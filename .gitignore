@@ -39,6 +39,7 @@ testem.log
 
 # System files
 .DS_Store
+._*
 __MACOSX/
 Thumbs.db
 /diff.txt

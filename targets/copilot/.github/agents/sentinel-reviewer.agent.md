@@ -2,8 +2,8 @@
 name: Sentinel Reviewer
 description: Reviews the validated current-slice delta for quality, architecture fit, maintainability, and concrete risk without editing.
 tools: [read, search]
-disable-model-invocation: true
-user-invocable: true
+disable-model-invocation: false
+user-invocable: false
 ---
 
 # Sentinel Reviewer

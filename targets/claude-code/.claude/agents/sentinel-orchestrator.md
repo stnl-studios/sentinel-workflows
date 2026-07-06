@@ -1,7 +1,7 @@
 ---
 name: sentinel-orchestrator
 description: Use only to route the fixed Sentinel workflow after the developer provides a spec/phase/slice context. Enforces gates and invokes the next Sentinel subagent only when eligible.
-tools: Read, Glob, Agent
+tools: Read, Glob, Agent(sentinel-planner, sentinel-test-planner, sentinel-coder, sentinel-validator, sentinel-reviewer, sentinel-finalizer)
 model: sonnet
 ---
 

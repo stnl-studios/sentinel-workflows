@@ -1,65 +1,35 @@
 # Sentinel Workflows for GitHub Copilot
 
-Sentinel Workflows is a small, contract-based execution workflow for scoped software changes. Copy this target into a project and use the supplied Copilot agents, instructions, and skills directly; no generator or additional runtime is required.
+Use English for workflow artifacts. Start an explicit Sentinel request with `sentinel-orchestrator`; specialist agents are orchestration-only and must not be invoked directly. Do not execute a phase from free conversation.
 
-All workflow files and generated contract content are written in English.
+## Workflow and gates
 
-## Workflow
-
-Run phases only in this order:
+Run only this sequence:
 
 ```text
-orchestrator
-  -> planner
-  -> developer approval
-  -> test-planner
-  -> developer approval
-  -> coder
-  -> validator
-  -> reviewer
-  -> finalizer
+orchestrator -> planner -> developer approval -> test-planner
+  -> developer approval -> coder -> validator -> reviewer -> finalizer
 ```
 
-The orchestrator routes; it does not perform another agent's work. A plan change returns to developer approval. A test-plan change returns to developer approval. Scope or architecture uncertainty stops for a developer decision.
+Only the orchestrator may invoke another Sentinel agent, and it may invoke only the next eligible role. Specialists do not invoke agents. The developer must approve `plan-execution.md` before test planning and `test-plan.md` before coding; changing either contract repeats its approval gate. Scope expansion, new paths, dependencies, or major architecture decisions require developer approval.
 
-Only the orchestrator may invoke another Sentinel agent. Every non-orchestrator agent must return a short, textual, disposable, non-persistent handoff and must not invoke agents or create subagent chains. The developer and orchestrator control phase transitions.
+## Contracts and ownership
 
-Do not start this workflow from free conversation alone. Start with an explicit spec and phase/slice request, then use the matching agent. Do not skip agents or approvals.
+- `spec.md` or lifecycle-managed `feature_spec.md`: functional contract; only `stnl-spec-lifecycle-manager` may change `feature_spec.md`, including `MODE=CLOSE`.
+- `plan-execution.md`: technical contract; planner-only writes.
+- `test-plan.md`: evidence contract mapped to acceptance criteria and DoR/DoD; test-planner-only writes.
+- `spec-close-inputs.md`: lifecycle close input; finalizer-only writes after validator and reviewer pass.
 
-## Persistent contracts
+The finalizer does not edit or close the canonical spec. Never create persistent handoffs, `final.md`, operational logs, or agent history.
 
-- `spec.md`: functional contract. If the project uses `stnl-spec-lifecycle-manager`, its canonical `feature_spec.md` is the equivalent and must keep that lifecycle's structure.
-- `plan-execution.md`: developer-approved technical contract, split into small slices with allowed, read, and blocked paths.
-- `test-plan.md`: developer-approved evidence contract, mapped to acceptance criteria and DoD.
-- `spec-close-inputs.md`: minimal evidence prepared by the finalizer for lifecycle close; it is not a report or the final spec.
+## Scope, evidence, and context
 
-Write authority is exclusive:
+Every slice declares concrete allowed, read, and blocked paths. Read the smallest relevant context, change only allowed paths, and never access blocked paths. Stop before following an import, dependency, generated file, migration, security boundary, or architecture path outside the approved contract. Reviewer inspects the current delta, not the repository.
 
-- `feature_spec.md`: `stnl-spec-lifecycle-manager` only, including lifecycle operations such as `MODE=CLOSE`.
-- `plan-execution.md`: planner only.
-- `test-plan.md`: test-planner only.
-- `spec-close-inputs.md`: finalizer only.
+Evidence must identify commands or manual actions actually executed, concise observed results, omissions, and coverage of relevant acceptance criteria and DoR/DoD. A bare claim that tests passed is not evidence; missing mandatory evidence blocks validation.
 
-The finalizer must not edit `feature_spec.md`, close the spec directly, or invoke lifecycle close. It writes only `spec-close-inputs.md`. That artifact is input for lifecycle close, not an automatic close report.
+Load only skills required by the current role and slice. Orchestrator and finalizer load none; coder and validator use migration or security skills only when explicitly required by the plan or diff.
 
-Keep operational state, logs, diffs, and agent history out of the spec and these artifacts. Never create persistent handoff files or `final.md`.
+Handoffs are short, textual, disposable, and non-persistent. Use only `PASS`, `BLOCKED`, `NEEDS_APPROVAL`, `NEEDS_FIX`, `NEEDS_REPLAN`, or `NEEDS_RETEST_PLAN`.
 
-## Human gates
-
-The developer must approve `plan-execution.md` before test planning and approve `test-plan.md` before coding. Any later change to either contract repeats its gate. Dependencies, scope expansion, major architecture choices, and new allowed paths also require explicit approval.
-
-## Operating model
-
-1. Give the planner the functional contract and current slice. Approve its concrete plan.
-2. Give the test-planner the approved plan. Approve its evidence contract.
-3. Give the coder only the approved current slice and declared paths.
-4. Require objective command/results evidence from the validator.
-5. Have the reviewer inspect the delta, not the repository.
-6. Let the finalizer update only `spec-close-inputs.md` after validator and reviewer pass.
-7. Use `stnl-spec-lifecycle-manager` `MODE=CLOSE` only after close inputs say `ready-to-close`.
-
-Handoffs are textual, short, disposable, and non-persistent. Use only `PASS`, `BLOCKED`, `NEEDS_APPROVAL`, `NEEDS_FIX`, `NEEDS_REPLAN`, and `NEEDS_RETEST_PLAN`.
-
-## Recovery
-
-After an interrupted or partial run, reload the functional spec, approved plan, approved test plan, and existing close inputs; focus on the current slice; inspect only its partial diff; then continue, clean up, or block. Approved contracts are reusable. Unreliable partial implementation is disposable.
+After an interruption, reload the approved contracts and existing close inputs, focus on the current slice, and inspect only its partial diff before continuing, cleaning up, or blocking.

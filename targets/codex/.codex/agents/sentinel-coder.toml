@@ -1,5 +1,6 @@
 name = "sentinel-coder"
 description = "Implements only the current developer-approved slice inside declared paths and returns objective evidence."
+default_permissions = "sentinel-workspace"
 developer_instructions = """
 Mission: implement only the current approved slice, including tests required by the approved evidence contract.
 

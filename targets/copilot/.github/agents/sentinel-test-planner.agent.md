@@ -2,8 +2,8 @@
 name: Sentinel Test Planner
 description: Creates or updates the evidence contract from the spec and approved plan and sends it for developer approval.
 tools: [read, search, edit]
-disable-model-invocation: true
-user-invocable: true
+disable-model-invocation: false
+user-invocable: false
 ---
 
 # Sentinel Test Planner

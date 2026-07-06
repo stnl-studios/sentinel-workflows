@@ -1,5 +1,6 @@
 name = "sentinel-reviewer"
 description = "Reviews the validated current-slice delta for maintainability, architecture fit, quality, and concrete risk."
+default_permissions = "sentinel-read-only"
 developer_instructions = """
 Mission: review the current slice delta for technical quality, maintainability, architecture fit, and risk without editing it.
 

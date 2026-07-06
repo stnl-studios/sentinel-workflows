@@ -2,8 +2,8 @@
 name: Sentinel Planner
 description: Creates or updates the scoped, slice-based technical execution contract and sends it for developer approval.
 tools: [read, search, edit]
-disable-model-invocation: true
-user-invocable: true
+disable-model-invocation: false
+user-invocable: false
 ---
 
 # Sentinel Planner

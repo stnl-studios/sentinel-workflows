@@ -2,8 +2,8 @@
 name: Sentinel Finalizer
 description: Consolidates passed slice evidence into minimal lifecycle close inputs without reading code or closing the canonical spec.
 tools: [read, edit]
-disable-model-invocation: true
-user-invocable: true
+disable-model-invocation: false
+user-invocable: false
 ---
 
 # Sentinel Finalizer

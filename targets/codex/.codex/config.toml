@@ -1,3 +1,57 @@
 [agents]
 max_threads = 2
-max_depth = 1
+max_depth = 2
+
+[permissions.sentinel-read-only]
+description = "Read-only Sentinel work with sensitive paths denied."
+extends = ":read-only"
+
+[permissions.sentinel-read-only.filesystem]
+glob_scan_max_depth = 6
+"~/.aws" = "deny"
+"~/.ssh" = "deny"
+
+[permissions.sentinel-read-only.filesystem.":workspace_roots"]
+".env" = "deny"
+".env.*" = "deny"
+"**/.env" = "deny"
+"**/.env.*" = "deny"
+"secrets" = "deny"
+"secrets.*" = "deny"
+"**/secrets" = "deny"
+"**/secrets.*" = "deny"
+"credentials" = "deny"
+"credentials.*" = "deny"
+"**/credentials" = "deny"
+"**/credentials.*" = "deny"
+".aws" = "deny"
+"**/.aws" = "deny"
+".ssh" = "deny"
+"**/.ssh" = "deny"
+
+[permissions.sentinel-workspace]
+description = "Writable Sentinel workspace with sensitive paths denied."
+extends = ":workspace"
+
+[permissions.sentinel-workspace.filesystem]
+glob_scan_max_depth = 6
+"~/.aws" = "deny"
+"~/.ssh" = "deny"
+
+[permissions.sentinel-workspace.filesystem.":workspace_roots"]
+".env" = "deny"
+".env.*" = "deny"
+"**/.env" = "deny"
+"**/.env.*" = "deny"
+"secrets" = "deny"
+"secrets.*" = "deny"
+"**/secrets" = "deny"
+"**/secrets.*" = "deny"
+"credentials" = "deny"
+"credentials.*" = "deny"
+"**/credentials" = "deny"
+"**/credentials.*" = "deny"
+".aws" = "deny"
+"**/.aws" = "deny"
+".ssh" = "deny"
+"**/.ssh" = "deny"

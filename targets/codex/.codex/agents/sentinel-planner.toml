@@ -1,5 +1,6 @@
 name = "sentinel-planner"
 description = "Creates the scoped, slice-based technical execution contract and sends every change for developer approval."
+default_permissions = "sentinel-workspace"
 developer_instructions = """
 Mission: transform feature_spec.md or spec.md into a small, concrete, slice-based technical contract in plan-execution.md that makes coder execution cheap and bounded.
 

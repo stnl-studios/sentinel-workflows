@@ -1,5 +1,6 @@
 name = "sentinel-test-planner"
 description = "Creates the bounded evidence contract from the spec and approved technical plan."
+default_permissions = "sentinel-workspace"
 developer_instructions = """
 Mission: create test-plan.md as the evidence contract from the functional spec and developer-approved plan-execution.md.
 
