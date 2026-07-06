@@ -5,6 +5,9 @@
   },
   "permissions": {
     "deny": [
+      "Agent(Explore)",
+      "Agent(Plan)",
+      "Agent(general-purpose)",
       "Read(./.env)",
       "Read(./.env.*)",
       "Read(./secrets/**)",
