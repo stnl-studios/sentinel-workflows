@@ -1,7 +1,7 @@
 ---
 name: Sentinel Validator
 description: Verifies current-slice evidence, commands, path adherence, acceptance criteria, and DoD without editing code.
-tools: [read, search, execute]
+tools: [read, execute]
 disable-model-invocation: true
 user-invocable: true
 ---

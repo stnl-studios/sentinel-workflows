@@ -22,6 +22,8 @@ orchestrator
 
 The orchestrator routes; it does not perform another agent's work. A plan change returns to developer approval. A test-plan change returns to developer approval. Scope or architecture uncertainty stops for a developer decision.
 
+Only the orchestrator may invoke another Sentinel agent. Every non-orchestrator agent must return a short, textual, disposable, non-persistent handoff and must not invoke agents or create subagent chains. The developer and orchestrator control phase transitions.
+
 Do not start this workflow from free conversation alone. Start with an explicit spec and phase/slice request, then use the matching agent. Do not skip agents or approvals.
 
 ## Persistent contracts
@@ -30,6 +32,15 @@ Do not start this workflow from free conversation alone. Start with an explicit 
 - `plan-execution.md`: developer-approved technical contract, split into small slices with allowed, read, and blocked paths.
 - `test-plan.md`: developer-approved evidence contract, mapped to acceptance criteria and DoD.
 - `spec-close-inputs.md`: minimal evidence prepared by the finalizer for lifecycle close; it is not a report or the final spec.
+
+Write authority is exclusive:
+
+- `feature_spec.md`: `stnl-spec-lifecycle-manager` only, including lifecycle operations such as `MODE=CLOSE`.
+- `plan-execution.md`: planner only.
+- `test-plan.md`: test-planner only.
+- `spec-close-inputs.md`: finalizer only.
+
+The finalizer must not edit `feature_spec.md`, close the spec directly, or invoke lifecycle close. It writes only `spec-close-inputs.md`. That artifact is input for lifecycle close, not an automatic close report.
 
 Keep operational state, logs, diffs, and agent history out of the spec and these artifacts. Never create persistent handoff files or `final.md`.
 
@@ -47,7 +58,7 @@ The developer must approve `plan-execution.md` before test planning and approve 
 6. Let the finalizer update only `spec-close-inputs.md` after validator and reviewer pass.
 7. Use `stnl-spec-lifecycle-manager` `MODE=CLOSE` only after close inputs say `ready-to-close`.
 
-Handoffs are short and disposable. Use only `PASS`, `BLOCKED`, `NEEDS_APPROVAL`, `NEEDS_FIX`, `NEEDS_REPLAN`, and `NEEDS_RETEST_PLAN`.
+Handoffs are textual, short, disposable, and non-persistent. Use only `PASS`, `BLOCKED`, `NEEDS_APPROVAL`, `NEEDS_FIX`, `NEEDS_REPLAN`, and `NEEDS_RETEST_PLAN`.
 
 ## Recovery
 

@@ -6,6 +6,8 @@ applyTo: "**"
 
 Every execution slice must declare concrete allowed paths, read paths, and blocked paths.
 
+File ownership overrides slice path declarations. Only `stnl-spec-lifecycle-manager` may write `feature_spec.md`, including during `MODE=CLOSE`; only planner may write `plan-execution.md`; only test-planner may write `test-plan.md`; and only finalizer may write `spec-close-inputs.md`. The finalizer must not edit `feature_spec.md` or close the spec directly. `spec-close-inputs.md` is lifecycle-close input, not an automatic close report.
+
 - Allowed paths may be read and changed only for approved slice work.
 - Read paths may be inspected but not changed.
 - Blocked paths may not be read or changed.

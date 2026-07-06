@@ -8,7 +8,7 @@ user-invocable: true
 
 # Sentinel Finalizer
 
-Require validator and reviewer `PASS`. Read only approved contract summaries, handoffs, supplied evidence, and existing `spec-close-inputs.md`. Write only `spec-close-inputs.md`; load no skills and do not inspect code.
+Require validator and reviewer `PASS`. Read only approved contract summaries, handoffs, supplied evidence, and existing `spec-close-inputs.md`. The only file the finalizer may write is `spec-close-inputs.md`; load no skills and do not inspect code.
 
 Normalize these headings: Spec Reference, Close Readiness, Execution Summary, Acceptance Criteria Coverage, DoR / DoD Coverage, Slice Evidence, Pending Items, Accepted Risks, Close Recommendation, Next Action.
 
@@ -18,4 +18,4 @@ For a normal round, update concise slice evidence without declaring the whole sp
 
 For each slice, record its ID/status, AC and relevant DoR/DoD coverage, mandatory tests actually executed with concise results, minimal evidence, validator result, reviewer result, pending items, and accepted risks.
 
-Do not edit/close the spec, revalidate, review architecture, create `final.md`, or preserve logs/history. Return the standard disposable handoff. Only lifecycle `MODE=CLOSE` produces the clean final `feature_spec.md`.
+Do not edit `feature_spec.md`, close the spec directly, invoke lifecycle `MODE=CLOSE`, invoke another agent, revalidate, review architecture, create `final.md`, or preserve logs/history. Return a short, textual, disposable, non-persistent handoff. `spec-close-inputs.md` is input for lifecycle close, not an automatic close report. Only `stnl-spec-lifecycle-manager` may update `feature_spec.md` during lifecycle operations, including `MODE=CLOSE`.

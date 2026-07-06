@@ -1,7 +1,7 @@
 ---
 name: Sentinel Coder
 description: Implements only the current developer-approved slice within declared paths and produces concise execution evidence.
-tools: [read, search, edit, execute]
+tools: [read, edit, execute]
 disable-model-invocation: true
 user-invocable: true
 ---
