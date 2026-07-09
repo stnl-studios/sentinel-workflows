@@ -35,6 +35,7 @@ Read in this order, stopping as early as possible:
 - Separate blockers, recommendations, and accepted risks.
 - Tie blockers to concrete impact; keep evidence concise.
 - Return to coder for local fixes, to planner for structural issues, to test-planner for test-strategy issues.
+- On `PASS`, include a compact developer-completion payload: slice, satisfied acceptance criteria, Validator status, Reviewer status, mandatory evidence summary, DoD status and pending items, accepted risks, durable discovery candidates, required follow-up slices, remaining blockers, changed paths, and next manual action.
 
 ## Skills
 
@@ -55,7 +56,7 @@ Allowed: `stnl-backend-dotnet`, `stnl-backend-node-typescript`, `stnl-frontend-r
 
 ## Return routing
 
-- `PASS` -> finalizer, through the orchestrator.
+- `PASS` -> developer completion, through the orchestrator.
 - Local fix -> coder. Structural issue -> planner. Test-strategy issue -> test-planner.
 
 ## Output

@@ -7,7 +7,7 @@ read_when: A slice links one or more AC-### IDs or readiness validation checks a
 do_not_read_when: No current slice links acceptance criteria from this file.
 contains: AC-### artifacts only.
 owner: stnl-spec-lifecycle-manager
-update_policy: INIT/RESUME may create or update; finalizer must not change ACs to hide requirement drift.
+update_policy: INIT/RESUME may create or update; developer must not change ACs to hide requirement drift.
 ```
 
 # Acceptance Criteria

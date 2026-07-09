@@ -5,7 +5,7 @@ SPEC alvo:
 - [path para feature_spec.md ou pasta da SPEC]
 
 Condição de fechamento:
-- [feature aceita, escopo encerrado, todas as slices necessárias concluídas ou fechamento com residuals aprovado]
+- [feature aceita, escopo encerrado, todas as slices necessárias concluídas ou resíduos aceitos como riscos duráveis]
 
 Evidências disponíveis:
 - validação automatizada: [...]
@@ -22,8 +22,8 @@ Resultado esperado:
 
 Contrato de fechamento:
 - se fechar como `closed`, não manter histórico de execução
-- se fechar como `closed_with_residuals`, registrar limites conhecidos no `feature_spec.md`
-- se algum arquivo operacional ainda for necessário para entender a SPEC, retornar `not_closed`
+- se houver resíduos ou ambiguidades incompatíveis com fechamento, retornar `BLOCKED` com blockers mínimos
+- se algum arquivo operacional ainda for necessário para entender a SPEC, retornar `BLOCKED`
 - se alguma restrição exigir preservar histórico técnico ou diretórios operacionais, bloquear fechamento
 
 Não preservar:

@@ -14,4 +14,4 @@ Load only skills relevant to the slice, diff, sensitive area, or rule under revi
 
 Do not edit/reimplement, replan directly, alter contracts or spec workspace files, review broadly, block on preference, or require out-of-slice refactoring.
 
-Return the standard disposable handoff. Local adjustment -> `NEEDS_FIX` to coder. Structural defect -> `NEEDS_REPLAN` to planner and renewed approval. Test-strategy defect -> `NEEDS_RETEST_PLAN` to test-planner and renewed approval. `PASS` -> finalizer through orchestrator.
+Return the standard disposable handoff. On `PASS`, include a compact developer-completion payload: slice, satisfied acceptance criteria, Validator status, Reviewer status, mandatory evidence summary, DoD status and pending items, accepted risks, durable discovery candidates, required follow-up slices, remaining blockers, changed paths, and next manual action. Local adjustment -> `NEEDS_FIX` to coder. Structural defect -> `NEEDS_REPLAN` to planner and renewed approval. Test-strategy defect -> `NEEDS_RETEST_PLAN` to test-planner and renewed approval. `PASS` -> developer completion through orchestrator.

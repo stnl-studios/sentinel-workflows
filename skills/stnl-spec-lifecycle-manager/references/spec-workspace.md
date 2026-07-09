@@ -2,7 +2,7 @@
 
 ```yaml
 purpose: Define the modular operational spec workspace contract.
-load_when: Creating, resuming, validating, executing, or closing a lifecycle-managed spec workspace.
+load_when: Creating, resuming, validating readiness, preparing, or closing a lifecycle-managed spec workspace.
 do_not_load_when: Only canonical ID syntax or question wording is needed.
 contains: Directory structure, file responsibilities, File Purpose Headers, selective reading, materialization, consistency, migration, and close behavior.
 owner: stnl-spec-lifecycle-manager
@@ -178,7 +178,7 @@ The minimum package contains:
 - context hints;
 - minimal dependencies.
 
-Reading the whole workspace is allowed only with a concrete justification that the selective package is insufficient.
+Outside orchestrator handoff assembly, reading the whole spec workspace is allowed only with a concrete justification that the selective package is insufficient. The orchestrator itself must keep to the index, current slice, explicitly linked shared blocks, and lifecycle files needed for routing or continuity.
 
 ## Consistency Rules
 
@@ -204,9 +204,9 @@ Start from `feature_spec.md` and `lifecycle/resume-notes.md`. Preserve IDs. Comp
 
 Read only what is needed to validate consistency and readiness. Do not create, edit, split, merge, or rewrite files. Block on open questions, broken references, slice-file mismatches, stale traceability, or structural inconsistency.
 
-### External Execution and Finalizer
+### External Execution and Developer Completion
 
-Before finalizer, no execution agent mutates the spec workspace. After a fully successful round, the finalizer may update only:
+No execution agent mutates the spec workspace. After Validator and Reviewer both pass, the developer may manually update only:
 
 - the completed `slices/SL-###.md`;
 - durable additions to `shared/decisions.md`;
@@ -218,9 +218,9 @@ Before finalizer, no execution agent mutates the spec workspace. After a fully s
 - `lifecycle/resume-notes.md`;
 - compact metadata and indexes in `feature_spec.md`.
 
-The finalizer must not create or alter acceptance criteria to hide a requirement change. That blocks and returns to `RESUME`.
+The developer must not create or alter acceptance criteria to hide a requirement change. That blocks and returns to `RESUME`.
 
-All finalizer changes must be one logical atomic update. If final validation fails, revert the whole spec patch and keep the previous canonical workspace state.
+Spec-state atomicity means the spec does not advance automatically during the agent round. It is not a filesystem transaction. Until the developer completes the manual update, the slice remains in its previous canonical status. An interruption during manual completion requires checking `feature_spec.md`, the current slice, traceability, QA checklist, and resume notes before another slice starts. Restore consistency directly or use `MODE=RESUME`.
 
 ### `CLOSE`
 

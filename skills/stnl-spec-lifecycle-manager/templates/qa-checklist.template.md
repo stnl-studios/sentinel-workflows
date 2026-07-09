@@ -3,11 +3,11 @@
 ```yaml
 purpose: Store the Spec Quality Gate for <feature>.
 status: draft
-read_when: INIT, RESUME, PLANNING, or finalizer validates workspace quality.
+read_when: INIT, RESUME, PLANNING, or developer completion validates workspace quality.
 do_not_read_when: Implementing or reviewing code for a prepared slice package.
 contains: Compact quality gate status and ID-based blockers only.
 owner: stnl-spec-lifecycle-manager
-update_policy: INIT/RESUME/finalizer update only to reflect real workspace state.
+update_policy: INIT/RESUME and developer completion update only to reflect real workspace state.
 ```
 
 # QA Checklist

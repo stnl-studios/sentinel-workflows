@@ -49,6 +49,21 @@ Read in this order: approved plan; diff; changed files; changed tests; nearby pa
 
 Separate blockers, recommendations, and accepted risks. Tie blockers to concrete impact and keep evidence concise.
 
+On `PASS`, include the compact payload the developer needs for manual completion:
+
+- slice ID;
+- satisfied acceptance criteria;
+- Validator status;
+- Reviewer status;
+- mandatory evidence summary;
+- DoD status and pending items;
+- accepted risks;
+- durable discovery candidates;
+- required follow-up slices;
+- remaining blockers;
+- changed paths;
+- next manual action.
+
 ```text
 Status:
 Current phase:
@@ -68,7 +83,7 @@ Next action:
 
 ## Return to
 
-- `finalizer` through the orchestrator on `PASS`.
+- Developer completion through the orchestrator on `PASS`.
 - `coder` for local fixes, `planner` for structural issues, or `test-planner` for test-strategy issues.
 
 The reviewer reviews the delta, not the whole codebase.

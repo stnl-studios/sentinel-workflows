@@ -7,7 +7,7 @@ read_when: A slice links R-### IDs or readiness validation checks risk coverage.
 do_not_read_when: The current slice links no risks and risk absence is explicit in the index.
 contains: R-### artifacts only.
 owner: stnl-spec-lifecycle-manager
-update_policy: INIT/RESUME may update; finalizer may append durable risks after a fully successful round.
+update_policy: INIT/RESUME may update; developer may append durable risks after Validator and Reviewer pass.
 ```
 
 # Risks

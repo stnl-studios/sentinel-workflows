@@ -15,279 +15,352 @@ cd "$ROOT"
 
 command -v "$PYTHON_BIN" >/dev/null 2>&1 || fail "PYTHON_BIN is unavailable: $PYTHON_BIN"
 
-# Packaging and prompt templates
-if find . \( -name .DS_Store -o -name '._*' -o -name __MACOSX \) -print -quit | grep -q .; then
+# Packaging metadata and archives
+if find . -path ./.git -prune -o \( -name .DS_Store -o -name '._*' -o -name __MACOSX -o -name Thumbs.db \) -print -quit | grep -q .; then
   fail "packaging metadata remains"
 fi
 
+while IFS= read -r archive; do
+  case "$archive" in
+    *.zip)
+      command -v unzip >/dev/null 2>&1 || fail "unzip is required to inspect $archive"
+      if unzip -l "$archive" | grep -Eq '(^|/)(__MACOSX|\.DS_Store|\._[^/]*|Thumbs\.db)(/|$)'; then
+        fail "packaging metadata remains inside $archive"
+      fi
+      ;;
+    *.tar|*.tgz|*.tar.gz)
+      if tar -tf "$archive" | grep -Eq '(^|/)(__MACOSX|\.DS_Store|\._[^/]*|Thumbs\.db)(/|$)'; then
+        fail "packaging metadata remains inside $archive"
+      fi
+      ;;
+  esac
+done < <(find . -path ./.git -prune -o -type f \( -name '*.zip' -o -name '*.tar' -o -name '*.tgz' -o -name '*.tar.gz' \) -print)
+
+# Prompt templates
 test -d templates/prompts || fail "templates/prompts directory is missing"
 test ! -e "$LEGACY_TEMPLATE_DIR" || fail "legacy template path remains: $LEGACY_TEMPLATE_DIR"
 for name in spec-close spec-init spec-planning spec-resume; do
   test -f "templates/prompts/$name.md" || fail "missing templates/prompts/$name.md"
 done
-if grep -R -q --exclude='*.zip' --exclude-dir=.git "$LEGACY_TEMPLATE_NAME" .; then
+if grep -R -q --exclude-dir=.git "$LEGACY_TEMPLATE_NAME" .; then
   fail "legacy template reference remains"
 fi
 
-# Codex target
-grep -Eq '^max_depth[[:space:]]*=[[:space:]]*2$' targets/codex/.codex/config.toml \
-  || fail "Codex max_depth is not 2"
-if grep -R -n '^sandbox_mode[[:space:]]*=' targets/codex/.codex >/dev/null; then
-  fail "Codex target mixes sandbox_mode with permission profiles"
-fi
-for profile in sentinel-read-only sentinel-workspace; do
-  grep -Fq "[permissions.$profile]" targets/codex/.codex/config.toml \
-    || fail "missing Codex profile $profile"
-done
-for agent in sentinel-orchestrator sentinel-reviewer; do
-  grep -Fq 'default_permissions = "sentinel-read-only"' "targets/codex/.codex/agents/$agent.toml" \
-    || fail "$agent is not read-only"
-done
-for agent in sentinel-planner sentinel-test-planner sentinel-coder sentinel-finalizer; do
-  grep -Fq 'default_permissions = "sentinel-workspace"' "targets/codex/.codex/agents/$agent.toml" \
-    || fail "$agent cannot write within the workspace"
-done
-
-codex_validator=targets/codex/.codex/agents/sentinel-validator.toml
-grep -Fq 'default_permissions = "sentinel-workspace"' "$codex_validator" \
-  || fail "sentinel-validator must use sentinel-workspace to execute validation commands"
-for rule in \
-  'Approved validation commands may generate execution artifacts' \
-  'Never edit code, product files, tests, contracts, plans, or spec files.' \
-  'changes files outside its expected execution artifacts, return BLOCKED or NEEDS_FIX' \
-  'Inspect and report every dirty diff produced by validation.'; do
-  grep -Fq "$rule" "$codex_validator" \
-    || fail "sentinel-validator is missing its workspace restriction: $rule"
-done
-for sensitive in '.env' 'secrets' 'credentials' '.aws' '.ssh'; do
-  grep -Fq "$sensitive" targets/codex/.codex/config.toml \
-    || fail "missing Codex deny rule for $sensitive"
-done
-
-if "$PYTHON_BIN" -c 'import tomllib' >/dev/null 2>&1; then
-  "$PYTHON_BIN" - <<'PY'
-from pathlib import Path
-import tomllib
-
-for path in Path("targets/codex/.codex").rglob("*.toml"):
-    with path.open("rb") as source:
-        tomllib.load(source)
-PY
-elif command -v codex >/dev/null 2>&1; then
-  (cd targets/codex && codex features list >/dev/null)
-else
-  fail "TOML validation requires PYTHON_BIN with tomllib or Codex CLI"
-fi
-
-# Claude Code target: JSON, frontmatter, allowlist, and delegation boundaries
+# Static contract validation
 "$PYTHON_BIN" - <<'PY'
+from __future__ import annotations
+
 import json
 import re
 from pathlib import Path
 
+try:
+    import tomllib as _tomllib
+except ModuleNotFoundError:
+    _tomllib = None
 
-def frontmatter(path: Path) -> dict[str, str]:
-    text = path.read_text()
+ROOT = Path(".")
+TEXT_ROOTS = [Path("agents"), Path("targets"), Path("skills"), Path("templates"), Path("scripts")]
+ALLOWED_HANDOFF = {"PASS", "BLOCKED", "NEEDS_APPROVAL", "NEEDS_FIX", "NEEDS_REPLAN", "NEEDS_RETEST_PLAN"}
+ALLOWED_MODES = {"INIT", "RESUME", "PLANNING", "CLOSE"}
+LEGACY_ROLE = "final" "izer"
+LEGACY_AGENT = "sentinel-" + LEGACY_ROLE
+LEGACY_BASE = Path("agents/base") / f"{LEGACY_ROLE}.md"
+LEGACY_FILES = [
+    LEGACY_BASE,
+    Path("targets/codex/.codex/agents") / f"{LEGACY_AGENT}.toml",
+    Path("targets/claude-code/.claude/agents") / f"{LEGACY_AGENT}.md",
+    Path("targets/copilot/.github/agents") / f"{LEGACY_AGENT}.agent.md",
+]
+LEGACY_TOKENS = [
+    LEGACY_AGENT,
+    str(LEGACY_BASE),
+    "-> " + LEGACY_ROLE,
+    LEGACY_ROLE + " allowlist",
+    "spec-close-" "inputs.md",
+    "close-" "readiness.md",
+    "MODE=" "COMPLETE",
+    "MODE=" "COMMIT",
+]
+REMOVED_STATUSES = [
+    "closed_" "with_residuals",
+    "not_" "closed",
+    "ready-to-" "close",
+    "not-ready-to-" "close",
+]
+
+
+def fail(message: str) -> None:
+    raise SystemExit(message)
+
+
+def read_text(path: Path) -> str:
+    return path.read_text(encoding="utf-8")
+
+
+def load_toml(path: Path) -> dict:
+    text = read_text(path)
+    if _tomllib is not None:
+        return _tomllib.loads(text)
+
+    data: dict = {}
+    section: list[str] = []
     lines = text.splitlines()
-    if not lines or lines[0] != "---":
-        raise SystemExit(f"invalid frontmatter start: {path}")
-    try:
-        end = lines.index("---", 1)
-    except ValueError as error:
-        raise SystemExit(f"missing frontmatter end: {path}") from error
-    data: dict[str, str] = {}
-    for line in lines[1:end]:
-        if not line.strip() or line.startswith((" ", "\t")):
-            raise SystemExit(f"unsupported or blank frontmatter line in {path}: {line!r}")
-        match = re.fullmatch(r"([A-Za-z][A-Za-z0-9-]*):\s+(.+)", line)
-        if not match:
-            raise SystemExit(f"invalid frontmatter line in {path}: {line!r}")
-        key, value = match.groups()
-        if key in data:
-            raise SystemExit(f"duplicate frontmatter key in {path}: {key}")
-        if value.startswith("[") != value.endswith("]"):
-            raise SystemExit(f"unbalanced frontmatter list in {path}: {key}")
-        data[key] = value
+    index = 0
+    while index < len(lines):
+        raw = lines[index]
+        line = raw.strip()
+        index += 1
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            section = [part.strip('"') for part in line.strip("[]").split(".")]
+            cursor = data
+            for part in section:
+                cursor = cursor.setdefault(part, {})
+            continue
+        if "=" not in line:
+            fail(f"invalid TOML line in {path}: {raw!r}")
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if value.startswith('"""'):
+            collected = [value[3:]]
+            while not collected[-1].endswith('"""'):
+                if index >= len(lines):
+                    fail(f"unterminated TOML multiline string in {path}: {key}")
+                collected.append(lines[index])
+                index += 1
+            collected[-1] = collected[-1][:-3]
+            parsed: object = "\n".join(collected)
+        elif value.startswith('"') and value.endswith('"'):
+            parsed = value[1:-1]
+        elif re.fullmatch(r"\d+", value):
+            parsed = int(value)
+        else:
+            fail(f"unsupported TOML value in {path}: {raw!r}")
+        cursor = data
+        for part in section:
+            cursor = cursor.setdefault(part, {})
+        cursor[key] = parsed
     return data
 
 
-settings_path = Path("targets/claude-code/.claude/settings.json")
-try:
-    settings = json.loads(settings_path.read_text())
-except json.JSONDecodeError as error:
-    raise SystemExit(f"invalid JSON in {settings_path}: {error}") from error
-if settings.get("agent") != "sentinel-orchestrator":
-    raise SystemExit("Claude settings do not select sentinel-orchestrator")
-denied = set(settings.get("permissions", {}).get("deny", []))
-required_denials = {"Agent(Explore)", "Agent(Plan)", "Agent(general-purpose)"}
-if not required_denials <= denied:
-    raise SystemExit("Claude settings are missing built-in Agent denials")
-
-agent_dir = Path("targets/claude-code/.claude/agents")
-agents = sorted(agent_dir.glob("*.md"))
-if not agents:
-    raise SystemExit("Claude agents are missing")
-metadata = {path.name: frontmatter(path) for path in agents}
-required_keys = {"name", "description", "tools", "model"}
-for name, data in metadata.items():
-    if not required_keys <= data.keys():
-        raise SystemExit(f"Claude agent frontmatter is incomplete: {name}")
-
-expected_tools = (
-    "Read, Glob, Agent(sentinel-planner, sentinel-test-planner, sentinel-coder, "
-    "sentinel-validator, sentinel-reviewer, sentinel-finalizer)"
-)
-orchestrator = metadata.get("sentinel-orchestrator.md")
-if orchestrator is None or orchestrator.get("tools") != expected_tools:
-    raise SystemExit("Claude orchestrator Agent allowlist differs from the six specialists")
-for name, data in metadata.items():
-    if name != "sentinel-orchestrator.md" and re.search(r"(?:^|[, ])Agent(?:\(|[, ]|$)", data["tools"]):
-        raise SystemExit(f"Claude specialist can delegate: {name}")
-PY
-
-# Copilot target: orchestrator-first invocation and static smoke checks
-"$PYTHON_BIN" - <<'PY'
-import re
-from pathlib import Path
+def iter_text_files() -> list[Path]:
+    files: list[Path] = []
+    for root in TEXT_ROOTS:
+        if not root.exists():
+            continue
+        for path in root.rglob("*"):
+            if path.is_file() and ".git" not in path.parts:
+                try:
+                    path.read_text(encoding="utf-8")
+                except UnicodeDecodeError:
+                    continue
+                files.append(path)
+    return files
 
 
-def read_agent(path: Path) -> tuple[dict[str, str], str]:
-    text = path.read_text()
+all_text = {path: read_text(path) for path in iter_text_files()}
+
+# Removed legacy agent and terms
+for path in LEGACY_FILES:
+    if path.exists():
+        fail(f"legacy agent file remains: {path}")
+for path, text in all_text.items():
+    for token in LEGACY_TOKENS:
+        if token.lower() in text.lower():
+            fail(f"legacy token remains in {path}: {token}")
+    for status in REMOVED_STATUSES:
+        if re.search(rf"\b{re.escape(status)}\b", text):
+            fail(f"removed status remains in {path}: {status}")
+
+# Markdown fence balance
+for path, text in all_text.items():
+    if path.suffix != ".md":
+        continue
+    backtick = sum(1 for line in text.splitlines() if line.startswith("```"))
+    tilde = sum(1 for line in text.splitlines() if line.startswith("~~~"))
+    if backtick % 2:
+        fail(f"unbalanced backtick fences in {path}")
+    if tilde % 2:
+        fail(f"unbalanced tilde fences in {path}")
+
+# File Purpose Headers in skill reference/template/example/eval docs
+for folder in [
+    Path("skills/stnl-spec-lifecycle-manager/references"),
+    Path("skills/stnl-spec-lifecycle-manager/templates"),
+    Path("skills/stnl-spec-lifecycle-manager/examples"),
+    Path("skills/stnl-spec-lifecycle-manager/evals"),
+]:
+    for path in folder.glob("*.md"):
+        text = read_text(path)
+        if not text.startswith("# File Purpose Header\n\n```yaml\n"):
+            fail(f"missing File Purpose Header: {path}")
+
+# Skill description and MODE vocabulary
+skill_text = read_text(Path("skills/stnl-spec-lifecycle-manager/SKILL.md"))
+frontmatter = skill_text.split("---", 2)
+if len(frontmatter) < 3:
+    fail("skill frontmatter is missing")
+description_line = next((line for line in frontmatter[1].splitlines() if line.startswith("description:")), "")
+if re.search(r"\b(execute|executing|implementation)\b", description_line, re.IGNORECASE):
+    fail("skill frontmatter describes implementation execution")
+for path, text in all_text.items():
+    for match in re.finditer(r"\bMODE\s*[=:]\s*([A-Z_]+)", text):
+        mode = match.group(1)
+        if mode not in ALLOWED_MODES:
+            fail(f"unsupported MODE in {path}: {mode}")
+
+# TOML, JSON, and frontmatter validation
+for path in Path("targets/codex/.codex").rglob("*.toml"):
+    load_toml(path)
+json.loads(read_text(Path("targets/claude-code/.claude/settings.json")))
+
+
+def parse_frontmatter(path: Path) -> tuple[dict[str, str], str]:
+    text = read_text(path)
     lines = text.splitlines()
     if not lines or lines[0] != "---":
-        raise SystemExit(f"invalid frontmatter start: {path}")
+        fail(f"invalid frontmatter start: {path}")
     try:
         end = lines.index("---", 1)
-    except ValueError as error:
-        raise SystemExit(f"missing frontmatter end: {path}") from error
+    except ValueError:
+        fail(f"missing frontmatter end: {path}")
     data: dict[str, str] = {}
     for line in lines[1:end]:
         if not line.strip() or line.startswith((" ", "\t")):
-            raise SystemExit(f"unsupported or blank frontmatter line in {path}: {line!r}")
+            fail(f"unsupported or blank frontmatter line in {path}: {line!r}")
         match = re.fullmatch(r"([A-Za-z][A-Za-z0-9-]*):\s+(.+)", line)
         if not match:
-            raise SystemExit(f"invalid frontmatter line in {path}: {line!r}")
+            fail(f"invalid frontmatter line in {path}: {line!r}")
         key, value = match.groups()
         if key in data:
-            raise SystemExit(f"duplicate frontmatter key in {path}: {key}")
+            fail(f"duplicate frontmatter key in {path}: {key}")
         if value.startswith("[") != value.endswith("]"):
-            raise SystemExit(f"unbalanced frontmatter list in {path}: {key}")
+            fail(f"unbalanced frontmatter list in {path}: {key}")
         if key in {"disable-model-invocation", "user-invocable"} and value not in {"true", "false"}:
-            raise SystemExit(f"invalid boolean in {path}: {key}")
+            fail(f"invalid boolean in {path}: {key}")
         data[key] = value
     return data, "\n".join(lines[end + 1 :])
 
 
-agent_dir = Path("targets/copilot/.github/agents")
-paths = sorted(agent_dir.glob("*.agent.md"))
-if not paths:
-    raise SystemExit("Copilot agents are missing")
-agents = {path.name: read_agent(path) for path in paths}
-required_keys = {
-    "name",
-    "description",
-    "tools",
-    "disable-model-invocation",
-    "user-invocable",
-}
-for name, (data, _) in agents.items():
-    if not required_keys <= data.keys():
-        raise SystemExit(f"Copilot agent frontmatter is incomplete: {name}")
+# Codex target
+config = read_text(Path("targets/codex/.codex/config.toml"))
+if not re.search(r"^max_depth\s*=\s*2$", config, re.MULTILINE):
+    fail("Codex max_depth is not 2")
+if re.search(r"^sandbox_mode\s*=", config, re.MULTILINE):
+    fail("Codex target mixes sandbox_mode with permission profiles")
+for profile in ["sentinel-read-only", "sentinel-workspace"]:
+    if f"[permissions.{profile}]" not in config:
+        fail(f"missing Codex profile {profile}")
+for denied in ["spec.md", "**/spec.md", "specs/**/feature_spec.md", "specs/**/shared/**", "specs/**/slices/**", "specs/**/lifecycle/**"]:
+    if denied not in config:
+        fail(f"Codex workspace profile does not deny spec writes: {denied}")
+codex_agents = {path.stem: load_toml(path) for path in Path("targets/codex/.codex/agents").glob("*.toml")}
+expected_codex = {"sentinel-orchestrator", "sentinel-planner", "sentinel-test-planner", "sentinel-coder", "sentinel-validator", "sentinel-reviewer"}
+if set(codex_agents) != expected_codex:
+    fail(f"Codex agent registry mismatch: {sorted(codex_agents)}")
+if codex_agents["sentinel-orchestrator"]["default_permissions"] != "sentinel-read-only":
+    fail("Codex orchestrator is not read-only")
+if codex_agents["sentinel-reviewer"]["default_permissions"] != "sentinel-read-only":
+    fail("Codex reviewer is not read-only")
+for name in expected_codex - {"sentinel-orchestrator", "sentinel-reviewer"}:
+    if codex_agents[name]["default_permissions"] != "sentinel-workspace":
+        fail(f"Codex {name} does not use workspace permissions")
+orchestrator_text = codex_agents["sentinel-orchestrator"]["developer_instructions"]
+for required in ["read-only textual search", "developer-completion", "Next agent none", "No agent runs after reviewer"]:
+    if required not in orchestrator_text:
+        fail(f"Codex orchestrator missing rule: {required}")
+if re.search(r"\b(source code|whole repository)\b", orchestrator_text) and "must not" not in orchestrator_text.lower():
+    fail("Codex orchestrator source-reading restriction is ambiguous")
 
+# Claude Code target
+settings = json.loads(read_text(Path("targets/claude-code/.claude/settings.json")))
+if settings.get("agent") != "sentinel-orchestrator":
+    fail("Claude settings do not select sentinel-orchestrator")
+denied = set(settings.get("permissions", {}).get("deny", []))
+if not {"Agent(Explore)", "Agent(Plan)", "Agent(general-purpose)"} <= denied:
+    fail("Claude settings are missing built-in Agent denials")
+claude_dir = Path("targets/claude-code/.claude/agents")
+claude_agents = {path.name: parse_frontmatter(path) for path in claude_dir.glob("*.md")}
+expected_claude = {f"{name}.md" for name in expected_codex}
+if set(claude_agents) != expected_claude:
+    fail(f"Claude agent registry mismatch: {sorted(claude_agents)}")
+for name, (data, _) in claude_agents.items():
+    if not {"name", "description", "tools", "model"} <= data.keys():
+        fail(f"Claude frontmatter incomplete: {name}")
+expected_tools = "Read, Glob, Grep, Agent(sentinel-planner, sentinel-test-planner, sentinel-coder, sentinel-validator, sentinel-reviewer)"
+if claude_agents["sentinel-orchestrator.md"][0]["tools"] != expected_tools:
+    fail("Claude orchestrator tools do not match selective search and five-agent delegation")
+for forbidden in ["Write", "Edit", "Bash"]:
+    if forbidden in claude_agents["sentinel-orchestrator.md"][0]["tools"]:
+        fail(f"Claude orchestrator has forbidden tool: {forbidden}")
+for name, (data, _) in claude_agents.items():
+    if name != "sentinel-orchestrator.md" and re.search(r"(?:^|[, ])Agent(?:\(|[, ]|$)", data["tools"]):
+        fail(f"Claude specialist can delegate: {name}")
+
+# Copilot target
+copilot_dir = Path("targets/copilot/.github/agents")
+copilot_agents = {path.name: parse_frontmatter(path) for path in copilot_dir.glob("*.agent.md")}
+expected_copilot = {f"{name}.agent.md" for name in expected_codex}
+if set(copilot_agents) != expected_copilot:
+    fail(f"Copilot agent registry mismatch: {sorted(copilot_agents)}")
 orchestrator_name = "sentinel-orchestrator.agent.md"
-orchestrator = agents.get(orchestrator_name)
-if orchestrator is None:
-    raise SystemExit("Copilot orchestrator is missing")
-invocable = [name for name, (data, _) in agents.items() if data["user-invocable"] == "true"]
+invocable = [name for name, (data, _) in copilot_agents.items() if data["user-invocable"] == "true"]
 if invocable != [orchestrator_name]:
-    raise SystemExit(f"Copilot user-invocable agents must contain only the orchestrator: {invocable}")
-
-orchestrator_data, orchestrator_body = orchestrator
+    fail(f"Copilot user-invocable agents must contain only the orchestrator: {invocable}")
+orchestrator_data, orchestrator_body = copilot_agents[orchestrator_name]
 orchestrator_tools = {item.strip().lower() for item in orchestrator_data["tools"].strip("[]").split(",")}
-if "agent" not in orchestrator_tools:
-    raise SystemExit("Copilot orchestrator lacks the agent tool")
-if not re.search(r"invokes? only the next eligible agent", orchestrator_body, re.IGNORECASE):
-    raise SystemExit("Copilot orchestrator lacks the next-eligible-agent restriction")
-
+if orchestrator_tools != {"read", "search", "agent"}:
+    fail(f"Copilot orchestrator tools are wrong: {orchestrator_tools}")
+if {"edit", "execute"} & orchestrator_tools:
+    fail("Copilot orchestrator has write or execution tools")
+if "developer-completion" not in orchestrator_body or "Next agent: none" not in orchestrator_body:
+    fail("Copilot orchestrator lacks developer completion return")
 negative_prefix = re.compile(r"\b(?:do not|does not|must not|never|cannot|may not)\b", re.IGNORECASE)
 delegation = re.compile(r"\b(?:invoke|delegate|call)\b.{0,80}\b(?:agent|sentinel-[a-z-]+)\b", re.IGNORECASE)
 direct_call = re.compile(r"\b(?:user|developer)\b.{0,80}\b(?:invoke|call)\b|\b(?:invoke|call)\b.{0,40}\bdirectly\b", re.IGNORECASE)
-for name, (data, body) in agents.items():
+for name, (data, body) in copilot_agents.items():
     if name == orchestrator_name:
         continue
     if data["user-invocable"] != "false":
-        raise SystemExit(f"Copilot specialist is user-invocable: {name}")
+        fail(f"Copilot specialist is user-invocable: {name}")
     if data["disable-model-invocation"] != "false":
-        raise SystemExit(f"Copilot specialist cannot be invoked programmatically: {name}")
+        fail(f"Copilot specialist cannot be invoked programmatically: {name}")
     tools = {item.strip().lower() for item in data["tools"].strip("[]").split(",")}
     if "agent" in tools:
-        raise SystemExit(f"Copilot specialist has the agent tool: {name}")
+        fail(f"Copilot specialist has the agent tool: {name}")
     for line in body.splitlines():
         if (delegation.search(line) or direct_call.search(line)) and not negative_prefix.search(line):
-            raise SystemExit(f"Copilot specialist contains a delegation/direct-call instruction: {name}: {line}")
+            fail(f"Copilot specialist contains delegation/direct-call instruction: {name}: {line}")
 
-instructions_dir = Path("targets/copilot/.github/instructions")
-known_redundant = {
-    "sentinel-evidence.instructions.md",
-    "sentinel-path-scope.instructions.md",
-    "sentinel-skill-loading.instructions.md",
-    "sentinel-workflows.instructions.md",
-}
-for path in instructions_dir.glob("*.instructions.md") if instructions_dir.exists() else []:
-    if path.name in known_redundant:
-        raise SystemExit(f"redundant Copilot instruction was reintroduced: {path}")
-    if re.search(r"^applyTo:\s*['\"]?\*\*['\"]?\s*$", path.read_text(), re.MULTILINE):
-        raise SystemExit(f"global Copilot instruction was reintroduced: {path}")
+# Workflow, ownership, statuses, and reviewer payload consistency
+for path in [Path("targets/codex/AGENTS.md"), Path("targets/claude-code/CLAUDE.md"), Path("targets/copilot/AGENTS.md")]:
+    text = read_text(path)
+    for required in [
+        "developer completion",
+        "No execution agent may modify",
+        "Developer Completion Protocol",
+        "spec-state atomicity",
+        "not a filesystem transaction",
+        "slice context package",
+    ]:
+        if required not in text:
+            fail(f"{path} missing contract text: {required}")
+for path in [Path("agents/base/reviewer.md"), Path("targets/codex/.codex/agents/sentinel-reviewer.toml"), Path("targets/claude-code/.claude/agents/sentinel-reviewer.md"), Path("targets/copilot/.github/agents/sentinel-reviewer.agent.md")]:
+    text = read_text(path)
+    for required in ["satisfied acceptance criteria", "Validator status", "Reviewer status", "mandatory evidence", "DoD", "accepted risks", "changed paths"]:
+        if required not in text:
+            fail(f"reviewer payload incomplete in {path}: {required}")
+for path, text in all_text.items():
+    for status in re.findall(r"\b(PASS|BLOCKED|NEEDS_APPROVAL|NEEDS_FIX|NEEDS_REPLAN|NEEDS_RETEST_PLAN|NEEDS_[A-Z_]+)\b", text):
+        if status.startswith("NEEDS_") and status not in ALLOWED_HANDOFF:
+            fail(f"unsupported handoff status in {path}: {status}")
+
+print("PASS: static target and contract checks")
 PY
 
-copilot_policy=targets/copilot/AGENTS.md
-for rule in \
-  '## Workflow and gates' \
-  '## Contracts and ownership' \
-  '## Scope, evidence, and context' \
-  'Handoffs are short, textual, disposable, and non-persistent.' \
-  'After an interruption, reload the compact spec index'; do
-  grep -Fq "$rule" "$copilot_policy" || fail "Copilot AGENTS.md is missing a critical rule: $rule"
-done
-grep -Fq 'acceptance criteria and DoR/DoD' "$copilot_policy" \
-  || fail "Copilot AGENTS.md is missing evidence-to-DoR/DoD coverage"
-
-# Modular spec workspace contract
-test -f skills/stnl-spec-lifecycle-manager/references/spec-workspace.md \
-  || fail "missing modular spec workspace reference"
-for template in \
-  feature_spec \
-  shared-acceptance-criteria \
-  shared-decisions \
-  shared-constraints \
-  shared-risks \
-  shared-questions \
-  slice \
-  traceability \
-  qa-checklist \
-  resume-notes \
-  closed-feature_spec; do
-  test -f "skills/stnl-spec-lifecycle-manager/templates/$template.template.md" \
-    || fail "missing modular template: $template"
-done
-for policy in targets/codex/AGENTS.md targets/claude-code/CLAUDE.md targets/copilot/AGENTS.md; do
-  grep -Eq 'modular spec workspace|spec workspace is modular' "$policy" \
-    || fail "$policy does not describe the modular spec workspace"
-  grep -Fq 'slice context package' "$policy" \
-    || fail "$policy does not forbid persistent slice context packages"
-done
-for finalizer in \
-  agents/base/finalizer.md \
-  targets/codex/.codex/agents/sentinel-finalizer.toml \
-  targets/claude-code/.claude/agents/sentinel-finalizer.md \
-  targets/copilot/.github/agents/sentinel-finalizer.agent.md; do
-  grep -Fq 'shared/acceptance-criteria.md' "$finalizer" \
-    || fail "$finalizer does not protect acceptance criteria"
-  grep -Fq 'lifecycle/resume-notes.md' "$finalizer" \
-    || fail "$finalizer does not include modular lifecycle allowlist"
-done
-if grep -R -n --exclude-dir=.git --exclude='*.zip' 'spec-close-inputs.md' agents targets skills templates >/dev/null; then
-  fail "legacy spec-close-inputs.md reference remains"
-fi
+bash scripts/smoke-structure.sh
 
 echo "PASS: target alignment checks"

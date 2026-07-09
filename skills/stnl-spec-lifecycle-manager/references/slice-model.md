@@ -18,7 +18,7 @@ A slice is the canonical unit of execution and lives in its own file: `slices/SL
 A slice is the smallest useful unit of delivery that can pass through one complete external agent round with high quality:
 
 ```text
-orchestrator -> planner -> test planner -> coder -> validator -> reviewer -> finalizer
+orchestrator -> planner -> developer approval -> test-planner -> developer approval -> coder -> validator -> reviewer -> developer completion
 ```
 
 The slice must be small enough to fit a single round without excessive context, but large enough to justify that round.
@@ -71,7 +71,7 @@ The slice must link IDs only. Do not duplicate full acceptance criteria, decisio
 | `planned` | Slice exists but is not ready for execution. |
 | `ready` | Slice can enter the external agent round. |
 | `blocked` | Slice cannot execute due to open questions, missing context, invalid links, or unresolved risks. |
-| `done` | Slice completed successfully and the finalizer updated the spec. |
+| `done` | Slice completed successfully and the developer or explicitly invoked lifecycle skill updated the spec. |
 | `dropped` | Slice was canceled. The ID remains reserved forever. |
 
 Do not use intermediate implementation statuses such as `implemented`, `validated`, or `reviewed` in the spec. Those belong to the external execution round. If the full round does not complete successfully, the spec is not updated.
@@ -119,23 +119,33 @@ A slice can be `ready` only when:
 
 ## Updating a completed slice
 
-Only the finalizer may update a slice file to `done`, and only after the complete external agent round succeeds.
+No execution agent may update a slice file to `done`. After Validator and Reviewer both pass, the developer may mark the slice `done` manually. The lifecycle skill may also update the workspace when explicitly invoked for lifecycle management.
 
-The finalizer may add a compact `completion_summary`, such as:
+The developer adds a compact `completion_summary`, such as:
 
 ```yaml
 completion_summary:
-  result: <what was completed>
+  result: <objective slice result>
   satisfied_acceptance_criteria: [AC-###]
+  validation:
+    mandatory_evidence: pass
+    validator: PASS
+    reviewer: PASS
+    commands:
+      - <summarized command or validation>
+  dod:
+    status: met
+    pending: []
   new_decisions: [D-###]
   new_risks: [R-###]
   new_constraints: [C-###]
+  accepted_risks: []
   follow_up_slices: [SL-###]
 ```
 
 Keep the summary short. Do not include failed attempts, logs, or internal agent debate.
 
-After updating a slice file, the finalizer must update compact index metadata, traceability, QA state, and resume notes in the same logical patch.
+After updating a slice file, update compact index metadata, traceability, QA state, and resume notes before starting another slice.
 
 ## Reopening completed work
 

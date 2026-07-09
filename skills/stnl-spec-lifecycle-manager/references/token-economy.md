@@ -58,7 +58,7 @@ dependencies: [SL-###]
 
 Do not create a permanent `slice-context`, `context-package`, `handoff`, or similar repository file. Handoffs between agents are disposable and textual.
 
-Reading the whole workspace is allowed only when a concrete reason shows the selective package is insufficient.
+Outside orchestrator handoff assembly, reading the whole spec workspace is allowed only when a concrete reason shows the selective package is insufficient. The orchestrator keeps to the index, current slice, explicitly linked shared blocks, and lifecycle files needed for routing or continuity.
 
 ## Compact Traceability
 

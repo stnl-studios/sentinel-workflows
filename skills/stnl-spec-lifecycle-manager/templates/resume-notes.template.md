@@ -7,7 +7,7 @@ read_when: Resuming the workflow or discovering the next candidate slice.
 do_not_read_when: Executing an already prepared slice package.
 contains: Last completed slice, next candidate, blockers, files/IDs to load, and compact continuity note.
 owner: stnl-spec-lifecycle-manager
-update_policy: INIT/RESUME/finalizer keep compact and operational; do not store logs or chat history.
+update_policy: INIT/RESUME and developer completion keep compact and operational; do not store logs or chat history.
 ```
 
 # Resume Notes

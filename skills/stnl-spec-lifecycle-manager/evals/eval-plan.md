@@ -171,22 +171,23 @@ Fail if:
 
 ---
 
-### E-008 - Finalizer Allowlist
+### E-008 - Developer Completion Protocol
 
 Input has validator and reviewer `PASS`.
 
 Expected:
 
-- finalizer updates only the completed slice file, allowed durable shared files, follow-up slice files when needed, lifecycle files, and compact index metadata;
-- finalizer does not close the spec;
-- finalizer does not alter acceptance criteria to hide a requirement change;
-- all finalizer changes are one logical atomic update.
+- reviewer supplies the compact completion payload needed by the developer;
+- developer updates only the completed slice file, allowed durable shared files, follow-up slice files when needed, lifecycle files, and compact index metadata;
+- no agent closes the spec or marks the slice done automatically;
+- acceptance criteria are not altered to hide a requirement change;
+- manual completion keeps index, traceability, QA checklist, and resume notes consistent.
 
 Fail if:
 
 - removes `shared/`, `slices/`, or `lifecycle/`;
-- writes outside the allowlist;
-- creates close-input, final report, log, or history files;
+- writes outside the manual completion allowlist;
+- creates secondary closure input artifacts, final report, log, or history files;
 - leaves index or traceability inconsistent.
 
 ---

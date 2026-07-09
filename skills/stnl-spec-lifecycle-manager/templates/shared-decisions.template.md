@@ -7,7 +7,7 @@ read_when: A slice links D-### IDs or durable behavior decisions must be validat
 do_not_read_when: The current slice links no decisions.
 contains: D-### artifacts only.
 owner: stnl-spec-lifecycle-manager
-update_policy: INIT/RESUME may update; finalizer may append durable decisions after a fully successful round.
+update_policy: INIT/RESUME may update; developer may append durable decisions after Validator and Reviewer pass.
 ```
 
 # Decisions

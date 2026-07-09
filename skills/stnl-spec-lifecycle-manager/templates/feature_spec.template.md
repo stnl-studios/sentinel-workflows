@@ -7,7 +7,7 @@ read_when: Starting INIT, RESUME, PLANNING, or discovering the next slice.
 do_not_read_when: A role already has the current slice package and does not need workspace discovery.
 contains: Compact metadata, objective, scope, artifact index, canonical paths, blockers, and selective-reading instructions.
 owner: stnl-spec-lifecycle-manager
-update_policy: Update during INIT/RESUME/finalizer only for index metadata; CLOSE replaces this with the final spec.
+update_policy: Developer or stnl-spec-lifecycle-manager may update index metadata; CLOSE replaces this with the final spec.
 ```
 
 # <Feature Name> - Feature Spec Index

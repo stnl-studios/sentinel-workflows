@@ -3,7 +3,7 @@ max_threads = 2
 max_depth = 2
 
 [permissions.sentinel-read-only]
-description = "Read-only Sentinel work with sensitive paths denied."
+description = "Read-only Sentinel work with sensitive paths denied. Orchestrator may perform ID-limited textual search in the active spec workspace only."
 extends = ":read-only"
 
 [permissions.sentinel-read-only.filesystem]
@@ -55,3 +55,9 @@ glob_scan_max_depth = 6
 "**/.aws" = "deny"
 ".ssh" = "deny"
 "**/.ssh" = "deny"
+"spec.md" = "deny"
+"**/spec.md" = "deny"
+"specs/**/feature_spec.md" = "deny"
+"specs/**/shared/**" = "deny"
+"specs/**/slices/**" = "deny"
+"specs/**/lifecycle/**" = "deny"

@@ -1,15 +1,15 @@
 ---
 name: stnl-spec-lifecycle-manager
-description: Use to create, resume, validate, execute, and close modular slice-driven feature specification workspaces with stable canonical IDs, readiness gates, atomic slice execution, and selective loading.
+description: Use to create, resume, validate readiness, and close modular slice-driven feature specification workspaces with stable canonical IDs, readiness gates, spec-state controls, and selective loading.
 ---
 
 # stnl-spec-lifecycle-manager
 
 ## Purpose
 
-Manage a feature specification as a modular, slice-driven workspace. Use this skill to create a new operational spec workspace, resume or replan an existing workspace, validate whether it is ready for implementation, or close it into a clean final `feature_spec.md`.
+Manage a feature specification as a modular, slice-driven workspace. Use this skill to create a new operational spec workspace, resume or replan an existing workspace, validate whether it is ready for the external slice workflow, or close it into a clean final `feature_spec.md`.
 
-This skill is not a generic markdown generator. It is a governance protocol for specs that must be safe for orchestrated implementation by specialized agents.
+This skill is not a generic markdown generator. It is a governance protocol for specs that must be safe for an orchestrated delivery workflow.
 
 ## When to use
 
@@ -17,7 +17,7 @@ Use this skill when the user asks to:
 
 - create a new feature spec;
 - resume, continue, or replan an existing feature spec;
-- validate whether a feature spec is ready to start implementation;
+- validate whether a feature spec is ready to enter the external slice workflow;
 - split a feature into executable slices;
 - clean, finalize, or close a feature spec;
 - enforce canonical IDs, acceptance criteria, constraints, risks, decisions, questions, or slice readiness.
@@ -65,24 +65,24 @@ These rules always apply:
 9. Never reference canonical artifacts only by title when an ID exists.
 10. Open questions block the spec. A user bypass must be recorded as a resolved question, decision, constraint, or explicit scope change.
 11. `PLANNING` is read-only. If the workspace or a slice needs structural replanning, block and direct the user to `RESUME`.
-12. Slice execution is atomic. If an external agent round fails, the spec workspace is not updated.
-13. During external execution, only the finalizer may update the spec workspace, and only within the finalizer allowlist.
+12. Slice execution has spec-state atomicity: if an external agent round fails, the spec workspace does not advance.
+13. During external execution, no agent may update the spec workspace. The developer may complete the slice manually only after Validator and Reviewer both pass. This skill may update the workspace only when explicitly invoked in a lifecycle MODE.
 14. No permanent slice context package is created. The orchestrator builds the slice handoff in memory from selective reads.
 15. `CLOSE` is the only mode that compacts the workspace and leaves exactly one clean `feature_spec.md`.
 
-## Atomic slice execution contract
+## Slice Execution State Contract
 
-A slice is complete only when the full external round succeeds:
+A slice is eligible for manual completion only when the full external round succeeds:
 
 ```text
-orchestrator -> planner -> test planner -> coder -> validator -> reviewer -> finalizer
+orchestrator -> planner -> developer approval -> test-planner -> developer approval -> coder -> validator -> reviewer -> developer completion
 ```
 
-If any step fails, is incomplete, or produces unreviewed work, discard the round output and do not update the spec workspace.
+If any step fails, is incomplete, or produces unreviewed work, the spec workspace stays at the previous canonical state. Code changes may remain in the working tree for correction, but the slice is not marked done.
 
-The finalizer does not close the whole spec. After a fully successful round, it may update only the completed slice file, allowed durable shared artifacts, lifecycle files, and compact index metadata.
+After Validator and Reviewer pass, the developer reviews the final handoff and manually applies the Developer Completion Protocol. The reviewer is the last agent; no agent updates the spec after it.
 
-Read `references/agent-execution-contract.md` when preparing a spec for external agents or updating a slice after a successful execution round.
+Read `references/agent-execution-contract.md` when preparing a spec for external agents or completing a slice after a successful execution round.
 
 ## Lazy-loading map
 
@@ -109,7 +109,7 @@ Resume an existing workspace, starting from `feature_spec.md` and `lifecycle/res
 
 ### `PLANNING`
 
-Validate whether the workspace can start or resume implementation. Do not write files. Validate paths, IDs, links, slice file consistency, traceability, QA state, and open questions. If structural change is needed, return `needs_resume_replan`.
+Validate whether the workspace can start or resume external agent execution. Do not write files. Validate paths, IDs, links, slice file consistency, traceability, QA state, and open questions. If structural change is needed, return `needs_resume_replan`.
 
 ### `CLOSE`
 
@@ -133,4 +133,4 @@ When creating or updating files:
 
 ## Evaluation guidance
 
-When changing this skill, use `evals/eval-plan.md` to test the must-pass behaviors: ID stability, no open-question bypass, token-bloat control, planning gate behavior, close cleanup, and atomic slice update rules.
+When changing this skill, use `evals/eval-plan.md` to test the must-pass behaviors: ID stability, no open-question bypass, token-bloat control, planning gate behavior, close cleanup, and spec-state atomicity rules.

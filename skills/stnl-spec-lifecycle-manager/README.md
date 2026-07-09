@@ -1,6 +1,6 @@
 # stnl-spec-lifecycle-manager Skill
 
-A slice-driven skill package for creating, resuming, planning, executing, and closing modular feature specification workspaces.
+A slice-driven skill package for creating, resuming, validating readiness, and closing modular feature specification workspaces.
 
 ## Main entry
 
@@ -38,10 +38,10 @@ The canonical unit of work is a slice: `SL-001+`, stored in `slices/SL-###.md`.
 A slice should fit one complete external agent round:
 
 ```text
-orchestrator -> planner -> test planner -> coder -> validator -> reviewer -> finalizer
+orchestrator -> planner -> developer approval -> test-planner -> developer approval -> coder -> validator -> reviewer -> developer completion
 ```
 
-If the round fails, the spec workspace is not updated. If the round succeeds, the finalizer updates only the completed slice file, allowed durable linked artifacts, lifecycle files, and compact index metadata.
+If the round fails, the spec workspace is not updated. If Validator and Reviewer pass, the developer manually completes the slice by updating only the allowed spec workspace files with a compact completion summary and lifecycle/index consistency updates.
 
 ## Modes
 

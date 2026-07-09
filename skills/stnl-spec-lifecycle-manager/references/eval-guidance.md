@@ -25,7 +25,7 @@ Evaluate this skill with representative tasks before adopting changes.
 8. `RESUME` can re-slice without renumbering IDs.
 9. `lifecycle/qa-checklist.md` does not become a test plan.
 10. `CLOSE` removes execution history.
-11. Finalizer updates only a completed slice.
+11. Developer completion updates only an approved completed slice.
 12. Failed external execution does not update the spec.
 13. Traceability matrix stays compact and ID-only.
 14. Token bloat is controlled.

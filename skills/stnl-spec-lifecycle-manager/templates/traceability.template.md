@@ -3,11 +3,11 @@
 ```yaml
 purpose: Track compact ID/path traceability for <feature>.
 status: draft
-read_when: PLANNING, RESUME, or finalizer validates links between slices and artifacts.
+read_when: PLANNING, RESUME, or developer completion validates links between slices and artifacts.
 do_not_read_when: Implementing a slice from an already prepared package.
 contains: ID/path traceability matrix only.
 owner: stnl-spec-lifecycle-manager
-update_policy: INIT/RESUME/finalizer keep synchronized with slice links and index metadata.
+update_policy: INIT/RESUME and developer completion keep synchronized with slice links and index metadata.
 ```
 
 # Traceability

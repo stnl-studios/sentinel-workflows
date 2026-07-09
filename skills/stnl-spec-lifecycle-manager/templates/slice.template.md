@@ -7,7 +7,7 @@ read_when: SL-### is the current or next candidate slice.
 do_not_read_when: Working on another slice that does not depend on SL-###.
 contains: Slice goal, scope, linked IDs, dependencies, validation hints, context hints, readiness, and completion summary.
 owner: stnl-spec-lifecycle-manager
-update_policy: INIT/RESUME create or replan; finalizer may mark done after a fully successful round.
+update_policy: INIT/RESUME create or replan; developer may mark done after Validator and Reviewer pass.
 ```
 
 # SL-001 - <Slice title>

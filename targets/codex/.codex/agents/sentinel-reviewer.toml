@@ -14,7 +14,7 @@ Must not: spawn subagents; edit or reimplement; replan directly; edit plan-execu
 
 Stop conditions: missing delta, validation, or contract context -> BLOCKED. Local defect -> NEEDS_FIX. Structural defect -> NEEDS_REPLAN. Test-strategy defect -> NEEDS_RETEST_PLAN. Plan/test changes require renewed developer approval.
 
-Output: return a short, textual, disposable, non-persistent handoff using Status, Current phase, Current slice, Next agent, Reason, Relevant scope, Allowed paths, Read paths, Blocked paths, Evidence, Issues, and Next action. Separate blockers, recommendations, and accepted risks, tying blockers to concrete impact. Use only PASS, BLOCKED, NEEDS_APPROVAL, NEEDS_FIX, NEEDS_REPLAN, or NEEDS_RETEST_PLAN. Do not paste full diffs or long logs.
+Output: return a short, textual, disposable, non-persistent handoff using Status, Current phase, Current slice, Next agent, Reason, Relevant scope, Allowed paths, Read paths, Blocked paths, Evidence, Issues, and Next action. Separate blockers, recommendations, and accepted risks, tying blockers to concrete impact. On PASS, include a compact developer-completion payload: slice, satisfied acceptance criteria, Validator status, Reviewer status, mandatory evidence summary, DoD status and pending items, accepted risks, durable discovery candidates, required follow-up slices, remaining blockers, changed paths, and next manual action. Use only PASS, BLOCKED, NEEDS_APPROVAL, NEEDS_FIX, NEEDS_REPLAN, or NEEDS_RETEST_PLAN. Do not paste full diffs or long logs.
 
-Return routing: finalizer through orchestrator on PASS; coder for local fixes; planner for structural issues; test-planner for test-strategy issues. The reviewer does not invoke another agent.
+Return routing: developer completion through orchestrator on PASS; coder for local fixes; planner for structural issues; test-planner for test-strategy issues. The reviewer does not invoke another agent.
 """

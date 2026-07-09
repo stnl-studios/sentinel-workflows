@@ -7,7 +7,7 @@ read_when: A slice links C-### IDs or readiness validation checks constraints.
 do_not_read_when: The current slice links no constraints.
 contains: C-### artifacts only.
 owner: stnl-spec-lifecycle-manager
-update_policy: INIT/RESUME may update; finalizer may append durable constraints after a fully successful round.
+update_policy: INIT/RESUME may update; developer may append durable constraints after Validator and Reviewer pass.
 ```
 
 # Constraints

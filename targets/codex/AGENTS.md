@@ -22,28 +22,45 @@ orchestrator
   -> coder
   -> validator
   -> reviewer
-  -> finalizer
+  -> developer completion
 ```
 
-The spec workspace is modular. Operational `feature_spec.md` is a compact index; the orchestrator prepares the current slice package from `feature_spec.md`, `slices/SL-###.md`, and linked shared artifacts. The approved plan is the technical contract. The approved test plan is the evidence contract. The coder executes only approved slices. Validator and reviewer do not edit code. Any scope, plan, test, dependency, or architecture change returns to developer approval.
+The spec workspace is modular. Operational `feature_spec.md` is a compact index; the orchestrator prepares the current slice package from `feature_spec.md`, `slices/SL-###.md`, and explicitly linked shared artifact blocks. The orchestrator may read and extract linked content, but must not judge it, modify it, expand it, inspect source code, or create a persistent context package. The approved plan is the technical contract. The approved test plan is the evidence contract. The coder executes only approved slices. Validator and reviewer do not edit code. Any scope, plan, test, dependency, or architecture change returns to developer approval.
 
 ## Persistent artifacts and authority
 
-| Artifact | Exclusive write authority |
+| Artifact | Write authority |
 |---|---|
-| operational `feature_spec.md` index | lifecycle/spec management and finalizer compact metadata only |
-| `shared/acceptance-criteria.md` | lifecycle/spec management only |
-| `shared/decisions.md`, `shared/constraints.md`, `shared/risks.md` | lifecycle/spec management; finalizer may append durable artifacts |
-| `shared/questions.md` | lifecycle/spec management only |
-| `slices/SL-###.md` | lifecycle/spec management; finalizer may mark the completed slice done and create necessary follow-up slices |
-| `lifecycle/traceability.md`, `lifecycle/qa-checklist.md`, `lifecycle/resume-notes.md` | lifecycle/spec management; finalizer may update after a successful round |
-| `spec.md` | lifecycle/spec management only |
+| operational `feature_spec.md` index | developer or `stnl-spec-lifecycle-manager` when explicitly invoked |
+| `shared/acceptance-criteria.md` | developer or `stnl-spec-lifecycle-manager`; never to hide implementation drift |
+| `shared/decisions.md`, `shared/constraints.md`, `shared/risks.md` | developer or `stnl-spec-lifecycle-manager` when explicitly invoked |
+| `shared/questions.md` | developer or `stnl-spec-lifecycle-manager` when explicitly invoked |
+| `slices/SL-###.md` | developer or `stnl-spec-lifecycle-manager`; only the developer marks a slice `done` after Validator and Reviewer pass |
+| `lifecycle/traceability.md`, `lifecycle/qa-checklist.md`, `lifecycle/resume-notes.md` | developer or `stnl-spec-lifecycle-manager` when explicitly invoked |
+| `spec.md` | developer or `stnl-spec-lifecycle-manager` when explicitly invoked |
 | `plan-execution.md` | planner only |
 | `test-plan.md` | test-planner only |
 
-The finalizer applies one atomic modular spec update only after validator and reviewer both pass. It never changes acceptance criteria to hide requirement drift, invokes lifecycle `MODE=CLOSE`, removes operational directories, or closes the spec. `MODE=CLOSE` alone compacts the workspace into the final one-file `feature_spec.md`.
+The workspace of the spec may be changed only by the developer or by `stnl-spec-lifecycle-manager` when explicitly invoked. No execution agent may modify `feature_spec.md`, `shared/`, `slices/`, `lifecycle/`, or `spec.md`.
 
 Never create `final.md`, close-input files, persistent handoff files, slice context package files, or operational-history artifacts.
+
+## Developer completion
+
+After Validator `PASS` and Reviewer `PASS`, the reviewer is the last agent. The reviewer returns a compact final handoff with satisfied ACs, Validator and Reviewer status, mandatory evidence summary, DoD status, accepted risks, durable discovery candidates, follow-ups, blockers, changed paths, and the next manual action. The orchestrator then returns:
+
+```text
+Status: NEEDS_APPROVAL
+Current phase: developer-completion
+Current slice: SL-###
+Next agent: none
+Reason: Validator and Reviewer passed; manual spec workspace update is required.
+Next action: Developer reviews evidence and applies the Developer Completion Protocol.
+```
+
+To complete the slice manually, the developer confirms Validator `PASS`, Reviewer `PASS`, mandatory evidence, satisfied ACs, and applicable DoD; then marks the slice `done`, fills compact `completion_summary`, records relevant accepted risks and durable discoveries, updates traceability, QA, resume notes, and compact index metadata, and creates only truly necessary follow-up slices. The developer must not change acceptance criteria to hide implementation drift. If an AC, requirement, or scope must change, do not complete the slice; return to `MODE=RESUME`.
+
+The spec-state atomicity guarantee is only that the spec does not advance automatically during execution. It is not a filesystem transaction. Partial code may remain in the working tree for correction, but partial work is never recorded as a completed slice. An interruption during manual completion requires checking the compact index, current slice, traceability, QA, and resume notes for consistency before another slice starts; restore consistency directly or use `MODE=RESUME`.
 
 ## Human gates
 
@@ -65,7 +82,7 @@ Do not create recursive agent chains or uncontrolled fan-out.
 
 ## Skills
 
-Load a skill only when the current slice package, approved plan, test plan, diff, sensitive area, or specific validation rule directly requires it. Never load a skill just in case. Orchestrator and finalizer load no technical skills.
+Load a skill only when the current slice package, approved plan, test plan, diff, sensitive area, or specific validation rule directly requires it. Never load a skill just in case. Orchestrator loads no technical skills.
 
 | Agent | .NET | Node/TS | Frontend | Testing | DB/Migrations | Security/Auth |
 |---|---:|---:|---:|---:|---:|---:|
@@ -75,7 +92,6 @@ Load a skill only when the current slice package, approved plan, test plan, diff
 | coder | Yes | Yes | Yes | Yes | Restricted | Restricted |
 | validator | Yes | Yes | Yes | Yes | Restricted | Restricted |
 | reviewer | Yes | Yes | Yes | Yes | Yes | Yes |
-| finalizer | No | No | No | No | No | No |
 
 For coder and validator, database/migration and security/auth skills require explicit relevance and plan authorization.
 
@@ -107,8 +123,8 @@ Do not repeat full contracts, paste full diffs or long logs, or store operationa
 - Local implementation defect: validator/reviewer -> coder.
 - Plan defect or incompatible plan: coder/validator/reviewer -> planner -> renewed developer approval.
 - Evidence-contract or test-strategy defect: coder/validator/reviewer -> test-planner -> renewed developer approval.
+- Reviewer `PASS`: orchestrator -> developer completion with `NEEDS_APPROVAL` and no next agent.
 - Scope change: `BLOCKED` pending developer decision.
-- Incomplete DoD or evidence at finalization: `BLOCKED` or return to the responsible role.
 
 All routing goes through the orchestrator.
 
@@ -118,11 +134,12 @@ After network failure, lost session, crash, or partial implementation:
 
 1. Read compact `feature_spec.md` index or `spec.md`.
 2. Read the current `slices/SL-###.md` and linked shared artifact blocks only.
-3. Read `plan-execution.md`.
-4. Read `test-plan.md`.
-5. Focus only on the target slice.
-6. Inspect only its partial diff.
-7. Decide whether the partial implementation is trustworthy.
-8. Continue, clean up, or block.
+3. Read `lifecycle/traceability.md`, `lifecycle/qa-checklist.md`, and `lifecycle/resume-notes.md` when checking continuity or possible manual completion drift.
+4. Read `plan-execution.md`.
+5. Read `test-plan.md`.
+6. Focus only on the target slice.
+7. Inspect only its partial diff.
+8. Detect whether a manual spec update is partial or inconsistent.
+9. Continue, clean up, block, or restore consistency directly or through `MODE=RESUME`.
 
 Do not trust stale conversation blindly. Approved contracts are reusable; partial implementation attempts are disposable when they lose reliability.
