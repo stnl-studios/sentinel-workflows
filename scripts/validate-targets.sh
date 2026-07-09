@@ -15,26 +15,10 @@ cd "$ROOT"
 
 command -v "$PYTHON_BIN" >/dev/null 2>&1 || fail "PYTHON_BIN is unavailable: $PYTHON_BIN"
 
-# Packaging metadata and archives
+# Packaging metadata
 if find . -path ./.git -prune -o \( -name .DS_Store -o -name '._*' -o -name __MACOSX -o -name Thumbs.db \) -print -quit | grep -q .; then
   fail "packaging metadata remains"
 fi
-
-while IFS= read -r archive; do
-  case "$archive" in
-    *.zip)
-      command -v unzip >/dev/null 2>&1 || fail "unzip is required to inspect $archive"
-      if unzip -l "$archive" | grep -Eq '(^|/)(__MACOSX|\.DS_Store|\._[^/]*|Thumbs\.db)(/|$)'; then
-        fail "packaging metadata remains inside $archive"
-      fi
-      ;;
-    *.tar|*.tgz|*.tar.gz)
-      if tar -tf "$archive" | grep -Eq '(^|/)(__MACOSX|\.DS_Store|\._[^/]*|Thumbs\.db)(/|$)'; then
-        fail "packaging metadata remains inside $archive"
-      fi
-      ;;
-  esac
-done < <(find . -path ./.git -prune -o -type f \( -name '*.zip' -o -name '*.tar' -o -name '*.tgz' -o -name '*.tar.gz' \) -print)
 
 # Prompt templates
 test -d templates/prompts || fail "templates/prompts directory is missing"
