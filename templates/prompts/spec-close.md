@@ -16,15 +16,15 @@ Evidências disponíveis:
 
 Resultado esperado:
 - consolidar tudo em um único `feature_spec.md`
+- remover `shared/`, `slices/` e `lifecycle/`
 - remover histórico operacional e ruído de desenvolvimento
-- remover auxiliares temporários da SPEC
 - preservar apenas regras de negócio, ACs finais, decisões duráveis, constraints relevantes, riscos relevantes e notas técnicas essenciais
 
 Contrato de fechamento:
 - se fechar como `closed`, não manter histórico de execução
 - se fechar como `closed_with_residuals`, registrar limites conhecidos no `feature_spec.md`
-- se algum auxiliar ainda for necessário para entender a SPEC, retornar `not_closed`
-- se alguma restrição exigir preservar histórico técnico ou auxiliares, bloquear fechamento
+- se algum arquivo operacional ainda for necessário para entender a SPEC, retornar `not_closed`
+- se alguma restrição exigir preservar histórico técnico ou diretórios operacionais, bloquear fechamento
 
 Não preservar:
 - logs de execução

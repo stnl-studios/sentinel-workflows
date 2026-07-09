@@ -246,10 +246,48 @@ for rule in \
   '## Contracts and ownership' \
   '## Scope, evidence, and context' \
   'Handoffs are short, textual, disposable, and non-persistent.' \
-  'After an interruption, reload the approved contracts'; do
+  'After an interruption, reload the compact spec index'; do
   grep -Fq "$rule" "$copilot_policy" || fail "Copilot AGENTS.md is missing a critical rule: $rule"
 done
 grep -Fq 'acceptance criteria and DoR/DoD' "$copilot_policy" \
   || fail "Copilot AGENTS.md is missing evidence-to-DoR/DoD coverage"
+
+# Modular spec workspace contract
+test -f skills/stnl-spec-lifecycle-manager/references/spec-workspace.md \
+  || fail "missing modular spec workspace reference"
+for template in \
+  feature_spec \
+  shared-acceptance-criteria \
+  shared-decisions \
+  shared-constraints \
+  shared-risks \
+  shared-questions \
+  slice \
+  traceability \
+  qa-checklist \
+  resume-notes \
+  closed-feature_spec; do
+  test -f "skills/stnl-spec-lifecycle-manager/templates/$template.template.md" \
+    || fail "missing modular template: $template"
+done
+for policy in targets/codex/AGENTS.md targets/claude-code/CLAUDE.md targets/copilot/AGENTS.md; do
+  grep -Eq 'modular spec workspace|spec workspace is modular' "$policy" \
+    || fail "$policy does not describe the modular spec workspace"
+  grep -Fq 'slice context package' "$policy" \
+    || fail "$policy does not forbid persistent slice context packages"
+done
+for finalizer in \
+  agents/base/finalizer.md \
+  targets/codex/.codex/agents/sentinel-finalizer.toml \
+  targets/claude-code/.claude/agents/sentinel-finalizer.md \
+  targets/copilot/.github/agents/sentinel-finalizer.agent.md; do
+  grep -Fq 'shared/acceptance-criteria.md' "$finalizer" \
+    || fail "$finalizer does not protect acceptance criteria"
+  grep -Fq 'lifecycle/resume-notes.md' "$finalizer" \
+    || fail "$finalizer does not include modular lifecycle allowlist"
+done
+if grep -R -n --exclude-dir=.git --exclude='*.zip' 'spec-close-inputs.md' agents targets skills templates >/dev/null; then
+  fail "legacy spec-close-inputs.md reference remains"
+fi
 
 echo "PASS: target alignment checks"

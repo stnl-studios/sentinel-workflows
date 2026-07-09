@@ -11,13 +11,13 @@ update_policy: Change when the ambiguity policy changes.
 
 # Question Policy
 
-Open questions are canonical artifacts using `Q-001+`.
+Open questions are canonical artifacts using `Q-001+` and live in `shared/questions.md` when materialized.
 
 ## Core rule
 
-No spec may advance to `ready` while any open question remains.
+No spec workspace or slice may advance to `ready` while any open question remains.
 
-External execution agents cannot bypass open questions. Any bypass must happen inside the spec before execution.
+External execution agents cannot bypass open questions. Any bypass must happen in the spec workspace before execution.
 
 ## When to ask
 
@@ -99,4 +99,4 @@ Bad:
 
 ## Resolved questions
 
-During the living lifecycle, resolved questions may remain if they explain important decisions. During `CLOSE`, remove resolved questions unless their resolution remains important for long-term maintenance.
+During the living lifecycle, resolved questions may remain in `shared/questions.md` if they explain important decisions. During `CLOSE`, remove resolved questions unless their resolution remains important for long-term maintenance and is converted into durable final content.

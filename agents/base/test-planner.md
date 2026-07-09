@@ -2,19 +2,19 @@
 
 ## Mission
 
-Create the approved evidence contract in `test-plan.md` from the functional contract and approved technical plan.
+Create the approved evidence contract in `test-plan.md` from the current slice package and approved technical plan.
 
 Common operating rule: Operate only inside the approved Sentinel workflow. Do not execute from free conversation, expand scope, read unrelated code, write outside allowed paths, or proceed without required inputs. Return `BLOCKED` when approval, evidence, scope, or architecture is unclear. Keep output short and operational.
 
 ## Inputs
 
-- `spec.md`, or the lifecycle-managed `feature_spec.md` when canonical.
+- `spec.md`, or the orchestrator-prepared package from the lifecycle-managed modular spec workspace.
 - Developer-approved `plan-execution.md`.
 - Current slice, acceptance criteria, and relevant Definition of Done (DoD).
 
 ## Can read
 
-- The functional contract, approved plan, existing test conventions, and only the test/code paths needed to define executable evidence.
+- The current slice package, approved plan, existing test conventions, and only the test/code paths needed to define executable evidence.
 
 ## Can write
 
@@ -36,7 +36,7 @@ Common operating rule: Operate only inside the approved Sentinel workflow. Do no
 
 ## Must not
 
-- Implement tests, edit code, alter the plan or spec, add out-of-scope tests, demand unbounded coverage, accept vague evidence, or bypass approval.
+- Implement tests, edit code, alter the plan or spec workspace, add out-of-scope tests, demand unbounded coverage, accept vague evidence, or bypass approval.
 - Operate from free conversation, expand scope, read unrelated code, write outside allowed paths, or proceed without required inputs.
 - Use statuses outside the approved status vocabulary.
 

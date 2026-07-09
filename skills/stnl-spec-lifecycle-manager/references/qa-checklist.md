@@ -1,7 +1,7 @@
 # File Purpose Header
 
 ```yaml
-purpose: Define qa_checklist as a Spec Quality Gate, not a test plan.
+purpose: Define lifecycle/qa-checklist.md as a Spec Quality Gate, not a test plan.
 load_when: Creating or validating spec quality, slice readiness, or planning gates.
 do_not_load_when: Implementing tests or reviewing code.
 contains: QA checklist boundaries, global checklist rules, slice readiness derivation, and validation hint rules.
@@ -11,7 +11,7 @@ update_policy: Change when the quality bar for specs changes.
 
 # QA Checklist
 
-`qa_checklist` is the Spec Quality Gate. It defines the minimum acceptable quality for a spec before implementation begins.
+`lifecycle/qa-checklist.md` is the Spec Quality Gate. It defines the minimum acceptable quality for a modular spec workspace before implementation begins.
 
 It is not a QA test plan, not a scenario list, and not test implementation guidance.
 
@@ -25,7 +25,8 @@ The checklist must derive from:
 - anti-drift constraints;
 - validation hints;
 - traceability;
-- slice readiness.
+- slice readiness;
+- workspace path integrity.
 
 ## What it must not contain
 
@@ -51,6 +52,8 @@ qa_checklist:
     status: ready | blocked | incomplete
     blockers: [Q-###, R-###, C-###]
     checks:
+      canonical_ids: pass | fail
+      workspace_paths: pass | fail
       acceptance_coverage: pass | fail
       open_questions: pass | fail
       anti_drift_constraints: pass | fail
@@ -87,9 +90,10 @@ A spec is minimally acceptable when:
 6. material risks are identified or explicitly absent;
 7. every ready slice links to relevant ACs and constraints;
 8. every ready slice has validation hints;
-9. traceability matrix is compact and ID-based;
+9. traceability matrix is compact and ID/path-based;
 10. no slice is too small or too large;
-11. `PLANNING` can return `ready` without needing structural edits.
+11. indexed files exist or absent shared categories are explicitly not materialized;
+12. `PLANNING` can return `ready` without needing structural edits.
 
 ## Validation hints
 

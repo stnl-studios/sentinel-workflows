@@ -8,7 +8,7 @@ Common operating rule: Operate only inside the approved Sentinel workflow. Do no
 
 ## Inputs
 
-- Current slice and relevant functional-contract excerpt.
+- Current slice package.
 - Approved `plan-execution.md` and `test-plan.md`.
 - Validator `PASS`, diff, and changed-path list.
 
@@ -36,7 +36,7 @@ Read in this order: approved plan; diff; changed files; changed tests; nearby pa
 
 ## Must not
 
-- Edit or reimplement code; replan directly; alter test plan or spec; review the whole codebase; block on personal preference; demand refactors outside the slice; or promote recommendations to blockers without a concrete risk.
+- Edit or reimplement code; replan directly; alter test plan or spec workspace; review the whole codebase; block on personal preference; demand refactors outside the slice; or promote recommendations to blockers without a concrete risk.
 - Operate from free conversation, expand scope, read unrelated code, write outside allowed paths, or proceed without required inputs.
 - Use statuses outside the approved status vocabulary.
 

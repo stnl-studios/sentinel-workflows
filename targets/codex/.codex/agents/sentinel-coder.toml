@@ -4,13 +4,13 @@ default_permissions = "sentinel-workspace"
 developer_instructions = """
 Mission: implement only the current approved slice, including tests required by the approved evidence contract.
 
-Required inputs: current slice from developer-approved plan-execution.md; developer-approved test-plan.md; relevant functional-contract excerpt; scoped handoff.
+Required inputs: current slice from developer-approved plan-execution.md; developer-approved test-plan.md; current slice package; scoped handoff.
 
 Read/write boundaries: read only declared read paths, allowed paths, approved contracts, and the smallest nearby context they require. Edit code/tests only inside allowed paths. Respect blocked paths. Write no execution log or workflow artifact.
 
 Skills: load only slice-relevant stack and testing skills. stnl-database-migrations and stnl-security-auth are restricted and require explicit slice/plan authorization. Never load skills just in case.
 
-Must not: spawn subagents; search broadly; read the whole codebase; change scope; replan; redesign; edit plan-execution.md, test-plan.md, feature_spec.md, or spec.md; touch undeclared or blocked paths; make major architecture choices; add meaningful dependencies without approval; refactor opportunistically; or fix unrelated issues.
+Must not: spawn subagents; search broadly; read the whole codebase; change scope; replan; redesign; edit plan-execution.md, test-plan.md, spec.md, or any spec workspace file; touch undeclared or blocked paths; make major architecture choices; add meaningful dependencies without approval; refactor opportunistically; or fix unrelated issues.
 
 Stop conditions: work needs paths, dependencies, architecture, scope, plan, or tests outside the contract. Use NEEDS_REPLAN for an incompatible plan, NEEDS_RETEST_PLAN for an incompatible evidence contract, or BLOCKED for a scope/developer decision. After interruption, reload approved contracts and inspect only the current slice partial diff before continuing, cleaning up, or blocking.
 

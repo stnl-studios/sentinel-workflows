@@ -4,7 +4,7 @@
 purpose: Define gates used to decide whether a spec or slice may proceed.
 load_when: Running PLANNING, validating RESUME output, or checking slice readiness.
 do_not_load_when: Only creating initial draft text without readiness claims.
-contains: Question, size, traceability, readiness, planning, closure, and ID gates.
+contains: Workspace, question, size, traceability, readiness, planning, closure, and ID gates.
 owner: stnl-spec-lifecycle-manager
 update_policy: Change when gate logic changes.
 ```
@@ -31,6 +31,7 @@ Use these verdicts:
 - every artifact has ID in heading and `id:` field;
 - existing IDs are preserved;
 - references use IDs.
+- every slice filename, heading, and `id:` field match.
 
 ### Fail when
 
@@ -38,10 +39,34 @@ Use these verdicts:
 - an ID was renumbered;
 - an ID was reused;
 - an artifact is referenced only by title.
+- `slices/SL-001.md` declares a different ID.
 
 ### Failure action
 
-Block. Since there are no legacy specs, invalid IDs indicate a contract violation.
+Block. Invalid IDs indicate a contract violation, even when migrating a previous monolithic operational spec.
+
+## `workspace_gate`
+
+### Pass when
+
+- operational `feature_spec.md` is a compact index, not a monolithic spec;
+- required lifecycle files exist;
+- materialized shared files exist at indexed paths;
+- absent shared categories are explicitly marked as not materialized;
+- each indexed slice file exists;
+- no permanent slice context package exists.
+
+### Fail when
+
+- the operational workspace contains only a monolithic `feature_spec.md`;
+- `feature_spec.md` includes complete slice definitions or complete shared artifacts;
+- `lifecycle/traceability.md`, `lifecycle/qa-checklist.md`, or `lifecycle/resume-notes.md` is missing;
+- an indexed path is broken;
+- a context-package, close-input, final report, or operational handoff file is created as a persistent spec artifact.
+
+### Failure action
+
+In `PLANNING`, block with `needs_resume_replan`. In `RESUME`, repair or migrate the workspace while preserving IDs.
 
 ## `question_gate`
 
@@ -88,7 +113,8 @@ In `RESUME`, re-slice using the next available `SL-###` IDs.
 - constraints and risks are linked where relevant;
 - decisions are linked where they govern behavior;
 - questions are linked where they block or inform work;
-- traceability matrix uses IDs only.
+- traceability matrix uses IDs and paths only;
+- traceability agrees with each slice file's linked IDs.
 
 ### Fail when
 
@@ -96,6 +122,7 @@ In `RESUME`, re-slice using the next available `SL-###` IDs.
 - a slice depends on title-only references;
 - an acceptance criterion has no implementing slice and no explicit reason;
 - a risk has no mitigation, constraint, linked slice, or explicit acceptance.
+- traceability references an ID or path that does not exist.
 
 ## `validation_hint_gate`
 
@@ -112,6 +139,7 @@ Every executable slice has validation hints and those hints remain test-framewor
 
 A slice is ready only if all required gates pass:
 
+- `workspace_gate`
 - `canonical_id_gate`
 - `question_gate`
 - `slice_size_gate`
@@ -139,12 +167,19 @@ next_mode: RESUME
 
 ```yaml
 planning_status: incomplete_spec
-missing: [objective, scope, acceptance_criteria, constraints, risks, validation_hints]
+missing: [objective, scope, acceptance_criteria, constraints, risks, validation_hints, lifecycle_files]
 ```
 
 ```yaml
 planning_status: invalid_canonical_ids
 invalid_items: [<description>]
+```
+
+```yaml
+planning_status: broken_workspace_references
+broken_paths: [<path>]
+broken_ids: [AC-###, SL-###]
+next_mode: RESUME
 ```
 
 ## `closure_gate`
@@ -156,6 +191,7 @@ invalid_items: [<description>]
 - final acceptance criteria are stable;
 - durable decisions are identified;
 - relevant constraints and risks are known;
+- durable content from shared and slice files has been consolidated;
 - execution history can be removed without losing important business or technical context.
 
 If closure would hide unresolved ambiguity, block instead of producing a misleading final spec.

@@ -12,8 +12,8 @@ Operate only inside the approved Sentinel workflow. Never treat free conversatio
 ## Delegation
 
 - You are the only Sentinel subagent allowed to use the `Agent` tool. Delegate only to the next eligible Sentinel subagent in the fixed workflow: `sentinel-planner`, `sentinel-test-planner`, `sentinel-coder`, `sentinel-validator`, `sentinel-reviewer`, or `sentinel-finalizer`.
-- Before delegating, confirm: current phase, current slice, required artifact availability (`feature_spec.md` or `spec.md`, `plan-execution.md`, `test-plan.md` as applicable), approval state, and scoped paths.
-- Pass the delegated agent a minimal handoff with scoped artifact references, not artifact content.
+- Before delegating, confirm: current phase, current slice, required artifact availability (compact `feature_spec.md` index or `spec.md`, candidate slice file, linked shared artifacts, `plan-execution.md`, `test-plan.md` as applicable), approval state, and scoped paths.
+- Pass the delegated agent a minimal in-memory slice package with scoped artifact references and linked artifact content, not the whole workspace.
 
 ## Can read
 
@@ -39,7 +39,7 @@ Operate only inside the approved Sentinel workflow. Never treat free conversatio
 
 - Approval, evidence, scope, architecture, required artifacts, or next-phase eligibility is unclear: return `BLOCKED` or `NEEDS_APPROVAL`.
 - An agent requests a contract change: route to the responsible agent and require renewed developer approval.
-- Execution was interrupted: do not trust prior context; require the responsible agent to reload `feature_spec.md` or `spec.md`, `plan-execution.md`, `test-plan.md`, existing `spec-close-inputs.md`, and only the current slice's partial diff before it continues, cleans up, or blocks.
+- Execution was interrupted: do not trust prior context; require the responsible agent to reload the compact index or `spec.md`, current slice package, `plan-execution.md`, `test-plan.md`, and only the current slice's partial diff before it continues, cleans up, or blocks.
 
 ## Return routing
 

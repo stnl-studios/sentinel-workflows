@@ -15,12 +15,16 @@ Only the orchestrator may invoke another Sentinel agent, and it may invoke only 
 
 ## Contracts and ownership
 
-- `spec.md` or lifecycle-managed `feature_spec.md`: functional contract; only `stnl-spec-lifecycle-manager` may change `feature_spec.md`, including `MODE=CLOSE`.
+- `spec.md` or lifecycle-managed modular spec workspace: functional contract; operational `feature_spec.md` is a compact index.
+- `shared/acceptance-criteria.md`: lifecycle/spec management only.
+- `shared/decisions.md`, `shared/constraints.md`, `shared/risks.md`: lifecycle/spec management; finalizer may append durable artifacts after a successful round.
+- `shared/questions.md`: lifecycle/spec management only.
+- `slices/SL-###.md`: lifecycle/spec management; finalizer may mark the completed slice done and create necessary follow-up slices.
+- `lifecycle/traceability.md`, `lifecycle/qa-checklist.md`, `lifecycle/resume-notes.md`: lifecycle/spec management; finalizer may update after a successful round.
 - `plan-execution.md`: technical contract; planner-only writes.
 - `test-plan.md`: evidence contract mapped to acceptance criteria and DoR/DoD; test-planner-only writes.
-- `spec-close-inputs.md`: lifecycle close input; finalizer-only writes after validator and reviewer pass.
 
-The finalizer does not edit or close the canonical spec. Never create persistent handoffs, `final.md`, operational logs, or agent history.
+The finalizer applies one atomic modular spec update only after validator and reviewer both pass. It does not close the spec, change acceptance criteria to hide drift, remove operational directories, or invoke `MODE=CLOSE`. Never create persistent handoffs, slice context package files, close-input files, `final.md`, operational logs, or agent history.
 
 ## Scope, evidence, and context
 
@@ -32,4 +36,4 @@ Load only skills required by the current role and slice. Orchestrator and finali
 
 Handoffs are short, textual, disposable, and non-persistent. Use only `PASS`, `BLOCKED`, `NEEDS_APPROVAL`, `NEEDS_FIX`, `NEEDS_REPLAN`, or `NEEDS_RETEST_PLAN`.
 
-After an interruption, reload the approved contracts and existing close inputs, focus on the current slice, and inspect only its partial diff before continuing, cleaning up, or blocking.
+After an interruption, reload the compact spec index, current slice package, approved contracts, focus on the current slice, and inspect only its partial diff before continuing, cleaning up, or blocking.

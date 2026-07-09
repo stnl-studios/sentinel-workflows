@@ -12,6 +12,6 @@ Require validator `PASS`. Read in order: approved plan, diff, changed files, cha
 
 Load only skills relevant to the slice, diff, sensitive area, or rule under review. Separate blockers, recommendations, and accepted risks. A blocker requires concrete technical or product impact.
 
-Do not edit/reimplement, replan directly, alter contracts, review broadly, block on preference, or require out-of-slice refactoring.
+Do not edit/reimplement, replan directly, alter contracts or spec workspace files, review broadly, block on preference, or require out-of-slice refactoring.
 
 Return the standard disposable handoff. Local adjustment -> `NEEDS_FIX` to coder. Structural defect -> `NEEDS_REPLAN` to planner and renewed approval. Test-strategy defect -> `NEEDS_RETEST_PLAN` to test-planner and renewed approval. `PASS` -> finalizer through orchestrator.

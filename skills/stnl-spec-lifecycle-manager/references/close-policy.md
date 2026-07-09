@@ -1,27 +1,28 @@
 # File Purpose Header
 
 ```yaml
-purpose: Define how CLOSE creates a clean final feature_spec.md.
+purpose: Define how CLOSE compacts a modular workspace into a clean final feature_spec.md.
 load_when: MODE is CLOSE or the user asks to finalize/clean the spec.
 do_not_load_when: Creating, executing, or replanning active slices.
-contains: Closure rules, what to keep, what to remove, final file structure, and blocking conditions.
+contains: Closure gates, durable content rules, operational removal rules, final structure, and blockers.
 owner: stnl-spec-lifecycle-manager
 update_policy: Change only when final artifact rules change.
 ```
 
 # CLOSE Policy
 
-`CLOSE` transforms the living spec into a clean final `feature_spec.md`.
+`CLOSE` transforms the modular operational workspace into a clean final `feature_spec.md`.
 
-## Core rule
+## Core Rule
 
-The final output is exactly one file:
+The final feature folder contains exactly one file:
 
 ```text
-feature_spec.md
+specs/<feature-slug>/
+└── feature_spec.md
 ```
 
-No archive, changelog, execution log, or secondary file is produced unless the user explicitly asks outside this skill's default contract.
+Remove `shared/`, `slices/`, and `lifecycle/` only after durable content has been safely consolidated. No archive, changelog, execution log, close-input file, or secondary artifact is produced by default.
 
 ## Keep
 
@@ -43,20 +44,22 @@ Keep only information that is durable and useful for future maintenance:
 
 Remove:
 
-- slice execution history;
+- operational slice files;
+- detailed slice execution history;
 - failed attempts;
 - agent logs;
 - intermediate plans;
+- lifecycle traceability;
+- QA checklist details;
+- resume notes;
+- context-loading hints;
 - unresolved operational TODOs;
 - resolved questions without durable value;
-- verbose QA checklist details;
-- traceability matrix if it no longer helps maintenance;
 - planning notes;
-- context-loading hints;
 - speculative comments;
 - internal debate or discarded approaches.
 
-## Slices in final spec
+## Slices in Final Spec
 
 Do not keep detailed slice history.
 
@@ -71,13 +74,13 @@ A slice may influence the final spec only if it produced durable knowledge, such
 
 Do not preserve a list of completed slices merely as history.
 
-## Questions in final spec
-
-Do not keep resolved questions unless the answer is important long-term context. If important, convert the resolution into a business rule, decision, constraint, or technical note.
+## Questions in Final Spec
 
 No open questions may remain in a closed spec.
 
-## Closure blockers
+Do not keep resolved questions unless the answer is important long-term context. If important, convert the resolution into a business rule, decision, constraint, or technical note.
+
+## Closure Blockers
 
 Block `CLOSE` when:
 
@@ -85,18 +88,21 @@ Block `CLOSE` when:
 - final acceptance criteria are not stable;
 - closure would hide unresolved ambiguity;
 - invalid canonical IDs remain in sections that must be preserved;
-- the spec still contains obvious execution history that cannot be safely separated from durable content.
+- durable content has not been consolidated safely;
+- removing operational directories would lose important business or technical context.
 
-## Final header
+## Final Header
 
 The final file header should mark the spec as closed:
 
 ```yaml
 purpose: Final feature specification for <feature>.
 status: closed
-mode_last_updated: CLOSE
 read_when: Maintaining, extending, validating, or revisiting this feature.
 do_not_read_when: Looking for historical execution logs; those are intentionally not preserved.
+contains: Durable objective, final scope, acceptance criteria, decisions, constraints, risks, and essential notes.
+owner: stnl-spec-lifecycle-manager
+update_policy: Update only through an explicit future spec lifecycle action.
 ```
 
 ## Style

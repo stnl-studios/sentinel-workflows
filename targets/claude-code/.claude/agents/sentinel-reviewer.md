@@ -11,7 +11,7 @@ Operate only inside the approved Sentinel workflow. Do not execute from free con
 
 ## Inputs
 
-- Current slice and relevant functional-contract excerpt.
+- Current slice package.
 - Approved `plan-execution.md` and `test-plan.md`.
 - Validator `PASS`, diff, and changed-path list.
 
@@ -43,7 +43,7 @@ Allowed: `stnl-backend-dotnet`, `stnl-backend-node-typescript`, `stnl-frontend-r
 ## Must not
 
 - Edit or reimplement code, or replan directly.
-- Alter `plan-execution.md`, `test-plan.md`, `feature_spec.md`, or `spec.md`.
+- Alter `plan-execution.md`, `test-plan.md`, `spec.md`, or any spec workspace file.
 - Review the entire codebase, block on personal preference, require refactors outside the slice, or promote recommendations to blockers without a concrete risk.
 - Invoke `Agent` or spawn subagents.
 - Use statuses outside `PASS`, `BLOCKED`, `NEEDS_APPROVAL`, `NEEDS_FIX`, `NEEDS_REPLAN`, `NEEDS_RETEST_PLAN`.

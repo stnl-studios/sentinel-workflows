@@ -4,7 +4,7 @@
 purpose: Define stable canonical IDs for every SPEC artifact.
 load_when: Creating, resuming, validating, or closing a spec that contains canonical artifacts.
 do_not_load_when: The task is unrelated to SPEC structure or artifact references.
-contains: ID formats, stability rules, invalid formats, next-ID calculation, and reference rules.
+contains: ID formats, stability rules, invalid formats, next-ID calculation across the workspace, path consistency, and reference rules.
 owner: stnl-spec-lifecycle-manager
 update_policy: Treat as invariant contract. Change only with deliberate migration.
 ```
@@ -41,7 +41,7 @@ Do not create, preserve as new, or normalize into these formats silently:
 - any non-zero-padded format;
 - any alternate casing or spacing.
 
-There are no legacy specs in this system. If an invalid ID appears, treat the spec as contract-violating and block until corrected in an allowed mode.
+Invalid IDs are contract violations. A previous monolithic operational spec with valid IDs may be migrated in `RESUME`; invalid IDs still block until corrected in an allowed mode.
 
 ## Required placement
 
@@ -69,10 +69,17 @@ The user can create an invitation with a valid expiration date.
 - Preserve existing valid IDs exactly as written.
 - Do not change ID casing, separator, or zero-padding.
 - Do not reference canonical artifacts only by title when an ID exists.
+- Preserve IDs when migrating a previous monolithic operational spec into the modular workspace.
 
 ## Next-ID calculation
 
-For each artifact type, compute the next ID from the highest existing numeric suffix of that type.
+For each artifact type, compute the next ID from the highest existing numeric suffix of that type across the whole workspace:
+
+- `feature_spec.md` compact indexes;
+- all materialized `shared/*.md` files;
+- all `slices/SL-###.md` files;
+- all `lifecycle/*.md` files;
+- any valid IDs still present in a previous monolithic operational source during `RESUME` migration.
 
 Examples:
 
@@ -83,6 +90,17 @@ Examples:
 | `SL-001`, `SL-002` | `SL-003` |
 
 Never reuse gaps.
+
+## Slice file consistency
+
+Each slice file must satisfy all of these:
+
+- filename is `slices/SL-###.md`;
+- first slice heading contains the same `SL-###`;
+- explicit `id:` field is the same `SL-###`;
+- references in `feature_spec.md`, traceability, and resume notes use that same ID.
+
+Mismatch blocks readiness.
 
 ## Reference rules
 
@@ -108,6 +126,6 @@ blocked_by: ["permission question"]
 | MODE | Behavior |
 |---|---|
 | `INIT` | Do not create invalid IDs. If source material contains invalid IDs, ask whether to start a clean spec. |
-| `RESUME` | Block and require correction. There are no supported legacy migrations by default. |
+| `RESUME` | Migrate previous monolithic operational specs only when IDs are valid; otherwise block and require correction. |
 | `PLANNING` | Return `invalid_canonical_ids` and block readiness. |
 | `CLOSE` | Do not close until invalid IDs are corrected or removed as noise. |

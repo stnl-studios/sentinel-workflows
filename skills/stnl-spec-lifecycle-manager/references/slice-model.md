@@ -4,14 +4,14 @@
 purpose: Define the canonical slice model used as the unit of external agent execution.
 load_when: Creating, validating, replanning, or updating slices.
 do_not_load_when: Only closing final business rules without slice history.
-contains: Slice definition, required fields, statuses, sizing rules, readiness rules, and update rules.
+contains: Slice file definition, required fields, statuses, sizing rules, readiness rules, and update rules.
 owner: stnl-spec-lifecycle-manager
 update_policy: Change only when the execution unit changes.
 ```
 
 # Slice Model
 
-A slice is the canonical unit of execution.
+A slice is the canonical unit of execution and lives in its own file: `slices/SL-###.md`.
 
 ## Definition
 
@@ -22,6 +22,8 @@ orchestrator -> planner -> test planner -> coder -> validator -> reviewer -> fin
 ```
 
 The slice must be small enough to fit a single round without excessive context, but large enough to justify that round.
+
+Filename, heading ID, and explicit `id:` field must match exactly. Do not store complete slice definitions inside operational `feature_spec.md`.
 
 ## Slice type
 
@@ -37,7 +39,7 @@ A technical slice is allowed only when it has a clear relationship to the featur
 
 ## Required slice fields
 
-Each slice should contain:
+Each `slices/SL-###.md` file should contain:
 
 ```yaml
 id: SL-###
@@ -50,6 +52,7 @@ linked_decisions: [D-###]
 linked_constraints: [C-###]
 linked_risks: [R-###]
 linked_questions: [Q-###]
+dependencies: [SL-###]
 validation_hints:
   - <observability or validation hint, not a test case>
 context_hints:
@@ -58,6 +61,8 @@ completion_summary: <empty until done>
 ```
 
 Use empty arrays only when the absence is intentional and safe.
+
+The slice must link IDs only. Do not duplicate full acceptance criteria, decision text, constraints, risks, or question text inside the slice.
 
 ## Allowed statuses
 
@@ -114,7 +119,7 @@ A slice can be `ready` only when:
 
 ## Updating a completed slice
 
-Only the finalizer may update a slice to `done`, and only after the complete external agent round succeeds.
+Only the finalizer may update a slice file to `done`, and only after the complete external agent round succeeds.
 
 The finalizer may add a compact `completion_summary`, such as:
 
@@ -129,6 +134,8 @@ completion_summary:
 ```
 
 Keep the summary short. Do not include failed attempts, logs, or internal agent debate.
+
+After updating a slice file, the finalizer must update compact index metadata, traceability, QA state, and resume notes in the same logical patch.
 
 ## Reopening completed work
 

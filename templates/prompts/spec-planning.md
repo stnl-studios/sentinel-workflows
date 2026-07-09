@@ -12,18 +12,22 @@ Objetivo:
 
 Resultado esperado:
 - executar readiness gates
+- validar o workspace modular sem mutações
+- validar paths indexados, arquivos de slice, File Purpose Headers e IDs
 - validar perguntas abertas
 - validar tamanho da slice
 - validar ACs, constraints, riscos, decisões e rastreabilidade
 - validar `validation_hints`
-- validar `qa_checklist`
+- validar `lifecycle/qa-checklist.md`
 - retornar status de readiness
 
 Contrato:
 - se houver pergunta aberta, bloquear
 - se a slice estiver grande demais, pequena demais ou vaga, bloquear e indicar `MODE=RESUME`
+- se houver referência quebrada, bloquear e indicar `MODE=RESUME`
 - se faltar material essencial, bloquear e listar o mínimo necessário
 - não replanejar diretamente
+- não criar, editar, dividir ou mesclar arquivos
 - não alterar escopo sem delta explícito
 - não gerar plano de execução
 

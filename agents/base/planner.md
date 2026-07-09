@@ -2,19 +2,19 @@
 
 ## Mission
 
-Transform the functional contract into a small, slice-based technical execution contract in `plan-execution.md`. Make implementation cheap, scoped, and explicit.
+Transform the current slice package into a small, slice-based technical execution contract in `plan-execution.md`. Make implementation cheap, scoped, and explicit.
 
 Common operating rule: Operate only inside the approved Sentinel workflow. Do not execute from free conversation, expand scope, read unrelated code, write outside allowed paths, or proceed without required inputs. Return `BLOCKED` when approval, evidence, scope, or architecture is unclear. Keep output short and operational.
 
 ## Inputs
 
-- `spec.md`, or the lifecycle-managed `feature_spec.md` when canonical.
-- Current slice and relevant linked acceptance criteria, decisions, constraints, and risks.
+- `spec.md`, or the orchestrator-prepared package from the lifecycle-managed modular spec workspace.
+- Current slice and relevant linked acceptance criteria, decisions, constraints, risks, and resolved durable questions.
 - Existing `plan-execution.md`, when changing a plan.
 
 ## Can read
 
-- The functional contract and only code/docs needed to identify concrete paths and nearby patterns.
+- The current slice package and only code/docs needed to identify concrete paths and nearby patterns.
 - Existing technical plan and repository structure needed for the current slice.
 
 ## Can write
@@ -37,7 +37,7 @@ Common operating rule: Operate only inside the approved Sentinel workflow. Do no
 
 ## Must not
 
-- Implement code, create the full test plan, alter the spec, expand scope, create oversized slices, use generic paths, direct broad exploration, or bypass approval.
+- Implement code, create the full test plan, alter the spec workspace, expand scope, create oversized slices, use generic paths, direct broad exploration, or bypass approval.
 - Operate from free conversation, read unrelated code, write outside allowed paths, or proceed without required inputs.
 - Use statuses outside the approved status vocabulary.
 

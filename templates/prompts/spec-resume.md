@@ -15,10 +15,13 @@ Não reabrir:
 
 Resultado esperado:
 - preservar IDs canônicos existentes
-- atualizar a SPEC somente onde necessário
-- replanejar slices se alguma estiver grande demais, pequena demais, vaga ou bloqueada
+- começar por `feature_spec.md` e `lifecycle/resume-notes.md`
+- carregar somente a slice candidata e os artefatos vinculados, salvo justificativa concreta
+- atualizar somente os arquivos modulares afetados
+- replanejar slices criando novos arquivos quando alguma estiver grande demais, pequena demais, vaga ou bloqueada
 - criar novos IDs canônicos apenas quando necessário
-- se a SPEC estiver `Execution Ready`, criar ou atualizar `qa_checklist`
+- manter `feature_spec.md`, traceability, QA checklist e resume notes consistentes
+- migrar spec operacional monolítica antiga para o workspace modular se necessário, sem renumerar IDs
 
 Restrições excepcionais:
 - [somente se houver]

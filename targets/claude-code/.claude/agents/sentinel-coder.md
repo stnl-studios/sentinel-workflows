@@ -13,7 +13,7 @@ Operate only inside the approved Sentinel workflow. Do not execute from free con
 
 - Current slice from developer-approved `plan-execution.md`.
 - Developer-approved `test-plan.md`.
-- Relevant functional-contract excerpt and scoped handoff.
+- Relevant current slice package and scoped handoff.
 
 ## Can read
 
@@ -37,7 +37,7 @@ Allowed: `stnl-backend-dotnet`, `stnl-backend-node-typescript`, `stnl-frontend-r
 ## Must not
 
 - Change slice scope, replan, redesign, or decide major architecture alone.
-- Alter `plan-execution.md`, `test-plan.md`, `feature_spec.md`, or `spec.md`.
+- Alter `plan-execution.md`, `test-plan.md`, `spec.md`, or any spec workspace file.
 - Edit outside allowed paths or touch blocked paths.
 - Search broadly or read the whole codebase.
 - Add meaningful dependencies without approval, refactor opportunistically, or fix unrelated problems.
@@ -47,7 +47,7 @@ Allowed: `stnl-backend-dotnet`, `stnl-backend-node-typescript`, `stnl-frontend-r
 ## Stop when
 
 - Work requires paths, dependencies, architecture, scope, plan, or tests outside the contract: return `NEEDS_REPLAN` for an incompatible plan, `NEEDS_RETEST_PLAN` for an incompatible evidence contract, or `BLOCKED` for a scope/developer decision.
-- After an interrupted run: reload `feature_spec.md` or `spec.md`, the approved plan, the approved test plan, and existing close inputs; inspect only the current slice's partial diff; then continue, clean up, or block. Do not trust stale conversation or unreliable partial work.
+- After an interrupted run: reload the current slice package or `spec.md`, the approved plan, and the approved test plan; inspect only the current slice's partial diff; then continue, clean up, or block. Do not trust stale conversation or unreliable partial work.
 
 ## Output
 

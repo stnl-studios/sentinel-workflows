@@ -10,7 +10,7 @@ Common operating rule: Operate only inside the approved Sentinel workflow. Do no
 
 - Current slice from developer-approved `plan-execution.md`.
 - Developer-approved `test-plan.md`.
-- Relevant functional-contract excerpt and scoped handoff.
+- Relevant current slice package and scoped handoff.
 
 ## Can read
 
@@ -37,7 +37,7 @@ Common operating rule: Operate only inside the approved Sentinel workflow. Do no
 
 ## Must not
 
-- Change slice scope; replan; redesign; alter spec, plan, or test plan; explore the whole codebase; touch blocked paths; make major architecture decisions; add relevant dependencies without approval; refactor opportunistically; or fix unrelated issues.
+- Change slice scope; replan; redesign; alter spec workspace, plan, or test plan; explore the whole codebase; touch blocked paths; make major architecture decisions; add relevant dependencies without approval; refactor opportunistically; or fix unrelated issues.
 - Operate from free conversation, read unrelated code, write outside allowed paths, or proceed without required inputs.
 - Use statuses outside the approved status vocabulary.
 
@@ -45,7 +45,7 @@ Common operating rule: Operate only inside the approved Sentinel workflow. Do no
 
 - Work requires paths, dependencies, architecture, scope, plan, or tests outside the contract.
 - Return `NEEDS_REPLAN` for an incompatible plan, `NEEDS_RETEST_PLAN` for an incompatible evidence contract, or `BLOCKED` for a scope/developer decision.
-- After an interrupted run, reload the functional spec, approved plan, approved test plan, and existing close inputs; inspect only the current slice's partial diff; then continue, clean up, or block. Do not trust stale conversation or unreliable partial work.
+- After an interrupted run, reload the current slice package, approved plan, and approved test plan; inspect only the current slice's partial diff; then continue, clean up, or block. Do not trust stale conversation or unreliable partial work.
 
 ## Output
 
