@@ -8,6 +8,7 @@ cd "$ROOT"
 "$PYTHON_BIN" - <<'PY'
 from __future__ import annotations
 
+import hashlib
 import re
 import tempfile
 from pathlib import Path
@@ -17,6 +18,12 @@ FIELDS = ["purpose", "status", "read_when", "do_not_read_when", "contains", "own
 STATUSES = {"draft", "ready", "blocked", "done", "closed", "not_applicable"}
 SPEC_ROOT = Path("skills/stnl-spec-lifecycle-manager")
 EXEC_ROOT = Path("skills/stnl-spec-execution-manager")
+LEGACY_PHASE_FIX = "phase-fix"
+EVIDENCE_SCALAR_VALUES = {
+    "test_result": {"pending", "PASS", "NEEDS_FIX"},
+    "validation": {"pending", "PASS", "NEEDS_FIX"},
+    "revalidation": {"pending", "PASS", "NEEDS_FIX", "not_required"},
+}
 
 
 def fail(message: str) -> None:
@@ -154,11 +161,22 @@ def check_spec_blocked(root: Path) -> None:
 
 
 def check_spec_closed(root: Path) -> None:
-    expected = {root / "feature_spec.md", root / "execution/plan.md"}
-    actual = {path for path in root.rglob("*") if path.is_file()}
-    expect(actual == expected, "closed SPEC does not preserve the separate execution workspace")
-    check_header(root / "feature_spec.md", "stnl-spec-lifecycle-manager")
-    check_header(root / "execution/plan.md", "stnl-spec-execution-manager")
+    feature = root / "feature_spec.md"
+    expect(feature.exists(), "closed SPEC missing feature_spec.md")
+    check_header(feature, "stnl-spec-lifecycle-manager")
+    expect(not (root / "shared").exists(), "closed SPEC retains lifecycle shared/ residue")
+
+
+def snapshot_tree(root: Path) -> tuple[tuple[str, str, str], ...]:
+    snapshot: list[tuple[str, str, str]] = []
+    for path in sorted(root.rglob("*"), key=lambda item: item.as_posix()):
+        relative = path.relative_to(root).as_posix()
+        if path.is_dir():
+            snapshot.append(("directory", relative, ""))
+        else:
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+            snapshot.append(("file", relative, digest))
+    return tuple(snapshot)
 
 
 def execution_fixture(root: Path) -> None:
@@ -234,6 +252,120 @@ revalidation: pending
 """)
 
 
+def extract_evidence_fields(task_path: Path) -> dict[str, str | list[str]]:
+    text = task_path.read_text(encoding="utf-8")
+    blocks = re.findall(
+        r"^## Execution Evidence\n\n```yaml\n(.*?)^```\s*$",
+        text,
+        re.MULTILINE | re.DOTALL,
+    )
+    expect(len(blocks) == 1, f"expected exactly one Execution Evidence block: {task_path}")
+
+    fields: dict[str, str | list[str]] = {}
+    lines = blocks[0].splitlines()
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        if line.startswith(("test_result:", "validation:", "revalidation:")):
+            field, value = line.split(":", 1)
+            expect(field not in fields, f"duplicate evidence field {field}: {task_path}")
+            value = value.strip()
+            expect(value in EVIDENCE_SCALAR_VALUES[field], f"invalid {field} value {value!r}: {task_path}")
+            fields[field] = value
+        elif line.startswith("corrections:"):
+            expect("corrections" not in fields, f"duplicate evidence field corrections: {task_path}")
+            value = line.split(":", 1)[1].strip()
+            if value == "[]":
+                fields["corrections"] = []
+            else:
+                expect(not value, f"malformed corrections list: {task_path}")
+                corrections: list[str] = []
+                index += 1
+                while index < len(lines) and lines[index].startswith("  - "):
+                    correction = lines[index][4:].strip()
+                    expect(correction, f"empty correction entry: {task_path}")
+                    corrections.append(correction)
+                    index += 1
+                expect(corrections, f"malformed corrections list: {task_path}")
+                fields["corrections"] = corrections
+                continue
+        elif line.startswith("  - "):
+            fail(f"malformed corrections list: {task_path}")
+        index += 1
+
+    for field in ["test_result", "validation", "corrections", "revalidation"]:
+        expect(field in fields, f"missing evidence field {field}: {task_path}")
+    return fields
+
+
+def write_evidence(
+    root: Path,
+    *,
+    test_result: str,
+    validation: str,
+    corrections: list[str],
+    revalidation: str,
+) -> None:
+    if corrections:
+        correction_lines = "\n".join(
+            ["corrections:", *[f"  - {correction}" for correction in corrections]]
+        )
+    else:
+        correction_lines = "corrections: []"
+    evidence = f"""## Execution Evidence
+
+```yaml
+tests_executed: []
+test_result: {test_result}
+validation: {validation}
+{correction_lines}
+revalidation: {revalidation}
+```
+"""
+    task_path = root / "execution/tasks/tasks-01.md"
+    updated, replacements = re.subn(
+        r"## Execution Evidence\n\n```yaml\n.*?^```\n?",
+        evidence,
+        task_path.read_text(encoding="utf-8"),
+        count=1,
+        flags=re.MULTILINE | re.DOTALL,
+    )
+    expect(replacements == 1, f"fixture lacks one Execution Evidence block: {task_path}")
+    task_path.write_text(updated, encoding="utf-8")
+
+
+def conclude_phase(
+    root: Path,
+    *,
+    test_result: str = "PASS",
+    validation: str = "PASS",
+    corrections: list[str] | None = None,
+    revalidation: str = "not_required",
+) -> None:
+    for path in [root / "execution/plan.md", root / "execution/tasks.md"]:
+        text = path.read_text(encoding="utf-8")
+        expect("| [ ] | 01" in text, f"fixture lacks open phase row: {path}")
+        path.write_text(text.replace("| [ ] | 01", "| [x] | 01", 1), encoding="utf-8")
+    task_path = root / "execution/tasks/tasks-01.md"
+    text = task_path.read_text(encoding="utf-8")
+    expect("- [ ]" in text, f"fixture lacks open task: {task_path}")
+    task_path.write_text(text.replace("- [ ]", "- [x]", 1), encoding="utf-8")
+    write_evidence(
+        root,
+        test_result=test_result,
+        validation=validation,
+        corrections=[] if corrections is None else corrections,
+        revalidation=revalidation,
+    )
+
+
+def replace_task_text(root: Path, old: str, new: str) -> None:
+    task_path = root / "execution/tasks/tasks-01.md"
+    text = task_path.read_text(encoding="utf-8")
+    expect(old in text, f"fixture text is missing {old!r}: {task_path}")
+    task_path.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+
 def check_execution(root: Path) -> None:
     execution = root / "execution"
     files = [root / "feature_spec.md", execution / "plan.md", execution / "plans/plan-01.md", execution / "tasks.md", execution / "tasks/tasks-01.md"]
@@ -265,13 +397,20 @@ def check_execution(root: Path) -> None:
     expect(plan_done == tasks_done, "delivery indices disagree")
     if plan_done:
         expect("- [ ]" not in tasks, "concluded phase has an open task")
-        expect("test_result: PASS" in tasks, "concluded phase lacks successful test evidence")
-        expect("validation: PASS" in tasks, "concluded phase lacks validation evidence")
-        has_corrections = "corrections: []" not in tasks
-        if has_corrections:
-            expect("revalidation: PASS" in tasks, "corrected phase lacks focused revalidation PASS")
-        else:
-            expect("revalidation: not_required" in tasks, "initial PASS phase lacks not_required revalidation")
+        evidence = extract_evidence_fields(execution / "tasks/tasks-01.md")
+        expect(evidence["test_result"] == "PASS", "concluded phase lacks successful test evidence")
+        direct_pass = (
+            evidence["validation"] == "PASS"
+            and evidence["corrections"] == []
+            and evidence["revalidation"] == "not_required"
+        )
+        corrected_pass = (
+            evidence["validation"] == "NEEDS_FIX"
+            and isinstance(evidence["corrections"], list)
+            and bool(evidence["corrections"])
+            and evidence["revalidation"] == "PASS"
+        )
+        expect(direct_pass or corrected_pass, "concluded phase has an invalid validation history")
 
     if "| yes | plans/plan-01.md" in plan_index:
         expect("parallel_safety: verified" in plan, "parallel phase lacks verified non-overlap")
@@ -287,6 +426,33 @@ def invalid_execution(name: str, mutate) -> None:
         except SystemExit:
             return
         fail(f"invalid delivery fixture accepted: {name}")
+
+
+def check_validation_history_matrix(base: Path) -> None:
+    for validation in ["pending", "PASS", "NEEDS_FIX"]:
+        for corrections in [[], ["fix"]]:
+            for revalidation in ["pending", "PASS", "NEEDS_FIX", "not_required"]:
+                name = f"validation-{validation}-{'with' if corrections else 'without'}-corrections-{revalidation}"
+                root = base / name
+                execution_fixture(root)
+                conclude_phase(
+                    root,
+                    validation=validation,
+                    corrections=corrections,
+                    revalidation=revalidation,
+                )
+                expected = (
+                    validation == "PASS" and not corrections and revalidation == "not_required"
+                ) or (
+                    validation == "NEEDS_FIX" and bool(corrections) and revalidation == "PASS"
+                )
+                try:
+                    check_execution(root)
+                except SystemExit:
+                    accepted = False
+                else:
+                    accepted = True
+                expect(accepted == expected, f"validation-history matrix mismatch: {name}")
 
 
 def external_execution_fixture(base: Path) -> None:
@@ -343,7 +509,10 @@ def static_contract_checks() -> None:
         for folder in ["references", "templates", "examples", "evals"]:
             for path in (root / folder).glob("*.md"):
                 check_header(path, owner)
-    spec_forbidden = re.compile(r"plan\\.md|tasks\\.md|plans/|tasks/|phase-execute|phase-validate|phase-" + "fix" + r"|phase-commit|phase-parallel|independent validation|implementation phase", re.IGNORECASE)
+    spec_forbidden = re.compile(
+        rf"plan\\.md|tasks\\.md|plans/|tasks/|phase-execute|phase-validate|{re.escape(LEGACY_PHASE_FIX)}|phase-commit|phase-parallel|independent validation|implementation phase",
+        re.IGNORECASE,
+    )
     for path in SPEC_ROOT.rglob("*.md"):
         expect(spec_forbidden.search(path.read_text(encoding="utf-8")) is None, f"SPEC skill retains delivery content: {path}")
 
@@ -370,8 +539,41 @@ with tempfile.TemporaryDirectory() as tmp:
 
     closed_spec = base / "closed-spec"
     write(closed_spec / "feature_spec.md", header("stnl-spec-lifecycle-manager", "Closed feature SPEC", "closed") + "# Closed SPEC\n")
-    write(closed_spec / "execution/plan.md", header("stnl-spec-execution-manager", "Preserved execution index") + "# Delivery Plan Index\n")
     check_spec_closed(closed_spec)
+
+    closed_spec_with_execution = base / "closed-spec-with-execution"
+    execution_fixture(closed_spec_with_execution)
+    write(closed_spec_with_execution / "feature_spec.md", header("stnl-spec-lifecycle-manager", "Closed feature SPEC", "closed") + "# Closed SPEC\n")
+    execution_snapshot = snapshot_tree(closed_spec_with_execution / "execution")
+    check_spec_closed(closed_spec_with_execution)
+    expect(
+        snapshot_tree(closed_spec_with_execution / "execution") == execution_snapshot,
+        "documentary CLOSE validation changed the execution workspace",
+    )
+
+    closed_spec_with_external = base / "closed-spec-with-external"
+    write(closed_spec_with_external / "feature_spec.md", header("stnl-spec-lifecycle-manager", "Closed feature SPEC", "closed") + "# Closed SPEC\n")
+    write(closed_spec_with_external / "attachments/context.txt", "Opaque external context without a lifecycle header.\n")
+    check_spec_closed(closed_spec_with_external)
+
+    invalid_closed_spec = base / "invalid-closed-spec"
+    write(invalid_closed_spec / "feature_spec.md", header("stnl-spec-lifecycle-manager", "Closed feature SPEC", "closed") + "# Closed SPEC\n")
+    write(invalid_closed_spec / "shared/questions.md", "Lifecycle residue.\n")
+    try:
+        check_spec_closed(invalid_closed_spec)
+    except SystemExit:
+        pass
+    else:
+        fail("invalid closed SPEC with shared residue accepted")
+
+    missing_final_spec = base / "missing-final-spec"
+    write(missing_final_spec / "attachments/context.txt", "No lifecycle artifact is present.\n")
+    try:
+        check_spec_closed(missing_final_spec)
+    except SystemExit:
+        pass
+    else:
+        fail("closed SPEC without feature_spec.md accepted")
 
     active_execution = base / "active-execution"
     execution_fixture(active_execution)
@@ -385,25 +587,67 @@ with tempfile.TemporaryDirectory() as tmp:
 
     initial_pass = base / "initial-pass"
     execution_fixture(initial_pass)
-    for path in [initial_pass / "execution/plan.md", initial_pass / "execution/tasks.md"]:
-        path.write_text(path.read_text(encoding="utf-8").replace("| [ ] | 01", "| [x] | 01"), encoding="utf-8")
-    task_record = initial_pass / "execution/tasks/tasks-01.md"
-    task_record.write_text(task_record.read_text(encoding="utf-8").replace("- [ ]", "- [x]").replace("test_result: pending", "test_result: PASS").replace("\nvalidation: pending", "\nvalidation: PASS").replace("revalidation: pending", "revalidation: not_required"), encoding="utf-8")
+    conclude_phase(initial_pass)
     check_execution(initial_pass)
 
     corrected_pass = base / "corrected-pass"
     execution_fixture(corrected_pass)
-    for path in [corrected_pass / "execution/plan.md", corrected_pass / "execution/tasks.md"]:
-        path.write_text(path.read_text(encoding="utf-8").replace("| [ ] | 01", "| [x] | 01"), encoding="utf-8")
-    task_record = corrected_pass / "execution/tasks/tasks-01.md"
-    task_record.write_text(task_record.read_text(encoding="utf-8").replace("- [ ]", "- [x]").replace("test_result: pending", "test_result: PASS").replace("\nvalidation: pending", "\nvalidation: PASS").replace("corrections: []", "corrections: [fix]").replace("revalidation: pending", "revalidation: PASS"), encoding="utf-8")
+    conclude_phase(corrected_pass, validation="NEEDS_FIX", corrections=["fix"], revalidation="PASS")
     check_execution(corrected_pass)
+
+    invalid_execution(
+        "corrections-without-revalidation",
+        lambda root: conclude_phase(root, validation="NEEDS_FIX", corrections=["fix"], revalidation="pending"),
+    )
+    invalid_execution(
+        "corrections-with-failed-revalidation",
+        lambda root: conclude_phase(root, validation="NEEDS_FIX", corrections=["fix"], revalidation="NEEDS_FIX"),
+    )
+    invalid_execution(
+        "needs-fix-without-corrections",
+        lambda root: conclude_phase(root, validation="NEEDS_FIX", revalidation="PASS"),
+    )
+    invalid_execution(
+        "initial-pass-with-artificial-revalidation",
+        lambda root: conclude_phase(root, revalidation="PASS"),
+    )
+    invalid_execution(
+        "initial-pass-with-corrections",
+        lambda root: conclude_phase(root, corrections=["fix"]),
+    )
+    invalid_execution(
+        "concluded-with-pending-validation",
+        lambda root: conclude_phase(root, validation="pending", revalidation="pending"),
+    )
+    invalid_execution(
+        "concluded-without-approved-tests",
+        lambda root: conclude_phase(root, test_result="pending"),
+    )
+    invalid_execution(
+        "missing-evidence-field",
+        lambda root: (conclude_phase(root), replace_task_text(root, "validation: PASS\n", "")),
+    )
+    invalid_execution(
+        "duplicate-evidence-field",
+        lambda root: (conclude_phase(root), replace_task_text(root, "validation: PASS\n", "validation: PASS\nvalidation: PASS\n")),
+    )
+    invalid_execution(
+        "invalid-evidence-value",
+        lambda root: (conclude_phase(root), replace_task_text(root, "validation: PASS", "validation: UNKNOWN")),
+    )
+    invalid_execution(
+        "malformed-corrections-list",
+        lambda root: (conclude_phase(root), replace_task_text(root, "corrections: []", "corrections: [fix]")),
+    )
+    check_validation_history_matrix(base)
 
     external_execution_fixture(base / "external-source")
 
     static_contract_checks()
 
 print("PASS: SPEC workspace structural smoke validation")
+print("PASS: documentary CLOSE ownership fixtures")
 print("PASS: delivery workspace structural smoke validation")
+print("PASS: delivery validation-history fixtures")
 print("PASS: external requirements source structural smoke validation")
 PY

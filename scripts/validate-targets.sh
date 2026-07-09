@@ -231,7 +231,9 @@ EXPECTED_PROMPTS = {
     "execution-close",
 }
 SPEC_PROMPTS = {"spec-init", "spec-resume", "spec-planning", "spec-close"}
-LEGACY_PROMPTS = {"execution-planning", "phase-" + "fix"}
+LEGACY_PHASE_FIX = "phase-fix"
+LEGACY_PROMPTS = {"execution-planning", LEGACY_PHASE_FIX}
+LEGACY_PHASE_FIX_ROOTS = [Path("templates/prompts"), Path("skills")]
 ALLOWED_PROMPT_PLACEHOLDERS = {
     "SPEC_PATH",
     "EXECUTION_ROOT",
@@ -252,7 +254,7 @@ REQUIRED_PROMPT_PLACEHOLDERS = {
     "phase-finalize": {"SPEC_PATH", "EXECUTION_ROOT", "PHASE_NUMBER"},
     "phase-commit": {"SPEC_PATH", "EXECUTION_ROOT", "PHASE_NUMBER", "COMMIT_TYPE"},
     "phase-parallel": {"SPEC_PATH", "EXECUTION_ROOT", "PARALLEL_PHASES"},
-    "execution-close": {"SPEC_PATH", "CLOSE_POLICY"},
+    "execution-close": {"SPEC_PATH", "EXECUTION_ROOT", "CLOSE_POLICY"},
 }
 PROMPT_METADATA = re.compile(
     r"(?im)^(?:purpose|status|read_when|do_not_read_when|owner|update_policy|contains)\s*:"
@@ -314,6 +316,10 @@ for name, path in prompt_files.items():
     for destination in re.findall(r"\[[^\]]+\]\(([^)]+)\)", text):
         if not re.match(r"(?:https?://|mailto:|#)", destination) and not (path.parent / destination).exists():
             fail(f"copyable prompt has a broken internal link: {path} -> {destination}")
+
+for path, text in all_text.items():
+    if any(root == path or root in path.parents for root in LEGACY_PHASE_FIX_ROOTS) and LEGACY_PHASE_FIX in text:
+        fail(f"legacy prompt name remains in {path}: {LEGACY_PHASE_FIX}")
 
 for name in {"phase-validate", "phase-finalize"}:
     text = read_text(prompt_files[name])
@@ -380,7 +386,7 @@ for path in [
         fail(f"execution skill resource is missing: {path}")
 
 spec_forbidden = re.compile(
-    r"plan\\.md|tasks\\.md|plans/|tasks/|phase-execute|phase-validate|phase-" + "fix" + r"|phase-commit|phase-parallel|independent validation|implementation phase",
+    rf"plan\\.md|tasks\\.md|plans/|tasks/|phase-execute|phase-validate|{re.escape(LEGACY_PHASE_FIX)}|phase-commit|phase-parallel|independent validation|implementation phase",
     re.IGNORECASE,
 )
 for path in Path("skills/stnl-spec-lifecycle-manager").rglob("*.md"):
