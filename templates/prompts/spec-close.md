@@ -1,39 +1,19 @@
-Use `stnl-spec-lifecycle-manager`.
+# File Purpose Header
+
+```yaml
+purpose: Prompt template for documentary finalization of a feature SPEC.
+status: ready
+read_when: MODE CLOSE is requested for a document-ready SPEC.
+do_not_read_when: A documentary blocker or required correction remains.
+contains: Closure input, documentary cross-check, blockers, and cleanup result.
+owner: stnl-spec-lifecycle-manager
+update_policy: Update when CLOSE policy changes.
+```
+
+Use stnl-spec-lifecycle-manager.
 MODE=CLOSE
 
-SPEC alvo:
-- [path para feature_spec.md ou pasta da SPEC]
+SPEC path: <feature_spec.md or workspace>
+Known documentary limits: <open questions, contradictions, or none>
 
-Condição de fechamento:
-- [feature aceita, escopo encerrado, todas as slices necessárias concluídas ou resíduos aceitos como riscos duráveis]
-
-Evidências disponíveis:
-- validação automatizada: [...]
-- validação manual: [...]
-- revisão: [...]
-- limites conhecidos: [...]
-- decisões finais: [...]
-
-Resultado esperado:
-- consolidar tudo em um único `feature_spec.md`
-- remover `shared/`, `slices/` e `lifecycle/`
-- remover histórico operacional e ruído de desenvolvimento
-- preservar apenas regras de negócio, ACs finais, decisões duráveis, constraints relevantes, riscos relevantes e notas técnicas essenciais
-
-Contrato de fechamento:
-- se fechar como `closed`, não manter histórico de execução
-- se houver resíduos ou ambiguidades incompatíveis com fechamento, retornar `BLOCKED` com blockers mínimos
-- se algum arquivo operacional ainda for necessário para entender a SPEC, retornar `BLOCKED`
-- se alguma restrição exigir preservar histórico técnico ou diretórios operacionais, bloquear fechamento
-
-Não preservar:
-- logs de execução
-- tentativas falhas
-- comandos detalhados
-- checklist técnico granular
-- session summaries
-- planning intermediário
-- histórico de slices como execução
-
-Restrições excepcionais:
-- [somente se houver]
+Validate IDs, references, questions, scope, criteria, decisions, constraints, risks, and duplicate content. Block on unresolved documentary gaps. On success, consolidate durable content into one `feature_spec.md` and remove `shared/`. Do not require code, tests, diffs, commits, or delivery records.

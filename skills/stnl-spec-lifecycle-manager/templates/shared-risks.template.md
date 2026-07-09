@@ -1,13 +1,13 @@
 # File Purpose Header
 
 ```yaml
-purpose: Store material risks for <feature>.
-status: draft
-read_when: A slice links R-### IDs or readiness validation checks risk coverage.
-do_not_read_when: The current slice links no risks and risk absence is explicit in the index.
-contains: R-### artifacts only.
+purpose: Template for materialized risks and mitigations.
+status: ready
+read_when: Scope, requirements, or a review finding names a risk identifier.
+do_not_read_when: No active SPEC concern requires a risk from this file.
+contains: R canonical artifacts only.
 owner: stnl-spec-lifecycle-manager
-update_policy: INIT/RESUME may update; developer may append durable risks after Validator and Reviewer pass.
+update_policy: INIT and RESUME maintain material risks without hiding unresolved exposure.
 ```
 
 # Risks
@@ -17,8 +17,7 @@ update_policy: INIT/RESUME may update; developer may append durable risks after 
 ```yaml
 id: R-001
 status: open
-risk: <What could go wrong.>
+risk: <What can go wrong.>
 impact: low | medium | high
-mitigation: <How the spec constrains or handles the risk.>
-linked_artifacts: [SL-001, C-001]
+mitigation: <How it is controlled.>
 ```

@@ -1,18 +1,18 @@
 # File Purpose Header
 
 ```yaml
-purpose: Template for the operational feature_spec.md index.
+purpose: Template for the active documentary feature SPEC.
 status: draft
-read_when: Starting INIT, RESUME, PLANNING, or discovering the next slice.
-do_not_read_when: A role already has the current slice package and does not need workspace discovery.
-contains: Compact metadata, objective, scope, artifact index, canonical paths, blockers, and selective-reading instructions.
+read_when: Discovering the SPEC purpose, scope, blockers, or materialized records.
+do_not_read_when: A linked canonical artifact already provides the needed detail.
+contains: Metadata, requirements context, artifact index, blockers, and selective reading.
 owner: stnl-spec-lifecycle-manager
-update_policy: Developer or stnl-spec-lifecycle-manager may update index metadata; CLOSE replaces this with the final spec.
+update_policy: INIT and RESUME update documentary content; CLOSE replaces it with the final SPEC.
 ```
 
-# <Feature Name> - Feature Spec Index
+# <Feature Name> - Feature SPEC
 
-## Spec Metadata
+## SPEC Metadata
 
 ```yaml
 spec_id: <feature-slug>
@@ -20,76 +20,47 @@ workspace_root: specs/<feature-slug>
 spec_status: draft
 created_from_mode: INIT
 last_updated_mode: INIT
-current_slice: null
-next_candidate_slice: null
 open_question_count: 0
 ```
 
 ## Objective
 
-<One concise paragraph describing what changes and why it matters.>
+<Concise intended outcome and value.>
+
+## Context
+
+- Facts: <Known factual context.>
+- Hypotheses: <Explicitly uncertain context, if any.>
 
 ## Scope
 
-- <Included behavior, system area, user flow, or technical boundary.>
+- <Included behavior or boundary.>
 
 ## Out of Scope
 
-- <Explicit exclusions that prevent drift.>
+- <Excluded behavior or boundary, when needed.>
 
-## Operational State
+## Requirements
 
-```yaml
-readiness: draft | ready | blocked
-blockers: []
-last_completed_slice: null
-next_candidate_slice: null
-```
+- <Requirement or contract expectation.>
 
-## Artifact Index
+## Business Rules
+
+- <Rule, when applicable.>
+
+## Relevant Contracts
+
+- <API, data, legal, compatibility, or integration contract.>
+
+## Canonical Artifact Index
 
 ```yaml
 artifacts:
-  acceptance_criteria:
-    file: null
-    count: 0
-    materialized: false
-  decisions:
-    file: null
-    count: 0
-    materialized: false
-  constraints:
-    file: null
-    count: 0
-    materialized: false
-  risks:
-    file: null
-    count: 0
-    materialized: false
-  questions:
-    file: null
-    count: 0
-    open_count: 0
-    materialized: false
-  slices: []
-```
-
-## Canonical Paths
-
-```yaml
-paths:
-  feature_index: feature_spec.md
-  shared:
-    acceptance_criteria: shared/acceptance-criteria.md
-    decisions: shared/decisions.md
-    constraints: shared/constraints.md
-    risks: shared/risks.md
-    questions: shared/questions.md
-  slices_dir: slices/
-  lifecycle:
-    traceability: lifecycle/traceability.md
-    qa_checklist: lifecycle/qa-checklist.md
-    resume_notes: lifecycle/resume-notes.md
+  acceptance_criteria: {file: null, count: 0, materialized: false}
+  decisions: {file: null, count: 0, materialized: false}
+  constraints: {file: null, count: 0, materialized: false}
+  risks: {file: null, count: 0, materialized: false}
+  questions: {file: null, count: 0, open_count: 0, materialized: false}
 ```
 
 ## Blockers
@@ -97,13 +68,12 @@ paths:
 ```yaml
 open_questions: []
 broken_references: []
-readiness_blockers: []
+documentary_gaps: []
 ```
 
-## Selective Reading Instructions
+## Selective Reading
 
-1. Read this index first.
-2. Read `lifecycle/resume-notes.md` only when resuming or checking continuity.
-3. Read the `next_candidate_slice` file.
-4. Load only linked artifact blocks from materialized `shared/*.md` files.
-5. Load lifecycle files only when the MODE or role requires them.
+1. Read this file first.
+2. Load only the shared category and canonical IDs relevant to the current question.
+3. Treat each canonical item as authoritative for its category.
+4. Do not create duplicate summaries or operational records in this workspace.

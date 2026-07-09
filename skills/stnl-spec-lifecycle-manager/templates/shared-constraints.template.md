@@ -1,13 +1,13 @@
 # File Purpose Header
 
 ```yaml
-purpose: Store anti-drift constraints for <feature>.
-status: draft
-read_when: A slice links C-### IDs or readiness validation checks constraints.
-do_not_read_when: The current slice links no constraints.
-contains: C-### artifacts only.
+purpose: Template for materialized anti-drift constraints.
+status: ready
+read_when: Scope, requirements, or a review finding names a constraint identifier.
+do_not_read_when: No active SPEC concern requires a constraint from this file.
+contains: C canonical artifacts only.
 owner: stnl-spec-lifecycle-manager
-update_policy: INIT/RESUME may update; developer may append durable constraints after Validator and Reviewer pass.
+update_policy: INIT and RESUME maintain constraints through explicit documentary changes.
 ```
 
 # Constraints
@@ -17,7 +17,6 @@ update_policy: INIT/RESUME may update; developer may append durable constraints 
 ```yaml
 id: C-001
 status: active
-constraint: <Boundary that implementation agents must not violate.>
-reason: <Why this protects scope, contract, architecture, or behavior.>
-linked_artifacts: [SL-001]
+constraint: <Boundary that must not be violated.>
+reason: <Why the boundary matters.>
 ```

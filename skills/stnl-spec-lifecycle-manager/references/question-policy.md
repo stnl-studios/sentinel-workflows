@@ -1,102 +1,32 @@
 # File Purpose Header
 
 ```yaml
-purpose: Define when and how the skill asks, resolves, and blocks on questions.
-load_when: INIT or RESUME encounters ambiguity, or PLANNING checks open questions.
-do_not_load_when: The spec has no ambiguity and no open questions.
-contains: Crucial question rules, bypass rules, question statuses, and blocking policy.
+purpose: Define question creation, blocking, resolution, and durable conversion.
+status: not_applicable
+read_when: INIT or RESUME encounters material ambiguity or a gate detects an open question.
+do_not_read_when: The SPEC has sufficient signal and no material question exists.
+contains: Blocking rules, question shape, resolution options, and closure treatment.
 owner: stnl-spec-lifecycle-manager
-update_policy: Change when the ambiguity policy changes.
+update_policy: Change when ambiguity or scope policy changes.
 ```
 
 # Question Policy
 
-Open questions are canonical artifacts using `Q-001+` and live in `shared/questions.md` when materialized.
+Questions are canonical `Q-###` artifacts in `shared/questions.md`. Create one when missing information materially changes behavior, permissions, contracts, data, integrations, security, migration, irreversible architecture, scope, criteria, or risk posture.
 
-## Core rule
+Keep the SPEC blocked while a question is open. Do not replace a missing answer with an undocumented assumption.
 
-No spec workspace or slice may advance to `ready` while any open question remains.
-
-External execution agents cannot bypass open questions. Any bypass must happen in the spec workspace before execution.
-
-## When to ask
-
-Ask crucial questions when missing information affects:
-
-- business behavior;
-- user permissions;
-- API or data contract;
-- state transitions;
-- integration behavior;
-- security;
-- migrations;
-- irreversible architecture choices;
-- slice boundaries;
-- acceptance criteria;
-- constraints;
-- risk posture.
-
-## When not to ask
-
-Do not ask when:
-
-- the gap is minor and safely captured as out of scope;
-- the spec can proceed after adding a constraint;
-- the missing detail belongs to implementation discovery and does not change the feature contract;
-- the user has already provided enough signal.
-
-When proceeding without asking, record the assumption only if it is durable and material. Otherwise keep the spec concise.
-
-## Question fields
-
-Recommended structure:
+Use a compact shape:
 
 ```yaml
-id: Q-###
-status: open | resolved | bypassed | dropped
-question: <the smallest decision needed>
-why_it_matters: <business, technical, risk, or scope impact>
-blocks: [SL-###, AC-###]
-resolution: <empty until resolved>
-resolved_by: user | decision | scope_change | constraint
-linked_decision: D-### | null
-```
-
-## Bypass rules
-
-A user may bypass a question only inside the spec by one of these mechanisms:
-
-- answering it;
-- creating a durable `D-###` decision;
-- adding or changing a `C-###` constraint;
-- changing scope or out-of-scope;
-- dropping the affected slice;
-- explicitly marking the question as `bypassed` with rationale.
-
-Do not allow an implementation agent to continue by assuming the answer during execution.
-
-## Question phrasing
-
-Questions should be short, specific, and decision-oriented.
-
-Good:
-
-```markdown
-### Q-001 — Should expired invitations remain visible to admins?
-
 id: Q-001
-status: open
-question: Should expired invitations remain visible to admins after expiration?
-why_it_matters: Determines API filtering behavior and acceptance criteria.
-blocks: [AC-002, SL-001]
+status: open | resolved | bypassed | dropped
+question: <smallest decision required>
+why_it_matters: <scope, behavior, or risk impact>
+blocks: [AC-001]
+resolution: null
+resolved_by: user | decision | scope_change | constraint
+linked_decision: D-001 | null
 ```
 
-Bad:
-
-```markdown
-### Q-001 — How should invitations work?
-```
-
-## Resolved questions
-
-During the living lifecycle, resolved questions may remain in `shared/questions.md` if they explain important decisions. During `CLOSE`, remove resolved questions unless their resolution remains important for long-term maintenance and is converted into durable final content.
+Resolve, bypass, or drop a question only through an explicit answer, durable decision, constraint, approved scope change, or removal of the affected requirement. CLOSE keeps a resolved question only when its answer has lasting explanatory value.

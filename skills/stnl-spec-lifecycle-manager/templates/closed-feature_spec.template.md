@@ -1,57 +1,81 @@
 # File Purpose Header
 
 ```yaml
-purpose: Final feature specification for <feature>.
+purpose: Template for the final durable feature SPEC.
 status: closed
-read_when: Maintaining, extending, validating, or revisiting this feature.
-do_not_read_when: Looking for historical execution logs; those are intentionally not preserved.
-contains: Durable objective, final scope, acceptance criteria, decisions, constraints, risks, and essential notes.
+read_when: Maintaining, extending, validating, or revisiting the closed feature requirements.
+do_not_read_when: Looking for session history or delivery records that closure intentionally removes.
+contains: Durable objective, context, scope, rules, criteria, decisions, constraints, risks, and contracts.
 owner: stnl-spec-lifecycle-manager
-update_policy: Update only through an explicit future spec lifecycle action.
+update_policy: Update only through an explicit future lifecycle action.
 ```
 
-# <Feature Name> - Feature Spec
+# <Feature Name> - Feature SPEC
 
 ## Objective
 
-<Durable objective.>
+<Durable outcome.>
+
+## Context
+
+<Only context necessary to interpret the final requirements.>
 
 ## Final Scope
 
-- <Final included behavior.>
+- <Included behavior.>
 
 ## Out of Scope
 
-- <Durable exclusions.>
+- <Durable exclusion.>
+
+## Requirements
+
+- <Final requirement.>
 
 ## Business Rules
 
-- <Durable business rule, if any.>
+- <Rule, when applicable.>
 
 ## Final Acceptance Criteria
 
-### AC-001 - <Acceptance criterion title>
+### AC-001 - <Criterion title>
 
-<Final observable behavior.>
+```yaml
+id: AC-001
+status: active
+statement: <Final observable behavior.>
+```
 
 ## Durable Decisions
 
 ### D-001 - <Decision title>
 
-<Durable decision and impact.>
+```yaml
+id: D-001
+status: accepted
+decision: <Decision and durable impact.>
+```
 
 ## Relevant Constraints
 
 ### C-001 - <Constraint title>
 
-<Relevant long-term constraint.>
+```yaml
+id: C-001
+status: active
+constraint: <Long-lived boundary.>
+```
 
 ## Relevant Risks
 
 ### R-001 - <Risk title>
 
-<Relevant risk and mitigation.>
+```yaml
+id: R-001
+status: open
+risk: <Risk and mitigation.>
+```
 
-## Essential Technical Notes
+## Important Contracts
 
-- <Only durable technical context.>
+- <Only durable context.>

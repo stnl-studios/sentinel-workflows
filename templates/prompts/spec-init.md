@@ -1,32 +1,20 @@
-Use `stnl-spec-lifecycle-manager`.
+# File Purpose Header
+
+```yaml
+purpose: Prompt template for starting or maturing an independent feature SPEC.
+status: ready
+read_when: A user needs MODE INIT.
+do_not_read_when: An existing SPEC needs resumption, review, or documentary closure.
+contains: Minimal input slots and INIT boundaries.
+owner: stnl-spec-lifecycle-manager
+update_policy: Update when INIT behavior changes.
+```
+
+Use stnl-spec-lifecycle-manager.
 MODE=INIT
 
-Objetivo:
-- criar uma nova SPEC slice-driven para: [feature, bugfix, mudança ou iniciativa]
+Feature intent: <problem, change, or outcome>
+Known scope: <included and excluded behavior>
+Known facts: <rules, decisions, constraints, risks, contracts>
 
-Entrada mínima:
-- [descreva o problema, objetivo ou mudança em poucas linhas]
-
-Escopo:
-- entra: [fluxos, módulos, endpoints, telas, jobs, contratos ou "não informado"]
-- fora: [o que não deve entrar ou "não informado"]
-
-Contexto disponível:
-- regras conhecidas: [...]
-- decisões já tomadas: [...]
-- restrições técnicas/produto: [...]
-- evidências iniciais: [...]
-
-Resultado esperado:
-- criar workspace modular em `specs/<feature-slug>/` quando não houver caminho mais específico
-- criar `feature_spec.md` como índice compacto, não como spec monolítica
-- criar arquivos compartilhados somente para categorias materializadas
-- criar um arquivo `slices/SL-###.md` por slice quando houver sinal suficiente
-- criar `lifecycle/traceability.md`, `lifecycle/qa-checklist.md` e `lifecycle/resume-notes.md`
-- criar perguntas `Q-001+` se houver dúvidas bloqueantes
-- criar ACs, decisões, riscos e constraints com IDs canônicos quando aplicável
-- se houver pergunta aberta, manter readiness bloqueada e não criar slice `ready`
-
-Restrições excepcionais:
-- [somente se houver]
-
+Create `feature_spec.md` and only meaningful shared categories. Record the smallest blocking questions. Distinguish facts, hypotheses, and decisions; preserve stable IDs; do not invent requirements. Do not implement code or create delivery artifacts.

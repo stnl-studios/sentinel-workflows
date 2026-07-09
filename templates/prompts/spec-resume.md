@@ -1,27 +1,20 @@
-Use `stnl-spec-lifecycle-manager`.
+# File Purpose Header
+
+```yaml
+purpose: Prompt template for resolving or revising an existing feature SPEC.
+status: ready
+read_when: A user needs MODE RESUME.
+do_not_read_when: A new SPEC, documentary review, or closure is requested.
+contains: Resume input slots and preservation boundaries.
+owner: stnl-spec-lifecycle-manager
+update_policy: Update when RESUME behavior changes.
+```
+
+Use stnl-spec-lifecycle-manager.
 MODE=RESUME
 
-SPEC alvo:
-- [path para feature_spec.md ou pasta da SPEC]
+SPEC path: <feature_spec.md or workspace>
+New fact or requested change: <answer, decision, inconsistency, scope delta, or correction>
+Preserve: <IDs, decisions, constraints, or other durable records>
 
-Objetivo desta retomada:
-- [continuar, corrigir, replanejar, resolver bloqueio, incorporar decisão ou consolidar delta]
-
-Delta novo:
-- [nova evidência, decisão, resposta de pergunta, blocker ou ajuste de direção]
-
-Não reabrir:
-- [decisões, escopos, constraints ou temas que devem permanecer fechados]
-
-Resultado esperado:
-- preservar IDs canônicos existentes
-- começar por `feature_spec.md` e `lifecycle/resume-notes.md`
-- carregar somente a slice candidata e os artefatos vinculados, salvo justificativa concreta
-- atualizar somente os arquivos modulares afetados
-- replanejar slices criando novos arquivos quando alguma estiver grande demais, pequena demais, vaga ou bloqueada
-- criar novos IDs canônicos apenas quando necessário
-- manter `feature_spec.md`, traceability, QA checklist e resume notes consistentes
-- migrar spec operacional monolítica antiga para o workspace modular se necessário, sem renumerar IDs
-
-Restrições excepcionais:
-- [somente se houver]
+Read only affected artifacts. Incorporate explicit answers, decisions, and documentary corrections; preserve IDs; update references consistently; and make material changes visible. Do not erase relevant decision history or create delivery artifacts.

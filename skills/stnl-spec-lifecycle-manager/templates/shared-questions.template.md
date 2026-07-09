@@ -1,13 +1,13 @@
 # File Purpose Header
 
 ```yaml
-purpose: Store open, resolved, bypassed, or dropped questions for <feature>.
+purpose: Template for materialized blocking and resolved questions.
 status: blocked
-read_when: INIT/RESUME/PLANNING checks blockers or a slice links Q-### IDs.
-do_not_read_when: The index says there are no materialized questions.
-contains: Q-### artifacts only.
+read_when: INIT, RESUME, or a readiness gate needs a question resolution.
+do_not_read_when: The SPEC confirms no materialized question is relevant.
+contains: Q canonical artifacts only.
 owner: stnl-spec-lifecycle-manager
-update_policy: INIT/RESUME may update; execution agents cannot bypass questions.
+update_policy: INIT and RESUME resolve questions explicitly and preserve durable resolutions.
 ```
 
 # Questions
@@ -18,8 +18,8 @@ update_policy: INIT/RESUME may update; execution agents cannot bypass questions.
 id: Q-001
 status: open
 question: <Smallest decision needed.>
-why_it_matters: <Why this affects scope, behavior, risk, or implementation.>
-blocks: [SL-001]
+why_it_matters: <Behavior, scope, or risk impact.>
+blocks: [AC-001]
 resolution: null
 resolved_by: null
 linked_decision: null

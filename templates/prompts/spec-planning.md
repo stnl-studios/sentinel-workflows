@@ -1,35 +1,19 @@
-Use `stnl-spec-lifecycle-manager`.
+# File Purpose Header
+
+```yaml
+purpose: Prompt template for read-only documentary readiness review of a feature SPEC.
+status: ready
+read_when: A user needs MODE PLANNING.
+do_not_read_when: A documentary update or closure is requested.
+contains: Review input, readiness checks, outputs, and no-mutation boundary.
+owner: stnl-spec-lifecycle-manager
+update_policy: Update when PLANNING behavior changes.
+```
+
+Use stnl-spec-lifecycle-manager.
 MODE=PLANNING
 
-SPEC alvo:
-- [path para feature_spec.md ou pasta da SPEC]
+SPEC path: <feature_spec.md or workspace>
+Review focus: <whole SPEC or stated concern>
 
-Alvo da validação:
-- [SL-001, próxima slice ready/planned ou SPEC inteira]
-
-Objetivo:
-- validar se a SPEC ou slice alvo está pronta para execução atômica por agentes
-
-Resultado esperado:
-- executar readiness gates
-- validar o workspace modular sem mutações
-- validar paths indexados, arquivos de slice, File Purpose Headers e IDs
-- validar perguntas abertas
-- validar tamanho da slice
-- validar ACs, constraints, riscos, decisões e rastreabilidade
-- validar `validation_hints`
-- validar `lifecycle/qa-checklist.md`
-- retornar status de readiness
-
-Contrato:
-- se houver pergunta aberta, bloquear
-- se a slice estiver grande demais, pequena demais ou vaga, bloquear e indicar `MODE=RESUME`
-- se houver referência quebrada, bloquear e indicar `MODE=RESUME`
-- se faltar material essencial, bloquear e listar o mínimo necessário
-- não replanejar diretamente
-- não criar, editar, dividir ou mesclar arquivos
-- não alterar escopo sem delta explícito
-- não gerar plano de execução
-
-Restrições excepcionais:
-- [somente se houver]
+Read the feature document and only relevant shared records. Review documentary clarity, scope, criteria, blockers, decisions, constraints, risks, duplication, and references without changing files or exploring implementation. Return `planning_status: ready` or `planning_status: needs_resume`, `next_mode: RESUME`, and actionable findings with affected artifacts or IDs.

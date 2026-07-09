@@ -23,7 +23,7 @@ fi
 # Prompt templates
 test -d templates/prompts || fail "templates/prompts directory is missing"
 test ! -e "$LEGACY_TEMPLATE_DIR" || fail "legacy template path remains: $LEGACY_TEMPLATE_DIR"
-for name in spec-close spec-init spec-planning spec-resume; do
+for name in spec-init spec-planning spec-resume spec-close execution-planning phase-execute phase-validate phase-finalize phase-commit phase-parallel execution-close; do
   test -f "templates/prompts/$name.md" || fail "missing templates/prompts/$name.md"
 done
 if grep -R -q --exclude-dir=.git "$LEGACY_TEMPLATE_NAME" .; then
@@ -47,6 +47,17 @@ ROOT = Path(".")
 TEXT_ROOTS = [Path("agents"), Path("targets"), Path("skills"), Path("templates"), Path("scripts")]
 ALLOWED_HANDOFF = {"PASS", "BLOCKED", "NEEDS_APPROVAL", "NEEDS_FIX", "NEEDS_REPLAN", "NEEDS_RETEST_PLAN"}
 ALLOWED_MODES = {"INIT", "RESUME", "PLANNING", "CLOSE"}
+SKILL_RESOURCE_FOLDERS = [
+    Path("skills/stnl-spec-lifecycle-manager/references"),
+    Path("skills/stnl-spec-lifecycle-manager/templates"),
+    Path("skills/stnl-spec-lifecycle-manager/examples"),
+    Path("skills/stnl-spec-lifecycle-manager/evals"),
+    Path("skills/stnl-spec-execution-manager/references"),
+    Path("skills/stnl-spec-execution-manager/templates"),
+    Path("skills/stnl-spec-execution-manager/examples"),
+    Path("skills/stnl-spec-execution-manager/evals"),
+    Path("templates/prompts"),
+]
 LEGACY_ROLE = "final" "izer"
 LEGACY_AGENT = "sentinel-" + LEGACY_ROLE
 LEGACY_BASE = Path("agents/base") / f"{LEGACY_ROLE}.md"
@@ -170,26 +181,85 @@ for path, text in all_text.items():
     if tilde % 2:
         fail(f"unbalanced tilde fences in {path}")
 
-# File Purpose Headers in skill reference/template/example/eval docs
-for folder in [
-    Path("skills/stnl-spec-lifecycle-manager/references"),
-    Path("skills/stnl-spec-lifecycle-manager/templates"),
-    Path("skills/stnl-spec-lifecycle-manager/examples"),
-    Path("skills/stnl-spec-lifecycle-manager/evals"),
-]:
+# File Purpose Headers in skill reference/template/example/eval/prompt docs
+for folder in SKILL_RESOURCE_FOLDERS:
     for path in folder.glob("*.md"):
         text = read_text(path)
         if not text.startswith("# File Purpose Header\n\n```yaml\n"):
             fail(f"missing File Purpose Header: {path}")
 
-# Skill description and MODE vocabulary
-skill_text = read_text(Path("skills/stnl-spec-lifecycle-manager/SKILL.md"))
-frontmatter = skill_text.split("---", 2)
+HEADER_FIELDS = [
+    "purpose",
+    "status",
+    "read_when",
+    "do_not_read_when",
+    "contains",
+    "owner",
+    "update_policy",
+]
+HEADER_STATUSES = {"draft", "ready", "blocked", "done", "closed", "not_applicable"}
+for folder in SKILL_RESOURCE_FOLDERS:
+    for path in folder.glob("*.md"):
+        lines = read_text(path).splitlines()
+        fence = lines[2][:3] if len(lines) > 2 else ""
+        try:
+            closing = lines.index(fence, 3)
+        except (IndexError, ValueError):
+            fail(f"invalid File Purpose Header fence: {path}")
+        fields = [line.split(":", 1)[0] for line in lines[3:closing] if ":" in line]
+        if fields != HEADER_FIELDS:
+            fail(f"File Purpose Header fields are not normalized: {path}")
+        status = lines[4].split(":", 1)[1].strip()
+        if status not in HEADER_STATUSES:
+            fail(f"invalid File Purpose Header status: {path}")
+
+# Skill descriptions, resource completeness, and MODE vocabulary
+spec_skill_text = read_text(Path("skills/stnl-spec-lifecycle-manager/SKILL.md"))
+frontmatter = spec_skill_text.split("---", 2)
 if len(frontmatter) < 3:
-    fail("skill frontmatter is missing")
+    fail("SPEC skill frontmatter is missing")
 description_line = next((line for line in frontmatter[1].splitlines() if line.startswith("description:")), "")
 if re.search(r"\b(execute|executing|implementation)\b", description_line, re.IGNORECASE):
-    fail("skill frontmatter describes implementation execution")
+    fail("SPEC skill frontmatter describes delivery execution")
+if re.search(r"\bplan(?:ning)?\b", description_line, re.IGNORECASE):
+    fail("SPEC skill frontmatter describes delivery planning")
+
+execution_skill = Path("skills/stnl-spec-execution-manager/SKILL.md")
+if not execution_skill.exists():
+    fail("execution skill is missing")
+execution_skill_text = read_text(execution_skill)
+execution_frontmatter = execution_skill_text.split("---", 2)
+if len(execution_frontmatter) < 3:
+    fail("execution skill frontmatter is missing")
+execution_description = next((line for line in execution_frontmatter[1].splitlines() if line.startswith("description:")), "")
+if not execution_description:
+    fail("execution skill description is missing")
+if re.search(r"must use stnl-spec-lifecycle-manager|required stnl-spec-lifecycle-manager|only specs created by", execution_skill_text, re.IGNORECASE):
+    fail("execution skill requires stnl-spec-lifecycle-manager")
+
+for path in [
+    Path("skills/stnl-spec-execution-manager/references/workspace.md"),
+    Path("skills/stnl-spec-execution-manager/references/phase-model.md"),
+    Path("skills/stnl-spec-execution-manager/references/phase-execution-contract.md"),
+    Path("skills/stnl-spec-execution-manager/references/execution-close-policy.md"),
+    Path("skills/stnl-spec-execution-manager/templates/plan-index.template.md"),
+    Path("skills/stnl-spec-execution-manager/templates/phase-plan.template.md"),
+    Path("skills/stnl-spec-execution-manager/templates/tasks-index.template.md"),
+    Path("skills/stnl-spec-execution-manager/templates/phase-tasks.template.md"),
+    Path("skills/stnl-spec-execution-manager/examples/phase-driven-workspace.md"),
+    Path("skills/stnl-spec-execution-manager/evals/eval-plan.md"),
+]:
+    if not path.exists():
+        fail(f"execution skill resource is missing: {path}")
+
+spec_forbidden = re.compile(
+    r"plan\\.md|tasks\\.md|plans/|tasks/|phase-execute|phase-validate|phase-finalize|phase-commit|phase-parallel|independent validation|implementation phase",
+    re.IGNORECASE,
+)
+for path in Path("skills/stnl-spec-lifecycle-manager").rglob("*.md"):
+    if spec_forbidden.search(read_text(path)):
+        fail(f"SPEC skill retains delivery-only content: {path}")
+
 for path, text in all_text.items():
     for match in re.finditer(r"\bMODE\s*[=:]\s*([A-Z_]+)", text):
         mode = match.group(1)
