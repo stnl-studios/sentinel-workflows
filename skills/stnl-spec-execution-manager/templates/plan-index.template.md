@@ -15,8 +15,8 @@ update_policy: Initial planning creates; conclusion updates one completed phase 
 ## Requirements Source
 
 ```yaml
-requirements_source: feature_spec.md
-execution_workspace: <workspace path>
+requirements_source: <relative requirements path>
+execution_workspace: .
 ```
 
 | Done | Phase | Objective | Dependencies | Covered IDs or criteria | Parallel | Detail | Result |

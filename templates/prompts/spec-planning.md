@@ -1,6 +1,7 @@
-Use `stnl-spec-lifecycle-manager` in `MODE=PLANNING`.
+Use `stnl-spec-lifecycle-manager` em `MODE=PLANNING`.
 
-SPEC: `{{SPEC_PATH}}`
-Perform a read-only documentary readiness review. Do not change the SPEC, create `plan.md`, create tasks, or explore implementation beyond what is needed to validate documentary clarity.
+SPEC: `{{SPEC_PATH}}`.
+Faça uma revisão documental somente leitura da prontidão da SPEC.
+Não altere arquivos, não crie plano nem tarefas e não explore implementação além do necessário para verificar clareza documental.
 
-Reply exactly `READY`, or `NEEDS_RESUME` followed only by actionable findings and their affected references.
+Retorne `READY` ou `NEEDS_RESUME` seguido somente de achados acionáveis com suas referências.

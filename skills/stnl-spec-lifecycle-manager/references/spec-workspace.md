@@ -17,15 +17,16 @@ Default to `specs/<feature-slug>/` when the consumer provides no stronger conven
 ```text
 specs/<feature-slug>/
 ├── feature_spec.md
-└── shared/
-    ├── acceptance-criteria.md
-    ├── decisions.md
-    ├── constraints.md
-    ├── risks.md
-    └── questions.md
+├── shared/
+│   ├── acceptance-criteria.md
+│   ├── decisions.md
+│   ├── constraints.md
+│   ├── risks.md
+│   └── questions.md
+└── execution/ (outside lifecycle ownership, when present)
 ```
 
-Shared files are optional and exist only for materialized categories. A blocked SPEC may contain only `feature_spec.md` and `shared/questions.md`. Do not create empty categories merely to complete the tree.
+Shared files are optional and exist only for materialized categories. A blocked SPEC may contain only `feature_spec.md` and `shared/questions.md`. Do not create empty categories merely to complete the tree. Ignore `execution/` and any other external workspace because they are not lifecycle artifacts.
 
 ## Responsibilities
 

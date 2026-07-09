@@ -3,7 +3,7 @@
 ```yaml
 purpose: Define regression cases for the independent feature SPEC lifecycle.
 status: not_applicable
-read_when: Changing the skill, templates, prompts, examples, or structural validation.
+read_when: Changing the skill, templates, examples, or structural validation.
 do_not_read_when: Running an ordinary SPEC lifecycle operation.
 contains: Required SPEC-only eval cases and shared failure signals.
 owner: stnl-spec-lifecycle-manager

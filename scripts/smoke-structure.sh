@@ -154,10 +154,11 @@ def check_spec_blocked(root: Path) -> None:
 
 
 def check_spec_closed(root: Path) -> None:
-    expected = {root / "feature_spec.md"}
+    expected = {root / "feature_spec.md", root / "execution/plan.md"}
     actual = {path for path in root.rglob("*") if path.is_file()}
-    expect(actual == expected, "closed SPEC has auxiliary residue")
+    expect(actual == expected, "closed SPEC does not preserve the separate execution workspace")
     check_header(root / "feature_spec.md", "stnl-spec-lifecycle-manager")
+    check_header(root / "execution/plan.md", "stnl-spec-execution-manager")
 
 
 def execution_fixture(root: Path) -> None:
@@ -171,26 +172,27 @@ status: active
 statement: The behavior is observable.
 ```
 """)
-    write(root / "plan.md", header("stnl-spec-execution-manager", "Fixture delivery plan index") + """# Delivery Plan Index
+    execution = root / "execution"
+    write(execution / "plan.md", header("stnl-spec-execution-manager", "Fixture delivery plan index") + """# Delivery Plan Index
 
 ## Requirements Source
 
 ```yaml
-requirements_source: feature_spec.md
-execution_workspace: fixture
+requirements_source: ../feature_spec.md
+execution_workspace: .
 ```
 
 | Done | Phase | Objective | Dependencies | Covered IDs or criteria | Parallel | Detail | Result |
 |---|---|---|---|---|---|---|---|
 | [ ] | 01 - Fixture | Deliver behavior | - | AC-001 | no | plans/plan-01.md | - |
 """)
-    write(root / "plans/plan-01.md", header("stnl-spec-execution-manager", "Fixture detailed plan") + """# Phase 01 - Fixture
+    write(execution / "plans/plan-01.md", header("stnl-spec-execution-manager", "Fixture detailed plan") + """# Phase 01 - Fixture
 
 ## Source and Phase Metadata
 
 ```yaml
 phase: 01
-requirements_source: feature_spec.md
+requirements_source: ../../feature_spec.md
 parallelizable: false
 parallel_safety: not_applicable
 ```
@@ -199,19 +201,19 @@ parallel_safety: not_applicable
 
 AC-001
 """)
-    write(root / "tasks.md", header("stnl-spec-execution-manager", "Fixture delivery tasks index") + """# Delivery Tasks Index
+    write(execution / "tasks.md", header("stnl-spec-execution-manager", "Fixture delivery tasks index") + """# Delivery Tasks Index
 
 | Done | Phase | Tasks | Detail | Tests | Validation | Result |
 |---|---|---|---|---|---|---|
 | [ ] | 01 - Fixture | 1 task | tasks/tasks-01.md | pending | pending | - |
 """)
-    write(root / "tasks/tasks-01.md", header("stnl-spec-execution-manager", "Fixture detailed task record") + """# Phase 01 Tasks - Fixture
+    write(execution / "tasks/tasks-01.md", header("stnl-spec-execution-manager", "Fixture detailed task record") + """# Phase 01 Tasks - Fixture
 
 ## Source and Phase Metadata
 
 ```yaml
 phase: 01
-requirements_source: feature_spec.md
+requirements_source: ../../feature_spec.md
 plan: plans/plan-01.md
 covered_references: [AC-001]
 ```
@@ -226,26 +228,29 @@ covered_references: [AC-001]
 tests_executed: []
 test_result: pending
 validation: pending
+corrections: []
 revalidation: pending
 ```
 """)
 
 
 def check_execution(root: Path) -> None:
-    files = [root / "feature_spec.md", root / "plan.md", root / "plans/plan-01.md", root / "tasks.md", root / "tasks/tasks-01.md"]
+    execution = root / "execution"
+    files = [root / "feature_spec.md", execution / "plan.md", execution / "plans/plan-01.md", execution / "tasks.md", execution / "tasks/tasks-01.md"]
     for path in files:
         expect(path.exists(), f"delivery workspace missing file: {path}")
     check_header(root / "feature_spec.md", "stnl-spec-lifecycle-manager")
     for path in files[1:]:
         check_header(path, "stnl-spec-execution-manager")
 
-    plan_index = (root / "plan.md").read_text(encoding="utf-8")
-    tasks_index = (root / "tasks.md").read_text(encoding="utf-8")
-    plan = (root / "plans/plan-01.md").read_text(encoding="utf-8")
-    tasks = (root / "tasks/tasks-01.md").read_text(encoding="utf-8")
+    plan_index = (execution / "plan.md").read_text(encoding="utf-8")
+    tasks_index = (execution / "tasks.md").read_text(encoding="utf-8")
+    plan = (execution / "plans/plan-01.md").read_text(encoding="utf-8")
+    tasks = (execution / "tasks/tasks-01.md").read_text(encoding="utf-8")
     source = (root / "feature_spec.md").read_text(encoding="utf-8")
 
-    expect("requirements_source: feature_spec.md" in plan_index and "requirements_source: feature_spec.md" in plan, "delivery source path is missing")
+    expect("requirements_source: ../feature_spec.md" in plan_index, "delivery index source path is missing")
+    expect("requirements_source: ../../feature_spec.md" in plan and "requirements_source: ../../feature_spec.md" in tasks, "delivery detailed source path is missing")
     expect("plans/plan-01.md" in plan_index, "plan index link is missing")
     expect("tasks/tasks-01.md" in tasks_index, "tasks index link is missing")
     expect("plan: plans/plan-01.md" in tasks, "task record points to the wrong plan")
@@ -262,7 +267,11 @@ def check_execution(root: Path) -> None:
         expect("- [ ]" not in tasks, "concluded phase has an open task")
         expect("test_result: PASS" in tasks, "concluded phase lacks successful test evidence")
         expect("validation: PASS" in tasks, "concluded phase lacks validation evidence")
-        expect("revalidation: PASS" in tasks or "revalidation: not_required" in tasks, "concluded phase lacks revalidation evidence")
+        has_corrections = "corrections: []" not in tasks
+        if has_corrections:
+            expect("revalidation: PASS" in tasks, "corrected phase lacks focused revalidation PASS")
+        else:
+            expect("revalidation: not_required" in tasks, "initial PASS phase lacks not_required revalidation")
 
     if "| yes | plans/plan-01.md" in plan_index:
         expect("parallel_safety: verified" in plan, "parallel phase lacks verified non-overlap")
@@ -280,12 +289,61 @@ def invalid_execution(name: str, mutate) -> None:
         fail(f"invalid delivery fixture accepted: {name}")
 
 
+def external_execution_fixture(base: Path) -> None:
+    source = base / "requirements/billing-change.md"
+    original = "# Billing change\n\nThe billing behavior is observable.\n"
+    write(source, original)
+    execution = base / "requirements/billing-change-execution"
+    write(execution / "plan.md", header("stnl-spec-execution-manager", "External delivery plan index") + """# Delivery Plan Index
+
+```yaml
+requirements_source: ../billing-change.md
+execution_workspace: .
+```
+
+| Done | Phase | Detail |
+|---|---|---|
+| [ ] | 01 - Billing | plans/plan-01.md |
+""")
+    write(execution / "plans/plan-01.md", header("stnl-spec-execution-manager", "External detailed plan") + """# Phase 01 - Billing
+
+```yaml
+phase: 01
+requirements_source: ../../billing-change.md
+```
+""")
+    write(execution / "tasks.md", header("stnl-spec-execution-manager", "External delivery tasks index") + """# Delivery Tasks Index
+
+| Done | Phase | Detail |
+|---|---|---|
+| [ ] | 01 - Billing | tasks/tasks-01.md |
+""")
+    write(execution / "tasks/tasks-01.md", header("stnl-spec-execution-manager", "External detailed task record") + """# Phase 01 Tasks - Billing
+
+```yaml
+phase: 01
+requirements_source: ../../billing-change.md
+```
+""")
+    expect(source.read_text(encoding="utf-8") == original, "external requirements source changed during planning")
+    expect("# File Purpose Header" not in source.read_text(encoding="utf-8"), "external requirements source requires a lifecycle header")
+    expect(not (base / "requirements/feature_spec.md").exists(), "external requirements source was renamed")
+    plan_index = (execution / "plan.md").read_text(encoding="utf-8")
+    detailed_plan = (execution / "plans/plan-01.md").read_text(encoding="utf-8")
+    tasks = (execution / "tasks/tasks-01.md").read_text(encoding="utf-8")
+    expect("requirements_source: ../billing-change.md" in plan_index, "external plan index lacks relative source")
+    expect("requirements_source: ../../billing-change.md" in detailed_plan and "requirements_source: ../../billing-change.md" in tasks, "external detailed artifacts lack relative source")
+    expect("plans/plan-01.md" in plan_index and "tasks/tasks-01.md" in (execution / "tasks.md").read_text(encoding="utf-8"), "external execution workspace has broken indices")
+    for path in [execution / "plan.md", execution / "plans/plan-01.md", execution / "tasks.md", execution / "tasks/tasks-01.md"]:
+        check_header(path, "stnl-spec-execution-manager")
+
+
 def static_contract_checks() -> None:
     for root, owner in [(SPEC_ROOT, "stnl-spec-lifecycle-manager"), (EXEC_ROOT, "stnl-spec-execution-manager")]:
         for folder in ["references", "templates", "examples", "evals"]:
             for path in (root / folder).glob("*.md"):
                 check_header(path, owner)
-    spec_forbidden = re.compile(r"plan\\.md|tasks\\.md|plans/|tasks/|phase-execute|phase-validate|phase-fix|phase-commit|phase-parallel|independent validation|implementation phase", re.IGNORECASE)
+    spec_forbidden = re.compile(r"plan\\.md|tasks\\.md|plans/|tasks/|phase-execute|phase-validate|phase-" + "fix" + r"|phase-commit|phase-parallel|independent validation|implementation phase", re.IGNORECASE)
     for path in SPEC_ROOT.rglob("*.md"):
         expect(spec_forbidden.search(path.read_text(encoding="utf-8")) is None, f"SPEC skill retains delivery content: {path}")
 
@@ -312,20 +370,40 @@ with tempfile.TemporaryDirectory() as tmp:
 
     closed_spec = base / "closed-spec"
     write(closed_spec / "feature_spec.md", header("stnl-spec-lifecycle-manager", "Closed feature SPEC", "closed") + "# Closed SPEC\n")
+    write(closed_spec / "execution/plan.md", header("stnl-spec-execution-manager", "Preserved execution index") + "# Delivery Plan Index\n")
     check_spec_closed(closed_spec)
 
     active_execution = base / "active-execution"
     execution_fixture(active_execution)
     check_execution(active_execution)
 
-    invalid_execution("missing-plan", lambda root: (root / "plans/plan-01.md").unlink())
-    invalid_execution("wrong-task-plan", lambda root: (root / "tasks/tasks-01.md").write_text((root / "tasks/tasks-01.md").read_text(encoding="utf-8").replace("plans/plan-01.md", "plans/plan-02.md"), encoding="utf-8"))
-    invalid_execution("missing-ac", lambda root: (root / "tasks/tasks-01.md").write_text((root / "tasks/tasks-01.md").read_text(encoding="utf-8").replace("AC-001", "AC-999"), encoding="utf-8"))
-    invalid_execution("completed-open-task", lambda root: ((root / "plan.md").write_text((root / "plan.md").read_text(encoding="utf-8").replace("| [ ] | 01", "| [x] | 01"), encoding="utf-8"), (root / "tasks.md").write_text((root / "tasks.md").read_text(encoding="utf-8").replace("| [ ] | 01", "| [x] | 01"), encoding="utf-8")))
-    invalid_execution("parallel-without-safety", lambda root: (root / "plan.md").write_text((root / "plan.md").read_text(encoding="utf-8").replace("| no | plans/plan-01.md", "| yes | plans/plan-01.md"), encoding="utf-8"))
+    invalid_execution("missing-plan", lambda root: (root / "execution/plans/plan-01.md").unlink())
+    invalid_execution("wrong-task-plan", lambda root: (root / "execution/tasks/tasks-01.md").write_text((root / "execution/tasks/tasks-01.md").read_text(encoding="utf-8").replace("plans/plan-01.md", "plans/plan-02.md"), encoding="utf-8"))
+    invalid_execution("missing-ac", lambda root: (root / "execution/tasks/tasks-01.md").write_text((root / "execution/tasks/tasks-01.md").read_text(encoding="utf-8").replace("AC-001", "AC-999"), encoding="utf-8"))
+    invalid_execution("completed-open-task", lambda root: ((root / "execution/plan.md").write_text((root / "execution/plan.md").read_text(encoding="utf-8").replace("| [ ] | 01", "| [x] | 01"), encoding="utf-8"), (root / "execution/tasks.md").write_text((root / "execution/tasks.md").read_text(encoding="utf-8").replace("| [ ] | 01", "| [x] | 01"), encoding="utf-8")))
+    invalid_execution("parallel-without-safety", lambda root: (root / "execution/plan.md").write_text((root / "execution/plan.md").read_text(encoding="utf-8").replace("| no | plans/plan-01.md", "| yes | plans/plan-01.md"), encoding="utf-8"))
+
+    initial_pass = base / "initial-pass"
+    execution_fixture(initial_pass)
+    for path in [initial_pass / "execution/plan.md", initial_pass / "execution/tasks.md"]:
+        path.write_text(path.read_text(encoding="utf-8").replace("| [ ] | 01", "| [x] | 01"), encoding="utf-8")
+    task_record = initial_pass / "execution/tasks/tasks-01.md"
+    task_record.write_text(task_record.read_text(encoding="utf-8").replace("- [ ]", "- [x]").replace("test_result: pending", "test_result: PASS").replace("\nvalidation: pending", "\nvalidation: PASS").replace("revalidation: pending", "revalidation: not_required"), encoding="utf-8")
+    check_execution(initial_pass)
+
+    corrected_pass = base / "corrected-pass"
+    execution_fixture(corrected_pass)
+    for path in [corrected_pass / "execution/plan.md", corrected_pass / "execution/tasks.md"]:
+        path.write_text(path.read_text(encoding="utf-8").replace("| [ ] | 01", "| [x] | 01"), encoding="utf-8")
+    task_record = corrected_pass / "execution/tasks/tasks-01.md"
+    task_record.write_text(task_record.read_text(encoding="utf-8").replace("- [ ]", "- [x]").replace("test_result: pending", "test_result: PASS").replace("\nvalidation: pending", "\nvalidation: PASS").replace("corrections: []", "corrections: [fix]").replace("revalidation: pending", "revalidation: PASS"), encoding="utf-8")
+    check_execution(corrected_pass)
+
+    external_execution_fixture(base / "external-source")
 
     static_contract_checks()
 
 print("PASS: SPEC workspace structural smoke validation")
 print("PASS: delivery workspace structural smoke validation")
+print("PASS: external requirements source structural smoke validation")
 PY

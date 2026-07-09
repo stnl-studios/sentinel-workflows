@@ -1,13 +1,8 @@
 Use `stnl-spec-execution-manager`.
 
-SPEC: `{{SPEC_PATH}}`
-Execution root: `{{EXECUTION_ROOT}}` (optional; infer it when blank).
-Close policy: `{{CLOSE_POLICY}}` (`validate_only`, `consolidate_and_keep`, or `consolidate_and_remove`).
-Perform operational closure using the selected policy. Verify the SPEC, plan, tasks, code, tests, and findings from evidence rather than checkboxes alone; block on insufficient evidence.
-Persist audit details in the artifacts and do not repeat the audit in chat.
+Fonte de requisitos: `{{SPEC_PATH}}`; diretório de execução: `{{EXECUTION_ROOT}}`; política: `{{CLOSE_POLICY}}`.
+Use somente `validate_only`, `consolidate_and_keep` ou `consolidate_and_remove`.
+Verifique fonte, plano, tarefas, código, testes, achados e evidências, sem confiar apenas em caixas de seleção.
+Persista a auditoria nos artefatos e não a reproduza integralmente na resposta.
 
-Reply only with:
-- status;
-- applied policy;
-- blockers;
-- relevant final files.
+Retorne somente: status; política aplicada; bloqueios; arquivos finais relevantes.

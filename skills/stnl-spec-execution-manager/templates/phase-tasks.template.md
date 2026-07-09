@@ -16,7 +16,7 @@ update_policy: Delivery updates tasks and evidence; conclusion completes only af
 
 ```yaml
 phase: 01
-requirements_source: feature_spec.md
+requirements_source: <relative requirements path>
 plan: plans/plan-01.md
 covered_references: [AC-001, C-001]
 ```

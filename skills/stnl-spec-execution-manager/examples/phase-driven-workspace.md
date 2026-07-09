@@ -19,20 +19,21 @@ specs/invitation-expiration/
 │   ├── acceptance-criteria.md
 │   ├── constraints.md
 │   └── risks.md
-├── plan.md
-├── plans/
-│   ├── plan-01.md
-│   └── plan-02.md
-├── tasks.md
-└── tasks/
-    └── tasks-01.md
+└── execution/
+    ├── plan.md
+    ├── plans/
+    │   ├── plan-01.md
+    │   └── plan-02.md
+    ├── tasks.md
+    └── tasks/
+        └── tasks-01.md
 ```
 
-`plan.md` has compact rows only:
+`execution/plan.md` has compact rows only and records `requirements_source: ../feature_spec.md`:
 
 | Done | Phase | Objective | Dependencies | Covered IDs or criteria | Parallel | Detail | Result |
 |---|---|---|---|---|---|---|---|
 | [ ] | 01 - Expire invitations | Reject expired invitations | - | AC-001, C-001, R-001 | no | plans/plan-01.md | - |
 | [ ] | 02 - Expose state | Show expiration state in lookup | 01 | AC-002, C-001 | no | plans/plan-02.md | - |
 
-`tasks.md` contains only phase 01 because phase 02 cannot begin until phase 01 concludes. `plans/plan-01.md` references source records without copying them. `tasks/tasks-01.md` contains local tasks `1.1` and `1.2`, expected tests, and pending evidence.
+`execution/tasks.md` contains only phase 01 because phase 02 cannot begin until phase 01 concludes. `execution/plans/plan-01.md` references the source records without copying them. `execution/tasks/tasks-01.md` contains local tasks `1.1` and `1.2`, expected tests, and pending evidence.

@@ -1,11 +1,8 @@
-Use `stnl-spec-lifecycle-manager` in `MODE=RESUME`.
+Use `stnl-spec-lifecycle-manager` em `MODE=RESUME`.
 
-SPEC: `{{SPEC_PATH}}`
-Incorporate the new information in this request, reading only affected artifacts. Preserve IDs, resolve documentary inconsistencies, and do not plan implementation.
-Persist the detail in the SPEC artifacts.
+SPEC: `{{SPEC_PATH}}`.
+Incorpore as novas informações desta solicitação, lendo apenas os artefatos afetados.
+Preserve IDs, resolva inconsistências documentais e não planeje implementação.
+Persista os detalhes nos artefatos da SPEC e pare se faltar decisão material.
 
-Reply only with:
-- status;
-- relevant documentary changes;
-- remaining open questions;
-- recommended next MODE.
+Retorne somente: status; alterações relevantes; perguntas ainda abertas; próximo MODE.

@@ -1,8 +1,9 @@
 Use `stnl-spec-execution-manager`.
 
-SPEC: `{{SPEC_PATH}}`
-Phase: `{{PHASE_NUMBER}}`
-Commit type: `{{COMMIT_TYPE}}` (optional; choose the correct conventional type when blank).
-Confirm the phase has `PASS` and is concluded, inspect `git status`, and include only changes belonging to this phase. Do not include unrelated changes, modify code, close execution, or start another phase.
+Fonte de requisitos: `{{SPEC_PATH}}`; diretório de execução: `{{EXECUTION_ROOT}}` quando informado; fase: `{{PHASE_NUMBER}}`; tipo: `{{COMMIT_TYPE}}`.
+Confirme que a fase está concluída e possui `PASS`; revise `git status`.
+Inclua somente mudanças da fase e exclua mudanças não relacionadas.
+Crie um commit convencional usando `{{COMMIT_TYPE}}` quando preenchido ou inferindo o tipo correto quando vazio.
+Não modifique código, não feche a execução e não inicie a próxima fase.
 
-Reply exactly `Commit created: <short hash> <message>`, or only the blocker when it is unsafe to commit.
+Retorne `Commit criado: <hash curto> <mensagem>` ou `BLOQUEADO: <motivo curto>`.

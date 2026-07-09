@@ -16,6 +16,6 @@ CLOSE validates the document, not the implementation of the document. Confirm st
 
 Block closure when a question remains blocking, an ID reference is invalid, essential scope or criteria are unclear, material artifacts conflict, or consolidation would lose durable content.
 
-On success, incorporate durable material into one `feature_spec.md`, then remove `shared/`. Retain the objective, necessary context, scope, out of scope, requirements, business rules, final criteria, durable decisions, relevant constraints, relevant risks, important contracts, and resolved questions that still explain a durable choice.
+On success, incorporate durable material into one `feature_spec.md`, then remove `shared/`. Leave any external or execution directory untouched because it is not a lifecycle artifact. Retain the objective, necessary context, scope, out of scope, requirements, business rules, final criteria, durable decisions, relevant constraints, relevant risks, important contracts, and resolved questions that still explain a durable choice.
 
 Do not retain low-value resolved questions, session history, working notes, logs, internal reasoning, operational planning, task records, diffs, test results, command output, or implementation evidence.

@@ -24,7 +24,7 @@ Infer a missing MODE only when it is unambiguous; otherwise request the smallest
 
 ## Core invariants
 
-1. An active SPEC has `feature_spec.md` and only the materialized categories in `shared/`.
+1. An active SPEC has `feature_spec.md` and only the materialized categories in `shared/`; unrelated directories, including a separate execution workspace, are outside this skill's ownership.
 2. Canonical IDs are only `Q-###`, `D-###`, `AC-###`, `R-###`, and `C-###`.
 3. Each canonical ID appears in its heading and explicit `id:` field. Never renumber, reuse, fill gaps, alter valid casing, or refer to an existing item by title alone.
 4. Distinguish facts, hypotheses, and decisions. Never invent a requirement to make a SPEC look complete.
@@ -38,8 +38,6 @@ Infer a missing MODE only when it is unambiguous; otherwise request the smallest
 Every applicable workspace artifact, template, reference, example, and eval starts with `# File Purpose Header`, followed by one YAML block containing exactly: `purpose`, `status`, `read_when`, `do_not_read_when`, `contains`, `owner`, and `update_policy`.
 
 Use only `draft`, `ready`, `blocked`, `done`, `closed`, or `not_applicable` for header status. Do not use competing YAML frontmatter, `planned`, `load_when`, or `do_not_load_when`. Keep headers short and oriented to selective reading.
-
-Copyable prompts in `templates/prompts/` are user-facing instructions: they start directly with the prompt text and do not carry a File Purpose Header or YAML metadata.
 
 ## Lazy-loading map
 
@@ -70,7 +68,7 @@ Return `READY`, or `NEEDS_RESUME` followed only by actionable documentary findin
 
 ### CLOSE
 
-Validate documentary consistency and absence of blocking questions, references, and unresolved contradictions. Consolidate durable content into one `feature_spec.md` and remove materialized auxiliary files only after their necessary content is incorporated. The final file preserves durable requirements context, not session history or operational records.
+Validate documentary consistency and absence of blocking questions, references, and unresolved contradictions. Consolidate durable content into one `feature_spec.md` and remove materialized lifecycle auxiliary files only after their necessary content is incorporated; leave external directories untouched. The final file preserves durable requirements context, not session history or operational records.
 
 ## Evaluation
 

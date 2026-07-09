@@ -3,7 +3,7 @@
 ```yaml
 purpose: Define regression cases for the conservative delivery workflow skill.
 status: not_applicable
-read_when: Changing the skill, templates, prompts, examples, or structural validation.
+read_when: Changing the skill, templates, examples, or structural validation.
 do_not_read_when: Running ordinary delivery work.
 contains: Required execution eval cases and shared failure signals.
 owner: stnl-spec-execution-manager
@@ -34,6 +34,8 @@ update_policy: Extend when a real regression exposes a missing invariant.
 18. `consolidate_and_keep` retains delivery artifacts after allowed consolidation.
 19. `consolidate_and_remove` removes delivery artifacts only after a successful explicit closure.
 20. The skill has no mandatory provider, model, or particular SPEC-producing skill.
+21. A `feature_spec.md` source uses its separate `execution/` child workspace without changing lifecycle artifacts.
+22. A generic external source uses a sibling execution workspace with explicit relative references and is neither moved nor changed during planning.
 
 ## Failure signals
 

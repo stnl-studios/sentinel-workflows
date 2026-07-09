@@ -16,7 +16,7 @@ update_policy: Initial planning creates; revise an unconcluded phase only with a
 
 ```yaml
 phase: 01
-requirements_source: feature_spec.md
+requirements_source: <relative requirements path>
 plan_index: plan.md
 parallelizable: false
 parallel_safety: not_applicable

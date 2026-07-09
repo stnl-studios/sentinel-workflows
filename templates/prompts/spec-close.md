@@ -1,10 +1,8 @@
-Use `stnl-spec-lifecycle-manager` in `MODE=CLOSE`.
+Use `stnl-spec-lifecycle-manager` em `MODE=CLOSE`.
 
-SPEC: `{{SPEC_PATH}}`
-Perform documentary closure and consolidate the SPEC. Do not require a plan, tasks, diff, tests, or implementation; after approval, leave only `feature_spec.md`.
-Persist the detail in the final artifact.
+SPEC: `{{SPEC_PATH}}`.
+Faça o fechamento documental e consolide a SPEC sem depender de implementação.
+Não exija plano, tarefas, diff, commits ou testes; persista os detalhes no artefato final.
+Pare se houver bloqueio documental.
 
-Reply only with:
-- status;
-- final file;
-- blockers, if any.
+Retorne somente: status; arquivo final; bloqueios.

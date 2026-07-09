@@ -15,11 +15,11 @@ update_policy: Keep aligned with workspace source-preservation rules.
 ```text
 requirements/
 ├── billing-change.md
-└── billing-change-delivery/
+└── billing-change-execution/
     ├── plan.md
     ├── plans/plan-01.md
     ├── tasks.md
     └── tasks/tasks-01.md
 ```
 
-`billing-change.md` remains unchanged. The plan index and detailed plan both state `requirements_source: ../billing-change.md`, so every delivery record has an explicit authority path without renaming or copying the source.
+`billing-change.md` remains unchanged. The plan index states `requirements_source: ../billing-change.md`; its detailed plan and task record state `requirements_source: ../../billing-change.md`. Every delivery record has an explicit relative authority path without renaming, moving, or copying the source.

@@ -12,6 +12,6 @@ update_policy: Expand when a real regression reveals a missing invariant.
 
 # Eval Guidance
 
-Use the named cases in `evals/eval-cases.md` before adopting a substantial change. Check documentary outcomes, ID stability, selective reading, headers on internal artifacts, header-free copyable prompts, cross-reference integrity, conservative review, and durable closure.
+Use the named cases in `evals/eval-cases.md` before adopting a substantial change. Check documentary outcomes, ID stability, selective reading, headers on internal artifacts, cross-reference integrity, conservative review, and durable closure.
 
 Fail a change that requires a delivery workflow, invents requirements, changes stable IDs, hides a relevant decision, mutates during `PLANNING`, makes closure depend on operational proof, duplicates artifacts, or leaves auxiliary SPEC files after successful CLOSE.

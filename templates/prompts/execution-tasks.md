@@ -1,12 +1,8 @@
 Use `stnl-spec-execution-manager`.
 
-SPEC: `{{SPEC_PATH}}`
-Execution root: `{{EXECUTION_ROOT}}` (optional; infer it when blank).
-Read the approved plan and materialize only the next executable phase's tasks. Number them and associate expected areas or files and acceptance references; update the required indices.
-Do not implement or pre-detail future phases. Save task details in the artifacts, not in chat.
+Fonte de requisitos: `{{SPEC_PATH}}`.
+Diretório de execução: `{{EXECUTION_ROOT}}` quando informado.
+Leia o plano aprovado e materialize somente as tarefas da próxima fase executável, atualizando os índices necessários.
+Não gere antecipadamente tarefas de outras fases, não implemente e não reproduza a lista completa.
 
-Reply only with:
-- materialized phase;
-- task count;
-- covered criteria;
-- blockers.
+Retorne somente: fase; quantidade de tarefas; critérios cobertos; bloqueios.

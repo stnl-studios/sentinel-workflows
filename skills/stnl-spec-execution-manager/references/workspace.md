@@ -12,19 +12,21 @@ update_policy: Change only when the delivery workspace architecture changes.
 
 # Delivery Workspace
 
-Prefer a safe location adjacent to the requirements source. If the source is `feature_spec.md` in a dedicated workspace, use that workspace without modifying the requirements document. If the source has another name or is external, preserve it and choose a documented adjacent execution location. Every index and detailed plan names the source path explicitly.
+Prefer a dedicated execution root. If the source is `feature_spec.md` in a dedicated SPEC workspace, default to its `execution/` child without modifying the requirements document or `shared/`. If the source has another name or is external, preserve it and default to a sibling `<requirements-name>-execution/` workspace. Every index and detailed plan names the source with an explicit relative path.
 
 ```text
-<execution-workspace>/
-├── <requirements source, preserved when colocated>
-├── plan.md
-├── plans/
-│   ├── plan-01.md
-│   └── ...
-├── tasks.md
-└── tasks/
-    ├── tasks-01.md
-    └── ...
+<spec-workspace>/
+├── feature_spec.md
+├── shared/
+└── execution/
+    ├── plan.md
+    ├── plans/
+    │   ├── plan-01.md
+    │   └── ...
+    ├── tasks.md
+    └── tasks/
+        ├── tasks-01.md
+        └── ...
 ```
 
 ## Responsibilities

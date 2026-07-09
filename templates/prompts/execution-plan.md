@@ -1,12 +1,9 @@
 Use `stnl-spec-execution-manager`.
 
-SPEC: `{{SPEC_PATH}}`
-Execution root: `{{EXECUTION_ROOT}}` (optional; infer it when blank).
-Enter plan mode when the environment supports it. Read the SPEC and only relevant code, then create the complete execution plan in deliverable, independently testable phases.
-For each phase, record its objective, affected areas, risks, dependencies, and ready criterion in the execution artifacts.
-Do not implement code or create tasks. Save the plan artifacts without reproducing the plan in chat.
+Fonte de requisitos: `{{SPEC_PATH}}`.
+Diretório de execução: `{{EXECUTION_ROOT}}` quando informado.
+Entre no modo de planejamento quando o ambiente oferecer esse recurso; leia a fonte e somente o código relevante.
+Crie o plano completo em fases entregáveis e testáveis, salvando os detalhes nos artefatos.
+Não implemente nem crie tarefas; não reproduza o plano completo na resposta.
 
-Reply only with:
-- phase count and next phase;
-- blockers;
-- created or updated paths.
+Retorne somente: quantidade de fases; próxima fase; caminhos atualizados; bloqueios.

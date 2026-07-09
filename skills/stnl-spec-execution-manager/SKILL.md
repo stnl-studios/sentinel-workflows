@@ -29,26 +29,28 @@ It preserves requirements authority. If delivery work exposes an ambiguity, requ
 
 ## Inputs and workspace selection
 
-Accept a requirements path, an optional requested phase, and user-supplied operational constraints. Preserve the source document exactly where it is. When the source is an existing `feature_spec.md`, execution artifacts may be placed in that workspace. When it has another name or is outside a safe workspace, keep it in place, put artifacts as close as safely possible, and record the explicit source path in `plan.md` and each detailed plan.
+Accept a requirements path, an optional execution root, an optional requested phase, and user-supplied operational constraints. Preserve the source document exactly where it is. When the source is `feature_spec.md`, default the execution root to `<spec-root>/execution/`. For another source without its own execution workspace, use a sibling `<requirements-name>-execution/` workspace. Record the explicit relative source path in `plan.md` and each detailed plan.
 
 The common colocated layout is:
 
 ```text
 <spec-workspace>/
 ├── feature_spec.md
-├── plan.md
-├── plans/
-│   ├── plan-01.md
-│   ├── plan-02.md
-│   └── ...
-├── tasks.md
-└── tasks/
-    ├── tasks-01.md
-    ├── tasks-02.md
-    └── ...
+├── shared/
+└── execution/
+    ├── plan.md
+    ├── plans/
+    │   ├── plan-01.md
+    │   ├── plan-02.md
+    │   └── ...
+    ├── tasks.md
+    └── tasks/
+        ├── tasks-01.md
+        ├── tasks-02.md
+        └── ...
 ```
 
-Do not rename, move, or copy an external source merely to fit this layout. `plan.md` is the compact authority for the chosen execution workspace and records `requirements_source` whenever the source differs from colocated `feature_spec.md`.
+Do not rename, move, or copy an external source merely to fit this layout. `plan.md` is the compact authority for the chosen execution workspace and records `requirements_source` as an explicit relative path. Execution artifacts never belong to the requirements source's documentary workspace.
 
 ## Operational contracts
 
@@ -56,7 +58,7 @@ Do not rename, move, or copy an external source merely to fit this layout. `plan
 2. `plans/plan-NN.md` defines one observable delivery, its requirements references, boundaries, likely areas, dependencies, risks, strategy, expected tests or validation, and ready criterion. Likely areas guide discovery, not an absolute allowlist; record and assess any expansion. It never becomes a microtask checklist.
 3. `tasks.md` is a compact cumulative index. It does not discard earlier work or duplicate detailed task content.
 4. `tasks/tasks-NN.md` records one detailed checklist, expected and actual areas, acceptance per task, tests, findings, corrections, revalidation, diff summary, and result.
-5. A phase has only `[ ]` or `[x]`. Tasks may be completed earlier; the phase is `[x]` only after mandatory tasks, relevant tests, and independent validation pass. Focused revalidation must also pass when initial validation returned `NEEDS_FIX`; otherwise record it as `not_required`.
+5. A phase has only `[ ]` or `[x]`. Tasks may be completed earlier; the phase is `[x]` only after mandatory tasks, relevant tests, and finalization following independent validation. Focused revalidation must also pass when initial validation returned `NEEDS_FIX`; otherwise finalization records it as `not_required`.
 6. A completed phase is immutable. Later work becomes a new corrective or complementary phase.
 7. Validation returns exactly `PASS` or `NEEDS_FIX`, changes no code, records its verdict and findings in the selected phase artifact, and does not accept the executor's self-declaration as proof.
 8. Parallel delivery is permitted only after the explicit non-overlap check. Workers update only their own detailed task files; a coordinator serializes index changes.
@@ -81,7 +83,7 @@ Read the requirements source, selected detailed plan, selected detailed tasks, l
 
 ### Validation, correction, and conclusion
 
-An independent validator compares the diff, selected plan, tasks, requirements, and test record. `NEEDS_FIX` findings state problem, evidence, impact, reference, and expected correction. An initial `PASS` records `revalidation: not_required`, finalizes the detailed record, and updates both compact indices. For `NEEDS_FIX`, correct only those findings and necessary effects, retest, record the correction, and request focused revalidation. A material requirements or strategy change blocks delivery. After revalidation `PASS`, finalize the detailed record and update both compact indices; materialize later tasks only in a separate task-materialization operation.
+An independent validator compares the diff, selected plan, tasks, requirements, and test record without changing code, detailed evidence, or compact indices. `NEEDS_FIX` findings state problem, evidence, impact, reference, and expected correction. Finalization processes the persisted verdict: an initial `PASS` records `revalidation: not_required`, finalizes the detailed record, and updates both compact indices; `NEEDS_FIX` permits only its findings and necessary effects to be corrected, retested, recorded, and independently revalidated. A material requirements or strategy change blocks delivery. After revalidation `PASS`, finalization updates both compact indices; materialize later tasks only in a separate task-materialization operation.
 
 ### Operational closure
 
@@ -91,15 +93,13 @@ Cross-check requirements, indices, detailed records, code, tests, findings, and 
 - `consolidate_and_keep`: incorporate allowed durable facts and retain delivery artifacts.
 - `validate_only`: report compatibility and retain all inputs unchanged.
 
-The default policy is decided by the caller. Repository-specific prompts may set a default, but the skill never requires destructive consolidation.
+The default policy is decided by the caller; the skill never requires destructive consolidation.
 
 ## File Purpose Header
 
 Every applicable delivery artifact, template, reference, example, and eval starts with `# File Purpose Header`, followed by one YAML block containing exactly: `purpose`, `status`, `read_when`, `do_not_read_when`, `contains`, `owner`, and `update_policy`.
 
 Use only `draft`, `ready`, `blocked`, `done`, `closed`, or `not_applicable` for header status. Keep headers concise and selective-reading oriented; never put a delivery phase state in the header.
-
-Copyable prompts in `templates/prompts/` are user-facing instructions: they start directly with the prompt text and do not carry a File Purpose Header or YAML metadata.
 
 ## Lazy-loading map
 

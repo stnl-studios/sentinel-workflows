@@ -1,11 +1,8 @@
-Use `stnl-spec-lifecycle-manager` in `MODE=INIT`.
+Use `stnl-spec-lifecycle-manager` em `MODE=INIT`.
 
-Use the user's new information and only the source code strictly needed to clarify it.
-Create or mature a new SPEC; do not implement, create an execution plan, or create tasks.
-Persist the full detail in the SPEC artifacts.
+Use `{{SPEC_PATH}}` quando o caminho já estiver definido.
+Crie ou amadureça uma nova SPEC com as informações fornecidas e consulte apenas o código estritamente necessário para esclarecê-las.
+Não implemente, não crie plano de execução nem tarefas.
+Persista os detalhes nos artefatos da SPEC e pare quando houver pergunta bloqueante.
 
-Reply only with:
-- status;
-- SPEC path;
-- blocking questions, if any;
-- recommended next MODE.
+Retorne somente: status; caminho; perguntas bloqueantes; próximo MODE.

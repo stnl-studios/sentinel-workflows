@@ -17,7 +17,7 @@ Use `pass`, `fail`, `blocked`, or `not_applicable` for a gate verdict.
 ## Required gates
 
 - `canonical_id_gate`: IDs are valid, stable, in headings and fields, and every reference resolves.
-- `workspace_gate`: `feature_spec.md` exists, only meaningful shared categories are materialized, and no auxiliary residue or duplicate authority exists.
+- `workspace_gate`: `feature_spec.md` exists, only meaningful shared categories are materialized, and no lifecycle auxiliary residue or duplicate authority exists; external directories are outside this gate.
 - `question_gate`: no open question blocks the stated scope or criterion.
 - `spec_quality_gate`: objective, context, scope, exclusions when needed, requirements, rules, and contracts have adequate signal.
 - `reference_integrity_gate`: references are explicit, valid, and semantically consistent across artifacts.
