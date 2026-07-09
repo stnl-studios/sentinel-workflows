@@ -20,12 +20,12 @@ The executor may implement scoped work, run tests, complete individual tasks, an
 
 ## Validate
 
-Validation is independent and read-only. Compare the phase diff with the detailed plan, detailed tasks, requirements references, and test record. Return exactly `PASS` or `NEEDS_FIX`.
+Validation is independent and read-only for code. Compare the phase diff with the detailed plan, detailed tasks, requirements references, and test record. Return exactly `PASS` or `NEEDS_FIX`, recording the verdict and findings in the selected task record.
 
-Each finding includes the problem, evidence, impact, related requirement/plan/task, and expected correction. Validation never implements a correction.
+Each finding includes the problem, evidence, impact, related requirement/plan/task, and expected correction. Validation never implements a correction. An initial `PASS` records `revalidation: not_required`, finalizes detailed evidence, and updates both compact indices.
 
 ## Correct and conclude
 
 For `NEEDS_FIX`, correct only the reported findings and necessary effects, rerun relevant tests, record the correction, and request focused revalidation. If a requirement, scope, dependency, or strategy changes, stop and return the divergence to the requirements owner.
 
-Only after `PASS` may conclusion finish detailed evidence, mark both compact phase rows `[x]`, add compact consistent summaries, and create the next safe task file. Do not erase earlier records during active delivery.
+Only after focused revalidation `PASS` may conclusion finish detailed evidence and mark both compact phase rows `[x]`. Do not create the next task file automatically or erase earlier records during active delivery.

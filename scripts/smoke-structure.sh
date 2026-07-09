@@ -17,7 +17,6 @@ FIELDS = ["purpose", "status", "read_when", "do_not_read_when", "contains", "own
 STATUSES = {"draft", "ready", "blocked", "done", "closed", "not_applicable"}
 SPEC_ROOT = Path("skills/stnl-spec-lifecycle-manager")
 EXEC_ROOT = Path("skills/stnl-spec-execution-manager")
-PROMPT_ROOT = Path("templates/prompts")
 
 
 def fail(message: str) -> None:
@@ -262,7 +261,8 @@ def check_execution(root: Path) -> None:
     if plan_done:
         expect("- [ ]" not in tasks, "concluded phase has an open task")
         expect("test_result: PASS" in tasks, "concluded phase lacks successful test evidence")
-        expect("validation: PASS" in tasks and "revalidation: PASS" in tasks, "concluded phase lacks validation evidence")
+        expect("validation: PASS" in tasks, "concluded phase lacks validation evidence")
+        expect("revalidation: PASS" in tasks or "revalidation: not_required" in tasks, "concluded phase lacks revalidation evidence")
 
     if "| yes | plans/plan-01.md" in plan_index:
         expect("parallel_safety: verified" in plan, "parallel phase lacks verified non-overlap")
@@ -285,10 +285,7 @@ def static_contract_checks() -> None:
         for folder in ["references", "templates", "examples", "evals"]:
             for path in (root / folder).glob("*.md"):
                 check_header(path, owner)
-    for path in PROMPT_ROOT.glob("*.md"):
-        check_header(path)
-
-    spec_forbidden = re.compile(r"plan\\.md|tasks\\.md|plans/|tasks/|phase-execute|phase-validate|phase-finalize|phase-commit|phase-parallel|independent validation|implementation phase", re.IGNORECASE)
+    spec_forbidden = re.compile(r"plan\\.md|tasks\\.md|plans/|tasks/|phase-execute|phase-validate|phase-fix|phase-commit|phase-parallel|independent validation|implementation phase", re.IGNORECASE)
     for path in SPEC_ROOT.rglob("*.md"):
         expect(spec_forbidden.search(path.read_text(encoding="utf-8")) is None, f"SPEC skill retains delivery content: {path}")
 

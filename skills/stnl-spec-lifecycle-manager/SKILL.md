@@ -35,9 +35,11 @@ Infer a missing MODE only when it is unambiguous; otherwise request the smallest
 
 ## File Purpose Header
 
-Every applicable workspace artifact, template, reference, example, eval, and prompt starts with `# File Purpose Header`, followed by one YAML block containing exactly: `purpose`, `status`, `read_when`, `do_not_read_when`, `contains`, `owner`, and `update_policy`.
+Every applicable workspace artifact, template, reference, example, and eval starts with `# File Purpose Header`, followed by one YAML block containing exactly: `purpose`, `status`, `read_when`, `do_not_read_when`, `contains`, `owner`, and `update_policy`.
 
 Use only `draft`, `ready`, `blocked`, `done`, `closed`, or `not_applicable` for header status. Do not use competing YAML frontmatter, `planned`, `load_when`, or `do_not_load_when`. Keep headers short and oriented to selective reading.
+
+Copyable prompts in `templates/prompts/` are user-facing instructions: they start directly with the prompt text and do not carry a File Purpose Header or YAML metadata.
 
 ## Lazy-loading map
 
@@ -64,20 +66,7 @@ Incorporate explicit answers and changes, resolve inconsistencies, update scope 
 
 Review documentary readiness without modifying files. Verify objective, context, scope, exclusions when needed, requirements, verifiable criteria, blockers, pending decisions, contradictions, constraints, risks, references, duplication, and whether an external consumer can use the SPEC.
 
-Return one of:
-
-```yaml
-planning_status: ready
-```
-
-or:
-
-```yaml
-planning_status: needs_resume
-next_mode: RESUME
-findings:
-  - <actionable documentary correction with affected artifact or canonical ID>
-```
+Return `READY`, or `NEEDS_RESUME` followed only by actionable documentary findings and their affected artifact or canonical ID.
 
 ### CLOSE
 

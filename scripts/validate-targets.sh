@@ -20,10 +20,10 @@ if find . -path ./.git -prune -o \( -name .DS_Store -o -name '._*' -o -name __MA
   fail "packaging metadata remains"
 fi
 
-# Prompt templates
+# Copyable prompts
 test -d templates/prompts || fail "templates/prompts directory is missing"
 test ! -e "$LEGACY_TEMPLATE_DIR" || fail "legacy template path remains: $LEGACY_TEMPLATE_DIR"
-for name in spec-init spec-planning spec-resume spec-close execution-planning phase-execute phase-validate phase-finalize phase-commit phase-parallel execution-close; do
+for name in spec-init spec-resume spec-planning spec-close execution-plan execution-plan-review execution-tasks phase-execute phase-validate phase-fix phase-commit phase-parallel execution-close; do
   test -f "templates/prompts/$name.md" || fail "missing templates/prompts/$name.md"
 done
 if grep -R -q --exclude-dir=.git "$LEGACY_TEMPLATE_NAME" .; then
@@ -45,7 +45,7 @@ except ModuleNotFoundError:
 
 ROOT = Path(".")
 TEXT_ROOTS = [Path("agents"), Path("targets"), Path("skills"), Path("templates"), Path("scripts")]
-ALLOWED_HANDOFF = {"PASS", "BLOCKED", "NEEDS_APPROVAL", "NEEDS_FIX", "NEEDS_REPLAN", "NEEDS_RETEST_PLAN"}
+ALLOWED_HANDOFF = {"PASS", "BLOCKED", "NEEDS_APPROVAL", "NEEDS_FIX", "NEEDS_REPLAN", "NEEDS_RETEST_PLAN", "NEEDS_RESUME"}
 ALLOWED_MODES = {"INIT", "RESUME", "PLANNING", "CLOSE"}
 SKILL_RESOURCE_FOLDERS = [
     Path("skills/stnl-spec-lifecycle-manager/references"),
@@ -56,7 +56,6 @@ SKILL_RESOURCE_FOLDERS = [
     Path("skills/stnl-spec-execution-manager/templates"),
     Path("skills/stnl-spec-execution-manager/examples"),
     Path("skills/stnl-spec-execution-manager/evals"),
-    Path("templates/prompts"),
 ]
 LEGACY_ROLE = "final" "izer"
 LEGACY_AGENT = "sentinel-" + LEGACY_ROLE
@@ -181,7 +180,7 @@ for path, text in all_text.items():
     if tilde % 2:
         fail(f"unbalanced tilde fences in {path}")
 
-# File Purpose Headers in skill reference/template/example/eval/prompt docs
+# File Purpose Headers in internal skill reference/template/example/eval docs
 for folder in SKILL_RESOURCE_FOLDERS:
     for path in folder.glob("*.md"):
         text = read_text(path)
@@ -212,6 +211,107 @@ for folder in SKILL_RESOURCE_FOLDERS:
         status = lines[4].split(":", 1)[1].strip()
         if status not in HEADER_STATUSES:
             fail(f"invalid File Purpose Header status: {path}")
+
+
+# Copyable prompts are intentionally header-free user-facing instructions.
+PROMPT_ROOT = Path("templates/prompts")
+EXPECTED_PROMPTS = {
+    "spec-init",
+    "spec-resume",
+    "spec-planning",
+    "spec-close",
+    "execution-plan",
+    "execution-plan-review",
+    "execution-tasks",
+    "phase-execute",
+    "phase-validate",
+    "phase-fix",
+    "phase-commit",
+    "phase-parallel",
+    "execution-close",
+}
+SPEC_PROMPTS = {"spec-init", "spec-resume", "spec-planning", "spec-close"}
+LEGACY_PROMPTS = {"execution-planning", "phase-finalize"}
+ALLOWED_PROMPT_PLACEHOLDERS = {
+    "SPEC_PATH",
+    "EXECUTION_ROOT",
+    "PHASE_NUMBER",
+    "PARALLEL_PHASES",
+    "COMMIT_TYPE",
+    "CLOSE_POLICY",
+}
+REQUIRED_PROMPT_PLACEHOLDERS = {
+    "spec-resume": {"SPEC_PATH"},
+    "spec-planning": {"SPEC_PATH"},
+    "spec-close": {"SPEC_PATH"},
+    "execution-plan": {"SPEC_PATH"},
+    "execution-plan-review": {"SPEC_PATH"},
+    "execution-tasks": {"SPEC_PATH"},
+    "phase-execute": {"SPEC_PATH", "PHASE_NUMBER"},
+    "phase-validate": {"SPEC_PATH", "PHASE_NUMBER"},
+    "phase-fix": {"SPEC_PATH", "PHASE_NUMBER"},
+    "phase-commit": {"SPEC_PATH", "PHASE_NUMBER", "COMMIT_TYPE"},
+    "phase-parallel": {"PARALLEL_PHASES"},
+    "execution-close": {"SPEC_PATH", "CLOSE_POLICY"},
+}
+PROMPT_METADATA = re.compile(
+    r"(?im)^(?:purpose|status|read_when|do_not_read_when|owner|update_policy|contains)\s*:"
+)
+PROMPT_VENDORS = re.compile(r"\b(?:Claude|Haiku|Sonnet|Codex|Copilot|GPT-\d+|OpenAI|Anthropic)\b", re.IGNORECASE)
+PROMPT_CONTRACT_MARKERS = ["# File Purpose Header", "```", "## Core invariants", "## Workflow"]
+
+
+prompt_files = {path.stem: path for path in PROMPT_ROOT.glob("*.md")}
+if set(prompt_files) != EXPECTED_PROMPTS:
+    missing = sorted(EXPECTED_PROMPTS - set(prompt_files))
+    unexpected = sorted(set(prompt_files) - EXPECTED_PROMPTS)
+    fail(f"prompt registry mismatch; missing={missing}, unexpected={unexpected}")
+if LEGACY_PROMPTS & set(prompt_files):
+    fail(f"legacy prompt remains: {sorted(LEGACY_PROMPTS & set(prompt_files))}")
+
+for name, path in prompt_files.items():
+    text = read_text(path)
+    if not text.strip():
+        fail(f"empty copyable prompt: {path}")
+    if not text.startswith("Use `"):
+        fail(f"copyable prompt does not begin directly with its instruction: {path}")
+    if re.search(r"(?m)^---\s*$", text) or "# File Purpose Header" in text or PROMPT_METADATA.search(text):
+        fail(f"copyable prompt retains metadata: {path}")
+    if any(marker in text for marker in PROMPT_CONTRACT_MARKERS):
+        fail(f"copyable prompt duplicates a contract structure: {path}")
+    if "```" in text:
+        fail(f"copyable prompt contains a Markdown fence: {path}")
+
+    nonblank_lines = [line for line in text.splitlines() if line.strip()]
+    line_limit = 20 if name in {"execution-plan", "execution-plan-review", "phase-parallel"} else 12
+    if len(nonblank_lines) > line_limit:
+        fail(f"copyable prompt exceeds its compact line budget: {path}")
+
+    expected_skill = "stnl-spec-lifecycle-manager" if name in SPEC_PROMPTS else "stnl-spec-execution-manager"
+    other_skill = "stnl-spec-execution-manager" if name in SPEC_PROMPTS else "stnl-spec-lifecycle-manager"
+    if expected_skill not in text or other_skill in text:
+        fail(f"copyable prompt names the wrong skill: {path}")
+
+    placeholders = set(re.findall(r"\{\{([A-Z0-9_]+)\}\}", text))
+    unexpected_placeholders = placeholders - ALLOWED_PROMPT_PLACEHOLDERS
+    if unexpected_placeholders:
+        fail(f"copyable prompt has unsupported placeholders in {path}: {sorted(unexpected_placeholders)}")
+    required_placeholders = REQUIRED_PROMPT_PLACEHOLDERS.get(name, set())
+    if not required_placeholders <= placeholders:
+        fail(f"copyable prompt lacks required placeholders in {path}: {sorted(required_placeholders - placeholders)}")
+
+    if name == "phase-execute":
+        vendorless_text = re.sub(r"\bClaude Code\b", "", text, flags=re.IGNORECASE)
+        if PROMPT_VENDORS.search(vendorless_text):
+            fail(f"copyable prompt hardcodes a vendor or model: {path}")
+        if "Use `/compact` in Claude Code or the environment's equivalent mechanism." not in text:
+            fail("phase-execute lacks the compatible context-compaction instruction")
+    elif PROMPT_VENDORS.search(text):
+        fail(f"copyable prompt hardcodes a vendor or model: {path}")
+
+    for destination in re.findall(r"\[[^\]]+\]\(([^)]+)\)", text):
+        if not re.match(r"(?:https?://|mailto:|#)", destination) and not (path.parent / destination).exists():
+            fail(f"copyable prompt has a broken internal link: {path} -> {destination}")
 
 # Skill descriptions, resource completeness, and MODE vocabulary
 spec_skill_text = read_text(Path("skills/stnl-spec-lifecycle-manager/SKILL.md"))
@@ -253,7 +353,7 @@ for path in [
         fail(f"execution skill resource is missing: {path}")
 
 spec_forbidden = re.compile(
-    r"plan\\.md|tasks\\.md|plans/|tasks/|phase-execute|phase-validate|phase-finalize|phase-commit|phase-parallel|independent validation|implementation phase",
+    r"plan\\.md|tasks\\.md|plans/|tasks/|phase-execute|phase-validate|phase-fix|phase-commit|phase-parallel|independent validation|implementation phase",
     re.IGNORECASE,
 )
 for path in Path("skills/stnl-spec-lifecycle-manager").rglob("*.md"):

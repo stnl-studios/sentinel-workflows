@@ -23,13 +23,13 @@ Use `plans/plan-01.md` for the detailed plan and `tasks/tasks-01.md` for the det
 
 ## Planning and tasks
 
-Initial planning creates detailed plans for every foreseeable phase, then critiques size, requirements coverage, dependencies, risks, order, assumptions, migration needs, breaking changes, shared state, testability, and parallel safety. Correct the plan before creating task records.
+Planning creates detailed plans for every foreseeable phase. A separate plan review critiques size, requirements coverage, dependencies, risks, order, assumptions, migration needs, breaking changes, shared state, testability, and parallel safety, then corrects the plan before task records exist.
 
 Materialize `tasks.md` and only the next executable task file. Materialize later task files after the preceding phase concludes, unless explicit parallel safety permits otherwise. Each detailed task uses a local number, expected areas, acceptance reference, and expected tests. It records actual changed areas, tests, findings, corrections, revalidation, concise diff summary, and final result.
 
 ## Conclusion
 
-Mark a phase `[x]` only after all required tasks are complete, relevant tests pass, independent validation returns `PASS`, every blocking finding is corrected, and focused revalidation passes. Then update both indices and materialize the next safe task file. Never reopen a concluded phase; add a new numbered corrective or complementary phase instead.
+Mark a phase `[x]` only after all required tasks are complete and relevant tests pass. When initial validation returns `PASS`, record `revalidation: not_required` and conclude the phase. When it returns `NEEDS_FIX`, every blocking finding must be corrected and focused revalidation must return `PASS` before conclusion. Then update both indices; materialize later task files in a separate operation. Never reopen a concluded phase; add a new numbered corrective or complementary phase instead.
 
 ## Parallel work
 

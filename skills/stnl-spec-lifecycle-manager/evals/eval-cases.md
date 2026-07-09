@@ -19,8 +19,8 @@ update_policy: Extend when a real regression exposes a missing invariant.
 3. Existing Q, D, AC, R, and C IDs remain stable and new IDs do not fill gaps.
 4. RESUME resolves a question through an explicit answer or decision.
 5. RESUME preserves relevant decisions and makes changes visible.
-6. PLANNING returns `planning_status: ready` for a documentary-ready SPEC.
-7. PLANNING returns `planning_status: needs_resume` with actionable findings for a deficient SPEC.
+6. PLANNING returns `READY` for a documentary-ready SPEC.
+7. PLANNING returns `NEEDS_RESUME` with actionable findings for a deficient SPEC.
 8. PLANNING creates no implementation planning artifacts and changes no SPEC files.
 9. Selective reading loads only the feature document, selected category, and linked IDs.
 10. A missing canonical reference fails `reference_integrity_gate`.

@@ -24,7 +24,7 @@ Apply explicit answers, decisions, corrections, or scope deltas to the affected 
 
 ## PLANNING
 
-Read the existing SPEC selectively and make no changes. Assess documentary readiness using the defined gates. Return `planning_status: ready` when sufficient, or `planning_status: needs_resume` with actionable findings and `next_mode: RESUME` when correction is necessary.
+Read the existing SPEC selectively and make no changes. Assess documentary readiness using the defined gates. Return `READY` when sufficient, or `NEEDS_RESUME` with actionable findings and affected artifacts or canonical IDs when correction is necessary.
 
 ## CLOSE
 

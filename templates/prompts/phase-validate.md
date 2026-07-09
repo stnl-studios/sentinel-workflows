@@ -1,15 +1,10 @@
-# File Purpose Header
+Use `stnl-spec-execution-manager`.
 
-```yaml
-purpose: Prompt template for independent read-only validation of one phase.
-status: ready
-read_when: A selected phase implementation and test record need assessment.
-do_not_read_when: Correction, planning, or operational closure is the active operation.
-contains: Validation inputs, required verdict, and finding shape.
-owner: stnl-spec-execution-manager
-update_policy: Update when validation evidence or independence rules change.
-```
+SPEC: `{{SPEC_PATH}}`
+Execution root: `{{EXECUTION_ROOT}}` (optional; infer it when blank).
+Phase: `{{PHASE_NUMBER}}`
+Validate in a subagent or independent context when available; use a suitable lower-cost model for mechanical review when appropriate. Review only this phase's diff against its SPEC references, plan, tasks, and executed tests.
+Identify divergences, unmet criteria, missing tests, dead code, and out-of-scope changes. Do not modify code or correct findings; persist findings in the phase artifact.
+On `PASS`, record `revalidation: not_required`, finalize the phase evidence, and update the execution indices. On `NEEDS_FIX`, record findings only.
 
-Use stnl-spec-execution-manager to validate phase <NN> in <execution workspace> without changing files.
-
-Compare the phase diff, named requirements source, `plans/plan-NN.md`, `tasks/tasks-NN.md`, linked records, and test evidence. Return exactly `PASS` or `NEEDS_FIX`. For each finding, state problem, evidence, impact, related requirement/plan/task, and expected correction. Do not implement a fix.
+Reply exactly `PASS`, or `NEEDS_FIX` followed only by numbered findings with problem, evidence, reference, and expected correction.

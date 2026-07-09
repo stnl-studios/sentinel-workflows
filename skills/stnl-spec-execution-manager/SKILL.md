@@ -56,16 +56,24 @@ Do not rename, move, or copy an external source merely to fit this layout. `plan
 2. `plans/plan-NN.md` defines one observable delivery, its requirements references, boundaries, likely areas, dependencies, risks, strategy, expected tests or validation, and ready criterion. Likely areas guide discovery, not an absolute allowlist; record and assess any expansion. It never becomes a microtask checklist.
 3. `tasks.md` is a compact cumulative index. It does not discard earlier work or duplicate detailed task content.
 4. `tasks/tasks-NN.md` records one detailed checklist, expected and actual areas, acceptance per task, tests, findings, corrections, revalidation, diff summary, and result.
-5. A phase has only `[ ]` or `[x]`. Tasks may be completed earlier; the phase is `[x]` only after mandatory tasks, relevant tests, independent read-only validation, corrections, and focused revalidation pass.
+5. A phase has only `[ ]` or `[x]`. Tasks may be completed earlier; the phase is `[x]` only after mandatory tasks, relevant tests, and independent validation pass. Focused revalidation must also pass when initial validation returned `NEEDS_FIX`; otherwise record it as `not_required`.
 6. A completed phase is immutable. Later work becomes a new corrective or complementary phase.
-7. Validation returns exactly `PASS` or `NEEDS_FIX`, changes no files, and does not accept the executor's self-declaration as proof.
+7. Validation returns exactly `PASS` or `NEEDS_FIX`, changes no code, records its verdict and findings in the selected phase artifact, and does not accept the executor's self-declaration as proof.
 8. Parallel delivery is permitted only after the explicit non-overlap check. Workers update only their own detailed task files; a coordinator serializes index changes.
 
 ## Workflow
 
-### Initial planning
+### Plan
 
-Read the requirements source and only relevant code. Create the compact plan index and all foreseeable detailed plans. Self-critique phase sizing, dependencies, requirements coverage, migrations, external dependencies, breaking changes, shared files and state, testability, order, assumptions, and parallel safety. Correct the plan, create the compact tasks index, and materialize only `tasks/tasks-01.md` or the next executable detailed task file.
+Read the requirements source and only relevant code. Create the compact plan index and all foreseeable detailed plans. Do not create task indices or detailed task files.
+
+### Plan review
+
+Self-critique the plan for phase sizing, dependencies, requirements coverage, migrations, external dependencies, breaking changes, shared files and state, testability, order, assumptions, and parallel safety. Correct the plan directly; do not create tasks.
+
+### Task materialization
+
+From the approved plan, create the compact tasks index and materialize only `tasks/tasks-01.md` or the next executable detailed task file.
 
 ### Phase delivery
 
@@ -73,7 +81,7 @@ Read the requirements source, selected detailed plan, selected detailed tasks, l
 
 ### Validation, correction, and conclusion
 
-An independent read-only validator compares the diff, selected plan, tasks, requirements, and test record. `NEEDS_FIX` findings state problem, evidence, impact, reference, and expected correction. Correct only those findings and necessary effects, retest, record the correction, and request focused revalidation. A material requirements or strategy change blocks delivery. After `PASS`, finalize the detailed record, update both compact indices, and create the next safe detailed task file.
+An independent validator compares the diff, selected plan, tasks, requirements, and test record. `NEEDS_FIX` findings state problem, evidence, impact, reference, and expected correction. An initial `PASS` records `revalidation: not_required`, finalizes the detailed record, and updates both compact indices. For `NEEDS_FIX`, correct only those findings and necessary effects, retest, record the correction, and request focused revalidation. A material requirements or strategy change blocks delivery. After revalidation `PASS`, finalize the detailed record and update both compact indices; materialize later tasks only in a separate task-materialization operation.
 
 ### Operational closure
 
@@ -87,9 +95,11 @@ The default policy is decided by the caller. Repository-specific prompts may set
 
 ## File Purpose Header
 
-Every applicable delivery artifact, template, reference, example, eval, and prompt starts with `# File Purpose Header`, followed by one YAML block containing exactly: `purpose`, `status`, `read_when`, `do_not_read_when`, `contains`, `owner`, and `update_policy`.
+Every applicable delivery artifact, template, reference, example, and eval starts with `# File Purpose Header`, followed by one YAML block containing exactly: `purpose`, `status`, `read_when`, `do_not_read_when`, `contains`, `owner`, and `update_policy`.
 
 Use only `draft`, `ready`, `blocked`, `done`, `closed`, or `not_applicable` for header status. Keep headers concise and selective-reading oriented; never put a delivery phase state in the header.
+
+Copyable prompts in `templates/prompts/` are user-facing instructions: they start directly with the prompt text and do not carry a File Purpose Header or YAML metadata.
 
 ## Lazy-loading map
 

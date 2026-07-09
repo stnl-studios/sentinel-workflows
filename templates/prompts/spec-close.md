@@ -1,19 +1,10 @@
-# File Purpose Header
+Use `stnl-spec-lifecycle-manager` in `MODE=CLOSE`.
 
-```yaml
-purpose: Prompt template for documentary finalization of a feature SPEC.
-status: ready
-read_when: MODE CLOSE is requested for a document-ready SPEC.
-do_not_read_when: A documentary blocker or required correction remains.
-contains: Closure input, documentary cross-check, blockers, and cleanup result.
-owner: stnl-spec-lifecycle-manager
-update_policy: Update when CLOSE policy changes.
-```
+SPEC: `{{SPEC_PATH}}`
+Perform documentary closure and consolidate the SPEC. Do not require a plan, tasks, diff, tests, or implementation; after approval, leave only `feature_spec.md`.
+Persist the detail in the final artifact.
 
-Use stnl-spec-lifecycle-manager.
-MODE=CLOSE
-
-SPEC path: <feature_spec.md or workspace>
-Known documentary limits: <open questions, contradictions, or none>
-
-Validate IDs, references, questions, scope, criteria, decisions, constraints, risks, and duplicate content. Block on unresolved documentary gaps. On success, consolidate durable content into one `feature_spec.md` and remove `shared/`. Do not require code, tests, diffs, commits, or delivery records.
+Reply only with:
+- status;
+- final file;
+- blockers, if any.

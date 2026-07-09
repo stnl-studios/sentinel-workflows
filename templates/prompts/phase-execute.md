@@ -1,15 +1,14 @@
-# File Purpose Header
+Use `stnl-spec-execution-manager`.
 
-```yaml
-purpose: Prompt template for delivering one materialized phase.
-status: ready
-read_when: A detailed plan and detailed task file are ready for a selected phase.
-do_not_read_when: Initial planning, independent validation, or operational closure is active.
-contains: Minimum inputs and delivery-only boundaries.
-owner: stnl-spec-execution-manager
-update_policy: Update when phase delivery boundaries change.
-```
+SPEC: `{{SPEC_PATH}}`
+Execution root: `{{EXECUTION_ROOT}}` (optional; infer it when blank).
+Phase: `{{PHASE_NUMBER}}`
+Read only the phase artifacts, relevant SPEC sections, and related code. Implement only this phase, run directly related tests, complete individual tasks, and record changed files, tests, and a concise diff summary in the phase artifacts.
+Do not conclude or validate the phase, commit, start another phase, or perform future-phase work.
+If session context exceeds about 40%, compact it before continuing, preserving only the phase, relevant decisions, changed files, tests, and pending work. Use `/compact` in Claude Code or the environment's equivalent mechanism.
 
-Use stnl-spec-execution-manager to deliver phase <NN> in <execution workspace>.
-
-Read the named requirements source, `plans/plan-NN.md`, `tasks/tasks-NN.md`, linked records, and related code. Implement only the selected scope, complete individual tasks, and record tests and a concise diff summary in its detailed task file. Do not update phase checkboxes or compact indices. Stop and report a requirements divergence if scope, dependency, or strategy changes.
+Reply only with:
+- implementation status;
+- changed files;
+- tests;
+- blockers.

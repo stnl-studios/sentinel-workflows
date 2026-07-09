@@ -26,4 +26,4 @@ Use `pass`, `fail`, `blocked`, or `not_applicable` for a gate verdict.
 - `decision_consistency_gate`: decisions, constraints, risks, and resolved questions do not contradict the SPEC or one another.
 - `closure_gate`: durable content can be consolidated without unresolved documentary blocker, duplication, or information loss.
 
-`PLANNING` reports failures as actionable findings and returns `needs_resume`; it does not repair them. `CLOSE` blocks until all applicable gates pass.
+`PLANNING` reports failures as actionable findings and returns `NEEDS_RESUME`; it does not repair them. `CLOSE` blocks until all applicable gates pass.
