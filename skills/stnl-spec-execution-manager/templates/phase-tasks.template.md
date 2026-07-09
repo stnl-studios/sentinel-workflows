@@ -5,7 +5,7 @@ purpose: Template for detailed delivery tasks and evidence of one phase.
 status: ready
 read_when: Delivering, validating, correcting, or concluding this phase.
 do_not_read_when: A different phase is active and has no dependency on this one.
-contains: Checklist, acceptance, expected and actual areas, tests, findings, corrections, revalidation, diff summary, and result.
+contains: Checklist, acceptance, expected tests, execution test evidence, validation, corrections, and revalidation.
 owner: stnl-spec-execution-manager
 update_policy: Delivery updates tasks and evidence; conclusion completes only after independent validation passes.
 ```
@@ -33,13 +33,11 @@ covered_references: [AC-001, C-001]
 ## Execution Evidence
 
 ```yaml
-actual_changed_areas: []
 tests_executed: []
 test_result: pending
 validation: pending
-findings: []
 corrections: []
 revalidation: pending
-diff_summary: null
-phase_result: pending
 ```
+
+Use `test_result: PASS` only with at least one real `tests_executed` item. If no test applies, keep `tests_executed: []`, set `test_result: not_applicable`, and add one objective `test_reason`. Omit `test_reason` when tests run.

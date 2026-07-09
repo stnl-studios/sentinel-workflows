@@ -20,10 +20,15 @@ SPEC_ROOT = Path("skills/stnl-spec-lifecycle-manager")
 EXEC_ROOT = Path("skills/stnl-spec-execution-manager")
 LEGACY_PHASE_FIX = "phase-fix"
 EVIDENCE_SCALAR_VALUES = {
-    "test_result": {"pending", "PASS", "NEEDS_FIX"},
+    "test_result": {"pending", "PASS", "NEEDS_FIX", "not_applicable"},
     "validation": {"pending", "PASS", "NEEDS_FIX"},
     "revalidation": {"pending", "PASS", "NEEDS_FIX", "not_required"},
 }
+EVIDENCE_SCALARS = set(EVIDENCE_SCALAR_VALUES) | {"test_reason"}
+EVIDENCE_LISTS = {"tests_executed", "corrections"}
+EVIDENCE_FIELDS = EVIDENCE_SCALARS | EVIDENCE_LISTS
+REQUIRED_EVIDENCE_FIELDS = ["tests_executed", "test_result", "validation", "corrections", "revalidation"]
+GENERIC_TEST_REASONS = {"none", "n/a", "na", "not applicable", "not_applicable"}
 
 
 def fail(message: str) -> None:
@@ -266,59 +271,101 @@ def extract_evidence_fields(task_path: Path) -> dict[str, str | list[str]]:
     index = 0
     while index < len(lines):
         line = lines[index]
-        if line.startswith(("test_result:", "validation:", "revalidation:")):
-            field, value = line.split(":", 1)
+        if line.startswith("  - "):
+            fail(f"list item without active evidence list: {task_path}")
+
+        match = re.match(r"^([a-z_]+):(.*)$", line)
+        expect(match is not None, f"malformed evidence line {line!r}: {task_path}")
+        field, raw_value = match.groups()
+        expect(field in EVIDENCE_FIELDS, f"unknown evidence field {field}: {task_path}")
+
+        if field in EVIDENCE_SCALARS:
             expect(field not in fields, f"duplicate evidence field {field}: {task_path}")
-            value = value.strip()
-            expect(value in EVIDENCE_SCALAR_VALUES[field], f"invalid {field} value {value!r}: {task_path}")
-            fields[field] = value
-        elif line.startswith("corrections:"):
-            expect("corrections" not in fields, f"duplicate evidence field corrections: {task_path}")
-            value = line.split(":", 1)[1].strip()
-            if value == "[]":
-                fields["corrections"] = []
+            value = raw_value.strip()
+            if field == "test_reason":
+                expect(value, f"empty test_reason: {task_path}")
+                expect(value.lower() not in GENERIC_TEST_REASONS, f"generic test_reason value {value!r}: {task_path}")
             else:
-                expect(not value, f"malformed corrections list: {task_path}")
-                corrections: list[str] = []
+                expect(value in EVIDENCE_SCALAR_VALUES[field], f"invalid {field} value {value!r}: {task_path}")
+            fields[field] = value
+        else:
+            expect(field not in fields, f"duplicate evidence field {field}: {task_path}")
+            value = raw_value.strip()
+            if value == "[]":
+                fields[field] = []
+            else:
+                expect(not value, f"malformed {field} list: {task_path}")
+                items: list[str] = []
                 index += 1
-                while index < len(lines) and lines[index].startswith("  - "):
-                    correction = lines[index][4:].strip()
-                    expect(correction, f"empty correction entry: {task_path}")
-                    corrections.append(correction)
-                    index += 1
-                expect(corrections, f"malformed corrections list: {task_path}")
-                fields["corrections"] = corrections
+                while index < len(lines):
+                    item_line = lines[index]
+                    if item_line.startswith("  -"):
+                        expect(item_line.startswith("  - "), f"empty {field} entry: {task_path}")
+                        item = item_line[4:].strip()
+                        expect(item, f"empty {field} entry: {task_path}")
+                        items.append(item)
+                        index += 1
+                        continue
+                    if item_line.startswith(" "):
+                        fail(f"malformed {field} list item: {task_path}")
+                    break
+                expect(items, f"malformed {field} list: {task_path}")
+                fields[field] = items
                 continue
-        elif line.startswith("  - "):
-            fail(f"malformed corrections list: {task_path}")
         index += 1
 
-    for field in ["test_result", "validation", "corrections", "revalidation"]:
+    for field in REQUIRED_EVIDENCE_FIELDS:
         expect(field in fields, f"missing evidence field {field}: {task_path}")
+    if "test_reason" in fields:
+        expect(fields["test_result"] == "not_applicable", f"test_reason is only allowed with not_applicable test_result: {task_path}")
     return fields
+
+
+def render_list_field(field: str, values: list[str]) -> str:
+    if not values:
+        return f"{field}: []"
+    return "\n".join([f"{field}:", *[f"  - {value}" for value in values]])
+
+
+def validate_concluded_test_evidence(evidence: dict[str, str | list[str]], task_path: Path) -> None:
+    tests_executed = evidence["tests_executed"]
+    expect(isinstance(tests_executed, list), f"tests_executed is not a list: {task_path}")
+    test_result = evidence["test_result"]
+    expect(isinstance(test_result, str), f"test_result is not scalar: {task_path}")
+
+    if test_result == "PASS":
+        expect(bool(tests_executed), f"PASS test_result requires at least one tests_executed item: {task_path}")
+        expect("test_reason" not in evidence, f"test_reason is only allowed with not_applicable test_result: {task_path}")
+        return
+
+    if test_result == "not_applicable":
+        expect(tests_executed == [], f"not_applicable test_result requires empty tests_executed: {task_path}")
+        expect("test_reason" in evidence, f"not_applicable test_result requires test_reason: {task_path}")
+        test_reason = evidence["test_reason"]
+        expect(isinstance(test_reason, str) and bool(test_reason.strip()), f"not_applicable test_result requires non-empty test_reason: {task_path}")
+        return
+
+    fail(f"concluded phase has invalid test_result {test_result!r}: {task_path}")
 
 
 def write_evidence(
     root: Path,
     *,
+    tests_executed: list[str],
     test_result: str,
+    test_reason: str | None,
     validation: str,
     corrections: list[str],
     revalidation: str,
 ) -> None:
-    if corrections:
-        correction_lines = "\n".join(
-            ["corrections:", *[f"  - {correction}" for correction in corrections]]
-        )
-    else:
-        correction_lines = "corrections: []"
+    test_reason_line = f"test_reason: {test_reason}\n" if test_reason is not None else ""
     evidence = f"""## Execution Evidence
 
 ```yaml
-tests_executed: []
+{render_list_field("tests_executed", tests_executed)}
 test_result: {test_result}
-validation: {validation}
-{correction_lines}
+{test_reason_line}validation: {validation}
+{render_list_field("corrections", corrections)}
 revalidation: {revalidation}
 ```
 """
@@ -337,7 +384,9 @@ revalidation: {revalidation}
 def conclude_phase(
     root: Path,
     *,
+    tests_executed: list[str] | None = None,
     test_result: str = "PASS",
+    test_reason: str | None = None,
     validation: str = "PASS",
     corrections: list[str] | None = None,
     revalidation: str = "not_required",
@@ -352,7 +401,9 @@ def conclude_phase(
     task_path.write_text(text.replace("- [ ]", "- [x]", 1), encoding="utf-8")
     write_evidence(
         root,
+        tests_executed=["fixture-test-suite"] if tests_executed is None else tests_executed,
         test_result=test_result,
+        test_reason=test_reason,
         validation=validation,
         corrections=[] if corrections is None else corrections,
         revalidation=revalidation,
@@ -397,8 +448,9 @@ def check_execution(root: Path) -> None:
     expect(plan_done == tasks_done, "delivery indices disagree")
     if plan_done:
         expect("- [ ]" not in tasks, "concluded phase has an open task")
-        evidence = extract_evidence_fields(execution / "tasks/tasks-01.md")
-        expect(evidence["test_result"] == "PASS", "concluded phase lacks successful test evidence")
+        task_path = execution / "tasks/tasks-01.md"
+        evidence = extract_evidence_fields(task_path)
+        validate_concluded_test_evidence(evidence, task_path)
         direct_pass = (
             evidence["validation"] == "PASS"
             and evidence["corrections"] == []
@@ -416,14 +468,16 @@ def check_execution(root: Path) -> None:
         expect("parallel_safety: verified" in plan, "parallel phase lacks verified non-overlap")
 
 
-def invalid_execution(name: str, mutate) -> None:
+def invalid_execution(name: str, mutate, expected_message: str | None = None) -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp) / name
         execution_fixture(root)
         mutate(root)
         try:
             check_execution(root)
-        except SystemExit:
+        except SystemExit as exc:
+            if expected_message is not None:
+                expect(expected_message in str(exc), f"invalid delivery fixture {name} failed for the wrong reason: {exc}")
             return
         fail(f"invalid delivery fixture accepted: {name}")
 
@@ -595,6 +649,39 @@ with tempfile.TemporaryDirectory() as tmp:
     conclude_phase(corrected_pass, validation="NEEDS_FIX", corrections=["fix"], revalidation="PASS")
     check_execution(corrected_pass)
 
+    one_test_pass = base / "one-test-pass"
+    execution_fixture(one_test_pass)
+    conclude_phase(one_test_pass, tests_executed=["unit tests"])
+    check_execution(one_test_pass)
+
+    multiple_tests_pass = base / "multiple-tests-pass"
+    execution_fixture(multiple_tests_pass)
+    conclude_phase(multiple_tests_pass, tests_executed=["unit tests", "integration tests"])
+    check_execution(multiple_tests_pass)
+
+    not_applicable_pass = base / "not-applicable-pass"
+    execution_fixture(not_applicable_pass)
+    conclude_phase(
+        not_applicable_pass,
+        tests_executed=[],
+        test_result="not_applicable",
+        test_reason="Mudança exclusivamente documental sem comportamento executável.",
+    )
+    check_execution(not_applicable_pass)
+
+    corrected_not_applicable_pass = base / "corrected-not-applicable-pass"
+    execution_fixture(corrected_not_applicable_pass)
+    conclude_phase(
+        corrected_not_applicable_pass,
+        tests_executed=[],
+        test_result="not_applicable",
+        test_reason="Mudança exclusivamente documental sem comportamento executável.",
+        validation="NEEDS_FIX",
+        corrections=["fix documentation"],
+        revalidation="PASS",
+    )
+    check_execution(corrected_not_applicable_pass)
+
     invalid_execution(
         "corrections-without-revalidation",
         lambda root: conclude_phase(root, validation="NEEDS_FIX", corrections=["fix"], revalidation="pending"),
@@ -620,8 +707,124 @@ with tempfile.TemporaryDirectory() as tmp:
         lambda root: conclude_phase(root, validation="pending", revalidation="pending"),
     )
     invalid_execution(
-        "concluded-without-approved-tests",
+        "pass-without-tests",
+        lambda root: conclude_phase(root, tests_executed=[], test_result="PASS"),
+        "PASS test_result requires at least one tests_executed item",
+    )
+    invalid_execution(
+        "missing-tests-executed",
+        lambda root: (
+            conclude_phase(root),
+            replace_task_text(root, "tests_executed:\n  - fixture-test-suite\n", ""),
+        ),
+        "missing evidence field tests_executed",
+    )
+    invalid_execution(
+        "duplicate-tests-executed",
+        lambda root: (
+            conclude_phase(root),
+            replace_task_text(
+                root,
+                "tests_executed:\n  - fixture-test-suite\n",
+                "tests_executed:\n  - fixture-test-suite\ntests_executed:\n  - unit tests\n",
+            ),
+        ),
+        "duplicate evidence field tests_executed",
+    )
+    invalid_execution(
+        "malformed-tests-list",
+        lambda root: (
+            conclude_phase(root),
+            replace_task_text(root, "tests_executed:\n  - fixture-test-suite\n", "tests_executed:\n  unit tests\n"),
+        ),
+        "malformed tests_executed list item",
+    )
+    invalid_execution(
+        "empty-test-item",
+        lambda root: (
+            conclude_phase(root),
+            replace_task_text(root, "  - fixture-test-suite", "  - "),
+        ),
+        "empty tests_executed entry",
+    )
+    invalid_execution(
+        "inline-filled-tests-list",
+        lambda root: (
+            conclude_phase(root),
+            replace_task_text(root, "tests_executed:\n  - fixture-test-suite\n", "tests_executed: [unit tests]\n"),
+        ),
+        "malformed tests_executed list",
+    )
+    invalid_execution(
+        "not-applicable-with-tests",
+        lambda root: conclude_phase(
+            root,
+            tests_executed=["unit tests"],
+            test_result="not_applicable",
+            test_reason="Mudança documental sem comportamento executável.",
+        ),
+        "not_applicable test_result requires empty tests_executed",
+    )
+    invalid_execution(
+        "not-applicable-without-reason",
+        lambda root: conclude_phase(root, tests_executed=[], test_result="not_applicable"),
+        "not_applicable test_result requires test_reason",
+    )
+    invalid_execution(
+        "not-applicable-empty-reason",
+        lambda root: conclude_phase(root, tests_executed=[], test_result="not_applicable", test_reason=""),
+        "empty test_reason",
+    )
+    invalid_execution(
+        "not-applicable-generic-reason",
+        lambda root: conclude_phase(root, tests_executed=[], test_result="not_applicable", test_reason="n/a"),
+        "generic test_reason value",
+    )
+    invalid_execution(
+        "pass-with-test-reason",
+        lambda root: conclude_phase(root, test_reason="Testes executados."),
+        "test_reason is only allowed with not_applicable test_result",
+    )
+    invalid_execution(
+        "concluded-with-pending-tests",
         lambda root: conclude_phase(root, test_result="pending"),
+        "concluded phase has invalid test_result 'pending'",
+    )
+    invalid_execution(
+        "concluded-with-needs-fix-tests",
+        lambda root: conclude_phase(root, test_result="NEEDS_FIX"),
+        "concluded phase has invalid test_result 'NEEDS_FIX'",
+    )
+    invalid_execution(
+        "concluded-with-invalid-test-result",
+        lambda root: conclude_phase(root, test_result="BROKEN"),
+        "invalid test_result value 'BROKEN'",
+    )
+    invalid_execution(
+        "unknown-evidence-field",
+        lambda root: (
+            conclude_phase(root),
+            replace_task_text(root, "test_result: PASS\n", "test_result: PASS\nunknown_field: value\n"),
+        ),
+        "unknown evidence field unknown_field",
+    )
+    invalid_execution(
+        "indented-item-without-active-list",
+        lambda root: (
+            conclude_phase(root),
+            replace_task_text(root, "test_result: PASS\n", "test_result: PASS\n  - stray item\n"),
+        ),
+        "list item without active evidence list",
+    )
+    invalid_execution(
+        "tests-item-under-corrections",
+        lambda root: conclude_phase(root, tests_executed=[], corrections=["unit tests"]),
+        "PASS test_result requires at least one tests_executed item",
+    )
+    invalid_execution(
+        "correction-item-under-tests",
+        lambda root: conclude_phase(root, tests_executed=["fix applied"], validation="NEEDS_FIX", corrections=[], revalidation="PASS"),
+        "concluded phase has an invalid validation history",
     )
     invalid_execution(
         "missing-evidence-field",

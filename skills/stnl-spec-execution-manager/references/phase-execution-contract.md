@@ -18,6 +18,10 @@ Read the requirements source, selected `plans/plan-NN.md`, selected `tasks/tasks
 
 The executor may implement scoped work, run tests, complete individual tasks, and record concise evidence. It must not complete a phase row.
 
+## Test evidence
+
+A concluded phase accepts only final test evidence. With executed tests, `tests_executed` lists at least one non-empty test, suite, or command, `test_result: PASS`, and `test_reason` is absent. When no test applies, record `tests_executed: []`, `test_result: not_applicable`, and one objective non-generic `test_reason` explaining why the phase has no executable or observable test. Do not invent tests to satisfy evidence. Pending, failed, missing, malformed, or contradictory test evidence cannot conclude a phase.
+
 ## Validate
 
 Validation is independent and read-only for code. Compare the phase diff with the detailed plan, detailed tasks, requirements references, and test record. Return exactly `PASS` or `NEEDS_FIX`, recording the verdict and findings in the selected task record.
@@ -26,6 +30,6 @@ Each finding includes the problem, evidence, impact, related requirement/plan/ta
 
 ## Correct and conclude
 
-Finalization processes the persisted verdict. For an initial `PASS`, it records `revalidation: not_required`, finalizes detailed evidence, and updates both compact indices without another validation. For `NEEDS_FIX`, it corrects only the reported findings and necessary effects, reruns relevant tests, records the correction, and requests focused revalidation. If a requirement, scope, dependency, or strategy changes, stop and return the divergence to the requirements owner.
+Finalization processes the persisted verdict. For an initial `PASS`, it records `revalidation: not_required`, finalizes detailed evidence, and updates both compact indices without another validation. For `NEEDS_FIX`, it corrects only the reported findings and necessary effects, reruns relevant tests when tests apply, records the correction, and requests focused revalidation. If a requirement, scope, dependency, or strategy changes, stop and return the divergence to the requirements owner.
 
 Only after focused revalidation `PASS` may conclusion finish detailed evidence and mark both compact phase rows `[x]`. Do not create the next task file automatically or erase earlier records during active delivery.

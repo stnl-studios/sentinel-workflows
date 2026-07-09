@@ -29,7 +29,7 @@ Materialize `tasks.md` and only the next executable task file. Materialize later
 
 ## Conclusion
 
-Mark a phase `[x]` only after all required tasks are complete and relevant tests pass. Finalization records `revalidation: not_required` and concludes the phase when initial validation returns `PASS`. When it returns `NEEDS_FIX`, every blocking finding must be corrected and focused revalidation must return `PASS` before conclusion. Then update both indices; materialize later task files in a separate operation. Never reopen a concluded phase; add a new numbered corrective or complementary phase instead.
+Mark a phase `[x]` only after all required tasks are complete and test evidence is final. Executed tests require at least one `tests_executed` item with `test_result: PASS` and no `test_reason`; phases with no applicable test require `tests_executed: []`, `test_result: not_applicable`, and an objective `test_reason`. Pending, failed, missing, malformed, or contradictory test evidence cannot conclude a phase. Finalization records `revalidation: not_required` and concludes the phase when initial validation returns `PASS`. When it returns `NEEDS_FIX`, every blocking finding must be corrected and focused revalidation must return `PASS` before conclusion. Then update both indices; materialize later task files in a separate operation. Never reopen a concluded phase; add a new numbered corrective or complementary phase instead.
 
 ## Parallel work
 
