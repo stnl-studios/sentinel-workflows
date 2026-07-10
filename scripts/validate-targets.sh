@@ -372,8 +372,8 @@ for name, path in prompt_files.items():
         fail(f"copyable prompt duplicates a contract structure: {path}")
     if "```" in text:
         fail(f"copyable prompt contains a Markdown fence: {path}")
-    if "{{" in text or "}}" in text:
-        fail(f"copyable prompt uses legacy moustache placeholders: {path}")
+    if name not in SPEC_PROMPTS and ("{{" in text or "}}" in text):
+        fail(f"copyable prompt uses unexpected brace placeholders: {path}")
     if PROMPT_LEGACY_OPERATIONAL.search(text):
         fail(f"copyable prompt retains legacy operational reference: {path}")
 
@@ -414,11 +414,22 @@ for name, path in prompt_files.items():
         elif re.search(r"(?m)^SLICES?=", text):
             fail(f"non-slice prompt declares SLICE/SLICES: {path}")
 
-    placeholders = {value.strip() for value in re.findall(r"<([^>\n]+)>", text)}
-    if any(not value for value in placeholders):
-        fail(f"copyable prompt has empty angle placeholder: {path}")
-    if any(not re.fullmatch(r"[A-Z0-9_, ]+", value) for value in placeholders):
-        fail(f"copyable prompt has non-normalized placeholder in {path}: {sorted(placeholders)}")
+    if name in SPEC_PROMPTS:
+        if re.search(r"<[^>\n]+>", text):
+            fail(f"copyable spec prompt uses legacy angle placeholder: {path}")
+        placeholder_matches = re.findall(r"\{\{([^{}\n]+)\}\}", text)
+        placeholder_sanitized = re.sub(r"\{\{[A-Z0-9_]+\}\}", "", text)
+        if "{{" in placeholder_sanitized or "}}" in placeholder_sanitized:
+            fail(f"copyable spec prompt has malformed brace placeholder: {path}")
+        placeholders = {value.strip() for value in placeholder_matches}
+    else:
+        placeholders = {value.strip() for value in re.findall(r"<([^>\n]+)>", text)}
+        if any(not value for value in placeholders):
+            fail(f"copyable prompt has empty angle placeholder: {path}")
+        if any(not re.fullmatch(r"[A-Z0-9_, ]+", value) for value in placeholders):
+            fail(f"copyable prompt has non-normalized placeholder in {path}: {sorted(placeholders)}")
+    if name in SPEC_PROMPTS and any(not re.fullmatch(r"[A-Z0-9_]+", value) for value in placeholders):
+        fail(f"copyable spec prompt has non-normalized placeholder in {path}: {sorted(placeholders)}")
     required_placeholders = REQUIRED_PROMPT_PLACEHOLDERS.get(name, set())
     if not required_placeholders <= placeholders:
         fail(f"copyable prompt lacks required placeholders in {path}: {sorted(required_placeholders - placeholders)}")
@@ -450,7 +461,7 @@ spec_init_prompt = read_text(prompt_files["spec-init"])
 if "criar ou amadurecer" in spec_init_prompt or "workspace documental ainda inexistente" not in spec_init_prompt:
     fail("spec-init prompt does not define new-workspace-only INIT")
 spec_resume_prompt = read_text(prompt_files["spec-resume"])
-if "`feature_spec.md` preexistente" not in spec_resume_prompt:
+if "`{{SPEC_PATH}}/feature_spec.md` preexistente" not in spec_resume_prompt:
     fail("spec-resume prompt does not require an existing feature_spec.md")
 spec_close_prompt = read_text(prompt_files["spec-close"])
 for marker in ["`resolved`", "`bypassed`", "`dropped`", "antes da remoção de `shared/`", "`execution/`"]:
