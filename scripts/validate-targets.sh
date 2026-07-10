@@ -20,7 +20,7 @@ command -v "$PYTHON_BIN" >/dev/null 2>&1 || fail "PYTHON_BIN is unavailable: $PY
 # Copyable prompts
 test -d templates/prompts || fail "templates/prompts directory is missing"
 test ! -e "$LEGACY_TEMPLATE_DIR" || fail "legacy template path remains: $LEGACY_TEMPLATE_DIR"
-for name in spec-init spec-resume spec-planning spec-close execution-plan execution-plan-review execution-tasks slice-execute slice-validate slice-apply-findings slice-finalize slice-commit slice-parallel execution-close; do
+for name in spec-init spec-resume spec-planning spec-close execution-plan execution-plan-review execution-tasks slice-execute slice-validate slice-apply-findings slice-finalize slice-parallel execution-close; do
   test -f "templates/prompts/$name.md" || fail "missing templates/prompts/$name.md"
 done
 if grep -R -q --exclude-dir=.git "$LEGACY_TEMPLATE_NAME" .; then
@@ -208,6 +208,9 @@ for folder in SKILL_RESOURCE_FOLDERS:
         status = lines[4].split(":", 1)[1].strip()
         if status not in HEADER_STATUSES:
             fail(f"invalid File Purpose Header status: {path}")
+        if "stnl-spec-execution-manager" in path.parts:
+            if read_text(path).count("```yaml") != 1:
+                fail(f"execution resource contains YAML beyond the required header: {path}")
 
 
 # Copyable prompts are intentionally header-free user-facing instructions.
@@ -224,7 +227,6 @@ EXPECTED_PROMPTS = {
     "slice-validate",
     "slice-apply-findings",
     "slice-finalize",
-    "slice-commit",
     "slice-parallel",
     "execution-close",
 }
@@ -243,11 +245,10 @@ PROMPT_OPERATIONS = {
     "slice-validate": "VALIDATE_SLICE",
     "slice-apply-findings": "APPLY_FINDINGS",
     "slice-finalize": "FINALIZE_SLICE",
-    "slice-commit": "COMMIT_SLICE",
     "slice-parallel": "PARALLELIZE_SLICES",
     "execution-close": "CLOSE",
 }
-SLICE_PROMPTS = {"slice-execute", "slice-validate", "slice-apply-findings", "slice-finalize", "slice-commit"}
+SLICE_PROMPTS = {"slice-execute", "slice-validate", "slice-apply-findings", "slice-finalize"}
 LEGACY_PROMPTS = {
     "execution-planning",
     "phase-execute",
@@ -269,9 +270,8 @@ REQUIRED_PROMPT_PLACEHOLDERS = {
     "slice-validate": {"EXECUTION_ROOT", "NN"},
     "slice-apply-findings": {"EXECUTION_ROOT", "NN"},
     "slice-finalize": {"EXECUTION_ROOT", "NN"},
-    "slice-commit": {"EXECUTION_ROOT", "NN"},
     "slice-parallel": {"EXECUTION_ROOT", "NN, NN"},
-    "execution-close": {"SPEC_PATH", "EXECUTION_ROOT", "CLOSE_POLICY"},
+    "execution-close": {"SPEC_PATH", "EXECUTION_ROOT"},
 }
 PROMPT_METADATA = re.compile(
     r"(?im)^(?:purpose|status|read_when|do_not_read_when|owner|update_policy|contains)\s*:"
@@ -279,7 +279,7 @@ PROMPT_METADATA = re.compile(
 PROMPT_VENDOR_TERMS = ["Claude", "Hai" + "ku", "Son" + "net", "Codex", "Copilot", "GPT" + r"-\d+", "OpenAI", "Anthropic"]
 PROMPT_VENDORS = re.compile(r"\b(?:" + "|".join(PROMPT_VENDOR_TERMS) + r")\b", re.IGNORECASE)
 PROMPT_CONTRACT_MARKERS = ["# File Purpose Header", "```", "## Core invariants", "## Workflow"]
-PROMPT_STRUCTURAL_MARKERS = ["Objetivo:", "Resultado esperado:", "Restrições excepcionais:"]
+PROMPT_STRUCTURAL_MARKERS = ["Objetivo:", "Entrada mínima:", "Escopo:", "Contexto disponível:", "Resultado esperado:", "Restrições excepcionais:"]
 PROMPT_LEGACY_OPERATIONAL = re.compile(
     r"\b(?:phase|Phase|PHASE|PHASE_NUMBER|PARALLEL_PHASES|phase-[a-z]+|plan-01\.md|tasks-01\.md)\b|/clear|/compact"
 )
@@ -367,11 +367,11 @@ for name, path in prompt_files.items():
 for name in {"slice-validate", "slice-finalize"}:
     text = read_text(prompt_files[name])
     if name == "slice-validate":
-        required = ["[x]", "plan.md", "tasks.md", "validation: PASS", "revalidation: PASS", "não sobrescrever o histórico", "retornar exatamente um verdict"]
-        if any(marker not in text for marker in required) or "revalidation: not_required" in text:
+        required = ["[x]", "plan.md", "tasks.md", "Validação: PASS", "Revalidação: PASS", "não sobrescrever o histórico", "retornar exatamente um verdict"]
+        if any(marker not in text for marker in required) or "Revalidação: not_required" in text:
             fail("slice validator does not preserve its read-only boundary")
     else:
-        required = ["revalidation: not_required", "NEEDS_FIX", "revalidation: PASS", "plan.md", "tasks.md"]
+        required = ["Revalidação: not_required", "NEEDS_FIX", "Revalidação: PASS", "plan.md", "tasks.md"]
         if any(marker not in text for marker in required):
             fail("slice finalizer lacks conditional conclusion handling")
 
@@ -386,7 +386,7 @@ HELPER_NAMES = {
     "spec-init.md", "spec-resume.md", "spec-planning.md", "spec-close.md",
     "execution-plan.md", "execution-plan-review.md", "execution-tasks.md",
     "slice-execute.md", "slice-validate.md", "slice-apply-findings.md", "slice-finalize.md",
-    "slice-commit.md", "slice-parallel.md", "execution-close.md",
+    "slice-parallel.md", "execution-close.md",
 }
 for skill_root in [Path("skills/stnl-spec-lifecycle-manager"), Path("skills/stnl-spec-execution-manager")]:
     for path in skill_root.rglob("*"):
@@ -437,7 +437,7 @@ for path in [
         fail(f"execution skill resource is missing: {path}")
 
 spec_forbidden = re.compile(
-    r"plan\\.md|tasks\\.md|plans/|tasks/|slice-execute|slice-validate|slice-commit|slice-parallel|independent validation|implementation slice",
+    r"plan\\.md|tasks\\.md|plans/|tasks/|slice-execute|slice-validate|slice-parallel|independent validation|implementation slice",
     re.IGNORECASE,
 )
 for path in Path("skills/stnl-spec-lifecycle-manager").rglob("*.md"):
@@ -445,6 +445,15 @@ for path in Path("skills/stnl-spec-lifecycle-manager").rglob("*.md"):
         fail(f"SPEC skill retains delivery-only content: {path}")
 
 for path, text in all_text.items():
+    removed_tokens = [
+        "CLOSE" + "_POLICY",
+        "COMMIT" + "_SLICE",
+        "slice-" + "commit",
+        "commit" + "_hash",
+    ]
+    for token in removed_tokens:
+        if token in text:
+            fail(f"removed execution contract token remains in {path}: {token}")
     for match in re.finditer(r"\bMODE\s*[=:]\s*([A-Z_]+)", text):
         mode = match.group(1)
         if mode not in ALLOWED_MODES:

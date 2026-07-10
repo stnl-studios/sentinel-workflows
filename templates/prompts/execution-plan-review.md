@@ -13,6 +13,10 @@ Riscos já suspeitos:
 Objetivo:
 - revisar e corrigir diretamente o plano de execução quando necessário
 
+Entrada mínima:
+- `plan.md` existente
+- `plans/slice-NN.md` relevantes para o foco da revisão
+
 Escopo:
 - entra: tamanho das slices, dependências ocultas, ordem, cobertura dos requisitos, estado compartilhado, migrações, integrações externas, breaking changes, testabilidade e paralelização
 - fora: criação de tasks, implementação de código e replanejamento sem evidência

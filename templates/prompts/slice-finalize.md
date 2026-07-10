@@ -13,12 +13,16 @@ Entrada mínima:
 - evidências de teste, validação, findings, correções, revalidação e diff final
 
 Escopo:
-- entra: verificação do checklist, testes, validation, findings, correções, revalidation e isolamento do diff
-- fora: implementação, correção de código, próxima slice e commit automático
+- entra: verificação do checklist, testes, validação, findings, correções, revalidação e isolamento do diff
+- fora: implementação, correção de código e próxima slice
+
+Contexto disponível:
+- task detalhada da slice e linha correspondente em `tasks.md`
+- evidências finais e diff da slice
 
 Resultado esperado:
-- se a validação inicial for `PASS`, registrar `revalidation: not_required`
-- se a validação inicial for `NEEDS_FIX`, exigir correções registradas e `revalidation: PASS`
+- se a validação inicial for `PASS`, registrar `Revalidação: not_required`
+- se a validação inicial for `NEEDS_FIX`, exigir correções registradas e `Revalidação: PASS`
 - bloquear quando findings, correções ou revalidação forem incompatíveis
 - atualizar o resultado final da slice
 - marcar a slice como `[x]` em `tasks.md` somente se tudo estiver satisfeito

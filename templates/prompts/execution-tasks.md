@@ -22,6 +22,10 @@ Escopo:
 - entra: `tasks.md`, todos os `tasks/slice-NN.md`, checklist numerado, áreas esperadas, aceite por task e testes esperados
 - fora: nova exploração ampla da codebase e implementação
 
+Contexto disponível:
+- plano global aprovado
+- planos detalhados e requisitos citados por slice
+
 Resultado esperado:
 - `tasks.md` criado ou atualizado como autoridade global de progresso
 - todos os `tasks/slice-NN.md` criados

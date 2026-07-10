@@ -14,12 +14,10 @@ update_policy: PLAN creates; REVIEW_PLAN revises before task materialization; pr
 
 ## Global Context
 
-```yaml
-requirements_source: <relative path from this file>
-execution_root: .
-overall_objective: <short delivery objective>
-strategy: <compact global strategy>
-```
+- Fonte de requisitos: `<relative path from this file>`
+- Execution root: `.`
+- Objetivo geral: <short delivery objective>
+- Estratégia: <compact global strategy>
 
 ## Slice Order
 

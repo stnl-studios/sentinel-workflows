@@ -19,11 +19,10 @@ requirements
 -> VALIDATE_SLICE
 -> APPLY_FINDINGS
 -> FINALIZE_SLICE
--> optional COMMIT_SLICE
 -> CLOSE
 ```
 
-The source may be a `feature_spec.md` produced by another process or any other clear requirements document. This skill does not require a particular requirements skill, vendor, model, agent topology, context-reset command, subagent, or commit policy.
+The source may be a `feature_spec.md` produced by another process or any other clear requirements document. This skill does not require a particular requirements skill, vendor, model, agent topology, context-reset command, or subagent.
 
 Run exactly one operation per invocation. Do not silently continue into the next operation.
 
@@ -37,11 +36,11 @@ The requirements source remains the product authority. This skill may plan and e
 - resolve scope changes through tasks;
 - edit lifecycle-owned documentary artifacts.
 
-When execution exposes ambiguity, conflict, material scope change, new material dependency, or an unauthorized strategic decision, record the divergence concisely in the selected slice task file, block only affected work, and report that the matter must return to the requirements process.
+When execution exposes ambiguity, conflict, material scope change, new material dependency, or an unauthorized strategic decision, record the divergence concisely in the selected slice task file, block only affected work when the divergence is blocking, and report the decision needed.
 
 ## Workspace
 
-Accept a requirements path, an optional execution root, an operation, and operation-specific arguments such as a slice number or close policy. When the source is `feature_spec.md`, default the execution root to `<spec-root>/execution/`. For another source, preserve it and default to a sibling `<requirements-name>-execution/` root.
+Accept a requirements path, an optional execution root, an operation, and operation-specific arguments such as a slice number. When the source is `feature_spec.md`, default the execution root to `<spec-root>/execution/`. For another source, preserve it and default to a sibling `<requirements-name>-execution/` root.
 
 Standard layout:
 
@@ -64,9 +63,9 @@ All persisted paths are relative to the artifact that contains them. For example
 ## Artifact Contracts
 
 - `plan.md` preserves compact global context: requirements source, overall objective, delivery strategy, slice order, dependencies, each slice summary, expected areas, coverage references, parallelization notes, and detailed plan paths. It is not a progress authority and must not duplicate completion checkboxes.
-- `plans/slice-NN.md` defines one observable, testable, coherent delivery suitable for a dedicated commit-sized unit. It includes exact requirements references, included and excluded scope, boundaries with other slices, likely affected areas, dependencies, risks, strategy, expected tests, ready criterion, and parallelization assessment.
+- `plans/slice-NN.md` defines one observable, testable, coherent delivery. It includes exact requirements references, included and excluded scope, boundaries with other slices, likely affected areas, dependencies, risks, strategy, expected tests, a short completion criterion, and parallelization assessment.
 - `tasks.md` is the only global progress authority. It has one compact `[ ]` or `[x]` row per slice with summary, dependencies, detailed task path, test summary, validation summary, and final result.
-- `tasks/slice-NN.md` is the complete operational record for one slice: metadata, plan link, covered requirements, numbered checklist, expected areas and acceptance per task, expected tests, actual changes, scope expansion, test evidence, validation verdict and findings, corrections, revalidation, diff summary, final result, and optional commit.
+- `tasks/slice-NN.md` is the complete operational record for one slice: plan link, numbered checklist, expected areas and acceptance per task, expected tests, actual changes, scope expansion, simple divergence record, test evidence, validation verdict and findings, corrections, revalidation, diff summary, and final result.
 
 `[ ]` means not concluded. `[x]` means concluded. No other global slice state is required.
 
@@ -100,19 +99,15 @@ Read persisted findings, the selected task file, its plan, affected files, relat
 
 ### FINALIZE_SLICE
 
-Do not implement functionality. Verify checklist, tests, validation, findings, corrections, revalidation, diff summary, and absence of work belonging to other slices. If initial validation was `PASS`, record `revalidation: not_required`. If it was `NEEDS_FIX`, require independent focused revalidation with `PASS`. Then finalize the detailed task file, mark the row `[x]` in `tasks.md`, record a short result, and stop.
-
-### COMMIT_SLICE
-
-Commit only a finalized slice after checking `tasks.md`, the selected `tasks/slice-NN.md`, validation state, and `git status`. Stage only changes belonging to that slice, use a conventional message when no stricter convention is provided, and do not alter code. Functional content and evidence of a concluded slice are immutable; later operational metadata such as the commit hash may be appended when the task artifact permits it, but tasks, tests, findings, corrections, validation, revalidation, and final result must not be rewritten during commit.
+Do not implement functionality. Verify checklist, tests, validation, findings, corrections, revalidation, diff summary, and absence of work belonging to other slices. If initial validation was `PASS`, record `Revalidação: not_required`. If it was `NEEDS_FIX`, require independent focused revalidation with `PASS`. Then finalize the detailed task file, mark the row `[x]` in `tasks.md`, record a short result, and stop.
 
 ### PARALLELIZE_SLICES
 
-Evaluate explicitly named slices for independent execution. Verify dependencies, file overlap, shared state, schemas, contracts, fixtures, generated code, mutable tests, external resources, and ordering constraints. If independence is not proven, block parallelization. If permitted, each slice execution reads and writes only its own detailed task file and related implementation files; `tasks.md` updates are integrated later in a serial step. Do not require a particular agent topology and do not create commits automatically.
+Evaluate explicitly named slices for independent execution. Verify dependencies, file overlap, shared state, schemas, contracts, fixtures, generated code, mutable tests, external resources, and ordering constraints. If independence is not proven, block parallelization. If permitted, each slice execution reads and writes only its own detailed task file and related implementation files; `tasks.md` updates are integrated later in a serial step. Do not require a particular agent topology.
 
 ### CLOSE
 
-Cross-check requirements, `plan.md`, `tasks.md`, detailed plans, detailed task files, code, tests, findings, and evidence. Do not trust checkboxes alone. Closure may validate and keep execution artifacts, validate and remove execution artifacts when explicitly requested, or only report validation. It must never modify the requirements source or lifecycle-owned artifacts.
+Cross-check requirements, `plan.md`, `tasks.md`, detailed plans, detailed task files, code, tests, findings, and evidence. Do not trust checkboxes alone. Closure validates and reports consistency; artifact retention or removal is outside this operation. It must never modify the requirements source or lifecycle-owned artifacts.
 
 ## File Purpose Header
 
@@ -131,7 +126,6 @@ Use only `draft`, `ready`, `blocked`, `done`, `closed`, or `not_applicable` for 
 | `VALIDATE_SLICE` | selected diff, selected plan/task files, referenced requirements, test evidence, and changed code |
 | `APPLY_FINDINGS` | persisted findings, selected task file, affected code, related tests, and directly involved requirements |
 | `FINALIZE_SLICE` | selected task file, `tasks.md`, selected plan, evidence, and final diff summary |
-| `COMMIT_SLICE` | `tasks.md`, selected task file, final validation evidence, and `git status` |
 | `PARALLELIZE_SLICES` | `plan.md`, `tasks.md`, selected plans, selected task files, and concrete overlap evidence |
 | `CLOSE` | `execution-close-policy.md`, global artifacts, and only details required for cross-checking |
 

@@ -18,6 +18,10 @@ Escopo:
 - entra: artefatos afetados, IDs existentes, inconsistências documentais e perguntas materiais
 - fora: planejamento de execução, tasks e implementação
 
+Contexto disponível:
+- SPEC existente
+- novas informações fornecidas pelo usuário
+
 Resultado esperado:
 - artefatos da SPEC atualizados apenas onde necessário
 - IDs preservados e inconsistências resolvidas

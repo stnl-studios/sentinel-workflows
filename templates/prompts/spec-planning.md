@@ -17,6 +17,10 @@ Escopo:
 - entra: clareza, consistência, critérios, decisões, riscos, restrições e perguntas abertas
 - fora: alteração de arquivos, plano de execução, tasks e implementação
 
+Contexto disponível:
+- `feature_spec.md`
+- artefatos compartilhados e perguntas abertas da SPEC
+
 Resultado esperado:
 - retornar `READY` ou `NEEDS_RESUME`
 - listar somente achados acionáveis com referências quando houver

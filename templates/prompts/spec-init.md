@@ -18,6 +18,10 @@ Escopo:
 - entra: clareza documental, critérios, riscos, restrições e perguntas bloqueantes
 - fora: plano de execução, tasks e implementação
 
+Contexto disponível:
+- fonte de requisitos informada
+- decisões já conhecidas e perguntas materiais, quando existirem
+
 Resultado esperado:
 - artefatos da SPEC criados ou atualizados
 - perguntas bloqueantes persistidas quando faltarem decisões materiais

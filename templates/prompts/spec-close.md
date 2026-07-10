@@ -4,9 +4,6 @@ MODE=CLOSE
 SPEC:
 - <SPEC_PATH>
 
-Política de fechamento:
-- <CLOSE_POLICY>
-
 Objetivo:
 - fechar documentalmente a SPEC sem depender de execução
 
@@ -15,7 +12,11 @@ Entrada mínima:
 
 Escopo:
 - entra: consistência documental, artefato final e bloqueios documentais
-- fora: plano, tasks, diff, commits, testes e implementação
+- fora: plano de execução, tasks, diff, testes e implementação
+
+Contexto disponível:
+- `feature_spec.md` e artefatos compartilhados da SPEC
+- decisões, critérios, riscos e perguntas já persistidos
 
 Resultado esperado:
 - fechamento persistido quando a SPEC estiver pronta

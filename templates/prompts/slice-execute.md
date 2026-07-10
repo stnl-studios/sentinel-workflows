@@ -11,16 +11,22 @@ Execution root:
 Objetivo:
 - <SLICE_OBJECTIVE>
 
-Escopo adicional:
+Entrada mínima:
+- `plan.md`, `tasks.md`, `plans/slice-NN.md` e `tasks/slice-NN.md`
+- requisitos referenciados pela slice selecionada
+
+Escopo:
 - entra: <ADDITIONAL_IN_SCOPE_OR_NONE>
 - fora: <ADDITIONAL_OUT_OF_SCOPE_OR_NONE>
 
-Contexto recente relevante:
+Contexto disponível:
 - <RECENT_CONTEXT_OR_NONE>
+- arquivos e testes descobertos a partir da slice selecionada
 
 Resultado esperado:
 - implementar somente a slice selecionada
-- atualizar somente `tasks/slice-NN.md`
+- entre os artefatos de execução, atualizar somente `tasks/slice-NN.md`
+- alterar apenas o código e os testes necessários para a slice selecionada
 - marcar tasks individuais concluídas
 - executar testes aplicáveis
 - registrar arquivos alterados, expansão necessária e resumo do diff

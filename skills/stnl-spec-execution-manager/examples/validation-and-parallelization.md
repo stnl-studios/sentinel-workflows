@@ -16,14 +16,12 @@ update_policy: Keep aligned with validation, correction, finalization, and paral
 
 `tasks/slice-02.md` records a validation problem without changing code during validation:
 
-```yaml
-tests_executed:
-  - npm test -- invitation-lookup
-test_result: PASS
-validation: NEEDS_FIX
-corrections: []
-revalidation: pending
-```
+- Testes executados:
+  - `npm test -- invitation-lookup`
+- Resultado dos testes: PASS
+- Validação: NEEDS_FIX
+- Correções: nenhuma
+- Revalidação: pending
 
 `## Validation Findings` contains:
 
@@ -33,7 +31,7 @@ revalidation: pending
 - Related reference: `plans/slice-02.md`, task 2.1, AC-002.
 - Expected correction: serialize the expiration state for every lookup response covered by AC-002.
 
-`APPLY_FINDINGS` later records the correction and reruns the affected test. `VALIDATE_SLICE` then persists `revalidation: PASS`. Only `FINALIZE_SLICE` can mark slice 02 `[x]` in `tasks.md`.
+`APPLY_FINDINGS` later records the correction and reruns the affected test. `VALIDATE_SLICE` then persists `Revalidação: PASS`. Only `FINALIZE_SLICE` can mark slice 02 `[x]` in `tasks.md`.
 
 ## Parallel Allowed
 
@@ -47,4 +45,4 @@ Parallel executions update only `tasks/slice-04.md` and `tasks/slice-05.md`. `ta
 
 ## Parallel Blocked
 
-Slices 02 and 03 are not parallel-safe when both touch `src/invitations/state.ts` or tests that mutate the same invitation records. The plans record the overlap and leave `parallelizable: false`. Execution waits for an explicit serial order or returns to plan review if the dependency was not anticipated.
+Slices 02 and 03 are not parallel-safe when both touch `src/invitations/state.ts` or tests that mutate the same invitation records. The plans record the overlap and explain why the slices are not eligible for parallel execution. Execution waits for an explicit serial order or returns to plan review if the dependency was not anticipated.

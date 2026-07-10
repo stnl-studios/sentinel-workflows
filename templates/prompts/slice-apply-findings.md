@@ -19,6 +19,10 @@ Escopo:
 - entra: correções dos findings registrados ou explicitamente selecionados e efeitos necessários
 - fora: refactors oportunistas, mudanças de requisito, expansão silenciosa de escopo e finalização da slice
 
+Contexto disponível:
+- `tasks/slice-NN.md` com findings persistidos
+- diff, arquivos e testes afetados pelos findings selecionados
+
 Resultado esperado:
 - correções registradas no arquivo detalhado da slice
 - testes afetados executados ou justificativa objetiva registrada

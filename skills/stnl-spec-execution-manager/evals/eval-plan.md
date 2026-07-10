@@ -31,21 +31,20 @@ update_policy: Extend when a real regression exposes a missing invariant.
 15. `FINALIZE_SLICE` blocks when findings lack corrections or revalidation.
 16. A slice becomes `[x]` only with mandatory tasks, final test evidence, validation, required revalidation, and final diff summary.
 17. A concluded slice is immutable; later work becomes a new corrective or complementary slice.
-18. Executed tests require non-empty `tests_executed`, `test_result: PASS`, and no `test_reason`.
-19. No-applicable-test evidence requires `tests_executed: []`, `test_result: not_applicable`, and a specific objective `test_reason`.
+18. Executed tests require non-empty `Testes executados`, `Resultado dos testes: PASS`, and no `Justificativa sem teste`.
+19. No-applicable-test evidence requires `Testes executados: nenhum`, `Resultado dos testes: not_applicable`, and a specific objective `Justificativa sem teste`.
 20. Malformed, duplicated, inline-filled, or empty-item evidence lists fail structural validation.
 21. A material requirements, scope, dependency, or strategy change blocks affected work and returns to the requirements process.
 22. Independent slices may run in parallel only with a recorded non-overlap justification.
 23. Shared files, schemas, contracts, mutable state, generated code, global fixtures, or order dependency block parallel work.
-24. Parallel execution does not update `tasks.md` concurrently and does not create commits automatically.
-25. `COMMIT_SLICE` is a formal optional operation, stages only finalized slice changes, and may append only commit metadata after conclusion.
+24. Parallel execution does not update `tasks.md` concurrently.
+25. The skill creates no commits, stores no commit hash, and has no commit operation.
 26. `CLOSE` cross-checks requirements, execution artifacts, code, tests, findings, and evidence instead of trusting checkboxes.
 27. `CLOSE` does not modify the requirements source.
-28. `validate_only` preserves the source and execution artifacts.
-29. `validate_and_remove` removes only execution artifacts and only after explicit request plus successful validation.
-30. A `feature_spec.md` source uses its separate `execution/` child without changing lifecycle artifacts.
-31. A generic external source uses a sibling execution root with explicit relative references and is neither moved nor changed.
-32. The skill has no mandatory provider, model, context-reset command, subagent, commit policy, or particular requirements-producing skill.
+28. `CLOSE` validates and reports without artifact-retention policy options.
+29. A `feature_spec.md` source uses its separate `execution/` child without changing lifecycle artifacts.
+30. A generic external source uses a sibling execution root with explicit relative references and is neither moved nor changed.
+31. The skill has no mandatory provider, model, context-reset command, subagent, or particular requirements-producing skill.
 
 ## Failure signals
 

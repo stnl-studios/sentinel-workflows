@@ -12,7 +12,7 @@ update_policy: Change when the slice execution model changes.
 
 # Slice Model
 
-A slice delivers one observable and testable outcome. It is larger than a microtask, smaller than a broad initiative, coherent enough to validate in isolation, and suitable for a dedicated commit when the user asks for one.
+A slice delivers one observable and testable outcome. It is larger than a microtask, smaller than a broad initiative, and coherent enough to validate in isolation.
 
 Use zero-padded sequence numbers:
 
@@ -23,7 +23,7 @@ Do not create a separate canonical ID when the sequence already identifies the s
 
 ## Planning
 
-Planning creates `plan.md` and all foreseeable detailed plans. Each `plans/slice-NN.md` states objective, observable result, exact requirements references, included and excluded scope, boundaries with other slices, likely areas, dependencies, risks, strategy, expected tests, ready criterion, and parallelization assessment.
+Planning creates `plan.md` and all foreseeable detailed plans. Each `plans/slice-NN.md` states objective, observable result, exact requirements references, included and excluded scope, boundaries with other slices, likely areas, dependencies, risks, strategy, expected tests, a short completion criterion, and parallelization assessment.
 
 `plan.md` stays compact. It preserves enough global context for a clean session to choose or understand a slice without rereading all detailed plans, but it does not store checklists, extensive evidence, implementation history, or duplicated requirement text.
 
@@ -36,7 +36,7 @@ After plan review, materialize `tasks.md` and every `tasks/slice-NN.md`. This is
 - `[ ]`: slice not concluded;
 - `[x]`: slice concluded.
 
-The detailed task file for each slice contains local checklist items, expected areas, acceptance references, expected tests, actual changed areas, scope expansion, test evidence, validation findings, corrections, revalidation, diff summary, final result, and optional commit.
+The detailed task file for each slice contains local checklist items, expected areas, acceptance references, expected tests, actual changed areas, scope expansion, divergences, test evidence, validation findings, corrections, revalidation, diff summary, and final result.
 
 ## Current Slice
 
@@ -59,7 +59,7 @@ A slice can become `[x]` in `tasks.md` only after:
 - minimum evidence is persisted in `tasks/slice-NN.md`;
 - the final diff excludes deliberate work reserved for other slices.
 
-With executed tests, `tests_executed` lists at least one command, suite, or observable check and `test_result: PASS`. With no applicable test, `tests_executed: []`, `test_result: not_applicable`, and one objective `test_reason` are required. Pending, failed, malformed, contradictory, or generic evidence cannot conclude a slice.
+With executed tests, `Testes executados` lists at least one command, suite, or observable check and `Resultado dos testes: PASS`. With no applicable test, `Testes executados: nenhum`, `Resultado dos testes: not_applicable`, and one objective `Justificativa sem teste` are required. Pending, failed, malformed, contradictory, or generic evidence cannot conclude a slice.
 
 A concluded slice is immutable. Later changes become a new corrective or complementary slice.
 
@@ -67,4 +67,4 @@ A concluded slice is immutable. Later changes become a new corrective or complem
 
 Parallelization is optional. Two slices can run in parallel only when they share no files, schemas, migrations, lockfiles, public contracts, global fixtures, generated code, persistent state, mutable external resources, order dependency, or tests that mutate the same resource.
 
-`parallelizable: true` is not enough. The detailed plans must record a concrete non-overlap justification. Parallel executions read only their own selected artifacts, update only their own detailed task files, do not update `tasks.md` concurrently, and do not create commits automatically. Results are integrated serially.
+Parallelization requires a concrete non-overlap justification in the detailed plans. Parallel executions read only their own selected artifacts and update only their own detailed task files. `tasks.md` updates are integrated serially.

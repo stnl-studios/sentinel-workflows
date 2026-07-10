@@ -24,6 +24,6 @@ requirements/
         └── slice-01.md
 ```
 
-`billing-change.md` remains unchanged. The global plan states `requirements_source: ../billing-change.md`; `plans/slice-01.md` and `tasks/slice-01.md` state `requirements_source: ../../billing-change.md`. The task file points to `plan: ../plans/slice-01.md`.
+`billing-change.md` remains unchanged. The global plan records `Fonte de requisitos: ../billing-change.md`; `plans/slice-01.md` and `tasks/slice-01.md` record `Fonte de requisitos: ../../billing-change.md`. The task file points to `Plano: ../plans/slice-01.md`.
 
 Execution artifacts do not rename, move, copy, or add headers to the external source.

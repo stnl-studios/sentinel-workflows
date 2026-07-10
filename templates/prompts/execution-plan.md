@@ -22,6 +22,10 @@ Decisões e riscos conhecidos:
 - decisões: <KNOWN_DECISIONS_OR_NONE>
 - riscos: <KNOWN_RISKS_OR_NONE>
 
+Contexto disponível:
+- fonte de requisitos informada
+- estrutura do projeto e arquivos relacionados descobertos progressivamente
+
 Resultado esperado:
 - criar `plan.md` e todos os `plans/slice-NN.md`
 - organizar slices entregáveis e testáveis isoladamente

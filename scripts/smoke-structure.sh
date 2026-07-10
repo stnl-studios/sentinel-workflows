@@ -23,11 +23,17 @@ EVIDENCE_SCALAR_VALUES = {
     "validation": {"pending", "PASS", "NEEDS_FIX"},
     "revalidation": {"pending", "PASS", "NEEDS_FIX", "not_required"},
 }
-EVIDENCE_SCALARS = set(EVIDENCE_SCALAR_VALUES) | {"test_reason"}
-EVIDENCE_LISTS = {"tests_executed", "corrections"}
-EVIDENCE_FIELDS = EVIDENCE_SCALARS | EVIDENCE_LISTS
 REQUIRED_EVIDENCE_FIELDS = ["tests_executed", "test_result", "validation", "corrections", "revalidation"]
 GENERIC_TEST_REASONS = {"none", "n/a", "na", "not applicable", "not_applicable"}
+EVIDENCE_LABELS = {
+    "Testes executados": "tests_executed",
+    "Resultado dos testes": "test_result",
+    "Justificativa sem teste": "test_reason",
+    "Validação": "validation",
+    "Correções": "corrections",
+    "Revalidação": "revalidation",
+}
+EVIDENCE_LIST_FIELDS = {"tests_executed", "corrections"}
 
 
 def fail(message: str) -> None:
@@ -190,19 +196,13 @@ def plan_path(root: Path, number: str) -> Path:
 
 
 def slice_plan(number: str, name: str, requirement: str, dependency: str, *, parallel: bool = False) -> str:
-    parallel_value = "true" if parallel else "false"
-    safety = "verified" if parallel else "not_applicable"
     return header("stnl-spec-execution-manager", f"Fixture detailed slice {number} plan") + f"""# Slice {number} - {name}
 
-## Metadata
+## Referências
 
-```yaml
-slice: {number}
-requirements_source: ../../feature_spec.md
-plan: ../plan.md
-parallelizable: {parallel_value}
-parallel_safety: {safety}
-```
+- Slice: {number}
+- Fonte de requisitos: `../../feature_spec.md`
+- Plano global: `../plan.md`
 
 ## Objective
 
@@ -248,9 +248,11 @@ Make the smallest observable change for this slice.
 
 - fixture-test-{number}
 
-## Ready Criterion
+## Critério de conclusão
 
-Requirements reference {requirement} is clear.
+- {name} can be verified independently.
+- fixture-test-{number} passes or has an objective not-applicable reason.
+- Work reserved for other slices remains untouched.
 
 ## Parallelization Assessment
 
@@ -262,16 +264,12 @@ Requirements reference {requirement} is clear.
 def slice_tasks(number: str, name: str, requirement: str) -> str:
     return header("stnl-spec-execution-manager", f"Fixture detailed slice {number} tasks") + f"""# Slice {number} Tasks - {name}
 
-## Metadata
+## Referências
 
-```yaml
-slice: {number}
-requirements_source: ../../feature_spec.md
-plan: ../plans/slice-{number}.md
-tasks_index: ../tasks.md
-covered_references: [{requirement}]
-blocking_divergence: false
-```
+- Slice: {number}
+- Plano: `../plans/slice-{number}.md`
+- Fonte de requisitos: `../../feature_spec.md`
+- Índice global: `../tasks.md`
 
 ## Checklist
 
@@ -289,15 +287,17 @@ blocking_divergence: false
 
 - none
 
+## Divergências
+
+- nenhuma
+
 ## Execution Evidence
 
-```yaml
-tests_executed: []
-test_result: pending
-validation: pending
-corrections: []
-revalidation: pending
-```
+- Testes executados: nenhum
+- Resultado dos testes: pending
+- Validação: pending
+- Correções: nenhuma
+- Revalidação: pending
 
 ## Validation Findings
 
@@ -318,10 +318,6 @@ revalidation: pending
 ## Final Result
 
 - pending
-
-## Optional Commit
-
-- not_requested
 """
 
 
@@ -357,12 +353,10 @@ statement: The maintenance behavior is observable.
 
 ## Global Context
 
-```yaml
-requirements_source: ../feature_spec.md
-execution_root: .
-overall_objective: Deliver three fixture behaviors.
-strategy: Build domain behavior first, then API behavior, then maintenance behavior.
-```
+- Fonte de requisitos: `../feature_spec.md`
+- Execution root: `.`
+- Objetivo geral: Deliver three fixture behaviors.
+- Estratégia: Build domain behavior first, then API behavior, then maintenance behavior.
 
 ## Slice Order
 
@@ -427,8 +421,14 @@ def dependency_numbers(value: str) -> set[str]:
     return {part.strip() for part in value.split(",") if part.strip()}
 
 
-def has_blocking_divergence(path: Path) -> bool:
-    return bool(re.search(r"^blocking_divergence:\s*true$", path.read_text(encoding="utf-8"), re.MULTILINE))
+def has_divergencia_bloqueante(path: Path) -> bool:
+    text = path.read_text(encoding="utf-8")
+    section = extract_section_text(text, "Divergências", path)
+    if re.search(r"(?im)^\s*-\s+Bloqueante:\s*sim\s*$", section):
+        return True
+    if re.search(r"(?im)^-\s+nenhuma\s*$", section):
+        return False
+    return False
 
 
 def eligible_slices(root: Path) -> list[str]:
@@ -438,31 +438,37 @@ def eligible_slices(root: Path) -> list[str]:
     for row in rows:
         if row["done"] != "[ ]":
             continue
-        if dependency_numbers(row["dependencies"]) <= done and not has_blocking_divergence(root / "execution" / row["detail"]):
+        if dependency_numbers(row["dependencies"]) <= done and not has_divergencia_bloqueante(root / "execution" / row["detail"]):
             eligible.append(row["number"])
     return eligible
 
 
+def extract_section_text(text: str, heading: str, path: Path) -> str:
+    pattern = rf"^## {re.escape(heading)}\n\n(.*?)(?=^## |\Z)"
+    matches = re.findall(pattern, text, re.MULTILINE | re.DOTALL)
+    expect(len(matches) == 1, f"expected exactly one {heading} section: {path}")
+    return matches[0]
+
+
 def extract_evidence_fields(path: Path) -> dict[str, str | list[str]]:
     text = path.read_text(encoding="utf-8")
-    blocks = re.findall(
-        r"^## Execution Evidence\n\n```yaml\n(.*?)^```\s*",
-        text,
-        re.MULTILINE | re.DOTALL,
-    )
-    expect(len(blocks) == 1, f"expected exactly one Execution Evidence block: {path}")
+    section = extract_section_text(text, "Execution Evidence", path)
     fields: dict[str, str | list[str]] = {}
-    lines = blocks[0].splitlines()
+    lines = section.splitlines()
     index = 0
     while index < len(lines):
         line = lines[index]
+        if not line.strip():
+            index += 1
+            continue
         if line.startswith("  - "):
             fail(f"list item without active evidence list: {path}")
-        match = re.match(r"^([a-z_]+):(.*)$", line)
+        match = re.match(r"^- ([^:]+):(.*)$", line)
         expect(match is not None, f"malformed evidence line {line!r}: {path}")
-        field, raw_value = match.groups()
-        expect(field in EVIDENCE_FIELDS, f"unknown evidence field {field}: {path}")
-        if field in EVIDENCE_SCALARS:
+        label, raw_value = match.groups()
+        expect(label in EVIDENCE_LABELS, f"unknown evidence field {label}: {path}")
+        field = EVIDENCE_LABELS[label]
+        if field not in EVIDENCE_LIST_FIELDS:
             expect(field not in fields, f"duplicate evidence field {field}: {path}")
             value = raw_value.strip()
             if field == "test_reason":
@@ -474,7 +480,7 @@ def extract_evidence_fields(path: Path) -> dict[str, str | list[str]]:
         else:
             expect(field not in fields, f"duplicate evidence field {field}: {path}")
             value = raw_value.strip()
-            if value == "[]":
+            if value == "nenhum":
                 fields[field] = []
             else:
                 expect(not value, f"malformed {field} list: {path}")
@@ -484,7 +490,7 @@ def extract_evidence_fields(path: Path) -> dict[str, str | list[str]]:
                     item_line = lines[index]
                     if item_line.startswith("  -"):
                         expect(item_line.startswith("  - "), f"empty {field} entry: {path}")
-                        item = item_line[4:].strip()
+                        item = item_line[4:].strip().strip("`")
                         expect(item, f"empty {field} entry: {path}")
                         items.append(item)
                         index += 1
@@ -503,10 +509,10 @@ def extract_evidence_fields(path: Path) -> dict[str, str | list[str]]:
     return fields
 
 
-def render_list_field(field: str, values: list[str]) -> str:
+def render_list_field(label: str, values: list[str]) -> str:
     if not values:
-        return f"{field}: []"
-    return "\n".join([f"{field}:", *[f"  - {value}" for value in values]])
+        return f"- {label}: nenhum"
+    return "\n".join([f"- {label}:", *[f"  - {value}" for value in values]])
 
 
 def write_evidence(
@@ -520,20 +526,18 @@ def write_evidence(
     corrections: list[str],
     revalidation: str,
 ) -> None:
-    reason_line = f"test_reason: {test_reason}\n" if test_reason is not None else ""
+    reason_line = f"- Justificativa sem teste: {test_reason}\n" if test_reason is not None else ""
     evidence = f"""## Execution Evidence
 
-```yaml
-{render_list_field("tests_executed", tests_executed)}
-test_result: {test_result}
-{reason_line}validation: {validation}
-{render_list_field("corrections", corrections)}
-revalidation: {revalidation}
-```
+{render_list_field("Testes executados", tests_executed)}
+- Resultado dos testes: {test_result}
+{reason_line}- Validação: {validation}
+{render_list_field("Correções", corrections)}
+- Revalidação: {revalidation}
 """
     path = task_path(root, number)
     updated, replacements = re.subn(
-        r"## Execution Evidence\n\n```yaml\n.*?^```\n?",
+        r"## Execution Evidence\n\n.*?(?=^## |\Z)",
         evidence,
         path.read_text(encoding="utf-8"),
         count=1,
@@ -647,7 +651,7 @@ def check_execution(root: Path) -> None:
     source = (root / "feature_spec.md").read_text(encoding="utf-8")
     plan_index = (execution / "plan.md").read_text(encoding="utf-8")
     tasks_index = (execution / "tasks.md").read_text(encoding="utf-8")
-    expect("requirements_source: ../feature_spec.md" in plan_index, "global plan source path is missing")
+    expect("- Fonte de requisitos: `../feature_spec.md`" in plan_index, "global plan source path is missing")
     expect("[ ]" not in plan_index and "[x]" not in plan_index, "plan.md duplicates progress checkboxes")
     expect("tasks.md is the only global progress authority" in plan_index, "plan.md lacks progress boundary note")
     expect("Fixture domain behavior becomes observable" in plan_index, "plan.md lacks useful slice summary")
@@ -662,14 +666,16 @@ def check_execution(root: Path) -> None:
         p_task = task_path(root, number)
         plan_text = p_plan.read_text(encoding="utf-8")
         task_text = p_task.read_text(encoding="utf-8")
-        expect(f"slice: {number}" in plan_text and f"slice: {number}" in task_text, f"slice metadata mismatch: {number}")
-        expect("requirements_source: ../../feature_spec.md" in plan_text, f"detailed plan source path mismatch: {number}")
-        expect("requirements_source: ../../feature_spec.md" in task_text, f"detailed task source path mismatch: {number}")
-        expect(f"plan: ../plans/slice-{number}.md" in task_text, f"task record points to wrong plan: {number}")
+        expect(f"- Slice: {number}" in plan_text and f"- Slice: {number}" in task_text, f"slice reference mismatch: {number}")
+        expect("- Fonte de requisitos: `../../feature_spec.md`" in plan_text, f"detailed plan source path mismatch: {number}")
+        expect("- Fonte de requisitos: `../../feature_spec.md`" in task_text, f"detailed task source path mismatch: {number}")
+        expect(f"- Plano: `../plans/slice-{number}.md`" in task_text, f"task record points to wrong plan: {number}")
+        expect("## Critério de conclusão" in plan_text, f"detailed plan lacks completion criterion: {number}")
+        expect("## Divergências" in task_text, f"detailed task lacks divergence section: {number}")
         expect(canonical_ids(plan_text + task_text) <= canonical_ids(source), f"execution references missing criterion: {number}")
         if row["done"] == "[x]":
             expect("- [ ]" not in task_text, f"concluded slice has an open task: {number}")
-            expect("blocking_divergence: true" not in task_text, f"concluded slice has blocking divergence: {number}")
+            expect(not has_divergencia_bloqueante(p_task), f"concluded slice has blocking divergence: {number}")
             expect("## Diff Summary\n\n- pending" not in task_text, f"concluded slice lacks diff summary: {number}")
             expect("## Final Result\n\n- pending" not in task_text, f"concluded slice lacks final result: {number}")
             evidence = extract_evidence_fields(p_task)
@@ -692,8 +698,7 @@ def check_execution(root: Path) -> None:
 
     for number in ["01", "02", "03"]:
         plan_text = plan_path(root, number).read_text(encoding="utf-8")
-        if "parallelizable: true" in plan_text:
-            expect("parallel_safety: verified" in plan_text, f"parallel slice lacks verified safety: {number}")
+        if "- Eligible: yes" in plan_text:
             expect("no shared files" in plan_text, f"parallel slice lacks non-overlap justification: {number}")
 
 
@@ -746,12 +751,12 @@ def external_execution_fixture(base: Path) -> None:
     execution = base / "requirements/billing-change-execution"
     write(execution / "plan.md", header("stnl-spec-execution-manager", "External global execution plan") + """# Execution Plan
 
-```yaml
-requirements_source: ../billing-change.md
-execution_root: .
-overall_objective: Deliver billing behavior.
-strategy: One slice.
-```
+## Global Context
+
+- Fonte de requisitos: `../billing-change.md`
+- Execution root: `.`
+- Objetivo geral: Deliver billing behavior.
+- Estratégia: One slice.
 
 | Slice | Summary | Dependencies | Covered Requirements | Expected Areas | Parallelization | Detailed Plan |
 |---|---|---|---|---|---|---|
@@ -759,10 +764,10 @@ strategy: One slice.
 """)
     write(execution / "plans/slice-01.md", header("stnl-spec-execution-manager", "External detailed slice plan") + """# Slice 01 - Billing
 
-```yaml
-slice: 01
-requirements_source: ../../billing-change.md
-```
+## Referências
+
+- Slice: 01
+- Fonte de requisitos: `../../billing-change.md`
 """)
     write(execution / "tasks.md", header("stnl-spec-execution-manager", "External global execution tasks") + """# Execution Tasks
 
@@ -772,19 +777,19 @@ requirements_source: ../../billing-change.md
 """)
     write(execution / "tasks/slice-01.md", header("stnl-spec-execution-manager", "External detailed slice tasks") + """# Slice 01 Tasks - Billing
 
-```yaml
-slice: 01
-requirements_source: ../../billing-change.md
-plan: ../plans/slice-01.md
-```
+## Referências
+
+- Slice: 01
+- Plano: `../plans/slice-01.md`
+- Fonte de requisitos: `../../billing-change.md`
 """)
     expect(source.read_text(encoding="utf-8") == original, "external requirements source changed during planning")
     expect("# File Purpose Header" not in source.read_text(encoding="utf-8"), "external requirements source requires a lifecycle header")
     expect(not (base / "requirements/feature_spec.md").exists(), "external requirements source was renamed")
-    expect("requirements_source: ../billing-change.md" in (execution / "plan.md").read_text(encoding="utf-8"), "external global plan lacks relative source")
-    expect("requirements_source: ../../billing-change.md" in (execution / "plans/slice-01.md").read_text(encoding="utf-8"), "external detailed plan lacks relative source")
-    expect("requirements_source: ../../billing-change.md" in (execution / "tasks/slice-01.md").read_text(encoding="utf-8"), "external task lacks relative source")
-    expect("plan: ../plans/slice-01.md" in (execution / "tasks/slice-01.md").read_text(encoding="utf-8"), "external task points to wrong plan")
+    expect("- Fonte de requisitos: `../billing-change.md`" in (execution / "plan.md").read_text(encoding="utf-8"), "external global plan lacks relative source")
+    expect("- Fonte de requisitos: `../../billing-change.md`" in (execution / "plans/slice-01.md").read_text(encoding="utf-8"), "external detailed plan lacks relative source")
+    expect("- Fonte de requisitos: `../../billing-change.md`" in (execution / "tasks/slice-01.md").read_text(encoding="utf-8"), "external task lacks relative source")
+    expect("- Plano: `../plans/slice-01.md`" in (execution / "tasks/slice-01.md").read_text(encoding="utf-8"), "external task points to wrong plan")
     for path in [execution / "plan.md", execution / "plans/slice-01.md", execution / "tasks.md", execution / "tasks/slice-01.md"]:
         check_header(path, "stnl-spec-execution-manager")
 
@@ -807,7 +812,7 @@ def static_contract_checks() -> None:
                 check_header(path, owner)
 
     spec_forbidden = re.compile(
-        r"plan\.md|tasks\.md|plans/|tasks/|slice-execute|slice-validate|slice-commit|slice-parallel|independent validation|implementation slice",
+        r"plan\.md|tasks\.md|plans/|tasks/|slice-execute|slice-validate|slice-parallel|independent validation|implementation slice",
         re.IGNORECASE,
     )
     for path in SPEC_ROOT.rglob("*.md"):
@@ -830,10 +835,11 @@ def static_contract_checks() -> None:
     for token in ["work" + "ers", "coord" + "inator", "Claude" + " Code", "Hai" + "ku", "Son" + "net", "GPT" + "-"]:
         expect(token.lower() not in execution_text.lower(), f"vendor, model, or fixed topology remains: {token}")
     close_policy = (EXEC_ROOT / "references/execution-close-policy.md").read_text(encoding="utf-8")
-    for policy in ["validate_only", "validate_and_keep", "validate_and_remove"]:
-        expect(policy in close_policy, f"missing execution closure policy: {policy}")
+    for policy in ["validate" + "_only", "validate" + "_and_keep", "validate" + "_and_remove"]:
+        expect(policy not in close_policy, f"removed execution closure policy remains: {policy}")
     expect("consolidate" not in execution_text.lower(), "execution skill retains a source-update closure policy")
-    expect("Closure never modifies the requirements source" in close_policy, "closure policy does not protect requirements")
+    expect("Closure reports compatibility and blockers" in close_policy, "closure contract does not define report-only behavior")
+    expect("Closure never modifies the requirements source" in close_policy, "closure contract does not protect requirements")
 
 
 with tempfile.TemporaryDirectory() as tmp:
@@ -891,12 +897,12 @@ with tempfile.TemporaryDirectory() as tmp:
     invalid_execution("missing-plan", lambda root: plan_path(root, "01").unlink())
     invalid_execution("missing-task-file", lambda root: task_path(root, "03").unlink())
     invalid_execution("wrong-task-plan", lambda root: replace_task_text(root, "01", "../plans/slice-01.md", "../plans/slice-02.md"))
-    invalid_execution("wrong-relative-source", lambda root: replace_task_text(root, "01", "requirements_source: ../../feature_spec.md", "requirements_source: ../feature_spec.md"))
+    invalid_execution("wrong-relative-source", lambda root: replace_task_text(root, "01", "- Fonte de requisitos: `../../feature_spec.md`", "- Fonte de requisitos: `../feature_spec.md`"))
     invalid_execution("missing-ac", lambda root: replace_task_text(root, "01", "AC-001", "AC-999"))
     invalid_execution("plan-contains-checkbox", lambda root: (root / "execution/plan.md").write_text((root / "execution/plan.md").read_text(encoding="utf-8") + "\n| [ ] | bad |\n", encoding="utf-8"))
     invalid_execution("completed-open-task", lambda root: update_task_row(root, "01", done="[x]", tests="PASS", validation="PASS", result="Done"))
-    invalid_execution("concluded-blocked-divergence", lambda root: (conclude_slice(root, "01"), replace_task_text(root, "01", "blocking_divergence: false", "blocking_divergence: true")))
-    invalid_execution("parallel-without-safety", lambda root: (conclude_slice(root, "01"), write(plan_path(root, "02"), slice_plan("02", "API", "AC-002", "01", parallel=True).replace("parallel_safety: verified", "parallel_safety: not_verified")), update_task_row(root, "02", done="[ ]", tests="pending", validation="pending", result="-")))
+    invalid_execution("concluded-blocked-divergence", lambda root: (conclude_slice(root, "01"), replace_task_text(root, "01", "- nenhuma", "- Tipo: escopo\n  - Descrição: Fixture divergence.\n  - Impacto: Fixture blocked.\n  - Decisão necessária: Resolve fixture scope.\n  - Bloqueante: sim")))
+    invalid_execution("parallel-without-safety", lambda root: (conclude_slice(root, "01"), write(plan_path(root, "02"), slice_plan("02", "API", "AC-002", "01", parallel=True).replace("no shared files, state, contracts, fixtures, generated code, or mutable resources", "not_applicable")), update_task_row(root, "02", done="[ ]", tests="pending", validation="pending", result="-")))
     invalid_execution("pass-without-tests", lambda root: conclude_slice(root, "01", tests_executed=[], test_result="PASS"), "PASS test_result requires at least one tests_executed item")
     invalid_execution("not-applicable-without-reason", lambda root: conclude_slice(root, "01", tests_executed=[], test_result="not_applicable"), "not_applicable test_result requires test_reason")
     invalid_execution("not-applicable-generic-reason", lambda root: conclude_slice(root, "01", tests_executed=[], test_result="not_applicable", test_reason="n/a"), "generic test_reason value")
@@ -904,10 +910,10 @@ with tempfile.TemporaryDirectory() as tmp:
     invalid_execution("needs-fix-without-corrections", lambda root: conclude_slice(root, "01", validation="NEEDS_FIX", revalidation="PASS"))
     invalid_execution("needs-fix-without-revalidation", lambda root: conclude_slice(root, "01", validation="NEEDS_FIX", corrections=["fix"], revalidation="pending"))
     invalid_execution("initial-pass-with-revalidation", lambda root: conclude_slice(root, "01", revalidation="PASS"))
-    invalid_execution("missing-evidence-field", lambda root: (conclude_slice(root, "01"), replace_task_text(root, "01", "validation: PASS\n", "")))
-    invalid_execution("duplicate-evidence-field", lambda root: (conclude_slice(root, "01"), replace_task_text(root, "01", "validation: PASS\n", "validation: PASS\nvalidation: PASS\n")))
-    invalid_execution("malformed-tests-list", lambda root: (conclude_slice(root, "01"), replace_task_text(root, "01", "tests_executed:\n  - fixture-test-01\n", "tests_executed:\n  fixture-test-01\n")))
-    invalid_execution("inline-filled-tests-list", lambda root: (conclude_slice(root, "01"), replace_task_text(root, "01", "tests_executed:\n  - fixture-test-01\n", "tests_executed: [fixture-test-01]\n")))
+    invalid_execution("missing-evidence-field", lambda root: (conclude_slice(root, "01"), replace_task_text(root, "01", "- Validação: PASS\n", "")))
+    invalid_execution("duplicate-evidence-field", lambda root: (conclude_slice(root, "01"), replace_task_text(root, "01", "- Validação: PASS\n", "- Validação: PASS\n- Validação: PASS\n")))
+    invalid_execution("malformed-tests-list", lambda root: (conclude_slice(root, "01"), replace_task_text(root, "01", "- Testes executados:\n  - fixture-test-01\n", "- Testes executados:\n  fixture-test-01\n")))
+    invalid_execution("inline-filled-tests-list", lambda root: (conclude_slice(root, "01"), replace_task_text(root, "01", "- Testes executados:\n  - fixture-test-01\n", "- Testes executados: [fixture-test-01]\n")))
 
     not_applicable_pass = base / "not-applicable-pass"
     execution_fixture(not_applicable_pass)

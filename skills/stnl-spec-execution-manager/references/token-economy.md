@@ -27,4 +27,4 @@ For one slice, start with:
 
 Do not load future slice details, completed slice task records, all requirements artifacts, all tests, previous conversation summaries, or the whole repository without a concrete reason.
 
-Detailed evidence stays concise: changed areas, scope expansion if any, test result, validation verdict, findings, corrections, revalidation, diff summary, final result, and optional commit. Do not store command output, failed attempts, chats, permanent handoffs, or repeated criteria.
+Detailed evidence stays concise: changed areas, scope expansion if any, divergences, test result, validation verdict, findings, corrections, revalidation, diff summary, and final result. Do not store command output, failed attempts, chats, permanent handoffs, or repeated criteria.

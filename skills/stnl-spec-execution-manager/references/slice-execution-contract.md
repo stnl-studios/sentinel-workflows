@@ -22,9 +22,9 @@ The executor may implement scoped work, run relevant tests, complete local check
 
 A finalized slice accepts only final test evidence:
 
-- `tests_executed` is a YAML block list of commands, suites, or observable checks, or `[]` when no test applies.
-- `test_result` is `PASS` when tests ran successfully, or `not_applicable` only when no executable or observable test applies.
-- `test_reason` is required only with `not_applicable` and must be objective and specific.
+- `Testes executados` lists commands, suites, or observable checks, or `nenhum` when no test applies.
+- `Resultado dos testes` is `PASS` when tests ran successfully, or `not_applicable` only when no executable or observable test applies.
+- `Justificativa sem teste` is required only with `not_applicable` and must be objective and specific.
 
 Do not store full command output, discarded attempts, transcript fragments, or internal reasoning.
 
@@ -37,7 +37,7 @@ Validation is independent and read-only for code. Compare the selected diff with
 
 Each finding includes problem, evidence, impact, related requirement/plan/task, and expected correction. Validation does not implement corrections, update `tasks.md`, finalize the slice, or create commits.
 
-If `validation` is pending, write the verdict to `validation`. If `validation` is `NEEDS_FIX`, corrections are recorded, and `revalidation` is pending, write the focused verdict to `revalidation`. Do not overwrite the initial validation history. Block incompatible states such as revalidation without recorded corrections, corrections after initial `PASS`, or an attempt to replace an existing verdict.
+If `Validação` is pending, write the verdict there. If `Validação` is `NEEDS_FIX`, corrections are recorded, and `Revalidação` is pending, write the focused verdict to `Revalidação`. Do not overwrite the initial validation history. Block incompatible states such as revalidation without recorded corrections, corrections after initial `PASS`, or an attempt to replace an existing verdict.
 
 ## Apply Findings
 
@@ -49,13 +49,9 @@ If a correction requires a material requirements, scope, dependency, or strategy
 
 Finalization implements no new functionality. It verifies checklist, evidence, validation, findings, corrections, revalidation, diff summary, and scope boundaries.
 
-For initial validation `PASS`, record `revalidation: not_required`. For initial validation `NEEDS_FIX`, require non-empty corrections and independent focused revalidation with `PASS`.
+For initial validation `PASS`, record `Revalidação: not_required`. For initial validation `NEEDS_FIX`, require non-empty corrections and independent focused revalidation with `PASS`.
 
-Only then finalize `tasks/slice-NN.md`, mark the selected row `[x]` in `tasks.md`, record a short result, and stop. Do not start another slice, materialize new files, alter requirements, or create a commit unless a separate operation requests it.
-
-## Commit
-
-Committing a slice is a separate optional operation after finalization. Stage only files belonging to the finalized slice and do not alter implementation. Functional content and evidence are immutable after conclusion; commit hash or equivalent operational metadata may be appended to `tasks/slice-NN.md` when the artifact supports it, but tasks, tests, findings, corrections, validation, revalidation, and final result must not be rewritten.
+Only then finalize `tasks/slice-NN.md`, mark the selected row `[x]` in `tasks.md`, record a short result, and stop. Do not start another slice, materialize new files, alter requirements, or create a commit. The user may commit manually after finalization; that manual step is outside this skill and is not recorded as slice state.
 
 ## Parallelize
 

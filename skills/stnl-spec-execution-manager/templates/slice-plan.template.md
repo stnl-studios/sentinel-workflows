@@ -5,22 +5,18 @@ purpose: Template for detailed planning of one observable execution slice.
 status: ready
 read_when: Preparing, executing, validating, correcting, or finalizing this slice.
 do_not_read_when: A different independent slice is the active scope.
-contains: Source reference, objective, observable result, requirements references, boundaries, likely areas, dependencies, risks, strategy, checks, ready criterion, and parallel assessment.
+contains: Source reference, objective, observable result, requirements references, boundaries, likely areas, dependencies, risks, strategy, checks, completion criterion, and parallel assessment.
 owner: stnl-spec-execution-manager
 update_policy: PLAN creates; REVIEW_PLAN may revise before task materialization; later changes require an explicit recorded reason before execution.
 ```
 
 # Slice 01 - <Name>
 
-## Metadata
+## Referências
 
-```yaml
-slice: 01
-requirements_source: <relative path from this file>
-plan: ../plan.md
-parallelizable: false
-parallel_safety: not_applicable
-```
+- Slice: 01
+- Fonte de requisitos: `<relative path from this file>`
+- Plano global: `../plan.md`
 
 ## Objective
 
@@ -70,9 +66,11 @@ Likely areas guide discovery; they are not an absolute allowlist. Record and ass
 
 - <Relevant test, suite, command, or observable check.>
 
-## Ready Criterion
+## Critério de conclusão
 
-<Conditions required before this slice can be executed.>
+- <observable and verifiable result>
+- <minimum tests or validations>
+- <important boundary that remains preserved>
 
 ## Parallelization Assessment
 
