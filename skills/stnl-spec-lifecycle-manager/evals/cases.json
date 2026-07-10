@@ -1185,5 +1185,147 @@
     "assertions": [
       "blocked SPEC can temporarily omit acceptance criteria with a global open question"
     ]
+  },
+  {
+    "id": "template-ac-isolated-valid",
+    "operation": "INIT",
+    "runner": "template_isolated",
+    "fixture": "acceptance_criteria",
+    "input_files": [
+      "templates/feature_spec.template.md",
+      "templates/shared-acceptance-criteria.template.md"
+    ],
+    "expected_files": [
+      "feature_spec.md",
+      "shared/acceptance-criteria.md"
+    ],
+    "allowed_changes": [
+      "feature_spec.md",
+      "shared/acceptance-criteria.md"
+    ],
+    "expected_valid": true,
+    "expected_status": "draft",
+    "expected_ids": [
+      "AC-001"
+    ],
+    "expected_links": {},
+    "assertions": [
+      "AC template materializes without decisions or constraints",
+      "no artificial references are created"
+    ]
+  },
+  {
+    "id": "template-decision-isolated-valid",
+    "operation": "INIT",
+    "runner": "template_isolated",
+    "fixture": "decisions",
+    "input_files": [
+      "templates/feature_spec.template.md",
+      "templates/shared-decisions.template.md"
+    ],
+    "expected_files": [
+      "feature_spec.md",
+      "shared/decisions.md"
+    ],
+    "allowed_changes": [
+      "feature_spec.md",
+      "shared/decisions.md"
+    ],
+    "expected_valid": true,
+    "expected_status": "draft",
+    "expected_ids": [
+      "D-001"
+    ],
+    "expected_links": {},
+    "assertions": [
+      "decision template materializes without constraints",
+      "no artificial references are created"
+    ]
+  },
+  {
+    "id": "template-constraint-isolated-valid",
+    "operation": "INIT",
+    "runner": "template_isolated",
+    "fixture": "constraints",
+    "input_files": [
+      "templates/feature_spec.template.md",
+      "templates/shared-constraints.template.md"
+    ],
+    "expected_files": [
+      "feature_spec.md",
+      "shared/constraints.md"
+    ],
+    "allowed_changes": [
+      "feature_spec.md",
+      "shared/constraints.md"
+    ],
+    "expected_valid": true,
+    "expected_status": "draft",
+    "expected_ids": [
+      "C-001"
+    ],
+    "expected_links": {},
+    "assertions": [
+      "constraint template materializes without decisions",
+      "no artificial references are created"
+    ]
+  },
+  {
+    "id": "template-risk-isolated-valid",
+    "operation": "INIT",
+    "runner": "template_isolated",
+    "fixture": "risks",
+    "input_files": [
+      "templates/feature_spec.template.md",
+      "templates/shared-risks.template.md"
+    ],
+    "expected_files": [
+      "feature_spec.md",
+      "shared/risks.md"
+    ],
+    "allowed_changes": [
+      "feature_spec.md",
+      "shared/risks.md"
+    ],
+    "expected_valid": true,
+    "expected_status": "draft",
+    "expected_ids": [
+      "R-001"
+    ],
+    "expected_links": {},
+    "assertions": [
+      "risk template materializes without AC or constraints",
+      "no artificial references are created"
+    ]
+  },
+  {
+    "id": "template-question-isolated-valid",
+    "operation": "INIT",
+    "runner": "template_isolated",
+    "fixture": "questions",
+    "input_files": [
+      "templates/feature_spec.template.md",
+      "templates/shared-questions.template.md"
+    ],
+    "expected_files": [
+      "feature_spec.md",
+      "shared/questions.md"
+    ],
+    "allowed_changes": [
+      "feature_spec.md",
+      "shared/questions.md"
+    ],
+    "expected_valid": true,
+    "expected_status": "blocked",
+    "expected_ids": [
+      "Q-001"
+    ],
+    "expected_links": {
+      "Q-001.blocks": []
+    },
+    "assertions": [
+      "question template materializes as a global blocker",
+      "no acceptance criteria category is created"
+    ]
   }
 ]

@@ -15,7 +15,6 @@ update_policy: INIT and RESUME maintain constraints through explicit documentary
 ### C-001 — {{ITEM_TITLE}}
 
 - status: active
-- references: [D-001]
 
 #### Restrição
 

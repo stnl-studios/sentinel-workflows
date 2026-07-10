@@ -47,7 +47,6 @@ update_policy: Update only through an explicit future documentary lifecycle acti
 ### AC-001 — {{ITEM_TITLE}}
 
 - status: active
-- references: [D-001, C-001]
 
 {{CONTENT}}
 
@@ -56,7 +55,6 @@ update_policy: Update only through an explicit future documentary lifecycle acti
 ### D-001 — {{ITEM_TITLE}}
 
 - status: accepted
-- references: [C-001]
 
 #### Contexto
 
@@ -75,7 +73,6 @@ update_policy: Update only through an explicit future documentary lifecycle acti
 ### C-001 — {{ITEM_TITLE}}
 
 - status: active
-- references: [D-001]
 
 #### Restrição
 
@@ -91,7 +88,6 @@ update_policy: Update only through an explicit future documentary lifecycle acti
 
 - status: active
 - impact: high
-- references: [C-001, AC-001]
 
 #### Risco
 

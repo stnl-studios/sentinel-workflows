@@ -227,6 +227,39 @@ def shared_document(template_name: str, status: str, root_heading: str, item: st
     return template_header(template_name, status) + f"# {root_heading}\n\n{item}"
 
 
+def instantiate_template(name: str, status: str) -> str:
+    text = (TEMPLATE_ROOT / name).read_text(encoding="utf-8")
+    text, replacements = re.subn(r"(?m)^status: \S+$", f"status: {status}", text, count=1)
+    expect(replacements == 1, f"template header status is missing: {name}")
+    values = {
+        "{{FEATURE_NAME}}": "Isolated Template Feature",
+        "{{OBJECTIVE}}": "Validate isolated template materialization.",
+        "{{ITEM_TITLE}}": "Isolated template item",
+        "{{CONTENT}}": "Concrete durable fixture content with enough structural detail for validation.",
+    }
+    for placeholder, value in values.items():
+        text = text.replace(placeholder, value)
+    return text
+
+
+def render_isolated_feature(category_key: str) -> str:
+    category = next(category for category in CATEGORIES if category.key == category_key)
+    text = instantiate_template("feature_spec.template.md", "blocked" if category_key == "questions" else "draft")
+    artifact_index = f"```yaml\nartifacts:\n  {category.key}: shared/{category.filename}\n```"
+    text = text.replace("```yaml\nartifacts: {}\n```", artifact_index, 1)
+    if category_key == "questions":
+        text = text.replace("open_questions: []", "open_questions: [Q-001]", 1)
+    return text
+
+
+def write_isolated_template_workspace(root: Path, category_key: str) -> None:
+    category = next(category for category in CATEGORIES if category.key == category_key)
+    write(root / "feature_spec.md", render_isolated_feature(category_key))
+    template_name = f"shared-{category.filename.removesuffix('.md')}.template.md"
+    status = "blocked" if category_key == "questions" else "ready"
+    write(root / f"shared/{category.filename}", instantiate_template(template_name, status))
+
+
 def write_full_workspace(root: Path, status: str) -> None:
     question_status = "open" if status == "blocked" else "resolved"
     artifact_keys = [category.key for category in CATEGORIES]
@@ -576,6 +609,11 @@ def build_close_pair(base: Path, status: str) -> tuple[Path, Path]:
 
 def execute(case: dict[str, object], base: Path) -> tuple[Workspace | None, Path, str | None]:
     runner = case["runner"]
+    if runner == "template_isolated":
+        root = base / "workspace"
+        write_isolated_template_workspace(root, str(case["fixture"]))
+        workspace = validate_workspace(root)
+        return workspace, root, None
     if runner == "resume_resolve":
         workspace, result, _ = run_resume_resolve(case, base)
         return workspace, result, None
@@ -621,13 +659,19 @@ def validate_template_contract() -> None:
         expect(re.search(r"^### (?:AC|D|C|R|Q)-\d{3} — ", after_header, re.MULTILINE) is not None, f"canonical heading missing: {path}")
         expect(re.search(r"(?m)^id:\s*(?:AC|D|C|R|Q)-", after_header) is None, f"duplicate ID field remains: {path}")
         expect("null" not in after_header.casefold(), f"null optional metadata remains: {path}")
+        expect("references:" not in after_header, f"artificial references remain in generic template: {path}")
+        expect("blocked_by:" not in after_header, f"artificial blocked_by remains in generic template: {path}")
+        expect("blocks: [AC-001]" not in after_header, f"artificial question block remains in generic template: {path}")
         expect("{{CONTENT}}" in after_header or "{{ITEM_TITLE}}" in after_header, f"explicit template placeholders missing: {path}")
+    questions = (TEMPLATE_ROOT / "shared-questions.template.md").read_text(encoding="utf-8")
+    expect("- blocks: []" in questions, "generic question template must use global blocks: []")
     feature = (TEMPLATE_ROOT / "feature_spec.template.md").read_text(encoding="utf-8")
     expect(feature.count("```yaml") == 3, "active feature template must use YAML only for header, index, and blockers")
     expect("artifacts: {}" in feature, "active feature template must not pre-list unmaterialized categories")
     closed = (TEMPLATE_ROOT / "closed-feature_spec.template.md").read_text(encoding="utf-8")
     expect(closed.count("```yaml") == 1, "closed template must use YAML only for its File Purpose Header")
     expect("blocked_by:" not in closed and "blocks:" not in closed, "closed template must not preserve active blockers")
+    expect("references:" not in closed, "closed template must not invent optional internal references")
     expect("### Facts" in feature and "### Hypotheses" in feature, "active template lacks real Context headings")
     expect("### Facts" in closed and "### Hypotheses" in closed, "closed template cannot preserve Context structure")
 
@@ -644,6 +688,17 @@ def validate_template_contract() -> None:
         write(closed_workspace / "feature_spec.md", instantiated_closed)
         validated_closed = validate_workspace(closed_workspace)
         expect(validated_closed.status == "closed", "instantiated closed template is structurally invalid")
+        for category in CATEGORIES:
+            isolated = workspace / f"isolated-{category.key}"
+            write_isolated_template_workspace(isolated, category.key)
+            validated_isolated = validate_workspace(isolated)
+            expected_status = "blocked" if category.key == "questions" else "draft"
+            expect(validated_isolated.status == expected_status, f"{category.key} isolated template has wrong status")
+            expect(set(validated_isolated.artifacts) == {category.key}, f"{category.key} isolated template materialized extra categories")
+            expect(set(validated_isolated.items) == {f"{category.prefix}-001"}, f"{category.key} isolated template has wrong IDs")
+            expect(not validated_isolated.broken_references, f"{category.key} isolated template has broken references")
+            if category.key == "questions":
+                expect(validated_isolated.items["Q-001"].metadata.get("blocks") == (), "question template must validate with blocks: []")
 
 
 def main() -> int:
@@ -705,6 +760,11 @@ def main() -> int:
         "blocked-by-resolved-question-rejected",
         "empty-artifact-index-valid",
         "missing-internal-id",
+        "template-ac-isolated-valid",
+        "template-decision-isolated-valid",
+        "template-constraint-isolated-valid",
+        "template-risk-isolated-valid",
+        "template-question-isolated-valid",
         "qualified-external-id",
         "inverse-link-divergence",
         "active-mitigated-risk",

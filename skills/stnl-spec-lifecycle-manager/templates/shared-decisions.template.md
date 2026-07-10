@@ -15,7 +15,6 @@ update_policy: INIT and RESUME maintain decisions with complete context and impa
 ### D-001 — {{ITEM_TITLE}}
 
 - status: accepted
-- references: [C-001]
 
 #### Contexto
 

@@ -15,6 +15,5 @@ update_policy: INIT and RESUME maintain criteria without hiding requirement conf
 ### AC-001 — {{ITEM_TITLE}}
 
 - status: active
-- references: [D-001, C-001]
 
 {{CONTENT}}

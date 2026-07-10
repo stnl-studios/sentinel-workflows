@@ -16,7 +16,6 @@ update_policy: INIT and RESUME retain material exposure and explicit mitigation.
 
 - status: active
 - impact: high
-- references: [C-001, AC-001]
 
 #### Risco
 
