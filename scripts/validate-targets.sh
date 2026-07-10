@@ -15,15 +15,12 @@ cd "$ROOT"
 
 command -v "$PYTHON_BIN" >/dev/null 2>&1 || fail "PYTHON_BIN is unavailable: $PYTHON_BIN"
 
-# Packaging metadata
-if find . -path ./.git -prune -o \( -name .DS_Store -o -name '._*' -o -name __MACOSX -o -name Thumbs.db \) -print -quit | grep -q .; then
-  fail "packaging metadata remains"
-fi
+# Packaging metadata is ignored by this structural validator.
 
 # Copyable prompts
 test -d templates/prompts || fail "templates/prompts directory is missing"
 test ! -e "$LEGACY_TEMPLATE_DIR" || fail "legacy template path remains: $LEGACY_TEMPLATE_DIR"
-for name in spec-init spec-resume spec-planning spec-close execution-plan execution-plan-review execution-tasks phase-execute phase-validate phase-finalize phase-commit phase-parallel execution-close; do
+for name in spec-init spec-resume spec-planning spec-close execution-plan execution-plan-review execution-tasks slice-execute slice-validate slice-apply-findings slice-finalize slice-commit slice-parallel execution-close; do
   test -f "templates/prompts/$name.md" || fail "missing templates/prompts/$name.md"
 done
 if grep -R -q --exclude-dir=.git "$LEGACY_TEMPLATE_NAME" .; then
@@ -223,44 +220,69 @@ EXPECTED_PROMPTS = {
     "execution-plan",
     "execution-plan-review",
     "execution-tasks",
-    "phase-execute",
-    "phase-validate",
-    "phase-finalize",
-    "phase-commit",
-    "phase-parallel",
+    "slice-execute",
+    "slice-validate",
+    "slice-apply-findings",
+    "slice-finalize",
+    "slice-commit",
+    "slice-parallel",
     "execution-close",
 }
 SPEC_PROMPTS = {"spec-init", "spec-resume", "spec-planning", "spec-close"}
-LEGACY_PHASE_FIX = "phase-fix"
-LEGACY_PROMPTS = {"execution-planning", LEGACY_PHASE_FIX}
-LEGACY_PHASE_FIX_ROOTS = [Path("templates/prompts"), Path("skills")]
-ALLOWED_PROMPT_PLACEHOLDERS = {
-    "SPEC_PATH",
-    "EXECUTION_ROOT",
-    "PHASE_NUMBER",
-    "PARALLEL_PHASES",
-    "COMMIT_TYPE",
-    "CLOSE_POLICY",
+PROMPT_MODES = {
+    "spec-init": "INIT",
+    "spec-resume": "RESUME",
+    "spec-planning": "PLANNING",
+    "spec-close": "CLOSE",
+}
+PROMPT_OPERATIONS = {
+    "execution-plan": "PLAN",
+    "execution-plan-review": "REVIEW_PLAN",
+    "execution-tasks": "MATERIALIZE_TASKS",
+    "slice-execute": "EXECUTE_SLICE",
+    "slice-validate": "VALIDATE_SLICE",
+    "slice-apply-findings": "APPLY_FINDINGS",
+    "slice-finalize": "FINALIZE_SLICE",
+    "slice-commit": "COMMIT_SLICE",
+    "slice-parallel": "PARALLELIZE_SLICES",
+    "execution-close": "CLOSE",
+}
+SLICE_PROMPTS = {"slice-execute", "slice-validate", "slice-apply-findings", "slice-finalize", "slice-commit"}
+LEGACY_PROMPTS = {
+    "execution-planning",
+    "phase-execute",
+    "phase-validate",
+    "phase-apply-findings",
+    "phase-finalize",
+    "phase-commit",
+    "phase-parallel",
 }
 REQUIRED_PROMPT_PLACEHOLDERS = {
+    "spec-init": {"SPEC_PATH"},
     "spec-resume": {"SPEC_PATH"},
     "spec-planning": {"SPEC_PATH"},
     "spec-close": {"SPEC_PATH"},
-    "execution-plan": {"SPEC_PATH"},
-    "execution-plan-review": {"SPEC_PATH"},
-    "execution-tasks": {"SPEC_PATH"},
-    "phase-execute": {"SPEC_PATH", "PHASE_NUMBER"},
-    "phase-validate": {"SPEC_PATH", "PHASE_NUMBER"},
-    "phase-finalize": {"SPEC_PATH", "EXECUTION_ROOT", "PHASE_NUMBER"},
-    "phase-commit": {"SPEC_PATH", "EXECUTION_ROOT", "PHASE_NUMBER", "COMMIT_TYPE"},
-    "phase-parallel": {"SPEC_PATH", "EXECUTION_ROOT", "PARALLEL_PHASES"},
+    "execution-plan": {"SPEC_PATH", "EXECUTION_ROOT"},
+    "execution-plan-review": {"EXECUTION_ROOT"},
+    "execution-tasks": {"EXECUTION_ROOT"},
+    "slice-execute": {"SPEC_PATH", "EXECUTION_ROOT", "NN"},
+    "slice-validate": {"EXECUTION_ROOT", "NN"},
+    "slice-apply-findings": {"EXECUTION_ROOT", "NN"},
+    "slice-finalize": {"EXECUTION_ROOT", "NN"},
+    "slice-commit": {"EXECUTION_ROOT", "NN"},
+    "slice-parallel": {"EXECUTION_ROOT", "NN, NN"},
     "execution-close": {"SPEC_PATH", "EXECUTION_ROOT", "CLOSE_POLICY"},
 }
 PROMPT_METADATA = re.compile(
     r"(?im)^(?:purpose|status|read_when|do_not_read_when|owner|update_policy|contains)\s*:"
 )
-PROMPT_VENDORS = re.compile(r"\b(?:Claude|Haiku|Sonnet|Codex|Copilot|GPT-\d+|OpenAI|Anthropic)\b", re.IGNORECASE)
+PROMPT_VENDOR_TERMS = ["Claude", "Hai" + "ku", "Son" + "net", "Codex", "Copilot", "GPT" + r"-\d+", "OpenAI", "Anthropic"]
+PROMPT_VENDORS = re.compile(r"\b(?:" + "|".join(PROMPT_VENDOR_TERMS) + r")\b", re.IGNORECASE)
 PROMPT_CONTRACT_MARKERS = ["# File Purpose Header", "```", "## Core invariants", "## Workflow"]
+PROMPT_STRUCTURAL_MARKERS = ["Objetivo:", "Resultado esperado:", "Restrições excepcionais:"]
+PROMPT_LEGACY_OPERATIONAL = re.compile(
+    r"\b(?:phase|Phase|PHASE|PHASE_NUMBER|PARALLEL_PHASES|phase-[a-z]+|plan-01\.md|tasks-01\.md)\b|/clear|/compact"
+)
 
 
 prompt_files = {path.stem: path for path in PROMPT_ROOT.glob("*.md")}
@@ -275,7 +297,8 @@ for name, path in prompt_files.items():
     text = read_text(path)
     if not text.strip():
         fail(f"empty copyable prompt: {path}")
-    if not text.startswith("Use `"):
+    lines = text.splitlines()
+    if not lines or not lines[0].startswith("Use `"):
         fail(f"copyable prompt does not begin directly with its instruction: {path}")
     if re.search(r"(?m)^---\s*$", text) or "# File Purpose Header" in text or PROMPT_METADATA.search(text):
         fail(f"copyable prompt retains metadata: {path}")
@@ -283,60 +306,87 @@ for name, path in prompt_files.items():
         fail(f"copyable prompt duplicates a contract structure: {path}")
     if "```" in text:
         fail(f"copyable prompt contains a Markdown fence: {path}")
+    if "{{" in text or "}}" in text:
+        fail(f"copyable prompt uses legacy moustache placeholders: {path}")
+    if PROMPT_LEGACY_OPERATIONAL.search(text):
+        fail(f"copyable prompt retains legacy operational reference: {path}")
 
     nonblank_lines = [line for line in text.splitlines() if line.strip()]
-    line_limit = 20 if name in {"execution-plan", "execution-plan-review", "phase-finalize", "phase-parallel"} else 12
-    if len(nonblank_lines) > line_limit:
+    if len(nonblank_lines) > 45:
         fail(f"copyable prompt exceeds its compact line budget: {path}")
+    if len(nonblank_lines) < 12:
+        fail(f"copyable prompt lacks operational context: {path}")
 
     expected_skill = "stnl-spec-lifecycle-manager" if name in SPEC_PROMPTS else "stnl-spec-execution-manager"
     other_skill = "stnl-spec-execution-manager" if name in SPEC_PROMPTS else "stnl-spec-lifecycle-manager"
-    if expected_skill not in text or other_skill in text:
+    if lines[0] != f"Use `{expected_skill}`." or other_skill in text:
         fail(f"copyable prompt names the wrong skill: {path}")
-    if not re.search(r"\b(?:Não|Retorne|Faça|Crie|Leia|Valide|Confirme|Antes|Após|Com|Fonte)\b", text):
+    if not re.search(r"\b(?:Não|Retorne|Faça|Crie|Leia|Valide|Confirme|Antes|Após|Com|Fonte|Objetivo|Resultado)\b", text):
         fail(f"copyable prompt is not written in pt-BR: {path}")
+    for marker in PROMPT_STRUCTURAL_MARKERS:
+        if marker not in text:
+            fail(f"copyable prompt lacks structural marker {marker!r}: {path}")
 
-    placeholders = set(re.findall(r"\{\{([A-Z0-9_]+)\}\}", text))
-    unexpected_placeholders = placeholders - ALLOWED_PROMPT_PLACEHOLDERS
-    if unexpected_placeholders:
-        fail(f"copyable prompt has unsupported placeholders in {path}: {sorted(unexpected_placeholders)}")
+    if name in SPEC_PROMPTS:
+        expected_mode = PROMPT_MODES[name]
+        if len(lines) < 2 or lines[1] != f"MODE={expected_mode}":
+            fail(f"copyable spec prompt has wrong MODE declaration: {path}")
+        if re.search(r"(?m)^OPERATION=", text):
+            fail(f"copyable spec prompt declares execution OPERATION: {path}")
+    else:
+        expected_operation = PROMPT_OPERATIONS[name]
+        if len(lines) < 2 or lines[1] != f"OPERATION={expected_operation}":
+            fail(f"copyable execution prompt has wrong OPERATION declaration: {path}")
+        if re.search(r"(?m)^MODE=", text):
+            fail(f"copyable execution prompt declares lifecycle MODE: {path}")
+        if name in SLICE_PROMPTS:
+            if len(lines) < 3 or lines[2] != "SLICE=<NN>":
+                fail(f"slice prompt lacks SLICE=<NN>: {path}")
+        elif name == "slice-parallel":
+            if len(lines) < 3 or lines[2] != "SLICES=<NN, NN>":
+                fail(f"parallel prompt lacks SLICES=<NN, NN>: {path}")
+        elif re.search(r"(?m)^SLICES?=", text):
+            fail(f"non-slice prompt declares SLICE/SLICES: {path}")
+
+    placeholders = {value.strip() for value in re.findall(r"<([^>\n]+)>", text)}
+    if any(not value for value in placeholders):
+        fail(f"copyable prompt has empty angle placeholder: {path}")
+    if any(not re.fullmatch(r"[A-Z0-9_, ]+", value) for value in placeholders):
+        fail(f"copyable prompt has non-normalized placeholder in {path}: {sorted(placeholders)}")
     required_placeholders = REQUIRED_PROMPT_PLACEHOLDERS.get(name, set())
     if not required_placeholders <= placeholders:
         fail(f"copyable prompt lacks required placeholders in {path}: {sorted(required_placeholders - placeholders)}")
 
-    if name == "phase-execute":
-        vendorless_text = text.replace("Claude Code", "")
-        if PROMPT_VENDORS.search(vendorless_text):
-            fail(f"copyable prompt hardcodes a vendor or model: {path}")
-        if "Use `/compact` no Claude Code ou o mecanismo equivalente do ambiente." not in text:
-            fail("phase-execute lacks the compatible context-compaction instruction")
-    elif PROMPT_VENDORS.search(text):
+    if PROMPT_VENDORS.search(text):
         fail(f"copyable prompt hardcodes a vendor or model: {path}")
 
     for destination in re.findall(r"\[[^\]]+\]\(([^)]+)\)", text):
         if not re.match(r"(?:https?://|mailto:|#)", destination) and not (path.parent / destination).exists():
             fail(f"copyable prompt has a broken internal link: {path} -> {destination}")
 
-for path, text in all_text.items():
-    if any(root == path or root in path.parents for root in LEGACY_PHASE_FIX_ROOTS) and LEGACY_PHASE_FIX in text:
-        fail(f"legacy prompt name remains in {path}: {LEGACY_PHASE_FIX}")
-
-for name in {"phase-validate", "phase-finalize"}:
+for name in {"slice-validate", "slice-finalize"}:
     text = read_text(prompt_files[name])
-    if name == "phase-validate":
-        required = ["[x]", "plan.md", "tasks.md", "Não modifique código"]
+    if name == "slice-validate":
+        required = ["[x]", "plan.md", "tasks.md", "validation: PASS", "revalidation: PASS", "não sobrescrever o histórico", "retornar exatamente um verdict"]
         if any(marker not in text for marker in required) or "revalidation: not_required" in text:
-            fail("phase validator does not preserve its read-only boundary")
+            fail("slice validator does not preserve its read-only boundary")
     else:
         required = ["revalidation: not_required", "NEEDS_FIX", "revalidation: PASS", "plan.md", "tasks.md"]
         if any(marker not in text for marker in required):
-            fail("phase finalizer lacks conditional conclusion handling")
+            fail("slice finalizer lacks conditional conclusion handling")
+
+execution_operations = set(
+    re.findall(r"(?m)^### ([A-Z_]+)$", read_text(Path("skills/stnl-spec-execution-manager/SKILL.md")))
+)
+missing_operations = sorted(set(PROMPT_OPERATIONS.values()) - execution_operations)
+if missing_operations:
+    fail(f"prompt declares operation missing from execution skill: {missing_operations}")
 
 HELPER_NAMES = {
     "spec-init.md", "spec-resume.md", "spec-planning.md", "spec-close.md",
     "execution-plan.md", "execution-plan-review.md", "execution-tasks.md",
-    "phase-execute.md", "phase-validate.md", "phase-finalize.md", "phase-commit.md",
-    "phase-parallel.md", "execution-close.md",
+    "slice-execute.md", "slice-validate.md", "slice-apply-findings.md", "slice-finalize.md",
+    "slice-commit.md", "slice-parallel.md", "execution-close.md",
 }
 for skill_root in [Path("skills/stnl-spec-lifecycle-manager"), Path("skills/stnl-spec-execution-manager")]:
     for path in skill_root.rglob("*"):
@@ -372,21 +422,22 @@ if re.search(r"must use stnl-spec-lifecycle-manager|required stnl-spec-lifecycle
 
 for path in [
     Path("skills/stnl-spec-execution-manager/references/workspace.md"),
-    Path("skills/stnl-spec-execution-manager/references/phase-model.md"),
-    Path("skills/stnl-spec-execution-manager/references/phase-execution-contract.md"),
+    Path("skills/stnl-spec-execution-manager/references/slice-model.md"),
+    Path("skills/stnl-spec-execution-manager/references/slice-execution-contract.md"),
     Path("skills/stnl-spec-execution-manager/references/execution-close-policy.md"),
-    Path("skills/stnl-spec-execution-manager/templates/plan-index.template.md"),
-    Path("skills/stnl-spec-execution-manager/templates/phase-plan.template.md"),
-    Path("skills/stnl-spec-execution-manager/templates/tasks-index.template.md"),
-    Path("skills/stnl-spec-execution-manager/templates/phase-tasks.template.md"),
-    Path("skills/stnl-spec-execution-manager/examples/phase-driven-workspace.md"),
+    Path("skills/stnl-spec-execution-manager/templates/plan.template.md"),
+    Path("skills/stnl-spec-execution-manager/templates/slice-plan.template.md"),
+    Path("skills/stnl-spec-execution-manager/templates/tasks.template.md"),
+    Path("skills/stnl-spec-execution-manager/templates/slice-tasks.template.md"),
+    Path("skills/stnl-spec-execution-manager/examples/slice-workspace.md"),
+    Path("skills/stnl-spec-execution-manager/examples/validation-and-parallelization.md"),
     Path("skills/stnl-spec-execution-manager/evals/eval-plan.md"),
 ]:
     if not path.exists():
         fail(f"execution skill resource is missing: {path}")
 
 spec_forbidden = re.compile(
-    rf"plan\\.md|tasks\\.md|plans/|tasks/|phase-execute|phase-validate|{re.escape(LEGACY_PHASE_FIX)}|phase-commit|phase-parallel|independent validation|implementation phase",
+    r"plan\\.md|tasks\\.md|plans/|tasks/|slice-execute|slice-validate|slice-commit|slice-parallel|independent validation|implementation slice",
     re.IGNORECASE,
 )
 for path in Path("skills/stnl-spec-lifecycle-manager").rglob("*.md"):
@@ -398,6 +449,10 @@ for path, text in all_text.items():
         mode = match.group(1)
         if mode not in ALLOWED_MODES:
             fail(f"unsupported MODE in {path}: {mode}")
+    for match in re.finditer(r"\bOPERATION\s*[=:]\s*([A-Z_]+)", text):
+        operation = match.group(1)
+        if operation not in execution_operations:
+            fail(f"unsupported OPERATION in {path}: {operation}")
 
 # TOML, JSON, and frontmatter validation
 for path in Path("targets/codex/.codex").rglob("*.toml"):

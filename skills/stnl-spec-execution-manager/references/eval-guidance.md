@@ -1,10 +1,10 @@
 # File Purpose Header
 
 ```yaml
-purpose: Define evaluation expectations for changes to the delivery workflow skill.
+purpose: Define evaluation expectations for changes to the slice execution workflow skill.
 status: not_applicable
 read_when: Updating the skill, templates, prompts, examples, or structural checks.
-do_not_read_when: Running ordinary delivery work.
+do_not_read_when: Running ordinary slice execution work.
 contains: Evaluation scope, quality categories, and regression signals.
 owner: stnl-spec-execution-manager
 update_policy: Expand when a real regression reveals a missing invariant.
@@ -12,6 +12,6 @@ update_policy: Expand when a real regression reveals a missing invariant.
 
 # Eval Guidance
 
-Use the named cases in `evals/eval-plan.md` before adopting a substantial change. Check requirements preservation, phase boundaries, selective reading, evidence quality, independent validation, safe parallelization, retention policies, headers on internal artifacts, and no mandatory provider or model.
+Use the named cases in `evals/eval-plan.md` before adopting a substantial change. Check requirements preservation, slice boundaries, upfront task materialization, deterministic current-slice selection, relative paths, selective reading, evidence quality, independent validation, safe parallelization, closure boundaries, headers on internal artifacts, and absence of mandatory provider or model.
 
-Fail a change that silently changes requirements, completes a phase before validation, lets validation repair code, duplicates details in an index, lets workers update shared indices concurrently, reopens concluded work, or forces removal under `validate_only` or `consolidate_and_keep`.
+Fail a change that silently edits requirements, stores progress in `plan.md`, omits detailed task files after `MATERIALIZE_TASKS`, completes a slice before validation, lets validation repair code, duplicates detailed content in global artifacts, updates `tasks.md` concurrently during parallel work, reopens concluded work, or makes closure modify the requirements source.

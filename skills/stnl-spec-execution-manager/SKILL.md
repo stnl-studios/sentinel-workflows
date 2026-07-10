@@ -1,118 +1,142 @@
 ---
 name: stnl-spec-execution-manager
-description: Use to conservatively plan, execute, validate, correct, and close delivery work from a clear requirements document while preserving scope and evidence boundaries.
+description: Use to plan, execute, validate, correct, finalize, and close incremental delivery slices from a clear requirements source while preserving authority, selective reading, and evidence boundaries.
 ---
 
 # stnl-spec-execution-manager
 
 ## Purpose
 
-Manage an optional delivery workflow from a sufficiently clear requirements source:
+Manage an optional delivery workflow from any sufficiently clear requirements source:
 
 ```text
-requirements source
-→ plan
-→ self-critique
-→ tasks
-→ phase delivery
-→ tests
-→ validation
-→ correction
-→ revalidation
-→ conclusion
-→ operational closure
+requirements
+-> PLAN
+-> REVIEW_PLAN
+-> MATERIALIZE_TASKS
+-> EXECUTE_SLICE
+   or PARALLELIZE_SLICES when independent slices are explicit
+-> VALIDATE_SLICE
+-> APPLY_FINDINGS
+-> FINALIZE_SLICE
+-> optional COMMIT_SLICE
+-> CLOSE
 ```
 
-The input can be a `feature_spec.md` produced by any process or any other clear requirements document. This skill does not require a particular SPEC skill, vendor, model, agent topology, or commit policy.
+The source may be a `feature_spec.md` produced by another process or any other clear requirements document. This skill does not require a particular requirements skill, vendor, model, agent topology, context-reset command, subagent, or commit policy.
 
-It preserves requirements authority. If delivery work exposes an ambiguity, requirement conflict, scope change, or material strategy decision that the source does not authorize, stop the affected work, record the divergence, and return it to the owner of the requirements process. Do not solve a requirements problem by silently changing tasks or implementation.
+Run exactly one operation per invocation. Do not silently continue into the next operation.
 
-## Inputs and workspace selection
+## Authority Boundary
 
-Accept a requirements path, an optional execution root, an optional requested phase, and user-supplied operational constraints. Preserve the source document exactly where it is. When the source is `feature_spec.md`, default the execution root to `<spec-root>/execution/`. For another source without its own execution workspace, use a sibling `<requirements-name>-execution/` workspace. Record the explicit relative source path in `plan.md` and each detailed plan.
+The requirements source remains the product authority. This skill may plan and execute against it, but it must not:
 
-The common colocated layout is:
+- silently change requirements;
+- reinterpret criteria to fit an implementation;
+- incorporate new decisions directly into the source;
+- resolve scope changes through tasks;
+- edit lifecycle-owned documentary artifacts.
+
+When execution exposes ambiguity, conflict, material scope change, new material dependency, or an unauthorized strategic decision, record the divergence concisely in the selected slice task file, block only affected work, and report that the matter must return to the requirements process.
+
+## Workspace
+
+Accept a requirements path, an optional execution root, an operation, and operation-specific arguments such as a slice number or close policy. When the source is `feature_spec.md`, default the execution root to `<spec-root>/execution/`. For another source, preserve it and default to a sibling `<requirements-name>-execution/` root.
+
+Standard layout:
 
 ```text
-<spec-workspace>/
-├── feature_spec.md
-├── shared/
-└── execution/
-    ├── plan.md
-    ├── plans/
-    │   ├── plan-01.md
-    │   ├── plan-02.md
-    │   └── ...
-    ├── tasks.md
-    └── tasks/
-        ├── tasks-01.md
-        ├── tasks-02.md
-        └── ...
+<execution-root>/
+├── plan.md
+├── plans/
+│   ├── slice-01.md
+│   ├── slice-02.md
+│   └── ...
+├── tasks.md
+└── tasks/
+    ├── slice-01.md
+    ├── slice-02.md
+    └── ...
 ```
 
-Do not rename, move, or copy an external source merely to fit this layout. `plan.md` is the compact authority for the chosen execution workspace and records `requirements_source` as an explicit relative path. Execution artifacts never belong to the requirements source's documentary workspace.
+All persisted paths are relative to the artifact that contains them. For example, `execution/plan.md` may use `../feature_spec.md`, `execution/plans/slice-01.md` may use `../../feature_spec.md`, and `execution/tasks/slice-01.md` must point to `../plans/slice-01.md`.
 
-## Operational contracts
+## Artifact Contracts
 
-1. `plan.md` is a compact cumulative index. Every foreseeable phase has one `[ ]` or `[x]` row and a detailed file in `plans/`.
-2. `plans/plan-NN.md` defines one observable delivery, its requirements references, boundaries, likely areas, dependencies, risks, strategy, expected tests or validation, and ready criterion. Likely areas guide discovery, not an absolute allowlist; record and assess any expansion. It never becomes a microtask checklist.
-3. `tasks.md` is a compact cumulative index. It does not discard earlier work or duplicate detailed task content.
-4. `tasks/tasks-NN.md` records one detailed checklist, expected and actual areas, acceptance per task, tests, findings, corrections, revalidation, diff summary, and result.
-5. A phase has only `[ ]` or `[x]`. Tasks may be completed earlier; the phase is `[x]` only after mandatory tasks, final test evidence (`PASS` with recorded tests or `not_applicable` with a specific reason), and finalization following independent validation. Focused revalidation must also pass when initial validation returned `NEEDS_FIX`; otherwise finalization records it as `not_required`.
-6. A completed phase is immutable. Later work becomes a new corrective or complementary phase.
-7. Validation returns exactly `PASS` or `NEEDS_FIX`, changes no code, records its verdict and findings in the selected phase artifact, and does not accept the executor's self-declaration as proof.
-8. Parallel delivery is permitted only after the explicit non-overlap check. Workers update only their own detailed task files; a coordinator serializes index changes.
+- `plan.md` preserves compact global context: requirements source, overall objective, delivery strategy, slice order, dependencies, each slice summary, expected areas, coverage references, parallelization notes, and detailed plan paths. It is not a progress authority and must not duplicate completion checkboxes.
+- `plans/slice-NN.md` defines one observable, testable, coherent delivery suitable for a dedicated commit-sized unit. It includes exact requirements references, included and excluded scope, boundaries with other slices, likely affected areas, dependencies, risks, strategy, expected tests, ready criterion, and parallelization assessment.
+- `tasks.md` is the only global progress authority. It has one compact `[ ]` or `[x]` row per slice with summary, dependencies, detailed task path, test summary, validation summary, and final result.
+- `tasks/slice-NN.md` is the complete operational record for one slice: metadata, plan link, covered requirements, numbered checklist, expected areas and acceptance per task, expected tests, actual changes, scope expansion, test evidence, validation verdict and findings, corrections, revalidation, diff summary, final result, and optional commit.
 
-## Workflow
+`[ ]` means not concluded. `[x]` means concluded. No other global slice state is required.
 
-### Plan
+The current slice, when the caller does not name one, is the first `[ ]` row in `tasks.md` whose dependencies are `[x]` and whose detailed task file does not record a blocking divergence. If more than one slice is eligible because work is parallel-safe, the caller must explicitly name the slices.
 
-Read the requirements source and only relevant code. Create the compact plan index and all foreseeable detailed plans. Do not create task indices or detailed task files.
+## Operations
 
-### Plan review
+### PLAN
 
-Self-critique the plan for phase sizing, dependencies, requirements coverage, migrations, external dependencies, breaking changes, shared files and state, testability, order, assumptions, and parallel safety. Correct the plan directly; do not create tasks.
+Read the requirements source, required referenced records, shallow project structure, directly related code, and concrete imports or calls needed to understand likely impact. Create `plan.md` and every foreseeable `plans/slice-NN.md`. Do not create tasks and do not implement.
 
-### Task materialization
+### REVIEW_PLAN
 
-From the approved plan, create the compact tasks index and materialize only `tasks/tasks-01.md` or the next executable detailed task file.
+Read `plan.md`, relevant detailed plans, and relevant requirements references. Open code only to verify a concrete concern such as hidden dependencies, migrations, external integrations, breaking changes, shared state, architecture boundaries, or test risk. Correct the plan directly. Do not create tasks and do not implement.
 
-### Phase delivery
+### MATERIALIZE_TASKS
 
-Read the requirements source, selected detailed plan, selected detailed tasks, linked records, and related code. Implement the selected scope, run relevant tests, complete individual tasks, and record concise evidence. Do not complete the phase index row.
+Read `plan.md`, all approved detailed slice plans, and only requirements excerpts needed to make acceptance objective. Create `tasks.md` and every `tasks/slice-NN.md`. Do not reread the codebase by default and do not implement.
 
-### Validation, correction, and conclusion
+### EXECUTE_SLICE
 
-An independent validator compares the diff, selected plan, tasks, requirements, and test record without changing code, detailed evidence, or compact indices. `NEEDS_FIX` findings state problem, evidence, impact, reference, and expected correction. Finalization processes the persisted verdict: an initial `PASS` records `revalidation: not_required`, finalizes the detailed record, and updates both compact indices; `NEEDS_FIX` permits only its findings and necessary effects to be corrected, retested when tests apply, recorded, and independently revalidated. A material requirements or strategy change blocks delivery. After revalidation `PASS`, finalization updates both compact indices; materialize later tasks only in a separate task-materialization operation.
+Start with `plan.md`, `tasks.md`, `plans/slice-NN.md`, `tasks/slice-NN.md`, and only requirements referenced by the selected slice. Then read explicitly listed files, required imports, related tests, and additional files only when a concrete need appears. Implement only the selected slice, update individual tasks and concise evidence, and do not mark the global slice row `[x]`.
 
-### Operational closure
+### VALIDATE_SLICE
 
-Cross-check requirements, indices, detailed records, code, tests, findings, and evidence. Do not rely only on checkboxes. Use an explicit policy:
+Validate independently from implementation. Read only the selected diff, `plans/slice-NN.md`, `tasks/slice-NN.md`, referenced requirements, test evidence, changed code, and dependencies needed to verify the diff. Do not correct code. Persist exactly `PASS` or `NEEDS_FIX`; each finding records problem, evidence, impact, related requirement/plan/task, and expected correction.
 
-- `consolidate_and_remove`: incorporate only durable user-requested facts into the requirements source when appropriate, then remove delivery artifacts.
-- `consolidate_and_keep`: incorporate allowed durable facts and retain delivery artifacts.
-- `validate_only`: report compatibility and retain all inputs unchanged.
+### APPLY_FINDINGS
 
-The default policy is decided by the caller; the skill never requires destructive consolidation.
+Read persisted findings, the selected task file, its plan, affected files, related tests, and directly involved requirements. Correct only reported findings and necessary effects. Rerun affected tests and record corrections. If a correction requires a material requirements, scope, dependency, or strategy change, block and record the divergence.
+
+### FINALIZE_SLICE
+
+Do not implement functionality. Verify checklist, tests, validation, findings, corrections, revalidation, diff summary, and absence of work belonging to other slices. If initial validation was `PASS`, record `revalidation: not_required`. If it was `NEEDS_FIX`, require independent focused revalidation with `PASS`. Then finalize the detailed task file, mark the row `[x]` in `tasks.md`, record a short result, and stop.
+
+### COMMIT_SLICE
+
+Commit only a finalized slice after checking `tasks.md`, the selected `tasks/slice-NN.md`, validation state, and `git status`. Stage only changes belonging to that slice, use a conventional message when no stricter convention is provided, and do not alter code. Functional content and evidence of a concluded slice are immutable; later operational metadata such as the commit hash may be appended when the task artifact permits it, but tasks, tests, findings, corrections, validation, revalidation, and final result must not be rewritten during commit.
+
+### PARALLELIZE_SLICES
+
+Evaluate explicitly named slices for independent execution. Verify dependencies, file overlap, shared state, schemas, contracts, fixtures, generated code, mutable tests, external resources, and ordering constraints. If independence is not proven, block parallelization. If permitted, each slice execution reads and writes only its own detailed task file and related implementation files; `tasks.md` updates are integrated later in a serial step. Do not require a particular agent topology and do not create commits automatically.
+
+### CLOSE
+
+Cross-check requirements, `plan.md`, `tasks.md`, detailed plans, detailed task files, code, tests, findings, and evidence. Do not trust checkboxes alone. Closure may validate and keep execution artifacts, validate and remove execution artifacts when explicitly requested, or only report validation. It must never modify the requirements source or lifecycle-owned artifacts.
 
 ## File Purpose Header
 
-Every applicable delivery artifact, template, reference, example, and eval starts with `# File Purpose Header`, followed by one YAML block containing exactly: `purpose`, `status`, `read_when`, `do_not_read_when`, `contains`, `owner`, and `update_policy`.
+Every applicable execution reference, template, example, and eval starts with `# File Purpose Header`, followed by one YAML block containing exactly: `purpose`, `status`, `read_when`, `do_not_read_when`, `contains`, `owner`, and `update_policy`.
 
-Use only `draft`, `ready`, `blocked`, `done`, `closed`, or `not_applicable` for header status. Keep headers concise and selective-reading oriented; never put a delivery phase state in the header.
+Use only `draft`, `ready`, `blocked`, `done`, `closed`, or `not_applicable` for header status. Header status describes the artifact, never slice progress.
 
-## Lazy-loading map
+## Lazy Loading
 
 | Operation | Read |
 |---|---|
-| Initial planning | `references/workspace.md`, `phase-model.md`, `phase-execution-contract.md`, `token-economy.md`, source requirements, and relevant code |
-| Deliver one phase | source requirements, selected `plans/plan-NN.md`, selected `tasks/tasks-NN.md`, linked records, and related code |
-| Validate one phase | source requirements, selected plan and tasks, phase diff, and test record |
-| Correct and conclude | selected findings, selected task file, affected code, and related tests |
-| Operational closure | `execution-close-policy.md`, compact indices, and only details needed to resolve coverage gaps |
+| `PLAN` | `references/workspace.md`, `slice-model.md`, `token-economy.md`, requirements, and progressively discovered code |
+| `REVIEW_PLAN` | `plan.md`, relevant `plans/slice-NN.md`, relevant requirements, and code only for concrete risks |
+| `MATERIALIZE_TASKS` | `plan.md`, all `plans/slice-NN.md`, and only necessary requirement excerpts |
+| `EXECUTE_SLICE` | `plan.md`, `tasks.md`, selected plan, selected task file, referenced requirements, and related code/tests |
+| `VALIDATE_SLICE` | selected diff, selected plan/task files, referenced requirements, test evidence, and changed code |
+| `APPLY_FINDINGS` | persisted findings, selected task file, affected code, related tests, and directly involved requirements |
+| `FINALIZE_SLICE` | selected task file, `tasks.md`, selected plan, evidence, and final diff summary |
+| `COMMIT_SLICE` | `tasks.md`, selected task file, final validation evidence, and `git status` |
+| `PARALLELIZE_SLICES` | `plan.md`, `tasks.md`, selected plans, selected task files, and concrete overlap evidence |
+| `CLOSE` | `execution-close-policy.md`, global artifacts, and only details required for cross-checking |
 
-Load examples only to clarify format. Do not load all plans, all task files, all requirements records, or the whole repository by default.
+Load examples only to clarify format. Do not load all detailed plans, all detailed task files, all requirements records, previous session history, or the whole repository by default.
 
 ## Evaluation
 
-Read `references/eval-guidance.md` and use `evals/eval-plan.md` when changing this skill. Validate phase boundaries, requirement preservation, selective reads, independent validation, safe parallelization, closure policies, headers, and no mandatory vendor or model.
+When changing this skill, read `references/eval-guidance.md` and use `evals/eval-plan.md`. Validate slice boundaries, task materialization, relative paths, selective reads, independent validation, evidence quality, requirements preservation, safe parallelization, closure policy, headers, and absence of mandatory vendor or model.

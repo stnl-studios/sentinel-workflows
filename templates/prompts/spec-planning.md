@@ -1,7 +1,26 @@
-Use `stnl-spec-lifecycle-manager` em `MODE=PLANNING`.
+Use `stnl-spec-lifecycle-manager`.
+MODE=PLANNING
 
-SPEC: `{{SPEC_PATH}}`.
-Faça uma revisão documental somente leitura da prontidão da SPEC.
-Não altere arquivos, não crie plano nem tarefas e não explore implementação além do necessário para verificar clareza documental.
+SPEC:
+- <SPEC_PATH>
 
-Retorne `READY` ou `NEEDS_RESUME` seguido somente de achados acionáveis com suas referências.
+Foco adicional:
+- <PLANNING_REVIEW_FOCUS_OR_NONE>
+
+Objetivo:
+- revisar a prontidão documental da SPEC para planejamento posterior
+
+Entrada mínima:
+- `feature_spec.md` e artefatos compartilhados da SPEC
+
+Escopo:
+- entra: clareza, consistência, critérios, decisões, riscos, restrições e perguntas abertas
+- fora: alteração de arquivos, plano de execução, tasks e implementação
+
+Resultado esperado:
+- retornar `READY` ou `NEEDS_RESUME`
+- listar somente achados acionáveis com referências quando houver
+- não modificar artefatos
+
+Restrições excepcionais:
+- <EXCEPTIONAL_CONSTRAINTS_OR_NONE>

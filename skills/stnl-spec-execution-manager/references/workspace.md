@@ -1,39 +1,47 @@
 # File Purpose Header
 
 ```yaml
-purpose: Define delivery workspace selection, source preservation, and artifact responsibilities.
+purpose: Define slice execution workspace selection, source preservation, relative paths, and artifact responsibilities.
 status: not_applicable
-read_when: Selecting an execution location or creating delivery artifacts.
-do_not_read_when: A known detailed artifact already provides the needed local context.
-contains: Colocated layout, external-source handling, file boundaries, and source references.
+read_when: Selecting an execution root or creating slice execution artifacts.
+do_not_read_when: A selected detailed artifact already provides the needed local context.
+contains: Standard layout, external-source handling, relative path rule, file boundaries, and source references.
 owner: stnl-spec-execution-manager
-update_policy: Change only when the delivery workspace architecture changes.
+update_policy: Change only when the execution workspace architecture changes.
 ```
 
-# Delivery Workspace
+# Execution Workspace
 
-Prefer a dedicated execution root. If the source is `feature_spec.md` in a dedicated SPEC workspace, default to its `execution/` child without modifying the requirements document or `shared/`. If the source has another name or is external, preserve it and default to a sibling `<requirements-name>-execution/` workspace. Every index and detailed plan names the source with an explicit relative path.
+Prefer a dedicated execution root. If the source is `feature_spec.md` in a dedicated requirements workspace, default to its `execution/` child without modifying the source document or its `shared/` records. If the source has another name or location, preserve it and default to a sibling `<requirements-name>-execution/` root.
 
 ```text
-<spec-workspace>/
-├── feature_spec.md
-├── shared/
-└── execution/
-    ├── plan.md
-    ├── plans/
-    │   ├── plan-01.md
-    │   └── ...
-    ├── tasks.md
-    └── tasks/
-        ├── tasks-01.md
-        └── ...
+<execution-root>/
+├── plan.md
+├── plans/
+│   ├── slice-01.md
+│   └── ...
+├── tasks.md
+└── tasks/
+    ├── slice-01.md
+    └── ...
 ```
+
+## Relative Paths
+
+Every persisted path is relative to the file that contains it.
+
+- In `execution/plan.md`, a colocated source can be `../feature_spec.md`.
+- In `execution/plans/slice-01.md`, the same source can be `../../feature_spec.md`.
+- In `execution/tasks/slice-01.md`, the detailed plan must be `../plans/slice-01.md`.
+- In `execution/tasks/slice-01.md`, the same source can be `../../feature_spec.md`.
+
+Do not store absolute paths unless the caller explicitly requires a non-portable workspace.
 
 ## Responsibilities
 
-- `plan.md`: all phase rows, order, dependencies, coverage references, parallel notes, detailed paths, and short completion results.
-- `plans/plan-NN.md`: detailed delivery design for one phase, not a task list.
-- `tasks.md`: compact cumulative task evidence index.
-- `tasks/tasks-NN.md`: detailed execution record for one phase.
+- `plan.md`: compact global context, slice order, dependency map, per-slice summaries, coverage references, likely areas, parallel notes, and detailed plan paths. It is not progress state.
+- `plans/slice-NN.md`: detailed design for one observable delivery slice, not a checklist.
+- `tasks.md`: compact global operational progress and the canonical `[ ]` or `[x]` row for each slice.
+- `tasks/slice-NN.md`: detailed checklist and evidence record for one slice.
 
-The source remains authoritative for requirements. A linked requirements record may be read selectively; it is not copied into every plan or task document. Likely areas in a detailed plan are guidance, not an absolute allowlist. Record and assess any discovered expansion; stop when it changes authorized requirements, scope, dependencies, or strategy.
+The source remains authoritative for requirements. Reference requirements by stable IDs or exact locations; do not copy full criteria into every execution artifact. Likely areas guide exploration but are not an absolute allowlist. Record and assess discovered expansion before acting, and block when it changes authorized requirements, scope, dependencies, or strategy.

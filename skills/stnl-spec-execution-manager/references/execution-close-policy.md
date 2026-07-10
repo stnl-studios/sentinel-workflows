@@ -1,25 +1,25 @@
 # File Purpose Header
 
 ```yaml
-purpose: Define operational closure, coverage checks, and explicit retention policies.
+purpose: Define execution closure, cross-checks, artifact retention, and the boundary that prevents requirements edits.
 status: not_applicable
-read_when: Delivery work is believed complete and operational closure is requested.
-do_not_read_when: A selected phase still has pending work or a requirements divergence is unresolved.
-contains: Closure cross-check, blockers, requirements-update boundary, and retention policies.
+read_when: Execution work is believed complete and CLOSE is requested.
+do_not_read_when: A selected slice still has pending work or a requirements divergence is unresolved.
+contains: Closure cross-check, blockers, requirements boundary, and execution-artifact retention policies.
 owner: stnl-spec-execution-manager
-update_policy: Change only when operational closure policy changes.
+update_policy: Change only when execution closure policy changes.
 ```
 
-# Operational Closure Policy
+# Execution Closure Policy
 
-Cross-check the requirements source, `plan.md`, detailed plans, `tasks.md`, detailed task records, final code, tests, findings, corrections, revalidation, and evidence. Do not trust checkboxes alone.
+Cross-check the requirements source, `plan.md`, `tasks.md`, detailed plans, detailed task files, final code, tests, findings, corrections, revalidation, and evidence. Do not trust checkboxes alone.
 
-Block closure if a required criterion lacks coverage, any phase is incomplete, a task remains open, a blocking finding remains, relevant tests are missing or failing, a recorded divergence is unresolved, or final behavior conflicts with the requirements source.
+Block closure if a required criterion lacks coverage, any slice is incomplete, a mandatory task remains open, a blocking finding remains, relevant tests are missing or failing, a recorded divergence is unresolved, final behavior conflicts with the requirements source, or execution artifacts disagree with each other.
 
 Choose one explicit policy:
 
-- `validate_only`: assess and report compatibility; preserve requirements and all delivery artifacts.
-- `consolidate_and_keep`: incorporate only user-authorized durable facts into the requirements source and retain delivery artifacts.
-- `consolidate_and_remove`: incorporate only user-authorized durable facts into the requirements source and remove delivery artifacts after a successful cross-check.
+- `validate_only`: assess compatibility and report the result; preserve requirements and all execution artifacts.
+- `validate_and_keep`: validate compatibility and keep execution artifacts unchanged except for closure evidence requested by the caller.
+- `validate_and_remove`: after successful validation and explicit caller request, remove only execution artifacts owned by this skill.
 
-Do not modify a requirements document to hide a gap. Never require consolidation or removal when the caller chose another policy.
+Closure never modifies the requirements source, lifecycle-owned files, or code. Destructive operations are never implicit.
