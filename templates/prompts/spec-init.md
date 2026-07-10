@@ -8,10 +8,11 @@ Fonte de requisitos:
 - <REQUIREMENTS_SOURCE>
 
 Objetivo:
-- criar ou amadurecer uma SPEC documental independente
+- criar uma nova SPEC documental independente
 
 Entrada mínima:
 - problema, objetivo ou mudança desejada
+- workspace documental ainda inexistente
 - decisões já conhecidas: <KNOWN_DECISIONS_OR_NONE>
 
 Escopo:
@@ -23,8 +24,9 @@ Contexto disponível:
 - decisões já conhecidas e perguntas materiais, quando existirem
 
 Resultado esperado:
-- artefatos da SPEC criados ou atualizados
+- artefatos mínimos da nova SPEC criados
 - perguntas bloqueantes persistidas quando faltarem decisões materiais
+- readiness gates aplicados antes de declarar `ready`
 - retorno curto com status, caminho e próximo MODE
 
 Restrições excepcionais:

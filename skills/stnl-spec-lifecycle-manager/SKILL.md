@@ -1,75 +1,62 @@
 ---
 name: stnl-spec-lifecycle-manager
-description: Use to create, mature, review, resume, and close independent feature SPECs with stable canonical IDs, selective reading, and durable documentary consistency.
+description: Use to create, mature, review, resume, and close independent feature SPECs with deterministic canonical IDs, selective reading, and durable documentary consistency.
 ---
 
 # stnl-spec-lifecycle-manager
 
 ## Purpose
 
-Manage the lifecycle of a feature SPEC as an independent requirements artifact. This skill defines what must be delivered: objective, context, scope, exclusions, requirements, business rules, acceptance criteria, questions, decisions, constraints, risks, and relevant contracts. It does not prescribe how work is planned or delivered.
+Manage the documentary lifecycle of an independent feature SPEC. The skill owns requirements content—objective, context, scope, exclusions, requirements, rules, acceptance criteria, questions, decisions, constraints, risks, and contracts—but never execution plans, tasks, implementation, or delivery evidence.
 
-Consumers may use a ready SPEC for direct implementation, a manual plan, an issue tracker, another skill, an external workflow, or a separate session.
+Consumers may implement a ready SPEC directly or use any separate delivery workflow.
 
 ## Required MODE
 
 Operate in exactly one MODE:
 
-- `INIT`: create or mature a new SPEC.
-- `RESUME`: update an existing SPEC from explicit new information.
-- `PLANNING`: perform a conservative, read-only documentary readiness review.
-- `CLOSE`: consolidate a documentary SPEC into one durable file.
+- `INIT`: create a new SPEC; the documentary workspace must not exist.
+- `RESUME`: update or mature an existing SPEC; `feature_spec.md` must predate the operation.
+- `PLANNING`: perform a conservative, strictly read-only readiness review.
+- `CLOSE`: consolidate a ready SPEC into one durable `feature_spec.md`.
 
-Infer a missing MODE only when it is unambiguous; otherwise request the smallest necessary clarification.
+Infer a missing MODE only when unambiguous; otherwise request the smallest necessary clarification.
 
 ## Core invariants
 
-1. An active SPEC has `feature_spec.md` and only the materialized categories in `shared/`; unrelated directories, including a separate execution workspace, are outside this skill's ownership.
-2. Canonical IDs are only `Q-###`, `D-###`, `AC-###`, `R-###`, and `C-###`.
-3. Each canonical ID appears in its heading and explicit `id:` field. Never renumber, reuse, fill gaps, alter valid casing, or refer to an existing item by title alone.
-4. Distinguish facts, hypotheses, and decisions. Never invent a requirement to make a SPEC look complete.
-5. Materialize a shared file only when it has real content. A blocked SPEC may contain only `feature_spec.md` and `shared/questions.md`.
-6. Read selectively; do not create session logs, permanent context packages, or duplicate traceability artifacts.
-7. `PLANNING` is read-only and assesses documentary readiness only.
-8. `CLOSE` is documentary closure only. It does not depend on code, tests, diffs, commits, tasks, or operational evidence.
+1. An active workspace has `feature_spec.md` and only materialized categories in `shared/`. Every other directory, including `execution/`, is outside lifecycle ownership.
+2. Canonical IDs are only `Q-###`, `D-###`, `AC-###`, `R-###`, and `C-###`. The heading `### ID — Title` is the sole ID authority.
+3. Canonical item metadata is a deterministic Markdown list; canonical items never use YAML, repeat `id:`, use optional `null`, renumber, reuse, or fill ID gaps.
+4. Structural links are `blocks`, `blocked_by`, `linked_decision`, and `references`. Only these metadata fields participate in automatic internal-ID integrity checks; qualified external references stay narrative.
+5. Facts, hypotheses, and decisions remain distinct. Never invent a requirement to make a SPEC appear complete.
+6. A materialized shared file has real content. A blocked SPEC may contain only `feature_spec.md` and `shared/questions.md`.
+7. `PLANNING` never mutates files or creates operational artifacts.
+8. `CLOSE` depends only on documentary gates, preserves durable content before removing `shared/`, and leaves all external directories byte-for-byte unchanged.
 
 ## File Purpose Header
 
 Every applicable workspace artifact, template, reference, example, and eval starts with `# File Purpose Header`, followed by one YAML block containing exactly: `purpose`, `status`, `read_when`, `do_not_read_when`, `contains`, `owner`, and `update_policy`.
 
-Use only `draft`, `ready`, `blocked`, `done`, `closed`, or `not_applicable` for header status. Do not use competing YAML frontmatter, `planned`, `load_when`, or `do_not_load_when`. Keep headers short and oriented to selective reading.
+The header `status` of `feature_spec.md` is the documentary state authority. Use only `draft`, `ready`, `blocked`, `done`, `closed`, or `not_applicable`. Do not add competing metadata blocks.
 
-## Lazy-loading map
+## Progressive disclosure
 
 | Operation | Read |
 |---|---|
-| INIT | `references/modes.md`, `spec-workspace.md`, `canonical-ids.md`, `question-policy.md`, `spec-schema.md`, and only needed templates |
+| INIT | `references/modes.md`, `spec-workspace.md`, `canonical-ids.md`, `question-policy.md`, `spec-schema.md`, readiness gates when claiming `ready`, and only needed templates |
 | RESUME | `modes.md`, `spec-workspace.md`, `canonical-ids.md`, `question-policy.md`, `readiness-gates.md`, and only affected artifacts |
-| PLANNING | `modes.md`, `readiness-gates.md`, `spec-schema.md`, `canonical-ids.md`, and the relevant SPEC artifacts |
-| CLOSE | `close-policy.md`, `readiness-gates.md`, `spec-schema.md`, `canonical-ids.md`, and only materialized artifacts needed for consolidation |
+| PLANNING | `modes.md`, `readiness-gates.md`, `spec-schema.md`, `canonical-ids.md`, then only relevant SPEC records |
+| CLOSE | `close-policy.md`, `readiness-gates.md`, `spec-schema.md`, `canonical-ids.md`, and all materialized content needed for lossless consolidation |
 
-Load examples only to clarify a format. Do not browse source code merely to turn a SPEC review into implementation planning.
+For a localized ID lookup, follow `references/spec-workspace.md`: read the feature header and index, open one category, locate the exact heading, read through the next `###` or EOF, and follow only necessary structural links.
 
-## MODE summaries
+## MODE outcomes
 
-### INIT
-
-Create the workspace, `feature_spec.md`, and only needed shared artifacts. Record the smallest blocking questions. Capture supplied facts, hypotheses, and decisions without fabricating requirements. Do not implement code or create operational planning artifacts.
-
-### RESUME
-
-Incorporate explicit answers and changes, resolve inconsistencies, update scope and criteria, and record durable decisions. Preserve valid IDs and prior decisions that remain relevant. Make changes visible; never rewrite history solely to erase a relevant decision. Do not create operational artifacts.
-
-### PLANNING
-
-Review documentary readiness without modifying files. Verify objective, context, scope, exclusions when needed, requirements, verifiable criteria, blockers, pending decisions, contradictions, constraints, risks, references, duplication, and whether an external consumer can use the SPEC.
-
-Return `READY`, or `NEEDS_RESUME` followed only by actionable documentary findings and their affected artifact or canonical ID.
-
-### CLOSE
-
-Validate documentary consistency and absence of blocking questions, references, and unresolved contradictions. Consolidate durable content into one `feature_spec.md` and remove materialized lifecycle auxiliary files only after their necessary content is incorporated; leave external directories untouched. The final file preserves durable requirements context, not session history or operational records.
+- `INIT` creates the minimum new workspace and returns its documentary status.
+- `RESUME` applies explicit deltas, preserves IDs, and may change status only when gates permit.
+- `PLANNING` returns `READY` or `NEEDS_RESUME` with actionable documentary findings and affected artifacts or IDs.
+- `CLOSE` validates, consolidates, verifies preservation, removes `shared/`, validates the final form, and confirms external-directory preservation.
 
 ## Evaluation
 
-Read `references/eval-guidance.md` and use `evals/eval-cases.md` when changing this skill. Validate the SPEC-only boundary, IDs, selective reading, gates, headers, and documentary closure.
+When changing this skill, read `references/eval-guidance.md` and run the executable cases indexed by `evals/eval-cases.md`. Validate the SPEC-only boundary, parser, relationships, readiness, selective reading, closure preservation, and external-directory protection.

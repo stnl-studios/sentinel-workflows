@@ -1,13 +1,13 @@
 # File Purpose Header
 
 ```yaml
-purpose: Define the modular SPEC workspace, file responsibilities, and selective reads.
+purpose: Define the modular SPEC workspace, artifact boundaries, and exact selective-reading procedure.
 status: not_applicable
-read_when: Creating, resuming, reviewing, or closing a feature SPEC workspace.
-do_not_read_when: Only one canonical artifact format is needed.
-contains: Workspace tree, file boundaries, materialization rules, and selective reading.
+read_when: Creating, resuming, reviewing, selectively reading, or closing a feature SPEC workspace.
+do_not_read_when: Only one already-located canonical item needs interpretation.
+contains: Workspace tree, authorities, materialization rules, external boundary, and selective reads.
 owner: stnl-spec-lifecycle-manager
-update_policy: Change only when the SPEC workspace architecture changes.
+update_policy: Change only when the documentary workspace architecture changes.
 ```
 
 # SPEC Workspace
@@ -26,18 +26,27 @@ specs/<feature-slug>/
 └── execution/ (outside lifecycle ownership, when present)
 ```
 
-Shared files are optional and exist only for materialized categories. A blocked SPEC may contain only `feature_spec.md` and `shared/questions.md`. Do not create empty categories merely to complete the tree. Ignore `execution/` and any other external workspace because they are not lifecycle artifacts.
+Shared files are optional and exist only for materialized categories. A blocked SPEC may contain only `feature_spec.md` and `shared/questions.md`. Never create an empty category. `execution/` and every other external directory are outside lifecycle ownership and remain unmodified, including during CLOSE.
 
-## Responsibilities
+## Authorities
 
-- `feature_spec.md`: documentary authority for purpose, context, scope, requirements, rules, contracts, artifact discovery, blockers, and selective reading.
-- `shared/*.md`: one canonical category per file, used only where a full canonical record is needed.
+- Documentary status: `status` in the File Purpose Header of `feature_spec.md`.
+- Open questions: `Q-*` items whose metadata has `status: open`.
+- Existing IDs: canonical `### ID — Title` headings.
+- Existing files: the filesystem.
+- Artifact and blocker blocks: compact derived discovery indexes, never competing authorities.
 
 ## Selective reading
 
-- INIT: user input, existing requirements material, and only directly relevant conventions.
-- RESUME: `feature_spec.md`, the affected shared category, and records named by canonical ID.
-- PLANNING: `feature_spec.md` and only shared artifacts needed to assess a stated concern.
-- CLOSE: begin with `feature_spec.md`, then read only materialized artifacts necessary to consolidate durable content.
+For one localized concern:
 
-Do not create permanent context packages, histories, or duplicated matrices. A separate delivery workflow may consume this workspace, but it is not part of this skill.
+1. Read the File Purpose Header and Canonical Artifact Index in `feature_spec.md`.
+2. Identify the category from the requested canonical ID.
+3. Open only the indexed file for that category.
+4. Locate the exact `### ID — Title` heading.
+5. Read through the next `###` heading or end of file.
+6. Follow only the necessary `blocks`, `blocked_by`, `linked_decision`, and `references` links.
+
+Do not require a full read of every shared file or persist synthetic linkage sections, context packages, histories, matrices, or duplicate summaries.
+
+MODE-specific starting sets remain narrow: INIT reads supplied requirements and conventions; RESUME reads the feature index plus affected records; PLANNING reads only records needed for the stated review; CLOSE reads all materialized content necessary for safe consolidation.

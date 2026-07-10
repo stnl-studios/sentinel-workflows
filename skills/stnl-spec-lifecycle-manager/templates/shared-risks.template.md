@@ -1,23 +1,27 @@
 # File Purpose Header
 
 ```yaml
-purpose: Template for materialized risks and mitigations.
+purpose: Template for materialized risks and their treatment.
 status: ready
-read_when: Scope, requirements, or a review finding names a risk identifier.
-do_not_read_when: No active SPEC concern requires a risk from this file.
+read_when: Scope, requirements, a constraint, or a review finding names a risk identifier.
+do_not_read_when: No current concern requires a risk from this file.
 contains: R canonical artifacts only.
 owner: stnl-spec-lifecycle-manager
-update_policy: INIT and RESUME maintain material risks without hiding unresolved exposure.
+update_policy: INIT and RESUME retain material exposure and explicit mitigation.
 ```
 
 # Risks
 
-### R-001 - <Risk title>
+### R-001 — <Risk title>
 
-```yaml
-id: R-001
-status: open
-risk: <What can go wrong.>
-impact: low | medium | high
-mitigation: <How it is controlled.>
-```
+- status: active
+- impact: high
+- references: [C-001, AC-001]
+
+#### Risco
+
+<What can go wrong while the risk remains relevant.>
+
+#### Mitigação
+
+<How the risk is reduced, monitored, or consciously accepted.>

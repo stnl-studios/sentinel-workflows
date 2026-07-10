@@ -10,8 +10,13 @@ from __future__ import annotations
 
 import hashlib
 import re
+import sys
 import tempfile
 from pathlib import Path
+
+sys.path.insert(0, str(Path("scripts").resolve()))
+
+from validate_spec_lifecycle import ValidationError, validate_workspace
 
 
 FIELDS = ["purpose", "status", "read_when", "do_not_read_when", "contains", "owner", "update_policy"]
@@ -85,60 +90,97 @@ def canonical_ids(text: str) -> set[str]:
 
 
 def spec_fixture(root: Path) -> None:
-    write(root / "feature_spec.md", header("stnl-spec-lifecycle-manager", "Fixture feature SPEC") + """# Fixture Feature SPEC
+    write(root / "feature_spec.md", header("stnl-spec-lifecycle-manager", "Fixture feature SPEC", "ready") + """# Fixture Feature SPEC
 
 ## Objective
 
 Deliver the fixture behavior.
 
+## Context
+
+### Facts
+
+- The fixture has one observable behavior.
+
+### Hypotheses
+
+- None identified.
+
 ## Scope
 
 - Include the observable fixture behavior.
+
+## Out of Scope
+
+- Delivery workflow behavior.
+
+## Requirements
+
+- The fixture result is deterministic.
+
+## Business Rules
+
+- None.
+
+## Relevant Contracts
+
+- `docs/core/CONTRACTS.md §5` is external narrative context.
 
 ## Canonical Artifact Index
 
 ```yaml
 artifacts:
-  acceptance_criteria: {file: shared/acceptance-criteria.md, count: 1, materialized: true}
-  decisions: {file: shared/decisions.md, count: 1, materialized: true}
+  acceptance_criteria: shared/acceptance-criteria.md
+  decisions: shared/decisions.md
 ```
 
-## Linked Records
+## Blockers
 
-AC-001, D-001
+```yaml
+open_questions: []
+broken_references: []
+documentary_gaps: []
+```
 
 ## Selective Reading
 
-Read this file, then only the linked canonical records.
+Read this file, then only the indexed category and necessary structural links.
 """)
     write(root / "shared/acceptance-criteria.md", header("stnl-spec-lifecycle-manager", "Fixture acceptance criteria") + """# Acceptance Criteria
 
-### AC-001 - Observable behavior
+### AC-001 — Observable behavior
 
-```yaml
-id: AC-001
-status: active
-statement: The fixture behavior can be observed.
-```
+- status: active
+- references: [D-001]
+
+Given the fixture input, when the behavior runs, then the visible result returns `fixture-ok`.
 """)
     write(root / "shared/decisions.md", header("stnl-spec-lifecycle-manager", "Fixture decisions") + """# Decisions
 
-### D-001 - Fixture boundary
+### D-001 — Fixture boundary
 
-```yaml
-id: D-001
-status: accepted
-decision: Keep the fixture local.
-```
+- status: accepted
+- references: [AC-001]
+
+#### Contexto
+
+The smoke test needs a stable local boundary.
+
+#### Decisão
+
+Keep the fixture local to its temporary workspace.
+
+#### Impacto
+
+The result remains isolated and deterministic.
 """)
 
 
 def check_ids(path: Path) -> set[str]:
     text = path.read_text(encoding="utf-8")
-    headings = set(re.findall(r"^### ((?:Q|D|AC|R|C)-\d{3})\b", text, re.MULTILINE))
-    fields = set(re.findall(r"^id:\s*((?:Q|D|AC|R|C)-\d{3})$", text, re.MULTILINE))
-    expect(headings == fields, f"heading/id mismatch: {path}")
-    expect(len(re.findall(r"^id:\s*(?:Q|D|AC|R|C)-\d{3}$", text, re.MULTILINE)) == len(fields), f"duplicate canonical id: {path}")
+    headings = set(re.findall(r"^### ((?:Q|D|AC|R|C)-\d{3}) — \S", text, re.MULTILINE))
+    expect(re.search(r"(?m)^id:\s*(?:Q|D|AC|R|C)-\d{3}$", text) is None, f"duplicate canonical id field: {path}")
+    expect("```yaml\nid:" not in text, f"canonical item YAML remains: {path}")
     return headings
 
 
@@ -155,8 +197,9 @@ def check_spec_active(root: Path) -> None:
         available |= check_ids(path)
     feature_text = feature.read_text(encoding="utf-8")
     expect({"AC-001", "D-001"} <= available, "SPEC fixture lacks canonical records")
-    expect({"AC-001", "D-001"} <= canonical_ids(feature_text), "SPEC references are missing")
     expect("Selective Reading" in feature_text, "SPEC feature document lacks selective reading")
+    workspace = validate_workspace(root)
+    expect(workspace.status == "ready" and set(workspace.items) == {"AC-001", "D-001"}, "active SPEC validator rejected canonical fixture")
 
 
 def check_spec_blocked(root: Path) -> None:
@@ -167,6 +210,8 @@ def check_spec_blocked(root: Path) -> None:
     expect("Q-001" in questions and "status: open" in questions, "blocked question is malformed")
     for name in ["plan.md", "tasks.md", "plans", "tasks"]:
         expect(not (root / name).exists(), f"blocked SPEC contains execution artifact: {name}")
+    workspace = validate_workspace(root)
+    expect(workspace.status == "blocked" and workspace.open_questions == ("Q-001",), "blocked SPEC validator rejected open question")
 
 
 def check_spec_closed(root: Path) -> None:
@@ -174,6 +219,124 @@ def check_spec_closed(root: Path) -> None:
     expect(feature.exists(), "closed SPEC missing feature_spec.md")
     check_header(feature, "stnl-spec-lifecycle-manager")
     expect(not (root / "shared").exists(), "closed SPEC retains lifecycle shared/ residue")
+    workspace = validate_workspace(root)
+    expect(workspace.status == "closed", "closed SPEC validator rejected durable fixture")
+
+
+def blocked_spec_fixture(root: Path) -> None:
+    write(root / "feature_spec.md", header("stnl-spec-lifecycle-manager", "Blocked feature SPEC", "blocked") + """# Blocked SPEC
+
+## Objective
+
+Define the fixture scope.
+
+## Context
+
+### Facts
+
+- The requested behavior exists.
+
+### Hypotheses
+
+- The final scope is not yet known.
+
+## Scope
+
+- Behavior confirmed by the pending answer.
+
+## Out of Scope
+
+- Unconfirmed behavior.
+
+## Requirements
+
+- The chosen scope must be explicit.
+
+## Business Rules
+
+- None.
+
+## Relevant Contracts
+
+- None.
+
+## Canonical Artifact Index
+
+```yaml
+artifacts:
+  questions: shared/questions.md
+```
+
+## Blockers
+
+```yaml
+open_questions: [Q-001]
+broken_references: []
+documentary_gaps: []
+```
+
+## Selective Reading
+
+Read Q-001 only when resolving the global blocker.
+""")
+    write(root / "shared/questions.md", header("stnl-spec-lifecycle-manager", "Blocking questions", "blocked") + """# Questions
+
+### Q-001 — Scope
+
+- status: open
+- blocks: []
+
+#### Pergunta
+
+Which fixture behavior is in scope?
+
+#### Por que importa
+
+The answer defines the global documentary boundary.
+
+#### Resolução
+
+Pendente.
+""")
+
+
+def closed_spec_fixture(root: Path) -> None:
+    write(root / "feature_spec.md", header("stnl-spec-lifecycle-manager", "Closed feature SPEC", "closed") + """# Closed SPEC
+
+## Objective
+
+Preserve the durable fixture requirement.
+
+## Context
+
+### Facts
+
+- The durable fixture behavior is known.
+
+### Hypotheses
+
+- None identified.
+
+## Final Scope
+
+- The fixture behavior remains included.
+
+## Out of Scope
+
+- Operational workflow behavior.
+
+## Requirements
+
+- The fixture result stays deterministic.
+
+## Business Rules
+
+- None.
+
+## Important Contracts
+
+- None.
+""")
 
 
 def snapshot_tree(root: Path) -> tuple[tuple[str, str, str], ...]:
@@ -322,31 +485,61 @@ def slice_tasks(number: str, name: str, requirement: str) -> str:
 
 
 def execution_fixture(root: Path) -> None:
-    write(root / "feature_spec.md", header("stnl-spec-lifecycle-manager", "Fixture requirements source") + """# Fixture Requirements
+    write(root / "feature_spec.md", header("stnl-spec-lifecycle-manager", "Fixture requirements source", "closed") + """# Fixture Requirements
 
-### AC-001 - Domain behavior
+## Objective
 
-```yaml
-id: AC-001
-status: active
-statement: The domain behavior is observable.
-```
+Deliver three observable fixture behaviors.
 
-### AC-002 - API behavior
+## Context
 
-```yaml
-id: AC-002
-status: active
-statement: The API behavior is observable.
-```
+### Facts
 
-### AC-003 - Maintenance behavior
+- The requirements source is documentary and closed.
 
-```yaml
-id: AC-003
-status: active
-statement: The maintenance behavior is observable.
-```
+### Hypotheses
+
+- None identified.
+
+## Final Scope
+
+- Domain, API, and maintenance fixture behavior.
+
+## Out of Scope
+
+- Additional fixture behavior.
+
+## Requirements
+
+- Each behavior is independently observable.
+
+## Business Rules
+
+- None.
+
+## Final Acceptance Criteria
+
+### AC-001 — Domain behavior
+
+- status: active
+
+Given a domain input, when it is handled, then the domain result returns `domain-ok`.
+
+### AC-002 — API behavior
+
+- status: active
+
+Given an API request, when it is handled, then the response returns HTTP 200 with `api-ok`.
+
+### AC-003 — Maintenance behavior
+
+- status: active
+
+Given a maintenance trigger, when it runs, then the visible report contains `maintenance-ok`.
+
+## Important Contracts
+
+- None.
 """)
     execution = root / "execution"
     write(execution / "plan.md", header("stnl-spec-execution-manager", "Fixture global execution plan") + """# Execution Plan
@@ -910,27 +1103,25 @@ with tempfile.TemporaryDirectory() as tmp:
     check_spec_active(active_spec)
 
     blocked_spec = base / "blocked-spec"
-    write(blocked_spec / "feature_spec.md", header("stnl-spec-lifecycle-manager", "Blocked feature SPEC", "blocked") + "# Blocked SPEC\n")
-    write(blocked_spec / "shared/questions.md", header("stnl-spec-lifecycle-manager", "Blocking questions", "blocked") + "### Q-001 - Scope\n\n```yaml\nid: Q-001\nstatus: open\n```\n")
+    blocked_spec_fixture(blocked_spec)
     check_spec_blocked(blocked_spec)
 
     closed_spec = base / "closed-spec"
-    write(closed_spec / "feature_spec.md", header("stnl-spec-lifecycle-manager", "Closed feature SPEC", "closed") + "# Closed SPEC\n")
+    closed_spec_fixture(closed_spec)
     check_spec_closed(closed_spec)
 
     closed_spec_with_execution = base / "closed-spec-with-execution"
     execution_fixture(closed_spec_with_execution)
-    write(closed_spec_with_execution / "feature_spec.md", header("stnl-spec-lifecycle-manager", "Closed feature SPEC", "closed") + "# Closed SPEC\n")
     execution_snapshot = snapshot_tree(closed_spec_with_execution / "execution")
     check_spec_closed(closed_spec_with_execution)
     expect(snapshot_tree(closed_spec_with_execution / "execution") == execution_snapshot, "documentary CLOSE validation changed the execution workspace")
 
     invalid_closed_spec = base / "invalid-closed-spec"
-    write(invalid_closed_spec / "feature_spec.md", header("stnl-spec-lifecycle-manager", "Closed feature SPEC", "closed") + "# Closed SPEC\n")
+    closed_spec_fixture(invalid_closed_spec)
     write(invalid_closed_spec / "shared/questions.md", "Lifecycle residue.\n")
     try:
         check_spec_closed(invalid_closed_spec)
-    except SystemExit:
+    except (SystemExit, ValidationError):
         pass
     else:
         fail("invalid closed SPEC with shared residue accepted")
@@ -996,3 +1187,5 @@ print("PASS: divergence contract fixtures")
 print("PASS: external requirements source structural smoke validation")
 print("PASS: slice selective-reading and closure contract checks")
 PY
+
+"$PYTHON_BIN" scripts/test-spec-lifecycle.py

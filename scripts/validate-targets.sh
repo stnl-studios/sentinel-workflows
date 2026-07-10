@@ -14,6 +14,7 @@ fail() {
 cd "$ROOT"
 
 command -v "$PYTHON_BIN" >/dev/null 2>&1 || fail "PYTHON_BIN is unavailable: $PYTHON_BIN"
+"$PYTHON_BIN" -m py_compile scripts/validate_spec_lifecycle.py scripts/test-spec-lifecycle.py
 
 # Packaging metadata is ignored by this structural validator.
 
@@ -212,6 +213,56 @@ for folder in SKILL_RESOURCE_FOLDERS:
             if read_text(path).count("```yaml") != 1:
                 fail(f"execution resource contains YAML beyond the required header: {path}")
 
+# Lifecycle canonical items use only the current Markdown contract.
+SPEC_RESOURCE_ROOT = Path("skills/stnl-spec-lifecycle-manager")
+CANONICAL_ID_PATTERN = r"(?:AC|D|C|R|Q)-\d{3}"
+CANONICAL_HEADING = re.compile(rf"^### ({CANONICAL_ID_PATTERN}) — \S.*$", re.MULTILINE)
+OLD_CANONICAL_HEADING = re.compile(rf"^### ({CANONICAL_ID_PATTERN}) - \S.*$", re.MULTILINE)
+for path in SPEC_RESOURCE_ROOT.rglob("*.md"):
+    text = read_text(path)
+    if OLD_CANONICAL_HEADING.search(text):
+        fail(f"lifecycle resource retains a non-canonical item heading: {path}")
+    item_starts = list(CANONICAL_HEADING.finditer(text))
+    h3_starts = list(re.finditer(r"^### \S.*$", text, re.MULTILINE))
+    h2_starts = list(re.finditer(r"^## \S.*$", text, re.MULTILINE))
+    for item_start in item_starts:
+        candidates = [match.start() for match in h3_starts + h2_starts if match.start() > item_start.start()]
+        end = min(candidates) if candidates else len(text)
+        item = text[item_start.start():end]
+        if re.search(r"(?m)^```(?:yaml|yml|markdown)\s*$", item, re.IGNORECASE):
+            fail(f"canonical item is wrapped in YAML/Markdown fence: {path}: {item_start.group(1)}")
+        if re.search(rf"(?m)^\s*-?\s*id:\s*{re.escape(item_start.group(1))}\s*$", item):
+            fail(f"canonical item repeats its heading ID: {path}: {item_start.group(1)}")
+        if re.search(r"(?m)^- [a-z_]+: null$", item, re.IGNORECASE):
+            fail(f"canonical item retains optional null metadata: {path}: {item_start.group(1)}")
+
+removed_lifecycle_tokens = [
+    "Linked Records",
+    "open_question_count",
+    "materialized:",
+    "created_from_mode",
+    "last_updated_mode",
+    "workspace_root:",
+    "spec_status:",
+    "statement:",
+    "why_it_matters:",
+]
+for path in SPEC_RESOURCE_ROOT.rglob("*.md"):
+    text = read_text(path)
+    for token in removed_lifecycle_tokens:
+        if token in text:
+            fail(f"removed lifecycle token remains in {path}: {token}")
+
+cases_path = SPEC_RESOURCE_ROOT / "evals/cases.json"
+if not cases_path.exists():
+    fail("executable lifecycle eval catalog is missing")
+cases = json.loads(read_text(cases_path))
+if len(cases) < 15 or any("expected_valid" not in case or "assertions" not in case for case in cases):
+    fail("executable lifecycle eval catalog is incomplete")
+for script in [Path("scripts/validate_spec_lifecycle.py"), Path("scripts/test-spec-lifecycle.py")]:
+    if not script.exists():
+        fail(f"lifecycle validation script is missing: {script}")
+
 
 # Copyable prompts are intentionally header-free user-facing instructions.
 PROMPT_ROOT = Path("templates/prompts")
@@ -394,6 +445,19 @@ execution_close_prompt = read_text(prompt_files["execution-close"])
 for marker in ["validar e reportar", "não modificar nem remover nenhum artefato", "retenção", "limpeza"]:
     if marker not in execution_close_prompt:
         fail(f"execution-close prompt does not freeze report-only CLOSE behavior: {marker}")
+
+spec_init_prompt = read_text(prompt_files["spec-init"])
+if "criar ou amadurecer" in spec_init_prompt or "workspace documental ainda inexistente" not in spec_init_prompt:
+    fail("spec-init prompt does not define new-workspace-only INIT")
+spec_resume_prompt = read_text(prompt_files["spec-resume"])
+if "`feature_spec.md` preexistente" not in spec_resume_prompt:
+    fail("spec-resume prompt does not require an existing feature_spec.md")
+spec_close_prompt = read_text(prompt_files["spec-close"])
+for marker in ["`resolved`", "`bypassed`", "`dropped`", "antes da remoção de `shared/`", "`execution/`"]:
+    if marker not in spec_close_prompt:
+        fail(f"spec-close prompt lacks documentary closure boundary: {marker}")
+if "justificadas" in spec_close_prompt:
+    fail("spec-close prompt retains an undefined question state")
 
 execution_operations = set(
     re.findall(r"(?m)^### ([A-Z_]+)$", read_text(Path("skills/stnl-spec-execution-manager/SKILL.md")))

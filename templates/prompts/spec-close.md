@@ -8,7 +8,7 @@ Objetivo:
 - fechar documentalmente a SPEC sem depender de execução
 
 Entrada mínima:
-- SPEC ativa com critérios, decisões e perguntas resolvidas ou justificadas
+- SPEC ativa sem perguntas `open`; perguntas apenas `resolved`, `bypassed` ou `dropped`
 
 Escopo:
 - entra: consistência documental, artefato final e bloqueios documentais
@@ -19,7 +19,9 @@ Contexto disponível:
 - decisões, critérios, riscos e perguntas já persistidos
 
 Resultado esperado:
-- fechamento persistido quando a SPEC estiver pronta
+- conteúdo durável consolidado e verificado antes da remoção de `shared/`
+- fechamento persistido apenas quando todos os gates documentais passarem
+- diretórios externos, incluindo `execution/`, confirmados como inalterados
 - bloqueios documentais registrados quando necessário
 - retorno curto com status, arquivo final e bloqueios
 

@@ -1,24 +1,86 @@
 # File Purpose Header
 
 ```yaml
-purpose: Show a ready modular SPEC with only meaningful shared categories.
+purpose: Show a valid ready modular SPEC with qualified external references and an active mitigated risk.
 status: ready
-read_when: A concrete active workspace layout is needed.
+read_when: A concrete ready workspace or canonical item example is needed.
 do_not_read_when: Only a blocked or closed shape is needed.
-contains: Tree and compact artifact-discovery example.
+contains: Materialized tree, compact index, observable AC, decision-linked question, external reference, and risk.
 owner: stnl-spec-lifecycle-manager
-update_policy: Keep aligned with the workspace and schema references.
+update_policy: Keep aligned with schemas, relationships, and readiness gates.
 ```
 
-# Modular Workspace
+# Ready Modular Workspace
 
 ```text
 specs/invitation-expiration/
 ├── feature_spec.md
 └── shared/
     ├── acceptance-criteria.md
+    ├── decisions.md
     ├── constraints.md
-    └── risks.md
+    ├── risks.md
+    └── questions.md
 ```
 
-The feature document declares the objective, scope, business rules, and these artifact paths. `acceptance-criteria.md` contains `AC-001` and `AC-002`; `constraints.md` contains `C-001`; `risks.md` contains `R-001`. There are no empty decisions or questions files because neither category has content.
+The feature header has `status: ready`, `open_questions: []`, no gaps, and an index containing exactly the five files above.
+
+### AC-001 — Convite expirado é rejeitado
+
+- status: active
+- blocked_by: [Q-001]
+- references: [D-001, C-001, R-001]
+
+Dado um convite com `expires_at` anterior ao relógio do serviço, quando o destinatário tenta aceitá-lo, então a API retorna HTTP 410 e não cria associação.
+
+The external origin `initial-scaffold/D-011` remains qualified in this narrative and is not treated as a missing local decision.
+
+### D-001 — Expiração usa relógio do serviço
+
+- status: accepted
+- references: [C-001]
+
+#### Contexto
+
+Clientes podem ter relógios divergentes.
+
+#### Decisão
+
+O serviço compara `expires_at` com seu próprio relógio UTC.
+
+#### Impacto
+
+O resultado é determinístico para todos os clientes.
+
+### Q-001 — Autoridade do relógio
+
+- status: resolved
+- blocks: [AC-001]
+- resolved_by: decision
+- linked_decision: D-001
+
+#### Pergunta
+
+Qual relógio determina a expiração?
+
+#### Por que importa
+
+A escolha altera o resultado observado por AC-001.
+
+#### Resolução
+
+D-001 estabelece o relógio UTC do serviço como autoridade.
+
+### R-001 — Atraso de propagação do relógio
+
+- status: active
+- impact: medium
+- references: [C-001, AC-001]
+
+#### Risco
+
+Pequena deriva entre nós pode produzir respostas diferentes na borda do prazo.
+
+#### Mitigação
+
+Sincronizar nós, monitorar deriva e aceitar a tolerância documentada sem retirar a relevância do risco.

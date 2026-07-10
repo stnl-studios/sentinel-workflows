@@ -1,23 +1,23 @@
 # File Purpose Header
 
 ```yaml
-purpose: Demonstrate minimum reads for documentary review of a selected concern.
+purpose: Demonstrate exact selective reading for one canonical ID.
 status: ready
-read_when: A SPEC maintainer needs a concrete selective-reading sequence.
-do_not_read_when: The task is only about workspace shape or final consolidation.
-contains: Review read sets for one question and one acceptance criterion.
+read_when: A maintainer needs a localized lookup without loading the whole workspace.
+do_not_read_when: The task is workspace creation or full final consolidation.
+contains: One-ID read sequence, item boundary, and structural-link traversal.
 owner: stnl-spec-lifecycle-manager
-update_policy: Keep aligned with token economy and readiness gates.
+update_policy: Keep aligned with workspace authority, item grammar, and token economy.
 ```
 
-# Selective Reading
+# Selective Reading of `AC-002`
 
-To review whether `AC-002` is clear:
+1. Read only the File Purpose Header and Canonical Artifact Index of `feature_spec.md`.
+2. Map `AC-*` to `shared/acceptance-criteria.md`.
+3. Open that one file and locate the exact heading `### AC-002 — ...`.
+4. Read from that heading through the next `###` heading or EOF.
+5. If its metadata is `blocked_by: [Q-001]` and `references: [D-001, C-001]`, open only those three exact records as needed.
+6. Confirm the inverse `Q-001.blocks` relationship if blocking is relevant to the question being answered.
+7. Stop; do not load unrelated risks, questions, decisions, constraints, or full shared files.
 
-1. Read `feature_spec.md` for objective, scope, and artifact paths.
-2. Read the `AC-002` block in `shared/acceptance-criteria.md`.
-3. Load only the linked `D-001`, `C-001`, `R-001`, or `Q-001` records that affect it.
-4. Compare the selected records for contradiction or missing context.
-5. Report a documentary finding; do not expand the read set without a reason.
-
-For CLOSE, start with the feature document and load only materialized records needed to consolidate durable content.
+Discovery comes from the feature index; traversal comes only from `blocks`, `blocked_by`, `linked_decision`, and `references`, without a synthetic linkage section.

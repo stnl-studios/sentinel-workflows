@@ -1,27 +1,16 @@
 # File Purpose Header
 
 ```yaml
-purpose: Template for the active documentary feature SPEC.
+purpose: Template for an active documentary feature SPEC.
 status: draft
-read_when: Discovering the SPEC purpose, scope, blockers, or materialized records.
-do_not_read_when: A linked canonical artifact already provides the needed detail.
-contains: Metadata, requirements context, artifact index, blockers, and selective reading.
+read_when: Discovering documentary status, scope, blockers, or materialized canonical records.
+do_not_read_when: An indexed canonical item already provides the complete needed detail.
+contains: Requirements context, compact artifact index, blockers, and selective-reading instructions.
 owner: stnl-spec-lifecycle-manager
-update_policy: INIT and RESUME update documentary content; CLOSE replaces it with the final SPEC.
+update_policy: INIT creates it; RESUME updates documentary content; CLOSE replaces it with the durable final form.
 ```
 
 # <Feature Name> - Feature SPEC
-
-## SPEC Metadata
-
-```yaml
-spec_id: <feature-slug>
-workspace_root: specs/<feature-slug>
-spec_status: draft
-created_from_mode: INIT
-last_updated_mode: INIT
-open_question_count: 0
-```
 
 ## Objective
 
@@ -29,8 +18,13 @@ open_question_count: 0
 
 ## Context
 
-- Facts: <Known factual context.>
-- Hypotheses: <Explicitly uncertain context, if any.>
+### Facts
+
+- <Known factual context.>
+
+### Hypotheses
+
+- <Explicitly uncertain context, or "None identified.">
 
 ## Scope
 
@@ -38,7 +32,7 @@ open_question_count: 0
 
 ## Out of Scope
 
-- <Excluded behavior or boundary, when needed.>
+- <Excluded behavior or boundary.>
 
 ## Requirements
 
@@ -46,21 +40,21 @@ open_question_count: 0
 
 ## Business Rules
 
-- <Rule, when applicable.>
+- <Rule, or "None.">
 
 ## Relevant Contracts
 
-- <API, data, legal, compatibility, or integration contract.>
+- <API, data, legal, compatibility, or integration contract, or "None.">
 
 ## Canonical Artifact Index
 
 ```yaml
 artifacts:
-  acceptance_criteria: {file: null, count: 0, materialized: false}
-  decisions: {file: null, count: 0, materialized: false}
-  constraints: {file: null, count: 0, materialized: false}
-  risks: {file: null, count: 0, materialized: false}
-  questions: {file: null, count: 0, open_count: 0, materialized: false}
+  acceptance_criteria: shared/acceptance-criteria.md
+  decisions: shared/decisions.md
+  constraints: shared/constraints.md
+  risks: shared/risks.md
+  questions: shared/questions.md
 ```
 
 ## Blockers
@@ -73,7 +67,8 @@ documentary_gaps: []
 
 ## Selective Reading
 
-1. Read this file first.
-2. Load only the shared category and canonical IDs relevant to the current question.
-3. Treat each canonical item as authoritative for its category.
-4. Do not create duplicate summaries or operational records in this workspace.
+1. Read this file's purpose header and artifact index.
+2. Map the needed canonical ID to its indexed category.
+3. Open only that category file and locate the exact heading.
+4. Read the item through the next `###` heading or EOF.
+5. Follow only necessary `blocks`, `blocked_by`, `linked_decision`, or `references` links.

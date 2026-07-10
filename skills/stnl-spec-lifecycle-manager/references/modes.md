@@ -1,31 +1,31 @@
 # File Purpose Header
 
 ```yaml
-purpose: Define allowed changes and blocking behavior for the four SPEC lifecycle MODEs.
+purpose: Define preconditions, allowed changes, and completion behavior for the four SPEC lifecycle MODEs.
 status: not_applicable
 read_when: Selecting or applying INIT, RESUME, PLANNING, or CLOSE.
-do_not_read_when: Only a file template or canonical ID format is needed.
-contains: Mode responsibilities, transitions, restrictions, and completion conditions.
+do_not_read_when: Only a canonical item shape or isolated relationship rule is needed.
+contains: Mode boundaries, transitions, restrictions, and completion conditions.
 owner: stnl-spec-lifecycle-manager
 update_policy: Change only when lifecycle semantics change.
 ```
 
 # Lifecycle MODEs
 
-Use exactly one MODE at a time.
+Use exactly one MODE at a time. INIT and RESUME have non-overlapping preconditions.
 
 ## INIT
 
-Create or mature a documentary SPEC from supplied information. Materialize only meaningful shared categories and blocking questions. Separate facts, hypotheses, and decisions. Do not write code or operational planning artifacts.
+Create a new documentary SPEC. The target documentary workspace must not exist. Materialize only meaningful shared categories and the smallest blocking questions. Separate facts, hypotheses, and decisions. Apply readiness gates before declaring the new SPEC `ready`. Do not write code or operational artifacts.
 
 ## RESUME
 
-Apply explicit answers, decisions, corrections, or scope deltas to the affected SPEC artifacts. Preserve valid IDs and relevant decisions, expose the change, and resolve cross-reference inconsistencies. Do not conceal unresolved ambiguity or create operational artifacts.
+Update or mature an existing SPEC; `feature_spec.md` must have existed before the operation. Apply explicit answers, decisions, corrections, or scope deltas to affected artifacts. RESUME may add information, resolve questions, create decisions, adjust criteria and links, and change documentary status when gates permit. Preserve all allocated IDs; never renumber or reuse them. Do not create operational artifacts.
 
 ## PLANNING
 
-Read the existing SPEC selectively and make no changes. Assess documentary readiness using the defined gates. Return `READY` when sufficient, or `NEEDS_RESUME` with actionable findings and affected artifacts or canonical IDs when correction is necessary.
+Read the existing SPEC selectively and make no changes. Evaluate readiness, expose blockers and inconsistencies, and identify relevant artifacts. Return `READY` when every applicable gate passes; otherwise return `NEEDS_RESUME` with only actionable documentary findings and affected files or IDs. Never create a delivery plan inside the documentary workspace.
 
 ## CLOSE
 
-Consolidate a documentary SPEC only after its gates pass. Incorporate durable content into `feature_spec.md`, then remove `shared/`. Do not depend on code changes, operational history, or a particular delivery method.
+Consolidate only after every close precondition passes. Valid question states are `resolved`, `bypassed`, and `dropped`; `open` always blocks. Build and validate the durable final document before removing `shared/`, then validate the final form and external-directory preservation. Closure never depends on code, tests, commits, diffs, tasks, or implementation state.

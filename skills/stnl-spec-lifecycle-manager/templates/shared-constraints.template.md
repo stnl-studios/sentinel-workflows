@@ -3,8 +3,8 @@
 ```yaml
 purpose: Template for materialized anti-drift constraints.
 status: ready
-read_when: Scope, requirements, or a review finding names a constraint identifier.
-do_not_read_when: No active SPEC concern requires a constraint from this file.
+read_when: Scope, requirements, a decision, or a review finding names a constraint identifier.
+do_not_read_when: No current concern requires a constraint from this file.
 contains: C canonical artifacts only.
 owner: stnl-spec-lifecycle-manager
 update_policy: INIT and RESUME maintain constraints through explicit documentary changes.
@@ -12,11 +12,15 @@ update_policy: INIT and RESUME maintain constraints through explicit documentary
 
 # Constraints
 
-### C-001 - <Constraint title>
+### C-001 — <Constraint title>
 
-```yaml
-id: C-001
-status: active
-constraint: <Boundary that must not be violated.>
-reason: <Why the boundary matters.>
-```
+- status: active
+- references: [D-001]
+
+#### Restrição
+
+<Boundary that must not be violated.>
+
+#### Razão
+
+<Why the boundary matters.>

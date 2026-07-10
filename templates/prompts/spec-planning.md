@@ -24,6 +24,7 @@ Contexto disponível:
 Resultado esperado:
 - retornar `READY` ou `NEEDS_RESUME`
 - listar somente achados acionáveis com referências quando houver
+- indicar apenas os artefatos relevantes para cada achado
 - não modificar artefatos
 
 Restrições excepcionais:

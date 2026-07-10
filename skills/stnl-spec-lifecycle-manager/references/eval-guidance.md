@@ -1,17 +1,19 @@
 # File Purpose Header
 
 ```yaml
-purpose: Define evaluation expectations for changes to the independent SPEC skill.
+purpose: Define executable evaluation expectations for the lifecycle contract.
 status: not_applicable
-read_when: Updating the skill, templates, prompts, examples, or structural checks.
-do_not_read_when: Running a normal SPEC lifecycle operation.
-contains: Evaluation scope, quality categories, and regression signals.
+read_when: Updating the skill, schema, templates, prompts, examples, parser, or structural checks.
+do_not_read_when: Running an ordinary SPEC lifecycle operation.
+contains: Executable case source, required assertions, quality categories, and regression signals.
 owner: stnl-spec-lifecycle-manager
-update_policy: Expand when a real regression reveals a missing invariant.
+update_policy: Expand when a real regression exposes a missing invariant.
 ```
 
 # Eval Guidance
 
-Use the named cases in `evals/eval-cases.md` before adopting a substantial change. Check documentary outcomes, ID stability, selective reading, headers on internal artifacts, cross-reference integrity, conservative review, and durable closure.
+`evals/cases.json` is the machine-consumed case catalog; `evals/eval-cases.md` is its human index. Run `python3 scripts/test-spec-lifecycle.py` after any substantial lifecycle change. Generated workspaces are isolated temporary test fixtures.
 
-Fail a change that requires a delivery workflow, invents requirements, changes stable IDs, hides a relevant decision, mutates during `PLANNING`, makes closure depend on operational proof, duplicates artifacts, or leaves auxiliary SPEC files after successful CLOSE.
+Each case declares an operation or prompt, generated inputs, expected validity and status, allowed changes, expected IDs, expected links, and objective assertions. The runner verifies positive and negative parser cases, mode boundaries, read-only PLANNING, readiness, structural references, external narrative references, active risks, close preservation, and external-directory immutability.
+
+Fail a change that requires a delivery workflow, invents requirements, changes stable IDs, accepts item YAML, hides a relevant decision, mutates during PLANNING, makes closure depend on operational proof, loses durable content, weakens inverse-link validation, or modifies an external directory.

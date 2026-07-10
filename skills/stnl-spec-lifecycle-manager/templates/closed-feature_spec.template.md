@@ -1,24 +1,30 @@
 # File Purpose Header
 
 ```yaml
-purpose: Template for the final durable feature SPEC.
+purpose: Template for the final lossless documentary feature SPEC.
 status: closed
-read_when: Maintaining, extending, validating, or revisiting the closed feature requirements.
-do_not_read_when: Looking for session history or delivery records that closure intentionally removes.
-contains: Durable objective, context, scope, rules, criteria, decisions, constraints, risks, and contracts.
+read_when: Maintaining, validating, extending, or revisiting the closed feature requirements.
+do_not_read_when: Looking for session history, implementation evidence, or delivery records.
+contains: Durable objective, context, scope, rules, canonical items, contracts, and relevant resolved questions.
 owner: stnl-spec-lifecycle-manager
-update_policy: Update only through an explicit future lifecycle action.
+update_policy: Update only through an explicit future documentary lifecycle action.
 ```
 
 # <Feature Name> - Feature SPEC
 
 ## Objective
 
-<Durable outcome.>
+<Durable outcome and value.>
 
 ## Context
 
-<Only context necessary to interpret the final requirements.>
+### Facts
+
+- <Facts needed to interpret the final requirements.>
+
+### Hypotheses
+
+- <Remaining explicit hypothesis, or "None identified.">
 
 ## Final Scope
 
@@ -34,48 +40,89 @@ update_policy: Update only through an explicit future lifecycle action.
 
 ## Business Rules
 
-- <Rule, when applicable.>
+- <Durable rule, or "None.">
 
 ## Final Acceptance Criteria
 
-### AC-001 - <Criterion title>
+### AC-001 — <Criterion title>
 
-```yaml
-id: AC-001
-status: active
-statement: <Final observable behavior.>
-```
+- status: active
+- blocked_by: [Q-001]
+- references: [D-001, C-001]
+
+Dado <estado observável>, quando <ação>, então <resultado verificável>.
 
 ## Durable Decisions
 
-### D-001 - <Decision title>
+### D-001 — <Decision title>
 
-```yaml
-id: D-001
-status: accepted
-decision: <Decision and durable impact.>
-```
+- status: accepted
+- references: [C-001]
+
+#### Contexto
+
+<Why this decision exists.>
+
+#### Decisão
+
+<The durable choice.>
+
+#### Impacto
+
+<The lasting consequence.>
 
 ## Relevant Constraints
 
-### C-001 - <Constraint title>
+### C-001 — <Constraint title>
 
-```yaml
-id: C-001
-status: active
-constraint: <Long-lived boundary.>
-```
+- status: active
+- references: [D-001]
+
+#### Restrição
+
+<Boundary that must not be violated.>
+
+#### Razão
+
+<Why the boundary matters.>
 
 ## Relevant Risks
 
-### R-001 - <Risk title>
+### R-001 — <Risk title>
 
-```yaml
-id: R-001
-status: open
-risk: <Risk and mitigation.>
-```
+- status: active
+- impact: high
+- references: [C-001, AC-001]
+
+#### Risco
+
+<Material exposure that remains relevant.>
+
+#### Mitigação
+
+<Treatment without erasing the active risk.>
 
 ## Important Contracts
 
-- <Only durable context.>
+- <Durable API, data, legal, compatibility, or integration contract.>
+
+## Durable Resolved Questions
+
+### Q-001 — <Question title>
+
+- status: resolved
+- blocks: [AC-001]
+- resolved_by: decision
+- linked_decision: D-001
+
+#### Pergunta
+
+<The material question.>
+
+#### Por que importa
+
+<Why the answer established a durable boundary.>
+
+#### Resolução
+
+<Explicit resolution preserved because it explains D-001.>

@@ -1,21 +1,38 @@
 # File Purpose Header
 
 ```yaml
-purpose: Define documentary closure and durable one-file consolidation.
+purpose: Define lossless documentary closure and protected external boundaries.
 status: not_applicable
-read_when: MODE is CLOSE or final documentary consolidation is requested.
-do_not_read_when: The SPEC remains active or documentary blockers are unresolved.
-contains: Closure checks, blockers, durable content, removal rules, and final structure.
+read_when: MODE is CLOSE or final one-file consolidation is requested.
+do_not_read_when: The SPEC remains active or any documentary blocker is unresolved.
+contains: Preconditions, durable preservation, safe order, removal rule, and final validation.
 owner: stnl-spec-lifecycle-manager
-update_policy: Change only when final artifact policy changes.
+update_policy: Change only when documentary closure or preservation policy changes.
 ```
 
 # CLOSE Policy
 
-CLOSE validates the document, not the implementation of the document. Confirm stable IDs, resolved blocking questions, valid references, clear scope, verifiable criteria, consistent decisions, relevant constraints and risks, and absence of contradictory or duplicated material.
+CLOSE validates the document, never its implementation. It requires no open question, broken internal reference, material conflict, blocking documentary gap, or non-observable active criterion. Question states permitted at closure are exactly `resolved`, `bypassed`, and `dropped`.
 
-Block closure when a question remains blocking, an ID reference is invalid, essential scope or criteria are unclear, material artifacts conflict, or consolidation would lose durable content.
+## Durable final content
 
-On success, incorporate durable material into one `feature_spec.md`, then remove `shared/`. Leave any external or execution directory untouched because it is not a lifecycle artifact. Retain the objective, necessary context, scope, out of scope, requirements, business rules, final criteria, durable decisions, relevant constraints, relevant risks, important contracts, and resolved questions that still explain a durable choice.
+Consolidate Objective; Context; Final Scope; Out of Scope; Requirements; Business Rules; Final Acceptance Criteria; Durable Decisions; Relevant Constraints; Relevant Risks; Important Contracts; and Durable Resolved Questions when relevant.
 
-Do not retain low-value resolved questions, session history, working notes, logs, internal reasoning, operational planning, task records, diffs, test results, command output, or implementation evidence.
+Preserve canonical IDs and meaningful structural references. Preserve observable AC prose; every decision's `Contexto`, `Decisão`, and `Impacto`; every relevant constraint's `Restrição` and `Razão`; every relevant risk's `Risco`, `impact`, and `Mitigação`; and final questions that explain durable decisions or boundaries. Do not flatten these structures into one string or delete information merely to shorten the file.
+
+Low-value resolved question history may be omitted only after its answer is durably incorporated elsewhere without information loss. Never retain session logs, internal reasoning, command output, operational records, diffs, tests, commits, or implementation evidence as requirements content.
+
+## Safe order
+
+1. Validate every readiness and closure gate.
+2. Build the complete final `feature_spec.md` while `shared/` still exists.
+3. Compare source and consolidation to verify durable structural and narrative preservation.
+4. Only after that check passes, remove `shared/`.
+5. Validate the final one-file structure.
+6. Confirm every external directory is unchanged.
+
+Never remove `shared/` before the consolidation is validated.
+
+## External boundary
+
+CLOSE must not alter, remove, or move `execution/` or any other directory not owned by the documentary lifecycle. It must not use code, tests, tasks, commits, diffs, or delivery state as a closure gate. External contents may be compared for preservation but are not documentary input.

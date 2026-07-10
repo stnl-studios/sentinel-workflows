@@ -1,26 +1,32 @@
 # File Purpose Header
 
 ```yaml
-purpose: Template for materialized blocking and resolved questions.
-status: blocked
-read_when: INIT, RESUME, or a readiness gate needs a question resolution.
+purpose: Template for materialized canonical questions with explicit final resolution.
+status: ready
+read_when: INIT, RESUME, or a readiness gate needs a question or its resolution.
 do_not_read_when: The SPEC confirms no materialized question is relevant.
-contains: Q canonical artifacts only.
+contains: Q canonical artifacts only, with a decision-resolved example.
 owner: stnl-spec-lifecycle-manager
-update_policy: INIT and RESUME resolve questions explicitly and preserve durable resolutions.
+update_policy: INIT and RESUME maintain blockers, inverse links, and explicit final resolutions.
 ```
 
 # Questions
 
-### Q-001 - <Question title>
+### Q-001 — <Resolved question title>
 
-```yaml
-id: Q-001
-status: open
-question: <Smallest decision needed.>
-why_it_matters: <Behavior, scope, or risk impact.>
-blocks: [AC-001]
-resolution: null
-resolved_by: null
-linked_decision: null
-```
+- status: resolved
+- blocks: [AC-001]
+- resolved_by: decision
+- linked_decision: D-001
+
+#### Pergunta
+
+<Smallest decision that was needed.>
+
+#### Por que importa
+
+<Durable impact of the answer.>
+
+#### Resolução
+
+<Explicit resolution represented by D-001.>

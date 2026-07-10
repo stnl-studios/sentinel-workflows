@@ -11,7 +11,7 @@ Objetivo:
 - incorporar informações novas preservando a coerência documental da SPEC
 
 Entrada mínima:
-- SPEC existente
+- `feature_spec.md` preexistente
 - informações novas ou respostas a perguntas abertas
 
 Escopo:
@@ -24,7 +24,7 @@ Contexto disponível:
 
 Resultado esperado:
 - artefatos da SPEC atualizados apenas onde necessário
-- IDs preservados e inconsistências resolvidas
+- IDs preservados sem renumeração ou reutilização e inconsistências resolvidas
 - retorno curto com status, alterações relevantes, perguntas abertas e próximo MODE
 
 Restrições excepcionais:
