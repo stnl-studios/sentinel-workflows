@@ -14,8 +14,8 @@ update_policy: Change only when execution closure policy changes.
 
 Cross-check the requirements source, `plan.md`, `tasks.md`, detailed plans, detailed task files, final code, tests, findings, corrections, revalidation, and evidence. Do not trust checkboxes alone.
 
-Block closure if a required criterion lacks coverage, any slice is incomplete, a mandatory task remains open, a blocking finding remains, relevant tests are missing or failing, a recorded divergence is unresolved, final behavior conflicts with the requirements source, or execution artifacts disagree with each other.
+`CLOSE` validates and reports. This report-only boundary is intentional: the operation returns status and blockers but does not alter or remove artifacts.
 
-Closure reports compatibility and blockers. It does not remove execution artifacts, alter code, or persist a retention decision.
+Block closure if a required criterion lacks coverage, any slice is incomplete, a mandatory task remains open, a blocking finding remains, relevant tests are missing or failing, a recorded blocking divergence is unresolved, final behavior conflicts with the requirements source, or execution artifacts disagree with each other.
 
-Closure never modifies the requirements source, lifecycle-owned files, execution artifacts, or code. Any manual cleanup after closure is outside this skill.
+Closure reports compatibility, inconsistencies, incomplete slices, blocking divergences, blocking findings, missing evidence, and blockers. It does not change the requirements source, lifecycle-owned files, execution artifacts, code, or any other file. It does not remove execution artifacts, persist retention decisions, decide cleanup, or accept retention variants. Any manual cleanup after closure is outside this skill.

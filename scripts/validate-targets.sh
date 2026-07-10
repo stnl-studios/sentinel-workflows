@@ -279,7 +279,22 @@ PROMPT_METADATA = re.compile(
 PROMPT_VENDOR_TERMS = ["Claude", "Hai" + "ku", "Son" + "net", "Codex", "Copilot", "GPT" + r"-\d+", "OpenAI", "Anthropic"]
 PROMPT_VENDORS = re.compile(r"\b(?:" + "|".join(PROMPT_VENDOR_TERMS) + r")\b", re.IGNORECASE)
 PROMPT_CONTRACT_MARKERS = ["# File Purpose Header", "```", "## Core invariants", "## Workflow"]
-PROMPT_STRUCTURAL_MARKERS = ["Objetivo:", "Entrada mínima:", "Escopo:", "Contexto disponível:", "Resultado esperado:", "Restrições excepcionais:"]
+PROMPT_GLOBAL_STRUCTURAL_MARKERS = ["Objetivo:", "Resultado esperado:", "Restrições excepcionais:"]
+PROMPT_OPERATIONAL_MARKERS = {
+    "spec-init": ["Entrada mínima:", "Escopo:", "Contexto disponível:"],
+    "spec-resume": ["Entrada mínima:", "Escopo:", "Contexto disponível:"],
+    "spec-planning": ["Entrada mínima:", "Escopo:", "Contexto disponível:"],
+    "spec-close": ["Entrada mínima:", "Escopo:", "Contexto disponível:"],
+    "execution-plan": ["Fonte de requisitos:", "Execution root:", "Entrada mínima:", "Escopo:", "Contexto disponível:"],
+    "execution-plan-review": ["Execution root:", "Foco adicional da revisão:", "Riscos já suspeitos:", "Entrada mínima:", "Escopo:", "Contexto disponível:"],
+    "execution-tasks": ["Execution root:", "Entrada mínima:", "Escopo:", "Contexto disponível:"],
+    "slice-execute": ["Fonte de requisitos:", "Execution root:", "Entrada mínima:", "Escopo:", "Contexto disponível:"],
+    "slice-validate": ["Execution root:", "Entrada mínima:", "Escopo:"],
+    "slice-apply-findings": ["Execution root:", "Findings a aplicar:", "Entrada mínima:", "Escopo:"],
+    "slice-finalize": ["Execution root:", "Entrada mínima:", "Escopo:"],
+    "slice-parallel": ["Execution root:", "Slices candidatas:", "Entrada mínima:", "Escopo:"],
+    "execution-close": ["Fonte de requisitos:", "Execution root:", "Entrada mínima:", "Escopo:"],
+}
 PROMPT_LEGACY_OPERATIONAL = re.compile(
     r"\b(?:phase|Phase|PHASE|PHASE_NUMBER|PARALLEL_PHASES|phase-[a-z]+|plan-01\.md|tasks-01\.md)\b|/clear|/compact"
 )
@@ -323,7 +338,7 @@ for name, path in prompt_files.items():
         fail(f"copyable prompt names the wrong skill: {path}")
     if not re.search(r"\b(?:Não|Retorne|Faça|Crie|Leia|Valide|Confirme|Antes|Após|Com|Fonte|Objetivo|Resultado)\b", text):
         fail(f"copyable prompt is not written in pt-BR: {path}")
-    for marker in PROMPT_STRUCTURAL_MARKERS:
+    for marker in PROMPT_GLOBAL_STRUCTURAL_MARKERS + PROMPT_OPERATIONAL_MARKERS[name]:
         if marker not in text:
             fail(f"copyable prompt lacks structural marker {marker!r}: {path}")
 
@@ -375,6 +390,11 @@ for name in {"slice-validate", "slice-finalize"}:
         if any(marker not in text for marker in required):
             fail("slice finalizer lacks conditional conclusion handling")
 
+execution_close_prompt = read_text(prompt_files["execution-close"])
+for marker in ["validar e reportar", "não modificar nem remover nenhum artefato", "retenção", "limpeza"]:
+    if marker not in execution_close_prompt:
+        fail(f"execution-close prompt does not freeze report-only CLOSE behavior: {marker}")
+
 execution_operations = set(
     re.findall(r"(?m)^### ([A-Z_]+)$", read_text(Path("skills/stnl-spec-execution-manager/SKILL.md")))
 )
@@ -419,6 +439,9 @@ if not execution_description:
     fail("execution skill description is missing")
 if re.search(r"must use stnl-spec-lifecycle-manager|required stnl-spec-lifecycle-manager|only specs created by", execution_skill_text, re.IGNORECASE):
     fail("execution skill requires stnl-spec-lifecycle-manager")
+for marker in ["if NEEDS_FIX: APPLY_FINDINGS", "VALIDATE_SLICE as revalidation", "without overwriting the initial validation history"]:
+    if marker not in execution_skill_text:
+        fail(f"execution workflow does not preserve revalidation: {marker}")
 
 for path in [
     Path("skills/stnl-spec-execution-manager/references/workspace.md"),

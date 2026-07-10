@@ -17,7 +17,8 @@ requirements
 -> EXECUTE_SLICE
    or PARALLELIZE_SLICES when independent slices are explicit
 -> VALIDATE_SLICE
--> APPLY_FINDINGS
+-> if NEEDS_FIX: APPLY_FINDINGS
+-> if corrections were applied: VALIDATE_SLICE as revalidation
 -> FINALIZE_SLICE
 -> CLOSE
 ```
@@ -93,6 +94,8 @@ Start with `plan.md`, `tasks.md`, `plans/slice-NN.md`, `tasks/slice-NN.md`, and 
 
 Validate independently from implementation. Read only the selected diff, `plans/slice-NN.md`, `tasks/slice-NN.md`, referenced requirements, test evidence, changed code, and dependencies needed to verify the diff. Do not correct code. Persist exactly `PASS` or `NEEDS_FIX`; each finding records problem, evidence, impact, related requirement/plan/task, and expected correction.
 
+When `Validação: pending`, write the initial verdict to `Validação`. When `Validação: NEEDS_FIX`, corrections are recorded, and `Revalidação: pending`, write the focused verdict to `Revalidação` without overwriting the initial validation history.
+
 ### APPLY_FINDINGS
 
 Read persisted findings, the selected task file, its plan, affected files, related tests, and directly involved requirements. Correct only reported findings and necessary effects. Rerun affected tests and record corrections. If a correction requires a material requirements, scope, dependency, or strategy change, block and record the divergence.
@@ -107,7 +110,7 @@ Evaluate explicitly named slices for independent execution. Verify dependencies,
 
 ### CLOSE
 
-Cross-check requirements, `plan.md`, `tasks.md`, detailed plans, detailed task files, code, tests, findings, and evidence. Do not trust checkboxes alone. Closure validates and reports consistency; artifact retention or removal is outside this operation. It must never modify the requirements source or lifecycle-owned artifacts.
+Cross-check requirements, `plan.md`, `tasks.md`, detailed plans, detailed task files, code, tests, findings, and evidence. Do not trust checkboxes alone. `CLOSE` intentionally validates and reports only: it returns status, inconsistencies, incomplete slices, blocking divergences, blocking findings, and evidence gaps. It must not modify the requirements source, lifecycle-owned artifacts, execution artifacts, code, or files, and it has no retention, removal, or cleanup policy.
 
 ## File Purpose Header
 

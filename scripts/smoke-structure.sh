@@ -424,11 +424,37 @@ def dependency_numbers(value: str) -> set[str]:
 def has_divergencia_bloqueante(path: Path) -> bool:
     text = path.read_text(encoding="utf-8")
     section = extract_section_text(text, "Divergências", path)
-    if re.search(r"(?im)^\s*-\s+Bloqueante:\s*sim\s*$", section):
-        return True
-    if re.search(r"(?im)^-\s+nenhuma\s*$", section):
+    lines = [line.rstrip() for line in section.splitlines() if line.strip()]
+    expect(lines, f"empty Divergências section: {path}")
+    has_none = any(re.fullmatch(r"-\s+nenhuma", line.strip(), re.IGNORECASE) for line in lines)
+    has_real = any(re.fullmatch(r"-\s+Tipo:\s+.+", line.strip()) for line in lines)
+    if has_none:
+        expect(len(lines) == 1 and not has_real, f"Divergências mixes none with real divergences: {path}")
         return False
-    return False
+    expect(has_real, f"Divergências lacks '- nenhuma' or divergence entries: {path}")
+
+    blocking = False
+    index = 0
+    required = ["Descrição", "Impacto", "Decisão necessária", "Bloqueante"]
+    while index < len(lines):
+        type_line = lines[index].strip()
+        expect(re.fullmatch(r"-\s+Tipo:\s+.+", type_line) is not None, f"malformed divergence type line: {path}")
+        index += 1
+        fields: dict[str, str] = {}
+        while index < len(lines) and not lines[index].startswith("- Tipo:"):
+            match = re.fullmatch(r"\s{2}-\s+([^:]+):\s*(.+)", lines[index])
+            expect(match is not None, f"malformed divergence field line: {path}")
+            key, value = match.groups()
+            expect(key in required, f"unknown divergence field {key}: {path}")
+            expect(key not in fields, f"duplicate divergence field {key}: {path}")
+            fields[key] = value.strip()
+            index += 1
+        for key in required:
+            expect(key in fields, f"missing divergence field {key}: {path}")
+        flag = fields["Bloqueante"].lower()
+        expect(flag in {"sim", "não"}, f"invalid Bloqueante value {fields['Bloqueante']!r}: {path}")
+        blocking = blocking or flag == "sim"
+    return blocking
 
 
 def eligible_slices(root: Path) -> list[str]:
@@ -438,7 +464,8 @@ def eligible_slices(root: Path) -> list[str]:
     for row in rows:
         if row["done"] != "[ ]":
             continue
-        if dependency_numbers(row["dependencies"]) <= done and not has_divergencia_bloqueante(root / "execution" / row["detail"]):
+        has_blocking_divergence = has_divergencia_bloqueante(root / "execution" / row["detail"])
+        if dependency_numbers(row["dependencies"]) <= done and not has_blocking_divergence:
             eligible.append(row["number"])
     return eligible
 
@@ -666,6 +693,7 @@ def check_execution(root: Path) -> None:
         p_task = task_path(root, number)
         plan_text = p_plan.read_text(encoding="utf-8")
         task_text = p_task.read_text(encoding="utf-8")
+        has_blocking_divergence = has_divergencia_bloqueante(p_task)
         expect(f"- Slice: {number}" in plan_text and f"- Slice: {number}" in task_text, f"slice reference mismatch: {number}")
         expect("- Fonte de requisitos: `../../feature_spec.md`" in plan_text, f"detailed plan source path mismatch: {number}")
         expect("- Fonte de requisitos: `../../feature_spec.md`" in task_text, f"detailed task source path mismatch: {number}")
@@ -675,7 +703,7 @@ def check_execution(root: Path) -> None:
         expect(canonical_ids(plan_text + task_text) <= canonical_ids(source), f"execution references missing criterion: {number}")
         if row["done"] == "[x]":
             expect("- [ ]" not in task_text, f"concluded slice has an open task: {number}")
-            expect(not has_divergencia_bloqueante(p_task), f"concluded slice has blocking divergence: {number}")
+            expect(not has_blocking_divergence, f"concluded slice has blocking divergence: {number}")
             expect("## Diff Summary\n\n- pending" not in task_text, f"concluded slice lacks diff summary: {number}")
             expect("## Final Result\n\n- pending" not in task_text, f"concluded slice lacks final result: {number}")
             evidence = extract_evidence_fields(p_task)
@@ -742,6 +770,35 @@ def check_validation_history_matrix(base: Path) -> None:
                 else:
                     accepted = True
                 expect(accepted == expected, f"validation-history matrix mismatch: {root.name}")
+
+
+def check_divergence_matrix(base: Path) -> None:
+    cases = [
+        ("none-valid", "- nenhuma", False, True),
+        ("blocking-valid", "- Tipo: escopo\n  - Descrição: Fixture divergence.\n  - Impacto: Fixture blocked.\n  - Decisão necessária: Resolve fixture scope.\n  - Bloqueante: sim", True, True),
+        ("nonblocking-valid", "- Tipo: observação\n  - Descrição: Fixture divergence.\n  - Impacto: No block.\n  - Decisão necessária: Track later.\n  - Bloqueante: não", False, True),
+        ("missing-bloqueante", "- Tipo: escopo\n  - Descrição: Fixture divergence.\n  - Impacto: Fixture blocked.\n  - Decisão necessária: Resolve fixture scope.", None, False),
+        ("invalid-bloqueante", "- Tipo: escopo\n  - Descrição: Fixture divergence.\n  - Impacto: Fixture blocked.\n  - Decisão necessária: Resolve fixture scope.\n  - Bloqueante: talvez", None, False),
+        ("mixed-none", "- nenhuma\n- Tipo: escopo\n  - Descrição: Fixture divergence.\n  - Impacto: Fixture blocked.\n  - Decisão necessária: Resolve fixture scope.\n  - Bloqueante: sim", None, False),
+    ]
+    for name, body, expected_blocking, should_accept in cases:
+        root = base / f"divergence-{name}"
+        execution_fixture(root)
+        replace_section(task_path(root, "01"), "Divergências", body)
+        try:
+            actual = has_divergencia_bloqueante(task_path(root, "01"))
+        except SystemExit:
+            accepted = False
+            actual = None
+        else:
+            accepted = True
+        expect(accepted == should_accept, f"divergence matrix acceptance mismatch: {name}")
+        if should_accept:
+            expect(actual == expected_blocking, f"divergence blocking mismatch: {name}")
+    invalid_execution("missing-divergence-section", lambda root: replace_task_text(root, "01", "## Divergências\n\n- nenhuma\n\n", ""), "expected exactly one Divergências section")
+    invalid_execution("duplicate-divergence-section", lambda root: replace_task_text(root, "01", "## Execution Evidence", "## Divergências\n\n- nenhuma\n\n## Execution Evidence"), "expected exactly one Divergências section")
+    invalid_execution("eligible-malformed-divergence", lambda root: replace_section(task_path(root, "01"), "Divergências", "- Tipo: escopo\n  - Descrição: missing blocking flag\n  - Impacto: ambiguous\n  - Decisão necessária: decide"), "missing divergence field Bloqueante")
+    invalid_execution("dependency-blocked-malformed-divergence", lambda root: replace_section(task_path(root, "03"), "Divergências", "- Tipo: escopo\n  - Descrição: malformed future slice divergence\n  - Impacto: ambiguous\n  - Decisão necessária: decide"), "missing divergence field Bloqueante")
 
 
 def external_execution_fixture(base: Path) -> None:
@@ -822,6 +879,8 @@ def static_contract_checks() -> None:
     expect("must use stnl-spec-lifecycle-manager" not in execution_text.lower(), "execution skill requires SPEC skill")
     expect("required stnl-spec-lifecycle-manager" not in execution_text.lower(), "execution skill requires SPEC skill")
     expect("only specs created by" not in execution_text.lower(), "execution skill requires one source")
+    for marker in ["if NEEDS_FIX: APPLY_FINDINGS", "VALIDATE_SLICE as revalidation", "without overwriting the initial validation history"]:
+        expect(marker in execution_text, f"execution workflow does not preserve revalidation: {marker}")
     for token in [
         "plans/" + "plan-" + "01.md",
         "tasks/" + "tasks-" + "01.md",
@@ -838,8 +897,9 @@ def static_contract_checks() -> None:
     for policy in ["validate" + "_only", "validate" + "_and_keep", "validate" + "_and_remove"]:
         expect(policy not in close_policy, f"removed execution closure policy remains: {policy}")
     expect("consolidate" not in execution_text.lower(), "execution skill retains a source-update closure policy")
-    expect("Closure reports compatibility and blockers" in close_policy, "closure contract does not define report-only behavior")
-    expect("Closure never modifies the requirements source" in close_policy, "closure contract does not protect requirements")
+    expect("CLOSE` validates and reports" in close_policy, "closure contract does not define report-only behavior")
+    expect("does not change the requirements source" in close_policy, "closure contract does not protect requirements")
+    expect("does not remove execution artifacts" in close_policy, "closure contract does not reject retention/removal policy")
 
 
 with tempfile.TemporaryDirectory() as tmp:
@@ -926,11 +986,13 @@ with tempfile.TemporaryDirectory() as tmp:
     check_execution(corrected_pass)
 
     check_validation_history_matrix(base)
+    check_divergence_matrix(base)
     static_contract_checks()
 
 print("PASS: SPEC workspace structural smoke validation")
 print("PASS: slice execution workspace structural smoke validation")
 print("PASS: slice evidence and validation-history fixtures")
+print("PASS: divergence contract fixtures")
 print("PASS: external requirements source structural smoke validation")
 print("PASS: slice selective-reading and closure contract checks")
 PY
