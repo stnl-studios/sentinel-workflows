@@ -32,6 +32,7 @@ CANONICAL_ID_RE = re.compile(rf"^{CANONICAL_ID_PATTERN}$")
 CANONICAL_HEADING_RE = re.compile(rf"^### (?P<id>{CANONICAL_ID_PATTERN}) — (?P<title>\S.*)$")
 METADATA_RE = re.compile(r"^- (?P<field>[a-z_]+): (?P<value>.+)$")
 OS_METADATA_NAMES = {".DS_Store", "__MACOSX"}
+TEMPLATE_PLACEHOLDER_RE = re.compile(r"{{(?:FEATURE_NAME|OBJECTIVE|ITEM_TITLE|CONTENT)}}")
 
 
 @dataclass(frozen=True)
@@ -93,7 +94,7 @@ CATEGORIES = (
         "Q",
         "Questions",
         ("status", "blocks", "resolved_by", "linked_decision", "references"),
-        ("status", "blocks"),
+        ("status",),
         frozenset({"open", "resolved", "bypassed", "dropped"}),
         ("Pergunta", "Por que importa", "Resolução"),
     ),
@@ -180,6 +181,10 @@ def normalize(text: str) -> str:
     return "\n".join(lines)
 
 
+def contains_template_placeholder(text: str) -> bool:
+    return TEMPLATE_PLACEHOLDER_RE.search(text) is not None
+
+
 def fail(message: str, path: Path | None = None) -> None:
     location = f"{path}: " if path is not None else ""
     raise ValidationError(location + message)
@@ -245,7 +250,7 @@ def require_sections(
     for name in required:
         if not sections[name]:
             fail(f"section {name!r} is empty", path)
-        if re.search(r"<[^>]+>", sections[name]):
+        if contains_template_placeholder(sections[name]):
             fail(f"section {name!r} contains placeholder content", path)
 
 
@@ -268,8 +273,10 @@ def extract_yaml_fence(section: str, label: str, path: Path) -> list[str]:
 
 def parse_artifact_index(section: str, path: Path) -> dict[str, str]:
     lines = extract_yaml_fence(section, "Canonical Artifact Index", path)
+    if lines == ["artifacts: {}"]:
+        return {}
     if not lines or lines[0] != "artifacts:":
-        fail("artifact index must start with 'artifacts:'", path)
+        fail("artifact index must start with 'artifacts:' or be 'artifacts: {}'", path)
     artifacts: dict[str, str] = {}
     order: list[str] = []
     for line in lines[1:]:
@@ -367,39 +374,20 @@ def parse_narrative_sections(narrative: str, category: Category, path: Path) -> 
     for index, match in enumerate(matches):
         end = matches[index + 1].start() if index + 1 < len(matches) else len(narrative)
         content = normalize(narrative[match.end() : end])
-        if not content or re.search(r"<[^>]+>", content):
+        if not content or contains_template_placeholder(content):
             fail(f"section {match.group('name')!r} is empty or placeholder", path)
         sections[match.group("name")] = content
     return sections
 
 
-def criterion_is_observable(text: str) -> bool:
-    lowered = text.casefold()
-    gherkin = all(token in lowered for token in ("dado", "quando", "então")) or all(
-        token in lowered for token in ("given", "when", "then")
-    )
-    observable_tokens = (
-        "retorna",
-        "return",
-        "exibe",
-        "display",
-        "visível",
-        "visible",
-        "persiste",
-        "persist",
-        "http ",
-        "status ",
-        "contém",
-        "contains",
-        "emite",
-        "emit",
-        "cria ",
-        "creates ",
-        "rejeita",
-        "reject",
-    )
-    words = re.findall(r"\w+", lowered, re.UNICODE)
-    return len(words) >= 8 and (gherkin or any(token in lowered for token in observable_tokens))
+def validate_acceptance_criterion_narrative(identifier: str, narrative: str, path: Path) -> None:
+    words = re.findall(r"\w+", narrative, re.UNICODE)
+    if len(words) < 8:
+        fail(f"{identifier} acceptance criterion narrative is too short", path)
+    if contains_template_placeholder(narrative):
+        fail(f"{identifier} contains placeholder content", path)
+    if re.search(r"(?m)^#{1,6} ", narrative):
+        fail(f"{identifier} acceptance criterion narrative cannot contain nested headings", path)
 
 
 def parse_items(
@@ -456,6 +444,8 @@ def parse_items(
         narrative = normalize("\n".join(lines[index + 1 :]))
         if not narrative:
             fail(f"{identifier} has no narrative content", path)
+        if contains_template_placeholder(body):
+            fail(f"{identifier} contains placeholder content", path)
         if re.search(r"(?m)^```(?:yaml|yml|markdown)\s*$", narrative, re.IGNORECASE):
             fail(f"{identifier} contains a forbidden item wrapper", path)
         if re.search(r"(?im)^\s*-?\s*id\s*:", body):
@@ -501,18 +491,22 @@ def parse_items(
             fail(f"{identifier} has an improper self-reference", path)
 
         sections = parse_narrative_sections(narrative, category, path)
-        if category.prefix == "AC" and not criterion_is_observable(narrative):
-            fail(f"{identifier} is not sufficiently observable", path)
+        if category.prefix == "AC":
+            validate_acceptance_criterion_narrative(identifier, narrative, path)
         if category.prefix == "Q":
             resolved_by = metadata.get("resolved_by")
             linked_decision = metadata.get("linked_decision")
             resolution = sections["Resolução"]
             if status == "open":
+                if "blocks" not in metadata:
+                    fail(f"{identifier} open state requires blocks", path)
                 if resolved_by is not None or linked_decision is not None:
                     fail(f"{identifier} open state cannot contain final-state metadata", path)
                 if resolution != "Pendente.":
                     fail(f"{identifier} open state must use 'Pendente.' resolution", path)
             else:
+                if "blocks" in metadata:
+                    fail(f"{identifier} final state cannot contain blocks", path)
                 if resolved_by not in {"answer", "decision", "constraint", "scope_change"}:
                     fail(f"{identifier} final state requires valid resolved_by", path)
                 if resolution == "Pendente." or len(re.findall(r"\w+", resolution, re.UNICODE)) < 4:
@@ -550,10 +544,24 @@ def parse_items(
 
 def parse_shared_file(path: Path, category: Category) -> list[Item]:
     header, text = parse_file_purpose_header(path)
+    if text.startswith("\n"):
+        text = text[1:]
     if re.search(r"(?m)^```(?:yaml|yml)\s*$", text, re.IGNORECASE):
         fail("shared category files cannot contain YAML beyond the File Purpose Header", path)
-    if f"# {category.root_heading}\n" not in text:
-        fail(f"missing '# {category.root_heading}' root heading", path)
+    root_heading = f"# {category.root_heading}"
+    if not text.startswith(root_heading + "\n\n"):
+        fail(f"shared category file must start with '# {category.root_heading}' root heading", path)
+    h1_headings = re.findall(r"(?m)^# .+$", text)
+    if h1_headings != [root_heading]:
+        fail("shared category file must contain exactly one expected root heading", path)
+    if re.search(r"(?m)^## .+$", text):
+        fail("shared category files cannot contain extra level-2 headings", path)
+    item_region = text[len(root_heading) + 2 :]
+    first_item = re.search(r"(?m)^### .+$", item_region)
+    if first_item is None:
+        fail("materialized category file is semantically empty", path)
+    if normalize(item_region[: first_item.start()]):
+        fail("shared category file contains content before the first canonical item", path)
     items = parse_items(text, path, expected_prefix=category.prefix, shared_file=True)
     if not items:
         fail("materialized category file is semantically empty", path)
@@ -574,6 +582,8 @@ def collect_relationship_state(items: dict[str, Item]) -> tuple[set[str], list[s
     criterion_pairs: set[tuple[str, str]] = set()
     for item in items.values():
         for field in ("blocks", "blocked_by", "references"):
+            if field not in item.metadata:
+                continue
             values = item.metadata.get(field, ())
             if not isinstance(values, tuple):
                 continue
@@ -581,8 +591,24 @@ def collect_relationship_state(items: dict[str, Item]) -> tuple[set[str], list[s
                 if target not in items:
                     missing.add(target)
             if field == "blocks":
+                if item.category.prefix != "Q":
+                    errors.append(f"{item.identifier} uses blocks outside a question")
+                    continue
+                if item.metadata["status"] != "open":
+                    errors.append(f"{item.identifier} non-open question cannot contain blocks")
+                    continue
                 question_pairs.update((item.identifier, target) for target in values)
             elif field == "blocked_by":
+                if item.category.prefix != "AC":
+                    errors.append(f"{item.identifier} uses blocked_by outside an acceptance criterion")
+                    continue
+                if item.metadata["status"] != "active":
+                    errors.append(f"{item.identifier} non-active acceptance criterion cannot contain blocked_by")
+                    continue
+                for target in values:
+                    target_item = items.get(target)
+                    if target_item is not None and target_item.metadata["status"] != "open":
+                        errors.append(f"{item.identifier} blocked_by points to non-open question {target}")
                 criterion_pairs.update((target, item.identifier) for target in values)
         linked = item.metadata.get("linked_decision")
         if isinstance(linked, str) and linked not in items:
@@ -654,6 +680,18 @@ def validate_active(root: Path, feature: Path, header: dict[str, str], text: str
         fail(f"broken internal references: {sorted(missing)}", feature)
     if relationship_errors:
         fail(relationship_errors[0], feature)
+
+    if header["status"] == "ready":
+        if "acceptance_criteria" not in artifacts:
+            fail("ready SPEC requires indexed acceptance criteria", feature)
+        active_criteria = [
+            item for item in items.values()
+            if item.category.prefix == "AC" and item.metadata["status"] == "active"
+        ]
+        if not active_criteria:
+            fail("ready SPEC requires at least one active acceptance criterion", feature)
+        if any("blocked_by" in item.metadata for item in active_criteria):
+            fail("ready SPEC cannot have active acceptance criteria blocked_by open questions", feature)
 
     blockers_present = bool(actual_open or broken_index or gaps)
     if actual_open and header["status"] != "blocked":

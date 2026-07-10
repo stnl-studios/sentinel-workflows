@@ -12,13 +12,13 @@ update_policy: Change only when documentary closure or preservation policy chang
 
 # CLOSE Policy
 
-CLOSE validates the document, never its implementation. It requires no open question, broken internal reference, material conflict, blocking documentary gap, or non-observable active criterion. Question states permitted at closure are exactly `resolved`, `bypassed`, and `dropped`.
+CLOSE validates the document, never its implementation. It requires no open question, active `blocked_by`, broken internal reference, material conflict, or blocking documentary gap. Active criteria must have already passed semantic observability review during lifecycle work; the structural parser does not infer observability from keyword lists. Question states permitted at closure are exactly `resolved`, `bypassed`, and `dropped`.
 
 ## Durable final content
 
 Consolidate Objective; Context; Final Scope; Out of Scope; Requirements; Business Rules; Final Acceptance Criteria; Durable Decisions; Relevant Constraints; Relevant Risks; Important Contracts; and Durable Resolved Questions when relevant.
 
-Preserve canonical IDs and meaningful structural references. Preserve observable AC prose; every decision's `Contexto`, `Decisão`, and `Impacto`; every relevant constraint's `Restrição` and `Razão`; every relevant risk's `Risco`, `impact`, and `Mitigação`; and final questions that explain durable decisions or boundaries. Do not flatten these structures into one string or delete information merely to shorten the file.
+Preserve canonical IDs and meaningful structural references. Preserve AC prose; every decision's `Contexto`, `Decisão`, and `Impacto`; every relevant constraint's `Restrição` and `Razão`; every relevant risk's `Risco`, `impact`, and `Mitigação`; and final questions that explain durable decisions or boundaries. Do not preserve active blocker metadata as history: final ACs have no `blocked_by`, and final questions have no `blocks`. Use `linked_decision`, `references`, and resolution narrative for durable provenance. Do not flatten these structures into one string or delete information merely to shorten the file.
 
 Low-value resolved question history may be omitted only after its answer is durably incorporated elsewhere without information loss. Never retain session logs, internal reasoning, command output, operational records, diffs, tests, commits, or implementation evidence as requirements content.
 

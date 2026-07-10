@@ -27,9 +27,9 @@ Infer a missing MODE only when unambiguous; otherwise request the smallest neces
 1. An active workspace has `feature_spec.md` and only materialized categories in `shared/`. Every other directory, including `execution/`, is outside lifecycle ownership.
 2. Canonical IDs are only `Q-###`, `D-###`, `AC-###`, `R-###`, and `C-###`. The heading `### ID — Title` is the sole ID authority.
 3. Canonical item metadata is a deterministic Markdown list; canonical items never use YAML, repeat `id:`, use optional `null`, renumber, reuse, or fill ID gaps.
-4. Structural links are `blocks`, `blocked_by`, `linked_decision`, and `references`. Only these metadata fields participate in automatic internal-ID integrity checks; qualified external references stay narrative.
+4. Structural links are `blocks`, `blocked_by`, `linked_decision`, and `references`. `blocks` exists only on open questions, `blocked_by` only points to open questions from active ACs, and qualified external references stay narrative.
 5. Facts, hypotheses, and decisions remain distinct. Never invent a requirement to make a SPEC appear complete.
-6. A materialized shared file has real content. A blocked SPEC may contain only `feature_spec.md` and `shared/questions.md`.
+6. A materialized shared file has real content. A blocked SPEC may contain only `feature_spec.md` and `shared/questions.md`; a ready SPEC must have at least one active unblocked acceptance criterion.
 7. `PLANNING` never mutates files or creates operational artifacts.
 8. `CLOSE` depends only on documentary gates, preserves durable content before removing `shared/`, and leaves all external directories byte-for-byte unchanged.
 

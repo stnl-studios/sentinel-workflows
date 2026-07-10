@@ -12,10 +12,9 @@ update_policy: INIT and RESUME maintain criteria without hiding requirement conf
 
 # Acceptance Criteria
 
-### AC-001 — <Criterion title>
+### AC-001 — {{ITEM_TITLE}}
 
 - status: active
-- blocked_by: [Q-001]
 - references: [D-001, C-001]
 
-Dado <estado observável>, quando <ação>, então <resultado verificável>.
+{{CONTENT}}

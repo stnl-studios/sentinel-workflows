@@ -10,85 +10,84 @@ owner: stnl-spec-lifecycle-manager
 update_policy: Update only through an explicit future documentary lifecycle action.
 ```
 
-# <Feature Name> - Feature SPEC
+# {{FEATURE_NAME}} - Feature SPEC
 
 ## Objective
 
-<Durable outcome and value.>
+{{OBJECTIVE}}
 
 ## Context
 
 ### Facts
 
-- <Facts needed to interpret the final requirements.>
+- {{CONTENT}}
 
 ### Hypotheses
 
-- <Remaining explicit hypothesis, or "None identified.">
+- {{CONTENT}}
 
 ## Final Scope
 
-- <Included behavior.>
+- {{CONTENT}}
 
 ## Out of Scope
 
-- <Durable exclusion.>
+- {{CONTENT}}
 
 ## Requirements
 
-- <Final requirement.>
+- {{CONTENT}}
 
 ## Business Rules
 
-- <Durable rule, or "None.">
+- {{CONTENT}}
 
 ## Final Acceptance Criteria
 
-### AC-001 — <Criterion title>
+### AC-001 — {{ITEM_TITLE}}
 
 - status: active
-- blocked_by: [Q-001]
 - references: [D-001, C-001]
 
-Dado <estado observável>, quando <ação>, então <resultado verificável>.
+{{CONTENT}}
 
 ## Durable Decisions
 
-### D-001 — <Decision title>
+### D-001 — {{ITEM_TITLE}}
 
 - status: accepted
 - references: [C-001]
 
 #### Contexto
 
-<Why this decision exists.>
+{{CONTENT}}
 
 #### Decisão
 
-<The durable choice.>
+{{CONTENT}}
 
 #### Impacto
 
-<The lasting consequence.>
+{{CONTENT}}
 
 ## Relevant Constraints
 
-### C-001 — <Constraint title>
+### C-001 — {{ITEM_TITLE}}
 
 - status: active
 - references: [D-001]
 
 #### Restrição
 
-<Boundary that must not be violated.>
+{{CONTENT}}
 
 #### Razão
 
-<Why the boundary matters.>
+{{CONTENT}}
 
 ## Relevant Risks
 
-### R-001 — <Risk title>
+### R-001 — {{ITEM_TITLE}}
 
 - status: active
 - impact: high
@@ -96,33 +95,32 @@ Dado <estado observável>, quando <ação>, então <resultado verificável>.
 
 #### Risco
 
-<Material exposure that remains relevant.>
+{{CONTENT}}
 
 #### Mitigação
 
-<Treatment without erasing the active risk.>
+{{CONTENT}}
 
 ## Important Contracts
 
-- <Durable API, data, legal, compatibility, or integration contract.>
+- {{CONTENT}}
 
 ## Durable Resolved Questions
 
-### Q-001 — <Question title>
+### Q-001 — {{ITEM_TITLE}}
 
 - status: resolved
-- blocks: [AC-001]
 - resolved_by: decision
 - linked_decision: D-001
 
 #### Pergunta
 
-<The material question.>
+{{CONTENT}}
 
 #### Por que importa
 
-<Why the answer established a durable boundary.>
+{{CONTENT}}
 
 #### Resolução
 
-<Explicit resolution preserved because it explains D-001.>
+{{CONTENT}}

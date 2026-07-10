@@ -4,92 +4,204 @@
     "operation": "INIT",
     "runner": "workspace",
     "fixture": "ready",
-    "input_files": ["templates/feature_spec.template.md", "templates/shared-acceptance-criteria.template.md"],
-    "expected_files": ["feature_spec.md", "shared/acceptance-criteria.md", "shared/constraints.md", "shared/decisions.md", "shared/questions.md", "shared/risks.md"],
-    "allowed_changes": ["feature_spec.md", "shared/"],
+    "input_files": [
+      "templates/feature_spec.template.md",
+      "templates/shared-acceptance-criteria.template.md"
+    ],
+    "expected_files": [
+      "feature_spec.md",
+      "shared/acceptance-criteria.md",
+      "shared/constraints.md",
+      "shared/decisions.md",
+      "shared/questions.md",
+      "shared/risks.md"
+    ],
+    "allowed_changes": [
+      "feature_spec.md",
+      "shared/"
+    ],
     "expected_valid": true,
     "expected_status": "ready",
-    "expected_ids": ["AC-001", "C-001", "D-001", "Q-001", "R-001"],
-    "expected_links": {"Q-001.blocks": ["AC-001"], "AC-001.blocked_by": ["Q-001"]},
-    "assertions": ["new workspace", "no operational artifacts", "all readiness gates pass"]
+    "expected_ids": [
+      "AC-001",
+      "C-001",
+      "D-001",
+      "Q-001",
+      "R-001"
+    ],
+    "expected_links": {
+      "Q-001.linked_decision": "D-001"
+    },
+    "assertions": [
+      "new workspace",
+      "no operational artifacts",
+      "ready has active unblocked AC"
+    ]
   },
   {
     "id": "init-blocked",
     "operation": "INIT",
     "runner": "workspace",
     "fixture": "blocked",
-    "input_files": ["templates/feature_spec.template.md", "templates/shared-questions.template.md"],
-    "expected_files": ["feature_spec.md", "shared/acceptance-criteria.md", "shared/constraints.md", "shared/decisions.md", "shared/questions.md", "shared/risks.md"],
-    "allowed_changes": ["feature_spec.md", "shared/"],
+    "input_files": [
+      "templates/feature_spec.template.md",
+      "templates/shared-questions.template.md"
+    ],
+    "expected_files": [
+      "feature_spec.md",
+      "shared/acceptance-criteria.md",
+      "shared/constraints.md",
+      "shared/decisions.md",
+      "shared/questions.md",
+      "shared/risks.md"
+    ],
+    "allowed_changes": [
+      "feature_spec.md",
+      "shared/"
+    ],
     "expected_valid": true,
     "expected_status": "blocked",
-    "expected_ids": ["AC-001", "C-001", "D-001", "Q-001", "R-001"],
-    "expected_links": {"Q-001.blocks": ["AC-001"], "AC-001.blocked_by": ["Q-001"]},
-    "assertions": ["open question blocks SPEC", "open_questions is derived"]
+    "expected_ids": [
+      "AC-001",
+      "C-001",
+      "D-001",
+      "Q-001",
+      "R-001"
+    ],
+    "expected_links": {
+      "Q-001.blocks": [
+        "AC-001"
+      ],
+      "AC-001.blocked_by": [
+        "Q-001"
+      ]
+    },
+    "assertions": [
+      "open question blocks SPEC",
+      "open_questions is derived",
+      "blocked AC has reciprocal open question"
+    ]
   },
   {
     "id": "resume-resolves-question",
     "operation": "RESUME",
     "runner": "resume_resolve",
     "fixture": "blocked",
-    "input_files": ["feature_spec.md", "shared/questions.md"],
-    "expected_files": ["feature_spec.md", "shared/questions.md"],
-    "allowed_changes": ["feature_spec.md", "shared/questions.md"],
+    "input_files": [
+      "feature_spec.md",
+      "shared/acceptance-criteria.md",
+      "shared/questions.md"
+    ],
+    "expected_files": [
+      "feature_spec.md",
+      "shared/acceptance-criteria.md",
+      "shared/questions.md"
+    ],
+    "allowed_changes": [
+      "feature_spec.md",
+      "shared/acceptance-criteria.md",
+      "shared/questions.md"
+    ],
     "expected_valid": true,
     "expected_status": "ready",
-    "expected_ids": ["AC-001", "C-001", "D-001", "Q-001", "R-001"],
-    "expected_links": {"Q-001.linked_decision": "D-001"},
-    "assertions": ["existing IDs unchanged", "question resolution explicit"]
+    "expected_ids": [
+      "AC-001",
+      "C-001",
+      "D-001",
+      "Q-001",
+      "R-001"
+    ],
+    "expected_links": {
+      "Q-001.linked_decision": "D-001"
+    },
+    "assertions": [
+      "existing IDs unchanged",
+      "question resolution explicit",
+      "active blockers removed"
+    ]
   },
   {
     "id": "resume-creates-durable-decision",
     "operation": "RESUME",
     "runner": "resume_decision",
     "fixture": "decisionless_blocked",
-    "input_files": ["feature_spec.md", "shared/acceptance-criteria.md", "shared/questions.md"],
-    "expected_files": ["feature_spec.md", "shared/acceptance-criteria.md", "shared/decisions.md", "shared/questions.md"],
-    "allowed_changes": ["feature_spec.md", "shared/acceptance-criteria.md", "shared/decisions.md", "shared/questions.md"],
+    "input_files": [
+      "feature_spec.md",
+      "shared/acceptance-criteria.md",
+      "shared/questions.md"
+    ],
+    "expected_files": [
+      "feature_spec.md",
+      "shared/acceptance-criteria.md",
+      "shared/decisions.md",
+      "shared/questions.md"
+    ],
+    "allowed_changes": [
+      "feature_spec.md",
+      "shared/acceptance-criteria.md",
+      "shared/decisions.md",
+      "shared/questions.md"
+    ],
     "expected_valid": true,
     "expected_status": "ready",
-    "expected_ids": ["AC-001", "D-001", "Q-001"],
-    "expected_links": {"Q-001.linked_decision": "D-001", "AC-001.references": ["D-001"]},
-    "assertions": ["new decision is durable", "question and criterion link to decision"]
+    "expected_ids": [
+      "AC-001",
+      "D-001",
+      "Q-001"
+    ],
+    "expected_links": {
+      "Q-001.linked_decision": "D-001",
+      "AC-001.references": [
+        "D-001"
+      ]
+    },
+    "assertions": [
+      "new decision is durable",
+      "question and criterion link to decision",
+      "active blockers removed"
+    ]
   },
   {
     "id": "planning-read-only",
     "operation": "PLANNING",
     "runner": "planning_read_only",
     "fixture": "ready",
-    "input_files": ["feature_spec.md", "shared/acceptance-criteria.md"],
-    "expected_files": ["feature_spec.md", "shared/acceptance-criteria.md", "shared/constraints.md", "shared/decisions.md", "shared/questions.md", "shared/risks.md"],
+    "input_files": [
+      "feature_spec.md",
+      "shared/acceptance-criteria.md"
+    ],
+    "expected_files": [
+      "feature_spec.md",
+      "shared/acceptance-criteria.md",
+      "shared/constraints.md",
+      "shared/decisions.md",
+      "shared/questions.md",
+      "shared/risks.md"
+    ],
     "allowed_changes": [],
     "expected_valid": true,
     "expected_status": "ready",
-    "expected_ids": ["AC-001", "C-001", "D-001", "Q-001", "R-001"],
+    "expected_ids": [
+      "AC-001",
+      "C-001",
+      "D-001",
+      "Q-001",
+      "R-001"
+    ],
     "expected_links": {},
-    "assertions": ["snapshot unchanged", "no plan or task artifact"]
-  },
-  {
-    "id": "criterion-not-observable",
-    "operation": "PLANNING",
-    "runner": "workspace",
-    "fixture": "non_observable",
-    "input_files": ["shared/acceptance-criteria.md"],
-    "expected_files": [],
-    "allowed_changes": [],
-    "expected_valid": false,
-    "expected_status": "invalid",
-    "expected_ids": [],
-    "expected_links": {},
-    "expected_error": "not sufficiently observable",
-    "assertions": ["acceptance_criteria_gate fails"]
+    "assertions": [
+      "snapshot unchanged",
+      "no plan or task artifact"
+    ]
   },
   {
     "id": "missing-internal-id",
     "operation": "PLANNING",
     "runner": "workspace",
     "fixture": "missing_internal",
-    "input_files": ["shared/risks.md"],
+    "input_files": [
+      "shared/risks.md"
+    ],
     "expected_files": [],
     "allowed_changes": [],
     "expected_valid": false,
@@ -97,28 +209,50 @@
     "expected_ids": [],
     "expected_links": {},
     "expected_error": "broken internal references",
-    "assertions": ["reference_integrity_gate fails"]
+    "assertions": [
+      "reference_integrity_gate fails"
+    ]
   },
   {
     "id": "qualified-external-id",
     "operation": "PLANNING",
     "runner": "workspace",
     "fixture": "external_reference",
-    "input_files": ["shared/acceptance-criteria.md"],
-    "expected_files": ["feature_spec.md", "shared/acceptance-criteria.md", "shared/constraints.md", "shared/decisions.md", "shared/questions.md", "shared/risks.md"],
+    "input_files": [
+      "shared/acceptance-criteria.md"
+    ],
+    "expected_files": [
+      "feature_spec.md",
+      "shared/acceptance-criteria.md",
+      "shared/constraints.md",
+      "shared/decisions.md",
+      "shared/questions.md",
+      "shared/risks.md"
+    ],
     "allowed_changes": [],
     "expected_valid": true,
     "expected_status": "ready",
-    "expected_ids": ["AC-001", "C-001", "D-001", "Q-001", "R-001"],
+    "expected_ids": [
+      "AC-001",
+      "C-001",
+      "D-001",
+      "Q-001",
+      "R-001"
+    ],
     "expected_links": {},
-    "assertions": ["initial-scaffold/D-011 is not a local reference"]
+    "assertions": [
+      "initial-scaffold/D-011 is not a local reference"
+    ]
   },
   {
     "id": "inverse-link-divergence",
     "operation": "PLANNING",
     "runner": "workspace",
     "fixture": "divergent_links",
-    "input_files": ["shared/acceptance-criteria.md", "shared/questions.md"],
+    "input_files": [
+      "shared/acceptance-criteria.md",
+      "shared/questions.md"
+    ],
     "expected_files": [],
     "allowed_changes": [],
     "expected_valid": false,
@@ -126,42 +260,93 @@
     "expected_ids": [],
     "expected_links": {},
     "expected_error": "missing inverse blocked_by",
-    "assertions": ["relationship_gate fails"]
+    "assertions": [
+      "relationship_gate fails"
+    ]
   },
   {
     "id": "active-mitigated-risk",
     "operation": "PLANNING",
     "runner": "workspace",
     "fixture": "active_risk",
-    "input_files": ["shared/risks.md"],
-    "expected_files": ["feature_spec.md", "shared/acceptance-criteria.md", "shared/constraints.md", "shared/decisions.md", "shared/questions.md", "shared/risks.md"],
+    "input_files": [
+      "shared/risks.md"
+    ],
+    "expected_files": [
+      "feature_spec.md",
+      "shared/acceptance-criteria.md",
+      "shared/constraints.md",
+      "shared/decisions.md",
+      "shared/questions.md",
+      "shared/risks.md"
+    ],
     "allowed_changes": [],
     "expected_valid": true,
     "expected_status": "ready",
-    "expected_ids": ["AC-001", "C-001", "D-001", "Q-001", "R-001"],
-    "expected_links": {"R-001.references": ["C-001", "AC-001"]},
-    "assertions": ["risk remains active", "mitigation is present", "risk does not block readiness"]
+    "expected_ids": [
+      "AC-001",
+      "C-001",
+      "D-001",
+      "Q-001",
+      "R-001"
+    ],
+    "expected_links": {
+      "R-001.references": [
+        "C-001",
+        "AC-001"
+      ]
+    },
+    "assertions": [
+      "risk remains active",
+      "mitigation is present",
+      "risk does not block readiness"
+    ]
   },
   {
     "id": "close-complete",
     "operation": "CLOSE",
     "runner": "close_valid",
     "fixture": "ready",
-    "input_files": ["feature_spec.md", "shared/"],
-    "expected_files": ["feature_spec.md", "execution/retained-record.txt"],
-    "allowed_changes": ["feature_spec.md", "shared/"],
+    "input_files": [
+      "feature_spec.md",
+      "shared/"
+    ],
+    "expected_files": [
+      "feature_spec.md",
+      "execution/retained-record.txt"
+    ],
+    "allowed_changes": [
+      "feature_spec.md",
+      "shared/"
+    ],
     "expected_valid": true,
     "expected_status": "closed",
-    "expected_ids": ["AC-001", "C-001", "D-001", "Q-001", "R-001"],
-    "expected_links": {"Q-001.linked_decision": "D-001"},
-    "assertions": ["durable content preserved", "shared removed after validation", "execution unchanged"]
+    "expected_ids": [
+      "AC-001",
+      "C-001",
+      "D-001",
+      "Q-001",
+      "R-001"
+    ],
+    "expected_links": {
+      "Q-001.linked_decision": "D-001"
+    },
+    "assertions": [
+      "durable content preserved",
+      "shared removed after validation",
+      "execution unchanged",
+      "closed AC has no blocked_by"
+    ]
   },
   {
     "id": "close-blocked",
     "operation": "CLOSE",
     "runner": "close_blocked",
     "fixture": "blocked",
-    "input_files": ["feature_spec.md", "shared/questions.md"],
+    "input_files": [
+      "feature_spec.md",
+      "shared/questions.md"
+    ],
     "expected_files": [],
     "allowed_changes": [],
     "expected_valid": false,
@@ -169,28 +354,52 @@
     "expected_ids": [],
     "expected_links": {},
     "expected_error": "active ready SPEC",
-    "assertions": ["open question prevents CLOSE"]
+    "assertions": [
+      "open question prevents CLOSE"
+    ]
   },
   {
     "id": "close-preserves-execution",
     "operation": "CLOSE",
     "runner": "close_valid",
     "fixture": "ready_with_execution",
-    "input_files": ["feature_spec.md", "shared/", "execution/retained-record.txt"],
-    "expected_files": ["feature_spec.md", "execution/retained-record.txt"],
-    "allowed_changes": ["feature_spec.md", "shared/"],
+    "input_files": [
+      "feature_spec.md",
+      "shared/",
+      "execution/retained-record.txt"
+    ],
+    "expected_files": [
+      "feature_spec.md",
+      "execution/retained-record.txt"
+    ],
+    "allowed_changes": [
+      "feature_spec.md",
+      "shared/"
+    ],
     "expected_valid": true,
     "expected_status": "closed",
-    "expected_ids": ["AC-001", "C-001", "D-001", "Q-001", "R-001"],
+    "expected_ids": [
+      "AC-001",
+      "C-001",
+      "D-001",
+      "Q-001",
+      "R-001"
+    ],
     "expected_links": {},
-    "assertions": ["execution hash unchanged"]
+    "assertions": [
+      "execution hash unchanged",
+      "resolved question keeps linked_decision without blocks"
+    ]
   },
   {
     "id": "close-detects-content-loss",
     "operation": "CLOSE",
     "runner": "close_loss",
     "fixture": "ready",
-    "input_files": ["feature_spec.md", "shared/decisions.md"],
+    "input_files": [
+      "feature_spec.md",
+      "shared/decisions.md"
+    ],
     "expected_files": [],
     "allowed_changes": [],
     "expected_valid": false,
@@ -198,14 +407,18 @@
     "expected_ids": [],
     "expected_links": {},
     "expected_error": "changed durable content for D-001",
-    "assertions": ["decision context, decision, and impact compared"]
+    "assertions": [
+      "decision context, decision, and impact compared"
+    ]
   },
   {
     "id": "close-detects-execution-change",
     "operation": "CLOSE",
     "runner": "close_execution_mutation",
     "fixture": "ready_with_execution",
-    "input_files": ["execution/retained-record.txt"],
+    "input_files": [
+      "execution/retained-record.txt"
+    ],
     "expected_files": [],
     "allowed_changes": [],
     "expected_valid": false,
@@ -213,14 +426,18 @@
     "expected_ids": [],
     "expected_links": {},
     "expected_error": "changed an external directory",
-    "assertions": ["external_boundary_gate fails"]
+    "assertions": [
+      "external_boundary_gate fails"
+    ]
   },
   {
     "id": "item-yaml-forbidden",
     "operation": "PLANNING",
     "runner": "workspace",
     "fixture": "item_yaml",
-    "input_files": ["shared/acceptance-criteria.md"],
+    "input_files": [
+      "shared/acceptance-criteria.md"
+    ],
     "expected_files": [],
     "allowed_changes": [],
     "expected_valid": false,
@@ -228,14 +445,18 @@
     "expected_ids": [],
     "expected_links": {},
     "expected_error": "cannot contain YAML",
-    "assertions": ["canonical items contain no YAML"]
+    "assertions": [
+      "canonical items contain no YAML"
+    ]
   },
   {
     "id": "body-id-forbidden",
     "operation": "PLANNING",
     "runner": "workspace",
     "fixture": "body_id",
-    "input_files": ["shared/acceptance-criteria.md"],
+    "input_files": [
+      "shared/acceptance-criteria.md"
+    ],
     "expected_files": [],
     "allowed_changes": [],
     "expected_valid": false,
@@ -243,14 +464,18 @@
     "expected_ids": [],
     "expected_links": {},
     "expected_error": "repeats its ID",
-    "assertions": ["heading is the sole ID authority"]
+    "assertions": [
+      "heading is the sole ID authority"
+    ]
   },
   {
     "id": "duplicate-id",
     "operation": "PLANNING",
     "runner": "workspace",
     "fixture": "duplicate_id",
-    "input_files": ["shared/acceptance-criteria.md"],
+    "input_files": [
+      "shared/acceptance-criteria.md"
+    ],
     "expected_files": [],
     "allowed_changes": [],
     "expected_valid": false,
@@ -258,14 +483,18 @@
     "expected_ids": [],
     "expected_links": {},
     "expected_error": "duplicate canonical ID",
-    "assertions": ["IDs are unique"]
+    "assertions": [
+      "IDs are unique"
+    ]
   },
   {
     "id": "wrong-prefix",
     "operation": "PLANNING",
     "runner": "workspace",
     "fixture": "wrong_prefix",
-    "input_files": ["shared/acceptance-criteria.md"],
+    "input_files": [
+      "shared/acceptance-criteria.md"
+    ],
     "expected_files": [],
     "allowed_changes": [],
     "expected_valid": false,
@@ -273,14 +502,18 @@
     "expected_ids": [],
     "expected_links": {},
     "expected_error": "incompatible with this category file",
-    "assertions": ["file prefix is enforced"]
+    "assertions": [
+      "file prefix is enforced"
+    ]
   },
   {
     "id": "missing-metadata",
     "operation": "PLANNING",
     "runner": "workspace",
     "fixture": "missing_metadata",
-    "input_files": ["shared/acceptance-criteria.md"],
+    "input_files": [
+      "shared/acceptance-criteria.md"
+    ],
     "expected_files": [],
     "allowed_changes": [],
     "expected_valid": false,
@@ -288,14 +521,18 @@
     "expected_ids": [],
     "expected_links": {},
     "expected_error": "missing required metadata",
-    "assertions": ["status is required"]
+    "assertions": [
+      "status is required"
+    ]
   },
   {
     "id": "invalid-status",
     "operation": "PLANNING",
     "runner": "workspace",
     "fixture": "invalid_status",
-    "input_files": ["shared/risks.md"],
+    "input_files": [
+      "shared/risks.md"
+    ],
     "expected_files": [],
     "allowed_changes": [],
     "expected_valid": false,
@@ -303,14 +540,19 @@
     "expected_ids": [],
     "expected_links": {},
     "expected_error": "invalid status",
-    "assertions": ["old risk status is rejected"]
+    "assertions": [
+      "old risk status is rejected"
+    ]
   },
   {
     "id": "stale-open-question-index",
     "operation": "PLANNING",
     "runner": "workspace",
     "fixture": "stale_open_index",
-    "input_files": ["feature_spec.md", "shared/questions.md"],
+    "input_files": [
+      "feature_spec.md",
+      "shared/questions.md"
+    ],
     "expected_files": [],
     "allowed_changes": [],
     "expected_valid": false,
@@ -318,6 +560,630 @@
     "expected_ids": [],
     "expected_links": {},
     "expected_error": "open_questions must exactly equal",
-    "assertions": ["derived blocker index is exact"]
+    "assertions": [
+      "derived blocker index is exact"
+    ]
+  },
+  {
+    "id": "ready-missing-ac-file",
+    "operation": "PLANNING",
+    "runner": "workspace",
+    "fixture": "ready_missing_ac_file",
+    "input_files": [
+      "feature_spec.md"
+    ],
+    "expected_files": [],
+    "allowed_changes": [],
+    "expected_valid": false,
+    "expected_status": "invalid",
+    "expected_ids": [],
+    "expected_links": {},
+    "assertions": [
+      "ready without AC file rejected"
+    ],
+    "expected_error": "artifact index does not exactly match"
+  },
+  {
+    "id": "ready-empty-ac-file",
+    "operation": "PLANNING",
+    "runner": "workspace",
+    "fixture": "empty_ac",
+    "input_files": [
+      "feature_spec.md"
+    ],
+    "expected_files": [],
+    "allowed_changes": [],
+    "expected_valid": false,
+    "expected_status": "invalid",
+    "expected_ids": [],
+    "expected_links": {},
+    "assertions": [
+      "ready with empty AC file rejected"
+    ],
+    "expected_error": "semantically empty"
+  },
+  {
+    "id": "ready-no-active-ac",
+    "operation": "PLANNING",
+    "runner": "workspace",
+    "fixture": "no_active_ac",
+    "input_files": [
+      "feature_spec.md"
+    ],
+    "expected_files": [],
+    "allowed_changes": [],
+    "expected_valid": false,
+    "expected_status": "invalid",
+    "expected_ids": [],
+    "expected_links": {},
+    "assertions": [
+      "ready with only superseded AC rejected"
+    ],
+    "expected_error": "at least one active acceptance criterion"
+  },
+  {
+    "id": "ready-only-dropped-ac",
+    "operation": "PLANNING",
+    "runner": "workspace",
+    "fixture": "only_dropped_ac",
+    "input_files": [
+      "feature_spec.md"
+    ],
+    "expected_files": [],
+    "allowed_changes": [],
+    "expected_valid": false,
+    "expected_status": "invalid",
+    "expected_ids": [],
+    "expected_links": {},
+    "assertions": [
+      "ready with only dropped AC rejected"
+    ],
+    "expected_error": "at least one active acceptance criterion"
+  },
+  {
+    "id": "ready-active-ac-valid",
+    "operation": "PLANNING",
+    "runner": "workspace",
+    "fixture": "valid_non_heuristic_ac",
+    "input_files": [
+      "feature_spec.md"
+    ],
+    "expected_files": [
+      "feature_spec.md",
+      "shared/acceptance-criteria.md",
+      "shared/constraints.md",
+      "shared/decisions.md",
+      "shared/questions.md",
+      "shared/risks.md"
+    ],
+    "allowed_changes": [],
+    "expected_valid": true,
+    "expected_status": "ready",
+    "expected_ids": [
+      "AC-001",
+      "C-001",
+      "D-001",
+      "Q-001",
+      "R-001"
+    ],
+    "expected_links": {},
+    "assertions": [
+      "ready has one active AC"
+    ]
+  },
+  {
+    "id": "blocked-without-ac",
+    "operation": "PLANNING",
+    "runner": "workspace",
+    "fixture": "empty_artifact_index",
+    "input_files": [
+      "feature_spec.md"
+    ],
+    "expected_files": [
+      "feature_spec.md"
+    ],
+    "allowed_changes": [],
+    "expected_valid": true,
+    "expected_status": "draft",
+    "expected_ids": [],
+    "expected_links": {},
+    "assertions": [
+      "draft can omit acceptance criteria"
+    ]
+  },
+  {
+    "id": "ready-ac-blocked-rejected",
+    "operation": "PLANNING",
+    "runner": "workspace",
+    "fixture": "ready_ac_blocked",
+    "input_files": [
+      "feature_spec.md"
+    ],
+    "expected_files": [],
+    "allowed_changes": [],
+    "expected_valid": false,
+    "expected_status": "invalid",
+    "expected_ids": [],
+    "expected_links": {},
+    "assertions": [
+      "ready with blocked active AC rejected"
+    ],
+    "expected_error": "blocked_by points to non-open question"
+  },
+  {
+    "id": "ac-session-restored-valid",
+    "operation": "PLANNING",
+    "runner": "workspace",
+    "fixture": "valid_non_heuristic_ac",
+    "input_files": [
+      "feature_spec.md"
+    ],
+    "expected_files": [
+      "feature_spec.md",
+      "shared/acceptance-criteria.md",
+      "shared/constraints.md",
+      "shared/decisions.md",
+      "shared/questions.md",
+      "shared/risks.md"
+    ],
+    "allowed_changes": [],
+    "expected_valid": true,
+    "expected_status": "ready",
+    "expected_ids": [
+      "AC-001",
+      "C-001",
+      "D-001",
+      "Q-001",
+      "R-001"
+    ],
+    "expected_links": {},
+    "assertions": [
+      "AC without old heuristic verbs accepted structurally"
+    ]
+  },
+  {
+    "id": "ac-empty-rejected",
+    "operation": "PLANNING",
+    "runner": "workspace",
+    "fixture": "empty_ac_narrative",
+    "input_files": [
+      "feature_spec.md"
+    ],
+    "expected_files": [],
+    "allowed_changes": [],
+    "expected_valid": false,
+    "expected_status": "invalid",
+    "expected_ids": [],
+    "expected_links": {},
+    "assertions": [
+      "empty AC rejected structurally"
+    ],
+    "expected_error": "has no narrative content"
+  },
+  {
+    "id": "ac-placeholder-rejected",
+    "operation": "PLANNING",
+    "runner": "workspace",
+    "fixture": "placeholder_real",
+    "input_files": [
+      "feature_spec.md"
+    ],
+    "expected_files": [],
+    "allowed_changes": [],
+    "expected_valid": false,
+    "expected_status": "invalid",
+    "expected_ids": [],
+    "expected_links": {},
+    "assertions": [
+      "explicit template placeholder rejected"
+    ],
+    "expected_error": "placeholder content"
+  },
+  {
+    "id": "result-user-accepted",
+    "operation": "PLANNING",
+    "runner": "workspace",
+    "fixture": "technical_result_user",
+    "input_files": [
+      "feature_spec.md"
+    ],
+    "expected_files": [
+      "feature_spec.md",
+      "shared/acceptance-criteria.md",
+      "shared/constraints.md",
+      "shared/decisions.md",
+      "shared/questions.md",
+      "shared/risks.md"
+    ],
+    "allowed_changes": [],
+    "expected_valid": true,
+    "expected_status": "ready",
+    "expected_ids": [
+      "AC-001",
+      "C-001",
+      "D-001",
+      "Q-001",
+      "R-001"
+    ],
+    "expected_links": {},
+    "assertions": [
+      "Result<User> is not a placeholder"
+    ]
+  },
+  {
+    "id": "promise-result-t-accepted",
+    "operation": "PLANNING",
+    "runner": "workspace",
+    "fixture": "technical_promise_result",
+    "input_files": [
+      "feature_spec.md"
+    ],
+    "expected_files": [
+      "feature_spec.md",
+      "shared/acceptance-criteria.md",
+      "shared/constraints.md",
+      "shared/decisions.md",
+      "shared/questions.md",
+      "shared/risks.md"
+    ],
+    "allowed_changes": [],
+    "expected_valid": true,
+    "expected_status": "ready",
+    "expected_ids": [
+      "AC-001",
+      "C-001",
+      "D-001",
+      "Q-001",
+      "R-001"
+    ],
+    "expected_links": {},
+    "assertions": [
+      "Promise<Result<T>> is not a placeholder"
+    ]
+  },
+  {
+    "id": "html-tag-accepted",
+    "operation": "PLANNING",
+    "runner": "workspace",
+    "fixture": "technical_html",
+    "input_files": [
+      "feature_spec.md"
+    ],
+    "expected_files": [
+      "feature_spec.md",
+      "shared/acceptance-criteria.md",
+      "shared/constraints.md",
+      "shared/decisions.md",
+      "shared/questions.md",
+      "shared/risks.md"
+    ],
+    "allowed_changes": [],
+    "expected_valid": true,
+    "expected_status": "ready",
+    "expected_ids": [
+      "AC-001",
+      "C-001",
+      "D-001",
+      "Q-001",
+      "R-001"
+    ],
+    "expected_links": {},
+    "assertions": [
+      "HTML-like syntax is not a placeholder"
+    ]
+  },
+  {
+    "id": "preamble-before-item-rejected",
+    "operation": "PLANNING",
+    "runner": "workspace",
+    "fixture": "preamble_before_item",
+    "input_files": [
+      "feature_spec.md"
+    ],
+    "expected_files": [],
+    "allowed_changes": [],
+    "expected_valid": false,
+    "expected_status": "invalid",
+    "expected_ids": [],
+    "expected_links": {},
+    "assertions": [
+      "arbitrary preamble rejected"
+    ],
+    "expected_error": "before the first canonical item"
+  },
+  {
+    "id": "notes-heading-rejected",
+    "operation": "PLANNING",
+    "runner": "workspace",
+    "fixture": "notes_after_item",
+    "input_files": [
+      "feature_spec.md"
+    ],
+    "expected_files": [],
+    "allowed_changes": [],
+    "expected_valid": false,
+    "expected_status": "invalid",
+    "expected_ids": [],
+    "expected_links": {},
+    "assertions": [
+      "## Notes rejected"
+    ],
+    "expected_error": "extra level-2 headings"
+  },
+  {
+    "id": "wrong-root-heading-rejected",
+    "operation": "PLANNING",
+    "runner": "workspace",
+    "fixture": "wrong_root_heading",
+    "input_files": [
+      "feature_spec.md"
+    ],
+    "expected_files": [],
+    "allowed_changes": [],
+    "expected_valid": false,
+    "expected_status": "invalid",
+    "expected_ids": [],
+    "expected_links": {},
+    "assertions": [
+      "wrong root heading rejected"
+    ],
+    "expected_error": "must start with"
+  },
+  {
+    "id": "multiple-root-headings-rejected",
+    "operation": "PLANNING",
+    "runner": "workspace",
+    "fixture": "multiple_root_headings",
+    "input_files": [
+      "feature_spec.md"
+    ],
+    "expected_files": [],
+    "allowed_changes": [],
+    "expected_valid": false,
+    "expected_status": "invalid",
+    "expected_ids": [],
+    "expected_links": {},
+    "assertions": [
+      "multiple root headings rejected"
+    ],
+    "expected_error": "exactly one expected root heading"
+  },
+  {
+    "id": "unknown-item-section-rejected",
+    "operation": "PLANNING",
+    "runner": "workspace",
+    "fixture": "unknown_item_section",
+    "input_files": [
+      "feature_spec.md"
+    ],
+    "expected_files": [],
+    "allowed_changes": [],
+    "expected_valid": false,
+    "expected_status": "invalid",
+    "expected_ids": [],
+    "expected_links": {},
+    "assertions": [
+      "unknown #### section rejected"
+    ],
+    "expected_error": "narrative sections must be"
+  },
+  {
+    "id": "invalid-h3-heading-rejected",
+    "operation": "PLANNING",
+    "runner": "workspace",
+    "fixture": "invalid_h3_heading",
+    "input_files": [
+      "feature_spec.md"
+    ],
+    "expected_files": [],
+    "allowed_changes": [],
+    "expected_valid": false,
+    "expected_status": "invalid",
+    "expected_ids": [],
+    "expected_links": {},
+    "assertions": [
+      "invalid ### heading rejected"
+    ],
+    "expected_error": "non-canonical item heading"
+  },
+  {
+    "id": "loose-content-after-item-rejected",
+    "operation": "PLANNING",
+    "runner": "workspace",
+    "fixture": "loose_content_after_item",
+    "input_files": [
+      "feature_spec.md"
+    ],
+    "expected_files": [],
+    "allowed_changes": [],
+    "expected_valid": false,
+    "expected_status": "invalid",
+    "expected_ids": [],
+    "expected_links": {},
+    "assertions": [
+      "loose trailing block rejected"
+    ],
+    "expected_error": "non-canonical item heading"
+  },
+  {
+    "id": "open-question-reciprocal-valid",
+    "operation": "PLANNING",
+    "runner": "workspace",
+    "fixture": "open_question_reciprocal",
+    "input_files": [
+      "feature_spec.md"
+    ],
+    "expected_files": [
+      "feature_spec.md",
+      "shared/acceptance-criteria.md",
+      "shared/constraints.md",
+      "shared/decisions.md",
+      "shared/questions.md",
+      "shared/risks.md"
+    ],
+    "allowed_changes": [],
+    "expected_valid": true,
+    "expected_status": "blocked",
+    "expected_ids": [
+      "AC-001",
+      "C-001",
+      "D-001",
+      "Q-001",
+      "R-001"
+    ],
+    "expected_links": {
+      "Q-001.blocks": [
+        "AC-001"
+      ],
+      "AC-001.blocked_by": [
+        "Q-001"
+      ]
+    },
+    "assertions": [
+      "open question with reciprocal blocks valid"
+    ]
+  },
+  {
+    "id": "open-question-without-blocks-rejected",
+    "operation": "PLANNING",
+    "runner": "workspace",
+    "fixture": "open_question_without_blocks",
+    "input_files": [
+      "feature_spec.md"
+    ],
+    "expected_files": [],
+    "allowed_changes": [],
+    "expected_valid": false,
+    "expected_status": "invalid",
+    "expected_ids": [],
+    "expected_links": {},
+    "assertions": [
+      "open question without blocks rejected"
+    ],
+    "expected_error": "open state requires blocks"
+  },
+  {
+    "id": "resolved-question-with-blocks-rejected",
+    "operation": "PLANNING",
+    "runner": "workspace",
+    "fixture": "resolved_question_with_blocks",
+    "input_files": [
+      "feature_spec.md"
+    ],
+    "expected_files": [],
+    "allowed_changes": [],
+    "expected_valid": false,
+    "expected_status": "invalid",
+    "expected_ids": [],
+    "expected_links": {},
+    "assertions": [
+      "resolved question with blocks rejected"
+    ],
+    "expected_error": "final state cannot contain blocks"
+  },
+  {
+    "id": "blocked-by-resolved-question-rejected",
+    "operation": "PLANNING",
+    "runner": "workspace",
+    "fixture": "blocked_by_resolved_question",
+    "input_files": [
+      "feature_spec.md"
+    ],
+    "expected_files": [],
+    "allowed_changes": [],
+    "expected_valid": false,
+    "expected_status": "invalid",
+    "expected_ids": [],
+    "expected_links": {},
+    "assertions": [
+      "AC cannot point blocked_by to resolved question"
+    ],
+    "expected_error": "blocked_by points to non-open question"
+  },
+  {
+    "id": "empty-artifact-index-valid",
+    "operation": "INIT",
+    "runner": "workspace",
+    "fixture": "empty_artifact_index",
+    "input_files": [
+      "feature_spec.md"
+    ],
+    "expected_files": [
+      "feature_spec.md"
+    ],
+    "allowed_changes": [
+      "feature_spec.md"
+    ],
+    "expected_valid": true,
+    "expected_status": "draft",
+    "expected_ids": [],
+    "expected_links": {},
+    "assertions": [
+      "empty artifact index valid for initial draft"
+    ]
+  },
+  {
+    "operation": "PLANNING",
+    "runner": "workspace",
+    "input_files": [
+      "feature_spec.md"
+    ],
+    "expected_files": [],
+    "allowed_changes": [],
+    "expected_valid": false,
+    "expected_status": "invalid",
+    "expected_ids": [],
+    "expected_links": {},
+    "id": "ready-no-ac-index-rejected",
+    "fixture": "ready_no_ac_index",
+    "expected_error": "ready SPEC requires indexed acceptance criteria",
+    "assertions": [
+      "ready without AC category rejected"
+    ]
+  },
+  {
+    "operation": "PLANNING",
+    "runner": "workspace",
+    "input_files": [
+      "feature_spec.md"
+    ],
+    "expected_files": [],
+    "allowed_changes": [],
+    "expected_valid": false,
+    "expected_status": "invalid",
+    "expected_ids": [],
+    "expected_links": {},
+    "id": "file-without-index-rejected",
+    "fixture": "unindexed_ac_file",
+    "expected_error": "artifact index does not exactly match",
+    "assertions": [
+      "materialized category without index rejected"
+    ]
+  },
+  {
+    "id": "blocked-without-ac-valid",
+    "operation": "PLANNING",
+    "runner": "workspace",
+    "fixture": "blocked_without_ac",
+    "input_files": [
+      "feature_spec.md",
+      "shared/questions.md"
+    ],
+    "expected_files": [
+      "feature_spec.md",
+      "shared/questions.md"
+    ],
+    "allowed_changes": [],
+    "expected_valid": true,
+    "expected_status": "blocked",
+    "expected_ids": [
+      "Q-001"
+    ],
+    "expected_links": {
+      "Q-001.blocks": []
+    },
+    "assertions": [
+      "blocked SPEC can temporarily omit acceptance criteria with a global open question"
+    ]
   }
 ]

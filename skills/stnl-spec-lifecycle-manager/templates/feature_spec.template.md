@@ -10,51 +10,46 @@ owner: stnl-spec-lifecycle-manager
 update_policy: INIT creates it; RESUME updates documentary content; CLOSE replaces it with the durable final form.
 ```
 
-# <Feature Name> - Feature SPEC
+# {{FEATURE_NAME}} - Feature SPEC
 
 ## Objective
 
-<Concise intended outcome and value.>
+{{OBJECTIVE}}
 
 ## Context
 
 ### Facts
 
-- <Known factual context.>
+- {{CONTENT}}
 
 ### Hypotheses
 
-- <Explicitly uncertain context, or "None identified.">
+- {{CONTENT}}
 
 ## Scope
 
-- <Included behavior or boundary.>
+- {{CONTENT}}
 
 ## Out of Scope
 
-- <Excluded behavior or boundary.>
+- {{CONTENT}}
 
 ## Requirements
 
-- <Requirement or contract expectation.>
+- {{CONTENT}}
 
 ## Business Rules
 
-- <Rule, or "None.">
+- {{CONTENT}}
 
 ## Relevant Contracts
 
-- <API, data, legal, compatibility, or integration contract, or "None.">
+- {{CONTENT}}
 
 ## Canonical Artifact Index
 
 ```yaml
-artifacts:
-  acceptance_criteria: shared/acceptance-criteria.md
-  decisions: shared/decisions.md
-  constraints: shared/constraints.md
-  risks: shared/risks.md
-  questions: shared/questions.md
+artifacts: {}
 ```
 
 ## Blockers

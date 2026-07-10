@@ -17,16 +17,12 @@ Default to `specs/<feature-slug>/` when the consumer provides no stronger conven
 ```text
 specs/<feature-slug>/
 ├── feature_spec.md
-├── shared/
-│   ├── acceptance-criteria.md
-│   ├── decisions.md
-│   ├── constraints.md
-│   ├── risks.md
+├── shared/ (only when at least one category is materialized)
 │   └── questions.md
 └── execution/ (outside lifecycle ownership, when present)
 ```
 
-Shared files are optional and exist only for materialized categories. A blocked SPEC may contain only `feature_spec.md` and `shared/questions.md`. Never create an empty category. `execution/` and every other external directory are outside lifecycle ownership and remain unmodified, including during CLOSE.
+Shared files are optional and exist only for materialized categories. A newly initialized draft may use `artifacts: {}` and no `shared/` directory. A blocked SPEC may contain only `feature_spec.md` and `shared/questions.md`. Never create an empty category. `execution/` and every other external directory are outside lifecycle ownership and remain unmodified, including during CLOSE.
 
 ## Authorities
 

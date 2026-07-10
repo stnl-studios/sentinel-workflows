@@ -16,8 +16,8 @@ Run:
 
 `python3 scripts/test-spec-lifecycle.py`
 
-The runner consumes `evals/cases.json`, creates isolated input workspaces from the skill's real templates when applicable, executes validator or transition operations, and asserts validity, documentary status, IDs, links, allowed file changes, and expected error signals.
+The runner consumes `evals/cases.json`, creates isolated fixture workspaces from helpers and real templates where applicable, runs deterministic validators or transition simulations, and asserts validity, documentary status, IDs, links, allowed file changes, and expected error signals. It does not execute lifecycle modes with a model end to end.
 
-The catalog covers: ready and blocked INIT; RESUME resolving a question and creating a durable decision; read-only PLANNING; non-observable criteria; missing internal IDs; qualified external IDs; divergent inverse links; active mitigated risks; complete and blocked CLOSE; durable-content loss; `execution/` preservation and mutation detection; item YAML rejection; duplicate body IDs; duplicate headings; prefix mismatch; missing metadata; invalid status; and stale `open_questions`.
+The catalog covers deterministic fixtures for ready, blocked, and draft INIT shapes; RESUME-style question resolution and durable-decision transformations; read-only PLANNING simulation; ready-without-active-AC rejection; structural AC narrative checks without keyword observability; explicit placeholder rejection; technical angle-bracket syntax acceptance; missing internal IDs; qualified external IDs; divergent inverse links; active mitigated risks; canonical shared-file structure; block semantics for open versus final questions; complete and blocked CLOSE; durable-content loss; `execution/` preservation and mutation detection; item YAML rejection; duplicate body IDs; duplicate headings; prefix mismatch; missing metadata; invalid status; stale `open_questions`; and artifact-index consistency.
 
 Every case targets the single current contract described by the skill references.

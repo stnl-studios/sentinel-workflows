@@ -113,14 +113,16 @@ documentary_gaps: []
 """
 
 
-def acceptance_item(*, references: bool = True) -> str:
+def acceptance_item(*, references: bool = True, blocked: bool = False, narrative: str | None = None, status: str = "active") -> str:
+    blocked_line = "- blocked_by: [Q-001]\n" if blocked else ""
     reference_line = "- references: [D-001, C-001, R-001]\n" if references else ""
+    body = narrative or "A sessão é restaurada ao reabrir o aplicativo com credenciais válidas, mantendo o usuário autenticado sem repetir o login."
     return f"""### AC-001 — Expired invitation is rejected
 
-- status: active
-- blocked_by: [Q-001]
+- status: {status}
+{blocked_line}\
 {reference_line}
-Given an invitation whose `expires_at` is earlier than the service clock, when the recipient accepts it, then the API returns HTTP 410 and creates no membership. The qualified external origin `initial-scaffold/D-011` is narrative only.
+{body} The qualified external origin `initial-scaffold/D-011` is narrative only.
 """
 
 
@@ -201,7 +203,7 @@ def question_item(status: str) -> str:
         metadata = "- status: open\n- blocks: [AC-001]"
         resolution = "Pendente."
     else:
-        metadata = "- status: resolved\n- blocks: [AC-001]\n- resolved_by: decision\n- linked_decision: D-001"
+        metadata = "- status: resolved\n- resolved_by: decision\n- linked_decision: D-001"
         resolution = "D-001 explicitly establishes the service UTC clock as authority."
     return f"""### Q-001 — Which clock determines expiration
 
@@ -229,9 +231,10 @@ def write_full_workspace(root: Path, status: str) -> None:
     question_status = "open" if status == "blocked" else "resolved"
     artifact_keys = [category.key for category in CATEGORIES]
     write(root / "feature_spec.md", render_feature(status, artifact_keys, ["Q-001"] if status == "blocked" else []))
+    blocked = status == "blocked"
     write(
         root / "shared/acceptance-criteria.md",
-        shared_document("shared-acceptance-criteria.template.md", "ready", "Acceptance Criteria", acceptance_item()),
+        shared_document("shared-acceptance-criteria.template.md", "ready", "Acceptance Criteria", acceptance_item(blocked=blocked)),
     )
     write(
         root / "shared/decisions.md",
@@ -260,7 +263,7 @@ def write_decisionless_blocked(root: Path) -> None:
     write(root / "feature_spec.md", render_feature("blocked", ["acceptance_criteria", "questions"], ["Q-001"]))
     write(
         root / "shared/acceptance-criteria.md",
-        shared_document("shared-acceptance-criteria.template.md", "ready", "Acceptance Criteria", acceptance_item(references=False)),
+        shared_document("shared-acceptance-criteria.template.md", "ready", "Acceptance Criteria", acceptance_item(references=False, blocked=True)),
     )
     write(
         root / "shared/questions.md",
@@ -342,13 +345,76 @@ def assert_changes_are_allowed(changes: set[str], allowed_changes: list[str], ca
 
 
 def mutate_workspace(root: Path, fixture: str) -> None:
-    if fixture in {"ready", "blocked", "decisionless_blocked", "external_reference", "active_risk", "ready_with_execution"}:
+    if fixture in {
+        "ready",
+        "blocked",
+        "decisionless_blocked",
+        "external_reference",
+        "active_risk",
+        "ready_with_execution",
+        "valid_non_heuristic_ac",
+        "technical_result_user",
+        "technical_promise_result",
+        "technical_html",
+        "empty_artifact_index",
+        "ready_missing_ac_file",
+        "ready_no_ac_index",
+        "unindexed_ac_file",
+        "blocked_without_ac",
+        "open_question_reciprocal",
+    }:
         return
-    if fixture == "non_observable":
+    if fixture == "empty_ac":
+        path = root / "shared/acceptance-criteria.md"
+        write(path, template_header("shared-acceptance-criteria.template.md", "ready") + "# Acceptance Criteria\n\n")
+    elif fixture == "no_active_ac":
+        path = root / "shared/acceptance-criteria.md"
+        write(path, path.read_text(encoding="utf-8").replace("- status: active", "- status: superseded", 1))
+    elif fixture == "only_dropped_ac":
+        path = root / "shared/acceptance-criteria.md"
+        write(path, path.read_text(encoding="utf-8").replace("- status: active", "- status: dropped", 1))
+    elif fixture == "ready_ac_blocked":
+        path = root / "shared/acceptance-criteria.md"
+        write(path, path.read_text(encoding="utf-8").replace("- status: active\n", "- status: active\n- blocked_by: [Q-001]\n", 1))
+    elif fixture == "empty_ac_narrative":
         path = root / "shared/acceptance-criteria.md"
         text = path.read_text(encoding="utf-8")
-        text = re.sub(r"Given an invitation.*narrative only\.", "The invitation behavior should work correctly.", text)
+        text = re.sub(r"\n\nA sessão.*narrative only\.\n", "\n\n\n", text, count=1)
         write(path, text)
+    elif fixture == "placeholder_real":
+        path = root / "shared/acceptance-criteria.md"
+        write(path, path.read_text(encoding="utf-8").replace("A sessão", "{{CONTENT}} A sessão", 1))
+    elif fixture == "preamble_before_item":
+        path = root / "shared/acceptance-criteria.md"
+        write(path, path.read_text(encoding="utf-8").replace("# Acceptance Criteria\n\n", "# Acceptance Criteria\n\nArbitrary preamble.\n\n", 1))
+    elif fixture == "notes_after_item":
+        path = root / "shared/acceptance-criteria.md"
+        write(path, path.read_text(encoding="utf-8") + "\n## Notes\n\nArbitrary notes.\n")
+    elif fixture == "wrong_root_heading":
+        path = root / "shared/acceptance-criteria.md"
+        write(path, path.read_text(encoding="utf-8").replace("# Acceptance Criteria", "# Criteria", 1))
+    elif fixture == "multiple_root_headings":
+        path = root / "shared/acceptance-criteria.md"
+        write(path, path.read_text(encoding="utf-8").replace("# Acceptance Criteria\n\n", "# Acceptance Criteria\n\n# Acceptance Criteria\n\n", 1))
+    elif fixture == "unknown_item_section":
+        path = root / "shared/decisions.md"
+        write(path, path.read_text(encoding="utf-8").replace("#### Impacto\n\n", "#### Unknown\n\nUnexpected section.\n\n#### Impacto\n\n", 1))
+    elif fixture == "invalid_h3_heading":
+        path = root / "shared/acceptance-criteria.md"
+        write(path, path.read_text(encoding="utf-8").replace("### AC-001 —", "### Criterion —", 1))
+    elif fixture == "loose_content_after_item":
+        path = root / "shared/acceptance-criteria.md"
+        write(path, path.read_text(encoding="utf-8") + "\n### Appendix\n\nLoose content.\n")
+    elif fixture == "open_question_without_blocks":
+        write_full_workspace(root, "blocked")
+        path = root / "shared/questions.md"
+        write(path, path.read_text(encoding="utf-8").replace("- blocks: [AC-001]\n", "", 1))
+    elif fixture == "resolved_question_with_blocks":
+        path = root / "shared/questions.md"
+        write(path, path.read_text(encoding="utf-8").replace("- status: resolved\n", "- status: resolved\n- blocks: [AC-001]\n", 1))
+    elif fixture == "blocked_by_resolved_question":
+        path = root / "shared/acceptance-criteria.md"
+        write(path, path.read_text(encoding="utf-8").replace("- status: active\n", "- status: active\n- blocked_by: [Q-001]\n", 1))
     elif fixture == "missing_internal":
         risk = root / "shared/risks.md"
         write(risk, risk.read_text(encoding="utf-8").replace("[C-001, AC-001]", "[C-001, AC-999]"))
@@ -356,15 +422,17 @@ def mutate_workspace(root: Path, fixture: str) -> None:
         write(feature, feature.read_text(encoding="utf-8").replace("broken_references: []", "broken_references: [AC-999]"))
     elif fixture == "divergent_links":
         path = root / "shared/acceptance-criteria.md"
+        write_full_workspace(root, "blocked")
+        path = root / "shared/acceptance-criteria.md"
         write(path, path.read_text(encoding="utf-8").replace("- blocked_by: [Q-001]\n", ""))
     elif fixture == "item_yaml":
         path = root / "shared/acceptance-criteria.md"
         text = path.read_text(encoding="utf-8")
-        text = text.replace("Given an invitation", "```yaml\nstatus: active\n```\n\nGiven an invitation")
+        text = text.replace("A sessão", "```yaml\nstatus: active\n```\n\nA sessão", 1)
         write(path, text)
     elif fixture == "body_id":
         path = root / "shared/acceptance-criteria.md"
-        text = path.read_text(encoding="utf-8").replace("Given an invitation", "id: AC-001\n\nGiven an invitation")
+        text = path.read_text(encoding="utf-8").replace("A sessão", "id: AC-001\n\nA sessão", 1)
         write(path, text)
     elif fixture == "duplicate_id":
         path = root / "shared/acceptance-criteria.md"
@@ -386,14 +454,43 @@ def mutate_workspace(root: Path, fixture: str) -> None:
 
 
 def workspace_fixture(root: Path, fixture: str) -> None:
-    if fixture in {"blocked", "stale_open_index"}:
+    if fixture in {"blocked", "stale_open_index", "open_question_reciprocal"}:
         write_full_workspace(root, "blocked")
     elif fixture == "decisionless_blocked":
         write_decisionless_blocked(root)
+    elif fixture == "ready_missing_ac_file":
+        write_full_workspace(root, "ready")
+        (root / "shared/acceptance-criteria.md").unlink()
+    elif fixture == "ready_no_ac_index":
+        write(root / "feature_spec.md", render_feature("ready", [], []))
+    elif fixture == "empty_artifact_index":
+        write(root / "feature_spec.md", render_feature("draft", [], []))
+    elif fixture == "blocked_without_ac":
+        write(root / "feature_spec.md", render_feature("blocked", ["questions"], ["Q-001"]))
+        question = question_item("open").replace("- blocks: [AC-001]", "- blocks: []", 1)
+        write(
+            root / "shared/questions.md",
+            shared_document("shared-questions.template.md", "blocked", "Questions", question),
+        )
+    elif fixture == "unindexed_ac_file":
+        write(root / "feature_spec.md", render_feature("draft", [], []))
+        write(
+            root / "shared/acceptance-criteria.md",
+            shared_document("shared-acceptance-criteria.template.md", "ready", "Acceptance Criteria", acceptance_item()),
+        )
     else:
         write_full_workspace(root, "ready")
     if fixture == "ready_with_execution":
         write(root / "execution/retained-record.txt", "external execution state\n")
+    elif fixture == "technical_result_user":
+        path = root / "shared/acceptance-criteria.md"
+        write(path, path.read_text(encoding="utf-8").replace("A sessão", "O adapter retorna `Repository<Result<User>>` e mantém", 1))
+    elif fixture == "technical_promise_result":
+        path = root / "shared/acceptance-criteria.md"
+        write(path, path.read_text(encoding="utf-8").replace("A sessão", "Chamadas subsequentes funcionam com `Promise<Result<T>>` e", 1))
+    elif fixture == "technical_html":
+        path = root / "shared/acceptance-criteria.md"
+        write(path, path.read_text(encoding="utf-8").replace("A sessão", "O resumo mantém a tag `<strong>` renderizada e", 1))
     mutate_workspace(root, fixture)
 
 
@@ -428,6 +525,8 @@ def run_resume_resolve(case: dict[str, object], base: Path) -> tuple[Workspace, 
         questions,
         shared_document("shared-questions.template.md", "ready", "Questions", question_item("resolved")),
     )
+    ac = after / "shared/acceptance-criteria.md"
+    write(ac, ac.read_text(encoding="utf-8").replace("- blocked_by: [Q-001]\n", "", 1))
     workspace = validate_workspace(after)
     changes = changed_paths(before_snapshot, file_snapshot(after))
     assert_changes_are_allowed(changes, case["allowed_changes"], str(case["id"]))
@@ -443,7 +542,7 @@ def run_resume_decision(case: dict[str, object], base: Path) -> tuple[Workspace,
     before_snapshot = file_snapshot(before)
     write(after / "feature_spec.md", render_feature("ready", ["acceptance_criteria", "decisions", "questions"], []))
     ac = acceptance_item(references=False).replace(
-        "- blocked_by: [Q-001]\n\n", "- blocked_by: [Q-001]\n- references: [D-001]\n\n"
+        "\nA sessão", "- references: [D-001]\n\nA sessão", 1
     )
     write(
         after / "shared/acceptance-criteria.md",
@@ -522,33 +621,26 @@ def validate_template_contract() -> None:
         expect(re.search(r"^### (?:AC|D|C|R|Q)-\d{3} — ", after_header, re.MULTILINE) is not None, f"canonical heading missing: {path}")
         expect(re.search(r"(?m)^id:\s*(?:AC|D|C|R|Q)-", after_header) is None, f"duplicate ID field remains: {path}")
         expect("null" not in after_header.casefold(), f"null optional metadata remains: {path}")
+        expect("{{CONTENT}}" in after_header or "{{ITEM_TITLE}}" in after_header, f"explicit template placeholders missing: {path}")
     feature = (TEMPLATE_ROOT / "feature_spec.template.md").read_text(encoding="utf-8")
     expect(feature.count("```yaml") == 3, "active feature template must use YAML only for header, index, and blockers")
+    expect("artifacts: {}" in feature, "active feature template must not pre-list unmaterialized categories")
     closed = (TEMPLATE_ROOT / "closed-feature_spec.template.md").read_text(encoding="utf-8")
     expect(closed.count("```yaml") == 1, "closed template must use YAML only for its File Purpose Header")
+    expect("blocked_by:" not in closed and "blocks:" not in closed, "closed template must not preserve active blockers")
     expect("### Facts" in feature and "### Hypotheses" in feature, "active template lacks real Context headings")
     expect("### Facts" in closed and "### Hypotheses" in closed, "closed template cannot preserve Context structure")
 
     with tempfile.TemporaryDirectory(prefix="stnl-real-templates-") as tmp:
         workspace = Path(tmp)
-        instantiated_feature = re.sub(r"<[^>]+>", "Concrete durable fixture content.", feature)
+        concrete = "Concrete durable fixture content with enough structural detail."
+        instantiated_feature = re.sub(r"{{(?:FEATURE_NAME|OBJECTIVE|ITEM_TITLE|CONTENT)}}", concrete, feature)
         write(workspace / "feature_spec.md", instantiated_feature)
-        template_destinations = {
-            "shared-acceptance-criteria.template.md": "acceptance-criteria.md",
-            "shared-decisions.template.md": "decisions.md",
-            "shared-constraints.template.md": "constraints.md",
-            "shared-risks.template.md": "risks.md",
-            "shared-questions.template.md": "questions.md",
-        }
-        for source_name, destination in template_destinations.items():
-            source = (TEMPLATE_ROOT / source_name).read_text(encoding="utf-8")
-            instantiated = re.sub(r"<[^>]+>", "Concrete durable fixture content.", source)
-            write(workspace / "shared" / destination, instantiated)
         validated = validate_workspace(workspace)
         expect(validated.status == "draft", "instantiated real templates do not form a valid draft workspace")
-        expect(set(validated.items) == {"AC-001", "D-001", "C-001", "R-001", "Q-001"}, "real template IDs are inconsistent")
+        expect(set(validated.items) == set(), "empty artifact index must not materialize categories")
         closed_workspace = workspace / "closed-template"
-        instantiated_closed = re.sub(r"<[^>]+>", "Concrete durable fixture content.", closed)
+        instantiated_closed = re.sub(r"{{(?:FEATURE_NAME|OBJECTIVE|ITEM_TITLE|CONTENT)}}", concrete, closed)
         write(closed_workspace / "feature_spec.md", instantiated_closed)
         validated_closed = validate_workspace(closed_workspace)
         expect(validated_closed.status == "closed", "instantiated closed template is structurally invalid")
@@ -601,7 +693,17 @@ def main() -> int:
         "resume-resolves-question",
         "resume-creates-durable-decision",
         "planning-read-only",
-        "criterion-not-observable",
+        "ac-session-restored-valid",
+        "ac-empty-rejected",
+        "ac-placeholder-rejected",
+        "ready-no-active-ac",
+        "ready-no-ac-index-rejected",
+        "blocked-without-ac-valid",
+        "result-user-accepted",
+        "preamble-before-item-rejected",
+        "resolved-question-with-blocks-rejected",
+        "blocked-by-resolved-question-rejected",
+        "empty-artifact-index-valid",
         "missing-internal-id",
         "qualified-external-id",
         "inverse-link-divergence",

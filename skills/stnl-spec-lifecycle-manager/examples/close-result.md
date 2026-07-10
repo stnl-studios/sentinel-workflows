@@ -38,7 +38,7 @@ specs/invitation-expiration/
     └── retained-record.txt
 ```
 
-The final `feature_spec.md` keeps the objective, context, final scope, exclusions, requirements, rules, contracts, observable AC prose, and complete durable records. For example:
+The final `feature_spec.md` keeps the objective, context, final scope, exclusions, requirements, rules, contracts, AC prose, and complete durable records. Active blocker metadata is absent; durable provenance remains through decisions, references, and question resolution. For example:
 
 ### D-001 — Expiração usa relógio do serviço
 

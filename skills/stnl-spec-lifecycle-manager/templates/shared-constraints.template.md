@@ -12,15 +12,15 @@ update_policy: INIT and RESUME maintain constraints through explicit documentary
 
 # Constraints
 
-### C-001 — <Constraint title>
+### C-001 — {{ITEM_TITLE}}
 
 - status: active
 - references: [D-001]
 
 #### Restrição
 
-<Boundary that must not be violated.>
+{{CONTENT}}
 
 #### Razão
 
-<Why the boundary matters.>
+{{CONTENT}}

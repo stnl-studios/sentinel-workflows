@@ -5,7 +5,7 @@ purpose: Show a valid ready modular SPEC with qualified external references and 
 status: ready
 read_when: A concrete ready workspace or canonical item example is needed.
 do_not_read_when: Only a blocked or closed shape is needed.
-contains: Materialized tree, compact index, observable AC, decision-linked question, external reference, and risk.
+contains: Materialized tree, compact index, active AC, decision-linked question, external reference, and risk.
 owner: stnl-spec-lifecycle-manager
 update_policy: Keep aligned with schemas, relationships, and readiness gates.
 ```
@@ -28,10 +28,9 @@ The feature header has `status: ready`, `open_questions: []`, no gaps, and an in
 ### AC-001 — Convite expirado é rejeitado
 
 - status: active
-- blocked_by: [Q-001]
 - references: [D-001, C-001, R-001]
 
-Dado um convite com `expires_at` anterior ao relógio do serviço, quando o destinatário tenta aceitá-lo, então a API retorna HTTP 410 e não cria associação.
+A sessão é restaurada ao reabrir o aplicativo com credenciais válidas, mantendo o usuário autenticado sem repetir o login.
 
 The external origin `initial-scaffold/D-011` remains qualified in this narrative and is not treated as a missing local decision.
 
@@ -55,7 +54,6 @@ O resultado é determinístico para todos os clientes.
 ### Q-001 — Autoridade do relógio
 
 - status: resolved
-- blocks: [AC-001]
 - resolved_by: decision
 - linked_decision: D-001
 

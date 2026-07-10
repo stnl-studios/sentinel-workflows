@@ -16,7 +16,7 @@ update_policy: Keep aligned with workspace authority, item grammar, and token ec
 2. Map `AC-*` to `shared/acceptance-criteria.md`.
 3. Open that one file and locate the exact heading `### AC-002 — ...`.
 4. Read from that heading through the next `###` heading or EOF.
-5. If its metadata is `blocked_by: [Q-001]` and `references: [D-001, C-001]`, open only those three exact records as needed.
+5. If its metadata is `references: [D-001, C-001]`, open only those exact records as needed. If an active AC has `blocked_by: [Q-001]`, open that question too and confirm it is still `open`.
 6. Confirm the inverse `Q-001.blocks` relationship if blocking is relevant to the question being answered.
 7. Stop; do not load unrelated risks, questions, decisions, constraints, or full shared files.
 

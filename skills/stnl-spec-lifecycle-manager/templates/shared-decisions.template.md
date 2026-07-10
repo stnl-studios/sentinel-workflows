@@ -12,19 +12,19 @@ update_policy: INIT and RESUME maintain decisions with complete context and impa
 
 # Decisions
 
-### D-001 — <Decision title>
+### D-001 — {{ITEM_TITLE}}
 
 - status: accepted
 - references: [C-001]
 
 #### Contexto
 
-<Why this decision exists.>
+{{CONTENT}}
 
 #### Decisão
 
-<The durable choice.>
+{{CONTENT}}
 
 #### Impacto
 
-<The lasting consequence.>
+{{CONTENT}}

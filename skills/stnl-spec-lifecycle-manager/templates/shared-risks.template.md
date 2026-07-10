@@ -12,7 +12,7 @@ update_policy: INIT and RESUME retain material exposure and explicit mitigation.
 
 # Risks
 
-### R-001 — <Risk title>
+### R-001 — {{ITEM_TITLE}}
 
 - status: active
 - impact: high
@@ -20,8 +20,8 @@ update_policy: INIT and RESUME retain material exposure and explicit mitigation.
 
 #### Risco
 
-<What can go wrong while the risk remains relevant.>
+{{CONTENT}}
 
 #### Mitigação
 
-<How the risk is reduced, monitored, or consciously accepted.>
+{{CONTENT}}

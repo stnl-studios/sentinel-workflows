@@ -19,11 +19,14 @@ Use real Markdown sections for Objective; Context with `### Facts` and `### Hypo
 The only YAML beyond the File Purpose Header is compact file-level state:
 
 ```yaml
+artifacts: {}
+```
+
+When categories are materialized, list only the files that exist:
+
+```yaml
 artifacts:
   acceptance_criteria: shared/acceptance-criteria.md
-  decisions: shared/decisions.md
-  constraints: shared/constraints.md
-  risks: shared/risks.md
   questions: shared/questions.md
 ```
 
@@ -42,11 +45,13 @@ documentary_gaps:
 
 Every item starts with `### ID — Title`. After one blank line, metadata is a Markdown list with one `- field: value` per line; `status` is first, category fields follow, and `references` is last. A blank line separates metadata from narrative content. Arrays use `[ID-001, ID-002]`. Omit absent optional fields; never use `null`. The next `###` heading or EOF ends the item.
 
-YAML and duplicate `id:` fields are forbidden inside canonical items.
+YAML and duplicate `id:` fields are forbidden inside canonical items. Template placeholders use only the explicit `{{FEATURE_NAME}}`, `{{OBJECTIVE}}`, `{{ITEM_TITLE}}`, and `{{CONTENT}}` syntax and must not remain in materialized SPECs. Angle-bracket technical syntax such as `Result<User>`, `Promise<Result<T>>`, or HTML tags is not placeholder syntax.
+
+Shared category files contain only the File Purpose Header, the expected root heading, and canonical items for that category. They do not permit preambles, `##` sections, invalid `###` headings, appendices, notes, or unknown item subsections.
 
 ### Acceptance Criteria
 
-Metadata order: required `status`; optional `blocked_by`; optional `references`. Status is `active`, `superseded`, or `dropped`. `blocked_by` accepts only `Q-*`; `references` accepts existing internal IDs. An in-scope criterion stays `active` while blocked; blocking is represented only by `blocked_by`, never `status: blocked` or duplicate narrative phrases. Narrative text must be observable and verifiable.
+Metadata order: required `status`; optional `blocked_by`; optional `references`. Status is `active`, `superseded`, or `dropped`. `blocked_by` accepts only `Q-*` questions whose status is currently `open`; `references` accepts existing internal IDs. An in-scope criterion stays `active` while blocked; blocking is represented only by `blocked_by`, never `status: blocked` or duplicate narrative phrases. The structural parser verifies that narrative is present, non-empty, placeholder-free, and has a reasonable minimum size. Whether the criterion is observable and verifiable is a semantic readiness finding during INIT, RESUME, or PLANNING, not a deterministic keyword check.
 
 ### Decisions
 
@@ -62,10 +67,10 @@ Metadata order: required `status`; required `impact`; optional `references`. Sta
 
 ### Questions
 
-Metadata order: required `status`; required `blocks`; final-state `resolved_by` when applicable; conditional `linked_decision`; optional `references` last. Status is `open`, `resolved`, `bypassed`, or `dropped`. `blocks` accepts only `AC-*` and may be `[]` for a global documentary block. Narrative has exactly `#### Pergunta`, `#### Por que importa`, and `#### Resolução`.
+Metadata order: required `status`; `blocks` only when `status: open`; final-state `resolved_by` when applicable; conditional `linked_decision`; optional `references` last. Status is `open`, `resolved`, `bypassed`, or `dropped`. `blocks` accepts only `AC-*` and may be `[]` for a global documentary block. Non-open questions must not contain `blocks`; historical context belongs in `linked_decision`, `references`, or the resolution narrative. Narrative has exactly `#### Pergunta`, `#### Por que importa`, and `#### Resolução`.
 
-Use `resolved_by: answer | decision | constraint | scope_change` only in final states. A final-state item records `resolved_by`; `linked_decision` is required exactly when `resolved_by: decision` and points to an existing `D-*`. `open` uses `Pendente.` as resolution and has neither final-state field. `resolved` requires an explicit answer, `bypassed` an explicit justification, and `dropped` an explicit scope change or removal; `dropped` uses `resolved_by: scope_change`.
+Use `resolved_by: answer | decision | constraint | scope_change` only in final states. A final-state item records `resolved_by`; `linked_decision` is required exactly when `resolved_by: decision` and points to an existing `D-*`. `open` uses `Pendente.` as resolution and has `blocks` but no final-state field. `resolved` requires an explicit answer, `bypassed` an explicit justification, and `dropped` an explicit scope change or removal; `dropped` uses `resolved_by: scope_change`.
 
 ## Closed `feature_spec.md`
 
-After CLOSE, the one file contains Objective; Context; Final Scope; Out of Scope; Requirements; Business Rules; Final Acceptance Criteria; Durable Decisions; Relevant Constraints; Relevant Risks; Important Contracts; and Durable Resolved Questions when relevant. Canonical items retain the same heading, metadata, and narrative schemas used while active. Sections with no durable item may be omitted, but required durable content may not be collapsed or lost.
+After CLOSE, the one file contains Objective; Context; Final Scope; Out of Scope; Requirements; Business Rules; Final Acceptance Criteria; Durable Decisions; Relevant Constraints; Relevant Risks; Important Contracts; and Durable Resolved Questions when relevant. Canonical items retain the same heading, metadata, and narrative schemas used while active, except active blockers are absent: closed ACs do not retain `blocked_by`, and final questions do not retain `blocks`. Sections with no durable item may be omitted, but required durable content may not be collapsed or lost.
