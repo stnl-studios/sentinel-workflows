@@ -1,9 +1,9 @@
 # File Purpose Header
 
 ```yaml
-purpose: Define slice planning, task materialization, binary progress, current-slice selection, and safe parallelization.
+purpose: Define slice planning, task materialization, binary progress, explicit slice selection, and safe parallelization.
 status: not_applicable
-read_when: Creating or revising plans, tasks, slice boundaries, current-slice selection, or optional parallel work.
+read_when: Creating or revising plans, tasks, slice boundaries, explicit slice selection, or optional parallel work.
 do_not_read_when: Only a selected validation finding is being corrected.
 contains: Slice responsibilities, sizing rules, materialization rules, completion rules, and parallel limits.
 owner: stnl-spec-execution-manager
@@ -38,15 +38,9 @@ After plan review, materialize `tasks.md` and every `tasks/slice-NN.md`. This is
 
 The detailed task file for each slice contains local checklist items, expected areas, acceptance references, expected tests, actual changed areas, scope expansion, divergences, test evidence, validation findings, corrections, revalidation, diff summary, and final result.
 
-## Current Slice
+## Slice Selection
 
-When a caller does not specify a slice, select the first row in `tasks.md` that:
-
-- is `[ ]`;
-- has all listed dependencies `[x]`;
-- does not have a blocking divergence recorded in its detailed task file.
-
-If multiple rows are eligible because they are genuinely independent, the operation must receive explicit slice numbers. Do not infer a parallel batch from a boolean flag.
+`tasks.md` may identify eligible slices from open status, concluded dependencies, and blocking divergences. It may present the first eligible slice as a suggested next slice, but eligibility never selects an operation. `EXECUTE_SLICE`, `VALIDATE_SLICE`, `APPLY_FINDINGS`, and `FINALIZE_SLICE` require an explicit `SLICE`, normalized by `workspace.md`, and block when it is absent even if exactly one slice is eligible. `PARALLELIZE_SLICES` requires explicit normalized `SLICES`; it blocks when absent and never infers a batch or additional candidates.
 
 ## Completion
 

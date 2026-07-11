@@ -3,6 +3,8 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
+PROMPT_ROOT="${PROMPT_ROOT:-templates/prompts}"
+export PROMPT_ROOT
 LEGACY_TEMPLATE_NAME="prom""tps"
 LEGACY_TEMPLATE_DIR="templates/$LEGACY_TEMPLATE_NAME"
 
@@ -19,10 +21,10 @@ command -v "$PYTHON_BIN" >/dev/null 2>&1 || fail "PYTHON_BIN is unavailable: $PY
 # Packaging metadata is ignored by this structural validator.
 
 # Copyable prompts
-test -d templates/prompts || fail "templates/prompts directory is missing"
+test -d "$PROMPT_ROOT" || fail "prompt directory is missing: $PROMPT_ROOT"
 test ! -e "$LEGACY_TEMPLATE_DIR" || fail "legacy template path remains: $LEGACY_TEMPLATE_DIR"
 for name in spec-init spec-resume spec-planning spec-close execution-plan execution-plan-review execution-tasks slice-execute slice-validate slice-apply-findings slice-finalize slice-parallel execution-close; do
-  test -f "templates/prompts/$name.md" || fail "missing templates/prompts/$name.md"
+  test -f "$PROMPT_ROOT/$name.md" || fail "missing launcher: $PROMPT_ROOT/$name.md"
 done
 if grep -R -q --exclude-dir=.git "$LEGACY_TEMPLATE_NAME" .; then
   fail "legacy template reference remains"
@@ -33,6 +35,7 @@ fi
 from __future__ import annotations
 
 import json
+import os
 import re
 from pathlib import Path
 
@@ -265,7 +268,7 @@ for script in [Path("scripts/validate_spec_lifecycle.py"), Path("scripts/test-sp
 
 
 # Copyable prompts are intentionally header-free user-facing instructions.
-PROMPT_ROOT = Path("templates/prompts")
+PROMPT_ROOT = Path(os.environ.get("PROMPT_ROOT", "templates/prompts"))
 EXPECTED_PROMPTS = {
     "spec-init",
     "spec-resume",
@@ -309,46 +312,30 @@ LEGACY_PROMPTS = {
     "phase-commit",
     "phase-parallel",
 }
-REQUIRED_PROMPT_PLACEHOLDERS = {
-    "spec-init": {"SPEC_PATH"},
-    "spec-resume": {"SPEC_PATH"},
-    "spec-planning": {"SPEC_PATH"},
-    "spec-close": {"SPEC_PATH"},
-    "execution-plan": {"SPEC_PATH", "EXECUTION_ROOT"},
-    "execution-plan-review": {"EXECUTION_ROOT"},
-    "execution-tasks": {"EXECUTION_ROOT"},
-    "slice-execute": {"SPEC_PATH", "EXECUTION_ROOT", "NN"},
-    "slice-validate": {"EXECUTION_ROOT", "NN"},
-    "slice-apply-findings": {"EXECUTION_ROOT", "NN"},
-    "slice-finalize": {"EXECUTION_ROOT", "NN"},
-    "slice-parallel": {"EXECUTION_ROOT", "NN, NN"},
-    "execution-close": {"SPEC_PATH", "EXECUTION_ROOT"},
+CONTEXT_TITLE = "Contexto adicional (opcional):"
+LAUNCHER_LINES = {
+    "spec-init": ["Use `stnl-spec-lifecycle-manager`.", "MODE=INIT", "SPEC_PATH={{SPEC_PATH}}", "REQUIREMENTS_SOURCE={{REQUIREMENTS_SOURCE}}", "", CONTEXT_TITLE],
+    "spec-resume": ["Use `stnl-spec-lifecycle-manager`.", "MODE=RESUME", "SPEC_PATH={{SPEC_PATH}}", "NEW_INFORMATION={{NEW_INFORMATION}}", "", CONTEXT_TITLE],
+    "spec-planning": ["Use `stnl-spec-lifecycle-manager`.", "MODE=PLANNING", "SPEC_PATH={{SPEC_PATH}}", "", CONTEXT_TITLE],
+    "spec-close": ["Use `stnl-spec-lifecycle-manager`.", "MODE=CLOSE", "SPEC_PATH={{SPEC_PATH}}", "", CONTEXT_TITLE],
+    "execution-plan": ["Use `stnl-spec-execution-manager`.", "OPERATION=PLAN", "SPEC_PATH={{SPEC_PATH}}", "", CONTEXT_TITLE],
+    "execution-plan-review": ["Use `stnl-spec-execution-manager`.", "OPERATION=REVIEW_PLAN", "SPEC_PATH={{SPEC_PATH}}", "", CONTEXT_TITLE],
+    "execution-tasks": ["Use `stnl-spec-execution-manager`.", "OPERATION=MATERIALIZE_TASKS", "SPEC_PATH={{SPEC_PATH}}", "", CONTEXT_TITLE],
+    "slice-execute": ["Use `stnl-spec-execution-manager`.", "OPERATION=EXECUTE_SLICE", "SPEC_PATH={{SPEC_PATH}}", "SLICE={{SLICE}}", "", CONTEXT_TITLE],
+    "slice-validate": ["Use `stnl-spec-execution-manager`.", "OPERATION=VALIDATE_SLICE", "SPEC_PATH={{SPEC_PATH}}", "SLICE={{SLICE}}", "", CONTEXT_TITLE],
+    "slice-apply-findings": ["Use `stnl-spec-execution-manager`.", "OPERATION=APPLY_FINDINGS", "SPEC_PATH={{SPEC_PATH}}", "SLICE={{SLICE}}", "", CONTEXT_TITLE],
+    "slice-finalize": ["Use `stnl-spec-execution-manager`.", "OPERATION=FINALIZE_SLICE", "SPEC_PATH={{SPEC_PATH}}", "SLICE={{SLICE}}", "", CONTEXT_TITLE],
+    "slice-parallel": ["Use `stnl-spec-execution-manager`.", "OPERATION=PARALLELIZE_SLICES", "SPEC_PATH={{SPEC_PATH}}", "SLICES={{SLICES}}", "", CONTEXT_TITLE],
+    "execution-close": ["Use `stnl-spec-execution-manager`.", "OPERATION=CLOSE", "SPEC_PATH={{SPEC_PATH}}", "", CONTEXT_TITLE],
 }
-PROMPT_METADATA = re.compile(
-    r"(?im)^(?:purpose|status|read_when|do_not_read_when|owner|update_policy|contains)\s*:"
-)
-PROMPT_VENDOR_TERMS = ["Claude", "Hai" + "ku", "Son" + "net", "Codex", "Copilot", "GPT" + r"-\d+", "OpenAI", "Anthropic"]
-PROMPT_VENDORS = re.compile(r"\b(?:" + "|".join(PROMPT_VENDOR_TERMS) + r")\b", re.IGNORECASE)
-PROMPT_CONTRACT_MARKERS = ["# File Purpose Header", "```", "## Core invariants", "## Workflow"]
-PROMPT_GLOBAL_STRUCTURAL_MARKERS = ["Objetivo:", "Resultado esperado:", "Restrições excepcionais:"]
-PROMPT_OPERATIONAL_MARKERS = {
-    "spec-init": ["Entrada mínima:", "Escopo:", "Contexto disponível:"],
-    "spec-resume": ["Entrada mínima:", "Escopo:", "Contexto disponível:"],
-    "spec-planning": ["Entrada mínima:", "Escopo:", "Contexto disponível:"],
-    "spec-close": ["Entrada mínima:", "Escopo:", "Contexto disponível:"],
-    "execution-plan": ["Fonte de requisitos:", "Execution root:", "Entrada mínima:", "Escopo:", "Contexto disponível:"],
-    "execution-plan-review": ["Execution root:", "Foco adicional da revisão:", "Riscos já suspeitos:", "Entrada mínima:", "Escopo:", "Contexto disponível:"],
-    "execution-tasks": ["Execution root:", "Entrada mínima:", "Escopo:", "Contexto disponível:"],
-    "slice-execute": ["Fonte de requisitos:", "Execution root:", "Entrada mínima:", "Escopo:", "Contexto disponível:"],
-    "slice-validate": ["Execution root:", "Entrada mínima:", "Escopo:"],
-    "slice-apply-findings": ["Execution root:", "Findings a aplicar:", "Entrada mínima:", "Escopo:"],
-    "slice-finalize": ["Execution root:", "Entrada mínima:", "Escopo:"],
-    "slice-parallel": ["Execution root:", "Slices candidatas:", "Entrada mínima:", "Escopo:"],
-    "execution-close": ["Fonte de requisitos:", "Execution root:", "Entrada mínima:", "Escopo:"],
-}
-PROMPT_LEGACY_OPERATIONAL = re.compile(
-    r"\b(?:phase|Phase|PHASE|PHASE_NUMBER|PARALLEL_PHASES|phase-[a-z]+|plan-01\.md|tasks-01\.md)\b|/clear|/compact"
-)
+
+
+def normalize_final_newline(text: str) -> str:
+    if text.endswith("\r\n"):
+        return text[:-2]
+    if text.endswith("\n"):
+        return text[:-1]
+    return text
 
 
 prompt_files = {path.stem: path for path in PROMPT_ROOT.glob("*.md")}
@@ -360,115 +347,10 @@ if LEGACY_PROMPTS & set(prompt_files):
     fail(f"legacy prompt remains: {sorted(LEGACY_PROMPTS & set(prompt_files))}")
 
 for name, path in prompt_files.items():
-    text = read_text(path)
-    if not text.strip():
-        fail(f"empty copyable prompt: {path}")
-    lines = text.splitlines()
-    if not lines or not lines[0].startswith("Use `"):
-        fail(f"copyable prompt does not begin directly with its instruction: {path}")
-    if re.search(r"(?m)^---\s*$", text) or "# File Purpose Header" in text or PROMPT_METADATA.search(text):
-        fail(f"copyable prompt retains metadata: {path}")
-    if any(marker in text for marker in PROMPT_CONTRACT_MARKERS):
-        fail(f"copyable prompt duplicates a contract structure: {path}")
-    if "```" in text:
-        fail(f"copyable prompt contains a Markdown fence: {path}")
-    if name not in SPEC_PROMPTS and ("{{" in text or "}}" in text):
-        fail(f"copyable prompt uses unexpected brace placeholders: {path}")
-    if PROMPT_LEGACY_OPERATIONAL.search(text):
-        fail(f"copyable prompt retains legacy operational reference: {path}")
-
-    nonblank_lines = [line for line in text.splitlines() if line.strip()]
-    if len(nonblank_lines) > 45:
-        fail(f"copyable prompt exceeds its compact line budget: {path}")
-    if len(nonblank_lines) < 12:
-        fail(f"copyable prompt lacks operational context: {path}")
-
-    expected_skill = "stnl-spec-lifecycle-manager" if name in SPEC_PROMPTS else "stnl-spec-execution-manager"
-    other_skill = "stnl-spec-execution-manager" if name in SPEC_PROMPTS else "stnl-spec-lifecycle-manager"
-    if lines[0] != f"Use `{expected_skill}`." or other_skill in text:
-        fail(f"copyable prompt names the wrong skill: {path}")
-    if not re.search(r"\b(?:Não|Retorne|Faça|Crie|Leia|Valide|Confirme|Antes|Após|Com|Fonte|Objetivo|Resultado)\b", text):
-        fail(f"copyable prompt is not written in pt-BR: {path}")
-    for marker in PROMPT_GLOBAL_STRUCTURAL_MARKERS + PROMPT_OPERATIONAL_MARKERS[name]:
-        if marker not in text:
-            fail(f"copyable prompt lacks structural marker {marker!r}: {path}")
-
-    if name in SPEC_PROMPTS:
-        expected_mode = PROMPT_MODES[name]
-        if len(lines) < 2 or lines[1] != f"MODE={expected_mode}":
-            fail(f"copyable spec prompt has wrong MODE declaration: {path}")
-        if re.search(r"(?m)^OPERATION=", text):
-            fail(f"copyable spec prompt declares execution OPERATION: {path}")
-    else:
-        expected_operation = PROMPT_OPERATIONS[name]
-        if len(lines) < 2 or lines[1] != f"OPERATION={expected_operation}":
-            fail(f"copyable execution prompt has wrong OPERATION declaration: {path}")
-        if re.search(r"(?m)^MODE=", text):
-            fail(f"copyable execution prompt declares lifecycle MODE: {path}")
-        if name in SLICE_PROMPTS:
-            if len(lines) < 3 or lines[2] != "SLICE=<NN>":
-                fail(f"slice prompt lacks SLICE=<NN>: {path}")
-        elif name == "slice-parallel":
-            if len(lines) < 3 or lines[2] != "SLICES=<NN, NN>":
-                fail(f"parallel prompt lacks SLICES=<NN, NN>: {path}")
-        elif re.search(r"(?m)^SLICES?=", text):
-            fail(f"non-slice prompt declares SLICE/SLICES: {path}")
-
-    if name in SPEC_PROMPTS:
-        if re.search(r"<[^>\n]+>", text):
-            fail(f"copyable spec prompt uses legacy angle placeholder: {path}")
-        placeholder_matches = re.findall(r"\{\{([^{}\n]+)\}\}", text)
-        placeholder_sanitized = re.sub(r"\{\{[A-Z0-9_]+\}\}", "", text)
-        if "{{" in placeholder_sanitized or "}}" in placeholder_sanitized:
-            fail(f"copyable spec prompt has malformed brace placeholder: {path}")
-        placeholders = {value.strip() for value in placeholder_matches}
-    else:
-        placeholders = {value.strip() for value in re.findall(r"<([^>\n]+)>", text)}
-        if any(not value for value in placeholders):
-            fail(f"copyable prompt has empty angle placeholder: {path}")
-        if any(not re.fullmatch(r"[A-Z0-9_, ]+", value) for value in placeholders):
-            fail(f"copyable prompt has non-normalized placeholder in {path}: {sorted(placeholders)}")
-    if name in SPEC_PROMPTS and any(not re.fullmatch(r"[A-Z0-9_]+", value) for value in placeholders):
-        fail(f"copyable spec prompt has non-normalized placeholder in {path}: {sorted(placeholders)}")
-    required_placeholders = REQUIRED_PROMPT_PLACEHOLDERS.get(name, set())
-    if not required_placeholders <= placeholders:
-        fail(f"copyable prompt lacks required placeholders in {path}: {sorted(required_placeholders - placeholders)}")
-
-    if PROMPT_VENDORS.search(text):
-        fail(f"copyable prompt hardcodes a vendor or model: {path}")
-
-    for destination in re.findall(r"\[[^\]]+\]\(([^)]+)\)", text):
-        if not re.match(r"(?:https?://|mailto:|#)", destination) and not (path.parent / destination).exists():
-            fail(f"copyable prompt has a broken internal link: {path} -> {destination}")
-
-for name in {"slice-validate", "slice-finalize"}:
-    text = read_text(prompt_files[name])
-    if name == "slice-validate":
-        required = ["[x]", "plan.md", "tasks.md", "Validação: PASS", "Revalidação: PASS", "não sobrescrever o histórico", "retornar exatamente um verdict"]
-        if any(marker not in text for marker in required) or "Revalidação: not_required" in text:
-            fail("slice validator does not preserve its read-only boundary")
-    else:
-        required = ["Revalidação: not_required", "NEEDS_FIX", "Revalidação: PASS", "plan.md", "tasks.md"]
-        if any(marker not in text for marker in required):
-            fail("slice finalizer lacks conditional conclusion handling")
-
-execution_close_prompt = read_text(prompt_files["execution-close"])
-for marker in ["validar e reportar", "não modificar nem remover nenhum artefato", "retenção", "limpeza"]:
-    if marker not in execution_close_prompt:
-        fail(f"execution-close prompt does not freeze report-only CLOSE behavior: {marker}")
-
-spec_init_prompt = read_text(prompt_files["spec-init"])
-if "criar ou amadurecer" in spec_init_prompt or "workspace documental ainda inexistente" not in spec_init_prompt:
-    fail("spec-init prompt does not define new-workspace-only INIT")
-spec_resume_prompt = read_text(prompt_files["spec-resume"])
-if "`{{SPEC_PATH}}/feature_spec.md` preexistente" not in spec_resume_prompt:
-    fail("spec-resume prompt does not require an existing feature_spec.md")
-spec_close_prompt = read_text(prompt_files["spec-close"])
-for marker in ["`resolved`", "`bypassed`", "`dropped`", "antes da remoção de `shared/`", "`execution/`"]:
-    if marker not in spec_close_prompt:
-        fail(f"spec-close prompt lacks documentary closure boundary: {marker}")
-if "justificadas" in spec_close_prompt:
-    fail("spec-close prompt retains an undefined question state")
+    text = path.read_bytes().decode("utf-8")
+    expected = "\n".join(LAUNCHER_LINES[name])
+    if normalize_final_newline(text) != expected:
+        fail(f"launcher is not canonical: {path}")
 
 execution_operations = set(
     re.findall(r"(?m)^### ([A-Z_]+)$", read_text(Path("skills/stnl-spec-execution-manager/SKILL.md")))
@@ -490,6 +372,17 @@ for skill_root in [Path("skills/stnl-spec-lifecycle-manager"), Path("skills/stnl
         text = read_text(path)
         if "templates/prompts/" in text or any(name in text for name in HELPER_NAMES):
             fail(f"skill knows a prompt helper: {path}")
+
+INIT_PRECONDITION = "For `INIT`, `SPEC_PATH` must designate a directory path that does not exist. Block an existing file or directory, including a directory without `feature_spec.md`; if `feature_spec.md` already exists, direct the caller to `RESUME`."
+for path in [
+    Path("skills/stnl-spec-lifecycle-manager/SKILL.md"),
+    Path("skills/stnl-spec-lifecycle-manager/references/spec-workspace.md"),
+    Path("skills/stnl-spec-lifecycle-manager/references/modes.md"),
+    Path("skills/stnl-spec-lifecycle-manager/evals/eval-cases.md"),
+    Path("skills/stnl-spec-lifecycle-manager/references/eval-guidance.md"),
+]:
+    if INIT_PRECONDITION not in read_text(path):
+        fail(f"lifecycle INIT precondition is not canonical: {path}")
 
 # Skill descriptions, resource completeness, and MODE vocabulary
 spec_skill_text = read_text(Path("skills/stnl-spec-lifecycle-manager/SKILL.md"))

@@ -39,9 +39,19 @@ The requirements source remains the product authority. This skill may plan and e
 
 When execution exposes ambiguity, conflict, material scope change, new material dependency, or an unauthorized strategic decision, record the divergence concisely in the selected slice task file, block only affected work when the divergence is blocking, and report the decision needed.
 
+## Invocation Inputs
+
+Accept exactly one `OPERATION`, `SPEC_PATH`, and only the slice input required by that operation. The execution root is derived, never supplied as an invocation input.
+
+- `SPEC_PATH` is normalized according to `references/workspace.md`; it determines the preserved requirements source and execution root.
+- `SLICE` is required by `EXECUTE_SLICE`, `VALIDATE_SLICE`, `APPLY_FINDINGS`, and `FINALIZE_SLICE` and is normalized to `slice-NN`. Block when it is absent, even if exactly one slice is eligible.
+- `SLICES` is required by `PARALLELIZE_SLICES`; it is an explicit comma-separated list normalized to distinct `slice-NN` identifiers. Block when it is absent; never infer candidates.
+
+The optional free-text additional context is transient. It may restrict the selected operation for a concrete current circumstance, but never replaces the required selective reads, persists automatically, changes authority, or authorizes work outside that operation. If it materially conflicts with requirements or an approved plan, block the affected operation, identify the concrete artifact or ID, and direct the caller to `RESUME`, `REVIEW_PLAN`, or the applicable contractual operation. Do not silently choose a version or edit requirements to accommodate it.
+
 ## Workspace
 
-Accept a requirements path, an optional execution root, an operation, and operation-specific arguments such as a slice number. When the source is `feature_spec.md`, default the execution root to `<spec-root>/execution/`. For another source, preserve it and default to a sibling `<requirements-name>-execution/` root.
+Derive the requirements source and execution root from `SPEC_PATH` before reading operation artifacts. A directory containing `feature_spec.md` and a direct path to that file resolve to the same workspace and its `execution/` child. Another requirements file is preserved and receives the sibling root defined in `references/workspace.md`.
 
 Standard layout:
 
@@ -61,6 +71,10 @@ Standard layout:
 
 All persisted paths are relative to the artifact that contains them. For example, `execution/plan.md` may use `../feature_spec.md`, `execution/plans/slice-01.md` may use `../../feature_spec.md`, and `execution/tasks/slice-01.md` must point to `../plans/slice-01.md`.
 
+## Derived Operation Inputs
+
+After normalization, derive `plan.md`, `tasks.md`, `plans/slice-NN.md`, and `tasks/slice-NN.md` from the execution root. Derive the selected slice objective and scope, dependencies, referenced requirements, persisted findings and corrections, test evidence, validation/revalidation state, and finalization criteria from those artifacts. `PARALLELIZE_SLICES` evaluates only the explicitly normalized candidates; it never discovers additional slices. Block with an objective diagnostic when a required source or operation artifact is absent.
+
 ## Artifact Contracts
 
 - `plan.md` preserves compact global context: requirements source, overall objective, delivery strategy, slice order, dependencies, each slice summary, expected areas, coverage references, parallelization notes, and detailed plan paths. It is not a progress authority and must not duplicate completion checkboxes.
@@ -70,7 +84,7 @@ All persisted paths are relative to the artifact that contains them. For example
 
 `[ ]` means not concluded. `[x]` means concluded. No other global slice state is required.
 
-The current slice, when the caller does not name one, is the first `[ ]` row in `tasks.md` whose dependencies are `[x]` and whose detailed task file does not record a blocking divergence. If more than one slice is eligible because work is parallel-safe, the caller must explicitly name the slices.
+The execution artifacts may identify eligible slices and present the first eligible open slice only as a suggested next slice. Every slice operation requires an explicit normalized `SLICE`, including when one slice is eligible. Parallel work requires explicit normalized `SLICES`; do not infer a batch or additional candidates.
 
 ## Operations
 

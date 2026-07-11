@@ -14,6 +14,8 @@ update_policy: Change only when the documentary workspace architecture changes.
 
 Default to `specs/<feature-slug>/` when the consumer provides no stronger convention.
 
+For an existing SPEC, normalize `SPEC_PATH` deterministically: a workspace directory must contain `feature_spec.md`; a direct `feature_spec.md` path resolves to its parent workspace. Block when the path does not exist, a directory has no such file, or selection would be ambiguous; do not scan broadly to guess another workspace. For `INIT`, `SPEC_PATH` is the intended new workspace directory. For `INIT`, `SPEC_PATH` must designate a directory path that does not exist. Block an existing file or directory, including a directory without `feature_spec.md`; if `feature_spec.md` already exists, direct the caller to `RESUME`.
+
 ```text
 specs/<feature-slug>/
 ├── feature_spec.md

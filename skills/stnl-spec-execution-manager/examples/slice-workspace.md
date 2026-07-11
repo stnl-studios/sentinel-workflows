@@ -50,6 +50,6 @@ Each summary is enough for orientation, but details stay in the slice plans.
 | [ ] | 02 - Lookup state | Lookup exposes expiration state | 01 | tasks/slice-02.md | pending | pending | - |
 | [ ] | 03 - Cleanup command | Stale pending invitations can be marked | 01 | tasks/slice-03.md | pending | pending | - |
 
-With slice 01 concluded, slice 02 is the current deterministic slice because it is the first open eligible row. Slice 03 is also dependency-ready only if its detailed task file has no blocking divergence; if both are intended to run together, the caller must explicitly request both.
+With slice 01 concluded, slice 02 is the suggested next slice because it is the first open eligible row. Slice 03 is also dependency-ready only if its detailed task file has no blocking divergence. This eligibility does not select an operation: every slice operation still requires an explicit `SLICE`, and parallel work requires explicit `SLICES`.
 
 `tasks/slice-01.md` stores the completed checklist, changed areas, divergences, test evidence, validation verdict, diff summary, and final result. `tasks/slice-02.md` and `tasks/slice-03.md` already exist from `MATERIALIZE_TASKS`, so a later clean session does not need to regenerate task files. After finalization the user may commit manually, but that is outside the execution artifacts.

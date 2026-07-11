@@ -20,4 +20,6 @@ The runner consumes `evals/cases.json`, creates isolated fixture workspaces from
 
 The catalog covers deterministic fixtures for ready, blocked, and draft INIT shapes; isolated materialization of each shared template with only its indexed category; RESUME-style question resolution and durable-decision transformations; read-only PLANNING simulation; ready-without-active-AC rejection; structural AC narrative checks without keyword observability; explicit placeholder rejection; technical angle-bracket syntax acceptance; missing internal IDs; qualified external IDs; divergent inverse links; active mitigated risks; canonical shared-file structure; block semantics for open versus final questions; complete and blocked CLOSE; durable-content loss; `execution/` preservation and mutation detection; item YAML rejection; duplicate body IDs; duplicate headings; prefix mismatch; missing metadata; invalid status; stale `open_questions`; and artifact-index consistency.
 
-Every case targets the single current contract described by the skill references.
+The lifecycle invocation itself has no model runner. For `INIT`, `SPEC_PATH` must designate a directory path that does not exist. Block an existing file or directory, including a directory without `feature_spec.md`; if `feature_spec.md` already exists, direct the caller to `RESUME`.
+
+Every case targets the single current contract described by the skill references. `validate-targets.sh` separately checks the minimal launcher contract, including transient optional context and the absence of duplicated mode rules.

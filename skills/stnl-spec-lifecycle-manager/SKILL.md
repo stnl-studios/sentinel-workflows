@@ -15,12 +15,18 @@ Consumers may implement a ready SPEC directly or use any separate delivery workf
 
 Operate in exactly one MODE:
 
-- `INIT`: create a new SPEC; the documentary workspace must not exist.
+- `INIT`: create a new SPEC only at a directory path that does not exist.
 - `RESUME`: update or mature an existing SPEC; `feature_spec.md` must predate the operation.
 - `PLANNING`: perform a conservative, strictly read-only readiness review.
 - `CLOSE`: consolidate a ready SPEC into one durable `feature_spec.md`.
 
 Infer a missing MODE only when unambiguous; otherwise request the smallest necessary clarification.
+
+## Invocation Inputs and Additional Context
+
+`SPEC_PATH` identifies the documentary workspace: for an existing SPEC it may be the workspace directory containing `feature_spec.md` or the direct path to that file; for `INIT` it is the intended new workspace directory. For `INIT`, `SPEC_PATH` must designate a directory path that does not exist. Block an existing file or directory, including a directory without `feature_spec.md`; if `feature_spec.md` already exists, direct the caller to `RESUME`. `INIT` additionally requires `REQUIREMENTS_SOURCE`; `RESUME` additionally requires `NEW_INFORMATION`. The other modes require only `SPEC_PATH`.
+
+Additional free-text context is optional and transient. It may state a current operational restriction, risk, preference, or recent information, but does not replace mandatory selective reading, persist automatically, override requirements, acceptance criteria, decisions, scope, dependencies, strategy, or evidence, or authorize changes outside the selected MODE. If it materially conflicts with persisted SPEC authority, block the affected work, identify the concrete artifact or ID, and direct the caller to `RESUME` or the applicable mode. Never silently select one version or alter the SPEC merely to accommodate the context.
 
 ## Core invariants
 

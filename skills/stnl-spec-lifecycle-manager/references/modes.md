@@ -14,9 +14,11 @@ update_policy: Change only when lifecycle semantics change.
 
 Use exactly one MODE at a time. INIT and RESUME have non-overlapping preconditions.
 
+Optional free-text additional context is transient. It may narrow the selected MODE for a current restriction, risk, preference, or recent fact, but never replaces selective reading or persisted authority, persists automatically, or permits work outside the MODE. If it materially conflicts with the SPEC, block, identify the artifact or ID, and direct the caller to `RESUME` or the applicable mode; do not silently rewrite the SPEC.
+
 ## INIT
 
-Create a new documentary SPEC. The target documentary workspace must not exist. Materialize only meaningful shared categories and the smallest blocking questions. Separate facts, hypotheses, and decisions. Apply readiness gates before declaring the new SPEC `ready`. Do not write code or operational artifacts.
+Create a new documentary SPEC. For `INIT`, `SPEC_PATH` must designate a directory path that does not exist. Block an existing file or directory, including a directory without `feature_spec.md`; if `feature_spec.md` already exists, direct the caller to `RESUME`. Do not treat the absence of `feature_spec.md` in an arbitrary existing directory as permission to initialize there. Materialize only meaningful shared categories and the smallest blocking questions. Separate facts, hypotheses, and decisions. Apply readiness gates before declaring the new SPEC `ready`. Do not write code or operational artifacts.
 
 ## RESUME
 

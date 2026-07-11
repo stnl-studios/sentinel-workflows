@@ -12,7 +12,29 @@ update_policy: Change only when the execution workspace architecture changes.
 
 # Execution Workspace
 
-Prefer a dedicated execution root. If the source is `feature_spec.md` in a dedicated requirements workspace, default to its `execution/` child without modifying the source document or its `shared/` records. If the source has another name or location, preserve it and default to a sibling `<requirements-name>-execution/` root.
+## `SPEC_PATH` normalization
+
+Normalize `SPEC_PATH` before deriving any artifact. Do not broadly explore a repository to guess an invalid path.
+
+1. A directory is valid only when it contains `feature_spec.md`. The requirements source is its `feature_spec.md` child and the execution root is its `execution/` child.
+2. A direct path whose basename is `feature_spec.md` has its parent as the SPEC root. The requirements source is that exact file and the execution root is the sibling `execution/` directory in that parent.
+3. Another existing requirements file remains the requirements source unchanged. Its execution root is the sibling `requirements-name-execution/`, where `requirements-name` is the file name without its final extension.
+
+The first two forms must resolve to the same canonical source and execution root. Never move, rename, or alter the source while normalizing it. Persisted paths remain relative to the artifact that contains them.
+
+Block with a concise diagnostic when the path does not exist; a directory has no deterministic `feature_spec.md` source; a directory offers more than one possible source without a deterministic selection rule; the derived execution root collides with the source, an existing non-directory, or an existing unrelated directory; or an operation requires artifacts that do not exist. An existing execution root is safe only when empty or when it contains the recognized execution layout. A missing derived execution directory is created only by an operation authorized to create execution artifacts; review, slice, and close operations must instead report their missing required artifact.
+
+## Slice normalization
+
+`SLICE` accepts one unsigned decimal number such as `3` or `03`, and normalizes it deterministically to `slice-03`. Reject empty, signed, negative, non-numeric, decimal, or otherwise ambiguous values; callers do not supply the `slice-` prefix.
+
+`SLICES` accepts an explicit comma-separated list of those numbers. Normalize each member, remove duplicates while preserving first-seen order, and require at least two distinct slices. Never infer additional candidates.
+
+Eligibility is derived from persisted open status, dependencies, and blockers; it is not an invocation input and never selects a slice. Block every slice operation without `SLICE`, including when one slice is eligible, and block `PARALLELIZE_SLICES` without `SLICES`.
+
+## Execution root
+
+Prefer the derived dedicated execution root. A `feature_spec.md` source uses its `execution/` child without modifying the source document or its `shared/` records. Another source uses the normalized sibling root.
 
 ```text
 <execution-root>/

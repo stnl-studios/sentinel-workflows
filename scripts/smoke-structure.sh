@@ -1129,13 +1129,13 @@ with tempfile.TemporaryDirectory() as tmp:
     active_execution = base / "active-execution"
     execution_fixture(active_execution)
     check_execution(active_execution)
-    expect(eligible_slices(active_execution) == ["01"], "initial current slice is not deterministic")
+    expect(eligible_slices(active_execution) == ["01"], "initial eligible-slice discovery is not deterministic")
 
     after_first = base / "after-first"
     execution_fixture(after_first)
     conclude_slice(after_first, "01")
     check_execution(after_first)
-    expect(eligible_slices(after_first) == ["02"], "next slice after first conclusion is not deterministic")
+    expect(eligible_slices(after_first) == ["02"], "next eligible-slice discovery is not deterministic")
 
     parallel_ready = base / "parallel-ready"
     execution_fixture(parallel_ready)

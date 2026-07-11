@@ -12,6 +12,10 @@ update_policy: Change only when slice evidence or validation boundaries change.
 
 # Slice Execution Contract
 
+## Additional Context
+
+Optional free-text context is transient and can only narrow the selected operation for a concrete circumstance. It never replaces required reads, is never persisted automatically, and cannot override requirements, acceptance criteria, decisions, scope, dependencies, strategy, or recorded evidence. A material conflict with the requirements source or approved detailed plan blocks the affected work: identify the artifact or ID and return it to `RESUME`, `REVIEW_PLAN`, or the applicable operation. Do not silently reconcile the conflict.
+
 ## Execute
 
 Read `plan.md`, `tasks.md`, the selected `plans/slice-NN.md`, the selected `tasks/slice-NN.md`, referenced requirements, explicitly named files, required imports, related tests, and additional files only when a concrete need appears. Do not load unrelated detailed plans, unrelated detailed task files, all source records, previous session summaries, or the whole repository by default.
