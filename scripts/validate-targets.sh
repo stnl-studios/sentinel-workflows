@@ -5,6 +5,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 PROMPT_ROOT="${PROMPT_ROOT:-templates/prompts}"
 export PROMPT_ROOT
+SUBAGENT_TEMPLATE_ROOT="${SUBAGENT_TEMPLATE_ROOT:-templates/subagents}"
+export SUBAGENT_TEMPLATE_ROOT
 LEGACY_TEMPLATE_NAME="prom""tps"
 LEGACY_TEMPLATE_DIR="templates/$LEGACY_TEMPLATE_NAME"
 
@@ -93,6 +95,10 @@ def read_text(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
+def is_ignored_metadata(path: Path) -> bool:
+    return path.name == ".DS_Store" or path.name.startswith("._") or "__MACOSX" in path.parts
+
+
 def load_toml(path: Path) -> dict:
     text = read_text(path)
     if _tomllib is not None:
@@ -147,7 +153,7 @@ def iter_text_files() -> list[Path]:
         if not root.exists():
             continue
         for path in root.rglob("*"):
-            if path.is_file() and ".git" not in path.parts:
+            if path.is_file() and ".git" not in path.parts and not is_ignored_metadata(path):
                 try:
                     path.read_text(encoding="utf-8")
                 except UnicodeDecodeError:
@@ -269,6 +275,7 @@ for script in [Path("scripts/validate_spec_lifecycle.py"), Path("scripts/test-sp
 
 # Copyable prompts are intentionally header-free user-facing instructions.
 PROMPT_ROOT = Path(os.environ.get("PROMPT_ROOT", "templates/prompts"))
+SUBAGENT_TEMPLATE_ROOT = Path(os.environ.get("SUBAGENT_TEMPLATE_ROOT", "templates/subagents"))
 EXPECTED_PROMPTS = {
     "spec-init",
     "spec-resume",
@@ -313,6 +320,21 @@ LEGACY_PROMPTS = {
     "phase-parallel",
 }
 CONTEXT_TITLE = "Contexto adicional (opcional):"
+VALIDATION_RUNNER_LOGICAL_NAME = "stnl-validation-runner"
+CODEX_VALIDATION_RUNNER_NAME = "stnl_validation_runner"
+CLAUDE_VALIDATION_RUNNER_NAME = "stnl-validation-runner"
+CLAUDE_VALIDATION_RUNNER_MENTION = f"@agent-{CLAUDE_VALIDATION_RUNNER_NAME}"
+CODEX_VALIDATION_RUNNER_SPAWN = f"no Codex, faça spawn do agente customizado cujo name é {CODEX_VALIDATION_RUNNER_NAME}."
+VALIDATION_RUNNER_SELECTION = f"Selecione obrigatoriamente o papel conceitual {VALIDATION_RUNNER_LOGICAL_NAME}, materializado assim: no Claude Code, {CLAUDE_VALIDATION_RUNNER_MENTION}; {CODEX_VALIDATION_RUNNER_SPAWN}"
+VALIDATION_RUNNER_IDENTIFIERS = {
+    VALIDATION_RUNNER_LOGICAL_NAME,
+    CODEX_VALIDATION_RUNNER_NAME,
+    CLAUDE_VALIDATION_RUNNER_MENTION,
+}
+VALIDATION_RUNNER_BLOCKED = "se o agente estiver ausente, indisponível, não iniciar ou terminar sem retorno válido, retorne BLOCKED."
+TEST_RUNNER_INSTRUCTION = f"Aguarde o retorno válido: somente o agente executa ou repete testes e produz a evidência; o contexto principal só pode interpretar e persistir o retorno, sem fallback, repetição, evidência inventada ou substituição de status; {VALIDATION_RUNNER_BLOCKED}"
+VALIDATION_RUNNER_INSTRUCTION = f"Aguarde o retorno válido: o agente faz toda a validação independente, incluindo testes; o contexto principal apenas persiste e reporta seu retorno, sem fallback, testes repetidos, nova validação, segundo veredito, substituição, suavização ou promoção de PASS, NEEDS_FIX, BLOCKED ou findings; {VALIDATION_RUNNER_BLOCKED}"
+VALIDATION_RUNNER_LAUNCHERS = {"slice-execute", "slice-validate", "slice-apply-findings", "execution-close"}
 LAUNCHER_LINES = {
     "spec-init": ["Use `stnl-spec-lifecycle-manager`.", "MODE=INIT", "SPEC_PATH={{SPEC_PATH}}", "REQUIREMENTS_SOURCE={{REQUIREMENTS_SOURCE}}", "", CONTEXT_TITLE],
     "spec-resume": ["Use `stnl-spec-lifecycle-manager`.", "MODE=RESUME", "SPEC_PATH={{SPEC_PATH}}", "NEW_INFORMATION={{NEW_INFORMATION}}", "", CONTEXT_TITLE],
@@ -321,12 +343,12 @@ LAUNCHER_LINES = {
     "execution-plan": ["Use `stnl-spec-execution-manager`.", "OPERATION=PLAN", "SPEC_PATH={{SPEC_PATH}}", "", CONTEXT_TITLE],
     "execution-plan-review": ["Use `stnl-spec-execution-manager`.", "OPERATION=REVIEW_PLAN", "SPEC_PATH={{SPEC_PATH}}", "", CONTEXT_TITLE],
     "execution-tasks": ["Use `stnl-spec-execution-manager`.", "OPERATION=MATERIALIZE_TASKS", "SPEC_PATH={{SPEC_PATH}}", "", CONTEXT_TITLE],
-    "slice-execute": ["Use `stnl-spec-execution-manager`.", "OPERATION=EXECUTE_SLICE", "SPEC_PATH={{SPEC_PATH}}", "SLICE={{SLICE}}", "", CONTEXT_TITLE],
-    "slice-validate": ["Use `stnl-spec-execution-manager`.", "OPERATION=VALIDATE_SLICE", "SPEC_PATH={{SPEC_PATH}}", "SLICE={{SLICE}}", "", CONTEXT_TITLE],
-    "slice-apply-findings": ["Use `stnl-spec-execution-manager`.", "OPERATION=APPLY_FINDINGS", "SPEC_PATH={{SPEC_PATH}}", "SLICE={{SLICE}}", "", CONTEXT_TITLE],
+    "slice-execute": ["Use `stnl-spec-execution-manager`.", "OPERATION=EXECUTE_SLICE", "SPEC_PATH={{SPEC_PATH}}", "SLICE={{SLICE}}", VALIDATION_RUNNER_SELECTION, TEST_RUNNER_INSTRUCTION, "", CONTEXT_TITLE],
+    "slice-validate": ["Use `stnl-spec-execution-manager`.", "OPERATION=VALIDATE_SLICE", "SPEC_PATH={{SPEC_PATH}}", "SLICE={{SLICE}}", VALIDATION_RUNNER_SELECTION, VALIDATION_RUNNER_INSTRUCTION, "", CONTEXT_TITLE],
+    "slice-apply-findings": ["Use `stnl-spec-execution-manager`.", "OPERATION=APPLY_FINDINGS", "SPEC_PATH={{SPEC_PATH}}", "SLICE={{SLICE}}", VALIDATION_RUNNER_SELECTION, TEST_RUNNER_INSTRUCTION, "", CONTEXT_TITLE],
     "slice-finalize": ["Use `stnl-spec-execution-manager`.", "OPERATION=FINALIZE_SLICE", "SPEC_PATH={{SPEC_PATH}}", "SLICE={{SLICE}}", "", CONTEXT_TITLE],
     "slice-parallel": ["Use `stnl-spec-execution-manager`.", "OPERATION=PARALLELIZE_SLICES", "SPEC_PATH={{SPEC_PATH}}", "SLICES={{SLICES}}", "", CONTEXT_TITLE],
-    "execution-close": ["Use `stnl-spec-execution-manager`.", "OPERATION=CLOSE", "SPEC_PATH={{SPEC_PATH}}", "", CONTEXT_TITLE],
+    "execution-close": ["Use `stnl-spec-execution-manager`.", "OPERATION=CLOSE", "SPEC_PATH={{SPEC_PATH}}", VALIDATION_RUNNER_SELECTION, VALIDATION_RUNNER_INSTRUCTION, "", CONTEXT_TITLE],
 }
 
 
@@ -351,6 +373,28 @@ for name, path in prompt_files.items():
     expected = "\n".join(LAUNCHER_LINES[name])
     if normalize_final_newline(text) != expected:
         fail(f"launcher is not canonical: {path}")
+    has_validation_runner = any(identifier in text for identifier in VALIDATION_RUNNER_IDENTIFIERS)
+    if (name in VALIDATION_RUNNER_LAUNCHERS) != has_validation_runner:
+        fail(f"a validation runner identifier appears in an unauthorized launcher: {path}")
+    if name in VALIDATION_RUNNER_LAUNCHERS:
+        if text.count(VALIDATION_RUNNER_SELECTION) != 1:
+            fail(f"logical validation runner selection is not unique: {path}")
+        if text.count(CLAUDE_VALIDATION_RUNNER_MENTION) != 1:
+            fail(f"Claude validation runner mention is not unique: {path}")
+        codex_names = re.findall(r"no Codex, faça spawn do agente customizado cujo name é ([a-z0-9_-]+)\.", text)
+        if codex_names != [CODEX_VALIDATION_RUNNER_NAME]:
+            fail(f"Codex validation runner spawn name is wrong: {path}: {codex_names}")
+        if "-" in codex_names[0]:
+            fail(f"Codex validation runner spawn name contains a hyphen: {path}")
+        claude_mentions = re.findall(r"@agent-[a-z0-9_-]+", text)
+        if claude_mentions != [CLAUDE_VALIDATION_RUNNER_MENTION]:
+            fail(f"Claude validation runner mention is wrong: {path}: {claude_mentions}")
+        if "_" in claude_mentions[0]:
+            fail(f"Claude validation runner mention contains an underscore: {path}")
+        if f"papel conceitual {VALIDATION_RUNNER_LOGICAL_NAME}" not in text:
+            fail(f"logical validation runner identity is missing: {path}")
+        if f"`{CLAUDE_VALIDATION_RUNNER_MENTION}`" in text or re.search(rf"```[^\n]*\n.*{re.escape(CLAUDE_VALIDATION_RUNNER_MENTION)}", text, re.DOTALL):
+            fail(f"Claude validation runner mention is formatted as code: {path}")
 
 execution_operations = set(
     re.findall(r"(?m)^### ([A-Z_]+)$", read_text(Path("skills/stnl-spec-execution-manager/SKILL.md")))
@@ -486,6 +530,146 @@ def parse_frontmatter(path: Path) -> tuple[dict[str, str], str]:
         data[key] = value
     return data, "\n".join(lines[end + 1 :])
 
+
+# Copyable validation-runner templates
+EXPECTED_SUBAGENT_FILES = {
+    "README.md",
+    f"codex/.codex/agents/{CODEX_VALIDATION_RUNNER_NAME}.toml",
+    f"claude-code/.claude/agents/{CLAUDE_VALIDATION_RUNNER_NAME}.md",
+}
+
+README_LINES = [
+    f"# `{VALIDATION_RUNNER_LOGICAL_NAME}`",
+    "",
+    "Este agente copiável isola testes e validações da sessão principal. Ele não substitui a skill `stnl-spec-execution-manager`.",
+    "",
+    f"Os dois adaptadores implementam o mesmo papel conceitual `{VALIDATION_RUNNER_LOGICAL_NAME}`. O Codex usa o identificador técnico `{CODEX_VALIDATION_RUNNER_NAME}`, enquanto o Claude Code usa `{CLAUDE_VALIDATION_RUNNER_NAME}`, porque os runtimes possuem regras de nomenclatura diferentes.",
+    "",
+    "Não normalize, troque ou iguale esses nomes físicos entre as plataformas.",
+    "",
+    "Copie somente um adaptador para a raiz do projeto:",
+    "",
+    f"- Codex: copie `codex/` para obter `.codex/agents/{CODEX_VALIDATION_RUNNER_NAME}.toml`.",
+    f"- Claude Code: copie `claude-code/` para obter `.claude/agents/{CLAUDE_VALIDATION_RUNNER_NAME}.md`.",
+    "",
+    "## Invocação e retorno",
+    "",
+    f"No Claude Code, os launchers enviam {CLAUDE_VALIDATION_RUNNER_MENTION} como menção direta, sem crases, aspas, escape, link ou bloco de código. Citar apenas o nome em linguagem natural não é o contrato canônico do Claude Code.",
+    "",
+    f"No Codex, a sessão principal faz spawn do agente customizado pelo nome {CODEX_VALIDATION_RUNNER_NAME}. A sessão principal aguarda o retorno, não repete testes nem validações e preserva integralmente o status e os findings retornados.",
+    "",
+    f"Se o agente estiver ausente, indisponível, não iniciar ou terminar sem retorno válido, o resultado é BLOCKED. Não existe fallback para a sessão principal. Abra uma nova sessão quando a pasta de agentes ainda não tiver sido carregada.",
+    "",
+    "Não copie este agente para `targets/`. Ele não implementa nem corrige trabalho.",
+    "",
+    "## Smoke test manual",
+    "",
+    "1. Copie somente o adaptador da plataforma para um projeto.",
+    "2. Inicie uma nova sessão quando necessário.",
+    "3. Execute um dos quatro launchers.",
+    f"4. Confirme visualmente que o agente correto da plataforma foi iniciado: `{CODEX_VALIDATION_RUNNER_NAME}` no Codex ou `{CLAUDE_VALIDATION_RUNNER_NAME}` no Claude Code.",
+    "5. Confirme que os comandos de teste aparecem somente na thread do subagente.",
+    "6. Confirme que a sessão principal apenas recebe e persiste o resumo.",
+    "7. Confirme que a saída contém todas as seções canônicas.",
+    "8. Remova temporários criados exclusivamente para o smoke test.",
+]
+if not SUBAGENT_TEMPLATE_ROOT.is_dir():
+    fail(f"subagent template directory is missing: {SUBAGENT_TEMPLATE_ROOT}")
+actual_subagent_files = {
+    path.relative_to(SUBAGENT_TEMPLATE_ROOT).as_posix()
+    for path in SUBAGENT_TEMPLATE_ROOT.rglob("*")
+    if path.is_file() and not is_ignored_metadata(path.relative_to(SUBAGENT_TEMPLATE_ROOT))
+}
+if actual_subagent_files != EXPECTED_SUBAGENT_FILES:
+    missing = sorted(EXPECTED_SUBAGENT_FILES - actual_subagent_files)
+    unexpected = sorted(actual_subagent_files - EXPECTED_SUBAGENT_FILES)
+    fail(f"subagent template registry mismatch; missing={missing}, unexpected={unexpected}")
+
+subagent_readme = SUBAGENT_TEMPLATE_ROOT / "README.md"
+if normalize_final_newline(read_text(subagent_readme)) != "\n".join(README_LINES):
+    fail("subagent template README is not canonical")
+codex_runner_path = SUBAGENT_TEMPLATE_ROOT / f"codex/.codex/agents/{CODEX_VALIDATION_RUNNER_NAME}.toml"
+claude_runner_path = SUBAGENT_TEMPLATE_ROOT / f"claude-code/.claude/agents/{CLAUDE_VALIDATION_RUNNER_NAME}.md"
+codex_runner = load_toml(codex_runner_path)
+required_codex_runner = {"name", "description", "model", "model_reasoning_effort", "sandbox_mode", "developer_instructions"}
+if set(codex_runner) != required_codex_runner | {"agents"}:
+    fail(f"Codex validation runner fields are not canonical: {sorted(codex_runner)}")
+if not isinstance(codex_runner["name"], str) or not re.fullmatch(r"[a-z0-9_]+", codex_runner["name"]):
+    fail("Codex validation runner name must use only lowercase letters, numbers, and underscores")
+if codex_runner["name"] != CODEX_VALIDATION_RUNNER_NAME:
+    fail(f"Codex validation runner name is wrong: expected {CODEX_VALIDATION_RUNNER_NAME}")
+if "-" in codex_runner["name"]:
+    fail("Codex validation runner name must not contain hyphens")
+if not isinstance(codex_runner["description"], str) or not codex_runner["description"].strip():
+    fail("Codex validation runner description is empty")
+if codex_runner["model"] != "gpt-5.4-mini":
+    fail("Codex validation runner model is wrong")
+if codex_runner["model_reasoning_effort"] != "medium":
+    fail("Codex validation runner effort is wrong")
+if codex_runner["sandbox_mode"] != "workspace-write":
+    fail("Codex validation runner sandbox does not permit normal test artifacts")
+if codex_runner["agents"] != {"max_depth": 1}:
+    fail("Codex validation runner does not block nested subagents")
+if not isinstance(codex_runner["developer_instructions"], str) or not codex_runner["developer_instructions"].strip():
+    fail("Codex validation runner instructions are empty")
+
+claude_runner_data, claude_runner_body = parse_frontmatter(claude_runner_path)
+required_claude_runner = {"name", "description", "tools", "model", "effort"}
+if set(claude_runner_data) != required_claude_runner:
+    fail(f"Claude validation runner frontmatter is not canonical: {sorted(claude_runner_data)}")
+if not re.fullmatch(r"[a-z0-9-]+", claude_runner_data["name"]):
+    fail("Claude validation runner name must use only lowercase letters, numbers, and hyphens")
+if claude_runner_data["name"] != CLAUDE_VALIDATION_RUNNER_NAME:
+    fail(f"Claude validation runner name is wrong: expected {CLAUDE_VALIDATION_RUNNER_NAME}")
+if "_" in claude_runner_data["name"]:
+    fail("Claude validation runner name must not contain underscores")
+if not claude_runner_data["description"].strip():
+    fail("Claude validation runner description is empty")
+if claude_runner_data["model"] != "haiku":
+    fail("Claude validation runner model is wrong")
+if claude_runner_data["effort"] != "medium":
+    fail("Claude validation runner effort is wrong")
+if claude_runner_data["tools"] != "Read, Glob, Grep, Bash":
+    fail("Claude validation runner tools are not the read/search/command allowlist")
+for forbidden_tool in ["Write", "Edit", "Agent"]:
+    if forbidden_tool in claude_runner_data["tools"]:
+        fail(f"Claude validation runner permits forbidden tool: {forbidden_tool}")
+if not claude_runner_body.strip():
+    fail("Claude validation runner body is empty")
+
+codex_contract = codex_runner["developer_instructions"].strip()
+claude_contract = claude_runner_body.strip()
+if codex_contract != claude_contract:
+    fail("validation runner contracts materially diverge between platforms")
+if VALIDATION_RUNNER_LOGICAL_NAME not in codex_contract:
+    fail("validation runner contract loses its logical identity")
+for required_marker in [
+    "CONTRATO_CANONICO=stnl-validation-runner/v1",
+    "Não implemente, não corrija e não finalize trabalho.",
+    "Não crie subagentes nem delegue a outros agentes.",
+    "Não edite código, testes, requisitos, `plan.md`, `tasks.md`, `plans/slice-NN.md` ou `tasks/slice-NN.md`.",
+    "`EXECUTE_SLICE`:",
+    "`APPLY_FINDINGS`:",
+    "`VALIDATE_SLICE`:",
+    "`CLOSE`:",
+    "Status: PASS | NEEDS_FIX | BLOCKED",
+    "Operação:",
+    "Escopo verificado:",
+    "Comandos executados:",
+    "Resultado de cada comando e exit code:",
+    "Evidências:",
+    "Findings:",
+    "Efeitos inesperados no workspace:",
+    "Bloqueios:",
+    "Resumo para persistência:",
+    "`PASS` exige evidência objetiva.",
+    "`NEEDS_FIX` exige ao menos um finding.",
+    "`BLOCKED` exige causa concreta",
+]:
+    if required_marker not in codex_contract:
+        fail(f"validation runner contract lacks canonical marker: {required_marker}")
+if re.search(r"(?:targets/|sentinel-[a-z-]+)", codex_contract, re.IGNORECASE):
+    fail("validation runner contract references a prohibited target or Sentinel agent")
 
 # Codex target
 config = read_text(Path("targets/codex/.codex/config.toml"))
