@@ -87,27 +87,49 @@ elif expression == "prohibited-target-or-sentinel-reference":
 elif expression == "readme-missing-claude-mention":
     replace(root / "README.md", "@agent-stnl-validation-runner", "stnl-validation-runner")
 elif expression == "readme-missing-codex-spawn":
-    replace(root / "README.md", "faz spawn do agente customizado pelo nome stnl_validation_runner", "usa o agente")
+    replace(root / "README.md", "faz spawn do agente customizado `stnl_validation_runner`", "usa o agente")
 elif expression == "readme-swaps-platform-names":
     replace(
         root / "README.md",
-        "O Codex usa o identificador técnico `stnl_validation_runner`, enquanto o Claude Code usa `stnl-validation-runner`",
-        "O Codex usa o identificador técnico `stnl-validation-runner`, enquanto o Claude Code usa `stnl_validation_runner`",
+        "No Codex, o launcher faz spawn do agente customizado `stnl_validation_runner`.",
+        "No Codex, o launcher faz spawn do agente customizado `stnl-validation-runner`.",
     )
-elif expression == "readme-omits-naming-difference":
+elif expression == "readme-omits-platform-specific-launchers":
     replace(
         root / "README.md",
-        "Os dois adaptadores implementam o mesmo papel conceitual `stnl-validation-runner`. O Codex usa o identificador técnico `stnl_validation_runner`, enquanto o Claude Code usa `stnl-validation-runner`, porque os runtimes possuem regras de nomenclatura diferentes.",
-        "Os dois adaptadores implementam o mesmo agente de validação.",
+        "Os launchers são específicos por plataforma.",
+        "Os launchers usam o mesmo formato.",
     )
 elif expression == "readme-allows-fallback":
-    replace(root / "README.md", "Não existe fallback para a sessão principal.", "Existe fallback para a sessão principal.")
-elif expression == "readme-allows-main-repetition":
-    replace(root / "README.md", "não repete testes nem validações", "pode repetir testes e validações")
-elif expression == "readme-removes-status-preservation":
-    replace(root / "README.md", "preserva integralmente o status e os findings retornados", "resume o retorno")
+    replace(root / "README.md", "Não existe fallback.", "Existe fallback.")
+elif expression == "readme-allows-cross-platform-use":
+    replace(root / "README.md", "Não use um launcher de uma plataforma na outra.", "Use qualquer launcher em qualquer plataforma.")
+elif expression == "readme-removes-blocked-contract":
+    replace(root / "README.md", "o resultado é `BLOCKED`. Não existe fallback.", "o resultado é pendente.")
 elif expression == "readme-removes-manual-smoke":
     replace(root / "README.md", "## Smoke test manual", "## Operação")
+elif expression == "readme-removes-installation-section":
+    replace(
+        root / "README.md",
+        "## Instalação\n\nA cópia parte da pasta `templates/subagents/` deste repositório. Copie somente o adaptador da plataforma usada para a raiz do projeto:\n\n- Codex: copie o conteúdo de `codex/`. O arquivo resultante deve ser `.codex/agents/stnl_validation_runner.toml`.\n- Claude Code: copie o conteúdo de `claude-code/`. O arquivo resultante deve ser `.claude/agents/stnl-validation-runner.md`.\n\nNão copie os dois adaptadores para o mesmo projeto.\n\n",
+        "",
+    )
+elif expression == "readme-missing-codex-source":
+    replace(root / "README.md", "- Codex: copie o conteúdo de `codex/`. O arquivo resultante deve ser `.codex/agents/stnl_validation_runner.toml`.\n", "")
+elif expression == "readme-wrong-codex-destination":
+    replace(root / "README.md", ".codex/agents/stnl_validation_runner.toml", ".codex/agents/stnl-validation-runner.toml")
+elif expression == "readme-missing-claude-source":
+    replace(root / "README.md", "- Claude Code: copie o conteúdo de `claude-code/`. O arquivo resultante deve ser `.claude/agents/stnl-validation-runner.md`.\n", "")
+elif expression == "readme-wrong-claude-destination":
+    replace(root / "README.md", ".claude/agents/stnl-validation-runner.md", ".claude/agents/stnl_validation_runner.md")
+elif expression == "readme-swaps-installation-destinations":
+    replace(
+        root / "README.md",
+        "- Codex: copie o conteúdo de `codex/`. O arquivo resultante deve ser `.codex/agents/stnl_validation_runner.toml`.\n- Claude Code: copie o conteúdo de `claude-code/`. O arquivo resultante deve ser `.claude/agents/stnl-validation-runner.md`.",
+        "- Codex: copie o conteúdo de `codex/`. O arquivo resultante deve ser `.claude/agents/stnl-validation-runner.md`.\n- Claude Code: copie o conteúdo de `claude-code/`. O arquivo resultante deve ser `.codex/agents/stnl_validation_runner.toml`.",
+    )
+elif expression == "readme-allows-copying-both-adapters":
+    replace(root / "README.md", "Não copie os dois adaptadores para o mesmo projeto.", "Copie os dois adaptadores para o mesmo projeto.")
 elif expression == "registry-wrong-codex-physical-name":
     codex.rename(codex.with_name("other_validation_runner.toml"))
 else:
@@ -146,11 +168,18 @@ case_mutation prohibited-target-or-sentinel-reference prohibited-target-or-senti
 case_mutation readme-missing-claude-mention readme-missing-claude-mention
 case_mutation readme-missing-codex-spawn readme-missing-codex-spawn
 case_mutation readme-swaps-platform-names readme-swaps-platform-names
-case_mutation readme-omits-naming-difference readme-omits-naming-difference
+case_mutation readme-omits-platform-specific-launchers readme-omits-platform-specific-launchers
 case_mutation readme-allows-fallback readme-allows-fallback
-case_mutation readme-allows-main-repetition readme-allows-main-repetition
-case_mutation readme-removes-status-preservation readme-removes-status-preservation
+case_mutation readme-allows-cross-platform-use readme-allows-cross-platform-use
+case_mutation readme-removes-blocked-contract readme-removes-blocked-contract
 case_mutation readme-removes-manual-smoke readme-removes-manual-smoke
+case_mutation readme-removes-installation-section readme-removes-installation-section
+case_mutation readme-missing-codex-source readme-missing-codex-source
+case_mutation readme-wrong-codex-destination readme-wrong-codex-destination
+case_mutation readme-missing-claude-source readme-missing-claude-source
+case_mutation readme-wrong-claude-destination readme-wrong-claude-destination
+case_mutation readme-swaps-installation-destinations readme-swaps-installation-destinations
+case_mutation readme-allows-copying-both-adapters readme-allows-copying-both-adapters
 case_mutation registry-wrong-codex-physical-name registry-wrong-codex-physical-name
 
-echo "PASS: 28 invalid validation-runner mutations rejected"
+echo "PASS: 35 invalid validation-runner mutations rejected"

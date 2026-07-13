@@ -25,7 +25,7 @@ command -v "$PYTHON_BIN" >/dev/null 2>&1 || fail "PYTHON_BIN is unavailable: $PY
 # Copyable prompts
 test -d "$PROMPT_ROOT" || fail "prompt directory is missing: $PROMPT_ROOT"
 test ! -e "$LEGACY_TEMPLATE_DIR" || fail "legacy template path remains: $LEGACY_TEMPLATE_DIR"
-for name in spec-init spec-resume spec-planning spec-close execution-plan execution-plan-review execution-tasks slice-execute slice-validate slice-apply-findings slice-finalize slice-parallel execution-close; do
+for name in spec-init spec-resume spec-planning spec-close execution-plan execution-plan-review execution-tasks slice-finalize slice-parallel slice-execute-codex slice-execute-claude slice-validate-codex slice-validate-claude slice-apply-findings-codex slice-apply-findings-claude execution-close-codex execution-close-claude; do
   test -f "$PROMPT_ROOT/$name.md" || fail "missing launcher: $PROMPT_ROOT/$name.md"
 done
 if grep -R -q --exclude-dir=.git "$LEGACY_TEMPLATE_NAME" .; then
@@ -284,11 +284,32 @@ EXPECTED_PROMPTS = {
     "execution-plan",
     "execution-plan-review",
     "execution-tasks",
+    "slice-finalize",
+    "slice-parallel",
+    "slice-execute-codex",
+    "slice-execute-claude",
+    "slice-validate-codex",
+    "slice-validate-claude",
+    "slice-apply-findings-codex",
+    "slice-apply-findings-claude",
+    "execution-close-codex",
+    "execution-close-claude",
+}
+SHARED_PROMPTS = {
+    "spec-init",
+    "spec-resume",
+    "spec-planning",
+    "spec-close",
+    "execution-plan",
+    "execution-plan-review",
+    "execution-tasks",
+    "slice-finalize",
+    "slice-parallel",
+}
+MIXED_VALIDATION_RUNNER_PROMPTS = {
     "slice-execute",
     "slice-validate",
     "slice-apply-findings",
-    "slice-finalize",
-    "slice-parallel",
     "execution-close",
 }
 SPEC_PROMPTS = {"spec-init", "spec-resume", "spec-planning", "spec-close"}
@@ -302,14 +323,26 @@ PROMPT_OPERATIONS = {
     "execution-plan": "PLAN",
     "execution-plan-review": "REVIEW_PLAN",
     "execution-tasks": "MATERIALIZE_TASKS",
-    "slice-execute": "EXECUTE_SLICE",
-    "slice-validate": "VALIDATE_SLICE",
-    "slice-apply-findings": "APPLY_FINDINGS",
     "slice-finalize": "FINALIZE_SLICE",
     "slice-parallel": "PARALLELIZE_SLICES",
-    "execution-close": "CLOSE",
+    "slice-execute-codex": "EXECUTE_SLICE",
+    "slice-execute-claude": "EXECUTE_SLICE",
+    "slice-validate-codex": "VALIDATE_SLICE",
+    "slice-validate-claude": "VALIDATE_SLICE",
+    "slice-apply-findings-codex": "APPLY_FINDINGS",
+    "slice-apply-findings-claude": "APPLY_FINDINGS",
+    "execution-close-codex": "CLOSE",
+    "execution-close-claude": "CLOSE",
 }
-SLICE_PROMPTS = {"slice-execute", "slice-validate", "slice-apply-findings", "slice-finalize"}
+SLICE_PROMPTS = {
+    "slice-execute-codex",
+    "slice-execute-claude",
+    "slice-validate-codex",
+    "slice-validate-claude",
+    "slice-apply-findings-codex",
+    "slice-apply-findings-claude",
+    "slice-finalize",
+}
 LEGACY_PROMPTS = {
     "execution-planning",
     "phase-execute",
@@ -324,17 +357,19 @@ VALIDATION_RUNNER_LOGICAL_NAME = "stnl-validation-runner"
 CODEX_VALIDATION_RUNNER_NAME = "stnl_validation_runner"
 CLAUDE_VALIDATION_RUNNER_NAME = "stnl-validation-runner"
 CLAUDE_VALIDATION_RUNNER_MENTION = f"@agent-{CLAUDE_VALIDATION_RUNNER_NAME}"
-CODEX_VALIDATION_RUNNER_SPAWN = f"no Codex, faça spawn do agente customizado cujo name é {CODEX_VALIDATION_RUNNER_NAME}."
-VALIDATION_RUNNER_SELECTION = f"Selecione obrigatoriamente o papel conceitual {VALIDATION_RUNNER_LOGICAL_NAME}, materializado assim: no Claude Code, {CLAUDE_VALIDATION_RUNNER_MENTION}; {CODEX_VALIDATION_RUNNER_SPAWN}"
-VALIDATION_RUNNER_IDENTIFIERS = {
-    VALIDATION_RUNNER_LOGICAL_NAME,
-    CODEX_VALIDATION_RUNNER_NAME,
-    CLAUDE_VALIDATION_RUNNER_MENTION,
+CODEX_TEST_RETURN = "Aguarde o retorno. O contexto principal não executa nem repete os testes e usa somente a evidência retornada."
+CODEX_VALIDATION_RETURN = "Aguarde o retorno. O contexto principal apenas persiste e reporta o status e os findings retornados; não repete testes, não refaz a validação e não emite outro veredito."
+CODEX_CLOSE_RETURN = "Aguarde o retorno. O contexto principal apenas persiste e reporta o status, os findings e os bloqueios retornados; não repete testes, não refaz a validação e não emite outro veredito."
+TEST_BLOCKED = "Se o agente não iniciar ou não retornar resultado válido, retorne `BLOCKED`. Não faça fallback."
+VALIDATION_BLOCKED = "Se o agente não iniciar ou não retornar resultado válido, retorne `BLOCKED`. Não faça fallback nem substitua, suavize ou promova o resultado."
+PLATFORM_PROMPTS = {
+    "slice-execute": "EXECUTE_SLICE",
+    "slice-validate": "VALIDATE_SLICE",
+    "slice-apply-findings": "APPLY_FINDINGS",
+    "execution-close": "CLOSE",
 }
-VALIDATION_RUNNER_BLOCKED = "se o agente estiver ausente, indisponível, não iniciar ou terminar sem retorno válido, retorne BLOCKED."
-TEST_RUNNER_INSTRUCTION = f"Aguarde o retorno válido: somente o agente executa ou repete testes e produz a evidência; o contexto principal só pode interpretar e persistir o retorno, sem fallback, repetição, evidência inventada ou substituição de status; {VALIDATION_RUNNER_BLOCKED}"
-VALIDATION_RUNNER_INSTRUCTION = f"Aguarde o retorno válido: o agente faz toda a validação independente, incluindo testes; o contexto principal apenas persiste e reporta seu retorno, sem fallback, testes repetidos, nova validação, segundo veredito, substituição, suavização ou promoção de PASS, NEEDS_FIX, BLOCKED ou findings; {VALIDATION_RUNNER_BLOCKED}"
-VALIDATION_RUNNER_LAUNCHERS = {"slice-execute", "slice-validate", "slice-apply-findings", "execution-close"}
+CODEX_PROMPTS = {f"{name}-codex" for name in PLATFORM_PROMPTS}
+CLAUDE_PROMPTS = {f"{name}-claude" for name in PLATFORM_PROMPTS}
 LAUNCHER_LINES = {
     "spec-init": ["Use `stnl-spec-lifecycle-manager`.", "MODE=INIT", "SPEC_PATH={{SPEC_PATH}}", "REQUIREMENTS_SOURCE={{REQUIREMENTS_SOURCE}}", "", CONTEXT_TITLE],
     "spec-resume": ["Use `stnl-spec-lifecycle-manager`.", "MODE=RESUME", "SPEC_PATH={{SPEC_PATH}}", "NEW_INFORMATION={{NEW_INFORMATION}}", "", CONTEXT_TITLE],
@@ -343,12 +378,16 @@ LAUNCHER_LINES = {
     "execution-plan": ["Use `stnl-spec-execution-manager`.", "OPERATION=PLAN", "SPEC_PATH={{SPEC_PATH}}", "", CONTEXT_TITLE],
     "execution-plan-review": ["Use `stnl-spec-execution-manager`.", "OPERATION=REVIEW_PLAN", "SPEC_PATH={{SPEC_PATH}}", "", CONTEXT_TITLE],
     "execution-tasks": ["Use `stnl-spec-execution-manager`.", "OPERATION=MATERIALIZE_TASKS", "SPEC_PATH={{SPEC_PATH}}", "", CONTEXT_TITLE],
-    "slice-execute": ["Use `stnl-spec-execution-manager`.", "OPERATION=EXECUTE_SLICE", "SPEC_PATH={{SPEC_PATH}}", "SLICE={{SLICE}}", VALIDATION_RUNNER_SELECTION, TEST_RUNNER_INSTRUCTION, "", CONTEXT_TITLE],
-    "slice-validate": ["Use `stnl-spec-execution-manager`.", "OPERATION=VALIDATE_SLICE", "SPEC_PATH={{SPEC_PATH}}", "SLICE={{SLICE}}", VALIDATION_RUNNER_SELECTION, VALIDATION_RUNNER_INSTRUCTION, "", CONTEXT_TITLE],
-    "slice-apply-findings": ["Use `stnl-spec-execution-manager`.", "OPERATION=APPLY_FINDINGS", "SPEC_PATH={{SPEC_PATH}}", "SLICE={{SLICE}}", VALIDATION_RUNNER_SELECTION, TEST_RUNNER_INSTRUCTION, "", CONTEXT_TITLE],
     "slice-finalize": ["Use `stnl-spec-execution-manager`.", "OPERATION=FINALIZE_SLICE", "SPEC_PATH={{SPEC_PATH}}", "SLICE={{SLICE}}", "", CONTEXT_TITLE],
     "slice-parallel": ["Use `stnl-spec-execution-manager`.", "OPERATION=PARALLELIZE_SLICES", "SPEC_PATH={{SPEC_PATH}}", "SLICES={{SLICES}}", "", CONTEXT_TITLE],
-    "execution-close": ["Use `stnl-spec-execution-manager`.", "OPERATION=CLOSE", "SPEC_PATH={{SPEC_PATH}}", VALIDATION_RUNNER_SELECTION, VALIDATION_RUNNER_INSTRUCTION, "", CONTEXT_TITLE],
+    "slice-execute-codex": ["Use `stnl-spec-execution-manager`.", "OPERATION=EXECUTE_SLICE", "SPEC_PATH={{SPEC_PATH}}", "SLICE={{SLICE}}", f"Após implementar a slice, faça spawn do agente customizado `{CODEX_VALIDATION_RUNNER_NAME}` para executar os testes desta operação.", CODEX_TEST_RETURN, TEST_BLOCKED, "", CONTEXT_TITLE],
+    "slice-execute-claude": ["Use `stnl-spec-execution-manager`.", "OPERATION=EXECUTE_SLICE", "SPEC_PATH={{SPEC_PATH}}", "SLICE={{SLICE}}", "Após implementar a slice, delegue obrigatoriamente os testes desta operação para:", CLAUDE_VALIDATION_RUNNER_MENTION, CODEX_TEST_RETURN, TEST_BLOCKED, "", CONTEXT_TITLE],
+    "slice-validate-codex": ["Use `stnl-spec-execution-manager`.", "OPERATION=VALIDATE_SLICE", "SPEC_PATH={{SPEC_PATH}}", "SLICE={{SLICE}}", f"Faça spawn do agente customizado `{CODEX_VALIDATION_RUNNER_NAME}` para executar toda a validação independente desta operação, incluindo os testes aplicáveis.", CODEX_VALIDATION_RETURN, VALIDATION_BLOCKED, "", CONTEXT_TITLE],
+    "slice-validate-claude": ["Use `stnl-spec-execution-manager`.", "OPERATION=VALIDATE_SLICE", "SPEC_PATH={{SPEC_PATH}}", "SLICE={{SLICE}}", "Delegue obrigatoriamente toda a validação independente desta operação, incluindo os testes aplicáveis, para:", CLAUDE_VALIDATION_RUNNER_MENTION, CODEX_VALIDATION_RETURN, VALIDATION_BLOCKED, "", CONTEXT_TITLE],
+    "slice-apply-findings-codex": ["Use `stnl-spec-execution-manager`.", "OPERATION=APPLY_FINDINGS", "SPEC_PATH={{SPEC_PATH}}", "SLICE={{SLICE}}", f"Após aplicar os findings, faça spawn do agente customizado `{CODEX_VALIDATION_RUNNER_NAME}` para executar os testes desta operação.", CODEX_TEST_RETURN, TEST_BLOCKED, "", CONTEXT_TITLE],
+    "slice-apply-findings-claude": ["Use `stnl-spec-execution-manager`.", "OPERATION=APPLY_FINDINGS", "SPEC_PATH={{SPEC_PATH}}", "SLICE={{SLICE}}", "Após aplicar os findings, delegue obrigatoriamente os testes desta operação para:", CLAUDE_VALIDATION_RUNNER_MENTION, CODEX_TEST_RETURN, TEST_BLOCKED, "", CONTEXT_TITLE],
+    "execution-close-codex": ["Use `stnl-spec-execution-manager`.", "OPERATION=CLOSE", "SPEC_PATH={{SPEC_PATH}}", f"Faça spawn do agente customizado `{CODEX_VALIDATION_RUNNER_NAME}` para executar todo o cross-check independente do fechamento, incluindo os testes aplicáveis.", CODEX_CLOSE_RETURN, VALIDATION_BLOCKED, "", CONTEXT_TITLE],
+    "execution-close-claude": ["Use `stnl-spec-execution-manager`.", "OPERATION=CLOSE", "SPEC_PATH={{SPEC_PATH}}", "Delegue obrigatoriamente todo o cross-check independente do fechamento, incluindo os testes aplicáveis, para:", CLAUDE_VALIDATION_RUNNER_MENTION, CODEX_CLOSE_RETURN, VALIDATION_BLOCKED, "", CONTEXT_TITLE],
 }
 
 
@@ -367,34 +406,46 @@ if set(prompt_files) != EXPECTED_PROMPTS:
     fail(f"prompt registry mismatch; missing={missing}, unexpected={unexpected}")
 if LEGACY_PROMPTS & set(prompt_files):
     fail(f"legacy prompt remains: {sorted(LEGACY_PROMPTS & set(prompt_files))}")
+if MIXED_VALIDATION_RUNNER_PROMPTS & set(prompt_files):
+    fail(f"mixed validation-runner launcher remains: {sorted(MIXED_VALIDATION_RUNNER_PROMPTS & set(prompt_files))}")
 
 for name, path in prompt_files.items():
     text = path.read_bytes().decode("utf-8")
     expected = "\n".join(LAUNCHER_LINES[name])
     if normalize_final_newline(text) != expected:
         fail(f"launcher is not canonical: {path}")
-    has_validation_runner = any(identifier in text for identifier in VALIDATION_RUNNER_IDENTIFIERS)
-    if (name in VALIDATION_RUNNER_LAUNCHERS) != has_validation_runner:
-        fail(f"a validation runner identifier appears in an unauthorized launcher: {path}")
-    if name in VALIDATION_RUNNER_LAUNCHERS:
-        if text.count(VALIDATION_RUNNER_SELECTION) != 1:
-            fail(f"logical validation runner selection is not unique: {path}")
-        if text.count(CLAUDE_VALIDATION_RUNNER_MENTION) != 1:
-            fail(f"Claude validation runner mention is not unique: {path}")
-        codex_names = re.findall(r"no Codex, faça spawn do agente customizado cujo name é ([a-z0-9_-]+)\.", text)
-        if codex_names != [CODEX_VALIDATION_RUNNER_NAME]:
-            fail(f"Codex validation runner spawn name is wrong: {path}: {codex_names}")
-        if "-" in codex_names[0]:
-            fail(f"Codex validation runner spawn name contains a hyphen: {path}")
-        claude_mentions = re.findall(r"@agent-[a-z0-9_-]+", text)
-        if claude_mentions != [CLAUDE_VALIDATION_RUNNER_MENTION]:
-            fail(f"Claude validation runner mention is wrong: {path}: {claude_mentions}")
-        if "_" in claude_mentions[0]:
-            fail(f"Claude validation runner mention contains an underscore: {path}")
-        if f"papel conceitual {VALIDATION_RUNNER_LOGICAL_NAME}" not in text:
-            fail(f"logical validation runner identity is missing: {path}")
+    expected_placeholders = set(re.findall(r"\{\{([A-Z_]+)\}\}", expected))
+    actual_placeholders = set(re.findall(r"\{\{([A-Z_]+)\}\}", text))
+    if actual_placeholders != expected_placeholders:
+        fail(f"launcher has unknown or missing placeholders: {path}")
+    has_slice = "SLICE={{SLICE}}" in text
+    if has_slice != (name in SLICE_PROMPTS):
+        fail(f"launcher has SLICE outside its allowed operation: {path}")
+    if name in SHARED_PROMPTS and re.search(r"(?:stnl[_-])?validation(?:[_ -])runner|@agent-stnl-validation-runner", text, re.IGNORECASE):
+        fail(f"a validation runner identifier appears in a shared launcher: {path}")
+    if name in CODEX_PROMPTS:
+        if text.count(CODEX_VALIDATION_RUNNER_NAME) != 1:
+            fail(f"Codex validation runner identifier is not unique: {path}")
+        if "stnl-validation-runner" in text or "@agent-" in text or "Claude Code" in text:
+            fail(f"Codex launcher contains a Claude identifier: {path}")
+        if "faça spawn do agente customizado" not in text.lower():
+            fail(f"Codex launcher does not instruct custom-agent spawn: {path}")
+    if name in CLAUDE_PROMPTS:
+        if text.splitlines().count(CLAUDE_VALIDATION_RUNNER_MENTION) != 1:
+            fail(f"Claude validation runner mention is not a unique plain-text line: {path}")
+        if CODEX_VALIDATION_RUNNER_NAME in text or "Codex" in text:
+            fail(f"Claude launcher contains a Codex identifier: {path}")
+        if "faça spawn" in text or "name é" in text:
+            fail(f"Claude launcher instructs spawn by name: {path}")
         if f"`{CLAUDE_VALIDATION_RUNNER_MENTION}`" in text or re.search(rf"```[^\n]*\n.*{re.escape(CLAUDE_VALIDATION_RUNNER_MENTION)}", text, re.DOTALL):
             fail(f"Claude validation runner mention is formatted as code: {path}")
+    if name in CODEX_PROMPTS | CLAUDE_PROMPTS and ("papel conceitual" in text or "materializado assim" in text):
+        fail(f"launcher retains multi-platform conceptual language: {path}")
+
+for operation in PLATFORM_PROMPTS:
+    pair = {f"{operation}-codex", f"{operation}-claude"}
+    if not pair <= set(prompt_files):
+        fail(f"platform launcher pair is incomplete for {operation}")
 
 execution_operations = set(
     re.findall(r"(?m)^### ([A-Z_]+)$", read_text(Path("skills/stnl-spec-execution-manager/SKILL.md")))
@@ -406,8 +457,11 @@ if missing_operations:
 HELPER_NAMES = {
     "spec-init.md", "spec-resume.md", "spec-planning.md", "spec-close.md",
     "execution-plan.md", "execution-plan-review.md", "execution-tasks.md",
-    "slice-execute.md", "slice-validate.md", "slice-apply-findings.md", "slice-finalize.md",
-    "slice-parallel.md", "execution-close.md",
+    "slice-finalize.md", "slice-parallel.md",
+    "slice-execute-codex.md", "slice-execute-claude.md",
+    "slice-validate-codex.md", "slice-validate-claude.md",
+    "slice-apply-findings-codex.md", "slice-apply-findings-claude.md",
+    "execution-close-codex.md", "execution-close-claude.md",
 }
 for skill_root in [Path("skills/stnl-spec-lifecycle-manager"), Path("skills/stnl-spec-execution-manager")]:
     for path in skill_root.rglob("*"):
@@ -543,35 +597,36 @@ README_LINES = [
     "",
     "Este agente copiável isola testes e validações da sessão principal. Ele não substitui a skill `stnl-spec-execution-manager`.",
     "",
-    f"Os dois adaptadores implementam o mesmo papel conceitual `{VALIDATION_RUNNER_LOGICAL_NAME}`. O Codex usa o identificador técnico `{CODEX_VALIDATION_RUNNER_NAME}`, enquanto o Claude Code usa `{CLAUDE_VALIDATION_RUNNER_NAME}`, porque os runtimes possuem regras de nomenclatura diferentes.",
+    "## Instalação",
     "",
-    "Não normalize, troque ou iguale esses nomes físicos entre as plataformas.",
+    "A cópia parte da pasta `templates/subagents/` deste repositório. Copie somente o adaptador da plataforma usada para a raiz do projeto:",
     "",
-    "Copie somente um adaptador para a raiz do projeto:",
+    f"- Codex: copie o conteúdo de `codex/`. O arquivo resultante deve ser `.codex/agents/{CODEX_VALIDATION_RUNNER_NAME}.toml`.",
+    f"- Claude Code: copie o conteúdo de `claude-code/`. O arquivo resultante deve ser `.claude/agents/{CLAUDE_VALIDATION_RUNNER_NAME}.md`.",
     "",
-    f"- Codex: copie `codex/` para obter `.codex/agents/{CODEX_VALIDATION_RUNNER_NAME}.toml`.",
-    f"- Claude Code: copie `claude-code/` para obter `.claude/agents/{CLAUDE_VALIDATION_RUNNER_NAME}.md`.",
+    "Não copie os dois adaptadores para o mesmo projeto.",
+    "",
+    "## Launchers",
+    "",
+    "Os launchers são específicos por plataforma.",
+    "",
+    "- Para Codex, use os arquivos `*-codex.md`.",
+    "- Para Claude Code, use os arquivos `*-claude.md`.",
+    "- Não use um launcher de uma plataforma na outra.",
+    "- Os quatro launchers mistos antigos não existem mais.",
     "",
     "## Invocação e retorno",
     "",
-    f"No Claude Code, os launchers enviam {CLAUDE_VALIDATION_RUNNER_MENTION} como menção direta, sem crases, aspas, escape, link ou bloco de código. Citar apenas o nome em linguagem natural não é o contrato canônico do Claude Code.",
-    "",
-    f"No Codex, a sessão principal faz spawn do agente customizado pelo nome {CODEX_VALIDATION_RUNNER_NAME}. A sessão principal aguarda o retorno, não repete testes nem validações e preserva integralmente o status e os findings retornados.",
-    "",
-    f"Se o agente estiver ausente, indisponível, não iniciar ou terminar sem retorno válido, o resultado é BLOCKED. Não existe fallback para a sessão principal. Abra uma nova sessão quando a pasta de agentes ainda não tiver sido carregada.",
-    "",
-    "Não copie este agente para `targets/`. Ele não implementa nem corrige trabalho.",
+    f"No Codex, o launcher faz spawn do agente customizado `{CODEX_VALIDATION_RUNNER_NAME}`.",
+    f"No Claude Code, o launcher usa {CLAUDE_VALIDATION_RUNNER_MENTION} como menção direta.",
+    "Se o agente estiver ausente, não iniciar ou não retornar resultado válido, o resultado é `BLOCKED`. Não existe fallback.",
     "",
     "## Smoke test manual",
     "",
     "1. Copie somente o adaptador da plataforma para um projeto.",
     "2. Inicie uma nova sessão quando necessário.",
-    "3. Execute um dos quatro launchers.",
-    f"4. Confirme visualmente que o agente correto da plataforma foi iniciado: `{CODEX_VALIDATION_RUNNER_NAME}` no Codex ou `{CLAUDE_VALIDATION_RUNNER_NAME}` no Claude Code.",
-    "5. Confirme que os comandos de teste aparecem somente na thread do subagente.",
-    "6. Confirme que a sessão principal apenas recebe e persiste o resumo.",
-    "7. Confirme que a saída contém todas as seções canônicas.",
-    "8. Remova temporários criados exclusivamente para o smoke test.",
+    "3. Execute um launcher correspondente à plataforma.",
+    "4. Confirme que os comandos de teste aparecem somente na thread do subagente e que a sessão principal apenas recebe e persiste o retorno.",
 ]
 if not SUBAGENT_TEMPLATE_ROOT.is_dir():
     fail(f"subagent template directory is missing: {SUBAGENT_TEMPLATE_ROOT}")
