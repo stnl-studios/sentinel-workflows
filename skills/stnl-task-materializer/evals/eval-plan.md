@@ -18,3 +18,5 @@ update_policy: Extend when task materialization loses approved-plan fidelity.
 4. Never changes planning artifacts or invents work.
 5. Rejects every existing or partial task set and preserves its bytes.
 6. Validates and renders the entire set before publishing, leaving no partial artifacts on failure.
+7. Renders separate append-only implementation and findings check sections with global sequential IDs, automatic round `N/3`, four auxiliary statuses, read-only discovery actions and sources, verification types, non-applicability rationale, no-verification-command confirmation, and between-round correction evidence.
+8. Keeps Validation Attempts and the Effective Validation Base separate from every auxiliary check record.

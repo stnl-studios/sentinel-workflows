@@ -23,6 +23,7 @@ The independent runner owns the technical verdict. This skill owns persistence i
 
 - `tasks.md`, selected detailed plan and task file, referenced requirements;
 - `references/validation-base.md` before persisting a result;
+- Implementation Test Evidence and Findings Test Evidence for the selected slice;
 - only artifacts needed for cheap prerequisites and faithful persistence.
 
 ## VALIDATE_SLICE
@@ -30,6 +31,8 @@ The independent runner owns the technical verdict. This skill owns persistence i
 Before delegation, require all artifacts, a fully completed mandatory checklist, no known blocking divergence, an open slice, and a valid attempt sequence. The first invocation is `initial`; every later invocation is `revalidation`, including after `BLOCKED`. A concluded slice is immutable. Block before invoking the runner when any condition fails.
 
 The main context does not rerun tests, redo validation, soften findings, promote `BLOCKED`, or emit another technical verdict.
+
+Prior test evidence is auxiliary, never a formal verdict. Pass it to the runner with the selected diff and scope. The runner independently checks whether the tested file state is still current, the commands were authoritative, selection and coverage remain sufficient, new risks appeared, and prior-slice overlaps require additional regressions. It must independently review a prior `TESTS_NOT_APPLICABLE`: confirm which read-only discovery actions were performed, which discovery sources were consulted, which verification types were considered, and whether any applicable verification command was omitted; reject it when absence of a tool or environment was confused with absence of applicability, and perform proportional static inspection or executable verification when needed. It may reuse current adequate evidence to avoid unjustified repetition, but executes or repeats checks proportionally when state, authority, coverage, or risk requires it. Neither `TESTS_PASS` nor `TESTS_NOT_APPLICABLE` reduces the formal requirements below an independent verdict, creates a Validation Attempt or Effective Validation Base before `VALIDATE_SLICE`, or guarantees `PASS`.
 
 For every valid runner invocation, append exactly one deterministic next `attempt-NN` with type, exact status, HEAD, verified scope, commands and exit codes, evidence, findings, blockers, unexpected workspace effects, and persistence summary. Preserve every earlier attempt. If the runner cannot start or returns malformed output after a valid invocation, append `BLOCKED` with that concrete cause and do not fabricate missing fields.
 

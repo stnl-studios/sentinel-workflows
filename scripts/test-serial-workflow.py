@@ -57,7 +57,11 @@ PRISTINE_TASK = """# Slice Tasks
 
 - none
 
-## Developer Checks
+## Implementation Test Evidence
+
+- none
+
+## Findings Test Evidence
 
 - none
 
@@ -155,7 +159,8 @@ def derive_state(root: Path) -> str:
             "Scope Expansion": "- none",
             "Prior Validation Overlap": "- none",
             "Divergences": "- none",
-            "Developer Checks": "- none",
+            "Implementation Test Evidence": "- none",
+            "Findings Test Evidence": "- none",
             "Validation Attempts": "- none",
             "Validation Findings": "- none",
             "Corrections Applied": "- none",
@@ -193,6 +198,53 @@ class Attempt:
     effects: list[str] = field(default_factory=list)
     summary: str = "compact summary"
     historical_hashes: dict[str, str] = field(default_factory=dict)
+    reviewed_test_evidence: bool = False
+    stale_test_evidence: bool = False
+    reviewed_non_applicability: bool = False
+
+
+@dataclass
+class TestEvidence:
+    identifier: str
+    operation: str
+    status: str
+    tested_state: dict[str, str]
+    commands: list[tuple[str, int]]
+    automatic_round: int
+    automatic_limit: int = 3
+    scope: str = "changed scope"
+    discovery_sources: list[str] = field(default_factory=lambda: ["project scripts", "development docs", "CI", "nearby tests"])
+    verification_types: list[str] = field(default_factory=lambda: ["focused tests", "static validator"])
+    non_applicability_rationale: str = "not_applicable"
+    no_verification_command_confirmation: str = "not_applicable"
+    selected_tests: list[str] = field(default_factory=lambda: ["focused fixture test"])
+    rationale: str = "covers changed behavior"
+    coverage: str = "changed behavior"
+    findings_cycle: str | None = None
+    findings_verified: list[str] = field(default_factory=list)
+    corrections_covered: set[str] = field(default_factory=set)
+    regressions: list[str] = field(default_factory=list)
+    unsupported_findings: list[str] = field(default_factory=list)
+    blockers: list[str] = field(default_factory=list)
+    effects: list[str] = field(default_factory=list)
+    summary: str = "compact check evidence"
+    failures: list[str] = field(default_factory=list)
+    previous_failure: str = "none"
+    correction_applied: str = "none"
+    files_changed_between_rounds: set[str] = field(default_factory=set)
+    updated_scope_rationale: str = "not_applicable"
+
+
+@dataclass
+class CheckCorrection:
+    operation: str
+    failed_check: str
+    failure: str
+    evidence: str
+    change: str
+    files: set[str]
+    updated_scope: set[str]
+    in_scope_rationale: str
 
 
 @dataclass
@@ -217,6 +269,9 @@ class Slice:
     findings: list[str] = field(default_factory=list)
     corrections: set[str] = field(default_factory=set)
     divergences: list[str] = field(default_factory=list)
+    implementation_evidence: list[TestEvidence] = field(default_factory=list)
+    findings_evidence: list[TestEvidence] = field(default_factory=list)
+    check_corrections: list[CheckCorrection] = field(default_factory=list)
     attempts: list[Attempt] = field(default_factory=list)
     bases: list[Base] = field(default_factory=list)
     done: bool = False
@@ -227,6 +282,178 @@ class Slice:
 class Workflow:
     slices: list[Slice]
     files: dict[str, bytes]
+    runner_calls: int = 0
+    discovery_actions: int = 0
+    verification_commands: int = 0
+
+    def run_checks(
+        self,
+        item: Slice,
+        operation: str,
+        status: str,
+        paths: set[str],
+        *,
+        automatic_round: int = 1,
+        findings_cycle: str | None = None,
+        prior_correction: CheckCorrection | None = None,
+    ) -> TestEvidence:
+        expect(operation in {"EXECUTE_SLICE", "APPLY_FINDINGS"}, "unsupported check operation accepted")
+        expect(status in {"TESTS_PASS", "TESTS_FAIL", "TESTS_NOT_APPLICABLE", "BLOCKED"}, "formal or unknown check status accepted")
+        expect(1 <= automatic_round <= 3, "automatic check round exceeded 3")
+        expect(not item.done, "checks ran for concluded slice")
+        if operation == "APPLY_FINDINGS":
+            expect(item.findings and findings_cycle, "findings checks without persisted findings accepted")
+
+        attempt_count = len(item.attempts)
+        base_count = len(item.bases)
+        self.runner_calls += 1
+        self.discovery_actions += 1
+        if status == "TESTS_PASS":
+            commands = [("fixture-focused-check", 0)]
+        elif status == "TESTS_FAIL":
+            commands = [("fixture-focused-check", 1)]
+        else:
+            commands = []
+        self.verification_commands += len(commands)
+        tested_state = {
+            path: REMOVED if path not in self.files else sha(self.files[path])
+            for path in sorted(paths)
+        }
+        collection = item.implementation_evidence if operation == "EXECUTE_SLICE" else item.findings_evidence
+        prefix = "implementation-check" if operation == "EXECUTE_SLICE" else "findings-check"
+        evidence = TestEvidence(
+            identifier=f"{prefix}-{len(collection) + 1:02d}",
+            operation=operation,
+            status=status,
+            tested_state=tested_state,
+            commands=commands,
+            automatic_round=automatic_round,
+            findings_cycle=findings_cycle,
+        )
+        if status == "TESTS_NOT_APPLICABLE":
+            evidence.non_applicability_rationale = "documentation-only scope has no observable executable validator"
+            evidence.no_verification_command_confirmation = "no verification command executed"
+            expect(evidence.discovery_sources and evidence.verification_types and not evidence.commands, "invalid TESTS_NOT_APPLICABLE evidence")
+        if status == "TESTS_FAIL":
+            evidence.failures.append("fixture-focused-check failed with exit 1")
+        if prior_correction:
+            evidence.previous_failure = prior_correction.failure
+            evidence.correction_applied = prior_correction.change
+            evidence.files_changed_between_rounds = set(prior_correction.files)
+            evidence.updated_scope_rationale = prior_correction.in_scope_rationale
+            evidence.corrections_covered = set(prior_correction.files)
+        if status == "BLOCKED":
+            evidence.blockers.append("applicable check discovered but required fixture tool is unavailable")
+        if operation == "APPLY_FINDINGS":
+            evidence.findings_verified = list(item.findings) if status == "TESTS_PASS" else []
+            evidence.corrections_covered = set(item.corrections)
+            evidence.regressions = ["related fixture regression"]
+            evidence.unsupported_findings = [] if status == "TESTS_PASS" else list(item.findings)
+        collection.append(evidence)
+
+        expect(len(item.attempts) == attempt_count, "checks created a Validation Attempt")
+        expect(len(item.bases) == base_count and not item.done and item.final_result == "pending", "checks promoted slice authority")
+        return evidence
+
+    def run_check_cycle(
+        self,
+        item: Slice,
+        operation: str,
+        statuses: list[str],
+        paths: set[str],
+        *,
+        correction_updates: list[dict[str, bytes | None]] | None = None,
+        findings_cycle: str | None = None,
+    ) -> list[TestEvidence]:
+        expect(1 <= len(statuses) <= 3, "manual operation allowed zero or more than three runner calls")
+        correction_updates = correction_updates or []
+        evidence_records: list[TestEvidence] = []
+        correction_index = 0
+        prior_correction: CheckCorrection | None = None
+        attempts_before = len(item.attempts)
+        bases_before = len(item.bases)
+
+        for automatic_round, status in enumerate(statuses, start=1):
+            evidence = self.run_checks(
+                item,
+                operation,
+                status,
+                paths,
+                automatic_round=automatic_round,
+                findings_cycle=findings_cycle,
+                prior_correction=prior_correction,
+            )
+            evidence_records.append(evidence)
+            prior_correction = None
+            if status in {"TESTS_PASS", "TESTS_NOT_APPLICABLE", "BLOCKED"}:
+                expect(automatic_round == len(statuses), "runner was invoked after a terminal auxiliary status")
+                break
+            expect(status == "TESTS_FAIL", "unknown auxiliary status bypassed cycle handling")
+            if automatic_round == 3:
+                expect(automatic_round == len(statuses), "fourth runner invocation followed the third failure")
+                break
+            expect(automatic_round < len(statuses), "early TESTS_FAIL stopped without an in-operation correction and recheck")
+            expect(correction_index < len(correction_updates), "automatic correction evidence is missing")
+            update = correction_updates[correction_index]
+            correction_index += 1
+            changed_files = set(update)
+            for path, content in update.items():
+                if content is None:
+                    self.files.pop(path, None)
+                else:
+                    self.files[path] = content
+            paths |= changed_files
+            if operation == "EXECUTE_SLICE":
+                item.changed_paths |= changed_files
+            else:
+                item.corrections |= changed_files
+            prior_correction = CheckCorrection(
+                operation=operation,
+                failed_check=evidence.identifier,
+                failure=evidence.failures[0],
+                evidence=evidence.summary,
+                change=f"objective correction after {evidence.identifier}",
+                files=changed_files,
+                updated_scope=set(paths),
+                in_scope_rationale="failure evidence identifies a necessary change inside the approved slice",
+            )
+            item.check_corrections.append(prior_correction)
+
+        expect(correction_index == len(correction_updates), "unused automatic correction was supplied")
+        expect(len(item.attempts) == attempts_before, "automatic checks created a Validation Attempt")
+        expect(len(item.bases) == bases_before and not item.done and item.final_result == "pending", "automatic checks promoted formal authority")
+        return evidence_records
+
+    def run_manual_operation(
+        self,
+        item: Slice,
+        operation: str,
+        statuses: list[str],
+        paths: set[str],
+        *,
+        preconditions_valid: bool,
+        work_applied: bool,
+        correction_updates: list[dict[str, bytes | None]] | None = None,
+        findings_cycle: str | None = None,
+    ) -> list[TestEvidence]:
+        calls_before = self.runner_calls
+        if not preconditions_valid:
+            expect(not work_applied, "invalid precondition allowed implementation or correction")
+            expect(not statuses, "precondition-blocked operation supplied a runner result")
+            expect(self.runner_calls == calls_before, "precondition-blocked operation invoked the runner")
+            return []
+        expect(work_applied, "valid operation reached runner cycle before implementation or correction")
+        records = self.run_check_cycle(
+            item,
+            operation,
+            statuses,
+            paths,
+            correction_updates=correction_updates,
+            findings_cycle=findings_cycle,
+        )
+        calls = self.runner_calls - calls_before
+        expect(1 <= calls <= 3, "valid manual operation did not invoke the runner from one to three times")
+        return records
 
     def validate(
         self,
@@ -239,9 +466,31 @@ class Workflow:
         historical_hashes: dict[str, str] | None = None,
     ) -> None:
         expect(item.checklist_done and not item.done and not item.divergences, "invalid validation prerequisites accepted")
+        self.runner_calls += 1
+        self.discovery_actions += 1
         identifier = f"attempt-{len(item.attempts) + 1:02d}"
         kind = "initial" if not item.attempts else "revalidation"
-        attempt = Attempt(identifier, kind, status, historical_hashes=historical_hashes or {})
+        prior_evidence = item.findings_evidence[-1] if item.findings_evidence else (item.implementation_evidence[-1] if item.implementation_evidence else None)
+        stale_evidence = False
+        if prior_evidence:
+            for path, expected in prior_evidence.tested_state.items():
+                current = REMOVED if path not in self.files else sha(self.files[path])
+                stale_evidence = stale_evidence or current != expected
+        if prior_evidence and prior_evidence.status == "TESTS_NOT_APPLICABLE":
+            commands = [("fixture-independent-non-applicability-review", 0)]
+        else:
+            commands = [("fixture-retest-stale-evidence", 0)] if stale_evidence else [("fixture-proportional-validation", 0)]
+        self.verification_commands += len(commands)
+        attempt = Attempt(
+            identifier,
+            kind,
+            status,
+            commands=commands,
+            historical_hashes=historical_hashes or {},
+            reviewed_test_evidence=prior_evidence is not None,
+            stale_test_evidence=stale_evidence,
+            reviewed_non_applicability=bool(prior_evidence and prior_evidence.status == "TESTS_NOT_APPLICABLE"),
+        )
         if status == "NEEDS_FIX":
             attempt.findings.append(finding)
             item.findings.append(finding)
@@ -277,6 +526,9 @@ class Workflow:
         item.final_result = "PASS"
 
     def close(self) -> tuple[bool, list[str]]:
+        runner_calls_before = self.runner_calls
+        discovery_actions_before = self.discovery_actions
+        verification_commands_before = self.verification_commands
         errors: list[str] = []
         ownership: dict[str, tuple[int, str]] = {}
         claimed_changes: set[str] = set()
@@ -305,6 +557,9 @@ class Workflow:
             current = REMOVED if path not in self.files else sha(self.files[path])
             if current != expected:
                 errors.append(f"{path}: slice-{owner:02d}; expected {expected}; current {current}; run explicit VALIDATE_SLICE")
+        expect(self.runner_calls == runner_calls_before, "CLOSE invoked the runner")
+        expect(self.discovery_actions == discovery_actions_before, "CLOSE performed runner discovery")
+        expect(self.verification_commands == verification_commands_before, "CLOSE executed verification commands")
         return not errors, errors
 
 
@@ -313,6 +568,169 @@ def manifest(workflow: Workflow, *paths: str) -> list[tuple[str, str]]:
 
 
 def validation_scenarios() -> None:
+    execution_pass = Workflow([Slice(1, {"src/a.txt"}, changed_paths={"src/a.txt"})], {"src/a.txt": b"a"})
+    item = execution_pass.slices[0]
+    records = execution_pass.run_manual_operation(
+        item,
+        "EXECUTE_SLICE",
+        ["TESTS_PASS"],
+        {"src/a.txt"},
+        preconditions_valid=True,
+        work_applied=True,
+    )
+    evidence = records[0]
+    expect(evidence.identifier == "implementation-check-01" and evidence.automatic_round == 1 and len(item.implementation_evidence) == 1, "execution initial TESTS_PASS evidence failed")
+    expect(execution_pass.runner_calls >= 1 and execution_pass.verification_commands == 1 and evidence.status != "TESTS_NOT_APPLICABLE", "valid execution skipped the runner or mislabeled an executed verification command")
+    expect(not item.attempts and not item.bases and not item.done and item.final_result == "pending", "execution TESTS_PASS promoted slice")
+
+    precondition_blocked = Workflow([Slice(1, {"src/a.txt"}, changed_paths=set())], {"src/a.txt": b"a"})
+    records = precondition_blocked.run_manual_operation(
+        precondition_blocked.slices[0],
+        "EXECUTE_SLICE",
+        [],
+        {"src/a.txt"},
+        preconditions_valid=False,
+        work_applied=False,
+    )
+    expect(not records and precondition_blocked.runner_calls == 0, "precondition block before implementation invoked the runner")
+
+    execution_fail_then_pass = Workflow([Slice(1, {"src/a.txt"}, changed_paths={"src/a.txt"})], {"src/a.txt": b"bad"})
+    item = execution_fail_then_pass.slices[0]
+    records = execution_fail_then_pass.run_check_cycle(
+        item,
+        "EXECUTE_SLICE",
+        ["TESTS_FAIL", "TESTS_PASS"],
+        {"src/a.txt"},
+        correction_updates=[{"src/a.txt": b"fixed"}],
+    )
+    expect([record.status for record in records] == ["TESTS_FAIL", "TESTS_PASS"], "one failure then success did not recheck")
+    expect([record.identifier for record in records] == ["implementation-check-01", "implementation-check-02"], "execution evidence was not append-only")
+    expect(records[1].correction_applied != "none" and records[1].files_changed_between_rounds == {"src/a.txt"}, "between-round correction evidence missing")
+    expect(len(item.check_corrections) == 1 and not item.findings and not item.attempts and not item.done, "execution retry changed formal authority")
+
+    execution_two_fails_then_pass = Workflow([Slice(1, {"src/a.txt"}, changed_paths={"src/a.txt"})], {"src/a.txt": b"bad-1"})
+    item = execution_two_fails_then_pass.slices[0]
+    records = execution_two_fails_then_pass.run_check_cycle(
+        item,
+        "EXECUTE_SLICE",
+        ["TESTS_FAIL", "TESTS_FAIL", "TESTS_PASS"],
+        {"src/a.txt"},
+        correction_updates=[{"src/a.txt": b"bad-2"}, {"src/a.txt": b"fixed"}],
+    )
+    expect(len(records) == 3 and records[-1].status == "TESTS_PASS", "two failures then success did not use all three rounds")
+    expect([record.automatic_round for record in records] == [1, 2, 3] and len(item.check_corrections) == 2, "three-round execution history is incomplete")
+
+    execution_three_fails = Workflow([Slice(1, {"src/a.txt"}, changed_paths={"src/a.txt"})], {"src/a.txt": b"bad-1"})
+    item = execution_three_fails.slices[0]
+    records = execution_three_fails.run_check_cycle(
+        item,
+        "EXECUTE_SLICE",
+        ["TESTS_FAIL", "TESTS_FAIL", "TESTS_FAIL"],
+        {"src/a.txt"},
+        correction_updates=[{"src/a.txt": b"bad-2"}, {"src/a.txt": b"bad-3"}],
+    )
+    expect(len(records) == 3 and execution_three_fails.runner_calls == 3, "third failure allowed a fourth runner call")
+    expect(len(item.check_corrections) == 2 and not item.attempts and not item.done, "third failure applied an extra correction or formalized the slice")
+
+    execution_not_applicable = Workflow([Slice(1, {"docs/a.md"}, changed_paths={"docs/a.md"})], {"docs/a.md": b"docs"})
+    item = execution_not_applicable.slices[0]
+    records = execution_not_applicable.run_check_cycle(item, "EXECUTE_SLICE", ["TESTS_NOT_APPLICABLE"], {"docs/a.md"})
+    evidence = records[0]
+    expect(evidence.discovery_sources and evidence.verification_types and evidence.non_applicability_rationale != "not_applicable", "non-applicability lacks objective discovery")
+    expect(
+        not evidence.commands
+        and evidence.no_verification_command_confirmation == "no verification command executed"
+        and execution_not_applicable.verification_commands == 0
+        and execution_not_applicable.discovery_actions > 0,
+        "non-applicability did not distinguish discovery from verification",
+    )
+    expect(not item.attempts and not item.bases and not item.done, "non-applicability promoted slice authority")
+
+    execution_blocked = Workflow([Slice(1, {"src/a.txt"}, changed_paths={"src/a.txt"})], {"src/a.txt": b"a"})
+    item = execution_blocked.slices[0]
+    evidence = execution_blocked.run_check_cycle(item, "EXECUTE_SLICE", ["BLOCKED"], {"src/a.txt"})[0]
+    expect(
+        evidence.blockers
+        and "tool is unavailable" in evidence.blockers[0]
+        and execution_blocked.discovery_actions > 0
+        and execution_blocked.verification_commands == 0
+        and not evidence.commands
+        and not item.check_corrections
+        and not item.attempts
+        and not item.done,
+        "applicable check with missing tool did not remain BLOCKED",
+    )
+
+    global_sequence = Workflow([Slice(1, {"src/a.txt"}, changed_paths={"src/a.txt"})], {"src/a.txt": b"a"})
+    item = global_sequence.slices[0]
+    global_sequence.run_check_cycle(item, "EXECUTE_SLICE", ["TESTS_PASS"], {"src/a.txt"})
+    global_sequence.run_check_cycle(item, "EXECUTE_SLICE", ["TESTS_PASS"], {"src/a.txt"})
+    expect([record.identifier for record in item.implementation_evidence] == ["implementation-check-01", "implementation-check-02"], "later manual execution reset evidence sequence")
+    expect([record.automatic_round for record in item.implementation_evidence] == [1, 1], "automatic round did not reset per manual operation")
+
+    findings_pass = Workflow([Slice(1, {"src/a.txt"}, changed_paths={"src/a.txt"})], {"src/a.txt": b"bad"})
+    item = findings_pass.slices[0]
+    findings_pass.validate(item, "NEEDS_FIX", finding="finding-01")
+    findings_pass.files["src/a.txt"] = b"fixed"
+    item.corrections.add("src/a.txt")
+    attempt_count = len(item.attempts)
+    records = findings_pass.run_manual_operation(
+        item,
+        "APPLY_FINDINGS",
+        ["TESTS_FAIL", "TESTS_PASS"],
+        {"src/a.txt"},
+        preconditions_valid=True,
+        work_applied=True,
+        correction_updates=[{"src/a.txt": b"fixed-after-recheck"}],
+        findings_cycle="attempt-01",
+    )
+    expect(findings_pass.runner_calls - attempt_count >= 1, "valid APPLY_FINDINGS skipped the runner")
+    expect(records[-1].findings_verified == ["finding-01"] and len(item.attempts) == attempt_count and not item.bases and not item.done, "findings failure then success changed authority")
+    expect(item.findings == ["finding-01"] and len(item.check_corrections) == 1, "findings retry did not preserve history")
+
+    findings_three_fails = Workflow([Slice(1, {"src/a.txt"}, changed_paths={"src/a.txt"})], {"src/a.txt": b"bad"})
+    item = findings_three_fails.slices[0]
+    findings_three_fails.validate(item, "NEEDS_FIX", finding="finding-01")
+    item.corrections.add("src/a.txt")
+    attempt_count = len(item.attempts)
+    records = findings_three_fails.run_check_cycle(
+        item,
+        "APPLY_FINDINGS",
+        ["TESTS_FAIL", "TESTS_FAIL", "TESTS_FAIL"],
+        {"src/a.txt"},
+        correction_updates=[{"src/a.txt": b"bad-2"}, {"src/a.txt": b"bad-3"}],
+        findings_cycle="attempt-01",
+    )
+    expect(len(records) == 3 and findings_three_fails.runner_calls == attempt_count + 3, "findings third failure allowed a fourth check")
+    expect(records[-1].unsupported_findings == ["finding-01"] and item.findings == ["finding-01"] and len(item.attempts) == attempt_count and not item.done, "findings three-failure history was not preserved")
+
+    findings_not_applicable = Workflow([Slice(1, {"docs/a.md"}, changed_paths={"docs/a.md"})], {"docs/a.md": b"bad docs"})
+    item = findings_not_applicable.slices[0]
+    findings_not_applicable.validate(item, "NEEDS_FIX", finding="finding-docs")
+    item.corrections.add("docs/a.md")
+    attempt_count = len(item.attempts)
+    evidence = findings_not_applicable.run_check_cycle(
+        item,
+        "APPLY_FINDINGS",
+        ["TESTS_NOT_APPLICABLE"],
+        {"docs/a.md"},
+        findings_cycle="attempt-01",
+    )[0]
+    expect(not evidence.commands and item.findings == ["finding-docs"] and len(item.attempts) == attempt_count and not item.done, "findings non-applicability resolved findings or created authority")
+
+    non_applicable_then_validated = Workflow([Slice(1, {"docs/a.md"}, changed_paths={"docs/a.md"})], {"docs/a.md": b"docs"})
+    item = non_applicable_then_validated.slices[0]
+    non_applicable_then_validated.run_check_cycle(item, "EXECUTE_SLICE", ["TESTS_NOT_APPLICABLE"], {"docs/a.md"})
+    non_applicable_then_validated.validate(item, "PASS", manifest(non_applicable_then_validated, "docs/a.md"))
+    expect(item.attempts[-1].reviewed_non_applicability and item.attempts[-1].commands == [("fixture-independent-non-applicability-review", 0)], "formal validation did not independently review non-applicability")
+    expect(item.attempts[-1].status in {"PASS", "NEEDS_FIX", "BLOCKED"} and item.done, "formal validation accepted an auxiliary verdict")
+
+    checked_then_validated = Workflow([Slice(1, {"src/a.txt"}, changed_paths={"src/a.txt"})], {"src/a.txt": b"a"})
+    item = checked_then_validated.slices[0]
+    checked_then_validated.run_checks(item, "EXECUTE_SLICE", "TESTS_PASS", {"src/a.txt"})
+    checked_then_validated.validate(item, "PASS", manifest(checked_then_validated, "src/a.txt"))
+    expect(item.attempts[-1].reviewed_test_evidence and item.done and item.bases[0].origin == "attempt-01", "formal PASS after checks failed")
+
     direct = Workflow([Slice(1, {"src/a.txt"}, changed_paths={"src/a.txt"})], {"src/a.txt": b"a"})
     direct.validate(direct.slices[0], "PASS", manifest(direct, "src/a.txt"))
     expect(direct.slices[0].attempts[0].identifier == "attempt-01" and len(direct.slices[0].bases) == 1 and direct.slices[0].done, "direct PASS failed")
@@ -330,6 +748,7 @@ def validation_scenarios() -> None:
     findings.validate(item, "NEEDS_FIX", historical_hashes={"src/a.txt": sha(b"bad")})
     findings.files["src/a.txt"] = b"fixed"
     item.corrections.add("src/a.txt")
+    findings.run_checks(item, "APPLY_FINDINGS", "TESTS_PASS", {"src/a.txt", "tests/a.txt"}, findings_cycle="attempt-01")
     findings.validate(item, "PASS", manifest(findings, "src/a.txt", "tests/a.txt"))
     ok, errors = findings.close()
     expect(ok and not errors and [a.identifier for a in item.attempts] == ["attempt-01", "attempt-02"] and item.bases[0].origin == "attempt-02", "NEEDS_FIX -> APPLY_FINDINGS -> revalidation PASS -> CLOSE PASS failed")
@@ -348,6 +767,13 @@ def validation_scenarios() -> None:
     blocked_then_pass.validate(item, "BLOCKED")
     blocked_then_pass.validate(item, "PASS", manifest(blocked_then_pass, "src/a.txt"))
     expect(item.attempts[0].status == "BLOCKED" and item.bases[0].origin == "attempt-02", "BLOCKED history was not preserved")
+
+    stale = Workflow([Slice(1, {"src/a.txt"}, changed_paths={"src/a.txt"})], {"src/a.txt": b"tested"})
+    item = stale.slices[0]
+    stale.run_checks(item, "EXECUTE_SLICE", "TESTS_PASS", {"src/a.txt"})
+    stale.files["src/a.txt"] = b"changed-after-checks"
+    stale.validate(item, "PASS", manifest(stale, "src/a.txt"))
+    expect(item.attempts[-1].stale_test_evidence and item.attempts[-1].commands == [("fixture-retest-stale-evidence", 0)] and item.done, "stale test evidence was trusted")
 
     drift = Workflow([Slice(1, {"src/a.txt"}, changed_paths={"src/a.txt"})], {"src/a.txt": b"a"})
     drift.validate(drift.slices[0], "PASS", manifest(drift, "src/a.txt"))
@@ -400,6 +826,21 @@ def validation_scenarios() -> None:
     item = invalid.slices[0]
     invalid.validate(item, "PASS", [("src/a.txt", "bad")])
     expect(item.attempts[-1].status == "BLOCKED" and not item.bases and not item.done, "malformed PASS base accepted")
+
+    close_read_only = Workflow([Slice(1, {"src/a.txt"}, changed_paths={"src/a.txt"})], {"src/a.txt": b"a"})
+    item = close_read_only.slices[0]
+    close_read_only.run_checks(item, "EXECUTE_SLICE", "TESTS_PASS", {"src/a.txt"})
+    close_read_only.validate(item, "PASS", manifest(close_read_only, "src/a.txt"))
+    runner_calls = close_read_only.runner_calls
+    discovery_actions = close_read_only.discovery_actions
+    verification_commands = close_read_only.verification_commands
+    expect(
+        close_read_only.close()[0]
+        and close_read_only.runner_calls == runner_calls
+        and close_read_only.discovery_actions == discovery_actions
+        and close_read_only.verification_commands == verification_commands,
+        "CLOSE ran discovery, verification, or runner",
+    )
 
 
 def state_gate_scenarios() -> None:
@@ -462,7 +903,8 @@ def state_gate_scenarios() -> None:
 
         for name, old, new in [
             ("marked-task", "- [ ] 1.1", "- [x] 1.1"),
-            ("developer-check", "## Developer Checks\n\n- none", "## Developer Checks\n\n- unit check exit:0"),
+            ("implementation-test-evidence", "## Implementation Test Evidence\n\n- none", "## Implementation Test Evidence\n\n### implementation-check-01\n\n- Status: TESTS_PASS"),
+            ("findings-test-evidence", "## Findings Test Evidence\n\n- none", "## Findings Test Evidence\n\n### findings-check-01\n\n- Status: TESTS_FAIL"),
             ("validation-attempt", "## Validation Attempts\n\n- none", "## Validation Attempts\n\n### attempt-01\n\n- Status: BLOCKED"),
         ]:
             root = base / name
@@ -481,6 +923,7 @@ def contract_mutation_scenarios() -> None:
         "plan_reviewer": Path("skills/stnl-plan-reviewer/SKILL.md"),
         "materializer": Path("skills/stnl-task-materializer/SKILL.md"),
         "task_reviewer": Path("skills/stnl-task-reviewer/SKILL.md"),
+        "executor": Path("skills/stnl-slice-executor/SKILL.md"),
         "quality": Path("skills/stnl-slice-quality-manager/SKILL.md"),
         "base": Path("skills/stnl-slice-quality-manager/references/validation-base.md"),
         "closer": Path("skills/stnl-execution-closer/SKILL.md"),
@@ -492,16 +935,21 @@ def contract_mutation_scenarios() -> None:
         "plan_reviewer": ["Run only in `planned`", "preserve all plans byte-for-byte"],
         "materializer": ["Any task artifact", "Validate every precondition and render the full task set before publishing"],
         "task_reviewer": ["Run only in `materialized-pristine`", "preserve all plans and tasks byte-for-byte"],
-        "quality": ["append exactly one deterministic next `attempt-NN`", "Effective Validation Base unchanged or absent", "origin is `NEEDS_FIX` or `BLOCKED`", "A `[x]` slice has exactly one valid Effective Validation Base"],
+        "executor": ["configured runner at least once and at most three times", "The first invocation is mandatory", "cannot be skipped because the change appears simple", "Once implementation or correction has occurred, the operation cannot end without invoking", "without running verification commands in the main context", "Implementation Test Evidence", "Findings Test Evidence", "`TESTS_PASS`, `TESTS_FAIL`, `TESTS_NOT_APPLICABLE`, or `BLOCKED`", "Never make a fourth automatic invocation", "use an unbounded loop", "A later manual invocation has its own three-call budget", "no verification command was executed", "read-only actions used only to discover applicable checks are permitted", "create a Validation Attempt or Effective Validation Base"],
+        "quality": ["Prior test evidence is auxiliary", "tested file state is still current", "executes or repeats checks proportionally", "independently review a prior `TESTS_NOT_APPLICABLE`", "which read-only discovery actions were performed", "which discovery sources were consulted", "which verification types were considered", "whether any applicable verification command was omitted", "absence of a tool or environment was confused with absence of applicability", "append exactly one deterministic next `attempt-NN`", "Effective Validation Base unchanged or absent", "origin is `NEEDS_FIX` or `BLOCKED`", "A `[x]` slice has exactly one valid Effective Validation Base"],
         "base": ["At most one Effective Validation Base", "Paths are relative, unique", "malformed hashes", "origin attempt that is not the current `PASS`"],
         "closer": ["Earlier hashes remain historical and are never compared", "Do not inspect hashes stored inside Validation Attempts", "Do not run tests", "Do not edit, test, invoke a runner"],
-        "template": ["## Validation Attempts", "## Effective Validation Base", "Result: PASS"],
+        "template": ["## Implementation Test Evidence", "## Findings Test Evidence", "Automatic check round", "TESTS_NOT_APPLICABLE", "Check discovery sources", "Non-applicability rationale", "No verification-command confirmation", "Discovery-only read operations are allowed", "## Validation Attempts", "## Effective Validation Base", "Result: PASS"],
     }
 
     def check(texts: dict[str, str]) -> None:
         for name, markers in required.items():
             for marker in markers:
                 expect(marker in texts[name], f"missing contract marker {name}: {marker}")
+        for marker in ["Automatic check round", "- Check discovery sources:", "Non-applicability rationale", "No verification-command confirmation", "Discovery-only read operations are allowed"]:
+            expect(texts["template"].count(marker) == 2, f"template marker must exist in both evidence sections: {marker}")
+        for pattern in ["up to three times", "zero to three calls", "may invoke the runner", "runner invocation is optional", "skip the runner when no tests apply", "no runner call is required"]:
+            expect(pattern not in texts["executor"].lower(), f"executor permits an optional or zero-call runner cycle: {pattern}")
         joined = "\n".join(texts.values())
         for forbidden in [
             "create or replace the planning artifacts",
@@ -512,6 +960,7 @@ def contract_mutation_scenarios() -> None:
             "## Validation History",
             "## Validation Base\n",
             "Recalculate SHA-256 for every path in each validation base",
+            "Retry checks during CLOSE",
         ]:
             expect(forbidden not in joined, f"forbidden contract accepted: {forbidden}")
 
@@ -527,9 +976,32 @@ def contract_mutation_scenarios() -> None:
         ("planner-reset", "planner", "## PLAN", "PLAN resets execution root\n\n## PLAN"),
         ("reviewer-after-tasks", "plan_reviewer", "preserve all plans byte-for-byte", "rewrite plans after tasks"),
         ("task-reviewer-after-start", "task_reviewer", "preserve all plans and tasks byte-for-byte", "rewrite executed tasks"),
+        ("executor-one-runner-call", "executor", "configured runner at least once and at most three times", "configured runner exactly once"),
+        ("executor-zero-runner-calls", "executor", "configured runner at least once and at most three times", "configured runner zero to three calls"),
+        ("executor-up-to-three-only", "executor", "configured runner at least once and at most three times", "configured runner up to three times"),
+        ("executor-optional-runner", "executor", "The first invocation is mandatory", "Runner invocation is optional"),
+        ("executor-skips-no-tests", "executor", "cannot be skipped because the change appears simple or because no check is expected to apply", "skip the runner when no tests apply"),
+        ("executor-unbounded-loop", "executor", "Never make a fourth automatic invocation, use an unbounded loop", "Use an unbounded loop"),
+        ("executor-fourth-call", "executor", "Never make a fourth automatic invocation", "Make a fourth automatic invocation"),
+        ("executor-missing-not-applicable", "executor", "`TESTS_PASS`, `TESTS_FAIL`, `TESTS_NOT_APPLICABLE`, or `BLOCKED`", "`TESTS_PASS`, `TESTS_FAIL`, or `BLOCKED`"),
+        ("executor-resets-check-sequence", "executor", "A later manual invocation has its own three-call budget but continues each section's sequence", "A later manual invocation resets each section's sequence"),
+        ("check-creates-formal-authority", "executor", "create a Validation Attempt or Effective Validation Base", "create formal validation authority"),
+        ("executor-direct-checks", "executor", "without running verification commands in the main context", "after running verification commands in the main context"),
+        ("executor-no-implementation-evidence", "executor", "Implementation Test Evidence", "Execution Notes"),
+        ("executor-no-findings-evidence", "executor", "Findings Test Evidence", "Correction Notes"),
+        ("quality-trusts-stale-evidence", "quality", "tested file state is still current", "prior evidence exists"),
+        ("quality-trusts-not-applicable", "quality", "independently review a prior `TESTS_NOT_APPLICABLE`", "accept a prior `TESTS_NOT_APPLICABLE` without review"),
+        ("quality-omits-discovery-sources", "quality", "which discovery sources were consulted", "whether a non-applicability status exists"),
+        ("template-missing-automatic-round", "template", "Automatic check round", "Check round"),
+        ("template-missing-check-discovery", "template", "- Check discovery sources:", "- Check sources omitted:"),
+        ("template-missing-non-applicability-rationale", "template", "Non-applicability rationale", "No rationale"),
+        ("template-allows-command-for-non-applicable", "template", "No verification-command confirmation", "Verification commands may execute"),
+        ("template-ambiguous-confirmation", "template", "No verification-command confirmation", "No-command confirmation"),
+        ("template-omits-discovery-verification-distinction", "template", "Discovery-only read operations are allowed and summarized under `Check discovery sources`; they are not verification commands.", "Discovery details omitted."),
         ("closer-historical-hashes", "closer", "## CLOSE", "Recalculate SHA-256 for every path in each validation base\n\n## CLOSE"),
         ("closer-runs-tests", "closer", "Do not run tests", "Run tests"),
         ("closer-calls-runner", "closer", "Do not edit, test, invoke a runner", "Invoke a runner"),
+        ("closer-retries-checks", "closer", "## CLOSE", "Retry checks during CLOSE\n\n## CLOSE"),
         ("blocked-promotion", "quality", "origin is `NEEDS_FIX` or `BLOCKED`", "promote `BLOCKED` to PASS"),
         ("legacy-validation-contract", "template", "## Validation Attempts", "## Validation History"),
         ("parallel-residue", "planner", "## PLAN", "PARALLELIZE_SLICES\n\n## PLAN"),
@@ -549,13 +1021,22 @@ def main() -> None:
     validation_scenarios()
     state_gate_scenarios()
     contract_mutation_scenarios()
+    print("PASS: valid EXECUTE_SLICE and APPLY_FINDINGS invoke the runner at least once; precondition block may invoke it zero times")
+    print("PASS: EXECUTE_SLICE initial success, fail/pass, fail/fail/pass, three failures, TESTS_NOT_APPLICABLE, and BLOCKED")
+    print("PASS: APPLY_FINDINGS retry, three failures, and TESTS_NOT_APPLICABLE preserve findings and formal authority")
+    print("PASS: discovery_actions and verification_commands are distinct; non-applicability performs discovery with zero verification commands")
+    print("PASS: an executed verification command cannot be TESTS_NOT_APPLICABLE; an applicable check with missing tooling is BLOCKED")
+    print("PASS: automatic check evidence is append-only, round-limited to 3, and records between-round corrections")
+    print("PASS: formal validation independently reviews TESTS_NOT_APPLICABLE and keeps PASS | NEEDS_FIX | BLOCKED")
     print("PASS: direct PASS, NEEDS_FIX, BLOCKED, findings revalidation, and multiple attempts")
     print("PASS: explicit NEEDS_FIX -> APPLY_FINDINGS -> revalidation PASS -> CLOSE PASS")
+    print("PASS: stale test evidence triggers proportional retest before formal PASS")
     print("PASS: drift, removals, historical hashes, and serial final validation ownership")
+    print("PASS: CLOSE invokes no runner and executes no tests")
     print("PASS: explicit slice-01 shared PASS -> slice-02 shared PASS -> CLOSE PASS")
     print("PASS: PLAN, REVIEW_PLAN, MATERIALIZE_TASKS, and REVIEW_TASKS monotonic state gates")
     print("PASS: blocked operations preserve bytes and leave no partial task set")
-    print("PASS: 16 focused negative execution-contract mutations rejected")
+    print("PASS: 39 focused negative execution-contract mutations rejected")
 
 
 if __name__ == "__main__":

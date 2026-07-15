@@ -16,6 +16,8 @@ update_policy: Change only when validation persistence or drift verification cha
 
 Every valid runner invocation appends exactly one sequential `attempt-NN` and never changes an earlier attempt. `attempt-01` is `initial`; every later attempt is `revalidation`. Persist status (`PASS`, `NEEDS_FIX`, or `BLOCKED`), HEAD or `not_available`, verified scope, exact commands and numeric exit codes, compact evidence, findings, blockers, unexpected workspace effects, and persistence summary. Do not persist full logs or hashes as final authority inside an attempt.
 
+Implementation Test Evidence and Findings Test Evidence are auxiliary append-only check records, not Validation Attempts. They may inform proportional validation only after the runner confirms that their tested state, commands, coverage, and risk remain valid. A `TESTS_NOT_APPLICABLE` record is acceptable auxiliary input only after independent review of its read-only discovery actions, discovery sources, verification types considered, objective rationale, and no-verification-command confirmation; it is rejected if an applicable check was omitted or a missing tool was confused with non-applicability, and never lowers the evidence required for formal `PASS`. Auxiliary records never create or replace an Effective Validation Base.
+
 ## Effective Validation Base
 
 At most one Effective Validation Base may exist. `NEEDS_FIX` and `BLOCKED` never create or update it. A current `PASS` creates it, or replaces the entire previous base when the current attempt is a revalidation. The origin must name the current `PASS` attempt and record its type, HEAD or `not_available`, `Result: PASS`, authoritative commands with numeric exit codes, compact evidence, and one final manifest.

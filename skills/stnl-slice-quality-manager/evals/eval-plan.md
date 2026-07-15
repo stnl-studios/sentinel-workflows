@@ -5,7 +5,7 @@ purpose: Define regression expectations for independent validation persistence a
 status: not_applicable
 read_when: Changing VALIDATE_SLICE, validation-base persistence, or completion checks.
 do_not_read_when: Running stable validation for one slice.
-contains: Prerequisites, append-only attempts, exact verdict handling, findings, blocked states, effective PASS base, complete manifests, hashes, overlap, and completion cases.
+contains: Prerequisites, auxiliary test evidence, independent proportional checks, append-only attempts, exact verdict handling, findings, blocked states, effective PASS base, complete manifests, hashes, overlap, and completion cases.
 owner: stnl-slice-quality-manager
 update_policy: Extend when quality persistence or completion accepts an invalid state.
 ```
@@ -20,3 +20,7 @@ update_policy: Extend when quality persistence or completion accepts an invalid 
 6. Multiple findings cycles produce sequential IDs and only the final `PASS` attempt is authoritative.
 7. Rejects duplicate, malformed, incomplete, unsorted, or inconsistent manifests and overlap without justified regressions.
 8. Never completes from a historical `PASS`, `NEEDS_FIX`, or `BLOCKED` attempt.
+9. Treats implementation and findings test evidence as auxiliary: it never creates an attempt, base, or completion before formal validation.
+10. Reuses current sufficient evidence only proportionally and reruns necessary checks when tested state is stale, authority or coverage is insufficient, risk changed, or overlap requires regression.
+11. A prior `TESTS_PASS` does not replace independent review or the current formal verdict.
+12. A prior `TESTS_NOT_APPLICABLE` is reviewed independently for read-only discovery actions, sources consulted, verification types considered, omitted applicable checks, and tool absence incorrectly presented as non-applicability; it never guarantees `PASS` and creates no attempt or base before `VALIDATE_SLICE`.
