@@ -1,4 +1,4 @@
-Use `stnl-spec-execution-manager`.
+Use `stnl-execution-planner`.
 OPERATION=PLAN
 SPEC_PATH={{SPEC_PATH}}
 

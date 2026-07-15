@@ -4,11 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 PROMPT_ROOT="${PROMPT_ROOT:-templates/prompts}"
-export PROMPT_ROOT
 SUBAGENT_TEMPLATE_ROOT="${SUBAGENT_TEMPLATE_ROOT:-templates/subagents}"
-export SUBAGENT_TEMPLATE_ROOT
-LEGACY_TEMPLATE_NAME="prom""tps"
-LEGACY_TEMPLATE_DIR="templates/$LEGACY_TEMPLATE_NAME"
 
 fail() {
   echo "FAIL: $*" >&2
@@ -16,102 +12,47 @@ fail() {
 }
 
 cd "$ROOT"
-
 command -v "$PYTHON_BIN" >/dev/null 2>&1 || fail "PYTHON_BIN is unavailable: $PYTHON_BIN"
-"$PYTHON_BIN" -m py_compile scripts/validate_spec_lifecycle.py scripts/test-spec-lifecycle.py
+"$PYTHON_BIN" -m py_compile scripts/check-contracts.py scripts/validate_spec_lifecycle.py scripts/test-spec-lifecycle.py scripts/test-serial-workflow.py
+"$PYTHON_BIN" scripts/check-contracts.py launchers --root "$PROMPT_ROOT"
+"$PYTHON_BIN" scripts/check-contracts.py validation-runner --root "$SUBAGENT_TEMPLATE_ROOT"
 
-# Packaging metadata is ignored by this structural validator.
-
-# Copyable prompts
-test -d "$PROMPT_ROOT" || fail "prompt directory is missing: $PROMPT_ROOT"
-test ! -e "$LEGACY_TEMPLATE_DIR" || fail "legacy template path remains: $LEGACY_TEMPLATE_DIR"
-for name in spec-init spec-resume spec-planning spec-close execution-plan execution-plan-review execution-tasks slice-finalize slice-parallel slice-execute-codex slice-execute-claude slice-validate-codex slice-validate-claude slice-apply-findings-codex slice-apply-findings-claude execution-close-codex execution-close-claude; do
-  test -f "$PROMPT_ROOT/$name.md" || fail "missing launcher: $PROMPT_ROOT/$name.md"
-done
-if grep -R -q --exclude-dir=.git "$LEGACY_TEMPLATE_NAME" .; then
-  fail "legacy template reference remains"
-fi
-
-# Static contract validation
 "$PYTHON_BIN" - <<'PY'
 from __future__ import annotations
 
 import json
-import os
 import re
 from pathlib import Path
 
 try:
-    import tomllib as _tomllib
+    import tomllib
 except ModuleNotFoundError:
-    _tomllib = None
-
-ROOT = Path(".")
-TEXT_ROOTS = [Path("agents"), Path("targets"), Path("skills"), Path("templates"), Path("scripts")]
-ALLOWED_HANDOFF = {"PASS", "BLOCKED", "NEEDS_APPROVAL", "NEEDS_FIX", "NEEDS_REPLAN", "NEEDS_RETEST_PLAN", "NEEDS_RESUME"}
-ALLOWED_MODES = {"INIT", "RESUME", "PLANNING", "CLOSE"}
-SKILL_RESOURCE_FOLDERS = [
-    Path("skills/stnl-spec-lifecycle-manager/references"),
-    Path("skills/stnl-spec-lifecycle-manager/templates"),
-    Path("skills/stnl-spec-lifecycle-manager/examples"),
-    Path("skills/stnl-spec-lifecycle-manager/evals"),
-    Path("skills/stnl-spec-execution-manager/references"),
-    Path("skills/stnl-spec-execution-manager/templates"),
-    Path("skills/stnl-spec-execution-manager/examples"),
-    Path("skills/stnl-spec-execution-manager/evals"),
-]
-LEGACY_ROLE = "final" "izer"
-LEGACY_AGENT = "sentinel-" + LEGACY_ROLE
-LEGACY_BASE = Path("agents/base") / f"{LEGACY_ROLE}.md"
-LEGACY_FILES = [
-    LEGACY_BASE,
-    Path("targets/codex/.codex/agents") / f"{LEGACY_AGENT}.toml",
-    Path("targets/claude-code/.claude/agents") / f"{LEGACY_AGENT}.md",
-    Path("targets/copilot/.github/agents") / f"{LEGACY_AGENT}.agent.md",
-]
-LEGACY_TOKENS = [
-    LEGACY_AGENT,
-    str(LEGACY_BASE),
-    "-> " + LEGACY_ROLE,
-    LEGACY_ROLE + " allowlist",
-    "spec-close-" "inputs.md",
-    "close-" "readiness.md",
-    "MODE=" "COMPLETE",
-    "MODE=" "COMMIT",
-]
-REMOVED_STATUSES = [
-    "closed_" "with_residuals",
-    "not_" "closed",
-    "ready-to-" "close",
-    "not-ready-to-" "close",
-]
+    tomllib = None
 
 
 def fail(message: str) -> None:
-    raise SystemExit(message)
+    raise SystemExit(f"FAIL: {message}")
 
 
-def read_text(path: Path) -> str:
-    return path.read_text(encoding="utf-8")
-
-
-def is_ignored_metadata(path: Path) -> bool:
-    return path.name == ".DS_Store" or path.name.startswith("._") or "__MACOSX" in path.parts
+def read(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        fail(f"missing file: {path}")
 
 
 def load_toml(path: Path) -> dict:
-    text = read_text(path)
-    if _tomllib is not None:
-        return _tomllib.loads(text)
-
+    text = read(path)
+    if tomllib is not None:
+        return tomllib.loads(text)
     data: dict = {}
     section: list[str] = []
     lines = text.splitlines()
     index = 0
     while index < len(lines):
         raw = lines[index]
-        line = raw.strip()
         index += 1
+        line = raw.strip()
         if not line or line.startswith("#"):
             continue
         if line.startswith("[") and line.endswith("]"):
@@ -122,21 +63,19 @@ def load_toml(path: Path) -> dict:
             continue
         if "=" not in line:
             fail(f"invalid TOML line in {path}: {raw!r}")
-        key, value = line.split("=", 1)
-        key = key.strip()
-        value = value.strip()
-        if value.startswith('"""'):
+        key, value = (part.strip() for part in line.split("=", 1))
+        if value.startswith('\"\"\"'):
             collected = [value[3:]]
-            while not collected[-1].endswith('"""'):
+            while not collected[-1].endswith('\"\"\"'):
                 if index >= len(lines):
-                    fail(f"unterminated TOML multiline string in {path}: {key}")
+                    fail(f"unterminated TOML string in {path}: {key}")
                 collected.append(lines[index])
                 index += 1
             collected[-1] = collected[-1][:-3]
             parsed: object = "\n".join(collected)
         elif value.startswith('"') and value.endswith('"'):
             parsed = value[1:-1]
-        elif re.fullmatch(r"\d+", value):
+        elif value.isdigit():
             parsed = int(value)
         else:
             fail(f"unsupported TOML value in {path}: {raw!r}")
@@ -147,701 +86,151 @@ def load_toml(path: Path) -> dict:
     return data
 
 
-def iter_text_files() -> list[Path]:
-    files: list[Path] = []
-    for root in TEXT_ROOTS:
-        if not root.exists():
-            continue
-        for path in root.rglob("*"):
-            if path.is_file() and ".git" not in path.parts and not is_ignored_metadata(path):
-                try:
-                    path.read_text(encoding="utf-8")
-                except UnicodeDecodeError:
-                    continue
-                files.append(path)
-    return files
-
-
-all_text = {path: read_text(path) for path in iter_text_files()}
-
-# Removed legacy agent and terms
-for path in LEGACY_FILES:
-    if path.exists():
-        fail(f"legacy agent file remains: {path}")
-for path, text in all_text.items():
-    for token in LEGACY_TOKENS:
-        if token.lower() in text.lower():
-            fail(f"legacy token remains in {path}: {token}")
-    for status in REMOVED_STATUSES:
-        if re.search(rf"\b{re.escape(status)}\b", text):
-            fail(f"removed status remains in {path}: {status}")
-
-# Markdown fence balance
-for path, text in all_text.items():
-    if path.suffix != ".md":
-        continue
-    backtick = sum(1 for line in text.splitlines() if line.startswith("```"))
-    tilde = sum(1 for line in text.splitlines() if line.startswith("~~~"))
-    if backtick % 2:
-        fail(f"unbalanced backtick fences in {path}")
-    if tilde % 2:
-        fail(f"unbalanced tilde fences in {path}")
-
-# File Purpose Headers in internal skill reference/template/example/eval docs
-for folder in SKILL_RESOURCE_FOLDERS:
-    for path in folder.glob("*.md"):
-        text = read_text(path)
-        if not text.startswith("# File Purpose Header\n\n```yaml\n"):
-            fail(f"missing File Purpose Header: {path}")
-
-HEADER_FIELDS = [
-    "purpose",
-    "status",
-    "read_when",
-    "do_not_read_when",
-    "contains",
-    "owner",
-    "update_policy",
-]
-HEADER_STATUSES = {"draft", "ready", "blocked", "done", "closed", "not_applicable"}
-for folder in SKILL_RESOURCE_FOLDERS:
-    for path in folder.glob("*.md"):
-        lines = read_text(path).splitlines()
-        fence = lines[2][:3] if len(lines) > 2 else ""
-        try:
-            closing = lines.index(fence, 3)
-        except (IndexError, ValueError):
-            fail(f"invalid File Purpose Header fence: {path}")
-        fields = [line.split(":", 1)[0] for line in lines[3:closing] if ":" in line]
-        if fields != HEADER_FIELDS:
-            fail(f"File Purpose Header fields are not normalized: {path}")
-        status = lines[4].split(":", 1)[1].strip()
-        if status not in HEADER_STATUSES:
-            fail(f"invalid File Purpose Header status: {path}")
-        if "stnl-spec-execution-manager" in path.parts:
-            if read_text(path).count("```yaml") != 1:
-                fail(f"execution resource contains YAML beyond the required header: {path}")
-
-# Lifecycle canonical items use only the current Markdown contract.
-SPEC_RESOURCE_ROOT = Path("skills/stnl-spec-lifecycle-manager")
-CANONICAL_ID_PATTERN = r"(?:AC|D|C|R|Q)-\d{3}"
-CANONICAL_HEADING = re.compile(rf"^### ({CANONICAL_ID_PATTERN}) — \S.*$", re.MULTILINE)
-OLD_CANONICAL_HEADING = re.compile(rf"^### ({CANONICAL_ID_PATTERN}) - \S.*$", re.MULTILINE)
-for path in SPEC_RESOURCE_ROOT.rglob("*.md"):
-    text = read_text(path)
-    if OLD_CANONICAL_HEADING.search(text):
-        fail(f"lifecycle resource retains a non-canonical item heading: {path}")
-    item_starts = list(CANONICAL_HEADING.finditer(text))
-    h3_starts = list(re.finditer(r"^### \S.*$", text, re.MULTILINE))
-    h2_starts = list(re.finditer(r"^## \S.*$", text, re.MULTILINE))
-    for item_start in item_starts:
-        candidates = [match.start() for match in h3_starts + h2_starts if match.start() > item_start.start()]
-        end = min(candidates) if candidates else len(text)
-        item = text[item_start.start():end]
-        if re.search(r"(?m)^```(?:yaml|yml|markdown)\s*$", item, re.IGNORECASE):
-            fail(f"canonical item is wrapped in YAML/Markdown fence: {path}: {item_start.group(1)}")
-        if re.search(rf"(?m)^\s*-?\s*id:\s*{re.escape(item_start.group(1))}\s*$", item):
-            fail(f"canonical item repeats its heading ID: {path}: {item_start.group(1)}")
-        if re.search(r"(?m)^- [a-z_]+: null$", item, re.IGNORECASE):
-            fail(f"canonical item retains optional null metadata: {path}: {item_start.group(1)}")
-
-removed_lifecycle_tokens = [
-    "Linked Records",
-    "open_question_count",
-    "materialized:",
-    "created_from_mode",
-    "last_updated_mode",
-    "workspace_root:",
-    "spec_status:",
-    "statement:",
-    "why_it_matters:",
-]
-for path in SPEC_RESOURCE_ROOT.rglob("*.md"):
-    text = read_text(path)
-    for token in removed_lifecycle_tokens:
-        if token in text:
-            fail(f"removed lifecycle token remains in {path}: {token}")
-
-cases_path = SPEC_RESOURCE_ROOT / "evals/cases.json"
-if not cases_path.exists():
-    fail("executable lifecycle eval catalog is missing")
-cases = json.loads(read_text(cases_path))
-if len(cases) < 15 or any("expected_valid" not in case or "assertions" not in case for case in cases):
-    fail("executable lifecycle eval catalog is incomplete")
-for script in [Path("scripts/validate_spec_lifecycle.py"), Path("scripts/test-spec-lifecycle.py")]:
-    if not script.exists():
-        fail(f"lifecycle validation script is missing: {script}")
-
-
-# Copyable prompts are intentionally header-free user-facing instructions.
-PROMPT_ROOT = Path(os.environ.get("PROMPT_ROOT", "templates/prompts"))
-SUBAGENT_TEMPLATE_ROOT = Path(os.environ.get("SUBAGENT_TEMPLATE_ROOT", "templates/subagents"))
-EXPECTED_PROMPTS = {
-    "spec-init",
-    "spec-resume",
-    "spec-planning",
-    "spec-close",
-    "execution-plan",
-    "execution-plan-review",
-    "execution-tasks",
-    "slice-finalize",
-    "slice-parallel",
-    "slice-execute-codex",
-    "slice-execute-claude",
-    "slice-validate-codex",
-    "slice-validate-claude",
-    "slice-apply-findings-codex",
-    "slice-apply-findings-claude",
-    "execution-close-codex",
-    "execution-close-claude",
-}
-SHARED_PROMPTS = {
-    "spec-init",
-    "spec-resume",
-    "spec-planning",
-    "spec-close",
-    "execution-plan",
-    "execution-plan-review",
-    "execution-tasks",
-    "slice-finalize",
-    "slice-parallel",
-}
-MIXED_VALIDATION_RUNNER_PROMPTS = {
-    "slice-execute",
-    "slice-validate",
-    "slice-apply-findings",
-    "execution-close",
-}
-SPEC_PROMPTS = {"spec-init", "spec-resume", "spec-planning", "spec-close"}
-PROMPT_MODES = {
-    "spec-init": "INIT",
-    "spec-resume": "RESUME",
-    "spec-planning": "PLANNING",
-    "spec-close": "CLOSE",
-}
-PROMPT_OPERATIONS = {
-    "execution-plan": "PLAN",
-    "execution-plan-review": "REVIEW_PLAN",
-    "execution-tasks": "MATERIALIZE_TASKS",
-    "slice-finalize": "FINALIZE_SLICE",
-    "slice-parallel": "PARALLELIZE_SLICES",
-    "slice-execute-codex": "EXECUTE_SLICE",
-    "slice-execute-claude": "EXECUTE_SLICE",
-    "slice-validate-codex": "VALIDATE_SLICE",
-    "slice-validate-claude": "VALIDATE_SLICE",
-    "slice-apply-findings-codex": "APPLY_FINDINGS",
-    "slice-apply-findings-claude": "APPLY_FINDINGS",
-    "execution-close-codex": "CLOSE",
-    "execution-close-claude": "CLOSE",
-}
-SLICE_PROMPTS = {
-    "slice-execute-codex",
-    "slice-execute-claude",
-    "slice-validate-codex",
-    "slice-validate-claude",
-    "slice-apply-findings-codex",
-    "slice-apply-findings-claude",
-    "slice-finalize",
-}
-LEGACY_PROMPTS = {
-    "execution-planning",
-    "phase-execute",
-    "phase-validate",
-    "phase-apply-findings",
-    "phase-finalize",
-    "phase-commit",
-    "phase-parallel",
-}
-CONTEXT_TITLE = "Contexto adicional (opcional):"
-VALIDATION_RUNNER_LOGICAL_NAME = "stnl-validation-runner"
-CODEX_VALIDATION_RUNNER_NAME = "stnl_validation_runner"
-CLAUDE_VALIDATION_RUNNER_NAME = "stnl-validation-runner"
-CLAUDE_VALIDATION_RUNNER_MENTION = f"@agent-{CLAUDE_VALIDATION_RUNNER_NAME}"
-CODEX_TEST_RETURN = "Aguarde o retorno. O contexto principal não executa nem repete os testes e usa somente a evidência retornada."
-CODEX_VALIDATION_RETURN = "Aguarde o retorno. O contexto principal apenas persiste e reporta o status e os findings retornados; não repete testes, não refaz a validação e não emite outro veredito."
-CODEX_CLOSE_RETURN = "Aguarde o retorno. O contexto principal apenas persiste e reporta o status, os findings e os bloqueios retornados; não repete testes, não refaz a validação e não emite outro veredito."
-TEST_BLOCKED = "Se o agente não iniciar ou não retornar resultado válido, retorne `BLOCKED`. Não faça fallback."
-VALIDATION_BLOCKED = "Se o agente não iniciar ou não retornar resultado válido, retorne `BLOCKED`. Não faça fallback nem substitua, suavize ou promova o resultado."
-PLATFORM_PROMPTS = {
-    "slice-execute": "EXECUTE_SLICE",
-    "slice-validate": "VALIDATE_SLICE",
-    "slice-apply-findings": "APPLY_FINDINGS",
-    "execution-close": "CLOSE",
-}
-CODEX_PROMPTS = {f"{name}-codex" for name in PLATFORM_PROMPTS}
-CLAUDE_PROMPTS = {f"{name}-claude" for name in PLATFORM_PROMPTS}
-LAUNCHER_LINES = {
-    "spec-init": ["Use `stnl-spec-lifecycle-manager`.", "MODE=INIT", "SPEC_PATH={{SPEC_PATH}}", "REQUIREMENTS_SOURCE={{REQUIREMENTS_SOURCE}}", "", CONTEXT_TITLE],
-    "spec-resume": ["Use `stnl-spec-lifecycle-manager`.", "MODE=RESUME", "SPEC_PATH={{SPEC_PATH}}", "NEW_INFORMATION={{NEW_INFORMATION}}", "", CONTEXT_TITLE],
-    "spec-planning": ["Use `stnl-spec-lifecycle-manager`.", "MODE=PLANNING", "SPEC_PATH={{SPEC_PATH}}", "", CONTEXT_TITLE],
-    "spec-close": ["Use `stnl-spec-lifecycle-manager`.", "MODE=CLOSE", "SPEC_PATH={{SPEC_PATH}}", "", CONTEXT_TITLE],
-    "execution-plan": ["Use `stnl-spec-execution-manager`.", "OPERATION=PLAN", "SPEC_PATH={{SPEC_PATH}}", "", CONTEXT_TITLE],
-    "execution-plan-review": ["Use `stnl-spec-execution-manager`.", "OPERATION=REVIEW_PLAN", "SPEC_PATH={{SPEC_PATH}}", "", CONTEXT_TITLE],
-    "execution-tasks": ["Use `stnl-spec-execution-manager`.", "OPERATION=MATERIALIZE_TASKS", "SPEC_PATH={{SPEC_PATH}}", "", CONTEXT_TITLE],
-    "slice-finalize": ["Use `stnl-spec-execution-manager`.", "OPERATION=FINALIZE_SLICE", "SPEC_PATH={{SPEC_PATH}}", "SLICE={{SLICE}}", "", CONTEXT_TITLE],
-    "slice-parallel": ["Use `stnl-spec-execution-manager`.", "OPERATION=PARALLELIZE_SLICES", "SPEC_PATH={{SPEC_PATH}}", "SLICES={{SLICES}}", "", CONTEXT_TITLE],
-    "slice-execute-codex": ["Use `stnl-spec-execution-manager`.", "OPERATION=EXECUTE_SLICE", "SPEC_PATH={{SPEC_PATH}}", "SLICE={{SLICE}}", f"Após implementar a slice, faça spawn do agente customizado `{CODEX_VALIDATION_RUNNER_NAME}` para executar os testes desta operação.", CODEX_TEST_RETURN, TEST_BLOCKED, "", CONTEXT_TITLE],
-    "slice-execute-claude": ["Use `stnl-spec-execution-manager`.", "OPERATION=EXECUTE_SLICE", "SPEC_PATH={{SPEC_PATH}}", "SLICE={{SLICE}}", "Após implementar a slice, delegue obrigatoriamente os testes desta operação para:", CLAUDE_VALIDATION_RUNNER_MENTION, CODEX_TEST_RETURN, TEST_BLOCKED, "", CONTEXT_TITLE],
-    "slice-validate-codex": ["Use `stnl-spec-execution-manager`.", "OPERATION=VALIDATE_SLICE", "SPEC_PATH={{SPEC_PATH}}", "SLICE={{SLICE}}", f"Faça spawn do agente customizado `{CODEX_VALIDATION_RUNNER_NAME}` para executar toda a validação independente desta operação, incluindo os testes aplicáveis.", CODEX_VALIDATION_RETURN, VALIDATION_BLOCKED, "", CONTEXT_TITLE],
-    "slice-validate-claude": ["Use `stnl-spec-execution-manager`.", "OPERATION=VALIDATE_SLICE", "SPEC_PATH={{SPEC_PATH}}", "SLICE={{SLICE}}", "Delegue obrigatoriamente toda a validação independente desta operação, incluindo os testes aplicáveis, para:", CLAUDE_VALIDATION_RUNNER_MENTION, CODEX_VALIDATION_RETURN, VALIDATION_BLOCKED, "", CONTEXT_TITLE],
-    "slice-apply-findings-codex": ["Use `stnl-spec-execution-manager`.", "OPERATION=APPLY_FINDINGS", "SPEC_PATH={{SPEC_PATH}}", "SLICE={{SLICE}}", f"Após aplicar os findings, faça spawn do agente customizado `{CODEX_VALIDATION_RUNNER_NAME}` para executar os testes desta operação.", CODEX_TEST_RETURN, TEST_BLOCKED, "", CONTEXT_TITLE],
-    "slice-apply-findings-claude": ["Use `stnl-spec-execution-manager`.", "OPERATION=APPLY_FINDINGS", "SPEC_PATH={{SPEC_PATH}}", "SLICE={{SLICE}}", "Após aplicar os findings, delegue obrigatoriamente os testes desta operação para:", CLAUDE_VALIDATION_RUNNER_MENTION, CODEX_TEST_RETURN, TEST_BLOCKED, "", CONTEXT_TITLE],
-    "execution-close-codex": ["Use `stnl-spec-execution-manager`.", "OPERATION=CLOSE", "SPEC_PATH={{SPEC_PATH}}", f"Faça spawn do agente customizado `{CODEX_VALIDATION_RUNNER_NAME}` para executar todo o cross-check independente do fechamento, incluindo os testes aplicáveis.", CODEX_CLOSE_RETURN, VALIDATION_BLOCKED, "", CONTEXT_TITLE],
-    "execution-close-claude": ["Use `stnl-spec-execution-manager`.", "OPERATION=CLOSE", "SPEC_PATH={{SPEC_PATH}}", "Delegue obrigatoriamente todo o cross-check independente do fechamento, incluindo os testes aplicáveis, para:", CLAUDE_VALIDATION_RUNNER_MENTION, CODEX_CLOSE_RETURN, VALIDATION_BLOCKED, "", CONTEXT_TITLE],
-}
-
-
-def normalize_final_newline(text: str) -> str:
-    if text.endswith("\r\n"):
-        return text[:-2]
-    if text.endswith("\n"):
-        return text[:-1]
-    return text
-
-
-prompt_files = {path.stem: path for path in PROMPT_ROOT.glob("*.md")}
-if set(prompt_files) != EXPECTED_PROMPTS:
-    missing = sorted(EXPECTED_PROMPTS - set(prompt_files))
-    unexpected = sorted(set(prompt_files) - EXPECTED_PROMPTS)
-    fail(f"prompt registry mismatch; missing={missing}, unexpected={unexpected}")
-if LEGACY_PROMPTS & set(prompt_files):
-    fail(f"legacy prompt remains: {sorted(LEGACY_PROMPTS & set(prompt_files))}")
-if MIXED_VALIDATION_RUNNER_PROMPTS & set(prompt_files):
-    fail(f"mixed validation-runner launcher remains: {sorted(MIXED_VALIDATION_RUNNER_PROMPTS & set(prompt_files))}")
-
-for name, path in prompt_files.items():
-    text = path.read_bytes().decode("utf-8")
-    expected = "\n".join(LAUNCHER_LINES[name])
-    if normalize_final_newline(text) != expected:
-        fail(f"launcher is not canonical: {path}")
-    expected_placeholders = set(re.findall(r"\{\{([A-Z_]+)\}\}", expected))
-    actual_placeholders = set(re.findall(r"\{\{([A-Z_]+)\}\}", text))
-    if actual_placeholders != expected_placeholders:
-        fail(f"launcher has unknown or missing placeholders: {path}")
-    has_slice = "SLICE={{SLICE}}" in text
-    if has_slice != (name in SLICE_PROMPTS):
-        fail(f"launcher has SLICE outside its allowed operation: {path}")
-    if name in SHARED_PROMPTS and re.search(r"(?:stnl[_-])?validation(?:[_ -])runner|@agent-stnl-validation-runner", text, re.IGNORECASE):
-        fail(f"a validation runner identifier appears in a shared launcher: {path}")
-    if name in CODEX_PROMPTS:
-        if text.count(CODEX_VALIDATION_RUNNER_NAME) != 1:
-            fail(f"Codex validation runner identifier is not unique: {path}")
-        if "stnl-validation-runner" in text or "@agent-" in text or "Claude Code" in text:
-            fail(f"Codex launcher contains a Claude identifier: {path}")
-        if "faça spawn do agente customizado" not in text.lower():
-            fail(f"Codex launcher does not instruct custom-agent spawn: {path}")
-    if name in CLAUDE_PROMPTS:
-        if text.splitlines().count(CLAUDE_VALIDATION_RUNNER_MENTION) != 1:
-            fail(f"Claude validation runner mention is not a unique plain-text line: {path}")
-        if CODEX_VALIDATION_RUNNER_NAME in text or "Codex" in text:
-            fail(f"Claude launcher contains a Codex identifier: {path}")
-        if "faça spawn" in text or "name é" in text:
-            fail(f"Claude launcher instructs spawn by name: {path}")
-        if f"`{CLAUDE_VALIDATION_RUNNER_MENTION}`" in text or re.search(rf"```[^\n]*\n.*{re.escape(CLAUDE_VALIDATION_RUNNER_MENTION)}", text, re.DOTALL):
-            fail(f"Claude validation runner mention is formatted as code: {path}")
-    if name in CODEX_PROMPTS | CLAUDE_PROMPTS and ("papel conceitual" in text or "materializado assim" in text):
-        fail(f"launcher retains multi-platform conceptual language: {path}")
-
-for operation in PLATFORM_PROMPTS:
-    pair = {f"{operation}-codex", f"{operation}-claude"}
-    if not pair <= set(prompt_files):
-        fail(f"platform launcher pair is incomplete for {operation}")
-
-execution_operations = set(
-    re.findall(r"(?m)^### ([A-Z_]+)$", read_text(Path("skills/stnl-spec-execution-manager/SKILL.md")))
-)
-missing_operations = sorted(set(PROMPT_OPERATIONS.values()) - execution_operations)
-if missing_operations:
-    fail(f"prompt declares operation missing from execution skill: {missing_operations}")
-
-HELPER_NAMES = {
-    "spec-init.md", "spec-resume.md", "spec-planning.md", "spec-close.md",
-    "execution-plan.md", "execution-plan-review.md", "execution-tasks.md",
-    "slice-finalize.md", "slice-parallel.md",
-    "slice-execute-codex.md", "slice-execute-claude.md",
-    "slice-validate-codex.md", "slice-validate-claude.md",
-    "slice-apply-findings-codex.md", "slice-apply-findings-claude.md",
-    "execution-close-codex.md", "execution-close-claude.md",
-}
-for skill_root in [Path("skills/stnl-spec-lifecycle-manager"), Path("skills/stnl-spec-execution-manager")]:
-    for path in skill_root.rglob("*"):
-        if not path.is_file():
-            continue
-        text = read_text(path)
-        if "templates/prompts/" in text or any(name in text for name in HELPER_NAMES):
-            fail(f"skill knows a prompt helper: {path}")
-
-INIT_PRECONDITION = "For `INIT`, `SPEC_PATH` must designate a directory path that does not exist. Block an existing file or directory, including a directory without `feature_spec.md`; if `feature_spec.md` already exists, direct the caller to `RESUME`."
-for path in [
-    Path("skills/stnl-spec-lifecycle-manager/SKILL.md"),
-    Path("skills/stnl-spec-lifecycle-manager/references/spec-workspace.md"),
-    Path("skills/stnl-spec-lifecycle-manager/references/modes.md"),
-    Path("skills/stnl-spec-lifecycle-manager/evals/eval-cases.md"),
-    Path("skills/stnl-spec-lifecycle-manager/references/eval-guidance.md"),
-]:
-    if INIT_PRECONDITION not in read_text(path):
-        fail(f"lifecycle INIT precondition is not canonical: {path}")
-
-# Skill descriptions, resource completeness, and MODE vocabulary
-spec_skill_text = read_text(Path("skills/stnl-spec-lifecycle-manager/SKILL.md"))
-frontmatter = spec_skill_text.split("---", 2)
-if len(frontmatter) < 3:
-    fail("SPEC skill frontmatter is missing")
-description_line = next((line for line in frontmatter[1].splitlines() if line.startswith("description:")), "")
-if re.search(r"\b(execute|executing|implementation)\b", description_line, re.IGNORECASE):
-    fail("SPEC skill frontmatter describes delivery execution")
-if re.search(r"\bplan(?:ning)?\b", description_line, re.IGNORECASE):
-    fail("SPEC skill frontmatter describes delivery planning")
-
-execution_skill = Path("skills/stnl-spec-execution-manager/SKILL.md")
-if not execution_skill.exists():
-    fail("execution skill is missing")
-execution_skill_text = read_text(execution_skill)
-execution_frontmatter = execution_skill_text.split("---", 2)
-if len(execution_frontmatter) < 3:
-    fail("execution skill frontmatter is missing")
-execution_description = next((line for line in execution_frontmatter[1].splitlines() if line.startswith("description:")), "")
-if not execution_description:
-    fail("execution skill description is missing")
-if re.search(r"must use stnl-spec-lifecycle-manager|required stnl-spec-lifecycle-manager|only specs created by", execution_skill_text, re.IGNORECASE):
-    fail("execution skill requires stnl-spec-lifecycle-manager")
-for marker in ["if NEEDS_FIX: APPLY_FINDINGS", "VALIDATE_SLICE as revalidation", "without overwriting the initial validation history"]:
-    if marker not in execution_skill_text:
-        fail(f"execution workflow does not preserve revalidation: {marker}")
-
-for path in [
-    Path("skills/stnl-spec-execution-manager/references/workspace.md"),
-    Path("skills/stnl-spec-execution-manager/references/slice-model.md"),
-    Path("skills/stnl-spec-execution-manager/references/slice-execution-contract.md"),
-    Path("skills/stnl-spec-execution-manager/references/execution-close-policy.md"),
-    Path("skills/stnl-spec-execution-manager/templates/plan.template.md"),
-    Path("skills/stnl-spec-execution-manager/templates/slice-plan.template.md"),
-    Path("skills/stnl-spec-execution-manager/templates/tasks.template.md"),
-    Path("skills/stnl-spec-execution-manager/templates/slice-tasks.template.md"),
-    Path("skills/stnl-spec-execution-manager/examples/slice-workspace.md"),
-    Path("skills/stnl-spec-execution-manager/examples/validation-and-parallelization.md"),
-    Path("skills/stnl-spec-execution-manager/evals/eval-plan.md"),
-]:
-    if not path.exists():
-        fail(f"execution skill resource is missing: {path}")
-
-spec_forbidden = re.compile(
-    r"plan\\.md|tasks\\.md|plans/|tasks/|slice-execute|slice-validate|slice-parallel|independent validation|implementation slice",
-    re.IGNORECASE,
-)
-for path in Path("skills/stnl-spec-lifecycle-manager").rglob("*.md"):
-    if spec_forbidden.search(read_text(path)):
-        fail(f"SPEC skill retains delivery-only content: {path}")
-
-for path, text in all_text.items():
-    removed_tokens = [
-        "CLOSE" + "_POLICY",
-        "COMMIT" + "_SLICE",
-        "slice-" + "commit",
-        "commit" + "_hash",
-    ]
-    for token in removed_tokens:
-        if token in text:
-            fail(f"removed execution contract token remains in {path}: {token}")
-    for match in re.finditer(r"\bMODE\s*[=:]\s*([A-Z_]+)", text):
-        mode = match.group(1)
-        if mode not in ALLOWED_MODES:
-            fail(f"unsupported MODE in {path}: {mode}")
-    for match in re.finditer(r"\bOPERATION\s*[=:]\s*([A-Z_]+)", text):
-        operation = match.group(1)
-        if operation not in execution_operations:
-            fail(f"unsupported OPERATION in {path}: {operation}")
-
-# TOML, JSON, and frontmatter validation
-for path in Path("targets/codex/.codex").rglob("*.toml"):
-    load_toml(path)
-json.loads(read_text(Path("targets/claude-code/.claude/settings.json")))
-
-
 def parse_frontmatter(path: Path) -> tuple[dict[str, str], str]:
-    text = read_text(path)
-    lines = text.splitlines()
+    lines = read(path).splitlines()
     if not lines or lines[0] != "---":
-        fail(f"invalid frontmatter start: {path}")
+        fail(f"frontmatter start is missing: {path}")
     try:
         end = lines.index("---", 1)
     except ValueError:
-        fail(f"missing frontmatter end: {path}")
+        fail(f"frontmatter end is missing: {path}")
     data: dict[str, str] = {}
     for line in lines[1:end]:
-        if not line.strip() or line.startswith((" ", "\t")):
-            fail(f"unsupported or blank frontmatter line in {path}: {line!r}")
         match = re.fullmatch(r"([A-Za-z][A-Za-z0-9-]*):\s+(.+)", line)
         if not match:
             fail(f"invalid frontmatter line in {path}: {line!r}")
         key, value = match.groups()
         if key in data:
-            fail(f"duplicate frontmatter key in {path}: {key}")
-        if value.startswith("[") != value.endswith("]"):
-            fail(f"unbalanced frontmatter list in {path}: {key}")
-        if key in {"disable-model-invocation", "user-invocable"} and value not in {"true", "false"}:
-            fail(f"invalid boolean in {path}: {key}")
+            fail(f"duplicate frontmatter field in {path}: {key}")
         data[key] = value
-    return data, "\n".join(lines[end + 1 :])
+    return data, "\n".join(lines[end + 1:])
 
 
-# Copyable validation-runner templates
-EXPECTED_SUBAGENT_FILES = {
-    "README.md",
-    f"codex/.codex/agents/{CODEX_VALIDATION_RUNNER_NAME}.toml",
-    f"claude-code/.claude/agents/{CLAUDE_VALIDATION_RUNNER_NAME}.md",
+def check_file_header(path: Path, owner: str) -> None:
+    text = read(path)
+    match = re.match(r"# File Purpose Header\n\n```yaml\n(.*?)```\n", text, re.DOTALL)
+    if not match:
+        fail(f"missing File Purpose Header: {path}")
+    lines = [line for line in match.group(1).splitlines() if line]
+    fields = [line.split(":", 1)[0] for line in lines]
+    expected = ["purpose", "status", "read_when", "do_not_read_when", "contains", "owner", "update_policy"]
+    if fields != expected:
+        fail(f"noncanonical File Purpose Header fields: {path}")
+    values = dict(line.split(":", 1) for line in lines)
+    if values["status"].strip() not in {"draft", "ready", "blocked", "done", "closed", "not_applicable"}:
+        fail(f"invalid File Purpose Header status: {path}")
+    if values["owner"].strip() != owner:
+        fail(f"wrong File Purpose Header owner in {path}")
+    if text.count("```yaml") != 1:
+        fail(f"execution resource contains extra YAML blocks: {path}")
+
+
+execution_skills = {
+    "stnl-execution-planner": {"PLAN"},
+    "stnl-plan-reviewer": {"REVIEW_PLAN"},
+    "stnl-task-materializer": {"MATERIALIZE_TASKS"},
+    "stnl-task-reviewer": {"REVIEW_TASKS"},
+    "stnl-slice-executor": {"EXECUTE_SLICE", "APPLY_FINDINGS"},
+    "stnl-slice-quality-manager": {"VALIDATE_SLICE"},
+    "stnl-execution-closer": {"CLOSE"},
 }
 
-README_LINES = [
-    f"# `{VALIDATION_RUNNER_LOGICAL_NAME}`",
-    "",
-    "Este agente copiável isola testes e validações da sessão principal. Ele não substitui a skill `stnl-spec-execution-manager`.",
-    "",
-    "## Instalação",
-    "",
-    "A cópia parte da pasta `templates/subagents/` deste repositório. Copie somente o adaptador da plataforma usada para a raiz do projeto:",
-    "",
-    f"- Codex: copie o conteúdo de `codex/`. O arquivo resultante deve ser `.codex/agents/{CODEX_VALIDATION_RUNNER_NAME}.toml`.",
-    f"- Claude Code: copie o conteúdo de `claude-code/`. O arquivo resultante deve ser `.claude/agents/{CLAUDE_VALIDATION_RUNNER_NAME}.md`.",
-    "",
-    "Não copie os dois adaptadores para o mesmo projeto.",
-    "",
-    "## Launchers",
-    "",
-    "Os launchers são específicos por plataforma.",
-    "",
-    "- Para Codex, use os arquivos `*-codex.md`.",
-    "- Para Claude Code, use os arquivos `*-claude.md`.",
-    "- Não use um launcher de uma plataforma na outra.",
-    "- Os quatro launchers mistos antigos não existem mais.",
-    "",
-    "## Invocação e retorno",
-    "",
-    f"No Codex, o launcher faz spawn do agente customizado `{CODEX_VALIDATION_RUNNER_NAME}`.",
-    f"No Claude Code, o launcher usa {CLAUDE_VALIDATION_RUNNER_MENTION} como menção direta.",
-    "Se o agente estiver ausente, não iniciar ou não retornar resultado válido, o resultado é `BLOCKED`. Não existe fallback.",
-    "",
-    "## Smoke test manual",
-    "",
-    "1. Copie somente o adaptador da plataforma para um projeto.",
-    "2. Inicie uma nova sessão quando necessário.",
-    "3. Execute um launcher correspondente à plataforma.",
-    "4. Confirme que os comandos de teste aparecem somente na thread do subagente e que a sessão principal apenas recebe e persiste o retorno.",
-]
-if not SUBAGENT_TEMPLATE_ROOT.is_dir():
-    fail(f"subagent template directory is missing: {SUBAGENT_TEMPLATE_ROOT}")
-actual_subagent_files = {
-    path.relative_to(SUBAGENT_TEMPLATE_ROOT).as_posix()
-    for path in SUBAGENT_TEMPLATE_ROOT.rglob("*")
-    if path.is_file() and not is_ignored_metadata(path.relative_to(SUBAGENT_TEMPLATE_ROOT))
-}
-if actual_subagent_files != EXPECTED_SUBAGENT_FILES:
-    missing = sorted(EXPECTED_SUBAGENT_FILES - actual_subagent_files)
-    unexpected = sorted(actual_subagent_files - EXPECTED_SUBAGENT_FILES)
-    fail(f"subagent template registry mismatch; missing={missing}, unexpected={unexpected}")
+actual_execution = {path.name for path in Path("skills").glob("stnl-*") if (path / "SKILL.md").is_file() and path.name != "stnl-spec-lifecycle-manager"}
+if actual_execution != set(execution_skills):
+    fail(f"execution skill registry mismatch; expected={sorted(execution_skills)}, actual={sorted(actual_execution)}")
 
-subagent_readme = SUBAGENT_TEMPLATE_ROOT / "README.md"
-if normalize_final_newline(read_text(subagent_readme)) != "\n".join(README_LINES):
-    fail("subagent template README is not canonical")
-codex_runner_path = SUBAGENT_TEMPLATE_ROOT / f"codex/.codex/agents/{CODEX_VALIDATION_RUNNER_NAME}.toml"
-claude_runner_path = SUBAGENT_TEMPLATE_ROOT / f"claude-code/.claude/agents/{CLAUDE_VALIDATION_RUNNER_NAME}.md"
-codex_runner = load_toml(codex_runner_path)
-required_codex_runner = {"name", "description", "model", "model_reasoning_effort", "sandbox_mode", "developer_instructions"}
-if set(codex_runner) != required_codex_runner | {"agents"}:
-    fail(f"Codex validation runner fields are not canonical: {sorted(codex_runner)}")
-if not isinstance(codex_runner["name"], str) or not re.fullmatch(r"[a-z0-9_]+", codex_runner["name"]):
-    fail("Codex validation runner name must use only lowercase letters, numbers, and underscores")
-if codex_runner["name"] != CODEX_VALIDATION_RUNNER_NAME:
-    fail(f"Codex validation runner name is wrong: expected {CODEX_VALIDATION_RUNNER_NAME}")
-if "-" in codex_runner["name"]:
-    fail("Codex validation runner name must not contain hyphens")
-if not isinstance(codex_runner["description"], str) or not codex_runner["description"].strip():
-    fail("Codex validation runner description is empty")
-if codex_runner["model"] != "gpt-5.4-mini":
-    fail("Codex validation runner model is wrong")
-if codex_runner["model_reasoning_effort"] != "medium":
-    fail("Codex validation runner effort is wrong")
-if codex_runner["sandbox_mode"] != "workspace-write":
-    fail("Codex validation runner sandbox does not permit normal test artifacts")
-if codex_runner["agents"] != {"max_depth": 1}:
-    fail("Codex validation runner does not block nested subagents")
-if not isinstance(codex_runner["developer_instructions"], str) or not codex_runner["developer_instructions"].strip():
-    fail("Codex validation runner instructions are empty")
+required_sections = ["Purpose", "Inputs", "Authority", "Minimum Reads", "Allowed Effects", "Blocks", "Output"]
+for name, operations in execution_skills.items():
+    root = Path("skills") / name
+    skill = root / "SKILL.md"
+    frontmatter, body = parse_frontmatter(skill)
+    if frontmatter.get("name") != name or not frontmatter.get("description"):
+        fail(f"invalid skill frontmatter: {skill}")
+    for section in required_sections:
+        if f"## {section}" not in body:
+            fail(f"missing {section} section: {skill}")
+    declared = {operation for operation in operations if f"## {operation}" in body}
+    if declared != operations:
+        fail(f"operation declaration mismatch in {skill}: {sorted(declared)}")
+    for folder in ["references", "templates", "examples", "evals"]:
+        for path in (root / folder).glob("*.md"):
+            check_file_header(path, name)
 
-claude_runner_data, claude_runner_body = parse_frontmatter(claude_runner_path)
-required_claude_runner = {"name", "description", "tools", "model", "effort"}
-if set(claude_runner_data) != required_claude_runner:
-    fail(f"Claude validation runner frontmatter is not canonical: {sorted(claude_runner_data)}")
-if not re.fullmatch(r"[a-z0-9-]+", claude_runner_data["name"]):
-    fail("Claude validation runner name must use only lowercase letters, numbers, and hyphens")
-if claude_runner_data["name"] != CLAUDE_VALIDATION_RUNNER_NAME:
-    fail(f"Claude validation runner name is wrong: expected {CLAUDE_VALIDATION_RUNNER_NAME}")
-if "_" in claude_runner_data["name"]:
-    fail("Claude validation runner name must not contain underscores")
-if not claude_runner_data["description"].strip():
-    fail("Claude validation runner description is empty")
-if claude_runner_data["model"] != "haiku":
-    fail("Claude validation runner model is wrong")
-if claude_runner_data["effort"] != "medium":
-    fail("Claude validation runner effort is wrong")
-if claude_runner_data["tools"] != "Read, Glob, Grep, Bash":
-    fail("Claude validation runner tools are not the read/search/command allowlist")
-for forbidden_tool in ["Write", "Edit", "Agent"]:
-    if forbidden_tool in claude_runner_data["tools"]:
-        fail(f"Claude validation runner permits forbidden tool: {forbidden_tool}")
-if not claude_runner_body.strip():
-    fail("Claude validation runner body is empty")
+all_execution_text = "\n".join(read(path) for name in execution_skills for path in (Path("skills") / name).rglob("*.md"))
+for token in ["stnl-spec-execution-manager", "FINALIZE_SLICE", "PARALLELIZE_SLICES", "SLICES", "slice-finalize", "slice-parallel"]:
+    if token in all_execution_text:
+        fail(f"removed execution token remains in skills: {token}")
+for vendor in ["Claude Code", "@agent-stnl-validation-runner", "stnl_validation_runner", "gpt-", "haiku", "sonnet"]:
+    if vendor.lower() in all_execution_text.lower():
+        fail(f"execution skills are not vendor-neutral: {vendor}")
 
-codex_contract = codex_runner["developer_instructions"].strip()
-claude_contract = claude_runner_body.strip()
-if codex_contract != claude_contract:
-    fail("validation runner contracts materially diverge between platforms")
-if VALIDATION_RUNNER_LOGICAL_NAME not in codex_contract:
-    fail("validation runner contract loses its logical identity")
-for required_marker in [
-    "CONTRATO_CANONICO=stnl-validation-runner/v1",
-    "Não implemente, não corrija e não finalize trabalho.",
-    "Não crie subagentes nem delegue a outros agentes.",
-    "Não edite código, testes, requisitos, `plan.md`, `tasks.md`, `plans/slice-NN.md` ou `tasks/slice-NN.md`.",
-    "`EXECUTE_SLICE`:",
-    "`APPLY_FINDINGS`:",
-    "`VALIDATE_SLICE`:",
-    "`CLOSE`:",
-    "Status: PASS | NEEDS_FIX | BLOCKED",
-    "Operação:",
-    "Escopo verificado:",
-    "Comandos executados:",
-    "Resultado de cada comando e exit code:",
-    "Evidências:",
-    "Findings:",
-    "Efeitos inesperados no workspace:",
-    "Bloqueios:",
-    "Resumo para persistência:",
-    "`PASS` exige evidência objetiva.",
-    "`NEEDS_FIX` exige ao menos um finding.",
-    "`BLOCKED` exige causa concreta",
+planner = read(Path("skills/stnl-execution-planner/SKILL.md"))
+reviewer = read(Path("skills/stnl-plan-reviewer/SKILL.md"))
+materializer = read(Path("skills/stnl-task-materializer/SKILL.md"))
+task_reviewer = read(Path("skills/stnl-task-reviewer/SKILL.md"))
+executor = read(Path("skills/stnl-slice-executor/SKILL.md"))
+quality = read(Path("skills/stnl-slice-quality-manager/SKILL.md"))
+closer = read(Path("skills/stnl-execution-closer/SKILL.md"))
+for marker in ["status to `draft`", "`REVIEW_PLAN` is required", "allowed only when the root is absent or contains no other entries", "preserve every byte", "Reset is a separate explicit user action"]:
+    if marker not in planner:
+        fail(f"planner lacks unapproved-plan contract: {marker}")
+for marker in ["status of `plan.md` and every detailed plan to `ready`", "review state to `approved`", "Run only in `planned`", "preserve all plans byte-for-byte"]:
+    if marker not in reviewer:
+        fail(f"plan reviewer lacks approval contract: {marker}")
+for marker in ["File Purpose Header status `ready`", "review state `approved`", "may not alter plans", "Any task artifact", "Validate every precondition and render the full task set before publishing"]:
+    if marker not in materializer:
+        fail(f"materializer lacks approved-plan boundary: {marker}")
+for marker in ["may alter only `tasks.md`", "Return `NEEDS_REPLAN`", "Run only in `materialized-pristine`", "Validation Attempt", "preserve all plans and tasks byte-for-byte"]:
+    if marker not in task_reviewer:
+        fail(f"task reviewer lacks write boundary: {marker}")
+for marker in ["`tasks.md` defines global progress and is read-only", "Do not mark the global row complete", "Do not perform independent validation", "Prior Validation Overlap", "Do not reopen or rewrite an earlier slice"]:
+    if marker not in executor:
+        fail(f"executor lacks completion/runner boundary: {marker}")
+for marker in ["only when it returns `PASS`", "For every valid runner invocation", "append exactly one deterministic next `attempt-NN`", "On `NEEDS_FIX`", "Effective Validation Base unchanged or absent", "keep the global row `[ ]`", "On `BLOCKED`", "do not convert the status", "complete final manifest", "create or replace the entire Effective Validation Base", "origin is `NEEDS_FIX` or `BLOCKED`", "change exactly the selected global row"]:
+    if marker not in quality:
+        fail(f"quality manager lacks verdict persistence contract: {marker}")
+for marker in ["final validation ownership", "walking completed slices once in the exact serial order", "Earlier hashes remain historical and are never compared", "compare each path only with its last owner", "no final validation owner", "Do not inspect hashes stored inside Validation Attempts", "Do not run tests", "Do not edit, test, invoke a runner"]:
+    if marker not in closer:
+        fail(f"closer lacks drift/no-test contract: {marker}")
+
+for forbidden, text, label in [
+    ("create or replace the planning artifacts", planner, "planner replacement"),
+    ("create or replace task artifacts", materializer, "materializer replacement"),
+    ("Recalculate SHA-256 for every path in each validation base", closer, "historical base drift"),
+    ("FINALIZE_SLICE", all_execution_text, "removed finalizer"),
+    ("PARALLELIZE_SLICES", all_execution_text, "parallel execution"),
 ]:
-    if required_marker not in codex_contract:
-        fail(f"validation runner contract lacks canonical marker: {required_marker}")
-if re.search(r"(?:targets/|sentinel-[a-z-]+)", codex_contract, re.IGNORECASE):
-    fail("validation runner contract references a prohibited target or Sentinel agent")
+    if forbidden in text:
+        fail(f"forbidden execution semantics remain: {label}")
 
-# Codex target
-config = read_text(Path("targets/codex/.codex/config.toml"))
-if not re.search(r"^max_depth\s*=\s*2$", config, re.MULTILINE):
-    fail("Codex max_depth is not 2")
-if re.search(r"^sandbox_mode\s*=", config, re.MULTILINE):
-    fail("Codex target mixes sandbox_mode with permission profiles")
-for profile in ["sentinel-read-only", "sentinel-workspace"]:
-    if f"[permissions.{profile}]" not in config:
-        fail(f"missing Codex profile {profile}")
-for denied in ["spec.md", "**/spec.md", "specs/**/feature_spec.md", "specs/**/shared/**", "specs/**/slices/**", "specs/**/lifecycle/**"]:
-    if denied not in config:
-        fail(f"Codex workspace profile does not deny spec writes: {denied}")
-codex_agents = {path.stem: load_toml(path) for path in Path("targets/codex/.codex/agents").glob("*.toml")}
-expected_codex = {"sentinel-orchestrator", "sentinel-planner", "sentinel-test-planner", "sentinel-coder", "sentinel-validator", "sentinel-reviewer"}
-if set(codex_agents) != expected_codex:
-    fail(f"Codex agent registry mismatch: {sorted(codex_agents)}")
-if codex_agents["sentinel-orchestrator"]["default_permissions"] != "sentinel-read-only":
-    fail("Codex orchestrator is not read-only")
-if codex_agents["sentinel-reviewer"]["default_permissions"] != "sentinel-read-only":
-    fail("Codex reviewer is not read-only")
-for name in expected_codex - {"sentinel-orchestrator", "sentinel-reviewer"}:
-    if codex_agents[name]["default_permissions"] != "sentinel-workspace":
-        fail(f"Codex {name} does not use workspace permissions")
-orchestrator_text = codex_agents["sentinel-orchestrator"]["developer_instructions"]
-for required in ["read-only textual search", "developer-completion", "Next agent none", "No agent runs after reviewer"]:
-    if required not in orchestrator_text:
-        fail(f"Codex orchestrator missing rule: {required}")
-if re.search(r"\b(source code|whole repository)\b", orchestrator_text) and "must not" not in orchestrator_text.lower():
-    fail("Codex orchestrator source-reading restriction is ambiguous")
+task_template = read(Path("skills/stnl-task-materializer/templates/slice-tasks.template.md"))
+for marker in ["## Validation Attempts", "### attempt-01", "## Effective Validation Base", "Origin attempt", "Result: PASS", "REMOVED", "Prior Validation Overlap"]:
+    if marker not in task_template:
+        fail(f"slice task template lacks current validation contract: {marker}")
+for legacy in ["## Validation History", "## Validation Base\n"]:
+    if legacy in task_template:
+        fail(f"slice task template retains legacy validation contract: {legacy.strip()}")
 
-# Claude Code target
-settings = json.loads(read_text(Path("targets/claude-code/.claude/settings.json")))
-if settings.get("agent") != "sentinel-orchestrator":
-    fail("Claude settings do not select sentinel-orchestrator")
-denied = set(settings.get("permissions", {}).get("deny", []))
-if not {"Agent(Explore)", "Agent(Plan)", "Agent(general-purpose)"} <= denied:
-    fail("Claude settings are missing built-in Agent denials")
-claude_dir = Path("targets/claude-code/.claude/agents")
-claude_agents = {path.name: parse_frontmatter(path) for path in claude_dir.glob("*.md")}
-expected_claude = {f"{name}.md" for name in expected_codex}
-if set(claude_agents) != expected_claude:
-    fail(f"Claude agent registry mismatch: {sorted(claude_agents)}")
-for name, (data, _) in claude_agents.items():
-    if not {"name", "description", "tools", "model"} <= data.keys():
-        fail(f"Claude frontmatter incomplete: {name}")
-expected_tools = "Read, Glob, Grep, Agent(sentinel-planner, sentinel-test-planner, sentinel-coder, sentinel-validator, sentinel-reviewer)"
-if claude_agents["sentinel-orchestrator.md"][0]["tools"] != expected_tools:
-    fail("Claude orchestrator tools do not match selective search and five-agent delegation")
-for forbidden in ["Write", "Edit", "Bash"]:
-    if forbidden in claude_agents["sentinel-orchestrator.md"][0]["tools"]:
-        fail(f"Claude orchestrator has forbidden tool: {forbidden}")
-for name, (data, _) in claude_agents.items():
-    if name != "sentinel-orchestrator.md" and re.search(r"(?:^|[, ])Agent(?:\(|[, ]|$)", data["tools"]):
-        fail(f"Claude specialist can delegate: {name}")
+json.loads(read(Path("targets/claude-code/.claude/settings.json")))
+load_toml(Path("targets/codex/.codex/config.toml"))
+expected_agents = {"sentinel-orchestrator", "sentinel-planner", "sentinel-test-planner", "sentinel-coder", "sentinel-validator", "sentinel-reviewer"}
+codex_agents = {path.stem for path in Path("targets/codex/.codex/agents").glob("*.toml")}
+claude_agents = {path.stem for path in Path("targets/claude-code/.claude/agents").glob("*.md")}
+copilot_agents = {path.name.removesuffix(".agent.md") for path in Path("targets/copilot/.github/agents").glob("*.agent.md")}
+if codex_agents != expected_agents or claude_agents != expected_agents or copilot_agents != expected_agents:
+    fail("an unrelated target agent registry changed")
 
-# Copilot target
-copilot_dir = Path("targets/copilot/.github/agents")
-copilot_agents = {path.name: parse_frontmatter(path) for path in copilot_dir.glob("*.agent.md")}
-expected_copilot = {f"{name}.agent.md" for name in expected_codex}
-if set(copilot_agents) != expected_copilot:
-    fail(f"Copilot agent registry mismatch: {sorted(copilot_agents)}")
-orchestrator_name = "sentinel-orchestrator.agent.md"
-invocable = [name for name, (data, _) in copilot_agents.items() if data["user-invocable"] == "true"]
-if invocable != [orchestrator_name]:
-    fail(f"Copilot user-invocable agents must contain only the orchestrator: {invocable}")
-orchestrator_data, orchestrator_body = copilot_agents[orchestrator_name]
-orchestrator_tools = {item.strip().lower() for item in orchestrator_data["tools"].strip("[]").split(",")}
-if orchestrator_tools != {"read", "search", "agent"}:
-    fail(f"Copilot orchestrator tools are wrong: {orchestrator_tools}")
-if {"edit", "execute"} & orchestrator_tools:
-    fail("Copilot orchestrator has write or execution tools")
-if "developer-completion" not in orchestrator_body or "Next agent: none" not in orchestrator_body:
-    fail("Copilot orchestrator lacks developer completion return")
-negative_prefix = re.compile(r"\b(?:do not|does not|must not|never|cannot|may not)\b", re.IGNORECASE)
-delegation = re.compile(r"\b(?:invoke|delegate|call)\b.{0,80}\b(?:agent|sentinel-[a-z-]+)\b", re.IGNORECASE)
-direct_call = re.compile(r"\b(?:user|developer)\b.{0,80}\b(?:invoke|call)\b|\b(?:invoke|call)\b.{0,40}\bdirectly\b", re.IGNORECASE)
-for name, (data, body) in copilot_agents.items():
-    if name == orchestrator_name:
-        continue
-    if data["user-invocable"] != "false":
-        fail(f"Copilot specialist is user-invocable: {name}")
-    if data["disable-model-invocation"] != "false":
-        fail(f"Copilot specialist cannot be invoked programmatically: {name}")
-    tools = {item.strip().lower() for item in data["tools"].strip("[]").split(",")}
-    if "agent" in tools:
-        fail(f"Copilot specialist has the agent tool: {name}")
-    for line in body.splitlines():
-        if (delegation.search(line) or direct_call.search(line)) and not negative_prefix.search(line):
-            fail(f"Copilot specialist contains delegation/direct-call instruction: {name}: {line}")
+lifecycle = Path("skills/stnl-spec-lifecycle-manager")
+if not (lifecycle / "SKILL.md").exists() or not (lifecycle / "evals/cases.json").exists():
+    fail("lifecycle skill resources are missing")
+cases = json.loads(read(lifecycle / "evals/cases.json"))
+if len(cases) < 15:
+    fail("lifecycle eval catalog is incomplete")
 
-# Workflow, ownership, statuses, and reviewer payload consistency
-for path in [Path("targets/codex/AGENTS.md"), Path("targets/claude-code/CLAUDE.md"), Path("targets/copilot/AGENTS.md")]:
-    text = read_text(path)
-    for required in [
-        "developer completion",
-        "No execution agent may modify",
-        "Developer Completion Protocol",
-        "spec-state atomicity",
-        "not a filesystem transaction",
-        "slice context package",
-    ]:
-        if required not in text:
-            fail(f"{path} missing contract text: {required}")
-for path in [Path("agents/base/reviewer.md"), Path("targets/codex/.codex/agents/sentinel-reviewer.toml"), Path("targets/claude-code/.claude/agents/sentinel-reviewer.md"), Path("targets/copilot/.github/agents/sentinel-reviewer.agent.md")]:
-    text = read_text(path)
-    for required in ["satisfied acceptance criteria", "Validator status", "Reviewer status", "mandatory evidence", "DoD", "accepted risks", "changed paths"]:
-        if required not in text:
-            fail(f"reviewer payload incomplete in {path}: {required}")
-for path, text in all_text.items():
-    for status in re.findall(r"\b(PASS|BLOCKED|NEEDS_APPROVAL|NEEDS_FIX|NEEDS_REPLAN|NEEDS_RETEST_PLAN|NEEDS_[A-Z_]+)\b", text):
-        if status.startswith("NEEDS_") and status not in ALLOWED_HANDOFF:
-            fail(f"unsupported handoff status in {path}: {status}")
-
-print("PASS: static target and contract checks")
+print("PASS: static target, skill, launcher, and validation-runner checks")
 PY
 
-bash scripts/smoke-structure.sh
-
+if [[ "${SKIP_SMOKE:-0}" != "1" ]]; then
+  bash scripts/smoke-structure.sh
+fi
 echo "PASS: target alignment checks"
