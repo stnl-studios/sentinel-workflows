@@ -18,6 +18,7 @@ Before CLOSE:
 specs/invitation-expiration/
 ├── feature_spec.md
 ├── shared/
+│   ├── requirements.md
 │   ├── acceptance-criteria.md
 │   ├── decisions.md
 │   ├── constraints.md
@@ -27,7 +28,7 @@ specs/invitation-expiration/
     └── retained-record.txt
 ```
 
-The lifecycle manager validates all gates, builds the final document, compares every durable item and main section, then removes `shared/`. Only afterward does it validate the closed form and compare the external snapshot.
+The lifecycle manager validates all gates, builds the final document, compares every canonical item and durable feature section, then removes `shared/`. Only afterward does it validate the closed form and compare the external snapshot.
 
 After CLOSE:
 
@@ -38,7 +39,13 @@ specs/invitation-expiration/
     └── retained-record.txt
 ```
 
-The final `feature_spec.md` keeps the objective, context, final scope, exclusions, requirements, rules, contracts, AC prose, and complete durable records. Active blocker metadata is absent; durable provenance remains through decisions, references, and question resolution. For example:
+The final `feature_spec.md` keeps the objective, context, final scope, exclusions, complete canonical requirements, rules, contracts, AC prose, and every canonical record from the source. Active blocker metadata is absent; durable provenance remains through `verifies`, decisions, references, and question resolution. For example:
+
+### R-001 — Convite expirado não cria participação
+
+- status: in_scope
+
+Um convite expirado segundo a autoridade temporal do serviço deve ser rejeitado sem criar participação.
 
 ### D-001 — Expiração usa relógio do serviço
 
@@ -57,7 +64,7 @@ O serviço compara `expires_at` com seu próprio relógio UTC.
 
 O resultado é determinístico para todos os clientes.
 
-### R-001 — Atraso de propagação do relógio
+### RK-001 — Atraso de propagação do relógio
 
 - status: active
 - impact: medium
@@ -71,4 +78,4 @@ Deriva entre nós pode produzir respostas diferentes na borda do prazo.
 
 Sincronizar nós e monitorar deriva, preservando o risco como ativo enquanto material.
 
-A resolved question linked to D-001 remains in `Durable Resolved Questions` with its `Pergunta`, `Por que importa`, and explicit `Resolução`. The byte content of `execution/retained-record.txt` is unchanged; no implementation evidence participates in the gate.
+Every final question, including one linked to D-001, remains in `Durable Resolved Questions` with its classification, `Pergunta`, `Por que importa`, and explicit `Resolução`. Merely copying an answer elsewhere does not authorize deletion. The byte content of `execution/retained-record.txt` is unchanged; no implementation evidence participates in the gate.

@@ -109,11 +109,13 @@ else:
     mutations = {
         "old-skill": ("stnl-execution-planner", "stnl-spec-execution-manager"),
         "wrong-operation": ("OPERATION=PLAN", "OPERATION=FINALIZE_SLICE"),
+        "legacy-planning": ("MODE=READINESS", "MODE=PLANNING"),
         "parallel-operation": ("OPERATION=PLAN", "OPERATION=PARALLELIZE_SLICES"),
         "slices-input": ("Contexto adicional (opcional):", "SLICES={{SLICES}}\n\nContexto adicional (opcional):"),
         "execution-root": ("Contexto adicional (opcional):", "EXECUTION_ROOT={{EXECUTION_ROOT}}\n\nContexto adicional (opcional):"),
         "duplicate-spec": ("SPEC_PATH={{SPEC_PATH}}", "SPEC_PATH={{SPEC_PATH}}\nSPEC_PATH={{SPEC_PATH}}"),
         "missing-slice": ("SLICE={{SLICE}}\n", ""),
+        "missing-readiness-scope": ("READINESS_SCOPE={{READINESS_SCOPE}}\n", ""),
         "extra-slice": ("Contexto adicional (opcional):", "SLICE={{SLICE}}\n\nContexto adicional (opcional):"),
         "close-runner": ("Contexto adicional (opcional):", "Use validation runner.\n\nContexto adicional (opcional):"),
         "shared-codex": ("Contexto adicional (opcional):", "Codex stnl_validation_runner\n\nContexto adicional (opcional):"),
@@ -209,11 +211,13 @@ case_executor_mutation() {
 
 case_mutation old-skill L002_SKILL execution-plan.md old-skill
 case_mutation old-operation L003_OPERATION execution-plan.md wrong-operation
+case_mutation legacy-planning-mode L003_OPERATION spec-readiness.md legacy-planning
 case_mutation parallel-operation L003_OPERATION execution-plan.md parallel-operation
 case_mutation slices-input L005_REMOVED_CONTRACT execution-plan.md slices-input
 case_mutation explicit-execution-root L004_INPUTS execution-plan.md execution-root
 case_mutation duplicate-spec-path L004_INPUTS execution-plan.md duplicate-spec
 case_mutation missing-slice L004_INPUTS slice-execute-codex.md missing-slice
+case_mutation missing-readiness-scope L004_INPUTS spec-readiness.md missing-readiness-scope
 case_mutation slice-on-close L004_INPUTS execution-close.md extra-slice
 case_mutation close-invokes-runner L006_SHARED_ISOLATION execution-close.md close-runner
 case_mutation shared-codex-identifier L006_SHARED_ISOLATION execution-plan.md shared-codex
@@ -259,5 +263,5 @@ case_executor_mutation executor-contract-says-up-to-only executor-up-to-only
 case_executor_mutation executor-contract-makes-invocation-optional executor-optional-invocation
 case_executor_mutation executor-contract-skips-not-applicable executor-skip-not-applicable
 
-echo "PASS: 51 invalid executor/launcher mutations rejected by the semantic checker against isolated fixtures"
+echo "PASS: 53 invalid executor/launcher mutations rejected by the semantic checker against isolated fixtures"
 echo "PASS: focused launcher contract suite completed in $((SECONDS - START_SECONDS))s"

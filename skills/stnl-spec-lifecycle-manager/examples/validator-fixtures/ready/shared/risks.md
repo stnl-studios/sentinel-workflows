@@ -12,15 +12,17 @@ update_policy: INIT and RESUME retain material exposure and explicit mitigation.
 
 # Risks
 
-### RK-001 — {{ITEM_TITLE}}
+### RK-001 — Clock drift near expiration boundary
 
 - status: active
-- impact: high
+- impact: medium
+- references: [C-001, AC-001]
 
 #### Risco
 
-{{CONTENT}}
+Clock drift between service nodes can change the result near the expiration boundary.
 
 #### Mitigação
 
-{{CONTENT}}
+Synchronize nodes, monitor drift, and retain the risk as active while it remains material.
+

@@ -109,8 +109,15 @@ LAUNCHERS = {
         "RESUME",
         (("SPEC_PATH", "{{SPEC_PATH}}"), ("NEW_INFORMATION", "{{NEW_INFORMATION}}")),
     ),
-    "spec-planning": LauncherSpec(
-        "stnl-spec-lifecycle-manager", "MODE", "PLANNING", (("SPEC_PATH", "{{SPEC_PATH}}"),)
+    "spec-readiness": LauncherSpec(
+        "stnl-spec-lifecycle-manager",
+        "MODE",
+        "READINESS",
+        (
+            ("SPEC_PATH", "{{SPEC_PATH}}"),
+            ("READINESS_SCOPE", "{{READINESS_SCOPE}}"),
+            ("READINESS_FOCUS", "{{READINESS_FOCUS}}"),
+        ),
     ),
     "spec-close": LauncherSpec(
         "stnl-spec-lifecycle-manager", "MODE", "CLOSE", (("SPEC_PATH", "{{SPEC_PATH}}"),)
@@ -299,6 +306,8 @@ def check_launcher_contract(root: Path) -> None:
         for token in forbidden_removed:
             if token in text:
                 reject("L005_REMOVED_CONTRACT", f"{actual[name]}: removed operation remains: {token}")
+        if "PLANNING" in text:
+            reject("L005_REMOVED_CONTRACT", f"{actual[name]}: removed lifecycle mode remains: PLANNING")
         if re.search(r"(?m)^SLICES=", text):
             reject("L005_REMOVED_CONTRACT", f"{actual[name]}: removed SLICES input remains")
         if re.search(r"(?i)paralel|parallel", text):

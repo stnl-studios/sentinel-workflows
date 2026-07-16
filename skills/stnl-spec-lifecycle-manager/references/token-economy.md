@@ -1,19 +1,19 @@
 # File Purpose Header
 
 ```yaml
-purpose: Keep SPEC work compact without sacrificing deterministic validation or durable content.
+purpose: Explain maintenance rationale for total-token economy without adding runtime rules.
 status: not_applicable
-read_when: A lifecycle operation risks broad reads, duplicated metadata, repeated prose, or lossy compaction.
-do_not_read_when: A tiny isolated correction already has all required context.
-contains: Selective-reading, non-duplication, metadata economy, and safe closure rules.
+read_when: Maintaining instruction structure, evaluating duplication, or interpreting measured lifecycle cost.
+do_not_read_when: Running an ordinary INIT, RESUME, READINESS, or CLOSE operation.
+contains: Total-cost rationale and the reasons behind progressive disclosure and bounded exploration.
 owner: stnl-spec-lifecycle-manager
-update_policy: Change when documentary economy or preservation policy changes.
+update_policy: Keep rationale aligned with runtime authorities; do not duplicate their procedures here.
 ```
 
 # Token Economy
 
-Use the feature header and compact indexes for discovery, then read only the necessary canonical item and structural links. Do not load every shared category for a localized question.
+The optimization target is total cost to a correct, stable SPEC, not the tokens in one call. Relevant cost includes loaded instructions, files read, tool calls, output, correction rounds, rework, principal-model use, and any scout handoff. Shortening a read that causes an unsupported conclusion or another round is a loss.
 
-Keep IDs only in headings. Omit absent optional metadata instead of writing `null`. Do not persist derived counters, materialization flags, null paths, operational mode history, repeated blockers, command output, chats, session summaries, internal reasoning, permanent handoffs, or duplicate traceability.
+The runtime contracts express that tradeoff through one authority per rule, progressive disclosure by mode, proportional evidence, compact outputs, minimal materialization, deterministic validation before publication, and bounded repository exploration. Local work avoids unrelated categories; global readiness and closure deliberately pay for complete material authority. The optional single scout can isolate a difficult search without creating fan-out or contaminating the principal context with broad raw reads.
 
-Narrative content stays real Markdown rather than YAML-wrapped prose. CLOSE may inspect every materialized record needed for consistency, but compaction never erases durable structure or collapses a decision, constraint, risk, criterion, or relevant resolved question into a lossy single string.
+Measure actual input, output, tools, files, rounds, rework, and tokens when the platform exposes them. Never invent savings or model-eval numbers. Operational authority remains in `SKILL.md`, `modes.md`, `spec-workspace.md`, `spec-schema.md`, `readiness-gates.md`, and `close-policy.md`; ordinary lifecycle runs do not load this rationale.

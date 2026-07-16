@@ -2,7 +2,7 @@
 
 ```yaml
 purpose: Template for an active documentary feature SPEC.
-status: draft
+status: blocked
 read_when: Discovering documentary status, scope, blockers, or materialized canonical records.
 do_not_read_when: An indexed canonical item already provides the complete needed detail.
 contains: Requirements context, derived requirement references, compact artifact index, blockers, and selective-reading instructions.
@@ -10,59 +10,62 @@ owner: stnl-spec-lifecycle-manager
 update_policy: INIT creates it; RESUME updates documentary content; CLOSE replaces it with the durable final form.
 ```
 
-# {{FEATURE_NAME}} - Feature SPEC
+# Fixture Feature - Feature SPEC
 
 ## Objective
 
-{{OBJECTIVE}}
+Provide deterministic invitation expiration behavior.
 
 ## Context
 
 ### Facts
 
-- {{CONTENT}}
+- Invitations already contain an UTC expiration timestamp.
 
 ### Hypotheses
 
-- {{CONTENT}}
+- None identified.
 
 ## Scope
 
-- {{CONTENT}}
+- Reject acceptance after the stored expiration timestamp.
 
 ## Out of Scope
 
-- {{CONTENT}}
+- Changing invitation delivery channels.
 
 ## Requirements
 
-- Not established.
+- R-001
 
 ## Business Rules
 
-- {{CONTENT}}
+- The service clock is the time authority.
 
 ## Relevant Contracts
 
-- {{CONTENT}}
+- `docs/core/CONTRACTS.md §5` defines the HTTP error envelope.
 
 ## Canonical Artifact Index
 
 ```yaml
-artifacts: {}
+artifacts:
+  requirements: shared/requirements.md
+  acceptance_criteria: shared/acceptance-criteria.md
+  questions: shared/questions.md
 ```
 
 ## Blockers
 
 ```yaml
-blocking_questions: []
+blocking_questions: [Q-001]
 documentary_gaps: []
 ```
 
 ## Selective Reading
 
-1. Read this file's purpose header and artifact index.
-2. Map the needed canonical ID to its indexed category.
-3. Open only that category file and locate the exact heading.
-4. Read the item through the next `###` heading or EOF.
-5. Follow only necessary `verifies`, `blocks`, `blocked_by`, `linked_decision`, or `references` links.
+1. Read this header and artifact index.
+2. Map the requested ID to one category file.
+3. Read the exact item through the next `###` heading or EOF.
+4. Follow only necessary structural metadata links.
+

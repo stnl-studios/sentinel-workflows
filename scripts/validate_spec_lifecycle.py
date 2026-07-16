@@ -26,8 +26,8 @@ HEADER_FIELDS = [
 ]
 HEADER_STATUSES = {"draft", "ready", "blocked", "done", "closed", "not_applicable"}
 FEATURE_ACTIVE_STATUSES = {"draft", "ready", "blocked"}
-CANONICAL_PREFIXES = {"AC", "D", "C", "R", "Q"}
-CANONICAL_ID_PATTERN = r"(?:AC|D|C|R|Q)-\d{3}"
+CANONICAL_PREFIXES = ("R", "AC", "D", "C", "RK", "Q")
+CANONICAL_ID_PATTERN = r"(?:AC|RK|R|D|C|Q)-\d{3}"
 CANONICAL_ID_RE = re.compile(rf"^{CANONICAL_ID_PATTERN}$")
 CANONICAL_HEADING_RE = re.compile(rf"^### (?P<id>{CANONICAL_ID_PATTERN}) — (?P<title>\S.*)$")
 METADATA_RE = re.compile(r"^- (?P<field>[a-z_]+): (?P<value>.+)$")
@@ -49,12 +49,22 @@ class Category:
 
 CATEGORIES = (
     Category(
+        "requirements",
+        "requirements.md",
+        "R",
+        "Requirements",
+        ("status", "coverage_justification", "references"),
+        ("status",),
+        frozenset({"in_scope", "out_of_scope", "superseded"}),
+        (),
+    ),
+    Category(
         "acceptance_criteria",
         "acceptance-criteria.md",
         "AC",
         "Acceptance Criteria",
-        ("status", "blocked_by", "references"),
-        ("status",),
+        ("status", "verifies", "blocked_by", "references"),
+        ("status", "verifies"),
         frozenset({"active", "superseded", "dropped"}),
         (),
     ),
@@ -81,7 +91,7 @@ CATEGORIES = (
     Category(
         "risks",
         "risks.md",
-        "R",
+        "RK",
         "Risks",
         ("status", "impact", "references"),
         ("status", "impact"),
@@ -93,8 +103,8 @@ CATEGORIES = (
         "questions.md",
         "Q",
         "Questions",
-        ("status", "blocks", "resolved_by", "linked_decision", "references"),
-        ("status",),
+        ("status", "classification", "blocks", "resolved_by", "linked_decision", "references"),
+        ("status", "classification"),
         frozenset({"open", "resolved", "bypassed", "dropped"}),
         ("Pergunta", "Por que importa", "Resolução"),
     ),
@@ -108,10 +118,11 @@ EXPECTED_ARTIFACT_PATHS = {
 }
 
 CLOSED_SECTION_PREFIX = {
+    "Requirements": "R",
     "Final Acceptance Criteria": "AC",
     "Durable Decisions": "D",
     "Relevant Constraints": "C",
-    "Relevant Risks": "R",
+    "Relevant Risks": "RK",
     "Durable Resolved Questions": "Q",
 }
 
@@ -149,6 +160,7 @@ class Item:
     category: Category
     metadata: dict[str, str | tuple[str, ...]]
     narrative: str
+    raw_narrative: str
     sections: dict[str, str]
     path: Path
     parent_section: str | None = None
@@ -156,18 +168,20 @@ class Item:
     def preservation_signature(self) -> tuple[object, ...]:
         ordered_metadata = tuple((field, self.metadata[field]) for field in self.category.fields if field in self.metadata)
         ordered_sections = tuple((name, self.sections.get(name, "")) for name in self.category.sections)
-        return self.title, ordered_metadata, normalize(self.narrative), ordered_sections
+        return self.title, ordered_metadata, self.raw_narrative, ordered_sections
 
 
 @dataclass(frozen=True)
 class Workspace:
     root: Path
+    h1: str
     status: str
     closed: bool
     items: dict[str, Item]
     sections: dict[str, str]
     artifacts: dict[str, str]
     open_questions: tuple[str, ...]
+    blocking_questions: tuple[str, ...]
     broken_references: tuple[str, ...]
     documentary_gaps: tuple[str, ...]
 
@@ -217,11 +231,34 @@ def parse_file_purpose_header(path: Path) -> tuple[dict[str, str], str]:
         data[field] = value.strip()
     if order != HEADER_FIELDS:
         fail(f"File Purpose Header fields must be {HEADER_FIELDS}", path)
+    empty_fields = [field for field in HEADER_FIELDS if not data[field]]
+    if empty_fields:
+        fail(f"File Purpose Header fields must be non-empty: {empty_fields}", path)
+    placeholder_fields = [field for field in HEADER_FIELDS if contains_template_placeholder(data[field])]
+    if placeholder_fields:
+        fail(f"File Purpose Header fields contain placeholder content: {placeholder_fields}", path)
     if data["status"] not in HEADER_STATUSES:
         fail(f"invalid File Purpose Header status {data['status']!r}", path)
     if data["owner"] != "stnl-spec-lifecycle-manager":
         fail("wrong File Purpose Header owner", path)
     return data, text[match.end() :]
+
+
+def validate_feature_root(text: str, path: Path) -> str:
+    """Return semantic feature content after enforcing the canonical document root."""
+
+    if not text.startswith("\n") or text.startswith("\n\n"):
+        fail("feature H1 must be the first semantic content after the File Purpose Header", path)
+    semantic = text[1:]
+    first_line = semantic.splitlines()[0] if semantic.splitlines() else ""
+    if re.fullmatch(r"# \S(?:.*\S)? - Feature SPEC", first_line) is None:
+        fail("feature must start with canonical '# <name> - Feature SPEC' H1", path)
+    if contains_template_placeholder(first_line):
+        fail("feature H1 contains placeholder content", path)
+    h1_headings = re.findall(r"(?m)^# .+$", semantic)
+    if h1_headings != [first_line]:
+        fail("feature must contain exactly one canonical H1", path)
+    return semantic
 
 
 def h2_sections(text: str, path: Path) -> tuple[dict[str, str], list[str]]:
@@ -324,28 +361,45 @@ def parse_id_array(
     return values
 
 
-def parse_blockers(section: str, path: Path) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
+def parse_requirement_index(section: str, path: Path) -> tuple[str, ...]:
+    lines = normalize(section).splitlines()
+    if lines == ["- Not established."]:
+        return ()
+    identifiers: list[str] = []
+    for line in lines:
+        match = re.fullmatch(r"- (R-\d{3})", line)
+        if match is None:
+            fail("Requirements must be a derived '- R-###' index or '- Not established.'", path)
+        identifiers.append(match.group(1))
+    if len(identifiers) != len(set(identifiers)):
+        fail("Requirements index contains duplicate IDs", path)
+    if identifiers != sorted(identifiers):
+        fail("Requirements index must be sorted", path)
+    return tuple(identifiers)
+
+
+def parse_blockers(section: str, path: Path) -> tuple[tuple[str, ...], tuple[str, ...]]:
     lines = extract_yaml_fence(section, "Blockers", path)
-    if len(lines) < 3:
-        fail("Blockers must define open_questions, broken_references, and documentary_gaps", path)
-    open_match = re.fullmatch(r"open_questions: (\[.*\])", lines[0])
-    broken_match = re.fullmatch(r"broken_references: (\[.*\])", lines[1])
-    if open_match is None or broken_match is None:
+    if len(lines) < 2:
+        fail("Blockers must define blocking_questions and documentary_gaps", path)
+    blocking_match = re.fullmatch(r"blocking_questions: (\[.*\])", lines[0])
+    if blocking_match is None:
         fail("Blockers fields are missing or out of order", path)
-    open_questions = parse_id_array(
-        open_match.group(1), "open_questions", path, allowed_prefixes={"Q"}, allow_empty=True
-    )
-    broken = parse_id_array(
-        broken_match.group(1), "broken_references", path, allow_empty=True
+    blocking_questions = parse_id_array(
+        blocking_match.group(1),
+        "blocking_questions",
+        path,
+        allowed_prefixes={"Q"},
+        allow_empty=True,
     )
     gaps: tuple[str, ...]
-    if lines[2] == "documentary_gaps: []":
-        if len(lines) != 3:
+    if lines[1] == "documentary_gaps: []":
+        if len(lines) != 2:
             fail("unexpected content after documentary_gaps", path)
         gaps = ()
-    elif lines[2] == "documentary_gaps:":
+    elif lines[1] == "documentary_gaps:":
         gap_values: list[str] = []
-        for line in lines[3:]:
+        for line in lines[2:]:
             match = re.fullmatch(r"  - (\S.*)", line)
             if match is None:
                 fail(f"malformed documentary gap {line!r}", path)
@@ -360,12 +414,17 @@ def parse_blockers(section: str, path: Path) -> tuple[tuple[str, ...], tuple[str
         gaps = tuple(gap_values)
     else:
         fail("documentary_gaps is malformed or out of order", path)
-    return open_questions, broken, gaps
+    return blocking_questions, gaps
 
 
 def parse_narrative_sections(narrative: str, category: Category, path: Path) -> dict[str, str]:
     if not category.sections:
+        if re.search(r"(?m)^#{1,6} ", narrative):
+            fail(f"{category.prefix} narrative cannot contain nested headings", path)
         return {}
+    all_headings = list(re.finditer(r"^(?P<marks>#{1,6}) (?P<name>[^\n]+)\n", narrative, re.MULTILINE))
+    if any(match.group("marks") != "####" for match in all_headings):
+        fail(f"{category.prefix} narrative sections must use only canonical level-4 headings", path)
     matches = list(re.finditer(r"^#### (?P<name>[^\n]+)\n", narrative, re.MULTILINE))
     names = [match.group("name") for match in matches]
     if names != list(category.sections):
@@ -378,16 +437,6 @@ def parse_narrative_sections(narrative: str, category: Category, path: Path) -> 
             fail(f"section {match.group('name')!r} is empty or placeholder", path)
         sections[match.group("name")] = content
     return sections
-
-
-def validate_acceptance_criterion_narrative(identifier: str, narrative: str, path: Path) -> None:
-    words = re.findall(r"\w+", narrative, re.UNICODE)
-    if len(words) < 8:
-        fail(f"{identifier} acceptance criterion narrative is too short", path)
-    if contains_template_placeholder(narrative):
-        fail(f"{identifier} contains placeholder content", path)
-    if re.search(r"(?m)^#{1,6} ", narrative):
-        fail(f"{identifier} acceptance criterion narrative cannot contain nested headings", path)
 
 
 def parse_items(
@@ -418,6 +467,8 @@ def parse_items(
         if expected_prefix is not None and prefix != expected_prefix:
             fail(f"prefix {prefix} is incompatible with this category file", path)
         category = CATEGORY_BY_PREFIX[prefix]
+        if contains_template_placeholder(canonical.group("title")):
+            fail(f"{identifier} title contains placeholder content", path)
         if identifier in seen:
             fail(f"duplicate canonical ID {identifier}", path)
         seen.add(identifier)
@@ -441,9 +492,15 @@ def parse_items(
             fail(f"{identifier} has no metadata", path)
         if index >= len(lines) or lines[index] != "":
             fail(f"{identifier} metadata must be followed by one blank line", path)
-        narrative = normalize("\n".join(lines[index + 1 :]))
+        raw_narrative_lines = lines[index + 1 :]
+        while raw_narrative_lines and raw_narrative_lines[-1] == "":
+            raw_narrative_lines.pop()
+        raw_narrative = "\n".join(raw_narrative_lines)
+        narrative = normalize(raw_narrative)
         if not narrative:
             fail(f"{identifier} has no narrative content", path)
+        if lines[index + 1] == "":
+            fail(f"{identifier} metadata must be followed by exactly one blank line", path)
         if contains_template_placeholder(body):
             fail(f"{identifier} contains placeholder content", path)
         if re.search(r"(?m)^```(?:yaml|yml|markdown)\s*$", narrative, re.IGNORECASE):
@@ -470,7 +527,9 @@ def parse_items(
         for field, raw_value in metadata_lines:
             if raw_value.casefold() == "null":
                 fail(f"{identifier} uses null for {field}; omit non-applicable optional fields", path)
-            if field == "blocked_by":
+            if field == "verifies":
+                metadata[field] = parse_id_array(raw_value, field, path, allowed_prefixes={"R"})
+            elif field == "blocked_by":
                 metadata[field] = parse_id_array(raw_value, field, path, allowed_prefixes={"Q"})
             elif field == "blocks":
                 metadata[field] = parse_id_array(
@@ -484,22 +543,43 @@ def parse_items(
         status = metadata["status"]
         if not isinstance(status, str) or status not in category.statuses:
             fail(f"{identifier} has invalid status {status!r}", path)
-        if category.prefix == "R" and metadata["impact"] not in {"low", "medium", "high"}:
+        if category.prefix == "RK" and metadata["impact"] not in {"low", "medium", "high"}:
             fail(f"{identifier} has invalid impact {metadata['impact']!r}", path)
         references = metadata.get("references", ())
         if identifier in references:
             fail(f"{identifier} has an improper self-reference", path)
 
         sections = parse_narrative_sections(narrative, category, path)
-        if category.prefix == "AC":
-            validate_acceptance_criterion_narrative(identifier, narrative, path)
+        if category.prefix == "R":
+            justification = metadata.get("coverage_justification")
+            if justification is not None:
+                if status != "in_scope":
+                    fail(f"{identifier} coverage_justification is allowed only for in_scope requirements", path)
+                if not isinstance(justification, str):
+                    fail(f"{identifier} coverage_justification must be textual", path)
+                if justification.strip().casefold() in {
+                    "none",
+                    "n/a",
+                    "not applicable",
+                    "pending",
+                    "tbd",
+                    "unknown",
+                } or contains_template_placeholder(justification):
+                    fail(f"{identifier} coverage_justification contains placeholder content", path)
         if category.prefix == "Q":
+            classification = metadata.get("classification")
+            if classification not in {"blocking", "non_blocking", "irrelevant"}:
+                fail(f"{identifier} has invalid classification {classification!r}", path)
             resolved_by = metadata.get("resolved_by")
             linked_decision = metadata.get("linked_decision")
             resolution = sections["Resolução"]
             if status == "open":
-                if "blocks" not in metadata:
-                    fail(f"{identifier} open state requires blocks", path)
+                if classification == "irrelevant":
+                    fail(f"{identifier} irrelevant questions cannot remain open", path)
+                if classification == "blocking" and "blocks" not in metadata:
+                    fail(f"{identifier} open blocking state requires blocks", path)
+                if classification != "blocking" and "blocks" in metadata:
+                    fail(f"{identifier} non-blocking open state cannot contain blocks", path)
                 if resolved_by is not None or linked_decision is not None:
                     fail(f"{identifier} open state cannot contain final-state metadata", path)
                 if resolution != "Pendente.":
@@ -509,10 +589,19 @@ def parse_items(
                     fail(f"{identifier} final state cannot contain blocks", path)
                 if resolved_by not in {"answer", "decision", "constraint", "scope_change"}:
                     fail(f"{identifier} final state requires valid resolved_by", path)
-                if resolution == "Pendente." or len(re.findall(r"\w+", resolution, re.UNICODE)) < 4:
-                    fail(f"{identifier} final state requires an explicit resolution", path)
+                if resolution.strip().casefold() in {
+                    "pendente.",
+                    "pending",
+                    "tbd",
+                    "none",
+                    "n/a",
+                    "unknown",
+                } or contains_template_placeholder(resolution):
+                    fail(f"{identifier} final state requires an explicit non-placeholder resolution", path)
                 if status == "dropped" and resolved_by != "scope_change":
                     fail(f"{identifier} dropped state requires resolved_by: scope_change", path)
+                if classification == "irrelevant" and status != "dropped":
+                    fail(f"{identifier} irrelevant classification requires dropped status", path)
                 if resolved_by == "decision":
                     if not isinstance(linked_decision, str) or re.fullmatch(r"D-\d{3}", linked_decision) is None:
                         fail(f"{identifier} decision resolution requires linked_decision: D-*", path)
@@ -534,6 +623,7 @@ def parse_items(
                 category=category,
                 metadata=metadata,
                 narrative=narrative,
+                raw_narrative=raw_narrative,
                 sections=sections,
                 path=path,
                 parent_section=parent_section,
@@ -566,8 +656,11 @@ def parse_shared_file(path: Path, category: Category) -> list[Item]:
     if not items:
         fail("materialized category file is semantically empty", path)
     if category.prefix == "Q":
-        has_open = any(item.metadata["status"] == "open" for item in items)
-        expected_status = "blocked" if has_open else "ready"
+        has_blocking = any(
+            item.metadata["status"] == "open" and item.metadata["classification"] == "blocking"
+            for item in items
+        )
+        expected_status = "blocked" if has_blocking else "ready"
         if header["status"] != expected_status:
             fail(f"questions header status must be {expected_status}", path)
     elif header["status"] != "ready":
@@ -581,7 +674,7 @@ def collect_relationship_state(items: dict[str, Item]) -> tuple[set[str], list[s
     question_pairs: set[tuple[str, str]] = set()
     criterion_pairs: set[tuple[str, str]] = set()
     for item in items.values():
-        for field in ("blocks", "blocked_by", "references"):
+        for field in ("verifies", "blocks", "blocked_by", "references"):
             if field not in item.metadata:
                 continue
             values = item.metadata.get(field, ())
@@ -590,7 +683,27 @@ def collect_relationship_state(items: dict[str, Item]) -> tuple[set[str], list[s
             for target in values:
                 if target not in items:
                     missing.add(target)
-            if field == "blocks":
+            if field == "references" and item.category.prefix == "R" and any(
+                target.startswith("AC-") for target in values
+            ):
+                errors.append(f"{item.identifier} duplicates coverage through references; AC.verifies is authoritative")
+            if field == "references" and item.category.prefix == "AC" and any(
+                target.startswith("R-") for target in values
+            ):
+                errors.append(f"{item.identifier} duplicates verifies through references")
+            if field == "verifies":
+                if item.category.prefix != "AC":
+                    errors.append(f"{item.identifier} uses verifies outside an acceptance criterion")
+                    continue
+                for target in values:
+                    target_item = items.get(target)
+                    if (
+                        item.metadata["status"] == "active"
+                        and target_item is not None
+                        and target_item.metadata["status"] != "in_scope"
+                    ):
+                        errors.append(f"{item.identifier} verifies non-in-scope requirement {target}")
+            elif field == "blocks":
                 if item.category.prefix != "Q":
                     errors.append(f"{item.identifier} uses blocks outside a question")
                     continue
@@ -620,31 +733,74 @@ def collect_relationship_state(items: dict[str, Item]) -> tuple[set[str], list[s
     return missing, errors
 
 
+def validate_requirement_coverage(items: dict[str, Item], path: Path, *, complete: bool) -> None:
+    requirements = {
+        identifier: item
+        for identifier, item in items.items()
+        if item.category.prefix == "R" and item.metadata["status"] == "in_scope"
+    }
+    active_criteria = {
+        identifier: item
+        for identifier, item in items.items()
+        if item.category.prefix == "AC" and item.metadata["status"] == "active"
+    }
+    covered: dict[str, list[str]] = {identifier: [] for identifier in requirements}
+    for criterion in active_criteria.values():
+        verifies = criterion.metadata.get("verifies", ())
+        if not isinstance(verifies, tuple) or not verifies:
+            fail(f"{criterion.identifier} active criterion must verify at least one requirement", path)
+        for requirement_id in verifies:
+            if requirement_id in covered:
+                covered[requirement_id].append(criterion.identifier)
+
+    for identifier, requirement in requirements.items():
+        justification = requirement.metadata.get("coverage_justification")
+        if covered[identifier] and justification is not None:
+            fail(f"{identifier} has stale coverage_justification despite active AC coverage", path)
+        if complete and not covered[identifier] and justification is None:
+            fail(f"{identifier} has no active AC coverage or formal coverage_justification", path)
+
+    if complete:
+        if not requirements:
+            fail("ready or closed SPEC requires at least one in-scope requirement", path)
+        if not active_criteria:
+            fail("ready or closed SPEC requires at least one active acceptance criterion", path)
+
+
 def validate_active(root: Path, feature: Path, header: dict[str, str], text: str) -> Workspace:
     if header["status"] not in FEATURE_ACTIVE_STATUSES:
         fail(f"active feature status must be one of {sorted(FEATURE_ACTIVE_STATUSES)}", feature)
+    text = validate_feature_root(text, feature)
     sections, order = h2_sections(text, feature)
     require_sections(sections, order, ACTIVE_SECTIONS, feature)
     if order != ACTIVE_SECTIONS:
         fail(f"active feature sections must be exactly {ACTIVE_SECTIONS}", feature)
     if len(re.findall(r"(?m)^```(?:yaml|yml)\s*$", text, re.IGNORECASE)) != 2:
         fail("active feature YAML is limited to Artifact Index and Blockers", feature)
+    h3_headings = re.findall(r"(?m)^### ([^\n]+)$", text)
+    if h3_headings != ["Facts", "Hypotheses"]:
+        fail("active feature permits only Context Facts and Hypotheses level-3 headings", feature)
+    if re.search(r"(?m)^#{4,6} ", text):
+        fail("active feature cannot contain nested level-4 through level-6 headings", feature)
     validate_context(sections["Context"], feature)
     artifacts = parse_artifact_index(sections["Canonical Artifact Index"], feature)
-    open_index, broken_index, gaps = parse_blockers(sections["Blockers"], feature)
+    requirement_index = parse_requirement_index(sections["Requirements"], feature)
+    blocking_index, gaps = parse_blockers(sections["Blockers"], feature)
 
     shared = root / "shared"
     actual_categories: dict[str, Path] = {}
-    if shared.exists():
-        if not shared.is_dir():
-            fail("shared must be a directory", shared)
+    if shared.exists() or shared.is_symlink():
+        if not shared.is_dir() or shared.is_symlink():
+            fail("shared must be a real directory", shared)
         for child in sorted(shared.iterdir()):
             if is_os_metadata(child.relative_to(root)):
                 continue
-            if not child.is_file() or child.name not in CATEGORY_BY_FILENAME:
+            if child.is_symlink() or not child.is_file() or child.name not in CATEGORY_BY_FILENAME:
                 fail(f"unexpected lifecycle artifact {child.name!r}", child)
             category = CATEGORY_BY_FILENAME[child.name]
             actual_categories[category.key] = child
+        if not actual_categories:
+            fail("empty shared/ directory must be absent", shared)
     if set(artifacts) != set(actual_categories):
         fail(
             f"artifact index does not exactly match materialized categories; index={sorted(artifacts)}, files={sorted(actual_categories)}",
@@ -668,20 +824,35 @@ def validate_active(root: Path, feature: Path, header: dict[str, str], text: str
         identifier for identifier, item in items.items()
         if item.category.prefix == "Q" and item.metadata["status"] == "open"
     ))
-    if open_index != actual_open:
-        fail(f"open_questions must exactly equal {list(actual_open)}", feature)
-    if tuple(sorted(open_index)) != open_index:
-        fail("open_questions must be sorted", feature)
+    actual_blocking = tuple(sorted(
+        identifier for identifier, item in items.items()
+        if item.category.prefix == "Q"
+        and item.metadata["status"] == "open"
+        and item.metadata["classification"] == "blocking"
+    ))
+    if blocking_index != actual_blocking:
+        fail(f"blocking_questions must exactly equal {list(actual_blocking)}", feature)
+    if tuple(sorted(blocking_index)) != blocking_index:
+        fail("blocking_questions must be sorted", feature)
+
+    actual_requirements = tuple(sorted(
+        identifier for identifier, item in items.items() if item.category.prefix == "R"
+    ))
+    if requirement_index != actual_requirements:
+        fail(f"Requirements index must exactly equal {list(actual_requirements)}", feature)
+    if not actual_requirements and sections["Requirements"] != "- Not established.":
+        fail("a workspace without canonical requirements must use '- Not established.'", feature)
 
     missing, relationship_errors = collect_relationship_state(items)
-    if tuple(sorted(broken_index)) != tuple(sorted(missing)):
-        fail(f"broken_references must exactly equal {sorted(missing)}", feature)
     if missing:
-        fail(f"broken internal references: {sorted(missing)}", feature)
+        fail(f"calculated broken_references: {sorted(missing)}", feature)
     if relationship_errors:
         fail(relationship_errors[0], feature)
+    validate_requirement_coverage(items, feature, complete=header["status"] == "ready")
 
     if header["status"] == "ready":
+        if "requirements" not in artifacts:
+            fail("ready SPEC requires indexed requirements", feature)
         if "acceptance_criteria" not in artifacts:
             fail("ready SPEC requires indexed acceptance criteria", feature)
         active_criteria = [
@@ -693,23 +864,25 @@ def validate_active(root: Path, feature: Path, header: dict[str, str], text: str
         if any("blocked_by" in item.metadata for item in active_criteria):
             fail("ready SPEC cannot have active acceptance criteria blocked_by open questions", feature)
 
-    blockers_present = bool(actual_open or broken_index or gaps)
-    if actual_open and header["status"] != "blocked":
-        fail("an open question requires feature status blocked", feature)
+    blockers_present = bool(actual_blocking or gaps)
+    if actual_blocking and header["status"] != "blocked":
+        fail("an open blocking question requires feature status blocked", feature)
     if header["status"] == "ready" and blockers_present:
-        fail("a ready SPEC cannot have open questions, broken references, or documentary gaps", feature)
+        fail("a ready SPEC cannot have blocking questions or documentary gaps", feature)
     if header["status"] == "blocked" and not blockers_present:
         fail("blocked feature status requires an indexed documentary blocker", feature)
 
     return Workspace(
         root=root,
+        h1=text.splitlines()[0],
         status=header["status"],
         closed=False,
         items=items,
         sections=sections,
         artifacts=artifacts,
         open_questions=actual_open,
-        broken_references=broken_index,
+        blocking_questions=actual_blocking,
+        broken_references=tuple(sorted(missing)),
         documentary_gaps=gaps,
     )
 
@@ -717,8 +890,9 @@ def validate_active(root: Path, feature: Path, header: dict[str, str], text: str
 def validate_closed(root: Path, feature: Path, header: dict[str, str], text: str) -> Workspace:
     if header["status"] != "closed":
         fail("closed validator requires feature status closed", feature)
-    if (root / "shared").exists():
+    if (root / "shared").exists() or (root / "shared").is_symlink():
         fail("closed workspace retains shared/ lifecycle residue", root / "shared")
+    text = validate_feature_root(text, feature)
     sections, order = h2_sections(text, feature)
     require_sections(sections, order, CLOSED_CORE_SECTIONS, feature)
     allowed_order = [
@@ -740,6 +914,24 @@ def validate_closed(root: Path, feature: Path, header: dict[str, str], text: str
         fail(f"closed feature sections must follow {expected_order}", feature)
     if re.search(r"(?m)^```(?:yaml|yml)\s*$", text, re.IGNORECASE):
         fail("closed feature cannot contain YAML beyond the File Purpose Header", feature)
+    for heading in re.findall(r"(?m)^### ([^\n]+)$", text):
+        if heading in {"Facts", "Hypotheses"}:
+            continue
+        if CANONICAL_HEADING_RE.fullmatch("### " + heading) is None:
+            fail(f"closed feature contains non-canonical level-3 heading {heading!r}", feature)
+    if re.search(r"(?m)^#{5,6} ", text):
+        fail("closed feature cannot contain level-5 or level-6 headings", feature)
+    closed_h2 = list(re.finditer(r"(?m)^## [^\n]+$", text))
+    closed_h3 = list(re.finditer(r"(?m)^### [^\n]+$", text))
+    for h4 in re.finditer(r"(?m)^#### [^\n]+$", text):
+        previous_h2 = next((match for match in reversed(closed_h2) if match.start() < h4.start()), None)
+        previous_h3 = next((match for match in reversed(closed_h3) if match.start() < h4.start()), None)
+        if (
+            previous_h3 is None
+            or CANONICAL_HEADING_RE.fullmatch(previous_h3.group(0)) is None
+            or (previous_h2 is not None and previous_h3.start() < previous_h2.start())
+        ):
+            fail("closed feature has a level-4 heading outside a canonical record", feature)
     validate_context(sections["Context"], feature)
     for forbidden in ("Canonical Artifact Index", "Blockers", "Selective Reading"):
         if forbidden in sections:
@@ -750,6 +942,14 @@ def validate_closed(root: Path, feature: Path, header: dict[str, str], text: str
         if item.identifier in items:
             fail(f"duplicate canonical ID in closed workspace: {item.identifier}", feature)
         items[item.identifier] = item
+    for section_name, prefix in CLOSED_SECTION_PREFIX.items():
+        if section_name not in sections:
+            continue
+        first_line = sections[section_name].splitlines()[0]
+        if re.fullmatch(rf"### {prefix}-\d{{3}} — \S.*", first_line) is None:
+            fail(f"closed canonical section {section_name!r} contains a preamble", feature)
+        if not any(item.category.prefix == prefix for item in items.values()):
+            fail(f"closed feature contains empty canonical section {section_name!r}", feature)
     missing, relationship_errors = collect_relationship_state(items)
     if missing:
         fail(f"closed feature has broken internal references: {sorted(missing)}", feature)
@@ -757,39 +957,36 @@ def validate_closed(root: Path, feature: Path, header: dict[str, str], text: str
         fail(relationship_errors[0], feature)
     if any(item.category.prefix == "Q" and item.metadata["status"] == "open" for item in items.values()):
         fail("closed feature contains an open question", feature)
+    validate_requirement_coverage(items, feature, complete=True)
     return Workspace(
         root=root,
+        h1=text.splitlines()[0],
         status="closed",
         closed=True,
         items=items,
         sections=sections,
         artifacts={},
         open_questions=(),
+        blocking_questions=(),
         broken_references=(),
         documentary_gaps=(),
     )
 
 
 def validate_workspace(root: str | Path) -> Workspace:
-    workspace_root = Path(root).resolve()
+    requested_root = Path(root).expanduser()
+    if requested_root.is_symlink():
+        fail("workspace root must not be a symlink", requested_root)
+    workspace_root = requested_root.resolve()
+    if not workspace_root.is_dir():
+        fail("workspace root must be a real directory", workspace_root)
     feature = workspace_root / "feature_spec.md"
+    if feature.is_symlink():
+        fail("feature_spec.md must be a real file", feature)
     header, text = parse_file_purpose_header(feature)
     if header["status"] == "closed":
         return validate_closed(workspace_root, feature, header, text)
     return validate_active(workspace_root, feature, header, text)
-
-
-def durable_item(item: Item) -> bool:
-    status = item.metadata["status"]
-    if item.category.prefix == "AC":
-        return status == "active"
-    if item.category.prefix == "D":
-        return status == "accepted"
-    if item.category.prefix in {"C", "R"}:
-        return status == "active"
-    if item.category.prefix == "Q":
-        return status in {"bypassed", "dropped"} or "linked_decision" in item.metadata or "references" in item.metadata
-    return False
 
 
 def external_snapshot(root: Path) -> tuple[tuple[str, str, str], ...]:
@@ -798,12 +995,116 @@ def external_snapshot(root: Path) -> tuple[tuple[str, str, str], ...]:
         relative = path.relative_to(root)
         if is_os_metadata(relative) or relative.parts[0] in {"shared"} or relative.as_posix() == "feature_spec.md":
             continue
-        if path.is_dir():
+        if path.is_symlink():
+            snapshot.append(("symlink", relative.as_posix(), path.readlink().as_posix()))
+        elif path.is_dir():
             snapshot.append(("directory", relative.as_posix(), ""))
         elif path.is_file():
             digest = hashlib.sha256(path.read_bytes()).hexdigest()
             snapshot.append(("file", relative.as_posix(), digest))
     return tuple(snapshot)
+
+
+def workspace_snapshot(root: Path) -> tuple[tuple[str, str, str], ...]:
+    snapshot: list[tuple[str, str, str]] = []
+    for path in sorted(root.rglob("*"), key=lambda value: value.as_posix()):
+        relative = path.relative_to(root)
+        if is_os_metadata(relative):
+            continue
+        if path.is_symlink():
+            snapshot.append(("symlink", relative.as_posix(), path.readlink().as_posix()))
+        elif path.is_dir():
+            snapshot.append(("directory", relative.as_posix(), ""))
+        elif path.is_file():
+            snapshot.append(("file", relative.as_posix(), hashlib.sha256(path.read_bytes()).hexdigest()))
+        else:
+            fail("workspace contains an unsupported filesystem entry", path)
+    return tuple(snapshot)
+
+
+def validate_init_transition(before_root: str | Path, after_root: str | Path) -> Workspace:
+    before_path = Path(before_root)
+    if before_path.exists() or before_path.is_symlink():
+        fail("INIT destination must not exist", before_path)
+    after = validate_workspace(after_root)
+    if after.closed:
+        fail("INIT cannot publish a closed SPEC", after.root / "feature_spec.md")
+    for child in after.root.iterdir():
+        relative = child.relative_to(after.root)
+        if is_os_metadata(relative):
+            continue
+        if child.name not in {"feature_spec.md", "shared"}:
+            fail(f"INIT created an out-of-contract path {child.name!r}", child)
+    return after
+
+
+def validate_resume_transition(before_root: str | Path, after_root: str | Path) -> tuple[Workspace, Workspace]:
+    before = validate_workspace(before_root)
+    after = validate_workspace(after_root)
+    if before.closed or after.closed:
+        fail("RESUME requires active source and candidate workspaces", after.root / "feature_spec.md")
+    if before.h1 != after.h1:
+        fail("RESUME changed the feature H1 identity", after.root / "feature_spec.md")
+
+    removed = sorted(set(before.items) - set(after.items))
+    if removed:
+        fail(f"RESUME removed canonical IDs instead of preserving their history: {removed}", after.root / "feature_spec.md")
+    for identifier, source_item in before.items.items():
+        candidate_item = after.items[identifier]
+        if source_item.category.key != candidate_item.category.key:
+            fail(f"RESUME changed canonical type for {identifier}", candidate_item.path)
+        if source_item.title != candidate_item.title:
+            fail(f"RESUME changed canonical identity/title for {identifier}", candidate_item.path)
+
+    new_ids = sorted(set(after.items) - set(before.items))
+    for prefix in CANONICAL_PREFIXES:
+        previous_suffixes = [
+            int(identifier.rsplit("-", 1)[1])
+            for identifier in before.items
+            if identifier.startswith(prefix + "-")
+        ]
+        highest = max(previous_suffixes, default=0)
+        invalid = [
+            identifier
+            for identifier in new_ids
+            if identifier.startswith(prefix + "-") and int(identifier.rsplit("-", 1)[1]) <= highest
+        ]
+        if invalid:
+            fail(
+                f"RESUME reused or filled a reserved {prefix} ID at/below {prefix}-{highest:03d}: {invalid}",
+                after.root / "feature_spec.md",
+            )
+        new_suffixes = sorted(
+            int(identifier.rsplit("-", 1)[1])
+            for identifier in new_ids
+            if identifier.startswith(prefix + "-")
+        )
+        expected_suffixes = list(range(highest + 1, highest + len(new_suffixes) + 1))
+        if new_suffixes != expected_suffixes:
+            fail(
+                f"RESUME new {prefix} IDs must continue monotonically from {prefix}-{highest + 1:03d}",
+                after.root / "feature_spec.md",
+            )
+
+    if external_snapshot(before.root) != external_snapshot(after.root):
+        fail("RESUME changed a directory outside lifecycle ownership", after.root)
+    return before, after
+
+
+def validate_readiness_transition(
+    before_root: str | Path,
+    after_root: str | Path,
+    scope: str = "global",
+) -> tuple[Workspace, Workspace]:
+    if scope not in {"localized", "global"}:
+        fail("READINESS scope must be 'localized' or 'global'")
+    before = validate_workspace(before_root)
+    after = validate_workspace(after_root)
+    if before.closed or after.closed:
+        fail("READINESS operates only on active SPEC workspaces", after.root / "feature_spec.md")
+    if workspace_snapshot(before.root) != workspace_snapshot(after.root):
+        fail(f"READINESS {scope} check mutated the workspace", after.root)
+    return before, after
 
 
 def validate_close_transition(before_root: str | Path, after_root: str | Path) -> tuple[Workspace, Workspace]:
@@ -815,13 +1116,14 @@ def validate_close_transition(before_root: str | Path, after_root: str | Path) -
     after = validate_workspace(after_root)
     if not after.closed:
         fail("CLOSE result must have feature status closed", after.root / "feature_spec.md")
+    if before.h1 != after.h1:
+        fail("CLOSE changed the feature H1 identity", after.root / "feature_spec.md")
 
     section_mapping = {
         "Objective": "Objective",
         "Context": "Context",
         "Scope": "Final Scope",
         "Out of Scope": "Out of Scope",
-        "Requirements": "Requirements",
         "Business Rules": "Business Rules",
         "Relevant Contracts": "Important Contracts",
     }
@@ -829,13 +1131,16 @@ def validate_close_transition(before_root: str | Path, after_root: str | Path) -
         if normalize(before.sections[source_name]) != normalize(after.sections[final_name]):
             fail(f"CLOSE lost or changed durable section {source_name!r}", after.root / "feature_spec.md")
 
-    expected = {identifier: item for identifier, item in before.items.items() if durable_item(item)}
+    expected = before.items
     missing = sorted(set(expected) - set(after.items))
+    extra = sorted(set(after.items) - set(expected))
     if missing:
-        fail(f"CLOSE lost durable canonical items: {missing}", after.root / "feature_spec.md")
+        fail(f"CLOSE discarded canonical items: {missing}", after.root / "feature_spec.md")
+    if extra:
+        fail(f"CLOSE invented canonical items: {extra}", after.root / "feature_spec.md")
     for identifier, source_item in expected.items():
         if source_item.preservation_signature() != after.items[identifier].preservation_signature():
-            fail(f"CLOSE changed durable content for {identifier}", after.root / "feature_spec.md")
+            fail(f"CLOSE changed canonical content for {identifier}", after.root / "feature_spec.md")
 
     before_external = external_snapshot(Path(before_root).resolve())
     after_external = external_snapshot(Path(after_root).resolve())
@@ -849,6 +1154,16 @@ def main(argv: Iterable[str] | None = None) -> int:
     subparsers = parser.add_subparsers(dest="command", required=True)
     workspace_parser = subparsers.add_parser("workspace", help="validate one active or closed workspace")
     workspace_parser.add_argument("root", type=Path)
+    init_parser = subparsers.add_parser("init-transition", help="validate a nonexistent-to-active INIT transition")
+    init_parser.add_argument("before", type=Path)
+    init_parser.add_argument("after", type=Path)
+    resume_parser = subparsers.add_parser("resume-transition", help="validate an active-to-active RESUME transition")
+    resume_parser.add_argument("before", type=Path)
+    resume_parser.add_argument("after", type=Path)
+    readiness_parser = subparsers.add_parser("readiness-transition", help="verify that READINESS was read-only")
+    readiness_parser.add_argument("before", type=Path)
+    readiness_parser.add_argument("after", type=Path)
+    readiness_parser.add_argument("--scope", choices=("localized", "global"), default="global")
     close_parser = subparsers.add_parser("close-transition", help="validate a before/after CLOSE transition")
     close_parser.add_argument("before", type=Path)
     close_parser.add_argument("after", type=Path)
@@ -857,9 +1172,18 @@ def main(argv: Iterable[str] | None = None) -> int:
         if args.command == "workspace":
             workspace = validate_workspace(args.root)
             print(f"PASS: {workspace.root} status={workspace.status} ids={len(workspace.items)}")
+        elif args.command == "init-transition":
+            workspace = validate_init_transition(args.before, args.after)
+            print(f"PASS: INIT published {workspace.root} status={workspace.status} ids={len(workspace.items)}")
+        elif args.command == "resume-transition":
+            before, after = validate_resume_transition(args.before, args.after)
+            print(f"PASS: RESUME {before.root} -> {after.root} preserved IDs and external paths")
+        elif args.command == "readiness-transition":
+            before, after = validate_readiness_transition(args.before, args.after, args.scope)
+            print(f"PASS: READINESS {args.scope} {before.root} -> {after.root} was read-only")
         else:
             before, after = validate_close_transition(args.before, args.after)
-            print(f"PASS: CLOSE {before.root} -> {after.root} preserved durable content and external directories")
+            print(f"PASS: CLOSE {before.root} -> {after.root} preserved exact authority and external directories")
     except ValidationError as exc:
         print(f"FAIL: {exc}", file=sys.stderr)
         return 1

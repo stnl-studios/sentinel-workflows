@@ -12,20 +12,21 @@ update_policy: INIT and RESUME maintain blockers, inverse links, and explicit fi
 
 # Questions
 
-### Q-001 — {{ITEM_TITLE}}
+### Q-001 — Which clock determines expiration
 
 - status: open
 - classification: blocking
-- blocks: []
+- blocks: [AC-001]
 
 #### Pergunta
 
-{{CONTENT}}
+Which clock determines whether an invitation is expired?
 
 #### Por que importa
 
-{{CONTENT}}
+The answer changes the result observed by AC-001.
 
 #### Resolução
 
 Pendente.
+

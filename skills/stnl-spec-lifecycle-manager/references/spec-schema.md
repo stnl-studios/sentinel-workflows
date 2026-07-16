@@ -1,76 +1,102 @@
 # File Purpose Header
 
 ```yaml
-purpose: Define active and closed SPEC structures plus canonical Markdown item schemas.
+purpose: Define the sole active and closed document grammar, artifact-specific statuses, and canonical record schemas.
 status: not_applicable
 read_when: Creating, resuming, validating, selectively reading, or closing a SPEC artifact.
 do_not_read_when: Only lifecycle mode selection or workspace ownership is needed.
-contains: Feature sections, compact YAML indexes, item metadata, statuses, narrative sections, and final structure.
+contains: File headers, H1 and section grammar, derived indexes, category metadata, statuses, and closed layout.
 owner: stnl-spec-lifecycle-manager
 update_policy: Keep synchronized with templates, parser, readiness gates, and close policy.
 ```
 
 # SPEC Schema
 
+## File Purpose Header and statuses
+
+Every workspace artifact starts with `# File Purpose Header`, followed by one YAML block containing exactly and in order: `purpose`, `status`, `read_when`, `do_not_read_when`, `contains`, `owner`, and `update_policy`. Do not add competing metadata blocks.
+
+Status values are artifact-specific:
+
+| Artifact | Valid File Purpose Header status |
+|---|---|
+| Active `feature_spec.md` | `draft`, `blocked`, `ready` |
+| Closed `feature_spec.md` | `closed` |
+| Materialized requirements, decisions, ACs, constraints, or risks file | `ready` |
+| Materialized questions file | `blocked` when an open blocking Q exists; otherwise `ready` |
+| Runtime reference or eval index | `not_applicable` |
+| Template or worked example | The valid status of the artifact it renders or demonstrates |
+
+Canonical record statuses are separate and defined per category below. A shared-file `ready` status means that category is structurally usable, not that the feature is globally ready.
+
 ## Active `feature_spec.md`
 
-Use real Markdown sections for Objective; Context with `### Facts` and `### Hypotheses`; Scope; Out of Scope; Requirements; Business Rules; Relevant Contracts; Canonical Artifact Index; Blockers; and Selective Reading. Do not duplicate full canonical items in this file.
+After the File Purpose Header, the first semantic content is exactly one non-empty `# <feature name> - Feature SPEC` H1. No preamble, alternate H1, or content before it is allowed. The document then contains exactly once and in order: Objective; Context with `### Facts` then `### Hypotheses`; Scope; Out of Scope; Requirements; Business Rules; Relevant Contracts; Canonical Artifact Index; Blockers; and Selective Reading.
 
-The only YAML beyond the File Purpose Header is compact file-level state:
+The active feature contains no canonical record block. A heading beginning `### R-*`, `### D-*`, `### AC-*`, `### C-*`, `### RK-*`, or `### Q-*` is duplicate authority and invalid; only the indexed `shared/` file owns that record.
 
-```yaml
-artifacts: {}
-```
+`Requirements` is a sorted derived list of every canonical R heading, written only as `- R-001`. If no requirements file exists, a `draft` or `blocked` feature uses exactly `- Not established.` A `ready` feature requires `shared/requirements.md`, at least one `in_scope` R, and cannot use the sentinel.
 
-When categories are materialized, list only the files that exist:
+The only YAML after the header is the two compact blocks below. The artifact index lists exactly the materialized files in this order and uses `artifacts: {}` when none exist:
 
 ```yaml
 artifacts:
+  requirements: shared/requirements.md
   acceptance_criteria: shared/acceptance-criteria.md
+  decisions: shared/decisions.md
+  constraints: shared/constraints.md
+  risks: shared/risks.md
   questions: shared/questions.md
 ```
 
-Include only materialized categories, in the order shown. Do not add counts, materialization flags, null paths, workspace paths, mode history, or duplicate status fields.
+The Blockers block is:
 
 ```yaml
-open_questions: [Q-001, Q-002]
-broken_references: []
+blocking_questions: [Q-001, Q-002]
 documentary_gaps:
   - Objective description of a material blocking gap.
 ```
 
-`open_questions` is a sorted derived index that exactly matches open `Q-*` items. `documentary_gaps` contains only material gaps; every listed gap blocks `ready`. `broken_references` is empty in a structurally valid or ready workspace.
+`blocking_questions` is sorted and exactly matches open Q records classified `blocking`. `documentary_gaps` contains only specific material gaps and uses `documentary_gaps: []` when empty. Both prevent `ready`. Broken references are computed validator diagnostics and are never persisted.
 
-## Canonical item grammar
+Do not persist chat or session history, internal reasoning, executed commands, permanent handoffs, generic repository summaries, derived counts, null paths, materialization or mode-history flags, duplicate status, or redundant traceability.
 
-Every item starts with `### ID — Title`. After one blank line, metadata is a Markdown list with one `- field: value` per line; `status` is first, category fields follow, and `references` is last. A blank line separates metadata from narrative content. Arrays use `[ID-001, ID-002]`. Omit absent optional fields; never use `null`. The next `###` heading or EOF ends the item.
+## Canonical record grammar
 
-YAML and duplicate `id:` fields are forbidden inside canonical items. Template placeholders use only the explicit `{{FEATURE_NAME}}`, `{{OBJECTIVE}}`, `{{ITEM_TITLE}}`, and `{{CONTENT}}` syntax and must not remain in materialized SPECs. Angle-bracket technical syntax such as `Result<User>`, `Promise<Result<T>>`, or HTML tags is not placeholder syntax.
+Every record starts with `### ID — Title`. After one blank line, metadata is a Markdown list with one `- field: value` per line; `status` is first, category fields follow in their declared order, and `references` is last. One blank line separates metadata from narrative. Arrays use `[ID-001, ID-002]`. Omit absent optional fields; never use `null`. The next `###` or EOF ends the record.
 
-Shared category files contain only the File Purpose Header, the expected root heading, and canonical items for that category. They do not permit preambles, `##` sections, invalid `###` headings, appendices, notes, or unknown item subsections.
+YAML, a repeated `id:`, unsupported metadata, and embedded wrappers are forbidden in canonical records. Template placeholders are limited to `{{FEATURE_NAME}}`, `{{OBJECTIVE}}`, `{{ITEM_TITLE}}`, and `{{CONTENT}}` and cannot remain in a materialized SPEC. Angle-bracket technical syntax such as `Result<User>` is not a placeholder.
 
-### Acceptance Criteria
+Each shared file contains only its File Purpose Header, expected H1, and at least one record of the matching prefix. It permits no preamble, `##` section, wrong-prefix or malformed `###`, appendix, or note.
 
-Metadata order: required `status`; optional `blocked_by`; optional `references`. Status is `active`, `superseded`, or `dropped`. `blocked_by` accepts only `Q-*` questions whose status is currently `open`; `references` accepts existing internal IDs. An in-scope criterion stays `active` while blocked; blocking is represented only by `blocked_by`, never `status: blocked` or duplicate narrative phrases. The structural parser verifies that narrative is present, non-empty, placeholder-free, and has a reasonable minimum size. Whether the criterion is observable and verifiable is a semantic readiness finding during INIT, RESUME, or PLANNING, not a deterministic keyword check.
+### Requirements (`R-*`)
 
-### Decisions
+Metadata order: required `status`; optional `coverage_justification`; optional `references`. Status is `in_scope`, `out_of_scope`, or `superseded`. Narrative is non-empty requirement authority. `coverage_justification` is allowed only on `in_scope` requirements and must explicitly explain why no observable AC applies; omit it when an active AC verifies the requirement. Requirements never list AC IDs.
+
+### Decisions (`D-*`)
 
 Metadata order: required `status`; optional `references`. Status is `accepted` or `superseded`. Narrative has exactly these non-empty sections in order: `#### Contexto`, `#### Decisão`, `#### Impacto`.
 
-### Constraints
+### Acceptance Criteria (`AC-*`)
+
+Metadata order: required `status`; required non-empty `verifies`; optional `blocked_by`; optional `references`. Status is `active`, `superseded`, or `dropped`. `verifies` accepts only existing `R-*`; an active AC in a ready SPEC verifies at least one `in_scope` R. `blocked_by` accepts only open blocking `Q-*` and exists only on active ACs. Narrative is non-empty and is semantically reviewed for concrete, observable, verifiable behavior; scripts validate its grammar and relationships, not quality by keywords.
+
+### Constraints (`C-*`)
 
 Metadata order: required `status`; optional `references`. Status is `active` or `retired`. Narrative has exactly `#### Restrição` and `#### Razão` in order.
 
-### Risks
+### Risks (`RK-*`)
 
-Metadata order: required `status`; required `impact`; optional `references`. Status is `active` or `retired`; impact is `low`, `medium`, or `high`. Narrative has exactly `#### Risco` and `#### Mitigação` in order. `active` means materially relevant even when mitigated or accepted; it does not automatically block readiness. `retired` means the risk no longer applies.
+Metadata order: required `status`; required `impact`; optional `references`. Status is `active` or `retired`; impact is `low`, `medium`, or `high`. Narrative has exactly `#### Risco` and `#### Mitigação` in order. An active mitigated risk remains relevant and does not automatically block readiness.
 
-### Questions
+### Questions (`Q-*`)
 
-Metadata order: required `status`; `blocks` only when `status: open`; final-state `resolved_by` when applicable; conditional `linked_decision`; optional `references` last. Status is `open`, `resolved`, `bypassed`, or `dropped`. `blocks` accepts only `AC-*` and may be `[]` for a global documentary block. Non-open questions must not contain `blocks`; historical context belongs in `linked_decision`, `references`, or the resolution narrative. Narrative has exactly `#### Pergunta`, `#### Por que importa`, and `#### Resolução`.
+Metadata order: required `status`; required `classification`; conditional `blocks`; final-state `resolved_by`; conditional `linked_decision`; optional `references`. Status is `open`, `resolved`, `bypassed`, or `dropped`; classification is `blocking`, `non_blocking`, or `irrelevant`. Narrative has exactly `#### Pergunta`, `#### Por que importa`, and `#### Resolução`.
 
-Use `resolved_by: answer | decision | constraint | scope_change` only in final states. A final-state item records `resolved_by`; `linked_decision` is required exactly when `resolved_by: decision` and points to an existing `D-*`. `open` uses `Pendente.` as resolution and has `blocks` but no final-state field. `resolved` requires an explicit answer, `bypassed` an explicit justification, and `dropped` an explicit scope change or removal; `dropped` uses `resolved_by: scope_change`.
+An open blocking Q requires `blocks`, which accepts `AC-*` or `[]` for a global blocker. An open non-blocking Q omits `blocks`. An irrelevant Q cannot be open and is retained only as `dropped`. Final questions have no `blocks` and require `resolved_by: answer|decision|constraint|scope_change`; `linked_decision: D-*` is required exactly with `resolved_by: decision`. Open questions use `Pendente.`; final resolutions are explicit. `dropped` uses `resolved_by: scope_change`, including an explicit determination that the matter is outside the SPEC.
 
 ## Closed `feature_spec.md`
 
-After CLOSE, the one file contains Objective; Context; Final Scope; Out of Scope; Requirements; Business Rules; Final Acceptance Criteria; Durable Decisions; Relevant Constraints; Relevant Risks; Important Contracts; and Durable Resolved Questions when relevant. Canonical items retain the same heading, metadata, and narrative schemas used while active, except active blockers are absent: closed ACs do not retain `blocked_by`, and final questions do not retain `blocks`. Sections with no durable item may be omitted, but required durable content may not be collapsed or lost.
+After CLOSE, the one file has a `closed` header, the same canonical H1 rule, and sections in this order: Objective; Context; Final Scope; Out of Scope; Requirements; Business Rules; optional Final Acceptance Criteria; optional Durable Decisions; optional Relevant Constraints; optional Relevant Risks; Important Contracts; and Durable Resolved Questions when Q records exist.
+
+`Requirements` contains the exact source R records, not the active derived list. Other canonical sections contain every source record of their type, including superseded, retired, bypassed, or dropped records; omit a category section only when no source record of that type exists. Canonical record blocks retain their active schemas and bytes. The closed file has no YAML beyond the File Purpose Header and no Canonical Artifact Index, Blockers, Selective Reading, or `shared/` residue.

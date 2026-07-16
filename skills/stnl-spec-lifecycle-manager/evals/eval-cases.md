@@ -1,13 +1,13 @@
 # File Purpose Header
 
 ```yaml
-purpose: Index the executable regression catalog for the independent SPEC lifecycle.
+purpose: Index deterministic lifecycle regressions, static policy fixtures, real examples, and model-eval limits.
 status: not_applicable
 read_when: Changing lifecycle contracts, templates, examples, prompts, parser, or validators.
 do_not_read_when: Running an ordinary SPEC lifecycle operation.
-contains: Runner command, machine catalog location, coverage map, and failure policy.
+contains: Runner command, catalogs, validator and transition coverage, static-contract scope, and model-eval limits.
 owner: stnl-spec-lifecycle-manager
-update_policy: Keep synchronized with cases.json and the executable runner.
+update_policy: Keep synchronized with both JSON catalogs, committed validator fixtures, and the executable runner.
 ```
 
 # Executable Eval Cases
@@ -16,10 +16,20 @@ Run:
 
 `python3 scripts/test-spec-lifecycle.py`
 
-The runner consumes `evals/cases.json`, creates isolated fixture workspaces from helpers and real templates where applicable, runs deterministic validators or transition simulations, and asserts validity, documentary status, IDs, links, allowed file changes, and expected error signals. It does not execute lifecycle modes with a model end to end.
+The runner consumes `evals/cases.json` for workspace cases and `evals/contract-cases.json` for static policy scenarios. It creates isolated fixtures, invokes the real workspace and transition validators, exercises the safe publisher, checks runtime instruction/adapters, and validates the complete workspaces under `examples/validator-fixtures/`.
 
-The catalog covers deterministic fixtures for ready, blocked, and draft INIT shapes; isolated materialization of each shared template with only its indexed category; RESUME-style question resolution and durable-decision transformations; read-only PLANNING simulation; ready-without-active-AC rejection; structural AC narrative checks without keyword observability; explicit placeholder rejection; technical angle-bracket syntax acceptance; missing internal IDs; qualified external IDs; divergent inverse links; active mitigated risks; canonical shared-file structure; block semantics for open versus final questions; complete and blocked CLOSE; durable-content loss; `execution/` preservation and mutation detection; item YAML rejection; duplicate body IDs; duplicate headings; prefix mismatch; missing metadata; invalid status; stale `open_questions`; and artifact-index consistency.
+Deterministic executable coverage includes:
 
-The lifecycle invocation itself has no model runner. For `INIT`, `SPEC_PATH` must designate a directory path that does not exist. Block an existing file or directory, including a directory without `feature_spec.md`; if `feature_spec.md` already exists, direct the caller to `RESUME`.
+- active H1, preamble, exact sections/order, shared-file grammar, duplicate authority, and derived indexes;
+- `R-*` requirement coverage through `AC.verifies`, formal justification, disconnected ACs, and invalid references;
+- blocking, non-blocking, irrelevant, open, and final question shapes;
+- INIT destination and allowed-file checks; RESUME feature/record identity, ID preservation, monotonic allocation, gap/reuse/removal/type/title protection, and external boundaries;
+- localized and global READINESS snapshot equality plus explicit rejection of the legacy name;
+- exact CLOSE authority equality, including invented R/AC/D/C/RK/Q items, changed titles/content, discarded questions, attempted answer incorporation, and external immutability;
+- isolated candidate validation, interruption before publish, rollback/no-partial-state behavior, and successful INIT/CLOSE publication;
+- prompt-injection-as-data behavior and static Codex/Claude scout boundaries;
+- small, medium, large, localized, transversal, global, deterministic-search, scout-eligible, zero-scout, and one-scout-cap policy scenarios without invented token metrics.
 
-Every case targets the single current contract described by the skill references. `validate-targets.sh` separately checks the minimal launcher contract, including transient optional context and the absence of duplicated mode rules.
+`PLANNING` appears only in an explicit negative fixture and CLI rejection check; it is never accepted as a mode or alias. `broken_references` appears only as a calculated validator diagnostic or a negative persistence mutation.
+
+The runner does not invoke Codex or Claude Code as lifecycle models and does not measure model tokens. Static triggering, security, exploration, and token scenarios prove catalog/adapter contract consistency, not real model behavior. A real-model eval may be reported only by an external authenticated run that records the platform, model, observed reads/writes, and actual result.

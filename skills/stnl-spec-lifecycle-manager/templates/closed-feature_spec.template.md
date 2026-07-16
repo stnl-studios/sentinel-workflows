@@ -5,7 +5,7 @@ purpose: Template for the final lossless documentary feature SPEC.
 status: closed
 read_when: Maintaining, validating, extending, or revisiting the closed feature requirements.
 do_not_read_when: Looking for session history, implementation evidence, or delivery records.
-contains: Durable objective, context, scope, rules, canonical items, contracts, and relevant resolved questions.
+contains: Durable objective, context, scope, rules, exact canonical items, contracts, and all final questions.
 owner: stnl-spec-lifecycle-manager
 update_policy: Update only through an explicit future documentary lifecycle action.
 ```
@@ -36,7 +36,11 @@ update_policy: Update only through an explicit future documentary lifecycle acti
 
 ## Requirements
 
-- {{CONTENT}}
+### R-001 — {{ITEM_TITLE}}
+
+- status: in_scope
+
+{{CONTENT}}
 
 ## Business Rules
 
@@ -47,6 +51,7 @@ update_policy: Update only through an explicit future documentary lifecycle acti
 ### AC-001 — {{ITEM_TITLE}}
 
 - status: active
+- verifies: [R-001]
 
 {{CONTENT}}
 
@@ -84,7 +89,7 @@ update_policy: Update only through an explicit future documentary lifecycle acti
 
 ## Relevant Risks
 
-### R-001 — {{ITEM_TITLE}}
+### RK-001 — {{ITEM_TITLE}}
 
 - status: active
 - impact: high
@@ -106,6 +111,7 @@ update_policy: Update only through an explicit future documentary lifecycle acti
 ### Q-001 — {{ITEM_TITLE}}
 
 - status: resolved
+- classification: blocking
 - resolved_by: decision
 - linked_decision: D-001
 

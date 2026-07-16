@@ -6,7 +6,8 @@
     "fixture": "ready",
     "input_files": [
       "templates/feature_spec.template.md",
-      "templates/shared-acceptance-criteria.template.md"
+      "templates/shared-acceptance-criteria.template.md",
+      "templates/shared-requirements.template.md"
     ],
     "expected_files": [
       "feature_spec.md",
@@ -14,7 +15,8 @@
       "shared/constraints.md",
       "shared/decisions.md",
       "shared/questions.md",
-      "shared/risks.md"
+      "shared/risks.md",
+      "shared/requirements.md"
     ],
     "allowed_changes": [
       "feature_spec.md",
@@ -27,7 +29,8 @@
       "C-001",
       "D-001",
       "Q-001",
-      "R-001"
+      "R-001",
+      "RK-001"
     ],
     "expected_links": {
       "Q-001.linked_decision": "D-001"
@@ -45,7 +48,8 @@
     "fixture": "blocked",
     "input_files": [
       "templates/feature_spec.template.md",
-      "templates/shared-questions.template.md"
+      "templates/shared-questions.template.md",
+      "templates/shared-requirements.template.md"
     ],
     "expected_files": [
       "feature_spec.md",
@@ -53,7 +57,8 @@
       "shared/constraints.md",
       "shared/decisions.md",
       "shared/questions.md",
-      "shared/risks.md"
+      "shared/risks.md",
+      "shared/requirements.md"
     ],
     "allowed_changes": [
       "feature_spec.md",
@@ -66,7 +71,8 @@
       "C-001",
       "D-001",
       "Q-001",
-      "R-001"
+      "R-001",
+      "RK-001"
     ],
     "expected_links": {
       "Q-001.blocks": [
@@ -78,7 +84,7 @@
     },
     "assertions": [
       "open question blocks SPEC",
-      "open_questions is derived",
+      "blocking_questions is derived",
       "blocked AC has reciprocal open question"
     ]
   },
@@ -95,7 +101,8 @@
     "expected_files": [
       "feature_spec.md",
       "shared/acceptance-criteria.md",
-      "shared/questions.md"
+      "shared/questions.md",
+      "shared/requirements.md"
     ],
     "allowed_changes": [
       "feature_spec.md",
@@ -109,7 +116,8 @@
       "C-001",
       "D-001",
       "Q-001",
-      "R-001"
+      "R-001",
+      "RK-001"
     ],
     "expected_links": {
       "Q-001.linked_decision": "D-001"
@@ -145,6 +153,7 @@
     "expected_valid": true,
     "expected_status": "ready",
     "expected_ids": [
+      "R-001",
       "AC-001",
       "D-001",
       "Q-001"
@@ -153,6 +162,9 @@
       "Q-001.linked_decision": "D-001",
       "AC-001.references": [
         "D-001"
+      ],
+      "AC-001.verifies": [
+        "R-001"
       ]
     },
     "assertions": [
@@ -162,9 +174,9 @@
     ]
   },
   {
-    "id": "planning-read-only",
-    "operation": "PLANNING",
-    "runner": "planning_read_only",
+    "id": "readiness-read-only",
+    "operation": "READINESS",
+    "runner": "readiness_read_only",
     "fixture": "ready",
     "input_files": [
       "feature_spec.md",
@@ -176,7 +188,8 @@
       "shared/constraints.md",
       "shared/decisions.md",
       "shared/questions.md",
-      "shared/risks.md"
+      "shared/risks.md",
+      "shared/requirements.md"
     ],
     "allowed_changes": [],
     "expected_valid": true,
@@ -186,9 +199,14 @@
       "C-001",
       "D-001",
       "Q-001",
-      "R-001"
+      "R-001",
+      "RK-001"
     ],
-    "expected_links": {},
+    "expected_links": {
+      "AC-001.verifies": [
+        "R-001"
+      ]
+    },
     "assertions": [
       "snapshot unchanged",
       "no plan or task artifact"
@@ -196,7 +214,7 @@
   },
   {
     "id": "missing-internal-id",
-    "operation": "PLANNING",
+    "operation": "READINESS",
     "runner": "workspace",
     "fixture": "missing_internal",
     "input_files": [
@@ -208,14 +226,14 @@
     "expected_status": "invalid",
     "expected_ids": [],
     "expected_links": {},
-    "expected_error": "broken internal references",
+    "expected_error": "calculated broken_references",
     "assertions": [
       "reference_integrity_gate fails"
     ]
   },
   {
     "id": "qualified-external-id",
-    "operation": "PLANNING",
+    "operation": "READINESS",
     "runner": "workspace",
     "fixture": "external_reference",
     "input_files": [
@@ -227,7 +245,8 @@
       "shared/constraints.md",
       "shared/decisions.md",
       "shared/questions.md",
-      "shared/risks.md"
+      "shared/risks.md",
+      "shared/requirements.md"
     ],
     "allowed_changes": [],
     "expected_valid": true,
@@ -237,7 +256,8 @@
       "C-001",
       "D-001",
       "Q-001",
-      "R-001"
+      "R-001",
+      "RK-001"
     ],
     "expected_links": {},
     "assertions": [
@@ -246,7 +266,7 @@
   },
   {
     "id": "inverse-link-divergence",
-    "operation": "PLANNING",
+    "operation": "READINESS",
     "runner": "workspace",
     "fixture": "divergent_links",
     "input_files": [
@@ -266,7 +286,7 @@
   },
   {
     "id": "active-mitigated-risk",
-    "operation": "PLANNING",
+    "operation": "READINESS",
     "runner": "workspace",
     "fixture": "active_risk",
     "input_files": [
@@ -278,7 +298,8 @@
       "shared/constraints.md",
       "shared/decisions.md",
       "shared/questions.md",
-      "shared/risks.md"
+      "shared/risks.md",
+      "shared/requirements.md"
     ],
     "allowed_changes": [],
     "expected_valid": true,
@@ -288,10 +309,11 @@
       "C-001",
       "D-001",
       "Q-001",
-      "R-001"
+      "R-001",
+      "RK-001"
     ],
     "expected_links": {
-      "R-001.references": [
+      "RK-001.references": [
         "C-001",
         "AC-001"
       ]
@@ -326,7 +348,8 @@
       "C-001",
       "D-001",
       "Q-001",
-      "R-001"
+      "R-001",
+      "RK-001"
     ],
     "expected_links": {
       "Q-001.linked_decision": "D-001"
@@ -383,7 +406,8 @@
       "C-001",
       "D-001",
       "Q-001",
-      "R-001"
+      "R-001",
+      "RK-001"
     ],
     "expected_links": {},
     "assertions": [
@@ -406,7 +430,7 @@
     "expected_status": "invalid",
     "expected_ids": [],
     "expected_links": {},
-    "expected_error": "changed durable content for D-001",
+    "expected_error": "changed canonical content for D-001",
     "assertions": [
       "decision context, decision, and impact compared"
     ]
@@ -432,7 +456,7 @@
   },
   {
     "id": "item-yaml-forbidden",
-    "operation": "PLANNING",
+    "operation": "READINESS",
     "runner": "workspace",
     "fixture": "item_yaml",
     "input_files": [
@@ -451,7 +475,7 @@
   },
   {
     "id": "body-id-forbidden",
-    "operation": "PLANNING",
+    "operation": "READINESS",
     "runner": "workspace",
     "fixture": "body_id",
     "input_files": [
@@ -470,7 +494,7 @@
   },
   {
     "id": "duplicate-id",
-    "operation": "PLANNING",
+    "operation": "READINESS",
     "runner": "workspace",
     "fixture": "duplicate_id",
     "input_files": [
@@ -489,7 +513,7 @@
   },
   {
     "id": "wrong-prefix",
-    "operation": "PLANNING",
+    "operation": "READINESS",
     "runner": "workspace",
     "fixture": "wrong_prefix",
     "input_files": [
@@ -508,7 +532,7 @@
   },
   {
     "id": "missing-metadata",
-    "operation": "PLANNING",
+    "operation": "READINESS",
     "runner": "workspace",
     "fixture": "missing_metadata",
     "input_files": [
@@ -527,7 +551,7 @@
   },
   {
     "id": "invalid-status",
-    "operation": "PLANNING",
+    "operation": "READINESS",
     "runner": "workspace",
     "fixture": "invalid_status",
     "input_files": [
@@ -545,10 +569,10 @@
     ]
   },
   {
-    "id": "stale-open-question-index",
-    "operation": "PLANNING",
+    "id": "stale-blocking-question-index",
+    "operation": "READINESS",
     "runner": "workspace",
-    "fixture": "stale_open_index",
+    "fixture": "stale_blocking_index",
     "input_files": [
       "feature_spec.md",
       "shared/questions.md"
@@ -559,14 +583,14 @@
     "expected_status": "invalid",
     "expected_ids": [],
     "expected_links": {},
-    "expected_error": "open_questions must exactly equal",
+    "expected_error": "blocking_questions must exactly equal",
     "assertions": [
-      "derived blocker index is exact"
+      "derived blocking-question index is exact"
     ]
   },
   {
     "id": "ready-missing-ac-file",
-    "operation": "PLANNING",
+    "operation": "READINESS",
     "runner": "workspace",
     "fixture": "ready_missing_ac_file",
     "input_files": [
@@ -585,7 +609,7 @@
   },
   {
     "id": "ready-empty-ac-file",
-    "operation": "PLANNING",
+    "operation": "READINESS",
     "runner": "workspace",
     "fixture": "empty_ac",
     "input_files": [
@@ -604,7 +628,7 @@
   },
   {
     "id": "ready-no-active-ac",
-    "operation": "PLANNING",
+    "operation": "READINESS",
     "runner": "workspace",
     "fixture": "no_active_ac",
     "input_files": [
@@ -619,11 +643,11 @@
     "assertions": [
       "ready with only superseded AC rejected"
     ],
-    "expected_error": "at least one active acceptance criterion"
+    "expected_error": "has no active AC coverage or formal coverage_justification"
   },
   {
     "id": "ready-only-dropped-ac",
-    "operation": "PLANNING",
+    "operation": "READINESS",
     "runner": "workspace",
     "fixture": "only_dropped_ac",
     "input_files": [
@@ -638,11 +662,11 @@
     "assertions": [
       "ready with only dropped AC rejected"
     ],
-    "expected_error": "at least one active acceptance criterion"
+    "expected_error": "has no active AC coverage or formal coverage_justification"
   },
   {
     "id": "ready-active-ac-valid",
-    "operation": "PLANNING",
+    "operation": "READINESS",
     "runner": "workspace",
     "fixture": "valid_non_heuristic_ac",
     "input_files": [
@@ -654,7 +678,8 @@
       "shared/constraints.md",
       "shared/decisions.md",
       "shared/questions.md",
-      "shared/risks.md"
+      "shared/risks.md",
+      "shared/requirements.md"
     ],
     "allowed_changes": [],
     "expected_valid": true,
@@ -664,7 +689,8 @@
       "C-001",
       "D-001",
       "Q-001",
-      "R-001"
+      "R-001",
+      "RK-001"
     ],
     "expected_links": {},
     "assertions": [
@@ -673,7 +699,7 @@
   },
   {
     "id": "blocked-without-ac",
-    "operation": "PLANNING",
+    "operation": "READINESS",
     "runner": "workspace",
     "fixture": "empty_artifact_index",
     "input_files": [
@@ -693,7 +719,7 @@
   },
   {
     "id": "ready-ac-blocked-rejected",
-    "operation": "PLANNING",
+    "operation": "READINESS",
     "runner": "workspace",
     "fixture": "ready_ac_blocked",
     "input_files": [
@@ -711,8 +737,8 @@
     "expected_error": "blocked_by points to non-open question"
   },
   {
-    "id": "ac-session-restored-valid",
-    "operation": "PLANNING",
+    "id": "ac-expired-invitation-valid",
+    "operation": "READINESS",
     "runner": "workspace",
     "fixture": "valid_non_heuristic_ac",
     "input_files": [
@@ -724,7 +750,8 @@
       "shared/constraints.md",
       "shared/decisions.md",
       "shared/questions.md",
-      "shared/risks.md"
+      "shared/risks.md",
+      "shared/requirements.md"
     ],
     "allowed_changes": [],
     "expected_valid": true,
@@ -734,16 +761,17 @@
       "C-001",
       "D-001",
       "Q-001",
-      "R-001"
+      "R-001",
+      "RK-001"
     ],
     "expected_links": {},
     "assertions": [
-      "AC without old heuristic verbs accepted structurally"
+      "semantically aligned invitation-expiration AC is structurally valid"
     ]
   },
   {
     "id": "ac-empty-rejected",
-    "operation": "PLANNING",
+    "operation": "READINESS",
     "runner": "workspace",
     "fixture": "empty_ac_narrative",
     "input_files": [
@@ -762,7 +790,7 @@
   },
   {
     "id": "ac-placeholder-rejected",
-    "operation": "PLANNING",
+    "operation": "READINESS",
     "runner": "workspace",
     "fixture": "placeholder_real",
     "input_files": [
@@ -781,7 +809,7 @@
   },
   {
     "id": "result-user-accepted",
-    "operation": "PLANNING",
+    "operation": "READINESS",
     "runner": "workspace",
     "fixture": "technical_result_user",
     "input_files": [
@@ -793,7 +821,8 @@
       "shared/constraints.md",
       "shared/decisions.md",
       "shared/questions.md",
-      "shared/risks.md"
+      "shared/risks.md",
+      "shared/requirements.md"
     ],
     "allowed_changes": [],
     "expected_valid": true,
@@ -803,7 +832,8 @@
       "C-001",
       "D-001",
       "Q-001",
-      "R-001"
+      "R-001",
+      "RK-001"
     ],
     "expected_links": {},
     "assertions": [
@@ -812,7 +842,7 @@
   },
   {
     "id": "promise-result-t-accepted",
-    "operation": "PLANNING",
+    "operation": "READINESS",
     "runner": "workspace",
     "fixture": "technical_promise_result",
     "input_files": [
@@ -824,7 +854,8 @@
       "shared/constraints.md",
       "shared/decisions.md",
       "shared/questions.md",
-      "shared/risks.md"
+      "shared/risks.md",
+      "shared/requirements.md"
     ],
     "allowed_changes": [],
     "expected_valid": true,
@@ -834,7 +865,8 @@
       "C-001",
       "D-001",
       "Q-001",
-      "R-001"
+      "R-001",
+      "RK-001"
     ],
     "expected_links": {},
     "assertions": [
@@ -843,7 +875,7 @@
   },
   {
     "id": "html-tag-accepted",
-    "operation": "PLANNING",
+    "operation": "READINESS",
     "runner": "workspace",
     "fixture": "technical_html",
     "input_files": [
@@ -855,7 +887,8 @@
       "shared/constraints.md",
       "shared/decisions.md",
       "shared/questions.md",
-      "shared/risks.md"
+      "shared/risks.md",
+      "shared/requirements.md"
     ],
     "allowed_changes": [],
     "expected_valid": true,
@@ -865,7 +898,8 @@
       "C-001",
       "D-001",
       "Q-001",
-      "R-001"
+      "R-001",
+      "RK-001"
     ],
     "expected_links": {},
     "assertions": [
@@ -874,7 +908,7 @@
   },
   {
     "id": "preamble-before-item-rejected",
-    "operation": "PLANNING",
+    "operation": "READINESS",
     "runner": "workspace",
     "fixture": "preamble_before_item",
     "input_files": [
@@ -893,7 +927,7 @@
   },
   {
     "id": "notes-heading-rejected",
-    "operation": "PLANNING",
+    "operation": "READINESS",
     "runner": "workspace",
     "fixture": "notes_after_item",
     "input_files": [
@@ -912,7 +946,7 @@
   },
   {
     "id": "wrong-root-heading-rejected",
-    "operation": "PLANNING",
+    "operation": "READINESS",
     "runner": "workspace",
     "fixture": "wrong_root_heading",
     "input_files": [
@@ -931,7 +965,7 @@
   },
   {
     "id": "multiple-root-headings-rejected",
-    "operation": "PLANNING",
+    "operation": "READINESS",
     "runner": "workspace",
     "fixture": "multiple_root_headings",
     "input_files": [
@@ -950,7 +984,7 @@
   },
   {
     "id": "unknown-item-section-rejected",
-    "operation": "PLANNING",
+    "operation": "READINESS",
     "runner": "workspace",
     "fixture": "unknown_item_section",
     "input_files": [
@@ -969,7 +1003,7 @@
   },
   {
     "id": "invalid-h3-heading-rejected",
-    "operation": "PLANNING",
+    "operation": "READINESS",
     "runner": "workspace",
     "fixture": "invalid_h3_heading",
     "input_files": [
@@ -988,7 +1022,7 @@
   },
   {
     "id": "loose-content-after-item-rejected",
-    "operation": "PLANNING",
+    "operation": "READINESS",
     "runner": "workspace",
     "fixture": "loose_content_after_item",
     "input_files": [
@@ -1007,7 +1041,7 @@
   },
   {
     "id": "open-question-reciprocal-valid",
-    "operation": "PLANNING",
+    "operation": "READINESS",
     "runner": "workspace",
     "fixture": "open_question_reciprocal",
     "input_files": [
@@ -1019,7 +1053,8 @@
       "shared/constraints.md",
       "shared/decisions.md",
       "shared/questions.md",
-      "shared/risks.md"
+      "shared/risks.md",
+      "shared/requirements.md"
     ],
     "allowed_changes": [],
     "expected_valid": true,
@@ -1029,7 +1064,8 @@
       "C-001",
       "D-001",
       "Q-001",
-      "R-001"
+      "R-001",
+      "RK-001"
     ],
     "expected_links": {
       "Q-001.blocks": [
@@ -1045,7 +1081,7 @@
   },
   {
     "id": "open-question-without-blocks-rejected",
-    "operation": "PLANNING",
+    "operation": "READINESS",
     "runner": "workspace",
     "fixture": "open_question_without_blocks",
     "input_files": [
@@ -1060,11 +1096,11 @@
     "assertions": [
       "open question without blocks rejected"
     ],
-    "expected_error": "open state requires blocks"
+    "expected_error": "open blocking state requires blocks"
   },
   {
     "id": "resolved-question-with-blocks-rejected",
-    "operation": "PLANNING",
+    "operation": "READINESS",
     "runner": "workspace",
     "fixture": "resolved_question_with_blocks",
     "input_files": [
@@ -1083,7 +1119,7 @@
   },
   {
     "id": "blocked-by-resolved-question-rejected",
-    "operation": "PLANNING",
+    "operation": "READINESS",
     "runner": "workspace",
     "fixture": "blocked_by_resolved_question",
     "input_files": [
@@ -1123,7 +1159,7 @@
     ]
   },
   {
-    "operation": "PLANNING",
+    "operation": "READINESS",
     "runner": "workspace",
     "input_files": [
       "feature_spec.md"
@@ -1136,13 +1172,13 @@
     "expected_links": {},
     "id": "ready-no-ac-index-rejected",
     "fixture": "ready_no_ac_index",
-    "expected_error": "ready SPEC requires indexed acceptance criteria",
+    "expected_error": "has no active AC coverage or formal coverage_justification",
     "assertions": [
       "ready without AC category rejected"
     ]
   },
   {
-    "operation": "PLANNING",
+    "operation": "READINESS",
     "runner": "workspace",
     "input_files": [
       "feature_spec.md"
@@ -1162,7 +1198,7 @@
   },
   {
     "id": "blocked-without-ac-valid",
-    "operation": "PLANNING",
+    "operation": "READINESS",
     "runner": "workspace",
     "fixture": "blocked_without_ac",
     "input_files": [
@@ -1187,31 +1223,63 @@
     ]
   },
   {
+    "id": "template-requirement-isolated-valid",
+    "operation": "INIT",
+    "runner": "template_isolated",
+    "fixture": "requirements",
+    "input_files": [
+      "templates/feature_spec.template.md",
+      "templates/shared-requirements.template.md"
+    ],
+    "expected_files": [
+      "feature_spec.md",
+      "shared/requirements.md"
+    ],
+    "allowed_changes": [
+      "feature_spec.md",
+      "shared/requirements.md"
+    ],
+    "expected_valid": true,
+    "expected_status": "draft",
+    "expected_ids": [
+      "R-001"
+    ],
+    "expected_links": {},
+    "assertions": [
+      "requirement template materializes without acceptance criteria",
+      "no artificial coverage justification is created"
+    ]
+  },
+  {
     "id": "template-ac-isolated-valid",
     "operation": "INIT",
     "runner": "template_isolated",
     "fixture": "acceptance_criteria",
     "input_files": [
       "templates/feature_spec.template.md",
-      "templates/shared-acceptance-criteria.template.md"
+      "templates/shared-acceptance-criteria.template.md",
+      "templates/shared-requirements.template.md"
     ],
     "expected_files": [
       "feature_spec.md",
-      "shared/acceptance-criteria.md"
+      "shared/acceptance-criteria.md",
+      "shared/requirements.md"
     ],
     "allowed_changes": [
       "feature_spec.md",
-      "shared/acceptance-criteria.md"
+      "shared/acceptance-criteria.md",
+      "shared/requirements.md"
     ],
     "expected_valid": true,
     "expected_status": "draft",
     "expected_ids": [
+      "R-001",
       "AC-001"
     ],
     "expected_links": {},
     "assertions": [
-      "AC template materializes without decisions or constraints",
-      "no artificial references are created"
+      "AC template materializes with its required R coverage",
+      "no artificial decisions or constraints are created"
     ]
   },
   {
@@ -1290,7 +1358,7 @@
     "expected_valid": true,
     "expected_status": "draft",
     "expected_ids": [
-      "R-001"
+      "RK-001"
     ],
     "expected_links": {},
     "assertions": [

@@ -12,9 +12,11 @@ update_policy: INIT and RESUME maintain criteria without hiding requirement conf
 
 # Acceptance Criteria
 
-### AC-001 — {{ITEM_TITLE}}
+### AC-001 — Expired invitation is rejected
 
 - status: active
 - verifies: [R-001]
+- references: [D-001, C-001, RK-001]
 
-{{CONTENT}}
+Ao receber um convite cujo `expires_at` já passou segundo o relógio UTC do serviço, a API rejeita a aceitação com o envelope público de convite expirado e não cria participação. The qualified external origin `initial-scaffold/D-011` is narrative only.
+
