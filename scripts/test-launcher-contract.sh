@@ -116,6 +116,21 @@ else:
         "duplicate-spec": ("SPEC_PATH={{SPEC_PATH}}", "SPEC_PATH={{SPEC_PATH}}\nSPEC_PATH={{SPEC_PATH}}"),
         "missing-slice": ("SLICE={{SLICE}}\n", ""),
         "missing-readiness-scope": ("READINESS_SCOPE={{READINESS_SCOPE}}\n", ""),
+        "missing-readiness-rules": ("`READINESS_SCOPE` aceita somente `LOCAL` ou `GLOBAL`, com correspondência case-sensitive e sem aliases.\n", ""),
+        "readiness-lowercase-local": ("somente `LOCAL` ou `GLOBAL`", "somente `local` ou `GLOBAL`"),
+        "readiness-lowercase-global": ("somente `LOCAL` ou `GLOBAL`", "somente `LOCAL` ou `global`"),
+        "readiness-localized-alias": ("somente `LOCAL` ou `GLOBAL`", "`LOCAL`, `GLOBAL` ou `localized`"),
+        "readiness-local-focus-optional": ("`READINESS_FOCUS` é obrigatório e delimitado", "`READINESS_FOCUS` é opcional"),
+        "readiness-local-global-verdict": ("nunca declara readiness global", "pode declarar readiness global"),
+        "readiness-global-index-only": ("`GLOBAL` avalia toda a autoridade material", "`GLOBAL` avalia somente o índice"),
+        "readiness-mutable": ("Ambos os escopos são estritamente read-only", "Ambos os escopos podem escrever"),
+        "readiness-attestation-missing": ("Somente após verdict semântico `GLOBAL/READY`, gere a readiness attestation externa e efêmera com o comando determinístico canônico; nunca a escreva manualmente nem dentro do workspace.\n", ""),
+        "readiness-attestation-local": ("Somente após verdict semântico `GLOBAL/READY`", "Após `LOCAL_PASS` ou `GLOBAL/READY`"),
+        "close-attestation-missing": ("Exija uma readiness attestation externa `GLOBAL/READY` para o snapshot atual, use somente o renderer determinístico canônico e passe a mesma attestation ao publisher; rejeite attestation stale e não aceite confirmação booleana.\n", ""),
+        "close-publisher-attestation-missing": (" e passe a mesma attestation ao publisher", ""),
+        "close-attestation-stale": ("rejeite attestation stale", "aceite attestation stale"),
+        "close-boolean-confirmation": ("não aceite confirmação booleana", "aceite confirmação booleana"),
+        "readiness-launches-scout": ("Contexto adicional (opcional):", "Acione o context scout automaticamente.\n\nContexto adicional (opcional):"),
         "extra-slice": ("Contexto adicional (opcional):", "SLICE={{SLICE}}\n\nContexto adicional (opcional):"),
         "close-runner": ("Contexto adicional (opcional):", "Use validation runner.\n\nContexto adicional (opcional):"),
         "shared-codex": ("Contexto adicional (opcional):", "Codex stnl_validation_runner\n\nContexto adicional (opcional):"),
@@ -218,6 +233,21 @@ case_mutation explicit-execution-root L004_INPUTS execution-plan.md execution-ro
 case_mutation duplicate-spec-path L004_INPUTS execution-plan.md duplicate-spec
 case_mutation missing-slice L004_INPUTS slice-execute-codex.md missing-slice
 case_mutation missing-readiness-scope L004_INPUTS spec-readiness.md missing-readiness-scope
+case_mutation missing-readiness-rules L015_READINESS_SCOPE spec-readiness.md missing-readiness-rules
+case_mutation readiness-lowercase-local L015_READINESS_SCOPE spec-readiness.md readiness-lowercase-local
+case_mutation readiness-lowercase-global L015_READINESS_SCOPE spec-readiness.md readiness-lowercase-global
+case_mutation readiness-localized-alias L015_READINESS_SCOPE spec-readiness.md readiness-localized-alias
+case_mutation readiness-local-focus-optional L015_READINESS_SCOPE spec-readiness.md readiness-local-focus-optional
+case_mutation readiness-local-global-verdict L015_READINESS_SCOPE spec-readiness.md readiness-local-global-verdict
+case_mutation readiness-global-index-only L015_READINESS_SCOPE spec-readiness.md readiness-global-index-only
+case_mutation readiness-mutable L015_READINESS_SCOPE spec-readiness.md readiness-mutable
+case_mutation readiness-attestation-missing L015_READINESS_SCOPE spec-readiness.md readiness-attestation-missing
+case_mutation readiness-attestation-from-local L015_READINESS_SCOPE spec-readiness.md readiness-attestation-local
+case_mutation readiness-launches-scout L015_SCOUT_ISOLATION spec-readiness.md readiness-launches-scout
+case_mutation close-attestation-missing L010_CANONICAL_CONTENT spec-close.md close-attestation-missing
+case_mutation close-publisher-attestation-missing L010_CANONICAL_CONTENT spec-close.md close-publisher-attestation-missing
+case_mutation close-accepts-stale-attestation L010_CANONICAL_CONTENT spec-close.md close-attestation-stale
+case_mutation close-accepts-boolean-confirmation L010_CANONICAL_CONTENT spec-close.md close-boolean-confirmation
 case_mutation slice-on-close L004_INPUTS execution-close.md extra-slice
 case_mutation close-invokes-runner L006_SHARED_ISOLATION execution-close.md close-runner
 case_mutation shared-codex-identifier L006_SHARED_ISOLATION execution-plan.md shared-codex
@@ -263,5 +293,5 @@ case_executor_mutation executor-contract-says-up-to-only executor-up-to-only
 case_executor_mutation executor-contract-makes-invocation-optional executor-optional-invocation
 case_executor_mutation executor-contract-skips-not-applicable executor-skip-not-applicable
 
-echo "PASS: 53 invalid executor/launcher mutations rejected by the semantic checker against isolated fixtures"
+echo "PASS: 63 invalid executor/launcher mutations rejected by the semantic checker against isolated fixtures"
 echo "PASS: focused launcher contract suite completed in $((SECONDS - START_SECONDS))s"

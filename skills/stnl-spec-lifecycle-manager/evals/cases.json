@@ -174,6 +174,352 @@
     ]
   },
   {
+    "id": "resume-manifest-authorized-requirement",
+    "operation": "RESUME",
+    "runner": "resume_manifest",
+    "fixture": "authorized_requirement",
+    "input_files": [
+      "feature_spec.md",
+      "shared/requirements.md",
+      "resume-manifest.json"
+    ],
+    "expected_files": [
+      "feature_spec.md",
+      "shared/requirements.md"
+    ],
+    "allowed_changes": [
+      "shared/requirements.md"
+    ],
+    "expected_valid": true,
+    "expected_status": "ready",
+    "expected_ids": [
+      "R-001",
+      "AC-001",
+      "D-001",
+      "C-001",
+      "RK-001",
+      "Q-001"
+    ],
+    "expected_links": {},
+    "assertions": [
+      "one existing requirement explicitly authorized",
+      "all neighboring records preserved byte-for-byte",
+      "manifest remains ephemeral"
+    ]
+  },
+  {
+    "id": "resume-manifest-authorized-objective",
+    "operation": "RESUME",
+    "runner": "resume_manifest",
+    "fixture": "authorized_objective",
+    "input_files": [
+      "feature_spec.md",
+      "resume-manifest.json"
+    ],
+    "expected_files": [
+      "feature_spec.md"
+    ],
+    "allowed_changes": [
+      "feature_spec.md"
+    ],
+    "expected_valid": true,
+    "expected_status": "ready",
+    "expected_ids": [
+      "R-001",
+      "AC-001",
+      "D-001",
+      "C-001",
+      "RK-001",
+      "Q-001"
+    ],
+    "expected_links": {},
+    "assertions": [
+      "one feature section explicitly authorized",
+      "other feature sections preserved byte-for-byte"
+    ]
+  },
+  {
+    "id": "resume-manifest-authorized-new-id",
+    "operation": "RESUME",
+    "runner": "resume_manifest",
+    "fixture": "authorized_new_id",
+    "input_files": [
+      "feature_spec.md",
+      "shared/requirements.md",
+      "resume-manifest.json"
+    ],
+    "expected_files": [
+      "feature_spec.md",
+      "shared/requirements.md"
+    ],
+    "allowed_changes": [
+      "feature_spec.md",
+      "shared/requirements.md"
+    ],
+    "expected_valid": true,
+    "expected_status": "ready",
+    "expected_ids": [
+      "R-001",
+      "R-002",
+      "AC-001",
+      "D-001",
+      "C-001",
+      "RK-001",
+      "Q-001"
+    ],
+    "expected_links": {},
+    "assertions": [
+      "new ID explicitly authorized",
+      "derived requirement index explicitly authorized",
+      "monotonic allocation preserved"
+    ]
+  },
+  {
+    "id": "resume-manifest-r001-rewrite-rejected",
+    "operation": "RESUME",
+    "runner": "resume_manifest",
+    "fixture": "unauthorized_requirement",
+    "input_files": [
+      "shared/requirements.md",
+      "resume-manifest.json"
+    ],
+    "expected_files": [],
+    "allowed_changes": [],
+    "expected_valid": false,
+    "expected_status": "invalid",
+    "expected_ids": [],
+    "expected_links": {},
+    "expected_error": "allowed_existing_ids",
+    "assertions": [
+      "complete R-001 narrative rewrite rejected without authorization"
+    ]
+  },
+  {
+    "id": "resume-manifest-objective-rewrite-rejected",
+    "operation": "RESUME",
+    "runner": "resume_manifest",
+    "fixture": "unauthorized_objective",
+    "input_files": [
+      "feature_spec.md",
+      "resume-manifest.json"
+    ],
+    "expected_files": [],
+    "allowed_changes": [],
+    "expected_valid": false,
+    "expected_status": "invalid",
+    "expected_ids": [],
+    "expected_links": {},
+    "expected_error": "allowed_feature_sections",
+    "assertions": [
+      "feature objective replacement rejected without authorization"
+    ]
+  },
+  {
+    "id": "resume-manifest-missing-rejected",
+    "operation": "RESUME",
+    "runner": "resume_manifest",
+    "fixture": "missing_manifest",
+    "input_files": [
+      "feature_spec.md"
+    ],
+    "expected_files": [],
+    "allowed_changes": [],
+    "expected_valid": false,
+    "expected_status": "invalid",
+    "expected_ids": [],
+    "expected_links": {},
+    "expected_error": "requires a pre-state change manifest",
+    "assertions": [
+      "manifest is semantically mandatory"
+    ]
+  },
+  {
+    "id": "resume-manifest-malformed-rejected",
+    "operation": "RESUME",
+    "runner": "resume_manifest",
+    "fixture": "malformed_manifest",
+    "input_files": [
+      "resume-manifest.json"
+    ],
+    "expected_files": [],
+    "allowed_changes": [],
+    "expected_valid": false,
+    "expected_status": "invalid",
+    "expected_ids": [],
+    "expected_links": {},
+    "expected_error": "malformed JSON",
+    "assertions": [
+      "malformed JSON fails closed"
+    ]
+  },
+  {
+    "id": "resume-manifest-post-facto-rejected",
+    "operation": "RESUME",
+    "runner": "resume_manifest",
+    "fixture": "post_facto_manifest",
+    "input_files": [
+      "feature_spec.md",
+      "resume-manifest.json"
+    ],
+    "expected_files": [],
+    "allowed_changes": [],
+    "expected_valid": false,
+    "expected_status": "invalid",
+    "expected_ids": [],
+    "expected_links": {},
+    "expected_error": "pre-state identity does not match",
+    "assertions": [
+      "candidate-derived post-facto identity rejected"
+    ]
+  },
+  {
+    "id": "resume-manifest-legacy-removal-authority-rejected",
+    "operation": "RESUME",
+    "runner": "resume_manifest",
+    "fixture": "legacy_removal_authority",
+    "input_files": [
+      "resume-manifest.json"
+    ],
+    "expected_files": [],
+    "allowed_changes": [],
+    "expected_valid": false,
+    "expected_status": "invalid",
+    "expected_ids": [],
+    "expected_links": {},
+    "expected_error": "unknown=['allowed_removed_ids']",
+    "assertions": [
+      "physical-removal authority is not part of the strict manifest schema"
+    ]
+  },
+  {
+    "id": "resume-physical-removal-rejected",
+    "operation": "RESUME",
+    "runner": "resume_manifest",
+    "fixture": "physical_remove_r002",
+    "input_files": [
+      "feature_spec.md",
+      "shared/requirements.md",
+      "resume-manifest.json"
+    ],
+    "expected_files": [],
+    "allowed_changes": [],
+    "expected_valid": false,
+    "expected_status": "invalid",
+    "expected_ids": [],
+    "expected_links": {},
+    "expected_error": "preserving tombstones",
+    "assertions": [
+      "R-002 cannot be removed physically",
+      "issued IDs remain represented in canonical authority"
+    ]
+  },
+  {
+    "id": "resume-gap-fill-rejected",
+    "operation": "RESUME",
+    "runner": "resume_manifest",
+    "fixture": "gap_fill_r002",
+    "input_files": [
+      "feature_spec.md",
+      "shared/requirements.md",
+      "resume-manifest.json"
+    ],
+    "expected_files": [],
+    "allowed_changes": [],
+    "expected_valid": false,
+    "expected_status": "invalid",
+    "expected_ids": [],
+    "expected_links": {},
+    "expected_error": "reused or filled a reserved R ID",
+    "assertions": [
+      "R-002 cannot fill a gap below existing R-003",
+      "allocation follows the category high-water mark"
+    ]
+  },
+  {
+    "id": "resume-type-swap-rejected",
+    "operation": "RESUME",
+    "runner": "resume_manifest",
+    "fixture": "type_swap_r002",
+    "input_files": [
+      "feature_spec.md",
+      "shared/requirements.md",
+      "shared/constraints.md",
+      "resume-manifest.json"
+    ],
+    "expected_files": [],
+    "allowed_changes": [],
+    "expected_valid": false,
+    "expected_status": "invalid",
+    "expected_ids": [],
+    "expected_links": {},
+    "expected_error": "preserving tombstones",
+    "assertions": [
+      "R-002 cannot disappear behind a new C-002",
+      "type changes cannot simulate removal"
+    ]
+  },
+  {
+    "id": "resume-retire-r002-add-r003",
+    "operation": "RESUME",
+    "runner": "resume_manifest",
+    "fixture": "retire_and_extend",
+    "input_files": [
+      "feature_spec.md",
+      "shared/requirements.md",
+      "resume-manifest.json"
+    ],
+    "expected_files": [
+      "feature_spec.md",
+      "shared/requirements.md"
+    ],
+    "allowed_changes": [
+      "feature_spec.md",
+      "shared/requirements.md"
+    ],
+    "expected_valid": true,
+    "expected_status": "ready",
+    "expected_ids": [
+      "R-001",
+      "R-002",
+      "R-003",
+      "AC-001",
+      "D-001",
+      "C-001",
+      "RK-001",
+      "Q-001"
+    ],
+    "expected_links": {
+      "R-002.status": "retired",
+      "R-002.retired_reason": "The record is no longer applicable, but its canonical identity remains reserved."
+    },
+    "assertions": [
+      "R-002 remains physically present as a retired tombstone",
+      "R-003 is the next monotonic requirement ID",
+      "retirement and extension can occur in one authorized transition"
+    ]
+  },
+  {
+    "id": "resume-retired-reason-tautology-rejected",
+    "operation": "RESUME",
+    "runner": "resume_manifest",
+    "fixture": "retired_reason_tautology",
+    "input_files": [
+      "shared/requirements.md",
+      "resume-manifest.json"
+    ],
+    "expected_files": [],
+    "allowed_changes": [],
+    "expected_valid": false,
+    "expected_status": "invalid",
+    "expected_ids": [],
+    "expected_links": {},
+    "expected_error": "non-placeholder retired_reason",
+    "assertions": [
+      "terminal-state labels are not accepted as retirement reasons",
+      "a tombstone requires a material explanation"
+    ]
+  },
+  {
     "id": "readiness-read-only",
     "operation": "READINESS",
     "runner": "readiness_read_only",

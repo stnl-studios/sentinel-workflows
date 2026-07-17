@@ -16,14 +16,14 @@
       "expected_mode": "RESUME"
     },
     {
-      "id": "trigger-readiness-localized",
-      "request": "Check only R-004 and its linked criteria with MODE=READINESS.",
+      "id": "trigger-readiness-local",
+      "request": "Check only R-004 and its linked criteria with MODE=READINESS and READINESS_SCOPE=LOCAL.",
       "expected_trigger": true,
       "expected_mode": "READINESS"
     },
     {
       "id": "trigger-readiness-global",
-      "request": "Review global documentary readiness with MODE=READINESS.",
+      "request": "Review documentary readiness with MODE=READINESS and READINESS_SCOPE=GLOBAL.",
       "expected_trigger": true,
       "expected_mode": "READINESS"
     },
@@ -140,8 +140,8 @@
   ],
   "readiness": [
     {
-      "id": "readiness-localized-read-only",
-      "scope": "localized",
+      "id": "readiness-local-read-only",
+      "scope": "LOCAL",
       "mutates": false,
       "reads_all_material_authority": false,
       "may_declare_global_ready": false,
@@ -149,23 +149,23 @@
     },
     {
       "id": "readiness-global-read-only",
-      "scope": "global",
+      "scope": "GLOBAL",
       "mutates": false,
       "reads_all_material_authority": true,
       "may_declare_global_ready": true,
       "expected_allowed": true
     },
     {
-      "id": "readiness-localized-mutation-rejected",
-      "scope": "localized",
+      "id": "readiness-local-mutation-rejected",
+      "scope": "LOCAL",
       "mutates": true,
       "reads_all_material_authority": false,
       "may_declare_global_ready": false,
       "expected_allowed": false
     },
     {
-      "id": "readiness-localized-global-verdict-rejected",
-      "scope": "localized",
+      "id": "readiness-local-global-verdict-rejected",
+      "scope": "LOCAL",
       "mutates": false,
       "reads_all_material_authority": false,
       "may_declare_global_ready": true,
@@ -173,10 +173,54 @@
     },
     {
       "id": "readiness-global-index-only-rejected",
-      "scope": "global",
+      "scope": "GLOBAL",
       "mutates": false,
       "reads_all_material_authority": false,
       "may_declare_global_ready": true,
+      "expected_allowed": false
+    }
+  ],
+  "readiness_scope_negative_controls": [
+    {
+      "id": "readiness-scope-lowercase-local-rejected",
+      "value": "local",
+      "negative_control": true,
+      "expected_allowed": false
+    },
+    {
+      "id": "readiness-scope-lowercase-global-rejected",
+      "value": "global",
+      "negative_control": true,
+      "expected_allowed": false
+    },
+    {
+      "id": "readiness-scope-localized-alias-rejected",
+      "value": "localized",
+      "negative_control": true,
+      "expected_allowed": false
+    },
+    {
+      "id": "readiness-scope-localized-case-variant-rejected",
+      "value": "LOCALIZED",
+      "negative_control": true,
+      "expected_allowed": false
+    },
+    {
+      "id": "readiness-scope-case-variant-local-rejected",
+      "value": "Local",
+      "negative_control": true,
+      "expected_allowed": false
+    },
+    {
+      "id": "readiness-scope-case-variant-global-rejected",
+      "value": "Global",
+      "negative_control": true,
+      "expected_allowed": false
+    },
+    {
+      "id": "readiness-scope-former-repository-alias-rejected",
+      "value": "repository",
+      "negative_control": true,
       "expected_allowed": false
     }
   ],
@@ -286,7 +330,7 @@
       "expected_scout_calls": 1
     },
     {
-      "id": "explore-second-scout-hard-cap",
+      "id": "explore-second-scout-contractual-limit",
       "size": "large",
       "paths_provided": false,
       "deterministic_evidence_sufficient": false,
@@ -297,6 +341,26 @@
       "scouts_already_used": 1,
       "expected_scout_eligible": false,
       "expected_scout_calls": 0
+    }
+  ],
+  "scout_scope_negative_controls": [
+    {
+      "id": "scout-scope-second-question-rejected",
+      "requested_change": "add_second_evidence_question",
+      "negative_control": true,
+      "expected_allowed": false
+    },
+    {
+      "id": "scout-scope-new-root-rejected",
+      "requested_change": "expand_allowed_roots",
+      "negative_control": true,
+      "expected_allowed": false
+    },
+    {
+      "id": "scout-scope-generic-survey-rejected",
+      "requested_change": "replace_bounded_search_with_repository_survey",
+      "negative_control": true,
+      "expected_allowed": false
     }
   ],
   "security": [
@@ -351,10 +415,10 @@
       "invent_metrics": false
     },
     {
-      "id": "tokens-large-localized-change",
+      "id": "tokens-large-focused-change",
       "operation": "RESUME",
       "size": "large",
-      "expected_read_scope": "localized_records",
+      "expected_read_scope": "focused_records",
       "metrics_available": false,
       "invent_metrics": false
     },

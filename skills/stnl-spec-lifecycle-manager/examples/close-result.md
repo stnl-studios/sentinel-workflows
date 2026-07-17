@@ -28,7 +28,7 @@ specs/invitation-expiration/
     └── retained-record.txt
 ```
 
-The lifecycle manager validates all gates, builds the final document, compares every canonical item and durable feature section, then removes `shared/`. Only afterward does it validate the closed form and compare the external snapshot.
+The lifecycle manager validates all gates, creates the external attestation, builds the final document, compares every canonical item and durable feature section, then removes `shared/`. The publisher revalidates the attestation, exact rendered feature bytes, absence of ignored OS metadata, closed form, and protected external snapshot before terminal publication.
 
 After CLOSE:
 

@@ -21,7 +21,7 @@ update_policy: Change only through a deliberate canonical-contract decision.
 | Risks | `RK-###` | `shared/risks.md` |
 | Questions | `Q-###` | `shared/questions.md` |
 
-The generated heading is `### AC-001 — Observable title`, using an em dash. The heading is the sole authority for ID and type: never repeat it in an `id:` field or YAML block. Preserve every valid ID exactly across RESUME and CLOSE; never renumber, reuse, fill gaps, change prefix/type, or change casing. Allocate the next ID as the highest suffix ever allocated in that category plus one. Removed, skipped, superseded, dropped, and retired IDs remain reserved.
+The generated heading is `### AC-001 — Observable title`, using an em dash. The heading is the sole authority for ID and type: never repeat it in an `id:` field or YAML block. Preserve every valid ID exactly across RESUME and CLOSE; never physically remove, renumber, reuse, fill gaps, change prefix/type, or change casing. Allocate the next ID as the highest suffix present in that category plus one. Because records remain as documentary tombstones, the materialized set is the high-water mark and no separate ID ledger exists. An inapplicable non-question record stays under its original heading in the canonical terminal state with `retired_reason`; Q records use their existing resolved, bypassed, or dropped forms.
 
 ## Structural relationships
 

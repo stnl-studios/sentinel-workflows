@@ -23,13 +23,14 @@ Deterministic executable coverage includes:
 - active H1, preamble, exact sections/order, shared-file grammar, duplicate authority, and derived indexes;
 - `R-*` requirement coverage through `AC.verifies`, formal justification, disconnected ACs, and invalid references;
 - blocking, non-blocking, irrelevant, open, and final question shapes;
-- INIT destination and allowed-file checks; RESUME feature/record identity, ID preservation, monotonic allocation, gap/reuse/removal/type/title protection, and external boundaries;
-- localized and global READINESS snapshot equality plus explicit rejection of the legacy name;
-- exact CLOSE authority equality, including invented R/AC/D/C/RK/Q items, changed titles/content, discarded questions, attempted answer incorporation, and external immutability;
-- isolated candidate validation, interruption before publish, rollback/no-partial-state behavior, and successful INIT/CLOSE publication;
+- INIT destination and allowed-file checks; RESUME feature/record identity, physical-removal prohibition, retired tombstones/reasons, monotonic allocation, gap/reuse/type/title protection, and external boundaries;
+- `LOCAL` and `GLOBAL` READINESS snapshot equality, canonical case-sensitive values, and explicit rejection of lowercase and former aliases;
+- exact CLOSE authority equality, including retired tombstones, invented or changed items, discarded questions, attempted answer incorporation, and external immutability;
+- strict `GLOBAL/READY` readiness attestations at renderer and publisher, stale/mismatched snapshot rejection, exact deterministic CLOSE feature bytes, rejected OS metadata, isolated candidate validation, post-rename source verification, rollback/conflict recovery, and successful publication;
 - prompt-injection-as-data behavior and static Codex/Claude scout boundaries;
-- small, medium, large, localized, transversal, global, deterministic-search, scout-eligible, zero-scout, and one-scout-cap policy scenarios without invented token metrics.
+- small, medium, large, focused, transversal, all-authority, deterministic-search, scout-eligible, zero-scout, and contractual one-call policy scenarios without invented token metrics;
+- explicit negative controls for READINESS scope aliases and scout question/root/survey expansion.
 
-`PLANNING` appears only in an explicit negative fixture and CLI rejection check; it is never accepted as a mode or alias. `broken_references` appears only as a calculated validator diagnostic or a negative persistence mutation.
+`PLANNING` and the removed boolean CLOSE argument appear only in explicit rejection controls. `broken_references` appears only as a calculated validator diagnostic or a negative persistence mutation. Publisher locks are persistent sibling runtime metadata and are excluded from readiness, rendering, and authority snapshots.
 
 The runner does not invoke Codex or Claude Code as lifecycle models and does not measure model tokens. Static triggering, security, exploration, and token scenarios prove catalog/adapter contract consistency, not real model behavior. A real-model eval may be reported only by an external authenticated run that records the platform, model, observed reads/writes, and actual result.

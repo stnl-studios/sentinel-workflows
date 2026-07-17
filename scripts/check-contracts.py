@@ -57,6 +57,14 @@ class LauncherSpec:
 
 
 CONTEXT_HEADING = "Contexto adicional (opcional):"
+READINESS_INSTRUCTIONS = (
+    "`READINESS_SCOPE` aceita somente `LOCAL` ou `GLOBAL`, com correspondência case-sensitive e sem aliases.",
+    "Com `LOCAL`, `READINESS_FOCUS` é obrigatório e delimitado, e o resultado nunca declara readiness global. `GLOBAL` avalia toda a autoridade material. Ambos os escopos são estritamente read-only.",
+    "Somente após verdict semântico `GLOBAL/READY`, gere a readiness attestation externa e efêmera com o comando determinístico canônico; nunca a escreva manualmente nem dentro do workspace.",
+)
+CLOSE_INSTRUCTIONS = (
+    "Exija uma readiness attestation externa `GLOBAL/READY` para o snapshot atual, use somente o renderer determinístico canônico e passe a mesma attestation ao publisher; rejeite attestation stale e não aceite confirmação booleana.",
+)
 CODEX_EXECUTE_INSTRUCTIONS = (
     "Após implementar e registrar o escopo alterado, faça spawn obrigatoriamente para a primeira chamada ao agente customizado `stnl_validation_runner` com `OPERATION=EXECUTE_SLICE`, o SPEC path, execution root derivado, slice, paths de plans e tasks, evidências relevantes, escopo alterado, rodada automática e o contexto adicional aplicável. Invoque o runner no mínimo uma vez e no máximo três vezes nesta mesma operação manual, nas rodadas `1/3`, `2/3` e `3/3`; nunca faça uma quarta chamada nem use loop ilimitado. Não pule o runner por mudança simples nem por acreditar que nenhum check seja aplicável; a descoberta independente e `TESTS_NOT_APPLICABLE` pertencem ao runner.",
     "Não passe logs completos. Não execute no contexto principal testes, builds, linters, typechecks, compilações ou outros comandos de verificação. Aguarde cada retorno e persista-o append-only em `Implementation Test Evidence`, com o próximo `implementation-check-NN` global, rodada, descoberta de checks, justificativa de não aplicabilidade, estado, comandos, falhas, correções cobertas e escopo.",
@@ -118,9 +126,14 @@ LAUNCHERS = {
             ("READINESS_SCOPE", "{{READINESS_SCOPE}}"),
             ("READINESS_FOCUS", "{{READINESS_FOCUS}}"),
         ),
+        READINESS_INSTRUCTIONS,
     ),
     "spec-close": LauncherSpec(
-        "stnl-spec-lifecycle-manager", "MODE", "CLOSE", (("SPEC_PATH", "{{SPEC_PATH}}"),)
+        "stnl-spec-lifecycle-manager",
+        "MODE",
+        "CLOSE",
+        (("SPEC_PATH", "{{SPEC_PATH}}"),),
+        CLOSE_INSTRUCTIONS,
     ),
     "execution-plan": LauncherSpec(
         "stnl-execution-planner", "OPERATION", "PLAN", (("SPEC_PATH", "{{SPEC_PATH}}"),)
@@ -308,6 +321,12 @@ def check_launcher_contract(root: Path) -> None:
                 reject("L005_REMOVED_CONTRACT", f"{actual[name]}: removed operation remains: {token}")
         if "PLANNING" in text:
             reject("L005_REMOVED_CONTRACT", f"{actual[name]}: removed lifecycle mode remains: PLANNING")
+        if re.search(
+            r"SCOUT_CALL|stnl[-_]spec[-_]context[-_]scout|context[ -]scout",
+            text,
+            re.IGNORECASE,
+        ):
+            reject("L015_SCOUT_ISOLATION", f"{actual[name]}: launcher invokes or routes to a context scout")
         if re.search(r"(?m)^SLICES=", text):
             reject("L005_REMOVED_CONTRACT", f"{actual[name]}: removed SLICES input remains")
         if re.search(r"(?i)paralel|parallel", text):
@@ -331,6 +350,16 @@ def check_launcher_contract(root: Path) -> None:
             )
         if "SLICE" in placeholders and spec.operation not in {"EXECUTE_SLICE", "APPLY_FINDINGS", "VALIDATE_SLICE"}:
             reject("L004_INPUTS", f"{actual[name]}: SLICE is not allowed for {spec.operation}")
+
+        if name == "spec-readiness":
+            for marker in READINESS_INSTRUCTIONS:
+                if marker not in text:
+                    reject("L015_READINESS_SCOPE", f"{actual[name]}: canonical READINESS scope boundary is missing")
+            if re.search(
+                r"`(?:local|global|localized|repository)`|READINESS_SCOPE\s*=\s*(?:local|global|localized|repository)\b",
+                text,
+            ):
+                reject("L015_READINESS_SCOPE", f"{actual[name]}: READINESS scope alias or case variant is forbidden")
 
         if name in SHARED_EXECUTION and re.search(
             r"stnl[_-]validation[_-]runner|@agent-|Claude|Codex|\bspawn\b|\bdeleg", text, re.IGNORECASE

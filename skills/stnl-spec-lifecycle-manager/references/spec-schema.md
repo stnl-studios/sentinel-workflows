@@ -71,23 +71,23 @@ Each shared file contains only its File Purpose Header, expected H1, and at leas
 
 ### Requirements (`R-*`)
 
-Metadata order: required `status`; optional `coverage_justification`; optional `references`. Status is `in_scope`, `out_of_scope`, or `superseded`. Narrative is non-empty requirement authority. `coverage_justification` is allowed only on `in_scope` requirements and must explicitly explain why no observable AC applies; omit it when an active AC verifies the requirement. Requirements never list AC IDs.
+Metadata: `status`; `retired_reason` only when retired; optional `coverage_justification`, `references`. Status: `in_scope|out_of_scope|superseded|retired`. Narrative is non-empty. Retirement reasons are specific and non-placeholder. Coverage justification is only for uncovered `in_scope` requirements; requirements never list AC IDs.
 
 ### Decisions (`D-*`)
 
-Metadata order: required `status`; optional `references`. Status is `accepted` or `superseded`. Narrative has exactly these non-empty sections in order: `#### Contexto`, `#### Decisão`, `#### Impacto`.
+Metadata: `status`; `retired_reason` only when retired; optional `references`. Status: `accepted|superseded|retired`. Keep Contexto, Decisão, and Impacto; retirement requires a specific reason.
 
 ### Acceptance Criteria (`AC-*`)
 
-Metadata order: required `status`; required non-empty `verifies`; optional `blocked_by`; optional `references`. Status is `active`, `superseded`, or `dropped`. `verifies` accepts only existing `R-*`; an active AC in a ready SPEC verifies at least one `in_scope` R. `blocked_by` accepts only open blocking `Q-*` and exists only on active ACs. Narrative is non-empty and is semantically reviewed for concrete, observable, verifiable behavior; scripts validate its grammar and relationships, not quality by keywords.
+Metadata: `status`; `retired_reason` only when retired; non-empty `verifies`; optional `blocked_by`, `references`. Status: `active|superseded|dropped|retired`. Retired ACs preserve links and require a specific reason. Active ACs verify an `in_scope` R; only they may use `blocked_by` for open blocking Qs. Narrative quality is reviewed semantically.
 
 ### Constraints (`C-*`)
 
-Metadata order: required `status`; optional `references`. Status is `active` or `retired`. Narrative has exactly `#### Restrição` and `#### Razão` in order.
+Metadata: `status`; `retired_reason` only when retired; optional `references`. Status: `active|retired`. Preserve Restrição and Razão; retirement requires a specific reason.
 
 ### Risks (`RK-*`)
 
-Metadata order: required `status`; required `impact`; optional `references`. Status is `active` or `retired`; impact is `low`, `medium`, or `high`. Narrative has exactly `#### Risco` and `#### Mitigação` in order. An active mitigated risk remains relevant and does not automatically block readiness.
+Metadata: `status`; `retired_reason` only when retired; `impact`; optional `references`. Status: `active|retired`; impact: `low|medium|high`. Preserve Risco, Mitigação, and impact; retirement requires a specific reason. Active mitigated risks do not automatically block readiness.
 
 ### Questions (`Q-*`)
 

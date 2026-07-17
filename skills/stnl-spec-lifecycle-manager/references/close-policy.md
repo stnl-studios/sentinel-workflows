@@ -1,33 +1,44 @@
 # File Purpose Header
 
 ```yaml
-purpose: Define strict authority equivalence, no-invention closure, and protected external boundaries.
+purpose: Define deterministic lossless closure, global-readiness preconditions, and protected external boundaries.
 status: not_applicable
-read_when: MODE is CLOSE or final one-file consolidation is requested.
+read_when: MODE is CLOSE and structural validation plus global semantic readiness passed.
 do_not_read_when: The SPEC remains active or any documentary blocker is unresolved.
-contains: Documentary preconditions, exact canonical equivalence, candidate consolidation, and publication checks.
+contains: Closure preconditions, renderer and publisher commands, exact preservation, and failure behavior.
 owner: stnl-spec-lifecycle-manager
 update_policy: Change only when documentary closure or preservation policy changes.
 ```
 
 # CLOSE Policy
 
-Require explicit `MODE=CLOSE`. Closure validates documentary authority, never implementation. The source must be an active `ready` workspace that passes global readiness again: no open blocking question, active `blocked_by`, computed broken reference, material conflict, uncovered in-scope requirement, or blocking documentary gap. Every Q must already be `resolved`, `bypassed`, or `dropped`; resolve documentary state through RESUME, never during CLOSE.
+## Preconditions
+
+Require explicit `MODE=CLOSE`, a valid active `ready` source, and `GLOBAL/READY` over that source. All semantic gates pass and every Q is final; use RESUME for change.
+
+Bind the verdict with the strict external readiness attestation. Reject unknown fields, wrong identity/verdict, stale digest, any symlink component, or an internal path. It is ephemeral runtime metadata, never SPEC authority or rendered content.
+
+## Deterministic pipeline
+
+1. After the verdict, create the external attestation:
+   `python3 scripts/create_readiness_attestation.py <SOURCE> <ATTESTATION> --scope GLOBAL --verdict READY`
+2. Build a disjoint candidate without model generation:
+   `python3 scripts/build_closed_spec.py <SOURCE> <CANDIDATE> --readiness-attestation <ATTESTATION>`
+3. The renderer verifies attestation and snapshot, copies externals safely, validates closed form and exact transition, then rechecks immediately before and after renaming its inode-backed candidate; stale state rolls that candidate back. Never refresh a stale attestation.
+4. Do not edit the rendered candidate. Publish it only with:
+   `python3 scripts/publish_spec_lifecycle.py CLOSE <TARGET> <CANDIDATE> --readiness-attestation <ATTESTATION>`
+5. Publisher revalidates that attestation against the live source and requires the exact deterministic candidate before promotion. Delete it after terminal success; a changed source requires new global readiness.
+
+The model does not load the full schema or canonical-ID manual, copy records, choose ordering, rebuild metadata, or paraphrase content. Renderer and validators own those deterministic operations.
 
 ## Exact consolidation
 
-Consolidate the existing Objective; Context; Final Scope; Out of Scope; canonical Requirements; Business Rules; Final Acceptance Criteria; Durable Decisions; Relevant Constraints; Relevant Risks; Important Contracts; and all final Q records under Durable Resolved Questions. The active feature's derived requirement list is replaced by its canonical R records, not copied as a second authority.
+The renderer uses fixed closed scaffolding and section order. It carries Objective, Context, Scope as Final Scope, Out of Scope, Business Rules, and Relevant Contracts as Important Contracts without rewriting their bodies. The active derived requirement list is replaced by canonical R record bytes. Optional closed sections appear only for materialized AC, D, C, RK, or Q categories.
 
-Preserve the feature H1 identity. The closed canonical ID set must exactly equal the source set. For every record, preserve prefix/type, ID, title, status, ordered metadata, narrative, and record identity; only its owning closed section changes. Reject missing or extra records, new IDs or titles, type changes, rewritten content, duplicated authority, or invented requirements, decisions, criteria, constraints, risks, questions, contracts, answers, or justifications. At a valid close source, ACs already have no `blocked_by` and final questions have no `blocks`, so CLOSE performs no semantic cleanup.
+The closed ID set exactly equals the source set. Preserve every record's prefix/type, ID, title, status, ordered metadata, narrative, references, record identity, all retired tombstones with their reasons, and all final Q records; only the owning section changes. Preserve valid gaps and Unicode. Add no timestamp, locale-dependent value, filesystem-order value, random value, summary, answer incorporation, session log, command, plan, test, commit, or implementation evidence.
 
-Preserve every final Q record. Do not infer that an answer was probably incorporated elsewhere. Never add session logs, internal reasoning, command output, operational records, diffs, tests, commits, or implementation evidence to the closed SPEC.
+Reject any missing or extra record, changed title/type/text/metadata, duplicate authority, open question, invalid final form, or external difference. Repeated rendering of the same source produces identical bytes and a final newline.
 
-## Candidate and publication
+## External and failure boundary
 
-Follow the safe-publication protocol in `modes.md`. Build the complete one-file result in an isolated candidate while live `shared/` remains untouched. Validate the candidate structure, exact source-to-result authority equivalence, allowed section relocation, and the external snapshot before publication. Only then publish the final `feature_spec.md` and remove lifecycle-owned `shared/` as one rollback-capable transition. Validate the live closed form and external snapshot again.
-
-Any failure leaves the active source intact; never remove live `shared/` before the candidate and transition pass.
-
-## External boundary
-
-CLOSE must not alter, remove, or move `execution/` or any other directory not owned by the documentary lifecycle. It must not use code, tests, tasks, commits, diffs, or delivery state as a closure gate. External contents may be compared for preservation but are not documentary input.
+`shared/` is lifecycle input and is absent only in the validated candidate. `execution/` and every other external path are copied without dereferencing symlinks and must compare unchanged; ignored OS packaging metadata is neither authority nor copied. Any renderer failure leaves source and destination untouched. Any publication failure or abrupt interruption is handled by the publisher's journaled recovery; never remove live `shared/` or a valid backup manually.

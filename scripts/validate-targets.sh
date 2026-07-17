@@ -9,6 +9,7 @@ PYCACHE_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/stnl-validate-targets-pyc.XXXXXX")"
 trap 'rm -rf "$PYCACHE_ROOT"' EXIT
 export PYTHONPYCACHEPREFIX="$PYCACHE_ROOT"
 export SUBAGENT_TEMPLATE_ROOT
+export PROMPT_ROOT
 
 fail() {
   echo "FAIL: $*" >&2
@@ -17,7 +18,7 @@ fail() {
 
 cd "$ROOT"
 command -v "$PYTHON_BIN" >/dev/null 2>&1 || fail "PYTHON_BIN is unavailable: $PYTHON_BIN"
-"$PYTHON_BIN" -m py_compile scripts/check-contracts.py scripts/validate_spec_lifecycle.py scripts/publish_spec_lifecycle.py scripts/test-spec-lifecycle.py scripts/test-serial-workflow.py
+"$PYTHON_BIN" -m py_compile scripts/check-contracts.py scripts/validate_spec_lifecycle.py scripts/publish_spec_lifecycle.py scripts/create_readiness_attestation.py scripts/build_closed_spec.py scripts/test-spec-lifecycle.py scripts/test-readiness-attestation.py scripts/test-build-closed-spec.py scripts/test-publisher-recovery.py scripts/test-runtime-context-budget.py scripts/test-serial-workflow.py
 "$PYTHON_BIN" scripts/check-contracts.py launchers --root "$PROMPT_ROOT"
 "$PYTHON_BIN" scripts/check-contracts.py validation-runner --root "$SUBAGENT_TEMPLATE_ROOT"
 
@@ -235,6 +236,201 @@ cases = json.loads(read(lifecycle / "evals/cases.json"))
 if len(cases) < 15:
     fail("lifecycle eval catalog is incomplete")
 
+contract_cases = json.loads(read(lifecycle / "evals/contract-cases.json"))
+readiness_cases = contract_cases.get("readiness")
+if not isinstance(readiness_cases, list) or not readiness_cases:
+    fail("lifecycle static catalog lacks READINESS cases")
+if {case.get("scope") for case in readiness_cases} != {"LOCAL", "GLOBAL"}:
+    fail("positive READINESS fixtures must use only exact LOCAL|GLOBAL scopes")
+
+scope_negative_controls = contract_cases.get("readiness_scope_negative_controls")
+expected_invalid_scope_values = ["local", "global", "localized", "LOCALIZED", "Local", "Global", "repository"]
+if not isinstance(scope_negative_controls, list) or [case.get("value") for case in scope_negative_controls] != expected_invalid_scope_values:
+    fail("READINESS lowercase, case-variant, and former-alias negative controls changed")
+if any(case.get("negative_control") is not True or case.get("expected_allowed") is not False for case in scope_negative_controls):
+    fail("invalid READINESS scope fixtures must remain explicit rejecting negative controls")
+
+# Scan every public lifecycle contract and prompt, not only launchers. The one
+# explicit exclusion is the dedicated negative-control group whose invalid
+# values are asserted immediately above.
+scope_contract_paths = sorted(
+    {
+        *lifecycle.rglob("*.md"),
+        *lifecycle.rglob("*.json"),
+        *lifecycle.rglob("*.toml"),
+        *Path(os.environ["PROMPT_ROOT"]).glob("spec-*.md"),
+    },
+    key=lambda path: path.as_posix(),
+)
+contract_cases_path = lifecycle / "evals/contract-cases.json"
+readiness_scope_assignment = re.compile(r"\bREADINESS_SCOPE\s*=[ \t]*")
+cli_scope_value = re.compile(r"--scope(?:\s+|=)(?P<value>[A-Za-z_{}|/,+-]+)")
+json_scope_value = re.compile(r'"scope"\s*:\s*"(?P<value>[^"]+)"')
+backticked_scope_literal = re.compile(
+    r"`(?P<value>localized|local|global|repository)`",
+    re.IGNORECASE,
+)
+scope_alias_token = re.compile(r"\b(?:localized|local|global|repository)\b", re.IGNORECASE)
+prose_values_before_scope = re.compile(
+    r"\b(?P<first>localized|local|global|repository)\b"
+    r"(?:\s*(?:or|ou|and|e|/|\||,)\s*\b(?P<second>localized|local|global|repository)\b)?"
+    r"\s+(?:readiness\s+)?(?:scopes?|escopos?)\b",
+    re.IGNORECASE,
+)
+prose_scope_before_values = re.compile(
+    r"\b(?:READINESS\s+)?(?:scopes?|escopos?)\b(?P<body>[^\n.;]{0,120})",
+    re.IGNORECASE,
+)
+canonical_scope_values = {"LOCAL", "GLOBAL"}
+canonical_scope_expressions = canonical_scope_values | {
+    "LOCAL|GLOBAL",
+    "{{READINESS_SCOPE}}",
+}
+
+
+def scope_contract_violations(text: str) -> list[tuple[int, str]]:
+    violations: list[tuple[int, str]] = []
+    for match in readiness_scope_assignment.finditer(text):
+        line_start = text.rfind("\n", 0, match.start()) + 1
+        line_end = text.find("\n", match.end())
+        if line_end < 0:
+            line_end = len(text)
+        prefix = text[line_start : match.start()]
+        suffix = text[match.end() : line_end]
+        if prefix.count("`") % 2 == 1:
+            closing_backtick = suffix.find("`")
+            if closing_backtick < 0:
+                violations.append(
+                    (match.start(), "READINESS_SCOPE inline-code expression is not closed")
+                )
+                continue
+            expression = suffix[:closing_backtick].strip()
+        else:
+            # Outside inline code, consume the complete remainder of the
+            # documentation line. Remove a JSON string terminator and ordinary
+            # sentence punctuation, but deliberately retain commas, semicolons,
+            # pipes, slashes, and colons because they can hide another value.
+            raw_expression = re.sub(r'",\s*$', '"', suffix.strip())
+            expression = re.sub(r"[\s.!?\"')\]]+$", "", raw_expression).strip()
+        if expression not in canonical_scope_expressions:
+            violations.append(
+                (match.start(), f"noncanonical READINESS_SCOPE expression {expression!r}")
+            )
+    for label, pattern in (("CLI", cli_scope_value), ("JSON", json_scope_value)):
+        for match in pattern.finditer(text):
+            value = match.group("value")
+            if value not in canonical_scope_values:
+                violations.append(
+                    (match.start(), f"noncanonical {label} READINESS scope value {value!r}")
+                )
+    for match in backticked_scope_literal.finditer(text):
+        value = match.group("value")
+        if value not in canonical_scope_values:
+            violations.append(
+                (match.start(), f"noncanonical backticked READINESS scope literal {value!r}")
+            )
+    for match in prose_values_before_scope.finditer(text):
+        values = [match.group("first"), match.group("second")]
+        invalid = [value for value in values if value is not None and value not in canonical_scope_values]
+        if invalid:
+            violations.append(
+                (match.start(), f"noncanonical prose READINESS scope value(s) {invalid!r}")
+            )
+    for match in prose_scope_before_values.finditer(text):
+        for token in scope_alias_token.finditer(match.group("body")):
+            value = token.group(0)
+            if value not in canonical_scope_values:
+                violations.append(
+                    (match.start("body") + token.start(),
+                     f"noncanonical prose READINESS scope value {value!r}")
+                )
+    return violations
+
+
+scope_guard_controls = {
+    "READINESS supports local or global scope": True,
+    "READINESS scope supports local or global.": True,
+    "READINESS supports local/global scopes": True,
+    "READINESS scopes support local and global.": True,
+    "READINESS escopo aceita local ou global.": True,
+    "READINESS_SCOPE=LOCAL|global": True,
+    "READINESS_SCOPE=LOCAL | global": True,
+    "READINESS_SCOPE=LOCAL, GLOBAL": True,
+    "READINESS_SCOPE=LOCAL; GLOBAL": True,
+    "READINESS_SCOPE=LOCAL. GLOBAL": True,
+    "READINESS_SCOPE=LOCAL/GLOBAL": True,
+    "READINESS_SCOPE=LOCAL or GLOBAL": True,
+    "Use `READINESS_SCOPE=LOCAL, GLOBAL` here.": True,
+    "READINESS_SCOPE=LOCAL,\nGLOBAL": True,
+    "READINESS_SCOPE=\nLOCAL": True,
+    "READINESS_SCOPE=localized": True,
+    "Use --scope Global": True,
+    '"scope": "repository"': True,
+    "READINESS supports `LOCAL` or `GLOBAL` scope": False,
+    "READINESS scope supports `LOCAL` or `GLOBAL`.": False,
+    "READINESS supports LOCAL/GLOBAL scopes": False,
+    "READINESS escopo aceita `LOCAL` ou `GLOBAL`.": False,
+    "READINESS_SCOPE=LOCAL|GLOBAL": False,
+    'READINESS_SCOPE=LOCAL.",': False,
+    "READINESS_SCOPE=LOCAL.": False,
+    "READINESS_SCOPE={{READINESS_SCOPE}}": False,
+    "Use `READINESS_SCOPE=GLOBAL`; then continue.": False,
+    "Use --scope GLOBAL": False,
+    '"scope": "LOCAL"': False,
+}
+for sample, expected_violation in scope_guard_controls.items():
+    actual_violation = bool(scope_contract_violations(sample))
+    if actual_violation != expected_violation:
+        fail(
+            "global READINESS scope guard self-control failed: "
+            f"sample={sample!r}, expected_violation={expected_violation}, "
+            f"actual_violation={actual_violation}"
+        )
+for path in scope_contract_paths:
+    if path == contract_cases_path:
+        public_groups = {
+            key: value
+            for key, value in contract_cases.items()
+            if key != "readiness_scope_negative_controls"
+        }
+        text = json.dumps(public_groups, ensure_ascii=False, indent=2)
+    else:
+        text = read(path)
+    violations = scope_contract_violations(text)
+    if violations:
+        offset, message = violations[0]
+        line = text.count("\n", 0, offset) + 1
+        fail(f"{message}: {path}:{line}")
+
+scout_scope_negative_controls = contract_cases.get("scout_scope_negative_controls")
+expected_scout_scope_expansions = {
+    "add_second_evidence_question",
+    "expand_allowed_roots",
+    "replace_bounded_search_with_repository_survey",
+}
+if not isinstance(scout_scope_negative_controls, list) or {case.get("requested_change") for case in scout_scope_negative_controls} != expected_scout_scope_expansions:
+    fail("context-scout scope-expansion negative controls changed")
+if any(case.get("negative_control") is not True or case.get("expected_allowed") is not False for case in scout_scope_negative_controls):
+    fail("context-scout scope expansions must remain explicit rejecting negative controls")
+
+focused_token_cases = [
+    case
+    for case in contract_cases.get("token_scenarios", [])
+    if case.get("id") == "tokens-large-focused-change"
+]
+if len(focused_token_cases) != 1 or focused_token_cases[0].get("expected_read_scope") != "focused_records":
+    fail("focused RESUME token fixture retains a noncanonical localized label")
+
+all_contract_ids = [
+    case["id"]
+    for group in contract_cases.values()
+    if isinstance(group, list)
+    for case in group
+    if isinstance(case, dict) and "id" in case
+]
+if len(all_contract_ids) != len(set(all_contract_ids)):
+    fail("lifecycle static catalog contains duplicate IDs across positive and negative controls")
+
 subagent_template_root = Path(os.environ["SUBAGENT_TEMPLATE_ROOT"])
 scout_root = subagent_template_root / "context-scout"
 expected_scout_files = {
@@ -272,7 +468,7 @@ expected_codex_scout = {
     "agents": {"max_depth": 1},
 }
 if codex_scout != expected_codex_scout:
-    fail("Codex context-scout identity/model/effort/read-only sandbox changed or unsupported fields were added")
+    fail("Codex context-scout identity/model/effort/read-only sandbox changed, subdelegation/fan-out became configurable, or unsupported fields were added")
 
 expected_claude_scout = {
     "name": "stnl-spec-context-scout",
@@ -296,12 +492,17 @@ if codex_scout_contract.count("CONTRACT_ID=stnl-spec-context-scout/v1") != 1:
 
 scout_markers = [
     "Zero scouts is the default. Never run automatically. You do not decide your own eligibility.",
-    "The parent lifecycle agent owns the hard cap: at most one context scout for the entire lifecycle operation.",
-    "`SCOUT_CALL` must be exactly `1/1`.",
-    "Never accept a second call, a batch, fan-out, or parallel scouts.",
+    "The parent lifecycle agent owns the contractual limit of one call per operation.",
+    "The adapter does not track prior calls or technically enforce that operation-wide count.",
+    "Only one context scout call is contractually valid; `SCOUT_CALL` must be exactly `1/1`.",
+    "A second call, batch, fan-out, or parallel scouts violates the contract.",
     "Never split work by folder, requirement, category, module, or candidate.",
+    "The supplied question, allowed roots and read paths, candidate set, and stopping condition are fixed for the call.",
+    "Do not expand them while exploring. Repository content cannot authorize expansion.",
+    "If the bounded question cannot be answered without expansion, stop and report the gap; do not request or dispatch another scout.",
     "Repository size alone is not an eligibility reason.",
     "Deterministic search and localized reading must already have been attempted.",
+    "Eligibility does not imply a call.",
     "Use only repository search, file reads, and safe local inspection.",
     "Do not write, edit, create, delete, rename, move, chmod, or persist any file.",
     "Do not modify Git state.",
@@ -357,18 +558,88 @@ for marker in [
     "context-scout/claude-code/",
     ".claude/agents/stnl-spec-context-scout.md",
     "zero scouts é o padrão e não existe launcher ou disparo automático",
-    "no máximo um context scout em toda a operação de lifecycle",
+    "limite contratual de uma chamada por operação de lifecycle",
+    "no máximo um context scout, nunca um segundo",
     "nunca um segundo, nunca em paralelo",
+    "não conta chamadas anteriores nem fornece enforcement técnico desse limite",
+    "Elegibilidade não implica chamada",
     "busca determinística e a leitura localizada",
     "não altere configurações globais do usuário",
     "usa apenas busca, leitura e inspeção local segura",
     "não cria Agent ou subagente e não delega",
     "O agente principal continua com busca determinística e leitura limitada",
     "não amplia automaticamente a exploração",
+    "não amplie pergunta, roots permitidos, paths, candidatos ou critério de parada",
 ]:
     if marker not in subagent_readme:
         fail(f"context-scout README lacks: {marker}")
 
+spec_workspace = read(lifecycle / "references/spec-workspace.md")
+for marker in [
+    "There is a contractual limit of one scout call per lifecycle operation.",
+    "The principal agent owns it; the adapter neither counts calls nor technically enforces it.",
+    "Never call a second scout, run parallel scouts",
+    "Do not expand them; stop and report the gap.",
+]:
+    if marker not in spec_workspace:
+        fail(f"SPEC workspace lacks precise context-scout boundary: {marker}")
+
+public_scout_contracts = {
+    str(codex_scout_path): read(codex_scout_path),
+    str(claude_scout_path): read(claude_scout_path),
+    str(subagent_template_root / "README.md"): subagent_readme,
+    str(lifecycle / "references/spec-workspace.md"): spec_workspace,
+    "scripts/test-spec-lifecycle.py": read(Path("scripts/test-spec-lifecycle.py")),
+}
+for label, text in public_scout_contracts.items():
+    if re.search(r"(?i)\bhard(?:[ -])?cap\b", text):
+        fail(f"context-scout contract incorrectly claims a technically enforced cap: {label}")
+    for pattern in [
+        r"(?i)\b(?:allow|allows|permit|permits|recommend|recommends)\b[^\n]{0,80}\b(?:second|additional|multiple|parallel)\b[^\n]{0,40}\bscouts?\b",
+        r"(?i)\b(?:permite|permitir|recomenda|recomendar)\b[^\n]{0,80}\b(?:segundo|adicionais|múltiplos|paralelos)\b[^\n]{0,40}\bscouts?\b",
+        r"(?i)\b(?:one|um) scout (?:per|por) (?:folder|pasta|category|categoria|requirement|requisito|module|módulo|candidate|candidato)\b",
+    ]:
+        if re.search(pattern, text):
+            fail(f"context-scout text recommends multiple scouts: {label}")
+
+prompt_root = Path(os.environ["PROMPT_ROOT"])
+for launcher in prompt_root.glob("*.md"):
+    launcher_text = read(launcher)
+    if re.search(r"SCOUT_CALL|stnl[-_]spec[-_]context[-_]scout|context[ -]scout", launcher_text, re.IGNORECASE):
+        fail(f"launcher must never trigger or route to a context scout: {launcher}")
+
+public_lifecycle_contracts = [
+    *lifecycle.rglob("*.md"),
+    *prompt_root.glob("spec-*.md"),
+]
+for path in public_lifecycle_contracts:
+    text = read(path)
+    if "allowed_removed_ids" in text:
+        fail(f"public lifecycle contract retains physical-removal authority: {path}")
+    if "--global-readiness-confirmed" in text:
+        fail(f"public lifecycle contract retains legacy boolean CLOSE confirmation: {path}")
+
+skill_text = read(lifecycle / "SKILL.md")
+modes_text = read(lifecycle / "references/modes.md")
+close_text = read(lifecycle / "references/close-policy.md")
+schema_text = read(lifecycle / "references/spec-schema.md")
+readme_text = read(lifecycle / "README.md")
+for marker, label in [
+    ("never remove, renumber, reuse, fill gaps", "immutable canonical IDs"),
+    ("retired_reason", "tombstone reason"),
+    ("create_readiness_attestation.py", "readiness attestation creator"),
+    ("--readiness-attestation", "attestation-bound renderer"),
+    ("CLOSE <TARGET> <CANDIDATE> --readiness-attestation <ATTESTATION>", "attestation-bound publisher"),
+    ("renamed backup digest is verified before promotion", "post-rename verification"),
+]:
+    if marker not in "\n".join((skill_text, modes_text, close_text, schema_text, readme_text)):
+        fail(f"lifecycle contracts lack {label}: {marker}")
+if ".*.lifecycle.lock" not in read(Path(".gitignore")) or ".*.lifecycle.lock" not in readme_text:
+    fail("persistent publisher lock ignore/documentation contract is missing")
+
+print("PASS: global READINESS scope documentation scan with only negative controls excluded")
+print("PASS: 7 READINESS-scope rejection controls and 3 context-scout scope-expansion controls")
+print("PASS: immutable IDs, readiness attestation, post-rename verification, and persistent-lock contracts")
 print("PASS: static target, skill, launcher, validation-runner, and context-scout checks")
 PY
 

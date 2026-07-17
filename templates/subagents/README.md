@@ -67,11 +67,11 @@ Copie somente o adaptador da plataforma usada, a partir do pacote isolado `templ
 
 Não copie os dois adaptadores para o mesmo projeto e não altere configurações globais do usuário. O Codex usa `gpt-5.4-mini` com effort `medium`, sandbox `read-only`, approvals desabilitadas e web search desabilitada. O Claude Code usa Haiku com effort `medium` e somente `Read`, `Glob` e `Grep`.
 
-## Gate e hard cap
+## Gate e limite contratual
 
-O agente principal da operação de lifecycle deve concluir primeiro a busca determinística e a leitura localizada. Tamanho do repositório, sozinho, não torna o scout elegível. O scout só pode ser considerado quando ainda existir uma lacuna relevante e quando seu custo estimado for menor do que carregar a exploração no contexto principal.
+O agente principal da operação de lifecycle deve concluir primeiro a busca determinística e a leitura localizada. Tamanho do repositório, sozinho, não torna o scout elegível. O scout só pode ser considerado quando ainda existir uma lacuna relevante e quando seu custo estimado for menor do que carregar a exploração no contexto principal. Elegibilidade não implica chamada.
 
-O agente principal controla o budget: no máximo um context scout em toda a operação de lifecycle, nunca um segundo, nunca em paralelo e nunca um por pasta, requisito, categoria, módulo ou candidato. A invocação explícita deve informar `SCOUT_CALL=1/1`, modo de lifecycle, pergunta delimitada, lacuna restante, buscas e leituras já tentadas, âncoras iniciais, paths permitidos/bloqueados e critério de parada. Entrada ausente, ampla, automática, repetida, em batch ou paralela deve ser recusada pelo adapter.
+O agente principal aplica o limite contratual de uma chamada por operação de lifecycle: no máximo um context scout, nunca um segundo, nunca em paralelo e nunca um por pasta, requisito, categoria, módulo ou candidato. O adapter não conta chamadas anteriores nem fornece enforcement técnico desse limite; `SCOUT_CALL=1/1` identifica a única chamada contratualmente válida. A invocação explícita deve informar modo de lifecycle, pergunta delimitada, lacuna restante, buscas e leituras já tentadas, âncoras iniciais, paths permitidos/bloqueados e critério de parada. Entrada ausente, ampla, automática, repetida, em batch, paralela ou que amplie o escopo deve ser recusada pelo adapter. Durante a chamada, não amplie pergunta, roots permitidos, paths, candidatos ou critério de parada; pare e relate a lacuna se a expansão fosse necessária.
 
 ## Limites e saída
 

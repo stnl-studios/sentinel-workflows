@@ -1,0 +1,139 @@
+{
+  "schema_version": 1,
+  "baseline_revision": "6d53ab0c5e5de015d697c9ea1f9e100e2a75e2c2",
+  "measurement": {
+    "bytes": "sum of raw file byte lengths",
+    "words": "sum of whitespace-separated words, equivalent to wc -w for these UTF-8 Markdown files",
+    "tokens": "not measured; no tokenizer dependency is required"
+  },
+  "maintenance_only": [
+    "skills/stnl-spec-lifecycle-manager/references/token-economy.md",
+    "skills/stnl-spec-lifecycle-manager/maintenance/runtime-context-budget.json"
+  ],
+  "modes": {
+    "INIT_DRAFT": {
+      "baseline": {
+        "files": [
+          "skills/stnl-spec-lifecycle-manager/SKILL.md",
+          "skills/stnl-spec-lifecycle-manager/references/modes.md",
+          "skills/stnl-spec-lifecycle-manager/references/spec-workspace.md",
+          "skills/stnl-spec-lifecycle-manager/references/spec-schema.md"
+        ],
+        "words": 3328,
+        "bytes": 24880
+      },
+      "runtime_files": [
+        "skills/stnl-spec-lifecycle-manager/SKILL.md",
+        "skills/stnl-spec-lifecycle-manager/references/modes.md",
+        "skills/stnl-spec-lifecycle-manager/references/spec-workspace.md",
+        "skills/stnl-spec-lifecycle-manager/references/spec-schema.md"
+      ],
+      "ceilings": {"words": 3300, "bytes": 24800},
+      "required_reduction_percent": 0
+    },
+    "INIT_READY": {
+      "baseline": {
+        "files": [
+          "skills/stnl-spec-lifecycle-manager/SKILL.md",
+          "skills/stnl-spec-lifecycle-manager/references/modes.md",
+          "skills/stnl-spec-lifecycle-manager/references/spec-workspace.md",
+          "skills/stnl-spec-lifecycle-manager/references/spec-schema.md",
+          "skills/stnl-spec-lifecycle-manager/references/readiness-gates.md",
+          "skills/stnl-spec-lifecycle-manager/references/canonical-ids.md"
+        ],
+        "words": 4323,
+        "bytes": 32433
+      },
+      "runtime_files": [
+        "skills/stnl-spec-lifecycle-manager/SKILL.md",
+        "skills/stnl-spec-lifecycle-manager/references/modes.md",
+        "skills/stnl-spec-lifecycle-manager/references/spec-workspace.md",
+        "skills/stnl-spec-lifecycle-manager/references/spec-schema.md",
+        "skills/stnl-spec-lifecycle-manager/references/readiness-gates.md",
+        "skills/stnl-spec-lifecycle-manager/references/canonical-ids.md"
+      ],
+      "ceilings": {"words": 4275, "bytes": 32225},
+      "required_reduction_percent": 0
+    },
+    "RESUME_FOCUSED": {
+      "baseline": {
+        "files": [
+          "skills/stnl-spec-lifecycle-manager/SKILL.md",
+          "skills/stnl-spec-lifecycle-manager/references/modes.md",
+          "skills/stnl-spec-lifecycle-manager/references/spec-workspace.md"
+        ],
+        "words": 2223,
+        "bytes": 16668
+      },
+      "runtime_files": [
+        "skills/stnl-spec-lifecycle-manager/SKILL.md",
+        "skills/stnl-spec-lifecycle-manager/references/modes.md",
+        "skills/stnl-spec-lifecycle-manager/references/spec-workspace.md"
+      ],
+      "ceilings": {"words": 2180, "bytes": 16610},
+      "required_reduction_percent": 0
+    },
+    "READINESS_LOCAL": {
+      "baseline": {
+        "files": [
+          "skills/stnl-spec-lifecycle-manager/SKILL.md",
+          "skills/stnl-spec-lifecycle-manager/references/modes.md",
+          "skills/stnl-spec-lifecycle-manager/references/readiness-gates.md",
+          "skills/stnl-spec-lifecycle-manager/references/spec-schema.md",
+          "skills/stnl-spec-lifecycle-manager/references/canonical-ids.md"
+        ],
+        "words": 3454,
+        "bytes": 26004
+      },
+      "runtime_files": [
+        "skills/stnl-spec-lifecycle-manager/SKILL.md",
+        "skills/stnl-spec-lifecycle-manager/references/modes.md",
+        "skills/stnl-spec-lifecycle-manager/references/readiness-gates.md"
+      ],
+      "ceilings": {"words": 1870, "bytes": 14750},
+      "required_reduction_percent": 0
+    },
+    "READINESS_GLOBAL": {
+      "baseline": {
+        "files": [
+          "skills/stnl-spec-lifecycle-manager/SKILL.md",
+          "skills/stnl-spec-lifecycle-manager/references/modes.md",
+          "skills/stnl-spec-lifecycle-manager/references/readiness-gates.md",
+          "skills/stnl-spec-lifecycle-manager/references/spec-schema.md",
+          "skills/stnl-spec-lifecycle-manager/references/canonical-ids.md"
+        ],
+        "words": 3454,
+        "bytes": 26004
+      },
+      "runtime_files": [
+        "skills/stnl-spec-lifecycle-manager/SKILL.md",
+        "skills/stnl-spec-lifecycle-manager/references/modes.md",
+        "skills/stnl-spec-lifecycle-manager/references/readiness-gates.md"
+      ],
+      "ceilings": {"words": 1870, "bytes": 14750},
+      "required_reduction_percent": 15
+    },
+    "CLOSE": {
+      "baseline": {
+        "files": [
+          "skills/stnl-spec-lifecycle-manager/SKILL.md",
+          "skills/stnl-spec-lifecycle-manager/references/modes.md",
+          "skills/stnl-spec-lifecycle-manager/references/readiness-gates.md",
+          "skills/stnl-spec-lifecycle-manager/references/spec-schema.md",
+          "skills/stnl-spec-lifecycle-manager/references/canonical-ids.md",
+          "skills/stnl-spec-lifecycle-manager/references/close-policy.md"
+        ],
+        "words": 3883,
+        "bytes": 29240
+      },
+      "runtime_files": [
+        "skills/stnl-spec-lifecycle-manager/SKILL.md",
+        "skills/stnl-spec-lifecycle-manager/references/modes.md",
+        "skills/stnl-spec-lifecycle-manager/references/readiness-gates.md",
+        "skills/stnl-spec-lifecycle-manager/references/close-policy.md"
+      ],
+      "ceilings": {"words": 2375, "bytes": 18650},
+      "required_reduction_percent": 20
+    }
+  }
+}
