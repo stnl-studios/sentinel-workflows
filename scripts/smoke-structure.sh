@@ -8,12 +8,18 @@ export PYTHONDONTWRITEBYTECODE=1
 
 "$PYTHON_BIN" scripts/test-serial-workflow.py
 
-"$PYTHON_BIN" scripts/test-spec-lifecycle.py
+bash scripts/test-validation-runner-contract.sh
 
-"$PYTHON_BIN" scripts/test-build-closed-spec.py
+bash scripts/test-launcher-contract.sh
 
-"$PYTHON_BIN" scripts/test-readiness-attestation.py
+node --test skills/stnl-spec-lifecycle-manager/runtime/test/*.test.mjs
 
-"$PYTHON_BIN" scripts/test-publisher-recovery.py
+node --test scripts/test-lifecycle-contracts.mjs
 
-"$PYTHON_BIN" scripts/test-runtime-context-budget.py
+node --test scripts/test-lifecycle-validator-adversarial.mjs scripts/test-lifecycle-readiness-adversarial.mjs scripts/test-lifecycle-renderer-adversarial.mjs
+
+node --test scripts/test-lifecycle-distribution.mjs
+
+node --test scripts/test-runtime-context-budget.mjs
+
+node --test scripts/test-subagent-packages.mjs

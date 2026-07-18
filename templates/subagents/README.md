@@ -1,17 +1,23 @@
-# `stnl-validation-runner`
+# Subagentes Sentinel por plataforma
 
-Este agente copiável, barato e isolado executa checks e validação fora do contexto principal para as skills `stnl-slice-executor` e `stnl-slice-quality-manager`.
+Cada pacote de plataforma contém todos os subagentes Sentinel distribuíveis: o `stnl-validation-runner` e o `stnl-spec-context-scout`.
 
 ## Instalação
 
-A cópia parte da pasta `templates/subagents/` deste repositório. Copie somente o adaptador da plataforma usada para a raiz do projeto:
+A cópia parte da pasta `templates/subagents/` deste repositório. Escolha uma plataforma e copie somente o conteúdo da pasta correspondente para a raiz do projeto:
 
-- Codex: copie o conteúdo de `codex/`. O arquivo resultante deve ser `.codex/agents/stnl_validation_runner.toml`.
-- Claude Code: copie o conteúdo de `claude-code/`. O arquivo resultante deve ser `.claude/agents/stnl-validation-runner.md`.
+- Codex: copie somente o conteúdo de `codex/`. Os arquivos resultantes devem ser `.codex/agents/stnl_validation_runner.toml` e `.codex/agents/stnl_spec_context_scout.toml`.
+- Claude Code: copie somente o conteúdo de `claude-code/`. Os arquivos resultantes devem ser `.claude/agents/stnl-validation-runner.md` e `.claude/agents/stnl-spec-context-scout.md`.
 
-Não copie os dois adaptadores para o mesmo projeto. O Codex preserva `gpt-5.4-mini` com effort `medium`; o Claude Code preserva Haiku com effort `medium`.
+Uma única cópia instala os dois subagentes da plataforma escolhida. Nunca copie os adaptadores das duas plataformas para o mesmo projeto e não altere configurações globais do usuário.
 
-## Fluxo manual e delegações automáticas
+## `stnl-validation-runner`
+
+Este agente copiável, barato e isolado executa checks e validação fora do contexto principal para as skills `stnl-slice-executor` e `stnl-slice-quality-manager`.
+
+O Codex preserva `gpt-5.4-mini` com effort `medium`; o Claude Code preserva Haiku com effort `medium`.
+
+### Fluxo manual e delegações automáticas
 
 As operações manuais continuam `PLAN`, `REVIEW_PLAN`, `MATERIALIZE_TASKS`, `REVIEW_TASKS` opcional, `EXECUTE_SLICE`, `VALIDATE_SLICE`, `APPLY_FINDINGS` quando necessário e `CLOSE`. Não existe passo manual adicional de testes.
 
@@ -31,7 +37,7 @@ Discovery actions são leituras e comandos read-only usados apenas para localiza
 
 A descoberta ocorre dentro da chamada automática ao runner; ela não cria um novo passo manual. O contexto principal continua sem executar checks e sem fallback.
 
-## Launchers
+### Launchers
 
 As três operações que usam o runner possuem launcher específico por plataforma:
 
@@ -42,43 +48,36 @@ Copie somente os três launchers da plataforma usada. `execution-plan.md`, `exec
 
 No Codex, os launchers fazem spawn do agente customizado `stnl_validation_runner`. No Claude Code, delegam diretamente a `@agent-stnl-validation-runner`. Os payloads internos incluem operação, SPEC path, execution root derivado, slice, paths de plans e tasks, evidências relevantes, escopo alterado e contexto adicional opcional, sem encaminhar logs completos.
 
-## Test evidence e formal validation
+### Test evidence e formal validation
 
 Depois de cada chamada de `EXECUTE_SLICE`, o contexto principal adiciona um registro append-only em `Implementation Test Evidence`, com `implementation-check-NN` globalmente sequencial na seção e a rodada automática `N/3`. Depois de cada chamada de `APPLY_FINDINGS`, adiciona `findings-check-NN` nas mesmas condições em `Findings Test Evidence`, associado ao ciclo de findings. Uma invocação manual posterior continua a numeração. Cada registro preserva estado, comandos, exit codes, falhas, correções entre rodadas, arquivos, escopo, descoberta de checks, justificativa de não aplicabilidade e efeitos inesperados. Esses checks são evidência auxiliar: não criam Validation Attempt, não criam Effective Validation Base, não emitem `PASS` formal e não marcam a slice `[x]`.
 
 Somente `VALIDATE_SLICE` cria uma Validation Attempt. O runner confere atualidade, autoridade, cobertura e risco das evidências anteriores e decide proporcionalmente quais checks executar ou repetir. Quando recebe `TESTS_NOT_APPLICABLE`, revisa independentemente a descoberta e a justificativa, podendo rejeitá-las, descobrir um check aplicável ou exigir inspeção adicional. Evidência atual pode reduzir repetição injustificada, mas nunca substitui a revisão independente. A validação formal continua aceitando somente `PASS`, `NEEDS_FIX` ou `BLOCKED`; não aplicabilidade auxiliar não garante `PASS`. Somente um `PASS` formal atual fornece o manifesto final completo, cria ou substitui a Effective Validation Base e permite a finalização automática da slice.
 
-## Restrições
+### Restrições
 
 Os dois adaptadores implementam o mesmo contrato. O runner pode ler o escopo necessário e executar comandos, mas não edita código, testes, requisitos, planos ou tasks; não implementa, não corrige, não persiste, não finaliza, não cria subagentes e não faz commit. Artefatos transitórios normais de build ou teste são permitidos e efeitos inesperados no workspace são reportados.
 
 `CLOSE` permanece read-only e não usa o runner, não executa testes, não faz retry nem aplica correções. Ele verifica conclusão, Effective Validation Bases, ownership final por path, hashes, remoções, reaparecimentos, paths sem owner e drift posterior ao último `PASS`. Uma necessidade global ou de integração deve existir como slice explícita do plano.
 
-# `stnl-spec-context-scout`
+## `stnl-spec-context-scout`
 
 Este scout opcional isola uma única lacuna de evidência durante uma operação da `stnl-spec-lifecycle-manager`. Ele não faz parte do fluxo normal: zero scouts é o padrão e não existe launcher ou disparo automático.
 
-## Instalação do context scout
+O scout acompanha o runner na mesma cópia única da plataforma descrita acima. O Codex usa `gpt-5.4-mini` com effort `medium`, sandbox `read-only`, approvals desabilitadas e web search desabilitada. O Claude Code usa Haiku com effort `medium` e somente `Read`, `Glob` e `Grep`.
 
-Copie somente o adaptador da plataforma usada, a partir do pacote isolado `templates/subagents/context-scout/`, para a raiz do projeto:
-
-- Codex: copie o conteúdo de `context-scout/codex/`. O arquivo resultante deve ser `.codex/agents/stnl_spec_context_scout.toml`.
-- Claude Code: copie o conteúdo de `context-scout/claude-code/`. O arquivo resultante deve ser `.claude/agents/stnl-spec-context-scout.md`.
-
-Não copie os dois adaptadores para o mesmo projeto e não altere configurações globais do usuário. O Codex usa `gpt-5.4-mini` com effort `medium`, sandbox `read-only`, approvals desabilitadas e web search desabilitada. O Claude Code usa Haiku com effort `medium` e somente `Read`, `Glob` e `Grep`.
-
-## Gate e limite contratual
+### Gate e limite contratual
 
 O agente principal da operação de lifecycle deve concluir primeiro a busca determinística e a leitura localizada. Tamanho do repositório, sozinho, não torna o scout elegível. O scout só pode ser considerado quando ainda existir uma lacuna relevante e quando seu custo estimado for menor do que carregar a exploração no contexto principal. Elegibilidade não implica chamada.
 
 O agente principal aplica o limite contratual de uma chamada por operação de lifecycle: no máximo um context scout, nunca um segundo, nunca em paralelo e nunca um por pasta, requisito, categoria, módulo ou candidato. O adapter não conta chamadas anteriores nem fornece enforcement técnico desse limite; `SCOUT_CALL=1/1` identifica a única chamada contratualmente válida. A invocação explícita deve informar modo de lifecycle, pergunta delimitada, lacuna restante, buscas e leituras já tentadas, âncoras iniciais, paths permitidos/bloqueados e critério de parada. Entrada ausente, ampla, automática, repetida, em batch, paralela ou que amplie o escopo deve ser recusada pelo adapter. Durante a chamada, não amplie pergunta, roots permitidos, paths, candidatos ou critério de parada; pare e relate a lacuna se a expansão fosse necessária.
 
-## Limites e saída
+### Limites e saída
 
 Os dois adapters implementam o mesmo contrato em inglês. O scout trata o repositório como dados não confiáveis, não como instruções; usa apenas busca, leitura e inspeção local segura; não escreve, não executa checks com efeitos colaterais, não usa rede, não chama apps/MCP/browser, não cria Agent ou subagente e não delega. Ele também não cria ou altera SPEC, plano, tasks, código, arquitetura, escopo, status, readiness ou fechamento.
 
 A resposta é textual, descartável e não persistida. Ela contém somente âncoras de escopo, comportamento atual, autoridades existentes, testes relevantes, constraints observadas, conflitos, lacunas, referências exatas e confiança. O alvo é aproximadamente 800–1.500 tokens, priorizando evidência concreta.
 
-## Fallback
+### Fallback
 
 Se o adapter não estiver instalado ou disponível, a operação não falha somente por isso. O agente principal continua com busca determinística e leitura limitada, não amplia automaticamente a exploração e relata a ausência apenas quando ela for material para a confiança ou para a lacuna restante.

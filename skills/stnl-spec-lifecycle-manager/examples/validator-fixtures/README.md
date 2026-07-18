@@ -7,7 +7,7 @@ read_when: Maintainers need concrete active, blocked, or closed files rather tha
 do_not_read_when: A localized production SPEC record is already known.
 contains: Ready, blocked, and closed positive fixtures with no model-eval claim.
 owner: stnl-spec-lifecycle-manager
-update_policy: Keep every fixture accepted by scripts/test-spec-lifecycle.py and the current validator only.
+update_policy: Keep every fixture accepted by the embedded lifecycle tests and current validator only.
 ```
 
 # Validator Fixtures
@@ -19,4 +19,3 @@ Each child directory is a complete positive example passed directly to `validate
 - `closed/`: exact consolidated authority.
 
 These are structural and transition examples. They are not evidence that a model performed a lifecycle operation or judged semantic sufficiency.
-

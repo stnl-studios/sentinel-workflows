@@ -12,11 +12,18 @@ update_policy: Keep synchronized with both JSON catalogs, committed validator fi
 
 # Executable Eval Cases
 
-Run:
+From the Sentinel Workflows repository root, run:
 
-`python3 scripts/test-spec-lifecycle.py`
+- `node --test scripts/test-lifecycle-contracts.mjs`
+- `node --test skills/stnl-spec-lifecycle-manager/runtime/test/core.test.mjs skills/stnl-spec-lifecycle-manager/runtime/test/lifecycle.test.mjs skills/stnl-spec-lifecycle-manager/runtime/test/readiness.test.mjs skills/stnl-spec-lifecycle-manager/runtime/test/closed-spec.test.mjs skills/stnl-spec-lifecycle-manager/runtime/test/publisher.test.mjs`
+- `node --test scripts/test-lifecycle-validator-adversarial.mjs scripts/test-lifecycle-readiness-adversarial.mjs scripts/test-lifecycle-renderer-adversarial.mjs`
+- `node --test scripts/test-lifecycle-distribution.mjs`
+- `node --test scripts/test-runtime-context-budget.mjs`
+- `node --test scripts/test-subagent-packages.mjs`
+- `bash scripts/test-validation-runner-contract.sh`
+- `bash scripts/test-launcher-contract.sh`
 
-The runner consumes `evals/cases.json` for workspace cases and `evals/contract-cases.json` for static policy scenarios. It creates isolated fixtures, invokes the real workspace and transition validators, exercises the safe publisher, checks runtime instruction/adapters, and validates the complete workspaces under `examples/validator-fixtures/`.
+`scripts/test-lifecycle-contracts.mjs` consumes `evals/cases.json` for workspace cases and `evals/contract-cases.json` for static policy scenarios. It creates isolated fixtures, invokes the real workspace and transition validators, and validates the complete workspaces under `examples/validator-fixtures/`. The embedded runtime suite exercises readiness, deterministic closure, the transactional publisher, concurrency, rollback, and interruption recovery. The adversarial suites preserve the full negative regression matrix for validator authority, attestations, aliases, filesystem races, rendering, and no-mutation failures. The remaining suites prove isolated distribution, instruction budgets, and platform-subagent packages.
 
 Deterministic executable coverage includes:
 

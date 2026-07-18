@@ -6,6 +6,11 @@
     "words": "sum of whitespace-separated words, equivalent to wc -w for these UTF-8 Markdown files",
     "tokens": "not measured; no tokenizer dependency is required"
   },
+  "embedded_runtime": {
+    "root_relative_to_skill": "runtime",
+    "context_policy": "execute_without_loading_source",
+    "external_dependencies": []
+  },
   "maintenance_only": [
     "skills/stnl-spec-lifecycle-manager/references/token-economy.md",
     "skills/stnl-spec-lifecycle-manager/maintenance/runtime-context-budget.json"

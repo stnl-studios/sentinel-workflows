@@ -1,7 +1,7 @@
 # File Purpose Header
 
 ```yaml
-purpose: Define preconditions, allowed changes, safe publication, and completion behavior for the four SPEC lifecycle modes.
+purpose: Define preconditions, changes, safe publication, and completion for the four SPEC lifecycle modes.
 status: not_applicable
 read_when: Selecting or applying INIT, RESUME, READINESS, or CLOSE.
 do_not_read_when: Only a canonical item shape or isolated relationship rule is needed.
@@ -12,7 +12,7 @@ update_policy: Change only when lifecycle semantics change.
 
 # Lifecycle MODEs
 
-Require exactly one explicit `MODE=INIT|RESUME|READINESS|CLOSE`. Reject aliases, case variants, combined modes, and inference. Optional context is transient and cannot replace persisted authority, selective reading, inputs, or mode boundaries. A material conflict blocks the affected work and names the artifact or ID; never silently choose or persist one version.
+Require exactly one explicit `MODE=INIT|RESUME|READINESS|CLOSE`. Reject aliases, case variants, combined modes, and inference. Transient context cannot replace persisted authority, required inputs, or mode boundaries. A material conflict blocks the affected work and names the artifact or ID.
 
 ## Mutable-mode publication
 
@@ -21,15 +21,15 @@ Require exactly one explicit `MODE=INIT|RESUME|READINESS|CLOSE`. Reject aliases,
 1. Resolve authority and snapshot the live lifecycle state and protected external paths.
 2. Build the complete candidate in an isolated, disjoint directory; never incrementally edit live state.
 3. Validate candidate structure and the mode transition against the unchanged source.
-4. Publish only through `scripts/publish_spec_lifecycle.py`. Its persistent lock coordinates publishers; recovery precedes work; the renamed backup digest is verified before promotion. Conflicts restore exact state before validation; other failures retain or restore a valid state. This is recovery safety, not filesystem-wide atomicity.
+4. Publish only with `node "<SKILL_ROOT>/runtime/publish-spec-lifecycle.mjs"`. Its portable exclusive lock precedes recovery; verify the renamed backup digest before promotion. Conflicts restore exact state; other failures retain or restore valid state. This is recovery safety, not filesystem-wide atomicity.
 5. Revalidate the published state and external snapshot. Report any failure without continuing the lifecycle operation.
 
-The candidate cannot justify its own changes. Scripts prove explicit structure, relations, declared preservation, rendering, and publication; the model remains responsible for semantic sufficiency and non-invention.
+The candidate cannot justify its changes. The runtime proves structure, relations, preservation, rendering, and publication; the model owns semantic sufficiency and non-invention.
 
 Commands:
 
-- INIT: `python3 scripts/publish_spec_lifecycle.py INIT <TARGET> <CANDIDATE>`; CLOSE: `close-policy.md`.
-- RESUME: `python3 scripts/publish_spec_lifecycle.py RESUME <TARGET> <CANDIDATE> --manifest <MANIFEST>`
+- INIT: `node "<SKILL_ROOT>/runtime/publish-spec-lifecycle.mjs" INIT <TARGET> <CANDIDATE>`; CLOSE: `close-policy.md`.
+- RESUME: `node "<SKILL_ROOT>/runtime/publish-spec-lifecycle.mjs" RESUME <TARGET> <CANDIDATE> --manifest <MANIFEST>`
 
 ## INIT
 
@@ -47,11 +47,11 @@ Apply only supported deltas. Preserve H1 and every ID/type/title; retire an inap
 
 Require `SPEC_PATH`, exactly `READINESS_SCOPE=LOCAL|GLOBAL`, and bounded `READINESS_FOCUS` for `LOCAL`. The mode is read-only: never mutate the workspace or create lifecycle content.
 
-Run `python3 scripts/validate_spec_lifecycle.py workspace <SPEC_PATH>` first. On failure, stop with its diagnostic and read only the relevant structural authority. On green, load `readiness-gates.md`; `LOCAL` reads its focus/dependencies and `GLOBAL` reads all authority. Confirm zero workspace mutation. Only after semantic `GLOBAL/READY`, run `python3 scripts/create_readiness_attestation.py <SPEC_PATH> <EXTERNAL_ATTESTATION> --scope GLOBAL --verdict READY`.
+First run `node "<SKILL_ROOT>/runtime/validate-spec-lifecycle.mjs" workspace <SPEC_PATH>`. On failure, stop with its diagnostic and read only relevant structural authority. On green, load `readiness-gates.md`; `LOCAL` reads its focus/dependencies and `GLOBAL` all authority. Confirm no mutation. Only after semantic `GLOBAL/READY`, run `node "<SKILL_ROOT>/runtime/create-readiness-attestation.mjs" <SPEC_PATH> <EXTERNAL_ATTESTATION> --scope GLOBAL --verdict READY`.
 
 ## CLOSE
 
-Require a valid active `ready` source and strict readiness attestation from `GLOBAL/READY` over its current snapshot. Follow `close-policy.md`; scripts verify, render, validate, and publish. Implementation evidence is never a gate.
+Require a valid active `ready` source and strict `GLOBAL/READY` attestation over its current snapshot. Follow `close-policy.md`; the runtime verifies, renders, validates, and publishes. Implementation evidence is never a gate.
 
 ## Outcome contract
 

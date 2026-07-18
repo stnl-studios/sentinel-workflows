@@ -18,9 +18,14 @@ fail() {
 
 cd "$ROOT"
 command -v "$PYTHON_BIN" >/dev/null 2>&1 || fail "PYTHON_BIN is unavailable: $PYTHON_BIN"
-"$PYTHON_BIN" -m py_compile scripts/check-contracts.py scripts/validate_spec_lifecycle.py scripts/publish_spec_lifecycle.py scripts/create_readiness_attestation.py scripts/build_closed_spec.py scripts/test-spec-lifecycle.py scripts/test-readiness-attestation.py scripts/test-build-closed-spec.py scripts/test-publisher-recovery.py scripts/test-runtime-context-budget.py scripts/test-serial-workflow.py
+command -v node >/dev/null 2>&1 || fail "node is unavailable"
+"$PYTHON_BIN" -m py_compile scripts/check-contracts.py scripts/test-serial-workflow.py
+while IFS= read -r -d '' module; do
+  node --check "$module"
+done < <(find scripts skills templates -type f -name '*.mjs' -print0)
+node scripts/check-distributable-skills.mjs skills/stnl-spec-lifecycle-manager
 "$PYTHON_BIN" scripts/check-contracts.py launchers --root "$PROMPT_ROOT"
-"$PYTHON_BIN" scripts/check-contracts.py validation-runner --root "$SUBAGENT_TEMPLATE_ROOT"
+"$PYTHON_BIN" scripts/check-contracts.py subagents --root "$SUBAGENT_TEMPLATE_ROOT"
 
 "$PYTHON_BIN" - <<'PY'
 from __future__ import annotations
@@ -432,26 +437,31 @@ if len(all_contract_ids) != len(set(all_contract_ids)):
     fail("lifecycle static catalog contains duplicate IDs across positive and negative controls")
 
 subagent_template_root = Path(os.environ["SUBAGENT_TEMPLATE_ROOT"])
-scout_root = subagent_template_root / "context-scout"
-expected_scout_files = {
+expected_subagent_files = {
+    Path("README.md"),
+    Path("codex/.codex/agents/stnl_validation_runner.toml"),
     Path("codex/.codex/agents/stnl_spec_context_scout.toml"),
+    Path("claude-code/.claude/agents/stnl-validation-runner.md"),
     Path("claude-code/.claude/agents/stnl-spec-context-scout.md"),
 }
-actual_scout_files = {
-    path.relative_to(scout_root)
-    for path in scout_root.rglob("*")
+actual_subagent_files = {
+    path.relative_to(subagent_template_root)
+    for path in subagent_template_root.rglob("*")
     if path.is_file()
-    and "__MACOSX" not in path.relative_to(scout_root).parts
+    and "__MACOSX" not in path.relative_to(subagent_template_root).parts
     and path.name != ".DS_Store"
     and not path.name.startswith("._")
 }
-if actual_scout_files != expected_scout_files:
-    missing = sorted(map(str, expected_scout_files - actual_scout_files))
-    unexpected = sorted(map(str, actual_scout_files - expected_scout_files))
-    fail(f"context-scout registry mismatch; missing={missing}, unexpected={unexpected}")
+if actual_subagent_files != expected_subagent_files:
+    missing = sorted(map(str, expected_subagent_files - actual_subagent_files))
+    unexpected = sorted(map(str, actual_subagent_files - expected_subagent_files))
+    fail(f"subagent bundle registry mismatch; missing={missing}, unexpected={unexpected}")
+legacy_scout_root = subagent_template_root / ("context" + "-" + "scout")
+if legacy_scout_root.exists() or legacy_scout_root.is_symlink():
+    fail("removed intermediate subagent package was recreated")
 
-codex_scout_path = scout_root / "codex/.codex/agents/stnl_spec_context_scout.toml"
-claude_scout_path = scout_root / "claude-code/.claude/agents/stnl-spec-context-scout.md"
+codex_scout_path = subagent_template_root / "codex/.codex/agents/stnl_spec_context_scout.toml"
+claude_scout_path = subagent_template_root / "claude-code/.claude/agents/stnl-spec-context-scout.md"
 codex_scout = load_toml(codex_scout_path)
 claude_scout_frontmatter, claude_scout_contract = parse_frontmatter(claude_scout_path)
 scout_description = "Read-only exception scout for one explicitly authorized lifecycle evidence gap; never auto-select or delegate."
@@ -553,10 +563,14 @@ if scout_schema != expected_scout_schema:
 
 subagent_readme = read(subagent_template_root / "README.md")
 for marker in [
-    "context-scout/codex/",
+    "copie somente o conteúdo de `codex/`",
+    ".codex/agents/stnl_validation_runner.toml",
     ".codex/agents/stnl_spec_context_scout.toml",
-    "context-scout/claude-code/",
+    "copie somente o conteúdo de `claude-code/`",
+    ".claude/agents/stnl-validation-runner.md",
     ".claude/agents/stnl-spec-context-scout.md",
+    "Uma única cópia instala os dois subagentes da plataforma escolhida.",
+    "Nunca copie os adaptadores das duas plataformas para o mesmo projeto",
     "zero scouts é o padrão e não existe launcher ou disparo automático",
     "limite contratual de uma chamada por operação de lifecycle",
     "no máximo um context scout, nunca um segundo",
@@ -589,7 +603,6 @@ public_scout_contracts = {
     str(claude_scout_path): read(claude_scout_path),
     str(subagent_template_root / "README.md"): subagent_readme,
     str(lifecycle / "references/spec-workspace.md"): spec_workspace,
-    "scripts/test-spec-lifecycle.py": read(Path("scripts/test-spec-lifecycle.py")),
 }
 for label, text in public_scout_contracts.items():
     if re.search(r"(?i)\bhard(?:[ -])?cap\b", text):
@@ -627,10 +640,10 @@ readme_text = read(lifecycle / "README.md")
 for marker, label in [
     ("never remove, renumber, reuse, fill gaps", "immutable canonical IDs"),
     ("retired_reason", "tombstone reason"),
-    ("create_readiness_attestation.py", "readiness attestation creator"),
+    ("runtime/create-readiness-attestation.mjs", "readiness attestation creator"),
     ("--readiness-attestation", "attestation-bound renderer"),
     ("CLOSE <TARGET> <CANDIDATE> --readiness-attestation <ATTESTATION>", "attestation-bound publisher"),
-    ("renamed backup digest is verified before promotion", "post-rename verification"),
+    ("renamed backup digest before promotion", "post-rename verification"),
 ]:
     if marker not in "\n".join((skill_text, modes_text, close_text, schema_text, readme_text)):
         fail(f"lifecycle contracts lack {label}: {marker}")
