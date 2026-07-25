@@ -20,7 +20,9 @@ Requirements remain product authority. Plans define intended coverage and serial
 
 ## CLOSE
 
-Start with `plan.md`, `tasks.md`, compact summaries, final results, and Effective Validation Bases. Open detailed artifacts only for a concrete inconsistency.
+Before content reads, execute `node "<SKILL_ROOT>/runtime/validate-execution-layout.mjs" <SPEC_PATH>`. This structural gate is read-only and only inventories canonical paths; it does not run tests. On `BLOCKED`, return its exact paths and required relocation or explicit removal without deleting anything.
+
+Then start with `plan.md`, `tasks.md`, compact summaries, final results, and Effective Validation Bases. Open detailed artifacts only for a concrete inconsistency.
 
 Verify every slice is `[x]`; serial dependencies were respected; every plan has exactly one task and no orphan exists; no blocking finding or divergence remains; every final result is `PASS`; every completed slice has exactly one valid Effective Validation Base originating from a `PASS` attempt; requirements have coverage; plans, tasks, and results agree; and no final workspace change lacks association with a validated slice.
 
@@ -39,12 +41,13 @@ If a needed cross-slice integration check has no explicit completed integration 
 
 ## Allowed Effects
 
+- execute the bundled structural layout validator;
 - read files, calculate hashes, and report integrity status.
 
 ## Blocks
 
-Block incomplete progress, invalid order or mapping, unresolved blocking findings/divergences, non-PASS results, missing/multiple/invalid Effective Validation Bases, changed final-owner paths, later omissions, unowned changes, invalid removals or reappearances, missing coverage, contradictions, or absent required integration work.
+Block incomplete progress, an exact non-canonical path or residue inside the SPEC, invalid order or mapping, unresolved blocking findings/divergences, non-PASS results, missing/multiple/invalid Effective Validation Bases, changed final-owner paths, later omissions, unowned changes, invalid removals or reappearances, missing coverage, contradictions, or absent required integration work. Never delete an unknown path.
 
 ## Output
 
-Return approved closure or `BLOCKED` with exact inconsistencies and affected slices. Remain read-only. Do not edit, test, invoke a runner, repair bases or tasks, finalize work, remove artifacts, or decide cleanup. Stop.
+Return `APPROVED` or `BLOCKED` with a short deterministic list of exact inconsistencies and affected slices. Remain read-only. Do not edit, test, invoke a runner, repair bases or tasks, finalize work, remove artifacts, or decide cleanup. Stop.

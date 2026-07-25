@@ -15,15 +15,29 @@ Invoke them directly with `node "<SKILL_ROOT>/runtime/<entrypoint>.mjs" ...`. Th
 
 ## Documentary contracts
 
-An active workspace owns `feature_spec.md` plus materialized categories in `shared/`. Canonical headings are the sole ID authority, metadata is an ordered Markdown list, records retire in place, and structural relationships remain bidirectionally validated. `READINESS` is read-only. Only semantic `GLOBAL/READY` creates an external attestation bound to the canonical lifecycle-authority snapshot. `CLOSE` requires that current attestation, renders exact canonical bytes, validates the transition, and publishes without model-authored consolidation.
+An active workspace owns `feature_spec.md` plus materialized categories in `shared/`. Canonical headings are the sole ID authority, metadata is an ordered Markdown list, records retire in place, and structural relationships remain bidirectionally validated. `READINESS` is read-only. Semantic `GLOBAL/READY` over current `ready` state creates an external attestation directly. When the validated state is still `draft`, an authorized status-only `RESUME` passes the deterministic sibling attestation path instead of a manifest; the publisher validates the `ready` candidate and materializes the attestation bound to that exact snapshot before promotion. `CLOSE` requires that current attestation, renders exact canonical bytes, validates the transition, and publishes without model-authored consolidation.
 
 ## Publication and recovery
 
 The publisher stages a complete disjoint candidate, validates its captured digest, journals every transactional phase, renames the source to a transaction-owned backup, verifies that backup, promotes the stage, revalidates the official path, and removes transaction residue only after commit. Journal schema version 2 preserves exactly ten fields: version, mode, target/stage/backup names, phase, source/candidate/observed digests, and transaction identity. A strict sibling ownership sidecar, `.<workspace-name>.lifecycle-ownership-<transaction-id>.json`, binds that transaction to the persisted device/inode identities and digests of its stage, source, backup, and promoted target. Recovery runs under the lock before new work and either completes a verified commit or restores and validates the exact captured source. Corrupt, foreign, or inconsistent metadata is preserved and rejected rather than treated as deletion authority.
 
+On Windows, only actual rename syscall arguments are converted with Node's native namespaced-path API. Rename retries are limited to three total attempts with deterministic short backoff, and only `EPERM`, `EACCES`, or `EBUSY` is retryable. Staging remains beside the target on the same volume; validation is not repeated by the retry, persisted paths and diagnostics remain portable, and other platforms retain their single native rename behavior.
+
 The sibling `.<workspace-name>.lifecycle.lock` is strict JSON in a single-link regular file. Acquisition writes and synchronizes a private build, atomically exposes a complete claim through the native hardlink primitive, settles the claim to one canonical link, and fails safely when the filesystem cannot provide that primitive. It records lock version/state, owner and operation identities, transaction identity, process ID, host, and start time; every transition revalidates the complete payload and inode. A successful release atomically persists a validated `released` state. An `active` lock is never removed merely because it is old: orphan recovery requires matching host, a proven-dead process, valid schema/link identity, and consistency with any journal transaction. Reclaim and transaction cleanup use quarantine renames followed by immediate inode, payload, and digest revalidation, so concurrent publishers cannot both acquire or delete a foreign replacement.
 
 Consumer repositories should ignore publisher lock files with `.*.lifecycle.lock`; the lock remains persistent on disk so interrupted operations can be validated and recovered safely.
+
+## JSON and transaction artifact lifecycle
+
+| Category | Files | Lifecycle |
+|---|---|---|
+| External ephemeral input | RESUME transition manifest | Captured by inode and digest, consumed after safe candidate validation and before journaling, and also removed on pre-publication failure. A replacement or unknown file is preserved. |
+| Persistent evidence | Readiness attestation | Lives outside the SPEC, bound to the validated snapshot, retained across a safe promotion rollback for direct retry, and consumed by successful `CLOSE`. |
+| Required recovery | Transaction journal and ownership proof | Preserved while recovery is possible or required; removed only after a verified commit or rollback. Foreign, corrupt, or inconsistent evidence is never deleted. |
+| Persistent lock state | Lifecycle lock | Follows the concurrency contract below. Released state remains inspectable; active or foreign state is never age-deleted. |
+| Internal temporary | Build, stage, backup, quarantine, and atomic-write temporary paths | Created outside the SPEC under transaction ownership and removed only after verified terminal state. Unknown replacements are preserved. |
+
+No temporary JSON, manifest, helper script, or scratch report belongs inside the SPEC. Runtime diagnostics identify intentionally retained recovery or readiness evidence by exact path.
 
 Target, candidate, manifest, attestation, lock, journal, stage, and backup paths reject traversal, symlink components, aliases, namespace collisions, and unsafe containment. Snapshot digests include bytes, entry types, link counts, and relative hardlink peers. Source and candidate digests are rechecked across validation and rename boundaries; a concurrent conflict restores the official source path before reporting failure. OS packaging metadata is outside authority and is rejected from deterministic CLOSE output.
 

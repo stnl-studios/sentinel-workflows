@@ -34,7 +34,11 @@ The main context does not rerun tests, redo validation, soften findings, promote
 
 Prior test evidence is auxiliary, never a formal verdict. Pass it to the runner with the selected diff and scope. The runner independently checks whether the tested file state is still current, the commands were authoritative, selection and coverage remain sufficient, new risks appeared, and prior-slice overlaps require additional regressions. It must independently review a prior `TESTS_NOT_APPLICABLE`: confirm which read-only discovery actions were performed, which discovery sources were consulted, which verification types were considered, and whether any applicable verification command was omitted; reject it when absence of a tool or environment was confused with absence of applicability, and perform proportional static inspection or executable verification when needed. It may reuse current adequate evidence to avoid unjustified repetition, but executes or repeats checks proportionally when state, authority, coverage, or risk requires it. Neither `TESTS_PASS` nor `TESTS_NOT_APPLICABLE` reduces the formal requirements below an independent verdict, creates a Validation Attempt or Effective Validation Base before `VALIDATE_SLICE`, or guarantees `PASS`.
 
-For every valid runner invocation, append exactly one deterministic next `attempt-NN` with type, exact status, HEAD, verified scope, commands and exit codes, evidence, findings, blockers, unexpected workspace effects, and persistence summary. Preserve every earlier attempt. If the runner cannot start or returns malformed output after a valid invocation, append `BLOCKED` with that concrete cause and do not fabricate missing fields.
+Start validation in an independent delegated session. On Codex, never combine the custom `stnl_validation_runner` with a full thread/context fork; initialize it without inherited conversation history. Send only operation, `SPEC_PATH`, derived execution root, selected slice, plan/task paths, compact implementation/findings evidence, existing validation-attempt summary, changed scope and diff, overlaps, and strictly necessary additional context. Never send conversation history or full logs.
+
+Classify initialization/transport failure, valid runner `BLOCKED`, malformed runner output, `NEEDS_FIX`, and verification-command failure separately. For initialization or transport failure only, retry once with a new independent session and the same minimum payload. These technical starts do not create or consume an `attempt-NN`, change `initial` to `revalidation`, or authorize validation in the main context. If both starts fail, persist exactly one singleton `Runner Initialization Blocker` outside Validation Attempts and stop. A later invocation with that exclusive latest blocker resumes directly at delegation, keeps the same next attempt identifier and validation type, and updates rather than duplicates the singleton blocker if transport fails again.
+
+For every successfully started runner invocation with a valid result, append exactly one deterministic next `attempt-NN` with type, exact status, HEAD, verified scope, commands and exit codes, evidence, findings, blockers, unexpected workspace effects, and persistence summary. Preserve every earlier attempt. A valid runner `BLOCKED` is persisted as that attempt. A malformed response after start is not a transport retry and is persisted once as an objective malformed-result blocker outside Validation Attempts; do not fabricate missing fields.
 
 On `NEEDS_FIX`, persist complete compact structured findings, leave the Effective Validation Base unchanged or absent, keep the global row `[ ]`, leave final result pending, and stop. Each finding records problem, evidence, impact, related requirement/plan/task, and expected correction.
 
@@ -58,10 +62,11 @@ Compose and validate all detailed and global changes before publishing them. Nev
 - invoke the configured independent runner once;
 - update validation-owned sections in `tasks/slice-NN.md`;
 - update exactly one `tasks.md` row only after valid `PASS` persistence.
+- use temporary support files only outside the SPEC and execution root; never create scratch scripts, manifests, checklists, or ad hoc reports inside them.
 
 ## Blocks
 
-Block invalid inputs, missing prerequisites, invalid attempt history, unavailable runner, malformed runner output, incomplete Effective Validation Base data, overlap without justified regressions, or persistence inconsistency. Never fall back to validation in the main context.
+Block invalid inputs, missing prerequisites, invalid attempt history, any exact non-canonical path inside the SPEC, unavailable runner after the single technical retry, malformed runner output, incomplete Effective Validation Base data, overlap without justified regressions, or persistence inconsistency. Never fall back to validation in the main context, delete an unknown path, or allocate an attempt for transport failure.
 
 ## Output
 

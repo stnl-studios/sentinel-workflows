@@ -11,11 +11,16 @@ import {
   isOsMetadata,
   validateCloseTransition,
   validateInitTransition,
+  validateReadyPromotionTransition,
   validateResumeTransition,
   validateWorkspace,
   workspaceSnapshot,
 } from "./lifecycle.mjs";
-import { validateReadinessAttestation } from "./readiness.mjs";
+import {
+  createReadyPromotionAttestation,
+  validateReadinessAttestation,
+  validateReadyPromotionAttestation,
+} from "./readiness.mjs";
 import { renderClosedFeature } from "./closed-spec.mjs";
 
 export const MUTABLE_MODES = new Set(["INIT", "RESUME", "CLOSE"]);
@@ -42,6 +47,8 @@ const TRANSACTION_ID_PATTERN = /^[0-9a-f]{32}$/;
 const MAX_JOURNAL_BYTES = 64 * 1024;
 const MAX_LOCK_BYTES = 16 * 1024;
 const JOURNAL_TOKEN = Symbol("journalToken");
+const WINDOWS_TRANSIENT_RENAME_CODES = new Set(["EPERM", "EACCES", "EBUSY"]);
+const WINDOWS_RENAME_BACKOFF_MS = [5, 15];
 const DIRECTORY_FSYNC_UNSUPPORTED = new Set([
   "EBADF",
   "EINVAL",
@@ -121,6 +128,47 @@ function fail(message, filePath = null) {
 
 function randomIdentity() {
   return randomBytes(16).toString("hex");
+}
+
+function wait(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+export function filesystemPathForSyscall(
+  filePath,
+  { platform = process.platform, toNamespacedPath = path.toNamespacedPath } = {},
+) {
+  return platform === "win32" ? toNamespacedPath(filePath) : filePath;
+}
+
+export async function renameWithRetry(
+  source,
+  destination,
+  {
+    platform = process.platform,
+    rename = fs.rename,
+    delay = wait,
+    toNamespacedPath = path.toNamespacedPath,
+  } = {},
+) {
+  const syscallSource = filesystemPathForSyscall(source, { platform, toNamespacedPath });
+  const syscallDestination = filesystemPathForSyscall(destination, {
+    platform,
+    toNamespacedPath,
+  });
+  const attempts = platform === "win32" ? WINDOWS_RENAME_BACKOFF_MS.length + 1 : 1;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      await rename(syscallSource, syscallDestination);
+      return;
+    } catch (error) {
+      const retry = platform === "win32"
+        && WINDOWS_TRANSIENT_RENAME_CODES.has(error?.code)
+        && attempt + 1 < attempts;
+      if (!retry) throw error;
+      await delay(WINDOWS_RENAME_BACKOFF_MS[attempt]);
+    }
+  }
 }
 
 function expandUser(value) {
@@ -327,7 +375,7 @@ async function durableReplace(source, destination) {
   if (await lexists(destination)) {
     fail("critical rename destination unexpectedly exists", destination);
   }
-  await fs.rename(source, destination);
+  await renameWithRetry(source, destination);
   await fsyncDirectory(path.dirname(destination));
 }
 
@@ -375,7 +423,7 @@ async function removeOwnedDirectory(target, transactionId, role, filePath, ident
   testOnlyCheckpoint("DURING_OWNED_REMOVAL");
   if (process.env[TEST_ONLY_MUTATE_WINDOW_ENV] === "QUARANTINE_SWAP") {
     const preserved = `${retired}.test-owned-original`;
-    await fs.rename(retired, preserved);
+    await renameWithRetry(retired, preserved);
     await fs.mkdir(retired);
     await fs.writeFile(path.join(retired, "foreign-sentinel.txt"), "foreign quarantine sentinel\n", "utf8");
   }
@@ -454,19 +502,19 @@ async function requireCandidateSnapshot(filePath, expectedDigest, mode, mismatch
   if ((await snapshotDigest(filePath)) !== expectedDigest) fail(mismatch, filePath);
 }
 
-async function captureEphemeralAttestationIdentity(filePath) {
+async function captureEphemeralFileIdentity(filePath, label) {
   const before = await fs.lstat(filePath, { bigint: true });
-  if (before.isSymbolicLink()) fail("readiness attestation must remain a single-link regular file", filePath);
+  if (before.isSymbolicLink()) fail(`${label} must remain a single-link regular file`, filePath);
   const handle = await fs.open(filePath, FS_CONSTANTS.O_RDONLY | (FS_CONSTANTS.O_NOFOLLOW ?? 0));
   try {
     const metadata = await handle.stat({ bigint: true });
     if (!metadata.isFile() || metadata.nlink !== 1n || !sameInode(before, metadata)) {
-      fail("readiness attestation must remain a single-link regular file", filePath);
+      fail(`${label} must remain a single-link regular file`, filePath);
     }
     const bytes = await handle.readFile();
     const after = await fs.lstat(filePath, { bigint: true });
     if (!sameInode(metadata, after) || after.nlink !== 1n) {
-      fail("readiness attestation changed identity while being captured", filePath);
+      fail(`${label} changed identity while being captured`, filePath);
     }
     return { metadata, digest: createHash("sha256").update(bytes).digest("hex") };
   } finally {
@@ -474,41 +522,70 @@ async function captureEphemeralAttestationIdentity(filePath) {
   }
 }
 
-async function assertEphemeralAttestationIdentity(filePath, expected, point) {
-  const actual = await captureEphemeralAttestationIdentity(filePath);
+async function assertEphemeralFileIdentity(filePath, expected, label) {
+  const actual = await captureEphemeralFileIdentity(filePath, label);
   if (!sameInode(actual.metadata, expected.metadata)) {
-    fail("readiness attestation changed identity before terminal cleanup", filePath);
+    fail(`${label} changed identity before terminal cleanup`, filePath);
   }
   if (actual.digest !== expected.digest) {
-    fail("readiness attestation changed bytes before terminal cleanup", filePath);
+    fail(`${label} changed bytes before terminal cleanup`, filePath);
   }
   return actual;
 }
 
-async function removeEphemeralAttestation(filePath, expected) {
-  await assertEphemeralAttestationIdentity(filePath, expected, "terminal cleanup");
+async function removeEphemeralFile(
+  filePath,
+  expected,
+  { label, retirementToken, afterQuarantine = null },
+) {
+  await assertEphemeralFileIdentity(filePath, expected, label);
   const identity = filesystemIdentity(expected.metadata);
   const retired = path.join(
     path.dirname(filePath),
-    `.${path.basename(filePath)}.lifecycle-attestation-retired-${identity.dev}-${identity.ino}-${expected.digest}`,
+    `.${path.basename(filePath)}.${retirementToken}-${identity.dev}-${identity.ino}-${expected.digest}`,
   );
-  if (await lexists(retired)) fail("readiness attestation quarantine already exists", retired);
-  await fs.rename(filePath, retired);
-  const moved = await captureEphemeralAttestationIdentity(retired);
+  if (await lexists(retired)) fail(`${label} quarantine already exists`, retired);
+  await renameWithRetry(filePath, retired);
+  const moved = await captureEphemeralFileIdentity(retired, label);
   if (!sameInode(moved.metadata, expected.metadata) || moved.digest !== expected.digest) {
-    if (!(await lexists(filePath))) await fs.rename(retired, filePath);
-    fail("readiness attestation changed identity during terminal quarantine", filePath);
+    if (!(await lexists(filePath))) await renameWithRetry(retired, filePath);
+    fail(`${label} changed identity during terminal quarantine`, filePath);
   }
-  if (process.env[TEST_ONLY_MUTATE_WINDOW_ENV] === "ATTESTATION_QUARANTINE_SWAP") {
-    await fs.rename(retired, `${retired}.test-owned-original`);
-    await fs.writeFile(retired, "foreign attestation quarantine sentinel\n", "utf8");
-  }
-  const final = await captureEphemeralAttestationIdentity(retired);
+  if (afterQuarantine !== null) await afterQuarantine(retired);
+  const final = await captureEphemeralFileIdentity(retired, label);
   if (!sameInode(final.metadata, expected.metadata) || final.digest !== expected.digest) {
-    fail("readiness attestation quarantine changed immediately before terminal removal", retired);
+    fail(`${label} quarantine changed immediately before terminal removal`, retired);
   }
   await fs.unlink(retired);
   await fsyncDirectory(path.dirname(filePath));
+}
+
+async function captureEphemeralAttestationIdentity(filePath) {
+  return captureEphemeralFileIdentity(filePath, "readiness attestation");
+}
+
+async function assertEphemeralAttestationIdentity(filePath, expected, point) {
+  return assertEphemeralFileIdentity(filePath, expected, "readiness attestation");
+}
+
+async function removeEphemeralAttestation(filePath, expected) {
+  await removeEphemeralFile(filePath, expected, {
+    label: "readiness attestation",
+    retirementToken: "lifecycle-attestation-retired",
+    afterQuarantine: async (retired) => {
+      if (process.env[TEST_ONLY_MUTATE_WINDOW_ENV] === "ATTESTATION_QUARANTINE_SWAP") {
+        await renameWithRetry(retired, `${retired}.test-owned-original`);
+        await fs.writeFile(retired, "foreign attestation quarantine sentinel\n", "utf8");
+      }
+    },
+  });
+}
+
+async function removeEphemeralManifest(filePath, expected) {
+  await removeEphemeralFile(filePath, expected, {
+    label: "RESUME manifest",
+    retirementToken: "lifecycle-manifest-retired",
+  });
 }
 
 export function journalPath(target) {
@@ -517,6 +594,13 @@ export function journalPath(target) {
 
 export function lockPath(target) {
   return path.join(path.dirname(target), `.${path.basename(target)}.lifecycle.lock`);
+}
+
+export function readinessAttestationPath(target) {
+  return path.join(
+    path.dirname(target),
+    `.${path.basename(target)}.readiness-attestation.json`,
+  );
 }
 
 function journalTempPrefix(target) {
@@ -598,10 +682,22 @@ function isWithin(candidate, root) {
   return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative));
 }
 
-async function preflightManifestPath(mode, manifestPath, target, candidate) {
+async function preflightManifestPath(
+  mode,
+  manifestPath,
+  target,
+  candidate,
+  { readyPromotion = false } = {},
+) {
   if (mode !== "RESUME") {
     if (manifestPath !== null && manifestPath !== undefined) {
       fail(`--manifest is valid only for RESUME, not ${mode}`);
+    }
+    return null;
+  }
+  if (readyPromotion) {
+    if (manifestPath !== null && manifestPath !== undefined) {
+      fail("ready promotion RESUME uses no external manifest; omit --manifest");
     }
     return null;
   }
@@ -622,10 +718,13 @@ async function preflightManifestPath(mode, manifestPath, target, candidate) {
 }
 
 async function preflightReadinessAttestationPath(mode, readinessAttestation, target, candidate) {
-  if (mode !== "CLOSE") {
+  if (mode === "INIT") {
     if (readinessAttestation !== null && readinessAttestation !== undefined) {
-      fail(`--readiness-attestation is valid only for CLOSE, not ${mode}`);
+      fail("--readiness-attestation is valid only for RESUME ready promotion or CLOSE, not INIT");
     }
+    return null;
+  }
+  if (mode === "RESUME" && (readinessAttestation === null || readinessAttestation === undefined)) {
     return null;
   }
   if (readinessAttestation === null || readinessAttestation === undefined) {
@@ -640,6 +739,12 @@ async function preflightReadinessAttestationPath(mode, readinessAttestation, tar
   );
   if (isWithin(attestation, target) || isWithin(attestation, candidate)) {
     fail("readiness attestation must remain outside source and candidate workspaces", attestation);
+  }
+  if (mode === "RESUME" && attestation !== readinessAttestationPath(target)) {
+    fail(
+      `RESUME ready promotion attestation must use the deterministic sibling path ${readinessAttestationPath(target)}`,
+      attestation,
+    );
   }
   return attestation;
 }
@@ -677,6 +782,7 @@ function validateRuntimeMetadataNamespace(target, inputPath, label) {
   const exactNames = new Set([
     filesystemComponentKey(path.basename(journalPath(target))),
     filesystemComponentKey(path.basename(lockPath(target))),
+    filesystemComponentKey(path.basename(readinessAttestationPath(target))),
   ]);
   const prefixes = [
     stagePrefix(target),
@@ -702,7 +808,10 @@ function validateStaticInputRelationships(target, candidate, manifest, readiness
   }
   validateRuntimeMetadataNamespace(target, candidate, "candidate");
   if (manifest !== null) validateRuntimeMetadataNamespace(target, manifest, "RESUME manifest");
-  if (readinessAttestation !== null) {
+  if (
+    readinessAttestation !== null
+    && readinessAttestation !== readinessAttestationPath(target)
+  ) {
     validateRuntimeMetadataNamespace(target, readinessAttestation, "readiness attestation");
   }
 }
@@ -746,7 +855,7 @@ function testOnlyForceRollback(environment = process.env) {
 async function testOnlySwapPrivateFile(filePath, window, label, environment = process.env) {
   if (environment[TEST_ONLY_MUTATE_WINDOW_ENV] !== window) return;
   const preserved = `${filePath}.test-owned-original`;
-  await fs.rename(filePath, preserved);
+  await renameWithRetry(filePath, preserved);
   await fs.writeFile(filePath, `foreign ${label} sentinel\n`, { mode: 0o600 });
 }
 
@@ -909,7 +1018,7 @@ async function readBoundedSingleLinkFile(filePath, maxBytes, label) {
 async function testOnlySwapExclusiveCreateCandidate(filePath, window, label) {
   if (process.env[TEST_ONLY_MUTATE_WINDOW_ENV] !== window) return;
   const preserved = `${filePath}.test-owned-original`;
-  await fs.rename(filePath, preserved);
+  await renameWithRetry(filePath, preserved);
   await fs.writeFile(filePath, `foreign ${label} sentinel\n`, { flag: "wx", mode: 0o600 });
   await fsyncDirectory(path.dirname(filePath));
 }
@@ -928,7 +1037,7 @@ async function cleanupExclusiveCreateCandidate(
   }
   const quarantine = `${filePath}.cleanup-${expectedMetadata.dev.toString()}-` +
     `${expectedMetadata.ino.toString()}-${randomIdentity()}`;
-  await fs.rename(filePath, quarantine);
+  await renameWithRetry(filePath, quarantine);
   await fsyncDirectory(path.dirname(filePath));
   const moved = await readBoundedSingleLinkFile(quarantine, expectedBytes.length, label);
   if (moved === null || !sameInode(moved.metadata, expectedMetadata) ||
@@ -1115,7 +1224,7 @@ async function buildJournalCandidate(
       priorIdentity,
       priorDigest,
     );
-    await fs.rename(build, temp);
+    await renameWithRetry(build, temp);
     build = null;
     await fsyncDirectory(path.dirname(target));
     const record = await readStableJournalRecord(temp);
@@ -1413,7 +1522,7 @@ async function writeJournal(target, transaction) {
     "previous",
     token.identity,
   );
-  await fs.rename(journal, previousPath);
+  await renameWithRetry(journal, previousPath);
   await fsyncDirectory(path.dirname(target));
   const previous = await readStableJournalRecord(previousPath);
   assertJournalRecordMatches(
@@ -1823,7 +1932,7 @@ async function settleOwnershipClaim(target, transactionId) {
         "previous",
         filesystemIdentity(canonical.metadata),
       );
-      await fs.rename(filePath, previousPath);
+      await renameWithRetry(filePath, previousPath);
       const previousRole = {
         role: "previous",
         identity: filesystemIdentity(canonical.metadata),
@@ -1889,7 +1998,7 @@ async function writeOwnership(target, ownership) {
       digest: createHash("sha256").update(existing.bytes).digest("hex"),
     },
   );
-  await fs.rename(build, temp);
+  await renameWithRetry(build, temp);
   await fsyncDirectory(path.dirname(target));
   const tempRecord = (await ownershipRoleRecords(target, ownership.transactionId))
     .find((entry) => entry.filePath === temp);
@@ -1937,7 +2046,7 @@ async function writeOwnership(target, ownership) {
       "previous",
       filesystemIdentity(existing.metadata),
     );
-    await fs.rename(filePath, previousPath);
+    await renameWithRetry(filePath, previousPath);
     await fsyncDirectory(path.dirname(target));
     const previousRole = {
       role: "previous",
@@ -1978,7 +2087,7 @@ async function removeOwnership(target, ownership) {
   }
   const identity = filesystemIdentity(before);
   const retired = `${filePath}.retired-${identity.dev}-${identity.ino}-${randomIdentity()}`;
-  await fs.rename(filePath, retired);
+  await renameWithRetry(filePath, retired);
   const moved = await fs.lstat(retired, { bigint: true });
   if (!sameInode(before, moved)) {
     fail("transaction ownership changed identity during cleanup", retired);
@@ -2301,7 +2410,7 @@ async function retireValidatedLock(target, observed) {
       !lockRecordsEqual(current.record, observed.record)) return false;
   const retired = path.join(path.dirname(target), `${lockRetiredPrefix(target)}${observed.record.ownerId}-${randomIdentity()}`);
   try {
-    await fs.rename(lockPath(target), retired);
+    await renameWithRetry(lockPath(target), retired);
   } catch (error) {
     if (error?.code === "ENOENT") return false;
     throw error;
@@ -2514,7 +2623,7 @@ async function testOnlySwapLockCreateCanonical(target, expected, window) {
     pid: process.pid,
     hostname: os.hostname(),
   };
-  await fs.rename(filePath, preserved);
+  await renameWithRetry(filePath, preserved);
   const handle = await fs.open(filePath, "wx", 0o600);
   try {
     await handle.writeFile(prettySortedAsciiJson(lockPayload(foreign)), "utf8");
@@ -2638,7 +2747,7 @@ async function settleLinkedLockClaim(target) {
       "previous",
       filesystemIdentity(canonical.metadata),
     );
-    await fs.rename(filePath, previousPath);
+    await renameWithRetry(filePath, previousPath);
     await fsyncDirectory(path.dirname(target));
     const previousObserved = await readLockRecord(previousPath);
     if (previousObserved === null || !sameInode(previousObserved.metadata, canonical.metadata) ||
@@ -2674,7 +2783,7 @@ async function createExclusiveLock(target, record) {
   } finally {
     await handle.close();
   }
-  await fs.rename(build, temp);
+  await renameWithRetry(build, temp);
   await fsyncDirectory(path.dirname(target));
   testOnlyCheckpoint("LOCK_TEMP_WRITTEN");
   const ownedTemp = await readLockRecord(temp);
@@ -2756,7 +2865,7 @@ async function replaceOwnedLock(target, previous, next) {
       digest: createHash("sha256").update(previous.bytes).digest("hex"),
     },
   );
-  await fs.rename(build, temp);
+  await renameWithRetry(build, temp);
   await fsyncDirectory(path.dirname(target));
   const nextRole = (await lockUpdateRoleRecords(target)).find((entry) => entry.filePath === temp);
   if (nextRole === undefined || !lockRecordsEqual(nextRole.observed.record, next)) {
@@ -2774,7 +2883,7 @@ async function replaceOwnedLock(target, previous, next) {
     "previous",
     filesystemIdentity(previous.metadata),
   );
-  await fs.rename(filePath, previousPath);
+  await renameWithRetry(filePath, previousPath);
   await fsyncDirectory(path.dirname(target));
   const previousObserved = await readLockRecord(previousPath);
   if (previousObserved === null || !sameInode(previousObserved.metadata, previous.metadata) ||
@@ -2812,7 +2921,7 @@ async function quarantineAndRemoveLockResidue(target, residue, observed) {
     path.dirname(target),
     `${lockRetiredPrefix(target)}${observed.record.ownerId}-${randomIdentity()}`,
   );
-  await fs.rename(residue, quarantine);
+  await renameWithRetry(residue, quarantine);
   await fsyncDirectory(path.dirname(target));
   const moved = await readLockRecord(quarantine);
   if (moved === null || !sameInode(moved.metadata, observed.metadata) ||
@@ -2820,7 +2929,7 @@ async function quarantineAndRemoveLockResidue(target, residue, observed) {
     fail("publisher lock residue changed during quarantine", quarantine);
   }
   if (process.env[TEST_ONLY_MUTATE_WINDOW_ENV] === "LOCK_RESIDUE_QUARANTINE_SWAP") {
-    await fs.rename(quarantine, `${quarantine}.test-owned-original`);
+    await renameWithRetry(quarantine, `${quarantine}.test-owned-original`);
     await fs.writeFile(quarantine, "foreign lock residue quarantine sentinel\n", "utf8");
   }
   const final = await readLockRecord(quarantine);
@@ -3079,7 +3188,7 @@ async function cleanupOwnershipTemps(target, transactionId) {
       }
     }
     const retired = `${filePath}.retired-${randomIdentity()}`;
-    await fs.rename(filePath, retired);
+    await renameWithRetry(filePath, retired);
     const moved = await fs.lstat(retired, { bigint: true });
     if (!sameInode(metadata, moved)) {
       fail("transaction ownership temp changed identity during cleanup", retired);
@@ -3161,7 +3270,7 @@ async function removeJournal(target, transaction) {
     "cleanup",
     token.identity,
   );
-  await fs.rename(journal, retired);
+  await renameWithRetry(journal, retired);
   await fsyncDirectory(path.dirname(target));
   const moved = await readStableJournalRecord(retired);
   assertJournalRecordMatches(
@@ -3201,7 +3310,7 @@ async function cleanupJournalTemps(paths, target, transaction) {
     }
     const before = await fs.lstat(temp, { bigint: true });
     const retired = `${temp}.retired-${before.dev.toString()}-${before.ino.toString()}`;
-    await fs.rename(temp, retired);
+    await renameWithRetry(temp, retired);
     const moved = await fs.lstat(retired, { bigint: true });
     if (!sameInode(before, moved)) fail("journal temp changed identity during quarantine", retired);
     const movedTransaction = parseJournal(target, await readJournalPayload(retired));
@@ -3488,9 +3597,25 @@ async function finishInitRecovery(target, transaction, stage, ownership) {
   }
 }
 
+async function validateReadyPromotionAttestationIfRequired(target, source, candidate) {
+  const sourceWorkspace = await validateMaybePromise(validateWorkspace(source));
+  const candidateWorkspace = await validateMaybePromise(validateWorkspace(candidate));
+  if (sourceWorkspace.status !== "draft" || candidateWorkspace.status !== "ready") {
+    return false;
+  }
+  await validateMaybePromise(validateReadyPromotionTransition(source, candidate));
+  await validateMaybePromise(
+    validateReadinessAttestation(candidate, readinessAttestationPath(target)),
+  );
+  return true;
+}
+
 async function finishUpdateCommit(target, transaction, stage, backup, ownership) {
   if (!(await lexists(target))) fail("validated/committed transaction has no live target", target);
   await validateCandidateIdentity(target, transaction, ownership);
+  if (await lexists(backup)) {
+    await validateReadyPromotionAttestationIfRequired(target, backup, target);
+  }
   if (transaction.phase !== PHASE_COMMITTED) {
     if (!(await lexists(backup))) fail("candidate was validated but its rollback backup is missing", backup);
     await validateCandidateIdentity(target, transaction, ownership);
@@ -3550,6 +3675,7 @@ async function recoverUpdate(target, transaction, stage, backup, ownership) {
       try {
         await validateCandidateIdentity(target, transaction, ownership);
         await validateSourceIdentity(backup, transaction, ownership);
+        await validateReadyPromotionAttestationIfRequired(target, backup, target);
       } catch (error) {
         if (!(error instanceof ValidationError)) throw error;
         return rollbackUpdate(target, transaction, ownership);
@@ -3610,11 +3736,15 @@ async function validateCandidate(
   manifest,
   readinessAttestation,
   readinessIdentity = null,
+  readyPromotion = false,
 ) {
   if (mode === "INIT") {
-    await validateMaybePromise(validateInitTransition(target, candidate));
+    return validateMaybePromise(validateInitTransition(target, candidate));
   } else if (mode === "RESUME") {
-    await validateMaybePromise(validateResumeTransition(target, candidate, manifest));
+    if (readyPromotion) {
+      return validateMaybePromise(validateReadyPromotionTransition(target, candidate));
+    }
+    return validateMaybePromise(validateResumeTransition(target, candidate, manifest));
   } else {
     if (readinessIdentity === null) fail("CLOSE validation requires a captured readiness identity");
     await assertEphemeralAttestationIdentity(readinessAttestation, readinessIdentity, "validation start");
@@ -3627,6 +3757,7 @@ async function validateCandidate(
     if (!candidateFeature.equals(Buffer.from(expectedFeature))) {
       fail("CLOSE candidate is not the exact deterministic rendering of the attested source", path.join(candidate, "feature_spec.md"));
     }
+    return null;
   }
 }
 
@@ -3693,7 +3824,16 @@ export async function publishCandidate(mode, target, candidate, {
   }
   const targetPath = await normalizeTarget(target);
   const candidatePath = await preflightCandidatePath(candidate);
-  const manifest = await preflightManifestPath(mode, manifestPath, targetPath, candidatePath);
+  const readyPromotion = mode === "RESUME"
+    && readinessAttestation !== null
+    && readinessAttestation !== undefined;
+  const manifest = await preflightManifestPath(
+    mode,
+    manifestPath,
+    targetPath,
+    candidatePath,
+    { readyPromotion },
+  );
   const attestation = await preflightReadinessAttestationPath(
     mode,
     readinessAttestation,
@@ -3739,13 +3879,39 @@ export async function publishCandidate(mode, target, candidate, {
       }
     }
 
-    const allocated = await allocateTransactionPaths(targetPath, mode, lease);
+    const manifestIdentity = manifest === null
+      ? null
+      : await captureEphemeralFileIdentity(manifest, "RESUME manifest");
+    let manifestConsumed = false;
+    const consumeManifest = async () => {
+      if (manifestIdentity === null || manifestConsumed) return;
+      await removeEphemeralManifest(manifest, manifestIdentity);
+      manifestConsumed = true;
+    };
+
+    let allocated;
+    try {
+      allocated = await allocateTransactionPaths(targetPath, mode, lease);
+    } catch (error) {
+      await consumeManifest();
+      throw error;
+    }
     const { transactionId, stage, backup } = allocated;
     let ownership = allocated.ownership;
     let journalPersisted = false;
     let committed = false;
     let transaction = null;
     let closeAttestationIdentity = null;
+    let readyPromotionAttestationIdentity = null;
+    let readyPromotionAttestationRetained = false;
+    const withRetainedReadyAttestation = (error) => {
+      if (!readyPromotionAttestationRetained) return error;
+      const retained = new ValidationError(
+        `${error.message}; readiness attestation intentionally retained for retry: ${attestation}`,
+      );
+      retained.cause = error;
+      return retained;
+    };
     try {
       await copyCandidateTree(candidatePath, stage);
       testOnlyCheckpoint("CANDIDATE_STAGED");
@@ -3775,14 +3941,46 @@ export async function publishCandidate(mode, target, candidate, {
           "locked validation",
         );
       }
-      await validateCandidate(
+      const transition = await validateCandidate(
         mode,
         targetPath,
         stage,
         manifest,
         attestation,
         closeAttestationIdentity,
+        readyPromotion,
       );
+      if (
+        mode === "RESUME"
+        && !readyPromotion
+        && transition?.[0]?.status === "draft"
+        && transition?.[1]?.status === "ready"
+      ) {
+        fail(
+          "draft -> ready RESUME requires the deterministic --readiness-attestation promotion path and no manifest",
+        );
+      }
+      if (readyPromotion) {
+        if (await lexists(attestation)) {
+          await validateMaybePromise(
+            validateReadyPromotionAttestation(targetPath, stage, attestation),
+          );
+        } else {
+          createReadyPromotionAttestation(targetPath, stage, attestation);
+        }
+        readyPromotionAttestationIdentity = await captureEphemeralAttestationIdentity(
+          attestation,
+        );
+        await validateMaybePromise(
+          validateReadyPromotionAttestation(targetPath, stage, attestation),
+        );
+        await assertEphemeralAttestationIdentity(
+          attestation,
+          readyPromotionAttestationIdentity,
+          "ready promotion validation",
+        );
+        readyPromotionAttestationRetained = true;
+      }
       await requireCandidateSnapshot(stage, candidateDigest, mode, `${mode} candidate changed during validation`);
       if (sourceDigest !== null) {
         try {
@@ -3809,6 +4007,7 @@ export async function publishCandidate(mode, target, candidate, {
       if (beforePublish !== null) await beforePublish({
         target: targetPath, stage, backup, transactionId, lock: lockPath(targetPath),
       });
+      await consumeManifest();
       await requireCandidateSnapshot(stage, candidateDigest, mode, `${mode} candidate changed after validation`);
       if (mode === "INIT") {
         if (await lexists(targetPath)) fail("INIT destination appeared before publication", targetPath);
@@ -3821,6 +4020,13 @@ export async function publishCandidate(mode, target, candidate, {
           if (!(error instanceof ValidationError)) throw error;
           fail(`${mode} source changed after candidate validation`, targetPath);
         }
+      }
+      if (readyPromotion) {
+        await assertEphemeralAttestationIdentity(
+          attestation,
+          readyPromotionAttestationIdentity,
+          "pre-journal ready promotion",
+        );
       }
       transaction = {
         mode,
@@ -3899,6 +4105,17 @@ export async function publishCandidate(mode, target, candidate, {
       testOnlyCheckpoint("BEFORE_TARGET_VALIDATION");
       testOnlyForceRollback();
       await validateCandidateIdentity(targetPath, transaction, ownership);
+      if (readyPromotion) {
+        await assertEphemeralAttestationIdentity(
+          attestation,
+          readyPromotionAttestationIdentity,
+          "promoted ready validation",
+        );
+        await validateMaybePromise(validateReadinessAttestation(targetPath, attestation));
+      }
+      if (backup !== null) {
+        await validateReadyPromotionAttestationIfRequired(targetPath, backup, targetPath);
+      }
       transaction = await advance(targetPath, transaction, PHASE_CANDIDATE_VALIDATED);
       testOnlyCheckpoint("AFTER_TARGET_VALIDATION");
       if (afterCandidateValidated !== null) await afterCandidateValidated({
@@ -3960,33 +4177,55 @@ export async function publishCandidate(mode, target, candidate, {
             [publicationError, rollbackError],
             "publication and rollback both failed",
           );
-          throw combined;
+          throw withRetainedReadyAttestation(combined);
         }
         if (outcome.restoredValidationError !== null || outcome.sourceConflict) {
           try {
             raiseRollbackOutcome(targetPath, outcome);
           } catch (restoredError) {
             restoredError.cause = publicationError;
-            throw restoredError;
+            throw withRetainedReadyAttestation(restoredError);
           }
         }
       }
-      throw publicationError;
+      throw withRetainedReadyAttestation(publicationError);
     } finally {
+      let terminalCleanupError = null;
+      try {
+        await consumeManifest();
+      } catch (error) {
+        terminalCleanupError = error;
+      }
       if (!journalPersisted) {
-        const persisted = await readOwnership(targetPath, transactionId);
-        if (persisted !== null) {
-          await removeOwnedDirectory(
-            targetPath,
-            transactionId,
-            "stage",
-            stage,
-            persisted.stageIdentity,
-            persisted.candidateSnapshotSha256,
-          );
-          await removeOwnership(targetPath, persisted);
+        try {
+          const persisted = await readOwnership(targetPath, transactionId);
+          if (persisted !== null) {
+            await removeOwnedDirectory(
+              targetPath,
+              transactionId,
+              "stage",
+              stage,
+              persisted.stageIdentity,
+              persisted.candidateSnapshotSha256,
+            );
+            await removeOwnership(targetPath, persisted);
+          }
+        } catch (error) {
+          if (terminalCleanupError === null) {
+            terminalCleanupError = error;
+          } else {
+            const combined = new ValidationError(
+              `terminal cleanup preserved unowned input and transaction recovery evidence: ${terminalCleanupError.message}; ${error.message}`,
+            );
+            combined.cause = new AggregateError(
+              [terminalCleanupError, error],
+              "manifest and transaction cleanup both failed",
+            );
+            terminalCleanupError = combined;
+          }
         }
       }
+      if (terminalCleanupError !== null) throw terminalCleanupError;
     }
   });
 }

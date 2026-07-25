@@ -65,42 +65,52 @@ READINESS_INSTRUCTIONS = (
 CLOSE_INSTRUCTIONS = (
     "Exija uma readiness attestation externa `GLOBAL/READY` para o snapshot atual, use somente o renderer determinístico canônico e passe a mesma attestation ao publisher; rejeite attestation stale e não aceite confirmação booleana.",
 )
+EXECUTION_CLOSE_INSTRUCTIONS = (
+    "Execute primeiro o validador estrutural read-only empacotado pela skill. Bloqueie qualquer path não canônico com o path exato e a ação de relocação ou remoção explícita; não apague resíduos nem produza artefatos.",
+)
 CODEX_EXECUTE_INSTRUCTIONS = (
-    "Após implementar e registrar o escopo alterado, faça spawn obrigatoriamente para a primeira chamada ao agente customizado `stnl_validation_runner` com `OPERATION=EXECUTE_SLICE`, o SPEC path, execution root derivado, slice, paths de plans e tasks, evidências relevantes, escopo alterado, rodada automática e o contexto adicional aplicável. Invoque o runner no mínimo uma vez e no máximo três vezes nesta mesma operação manual, nas rodadas `1/3`, `2/3` e `3/3`; nunca faça uma quarta chamada nem use loop ilimitado. Não pule o runner por mudança simples nem por acreditar que nenhum check seja aplicável; a descoberta independente e `TESTS_NOT_APPLICABLE` pertencem ao runner.",
+    "Após implementar e registrar o escopo alterado, faça spawn obrigatório para a primeira chamada em uma sessão delegada independente do agente customizado `stnl_validation_runner`, com `fork_turns=\"none\"` e sem fork completo da thread ou do contexto principal. Envie somente `OPERATION=EXECUTE_SLICE`, `SPEC_PATH`, execution root derivado, slice, paths de plans e tasks, escopo alterado, evidências compactas relevantes, rodada automática e contexto adicional estritamente necessário; não envie histórico da conversa. Invoque o runner no mínimo uma vez e no máximo três vezes nesta mesma operação manual, nas rodadas `1/3`, `2/3` e `3/3`; nunca faça uma quarta chamada nem use loop ilimitado. Não pule o runner por mudança simples nem por acreditar que nenhum check seja aplicável; a descoberta independente e `TESTS_NOT_APPLICABLE` pertencem ao runner.",
     "Não passe logs completos. Não execute no contexto principal testes, builds, linters, typechecks, compilações ou outros comandos de verificação. Aguarde cada retorno e persista-o append-only em `Implementation Test Evidence`, com o próximo `implementation-check-NN` global, rodada, descoberta de checks, justificativa de não aplicabilidade, estado, comandos, falhas, correções cobertas e escopo.",
     "Em `TESTS_FAIL` nas rodadas 1 ou 2, depois de persistir a evidência, corrija automaticamente no contexto principal somente a falha objetiva dentro do escopo aprovado, registre falha, evidência, alteração, arquivos, escopo atualizado e justificativa interna, e então chame o runner novamente. Na terceira falha, persista e encerre sem nova correção automática.",
     "Aceite somente `TESTS_PASS`, `TESTS_FAIL`, `TESTS_NOT_APPLICABLE` ou `BLOCKED`. Encerre em `TESTS_PASS`, `TESTS_NOT_APPLICABLE`, `BLOCKED`, terceira falha ou decisão fora do escopo; mantenha a slice aberta e não crie Validation Attempt, Effective Validation Base ou conclusão `[x]`. `TESTS_NOT_APPLICABLE` exige descoberta objetiva, fontes e ações read-only resumidas, justificativa e nenhum comando de verificação executado; não o trate como `PASS` formal.",
-    "Se o agente não iniciar ou retornar saída inválida, persista `BLOCKED` com a causa e encerre. Não faça fallback, não crie etapa manual de retry, não amplie escopo e não inicie `VALIDATE_SLICE` nem outra operação automaticamente.",
+    "Se a sessão não iniciar ou o transporte falhar, faça no máximo uma nova tentativa técnica em outra sessão independente com o mesmo payload mínimo. Essas tentativas não consomem rodada `N/3`, não criam `implementation-check-NN`, não autorizam correção e, após a segunda falha, produzem somente um `Runner Initialization Blocker`; saída malformada após início é um bloqueio distinto e não recebe retry de transporte. Não faça fallback, não crie etapa manual de retry, não amplie escopo e não inicie `VALIDATE_SLICE` nem outra operação automaticamente.",
+    "Se a mesma operação retornar após implementação e escopo já persistidos com bloqueio anterior exclusivamente de inicialização, retome diretamente no spawn: não reimplemente, não duplique checklist, diff, evidência ou blocker, não reinicie identificadores e não crie rodada antes de o runner iniciar. Nunca crie scratch file, script auxiliar, manifest ou relatório ad hoc dentro da SPEC; reporte qualquer path não canônico exatamente e use somente diretório temporário externo quando necessário.",
 )
 CLAUDE_EXECUTE_INSTRUCTIONS = (
-    "Após implementar e registrar o escopo alterado, delegue obrigatoriamente a primeira chamada dos testes desta operação com `OPERATION=EXECUTE_SLICE`, o SPEC path, execution root derivado, slice, paths de plans e tasks, evidências relevantes, escopo alterado, rodada automática e o contexto adicional aplicável para:",
+    "Após implementar e registrar o escopo alterado, delegue obrigatoriamente a primeira chamada dos testes desta operação em uma sessão independente, sem histórico da conversa, com somente `OPERATION=EXECUTE_SLICE`, `SPEC_PATH`, execution root derivado, slice, paths de plans e tasks, evidências compactas relevantes, escopo alterado, rodada automática e contexto adicional estritamente necessário para:",
     "@agent-stnl-validation-runner",
     "Invoque o runner no mínimo uma vez e no máximo três vezes nesta mesma operação manual, nas rodadas `1/3`, `2/3` e `3/3`; nunca faça uma quarta chamada nem use loop ilimitado. Não pule o runner por mudança simples nem por acreditar que nenhum check seja aplicável; a descoberta independente e `TESTS_NOT_APPLICABLE` pertencem ao runner.",
-    *CODEX_EXECUTE_INSTRUCTIONS[1:],
+    *CODEX_EXECUTE_INSTRUCTIONS[1:5],
+    "Se a mesma operação retornar após implementação e escopo já persistidos com bloqueio anterior exclusivamente de inicialização, retome diretamente na delegação: não reimplemente, não duplique checklist, diff, evidência ou blocker, não reinicie identificadores e não crie rodada antes de o runner iniciar. Nunca crie scratch file, script auxiliar, manifest ou relatório ad hoc dentro da SPEC; reporte qualquer path não canônico exatamente e use somente diretório temporário externo quando necessário.",
 )
 CODEX_FINDINGS_INSTRUCTIONS = (
-    "Após aplicar os findings e registrar correções e escopo alterado, faça spawn obrigatoriamente para a primeira chamada ao agente customizado `stnl_validation_runner` com `OPERATION=APPLY_FINDINGS`, o SPEC path, execution root derivado, slice, paths de plans e tasks, findings pendentes, correções, evidências relevantes, escopo alterado, rodada automática e o contexto adicional aplicável. Invoque o runner no mínimo uma vez e no máximo três vezes nesta mesma operação manual, nas rodadas `1/3`, `2/3` e `3/3`; nunca faça uma quarta chamada nem use loop ilimitado. Não pule o runner por correção simples nem por acreditar que nenhum check seja aplicável; a descoberta independente e `TESTS_NOT_APPLICABLE` pertencem ao runner.",
+    "Após aplicar os findings e registrar correções e escopo alterado, faça spawn obrigatório para a primeira chamada em uma sessão delegada independente do agente customizado `stnl_validation_runner`, com `fork_turns=\"none\"` e sem fork completo da thread ou do contexto principal. Envie somente `OPERATION=APPLY_FINDINGS`, `SPEC_PATH`, execution root derivado, slice, paths de plans e tasks, findings pendentes, correções aplicáveis, escopo alterado, evidências compactas relevantes, rodada automática e contexto adicional estritamente necessário; não envie histórico da conversa. Invoque o runner no mínimo uma vez e no máximo três vezes nesta mesma operação manual, nas rodadas `1/3`, `2/3` e `3/3`; nunca faça uma quarta chamada nem use loop ilimitado. Não pule o runner por correção simples nem por acreditar que nenhum check seja aplicável; a descoberta independente e `TESTS_NOT_APPLICABLE` pertencem ao runner.",
     "Não passe logs completos. Não execute no contexto principal testes, builds, linters, typechecks, compilações ou outros comandos de verificação. Aguarde cada retorno e persista-o append-only em `Findings Test Evidence`, com o próximo `findings-check-NN` global, ciclo de findings, rodada, descoberta de checks, justificativa de não aplicabilidade, estado, comandos, falhas, correções cobertas e escopo.",
     "Em `TESTS_FAIL` nas rodadas 1 ou 2, depois de persistir a evidência, ajuste automaticamente no contexto principal somente findings persistidos, falhas introduzidas ou expostas pelas correções e regressões diretamente relacionadas dentro do escopo aprovado; registre falha, evidência, alteração, arquivos, correções e escopo atualizado, e então chame o runner novamente. Na terceira falha, persista, preserve os findings e encerre sem nova correção automática.",
     "Aceite somente `TESTS_PASS`, `TESTS_FAIL`, `TESTS_NOT_APPLICABLE` ou `BLOCKED`. Encerre em `TESTS_PASS`, `TESTS_NOT_APPLICABLE`, `BLOCKED`, terceira falha ou decisão fora do escopo; preserve findings e Validation Attempts, mantenha a slice aberta e não crie Effective Validation Base ou conclusão `[x]`. `TESTS_NOT_APPLICABLE` exige descoberta objetiva, fontes e ações read-only resumidas, justificativa e nenhum comando de verificação executado e não resolve findings por si só.",
-    "Se o agente não iniciar ou retornar saída inválida, persista `BLOCKED` com a causa e encerre. Não faça fallback, não marque findings como resolvidos sem sustentação, não crie etapa manual de retry, não amplie escopo e não inicie `VALIDATE_SLICE` nem outra operação automaticamente.",
+    "Se a sessão não iniciar ou o transporte falhar, faça no máximo uma nova tentativa técnica em outra sessão independente com o mesmo payload mínimo. Essas tentativas não consomem rodada `N/3`, não criam `findings-check-NN`, não autorizam correção e, após a segunda falha, produzem somente um `Runner Initialization Blocker`; saída malformada após início é um bloqueio distinto e não recebe retry de transporte. Não faça fallback, não marque findings como resolvidos sem sustentação, não crie etapa manual de retry, não amplie escopo e não inicie `VALIDATE_SLICE` nem outra operação automaticamente.",
+    "Se a mesma operação retornar após correções e escopo já persistidos com bloqueio anterior exclusivamente de inicialização, retome diretamente no spawn: não reaplique findings, não duplique checklist, diff, evidência ou blocker, não reinicie identificadores e não crie rodada antes de o runner iniciar. Nunca crie scratch file, script auxiliar, manifest ou relatório ad hoc dentro da SPEC; reporte qualquer path não canônico exatamente e use somente diretório temporário externo quando necessário.",
 )
 CLAUDE_FINDINGS_INSTRUCTIONS = (
-    "Após aplicar os findings e registrar correções e escopo alterado, delegue obrigatoriamente a primeira chamada dos testes desta operação com `OPERATION=APPLY_FINDINGS`, o SPEC path, execution root derivado, slice, paths de plans e tasks, findings pendentes, correções, evidências relevantes, escopo alterado, rodada automática e o contexto adicional aplicável para:",
+    "Após aplicar os findings e registrar correções e escopo alterado, delegue obrigatoriamente a primeira chamada dos testes desta operação em uma sessão independente, sem histórico da conversa, com somente `OPERATION=APPLY_FINDINGS`, `SPEC_PATH`, execution root derivado, slice, paths de plans e tasks, findings pendentes, correções aplicáveis, evidências compactas relevantes, escopo alterado, rodada automática e contexto adicional estritamente necessário para:",
     "@agent-stnl-validation-runner",
     "Invoque o runner no mínimo uma vez e no máximo três vezes nesta mesma operação manual, nas rodadas `1/3`, `2/3` e `3/3`; nunca faça uma quarta chamada nem use loop ilimitado. Não pule o runner por correção simples nem por acreditar que nenhum check seja aplicável; a descoberta independente e `TESTS_NOT_APPLICABLE` pertencem ao runner.",
-    *CODEX_FINDINGS_INSTRUCTIONS[1:],
+    *CODEX_FINDINGS_INSTRUCTIONS[1:5],
+    "Se a mesma operação retornar após correções e escopo já persistidos com bloqueio anterior exclusivamente de inicialização, retome diretamente na delegação: não reaplique findings, não duplique checklist, diff, evidência ou blocker, não reinicie identificadores e não crie rodada antes de o runner iniciar. Nunca crie scratch file, script auxiliar, manifest ou relatório ad hoc dentro da SPEC; reporte qualquer path não canônico exatamente e use somente diretório temporário externo quando necessário.",
 )
 CODEX_VALIDATE_INSTRUCTIONS = (
-    "Faça spawn do agente customizado `stnl_validation_runner` com `OPERATION=VALIDATE_SLICE`, o SPEC path, execution root derivado, slice, paths de plans e tasks, evidências de implementação e findings, incluindo `TESTS_NOT_APPLICABLE`, histórico de validação, escopo alterado, diff, overlaps e o contexto adicional aplicável.",
+    "Faça spawn obrigatório de uma sessão delegada independente do agente customizado `stnl_validation_runner`, com `fork_turns=\"none\"` e sem fork completo da thread ou do contexto principal. Envie somente `OPERATION=VALIDATE_SLICE`, `SPEC_PATH`, execution root derivado, slice, paths de plans e tasks, evidências compactas de implementação e findings, incluindo `TESTS_NOT_APPLICABLE`, resumo das tentativas válidas, escopo alterado, diff, overlaps e contexto adicional estritamente necessário; não envie histórico da conversa.",
     "Não passe logs completos. Aguarde o retorno. O contexto principal somente adiciona a Validation Attempt e, em `PASS` válido, substitui a Effective Validation Base e finaliza a slice; não repete testes, não refaz a validação e não emite outro veredito.",
     "Exija revisão independente da descoberta e justificativa de qualquer `TESTS_NOT_APPLICABLE`; o runner pode rejeitar essa evidência, descobrir e executar check aplicável ou exigir inspeção adicional. Não promova não aplicabilidade a `PASS`; a validação formal continua somente `PASS | NEEDS_FIX | BLOCKED`.",
-    "Se o agente não iniciar ou não retornar resultado válido, persista e retorne `BLOCKED`. Não faça fallback nem substitua, suavize ou promova o resultado.",
+    "Se a sessão não iniciar ou o transporte falhar, faça no máximo uma nova tentativa técnica em outra sessão independente com o mesmo payload mínimo; ela não cria nem consome `attempt-NN`, não muda `initial` para `revalidation` e, após a segunda falha, mantém somente um `Runner Initialization Blocker`. Saída malformada após início é distinta, não recebe retry de transporte e não cria tentativa fabricada. Em nova chamada bloqueada exclusivamente pela inicialização, retome diretamente no spawn sem duplicar blocker ou reiniciar o próximo identificador. Não faça fallback nem substitua, suavize ou promova o resultado.",
+    "Nunca crie scratch file, script auxiliar, manifest ou relatório ad hoc dentro da SPEC; reporte qualquer path não canônico exatamente, não o apague e use somente diretório temporário externo quando necessário.",
 )
 CLAUDE_VALIDATE_INSTRUCTIONS = (
-    "Delegue obrigatoriamente a validação independente com `OPERATION=VALIDATE_SLICE`, o SPEC path, execution root derivado, slice, paths de plans e tasks, evidências de implementação e findings, incluindo `TESTS_NOT_APPLICABLE`, histórico de validação, escopo alterado, diff, overlaps e o contexto adicional aplicável para:",
+    "Delegue obrigatoriamente a validação independente em uma sessão delegada independente sem histórico da conversa, com somente `OPERATION=VALIDATE_SLICE`, `SPEC_PATH`, execution root derivado, slice, paths de plans e tasks, evidências compactas de implementação e findings, incluindo `TESTS_NOT_APPLICABLE`, resumo das tentativas válidas, escopo alterado, diff, overlaps e contexto adicional estritamente necessário para:",
     "@agent-stnl-validation-runner",
-    *CODEX_VALIDATE_INSTRUCTIONS[1:],
+    *CODEX_VALIDATE_INSTRUCTIONS[1:3],
+    "Se a sessão não iniciar ou o transporte falhar, faça no máximo uma nova tentativa técnica em outra sessão independente com o mesmo payload mínimo; ela não cria nem consome `attempt-NN`, não muda `initial` para `revalidation` e, após a segunda falha, mantém somente um `Runner Initialization Blocker`. Saída malformada após início é distinta, não recebe retry de transporte e não cria tentativa fabricada. Em nova chamada bloqueada exclusivamente pela inicialização, retome diretamente na delegação sem duplicar blocker ou reiniciar o próximo identificador. Não faça fallback nem substitua, suavize ou promova o resultado.",
+    CODEX_VALIDATE_INSTRUCTIONS[4],
 )
 
 
@@ -176,7 +186,11 @@ LAUNCHERS = {
         CLAUDE_FINDINGS_INSTRUCTIONS,
     ),
     "execution-close": LauncherSpec(
-        "stnl-execution-closer", "OPERATION", "CLOSE", (("SPEC_PATH", "{{SPEC_PATH}}"),)
+        "stnl-execution-closer",
+        "OPERATION",
+        "CLOSE",
+        (("SPEC_PATH", "{{SPEC_PATH}}"),),
+        EXECUTION_CLOSE_INSTRUCTIONS,
     ),
     "slice-validate-codex": LauncherSpec(
         "stnl-slice-quality-manager",
@@ -217,18 +231,31 @@ def check_executor_contract(path: Path) -> None:
     required_markers = [
         "Check every operation precondition before implementation or correction.",
         "Once implementation or correction has occurred, the operation cannot end without invoking the configured runner.",
+        "Start each logical runner invocation in an independent delegated session.",
+        "never combine the custom `stnl_validation_runner` with a full thread/context fork",
+        "initialize it without inherited conversation history and send only the explicit minimum payload",
+        "Never send conversation history or full logs.",
         "Invoke the configured runner at least once and at most three times within the same manual operation.",
         "The first invocation is mandatory after the initial implementation or correction",
         "cannot be skipped because the change appears simple or because no check is expected to apply",
         "the runner performs independent discovery and returns `TESTS_NOT_APPLICABLE` when appropriate",
-        "The operation may end after implementation or correction only after a valid auxiliary status is received or the runner fails to start or returns malformed output with an objective cause.",
-        "Additional invocations occur only after `TESTS_FAIL` in round one or two and an authorized correction.",
+        "For an initialization or transport failure only, retry the same logical invocation at most once",
+        "Neither technical start attempt consumes automatic round `1/3`, `2/3`, or `3/3`",
+        "allocates `implementation-check-NN` or `findings-check-NN`",
+        "persist exactly one objective singleton `Runner Initialization Blocker`",
+        "A malformed response after the runner started is not retried as transport",
+        "resume directly at the logical runner invocation",
+        "Do not reimplement, reapply findings, duplicate checklist or diff summaries, duplicate the blocker, reset global identifiers",
+        "update the existing singleton blocker instead of appending another record",
+        "Additional automatic rounds occur only after a successfully started runner returns `TESTS_FAIL` in round one or two",
         "Never make a fourth automatic invocation",
         "use an unbounded loop",
         "fall back to checks in the main context",
         "A later manual invocation has its own three-call budget but continues each section's sequence instead of resetting it.",
         "`TESTS_NOT_APPLICABLE` is valid only after objective discovery and when no verification command was executed",
         "read-only actions used only to discover applicable checks are permitted and recorded under `Check discovery sources`",
+        "never create scratch files, scripts, manifests, or ad hoc reports inside the SPEC or execution root",
+        "Report every non-canonical path exactly",
     ]
     for marker in required_markers:
         if marker not in text:
@@ -375,6 +402,9 @@ def check_launcher_contract(root: Path) -> None:
                 reject("L007_PLATFORM_IDENTITY", f"{actual[name]}: invalid Codex runner identity")
             if not instructions or "faça spawn" not in instructions[0].lower():
                 reject("L007_PLATFORM_IDENTITY", f"{actual[name]}: required Codex spawn invocation is missing")
+            for marker in ['fork_turns="none"', "sem fork completo da thread ou do contexto principal"]:
+                if marker not in text:
+                    reject("L016_TRANSPORT", f"{actual[name]}: Codex independent-session contract lacks: {marker}")
         elif name in RUNNER_LAUNCHERS and name.endswith("-claude"):
             if text.splitlines().count("@agent-stnl-validation-runner") != 1 or "stnl_validation_runner" in text or "Codex" in text:
                 reject("L007_PLATFORM_IDENTITY", f"{actual[name]}: invalid Claude runner identity")
@@ -390,6 +420,14 @@ def check_launcher_contract(root: Path) -> None:
                 "execution root derivado": "derived execution root is not passed",
                 "paths de plans e tasks": "plan/task paths are not passed",
                 "escopo alterado": "changed scope is not passed",
+                "sessão independente": "runner session is not independent",
+                "evidências compactas relevantes": "runner payload is not compact",
+                "contexto adicional estritamente necessário": "runner payload is not minimal",
+                (
+                    "não envie histórico da conversa"
+                    if name.endswith("-codex")
+                    else "sem histórico da conversa"
+                ): "conversation-history boundary is missing",
                 "Não passe logs completos": "full-log forwarding is not prohibited",
                 "Não execute no contexto principal testes": "main context may execute checks",
                 evidence_section: "compact evidence destination is missing",
@@ -411,6 +449,19 @@ def check_launcher_contract(root: Path) -> None:
                 "não crie etapa manual de retry": "manual retry step is not prohibited",
                 "não inicie `VALIDATE_SLICE`": "automatic formal validation is not prohibited",
                 "`TESTS_NOT_APPLICABLE` exige descoberta objetiva, fontes e ações read-only resumidas, justificativa e nenhum comando de verificação executado": "non-applicability evidence is incomplete",
+                "no máximo uma nova tentativa técnica": "technical transport retry is not bounded",
+                "não consomem rodada `N/3`": "transport retry consumes an automatic round",
+                "Runner Initialization Blocker": "definitive transport failure lacks singleton persistence",
+                "saída malformada após início": "malformed output is not distinct from transport",
+                "bloqueio anterior exclusivamente de inicialização": "transport-only resume is missing",
+                (
+                    "não reimplemente"
+                    if spec.operation == "EXECUTE_SLICE"
+                    else "não reaplique findings"
+                ): "transport-only resume repeats completed work",
+                "não crie rodada antes de o runner iniciar": "resume allocates a round before runner start",
+                "Nunca crie scratch file": "scratch files inside the SPEC are not prohibited",
+                "path não canônico exatamente": "non-canonical paths are not reported exactly",
             }
             for marker, description in required_flow.items():
                 if marker not in text:
@@ -465,16 +516,29 @@ def check_launcher_contract(root: Path) -> None:
                 "não refaz a validação": "main context must not redo validation",
                 "não emite outro veredito": "main context must not emit another verdict",
                 "substitui a Effective Validation Base e finaliza a slice": "PASS must update the base and finalize",
-                "persista e retorne `BLOCKED`": "invalid runner return must remain BLOCKED",
                 "`OPERATION=VALIDATE_SLICE`": "runner operation is not passed",
                 "execution root derivado": "derived execution root is not passed",
-                "evidências de implementação e findings": "prior test evidence is not passed",
+                "evidências compactas de implementação e findings": "prior test evidence is not passed",
                 "Não passe logs completos": "full-log forwarding is not prohibited",
                 "incluindo `TESTS_NOT_APPLICABLE`": "non-applicability evidence is not passed",
                 "Exija revisão independente da descoberta e justificativa": "non-applicability is not reviewed independently",
                 "pode rejeitar essa evidência": "omitted applicable checks cannot reject non-applicability",
                 "Não promova não aplicabilidade a `PASS`": "non-applicability may be promoted to PASS",
                 "somente `PASS | NEEDS_FIX | BLOCKED`": "formal validation statuses changed",
+                "sessão delegada independente": "validation runner session is not independent",
+                "contexto adicional estritamente necessário": "validation payload is not minimal",
+                (
+                    "não envie histórico da conversa"
+                    if name.endswith("-codex")
+                    else "sem histórico da conversa"
+                ): "conversation-history boundary is missing",
+                "no máximo uma nova tentativa técnica": "validation transport retry is not bounded",
+                "não cria nem consome `attempt-NN`": "transport failure consumes a validation attempt",
+                "Runner Initialization Blocker": "validation transport failure lacks singleton persistence",
+                "Saída malformada após início é distinta": "malformed validation output is not distinct",
+                "bloqueada exclusivamente pela inicialização": "validation transport-only resume is missing",
+                "Nunca crie scratch file": "validation launcher permits SPEC scratch files",
+                "path não canônico exatamente": "validation launcher does not report exact residue paths",
             }
             for marker, description in required_flow.items():
                 if marker not in text:
@@ -932,6 +996,18 @@ def check_runner_contract(root: Path) -> None:
         "Uma invocação manual posterior continua a numeração.",
         "revisa independentemente a descoberta e a justificativa",
         "não faz retry nem aplica correções",
+        '`fork_turns="none"`',
+        "nunca combinam o agente customizado com fork completo da thread ou do contexto principal",
+        "Os payloads mínimos incluem somente operação, `SPEC_PATH`",
+        "Históricos e logs completos não são encaminhados.",
+        "no máximo uma segunda tentativa técnica",
+        "não consomem rodada `N/3`",
+        "não criam `implementation-check-NN`, `findings-check-NN` ou `attempt-NN`",
+        "somente um `Runner Initialization Blocker`",
+        "Um `BLOCKED` válido do runner, uma saída malformada após início, `TESTS_FAIL` e uma falha de verification command permanecem categorias distintas",
+        "retoma diretamente na delegação",
+        "Não reimplementa, não reaplica findings",
+        "não cria rodada antes de a sessão iniciar",
     ]
     for marker in readme_markers:
         if marker not in readme:

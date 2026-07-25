@@ -30,7 +30,7 @@ For an existing SPEC, `SPEC_PATH` is its directory or direct `feature_spec.md`. 
 4. Structural links are `blocks`, `blocked_by`, `linked_decision`, `verifies`, and `references`; qualified external narrative references are not local IDs.
 5. Keep facts, hypotheses, decisions, and requirements distinct. Never invent content to pass a gate.
 6. Materialize only categories with real records. A ready SPEC has at least one active, unblocked AC covering an in-scope requirement.
-7. `READINESS` never mutates the workspace; only `GLOBAL/READY` emits an external attestation. `CLOSE` requires it and preserves external paths.
+7. `READINESS` is read-only. `GLOBAL/READY` attests current `ready` state or the publisher's status-only `draft → ready` candidate. `CLOSE` requires it and preserves external paths.
 8. Every Markdown artifact begins with the exact File Purpose Header contract; `feature_spec.md` header status is the documentary state authority.
 9. A context scout is exceptional: zero by default, search and localized reading first, at most one read-only call per operation, without fan-out, subdelegation, or SPEC decisions.
 
@@ -55,8 +55,8 @@ On validator failure, stop before semantic review and load only the diagnostic's
 ## Outcomes
 
 - `INIT`: create the minimum valid workspace and return `draft`, `blocked`, or globally justified `ready`.
-- `RESUME`: apply only manifest-authorized deltas, preserve all other bytes, and change status only when gates permit.
-- `READINESS`: return findings without workspace mutation; `GLOBAL/READY` generates the attestation deterministically.
+- `RESUME`: apply only authorized deltas, preserve all other bytes, and change status only when gates permit.
+- `READINESS`: return findings without workspace mutation; `GLOBAL/READY` follows invariant 7.
 - `CLOSE`: verify the attestation, render, validate, and publish without model-authored consolidation.
 
 Return only verdict/status, changed lifecycle files, documentary decisions, actionable findings with paths or IDs, validations, and next allowed step.

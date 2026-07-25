@@ -1043,6 +1043,32 @@ export function validateResumeTransition(beforeRoot, afterRoot, manifestPath) {
   return [before, after];
 }
 
+export function validateReadyPromotionTransition(beforeRoot, afterRoot) {
+  const before = validateWorkspace(beforeRoot);
+  const after = validateWorkspace(afterRoot);
+  const feature = path.join(after.root, 'feature_spec.md');
+  if (before.closed || after.closed) fail('ready promotion requires active source and candidate workspaces', feature);
+  if (before.status !== 'draft' || after.status !== 'ready') {
+    fail(`ready promotion requires exact feature status draft -> ready; got ${before.status} -> ${after.status}`, feature);
+  }
+  if (before.h1 !== after.h1) fail('ready promotion changed the feature H1 identity', feature);
+  validateResumePreservation(before, after, {
+    featureSections: [],
+    existingIds: [],
+    newIds: [],
+    statusTransitions: [{
+      path: 'feature_spec.md',
+      before: 'draft',
+      after: 'ready',
+    }],
+    recordStatusTransitions: [],
+  });
+  if (!same(externalSnapshot(before.root), externalSnapshot(after.root))) {
+    fail('ready promotion changed a directory outside lifecycle ownership', after.root);
+  }
+  return [before, after];
+}
+
 export function validateReadinessTransition(beforeRoot, afterRoot, scope) {
   if (!new Set(['LOCAL', 'GLOBAL']).has(scope)) fail("READINESS scope must be exactly 'LOCAL' or 'GLOBAL'");
   const before = validateWorkspace(beforeRoot);

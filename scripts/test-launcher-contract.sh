@@ -139,6 +139,13 @@ else:
         "claude-codex-id": ("@agent-stnl-validation-runner", "stnl_validation_runner"),
         "codex-no-spawn-upper": ("Faça spawn", "Use"),
         "codex-no-spawn-lower": ("faça spawn", "use"),
+        "codex-full-fork": ('fork_turns="none"', 'fork_turns="all"'),
+        "forwards-history": ("; não envie histórico da conversa", "; envie histórico da conversa"),
+        "two-technical-retries": ("no máximo uma nova tentativa técnica", "no máximo duas novas tentativas técnicas"),
+        "transport-consumes-round": ("não consomem rodada `N/3`", "consomem rodada `N/3`"),
+        "resume-reimplements": ("não reimplemente", "reimplemente"),
+        "allows-spec-scratch": ("Nunca crie scratch file", "Crie scratch file"),
+        "validation-consumes-attempt": ("não cria nem consome `attempt-NN`", "cria e consome `attempt-NN`"),
         "claude-optional-upper": ("Delegue obrigatoriamente", "Execute diretamente"),
         "claude-optional-lower": ("delegue obrigatoriamente", "execute diretamente"),
         "fallback": ("Não faça fallback", "Faça fallback"),
@@ -260,6 +267,13 @@ case_mutation execute-codex-missing-spawn L007_PLATFORM_IDENTITY slice-execute-c
 case_mutation execute-claude-missing-delegation L007_PLATFORM_IDENTITY slice-execute-claude.md claude-optional-lower
 case_mutation findings-codex-missing-spawn L007_PLATFORM_IDENTITY slice-apply-findings-codex.md codex-no-spawn-lower
 case_mutation findings-claude-missing-delegation L007_PLATFORM_IDENTITY slice-apply-findings-claude.md claude-optional-lower
+case_mutation codex-full-context-fork L016_TRANSPORT slice-execute-codex.md codex-full-fork
+case_mutation runner-forwards-conversation-history L012_CHECK_DELEGATION slice-apply-findings-codex.md forwards-history
+case_mutation runner-allows-two-technical-retries L012_CHECK_DELEGATION slice-execute-codex.md two-technical-retries
+case_mutation transport-retry-consumes-round L014_AUTOMATIC_RECHECK slice-apply-findings-codex.md transport-consumes-round
+case_mutation transport-resume-reimplements L012_CHECK_DELEGATION slice-execute-codex.md resume-reimplements
+case_mutation launcher-allows-spec-scratch L012_CHECK_DELEGATION slice-apply-findings-codex.md allows-spec-scratch
+case_mutation validation-transport-consumes-attempt L008_VALIDATION_FLOW slice-validate-codex.md validation-consumes-attempt
 case_mutation execute-formal-pass L013_CHECK_AUTHORITY slice-execute-codex.md formal-pass
 case_mutation findings-creates-attempt L013_CHECK_AUTHORITY slice-apply-findings-claude.md create-attempt
 case_mutation execute-completes-slice L013_CHECK_AUTHORITY slice-execute-claude.md complete-slice
@@ -293,5 +307,5 @@ case_executor_mutation executor-contract-says-up-to-only executor-up-to-only
 case_executor_mutation executor-contract-makes-invocation-optional executor-optional-invocation
 case_executor_mutation executor-contract-skips-not-applicable executor-skip-not-applicable
 
-echo "PASS: 63 invalid executor/launcher mutations rejected by the semantic checker against isolated fixtures"
+echo "PASS: 70 invalid executor/launcher mutations rejected by the semantic checker against isolated fixtures"
 echo "PASS: focused launcher contract suite completed in $((SECONDS - START_SECONDS))s"

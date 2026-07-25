@@ -6,7 +6,9 @@ import test from 'node:test';
 
 import {
   createReadinessAttestation,
+  createReadyPromotionAttestation,
   validateReadinessAttestation,
+  validateReadyPromotionAttestation,
   workspaceAuthoritySnapshotSha256,
 } from '../lib/readiness.mjs';
 import { validateWorkspace } from '../lib/lifecycle.mjs';
@@ -132,4 +134,44 @@ test('attestation CLI accepts equals and last repeated value, and help exits suc
   const help = spawnSync(process.execPath, [entry, '--help'], { cwd: root, encoding: 'utf8' });
   assert.equal(help.status, 0, help.stderr);
   assert.match(help.stdout, /^usage:/u);
+});
+
+test('draft ready promotion attestation binds the validated candidate to the active target identity', (t) => {
+  const root = temporary(t, 'stnl readiness promotion ');
+  const source = copyFixture(root, 'ready', 'source draft');
+  replace(path.join(source, 'feature_spec.md'), 'status: ready', 'status: draft');
+  const candidate = copyFixture(root, 'ready', 'candidate ready');
+  const receipt = path.join(root, 'promotion.json');
+  createReadyPromotionAttestation(source, candidate, receipt);
+  assert.equal(validateWorkspace(source).status, 'draft');
+  assert.equal(validateWorkspace(candidate).status, 'ready');
+  assert.equal(validateReadyPromotionAttestation(source, candidate, receipt)[1].status, 'ready');
+  fs.rmSync(source, { recursive: true });
+  fs.renameSync(candidate, source);
+  assert.doesNotThrow(() => validateReadinessAttestation(source, receipt));
+});
+
+test('draft source cannot use normal attestation creation and stale promotion candidates are rejected', (t) => {
+  const root = temporary(t, 'stnl readiness stale promotion ');
+  const source = copyFixture(root, 'ready', 'source draft');
+  replace(path.join(source, 'feature_spec.md'), 'status: ready', 'status: draft');
+  const candidate = copyFixture(root, 'ready', 'candidate ready');
+  assert.throws(
+    () => createReadinessAttestation(source, path.join(root, 'normal.json'), {
+      scope: 'GLOBAL',
+      verdict: 'READY',
+    }),
+    /active ready workspace/u,
+  );
+  const receipt = path.join(root, 'promotion.json');
+  createReadyPromotionAttestation(source, candidate, receipt);
+  replace(
+    path.join(candidate, 'feature_spec.md'),
+    'Provide deterministic',
+    'Provide changed deterministic',
+  );
+  assert.throws(
+    () => validateReadyPromotionAttestation(source, candidate, receipt),
+    /feature section changes|stale or incompatible/u,
+  );
 });

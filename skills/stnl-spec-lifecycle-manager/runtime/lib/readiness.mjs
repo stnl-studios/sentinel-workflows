@@ -6,6 +6,7 @@ import { createHash } from 'node:crypto';
 import {
   ValidationError,
   canonicalPathWithoutSymlinks,
+  validateReadyPromotionTransition,
   validateWorkspace,
 } from './lifecycle.mjs';
 import {
@@ -226,7 +227,7 @@ function verifyStableReadyCapture(capture) {
   ) reject('readiness source authority changed during attestation creation');
 }
 
-function payload(workspace, { scope, verdict, snapshot }) {
+function payload(workspace, { scope, verdict, snapshot, identityWorkspace = workspace }) {
   if (scope !== 'GLOBAL') reject('readiness attestation requires scope GLOBAL');
   if (verdict !== 'READY') reject('readiness attestation requires verdict READY');
   // Preserve the established canonical sorted-key JSON byte layout exactly.
@@ -235,7 +236,7 @@ function payload(workspace, { scope, verdict, snapshot }) {
     scope,
     verdict,
     version: READINESS_ATTESTATION_VERSION,
-    workspace_identity: workspaceIdentity(workspace),
+    workspace_identity: workspaceIdentity(identityWorkspace),
     workspace_snapshot_sha256: snapshot,
   };
 }
@@ -314,10 +315,7 @@ function removeOwnedOutput(output, owned) {
   }
 }
 
-export function createReadinessAttestation(source, attestation, { scope, verdict } = {}) {
-  const capture = requireStableReadyCapture(source);
-  const output = outputPath(attestation, capture.workspace);
-  const encoded = Buffer.from(`${JSON.stringify(payload(capture.workspace, { scope, verdict, snapshot: capture.snapshot }))}\n`, 'utf8');
+function writeAttestationOutput(output, encoded, verifySource) {
   let descriptor = null;
   let owned = null;
   try {
@@ -327,7 +325,7 @@ export function createReadinessAttestation(source, attestation, { scope, verdict
     fs.fsyncSync(descriptor);
     requireOwnedOutputBytes(descriptor, owned, encoded);
     requireOwnedOutputPath(output, owned);
-    verifyStableReadyCapture(capture);
+    verifySource();
     requireOwnedOutputBytes(descriptor, owned, encoded);
     requireOwnedOutputPath(output, owned);
     fs.closeSync(descriptor);
@@ -339,6 +337,40 @@ export function createReadinessAttestation(source, attestation, { scope, verdict
     throw error;
   }
   return output;
+}
+
+export function createReadinessAttestation(source, attestation, { scope, verdict } = {}) {
+  const capture = requireStableReadyCapture(source);
+  const output = outputPath(attestation, capture.workspace);
+  const encoded = Buffer.from(`${JSON.stringify(payload(capture.workspace, { scope, verdict, snapshot: capture.snapshot }))}\n`, 'utf8');
+  return writeAttestationOutput(output, encoded, () => verifyStableReadyCapture(capture));
+}
+
+export function createReadyPromotionAttestation(
+  source,
+  candidate,
+  attestation,
+  { scope = 'GLOBAL', verdict = 'READY' } = {},
+) {
+  const [sourceWorkspace] = validateReadyPromotionTransition(source, candidate);
+  const capture = requireStableReadyCapture(candidate);
+  if (capture.workspace.h1 !== sourceWorkspace.h1) {
+    reject('ready promotion attestation candidate identity does not match the source workspace');
+  }
+  const output = outputPath(attestation, capture.workspace);
+  if (isWithin(output, sourceWorkspace.root)) {
+    reject('attestation output must be outside the source workspace');
+  }
+  const encoded = Buffer.from(`${JSON.stringify(payload(capture.workspace, {
+    scope,
+    verdict,
+    snapshot: capture.snapshot,
+    identityWorkspace: sourceWorkspace,
+  }))}\n`, 'utf8');
+  return writeAttestationOutput(output, encoded, () => {
+    validateReadyPromotionTransition(source, candidate);
+    verifyStableReadyCapture(capture);
+  });
 }
 
 function nonemptyString(value, label) {
@@ -424,4 +456,32 @@ export function validateReadinessAttestation(source, attestation, { candidate = 
   const actualSnapshot = workspaceAuthoritySnapshotSha256(workspace);
   if (actualSnapshot !== parsed.workspace_snapshot_sha256) reject('readiness attestation is stale; rerun READINESS GLOBAL');
   return [workspace, actualSnapshot];
+}
+
+export function validateReadyPromotionAttestation(source, candidate, attestation) {
+  const [sourceWorkspace, candidateWorkspace] = validateReadyPromotionTransition(
+    source,
+    candidate,
+  );
+  const requested = requestedPath(attestation, 'readiness attestation');
+  const attestationPath = canonicalPathWithoutSymlinks(requested, 'readiness attestation');
+  if (
+    isWithin(attestationPath, sourceWorkspace.root)
+    || isWithin(attestationPath, candidateWorkspace.root)
+  ) {
+    reject('readiness attestation must be outside source and candidate workspaces');
+  }
+  const parsed = parseAttestation(attestationPath);
+  const expectedIdentity = workspaceIdentity(sourceWorkspace);
+  if (
+    parsed.workspace_identity.h1 !== expectedIdentity.h1
+    || parsed.workspace_identity.path_sha256 !== expectedIdentity.path_sha256
+  ) {
+    reject('readiness attestation workspace identity does not match the ready promotion target');
+  }
+  const candidateSnapshot = workspaceAuthoritySnapshotSha256(candidateWorkspace);
+  if (candidateSnapshot !== parsed.workspace_snapshot_sha256) {
+    reject('readiness attestation is stale or incompatible with the ready candidate');
+  }
+  return [sourceWorkspace, candidateWorkspace, candidateSnapshot];
 }

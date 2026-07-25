@@ -46,7 +46,11 @@ As três operações que usam o runner possuem launcher específico por platafor
 
 Copie somente os três launchers da plataforma usada. `execution-plan.md`, `execution-plan-review.md`, `execution-tasks.md`, `execution-tasks-review.md` e `execution-close.md` continuam compartilhados.
 
-No Codex, os launchers fazem spawn do agente customizado `stnl_validation_runner`. No Claude Code, delegam diretamente a `@agent-stnl-validation-runner`. Os payloads internos incluem operação, SPEC path, execution root derivado, slice, paths de plans e tasks, evidências relevantes, escopo alterado e contexto adicional opcional, sem encaminhar logs completos.
+No Codex, os launchers fazem spawn do agente customizado `stnl_validation_runner` em sessão independente com `fork_turns="none"`; nunca combinam o agente customizado com fork completo da thread ou do contexto principal. No Claude Code, delegam diretamente a `@agent-stnl-validation-runner` sem histórico da conversa. Os payloads mínimos incluem somente operação, `SPEC_PATH`, execution root derivado, slice, paths de plans e tasks, findings ou correções aplicáveis, escopo alterado, evidências compactas, rodada automática quando aplicável e contexto adicional estritamente necessário. Históricos e logs completos não são encaminhados.
+
+Falha de inicialização ou transporte recebe no máximo uma segunda tentativa técnica em nova sessão independente e com o mesmo payload mínimo. Essas tentativas não consomem rodada `N/3`, não criam `implementation-check-NN`, `findings-check-NN` ou `attempt-NN`, e não autorizam correção. Duas falhas persistem somente um `Runner Initialization Blocker`. Um `BLOCKED` válido do runner, uma saída malformada após início, `TESTS_FAIL` e uma falha de verification command permanecem categorias distintas; somente `TESTS_FAIL` válido pode autorizar a correção automática já delimitada.
+
+Uma nova chamada da mesma operação, quando implementação ou correção e escopo já foram persistidos e o único bloqueio final é de inicialização, retoma diretamente na delegação. Não reimplementa, não reaplica findings, não duplica checklist, diff, evidência ou blocker, não reinicia identificadores e não cria rodada antes de a sessão iniciar. O fallback no contexto principal é proibido.
 
 ### Test evidence e formal validation
 

@@ -1262,7 +1262,11 @@ test("recovery precedes late candidate and manifest validation", async (t) => {
         });
         assertKilled(result, "TARGET_TO_BACKUP_RENAMED");
         if (missingInput === "candidate") await fs.rm(candidate, { recursive: true });
-        else await fs.unlink(manifest);
+        else assert.equal(
+          await fs.stat(manifest).then(() => true, () => false),
+          false,
+          "the crashed transaction must already have consumed its ephemeral manifest",
+        );
         await assert.rejects(
           publishCandidate("RESUME", target, candidate, { manifestPath: manifest }),
           missingInput === "candidate" ? /candidate must be a real directory/u : /RESUME manifest must be a real file/u,
@@ -1600,14 +1604,27 @@ test("action and lock-release failures are both reported and every lease field i
       await withTemporaryDirectory(`stnl-publisher-lock-lease-${field}-`, async (base) => {
         const { target, candidate, manifest } = await buildResumeFixture(base);
         const before = snapshot(target);
+        let inodeSwapEvidence = null;
         await assert.rejects(
           publishCandidate("RESUME", target, candidate, {
             manifestPath: manifest,
             beforePublish: async ({ lock }) => {
               const payload = await readJson(lock);
               if (field === "inode") {
-                await fs.unlink(lock);
-                await fs.writeFile(lock, `${JSON.stringify(payload, null, 2)}\n`, { mode: 0o600 });
+                const originalBytes = await fs.readFile(lock);
+                const originalMetadata = await fs.lstat(lock, { bigint: true });
+                const displacedLock = `${lock}.test-displaced-original`;
+                await fs.rename(lock, displacedLock);
+                await fs.writeFile(lock, originalBytes, { flag: "wx", mode: 0o600 });
+                const displacedMetadata = await fs.lstat(displacedLock, { bigint: true });
+                const replacementMetadata = await fs.lstat(lock, { bigint: true });
+                assert.equal(displacedMetadata.dev, originalMetadata.dev);
+                assert.equal(displacedMetadata.ino, originalMetadata.ino);
+                assert.notDeepEqual(
+                  [replacementMetadata.dev, replacementMetadata.ino],
+                  [originalMetadata.dev, originalMetadata.ino],
+                );
+                inodeSwapEvidence = await captureFileEvidence([lock, displacedLock]);
               } else {
                 payload[field] = replacement;
                 await fs.writeFile(lock, `${JSON.stringify(payload, null, 2)}\n`, { mode: 0o600 });
@@ -1623,6 +1640,10 @@ test("action and lock-release failures are both reported and every lease field i
             return true;
           },
         );
+        if (field === "inode") {
+          assert.ok(inodeSwapEvidence);
+          await assertFileEvidencePreserved(inodeSwapEvidence);
+        }
         assert.equal(snapshot(target), before);
         assert.deepEqual(await transactionResidues(target), []);
       });

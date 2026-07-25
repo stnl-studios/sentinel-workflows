@@ -27,6 +27,8 @@ tasks.md
 tasks/slice-NN.md
 ```
 
+No other persisted file or directory is canonical. Never create analysis notes, review checklists, manifests, helper scripts, scratch files, or ad hoc reports inside the SPEC or execution root. When temporary support is indispensable, use an operating-system temporary directory outside the SPEC. Unknown paths block with their exact path and required relocation or explicit removal; workflow skills never delete them automatically.
+
 Every persisted path is relative to its containing artifact. For a colocated SPEC, `plan.md` refers to `../feature_spec.md`; detailed plans and tasks refer to `../../feature_spec.md`; a detailed task refers to `../plans/slice-NN.md`.
 
 `SLICE` accepts one unsigned decimal number without a prefix and normalizes it to zero-padded `slice-NN`. Reject missing, signed, negative, decimal, prefixed, or non-numeric values. Never infer a slice.

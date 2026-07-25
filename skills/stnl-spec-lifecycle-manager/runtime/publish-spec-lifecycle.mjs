@@ -6,7 +6,12 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { ValidationError } from "./lib/lifecycle.mjs";
-import { MUTABLE_MODES, isFilesystemError, publishCandidate } from "./lib/publisher.mjs";
+import {
+  MUTABLE_MODES,
+  isFilesystemError,
+  publishCandidate,
+  readinessAttestationPath,
+} from "./lib/publisher.mjs";
 
 const USAGE =
   "usage: publish-spec-lifecycle.mjs [-h] [--manifest MANIFEST] " +
@@ -91,6 +96,11 @@ export async function main(arguments_ = process.argv.slice(2)) {
       readinessAttestation: parsed.readinessAttestation,
     });
     process.stdout.write(`PASS: ${parsed.mode} published validated candidate at ${published}\n`);
+    if (parsed.mode === "RESUME" && parsed.readinessAttestation !== null) {
+      process.stdout.write(
+        `PASS: readiness attestation available at ${readinessAttestationPath(published)}\n`,
+      );
+    }
     return 0;
   } catch (error) {
     if (error instanceof ValidationError || isFilesystemError(error)) {

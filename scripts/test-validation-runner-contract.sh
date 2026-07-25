@@ -214,6 +214,16 @@ elif expression == "readme-manual-retry":
     replace(readme, "operação manual de retry", "operação manual `RETRY_TESTS`")
 elif expression == "readme-prohibits-discovery":
     replace(readme, "Discovery actions são leituras e comandos read-only", "Nenhum comando ou ação pode ser usado na descoberta; discovery actions são proibidas")
+elif expression == "readme-full-fork":
+    replace(readme, '`fork_turns="none"`', '`fork_turns="all"`')
+elif expression == "readme-forwards-history":
+    replace(readme, "Históricos e logs completos não são encaminhados.", "Históricos e logs completos são encaminhados.")
+elif expression == "readme-unbounded-transport":
+    replace(readme, "no máximo uma segunda tentativa técnica", "tentativas técnicas ilimitadas")
+elif expression == "readme-transport-consumes-round":
+    replace(readme, "não consomem rodada `N/3`", "consomem rodada `N/3`")
+elif expression == "readme-resume-reimplements":
+    replace(readme, "Não reimplementa, não reaplica findings", "Reimplementa e reaplica findings")
 else:
     raise SystemExit(f"unknown mutation: {expression}")
 
@@ -289,6 +299,11 @@ case_mutation readme-attempt-for-checks R012_README readme-attempt-for-checks
 case_mutation readme-close-calls-runner R012_README readme-close-runner
 case_mutation readme-creates-manual-retry R012_README readme-manual-retry
 case_mutation readme-prohibits-discovery-actions R012_README readme-prohibits-discovery
+case_mutation readme-allows-full-fork R012_README readme-full-fork
+case_mutation readme-forwards-history R012_README readme-forwards-history
+case_mutation readme-unbounded-transport-retry R012_README readme-unbounded-transport
+case_mutation readme-transport-retry-consumes-round R012_README readme-transport-consumes-round
+case_mutation readme-resume-repeats-work R012_README readme-resume-reimplements
 
-echo "PASS: 57 invalid validation-runner mutations rejected by the semantic checker against isolated fixtures"
+echo "PASS: 62 invalid validation-runner mutations rejected by the semantic checker against isolated fixtures"
 echo "PASS: focused validation-runner contract suite completed in $((SECONDS - START_SECONDS))s"

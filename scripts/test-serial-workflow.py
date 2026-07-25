@@ -274,6 +274,8 @@ class Slice:
     check_corrections: list[CheckCorrection] = field(default_factory=list)
     attempts: list[Attempt] = field(default_factory=list)
     bases: list[Base] = field(default_factory=list)
+    initialization_blockers: dict[str, list[str]] = field(default_factory=dict)
+    malformed_runner_blockers: dict[str, str] = field(default_factory=dict)
     done: bool = False
     final_result: str = "pending"
 
@@ -283,8 +285,33 @@ class Workflow:
     slices: list[Slice]
     files: dict[str, bytes]
     runner_calls: int = 0
+    technical_start_attempts: int = 0
     discovery_actions: int = 0
     verification_commands: int = 0
+
+    def start_delegation(
+        self,
+        item: Slice,
+        operation: str,
+        outcomes: list[str],
+    ) -> bool:
+        expect(1 <= len(outcomes) <= 2, "transport start retry was unbounded")
+        expect(operation in {"EXECUTE_SLICE", "APPLY_FINDINGS", "VALIDATE_SLICE"}, "unknown delegated operation")
+        for outcome in outcomes:
+            self.technical_start_attempts += 1
+            if outcome == "STARTED":
+                item.initialization_blockers.pop(operation, None)
+                return True
+            expect(outcome == "TRANSPORT_FAIL", "malformed or runner verdict was confused with transport")
+        item.initialization_blockers[operation] = [
+            f"transport start {index + 1} failed"
+            for index in range(len(outcomes))
+        ]
+        return False
+
+    def record_malformed_runner_result(self, item: Slice, operation: str) -> None:
+        self.technical_start_attempts += 1
+        item.malformed_runner_blockers[operation] = "runner started but returned malformed output"
 
     def run_checks(
         self,
@@ -435,6 +462,8 @@ class Workflow:
         work_applied: bool,
         correction_updates: list[dict[str, bytes | None]] | None = None,
         findings_cycle: str | None = None,
+        start_outcomes: list[str] | None = None,
+        resume_after_transport: bool = False,
     ) -> list[TestEvidence]:
         calls_before = self.runner_calls
         if not preconditions_valid:
@@ -442,7 +471,17 @@ class Workflow:
             expect(not statuses, "precondition-blocked operation supplied a runner result")
             expect(self.runner_calls == calls_before, "precondition-blocked operation invoked the runner")
             return []
-        expect(work_applied, "valid operation reached runner cycle before implementation or correction")
+        if resume_after_transport:
+            expect(
+                operation in item.initialization_blockers,
+                "transport resume lacked a persisted initialization blocker",
+            )
+            expect(not work_applied, "transport-only resume repeated implementation or findings")
+        else:
+            expect(work_applied, "valid operation reached runner cycle before implementation or correction")
+        if not self.start_delegation(item, operation, start_outcomes or ["STARTED"]):
+            expect(self.runner_calls == calls_before, "transport failure consumed an automatic runner round")
+            return []
         records = self.run_check_cycle(
             item,
             operation,
@@ -454,6 +493,19 @@ class Workflow:
         calls = self.runner_calls - calls_before
         expect(1 <= calls <= 3, "valid manual operation did not invoke the runner from one to three times")
         return records
+
+    def validate_with_transport(
+        self,
+        item: Slice,
+        start_outcomes: list[str],
+        status: str,
+        manifest: list[tuple[str, str]] | None = None,
+    ) -> None:
+        attempts_before = len(item.attempts)
+        if not self.start_delegation(item, "VALIDATE_SLICE", start_outcomes):
+            expect(len(item.attempts) == attempts_before, "transport failure created Validation Attempt")
+            return
+        self.validate(item, status, manifest)
 
     def validate(
         self,
@@ -593,6 +645,127 @@ def validation_scenarios() -> None:
         work_applied=False,
     )
     expect(not records and precondition_blocked.runner_calls == 0, "precondition block before implementation invoked the runner")
+
+    transport_resume = Workflow(
+        [Slice(1, {"src/a.txt"}, changed_paths={"src/a.txt"})],
+        {"src/a.txt": b"implemented"},
+    )
+    item = transport_resume.slices[0]
+    original_scope = set(item.changed_paths)
+    records = transport_resume.run_manual_operation(
+        item,
+        "EXECUTE_SLICE",
+        ["TESTS_PASS"],
+        {"src/a.txt"},
+        preconditions_valid=True,
+        work_applied=True,
+        start_outcomes=["TRANSPORT_FAIL", "TRANSPORT_FAIL"],
+    )
+    expect(not records, "definitive transport failure fabricated check evidence")
+    expect(
+        transport_resume.runner_calls == 0
+        and transport_resume.verification_commands == 0
+        and len(item.initialization_blockers) == 1
+        and "EXECUTE_SLICE" in item.initialization_blockers,
+        "transport retry consumed a round, fell back, or duplicated its blocker",
+    )
+    records = transport_resume.run_manual_operation(
+        item,
+        "EXECUTE_SLICE",
+        ["TESTS_PASS"],
+        {"src/a.txt"},
+        preconditions_valid=True,
+        work_applied=False,
+        start_outcomes=["STARTED"],
+        resume_after_transport=True,
+    )
+    expect(
+        len(records) == 1
+        and records[0].identifier == "implementation-check-01"
+        and records[0].automatic_round == 1,
+        "transport resume did not preserve the first real round and evidence identifier",
+    )
+    expect(
+        item.changed_paths == original_scope
+        and not item.initialization_blockers
+        and transport_resume.technical_start_attempts == 3,
+        "transport resume repeated implementation, changed scope, or retained duplicate blockers",
+    )
+
+    repeated_transport_failure = Workflow(
+        [Slice(1, {"src/a.txt"}, changed_paths={"src/a.txt"})],
+        {"src/a.txt": b"implemented"},
+    )
+    repeated_item = repeated_transport_failure.slices[0]
+    repeated_transport_failure.run_manual_operation(
+        repeated_item,
+        "EXECUTE_SLICE",
+        ["TESTS_PASS"],
+        {"src/a.txt"},
+        preconditions_valid=True,
+        work_applied=True,
+        start_outcomes=["TRANSPORT_FAIL", "TRANSPORT_FAIL"],
+    )
+    repeated_transport_failure.run_manual_operation(
+        repeated_item,
+        "EXECUTE_SLICE",
+        ["TESTS_PASS"],
+        {"src/a.txt"},
+        preconditions_valid=True,
+        work_applied=False,
+        start_outcomes=["TRANSPORT_FAIL", "TRANSPORT_FAIL"],
+        resume_after_transport=True,
+    )
+    expect(
+        len(repeated_item.initialization_blockers) == 1
+        and not repeated_item.implementation_evidence
+        and repeated_transport_failure.runner_calls == 0,
+        "repeated transport failure duplicated blockers or allocated check evidence",
+    )
+
+    malformed_runner = Workflow(
+        [Slice(1, {"src/a.txt"}, changed_paths={"src/a.txt"})],
+        {"src/a.txt": b"implemented"},
+    )
+    malformed_runner.record_malformed_runner_result(
+        malformed_runner.slices[0],
+        "EXECUTE_SLICE",
+    )
+    expect(
+        malformed_runner.technical_start_attempts == 1
+        and malformed_runner.runner_calls == 0
+        and len(malformed_runner.slices[0].malformed_runner_blockers) == 1,
+        "malformed runner output received a transport retry or fabricated check evidence",
+    )
+
+    validation_transport = Workflow(
+        [Slice(1, {"src/a.txt"}, changed_paths={"src/a.txt"})],
+        {"src/a.txt": b"implemented"},
+    )
+    validation_item = validation_transport.slices[0]
+    validation_transport.validate_with_transport(
+        validation_item,
+        ["TRANSPORT_FAIL", "TRANSPORT_FAIL"],
+        "PASS",
+        manifest(validation_transport, "src/a.txt"),
+    )
+    expect(
+        not validation_item.attempts
+        and len(validation_item.initialization_blockers) == 1,
+        "validation transport failure created an attempt or duplicate blockers",
+    )
+    validation_transport.validate_with_transport(
+        validation_item,
+        ["STARTED"],
+        "PASS",
+        manifest(validation_transport, "src/a.txt"),
+    )
+    expect(
+        validation_item.attempts[0].identifier == "attempt-01"
+        and validation_item.attempts[0].kind == "initial"
+        and validation_item.done,
+        "validation transport resume consumed the initial attempt identifier or type",
+    )
 
     execution_fail_then_pass = Workflow([Slice(1, {"src/a.txt"}, changed_paths={"src/a.txt"})], {"src/a.txt": b"bad"})
     item = execution_fail_then_pass.slices[0]
