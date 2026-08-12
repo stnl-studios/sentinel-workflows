@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 
 const ROOT_FILES = new Set(["plan.md", "tasks.md"]);
 const ROOT_DIRECTORIES = new Set(["plans", "tasks"]);
-const SPEC_ROOT_ENTRIES = new Set(["feature_spec.md", "shared", "execution"]);
+const SPEC_ROOT_ENTRIES = new Set(["feature_spec.md", "shared", "execution", "test-runbook"]);
 const SLICE_FILE = /^slice-[0-9]{2,}\.md$/u;
 
 function isIgnoredMetadata(name) {
@@ -86,7 +86,9 @@ export async function findNonCanonicalExecutionPaths(specPath) {
   if (specRoot !== null) {
     for (const entry of await fs.readdir(specRoot, { withFileTypes: true })) {
       if (isIgnoredMetadata(entry.name)) continue;
-      if (!SPEC_ROOT_ENTRIES.has(entry.name)) findings.push(path.join(specRoot, entry.name));
+      const entryPath = path.join(specRoot, entry.name);
+      if (!SPEC_ROOT_ENTRIES.has(entry.name)) findings.push(entryPath);
+      else if (entry.name === "test-runbook" && (!entry.isDirectory() || entry.isSymbolicLink())) findings.push(entryPath);
     }
   }
   const rootMetadata = await lstatOrNull(executionRoot);

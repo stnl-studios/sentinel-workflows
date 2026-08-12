@@ -68,6 +68,20 @@ CLOSE_INSTRUCTIONS = (
 EXECUTION_CLOSE_INSTRUCTIONS = (
     "Execute primeiro o validador estrutural read-only empacotado pela skill. Bloqueie qualquer path não canônico com o path exato e a ação de relocação ou remoção explícita; não apague resíduos nem produza artefatos.",
 )
+RUNBOOK_INSTRUCTIONS = (
+    "Gere ou regenere somente após esta invocação explícita; nunca encadeie lifecycle, execução, validação ou fechamento.",
+    "",
+    "Guia de preenchimento:",
+    "",
+    "- `SPEC_PATH`: caminho existente para a pasta da SPEC, para seu `feature_spec.md` ou para um arquivo avulso de requisitos.",
+    "- `RUNBOOK_SCOPE`: `TASK` para uma task; `SLICE` para uma slice; `MULTI_SLICE` para duas ou mais slices; `EXECUTION` para toda a execução; `SPEC` para toda a SPEC; `CUSTOM` para fontes delimitadas manualmente.",
+    '- `RUNBOOK_SELECTION`: objeto JSON. Use `{"slice":"1","task":"1.1"}` em `TASK`, `{"slice":"1"}` em `SLICE`, `{"slices":["1","3"]}` em `MULTI_SLICE`, `{}` em `EXECUTION` ou `SPEC`, e `{"anchors":["AC-001"],"paths":["docs/flow.md"]}` em `CUSTOM`.',
+    "- `RUNBOOK_OPTIONS`: objeto JSON; use `{}` para os defaults. Chaves opcionais: `audience` (públicos), `test_types` (tipos de teste), `environment` (ambiente), `depth` (`concise`, `detailed` ou `guided`), `data_preparation` (preferências de dados), `evidence` (evidências esperadas), `presentation` (booleano) e `helpers` (booleano; apenas autoriza helpers quando forem realmente necessários).",
+    "- Defaults de `RUNBOOK_OPTIONS={}`: audiência mista, profundidade detalhada, tipos sustentados pelas evidências, ambiente não presumido, reutilização de dados existentes, apresentação habilitada e nenhum helper.",
+    "- JSON deve usar aspas duplas, sem comentários nem vírgula final. Não informe secrets, tokens, cookies, credenciais ou dados pessoais reais.",
+    "",
+    'Exemplo: caminho `docs/SPEC/invitation-acceptance`, escopo `SLICE`, seleção `{"slice":"1"}` e opções `{"audience":["functional_qa","product_owner"],"test_types":["smoke","functional","acceptance"],"environment":"staging","depth":"guided","data_preparation":["fixture"],"evidence":["screenshot","request_response"],"presentation":true,"helpers":false}`.',
+)
 CODEX_EXECUTE_INSTRUCTIONS = (
     "Após implementar e registrar o escopo alterado, faça spawn obrigatório para a primeira chamada em uma sessão delegada independente do agente customizado `stnl_validation_runner`, com `fork_turns=\"none\"` e sem fork completo da thread ou do contexto principal. Envie somente `OPERATION=EXECUTE_SLICE`, `SPEC_PATH`, execution root derivado, slice, paths de plans e tasks, escopo alterado, evidências compactas relevantes, rodada automática e contexto adicional estritamente necessário; não envie histórico da conversa. Invoque o runner no mínimo uma vez e no máximo três vezes nesta mesma operação manual, nas rodadas `1/3`, `2/3` e `3/3`; nunca faça uma quarta chamada nem use loop ilimitado. Não pule o runner por mudança simples nem por acreditar que nenhum check seja aplicável; a descoberta independente e `TESTS_NOT_APPLICABLE` pertencem ao runner.",
     "Não passe logs completos. Não execute no contexto principal testes, builds, linters, typechecks, compilações ou outros comandos de verificação. Aguarde cada retorno e persista-o append-only em `Implementation Test Evidence`, com o próximo `implementation-check-NN` global, rodada, descoberta de checks, justificativa de não aplicabilidade, estado, comandos, falhas, correções cobertas e escopo.",
@@ -144,6 +158,18 @@ LAUNCHERS = {
         "CLOSE",
         (("SPEC_PATH", "{{SPEC_PATH}}"),),
         CLOSE_INSTRUCTIONS,
+    ),
+    "spec-test-runbook": LauncherSpec(
+        "stnl-spec-test-runbook",
+        "OPERATION",
+        "GENERATE_RUNBOOK",
+        (
+            ("SPEC_PATH", "{{SPEC_PATH}}"),
+            ("RUNBOOK_SCOPE", "{{RUNBOOK_SCOPE}}"),
+            ("RUNBOOK_SELECTION", "{{RUNBOOK_SELECTION}}"),
+            ("RUNBOOK_OPTIONS", "{{RUNBOOK_OPTIONS}}"),
+        ),
+        RUNBOOK_INSTRUCTIONS,
     ),
     "execution-plan": LauncherSpec(
         "stnl-execution-planner", "OPERATION", "PLAN", (("SPEC_PATH", "{{SPEC_PATH}}"),)
@@ -552,6 +578,12 @@ def check_launcher_contract(root: Path) -> None:
     }
     if runner_mentions != RUNNER_LAUNCHERS:
         reject("L006_SHARED_ISOLATION", f"automatic runner invocation mismatch: {sorted(runner_mentions)}")
+    runbook_mentions = {
+        name for name, text in texts.items()
+        if "GENERATE_RUNBOOK" in text or "stnl-spec-test-runbook" in text
+    }
+    if runbook_mentions != {"spec-test-runbook"}:
+        reject("L017_EXPLICIT_RUNBOOK", f"runbook generation is not exclusively explicit: {sorted(runbook_mentions)}")
 
 
 def load_toml(path: Path) -> dict:

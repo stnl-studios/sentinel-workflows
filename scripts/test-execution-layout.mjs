@@ -31,6 +31,27 @@ test("canonical layout passes without creating or changing artifacts", async (t)
   assert.deepEqual(await fs.readdir(execution), before);
 });
 
+test("optional generated test-runbook directory is accepted but never required or changed", async (t) => {
+  const { root } = await fixture(t);
+  await validateExecutionLayout(root);
+  assert.equal(await fs.stat(path.join(root, "test-runbook")).catch(() => null), null);
+  const runbook = path.join(root, "test-runbook");
+  await fs.mkdir(runbook);
+  const index = path.join(runbook, "index.html");
+  await fs.writeFile(index, "<!doctype html><title>Optional projection</title>\n", "utf8");
+  const before = await fs.readFile(index);
+  await validateExecutionLayout(root);
+  assert.deepEqual(await fs.readFile(index), before);
+});
+
+test("symlinked optional test-runbook root blocks without dereferencing", async (t) => {
+  const { root } = await fixture(t);
+  const external = await fs.mkdtemp(path.join(os.tmpdir(), "stnl external runbook-"));
+  t.after(() => fs.rm(external, { recursive: true, force: true }));
+  await fs.symlink(external, path.join(root, "test-runbook"));
+  assert.deepEqual(await findNonCanonicalExecutionPaths(root), [path.join(root, "test-runbook")]);
+});
+
 test("auxiliary files and scripts are reported exactly and never deleted", async (t) => {
   const { root, execution } = await fixture(t);
   const residues = [

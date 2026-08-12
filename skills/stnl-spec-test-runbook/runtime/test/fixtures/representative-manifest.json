@@ -1,0 +1,129 @@
+{
+  "contract_version": 1,
+  "title": "Invitation acceptance validation",
+  "summary": "Validate eligible and expired invitation behavior for QA, acceptance, and a stakeholder demonstration.",
+  "scope": {"kind": "SPEC", "selection": {}},
+  "configuration": {
+    "audience": ["functional_qa", "technical_qa", "stakeholder"],
+    "test_types": ["smoke", "functional", "integration", "acceptance", "negative", "regression"],
+    "environment": "staging / homologation",
+    "depth": "guided",
+    "presentation": true
+  },
+  "sources": [
+    {"path": "docs/SPEC/invitation-acceptance/execution/plan.md", "role": "global_plan", "ids": ["slice-01", "slice-02"]},
+    {"path": "docs/SPEC/invitation-acceptance/execution/plans/slice-01.md", "role": "approved_plan", "ids": ["AC-001", "AC-002"]},
+    {"path": "docs/SPEC/invitation-acceptance/execution/plans/slice-02.md", "role": "approved_plan", "ids": ["AC-001"]},
+    {"path": "docs/SPEC/invitation-acceptance/execution/tasks.md", "role": "global_progress", "ids": ["slice-01", "slice-02"]},
+    {"path": "docs/SPEC/invitation-acceptance/execution/tasks/slice-01.md", "role": "execution_evidence", "ids": ["1.1", "1.2"]},
+    {"path": "docs/SPEC/invitation-acceptance/execution/tasks/slice-02.md", "role": "execution_evidence", "ids": ["2.1"]},
+    {"path": "docs/SPEC/invitation-acceptance/feature_spec.md", "role": "spec_index", "ids": []},
+    {"path": "docs/SPEC/invitation-acceptance/shared/acceptance-criteria.md", "role": "acceptance_criteria", "ids": ["AC-001", "AC-002"]},
+    {"path": "docs/SPEC/invitation-acceptance/shared/requirements.md", "role": "requirements", "ids": ["R-001", "R-002", "R-003"]},
+    {"path": "docs/SPEC/invitation-acceptance/shared/risks.md", "role": "risks", "ids": ["RK-001"]},
+    {"path": "test/fixtures/invitations.json", "role": "existing_fixture", "ids": []}
+  ],
+  "setup": [
+    {"title": "Reach the staging service", "detail": "Confirm the staging UI and API are reachable; credentials are supplied through the approved team mechanism and are never embedded here."},
+    {"title": "Product decision", "detail": "Confirmation copy remains undecided, so the UI presentation scenario is blocked."}
+  ],
+  "data_preparation": [
+    {"title": "Invitation states", "method": "fixture", "status": "reused", "instructions": "Use the existing eligible and expired invitation records; do not create a second seed system.", "source": "test/fixtures/invitations.json"},
+    {"title": "Additional runbook seed", "method": "seed", "status": "not_needed", "instructions": "The existing fixture is sufficient, so no runbook-specific seed is generated."}
+  ],
+  "scenarios": [
+    {
+      "id": "TR-001",
+      "title": "Accept an eligible invitation <img src=x onerror=globalThis.pwned=1>",
+      "objective": "Verify the happy path creates participation once and reports its identifier.",
+      "domain": "Invitation API",
+      "types": ["smoke", "functional", "integration", "acceptance"],
+      "criticality": "critical",
+      "initial_status": "not_run",
+      "origins": [
+        {"kind": "requirement", "ref": "R-001", "label": "Accept an eligible invitation"},
+        {"kind": "acceptance_criterion", "ref": "AC-001", "label": "Eligible invitation"},
+        {"kind": "task", "ref": "1.1"}
+      ],
+      "preconditions": ["The eligible fixture is loaded.", "The executor has an approved non-production test identity."],
+      "environment": "staging / homologation",
+      "inputs": [{"name": "invitation_id", "value": "eligible fixture identifier"}, {"name": "session", "sensitive": true}],
+      "preparation": ["Locate the eligible fixture record and note its public identifier."],
+      "steps": [
+        {"action": "Open the invitation URL.", "expected": "The acceptance screen identifies the invitation without exposing internal data.", "evidence": ["screenshot"]},
+        {"action": "Submit acceptance once.", "expected": "The API returns HTTP 201 and the UI confirms participation.", "evidence": ["status_http", "request_response", "visual_result"]},
+        {"action": "Record the participation identifier.", "expected": "A non-empty generated ID is available for traceability.", "evidence": ["generated_ids"]}
+      ],
+      "evidence": ["screenshot", "request_response", "status_http", "generated_ids", "database_result"],
+      "cleanup": ["Remove only the participation created from the eligible fixture, using the project-approved cleanup mechanism."],
+      "regressions": ["A second acceptance must not create duplicate participation."],
+      "risks": ["A reused shared fixture can carry state from an earlier run."],
+      "notes": ["Malicious source sample must remain literal: </script><script>globalThis.pwned=1</script> & javascript:alert(1)."],
+      "known_issues": [],
+      "approval_criteria": ["HTTP status, UI result, generated ID, and persistence evidence agree."]
+    },
+    {
+      "id": "TR-002",
+      "title": "Reject an expired invitation",
+      "objective": "Verify the negative path rejects expired state without persistence.",
+      "domain": "Invitation API",
+      "types": ["negative", "functional", "regression"],
+      "criticality": "high",
+      "initial_status": "not_run",
+      "origins": [
+        {"kind": "requirement", "ref": "R-002"},
+        {"kind": "acceptance_criterion", "ref": "AC-002"},
+        {"kind": "risk", "ref": "RK-001"},
+        {"kind": "task", "ref": "1.2"}
+      ],
+      "preconditions": ["The expired fixture is loaded and its expiration precedes the service UTC clock."],
+      "inputs": [{"name": "invitation_id", "value": "expired fixture identifier"}],
+      "preparation": ["Confirm fixture expiration without changing it."],
+      "steps": [
+        {"action": "Submit acceptance for the expired invitation.", "expected": "The public expiration error is returned and no participation is created.", "evidence": ["status_http", "message_to_user", "database_result"]}
+      ],
+      "evidence": ["request_response", "status_http", "database_result"],
+      "cleanup": [],
+      "regressions": ["Eligible invitations remain accepted."],
+      "risks": ["Clock skew near the boundary can make the result non-reproducible."],
+      "notes": [],
+      "known_issues": [],
+      "approval_criteria": ["The error contract matches AC-002 and no participation exists."]
+    },
+    {
+      "id": "TR-003",
+      "title": "Present approved confirmation copy",
+      "objective": "Demonstrate the final confirmation message after product approval.",
+      "domain": "Confirmation UI",
+      "types": ["acceptance", "functional"],
+      "criticality": "medium",
+      "initial_status": "blocked",
+      "origins": [{"kind": "slice", "ref": "slice-02"}, {"kind": "task", "ref": "2.1"}],
+      "preconditions": ["Product approves the final confirmation copy; this precondition is not currently determined."],
+      "inputs": [],
+      "preparation": ["Obtain the persisted decision before execution."],
+      "steps": [{"action": "Accept an eligible invitation through the UI.", "expected": "The approved confirmation copy is presented.", "evidence": ["screenshot", "video"]}],
+      "evidence": ["screenshot", "video", "message_to_user"],
+      "cleanup": ["Use the bounded participation cleanup described for TR-001."],
+      "regressions": [],
+      "risks": [],
+      "notes": [],
+      "known_issues": ["Final confirmation copy is not yet authoritative."],
+      "approval_criteria": ["The displayed text exactly matches the approved decision."]
+    }
+  ],
+  "coverage": [
+    {"source_id": "R-001", "title": "Accept an eligible invitation", "status": "covered", "scenario_ids": ["TR-001"], "rationale": "Happy path is operationally reproducible and traced through AC-001 and task 1.1."},
+    {"source_id": "R-002", "title": "Reject an expired invitation", "status": "covered", "scenario_ids": ["TR-002"], "rationale": "Negative path includes the clock risk and persistence check."},
+    {"source_id": "R-003", "title": "Audit delivery telemetry", "status": "not_manually_testable", "scenario_ids": [], "rationale": "Current evidence assigns telemetry to automated checks and provides no safe manual log access."},
+    {"source_id": "slice-02", "title": "Confirmation UI", "status": "blocked", "scenario_ids": ["TR-003"], "rationale": "The scenario exists but cannot pass before the product copy decision."}
+  ],
+  "risks": [{"title": "Clock boundary", "detail": "Avoid near-boundary data and record the service UTC time when executing TR-002."}],
+  "known_issues": [{"title": "Confirmation copy pending", "detail": "Do not infer final UI text from implementation placeholders."}],
+  "gaps": [
+    {"title": "Final confirmation copy", "detail": "A product decision is required before TR-003 becomes executable.", "kind": "decision_required"},
+    {"title": "Manual telemetry access", "detail": "No safe, authorized log-viewing procedure exists in the current evidence.", "kind": "not_executable"}
+  ],
+  "cleanup": [{"title": "Bounded cleanup", "detail": "Remove only IDs recorded during this run; never run broad deletion or truncate shared data."}],
+  "helper_artifacts": []
+}

@@ -64,6 +64,18 @@ export const LIFECYCLE_DISTRIBUTION_POLICY = Object.freeze({
   ],
 });
 
+export const RUNBOOK_DISTRIBUTION_POLICY = Object.freeze({
+  allowedRuntimeExtensions: [".mjs", ".md", ".json"],
+  requiredEntrypoints: ["inspect-workspace.mjs", "generate-runbook.mjs"],
+  forbiddenOperationalPatterns: [
+    [/(?:^|[^A-Za-z])python3?(?:[^A-Za-z]|$)/iu, "Python runtime reference"],
+    [/\.py(?:\b|$)/iu, "Python script reference"],
+    [/(?:\.\.\/){2,}scripts(?:\/|\b)/u, "repository-relative scripts dependency"],
+    [/(?:^|\s)npm\s+install(?:\s|$)/iu, "package installation instruction"],
+    [/(?:^|[\s"'`(])[A-Za-z]:[\\/][^\s"'`<>]*/u, "host-specific absolute path"],
+  ],
+});
+
 function normalizedRelative(root, path) {
   return relative(root, path).split(sep).join("/");
 }

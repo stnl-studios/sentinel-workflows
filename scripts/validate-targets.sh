@@ -23,7 +23,7 @@ command -v node >/dev/null 2>&1 || fail "node is unavailable"
 while IFS= read -r -d '' module; do
   node --check "$module"
 done < <(find scripts skills templates -type f -name '*.mjs' -print0)
-node scripts/check-distributable-skills.mjs skills/stnl-spec-lifecycle-manager
+node scripts/check-distributable-skills.mjs skills/stnl-spec-lifecycle-manager skills/stnl-spec-test-runbook
 "$PYTHON_BIN" scripts/check-contracts.py launchers --root "$PROMPT_ROOT"
 "$PYTHON_BIN" scripts/check-contracts.py subagents --root "$SUBAGENT_TEMPLATE_ROOT"
 
@@ -145,13 +145,17 @@ execution_skills = {
     "stnl-slice-quality-manager": {"VALIDATE_SLICE"},
     "stnl-execution-closer": {"CLOSE"},
 }
+projection_skills = {
+    "stnl-spec-test-runbook": {"GENERATE_RUNBOOK"},
+}
+workflow_skills = {**execution_skills, **projection_skills}
 
-actual_execution = {path.name for path in Path("skills").glob("stnl-*") if (path / "SKILL.md").is_file() and path.name != "stnl-spec-lifecycle-manager"}
-if actual_execution != set(execution_skills):
-    fail(f"execution skill registry mismatch; expected={sorted(execution_skills)}, actual={sorted(actual_execution)}")
+actual_workflow = {path.name for path in Path("skills").glob("stnl-*") if (path / "SKILL.md").is_file() and path.name != "stnl-spec-lifecycle-manager"}
+if actual_workflow != set(workflow_skills):
+    fail(f"workflow skill registry mismatch; expected={sorted(workflow_skills)}, actual={sorted(actual_workflow)}")
 
 required_sections = ["Purpose", "Inputs", "Authority", "Minimum Reads", "Allowed Effects", "Blocks", "Output"]
-for name, operations in execution_skills.items():
+for name, operations in workflow_skills.items():
     root = Path("skills") / name
     skill = root / "SKILL.md"
     frontmatter, body = parse_frontmatter(skill)
@@ -171,7 +175,7 @@ all_execution_text = "\n".join(read(path) for name in execution_skills for path 
 for token in ["stnl-spec-execution-manager", "FINALIZE_SLICE", "PARALLELIZE_SLICES", "SLICES", "slice-finalize", "slice-parallel", "RUN_TESTS", "RETRY_TESTS", "FIX_TESTS", "TEST_SLICE", "TEST_FINDINGS", "VALIDATE_IMPLEMENTATION"]:
     if token in all_execution_text:
         fail(f"removed execution token remains in skills: {token}")
-for vendor in ["Claude Code", "@agent-stnl-validation-runner", "stnl_validation_runner", "gpt-", "haiku", "sonnet"]:
+for vendor in ["Claude Code", "@agent-stnl-validation-runner", "gpt-", "haiku", "sonnet"]:
     if vendor.lower() in all_execution_text.lower():
         fail(f"execution skills are not vendor-neutral: {vendor}")
 
@@ -182,6 +186,7 @@ task_reviewer = read(Path("skills/stnl-task-reviewer/SKILL.md"))
 executor = read(Path("skills/stnl-slice-executor/SKILL.md"))
 quality = read(Path("skills/stnl-slice-quality-manager/SKILL.md"))
 closer = read(Path("skills/stnl-execution-closer/SKILL.md"))
+runbook = read(Path("skills/stnl-spec-test-runbook/SKILL.md"))
 for marker in ["status to `draft`", "`REVIEW_PLAN` is required", "allowed only when the root is absent or contains no other entries", "preserve every byte", "Reset is a separate explicit user action"]:
     if marker not in planner:
         fail(f"planner lacks unapproved-plan contract: {marker}")
@@ -194,18 +199,31 @@ for marker in ["File Purpose Header status `ready`", "review state `approved`", 
 for marker in ["may alter only `tasks.md`", "Return `NEEDS_REPLAN`", "Run only in `materialized-pristine`", "Validation Attempt", "preserve all plans and tasks byte-for-byte"]:
     if marker not in task_reviewer:
         fail(f"task reviewer lacks write boundary: {marker}")
-for marker in ["`tasks.md` defines global progress and is read-only", "configured runner at least once and at most three times", "The first invocation is mandatory", "cannot be skipped because the change appears simple", "Once implementation or correction has occurred, the operation cannot end without invoking", "valid auxiliary status is received or the runner fails to start", "Additional invocations occur only after `TESTS_FAIL` in round one or two", "without running verification commands in the main context", "`TESTS_PASS`, `TESTS_FAIL`, `TESTS_NOT_APPLICABLE`, or `BLOCKED`", "Never make a fourth automatic invocation", "use an unbounded loop", "After `TESTS_FAIL` in round one or two", "Persist every valid result append-only", "A later manual invocation has its own three-call budget", "objective discovery and when no verification command was executed", "read-only actions used only to discover applicable checks are permitted", "Implementation Test Evidence", "Findings Test Evidence", "fall back to checks in the main context", "create a Validation Attempt or Effective Validation Base", "mark `[x]`", "Prior Validation Overlap", "Do not reopen or rewrite an earlier slice"]:
+for marker in ["`tasks.md` defines global progress and is read-only", "configured runner at least once and at most three times", "The first invocation is mandatory", "cannot be skipped because the change appears simple", "Once implementation or correction has occurred, the operation cannot end without invoking", "valid auxiliary status is received or a definitive initialization/transport or malformed-output blocker is persisted", "Additional automatic rounds occur only after a successfully started runner returns `TESTS_FAIL` in round one or two", "without running verification commands in the main context", "`TESTS_PASS`, `TESTS_FAIL`, `TESTS_NOT_APPLICABLE`, or `BLOCKED`", "Never make a fourth automatic invocation", "use an unbounded loop", "After `TESTS_FAIL` in round one or two", "Persist every valid result append-only", "A later manual invocation has its own three-call budget", "objective discovery and when no verification command was executed", "read-only actions used only to discover applicable checks are permitted", "Implementation Test Evidence", "Findings Test Evidence", "fall back to checks in the main context", "create a Validation Attempt or Effective Validation Base", "mark `[x]`", "Prior Validation Overlap", "Do not reopen or rewrite an earlier slice"]:
     if marker not in executor:
         fail(f"executor lacks completion/runner boundary: {marker}")
 for pattern in [r"(?i)\bup to three times\b", r"(?i)\bzero to three calls\b", r"(?i)\bmay invoke the runner\b", r"(?i)\brunner invocation is optional\b", r"(?i)\bskip the runner when no tests apply\b", r"(?i)\bno runner call is required\b"]:
     if re.search(pattern, executor):
         fail(f"executor permits an optional or zero-call runner cycle: {pattern}")
-for marker in ["only when it returns `PASS`", "For every valid runner invocation", "append exactly one deterministic next `attempt-NN`", "Prior test evidence is auxiliary", "tested file state is still current", "independently review a prior `TESTS_NOT_APPLICABLE`", "which read-only discovery actions were performed", "which discovery sources were consulted", "which verification types were considered", "whether any applicable verification command was omitted", "absence of a tool or environment was confused with absence of applicability", "executes or repeats checks proportionally", "On `NEEDS_FIX`", "Effective Validation Base unchanged or absent", "keep the global row `[ ]`", "On `BLOCKED`", "do not convert the status", "complete final manifest", "create or replace the entire Effective Validation Base", "origin is `NEEDS_FIX` or `BLOCKED`", "change exactly the selected global row"]:
+for marker in ["only when it returns `PASS`", "For every successfully started runner invocation with a valid result", "append exactly one deterministic next `attempt-NN`", "Prior test evidence is auxiliary", "tested file state is still current", "independently review a prior `TESTS_NOT_APPLICABLE`", "which read-only discovery actions were performed", "which discovery sources were consulted", "which verification types were considered", "whether any applicable verification command was omitted", "absence of a tool or environment was confused with absence of applicability", "executes or repeats checks proportionally", "On `NEEDS_FIX`", "Effective Validation Base unchanged or absent", "keep the global row `[ ]`", "On `BLOCKED`", "do not convert the status", "complete final manifest", "create or replace the entire Effective Validation Base", "origin is `NEEDS_FIX` or `BLOCKED`", "change exactly the selected global row"]:
     if marker not in quality:
         fail(f"quality manager lacks verdict persistence contract: {marker}")
 for marker in ["final validation ownership", "walking completed slices once in the exact serial order", "Earlier hashes remain historical and are never compared", "compare each path only with its last owner", "no final validation owner", "Do not inspect hashes stored inside Validation Attempts", "Do not run tests", "Do not edit, test, invoke a runner"]:
     if marker not in closer:
         fail(f"closer lacks drift/no-test contract: {marker}")
+for marker in ["Run only explicit `GENERATE_RUNBOOK`", "`TASK|SLICE|MULTI_SLICE|EXECUTION|SPEC|CUSTOM`", "Never infer a slice", "test-runbook/index.html", "Never write the runbook in `execution/`", "never invoked by slice execution", "Browser state is separate", "byte-identical"]:
+    if marker not in runbook:
+        fail(f"runbook skill lacks explicit projection contract: {marker}")
+for path in [
+    Path("templates/prompts/execution-close.md"),
+    Path("templates/prompts/spec-close.md"),
+    Path("skills/stnl-execution-closer/SKILL.md"),
+    Path("skills/stnl-spec-lifecycle-manager/SKILL.md"),
+    Path("skills/stnl-slice-executor/SKILL.md"),
+    Path("skills/stnl-slice-quality-manager/SKILL.md"),
+]:
+    if "GENERATE_RUNBOOK" in read(path) or "stnl-spec-test-runbook" in read(path):
+        fail(f"runbook generation leaked into an implicit lifecycle or execution path: {path}")
 
 for forbidden, text, label in [
     ("create or replace the planning artifacts", planner, "planner replacement"),

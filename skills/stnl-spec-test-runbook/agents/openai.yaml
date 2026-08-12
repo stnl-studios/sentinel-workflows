@@ -1,0 +1,4 @@
+interface:
+  display_name: "Sentinel Test Runbook"
+  short_description: "Generate portable Sentinel test runbooks"
+  default_prompt: "Use $stnl-spec-test-runbook to generate an explicit test runbook for this Sentinel SPEC."

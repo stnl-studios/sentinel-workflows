@@ -1,0 +1,4 @@
+{
+  "eligible": {"id": "inv-eligible", "state": "eligible"},
+  "expired": {"id": "inv-expired", "state": "expired"}
+}

@@ -1,0 +1,21 @@
+[
+  {"id":"complete-spec","expectation":"A ready SPEC and execution evidence produce a traced operational dashboard.","automated":true},
+  {"id":"explicit-slice","expectation":"SLICE requires and preserves one explicit normalized slice.","automated":true},
+  {"id":"missing-selection","expectation":"A selection-dependent scope blocks before writing.","automated":true},
+  {"id":"traceable-requirements","expectation":"Scenario origins and coverage retain canonical requirement and acceptance IDs.","automated":true},
+  {"id":"insufficient-evidence","expectation":"Missing evidence is a visible gap or blocked scenario, never an invented fact.","automated":true},
+  {"id":"reuse-existing-seed","expectation":"An adequate existing seed is referenced rather than duplicated.","automated":true},
+  {"id":"unnecessary-seed-request","expectation":"A requested helper is not created when existing or manual preparation is sufficient.","automated":false},
+  {"id":"secret-exposure","expectation":"Secret-bearing input and secret source paths are rejected without output mutation.","automated":true},
+  {"id":"xss-content","expectation":"HTML-like source content remains literal inert text.","automated":true},
+  {"id":"regeneration","expectation":"Owned output is replaced deterministically and unowned output is preserved and blocks.","automated":true},
+  {"id":"explicit-only-close","expectation":"Execution close and SPEC close do not invoke or generate a runbook.","automated":true},
+  {"id":"blocked-scenario","expectation":"A blocker is visible in status, scenario details, summary, and print.","automated":true},
+  {"id":"combined-test-types","expectation":"Multiple requested test types remain filterable and visible.","automated":true},
+  {"id":"functional-audience","expectation":"Functional QA receives reproducible behavior-oriented guidance.","automated":false},
+  {"id":"technical-audience","expectation":"Technical QA receives contracts, request/response, logs, and persistence evidence when sourced.","automated":false},
+  {"id":"presentation-mode","expectation":"Presentation mode emphasizes summary, coverage, critical scenarios, risks, and blockers.","automated":true},
+  {"id":"print-output","expectation":"Print CSS exposes all essential content and hides interactive-only controls.","automated":true},
+  {"id":"inconsistent-authority","expectation":"Missing or contradictory selected artifacts block without partial output.","automated":true}
+]
+

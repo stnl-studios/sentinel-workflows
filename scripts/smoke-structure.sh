@@ -8,6 +8,12 @@ export PYTHONDONTWRITEBYTECODE=1
 
 "$PYTHON_BIN" scripts/test-serial-workflow.py
 
+node --test skills/stnl-spec-test-runbook/runtime/test/*.test.mjs
+
+node --test scripts/test-execution-layout.mjs
+
+node scripts/check-distributable-skills.mjs skills/stnl-spec-test-runbook
+
 bash scripts/test-validation-runner-contract.sh
 
 bash scripts/test-launcher-contract.sh

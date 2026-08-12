@@ -53,7 +53,7 @@ if ! run_checker "$ROOT/templates/prompts"; then
   echo "FAIL: canonical launcher contract is invalid; mutations were not executed" >&2
   exit 1
 fi
-echo "PASS: accepted 15 canonical launchers"
+echo "PASS: accepted 16 canonical launchers"
 
 copy_fixture
 mkdir -p "$FIXTURE/fixture-notes" "$FIXTURE/__MACOSX"
@@ -116,6 +116,9 @@ else:
         "duplicate-spec": ("SPEC_PATH={{SPEC_PATH}}", "SPEC_PATH={{SPEC_PATH}}\nSPEC_PATH={{SPEC_PATH}}"),
         "missing-slice": ("SLICE={{SLICE}}\n", ""),
         "missing-readiness-scope": ("READINESS_SCOPE={{READINESS_SCOPE}}\n", ""),
+        "missing-runbook-selection": ("RUNBOOK_SELECTION={{RUNBOOK_SELECTION}}\n", ""),
+        "automatic-runbook": ("Gere ou regenere somente após esta invocação explícita", "Gere automaticamente após qualquer fechamento"),
+        "missing-runbook-guide": ("Guia de preenchimento:\n", ""),
         "missing-readiness-rules": ("`READINESS_SCOPE` aceita somente `LOCAL` ou `GLOBAL`, com correspondência case-sensitive e sem aliases.\n", ""),
         "readiness-lowercase-local": ("somente `LOCAL` ou `GLOBAL`", "somente `local` ou `GLOBAL`"),
         "readiness-lowercase-global": ("somente `LOCAL` ou `GLOBAL`", "somente `LOCAL` ou `global`"),
@@ -240,6 +243,9 @@ case_mutation explicit-execution-root L004_INPUTS execution-plan.md execution-ro
 case_mutation duplicate-spec-path L004_INPUTS execution-plan.md duplicate-spec
 case_mutation missing-slice L004_INPUTS slice-execute-codex.md missing-slice
 case_mutation missing-readiness-scope L004_INPUTS spec-readiness.md missing-readiness-scope
+case_mutation missing-runbook-selection L004_INPUTS spec-test-runbook.md missing-runbook-selection
+case_mutation automatic-runbook L010_CANONICAL_CONTENT spec-test-runbook.md automatic-runbook
+case_mutation missing-runbook-guide L010_CANONICAL_CONTENT spec-test-runbook.md missing-runbook-guide
 case_mutation missing-readiness-rules L015_READINESS_SCOPE spec-readiness.md missing-readiness-rules
 case_mutation readiness-lowercase-local L015_READINESS_SCOPE spec-readiness.md readiness-lowercase-local
 case_mutation readiness-lowercase-global L015_READINESS_SCOPE spec-readiness.md readiness-lowercase-global
@@ -307,5 +313,5 @@ case_executor_mutation executor-contract-says-up-to-only executor-up-to-only
 case_executor_mutation executor-contract-makes-invocation-optional executor-optional-invocation
 case_executor_mutation executor-contract-skips-not-applicable executor-skip-not-applicable
 
-echo "PASS: 70 invalid executor/launcher mutations rejected by the semantic checker against isolated fixtures"
+echo "PASS: 73 invalid executor/launcher mutations rejected by the semantic checker against isolated fixtures"
 echo "PASS: focused launcher contract suite completed in $((SECONDS - START_SECONDS))s"
