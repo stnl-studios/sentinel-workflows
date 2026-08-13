@@ -5,16 +5,17 @@ import test from "node:test";
 
 import { REPOSITORY_ROOT, SKILL_ROOT } from "./helpers.mjs";
 
-test("eval catalog contains the complete unique 18-case contract", async () => {
+test("eval catalog contains the complete unique 21-case contract", async () => {
   const cases = JSON.parse(await fs.readFile(path.join(SKILL_ROOT, "evals", "cases.json"), "utf8"));
   const expected = [
     "complete-spec", "explicit-slice", "missing-selection", "traceable-requirements",
     "insufficient-evidence", "reuse-existing-seed", "unnecessary-seed-request", "secret-exposure",
     "xss-content", "regeneration", "explicit-only-close", "blocked-scenario", "combined-test-types",
     "functional-audience", "technical-audience", "presentation-mode", "print-output", "inconsistent-authority",
+    "runtime-options", "locale-en-us", "locale-pt-br",
   ];
   assert.deepEqual(cases.map((item) => item.id), expected);
-  assert.equal(new Set(cases.map((item) => item.id)).size, 18);
+  assert.equal(new Set(cases.map((item) => item.id)).size, 21);
   for (const item of cases) {
     assert.equal(typeof item.expectation, "string");
     assert.equal(typeof item.automated, "boolean");
@@ -56,4 +57,3 @@ test("runbook runtime uses no network, external package, child process, or dynam
     assert.equal(joined.includes(forbidden), false, `runtime contains forbidden capability: ${forbidden}`);
   }
 });
-

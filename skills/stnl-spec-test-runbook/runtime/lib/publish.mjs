@@ -12,6 +12,9 @@ async function ownedIndex(indexPath) {
   if (metadata.isSymbolicLink() || !metadata.isFile()) {
     throw new Error(`existing runbook index must be a real generated file: ${indexPath}`);
   }
+  if (metadata.nlink !== 1) {
+    throw new Error(`existing runbook index must be a single-link real generated file: ${indexPath}`);
+  }
   const bytes = await fs.readFile(indexPath);
   const content = bytes.toString("utf8");
   const match = content.slice(0, 512).match(OWNERSHIP);

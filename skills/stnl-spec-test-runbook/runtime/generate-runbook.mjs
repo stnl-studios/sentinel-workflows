@@ -16,17 +16,20 @@ async function readManifest(manifestPath) {
   if (metadata === null || metadata.isSymbolicLink() || !metadata.isFile()) {
     throw new Error(`manifest must be a real file: ${requested}`);
   }
+  if (metadata.nlink !== 1) {
+    throw new Error(`manifest must be a single-link real file: ${requested}`);
+  }
   if (metadata.size > 2_000_000) throw new Error("manifest exceeds the 2 MB safety limit");
   return parseStrictJson(await fs.readFile(requested, "utf8"), "manifest");
 }
 
-export async function generateRunbook(specPath, manifestPath) {
+export async function generateRunbook(specPath, manifestPath, optionsValue = {}) {
   const requestedManifest = path.resolve(String(manifestPath));
   const raw = await readManifest(manifestPath);
   if (raw === null || typeof raw !== "object" || Array.isArray(raw) || raw.scope === null || typeof raw.scope !== "object") {
     throw new Error("manifest.scope is required");
   }
-  const inspection = await inspectWorkspace(specPath, raw.scope.kind, raw.scope.selection);
+  const inspection = await inspectWorkspace(specPath, raw.scope.kind, raw.scope.selection, optionsValue);
   const physicalManifest = await fs.realpath(requestedManifest);
   for (const [label, root] of [["SPEC", inspection.spec_root], ["execution", inspection.execution_root], ["output", inspection.output_root]]) {
     if (root === null) continue;
@@ -44,6 +47,7 @@ export async function generateRunbook(specPath, manifestPath) {
     output,
     fingerprint: rendered.fingerprint,
     scope: inspection.scope,
+    configuration: inspection.configuration,
     scenarios: manifest.scenarios.length,
     coverage_records: manifest.coverage.length,
     helpers: manifest.helper_artifacts.map((item) => path.join(inspection.output_root, ...item.path.split("/"))),
@@ -51,12 +55,16 @@ export async function generateRunbook(specPath, manifestPath) {
 }
 
 export async function main(arguments_) {
-  if (arguments_.length !== 2) {
-    process.stderr.write("usage: generate-runbook.mjs SPEC_PATH MANIFEST_PATH\n");
+  if (arguments_.length < 2 || arguments_.length > 3) {
+    process.stderr.write("usage: generate-runbook.mjs SPEC_PATH MANIFEST_PATH [RUNBOOK_OPTIONS_JSON]\n");
     return 2;
   }
   try {
-    const result = await generateRunbook(arguments_[0], arguments_[1]);
+    const result = await generateRunbook(
+      arguments_[0],
+      arguments_[1],
+      arguments_[2] === undefined ? {} : parseStrictJson(arguments_[2], "RUNBOOK_OPTIONS"),
+    );
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
     return 0;
   } catch (error) {

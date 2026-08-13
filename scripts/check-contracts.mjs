@@ -427,6 +427,18 @@ function checkLaunchers(root) {
       requirePattern(instructions, /READINESS_FOCUS.{0,100}(?:obrigat|required)/iu, "L015_READINESS_SCOPE", "LOCAL focus requirement is missing");
       forbidPattern(instructions, /`(?:local|global|localized|repository)`/u, "L015_READINESS_SCOPE", "READINESS scope alias is present");
     }
+    if (name === "spec-test-runbook") {
+      for (const key of ["audience", "test_types", "environment", "depth", "data_preparation", "evidence", "presentation", "helpers", "locale"]) {
+        requirePattern(instructions, new RegExp(`\\b${key}\\b`, "u"), "L020_RUNBOOK_OPTIONS", `runbook launcher omits canonical option ${key}`);
+      }
+      requirePattern(instructions, /locale.{0,80}`en-US`.{0,30}`pt-BR`|`en-US`.{0,30}`pt-BR`.{0,80}locale/iu, "L020_RUNBOOK_OPTIONS", "runbook launcher omits the exact locale set");
+      requirePattern(instructions, /locale="en-US"/u, "L020_RUNBOOK_OPTIONS", "runbook launcher omits the en-US default");
+      requirePattern(instructions, /não (?:é |será )?detectado automaticamente|sem detecção automática|never (?:automatically )?detected/iu, "L020_RUNBOOK_OPTIONS", "runbook launcher permits automatic locale detection");
+      requirePattern(instructions, /pt_BR.{0,60}pt-br.{0,60}es-ES.{0,60}auto.{0,60}system/u, "L020_RUNBOOK_OPTIONS", "runbook launcher omits representative invalid locales");
+      requirePattern(instructions, /Chaves desconhecidas.{0,100}tipos incorretos.{0,100}enums inválidos.{0,100}arrays inválidos/iu, "L020_RUNBOOK_OPTIONS", "runbook launcher omits deterministic rejection rules");
+      requirePattern(instructions, /Exemplo em inglês[\s\S]{0,500}"en-US"/u, "L020_RUNBOOK_OPTIONS", "runbook launcher omits the en-US example");
+      requirePattern(instructions, /Exemplo em português do Brasil[\s\S]{0,800}"pt-BR"/u, "L020_RUNBOOK_OPTIONS", "runbook launcher omits the pt-BR example");
+    }
     if (!runnerLaunchers.has(name)) continue;
     requirePattern(
       instructions,

@@ -16,6 +16,8 @@
   {"id":"technical-audience","expectation":"Technical QA receives contracts, request/response, logs, and persistence evidence when sourced.","automated":false},
   {"id":"presentation-mode","expectation":"Presentation mode emphasizes summary, coverage, critical scenarios, risks, and blockers.","automated":true},
   {"id":"print-output","expectation":"Print CSS exposes all essential content and hides interactive-only controls.","automated":true},
-  {"id":"inconsistent-authority","expectation":"Missing or contradictory selected artifacts block without partial output.","automated":true}
+  {"id":"inconsistent-authority","expectation":"Missing or contradictory selected artifacts block without partial output.","automated":true},
+  {"id":"runtime-options","expectation":"RUNBOOK_OPTIONS is strictly validated and normalized by runtime before generation, including defaults, unknown keys, types, arrays, enums, and booleans.","automated":true},
+  {"id":"locale-en-us","expectation":"Omitted locale defaults to en-US and produces consistently localized human-facing output without host-locale inference.","automated":true},
+  {"id":"locale-pt-br","expectation":"Explicit pt-BR produces UTF-8 Brazilian Portuguese human-facing output while canonical technical identifiers remain literal.","automated":true}
 ]
-

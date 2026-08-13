@@ -10,7 +10,6 @@ const TOP_LEVEL_FIELDS = new Set([
 ]);
 const STATUS_VALUES = new Set(["not_run", "passed", "failed", "blocked", "skipped"]);
 const CRITICALITY_VALUES = new Set(["critical", "high", "medium", "low"]);
-const DEPTH_VALUES = new Set(["concise", "detailed", "guided"]);
 const COVERAGE_VALUES = new Set([
   "covered", "partial", "no_scenario", "not_manually_testable", "out_of_scope", "blocked",
 ]);
@@ -214,21 +213,6 @@ function helper(value, label) {
   };
 }
 
-function configuration(value) {
-  const item = object(value, "configuration");
-  exact(item, new Set(["audience", "test_types", "environment", "depth", "presentation"]), "configuration");
-  if (item.presentation !== undefined && typeof item.presentation !== "boolean") {
-    throw new Error("configuration.presentation must be boolean");
-  }
-  return {
-    audience: stringArray(item.audience, "configuration.audience", { min: 1, max: 20 }),
-    test_types: stringArray(item.test_types, "configuration.test_types", { min: 1, max: 30 }),
-    ...(item.environment === undefined ? {} : { environment: text(item.environment, "configuration.environment", { max: 300 }) }),
-    depth: enumValue(item.depth, DEPTH_VALUES, "configuration.depth"),
-    presentation: item.presentation !== false,
-  };
-}
-
 function scanSecrets(value, location = "manifest") {
   if (typeof value === "string") {
     for (const pattern of SECRET_PATTERNS) {
@@ -256,13 +240,18 @@ export function validateManifest(raw, inspection) {
   if (scope.kind !== inspection.scope.kind || canonicalJson(normalizedSelection) !== canonicalJson(inspection.scope.selection)) {
     throw new Error("manifest scope/selection does not match the explicitly inspected operation");
   }
+  const manifestConfiguration = object(manifest.configuration, "configuration");
+  exact(manifestConfiguration, new Set(Object.keys(inspection.configuration)), "configuration");
+  if (canonicalJson(manifestConfiguration) !== canonicalJson(inspection.configuration)) {
+    throw new Error("manifest configuration does not exactly match normalized RUNBOOK_OPTIONS");
+  }
 
   const normalized = {
     contract_version: 1,
     title: text(manifest.title, "manifest.title", { max: 500 }),
     summary: text(manifest.summary, "manifest.summary"),
     scope: inspection.scope,
-    configuration: configuration(manifest.configuration),
+    configuration: structuredClone(inspection.configuration),
     sources: array(manifest.sources, "manifest.sources", { min: 1 }).map((entry, index) => source(entry, `sources[${index}]`)).sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0),
     setup: array(manifest.setup ?? [], "manifest.setup", { max: 100 }).map((entry, index) => detailItem(entry, `setup[${index}]`)),
     data_preparation: array(manifest.data_preparation ?? [], "manifest.data_preparation", { max: 100 }).map((entry, index) => preparation(entry, `data_preparation[${index}]`)),
@@ -281,6 +270,9 @@ export function validateManifest(raw, inspection) {
   if (new Set(sourcePaths).size !== sourcePaths.length) throw new Error("source paths must be unique");
   const helperPaths = normalized.helper_artifacts.map((entry) => entry.path);
   if (new Set(helperPaths).size !== helperPaths.length) throw new Error("helper paths must be unique");
+  if (!normalized.configuration.helpers && helperPaths.length !== 0) {
+    throw new Error("helper_artifacts require RUNBOOK_OPTIONS.helpers=true");
+  }
   const coverageIds = normalized.coverage.map((entry) => entry.source_id);
   if (new Set(coverageIds).size !== coverageIds.length) throw new Error("coverage source IDs must be unique");
   const scenarios = new Set(scenarioIds);

@@ -4,11 +4,15 @@
   "summary": "Validate eligible and expired invitation behavior for QA, acceptance, and a stakeholder demonstration.",
   "scope": {"kind": "SPEC", "selection": {}},
   "configuration": {
-    "audience": ["functional_qa", "technical_qa", "stakeholder"],
+    "audience": ["mixed"],
     "test_types": ["smoke", "functional", "integration", "acceptance", "negative", "regression"],
-    "environment": "staging / homologation",
-    "depth": "guided",
-    "presentation": true
+    "environment": null,
+    "depth": "detailed",
+    "data_preparation": ["existing_data"],
+    "evidence": ["screenshot", "video", "request_response", "logs", "generated_ids", "database_result", "visual_result", "status_http", "events", "message_to_user"],
+    "presentation": true,
+    "helpers": false,
+    "locale": "en-US"
   },
   "sources": [
     {"path": "docs/SPEC/invitation-acceptance/execution/plan.md", "role": "global_plan", "ids": ["slice-01", "slice-02"]},

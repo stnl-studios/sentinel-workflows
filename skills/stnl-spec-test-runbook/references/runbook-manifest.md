@@ -21,11 +21,15 @@ Write one UTF-8 JSON object with only these top-level keys:
   "summary": "What is validated and why.",
   "scope": {"kind": "SLICE", "selection": {"slice": "1"}},
   "configuration": {
-    "audience": ["functional_qa", "stakeholder"],
-    "test_types": ["smoke", "functional", "acceptance"],
-    "environment": "staging",
-    "depth": "guided",
-    "presentation": true
+    "audience": ["mixed"],
+    "test_types": ["smoke", "functional", "integration", "acceptance", "negative", "regression"],
+    "environment": null,
+    "depth": "detailed",
+    "data_preparation": ["existing_data"],
+    "evidence": ["screenshot", "video", "request_response", "logs", "generated_ids", "database_result", "visual_result", "status_http", "events", "message_to_user"],
+    "presentation": true,
+    "helpers": false,
+    "locale": "en-US"
   },
   "sources": [],
   "setup": [],
@@ -42,7 +46,11 @@ Write one UTF-8 JSON object with only these top-level keys:
 
 `setup`, `data_preparation`, `coverage`, `risks`, `known_issues`, `gaps`, `cleanup`, and `helper_artifacts` may be omitted when they add no evidence; the validator normalizes them to empty arrays. `sources` and at least one operational `scenario` are required.
 
-`scope.kind` and `scope.selection` must exactly match the explicit operation input after normalization. `configuration.environment` is optional; omission renders `Not determined`. `depth` is `concise`, `detailed`, or `guided`. Audience and test-type arrays contain concise stable labels; prefer `functional_qa`, `technical_qa`, `developer`, `product_owner`, `analyst`, `business_user`, `stakeholder`, or `mixed`, and the requested test types.
+`scope.kind` and `scope.selection` must exactly match the explicit operation input after normalization. `configuration` is not an agent-authored interpretation: copy the complete normalized object returned by `inspect-workspace.mjs` exactly, including explicit defaults and `environment: null`. The generator rejects missing, extra, or changed values relative to the normalized `RUNBOOK_OPTIONS`; JSON object key order is irrelevant. Do not reconstruct defaults in the manifest or renderer.
+
+The only configuration keys are `audience`, `test_types`, `environment`, `depth`, `data_preparation`, `evidence`, `presentation`, `helpers`, and `locale`. `depth` is `concise`, `detailed`, or `guided`; `locale` is exactly `en-US` or `pt-BR`, defaults to `en-US`, and is never inferred from the host or source language. Audience and test-type arrays contain concise stable labels; prefer `functional_qa`, `technical_qa`, `developer`, `product_owner`, `analyst`, `business_user`, `stakeholder`, or `mixed`, and the requested test types. Preparation and evidence values use only the enums documented by the runtime input contract.
+
+`locale` controls all human-facing static UI and author-written prose. Preserve IDs, paths, filenames, endpoints, parameters, payloads, field names, code, commands, HTTP headers and status values, event names, and other technical contract values exactly as sourced. For example, Portuguese prose may say `Resultado esperado: HTTP 409 Conflict`; it must not translate the canonical HTTP status.
 
 ## Sources
 

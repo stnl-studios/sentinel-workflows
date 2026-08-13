@@ -3,6 +3,27 @@ import path from "node:path";
 import { computeRequirementsAuthority, inspectExecutionState } from "../execution-state.mjs";
 
 const SCOPES = new Set(["TASK", "SLICE", "MULTI_SLICE", "EXECUTION", "SPEC", "CUSTOM"]);
+const DEPTHS = new Set(["concise", "detailed", "guided"]);
+const LOCALES = new Set(["en-US", "pt-BR"]);
+const DATA_PREPARATION_OPTIONS = new Set([
+  "existing_data", "fixture", "factory", "seed", "manual", "api", "sql", "helper_script",
+]);
+const EVIDENCE_OPTIONS = new Set([
+  "screenshot", "video", "request_response", "logs", "generated_ids", "database_result",
+  "visual_result", "status_http", "events", "message_to_user",
+]);
+export const RUNBOOK_OPTION_DEFAULTS = Object.freeze({
+  audience: Object.freeze(["mixed"]),
+  test_types: Object.freeze(["smoke", "functional", "integration", "acceptance", "negative", "regression"]),
+  environment: null,
+  depth: "detailed",
+  data_preparation: Object.freeze(["existing_data"]),
+  evidence: Object.freeze([...EVIDENCE_OPTIONS]),
+  presentation: true,
+  helpers: false,
+  locale: "en-US",
+});
+const RUNBOOK_OPTION_KEYS = new Set(Object.keys(RUNBOOK_OPTION_DEFAULTS));
 const SLICE_FILE = /^slice-[0-9]{2,}\.md$/u;
 const TASK_LABEL = /^[0-9]+\.[0-9]+$/u;
 const EXECUTION_ROOT_FILES = new Set(["plan.md", "tasks.md"]);
@@ -480,6 +501,63 @@ export function normalizeSlice(value, label = "slice") {
   return `slice-${text.padStart(2, "0")}`;
 }
 
+function optionStringArray(value, label, { allowed = null, max = 30 } = {}) {
+  if (!Array.isArray(value) || value.length === 0 || value.length > max) {
+    throw new Error(`${label} must be a non-empty array with at most ${max} items`);
+  }
+  const normalized = value.map((entry, index) => {
+    if (typeof entry !== "string" || entry.length === 0 || entry !== entry.trim() || entry.length > 80) {
+      throw new Error(`${label}[${index}] must be a concise non-empty string without surrounding whitespace`);
+    }
+    if (allowed !== null && !allowed.has(entry)) {
+      throw new Error(`${label}[${index}] must be one of ${[...allowed].join("|")}`);
+    }
+    return entry;
+  });
+  if (new Set(normalized).size !== normalized.length) throw new Error(`${label} must not contain duplicates`);
+  return normalized;
+}
+
+export function normalizeRunbookOptions(rawOptions = {}) {
+  const options = requirePlainObject(rawOptions, "RUNBOOK_OPTIONS");
+  requireExactKeys(options, RUNBOOK_OPTION_KEYS, "RUNBOOK_OPTIONS");
+  if (options.environment !== undefined && (typeof options.environment !== "string"
+    || options.environment.length === 0 || options.environment !== options.environment.trim()
+    || options.environment.length > 300)) {
+    throw new Error("RUNBOOK_OPTIONS.environment must be non-empty text without surrounding whitespace");
+  }
+  if (options.depth !== undefined && !DEPTHS.has(options.depth)) {
+    throw new Error(`RUNBOOK_OPTIONS.depth must be one of ${[...DEPTHS].join("|")}`);
+  }
+  for (const key of ["presentation", "helpers"]) {
+    if (options[key] !== undefined && typeof options[key] !== "boolean") {
+      throw new Error(`RUNBOOK_OPTIONS.${key} must be boolean`);
+    }
+  }
+  if (options.locale !== undefined && !LOCALES.has(options.locale)) {
+    throw new Error(`RUNBOOK_OPTIONS.locale must be one of ${[...LOCALES].join("|")}`);
+  }
+  return {
+    audience: options.audience === undefined
+      ? [...RUNBOOK_OPTION_DEFAULTS.audience]
+      : optionStringArray(options.audience, "RUNBOOK_OPTIONS.audience", { max: 20 }),
+    test_types: options.test_types === undefined
+      ? [...RUNBOOK_OPTION_DEFAULTS.test_types]
+      : optionStringArray(options.test_types, "RUNBOOK_OPTIONS.test_types"),
+    environment: options.environment ?? RUNBOOK_OPTION_DEFAULTS.environment,
+    depth: options.depth ?? RUNBOOK_OPTION_DEFAULTS.depth,
+    data_preparation: options.data_preparation === undefined
+      ? [...RUNBOOK_OPTION_DEFAULTS.data_preparation]
+      : optionStringArray(options.data_preparation, "RUNBOOK_OPTIONS.data_preparation", { allowed: DATA_PREPARATION_OPTIONS }),
+    evidence: options.evidence === undefined
+      ? [...RUNBOOK_OPTION_DEFAULTS.evidence]
+      : optionStringArray(options.evidence, "RUNBOOK_OPTIONS.evidence", { allowed: EVIDENCE_OPTIONS }),
+    presentation: options.presentation ?? RUNBOOK_OPTION_DEFAULTS.presentation,
+    helpers: options.helpers ?? RUNBOOK_OPTION_DEFAULTS.helpers,
+    locale: options.locale ?? RUNBOOK_OPTION_DEFAULTS.locale,
+  };
+}
+
 function safeRelativePath(value, label) {
   if (typeof value !== "string" || value.length === 0 || value.includes("\\") || path.isAbsolute(value)) {
     throw new Error(`${label} must be a non-empty relative POSIX path`);
@@ -753,9 +831,10 @@ async function verifyTaskLabel(taskPath, label) {
   }
 }
 
-export async function inspectWorkspace(specPath, scopeValue, selectionValue) {
+export async function inspectWorkspace(specPath, scopeValue, selectionValue, optionsValue = {}) {
   const scope = String(scopeValue);
   if (!SCOPES.has(scope)) throw new Error(`RUNBOOK_SCOPE must be one of ${[...SCOPES].join("|")}`);
+  const configuration = normalizeRunbookOptions(optionsValue);
   const workspace = await resolveWorkspace(specPath);
   await validateModularAuthority(workspace);
   const selection = normalizeSelection(scope, selectionValue);
@@ -822,6 +901,7 @@ export async function inspectWorkspace(specPath, scopeValue, selectionValue) {
     output_root: workspace.outputRoot,
     output_path: path.join(workspace.outputRoot, "index.html"),
     scope: { kind: scope, selection },
+    configuration,
     mandatory_sources: uniqueSources,
   };
 }

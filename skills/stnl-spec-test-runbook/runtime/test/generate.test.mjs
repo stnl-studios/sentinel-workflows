@@ -172,6 +172,7 @@ test("CLI runs from an unrelated cwd with spaces and only the Node runtime", asy
   assert.equal(result.status, 0, result.stderr);
   const output = JSON.parse(result.stdout);
   assert.equal(output.status, "GENERATED");
+  assert.equal(output.configuration.locale, "en-US");
   assert.equal(await fs.stat(output.output).then((item) => item.isFile()), true);
 });
 
@@ -181,7 +182,7 @@ test("same manifest renders the same bytes under different locale environment", 
   const manifest = await externalManifest(root);
   let baseline = null;
   for (const locale of ["C", "pt_BR.UTF-8", "en_US.UTF-8"]) {
-    const result = spawnSync(process.execPath, [entry, root, manifest], {
+    const result = spawnSync(process.execPath, [entry, root, manifest, "{}"], {
       encoding: "utf8",
       env: { ...process.env, LANG: locale, LC_ALL: locale },
     });

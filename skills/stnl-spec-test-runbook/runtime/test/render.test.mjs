@@ -40,8 +40,54 @@ test("renders deterministic semantic self-contained HTML", async (t) => {
   assert.match(first.html, /status\.value=card\.dataset\.initialStatus/u);
   assert.match(first.html, /button\.dataset\.viewButton==="presentation"/u);
   assert.match(first.html, /\.execution-capture:not\(\.has-content\)\{display:none!important\}/u);
-  assert.match(first.html, /--focus:#005fcc/u);
+  assert.match(first.html, /:focus-visible\{outline:3px solid var\(--focus\)\}/u);
+  assert.match(first.html, /data-next-action-id="TR-003"/u);
+  assert.match(first.html, /aria-label="Status legend"/u);
+  assert.match(first.html, /\.js \.scenario-list \.scenario:not\(\.is-focused\)\{display:none\}/u);
+  assert.match(first.html, /aria-label="Set local scenario result TR-001"/u);
+  assert.match(first.html, /<select hidden tabindex="-1" aria-hidden="true" data-scenario-status>/u);
+  assert.match(first.html, /\.sidebar\[data-open="true"\]\{z-index:52;border-color:transparent;background:transparent;pointer-events:none\}/u);
+  assert.match(first.html, /search\.value="";statusFilter\.value="";typeFilter\.value="";criticalityFilter\.value=""/u);
+  assert.match(first.html, /criticalityFilter\.value="";noScenarios\.hidden=true/u);
   assert.ok(first.html.includes("Generated IDs"));
+});
+
+test("renders complete en-US and pt-BR UI while preserving technical literals", async (t) => {
+  const { root, raw } = await validated(t);
+  const enInspection = await inspectWorkspace(root, raw.scope.kind, raw.scope.selection, { locale: "en-US" });
+  const enRaw = structuredClone(raw);
+  enRaw.configuration = enInspection.configuration;
+  const en = renderRunbook(validateManifest(enRaw, enInspection)).html;
+  assert.match(en, /<html lang="en-US">/u);
+  for (const text of ["Validation overview", "Execution steps", "Expected result", "Not run", "Presentation"]) {
+    assert.ok(en.includes(text), `missing en-US UI text: ${text}`);
+  }
+
+  const ptInspection = await inspectWorkspace(root, raw.scope.kind, raw.scope.selection, { locale: "pt-BR", helpers: true });
+  const ptRaw = structuredClone(raw);
+  ptRaw.configuration = ptInspection.configuration;
+  ptRaw.helper_artifacts = [{ path: "seed.mjs", purpose: "Preparar dados delimitados" }];
+  const pt = renderRunbook(validateManifest(ptRaw, ptInspection)).html;
+  assert.match(pt, /<html lang="pt-BR">/u);
+  for (const text of [
+    "Visão geral da validação", "Passos de execução", "Resultado esperado", "Não executado",
+    "Apresentação", "Antes de executar", "Critérios de aprovação", "Referências de evidência",
+    "Idioma", "Entradas", "Captura de tela", "Tarefa",
+  ]) assert.ok(pt.includes(text), `missing pt-BR UI text: ${text}`);
+  for (const stale of [
+    "Skip to runbook content", "Validation overview", "Collapse details", "Execution steps",
+    "Expected result", "Local convenience only.", ">Inputs<", ">Requirements<", ">Path<",
+  ]) assert.equal(pt.includes(stale), false, `unexpected en-US UI text in pt-BR: ${stale}`);
+  for (const localized of [">Entradas<", ">Requisitos<", ">Caminho<"]) {
+    assert.ok(pt.includes(localized), `missing localized pt-BR UI text: ${localized}`);
+  }
+  for (const literal of ["TR-001", "R-001", "AC-001", "HTTP 201", "test/fixtures/invitations.json", "invitation_id"]) {
+    assert.ok(pt.includes(literal), `translated or lost technical literal: ${literal}`);
+  }
+  assert.ok(pt.includes("&lt;img src=x onerror=globalThis.pwned=1&gt;"));
+  assert.equal((pt.match(/<script>/gu) ?? []).length, 1);
+  assert.equal(Buffer.from(pt, "utf8").toString("utf8"), pt);
+  assert.notEqual(en, pt);
 });
 
 test("escapes malicious source content without creating executable elements", async (t) => {
@@ -58,8 +104,8 @@ test("makes traceability, blockers, evidence, setup, cleanup, and local-state bo
   const { manifest } = await validated(t);
   const { html } = renderRunbook(manifest);
   for (const expected of [
-    "Why this test exists", "R-001", "AC-001", "1.1", "Evidence expected",
-    "Blocked initially", "Final confirmation copy", "Global cleanup", "Sources used",
+    "Traceability", "R-001", "AC-001", "1.1", "Evidence expected",
+    "Blocker", "Needed to unblock", "Final confirmation copy", "Global cleanup", "Sources used",
     "Local convenience only", "Browser-local state is never repository evidence",
   ]) assert.ok(html.includes(expected), `missing visible content: ${expected}`);
 });
@@ -68,9 +114,51 @@ test("print contract reveals essential content and hides controls", async (t) =>
   const { manifest } = await validated(t);
   const { html } = renderRunbook(manifest);
   for (const expected of [
-    "@page{margin:12mm}", ".sidebar,.view-switch,.scenario-toolbar,.operational-only,.skip-link,footer{display:none!important}",
-    ".scenario{display:block!important", ".scenario-body{display:block!important}", "thead{display:table-header-group}",
+    "@page{margin:11mm}", ".sidebar,.drawer-scrim,.view-switch,.operational-only,.skip-link,footer,.scenario-directory,.focus-label,.next-action{display:none!important}",
+    ".scenario-list .scenario,.js .scenario-list .scenario:not(.is-focused)", ".scenario-body{display:block!important}",
+    ".reference-section>.reference-content", "thead{display:table-header-group}",
+    'addEventListener("beforeprint"', 'addEventListener("afterprint"', 'details:not([open])',
+    ".execution-capture.has-content{display:block!important}",
+    '<div class="scenario-lead">', ".scenario-lead{break-inside:avoid-page;page-break-inside:avoid}",
   ]) assert.ok(html.includes(expected), `missing print contract: ${expected}`);
+});
+
+test("selects Next Action deterministically from existing scenario data", async (t) => {
+  const { raw, inspection } = await validated(t);
+
+  raw.scenarios[0].initial_status = "failed";
+  assert.match(renderRunbook(validateManifest(raw, inspection)).html, /data-next-action-id="TR-001"/u);
+
+  raw.scenarios[0].initial_status = "not_run";
+  assert.match(renderRunbook(validateManifest(raw, inspection)).html, /data-next-action-id="TR-003"/u);
+
+  raw.scenarios[2].initial_status = "passed";
+  assert.match(renderRunbook(validateManifest(raw, inspection)).html, /data-next-action-id="TR-001"/u);
+
+  for (const scenario of raw.scenarios) scenario.initial_status = "passed";
+  const complete = renderRunbook(validateManifest(raw, inspection)).html;
+  assert.match(complete, /data-next-action-id=""/u);
+  assert.ok(complete.includes("Run complete"));
+});
+
+test("renders labeled semantic states, focused execution controls, and safe progressive enhancement", async (t) => {
+  const { manifest } = await validated(t);
+  const { html } = renderRunbook(manifest);
+  for (const status of ["Not run", "Passed", "Failed", "Blocked", "Skipped"]) {
+    assert.ok(html.includes(status), `missing semantic status label: ${status}`);
+  }
+  for (const result of ["passed", "failed", "blocked", "skipped", "not_run"]) {
+    assert.match(html, new RegExp(`data-result="${result}"`, "u"));
+  }
+  assert.match(html, /Scenario 01 of 03/u);
+  assert.match(html, /<details class="support-details presentation-secondary">/u);
+  assert.match(html, /\.scenario\[data-status="failed"\] \.failed-context\{display:grid/u);
+  assert.match(html, /\.scenario\[data-status="blocked"\] \.blocked-context\{display:grid/u);
+  assert.ok(html.includes("Record the blocking reason in the execution notes below."));
+  assert.match(html, /data-actionable-blocked="false"/u);
+  assert.match(html, /card\.dataset\.initialStatus!=="blocked"/u);
+  assert.doesNotMatch(html, /\b(?:innerHTML|outerHTML|insertAdjacentHTML|document\.write|eval\s*\(|new Function)\b/u);
+  assert.doesNotMatch(html, /\s(?:onclick|onchange|oninput|onload|onsubmit|onfocus|onkeydown)\s*=/iu);
 });
 
 test("coverage rejects false references and false covered claims", async (t) => {
@@ -132,8 +220,9 @@ test("optional top-level evidence sections may be omitted without empty-field bo
 });
 
 test("presentation option deterministically controls presentation-mode availability", async (t) => {
-  const { raw, inspection } = await validated(t);
+  const { root, raw } = await validated(t);
   raw.configuration.presentation = false;
+  const inspection = await inspectWorkspace(root, raw.scope.kind, raw.scope.selection, { presentation: false });
   const { html } = renderRunbook(validateManifest(raw, inspection));
   assert.equal(html.includes('data-view-button="presentation"'), false);
   assert.ok(html.includes('data-view-button="operational"'));

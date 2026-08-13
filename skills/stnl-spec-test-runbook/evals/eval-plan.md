@@ -33,6 +33,9 @@ The catalog covers:
 15. technical audience;
 16. presentation mode;
 17. print output;
-18. absent or inconsistent authority, including invalid documentary status or an artifact index that disagrees with `shared/`.
+18. absent or inconsistent authority, including invalid documentary status or an artifact index that disagrees with `shared/`;
+19. deterministic runtime enforcement and normalization of every `RUNBOOK_OPTIONS` field;
+20. omitted or explicit `en-US` localization without host-locale inference;
+21. explicit `pt-BR` localization with UTF-8 accents and unchanged canonical technical identifiers.
 
 These are static/runtime evals, not a claim that a model executed each prompt. A real-model eval is reportable only with platform, model, raw request, observed reads/writes, and actual result.
