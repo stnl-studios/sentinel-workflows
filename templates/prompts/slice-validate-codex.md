@@ -2,6 +2,7 @@ Use `stnl-slice-quality-manager`.
 OPERATION=VALIDATE_SLICE
 SPEC_PATH={{SPEC_PATH}}
 SLICE={{SLICE}}
+Treat the concrete recovery operation and slice returned by the shared deterministic preflight as authority; derive neither from the current request, and report both exactly when blocked.
 Faça spawn obrigatório de uma sessão delegada independente do agente customizado `stnl_validation_runner`, com `fork_turns="none"` e sem fork completo da thread ou do contexto principal. Envie somente `OPERATION=VALIDATE_SLICE`, `SPEC_PATH`, execution root derivado, slice, paths de plans e tasks, Requirements authority, Plan revision, evidências compactas de implementação e findings, incluindo `TESTS_NOT_APPLICABLE`, resumo de findings ativos/históricos e tentativas válidas, escopo alterado, diff, overlaps e contexto adicional estritamente necessário; não envie histórico da conversa.
 Não passe logs completos. Aguarde o retorno. O contexto principal adiciona a Validation Attempt, persiste as disposições completas de findings existentes e novos findings estruturados e, em `PASS` válido, exige zero finding bloqueante ativo, substitui a Effective Validation Base e finaliza a slice; não repete testes, não refaz a validação e não emite outro veredito.
 Exija revisão independente da descoberta e justificativa de qualquer `TESTS_NOT_APPLICABLE`; o runner pode rejeitar essa evidência, descobrir e executar check aplicável ou exigir inspeção adicional. Não promova não aplicabilidade a `PASS`; a validação formal continua somente `PASS | NEEDS_FIX | BLOCKED`.

@@ -29,3 +29,4 @@ update_policy: Extend when quality persistence or completion accepts an invalid 
 15. Active blocking divergence blocks validation; resolved/superseded divergence history does not.
 16. Explicit validation is the only continuation from third auxiliary `TESTS_FAIL`; executor re-entry remains blocked until its verdict.
 17. Stale requirements/revision blocks before delegation; arbitrary user-owned SPEC-root siblings remain preserved and allowed.
+18. Scoped runner, retry, or validation recovery reports the exact persisted operation and slice even when the current request is wrong; unscoped authority recovery keeps slice absent.

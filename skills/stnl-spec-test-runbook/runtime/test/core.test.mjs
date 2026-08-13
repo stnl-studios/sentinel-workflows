@@ -105,7 +105,7 @@ test("execution discovery requires canonical approved plan and task artifacts", 
       path.join(pairedOrphanRoot, "execution", directory, "slice-99.md"),
     );
   }
-  await assert.rejects(inspectWorkspace(pairedOrphanRoot, "EXECUTION", {}), /slice set does not exactly match/u);
+  await assert.rejects(inspectWorkspace(pairedOrphanRoot, "EXECUTION", {}), /plans directory does not exactly match the current Serial Slice Order/u);
 
   const missingGlobalRowRoot = await copyFixture(t);
   const globalTasks = path.join(missingGlobalRowRoot, "execution", "tasks.md");

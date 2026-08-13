@@ -23,3 +23,4 @@ update_policy: Extend when task materialization loses approved-plan fidelity.
 9. After operational evidence, commits only an approved append-only extension and exact supersession fields; historical PASS and evidence remain unchanged.
 10. Supersession terminalizes the named open predecessor as `[x]`/`SUPERSEDED` with replacement pointer while appending the new active task.
 11. Rejects stale fingerprints, non-increasing revisions/slices, or history mutation.
+12. Treats an approved planning-only replacement with no tasks as ordinary revision `1` initial materialization, never as pristine or append-only historical recovery.

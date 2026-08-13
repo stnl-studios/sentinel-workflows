@@ -19,3 +19,4 @@ update_policy: Extend when review fails to detect a material planning defect.
 5. Repeats safely while an initial, pristine replacement, or append-only recovery draft exists.
 6. With prior operational history, approves only a pending increasing revision/extension and preserves every historical plan/task byte.
 7. Rejects stale authority fingerprints, non-monotonic slices, invalid supersession, or authority change without a current-revision reconciliation/corrective slice.
+8. Reviews a planning-only replacement as revision `1` initial authority with no historical recovery fields, and rejects any obsolete detailed plan outside the global Serial Slice Order.

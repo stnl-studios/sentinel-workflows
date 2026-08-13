@@ -20,7 +20,7 @@ Requirements and their current computed fingerprint remain authoritative. This s
 
 ## REVIEW_PLAN
 
-Before content reads, execute `node "<SKILL_ROOT>/runtime/validate-execution-state.mjs" <SPEC_PATH> REVIEW_PLAN`. Run only when there is a draft initial plan or pending `REPLAN` revision/extension. It may be repeated while that draft remains mutable. Existing task artifacts do not by themselves block review: in pristine replacement mode, review the full replacement set; after operational evidence, review only the append-only revision and new slices while preserving all historical plan/task artifacts byte-for-byte.
+Before content reads, execute `node "<SKILL_ROOT>/runtime/validate-execution-state.mjs" <SPEC_PATH> REVIEW_PLAN`. Run only when there is a draft initial or planning-only replacement plan, or a pending materialized `REPLAN` revision/extension. It may be repeated while that draft remains mutable. A planning-only replacement is revision `1`, has no historical recovery fields, and follows the same review gate as an initial plan. Existing task artifacts do not by themselves block review: in pristine replacement mode, review the full replacement set; after operational evidence, review only the append-only revision and new slices while preserving all historical plan/task artifacts byte-for-byte.
 
 Check full requirement coverage, missing owners, overlap, slice sizing, strict serial order, dependencies, public contracts, persistence, migrations, authentication and authorization, external integrations, shared state, breaking changes, architectural risk, expected tests, implicit work, accidental scope, and consistency between global and detailed plans.
 
@@ -36,7 +36,7 @@ When review succeeds, set the mutable global plan and every detailed plan in the
 
 ## Allowed Effects
 
-- for an initial or wholly pristine replacement, modify, create, remove, or reorder only the candidate planning set needed to leave one coherent approved result;
+- for an initial, planning-only replacement, or wholly pristine materialized replacement, modify, create, remove, or reorder only the candidate planning set needed to leave one coherent approved result;
 - for append-only recovery, modify only the pending revision and appended plans while preserving historical planning bytes;
 - report exact corrections made.
 

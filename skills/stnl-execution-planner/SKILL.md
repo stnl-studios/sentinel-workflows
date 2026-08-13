@@ -17,7 +17,7 @@ Run exactly one operation: `PLAN` or `REPLAN`. Convert an authoritative requirem
 
 ## Authority
 
-The normalized requirements source remains authoritative and unchanged. Compute its canonical `stnl-requirements-authority-v1` SHA-256 fingerprint before planning and persist exactly `- Requirements authority: sha256:<64hex>` and `- Plan revision: <positive integer>`. This skill may create or revise only `plan.md` and `plans/slice-NN.md` below the derived execution root. `REPLAN` may also stage the precise task-history transitions later committed atomically by `MATERIALIZE_TASKS`; it never mutates tasks itself. Persist every path relative to the artifact containing it.
+The normalized requirements source remains authoritative and unchanged. Compute its canonical `stnl-requirements-authority-v1` SHA-256 fingerprint before planning and persist exactly `- Requirements authority: sha256:<64hex>` and `- Plan revision: <positive integer>`. This skill may create or revise only `plan.md` and `plans/slice-NN.md` below the derived execution root. Before tasks exist, `REPLAN` replaces only the unmaterialized planning authority. After tasks exist, it may stage the precise task-history transitions later committed atomically by `MATERIALIZE_TASKS`; it never mutates tasks itself. Persist every path relative to the artifact containing it.
 
 ## PLAN
 
@@ -31,9 +31,11 @@ Create `plan.md` and every foreseeable `plans/slice-NN.md` using the templates. 
 
 ## REPLAN
 
-Require explicit `REPLAN_REASON`. Before content reads or writes, execute `node "<SKILL_ROOT>/runtime/validate-execution-state.mjs" <SPEC_PATH> REPLAN`. Derive recovery mode solely from deterministic execution state; never accept a caller-selected reset or extension mode. Recompute the current requirements fingerprint before any proposal. If a product decision or documentary change is still required, return a lifecycle `RESUME` handoff without drafting.
+Require explicit `REPLAN_REASON`. Before content reads or writes, execute `node "<SKILL_ROOT>/runtime/validate-execution-state.mjs" <SPEC_PATH> REPLAN`. Derive the exact one of three mutation classes solely from deterministic execution state: planning exists with tasks absent, tasks exist and are wholly pristine, or operational evidence/history exists. Never accept a caller-selected reset or extension mode. Recompute the current requirements fingerprint before any proposal. If a product decision or documentary change is still required, return a lifecycle `RESUME` handoff without drafting.
 
-When the complete task set is `MATERIALIZED_PRISTINE`, build one full replacement plan set in isolation. Preserve the source and every unrelated byte while rendering. The later materialization commit may atomically replace only the canonical plans and pristine task set, returning execution to draft planning. This is the only state in which existing plan or task artifacts may be replaced or removed.
+When planning artifacts exist but neither `tasks.md` nor `tasks/` exists, they are mutable unmaterialized authority, not historical execution state. Build one complete replacement planning set in isolation and atomically replace exactly `plan.md` plus the detailed plans named by its Serial Slice Order. Remove obsolete canonical detailed plans in the same publication so no competing planning authority survives. Keep Plan revision `1`; omit `Revision mode`, `Replan reason`, and `Supersedes open slices` because those fields describe recovery from materialized history. Publish the replacement as draft/pending review, return to `PLANNED_DRAFT`, and require the normal `REVIEW_PLAN` then initial `MATERIALIZE_TASKS` flow. Do not create an append-only recovery revision merely because planning files existed.
+
+When the complete task set is `MATERIALIZED_PRISTINE`, build one full replacement plan set in isolation. Preserve the source and every unrelated byte while rendering. Use the existing increasing revision with `Revision mode: pristine-replacement`; the later materialization commit may atomically replace only the canonical plans and pristine task set, returning execution to draft planning. This is the only state in which materialized task artifacts may be replaced or removed.
 
 After any operational evidence exists, history is immutable. Preserve every existing detailed plan, detailed task, Validation Attempt, finding, divergence, Effective Validation Base, final result, and prior requirements fingerprint byte-for-byte. Increment the global plan revision and append monotonically numbered corrective, replacement, reconciliation, or integration slices only. A replacement proposal identifies each open prior slice it supersedes. A prior `PASS` remains `PASS`; an open superseded slice is terminalized only when approved extension tasks are committed by `MATERIALIZE_TASKS`.
 
@@ -53,7 +55,7 @@ Render the pending replacement or extension with `draft` status and pending revi
 
 - create the derived execution root when safe;
 - create `plan.md` and the complete `plans/slice-NN.md` set once, only from `EMPTY`;
-- on explicit `REPLAN`, draft either an atomic pristine replacement or append-only revision/extension as determined by state;
+- on explicit `REPLAN`, atomically replace planning-only authority, draft a materialized-pristine replacement, or stage an append-only recovery extension as determined by state;
 - report coverage and concrete uncertainty.
 
 ## Blocks

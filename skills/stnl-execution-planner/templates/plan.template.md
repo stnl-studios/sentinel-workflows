@@ -21,7 +21,7 @@ update_policy: PLAN creates revision 1; REPLAN drafts a replacement or extension
 - Strategy: <compact strategy>
 - Review state: pending
 
-For revision 1, omit the following recovery fields. A later revision records the deterministic reason and whether it is a pristine replacement or append-only extension:
+For revision 1, including a planning-only replacement before tasks exist, omit the following historical recovery fields. Only a later revision recovering from materialized tasks records the deterministic reason and whether it is a pristine replacement or append-only extension:
 
 - Replan reason: <REPLAN_REASON>
 - Revision mode: pristine-replacement | append-only-extension

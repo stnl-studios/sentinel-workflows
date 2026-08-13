@@ -2,6 +2,7 @@ Use `stnl-slice-executor`.
 OPERATION=EXECUTE_SLICE
 SPEC_PATH={{SPEC_PATH}}
 SLICE={{SLICE}}
+Treat the concrete recovery operation and slice returned by the shared deterministic preflight as authority; derive neither from the current request, and report both exactly when blocked.
 Após implementar e registrar o escopo alterado, delegue obrigatoriamente a primeira chamada dos testes desta operação em uma sessão independente, sem histórico da conversa, com somente `OPERATION=EXECUTE_SLICE`, `SPEC_PATH`, execution root derivado, slice, paths de plans e tasks, Requirements authority, Plan revision, evidências compactas relevantes, escopo alterado, rodada automática e contexto adicional estritamente necessário para:
 @agent-stnl-validation-runner
 Invoque o runner no mínimo uma vez e no máximo três vezes nesta mesma operação manual, nas rodadas `1/3`, `2/3` e `3/3`; nunca faça uma quarta chamada nem use loop ilimitado. Não pule o runner por mudança simples nem por acreditar que nenhum check seja aplicável; a descoberta independente e `TESTS_NOT_APPLICABLE` pertencem ao runner.

@@ -50,6 +50,8 @@ No Codex, os launchers fazem spawn do agente customizado `stnl_validation_runner
 
 Falha de inicialização ou transporte recebe no máximo uma segunda tentativa técnica em nova sessão independente e com o mesmo payload mínimo. Essas tentativas não consomem rodada `N/3`, não criam `implementation-check-NN`, `findings-check-NN` ou `attempt-NN`, e não autorizam correção. Duas falhas persistem o singleton `Delegation Blocker` com `Kind: initialization` e estado `RUNNER_INITIALIZATION_BLOCKED`; saída malformada usa `Kind: malformed-output` e `RUNNER_RESULT_BLOCKED`. Um `BLOCKED` válido do runner, `TESTS_FAIL` e falha de verification command permanecem categorias distintas; somente `TESTS_FAIL` válido pode autorizar a correção automática delimitada.
 
+O preflight compartilhado deriva recovery targets somente do estado persistido. Cada target informa operação, slice anulável, owner, record/round/retry quando aplicáveis e se a retomada exige a mesma operação. Os launchers preservam essa autoridade: blockers scoped reportam a operação e a slice concretas, enquanto recovery global mantém slice nula e nunca copia uma slice do pedido atual.
+
 Uma nova chamada da mesma operação, quando implementação ou correção e escopo já foram persistidos e o único bloqueio final é de inicialização, retoma diretamente na delegação. Não reimplementa, não reaplica findings, não duplica checklist, diff, evidência ou blocker, não reinicia identificadores e não cria rodada antes de a sessão iniciar. O fallback no contexto principal é proibido.
 
 ### Test evidence e formal validation

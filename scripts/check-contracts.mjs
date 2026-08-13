@@ -420,6 +420,7 @@ function checkLaunchers(root) {
     if (name === "execution-replan") {
       requirePattern(text, /OPERATION=REPLAN/u, "L003_OPERATION", "REPLAN launcher operation is missing");
       requirePattern(text, /REPLAN_REASON=\{\{REPLAN_REASON\}\}/u, "L004_INPUTS", "REPLAN_REASON is missing");
+      requirePattern(instructions, /planning-only atomic replacement[\s\S]{0,120}revision 1[\s\S]{0,160}materialized-pristine replacement[\s\S]{0,160}append-only extension/iu, "L019_RECOVERY_TARGET", "REPLAN launcher does not distinguish all three mutation classes");
     }
     if (name === "spec-readiness") {
       requirePattern(instructions, /(?:only|somente).{0,40}`LOCAL`.{0,30}`GLOBAL`|`LOCAL`.{0,30}`GLOBAL`.{0,80}(?:case-sensitive|sem aliases)/iu, "L015_READINESS_SCOPE", "READINESS exact scope set is missing");
@@ -427,6 +428,12 @@ function checkLaunchers(root) {
       forbidPattern(instructions, /`(?:local|global|localized|repository)`/u, "L015_READINESS_SCOPE", "READINESS scope alias is present");
     }
     if (!runnerLaunchers.has(name)) continue;
+    requirePattern(
+      instructions,
+      /concrete recovery operation and slice[^\n]{0,100}shared deterministic preflight[^\n]{0,80}authority[^\n]{0,120}derive neither from the current request[^\n]{0,100}report both exactly/iu,
+      "L019_RECOVERY_TARGET",
+      `${name}: state-derived concrete recovery target is missing`,
+    );
     const isCodex = name.endsWith("-codex");
     if (isCodex) {
       if ((text.match(/stnl_validation_runner/gu) ?? []).length !== 1 || text.includes("@agent-") || /\bClaude\b/u.test(text)) reject("L007_PLATFORM_IDENTITY", `${name}: invalid Codex identity`);

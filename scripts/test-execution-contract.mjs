@@ -65,6 +65,33 @@ function omitInitialRecoveryFields(text) {
   return text.replace(/\nFor revision 1,[\s\S]*?\n## Serial Slice Order/u, "\n## Serial Slice Order");
 }
 
+function setPlanReviewState(text, ready) {
+  return text
+    .replace(/^status: (?:draft|ready)$/mu, `status: ${ready ? "ready" : "draft"}`)
+    .replace(/^- Review state: (?:pending|approved)$/gmu, `- Review state: ${ready ? "approved" : "pending"}`);
+}
+
+async function renderTasks(fixture, { revision = 1, fingerprint = null } = {}) {
+  const authority = fingerprint ?? await computeRequirementsAuthority(fixture.requirements);
+  const requirementsMetadata = await fs.stat(fixture.requirements);
+  const authorityPath = requirementsMetadata.isDirectory() ? path.join(fixture.requirements, "feature_spec.md") : fixture.requirements;
+  const detailSource = path.relative(path.join(fixture.execution, "plans"), authorityPath).split(path.sep).join("/");
+  await fs.mkdir(path.join(fixture.execution, "tasks"), { recursive: true });
+  const tasksTemplate = await fs.readFile(path.join(ROOT, "skills/stnl-task-materializer/templates/tasks.template.md"), "utf8");
+  const tasks = replaceAll(tasksTemplate, [
+    ["01 - <name>", "01 - Delivery"], ["<observable delivery>", "observable result"],
+  ]);
+  await fs.writeFile(path.join(fixture.execution, "tasks.md"), tasks);
+  const taskTemplate = await fs.readFile(path.join(ROOT, "skills/stnl-task-materializer/templates/slice-tasks.template.md"), "utf8");
+  const task = replaceAll(taskTemplate, [
+    ["<Name>", "Delivery"], ["`<relative path>`", `\`${detailSource}\``],
+    ["sha256:<64hex>", `sha256:${authority}`], ["<positive integer>", String(revision)],
+    ["<task>", "Implement behavior"], ["<result>", "observable result"], ["<areas>", "src/example.txt"],
+    ["<test, command, suite, or observable check>", "node --test"],
+  ]);
+  await fs.writeFile(path.join(fixture.execution, "tasks/slice-01.md"), task);
+}
+
 async function renderArtifacts(fixture, { materialized = true, planStatus = "ready", revision = 1, fingerprint = null } = {}) {
   const authority = fingerprint ?? await computeRequirementsAuthority(fixture.requirements);
   const requirementsMetadata = await fs.stat(fixture.requirements);
@@ -94,20 +121,7 @@ async function renderArtifacts(fixture, { materialized = true, planStatus = "rea
   if (planStatus === "ready") slicePlan = headerReady(slicePlan);
   await fs.writeFile(path.join(fixture.execution, "plans/slice-01.md"), slicePlan);
   if (!materialized) return { authority };
-  await fs.mkdir(path.join(fixture.execution, "tasks"), { recursive: true });
-  const tasksTemplate = await fs.readFile(path.join(ROOT, "skills/stnl-task-materializer/templates/tasks.template.md"), "utf8");
-  const tasks = replaceAll(tasksTemplate, [
-    ["01 - <name>", "01 - Delivery"], ["<observable delivery>", "observable result"],
-  ]);
-  await fs.writeFile(path.join(fixture.execution, "tasks.md"), tasks);
-  const taskTemplate = await fs.readFile(path.join(ROOT, "skills/stnl-task-materializer/templates/slice-tasks.template.md"), "utf8");
-  const task = replaceAll(taskTemplate, [
-    ["<Name>", "Delivery"], ["`<relative path>`", `\`${detailSource}\``],
-    ["sha256:<64hex>", `sha256:${authority}`], ["<positive integer>", String(revision)],
-    ["<task>", "Implement behavior"], ["<result>", "observable result"], ["<areas>", "src/example.txt"],
-    ["<test, command, suite, or observable check>", "node --test"],
-  ]);
-  await fs.writeFile(path.join(fixture.execution, "tasks/slice-01.md"), task);
+  await renderTasks(fixture, { revision, fingerprint: authority });
   return { authority };
 }
 
@@ -144,6 +158,19 @@ async function stagePristineReplacement(fixture, oldHash, newHash, { ready = fal
     return result.replace("- Objective: Deliver observable behavior", `- Revision mode: pristine-replacement\n- Replan reason: task review found a plan-level defect\n- Supersedes open slices: none\n- Objective: Deliver observable behavior`);
   });
   await editSlicePlan(fixture, "slice-01", (value) => reviseAuthority(value, oldHash, newHash, 1, 2).replace("status: ready", `status: ${ready ? "ready" : "draft"}`).replace("Review state: approved", `Review state: ${ready ? "approved" : "pending"}`));
+}
+
+async function replacePlanningOnly(fixture, oldHash, newHash, { ready = false } = {}) {
+  await editPlan(fixture, (value) => setPlanReviewState(
+    reviseAuthority(value, oldHash, newHash, 1, 1)
+      .replace("- Objective: Deliver observable behavior", "- Objective: Deliver replacement planning authority"),
+    ready,
+  ));
+  await editSlicePlan(fixture, "slice-01", (value) => setPlanReviewState(
+    reviseAuthority(value, oldHash, newHash, 1, 1)
+      .replace("Deliver observable behavior.", "Deliver replacement planning authority."),
+    ready,
+  ));
 }
 
 async function appendRecoveryPlan(fixture, oldHash, newHash, { ready = false, supersedes = "slice-01 -> slice-02" } = {}) {
@@ -369,6 +396,41 @@ function delegationBlocker(operation, kind, { state = "active", after = "none", 
 - Required action: retry the same operation after restoring the runner${resolution === null ? "" : `\n- Resolution: ${resolution}`}`;
 }
 
+async function rejectedWithRecovery(promise, expected) {
+  let captured = null;
+  await assert.rejects(promise, (error) => {
+    captured = error;
+    assert.match(error.message, expected);
+    return true;
+  });
+  assert.ok(captured instanceof ExecutionContractError);
+  return captured;
+}
+
+function assertRecoveryTarget(result, expected) {
+  const target = result.recoveryTargets.find((candidate) => (
+    candidate.operation === expected.operation && candidate.slice === (expected.slice ?? null)
+  ));
+  assert.ok(target, `missing recovery target ${expected.operation} ${expected.slice ?? "unscoped"}`);
+  for (const [field, value] of Object.entries(expected)) assert.equal(target[field], value, `${field} disagrees`);
+  return target;
+}
+
+async function passFirstSlice(fixture) {
+  await editTask(fixture, (value) => {
+    let result = value.replace("- [ ] 1.1", "- [x] 1.1");
+    result = replaceSection(result, "Changed Areas", "- `../../src/example.txt`");
+    result = replaceSection(result, "Validation Attempts", PASS_ATTEMPT);
+    result = replaceSection(result, "Effective Validation Base", PASS_BASE);
+    return replaceSection(result, "Final Result", "- PASS");
+  });
+  await editTasksIndex(fixture, (value) => value.replace(
+    "| [ ] | 01 - Delivery | observable result | - | tasks/slice-01.md | pending | pending |",
+    "| [x] | 01 - Delivery | observable result | - | tasks/slice-01.md | PASS | PASS |",
+  ));
+  await writeValidatedPath(fixture);
+}
+
 test("all execution skills bundle byte-identical self-contained state runtimes", async () => {
   const names = ["execution-state.mjs", "validate-execution-state.mjs"];
   for (const name of names) {
@@ -463,6 +525,72 @@ test("plan-only materialization preflight parses every detailed plan and review 
   await assert.rejects(preflightExecutionOperation(draft.requirements, "MATERIALIZE_TASKS"), /ready global plan retains a draft detailed plan/u);
 });
 
+test("planning-only REPLAN atomically replaces revision 1 and returns through review and initial materialization", async (t) => {
+  const fixture = await standaloneWorkspace(t);
+  const { authority } = await renderArtifacts(fixture, { materialized: false, planStatus: "draft" });
+  const initial = await inspectExecutionState(fixture.requirements);
+  assert.equal(initial.state, "PLANNED_DRAFT");
+  assertRecoveryTarget(initial, { operation: "REPLAN", slice: null, owner: "planning-authority" });
+  assert.equal((await preflightExecutionOperation(fixture.requirements, "REPLAN")).state, "PLANNED_DRAFT");
+
+  await replacePlanningOnly(fixture, authority, authority);
+  const replacement = await inspectExecutionState(fixture.requirements);
+  assert.equal(replacement.state, "PLANNED_DRAFT");
+  assert.equal(replacement.globalPlan.revision, 1);
+  assert.equal(replacement.globalPlan.revisionMode, null);
+  assert.deepEqual(replacement.globalPlan.supersessionMappings, []);
+  await assert.rejects(fs.stat(path.join(fixture.execution, "tasks.md")), { code: "ENOENT" });
+
+  assert.equal((await preflightExecutionOperation(fixture.requirements, "REVIEW_PLAN")).state, "PLANNED_DRAFT");
+  await editPlan(fixture, (value) => setPlanReviewState(value, true));
+  await editSlicePlan(fixture, "slice-01", (value) => setPlanReviewState(value, true));
+  assert.equal((await preflightExecutionOperation(fixture.requirements, "MATERIALIZE_TASKS")).state, "PLANNED_READY");
+  await renderTasks(fixture, { revision: 1, fingerprint: authority });
+  assert.equal((await inspectExecutionState(fixture.requirements)).state, "MATERIALIZED_PRISTINE");
+});
+
+test("reviewed planning made stale before tasks replans without historical recovery metadata", async (t) => {
+  const fixture = await standaloneWorkspace(t);
+  const { authority: oldHash } = await renderArtifacts(fixture, { materialized: false, planStatus: "ready" });
+  assert.equal((await inspectExecutionState(fixture.requirements)).state, "PLANNED_READY");
+  await fs.appendFile(fixture.requirements, "- AC-002: authority changed before materialization\n");
+  const stale = await inspectExecutionState(fixture.requirements);
+  assert.equal(stale.state, "REQUIREMENTS_CHANGED");
+  assert.deepEqual(stale.recoveryTargets.map(({ operation, slice }) => ({ operation, slice })), [{ operation: "REPLAN", slice: null }]);
+  assert.equal((await preflightExecutionOperation(fixture.requirements, "REPLAN")).state, "REQUIREMENTS_CHANGED");
+
+  const newHash = await computeRequirementsAuthority(fixture.requirements);
+  await replacePlanningOnly(fixture, oldHash, newHash);
+  const replacement = await inspectExecutionState(fixture.requirements);
+  assert.equal(replacement.state, "PLANNED_DRAFT");
+  assert.equal(replacement.globalPlan.revision, 1);
+  assert.equal(replacement.globalPlan.revisionMode, null);
+  await editPlan(fixture, (value) => setPlanReviewState(value, true));
+  await editSlicePlan(fixture, "slice-01", (value) => setPlanReviewState(value, true));
+  assert.equal((await preflightExecutionOperation(fixture.requirements, "MATERIALIZE_TASKS")).state, "PLANNED_READY");
+  await renderTasks(fixture, { revision: 1, fingerprint: newHash });
+  assert.equal((await inspectExecutionState(fixture.requirements)).state, "MATERIALIZED_PRISTINE");
+});
+
+test("planning-only replacement rejects historical REPLAN fields and obsolete competing plans", async (t) => {
+  const historical = await standaloneWorkspace(t);
+  await renderArtifacts(historical, { materialized: false, planStatus: "draft" });
+  await editPlan(historical, (value) => value.replace(
+    "- Objective: Deliver observable behavior",
+    "- Revision mode: pristine-replacement\n- Replan reason: invalid history before tasks\n- Supersedes open slices: none\n- Objective: Deliver observable behavior",
+  ));
+  await assert.rejects(inspectExecutionState(historical.requirements), /planning-only REPLAN must omit historical recovery revision fields/u);
+
+  const obsolete = await standaloneWorkspace(t);
+  await renderArtifacts(obsolete, { materialized: false, planStatus: "draft" });
+  const stalePlan = (await fs.readFile(path.join(obsolete.execution, "plans/slice-01.md"), "utf8"))
+    .replaceAll("Slice 01", "Slice 02").replaceAll("- Slice: 01", "- Slice: 02");
+  await fs.writeFile(path.join(obsolete.execution, "plans/slice-02.md"), stalePlan, "utf8");
+  await assert.rejects(inspectExecutionState(obsolete.requirements), /plans directory does not exactly match the current Serial Slice Order/u);
+  await fs.rm(path.join(obsolete.execution, "plans/slice-02.md"));
+  assert.equal((await inspectExecutionState(obsolete.requirements)).state, "PLANNED_DRAFT");
+});
+
 test("controlled execution artifacts reject hardlinks without mutating external bytes", async (t) => {
   const fixture = await standaloneWorkspace(t);
   await renderArtifacts(fixture);
@@ -541,7 +669,7 @@ test("pending REPLAN requires canonical fields, one revision increment, and vali
   const invalidInitial = await standaloneWorkspace(t);
   await renderArtifacts(invalidInitial, { materialized: false });
   await editPlan(invalidInitial, (value) => value.replace("Plan revision: 1", "Plan revision: 4"));
-  await assert.rejects(inspectExecutionState(invalidInitial.requirements), /initial plan must use Plan revision 1/u);
+  await assert.rejects(inspectExecutionState(invalidInitial.requirements), /planning-only authority must use Plan revision 1/u);
 
   const mixedReplacement = await standaloneWorkspace(t);
   const { authority: mixedAuthority } = await renderArtifacts(mixedReplacement);
@@ -697,7 +825,22 @@ test("third TESTS_FAIL has only formal validation continuation for implementatio
     });
     const state = await inspectExecutionState(fixture.requirements);
     assert.equal(state.state, kind === "Implementation" ? "IMPLEMENTATION_RETRY_EXHAUSTED" : "FINDINGS_RETRY_EXHAUSTED");
+    assertRecoveryTarget(state, {
+      operation: "VALIDATE_SLICE",
+      slice: "slice-01",
+      owner: "retry-exhaustion",
+      record: `${prefix}-03`,
+      round: 3,
+      retryState: state.state,
+    });
     await assert.rejects(preflightExecutionOperation(fixture.requirements, kind === "Implementation" ? "EXECUTE_SLICE" : "APPLY_FINDINGS", "1"), /not legal/u);
+    if (kind === "Implementation") {
+      const invalidSlice = await rejectedWithRecovery(
+        preflightExecutionOperation(fixture.requirements, "VALIDATE_SLICE", "01"),
+        /SLICE must be one unsigned decimal number without prefix; legal next operation is VALIDATE_SLICE for slice-01/u,
+      );
+      assertRecoveryTarget(invalidSlice, { operation: "VALIDATE_SLICE", slice: "slice-01" });
+    }
     assert.equal((await preflightExecutionOperation(fixture.requirements, "VALIDATE_SLICE", "1")).state, state.state);
 
     const blocked = await standaloneWorkspace(t);
@@ -786,7 +929,7 @@ test("terminal auxiliary outcomes and scoped blocker resumes have exact phases",
     return replaceSection(result, "Implementation Test Evidence", checkRecord("implementation-check", 1, "TESTS_PASS", 1));
   });
   assert.equal((await inspectExecutionState(implemented.requirements)).state, "IMPLEMENTED_AWAITING_VALIDATION");
-  await assert.rejects(preflightExecutionOperation(implemented.requirements, "EXECUTE_SLICE", "1"), /legal next operations are VALIDATE_SLICE or REPLAN/u);
+  await assert.rejects(preflightExecutionOperation(implemented.requirements, "EXECUTE_SLICE", "1"), /legal next operations are VALIDATE_SLICE for slice-01 or REPLAN/u);
   assert.equal((await preflightExecutionOperation(implemented.requirements, "VALIDATE_SLICE", "1")).state, "IMPLEMENTED_AWAITING_VALIDATION");
 
   const corrected = await standaloneWorkspace(t);
@@ -808,9 +951,40 @@ test("terminal auxiliary outcomes and scoped blocker resumes have exact phases",
     result = replaceSection(result, "Changed Areas", "- `../../src/example.txt`");
     return replaceSection(result, "Delegation Blocker", delegationBlocker("EXECUTE_SLICE", "initialization"));
   });
-  assert.equal((await inspectExecutionState(initialized.requirements)).state, "RUNNER_INITIALIZATION_BLOCKED");
+  const initializedState = await inspectExecutionState(initialized.requirements);
+  assert.equal(initializedState.state, "RUNNER_INITIALIZATION_BLOCKED");
+  assertRecoveryTarget(initializedState, {
+    operation: "EXECUTE_SLICE",
+    slice: "slice-01",
+    owner: "delegation-blocker",
+    record: null,
+    round: null,
+    retryState: null,
+    sameOperationResumeRequired: true,
+  });
   assert.equal((await preflightExecutionOperation(initialized.requirements, "EXECUTE_SLICE", "1")).state, "RUNNER_INITIALIZATION_BLOCKED");
-  await assert.rejects(preflightExecutionOperation(initialized.requirements, "VALIDATE_SLICE", "1"), /resume only EXECUTE_SLICE for slice-01/u);
+  const wrongOperation = await rejectedWithRecovery(
+    preflightExecutionOperation(initialized.requirements, "REPLAN"),
+    /legal next operation is EXECUTE_SLICE for slice-01/u,
+  );
+  assertRecoveryTarget(wrongOperation, { operation: "EXECUTE_SLICE", slice: "slice-01" });
+  const unsupportedOperation = await rejectedWithRecovery(
+    preflightExecutionOperation(initialized.requirements, "DELETE_MANUALLY"),
+    /unsupported operation DELETE_MANUALLY; legal next operation is EXECUTE_SLICE for slice-01/u,
+  );
+  assertRecoveryTarget(unsupportedOperation, { operation: "EXECUTE_SLICE", slice: "slice-01" });
+  const wrongSlice = await rejectedWithRecovery(
+    preflightExecutionOperation(initialized.requirements, "EXECUTE_SLICE", "2"),
+    /legal next operation is EXECUTE_SLICE for slice-01/u,
+  );
+  assertRecoveryTarget(wrongSlice, { operation: "EXECUTE_SLICE", slice: "slice-01" });
+  const cli = spawnSync(process.execPath, [
+    path.join(ROOT, "skills/stnl-slice-executor/runtime/validate-execution-state.mjs"),
+    initialized.requirements,
+    "REPLAN",
+  ], { encoding: "utf8" });
+  assert.equal(cli.status, 1);
+  assert.match(cli.stderr, /legal next operation is EXECUTE_SLICE for slice-01/u);
   await editTask(initialized, (value) => {
     let result = replaceSection(value, "Implementation Test Evidence", checkRecord("implementation-check", 1, "TESTS_PASS", 1));
     return replaceSection(result, "Delegation Blocker", delegationBlocker("EXECUTE_SLICE", "initialization", { state: "resolved", resolution: "implementation-check-01 returned a valid result" }));
@@ -824,8 +998,59 @@ test("terminal auxiliary outcomes and scoped blocker resumes have exact phases",
     result = replaceSection(result, "Implementation Test Evidence", checkRecord("implementation-check", 1, "TESTS_PASS", 1));
     return replaceSection(result, "Delegation Blocker", delegationBlocker("VALIDATE_SLICE", "malformed-output"));
   });
-  assert.equal((await inspectExecutionState(malformed.requirements)).state, "RUNNER_RESULT_BLOCKED");
+  const malformedState = await inspectExecutionState(malformed.requirements);
+  assert.equal(malformedState.state, "RUNNER_RESULT_BLOCKED");
+  assertRecoveryTarget(malformedState, {
+    operation: "VALIDATE_SLICE",
+    slice: "slice-01",
+    owner: "delegation-blocker",
+    sameOperationResumeRequired: true,
+  });
   assert.equal((await preflightExecutionOperation(malformed.requirements, "VALIDATE_SLICE", "1")).state, "RUNNER_RESULT_BLOCKED");
+});
+
+test("APPLY_FINDINGS recovery remains bound to persisted slice-02 and exposes auxiliary round ownership", async (t) => {
+  const fixture = await standaloneWorkspace(t);
+  await renderArtifacts(fixture);
+  await addSecondPristineSlice(fixture);
+  await passFirstSlice(fixture);
+  const second = path.join(fixture.execution, "tasks/slice-02.md");
+  let task = await fs.readFile(second, "utf8");
+  task = task.replace("- [ ] 2.1", "- [x] 2.1");
+  task = replaceSection(task, "Changed Areas", "- `../../src/example.txt`");
+  task = replaceSection(task, "Validation Attempts", NEEDS_FIX_ATTEMPT);
+  task = replaceSection(task, "Validation Findings", ACTIVE_FINDING);
+  task = replaceSection(task, "Delegation Blocker", delegationBlocker("APPLY_FINDINGS", "initialization"));
+  await fs.writeFile(second, task, "utf8");
+
+  const blocked = await inspectExecutionState(fixture.requirements);
+  assert.equal(blocked.state, "RUNNER_INITIALIZATION_BLOCKED");
+  assertRecoveryTarget(blocked, {
+    operation: "APPLY_FINDINGS",
+    slice: "slice-02",
+    owner: "delegation-blocker",
+    sameOperationResumeRequired: true,
+  });
+  assert.equal((await preflightExecutionOperation(fixture.requirements, "APPLY_FINDINGS", "2")).state, "RUNNER_INITIALIZATION_BLOCKED");
+  await rejectedWithRecovery(
+    preflightExecutionOperation(fixture.requirements, "EXECUTE_SLICE", "2"),
+    /legal next operation is APPLY_FINDINGS for slice-02/u,
+  );
+
+  task = await fs.readFile(second, "utf8");
+  task = replaceSection(task, "Delegation Blocker", "- none");
+  task = replaceSection(task, "Findings Test Evidence", checkRecord("findings-check", 1, "BLOCKED", 1, { cycle: "attempt-01" }));
+  await fs.writeFile(second, task, "utf8");
+  const auxiliary = await inspectExecutionState(fixture.requirements);
+  assert.equal(auxiliary.state, "AUXILIARY_BLOCKED");
+  assertRecoveryTarget(auxiliary, {
+    operation: "APPLY_FINDINGS",
+    slice: "slice-02",
+    owner: "auxiliary-check",
+    record: "findings-check-01",
+    round: 1,
+    sameOperationResumeRequired: true,
+  });
 });
 
 test("auxiliary BLOCKED resumes only its originating operation and later records clear it", async (t) => {
@@ -835,9 +1060,18 @@ test("auxiliary BLOCKED resumes only its originating operation and later records
     let result = replaceSection(value, "Changed Areas", "- `../../src/example.txt`");
     return replaceSection(result, "Implementation Test Evidence", checkRecord("implementation-check", 1, "BLOCKED", 1));
   });
-  assert.equal((await inspectExecutionState(fixture.requirements)).state, "AUXILIARY_BLOCKED");
+  const blocked = await inspectExecutionState(fixture.requirements);
+  assert.equal(blocked.state, "AUXILIARY_BLOCKED");
+  assertRecoveryTarget(blocked, {
+    operation: "EXECUTE_SLICE",
+    slice: "slice-01",
+    owner: "auxiliary-check",
+    record: "implementation-check-01",
+    round: 1,
+    sameOperationResumeRequired: true,
+  });
   assert.equal((await preflightExecutionOperation(fixture.requirements, "EXECUTE_SLICE", "1")).state, "AUXILIARY_BLOCKED");
-  await assert.rejects(preflightExecutionOperation(fixture.requirements, "APPLY_FINDINGS", "1"), /resume only EXECUTE_SLICE for slice-01/u);
+  await assert.rejects(preflightExecutionOperation(fixture.requirements, "APPLY_FINDINGS", "1"), /legal next operation is EXECUTE_SLICE for slice-01/u);
   await editTask(fixture, (value) => replaceSection(value, "Implementation Test Evidence", `${checkRecord("implementation-check", 1, "BLOCKED", 1)}\n\n${checkRecord("implementation-check", 2, "TESTS_PASS", 1)}`));
   assert.equal((await inspectExecutionState(fixture.requirements)).state, "IMPLEMENTED_AWAITING_VALIDATION");
 });
@@ -1028,6 +1262,9 @@ test("formal BLOCKED and selected-slice gates have only legal recovery transitio
     return replaceSection(checked, "Validation Attempts", BLOCKED_ATTEMPT);
   });
   assert.equal((await inspectExecutionState(fixture.requirements)).state, "VALIDATION_BLOCKED");
+  assertRecoveryTarget(await inspectExecutionState(fixture.requirements), {
+    operation: "VALIDATE_SLICE", slice: "slice-01", owner: "validation-attempt", record: "attempt-01",
+  });
   await assert.rejects(preflightExecutionOperation(fixture.requirements, "EXECUTE_SLICE", "1"), /not legal/u);
   assert.equal((await preflightExecutionOperation(fixture.requirements, "VALIDATE_SLICE", "1")).state, "VALIDATION_BLOCKED");
   assert.equal((await preflightExecutionOperation(fixture.requirements, "REPLAN")).state, "VALIDATION_BLOCKED");

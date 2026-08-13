@@ -12,20 +12,6 @@ const OPERATIONS = new Set([
   "PLAN", "REVIEW_PLAN", "MATERIALIZE_TASKS", "REVIEW_TASKS", "REPLAN",
   "EXECUTE_SLICE", "APPLY_FINDINGS", "VALIDATE_SLICE", "CLOSE",
 ]);
-const RECOVERY_OPERATIONS = new Map([
-  ["EMPTY", ["PLAN"]], ["PLANNED_DRAFT", ["REVIEW_PLAN"]], ["PLANNED_READY", ["MATERIALIZE_TASKS"]],
-  ["PENDING_REPLAN_DRAFT", ["REVIEW_PLAN"]], ["PENDING_REPLAN_READY", ["MATERIALIZE_TASKS"]],
-  ["MATERIALIZED_PRISTINE", ["REVIEW_TASKS", "EXECUTE_SLICE", "REPLAN"]],
-  ["EXECUTION_STARTED", ["EXECUTE_SLICE", "REPLAN"]],
-  ["REQUIREMENTS_CHANGED", ["REPLAN"]], ["DIVERGENCE_BLOCKED", ["REPLAN"]],
-  ["AUXILIARY_BLOCKED", ["originating EXECUTE_SLICE or APPLY_FINDINGS"]],
-  ["RUNNER_INITIALIZATION_BLOCKED", ["originating slice operation"]],
-  ["RUNNER_RESULT_BLOCKED", ["originating slice operation"]],
-  ["IMPLEMENTATION_RETRY_EXHAUSTED", ["VALIDATE_SLICE"]], ["FINDINGS_RETRY_EXHAUSTED", ["VALIDATE_SLICE"]],
-  ["IMPLEMENTED_AWAITING_VALIDATION", ["VALIDATE_SLICE", "REPLAN"]], ["FINDINGS_CORRECTED", ["VALIDATE_SLICE", "REPLAN"]],
-  ["VALIDATION_NEEDS_FIX", ["APPLY_FINDINGS"]], ["VALIDATION_BLOCKED", ["VALIDATE_SLICE", "REPLAN"]],
-  ["REPLAN_REQUIRED", ["REPLAN"]], ["COMPLETE", ["CLOSE", "REPLAN"]],
-]);
 const CURRENT_AUTHORITY = /^sha256:([0-9a-f]{64})$/u;
 const HASH_DOMAIN = Buffer.from("stnl-requirements-authority-v1\0", "utf8");
 const PRISTINE = new Map([
@@ -68,10 +54,11 @@ const CLOSED_RECORD_SECTIONS = new Set([
 const PURPOSE_HEADER_FIELDS = ["purpose", "status", "read_when", "do_not_read_when", "contains", "owner", "update_policy"];
 
 export class ExecutionContractError extends Error {
-  constructor(message, findings = []) {
+  constructor(message, findings = [], recoveryTargets = []) {
     super(message);
     this.name = "ExecutionContractError";
     this.findings = findings;
+    this.recoveryTargets = recoveryTargets;
   }
 }
 
@@ -873,6 +860,16 @@ async function readPlanArtifacts(workspace) {
   if (sliceOrder.length === 0 || sliceOrder.length !== planLinks.length) throw new ExecutionContractError("plan.md has missing or duplicate detailed plan mappings");
   const plans = new Map();
   const planDirectory = path.join(workspace.executionRoot, "plans");
+  const directoryFindings = [];
+  const actualPlanNames = await inspectSliceDirectory(planDirectory, directoryFindings, { required: true });
+  if (directoryFindings.length !== 0) {
+    throw new ExecutionContractError(`execution layout contains non-canonical paths: ${directoryFindings.join(", ")}`, directoryFindings);
+  }
+  const expectedPlanNames = sliceOrder.map((slice) => `${slice}.md`).sort();
+  if (actualPlanNames.length !== expectedPlanNames.length
+    || actualPlanNames.some((name, index) => name !== expectedPlanNames[index])) {
+    throw new ExecutionContractError("plans directory does not exactly match the current Serial Slice Order");
+  }
   for (const slice of sliceOrder) {
     const detailedPath = path.join(planDirectory, `${slice}.md`);
     await requireRealFile(detailedPath, `${slice} detailed plan`);
@@ -1060,15 +1057,19 @@ export async function inspectExecutionState(specPath) {
   const workspace = await resolveExecutionWorkspace(specPath);
   const currentFingerprint = await computeRequirementsAuthority(specPath);
   const rootMetadata = await lstatOrNull(workspace.executionRoot);
-  if (rootMetadata === null) return { state: "EMPTY", workspace, currentFingerprint };
+  if (rootMetadata === null) return withRecoveryTargets({ state: "EMPTY", workspace, currentFingerprint });
   const nonIgnored = (await fs.readdir(workspace.executionRoot, { withFileTypes: true })).filter((entry) => !isIgnoredMetadata(entry.name));
-  if (nonIgnored.length === 0) return { state: "EMPTY", workspace, currentFingerprint };
+  if (nonIgnored.length === 0) return withRecoveryTargets({ state: "EMPTY", workspace, currentFingerprint });
   const hasTasks = await lstatOrNull(path.join(workspace.executionRoot, "tasks.md")) !== null;
   await validateExecutionLayout(specPath, { allowPlanned: !hasTasks });
   if (!hasTasks) {
     const { globalPlan, plans } = await readPlanArtifacts(workspace);
-    if (globalPlan.revisionMode === null && globalPlan.revision !== 1) throw new ExecutionContractError("initial plan must use Plan revision 1");
-    if (globalPlan.revisionMode !== null) throw new ExecutionContractError("REPLAN cannot exist without materialized historical tasks");
+    if (globalPlan.revisionMode === null && globalPlan.revision !== 1) {
+      throw new ExecutionContractError("planning-only authority must use Plan revision 1, including replacement by REPLAN");
+    }
+    if (globalPlan.revisionMode !== null) {
+      throw new ExecutionContractError("planning-only REPLAN must omit historical recovery revision fields until tasks have been materialized");
+    }
     if ([...plans.values()].some((plan) => plan.fingerprint !== globalPlan.fingerprint || plan.revision !== globalPlan.revision)) {
       throw new ExecutionContractError("detailed plans do not match the global planning authority and revision");
     }
@@ -1077,7 +1078,7 @@ export async function inspectExecutionState(specPath) {
     }
     const stale = globalPlan.fingerprint !== currentFingerprint;
     const state = stale ? "REQUIREMENTS_CHANGED" : globalPlan.status === "ready" ? "PLANNED_READY" : "PLANNED_DRAFT";
-    return { state, workspace, currentFingerprint, globalPlan, stale };
+    return withRecoveryTargets({ state, workspace, currentFingerprint, globalPlan, stale });
   }
   const artifacts = await executionArtifacts(workspace);
   const stale = artifacts.globalPlan.fingerprint !== currentFingerprint;
@@ -1085,7 +1086,7 @@ export async function inspectExecutionState(specPath) {
   if (artifacts.pendingReplan) {
     if (artifacts.globalPlan.fingerprint !== currentFingerprint) throw new ExecutionContractError("pending REPLAN fingerprint is stale relative to current requirements authority");
     const state = artifacts.globalPlan.status === "ready" ? "PENDING_REPLAN_READY" : "PENDING_REPLAN_DRAFT";
-    return { state, workspace, currentFingerprint, stale: false, ...artifacts };
+    return withRecoveryTargets({ state, workspace, currentFingerprint, stale: false, ...artifacts });
   }
   const effectiveSlices = artifacts.rows.filter((row) => row.result !== "SUPERSEDED").map((row) => row.slice);
   const activeFindings = effectiveSlices.flatMap((slice) => artifacts.tasks.get(slice).findings.filter((record) => record.severity === "blocking" && record.state === "active").map((record) => `${slice}:${record.id}`));
@@ -1102,9 +1103,9 @@ export async function inspectExecutionState(specPath) {
     const latestAttempt = task.attempts.at(-1);
     const implementation = task.implementationChecks.at(-1);
     const findings = task.findingsChecks.at(-1);
-    if (latestAttempt === undefined && implementation?.status === "BLOCKED") return [{ slice, operation: "EXECUTE_SLICE", record: implementation.id }];
+    if (latestAttempt === undefined && implementation?.status === "BLOCKED") return [{ slice, operation: "EXECUTE_SLICE", record: implementation.id, round: implementation.round }];
     if (latestAttempt?.status === "NEEDS_FIX" && findings?.status === "BLOCKED" && findings.findingsCycle === latestAttempt.id) {
-      return [{ slice, operation: "APPLY_FINDINGS", record: findings.id }];
+      return [{ slice, operation: "APPLY_FINDINGS", record: findings.id, round: findings.round }];
     }
     return [];
   });
@@ -1140,24 +1141,200 @@ export async function inspectExecutionState(specPath) {
   else if (allPristine) state = "MATERIALIZED_PRISTINE";
   else if (allTerminal && currentPass) state = "COMPLETE";
   else if (allTerminal) state = "REPLAN_REQUIRED";
-  return {
+  return withRecoveryTargets({
     state, workspace, currentFingerprint, stale, activeFindings, activeDivergences, activeDelegationBlockers,
     exhausted, auxiliaryBlocked, findingsCorrected, implementedAwaitingValidation, validationBlocked, ...artifacts,
-  };
+  });
+}
+
+function recoveryTarget(operation, {
+  slice = null,
+  owner = "execution-state",
+  record = null,
+  round = null,
+  retryState = null,
+  sameOperationResumeRequired = false,
+} = {}) {
+  return { operation, slice, owner, record, round, retryState, sameOperationResumeRequired };
+}
+
+function uniqueRecoveryTargets(targets) {
+  const seen = new Set();
+  return targets.filter((target) => {
+    const key = `${target.operation}\0${target.slice ?? ""}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function currentFrontier(result) {
+  return result.rows?.find((row) => !row.done)?.slice ?? null;
+}
+
+export function deriveRecoveryTargets(result) {
+  const unscoped = (operation, owner = "execution-state") => recoveryTarget(operation, { owner });
+  const scoped = (operation, slice, options = {}) => recoveryTarget(operation, { slice, ...options });
+  let targets = [];
+  switch (result.state) {
+    case "EMPTY": targets = [unscoped("PLAN", "empty-workspace")]; break;
+    case "PLANNED_DRAFT": targets = [unscoped("REVIEW_PLAN", "planning-authority"), unscoped("REPLAN", "planning-authority")]; break;
+    case "PLANNED_READY": targets = [unscoped("MATERIALIZE_TASKS", "planning-authority"), unscoped("REPLAN", "planning-authority")]; break;
+    case "PENDING_REPLAN_DRAFT": targets = [unscoped("REVIEW_PLAN", "pending-replan")]; break;
+    case "PENDING_REPLAN_READY": targets = [unscoped("MATERIALIZE_TASKS", "pending-replan")]; break;
+    case "MATERIALIZED_PRISTINE":
+      targets = [
+        unscoped("REVIEW_TASKS", "materialized-pristine"),
+        scoped("EXECUTE_SLICE", currentFrontier(result), { owner: "serial-frontier" }),
+        unscoped("REPLAN", "materialized-pristine"),
+      ];
+      break;
+    case "EXECUTION_STARTED":
+      targets = [scoped("EXECUTE_SLICE", currentFrontier(result), { owner: "serial-frontier" }), unscoped("REPLAN", "execution-history")];
+      break;
+    case "REQUIREMENTS_CHANGED": targets = [unscoped("REPLAN", "requirements-authority")]; break;
+    case "DIVERGENCE_BLOCKED": targets = [unscoped("REPLAN", "active-divergence")]; break;
+    case "AUXILIARY_BLOCKED": {
+      const blocker = result.auxiliaryBlocked?.[0];
+      if (blocker !== undefined) targets = [scoped(blocker.operation, blocker.slice, {
+        owner: "auxiliary-check", record: blocker.record, round: blocker.round, sameOperationResumeRequired: true,
+      })];
+      break;
+    }
+    case "RUNNER_INITIALIZATION_BLOCKED":
+    case "RUNNER_RESULT_BLOCKED": {
+      const blocker = result.activeDelegationBlockers?.[0];
+      if (blocker !== undefined) {
+        const task = result.tasks.get(blocker.slice);
+        const records = blocker.operation === "EXECUTE_SLICE" ? task.implementationChecks
+          : blocker.operation === "APPLY_FINDINGS" ? task.findingsChecks : task.attempts;
+        const prior = blocker.afterRecord === "none" ? null : records.find((record) => record.id === blocker.afterRecord);
+        targets = [scoped(blocker.operation, blocker.slice, {
+          owner: "delegation-blocker",
+          record: prior?.id ?? null,
+          round: prior?.round ?? null,
+          sameOperationResumeRequired: true,
+        })];
+      }
+      break;
+    }
+    case "IMPLEMENTATION_RETRY_EXHAUSTED":
+    case "FINDINGS_RETRY_EXHAUSTED": {
+      const kind = result.state === "FINDINGS_RETRY_EXHAUSTED" ? "FINDINGS" : "IMPLEMENTATION";
+      const entry = result.exhausted?.find(([, value]) => value === kind);
+      if (entry !== undefined) {
+        const [slice] = entry;
+        const task = result.tasks.get(slice);
+        const record = kind === "FINDINGS" ? task.findingsChecks.at(-1) : task.implementationChecks.at(-1);
+        targets = [scoped("VALIDATE_SLICE", slice, {
+          owner: "retry-exhaustion", record: record?.id ?? null, round: record?.round ?? 3, retryState: result.state,
+        })];
+      }
+      break;
+    }
+    case "IMPLEMENTED_AWAITING_VALIDATION":
+      targets = [
+        ...(result.implementedAwaitingValidation ?? []).map((slice) => {
+          const record = result.tasks.get(slice).implementationChecks.at(-1);
+          return scoped("VALIDATE_SLICE", slice, { owner: "implementation-check", record: record?.id ?? null, round: record?.round ?? null });
+        }),
+        unscoped("REPLAN", "execution-history"),
+      ];
+      break;
+    case "FINDINGS_CORRECTED":
+      targets = [
+        ...(result.findingsCorrected ?? []).map((slice) => {
+          const record = result.tasks.get(slice).findingsChecks.at(-1);
+          return scoped("VALIDATE_SLICE", slice, { owner: "findings-check", record: record?.id ?? null, round: record?.round ?? null });
+        }),
+        unscoped("REPLAN", "execution-history"),
+      ];
+      break;
+    case "VALIDATION_NEEDS_FIX":
+      targets = (result.activeFindings ?? []).map((value) => {
+        const [slice, record] = value.split(":");
+        return scoped("APPLY_FINDINGS", slice, { owner: "active-finding", record });
+      });
+      break;
+    case "VALIDATION_BLOCKED":
+      targets = [
+        ...(result.validationBlocked ?? []).map((slice) => scoped("VALIDATE_SLICE", slice, {
+          owner: "validation-attempt", record: result.tasks.get(slice).attempts.at(-1)?.id ?? null,
+        })),
+        unscoped("REPLAN", "execution-history"),
+      ];
+      break;
+    case "REPLAN_REQUIRED": targets = [unscoped("REPLAN", "current-authority")]; break;
+    case "COMPLETE": targets = [unscoped("CLOSE", "complete-execution"), unscoped("REPLAN", "complete-execution")]; break;
+    default: targets = [];
+  }
+  for (const target of targets) {
+    if (SLICE_OPERATIONS.has(target.operation) && target.slice === null) {
+      throw new ExecutionContractError(`${result.state} lacks a concrete recovery slice for ${target.operation}`);
+    }
+  }
+  return uniqueRecoveryTargets(targets);
+}
+
+function withRecoveryTargets(result) {
+  return { ...result, recoveryTargets: deriveRecoveryTargets(result) };
+}
+
+export function formatRecoveryTarget(target) {
+  return `${target.operation}${target.slice === null ? "" : ` for ${target.slice}`}`;
+}
+
+function recoverySuffix(targets) {
+  if (targets.length === 0) return "";
+  return `; legal next operation${targets.length === 1 ? " is" : "s are"} ${targets.map(formatRecoveryTarget).join(" or ")}`;
+}
+
+function recoveryError(operation, result) {
+  return new ExecutionContractError(
+    `${operation} is not legal from ${result.state}${recoverySuffix(result.recoveryTargets)}`,
+    [],
+    result.recoveryTargets,
+  );
 }
 
 export async function preflightExecutionOperation(specPath, operation, sliceValue = null) {
   const normalizedOperation = String(operation);
-  if (!OPERATIONS.has(normalizedOperation)) throw new ExecutionContractError(`unsupported operation ${normalizedOperation}`);
-  const needsSlice = SLICE_OPERATIONS.has(normalizedOperation);
-  if (needsSlice !== (sliceValue !== null && sliceValue !== undefined)) throw new ExecutionContractError(`${normalizedOperation} ${needsSlice ? "requires" : "does not accept"} SLICE`);
-  let slice = null;
-  if (needsSlice) {
-    const raw = String(sliceValue);
-    if (!/^(?:0|[1-9][0-9]*)$/u.test(raw)) throw new ExecutionContractError("SLICE must be one unsigned decimal number without prefix");
-    slice = `slice-${raw.padStart(2, "0")}`;
-  }
   const result = await inspectExecutionState(specPath);
+  if (!OPERATIONS.has(normalizedOperation)) {
+    throw new ExecutionContractError(
+      `unsupported operation ${normalizedOperation}${recoverySuffix(result.recoveryTargets)}`,
+      [],
+      result.recoveryTargets,
+    );
+  }
+  const needsSlice = SLICE_OPERATIONS.has(normalizedOperation);
+  const hasSlice = sliceValue !== null && sliceValue !== undefined;
+  let slice = null;
+  let invalidSlice = false;
+  if (hasSlice) {
+    const raw = String(sliceValue);
+    invalidSlice = !/^(?:0|[1-9][0-9]*)$/u.test(raw);
+    if (!invalidSlice) slice = `slice-${raw.padStart(2, "0")}`;
+  }
+  const mandatoryRecovery = result.recoveryTargets.find((target) => target.sameOperationResumeRequired);
+  if (mandatoryRecovery !== undefined
+    && (mandatoryRecovery.operation !== normalizedOperation || mandatoryRecovery.slice !== slice)) {
+    throw recoveryError(normalizedOperation, result);
+  }
+  if (needsSlice !== hasSlice) {
+    throw new ExecutionContractError(
+      `${normalizedOperation} ${needsSlice ? "requires" : "does not accept"} SLICE${recoverySuffix(result.recoveryTargets)}`,
+      [],
+      result.recoveryTargets,
+    );
+  }
+  if (invalidSlice) {
+    throw new ExecutionContractError(
+      `SLICE must be one unsigned decimal number without prefix${recoverySuffix(result.recoveryTargets)}`,
+      [],
+      result.recoveryTargets,
+    );
+  }
   const allowed = {
     PLAN: new Set(["EMPTY"]),
     REVIEW_PLAN: new Set(["PLANNED_DRAFT", "PLANNED_READY", "PENDING_REPLAN_DRAFT", "PENDING_REPLAN_READY"]),
@@ -1169,10 +1346,10 @@ export async function preflightExecutionOperation(specPath, operation, sliceValu
     VALIDATE_SLICE: new Set(["IMPLEMENTED_AWAITING_VALIDATION", "FINDINGS_CORRECTED", "VALIDATION_BLOCKED", "IMPLEMENTATION_RETRY_EXHAUSTED", "FINDINGS_RETRY_EXHAUSTED", "RUNNER_INITIALIZATION_BLOCKED", "RUNNER_RESULT_BLOCKED"]),
     CLOSE: new Set(["COMPLETE"]),
   }[normalizedOperation];
-  if (!allowed.has(result.state)) {
-    const recoveries = RECOVERY_OPERATIONS.get(result.state) ?? [];
-    const suffix = recoveries.length === 0 ? "" : `; legal next operation${recoveries.length === 1 ? " is" : "s are"} ${recoveries.join(" or ")}`;
-    throw new ExecutionContractError(`${normalizedOperation} is not legal from ${result.state}${suffix}`);
+  if (!allowed.has(result.state)) throw recoveryError(normalizedOperation, result);
+  const operationTargets = result.recoveryTargets.filter((target) => target.operation === normalizedOperation);
+  if (operationTargets.length !== 0 && !operationTargets.some((target) => target.slice === slice)) {
+    throw recoveryError(normalizedOperation, result);
   }
   if (slice !== null && !result.tasks?.has(slice)) throw new ExecutionContractError(`${slice} is absent from the execution artifacts`);
   if (slice !== null) {
@@ -1185,18 +1362,6 @@ export async function preflightExecutionOperation(specPath, operation, sliceValu
       if (selectedTask.attempts.length !== 0) throw new ExecutionContractError(`${slice} already has formal validation history; EXECUTE_SLICE cannot re-enter`);
     }
     if (normalizedOperation === "VALIDATE_SLICE" && !selectedTask.checklistComplete) throw new ExecutionContractError(`${slice} checklist is incomplete`);
-  }
-  if (new Set(["RUNNER_INITIALIZATION_BLOCKED", "RUNNER_RESULT_BLOCKED"]).has(result.state)) {
-    const blocker = result.activeDelegationBlockers[0];
-    if (blocker.slice !== slice || blocker.operation !== normalizedOperation) {
-      throw new ExecutionContractError(`${result.state} may resume only ${blocker.operation} for ${blocker.slice}`);
-    }
-  }
-  if (result.state === "AUXILIARY_BLOCKED") {
-    const blocker = result.auxiliaryBlocked[0];
-    if (blocker.slice !== slice || blocker.operation !== normalizedOperation) {
-      throw new ExecutionContractError(`AUXILIARY_BLOCKED may resume only ${blocker.operation} for ${blocker.slice}`);
-    }
   }
   if (normalizedOperation === "APPLY_FINDINGS" && !result.tasks.get(slice).findings.some((record) => record.severity === "blocking" && record.state === "active")) {
     throw new ExecutionContractError(`${slice} has no active blocking finding`);

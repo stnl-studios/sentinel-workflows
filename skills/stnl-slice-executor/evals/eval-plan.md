@@ -29,3 +29,4 @@ update_policy: Extend when execution crosses a slice or evidence boundary.
 15. Active blocking divergence prevents execution; resolved/superseded history does not. The executor appends but never resolves divergence records.
 16. Requirements staleness routes to `REPLAN`; arbitrary user-owned SPEC-root siblings remain preserved and do not block.
 17. Generic skill text remains platform-neutral while launchers retain equivalent vendor invocation syntax.
+18. Scoped runner or auxiliary recovery reports and enforces the exact operation and slice derived from persisted state, including on a wrong-operation or wrong-slice request; unscoped recovery never fabricates a slice.

@@ -20,7 +20,8 @@ update_policy: Extend when a planner regression reveals a missing invariant.
 6. Runs only from `EMPTY`; existing plans, tasks, or unrelated content block without byte changes.
 7. Never describes PLAN as replacement or reset.
 8. Requires explicit `REPLAN_REASON` and derives pristine replacement versus append-only extension only from deterministic state.
-9. Replaces a wholly pristine canonical plan/task set atomically, with no operational history loss.
-10. After execution starts, preserves all history and appends monotonically numbered corrective, replacement, reconciliation, or integration slices under an increasing plan revision.
-11. Detects requirements fingerprint changes before materialization, after materialization, during partial execution, and after all prior slices PASS; never treats stale plans as current.
-12. Returns lifecycle `RESUME` without drafting when a new product decision is required; otherwise returns `REPLAN_DRAFT` and requires review.
+9. Before tasks exist, atomically replaces the complete current planning authority, removes obsolete detailed plans, remains revision `1`, omits historical recovery fields, and returns through review plus initial materialization.
+10. Replaces a wholly pristine canonical materialized plan/task set atomically under an increasing `pristine-replacement` revision, with no operational history loss.
+11. After execution starts, preserves all history and appends monotonically numbered corrective, replacement, reconciliation, or integration slices under an increasing plan revision.
+12. Detects requirements fingerprint changes before materialization, after materialization, during partial execution, and after all prior slices PASS; never treats stale plans as current.
+13. Returns lifecycle `RESUME` without drafting when a new product decision is required; otherwise returns `REPLAN_DRAFT` and requires review.
