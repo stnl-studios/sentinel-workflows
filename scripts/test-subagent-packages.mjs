@@ -25,8 +25,6 @@ const RUNNER_DESCRIPTION =
   "Runner barato e isolado para checks de implementação, checks de findings e validação formal independente de uma slice.";
 const SCOUT_DESCRIPTION =
   "Read-only exception scout for one explicitly authorized lifecycle evidence gap; never auto-select or delegate.";
-const RUNNER_CONTRACT_SHA256 =
-  "9ebacae64041b7510d0fbcdcd3ed431525e4d8f861985072966362e3f793951a";
 const SCOUT_CONTRACT_SHA256 =
   "d9119fb83e790db7f18a6090dd3e7ae925bf01de15d6309a201941049c20970d";
 
@@ -190,6 +188,25 @@ function assertContract(contract, expectedHash, label) {
   assert.equal(sha256(contract), expectedHash, `${label} complete contract body changed`);
 }
 
+function assertRunnerContract(contract, label) {
+  assert.match(contract, /^CONTRATO_CANONICO=stnl-validation-runner\/v[0-9]+$/mu, `${label} contract ID changed`);
+  assert.match(contract, /^OPERACOES_SUPORTADAS=EXECUTE_SLICE\|APPLY_FINDINGS\|VALIDATE_SLICE$/mu, `${label} operations changed`);
+  assert.match(contract, /^STATUS_CHECKS=TESTS_PASS\|TESTS_FAIL\|TESTS_NOT_APPLICABLE\|BLOCKED$/mu, `${label} check statuses changed`);
+  assert.match(contract, /^STATUS_VALIDACAO=PASS\|NEEDS_FIX\|BLOCKED$/mu, `${label} validation statuses changed`);
+  for (const heading of ["# EXECUTE_SLICE", "# APPLY_FINDINGS", "# VALIDATE_SLICE"]) {
+    assert.equal(contract.split(heading).length - 1, 1, `${label} heading changed: ${heading}`);
+  }
+  for (const boundary of [
+    "Não edite código, testes, requisitos, planos ou tasks.",
+    "Não aplique correções, não implemente findings",
+    "Não crie subagentes nem delegue.",
+    "Checks nunca emitem `PASS` formal",
+    "Não corrija automaticamente código quando um check falhar.",
+    "Não retorne `PASS` com manifesto vazio, incompleto, duplicado, malformado ou inconsistente",
+  ]) assert.ok(contract.includes(boundary), `${label} lacks harmful-action boundary: ${boundary}`);
+  assert.doesNotMatch(contract, /(?:você pode|é permitido|you may)[^\n]{0,80}(?:editar|implementar|aplicar correções|criar subagentes|delegar)/iu, `${label} enables a harmful action`);
+}
+
 async function validateCodexPackage(root) {
   const config = PLATFORMS.codex;
   if (await exists(path.join(root, config.foreignRoot))) {
@@ -222,7 +239,7 @@ async function validateCodexPackage(root) {
     web_search: "disabled",
     agents: { max_depth: 1 },
   });
-  assertContract(runner.contract, RUNNER_CONTRACT_SHA256, "Codex runner");
+  assertRunnerContract(runner.contract, "Codex runner");
   assertContract(scout.contract, SCOUT_CONTRACT_SHA256, "Codex scout");
   return { runner: runner.contract, scout: scout.contract };
 }
@@ -255,7 +272,7 @@ async function validateClaudePackage(root) {
     model: "haiku",
     effort: "medium",
   });
-  assertContract(runner.contract, RUNNER_CONTRACT_SHA256, "Claude runner");
+  assertRunnerContract(runner.contract, "Claude runner");
   assertContract(scout.contract, SCOUT_CONTRACT_SHA256, "Claude scout");
   return { runner: runner.contract, scout: scout.contract };
 }
@@ -436,6 +453,24 @@ test("rejects a modified complete contract body", async () => {
       "Search and inspect; you may decide and persist.",
     ),
   );
+});
+
+test("rejects a runner that gains implementation authority", async () => {
+  await expectRejectedDistribution(async (fixture) => {
+    for (const file of [
+      path.join(fixture, "codex", ".codex", "agents", "stnl_validation_runner.toml"),
+      path.join(fixture, "claude-code", ".claude", "agents", "stnl-validation-runner.md"),
+    ]) await replaceOnce(file, "Não aplique correções, não implemente findings", "Você pode aplicar correções e implementar findings");
+  });
+});
+
+test("rejects a runner with expanded operation authority", async () => {
+  await expectRejectedDistribution(async (fixture) => {
+    for (const file of [
+      path.join(fixture, "codex", ".codex", "agents", "stnl_validation_runner.toml"),
+      path.join(fixture, "claude-code", ".claude", "agents", "stnl-validation-runner.md"),
+    ]) await replaceOnce(file, "OPERACOES_SUPORTADAS=EXECUTE_SLICE|APPLY_FINDINGS|VALIDATE_SLICE", "OPERACOES_SUPORTADAS=EXECUTE_SLICE|APPLY_FINDINGS|VALIDATE_SLICE|CLOSE");
+  });
 });
 
 test("rejects altered Claude tools", async () => {

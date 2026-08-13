@@ -1,13 +1,13 @@
 ---
 name: stnl-plan-reviewer
-description: Independently review and directly correct global and detailed execution plans before task materialization.
+description: Independently review and directly correct an initial plan or pending recovery revision before task commitment.
 ---
 
 # stnl-plan-reviewer
 
 ## Purpose
 
-Run only `REVIEW_PLAN`. Perform an independent critical review of `plan.md` and every `plans/slice-NN.md`, correct them directly, approve a coherent result, and stop.
+Run only `REVIEW_PLAN`. Perform an independent critical review of the initial plan or one pending `REPLAN` revision, correct only the mutable draft set, approve a coherent result, and stop.
 
 ## Inputs
 
@@ -16,17 +16,17 @@ Run only `REVIEW_PLAN`. Perform an independent critical review of `plan.md` and 
 
 ## Authority
 
-Requirements remain authoritative. This skill may change only `plan.md` and `plans/slice-NN.md`. It cannot create tasks, edit code, or resolve documentary ambiguity.
+Requirements and their current computed fingerprint remain authoritative. This skill may change only the mutable draft global plan and detailed plans. Historical revisions and slice plans carrying an earlier revision are immutable. It cannot create tasks, edit code, resolve documentary ambiguity, or commit supersession.
 
 ## REVIEW_PLAN
 
-Derive the root state before reading for correction. Run only in `planned`: `plan.md` and the complete detailed plan set exist, while `tasks.md`, task files, and operational evidence do not. It may be repeated in that state. If any task artifact exists, return `NEEDS_REPLAN`, preserve all plans byte-for-byte, and explain that the user must explicitly reinitialize the execution root before new planning. Never reset automatically.
+Before content reads, execute `node "<SKILL_ROOT>/runtime/validate-execution-state.mjs" <SPEC_PATH> REVIEW_PLAN`. Run only when there is a draft initial plan or pending `REPLAN` revision/extension. It may be repeated while that draft remains mutable. Existing task artifacts do not by themselves block review: in pristine replacement mode, review the full replacement set; after operational evidence, review only the append-only revision and new slices while preserving all historical plan/task artifacts byte-for-byte.
 
 Check full requirement coverage, missing owners, overlap, slice sizing, strict serial order, dependencies, public contracts, persistence, migrations, authentication and authorization, external integrations, shared state, breaking changes, architectural risk, expected tests, implicit work, accidental scope, and consistency between global and detailed plans.
 
-Open code only to verify a concrete concern. Split, combine, reorder, or revise slices as needed. Add a final integration or stabilization slice when technically required. If a correction needs a requirements decision, return the appropriate handoff to the requirements lifecycle instead of masking it.
+Open code only to verify a concrete concern. For an initial or pristine replacement draft, split, combine, reorder, or revise slices as needed. For append-only recovery, never renumber, reorder, rewrite, or remove historical slices; revise only the pending extension and append monotonically numbered slices. Verify its `REPLAN_REASON`, supersession mapping, current requirements fingerprint, increasing plan revision, and a current-revision reconciliation/corrective slice after authority change. Add an integration or stabilization slice when technically required. If a correction needs a requirements decision, return lifecycle `RESUME` instead of masking it.
 
-When the review succeeds, set the File Purpose Header status of `plan.md` and every detailed plan to `ready`, set each review state to `approved`, and ensure global and detailed artifacts agree.
+When review succeeds, set the mutable global plan and every detailed plan in the initial/replacement set or pending extension to File Purpose Header status `ready` and review state `approved`. Never change a historical detailed plan. Ensure the current revision, extension, and immutable history agree.
 
 ## Minimum Reads
 
@@ -36,12 +36,13 @@ When the review succeeds, set the File Purpose Header status of `plan.md` and ev
 
 ## Allowed Effects
 
-- modify, create, remove, or reorder planning artifacts needed to leave one coherent approved plan set;
+- for an initial or wholly pristine replacement, modify, create, remove, or reorder only the candidate planning set needed to leave one coherent approved result;
+- for append-only recovery, modify only the pending revision and appended plans while preserving historical planning bytes;
 - report exact corrections made.
 
 ## Blocks
 
-Block with a requirements handoff when approval depends on missing, conflicting, or changed requirements. Return `NEEDS_REPLAN` without writes when the root is no longer `planned`. Do not invent answers, create tasks, or alter planning artifacts after materialization.
+Block with a lifecycle `RESUME` handoff when approval depends on a missing or conflicting product decision. Return `NEEDS_REPLAN` without writes when no valid initial or pending recovery draft exists, the fingerprint is stale, revision or supersession data is invalid, or history changed. Do not invent answers, create tasks, commit supersession, or alter historical planning artifacts.
 
 ## Output
 

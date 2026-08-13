@@ -1,12 +1,12 @@
 import * as fs from "node:fs/promises";
 import path from "node:path";
+import { computeRequirementsAuthority, inspectExecutionState } from "../execution-state.mjs";
 
 const SCOPES = new Set(["TASK", "SLICE", "MULTI_SLICE", "EXECUTION", "SPEC", "CUSTOM"]);
 const SLICE_FILE = /^slice-[0-9]{2,}\.md$/u;
 const TASK_LABEL = /^[0-9]+\.[0-9]+$/u;
 const EXECUTION_ROOT_FILES = new Set(["plan.md", "tasks.md"]);
 const EXECUTION_ROOT_DIRECTORIES = new Set(["plans", "tasks"]);
-const SPEC_ROOT_ENTRIES = new Set(["feature_spec.md", "shared", "execution", "test-runbook"]);
 const SECRET_PATH_NAMES = new Set([
   ".env", ".npmrc", ".pypirc", "credentials", "credentials.json", "id_rsa", "id_ed25519",
   "cookies", "cookies.json", "secrets", "secrets.json",
@@ -54,7 +54,7 @@ const SLICE_PLAN_SECTIONS = [
 ];
 const SLICE_TASK_SECTIONS = [
   "References", "Checklist", "Expected Tests", "Changed Areas", "Scope Expansion", "Prior Validation Overlap", "Divergences",
-  "Implementation Test Evidence", "Findings Test Evidence", "Validation Attempts", "Validation Findings", "Corrections Applied",
+  "Delegation Blocker", "Implementation Test Evidence", "Findings Test Evidence", "Validation Attempts", "Validation Findings", "Corrections Applied",
   "Effective Validation Base", "Diff Summary", "Final Result",
 ];
 
@@ -165,6 +165,16 @@ function sectionBody(body, heading) {
   const contentStart = start + marker.length;
   const next = body.indexOf("\n## ", contentStart);
   return body.slice(contentStart, next < 0 ? body.length : next).trim();
+}
+
+function executionAuthority(body, heading, label) {
+  const authoritySection = sectionBody(body, heading);
+  if (authoritySection === null) throw new Error(`${label} is missing its ${heading} authority section`);
+  const authorities = [...authoritySection.matchAll(/^- Requirements authority: sha256:([0-9a-f]{64})$/gmu)];
+  const revisions = [...authoritySection.matchAll(/^- Plan revision: ([1-9][0-9]*)$/gmu)];
+  if (authorities.length !== 1) throw new Error(`${label} must contain exactly one canonical Requirements authority`);
+  if (revisions.length !== 1) throw new Error(`${label} must contain exactly one canonical Plan revision`);
+  return { fingerprint: authorities[0][1], revision: Number(revisions[0][1]) };
 }
 
 function artifactIndexPaths(body, label) {
@@ -413,15 +423,19 @@ async function validateExecutionArtifact(filePath, kind, slice = null) {
   if (kind === "plan") {
     requireHeadingContract(header.body, /^Execution Plan$/u, PLAN_SECTIONS, label);
     if (!/^- Review state: approved$/gmu.test(header.body)) throw new Error(`${label} is not an approved execution plan`);
+    return executionAuthority(header.body, "Global Context", label);
   } else if (kind === "slice-plan") {
     const number = slice.slice("slice-".length);
     requireHeadingContract(header.body, new RegExp(`^Slice ${number} - .+$`, "u"), SLICE_PLAN_SECTIONS, label);
     if (!/^- Review state: approved$/gmu.test(header.body)) throw new Error(`${label} is not an approved slice plan`);
+    return executionAuthority(header.body, "References", label);
   } else if (kind === "tasks") {
     requireHeadingContract(header.body, /^Execution Tasks$/u, [], label);
+    return null;
   } else {
     const number = slice.slice("slice-".length);
     requireHeadingContract(header.body, new RegExp(`^Slice ${number} Tasks - .+$`, "u"), SLICE_TASK_SECTIONS, label);
+    return executionAuthority(header.body, "References", label);
   }
 }
 
@@ -603,12 +617,11 @@ async function canonicalSharedSources(workspace) {
 async function requireExecutionBase(workspace) {
   if (workspace.specRoot !== null) {
     const specFindings = [];
-    for (const entry of await fs.readdir(workspace.specRoot, { withFileTypes: true })) {
-      if (isIgnoredMetadata(entry.name)) continue;
-      const entryPath = path.join(workspace.specRoot, entry.name);
-      if (!SPEC_ROOT_ENTRIES.has(entry.name)) specFindings.push(entryPath);
-      else if (entry.name === "test-runbook" && (!entry.isDirectory() || entry.isSymbolicLink())) specFindings.push(entryPath);
-    }
+    // feature_spec.md/shared are lifecycle-owned. Every other SPEC-root sibling is
+    // externally owned and must be preserved, not classified as execution residue.
+    const output = path.join(workspace.specRoot, "test-runbook");
+    const outputMetadata = await lstatOrNull(output);
+    if (outputMetadata !== null && (outputMetadata.isSymbolicLink() || !outputMetadata.isDirectory())) specFindings.push(output);
     if (specFindings.length !== 0) throw new Error(`SPEC layout contains non-canonical paths: ${specFindings.sort().join(", ")}`);
   }
   await requireRealDirectory(workspace.executionRoot, "execution root");
@@ -651,7 +664,9 @@ async function requireExecutionBase(workspace) {
     await requireRealFile(path.join(workspace.executionRoot, "plan.md"), "execution plan"),
     await requireRealFile(path.join(workspace.executionRoot, "tasks.md"), "execution tasks"),
   ];
-  await validateExecutionArtifact(sources[0], "plan");
+  const planAuthority = await validateExecutionArtifact(sources[0], "plan");
+  const currentAuthority = await computeRequirementsAuthority(workspace.authorityPath);
+  if (planAuthority.fingerprint !== currentAuthority) throw new Error("execution plan Requirements authority is stale relative to current requirements");
   await validateExecutionArtifact(sources[1], "tasks");
   return sources;
 }
@@ -717,8 +732,11 @@ async function requireSliceSources(workspace, slices) {
     if (!SLICE_FILE.test(`${slice}.md`)) throw new Error(`invalid normalized slice: ${slice}`);
     const planPath = await requireRealFile(path.join(workspace.executionRoot, "plans", `${slice}.md`), `${slice} plan`);
     const taskPath = await requireRealFile(path.join(workspace.executionRoot, "tasks", `${slice}.md`), `${slice} tasks`);
-    await validateExecutionArtifact(planPath, "slice-plan", slice);
-    await validateExecutionArtifact(taskPath, "slice-tasks", slice);
+    const planAuthority = await validateExecutionArtifact(planPath, "slice-plan", slice);
+    const taskAuthority = await validateExecutionArtifact(taskPath, "slice-tasks", slice);
+    if (planAuthority.fingerprint !== taskAuthority.fingerprint || planAuthority.revision !== taskAuthority.revision) {
+      throw new Error(`${slice} plan and task Requirements authority or Plan revision disagree`);
+    }
     sources.push(planPath, taskPath);
   }
   return { selected, sources };
@@ -742,6 +760,9 @@ export async function inspectWorkspace(specPath, scopeValue, selectionValue) {
   await validateModularAuthority(workspace);
   const selection = normalizeSelection(scope, selectionValue);
   const mandatorySources = [workspace.authorityPath, ...(await canonicalSharedSources(workspace))];
+  if (new Set(["EXECUTION", "SLICE", "TASK", "MULTI_SLICE"]).has(scope)) {
+    await inspectExecutionState(workspace.authorityPath);
+  }
 
   if (scope === "EXECUTION") {
     mandatorySources.push(...(await requireExecutionBase(workspace)));
@@ -767,6 +788,7 @@ export async function inspectWorkspace(specPath, scopeValue, selectionValue) {
       if (execution.isSymbolicLink() || !execution.isDirectory()) {
         throw new Error(`execution root must be a real directory when present: ${workspace.executionRoot}`);
       }
+      await inspectExecutionState(workspace.authorityPath);
       const base = await requireExecutionBase(workspace);
       mandatorySources.push(...base);
       const order = await planSliceOrder(workspace);

@@ -15,8 +15,11 @@ update_policy: Extend when task materialization loses approved-plan fidelity.
 1. Rejects missing, draft, unapproved, or inconsistent plans before writing.
 2. Creates exactly one global row and one detailed task file per approved slice.
 3. Uses only binary global checkboxes and preserves serial dependencies.
-4. Never changes planning artifacts or invents work.
-5. Rejects every existing or partial task set and preserves its bytes.
+4. Never invents work; changes canonical planning artifacts only as part of an approved atomic pristine replacement.
+5. Rejects partial/malformed task sets and preserves bytes outside the authorized candidate.
 6. Validates and renders the entire set before publishing, leaving no partial artifacts on failure.
-7. Renders separate append-only implementation and findings check sections with global sequential IDs, automatic round `N/3`, four auxiliary statuses, read-only discovery actions and sources, verification types, non-applicability rationale, no-verification-command confirmation, and between-round correction evidence.
-8. Keeps Validation Attempts and the Effective Validation Base separate from every auxiliary check record.
+7. Renders a real pristine task with sentinels only; no fake check, attempt, finding, divergence, or example heading is persisted.
+8. A wholly pristine approved replacement atomically replaces only canonical plans/tasks and leaves the new task set pristine.
+9. After operational evidence, commits only an approved append-only extension and exact supersession fields; historical PASS and evidence remain unchanged.
+10. Supersession terminalizes the named open predecessor as `[x]`/`SUPERSEDED` with replacement pointer while appending the new active task.
+11. Rejects stale fingerprints, non-increasing revisions/slices, or history mutation.

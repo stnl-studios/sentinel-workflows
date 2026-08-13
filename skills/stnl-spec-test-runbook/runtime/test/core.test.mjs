@@ -76,7 +76,7 @@ test("TASK requires one exact persisted label paired with its slice", async (t) 
   let taskText = await fs.readFile(tasks, "utf8");
   taskText = taskText
     .replace(/^- \[x\] 1\.1 .*\n/mu, "")
-    .replace("## Changed Areas\n", "## Changed Areas\n\n- [x] 1.1 Incidental evidence mention only.\n");
+    .replace("## Diff Summary\n", "## Diff Summary\n\n- 1.1 Incidental evidence mention only.\n");
   await fs.writeFile(tasks, taskText, "utf8");
   await assert.rejects(inspectWorkspace(root, "TASK", { slice: "1", task: "1.1" }), /occur exactly once/u);
 });
@@ -85,7 +85,7 @@ test("execution discovery requires canonical approved plan and task artifacts", 
   const root = await copyFixture(t);
   const plan = path.join(root, "execution", "plans", "slice-01.md");
   await fs.writeFile(plan, (await fs.readFile(plan, "utf8")).replace("Review state: approved", "Review state: pending"), "utf8");
-  await assert.rejects(inspectWorkspace(root, "SLICE", { slice: "1" }), /not an approved slice plan/u);
+  await assert.rejects(inspectWorkspace(root, "SLICE", { slice: "1" }), /status and Review state disagree/u);
 
   const residueRoot = await copyFixture(t);
   await fs.writeFile(path.join(residueRoot, "execution", "analysis.tmp"), "residue\n", "utf8");
@@ -114,11 +114,23 @@ test("execution discovery requires canonical approved plan and task artifacts", 
     (await fs.readFile(globalTasks, "utf8")).replace(/^\| \[ \] \| 02 - .*\n/mu, ""),
     "utf8",
   );
-  await assert.rejects(inspectWorkspace(missingGlobalRowRoot, "EXECUTION", {}), /tasks slice order does not exactly match/u);
+  await assert.rejects(inspectWorkspace(missingGlobalRowRoot, "EXECUTION", {}), /plan\/task slice mappings or serial order disagree/u);
 
-  const specResidueRoot = await copyFixture(t);
-  await fs.writeFile(path.join(specResidueRoot, "analysis.tmp"), "residue\n", "utf8");
-  await assert.rejects(inspectWorkspace(specResidueRoot, "EXECUTION", {}), /SPEC layout contains non-canonical paths.*analysis\.tmp/u);
+  const externalSiblingRoot = await copyFixture(t);
+  const externalSibling = path.join(externalSiblingRoot, "analysis.tmp");
+  await fs.writeFile(externalSibling, "lifecycle-preserved user content\n", "utf8");
+  await inspectWorkspace(externalSiblingRoot, "EXECUTION", {});
+  assert.equal(await fs.readFile(externalSibling, "utf8"), "lifecycle-preserved user content\n");
+
+  const missingBlockerRoot = await copyFixture(t);
+  const missingBlockerTask = path.join(missingBlockerRoot, "execution/tasks/slice-01.md");
+  await fs.writeFile(missingBlockerTask, (await fs.readFile(missingBlockerTask, "utf8")).replace(/\n## Delegation Blocker\n\n- none\n/u, ""), "utf8");
+  await assert.rejects(inspectWorkspace(missingBlockerRoot, "SLICE", { slice: "1" }), /non-canonical sections/u);
+
+  const mismatchedAuthorityRoot = await copyFixture(t);
+  const mismatchedTask = path.join(mismatchedAuthorityRoot, "execution/tasks/slice-01.md");
+  await fs.writeFile(mismatchedTask, (await fs.readFile(mismatchedTask, "utf8")).replace("Plan revision: 1", "Plan revision: 2"), "utf8");
+  await assert.rejects(inspectWorkspace(mismatchedAuthorityRoot, "SLICE", { slice: "1" }), /open slice is stale relative to current global authority/u);
 });
 
 test("modular discovery accepts the canonical blocked status for questions authority", async (t) => {

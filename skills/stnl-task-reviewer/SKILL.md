@@ -20,9 +20,9 @@ Run only explicit `REVIEW_TASKS`. This optional operation compares approved plan
 
 ## REVIEW_TASKS
 
-Derive the root state from the task schemas before any write. Run only in `materialized-pristine`: the full task set exists; all global and local checkboxes are `[ ]`; global validation/result values are `pending`; changed areas and diff summary are `pending`; scope expansion, prior overlap, divergences, developer checks, Validation Attempts, findings, corrections, and Effective Validation Base use their pristine sentinels; and every final result is `pending`.
+Before content reads or writes, execute `node "<SKILL_ROOT>/runtime/validate-execution-state.mjs" <SPEC_PATH> REVIEW_TASKS`. Run only in `MATERIALIZED_PRISTINE`: the full task set exists; all fingerprint/revision references match; all global and local checkboxes are `[ ]`; global validation/result values are `pending`; and every operational section, including `Delegation Blocker`, uses its exact pristine sentinel.
 
-Any marked local task, actual change, recorded file, scope expansion, prior overlap, divergence, developer check, Validation Attempt, finding, correction, Effective Validation Base, non-pending result, or `[x]` global row means execution has started. In `execution-started` or `complete`, return `BLOCKED` and preserve all plans and tasks byte-for-byte. Do not remove or reorder executed work and do not turn task review into replanning.
+Any marked local task, actual change, operational record, non-pending result, or `[x]` global row means execution has started. Outside `MATERIALIZED_PRISTINE`, preflight returns `BLOCKED` with the exact state and its canonical legal next operation; preserve all plans/tasks byte-for-byte. In `REQUIREMENTS_CHANGED`, that next operation is `REPLAN`, which is the canonical `NEEDS_REPLAN` route. Do not remove or reorder executed work or turn task review into replanning.
 
 Check that no plan obligation was lost and no task was invented. Verify fidelity, coverage, granularity, order, dependencies, objective results, tests, slice isolation, absence of work belonging elsewhere, consistency between global and detailed tasks, and economy of context for execution. Correct task artifacts directly when the approved plan already determines the answer.
 
@@ -38,7 +38,7 @@ Check that no plan obligation was lost and no task was invented. Verify fidelity
 
 ## Blocks
 
-Return `NEEDS_REPLAN` without changing plans when a pristine review requires strategy, scope, requirements, dependencies, or slice boundaries to change. Return `BLOCKED` without any write when state is `execution-started`, `complete`, partial, or malformed.
+Return `NEEDS_REPLAN` without changing plans when a pristine review requires strategy, scope, requirements, dependencies, slice boundaries, or current requirements authority to change; the executable next action is explicit `REPLAN` with the returned diagnostic as `REPLAN_REASON`. Return `BLOCKED` without writes from any other state, partial set, or malformed layout.
 
 ## Output
 

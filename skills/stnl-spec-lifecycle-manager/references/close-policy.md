@@ -12,11 +12,13 @@ update_policy: Change only when documentary closure or preservation policy chang
 
 # CLOSE Policy
 
+`MODE=CLOSE` returns documentary `SPEC_CLOSED`, not execution `OPERATION=CLOSE`/delivery approval. It preserves requirements authority; substantive `RESUME` requires `REPLAN`. Lifecycle never rewrites execution artifacts.
+
 ## Preconditions
 
-Require explicit `MODE=CLOSE`, a valid active `ready` source, and `GLOBAL/READY` over that source. All semantic gates pass and every Q is final; use RESUME for change.
+Require explicit `MODE=CLOSE`, active `ready`, and final-Q `GLOBAL/READY`; use `RESUME` for change.
 
-Bind the verdict with the strict external readiness attestation. Reject unknown fields, wrong identity/verdict, stale digest, any symlink component, or an internal path. It is ephemeral runtime metadata, never SPEC authority or rendered content.
+Require the external attestation; reject unknown fields, wrong identity/verdict, stale digest, symlinks, or internal paths. It is ephemeral, not SPEC authority or content.
 
 ## Deterministic pipeline
 
@@ -29,7 +31,7 @@ Bind the verdict with the strict external readiness attestation. Reject unknown 
    `node "<SKILL_ROOT>/runtime/publish-spec-lifecycle.mjs" CLOSE <TARGET> <CANDIDATE> --readiness-attestation <ATTESTATION>`
 5. Publisher revalidates that attestation against the live source and requires the exact deterministic candidate before promotion. Delete it after terminal success; a changed source requires new global readiness.
 
-The model does not load the full schema or canonical-ID manual, copy records, choose ordering, rebuild metadata, or paraphrase content. Renderer and validators own those deterministic operations.
+The model does not copy or paraphrase records, nor rebuild deterministic structure or metadata; renderer and validators do.
 
 ## Exact consolidation
 

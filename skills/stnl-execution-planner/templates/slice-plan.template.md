@@ -7,7 +7,7 @@ read_when: PLAN creates or REVIEW_PLAN checks this detailed slice plan.
 do_not_read_when: Another slice is active and no concrete dependency requires this plan.
 contains: References, objective, observable result, scope, boundaries, dependencies, risks, strategy, expected tests, and completion criterion.
 owner: stnl-execution-planner
-update_policy: PLAN creates as draft; REVIEW_PLAN corrects and changes status to ready.
+update_policy: PLAN or REPLAN creates as draft; REVIEW_PLAN corrects only the mutable draft and changes it to ready.
 ```
 
 # Slice 01 - <Name>
@@ -16,6 +16,8 @@ update_policy: PLAN creates as draft; REVIEW_PLAN corrects and changes status to
 
 - Slice: 01
 - Requirements source: `<relative path>`
+- Requirements authority: sha256:<64hex>
+- Plan revision: <positive integer>
 - Global plan: `../plan.md`
 - Review state: pending
 
@@ -55,4 +57,3 @@ update_policy: PLAN creates as draft; REVIEW_PLAN corrects and changes status to
 ## Completion Criterion
 
 - <objective result and preserved boundary>
-

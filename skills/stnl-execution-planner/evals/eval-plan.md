@@ -10,12 +10,17 @@ owner: stnl-execution-planner
 update_policy: Extend when a planner regression reveals a missing invariant.
 ```
 
-# PLAN Eval Cases
+# PLAN and REPLAN Eval Cases
 
 1. Creates only global and detailed plan artifacts with `draft` headers and pending review state.
 2. Preserves the requirements source and relative paths.
 3. Covers every requirement with serial, observable, testable slices and explicit dependencies.
 4. Adds a final integration slice when cross-slice verification is a real delivery requirement.
 5. Rejects ambiguous requirements instead of inventing product decisions.
-6. Runs only from `empty`; existing plans, tasks, or unrelated content block without byte changes.
+6. Runs only from `EMPTY`; existing plans, tasks, or unrelated content block without byte changes.
 7. Never describes PLAN as replacement or reset.
+8. Requires explicit `REPLAN_REASON` and derives pristine replacement versus append-only extension only from deterministic state.
+9. Replaces a wholly pristine canonical plan/task set atomically, with no operational history loss.
+10. After execution starts, preserves all history and appends monotonically numbered corrective, replacement, reconciliation, or integration slices under an increasing plan revision.
+11. Detects requirements fingerprint changes before materialization, after materialization, during partial execution, and after all prior slices PASS; never treats stale plans as current.
+12. Returns lifecycle `RESUME` without drafting when a new product decision is required; otherwise returns `REPLAN_DRAFT` and requires review.

@@ -17,6 +17,8 @@ update_policy: MATERIALIZE_TASKS created it; executor and quality manager update
 - Slice: 01
 - Plan: `../plans/slice-01.md`
 - Requirements source: `../../feature_spec.md`
+- Requirements authority: sha256:11aba916db71705bfb2f518aac2b8f808c5f410559b1693949764b318b0f6424
+- Plan revision: 1
 - Global tasks: `../tasks.md`
 
 ## Checklist
@@ -30,8 +32,7 @@ update_policy: MATERIALIZE_TASKS created it; executor and quality manager update
 
 ## Changed Areas
 
-- invitation acceptance service
-- test/fixtures/invitations.json
+- `../../test/fixtures/invitations.json`
 
 ## Scope Expansion
 
@@ -45,9 +46,32 @@ update_policy: MATERIALIZE_TASKS created it; executor and quality manager update
 
 - none
 
+## Delegation Blocker
+
+- none
+
 ## Implementation Test Evidence
 
-- Awaiting the next automatic implementation check; this fixture does not claim formal validation.
+### implementation-check-01
+
+- Automatic check round: 1/3
+- Status: TESTS_PASS
+- HEAD: fixture
+- Tested scope: invitation acceptance service
+- Tested state:
+  - `../../test/fixtures/invitations.json` | sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+- Discovery sources: approved task and repository tests
+- Discovery actions: inspected applicable integration-test commands
+- Verification types considered: focused integration test
+- Commands:
+  - `node --test test/invitations.test.mjs` | exit:0
+- Selected checks: invitation acceptance integration test
+- Selection rationale: focused authoritative behavior check
+- Coverage: AC-001 and AC-002 observable behavior
+- Failures: none
+- Blockers: none
+- Unexpected workspace effects: none
+- Persistence summary: TESTS_PASS persisted.
 
 ## Findings Test Evidence
 
@@ -76,4 +100,3 @@ update_policy: MATERIALIZE_TASKS created it; executor and quality manager update
 ## Final Result
 
 - pending
-

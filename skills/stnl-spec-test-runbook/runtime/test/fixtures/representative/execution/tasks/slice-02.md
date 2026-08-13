@@ -17,6 +17,8 @@ update_policy: MATERIALIZE_TASKS created it; executor and quality manager update
 - Slice: 02
 - Plan: `../plans/slice-02.md`
 - Requirements source: `../../feature_spec.md`
+- Requirements authority: sha256:11aba916db71705bfb2f518aac2b8f808c5f410559b1693949764b318b0f6424
+- Plan revision: 1
 - Global tasks: `../tasks.md`
 
 ## Checklist
@@ -41,7 +43,11 @@ update_policy: MATERIALIZE_TASKS created it; executor and quality manager update
 
 ## Divergences
 
-- Confirmation copy needs a persisted product decision before execution.
+- none
+
+## Delegation Blocker
+
+- none
 
 ## Implementation Test Evidence
 

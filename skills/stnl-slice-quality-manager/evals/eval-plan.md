@@ -24,3 +24,8 @@ update_policy: Extend when quality persistence or completion accepts an invalid 
 10. Reuses current sufficient evidence only proportionally and reruns necessary checks when tested state is stale, authority or coverage is insufficient, risk changed, or overlap requires regression.
 11. A prior `TESTS_PASS` does not replace independent review or the current formal verdict.
 12. A prior `TESTS_NOT_APPLICABLE` is reviewed independently for read-only discovery actions, sources consulted, verification types considered, omitted applicable checks, and tool absence incorrectly presented as non-applicability; it never guarantees `PASS` and creates no attempt or base before `VALIDATE_SLICE`.
+13. Formal `NEEDS_FIX` may resolve corrected prior findings, preserve unresolved active findings, supersede with valid same-kind identity, and append new stable findings.
+14. `PASS` atomically resolves/supersedes every remaining active blocking finding; resolved historical findings remain auditable and do not block completion or close.
+15. Active blocking divergence blocks validation; resolved/superseded divergence history does not.
+16. Explicit validation is the only continuation from third auxiliary `TESTS_FAIL`; executor re-entry remains blocked until its verdict.
+17. Stale requirements/revision blocks before delegation; arbitrary user-owned SPEC-root siblings remain preserved and allowed.

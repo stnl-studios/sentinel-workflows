@@ -15,6 +15,8 @@ update_policy: PLAN created it as draft; REVIEW_PLAN approved it and made it imm
 ## Global Context
 
 - Requirements source: `../feature_spec.md`
+- Requirements authority: sha256:11aba916db71705bfb2f518aac2b8f808c5f410559b1693949764b318b0f6424
+- Plan revision: 1
 - Objective: Deliver API invitation acceptance followed by its confirmation UI.
 - Strategy: Establish the service behavior before exposing the user flow.
 - Review state: approved
@@ -31,4 +33,3 @@ update_policy: PLAN created it as draft; REVIEW_PLAN approved it and made it imm
 - Record service UTC time for expiration checks and keep product copy approval explicit.
 
 `tasks.md` is the only global progress authority.
-

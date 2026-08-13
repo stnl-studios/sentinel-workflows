@@ -16,5 +16,6 @@ update_policy: Extend when task review misses a checklist defect.
 2. Changes only global and detailed task artifacts.
 3. Creates no persistent review profile or approval state.
 4. Returns `NEEDS_REPLAN` rather than changing plans.
-5. Accepts repeat review only while the exact materialized-pristine sentinels remain.
+5. Accepts repeat review only while the exact `MATERIALIZED_PRISTINE` sentinels remain.
 6. A marked task, developer check, Validation Attempt, or other operational evidence blocks and preserves bytes.
+7. A plan-level defect or stale requirements fingerprint returns `NEEDS_REPLAN` whose diagnostic is executable as `REPLAN_REASON`.
