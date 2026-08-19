@@ -26,9 +26,10 @@ Common operating rule: Operate only inside the approved Sentinel workflow. Do no
 
 - `stnl-backend-dotnet`
 - `stnl-backend-node-typescript`
+- `stnl-database-persistence` — restricted: use only when explicitly approved by the plan.
 - `stnl-frontend-react-next-angular`
+- `stnl-mobile-ios-swift` — restricted: use only when the approved slice covers Swift or iOS.
 - `stnl-testing`
-- `stnl-database-migrations` — restricted: use only when explicitly approved by the plan.
 - `stnl-security-auth` — restricted: use only when explicitly approved by the plan.
 
 ## Skill loading rule

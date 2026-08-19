@@ -4,6 +4,13 @@ import * as fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import {
+  DOMAIN_SKILLS,
+  WORKFLOW_OPERATIONS,
+  WORKFLOW_SKILLS,
+  registrySkills,
+} from "./lib/skill-registry.mjs";
+
 class ContractError extends Error {
   constructor(category, message) {
     super(message);
@@ -30,7 +37,13 @@ function realFiles(root) {
   const output = [];
   function visit(current) {
     for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
-      if (entry.name === ".DS_Store" || entry.name.startsWith("._") || entry.name === "__MACOSX") continue;
+      if (
+        entry.name === ".DS_Store" ||
+        entry.name.startsWith("._") ||
+        entry.name === "__MACOSX" ||
+        entry.name === "targets" ||
+        entry.name === "node_modules"
+      ) continue;
       const child = path.join(current, entry.name);
       if (entry.isDirectory()) visit(child);
       else if (entry.isFile()) output.push(child);
@@ -517,22 +530,42 @@ function checkLaunchers(root) {
 function checkRepository(root) {
   checkPortability(root);
   const skillsRoot = path.join(root, "skills");
-  const operations = {
-    "stnl-execution-planner": ["PLAN", "REPLAN"],
-    "stnl-plan-reviewer": ["REVIEW_PLAN"],
-    "stnl-task-materializer": ["MATERIALIZE_TASKS"],
-    "stnl-task-reviewer": ["REVIEW_TASKS"],
-    "stnl-slice-executor": ["EXECUTE_SLICE", "APPLY_FINDINGS"],
-    "stnl-slice-quality-manager": ["VALIDATE_SLICE"],
-    "stnl-execution-closer": ["CLOSE"],
-    "stnl-spec-test-runbook": ["GENERATE_RUNBOOK"],
-  };
-  const actual = fs.readdirSync(skillsRoot, { withFileTypes: true }).filter((entry) => entry.isDirectory() && entry.name.startsWith("stnl-") && entry.name !== "stnl-spec-lifecycle-manager" && fs.existsSync(path.join(skillsRoot, entry.name, "SKILL.md"))).map((entry) => entry.name).sort();
-  if (JSON.stringify(actual) !== JSON.stringify(Object.keys(operations).sort())) reject("C002_SKILL_REGISTRY", `workflow skill registry mismatch: ${JSON.stringify(actual)}`);
+  for (const relative of [
+    "scripts/lib/skill-registry.mjs",
+    "scripts/lib/skill-discovery.mjs",
+    "scripts/lib/skill-routing.mjs",
+    "integrations/codex/skill-discovery.mjs",
+    "integrations/claude-code/skill-discovery.mjs",
+  ]) {
+    if (!fs.statSync(path.join(root, relative), { throwIfNoEntry: false })?.isFile()) reject("C017_SKILL_INTEGRATION", `missing skill integration: ${relative}`);
+  }
+  const workflowRoot = path.join(skillsRoot, "workflows");
+  const domainRoot = path.join(skillsRoot, "domains");
+  const operations = WORKFLOW_OPERATIONS;
+  const registry = registrySkills();
+  if (new Set(registry).size !== registry.length) reject("C002_SKILL_REGISTRY", "workflow and domain registries contain duplicate names");
+  if (WORKFLOW_SKILLS.some((name) => DOMAIN_SKILLS.includes(name))) reject("C002_SKILL_REGISTRY", "workflow and domain registries overlap");
+
+  function directSkillNames(directory) {
+    if (!fs.statSync(directory, { throwIfNoEntry: false })?.isDirectory()) reject("C002_SKILL_REGISTRY", `missing skill family directory: ${directory}`);
+    return fs.readdirSync(directory, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && entry.name.startsWith("stnl-"))
+      .map((entry) => entry.name)
+      .sort();
+  }
+
+  const actualWorkflows = directSkillNames(workflowRoot);
+  const actualDomains = directSkillNames(domainRoot);
+  if (JSON.stringify(actualWorkflows) !== JSON.stringify([...WORKFLOW_SKILLS].sort())) reject("C002_SKILL_REGISTRY", `workflow skill registry mismatch: ${JSON.stringify(actualWorkflows)}`);
+  if (JSON.stringify(actualDomains) !== JSON.stringify([...DOMAIN_SKILLS].sort())) reject("C002_SKILL_REGISTRY", `domain skill registry mismatch: ${JSON.stringify(actualDomains)}`);
+  for (const name of registry) {
+    if (fs.existsSync(path.join(skillsRoot, name))) reject("C002_SKILL_REGISTRY", `flat skill duplicate remains: skills/${name}`);
+  }
+
   const requiredSections = ["Purpose", "Inputs", "Authority", "Minimum Reads", "Allowed Effects", "Blocks", "Output"];
   const genericTexts = [];
   for (const [name, expectedOperations] of Object.entries(operations)) {
-    const file = path.join(skillsRoot, name, "SKILL.md");
+    const file = path.join(workflowRoot, name, "SKILL.md");
     const { metadata, body } = parseFrontmatter(file);
     if (metadata.name !== name || !metadata.description) reject("C003_SKILL_SCHEMA", `invalid skill frontmatter: ${file}`);
     for (const section of requiredSections) if (!body.includes(`## ${section}`)) reject("C003_SKILL_SCHEMA", `${file}: missing ${section}`);
@@ -545,14 +578,22 @@ function checkRepository(root) {
     }
     if (name !== "stnl-spec-test-runbook") genericTexts.push([file, body]);
   }
+  const lifecycleFile = path.join(workflowRoot, "stnl-spec-lifecycle-manager", "SKILL.md");
+  const lifecycleSkill = parseFrontmatter(lifecycleFile);
+  if (lifecycleSkill.metadata.name !== "stnl-spec-lifecycle-manager" || !lifecycleSkill.metadata.description) reject("C003_SKILL_SCHEMA", `invalid skill frontmatter: ${lifecycleFile}`);
+  for (const name of DOMAIN_SKILLS) {
+    const file = path.join(domainRoot, name, "SKILL.md");
+    const { metadata, body } = parseFrontmatter(file);
+    if (metadata.name !== name || !metadata.description || !body) reject("C003_SKILL_SCHEMA", `invalid domain skill schema: ${file}`);
+  }
   const vendor = /\bCodex\b|\bClaude(?: Code)?\b|@agent-|stnl[_-]validation[_-]runner|fork_turns|\bgpt-[0-9]|\bhaiku\b|\bsonnet\b/iu;
   for (const [file, text] of genericTexts) if (vendor.test(text)) reject("C004_VENDOR_NEUTRALITY", `${file}: generic execution skill contains vendor invocation syntax`);
   const allExecutionText = genericTexts.map(([, text]) => text).join("\n");
   for (const token of ["stnl-spec-execution-manager", "FINALIZE_SLICE", "PARALLELIZE_SLICES", "EXECUTE_SLICES", "RUN_TESTS", "RETRY_TESTS", "FIX_TESTS", "TEST_SLICE", "TEST_FINDINGS", "VALIDATE_IMPLEMENTATION"]) {
     if (allExecutionText.includes(token)) reject("C009_REMOVED_TOKENS", `removed execution token remains: ${token}`);
   }
-  const plannerContract = ["SKILL.md", "templates/plan.template.md", "templates/slice-plan.template.md"].map((relative) => read(path.join(skillsRoot, "stnl-execution-planner", relative))).join("\n");
-  const taskContract = ["SKILL.md", "templates/tasks.template.md", "templates/slice-tasks.template.md"].map((relative) => read(path.join(skillsRoot, "stnl-task-materializer", relative))).join("\n");
+  const plannerContract = ["SKILL.md", "templates/plan.template.md", "templates/slice-plan.template.md"].map((relative) => read(path.join(workflowRoot, "stnl-execution-planner", relative))).join("\n");
+  const taskContract = ["SKILL.md", "templates/tasks.template.md", "templates/slice-tasks.template.md"].map((relative) => read(path.join(workflowRoot, "stnl-task-materializer", relative))).join("\n");
   for (const [label, contract] of [["planning", plannerContract], ["tasks", taskContract]]) {
     if (!contract.includes("Requirements authority: sha256:<64hex>")) reject("C005_AUTHORITY_FIELDS", `${label} contract lacks exact Requirements authority field`);
     if (!contract.includes("Plan revision: <positive integer>")) reject("C005_AUTHORITY_FIELDS", `${label} contract lacks exact Plan revision field`);
@@ -565,21 +606,20 @@ function checkRepository(root) {
     if (path.basename(file) !== "spec-test-runbook.md" && /GENERATE_RUNBOOK|stnl-spec-test-runbook/u.test(text)) reject("C011_RUNBOOK_ISOLATION", `implicit path invokes runbook generation: ${file}`);
   }
 
-  checkTargets(root);
   checkLifecycleStatic(root);
   const executionSkills = Object.keys(operations).filter((name) => name !== "stnl-spec-test-runbook");
   for (const runtime of ["execution-state.mjs", "validate-execution-state.mjs"]) {
-    const files = executionSkills.map((name) => path.join(skillsRoot, name, "runtime", runtime));
+    const files = executionSkills.map((name) => path.join(workflowRoot, name, "runtime", runtime));
     for (const file of files) if (!fs.statSync(file, { throwIfNoEntry: false })?.isFile()) reject("C006_DISTRIBUTION", `execution skill is missing shared runtime: ${file}`);
     const authority = fs.readFileSync(files[0]);
     for (const file of files.slice(1)) if (!authority.equals(fs.readFileSync(file))) reject("C006_DISTRIBUTION", `shared runtime copies differ: ${runtime}`);
   }
-  const runbookAuthorityRuntime = path.join(skillsRoot, "stnl-spec-test-runbook/runtime/execution-state.mjs");
+  const runbookAuthorityRuntime = path.join(workflowRoot, "stnl-spec-test-runbook/runtime/execution-state.mjs");
   if (!fs.statSync(runbookAuthorityRuntime, { throwIfNoEntry: false })?.isFile()) reject("C006_DISTRIBUTION", "runbook is missing deterministic requirements-authority runtime");
-  if (!fs.readFileSync(path.join(skillsRoot, executionSkills[0], "runtime/execution-state.mjs")).equals(fs.readFileSync(runbookAuthorityRuntime))) {
+  if (!fs.readFileSync(path.join(workflowRoot, executionSkills[0], "runtime/execution-state.mjs")).equals(fs.readFileSync(runbookAuthorityRuntime))) {
     reject("C006_DISTRIBUTION", "runbook requirements-authority runtime differs from execution authority");
   }
-  const schemaFiles = executionSkills.map((name) => path.join(skillsRoot, name, "references/execution-record-schema.md")).filter((file) => fs.statSync(file, { throwIfNoEntry: false })?.isFile());
+  const schemaFiles = executionSkills.map((name) => path.join(workflowRoot, name, "references/execution-record-schema.md")).filter((file) => fs.statSync(file, { throwIfNoEntry: false })?.isFile());
   if (schemaFiles.length < 2) reject("C006_DISTRIBUTION", "execution record schema is not distributed to its consumers");
   const schemaAuthority = fs.readFileSync(schemaFiles[0]);
   for (const file of schemaFiles.slice(1)) if (!schemaAuthority.equals(fs.readFileSync(file))) reject("C006_DISTRIBUTION", `execution record schema copies differ: ${file}`);
@@ -594,44 +634,8 @@ function checkPortability(root) {
   for (const obsolete of ["scripts/check-contracts.py", "scripts/test-serial-workflow.py"]) if (fs.existsSync(path.join(root, obsolete))) reject("C007_PORTABILITY", `obsolete Python validation entrypoint remains: ${obsolete}`);
 }
 
-function checkTargets(root) {
-  const expectedAgents = ["sentinel-coder", "sentinel-orchestrator", "sentinel-planner", "sentinel-reviewer", "sentinel-test-planner", "sentinel-validator"];
-  const registries = [
-    ["targets/codex/.codex/agents", ".toml"],
-    ["targets/claude-code/.claude/agents", ".md"],
-    ["targets/copilot/.github/agents", ".agent.md"],
-  ];
-  for (const [relative, suffix] of registries) {
-    const actual = fs.readdirSync(path.join(root, relative)).filter((name) => name.endsWith(suffix)).map((name) => name.slice(0, -suffix.length)).sort();
-    if (JSON.stringify(actual) !== JSON.stringify(expectedAgents)) reject("C012_TARGET_REGISTRY", `target agent registry changed: ${relative}`);
-  }
-  parseJson(path.join(root, "targets/claude-code/.claude/settings.json"), "C013_TARGET_CONFIG");
-  parseToml(path.join(root, "targets/codex/.codex/config.toml"), "C013_TARGET_CONFIG");
-  const codexPermissions = {
-    "sentinel-orchestrator": "sentinel-read-only", "sentinel-planner": "sentinel-workspace", "sentinel-test-planner": "sentinel-workspace",
-    "sentinel-coder": "sentinel-workspace", "sentinel-validator": "sentinel-workspace", "sentinel-reviewer": "sentinel-read-only",
-  };
-  const claudeTools = {
-    "sentinel-orchestrator": "Read, Glob, Grep, Agent(sentinel-planner, sentinel-test-planner, sentinel-coder, sentinel-validator, sentinel-reviewer)",
-    "sentinel-planner": "Read, Glob, Grep, Write, Edit", "sentinel-test-planner": "Read, Glob, Grep, Write, Edit",
-    "sentinel-coder": "Read, Write, Edit, MultiEdit, Bash", "sentinel-validator": "Read, Bash", "sentinel-reviewer": "Read, Glob, Grep",
-  };
-  const copilotTools = {
-    "sentinel-orchestrator": "[read, search, agent]", "sentinel-planner": "[read, search, edit]", "sentinel-test-planner": "[read, search, edit]",
-    "sentinel-coder": "[read, edit, execute]", "sentinel-validator": "[read, execute]", "sentinel-reviewer": "[read, search]",
-  };
-  for (const name of expectedAgents) {
-    const codex = parseToml(path.join(root, `targets/codex/.codex/agents/${name}.toml`), "C013_TARGET_CONFIG");
-    if (!keysEqual(codex, { name, description: codex.description, default_permissions: codex.default_permissions, developer_instructions: codex.developer_instructions }) || codex.name !== name || codex.default_permissions !== codexPermissions[name]) reject("C013_TARGET_CONFIG", `Codex agent schema/permissions changed: ${name}`);
-    const claude = parseFrontmatter(path.join(root, `targets/claude-code/.claude/agents/${name}.md`), "C013_TARGET_CONFIG");
-    if (!keysEqual(claude.metadata, { name, description: claude.metadata.description, tools: claude.metadata.tools, model: claude.metadata.model }) || claude.metadata.name !== name || claude.metadata.tools !== claudeTools[name] || claude.metadata.model !== "sonnet") reject("C013_TARGET_CONFIG", `Claude agent frontmatter/tools changed: ${name}`);
-    const copilot = parseFrontmatter(path.join(root, `targets/copilot/.github/agents/${name}.agent.md`), "C013_TARGET_CONFIG");
-    if (!keysEqual(copilot.metadata, { name: copilot.metadata.name, description: copilot.metadata.description, tools: copilot.metadata.tools, "disable-model-invocation": copilot.metadata["disable-model-invocation"], "user-invocable": copilot.metadata["user-invocable"] }) || copilot.metadata.tools !== copilotTools[name]) reject("C013_TARGET_CONFIG", `Copilot agent frontmatter/tools changed: ${name}`);
-  }
-}
-
 function checkLifecycleStatic(root) {
-  const lifecycle = path.join(root, "skills/stnl-spec-lifecycle-manager");
+  const lifecycle = path.join(root, "skills/workflows/stnl-spec-lifecycle-manager");
   const cases = parseJson(path.join(lifecycle, "evals/cases.json"), "C014_LIFECYCLE_CATALOG");
   if (!Array.isArray(cases) || cases.length < 15) reject("C014_LIFECYCLE_CATALOG", "lifecycle eval catalog is incomplete");
   const contracts = parseJson(path.join(lifecycle, "evals/contract-cases.json"), "C014_LIFECYCLE_CATALOG");

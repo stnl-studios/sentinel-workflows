@@ -11,19 +11,19 @@ import test from 'node:test';
 
 import {
   buildClosedCandidate,
-} from '../skills/stnl-spec-lifecycle-manager/runtime/lib/closed-spec.mjs';
+} from '../skills/workflows/stnl-spec-lifecycle-manager/runtime/lib/closed-spec.mjs';
 import {
   createReadinessAttestation,
-} from '../skills/stnl-spec-lifecycle-manager/runtime/lib/readiness.mjs';
+} from '../skills/workflows/stnl-spec-lifecycle-manager/runtime/lib/readiness.mjs';
 import {
   ValidationError,
   validateCloseTransition,
   validateWorkspace,
   workspaceSnapshot,
-} from '../skills/stnl-spec-lifecycle-manager/runtime/lib/lifecycle.mjs';
+} from '../skills/workflows/stnl-spec-lifecycle-manager/runtime/lib/lifecycle.mjs';
 
 const REPOSITORY_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const SKILL_ROOT = path.join(REPOSITORY_ROOT, 'skills', 'stnl-spec-lifecycle-manager');
+const SKILL_ROOT = path.join(REPOSITORY_ROOT, 'skills', 'workflows', 'stnl-spec-lifecycle-manager');
 const FIXTURES = path.join(SKILL_ROOT, 'examples', 'validator-fixtures');
 const RENDERER = path.join(SKILL_ROOT, 'runtime', 'build-closed-spec.mjs');
 const OPTIONAL_SYMLINK_ERRORS = new Set(['EPERM', 'EACCES', 'ENOTSUP', 'EOPNOTSUPP', 'UNKNOWN']);

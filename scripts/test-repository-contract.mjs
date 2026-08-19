@@ -13,7 +13,8 @@ const validationScripts = ["validate-targets.sh", "smoke-structure.sh", "test-la
 async function fixture(t) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "stnl-repository-contract-"));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
-  for (const name of ["skills", "templates", "targets"]) await fs.symlink(path.join(repository, name), path.join(root, name), "dir");
+  for (const name of ["skills", "templates"]) await fs.symlink(path.join(repository, name), path.join(root, name), "dir");
+  await fs.symlink(path.join(repository, "integrations"), path.join(root, "integrations"), "dir");
   await fs.symlink(path.join(repository, ".gitignore"), path.join(root, ".gitignore"), "file");
   await fs.mkdir(path.join(root, "scripts"));
   for (const name of validationScripts) await fs.copyFile(path.join(repository, "scripts", name), path.join(root, "scripts", name));

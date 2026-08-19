@@ -12,7 +12,7 @@ update_policy: Keep synchronized with cases.json, runtime fixtures, automated te
 
 # Test Runbook Eval Cases
 
-`cases.json` is the machine-checked catalog. Run `node --test skills/stnl-spec-test-runbook/runtime/test/*.test.mjs` from the repository root. The suite validates every catalog ID and exercises deterministic discovery, manifest validation, security, HTML behavior contracts, publication, and a real representative generation.
+`cases.json` is the machine-checked catalog. Run `node --test skills/workflows/stnl-spec-test-runbook/runtime/test/*.test.mjs` from the repository root. The suite validates every catalog ID and exercises deterministic discovery, manifest validation, security, HTML behavior contracts, publication, and a real representative generation.
 
 The catalog covers:
 

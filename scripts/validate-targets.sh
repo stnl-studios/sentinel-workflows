@@ -36,18 +36,18 @@ node scripts/check-contracts.mjs launchers --root templates/prompts
 node scripts/check-contracts.mjs subagents --root templates/subagents
 
 execution_skills=(
-  skills/stnl-execution-planner
-  skills/stnl-plan-reviewer
-  skills/stnl-task-materializer
-  skills/stnl-task-reviewer
-  skills/stnl-slice-executor
-  skills/stnl-slice-quality-manager
-  skills/stnl-execution-closer
+  skills/workflows/stnl-execution-planner
+  skills/workflows/stnl-plan-reviewer
+  skills/workflows/stnl-task-materializer
+  skills/workflows/stnl-task-reviewer
+  skills/workflows/stnl-slice-executor
+  skills/workflows/stnl-slice-quality-manager
+  skills/workflows/stnl-execution-closer
 )
 node scripts/check-distributable-skills.mjs \
   "${execution_skills[@]}" \
-  skills/stnl-spec-lifecycle-manager \
-  skills/stnl-spec-test-runbook
+  skills/workflows/stnl-spec-lifecycle-manager \
+  skills/workflows/stnl-spec-test-runbook
 
 if [[ "$SKIP_SMOKE" == "0" ]]; then
   bash scripts/smoke-structure.sh

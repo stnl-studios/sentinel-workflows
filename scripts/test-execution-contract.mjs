@@ -11,7 +11,7 @@ import {
   computeRequirementsAuthority,
   inspectExecutionState,
   preflightExecutionOperation,
-} from "../skills/stnl-execution-closer/runtime/execution-state.mjs";
+} from "../skills/workflows/stnl-execution-closer/runtime/execution-state.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
 const SKILLS = [
@@ -77,12 +77,12 @@ async function renderTasks(fixture, { revision = 1, fingerprint = null } = {}) {
   const authorityPath = requirementsMetadata.isDirectory() ? path.join(fixture.requirements, "feature_spec.md") : fixture.requirements;
   const detailSource = path.relative(path.join(fixture.execution, "plans"), authorityPath).split(path.sep).join("/");
   await fs.mkdir(path.join(fixture.execution, "tasks"), { recursive: true });
-  const tasksTemplate = await fs.readFile(path.join(ROOT, "skills/stnl-task-materializer/templates/tasks.template.md"), "utf8");
+  const tasksTemplate = await fs.readFile(path.join(ROOT, "skills/workflows/stnl-task-materializer/templates/tasks.template.md"), "utf8");
   const tasks = replaceAll(tasksTemplate, [
     ["01 - <name>", "01 - Delivery"], ["<observable delivery>", "observable result"],
   ]);
   await fs.writeFile(path.join(fixture.execution, "tasks.md"), tasks);
-  const taskTemplate = await fs.readFile(path.join(ROOT, "skills/stnl-task-materializer/templates/slice-tasks.template.md"), "utf8");
+  const taskTemplate = await fs.readFile(path.join(ROOT, "skills/workflows/stnl-task-materializer/templates/slice-tasks.template.md"), "utf8");
   const task = replaceAll(taskTemplate, [
     ["<Name>", "Delivery"], ["`<relative path>`", `\`${detailSource}\``],
     ["sha256:<64hex>", `sha256:${authority}`], ["<positive integer>", String(revision)],
@@ -99,7 +99,7 @@ async function renderArtifacts(fixture, { materialized = true, planStatus = "rea
   const globalSource = path.relative(fixture.execution, authorityPath).split(path.sep).join("/");
   const detailSource = path.relative(path.join(fixture.execution, "plans"), authorityPath).split(path.sep).join("/");
   await fs.mkdir(path.join(fixture.execution, "plans"), { recursive: true });
-  const planTemplate = await fs.readFile(path.join(ROOT, "skills/stnl-execution-planner/templates/plan.template.md"), "utf8");
+  const planTemplate = await fs.readFile(path.join(ROOT, "skills/workflows/stnl-execution-planner/templates/plan.template.md"), "utf8");
   let global = omitInitialRecoveryFields(replaceAll(planTemplate, [
     ["`<relative path>`", `\`${globalSource}\``], ["sha256:<64hex>", `sha256:${authority}`],
     ["<positive integer>", String(revision)], ["<compact objective>", "Deliver observable behavior"],
@@ -108,7 +108,7 @@ async function renderArtifacts(fixture, { materialized = true, planStatus = "rea
   ]));
   if (planStatus === "ready") global = headerReady(global);
   await fs.writeFile(path.join(fixture.execution, "plan.md"), global);
-  const slicePlanTemplate = await fs.readFile(path.join(ROOT, "skills/stnl-execution-planner/templates/slice-plan.template.md"), "utf8");
+  const slicePlanTemplate = await fs.readFile(path.join(ROOT, "skills/workflows/stnl-execution-planner/templates/slice-plan.template.md"), "utf8");
   let slicePlan = replaceAll(slicePlanTemplate, [
     ["<Name>", "Delivery"], ["`<relative path>`", `\`${detailSource}\``],
     ["sha256:<64hex>", `sha256:${authority}`], ["<positive integer>", String(revision)],
@@ -206,7 +206,7 @@ async function commitAppendRecovery(fixture, oldHash, newHash, { resolveDivergen
     "| [ ] | 01 - Delivery | observable result | - | tasks/slice-01.md | pending | pending |",
     "| [x] | 01 - Delivery | observable result | - | tasks/slice-01.md | SUPERSEDED | SUPERSEDED |\n| [ ] | 02 - Recovery | reconciled result | 01 | tasks/slice-02.md | pending | pending |",
   ));
-  const template = await fs.readFile(path.join(ROOT, "skills/stnl-task-materializer/templates/slice-tasks.template.md"), "utf8");
+  const template = await fs.readFile(path.join(ROOT, "skills/workflows/stnl-task-materializer/templates/slice-tasks.template.md"), "utf8");
   const appended = replaceAll(template, [
     ["Slice 01", "Slice 02"], ["- Slice: 01", "- Slice: 02"], ["<Name>", "Recovery"],
     ["plans/slice-01.md", "plans/slice-02.md"], ["`<relative path>`", "`../../requirements.md`"],
@@ -261,7 +261,7 @@ async function commitThirdRecovery(fixture, authority) {
     "| [ ] | 02 - Recovery | reconciled result | 01 | tasks/slice-02.md | pending | pending |",
     "| [x] | 02 - Recovery | reconciled result | 01 | tasks/slice-02.md | SUPERSEDED | SUPERSEDED |\n| [ ] | 03 - Recovery | reconciled result | 02 | tasks/slice-03.md | pending | pending |",
   ));
-  const template = await fs.readFile(path.join(ROOT, "skills/stnl-task-materializer/templates/slice-tasks.template.md"), "utf8");
+  const template = await fs.readFile(path.join(ROOT, "skills/workflows/stnl-task-materializer/templates/slice-tasks.template.md"), "utf8");
   const third = replaceAll(template, [
     ["Slice 01", "Slice 03"], ["- Slice: 01", "- Slice: 03"], ["<Name>", "Recovery"],
     ["plans/slice-01.md", "plans/slice-03.md"], ["`<relative path>`", "`../../requirements.md`"],
@@ -434,7 +434,7 @@ async function passFirstSlice(fixture) {
 test("all execution skills bundle byte-identical self-contained state runtimes", async () => {
   const names = ["execution-state.mjs", "validate-execution-state.mjs"];
   for (const name of names) {
-    const copies = await Promise.all(SKILLS.map((skill) => fs.readFile(path.join(ROOT, "skills", skill, "runtime", name))));
+  const copies = await Promise.all(SKILLS.map((skill) => fs.readFile(path.join(ROOT, "skills", "workflows", skill, "runtime", name))));
     for (const copy of copies.slice(1)) assert.deepEqual(copy, copies[0], `${name} copies differ`);
     const source = copies[0].toString("utf8");
     assert.doesNotMatch(source, /stnl-spec-lifecycle-manager|\.\.\/\.\.\//u);
@@ -446,7 +446,7 @@ test("an isolated copied skill runs the stable self-contained preflight CLI", as
   const copied = path.join(root, "copied-skill");
   await fs.mkdir(path.join(copied, "runtime"), { recursive: true });
   for (const name of ["execution-state.mjs", "validate-execution-state.mjs"]) {
-    await fs.copyFile(path.join(ROOT, "skills/stnl-slice-executor/runtime", name), path.join(copied, "runtime", name));
+    await fs.copyFile(path.join(ROOT, "skills/workflows/stnl-slice-executor/runtime", name), path.join(copied, "runtime", name));
   }
   const requirements = path.join(root, "requirements.md");
   await fs.writeFile(requirements, "# Isolated requirements\n");
@@ -707,8 +707,8 @@ test("requirements authority detects unchanged and stale planning at every reque
 });
 
 test("lifecycle shared-only changes stale planning and deterministic lifecycle CLOSE preserves the fingerprint", async (t) => {
-  const readySource = path.join(ROOT, "skills/stnl-spec-lifecycle-manager/examples/validator-fixtures/ready");
-  const closedSource = path.join(ROOT, "skills/stnl-spec-lifecycle-manager/examples/validator-fixtures/closed");
+  const readySource = path.join(ROOT, "skills/workflows/stnl-spec-lifecycle-manager/examples/validator-fixtures/ready");
+  const closedSource = path.join(ROOT, "skills/workflows/stnl-spec-lifecycle-manager/examples/validator-fixtures/closed");
   const root = await temporary(t);
   const ready = await copyDirectory(readySource, path.join(root, "ready"));
   const closed = await copyDirectory(closedSource, path.join(root, "closed"));
@@ -979,7 +979,7 @@ test("terminal auxiliary outcomes and scoped blocker resumes have exact phases",
   );
   assertRecoveryTarget(wrongSlice, { operation: "EXECUTE_SLICE", slice: "slice-01" });
   const cli = spawnSync(process.execPath, [
-    path.join(ROOT, "skills/stnl-slice-executor/runtime/validate-execution-state.mjs"),
+    path.join(ROOT, "skills/workflows/stnl-slice-executor/runtime/validate-execution-state.mjs"),
     initialized.requirements,
     "REPLAN",
   ], { encoding: "utf8" });
@@ -1280,7 +1280,7 @@ test("formal BLOCKED and selected-slice gates have only legal recovery transitio
 
 test("non-canonical execution residue blocks preflight while arbitrary external SPEC siblings remain untouched", async (t) => {
   const root = await temporary(t);
-  const workspace = await copyDirectory(path.join(ROOT, "skills/stnl-spec-lifecycle-manager/examples/validator-fixtures/ready"), path.join(root, "spec"));
+  const workspace = await copyDirectory(path.join(ROOT, "skills/workflows/stnl-spec-lifecycle-manager/examples/validator-fixtures/ready"), path.join(root, "spec"));
   const fixture = { requirements: workspace, execution: path.join(workspace, "execution") };
   await renderArtifacts(fixture);
   const external = path.join(workspace, "user-owned.bin");
@@ -1351,7 +1351,7 @@ test("lifecycle CLOSE trusts repository-owned paths outside a nested SPEC and re
   const repository = path.join(root, "repository");
   await fs.mkdir(path.join(repository, ".git"), { recursive: true });
   const workspace = await copyDirectory(
-    path.join(ROOT, "skills/stnl-spec-lifecycle-manager/examples/validator-fixtures/ready"),
+    path.join(ROOT, "skills/workflows/stnl-spec-lifecycle-manager/examples/validator-fixtures/ready"),
     path.join(repository, "specs/feature"),
   );
   const fixture = { root: repository, requirements: workspace, execution: path.join(workspace, "execution") };

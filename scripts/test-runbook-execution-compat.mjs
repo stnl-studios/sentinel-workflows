@@ -5,11 +5,11 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { inspectWorkspace } from "../skills/stnl-spec-test-runbook/runtime/lib/core.mjs";
-import { computeRequirementsAuthority, inspectExecutionState } from "../skills/stnl-task-materializer/runtime/execution-state.mjs";
+import { inspectWorkspace } from "../skills/workflows/stnl-spec-test-runbook/runtime/lib/core.mjs";
+import { computeRequirementsAuthority, inspectExecutionState } from "../skills/workflows/stnl-task-materializer/runtime/execution-state.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const REPRESENTATIVE = path.join(ROOT, "skills/stnl-spec-test-runbook/runtime/test/fixtures/representative");
+const REPRESENTATIVE = path.join(ROOT, "skills/workflows/stnl-spec-test-runbook/runtime/test/fixtures/representative");
 
 function replaceAll(text, replacements) {
   let result = text;
@@ -32,7 +32,7 @@ async function renderRealTemplateExecution(spec) {
   await fs.mkdir(path.join(execution, "tasks"), { recursive: true });
   const authority = await computeRequirementsAuthority(spec);
 
-  const planTemplate = await fs.readFile(path.join(ROOT, "skills/stnl-execution-planner/templates/plan.template.md"), "utf8");
+  const planTemplate = await fs.readFile(path.join(ROOT, "skills/workflows/stnl-execution-planner/templates/plan.template.md"), "utf8");
   const plan = replaceAll(planTemplate, [
     ["`<relative path>`", "`../feature_spec.md`"], ["sha256:<64hex>", `sha256:${authority}`],
     ["<positive integer>", "1"], ["<compact objective>", "Deliver one observable invitation behavior"],
@@ -43,7 +43,7 @@ async function renderRealTemplateExecution(spec) {
     .replace(/\nFor revision 1,[\s\S]*?\n## Serial Slice Order/u, "\n## Serial Slice Order");
   await fs.writeFile(path.join(execution, "plan.md"), plan, "utf8");
 
-  const sliceTemplate = await fs.readFile(path.join(ROOT, "skills/stnl-execution-planner/templates/slice-plan.template.md"), "utf8");
+  const sliceTemplate = await fs.readFile(path.join(ROOT, "skills/workflows/stnl-execution-planner/templates/slice-plan.template.md"), "utf8");
   const slice = replaceAll(sliceTemplate, [
     ["<Name>", "Invitation API"], ["`<relative path>`", "`../../feature_spec.md`"],
     ["sha256:<64hex>", `sha256:${authority}`], ["<positive integer>", "1"],
@@ -56,11 +56,11 @@ async function renderRealTemplateExecution(spec) {
   ]).replace("status: draft", "status: ready").replace("Review state: pending", "Review state: approved");
   await fs.writeFile(path.join(execution, "plans/slice-01.md"), slice, "utf8");
 
-  const tasksTemplate = await fs.readFile(path.join(ROOT, "skills/stnl-task-materializer/templates/tasks.template.md"), "utf8");
+  const tasksTemplate = await fs.readFile(path.join(ROOT, "skills/workflows/stnl-task-materializer/templates/tasks.template.md"), "utf8");
   await fs.writeFile(path.join(execution, "tasks.md"), replaceAll(tasksTemplate, [
     ["01 - <name>", "01 - Invitation API"], ["<observable delivery>", "eligible invitation is accepted"],
   ]), "utf8");
-  const taskTemplate = await fs.readFile(path.join(ROOT, "skills/stnl-task-materializer/templates/slice-tasks.template.md"), "utf8");
+  const taskTemplate = await fs.readFile(path.join(ROOT, "skills/workflows/stnl-task-materializer/templates/slice-tasks.template.md"), "utf8");
   const task = replaceAll(taskTemplate, [
     ["<Name>", "Invitation API"], ["`<relative path>`", "`../../feature_spec.md`"],
     ["sha256:<64hex>", `sha256:${authority}`], ["<positive integer>", "1"],

@@ -26,9 +26,10 @@ Common operating rule: Operate only inside the approved Sentinel workflow. Do no
 
 - `stnl-backend-dotnet`
 - `stnl-backend-node-typescript`
+- `stnl-database-persistence` — restricted: validate only when the slice/diff explicitly touches persistence or data access.
 - `stnl-frontend-react-next-angular`
+- `stnl-mobile-ios-swift` — restricted: validate only when the slice/diff explicitly touches Swift or iOS.
 - `stnl-testing`
-- `stnl-database-migrations` — restricted: validate only when the slice/diff explicitly touches migrations or data persistence.
 - `stnl-security-auth` — restricted: validate only when the slice/diff explicitly touches security or authentication.
 
 ## Skill loading rule

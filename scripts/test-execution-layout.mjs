@@ -8,7 +8,7 @@ import test from "node:test";
 import {
   findNonCanonicalExecutionPaths,
   validateExecutionLayout,
-} from "../skills/stnl-execution-closer/runtime/validate-execution-layout.mjs";
+} from "../skills/workflows/stnl-execution-closer/runtime/validate-execution-layout.mjs";
 
 async function fixture(t) {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "stnl-execution-layout-")));
@@ -101,7 +101,7 @@ test("CLI is compact, read-only, and invokes no test or runner process", async (
   const residue = path.join(execution, "slice-03-analysis.md");
   await fs.writeFile(residue, "preserve me\n", "utf8");
   const entry = path.resolve(
-    "skills/stnl-execution-closer/runtime/validate-execution-layout.mjs",
+    "skills/workflows/stnl-execution-closer/runtime/validate-execution-layout.mjs",
   );
   const result = spawnSync(process.execPath, [entry, root], { encoding: "utf8" });
   assert.equal(result.status, 1);

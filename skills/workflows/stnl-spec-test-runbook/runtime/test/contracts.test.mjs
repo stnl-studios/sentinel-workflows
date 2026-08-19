@@ -33,8 +33,8 @@ test("generation remains exclusively reachable through its own launcher", async 
   assert.deepEqual(mentions, ["spec-test-runbook.md"]);
   for (const relative of [
     "templates/prompts/execution-close.md", "templates/prompts/spec-close.md",
-    "skills/stnl-execution-closer/SKILL.md", "skills/stnl-spec-lifecycle-manager/SKILL.md",
-    "skills/stnl-slice-executor/SKILL.md", "skills/stnl-slice-quality-manager/SKILL.md",
+    "skills/workflows/stnl-execution-closer/SKILL.md", "skills/workflows/stnl-spec-lifecycle-manager/SKILL.md",
+    "skills/workflows/stnl-slice-executor/SKILL.md", "skills/workflows/stnl-slice-quality-manager/SKILL.md",
   ]) {
     const content = await fs.readFile(path.join(REPOSITORY_ROOT, relative), "utf8");
     assert.equal(/GENERATE_RUNBOOK|stnl-spec-test-runbook/u.test(content), false, `${relative} must not generate a runbook`);

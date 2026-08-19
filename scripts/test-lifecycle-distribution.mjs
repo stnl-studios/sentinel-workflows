@@ -13,7 +13,7 @@ import {
 } from "./lib/check-distributable-skill.mjs";
 
 const REPOSITORY_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const SOURCE_SKILL_ROOT = join(REPOSITORY_ROOT, "skills", "stnl-spec-lifecycle-manager");
+const SOURCE_SKILL_ROOT = join(REPOSITORY_ROOT, "skills", "workflows", "stnl-spec-lifecycle-manager");
 const ENTRYPOINTS = Object.freeze({
   validator: "validate-spec-lifecycle.mjs",
   attestation: "create-readiness-attestation.mjs",

@@ -8,7 +8,7 @@ export const FIXTURE_ROOT = path.join(TEST_ROOT, "fixtures", "representative");
 export const PROJECT_FIXTURE_ROOT = path.join(TEST_ROOT, "fixtures", "representative-project");
 export const MANIFEST_FIXTURE = path.join(TEST_ROOT, "fixtures", "representative-manifest.json");
 export const SKILL_ROOT = path.resolve(TEST_ROOT, "..", "..");
-export const REPOSITORY_ROOT = path.resolve(SKILL_ROOT, "..", "..");
+export const REPOSITORY_ROOT = path.resolve(SKILL_ROOT, "..", "..", "..");
 
 export async function copyFixture(t, prefix = "stnl runbook fixture ") {
   const temporary = await fs.mkdtemp(path.join(os.tmpdir(), prefix));

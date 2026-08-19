@@ -11,17 +11,18 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const MANIFEST_PATH = join(
   ROOT,
   "skills",
+  "workflows",
   "stnl-spec-lifecycle-manager",
   "maintenance",
   "runtime-context-budget.json",
 );
-const SKILL = "skills/stnl-spec-lifecycle-manager/SKILL.md";
-const MODES = "skills/stnl-spec-lifecycle-manager/references/modes.md";
-const WORKSPACE = "skills/stnl-spec-lifecycle-manager/references/spec-workspace.md";
-const SCHEMA = "skills/stnl-spec-lifecycle-manager/references/spec-schema.md";
-const GATES = "skills/stnl-spec-lifecycle-manager/references/readiness-gates.md";
-const IDS = "skills/stnl-spec-lifecycle-manager/references/canonical-ids.md";
-const CLOSE_POLICY = "skills/stnl-spec-lifecycle-manager/references/close-policy.md";
+const SKILL = "skills/workflows/stnl-spec-lifecycle-manager/SKILL.md";
+const MODES = "skills/workflows/stnl-spec-lifecycle-manager/references/modes.md";
+const WORKSPACE = "skills/workflows/stnl-spec-lifecycle-manager/references/spec-workspace.md";
+const SCHEMA = "skills/workflows/stnl-spec-lifecycle-manager/references/spec-schema.md";
+const GATES = "skills/workflows/stnl-spec-lifecycle-manager/references/readiness-gates.md";
+const IDS = "skills/workflows/stnl-spec-lifecycle-manager/references/canonical-ids.md";
+const CLOSE_POLICY = "skills/workflows/stnl-spec-lifecycle-manager/references/close-policy.md";
 const EXPECTED_RUNTIME = Object.freeze({
   INIT_DRAFT: [SKILL, MODES, WORKSPACE, SCHEMA],
   INIT_READY: [SKILL, MODES, WORKSPACE, SCHEMA, GATES, IDS],

@@ -27,7 +27,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
 
 const ROOT = fileURLToPath(new URL("../", import.meta.url));
-const SKILL_ROOT = path.join(ROOT, "skills", "stnl-spec-lifecycle-manager");
+const SKILL_ROOT = path.join(ROOT, "skills", "workflows", "stnl-spec-lifecycle-manager");
 const RUNTIME_ROOT = path.join(SKILL_ROOT, "runtime");
 const TEMPLATE_ROOT = path.join(SKILL_ROOT, "templates");
 const CASES_PATH = path.join(SKILL_ROOT, "evals", "cases.json");

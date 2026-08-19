@@ -15,7 +15,7 @@ update_policy: Keep synchronized with both JSON catalogs, committed validator fi
 From the Sentinel Workflows repository root, run:
 
 - `node --test scripts/test-lifecycle-contracts.mjs`
-- `node --test skills/stnl-spec-lifecycle-manager/runtime/test/core.test.mjs skills/stnl-spec-lifecycle-manager/runtime/test/lifecycle.test.mjs skills/stnl-spec-lifecycle-manager/runtime/test/readiness.test.mjs skills/stnl-spec-lifecycle-manager/runtime/test/closed-spec.test.mjs skills/stnl-spec-lifecycle-manager/runtime/test/publisher.test.mjs`
+- `node --test skills/workflows/stnl-spec-lifecycle-manager/runtime/test/core.test.mjs skills/workflows/stnl-spec-lifecycle-manager/runtime/test/lifecycle.test.mjs skills/workflows/stnl-spec-lifecycle-manager/runtime/test/readiness.test.mjs skills/workflows/stnl-spec-lifecycle-manager/runtime/test/closed-spec.test.mjs skills/workflows/stnl-spec-lifecycle-manager/runtime/test/publisher.test.mjs`
 - `node --test scripts/test-lifecycle-validator-adversarial.mjs scripts/test-lifecycle-readiness-adversarial.mjs scripts/test-lifecycle-renderer-adversarial.mjs`
 - `node --test scripts/test-lifecycle-distribution.mjs`
 - `node --test scripts/test-runtime-context-budget.mjs`

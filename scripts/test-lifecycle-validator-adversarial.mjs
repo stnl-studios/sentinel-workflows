@@ -18,12 +18,13 @@ import {
   validateResumeTransition,
   validateWorkspace,
   workspaceSnapshot,
-} from "../skills/stnl-spec-lifecycle-manager/runtime/lib/lifecycle.mjs";
+} from "../skills/workflows/stnl-spec-lifecycle-manager/runtime/lib/lifecycle.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const FIXTURES = path.join(
   ROOT,
   "skills",
+  "workflows",
   "stnl-spec-lifecycle-manager",
   "examples",
   "validator-fixtures",
@@ -31,6 +32,7 @@ const FIXTURES = path.join(
 const VALIDATOR = path.join(
   ROOT,
   "skills",
+  "workflows",
   "stnl-spec-lifecycle-manager",
   "runtime",
   "validate-spec-lifecycle.mjs",

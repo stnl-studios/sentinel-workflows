@@ -25,9 +25,10 @@ Read in this order: approved plan; diff; changed files; changed tests; nearby pa
 
 - `stnl-backend-dotnet`
 - `stnl-backend-node-typescript`
+- `stnl-database-persistence`
 - `stnl-frontend-react-next-angular`
+- `stnl-mobile-ios-swift`
 - `stnl-testing`
-- `stnl-database-migrations`
 - `stnl-security-auth`
 
 ## Skill loading rule
