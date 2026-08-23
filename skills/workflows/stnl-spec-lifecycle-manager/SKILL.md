@@ -59,8 +59,6 @@ On validator failure, stop before semantic review and load only the diagnostic's
 - `READINESS`: return findings without workspace mutation; `GLOBAL/READY` follows invariant 7.
 - `CLOSE`: verify the attestation, render, validate, and publish without model-authored consolidation.
 
-Return only verdict/status, changed lifecycle files, documentary decisions, actionable findings with paths or IDs, validations, and next allowed step.
-
 ## Evaluation
 
 When changing this skill, read `references/eval-guidance.md` and run its lifecycle, renderer, distribution, and budget checks. Validate mode boundaries, relations, default-deny RESUME, readiness immutability, lossless closure, recovery-safe publication, and external preservation.

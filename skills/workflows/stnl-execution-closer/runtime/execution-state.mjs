@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import * as fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 
 const ROOT_FILES = new Set(["plan.md", "tasks.md"]);
@@ -11,6 +12,28 @@ const SLICE_OPERATIONS = new Set(["EXECUTE_SLICE", "APPLY_FINDINGS", "VALIDATE_S
 const OPERATIONS = new Set([
   "PLAN", "REVIEW_PLAN", "MATERIALIZE_TASKS", "REVIEW_TASKS", "REPLAN",
   "EXECUTE_SLICE", "APPLY_FINDINGS", "VALIDATE_SLICE", "CLOSE",
+]);
+export const EXECUTION_WORKFLOW_SKILLS = Object.freeze({
+  PLAN: "stnl-execution-planner",
+  REPLAN: "stnl-execution-planner",
+  REVIEW_PLAN: "stnl-plan-reviewer",
+  MATERIALIZE_TASKS: "stnl-task-materializer",
+  REVIEW_TASKS: "stnl-task-reviewer",
+  EXECUTE_SLICE: "stnl-slice-executor",
+  APPLY_FINDINGS: "stnl-slice-executor",
+  VALIDATE_SLICE: "stnl-slice-quality-manager",
+  CLOSE: "stnl-execution-closer",
+});
+const OPERATION_STATES = new Map([
+  ["PLAN", new Set(["EMPTY"])],
+  ["REVIEW_PLAN", new Set(["PLANNED_DRAFT", "PLANNED_READY", "PENDING_REPLAN_DRAFT", "PENDING_REPLAN_READY"])],
+  ["MATERIALIZE_TASKS", new Set(["PLANNED_READY", "PENDING_REPLAN_READY"])],
+  ["REVIEW_TASKS", new Set(["MATERIALIZED_PRISTINE"])],
+  ["REPLAN", new Set(["PLANNED_DRAFT", "PLANNED_READY", "MATERIALIZED_PRISTINE", "EXECUTION_STARTED", "REQUIREMENTS_CHANGED", "DIVERGENCE_BLOCKED", "VALIDATION_BLOCKED", "IMPLEMENTED_AWAITING_VALIDATION", "FINDINGS_CORRECTED", "REPLAN_REQUIRED", "COMPLETE"])],
+  ["EXECUTE_SLICE", new Set(["MATERIALIZED_PRISTINE", "EXECUTION_STARTED", "AUXILIARY_BLOCKED", "RUNNER_INITIALIZATION_BLOCKED", "RUNNER_RESULT_BLOCKED"])],
+  ["APPLY_FINDINGS", new Set(["VALIDATION_NEEDS_FIX", "AUXILIARY_BLOCKED", "RUNNER_INITIALIZATION_BLOCKED", "RUNNER_RESULT_BLOCKED"])],
+  ["VALIDATE_SLICE", new Set(["IMPLEMENTED_AWAITING_VALIDATION", "FINDINGS_CORRECTED", "VALIDATION_BLOCKED", "IMPLEMENTATION_RETRY_EXHAUSTED", "FINDINGS_RETRY_EXHAUSTED", "RUNNER_INITIALIZATION_BLOCKED", "RUNNER_RESULT_BLOCKED"])],
+  ["CLOSE", new Set(["COMPLETE"])],
 ]);
 const CURRENT_AUTHORITY = /^sha256:([0-9a-f]{64})$/u;
 const HASH_DOMAIN = Buffer.from("stnl-requirements-authority-v1\0", "utf8");
@@ -54,11 +77,12 @@ const CLOSED_RECORD_SECTIONS = new Set([
 const PURPOSE_HEADER_FIELDS = ["purpose", "status", "read_when", "do_not_read_when", "contains", "owner", "update_policy"];
 
 export class ExecutionContractError extends Error {
-  constructor(message, findings = [], recoveryTargets = []) {
+  constructor(message, findings = [], recoveryTargets = [], contractViolation = null) {
     super(message);
     this.name = "ExecutionContractError";
     this.findings = findings;
     this.recoveryTargets = recoveryTargets;
+    this.contractViolation = contractViolation;
   }
 }
 
@@ -476,7 +500,76 @@ function blockerRecords(section, kind) {
   return records;
 }
 
-function parseChecks(section, prefix) {
+const CHECK_FIELD_NAMES = new Set([
+  "Automatic check round", "Status", "HEAD", "Tested scope", "Tested state", "Discovery sources",
+  "Discovery actions", "Verification types considered", "Commands", "Selected checks", "Selection rationale",
+  "Coverage", "Failures", "Blockers", "Unexpected workspace effects", "Persistence summary",
+  "Prior-round failure", "Correction applied", "Correction paths", "Updated scope", "In-slice rationale",
+  "Findings cycle", "Finding IDs", "Findings verified", "Corrections covered", "Regressions",
+  "Unsupported active findings", "Non-applicability rationale", "No verification-command confirmation",
+]);
+
+function exactFieldLines(body, name) {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  return [...String(body).matchAll(new RegExp(`^- ${escaped}:[ \\t]*(.*)$`, "gmu"))];
+}
+
+function findingsIdContractViolation(record, {
+  artifact = null,
+  section = "Findings Test Evidence",
+  declaredFindingIds = new Set(),
+} = {}) {
+  const canonical = exactFieldLines(record.body, "Finding IDs");
+  const legacy = exactFieldLines(record.body, "Findings IDs");
+  if (canonical.length === 1 && legacy.length === 0) return null;
+
+  let reason = "unknown-or-missing-field";
+  let foundField = null;
+  let repairability = "blocked";
+  if (canonical.length > 1) {
+    reason = "duplicate-canonical-field";
+    foundField = "Finding IDs";
+  } else if (canonical.length === 1 && legacy.length !== 0) {
+    reason = "canonical-and-alias-conflict";
+    foundField = "Findings IDs";
+  } else if (legacy.length > 1) {
+    reason = "duplicate-legacy-field";
+    foundField = "Findings IDs";
+  } else if (legacy.length === 1) {
+    foundField = "Findings IDs";
+    const value = legacy[0][1].trim();
+    if (/^finding-[0-9]{2,}$/u.test(value) && declaredFindingIds.has(value)) {
+      reason = "exact-approved-alias";
+      repairability = "mechanical";
+    } else reason = "invalid-repair-value";
+  } else {
+    const labels = [...record.body.matchAll(/^- ([^:\n]+):/gmu)].map((match) => match[1]);
+    foundField = labels.find((label) => !CHECK_FIELD_NAMES.has(label)) ?? null;
+  }
+  return Object.freeze({
+    kind: "non-canonical-field",
+    artifact,
+    section,
+    record: record.id,
+    expectedField: "Finding IDs",
+    foundField,
+    owner: "execution-contract-runtime",
+    repairability,
+    reason,
+  });
+}
+
+function throwFindingsIdViolation(violation) {
+  const found = violation.foundField === null ? "missing field" : `'${violation.foundField}'`;
+  throw new ExecutionContractError(
+    `${violation.artifact ?? violation.record}:${violation.record} expected exactly one 'Finding IDs' field; found ${found}; contract repair ${violation.repairability}`,
+    violation.artifact === null ? [] : [violation.artifact],
+    [],
+    violation,
+  );
+}
+
+function parseChecks(section, prefix, context = {}) {
   const records = operationRecords(section, prefix, { statusValues: new Set(["TESTS_PASS", "TESTS_FAIL", "TESTS_NOT_APPLICABLE", "BLOCKED"]) });
   for (const record of records) {
     const round = field(record.body, "Automatic check round").match(/^([123])\/3$/u);
@@ -502,6 +595,8 @@ function parseChecks(section, prefix) {
       requireNonPlaceholder(field(record.body, "No verification-command confirmation"), `${record.id} No verification-command confirmation`);
     }
     if (prefix === "findings-check") {
+      const violation = findingsIdContractViolation(record, context);
+      if (violation !== null) throwFindingsIdViolation(violation);
       record.findingsCycle = field(record.body, "Findings cycle");
       if (!/^attempt-[0-9]{2,}$/u.test(record.findingsCycle)) throw new ExecutionContractError(`${record.id} has invalid Findings cycle`);
       for (const name of ["Finding IDs", "Findings verified", "Corrections covered", "Regressions", "Unsupported active findings"]) {
@@ -685,8 +780,19 @@ function parseTask(text, label, expectedSlice, references = {}) {
   const declared = field(body, "Slice");
   if (declared !== expectedSlice.slice("slice-".length)) throw new ExecutionContractError(`${label} declares the wrong slice`);
   for (const name of PRISTINE.keys()) if (!taskSections.has(name)) throw new ExecutionContractError(`${label} is missing ${name}`);
-  const implementationChecks = parseChecks(taskSections.get("Implementation Test Evidence"), "implementation-check");
-  const findingsChecks = parseChecks(taskSections.get("Findings Test Evidence"), "findings-check");
+  const declaredFindingIds = new Set([
+    ...taskSections.get("Validation Findings").matchAll(/^### (finding-[0-9]{2,})$/gmu),
+  ].map((match) => match[1]));
+  const implementationChecks = parseChecks(taskSections.get("Implementation Test Evidence"), "implementation-check", {
+    artifact: label,
+    section: "Implementation Test Evidence",
+    declaredFindingIds,
+  });
+  const findingsChecks = parseChecks(taskSections.get("Findings Test Evidence"), "findings-check", {
+    artifact: label,
+    section: "Findings Test Evidence",
+    declaredFindingIds,
+  });
   const attempts = parseAttempts(taskSections.get("Validation Attempts"));
   const findings = blockerRecords(taskSections.get("Validation Findings"), "finding");
   const divergences = blockerRecords(taskSections.get("Divergences"), "divergence");
@@ -892,7 +998,7 @@ async function executionArtifacts(workspace) {
     const taskDirectory = path.join(workspace.executionRoot, "tasks");
     const taskPath = path.join(taskDirectory, `${row.slice}.md`);
     await requireRealFile(taskPath, `${row.slice} detailed task`);
-    const task = parseTask(await fs.readFile(taskPath, "utf8"), `${row.slice} task`, row.slice, {
+    const task = parseTask(await fs.readFile(taskPath, "utf8"), taskPath, row.slice, {
       requirementsSource: requirementsReference(workspace, taskDirectory),
     });
     const plan = plans.get(row.slice);
@@ -1276,8 +1382,98 @@ export function deriveRecoveryTargets(result) {
   return uniqueRecoveryTargets(targets);
 }
 
+function handoffForTarget(target) {
+  const workflowSkill = workflowSkillForOperation(target.operation);
+  return Object.freeze({
+    workflowSkill,
+    operation: target.operation,
+    invocation: `OPERATION=${target.operation}`,
+    slice: target.slice,
+  });
+}
+
+export function workflowSkillForOperation(operation) {
+  const workflowSkill = EXECUTION_WORKFLOW_SKILLS[String(operation)];
+  if (workflowSkill === undefined) throw new ExecutionContractError(`no workflow skill owns ${operation}`);
+  return workflowSkill;
+}
+
+function simplifiedTarget(target) {
+  return Object.freeze({ operation: target.operation, slice: target.slice });
+}
+
+export function deriveLegalOperations(result, recoveryTargets = deriveRecoveryTargets(result)) {
+  const mandatory = recoveryTargets.filter((target) => target.sameOperationResumeRequired);
+  if (mandatory.length > 1) throw new ExecutionContractError(`${result.state} has ambiguous mandatory recovery authority`);
+  if (mandatory.length === 1) return Object.freeze([simplifiedTarget(mandatory[0])]);
+  const legal = [];
+  for (const [operation, states] of OPERATION_STATES) {
+    if (!states.has(result.state)) continue;
+    if (!SLICE_OPERATIONS.has(operation)) legal.push(Object.freeze({ operation, slice: null }));
+    else {
+      for (const target of recoveryTargets.filter((candidate) => candidate.operation === operation)) {
+        legal.push(simplifiedTarget(target));
+      }
+    }
+  }
+  return Object.freeze(uniqueRecoveryTargets(legal));
+}
+
+function uniqueNormalTarget(result, operation) {
+  const matches = result.legalOperations.filter((target) => target.operation === operation);
+  return matches.length === 1 ? matches[0] : null;
+}
+
+export function deriveNormalHandoff(result, completedOperation = null) {
+  if (result.mandatoryRecovery !== null) return null;
+  let operation = null;
+  if (completedOperation !== null) {
+    workflowSkillForOperation(completedOperation);
+    if (new Set(["PLAN", "REPLAN"]).has(completedOperation)
+      && new Set(["PLANNED_DRAFT", "PENDING_REPLAN_DRAFT"]).has(result.state)) operation = "REVIEW_PLAN";
+    else if (completedOperation === "REVIEW_PLAN"
+      && new Set(["PLANNED_READY", "PENDING_REPLAN_READY"]).has(result.state)) operation = "MATERIALIZE_TASKS";
+    else if (completedOperation === "MATERIALIZE_TASKS" && result.state === "MATERIALIZED_PRISTINE") operation = "REVIEW_TASKS";
+    else if (completedOperation === "MATERIALIZE_TASKS" && result.state === "EXECUTION_STARTED") operation = "EXECUTE_SLICE";
+    else if (completedOperation === "REVIEW_TASKS" && result.state === "MATERIALIZED_PRISTINE") operation = "EXECUTE_SLICE";
+    else if (completedOperation === "EXECUTE_SLICE" && result.state === "IMPLEMENTED_AWAITING_VALIDATION") operation = "VALIDATE_SLICE";
+    else if (completedOperation === "APPLY_FINDINGS" && result.state === "FINDINGS_CORRECTED") operation = "VALIDATE_SLICE";
+    else if (completedOperation === "VALIDATE_SLICE" && result.state === "VALIDATION_NEEDS_FIX") operation = "APPLY_FINDINGS";
+    else if (completedOperation === "VALIDATE_SLICE" && result.state === "EXECUTION_STARTED") operation = "EXECUTE_SLICE";
+    else if (completedOperation === "VALIDATE_SLICE" && result.state === "COMPLETE") operation = "CLOSE";
+  } else if (result.state === "EMPTY") operation = "PLAN";
+  else if (result.state === "PLANNED_DRAFT") operation = "REVIEW_PLAN";
+  else if (result.state === "PLANNED_READY") operation = "MATERIALIZE_TASKS";
+  else if (result.state === "EXECUTION_STARTED") operation = "EXECUTE_SLICE";
+  else if (result.state === "IMPLEMENTED_AWAITING_VALIDATION" || result.state === "FINDINGS_CORRECTED") operation = "VALIDATE_SLICE";
+  else if (result.state === "COMPLETE") operation = "CLOSE";
+  if (operation === null) return null;
+  const target = uniqueNormalTarget(result, operation);
+  return target === null ? null : handoffForTarget(target);
+}
+
+function deriveRequiredRecoveryHandoff(result) {
+  if (result.mandatoryRecovery !== null) return null;
+  const targets = result.recoveryTargets.filter((target) => target.owner === "retry-exhaustion");
+  if (targets.length > 1) throw new ExecutionContractError(`${result.state} has ambiguous required recovery authority`);
+  return targets.length === 0 ? null : handoffForTarget(targets[0]);
+}
+
 function withRecoveryTargets(result) {
-  return { ...result, recoveryTargets: deriveRecoveryTargets(result) };
+  const recoveryTargets = deriveRecoveryTargets(result);
+  const mandatory = recoveryTargets.filter((target) => target.sameOperationResumeRequired);
+  if (mandatory.length > 1) throw new ExecutionContractError(`${result.state} has ambiguous mandatory recovery authority`);
+  const state = {
+    ...result,
+    recoveryTargets,
+    legalOperations: deriveLegalOperations(result, recoveryTargets),
+    mandatoryRecovery: mandatory.length === 1 ? mandatory[0] : null,
+  };
+  return {
+    ...state,
+    normalHandoff: deriveNormalHandoff(state),
+    requiredRecoveryHandoff: deriveRequiredRecoveryHandoff(state),
+  };
 }
 
 export function formatRecoveryTarget(target) {
@@ -1295,6 +1491,181 @@ function recoveryError(operation, result) {
     [],
     result.recoveryTargets,
   );
+}
+
+function pathIsWithin(candidate, root) {
+  const relative = path.relative(root, candidate);
+  return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative));
+}
+
+async function createCandidateShadow(workspace) {
+  const liveContainer = workspace.kind === "lifecycle" ? workspace.specRoot : path.dirname(workspace.authorityPath);
+  const shadowParent = path.dirname(liveContainer);
+  const shadowRoot = await fs.realpath(await fs.mkdtemp(path.join(
+    shadowParent,
+    `.${path.basename(liveContainer)}.stnl-execution-candidate-`,
+  )));
+  try {
+    if (workspace.kind === "standalone") {
+      const authority = path.join(shadowRoot, path.basename(workspace.authorityPath));
+      await fs.copyFile(workspace.authorityPath, authority);
+      return {
+        shadowRoot,
+        specPath: authority,
+        executionRoot: path.join(shadowRoot, path.basename(workspace.executionRoot)),
+      };
+    }
+    const specRoot = shadowRoot;
+    await fs.copyFile(workspace.authorityPath, path.join(specRoot, "feature_spec.md"));
+    const shared = path.join(workspace.specRoot, "shared");
+    const sharedMetadata = await lstatOrNull(shared);
+    if (sharedMetadata !== null) await fs.cp(shared, path.join(specRoot, "shared"), { recursive: true });
+    return { shadowRoot, specPath: specRoot, executionRoot: path.join(specRoot, "execution") };
+  } catch (error) {
+    await fs.rm(shadowRoot, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+async function assertCandidateTreeSafe(directory) {
+  for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
+    const entryPath = path.join(directory, entry.name);
+    const metadata = await fs.lstat(entryPath);
+    if (metadata.isSymbolicLink()) throw new ExecutionContractError(`candidate execution tree contains a symlink: ${entryPath}`, [entryPath]);
+    if (metadata.isDirectory()) await assertCandidateTreeSafe(entryPath);
+    else if (!metadata.isFile() || metadata.nlink !== 1) {
+      throw new ExecutionContractError(`candidate execution tree entry must be a single-link real file: ${entryPath}`, [entryPath]);
+    }
+  }
+}
+
+export async function validateExecutionCandidate(specPath, candidateExecutionRoot) {
+  const workspace = await resolveExecutionWorkspace(specPath);
+  const candidate = path.resolve(String(candidateExecutionRoot));
+  await assertNoSymlinkComponents(candidate, "candidate execution root");
+  const metadata = await lstatOrNull(candidate);
+  if (metadata === null || metadata.isSymbolicLink() || !metadata.isDirectory()) {
+    throw new ExecutionContractError(`candidate execution root must be a real directory: ${candidate}`, [candidate]);
+  }
+  if (pathIsWithin(candidate, workspace.executionRoot) || pathIsWithin(workspace.executionRoot, candidate)) {
+    throw new ExecutionContractError("candidate execution root must be isolated from live execution artifacts", [candidate]);
+  }
+  await assertCandidateTreeSafe(candidate);
+  const shadow = await createCandidateShadow(workspace);
+  try {
+    await fs.cp(candidate, shadow.executionRoot, { recursive: true });
+    const result = await inspectExecutionState(shadow.specPath);
+    return Object.freeze({
+      state: result.state,
+      currentFingerprint: result.currentFingerprint,
+      legalOperations: result.legalOperations,
+      mandatoryRecovery: result.mandatoryRecovery,
+      normalHandoff: result.normalHandoff,
+      requiredRecoveryHandoff: result.requiredRecoveryHandoff,
+    });
+  } finally {
+    await fs.rm(shadow.shadowRoot, { recursive: true, force: true });
+  }
+}
+
+async function atomicReplaceFile(filePath, bytes, mode) {
+  const temporary = `${filePath}.stnl-contract-repair-${process.pid}-${randomUUID()}`;
+  let handle;
+  try {
+    handle = await fs.open(temporary, "wx", mode);
+    await handle.writeFile(bytes);
+    await handle.sync();
+    await handle.close();
+    handle = null;
+    await fs.rename(temporary, filePath);
+  } finally {
+    await handle?.close();
+    await fs.rm(temporary, { force: true });
+  }
+}
+
+function repairBlockedError(violation) {
+  const found = violation.foundField === null ? "missing field" : `'${violation.foundField}'`;
+  return new ExecutionContractError(
+    `${violation.artifact}:${violation.record} expected exactly one 'Finding IDs' field; found ${found}; contract repair blocked (${violation.reason})`,
+    [violation.artifact],
+    [],
+    violation,
+  );
+}
+
+export async function repairExecutionContract(specPath) {
+  let violation;
+  try {
+    const state = await inspectExecutionState(specPath);
+    return Object.freeze({ status: "UNCHANGED", repairs: Object.freeze([]), state: state.state });
+  } catch (error) {
+    if (!(error instanceof ExecutionContractError)) throw error;
+    if (error.contractViolation?.repairability !== "mechanical") throw error;
+    violation = error.contractViolation;
+  }
+
+  const workspace = await resolveExecutionWorkspace(specPath);
+  const artifact = path.resolve(String(violation.artifact));
+  const taskRoot = path.join(workspace.executionRoot, "tasks");
+  if (!pathIsWithin(artifact, taskRoot) || path.dirname(artifact) !== taskRoot || !SLICE_FILE.test(path.basename(artifact))) {
+    throw repairBlockedError(Object.freeze({ ...violation, repairability: "blocked", reason: "artifact-outside-task-root" }));
+  }
+  await requireRealFile(artifact, "contract repair artifact");
+  const original = await fs.readFile(artifact);
+  const text = original.toString("utf8");
+  const escapedRecord = violation.record.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  const headings = [...text.matchAll(new RegExp(`^### ${escapedRecord}$`, "gmu"))];
+  if (headings.length !== 1) {
+    throw repairBlockedError(Object.freeze({ ...violation, repairability: "blocked", reason: "record-identity-changed" }));
+  }
+  const recordStart = headings[0].index;
+  const boundary = /^#{2,3} /gmu;
+  boundary.lastIndex = recordStart + headings[0][0].length;
+  const nextHeading = boundary.exec(text);
+  const recordEnd = nextHeading?.index ?? text.length;
+  const record = text.slice(recordStart, recordEnd);
+  if (exactFieldLines(record, "Findings IDs").length !== 1 || exactFieldLines(record, "Finding IDs").length !== 0) {
+    throw repairBlockedError(Object.freeze({ ...violation, repairability: "blocked", reason: "record-fields-changed" }));
+  }
+  const repairedRecord = record.replace(/^- Findings IDs:(?=[ \t])/mu, "- Finding IDs:");
+  if (repairedRecord === record) {
+    throw repairBlockedError(Object.freeze({ ...violation, repairability: "blocked", reason: "non-lossless-label-replacement" }));
+  }
+  const candidateBytes = Buffer.from(`${text.slice(0, recordStart)}${repairedRecord}${text.slice(recordEnd)}`, "utf8");
+
+  const candidateContainer = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "stnl-execution-repair-")));
+  const candidateRoot = path.join(candidateContainer, "execution");
+  try {
+    await fs.cp(workspace.executionRoot, candidateRoot, { recursive: true });
+    const relative = path.relative(workspace.executionRoot, artifact);
+    await fs.writeFile(path.join(candidateRoot, relative), candidateBytes);
+    await validateExecutionCandidate(specPath, candidateRoot);
+
+    if (!Buffer.from(await fs.readFile(artifact)).equals(original)) {
+      throw new ExecutionContractError(`contract repair source changed during candidate validation: ${artifact}`, [artifact]);
+    }
+    const metadata = await fs.stat(artifact);
+    let published = false;
+    try {
+      await atomicReplaceFile(artifact, candidateBytes, metadata.mode);
+      published = true;
+      const state = await inspectExecutionState(specPath);
+      return Object.freeze({
+        status: "REPAIRED",
+        repairs: Object.freeze([Object.freeze({
+          ...violation,
+          changedLabel: "Findings IDs -> Finding IDs",
+        })]),
+        state: state.state,
+      });
+    } catch (error) {
+      if (published) await atomicReplaceFile(artifact, original, metadata.mode);
+      throw error;
+    }
+  } finally {
+    await fs.rm(candidateContainer, { recursive: true, force: true });
+  }
 }
 
 export async function preflightExecutionOperation(specPath, operation, sliceValue = null) {
@@ -1335,17 +1706,7 @@ export async function preflightExecutionOperation(specPath, operation, sliceValu
       result.recoveryTargets,
     );
   }
-  const allowed = {
-    PLAN: new Set(["EMPTY"]),
-    REVIEW_PLAN: new Set(["PLANNED_DRAFT", "PLANNED_READY", "PENDING_REPLAN_DRAFT", "PENDING_REPLAN_READY"]),
-    MATERIALIZE_TASKS: new Set(["PLANNED_READY", "PENDING_REPLAN_READY"]),
-    REVIEW_TASKS: new Set(["MATERIALIZED_PRISTINE"]),
-    REPLAN: new Set(["PLANNED_DRAFT", "PLANNED_READY", "MATERIALIZED_PRISTINE", "EXECUTION_STARTED", "REQUIREMENTS_CHANGED", "DIVERGENCE_BLOCKED", "VALIDATION_BLOCKED", "IMPLEMENTED_AWAITING_VALIDATION", "FINDINGS_CORRECTED", "REPLAN_REQUIRED", "COMPLETE"]),
-    EXECUTE_SLICE: new Set(["MATERIALIZED_PRISTINE", "EXECUTION_STARTED", "AUXILIARY_BLOCKED", "RUNNER_INITIALIZATION_BLOCKED", "RUNNER_RESULT_BLOCKED"]),
-    APPLY_FINDINGS: new Set(["VALIDATION_NEEDS_FIX", "AUXILIARY_BLOCKED", "RUNNER_INITIALIZATION_BLOCKED", "RUNNER_RESULT_BLOCKED"]),
-    VALIDATE_SLICE: new Set(["IMPLEMENTED_AWAITING_VALIDATION", "FINDINGS_CORRECTED", "VALIDATION_BLOCKED", "IMPLEMENTATION_RETRY_EXHAUSTED", "FINDINGS_RETRY_EXHAUSTED", "RUNNER_INITIALIZATION_BLOCKED", "RUNNER_RESULT_BLOCKED"]),
-    CLOSE: new Set(["COMPLETE"]),
-  }[normalizedOperation];
+  const allowed = OPERATION_STATES.get(normalizedOperation);
   if (!allowed.has(result.state)) throw recoveryError(normalizedOperation, result);
   const operationTargets = result.recoveryTargets.filter((target) => target.operation === normalizedOperation);
   if (operationTargets.length !== 0 && !operationTargets.some((target) => target.slice === slice)) {

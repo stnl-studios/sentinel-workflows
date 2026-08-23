@@ -20,6 +20,8 @@ Run exactly one manual operation: `EXECUTE_SLICE` or `APPLY_FINDINGS`. Work on o
 
 Current requirements authority and approved plans define scope. `tasks.md` defines global progress and is read-only for this skill. The selected detailed task file authorizes local work and records execution. Its `Requirements authority` and `Plan revision` must match the current open slice and deterministic preflight. The configured independent runner owns only the check result; it does not own implementation, correction, persistence, the formal validation verdict, or completion. Other slice artifacts are out of scope unless a concrete dependency must be checked read-only.
 
+Execution preflight is read-only. Only when it reports the exact mechanical `Findings IDs` contract violation may this skill explicitly run `node "<SKILL_ROOT>/runtime/validate-execution-state.mjs" <SPEC_PATH> --repair-known-contract` once and repeat the original preflight; every other contract violation blocks.
+
 ## Minimum Reads
 
 - `plan.md`, `tasks.md`, selected detailed plan and task file;
@@ -65,6 +67,10 @@ Then delegate checks automatically and append the result under `Findings Test Ev
 
 On `TESTS_FAIL` before the third round, adjust only persisted active findings, failures introduced or exposed by their corrections, directly related regressions, and necessary effects inside approved scope. Update corrections and changed scope, record the between-round correction, and invoke the runner again within the same `APPLY_FINDINGS`. On the third `TESTS_FAIL`, persist evidence, leave every previously active finding active while preserving historical states, enter `FINDINGS_RETRY_EXHAUSTED`, and report explicit `VALIDATE_SLICE` as the only next slice action; do not correct again or permit executor re-entry. On `TESTS_NOT_APPLICABLE`, persist objective discovery, relevant read-only discovery actions, verification types considered, rationale, and confirmation that no verification command was executed without resolving findings. On `BLOCKED`, preserve cause and required action and enter `AUXILIARY_BLOCKED`. Do not perform formal validation, mark completion, set final result, replace prior Validation Attempts or Effective Validation Base, or invoke `VALIDATE_SLICE` automatically. If correction requires a requirement, scope, dependency, or strategy change, append an active blocking divergence and direct first to lifecycle `RESUME` when needed and then explicit `REPLAN`.
 
+## Execution artifact publication
+
+Never append or replace a live execution record directly. Copy the complete execution tree to an isolated operating-system temporary candidate, apply only executor-owned changes there, and execute `node "<SKILL_ROOT>/runtime/validate-execution-state.mjs" <SPEC_PATH> --candidate <CANDIDATE_EXECUTION_ROOT>`. This invocation and publication ownership are contract/model enforced; the runtime enforces strict candidate parsing when called, but is not a publisher and does not authorize the diff. A rejected candidate consumes no additional runner call, check round, identifier, or live history. Publish only the selected task artifact using the operation's existing preservation rules, then strictly read back through the original preflight before declaring the record persisted.
+
 ## Allowed Effects
 
 - modify implementation and tests inside the selected scope;
@@ -78,4 +84,4 @@ Block missing or invalid inputs, absent artifacts, incomplete dependencies, stal
 
 ## Output
 
-Report operation, selected slice, changed areas, delegated-check status and evidence location, divergences, and the next appropriate explicit action. Stop.
+After persistence, execute `node "<SKILL_ROOT>/runtime/validate-execution-state.mjs" <SPEC_PATH> --handoff-after <OPERATION>` and report its normal handoff, every legal operation, required recovery handoff, and mandatory same-operation recovery as separate fields. Also report operation, selected slice, changed areas, delegated-check status and evidence location, divergences, and candidate/read-back validation. Stop.

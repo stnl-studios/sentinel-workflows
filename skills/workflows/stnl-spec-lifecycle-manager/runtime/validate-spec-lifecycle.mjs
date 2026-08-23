@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import {
   ValidationError,
+  deriveLifecycleHandoff,
   validateCloseTransition,
   validateInitTransition,
   validateReadinessTransition,
@@ -9,11 +10,11 @@ import {
 } from './lib/lifecycle.mjs';
 import { cliError, helpRequested, parseOptions, printHelp } from './lib/cli.mjs';
 
-const usage = 'validate-spec-lifecycle.mjs {workspace,init-transition,resume-transition,readiness-transition,close-transition} ...';
+const usage = 'validate-spec-lifecycle.mjs {workspace,handoff,init-transition,resume-transition,readiness-transition,close-transition} ...';
 const tokens = process.argv.slice(2);
 const wantsHelp = helpRequested(tokens);
 const command = tokens.shift();
-const commands = new Set(['workspace', 'init-transition', 'resume-transition', 'readiness-transition', 'close-transition']);
+const commands = new Set(['workspace', 'handoff', 'init-transition', 'resume-transition', 'readiness-transition', 'close-transition']);
 if (wantsHelp) printHelp(usage);
 else if (!command) cliError('the following arguments are required: command', usage);
 else if (!commands.has(command)) cliError(`argument command: invalid choice: '${command}'`, usage);
@@ -22,7 +23,7 @@ else {
   let expected;
   if (command === 'resume-transition') { parsed = parseOptions(tokens, { '--manifest': { required: true } }); expected = 2; }
   else if (command === 'readiness-transition') { parsed = parseOptions(tokens, { '--scope': { required: true, choices: ['LOCAL', 'GLOBAL'] } }); expected = 2; }
-  else { parsed = parseOptions(tokens, {}); expected = command === 'workspace' ? 1 : 2; }
+  else { parsed = parseOptions(tokens, {}); expected = new Set(['workspace', 'handoff']).has(command) ? 1 : 2; }
   if (parsed.error) cliError(parsed.error, usage);
   else if (parsed.positional.length !== expected) cliError(`expected ${expected} positional argument${expected === 1 ? '' : 's'}`, usage);
   else {
@@ -30,6 +31,8 @@ else {
       if (command === 'workspace') {
         const workspace = validateWorkspace(parsed.positional[0]);
         process.stdout.write(`PASS: ${workspace.root} status=${workspace.status} ids=${workspace.items.size}\n`);
+      } else if (command === 'handoff') {
+        process.stdout.write(`${JSON.stringify(deriveLifecycleHandoff(parsed.positional[0]))}\n`);
       } else if (command === 'init-transition') {
         const workspace = validateInitTransition(...parsed.positional);
         process.stdout.write(`PASS: INIT published ${workspace.root} status=${workspace.status} ids=${workspace.items.size}\n`);

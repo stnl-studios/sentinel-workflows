@@ -19,6 +19,8 @@ Run exactly one operation: `PLAN` or `REPLAN`. Convert an authoritative requirem
 
 The normalized requirements source remains authoritative and unchanged. Compute its canonical `stnl-requirements-authority-v1` SHA-256 fingerprint before planning and persist exactly `- Requirements authority: sha256:<64hex>` and `- Plan revision: <positive integer>`. This skill may create or revise only `plan.md` and `plans/slice-NN.md` below the derived execution root. Before tasks exist, `REPLAN` replaces only the unmaterialized planning authority. After tasks exist, it may stage the precise task-history transitions later committed atomically by `MATERIALIZE_TASKS`; it never mutates tasks itself. Persist every path relative to the artifact containing it.
 
+Execution preflight is read-only. Only when it reports the exact mechanical `Findings IDs` contract violation may this skill explicitly run `node "<SKILL_ROOT>/runtime/validate-execution-state.mjs" <SPEC_PATH> --repair-known-contract` once and repeat the original preflight; every other contract violation blocks.
+
 ## PLAN
 
 Before content reads or writes, execute `node "<SKILL_ROOT>/runtime/validate-execution-state.mjs" <SPEC_PATH> PLAN`. Ignore `__MACOSX`, `.DS_Store`, and `._*` when deciding whether a directory is empty. `PLAN` is allowed only when the root is absent or contains no other entries. If any recognized planning or execution artifact exists, return `BLOCKED`, list it, preserve every byte, and name the operation compatible with the observed state. Unrelated execution-root content is also a collision and blocks. Reset is not a PLAN behavior.
@@ -64,4 +66,4 @@ Block without writes when inputs or execution state are invalid, `PLAN` sees a n
 
 ## Output
 
-Report operation, status (`REPLAN_DRAFT` for successful `REPLAN`), current requirements fingerprint, plan revision, created or proposed paths, supersession mappings, slice order, coverage, material risks, and that `REVIEW_PLAN` is required. Stop.
+After successful publication, execute `node "<SKILL_ROOT>/runtime/validate-execution-state.mjs" <SPEC_PATH> --handoff-after <OPERATION>`. Report operation, status (`REPLAN_DRAFT` for successful `REPLAN`), current requirements fingerprint, plan revision, created or proposed paths, supersession mappings, slice order, coverage, material risks, the runtime's normal handoff, and every legal operation in the resulting state. A successful `PLAN` normally hands off to `stnl-plan-reviewer / OPERATION=REVIEW_PLAN`; legal `REPLAN` remains separate. Stop.

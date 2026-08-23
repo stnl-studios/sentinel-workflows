@@ -18,6 +18,8 @@ Run only `MATERIALIZE_TASKS`. Convert an approved initial plan or recovery revis
 
 The current approved `plan.md` and approved detailed plans are the only materialization authority. Their `Requirements authority` fingerprint and `Plan revision` must match current authority and the corresponding task references. Requirements clarify referenced acceptance only. This skill may create an initial task set, including from a reviewed planning-only replacement, atomically replace a wholly pristine canonical materialized plan/task set, or append one approved recovery extension. It may not alter requirements or code.
 
+Execution preflight is read-only. Only when it reports the exact mechanical `Findings IDs` contract violation may this skill explicitly run `node "<SKILL_ROOT>/runtime/validate-execution-state.mjs" <SPEC_PATH> --repair-known-contract` once and repeat the original preflight; every other contract violation blocks.
+
 ## MATERIALIZE_TASKS
 
 Before content reads or writes, execute `node "<SKILL_ROOT>/runtime/validate-execution-state.mjs" <SPEC_PATH> MATERIALIZE_TASKS`. Require a complete approved current revision, matching fingerprints and revision fields, consistent slice sets/order/dependencies/scope/references, and a deterministic materialization mode.
@@ -47,4 +49,4 @@ Return `NEEDS_REPLAN` without writing when plans are missing, unapproved, stale,
 
 ## Output
 
-Report materialization mode, current fingerprint/revision, created task paths, committed supersession mappings, slice count, and any `NEEDS_REPLAN` reason. Stop after `MATERIALIZE_TASKS`.
+After successful publication, execute `node "<SKILL_ROOT>/runtime/validate-execution-state.mjs" <SPEC_PATH> --handoff-after MATERIALIZE_TASKS`. Report materialization mode, current fingerprint/revision, created task paths, committed supersession mappings, slice count, the runtime's normal handoff, all legal operations, and any `NEEDS_REPLAN` reason. After initial/pristine materialization, the normal handoff is `stnl-task-reviewer / OPERATION=REVIEW_TASKS`; frontier-scoped `EXECUTE_SLICE` and `REPLAN` remain legal alternatives and are not promoted over that review. Recovery materialization with execution history follows the persisted frontier. Stop after `MATERIALIZE_TASKS`.

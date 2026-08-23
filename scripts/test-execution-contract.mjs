@@ -7,11 +7,17 @@ import path from "node:path";
 import test from "node:test";
 
 import {
+  deriveNormalHandoff,
+  EXECUTION_WORKFLOW_SKILLS,
   ExecutionContractError,
   computeRequirementsAuthority,
   inspectExecutionState,
   preflightExecutionOperation,
+  repairExecutionContract,
+  validateExecutionCandidate,
+  workflowSkillForOperation,
 } from "../skills/workflows/stnl-execution-closer/runtime/execution-state.mjs";
+import { WORKFLOW_OPERATIONS } from "./lib/skill-registry.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
 const SKILLS = [
@@ -431,10 +437,22 @@ async function passFirstSlice(fixture) {
   await writeValidatedPath(fixture);
 }
 
+async function prepareFindingsCorrection(fixture, findingIdsLabel = "Finding IDs") {
+  await editTask(fixture, (value) => {
+    let result = value.replace("- [ ] 1.1", "- [x] 1.1");
+    result = replaceSection(result, "Changed Areas", "- `../../src/example.txt`");
+    result = replaceSection(result, "Validation Attempts", NEEDS_FIX_ATTEMPT);
+    result = replaceSection(result, "Validation Findings", ACTIVE_FINDING);
+    const check = checkRecord("findings-check", 1, "TESTS_NOT_APPLICABLE", 1, { cycle: "attempt-01" })
+      .replace("- Finding IDs: finding-01", `- ${findingIdsLabel}: finding-01`);
+    return replaceSection(result, "Findings Test Evidence", check);
+  });
+}
+
 test("all execution skills bundle byte-identical self-contained state runtimes", async () => {
-  const names = ["execution-state.mjs", "validate-execution-state.mjs"];
-  for (const name of names) {
-  const copies = await Promise.all(SKILLS.map((skill) => fs.readFile(path.join(ROOT, "skills", "workflows", skill, "runtime", name))));
+  const stateSkills = [...SKILLS, "stnl-spec-test-runbook"];
+  for (const [name, skillNames] of [["execution-state.mjs", stateSkills], ["validate-execution-state.mjs", SKILLS]]) {
+    const copies = await Promise.all(skillNames.map((skill) => fs.readFile(path.join(ROOT, "skills", "workflows", skill, "runtime", name))));
     for (const copy of copies.slice(1)) assert.deepEqual(copy, copies[0], `${name} copies differ`);
     const source = copies[0].toString("utf8");
     assert.doesNotMatch(source, /stnl-spec-lifecycle-manager|\.\.\/\.\.\//u);
@@ -453,6 +471,40 @@ test("an isolated copied skill runs the stable self-contained preflight CLI", as
   const result = spawnSync(process.execPath, [path.join(copied, "runtime/validate-execution-state.mjs"), requirements, "PLAN"], { encoding: "utf8", cwd: root });
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /^PASS: PLAN preflight state=EMPTY authority=sha256:[0-9a-f]{64}$/mu);
+
+  const materialized = await standaloneWorkspace(t);
+  await renderArtifacts(materialized);
+  const afterMaterialize = spawnSync(process.execPath, [
+    path.join(copied, "runtime/validate-execution-state.mjs"),
+    materialized.requirements,
+    "--handoff-after",
+    "MATERIALIZE_TASKS",
+  ], { encoding: "utf8", cwd: root });
+  assert.equal(afterMaterialize.status, 0, afterMaterialize.stderr);
+  const materializeTransition = JSON.parse(afterMaterialize.stdout);
+  assert.equal(materializeTransition.normal_handoff.workflowSkill, "stnl-task-reviewer");
+  assert.equal(materializeTransition.normal_handoff.invocation, "OPERATION=REVIEW_TASKS");
+  assert.deepEqual(new Set(materializeTransition.legal_operations.map(({ operation }) => operation)), new Set([
+    "REVIEW_TASKS", "EXECUTE_SLICE", "REPLAN",
+  ]));
+
+  const afterReview = spawnSync(process.execPath, [
+    path.join(copied, "runtime/validate-execution-state.mjs"),
+    materialized.requirements,
+    "--handoff-after",
+    "REVIEW_TASKS",
+  ], { encoding: "utf8", cwd: root });
+  assert.equal(afterReview.status, 0, afterReview.stderr);
+  const reviewTransition = JSON.parse(afterReview.stdout);
+  assert.equal(reviewTransition.normal_handoff.workflowSkill, "stnl-slice-executor");
+  assert.equal(reviewTransition.normal_handoff.invocation, "OPERATION=EXECUTE_SLICE");
+  assert.equal(reviewTransition.normal_handoff.slice, "slice-01");
+});
+
+test("the model-authored findings-check writer contract invokes strict candidate validation", async () => {
+  const source = await fs.readFile(path.join(ROOT, "skills/workflows/stnl-slice-executor/SKILL.md"), "utf8");
+  assert.match(source, /validate-execution-state\.mjs" <SPEC_PATH> --candidate <CANDIDATE_EXECUTION_ROOT>/u);
+  assert.match(source, /contract\/model enforced/u);
 });
 
 test("actual templates render a machine-unambiguous MATERIALIZED_PRISTINE task", async (t) => {
@@ -462,6 +514,184 @@ test("actual templates render a machine-unambiguous MATERIALIZED_PRISTINE task",
   assert.doesNotMatch(task, /^### (?:implementation-check|findings-check|attempt)-/gmu);
   assert.equal((await inspectExecutionState(fixture.requirements)).state, "MATERIALIZED_PRISTINE");
   assert.equal((await preflightExecutionOperation(fixture.requirements, "REVIEW_TASKS")).state, "MATERIALIZED_PRISTINE");
+});
+
+test("normal workflow sequence is operation-aware and preserves independent legality", async (t) => {
+  const registryProjection = Object.fromEntries(Object.entries(WORKFLOW_OPERATIONS)
+    .flatMap(([skill, operations]) => operations
+      .filter((operation) => operation !== "GENERATE_RUNBOOK")
+      .map((operation) => [operation, skill])));
+  assert.deepEqual(EXECUTION_WORKFLOW_SKILLS, registryProjection);
+  for (const [operation, skill] of Object.entries(registryProjection)) assert.equal(workflowSkillForOperation(operation), skill);
+  assert.throws(() => workflowSkillForOperation("GENERATE_RUNBOOK"), /no workflow skill owns/u);
+
+  const empty = await standaloneWorkspace(t);
+  const emptyState = await inspectExecutionState(empty.requirements);
+  assert.deepEqual(emptyState.legalOperations.map(({ operation }) => operation), ["PLAN"]);
+  assert.deepEqual(emptyState.normalHandoff, {
+    workflowSkill: "stnl-execution-planner",
+    operation: "PLAN",
+    invocation: "OPERATION=PLAN",
+    slice: null,
+  });
+
+  const draft = await standaloneWorkspace(t);
+  await renderArtifacts(draft, { materialized: false, planStatus: "draft" });
+  const draftState = await inspectExecutionState(draft.requirements);
+  assert.deepEqual(draftState.legalOperations.map(({ operation }) => operation), ["REVIEW_PLAN", "REPLAN"]);
+  assert.equal(deriveNormalHandoff(draftState, "PLAN").workflowSkill, "stnl-plan-reviewer");
+  assert.equal(deriveNormalHandoff(draftState, "PLAN").invocation, "OPERATION=REVIEW_PLAN");
+
+  const ready = await standaloneWorkspace(t);
+  await renderArtifacts(ready, { materialized: false, planStatus: "ready" });
+  const readyState = await inspectExecutionState(ready.requirements);
+  assert.deepEqual(readyState.legalOperations.map(({ operation }) => operation), ["REVIEW_PLAN", "MATERIALIZE_TASKS", "REPLAN"]);
+  assert.equal(deriveNormalHandoff(readyState, "REVIEW_PLAN").workflowSkill, "stnl-task-materializer");
+  assert.equal(deriveNormalHandoff(readyState, "REVIEW_PLAN").invocation, "OPERATION=MATERIALIZE_TASKS");
+
+  const materialized = await standaloneWorkspace(t);
+  await renderArtifacts(materialized);
+  const materializedState = await inspectExecutionState(materialized.requirements);
+  assert.deepEqual(materializedState.legalOperations.map(({ operation }) => operation), ["REVIEW_TASKS", "REPLAN", "EXECUTE_SLICE"]);
+  assert.equal(materializedState.normalHandoff, null, "persisted state alone cannot prove whether task review ran");
+  const afterMaterialize = deriveNormalHandoff(materializedState, "MATERIALIZE_TASKS");
+  assert.equal(afterMaterialize.workflowSkill, "stnl-task-reviewer");
+  assert.equal(afterMaterialize.invocation, "OPERATION=REVIEW_TASKS");
+  assert.equal(afterMaterialize.slice, null);
+  const afterReview = deriveNormalHandoff(materializedState, "REVIEW_TASKS");
+  assert.equal(afterReview.workflowSkill, "stnl-slice-executor");
+  assert.equal(afterReview.invocation, "OPERATION=EXECUTE_SLICE");
+  assert.equal(afterReview.slice, "slice-01");
+});
+
+test("exact legacy Findings IDs corruption is structured, mechanically repaired, and semantically neutral", async (t) => {
+  const fixture = await standaloneWorkspace(t);
+  await renderArtifacts(fixture);
+  await prepareFindingsCorrection(fixture, "Findings IDs");
+  const taskPath = path.join(fixture.execution, "tasks/slice-01.md");
+  const before = await fs.readFile(taskPath, "utf8");
+
+  let strictError;
+  await assert.rejects(inspectExecutionState(fixture.requirements), (error) => {
+    strictError = error;
+    assert.equal(error.contractViolation.kind, "non-canonical-field");
+    assert.equal(error.contractViolation.record, "findings-check-01");
+    assert.equal(error.contractViolation.expectedField, "Finding IDs");
+    assert.equal(error.contractViolation.foundField, "Findings IDs");
+    assert.equal(error.contractViolation.repairability, "mechanical");
+    return true;
+  });
+  assert.ok(strictError instanceof ExecutionContractError);
+
+  const repair = await repairExecutionContract(fixture.requirements);
+  assert.equal(repair.status, "REPAIRED");
+  assert.equal(repair.repairs.length, 1);
+  const after = await fs.readFile(taskPath, "utf8");
+  assert.equal(after, before.replace("- Findings IDs: finding-01", "- Finding IDs: finding-01"));
+  assert.equal(after.replace("- Finding IDs: finding-01", "- Findings IDs: finding-01"), before);
+
+  const recovered = await inspectExecutionState(fixture.requirements);
+  assert.equal(recovered.state, "FINDINGS_CORRECTED");
+  assert.deepEqual(recovered.activeFindings, ["slice-01:finding-01"]);
+  assert.equal(recovered.tasks.get("slice-01").attempts.length, 1);
+  assert.equal(recovered.tasks.get("slice-01").findingsChecks.length, 1);
+  assert.equal(recovered.tasks.get("slice-01").findings[0].state, "active");
+  assert.equal(recovered.tasks.get("slice-01").base.present, false);
+  assert.equal(recovered.tasks.get("slice-01").final.result, "pending");
+  assert.equal(recovered.normalHandoff.invocation, "OPERATION=VALIDATE_SLICE");
+  assert.equal(recovered.normalHandoff.slice, "slice-01");
+});
+
+test("preflight is read-only and exact safe contract repair is an explicit deterministic action", async (t) => {
+  const fixture = await standaloneWorkspace(t);
+  await renderArtifacts(fixture);
+  await prepareFindingsCorrection(fixture, "Findings IDs");
+  const taskPath = path.join(fixture.execution, "tasks/slice-01.md");
+  const before = await fs.readFile(taskPath);
+  for (const [operation, slice] of [["VALIDATE_SLICE", "1"], ["CLOSE", null], ["DELETE", null]]) {
+    await assert.rejects(preflightExecutionOperation(fixture.requirements, operation, slice), (error) => {
+      assert.equal(error.contractViolation.repairability, "mechanical");
+      return true;
+    });
+    assert.deepEqual(await fs.readFile(taskPath), before, `${operation} preflight mutated live execution`);
+  }
+  const repair = spawnSync(process.execPath, [
+    path.join(ROOT, "skills/workflows/stnl-execution-closer/runtime/validate-execution-state.mjs"),
+    fixture.requirements,
+    "--repair-known-contract",
+  ], { encoding: "utf8", cwd: fixture.root });
+  assert.equal(repair.status, 0, repair.stderr);
+  assert.match(repair.stdout, /^PASS: contract repair status=REPAIRED repairs=1 state=FINDINGS_CORRECTED$/mu);
+  const result = await preflightExecutionOperation(fixture.requirements, "VALIDATE_SLICE", "1");
+  assert.equal(result.state, "FINDINGS_CORRECTED");
+  assert.equal(result.slice, "slice-01");
+});
+
+for (const malformed of [
+  {
+    name: "canonical and legacy labels coexist",
+    mutate: (record) => record.replace("- Finding IDs: finding-01", "- Finding IDs: finding-01\n- Findings IDs: finding-01"),
+    reason: "canonical-and-alias-conflict",
+  },
+  {
+    name: "canonical label is duplicated",
+    mutate: (record) => record.replace("- Finding IDs: finding-01", "- Finding IDs: finding-01\n- Finding IDs: finding-01"),
+    reason: "duplicate-canonical-field",
+  },
+  {
+    name: "legacy label is duplicated",
+    mutate: (record) => record.replace("- Finding IDs: finding-01", "- Findings IDs: finding-01\n- Findings IDs: finding-01"),
+    reason: "duplicate-legacy-field",
+  },
+  {
+    name: "unknown typo is not fuzzily repaired",
+    mutate: (record) => record.replace("- Finding IDs: finding-01", "- Finding Identifierz: finding-01"),
+    reason: "unknown-or-missing-field",
+  },
+  {
+    name: "legacy label has an empty value",
+    mutate: (record) => record.replace("- Finding IDs: finding-01", "- Findings IDs: "),
+    reason: "invalid-repair-value",
+  },
+  {
+    name: "legacy label does not name a declared finding",
+    mutate: (record) => record.replace("- Finding IDs: finding-01", "- Findings IDs: arbitrary-text"),
+    reason: "invalid-repair-value",
+  },
+]) {
+  test(`malformed findings contract blocks without mutation: ${malformed.name}`, async (t) => {
+    const fixture = await standaloneWorkspace(t);
+    await renderArtifacts(fixture);
+    await prepareFindingsCorrection(fixture);
+    await editTask(fixture, (value) => malformed.mutate(value));
+    const taskPath = path.join(fixture.execution, "tasks/slice-01.md");
+    const before = await fs.readFile(taskPath);
+    await assert.rejects(preflightExecutionOperation(fixture.requirements, "VALIDATE_SLICE", "1"), (error) => {
+      assert.equal(error.contractViolation.repairability, "blocked");
+      assert.equal(error.contractViolation.reason, malformed.reason);
+      assert.deepEqual(error.recoveryTargets, []);
+      return true;
+    });
+    assert.deepEqual(await fs.readFile(taskPath), before);
+  });
+}
+
+test("candidate validation rejects unreadable mutations and preserves live execution bytes", async (t) => {
+  for (const [name, mutate] of [
+    ["legacy findings field", (value) => value.replace("- Finding IDs: finding-01", "- Findings IDs: finding-01")],
+    ["second required field class", (value) => value.replace("- HEAD: fixture", "- HEADs: fixture")],
+  ]) {
+    const fixture = await standaloneWorkspace(t);
+    await renderArtifacts(fixture);
+    await prepareFindingsCorrection(fixture);
+    const liveBefore = await fs.readFile(path.join(fixture.execution, "tasks/slice-01.md"));
+    const candidate = path.join(fixture.root, `candidate-${name.replaceAll(" ", "-")}`);
+    await copyDirectory(fixture.execution, candidate);
+    const candidateTask = path.join(candidate, "tasks/slice-01.md");
+    await fs.writeFile(candidateTask, mutate(await fs.readFile(candidateTask, "utf8")), "utf8");
+    await assert.rejects(validateExecutionCandidate(fixture.requirements, candidate), ExecutionContractError);
+    assert.deepEqual(await fs.readFile(path.join(fixture.execution, "tasks/slice-01.md")), liveBefore);
+  }
 });
 
 test("duplicate or unknown task sections cannot hide operational records", async (t) => {
@@ -833,6 +1063,28 @@ test("third TESTS_FAIL has only formal validation continuation for implementatio
       round: 3,
       retryState: state.state,
     });
+    assert.equal(state.normalHandoff, null);
+    assert.deepEqual(state.requiredRecoveryHandoff, {
+      workflowSkill: "stnl-slice-quality-manager",
+      operation: "VALIDATE_SLICE",
+      invocation: "OPERATION=VALIDATE_SLICE",
+      slice: "slice-01",
+    });
+    const handoff = spawnSync(process.execPath, [
+      path.join(ROOT, "skills/workflows/stnl-slice-executor/runtime/validate-execution-state.mjs"),
+      fixture.requirements,
+      "--handoff-after",
+      kind === "Implementation" ? "EXECUTE_SLICE" : "APPLY_FINDINGS",
+    ], { encoding: "utf8", cwd: fixture.root });
+    assert.equal(handoff.status, 0, handoff.stderr);
+    const transition = JSON.parse(handoff.stdout);
+    assert.equal(transition.normal_handoff, null);
+    assert.deepEqual(transition.required_recovery_handoff, {
+      workflowSkill: "stnl-slice-quality-manager",
+      operation: "VALIDATE_SLICE",
+      invocation: "OPERATION=VALIDATE_SLICE",
+      slice: "slice-01",
+    });
     await assert.rejects(preflightExecutionOperation(fixture.requirements, kind === "Implementation" ? "EXECUTE_SLICE" : "APPLY_FINDINGS", "1"), /not legal/u);
     if (kind === "Implementation") {
       const invalidSlice = await rejectedWithRecovery(
@@ -953,6 +1205,9 @@ test("terminal auxiliary outcomes and scoped blocker resumes have exact phases",
   });
   const initializedState = await inspectExecutionState(initialized.requirements);
   assert.equal(initializedState.state, "RUNNER_INITIALIZATION_BLOCKED");
+  assert.deepEqual(initializedState.mandatoryRecovery, initializedState.recoveryTargets[0]);
+  assert.deepEqual(initializedState.legalOperations, [{ operation: "EXECUTE_SLICE", slice: "slice-01" }]);
+  assert.equal(initializedState.normalHandoff, null);
   assertRecoveryTarget(initializedState, {
     operation: "EXECUTE_SLICE",
     slice: "slice-01",
@@ -1000,6 +1255,8 @@ test("terminal auxiliary outcomes and scoped blocker resumes have exact phases",
   });
   const malformedState = await inspectExecutionState(malformed.requirements);
   assert.equal(malformedState.state, "RUNNER_RESULT_BLOCKED");
+  assert.deepEqual(malformedState.mandatoryRecovery, malformedState.recoveryTargets[0]);
+  assert.equal(malformedState.normalHandoff, null);
   assertRecoveryTarget(malformedState, {
     operation: "VALIDATE_SLICE",
     slice: "slice-01",
@@ -1135,6 +1392,10 @@ test("superseded historical paths become closable only through a later current-a
   await fs.writeFile(second, task);
   await editTasksIndex(fixture, (value) => value.replace("| [ ] | 02 - Recovery | reconciled result | 01 | tasks/slice-02.md | pending | pending |", "| [x] | 02 - Recovery | reconciled result | 01 | tasks/slice-02.md | PASS | PASS |"));
   await writeValidatedPath(fixture);
+  const complete = await inspectExecutionState(fixture.requirements);
+  assert.deepEqual(new Set(complete.legalOperations.map(({ operation }) => operation)), new Set(["CLOSE", "REPLAN"]));
+  assert.equal(complete.normalHandoff.invocation, "OPERATION=CLOSE");
+  assert.equal(complete.normalHandoff.invocation.startsWith("MODE="), false);
   assert.equal((await preflightExecutionOperation(fixture.requirements, "CLOSE")).state, "COMPLETE");
   assert.equal((await preflightExecutionOperation(fixture.requirements, "REPLAN")).state, "COMPLETE", "CLOSE recovery must permit a corrective replan from COMPLETE");
 });
@@ -1370,6 +1631,8 @@ test("lifecycle CLOSE trusts repository-owned paths outside a nested SPEC and re
   });
   await editTasksIndex(fixture, (value) => value.replace("| [ ] | 01 - Delivery | observable result | - | tasks/slice-01.md | pending | pending |", "| [x] | 01 - Delivery | observable result | - | tasks/slice-01.md | PASS | PASS |"));
   assert.equal((await preflightExecutionOperation(workspace, "CLOSE")).state, "COMPLETE");
+  const candidate = await copyDirectory(fixture.execution, path.join(root, "nested-lifecycle-candidate"));
+  assert.equal((await validateExecutionCandidate(workspace, candidate)).state, "COMPLETE");
 
   const escapedPath = path.join(root, "escaped.txt");
   const escapedRelative = path.relative(taskDirectory, escapedPath).split(path.sep).join("/");

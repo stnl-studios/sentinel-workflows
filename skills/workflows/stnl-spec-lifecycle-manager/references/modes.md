@@ -55,4 +55,6 @@ Require a valid active `ready` source and strict `GLOBAL/READY` attestation over
 
 ## Outcome contract
 
-Return only mode verdict/status, changed lifecycle files (none for READINESS), documentary decisions, actionable blockers/findings with IDs or paths, validations, and next allowed step. Do not repeat the SPEC, histories, inventories, commands, internal reasoning, or already persisted prose.
+After active `ready`, return `node "<SKILL_ROOT>/runtime/validate-spec-lifecycle.mjs" handoff <SPEC_PATH>` verbatim. It owns only the lifecycle/execution boundary: empty execution normally hands off to `OPERATION=PLAN`; non-empty execution must be inspected by its own runtime. `MODE=CLOSE` stays explicit.
+
+Return status, changes, decisions, findings, validations, or transition/violation. Do not repeat content or reasoning.

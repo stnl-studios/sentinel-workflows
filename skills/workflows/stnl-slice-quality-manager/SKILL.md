@@ -19,6 +19,8 @@ Run only `VALIDATE_SLICE`. Check deterministic prerequisites, delegate technical
 
 The configured independent runner owns the technical verdict. This skill owns Validation Attempts and formal finding disposition in the selected task file and, only after `PASS` prerequisites succeed, the selected row in `tasks.md`. It does not edit requirements, plans, code, tests, or divergences.
 
+Execution preflight is read-only. Only when it reports the exact mechanical `Findings IDs` contract violation may this skill explicitly run `node "<SKILL_ROOT>/runtime/validate-execution-state.mjs" <SPEC_PATH> --repair-known-contract` once and repeat the original preflight; every other contract violation blocks.
+
 ## Minimum Reads
 
 - `tasks.md`, selected detailed plan and task file, referenced requirements;
@@ -73,4 +75,4 @@ Block invalid inputs, missing prerequisites, stale requirements authority, inval
 
 ## Output
 
-Report `PASS`, `NEEDS_FIX`, or `BLOCKED`, persisted evidence paths, whether the slice was completed, and exactly one legally executable next action when non-terminal. Stop.
+After persistence, execute `node "<SKILL_ROOT>/runtime/validate-execution-state.mjs" <SPEC_PATH> --handoff-after VALIDATE_SLICE`. Report `PASS`, `NEEDS_FIX`, or `BLOCKED`, persisted evidence paths, whether the slice was completed, the runtime's normal handoff, every legal operation, and mandatory recovery as separate fields. Stop.

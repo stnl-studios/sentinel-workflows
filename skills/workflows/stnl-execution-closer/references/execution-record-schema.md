@@ -14,6 +14,12 @@ update_policy: Change only when persisted execution-record identity or lifecycle
 
 Fresh materialization contains only its exact section sentinels (`- none` or `- pending`). The headings below are operational records, never template examples and never pristine placeholders.
 
+## Strict write check and exact contract repair
+
+The parser accepts only `Finding IDs`. The model-authored `Findings Test Evidence` writer contract requires an isolated candidate and the bundled `node "<SKILL_ROOT>/runtime/validate-execution-state.mjs" <SPEC_PATH> --candidate <CANDIDATE_EXECUTION_ROOT>` before publication. That invocation and mutation ownership are contract/model enforced; when invoked, the runtime strictly parses the complete candidate without changing live execution. It is not a generic publisher and does not prove an authorized diff.
+
+Every preflight is read-only. When its structured violation identifies exactly one `Findings IDs: finding-NN` inside one `findings-check-NN`, no canonical field coexists, and that finding is declared in the same task, the caller may explicitly run `node "<SKILL_ROOT>/runtime/validate-execution-state.mjs" <SPEC_PATH> --repair-known-contract`. The runtime changes only the label to `Finding IDs`, validates the complete candidate, atomically replaces that one file, and strictly reads it back. Duplicates, coexistence, an unknown label, an undeclared/invalid value, or any other invalidity remain blocked. Repair changes no value, semantic record, owner, attempt, round, validation base, runner budget, product code, or test result.
+
 ## Changed and corrected paths
 
 After work starts, `Changed Areas` replaces `- pending` with a non-empty lexicographically ordered list of unique normalized task-relative paths, each exactly `- \`<path>\``. `Corrections Applied` remains `- none` or uses the same list format. Every corrected path must also occur in `Changed Areas`. Nested bullets, prose, absolute paths, backslashes, duplicate paths, and unnormalized paths are invalid. `REMOVED` versus SHA-256 ownership is recorded in the Effective Validation Base; these sections claim the affected path without duplicating that disposition.

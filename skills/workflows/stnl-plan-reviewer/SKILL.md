@@ -18,6 +18,8 @@ Run only `REVIEW_PLAN`. Perform an independent critical review of the initial pl
 
 Requirements and their current computed fingerprint remain authoritative. This skill may change only the mutable draft global plan and detailed plans. Historical revisions and slice plans carrying an earlier revision are immutable. It cannot create tasks, edit code, resolve documentary ambiguity, or commit supersession.
 
+Execution preflight is read-only. Only when it reports the exact mechanical `Findings IDs` contract violation may this skill explicitly run `node "<SKILL_ROOT>/runtime/validate-execution-state.mjs" <SPEC_PATH> --repair-known-contract` once and repeat the original preflight; every other contract violation blocks.
+
 ## REVIEW_PLAN
 
 Before content reads, execute `node "<SKILL_ROOT>/runtime/validate-execution-state.mjs" <SPEC_PATH> REVIEW_PLAN`. Run only when there is a draft initial or planning-only replacement plan, or a pending materialized `REPLAN` revision/extension. It may be repeated while that draft remains mutable. A planning-only replacement is revision `1`, has no historical recovery fields, and follows the same review gate as an initial plan. Existing task artifacts do not by themselves block review: in pristine replacement mode, review the full replacement set; after operational evidence, review only the append-only revision and new slices while preserving all historical plan/task artifacts byte-for-byte.
@@ -46,4 +48,4 @@ Block with a lifecycle `RESUME` handoff when approval depends on a missing or co
 
 ## Output
 
-Report approval status and concise corrections. Stop after `REVIEW_PLAN`.
+After successful publication, execute `node "<SKILL_ROOT>/runtime/validate-execution-state.mjs" <SPEC_PATH> --handoff-after REVIEW_PLAN`. Report approval status, concise corrections, the runtime's normal handoff, and all legal operations in the resulting state. A successful initial review normally hands off to `stnl-task-materializer / OPERATION=MATERIALIZE_TASKS` while repeat `REVIEW_PLAN` and `REPLAN` remain legal where preflight permits them. Stop after `REVIEW_PLAN`.

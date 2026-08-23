@@ -25,6 +25,11 @@ import process from "node:process";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
+import {
+  ExecutionContractError,
+  inspectExecutionState,
+} from "../skills/workflows/stnl-execution-closer/runtime/execution-state.mjs";
+import { WORKFLOW_OPERATIONS } from "./lib/skill-registry.mjs";
 
 const ROOT = fileURLToPath(new URL("../", import.meta.url));
 const SKILL_ROOT = path.join(ROOT, "skills", "workflows", "stnl-spec-lifecycle-manager");
@@ -1166,6 +1171,41 @@ test("canonical validator CLI exercises all lifecycle transitions from an unrela
   result = runCli("validate-spec-lifecycle.mjs", ["close-transition", closeBefore, closeAfter], { cwd });
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /PASS: CLOSE .* preserved exact authority and external directories/u);
+});
+
+test("ready lifecycle boundary routes only EMPTY and defers existing execution to its own runtime", async (t) => {
+  const base = temporaryDirectory(t, "stnl-node-handoff-");
+  const workspace = path.join(base, "workspace");
+  writeFullWorkspace(workspace, "ready");
+
+  let result = runCli("validate-spec-lifecycle.mjs", ["handoff", workspace]);
+  assert.equal(result.status, 0, result.stderr);
+  const empty = JSON.parse(result.stdout);
+  assert.deepEqual(empty.normal_handoff, {
+    workflow_skill: "stnl-execution-planner",
+    invocation: "OPERATION=PLAN",
+  });
+  assert.deepEqual(empty.legal_execution_operations, ["PLAN"]);
+  assert.ok(WORKFLOW_OPERATIONS[empty.normal_handoff.workflow_skill].includes("PLAN"));
+  assert.equal(result.stdout.includes("MODE=CLOSE"), false);
+
+  mkdirSync(path.join(workspace, "execution"));
+  write(path.join(workspace, "execution", ".DS_Store"), "ignored metadata\n");
+  result = runCli("validate-spec-lifecycle.mjs", ["handoff", workspace]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(JSON.parse(result.stdout).normal_handoff.invocation, "OPERATION=PLAN");
+
+  rmSync(path.join(workspace, "execution"), { recursive: true });
+  mkdirSync(path.join(workspace, "execution"));
+  write(path.join(workspace, "execution", "plan.md"), "existing execution authority\n");
+  result = runCli("validate-spec-lifecycle.mjs", ["handoff", workspace]);
+  assert.equal(result.status, 0, result.stderr);
+  const existing = JSON.parse(result.stdout);
+  assert.equal(existing.normal_handoff, null);
+  assert.equal(existing.execution_state, null);
+  assert.equal(existing.authority, "execution-runtime-required");
+  assert.equal(existing.legal_execution_operations, null);
+  await assert.rejects(inspectExecutionState(workspace), ExecutionContractError);
 });
 
 for (const [name, arguments_, diagnostic] of [

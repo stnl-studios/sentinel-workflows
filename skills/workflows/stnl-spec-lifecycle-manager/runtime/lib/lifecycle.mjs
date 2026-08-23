@@ -709,6 +709,45 @@ export function validateWorkspace(value) {
   return header.status === 'closed' ? validateClosed(root, feature, header, text) : validateActive(root, feature, header, text);
 }
 
+export function deriveLifecycleHandoff(value) {
+  const workspace = validateWorkspace(value);
+  if (workspace.status !== 'ready' || workspace.closed) {
+    return Object.freeze({
+      lifecycle_status: workspace.status,
+      execution_state: 'NOT_APPLICABLE',
+      authority: 'lifecycle',
+      normal_handoff: null,
+      legal_execution_operations: Object.freeze([]),
+    });
+  }
+  const executionRoot = path.join(workspace.root, 'execution');
+  const metadata = lstatOrNull(executionRoot);
+  const empty = metadata === null || (
+    metadata.isDirectory()
+    && !metadata.isSymbolicLink()
+    && fs.readdirSync(executionRoot).every((name) => isOsMetadata(name))
+  );
+  if (empty) {
+    return Object.freeze({
+      lifecycle_status: 'ready',
+      execution_state: 'EMPTY',
+      authority: 'lifecycle-execution-boundary',
+      normal_handoff: Object.freeze({
+        workflow_skill: 'stnl-execution-planner',
+        invocation: 'OPERATION=PLAN',
+      }),
+      legal_execution_operations: Object.freeze(['PLAN']),
+    });
+  }
+  return Object.freeze({
+    lifecycle_status: 'ready',
+    execution_state: null,
+    authority: 'execution-runtime-required',
+    normal_handoff: null,
+    legal_execution_operations: null,
+  });
+}
+
 function walkTree(root) {
   const result = [];
   function visit(directory) {
