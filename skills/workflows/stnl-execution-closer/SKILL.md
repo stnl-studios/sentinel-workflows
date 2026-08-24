@@ -18,7 +18,7 @@ Run only execution `OPERATION=CLOSE`. Perform a read-only global integrity check
 
 Current requirements fingerprint remains product authority. Plan revisions define intended coverage and serial order. `tasks.md` is progress authority. Detailed final results, append-only attempts/findings/divergences, and Effective Validation Bases are evidence; only effective bases from `PASS` slices authorize final drift decisions. `SUPERSEDED` records are terminal history, never validation ownership. This skill changes none of them.
 
-Execution preflight is read-only. Only when it reports the exact mechanical `Findings IDs` contract violation may this skill explicitly run `node "<SKILL_ROOT>/runtime/validate-execution-state.mjs" <SPEC_PATH> --repair-known-contract` once and repeat the original preflight; every other contract violation blocks. That narrow runtime-owned repair does not transfer semantic task ownership to this skill.
+Execution preflight is read-only. Only when it reports a mechanical violation for the exact `Findings IDs` alias or the exact historical `Check discovery sources` / `Check discovery actions` pair may this skill explicitly run `node "<SKILL_ROOT>/runtime/validate-execution-state.mjs" <SPEC_PATH> --repair-known-contract` once and repeat the original preflight; every other contract violation blocks. That narrow runtime-owned repair does not transfer semantic task ownership to this skill.
 
 ## CLOSE
 

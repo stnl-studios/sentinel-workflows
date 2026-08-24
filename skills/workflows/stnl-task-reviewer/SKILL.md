@@ -18,7 +18,7 @@ Run only explicit `REVIEW_TASKS`. This is the normal post-materialization review
 
 `plan.md` and `plans/slice-NN.md` are read-only strategy authority. This skill may alter only `tasks.md` and `tasks/slice-NN.md`. Requirements and code are read-only and normally unnecessary.
 
-Execution preflight is read-only. Only when it reports the exact mechanical `Findings IDs` contract violation may this skill explicitly run `node "<SKILL_ROOT>/runtime/validate-execution-state.mjs" <SPEC_PATH> --repair-known-contract` once and repeat the original preflight; every other contract violation blocks.
+Execution preflight is read-only. Only when it reports a mechanical violation for the exact `Findings IDs` alias or the exact historical `Check discovery sources` / `Check discovery actions` pair may this skill explicitly run `node "<SKILL_ROOT>/runtime/validate-execution-state.mjs" <SPEC_PATH> --repair-known-contract` once and repeat the original preflight; every other contract violation blocks.
 
 ## REVIEW_TASKS
 
@@ -27,6 +27,8 @@ Before content reads or writes, execute `node "<SKILL_ROOT>/runtime/validate-exe
 Any marked local task, actual change, operational record, non-pending result, or `[x]` global row means execution has started. Outside `MATERIALIZED_PRISTINE`, preflight returns `BLOCKED` with exact state-derived recovery targets; preserve all plans/tasks byte-for-byte. In `REQUIREMENTS_CHANGED`, `REPLAN` is the `NEEDS_REPLAN` route. Do not remove or reorder executed work or turn task review into replanning.
 
 Check that no plan obligation was lost and no task was invented. Verify fidelity, coverage, granularity, order, dependencies, objective results, tests, slice isolation, absence of work belonging elsewhere, consistency between global and detailed tasks, and economy of context for execution. Correct task artifacts directly when the approved plan already determines the answer.
+
+Compose any model-authored task corrections in an isolated complete execution candidate and execute `node "<SKILL_ROOT>/runtime/validate-execution-state.mjs" <SPEC_PATH> --candidate <CANDIDATE_EXECUTION_ROOT>` before publication. This is contract/model enforcement; runtime parsing is not publication authority. Candidate rejection preserves live bytes. After PASS publish only task-review-owned paths and use the final handoff command as strict readback.
 
 ## Minimum Reads
 

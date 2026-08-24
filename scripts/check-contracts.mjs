@@ -152,8 +152,9 @@ const checkSchemas = {
     "HEAD:",
     "Escopo verificado:",
     "Estado testado:",
-    "Check discovery sources:",
-    "Check discovery actions:",
+    "Fileless reason: required only when Estado testado is exactly none; omit for file-backed state",
+    "Discovery sources:",
+    "Discovery actions:",
     "Verification types considered:",
     "Non-applicability rationale:",
     "No verification-command confirmation:",
@@ -178,8 +179,9 @@ const checkSchemas = {
     "HEAD:",
     "Escopo verificado:",
     "Estado testado:",
-    "Check discovery sources:",
-    "Check discovery actions:",
+    "Fileless reason: required only when Estado testado is exactly none; omit for file-backed state",
+    "Discovery sources:",
+    "Discovery actions:",
     "Verification types considered:",
     "Non-applicability rationale:",
     "No verification-command confirmation:",
@@ -208,6 +210,7 @@ const checkSchemas = {
     "Evidências anteriores avaliadas:",
     "Atualidade e suficiência das evidências:",
     "Manifesto final da slice:",
+    "Fileless reason: required only when Manifesto final da slice is exactly none; omit for file-backed manifest",
     "Comandos executados:",
     "Resultado de cada comando e exit code:",
     "Testes selecionados ou repetidos:",
@@ -304,18 +307,25 @@ function checkRunner(root) {
   requirePattern(contract, /NEEDS_FIX[\s\S]{0,700}(?:finding estruturado|structured finding)/iu, "R006_VERDICTS", "NEEDS_FIX lacks structured findings");
   requirePattern(contract, /NEEDS_FIX[^\n]{0,300}pode criar novos findings estruturados/iu, "R006_VERDICTS", "NEEDS_FIX cannot persist structured findings");
   requirePattern(contract, /`TESTS_PASS` exige[^\n]{0,160}exit code zero/iu, "R006_VERDICTS", "TESTS_PASS lacks zero-exit authority");
+  requirePattern(contract, /Em `TESTS_PASS`[^\n]{0,260}`Escopo verificado`[^\n]{0,160}`Verification types considered`[^\n]{0,160}`Testes selecionados`[^\n]{0,160}`Cobertura`[^\n]{0,120}(?:nunca podem ser exact `none`|must not be exact `none`)/iu, "R006_VERDICTS", "TESTS_PASS permits none in an objective summary field");
   requirePattern(contract, /`TESTS_FAIL` exige[^\n]{0,160}(?:comandos que falharam|commands that failed)/iu, "R006_VERDICTS", "TESTS_FAIL lacks command-failure evidence");
   requirePattern(contract, /`BLOCKED` exige[^\n]{0,180}(?:impossibilidade objetiva|objective impossibility)/iu, "R006_VERDICTS", "BLOCKED lacks an objective cause");
   forbidPattern(contract, /(?:NEEDS_FIX|BLOCKED)[\s\S]{0,160}(?:(?<!não )proponha|create|(?<!não )crie) Effective Validation Base/iu, "R006_VERDICTS", "non-PASS verdict creates an effective base");
   requirePattern(contract, /caminhos relativos únicos[\s\S]{0,180}SHA-256[\s\S]{0,100}`REMOVED`/iu, "R008_MANIFEST", "final manifest path/hash/removal semantics are incomplete");
   requirePattern(contract, /Estado testado[\s\S]{0,180}Manifesto final da slice[\s\S]{0,220}relativo ao diretório do artefato detalhado `tasks\/slice-NN\.md`/iu, "R008_MANIFEST", "tested-state and manifest path base is ambiguous");
-  requirePattern(contract, /fontes consultadas em `Check discovery sources`[\s\S]{0,160}`Check discovery actions`/iu, "R007_OUTPUT_SCHEMA", "discovery sources and actions are not distinct");
+  requirePattern(contract, /fontes consultadas em `Discovery sources`[\s\S]{0,160}`Discovery actions`/iu, "R007_OUTPUT_SCHEMA", "discovery sources and actions are not distinct");
+  requirePattern(contract, /rodadas posteriores file-backed[^\n]{0,180}caminhos de correção[^\n]{0,180}task-relative normalizados[^\n]{0,160}comma-space/iu, "R007_OUTPUT_SCHEMA", "file-backed correction-path persistence grammar is missing");
+  requirePattern(contract, /correção fileless[^\n]{0,80}`Correction paths`[^\n]{0,40}exact `none`/iu, "R007_OUTPUT_SCHEMA", "fileless correction paths cannot be exact none");
+  requirePattern(contract, /`Findings verificados`[^\n]{0,100}subconjunto canônico[^\n]{0,100}`Finding IDs`/iu, "R007_OUTPUT_SCHEMA", "verified findings are not constrained to the target subset");
+  requirePattern(contract, /`Findings ainda não sustentados pelos testes`[^\n]{0,140}exatamente os findings ativos[^\n]{0,180}(?:nunca se sobrepõem|never overlap)/iu, "R007_OUTPUT_SCHEMA", "unsupported active findings are not the exact disjoint remainder");
   requirePattern(contract, /não retorne `PASS` com manifesto vazio, incompleto, duplicado, malformado ou inconsistente/iu, "R008_MANIFEST", "manifest rejection cases are incomplete");
+  requirePattern(contract, /fileless[\s\S]{0,300}`Fileless reason`[\s\S]{0,300}(?:não invente|never invent).{0,80}(?:path|caminho|hash)/iu, "R008_MANIFEST", "fileless manifest contract is incomplete");
   requirePattern(contract, /overlap[\s\S]{0,500}regressões[\s\S]{0,300}(?:NEEDS_FIX|BLOCKED)/iu, "R010_OVERLAP", "overlap and regression obligations are incomplete");
   requirePattern(contract, /Para cada overlap[^\n]{0,100}valide o comportamento atual e regressões/iu, "R010_OVERLAP", "overlap behavior/regression validation is missing");
   requirePattern(contract, /primeira tentativa[^\n]{0,40}`initial`[^\n]{0,80}`revalidation`/iu, "R009_VALIDATION_ATTEMPT", "attempt type progression is missing");
   requirePattern(contract, /PASS[^\n]{0,240}manifesto final completo/iu, "R009_VALIDATION_ATTEMPT", "PASS does not require a complete final manifest");
   requirePattern(contract, /Findings:[^\n]{0,180}(?:disposição para cada finding|disposition for every finding)/iu, "R009_VALIDATION_ATTEMPT", "formal validation lacks per-finding disposition");
+  requirePattern(contract, /novo finding nasce `active`[^\n]{0,180}tentativa formal estritamente posterior/iu, "R009_VALIDATION_ATTEMPT", "new findings can be disposed at their origin attempt");
   requirePattern(contract, /PASS[^\n]{0,260}nenhuma disposição bloqueante ativa/iu, "R009_VALIDATION_ATTEMPT", "PASS may leave a blocking finding active");
   requirePattern(contract, /Checks nunca emitem[^\n]{0,160}(?:Validation Attempt|Effective Validation Base)/iu, "R015_CHECK_AUTHORITY", "check/formal authority separation is incomplete");
   requirePattern(contract, /Responda somente de forma compacta[^\n]{0,120}sem logs completos/iu, "R011_COMPACT_OUTPUT", "runner compact-output boundary is missing");
@@ -334,6 +344,8 @@ function checkRunner(root) {
   requirePattern(readme, /não criam `implementation-check-NN`, `findings-check-NN` ou `attempt-NN`/iu, "R012_README", "README transport/evidence separation is missing");
   requirePattern(readme, /retoma diretamente na delegação[\s\S]{0,240}não reinicia identificadores/iu, "R012_README", "README initialization-resume semantics are missing");
   requirePattern(readme, /terceira falha entra em `IMPLEMENTATION_RETRY_EXHAUSTED` ou `FINDINGS_RETRY_EXHAUSTED`[\s\S]{0,180}`VALIDATE_SLICE` é a única próxima operação/iu, "R012_README", "README third-failure recovery is missing");
+  requirePattern(readme, /fontes em `Discovery sources`, métodos em `Discovery actions`/iu, "R007_OUTPUT_SCHEMA", "README discovery labels are not canonical");
+  forbidPattern(readme, /`Check discovery (?:sources|actions)`/iu, "R007_OUTPUT_SCHEMA", "README authorizes historical discovery labels");
 }
 
 function checkScout(root) {

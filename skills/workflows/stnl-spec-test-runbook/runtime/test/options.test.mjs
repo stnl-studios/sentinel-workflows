@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import * as fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
@@ -11,6 +12,7 @@ import {
   RUNBOOK_OPTION_DEFAULTS,
 } from "../lib/core.mjs";
 import { validateManifest } from "../lib/manifest.mjs";
+import { generateRunbook } from "../generate-runbook.mjs";
 import { copyFixture, readManifest, REPOSITORY_ROOT, SKILL_ROOT } from "./helpers.mjs";
 
 const DEFAULT_CONFIGURATION = structuredClone(RUNBOOK_OPTION_DEFAULTS);
@@ -46,6 +48,21 @@ test("invalid RUNBOOK_OPTIONS JSON is rejected before inspection", () => {
     assert.equal(result.status, 1);
     assert.match(result.stderr, /BLOCKED: RUNBOOK_OPTIONS must be valid JSON/u);
   }
+});
+
+test("strict JSON rejects duplicate root and nested object keys without changing valid parsing", () => {
+  assert.throws(
+    () => parseStrictJson('{"locale":"en-US","locale":"pt-BR"}', "RUNBOOK_OPTIONS"),
+    /duplicate object key locale/u,
+  );
+  assert.throws(
+    () => parseStrictJson('{"scope":{"kind":"SPEC","kind":"CUSTOM"}}', "manifest"),
+    /duplicate object key kind/u,
+  );
+  assert.deepEqual(
+    parseStrictJson('{"scope":{"kind":"SPEC","selection":{}},"sources":[]}', "manifest"),
+    { scope: { kind: "SPEC", selection: {} }, sources: [] },
+  );
 });
 
 test("unknown option keys are rejected", () => {
@@ -134,7 +151,7 @@ test("inspection configuration is the effective manifest configuration", async (
   assert.throws(() => validateManifest(incompatible, defaultInspection), /helper_artifacts require RUNBOOK_OPTIONS.helpers=true/u);
 });
 
-test("runtime defaults, manifest reference, skill, and launcher remain aligned", async () => {
+test("runtime defaults, real manifest example, skill, and launcher remain aligned", async (t) => {
   const [reference, skill, launcher] = await Promise.all([
     fs.readFile(path.join(SKILL_ROOT, "references", "runbook-manifest.md"), "utf8"),
     fs.readFile(path.join(SKILL_ROOT, "SKILL.md"), "utf8"),
@@ -142,7 +159,20 @@ test("runtime defaults, manifest reference, skill, and launcher remain aligned",
   ]);
   const example = reference.match(/```json\n([\s\S]*?)\n```/u);
   assert.notEqual(example, null);
-  assert.deepEqual(JSON.parse(example[1]).configuration, DEFAULT_CONFIGURATION);
+  const exampleManifest = parseStrictJson(example[1], "runbook manifest example");
+  assert.deepEqual(exampleManifest.configuration, DEFAULT_CONFIGURATION);
+
+  const temporary = await fs.mkdtemp(path.join(os.tmpdir(), "stnl-runbook-example-"));
+  t.after(() => fs.rm(temporary, { recursive: true, force: true }));
+  const project = path.join(temporary, "project");
+  await fs.mkdir(path.join(project, ".git"), { recursive: true });
+  const requirements = path.join(project, "requirements.md");
+  await fs.writeFile(requirements, "# Requirements\n\n- REQ-001: observable behavior\n", "utf8");
+  const manifestPath = path.join(temporary, "manifest.json");
+  await fs.writeFile(manifestPath, example[1], "utf8");
+  const generated = await generateRunbook(requirements, manifestPath);
+  assert.equal(generated.status, "GENERATED");
+  assert.equal(generated.scenarios, 1);
 
   for (const key of Object.keys(DEFAULT_CONFIGURATION)) {
     assert.ok(skill.includes(`\`${key}\``), `SKILL.md omits ${key}`);

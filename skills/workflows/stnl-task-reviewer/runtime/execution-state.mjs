@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { createHash, randomUUID } from "node:crypto";
+import { constants as FS_CONSTANTS } from "node:fs";
 import * as fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -259,10 +260,12 @@ function requireCanonicalSections(parsed, expected, label) {
 
 function field(body, name, { required = true } = {}) {
   const escaped = name.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
-  const matches = [...String(body).matchAll(new RegExp(`^- ${escaped}: (.+)$`, "gmu"))];
-  if (matches.length === 0 && !required) return null;
-  if (matches.length !== 1) throw new ExecutionContractError(`expected exactly one '${name}' field`);
-  return matches[0][1].trim();
+  const markers = [...String(body).matchAll(new RegExp(`^- ${escaped}:.*$`, "gmu"))];
+  if (markers.length === 0 && !required) return null;
+  if (markers.length !== 1) throw new ExecutionContractError(`expected exactly one '${name}' field`);
+  const populated = markers[0][0].match(new RegExp(`^- ${escaped}: (.+)$`, "mu"));
+  if (populated === null) throw new ExecutionContractError(`${name} must be an inline populated field`);
+  return populated[1].trim();
 }
 
 function authorityFields(body, label) {
@@ -330,6 +333,16 @@ async function lifecycleProjection(workspace) {
   return { h1, core, records };
 }
 
+async function lifecycleStatusForExecution(workspace) {
+  if (workspace.kind !== "lifecycle") return null;
+  const featureText = await fs.readFile(workspace.authorityPath, "utf8");
+  const status = parsePurpose(featureText, "feature_spec.md").header.get("status");
+  if (!new Set(["draft", "blocked", "ready", "closed"]).has(status)) {
+    throw new ExecutionContractError(`feature_spec.md has unsupported lifecycle status ${status}`);
+  }
+  return status;
+}
+
 export async function computeRequirementsAuthority(specPath) {
   const workspace = await resolveExecutionWorkspace(specPath);
   const payload = workspace.kind === "standalone"
@@ -343,8 +356,185 @@ function referenceValue(body, name, expected, label) {
   if (actual !== `\`${expected}\``) throw new ExecutionContractError(`${label} has non-canonical ${name}`);
 }
 
+function throwLegacyExecutionContract(label, classification, reason, detail = "historical authority metadata cannot be invented") {
+  const violation = Object.freeze({
+    kind: "legacy-execution-contract",
+    artifact: label,
+    owner: "execution-contract-runtime",
+    classification,
+    repairability: "blocked",
+    reason,
+  });
+  throw new ExecutionContractError(
+    `legacy execution contract blocked in ${label}: ${reason}; ${detail}`,
+    [label],
+    [],
+    violation,
+  );
+}
+
+function parsedHistoricalPurpose(text, label) {
+  try {
+    return parsePurpose(text, label);
+  } catch {
+    return null;
+  }
+}
+
+function historicalPrimaryH1(parsed) {
+  return parsed?.body.match(/^# ([^\n]+)\n\n/u)?.[1] ?? null;
+}
+
+async function detectOfficialLifecycleRootExecution(workspace) {
+  if (workspace.kind !== "lifecycle") return false;
+  const planPath = path.join(workspace.specRoot, "plan.md");
+  const tasksPath = path.join(workspace.specRoot, "tasks.md");
+  const plansRoot = path.join(workspace.specRoot, "plans");
+  const tasksRoot = path.join(workspace.specRoot, "tasks");
+  const [planMetadata, tasksMetadata, plansMetadata, tasksDirectoryMetadata] = await Promise.all([
+    lstatOrNull(planPath), lstatOrNull(tasksPath), lstatOrNull(plansRoot), lstatOrNull(tasksRoot),
+  ]);
+  if (!planMetadata?.isFile() || planMetadata.isSymbolicLink() || planMetadata.nlink !== 1
+    || !tasksMetadata?.isFile() || tasksMetadata.isSymbolicLink() || tasksMetadata.nlink !== 1
+    || !plansMetadata?.isDirectory() || plansMetadata.isSymbolicLink()
+    || !tasksDirectoryMetadata?.isDirectory() || tasksDirectoryMetadata.isSymbolicLink()) return false;
+
+  const [plan, tasks] = await Promise.all([
+    fs.readFile(planPath, "utf8").then((text) => parsedHistoricalPurpose(text, planPath)),
+    fs.readFile(tasksPath, "utf8").then((text) => parsedHistoricalPurpose(text, tasksPath)),
+  ]);
+  if (plan === null || tasks === null
+    || plan.header.get("owner") !== "stnl-spec-execution-manager"
+    || plan.header.get("purpose") !== "Template for the compact index of all delivery phases."
+    || historicalPrimaryH1(plan) !== "Delivery Plan Index"
+    || !plan.body.includes("## Requirements Source\n\n```yaml\nrequirements_source: feature_spec.md\nexecution_workspace:")
+    || !plan.body.includes("| Done | Phase | Objective | Dependencies | Covered IDs or criteria | Parallel | Detail | Result |\n|---|---|---|---|---|---|---|---|")
+    || tasks.header.get("owner") !== "stnl-spec-execution-manager"
+    || tasks.header.get("purpose") !== "Template for the cumulative compact index of detailed delivery task records."
+    || historicalPrimaryH1(tasks) !== "Delivery Tasks Index"
+    || !tasks.body.includes("| Done | Phase | Tasks | Detail | Tests | Validation | Result |\n|---|---|---|---|---|---|---|")) return false;
+
+  const planRows = [...plan.body.matchAll(/^\| \[[ x]\] \| ([0-9]{2,}) - [^|]+ \|[^\n]*\| plans\/plan-\1\.md \| [^|]+ \|$/gmu)]
+    .map((match) => match[1]);
+  const taskRows = [...tasks.body.matchAll(/^\| \[[ x]\] \| ([0-9]{2,}) - [^|]+ \|[^\n]*\| tasks\/tasks-\1\.md \|[^\n]*\|$/gmu)]
+    .map((match) => match[1]);
+  if (planRows.length === 0 || taskRows.length === 0
+    || planRows.length !== taskRows.length
+    || planRows.some((identifier, index) => identifier !== taskRows[index])) return false;
+
+  for (const identifier of planRows) {
+    const detailedPlanPath = path.join(plansRoot, `plan-${identifier}.md`);
+    const detailedTaskPath = path.join(tasksRoot, `tasks-${identifier}.md`);
+    const [detailedPlanMetadata, detailedTaskMetadata] = await Promise.all([
+      lstatOrNull(detailedPlanPath), lstatOrNull(detailedTaskPath),
+    ]);
+    if (!detailedPlanMetadata?.isFile() || detailedPlanMetadata.isSymbolicLink() || detailedPlanMetadata.nlink !== 1
+      || !detailedTaskMetadata?.isFile() || detailedTaskMetadata.isSymbolicLink() || detailedTaskMetadata.nlink !== 1) return false;
+    const [detailedPlan, detailedTask] = await Promise.all([
+      fs.readFile(detailedPlanPath, "utf8").then((text) => parsedHistoricalPurpose(text, detailedPlanPath)),
+      fs.readFile(detailedTaskPath, "utf8").then((text) => parsedHistoricalPurpose(text, detailedTaskPath)),
+    ]);
+    if (detailedPlan?.header.get("owner") !== "stnl-spec-execution-manager"
+      || detailedPlan.header.get("purpose") !== "Template for detailed planning of one conservative delivery phase."
+      || !new RegExp(`^Phase ${identifier} - \\S`, "u").test(historicalPrimaryH1(detailedPlan) ?? "")
+      || detailedTask?.header.get("owner") !== "stnl-spec-execution-manager"
+      || detailedTask.header.get("purpose") !== "Template for detailed delivery tasks and evidence of one phase."
+      || !new RegExp(`^Phase ${identifier} Tasks - \\S`, "u").test(historicalPrimaryH1(detailedTask) ?? "")) return false;
+  }
+  return true;
+}
+
+async function rejectOfficialLifecycleRootExecution(workspace) {
+  if (await detectOfficialLifecycleRootExecution(workspace)) {
+    throwLegacyExecutionContract(
+      workspace.specRoot,
+      "structurally-incompatible",
+      "official-lifecycle-root-execution-generation",
+      "the official 98545e4 root-level execution producer is recognized but automatic migration is not authorized",
+    );
+  }
+}
+
+function exactSectionNames(body) {
+  return [...body.matchAll(/^## ([^\n]+)$/gmu)].map((match) => match[1]);
+}
+
+function exactHistoricalPlannerHeader(header, expected) {
+  return new Set(["draft", "ready"]).has(header.get("status"))
+    && Object.entries(expected).every(([name, value]) => header.get(name) === value);
+}
+
+function isOfficial98545e4Plan(header, body) {
+  return header.get("owner") === "stnl-spec-execution-manager"
+    && header.get("purpose") === "Template for the compact index of all delivery phases."
+    && body.match(/^# ([^\n]+)\n\n/u)?.[1] === "Delivery Plan Index"
+    && exactSectionNames(body).join("\0") === "Requirements Source"
+    && body.includes("```yaml\nrequirements_source: feature_spec.md\nexecution_workspace:")
+    && body.includes("| Done | Phase | Objective | Dependencies | Covered IDs or criteria | Parallel | Detail | Result |\n|---|---|---|---|---|---|---|---|");
+}
+
+function isOfficialE45e41dSplitPlan(header, body, expectedSlice) {
+  if (/^- Requirements authority:/mu.test(body) || /^- Plan revision:/mu.test(body)) return false;
+  const primaryH1 = body.match(/^# ([^\n]+)\n\n/u)?.[1] ?? null;
+  if (expectedSlice === null) {
+    if (!exactHistoricalPlannerHeader(header, {
+      purpose: "Template for compact global execution strategy and serial slice coverage.",
+      read_when: "PLAN creates or REVIEW_PLAN checks the global execution plan.",
+      do_not_read_when: "A selected detailed plan already supplies all necessary local context.",
+      contains: "Requirements source, objective, strategy, approval state, serial slice order, dependencies, coverage, and detailed plan paths.",
+      owner: "stnl-execution-planner",
+      update_policy: "PLAN creates as draft; REVIEW_PLAN corrects and changes status to ready.",
+    }) || primaryH1 !== "Execution Plan"
+      || exactSectionNames(body).join("\0") !== GLOBAL_PLAN_SECTIONS.join("\0")) return false;
+    const parsed = sections(body);
+    const context = parsed.get("Global Context") ?? "";
+    const order = parsed.get("Serial Slice Order") ?? "";
+    const risks = parsed.get("Global Risks and Integration") ?? "";
+    if (!/^- Requirements source: `[^`]+`\n- Objective: \S.*\n- Strategy: \S.*\n- Review state: (?:pending|approved)$/u.test(context)
+      || !/^(?:- \S.*\n)+\n`tasks\.md` is the only global progress authority and does not exist until approved plans are materialized\.$/u.test(risks)) return false;
+    try {
+      const rows = canonicalTableRows(
+        order,
+        "| Slice | Observable delivery | Dependencies | Requirements | Expected areas | Detailed plan |",
+        "|---|---|---|---|---|---|",
+        "historical e45e41d Serial Slice Order",
+      );
+      return rows.every((line) => {
+        const columns = line.split("|").slice(1, -1).map((column) => column.trim());
+        const identifier = columns[0]?.match(/^([0-9]{2,}) - \S.*$/u)?.[1];
+        return columns.length === 6 && identifier !== undefined && columns[5] === `plans/slice-${identifier}.md`;
+      });
+    } catch {
+      return false;
+    }
+  }
+  if (!exactHistoricalPlannerHeader(header, {
+    purpose: "Template for one observable and testable serial delivery slice.",
+    read_when: "PLAN creates or REVIEW_PLAN checks this detailed slice plan.",
+    do_not_read_when: "Another slice is active and no concrete dependency requires this plan.",
+    contains: "References, objective, observable result, scope, boundaries, dependencies, risks, strategy, expected tests, and completion criterion.",
+    owner: "stnl-execution-planner",
+    update_policy: "PLAN creates as draft; REVIEW_PLAN corrects and changes status to ready.",
+  }) || !new RegExp(`^Slice ${expectedSlice.slice(6)} - \\S`, "u").test(primaryH1 ?? "")
+    || exactSectionNames(body).join("\0") !== SLICE_PLAN_SECTIONS.join("\0")) return false;
+  const references = sections(body).get("References") ?? "";
+  return new RegExp(
+    `^- Slice: ${expectedSlice.slice(6)}\\n`
+      + "- Requirements source: `[^`]+`\\n"
+      + "- Global plan: `\\.\\./plan\\.md`\\n"
+      + "- Review state: (?:pending|approved)$",
+    "u",
+  ).test(references);
+}
+
 function parsePlan(text, label, expectedSlice = null, references = {}) {
   const { header, body } = parsePurpose(text, label);
+  if (isOfficial98545e4Plan(header, body)) {
+    throwLegacyExecutionContract(label, "structurally-incompatible", "official-phase-index-generation");
+  }
+  if (isOfficialE45e41dSplitPlan(header, body, expectedSlice)) {
+    throwLegacyExecutionContract(label, "semantically-incomplete", "known-split-plan-before-authority-fields");
+  }
   if (header.get("owner") !== "stnl-execution-planner") throw new ExecutionContractError(`${label} has the wrong File Purpose Header owner`);
   const h1 = body.match(/^# ([^\n]+)\n\n/u)?.[1];
   if (expectedSlice === null ? h1 !== "Execution Plan" : !new RegExp(`^Slice ${expectedSlice.slice(6)} - \\S.*$`, "u").test(h1 ?? "")) {
@@ -417,14 +607,14 @@ function operationRecords(section, prefix, { statusValues = null } = {}) {
 }
 
 function requireNonPlaceholder(value, label) {
-  if (value === null || /^(?:none|pending|n\/a|not_available)$/iu.test(value) || /<[^>\n]+>/u.test(value)) {
+  if (value === null || value.length === 0 || /^(?:none|pending|n\/a|not_available)$/iu.test(value) || /<[^>\n]+>/u.test(value)) {
     throw new ExecutionContractError(`${label} must be objective non-placeholder content`);
   }
   return value;
 }
 
 function requirePresentValue(value, label) {
-  if (value === null || /^(?:pending|n\/a)$/iu.test(value) || /<[^>\n]+>/u.test(value)) {
+  if (value === null || value.length === 0 || /^(?:pending|n\/a)$/iu.test(value) || /<[^>\n]+>/u.test(value)) {
     throw new ExecutionContractError(`${label} must contain a persisted value`);
   }
   return value;
@@ -446,15 +636,25 @@ function requireList(body, name, label) {
 }
 
 function requireCommands(record, { permitNone = false, requireZero = false } = {}) {
-  const none = field(record.body, "Commands", { required: false });
-  const commandLines = [...record.body.matchAll(/^  - `[^`]+` \| exit:([-]?[0-9]+)$/gmu)].map((match) => Number(match[1]));
-  if (none !== null) {
-    if (!permitNone || none !== "none" || commandLines.length !== 0) throw new ExecutionContractError(`${record.id} has invalid Commands`);
+  const markers = [...record.body.matchAll(/^- Commands:(?:[ \t]+(.*))?$/gmu)];
+  if (markers.length !== 1) throw new ExecutionContractError(`${record.id} must contain exactly one Commands field`);
+  const tail = record.body.slice(markers[0].index + markers[0][0].length);
+  const nextField = tail.search(/^- [^:\n]+:/mu);
+  const block = (nextField < 0 ? tail : tail.slice(0, nextField)).replace(/^\n/u, "").trimEnd();
+  const inline = markers[0][1]?.trim() ?? null;
+  if (inline !== null) {
+    if (!permitNone || inline !== "none" || block.length !== 0) throw new ExecutionContractError(`${record.id} has invalid Commands`);
     return [];
   }
-  if (!/^- Commands:$/mu.test(record.body) || commandLines.length === 0) throw new ExecutionContractError(`${record.id} has no numeric command evidence`);
-  if (requireZero && commandLines.some((value) => value !== 0)) throw new ExecutionContractError(`${record.id} PASS commands must exit zero`);
-  return commandLines;
+  const lines = block.split("\n").filter((line) => line.length !== 0);
+  const commands = lines.map((line) => {
+    const match = line.match(/^  - `([^`]+)` \| exit:([-]?[0-9]+)$/u);
+    if (match === null) throw new ExecutionContractError(`${record.id} has malformed Commands`);
+    return Object.freeze({ command: match[1], exit: Number(match[2]) });
+  });
+  if (commands.length === 0) throw new ExecutionContractError(`${record.id} has no numeric command evidence`);
+  if (requireZero && commands.some((entry) => entry.exit !== 0)) throw new ExecutionContractError(`${record.id} PASS commands must exit zero`);
+  return commands;
 }
 
 function blockerRecords(section, kind) {
@@ -473,6 +673,7 @@ function blockerRecords(section, kind) {
     if (kind === "divergence" && !new Set(["RESUME", "REPLAN"]).has(field(record.body, "Required authority operation"))) {
       throw new ExecutionContractError(`${record.id} has an invalid Required authority operation`);
     }
+    if (kind === "divergence") record.requiredAuthorityOperation = field(record.body, "Required authority operation");
     const resolutionValue = field(record.body, "Resolution", { required: false });
     const supersededValue = field(record.body, "Superseded by", { required: false });
     if (record.state === "active" && (resolutionValue !== null || supersededValue !== null)) {
@@ -501,17 +702,156 @@ function blockerRecords(section, kind) {
 }
 
 const CHECK_FIELD_NAMES = new Set([
-  "Automatic check round", "Status", "HEAD", "Tested scope", "Tested state", "Discovery sources",
+  "Automatic check round", "Status", "HEAD", "Tested scope", "Tested state", "Fileless reason", "Discovery sources",
   "Discovery actions", "Verification types considered", "Commands", "Selected checks", "Selection rationale",
   "Coverage", "Failures", "Blockers", "Unexpected workspace effects", "Persistence summary",
   "Prior-round failure", "Correction applied", "Correction paths", "Updated scope", "In-slice rationale",
   "Findings cycle", "Finding IDs", "Findings verified", "Corrections covered", "Regressions",
   "Unsupported active findings", "Non-applicability rationale", "No verification-command confirmation",
 ]);
+const FINDINGS_CHECK_ONLY_FIELD_NAMES = new Set([
+  "Findings cycle", "Finding IDs", "Findings verified", "Corrections covered", "Regressions", "Unsupported active findings",
+]);
+const IMPLEMENTATION_CHECK_FIELD_NAMES = new Set(
+  [...CHECK_FIELD_NAMES].filter((name) => !FINDINGS_CHECK_ONLY_FIELD_NAMES.has(name)),
+);
+const ATTEMPT_FIELD_NAMES = new Set([
+  "Type", "Status", "HEAD", "Verified scope", "Commands", "Evidence", "Finding references", "Finding dispositions",
+  "Blockers", "Unexpected workspace effects", "Persistence summary",
+]);
 
 function exactFieldLines(body, name) {
   const escaped = name.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
   return [...String(body).matchAll(new RegExp(`^- ${escaped}:[ \\t]*(.*)$`, "gmu"))];
+}
+
+function parseCanonicalFindingIds(value, label, { allowNone = false, declaredFindingIds = null } = {}) {
+  if (allowNone && value === "none") return [];
+  if (!/^finding-[0-9]{2,}(?:, finding-[0-9]{2,})*$/u.test(value)) {
+    throw new ExecutionContractError(`${label} has malformed Finding IDs`);
+  }
+  const identifiers = value.split(", ");
+  if (new Set(identifiers).size !== identifiers.length) throw new ExecutionContractError(`${label} has duplicate Finding IDs`);
+  if (identifiers.some((identifier, index) => index > 0 && identifier.localeCompare(identifiers[index - 1], "en") <= 0)) {
+    throw new ExecutionContractError(`${label} Finding IDs are not lexicographically ordered`);
+  }
+  if (declaredFindingIds !== null) {
+    const undeclared = identifiers.find((identifier) => !declaredFindingIds.has(identifier));
+    if (undeclared !== undefined) throw new ExecutionContractError(`${label} has undeclared Finding ID ${undeclared}`);
+  }
+  return identifiers;
+}
+
+function parseFindingDispositions(value, label) {
+  if (value === "none") return new Map();
+  if (!/^finding-[0-9]{2,}=(?:active|resolved|superseded)(?:, finding-[0-9]{2,}=(?:active|resolved|superseded))*$/u.test(value)) {
+    throw new ExecutionContractError(`${label} has malformed Finding dispositions`);
+  }
+  const entries = value.split(", ").map((entry) => entry.split("="));
+  const identifiers = entries.map(([identifier]) => identifier);
+  if (new Set(identifiers).size !== identifiers.length) throw new ExecutionContractError(`${label} has duplicate finding dispositions`);
+  if (identifiers.some((identifier, index) => index > 0 && identifier.localeCompare(identifiers[index - 1], "en") <= 0)) {
+    throw new ExecutionContractError(`${label} finding dispositions are not lexicographically ordered`);
+  }
+  return new Map(entries);
+}
+
+function scopedField(body, name, label) {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  const markers = [...String(body).matchAll(new RegExp(`^- ${escaped}:(?:[ \\t]+(.*))?$`, "gmu"))];
+  if (markers.length !== 1) throw new ExecutionContractError(`${label} must contain exactly one ${name} field`);
+  const tail = String(body).slice(markers[0].index + markers[0][0].length);
+  const nextField = tail.search(/^- [^:\n]+:/mu);
+  const block = (nextField < 0 ? tail : tail.slice(0, nextField)).replace(/^\n/u, "").trimEnd();
+  return { inline: markers[0][1]?.trim() ?? null, block };
+}
+
+function validateNestedScoping(record, { allowTestedState = false } = {}) {
+  let owner = null;
+  for (const line of record.body.split("\n")) {
+    if (line.length === 0) continue;
+    const top = line.match(/^- ([^:\n]+):/u);
+    if (top !== null) {
+      owner = top[1];
+      continue;
+    }
+    const command = /^  - `[^`]+` \| exit:[-]?[0-9]+$/u.test(line);
+    const testedState = /^  - `[^`]+` \| (?:sha256:[0-9a-f]{64}|REMOVED)$/u.test(line);
+    if ((command && owner === "Commands") || (allowTestedState && testedState && owner === "Tested state")) continue;
+    throw new ExecutionContractError(`${record.id} has unexpected nested or continuation content under ${owner ?? "no field"}`);
+  }
+}
+
+function validateRecordFields(record, allowedFields) {
+  const names = [...record.body.matchAll(/^- ([^:\n]+):/gmu)].map((match) => match[1]);
+  const unexpected = names.find((name) => !allowedFields.has(name));
+  if (unexpected !== undefined) throw new ExecutionContractError(`${record.id} has unknown field '${unexpected}'`);
+}
+
+function requireTestedState(record) {
+  const structured = scopedField(record.body, "Tested state", record.id);
+  if (structured.inline === "none" && structured.block.length === 0) {
+    requireNonPlaceholder(field(record.body, "Fileless reason"), `${record.id} Fileless reason`);
+    return [];
+  }
+  if (structured.inline !== null) throw new ExecutionContractError(`${record.id} Tested state must be a nested tuple list`);
+  if (field(record.body, "Fileless reason", { required: false }) !== null) {
+    throw new ExecutionContractError(`${record.id} Fileless reason is permitted only with Tested state: none`);
+  }
+  const lines = structured.block.split("\n").filter((line) => line.length !== 0);
+  const entries = lines.map((line) => {
+    const match = line.match(/^  - `([^`]+)` \| (sha256:([0-9a-f]{64})|REMOVED)$/u);
+    if (match === null) throw new ExecutionContractError(`${record.id} has malformed Tested state`);
+    return Object.freeze({ path: validateRelativeEvidencePath(match[1], `${record.id} Tested state path`), expected: match[2], hash: match[3] ?? null });
+  });
+  if (entries.length === 0) throw new ExecutionContractError(`${record.id} has empty Tested state`);
+  const paths = entries.map((entry) => entry.path);
+  if (new Set(paths).size !== paths.length) throw new ExecutionContractError(`${record.id} has duplicate Tested state paths`);
+  if (paths.some((value, index) => index > 0 && value.localeCompare(paths[index - 1], "en") <= 0)) {
+    throw new ExecutionContractError(`${record.id} Tested state paths are not lexicographically ordered`);
+  }
+  return entries;
+}
+
+function parseInlinePathSet(value, label) {
+  if (!/^\S+(?:, \S+)*$/u.test(value)) throw new ExecutionContractError(`${label} has malformed path set`);
+  const values = value.split(", ").map((entry) => validateRelativeEvidencePath(entry, `${label} path`));
+  if (new Set(values).size !== values.length) throw new ExecutionContractError(`${label} has duplicate paths`);
+  if (values.some((entry, index) => index > 0 && entry.localeCompare(values[index - 1], "en") <= 0)) {
+    throw new ExecutionContractError(`${label} paths are not lexicographically ordered`);
+  }
+  return values;
+}
+
+function discoveryContractViolation(record, { artifact = null, section = "Implementation Test Evidence" } = {}) {
+  const canonicalSources = exactFieldLines(record.body, "Discovery sources");
+  const canonicalActions = exactFieldLines(record.body, "Discovery actions");
+  const legacySources = exactFieldLines(record.body, "Check discovery sources");
+  const legacyActions = exactFieldLines(record.body, "Check discovery actions");
+  if (legacySources.length === 0 && legacyActions.length === 0) return null;
+  const mechanical = canonicalSources.length === 0 && canonicalActions.length === 0
+    && legacySources.length === 1 && legacyActions.length === 1
+    && legacySources[0][1].length !== 0 && legacyActions[0][1].length !== 0;
+  return Object.freeze({
+    kind: "legacy-discovery-labels",
+    artifact,
+    section,
+    record: record.id,
+    expectedField: "Discovery sources / Discovery actions",
+    foundField: "Check discovery sources / Check discovery actions",
+    owner: "execution-contract-runtime",
+    repairability: mechanical ? "mechanical" : "blocked",
+    reason: mechanical ? "exact-approved-label-pair" : "legacy-canonical-conflict-or-incomplete-pair",
+  });
+}
+
+function throwDiscoveryViolation(violation) {
+  throw new ExecutionContractError(
+    `${violation.artifact ?? violation.record}:${violation.record} uses legacy discovery labels; contract repair ${violation.repairability}`,
+    violation.artifact === null ? [] : [violation.artifact],
+    [],
+    violation,
+  );
 }
 
 function findingsIdContractViolation(record, {
@@ -538,10 +878,13 @@ function findingsIdContractViolation(record, {
   } else if (legacy.length === 1) {
     foundField = "Findings IDs";
     const value = legacy[0][1].trim();
-    if (/^finding-[0-9]{2,}$/u.test(value) && declaredFindingIds.has(value)) {
+    try {
+      parseCanonicalFindingIds(value, record.id, { declaredFindingIds });
       reason = "exact-approved-alias";
       repairability = "mechanical";
-    } else reason = "invalid-repair-value";
+    } catch {
+      reason = "invalid-repair-value";
+    }
   } else {
     const labels = [...record.body.matchAll(/^- ([^:\n]+):/gmu)].map((match) => match[1]);
     foundField = labels.find((label) => !CHECK_FIELD_NAMES.has(label)) ?? null;
@@ -572,21 +915,27 @@ function throwFindingsIdViolation(violation) {
 function parseChecks(section, prefix, context = {}) {
   const records = operationRecords(section, prefix, { statusValues: new Set(["TESTS_PASS", "TESTS_FAIL", "TESTS_NOT_APPLICABLE", "BLOCKED"]) });
   for (const record of records) {
+    validateNestedScoping(record, { allowTestedState: true });
+    const discoveryViolation = discoveryContractViolation(record, context);
+    if (discoveryViolation !== null) throwDiscoveryViolation(discoveryViolation);
+    if (prefix === "implementation-check") validateRecordFields(record, IMPLEMENTATION_CHECK_FIELD_NAMES);
     const round = field(record.body, "Automatic check round").match(/^([123])\/3$/u);
     if (round === null) throw new ExecutionContractError(`${record.id} has invalid Automatic check round`);
     record.round = Number(round[1]);
     for (const name of ["HEAD", "Tested scope", "Discovery sources", "Discovery actions", "Verification types considered", "Selected checks", "Selection rationale", "Coverage", "Failures", "Blockers", "Unexpected workspace effects", "Persistence summary"]) {
       requirePresentValue(field(record.body, name), `${record.id} ${name}`);
     }
-    const testedState = requireList(record.body, "Tested state", record.id);
-    if (testedState.some((value) => !/^`[^`]+` \| (?:sha256:[0-9a-f]{64}|REMOVED)$/u.test(value))) {
-      throw new ExecutionContractError(`${record.id} has malformed Tested state`);
+    if (record.status === "TESTS_PASS") {
+      for (const name of ["Tested scope", "Verification types considered", "Selected checks", "Coverage"]) {
+        requireNonPlaceholder(field(record.body, name), `${record.id} ${name}`);
+      }
     }
-    const commandExits = requireCommands(record, {
+    record.testedState = requireTestedState(record);
+    record.commands = requireCommands(record, {
       permitNone: new Set(["TESTS_NOT_APPLICABLE", "BLOCKED"]).has(record.status),
       requireZero: record.status === "TESTS_PASS",
     });
-    if (record.status === "TESTS_FAIL" && !commandExits.some((value) => value !== 0)) {
+    if (record.status === "TESTS_FAIL" && !record.commands.some((entry) => entry.exit !== 0)) {
       throw new ExecutionContractError(`${record.id} TESTS_FAIL must contain a nonzero command exit`);
     }
     if (record.status === "TESTS_NOT_APPLICABLE") {
@@ -597,15 +946,40 @@ function parseChecks(section, prefix, context = {}) {
     if (prefix === "findings-check") {
       const violation = findingsIdContractViolation(record, context);
       if (violation !== null) throwFindingsIdViolation(violation);
+      validateRecordFields(record, CHECK_FIELD_NAMES);
       record.findingsCycle = field(record.body, "Findings cycle");
       if (!/^attempt-[0-9]{2,}$/u.test(record.findingsCycle)) throw new ExecutionContractError(`${record.id} has invalid Findings cycle`);
       for (const name of ["Finding IDs", "Findings verified", "Corrections covered", "Regressions", "Unsupported active findings"]) {
         requirePresentValue(field(record.body, name), `${record.id} ${name}`);
       }
+      record.findingIds = parseCanonicalFindingIds(field(record.body, "Finding IDs"), record.id, {
+        declaredFindingIds: context.declaredFindingIds,
+      });
+      record.findingsVerified = parseCanonicalFindingIds(field(record.body, "Findings verified"), `${record.id} Findings verified`, {
+        allowNone: true,
+        declaredFindingIds: context.declaredFindingIds,
+      });
+      record.unsupportedActiveFindings = parseCanonicalFindingIds(
+        field(record.body, "Unsupported active findings"),
+        `${record.id} Unsupported active findings`,
+        { allowNone: true, declaredFindingIds: context.declaredFindingIds },
+      );
+      if (record.testedState.length === 0) {
+        requireNonPlaceholder(field(record.body, "Corrections covered"), `${record.id} Corrections covered`);
+      }
     }
     if (record.round > 1) {
-      for (const name of ["Prior-round failure", "Correction applied", "Correction paths", "Updated scope", "In-slice rationale"]) {
+      for (const name of ["Prior-round failure", "Correction applied", "Updated scope", "In-slice rationale"]) {
         requireNonPlaceholder(field(record.body, name), `${record.id} ${name}`);
+      }
+      const correctionPaths = field(record.body, "Correction paths");
+      if (correctionPaths === "none") {
+        if (record.testedState.length !== 0) {
+          throw new ExecutionContractError(`${record.id} file-backed Correction paths cannot be none`);
+        }
+        record.correctionPaths = [];
+      } else {
+        record.correctionPaths = parseInlinePathSet(correctionPaths, `${record.id} Correction paths`);
       }
     }
   }
@@ -639,21 +1013,44 @@ function baseState(section, attempts) {
   if (field(section, "Attempt type") !== field(owningAttempt.body, "Type")) throw new ExecutionContractError("Effective Validation Base Attempt type disagrees with its origin attempt");
   if (field(section, "HEAD") !== field(owningAttempt.body, "HEAD")) throw new ExecutionContractError("Effective Validation Base HEAD disagrees with its origin attempt");
   if (field(section, "Result") !== "PASS") throw new ExecutionContractError("Effective Validation Base Result must be PASS");
-  const filesMarker = section.indexOf("- Files:");
-  const commandsMarker = section.indexOf("- Authoritative commands:");
-  const evidenceMarker = section.indexOf("- Evidence summary:");
+  const nestedFiles = [...section.matchAll(/^- Files:$/gmu)];
+  const filelessFiles = [...section.matchAll(/^- Files: none$/gmu)];
+  if (nestedFiles.length + filelessFiles.length !== 1) throw new ExecutionContractError("Effective Validation Base must contain exactly one Files field");
+  const fileless = filelessFiles.length === 1;
+  const filesMarker = fileless ? filelessFiles[0].index : nestedFiles[0].index;
+  const commandMarkers = [...section.matchAll(/^- Authoritative commands:$/gmu)];
+  const evidenceMarkers = [...section.matchAll(/^- Evidence summary:[ \t]*(.*)$/gmu)];
+  if (commandMarkers.length !== 1) throw new ExecutionContractError("Effective Validation Base must contain exactly one Authoritative commands field");
+  if (evidenceMarkers.length !== 1) throw new ExecutionContractError("Effective Validation Base must contain exactly one Evidence summary field");
+  const commandsMarker = commandMarkers[0].index;
+  const evidenceMarker = evidenceMarkers[0].index;
   if (filesMarker < 0 || commandsMarker <= filesMarker || evidenceMarker <= commandsMarker) throw new ExecutionContractError("Effective Validation Base field order is malformed");
-  const filesSection = section.slice(filesMarker, commandsMarker).trimEnd();
-  const fileLines = filesSection.split("\n").slice(1).filter((line) => line.length !== 0);
-  if (fileLines.length === 0 || fileLines.some((line) => !/^  - `[^`]+` \| (?:sha256:[0-9a-f]{64}|REMOVED)$/u.test(line))) {
-    throw new ExecutionContractError("Effective Validation Base has a malformed Files manifest");
+  const evidenceEnd = evidenceMarker + evidenceMarkers[0][0].length;
+  if (section.slice(evidenceEnd).trim().length !== 0) {
+    throw new ExecutionContractError("Effective Validation Base has unexpected content after Evidence summary");
   }
+  const filesSection = section.slice(filesMarker, commandsMarker).trimEnd();
   const entries = [];
-  for (const match of filesSection.matchAll(/^  - `([^`]+)` \| (sha256:([0-9a-f]{64})|REMOVED)$/gmu)) {
-    entries.push({ path: match[1], expected: match[2], hash: match[3] ?? null });
+  if (fileless) {
+    const filelessLines = filesSection.split("\n").filter((line) => line.length !== 0);
+    if (filelessLines.length !== 2 || filelessLines[0] !== "- Files: none" || !filelessLines[1].startsWith("- Fileless reason: ")) {
+      throw new ExecutionContractError("Effective Validation Base fileless manifest requires exactly Files: none and Fileless reason");
+    }
+    requireNonPlaceholder(field(filesSection, "Fileless reason"), "Effective Validation Base Fileless reason");
+  } else {
+    if (field(section, "Fileless reason", { required: false }) !== null) {
+      throw new ExecutionContractError("Effective Validation Base Fileless reason is permitted only with Files: none");
+    }
+    const fileLines = filesSection.split("\n").slice(1).filter((line) => line.length !== 0);
+    if (fileLines.length === 0 || fileLines.some((line) => !/^  - `[^`]+` \| (?:sha256:[0-9a-f]{64}|REMOVED)$/u.test(line))) {
+      throw new ExecutionContractError("Effective Validation Base has a malformed Files manifest");
+    }
+    for (const match of filesSection.matchAll(/^  - `([^`]+)` \| (sha256:([0-9a-f]{64})|REMOVED)$/gmu)) {
+      entries.push({ path: match[1], expected: match[2], hash: match[3] ?? null });
+    }
   }
   const paths = entries.map((entry) => entry.path);
-  if (paths.length === 0) throw new ExecutionContractError("Effective Validation Base has an empty manifest");
+  if (!fileless && paths.length === 0) throw new ExecutionContractError("Effective Validation Base has an empty manifest");
   if (new Set(paths).size !== paths.length) throw new ExecutionContractError("Effective Validation Base has duplicate paths");
   if (paths.some((value, index) => index > 0 && value.localeCompare(paths[index - 1], "en") <= 0)) {
     throw new ExecutionContractError("Effective Validation Base paths are not lexicographically ordered");
@@ -663,36 +1060,58 @@ function baseState(section, attempts) {
   if (commandLines.length === 0 || commandLines.some((line) => !/^  - `[^`]+` \| exit:[-]?[0-9]+$/u.test(line))) {
     throw new ExecutionContractError("Effective Validation Base has malformed Authoritative commands");
   }
-  const commandExits = [...commandSection.matchAll(/^  - `[^`]+` \| exit:([-]?[0-9]+)$/gmu)].map((match) => Number(match[1]));
-  if (commandExits.length === 0 || commandExits.some((exit) => exit !== 0)) {
+  const commands = commandLines.map((line) => {
+    const match = line.match(/^  - `([^`]+)` \| exit:([-]?[0-9]+)$/u);
+    return Object.freeze({ command: match[1], exit: Number(match[2]) });
+  });
+  if (commands.some((entry) => entry.exit !== 0)) {
     throw new ExecutionContractError("Effective Validation Base authoritative commands must exist and exit zero");
   }
-  requireNonPlaceholder(field(section, "Evidence summary"), "Effective Validation Base Evidence summary");
-  return { present: true, paths, entries };
+  if (JSON.stringify(commands) !== JSON.stringify(owningAttempt.commands)) {
+    throw new ExecutionContractError("Effective Validation Base authoritative commands disagree with its origin attempt");
+  }
+  const evidenceSummary = field(section, "Evidence summary");
+  requireNonPlaceholder(evidenceSummary, "Effective Validation Base Evidence summary");
+  if (evidenceSummary !== field(owningAttempt.body, "Evidence")) {
+    throw new ExecutionContractError("Effective Validation Base Evidence summary disagrees with its origin attempt");
+  }
+  return { present: true, fileless, paths, entries };
 }
 
 function finalState(section) {
-  const result = section.match(/^- (pending|PASS|SUPERSEDED)$/mu)?.[1];
-  if (result === undefined) throw new ExecutionContractError("Final Result is malformed");
-  const supersededBy = result === "SUPERSEDED" ? field(section, "Superseded by") : null;
-  const straySupersededBy = result === "SUPERSEDED" ? null : field(section, "Superseded by", { required: false });
-  const strayPlanRevision = result === "SUPERSEDED" ? null : field(section, "Plan revision", { required: false });
-  if (straySupersededBy !== null || strayPlanRevision !== null) throw new ExecutionContractError(`${result} Final Result contains supersession-only fields`);
-  if (supersededBy !== null && !SLICE_FILE.test(`${supersededBy}.md`)) throw new ExecutionContractError("Final Result has malformed Superseded by slice");
-  const planRevisionValue = result === "SUPERSEDED" ? field(section, "Plan revision") : null;
-  if (planRevisionValue !== null && !/^[1-9][0-9]*$/u.test(planRevisionValue)) throw new ExecutionContractError("Final Result has malformed Plan revision");
-  return { result, supersededBy, planRevision: planRevisionValue === null ? null : Number(planRevisionValue) };
+  const normalized = normalizeText(section);
+  if (normalized === "- pending") return { result: "pending", supersededBy: null, planRevision: null };
+  if (normalized === "- PASS") return { result: "PASS", supersededBy: null, planRevision: null };
+  const superseded = normalized.match(/^- SUPERSEDED\n- Superseded by: (slice-[0-9]{2,})\n- Plan revision: ([1-9][0-9]*)$/u);
+  if (superseded === null || !SLICE_FILE.test(`${superseded[1]}.md`)) throw new ExecutionContractError("Final Result is malformed");
+  return { result: "SUPERSEDED", supersededBy: superseded[1], planRevision: Number(superseded[2]) };
 }
 
 function parseAttempts(section) {
   const attempts = operationRecords(section, "attempt", { statusValues: new Set(["PASS", "NEEDS_FIX", "BLOCKED"]) });
+  const firstPassIndex = attempts.findIndex((attempt) => attempt.status === "PASS");
+  if (firstPassIndex >= 0 && firstPassIndex !== attempts.length - 1) {
+    throw new ExecutionContractError(`${attempts[firstPassIndex].id} PASS is terminal; no later formal attempt is permitted`);
+  }
   if (attempts.length > 0 && field(attempts[0].body, "Type") !== "initial") throw new ExecutionContractError("attempt-01 must be initial");
   for (const attempt of attempts.slice(1)) if (field(attempt.body, "Type") !== "revalidation") throw new ExecutionContractError(`${attempt.id} must be revalidation`);
   for (const attempt of attempts) {
+    validateNestedScoping(attempt);
+    validateRecordFields(attempt, ATTEMPT_FIELD_NAMES);
     for (const name of ["HEAD", "Verified scope", "Evidence", "Finding references", "Finding dispositions", "Blockers", "Unexpected workspace effects", "Persistence summary"]) {
       requirePresentValue(field(attempt.body, name), `${attempt.id} ${name}`);
     }
-    requireCommands(attempt, { permitNone: attempt.status === "BLOCKED", requireZero: attempt.status === "PASS" });
+    attempt.commands = requireCommands(attempt, { permitNone: attempt.status === "BLOCKED", requireZero: attempt.status === "PASS" });
+    attempt.findingReferences = parseCanonicalFindingIds(
+      field(attempt.body, "Finding references"),
+      `${attempt.id} Finding references`,
+      { allowNone: true },
+    );
+    attempt.findingDispositions = parseFindingDispositions(field(attempt.body, "Finding dispositions"), attempt.id);
+    if (attempt.findingReferences.length !== attempt.findingDispositions.size
+      || attempt.findingReferences.some((identifier) => !attempt.findingDispositions.has(identifier))) {
+      throw new ExecutionContractError(`${attempt.id} Finding references and dispositions disagree`);
+    }
   }
   return attempts;
 }
@@ -716,20 +1135,71 @@ function parseDelegationBlocker(section, operationRecordsByName) {
   const priorIndex = afterRecord === "none" ? -1 : records.findIndex((record) => record.id === afterRecord);
   if (afterRecord !== "none" && priorIndex < 0) throw new ExecutionContractError("Delegation Blocker After record does not exist for its Operation");
   if (state === "active" && priorIndex !== records.length - 1) throw new ExecutionContractError("active Delegation Blocker must be resolved after a later valid record");
-  if (state === "resolved" && records.length <= priorIndex + 1) throw new ExecutionContractError("resolved Delegation Blocker requires a later valid record");
+  if (state === "resolved") {
+    if (records.length <= priorIndex + 1) throw new ExecutionContractError("resolved Delegation Blocker requires a later valid record");
+    const resolvingRecord = records[priorIndex + 1].id;
+    const resolutionText = field(section, "Resolution");
+    const namedRecords = [...resolutionText.matchAll(/\b(?:implementation-check|findings-check|attempt)-[0-9]{2,}\b/gu)].map((match) => match[0]);
+    if (namedRecords.length !== 1 || namedRecords[0] !== resolvingRecord) {
+      throw new ExecutionContractError(`Delegation Blocker Resolution must name ${resolvingRecord}`);
+    }
+  }
   return { operation, kind, state, afterRecord };
 }
 
 function validateFindingLifecycle(findings, attempts, findingsChecks) {
   const attemptsById = new Map(attempts.map((attempt, index) => [attempt.id, { ...attempt, index }]));
+  const findingsById = new Map(findings.map((finding) => [finding.id, finding]));
+  const resolutionIndexes = new Map();
   for (const finding of findings) {
     const origin = attemptsById.get(finding.origin);
     if (origin === undefined || origin.status !== "NEEDS_FIX") throw new ExecutionContractError(`${finding.id} Origin must name an existing NEEDS_FIX attempt`);
     if (finding.state === "resolved") {
       const resolutionAttemptId = field(finding.body, "Resolution").match(/\battempt-[0-9]{2,}\b/u)?.[0];
       const resolution = attemptsById.get(resolutionAttemptId);
-      if (resolution === undefined || resolution.index < origin.index || !new Set(["PASS", "NEEDS_FIX"]).has(resolution.status)) {
-        throw new ExecutionContractError(`${finding.id} Resolution must name an existing current or later formal attempt`);
+      if (resolution === undefined || resolution.index <= origin.index || !new Set(["PASS", "NEEDS_FIX"]).has(resolution.status)) {
+        throw new ExecutionContractError(`${finding.id} Resolution must name an existing strictly later formal attempt`);
+      }
+      resolutionIndexes.set(finding.id, resolution.index);
+    }
+    if (finding.state === "superseded") {
+      const replacement = findingsById.get(field(finding.body, "Superseded by"));
+      const replacementOrigin = replacement === undefined ? null : attemptsById.get(replacement.origin);
+      if (replacementOrigin === undefined || replacementOrigin === null || replacementOrigin.index <= origin.index) {
+        throw new ExecutionContractError(`${finding.id} superseding finding origin must be strictly later than its own origin`);
+      }
+    }
+  }
+  const findingStateAtAttempt = (finding, attemptIndex) => {
+    if (attemptsById.get(finding.origin).index > attemptIndex) return null;
+    if (finding.state === "resolved" && attemptIndex >= resolutionIndexes.get(finding.id)) return "resolved";
+    if (finding.state === "superseded") {
+      const replacement = findingsById.get(field(finding.body, "Superseded by"));
+      const replacementOrigin = replacement === undefined ? null : attemptsById.get(replacement.origin);
+      if (replacementOrigin === undefined || replacementOrigin === null) {
+        throw new ExecutionContractError(`${finding.id} Superseded by has no formal-attempt origin`);
+      }
+      if (attemptIndex >= replacementOrigin.index) return "superseded";
+    }
+    return "active";
+  };
+  for (const [attemptIndex, attempt] of attempts.entries()) {
+    for (const identifier of attempt.findingReferences) {
+      const finding = findingsById.get(identifier);
+      if (finding === undefined) throw new ExecutionContractError(`${attempt.id} references undeclared ${identifier}`);
+      if (attemptsById.get(finding.origin).index > attemptIndex) {
+        throw new ExecutionContractError(`${attempt.id} references ${identifier} before its origin attempt`);
+      }
+    }
+    const applicable = findings.filter((finding) => attemptsById.get(finding.origin).index <= attemptIndex).sort((left, right) => left.id.localeCompare(right.id, "en"));
+    if (attempt.findingReferences.length !== applicable.length
+      || attempt.findingReferences.some((identifier, index) => identifier !== applicable[index].id)) {
+      throw new ExecutionContractError(`${attempt.id} must dispose every finding in its authority`);
+    }
+    for (const finding of applicable) {
+      const expectedState = findingStateAtAttempt(finding, attemptIndex);
+      if (attempt.findingDispositions.get(finding.id) !== expectedState) {
+        throw new ExecutionContractError(`${attempt.id} disposition contradicts ${finding.id} deterministic timeline`);
       }
     }
   }
@@ -738,11 +1208,29 @@ function validateFindingLifecycle(findings, attempts, findingsChecks) {
     if (cycle === undefined || cycle.status !== "NEEDS_FIX") throw new ExecutionContractError(`${check.id} Findings cycle must name an existing NEEDS_FIX attempt`);
     const latestApplicable = attempts.slice(0, cycle.index + 1).filter((attempt) => attempt.status === "NEEDS_FIX").at(-1);
     if (latestApplicable?.id !== check.findingsCycle) throw new ExecutionContractError(`${check.id} Findings cycle is not the latest applicable NEEDS_FIX attempt`);
+    for (const identifier of check.findingIds) {
+      const finding = findingsById.get(identifier);
+      if (finding === undefined) throw new ExecutionContractError(`${check.id} references undeclared ${identifier}`);
+      if (attemptsById.get(finding.origin).index > cycle.index) throw new ExecutionContractError(`${check.id} references ${identifier} outside its Findings cycle`);
+    }
+    if (check.findingsVerified.some((identifier) => !check.findingIds.includes(identifier))) {
+      throw new ExecutionContractError(`${check.id} Findings verified must be a subset of Finding IDs`);
+    }
+    const activeAtCycle = findings.filter((finding) => findingStateAtAttempt(finding, cycle.index) === "active")
+      .map((finding) => finding.id).sort();
+    if (check.findingIds.some((identifier) => !activeAtCycle.includes(identifier))) {
+      throw new ExecutionContractError(`${check.id} verifies a finding that is not active in its cycle`);
+    }
+    const unsupported = activeAtCycle.filter((identifier) => !check.findingsVerified.includes(identifier));
+    if (unsupported.length !== check.unsupportedActiveFindings.length
+      || unsupported.some((identifier, index) => identifier !== check.unsupportedActiveFindings[index])) {
+      throw new ExecutionContractError(`${check.id} Unsupported active findings contradict the canonical active set`);
+    }
   }
 }
 
-function changedPathClaims(section, label, sentinel) {
-  if (section === sentinel) return [];
+function changedPathClaims(section, label, sentinels) {
+  if (sentinels.has(section)) return [];
   const lines = section.split("\n");
   if (lines.length === 0 || lines.some((line) => !/^- `[^`]+`$/u.test(line))) {
     throw new ExecutionContractError(`${label} must contain only canonical task-relative path claims`);
@@ -803,14 +1291,23 @@ function parseTask(text, label, expectedSlice, references = {}) {
   const base = baseState(taskSections.get("Effective Validation Base"), attempts);
   for (const entry of base.entries) validateRelativeEvidencePath(entry.path, `${label} Effective Validation Base path`);
   const final = finalState(taskSections.get("Final Result"));
-  const changedAreas = changedPathClaims(taskSections.get("Changed Areas"), `${label} Changed Areas`, "- pending");
-  const corrections = changedPathClaims(taskSections.get("Corrections Applied"), `${label} Corrections Applied`, "- none");
+  const changedAreasSection = taskSections.get("Changed Areas");
+  const changedAreas = changedPathClaims(changedAreasSection, `${label} Changed Areas`, new Set(["- pending", "- none"]));
+  const corrections = changedPathClaims(taskSections.get("Corrections Applied"), `${label} Corrections Applied`, new Set(["- none"]));
   if (corrections.some((claim) => !changedAreas.includes(claim))) throw new ExecutionContractError(`${label} correction path is absent from Changed Areas`);
   const changedClaims = [...new Set([...changedAreas, ...corrections])];
   const checklist = taskSections.get("Checklist") ?? "";
-  const checklistRows = [...checklist.matchAll(/^- \[([ x])\] [0-9]+\.[0-9]+\b/gmu)];
+  const checklistRows = checklist.split("\n").filter((line) => line.length !== 0).map((line) => {
+    const match = line.match(/^- \[([ x])\] ([0-9]+\.[0-9]+) \S.* \| observable result: \S.* \| expected areas: \S.* \| requirement: \S.*$/u);
+    if (match === null) throw new ExecutionContractError(`${label} has malformed Checklist row: ${line}`);
+    return { done: match[1] === "x", id: match[2] };
+  });
   if (checklistRows.length === 0) throw new ExecutionContractError(`${label} has no canonical checklist rows`);
-  const checklistComplete = checklistRows.every((match) => match[1] === "x");
+  if (new Set(checklistRows.map((row) => row.id)).size !== checklistRows.length) throw new ExecutionContractError(`${label} has duplicate Checklist rows`);
+  const checklistComplete = checklistRows.every((row) => row.done);
+  const workStarted = checklistRows.some((row) => row.done) || implementationChecks.length !== 0
+    || findingsChecks.length !== 0 || attempts.length !== 0 || corrections.length !== 0
+    || delegationBlocker !== null || normalizeText(taskSections.get("Diff Summary")) !== "- pending";
   if (attempts.length !== 0 && !checklistComplete) throw new ExecutionContractError(`${label} has Validation Attempts before the mandatory checklist is complete`);
   const pristine = [...PRISTINE].every(([name, sentinel]) => taskSections.get(name) === sentinel)
     && !/^- \[x\]/gmu.test(taskSections.get("Checklist") ?? "");
@@ -829,10 +1326,41 @@ function parseTask(text, label, expectedSlice, references = {}) {
   }
   if (final.result === "PASS" && (!base.present || activeBlockers.length !== 0)) throw new ExecutionContractError(`${label} PASS retains no valid base or active blocker`);
   if (final.result === "PASS" && attempts.at(-1)?.status !== "PASS") throw new ExecutionContractError(`${label} PASS does not originate from its latest formal attempt`);
+  if (final.result === "PASS") {
+    const diffSummary = normalizeText(taskSections.get("Diff Summary"));
+    if (!/^- \S.*$/u.test(diffSummary) || /^(?:- )?(?:none|pending|n\/a|not_available)$/iu.test(diffSummary)) {
+      throw new ExecutionContractError(`${label} terminal PASS requires a non-placeholder Diff Summary`);
+    }
+  }
   if (attempts.at(-1)?.status === "PASS" && (final.result !== "PASS" || !base.present)) throw new ExecutionContractError(`${label} latest PASS attempt was not published atomically`);
   if (final.result === "SUPERSEDED" && base.present) throw new ExecutionContractError(`${label} SUPERSEDED must not retain an Effective Validation Base`);
   if (final.result === "PASS" && changedClaims.some((claim) => !base.paths.includes(claim))) {
     throw new ExecutionContractError(`${label} has a changed/corrected path with no validation owner`);
+  }
+  const latestAttempt = attempts.at(-1);
+  const latestNeedsFix = attempts.filter((attempt) => attempt.status === "NEEDS_FIX").at(-1);
+  let currentAuxiliaryCheck = null;
+  if (!base.present) {
+    if (latestAttempt === undefined) currentAuxiliaryCheck = implementationChecks.at(-1) ?? null;
+    else if (latestAttempt.status === "NEEDS_FIX") {
+      currentAuxiliaryCheck = findingsChecks.filter((check) => check.findingsCycle === latestAttempt.id).at(-1) ?? null;
+    } else if (latestAttempt.status === "BLOCKED") {
+      currentAuxiliaryCheck = latestNeedsFix === undefined
+        ? implementationChecks.at(-1) ?? null
+        : findingsChecks.filter((check) => check.findingsCycle === latestNeedsFix.id).at(-1) ?? null;
+    }
+  }
+  if (base.present) {
+    if (base.fileless !== (changedAreasSection === "- none")) {
+      throw new ExecutionContractError(`${label} Effective Validation Base and Changed Areas disagree on fileless ownership`);
+    }
+  } else if (currentAuxiliaryCheck !== null) {
+    const currentFileless = currentAuxiliaryCheck.testedState.length === 0;
+    if (currentFileless !== (changedAreasSection === "- none")) {
+      throw new ExecutionContractError(`${label} current fileless auxiliary check requires Changed Areas: none and current file-backed evidence requires paths`);
+    }
+  } else if (changedAreasSection === "- none") {
+    throw new ExecutionContractError(`${label} Changed Areas: none requires current fileless check evidence or a fileless Effective Validation Base`);
   }
   let retryExhausted = null;
   const lastImplementation = implementationChecks.at(-1);
@@ -866,6 +1394,22 @@ function parseTask(text, label, expectedSlice, references = {}) {
         || latestAttempt?.status === "BLOCKED"
         || (latestAttempt?.status === "NEEDS_FIX" && findingsTerminal);
       if (!validationReady) throw new ExecutionContractError(`${label} has a stale VALIDATE_SLICE Delegation Blocker outside a validation phase`);
+    }
+  }
+  if (workStarted && taskSections.get("Changed Areas") === "- pending") {
+    throw new ExecutionContractError(`${label} Changed Areas cannot remain pending after work`);
+  }
+  const currentFindingsCheck = latestNeedsFix === undefined ? null
+    : findingsChecks.filter((check) => check.findingsCycle === latestNeedsFix.id).at(-1) ?? null;
+  if (findingsChecks.length !== 0 && corrections.length === 0 && currentFindingsCheck?.testedState.length !== 0) {
+    throw new ExecutionContractError(`${label} Findings Test Evidence requires Corrections Applied`);
+  }
+  for (const check of [...implementationChecks, ...findingsChecks].filter((record) => record.round > 1)) {
+    if (check.correctionPaths.some((claim) => !corrections.includes(claim))) {
+      throw new ExecutionContractError(`${check.id} Correction paths are absent from Corrections Applied`);
+    }
+    if (check.correctionPaths.some((claim) => !changedAreas.includes(claim))) {
+      throw new ExecutionContractError(`${check.id} Correction paths are absent from Changed Areas`);
     }
   }
   return {
@@ -929,23 +1473,103 @@ async function validateFinalOwnership(result) {
   if (findings.length !== 0) throw new ExecutionContractError("final validation ownership does not match the workspace", findings);
 }
 
+function markdownStructuralText(text) {
+  let fence = null;
+  let inHtmlComment = false;
+  return String(text).split("\n").map((rawLine) => {
+    if (fence !== null) {
+      const close = new RegExp(`^ {0,3}${fence.character}{${fence.length},}\\s*$`, "u");
+      if (close.test(rawLine)) fence = null;
+      return "";
+    }
+
+    let visible = "";
+    let cursor = 0;
+    while (cursor < rawLine.length) {
+      if (inHtmlComment) {
+        const end = rawLine.indexOf("-->", cursor);
+        if (end === -1) return visible;
+        inHtmlComment = false;
+        visible += " ";
+        cursor = end + 3;
+      } else {
+        const start = rawLine.indexOf("<!--", cursor);
+        if (start === -1) {
+          visible += rawLine.slice(cursor);
+          break;
+        }
+        visible += `${rawLine.slice(cursor, start)} `;
+        inHtmlComment = true;
+        cursor = start + 4;
+      }
+    }
+
+    const opening = visible.match(/^ {0,3}(`{3,}|~{3,})/u);
+    if (opening !== null) {
+      fence = { character: opening[1][0], length: opening[1].length };
+      return "";
+    }
+    return visible;
+  }).join("\n");
+}
+
 function parseGlobalRows(text) {
   const { header, body } = parsePurpose(text, "tasks.md");
   if (header.get("owner") !== "stnl-task-materializer" || header.get("status") !== "ready") {
     throw new ExecutionContractError("tasks.md has an invalid File Purpose Header owner or status");
   }
-  if (!body.startsWith("# Execution Tasks\n\n") || /^## /gmu.test(body)) throw new ExecutionContractError("tasks.md has a non-canonical heading structure");
+  const structuralBody = markdownStructuralText(body);
+  if (!structuralBody.startsWith("# Execution Tasks\n\n")
+    || (structuralBody.match(/^# /gmu) ?? []).length !== 1 || /^## /gmu.test(structuralBody)) {
+    throw new ExecutionContractError("tasks.md has a non-canonical heading structure");
+  }
+  const tableHeader = "| Done | Slice | Delivery | Dependencies | Detail | Validation | Result |";
+  const table = canonicalTableRows(
+    structuralBody,
+    tableHeader,
+    "|---|---|---|---|---|---|---|",
+    "tasks.md",
+    { permitProseOutside: true },
+  );
   const rows = [];
-  for (const line of body.split("\n")) {
-    if (!/^\| \[[ x]\] \|/u.test(line)) continue;
+  for (const line of table) {
     const columns = line.split("|").slice(1, -1).map((column) => column.trim());
-    if (columns.length !== 7) throw new ExecutionContractError(`tasks.md has malformed row: ${line}`);
+    if (columns.length !== 7 || !/^\[[ x]\]$/u.test(columns[0])) throw new ExecutionContractError(`tasks.md has malformed row: ${line}`);
     const sliceMatch = columns[1].match(/^([0-9]{2,}) - \S.*$/u);
     if (sliceMatch === null || columns[4] !== `tasks/slice-${sliceMatch[1]}.md`) throw new ExecutionContractError(`tasks.md has malformed slice mapping: ${line}`);
     rows.push({ done: columns[0] === "[x]", slice: `slice-${sliceMatch[1]}`, validation: columns[5], result: columns[6] });
   }
   if (rows.length === 0) throw new ExecutionContractError("tasks.md has no slice rows");
   if (new Set(rows.map((row) => row.slice)).size !== rows.length) throw new ExecutionContractError("tasks.md has duplicate slice rows");
+  return rows;
+}
+
+function rowLikeTableResidue(line) {
+  const value = line.trimStart();
+  const pipes = (value.match(/\|/gu) ?? []).length;
+  return value.startsWith("|")
+    || /^\[[ x]\]\s*\|/u.test(value)
+    || /^---+\s*\|/u.test(value)
+    || /^Done\s*\|\s*Slice\s*\|/u.test(value)
+    || (pipes >= 3 && /tasks\/slice-[0-9]{2,}\.md/u.test(value));
+}
+
+function canonicalTableRows(section, header, separator, label, { allowedOutside = new Set(), permitProseOutside = false } = {}) {
+  const lines = String(section).split("\n");
+  const headerIndexes = lines.flatMap((line, index) => line === header ? [index] : []);
+  if (headerIndexes.length !== 1 || lines[headerIndexes[0] + 1] !== separator) {
+    throw new ExecutionContractError(`${label} has a malformed canonical table header`);
+  }
+  const start = headerIndexes[0] + 2;
+  let end = start;
+  while (end < lines.length && lines[end].startsWith("|")) end += 1;
+  const rows = lines.slice(start, end);
+  const unexpected = lines.some((line, index) => line.length !== 0
+    && index !== headerIndexes[0] && index !== headerIndexes[0] + 1
+    && (index < start || index >= end)
+    && (permitProseOutside ? rowLikeTableResidue(line) : !allowedOutside.has(line)));
+  if (unexpected) throw new ExecutionContractError(`${label} has an unexpected structural row`);
+  if (rows.length === 0) throw new ExecutionContractError(`${label} has no canonical data rows`);
   return rows;
 }
 
@@ -961,9 +1585,22 @@ async function readPlanArtifacts(workspace) {
     requirementsSource: requirementsReference(workspace, workspace.executionRoot),
   });
   const serialOrder = globalPlan.sections.get("Serial Slice Order");
-  const planLinks = [...serialOrder.matchAll(/\| plans\/(slice-[0-9]{2,})\.md \|$/gmu)].map((match) => match[1]);
-  const sliceOrder = [...new Set(planLinks)];
-  if (sliceOrder.length === 0 || sliceOrder.length !== planLinks.length) throw new ExecutionContractError("plan.md has missing or duplicate detailed plan mappings");
+  const serialRows = canonicalTableRows(
+    serialOrder,
+    "| Slice | Observable delivery | Dependencies | Requirements | Expected areas | Detailed plan |",
+    "|---|---|---|---|---|---|",
+    "Serial Slice Order",
+  );
+  const sliceOrder = serialRows.map((line) => {
+    const columns = line.split("|").slice(1, -1).map((column) => column.trim());
+    if (columns.length !== 6) throw new ExecutionContractError(`Serial Slice Order has malformed row: ${line}`);
+    const slice = columns[0].match(/^([0-9]{2,}) - \S.*$/u)?.[1];
+    if (slice === undefined || columns[5] !== `plans/slice-${slice}.md`) {
+      throw new ExecutionContractError(`Serial Slice Order has malformed row: ${line}`);
+    }
+    return `slice-${slice}`;
+  });
+  if (new Set(sliceOrder).size !== sliceOrder.length) throw new ExecutionContractError("plan.md has missing or duplicate detailed plan mappings");
   const plans = new Map();
   const planDirectory = path.join(workspace.executionRoot, "plans");
   const directoryFindings = [];
@@ -1022,6 +1659,13 @@ async function executionArtifacts(workspace) {
       await rejectSymlinkComponents(path.resolve(taskDirectory, claim), trustedRoot).catch((error) => {
         throw new ExecutionContractError(`${slice} contains an unsafe validation-owned path: ${claim}`, error.findings ?? []);
       });
+    }
+    for (const record of [...task.implementationChecks, ...task.findingsChecks]) {
+      for (const entry of record.testedState) {
+        await rejectSymlinkComponents(path.resolve(taskDirectory, entry.path), trustedRoot).catch((error) => {
+          throw new ExecutionContractError(`${slice}:${record.id} contains an unsafe Tested state path: ${entry.path}`, error.findings ?? []);
+        });
+      }
     }
   }
   const mappingMismatch = rows.length !== sliceOrder.length || rows.some((row, index) => row.slice !== sliceOrder[index]);
@@ -1163,9 +1807,17 @@ export async function inspectExecutionState(specPath) {
   const workspace = await resolveExecutionWorkspace(specPath);
   const currentFingerprint = await computeRequirementsAuthority(specPath);
   const rootMetadata = await lstatOrNull(workspace.executionRoot);
-  if (rootMetadata === null) return withRecoveryTargets({ state: "EMPTY", workspace, currentFingerprint });
+  if (rootMetadata === null) {
+    await rejectOfficialLifecycleRootExecution(workspace);
+    const lifecycleStatus = await lifecycleStatusForExecution(workspace);
+    return withRecoveryTargets({ state: "EMPTY", workspace, currentFingerprint, lifecycleStatus });
+  }
   const nonIgnored = (await fs.readdir(workspace.executionRoot, { withFileTypes: true })).filter((entry) => !isIgnoredMetadata(entry.name));
-  if (nonIgnored.length === 0) return withRecoveryTargets({ state: "EMPTY", workspace, currentFingerprint });
+  if (nonIgnored.length === 0) {
+    await rejectOfficialLifecycleRootExecution(workspace);
+    const lifecycleStatus = await lifecycleStatusForExecution(workspace);
+    return withRecoveryTargets({ state: "EMPTY", workspace, currentFingerprint, lifecycleStatus });
+  }
   const hasTasks = await lstatOrNull(path.join(workspace.executionRoot, "tasks.md")) !== null;
   await validateExecutionLayout(specPath, { allowPlanned: !hasTasks });
   if (!hasTasks) {
@@ -1190,13 +1842,16 @@ export async function inspectExecutionState(specPath) {
   const stale = artifacts.globalPlan.fingerprint !== currentFingerprint;
   const allPristine = artifacts.rows.every((row) => !row.done && artifacts.tasks.get(row.slice).pristine);
   if (artifacts.pendingReplan) {
-    if (artifacts.globalPlan.fingerprint !== currentFingerprint) throw new ExecutionContractError("pending REPLAN fingerprint is stale relative to current requirements authority");
-    const state = artifacts.globalPlan.status === "ready" ? "PENDING_REPLAN_READY" : "PENDING_REPLAN_DRAFT";
-    return withRecoveryTargets({ state, workspace, currentFingerprint, stale: false, ...artifacts });
+    const pendingStale = artifacts.globalPlan.fingerprint !== currentFingerprint;
+    const state = pendingStale ? "REQUIREMENTS_CHANGED"
+      : artifacts.globalPlan.status === "ready" ? "PENDING_REPLAN_READY" : "PENDING_REPLAN_DRAFT";
+    return withRecoveryTargets({ state, workspace, currentFingerprint, stale: pendingStale, ...artifacts });
   }
   const effectiveSlices = artifacts.rows.filter((row) => row.result !== "SUPERSEDED").map((row) => row.slice);
   const activeFindings = effectiveSlices.flatMap((slice) => artifacts.tasks.get(slice).findings.filter((record) => record.severity === "blocking" && record.state === "active").map((record) => `${slice}:${record.id}`));
-  const activeDivergences = effectiveSlices.flatMap((slice) => artifacts.tasks.get(slice).divergences.filter((record) => record.severity === "blocking" && record.state === "active").map((record) => `${slice}:${record.id}`));
+  const activeDivergences = effectiveSlices.flatMap((slice) => artifacts.tasks.get(slice).divergences
+    .filter((record) => record.severity === "blocking" && record.state === "active")
+    .map((record) => Object.freeze({ slice, record: record.id, requiredAuthorityOperation: record.requiredAuthorityOperation })));
   const activeDelegationBlockers = effectiveSlices.flatMap((slice) => {
     const blocker = artifacts.tasks.get(slice).delegationBlocker;
     return blocker?.state === "active" ? [{ slice, ...blocker }] : [];
@@ -1259,15 +1914,20 @@ function recoveryTarget(operation, {
   record = null,
   round = null,
   retryState = null,
+  authorityMode = null,
+  invocation = null,
   sameOperationResumeRequired = false,
 } = {}) {
-  return { operation, slice, owner, record, round, retryState, sameOperationResumeRequired };
+  return { operation, slice, owner, record, round, retryState, authorityMode, invocation, sameOperationResumeRequired };
 }
 
 function uniqueRecoveryTargets(targets) {
   const seen = new Set();
   return targets.filter((target) => {
-    const key = `${target.operation}\0${target.slice ?? ""}`;
+    const key = [
+      target.operation, target.slice, target.owner, target.record, target.round, target.retryState,
+      target.authorityMode, target.invocation, target.sameOperationResumeRequired,
+    ].map((value) => value ?? "").join("\0");
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
@@ -1283,7 +1943,10 @@ export function deriveRecoveryTargets(result) {
   const scoped = (operation, slice, options = {}) => recoveryTarget(operation, { slice, ...options });
   let targets = [];
   switch (result.state) {
-    case "EMPTY": targets = [unscoped("PLAN", "empty-workspace")]; break;
+    case "EMPTY":
+      targets = result.workspace.kind === "standalone" || result.lifecycleStatus === "ready"
+        ? [unscoped("PLAN", "empty-workspace")] : [];
+      break;
     case "PLANNED_DRAFT": targets = [unscoped("REVIEW_PLAN", "planning-authority"), unscoped("REPLAN", "planning-authority")]; break;
     case "PLANNED_READY": targets = [unscoped("MATERIALIZE_TASKS", "planning-authority"), unscoped("REPLAN", "planning-authority")]; break;
     case "PENDING_REPLAN_DRAFT": targets = [unscoped("REVIEW_PLAN", "pending-replan")]; break;
@@ -1299,7 +1962,17 @@ export function deriveRecoveryTargets(result) {
       targets = [scoped("EXECUTE_SLICE", currentFrontier(result), { owner: "serial-frontier" }), unscoped("REPLAN", "execution-history")];
       break;
     case "REQUIREMENTS_CHANGED": targets = [unscoped("REPLAN", "requirements-authority")]; break;
-    case "DIVERGENCE_BLOCKED": targets = [unscoped("REPLAN", "active-divergence")]; break;
+    case "DIVERGENCE_BLOCKED": {
+      const lifecycle = (result.activeDivergences ?? []).filter((entry) => entry.requiredAuthorityOperation === "RESUME");
+      targets = lifecycle.length === 0 ? [unscoped("REPLAN", "active-divergence")]
+        : lifecycle.map((entry) => scoped(null, entry.slice, {
+          owner: "lifecycle",
+          record: entry.record,
+          authorityMode: "RESUME",
+          invocation: "MODE=RESUME",
+        }));
+      break;
+    }
     case "AUXILIARY_BLOCKED": {
       const blocker = result.auxiliaryBlocked?.[0];
       if (blocker !== undefined) targets = [scoped(blocker.operation, blocker.slice, {
@@ -1403,6 +2076,10 @@ function simplifiedTarget(target) {
 }
 
 export function deriveLegalOperations(result, recoveryTargets = deriveRecoveryTargets(result)) {
+  if (result.state === "EMPTY" && result.workspace.kind === "lifecycle" && result.lifecycleStatus !== "ready") {
+    return Object.freeze([]);
+  }
+  if (recoveryTargets.some((target) => target.owner === "lifecycle")) return Object.freeze([]);
   const mandatory = recoveryTargets.filter((target) => target.sameOperationResumeRequired);
   if (mandatory.length > 1) throw new ExecutionContractError(`${result.state} has ambiguous mandatory recovery authority`);
   if (mandatory.length === 1) return Object.freeze([simplifiedTarget(mandatory[0])]);
@@ -1435,6 +2112,8 @@ export function deriveNormalHandoff(result, completedOperation = null) {
       && new Set(["PLANNED_READY", "PENDING_REPLAN_READY"]).has(result.state)) operation = "MATERIALIZE_TASKS";
     else if (completedOperation === "MATERIALIZE_TASKS" && result.state === "MATERIALIZED_PRISTINE") operation = "REVIEW_TASKS";
     else if (completedOperation === "MATERIALIZE_TASKS" && result.state === "EXECUTION_STARTED") operation = "EXECUTE_SLICE";
+    else if (completedOperation === "MATERIALIZE_TASKS"
+      && new Set(["IMPLEMENTED_AWAITING_VALIDATION", "FINDINGS_CORRECTED"]).has(result.state)) operation = "VALIDATE_SLICE";
     else if (completedOperation === "REVIEW_TASKS" && result.state === "MATERIALIZED_PRISTINE") operation = "EXECUTE_SLICE";
     else if (completedOperation === "EXECUTE_SLICE" && result.state === "IMPLEMENTED_AWAITING_VALIDATION") operation = "VALIDATE_SLICE";
     else if (completedOperation === "APPLY_FINDINGS" && result.state === "FINDINGS_CORRECTED") operation = "VALIDATE_SLICE";
@@ -1454,6 +2133,18 @@ export function deriveNormalHandoff(result, completedOperation = null) {
 
 function deriveRequiredRecoveryHandoff(result) {
   if (result.mandatoryRecovery !== null) return null;
+  const lifecycle = result.recoveryTargets.filter((target) => target.owner === "lifecycle" && target.authorityMode === "RESUME");
+  if (lifecycle.length !== 0) {
+    const actionKeys = new Set(lifecycle.map((target) => [target.owner, target.authorityMode, target.invocation, target.slice].join("\0")));
+    if (actionKeys.size !== 1) throw new ExecutionContractError(`${result.state} has ambiguous lifecycle recovery authority`);
+    return Object.freeze({
+      owner: "lifecycle",
+      operation: null,
+      invocation: "MODE=RESUME",
+      slice: lifecycle[0].slice,
+      record: lifecycle.length === 1 ? lifecycle[0].record : null,
+    });
+  }
   const targets = result.recoveryTargets.filter((target) => target.owner === "retry-exhaustion");
   if (targets.length > 1) throw new ExecutionContractError(`${result.state} has ambiguous required recovery authority`);
   return targets.length === 0 ? null : handoffForTarget(targets[0]);
@@ -1477,6 +2168,7 @@ function withRecoveryTargets(result) {
 }
 
 export function formatRecoveryTarget(target) {
+  if (target.owner === "lifecycle" && target.authorityMode === "RESUME") return "lifecycle MODE=RESUME";
   return `${target.operation}${target.slice === null ? "" : ` for ${target.slice}`}`;
 }
 
@@ -1568,52 +2260,210 @@ export async function validateExecutionCandidate(specPath, candidateExecutionRoo
   }
 }
 
-async function atomicReplaceFile(filePath, bytes, mode) {
-  const temporary = `${filePath}.stnl-contract-repair-${process.pid}-${randomUUID()}`;
+async function lstatRepairPath(filePath) {
+  try {
+    return await fs.lstat(filePath, { bigint: true });
+  } catch (error) {
+    if (error?.code === "ENOENT" || error?.code === "ENOTDIR") return null;
+    throw error;
+  }
+}
+
+function sameRepairIdentity(left, right) {
+  return left !== null && right !== null && left.dev === right.dev && left.ino === right.ino;
+}
+
+async function captureRepairFile(filePath, label) {
+  const before = await lstatRepairPath(filePath);
+  if (before === null || before.isSymbolicLink() || !before.isFile() || before.nlink !== 1n) {
+    throw new ExecutionContractError(`${label} must remain a single-link real file: ${filePath}`, [filePath]);
+  }
+  const handle = await fs.open(filePath, FS_CONSTANTS.O_RDONLY | (FS_CONSTANTS.O_NOFOLLOW ?? 0));
+  try {
+    const openedBefore = await handle.stat({ bigint: true });
+    if (!sameRepairIdentity(before, openedBefore) || !openedBefore.isFile() || openedBefore.nlink !== 1n) {
+      throw new ExecutionContractError(`${label} identity changed while opening: ${filePath}`, [filePath]);
+    }
+    const bytes = await handle.readFile();
+    const openedAfter = await handle.stat({ bigint: true });
+    const after = await lstatRepairPath(filePath);
+    if (!sameRepairIdentity(openedBefore, openedAfter) || !sameRepairIdentity(openedAfter, after)
+      || openedBefore.size !== openedAfter.size || openedBefore.mtimeNs !== openedAfter.mtimeNs
+      || openedBefore.ctimeNs !== openedAfter.ctimeNs || openedAfter.nlink !== 1n) {
+      throw new ExecutionContractError(`${label} changed while being read: ${filePath}`, [filePath]);
+    }
+    return Object.freeze({ filePath, bytes, metadata: openedAfter });
+  } finally {
+    await handle.close();
+  }
+}
+
+function repairSnapshotsMatch(left, right) {
+  return sameRepairIdentity(left.metadata, right.metadata) && left.bytes.equals(right.bytes);
+}
+
+async function createRepairOwnedFile(filePath, bytes, mode, label) {
   let handle;
   try {
-    handle = await fs.open(temporary, "wx", mode);
+    handle = await fs.open(filePath, "wx", mode);
     await handle.writeFile(bytes);
     await handle.sync();
+    const metadata = await handle.stat({ bigint: true });
+    if (!metadata.isFile() || metadata.nlink !== 1n) {
+      throw new ExecutionContractError(`${label} is not a single-link real file: ${filePath}`, [filePath]);
+    }
     await handle.close();
     handle = null;
-    await fs.rename(temporary, filePath);
-  } finally {
+    const snapshot = await captureRepairFile(filePath, label);
+    if (!sameRepairIdentity(snapshot.metadata, metadata) || !snapshot.bytes.equals(bytes)) {
+      throw new ExecutionContractError(`${label} ownership changed during creation; foreign path preserved: ${filePath}`, [filePath]);
+    }
+    return snapshot;
+  } catch (error) {
     await handle?.close();
-    await fs.rm(temporary, { force: true });
+    throw error;
   }
+}
+
+async function removeRepairOwnedPath(snapshot, label) {
+  const current = await lstatRepairPath(snapshot.filePath);
+  if (current === null) return;
+  if (!sameRepairIdentity(current, snapshot.metadata)) {
+    throw new ExecutionContractError(`${label} ownership changed; foreign path preserved: ${snapshot.filePath}`, [snapshot.filePath]);
+  }
+  await fs.unlink(snapshot.filePath);
+}
+
+async function linkRepairOwnedFile(source, target, label) {
+  try {
+    await fs.link(source.filePath, target);
+  } catch (error) {
+    if (error?.code === "EEXIST") return false;
+    throw error;
+  }
+  const installed = await lstatRepairPath(target);
+  if (!sameRepairIdentity(installed, source.metadata)) {
+    throw new ExecutionContractError(`${label} identity changed during no-replace publication: ${target}`, [target]);
+  }
+  return true;
+}
+
+function repairLockPath(workspace) {
+  return `${workspace.executionRoot}.stnl-contract-repair.lock`;
+}
+
+async function acquireContractRepairLock(workspace) {
+  const filePath = repairLockPath(workspace);
+  const owner = randomUUID();
+  const bytes = Buffer.from(`${JSON.stringify({ version: 1, owner, pid: process.pid })}\n`, "utf8");
+  let snapshot;
+  try {
+    snapshot = await createRepairOwnedFile(filePath, bytes, 0o600, "contract repair lock");
+  } catch (error) {
+    if (error?.code === "EEXIST") {
+      throw new ExecutionContractError(`another contract repair owns the lock: ${filePath}`, [filePath]);
+    }
+    throw error;
+  }
+  return Object.freeze({ ...snapshot, owner });
+}
+
+async function releaseContractRepairLock(lock) {
+  const current = await captureRepairFile(lock.filePath, "contract repair lock");
+  if (!repairSnapshotsMatch(lock, current)) {
+    throw new ExecutionContractError(`contract repair lock ownership changed; foreign lock preserved: ${lock.filePath}`, [lock.filePath]);
+  }
+  const retiredPath = `${lock.filePath}.retired-${lock.owner}`;
+  await fs.rename(lock.filePath, retiredPath);
+  const retired = await captureRepairFile(retiredPath, "retired contract repair lock");
+  if (!sameRepairIdentity(retired.metadata, lock.metadata) || !retired.bytes.equals(lock.bytes)) {
+    if (await lstatRepairPath(lock.filePath) === null) await fs.link(retiredPath, lock.filePath);
+    throw new ExecutionContractError(`contract repair lock changed during release; foreign lock preserved: ${retiredPath}`, [retiredPath]);
+  }
+  await removeRepairOwnedPath(retired, "retired contract repair lock");
+}
+
+async function assertContractRepairLock(lock) {
+  const current = await captureRepairFile(lock.filePath, "contract repair lock");
+  if (!repairSnapshotsMatch(lock, current)) {
+    throw new ExecutionContractError(`contract repair lock ownership changed; foreign lock preserved: ${lock.filePath}`, [lock.filePath]);
+  }
+}
+
+async function withContractRepairLock(workspace, action) {
+  const lock = await acquireContractRepairLock(workspace);
+  let result;
+  let actionError = null;
+  try {
+    result = await action(lock);
+  } catch (error) {
+    actionError = error;
+  }
+  let releaseError = null;
+  try {
+    await releaseContractRepairLock(lock);
+  } catch (error) {
+    releaseError = error;
+  }
+  if (actionError !== null && releaseError !== null) {
+    const combined = new ExecutionContractError(
+      `contract repair failed: ${actionError.message}; lock release also failed: ${releaseError.message}`,
+      [...new Set([...(actionError.findings ?? []), ...(releaseError.findings ?? [])])],
+    );
+    combined.cause = new AggregateError([actionError, releaseError], "repair action and lock release both failed");
+    throw combined;
+  }
+  if (actionError !== null) throw actionError;
+  if (releaseError !== null) throw releaseError;
+  return result;
+}
+
+async function restoreClaimedRepairSource(backup, artifact) {
+  const live = await lstatRepairPath(artifact);
+  if (live === null) {
+    const restored = await linkRepairOwnedFile(backup, artifact, "contract repair rollback");
+    if (!restored) return false;
+  }
+  await removeRepairOwnedPath(backup, "contract repair source backup");
+  return live === null;
+}
+
+async function rollbackRepairPublication({ artifact, published, backup }) {
+  let live;
+  try {
+    live = await captureRepairFile(artifact, "published contract repair candidate");
+  } catch {
+    live = null;
+  }
+  if (live === null || !repairSnapshotsMatch(live, published)) {
+    await removeRepairOwnedPath(backup, "contract repair source backup");
+    return false;
+  }
+  const retiredPath = `${artifact}.stnl-contract-repair-rollback-${process.pid}-${randomUUID()}`;
+  await fs.rename(artifact, retiredPath);
+  const retired = await captureRepairFile(retiredPath, "retired contract repair candidate");
+  if (!repairSnapshotsMatch(retired, published)) {
+    if (await lstatRepairPath(artifact) === null) await fs.link(retiredPath, artifact);
+    throw new ExecutionContractError(`published repair ownership changed during rollback; foreign bytes preserved: ${retiredPath}`, [retiredPath]);
+  }
+  const restored = await linkRepairOwnedFile(backup, artifact, "contract repair rollback");
+  if (restored) await removeRepairOwnedPath(backup, "contract repair source backup");
+  await removeRepairOwnedPath(retired, "retired contract repair candidate");
+  return restored;
 }
 
 function repairBlockedError(violation) {
   const found = violation.foundField === null ? "missing field" : `'${violation.foundField}'`;
+  const expected = violation.expectedField ?? "known canonical field";
   return new ExecutionContractError(
-    `${violation.artifact}:${violation.record} expected exactly one 'Finding IDs' field; found ${found}; contract repair blocked (${violation.reason})`,
+    `${violation.artifact}:${violation.record} expected ${expected}; found ${found}; contract repair blocked (${violation.reason})`,
     [violation.artifact],
     [],
     violation,
   );
 }
 
-export async function repairExecutionContract(specPath) {
-  let violation;
-  try {
-    const state = await inspectExecutionState(specPath);
-    return Object.freeze({ status: "UNCHANGED", repairs: Object.freeze([]), state: state.state });
-  } catch (error) {
-    if (!(error instanceof ExecutionContractError)) throw error;
-    if (error.contractViolation?.repairability !== "mechanical") throw error;
-    violation = error.contractViolation;
-  }
-
-  const workspace = await resolveExecutionWorkspace(specPath);
-  const artifact = path.resolve(String(violation.artifact));
-  const taskRoot = path.join(workspace.executionRoot, "tasks");
-  if (!pathIsWithin(artifact, taskRoot) || path.dirname(artifact) !== taskRoot || !SLICE_FILE.test(path.basename(artifact))) {
-    throw repairBlockedError(Object.freeze({ ...violation, repairability: "blocked", reason: "artifact-outside-task-root" }));
-  }
-  await requireRealFile(artifact, "contract repair artifact");
-  const original = await fs.readFile(artifact);
-  const text = original.toString("utf8");
+function applyMechanicalRepair(text, violation) {
   const escapedRecord = violation.record.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
   const headings = [...text.matchAll(new RegExp(`^### ${escapedRecord}$`, "gmu"))];
   if (headings.length !== 1) {
@@ -1625,46 +2475,160 @@ export async function repairExecutionContract(specPath) {
   const nextHeading = boundary.exec(text);
   const recordEnd = nextHeading?.index ?? text.length;
   const record = text.slice(recordStart, recordEnd);
-  if (exactFieldLines(record, "Findings IDs").length !== 1 || exactFieldLines(record, "Finding IDs").length !== 0) {
-    throw repairBlockedError(Object.freeze({ ...violation, repairability: "blocked", reason: "record-fields-changed" }));
+  let repairedRecord = record;
+  let changedLabel;
+  if (violation.kind === "non-canonical-field") {
+    if (exactFieldLines(record, "Findings IDs").length !== 1 || exactFieldLines(record, "Finding IDs").length !== 0) {
+      throw repairBlockedError(Object.freeze({ ...violation, repairability: "blocked", reason: "record-fields-changed" }));
+    }
+    repairedRecord = record.replace(/^- Findings IDs:(?=[ \t])/mu, "- Finding IDs:");
+    changedLabel = "Findings IDs -> Finding IDs";
+  } else if (violation.kind === "legacy-discovery-labels") {
+    const exactLegacyPair = exactFieldLines(record, "Check discovery sources").length === 1
+      && exactFieldLines(record, "Check discovery actions").length === 1;
+    const canonicalAbsent = exactFieldLines(record, "Discovery sources").length === 0
+      && exactFieldLines(record, "Discovery actions").length === 0;
+    if (!exactLegacyPair || !canonicalAbsent) {
+      throw repairBlockedError(Object.freeze({ ...violation, repairability: "blocked", reason: "record-fields-changed" }));
+    }
+    repairedRecord = record
+      .replace(/^- Check discovery sources:(?=[ \t])/mu, "- Discovery sources:")
+      .replace(/^- Check discovery actions:(?=[ \t])/mu, "- Discovery actions:");
+    changedLabel = "Check discovery sources/actions -> Discovery sources/actions";
+  } else {
+    throw repairBlockedError(Object.freeze({ ...violation, repairability: "blocked", reason: "unsupported-repair-kind" }));
   }
-  const repairedRecord = record.replace(/^- Findings IDs:(?=[ \t])/mu, "- Finding IDs:");
   if (repairedRecord === record) {
     throw repairBlockedError(Object.freeze({ ...violation, repairability: "blocked", reason: "non-lossless-label-replacement" }));
   }
-  const candidateBytes = Buffer.from(`${text.slice(0, recordStart)}${repairedRecord}${text.slice(recordEnd)}`, "utf8");
+  return Object.freeze({
+    text: `${text.slice(0, recordStart)}${repairedRecord}${text.slice(recordEnd)}`,
+    repair: Object.freeze({ ...violation, changedLabel }),
+  });
+}
 
-  const candidateContainer = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "stnl-execution-repair-")));
-  const candidateRoot = path.join(candidateContainer, "execution");
+export async function repairExecutionContract(specPath) {
+  let initialViolation;
   try {
-    await fs.cp(workspace.executionRoot, candidateRoot, { recursive: true });
-    const relative = path.relative(workspace.executionRoot, artifact);
-    await fs.writeFile(path.join(candidateRoot, relative), candidateBytes);
-    await validateExecutionCandidate(specPath, candidateRoot);
+    const state = await inspectExecutionState(specPath);
+    return Object.freeze({ status: "UNCHANGED", repairs: Object.freeze([]), state: state.state });
+  } catch (error) {
+    if (!(error instanceof ExecutionContractError)) throw error;
+    if (error.contractViolation?.repairability !== "mechanical") throw error;
+    initialViolation = error.contractViolation;
+  }
 
-    if (!Buffer.from(await fs.readFile(artifact)).equals(original)) {
-      throw new ExecutionContractError(`contract repair source changed during candidate validation: ${artifact}`, [artifact]);
+  const workspace = await resolveExecutionWorkspace(specPath);
+  const artifact = path.resolve(String(initialViolation.artifact));
+  const taskRoot = path.join(workspace.executionRoot, "tasks");
+  if (!pathIsWithin(artifact, taskRoot) || path.dirname(artifact) !== taskRoot || !SLICE_FILE.test(path.basename(artifact))) {
+    throw repairBlockedError(Object.freeze({ ...initialViolation, repairability: "blocked", reason: "artifact-outside-task-root" }));
+  }
+  const initialSource = await captureRepairFile(artifact, "contract repair artifact");
+  const original = initialSource.bytes;
+  const relativeArtifact = path.relative(workspace.executionRoot, artifact);
+  const shadow = await createCandidateShadow(workspace);
+  try {
+    await fs.cp(workspace.executionRoot, shadow.executionRoot, { recursive: true });
+    await assertCandidateTreeSafe(shadow.executionRoot);
+    const repairs = [];
+    let candidateState;
+    while (true) {
+      try {
+        candidateState = await inspectExecutionState(shadow.specPath);
+        break;
+      } catch (error) {
+        if (!(error instanceof ExecutionContractError) || error.contractViolation?.repairability !== "mechanical") throw error;
+        const violation = error.contractViolation;
+        const shadowArtifact = path.resolve(String(violation.artifact));
+        const shadowTaskRoot = path.join(shadow.executionRoot, "tasks");
+        const shadowRelative = path.relative(shadow.executionRoot, shadowArtifact);
+        if (!pathIsWithin(shadowArtifact, shadowTaskRoot) || path.dirname(shadowArtifact) !== shadowTaskRoot || !SLICE_FILE.test(path.basename(shadowArtifact))) {
+          throw repairBlockedError(Object.freeze({ ...violation, repairability: "blocked", reason: "artifact-outside-task-root" }));
+        }
+        if (shadowRelative !== relativeArtifact) {
+          throw repairBlockedError(Object.freeze({ ...violation, repairability: "blocked", reason: "multi-artifact-repair-is-not-atomic" }));
+        }
+        const before = await fs.readFile(shadowArtifact, "utf8");
+        const applied = applyMechanicalRepair(before, violation);
+        await fs.writeFile(shadowArtifact, applied.text, "utf8");
+        repairs.push(applied.repair);
+        if (repairs.length > 100) {
+          throw repairBlockedError(Object.freeze({ ...violation, repairability: "blocked", reason: "repair-count-exceeds-bounded-limit" }));
+        }
+      }
     }
-    const metadata = await fs.stat(artifact);
-    let published = false;
-    try {
-      await atomicReplaceFile(artifact, candidateBytes, metadata.mode);
-      published = true;
-      const state = await inspectExecutionState(specPath);
-      return Object.freeze({
-        status: "REPAIRED",
-        repairs: Object.freeze([Object.freeze({
-          ...violation,
-          changedLabel: "Findings IDs -> Finding IDs",
-        })]),
-        state: state.state,
-      });
-    } catch (error) {
-      if (published) await atomicReplaceFile(artifact, original, metadata.mode);
-      throw error;
-    }
+    const candidateBytes = await fs.readFile(path.join(shadow.executionRoot, relativeArtifact));
+    return await withContractRepairLock(workspace, async (lock) => {
+      const currentSource = await captureRepairFile(artifact, "contract repair source");
+      if (!repairSnapshotsMatch(currentSource, initialSource)) {
+        throw new ExecutionContractError(`contract repair source changed during candidate validation: ${artifact}`, [artifact]);
+      }
+
+      const stagePath = `${artifact}.stnl-contract-repair-stage-${process.pid}-${randomUUID()}`;
+      const backupPath = path.join(
+        path.dirname(workspace.executionRoot),
+        `.${path.basename(workspace.executionRoot)}.stnl-contract-repair-backup-${process.pid}-${randomUUID()}`,
+      );
+      let stage = null;
+      let backup = null;
+      let published = null;
+      try {
+        stage = await createRepairOwnedFile(stagePath, candidateBytes, Number(currentSource.metadata.mode), "contract repair candidate stage");
+        await assertContractRepairLock(lock);
+        await fs.rename(artifact, backupPath);
+        backup = await captureRepairFile(backupPath, "contract repair source backup");
+        if (!sameRepairIdentity(backup.metadata, initialSource.metadata) || !backup.bytes.equals(original)) {
+          await restoreClaimedRepairSource(backup, artifact);
+          backup = null;
+          throw new ExecutionContractError(`contract repair concurrent source changed before publication; publication aborted: ${artifact}`, [artifact]);
+        }
+
+        if (!await linkRepairOwnedFile(stage, artifact, "contract repair candidate publication")) {
+          await restoreClaimedRepairSource(backup, artifact);
+          backup = null;
+          throw new ExecutionContractError(`contract repair concurrent source occupied the publication path; publication aborted: ${artifact}`, [artifact]);
+        }
+        const stageMetadata = stage.metadata;
+        await removeRepairOwnedPath(stage, "contract repair candidate stage");
+        stage = null;
+        published = await captureRepairFile(artifact, "published contract repair candidate");
+        if (!sameRepairIdentity(published.metadata, stageMetadata)
+          || !published.bytes.equals(candidateBytes)) {
+          throw new ExecutionContractError(`contract repair candidate changed during publication: ${artifact}`, [artifact]);
+        }
+
+        const state = await inspectExecutionState(specPath);
+        const readback = await captureRepairFile(artifact, "strict contract repair readback");
+        if (!repairSnapshotsMatch(readback, published) || !readback.bytes.equals(candidateBytes)) {
+          throw new ExecutionContractError(`contract repair strict readback lost publication ownership: ${artifact}`, [artifact]);
+        }
+        const retainedSource = await captureRepairFile(backupPath, "contract repair source backup");
+        if (!sameRepairIdentity(retainedSource.metadata, backup.metadata) || !retainedSource.bytes.equals(original)) {
+          backup = retainedSource;
+          throw new ExecutionContractError(`contract repair source changed through an open writer during readback: ${artifact}`, [artifact]);
+        }
+        await removeRepairOwnedPath(backup, "contract repair source backup");
+        backup = null;
+        return Object.freeze({
+          status: "REPAIRED",
+          repairs: Object.freeze(repairs),
+          state: state.state ?? candidateState.state,
+        });
+      } catch (error) {
+        if (published !== null && backup !== null) {
+          await rollbackRepairPublication({ artifact, published, backup });
+          backup = null;
+        } else if (backup !== null) {
+          await restoreClaimedRepairSource(backup, artifact);
+          backup = null;
+        }
+        if (stage !== null) await removeRepairOwnedPath(stage, "contract repair candidate stage");
+        throw error;
+      }
+    });
   } finally {
-    await fs.rm(candidateContainer, { recursive: true, force: true });
+    await fs.rm(shadow.shadowRoot, { recursive: true, force: true });
   }
 }
 
@@ -1674,6 +2638,14 @@ export async function preflightExecutionOperation(specPath, operation, sliceValu
   if (!OPERATIONS.has(normalizedOperation)) {
     throw new ExecutionContractError(
       `unsupported operation ${normalizedOperation}${recoverySuffix(result.recoveryTargets)}`,
+      [],
+      result.recoveryTargets,
+    );
+  }
+  if (normalizedOperation === "PLAN" && result.state === "EMPTY"
+    && result.workspace.kind === "lifecycle" && result.lifecycleStatus !== "ready") {
+    throw new ExecutionContractError(
+      `lifecycle status ${result.lifecycleStatus} cannot authorize PLAN; lifecycle PLAN requires ready`,
       [],
       result.recoveryTargets,
     );
@@ -1708,6 +2680,9 @@ export async function preflightExecutionOperation(specPath, operation, sliceValu
   }
   const allowed = OPERATION_STATES.get(normalizedOperation);
   if (!allowed.has(result.state)) throw recoveryError(normalizedOperation, result);
+  if (!result.legalOperations.some((target) => target.operation === normalizedOperation && target.slice === slice)) {
+    throw recoveryError(normalizedOperation, result);
+  }
   const operationTargets = result.recoveryTargets.filter((target) => target.operation === normalizedOperation);
   if (operationTargets.length !== 0 && !operationTargets.some((target) => target.slice === slice)) {
     throw recoveryError(normalizedOperation, result);

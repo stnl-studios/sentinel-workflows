@@ -19,7 +19,7 @@ Write one UTF-8 JSON object with only these top-level keys:
   "contract_version": 1,
   "title": "Feature test runbook",
   "summary": "What is validated and why.",
-  "scope": {"kind": "SLICE", "selection": {"slice": "1"}},
+  "scope": {"kind": "CUSTOM", "selection": {"anchors": ["REQ-001"], "paths": ["requirements.md"]}},
   "configuration": {
     "audience": ["mixed"],
     "test_types": ["smoke", "functional", "integration", "acceptance", "negative", "regression"],
@@ -31,10 +31,27 @@ Write one UTF-8 JSON object with only these top-level keys:
     "helpers": false,
     "locale": "en-US"
   },
-  "sources": [],
+  "sources": [
+    {"path": "requirements.md", "role": "requirements", "ids": ["REQ-001"]}
+  ],
   "setup": [],
   "data_preparation": [],
-  "scenarios": [],
+  "scenarios": [
+    {
+      "id": "TR-001",
+      "title": "Verify observable behavior",
+      "objective": "Confirm the representative requirement through one observable result.",
+      "domain": "Representative feature",
+      "types": ["functional"],
+      "criticality": "high",
+      "initial_status": "not_run",
+      "origins": [{"kind": "requirement", "ref": "REQ-001"}],
+      "preconditions": ["The representative requirements are available."],
+      "steps": [{"action": "Exercise the documented behavior.", "expected": "The REQ-001 observable result occurs.", "evidence": ["request_response"]}],
+      "evidence": ["request_response"],
+      "approval_criteria": ["The observed result matches REQ-001."]
+    }
+  ],
   "coverage": [],
   "risks": [],
   "known_issues": [],

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { watch, writeFileSync } from "node:fs";
 import * as fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -47,6 +48,29 @@ test("SPEC_PATH rejects directory and file traversal through symlink ancestors",
 async function copyDirectory(source, destination) {
   await fs.cp(source, destination, { recursive: true });
   return destination;
+}
+
+function gitShowText(revision, file) {
+  const result = spawnSync("git", ["show", `${revision}:${file}`], {
+    cwd: ROOT,
+    encoding: "utf8",
+  });
+  assert.equal(result.status, 0, result.stderr);
+  return result.stdout;
+}
+
+function spawnResult(command, arguments_, options = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, arguments_, options);
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => { stdout += chunk; });
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    child.on("error", reject);
+    child.on("close", (status, signal) => resolve({ status, signal, stdout, stderr }));
+  });
 }
 
 function replaceAll(text, values) {
@@ -295,6 +319,10 @@ const ACTIVE_FINDING = `### finding-01
 - Related authority: AC-001 and slice-01
 - Expected correction: Produce the required behavior.`;
 
+const ACTIVE_FINDING_02 = ACTIVE_FINDING
+  .replaceAll("finding-01", "finding-02")
+  .replace("Observable behavior is wrong.", "A second observable behavior is wrong.");
+
 const ACTIVE_DIVERGENCE = `### divergence-01
 
 - Severity: blocking
@@ -304,9 +332,9 @@ const ACTIVE_DIVERGENCE = `### divergence-01
 - Evidence: The implementation cannot remain inside the slice.
 - Required authority operation: REPLAN`;
 
-function attemptRecord(number, status, { type = number === 1 ? "initial" : "revalidation", references = "none", dispositions = "none" } = {}) {
+function attemptRecord(number, status, { type = number === 1 ? "initial" : "revalidation", references = "none", dispositions = "none", command = "node --test", evidence = `Objective ${status} evidence.` } = {}) {
   const id = String(number).padStart(2, "0");
-  const commands = status === "BLOCKED" ? "- Commands: none" : "- Commands:\n  - `node --test` | exit:0";
+  const commands = status === "BLOCKED" ? "- Commands: none" : `- Commands:\n  - \`${command}\` | exit:0`;
   return `### attempt-${id}
 
 - Type: ${type}
@@ -314,7 +342,7 @@ function attemptRecord(number, status, { type = number === 1 ? "initial" : "reva
 - HEAD: fixture
 - Verified scope: ../../src/example.txt
 - ${commands.slice(2)}
-- Evidence: Objective ${status} evidence.
+- Evidence: ${evidence}
 - Finding references: ${references}
 - Finding dispositions: ${dispositions}
 - Blockers: none
@@ -330,7 +358,7 @@ function checkRecord(prefix, number, status, round, { cycle = null } = {}) {
   const findings = prefix === "findings-check" ? `
 - Findings cycle: ${cycle}
 - Finding IDs: finding-01
-- Findings verified: active finding behavior
+- Findings verified: finding-01
 - Corrections covered: ../../src/example.txt
 - Regressions: none
 - Unsupported active findings: none` : "";
@@ -364,7 +392,7 @@ ${commands}
 }
 
 const PASS_ATTEMPT = attemptRecord(1, "PASS");
-const NEEDS_FIX_ATTEMPT = attemptRecord(1, "NEEDS_FIX", { references: "finding-01", dispositions: "finding-01 active" });
+const NEEDS_FIX_ATTEMPT = attemptRecord(1, "NEEDS_FIX", { references: "finding-01", dispositions: "finding-01=active" });
 const BLOCKED_ATTEMPT = attemptRecord(1, "BLOCKED");
 
 const VALIDATED_CONTENT = "validated behavior\n";
@@ -391,6 +419,14 @@ function passBase({ attempt = 1, relative = "../../src/example.txt", hash = VALI
 }
 
 const PASS_BASE = passBase();
+
+function publishPassResult(text) {
+  return replaceSection(
+    replaceSection(text, "Diff Summary", "- Implemented and validated the observable behavior."),
+    "Final Result",
+    "- PASS",
+  );
+}
 
 function delegationBlocker(operation, kind, { state = "active", after = "none", resolution = null } = {}) {
   return `- Operation: ${operation}
@@ -428,7 +464,7 @@ async function passFirstSlice(fixture) {
     result = replaceSection(result, "Changed Areas", "- `../../src/example.txt`");
     result = replaceSection(result, "Validation Attempts", PASS_ATTEMPT);
     result = replaceSection(result, "Effective Validation Base", PASS_BASE);
-    return replaceSection(result, "Final Result", "- PASS");
+    return publishPassResult(result);
   });
   await editTasksIndex(fixture, (value) => value.replace(
     "| [ ] | 01 - Delivery | observable result | - | tasks/slice-01.md | pending | pending |",
@@ -443,6 +479,7 @@ async function prepareFindingsCorrection(fixture, findingIdsLabel = "Finding IDs
     result = replaceSection(result, "Changed Areas", "- `../../src/example.txt`");
     result = replaceSection(result, "Validation Attempts", NEEDS_FIX_ATTEMPT);
     result = replaceSection(result, "Validation Findings", ACTIVE_FINDING);
+    result = replaceSection(result, "Corrections Applied", "- `../../src/example.txt`");
     const check = checkRecord("findings-check", 1, "TESTS_NOT_APPLICABLE", 1, { cycle: "attempt-01" })
       .replace("- Finding IDs: finding-01", `- ${findingIdsLabel}: finding-01`);
     return replaceSection(result, "Findings Test Evidence", check);
@@ -501,10 +538,16 @@ test("an isolated copied skill runs the stable self-contained preflight CLI", as
   assert.equal(reviewTransition.normal_handoff.slice, "slice-01");
 });
 
-test("the model-authored findings-check writer contract invokes strict candidate validation", async () => {
-  const source = await fs.readFile(path.join(ROOT, "skills/workflows/stnl-slice-executor/SKILL.md"), "utf8");
-  assert.match(source, /validate-execution-state\.mjs" <SPEC_PATH> --candidate <CANDIDATE_EXECUTION_ROOT>/u);
-  assert.match(source, /contract\/model enforced/u);
+test("every touched model-authored execution writer requires candidate validation and strict readback", async () => {
+  for (const skill of SKILLS) {
+    const source = await fs.readFile(path.join(ROOT, `skills/workflows/${skill}/SKILL.md`), "utf8");
+    if (skill !== "stnl-execution-closer") {
+      assert.match(source, /validate-execution-state\.mjs" <SPEC_PATH> --candidate <CANDIDATE_EXECUTION_ROOT>/u, skill);
+      assert.match(source, /contract\/model(?:-| )(?:enforced|enforcement|owned)/u, skill);
+      assert.match(source, /strict(?:ly)? read(?:back| back)/u, skill);
+    }
+    assert.match(source, /Findings IDs[\s\S]{0,180}Check discovery sources[\s\S]{0,80}Check discovery actions[\s\S]{0,240}--repair-known-contract/u, skill);
+  }
 });
 
 test("actual templates render a machine-unambiguous MATERIALIZED_PRISTINE task", async (t) => {
@@ -566,6 +609,127 @@ test("normal workflow sequence is operation-aware and preserves independent lega
   assert.equal(afterReview.slice, "slice-01");
 });
 
+test("PLAN requires active lifecycle ready while standalone EMPTY remains available", async (t) => {
+  const root = await temporary(t, "stnl-lifecycle-plan-gate-");
+  const lifecycleFixtures = path.join(ROOT, "skills/workflows/stnl-spec-lifecycle-manager/examples/validator-fixtures");
+  const ready = await copyDirectory(path.join(lifecycleFixtures, "ready"), path.join(root, "ready"));
+  assert.equal((await preflightExecutionOperation(ready, "PLAN")).state, "EMPTY");
+
+  const draft = await copyDirectory(path.join(lifecycleFixtures, "ready"), path.join(root, "draft"));
+  const draftFeature = path.join(draft, "feature_spec.md");
+  await fs.writeFile(draftFeature, (await fs.readFile(draftFeature, "utf8")).replace("status: ready", "status: draft"), "utf8");
+  const draftInspection = await inspectExecutionState(draft);
+  assert.equal(draftInspection.state, "EMPTY");
+  assert.equal(draftInspection.lifecycleStatus, "draft");
+  assert.deepEqual(draftInspection.legalOperations, []);
+  assert.equal(draftInspection.normalHandoff, null);
+  await assert.rejects(preflightExecutionOperation(draft, "PLAN"), /lifecycle status draft.*PLAN requires ready/u);
+
+  const blocked = await copyDirectory(path.join(lifecycleFixtures, "blocked"), path.join(root, "blocked"));
+  const blockedInspection = await inspectExecutionState(blocked);
+  assert.equal(blockedInspection.state, "EMPTY");
+  assert.equal(blockedInspection.lifecycleStatus, "blocked");
+  assert.deepEqual(blockedInspection.legalOperations, []);
+  assert.equal(blockedInspection.normalHandoff, null);
+  await assert.rejects(preflightExecutionOperation(blocked, "PLAN"), /lifecycle status blocked.*PLAN requires ready/u);
+
+  const standalone = await standaloneWorkspace(t);
+  assert.equal((await preflightExecutionOperation(standalone.requirements, "PLAN")).state, "EMPTY");
+});
+
+test("requirements changes during pending REPLAN draft or ready recover through REQUIREMENTS_CHANGED", async (t) => {
+  for (const ready of [false, true]) {
+    const root = await temporary(t, `stnl-pending-authority-${ready ? "ready" : "draft"}-`);
+    const fixtureRoot = path.join(ROOT, "skills/workflows/stnl-spec-lifecycle-manager/examples/validator-fixtures/ready");
+    const workspace = await copyDirectory(fixtureRoot, path.join(root, "spec"));
+    const fixture = { requirements: workspace, execution: path.join(workspace, "execution") };
+    const { authority } = await renderArtifacts(fixture);
+    await stagePristineReplacement(fixture, authority, authority, { ready });
+    assert.equal((await inspectExecutionState(workspace)).state, ready ? "PENDING_REPLAN_READY" : "PENDING_REPLAN_DRAFT");
+    const pendingPlan = await fs.readFile(path.join(fixture.execution, "plan.md"));
+
+    const requirements = path.join(workspace, "shared/requirements.md");
+    await fs.appendFile(requirements, "\nDocumentary requirement clarified by lifecycle RESUME.\n", "utf8");
+    const changed = await inspectExecutionState(workspace);
+    assert.equal(changed.state, "REQUIREMENTS_CHANGED");
+    assertRecoveryTarget(changed, { operation: "REPLAN", slice: null, owner: "requirements-authority" });
+    await assert.rejects(
+      preflightExecutionOperation(workspace, ready ? "MATERIALIZE_TASKS" : "REVIEW_PLAN"),
+      /not legal from REQUIREMENTS_CHANGED/u,
+    );
+    assert.deepEqual(await fs.readFile(path.join(fixture.execution, "plan.md")), pendingPlan);
+  }
+});
+
+test("MATERIALIZE_TASKS hands preserved validable frontiers to concrete validation", async (t) => {
+  const implemented = await standaloneWorkspace(t);
+  await renderArtifacts(implemented);
+  await editTask(implemented, (value) => {
+    let result = value.replace("- [ ] 1.1", "- [x] 1.1");
+    result = replaceSection(result, "Changed Areas", "- `../../src/example.txt`");
+    return replaceSection(result, "Implementation Test Evidence", checkRecord("implementation-check", 1, "TESTS_PASS", 1));
+  });
+  const implementedState = await inspectExecutionState(implemented.requirements);
+  assert.deepEqual(deriveNormalHandoff(implementedState, "MATERIALIZE_TASKS"), {
+    workflowSkill: "stnl-slice-quality-manager",
+    operation: "VALIDATE_SLICE",
+    invocation: "OPERATION=VALIDATE_SLICE",
+    slice: "slice-01",
+  });
+
+  const corrected = await standaloneWorkspace(t);
+  await renderArtifacts(corrected);
+  await prepareFindingsCorrection(corrected);
+  const correctedState = await inspectExecutionState(corrected.requirements);
+  assert.deepEqual(deriveNormalHandoff(correctedState, "MATERIALIZE_TASKS"), {
+    workflowSkill: "stnl-slice-quality-manager",
+    operation: "VALIDATE_SLICE",
+    invocation: "OPERATION=VALIDATE_SLICE",
+    slice: "slice-01",
+  });
+});
+
+test("RESUME remains lifecycle recovery authority before execution REPLAN is derived", async (t) => {
+  const fixture = await standaloneWorkspace(t);
+  await renderArtifacts(fixture);
+  const lifecycleDivergence = ACTIVE_DIVERGENCE.replace("Required authority operation: REPLAN", "Required authority operation: RESUME");
+  await editTask(fixture, (value) => replaceSection(value, "Divergences", lifecycleDivergence));
+  const blocked = await inspectExecutionState(fixture.requirements);
+  assert.equal(blocked.state, "DIVERGENCE_BLOCKED");
+  assert.deepEqual(blocked.legalOperations, []);
+  assert.deepEqual(blocked.requiredRecoveryHandoff, {
+    owner: "lifecycle",
+    operation: null,
+    invocation: "MODE=RESUME",
+    slice: "slice-01",
+    record: "divergence-01",
+  });
+  assert.equal(JSON.stringify(blocked).includes("OPERATION=RESUME"), false);
+  await assert.rejects(preflightExecutionOperation(fixture.requirements, "REPLAN"), /lifecycle MODE=RESUME/u);
+});
+
+test("two lifecycle RESUME records preserve both identities while sharing one handoff", async (t) => {
+  const fixture = await standaloneWorkspace(t);
+  await renderArtifacts(fixture);
+  const first = ACTIVE_DIVERGENCE.replace("Required authority operation: REPLAN", "Required authority operation: RESUME");
+  const second = first.replaceAll("divergence-01", "divergence-02").replace(
+    "Approved scope omits a required dependency.",
+    "A second persisted authority divergence requires lifecycle recovery.",
+  );
+  await editTask(fixture, (value) => replaceSection(value, "Divergences", `${first}\n\n${second}`));
+  const blocked = await inspectExecutionState(fixture.requirements);
+  assert.equal(blocked.state, "DIVERGENCE_BLOCKED");
+  assert.deepEqual(blocked.recoveryTargets.map(({ record }) => record), ["divergence-01", "divergence-02"]);
+  assert.deepEqual(blocked.legalOperations, []);
+  assert.deepEqual(blocked.requiredRecoveryHandoff, {
+    owner: "lifecycle",
+    operation: null,
+    invocation: "MODE=RESUME",
+    slice: "slice-01",
+    record: null,
+  });
+});
+
 test("exact legacy Findings IDs corruption is structured, mechanically repaired, and semantically neutral", async (t) => {
   const fixture = await standaloneWorkspace(t);
   await renderArtifacts(fixture);
@@ -602,6 +766,422 @@ test("exact legacy Findings IDs corruption is structured, mechanically repaired,
   assert.equal(recovered.tasks.get("slice-01").final.result, "pending");
   assert.equal(recovered.normalHandoff.invocation, "OPERATION=VALIDATE_SLICE");
   assert.equal(recovered.normalHandoff.slice, "slice-01");
+});
+
+test("exact historical discovery label pair is losslessly repaired while ambiguity stays blocked", async (t) => {
+  const legacy = await standaloneWorkspace(t);
+  await renderArtifacts(legacy);
+  await editTask(legacy, (value) => {
+    let result = value.replace("- [ ] 1.1", "- [x] 1.1");
+    result = replaceSection(result, "Changed Areas", "- `../../src/example.txt`");
+    return replaceSection(result, "Implementation Test Evidence", checkRecord("implementation-check", 1, "TESTS_PASS", 1)
+      .replace("- Discovery sources:", "- Check discovery sources:")
+      .replace("- Discovery actions:", "- Check discovery actions:"));
+  });
+  const taskPath = path.join(legacy.execution, "tasks/slice-01.md");
+  const before = await fs.readFile(taskPath, "utf8");
+  await assert.rejects(inspectExecutionState(legacy.requirements), (error) => {
+    assert.equal(error.contractViolation.kind, "legacy-discovery-labels");
+    assert.equal(error.contractViolation.repairability, "mechanical");
+    return true;
+  });
+  const repair = await repairExecutionContract(legacy.requirements);
+  assert.equal(repair.status, "REPAIRED");
+  const after = await fs.readFile(taskPath, "utf8");
+  assert.equal(after, before
+    .replace("- Check discovery sources:", "- Discovery sources:")
+    .replace("- Check discovery actions:", "- Discovery actions:"));
+  assert.equal((await inspectExecutionState(legacy.requirements)).state, "IMPLEMENTED_AWAITING_VALIDATION");
+
+  const coexistence = await standaloneWorkspace(t);
+  await renderArtifacts(coexistence);
+  await editTask(coexistence, (value) => {
+    let result = value.replace("- [ ] 1.1", "- [x] 1.1");
+    result = replaceSection(result, "Changed Areas", "- `../../src/example.txt`");
+    return replaceSection(result, "Implementation Test Evidence", checkRecord("implementation-check", 1, "TESTS_PASS", 1)
+      .replace("- Discovery sources:", "- Discovery sources: canonical\n- Check discovery sources:")
+      .replace("- Discovery actions:", "- Discovery actions: canonical\n- Check discovery actions:"));
+  });
+  await assert.rejects(inspectExecutionState(coexistence.requirements), (error) => {
+    assert.equal(error.contractViolation.repairability, "blocked");
+    return true;
+  });
+
+  const typo = await standaloneWorkspace(t);
+  await renderArtifacts(typo);
+  await editTask(typo, (value) => {
+    let result = value.replace("- [ ] 1.1", "- [x] 1.1");
+    result = replaceSection(result, "Changed Areas", "- `../../src/example.txt`");
+    return replaceSection(result, "Implementation Test Evidence", checkRecord("implementation-check", 1, "TESTS_PASS", 1)
+      .replace("- Discovery sources:", "- Discovery sourcez:"));
+  });
+  await assert.rejects(inspectExecutionState(typo.requirements), /Discovery sources|unknown field/u);
+});
+
+test("one explicit repair pass handles every approved alias in one task artifact", async (t) => {
+  const sameRecord = await standaloneWorkspace(t);
+  await renderArtifacts(sameRecord);
+  await prepareFindingsCorrection(sameRecord, "Findings IDs");
+  await editTask(sameRecord, (value) => value
+    .replace("- Discovery sources:", "- Check discovery sources:")
+    .replace("- Discovery actions:", "- Check discovery actions:"));
+  const sameRecordPath = path.join(sameRecord.execution, "tasks/slice-01.md");
+  const sameRecordBefore = await fs.readFile(sameRecordPath, "utf8");
+  const sameRecordRepair = await repairExecutionContract(sameRecord.requirements);
+  assert.equal(sameRecordRepair.status, "REPAIRED");
+  assert.equal(sameRecordRepair.repairs.length, 2);
+  assert.equal(await fs.readFile(sameRecordPath, "utf8"), sameRecordBefore
+    .replace("- Check discovery sources:", "- Discovery sources:")
+    .replace("- Check discovery actions:", "- Discovery actions:")
+    .replace("- Findings IDs:", "- Finding IDs:"));
+  assert.equal((await inspectExecutionState(sameRecord.requirements)).state, "FINDINGS_CORRECTED");
+
+  const multipleRecords = await standaloneWorkspace(t);
+  await renderArtifacts(multipleRecords);
+  await editTask(multipleRecords, (value) => {
+    let result = value.replace("- [ ] 1.1", "- [x] 1.1");
+    result = replaceSection(result, "Changed Areas", "- `../../src/example.txt`");
+    result = replaceSection(result, "Corrections Applied", "- `../../src/example.txt`");
+    const legacy = (record) => record
+      .replace("- Discovery sources:", "- Check discovery sources:")
+      .replace("- Discovery actions:", "- Check discovery actions:");
+    return replaceSection(result, "Implementation Test Evidence", [
+      legacy(checkRecord("implementation-check", 1, "TESTS_FAIL", 1)),
+      legacy(checkRecord("implementation-check", 2, "TESTS_PASS", 2)),
+    ].join("\n\n"));
+  });
+  const multipleRepair = await repairExecutionContract(multipleRecords.requirements);
+  assert.equal(multipleRepair.status, "REPAIRED");
+  assert.equal(multipleRepair.repairs.length, 2);
+  assert.equal((await inspectExecutionState(multipleRecords.requirements)).state, "IMPLEMENTED_AWAITING_VALIDATION");
+});
+
+test("contract repair never overwrites a writer in the final source-to-publication window", async (t) => {
+  const fixture = await standaloneWorkspace(t);
+  await renderArtifacts(fixture);
+  await prepareFindingsCorrection(fixture, "Findings IDs");
+  const taskPath = path.join(fixture.execution, "tasks/slice-01.md");
+
+  // Keep the source-to-publication window open without changing the artifact grammar.
+  await editTask(fixture, (value) => value.replace(
+    "- Problem: Observable behavior is wrong.",
+    `- Problem: ${"x".repeat(32 * 1024 * 1024)}`,
+  ));
+
+  const concurrentBytes = Buffer.from("CONCURRENT WRITER WON\n", "utf8");
+  let mutationResolve;
+  let mutationReject;
+  const mutation = new Promise((resolve, reject) => {
+    mutationResolve = resolve;
+    mutationReject = reject;
+  });
+  let fired = false;
+  const watcher = watch(path.dirname(taskPath), (_event, filename) => {
+    if (fired || filename === null
+      || !String(filename).startsWith("slice-01.md.stnl-contract-repair-")) return;
+    fired = true;
+    fs.writeFile(taskPath, concurrentBytes).then(mutationResolve, mutationReject);
+  });
+  t.after(() => watcher.close());
+
+  const outcome = await repairExecutionContract(fixture.requirements).then(
+    (result) => ({ result, error: null }),
+    (error) => ({ result: null, error }),
+  );
+  await mutation;
+  assert.equal(fired, true);
+  assert.ok(outcome.error instanceof ExecutionContractError,
+    `repair unexpectedly published: ${JSON.stringify(outcome.result)}`);
+  assert.match(outcome.error.message, /source changed|concurrent source|publication aborted/u);
+  assert.deepEqual(await fs.readFile(taskPath), concurrentBytes);
+});
+
+test("contract repair rejects a source mutation at critical-section entry", async (t) => {
+  const fixture = await standaloneWorkspace(t);
+  await renderArtifacts(fixture);
+  await prepareFindingsCorrection(fixture, "Findings IDs");
+  const taskPath = path.join(fixture.execution, "tasks/slice-01.md");
+  await editTask(fixture, (value) => value.replace(
+    "- Problem: Observable behavior is wrong.",
+    `- Problem: ${"x".repeat(32 * 1024 * 1024)}`,
+  ));
+
+  const lockPath = `${fixture.execution}.stnl-contract-repair.lock`;
+  const concurrentBytes = Buffer.from("PRE-CRITICAL WRITER WON\n", "utf8");
+  let fired = false;
+  let mutation = null;
+  const watcher = watch(path.dirname(lockPath), (_event, filename) => {
+    if (fired || filename === null || String(filename) !== path.basename(lockPath)) return;
+    fired = true;
+    mutation = fs.writeFile(taskPath, concurrentBytes);
+  });
+  t.after(() => watcher.close());
+
+  const outcome = await repairExecutionContract(fixture.requirements).then(
+    (result) => ({ result, error: null }),
+    (error) => ({ result: null, error }),
+  );
+  assert.equal(fired, true);
+  await mutation;
+  assert.ok(outcome.error instanceof ExecutionContractError,
+    `repair unexpectedly published: ${JSON.stringify(outcome.result)}`);
+  assert.match(outcome.error.message, /source changed|concurrent source|publication aborted/u);
+  assert.deepEqual(await fs.readFile(taskPath), concurrentBytes);
+});
+
+test("strict readback failure rolls back only the repair-owned publication", async (t) => {
+  const fixture = await standaloneWorkspace(t);
+  await renderArtifacts(fixture);
+  await prepareFindingsCorrection(fixture, "Findings IDs");
+  const taskPath = path.join(fixture.execution, "tasks/slice-01.md");
+  const tasksIndexPath = path.join(fixture.execution, "tasks.md");
+  await editTask(fixture, (value) => value.replace(
+    "- Problem: Observable behavior is wrong.",
+    `- Problem: ${"x".repeat(32 * 1024 * 1024)}`,
+  ));
+  const sourceBytes = await fs.readFile(taskPath);
+  const foreignIndexBytes = Buffer.from("CONCURRENT TASK INDEX WON\n", "utf8");
+
+  let fired = false;
+  let mutation = null;
+  const watcher = watch(path.dirname(taskPath), (_event, filename) => {
+    if (fired || filename === null
+      || !String(filename).startsWith("slice-01.md.stnl-contract-repair-stage-")) return;
+    fired = true;
+    writeFileSync(tasksIndexPath, foreignIndexBytes);
+    mutation = Promise.resolve();
+  });
+  t.after(() => watcher.close());
+
+  const outcome = await spawnResult(process.execPath, [
+    path.join(ROOT, "skills/workflows/stnl-execution-closer/runtime/validate-execution-state.mjs"),
+    fixture.requirements,
+    "--repair-known-contract",
+  ], { cwd: fixture.root });
+  assert.equal(fired, true);
+  await mutation;
+  assert.equal(outcome.status, 1, `repair unexpectedly passed strict readback: ${outcome.stdout}`);
+  assert.match(outcome.stderr, /BLOCKED:/u);
+  assert.deepEqual(await fs.readFile(taskPath), sourceBytes, "owned publication was not rolled back");
+  assert.deepEqual(await fs.readFile(tasksIndexPath), foreignIndexBytes, "foreign readback mutation was overwritten");
+});
+
+test("contract repair preserves a foreign replacement of its lock identity", async (t) => {
+  const fixture = await standaloneWorkspace(t);
+  await renderArtifacts(fixture);
+  await prepareFindingsCorrection(fixture, "Findings IDs");
+  const taskPath = path.join(fixture.execution, "tasks/slice-01.md");
+  await editTask(fixture, (value) => value.replace(
+    "- Problem: Observable behavior is wrong.",
+    `- Problem: ${"x".repeat(32 * 1024 * 1024)}`,
+  ));
+  const sourceBytes = await fs.readFile(taskPath);
+  const lockPath = `${fixture.execution}.stnl-contract-repair.lock`;
+  const displacedLockPath = `${lockPath}.displaced-by-test`;
+  const foreignLockBytes = Buffer.from("FOREIGN LOCK OWNER\n", "utf8");
+
+  let fired = false;
+  let mutation = null;
+  const watcher = watch(path.dirname(taskPath), (_event, filename) => {
+    if (fired || filename === null
+      || !String(filename).startsWith("slice-01.md.stnl-contract-repair-stage-")) return;
+    fired = true;
+    mutation = fs.rename(lockPath, displacedLockPath)
+      .then(() => fs.writeFile(lockPath, foreignLockBytes));
+  });
+  t.after(() => watcher.close());
+
+  const outcome = await repairExecutionContract(fixture.requirements).then(
+    (result) => ({ result, error: null }),
+    (error) => ({ result: null, error }),
+  );
+  assert.equal(fired, true);
+  await mutation;
+  assert.ok(outcome.error instanceof ExecutionContractError,
+    `repair ignored lock replacement: ${JSON.stringify(outcome.result)}`);
+  assert.match(outcome.error.message, /lock ownership changed|foreign lock preserved/u);
+  assert.deepEqual(await fs.readFile(taskPath), sourceBytes);
+  assert.deepEqual(await fs.readFile(lockPath), foreignLockBytes);
+});
+
+test("official 98545e4 lifecycle-root execution is explicit legacy and never EMPTY", async (t) => {
+  const root = await temporary(t, "stnl-old-root-execution-");
+  const readyFixture = path.join(ROOT, "skills/workflows/stnl-spec-lifecycle-manager/examples/validator-fixtures/ready");
+  const workspace = await copyDirectory(readyFixture, path.join(root, "spec"));
+  const historicalRoot = ["skills", "stnl-spec-execution-manager", "templates"].join("/");
+  const planIndex = replaceAll(gitShowText("98545e4", `${historicalRoot}/plan-index.template.md`), [
+    ["<workspace path>", workspace], ["01 - <name>", "01 - Delivery"],
+    ["<one-line observable outcome>", "observable result"],
+  ]);
+  const tasksIndex = replaceAll(gitShowText("98545e4", `${historicalRoot}/tasks-index.template.md`), [
+    ["01 - <name>", "01 - Delivery"], ["<count or compact summary>", "one task"],
+  ]);
+  const phasePlan = replaceAll(gitShowText("98545e4", `${historicalRoot}/phase-plan.template.md`), [
+    ["<Name>", "Delivery"], ["<One observable outcome.>", "Observable result."],
+  ]);
+  const phaseTasks = replaceAll(gitShowText("98545e4", `${historicalRoot}/phase-tasks.template.md`), [
+    ["<Name>", "Delivery"], ["<task>", "Implement behavior"],
+  ]);
+  await fs.mkdir(path.join(workspace, "plans"));
+  await fs.mkdir(path.join(workspace, "tasks"));
+  await fs.writeFile(path.join(workspace, "plan.md"), planIndex);
+  await fs.writeFile(path.join(workspace, "tasks.md"), tasksIndex);
+  await fs.writeFile(path.join(workspace, "plans/plan-01.md"), phasePlan);
+  await fs.writeFile(path.join(workspace, "tasks/tasks-01.md"), phaseTasks);
+
+  for (const operation of [
+    () => inspectExecutionState(workspace),
+    () => preflightExecutionOperation(workspace, "PLAN"),
+  ]) {
+    await assert.rejects(operation(), (error) => {
+      assert.equal(error.contractViolation?.kind, "legacy-execution-contract");
+      assert.equal(error.contractViolation?.classification, "structurally-incompatible");
+      assert.equal(error.contractViolation?.repairability, "blocked");
+      assert.equal(error.contractViolation?.reason, "official-lifecycle-root-execution-generation");
+      return true;
+    });
+  }
+});
+
+test("tasks prose is editable while its canonical table remains machine authority", async (t) => {
+  for (const mutate of [
+    (value) => value.replace("This is the sole global progress authority.", "This is the sole global progress authority!"),
+    (value) => value
+      .replace(/Use only `\[ \]`[\s\S]*?explicit `SLICE`\./u, "The table below is the global progress record; select every slice explicitly.")
+      .replace(/After materialization,[\s\S]*?(?=\n?$)/u, "History remains append-only after execution work starts."),
+    (value) => value.replace("\n\n| Done |", "\n\n\n| Done |").replace("| pending | pending |\n\n", "| pending | pending |\n   \n"),
+    (value) => value.replace("\n\n| Done |", "\n\nEditorial notation `A | B | C` is explanatory prose.\n\n| Done |"),
+  ]) {
+    const fixture = await standaloneWorkspace(t);
+    await renderArtifacts(fixture);
+    await editTasksIndex(fixture, mutate);
+    assert.equal((await inspectExecutionState(fixture.requirements)).state, "MATERIALIZED_PRISTINE");
+  }
+});
+
+test("non-rendered tasks prose cannot create authority and row-like residue cannot mask it", async (t) => {
+  for (const wrapper of [
+    (table) => `\`\`\`md\n${table}\`\`\`\n`,
+    (table) => `<!--\n${table}-->\n`,
+  ]) {
+    const fixture = await standaloneWorkspace(t);
+    await renderArtifacts(fixture);
+    await editTasksIndex(fixture, (value) => value.replace(
+      /(\| Done \| Slice \| Delivery \| Dependencies \| Detail \| Validation \| Result \|\n\|---\|---\|---\|---\|---\|---\|---\|\n(?:\|[^\n]+\|\n)+)/u,
+      (table) => wrapper(table),
+    ));
+    await assert.rejects(inspectExecutionState(fixture.requirements), /canonical table header/u);
+  }
+
+  const editorial = await standaloneWorkspace(t);
+  await renderArtifacts(editorial);
+  await editTasksIndex(editorial, (value) => value.replace(
+    "\n\n| Done |",
+    "\n\n```md\n# Editorial example\n| fake | table | row |\n```\n\n<!--\n# Commented example\n| fake | table | row |\n-->\n\n| Done |",
+  ));
+  assert.equal((await inspectExecutionState(editorial.requirements)).state, "MATERIALIZED_PRISTINE");
+
+  for (const residue of [
+    "[ ] | 01 - Delivery | observable result | - | tasks/slice-01.md | pending | pending |",
+    "<!-- editorial marker --> [ ] | 01 - Delivery | observable result | - | tasks/slice-01.md | pending | pending |",
+    "[ ] | 01 - Delivery | observable result | - | tasks/slice-01.md | pending | pending | <!-- editorial marker -->",
+  ]) {
+    const rowLikeResidue = await standaloneWorkspace(t);
+    await renderArtifacts(rowLikeResidue);
+    await editTasksIndex(rowLikeResidue, (value) => `${value}\n${residue}\n`);
+    await assert.rejects(inspectExecutionState(rowLikeResidue.requirements), /unexpected structural row/u);
+  }
+});
+
+test("legacy classification requires a complete historical producer signature", async (t) => {
+  for (const insertion of [
+    "```md\n# Delivery Plan Index\n```",
+    "Historical example: \n# Delivery Plan Index",
+  ]) {
+    const fixture = await standaloneWorkspace(t);
+    await renderArtifacts(fixture);
+    await editPlan(fixture, (value) => value.replace(
+      "- <risk, boundary, or explicit final integration slice>",
+      `- no material integration risk\n\n${insertion}`,
+    ));
+    assert.equal((await inspectExecutionState(fixture.requirements)).state, "MATERIALIZED_PRISTINE");
+  }
+
+  const missingAuthority = await standaloneWorkspace(t);
+  await renderArtifacts(missingAuthority);
+  await editPlan(missingAuthority, (value) => value
+    .replace(/^- Requirements authority: sha256:[0-9a-f]{64}\n/mu, "")
+    .replace(/^- Plan revision: [0-9]+\n/mu, ""));
+  await assert.rejects(inspectExecutionState(missingAuthority.requirements), (error) => {
+    assert.equal(error.contractViolation, null);
+    return /Requirements authority/u.test(error.message);
+  });
+
+  const hybrid = await standaloneWorkspace(t);
+  await renderArtifacts(hybrid);
+  await editPlan(hybrid, (value) => value.replace("# Execution Plan", "# Delivery Plan Index"));
+  await assert.rejects(inspectExecutionState(hybrid.requirements), (error) => {
+    assert.equal(error.contractViolation, null);
+    return /non-canonical primary heading/u.test(error.message);
+  });
+});
+
+test("the fabricated tasks prose pair is not a historical producer signature", async (t) => {
+  const currentIntroduction = "Use only `[ ]` and `[x]`. This is the sole global progress authority. `PASS` and `SUPERSEDED` are terminal; only `PASS` is successful validation. A suggested eligible slice never selects it; every slice operation requires explicit `SLICE`.";
+  const currentHistory = "After materialization, historical plans and task records are immutable. A wholly pristine canonical set may be atomically replaced only by explicit approved replanning. After any operational evidence, the index cannot be recreated and historical checklists cannot be rematerialized: an approved append-only revision adds only monotonically numbered rows/files. A current valid `PASS` atomically changes its selected row to `[x]`, validation `PASS`, result `PASS`. The same approved-replan materialization that appends a replacement slice may terminalize its named open predecessor as `[x]`, validation `SUPERSEDED`, result `SUPERSEDED`; it never changes a prior `PASS`.";
+  const fabricatedIntroduction = "Use only `[ ]` and `[x]`. This is the sole global progress authority. Every slice operation requires explicit `SLICE`.";
+  const fabricatedHistory = "Plans are immutable after materialization; only a current valid `PASS` may complete a selected row.";
+  const fixture = await standaloneWorkspace(t);
+  await renderArtifacts(fixture);
+  await editTasksIndex(fixture, (value) => value
+    .replace(currentIntroduction, fabricatedIntroduction)
+    .replace(currentHistory, fabricatedHistory));
+  assert.equal((await inspectExecutionState(fixture.requirements)).state, "MATERIALIZED_PRISTINE");
+});
+
+test("the exact e45e41d split-plan producer remains explicit blocked legacy", async (t) => {
+  const fixture = await standaloneWorkspace(t);
+  const authoritySource = path.relative(fixture.execution, fixture.requirements).split(path.sep).join("/");
+  const detailSource = path.relative(path.join(fixture.execution, "plans"), fixture.requirements).split(path.sep).join("/");
+  await fs.mkdir(path.join(fixture.execution, "plans"), { recursive: true });
+  const historicalPlannerRoot = ["skills", "stnl-execution-planner", "templates"].join("/");
+  let plan = replaceAll(gitShowText("e45e41d", `${historicalPlannerRoot}/plan.template.md`), [
+    ["`<relative path>`", `\`${authoritySource}\``], ["01 - <name>", "01 - Delivery"],
+    ["<compact objective>", "Deliver observable behavior"], ["<compact strategy>", "Implement serially"],
+    ["<result>", "observable result"], ["<areas>", "src/example.txt"],
+  ]);
+  plan = headerReady(plan);
+  let detail = replaceAll(gitShowText("e45e41d", `${historicalPlannerRoot}/slice-plan.template.md`), [
+    ["`<relative path>`", `\`${detailSource}\``], ["<Name>", "Delivery"],
+  ]);
+  detail = headerReady(detail);
+  await fs.writeFile(path.join(fixture.execution, "plan.md"), plan);
+  await fs.writeFile(path.join(fixture.execution, "plans/slice-01.md"), detail);
+  await assert.rejects(inspectExecutionState(fixture.requirements), (error) => {
+    assert.equal(error.contractViolation?.kind, "legacy-execution-contract");
+    assert.equal(error.contractViolation?.reason, "known-split-plan-before-authority-fields");
+    return true;
+  });
+});
+
+test("current and e45e41d hybrid plan structure remains a current violation", async (t) => {
+  const fixture = await standaloneWorkspace(t);
+  await renderArtifacts(fixture);
+  await editPlan(fixture, (value) => value
+    .replace(
+      "update_policy: PLAN creates revision 1; REPLAN drafts a replacement or extension; REVIEW_PLAN corrects the mutable draft and changes it to ready.",
+      "update_policy: PLAN creates as draft; REVIEW_PLAN corrects and changes status to ready.",
+    )
+    .replace(/^- Requirements authority: sha256:[0-9a-f]{64}\n/mu, "")
+    .replace(/^- Plan revision: [0-9]+\n/mu, "")
+    .replace(
+      "\n\n## Serial Slice Order",
+      "\n\nFor revision 1, including a planning-only replacement before tasks exist, omit the following historical recovery fields.\n\n- Replan reason: <REPLAN_REASON>\n- Revision mode: pristine-replacement | append-only-extension\n- Supersedes open slices: <slice-NN -> slice-NN mappings or none>\n\n## Serial Slice Order",
+    ));
+  await assert.rejects(inspectExecutionState(fixture.requirements), (error) => {
+    assert.equal(error.contractViolation, null);
+    return /Requirements authority/u.test(error.message);
+  });
 });
 
 test("preflight is read-only and exact safe contract repair is an explicit deterministic action", async (t) => {
@@ -694,6 +1274,189 @@ test("candidate validation rejects unreadable mutations and preserves live execu
     await assert.rejects(validateExecutionCandidate(fixture.requirements, candidate), ExecutionContractError);
     assert.deepEqual(await fs.readFile(path.join(fixture.execution, "tasks/slice-01.md")), liveBefore);
   }
+});
+
+test("successful model-owned candidate publication has strict success and live readback proof", async (t) => {
+  const fixture = await standaloneWorkspace(t);
+  await renderArtifacts(fixture);
+  const liveTask = path.join(fixture.execution, "tasks/slice-01.md");
+  const liveBefore = await fs.readFile(liveTask);
+  const candidate = path.join(fixture.root, "successful-candidate");
+  await copyDirectory(fixture.execution, candidate);
+  const candidateTask = path.join(candidate, "tasks/slice-01.md");
+  let candidateText = await fs.readFile(candidateTask, "utf8");
+  candidateText = candidateText.replace("- [ ] 1.1", "- [x] 1.1");
+  candidateText = replaceSection(candidateText, "Changed Areas", "- `../../src/example.txt`");
+  candidateText = replaceSection(candidateText, "Implementation Test Evidence", checkRecord("implementation-check", 1, "TESTS_PASS", 1));
+  await fs.writeFile(candidateTask, candidateText, "utf8");
+
+  const candidateState = await validateExecutionCandidate(fixture.requirements, candidate);
+  assert.equal(candidateState.state, "IMPLEMENTED_AWAITING_VALIDATION");
+  assert.deepEqual(await fs.readFile(liveTask), liveBefore, "candidate validation published implicitly");
+
+  // Publication remains model-owned; this test performs the authorized selected-task copy only after candidate PASS.
+  await fs.copyFile(candidateTask, liveTask);
+  const readback = await inspectExecutionState(fixture.requirements);
+  assert.equal(readback.state, "IMPLEMENTED_AWAITING_VALIDATION");
+  assert.equal(readback.tasks.get("slice-01").implementationChecks.at(-1).status, "TESTS_PASS");
+});
+
+test("auxiliary runner output contract round-trips through model-owned persistence and derived state", async (t) => {
+  const contracts = await Promise.all([
+    fs.readFile(path.join(ROOT, "templates/subagents/claude-code/.claude/agents/stnl-validation-runner.md"), "utf8"),
+    fs.readFile(path.join(ROOT, "templates/subagents/codex/.codex/agents/stnl_validation_runner.toml"), "utf8"),
+  ]);
+  const persisted = checkRecord("implementation-check", 1, "TESTS_PASS", 1);
+  for (const [runnerField, recordField] of [
+    ["Automatic check round:", "- Automatic check round: 1/3"],
+    ["Status:", "- Status: TESTS_PASS"],
+    ["Escopo verificado:", "- Tested scope: ../../src/example.txt"],
+    ["Estado testado:", "- Tested state:"],
+    ["Discovery sources:", "- Discovery sources:"],
+    ["Discovery actions:", "- Discovery actions:"],
+    ["Verification types considered:", "- Verification types considered:"],
+    ["Comandos executados:", "- Commands:"],
+    ["Testes selecionados:", "- Selected checks:"],
+  ]) {
+    for (const contract of contracts) assert.ok(contract.includes(runnerField), runnerField);
+    assert.ok(persisted.includes(recordField), recordField);
+  }
+  assert.match(persisted, /^- Tested scope: \S.*$/mu);
+  assert.match(persisted, /^- Tested state:\n  - `[^`]+` \| sha256:[0-9a-f]{64}$/mu);
+  assert.match(persisted, /^- Commands:\n  - `[^`]+` \| exit:0$/mu);
+  assert.doesNotMatch(persisted, /^- Fileless reason:/mu);
+  for (const contract of contracts) {
+    assert.match(contract, /Fileless reason: required only when Estado testado is exactly none; omit for file-backed state/u);
+    assert.match(contract, /Fileless reason: required only when Manifesto final da slice is exactly none; omit for file-backed manifest/u);
+  }
+  const filelessPersisted = persisted.replace(
+    `- Tested state:\n  - \`../../src/example.txt\` | sha256:${"b".repeat(64)}`,
+    "- Tested state: none\n- Fileless reason: no repository file participates in the observable state",
+  );
+  assert.match(filelessPersisted, /^- Tested state: none\n- Fileless reason: \S.*$/mu);
+  const findingsPersisted = checkRecord("findings-check", 1, "TESTS_PASS", 1, { cycle: "attempt-01" });
+  assert.match(findingsPersisted, /^- Findings verified: finding-01$/mu);
+  assert.match(findingsPersisted, /^- Unsupported active findings: none$/mu);
+  const correctionPersisted = checkRecord("implementation-check", 2, "TESTS_PASS", 2);
+  assert.match(correctionPersisted, /^- Correction paths: \.\.\/\.\.\/src\/example\.txt$/mu);
+
+  const fixture = await standaloneWorkspace(t);
+  await renderArtifacts(fixture);
+  const candidate = path.join(fixture.root, "runner-round-trip-candidate");
+  await copyDirectory(fixture.execution, candidate);
+  const taskPath = path.join(candidate, "tasks/slice-01.md");
+  let task = await fs.readFile(taskPath, "utf8");
+  task = task.replace("- [ ] 1.1", "- [x] 1.1");
+  task = replaceSection(task, "Changed Areas", "- `../../src/example.txt`");
+  task = replaceSection(task, "Implementation Test Evidence", persisted);
+  await fs.writeFile(taskPath, task, "utf8");
+  const candidateResult = await validateExecutionCandidate(fixture.requirements, candidate);
+  assert.equal(candidateResult.state, "IMPLEMENTED_AWAITING_VALIDATION");
+  await fs.copyFile(taskPath, path.join(fixture.execution, "tasks/slice-01.md"));
+  const parsed = await inspectExecutionState(fixture.requirements);
+  assert.equal(parsed.tasks.get("slice-01").implementationChecks[0].round, 1);
+  assert.equal(parsed.tasks.get("slice-01").implementationChecks[0].testedState[0].path, "../../src/example.txt");
+  assert.deepEqual(parsed.tasks.get("slice-01").implementationChecks[0].commands, [{ command: "node --test", exit: 0 }]);
+});
+
+test("formal validation output round-trips through NEEDS_FIX, correction, PASS, base, final, and handoff", async (t) => {
+  const runnerContract = await fs.readFile(path.join(ROOT, "templates/subagents/claude-code/.claude/agents/stnl-validation-runner.md"), "utf8");
+  for (const fieldName of ["Tipo de validação:", "Status: PASS | NEEDS_FIX | BLOCKED", "Manifesto final da slice:", "Evidências:", "Findings:"]) {
+    assert.ok(runnerContract.includes(fieldName), fieldName);
+  }
+  const fixture = await standaloneWorkspace(t);
+  await renderArtifacts(fixture);
+  await editTask(fixture, (value) => {
+    let result = value.replace("- [ ] 1.1", "- [x] 1.1");
+    result = replaceSection(result, "Changed Areas", "- `../../src/example.txt`");
+    return replaceSection(result, "Implementation Test Evidence", checkRecord("implementation-check", 1, "TESTS_PASS", 1));
+  });
+  assert.equal((await preflightExecutionOperation(fixture.requirements, "VALIDATE_SLICE", "1")).state, "IMPLEMENTED_AWAITING_VALIDATION");
+
+  await editTask(fixture, (value) => {
+    let result = replaceSection(value, "Validation Attempts", NEEDS_FIX_ATTEMPT);
+    return replaceSection(result, "Validation Findings", ACTIVE_FINDING);
+  });
+  const needsFix = await inspectExecutionState(fixture.requirements);
+  assert.equal(needsFix.state, "VALIDATION_NEEDS_FIX");
+  const needsFixHandoff = deriveNormalHandoff(needsFix, "VALIDATE_SLICE");
+  assert.equal(needsFixHandoff.operation, "APPLY_FINDINGS");
+  assert.equal(needsFixHandoff.slice, "slice-01");
+
+  await editTask(fixture, (value) => {
+    let result = replaceSection(value, "Corrections Applied", "- `../../src/example.txt`");
+    return replaceSection(result, "Findings Test Evidence", checkRecord("findings-check", 1, "TESTS_PASS", 1, { cycle: "attempt-01" }));
+  });
+  assert.equal((await preflightExecutionOperation(fixture.requirements, "VALIDATE_SLICE", "1")).state, "FINDINGS_CORRECTED");
+
+  await editTask(fixture, (value) => {
+    let result = replaceSection(value, "Validation Attempts", `${NEEDS_FIX_ATTEMPT}\n\n${attemptRecord(2, "PASS", { references: "finding-01", dispositions: "finding-01=resolved" })}`);
+    result = replaceSection(result, "Validation Findings", `${ACTIVE_FINDING.replace("- State: active", "- State: resolved")}\n- Resolution: attempt-02 confirmed the correction.`);
+    result = replaceSection(result, "Effective Validation Base", passBase({ attempt: 2 }));
+    return publishPassResult(result);
+  });
+  await editTasksIndex(fixture, (value) => value.replace(
+    "| [ ] | 01 - Delivery | observable result | - | tasks/slice-01.md | pending | pending |",
+    "| [x] | 01 - Delivery | observable result | - | tasks/slice-01.md | PASS | PASS |",
+  ));
+  await writeValidatedPath(fixture);
+  const complete = await inspectExecutionState(fixture.requirements);
+  assert.equal(complete.state, "COMPLETE");
+  assert.equal(complete.tasks.get("slice-01").base.present, true);
+  assert.equal(complete.tasks.get("slice-01").base.paths[0], "../../src/example.txt");
+  assert.equal(complete.tasks.get("slice-01").final.result, "PASS");
+  assert.equal(deriveNormalHandoff(complete, "VALIDATE_SLICE").operation, "CLOSE");
+});
+
+test("real planner and materializer templates round-trip through review and materialization handoffs", async (t) => {
+  const fixture = await standaloneWorkspace(t);
+  const { authority } = await renderArtifacts(fixture, { materialized: false, planStatus: "draft" });
+  assert.equal((await preflightExecutionOperation(fixture.requirements, "REVIEW_PLAN")).state, "PLANNED_DRAFT");
+  await editPlan(fixture, (value) => headerReady(value));
+  await editSlicePlan(fixture, "slice-01", (value) => headerReady(value));
+  assert.equal((await preflightExecutionOperation(fixture.requirements, "MATERIALIZE_TASKS")).state, "PLANNED_READY");
+  await renderTasks(fixture, { revision: 1, fingerprint: authority });
+  const materialized = await inspectExecutionState(fixture.requirements);
+  assert.equal(materialized.state, "MATERIALIZED_PRISTINE");
+  assert.deepEqual(deriveNormalHandoff(materialized, "MATERIALIZE_TASKS"), {
+    workflowSkill: "stnl-task-reviewer",
+    operation: "REVIEW_TASKS",
+    invocation: "OPERATION=REVIEW_TASKS",
+    slice: null,
+  });
+});
+
+test("distributed execution schemas and runtime agree on corrected semantic boundaries", async (t) => {
+  const schemaPaths = [
+    "stnl-execution-closer", "stnl-slice-executor", "stnl-slice-quality-manager", "stnl-task-materializer",
+  ].map((skill) => path.join(ROOT, `skills/workflows/${skill}/references/execution-record-schema.md`));
+  const schemas = await Promise.all(schemaPaths.map((schemaPath) => fs.readFile(schemaPath, "utf8")));
+  for (const schema of schemas.slice(1)) assert.equal(schema, schemas[0]);
+  for (const rule of [
+    /Scalar summaries are compact opaque inline values/u,
+    /`Finding IDs` is one non-empty lexicographically ordered set/u,
+    /exact `Tested state: none`[\s\S]{0,120}`Fileless reason`/u,
+    /exact historical pair `Check discovery sources` \/ `Check discovery actions`/u,
+    /At most one current base exists and it originates from the current `PASS` attempt/u,
+    /`Finding references` uses exact `none` or `finding-NN, finding-NN`/u,
+    /`Finding dispositions` uses exact `none` or `finding-NN=(?:active\|resolved\|superseded), finding-NN=(?:active\|resolved\|superseded)`/u,
+    /`Findings verified` is exact `none` or a canonical subset of `Finding IDs`/u,
+    /`Unsupported active findings` is deterministically every active finding at the named cycle not present in `Findings verified`/u,
+    /file-backed `Correction paths` is an exact comma-space-delimited normalized ordered set, while exact `none` is permitted only for the corresponding fileless correction/u,
+    /In `TESTS_PASS`, exact `none` is forbidden specifically for `Tested scope`, `Verification types considered`, `Selected checks`, and `Coverage`/u,
+    /The first `PASS` attempt is terminal/u,
+  ]) assert.match(schemas[0], rule);
+
+  const accepted = await standaloneWorkspace(t);
+  await renderArtifacts(accepted);
+  await editTask(accepted, (value) => {
+    let result = value.replace("- [ ] 1.1", "- [x] 1.1");
+    result = replaceSection(result, "Changed Areas", "- `../../src/example.txt`");
+    return replaceSection(result, "Implementation Test Evidence", checkRecord("implementation-check", 1, "TESTS_PASS", 1));
+  });
+  assert.equal((await inspectExecutionState(accepted.requirements)).state, "IMPLEMENTED_AWAITING_VALIDATION");
+  await editTask(accepted, (value) => value.replace("- Tested scope: ../../src/example.txt", "- Tested scope:\n  - ../../src/example.txt"));
+  await assert.rejects(inspectExecutionState(accepted.requirements), /Tested scope|unexpected nested/u);
 });
 
 test("duplicate or unknown task sections cannot hide operational records", async (t) => {
@@ -926,7 +1689,7 @@ test("requirements authority detects unchanged and stale planning at every reque
         result = replaceSection(result, "Changed Areas", "- `../../src/example.txt`");
         result = replaceSection(result, "Validation Attempts", PASS_ATTEMPT);
         result = replaceSection(result, "Effective Validation Base", PASS_BASE);
-        return replaceSection(result, "Final Result", "- PASS");
+        return publishPassResult(result);
       });
       await editTasksIndex(fixture, (value) => value.replace("| [ ] | 01 - Delivery | observable result | - | tasks/slice-01.md | pending | pending |", "| [x] | 01 - Delivery | observable result | - | tasks/slice-01.md | PASS | PASS |"));
       assert.equal((await inspectExecutionState(fixture.requirements)).state, "COMPLETE");
@@ -956,6 +1719,7 @@ test("finding resolution is historical while only active blocking findings block
   await renderArtifacts(fixture);
   await editTask(fixture, (value) => {
     let result = value.replace("- [ ] 1.1", "- [x] 1.1");
+    result = replaceSection(result, "Changed Areas", "- `../../src/example.txt`");
     result = replaceSection(result, "Validation Attempts", NEEDS_FIX_ATTEMPT);
     return replaceSection(result, "Validation Findings", ACTIVE_FINDING);
   });
@@ -965,9 +1729,10 @@ test("finding resolution is historical while only active blocking findings block
     let result = replaceSection(value, "Validation Findings", `${ACTIVE_FINDING.replace("- State: active", "- State: resolved")}\n- Resolution: attempt-02 confirmed the correction.`);
     result = result.replace("- [ ] 1.1", "- [x] 1.1");
     result = replaceSection(result, "Changed Areas", "- `../../src/example.txt`");
-    result = replaceSection(result, "Validation Attempts", `${NEEDS_FIX_ATTEMPT}\n\n${attemptRecord(2, "PASS", { references: "finding-01", dispositions: "finding-01 resolved" })}`);
+    result = replaceSection(result, "Corrections Applied", "- `../../src/example.txt`");
+    result = replaceSection(result, "Validation Attempts", `${NEEDS_FIX_ATTEMPT}\n\n${attemptRecord(2, "PASS", { references: "finding-01", dispositions: "finding-01=resolved" })}`);
     result = replaceSection(result, "Effective Validation Base", passBase({ attempt: 2 }));
-    return replaceSection(result, "Final Result", "- PASS");
+    return publishPassResult(result);
   });
   await editTasksIndex(fixture, (value) => value.replace("| [ ] | 01 - Delivery | observable result | - | tasks/slice-01.md | pending | pending |", "| [x] | 01 - Delivery | observable result | - | tasks/slice-01.md | PASS | PASS |"));
   await writeValidatedPath(fixture);
@@ -980,16 +1745,19 @@ test("partial finding correction may revalidate NEEDS_FIX before eventual PASS d
   const secondFinding = ACTIVE_FINDING.replaceAll("finding-01", "finding-02").replace("Origin: attempt-01", "Origin: attempt-02").replace("Observable behavior is wrong.", "Regression behavior is wrong.");
   await editTask(fixture, (value) => {
     let result = value.replace("- [ ] 1.1", "- [x] 1.1");
-    result = replaceSection(result, "Validation Attempts", `${NEEDS_FIX_ATTEMPT}\n\n${attemptRecord(2, "NEEDS_FIX", { references: "finding-01 finding-02", dispositions: "finding-01 resolved; finding-02 active" })}`);
+    result = replaceSection(result, "Changed Areas", "- `../../src/example.txt`");
+    result = replaceSection(result, "Corrections Applied", "- `../../src/example.txt`");
+    result = replaceSection(result, "Validation Attempts", `${NEEDS_FIX_ATTEMPT}\n\n${attemptRecord(2, "NEEDS_FIX", { references: "finding-01, finding-02", dispositions: "finding-01=resolved, finding-02=active" })}`);
     return replaceSection(result, "Validation Findings", `${ACTIVE_FINDING.replace("- State: active", "- State: resolved")}\n- Resolution: attempt-02 confirmed correction.\n\n${secondFinding}`);
   });
   assert.equal((await inspectExecutionState(fixture.requirements)).state, "VALIDATION_NEEDS_FIX");
   await editTask(fixture, (value) => {
-    let result = replaceSection(value, "Validation Attempts", `${NEEDS_FIX_ATTEMPT}\n\n${attemptRecord(2, "NEEDS_FIX", { references: "finding-01 finding-02", dispositions: "finding-01 resolved; finding-02 active" })}\n\n${attemptRecord(3, "PASS", { references: "finding-02", dispositions: "finding-02 resolved" })}`);
+    let result = replaceSection(value, "Validation Attempts", `${NEEDS_FIX_ATTEMPT}\n\n${attemptRecord(2, "NEEDS_FIX", { references: "finding-01, finding-02", dispositions: "finding-01=resolved, finding-02=active" })}\n\n${attemptRecord(3, "PASS", { references: "finding-01, finding-02", dispositions: "finding-01=resolved, finding-02=resolved" })}`);
     result = replaceSection(result, "Validation Findings", `${ACTIVE_FINDING.replace("- State: active", "- State: resolved")}\n- Resolution: attempt-02 confirmed correction.\n\n${secondFinding.replace("- State: active", "- State: resolved")}\n- Resolution: attempt-03 confirmed correction.`);
     result = replaceSection(result, "Changed Areas", "- `../../src/example.txt`");
+    result = replaceSection(result, "Corrections Applied", "- `../../src/example.txt`");
     result = replaceSection(result, "Effective Validation Base", passBase({ attempt: 3 }));
-    return replaceSection(result, "Final Result", "- PASS");
+    return publishPassResult(result);
   });
   await editTasksIndex(fixture, (value) => value.replace("| [ ] | 01 - Delivery | observable result | - | tasks/slice-01.md | pending | pending |", "| [x] | 01 - Delivery | observable result | - | tasks/slice-01.md | PASS | PASS |"));
   assert.equal((await inspectExecutionState(fixture.requirements)).state, "COMPLETE");
@@ -1051,8 +1819,12 @@ test("third TESTS_FAIL has only formal validation continuation for implementatio
     if (kind === "Findings") await editTask(fixture, (value) => replaceSection(value, "Validation Findings", ACTIVE_FINDING));
     await editTask(fixture, (value) => {
       let result = value.replace("- [ ] 1.1", "- [x] 1.1");
+      result = replaceSection(result, "Changed Areas", "- `../../src/example.txt`");
+      result = replaceSection(result, "Corrections Applied", "- `../../src/example.txt`");
       result = replaceSection(result, `${kind} Test Evidence`, [1, 2, 3].map((round) => checkRecord(prefix, round, "TESTS_FAIL", round, { cycle: "attempt-01" })).join("\n\n"));
-      if (kind === "Findings") result = replaceSection(result, "Validation Attempts", NEEDS_FIX_ATTEMPT);
+      if (kind === "Findings") {
+        result = replaceSection(result, "Validation Attempts", NEEDS_FIX_ATTEMPT);
+      }
       return result;
     });
     const state = await inspectExecutionState(fixture.requirements);
@@ -1165,7 +1937,7 @@ test("only the first open serial slice may own operational phase", async (t) => 
   passed = replaceSection(passed, "Changed Areas", "- `../../src/example.txt`");
   passed = replaceSection(passed, "Validation Attempts", PASS_ATTEMPT);
   passed = replaceSection(passed, "Effective Validation Base", PASS_BASE);
-  passed = replaceSection(passed, "Final Result", "- PASS");
+  passed = publishPassResult(passed);
   await fs.writeFile(laterPassPath, passed, "utf8");
   await editTasksIndex(laterPass, (value) => value.replace(
     "| [ ] | 02 - Later | later result | 01 | tasks/slice-02.md | pending | pending |",
@@ -1190,6 +1962,8 @@ test("terminal auxiliary outcomes and scoped blocker resumes have exact phases",
   await renderArtifacts(corrected);
   await editTask(corrected, (value) => {
     let result = value.replace("- [ ] 1.1", "- [x] 1.1");
+    result = replaceSection(result, "Changed Areas", "- `../../src/example.txt`");
+    result = replaceSection(result, "Corrections Applied", "- `../../src/example.txt`");
     result = replaceSection(result, "Validation Attempts", NEEDS_FIX_ATTEMPT);
     result = replaceSection(result, "Validation Findings", ACTIVE_FINDING);
     return replaceSection(result, "Findings Test Evidence", checkRecord("findings-check", 1, "TESTS_NOT_APPLICABLE", 1, { cycle: "attempt-01" }));
@@ -1252,6 +2026,7 @@ test("terminal auxiliary outcomes and scoped blocker resumes have exact phases",
   await renderArtifacts(malformed);
   await editTask(malformed, (value) => {
     let result = value.replace("- [ ] 1.1", "- [x] 1.1");
+    result = replaceSection(result, "Changed Areas", "- `../../src/example.txt`");
     result = replaceSection(result, "Implementation Test Evidence", checkRecord("implementation-check", 1, "TESTS_PASS", 1));
     return replaceSection(result, "Delegation Blocker", delegationBlocker("VALIDATE_SLICE", "malformed-output"));
   });
@@ -1298,6 +2073,7 @@ test("APPLY_FINDINGS recovery remains bound to persisted slice-02 and exposes au
 
   task = await fs.readFile(second, "utf8");
   task = replaceSection(task, "Delegation Blocker", "- none");
+  task = replaceSection(task, "Corrections Applied", "- `../../src/example.txt`");
   task = replaceSection(task, "Findings Test Evidence", checkRecord("findings-check", 1, "BLOCKED", 1, { cycle: "attempt-01" }));
   await fs.writeFile(second, task, "utf8");
   const auxiliary = await inspectExecutionState(fixture.requirements);
@@ -1355,7 +2131,12 @@ test("append-only requirements recovery preserves history and requires later PAS
   assert.equal(recovered.state, "EXECUTION_STARTED");
   assert.equal(recovered.tasks.get("slice-01").divergences[0].state, "resolved");
   // Terminalizing the replacement without PASS ownership is an impossible corrective request.
-  await fs.writeFile(path.join(fixture.execution, "tasks/slice-02.md"), (await fs.readFile(path.join(fixture.execution, "tasks/slice-02.md"), "utf8")).replace("- [ ] 1.1", "- [x] 1.1").replace("## Final Result\n\n- pending", "## Final Result\n\n- SUPERSEDED\n- Superseded by: slice-02\n- Plan revision: 2"));
+  const replacementPath = path.join(fixture.execution, "tasks/slice-02.md");
+  let impossibleReplacement = await fs.readFile(replacementPath, "utf8");
+  impossibleReplacement = impossibleReplacement.replace("- [ ] 1.1", "- [x] 1.1");
+  impossibleReplacement = replaceSection(impossibleReplacement, "Changed Areas", "- `../../src/example.txt`");
+  impossibleReplacement = impossibleReplacement.replace("## Final Result\n\n- pending", "## Final Result\n\n- SUPERSEDED\n- Superseded by: slice-02\n- Plan revision: 2");
+  await fs.writeFile(replacementPath, impossibleReplacement, "utf8");
   await editTasksIndex(fixture, (value) => value.replace("| [ ] | 02 - Recovery | reconciled result | 01 | tasks/slice-02.md | pending | pending |", "| [x] | 02 - Recovery | reconciled result | 01 | tasks/slice-02.md | SUPERSEDED | SUPERSEDED |"));
   await assert.rejects(inspectExecutionState(fixture.requirements), /committed supersessions do not exactly match|invalid later replacement slice/u);
 });
@@ -1368,7 +2149,7 @@ test("a later missing integration slice has an executable append-only REPLAN pat
     result = replaceSection(result, "Changed Areas", "- `../../src/example.txt`");
     result = replaceSection(result, "Validation Attempts", PASS_ATTEMPT);
     result = replaceSection(result, "Effective Validation Base", PASS_BASE);
-    return replaceSection(result, "Final Result", "- PASS");
+    return publishPassResult(result);
   });
   await editTasksIndex(fixture, (value) => value.replace("| [ ] | 01 - Delivery | observable result | - | tasks/slice-01.md | pending | pending |", "| [x] | 01 - Delivery | observable result | - | tasks/slice-01.md | PASS | PASS |"));
   assert.equal((await preflightExecutionOperation(fixture.requirements, "REPLAN")).state, "COMPLETE");
@@ -1390,7 +2171,7 @@ test("superseded historical paths become closable only through a later current-a
   task = replaceSection(task, "Changed Areas", "- `../../src/example.txt`");
   task = replaceSection(task, "Validation Attempts", PASS_ATTEMPT);
   task = replaceSection(task, "Effective Validation Base", PASS_BASE);
-  task = replaceSection(task, "Final Result", "- PASS");
+  task = publishPassResult(task);
   await fs.writeFile(second, task);
   await editTasksIndex(fixture, (value) => value.replace("| [ ] | 02 - Recovery | reconciled result | 01 | tasks/slice-02.md | pending | pending |", "| [x] | 02 - Recovery | reconciled result | 01 | tasks/slice-02.md | PASS | PASS |"));
   await writeValidatedPath(fixture);
@@ -1440,10 +2221,10 @@ test("attempt/check numbering, unresolved blockers at PASS, and structural gates
   await editTask(findingFixture, (value) => {
     let result = value.replace("- [ ] 1.1", "- [x] 1.1");
     result = replaceSection(result, "Changed Areas", "- `../../src/example.txt`");
-    result = replaceSection(result, "Validation Attempts", `${NEEDS_FIX_ATTEMPT}\n\n${attemptRecord(2, "PASS", { references: "finding-01", dispositions: "finding-01 incorrectly left active" })}`);
+    result = replaceSection(result, "Validation Attempts", `${NEEDS_FIX_ATTEMPT}\n\n${attemptRecord(2, "PASS", { references: "finding-01", dispositions: "finding-01=active" })}`);
     result = replaceSection(result, "Validation Findings", ACTIVE_FINDING);
     result = replaceSection(result, "Effective Validation Base", passBase({ attempt: 2 }));
-    return replaceSection(result, "Final Result", "- PASS");
+    return publishPassResult(result);
   });
   await assert.rejects(inspectExecutionState(findingFixture.requirements), /active blocker/u);
 
@@ -1490,7 +2271,7 @@ test("attempt/check numbering, unresolved blockers at PASS, and structural gates
       result = replaceSection(result, "Changed Areas", "- `../../src/example.txt`");
       result = replaceSection(result, "Validation Attempts", PASS_ATTEMPT);
       result = replaceSection(result, "Effective Validation Base", invalidBase);
-      return replaceSection(result, "Final Result", "- PASS");
+      return publishPassResult(result);
     });
     await assert.rejects(inspectExecutionState(malformed.requirements), expected);
   }
@@ -1517,11 +2298,601 @@ test("attempt/check numbering, unresolved blockers at PASS, and structural gates
   await assert.rejects(inspectExecutionState(unlistedCorrection.requirements), /correction path is absent from Changed Areas/u);
 });
 
+test("Effective Validation Base commands and evidence are exact provenance of the owning PASS attempt", async (t) => {
+  for (const [mutation, expected] of [
+    [(base) => base.replace("`node --test`", "`node --test --test-name-pattern provenance`"), /authoritative commands disagree with its origin attempt/u],
+    [(base) => base.replace("Objective PASS evidence.", "Different claimed PASS evidence."), /Evidence summary disagrees with its origin attempt/u],
+    [(base) => `${base}\n- Authoritative commands:\n  - \`conflicting command\` | exit:0`, /exactly one Authoritative commands|unexpected content after Evidence summary/u],
+  ]) {
+    const fixture = await standaloneWorkspace(t);
+    await renderArtifacts(fixture);
+    await editTask(fixture, (value) => {
+      let result = value.replace("- [ ] 1.1", "- [x] 1.1");
+      result = replaceSection(result, "Changed Areas", "- `../../src/example.txt`");
+      result = replaceSection(result, "Validation Attempts", PASS_ATTEMPT);
+      result = replaceSection(result, "Effective Validation Base", mutation(PASS_BASE));
+      result = replaceSection(result, "Diff Summary", "- Implemented and validated the observable behavior.");
+      return replaceSection(result, "Final Result", "- PASS");
+    });
+    await editTasksIndex(fixture, (value) => value.replace(
+      "| [ ] | 01 - Delivery | observable result | - | tasks/slice-01.md | pending | pending |",
+      "| [x] | 01 - Delivery | observable result | - | tasks/slice-01.md | PASS | PASS |",
+    ));
+    await assert.rejects(inspectExecutionState(fixture.requirements), expected);
+  }
+});
+
+test("fileless PASS uses an explicit none manifest with objective reason and evidence", async (t) => {
+  const filelessAttempt = attemptRecord(1, "PASS", { evidence: "validated observable behavior" });
+  const filelessCheck = checkRecord("implementation-check", 1, "TESTS_PASS", 1)
+    .replace(`- Tested state:\n  - \`../../src/example.txt\` | sha256:${"b".repeat(64)}`, "- Tested state: none\n- Fileless reason: no repository file participates in the observable configuration state");
+  const filelessBase = `- Origin attempt: attempt-01
+- Attempt type: initial
+- HEAD: fixture
+- Result: PASS
+- Files: none
+- Fileless reason: the slice changes no repository file and validates an externally observable configuration state
+- Authoritative commands:
+  - \`node --test\` | exit:0
+- Evidence summary: validated observable behavior`;
+
+  const valid = await standaloneWorkspace(t);
+  await renderArtifacts(valid);
+  await editTask(valid, (value) => {
+    let result = value.replace("- [ ] 1.1", "- [x] 1.1");
+    result = replaceSection(result, "Changed Areas", "- none");
+    return replaceSection(result, "Implementation Test Evidence", filelessCheck);
+  });
+  assert.equal((await inspectExecutionState(valid.requirements)).state, "IMPLEMENTED_AWAITING_VALIDATION");
+  assert.equal((await preflightExecutionOperation(valid.requirements, "VALIDATE_SLICE", "1")).state, "IMPLEMENTED_AWAITING_VALIDATION");
+  await editTask(valid, (value) => {
+    let result = value;
+    result = replaceSection(result, "Validation Attempts", filelessAttempt);
+    result = replaceSection(result, "Effective Validation Base", filelessBase);
+    return publishPassResult(result);
+  });
+  await editTasksIndex(valid, (value) => value.replace(
+    "| [ ] | 01 - Delivery | observable result | - | tasks/slice-01.md | pending | pending |",
+    "| [x] | 01 - Delivery | observable result | - | tasks/slice-01.md | PASS | PASS |",
+  ));
+  assert.equal((await inspectExecutionState(valid.requirements)).state, "COMPLETE");
+  assert.equal((await preflightExecutionOperation(valid.requirements, "CLOSE")).state, "COMPLETE");
+
+  for (const [name, baseMutation, error, attemptMutation = (attempt) => attempt] of [
+    ["missing reason", (base) => base.replace(/^- Fileless reason:.*\n/mu, ""), /Fileless reason/u],
+    ["placeholder reason", (base) => base.replace(/^- Fileless reason:.*$/mu, "- Fileless reason: pending"), /Fileless reason/u],
+    ["whitespace reason", (base) => base.replace(/^- Fileless reason:.*$/mu, "- Fileless reason:   "), /Fileless reason/u],
+    ["placeholder evidence", (base) => base.replace("- Evidence summary: validated observable behavior", "- Evidence summary: pending"), /Evidence summary/u],
+    [
+      "whitespace attempt and base evidence",
+      (base) => base.replace("- Evidence summary: validated observable behavior", "- Evidence summary:   "),
+      /Evidence|Evidence summary/u,
+      (attempt) => attempt.replace("- Evidence: validated observable behavior", "- Evidence:   "),
+    ],
+  ]) {
+    const invalid = await standaloneWorkspace(t);
+    await renderArtifacts(invalid);
+    await editTask(invalid, (value) => {
+      let result = value.replace("- [ ] 1.1", "- [x] 1.1");
+      result = replaceSection(result, "Changed Areas", "- none");
+      result = replaceSection(result, "Implementation Test Evidence", filelessCheck);
+      result = replaceSection(result, "Validation Attempts", attemptMutation(filelessAttempt));
+      result = replaceSection(result, "Effective Validation Base", baseMutation(filelessBase));
+      return publishPassResult(result);
+    });
+    await editTasksIndex(invalid, (value) => value.replace(
+      "| [ ] | 01 - Delivery | observable result | - | tasks/slice-01.md | pending | pending |",
+      "| [x] | 01 - Delivery | observable result | - | tasks/slice-01.md | PASS | PASS |",
+    ));
+    await assert.rejects(inspectExecutionState(invalid.requirements), error, name);
+  }
+});
+
+test("fileless APPLY_FINDINGS needs objective evidence but no fabricated path", async (t) => {
+  const fileless = (record) => record.replace(
+    `- Tested state:\n  - \`../../src/example.txt\` | sha256:${"b".repeat(64)}`,
+    "- Tested state: none\n- Fileless reason: the correction changes observable authority without filesystem ownership",
+  ).replace("- Corrections covered: ../../src/example.txt", "- Corrections covered: objective authority-only correction");
+
+  const fixture = await standaloneWorkspace(t);
+  await renderArtifacts(fixture);
+  await editTask(fixture, (value) => {
+    let result = value.replace("- [ ] 1.1", "- [x] 1.1");
+    result = replaceSection(result, "Changed Areas", "- none");
+    result = replaceSection(result, "Corrections Applied", "- none");
+    result = replaceSection(result, "Validation Attempts", NEEDS_FIX_ATTEMPT);
+    result = replaceSection(result, "Validation Findings", ACTIVE_FINDING);
+    return replaceSection(result, "Findings Test Evidence", fileless(
+      checkRecord("findings-check", 1, "TESTS_PASS", 1, { cycle: "attempt-01" }),
+    ));
+  });
+  assert.equal((await inspectExecutionState(fixture.requirements)).state, "FINDINGS_CORRECTED");
+  assert.equal((await preflightExecutionOperation(fixture.requirements, "VALIDATE_SLICE", "1")).state, "FINDINGS_CORRECTED");
+
+  const retried = await standaloneWorkspace(t);
+  await renderArtifacts(retried);
+  await editTask(retried, (value) => {
+    let result = value.replace("- [ ] 1.1", "- [x] 1.1");
+    result = replaceSection(result, "Changed Areas", "- none");
+    result = replaceSection(result, "Corrections Applied", "- none");
+    result = replaceSection(result, "Validation Attempts", NEEDS_FIX_ATTEMPT);
+    result = replaceSection(result, "Validation Findings", ACTIVE_FINDING);
+    const first = fileless(checkRecord("findings-check", 1, "TESTS_FAIL", 1, { cycle: "attempt-01" }));
+    const second = fileless(checkRecord("findings-check", 2, "TESTS_PASS", 2, { cycle: "attempt-01" }))
+      .replace("- Correction paths: ../../src/example.txt", "- Correction paths: none")
+      .replace("- Correction applied: bounded objective correction", "- Correction applied: corrected authority-only behavior with no filesystem ownership");
+    return replaceSection(result, "Findings Test Evidence", `${first}\n\n${second}`);
+  });
+  assert.equal((await inspectExecutionState(retried.requirements)).state, "FINDINGS_CORRECTED");
+});
+
+test("only the current state-driving auxiliary check controls fileless Changed Areas", async (t) => {
+  const fileless = (record) => record.replace(
+    `- Tested state:\n  - \`../../src/example.txt\` | sha256:${"b".repeat(64)}`,
+    "- Tested state: none\n- Fileless reason: no repository file participates in current tested state",
+  );
+
+  const contradiction = await standaloneWorkspace(t);
+  await renderArtifacts(contradiction);
+  await editTask(contradiction, (value) => {
+    let result = value.replace("- [ ] 1.1", "- [x] 1.1");
+    result = replaceSection(result, "Changed Areas", "- `../../src/example.txt`");
+    return replaceSection(result, "Implementation Test Evidence", fileless(
+      checkRecord("implementation-check", 1, "TESTS_PASS", 1),
+    ));
+  });
+  await assert.rejects(inspectExecutionState(contradiction.requirements), /current fileless.*Changed Areas: none/u);
+
+  const mixedHistory = await standaloneWorkspace(t);
+  await renderArtifacts(mixedHistory);
+  await editTask(mixedHistory, (value) => {
+    let result = value.replace("- [ ] 1.1", "- [x] 1.1");
+    result = replaceSection(result, "Changed Areas", "- `../../src/example.txt`");
+    result = replaceSection(result, "Corrections Applied", "- `../../src/example.txt`");
+    const historical = fileless(checkRecord("implementation-check", 1, "TESTS_FAIL", 1));
+    const current = checkRecord("implementation-check", 2, "TESTS_PASS", 2);
+    return replaceSection(result, "Implementation Test Evidence", `${historical}\n\n${current}`);
+  });
+  assert.equal((await inspectExecutionState(mixedHistory.requirements)).state, "IMPLEMENTED_AWAITING_VALIDATION");
+});
+
+test("Final Result accepts one exact terminal authority and rejects masked conflicts", async (t) => {
+  for (const invalid of [
+    "- PASS\n- pending",
+    "- PASS\n- PASS",
+    "- pending\n- PASS",
+    "- PASS\n- SUPERSEDED",
+    "- PASS\n- terminal: PASS",
+  ]) {
+    const fixture = await standaloneWorkspace(t);
+    await renderArtifacts(fixture);
+    await editTask(fixture, (value) => {
+      let result = value.replace("- [ ] 1.1", "- [x] 1.1");
+      result = replaceSection(result, "Changed Areas", "- `../../src/example.txt`");
+      result = replaceSection(result, "Validation Attempts", PASS_ATTEMPT);
+      result = replaceSection(result, "Effective Validation Base", PASS_BASE);
+      result = replaceSection(result, "Diff Summary", "- Implemented and validated the observable behavior.");
+      return replaceSection(result, "Final Result", invalid);
+    });
+    await editTasksIndex(fixture, (value) => value.replace(
+      "| [ ] | 01 - Delivery | observable result | - | tasks/slice-01.md | pending | pending |",
+      "| [x] | 01 - Delivery | observable result | - | tasks/slice-01.md | PASS | PASS |",
+    ));
+    await assert.rejects(inspectExecutionState(fixture.requirements), /Final Result is malformed/u);
+  }
+});
+
+test("canonical execution tables and checklists reject every unexpected structural row", async (t) => {
+  const malformedPlan = await standaloneWorkspace(t);
+  await renderArtifacts(malformedPlan);
+  await editPlan(malformedPlan, (value) => value.replace(
+    "| 01 - Delivery | observable result | - | AC-001 | src/example.txt | plans/slice-01.md |",
+    "| 01 - Delivery | observable result | - | AC-001 | src/example.txt | plans/slice-01.md |\n| malformed serial row |",
+  ));
+  await assert.rejects(inspectExecutionState(malformedPlan.requirements), /Serial Slice Order.*malformed row/u);
+
+  const malformedTasks = await standaloneWorkspace(t);
+  await renderArtifacts(malformedTasks);
+  await editTasksIndex(malformedTasks, (value) => value.replace(
+    "| [ ] | 01 - Delivery | observable result | - | tasks/slice-01.md | pending | pending |",
+    "| [ ] | 01 - Delivery | observable result | - | tasks/slice-01.md | pending | pending |\n| unexpected task row |",
+  ));
+  await assert.rejects(inspectExecutionState(malformedTasks.requirements), /tasks\.md has malformed row/u);
+
+  const nonPipePlan = await standaloneWorkspace(t);
+  await renderArtifacts(nonPipePlan);
+  await editPlan(nonPipePlan, (value) => value.replace(
+    "| 01 - Delivery | observable result | - | AC-001 | src/example.txt | plans/slice-01.md |",
+    "| 01 - Delivery | observable result | - | AC-001 | src/example.txt | plans/slice-01.md |\nmalformed serial row without pipes",
+  ));
+  await assert.rejects(inspectExecutionState(nonPipePlan.requirements), /Serial Slice Order.*unexpected structural row/u);
+
+  const nonPipeTasks = await standaloneWorkspace(t);
+  await renderArtifacts(nonPipeTasks);
+  await editTasksIndex(nonPipeTasks, (value) => value.replace(
+    "| [ ] | 01 - Delivery | observable result | - | tasks/slice-01.md | pending | pending |",
+    "| [ ] | 01 - Delivery | observable result | - | tasks/slice-01.md | pending | pending |\nmalformed task row without pipes",
+  ));
+  assert.equal((await inspectExecutionState(nonPipeTasks.requirements)).state, "MATERIALIZED_PRISTINE");
+
+  const malformedChecklist = await standaloneWorkspace(t);
+  await renderArtifacts(malformedChecklist);
+  await editTask(malformedChecklist, (value) => value.replace(
+    "- [ ] 1.1 Implement behavior | observable result: observable result | expected areas: src/example.txt | requirement: AC-001",
+    "- [ ] 1.1 Implement behavior | observable result: observable result | expected areas: src/example.txt | requirement: AC-001\n- [ ] malformed checklist row",
+  ));
+  await assert.rejects(inspectExecutionState(malformedChecklist.requirements), /malformed Checklist row/u);
+});
+
+test("scalar summaries stay inline while Tested state and Commands stay structurally scoped", async (t) => {
+  const valid = await standaloneWorkspace(t);
+  await renderArtifacts(valid);
+  await editTask(valid, (value) => {
+    let result = value.replace("- [ ] 1.1", "- [x] 1.1");
+    result = replaceSection(result, "Changed Areas", "- `../../src/example.txt`");
+    return replaceSection(result, "Implementation Test Evidence", checkRecord("implementation-check", 1, "TESTS_PASS", 1));
+  });
+  assert.equal((await inspectExecutionState(valid.requirements)).state, "IMPLEMENTED_AWAITING_VALIDATION");
+
+  const mutations = [
+    [(record) => record.replace("- Tested scope: ../../src/example.txt", "- Tested scope:   "), /Tested scope/u],
+    [(record) => record.replace("- Tested scope: ../../src/example.txt", "- Tested scope: ../../src/example.txt\n- Tested scope:"), /exactly one 'Tested scope' field/u],
+    [(record) => `${record}\n- Fileless reason:`, /Fileless reason/u],
+    [(record) => record.replace("- Tested scope: ../../src/example.txt", "- Tested scope: ../../src/example.txt\n  additional scope"), /unexpected nested or continuation/u],
+    [(record) => record.replace("- Tested scope: ../../src/example.txt", "- Tested scope: ../../src/example.txt\n    - nested scalar value"), /unexpected nested/u],
+    [(record) => record.replace("- Selected checks: node --test", "- Selected checks: node --test\n\t- nested scalar value"), /unexpected nested/u],
+    [(record) => record.replace("- Tested scope: ../../src/example.txt", "- Tested scope: ../../src/example.txt\n  * second value"), /unexpected nested/u],
+    [(record) => record.replace("- Tested scope: ../../src/example.txt", "- Tested scope: ../../src/example.txt\n  + second value"), /unexpected nested/u],
+    [(record) => record.replace("- Tested scope: ../../src/example.txt", "- Tested scope: ../../src/example.txt\n  1. second value"), /unexpected nested/u],
+    [(record) => record.replace("- Tested scope: ../../src/example.txt", "- Tested scope:\n  - ../../src/example.txt"), /Tested scope|unexpected nested/u],
+    [(record) => record.replace(
+      `  - \`../../src/example.txt\` | sha256:${"b".repeat(64)}`,
+      `  - \`../../src/example.txt\` | sha256:${"b".repeat(64)}\n  - \`../../src/example.txt\` | sha256:${"b".repeat(64)}`,
+    ), /duplicate Tested state paths/u],
+    [(record) => record.replace(
+      `  - \`../../src/example.txt\` | sha256:${"b".repeat(64)}`,
+      `  - \`../../src/z.txt\` | sha256:${"b".repeat(64)}\n  - \`../../src/a.txt\` | sha256:${"b".repeat(64)}`,
+    ), /Tested state paths are not lexicographically ordered/u],
+    [(record) => record.replace("`../../src/example.txt`", "`../../../outside.txt`"), /unsafe Tested state path/u],
+    [(record) => record
+      .replace("- Commands:\n  - `node --test` | exit:0", "- Commands:")
+      .replace("- Selected checks: node --test", "- Selected checks: focused check\n  - `node --test` | exit:0"), /Commands|unexpected nested/u],
+  ];
+  for (const [mutate, expected] of mutations) {
+    const fixture = await standaloneWorkspace(t);
+    await renderArtifacts(fixture);
+    await editTask(fixture, (value) => {
+      let result = value.replace("- [ ] 1.1", "- [x] 1.1");
+      result = replaceSection(result, "Changed Areas", "- `../../src/example.txt`");
+      return replaceSection(result, "Implementation Test Evidence", mutate(checkRecord("implementation-check", 1, "TESTS_PASS", 1)));
+    });
+    await assert.rejects(inspectExecutionState(fixture.requirements), expected);
+  }
+
+  const whitespaceReason = await standaloneWorkspace(t);
+  await renderArtifacts(whitespaceReason);
+  await editTask(whitespaceReason, (value) => {
+    let result = value.replace("- [ ] 1.1", "- [x] 1.1");
+    result = replaceSection(result, "Changed Areas", "- none");
+    const fileless = checkRecord("implementation-check", 1, "TESTS_PASS", 1)
+      .replace(`- Tested state:\n  - \`../../src/example.txt\` | sha256:${"b".repeat(64)}`, "- Tested state: none\n- Fileless reason:   ");
+    return replaceSection(result, "Implementation Test Evidence", fileless);
+  });
+  await assert.rejects(inspectExecutionState(whitespaceReason.requirements), /Fileless reason/u);
+
+  const attemptNested = await standaloneWorkspace(t);
+  await renderArtifacts(attemptNested);
+  await editTask(attemptNested, (value) => {
+    let result = value.replace("- [ ] 1.1", "- [x] 1.1");
+    result = replaceSection(result, "Changed Areas", "- `../../src/example.txt`");
+    result = replaceSection(result, "Validation Attempts", NEEDS_FIX_ATTEMPT.replace(
+      "- Verified scope: ../../src/example.txt",
+      "- Verified scope: ../../src/example.txt\n  additional scope\n  - `hidden command` | exit:0",
+    ));
+    return replaceSection(result, "Validation Findings", ACTIVE_FINDING);
+  });
+  await assert.rejects(inspectExecutionState(attemptNested.requirements), /unexpected nested/u);
+});
+
+test("Finding IDs are canonical ordered sets tied to declared findings and their cycle", async (t) => {
+  const prepare = async (value) => {
+    const fixture = await standaloneWorkspace(t);
+    await renderArtifacts(fixture);
+    await editTask(fixture, (task) => {
+      let result = task.replace("- [ ] 1.1", "- [x] 1.1");
+      result = replaceSection(result, "Changed Areas", "- `../../src/example.txt`");
+      result = replaceSection(result, "Corrections Applied", "- `../../src/example.txt`");
+      result = replaceSection(result, "Validation Attempts", attemptRecord(1, "NEEDS_FIX", {
+        references: "finding-01, finding-02",
+        dispositions: "finding-01=active, finding-02=active",
+      }));
+      result = replaceSection(result, "Validation Findings", `${ACTIVE_FINDING}\n\n${ACTIVE_FINDING_02}`);
+      const check = checkRecord("findings-check", 1, "TESTS_PASS", 1, { cycle: "attempt-01" })
+        .replace("- Finding IDs: finding-01", `- Finding IDs: ${value}`)
+        .replace("- Findings verified: finding-01", `- Findings verified: ${value}`);
+      return replaceSection(result, "Findings Test Evidence", check);
+    });
+    return fixture;
+  };
+
+  const valid = await prepare("finding-01, finding-02");
+  assert.equal((await inspectExecutionState(valid.requirements)).state, "FINDINGS_CORRECTED");
+  for (const [value, expected] of [
+    ["finding-01, finding-01", /duplicate Finding IDs/u],
+    ["finding-02, finding-01", /Finding IDs are not lexicographically ordered/u],
+    ["finding-01, finding-99", /undeclared Finding ID finding-99/u],
+    ["finding-01,finding-02", /malformed Finding IDs/u],
+  ]) {
+    const fixture = await prepare(value);
+    await assert.rejects(inspectExecutionState(fixture.requirements), expected);
+  }
+});
+
+test("Findings verified may be a canonical subset while unsupported reconciles active authority", async (t) => {
+  const fixture = await standaloneWorkspace(t);
+  await renderArtifacts(fixture);
+  await editTask(fixture, (value) => {
+    let result = value.replace("- [ ] 1.1", "- [x] 1.1");
+    result = replaceSection(result, "Changed Areas", "- `../../src/example.txt`");
+    result = replaceSection(result, "Corrections Applied", "- `../../src/example.txt`");
+    result = replaceSection(result, "Validation Attempts", NEEDS_FIX_ATTEMPT);
+    result = replaceSection(result, "Validation Findings", ACTIVE_FINDING);
+    const partial = checkRecord("findings-check", 1, "TESTS_PASS", 1, { cycle: "attempt-01" })
+      .replace("- Findings verified: finding-01", "- Findings verified: none")
+      .replace("- Unsupported active findings: none", "- Unsupported active findings: finding-01");
+    return replaceSection(result, "Findings Test Evidence", partial);
+  });
+  assert.equal((await inspectExecutionState(fixture.requirements)).state, "FINDINGS_CORRECTED");
+
+  const invalid = await standaloneWorkspace(t);
+  await renderArtifacts(invalid);
+  await editTask(invalid, (value) => {
+    let result = value.replace("- [ ] 1.1", "- [x] 1.1");
+    result = replaceSection(result, "Changed Areas", "- `../../src/example.txt`");
+    result = replaceSection(result, "Corrections Applied", "- `../../src/example.txt`");
+    result = replaceSection(result, "Validation Attempts", attemptRecord(1, "NEEDS_FIX", {
+      references: "finding-01, finding-02",
+      dispositions: "finding-01=active, finding-02=active",
+    }));
+    result = replaceSection(result, "Validation Findings", `${ACTIVE_FINDING}\n\n${ACTIVE_FINDING_02}`);
+    const check = checkRecord("findings-check", 1, "TESTS_PASS", 1, { cycle: "attempt-01" })
+      .replace("- Findings verified: finding-01", "- Findings verified: finding-02")
+      .replace("- Unsupported active findings: none", "- Unsupported active findings: finding-01");
+    return replaceSection(result, "Findings Test Evidence", check);
+  });
+  await assert.rejects(inspectExecutionState(invalid.requirements), /Findings verified.*subset/u);
+});
+
+test("TESTS_PASS rejects none only in the four objective summary fields", async (t) => {
+  for (const fieldName of ["Tested scope", "Verification types considered", "Selected checks", "Coverage"]) {
+    const fixture = await standaloneWorkspace(t);
+    await renderArtifacts(fixture);
+    await editTask(fixture, (value) => {
+      let result = value.replace("- [ ] 1.1", "- [x] 1.1");
+      result = replaceSection(result, "Changed Areas", "- `../../src/example.txt`");
+      const check = checkRecord("implementation-check", 1, "TESTS_PASS", 1)
+        .replace(new RegExp(`^- ${fieldName}:.*$`, "mu"), `- ${fieldName}: none`);
+      return replaceSection(result, "Implementation Test Evidence", check);
+    });
+    await assert.rejects(inspectExecutionState(fixture.requirements), new RegExp(fieldName, "u"));
+  }
+
+  const canonical = await standaloneWorkspace(t);
+  await renderArtifacts(canonical);
+  await editTask(canonical, (value) => {
+    let result = value.replace("- [ ] 1.1", "- [x] 1.1");
+    result = replaceSection(result, "Changed Areas", "- `../../src/example.txt`");
+    return replaceSection(result, "Implementation Test Evidence", checkRecord("implementation-check", 1, "TESTS_PASS", 1));
+  });
+  assert.equal((await inspectExecutionState(canonical.requirements)).state, "IMPLEMENTED_AWAITING_VALIDATION");
+});
+
+test("a finding is active at origin and terminalizes only under later authority", async (t) => {
+  const resolvedAtOrigin = await standaloneWorkspace(t);
+  await renderArtifacts(resolvedAtOrigin);
+  await editTask(resolvedAtOrigin, (value) => {
+    let result = value.replace("- [ ] 1.1", "- [x] 1.1");
+    result = replaceSection(result, "Changed Areas", "- `../../src/example.txt`");
+    result = replaceSection(result, "Corrections Applied", "- `../../src/example.txt`");
+    result = replaceSection(result, "Validation Attempts", `${attemptRecord(1, "NEEDS_FIX", {
+      references: "finding-01", dispositions: "finding-01=resolved",
+    })}\n\n${attemptRecord(2, "PASS", {
+      references: "finding-01", dispositions: "finding-01=resolved",
+    })}`);
+    result = replaceSection(result, "Validation Findings", `${ACTIVE_FINDING.replace("- State: active", "- State: resolved")}\n- Resolution: attempt-01 claimed immediate resolution.`);
+    result = replaceSection(result, "Effective Validation Base", passBase({ attempt: 2 }));
+    return publishPassResult(result);
+  });
+  await editTasksIndex(resolvedAtOrigin, (value) => value.replace(
+    "| [ ] | 01 - Delivery | observable result | - | tasks/slice-01.md | pending | pending |",
+    "| [x] | 01 - Delivery | observable result | - | tasks/slice-01.md | PASS | PASS |",
+  ));
+  await assert.rejects(inspectExecutionState(resolvedAtOrigin.requirements), /strictly later|later formal attempt/u);
+
+  const supersededAtOrigin = await standaloneWorkspace(t);
+  await renderArtifacts(supersededAtOrigin);
+  const superseded = `${ACTIVE_FINDING.replace("- State: active", "- State: superseded")}\n- Superseded by: finding-02`;
+  await editTask(supersededAtOrigin, (value) => {
+    let result = value.replace("- [ ] 1.1", "- [x] 1.1");
+    result = replaceSection(result, "Changed Areas", "- `../../src/example.txt`");
+    result = replaceSection(result, "Validation Attempts", attemptRecord(1, "NEEDS_FIX", {
+      references: "finding-01, finding-02",
+      dispositions: "finding-01=superseded, finding-02=active",
+    }));
+    return replaceSection(result, "Validation Findings", `${superseded}\n\n${ACTIVE_FINDING_02}`);
+  });
+  await assert.rejects(inspectExecutionState(supersededAtOrigin.requirements), /origin must be strictly later/u);
+});
+
+test("the first formal PASS is terminal for its slice", async (t) => {
+  const passPass = await standaloneWorkspace(t);
+  await renderArtifacts(passPass);
+  await editTask(passPass, (value) => {
+    let result = value.replace("- [ ] 1.1", "- [x] 1.1");
+    result = replaceSection(result, "Changed Areas", "- `../../src/example.txt`");
+    result = replaceSection(result, "Validation Attempts", `${PASS_ATTEMPT}\n\n${attemptRecord(2, "PASS")}`);
+    result = replaceSection(result, "Effective Validation Base", passBase({ attempt: 2 }));
+    return publishPassResult(result);
+  });
+  await editTasksIndex(passPass, (value) => value.replace(
+    "| [ ] | 01 - Delivery | observable result | - | tasks/slice-01.md | pending | pending |",
+    "| [x] | 01 - Delivery | observable result | - | tasks/slice-01.md | PASS | PASS |",
+  ));
+  await assert.rejects(inspectExecutionState(passPass.requirements), /attempt-01 PASS is terminal/u);
+
+  const passNeedsFix = await standaloneWorkspace(t);
+  await renderArtifacts(passNeedsFix);
+  const laterFinding = ACTIVE_FINDING.replace("Origin: attempt-01", "Origin: attempt-02");
+  await editTask(passNeedsFix, (value) => {
+    let result = value.replace("- [ ] 1.1", "- [x] 1.1");
+    result = replaceSection(result, "Changed Areas", "- `../../src/example.txt`");
+    result = replaceSection(result, "Validation Attempts", `${PASS_ATTEMPT}\n\n${attemptRecord(2, "NEEDS_FIX", {
+      references: "finding-01", dispositions: "finding-01=active",
+    })}`);
+    return replaceSection(result, "Validation Findings", laterFinding);
+  });
+  await assert.rejects(inspectExecutionState(passNeedsFix.requirements), /attempt-01 PASS is terminal/u);
+});
+
+test("work, corrections, findings authority, terminal diff, and blocker resolution reconcile exactly", async (t) => {
+  const pendingChanged = await standaloneWorkspace(t);
+  await renderArtifacts(pendingChanged);
+  await editTask(pendingChanged, (value) => replaceSection(
+    value.replace("- [ ] 1.1", "- [x] 1.1"),
+    "Implementation Test Evidence",
+    checkRecord("implementation-check", 1, "TESTS_PASS", 1),
+  ));
+  await assert.rejects(inspectExecutionState(pendingChanged.requirements), /Changed Areas cannot remain pending after work/u);
+
+  const noCorrections = await standaloneWorkspace(t);
+  await renderArtifacts(noCorrections);
+  await prepareFindingsCorrection(noCorrections);
+  await editTask(noCorrections, (value) => replaceSection(value, "Corrections Applied", "- none"));
+  await assert.rejects(inspectExecutionState(noCorrections.requirements), /Findings Test Evidence requires Corrections Applied/u);
+
+  const wrongRoundPath = await standaloneWorkspace(t);
+  await renderArtifacts(wrongRoundPath);
+  await editTask(wrongRoundPath, (value) => {
+    let result = value.replace("- [ ] 1.1", "- [x] 1.1");
+    result = replaceSection(result, "Changed Areas", "- `../../src/example.txt`");
+    result = replaceSection(result, "Corrections Applied", "- `../../src/example.txt`");
+    const records = `${checkRecord("implementation-check", 1, "TESTS_FAIL", 1)}\n\n${checkRecord("implementation-check", 2, "TESTS_PASS", 2).replace("- Correction paths: ../../src/example.txt", "- Correction paths: ../../src/other.txt")}`;
+    return replaceSection(result, "Implementation Test Evidence", records);
+  });
+  await assert.rejects(inspectExecutionState(wrongRoundPath.requirements), /Correction paths.*Corrections Applied/u);
+
+  const wrongAttemptIds = await standaloneWorkspace(t);
+  await renderArtifacts(wrongAttemptIds);
+  await editTask(wrongAttemptIds, (value) => {
+    let result = value.replace("- [ ] 1.1", "- [x] 1.1");
+    result = replaceSection(result, "Changed Areas", "- `../../src/example.txt`");
+    result = replaceSection(result, "Validation Attempts", attemptRecord(1, "NEEDS_FIX", {
+      references: "finding-99",
+      dispositions: "finding-99=active",
+    }));
+    return replaceSection(result, "Validation Findings", ACTIVE_FINDING);
+  });
+  await assert.rejects(inspectExecutionState(wrongAttemptIds.requirements), /undeclared finding-99/u);
+
+  const contradictoryTimeline = await standaloneWorkspace(t);
+  await renderArtifacts(contradictoryTimeline);
+  await editTask(contradictoryTimeline, (value) => {
+    let result = value.replace("- [ ] 1.1", "- [x] 1.1");
+    result = replaceSection(result, "Changed Areas", "- `../../src/example.txt`");
+    result = replaceSection(result, "Validation Attempts", [
+      NEEDS_FIX_ATTEMPT,
+      attemptRecord(2, "NEEDS_FIX", { references: "finding-01", dispositions: "finding-01=resolved" }),
+      attemptRecord(3, "NEEDS_FIX", { references: "finding-01", dispositions: "finding-01=active" }),
+    ].join("\n\n"));
+    return replaceSection(result, "Validation Findings", ACTIVE_FINDING);
+  });
+  await assert.rejects(inspectExecutionState(contradictoryTimeline.requirements), /disposition contradicts.*timeline/u);
+
+  const historicalUnsupported = await standaloneWorkspace(t);
+  await renderArtifacts(historicalUnsupported);
+  await editTask(historicalUnsupported, (value) => {
+    let result = value.replace("- [ ] 1.1", "- [x] 1.1");
+    result = replaceSection(result, "Changed Areas", "- `../../src/example.txt`");
+    result = replaceSection(result, "Corrections Applied", "- `../../src/example.txt`");
+    result = replaceSection(result, "Validation Attempts", [
+      attemptRecord(1, "NEEDS_FIX", {
+        references: "finding-01, finding-02",
+        dispositions: "finding-01=active, finding-02=active",
+      }),
+      attemptRecord(2, "NEEDS_FIX", {
+        references: "finding-01, finding-02",
+        dispositions: "finding-01=active, finding-02=active",
+      }),
+    ].join("\n\n"));
+    result = replaceSection(result, "Validation Findings", `${ACTIVE_FINDING}\n\n${ACTIVE_FINDING_02}`);
+    return replaceSection(result, "Findings Test Evidence", checkRecord(
+      "findings-check", 1, "TESTS_PASS", 1, { cycle: "attempt-01" },
+    ));
+  });
+  await assert.rejects(inspectExecutionState(historicalUnsupported.requirements), /Unsupported active findings contradict/u);
+
+  const unsupportedContradiction = await standaloneWorkspace(t);
+  await renderArtifacts(unsupportedContradiction);
+  await prepareFindingsCorrection(unsupportedContradiction);
+  await editTask(unsupportedContradiction, (value) => value.replace(
+    "- Unsupported active findings: none",
+    "- Unsupported active findings: finding-01",
+  ));
+  await assert.rejects(inspectExecutionState(unsupportedContradiction.requirements), /Unsupported active findings contradict/u);
+
+  const pendingDiff = await standaloneWorkspace(t);
+  await renderArtifacts(pendingDiff);
+  await editTask(pendingDiff, (value) => {
+    let result = value.replace("- [ ] 1.1", "- [x] 1.1");
+    result = replaceSection(result, "Changed Areas", "- `../../src/example.txt`");
+    result = replaceSection(result, "Validation Attempts", PASS_ATTEMPT);
+    result = replaceSection(result, "Effective Validation Base", PASS_BASE);
+    return replaceSection(result, "Final Result", "- PASS");
+  });
+  await editTasksIndex(pendingDiff, (value) => value.replace(
+    "| [ ] | 01 - Delivery | observable result | - | tasks/slice-01.md | pending | pending |",
+    "| [x] | 01 - Delivery | observable result | - | tasks/slice-01.md | PASS | PASS |",
+  ));
+  await assert.rejects(inspectExecutionState(pendingDiff.requirements), /terminal PASS requires a non-placeholder Diff Summary/u);
+
+  const blockerWithPendingChangedAreas = await standaloneWorkspace(t);
+  await renderArtifacts(blockerWithPendingChangedAreas);
+  await editTask(blockerWithPendingChangedAreas, (value) => replaceSection(
+    value,
+    "Delegation Blocker",
+    delegationBlocker("EXECUTE_SLICE", "initialization"),
+  ));
+  await assert.rejects(inspectExecutionState(blockerWithPendingChangedAreas.requirements), /Changed Areas cannot remain pending after work/u);
+
+  const diffWithPendingChangedAreas = await standaloneWorkspace(t);
+  await renderArtifacts(diffWithPendingChangedAreas);
+  await editTask(diffWithPendingChangedAreas, (value) => replaceSection(
+    value,
+    "Diff Summary",
+    "- Implemented the observable behavior.",
+  ));
+  await assert.rejects(inspectExecutionState(diffWithPendingChangedAreas.requirements), /Changed Areas cannot remain pending after work/u);
+
+  const wrongResolution = await standaloneWorkspace(t);
+  await renderArtifacts(wrongResolution);
+  await editTask(wrongResolution, (value) => {
+    let result = value.replace("- [ ] 1.1", "- [x] 1.1");
+    result = replaceSection(result, "Changed Areas", "- `../../src/example.txt`");
+    result = replaceSection(result, "Implementation Test Evidence", checkRecord("implementation-check", 1, "TESTS_PASS", 1));
+    return replaceSection(result, "Delegation Blocker", delegationBlocker("EXECUTE_SLICE", "initialization", {
+      state: "resolved",
+      resolution: "attempt-01 returned a valid result",
+    }));
+  });
+  await assert.rejects(inspectExecutionState(wrongResolution.requirements), /Resolution must name implementation-check-01/u);
+});
+
 test("formal BLOCKED and selected-slice gates have only legal recovery transitions", async (t) => {
   const fixture = await standaloneWorkspace(t);
   await renderArtifacts(fixture);
   await editTask(fixture, (value) => {
-    const checked = value.replace("- [ ] 1.1", "- [x] 1.1");
+    let checked = value.replace("- [ ] 1.1", "- [x] 1.1");
+    checked = replaceSection(checked, "Changed Areas", "- `../../src/example.txt`");
     return replaceSection(checked, "Validation Attempts", BLOCKED_ATTEMPT);
   });
   assert.equal((await inspectExecutionState(fixture.requirements)).state, "VALIDATION_BLOCKED");
@@ -1575,7 +2946,7 @@ test("CLOSE verifies real final-owner hashes, removals, and changed-path ownersh
     result = replaceSection(result, "Changed Areas", "- `../../src/example.txt`");
     result = replaceSection(result, "Validation Attempts", PASS_ATTEMPT);
     result = replaceSection(result, "Effective Validation Base", PASS_BASE);
-    return replaceSection(result, "Final Result", "- PASS");
+    return publishPassResult(result);
   });
   await editTasksIndex(matching, (value) => value.replace("| [ ] | 01 - Delivery | observable result | - | tasks/slice-01.md | pending | pending |", "| [x] | 01 - Delivery | observable result | - | tasks/slice-01.md | PASS | PASS |"));
   const target = await writeValidatedPath(matching);
@@ -1590,7 +2961,7 @@ test("CLOSE verifies real final-owner hashes, removals, and changed-path ownersh
     result = replaceSection(result, "Changed Areas", "- `../../src/removed.txt`");
     result = replaceSection(result, "Validation Attempts", PASS_ATTEMPT);
     result = replaceSection(result, "Effective Validation Base", passBase({ relative: "../../src/removed.txt", removed: true }));
-    return replaceSection(result, "Final Result", "- PASS");
+    return publishPassResult(result);
   });
   await editTasksIndex(removed, (value) => value.replace("| [ ] | 01 - Delivery | observable result | - | tasks/slice-01.md | pending | pending |", "| [x] | 01 - Delivery | observable result | - | tasks/slice-01.md | PASS | PASS |"));
   assert.equal((await preflightExecutionOperation(removed.requirements, "CLOSE")).state, "COMPLETE");
@@ -1604,7 +2975,7 @@ test("CLOSE verifies real final-owner hashes, removals, and changed-path ownersh
     result = replaceSection(result, "Changed Areas", "- `../../src/example.txt`\n- `../../src/unowned.txt`");
     result = replaceSection(result, "Validation Attempts", PASS_ATTEMPT);
     result = replaceSection(result, "Effective Validation Base", PASS_BASE);
-    return replaceSection(result, "Final Result", "- PASS");
+    return publishPassResult(result);
   });
   await assert.rejects(inspectExecutionState(unowned.requirements), /changed\/corrected path with no validation owner/u);
 });
@@ -1629,7 +3000,7 @@ test("lifecycle CLOSE trusts repository-owned paths outside a nested SPEC and re
     result = replaceSection(result, "Changed Areas", `- \`${ownedRelative}\``);
     result = replaceSection(result, "Validation Attempts", PASS_ATTEMPT);
     result = replaceSection(result, "Effective Validation Base", passBase({ relative: ownedRelative }));
-    return replaceSection(result, "Final Result", "- PASS");
+    return publishPassResult(result);
   });
   await editTasksIndex(fixture, (value) => value.replace("| [ ] | 01 - Delivery | observable result | - | tasks/slice-01.md | pending | pending |", "| [x] | 01 - Delivery | observable result | - | tasks/slice-01.md | PASS | PASS |"));
   assert.equal((await preflightExecutionOperation(workspace, "CLOSE")).state, "COMPLETE");

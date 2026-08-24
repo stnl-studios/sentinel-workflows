@@ -49,6 +49,13 @@ test("accepts harmless runner prose paraphrasing", async (t) => {
   assert.equal(check(root).status, 0, check(root).stderr);
 });
 
+test("runner documents structured findings and correction-path persistence grammar", async (t) => {
+  const root = await fixture(t);
+  const contract = await fs.readFile(path.join(root, "claude-code/.claude/agents/stnl-validation-runner.md"), "utf8");
+  assert.match(contract, /Findings verificados[\s\S]{0,160}subconjunto canônico[\s\S]{0,120}Finding IDs[\s\S]{0,180}Findings ainda não sustentados[\s\S]{0,180}exatamente os findings ativos[\s\S]{0,180}nunca se sobrepõem/u);
+  assert.match(contract, /caminhos de correção[\s\S]{0,260}normalizados[\s\S]{0,160}comma-space[\s\S]{0,100}correção fileless[\s\S]{0,80}Correction paths[\s\S]{0,60}exact `none`/u);
+});
+
 const cases = [
   ["Codex model", "R001_ADAPTER_METADATA", (root) => replace(path.join(root, "codex/.codex/agents/stnl_validation_runner.toml"), 'model = "gpt-5.4-mini"', 'model = "gpt-5.4"')],
   ["Claude tools", "R001_ADAPTER_METADATA", (root) => replace(path.join(root, "claude-code/.claude/agents/stnl-validation-runner.md"), "tools: Read, Glob, Grep, Bash", "tools: Read, Glob, Grep, Bash, Write")],
@@ -61,12 +68,23 @@ const cases = [
   ["runner may edit", "R005_READ_ONLY", (root) => replaceBoth(root, "Não edite código", "Edite código")],
   ["missing check status", "R006_VERDICTS", (root) => replaceBoth(root, "STATUS_CHECKS=TESTS_PASS|TESTS_FAIL|TESTS_NOT_APPLICABLE|BLOCKED", "STATUS_CHECKS=TESTS_PASS|TESTS_FAIL|BLOCKED")],
   ["missing formal status", "R006_VERDICTS", (root) => replaceBoth(root, "STATUS_VALIDACAO=PASS|NEEDS_FIX|BLOCKED", "STATUS_VALIDACAO=PASS|BLOCKED")],
-  ["schema field removed", "R007_OUTPUT_SCHEMA", (root) => replaceBoth(root, "Check discovery sources:\n", "")],
-  ["discovery actions field removed", "R007_OUTPUT_SCHEMA", (root) => replaceBoth(root, "Check discovery actions:\n", "")],
+  ["schema field removed", "R007_OUTPUT_SCHEMA", (root) => replaceBoth(root, "Discovery sources:\n", "")],
+  ["discovery actions field removed", "R007_OUTPUT_SCHEMA", (root) => replaceBoth(root, "Discovery actions:\n", "")],
+  ["correction path grammar removed", "R007_OUTPUT_SCHEMA", (root) => replaceBoth(root, "caminhos de correção são task-relative normalizados", "caminhos de correção são descritos")],
+  ["finding target subset removed", "R007_OUTPUT_SCHEMA", (root) => replaceBoth(root, "subconjunto canônico dos `Finding IDs`", "uma lista livre")],
+  ["unsupported finding remainder removed", "R007_OUTPUT_SCHEMA", (root) => replaceBoth(root, "contém exatamente os findings ativos do ciclo que não estão verificados; os conjuntos nunca se sobrepõem", "usa uma lista livre")],
+  ["fileless correction paths removed", "R007_OUTPUT_SCHEMA", (root) => replaceBoth(root, "na correção fileless, `Correction paths` é exact `none`", "na correção fileless, caminhos arbitrários são aceitos")],
+  ["PASS objective summaries allow none", "R006_VERDICTS", (root) => replaceBoth(root, "nunca podem ser exact `none`", "podem ser exact `none`")],
+  ["finding disposed at origin", "R009_VALIDATION_ATTEMPT", (root) => replaceBoth(root, "Todo novo finding nasce `active` na tentativa `NEEDS_FIX` que o cria; somente uma tentativa formal estritamente posterior à origem pode resolvê-lo ou supersedê-lo.", "Todo novo finding pode nascer resolvido na tentativa que o cria.")],
   ["manifest task path base removed", "R008_MANIFEST", (root) => replaceBoth(root, "relativo ao diretório do artefato detalhado `tasks/slice-NN.md`", "relativo a qualquer raiz")],
   ["manifest hash weakened", "R008_MANIFEST", (root) => replaceBoth(root, "caminhos relativos únicos em ordem lexicográfica, com SHA-256 minúsculo do conteúdo ou `REMOVED`", "caminhos arbitrários com qualquer hash")],
   ["tool absence becomes non-applicable", "R016_NOT_APPLICABLE", (root) => replaceBoth(root, "check aplicável que não pode ser executado por ferramenta, credencial, dependência externa, ambiente, serviço, permissão ou comando autoritativo objetivamente indisponível é `BLOCKED`", "ferramenta ausente produz TESTS_NOT_APPLICABLE")],
   ["README loses launcher", "R012_README", (root) => replace(path.join(root, "README.md"), "slice-validate-codex.md", "validation.md")],
+  ["README reintroduces legacy discovery labels", "R007_OUTPUT_SCHEMA", (root) => replace(
+    path.join(root, "README.md"),
+    "fontes em `Discovery sources`, métodos em `Discovery actions`",
+    "fontes em `Check discovery sources`, métodos em `Check discovery actions`",
+  )],
   ["Codex name", "R001_ADAPTER_METADATA", (root) => replace(path.join(root, "codex/.codex/agents/stnl_validation_runner.toml"), 'name = "stnl_validation_runner"', 'name = "runner"')],
   ["Codex description", "R001_ADAPTER_METADATA", (root) => replace(path.join(root, "codex/.codex/agents/stnl_validation_runner.toml"), "Runner barato e isolado", "Runner genérico")],
   ["Codex effort", "R001_ADAPTER_METADATA", (root) => replace(path.join(root, "codex/.codex/agents/stnl_validation_runner.toml"), 'model_reasoning_effort = "medium"', 'model_reasoning_effort = "high"')],

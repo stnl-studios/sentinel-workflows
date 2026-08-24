@@ -471,13 +471,80 @@ async function findSourceRoot(start) {
   }
 }
 
+function rejectDuplicateJsonKeys(source, label) {
+  let position = 0;
+  const whitespace = () => {
+    while (/\s/u.test(source[position] ?? "")) position += 1;
+  };
+  const stringEnd = () => {
+    const start = position;
+    position += 1;
+    while (position < source.length) {
+      if (source[position] === "\\") {
+        position += 2;
+      } else if (source[position] === '"') {
+        position += 1;
+        return source.slice(start, position);
+      } else {
+        position += 1;
+      }
+    }
+    return source.slice(start);
+  };
+  const value = () => {
+    whitespace();
+    if (source[position] === "{") {
+      position += 1;
+      whitespace();
+      const keys = new Set();
+      while (source[position] !== "}") {
+        const key = JSON.parse(stringEnd());
+        if (keys.has(key)) throw new Error(`${label} has duplicate object key ${key}`);
+        keys.add(key);
+        whitespace();
+        position += 1; // colon; syntax was already accepted by JSON.parse
+        value();
+        whitespace();
+        if (source[position] === ",") {
+          position += 1;
+          whitespace();
+        }
+      }
+      position += 1;
+      return;
+    }
+    if (source[position] === "[") {
+      position += 1;
+      whitespace();
+      while (source[position] !== "]") {
+        value();
+        whitespace();
+        if (source[position] === ",") {
+          position += 1;
+          whitespace();
+        }
+      }
+      position += 1;
+      return;
+    }
+    if (source[position] === '"') {
+      stringEnd();
+      return;
+    }
+    while (position < source.length && !/[\s,}\]]/u.test(source[position])) position += 1;
+  };
+  value();
+}
+
 export function parseStrictJson(value, label) {
+  const source = String(value);
   let parsed;
   try {
-    parsed = JSON.parse(String(value));
+    parsed = JSON.parse(source);
   } catch (error) {
     throw new Error(`${label} must be valid JSON: ${error.message}`);
   }
+  rejectDuplicateJsonKeys(source, label);
   return parsed;
 }
 
