@@ -17,7 +17,7 @@ import {
   validateExecutionCandidate,
   workflowSkillForOperation,
 } from "../skills/workflows/stnl-execution-closer/runtime/execution-state.mjs";
-import { WORKFLOW_OPERATIONS } from "./lib/skill-registry.mjs";
+import { EXECUTION_OPERATION_SKILLS, WORKFLOW_OPERATIONS } from "./lib/skill-registry.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
 const SKILLS = [
@@ -450,7 +450,7 @@ async function prepareFindingsCorrection(fixture, findingIdsLabel = "Finding IDs
 }
 
 test("all execution skills bundle byte-identical self-contained state runtimes", async () => {
-  const stateSkills = [...SKILLS, "stnl-spec-test-runbook"];
+  const stateSkills = [...SKILLS, "stnl-spec-roadmap", "stnl-spec-test-runbook"];
   for (const [name, skillNames] of [["execution-state.mjs", stateSkills], ["validate-execution-state.mjs", SKILLS]]) {
     const copies = await Promise.all(skillNames.map((skill) => fs.readFile(path.join(ROOT, "skills", "workflows", skill, "runtime", name))));
     for (const copy of copies.slice(1)) assert.deepEqual(copy, copies[0], `${name} copies differ`);
@@ -518,12 +518,14 @@ test("actual templates render a machine-unambiguous MATERIALIZED_PRISTINE task",
 
 test("normal workflow sequence is operation-aware and preserves independent legality", async (t) => {
   const registryProjection = Object.fromEntries(Object.entries(WORKFLOW_OPERATIONS)
+    .filter(([skill]) => EXECUTION_OPERATION_SKILLS.includes(skill))
     .flatMap(([skill, operations]) => operations
-      .filter((operation) => operation !== "GENERATE_RUNBOOK")
       .map((operation) => [operation, skill])));
   assert.deepEqual(EXECUTION_WORKFLOW_SKILLS, registryProjection);
   for (const [operation, skill] of Object.entries(registryProjection)) assert.equal(workflowSkillForOperation(operation), skill);
   assert.throws(() => workflowSkillForOperation("GENERATE_RUNBOOK"), /no workflow skill owns/u);
+  assert.throws(() => workflowSkillForOperation("INIT"), /no workflow skill owns/u);
+  assert.throws(() => workflowSkillForOperation("RECONCILE"), /no workflow skill owns/u);
 
   const empty = await standaloneWorkspace(t);
   const emptyState = await inspectExecutionState(empty.requirements);

@@ -1,0 +1,20 @@
+[
+  {"id":"init-default-path","expectation":"INIT publishes the canonical pair at docs/roadmap.","automated":true},
+  {"id":"init-custom-path","expectation":"A valid repository-relative custom ROADMAP_PATH is preserved.","automated":true},
+  {"id":"complete-coverage","expectation":"Every source need has exactly one explicit covered, deferred, or blocked disposition.","automated":true},
+  {"id":"overlap-classification","expectation":"Multi-candidate coverage classifies shared context or ambiguous ownership.","automated":true},
+  {"id":"dependency-cycle","expectation":"Missing, obsolete, self, and cyclic dependencies block before writes.","automated":true},
+  {"id":"canonical-materialization","expectation":"Only a lifecycle-valid canonical SPEC workspace is materialized.","automated":true},
+  {"id":"execution-approval-boundary","expectation":"Mechanical COMPLETE remains UNKNOWN without a current structured EXECUTION_APPROVED verdict.","automated":true},
+  {"id":"browser-state-boundary","expectation":"Local progress never changes roadmap or Sentinel dependency projection.","automated":false},
+  {"id":"stable-reconcile","expectation":"RECONCILE preserves IDs, tombstones, title, SPEC path, and requires materialized impact.","automated":true},
+  {"id":"stale-reconcile","expectation":"A changed model or authority snapshot blocks pair publication.","automated":true},
+  {"id":"transaction-recovery","expectation":"Every journaled interruption restores one complete old or new owned pair idempotently.","automated":true},
+  {"id":"unowned-collision","expectation":"Existing unowned or modified output is preserved and blocks.","automated":true},
+  {"id":"secret-exposure","expectation":"Secret-like paths or content block without output mutation.","automated":true},
+  {"id":"xss-content","expectation":"HTML-like project text is rendered as inert literal content.","automated":true},
+  {"id":"deterministic-render","expectation":"Equivalent normalized authority produces byte-identical JSON and HTML.","automated":true},
+  {"id":"offline-page","expectation":"The page is self-contained, CSP-blocked from networks, responsive, and printable.","automated":false},
+  {"id":"lifecycle-handoff","expectation":"Absent candidates expose deterministic MODE=INIT context without creating a SPEC.","automated":true},
+  {"id":"metadata-noise","expectation":"__MACOSX, .DS_Store, and AppleDouble entries do not alter canonical discovery.","automated":true}
+]

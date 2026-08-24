@@ -1,0 +1,4 @@
+interface:
+  display_name: "Sentinel SPEC Roadmap"
+  short_description: "Decompose broad scope into governed SPEC candidates"
+  default_prompt: "Use $stnl-spec-roadmap to initialize or reconcile a Sentinel multi-SPEC roadmap."

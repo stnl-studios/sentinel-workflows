@@ -5,7 +5,9 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
+  AUXILIARY_WORKFLOW_SKILLS,
   DOMAIN_SKILLS,
+  EXECUTION_OPERATION_SKILLS,
   WORKFLOW_OPERATIONS,
   WORKFLOW_SKILLS,
   registrySkills,
@@ -378,6 +380,8 @@ const launcherSpecs = {
   "spec-readiness": ["stnl-spec-lifecycle-manager", "MODE", "READINESS", [["SPEC_PATH", "{{SPEC_PATH}}"], ["READINESS_SCOPE", "{{READINESS_SCOPE}}"], ["READINESS_FOCUS", "{{READINESS_FOCUS}}"]]],
   "spec-close": ["stnl-spec-lifecycle-manager", "MODE", "CLOSE", [["SPEC_PATH", "{{SPEC_PATH}}"]]],
   "spec-test-runbook": ["stnl-spec-test-runbook", "OPERATION", "GENERATE_RUNBOOK", [["SPEC_PATH", "{{SPEC_PATH}}"], ["RUNBOOK_SCOPE", "{{RUNBOOK_SCOPE}}"], ["RUNBOOK_SELECTION", "{{RUNBOOK_SELECTION}}"], ["RUNBOOK_OPTIONS", "{{RUNBOOK_OPTIONS}}"]]],
+  "spec-roadmap-init": ["stnl-spec-roadmap", "OPERATION", "INIT", [["PROJECT_ROOT", "{{PROJECT_ROOT}}"], ["ROADMAP_PATH", "{{ROADMAP_PATH}}"], ["ROADMAP_SOURCE", "{{ROADMAP_SOURCE}}"]]],
+  "spec-roadmap-reconcile": ["stnl-spec-roadmap", "OPERATION", "RECONCILE", [["PROJECT_ROOT", "{{PROJECT_ROOT}}"], ["ROADMAP_PATH", "{{ROADMAP_PATH}}"], ["NEW_INFORMATION", "{{NEW_INFORMATION}}"]]],
   "execution-plan": ["stnl-execution-planner", "OPERATION", "PLAN", [["SPEC_PATH", "{{SPEC_PATH}}"]]],
   "execution-replan": ["stnl-execution-planner", "OPERATION", "REPLAN", [["SPEC_PATH", "{{SPEC_PATH}}"], ["REPLAN_REASON", "{{REPLAN_REASON}}"]]],
   "execution-plan-review": ["stnl-plan-reviewer", "OPERATION", "REVIEW_PLAN", [["SPEC_PATH", "{{SPEC_PATH}}"]]],
@@ -393,7 +397,7 @@ const launcherSpecs = {
 };
 
 const runnerLaunchers = new Set(Object.keys(launcherSpecs).filter((name) => name.startsWith("slice-")));
-const sharedExecution = new Set(["execution-plan", "execution-replan", "execution-plan-review", "execution-tasks", "execution-tasks-review", "execution-close"]);
+const sharedExecution = new Set(["execution-plan", "execution-replan", "execution-plan-review", "execution-tasks", "execution-tasks-review", "execution-close", "spec-roadmap-init", "spec-roadmap-reconcile"]);
 
 function parseLauncher(file, spec) {
   const text = read(file, "L001_REGISTRY");
@@ -451,6 +455,11 @@ function checkLaunchers(root) {
       requirePattern(instructions, /Chaves desconhecidas.{0,100}tipos incorretos.{0,100}enums inválidos.{0,100}arrays inválidos/iu, "L020_RUNBOOK_OPTIONS", "runbook launcher omits deterministic rejection rules");
       requirePattern(instructions, /Exemplo em inglês[\s\S]{0,500}"en-US"/u, "L020_RUNBOOK_OPTIONS", "runbook launcher omits the en-US example");
       requirePattern(instructions, /Exemplo em português do Brasil[\s\S]{0,800}"pt-BR"/u, "L020_RUNBOOK_OPTIONS", "runbook launcher omits the pt-BR example");
+    }
+    if (name.startsWith("spec-roadmap-")) {
+      requirePattern(instructions, /roadmap\.json/u, "L021_ROADMAP_BOUNDARY", `${name}: roadmap authority is missing`);
+      requirePattern(instructions, /browser.{0,120}(?:não é|never).{0,80}(?:Sentinel|authority|autoridade)/iu, "L021_ROADMAP_BOUNDARY", `${name}: browser-state boundary is missing`);
+      requirePattern(instructions, /não (?:crie|altere|invoque).{0,100}SPEC|do not (?:create|change|invoke).{0,100}SPEC/iu, "L021_ROADMAP_BOUNDARY", `${name}: SPEC mutation boundary is missing`);
     }
     if (!runnerLaunchers.has(name)) continue;
     requirePattern(
@@ -572,11 +581,11 @@ function checkRepository(root) {
     const declaredOperations = [...body.matchAll(/^## ([A-Z][A-Z0-9_]*)$/gmu)].map((match) => match[1]).sort();
     if (JSON.stringify(declaredOperations) !== JSON.stringify([...expectedOperations].sort())) reject("C003_SKILL_SCHEMA", `${file}: operation set mismatch; expected=${JSON.stringify(expectedOperations)}, actual=${JSON.stringify(declaredOperations)}`);
     for (const folder of ["references", "templates", "examples", "evals"]) {
-      const directory = path.join(skillsRoot, name, folder);
+      const directory = path.join(workflowRoot, name, folder);
       if (!fs.statSync(directory, { throwIfNoEntry: false })?.isDirectory()) continue;
       for (const resource of realFiles(directory).filter((candidate) => candidate.endsWith(".md"))) checkFilePurposeHeader(resource, name);
     }
-    if (name !== "stnl-spec-test-runbook") genericTexts.push([file, body]);
+    if (!AUXILIARY_WORKFLOW_SKILLS.includes(name)) genericTexts.push([file, body]);
   }
   const lifecycleFile = path.join(workflowRoot, "stnl-spec-lifecycle-manager", "SKILL.md");
   const lifecycleSkill = parseFrontmatter(lifecycleFile);
@@ -604,20 +613,23 @@ function checkRepository(root) {
     const text = read(file);
     if (/SCOUT_CALL|stnl[-_]spec[-_]context[-_]scout|context[ -]scout/iu.test(text)) reject("C010_SCOUT_BOUNDARY", `launcher must not route to context scout: ${file}`);
     if (path.basename(file) !== "spec-test-runbook.md" && /GENERATE_RUNBOOK|stnl-spec-test-runbook/u.test(text)) reject("C011_RUNBOOK_ISOLATION", `implicit path invokes runbook generation: ${file}`);
+    if (!path.basename(file).startsWith("spec-roadmap-") && /stnl-spec-roadmap|OPERATION=(?:INIT|RECONCILE)/u.test(text)) reject("C018_ROADMAP_ISOLATION", `implicit path invokes roadmap operation: ${file}`);
   }
 
   checkLifecycleStatic(root);
-  const executionSkills = Object.keys(operations).filter((name) => name !== "stnl-spec-test-runbook");
+  const executionSkills = [...EXECUTION_OPERATION_SKILLS];
   for (const runtime of ["execution-state.mjs", "validate-execution-state.mjs"]) {
     const files = executionSkills.map((name) => path.join(workflowRoot, name, "runtime", runtime));
     for (const file of files) if (!fs.statSync(file, { throwIfNoEntry: false })?.isFile()) reject("C006_DISTRIBUTION", `execution skill is missing shared runtime: ${file}`);
     const authority = fs.readFileSync(files[0]);
     for (const file of files.slice(1)) if (!authority.equals(fs.readFileSync(file))) reject("C006_DISTRIBUTION", `shared runtime copies differ: ${runtime}`);
   }
-  const runbookAuthorityRuntime = path.join(workflowRoot, "stnl-spec-test-runbook/runtime/execution-state.mjs");
-  if (!fs.statSync(runbookAuthorityRuntime, { throwIfNoEntry: false })?.isFile()) reject("C006_DISTRIBUTION", "runbook is missing deterministic requirements-authority runtime");
-  if (!fs.readFileSync(path.join(workflowRoot, executionSkills[0], "runtime/execution-state.mjs")).equals(fs.readFileSync(runbookAuthorityRuntime))) {
-    reject("C006_DISTRIBUTION", "runbook requirements-authority runtime differs from execution authority");
+  for (const auxiliary of AUXILIARY_WORKFLOW_SKILLS) {
+    const authorityRuntime = path.join(workflowRoot, auxiliary, "runtime/execution-state.mjs");
+    if (!fs.statSync(authorityRuntime, { throwIfNoEntry: false })?.isFile()) reject("C006_DISTRIBUTION", `${auxiliary} is missing deterministic requirements-authority runtime`);
+    if (!fs.readFileSync(path.join(workflowRoot, executionSkills[0], "runtime/execution-state.mjs")).equals(fs.readFileSync(authorityRuntime))) {
+      reject("C006_DISTRIBUTION", `${auxiliary} requirements-authority runtime differs from execution authority`);
+    }
   }
   const schemaFiles = executionSkills.map((name) => path.join(workflowRoot, name, "references/execution-record-schema.md")).filter((file) => fs.statSync(file, { throwIfNoEntry: false })?.isFile());
   if (schemaFiles.length < 2) reject("C006_DISTRIBUTION", "execution record schema is not distributed to its consumers");

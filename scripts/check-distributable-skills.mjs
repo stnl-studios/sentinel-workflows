@@ -4,6 +4,7 @@ import { basename, resolve } from "node:path";
 import {
   checkDistributableSkill,
   LIFECYCLE_DISTRIBUTION_POLICY,
+  ROADMAP_DISTRIBUTION_POLICY,
   RUNBOOK_DISTRIBUTION_POLICY,
 } from "./lib/check-distributable-skill.mjs";
 
@@ -17,9 +18,11 @@ if (roots.length === 0) {
     const root = resolve(value);
     const policy = basename(root) === "stnl-spec-lifecycle-manager"
       ? LIFECYCLE_DISTRIBUTION_POLICY
+      : basename(root) === "stnl-spec-roadmap"
+        ? ROADMAP_DISTRIBUTION_POLICY
       : basename(root) === "stnl-spec-test-runbook"
-        ? RUNBOOK_DISTRIBUTION_POLICY
-        : {};
+          ? RUNBOOK_DISTRIBUTION_POLICY
+          : {};
     const findings = await checkDistributableSkill(root, policy);
     if (findings.length === 0) {
       process.stdout.write(`PASS: distributable skill is self-contained: ${root}\n`);

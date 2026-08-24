@@ -1,0 +1,104 @@
+{
+  "contract_version": 1,
+  "roadmap_id": "RM-CHECKOUT",
+  "title": "Checkout Evolution Roadmap",
+  "summary": "Decompose checkout expansion into bounded payment, confirmation, and policy SPEC candidates.",
+  "sources": [
+    {
+      "id": "SRC-001",
+      "kind": "user_stories",
+      "label": "Checkout user stories",
+      "state": "active",
+      "path": "docs/checkout-stories.md",
+      "needs": [
+        {"id": "US-001", "title": "Pay by card"},
+        {"id": "US-002", "title": "Show an accessible confirmation"},
+        {"id": "US-003", "title": "Choose retry policy"},
+        {"id": "US-004", "title": "Share an idempotent checkout contract"}
+      ]
+    }
+  ],
+  "candidates": [
+    {
+      "id": "CAND-001",
+      "title": "Card Payment Foundation",
+      "disposition": "active",
+      "spec_path": "docs/SPEC/card-payment",
+      "depends_on": [],
+      "requirements_source": "# Card payment\n\n- Authorize one card payment idempotently.\n- Preserve the public checkout response envelope.",
+      "additional_context": "Reuse the existing payment-provider boundary."
+    },
+    {
+      "id": "CAND-002",
+      "title": "Accessible Checkout Confirmation",
+      "disposition": "active",
+      "spec_path": "docs/SPEC/checkout-confirmation",
+      "depends_on": ["CAND-001"],
+      "requirements_source": "# Confirmation\n\n- Present a keyboard-accessible success state.\n- Display the canonical participation identifier."
+    },
+    {
+      "id": "CAND-003",
+      "title": "Payment Retry Policy",
+      "disposition": "deferred",
+      "disposition_reason": "Product retry policy is unresolved.",
+      "spec_path": "docs/SPEC/payment-retry-policy",
+      "depends_on": ["CAND-001"],
+      "requirements_source": "# Retry policy\n\nDefine retry eligibility after product chooses ownership and retry limits."
+    }
+  ],
+  "coverage": [
+    {
+      "id": "COV-001",
+      "need_id": "US-001",
+      "title": "Card payment behavior",
+      "state": "active",
+      "status": "covered",
+      "candidate_ids": ["CAND-001"],
+      "gap_ids": [],
+      "rationale": "The payment foundation owns authorization behavior."
+    },
+    {
+      "id": "COV-002",
+      "need_id": "US-002",
+      "title": "Accessible confirmation",
+      "state": "active",
+      "status": "covered",
+      "candidate_ids": ["CAND-002"],
+      "gap_ids": [],
+      "rationale": "The confirmation candidate owns the presentation contract."
+    },
+    {
+      "id": "COV-003",
+      "need_id": "US-003",
+      "title": "Retry policy decision",
+      "state": "active",
+      "status": "blocked",
+      "candidate_ids": ["CAND-003"],
+      "gap_ids": ["GAP-001"],
+      "rationale": "The candidate is explicit, but product policy blocks specification."
+    },
+    {
+      "id": "COV-004",
+      "need_id": "US-004",
+      "title": "Shared idempotent checkout contract",
+      "state": "active",
+      "status": "covered",
+      "candidate_ids": ["CAND-001", "CAND-002"],
+      "gap_ids": [],
+      "overlap": "shared_context",
+      "rationale": "Payment owns the durable contract and confirmation consumes its identifier."
+    }
+  ],
+  "gaps": [
+    {
+      "id": "GAP-001",
+      "title": "Retry ownership and limits",
+      "severity": "BLOCKING",
+      "state": "open",
+      "detail": "Product has not chosen automatic versus user-triggered retry or a maximum attempt count.",
+      "impact": "Payment retry behavior cannot be specified without inventing policy.",
+      "candidate_ids": ["CAND-003"],
+      "coverage_ids": ["COV-003"]
+    }
+  ]
+}

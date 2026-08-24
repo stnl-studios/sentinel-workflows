@@ -33,10 +33,19 @@ yarn-error.log
 .sass-cache/
 /connect.lock
 .*.lifecycle.lock
+.*.stnl-roadmap.lock
+.*.stnl-roadmap.lock-retired-*
+.*.stnl-roadmap.journal.json
+.*.stnl-roadmap.stage-*
+.*.stnl-roadmap.backup-*
 /coverage
 /libpeerconnection.log
 testem.log
 /typings
+/tmp/*
+/.playwright-cli/*
+/output/*
+
 
 # System files
 .DS_Store

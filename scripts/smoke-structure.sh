@@ -8,6 +8,7 @@ command -v node >/dev/null 2>&1 || { echo "FAIL: node is unavailable" >&2; exit 
 node --test scripts/test-execution-contract.mjs
 node --test scripts/test-skill-consolidation.mjs
 node --test skills/workflows/stnl-spec-test-runbook/runtime/test/*.test.mjs
+node --test skills/workflows/stnl-spec-roadmap/runtime/test/*.test.mjs
 node --test scripts/test-runbook-execution-compat.mjs
 node --test scripts/test-execution-layout.mjs
 node --test scripts/test-launcher-contract.mjs

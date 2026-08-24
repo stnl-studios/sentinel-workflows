@@ -47,6 +47,7 @@ execution_skills=(
 node scripts/check-distributable-skills.mjs \
   "${execution_skills[@]}" \
   skills/workflows/stnl-spec-lifecycle-manager \
+  skills/workflows/stnl-spec-roadmap \
   skills/workflows/stnl-spec-test-runbook
 
 if [[ "$SKIP_SMOKE" == "0" ]]; then
