@@ -3,6 +3,7 @@ OPERATION=VALIDATE_SLICE
 SPEC_PATH={{SPEC_PATH}}
 SLICE={{SLICE}}
 Treat the concrete recovery operation and slice returned by the shared deterministic preflight as authority; derive neither from the current request, and report both exactly when blocked.
+Se evidência terminal de implementação coexistir com checklist obrigatório incompleto, não inicie validação: preserve e reporte exatamente o recovery target `stnl-slice-executor / EXECUTE_SLICE / slice-NN` retornado pelo preflight. Validação volta a ser legal somente após essa mesma slice ficar completa.
 Delegue obrigatoriamente a validação independente em uma sessão delegada independente sem histórico da conversa, com somente `OPERATION=VALIDATE_SLICE`, `SPEC_PATH`, execution root derivado, slice, paths de plans e tasks, Requirements authority, Plan revision, evidências compactas de implementação e findings, incluindo `TESTS_NOT_APPLICABLE`, resumo de findings ativos/históricos e tentativas válidas, escopo alterado, diff, overlaps e contexto adicional estritamente necessário para:
 @agent-stnl-validation-runner
 Não passe logs completos. Aguarde o retorno. O contexto principal adiciona a Validation Attempt, persiste as disposições completas de findings existentes e novos findings estruturados e, em `PASS` válido, exige zero finding bloqueante ativo, substitui a Effective Validation Base e finaliza a slice; não repete testes, não refaz a validação e não emite outro veredito.

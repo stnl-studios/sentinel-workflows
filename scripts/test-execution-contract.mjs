@@ -1444,6 +1444,8 @@ test("distributed execution schemas and runtime agree on corrected semantic boun
     /`Unsupported active findings` is deterministically every active finding at the named cycle not present in `Findings verified`/u,
     /file-backed `Correction paths` is an exact comma-space-delimited normalized ordered set, while exact `none` is permitted only for the corresponding fileless correction/u,
     /In `TESTS_PASS`, exact `none` is forbidden specifically for `Tested scope`, `Verification types considered`, `Selected checks`, and `Coverage`/u,
+    /Candidate validation rejects terminal implementation evidence with an incomplete checklist/u,
+    /exactly one mandatory target, `stnl-slice-executor \/ EXECUTE_SLICE \/ <affected slice>`/u,
     /The first `PASS` attempt is terminal/u,
   ]) assert.match(schemas[0], rule);
 
@@ -1946,6 +1948,239 @@ test("only the first open serial slice may own operational phase", async (t) => 
   await assert.rejects(inspectExecutionState(laterPass.requirements), /contains operational state after the serial frontier slice-01/u);
 });
 
+test("incomplete execution finalization is rejected for candidates and live history recovers only through its executor slice", async (t) => {
+  const planning = await standaloneWorkspace(t);
+  await renderArtifacts(planning, { materialized: false, planStatus: "draft" });
+  const planningCandidate = await copyDirectory(planning.execution, path.join(planning.root, "planning-candidate"));
+  assert.equal((await validateExecutionCandidate(planning.requirements, planningCandidate)).state, "PLANNED_DRAFT");
+
+  for (const status of ["TESTS_PASS", "TESTS_NOT_APPLICABLE"]) {
+    const prevention = await standaloneWorkspace(t);
+    await renderArtifacts(prevention);
+    const interruptedCandidate = await copyDirectory(
+      prevention.execution,
+      path.join(prevention.root, `interrupted-before-finalization-${status.toLowerCase()}`),
+    );
+    const interruptedTask = path.join(interruptedCandidate, "tasks/slice-01.md");
+    let interrupted = await fs.readFile(interruptedTask, "utf8");
+    interrupted = interrupted.replace("- [ ] 1.1", "- [x] 1.1");
+    interrupted = replaceSection(interrupted, "Changed Areas", "- `../../src/example.txt`");
+    await fs.writeFile(interruptedTask, interrupted, "utf8");
+    const interruptionState = await validateExecutionCandidate(prevention.requirements, interruptedCandidate);
+    assert.equal(interruptionState.state, "EXECUTION_STARTED");
+    assert.deepEqual(interruptionState.legalOperations, [
+      { operation: "REPLAN", slice: null },
+      { operation: "EXECUTE_SLICE", slice: "slice-01" },
+    ]);
+
+    const invalidCandidate = await copyDirectory(
+      prevention.execution,
+      path.join(prevention.root, `invalid-finalization-${status.toLowerCase()}`),
+    );
+    const invalidCandidateTask = path.join(invalidCandidate, "tasks/slice-01.md");
+    let invalid = await fs.readFile(invalidCandidateTask, "utf8");
+    invalid = replaceSection(invalid, "Changed Areas", "- `../../src/example.txt`");
+    invalid = replaceSection(invalid, "Implementation Test Evidence", checkRecord("implementation-check", 1, status, 1));
+    await fs.writeFile(invalidCandidateTask, invalid, "utf8");
+    await assert.rejects(
+      validateExecutionCandidate(prevention.requirements, invalidCandidate),
+      /candidate cannot finalize execution for slice-01 while its mandatory checklist is incomplete/u,
+    );
+    await fs.copyFile(invalidCandidateTask, path.join(prevention.execution, "tasks/slice-01.md"));
+    const persistedInconsistency = await inspectExecutionState(prevention.requirements);
+    assertRecoveryTarget(persistedInconsistency, {
+      operation: "EXECUTE_SLICE",
+      slice: "slice-01",
+      owner: "stnl-slice-executor",
+      record: "implementation-check-01",
+      round: 1,
+      sameOperationResumeRequired: true,
+    });
+    await editTask(prevention, (value) => value.replace("- [ ] 1.1", "- [x] 1.1"));
+    assert.equal(
+      (await preflightExecutionOperation(prevention.requirements, "VALIDATE_SLICE", "1")).state,
+      "IMPLEMENTED_AWAITING_VALIDATION",
+    );
+  }
+
+  const fixture = await standaloneWorkspace(t);
+  await renderArtifacts(fixture);
+  await addSecondPristineSlice(fixture);
+  await editTask(fixture, (value) => {
+    let result = replaceSection(value, "Changed Areas", "- `../../src/example.txt`");
+    return replaceSection(result, "Implementation Test Evidence", checkRecord("implementation-check", 1, "TESTS_PASS", 1));
+  });
+
+  const inconsistent = await inspectExecutionState(fixture.requirements);
+  assert.equal(inconsistent.state, "IMPLEMENTED_AWAITING_VALIDATION");
+  assert.deepEqual(inconsistent.legalOperations, [{ operation: "EXECUTE_SLICE", slice: "slice-01" }]);
+  assert.equal(inconsistent.normalHandoff, null);
+  assert.deepEqual(inconsistent.requiredRecoveryHandoff, null);
+  assertRecoveryTarget(inconsistent, {
+    operation: "EXECUTE_SLICE",
+    slice: "slice-01",
+    owner: "stnl-slice-executor",
+    record: "implementation-check-01",
+    round: 1,
+    sameOperationResumeRequired: true,
+  });
+
+  for (let invocation = 0; invocation < 2; invocation += 1) {
+    const resumed = await preflightExecutionOperation(fixture.requirements, "EXECUTE_SLICE", "1");
+    assert.equal(resumed.state, "IMPLEMENTED_AWAITING_VALIDATION");
+    assert.equal(resumed.mandatoryRecovery.slice, "slice-01");
+  }
+  const acceptedCli = spawnSync(process.execPath, [
+    path.join(ROOT, "skills/workflows/stnl-slice-executor/runtime/validate-execution-state.mjs"),
+    fixture.requirements,
+    "EXECUTE_SLICE",
+    "1",
+  ], { encoding: "utf8" });
+  assert.equal(acceptedCli.status, 0, acceptedCli.stderr);
+  const acceptedMetadata = JSON.parse(acceptedCli.stdout.split("\n")
+    .find((line) => line.startsWith("MANDATORY_RECOVERY: ")).slice("MANDATORY_RECOVERY: ".length));
+  assert.deepEqual(acceptedMetadata, inconsistent.mandatoryRecovery);
+  for (const [operation, slice] of [["EXECUTE_SLICE", "2"], ["VALIDATE_SLICE", "1"], ["REPLAN", null], ["CLOSE", null]]) {
+    const rejected = await rejectedWithRecovery(
+      preflightExecutionOperation(fixture.requirements, operation, slice),
+      /legal next operation is EXECUTE_SLICE for slice-01/u,
+    );
+    assertRecoveryTarget(rejected, {
+      operation: "EXECUTE_SLICE",
+      slice: "slice-01",
+      owner: "stnl-slice-executor",
+      record: "implementation-check-01",
+      round: 1,
+      sameOperationResumeRequired: true,
+    });
+  }
+  const unsupported = await rejectedWithRecovery(
+    preflightExecutionOperation(fixture.requirements, "RESUME_SLICE", "1"),
+    /unsupported operation RESUME_SLICE; legal next operation is EXECUTE_SLICE for slice-01/u,
+  );
+  assertRecoveryTarget(unsupported, {
+    operation: "EXECUTE_SLICE",
+    slice: "slice-01",
+    owner: "stnl-slice-executor",
+  });
+  const rejectedCli = spawnSync(process.execPath, [
+    path.join(ROOT, "skills/workflows/stnl-slice-quality-manager/runtime/validate-execution-state.mjs"),
+    fixture.requirements,
+    "VALIDATE_SLICE",
+    "1",
+  ], { encoding: "utf8" });
+  assert.equal(rejectedCli.status, 1);
+  const rejectedMetadata = JSON.parse(rejectedCli.stderr.split("\n")
+    .find((line) => line.startsWith("RECOVERY_TARGETS: ")).slice("RECOVERY_TARGETS: ".length));
+  assert.deepEqual(rejectedMetadata, inconsistent.recoveryTargets);
+
+  const recoveredCandidate = await copyDirectory(fixture.execution, path.join(fixture.root, "recovered-candidate"));
+  const recoveredCandidateTask = path.join(recoveredCandidate, "tasks/slice-01.md");
+  await fs.writeFile(
+    recoveredCandidateTask,
+    (await fs.readFile(recoveredCandidateTask, "utf8")).replace("- [ ] 1.1", "- [x] 1.1"),
+    "utf8",
+  );
+  const recoveredCandidateState = await validateExecutionCandidate(fixture.requirements, recoveredCandidate);
+  assert.equal(recoveredCandidateState.state, "IMPLEMENTED_AWAITING_VALIDATION");
+  assert.equal(recoveredCandidateState.mandatoryRecovery, null);
+  await fs.copyFile(recoveredCandidateTask, path.join(fixture.execution, "tasks/slice-01.md"));
+
+  const recovered = await inspectExecutionState(fixture.requirements);
+  assert.equal(recovered.state, "IMPLEMENTED_AWAITING_VALIDATION");
+  assert.equal(recovered.mandatoryRecovery, null);
+  assertRecoveryTarget(recovered, {
+    operation: "VALIDATE_SLICE",
+    slice: "slice-01",
+    owner: "implementation-check",
+  });
+  assert.equal((await preflightExecutionOperation(fixture.requirements, "VALIDATE_SLICE", "1")).state, "IMPLEMENTED_AWAITING_VALIDATION");
+  await assert.rejects(
+    preflightExecutionOperation(fixture.requirements, "EXECUTE_SLICE", "1"),
+    /legal next operations are VALIDATE_SLICE for slice-01 or REPLAN/u,
+  );
+});
+
+test("incomplete checklist recovery overrides only validation-bound implementation retry and delegation states", async (t) => {
+  const exhausted = await standaloneWorkspace(t);
+  await renderArtifacts(exhausted);
+  await editTask(exhausted, (value) => {
+    let result = replaceSection(value, "Changed Areas", "- `../../src/example.txt`");
+    result = replaceSection(result, "Corrections Applied", "- `../../src/example.txt`");
+    return replaceSection(
+      result,
+      "Implementation Test Evidence",
+      [1, 2, 3].map((round) => checkRecord("implementation-check", round, "TESTS_FAIL", round)).join("\n\n"),
+    );
+  });
+  const exhaustedCandidate = await copyDirectory(exhausted.execution, path.join(exhausted.root, "exhausted-invalid-candidate"));
+  await assert.rejects(
+    validateExecutionCandidate(exhausted.requirements, exhaustedCandidate),
+    /candidate cannot finalize execution for slice-01 while its mandatory checklist is incomplete/u,
+  );
+  const exhaustedState = await inspectExecutionState(exhausted.requirements);
+  assert.equal(exhaustedState.state, "IMPLEMENTATION_RETRY_EXHAUSTED");
+  assertRecoveryTarget(exhaustedState, {
+    operation: "EXECUTE_SLICE",
+    slice: "slice-01",
+    owner: "stnl-slice-executor",
+    record: "implementation-check-03",
+    round: 3,
+    sameOperationResumeRequired: true,
+  });
+  assert.equal((await preflightExecutionOperation(exhausted.requirements, "EXECUTE_SLICE", "1")).state, "IMPLEMENTATION_RETRY_EXHAUSTED");
+  await rejectedWithRecovery(
+    preflightExecutionOperation(exhausted.requirements, "VALIDATE_SLICE", "1"),
+    /legal next operation is EXECUTE_SLICE for slice-01/u,
+  );
+  await editTask(exhausted, (value) => value.replace("- [ ] 1.1", "- [x] 1.1"));
+  const exhaustedRecovered = await inspectExecutionState(exhausted.requirements);
+  assert.equal(exhaustedRecovered.state, "IMPLEMENTATION_RETRY_EXHAUSTED");
+  assertRecoveryTarget(exhaustedRecovered, {
+    operation: "VALIDATE_SLICE",
+    slice: "slice-01",
+    owner: "retry-exhaustion",
+  });
+  await assert.rejects(preflightExecutionOperation(exhausted.requirements, "EXECUTE_SLICE", "1"), /not legal/u);
+  assert.equal((await preflightExecutionOperation(exhausted.requirements, "VALIDATE_SLICE", "1")).state, "IMPLEMENTATION_RETRY_EXHAUSTED");
+
+  const delegatedValidation = await standaloneWorkspace(t);
+  await renderArtifacts(delegatedValidation);
+  await editTask(delegatedValidation, (value) => {
+    let result = replaceSection(value, "Changed Areas", "- `../../src/example.txt`");
+    result = replaceSection(result, "Implementation Test Evidence", checkRecord("implementation-check", 1, "TESTS_PASS", 1));
+    return replaceSection(result, "Delegation Blocker", delegationBlocker("VALIDATE_SLICE", "initialization"));
+  });
+  const delegatedInvalidCandidate = await copyDirectory(
+    delegatedValidation.execution,
+    path.join(delegatedValidation.root, "delegated-validation-invalid-candidate"),
+  );
+  await assert.rejects(
+    validateExecutionCandidate(delegatedValidation.requirements, delegatedInvalidCandidate),
+    /candidate cannot finalize execution for slice-01 while its mandatory checklist is incomplete/u,
+  );
+  const delegatedState = await inspectExecutionState(delegatedValidation.requirements);
+  assert.equal(delegatedState.state, "RUNNER_INITIALIZATION_BLOCKED");
+  assertRecoveryTarget(delegatedState, {
+    operation: "EXECUTE_SLICE",
+    slice: "slice-01",
+    owner: "stnl-slice-executor",
+    record: "implementation-check-01",
+    round: 1,
+    sameOperationResumeRequired: true,
+  });
+  assert.equal((await preflightExecutionOperation(delegatedValidation.requirements, "EXECUTE_SLICE", "1")).state, "RUNNER_INITIALIZATION_BLOCKED");
+  await editTask(delegatedValidation, (value) => value.replace("- [ ] 1.1", "- [x] 1.1"));
+  const delegatedRecovered = await inspectExecutionState(delegatedValidation.requirements);
+  assertRecoveryTarget(delegatedRecovered, {
+    operation: "VALIDATE_SLICE",
+    slice: "slice-01",
+    owner: "delegation-blocker",
+    sameOperationResumeRequired: true,
+  });
+  assert.equal((await preflightExecutionOperation(delegatedValidation.requirements, "VALIDATE_SLICE", "1")).state, "RUNNER_INITIALIZATION_BLOCKED");
+});
+
 test("terminal auxiliary outcomes and scoped blocker resumes have exact phases", async (t) => {
   const implemented = await standaloneWorkspace(t);
   await renderArtifacts(implemented);
@@ -2086,6 +2321,45 @@ test("APPLY_FINDINGS recovery remains bound to persisted slice-02 and exposes au
     round: 1,
     sameOperationResumeRequired: true,
   });
+});
+
+test("an executor delegation blocker remains narrowly resumable when later validation history would otherwise deadlock it", async (t) => {
+  const fixture = await standaloneWorkspace(t);
+  await renderArtifacts(fixture);
+  await editTask(fixture, (value) => {
+    let result = value.replace("- [ ] 1.1", "- [x] 1.1");
+    result = replaceSection(result, "Changed Areas", "- `../../src/example.txt`");
+    result = replaceSection(result, "Validation Attempts", NEEDS_FIX_ATTEMPT);
+    result = replaceSection(result, "Validation Findings", ACTIVE_FINDING);
+    return replaceSection(result, "Delegation Blocker", delegationBlocker("EXECUTE_SLICE", "initialization"));
+  });
+
+  const blocked = await inspectExecutionState(fixture.requirements);
+  assert.equal(blocked.state, "RUNNER_INITIALIZATION_BLOCKED");
+  assertRecoveryTarget(blocked, {
+    operation: "EXECUTE_SLICE",
+    slice: "slice-01",
+    owner: "delegation-blocker",
+    record: null,
+    sameOperationResumeRequired: true,
+  });
+  assert.equal((await preflightExecutionOperation(fixture.requirements, "EXECUTE_SLICE", "1")).state, "RUNNER_INITIALIZATION_BLOCKED");
+  await rejectedWithRecovery(
+    preflightExecutionOperation(fixture.requirements, "APPLY_FINDINGS", "1"),
+    /legal next operation is EXECUTE_SLICE for slice-01/u,
+  );
+
+  await editTask(fixture, (value) => {
+    let result = replaceSection(value, "Implementation Test Evidence", checkRecord("implementation-check", 1, "TESTS_PASS", 1));
+    return replaceSection(result, "Delegation Blocker", delegationBlocker("EXECUTE_SLICE", "initialization", {
+      state: "resolved",
+      resolution: "implementation-check-01 returned a valid result",
+    }));
+  });
+  const recovered = await inspectExecutionState(fixture.requirements);
+  assert.equal(recovered.state, "VALIDATION_NEEDS_FIX");
+  assert.equal((await preflightExecutionOperation(fixture.requirements, "APPLY_FINDINGS", "1")).state, "VALIDATION_NEEDS_FIX");
+  await assert.rejects(preflightExecutionOperation(fixture.requirements, "EXECUTE_SLICE", "1"), /not legal/u);
 });
 
 test("auxiliary BLOCKED resumes only its originating operation and later records clear it", async (t) => {
@@ -2903,13 +3177,6 @@ test("formal BLOCKED and selected-slice gates have only legal recovery transitio
   assert.equal((await preflightExecutionOperation(fixture.requirements, "VALIDATE_SLICE", "1")).state, "VALIDATION_BLOCKED");
   assert.equal((await preflightExecutionOperation(fixture.requirements, "REPLAN")).state, "VALIDATION_BLOCKED");
 
-  const incomplete = await standaloneWorkspace(t);
-  await renderArtifacts(incomplete);
-  await editTask(incomplete, (value) => {
-    let result = replaceSection(value, "Changed Areas", "- `../../src/example.txt`");
-    return replaceSection(result, "Implementation Test Evidence", checkRecord("implementation-check", 1, "TESTS_PASS", 1));
-  });
-  await assert.rejects(preflightExecutionOperation(incomplete.requirements, "VALIDATE_SLICE", "1"), /checklist is incomplete/u);
 });
 
 test("non-canonical execution residue blocks preflight while arbitrary external SPEC siblings remain untouched", async (t) => {

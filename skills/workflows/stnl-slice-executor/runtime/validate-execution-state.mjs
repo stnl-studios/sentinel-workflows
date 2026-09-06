@@ -51,6 +51,9 @@ export async function main(arguments_) {
     }
     const result = await preflightExecutionOperation(arguments_[0], arguments_[1], arguments_[2] ?? null);
     process.stdout.write(`PASS: ${result.operation} preflight state=${result.state}${result.slice === null ? "" : ` slice=${result.slice}`} authority=sha256:${result.currentFingerprint}\n`);
+    if (result.mandatoryRecovery !== null) {
+      process.stdout.write(`MANDATORY_RECOVERY: ${JSON.stringify(result.mandatoryRecovery)}\n`);
+    }
     return 0;
   } catch (error) {
     if (error instanceof ExecutionContractError) {
@@ -62,6 +65,9 @@ export async function main(arguments_) {
       }
       else if (error.findings.length !== 0) for (const finding of error.findings) process.stderr.write(`BLOCKED: ${finding}\n`);
       else process.stderr.write(`BLOCKED: ${error.message}\n`);
+      if (error.recoveryTargets.length !== 0) {
+        process.stderr.write(`RECOVERY_TARGETS: ${JSON.stringify(error.recoveryTargets)}\n`);
+      }
       return 1;
     }
     throw error;

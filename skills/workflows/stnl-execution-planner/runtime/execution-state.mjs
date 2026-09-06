@@ -1858,6 +1858,18 @@ export async function inspectExecutionState(specPath) {
   });
   if (activeDelegationBlockers.length > 1) throw new ExecutionContractError("multiple active Delegation Blockers make resume ambiguous");
   const exhausted = effectiveSlices.map((slice) => [slice, artifacts.tasks.get(slice).retryExhausted]).filter(([, value]) => value !== null);
+  const incompleteExecutionChecklists = effectiveSlices.flatMap((slice) => {
+    const task = artifacts.tasks.get(slice);
+    const record = task.implementationChecks.at(-1);
+    const handsOffToValidation = new Set(["TESTS_PASS", "TESTS_NOT_APPLICABLE"]).has(record?.status)
+      || (record?.status === "TESTS_FAIL" && record.round === 3);
+    return task.attempts.length === 0 && !task.checklistComplete && handsOffToValidation
+      ? [{ slice, record: record.id, round: record.round, status: record.status }]
+      : [];
+  });
+  if (incompleteExecutionChecklists.length > 1) {
+    throw new ExecutionContractError("multiple incomplete execution finalizations make recovery ambiguous");
+  }
   const validationBlocked = effectiveSlices.filter((slice) => artifacts.tasks.get(slice).attempts.at(-1)?.status === "BLOCKED");
   const auxiliaryBlocked = effectiveSlices.flatMap((slice) => {
     const task = artifacts.tasks.get(slice);
@@ -1904,7 +1916,8 @@ export async function inspectExecutionState(specPath) {
   else if (allTerminal) state = "REPLAN_REQUIRED";
   return withRecoveryTargets({
     state, workspace, currentFingerprint, stale, activeFindings, activeDivergences, activeDelegationBlockers,
-    exhausted, auxiliaryBlocked, findingsCorrected, implementedAwaitingValidation, validationBlocked, ...artifacts,
+    exhausted, incompleteExecutionChecklists, auxiliaryBlocked, findingsCorrected, implementedAwaitingValidation,
+    validationBlocked, ...artifacts,
   });
 }
 
@@ -1941,6 +1954,20 @@ function currentFrontier(result) {
 export function deriveRecoveryTargets(result) {
   const unscoped = (operation, owner = "execution-state") => recoveryTarget(operation, { owner });
   const scoped = (operation, slice, options = {}) => recoveryTarget(operation, { slice, ...options });
+  const incompleteExecution = result.incompleteExecutionChecklists?.[0];
+  const validationDelegationBlocked = new Set(["RUNNER_INITIALIZATION_BLOCKED", "RUNNER_RESULT_BLOCKED"]).has(result.state)
+    && result.activeDelegationBlockers?.[0]?.operation === "VALIDATE_SLICE";
+  if (incompleteExecution !== undefined && (
+    new Set(["IMPLEMENTED_AWAITING_VALIDATION", "IMPLEMENTATION_RETRY_EXHAUSTED"]).has(result.state)
+    || validationDelegationBlocked
+  )) {
+    return [scoped("EXECUTE_SLICE", incompleteExecution.slice, {
+      owner: "stnl-slice-executor",
+      record: incompleteExecution.record,
+      round: incompleteExecution.round,
+      sameOperationResumeRequired: true,
+    })];
+  }
   let targets = [];
   switch (result.state) {
     case "EMPTY":
@@ -2247,6 +2274,14 @@ export async function validateExecutionCandidate(specPath, candidateExecutionRoo
   try {
     await fs.cp(candidate, shadow.executionRoot, { recursive: true });
     const result = await inspectExecutionState(shadow.specPath);
+    if ((result.incompleteExecutionChecklists?.length ?? 0) !== 0) {
+      const inconsistency = result.incompleteExecutionChecklists[0];
+      throw new ExecutionContractError(
+        `candidate cannot finalize execution for ${inconsistency.slice} while its mandatory checklist is incomplete`,
+        [],
+        result.recoveryTargets,
+      );
+    }
     return Object.freeze({
       state: result.state,
       currentFingerprint: result.currentFingerprint,
@@ -2679,7 +2714,9 @@ export async function preflightExecutionOperation(specPath, operation, sliceValu
     );
   }
   const allowed = OPERATION_STATES.get(normalizedOperation);
-  if (!allowed.has(result.state)) throw recoveryError(normalizedOperation, result);
+  const exactMandatoryRecovery = mandatoryRecovery !== undefined
+    && mandatoryRecovery.operation === normalizedOperation && mandatoryRecovery.slice === slice;
+  if (!allowed.has(result.state) && !exactMandatoryRecovery) throw recoveryError(normalizedOperation, result);
   if (!result.legalOperations.some((target) => target.operation === normalizedOperation && target.slice === slice)) {
     throw recoveryError(normalizedOperation, result);
   }
@@ -2695,7 +2732,10 @@ export async function preflightExecutionOperation(specPath, operation, sliceValu
     const selectedIndex = result.rows.indexOf(selectedRow);
     if (result.rows.slice(0, selectedIndex).some((row) => !row.done)) throw new ExecutionContractError(`${slice} has an incomplete serial dependency`);
     if (normalizedOperation === "EXECUTE_SLICE") {
-      if (selectedTask.attempts.length !== 0) throw new ExecutionContractError(`${slice} already has formal validation history; EXECUTE_SLICE cannot re-enter`);
+      const resumesPersistedDelegation = exactMandatoryRecovery && mandatoryRecovery.owner === "delegation-blocker";
+      if (selectedTask.attempts.length !== 0 && !resumesPersistedDelegation) {
+        throw new ExecutionContractError(`${slice} already has formal validation history; EXECUTE_SLICE cannot re-enter`);
+      }
     }
     if (normalizedOperation === "VALIDATE_SLICE" && !selectedTask.checklistComplete) throw new ExecutionContractError(`${slice} checklist is incomplete`);
   }

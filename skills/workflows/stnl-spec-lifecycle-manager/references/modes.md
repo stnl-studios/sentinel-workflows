@@ -41,13 +41,13 @@ Bootstrap the smallest structurally valid workspace from supplied evidence. Do n
 
 Require `SPEC_PATH` and `NEW_INFORMATION` for an existing valid active workspace. Normal changes use a strict ephemeral JSON manifest naming authorized feature sections, IDs, and status transitions; it cannot authorize removal. Omitted authority is byte-preserved. Wildcards, generic authority, unknown fields, external paths, and post-fact expansion are invalid.
 
-Apply supported deltas only. Preserve H1, IDs/types/titles, unaffected bytes, references, and external paths; retire in place and allocate above the highest suffix. Runtime consumes its verified manifest even on pre-publication failure. After `GLOBAL/READY`, only a status-only `draft → ready` candidate is manifest-free: run `node "<SKILL_ROOT>/runtime/publish-spec-lifecycle.mjs" RESUME <TARGET> <CANDIDATE> --readiness-attestation <ATTESTATION>`, using sibling `.<workspace-name>.readiness-attestation.json`. Runtime binds it; never hand-write JSON or put it in the SPEC.
+Preserve H1, IDs/types/titles and unaffected bytes/links/paths; retire in place and allocate above highest suffix. Manifests are consumed on failure. After `GLOBAL/READY`, status-only `draft → ready` is manifest-free: run `node "<SKILL_ROOT>/runtime/publish-spec-lifecycle.mjs" RESUME <TARGET> <CANDIDATE> --readiness-attestation <ATTESTATION>` with absent sibling `.<workspace-name>.readiness-attestation.json`. Publisher creates it from target identity/candidate snapshot. Never call `create-readiness-attestation.mjs` on a candidate or hand-write JSON; reuse only for a publisher-retained retry.
 
 ## READINESS
 
 Require `SPEC_PATH`, exactly `READINESS_SCOPE=LOCAL|GLOBAL`, and bounded `READINESS_FOCUS` for `LOCAL`. The mode is read-only: never mutate the workspace or create lifecycle content.
 
-First run `node "<SKILL_ROOT>/runtime/validate-spec-lifecycle.mjs" workspace <SPEC_PATH>`; failure stops at its structural authority. On green, load `readiness-gates.md`: `LOCAL` reads focus/dependencies, `GLOBAL` all authority. Write nothing. After `GLOBAL/READY`, `ready` state runs `node "<SKILL_ROOT>/runtime/create-readiness-attestation.mjs" <SPEC_PATH> <EXTERNAL_ATTESTATION> --scope GLOBAL --verdict READY`; `draft` defers attestation to ready promotion above.
+Run `node "<SKILL_ROOT>/runtime/validate-spec-lifecycle.mjs" workspace <SPEC_PATH>` first; stop on failure. On PASS load `readiness-gates.md`: `LOCAL` reads focus/dependencies, `GLOBAL` all authority. Write nothing. After `GLOBAL/READY`, `ready` runs `node "<SKILL_ROOT>/runtime/create-readiness-attestation.mjs" <SPEC_PATH> <EXTERNAL_ATTESTATION> --scope GLOBAL --verdict READY`; `draft` never does and defers creation to the publisher above.
 
 ## CLOSE
 
