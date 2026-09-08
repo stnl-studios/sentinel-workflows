@@ -147,7 +147,7 @@ function checkFilePurposeHeader(file, owner) {
 const checkSchemas = {
   EXECUTE_SLICE: [
     "Operação: EXECUTE_SLICE",
-    "Status: TESTS_PASS | TESTS_FAIL | TESTS_NOT_APPLICABLE | BLOCKED",
+    "Status: TESTS_PASS | TESTS_ACCEPTED | TESTS_FAIL | TESTS_NOT_APPLICABLE | BLOCKED",
     "Automatic check round:",
     "HEAD:",
     "Escopo verificado:",
@@ -169,11 +169,12 @@ const checkSchemas = {
     "Arquivos ou comportamentos afetados:",
     "Bloqueios:",
     "Efeitos inesperados no workspace:",
+    "Gate assessments: optional inline JSON; required for non-blocking failures, bypass, divergence recovery or gate-driven REPLAN",
     "Resumo para persistência:",
   ],
   APPLY_FINDINGS: [
     "Operação: APPLY_FINDINGS",
-    "Status: TESTS_PASS | TESTS_FAIL | TESTS_NOT_APPLICABLE | BLOCKED",
+    "Status: TESTS_PASS | TESTS_ACCEPTED | TESTS_FAIL | TESTS_NOT_APPLICABLE | BLOCKED",
     "Automatic check round:",
     "Ciclo de findings:",
     "HEAD:",
@@ -199,12 +200,13 @@ const checkSchemas = {
     "Arquivos ou comportamentos afetados:",
     "Bloqueios:",
     "Efeitos inesperados no workspace:",
+    "Gate assessments: optional inline JSON; required for non-blocking failures, bypass, divergence recovery or gate-driven REPLAN",
     "Resumo para persistência:",
   ],
   VALIDATE_SLICE: [
     "Operação: VALIDATE_SLICE",
     "Tipo de validação: initial | revalidation",
-    "Status: PASS | NEEDS_FIX | BLOCKED",
+    "Status: PASS | ACCEPTED | NEEDS_FIX | BLOCKED",
     "Escopo verificado:",
     "HEAD:",
     "Evidências anteriores avaliadas:",
@@ -221,6 +223,7 @@ const checkSchemas = {
     "Overlap com bases anteriores:",
     "Regressões justificadas executadas:",
     "Efeitos inesperados no workspace:",
+    "Gate assessments: optional inline JSON; required for non-blocking failures, bypass, divergence recovery or gate-driven REPLAN",
     "Resumo para persistência:",
   ],
 };
@@ -269,7 +272,7 @@ function checkRunner(root) {
   requirePattern(contract, /^CONTRATO_CANONICO=stnl-validation-runner\/v[0-9]+$/mu, "R013_SYNTAX", "canonical runner contract ID is missing");
   const operations = /^OPERACOES_SUPORTADAS=([^\n]+)$/mu.exec(contract)?.[1];
   if (operations !== "EXECUTE_SLICE|APPLY_FINDINGS|VALIDATE_SLICE") reject("R004_OPERATION_SCOPE", `invalid runner operations: ${operations ?? "missing"}`);
-  if (!contract.includes("STATUS_CHECKS=TESTS_PASS|TESTS_FAIL|TESTS_NOT_APPLICABLE|BLOCKED") || !contract.includes("STATUS_VALIDACAO=PASS|NEEDS_FIX|BLOCKED")) {
+  if (!contract.includes("STATUS_CHECKS=TESTS_PASS|TESTS_ACCEPTED|TESTS_FAIL|TESTS_NOT_APPLICABLE|BLOCKED") || !contract.includes("STATUS_VALIDACAO=PASS|ACCEPTED|NEEDS_FIX|BLOCKED")) {
     reject("R006_VERDICTS", "runner statuses differ from the canonical protocol sets");
   }
   for (const [operation, expected] of Object.entries(checkSchemas)) {
@@ -307,10 +310,10 @@ function checkRunner(root) {
   requirePattern(contract, /NEEDS_FIX[\s\S]{0,700}(?:finding estruturado|structured finding)/iu, "R006_VERDICTS", "NEEDS_FIX lacks structured findings");
   requirePattern(contract, /NEEDS_FIX[^\n]{0,300}pode criar novos findings estruturados/iu, "R006_VERDICTS", "NEEDS_FIX cannot persist structured findings");
   requirePattern(contract, /`TESTS_PASS` exige[^\n]{0,160}exit code zero/iu, "R006_VERDICTS", "TESTS_PASS lacks zero-exit authority");
-  requirePattern(contract, /Em `TESTS_PASS`[^\n]{0,260}`Escopo verificado`[^\n]{0,160}`Verification types considered`[^\n]{0,160}`Testes selecionados`[^\n]{0,160}`Cobertura`[^\n]{0,120}(?:nunca podem ser exact `none`|must not be exact `none`)/iu, "R006_VERDICTS", "TESTS_PASS permits none in an objective summary field");
+  requirePattern(contract, /Em `TESTS_PASS` ou `TESTS_ACCEPTED`[^\n]{0,260}`Escopo verificado`[^\n]{0,160}`Verification types considered`[^\n]{0,160}`Testes selecionados`[^\n]{0,160}`Cobertura`[^\n]{0,120}(?:nunca podem ser exact `none`|must not be exact `none`)/iu, "R006_VERDICTS", "TESTS_PASS/TESTS_ACCEPTED permits none in an objective summary field");
   requirePattern(contract, /`TESTS_FAIL` exige[^\n]{0,160}(?:comandos que falharam|commands that failed)/iu, "R006_VERDICTS", "TESTS_FAIL lacks command-failure evidence");
   requirePattern(contract, /`BLOCKED` exige[^\n]{0,180}(?:impossibilidade objetiva|objective impossibility)/iu, "R006_VERDICTS", "BLOCKED lacks an objective cause");
-  forbidPattern(contract, /(?:NEEDS_FIX|BLOCKED)[\s\S]{0,160}(?:(?<!não )proponha|create|(?<!não )crie) Effective Validation Base/iu, "R006_VERDICTS", "non-PASS verdict creates an effective base");
+  forbidPattern(contract, /(?:NEEDS_FIX|BLOCKED)[\s\S]{0,160}(?:(?<!não )proponha|create|(?<!não )crie) Effective Validation Base/iu, "R006_VERDICTS", "unsuccessful verdict creates an effective base");
   requirePattern(contract, /caminhos relativos únicos[\s\S]{0,180}SHA-256[\s\S]{0,100}`REMOVED`/iu, "R008_MANIFEST", "final manifest path/hash/removal semantics are incomplete");
   requirePattern(contract, /Estado testado[\s\S]{0,180}Manifesto final da slice[\s\S]{0,220}relativo ao diretório do artefato detalhado `tasks\/slice-NN\.md`/iu, "R008_MANIFEST", "tested-state and manifest path base is ambiguous");
   requirePattern(contract, /fontes consultadas em `Discovery sources`[\s\S]{0,160}`Discovery actions`/iu, "R007_OUTPUT_SCHEMA", "discovery sources and actions are not distinct");
@@ -318,7 +321,7 @@ function checkRunner(root) {
   requirePattern(contract, /correção fileless[^\n]{0,80}`Correction paths`[^\n]{0,40}exact `none`/iu, "R007_OUTPUT_SCHEMA", "fileless correction paths cannot be exact none");
   requirePattern(contract, /`Findings verificados`[^\n]{0,100}subconjunto canônico[^\n]{0,100}`Finding IDs`/iu, "R007_OUTPUT_SCHEMA", "verified findings are not constrained to the target subset");
   requirePattern(contract, /`Findings ainda não sustentados pelos testes`[^\n]{0,140}exatamente os findings ativos[^\n]{0,180}(?:nunca se sobrepõem|never overlap)/iu, "R007_OUTPUT_SCHEMA", "unsupported active findings are not the exact disjoint remainder");
-  requirePattern(contract, /não retorne `PASS` com manifesto vazio, incompleto, duplicado, malformado ou inconsistente/iu, "R008_MANIFEST", "manifest rejection cases are incomplete");
+  requirePattern(contract, /não retorne `PASS` ou `ACCEPTED` com manifesto vazio, incompleto, duplicado, malformado ou inconsistente/iu, "R008_MANIFEST", "manifest rejection cases are incomplete");
   requirePattern(contract, /fileless[\s\S]{0,300}`Fileless reason`[\s\S]{0,300}(?:não invente|never invent).{0,80}(?:path|caminho|hash)/iu, "R008_MANIFEST", "fileless manifest contract is incomplete");
   requirePattern(contract, /overlap[\s\S]{0,500}regressões[\s\S]{0,300}(?:NEEDS_FIX|BLOCKED)/iu, "R010_OVERLAP", "overlap and regression obligations are incomplete");
   requirePattern(contract, /Para cada overlap[^\n]{0,100}valide o comportamento atual e regressões/iu, "R010_OVERLAP", "overlap behavior/regression validation is missing");
@@ -501,15 +504,15 @@ function checkLaunchers(root) {
     requirePattern(instructions, /retome diretamente (?:no spawn|na delegação)|resume directly (?:at|with) (?:spawn|delegation)/iu, "L016_TRANSPORT", `${name}: initialization-blocker resume path is missing`);
     forbidPattern(instructions, /(?<!não )(?:faça|crie|execute|use)[^\n]{0,40}(?:fallback|retry manual)|(?:fallback|manual retry)[^\n]{0,40}(?:permitid|allowed)/iu, "L008_VALIDATION_FLOW", `${name}: fallback or manual retry is enabled`);
     if (spec[2] === "VALIDATE_SLICE") {
-      requirePattern(instructions, /PASS\s*\|\s*NEEDS_FIX\s*\|\s*BLOCKED/u, "L008_VALIDATION_FLOW", `${name}: formal status set changed`);
-      requirePattern(instructions, /Effective Validation Base[\s\S]{0,100}(?:finaliza|complete)/iu, "L008_VALIDATION_FLOW", `${name}: PASS does not atomically finalize`);
+      requirePattern(instructions, /PASS\s*\|\s*ACCEPTED\s*\|\s*NEEDS_FIX\s*\|\s*BLOCKED/u, "L008_VALIDATION_FLOW", `${name}: formal status set changed`);
+      requirePattern(instructions, /Effective Validation Base[\s\S]{0,100}(?:finaliza|complete)/iu, "L008_VALIDATION_FLOW", `${name}: PASS/ACCEPTED does not atomically finalize`);
       requirePattern(instructions, /(?:Exija|Require)[^\n]{0,40}(?:revisão|review) independente[^\n]{0,100}TESTS_NOT_APPLICABLE/iu, "L008_VALIDATION_FLOW", `${name}: non-applicability is not independently reviewed`);
       forbidPattern(instructions, /(?<!não )(?:promova|converta|trate)[^\n]{0,80}TESTS_NOT_APPLICABLE[^\n]{0,80}(?:PASS|aprova)/iu, "L013_CHECK_AUTHORITY", `${name}: non-applicability is promoted to PASS`);
       requirePattern(instructions, /não (?:repete|executa)[^\n]{0,80}testes|does not (?:repeat|run)[^\n]{0,80}tests/iu, "L013_CHECK_AUTHORITY", `${name}: main context may repeat formal checks`);
       requirePattern(instructions, /não criam? nem consomem? `attempt-NN`|does not (?:create|consume)[^\n]{0,30}attempt/iu, "L016_TRANSPORT", `${name}: transport failure may allocate a formal attempt`);
       requirePattern(instructions, /não mudam? `initial` para `revalidation`|does not change[^\n]{0,30}initial[^\n]{0,30}revalidation/iu, "L016_TRANSPORT", `${name}: transport failure may change validation type`);
     } else {
-      requirePattern(instructions, /TESTS_PASS[\s\S]{0,80}TESTS_FAIL[\s\S]{0,80}TESTS_NOT_APPLICABLE[\s\S]{0,80}BLOCKED/u, "L014_AUTOMATIC_RECHECK", `${name}: auxiliary status set changed`);
+      requirePattern(instructions, /TESTS_PASS[\s\S]{0,80}TESTS_ACCEPTED[\s\S]{0,80}TESTS_FAIL[\s\S]{0,80}TESTS_NOT_APPLICABLE[\s\S]{0,80}BLOCKED/u, "L014_AUTOMATIC_RECHECK", `${name}: auxiliary status set changed`);
       requirePattern(instructions, /(?:no mínimo uma vez|at least once)[\s\S]{0,80}(?:no máximo três vezes|at most three times)/iu, "L014_AUTOMATIC_RECHECK", `${name}: one-to-three runner budget is missing`);
       requirePattern(instructions, /1\/3[\s\S]{0,40}2\/3[\s\S]{0,40}3\/3/u, "L014_AUTOMATIC_RECHECK", `${name}: exact round set is missing`);
       forbidPattern(instructions, /(?<!nunca )faça uma quarta chamada|(?<!never )make a fourth call|(?<!nem )(?<!não )use loop ilimitado|(?<!never )use an unbounded loop/iu, "L014_AUTOMATIC_RECHECK", `${name}: retry cycle is unbounded`);
@@ -535,7 +538,7 @@ function checkLaunchers(root) {
     const signatures = ["codex", "claude"].map((platform) => {
       const { instructions } = parseLauncher(actual[`slice-${operation}-${platform}`], launcherSpecs[`slice-${operation}-${platform}`]);
       return {
-        statuses: operation === "validate" ? /PASS\s*\|\s*NEEDS_FIX\s*\|\s*BLOCKED/u.test(instructions) : /TESTS_PASS[\s\S]*TESTS_FAIL[\s\S]*TESTS_NOT_APPLICABLE[\s\S]*BLOCKED/u.test(instructions),
+        statuses: operation === "validate" ? /PASS\s*\|\s*ACCEPTED\s*\|\s*NEEDS_FIX\s*\|\s*BLOCKED/u.test(instructions) : /TESTS_PASS[\s\S]*TESTS_ACCEPTED[\s\S]*TESTS_FAIL[\s\S]*TESTS_NOT_APPLICABLE[\s\S]*BLOCKED/u.test(instructions),
         retry: /no máximo uma nova tentativa/iu.test(instructions),
         singleton: /Runner Initialization Blocker/u.test(instructions),
         history: /sem histórico|não envie histórico/iu.test(instructions),

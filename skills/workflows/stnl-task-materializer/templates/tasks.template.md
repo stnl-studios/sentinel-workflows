@@ -12,10 +12,12 @@ update_policy: MATERIALIZE_TASKS creates rows and may commit approved supersessi
 
 # Execution Tasks
 
-Use only `[ ]` and `[x]`. This is the sole global progress authority. `PASS` and `SUPERSEDED` are terminal; only `PASS` is successful validation. A suggested eligible slice never selects it; every slice operation requires explicit `SLICE`.
+Use only `[ ]` and `[x]`. This is the sole global progress authority. `PASS`, `ACCEPTED` and `SUPERSEDED` are terminal; `PASS` is successful validation and `ACCEPTED` retains explicit optional gate acceptance with all mandatory obligations validated. A suggested eligible slice never selects it; every slice operation requires explicit `SLICE`.
 
 | Done | Slice | Delivery | Dependencies | Detail | Validation | Result |
 |---|---|---|---|---|---|---|
 | [ ] | 01 - <name> | <observable delivery> | - | tasks/slice-01.md | pending | pending |
 
 After materialization, historical plans and task records are immutable. A wholly pristine canonical set may be atomically replaced only by explicit approved replanning. After any operational evidence, the index cannot be recreated and historical checklists cannot be rematerialized: an approved append-only revision adds only monotonically numbered rows/files. A current valid `PASS` atomically changes its selected row to `[x]`, validation `PASS`, result `PASS`. The same approved-replan materialization that appends a replacement slice may terminalize its named open predecessor as `[x]`, validation `SUPERSEDED`, result `SUPERSEDED`; it never changes a prior `PASS`.
+
+A valid ACCEPTED attempt publishes its selected row with validation/result ACCEPTED under the Gate assessments contract; it is never rendered as PASS.

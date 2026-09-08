@@ -36,6 +36,8 @@ Evidence must identify commands or manual actions actually executed, concise obs
 
 Load only skills required by the current role and slice. Orchestrator loads none; coder and validator use migration or security skills only when explicitly required by the plan or diff.
 
-Handoffs are short, textual, disposable, and non-persistent. Use only `PASS`, `BLOCKED`, `NEEDS_APPROVAL`, `NEEDS_FIX`, `NEEDS_REPLAN`, or `NEEDS_RETEST_PLAN`.
+Handoffs are short, textual, disposable, and non-persistent. Use only `PASS`, `ACCEPTED`, `BLOCKED`, `NEEDS_APPROVAL`, `NEEDS_FIX`, `NEEDS_REPLAN`, or `NEEDS_RETEST_PLAN`.
 
 The spec-state atomicity rule means the spec does not advance automatically during execution; it is not a filesystem transaction. Partial code may remain in the working tree, but partial work is never recorded as completed. After an interruption, reload the compact spec index, current slice package, traceability, QA, resume notes, and approved contracts; detect any partial manual spec update before continuing, cleaning up, blocking, or restoring consistency directly or through `MODE=RESUME`.
+
+For slice quality operations, use the execution-record gate contract: independent external debt is non-blocking, persisted blockers require fresh working-tree revalidation, and REPLAN requires a current causal/required authority gap with no valid in-scope remedy. Explicit granular acceptance of optional quality debt is ACCEPTED, never PASS; structural and mandatory obligations remain enforced.

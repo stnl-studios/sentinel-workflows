@@ -58,6 +58,6 @@ Test code is production-quality evidence infrastructure: keep helpers and fixtur
 
 ## Stop
 
-Return `NEEDS_RETEST_PLAN` when approved evidence cannot prove a criterion, requires unavailable infrastructure, or needs a different bounded validation strategy. Return `NEEDS_REPLAN` when the implementation boundary itself prevents reliable testing or the required change escapes the approved slice.
+Return `NEEDS_RETEST_PLAN` when approved evidence cannot prove a criterion, requires unavailable infrastructure, or needs a different bounded validation strategy. Return `NEEDS_REPLAN` only with current causal/required slice evidence proving that no valid in-scope correction or verification can satisfy the mandatory obligation. External paths and preexisting independent failures are non-blocking observations; unknown causality requires bounded investigation, not automatic replanning. Recheck old blockers against the current working tree before deciding.
 
 Completion requires sufficient evidence, not maximum evidence. Prefer a small set of high-signal deterministic checks over a large low-signal suite.

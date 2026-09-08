@@ -191,8 +191,8 @@ function assertContract(contract, expectedHash, label) {
 function assertRunnerContract(contract, label) {
   assert.match(contract, /^CONTRATO_CANONICO=stnl-validation-runner\/v[0-9]+$/mu, `${label} contract ID changed`);
   assert.match(contract, /^OPERACOES_SUPORTADAS=EXECUTE_SLICE\|APPLY_FINDINGS\|VALIDATE_SLICE$/mu, `${label} operations changed`);
-  assert.match(contract, /^STATUS_CHECKS=TESTS_PASS\|TESTS_FAIL\|TESTS_NOT_APPLICABLE\|BLOCKED$/mu, `${label} check statuses changed`);
-  assert.match(contract, /^STATUS_VALIDACAO=PASS\|NEEDS_FIX\|BLOCKED$/mu, `${label} validation statuses changed`);
+  assert.match(contract, /^STATUS_CHECKS=TESTS_PASS\|TESTS_ACCEPTED\|TESTS_FAIL\|TESTS_NOT_APPLICABLE\|BLOCKED$/mu, `${label} check statuses changed`);
+  assert.match(contract, /^STATUS_VALIDACAO=PASS\|ACCEPTED\|NEEDS_FIX\|BLOCKED$/mu, `${label} validation statuses changed`);
   for (const heading of ["# EXECUTE_SLICE", "# APPLY_FINDINGS", "# VALIDATE_SLICE"]) {
     assert.equal(contract.split(heading).length - 1, 1, `${label} heading changed: ${heading}`);
   }
@@ -200,9 +200,9 @@ function assertRunnerContract(contract, label) {
     "Não edite código, testes, requisitos, planos ou tasks.",
     "Não aplique correções, não implemente findings",
     "Não crie subagentes nem delegue.",
-    "Checks nunca emitem `PASS` formal",
+    "Checks nunca emitem `PASS` ou `ACCEPTED` formal",
     "Não corrija automaticamente código quando um check falhar.",
-    "Não retorne `PASS` com manifesto vazio, incompleto, duplicado, malformado ou inconsistente",
+    "Não retorne `PASS` ou `ACCEPTED` com manifesto vazio, incompleto, duplicado, malformado ou inconsistente",
   ]) assert.ok(contract.includes(boundary), `${label} lacks harmful-action boundary: ${boundary}`);
   assert.doesNotMatch(contract, /(?:você pode|é permitido|you may)[^\n]{0,80}(?:editar|implementar|aplicar correções|criar subagentes|delegar)/iu, `${label} enables a harmful action`);
 }

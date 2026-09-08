@@ -31,9 +31,9 @@ const OPERATION_STATES = new Map([
   ["MATERIALIZE_TASKS", new Set(["PLANNED_READY", "PENDING_REPLAN_READY"])],
   ["REVIEW_TASKS", new Set(["MATERIALIZED_PRISTINE"])],
   ["REPLAN", new Set(["PLANNED_DRAFT", "PLANNED_READY", "MATERIALIZED_PRISTINE", "EXECUTION_STARTED", "REQUIREMENTS_CHANGED", "DIVERGENCE_BLOCKED", "VALIDATION_BLOCKED", "IMPLEMENTED_AWAITING_VALIDATION", "FINDINGS_CORRECTED", "REPLAN_REQUIRED", "COMPLETE"])],
-  ["EXECUTE_SLICE", new Set(["MATERIALIZED_PRISTINE", "EXECUTION_STARTED", "AUXILIARY_BLOCKED", "RUNNER_INITIALIZATION_BLOCKED", "RUNNER_RESULT_BLOCKED"])],
-  ["APPLY_FINDINGS", new Set(["VALIDATION_NEEDS_FIX", "AUXILIARY_BLOCKED", "RUNNER_INITIALIZATION_BLOCKED", "RUNNER_RESULT_BLOCKED"])],
-  ["VALIDATE_SLICE", new Set(["IMPLEMENTED_AWAITING_VALIDATION", "FINDINGS_CORRECTED", "VALIDATION_BLOCKED", "IMPLEMENTATION_RETRY_EXHAUSTED", "FINDINGS_RETRY_EXHAUSTED", "RUNNER_INITIALIZATION_BLOCKED", "RUNNER_RESULT_BLOCKED"])],
+  ["EXECUTE_SLICE", new Set(["DIVERGENCE_BLOCKED", "MATERIALIZED_PRISTINE", "EXECUTION_STARTED", "AUXILIARY_BLOCKED", "RUNNER_INITIALIZATION_BLOCKED", "RUNNER_RESULT_BLOCKED"])],
+  ["APPLY_FINDINGS", new Set(["DIVERGENCE_BLOCKED", "VALIDATION_NEEDS_FIX", "AUXILIARY_BLOCKED", "RUNNER_INITIALIZATION_BLOCKED", "RUNNER_RESULT_BLOCKED"])],
+  ["VALIDATE_SLICE", new Set(["VALIDATION_NEEDS_FIX", "DIVERGENCE_BLOCKED", "IMPLEMENTED_AWAITING_VALIDATION", "FINDINGS_CORRECTED", "VALIDATION_BLOCKED", "IMPLEMENTATION_RETRY_EXHAUSTED", "FINDINGS_RETRY_EXHAUSTED", "RUNNER_INITIALIZATION_BLOCKED", "RUNNER_RESULT_BLOCKED"])],
   ["CLOSE", new Set(["COMPLETE"])],
 ]);
 const CURRENT_AUTHORITY = /^sha256:([0-9a-f]{64})$/u;
@@ -670,10 +670,15 @@ function blockerRecords(section, kind) {
       ? ["Problem", "Evidence", "Impact", "Related authority", "Expected correction"]
       : ["Problem", "Evidence", "Required authority operation"];
     for (const required of requiredFields) field(record.body, required);
-    if (kind === "divergence" && !new Set(["RESUME", "REPLAN"]).has(field(record.body, "Required authority operation"))) {
-      throw new ExecutionContractError(`${record.id} has an invalid Required authority operation`);
+    if (kind === "divergence") {
+      // Legacy records require authority by contract. Only a divergence born
+      // observational can be disposed as independent external quality debt.
+      record.kind = field(record.body, "Kind", { required: false }) ?? "authority";
+      record.requiredAuthorityOperation = field(record.body, "Required authority operation");
+      if (!["observational", "authority", "structural", "required"].includes(record.kind)) throw new ExecutionContractError(`${record.id} has invalid divergence Kind`);
+      const operations = record.kind === "observational" ? ["none"] : ["RESUME", "REPLAN"];
+      if (!operations.includes(record.requiredAuthorityOperation)) throw new ExecutionContractError(`${record.id} has an invalid Required authority operation for its Kind`);
     }
-    if (kind === "divergence") record.requiredAuthorityOperation = field(record.body, "Required authority operation");
     const resolutionValue = field(record.body, "Resolution", { required: false });
     const supersededValue = field(record.body, "Superseded by", { required: false });
     if (record.state === "active" && (resolutionValue !== null || supersededValue !== null)) {
@@ -685,9 +690,12 @@ function blockerRecords(section, kind) {
       if (supersededValue !== null) throw new ExecutionContractError(`${record.id} resolved state cannot contain Superseded by`);
       if (kind === "divergence" && record.severity === "blocking") {
         const owner = resolution.match(/^plan revision ([1-9][0-9]*) committed recovery (slice-[0-9]{2,})$/u);
-        if (owner === null) throw new ExecutionContractError(`${record.id} blocking divergence Resolution must name its committed plan revision and recovery slice`);
-        record.resolutionRevision = Number(owner[1]);
-        record.resolutionSlice = owner[2];
+        const revalidated = resolution.match(/^(attempt-[0-9]{2,}|implementation-check-[0-9]{2,}|findings-check-[0-9]{2,}) revalidated: \S.+$/u);
+        if (owner === null && revalidated === null) throw new ExecutionContractError(`${record.id} blocking divergence Resolution must name its committed plan revision and recovery slice or a revalidation record`);
+        if (owner !== null) {
+          record.resolutionRevision = Number(owner[1]);
+          record.resolutionSlice = owner[2];
+        } else record.revalidationRecord = revalidated[1];
       }
     }
     if (record.state === "superseded") {
@@ -701,8 +709,114 @@ function blockerRecords(section, kind) {
   return records;
 }
 
+// Gate observations are append-only evidence inside existing checks/attempts. The
+// independent runner supplies causality; the parser enforces the decision boundary.
+const SUCCESS_RESULTS = new Set(["PASS", "ACCEPTED"]);
+const SUCCESS_CHECKS = new Set(["TESTS_PASS", "TESTS_ACCEPTED", "TESTS_NOT_APPLICABLE"]);
+const NON_BLOCKING_GATES = new Set(["resolved", "non_blocking", "bypassed"]);
+const GATE_KEYS = new Set(["id", "command", "kind", "scope", "causality", "state", "problem", "evidence", "diagnostic", "correction", "correctionEvidence", "revalidates", "snapshot", "bypass"]);
+
+function exactObject(value, keys, label) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)
+    || Object.keys(value).length !== keys.size || Object.keys(value).some((key) => !keys.has(key))) {
+    throw new ExecutionContractError(`${label} has missing or unknown fields`);
+  }
+}
+
+export function qualityGateIdentity(gate, authority) {
+  // Observation timestamps, prose and unrelated working-tree changes are not an
+  // identity. Diagnostic content and the authority/obligation boundary are.
+  return `sha256:${createHash("sha256").update(JSON.stringify([
+    "stnl-quality-gate-v1", authority.fingerprint, authority.revision, authority.slice,
+    gate.id, gate.command, gate.kind, gate.scope, gate.causality,
+    gate.diagnostic, gate.correction,
+  ])).digest("hex")}`;
+}
+
+export function evaluateQualityGate(gate, authority) {
+  exactObject(gate, GATE_KEYS, "Gate assessment");
+  for (const key of ["id", "problem", "evidence", "correctionEvidence"]) {
+    if (typeof gate[key] !== "string") throw new ExecutionContractError(`Gate ${key} must be text`);
+    requireNonPlaceholder(gate[key], `Gate ${key}`);
+  }
+  if (!/^gate-[0-9]{2,}$/u.test(gate.id) || (typeof gate.diagnostic !== "string" || !CURRENT_AUTHORITY.test(gate.diagnostic))) throw new ExecutionContractError("Gate identity is malformed");
+  for (const [key, values] of Object.entries({
+    kind: ["quality", "requirement", "structural"], scope: ["in_scope", "out_of_scope"],
+    causality: ["independent", "caused_by_slice", "required_by_slice", "unknown"],
+    state: ["present", "absent"], correction: ["in_scope", "authority_change", "unknown"],
+  })) if (!values.includes(gate[key])) throw new ExecutionContractError(`Gate ${key} is invalid`);
+  if (gate.command !== null && (typeof gate.command !== "string" || gate.command.length === 0)) throw new ExecutionContractError("Gate command is invalid");
+  if (gate.revalidates !== null && (typeof gate.revalidates !== "string" || !/^(?:(?:attempt|implementation-check|findings-check)-[0-9]{2,}\/gate-[0-9]{2,}|finding-[0-9]{2,}|divergence-[0-9]{2,})$/u.test(gate.revalidates))) throw new ExecutionContractError("Gate revalidates is invalid");
+  if (!Array.isArray(gate.snapshot)) throw new ExecutionContractError("Gate snapshot must be an array");
+  const paths = [];
+  for (const entry of gate.snapshot) {
+    exactObject(entry, new Set(["path", "expected"]), "Gate snapshot");
+    if (typeof entry.path !== "string" || typeof entry.expected !== "string" || (entry.expected !== "REMOVED" && !CURRENT_AUTHORITY.test(entry.expected))) throw new ExecutionContractError("Gate snapshot is malformed");
+    validateRelativeEvidencePath(entry.path, "Gate snapshot path");
+    paths.push(entry.path);
+  }
+  if (new Set(paths).size !== paths.length || paths.some((v, i) => i > 0 && v.localeCompare(paths[i - 1], "en") <= 0)) throw new ExecutionContractError("Gate snapshot paths must be unique and ordered");
+  let decision;
+  if (gate.state === "absent") decision = "resolved";
+  else if (gate.kind === "structural") decision = "blocking";
+  else if (gate.kind === "quality" && gate.scope === "out_of_scope" && gate.causality === "independent") decision = "non_blocking";
+  else if (gate.causality === "unknown") decision = "investigate";
+  else if (gate.correction === "authority_change" && ["caused_by_slice", "required_by_slice"].includes(gate.causality)) decision = "replan";
+  else decision = "blocking";
+  if (decision === "replan" && gate.snapshot.length === 0) throw new ExecutionContractError("REPLAN requires a current causal snapshot");
+  const identity = qualityGateIdentity(gate, authority);
+  if (gate.bypass !== null) {
+    exactObject(gate.bypass, new Set(["target", "operator", "reason", "authorization"]), "Gate bypass");
+    for (const key of ["operator", "reason", "authorization"]) {
+      if (typeof gate.bypass[key] !== "string") throw new ExecutionContractError(`Bypass ${key} must be text`);
+      requireNonPlaceholder(gate.bypass[key], `Bypass ${key}`);
+    }
+    // Referential integrity applies even when approval is only history. A
+    // materially changed gate keeps old approval in its prior record only.
+    if (gate.bypass.target !== identity) throw new ExecutionContractError("Gate bypass does not match this blocker and authority");
+    if (gate.kind !== "quality" || gate.correction !== "in_scope"
+      || ["required_by_slice", "unknown"].includes(gate.causality)) throw new ExecutionContractError("This gate cannot be bypassed");
+    // Recovery wins: valid historical approval never changes the current result.
+    if (!NON_BLOCKING_GATES.has(decision)) {
+      if (decision !== "blocking") throw new ExecutionContractError("This gate cannot be bypassed");
+      decision = "bypassed";
+    }
+  }
+  return Object.freeze({ ...gate, identity, decision });
+}
+
+function parseGateAssessments(record, authority) {
+  const raw = field(record.body, "Gate assessments", { required: false });
+  if (raw === null) return [];
+  let gates;
+  try { gates = JSON.parse(raw); } catch { throw new ExecutionContractError(`${record.id} Gate assessments must be inline JSON`); }
+  if (!Array.isArray(gates) || gates.length === 0) throw new ExecutionContractError(`${record.id} Gate assessments must be a nonempty array`);
+  const evaluated = gates.map((gate) => evaluateQualityGate(gate, authority));
+  if (new Set(evaluated.map((gate) => gate.id)).size !== evaluated.length) throw new ExecutionContractError(`${record.id} duplicate gate ID`);
+  for (const gate of evaluated) if (gate.command !== null && !record.commands.some((entry) => entry.command === gate.command)) throw new ExecutionContractError(`${record.id} gate command has no recorded exit`);
+  return evaluated;
+}
+
+function validateGateResult(record, authority) {
+  record.gates = parseGateAssessments(record, authority);
+  const success = SUCCESS_RESULTS.has(record.status) || ["TESTS_PASS", "TESTS_ACCEPTED"].includes(record.status);
+  const accepted = ["ACCEPTED", "TESTS_ACCEPTED"].includes(record.status);
+  if (["BLOCKED", "TESTS_FAIL", "NEEDS_FIX"].includes(record.status) && record.gates.length > 0
+    && record.gates.every((gate) => NON_BLOCKING_GATES.has(gate.decision))) throw new ExecutionContractError(`${record.id} cannot block solely on non-blocking gate observations`);
+  if (success) {
+    if (record.gates.some((gate) => !NON_BLOCKING_GATES.has(gate.decision))) throw new ExecutionContractError(`${record.id} success retains a blocking or undetermined gate`);
+    if (accepted !== record.gates.some((gate) => gate.decision === "bypassed")) throw new ExecutionContractError(`${record.id} bypass requires ACCEPTED, never PASS`);
+    for (const entry of record.commands.filter((entry) => entry.exit !== 0)) {
+      const gates = record.gates.filter((gate) => gate.command === entry.command);
+      if (gates.length === 0 || gates.some((gate) => !["non_blocking", "bypassed"].includes(gate.decision))) throw new ExecutionContractError(`${record.id} successful validation commands must exit zero unless every failure has a non-blocking gate assessment`);
+    }
+    // No bypass can replace the mandatory evidence for the slice itself.
+    if (!record.commands.some((entry) => entry.exit === 0)) throw new ExecutionContractError(`${record.id} lacks successful mandatory slice evidence`);
+  }
+}
+
 const CHECK_FIELD_NAMES = new Set([
-  "Automatic check round", "Status", "HEAD", "Tested scope", "Tested state", "Fileless reason", "Discovery sources",
+  "Gate assessments", "Automatic check round", "Status", "HEAD", "Tested scope", "Tested state", "Fileless reason", "Discovery sources",
   "Discovery actions", "Verification types considered", "Commands", "Selected checks", "Selection rationale",
   "Coverage", "Failures", "Blockers", "Unexpected workspace effects", "Persistence summary",
   "Prior-round failure", "Correction applied", "Correction paths", "Updated scope", "In-slice rationale",
@@ -716,7 +830,7 @@ const IMPLEMENTATION_CHECK_FIELD_NAMES = new Set(
   [...CHECK_FIELD_NAMES].filter((name) => !FINDINGS_CHECK_ONLY_FIELD_NAMES.has(name)),
 );
 const ATTEMPT_FIELD_NAMES = new Set([
-  "Type", "Status", "HEAD", "Verified scope", "Commands", "Evidence", "Finding references", "Finding dispositions",
+  "Gate assessments", "Type", "Status", "HEAD", "Verified scope", "Commands", "Evidence", "Finding references", "Finding dispositions",
   "Blockers", "Unexpected workspace effects", "Persistence summary",
 ]);
 
@@ -912,8 +1026,8 @@ function throwFindingsIdViolation(violation) {
   );
 }
 
-function parseChecks(section, prefix, context = {}) {
-  const records = operationRecords(section, prefix, { statusValues: new Set(["TESTS_PASS", "TESTS_FAIL", "TESTS_NOT_APPLICABLE", "BLOCKED"]) });
+function parseChecks(section, prefix, context = {}, authority = {}) {
+  const records = operationRecords(section, prefix, { statusValues: new Set(["TESTS_PASS", "TESTS_ACCEPTED", "TESTS_FAIL", "TESTS_NOT_APPLICABLE", "BLOCKED"]) });
   for (const record of records) {
     validateNestedScoping(record, { allowTestedState: true });
     const discoveryViolation = discoveryContractViolation(record, context);
@@ -925,7 +1039,7 @@ function parseChecks(section, prefix, context = {}) {
     for (const name of ["HEAD", "Tested scope", "Discovery sources", "Discovery actions", "Verification types considered", "Selected checks", "Selection rationale", "Coverage", "Failures", "Blockers", "Unexpected workspace effects", "Persistence summary"]) {
       requirePresentValue(field(record.body, name), `${record.id} ${name}`);
     }
-    if (record.status === "TESTS_PASS") {
+    if (["TESTS_PASS", "TESTS_ACCEPTED"].includes(record.status)) {
       for (const name of ["Tested scope", "Verification types considered", "Selected checks", "Coverage"]) {
         requireNonPlaceholder(field(record.body, name), `${record.id} ${name}`);
       }
@@ -933,8 +1047,9 @@ function parseChecks(section, prefix, context = {}) {
     record.testedState = requireTestedState(record);
     record.commands = requireCommands(record, {
       permitNone: new Set(["TESTS_NOT_APPLICABLE", "BLOCKED"]).has(record.status),
-      requireZero: record.status === "TESTS_PASS",
+      requireZero: false,
     });
+    validateGateResult(record, authority);
     if (record.status === "TESTS_FAIL" && !record.commands.some((entry) => entry.exit !== 0)) {
       throw new ExecutionContractError(`${record.id} TESTS_FAIL must contain a nonzero command exit`);
     }
@@ -994,7 +1109,7 @@ function parseChecks(section, prefix, context = {}) {
         if (currentCycle <= priorCycle) throw new ExecutionContractError(`${record.id} Findings cycle must move forward`);
       }
     } else if (previous.status === "TESTS_FAIL" && previous.round < 3) {
-      if (record.round !== previous.round + 1) throw new ExecutionContractError(`${record.id} must immediately follow ${previous.id} at round ${previous.round + 1}/3`);
+      if (record.round !== previous.round + 1 && !(record.round === 1 && record.gates.some((gate) => gate.revalidates?.startsWith("divergence-")))) throw new ExecutionContractError(`${record.id} must immediately follow ${previous.id} at round ${previous.round + 1}/3`);
     } else if (previous.status === "BLOCKED") {
       if (record.round !== 1) throw new ExecutionContractError(`${record.id} must restart at round 1/3 after ${previous.id} BLOCKED`);
     } else {
@@ -1009,10 +1124,10 @@ function baseState(section, attempts) {
   if (section === "- none") return { present: false, paths: [], entries: [] };
   const origin = field(section, "Origin attempt");
   const owningAttempt = attempts.at(-1);
-  if (owningAttempt?.id !== origin || owningAttempt?.status !== "PASS") throw new ExecutionContractError("Effective Validation Base does not originate from the latest PASS attempt");
+  if (owningAttempt?.id !== origin || !SUCCESS_RESULTS.has(owningAttempt?.status)) throw new ExecutionContractError("Effective Validation Base does not originate from the latest successful validation attempt");
   if (field(section, "Attempt type") !== field(owningAttempt.body, "Type")) throw new ExecutionContractError("Effective Validation Base Attempt type disagrees with its origin attempt");
   if (field(section, "HEAD") !== field(owningAttempt.body, "HEAD")) throw new ExecutionContractError("Effective Validation Base HEAD disagrees with its origin attempt");
-  if (field(section, "Result") !== "PASS") throw new ExecutionContractError("Effective Validation Base Result must be PASS");
+  if (field(section, "Result") !== owningAttempt.status) throw new ExecutionContractError("Effective Validation Base Result must match its owning PASS/ACCEPTED attempt");
   const nestedFiles = [...section.matchAll(/^- Files:$/gmu)];
   const filelessFiles = [...section.matchAll(/^- Files: none$/gmu)];
   if (nestedFiles.length + filelessFiles.length !== 1) throw new ExecutionContractError("Effective Validation Base must contain exactly one Files field");
@@ -1064,9 +1179,6 @@ function baseState(section, attempts) {
     const match = line.match(/^  - `([^`]+)` \| exit:([-]?[0-9]+)$/u);
     return Object.freeze({ command: match[1], exit: Number(match[2]) });
   });
-  if (commands.some((entry) => entry.exit !== 0)) {
-    throw new ExecutionContractError("Effective Validation Base authoritative commands must exist and exit zero");
-  }
   if (JSON.stringify(commands) !== JSON.stringify(owningAttempt.commands)) {
     throw new ExecutionContractError("Effective Validation Base authoritative commands disagree with its origin attempt");
   }
@@ -1081,17 +1193,17 @@ function baseState(section, attempts) {
 function finalState(section) {
   const normalized = normalizeText(section);
   if (normalized === "- pending") return { result: "pending", supersededBy: null, planRevision: null };
-  if (normalized === "- PASS") return { result: "PASS", supersededBy: null, planRevision: null };
+  if (["- PASS", "- ACCEPTED"].includes(normalized)) return { result: normalized.slice(2), supersededBy: null, planRevision: null };
   const superseded = normalized.match(/^- SUPERSEDED\n- Superseded by: (slice-[0-9]{2,})\n- Plan revision: ([1-9][0-9]*)$/u);
   if (superseded === null || !SLICE_FILE.test(`${superseded[1]}.md`)) throw new ExecutionContractError("Final Result is malformed");
   return { result: "SUPERSEDED", supersededBy: superseded[1], planRevision: Number(superseded[2]) };
 }
 
-function parseAttempts(section) {
-  const attempts = operationRecords(section, "attempt", { statusValues: new Set(["PASS", "NEEDS_FIX", "BLOCKED"]) });
-  const firstPassIndex = attempts.findIndex((attempt) => attempt.status === "PASS");
-  if (firstPassIndex >= 0 && firstPassIndex !== attempts.length - 1) {
-    throw new ExecutionContractError(`${attempts[firstPassIndex].id} PASS is terminal; no later formal attempt is permitted`);
+function parseAttempts(section, authority) {
+  const attempts = operationRecords(section, "attempt", { statusValues: new Set(["PASS", "ACCEPTED", "NEEDS_FIX", "BLOCKED"]) });
+  const firstSuccessIndex = attempts.findIndex((attempt) => SUCCESS_RESULTS.has(attempt.status));
+  if (firstSuccessIndex >= 0 && firstSuccessIndex !== attempts.length - 1) {
+    throw new ExecutionContractError(`${attempts[firstSuccessIndex].id} PASS/ACCEPTED is terminal; no later formal attempt is permitted`);
   }
   if (attempts.length > 0 && field(attempts[0].body, "Type") !== "initial") throw new ExecutionContractError("attempt-01 must be initial");
   for (const attempt of attempts.slice(1)) if (field(attempt.body, "Type") !== "revalidation") throw new ExecutionContractError(`${attempt.id} must be revalidation`);
@@ -1101,7 +1213,8 @@ function parseAttempts(section) {
     for (const name of ["HEAD", "Verified scope", "Evidence", "Finding references", "Finding dispositions", "Blockers", "Unexpected workspace effects", "Persistence summary"]) {
       requirePresentValue(field(attempt.body, name), `${attempt.id} ${name}`);
     }
-    attempt.commands = requireCommands(attempt, { permitNone: attempt.status === "BLOCKED", requireZero: attempt.status === "PASS" });
+    attempt.commands = requireCommands(attempt, { permitNone: attempt.status === "BLOCKED", requireZero: false });
+    validateGateResult(attempt, authority);
     attempt.findingReferences = parseCanonicalFindingIds(
       field(attempt.body, "Finding references"),
       `${attempt.id} Finding references`,
@@ -1157,9 +1270,10 @@ function validateFindingLifecycle(findings, attempts, findingsChecks) {
     if (finding.state === "resolved") {
       const resolutionAttemptId = field(finding.body, "Resolution").match(/\battempt-[0-9]{2,}\b/u)?.[0];
       const resolution = attemptsById.get(resolutionAttemptId);
-      if (resolution === undefined || resolution.index <= origin.index || !new Set(["PASS", "NEEDS_FIX"]).has(resolution.status)) {
+      if (resolution === undefined || resolution.index <= origin.index || !new Set(["PASS", "ACCEPTED", "NEEDS_FIX", "BLOCKED"]).has(resolution.status)) {
         throw new ExecutionContractError(`${finding.id} Resolution must name an existing strictly later formal attempt`);
       }
+      if (resolution.status === "BLOCKED" && !resolution.gates.some((gate) => gate.revalidates === finding.id && ["resolved", "non_blocking"].includes(gate.decision))) throw new ExecutionContractError(`${finding.id} BLOCKED resolution requires explicit revalidation evidence`);
       resolutionIndexes.set(finding.id, resolution.index);
     }
     if (finding.state === "superseded") {
@@ -1250,6 +1364,74 @@ function validateRelativeEvidencePath(value, label) {
   return value;
 }
 
+function validateGateHistory(records, findings, divergences) {
+  const seen = new Map();
+  const pending = new Map();
+  for (const record of records) {
+    const successors = new Map();
+    for (const [reference, prior] of pending) {
+      const matches = record.gates.filter((gate) => gate.identity === prior.identity
+        || gate.revalidates === reference
+        || prior.divergenceIds?.includes(gate.revalidates)
+        || (gate.revalidates !== null && seen.get(gate.revalidates)?.lineage === prior.lineage));
+      if (matches.length !== 1) throw new ExecutionContractError(`${record.id} must revalidate prior blocker ${reference} exactly once`);
+      successors.set(matches[0], prior.lineage);
+    }
+    for (const gate of record.gates) {
+      const target = gate.revalidates;
+      if (target !== null) {
+        if (target.includes("/") && !seen.has(target)) throw new ExecutionContractError(`${record.id} revalidates an unknown or future gate`);
+        if (target.startsWith("finding-") && !findings.some((finding) => finding.id === target && seen.has(finding.origin))) throw new ExecutionContractError(`${record.id} revalidates an unknown or future finding`);
+        if (target.startsWith("divergence-") && !divergences.some((entry) => entry.id === target)) throw new ExecutionContractError(`${record.id} revalidates an unknown divergence`);
+      }
+      const prior = target?.includes("/") ? seen.get(target) : undefined;
+      const inherited = [...pending.values()].filter((entry) => entry.identity === gate.identity
+        || entry.lineage === successors.get(gate));
+      const divergenceIds = new Set([
+        ...(target?.startsWith("divergence-") ? [target] : []),
+        ...(prior?.divergenceIds ?? []), ...inherited.flatMap((entry) => entry.divergenceIds ?? []),
+      ]);
+      const protectedObligation = gate.kind !== "quality" || gate.causality === "required_by_slice"
+        || prior?.protectedObligation === true || inherited.some((entry) => entry.protectedObligation);
+      successors.set(gate, { lineage: successors.get(gate), divergenceIds: [...divergenceIds], protectedObligation });
+      if (protectedObligation && (gate.bypass !== null || gate.decision === "non_blocking")) {
+        throw new ExecutionContractError(`${record.id} revalidation cannot demote or bypass a structural or mandatory gate obligation`);
+      }
+      for (const id of divergenceIds) {
+        const divergence = divergences.find((entry) => entry.id === id);
+        if (gate.bypass !== null) throw new ExecutionContractError("Authority divergences cannot be bypassed");
+        if (gate.decision === "non_blocking" && divergence.kind !== "observational") {
+          throw new ExecutionContractError(`${id} ${divergence.kind} divergence cannot become non_blocking; required authority operation ${divergence.requiredAuthorityOperation} remains mandatory while present`);
+        }
+      }
+      if (gate.bypass !== null) {
+        if (![...seen.values()].some((prior) => prior.identity === gate.identity && ["blocking", "bypassed"].includes(prior.decision))) {
+          throw new ExecutionContractError(`${record.id} bypass requires a previously observed concrete blocker`);
+        }
+        if (gate.decision !== "bypassed" && ![...seen.values()].some((prior) => prior.identity === gate.identity
+          && prior.bypass !== null && prior.bypass !== undefined
+          && ["target", "operator", "reason", "authorization"].every((key) => prior.bypass[key] === gate.bypass[key]))) {
+          throw new ExecutionContractError(`${record.id} historical bypass requires its previously recorded authorization`);
+        }
+      }
+    }
+    pending.clear();
+    for (const gate of record.gates) {
+      const reference = `${record.id}/${gate.id}`;
+      const observation = { ...gate, ...successors.get(gate), lineage: successors.get(gate)?.lineage ?? reference };
+      seen.set(reference, observation);
+      if (!NON_BLOCKING_GATES.has(gate.decision) || gate.decision === "bypassed") pending.set(reference, observation);
+    }
+    seen.set(record.id, record);
+  }
+}
+
+function chronologicalQualityRecords(implementationChecks, findingsChecks, attempts) {
+  return [...implementationChecks, ...attempts.flatMap((attempt) => [attempt,
+    ...findingsChecks.filter((check) => check.findingsCycle === attempt.id),
+  ])];
+}
+
 function parseTask(text, label, expectedSlice, references = {}) {
   const { header, body } = parsePurpose(text, label);
   if (header.get("status") !== "ready") throw new ExecutionContractError(`${label} must have status ready`);
@@ -1271,20 +1453,28 @@ function parseTask(text, label, expectedSlice, references = {}) {
   const declaredFindingIds = new Set([
     ...taskSections.get("Validation Findings").matchAll(/^### (finding-[0-9]{2,})$/gmu),
   ].map((match) => match[1]));
+  const gateAuthority = { ...state, slice: expectedSlice };
   const implementationChecks = parseChecks(taskSections.get("Implementation Test Evidence"), "implementation-check", {
     artifact: label,
     section: "Implementation Test Evidence",
     declaredFindingIds,
-  });
+  }, gateAuthority);
   const findingsChecks = parseChecks(taskSections.get("Findings Test Evidence"), "findings-check", {
     artifact: label,
     section: "Findings Test Evidence",
     declaredFindingIds,
-  });
-  const attempts = parseAttempts(taskSections.get("Validation Attempts"));
+  }, gateAuthority);
+  const attempts = parseAttempts(taskSections.get("Validation Attempts"), gateAuthority);
   const findings = blockerRecords(taskSections.get("Validation Findings"), "finding");
   const divergences = blockerRecords(taskSections.get("Divergences"), "divergence");
+  const qualityRecords = chronologicalQualityRecords(implementationChecks, findingsChecks, attempts);
+  validateGateHistory(qualityRecords, findings, divergences);
   validateFindingLifecycle(findings, attempts, findingsChecks);
+  for (const divergence of divergences.filter((entry) => entry.revalidationRecord !== undefined)) {
+    const record = qualityRecords.find((entry) => entry.id === divergence.revalidationRecord);
+    if (record === undefined || !record.gates.some((gate) => gate.revalidates === divergence.id
+      && ["resolved", "non_blocking"].includes(gate.decision))) throw new ExecutionContractError(`${divergence.id} resolution lacks current revalidation evidence`);
+  }
   const delegationBlocker = parseDelegationBlocker(taskSections.get("Delegation Blocker"), new Map([
     ["EXECUTE_SLICE", implementationChecks], ["APPLY_FINDINGS", findingsChecks], ["VALIDATE_SLICE", attempts],
   ]));
@@ -1311,30 +1501,31 @@ function parseTask(text, label, expectedSlice, references = {}) {
   if (attempts.length !== 0 && !checklistComplete) throw new ExecutionContractError(`${label} has Validation Attempts before the mandatory checklist is complete`);
   const pristine = [...PRISTINE].every(([name, sentinel]) => taskSections.get(name) === sentinel)
     && !/^- \[x\]/gmu.test(taskSections.get("Checklist") ?? "");
-  const activeBlockers = [...findings, ...divergences].filter((record) => record.severity === "blocking" && record.state === "active");
+  const activeBlockers = [...findings, ...divergences].filter((record) => record.severity === "blocking" && record.state === "active"
+    && !(record.id.startsWith("finding-") && attempts.at(-1)?.gates.some((gate) => gate.revalidates === record.id && gate.decision === "bypassed")));
   const activeBlockingDivergence = divergences.some((record) => record.severity === "blocking" && record.state === "active");
   for (const [name, latest] of [["implementation", implementationChecks.at(-1)], ["findings", findingsChecks.at(-1)]]) {
     const expectedOperation = name === "implementation" ? "EXECUTE_SLICE" : "APPLY_FINDINGS";
     const pausedByDelegation = delegationBlocker?.state === "active" && delegationBlocker.operation === expectedOperation
       && delegationBlocker.afterRecord === latest?.id;
-    if (latest?.status === "TESTS_FAIL" && latest.round < 3 && !activeBlockingDivergence && !pausedByDelegation) {
+    if (latest?.status === "TESTS_FAIL" && latest.round < 3 && !activeBlockingDivergence && !pausedByDelegation && attempts.length === 0) {
       throw new ExecutionContractError(`${label} has an unterminated ${name} automatic correction cycle without a blocking divergence`);
     }
   }
   if (attempts.at(-1)?.status === "NEEDS_FIX" && !findings.some((record) => record.severity === "blocking" && record.state === "active")) {
     throw new ExecutionContractError(`${label} latest NEEDS_FIX attempt has no active blocking finding`);
   }
-  if (final.result === "PASS" && (!base.present || activeBlockers.length !== 0)) throw new ExecutionContractError(`${label} PASS retains no valid base or active blocker`);
-  if (final.result === "PASS" && attempts.at(-1)?.status !== "PASS") throw new ExecutionContractError(`${label} PASS does not originate from its latest formal attempt`);
-  if (final.result === "PASS") {
+  if (SUCCESS_RESULTS.has(final.result) && (!base.present || activeBlockers.length !== 0)) throw new ExecutionContractError(`${label} successful terminal result lacks a valid base or retains an active blocker`);
+  if (SUCCESS_RESULTS.has(final.result) && attempts.at(-1)?.status !== final.result) throw new ExecutionContractError(`${label} successful terminal result does not originate from its latest formal attempt`);
+  if (SUCCESS_RESULTS.has(final.result)) {
     const diffSummary = normalizeText(taskSections.get("Diff Summary"));
     if (!/^- \S.*$/u.test(diffSummary) || /^(?:- )?(?:none|pending|n\/a|not_available)$/iu.test(diffSummary)) {
-      throw new ExecutionContractError(`${label} terminal PASS requires a non-placeholder Diff Summary`);
+      throw new ExecutionContractError(`${label} terminal PASS/ACCEPTED requires a non-placeholder Diff Summary`);
     }
   }
-  if (attempts.at(-1)?.status === "PASS" && (final.result !== "PASS" || !base.present)) throw new ExecutionContractError(`${label} latest PASS attempt was not published atomically`);
+  if (SUCCESS_RESULTS.has(attempts.at(-1)?.status) && (final.result !== attempts.at(-1)?.status || !base.present)) throw new ExecutionContractError(`${label} latest successful validation attempt was not published atomically`);
   if (final.result === "SUPERSEDED" && base.present) throw new ExecutionContractError(`${label} SUPERSEDED must not retain an Effective Validation Base`);
-  if (final.result === "PASS" && changedClaims.some((claim) => !base.paths.includes(claim))) {
+  if (SUCCESS_RESULTS.has(final.result) && changedClaims.some((claim) => !base.paths.includes(claim))) {
     throw new ExecutionContractError(`${label} has a changed/corrected path with no validation owner`);
   }
   const latestAttempt = attempts.at(-1);
@@ -1377,9 +1568,9 @@ function parseTask(text, label, expectedSlice, references = {}) {
     throw new ExecutionContractError(`${label} cannot resume ${exhaustedOperation} after third-failure exhaustion`);
   }
   if (delegationBlocker?.state === "active") {
-    const implementationTerminal = new Set(["TESTS_PASS", "TESTS_NOT_APPLICABLE"]).has(lastImplementation?.status)
+    const implementationTerminal = SUCCESS_CHECKS.has(lastImplementation?.status)
       || (lastImplementation?.status === "TESTS_FAIL" && lastImplementation.round === 3);
-    const findingsTerminal = new Set(["TESTS_PASS", "TESTS_NOT_APPLICABLE"]).has(lastFindings?.status)
+    const findingsTerminal = SUCCESS_CHECKS.has(lastFindings?.status)
       || (lastFindings?.status === "TESTS_FAIL" && lastFindings.round === 3);
     if (delegationBlocker.operation === "EXECUTE_SLICE" && implementationTerminal) {
       throw new ExecutionContractError(`${label} has a stale EXECUTE_SLICE Delegation Blocker after a terminal auxiliary result`);
@@ -1447,7 +1638,7 @@ async function validateFinalOwnership(result) {
   const owners = new Map();
   const trustedRoot = await trustedProjectRoot(result.workspace);
   for (const row of result.rows) {
-    if (row.result !== "PASS") continue;
+    if (!SUCCESS_RESULTS.has(row.result)) continue;
     const task = result.tasks.get(row.slice);
     const taskDirectory = path.join(result.workspace.executionRoot, "tasks");
     for (const entry of task.base.entries) {
@@ -1640,8 +1831,8 @@ async function executionArtifacts(workspace) {
     });
     const plan = plans.get(row.slice);
     if (plan !== undefined && (task.fingerprint !== plan.fingerprint || task.revision !== plan.revision)) pairMismatches.push(row.slice);
-    if (row.done && row.result === "PASS") {
-      if (row.validation !== "PASS" || task.final.result !== "PASS") throw new ExecutionContractError(`${row.slice} PASS row and detailed task disagree`);
+    if (row.done && SUCCESS_RESULTS.has(row.result)) {
+      if (row.validation !== row.result || task.final.result !== row.result) throw new ExecutionContractError(`${row.slice} PASS/ACCEPTED row and detailed task disagree`);
     } else if (row.done && row.result === "SUPERSEDED") {
       if (row.validation !== "SUPERSEDED" || task.final.result !== "SUPERSEDED") throw new ExecutionContractError(`${row.slice} SUPERSEDED row and detailed task disagree`);
     } else if (row.done || row.validation !== "pending" || row.result !== "pending" || task.final.result !== "pending") {
@@ -1775,7 +1966,7 @@ async function executionArtifacts(workspace) {
       || tasks.get(row.slice).final.planRevision > globalPlan.revision) {
       throw new ExecutionContractError(`${row.slice} SUPERSEDED Final Result does not name its replacement's committing Plan revision`);
     }
-    const laterOwned = new Set(rows.slice(replacementIndex).filter((candidate) => candidate.result === "PASS").flatMap((candidate) => tasks.get(candidate.slice).base.paths));
+    const laterOwned = new Set(rows.slice(replacementIndex).filter((candidate) => SUCCESS_RESULTS.has(candidate.result)).flatMap((candidate) => tasks.get(candidate.slice).base.paths));
     const unowned = tasks.get(row.slice).claims.filter((claim) => !laterOwned.has(claim));
     supersededUnowned.push(...unowned.map((claim) => `${row.slice}:${claim}`));
   }
@@ -1784,7 +1975,7 @@ async function executionArtifacts(workspace) {
     if (row.result === "SUPERSEDED" && task.divergences.some((record) => record.severity === "blocking" && record.state === "active")) {
       throw new ExecutionContractError(`${row.slice} SUPERSEDED history retains an undisposed blocking divergence`);
     }
-    for (const divergence of task.divergences.filter((record) => record.severity === "blocking" && record.state === "resolved")) {
+    for (const divergence of task.divergences.filter((record) => record.severity === "blocking" && record.state === "resolved" && record.revalidationRecord === undefined)) {
       const owner = tasks.get(divergence.resolutionSlice);
       if (row.result !== "SUPERSEDED" || task.final.supersededBy !== divergence.resolutionSlice || owner === undefined
         || owner.revision !== divergence.resolutionRevision || divergence.resolutionRevision > globalPlan.revision) {
@@ -1848,7 +2039,7 @@ export async function inspectExecutionState(specPath) {
     return withRecoveryTargets({ state, workspace, currentFingerprint, stale: pendingStale, ...artifacts });
   }
   const effectiveSlices = artifacts.rows.filter((row) => row.result !== "SUPERSEDED").map((row) => row.slice);
-  const activeFindings = effectiveSlices.flatMap((slice) => artifacts.tasks.get(slice).findings.filter((record) => record.severity === "blocking" && record.state === "active").map((record) => `${slice}:${record.id}`));
+  const activeFindings = effectiveSlices.flatMap((slice) => artifacts.tasks.get(slice).activeBlockers.filter((record) => record.id.startsWith("finding-")).map((record) => `${slice}:${record.id}`));
   const activeDivergences = effectiveSlices.flatMap((slice) => artifacts.tasks.get(slice).divergences
     .filter((record) => record.severity === "blocking" && record.state === "active")
     .map((record) => Object.freeze({ slice, record: record.id, requiredAuthorityOperation: record.requiredAuthorityOperation })));
@@ -1861,7 +2052,7 @@ export async function inspectExecutionState(specPath) {
   const incompleteExecutionChecklists = effectiveSlices.flatMap((slice) => {
     const task = artifacts.tasks.get(slice);
     const record = task.implementationChecks.at(-1);
-    const handsOffToValidation = new Set(["TESTS_PASS", "TESTS_NOT_APPLICABLE"]).has(record?.status)
+    const handsOffToValidation = SUCCESS_CHECKS.has(record?.status)
       || (record?.status === "TESTS_FAIL" && record.round === 3);
     return task.attempts.length === 0 && !task.checklistComplete && handsOffToValidation
       ? [{ slice, record: record.id, round: record.round, status: record.status }]
@@ -1888,17 +2079,17 @@ export async function inspectExecutionState(specPath) {
     const latestAttempt = task.attempts.at(-1);
     const latestCheck = task.findingsChecks.at(-1);
     return latestAttempt?.status === "NEEDS_FIX" && latestCheck?.findingsCycle === latestAttempt.id
-      && new Set(["TESTS_PASS", "TESTS_NOT_APPLICABLE"]).has(latestCheck.status);
+      && SUCCESS_CHECKS.has(latestCheck.status);
   });
   const implementedAwaitingValidation = effectiveSlices.filter((slice) => {
     const task = artifacts.tasks.get(slice);
-    return task.attempts.length === 0 && new Set(["TESTS_PASS", "TESTS_NOT_APPLICABLE"]).has(task.implementationChecks.at(-1)?.status);
+    return task.attempts.length === 0 && SUCCESS_CHECKS.has(task.implementationChecks.at(-1)?.status);
   });
-  const allTerminal = artifacts.rows.every((row) => row.done && new Set(["PASS", "SUPERSEDED"]).has(row.result));
+  const allTerminal = artifacts.rows.every((row) => row.done && new Set(["PASS", "ACCEPTED", "SUPERSEDED"]).has(row.result));
   if (allTerminal && artifacts.supersededUnowned.length !== 0) {
-    throw new ExecutionContractError(`SUPERSEDED paths lack later PASS ownership: ${artifacts.supersededUnowned.join(", ")}`);
+    throw new ExecutionContractError(`SUPERSEDED paths lack later PASS/ACCEPTED ownership: ${artifacts.supersededUnowned.join(", ")}`);
   }
-  const currentPass = artifacts.rows.some((row) => row.result === "PASS"
+  const currentPass = artifacts.rows.some((row) => SUCCESS_RESULTS.has(row.result)
     && artifacts.tasks.get(row.slice).fingerprint === artifacts.globalPlan.fingerprint
     && artifacts.tasks.get(row.slice).revision === artifacts.globalPlan.revision);
   let state = "EXECUTION_STARTED";
@@ -1951,6 +2142,11 @@ function currentFrontier(result) {
   return result.rows?.find((row) => !row.done)?.slice ?? null;
 }
 
+function hasGateReplanEvidence(result) {
+  return [...result.tasks?.values() ?? []].some((task) => task.final.result === "pending"
+    && chronologicalQualityRecords(task.implementationChecks, task.findingsChecks, task.attempts).at(-1)?.gates.some((gate) => gate.decision === "replan"));
+}
+
 export function deriveRecoveryTargets(result) {
   const unscoped = (operation, owner = "execution-state") => recoveryTarget(operation, { owner });
   const scoped = (operation, slice, options = {}) => recoveryTarget(operation, { slice, ...options });
@@ -1991,13 +2187,17 @@ export function deriveRecoveryTargets(result) {
     case "REQUIREMENTS_CHANGED": targets = [unscoped("REPLAN", "requirements-authority")]; break;
     case "DIVERGENCE_BLOCKED": {
       const lifecycle = (result.activeDivergences ?? []).filter((entry) => entry.requiredAuthorityOperation === "RESUME");
-      targets = lifecycle.length === 0 ? [unscoped("REPLAN", "active-divergence")]
-        : lifecycle.map((entry) => scoped(null, entry.slice, {
-          owner: "lifecycle",
-          record: entry.record,
-          authorityMode: "RESUME",
-          invocation: "MODE=RESUME",
-        }));
+      // Documentary changes still belong to lifecycle. A concrete observation
+      // can also be rechecked in its execution owner before any authority change.
+      targets = lifecycle.map((entry) => scoped(null, entry.slice, {
+        owner: "lifecycle", record: entry.record, authorityMode: "RESUME", invocation: "MODE=RESUME",
+      }));
+      for (const entry of result.activeDivergences ?? []) {
+        const task = result.tasks.get(entry.slice);
+        const operation = task.checklistComplete ? "VALIDATE_SLICE" : task.attempts.length ? "APPLY_FINDINGS" : "EXECUTE_SLICE";
+        targets.push(scoped(operation, entry.slice, { owner: "blocker-revalidation", record: entry.record }));
+      }
+      if (lifecycle.length === 0 && hasGateReplanEvidence(result)) targets.push(unscoped("REPLAN", "active-divergence"));
       break;
     }
     case "AUXILIARY_BLOCKED": {
@@ -2061,13 +2261,16 @@ export function deriveRecoveryTargets(result) {
         const [slice, record] = value.split(":");
         return scoped("APPLY_FINDINGS", slice, { owner: "active-finding", record });
       });
+      for (const slice of new Set((result.activeFindings ?? []).map((value) => value.split(":")[0]))) {
+        targets.push(scoped("VALIDATE_SLICE", slice, { owner: "blocker-revalidation" }));
+      }
       break;
     case "VALIDATION_BLOCKED":
       targets = [
         ...(result.validationBlocked ?? []).map((slice) => scoped("VALIDATE_SLICE", slice, {
           owner: "validation-attempt", record: result.tasks.get(slice).attempts.at(-1)?.id ?? null,
         })),
-        unscoped("REPLAN", "execution-history"),
+        ...(hasGateReplanEvidence(result) ? [unscoped("REPLAN", "execution-history")] : []),
       ];
       break;
     case "REPLAN_REQUIRED": targets = [unscoped("REPLAN", "current-authority")]; break;
@@ -2106,13 +2309,16 @@ export function deriveLegalOperations(result, recoveryTargets = deriveRecoveryTa
   if (result.state === "EMPTY" && result.workspace.kind === "lifecycle" && result.lifecycleStatus !== "ready") {
     return Object.freeze([]);
   }
-  if (recoveryTargets.some((target) => target.owner === "lifecycle")) return Object.freeze([]);
+  if (recoveryTargets.some((target) => target.owner === "lifecycle")) {
+    return Object.freeze(uniqueRecoveryTargets(recoveryTargets.filter((target) => target.owner === "blocker-revalidation").map(simplifiedTarget)));
+  }
   const mandatory = recoveryTargets.filter((target) => target.sameOperationResumeRequired);
   if (mandatory.length > 1) throw new ExecutionContractError(`${result.state} has ambiguous mandatory recovery authority`);
   if (mandatory.length === 1) return Object.freeze([simplifiedTarget(mandatory[0])]);
   const legal = [];
   for (const [operation, states] of OPERATION_STATES) {
     if (!states.has(result.state)) continue;
+    if (operation === "REPLAN" && ["VALIDATION_BLOCKED", "DIVERGENCE_BLOCKED"].includes(result.state) && !hasGateReplanEvidence(result)) continue;
     if (!SLICE_OPERATIONS.has(operation)) legal.push(Object.freeze({ operation, slice: null }));
     else {
       for (const target of recoveryTargets.filter((candidate) => candidate.operation === operation)) {
@@ -2189,6 +2395,11 @@ function withRecoveryTargets(result) {
   };
   return {
     ...state,
+    acceptedGates: [...result.tasks?.entries() ?? []].flatMap(([slice, task]) => {
+      if (task.final.result === "SUPERSEDED") return [];
+      const record = chronologicalQualityRecords(task.implementationChecks, task.findingsChecks, task.attempts).at(-1);
+      return (record?.gates ?? []).filter((gate) => gate.decision === "bypassed").map((gate) => ({ slice, record: record.id, gate: gate.id, ...gate.bypass }));
+    }),
     normalHandoff: deriveNormalHandoff(state),
     requiredRecoveryHandoff: deriveRequiredRecoveryHandoff(state),
   };
@@ -2258,6 +2469,93 @@ async function assertCandidateTreeSafe(directory) {
   }
 }
 
+async function validateCurrentGateSnapshots(result, liveRecords = null) {
+  const trustedRoot = await trustedProjectRoot(result.workspace);
+  for (const [slice, task] of result.tasks ?? []) {
+    const records = chronologicalQualityRecords(task.implementationChecks, task.findingsChecks, task.attempts);
+    for (const record of records) {
+      if (liveRecords !== null && liveRecords.get(`${slice}/${record.id}`) === record.body) continue;
+      if (liveRecords === null && record !== records.at(-1)) continue;
+      for (const gate of record.gates) for (const entry of gate.snapshot) {
+        const target = path.resolve(result.workspace.executionRoot, "tasks", entry.path);
+        await rejectSymlinkComponents(target, trustedRoot);
+        const metadata = await lstatOrNull(target);
+        const actual = metadata === null ? "REMOVED" : metadata.isFile() && !metadata.isSymbolicLink()
+          ? `sha256:${createHash("sha256").update(await fs.readFile(target)).digest("hex")}` : "INVALID";
+        if (actual !== entry.expected) throw new ExecutionContractError(`${slice}/${record.id}/${gate.id} observation is stale; revalidate current working tree`);
+      }
+    }
+  }
+}
+
+// Compare the persisted record, not just its final semantic classification.
+// Removing only these scalar disposition lines preserves every other original
+// field (including unknown extensions and omitted legacy Kind) without a second
+// list of identity fields that could drift from the schema.
+function originalRecordBody(body, supersession) {
+  const mutable = supersession ? /^- (?:State|Resolution|Superseded by):[^\n]*(?:\n|$)/gmu
+    : /^- (?:State|Resolution):[^\n]*(?:\n|$)/gmu;
+  return normalizeText(body.replace(mutable, ""));
+}
+
+function assertHistoricalRecord(original, candidate, label, { disposition = false, supersession = true } = {}) {
+  if (candidate === undefined) throw new ExecutionContractError(`${label} historical record cannot be removed`);
+  if (disposition && field(original.body, "State") === "active") {
+    if (originalRecordBody(original.body, supersession) === originalRecordBody(candidate.body, supersession)) return;
+  } else if (original.body === candidate.body) return;
+  throw new ExecutionContractError(`${label} historical identity and authority are immutable`);
+}
+
+async function validateCandidateHistory(workspace, result) {
+  const liveRecords = new Map();
+  const taskDirectory = path.join(workspace.executionRoot, "tasks");
+  const entries = await fs.readdir(taskDirectory, { withFileTypes: true }).catch((error) => {
+    if (error.code === "ENOENT") return [];
+    throw error;
+  });
+  // Enumerate live tasks so deleting a whole historical slice cannot evade the
+  // comparison. Pristine replacement has no operational records to preserve.
+  for (const entry of entries.filter((item) => !isIgnoredMetadata(item.name))) {
+    const livePath = path.join(taskDirectory, entry.name);
+    if (!/^slice-[0-9]{2,}\.md$/u.test(entry.name)) throw new ExecutionContractError(`non-canonical live task: ${livePath}`, [livePath]);
+    await requireRealFile(livePath, "live historical task");
+    const slice = entry.name.slice(0, -3);
+    const original = parseTask(await fs.readFile(livePath, "utf8"), livePath, slice);
+    const candidate = result.tasks?.get(slice);
+    if (candidate === undefined && original.pristine) continue;
+    if (candidate === undefined) throw new ExecutionContractError(`${slice} historical task cannot be removed`);
+    if (original.final.result !== "pending" && original.body !== candidate.body) {
+      throw new ExecutionContractError(`${slice} terminal task, validation base and supersession ownership are immutable`);
+    }
+    if (!original.pristine && original.sections.get("References") !== candidate.sections.get("References")) {
+      throw new ExecutionContractError(`${slice} historical task authority is immutable`);
+    }
+    for (const name of ["implementationChecks", "findingsChecks", "attempts", "findings", "divergences"]) {
+      const disposition = name === "findings" || name === "divergences";
+      const candidates = new Map(candidate[name].map((record) => [record.id, record]));
+      for (const record of original[name]) {
+        assertHistoricalRecord(record, candidates.get(record.id), `${slice}/${record.id}`, { disposition });
+        if (!disposition) liveRecords.set(`${slice}/${record.id}`, record.body);
+      }
+    }
+    for (const divergence of candidate.divergences) {
+      if (divergence.revalidationRecord !== undefined
+        && original.divergences.some((record) => record.id === divergence.id && record.state === "active")
+        && liveRecords.has(`${slice}/${divergence.revalidationRecord}`)) {
+        throw new ExecutionContractError(`${slice}/${divergence.id} resolution requires a newly appended revalidation record`);
+      }
+    }
+    if (original.delegationBlocker !== null) {
+      assertHistoricalRecord(
+        { body: original.sections.get("Delegation Blocker") },
+        candidate.delegationBlocker === null ? undefined : { body: candidate.sections.get("Delegation Blocker") },
+        `${slice}/Delegation Blocker`, { disposition: true, supersession: false },
+      );
+    }
+  }
+  return liveRecords;
+}
+
 export async function validateExecutionCandidate(specPath, candidateExecutionRoot) {
   const workspace = await resolveExecutionWorkspace(specPath);
   const candidate = path.resolve(String(candidateExecutionRoot));
@@ -2282,6 +2580,8 @@ export async function validateExecutionCandidate(specPath, candidateExecutionRoo
         result.recoveryTargets,
       );
     }
+    const liveRecords = await validateCandidateHistory(workspace, result);
+    await validateCurrentGateSnapshots({ ...result, workspace }, liveRecords);
     return Object.freeze({
       state: result.state,
       currentFingerprint: result.currentFingerprint,
@@ -2685,6 +2985,10 @@ export async function preflightExecutionOperation(specPath, operation, sliceValu
       result.recoveryTargets,
     );
   }
+  if (normalizedOperation === "REPLAN" && ["VALIDATION_BLOCKED", "DIVERGENCE_BLOCKED"].includes(result.state)
+    && !hasGateReplanEvidence(result) && !result.recoveryTargets.some((target) => target.owner === "lifecycle")) {
+    throw new ExecutionContractError("REPLAN requires current slice relevance, causal evidence and proof that no in-scope correction is valid; revalidate the blocker first", [], result.recoveryTargets);
+  }
   const needsSlice = SLICE_OPERATIONS.has(normalizedOperation);
   const hasSlice = sliceValue !== null && sliceValue !== undefined;
   let slice = null;
@@ -2742,6 +3046,24 @@ export async function preflightExecutionOperation(specPath, operation, sliceValu
   if (normalizedOperation === "APPLY_FINDINGS" && !result.tasks.get(slice).findings.some((record) => record.severity === "blocking" && record.state === "active")) {
     throw new ExecutionContractError(`${slice} has no active blocking finding`);
   }
+  if (normalizedOperation === "REPLAN" && ["VALIDATION_BLOCKED", "DIVERGENCE_BLOCKED"].includes(result.state)) {
+    const tasks = [...result.tasks.values()].filter((task) => task.final.result === "pending");
+    if (!tasks.some((task) => chronologicalQualityRecords(task.implementationChecks, task.findingsChecks, task.attempts).at(-1)?.gates.some((gate) => gate.decision === "replan"))) {
+      throw new ExecutionContractError("REPLAN requires current slice relevance, causal evidence and proof that no in-scope correction is valid; revalidate the blocker first", [], result.recoveryTargets);
+    }
+    await validateCurrentGateSnapshots(result);
+  }
   if (normalizedOperation === "CLOSE") await validateFinalOwnership(result);
-  return { ...result, operation: normalizedOperation, slice };
+  const revalidation = slice === null ? [] : blockerRevalidation(result.tasks.get(slice));
+  return { ...result, operation: normalizedOperation, slice, revalidation };
+}
+
+function blockerRevalidation(task) {
+  const records = chronologicalQualityRecords(task.implementationChecks, task.findingsChecks, task.attempts);
+  return [
+    ...task.activeBlockers.map((record) => ({ record: record.id, reason: "reobserve current condition before correction or authority change" })),
+    ...(task.delegationBlocker?.state === "active" ? [{ record: "Delegation Blocker", reason: "retry the logical runner invocation" }] : []),
+    ...records.slice(-1).filter((record) => record.status === "BLOCKED" || record.gates.some((gate) => gate.decision === "bypassed"))
+      .map((record) => ({ record: record.id, reason: "rerun applicable checks against the working tree; old verdict and HEAD are not current truth" })),
+  ];
 }

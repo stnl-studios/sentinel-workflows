@@ -9,6 +9,9 @@ import test from "node:test";
 
 import {
   deriveNormalHandoff,
+  deriveRecoveryTargets,
+  evaluateQualityGate,
+  qualityGateIdentity,
   EXECUTION_WORKFLOW_SKILLS,
   ExecutionContractError,
   computeRequirementsAuthority,
@@ -354,7 +357,7 @@ function checkRecord(prefix, number, status, round, { cycle = null } = {}) {
   const id = String(number).padStart(2, "0");
   const commands = new Set(["TESTS_NOT_APPLICABLE", "BLOCKED"]).has(status)
     ? "- Commands: none"
-    : `- Commands:\n  - \`node --test\` | exit:${status === "TESTS_PASS" ? 0 : 1}`;
+    : `- Commands:\n  - \`node --test\` | exit:${["TESTS_PASS", "TESTS_ACCEPTED"].includes(status) ? 0 : 1}`;
   const findings = prefix === "findings-check" ? `
 - Findings cycle: ${cycle}
 - Finding IDs: finding-01
@@ -696,7 +699,7 @@ test("RESUME remains lifecycle recovery authority before execution REPLAN is der
   await editTask(fixture, (value) => replaceSection(value, "Divergences", lifecycleDivergence));
   const blocked = await inspectExecutionState(fixture.requirements);
   assert.equal(blocked.state, "DIVERGENCE_BLOCKED");
-  assert.deepEqual(blocked.legalOperations, []);
+  assert.deepEqual(blocked.legalOperations, [{ operation: "EXECUTE_SLICE", slice: "slice-01" }]);
   assert.deepEqual(blocked.requiredRecoveryHandoff, {
     owner: "lifecycle",
     operation: null,
@@ -719,8 +722,8 @@ test("two lifecycle RESUME records preserve both identities while sharing one ha
   await editTask(fixture, (value) => replaceSection(value, "Divergences", `${first}\n\n${second}`));
   const blocked = await inspectExecutionState(fixture.requirements);
   assert.equal(blocked.state, "DIVERGENCE_BLOCKED");
-  assert.deepEqual(blocked.recoveryTargets.map(({ record }) => record), ["divergence-01", "divergence-02"]);
-  assert.deepEqual(blocked.legalOperations, []);
+  assert.deepEqual(blocked.recoveryTargets.filter(({ owner }) => owner === "lifecycle").map(({ record }) => record), ["divergence-01", "divergence-02"]);
+  assert.deepEqual(blocked.legalOperations, [{ operation: "EXECUTE_SLICE", slice: "slice-01" }]);
   assert.deepEqual(blocked.requiredRecoveryHandoff, {
     owner: "lifecycle",
     operation: null,
@@ -1361,7 +1364,7 @@ test("auxiliary runner output contract round-trips through model-owned persisten
 
 test("formal validation output round-trips through NEEDS_FIX, correction, PASS, base, final, and handoff", async (t) => {
   const runnerContract = await fs.readFile(path.join(ROOT, "templates/subagents/claude-code/.claude/agents/stnl-validation-runner.md"), "utf8");
-  for (const fieldName of ["Tipo de validação:", "Status: PASS | NEEDS_FIX | BLOCKED", "Manifesto final da slice:", "Evidências:", "Findings:"]) {
+  for (const fieldName of ["Tipo de validação:", "Status: PASS | ACCEPTED | NEEDS_FIX | BLOCKED", "Manifesto final da slice:", "Evidências:", "Findings:"]) {
     assert.ok(runnerContract.includes(fieldName), fieldName);
   }
   const fixture = await standaloneWorkspace(t);
@@ -1437,16 +1440,16 @@ test("distributed execution schemas and runtime agree on corrected semantic boun
     /`Finding IDs` is one non-empty lexicographically ordered set/u,
     /exact `Tested state: none`[\s\S]{0,120}`Fileless reason`/u,
     /exact historical pair `Check discovery sources` \/ `Check discovery actions`/u,
-    /At most one current base exists and it originates from the current `PASS` attempt/u,
+    /At most one current base exists and it originates from the current `PASS` or `ACCEPTED` attempt/u,
     /`Finding references` uses exact `none` or `finding-NN, finding-NN`/u,
     /`Finding dispositions` uses exact `none` or `finding-NN=(?:active\|resolved\|superseded), finding-NN=(?:active\|resolved\|superseded)`/u,
     /`Findings verified` is exact `none` or a canonical subset of `Finding IDs`/u,
     /`Unsupported active findings` is deterministically every active finding at the named cycle not present in `Findings verified`/u,
     /file-backed `Correction paths` is an exact comma-space-delimited normalized ordered set, while exact `none` is permitted only for the corresponding fileless correction/u,
-    /In `TESTS_PASS`, exact `none` is forbidden specifically for `Tested scope`, `Verification types considered`, `Selected checks`, and `Coverage`/u,
+    /In `TESTS_PASS` or `TESTS_ACCEPTED`, exact `none` is forbidden specifically for `Tested scope`, `Verification types considered`, `Selected checks`, and `Coverage`/u,
     /Candidate validation rejects terminal implementation evidence with an incomplete checklist/u,
     /exactly one mandatory target, `stnl-slice-executor \/ EXECUTE_SLICE \/ <affected slice>`/u,
-    /The first `PASS` attempt is terminal/u,
+    /The first `PASS` or `ACCEPTED` attempt is terminal/u,
   ]) assert.match(schemas[0], rule);
 
   const accepted = await standaloneWorkspace(t);
@@ -2529,7 +2532,7 @@ test("attempt/check numbering, unresolved blockers at PASS, and structural gates
   const pendingPass = await standaloneWorkspace(t);
   await renderArtifacts(pendingPass);
   await editTask(pendingPass, (value) => replaceSection(value.replace("- [ ] 1.1", "- [x] 1.1"), "Validation Attempts", PASS_ATTEMPT));
-  await assert.rejects(inspectExecutionState(pendingPass.requirements), /latest PASS attempt was not published atomically/u);
+  await assert.rejects(inspectExecutionState(pendingPass.requirements), /latest successful validation attempt was not published atomically/u);
 
   const malformedBases = [
     [PASS_BASE.replace("- Attempt type: initial", "- Attempt type: revalidation"), /Attempt type disagrees/u],
@@ -3012,7 +3015,7 @@ test("the first formal PASS is terminal for its slice", async (t) => {
     "| [ ] | 01 - Delivery | observable result | - | tasks/slice-01.md | pending | pending |",
     "| [x] | 01 - Delivery | observable result | - | tasks/slice-01.md | PASS | PASS |",
   ));
-  await assert.rejects(inspectExecutionState(passPass.requirements), /attempt-01 PASS is terminal/u);
+  await assert.rejects(inspectExecutionState(passPass.requirements), /attempt-01 PASS\/ACCEPTED is terminal/u);
 
   const passNeedsFix = await standaloneWorkspace(t);
   await renderArtifacts(passNeedsFix);
@@ -3025,7 +3028,7 @@ test("the first formal PASS is terminal for its slice", async (t) => {
     })}`);
     return replaceSection(result, "Validation Findings", laterFinding);
   });
-  await assert.rejects(inspectExecutionState(passNeedsFix.requirements), /attempt-01 PASS is terminal/u);
+  await assert.rejects(inspectExecutionState(passNeedsFix.requirements), /attempt-01 PASS\/ACCEPTED is terminal/u);
 });
 
 test("work, corrections, findings authority, terminal diff, and blocker resolution reconcile exactly", async (t) => {
@@ -3127,7 +3130,7 @@ test("work, corrections, findings authority, terminal diff, and blocker resoluti
     "| [ ] | 01 - Delivery | observable result | - | tasks/slice-01.md | pending | pending |",
     "| [x] | 01 - Delivery | observable result | - | tasks/slice-01.md | PASS | PASS |",
   ));
-  await assert.rejects(inspectExecutionState(pendingDiff.requirements), /terminal PASS requires a non-placeholder Diff Summary/u);
+  await assert.rejects(inspectExecutionState(pendingDiff.requirements), /terminal PASS\/ACCEPTED requires a non-placeholder Diff Summary/u);
 
   const blockerWithPendingChangedAreas = await standaloneWorkspace(t);
   await renderArtifacts(blockerWithPendingChangedAreas);
@@ -3175,7 +3178,7 @@ test("formal BLOCKED and selected-slice gates have only legal recovery transitio
   });
   await assert.rejects(preflightExecutionOperation(fixture.requirements, "EXECUTE_SLICE", "1"), /not legal/u);
   assert.equal((await preflightExecutionOperation(fixture.requirements, "VALIDATE_SLICE", "1")).state, "VALIDATION_BLOCKED");
-  assert.equal((await preflightExecutionOperation(fixture.requirements, "REPLAN")).state, "VALIDATION_BLOCKED");
+  await assert.rejects(preflightExecutionOperation(fixture.requirements, "REPLAN"), /revalidate the blocker first/u);
 
 });
 
@@ -3283,4 +3286,692 @@ test("lifecycle CLOSE trusts repository-owned paths outside a nested SPEC and re
     return result;
   });
   await assert.rejects(preflightExecutionOperation(workspace, "CLOSE"), /unsafe validation-owned path/u);
+});
+
+// Shared gate/recovery acceptance scenarios. These fixtures use a real failing
+// command and uncommitted file edits; no product language/tool is special-cased.
+async function qualityFixture(t) {
+  const fixture = await standaloneWorkspace(t);
+  const { authority } = await renderArtifacts(fixture);
+  fixture.gateAuthority = { fingerprint: authority, revision: 1, slice: "slice-01" };
+  await writeValidatedPath(fixture);
+  await writeValidatedPath(fixture, "../../src/external.txt", "broken\n");
+  await fs.writeFile(path.join(fixture.root, "check.mjs"), 'import fs from "node:fs"; process.exit(fs.readFileSync("src/external.txt", "utf8").trim() === "fixed" ? 0 : 1);\n');
+  await editTask(fixture, (value) => replaceSection(value.replace("- [ ] 1.1", "- [x] 1.1"), "Changed Areas", "- `../../src/example.txt`"));
+  return fixture;
+}
+
+async function observeGate(fixture, overrides = {}) {
+  const exit = spawnSync(process.execPath, ["check.mjs"], { cwd: fixture.root }).status;
+  const content = await fs.readFile(path.join(fixture.root, "src/external.txt"));
+  const gate = {
+    id: "gate-01", command: "node check.mjs", kind: "quality", scope: "out_of_scope",
+    causality: "independent", state: exit === 0 ? "absent" : "present",
+    problem: "External style debt", evidence: "Baseline and current diagnostic match; the unchanged consumer has no dependency on the slice contract.",
+    diagnostic: `sha256:${createHash("sha256").update("external style rule diagnostic").digest("hex")}`,
+    correction: "in_scope", correctionEvidence: "Slice obligations are independently validated by the focused check.",
+    revalidates: null,
+    snapshot: [{ path: "../../src/external.txt", expected: `sha256:${createHash("sha256").update(content).digest("hex")}` }],
+    bypass: null, ...overrides,
+  };
+  return { gate, exit };
+}
+
+function gateAttempt(number, status, gates, exit, options = {}) {
+  return attemptRecord(number, status, options)
+    .replace(/- Commands:(?: none|\n  - `[^`]+` \| exit:0)/u, `- Commands:\n  - \`node --test\` | exit:0\n  - \`node check.mjs\` | exit:${exit}`)
+    + `\n- Gate assessments: ${JSON.stringify(gates)}`;
+}
+
+async function persistQualityAttempt(fixture, record, { status = "BLOCKED", findingText = null, divergenceText = null } = {}) {
+  await editTask(fixture, (value) => {
+    const old = value.match(/## Validation Attempts\n\n([\s\S]*?)(?=\n## )/u)[1].trim();
+    let result = replaceSection(value, "Validation Attempts", old === "- none" ? record : `${old}\n\n${record}`);
+    if (findingText !== null) result = replaceSection(result, "Validation Findings", findingText);
+    if (divergenceText !== null) result = replaceSection(result, "Divergences", divergenceText);
+    if (["PASS", "ACCEPTED"].includes(status)) {
+      const number = Number(record.match(/^### attempt-([0-9]+)/u)[1]);
+      const commands = record.match(/- Commands:\n([\s\S]*?)(?=\n- Evidence:)/u)[1];
+      const base = passBase({ attempt: number }).replace("- Result: PASS", `- Result: ${status}`)
+        .replace("  - `node --test` | exit:0", commands)
+        .replace("Objective PASS evidence.", `Objective ${status} evidence.`);
+      result = replaceSection(result, "Effective Validation Base", base);
+      result = replaceSection(publishPassResult(result), "Final Result", `- ${status}`);
+    }
+    return result;
+  });
+  if (["PASS", "ACCEPTED"].includes(status)) await editTasksIndex(fixture, (value) => value.replace(
+    "| [ ] | 01 - Delivery | observable result | - | tasks/slice-01.md | pending | pending |",
+    `| [x] | 01 - Delivery | observable result | - | tasks/slice-01.md | ${status} | ${status} |`,
+  ));
+}
+
+async function executionCandidate(fixture) {
+  return { ...fixture, execution: await copyDirectory(fixture.execution, path.join(fixture.root, "candidate-execution")) };
+}
+
+async function snapshotTree(root) {
+  const files = (await fs.readdir(root, { recursive: true, withFileTypes: true }))
+    .filter((entry) => entry.isFile()).map((entry) => path.join(entry.parentPath, entry.name)).sort();
+  return Promise.all(files.map(async (file) => [path.relative(root, file), await fs.readFile(file)]));
+}
+
+async function assertCandidateRejectedWithoutMutation(fixture, candidate, pattern) {
+  const before = await snapshotTree(fixture.execution);
+  await assert.rejects(validateExecutionCandidate(fixture.requirements, candidate.execution), pattern);
+  assert.deepEqual(await snapshotTree(fixture.execution), before);
+}
+
+test("A/F: an independent external command failure preserves raw exits and permits slice PASS", async (t) => {
+  const fixture = await qualityFixture(t);
+  const { gate, exit } = await observeGate(fixture);
+  assert.equal(exit, 1);
+  assert.equal(evaluateQualityGate(gate, fixture.gateAuthority).decision, "non_blocking");
+  await persistQualityAttempt(fixture, gateAttempt(1, "PASS", [gate], exit), { status: "PASS" });
+  const result = await preflightExecutionOperation(fixture.requirements, "CLOSE");
+  assert.equal(result.state, "COMPLETE");
+  assert.equal(result.tasks.get("slice-01").attempts[0].commands[1].exit, 1);
+  assert.equal(result.tasks.get("slice-01").attempts[0].gates[0].decision, "non_blocking");
+  const unknown = { ...gate, causality: "unknown" };
+  assert.equal(evaluateQualityGate(unknown, fixture.gateAuthority).decision, "investigate");
+  await editTask(fixture, (value) => value.replace(JSON.stringify([gate]), JSON.stringify([unknown])));
+  await assert.rejects(inspectExecutionState(fixture.requirements), /blocking or undetermined gate/u);
+});
+
+test("B: external causal regressions require in-scope repair before authority expansion", async (t) => {
+  const fixture = await qualityFixture(t);
+  const { gate, exit } = await observeGate(fixture, { causality: "caused_by_slice", evidence: "Changing the slice interface reproduces the consumer failure; restoring the interface clears it." });
+  assert.equal(evaluateQualityGate(gate, fixture.gateAuthority).decision, "blocking");
+  await persistQualityAttempt(fixture, gateAttempt(1, "BLOCKED", [gate], exit));
+  await assert.rejects(preflightExecutionOperation(fixture.requirements, "REPLAN"), /no in-scope correction/u);
+  const expanded = { ...gate, correction: "authority_change", correctionEvidence: "The required interface is fixed by AC-001; an adapter cannot preserve the required behavior. The approved consumer boundary must change.", revalidates: "attempt-01/gate-01" };
+  await persistQualityAttempt(fixture, gateAttempt(2, "BLOCKED", [expanded], exit));
+  assert.equal((await preflightExecutionOperation(fixture.requirements, "REPLAN")).state, "VALIDATION_BLOCKED");
+  await writeValidatedPath(fixture, "../../src/external.txt", "fixed\n");
+  await assert.rejects(preflightExecutionOperation(fixture.requirements, "REPLAN"), /observation is stale/u);
+});
+
+test("C/E: a manually fixed blocker resumes the same operation with unchanged HEAD", async (t) => {
+  const fixture = await qualityFixture(t);
+  for (const args of [["init", "-q"], ["add", "."], ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "-qm", "baseline"]]) {
+    assert.equal(spawnSync("git", args, { cwd: fixture.root }).status, 0);
+  }
+  const head = spawnSync("git", ["rev-parse", "HEAD"], { cwd: fixture.root, encoding: "utf8" }).stdout;
+  const first = await observeGate(fixture, { scope: "in_scope", causality: "caused_by_slice" });
+  const oldRecord = gateAttempt(1, "BLOCKED", [first.gate], first.exit);
+  await persistQualityAttempt(fixture, oldRecord);
+  assert.equal((await preflightExecutionOperation(fixture.requirements, "VALIDATE_SLICE", "1")).revalidation[0].record, "attempt-01");
+  await writeValidatedPath(fixture, "../../src/external.txt", "fixed\n");
+  const current = await observeGate(fixture, { scope: "in_scope", causality: "caused_by_slice", revalidates: "attempt-01/gate-01" });
+  assert.equal(current.exit, 0);
+  assert.equal(evaluateQualityGate(current.gate, fixture.gateAuthority).decision, "resolved");
+  await persistQualityAttempt(fixture, gateAttempt(2, "PASS", [current.gate], current.exit), { status: "PASS" });
+  assert.equal((await preflightExecutionOperation(fixture.requirements, "CLOSE")).state, "COMPLETE");
+  assert.equal(spawnSync("git", ["rev-parse", "HEAD"], { cwd: fixture.root, encoding: "utf8" }).stdout, head);
+  assert.ok((await fs.readFile(path.join(fixture.execution, "tasks/slice-01.md"), "utf8")).includes(oldRecord));
+});
+
+test("D: an unchanged blocker is actually rechecked and appends another BLOCKED attempt", async (t) => {
+  const fixture = await qualityFixture(t);
+  for (let number = 1; number <= 2; number++) {
+    const observation = await observeGate(fixture, { scope: "in_scope", causality: "caused_by_slice", revalidates: number === 1 ? null : "attempt-01/gate-01" });
+    assert.equal(observation.exit, 1);
+    await persistQualityAttempt(fixture, gateAttempt(number, "BLOCKED", [observation.gate], observation.exit));
+    assert.equal((await preflightExecutionOperation(fixture.requirements, "VALIDATE_SLICE", "1")).state, "VALIDATION_BLOCKED");
+  }
+  assert.equal((await inspectExecutionState(fixture.requirements)).tasks.get("slice-01").attempts.length, 2);
+  await assert.rejects(preflightExecutionOperation(fixture.requirements, "CLOSE"), /not legal/u);
+});
+
+test("G/H/I: granular persisted bypass survives revalidation but never covers a new blocker", async (t) => {
+  const fixture = await qualityFixture(t);
+  const { gate, exit } = await observeGate(fixture, { scope: "in_scope", causality: "independent" });
+  await persistQualityAttempt(fixture, gateAttempt(1, "BLOCKED", [gate], exit));
+  const accepted = { ...gate, revalidates: "attempt-01/gate-01", bypass: { target: qualityGateIdentity(gate, fixture.gateAuthority), operator: "operator@example.test", reason: "Accept this optional style gate for this slice.", authorization: "Explicit operator request #42 for gate-01" } };
+  const second = { ...gate, id: "gate-02", problem: "New mandatory consumer regression", kind: "requirement", causality: "required_by_slice", diagnostic: `sha256:${"e".repeat(64)}` };
+  await persistQualityAttempt(fixture, gateAttempt(2, "BLOCKED", [accepted, second], exit));
+  const resumed = await preflightExecutionOperation(fixture.requirements, "VALIDATE_SLICE", "1");
+  const gates = resumed.tasks.get("slice-01").attempts.at(-1).gates;
+  assert.deepEqual(gates.map((entry) => entry.decision), ["bypassed", "blocking"]);
+  assert.throws(() => evaluateQualityGate({ ...second, bypass: accepted.bypass }, fixture.gateAuthority), /does not match/u);
+  assert.throws(() => evaluateQualityGate({ ...gate, bypass: accepted.bypass }, { ...fixture.gateAuthority, revision: 2 }), /does not match/u);
+  await persistQualityAttempt(fixture, gateAttempt(3, "ACCEPTED", [accepted, { ...second, state: "absent", command: null, revalidates: "attempt-02/gate-02" }], exit), { status: "ACCEPTED" });
+  const complete = await preflightExecutionOperation(fixture.requirements, "CLOSE");
+  assert.equal(complete.state, "COMPLETE");
+  assert.equal(complete.rows[0].result, "ACCEPTED");
+  assert.equal(complete.tasks.get("slice-01").attempts.at(-1).gates[0].bypass.authorization, accepted.bypass.authorization);
+  await assert.rejects(preflightExecutionOperation(fixture.requirements, "VALIDATE_SLICE", "1"), /not legal/u);
+  await editTask(fixture, (value) => value.replace("- Status: ACCEPTED", "- Status: PASS"));
+  await assert.rejects(inspectExecutionState(fixture.requirements), /bypass requires ACCEPTED/u);
+});
+
+test("auto-recovery takes precedence over a historical bypass", async (t) => {
+  const fixture = await qualityFixture(t);
+  const { gate } = await observeGate(fixture, { scope: "in_scope" });
+  const bypass = { target: qualityGateIdentity(gate, fixture.gateAuthority), operator: "operator", reason: "Known optional gate", authorization: "Explicit request 42" };
+  assert.equal(evaluateQualityGate({ ...gate, state: "absent", bypass }, fixture.gateAuthority).decision, "resolved");
+  assert.throws(() => evaluateQualityGate({ ...gate, scope: "out_of_scope", bypass }, fixture.gateAuthority), /does not match/u);
+});
+
+test("J: gate decisions and bypass cannot mask structural state or mandatory requirements", async (t) => {
+  const fixture = await qualityFixture(t);
+  const { gate, exit } = await observeGate(fixture);
+  for (const kind of ["structural", "requirement"]) {
+    const required = { ...gate, kind, scope: "out_of_scope", causality: "required_by_slice" };
+    assert.equal(evaluateQualityGate(required, fixture.gateAuthority).decision, "blocking");
+    assert.throws(() => evaluateQualityGate({ ...required, bypass: { target: qualityGateIdentity(required, fixture.gateAuthority), operator: "operator", reason: "Override", authorization: "Explicit" } }, fixture.gateAuthority), /cannot be bypassed/u);
+  }
+  await persistQualityAttempt(fixture, gateAttempt(1, "PASS", [gate], exit), { status: "PASS" });
+  const taskPath = path.join(fixture.execution, "tasks/slice-01.md");
+  const good = await fs.readFile(taskPath, "utf8");
+  await fs.writeFile(taskPath, good.replace("- [x] 1.1", "- [ ] 1.1"));
+  await assert.rejects(inspectExecutionState(fixture.requirements), /mandatory checklist/u);
+  await fs.writeFile(taskPath, good);
+  const dependencies = await standaloneWorkspace(t);
+  await renderArtifacts(dependencies);
+  await addSecondPristineSlice(dependencies);
+  await assert.rejects(preflightExecutionOperation(dependencies.requirements, "EXECUTE_SLICE", "2"), /not legal/u);
+  await fs.rm(path.join(fixture.execution, "plans/slice-01.md"));
+  await assert.rejects(inspectExecutionState(fixture.requirements), /non-canonical paths|missing|differ|absent|mappings or serial order disagree/u);
+});
+
+test("manual finding correction may go directly to independent validation without invented executor edits", async (t) => {
+  const fixture = await qualityFixture(t);
+  await editTask(fixture, (value) => replaceSection(replaceSection(value, "Validation Attempts", NEEDS_FIX_ATTEMPT), "Validation Findings", ACTIVE_FINDING));
+  assert.equal((await preflightExecutionOperation(fixture.requirements, "VALIDATE_SLICE", "1")).state, "VALIDATION_NEEDS_FIX");
+  await writeValidatedPath(fixture, "../../src/external.txt", "fixed\n");
+  const { gate, exit } = await observeGate(fixture, { revalidates: "finding-01" });
+  await persistQualityAttempt(fixture, gateAttempt(2, "PASS", [gate], exit, { references: "finding-01", dispositions: "finding-01=resolved" }), {
+    status: "PASS", findingText: `${ACTIVE_FINDING.replace("- State: active", "- State: resolved")}\n- Resolution: attempt-02 independently confirmed the external manual correction.`,
+  });
+  assert.equal((await preflightExecutionOperation(fixture.requirements, "CLOSE")).state, "COMPLETE");
+});
+
+test("observational divergence can be revalidated as independent without materializing a replan", async (t) => {
+  const fixture = await qualityFixture(t);
+  const observational = ACTIVE_DIVERGENCE.replace("- Required authority operation: REPLAN", "- Kind: observational\n- Required authority operation: none");
+  await editTask(fixture, (value) => replaceSection(value, "Divergences", observational));
+  assert.equal((await preflightExecutionOperation(fixture.requirements, "VALIDATE_SLICE", "1")).state, "DIVERGENCE_BLOCKED");
+  await assert.rejects(preflightExecutionOperation(fixture.requirements, "REPLAN"), /revalidate the blocker first/u);
+  const { gate, exit } = await observeGate(fixture, { revalidates: "divergence-01" });
+  await persistQualityAttempt(fixture, gateAttempt(1, "PASS", [gate], exit), {
+    status: "PASS", divergenceText: `${observational.replace("- State: active", "- State: resolved")}\n- Resolution: attempt-01 revalidated: external failure is independent of the slice.`,
+  });
+  assert.equal((await preflightExecutionOperation(fixture.requirements, "CLOSE")).state, "COMPLETE");
+});
+
+test("candidate rejects stale working-tree gate evidence and preserves live artifacts", async (t) => {
+  const fixture = await qualityFixture(t);
+  const { gate, exit } = await observeGate(fixture, { scope: "in_scope" });
+  const original = await fs.readFile(path.join(fixture.execution, "tasks/slice-01.md"), "utf8");
+  const candidate = path.join(await temporary(t), "candidate");
+  await fs.cp(fixture.execution, candidate, { recursive: true });
+  await fs.writeFile(path.join(candidate, "tasks/slice-01.md"), replaceSection(original, "Validation Attempts", gateAttempt(1, "BLOCKED", [gate], exit)));
+  assert.equal((await validateExecutionCandidate(fixture.requirements, candidate)).state, "VALIDATION_BLOCKED");
+  await writeValidatedPath(fixture, "../../src/external.txt", "fixed\n");
+  await assert.rejects(validateExecutionCandidate(fixture.requirements, candidate), /observation is stale/u);
+  assert.equal(await fs.readFile(path.join(fixture.execution, "tasks/slice-01.md"), "utf8"), original);
+});
+
+test("a prior blocker cannot be silently omitted in a later formal result", async (t) => {
+  const fixture = await qualityFixture(t);
+  const { gate, exit } = await observeGate(fixture, { scope: "in_scope" });
+  await persistQualityAttempt(fixture, gateAttempt(1, "BLOCKED", [gate], exit));
+  await writeValidatedPath(fixture, "../../src/external.txt", "fixed\n");
+  await persistQualityAttempt(fixture, attemptRecord(2, "PASS"), { status: "PASS" });
+  await assert.rejects(inspectExecutionState(fixture.requirements), /must revalidate prior blocker/u);
+});
+
+test("a bypass needs a prior real blocker, and mixed failures cannot be classified as PASS", async (t) => {
+  const fixture = await qualityFixture(t);
+  const { gate, exit } = await observeGate(fixture, { scope: "in_scope" });
+  const bypass = { target: qualityGateIdentity(gate, fixture.gateAuthority), operator: "operator", reason: "Accept optional rule", authorization: "Explicit request 42" };
+  await persistQualityAttempt(fixture, gateAttempt(1, "ACCEPTED", [{ ...gate, bypass }], exit), { status: "ACCEPTED" });
+  await assert.rejects(inspectExecutionState(fixture.requirements), /previously observed concrete blocker/u);
+  const mixed = await qualityFixture(t);
+  const independent = await observeGate(mixed);
+  const regression = { ...independent.gate, id: "gate-02", causality: "caused_by_slice" };
+  await persistQualityAttempt(mixed, gateAttempt(1, "PASS", [independent.gate, regression], exit), { status: "PASS" });
+  await assert.rejects(inspectExecutionState(mixed.requirements), /blocking or undetermined gate/u);
+});
+
+test("auxiliary manual recovery appends current evidence without commit or reimplementation", async (t) => {
+  const fixture = await qualityFixture(t);
+  const first = await observeGate(fixture, { scope: "in_scope" });
+  const prior = checkRecord("implementation-check", 1, "BLOCKED", 1)
+    .replace("- Commands: none", "- Commands:\n  - `node check.mjs` | exit:1") + `\n- Gate assessments: ${JSON.stringify([first.gate])}`;
+  await editTask(fixture, (value) => replaceSection(value, "Implementation Test Evidence", prior));
+  const resumed = await preflightExecutionOperation(fixture.requirements, "EXECUTE_SLICE", "1");
+  assert.equal(resumed.mandatoryRecovery.owner, "auxiliary-check");
+  assert.equal(resumed.revalidation[0].record, "implementation-check-01");
+  await writeValidatedPath(fixture, "../../src/external.txt", "fixed\n");
+  const current = await observeGate(fixture, { scope: "in_scope", revalidates: "implementation-check-01/gate-01" });
+  const next = checkRecord("implementation-check", 2, "TESTS_PASS", 1).replace("node --test", "node check.mjs") + `\n- Gate assessments: ${JSON.stringify([current.gate])}`;
+  await editTask(fixture, (value) => replaceSection(value, "Implementation Test Evidence", `${prior}\n\n${next}`));
+  assert.equal((await preflightExecutionOperation(fixture.requirements, "VALIDATE_SLICE", "1")).state, "IMPLEMENTED_AWAITING_VALIDATION");
+});
+
+test("BLOCKED may resolve a manual finding correction while preserving a different real blocker", async (t) => {
+  const fixture = await qualityFixture(t);
+  await editTask(fixture, (value) => replaceSection(replaceSection(value, "Validation Attempts", NEEDS_FIX_ATTEMPT), "Validation Findings", ACTIVE_FINDING));
+  const { gate, exit } = await observeGate(fixture, { scope: "in_scope" });
+  const resolved = { ...gate, id: "gate-02", command: null, state: "absent", revalidates: "finding-01" };
+  await persistQualityAttempt(fixture, gateAttempt(2, "BLOCKED", [gate, resolved], exit, { references: "finding-01", dispositions: "finding-01=resolved" }), {
+    findingText: `${ACTIVE_FINDING.replace("- State: active", "- State: resolved")}\n- Resolution: attempt-02 confirms manual correction while the optional environment gate remains.`,
+  });
+  const state = await preflightExecutionOperation(fixture.requirements, "VALIDATE_SLICE", "1");
+  assert.equal(state.state, "VALIDATION_BLOCKED");
+  assert.equal(state.tasks.get("slice-01").findings[0].state, "resolved");
+  assert.equal(state.activeFindings.length, 0);
+});
+
+test("ACCEPTED retains optional finding identity and exposes acceptance to CLI readers", async (t) => {
+  const fixture = await qualityFixture(t);
+  const { gate, exit } = await observeGate(fixture, { scope: "in_scope" });
+  await editTask(fixture, (value) => replaceSection(replaceSection(value, "Validation Attempts", gateAttempt(1, "NEEDS_FIX", [gate], exit, { references: "finding-01", dispositions: "finding-01=active" })), "Validation Findings", ACTIVE_FINDING.replace("AC-001 is not satisfied.", "Optional quality convention is not satisfied.")));
+  const accepted = { ...gate, revalidates: "finding-01", bypass: { target: qualityGateIdentity(gate, fixture.gateAuthority), operator: "operator", reason: "Accept optional rule", authorization: "Explicit request 42" } };
+  await persistQualityAttempt(fixture, gateAttempt(2, "ACCEPTED", [accepted], exit, { references: "finding-01", dispositions: "finding-01=active" }), { status: "ACCEPTED" });
+  const state = await preflightExecutionOperation(fixture.requirements, "CLOSE");
+  assert.equal(state.state, "COMPLETE");
+  assert.equal(state.tasks.get("slice-01").findings[0].state, "active");
+  assert.equal(state.activeFindings.length, 0);
+  assert.equal(state.acceptedGates[0].authorization, accepted.bypass.authorization);
+  const cli = spawnSync(process.execPath, [path.join(ROOT, "skills/workflows/stnl-execution-closer/runtime/validate-execution-state.mjs"), fixture.requirements, "--handoff-after", "VALIDATE_SLICE"], { encoding: "utf8" });
+  assert.equal(cli.status, 0, cli.stderr);
+  assert.equal(JSON.parse(cli.stdout).accepted_gates[0].gate, "gate-01");
+});
+
+test("gate identity excludes prose but binds every material blocker and authority attribute", async (t) => {
+  const fixture = await qualityFixture(t);
+  const { gate } = await observeGate(fixture, { scope: "in_scope" });
+  const authority = fixture.gateAuthority;
+  const identity = qualityGateIdentity(gate, authority);
+  const bypass = { target: identity, operator: "operator", reason: "Optional gate", authorization: "Request 42" };
+  const paraphrased = { ...gate, problem: "Reworded failure", evidence: "Freshly explained evidence", correctionEvidence: "Rephrased correction", snapshot: [] };
+  assert.equal(qualityGateIdentity(paraphrased, authority), identity);
+  assert.equal(evaluateQualityGate({ ...paraphrased, bypass }, authority).decision, "bypassed");
+  for (const change of [
+    { diagnostic: `sha256:${"a".repeat(64)}` }, { command: "node other.mjs" }, { kind: "requirement" },
+    { causality: "caused_by_slice" }, { correction: "authority_change" }, { scope: "out_of_scope" }, { id: "gate-02" },
+  ]) {
+    const changed = { ...gate, ...change };
+    assert.notEqual(qualityGateIdentity(changed, authority), identity, JSON.stringify(change));
+    assert.throws(() => evaluateQualityGate({ ...changed, bypass }, authority), /does not match/u);
+  }
+  for (const change of [{ revision: 2 }, { slice: "slice-02" }, { fingerprint: `sha256:${"f".repeat(64)}` }]) {
+    assert.notEqual(qualityGateIdentity(gate, { ...authority, ...change }), identity);
+    for (const state of ["present", "absent"]) assert.throws(() => evaluateQualityGate({ ...gate, state, bypass }, { ...authority, ...change }), /does not match/u);
+  }
+});
+
+test("persisted bypass survives prose changes, then resolves without ACCEPTED while retaining exact audit history", async (t) => {
+  const fixture = await qualityFixture(t);
+  const { gate, exit } = await observeGate(fixture, { scope: "in_scope" });
+  await persistQualityAttempt(fixture, gateAttempt(1, "BLOCKED", [gate], exit));
+  const bypass = { target: qualityGateIdentity(gate, fixture.gateAuthority), operator: "operator", reason: "Optional gate", authorization: "Request 42" };
+  const accepted = { ...gate, problem: "Same failure, new wording", evidence: "Updated explanation", revalidates: "attempt-01/gate-01", bypass };
+  const other = { ...gate, id: "gate-02", kind: "requirement", causality: "required_by_slice" };
+  await persistQualityAttempt(fixture, gateAttempt(2, "BLOCKED", [accepted, other], exit));
+  assert.equal((await inspectExecutionState(fixture.requirements)).tasks.get("slice-01").attempts[1].gates[0].decision, "bypassed");
+  await writeValidatedPath(fixture, "../../src/external.txt", "fixed\n");
+  const current = await observeGate(fixture, { ...accepted, state: "absent", revalidates: "attempt-02/gate-01" });
+  // Retain semantic identity, but refresh the observed working-tree bytes.
+  current.gate.snapshot = (await observeGate(fixture)).gate.snapshot;
+  const resolvedOther = { ...other, state: "absent", revalidates: "attempt-02/gate-02", snapshot: current.gate.snapshot };
+  await persistQualityAttempt(fixture, gateAttempt(3, "PASS", [current.gate, resolvedOther], current.exit), { status: "PASS" });
+  const state = await preflightExecutionOperation(fixture.requirements, "CLOSE");
+  assert.equal(state.rows[0].result, "PASS");
+  assert.deepEqual(state.acceptedGates, []);
+  const attempts = state.tasks.get("slice-01").attempts;
+  assert.equal(attempts[2].gates[0].decision, "resolved");
+  assert.deepEqual(attempts[2].gates[0].bypass, bypass);
+  assert.deepEqual(attempts[1].gates[0].bypass, bypass);
+  const taskFile = path.join(fixture.execution, "tasks/slice-01.md");
+  const valid = await fs.readFile(taskFile, "utf8");
+  for (const change of [{ target: `sha256:${"d".repeat(64)}` }, { target: null }, { target: qualityGateIdentity(gate, { ...fixture.gateAuthority, slice: "slice-02" }) }, { target: qualityGateIdentity(gate, { ...fixture.gateAuthority, revision: 2 }) }, { authorization: "Invented historical request" }]) {
+    await fs.writeFile(taskFile, valid.replace(JSON.stringify([current.gate, resolvedOther]), JSON.stringify([{ ...current.gate, bypass: { ...bypass, ...change } }, resolvedOther])));
+    await assert.rejects(inspectExecutionState(fixture.requirements), /does not match|previously recorded authorization/u);
+  }
+  await fs.writeFile(taskFile, valid.replace('- Status: PASS', '- Status: ACCEPTED'));
+  await assert.rejects(inspectExecutionState(fixture.requirements), /bypass requires ACCEPTED, never PASS/u);
+});
+
+test("historical bypass cannot be invented after recovery without a prior blocker", async (t) => {
+  const fixture = await qualityFixture(t);
+  await writeValidatedPath(fixture, "../../src/external.txt", "fixed\n");
+  const { gate, exit } = await observeGate(fixture, { scope: "in_scope" });
+  const bypass = { target: qualityGateIdentity(gate, fixture.gateAuthority), operator: "operator", reason: "Optional gate", authorization: "Request 42" };
+  await persistQualityAttempt(fixture, gateAttempt(1, "PASS", [{ ...gate, bypass }], exit), { status: "PASS" });
+  await assert.rejects(inspectExecutionState(fixture.requirements), /previously observed concrete blocker/u);
+});
+
+for (const kind of ["observational", "authority", "structural", "required", "legacy"]) {
+  test(`${kind} divergence resolves on objective absence and preserves original authority history`, async (t) => {
+    const fixture = await qualityFixture(t);
+    const original = ACTIVE_DIVERGENCE.replace("- Required authority operation: REPLAN", `${kind === "legacy" ? "" : `- Kind: ${kind}\n`}- Required authority operation: ${kind === "observational" ? "none" : "RESUME"}`);
+    await editTask(fixture, (value) => replaceSection(value, "Divergences", original));
+    if (kind !== "observational") {
+      const state = await preflightExecutionOperation(fixture.requirements, "VALIDATE_SLICE", "1");
+      assert.ok(deriveRecoveryTargets(state).some((target) => target.authorityMode === "RESUME"));
+    }
+    await writeValidatedPath(fixture, "../../src/external.txt", "fixed\n");
+    const { gate, exit } = await observeGate(fixture, { revalidates: "divergence-01" });
+    await persistQualityAttempt(fixture, gateAttempt(1, "PASS", [gate], exit), {
+      status: "PASS", divergenceText: `${original.replace("- State: active", "- State: resolved")}\n- Resolution: attempt-01 revalidated: current condition is objectively absent.`,
+    });
+    const state = await preflightExecutionOperation(fixture.requirements, "CLOSE");
+    assert.equal(state.state, "COMPLETE");
+    const divergence = state.tasks.get("slice-01").divergences[0];
+    assert.equal(divergence.requiredAuthorityOperation, kind === "observational" ? "none" : "RESUME");
+    for (const line of original.split("\n").filter((line) => line.startsWith("- ") && !line.startsWith("- State:"))) assert.ok(divergence.body.includes(line));
+  });
+}
+
+for (const kind of ["authority", "structural", "required", "legacy"]) {
+  test(`${kind} divergence cannot be demoted directly or through gate lineage, or bypassed`, async (t) => {
+    const fixture = await qualityFixture(t);
+    const original = ACTIVE_DIVERGENCE.replace("- Required authority operation: REPLAN", `${kind === "legacy" ? "" : `- Kind: ${kind}\n`}- Required authority operation: RESUME`);
+    await editTask(fixture, (value) => replaceSection(value, "Divergences", original));
+    const { gate, exit } = await observeGate(fixture, { scope: "in_scope", revalidates: "divergence-01" });
+    await persistQualityAttempt(fixture, gateAttempt(1, "BLOCKED", [gate], exit));
+    const active = await preflightExecutionOperation(fixture.requirements, "VALIDATE_SLICE", "1");
+    assert.equal(active.state, "DIVERGENCE_BLOCKED");
+    assert.ok(deriveRecoveryTargets(active).some((target) => target.authorityMode === "RESUME"));
+    await assert.rejects(preflightExecutionOperation(fixture.requirements, "REPLAN"), /not legal|revalidate/u);
+    const taskFile = path.join(fixture.execution, "tasks/slice-01.md");
+    const before = await fs.readFile(taskFile, "utf8");
+    for (const revalidates of ["divergence-01", "attempt-01/gate-01"]) {
+      await fs.writeFile(taskFile, before);
+      await persistQualityAttempt(fixture, gateAttempt(2, "PASS", [{ ...gate, scope: "out_of_scope", revalidates }], exit), {
+        status: "PASS", divergenceText: `${original.replace("- State: active", "- State: resolved")}\n- Resolution: attempt-02 revalidated: claims independent quality debt.`,
+      });
+      await assert.rejects(inspectExecutionState(fixture.requirements), /divergence cannot become non_blocking/u);
+    }
+    await fs.writeFile(taskFile, before);
+    const bypass = { target: qualityGateIdentity(gate, fixture.gateAuthority), operator: "operator", reason: "Optional gate", authorization: "Request 42" };
+    await persistQualityAttempt(fixture, gateAttempt(2, "ACCEPTED", [{ ...gate, bypass, revalidates: "attempt-01/gate-01" }], exit), { status: "ACCEPTED" });
+    await assert.rejects(inspectExecutionState(fixture.requirements), /divergences cannot be bypassed/u);
+  });
+}
+
+test("observational kind cannot erase a required authority operation", async (t) => {
+  const fixture = await qualityFixture(t);
+  await editTask(fixture, (value) => replaceSection(value, "Divergences", `${ACTIVE_DIVERGENCE}\n- Kind: observational`));
+  await assert.rejects(inspectExecutionState(fixture.requirements), /invalid Required authority operation/u);
+});
+
+for (const obligation of [{ kind: "structural" }, { kind: "requirement" }, { causality: "required_by_slice" }]) {
+  test(`revalidation preserves original mandatory gate boundary ${JSON.stringify(obligation)}`, async (t) => {
+    const fixture = await qualityFixture(t);
+    const { gate, exit } = await observeGate(fixture, { scope: "in_scope", ...obligation });
+    await persistQualityAttempt(fixture, gateAttempt(1, "BLOCKED", [gate], exit));
+    const candidate = { ...gate, kind: "quality", scope: "out_of_scope", causality: "independent", revalidates: "attempt-01/gate-01" };
+    await persistQualityAttempt(fixture, gateAttempt(2, "PASS", [candidate], exit), { status: "PASS" });
+    await assert.rejects(inspectExecutionState(fixture.requirements), /cannot demote or bypass a structural or mandatory gate obligation/u);
+  });
+}
+
+test("ACCEPTED enforces successful terminal diagnostics and exact result publication", async (t) => {
+  const fixture = await qualityFixture(t);
+  const { gate, exit } = await observeGate(fixture, { scope: "in_scope" });
+  await persistQualityAttempt(fixture, gateAttempt(1, "BLOCKED", [gate], exit));
+  const bypass = { target: qualityGateIdentity(gate, fixture.gateAuthority), operator: "operator", reason: "Optional gate", authorization: "Request 42" };
+  const accepted = { ...gate, bypass, revalidates: "attempt-01/gate-01" };
+  await persistQualityAttempt(fixture, gateAttempt(2, "ACCEPTED", [accepted], exit), { status: "ACCEPTED" });
+  assert.equal((await preflightExecutionOperation(fixture.requirements, "CLOSE")).state, "COMPLETE");
+  const taskFile = path.join(fixture.execution, "tasks/slice-01.md");
+  const valid = await fs.readFile(taskFile, "utf8");
+  for (const [mutate, message] of [
+    [(value) => value.replace('- Result: ACCEPTED', '- Result: PASS'), /Result must match its owning PASS\/ACCEPTED attempt/u],
+    [(value) => replaceSection(value, "Diff Summary", "- none"), /terminal PASS\/ACCEPTED requires/u],
+    [(value) => replaceSection(value, "Validation Attempts", `${value.match(/## Validation Attempts\n\n([\s\S]*?)(?=\n## )/u)[1].trim()}\n\n${gateAttempt(3, "ACCEPTED", [accepted], exit)}`), /PASS\/ACCEPTED is terminal/u],
+    [(value) => replaceSection(value, "Final Result", "- PASS"), /successful terminal result does not originate/u],
+  ]) {
+    await fs.writeFile(taskFile, mutate(valid));
+    await assert.rejects(inspectExecutionState(fixture.requirements), message);
+  }
+  await fs.writeFile(taskFile, valid);
+  await editTasksIndex(fixture, (value) => value.replace('| ACCEPTED | ACCEPTED |', '| PASS | PASS |'));
+  await assert.rejects(inspectExecutionState(fixture.requirements), /PASS\/ACCEPTED row and detailed task disagree/u);
+});
+
+test("TESTS_ACCEPTED is terminal auxiliary evidence and retains mandatory summary guards", async (t) => {
+  const fixture = await qualityFixture(t);
+  const { gate } = await observeGate(fixture, { scope: "in_scope" });
+  const first = checkRecord("implementation-check", 1, "BLOCKED", 1)
+    .replace("- Commands: none", "- Commands:\n  - `node check.mjs` | exit:1") + `\n- Gate assessments: ${JSON.stringify([gate])}`;
+  const bypass = { target: qualityGateIdentity(gate, fixture.gateAuthority), operator: "operator", reason: "Optional gate", authorization: "Request 42" };
+  const accepted = { ...gate, bypass, revalidates: "implementation-check-01/gate-01" };
+  const second = checkRecord("implementation-check", 2, "TESTS_ACCEPTED", 1)
+    .replace('  - `node --test` | exit:0', '  - `node --test` | exit:0\n  - `node check.mjs` | exit:1') + `\n- Gate assessments: ${JSON.stringify([accepted])}`;
+  await editTask(fixture, (value) => replaceSection(value, "Implementation Test Evidence", `${first}\n\n${second}`));
+  assert.equal((await preflightExecutionOperation(fixture.requirements, "VALIDATE_SLICE", "1")).state, "IMPLEMENTED_AWAITING_VALIDATION");
+  const taskFile = path.join(fixture.execution, "tasks/slice-01.md");
+  const valid = await fs.readFile(taskFile, "utf8");
+  for (const name of ["Tested scope", "Verification types considered", "Selected checks", "Coverage"]) {
+    const invalid = second.replace(new RegExp(`^- ${name}: .+$`, "mu"), `- ${name}: none`);
+    await fs.writeFile(taskFile, valid.replace(second, invalid));
+    await assert.rejects(inspectExecutionState(fixture.requirements), /placeholder/u);
+  }
+  await fs.writeFile(taskFile, valid.replace(second, `${second}\n\n${checkRecord("implementation-check", 3, "TESTS_PASS", 1)}`));
+  await assert.rejects(inspectExecutionState(fixture.requirements), /after terminal automatic-check record/u);
+});
+
+for (const [kind, operation] of [["authority", "RESUME"], ["authority", "REPLAN"], ["structural", "REPLAN"], ["required", "RESUME"], ["legacy", "RESUME"]]) {
+  test(`candidate history rejects ${kind}/${operation} divergence reclassified as observational`, async (t) => {
+    const fixture = await qualityFixture(t);
+    const original = ACTIVE_DIVERGENCE.replace("- Required authority operation: REPLAN", `${kind === "legacy" ? "" : `- Kind: ${kind}\n`}- Required authority operation: ${operation}`);
+    await editTask(fixture, (value) => replaceSection(value, "Divergences", original));
+    const candidate = await executionCandidate(fixture);
+    const { gate, exit } = await observeGate(fixture, { revalidates: "divergence-01" });
+    assert.equal(evaluateQualityGate(gate, fixture.gateAuthority).decision, "non_blocking");
+    const rewritten = ACTIVE_DIVERGENCE.replace("- Required authority operation: REPLAN", "- Kind: observational\n- Required authority operation: none");
+    await persistQualityAttempt(candidate, gateAttempt(1, "PASS", [gate], exit), {
+      status: "PASS", divergenceText: `${rewritten.replace("- State: active", "- State: resolved")}\n- Resolution: attempt-01 revalidated: external failure is independent.`,
+    });
+    await assertCandidateRejectedWithoutMutation(fixture, candidate, /divergence-01.*immutable/u);
+  });
+}
+
+for (const [name, from, to] of [
+  ["RESUME to REPLAN", "Required authority operation: RESUME", "Required authority operation: REPLAN"],
+  ["REPLAN to RESUME", "Required authority operation: REPLAN", "Required authority operation: RESUME"],
+  ["problem", "Problem: Approved scope omits a required dependency.", "Problem: An unrelated style warning."],
+  ["evidence", "Evidence: The implementation cannot remain inside the slice.", "Evidence: Baseline has the same style warning."],
+  ["severity", "Severity: blocking", "Severity: advisory"],
+  ["origin", "Origin: EXECUTE_SLICE", "Origin: VALIDATE_SLICE"],
+  ["extra historical field", "Evidence: The implementation cannot remain inside the slice.", "Evidence: The implementation cannot remain inside the slice.\n- Historical authority: invented"],
+]) {
+  test(`candidate history rejects divergence ${name} mutation during resolution`, async (t) => {
+    const fixture = await qualityFixture(t);
+    const original = `${ACTIVE_DIVERGENCE.replace("operation: REPLAN", `operation: ${name === "REPLAN to RESUME" ? "REPLAN" : "RESUME"}`)}\n- Kind: authority`;
+    await editTask(fixture, (value) => replaceSection(value, "Divergences", original));
+    const candidate = await executionCandidate(fixture);
+    await writeValidatedPath(fixture, "../../src/external.txt", "fixed\n");
+    const { gate, exit } = await observeGate(fixture, { revalidates: "divergence-01" });
+    assert.ok(original.includes(from));
+    await persistQualityAttempt(candidate, gateAttempt(1, "PASS", [gate], exit), {
+      status: "PASS", divergenceText: `${original.replace(from, to).replace("- State: active", "- State: resolved")}\n- Resolution: attempt-01 revalidated: condition is objectively absent.`,
+    });
+    await assertCandidateRejectedWithoutMutation(fixture, candidate, /divergence-01.*immutable/u);
+  });
+}
+
+for (const kind of ["authority", "structural", "required", "legacy", "observational"]) {
+  test(`candidate history permits ${kind} divergence disposition alone and canonical revalidation`, async (t) => {
+    const fixture = await qualityFixture(t);
+    const original = ACTIVE_DIVERGENCE.replace("- Required authority operation: REPLAN", `${kind === "legacy" ? "" : `- Kind: ${kind}\n`}- Required authority operation: ${kind === "observational" ? "none" : "RESUME"}`);
+    await editTask(fixture, (value) => replaceSection(value, "Divergences", original));
+    const candidate = await executionCandidate(fixture);
+    if (kind !== "observational") await writeValidatedPath(fixture, "../../src/external.txt", "fixed\n");
+    const { gate, exit } = await observeGate(fixture, { revalidates: "divergence-01" });
+    await persistQualityAttempt(candidate, gateAttempt(1, "PASS", [gate], exit), {
+      status: "PASS", divergenceText: `${original.replace("- State: active", "- State: resolved")}\n- Resolution: attempt-01 revalidated: current observation clears the original blocker.`,
+    });
+    const before = await snapshotTree(fixture.execution);
+    assert.equal((await validateExecutionCandidate(fixture.requirements, candidate.execution)).state, "COMPLETE");
+    assert.deepEqual(await snapshotTree(fixture.execution), before);
+    // Exercise the same candidate boundary used by every distributed CLI adapter.
+    const cli = spawnSync(process.execPath, [path.join(ROOT, "skills/workflows/stnl-execution-closer/runtime/validate-execution-state.mjs"), fixture.requirements, "--candidate", candidate.execution], { encoding: "utf8" });
+    assert.equal(cli.status, 0, cli.stderr);
+  });
+}
+
+for (const disposition of ["resolved", "superseded"]) {
+  test(`candidate history preserves materialized REPLAN divergence ${disposition}`, async (t) => {
+    const fixture = await qualityFixture(t);
+    const authority = await computeRequirementsAuthority(fixture.requirements);
+    await editTask(fixture, (value) => replaceSection(value, "Divergences", ACTIVE_DIVERGENCE));
+    await appendRecoveryPlan(fixture, authority, authority, { ready: true });
+    assert.equal((await preflightExecutionOperation(fixture.requirements, "MATERIALIZE_TASKS")).state, "PENDING_REPLAN_READY");
+    const candidate = await executionCandidate(fixture);
+    await commitAppendRecovery(candidate, authority, authority, { resolveDivergence: true });
+    if (disposition === "superseded") await editTask(candidate, (value) => replaceSection(value, "Divergences",
+      `${ACTIVE_DIVERGENCE.replace("- State: active", "- State: superseded")}\n- Superseded by: divergence-02\n\n${ACTIVE_DIVERGENCE.replace("divergence-01", "divergence-02").replace("- State: active", "- State: resolved")}\n- Resolution: plan revision 2 committed recovery slice-02`));
+    assert.equal((await validateExecutionCandidate(fixture.requirements, candidate.execution)).state, "EXECUTION_STARTED");
+    await editTask(candidate, (value) => value.replace("Problem: Approved scope omits a required dependency.", "Problem: Altered original authority."));
+    await assertCandidateRejectedWithoutMutation(fixture, candidate, /divergence-01.*immutable/u);
+  });
+}
+
+for (const disposition of ["resolved", "superseded"]) {
+  test(`candidate history protects finding identity during ${disposition}`, async (t) => {
+    const fixture = await qualityFixture(t);
+    await editTask(fixture, (value) => replaceSection(replaceSection(value, "Validation Attempts", NEEDS_FIX_ATTEMPT), "Validation Findings", ACTIVE_FINDING));
+    const candidate = await executionCandidate(fixture);
+    const findings = disposition === "resolved"
+      ? `${ACTIVE_FINDING.replace("State: active", "State: resolved")}\n- Resolution: attempt-02 verified the correction.\n\n${ACTIVE_FINDING_02.replace("Origin: attempt-01", "Origin: attempt-02")}`
+      : `${ACTIVE_FINDING.replace("State: active", "State: superseded")}\n- Superseded by: finding-02\n\n${ACTIVE_FINDING_02.replace("Origin: attempt-01", "Origin: attempt-02")}`;
+    const attempt = attemptRecord(2, "NEEDS_FIX", {
+      references: "finding-01, finding-02",
+      dispositions: `finding-01=${disposition}, finding-02=active`,
+    });
+    await persistQualityAttempt(candidate, attempt, { findingText: findings });
+    assert.equal((await validateExecutionCandidate(fixture.requirements, candidate.execution)).state, "VALIDATION_NEEDS_FIX");
+    await editTask(candidate, (value) => value.replace("Problem: Observable behavior is wrong.", "Problem: Unrelated cosmetic detail."));
+    await assertCandidateRejectedWithoutMutation(fixture, candidate, /finding-01.*immutable/u);
+  });
+}
+
+for (const section of ["Validation Attempts", "Implementation Test Evidence", "Findings Test Evidence"]) {
+  test(`candidate history rejects rewritten ${section}`, async (t) => {
+    const fixture = await qualityFixture(t);
+    if (section === "Findings Test Evidence") await prepareFindingsCorrection(fixture);
+    else await editTask(fixture, (value) => replaceSection(value, section, section === "Validation Attempts"
+      ? BLOCKED_ATTEMPT : checkRecord("implementation-check", 1, "TESTS_PASS", 1)));
+    const candidate = await executionCandidate(fixture);
+    await editTask(candidate, (value) => value.replace("- HEAD: fixture", "- HEAD: invented"));
+    await assertCandidateRejectedWithoutMutation(fixture, candidate, /(?:attempt|implementation-check|findings-check)-01.*immutable/u);
+  });
+}
+
+test("candidate history rejects coordinated historical bypass authorization rewrite", async (t) => {
+  const fixture = await qualityFixture(t);
+  const { gate, exit } = await observeGate(fixture, { scope: "in_scope" });
+  await persistQualityAttempt(fixture, gateAttempt(1, "BLOCKED", [gate], exit));
+  const accepted = { ...gate, revalidates: "attempt-01/gate-01", bypass: {
+    target: qualityGateIdentity(gate, fixture.gateAuthority), operator: "operator", reason: "Optional gate", authorization: "Request 42",
+  } };
+  const other = { ...gate, id: "gate-02", kind: "requirement", causality: "required_by_slice" };
+  await persistQualityAttempt(fixture, gateAttempt(2, "BLOCKED", [accepted, other], exit));
+  const candidate = await executionCandidate(fixture);
+  await editTask(candidate, (value) => value.replaceAll("Request 42", "Forged request"));
+  await assertCandidateRejectedWithoutMutation(fixture, candidate, /attempt-02.*immutable/u);
+});
+
+for (const mutation of ["base manifest", "attempt and base evidence", "terminal result"]) {
+  test(`candidate history rejects coordinated successful ${mutation} rewrite`, async (t) => {
+    const fixture = await qualityFixture(t);
+    const { gate, exit } = await observeGate(fixture, { scope: "in_scope" });
+    await persistQualityAttempt(fixture, gateAttempt(1, "BLOCKED", [gate], exit));
+    const accepted = { ...gate, revalidates: "attempt-01/gate-01", bypass: {
+      target: qualityGateIdentity(gate, fixture.gateAuthority), operator: "operator", reason: "Optional gate", authorization: "Request 42",
+    } };
+    await persistQualityAttempt(fixture, gateAttempt(2, "ACCEPTED", [accepted], exit), { status: "ACCEPTED" });
+    const candidate = await executionCandidate(fixture);
+    if (mutation === "base manifest") await editTask(candidate, (value) => value.replace(`sha256:${createHash("sha256").update(VALIDATED_CONTENT).digest("hex")}`, `sha256:${"a".repeat(64)}`));
+    if (mutation === "attempt and base evidence") await editTask(candidate, (value) => value.replaceAll("Objective ACCEPTED evidence.", "Invented evidence."));
+    if (mutation === "terminal result") {
+      await writeValidatedPath(fixture, "../../src/external.txt", "fixed\n");
+      const current = { ...accepted, state: "absent", bypass: null, snapshot: (await observeGate(fixture)).gate.snapshot };
+      await editTask(candidate, (value) => {
+        let result = value.replace(gateAttempt(2, "ACCEPTED", [accepted], exit), gateAttempt(2, "PASS", [current], 0)).replaceAll("ACCEPTED", "PASS");
+        const base = result.match(/## Effective Validation Base\n\n([\s\S]*?)(?=\n## )/u)[1].trim();
+        return replaceSection(result, "Effective Validation Base", base.replace("exit:1", "exit:0"));
+      });
+      await editTasksIndex(candidate, (value) => value.replaceAll("ACCEPTED", "PASS"));
+    }
+    await assertCandidateRejectedWithoutMutation(fixture, candidate, /(?:terminal.*immutable|attempt-02.*immutable)/u);
+  });
+}
+
+test("candidate history protects delegation blocker identity while allowing its resolution", async (t) => {
+  const fixture = await qualityFixture(t);
+  const original = delegationBlocker("VALIDATE_SLICE", "initialization");
+  await editTask(fixture, (value) => replaceSection(replaceSection(value, "Implementation Test Evidence", checkRecord("implementation-check", 1, "TESTS_PASS", 1)), "Delegation Blocker", original));
+  const candidate = await executionCandidate(fixture);
+  await persistQualityAttempt(candidate, BLOCKED_ATTEMPT);
+  await editTask(candidate, (value) => replaceSection(value, "Delegation Blocker", `${original.replace("State: active", "State: resolved")}\n- Resolution: attempt-01 returned valid output.`));
+  assert.equal((await validateExecutionCandidate(fixture.requirements, candidate.execution)).state, "VALIDATION_BLOCKED");
+  await editTask(candidate, (value) => value.replace("Kind: initialization", "Kind: malformed-output"));
+  await assertCandidateRejectedWithoutMutation(fixture, candidate, /Delegation Blocker.*immutable/u);
+});
+
+test("candidate history rejects removal and renumbering of persisted divergences", async (t) => {
+  const fixture = await qualityFixture(t);
+  await editTask(fixture, (value) => replaceSection(value, "Divergences", ACTIVE_DIVERGENCE));
+  const candidate = await executionCandidate(fixture);
+  await editTask(candidate, (value) => replaceSection(value, "Divergences", "- none"));
+  await assertCandidateRejectedWithoutMutation(fixture, candidate, /divergence-01.*(?:removed|immutable)/u);
+  await editTask(candidate, (value) => replaceSection(value, "Divergences", `${ACTIVE_DIVERGENCE.replace("Problem: Approved scope omits a required dependency.", "Problem: New record usurps original identifier.")}\n\n${ACTIVE_DIVERGENCE.replace("divergence-01", "divergence-02")}`));
+  await assertCandidateRejectedWithoutMutation(fixture, candidate, /divergence-01.*immutable/u);
+});
+
+test("candidate history rejects retroactive superseded slice ownership during later REPLAN", async (t) => {
+  const fixture = await qualityFixture(t);
+  const authority = await computeRequirementsAuthority(fixture.requirements);
+  await appendRecoveryPlan(fixture, authority, authority, { ready: true });
+  await commitAppendRecovery(fixture, authority, authority);
+  await stageThirdRecovery(fixture, authority, { ready: true });
+  const candidate = await executionCandidate(fixture);
+  await commitThirdRecovery(candidate, authority);
+  assert.equal((await validateExecutionCandidate(fixture.requirements, candidate.execution)).state, "EXECUTION_STARTED");
+  await editTask(candidate, (value) => replaceSection(value, "Final Result", "- SUPERSEDED\n- Superseded by: slice-02\n- Plan revision: 3"));
+  await editSlicePlan(candidate, "slice-02", (value) => value.replace("Plan revision: 2", "Plan revision: 3"));
+  const secondTask = path.join(candidate.execution, "tasks/slice-02.md");
+  await fs.writeFile(secondTask, (await fs.readFile(secondTask, "utf8")).replace("Plan revision: 2", "Plan revision: 3"));
+  await editPlan(candidate, (value) => value.replace("Supersedes open slices: slice-02 -> slice-03", "Supersedes open slices: slice-01 -> slice-02, slice-02 -> slice-03"));
+  await assertCandidateRejectedWithoutMutation(fixture, candidate, /terminal.*immutable/u);
+});
+
+test("candidate history rejects removal of an entire operational execution tree", async (t) => {
+  const fixture = await qualityFixture(t);
+  await editTask(fixture, (value) => replaceSection(value, "Divergences", ACTIVE_DIVERGENCE));
+  const candidate = await executionCandidate(fixture);
+  await fs.rm(path.join(candidate.execution, "tasks"), { recursive: true });
+  await fs.rm(path.join(candidate.execution, "tasks.md"));
+  await assertCandidateRejectedWithoutMutation(fixture, candidate, /historical task cannot be removed/u);
+});
+
+test("candidate history requires a newly appended observation for divergence resolution", async (t) => {
+  const fixture = await qualityFixture(t);
+  await editTask(fixture, (value) => replaceSection(value, "Divergences", ACTIVE_DIVERGENCE));
+  await writeValidatedPath(fixture, "../../src/external.txt", "fixed\n");
+  const { gate, exit } = await observeGate(fixture, { revalidates: "divergence-01" });
+  await persistQualityAttempt(fixture, gateAttempt(1, "BLOCKED", [gate, { ...gate, id: "gate-02", command: null, kind: "requirement", state: "present", causality: "required_by_slice", revalidates: null }], exit));
+  const candidate = await executionCandidate(fixture);
+  await editTask(candidate, (value) => replaceSection(value, "Divergences", `${ACTIVE_DIVERGENCE.replace("State: active", "State: resolved")}\n- Resolution: attempt-01 revalidated: reuse an old observation.`));
+  await writeValidatedPath(fixture, "../../src/external.txt", "broken again\n");
+  await assertCandidateRejectedWithoutMutation(fixture, candidate, /newly appended revalidation record/u);
+});
+
+test("candidate history rejects rewriting a resolved divergence disposition", async (t) => {
+  const fixture = await qualityFixture(t);
+  const original = ACTIVE_DIVERGENCE.replace("State: active", "State: resolved") + "\n- Resolution: attempt-01 revalidated: the original condition is absent.";
+  await writeValidatedPath(fixture, "../../src/external.txt", "fixed\n");
+  const { gate, exit } = await observeGate(fixture, { revalidates: "divergence-01" });
+  await persistQualityAttempt(fixture, gateAttempt(1, "BLOCKED", [gate, { ...gate, id: "gate-02", command: null, kind: "requirement", state: "present", causality: "required_by_slice", revalidates: null }], exit), { divergenceText: original });
+  const candidate = await executionCandidate(fixture);
+  await editTask(candidate, (value) => value.replace("the original condition is absent.", "a different reason replaces the historical disposition."));
+  await assertCandidateRejectedWithoutMutation(fixture, candidate, /divergence-01.*immutable/u);
 });

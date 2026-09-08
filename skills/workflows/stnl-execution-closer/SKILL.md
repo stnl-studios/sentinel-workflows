@@ -16,7 +16,7 @@ Run only execution `OPERATION=CLOSE`. Perform a read-only global integrity check
 
 ## Authority
 
-Current requirements fingerprint remains product authority. Plan revisions define intended coverage and serial order. `tasks.md` is progress authority. Detailed final results, append-only attempts/findings/divergences, and Effective Validation Bases are evidence; only effective bases from `PASS` slices authorize final drift decisions. `SUPERSEDED` records are terminal history, never validation ownership. This skill changes none of them.
+Current requirements fingerprint remains product authority. Plan revisions define intended coverage and serial order. `tasks.md` is progress authority. Detailed final results, append-only attempts/findings/divergences, and Effective Validation Bases are evidence; only effective bases from `PASS` or `ACCEPTED` slices authorize final drift decisions. `SUPERSEDED` records are terminal history, never validation ownership. This skill changes none of them.
 
 Execution preflight is read-only. Only when it reports a mechanical violation for the exact `Findings IDs` alias or the exact historical `Check discovery sources` / `Check discovery actions` pair may this skill explicitly run `node "<SKILL_ROOT>/runtime/validate-execution-state.mjs" <SPEC_PATH> --repair-known-contract` once and repeat the original preflight; every other contract violation blocks. That narrow runtime-owned repair does not transfer semantic task ownership to this skill.
 
@@ -26,13 +26,13 @@ Before semantic review, execute `node "<SKILL_ROOT>/runtime/validate-execution-s
 
 Then start with `plan.md`, `tasks.md`, compact summaries, final results, and Effective Validation Bases. Open detailed artifacts only for a concrete inconsistency.
 
-Verify every slice is terminal `[x]`; serial dependencies were respected; every plan has exactly one task and no orphan exists; no active blocking finding or divergence remains; every final result is `PASS` or `SUPERSEDED`; every `SUPERSEDED` slice points to an existing later replacement; every `PASS` slice has exactly one valid Effective Validation Base originating from a `PASS` attempt; current requirements authority matches the current global plan; after any authority change at least one current-revision `PASS` reconciliation/corrective slice covers affected requirements and final paths; plans, tasks, and results agree; and no final workspace change lacks association with a validated current delivery slice.
+Verify every slice is terminal `[x]`; serial dependencies were respected; every plan has exactly one task and no orphan exists; no effective active blocking finding or divergence remains; every final result is `PASS`, `ACCEPTED` or `SUPERSEDED`; every `SUPERSEDED` slice points to an existing later replacement; every `PASS`/`ACCEPTED` slice has exactly one valid Effective Validation Base originating from an attempt with its matching result; current requirements authority matches the current global plan; after any authority change at least one current-revision `PASS`/`ACCEPTED` reconciliation/corrective slice covers affected requirements and final paths; plans, tasks, and results agree; and no final workspace change lacks association with a validated current delivery slice.
 
 Treat the preflight's final-ownership and drift verdict as structural truth; do not reimplement or soften it through model interpretation. Semantic review remains responsible only for requirements coverage, reconciliation intent, cross-slice consistency, and whether an explicit current-revision integration/stabilization slice was required and passed.
 
 Every drift diagnostic identifies path, last responsible slice, expected hash or `REMOVED`, current hash/state, and required action. Because execution close starts only after all rows are terminal and terminal history is immutable, route drift to explicit `REPLAN` with this diagnostic as `REPLAN_REASON`; the approved append-only revision creates a corrective/reconciliation slice, then `MATERIALIZE_TASKS`, `EXECUTE_SLICE`, and `VALIDATE_SLICE` establish new ownership. Never prescribe validation of a concluded slice. Do not inspect hashes stored inside Validation Attempts or silently revalidate. Do not run tests.
 
-If a needed cross-slice integration check has no explicit current-revision `PASS` integration slice, return `EXECUTION_BLOCKED` with `REPLAN_REASON` and explicit `REPLAN` as the next operation. Do not create that slice or run a suite during closing.
+If a needed cross-slice integration check has no explicit current-revision `PASS`/`ACCEPTED` integration slice, return `EXECUTION_BLOCKED` with `REPLAN_REASON` and explicit `REPLAN` as the next operation. Do not create that slice or run a suite during closing.
 
 ## Minimum Reads
 
@@ -47,8 +47,10 @@ If a needed cross-slice integration check has no explicit current-revision `PASS
 
 ## Blocks
 
-Block incomplete progress, a non-canonical execution path or unsafe reserved SPEC entry reported by preflight, invalid order or mapping, active blocking findings/divergences, invalid terminal results, missing/multiple/invalid Effective Validation Bases for `PASS` slices, malformed supersession, stale requirements authority, missing current-revision reconciliation, changed final-owner paths, later omissions, unowned changes, invalid removals/reappearances, missing coverage, contradictions, or absent required integration work. Arbitrary lifecycle-external/user-owned SPEC-root siblings are preserved and do not block. Never delete an unknown path.
+Block incomplete progress, a non-canonical execution path or unsafe reserved SPEC entry reported by preflight, invalid order or mapping, active blocking findings/divergences, invalid terminal results, missing/multiple/invalid Effective Validation Bases for `PASS`/`ACCEPTED` slices, malformed supersession, stale requirements authority, missing current-revision reconciliation, changed final-owner paths, later omissions, unowned changes, invalid removals/reappearances, missing coverage, contradictions, or absent required integration work. Arbitrary lifecycle-external/user-owned SPEC-root siblings are preserved and do not block. Never delete an unknown path.
 
 ## Output
 
 Return `EXECUTION_APPROVED` or `EXECUTION_BLOCKED` with a short deterministic list of exact inconsistencies, affected slices, all legal execution operations, and mandatory recovery when present. Execution uses `OPERATION=CLOSE`; never render it as lifecycle `MODE=CLOSE`. Remain read-only except for the explicit exact mechanical repair above; do not edit semantically, test, invoke a runner, repair bases/tasks, finalize work, remove artifacts, or decide cleanup. `EXECUTION_APPROVED` is an inspection verdict for the current snapshot, not a durable artifact and not documentary `SPEC_CLOSED`. Stop.
+
+Report retained ACCEPTED results and their operator/gate/diagnostic acceptance explicitly. ACCEPTED has full mandatory requirement validation and final ownership; it preserves the accepted optional quality failure and never becomes PASS during CLOSE. Re-running CLOSE after externally corrected drift rehashes the current working tree without requiring a commit. REPLAN is necessary only while the terminal slice has a current relevant drift or uncovered mandatory obligation, not because an earlier close reported one.

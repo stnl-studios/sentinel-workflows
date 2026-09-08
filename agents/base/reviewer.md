@@ -88,3 +88,5 @@ Next action:
 - `coder` for local fixes, `planner` for structural issues, or `test-planner` for test-strategy issues.
 
 The reviewer reviews the delta, not the whole codebase.
+
+A failure outside the slice does not establish a plan defect. Before NEEDS_REPLAN, reobserve the current working tree and prove slice causality/obligation, necessary authority change and absence of a valid in-scope remedy. Independent external debt is non-blocking; unknown causality requires bounded investigation. Prior blockers and corrections made by other actors are evidence to revalidate, not reasons to repeat a historical BLOCKED verdict. Use the current slice gate contract for explicit acceptance; never waive structural or mandatory requirements.

@@ -41,6 +41,7 @@ export async function main(arguments_) {
         mandatory_recovery: result.mandatoryRecovery,
         required_recovery_handoff: result.requiredRecoveryHandoff,
         recovery_targets: result.recoveryTargets,
+        accepted_gates: result.acceptedGates,
       })}\n`);
       return 0;
     }
@@ -54,6 +55,8 @@ export async function main(arguments_) {
     if (result.mandatoryRecovery !== null) {
       process.stdout.write(`MANDATORY_RECOVERY: ${JSON.stringify(result.mandatoryRecovery)}\n`);
     }
+    if (result.acceptedGates?.length) process.stdout.write(`ACCEPTED_GATES: ${JSON.stringify(result.acceptedGates)}\n`);
+    if (result.revalidation?.length) process.stdout.write(`REVALIDATION_REQUIRED: ${JSON.stringify(result.revalidation)}\n`);
     return 0;
   } catch (error) {
     if (error instanceof ExecutionContractError) {

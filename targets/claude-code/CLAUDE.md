@@ -112,7 +112,7 @@ For coder and validator, database/migration and security/auth skills require exp
 
 ## Handoffs
 
-Handoffs are short, textual, disposable, and non-persistent. Use only `PASS`, `BLOCKED`, `NEEDS_APPROVAL`, `NEEDS_FIX`, `NEEDS_REPLAN`, or `NEEDS_RETEST_PLAN`.
+Handoffs are short, textual, disposable, and non-persistent. Use only `PASS`, `ACCEPTED`, `BLOCKED`, `NEEDS_APPROVAL`, `NEEDS_FIX`, `NEEDS_REPLAN`, or `NEEDS_RETEST_PLAN`.
 
 ```text
 Status:
@@ -158,3 +158,5 @@ After network failure, lost session, crash, or partial implementation:
 9. Continue, clean up, block, or restore consistency directly or through `MODE=RESUME`.
 
 Do not trust stale conversation blindly. Approved contracts are reusable; partial implementation attempts are disposable when they lose reliability.
+
+For slice quality operations, use the execution-record gate contract: independent external debt is non-blocking, persisted blockers require fresh working-tree revalidation, and REPLAN requires a current causal/required authority gap with no valid in-scope remedy. Explicit granular acceptance of optional quality debt is ACCEPTED, never PASS; structural and mandatory obligations remain enforced.

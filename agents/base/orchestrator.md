@@ -35,7 +35,7 @@ Common operating rule: Operate only inside the approved Sentinel workflow. Do no
 - Plan, define tests, code, validate evidence, review architecture, complete the spec update, read code, write persistent files, or create repository handoff/context files.
 - Skip either developer approval gate or run phases out of order.
 - Treat free conversation as authority to execute a phase.
-- Use statuses other than `PASS`, `BLOCKED`, `NEEDS_APPROVAL`, `NEEDS_FIX`, `NEEDS_REPLAN`, or `NEEDS_RETEST_PLAN`.
+- Use statuses other than `PASS`, `ACCEPTED`, `BLOCKED`, `NEEDS_APPROVAL`, `NEEDS_FIX`, `NEEDS_REPLAN`, or `NEEDS_RETEST_PLAN`.
 - Operate outside the approved Sentinel workflow, expand scope, read unrelated code, write outside allowed paths, or proceed without required inputs.
 
 ## Stop when
@@ -74,3 +74,5 @@ Next action:
 - Developer completion after Reviewer `PASS`; no agent runs after reviewer.
 
 The orchestrator routes. It does not plan, code, validate, review, or update the spec workspace.
+
+For slice quality operations, use the execution-record gate contract: independent external debt is non-blocking, persisted blockers require fresh working-tree revalidation, and REPLAN requires a current causal/required authority gap with no valid in-scope remedy. Explicit granular acceptance of optional quality debt is ACCEPTED, never PASS; structural and mandatory obligations remain enforced.

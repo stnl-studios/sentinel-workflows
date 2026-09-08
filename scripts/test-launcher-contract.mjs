@@ -47,6 +47,12 @@ test("accepts a harmless prose paraphrase while preserving semantics", async (t)
 });
 
 const cases = [
+  ...["slice-execute-codex.md", "slice-execute-claude.md", "slice-apply-findings-codex.md", "slice-apply-findings-claude.md"].map((name) => [
+    `only TESTS_ACCEPTED removed from ${name}`, name, (text) => text.replace(/TESTS_ACCEPTED/gu, ""), "L014_AUTOMATIC_RECHECK",
+  ]),
+  ...["slice-validate-codex.md", "slice-validate-claude.md"].map((name) => [
+    `only ACCEPTED removed from ${name}`, name, (text) => text.replace(/\bACCEPTED\s*\|\s*/gu, ""), "L008_VALIDATION_FLOW",
+  ]),
   ["missing launcher", "execution-close.md", async (file) => fs.unlink(file), "L001_REGISTRY"],
   ["obsolete launcher", "slice-finalize.md", async (file) => fs.writeFile(file, "Use `stnl-slice-executor`.\nOPERATION=FINALIZE_SLICE\n\nContexto adicional (opcional):\n"), "L001_REGISTRY"],
   ["wrong skill", "execution-plan.md", (text) => text.replace("stnl-execution-planner", "stnl-spec-execution-manager"), "L002_SKILL"],
@@ -65,7 +71,7 @@ const cases = [
   ["formal authority in check", "slice-execute-codex.md", (text) => text.replace("Contexto adicional (opcional):", "Crie Validation Attempt.\n\nContexto adicional (opcional):"), "L013_CHECK_AUTHORITY"],
   ["optional runner", "slice-execute-claude.md", (text) => text.replace(/(?:Invoque|Chame).{0,50}no mínimo uma vez/iu, "Pode invocar o runner"), "L014_AUTOMATIC_RECHECK"],
   ["four-round cycle", "slice-apply-findings-claude.md", (text) => text.replace(/1\/3/g, "1/4").replace(/2\/3/g, "2/4").replace(/3\/3/g, "3/4"), "L014_AUTOMATIC_RECHECK"],
-  ["validation status removed", "slice-validate-claude.md", (text) => text.replace(/PASS\s*\|\s*NEEDS_FIX\s*\|\s*BLOCKED/g, "PASS | BLOCKED"), "L008_VALIDATION_FLOW"],
+  ["validation status removed", "slice-validate-claude.md", (text) => text.replace(/PASS\s*\|\s*ACCEPTED\s*\|\s*NEEDS_FIX\s*\|\s*BLOCKED/g, "PASS | BLOCKED"), "L008_VALIDATION_FLOW"],
   ["malformed context", "execution-tasks-review.md", (text) => `${text}\nextra\n`, "L009_CONTEXT_FORMAT"],
   ["unexpected launcher", "unexpected.md", async (file) => fs.writeFile(file, "not registered\n"), "L001_REGISTRY"],
   ["duplicate lifecycle CLOSE route", "spec-close.md", (text) => text.replace("MODE=CLOSE", "MODE=CLOSE\nOPERATION=CLOSE"), "L004_INPUTS"],
