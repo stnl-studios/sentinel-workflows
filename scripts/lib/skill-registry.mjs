@@ -2,6 +2,7 @@ export const WORKFLOW_SKILLS = Object.freeze([
   "stnl-execution-closer",
   "stnl-execution-planner",
   "stnl-plan-reviewer",
+  "stnl-requirements-refiner",
   "stnl-slice-executor",
   "stnl-slice-quality-manager",
   "stnl-spec-lifecycle-manager",
@@ -29,6 +30,7 @@ export const WORKFLOW_OPERATIONS = Object.freeze({
   "stnl-slice-executor": Object.freeze(["EXECUTE_SLICE", "APPLY_FINDINGS"]),
   "stnl-slice-quality-manager": Object.freeze(["VALIDATE_SLICE"]),
   "stnl-execution-closer": Object.freeze(["CLOSE"]),
+  "stnl-requirements-refiner": Object.freeze(["INIT", "RECONCILE"]),
   "stnl-spec-roadmap": Object.freeze(["INIT", "RECONCILE"]),
   "stnl-spec-test-runbook": Object.freeze(["GENERATE_RUNBOOK"]),
 });

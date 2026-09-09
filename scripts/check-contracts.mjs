@@ -247,7 +247,7 @@ function checkRunner(root) {
   const expectedCodex = {
     name: "stnl_validation_runner",
     description: "Runner barato e isolado para checks de implementação, checks de findings e validação formal independente de uma slice.",
-    model: "gpt-5.4-mini",
+    model: "gpt-5.6-luna",
     model_reasoning_effort: "medium",
     sandbox_mode: "workspace-write",
     developer_instructions: codex.developer_instructions,
@@ -358,7 +358,7 @@ function checkScout(root) {
   const claude = parseFrontmatter(claudeFile, "S007_SYNTAX");
   const description = "Read-only exception scout for one explicitly authorized lifecycle evidence gap; never auto-select or delegate.";
   const expectedCodex = {
-    name: "stnl_spec_context_scout", description, model: "gpt-5.4-mini", model_reasoning_effort: "medium",
+    name: "stnl_spec_context_scout", description, model: "gpt-5.6-luna", model_reasoning_effort: "medium",
     sandbox_mode: "read-only", approval_policy: "never", web_search: "disabled",
     developer_instructions: codex.developer_instructions, agents: { max_depth: 1 },
   };
@@ -395,6 +395,8 @@ const launcherSpecs = {
   "spec-readiness": ["stnl-spec-lifecycle-manager", "MODE", "READINESS", [["SPEC_PATH", "{{SPEC_PATH}}"], ["READINESS_SCOPE", "{{READINESS_SCOPE}}"], ["READINESS_FOCUS", "{{READINESS_FOCUS}}"]]],
   "spec-close": ["stnl-spec-lifecycle-manager", "MODE", "CLOSE", [["SPEC_PATH", "{{SPEC_PATH}}"]]],
   "spec-test-runbook": ["stnl-spec-test-runbook", "OPERATION", "GENERATE_RUNBOOK", [["SPEC_PATH", "{{SPEC_PATH}}"], ["RUNBOOK_SCOPE", "{{RUNBOOK_SCOPE}}"], ["RUNBOOK_SELECTION", "{{RUNBOOK_SELECTION}}"], ["RUNBOOK_OPTIONS", "{{RUNBOOK_OPTIONS}}"]]],
+  "requirements-refinement-init": ["stnl-requirements-refiner", "OPERATION", "INIT", [["PROJECT_ROOT", "{{PROJECT_ROOT}}"], ["REFINEMENT_PATH", "{{REFINEMENT_PATH}}"], ["REQUIREMENTS_SOURCE", "{{REQUIREMENTS_SOURCE}}"]]],
+  "requirements-refinement-reconcile": ["stnl-requirements-refiner", "OPERATION", "RECONCILE", [["PROJECT_ROOT", "{{PROJECT_ROOT}}"], ["REFINEMENT_PATH", "{{REFINEMENT_PATH}}"], ["NEW_INFORMATION", "{{NEW_INFORMATION}}"]]],
   "spec-roadmap-init": ["stnl-spec-roadmap", "OPERATION", "INIT", [["PROJECT_ROOT", "{{PROJECT_ROOT}}"], ["ROADMAP_PATH", "{{ROADMAP_PATH}}"], ["ROADMAP_SOURCE", "{{ROADMAP_SOURCE}}"]]],
   "spec-roadmap-reconcile": ["stnl-spec-roadmap", "OPERATION", "RECONCILE", [["PROJECT_ROOT", "{{PROJECT_ROOT}}"], ["ROADMAP_PATH", "{{ROADMAP_PATH}}"], ["NEW_INFORMATION", "{{NEW_INFORMATION}}"]]],
   "execution-plan": ["stnl-execution-planner", "OPERATION", "PLAN", [["SPEC_PATH", "{{SPEC_PATH}}"]]],
@@ -412,7 +414,10 @@ const launcherSpecs = {
 };
 
 const runnerLaunchers = new Set(Object.keys(launcherSpecs).filter((name) => name.startsWith("slice-")));
-const sharedExecution = new Set(["execution-plan", "execution-replan", "execution-plan-review", "execution-tasks", "execution-tasks-review", "execution-close", "spec-roadmap-init", "spec-roadmap-reconcile"]);
+const sharedExecution = new Set([
+  "execution-plan", "execution-replan", "execution-plan-review", "execution-tasks", "execution-tasks-review", "execution-close",
+  "requirements-refinement-init", "requirements-refinement-reconcile", "spec-roadmap-init", "spec-roadmap-reconcile",
+]);
 
 function parseLauncher(file, spec) {
   const text = read(file, "L001_REGISTRY");
@@ -475,6 +480,12 @@ function checkLaunchers(root) {
       requirePattern(instructions, /roadmap\.json/u, "L021_ROADMAP_BOUNDARY", `${name}: roadmap authority is missing`);
       requirePattern(instructions, /browser.{0,120}(?:não é|never).{0,80}(?:Sentinel|authority|autoridade)/iu, "L021_ROADMAP_BOUNDARY", `${name}: browser-state boundary is missing`);
       requirePattern(instructions, /não (?:crie|altere|invoque).{0,100}SPEC|do not (?:create|change|invoke).{0,100}SPEC/iu, "L021_ROADMAP_BOUNDARY", `${name}: SPEC mutation boundary is missing`);
+    }
+    if (name.startsWith("requirements-refinement-")) {
+      requirePattern(instructions, /refinement\.json/u, "L022_REFINEMENT_BOUNDARY", `${name}: refinement authority is missing`);
+      requirePattern(instructions, /browser.{0,120}(?:não é|never).{0,80}(?:Sentinel|authority|autoridade)/iu, "L022_REFINEMENT_BOUNDARY", `${name}: browser-state boundary is missing`);
+      requirePattern(instructions, /não (?:crie|altere|invoque).{0,100}SPEC.{0,80}Roadmap.{0,80}(?:workflow )?downstream/iu, "L022_REFINEMENT_BOUNDARY", `${name}: downstream mutation boundary is missing`);
+      requirePattern(instructions, /handoff manual/iu, "L022_REFINEMENT_BOUNDARY", `${name}: manual handoff boundary is missing`);
     }
     if (!runnerLaunchers.has(name)) continue;
     requirePattern(
@@ -628,10 +639,12 @@ function checkRepository(root) {
     const text = read(file);
     if (/SCOUT_CALL|stnl[-_]spec[-_]context[-_]scout|context[ -]scout/iu.test(text)) reject("C010_SCOUT_BOUNDARY", `launcher must not route to context scout: ${file}`);
     if (path.basename(file) !== "spec-test-runbook.md" && /GENERATE_RUNBOOK|stnl-spec-test-runbook/u.test(text)) reject("C011_RUNBOOK_ISOLATION", `implicit path invokes runbook generation: ${file}`);
-    if (!path.basename(file).startsWith("spec-roadmap-") && /stnl-spec-roadmap|OPERATION=(?:INIT|RECONCILE)/u.test(text)) reject("C018_ROADMAP_ISOLATION", `implicit path invokes roadmap operation: ${file}`);
+    if (!path.basename(file).startsWith("spec-roadmap-") && /stnl-spec-roadmap/u.test(text)) reject("C018_ROADMAP_ISOLATION", `implicit path invokes roadmap operation: ${file}`);
+    if (!path.basename(file).startsWith("requirements-refinement-") && /stnl-requirements-refiner/u.test(text)) reject("C019_REFINEMENT_ISOLATION", `implicit path invokes requirements refinement: ${file}`);
   }
 
   checkLifecycleStatic(root);
+  checkRefinementStatic(root);
   const executionSkills = [...EXECUTION_OPERATION_SKILLS];
   for (const runtime of ["execution-state.mjs", "validate-execution-state.mjs"]) {
     const files = executionSkills.map((name) => path.join(workflowRoot, name, "runtime", runtime));
@@ -691,6 +704,32 @@ function checkLifecycleStatic(root) {
   ]) if (!lifecycleText.includes(marker)) reject("C015_LIFECYCLE_AUTHORITY", `lifecycle contracts lack ${label}`);
   const readme = read(path.join(lifecycle, "README.md"));
   if (!read(path.join(root, ".gitignore")).includes(".*.lifecycle.lock") || !readme.includes(".*.lifecycle.lock")) reject("C015_LIFECYCLE_AUTHORITY", "persistent publisher lock contract is missing");
+}
+
+function checkRefinementStatic(root) {
+  const skill = path.join(root, "skills/workflows/stnl-requirements-refiner");
+  const cases = parseJson(path.join(skill, "evals/cases.json"), "C019_REFINEMENT_ISOLATION");
+  const expected = new Set([
+    "messy-free-text", "structured-story", "multi-source-sprint", "finding-families", "bounded-evidence",
+    "insufficient-evidence", "resolution-accepted", "resolution-rejected", "resolution-inconclusive",
+    "explicit-bypass", "finding-reopen", "handoff-blocked", "handoff-direct-spec",
+    "handoff-multi-domain-roadmap", "cancellation-race", "inadequate-race-resolution",
+    "retry-policy-bypass", "stale-reconcile", "publication-collision", "deterministic-render",
+    "desktop-mobile-visual", "offline-keyboard-filters", "print-completeness",
+  ]);
+  if (!Array.isArray(cases) || cases.length !== expected.size || new Set(cases.map((item) => item.id)).size !== expected.size || cases.some((item) => !expected.has(item.id))) {
+    reject("C019_REFINEMENT_ISOLATION", "requirements-refiner eval catalog is incomplete or contains duplicate cases");
+  }
+  if (AUXILIARY_WORKFLOW_SKILLS.includes("stnl-requirements-refiner")) {
+    reject("C019_REFINEMENT_ISOLATION", "requirements refiner must remain pre-SPEC and outside execution-authority auxiliary workflows");
+  }
+  const publicText = realFiles(skill)
+    .filter((file) => /\.(?:md|json|yaml)$/u.test(file))
+    .map((file) => read(file))
+    .join("\n");
+  for (const marker of ["BLOCKED", "READY_FOR_SPEC", "READY_FOR_ROADMAP", "resolved", "bypassed", "rejected", "inconclusive"]) {
+    if (!publicText.includes(marker)) reject("C019_REFINEMENT_ISOLATION", `requirements-refiner public contract omits ${marker}`);
+  }
 }
 
 function parseArguments(argv) {

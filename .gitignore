@@ -38,6 +38,11 @@ yarn-error.log
 .*.stnl-roadmap.journal.json
 .*.stnl-roadmap.stage-*
 .*.stnl-roadmap.backup-*
+.*.stnl-refinement.lock
+.*.stnl-refinement.lock-retired-*
+.*.stnl-refinement.journal.json
+.*.stnl-refinement.stage-*
+.*.stnl-refinement.backup-*
 /coverage
 /libpeerconnection.log
 testem.log
@@ -53,3 +58,4 @@ testem.log
 __MACOSX/
 Thumbs.db
 /diff.txt
+*.zip

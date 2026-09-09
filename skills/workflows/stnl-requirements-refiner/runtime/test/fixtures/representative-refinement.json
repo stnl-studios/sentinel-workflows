@@ -1,0 +1,165 @@
+{
+  "contract_version": 1,
+  "refinement_id": "REF-ORDER-CANCELLATION",
+  "title": "Order cancellation refinement",
+  "summary": "Clarify cancellation eligibility and its race with asynchronous shipping.",
+  "input_assessment": {
+    "format": "UNSTRUCTURED",
+    "quality": "POOR",
+    "summary": "The source is informal and omits actor, exact state eligibility, failure behavior, and concurrency semantics."
+  },
+  "exploration": {
+    "status": "SUFFICIENT",
+    "anchors": ["cancel order", "shipping state"],
+    "searches": ["CREATED PAID PACKING SHIPPED"],
+    "files_read": ["src/order.mjs"],
+    "stop_reason": "The public state model and asynchronous transition are sufficient to demonstrate the material ambiguity.",
+    "limitations": []
+  },
+  "sources": [
+    {
+      "id": "SRC-001",
+      "kind": "USER_STORY",
+      "label": "Cancellation request",
+      "state": "ACTIVE",
+      "external_id": "US-41",
+      "path": "docs/requirements.md",
+      "original_text": "precisa colocar um botão para cancelar pedido caso ainda não tenha saído"
+    },
+    {
+      "id": "SRC-002",
+      "kind": "TEXT",
+      "label": "Shipping worker note",
+      "state": "ACTIVE",
+      "original_text": "O worker de expedição envia pedidos pagos de forma assíncrona."
+    }
+  ],
+  "needs": [
+    {
+      "id": "NEED-001",
+      "title": "Cancel an eligible order",
+      "state": "ACTIVE",
+      "source_ids": ["SRC-001"],
+      "statement": "A customer needs to cancel an order while it remains eligible before shipment.",
+      "actor": "Customer",
+      "preconditions": [],
+      "acceptance_signals": ["An eligible order becomes cancelled"],
+      "negative_signals": []
+    },
+    {
+      "id": "NEED-002",
+      "title": "Advance shipping asynchronously",
+      "state": "ACTIVE",
+      "source_ids": ["SRC-002"],
+      "statement": "The shipping worker advances paid orders through fulfillment states.",
+      "preconditions": ["Order is paid"],
+      "acceptance_signals": ["The worker advances the persisted order state"],
+      "negative_signals": []
+    }
+  ],
+  "evidence": [
+    {
+      "id": "EVD-001",
+      "kind": "SOURCE_ASSERTION",
+      "state": "ACTIVE",
+      "summary": "Cancellation is allowed before shipment",
+      "detail": "The source says the order can be cancelled when it has not left yet, without defining exact states.",
+      "confidence": "CONFIRMED",
+      "source_ids": ["SRC-001"],
+      "need_ids": ["NEED-001"]
+    },
+    {
+      "id": "EVD-002",
+      "kind": "SOURCE_ASSERTION",
+      "state": "ACTIVE",
+      "summary": "Shipping advances asynchronously",
+      "detail": "The supplied note states that a worker changes shipping state asynchronously.",
+      "confidence": "CONFIRMED",
+      "source_ids": ["SRC-002"],
+      "need_ids": ["NEED-002"]
+    },
+    {
+      "id": "EVD-003",
+      "kind": "REPOSITORY_OBSERVATION",
+      "state": "ACTIVE",
+      "summary": "Order state lifecycle and worker transition",
+      "detail": "The public state list includes CREATED, PAID, PACKING, and SHIPPED; the worker can transition PACKING to SHIPPED.",
+      "confidence": "CONFIRMED",
+      "source_ids": [],
+      "need_ids": ["NEED-001", "NEED-002"],
+      "path": "src/order.mjs",
+      "locator": "ORDER_STATES and shipOrder",
+      "surface": "Order"
+    }
+  ],
+  "relationships": [
+    {
+      "id": "REL-001",
+      "type": "CONFLICT",
+      "title": "Cancellation competes with shipping",
+      "state": "ACTIVE",
+      "need_ids": ["NEED-001", "NEED-002"],
+      "evidence_ids": ["EVD-002", "EVD-003"],
+      "detail": "Cancellation and shipping can attempt competing transitions on the same order."
+    }
+  ],
+  "questions": [
+    {
+      "id": "QST-001",
+      "question": "Is PACKING still eligible for cancellation, and which transition wins a race?",
+      "status": "OPEN",
+      "why_material": "The answer changes observable eligibility, persistence semantics, and conflict behavior.",
+      "need_ids": ["NEED-001", "NEED-002"],
+      "finding_ids": ["FND-001"],
+      "evidence_ids": ["EVD-001", "EVD-003"]
+    }
+  ],
+  "constraints": [
+    {
+      "id": "CON-001",
+      "statement": "The existing persisted state lifecycle includes PACKING and SHIPPED.",
+      "state": "ACTIVE",
+      "need_ids": ["NEED-001", "NEED-002"],
+      "evidence_ids": ["EVD-003"]
+    }
+  ],
+  "findings": [
+    {
+      "id": "FND-001",
+      "title": "Cancellation eligibility and transition race are undefined",
+      "type": "TECHNICAL_GAP",
+      "severity": "BLOCKING",
+      "disposition": "open",
+      "need_ids": ["NEED-001", "NEED-002"],
+      "evidence_ids": ["EVD-001", "EVD-002", "EVD-003"],
+      "relationship_ids": ["REL-001"],
+      "question_ids": ["QST-001"],
+      "problem": "Before shipment does not define whether PACKING is cancellable or how cancellation races with the asynchronous shipping transition.",
+      "why_it_matters": "A read-then-write implementation can cancel an order after shipping has already won, producing contradictory state or customer feedback.",
+      "impact": "Observable order behavior and persisted state consistency remain undefined."
+    }
+  ],
+  "final_assessment": {
+    "boundary": "UNITARY",
+    "capability_count": 1,
+    "decomposition_value": "NONE",
+    "rationale": "The source describes one coherent cancellation capability, but its state and concurrency behavior are not ready for documentary authority."
+  },
+  "handoff": {
+    "outcome": "BLOCKED",
+    "reason": "FND-001 remains an open BLOCKING finding.",
+    "blocker_ids": ["FND-001"],
+    "carried_finding_ids": ["FND-001"],
+    "next_workflow": "stnl-requirements-refiner",
+    "suggested_next_operation": "OPERATION=RECONCILE",
+    "payload": {
+      "kind": "REFINEMENT",
+      "need_ids": ["NEED-001", "NEED-002"],
+      "finding_ids": ["FND-001"],
+      "question_ids": ["QST-001"],
+      "constraint_ids": ["CON-001"],
+      "relationship_ids": ["REL-001"],
+      "evidence_ids": ["EVD-001", "EVD-002", "EVD-003"]
+    }
+  }
+}

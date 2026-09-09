@@ -15,7 +15,7 @@ Uma única cópia instala os dois subagentes da plataforma escolhida. Nunca copi
 
 Este agente copiável, barato e isolado executa checks e validação fora do contexto principal para as skills `stnl-slice-executor` e `stnl-slice-quality-manager`.
 
-O Codex preserva `gpt-5.4-mini` com effort `medium`; o Claude Code preserva Haiku com effort `medium`.
+O Codex preserva `gpt-5.6-luna` com effort `medium`; o Claude Code preserva Haiku com effort `medium`.
 
 ### Fluxo manual e delegações automáticas
 
@@ -74,7 +74,7 @@ O contrato v7 classifica escopo e causalidade separadamente em `Gate assessments
 
 Este scout opcional isola uma única lacuna de evidência durante uma operação da `stnl-spec-lifecycle-manager`. Ele não faz parte do fluxo normal: zero scouts é o padrão e não existe launcher ou disparo automático.
 
-O scout acompanha o runner na mesma cópia única da plataforma descrita acima. O Codex usa `gpt-5.4-mini` com effort `medium`, sandbox `read-only`, approvals desabilitadas e web search desabilitada. O Claude Code usa Haiku com effort `medium` e somente `Read`, `Glob` e `Grep`.
+O scout acompanha o runner na mesma cópia única da plataforma descrita acima. O Codex usa `gpt-5.6-luna` com effort `medium`, sandbox `read-only`, approvals desabilitadas e web search desabilitada. O Claude Code usa Haiku com effort `medium` e somente `Read`, `Glob` e `Grep`.
 
 ### Gate e limite contratual
 

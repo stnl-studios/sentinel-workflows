@@ -1,0 +1,4 @@
+interface:
+  display_name: "Sentinel Requirements Refiner"
+  short_description: "Refine messy requirements into governed handoffs"
+  default_prompt: "Use $stnl-requirements-refiner to initialize or reconcile a requirements refinement before SPEC work."

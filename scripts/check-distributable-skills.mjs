@@ -4,6 +4,7 @@ import { basename, resolve } from "node:path";
 import {
   checkDistributableSkill,
   LIFECYCLE_DISTRIBUTION_POLICY,
+  REFINEMENT_DISTRIBUTION_POLICY,
   ROADMAP_DISTRIBUTION_POLICY,
   RUNBOOK_DISTRIBUTION_POLICY,
 } from "./lib/check-distributable-skill.mjs";
@@ -18,6 +19,8 @@ if (roots.length === 0) {
     const root = resolve(value);
     const policy = basename(root) === "stnl-spec-lifecycle-manager"
       ? LIFECYCLE_DISTRIBUTION_POLICY
+      : basename(root) === "stnl-requirements-refiner"
+        ? REFINEMENT_DISTRIBUTION_POLICY
       : basename(root) === "stnl-spec-roadmap"
         ? ROADMAP_DISTRIBUTION_POLICY
       : basename(root) === "stnl-spec-test-runbook"
