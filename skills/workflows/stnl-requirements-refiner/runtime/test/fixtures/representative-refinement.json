@@ -109,6 +109,7 @@
       "question": "Is PACKING still eligible for cancellation, and which transition wins a race?",
       "status": "OPEN",
       "why_material": "The answer changes observable eligibility, persistence semantics, and conflict behavior.",
+      "source_ids": ["SRC-001", "SRC-002"],
       "need_ids": ["NEED-001", "NEED-002"],
       "finding_ids": ["FND-001"],
       "evidence_ids": ["EVD-001", "EVD-003"]
@@ -130,6 +131,7 @@
       "type": "TECHNICAL_GAP",
       "severity": "BLOCKING",
       "disposition": "open",
+      "source_ids": ["SRC-001", "SRC-002"],
       "need_ids": ["NEED-001", "NEED-002"],
       "evidence_ids": ["EVD-001", "EVD-002", "EVD-003"],
       "relationship_ids": ["REL-001"],

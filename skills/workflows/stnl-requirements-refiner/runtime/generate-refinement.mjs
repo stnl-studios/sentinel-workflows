@@ -80,7 +80,7 @@ export async function generateRefinement({
   if (previous !== null) validateReconcile(previous, model);
   const authorityAfter = await snapshotAuthorityInputs(model, context.projectRoot);
   if (authorityAfter !== authorityBefore) throw new ValidationError("repository authority changed during refinement projection");
-  const rendered = renderRefinement(model);
+  const rendered = renderRefinement(model, { refinementPath: context.refinementPath });
   const publishedResult = await publishRefinement({
     context,
     operation,

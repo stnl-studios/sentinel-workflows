@@ -1,42 +1,46 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import * as fs from "node:fs/promises";
+import path from "node:path";
 import test from "node:test";
 
 import { validateRefinement } from "../lib/model.mjs";
 import { hasRefinementOwnershipMarker } from "../lib/publish.mjs";
 import { renderRefinement } from "../lib/render.mjs";
-import { acceptedResolution, clone, representativeRaw } from "./helpers.mjs";
+import { acceptedResolution, clone, FIXTURES, representativeRaw } from "./helpers.mjs";
 
-function rejected(raw) {
-  raw.findings[0].resolution = {
-    proposal: "Read status before write.", verdict: "rejected", rationale: "Read-before-write leaves a race.",
-    checks: { behavior_defined: "PASS", ambiguity_closed: "FAIL", repository_consistent: "FAIL", no_new_gap_introduced: "PASS", problem_fully_addressed: "FAIL" },
-    supporting_evidence_ids: ["EVD-003"], remaining_gap: "Atomicity remains undefined.",
-  };
-  return raw;
+async function multiRaw() {
+  return JSON.parse(await fs.readFile(path.join(FIXTURES, "multi-us-refinement.json"), "utf8"));
 }
 
-function bypassed(raw) {
-  raw.findings[0].disposition = "bypassed";
-  raw.findings[0].bypass = { reason: "Explicitly outside this delivery.", known_risk: "The race remains known and observable." };
+function specReady(raw) {
+  const next = acceptedResolution(raw);
+  return next;
+}
+
+function roadmapReady(raw) {
+  raw.findings[0].severity = "ATTENTION";
+  raw.questions[0].status = "ANSWERED";
+  raw.questions[0].answer = "The roadmap carries the remaining non-blocking finding context.";
   raw.handoff = {
-    outcome: "READY_FOR_SPEC", reason: "The blocker was explicitly bypassed.", blocker_ids: [], carried_finding_ids: ["FND-001"],
-    next_workflow: "stnl-spec-lifecycle-manager", suggested_next_operation: "MODE=INIT",
-    payload: { kind: "SPEC", need_ids: ["NEED-001", "NEED-002"], finding_ids: ["FND-001"], question_ids: ["QST-001"], constraint_ids: ["CON-001"], relationship_ids: ["REL-001"], evidence_ids: ["EVD-001", "EVD-002", "EVD-003"], suggested_spec_title: "Order cancellation", requirements_source: "Cancellation behavior with an explicitly bypassed concurrency risk." },
+    outcome: "READY_FOR_ROADMAP", reason: "Three material capabilities require decomposition.", blocker_ids: [], carried_finding_ids: ["FND-001"],
+    next_workflow: "stnl-spec-roadmap", suggested_next_operation: "OPERATION=INIT",
+    payload: { kind: "ROADMAP", need_ids: ["NEED-001", "NEED-002"], finding_ids: ["FND-001"], question_ids: [], constraint_ids: ["CON-001"], relationship_ids: ["REL-001"], evidence_ids: ["EVD-001", "EVD-002", "EVD-003"], roadmap_source: "Cancellation and shipping boundaries require a roadmap." },
   };
+  raw.final_assessment = { boundary: "MULTIPLE", capability_count: 2, decomposition_value: "MATERIAL", rationale: "Two capabilities need decomposition." };
   return raw;
 }
 
-function findingHeader(html, variant) {
-  const match = new RegExp(`<article class="finding-card finding-${variant}"[^>]*>\\s*<header>([\\s\\S]*?)</header>`, "u").exec(html);
-  assert.notEqual(match, null);
-  return match[1];
+function blockedWithoutOpen(raw) {
+  const next = clone(raw);
+  next.questions[0].status = "ANSWERED";
+  next.questions[0].answer = "The clarification is recorded while the blocking finding remains open.";
+  next.handoff.payload.question_ids = [];
+  return next;
 }
 
-function validationPanel(html) {
-  const match = /<section class="validation-panel">([\s\S]*?)<\/section>/u.exec(html);
-  assert.notEqual(match, null);
-  return match[1];
+function visibleMarkup(html) {
+  return html.replace(/<script>[\s\S]*?<\/script>/u, "");
 }
 
 test("renderer is deterministic, offline, owned, and fingerprint-verifiable", async () => {
@@ -50,108 +54,150 @@ test("renderer is deterministic, offline, owned, and fingerprint-verifiable", as
   assert.doesNotMatch(first.html, /<link\b|<img\b|https?:\/\//iu);
 });
 
-test("open BLOCKING cards retain critical severity emphasis", async () => {
-  const html = renderRefinement(validateRefinement(await representativeRaw())).html;
-  for (const marker of ["Gap", "Why it matters", "Needs decision", "FND-001", "QST-001", "BLOCKED"]) assert.match(html, new RegExp(marker, "u"));
-  const header = findingHeader(html, "open");
-  assert.match(html, /finding-open"[^>]*data-status="open"[^>]*data-severity="BLOCKING"/u);
-  assert.match(header, /badge-open[^>]*>open</u);
-  assert.match(header, /badge-blocking[^>]*>BLOCKING</u);
-  assert.doesNotMatch(header, /severity-history/u);
-  assert.match(html, /\.finding-open\[data-severity="BLOCKING"\]\{border-left-color:var\(--red\)\}/u);
-});
-
-test("resolved BLOCKING cards make resolution dominant and render only positive accepted checks", async () => {
-  const html = renderRefinement(validateRefinement(acceptedResolution(await representativeRaw()))).html;
-  for (const marker of ["finding-resolved", "Gap", "Resolution", "Validation", "Problema integralmente tratado", "READY FOR SPEC"]) {
-    assert.match(html, new RegExp(marker, "iu"));
-  }
-  const header = findingHeader(html, "resolved");
-  const validation = validationPanel(html);
-  assert.match(html, /finding-resolved"[^>]*data-status="resolved"[^>]*data-severity="BLOCKING"/u);
-  assert.match(header, /badge-resolved[^>]*>resolved</u);
-  assert.match(header, /severity-history[^>]*><span>Original severity:<\/span> <strong>BLOCKING<\/strong>/u);
-  assert.doesNotMatch(header, /badge-blocking/u);
-  assert.match(validation, /Nenhum novo gap introduzido/u);
-  assert.equal((validation.match(/badge-pass/gu) ?? []).length, 5);
-  assert.doesNotMatch(validation, /badge-fail|Novo gap introduzido|new_gap_introduced/u);
-});
-
-test("rejected and inconclusive proposals remain visually distinct", async () => {
-  const rejectedHtml = renderRefinement(validateRefinement(rejected(await representativeRaw()))).html;
-  assert.match(rejectedHtml, /finding-rejected/u);
-  assert.match(rejectedHtml, /Proposed resolution/u);
-  assert.match(rejectedHtml, /Validation failed/u);
-  assert.match(rejectedHtml, /Gap restante/u);
-
-  const inconclusive = rejected(await representativeRaw());
-  inconclusive.findings[0].resolution.verdict = "inconclusive";
-  inconclusive.findings[0].resolution.rationale = "The persistence contract is unknown.";
-  inconclusive.findings[0].resolution.checks.ambiguity_closed = "UNKNOWN";
-  inconclusive.findings[0].resolution.checks.repository_consistent = "UNKNOWN";
-  inconclusive.findings[0].resolution.checks.problem_fully_addressed = "UNKNOWN";
-  const inconclusiveHtml = renderRefinement(validateRefinement(inconclusive)).html;
-  assert.match(inconclusiveHtml, /finding-inconclusive/u);
-  assert.match(inconclusiveHtml, /Validation inconclusive/u);
-});
-
-test("bypassed BLOCKING cards preserve historical severity without looking resolved or currently blocking", async () => {
-  const html = renderRefinement(validateRefinement(bypassed(await representativeRaw()))).html;
-  const header = findingHeader(html, "bypassed");
-  assert.match(html, /finding-bypassed/u);
-  assert.match(html, /finding-bypassed"[^>]*data-status="bypassed"[^>]*data-severity="BLOCKING"/u);
-  assert.match(html, /Bypass decision/u);
-  assert.match(html, /Known risk remains/u);
-  assert.match(header, /badge-bypassed[^>]*>bypassed</u);
-  assert.match(header, /severity-history[^>]*><span>Original severity:<\/span> <strong>BLOCKING<\/strong>/u);
-  assert.doesNotMatch(header, /badge-blocking|badge-resolved/u);
-  assert.doesNotMatch(html, /<article class="finding-card finding-resolved"/u);
-});
-
-test("untrusted content is escaped and absent from executable JavaScript", async () => {
+test("single requirement stays compact while retaining its visible requirement identity", async () => {
   const raw = await representativeRaw();
-  raw.title = '</script><script id="owned">alert(1)</script>';
-  raw.summary = '<svg onload="alert(2)"> café 漢字 😀';
-  raw.sources[0].original_text = '</pre><img src=x onerror="alert(3)">';
-  raw.findings[0].problem = '</section><script>alert(4)</script>';
+  raw.sources = [raw.sources[0]];
+  raw.needs = [raw.needs[0]];
+  raw.evidence = [raw.evidence[0]];
+  raw.relationships = [];
+  raw.questions[0].source_ids = ["SRC-001"];
+  raw.questions[0].need_ids = ["NEED-001"];
+  raw.questions[0].evidence_ids = ["EVD-001"];
+  raw.findings[0].source_ids = ["SRC-001"];
+  raw.findings[0].need_ids = ["NEED-001"];
+  raw.findings[0].evidence_ids = ["EVD-001"];
+  raw.findings[0].relationship_ids = [];
+  raw.constraints = [];
+  raw.handoff.payload = { kind: "REFINEMENT", need_ids: ["NEED-001"], finding_ids: ["FND-001"], question_ids: ["QST-001"], constraint_ids: [], relationship_ids: [], evidence_ids: ["EVD-001"] };
   const html = renderRefinement(validateRefinement(raw)).html;
-  assert.doesNotMatch(html, /<script id="owned">|<img src=x|<svg onload/iu);
-  assert.match(html, /&lt;\/script&gt;&lt;script id=&quot;owned&quot;&gt;/u);
-  assert.match(html, /&lt;\/pre&gt;&lt;img src=x onerror=&quot;alert\(3\)&quot;&gt;/u);
-  const script = /<script>([\s\S]*)<\/script>\s*<\/body>/u.exec(html)?.[1] ?? "";
-  assert.doesNotMatch(script, /owned|alert\([1-4]\)|café|漢字/u);
+  assert.match(html, /US-41/u);
+  assert.match(html, /1 Requirements · 1 Decisions · 1 Blockers · BLOCKED/u);
+  assert.match(html, /Requirements<\/h2>/u);
+  assert.doesNotMatch(html, /SRC-002/u);
 });
 
-test("filters, responsive layout, navigation, accessibility, and complete print are built in", async () => {
-  const html = renderRefinement(validateRefinement(await representativeRaw())).html;
-  for (const marker of [
-    "Requirements / USs", "Cross-US", "Technical Surface", "Handoff", 'id="search"', 'id="type"', 'id="severity"',
-    'name="status"', "All", "Open", "Resolved", "Bypassed", "Requirement", "Technical", "Cross-requirement", "Repository", "Risk",
-    "Blocking", "Attention", "Info", "beforeprint", "afterprint", "@media print", "@media(max-width:680px)",
-    'aria-live="polite"', 'class="skip"', "Manual handoff only", "refinement.json",
-  ]) assert.match(html, new RegExp(marker.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"), "iu"));
-  assert.match(html, /\.finding-card\[hidden\]\{display:block\}/u);
-  assert.match(html, /finding-card details>:not\(summary\)[^}]*display:block!important/u);
+test("multi-US projection groups decisions/findings and keeps cross-US identity", async () => {
+  const html = renderRefinement(validateRefinement(await multiRaw())).html;
+  for (const marker of ["US 36134", "US 36174", "US 36198", "Which advanced filters are in scope?", "Which current result does Excel export represent?", "Which fields participate in free-text search?", "Result adapter is currently hardcoded", "US 36134 ↔ US 36174 ↔ US 36198"]) {
+    assert.match(html, new RegExp(marker, "u"));
+  }
+  assert.match(html, /3 Requirements · 3 Decisions · 3 Blockers · BLOCKED/u);
+  assert.match(html, /US 36198 → US 36134/u);
+  assert.match(html, /US 36174 → US 36134/u);
+  assert.match(html, /Technical findings/u);
+  assert.equal((html.match(/<article class="requirement-card"/gu) ?? []).length, 3);
 });
 
-test("20+ findings and long text remain structurally compact", async () => {
-  const raw = await representativeRaw();
-  for (let index = 2; index <= 24; index += 1) {
-    raw.findings.push({
-      ...clone(raw.findings[0]),
-      id: `FND-${String(index).padStart(3, "0")}`,
-      title: `Additional material finding ${index}`,
-      type: index % 2 === 0 ? "RISK" : "REQUIREMENT_GAP",
-      severity: index % 3 === 0 ? "ATTENTION" : "INFO",
-      need_ids: ["NEED-001"], evidence_ids: ["EVD-001"], relationship_ids: [], question_ids: [],
-      problem: `A long but structured gap ${index}. `.repeat(25),
+test("cross-US decisions have one canonical interaction surface and references in every affected requirement", async () => {
+  const html = renderRefinement(validateRefinement(await multiRaw())).html;
+  assert.match(html, /id="cross-decisions"[\s\S]*?Cross-requirement decisions/u);
+  assert.match(html, /id="decision-QST-002"/u);
+  assert.equal((html.match(/data-question-id="QST-002"/gu) ?? []).length, 1);
+  assert.equal((html.match(/Cross-US decision · <code>QST-002<\/code>/gu) ?? []).length, 3);
+  assert.match(html, /US 36134 ↔ US 36174 ↔ US 36198/u);
+  assert.doesNotMatch(html, /id="SRC-001-QST-002"|id="SRC-002-QST-002"|id="SRC-003-QST-002"/u);
+  assert.match(html, /3 Requirements · 3 Decisions · 3 Blockers · BLOCKED/u);
+});
+
+test("requirement source disclosure stays local when findings or decisions are cross-US", async () => {
+  const raw = await multiRaw();
+  const html = renderRefinement(validateRefinement(raw)).html;
+  const starts = ["SRC-001", "SRC-002", "SRC-003"].map((id) => html.indexOf(`<article class="requirement-card" id="${id}"`));
+  const texts = raw.sources.map((source) => source.original_text);
+  starts.forEach((start, index) => {
+    const end = index === starts.length - 1 ? html.length : starts[index + 1];
+    const card = html.slice(start, end);
+    const disclosure = card.match(/<section class="original-sources">[\s\S]*?<\/section>/u)?.[0] ?? "";
+    assert.match(disclosure, new RegExp(texts[index].replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"), "u"));
+    texts.filter((_, otherIndex) => otherIndex !== index).forEach((text) => {
+      assert.doesNotMatch(disclosure, new RegExp(text.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"), "u"));
     });
-  }
-  const ids = raw.findings.map((item) => item.id);
-  raw.handoff.carried_finding_ids = ids;
-  raw.handoff.payload.finding_ids = ids;
+  });
+});
+
+test("decision cards lead while technical-only and questionless blockers remain represented", async () => {
+  const raw = await multiRaw();
+  raw.findings[3].severity = "BLOCKING";
+  raw.handoff.blocker_ids = ["FND-001", "FND-002", "FND-003", "FND-004"];
   const html = renderRefinement(validateRefinement(raw)).html;
-  assert.equal((html.match(/data-finding(?:\s|>)/gu) ?? []).length, 24);
-  assert.match(html, /24 findings visíveis/u);
-  assert.match(html, /finding-columns three/u);
+  assert.match(html, /class="decision-card(?:\s|")/u);
+  assert.match(html, /QST-001/u);
+  assert.match(html, /Result adapter is currently hardcoded/u);
+  assert.match(html, /technical-card is-blocking/u);
+});
+
+test("BLOCKED continue workflow is canonical RECONCILE with exact rendered copy payload", async () => {
+  const html = renderRefinement(validateRefinement(await multiRaw()), { refinementPath: "planning/refinement" }).html;
+  assert.match(html, /Recommended workflow<\/span><h3>Reconcile refinement/u);
+  assert.match(html, /OPERATION=RECONCILE/u);
+  assert.match(html, /data-refinement-path="planning\/refinement"/u);
+  for (const questionId of ["QST-001", "QST-002", "QST-003"]) assert.match(html, new RegExp(questionId, "u"));
+  assert.doesNotMatch(html, /Start SPEC|Start Roadmap/u);
+  assert.match(html, /id="copy-decisions"/u);
+  assert.match(html, /navigator\.clipboard\.writeText\(value\)/u);
+  assert.match(html, /document\.execCommand\("copy"\)/u);
+});
+
+test("ready handoffs produce SPEC and Roadmap prompts from canonical payload", async () => {
+  const spec = renderRefinement(validateRefinement(specReady(await representativeRaw()))).html;
+  assert.match(spec, /Start SPEC/u);
+  assert.match(spec, /MODE=INIT/u);
+  assert.match(spec, /SPEC_PATH=specs\/order-cancellation/u);
+  assert.match(spec, /REQUIREMENTS_SOURCE=Customer cancellation/u);
+
+  const roadmap = renderRefinement(validateRefinement(roadmapReady(await representativeRaw()))).html;
+  assert.match(roadmap, /Start Roadmap/u);
+  assert.match(roadmap, /OPERATION=INIT/u);
+  assert.match(roadmap, /ROADMAP_SOURCE=Cancellation and shipping boundaries require a roadmap/u);
+});
+
+test("draft summary exists only for an active reconciliation workspace", async () => {
+  const blockedOpen = renderRefinement(validateRefinement(await multiRaw())).html;
+  assert.match(blockedOpen, /<p class="draft-summary" id="readiness-draft-summary"[^>]*>3 open · 0 answered in draft · 3 remaining<\/p>/u);
+  assert.match(blockedOpen, /data-draft-decision/u);
+  assert.match(blockedOpen, /id="copy-decisions"/u);
+
+  const blockedWithoutQuestions = renderRefinement(validateRefinement(blockedWithoutOpen(await representativeRaw()))).html;
+  assert.match(blockedWithoutQuestions, /<p class="draft-summary" id="readiness-draft-summary"[^>]*>No OPEN decisions · additional information draft available<\/p>/u);
+  assert.match(blockedWithoutQuestions, /data-generic-reconciliation/u);
+  assert.match(blockedWithoutQuestions, /Additional information — draft/u);
+
+  const readySpec = renderRefinement(validateRefinement(specReady(await representativeRaw()))).html;
+  const readyRoadmap = renderRefinement(validateRefinement(roadmapReady(await representativeRaw()))).html;
+  for (const html of [readySpec, readyRoadmap]) {
+    assert.match(html, /data-draft-mode="none"/u);
+    assert.doesNotMatch(html, /id="readiness-draft-summary"/u);
+    assert.doesNotMatch(visibleMarkup(html), /answered in draft|additional information draft available|Additional information — draft/iu);
+  }
+  assert.match(readySpec, /<h3>Start SPEC<\/h3>/u);
+  assert.match(readySpec, /MODE=INIT/u);
+  assert.match(readySpec, /SPEC_PATH=specs\/order-cancellation/u);
+  assert.match(readySpec, /REQUIREMENTS_SOURCE=Customer cancellation before shipment uses an atomic conditional state transition; SHIPPED wins and cancellation returns conflict\./u);
+  assert.match(readyRoadmap, /<h3>Start Roadmap<\/h3>/u);
+  assert.match(readyRoadmap, /OPERATION=INIT/u);
+  assert.match(readyRoadmap, /ROADMAP_SOURCE=Cancellation and shipping boundaries require a roadmap/u);
+});
+
+test("renderer escapes content, including copy-prompt payload, and preserves accessibility, responsive, and print behavior", async () => {
+  const raw = await representativeRaw();
+  raw.title = '</textarea><script id="owned">alert(1)</script>';
+  raw.questions[0].question = '<svg onload="alert(2)">';
+  raw.handoff.reason = '<img src=x onerror="alert(3)">';
+  const html = renderRefinement(validateRefinement(raw)).html;
+  assert.doesNotMatch(html, /<script id="owned">|<svg onload|<img src=x/iu);
+  assert.match(html, /&lt;\/textarea&gt;&lt;script id=&quot;owned&quot;&gt;/u);
+  assert.match(html, /aria-live="polite"/u);
+  assert.match(html, /@media\(prefers-reduced-motion:reduce\)/u);
+  assert.match(html, /@media\(max-width:760px\)/u);
+  assert.match(html, /@media print/u);
+  assert.match(html, /details>:not\(summary\)[^}]*display:block!important/u);
+});
+
+test("source scope is first-class, exact, and rejects unknown or inconsistent associations", async () => {
+  const unknown = await representativeRaw();
+  unknown.questions[0].source_ids = ["SRC-999"];
+  assert.throws(() => validateRefinement(unknown), /references missing SRC-999/u);
+  const inconsistent = await representativeRaw();
+  inconsistent.findings[0].source_ids = ["SRC-001"];
+  assert.throws(() => validateRefinement(inconsistent), /must exactly match sources of its affected needs/u);
 });

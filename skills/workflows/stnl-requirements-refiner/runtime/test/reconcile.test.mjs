@@ -53,6 +53,8 @@ test("structurally dishonest resolution verdicts fail closed", async () => {
 
 test("explicit bypass is distinct from resolution, preserves risk, and stops blocking", async () => {
   const raw = await representativeRaw();
+  raw.questions[0].status = "ANSWERED";
+  raw.questions[0].answer = "The concurrency risk is explicitly carried to the downstream handoff.";
   raw.findings[0].disposition = "bypassed";
   raw.findings[0].bypass = {
     reason: "Out of scope for this delivery; risk explicitly accepted.",
@@ -62,7 +64,7 @@ test("explicit bypass is distinct from resolution, preserves risk, and stops blo
     outcome: "READY_FOR_SPEC", reason: "The only BLOCKING finding was explicitly bypassed.", blocker_ids: [],
     carried_finding_ids: ["FND-001"], next_workflow: "stnl-spec-lifecycle-manager", suggested_next_operation: "MODE=INIT",
     payload: {
-      kind: "SPEC", need_ids: ["NEED-001", "NEED-002"], finding_ids: ["FND-001"], question_ids: ["QST-001"],
+      kind: "SPEC", need_ids: ["NEED-001", "NEED-002"], finding_ids: ["FND-001"], question_ids: [],
       constraint_ids: ["CON-001"], relationship_ids: ["REL-001"], evidence_ids: ["EVD-001", "EVD-002", "EVD-003"],
       suggested_spec_title: "Order cancellation", requirements_source: "Customer cancellation before shipping, carrying the bypassed concurrency risk.",
     },

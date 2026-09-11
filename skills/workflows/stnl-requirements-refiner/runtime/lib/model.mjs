@@ -33,11 +33,11 @@ const RELATIONSHIP_FIELDS = new Set([
   "retired_reason",
 ]);
 const QUESTION_FIELDS = new Set([
-  "id", "question", "status", "why_material", "need_ids", "finding_ids", "evidence_ids", "answer",
+  "id", "question", "status", "why_material", "source_ids", "need_ids", "finding_ids", "evidence_ids", "answer",
 ]);
 const CONSTRAINT_FIELDS = new Set(["id", "statement", "state", "need_ids", "evidence_ids", "retired_reason"]);
 const FINDING_FIELDS = new Set([
-  "id", "title", "type", "severity", "disposition", "need_ids", "evidence_ids", "relationship_ids",
+  "id", "title", "type", "severity", "disposition", "source_ids", "need_ids", "evidence_ids", "relationship_ids",
   "question_ids", "problem", "why_it_matters", "impact", "resolution", "bypass", "reopened_reason",
 ]);
 const RESOLUTION_FIELDS = new Set([
@@ -322,7 +322,7 @@ function relationship(value, label) {
 
 function question(value, label) {
   const item = object(value, label);
-  exact(item, QUESTION_FIELDS, new Set(["id", "question", "status", "why_material", "need_ids", "finding_ids", "evidence_ids"]), label);
+  exact(item, QUESTION_FIELDS, new Set(["id", "question", "status", "why_material", "source_ids", "need_ids", "finding_ids", "evidence_ids"]), label);
   const status = enumValue(item.status, QUESTION_STATUSES, `${label}.status`);
   const answer = text(item.answer, `${label}.answer`, { optional: true, maximum: 8_000 });
   if ((status === "ANSWERED") !== (answer !== undefined)) throw new ValidationError(`${label} requires answer exactly when ANSWERED`);
@@ -331,6 +331,7 @@ function question(value, label) {
     question: text(item.question, `${label}.question`, { maximum: 2_000 }),
     status,
     why_material: text(item.why_material, `${label}.why_material`, { maximum: 4_000 }),
+    source_ids: identifierArray(item.source_ids, `${label}.source_ids`, /^SRC-[0-9]{3}$/u, { minimum: 1, maximum: 100 }),
     need_ids: identifierArray(item.need_ids, `${label}.need_ids`, /^NEED-[0-9]{3}$/u, { minimum: 1, maximum: 100 }),
     finding_ids: identifierArray(item.finding_ids, `${label}.finding_ids`, /^FND-[0-9]{3}$/u, { minimum: 1, maximum: 100 }),
     evidence_ids: identifierArray(item.evidence_ids, `${label}.evidence_ids`, /^EVD-[0-9]{3}$/u, { maximum: 100 }),
@@ -391,7 +392,7 @@ function resolution(value, label) {
 function finding(value, label) {
   const item = object(value, label);
   exact(item, FINDING_FIELDS, new Set([
-    "id", "title", "type", "severity", "disposition", "need_ids", "evidence_ids", "relationship_ids",
+    "id", "title", "type", "severity", "disposition", "source_ids", "need_ids", "evidence_ids", "relationship_ids",
     "question_ids", "problem", "why_it_matters", "impact",
   ]), label);
   const disposition = enumValue(item.disposition, DISPOSITIONS, `${label}.disposition`);
@@ -417,6 +418,7 @@ function finding(value, label) {
     type: enumValue(item.type, FINDING_TYPES, `${label}.type`),
     severity: enumValue(item.severity, SEVERITIES, `${label}.severity`),
     disposition,
+    source_ids: identifierArray(item.source_ids, `${label}.source_ids`, /^SRC-[0-9]{3}$/u, { minimum: 1, maximum: 100 }),
     need_ids: identifierArray(item.need_ids, `${label}.need_ids`, /^NEED-[0-9]{3}$/u, { minimum: 1, maximum: 100 }),
     evidence_ids: identifierArray(item.evidence_ids, `${label}.evidence_ids`, /^EVD-[0-9]{3}$/u, { maximum: 100 }),
     relationship_ids: identifierArray(item.relationship_ids, `${label}.relationship_ids`, /^REL-[0-9]{3}$/u, { maximum: 100 }),
@@ -449,7 +451,8 @@ function finalAssessment(value) {
 }
 
 export function expectedOutcome(model) {
-  if (model.findings.some((item) => item.disposition === "open" && item.severity === "BLOCKING")
+  if (model.questions.some((item) => item.status === "OPEN")
+    || model.findings.some((item) => item.disposition === "open" && item.severity === "BLOCKING")
     || model.final_assessment.boundary === "UNESTABLISHED") return "BLOCKED";
   if (model.final_assessment.boundary === "UNITARY" && model.final_assessment.capability_count === 1
     && model.final_assessment.decomposition_value === "NONE") return "READY_FOR_SPEC";
@@ -560,11 +563,16 @@ function requireReferences(model, refinementPath) {
     exists("evidence", item.evidence_ids, item.id);
   }
   for (const item of model.questions) {
+    exists("sources", item.source_ids, item.id);
     exists("needs", item.need_ids, item.id);
     exists("findings", item.finding_ids, item.id);
     exists("evidence", item.evidence_ids, item.id);
     for (const findingId of item.finding_ids) {
       if (!maps.findings.get(findingId).question_ids.includes(item.id)) throw new ValidationError(`${item.id} and ${findingId} must reference each other`);
+    }
+    const expectedSources = [...new Set(item.need_ids.flatMap((id) => maps.needs.get(id).source_ids))].sort();
+    if (JSON.stringify(item.source_ids) !== JSON.stringify(expectedSources)) {
+      throw new ValidationError(`${item.id}.source_ids must exactly match sources of its affected needs`);
     }
   }
   for (const item of model.constraints) {
@@ -572,6 +580,7 @@ function requireReferences(model, refinementPath) {
     exists("evidence", item.evidence_ids, item.id);
   }
   for (const item of model.findings) {
+    exists("sources", item.source_ids, item.id);
     exists("needs", item.need_ids, item.id);
     exists("evidence", item.evidence_ids, item.id);
     exists("relationships", item.relationship_ids, item.id);
@@ -579,6 +588,10 @@ function requireReferences(model, refinementPath) {
     if (item.resolution !== undefined) exists("evidence", item.resolution.supporting_evidence_ids, `${item.id}.resolution`);
     for (const questionId of item.question_ids) {
       if (!maps.questions.get(questionId).finding_ids.includes(item.id)) throw new ValidationError(`${item.id} and ${questionId} must reference each other`);
+    }
+    const expectedSources = [...new Set(item.need_ids.flatMap((id) => maps.needs.get(id).source_ids))].sort();
+    if (JSON.stringify(item.source_ids) !== JSON.stringify(expectedSources)) {
+      throw new ValidationError(`${item.id}.source_ids must exactly match sources of its affected needs`);
     }
     if (item.type === "CROSS_REQUIREMENT_GAP" && item.need_ids.length < 2) {
       throw new ValidationError(`${item.id} cross-requirement gap requires at least two needs`);

@@ -90,13 +90,13 @@ Relationships use `REL-NNN`, `ACTIVE|RETIRED`, at least two needs, evidence, a t
 
 They describe requirement interactions, not candidate SPEC decomposition. Retired relationships are terminal.
 
-Material questions use `QST-NNN`, `OPEN|ANSWERED`, question text, `why_material`, affected needs/findings, and evidence. `ANSWERED` requires the explicit answer. Question↔finding references are bidirectional. Do not materialize reversible implementation preferences.
+Material questions use `QST-NNN`, `OPEN|ANSWERED`, question text, `why_material`, first-class `source_ids`, affected needs/findings, and evidence. `source_ids` exactly equals the sorted union of the affected needs' sources, so a question's external requirement scope is explicit and referentially validated. `ANSWERED` requires the explicit answer. Question↔finding references are bidirectional. Do not materialize reversible implementation preferences.
 
 Constraints use `CON-NNN`, `ACTIVE|RETIRED`, statement, needs, and evidence. Retired constraints require a reason and are terminal.
 
 ## Findings
 
-Findings use contiguous `FND-NNN` IDs and contain title, type, severity, disposition, affected needs, evidence, relationships, questions, `problem`, `why_it_matters`, and `impact`.
+Findings use contiguous `FND-NNN` IDs and contain title, type, severity, disposition, first-class `source_ids`, affected needs, evidence, relationships, questions, `problem`, `why_it_matters`, and `impact`. `source_ids` exactly equals the sorted union of the affected needs' sources; it makes single- and cross-requirement scope explicit without creating an independent source authority.
 
 Type is `REQUIREMENT_GAP|TECHNICAL_GAP|CROSS_REQUIREMENT_GAP|REPOSITORY_CONFLICT|RISK`. Severity is independently `INFO|ATTENTION|BLOCKING`. Disposition is `open|resolved|bypassed`.
 
@@ -158,9 +158,11 @@ Bypass requires no ticket, owner, deadline, or external approval. It is never an
 
 The runtime independently derives:
 
-1. any open `BLOCKING`, or `UNESTABLISHED` boundary → `BLOCKED`;
-2. `UNITARY`, one capability, `NONE`, and no open blocking → `READY_FOR_SPEC`;
-3. otherwise → `READY_FOR_ROADMAP`.
+1. any material `OPEN` question, open `BLOCKING` finding, or `UNESTABLISHED` boundary → `BLOCKED`;
+2. `UNITARY`, one capability, `NONE`, no open blocking, and zero `OPEN` questions → `READY_FOR_SPEC`;
+3. otherwise → `READY_FOR_ROADMAP`, with zero `OPEN` questions required for every READY outcome.
+
+This closes the READY/open-question invariant: a material question cannot remain unanswered while the refinement is handed to a downstream workflow.
 
 `handoff` contains outcome, reason, exact open blocker IDs, exact carried finding IDs, next workflow, next operation, and payload. Browser state never participates.
 

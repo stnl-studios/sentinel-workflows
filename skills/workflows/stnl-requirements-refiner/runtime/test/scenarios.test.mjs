@@ -44,7 +44,7 @@ function multiDomainCandidate() {
       { id: "REL-003", type: "SHARED_AUTHORITY", title: "Password recovery remains independent", state: "ACTIVE", need_ids: ["NEED-001", "NEED-004"], evidence_ids: ["EVD-005"], detail: "Recovery has separate authority and no delivery dependency on commerce." },
     ],
     questions: [], constraints: [],
-    findings: [{ id: "FND-001", title: "Pricing ownership crosses Coupon and Checkout", type: "CROSS_REQUIREMENT_GAP", severity: "ATTENTION", disposition: "open", need_ids: ["NEED-002", "NEED-003"], evidence_ids: ["EVD-005"], relationship_ids: ["REL-002"], question_ids: [], problem: "The stories do not assign ownership of their shared Pricing changes.", why_it_matters: "Independent delivery can create conflicting price calculations.", impact: "The roadmap must sequence or coordinate the shared surface." }],
+    findings: [{ id: "FND-001", title: "Pricing ownership crosses Coupon and Checkout", type: "CROSS_REQUIREMENT_GAP", severity: "ATTENTION", disposition: "open", source_ids: ["SRC-002", "SRC-003"], need_ids: ["NEED-002", "NEED-003"], evidence_ids: ["EVD-005"], relationship_ids: ["REL-002"], question_ids: [], problem: "The stories do not assign ownership of their shared Pricing changes.", why_it_matters: "Independent delivery can create conflicting price calculations.", impact: "The roadmap must sequence or coordinate the shared surface." }],
     final_assessment: { boundary: "MULTIPLE", capability_count: 4, decomposition_value: "MATERIAL", rationale: "Four capabilities include a dependency, a shared authority, and one independent domain." },
     handoff: { outcome: "READY_FOR_ROADMAP", reason: "Multiple capabilities and shared surfaces need decomposition.", blocker_ids: [], carried_finding_ids: ["FND-001"], next_workflow: "stnl-spec-roadmap", suggested_next_operation: "OPERATION=INIT", payload: { kind: "ROADMAP", need_ids: needs.map((item) => item.id), finding_ids: ["FND-001"], question_ids: [], constraint_ids: [], relationship_ids: ["REL-001", "REL-002", "REL-003"], evidence_ids: evidence.map((item) => item.id), roadmap_source: "Decompose Cart, Coupon, Checkout, and Password Recovery while preserving dependency and Pricing ownership evidence." } },
   };
@@ -81,13 +81,15 @@ test("scenario D rejects read-before-write because the cancellation race remains
 
 test("scenario E keeps an explicitly bypassed retry-policy risk visible without blocking handoff", async () => {
   const raw = clone(await representativeRaw());
+  raw.questions[0].status = "ANSWERED";
+  raw.questions[0].answer = "The retry policy risk is explicitly carried to the downstream SPEC.";
   raw.findings[0].title = "Delivery retry policy is undefined";
   raw.findings[0].problem = "The delivery does not define retry bounds or duplicate-work handling.";
   raw.findings[0].why_it_matters = "Unbounded or duplicate retries can repeat downstream effects.";
   raw.findings[0].impact = "A known operational risk travels with the downstream requirements.";
   raw.findings[0].disposition = "bypassed";
   raw.findings[0].bypass = { reason: "Explicitly outside this delivery; risk accepted for later treatment.", known_risk: "Retries may still duplicate downstream work until the policy is defined." };
-  raw.handoff = { outcome: "READY_FOR_SPEC", reason: "The retry-policy blocker was explicitly bypassed.", blocker_ids: [], carried_finding_ids: ["FND-001"], next_workflow: "stnl-spec-lifecycle-manager", suggested_next_operation: "MODE=INIT", payload: { kind: "SPEC", need_ids: ["NEED-001", "NEED-002"], finding_ids: ["FND-001"], question_ids: ["QST-001"], constraint_ids: ["CON-001"], relationship_ids: ["REL-001"], evidence_ids: ["EVD-001", "EVD-002", "EVD-003"], suggested_spec_title: "Order cancellation", requirements_source: "Cancellation behavior carrying the explicitly bypassed retry-policy risk." } };
+  raw.handoff = { outcome: "READY_FOR_SPEC", reason: "The retry-policy blocker was explicitly bypassed.", blocker_ids: [], carried_finding_ids: ["FND-001"], next_workflow: "stnl-spec-lifecycle-manager", suggested_next_operation: "MODE=INIT", payload: { kind: "SPEC", need_ids: ["NEED-001", "NEED-002"], finding_ids: ["FND-001"], question_ids: [], constraint_ids: ["CON-001"], relationship_ids: ["REL-001"], evidence_ids: ["EVD-001", "EVD-002", "EVD-003"], suggested_spec_title: "Order cancellation", requirements_source: "Cancellation behavior carrying the explicitly bypassed retry-policy risk." } };
   const model = validateRefinement(raw);
   assert.equal(model.findings[0].disposition, "bypassed");
   assert.match(model.findings[0].bypass.known_risk, /duplicate/u);

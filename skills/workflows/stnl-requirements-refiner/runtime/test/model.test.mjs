@@ -5,6 +5,10 @@ import { expectedOutcome, validateRefinement } from "../lib/model.mjs";
 import { acceptedResolution, clone, representativeRaw } from "./helpers.mjs";
 
 function specHandoff(raw, { carried = raw.findings.filter((item) => item.disposition === "bypassed" || (item.disposition === "open" && item.severity !== "BLOCKING")).map((item) => item.id) } = {}) {
+  raw.questions.filter((item) => item.status === "OPEN").forEach((item) => {
+    item.status = "ANSWERED";
+    item.answer = "The material decision is recorded for the downstream handoff.";
+  });
   raw.handoff = {
     outcome: "READY_FOR_SPEC",
     reason: "One coherent boundary is ready for documentary refinement.",
@@ -140,6 +144,21 @@ test("handoff is independently derived and open blocking findings cannot be hidd
   const missingBlocker = await representativeRaw();
   missingBlocker.handoff.blocker_ids = [];
   assert.throws(() => validateRefinement(missingBlocker), /must exactly equal/u);
+});
+
+test("READY handoffs reject material OPEN questions", async () => {
+  const raw = await representativeRaw();
+  raw.findings[0].severity = "ATTENTION";
+  specHandoff(raw);
+  raw.questions[0].status = "OPEN";
+  delete raw.questions[0].answer;
+  raw.handoff.payload.question_ids = ["QST-001"];
+  assert.equal(expectedOutcome({
+    questions: [{ status: "OPEN" }],
+    findings: [],
+    final_assessment: raw.final_assessment,
+  }), "BLOCKED");
+  assert.throws(() => validateRefinement(raw), /handoff.outcome must be BLOCKED/u);
 });
 
 test("BLOCKING severity blocks only while the finding remains open", async () => {

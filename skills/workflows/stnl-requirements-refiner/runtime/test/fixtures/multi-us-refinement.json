@@ -1,0 +1,43 @@
+{
+  "contract_version": 1,
+  "refinement_id": "REF-COMMERCIAL-SEARCH-EXPORT",
+  "title": "Commercial filters, free search, and Excel export",
+  "summary": "Clarify three related commercial capabilities and their shared delivery dependencies.",
+  "input_assessment": {"format": "STRUCTURED", "quality": "PARTIAL", "summary": "The stories define intent but leave material scope and sequencing decisions open."},
+  "exploration": {"status": "SUFFICIENT", "anchors": ["filters", "search", "export"], "searches": ["filter search export"], "files_read": ["src/commercial.mjs"], "stop_reason": "The bounded public surface demonstrates the shared dependency.", "limitations": []},
+  "sources": [
+    {"id": "SRC-001", "kind": "USER_STORY", "label": "Advanced commercial filters", "state": "ACTIVE", "external_id": "US 36134", "original_text": "Provide advanced filters and commercial structure."},
+    {"id": "SRC-002", "kind": "USER_STORY", "label": "Excel export", "state": "ACTIVE", "external_id": "US 36174", "original_text": "Export the commercial result to Excel."},
+    {"id": "SRC-003", "kind": "USER_STORY", "label": "Free-text search", "state": "ACTIVE", "external_id": "US 36198", "original_text": "Search the commercial result with free text."}
+  ],
+  "needs": [
+    {"id": "NEED-001", "title": "Filter commercial results", "state": "ACTIVE", "source_ids": ["SRC-001"], "statement": "A user filters commercial results by the requested structure.", "preconditions": [], "acceptance_signals": ["Filtered results are observable."], "negative_signals": []},
+    {"id": "NEED-002", "title": "Export commercial results", "state": "ACTIVE", "source_ids": ["SRC-002"], "statement": "A user exports the current commercial result to Excel.", "preconditions": [], "acceptance_signals": ["An Excel export represents the current result."], "negative_signals": []},
+    {"id": "NEED-003", "title": "Search commercial results", "state": "ACTIVE", "source_ids": ["SRC-003"], "statement": "A user searches commercial results with free text.", "preconditions": [], "acceptance_signals": ["Search changes the result."], "negative_signals": []}
+  ],
+  "evidence": [
+    {"id": "EVD-001", "kind": "SOURCE_ASSERTION", "state": "ACTIVE", "summary": "Filters are requested", "detail": "The filters story requests advanced commercial filters.", "confidence": "CONFIRMED", "source_ids": ["SRC-001"], "need_ids": ["NEED-001"]},
+    {"id": "EVD-002", "kind": "SOURCE_ASSERTION", "state": "ACTIVE", "summary": "Export is requested", "detail": "The export story requests Excel output.", "confidence": "CONFIRMED", "source_ids": ["SRC-002"], "need_ids": ["NEED-002"]},
+    {"id": "EVD-003", "kind": "SOURCE_ASSERTION", "state": "ACTIVE", "summary": "Search is requested", "detail": "The search story requests free-text search.", "confidence": "CONFIRMED", "source_ids": ["SRC-003"], "need_ids": ["NEED-003"]},
+    {"id": "EVD-004", "kind": "REPOSITORY_OBSERVATION", "state": "ACTIVE", "summary": "Current result surface is shared", "detail": "Filter, search, and export read the same commercial result surface.", "confidence": "CONFIRMED", "source_ids": [], "need_ids": ["NEED-001", "NEED-002", "NEED-003"], "path": "src/commercial.mjs", "locator": "queryCommercialResults", "surface": "Commercial results"}
+  ],
+  "relationships": [
+    {"id": "REL-001", "type": "DEPENDENCY", "title": "Search depends on filters", "state": "ACTIVE", "need_ids": ["NEED-001", "NEED-003"], "evidence_ids": ["EVD-004"], "detail": "Search must compose with the filtered result.", "from_need_id": "NEED-003", "to_need_id": "NEED-001"},
+    {"id": "REL-002", "type": "DEPENDENCY", "title": "Export depends on filters", "state": "ACTIVE", "need_ids": ["NEED-001", "NEED-002"], "evidence_ids": ["EVD-004"], "detail": "Export must represent the filtered result.", "from_need_id": "NEED-002", "to_need_id": "NEED-001"},
+    {"id": "REL-003", "type": "SHARED_TECHNICAL_SURFACE", "title": "Export, filters, and search share results", "state": "ACTIVE", "need_ids": ["NEED-001", "NEED-002", "NEED-003"], "evidence_ids": ["EVD-004"], "detail": "All three capabilities share the commercial result surface."}
+  ],
+  "questions": [
+    {"id": "QST-001", "question": "Which advanced filters are in scope?", "status": "OPEN", "why_material": "The story and reference image diverge.", "source_ids": ["SRC-001"], "need_ids": ["NEED-001"], "finding_ids": ["FND-001"], "evidence_ids": ["EVD-001"]},
+    {"id": "QST-002", "question": "Which current result does Excel export represent?", "status": "OPEN", "why_material": "Export semantics depend on filters and search.", "source_ids": ["SRC-001", "SRC-002", "SRC-003"], "need_ids": ["NEED-001", "NEED-002", "NEED-003"], "finding_ids": ["FND-002"], "evidence_ids": ["EVD-002", "EVD-004"]},
+    {"id": "QST-003", "question": "Which fields participate in free-text search?", "status": "OPEN", "why_material": "Search behavior and matching bounds are undefined.", "source_ids": ["SRC-003"], "need_ids": ["NEED-003"], "finding_ids": ["FND-003"], "evidence_ids": ["EVD-003"]}
+  ],
+  "constraints": [],
+  "findings": [
+    {"id": "FND-001", "title": "Advanced filter scope is ambiguous", "type": "REQUIREMENT_GAP", "severity": "BLOCKING", "disposition": "open", "source_ids": ["SRC-001"], "need_ids": ["NEED-001"], "evidence_ids": ["EVD-001"], "relationship_ids": [], "question_ids": ["QST-001"], "problem": "The requested filters are not enumerated.", "why_it_matters": "The commercial boundary cannot be implemented consistently.", "impact": "US 36134 is blocked."},
+    {"id": "FND-002", "title": "Export result semantics are undefined", "type": "CROSS_REQUIREMENT_GAP", "severity": "BLOCKING", "disposition": "open", "source_ids": ["SRC-001", "SRC-002", "SRC-003"], "need_ids": ["NEED-001", "NEED-002", "NEED-003"], "evidence_ids": ["EVD-002", "EVD-004"], "relationship_ids": ["REL-001", "REL-002", "REL-003"], "question_ids": ["QST-002"], "problem": "The exported result does not specify its filter/search state.", "why_it_matters": "A user can receive a misleading spreadsheet.", "impact": "US 36174 is blocked."},
+    {"id": "FND-003", "title": "Free-text search scope is undefined", "type": "REQUIREMENT_GAP", "severity": "BLOCKING", "disposition": "open", "source_ids": ["SRC-003"], "need_ids": ["NEED-003"], "evidence_ids": ["EVD-003"], "relationship_ids": ["REL-001"], "question_ids": ["QST-003"], "problem": "Search fields and matching behavior are absent.", "why_it_matters": "Search cannot be verified.", "impact": "US 36198 is blocked."},
+    {"id": "FND-004", "title": "Result adapter is currently hardcoded", "type": "TECHNICAL_GAP", "severity": "ATTENTION", "disposition": "open", "source_ids": ["SRC-001", "SRC-002", "SRC-003"], "need_ids": ["NEED-001", "NEED-002", "NEED-003"], "evidence_ids": ["EVD-004"], "relationship_ids": ["REL-003"], "question_ids": [], "problem": "The observed result adapter returns fixed values.", "why_it_matters": "The shared surface needs an implementation decision later.", "impact": "Technical follow-up travels to the roadmap."}
+  ],
+  "final_assessment": {"boundary": "MULTIPLE", "capability_count": 3, "decomposition_value": "MATERIAL", "rationale": "Three capabilities share a technical surface and have directional dependencies."},
+  "handoff": {"outcome": "BLOCKED", "reason": "Three open BLOCKING findings require reconciliation.", "blocker_ids": ["FND-001", "FND-002", "FND-003"], "carried_finding_ids": ["FND-001", "FND-002", "FND-003", "FND-004"], "next_workflow": "stnl-requirements-refiner", "suggested_next_operation": "OPERATION=RECONCILE", "payload": {"kind": "REFINEMENT", "need_ids": ["NEED-001", "NEED-002", "NEED-003"], "finding_ids": ["FND-001", "FND-002", "FND-003", "FND-004"], "question_ids": ["QST-001", "QST-002", "QST-003"], "constraint_ids": [], "relationship_ids": ["REL-001", "REL-002", "REL-003"], "evidence_ids": ["EVD-001", "EVD-002", "EVD-003", "EVD-004"]}}
+}
