@@ -6,8 +6,8 @@ import test from "node:test";
 
 import { validateRefinement } from "../lib/model.mjs";
 import { hasRefinementOwnershipMarker } from "../lib/publish.mjs";
-import { renderRefinement } from "../lib/render.mjs";
-import { acceptedResolution, clone, FIXTURES, representativeRaw } from "./helpers.mjs";
+import { buildDecisionPrompt, renderRefinement } from "../lib/render.mjs";
+import { acceptedResolution, clone, FIXTURES, historyRaw, recordAcceptedDecision, representativeRaw } from "./helpers.mjs";
 
 async function multiRaw() {
   return JSON.parse(await fs.readFile(path.join(FIXTURES, "multi-us-refinement.json"), "utf8"));
@@ -20,8 +20,7 @@ function specReady(raw) {
 
 function roadmapReady(raw) {
   raw.findings[0].severity = "ATTENTION";
-  raw.questions[0].status = "ANSWERED";
-  raw.questions[0].answer = "The roadmap carries the remaining non-blocking finding context.";
+  recordAcceptedDecision(raw, 0, "The roadmap carries the remaining non-blocking finding context.");
   raw.handoff = {
     outcome: "READY_FOR_ROADMAP", reason: "Three material capabilities require decomposition.", blocker_ids: [], carried_finding_ids: ["FND-001"],
     next_workflow: "stnl-spec-roadmap", suggested_next_operation: "OPERATION=INIT",
@@ -33,8 +32,7 @@ function roadmapReady(raw) {
 
 function blockedWithoutOpen(raw) {
   const next = clone(raw);
-  next.questions[0].status = "ANSWERED";
-  next.questions[0].answer = "The clarification is recorded while the blocking finding remains open.";
+  recordAcceptedDecision(next, 0, "The clarification is recorded while the blocking finding remains open.");
   next.handoff.payload.question_ids = [];
   return next;
 }
@@ -58,6 +56,8 @@ test("single requirement stays compact while retaining its visible requirement i
   const raw = await representativeRaw();
   raw.sources = [raw.sources[0]];
   raw.needs = [raw.needs[0]];
+  raw.requirements[0].source_ids = ["SRC-001"];
+  raw.requirements[0].need_ids = ["NEED-001"];
   raw.evidence = [raw.evidence[0]];
   raw.relationships = [];
   raw.questions[0].source_ids = ["SRC-001"];
@@ -71,7 +71,7 @@ test("single requirement stays compact while retaining its visible requirement i
   raw.handoff.payload = { kind: "REFINEMENT", need_ids: ["NEED-001"], finding_ids: ["FND-001"], question_ids: ["QST-001"], constraint_ids: [], relationship_ids: [], evidence_ids: ["EVD-001"] };
   const html = renderRefinement(validateRefinement(raw)).html;
   assert.match(html, /US-41/u);
-  assert.match(html, /1 Requirements · 1 Decisions · 1 Blockers · BLOCKED/u);
+  assert.match(html, /1 Requirements · 1 Sources · 1 Decisions · 0 Follow-ups · 1 Blockers · BLOCKED/u);
   assert.match(html, /Requirements<\/h2>/u);
   assert.doesNotMatch(html, /SRC-002/u);
 });
@@ -81,31 +81,31 @@ test("multi-US projection groups decisions/findings and keeps cross-US identity"
   for (const marker of ["US 36134", "US 36174", "US 36198", "Which advanced filters are in scope?", "Which current result does Excel export represent?", "Which fields participate in free-text search?", "Result adapter is currently hardcoded", "US 36134 ↔ US 36174 ↔ US 36198"]) {
     assert.match(html, new RegExp(marker, "u"));
   }
-  assert.match(html, /3 Requirements · 3 Decisions · 3 Blockers · BLOCKED/u);
+  assert.match(html, /3 Requirements · 3 Sources · 3 Decisions · 0 Follow-ups · 3 Blockers · BLOCKED/u);
   assert.match(html, /US 36198 → US 36134/u);
   assert.match(html, /US 36174 → US 36134/u);
-  assert.match(html, /Technical findings/u);
+  assert.match(html, /Cross findings/u);
   assert.equal((html.match(/<article class="requirement-card"/gu) ?? []).length, 3);
 });
 
 test("cross-US decisions have one canonical interaction surface and references in every affected requirement", async () => {
   const html = renderRefinement(validateRefinement(await multiRaw())).html;
-  assert.match(html, /id="cross-decisions"[\s\S]*?Cross-requirement decisions/u);
+  assert.match(html, /id="cross-requirements"[\s\S]*?Cross decisions/u);
   assert.match(html, /id="decision-QST-002"/u);
   assert.equal((html.match(/data-question-id="QST-002"/gu) ?? []).length, 1);
-  assert.equal((html.match(/Cross-US decision · <code>QST-002<\/code>/gu) ?? []).length, 3);
+  assert.equal((html.match(/Cross-requirement decision · <code>QST-002<\/code>/gu) ?? []).length, 3);
   assert.match(html, /US 36134 ↔ US 36174 ↔ US 36198/u);
   assert.doesNotMatch(html, /id="SRC-001-QST-002"|id="SRC-002-QST-002"|id="SRC-003-QST-002"/u);
-  assert.match(html, /3 Requirements · 3 Decisions · 3 Blockers · BLOCKED/u);
+  assert.match(html, /3 Requirements · 3 Sources · 3 Decisions · 0 Follow-ups · 3 Blockers · BLOCKED/u);
 });
 
 test("requirement source disclosure stays local when findings or decisions are cross-US", async () => {
   const raw = await multiRaw();
   const html = renderRefinement(validateRefinement(raw)).html;
-  const starts = ["SRC-001", "SRC-002", "SRC-003"].map((id) => html.indexOf(`<article class="requirement-card" id="${id}"`));
+  const starts = ["REQ-001", "REQ-002", "REQ-003"].map((id) => html.indexOf(`<article class="requirement-card" id="${id}"`));
   const texts = raw.sources.map((source) => source.original_text);
   starts.forEach((start, index) => {
-    const end = index === starts.length - 1 ? html.length : starts[index + 1];
+    const end = index === starts.length - 1 ? html.indexOf('<section class="cross-decisions"') : starts[index + 1];
     const card = html.slice(start, end);
     const disclosure = card.match(/<section class="original-sources">[\s\S]*?<\/section>/u)?.[0] ?? "";
     assert.match(disclosure, new RegExp(texts[index].replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"), "u"));
@@ -200,4 +200,64 @@ test("source scope is first-class, exact, and rejects unknown or inconsistent as
   const inconsistent = await representativeRaw();
   inconsistent.findings[0].source_ids = ["SRC-001"];
   assert.throws(() => validateRefinement(inconsistent), /must exactly match sources of its affected needs/u);
+});
+
+test("history fixture renders local, Cross, answered, follow-up, and untouched states once", async () => {
+  const model = validateRefinement(await historyRaw());
+  const html = renderRefinement(model).html;
+  assert.match(html, /3 Requirements · 5 Sources · 3 Decisions · 1 Follow-ups · 2 Blockers · BLOCKED/u);
+  assert.equal((html.match(/<article class="requirement-card/g) ?? []).length, 3);
+  assert.equal((html.match(/data-question-id="QST-002"/gu) ?? []).length, 1);
+  assert.equal((html.match(/id="finding-FND-002"/gu) ?? []).length, 1);
+  assert.equal((html.match(/id="REL-001"/gu) ?? []).length, 1);
+  assert.match(html, /Awaiting decision/u);
+  assert.match(html, /Follow-up required/u);
+  assert.match(html, /Answered/u);
+  assert.match(html, /Previous response/u);
+  assert.match(html, /What this established/u);
+  assert.match(html, /Accent sensitivity and minimum query length remain undefined/u);
+  assert.match(html, /Previous reconciliation attempts <span>1<\/span>/u);
+  assert.match(html, /Canonical answer recorded/u);
+  assert.match(html, /US 36134 ↔ US 36198/u);
+  assert.match(html, /US 36134 ↔ US 36174/u);
+  const requirementOne = html.slice(html.indexOf('<article class="requirement-card" id="REQ-001"'), html.indexOf('<article class="requirement-card" id="REQ-002"'));
+  assert.match(requirementOne, /SRC-001[\s\S]*SRC-002[\s\S]*SRC-003/u);
+  assert.doesNotMatch(requirementOne, /data-question-id="QST-002"/u);
+});
+
+test("follow-up prompts carry canonical context while first and answered questions keep their boundaries", async () => {
+  const model = validateRefinement(await historyRaw());
+  const followUp = buildDecisionPrompt(model, model.questions[1], "The minimum query length is three characters.");
+  assert.match(followUp, /Interaction: FOLLOW_UP_REQUIRED/u);
+  assert.match(followUp, /Previous response:\nLIKE matching is required/u);
+  assert.match(followUp, /What this established:\nSearch uses LIKE matching\./u);
+  assert.match(followUp, /Still unresolved:\nAccent sensitivity and minimum query length remain undefined\./u);
+  assert.doesNotMatch(followUp, /Previous canonical answer/u);
+
+  const first = buildDecisionPrompt(model, model.questions[0], "Region and status are in scope.");
+  assert.match(first, /Interaction: AWAITING_DECISION/u);
+  assert.doesNotMatch(first, /Previous response|What this established|Still unresolved/u);
+  assert.equal(buildDecisionPrompt(model, model.questions[2], "Do not accept a new answer."), "");
+  assert.equal(buildDecisionPrompt(model, { id: "QST-999", status: "OPEN" }, "Stale question"), "");
+});
+
+test("reopened decisions retain prior canonical answers and explain the follow-up boundary", async () => {
+  const raw = await historyRaw();
+  const question = raw.questions[2];
+  question.status = "OPEN";
+  question.reopened_reason = "A newly discovered export path invalidates the earlier answer boundary.";
+  question.remaining_gaps = ["The export path's authorization behavior remains undefined."];
+  raw.handoff.payload.question_ids = ["QST-001", "QST-002", "QST-003"];
+  const model = validateRefinement(raw);
+  const html = renderRefinement(model).html;
+  assert.match(html, /Reopened · follow-up required/u);
+  assert.match(html, /Previous canonical answer/u);
+  assert.match(html, /A newly discovered export path invalidates the earlier answer boundary./u);
+  assert.match(html, /data-question-id="QST-003"[^>]*data-interaction-state="REOPENED_FOLLOW_UP_REQUIRED"/u);
+
+  const prompt = buildDecisionPrompt(model, model.questions[2], "Define the export authorization behavior.");
+  assert.match(prompt, /Interaction: REOPENED_FOLLOW_UP_REQUIRED/u);
+  assert.match(prompt, /Previous canonical answer:\n/u);
+  assert.match(prompt, /Reopened reason:\nA newly discovered export path invalidates the earlier answer boundary\./u);
+  assert.match(prompt, /Still unresolved:\nThe export path's authorization behavior remains undefined\./u);
 });

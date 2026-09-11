@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { validateReconcile, validateRefinement } from "../lib/model.mjs";
-import { acceptedResolution, clone, representativeRaw } from "./helpers.mjs";
+import { acceptedResolution, clone, historyRaw, recordAcceptedDecision, representativeRaw } from "./helpers.mjs";
 
 function rejected(raw, verdict = "rejected") {
   const next = clone(raw);
@@ -53,8 +53,7 @@ test("structurally dishonest resolution verdicts fail closed", async () => {
 
 test("explicit bypass is distinct from resolution, preserves risk, and stops blocking", async () => {
   const raw = await representativeRaw();
-  raw.questions[0].status = "ANSWERED";
-  raw.questions[0].answer = "The concurrency risk is explicitly carried to the downstream handoff.";
+  recordAcceptedDecision(raw, 0, "The concurrency risk is explicitly carried to the downstream handoff.");
   raw.findings[0].disposition = "bypassed";
   raw.findings[0].bypass = {
     reason: "Out of scope for this delivery; risk explicitly accepted.",
@@ -94,7 +93,7 @@ test("new evidence and relationships allocate only the next monotonic IDs", asyn
   const before = validateRefinement(await representativeRaw());
   const raw = await representativeRaw();
   raw.evidence.push({ id: "EVD-004", kind: "INFERENCE", state: "ACTIVE", summary: "A conditional write may be required", detail: "The shared state suggests an atomic guard may be necessary.", confidence: "SUPPORTED", source_ids: [], need_ids: ["NEED-001", "NEED-002"], surface: "Order" });
-  raw.relationships.push({ id: "REL-002", type: "SHARED_TECHNICAL_SURFACE", title: "Shared Order persistence", state: "ACTIVE", need_ids: ["NEED-001", "NEED-002"], evidence_ids: ["EVD-003", "EVD-004"], detail: "Both needs change the same persisted aggregate." });
+  raw.relationships.push({ id: "REL-002", type: "SHARED_TECHNICAL_SURFACE", title: "Shared Order persistence", state: "ACTIVE", requirement_ids: ["REQ-001"], need_ids: ["NEED-001", "NEED-002"], evidence_ids: ["EVD-003", "EVD-004"], detail: "Both needs change the same persisted aggregate." });
   raw.findings[0].evidence_ids.push("EVD-004");
   raw.findings[0].relationship_ids.push("REL-002");
   raw.handoff.payload.evidence_ids.push("EVD-004");
@@ -139,4 +138,88 @@ test("reopening without reason or by replacing the accepted proposal fails", asy
   assert.throws(() => validateReconcile(before, withoutReason), /reopening requires reopened_reason/u);
   raw.findings[0].reopened_reason = "New evidence invalidated the decision.";
   assert.throws(() => validateReconcile(before, validateRefinement(raw)), /must preserve its proposal/u);
+});
+
+test("reconciliation history is append-only and cannot be edited, deleted, or reordered", async () => {
+  const before = validateRefinement(await historyRaw());
+
+  const mutated = await historyRaw();
+  mutated.questions[1].reconciliation_attempts[0].human_response = "Edited after publication.";
+  assert.throws(() => validateReconcile(before, validateRefinement(mutated)), /append-only and prior entries are immutable/u);
+
+  const deleted = await historyRaw();
+  deleted.questions[1].reconciliation_attempts = [];
+  delete deleted.questions[1].remaining_gaps;
+  assert.throws(() => validateReconcile(before, validateRefinement(deleted)), /reconciliation attempts cannot be deleted/u);
+
+  const reordered = await historyRaw();
+  reordered.questions[1].reconciliation_attempts.push({
+    round: 2,
+    human_response: "A second response adds another unresolved search rule.",
+    assessment: "FOLLOW_UP_REQUIRED",
+    established_context: ["A second search rule is now explicit."],
+    remaining_gaps: ["The matching rule is still unresolved."],
+    affected_finding_ids: ["FND-002"],
+  });
+  reordered.questions[1].remaining_gaps = ["The matching rule is still unresolved."];
+  reordered.questions[1].reconciliation_attempts.reverse();
+  assert.throws(() => validateRefinement(reordered), /rounds must be contiguous and monotonic/u);
+});
+
+test("reconcile rejects changing Requirement scope or moving a Source to hide prior Cross context", async () => {
+  const before = validateRefinement(await historyRaw());
+  const hiddenCross = await historyRaw();
+  hiddenCross.questions[1].requirement_ids = ["REQ-001"];
+  assert.throws(() => validateRefinement(hiddenCross), /requirement_ids must exactly equal/u);
+
+  const moved = await historyRaw();
+  const first = moved.requirements.find((item) => item.id === "REQ-001");
+  const third = moved.requirements.find((item) => item.id === "REQ-003");
+  first.source_ids = ["SRC-001", "SRC-002"];
+  first.need_ids = ["NEED-001"];
+  third.source_ids = ["SRC-003", "SRC-005"];
+  third.need_ids = ["NEED-002", "NEED-004"];
+  moved.relationships[2].requirement_ids = ["REQ-001", "REQ-003"];
+  assert.throws(() => validateReconcile(before, validateRefinement(moved)), /cannot move between Requirements/u);
+});
+
+test("a question must be explicitly reopened before receiving another attempt", async () => {
+  const before = validateRefinement(acceptedResolution(await representativeRaw()));
+  const raw = acceptedResolution(await representativeRaw());
+  const question = raw.questions[0];
+  const nextAnswer = "The previously accepted answer is revised after a new repository observation.";
+  question.reconciliation_attempts.push({
+    round: 2,
+    human_response: nextAnswer,
+    assessment: "ACCEPTED",
+    established_context: ["A new observation changes the accepted decision."],
+    remaining_gaps: [],
+    affected_finding_ids: ["FND-001"],
+    canonical_answer: nextAnswer,
+  });
+  question.canonical_answer_history.push(nextAnswer);
+  question.answer = nextAnswer;
+  const after = validateRefinement(raw);
+  assert.throws(() => validateReconcile(before, after), /cannot receive an attempt while ANSWERED/u);
+});
+
+test("reopening preserves the previous canonical answer and allows a later follow-up", async () => {
+  const before = validateRefinement(acceptedResolution(await representativeRaw()));
+  const reopenedRaw = acceptedResolution(await representativeRaw());
+  reopenedRaw.questions[0].status = "OPEN";
+  reopenedRaw.questions[0].reopened_reason = "New repository evidence invalidated the previous conclusion.";
+  reopenedRaw.questions[0].remaining_gaps = ["The new conflict behavior is undefined."];
+  reopenedRaw.handoff = {
+    outcome: "BLOCKED", reason: "The answered decision was reopened.", blocker_ids: [], carried_finding_ids: [],
+    next_workflow: "stnl-requirements-refiner", suggested_next_operation: "OPERATION=RECONCILE",
+    payload: { kind: "REFINEMENT", need_ids: ["NEED-001", "NEED-002"], finding_ids: [], question_ids: ["QST-001"], constraint_ids: ["CON-001"], relationship_ids: ["REL-001"], evidence_ids: ["EVD-001", "EVD-002", "EVD-003", "EVD-004"] },
+  };
+  const reopened = validateRefinement(reopenedRaw);
+  assert.equal(reopened.questions[0].canonical_answer_history.length, 1);
+  assert.doesNotThrow(() => validateReconcile(before, reopened));
+
+  const lost = clone(reopenedRaw);
+  lost.questions[0].canonical_answer_history = [];
+  delete lost.questions[0].answer;
+  assert.throws(() => validateRefinement(lost), /canonical_answer_history/u);
 });

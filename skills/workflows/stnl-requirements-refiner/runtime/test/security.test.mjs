@@ -35,7 +35,7 @@ test("duplicate JSON keys, invalid UTF-8, hard links, and symlinks block before 
   const duplicateRoot = await project(t);
   const duplicate = await candidateFile(t, await representativeRaw());
   const source = await fs.readFile(duplicate, "utf8");
-  await fs.writeFile(duplicate, source.replace('{\n  "contract_version": 1,', '{\n  "contract_version": 1,\n  "contract_version": 1,'), "utf8");
+  await fs.writeFile(duplicate, source.replace('{\n  "contract_version": 2,', '{\n  "contract_version": 2,\n  "contract_version": 2,'), "utf8");
   await assert.rejects(() => generateRefinement({ operation: "INIT", projectRoot: duplicateRoot, candidatePath: duplicate }), /duplicate JSON key/u);
 
   const utfRoot = await project(t);

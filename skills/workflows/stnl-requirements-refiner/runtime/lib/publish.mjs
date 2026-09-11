@@ -14,8 +14,12 @@ import {
   requireSingleLinkRealFile,
   sha256,
 } from "./core.mjs";
+import { parseStrictJson } from "./strict-json.mjs";
 
-const OWNERSHIP = /<!-- stnl-requirements-refiner:v1 fingerprint:([0-9a-f]{64}) -->/u;
+const OWNERSHIP_BY_VERSION = Object.freeze({
+  1: /<!-- stnl-requirements-refiner:v1 fingerprint:([0-9a-f]{64}) -->/u,
+  2: /<!-- stnl-requirements-refiner:v2 fingerprint:([0-9a-f]{64}) -->/u,
+});
 const TRANSACTION_VERSION = 1;
 
 function transactionPaths(refinementRoot) {
@@ -145,14 +149,26 @@ async function acquireLock(context) {
   throw new ValidationError(`could not acquire refinement publication lock for ${context.refinementPath}`);
 }
 
-async function ownedHtmlBytes(filePath) {
+function ownershipMarker(version, fingerprint) {
+  return `<!-- stnl-requirements-refiner:v${version} fingerprint:${fingerprint} -->`;
+}
+
+function escapeHtml(value) {
+  return String(value).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;").replaceAll("'", "&#39;");
+}
+
+async function ownedHtmlBytes(filePath, expectedVersion, model) {
   await requireSingleLinkRealFile(filePath, "generated refinement index", 8_000_000);
   const bytes = await fs.readFile(filePath);
   const content = decodeUtf8(bytes, "generated refinement index");
-  const match = content.slice(0, 512).match(OWNERSHIP);
+  const pattern = OWNERSHIP_BY_VERSION[expectedVersion];
+  if (pattern === undefined) throw new ValidationError(`unsupported refinement contract version for ownership validation: ${expectedVersion}`);
+  pattern.lastIndex = 0;
+  const match = content.slice(0, 512).match(pattern);
   if (match === null) throw new ValidationError(`existing index.html is not owned by stnl-requirements-refiner: ${filePath}`);
   const fingerprint = match[1];
-  const marker = `<!-- stnl-requirements-refiner:v1 fingerprint:${fingerprint} -->`;
+  const marker = ownershipMarker(expectedVersion, fingerprint);
   const footer = `Refinement offline · fingerprint <code>${fingerprint.slice(0, 12)}</code>`;
   const markerIndex = content.indexOf(marker);
   const footerIndex = content.indexOf(footer);
@@ -160,16 +176,38 @@ async function ownedHtmlBytes(filePath) {
     || footerIndex < 0 || content.indexOf(footer, footerIndex + 1) >= 0) {
     throw new ValidationError(`existing generated index.html has invalid ownership slots: ${filePath}`);
   }
-  let draft = `${content.slice(0, markerIndex)}<!-- stnl-requirements-refiner:v1 fingerprint:${"0".repeat(64)} -->${content.slice(markerIndex + marker.length)}`;
+  let draft = `${content.slice(0, markerIndex)}${ownershipMarker(expectedVersion, "0".repeat(64))}${content.slice(markerIndex + marker.length)}`;
   const adjustedFooter = draft.indexOf(footer);
   draft = `${draft.slice(0, adjustedFooter)}Refinement offline · fingerprint <code>${"0".repeat(12)}</code>${draft.slice(adjustedFooter + footer.length)}`;
   if (createHash("sha256").update(draft, "utf8").digest("hex") !== fingerprint) {
     throw new ValidationError(`existing generated index.html was modified: ${filePath}`);
   }
-  return bytes;
+  if (expectedVersion === 1) {
+    const identity = [
+      `<title>${escapeHtml(model.title)} · Requirements Refinement</title>`,
+      escapeHtml(model.refinement_id),
+      `content=\"${escapeHtml(model.summary)}\"`,
+    ];
+    const renderedTokenGroups = [
+      model.refinement_id, model.title, model.summary,
+      ...(Array.isArray(model.sources) ? model.sources.filter((item) => item.state === "ACTIVE").flatMap((item) => [item.id, item.label, item.external_id, item.path, item.original_text]) : []),
+      ...(Array.isArray(model.needs) ? model.needs.filter((item) => item.state === "ACTIVE").flatMap((item) => [item.id, item.statement]) : []),
+      ...(Array.isArray(model.relationships) ? model.relationships.filter((item) => item.state === "ACTIVE").flatMap((item) => [item.id, item.title, item.detail]) : []),
+      ...(Array.isArray(model.questions) ? model.questions.flatMap((item) => [item.id, item.question, item.answer]) : []),
+      ...(Array.isArray(model.findings) ? model.findings.flatMap((item) => [item.id, item.title, item.problem, item.impact, item.resolution?.proposal, item.resolution?.remaining_gap]) : []),
+    ].filter((value) => value !== undefined && value !== null && String(value).length > 0)
+      .map((value) => {
+        const escaped = escapeHtml(value);
+        return [escaped, escaped.replaceAll("\n", "<br>")];
+      });
+    if (identity.some((value) => !content.includes(value)) || renderedTokenGroups.some((group) => !group.some((value) => content.includes(value)))) {
+      throw new ValidationError(`legacy v1 index.html does not match its refinement.json authority: ${filePath}`);
+    }
+  }
+  return { bytes, fingerprint, contractVersion: expectedVersion };
 }
 
-async function pairBytes(root, { requireOwned = true } = {}) {
+async function pairBytes(root, { requireOwned = true, expectedVersion = null } = {}) {
   const metadata = await lstatOrNull(root);
   if (metadata === null) return null;
   if (metadata.isSymbolicLink() || !metadata.isDirectory()) throw new ValidationError(`refinement root must be a real directory: ${root}`);
@@ -182,9 +220,32 @@ async function pairBytes(root, { requireOwned = true } = {}) {
   const modelPath = path.join(root, MODEL_FILENAME);
   await requireSingleLinkRealFile(modelPath, "refinement.json");
   const model = await fs.readFile(modelPath);
+  let parsedModel;
+  try {
+    parsedModel = parseStrictJson(
+      decodeUtf8(model, "refinement.json"),
+      (key) => `refinement.json contains duplicate JSON key '${key}'`,
+      (constant) => `refinement.json contains unsupported JSON constant '${constant}'`,
+    );
+  } catch (error) {
+    if (error instanceof ValidationError) throw error;
+    throw new ValidationError(`refinement.json is invalid JSON: ${error.message}`);
+  }
+  const contractVersion = parsedModel?.contract_version;
+  if (![1, 2].includes(contractVersion)) throw new ValidationError("refinement.json has an unsupported contract_version");
+  if (expectedVersion !== null && contractVersion !== expectedVersion) {
+    throw new ValidationError(`refinement pair contract version ${contractVersion} does not match expected version ${expectedVersion}`);
+  }
   const htmlPath = path.join(root, HTML_FILENAME);
-  const html = requireOwned ? await ownedHtmlBytes(htmlPath) : await fs.readFile(htmlPath);
-  return { model, html, digest: sha256(Buffer.concat([model, Buffer.from([0]), html])) };
+  const ownedHtml = requireOwned ? await ownedHtmlBytes(htmlPath, contractVersion, parsedModel) : null;
+  const html = ownedHtml?.bytes ?? await fs.readFile(htmlPath);
+  return {
+    model,
+    html,
+    contractVersion,
+    htmlFingerprint: ownedHtml?.fingerprint ?? null,
+    digest: sha256(Buffer.concat([model, Buffer.from([0]), html])),
+  };
 }
 
 async function readJournal(filePath, context) {
@@ -198,7 +259,7 @@ async function readJournal(filePath, context) {
   }
   const expected = ["backup", "mode", "new_digest", "old_digest", "stage", "target", "version"].sort();
   if (JSON.stringify(Object.keys(value ?? {}).sort()) !== JSON.stringify(expected)
-    || value.version !== TRANSACTION_VERSION || !["INIT", "RECONCILE"].includes(value.mode)
+    || value.version !== TRANSACTION_VERSION || !["INIT", "RECONCILE", "MIGRATE"].includes(value.mode)
     || value.target !== context.refinementRoot || !/^[0-9a-f]{64}$/u.test(value.new_digest)
     || !(value.old_digest === null || /^[0-9a-f]{64}$/u.test(value.old_digest))) {
     throw new ValidationError(`refinement transaction journal has invalid fields: ${filePath}`);
@@ -236,8 +297,8 @@ async function recoverLocked(context, paths) {
   } else if (backup !== null) {
     if (target !== null) throw new ValidationError("recovery found both the old target and its backup");
     await fs.rename(journal.backup, journal.target);
-  } else if (target === null && journal.mode === "RECONCILE") {
-    throw new ValidationError("recovery cannot restore the missing RECONCILE target");
+  } else if (target === null && new Set(["RECONCILE", "MIGRATE"]).has(journal.mode)) {
+    throw new ValidationError(`recovery cannot restore the missing ${journal.mode} target`);
   }
   if (stage !== null) await removeTree(journal.stage);
   await fs.unlink(paths.journal);
@@ -280,10 +341,17 @@ export async function recoverRefinementPublication(context) {
   }
 }
 
-export async function inspectPublishedRefinement(context) {
+export async function inspectPublishedRefinement(context, { allowLegacy = false } = {}) {
   const pair = await pairBytes(context.refinementRoot);
   if (pair === null) return null;
-  return { ...pair, modelFingerprint: `sha256:${sha256(pair.model)}` };
+  if (pair.contractVersion === 1 && !allowLegacy) {
+    throw new ValidationError("persisted contract v1 is legacy-only; inspect it through the controlled MIGRATE path");
+  }
+  return {
+    ...pair,
+    modelFingerprint: `sha256:${sha256(pair.model)}`,
+    htmlFingerprint: pair.htmlFingerprint === null ? null : `sha256:${pair.htmlFingerprint}`,
+  };
 }
 
 async function writeStage(stage, modelBytes, html) {
@@ -299,10 +367,11 @@ export async function publishRefinement({
   modelBytes,
   html,
   expectedFingerprint = null,
+  expectedHtmlFingerprint = null,
   expectedAuthoritySnapshot,
   readAuthoritySnapshot,
 }) {
-  if (!new Set(["INIT", "RECONCILE"]).has(operation)) throw new ValidationError(`unsupported refinement operation: ${operation}`);
+  if (!new Set(["INIT", "RECONCILE", "MIGRATE"]).has(operation)) throw new ValidationError(`unsupported refinement operation: ${operation}`);
   const paths = await acquireLock(context);
   let journal = null;
   let unjournaledStage = null;
@@ -312,8 +381,19 @@ export async function publishRefinement({
     if (operation === "INIT" && prior !== null) throw new ValidationError(`INIT target already exists: ${context.refinementPath}`);
     if (operation === "RECONCILE") {
       if (prior === null) throw new ValidationError(`RECONCILE target does not exist: ${context.refinementPath}`);
+      if (prior.contractVersion !== 2) throw new ValidationError("RECONCILE cannot write a legacy v1 authority; run MIGRATE first");
       if (expectedFingerprint === null || expectedFingerprint !== `sha256:${sha256(prior.model)}`) {
         throw new ValidationError("refinement.json changed after RECONCILE inspection");
+      }
+    }
+    if (operation === "MIGRATE") {
+      if (prior === null) throw new ValidationError(`MIGRATE target does not exist: ${context.refinementPath}`);
+      if (prior.contractVersion !== 1) throw new ValidationError("MIGRATE requires a persisted v1 authority");
+      if (expectedFingerprint === null || expectedFingerprint !== `sha256:${sha256(prior.model)}`) {
+        throw new ValidationError("legacy refinement.json changed after MIGRATE inspection");
+      }
+      if (expectedHtmlFingerprint === null || expectedHtmlFingerprint !== `sha256:${prior.htmlFingerprint}`) {
+        throw new ValidationError("legacy index.html changed after MIGRATE inspection");
       }
     }
     const parent = path.dirname(context.refinementRoot);
@@ -321,6 +401,7 @@ export async function publishRefinement({
     unjournaledStage = stage;
     const backup = path.join(parent, `${paths.backupPrefix}${process.pid}`);
     const staged = await writeStage(stage, modelBytes, html);
+    if (staged.contractVersion !== 2) throw new ValidationError(`${operation} must publish a v2 authority`);
     journal = {
       version: TRANSACTION_VERSION,
       mode: operation,
@@ -340,12 +421,12 @@ export async function publishRefinement({
     if ((prior === null) !== (current === null) || (prior !== null && current.digest !== prior.digest)) {
       throw new ValidationError("refinement target changed during publication");
     }
-    if (operation === "RECONCILE") await fs.rename(context.refinementRoot, backup);
+    if (new Set(["RECONCILE", "MIGRATE"]).has(operation)) await fs.rename(context.refinementRoot, backup);
     await fs.rename(stage, context.refinementRoot);
     await syncDirectory(parent);
     const published = await pairBytes(context.refinementRoot);
     if (published.digest !== staged.digest) throw new ValidationError("published refinement pair failed digest verification");
-    if (operation === "RECONCILE") await removeTree(backup);
+    if (new Set(["RECONCILE", "MIGRATE"]).has(operation)) await removeTree(backup);
     await fs.unlink(paths.journal);
     journal = null;
     await syncDirectory(parent);
@@ -367,6 +448,8 @@ export async function publishRefinement({
 }
 
 export function hasRefinementOwnershipMarker(html) {
-  OWNERSHIP.lastIndex = 0;
-  return OWNERSHIP.test(String(html).slice(0, 512));
+  const source = String(html).slice(0, 512);
+  const pattern = OWNERSHIP_BY_VERSION[2];
+  pattern.lastIndex = 0;
+  return pattern.test(source);
 }

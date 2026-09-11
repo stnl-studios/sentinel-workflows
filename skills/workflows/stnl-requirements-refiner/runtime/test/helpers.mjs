@@ -15,6 +15,10 @@ export async function representativeRaw() {
   return JSON.parse(await fs.readFile(path.join(FIXTURES, "representative-refinement.json"), "utf8"));
 }
 
+export async function historyRaw() {
+  return JSON.parse(await fs.readFile(path.join(FIXTURES, "representative-history-refinement.json"), "utf8"));
+}
+
 export async function project(t) {
   const root = await temporary(t, "stnl-refinement-project-");
   await fs.mkdir(path.join(root, "docs"), { recursive: true });
@@ -35,24 +39,47 @@ export function clone(value) {
   return structuredClone(value);
 }
 
+export function recordAcceptedDecision(raw, questionIndex = 0, answer = "The material decision is recorded for the downstream handoff.") {
+  const question = raw.questions[questionIndex];
+  question.status = "ANSWERED";
+  question.answer = answer;
+  question.canonical_answer_history = [...(question.canonical_answer_history ?? []), answer];
+  question.reconciliation_attempts = [
+    ...(question.reconciliation_attempts ?? []),
+    {
+      round: (question.reconciliation_attempts?.length ?? 0) + 1,
+      human_response: answer,
+      assessment: "ACCEPTED",
+      established_context: [answer],
+      remaining_gaps: [],
+      affected_finding_ids: [...question.finding_ids],
+      canonical_answer: answer,
+    },
+  ];
+  delete question.remaining_gaps;
+  return raw;
+}
+
 export function acceptedResolution(raw) {
   const next = clone(raw);
-  next.evidence.push({
-    id: "EVD-004",
-    kind: "USER_DECISION",
-    state: "ACTIVE",
-    summary: "Shipping wins concurrent transition",
-    detail: "SHIPPED wins; cancellation uses compare-and-set and returns conflict when shipping won.",
-    confidence: "CONFIRMED",
-    source_ids: [],
-    need_ids: ["NEED-001", "NEED-002"],
-    surface: "Order",
-  });
-  next.questions[0].status = "ANSWERED";
-  next.questions[0].answer = "SHIPPED wins; cancellation uses a conditional update and returns conflict.";
-  next.questions[0].evidence_ids.push("EVD-004");
+  if (!next.evidence.some((item) => item.id === "EVD-004")) {
+    next.evidence.push({
+      id: "EVD-004",
+      kind: "USER_DECISION",
+      state: "ACTIVE",
+      summary: "Shipping wins concurrent transition",
+      detail: "SHIPPED wins; cancellation uses compare-and-set and returns conflict when shipping won.",
+      confidence: "CONFIRMED",
+      source_ids: [],
+      need_ids: ["NEED-001", "NEED-002"],
+      surface: "Order",
+    });
+  }
+  const answer = "SHIPPED wins; cancellation uses a conditional update and returns conflict.";
+  recordAcceptedDecision(next, 0, answer);
+  if (!next.questions[0].evidence_ids.includes("EVD-004")) next.questions[0].evidence_ids.push("EVD-004");
   next.findings[0].disposition = "resolved";
-  next.findings[0].evidence_ids.push("EVD-004");
+  if (!next.findings[0].evidence_ids.includes("EVD-004")) next.findings[0].evidence_ids.push("EVD-004");
   next.findings[0].resolution = {
     proposal: "SHIPPED wins; cancellation uses compare-and-set on current state and returns conflict if shipping won.",
     verdict: "accepted",

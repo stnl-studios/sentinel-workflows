@@ -1,13 +1,19 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { expectedOutcome, validateRefinement } from "../lib/model.mjs";
-import { acceptedResolution, clone, representativeRaw } from "./helpers.mjs";
+import {
+  expectedOutcome,
+  questionCurrentGaps,
+  questionEstablishedContext,
+  questionInteractionState,
+  validateReconcile,
+  validateRefinement,
+} from "../lib/model.mjs";
+import { acceptedResolution, clone, historyRaw, recordAcceptedDecision, representativeRaw } from "./helpers.mjs";
 
 function specHandoff(raw, { carried = raw.findings.filter((item) => item.disposition === "bypassed" || (item.disposition === "open" && item.severity !== "BLOCKING")).map((item) => item.id) } = {}) {
   raw.questions.filter((item) => item.status === "OPEN").forEach((item) => {
-    item.status = "ANSWERED";
-    item.answer = "The material decision is recorded for the downstream handoff.";
+    recordAcceptedDecision(raw, raw.questions.indexOf(item));
   });
   raw.handoff = {
     outcome: "READY_FOR_SPEC",
@@ -41,6 +47,12 @@ test("messy, ID-less, and low-quality input remains analyzable", async () => {
   assert.equal(model.needs[0].id, "NEED-001");
 });
 
+test("contract v1 is rejected explicitly after the canonical Requirement migration", async () => {
+  const legacy = await representativeRaw();
+  legacy.contract_version = 1;
+  assert.throws(() => validateRefinement(legacy), /refinement\.contract_version must be 2/u);
+});
+
 test("well-structured and mixed multi-source input use the same strict model", async () => {
   const structured = await representativeRaw();
   structured.input_assessment = { format: "STRUCTURED", quality: "SUFFICIENT", summary: "Actor, intent, and context are supplied." };
@@ -55,6 +67,17 @@ test("all finding families and severities are representable without conflating t
   for (const type of ["REQUIREMENT_GAP", "TECHNICAL_GAP", "CROSS_REQUIREMENT_GAP", "REPOSITORY_CONFLICT", "RISK"]) {
     const raw = await representativeRaw();
     raw.findings[0].type = type;
+    if (type === "CROSS_REQUIREMENT_GAP") {
+      raw.requirements[0].source_ids = ["SRC-001"];
+      raw.requirements[0].need_ids = ["NEED-001"];
+      raw.requirements.push({
+        id: "REQ-002", title: "Shipping", state: "ACTIVE", external_id: "US-42",
+        source_ids: ["SRC-002"], need_ids: ["NEED-002"],
+      });
+      raw.relationships[0].requirement_ids = ["REQ-001", "REQ-002"];
+      raw.questions[0].requirement_ids = ["REQ-001", "REQ-002"];
+      raw.findings[0].requirement_ids = ["REQ-001", "REQ-002"];
+    }
     assert.equal(validateRefinement(raw).findings[0].type, type);
   }
   for (const severity of ["INFO", "ATTENTION"]) {
@@ -152,6 +175,8 @@ test("READY handoffs reject material OPEN questions", async () => {
   specHandoff(raw);
   raw.questions[0].status = "OPEN";
   delete raw.questions[0].answer;
+  raw.questions[0].reopened_reason = "The answered decision must be revisited before handoff.";
+  raw.questions[0].remaining_gaps = ["The material boundary is not yet ready for handoff."];
   raw.handoff.payload.question_ids = ["QST-001"];
   assert.equal(expectedOutcome({
     questions: [{ status: "OPEN" }],
@@ -221,4 +246,150 @@ test("an unestablished boundary blocks even without an open BLOCKING finding", a
   raw.final_assessment = { boundary: "UNESTABLISHED", capability_count: 0, decomposition_value: "UNCLEAR", rationale: "The supplied scope cannot yet establish a boundary." };
   raw.handoff.blocker_ids = [];
   assert.equal(validateRefinement(raw).handoff.outcome, "BLOCKED");
+});
+
+test("canonical Requirement ownership prevents false Cross scope and preserves provenance", async () => {
+  const model = validateRefinement(await historyRaw());
+  assert.deepEqual(model.requirements[0].source_ids, ["SRC-001", "SRC-002", "SRC-003"]);
+  assert.equal(model.questions[0].requirement_ids.length, 1);
+  assert.equal(model.questions[0].source_ids.length, 2);
+  assert.equal(questionInteractionState(model.questions[0]), "AWAITING_DECISION");
+  assert.deepEqual(model.questions[1].requirement_ids, ["REQ-001", "REQ-003"]);
+  assert.equal(questionInteractionState(model.questions[1]), "FOLLOW_UP_REQUIRED");
+  assert.deepEqual(questionEstablishedContext(model.questions[1]), ["Search uses LIKE matching.", "Search composes after filters."]);
+  assert.deepEqual(questionCurrentGaps(model.questions[1]), ["Accent sensitivity and minimum query length remain undefined."]);
+  assert.equal(questionInteractionState(model.questions[2]), "ANSWERED");
+  assert.deepEqual(model.evidence.find((item) => item.id === "EVD-005").source_ids, []);
+  assert.deepEqual(model.relationships.find((item) => item.id === "REL-003").requirement_ids, ["REQ-001"]);
+});
+
+test("source order is not semantic, duplicate Requirement external IDs fail, and source evolution stays explicit", async () => {
+  const original = validateRefinement(await historyRaw());
+  const reordered = await historyRaw();
+  reordered.requirements.reverse();
+  reordered.sources.reverse();
+  reordered.needs.reverse();
+  reordered.evidence.reverse();
+  reordered.relationships.reverse();
+  reordered.questions.reverse();
+  reordered.findings.reverse();
+  assert.deepEqual(validateRefinement(reordered), original);
+
+  const duplicateExternalId = await historyRaw();
+  duplicateExternalId.requirements[1].external_id = "US 36134";
+  assert.throws(() => validateRefinement(duplicateExternalId), /active Requirements cannot share external_id/u);
+
+  const sourceWithoutExternalId = await historyRaw();
+  delete sourceWithoutExternalId.sources[1].external_id;
+  assert.equal(validateRefinement(sourceWithoutExternalId).requirements[0].id, "REQ-001");
+
+  const addedSource = await historyRaw();
+  addedSource.sources.push({ id: "SRC-006", kind: "TEXT", label: "US 36134 later note", state: "ACTIVE", original_text: "Later note for the same logical Requirement." });
+  addedSource.requirements[0].source_ids.push("SRC-006");
+  const addedModel = validateRefinement(addedSource);
+  assert.equal(addedModel.requirements.length, original.requirements.length);
+  assert.equal(validateRefinement(addedSource).requirements[0].source_ids.includes("SRC-006"), true);
+  assert.doesNotThrow(() => validateReconcile(original, addedModel));
+
+  const retiredSource = clone(addedSource);
+  retiredSource.sources.find((item) => item.id === "SRC-003").state = "RETIRED";
+  retiredSource.sources.find((item) => item.id === "SRC-003").retired_reason = "Superseded by the consolidated filter notes.";
+  const retiredModel = validateRefinement(retiredSource);
+  assert.equal(retiredModel.sources.find((item) => item.id === "SRC-003").state, "RETIRED");
+  assert.equal(retiredModel.questions[1].reconciliation_attempts.length, original.questions[1].reconciliation_attempts.length);
+  assert.doesNotThrow(() => validateReconcile(addedModel, retiredModel));
+});
+
+test("global technical findings remain explicit without inventing a Requirement", async () => {
+  const raw = await historyRaw();
+  raw.findings.push({
+    id: "FND-005", title: "Global adapter observability gap", type: "TECHNICAL_GAP", severity: "ATTENTION", disposition: "open",
+    requirement_ids: [], source_ids: [], need_ids: [], evidence_ids: ["EVD-005"], relationship_ids: [], question_ids: [],
+    problem: "The shared adapter does not expose a diagnostic signal.", why_it_matters: "Operators cannot distinguish a query failure from an empty result.", impact: "The technical concern remains visible outside any single Requirement.",
+  });
+  raw.handoff.carried_finding_ids.push("FND-005");
+  raw.handoff.payload.finding_ids.push("FND-005");
+  const model = validateRefinement(raw);
+  assert.deepEqual(model.findings.find((item) => item.id === "FND-005").requirement_ids, []);
+  assert.equal(model.handoff.carried_finding_ids.includes("FND-005"), true);
+});
+
+test("partial reconciliation attempts append, preserve established context, and can close on a later round", async () => {
+  const before = validateRefinement(await historyRaw());
+  const partialRaw = await historyRaw();
+  const partialQuestion = partialRaw.questions[1];
+  partialQuestion.reconciliation_attempts.push({
+    round: 2,
+    human_response: "Accent-insensitive matching is not required; the minimum query length is three characters.",
+    assessment: "FOLLOW_UP_REQUIRED",
+    established_context: ["Accent-insensitive matching is out of scope."],
+    remaining_gaps: ["The empty-query behavior remains undefined."],
+    affected_finding_ids: ["FND-002"],
+  });
+  partialQuestion.remaining_gaps = ["The empty-query behavior remains undefined."];
+  const partial = validateRefinement(partialRaw);
+  assert.equal(questionInteractionState(partial.questions[1]), "FOLLOW_UP_REQUIRED");
+  assert.doesNotThrow(() => validateReconcile(before, partial));
+
+  const closedRaw = clone(partialRaw);
+  const closedQuestion = closedRaw.questions[1];
+  closedQuestion.status = "ANSWERED";
+  closedQuestion.answer = "Search applies LIKE matching to the filtered result, excludes accent-insensitive matching, and requires at least three characters.";
+  closedQuestion.canonical_answer_history = [closedQuestion.answer];
+  closedQuestion.reconciliation_attempts.push({
+    round: 3,
+    human_response: "Use the filtered result, require three characters, and leave empty-query behavior out of this release.",
+    assessment: "ACCEPTED",
+    established_context: ["The empty-query behavior is explicitly out of scope for this release."],
+    remaining_gaps: [],
+    affected_finding_ids: ["FND-002"],
+    canonical_answer: closedQuestion.answer,
+  });
+  delete closedQuestion.remaining_gaps;
+  closedRaw.handoff.payload.question_ids = ["QST-001"];
+  const closed = validateRefinement(closedRaw);
+  assert.equal(questionInteractionState(closed.questions[1]), "ANSWERED");
+  assert.equal(closed.questions[1].reconciliation_attempts.length, 3);
+  assert.equal(closed.questions[1].reconciliation_attempts[0].human_response, before.questions[1].reconciliation_attempts[0].human_response);
+  assert.doesNotThrow(() => validateReconcile(partial, closed));
+});
+
+test("duplicate and conflicting follow-up responses use explicit assessments", async () => {
+  const duplicate = await historyRaw();
+  duplicate.questions[1].reconciliation_attempts.push({
+    round: 2,
+    human_response: duplicate.questions[1].reconciliation_attempts[0].human_response,
+    assessment: "FOLLOW_UP_REQUIRED",
+    established_context: ["The same information was repeated."],
+    remaining_gaps: duplicate.questions[1].remaining_gaps,
+    affected_finding_ids: ["FND-002"],
+  });
+  assert.throws(() => validateRefinement(duplicate), /exact duplicate human_response/u);
+
+  const conflicting = await historyRaw();
+  conflicting.questions[1].reconciliation_attempts.push({
+    round: 2,
+    human_response: "Contrary to the first response, search must use exact matching.",
+    assessment: "CONFLICTING_INFORMATION",
+    established_context: ["The new response contradicts the earlier LIKE matching decision."],
+    remaining_gaps: ["A single matching rule must be selected explicitly."],
+    affected_finding_ids: ["FND-002"],
+  });
+  conflicting.questions[1].remaining_gaps = ["A single matching rule must be selected explicitly."];
+  const model = validateRefinement(conflicting);
+  assert.equal(model.questions[1].reconciliation_attempts[0].assessment, "FOLLOW_UP_REQUIRED");
+  assert.equal(model.questions[1].reconciliation_attempts[1].assessment, "CONFLICTING_INFORMATION");
+
+  const noProgress = await historyRaw();
+  noProgress.questions[1].reconciliation_attempts.push({
+    round: 2,
+    human_response: "I do not have any additional detail for the unresolved search behavior.",
+    assessment: "NO_MATERIAL_PROGRESS",
+    established_context: [],
+    remaining_gaps: noProgress.questions[1].remaining_gaps,
+    affected_finding_ids: ["FND-002"],
+  });
+  const noProgressModel = validateRefinement(noProgress);
+  assert.equal(noProgressModel.questions[1].reconciliation_attempts[1].assessment, "NO_MATERIAL_PROGRESS");
+  assert.equal(questionInteractionState(noProgressModel.questions[1]), "FOLLOW_UP_REQUIRED");
 });

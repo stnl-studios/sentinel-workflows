@@ -54,6 +54,60 @@ async function copyDirectory(source, destination) {
   return destination;
 }
 
+async function lifecycleExecutionFixture(t, fixtureName = "multi-slice") {
+  const root = await temporary(t, "stnl-lifecycle-execution-");
+  const source = path.join(ROOT, "skills/workflows/stnl-spec-test-runbook/runtime/test/fixtures", fixtureName);
+  const workspace = await copyDirectory(source, path.join(root, fixtureName));
+  return {
+    root,
+    requirements: path.join(workspace, "feature_spec.md"),
+    execution: path.join(workspace, "execution"),
+  };
+}
+
+async function setLifecycleRecordStatus(fixture, relativePath, identifier, status) {
+  const file = path.join(path.dirname(fixture.requirements), relativePath);
+  const source = await fs.readFile(file, "utf8");
+  const recordStart = source.indexOf(`### ${identifier} — `);
+  assert.notEqual(recordStart, -1, `fixture record is missing: ${identifier}`);
+  const statusStart = source.indexOf("- status: ", recordStart);
+  assert.notEqual(statusStart, -1, `fixture status is missing: ${identifier}`);
+  const lineEnd = source.indexOf("\n", statusStart);
+  assert.notEqual(lineEnd, -1, `fixture status line is unterminated: ${identifier}`);
+  await fs.writeFile(file, `${source.slice(0, statusStart)}- status: ${status}${source.slice(lineEnd)}`, "utf8");
+}
+
+async function executionMarkdownFiles(execution) {
+  const files = [];
+  async function visit(directory) {
+    for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
+      if (entry.name === "__MACOSX" || entry.name === ".DS_Store" || entry.name.startsWith("._")) continue;
+      const file = path.join(directory, entry.name);
+      if (entry.isDirectory()) await visit(file);
+      else if (entry.isFile() && entry.name.endsWith(".md")) files.push(file);
+    }
+  }
+  await visit(execution);
+  return files.sort();
+}
+
+async function refreshExecutionAuthority(fixture, oldHash, newHash, { planningOnly = false } = {}) {
+  const files = planningOnly
+    ? [
+      path.join(fixture.execution, "plan.md"),
+      ...(await fs.readdir(path.join(fixture.execution, "plans"), { withFileTypes: true }))
+        .filter((entry) => entry.isFile() && entry.name.endsWith(".md"))
+        .map((entry) => path.join(fixture.execution, "plans", entry.name)),
+    ]
+    : await executionMarkdownFiles(fixture.execution);
+  for (const file of files) {
+    const source = await fs.readFile(file, "utf8");
+    if (source.includes(`sha256:${oldHash}`)) {
+      await fs.writeFile(file, source.replaceAll(`sha256:${oldHash}`, `sha256:${newHash}`), "utf8");
+    }
+  }
+}
+
 function gitShowText(revision, file) {
   const result = spawnSync("git", ["show", `${revision}:${file}`], {
     cwd: ROOT,
@@ -243,7 +297,7 @@ async function appendRecoveryPlan(fixture, oldHash, newHash, {
   await fs.writeFile(path.join(fixture.execution, "plans/slice-02.md"), appended, "utf8");
 }
 
-async function commitAppendRecovery(fixture, oldHash, newHash, { resolveDivergence = false } = {}) {
+async function commitAppendRecovery(fixture, oldHash, newHash, { resolveDivergence = false, requirements = "AC-001" } = {}) {
   await editTask(fixture, (value) => {
     let result = replaceSection(value, "Final Result", "- SUPERSEDED\n- Superseded by: slice-02\n- Plan revision: 2");
     if (resolveDivergence) result = replaceSection(result, "Divergences", `${ACTIVE_DIVERGENCE.replace("- State: active", "- State: resolved")}\n- Resolution: plan revision 2 committed recovery slice-02`);
@@ -260,6 +314,7 @@ async function commitAppendRecovery(fixture, oldHash, newHash, { resolveDivergen
     ["sha256:<64hex>", `sha256:${newHash}`], ["<positive integer>", "2"],
     ["<task>", "Reconcile behavior"], ["<result>", "reconciled result"], ["<areas>", "src/example.txt"],
     ["<test, command, suite, or observable check>", "node --test"],
+    ["requirement: AC-001", `requirement: ${requirements}`],
   ]);
   await fs.writeFile(path.join(fixture.execution, "tasks/slice-02.md"), appended, "utf8");
 }
@@ -1579,6 +1634,168 @@ test("execution artifacts enforce purpose owners and canonical cross-references"
   await assert.rejects(inspectExecutionState(plan.requirements), /non-canonical Global plan/u);
 });
 
+test("lifecycle planning coverage preserves requirements without ACs and avoids double counting AC coverage", async (t) => {
+  const planningOnly = async () => {
+    const fixture = await lifecycleExecutionFixture(t);
+    await fs.rm(path.join(fixture.execution, "tasks.md"), { force: true });
+    await fs.rm(path.join(fixture.execution, "tasks"), { recursive: true, force: true });
+    return fixture;
+  };
+
+  const complete = await planningOnly();
+  assert.equal((await inspectExecutionState(complete.requirements)).state, "PLANNED_READY");
+
+  const missingGlobal = await planningOnly();
+  await editPlan(missingGlobal, (value) => value.replace(
+    /(\| 02 - Verify Delivery Telemetry \| [^|]+ \| slice-01 \| )R-003( \|)/u,
+    "$1AC-002$2",
+  ));
+  await assert.rejects(inspectExecutionState(missingGlobal.requirements), /detailed plan Requirements disagree/u);
+
+  const missingDetailed = await planningOnly();
+  await editSlicePlan(missingDetailed, "slice-02", (value) => value.replace("- R-003", "- AC-002"));
+  await assert.rejects(inspectExecutionState(missingDetailed.requirements), /detailed plan Requirements disagree/u);
+
+  const missingEverywhere = await planningOnly();
+  await editPlan(missingEverywhere, (value) => value.replace(
+    /(\| 02 - Verify Delivery Telemetry \| [^|]+ \| slice-01 \| )R-003( \|)/u,
+    "$1AC-002$2",
+  ));
+  await editSlicePlan(missingEverywhere, "slice-02", (value) => value.replace("- R-003", "- AC-002"));
+  await assert.rejects(inspectExecutionState(missingEverywhere.requirements), /current plan coverage omits authority R-003/u);
+});
+
+test("task authority references are canonical, Slice-scoped, and coverage-preserving", async (t) => {
+  const valid = await lifecycleExecutionFixture(t);
+  assert.equal((await inspectExecutionState(valid.requirements)).state, "IMPLEMENTED_AWAITING_VALIDATION");
+
+  const nonexistentAcceptance = await lifecycleExecutionFixture(t);
+  await editSliceTask(nonexistentAcceptance, "slice-02", (value) => value.replace("requirement: R-003", "requirement: AC-999"));
+  await assert.rejects(inspectExecutionState(nonexistentAcceptance.requirements), /slice-02 references unknown authority AC-999/u);
+
+  const nonexistentRequirement = await lifecycleExecutionFixture(t);
+  await editSliceTask(nonexistentRequirement, "slice-02", (value) => value.replace("requirement: R-003", "requirement: R-999"));
+  await assert.rejects(inspectExecutionState(nonexistentRequirement.requirements), /slice-02 references unknown authority R-999/u);
+
+  const crossSlice = await lifecycleExecutionFixture(t);
+  await editSliceTask(crossSlice, "slice-02", (value) => value.replace("requirement: R-003", "requirement: AC-001"));
+  await assert.rejects(inspectExecutionState(crossSlice.requirements), /slice-02 references authority AC-001 outside approved Slice coverage/u);
+
+  const lostCoverage = await lifecycleExecutionFixture(t);
+  await editSliceTask(lostCoverage, "slice-01", (value) => value.replace(/^- \[x\] 1\.2 .*$/mu, ""));
+  await assert.rejects(inspectExecutionState(lostCoverage.requirements), /slice-01 task coverage omits authority AC-002/u);
+
+  const oneTaskCoversMultiple = await lifecycleExecutionFixture(t);
+  await editSliceTask(oneTaskCoversMultiple, "slice-01", (value) => {
+    const withoutSecondTask = value.replace(/^- \[x\] 1\.2 .*$/mu, "");
+    return withoutSecondTask.replace("requirement: AC-001", "requirement: AC-001, AC-002");
+  });
+  assert.equal((await inspectExecutionState(oneTaskCoversMultiple.requirements)).state, "IMPLEMENTED_AWAITING_VALIDATION");
+
+  const repeatedAuthority = await lifecycleExecutionFixture(t, "representative");
+  assert.equal((await inspectExecutionState(repeatedAuthority.requirements)).state, "IMPLEMENTED_AWAITING_VALIDATION");
+});
+
+test("current lifecycle planning coverage accepts active R and AC references but rejects known inactive authorities", async (t) => {
+  const planningOnly = async () => {
+    const fixture = await lifecycleExecutionFixture(t);
+    await fs.rm(path.join(fixture.execution, "tasks.md"), { force: true });
+    await fs.rm(path.join(fixture.execution, "tasks"), { recursive: true, force: true });
+    return fixture;
+  };
+
+  const active = await planningOnly();
+  assert.equal((await inspectExecutionState(active.requirements)).state, "PLANNED_READY");
+
+  const inactiveDetailed = await planningOnly();
+  const detailedOldHash = await computeRequirementsAuthority(inactiveDetailed.requirements);
+  await setLifecycleRecordStatus(inactiveDetailed, "shared/requirements.md", "R-003", "out_of_scope");
+  const detailedNewHash = await computeRequirementsAuthority(inactiveDetailed.requirements);
+  await refreshExecutionAuthority(inactiveDetailed, detailedOldHash, detailedNewHash);
+  await editPlan(inactiveDetailed, (value) => value.replace(
+    /(\| 02 - Verify Delivery Telemetry \| [^|]+ \| slice-01 \| )R-003( \|)/u,
+    "$1AC-002$2",
+  ));
+  await assert.rejects(
+    inspectExecutionState(inactiveDetailed.requirements),
+    /slice-02 detailed plan Requirements disagree with Serial Slice Order/u,
+  );
+
+  const unknown = await planningOnly();
+  await editPlan(unknown, (value) => value.replace(
+    /(\| 02 - Verify Delivery Telemetry \| [^|]+ \| slice-01 \| )R-003( \|)/u,
+    "$1R-999$2",
+  ));
+  await editSlicePlan(unknown, "slice-02", (value) => value.replace("- R-003", "- R-999"));
+  await assert.rejects(inspectExecutionState(unknown.requirements), /current plan references unknown authority R-999/u);
+
+  for (const status of ["out_of_scope", "retired", "superseded"]) {
+    const fixture = await planningOnly();
+    const oldHash = await computeRequirementsAuthority(fixture.requirements);
+    await setLifecycleRecordStatus(fixture, "shared/requirements.md", "R-003", status);
+    const newHash = await computeRequirementsAuthority(fixture.requirements);
+    await refreshExecutionAuthority(fixture, oldHash, newHash);
+    await assert.rejects(
+      inspectExecutionState(fixture.requirements),
+      new RegExp(`current plan references inactive authority R-003`, "u"),
+    );
+  }
+
+  for (const status of ["dropped", "retired", "superseded"]) {
+    const fixture = await planningOnly();
+    const oldHash = await computeRequirementsAuthority(fixture.requirements);
+    await setLifecycleRecordStatus(fixture, "shared/acceptance-criteria.md", "AC-002", status);
+    const newHash = await computeRequirementsAuthority(fixture.requirements);
+    await refreshExecutionAuthority(fixture, oldHash, newHash);
+    await assert.rejects(
+      inspectExecutionState(fixture.requirements),
+      new RegExp(`current plan references inactive authority AC-002`, "u"),
+    );
+  }
+});
+
+test("current lifecycle Task coverage rejects known inactive authority without changing active, unknown, or cross-Slice rules", async (t) => {
+  const active = await lifecycleExecutionFixture(t);
+  assert.equal((await inspectExecutionState(active.requirements)).state, "IMPLEMENTED_AWAITING_VALIDATION");
+
+  const inactive = await lifecycleExecutionFixture(t);
+  const oldHash = await computeRequirementsAuthority(inactive.requirements);
+  await setLifecycleRecordStatus(inactive, "shared/requirements.md", "R-003", "out_of_scope");
+  const newHash = await computeRequirementsAuthority(inactive.requirements);
+  await refreshExecutionAuthority(inactive, oldHash, newHash);
+  await editPlan(inactive, (value) => value.replace(
+    "| 02 - Verify Delivery Telemetry | Delivery telemetry is emitted and verified as an independent observability milestone after acceptance. | slice-01 | R-003 | telemetry instrumentation and automated checks | plans/slice-02.md |",
+    "| 02 - Verify Delivery Telemetry | Delivery telemetry is emitted and verified as an independent observability milestone after acceptance. | slice-01 | AC-002 | telemetry instrumentation and automated checks | plans/slice-02.md |",
+  ));
+  await editSlicePlan(inactive, "slice-02", (value) => value.replace("- R-003", "- AC-002"));
+  await assert.rejects(inspectExecutionState(inactive.requirements), /slice-02 references inactive authority R-003/u);
+});
+
+test("current fingerprint validation rejects inactive coverage while stale historical references remain append-only", async (t) => {
+  const historical = await lifecycleExecutionFixture(t);
+  const historicalHash = await computeRequirementsAuthority(historical.requirements);
+  await setLifecycleRecordStatus(historical, "shared/requirements.md", "R-003", "out_of_scope");
+  const historicalState = await inspectExecutionState(historical.requirements);
+  assert.equal(historicalState.state, "REQUIREMENTS_CHANGED");
+  assert.equal(historicalState.stale, true);
+  assert.equal(historicalState.globalPlan.fingerprint, historicalHash);
+
+  const currentReplan = await lifecycleExecutionFixture(t);
+  const oldHash = await computeRequirementsAuthority(currentReplan.requirements);
+  await setLifecycleRecordStatus(currentReplan, "shared/requirements.md", "R-003", "out_of_scope");
+  const newHash = await computeRequirementsAuthority(currentReplan.requirements);
+  await refreshExecutionAuthority(currentReplan, oldHash, newHash, { planningOnly: true });
+  await editPlan(currentReplan, (value) => value
+    .replace("- Plan revision: 1", "- Plan revision: 2")
+    .replace(
+      "- Objective: Deliver invitation acceptance and complete the explicit delivery-telemetry verification milestone for that flow.",
+      "- Revision mode: append-only-extension\n- Replan reason: requirements authority changed\n- Supersedes open slices: none\n- Objective: Deliver invitation acceptance and complete the explicit delivery-telemetry verification milestone for that flow.",
+    ));
+  await editSlicePlan(currentReplan, "slice-01", (value) => value.replace("Plan revision: 1", "Plan revision: 2"));
+  await editSlicePlan(currentReplan, "slice-02", (value) => value.replace("Plan revision: 1", "Plan revision: 2"));
+  await assert.rejects(inspectExecutionState(currentReplan.requirements), /current plan references inactive authority R-003/u);
+});
+
 test("plan coverage and dependency transformations remain canonical across split, merge, and reorder", async (t) => {
   const split = await standaloneWorkspace(t);
   await fs.appendFile(split.requirements, "\n- AC-002: independent observable behavior\n", "utf8");
@@ -1704,6 +1921,7 @@ test("reviewed planning made stale before tasks replans without historical recov
   await editSlicePlan(fixture, "slice-01", (value) => setPlanReviewState(value, true));
   assert.equal((await preflightExecutionOperation(fixture.requirements, "MATERIALIZE_TASKS")).state, "PLANNED_READY");
   await renderTasks(fixture, { revision: 1, fingerprint: newHash });
+  await editTask(fixture, (value) => value.replace("requirement: AC-001", "requirement: AC-001, AC-002"));
   assert.equal((await inspectExecutionState(fixture.requirements)).state, "MATERIALIZED_PRISTINE");
 });
 
@@ -1763,6 +1981,7 @@ test("pristine REVIEW_TASKS replan dead end has draft, review, and atomic materi
   await editSlicePlan(fixture, "slice-01", (value) => value.replace("status: draft", "status: ready").replace("Review state: pending", "Review state: approved"));
   assert.equal((await preflightExecutionOperation(fixture.requirements, "MATERIALIZE_TASKS")).state, "PENDING_REPLAN_READY");
   await editTask(fixture, (value) => reviseAuthority(value, oldHash, newHash, 1, 2));
+  await editTask(fixture, (value) => value.replace("requirement: AC-001", "requirement: AC-001, AC-002"));
   assert.equal((await inspectExecutionState(fixture.requirements)).state, "MATERIALIZED_PRISTINE");
 });
 
@@ -2543,7 +2762,7 @@ test("append-only requirements recovery preserves history and requires later PAS
   await editPlan(fixture, (value) => value.replace("status: draft", "status: ready").replace("Review state: pending", "Review state: approved"));
   await editSlicePlan(fixture, "slice-02", (value) => value.replace("status: draft", "status: ready").replace("Review state: pending", "Review state: approved"));
   assert.equal((await preflightExecutionOperation(fixture.requirements, "MATERIALIZE_TASKS")).state, "PENDING_REPLAN_READY");
-  await commitAppendRecovery(fixture, oldHash, newHash, { resolveDivergence: true });
+  await commitAppendRecovery(fixture, oldHash, newHash, { resolveDivergence: true, requirements: "AC-001, AC-002" });
   const recovered = await inspectExecutionState(fixture.requirements);
   assert.equal(recovered.state, "EXECUTION_STARTED");
   assert.equal(recovered.tasks.get("slice-01").divergences[0].state, "resolved");
@@ -2581,7 +2800,7 @@ test("superseded historical paths become closable only through a later current-a
   await fs.appendFile(fixture.requirements, "- AC-002: corrective authority\n");
   const newHash = await computeRequirementsAuthority(fixture.requirements);
   await appendRecoveryPlan(fixture, oldHash, newHash, { ready: true, requirements: "AC-001, AC-002" });
-  await commitAppendRecovery(fixture, oldHash, newHash);
+  await commitAppendRecovery(fixture, oldHash, newHash, { requirements: "AC-001, AC-002" });
   const second = path.join(fixture.execution, "tasks/slice-02.md");
   let task = await fs.readFile(second, "utf8");
   task = task.replace("- [ ] 1.1", "- [x] 1.1");

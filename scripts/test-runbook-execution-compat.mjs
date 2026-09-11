@@ -38,7 +38,7 @@ async function renderRealTemplateExecution(spec) {
     ["`<relative path>`", "`../feature_spec.md`"], ["sha256:<64hex>", `sha256:${authority}`],
     ["<positive integer>", "1"], ["<compact objective>", "Deliver one observable invitation behavior"],
     ["<compact strategy>", "Implement and validate the complete vertical acceptance outcome"], ["01 - <name>", "01 - Accept Invitation"],
-    ["<result>", "eligible invitation is accepted and confirmed"], ["<areas>", "invitation service, persistence, UI, and tests"], ["| AC-001 |", "| AC-001, AC-002 |"],
+    ["<result>", "eligible invitation is accepted and confirmed"], ["<areas>", "invitation service, persistence, UI, and tests"], ["| AC-001 |", "| AC-001, AC-002, R-003 |"],
   ]).replace("status: draft", "status: ready")
     .replace("Review state: pending", "Review state: approved")
     .replace(/\nFor revision 1,[\s\S]*?\n## Serial Slice Order/u, "\n## Serial Slice Order");
@@ -48,7 +48,7 @@ async function renderRealTemplateExecution(spec) {
   const slice = replaceAll(sliceTemplate, [
     ["<Name>", "Accept Invitation"], ["`<relative path>`", "`../../feature_spec.md`"],
     ["sha256:<64hex>", `sha256:${authority}`], ["<positive integer>", "1"],
-    ["<One coherent outcome or milestone, how it is observed and validated, and why it is one boundary. Technical layers belong in Tasks.>", "Eligible invitations produce the approved API, persistence, and confirmation outcome."], ["- AC-001\n\n## Included Scope", "- AC-001\n- AC-002\n\n## Included Scope"],
+    ["<One coherent outcome or milestone, how it is observed and validated, and why it is one boundary. Technical layers belong in Tasks.>", "Eligible invitations produce the approved API, persistence, and confirmation outcome."], ["- AC-001\n\n## Included Scope", "- AC-001\n- AC-002\n- R-003\n\n## Included Scope"],
     ["<included work>", "Invitation acceptance behavior across service, persistence, UI, and validation."], ["<excluded work and the semantic boundary with later Slices; do not use a technical layer as the boundary>", "Unrelated invitation-management capabilities."],
     ["<path, contract, subsystem, or test area>", "invitation service, persistence, UI, and tests"], ["<earlier slice or none>", "none"],
     ["<risk and mitigation>", "Low risk; use stable fixtures."], ["<bounded approach>", "One bounded service change."],
@@ -67,6 +67,7 @@ async function renderRealTemplateExecution(spec) {
     ["sha256:<64hex>", `sha256:${authority}`], ["<positive integer>", "1"],
     ["<task>", "Implement eligible invitation acceptance"], ["<result>", "HTTP 201 and one participation"],
     ["<areas>", "invitation service"], ["<test, command, suite, or observable check>", "invitation integration test"],
+    ["requirement: AC-001", "requirement: AC-001, AC-002, R-003"],
   ]);
   await fs.writeFile(path.join(execution, "tasks/slice-01.md"), task, "utf8");
 }

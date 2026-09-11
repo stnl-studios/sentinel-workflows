@@ -12,11 +12,14 @@ import {
 
 const TOP_LEVEL_FIELDS = new Set([
   "contract_version", "refinement_id", "title", "summary", "input_assessment", "exploration",
-  "sources", "needs", "evidence", "relationships", "questions", "constraints", "findings",
-  "final_assessment", "handoff",
+  "requirements", "sources", "needs", "evidence", "relationships", "questions", "constraints", "findings",
+  "final_assessment", "handoff", "migration_provenance",
 ]);
 const INPUT_FIELDS = new Set(["format", "quality", "summary"]);
 const EXPLORATION_FIELDS = new Set(["status", "anchors", "searches", "files_read", "stop_reason", "limitations"]);
+const REQUIREMENT_FIELDS = new Set([
+  "id", "title", "state", "external_id", "source_ids", "need_ids", "retired_reason",
+]);
 const SOURCE_FIELDS = new Set([
   "id", "kind", "label", "state", "external_id", "path", "snapshot_sha256", "original_text", "retired_reason",
 ]);
@@ -29,16 +32,26 @@ const EVIDENCE_FIELDS = new Set([
   "snapshot_sha256", "surface", "superseded_reason",
 ]);
 const RELATIONSHIP_FIELDS = new Set([
-  "id", "type", "title", "state", "need_ids", "evidence_ids", "detail", "from_need_id", "to_need_id",
+  "id", "type", "title", "state", "requirement_ids", "need_ids", "evidence_ids", "detail", "from_need_id", "to_need_id",
   "retired_reason",
 ]);
 const QUESTION_FIELDS = new Set([
-  "id", "question", "status", "why_material", "source_ids", "need_ids", "finding_ids", "evidence_ids", "answer",
+  "id", "question", "status", "why_material", "requirement_ids", "source_ids", "need_ids", "finding_ids", "evidence_ids",
+  "answer", "canonical_answer_history", "reconciliation_attempts", "remaining_gaps", "reopened_reason", "reopen_events",
+  "migration_history",
+]);
+const REOPEN_EVENT_FIELDS = new Set(["sequence", "reason", "prior_canonical_answer", "remaining_gaps"]);
+const MIGRATION_HISTORY_FIELDS = new Set(["status", "human_response_persisted", "remaining_gaps"]);
+const MIGRATION_PROVENANCE_FIELDS = new Set([
+  "from_contract_version", "legacy_model_fingerprint", "legacy_html_fingerprint", "requirement_ownership_rule",
 ]);
 const CONSTRAINT_FIELDS = new Set(["id", "statement", "state", "need_ids", "evidence_ids", "retired_reason"]);
 const FINDING_FIELDS = new Set([
-  "id", "title", "type", "severity", "disposition", "source_ids", "need_ids", "evidence_ids", "relationship_ids",
+  "id", "title", "type", "severity", "disposition", "requirement_ids", "source_ids", "need_ids", "evidence_ids", "relationship_ids",
   "question_ids", "problem", "why_it_matters", "impact", "resolution", "bypass", "reopened_reason",
+]);
+const ATTEMPT_FIELDS = new Set([
+  "round", "human_response", "assessment", "established_context", "remaining_gaps", "affected_finding_ids", "canonical_answer",
 ]);
 const RESOLUTION_FIELDS = new Set([
   "proposal", "verdict", "rationale", "checks", "supporting_evidence_ids", "remaining_gap",
@@ -61,6 +74,7 @@ const SOURCE_KINDS = new Set([
   "USER_STORY", "EPIC", "FEATURE", "TEXT", "MARKDOWN", "DOCUMENTATION", "ACCEPTANCE_CRITERIA", "OTHER",
 ]);
 const SOURCE_STATES = new Set(["ACTIVE", "RETIRED"]);
+const REQUIREMENT_STATES = new Set(["ACTIVE", "RETIRED"]);
 const NEED_STATES = new Set(["ACTIVE", "RETIRED"]);
 const EVIDENCE_KINDS = new Set([
   "SOURCE_ASSERTION", "REPOSITORY_OBSERVATION", "USER_DECISION", "INFERENCE", "HYPOTHESIS", "RESOLUTION_VALIDATION",
@@ -72,6 +86,8 @@ const RELATIONSHIP_TYPES = new Set([
 ]);
 const RELATIONSHIP_STATES = new Set(["ACTIVE", "RETIRED"]);
 const QUESTION_STATUSES = new Set(["OPEN", "ANSWERED"]);
+const ATTEMPT_ASSESSMENTS = new Set(["ACCEPTED", "FOLLOW_UP_REQUIRED", "NO_MATERIAL_PROGRESS", "CONFLICTING_INFORMATION"]);
+const REOPEN_HISTORY_STATUSES = new Set(["NO_PERSISTED_HISTORY", "PRE_V2_INTERACTION_DETAIL_UNAVAILABLE", "LEGACY_CANONICAL_ANSWER"]);
 const CONSTRAINT_STATES = new Set(["ACTIVE", "RETIRED"]);
 const FINDING_TYPES = new Set([
   "REQUIREMENT_GAP", "TECHNICAL_GAP", "CROSS_REQUIREMENT_GAP", "REPOSITORY_CONFLICT", "RISK",
@@ -207,6 +223,23 @@ function exploration(value) {
   };
 }
 
+function requirement(value, label) {
+  const item = object(value, label);
+  exact(item, REQUIREMENT_FIELDS, new Set(["id", "title", "state", "source_ids", "need_ids"]), label);
+  const state = enumValue(item.state, REQUIREMENT_STATES, `${label}.state`);
+  const retiredReason = text(item.retired_reason, `${label}.retired_reason`, { optional: true, maximum: 2_000 });
+  if ((state === "RETIRED") !== (retiredReason !== undefined)) throw new ValidationError(`${label} requires retired_reason exactly when RETIRED`);
+  return {
+    id: identifier(item.id, `${label}.id`, /^REQ-[0-9]{3}$/u),
+    title: text(item.title, `${label}.title`, { maximum: 500 }),
+    state,
+    ...(item.external_id === undefined ? {} : { external_id: text(item.external_id, `${label}.external_id`, { maximum: 200 }) }),
+    source_ids: identifierArray(item.source_ids, `${label}.source_ids`, /^SRC-[0-9]{3}$/u, { minimum: 1, maximum: 200 }),
+    need_ids: identifierArray(item.need_ids, `${label}.need_ids`, /^NEED-[0-9]{3}$/u, { minimum: 1, maximum: 2_000 }),
+    ...(retiredReason === undefined ? {} : { retired_reason: retiredReason }),
+  };
+}
+
 function source(value, label) {
   const item = object(value, label);
   exact(item, SOURCE_FIELDS, new Set(["id", "kind", "label", "state", "original_text"]), label);
@@ -292,7 +325,7 @@ function evidence(value, label) {
 
 function relationship(value, label) {
   const item = object(value, label);
-  exact(item, RELATIONSHIP_FIELDS, new Set(["id", "type", "title", "state", "need_ids", "evidence_ids", "detail"]), label);
+  exact(item, RELATIONSHIP_FIELDS, new Set(["id", "type", "title", "state", "requirement_ids", "need_ids", "evidence_ids", "detail"]), label);
   const type = enumValue(item.type, RELATIONSHIP_TYPES, `${label}.type`);
   const state = enumValue(item.state, RELATIONSHIP_STATES, `${label}.state`);
   const retiredReason = text(item.retired_reason, `${label}.retired_reason`, { optional: true, maximum: 2_000 });
@@ -312,6 +345,7 @@ function relationship(value, label) {
     type,
     title: text(item.title, `${label}.title`, { maximum: 500 }),
     state,
+    requirement_ids: identifierArray(item.requirement_ids, `${label}.requirement_ids`, /^REQ-[0-9]{3}$/u, { minimum: 1, maximum: 100 }),
     need_ids: needIds,
     evidence_ids: identifierArray(item.evidence_ids, `${label}.evidence_ids`, /^EVD-[0-9]{3}$/u, { maximum: 100 }),
     detail: text(item.detail, `${label}.detail`, { maximum: 8_000 }),
@@ -320,22 +354,231 @@ function relationship(value, label) {
   };
 }
 
+function reconciliationAttempt(value, label) {
+  const item = object(value, label);
+  exact(item, ATTEMPT_FIELDS, new Set([
+    "round", "human_response", "assessment", "established_context", "remaining_gaps", "affected_finding_ids",
+  ]), label);
+  const assessment = enumValue(item.assessment, ATTEMPT_ASSESSMENTS, `${label}.assessment`);
+  const established = textArray(item.established_context, `${label}.established_context`, { maximum: 100, itemMaximum: 4_000 });
+  const remaining = textArray(item.remaining_gaps, `${label}.remaining_gaps`, { maximum: 100, itemMaximum: 4_000 });
+  const canonicalAnswer = text(item.canonical_answer, `${label}.canonical_answer`, { optional: true, maximum: 12_000 });
+  if (assessment === "ACCEPTED") {
+    if (canonicalAnswer === undefined || remaining.length !== 0) {
+      throw new ValidationError(`${label} accepted assessment requires canonical_answer and no remaining_gaps`);
+    }
+  } else {
+    if (canonicalAnswer !== undefined || remaining.length === 0) {
+      throw new ValidationError(`${label} ${assessment} assessment requires remaining_gaps and cannot contain canonical_answer`);
+    }
+  }
+  if (assessment === "NO_MATERIAL_PROGRESS" && established.length !== 0) {
+    throw new ValidationError(`${label} NO_MATERIAL_PROGRESS cannot establish context`);
+  }
+  return {
+    round: integer(item.round, `${label}.round`, { minimum: 1, maximum: 1_000 }),
+    human_response: text(item.human_response, `${label}.human_response`, { maximum: 100_000 }),
+    assessment,
+    established_context: established,
+    remaining_gaps: remaining,
+    affected_finding_ids: identifierArray(item.affected_finding_ids, `${label}.affected_finding_ids`, /^FND-[0-9]{3}$/u, { maximum: 100 }),
+    ...(canonicalAnswer === undefined ? {} : { canonical_answer: canonicalAnswer }),
+  };
+}
+
+function reconciliationAttempts(value, label) {
+  const attempts = array(value, label, { maximum: 1_000 }).map((item, index) => reconciliationAttempt(item, `${label}[${index}]`));
+  const seenResponses = new Set();
+  attempts.forEach((attempt, index) => {
+    if (attempt.round !== index + 1) throw new ValidationError(`${label} rounds must be contiguous and monotonic`);
+    if (seenResponses.has(attempt.human_response) && attempt.assessment !== "NO_MATERIAL_PROGRESS") {
+      throw new ValidationError(`${label}[${index}] exact duplicate human_response must be assessed as NO_MATERIAL_PROGRESS`);
+    }
+    seenResponses.add(attempt.human_response);
+  });
+  return attempts;
+}
+
+function reopenEvent(value, label) {
+  const item = object(value, label);
+  exact(item, REOPEN_EVENT_FIELDS, REOPEN_EVENT_FIELDS, label);
+  return {
+    sequence: integer(item.sequence, `${label}.sequence`, { minimum: 1, maximum: 1_000 }),
+    reason: text(item.reason, `${label}.reason`, { maximum: 4_000 }),
+    prior_canonical_answer: text(item.prior_canonical_answer, `${label}.prior_canonical_answer`, { maximum: 8_000 }),
+    remaining_gaps: textArray(item.remaining_gaps, `${label}.remaining_gaps`, { minimum: 1, maximum: 100, itemMaximum: 4_000 }),
+  };
+}
+
+function reopenEvents(value, label) {
+  const events = array(value, label, { maximum: 1_000 }).map((item, index) => reopenEvent(item, `${label}[${index}]`));
+  events.forEach((event, index) => {
+    if (event.sequence !== index + 1) throw new ValidationError(`${label} sequences must be contiguous and monotonic`);
+  });
+  return events;
+}
+
+function parseMigrationHistory(value, label) {
+  const item = object(value, label);
+  exact(item, MIGRATION_HISTORY_FIELDS, MIGRATION_HISTORY_FIELDS, label);
+  if (item.human_response_persisted !== false) {
+    throw new ValidationError(`${label}.human_response_persisted must be false for legacy migration history`);
+  }
+  const remainingGaps = textArray(item.remaining_gaps, `${label}.remaining_gaps`, { maximum: 100, itemMaximum: 4_000 });
+  return {
+    status: enumValue(item.status, REOPEN_HISTORY_STATUSES, `${label}.status`),
+    human_response_persisted: false,
+    remaining_gaps: remainingGaps,
+  };
+}
+
+function migrationProvenance(value) {
+  if (value === undefined) return undefined;
+  const item = object(value, "migration_provenance");
+  exact(item, MIGRATION_PROVENANCE_FIELDS, MIGRATION_PROVENANCE_FIELDS, "migration_provenance");
+  if (item.from_contract_version !== 1) throw new ValidationError("migration_provenance.from_contract_version must be 1");
+  for (const key of ["legacy_model_fingerprint", "legacy_html_fingerprint"]) {
+    const fingerprint = text(item[key], `migration_provenance.${key}`, { maximum: 71 });
+    if (!/^sha256:[0-9a-f]{64}$/u.test(fingerprint)) {
+      throw new ValidationError(`migration_provenance.${key} must be sha256:<64 lowercase hexadecimal characters>`);
+    }
+  }
+  if (item.requirement_ownership_rule !== "EXACT_NORMALIZED_SOURCE_EXTERNAL_ID") {
+    throw new ValidationError("migration_provenance.requirement_ownership_rule is unsupported");
+  }
+  return {
+    from_contract_version: 1,
+    legacy_model_fingerprint: item.legacy_model_fingerprint,
+    legacy_html_fingerprint: item.legacy_html_fingerprint,
+    requirement_ownership_rule: item.requirement_ownership_rule,
+  };
+}
+
 function question(value, label) {
   const item = object(value, label);
-  exact(item, QUESTION_FIELDS, new Set(["id", "question", "status", "why_material", "source_ids", "need_ids", "finding_ids", "evidence_ids"]), label);
+  exact(item, QUESTION_FIELDS, new Set([
+    "id", "question", "status", "why_material", "requirement_ids", "source_ids", "need_ids", "finding_ids", "evidence_ids",
+    "canonical_answer_history", "reconciliation_attempts",
+  ]), label);
+  const questionId = identifier(item.id, `${label}.id`, /^QST-[0-9]{3}$/u);
   const status = enumValue(item.status, QUESTION_STATUSES, `${label}.status`);
   const answer = text(item.answer, `${label}.answer`, { optional: true, maximum: 8_000 });
-  if ((status === "ANSWERED") !== (answer !== undefined)) throw new ValidationError(`${label} requires answer exactly when ANSWERED`);
+  const canonicalAnswerHistory = textArray(item.canonical_answer_history, `${label}.canonical_answer_history`, { maximum: 100, itemMaximum: 8_000 });
+  const attempts = reconciliationAttempts(item.reconciliation_attempts, `${label}.reconciliation_attempts`);
+  const migrationHistory = item.migration_history === undefined ? undefined : parseMigrationHistory(item.migration_history, `${label}.migration_history`);
+  const acceptedAnswers = new Set(attempts.filter((attempt) => attempt.assessment === "ACCEPTED").map((attempt) => attempt.canonical_answer));
+  const unsupportedAnswers = canonicalAnswerHistory.filter((entry) => !acceptedAnswers.has(entry));
+  const legacyAnswerIsAllowed = migrationHistory?.status === "LEGACY_CANONICAL_ANSWER"
+    && attempts.length === 0 && canonicalAnswerHistory.length === 1 && answer === canonicalAnswerHistory[0];
+  const laterHistoryHasImportedAnswer = migrationHistory?.status === "LEGACY_CANONICAL_ANSWER"
+    && attempts.length > 0 && canonicalAnswerHistory.length > 1 && unsupportedAnswers.length > 0
+    && unsupportedAnswers.every((entry) => entry === canonicalAnswerHistory[0]);
+  if (unsupportedAnswers.length !== 0 && !legacyAnswerIsAllowed && !laterHistoryHasImportedAnswer) {
+    throw new ValidationError(`${label}.canonical_answer_history must be supported by accepted reconciliation attempts`);
+  }
+  if (attempts.some((attempt) => attempt.assessment === "ACCEPTED" && !canonicalAnswerHistory.includes(attempt.canonical_answer))) {
+    throw new ValidationError(`${label} accepted reconciliation attempts must be represented in canonical_answer_history`);
+  }
+  const remainingGaps = item.remaining_gaps === undefined
+    ? undefined
+    : textArray(item.remaining_gaps, `${label}.remaining_gaps`, { maximum: 100, itemMaximum: 4_000 });
+  let events = item.reopen_events === undefined ? undefined : reopenEvents(item.reopen_events, `${label}.reopen_events`);
+  const suppliedReopenedReason = text(item.reopened_reason, `${label}.reopened_reason`, { optional: true, maximum: 4_000 });
+  if ((events === undefined || events.length === 0) && suppliedReopenedReason !== undefined) {
+    if (canonicalAnswerHistory.length !== 1 || remainingGaps === undefined || remainingGaps.length === 0) {
+      throw new ValidationError(`${label}.reopen_events is required to preserve a repeated or incomplete reopen history`);
+    }
+    events = [{
+      sequence: 1,
+      reason: suppliedReopenedReason,
+      prior_canonical_answer: canonicalAnswerHistory[0],
+      remaining_gaps: remainingGaps,
+    }];
+  }
+  events ??= [];
+  const reopenedReason = status === "OPEN" ? suppliedReopenedReason ?? events.at(-1)?.reason : suppliedReopenedReason;
+  if (suppliedReopenedReason !== undefined && events.length > 0 && suppliedReopenedReason !== events.at(-1).reason) {
+    throw new ValidationError(`${label}.reopened_reason must equal the latest reopen event reason`);
+  }
+  events.forEach((event, index) => {
+    if (canonicalAnswerHistory[index] !== event.prior_canonical_answer) {
+      throw new ValidationError(`${label}.reopen_events[${index}] must challenge the corresponding canonical answer history entry`);
+    }
+  });
+  if (events.length > canonicalAnswerHistory.length) {
+    throw new ValidationError(`${label}.reopen_events cannot exceed canonical answer history`);
+  }
+  if (status === "ANSWERED" && (answer === undefined || canonicalAnswerHistory.length === 0)) {
+    throw new ValidationError(`${label} ANSWERED requires answer and canonical_answer_history`);
+  }
+  if (status === "ANSWERED" && attempts.length === 0 && !legacyAnswerIsAllowed) {
+    throw new ValidationError(`${label} ANSWERED requires an accepted reconciliation attempt`);
+  }
+  if (answer !== undefined && canonicalAnswerHistory.at(-1) !== answer) {
+    throw new ValidationError(`${label}.answer must equal the latest canonical_answer_history entry`);
+  }
+  if (status === "OPEN" && answer !== undefined && reopenedReason === undefined) {
+    throw new ValidationError(`${label} OPEN question with a prior answer requires reopened_reason`);
+  }
+  if (status === "OPEN" && canonicalAnswerHistory.length > 0 && reopenedReason === undefined) {
+    throw new ValidationError(`${label} OPEN question with a canonical answer requires reopened_reason`);
+  }
+  if (status === "OPEN" && canonicalAnswerHistory.length === 0 && reopenedReason !== undefined) {
+    throw new ValidationError(`${label} reopened question requires a prior canonical answer`);
+  }
+  if (status === "OPEN" && canonicalAnswerHistory.length > 0 && events.length !== canonicalAnswerHistory.length) {
+    throw new ValidationError(`${label} OPEN question must retain one reopen event for each challenged canonical answer`);
+  }
+  if (status === "ANSWERED" && events.length >= canonicalAnswerHistory.length) {
+    throw new ValidationError(`${label} ANSWERED question cannot retain an unclosed latest reopen event`);
+  }
+  if (status === "ANSWERED" && suppliedReopenedReason !== undefined) {
+    throw new ValidationError(`${label} ANSWERED question cannot retain a current reopened_reason; reopen events preserve history`);
+  }
+  if (status === "OPEN" && attempts.length === 0 && remainingGaps !== undefined && migrationHistory === undefined) {
+    throw new ValidationError(`${label}.remaining_gaps requires reconciliation history`);
+  }
+  if (status === "OPEN" && attempts.length > 0) {
+    const latest = attempts.at(-1);
+    if (latest.assessment === "ACCEPTED" && reopenedReason === undefined) {
+      throw new ValidationError(`${label} OPEN question with an accepted attempt requires reopened_reason`);
+    }
+    if (latest.assessment !== "ACCEPTED") {
+      if (remainingGaps === undefined || JSON.stringify(remainingGaps) !== JSON.stringify(latest.remaining_gaps)) {
+        throw new ValidationError(`${label}.remaining_gaps must reflect the latest open reconciliation attempt`);
+      }
+    } else if (remainingGaps === undefined || remainingGaps.length === 0) {
+      throw new ValidationError(`${label} reopened question requires remaining_gaps`);
+    }
+  }
+  if (status === "ANSWERED" && remainingGaps !== undefined) throw new ValidationError(`${label} ANSWERED question cannot contain remaining_gaps`);
+  if (status === "ANSWERED") {
+    const latest = attempts.at(-1);
+    if (legacyAnswerIsAllowed) {
+      // v1 stored the canonical answer but never stored a v2 reconciliation attempt.
+      // The narrow migration provenance exception is the only accepted answer without
+      // a native v2 attempt; all subsequent answers still require an accepted attempt.
+    } else if (latest.assessment !== "ACCEPTED" || latest.canonical_answer !== answer) {
+      throw new ValidationError(`${label} ANSWERED question requires a latest accepted attempt matching answer`);
+    }
+  }
   return {
-    id: identifier(item.id, `${label}.id`, /^QST-[0-9]{3}$/u),
+    id: questionId,
     question: text(item.question, `${label}.question`, { maximum: 2_000 }),
     status,
     why_material: text(item.why_material, `${label}.why_material`, { maximum: 4_000 }),
+    requirement_ids: identifierArray(item.requirement_ids, `${label}.requirement_ids`, /^REQ-[0-9]{3}$/u, { minimum: 1, maximum: 100 }),
     source_ids: identifierArray(item.source_ids, `${label}.source_ids`, /^SRC-[0-9]{3}$/u, { minimum: 1, maximum: 100 }),
     need_ids: identifierArray(item.need_ids, `${label}.need_ids`, /^NEED-[0-9]{3}$/u, { minimum: 1, maximum: 100 }),
     finding_ids: identifierArray(item.finding_ids, `${label}.finding_ids`, /^FND-[0-9]{3}$/u, { minimum: 1, maximum: 100 }),
     evidence_ids: identifierArray(item.evidence_ids, `${label}.evidence_ids`, /^EVD-[0-9]{3}$/u, { maximum: 100 }),
     ...(answer === undefined ? {} : { answer }),
+    canonical_answer_history: canonicalAnswerHistory,
+    reconciliation_attempts: attempts,
+    ...(remainingGaps === undefined ? {} : { remaining_gaps: remainingGaps }),
+    ...(reopenedReason === undefined ? {} : { reopened_reason: reopenedReason }),
+    reopen_events: events,
+    ...(migrationHistory === undefined ? {} : { migration_history: migrationHistory }),
   };
 }
 
@@ -392,10 +635,20 @@ function resolution(value, label) {
 function finding(value, label) {
   const item = object(value, label);
   exact(item, FINDING_FIELDS, new Set([
-    "id", "title", "type", "severity", "disposition", "source_ids", "need_ids", "evidence_ids", "relationship_ids",
+    "id", "title", "type", "severity", "disposition", "requirement_ids", "source_ids", "need_ids", "evidence_ids", "relationship_ids",
     "question_ids", "problem", "why_it_matters", "impact",
   ]), label);
   const disposition = enumValue(item.disposition, DISPOSITIONS, `${label}.disposition`);
+  const type = enumValue(item.type, FINDING_TYPES, `${label}.type`);
+  const requirementIds = identifierArray(item.requirement_ids, `${label}.requirement_ids`, /^REQ-[0-9]{3}$/u, { maximum: 100 });
+  const sourceIds = identifierArray(item.source_ids, `${label}.source_ids`, /^SRC-[0-9]{3}$/u, { maximum: 100 });
+  const needIds = identifierArray(item.need_ids, `${label}.need_ids`, /^NEED-[0-9]{3}$/u, { maximum: 100 });
+  if (type === "CROSS_REQUIREMENT_GAP" && requirementIds.length < 2) {
+    throw new ValidationError(`${label} cross-requirement gap requires at least two requirements`);
+  }
+  if (needIds.length === 0 && (requirementIds.length !== 0 || sourceIds.length !== 0)) {
+    throw new ValidationError(`${label} global finding cannot carry requirement or source scope without needs`);
+  }
   const resolutionValue = item.resolution === undefined ? undefined : resolution(item.resolution, `${label}.resolution`);
   const bypassValue = item.bypass === undefined ? undefined : (() => {
     const candidate = object(item.bypass, `${label}.bypass`);
@@ -415,11 +668,12 @@ function finding(value, label) {
   return {
     id: identifier(item.id, `${label}.id`, /^FND-[0-9]{3}$/u),
     title: text(item.title, `${label}.title`, { maximum: 500 }),
-    type: enumValue(item.type, FINDING_TYPES, `${label}.type`),
+    type,
     severity: enumValue(item.severity, SEVERITIES, `${label}.severity`),
     disposition,
-    source_ids: identifierArray(item.source_ids, `${label}.source_ids`, /^SRC-[0-9]{3}$/u, { minimum: 1, maximum: 100 }),
-    need_ids: identifierArray(item.need_ids, `${label}.need_ids`, /^NEED-[0-9]{3}$/u, { minimum: 1, maximum: 100 }),
+    requirement_ids: requirementIds,
+    source_ids: sourceIds,
+    need_ids: needIds,
     evidence_ids: identifierArray(item.evidence_ids, `${label}.evidence_ids`, /^EVD-[0-9]{3}$/u, { maximum: 100 }),
     relationship_ids: identifierArray(item.relationship_ids, `${label}.relationship_ids`, /^REL-[0-9]{3}$/u, { maximum: 100 }),
     question_ids: identifierArray(item.question_ids, `${label}.question_ids`, /^QST-[0-9]{3}$/u, { maximum: 100 }),
@@ -538,8 +792,21 @@ function handoff(value, model, refinementPath) {
   };
 }
 
+function uniqueSorted(values) {
+  return [...new Set(values)].sort();
+}
+
+function scopeFromSources(sourceIds, sourceOwners) {
+  return uniqueSorted(sourceIds.map((id) => sourceOwners.get(id)).filter(Boolean));
+}
+
+function scopeFromNeeds(needIds, maps, sourceOwners) {
+  return scopeFromSources(needIds.flatMap((id) => maps.needs.get(id).source_ids), sourceOwners);
+}
+
 function requireReferences(model, refinementPath) {
   const maps = {
+    requirements: new Map(model.requirements.map((item) => [item.id, item])),
     sources: new Map(model.sources.map((item) => [item.id, item])),
     needs: new Map(model.needs.map((item) => [item.id, item])),
     evidence: new Map(model.evidence.map((item) => [item.id, item])),
@@ -550,6 +817,28 @@ function requireReferences(model, refinementPath) {
   const exists = (collection, ids, label) => {
     for (const id of ids) if (!maps[collection].has(id)) throw new ValidationError(`${label} references missing ${id}`);
   };
+  const sourceOwners = new Map();
+  const externalRequirementIds = new Map();
+  for (const item of model.requirements) {
+    exists("sources", item.source_ids, item.id);
+    exists("needs", item.need_ids, item.id);
+    for (const sourceId of item.source_ids) {
+      if (sourceOwners.has(sourceId)) throw new ValidationError(`${sourceId} belongs to more than one Requirement`);
+      sourceOwners.set(sourceId, item.id);
+    }
+    const expectedNeeds = model.needs
+      .filter((needItem) => needItem.source_ids.some((sourceId) => item.source_ids.includes(sourceId)))
+      .map((needItem) => needItem.id);
+    exactIds(item.need_ids, expectedNeeds, `${item.id}.need_ids`);
+    if (item.state === "ACTIVE" && item.external_id !== undefined) {
+      const key = item.external_id.normalize("NFC").toLocaleLowerCase("en-US");
+      if (externalRequirementIds.has(key)) throw new ValidationError(`active Requirements cannot share external_id: ${item.external_id}`);
+      externalRequirementIds.set(key, item.id);
+    }
+  }
+  for (const source of model.sources) {
+    if (!sourceOwners.has(source.id)) throw new ValidationError(`${source.id} must belong explicitly to one Requirement`);
+  }
   for (const item of model.needs) exists("sources", item.source_ids, item.id);
   for (const item of model.evidence) {
     exists("sources", item.source_ids, item.id);
@@ -559,10 +848,14 @@ function requireReferences(model, refinementPath) {
     }
   }
   for (const item of model.relationships) {
+    exists("requirements", item.requirement_ids, item.id);
     exists("needs", item.need_ids, item.id);
     exists("evidence", item.evidence_ids, item.id);
+    const expectedRequirements = scopeFromNeeds(item.need_ids, maps, sourceOwners);
+    exactIds(item.requirement_ids, expectedRequirements, `${item.id}.requirement_ids`);
   }
   for (const item of model.questions) {
+    exists("requirements", item.requirement_ids, item.id);
     exists("sources", item.source_ids, item.id);
     exists("needs", item.need_ids, item.id);
     exists("findings", item.finding_ids, item.id);
@@ -570,16 +863,25 @@ function requireReferences(model, refinementPath) {
     for (const findingId of item.finding_ids) {
       if (!maps.findings.get(findingId).question_ids.includes(item.id)) throw new ValidationError(`${item.id} and ${findingId} must reference each other`);
     }
-    const expectedSources = [...new Set(item.need_ids.flatMap((id) => maps.needs.get(id).source_ids))].sort();
+    for (const attempt of item.reconciliation_attempts) {
+      exists("findings", attempt.affected_finding_ids, `${item.id}.reconciliation_attempts`);
+      for (const findingId of attempt.affected_finding_ids) {
+        if (!item.finding_ids.includes(findingId)) throw new ValidationError(`${item.id} attempt references an unrelated ${findingId}`);
+      }
+    }
+    const expectedSources = uniqueSorted(item.need_ids.flatMap((id) => maps.needs.get(id).source_ids));
     if (JSON.stringify(item.source_ids) !== JSON.stringify(expectedSources)) {
       throw new ValidationError(`${item.id}.source_ids must exactly match sources of its affected needs`);
     }
+    const expectedRequirements = scopeFromSources(item.source_ids, sourceOwners);
+    exactIds(item.requirement_ids, expectedRequirements, `${item.id}.requirement_ids`);
   }
   for (const item of model.constraints) {
     exists("needs", item.need_ids, item.id);
     exists("evidence", item.evidence_ids, item.id);
   }
   for (const item of model.findings) {
+    exists("requirements", item.requirement_ids, item.id);
     exists("sources", item.source_ids, item.id);
     exists("needs", item.need_ids, item.id);
     exists("evidence", item.evidence_ids, item.id);
@@ -589,13 +891,12 @@ function requireReferences(model, refinementPath) {
     for (const questionId of item.question_ids) {
       if (!maps.questions.get(questionId).finding_ids.includes(item.id)) throw new ValidationError(`${item.id} and ${questionId} must reference each other`);
     }
-    const expectedSources = [...new Set(item.need_ids.flatMap((id) => maps.needs.get(id).source_ids))].sort();
+    const expectedSources = uniqueSorted(item.need_ids.flatMap((id) => maps.needs.get(id).source_ids));
     if (JSON.stringify(item.source_ids) !== JSON.stringify(expectedSources)) {
       throw new ValidationError(`${item.id}.source_ids must exactly match sources of its affected needs`);
     }
-    if (item.type === "CROSS_REQUIREMENT_GAP" && item.need_ids.length < 2) {
-      throw new ValidationError(`${item.id} cross-requirement gap requires at least two needs`);
-    }
+    const expectedRequirements = scopeFromNeeds(item.need_ids, maps, sourceOwners);
+    exactIds(item.requirement_ids, expectedRequirements, `${item.id}.requirement_ids`);
     if (item.type === "REPOSITORY_CONFLICT" && !item.evidence_ids.some((id) => maps.evidence.get(id).kind === "REPOSITORY_OBSERVATION")) {
       throw new ValidationError(`${item.id} repository conflict requires repository evidence`);
     }
@@ -618,7 +919,7 @@ function requireReferences(model, refinementPath) {
   }
 }
 
-function scanSensitive(value, location = "refinement") {
+export function scanSensitive(value, location = "refinement") {
   if (typeof value === "string") {
     for (const pattern of SECRET_PATTERNS) {
       pattern.lastIndex = 0;
@@ -645,15 +946,17 @@ function scanSensitive(value, location = "refinement") {
 
 export function validateRefinement(raw, { refinementPath = "docs/refinement" } = {}) {
   const root = object(raw, "refinement");
-  exact(root, TOP_LEVEL_FIELDS, TOP_LEVEL_FIELDS, "refinement");
-  if (root.contract_version !== 1) throw new ValidationError("refinement.contract_version must be 1");
+  exact(root, TOP_LEVEL_FIELDS, new Set([...TOP_LEVEL_FIELDS].filter((field) => field !== "migration_provenance")), "refinement");
+  if (root.contract_version !== 2) throw new ValidationError("refinement.contract_version must be 2");
+  const migration = migrationProvenance(root.migration_provenance);
   const partial = {
-    contract_version: 1,
+    contract_version: 2,
     refinement_id: identifier(root.refinement_id, "refinement.refinement_id", /^REF-[A-Z0-9][A-Z0-9-]{0,62}$/u),
     title: text(root.title, "refinement.title", { maximum: 500 }),
     summary: text(root.summary, "refinement.summary", { maximum: 12_000 }),
     input_assessment: inputAssessment(root.input_assessment),
     exploration: exploration(root.exploration),
+    requirements: array(root.requirements, "requirements", { minimum: 1, maximum: 500 }).map((item, index) => requirement(item, `requirements[${index}]`)).sort((a, b) => a.id.localeCompare(b.id, "en")),
     sources: array(root.sources, "sources", { minimum: 1, maximum: 200 }).map((item, index) => source(item, `sources[${index}]`)).sort((a, b) => a.id.localeCompare(b.id, "en")),
     needs: array(root.needs, "needs", { minimum: 1, maximum: 2_000 }).map((item, index) => need(item, `needs[${index}]`)).sort((a, b) => a.id.localeCompare(b.id, "en")),
     evidence: array(root.evidence, "evidence", { minimum: 1, maximum: 3_000 }).map((item, index) => evidence(item, `evidence[${index}]`)).sort((a, b) => a.id.localeCompare(b.id, "en")),
@@ -662,12 +965,22 @@ export function validateRefinement(raw, { refinementPath = "docs/refinement" } =
     constraints: array(root.constraints, "constraints", { maximum: 2_000 }).map((item, index) => constraint(item, `constraints[${index}]`)).sort((a, b) => a.id.localeCompare(b.id, "en")),
     findings: array(root.findings, "findings", { maximum: 2_000 }).map((item, index) => finding(item, `findings[${index}]`)).sort((a, b) => a.id.localeCompare(b.id, "en")),
     final_assessment: finalAssessment(root.final_assessment),
+    ...(migration === undefined ? {} : { migration_provenance: migration }),
   };
   for (const [items, prefix, label] of [
-    [partial.sources, "SRC-", "source"], [partial.needs, "NEED-", "need"], [partial.evidence, "EVD-", "evidence"],
+    [partial.requirements, "REQ-", "requirement"], [partial.sources, "SRC-", "source"], [partial.needs, "NEED-", "need"], [partial.evidence, "EVD-", "evidence"],
     [partial.relationships, "REL-", "relationship"], [partial.questions, "QST-", "question"],
     [partial.constraints, "CON-", "constraint"], [partial.findings, "FND-", "finding"],
   ]) requireContiguousIds(items, prefix, label);
+  for (const item of partial.questions) {
+    if (item.migration_history !== undefined && migration === undefined) {
+      throw new ValidationError(`${item.id}.migration_history requires refinement.migration_provenance`);
+    }
+    if (item.migration_history?.status === "LEGACY_CANONICAL_ANSWER"
+      && item.canonical_answer_history.length === 0) {
+      throw new ValidationError(`${item.id} legacy canonical-answer provenance requires canonical answer history`);
+    }
+  }
   requireReferences(partial, refinementPath);
   const normalized = { ...partial, handoff: handoff(root.handoff, partial, refinementPath) };
   scanSensitive(normalized);
@@ -684,21 +997,151 @@ function identity(value, fields) {
   return canonicalJson(Object.fromEntries(fields.map((field) => [field, value[field] ?? null])));
 }
 
+function sourceOwnership(model) {
+  const owners = new Map();
+  for (const requirementItem of model.requirements) {
+    for (const sourceId of requirementItem.source_ids) owners.set(sourceId, requirementItem.id);
+  }
+  return owners;
+}
+
+function ensureAppendOnly(before, after, label) {
+  if (after.length < before.length) throw new ValidationError(`${label} cannot be deleted`);
+  before.forEach((item, index) => {
+    if (canonicalJson(item) !== canonicalJson(after[index])) throw new ValidationError(`${label} is append-only and prior entries are immutable`);
+  });
+}
+
+function latestAcceptedAnswer(question) {
+  return [...question.reconciliation_attempts].reverse().find((attempt) => attempt.assessment === "ACCEPTED")?.canonical_answer;
+}
+
+export function questionInteractionState(question) {
+  if (question.status === "ANSWERED") return "ANSWERED";
+  if ((question.reopen_events?.length ?? 0) > 0 || question.reopened_reason !== undefined
+    || (question.canonical_answer_history?.length ?? 0) > 0) return "REOPENED_FOLLOW_UP_REQUIRED";
+  if ((question.reconciliation_attempts?.length ?? 0) > 0) return "FOLLOW_UP_REQUIRED";
+  if (question.migration_history?.status === "PRE_V2_INTERACTION_DETAIL_UNAVAILABLE") return "FOLLOW_UP_REQUIRED";
+  return "AWAITING_DECISION";
+}
+
+export function questionCurrentGaps(question) {
+  if (question.remaining_gaps !== undefined) return question.remaining_gaps;
+  return question.reconciliation_attempts?.at(-1)?.remaining_gaps
+    ?? question.migration_history?.remaining_gaps
+    ?? [];
+}
+
+function attemptContext(attempt) {
+  if (attempt.established_context.length !== 0) return attempt.established_context;
+  return attempt.assessment === "ACCEPTED" && attempt.canonical_answer !== undefined ? [attempt.canonical_answer] : [];
+}
+
+function challengedAcceptedAttemptIndex(question) {
+  if (question.status !== "OPEN" || (question.reopen_events?.length ?? 0) === 0) return -1;
+  const latestAnswer = question.canonical_answer_history?.at(-1);
+  if (latestAnswer === undefined) return -1;
+  return [...(question.reconciliation_attempts ?? [])].map((attempt, index) => ({ attempt, index }))
+    .reverse().find(({ attempt }) => attempt.assessment === "ACCEPTED" && attempt.canonical_answer === latestAnswer)?.index ?? -1;
+}
+
+export function questionEstablishedContext(question) {
+  let context = [];
+  let conflictActive = false;
+  const challengedIndex = challengedAcceptedAttemptIndex(question);
+  for (const [index, attempt] of (question.reconciliation_attempts ?? []).entries()) {
+    if (attempt.assessment === "CONFLICTING_INFORMATION") {
+      context = [];
+      conflictActive = true;
+    } else if (attempt.assessment === "ACCEPTED") {
+      context = [...new Set(attemptContext(attempt))];
+      conflictActive = false;
+      if (index === challengedIndex) context = [];
+    } else if (attempt.assessment === "FOLLOW_UP_REQUIRED" && !conflictActive && attempt.established_context.length !== 0) {
+      context = [...new Set(attempt.established_context)];
+    }
+  }
+  return context;
+}
+
+export function questionHistoricalEstablishedContext(question) {
+  return [...new Set((question.reconciliation_attempts ?? []).flatMap((attempt) => attempt.established_context))];
+}
+
+export function questionConflictContext(question) {
+  let context = [];
+  let conflict;
+  const challengedIndex = challengedAcceptedAttemptIndex(question);
+  for (const [index, attempt] of (question.reconciliation_attempts ?? []).entries()) {
+    if (attempt.assessment === "CONFLICTING_INFORMATION") {
+      conflict = {
+        round: attempt.round,
+        previous_context: context,
+        conflicting_context: attempt.established_context,
+        remaining_gaps: attempt.remaining_gaps,
+      };
+    } else if (attempt.assessment === "ACCEPTED") {
+      context = [...new Set(attemptContext(attempt))];
+      conflict = undefined;
+      if (index === challengedIndex) context = [];
+    } else if (attempt.assessment === "FOLLOW_UP_REQUIRED" && conflict === undefined && attempt.established_context.length !== 0) {
+      context = [...new Set(attempt.established_context)];
+    }
+  }
+  return conflict;
+}
+
+export function questionMigrationNotice(question) {
+  switch (question.migration_history?.status) {
+    case "PRE_V2_INTERACTION_DETAIL_UNAVAILABLE":
+      return "Pre-v2 reconciliation occurred; original human response was not persisted.";
+    case "LEGACY_CANONICAL_ANSWER":
+      return "Canonical answer imported from v1; original human response was not persisted.";
+    case "NO_PERSISTED_HISTORY":
+      return "No pre-v2 human response was persisted.";
+    default:
+      return undefined;
+  }
+}
+
+export function questionPreviousResponse(question) {
+  return question.reconciliation_attempts?.at(-1)?.human_response;
+}
+
+export function questionPreviousCanonicalAnswer(question) {
+  return question.answer ?? question.canonical_answer_history?.at(-1) ?? latestAcceptedAnswer(question);
+}
+
+export function requirementIdsForNeed(model, needId) {
+  return model.requirements.filter((item) => item.need_ids.includes(needId)).map((item) => item.id).sort();
+}
+
 export function validateReconcile(previous, next) {
   if (previous.refinement_id !== next.refinement_id) throw new ValidationError("RECONCILE cannot change refinement_id");
+  if (canonicalJson(previous.migration_provenance ?? null) !== canonicalJson(next.migration_provenance ?? null)) {
+    throw new ValidationError("migration_provenance is immutable after migration");
+  }
   for (const [label, before, after] of [
-    ["source", previous.sources, next.sources], ["need", previous.needs, next.needs], ["evidence", previous.evidence, next.evidence],
+    ["requirement", previous.requirements, next.requirements], ["source", previous.sources, next.sources], ["need", previous.needs, next.needs], ["evidence", previous.evidence, next.evidence],
     ["relationship", previous.relationships, next.relationships], ["question", previous.questions, next.questions],
     ["constraint", previous.constraints, next.constraints], ["finding", previous.findings, next.findings],
   ]) ensurePreserved(before, after, label);
+  const beforeOwners = sourceOwnership(previous);
+  const afterOwners = sourceOwnership(next);
+  for (const source of previous.sources) {
+    if (beforeOwners.get(source.id) !== afterOwners.get(source.id)) {
+      throw new ValidationError(`${source.id} cannot move between Requirements during RECONCILE`);
+    }
+  }
   const checks = [
+    ["requirement", previous.requirements, next.requirements, ["id"]],
     ["source", previous.sources, next.sources, ["id", "kind", "label", "external_id", "path"]],
     ["need", previous.needs, next.needs, ["id", "title", "source_ids"]],
     ["evidence", previous.evidence, next.evidence, ["id", "kind", "summary", "path", "locator"]],
-    ["relationship", previous.relationships, next.relationships, ["id", "type", "title", "need_ids", "from_need_id", "to_need_id"]],
-    ["question", previous.questions, next.questions, ["id", "question"]],
+    ["relationship", previous.relationships, next.relationships, ["id", "type", "title", "requirement_ids", "need_ids", "from_need_id", "to_need_id"]],
+    ["question", previous.questions, next.questions, ["id", "question", "requirement_ids"]],
     ["constraint", previous.constraints, next.constraints, ["id", "statement"]],
-    ["finding", previous.findings, next.findings, ["id", "type", "title", "need_ids"]],
+    ["finding", previous.findings, next.findings, ["id", "type", "title", "requirement_ids", "need_ids"]],
   ];
   for (const [label, beforeItems, afterItems, fields] of checks) {
     const after = new Map(afterItems.map((item) => [item.id, item]));
@@ -709,6 +1152,7 @@ export function validateReconcile(previous, next) {
     }
   }
   for (const [label, beforeItems, afterItems, stateField, terminal] of [
+    ["requirement", previous.requirements, next.requirements, "state", "RETIRED"],
     ["source", previous.sources, next.sources, "state", "RETIRED"],
     ["need", previous.needs, next.needs, "state", "RETIRED"],
     ["evidence", previous.evidence, next.evidence, "state", "SUPERSEDED"],
@@ -718,6 +1162,58 @@ export function validateReconcile(previous, next) {
     const after = new Map(afterItems.map((item) => [item.id, item]));
     for (const before of beforeItems.filter((item) => item[stateField] === terminal)) {
       if (canonicalJson(before) !== canonicalJson(after.get(before.id))) throw new ValidationError(`${before.id} is a terminal ${label} tombstone`);
+    }
+  }
+  const nextQuestions = new Map(next.questions.map((item) => [item.id, item]));
+  for (const before of previous.questions) {
+    const after = nextQuestions.get(before.id);
+    ensureAppendOnly(before.reconciliation_attempts, after.reconciliation_attempts, `${before.id} reconciliation attempts`);
+    ensureAppendOnly(before.canonical_answer_history, after.canonical_answer_history, `${before.id} canonical answer history`);
+    ensureAppendOnly(before.reopen_events ?? [], after.reopen_events ?? [], `${before.id} reopen events`);
+    if (canonicalJson(before.migration_history ?? null) !== canonicalJson(after.migration_history ?? null)) {
+      throw new ValidationError(`${before.id} migration history is immutable`);
+    }
+    const appendedAttempts = after.reconciliation_attempts.length > before.reconciliation_attempts.length;
+    const appendedReopens = (after.reopen_events?.length ?? 0) > (before.reopen_events?.length ?? 0);
+    const explicitReopen = before.status === "ANSWERED" && after.status === "OPEN" && appendedReopens;
+    if (appendedReopens && !explicitReopen) {
+      throw new ValidationError(`${before.id} reopen events require an explicit ANSWERED to OPEN reopen transition`);
+    }
+    if (explicitReopen) {
+      if ((after.reopen_events?.length ?? 0) !== (before.reopen_events?.length ?? 0) + 1) {
+        throw new ValidationError(`${before.id} one reopen transition may append exactly one reopen event`);
+      }
+      const event = after.reopen_events.at(-1);
+      if (event.prior_canonical_answer !== before.answer || event.reason !== after.reopened_reason
+        || JSON.stringify(event.remaining_gaps) !== JSON.stringify(after.remaining_gaps ?? null)) {
+        throw new ValidationError(`${before.id} reopen event must record the challenged answer, reason, and current gaps`);
+      }
+    } else if (before.reopened_reason !== undefined && after.reopened_reason !== before.reopened_reason) {
+      const acceptedClosure = before.status === "OPEN" && after.status === "ANSWERED"
+        && appendedAttempts && after.reconciliation_attempts.at(-1)?.assessment === "ACCEPTED";
+      if (!acceptedClosure) throw new ValidationError(`${before.id} reopened_reason is immutable outside an explicit reopen event`);
+    }
+    if (before.status === "ANSWERED") {
+      if (appendedAttempts && (after.status !== "OPEN" || after.reopened_reason === undefined)) {
+        throw new ValidationError(`${before.id} cannot receive an attempt while ANSWERED; reopen it explicitly first`);
+      }
+      if (after.status === "OPEN" && before.answer !== undefined && after.answer !== before.answer) {
+        throw new ValidationError(`${before.id} previous canonical answer cannot be silently replaced while reopening`);
+      }
+      if (after.status === "OPEN" && before.answer !== undefined
+        && !after.canonical_answer_history.includes(before.answer)) {
+        throw new ValidationError(`${before.id} reopening must preserve its previous canonical answer in history`);
+      }
+    }
+    if (before.status === "OPEN" && after.status === "ANSWERED") {
+      if (!appendedAttempts || after.reconciliation_attempts.at(-1).assessment !== "ACCEPTED") {
+        throw new ValidationError(`${before.id} becoming ANSWERED requires an appended accepted reconciliation attempt`);
+      }
+    }
+    if (!appendedAttempts && !explicitReopen
+      && (canonicalJson(before.canonical_answer_history) !== canonicalJson(after.canonical_answer_history)
+        || before.answer !== after.answer || canonicalJson(before.remaining_gaps ?? null) !== canonicalJson(after.remaining_gaps ?? null))) {
+      throw new ValidationError(`${before.id} current answer or remaining gaps require a new reconciliation attempt`);
     }
   }
   const nextFindings = new Map(next.findings.map((item) => [item.id, item]));

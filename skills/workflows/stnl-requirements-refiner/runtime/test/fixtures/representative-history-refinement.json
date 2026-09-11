@@ -1,0 +1,396 @@
+{
+  "contract_version": 2,
+  "refinement_id": "REF-COMMERCIAL-RECONCILIATION",
+  "title": "Commercial filters, export, and search reconciliation",
+  "summary": "Three logical Requirements retain source provenance while human reconciliation progresses across local and shared behavior.",
+  "input_assessment": {
+    "format": "MIXED",
+    "quality": "PARTIAL",
+    "summary": "The main story, two supporting artifacts, and repository observations establish three capabilities with unresolved shared behavior."
+  },
+  "exploration": {
+    "status": "SUFFICIENT",
+    "anchors": ["US 36134", "US 36174", "US 36198", "commercial results"],
+    "searches": ["filter search export", "queryCommercialResults"],
+    "files_read": ["src/commercial.mjs"],
+    "stop_reason": "The bounded result surface and source artifacts establish the local and cross-requirement scope.",
+    "limitations": ["Pagination and accent sensitivity remain human decisions."]
+  },
+  "requirements": [
+    {
+      "id": "REQ-001",
+      "title": "Advanced commercial filters",
+      "state": "ACTIVE",
+      "external_id": "US 36134",
+      "source_ids": ["SRC-001", "SRC-002", "SRC-003"],
+      "need_ids": ["NEED-001", "NEED-002"]
+    },
+    {
+      "id": "REQ-002",
+      "title": "Excel export",
+      "state": "ACTIVE",
+      "external_id": "US 36174",
+      "source_ids": ["SRC-004"],
+      "need_ids": ["NEED-003"]
+    },
+    {
+      "id": "REQ-003",
+      "title": "Free-text search",
+      "state": "ACTIVE",
+      "external_id": "US 36198",
+      "source_ids": ["SRC-005"],
+      "need_ids": ["NEED-004"]
+    }
+  ],
+  "sources": [
+    {
+      "id": "SRC-001",
+      "kind": "USER_STORY",
+      "label": "US 36134 story",
+      "state": "ACTIVE",
+      "external_id": "US 36134",
+      "original_text": "Provide advanced filters for the commercial result."
+    },
+    {
+      "id": "SRC-002",
+      "kind": "DOCUMENTATION",
+      "label": "US 36134 acceptance notes",
+      "state": "ACTIVE",
+      "original_text": "The filter experience must preserve the selected commercial structure and its visible result."
+    },
+    {
+      "id": "SRC-003",
+      "kind": "TEXT",
+      "label": "US 36134 screenshot annotation",
+      "state": "ACTIVE",
+      "original_text": "Screenshot annotation: the filter panel shows region, segment, and status controls."
+    },
+    {
+      "id": "SRC-004",
+      "kind": "USER_STORY",
+      "label": "US 36174 story",
+      "state": "ACTIVE",
+      "external_id": "US 36174",
+      "original_text": "Export the current commercial result to Excel."
+    },
+    {
+      "id": "SRC-005",
+      "kind": "USER_STORY",
+      "label": "US 36198 story",
+      "state": "ACTIVE",
+      "external_id": "US 36198",
+      "original_text": "Search the commercial result using free text."
+    }
+  ],
+  "needs": [
+    {
+      "id": "NEED-001",
+      "title": "Filter commercial results",
+      "state": "ACTIVE",
+      "source_ids": ["SRC-001", "SRC-002"],
+      "statement": "A user filters commercial results by the requested structure.",
+      "actor": "Commercial user",
+      "preconditions": ["The commercial result is available"],
+      "acceptance_signals": ["The result reflects the selected filters"],
+      "negative_signals": ["Unselected records do not appear"]
+    },
+    {
+      "id": "NEED-002",
+      "title": "Preserve filter panel behavior",
+      "state": "ACTIVE",
+      "source_ids": ["SRC-003"],
+      "statement": "The filter panel exposes the documented commercial controls.",
+      "actor": "Commercial user",
+      "preconditions": [],
+      "acceptance_signals": ["The documented controls are visible"],
+      "negative_signals": []
+    },
+    {
+      "id": "NEED-003",
+      "title": "Export the current result",
+      "state": "ACTIVE",
+      "source_ids": ["SRC-004"],
+      "statement": "A user exports the current commercial result to Excel.",
+      "actor": "Commercial user",
+      "preconditions": ["A result has been filtered or searched"],
+      "acceptance_signals": ["The Excel file represents the current result"],
+      "negative_signals": ["The export does not silently use a different result"]
+    },
+    {
+      "id": "NEED-004",
+      "title": "Search commercial results",
+      "state": "ACTIVE",
+      "source_ids": ["SRC-005"],
+      "statement": "A user searches commercial results with free text.",
+      "actor": "Commercial user",
+      "preconditions": ["The commercial result is available"],
+      "acceptance_signals": ["Matching records are observable"],
+      "negative_signals": ["Non-matching records are excluded"]
+    }
+  ],
+  "evidence": [
+    {
+      "id": "EVD-001",
+      "kind": "SOURCE_ASSERTION",
+      "state": "ACTIVE",
+      "summary": "Advanced filters are requested",
+      "detail": "The US 36134 story requests advanced filtering of the commercial result.",
+      "confidence": "CONFIRMED",
+      "source_ids": ["SRC-001"],
+      "need_ids": ["NEED-001"]
+    },
+    {
+      "id": "EVD-002",
+      "kind": "SOURCE_ASSERTION",
+      "state": "ACTIVE",
+      "summary": "Filter controls are documented",
+      "detail": "The supporting acceptance notes and screenshot annotation describe the visible filter surface.",
+      "confidence": "CONFIRMED",
+      "source_ids": ["SRC-002", "SRC-003"],
+      "need_ids": ["NEED-001", "NEED-002"]
+    },
+    {
+      "id": "EVD-003",
+      "kind": "SOURCE_ASSERTION",
+      "state": "ACTIVE",
+      "summary": "Excel export is requested",
+      "detail": "The US 36174 story requests an Excel representation of the current commercial result.",
+      "confidence": "CONFIRMED",
+      "source_ids": ["SRC-004"],
+      "need_ids": ["NEED-003"]
+    },
+    {
+      "id": "EVD-004",
+      "kind": "SOURCE_ASSERTION",
+      "state": "ACTIVE",
+      "summary": "Free-text search is requested",
+      "detail": "The US 36198 story requests free-text search over the commercial result.",
+      "confidence": "CONFIRMED",
+      "source_ids": ["SRC-005"],
+      "need_ids": ["NEED-004"]
+    },
+    {
+      "id": "EVD-005",
+      "kind": "REPOSITORY_OBSERVATION",
+      "state": "ACTIVE",
+      "summary": "The commercial result surface is shared",
+      "detail": "The bounded repository surface exposes one query result used by filters, export, and search.",
+      "confidence": "CONFIRMED",
+      "source_ids": [],
+      "need_ids": ["NEED-001", "NEED-003", "NEED-004"],
+      "path": "src/commercial.mjs",
+      "locator": "queryCommercialResults",
+      "surface": "Commercial result"
+    },
+    {
+      "id": "EVD-006",
+      "kind": "USER_DECISION",
+      "state": "ACTIVE",
+      "summary": "Export follows the filtered result",
+      "detail": "A prior human decision established that export must use the current filtered result.",
+      "confidence": "CONFIRMED",
+      "source_ids": [],
+      "need_ids": ["NEED-003"],
+      "surface": "Commercial export"
+    }
+  ],
+  "relationships": [
+    {
+      "id": "REL-001",
+      "type": "DEPENDENCY",
+      "title": "Export depends on filters",
+      "state": "ACTIVE",
+      "requirement_ids": ["REQ-001", "REQ-002"],
+      "need_ids": ["NEED-001", "NEED-003"],
+      "evidence_ids": ["EVD-005"],
+      "detail": "The export must represent the current filtered result.",
+      "from_need_id": "NEED-003",
+      "to_need_id": "NEED-001"
+    },
+    {
+      "id": "REL-002",
+      "type": "SHARED_TECHNICAL_SURFACE",
+      "title": "Search shares the commercial result",
+      "state": "ACTIVE",
+      "requirement_ids": ["REQ-001", "REQ-003"],
+      "need_ids": ["NEED-001", "NEED-004"],
+      "evidence_ids": ["EVD-005"],
+      "detail": "Filtering and free-text search compose over the same result surface."
+    },
+    {
+      "id": "REL-003",
+      "type": "OVERLAP",
+      "title": "Filter controls share one local boundary",
+      "state": "ACTIVE",
+      "requirement_ids": ["REQ-001"],
+      "need_ids": ["NEED-001", "NEED-002"],
+      "evidence_ids": ["EVD-002"],
+      "detail": "The story, acceptance notes, and screenshot describe one filter capability."
+    }
+  ],
+  "questions": [
+    {
+      "id": "QST-001",
+      "question": "Which advanced filters are in scope for US 36134?",
+      "status": "OPEN",
+      "why_material": "The answer changes the visible filter boundary and acceptance behavior.",
+      "requirement_ids": ["REQ-001"],
+      "source_ids": ["SRC-001", "SRC-002"],
+      "need_ids": ["NEED-001"],
+      "finding_ids": ["FND-001"],
+      "evidence_ids": ["EVD-001", "EVD-002"],
+      "canonical_answer_history": [],
+      "reconciliation_attempts": []
+    },
+    {
+      "id": "QST-002",
+      "question": "How should free-text search compose with the filtered result?",
+      "status": "OPEN",
+      "why_material": "The shared result semantics affect US 36134 and US 36198 together.",
+      "requirement_ids": ["REQ-001", "REQ-003"],
+      "source_ids": ["SRC-001", "SRC-002", "SRC-005"],
+      "need_ids": ["NEED-001", "NEED-004"],
+      "finding_ids": ["FND-002"],
+      "evidence_ids": ["EVD-005"],
+      "canonical_answer_history": [],
+      "reconciliation_attempts": [
+        {
+          "round": 1,
+          "human_response": "LIKE matching is required for the first release; the search runs over the filtered result.",
+          "assessment": "FOLLOW_UP_REQUIRED",
+          "established_context": ["Search uses LIKE matching.", "Search composes after filters."],
+          "remaining_gaps": ["Accent sensitivity and minimum query length remain undefined."],
+          "affected_finding_ids": ["FND-002"]
+        }
+      ],
+      "remaining_gaps": ["Accent sensitivity and minimum query length remain undefined."]
+    },
+    {
+      "id": "QST-003",
+      "question": "Which result does Excel export represent?",
+      "status": "ANSWERED",
+      "why_material": "Export must be consistent with the current filtered result.",
+      "requirement_ids": ["REQ-002"],
+      "source_ids": ["SRC-004"],
+      "need_ids": ["NEED-003"],
+      "finding_ids": ["FND-003"],
+      "evidence_ids": ["EVD-003", "EVD-006"],
+      "answer": "Excel export represents the current filtered result at the moment the user exports.",
+      "canonical_answer_history": ["Excel export represents the current filtered result at the moment the user exports."],
+      "reconciliation_attempts": [
+        {
+          "round": 1,
+          "human_response": "The export should reflect the result after the selected filters are applied.",
+          "assessment": "ACCEPTED",
+          "established_context": ["Export uses the current filtered result."],
+          "remaining_gaps": [],
+          "affected_finding_ids": ["FND-003"],
+          "canonical_answer": "Excel export represents the current filtered result at the moment the user exports."
+        }
+      ]
+    }
+  ],
+  "constraints": [],
+  "findings": [
+    {
+      "id": "FND-001",
+      "title": "Advanced filter scope is undefined",
+      "type": "REQUIREMENT_GAP",
+      "severity": "BLOCKING",
+      "disposition": "open",
+      "requirement_ids": ["REQ-001"],
+      "source_ids": ["SRC-001", "SRC-002"],
+      "need_ids": ["NEED-001"],
+      "evidence_ids": ["EVD-001", "EVD-002"],
+      "relationship_ids": ["REL-003"],
+      "question_ids": ["QST-001"],
+      "problem": "The requested advanced filters are not enumerated consistently across the source artifacts.",
+      "why_it_matters": "The local Requirement cannot be verified without a stable filter boundary.",
+      "impact": "US 36134 remains blocked."
+    },
+    {
+      "id": "FND-002",
+      "title": "Search and filtering semantics still have a material gap",
+      "type": "CROSS_REQUIREMENT_GAP",
+      "severity": "BLOCKING",
+      "disposition": "open",
+      "requirement_ids": ["REQ-001", "REQ-003"],
+      "source_ids": ["SRC-001", "SRC-002", "SRC-005"],
+      "need_ids": ["NEED-001", "NEED-004"],
+      "evidence_ids": ["EVD-005"],
+      "relationship_ids": ["REL-002"],
+      "question_ids": ["QST-002"],
+      "problem": "The first response establishes LIKE matching and composition order but leaves accent handling and minimum query length unresolved.",
+      "why_it_matters": "Different Requirements could implement different result semantics on the shared surface.",
+      "impact": "US 36134 and US 36198 remain jointly blocked."
+    },
+    {
+      "id": "FND-003",
+      "title": "Export result semantics were clarified",
+      "type": "TECHNICAL_GAP",
+      "severity": "BLOCKING",
+      "disposition": "resolved",
+      "requirement_ids": ["REQ-002"],
+      "source_ids": ["SRC-004"],
+      "need_ids": ["NEED-003"],
+      "evidence_ids": ["EVD-003", "EVD-006"],
+      "relationship_ids": ["REL-001"],
+      "question_ids": ["QST-003"],
+      "problem": "The exported result previously had no authoritative relationship to the active filter state.",
+      "why_it_matters": "A stale or unrelated export would mislead users.",
+      "impact": "The export behavior is now explicit.",
+      "resolution": {
+        "proposal": "Export the current filtered result at the moment of export.",
+        "verdict": "accepted",
+        "rationale": "The human decision closes the result-selection ambiguity and matches the shared surface evidence.",
+        "checks": {
+          "behavior_defined": "PASS",
+          "ambiguity_closed": "PASS",
+          "repository_consistent": "PASS",
+          "no_new_gap_introduced": "PASS",
+          "problem_fully_addressed": "PASS"
+        },
+        "supporting_evidence_ids": ["EVD-005", "EVD-006"]
+      }
+    },
+    {
+      "id": "FND-004",
+      "title": "Search adapter remains a later technical concern",
+      "type": "TECHNICAL_GAP",
+      "severity": "ATTENTION",
+      "disposition": "open",
+      "requirement_ids": ["REQ-003"],
+      "source_ids": ["SRC-005"],
+      "need_ids": ["NEED-004"],
+      "evidence_ids": ["EVD-005"],
+      "relationship_ids": ["REL-002"],
+      "question_ids": [],
+      "problem": "The observed adapter does not yet expose the final search bounds.",
+      "why_it_matters": "A technical implementation choice remains after the product decision.",
+      "impact": "Search follow-up should travel with the downstream work."
+    }
+  ],
+  "final_assessment": {
+    "boundary": "MULTIPLE",
+    "capability_count": 3,
+    "decomposition_value": "MATERIAL",
+    "rationale": "Three logical Requirements share a result surface while retaining distinct source ownership."
+  },
+  "handoff": {
+    "outcome": "BLOCKED",
+    "reason": "Two open BLOCKING findings remain after one Requirement-specific question was answered and one Cross question received partial information.",
+    "blocker_ids": ["FND-001", "FND-002"],
+    "carried_finding_ids": ["FND-001", "FND-002", "FND-004"],
+    "next_workflow": "stnl-requirements-refiner",
+    "suggested_next_operation": "OPERATION=RECONCILE",
+    "payload": {
+      "kind": "REFINEMENT",
+      "need_ids": ["NEED-001", "NEED-002", "NEED-003", "NEED-004"],
+      "finding_ids": ["FND-001", "FND-002", "FND-004"],
+      "question_ids": ["QST-001", "QST-002"],
+      "constraint_ids": [],
+      "relationship_ids": ["REL-001", "REL-002", "REL-003"],
+      "evidence_ids": ["EVD-001", "EVD-002", "EVD-003", "EVD-004", "EVD-005", "EVD-006"]
+    }
+  }
+}

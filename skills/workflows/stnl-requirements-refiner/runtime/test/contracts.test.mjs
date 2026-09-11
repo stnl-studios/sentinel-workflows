@@ -14,6 +14,9 @@ const EXPECTED_CASES = new Set([
   "explicit-bypass", "finding-reopen", "handoff-blocked", "handoff-direct-spec",
   "handoff-multi-domain-roadmap", "cancellation-race", "inadequate-race-resolution",
   "retry-policy-bypass", "stale-reconcile", "publication-collision", "deterministic-render",
+  "canonical-requirement-identity", "false-cross-prevention", "requirement-source-evolution", "reconciliation-attempt-history",
+  "follow-up-prompt-context", "candidate-history-integrity",
+  "controlled-v1-migration", "conflicting-current-context", "repeated-reopen-history",
   "desktop-mobile-visual", "offline-keyboard-filters", "print-completeness",
 ]);
 
@@ -55,7 +58,7 @@ test("copied skill executes INIT without imports outside its distribution", asyn
   });
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.equal(JSON.parse(result.stdout).status, "INITIALIZED");
-  assert.match(await fs.readFile(path.join(root, "docs/refinement/index.html"), "utf8"), /stnl-requirements-refiner:v1 fingerprint/u);
+  assert.match(await fs.readFile(path.join(root, "docs/refinement/index.html"), "utf8"), /stnl-requirements-refiner:v2 fingerprint/u);
 });
 
 test("CLI rejects unsupported operations and ambiguous arity before writes", async (t) => {

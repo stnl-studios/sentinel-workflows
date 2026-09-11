@@ -373,21 +373,44 @@ function authorityRecordIsActive(body) {
   return !new Set(["closed", "out_of_scope", "retired", "resolved", "superseded", "not_applicable"]).has(status);
 }
 
+function lifecycleCoverageRecordIsActive(identifier, body) {
+  const status = body.match(/^- status: (\S+)$/mu)?.[1]?.toLowerCase() ?? null;
+  if (identifier.startsWith("R-")) return status === "in_scope";
+  if (identifier.startsWith("AC-")) return status === "active";
+  return authorityRecordIsActive(body);
+}
+
+function lifecycleAcceptanceVerifies(body, label) {
+  const raw = field(body, "verifies", { required: false });
+  if (raw === null) return [];
+  const match = raw.match(/^\[((?:R-[0-9]{3})(?:, R-[0-9]{3})*)\]$/u);
+  if (match === null) throw new ExecutionContractError(`${label} has malformed verifies relationship`);
+  return match[1].split(", ");
+}
+
 async function authorityReferenceSets(workspace) {
   if (workspace.kind === "standalone") {
     const text = await fs.readFile(workspace.authorityPath, "utf8");
     const known = new Set(text.match(CANONICAL_AUTHORITY_REFERENCE_PATTERN) ?? []);
     const acceptance = new Set([...known].filter((value) => value.startsWith("AC-")));
     const requirements = new Set([...known].filter((value) => value.startsWith("R-")));
-    return { known, required: acceptance.size !== 0 ? acceptance : requirements };
+    return { known, active: new Set(known), required: acceptance.size !== 0 ? acceptance : requirements };
   }
   const projection = await lifecycleProjection(workspace);
   const records = projection.records.map(([id, body]) => ({ id, body })).filter(({ id }) => CANONICAL_AUTHORITY_REFERENCE.test(id));
   const known = new Set(records.map(({ id }) => id));
-  const active = records.filter(({ body }) => authorityRecordIsActive(body));
+  const active = records.filter(({ id, body }) => lifecycleCoverageRecordIsActive(id, body));
   const acceptance = new Set(active.filter(({ id }) => id.startsWith("AC-")).map(({ id }) => id));
   const requirements = new Set(active.filter(({ id }) => id.startsWith("R-")).map(({ id }) => id));
-  return { known, required: acceptance.size !== 0 ? acceptance : requirements };
+  const requirementsCoveredByAcceptance = new Set(active
+    .filter(({ id }) => id.startsWith("AC-"))
+    .flatMap(({ id, body }) => lifecycleAcceptanceVerifies(body, `${id} verifies`)));
+  const uncoveredRequirements = [...requirements].filter((id) => !requirementsCoveredByAcceptance.has(id));
+  return {
+    known,
+    active: new Set(active.map(({ id }) => id)),
+    required: new Set([...acceptance, ...uncoveredRequirements]),
+  };
 }
 
 function referenceValue(body, name, expected, label) {
@@ -1859,9 +1882,13 @@ function parseTask(text, label, expectedSlice, references = {}) {
   const changedClaims = [...new Set([...changedAreas, ...corrections])];
   const checklist = taskSections.get("Checklist") ?? "";
   const checklistRows = checklist.split("\n").filter((line) => line.length !== 0).map((line) => {
-    const match = line.match(/^- \[([ x])\] ([0-9]+\.[0-9]+) \S.* \| observable result: \S.* \| expected areas: \S.* \| requirement: \S.*$/u);
+    const match = line.match(/^- \[([ x])\] ([0-9]+\.[0-9]+) \S.* \| observable result: \S.* \| expected areas: \S.* \| requirement: (\S.*)$/u);
     if (match === null) throw new ExecutionContractError(`${label} has malformed Checklist row: ${line}`);
-    return { done: match[1] === "x", id: match[2] };
+    return {
+      done: match[1] === "x",
+      id: match[2],
+      requirements: parseCanonicalReferenceList(match[3], `${label} Checklist ${match[2]} requirement`),
+    };
   });
   if (checklistRows.length === 0) throw new ExecutionContractError(`${label} has no canonical checklist rows`);
   if (new Set(checklistRows.map((row) => row.id)).size !== checklistRows.length) throw new ExecutionContractError(`${label} has duplicate Checklist rows`);
@@ -1980,7 +2007,9 @@ function parseTask(text, label, expectedSlice, references = {}) {
   return {
     ...state, evidenceContract, body, sections: taskSections, pristine, attempts, findings, divergences, activeBlockers,
     base, final, implementationChecks, findingsChecks, delegationBlocker, retryExhausted, checklistComplete,
-    changedClaims, priorValidationOverlaps, claims: [...new Set([...changedClaims, ...base.paths])],
+    changedClaims, priorValidationOverlaps, checklistRows,
+    coverageReferences: [...new Set(checklistRows.flatMap((row) => row.requirements))].sort((left, right) => left.localeCompare(right, "en")),
+    claims: [...new Set([...changedClaims, ...base.paths])],
   };
 }
 
@@ -2245,20 +2274,43 @@ function validateSliceDependencyGraph(sliceOrder, sliceRows, label = "Serial Sli
   }
 }
 
-async function validatePlanCoverage({ workspace, globalPlan, sliceOrder, sliceRows, plans, currentFingerprint }) {
-  if (globalPlan.fingerprint !== currentFingerprint) return;
-  const authority = await authorityReferenceSets(workspace);
-  if (authority.known.size === 0) return;
+async function validatePlanCoverage({ workspace, globalPlan, sliceOrder, sliceRows, plans, currentFingerprint, authority = null }) {
+  if (globalPlan.fingerprint !== currentFingerprint) return authority;
+  const coverageAuthority = authority ?? await authorityReferenceSets(workspace);
+  if (coverageAuthority.known.size === 0) return coverageAuthority;
   const currentSlices = sliceOrder.filter((slice) => plans.get(slice)?.fingerprint === globalPlan.fingerprint);
   const covered = new Set(currentSlices.flatMap((slice) => sliceRows.get(slice).requirements));
   for (const reference of covered) {
-    if (!authority.known.has(reference)) {
+    if (!coverageAuthority.known.has(reference)) {
       throw new ExecutionContractError(`current plan references unknown authority ${reference}`);
     }
+    if (!coverageAuthority.active.has(reference)) {
+      throw new ExecutionContractError(`current plan references inactive authority ${reference}`);
+    }
   }
-  const missing = [...authority.required].filter((reference) => !covered.has(reference));
+  const missing = [...coverageAuthority.required].filter((reference) => !covered.has(reference));
   if (missing.length !== 0) {
     throw new ExecutionContractError(`current plan coverage omits authority ${missing.join(", ")}`);
+  }
+  return coverageAuthority;
+}
+
+function validateTaskAuthorityCoverage(task, authority, sliceRequirements, label) {
+  const taskReferences = new Set(task.coverageReferences);
+  for (const reference of taskReferences) {
+    if (!authority.known.has(reference)) {
+      throw new ExecutionContractError(`${label} references unknown authority ${reference}`);
+    }
+    if (!authority.active.has(reference)) {
+      throw new ExecutionContractError(`${label} references inactive authority ${reference}`);
+    }
+    if (!sliceRequirements.includes(reference)) {
+      throw new ExecutionContractError(`${label} references authority ${reference} outside approved Slice coverage`);
+    }
+  }
+  const missing = sliceRequirements.filter((reference) => !taskReferences.has(reference));
+  if (missing.length !== 0) {
+    throw new ExecutionContractError(`${label} task coverage omits authority ${missing.join(", ")}`);
   }
 }
 
@@ -2392,19 +2444,22 @@ async function readPlanArtifacts(workspace, { currentFingerprint = null } = {}) 
     }
     plans.set(slice, plan);
   }
+  const effectiveFingerprint = currentFingerprint ?? await computeRequirementsAuthority(workspace.authorityPath);
+  const authority = globalPlan.fingerprint === effectiveFingerprint ? await authorityReferenceSets(workspace) : null;
   await validatePlanCoverage({
     workspace,
     globalPlan,
     sliceOrder,
     sliceRows,
     plans,
-    currentFingerprint: currentFingerprint ?? await computeRequirementsAuthority(workspace.authorityPath),
+    currentFingerprint: effectiveFingerprint,
+    authority,
   });
-  return { globalPlan, globalPlanText, sliceOrder, sliceRows, plans };
+  return { globalPlan, globalPlanText, sliceOrder, sliceRows, plans, authority };
 }
 
 async function executionArtifacts(workspace, currentFingerprint = null) {
-  const { globalPlan, sliceOrder, sliceRows, plans } = await readPlanArtifacts(workspace, { currentFingerprint });
+  const { globalPlan, sliceOrder, sliceRows, plans, authority } = await readPlanArtifacts(workspace, { currentFingerprint });
   const tasksIndexPath = path.join(workspace.executionRoot, "tasks.md");
   await requireRealFile(tasksIndexPath, "execution tasks.md");
   const tasksIndexText = await fs.readFile(tasksIndexPath, "utf8");
@@ -2424,6 +2479,9 @@ async function executionArtifacts(workspace, currentFingerprint = null) {
     }
     const plan = plans.get(row.slice);
     if (plan !== undefined && (task.fingerprint !== plan.fingerprint || task.revision !== plan.revision)) pairMismatches.push(row.slice);
+    if (authority !== null && plan !== undefined && plan.fingerprint === globalPlan.fingerprint && task.fingerprint === plan.fingerprint) {
+      validateTaskAuthorityCoverage(task, authority, planRow.requirements, row.slice);
+    }
     if (row.done && SUCCESS_RESULTS.has(row.result)) {
       if (row.validation !== row.result || task.final.result !== row.result) throw new ExecutionContractError(`${row.slice} PASS/ACCEPTED row and detailed task disagree`);
     } else if (row.done && row.result === "SUPERSEDED") {

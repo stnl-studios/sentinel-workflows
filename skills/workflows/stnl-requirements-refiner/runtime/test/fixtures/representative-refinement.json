@@ -1,5 +1,5 @@
 {
-  "contract_version": 1,
+  "contract_version": 2,
   "refinement_id": "REF-ORDER-CANCELLATION",
   "title": "Order cancellation refinement",
   "summary": "Clarify cancellation eligibility and its race with asynchronous shipping.",
@@ -16,6 +16,16 @@
     "stop_reason": "The public state model and asynchronous transition are sufficient to demonstrate the material ambiguity.",
     "limitations": []
   },
+  "requirements": [
+    {
+      "id": "REQ-001",
+      "title": "Order cancellation",
+      "state": "ACTIVE",
+      "external_id": "US-41",
+      "source_ids": ["SRC-001", "SRC-002"],
+      "need_ids": ["NEED-001", "NEED-002"]
+    }
+  ],
   "sources": [
     {
       "id": "SRC-001",
@@ -98,6 +108,7 @@
       "type": "CONFLICT",
       "title": "Cancellation competes with shipping",
       "state": "ACTIVE",
+      "requirement_ids": ["REQ-001"],
       "need_ids": ["NEED-001", "NEED-002"],
       "evidence_ids": ["EVD-002", "EVD-003"],
       "detail": "Cancellation and shipping can attempt competing transitions on the same order."
@@ -109,10 +120,13 @@
       "question": "Is PACKING still eligible for cancellation, and which transition wins a race?",
       "status": "OPEN",
       "why_material": "The answer changes observable eligibility, persistence semantics, and conflict behavior.",
+      "requirement_ids": ["REQ-001"],
       "source_ids": ["SRC-001", "SRC-002"],
       "need_ids": ["NEED-001", "NEED-002"],
       "finding_ids": ["FND-001"],
-      "evidence_ids": ["EVD-001", "EVD-003"]
+      "evidence_ids": ["EVD-001", "EVD-003"],
+      "canonical_answer_history": [],
+      "reconciliation_attempts": []
     }
   ],
   "constraints": [
@@ -131,6 +145,7 @@
       "type": "TECHNICAL_GAP",
       "severity": "BLOCKING",
       "disposition": "open",
+      "requirement_ids": ["REQ-001"],
       "source_ids": ["SRC-001", "SRC-002"],
       "need_ids": ["NEED-001", "NEED-002"],
       "evidence_ids": ["EVD-001", "EVD-002", "EVD-003"],

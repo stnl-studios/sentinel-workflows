@@ -4,8 +4,9 @@ import * as vm from "node:vm";
 import test from "node:test";
 
 import { validateRefinement } from "../lib/model.mjs";
+import { questionConflictContext, questionCurrentGaps, questionEstablishedContext, questionInteractionState, questionMigrationNotice, questionPreviousCanonicalAnswer, questionPreviousResponse } from "../lib/model.mjs";
 import { buildAdditionalInformationPrompt, buildAggregateDecisionPrompt, buildDecisionPrompt, renderRefinement } from "../lib/render.mjs";
-import { acceptedResolution, clone, representativeRaw } from "./helpers.mjs";
+import { acceptedResolution, clone, historyRaw, recordAcceptedDecision, representativeRaw } from "./helpers.mjs";
 
 async function multiRaw() {
   return JSON.parse(await fs.readFile(new URL("./fixtures/multi-us-refinement.json", import.meta.url), "utf8"));
@@ -14,8 +15,7 @@ async function multiRaw() {
 function roadmapReady(raw) {
   const next = clone(raw);
   next.findings[0].severity = "ATTENTION";
-  next.questions[0].status = "ANSWERED";
-  next.questions[0].answer = "The roadmap carries the remaining non-blocking finding context.";
+  recordAcceptedDecision(next, 0, "The roadmap carries the remaining non-blocking finding context.");
   next.handoff = {
     outcome: "READY_FOR_ROADMAP", reason: "Three material capabilities require decomposition.", blocker_ids: [], carried_finding_ids: ["FND-001"],
     next_workflow: "stnl-spec-roadmap", suggested_next_operation: "OPERATION=INIT",
@@ -53,14 +53,26 @@ class FakeElement {
 
 class FakeDecisionCard extends FakeElement {
   constructor(question, maps) {
+    const conflict = questionConflictContext(question);
     const textarea = new FakeElement({
       id: `draft-${question.id}`,
       dataset: {
         questionId: question.id,
+        requirementIds: question.requirement_ids.join(" "),
+        requirementIdsList: question.requirement_ids.join(", "),
         sourceIdsList: question.source_ids.join(", "),
         needIdsList: question.need_ids.join(", "),
         findingIdsList: question.finding_ids.join(", "),
-        requirementIdentity: question.source_ids.map((id) => maps.source.get(id).external_id ?? id).join(" ↔ "),
+        requirementIdentity: question.requirement_ids.map((id) => maps.requirement.get(id).external_id ?? id).join(" ↔ "),
+        interactionState: questionInteractionState(question),
+        previousResponse: questionPreviousResponse(question) ?? "",
+        migrationNotice: questionMigrationNotice(question) ?? "",
+        previousCanonicalAnswer: questionPreviousCanonicalAnswer(question) ?? "",
+        reopenedReason: question.reopened_reason ?? "",
+        establishedContext: questionEstablishedContext(question).join("\n"),
+        previousEstablishedContext: conflict?.previous_context.join("\n") ?? "",
+        conflictingInformation: conflict?.conflicting_context.join("\n") ?? "",
+        remainingGaps: questionCurrentGaps(question).join("\n"),
       },
     });
     super({ dataset: { questionId: question.id }, textContent: "" });
@@ -87,7 +99,7 @@ function browserRuntime(model, refinementPath = "docs/refinement") {
   const html = renderRefinement(model, { refinementPath }).html;
   const script = html.match(/<script>([\s\S]*)<\/script>/u)?.[1];
   assert.ok(script, "rendered page must contain its active client script");
-  const maps = { source: new Map(model.sources.map((item) => [item.id, item])) };
+  const maps = { requirement: new Map(model.requirements.map((item) => [item.id, item])), source: new Map(model.sources.map((item) => [item.id, item])) };
   const openQuestions = model.questions.filter((item) => item.status === "OPEN");
   const draftMode = model.handoff.outcome !== "BLOCKED" ? "none" : openQuestions.length === 0 ? "additional-information" : "decisions";
   const cards = draftMode === "decisions" ? [...openQuestions].reverse().map((item) => new FakeDecisionCard(item, maps)) : [];
@@ -167,8 +179,7 @@ function inconclusive(raw) {
 }
 
 function bypassed(raw) {
-  raw.questions[0].status = "ANSWERED";
-  raw.questions[0].answer = "The bypassed risk is explicitly carried to the downstream handoff.";
+  recordAcceptedDecision(raw, 0, "The bypassed risk is explicitly carried to the downstream handoff.");
   raw.findings[0].disposition = "bypassed";
   raw.findings[0].bypass = { reason: "Explicitly outside this delivery.", known_risk: "The race remains known and observable." };
   raw.handoff = {
@@ -189,8 +200,7 @@ function reopened(raw) {
     checks: { behavior_defined: "PASS", ambiguity_closed: "PASS", repository_consistent: "PASS", no_new_gap_introduced: "PASS", problem_fully_addressed: "PASS" },
     supporting_evidence_ids: ["EVD-003"],
   };
-  accepted.questions[0].status = "ANSWERED";
-  accepted.questions[0].answer = "SHIPPED wins and cancellation uses compare-and-set.";
+  recordAcceptedDecision(accepted, 0, "SHIPPED wins and cancellation uses compare-and-set.");
   accepted.handoff = {
     outcome: "READY_FOR_SPEC", reason: "The unitary cancellation boundary is ready.", blocker_ids: [], carried_finding_ids: [],
     next_workflow: "stnl-spec-lifecycle-manager", suggested_next_operation: "MODE=INIT",
@@ -228,11 +238,12 @@ async function tenOpenQuestions() {
   raw.questions = Array.from({ length: 10 }, (_, index) => ({
     id: `QST-${String(index + 1).padStart(3, "0")}`,
     question: `Decision ${index + 1} is required.`, status: "OPEN", why_material: "The answer changes the documented behavior.",
-    source_ids: ["SRC-001", "SRC-002"], need_ids: ["NEED-001", "NEED-002"], finding_ids: [`FND-${String(index + 1).padStart(3, "0")}`], evidence_ids: ["EVD-001"],
+    requirement_ids: ["REQ-001"], source_ids: ["SRC-001", "SRC-002"], need_ids: ["NEED-001", "NEED-002"], finding_ids: [`FND-${String(index + 1).padStart(3, "0")}`], evidence_ids: ["EVD-001"],
+    canonical_answer_history: [], reconciliation_attempts: [],
   }));
   raw.findings = Array.from({ length: 10 }, (_, index) => ({
     id: `FND-${String(index + 1).padStart(3, "0")}`, title: `Open finding ${index + 1}`, type: "TECHNICAL_GAP", severity: "BLOCKING", disposition: "open",
-    source_ids: ["SRC-001", "SRC-002"], need_ids: ["NEED-001", "NEED-002"], evidence_ids: ["EVD-001"], relationship_ids: [],
+    requirement_ids: ["REQ-001"], source_ids: ["SRC-001", "SRC-002"], need_ids: ["NEED-001", "NEED-002"], evidence_ids: ["EVD-001"], relationship_ids: [],
     question_ids: [`QST-${String(index + 1).padStart(3, "0")}`], problem: "The behavior is not established.", why_it_matters: "The result would be ambiguous.", impact: "The refinement remains blocked.",
   }));
   raw.handoff = {
@@ -295,12 +306,11 @@ test("requirement details progressively disclose all canonical detail fields and
   assert.match(html, /precisa colocar um botão para cancelar pedido/u);
   assert.match(html, /docs\/requirements\.md/u);
   assert.match(html, /<details class="requirement-details">/u);
-  const firstRequirementStart = html.indexOf('<article class="requirement-card" id="SRC-001"');
-  const secondRequirementStart = html.indexOf('<article class="requirement-card" id="SRC-002"');
-  const firstRequirement = html.slice(firstRequirementStart, secondRequirementStart);
+  const firstRequirementStart = html.indexOf('<article class="requirement-card" id="REQ-001"');
+  const firstRequirement = html.slice(firstRequirementStart, html.indexOf('<section class="cross-decisions"'));
   const originalSources = firstRequirement.match(/<section class="original-sources">[\s\S]*?<\/section>/u)?.[0] ?? "";
   assert.match(originalSources, /SRC-001/u);
-  assert.doesNotMatch(originalSources, /SRC-002|O worker de expedição/u);
+  assert.match(originalSources, /SRC-002|O worker de expedição/u);
 });
 
 test("browser serializer matches the Node contract and aggregates entries directly in canonical order", async () => {
@@ -329,6 +339,57 @@ test("browser serializer matches the Node contract and aggregates entries direct
   assert.equal(runtime.copied.at(-1), buildDecisionPrompt(model, model.questions.find((item) => item.id === "QST-002"), decisions.get("QST-002"), "planning/refinement"));
 });
 
+test("browser serializer carries follow-up context and never exposes answered questions as drafts", async () => {
+  const model = validateRefinement(await historyRaw());
+  const runtime = browserRuntime(model, "planning/refinement");
+  assert.deepEqual(runtime.cards.map((card) => card.textarea.dataset.questionId), ["QST-002", "QST-001"]);
+  const decisions = new Map([
+    ["QST-002", "The minimum query length is three characters."],
+    ["QST-001", "Region and status are in scope."],
+  ]);
+  for (const card of runtime.cards) {
+    card.textarea.value = decisions.get(card.textarea.dataset.questionId);
+    card.textarea.dispatch("input");
+  }
+  const aggregate = runtime.elements.get("continue-prompt").value;
+  assert.equal(aggregate, buildAggregateDecisionPrompt(model, decisions, "planning/refinement"));
+  assert.match(aggregate, /Interaction: FOLLOW_UP_REQUIRED/u);
+  assert.match(aggregate, /Previous response:\nLIKE matching is required/u);
+  assert.match(aggregate, /Still unresolved:\nAccent sensitivity and minimum query length remain undefined\./u);
+  assert.match(aggregate, /Interaction: AWAITING_DECISION/u);
+  assert.doesNotMatch(aggregate, /QST-003/u);
+  assert.equal(runtime.summary.textContent, "2 open · 2 answered in draft · 0 remaining");
+});
+
+test("Node and browser prompt serializers agree on disputed current context", async () => {
+  const raw = await historyRaw();
+  const question = raw.questions[1];
+  question.reconciliation_attempts.push({
+    round: 2,
+    human_response: "Actually search should use exact matching.",
+    assessment: "CONFLICTING_INFORMATION",
+    established_context: ["Exact matching is required."],
+    remaining_gaps: ["Choose the matching rule for the shared result."],
+    affected_finding_ids: ["FND-002"],
+  });
+  question.remaining_gaps = ["Choose the matching rule for the shared result."];
+  const model = validateRefinement(raw);
+  const runtime = browserRuntime(model, "planning/refinement");
+  const decisions = new Map([["QST-002", "Resolve the matching rule."]]);
+  const card = runtime.cards.find((item) => item.textarea.dataset.questionId === "QST-002");
+  card.textarea.value = decisions.get("QST-002");
+  card.textarea.dispatch("input");
+  const expected = buildAggregateDecisionPrompt(model, decisions, "planning/refinement");
+  assert.equal(runtime.elements.get("continue-prompt").value, expected);
+  assert.equal(runtime.copied.length, 0);
+  card.copy.dispatch("click");
+  assert.equal(runtime.copied.at(-1), buildDecisionPrompt(model, question, decisions.get("QST-002"), "planning/refinement"));
+  assert.match(expected, /Previous established context:\nSearch uses LIKE matching\./u);
+  assert.match(expected, /New conflicting information:\nExact matching is required\./u);
+  assert.match(expected, /Current status: Conflict requires reconciliation/u);
+  assert.doesNotMatch(expected, /What this established:\nSearch uses LIKE matching\./u);
+});
+
 test("renderer contains one active implementation and one client script", async () => {
   const source = await fs.readFile(new URL("../lib/render.mjs", import.meta.url), "utf8");
   assert.doesNotMatch(source, /\blegacy[A-Z]\w*/u);
@@ -348,19 +409,21 @@ test("resolution projection preserves accepted, rejected, inconclusive, bypassed
   }
 });
 
-test("questionless findings use a neutral Other findings group while preserving every type badge", async () => {
+test("questionless local and cross findings remain visible at their canonical Requirement scope", async () => {
   const raw = await multiRaw();
   raw.findings.push(
-    { id: "FND-005", title: "Risk without a decision", type: "RISK", severity: "ATTENTION", disposition: "open", source_ids: ["SRC-001"], need_ids: ["NEED-001"], evidence_ids: ["EVD-001"], relationship_ids: [], question_ids: [], problem: "A risk is not bounded.", why_it_matters: "The risk can surprise delivery.", impact: "Risk remains visible." },
-    { id: "FND-006", title: "Requirement gap without a decision", type: "REQUIREMENT_GAP", severity: "ATTENTION", disposition: "open", source_ids: ["SRC-001"], need_ids: ["NEED-001"], evidence_ids: ["EVD-001"], relationship_ids: [], question_ids: [], problem: "A requirement detail is missing.", why_it_matters: "The result cannot be verified.", impact: "Requirement gap remains visible." },
-    { id: "FND-007", title: "Cross requirement gap without a decision", type: "CROSS_REQUIREMENT_GAP", severity: "ATTENTION", disposition: "open", source_ids: ["SRC-001", "SRC-002", "SRC-003"], need_ids: ["NEED-001", "NEED-002", "NEED-003"], evidence_ids: ["EVD-004"], relationship_ids: ["REL-003"], question_ids: [], problem: "The shared rule is missing.", why_it_matters: "Requirements can diverge.", impact: "Cross requirement gap remains visible." },
+    { id: "FND-005", title: "Risk without a decision", type: "RISK", severity: "ATTENTION", disposition: "open", requirement_ids: ["REQ-001"], source_ids: ["SRC-001"], need_ids: ["NEED-001"], evidence_ids: ["EVD-001"], relationship_ids: [], question_ids: [], problem: "A risk is not bounded.", why_it_matters: "The risk can surprise delivery.", impact: "Risk remains visible." },
+    { id: "FND-006", title: "Requirement gap without a decision", type: "REQUIREMENT_GAP", severity: "ATTENTION", disposition: "open", requirement_ids: ["REQ-001"], source_ids: ["SRC-001"], need_ids: ["NEED-001"], evidence_ids: ["EVD-001"], relationship_ids: [], question_ids: [], problem: "A requirement detail is missing.", why_it_matters: "The result cannot be verified.", impact: "Requirement gap remains visible." },
+    { id: "FND-007", title: "Cross requirement gap without a decision", type: "CROSS_REQUIREMENT_GAP", severity: "ATTENTION", disposition: "open", requirement_ids: ["REQ-001", "REQ-002", "REQ-003"], source_ids: ["SRC-001", "SRC-002", "SRC-003"], need_ids: ["NEED-001", "NEED-002", "NEED-003"], evidence_ids: ["EVD-004"], relationship_ids: ["REL-003"], question_ids: [], problem: "The shared rule is missing.", why_it_matters: "Requirements can diverge.", impact: "Cross requirement gap remains visible." },
   );
   raw.handoff.carried_finding_ids.push("FND-005", "FND-006", "FND-007");
   raw.handoff.payload.finding_ids.push("FND-005", "FND-006", "FND-007");
   const html = renderRefinement(validateRefinement(raw)).html;
-  assert.match(html, /Other findings <span>3<\/span>/u);
   for (const type of ["RISK", "REQUIREMENT_GAP", "CROSS_REQUIREMENT_GAP"]) assert.match(html, new RegExp(type, "u"));
-  assert.match(html, /Technical findings <span>1<\/span>/u);
+  assert.match(html, /id="REQ-001"[\s\S]*?finding-FND-005[\s\S]*?finding-FND-006/u);
+  assert.match(html, /id="cross-REQ-001-REQ-002-REQ-003"[\s\S]*?finding-FND-007/u);
+  assert.equal((html.match(/id="finding-FND-00[567]"/gu) ?? []).length, 3);
+  assert.match(html, /Global technical findings <span>0<\/span>/u);
 });
 
 test("OPEN and ANSWERED decisions have distinct projection affordances", async () => {
@@ -437,7 +500,7 @@ test("individual prompt carries full scope, authority metadata, and hostile mult
   const model = validateRefinement(await representativeRaw());
   const decision = "<script>\n</textarea> & \"quotes\" `code` — decisão";
   const prompt = buildDecisionPrompt(model, model.questions[0], decision, "planning/refinement");
-  for (const marker of ["OPERATION=RECONCILE", "REFINEMENT_PATH=planning/refinement", "REFINEMENT_ID=REF-ORDER-CANCELLATION", "QST-001", "US-41 ↔ SRC-002", "SRC-001, SRC-002", "FND-001", decision]) assert.match(prompt, new RegExp(marker.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"), "u"));
+  for (const marker of ["OPERATION=RECONCILE", "REFINEMENT_PATH=planning/refinement", "REFINEMENT_ID=REF-ORDER-CANCELLATION", "QST-001", "US-41", "Requirement IDs: REQ-001", "SRC-001, SRC-002", "FND-001", decision]) assert.match(prompt, new RegExp(marker.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"), "u"));
   const html = renderRefinement(model).html;
   assert.doesNotMatch(html, /<script>\n<\/textarea>/u);
   assert.doesNotMatch(html, /localStorage|sessionStorage|document\.cookie|fetch\s*\(|eval\s*\(|new Function/u);
