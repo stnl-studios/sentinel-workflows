@@ -10,6 +10,7 @@ import { computeRequirementsAuthority, inspectExecutionState } from "../skills/w
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const REPRESENTATIVE = path.join(ROOT, "skills/workflows/stnl-spec-test-runbook/runtime/test/fixtures/representative");
+const MULTI_SLICE = path.join(ROOT, "skills/workflows/stnl-spec-test-runbook/runtime/test/fixtures/multi-slice");
 
 function replaceAll(text, replacements) {
   let result = text;
@@ -17,10 +18,10 @@ function replaceAll(text, replacements) {
   return result;
 }
 
-async function fixture(t) {
+async function fixture(t, fixtureName = "representative") {
   const temporary = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "stnl-runbook-execution-compat-")));
   const spec = path.join(temporary, "representative");
-  await fs.cp(REPRESENTATIVE, spec, { recursive: true });
+  await fs.cp(fixtureName === "multi-slice" ? MULTI_SLICE : REPRESENTATIVE, spec, { recursive: true });
   t.after(() => fs.rm(temporary, { recursive: true, force: true }));
   return spec;
 }
@@ -36,8 +37,8 @@ async function renderRealTemplateExecution(spec) {
   const plan = replaceAll(planTemplate, [
     ["`<relative path>`", "`../feature_spec.md`"], ["sha256:<64hex>", `sha256:${authority}`],
     ["<positive integer>", "1"], ["<compact objective>", "Deliver one observable invitation behavior"],
-    ["<compact strategy>", "Implement and validate the single slice"], ["01 - <name>", "01 - Invitation API"],
-    ["<result>", "eligible invitation is accepted"], ["<areas>", "invitation service"],
+    ["<compact strategy>", "Implement and validate the complete vertical acceptance outcome"], ["01 - <name>", "01 - Accept Invitation"],
+    ["<result>", "eligible invitation is accepted and confirmed"], ["<areas>", "invitation service, persistence, UI, and tests"], ["| AC-001 |", "| AC-001, AC-002 |"],
   ]).replace("status: draft", "status: ready")
     .replace("Review state: pending", "Review state: approved")
     .replace(/\nFor revision 1,[\s\S]*?\n## Serial Slice Order/u, "\n## Serial Slice Order");
@@ -45,24 +46,24 @@ async function renderRealTemplateExecution(spec) {
 
   const sliceTemplate = await fs.readFile(path.join(ROOT, "skills/workflows/stnl-execution-planner/templates/slice-plan.template.md"), "utf8");
   const slice = replaceAll(sliceTemplate, [
-    ["<Name>", "Invitation API"], ["`<relative path>`", "`../../feature_spec.md`"],
+    ["<Name>", "Accept Invitation"], ["`<relative path>`", "`../../feature_spec.md`"],
     ["sha256:<64hex>", `sha256:${authority}`], ["<positive integer>", "1"],
-    ["<One coherent delivery and how it is observed.>", "Eligible invitations produce the approved API response."],
-    ["<included work>", "Invitation acceptance behavior."], ["<excluded work and boundary with later slices>", "No UI work."],
-    ["<path, contract, subsystem, or test area>", "invitation service"], ["<earlier slice or none>", "none"],
+    ["<One coherent outcome or milestone, how it is observed and validated, and why it is one boundary. Technical layers belong in Tasks.>", "Eligible invitations produce the approved API, persistence, and confirmation outcome."], ["- AC-001\n\n## Included Scope", "- AC-001\n- AC-002\n\n## Included Scope"],
+    ["<included work>", "Invitation acceptance behavior across service, persistence, UI, and validation."], ["<excluded work and the semantic boundary with later Slices; do not use a technical layer as the boundary>", "Unrelated invitation-management capabilities."],
+    ["<path, contract, subsystem, or test area>", "invitation service, persistence, UI, and tests"], ["<earlier slice or none>", "none"],
     ["<risk and mitigation>", "Low risk; use stable fixtures."], ["<bounded approach>", "One bounded service change."],
     ["<test, command, suite, or observable check>", "invitation integration test"],
-    ["<objective result and preserved boundary>", "Eligible acceptance is observable without UI changes."],
+    ["<objective result and preserved boundary>", "Eligible acceptance is observable end to end across API, persistence, and UI."],
   ]).replace("status: draft", "status: ready").replace("Review state: pending", "Review state: approved");
   await fs.writeFile(path.join(execution, "plans/slice-01.md"), slice, "utf8");
 
   const tasksTemplate = await fs.readFile(path.join(ROOT, "skills/workflows/stnl-task-materializer/templates/tasks.template.md"), "utf8");
   await fs.writeFile(path.join(execution, "tasks.md"), replaceAll(tasksTemplate, [
-    ["01 - <name>", "01 - Invitation API"], ["<observable delivery>", "eligible invitation is accepted"],
+    ["01 - <name>", "01 - Accept Invitation"], ["<observable delivery>", "eligible invitation is accepted and confirmed"],
   ]), "utf8");
   const taskTemplate = await fs.readFile(path.join(ROOT, "skills/workflows/stnl-task-materializer/templates/slice-tasks.template.md"), "utf8");
   const task = replaceAll(taskTemplate, [
-    ["<Name>", "Invitation API"], ["`<relative path>`", "`../../feature_spec.md`"],
+    ["<Name>", "Accept Invitation"], ["`<relative path>`", "`../../feature_spec.md`"],
     ["sha256:<64hex>", `sha256:${authority}`], ["<positive integer>", "1"],
     ["<task>", "Implement eligible invitation acceptance"], ["<result>", "HTTP 201 and one participation"],
     ["<areas>", "invitation service"], ["<test, command, suite, or observable check>", "invitation integration test"],
@@ -71,7 +72,7 @@ async function renderRealTemplateExecution(spec) {
 }
 
 test("operational runbook fixture is valid shared execution state", async (t) => {
-  const spec = await fixture(t);
+  const spec = await fixture(t, "multi-slice");
   assert.equal((await inspectWorkspace(spec, "EXECUTION", {})).scope.kind, "EXECUTION");
   assert.equal((await inspectExecutionState(spec)).state, "IMPLEMENTED_AWAITING_VALIDATION");
 });
@@ -95,7 +96,7 @@ test("runbook rejects execution artifacts after current requirements authority c
 });
 
 test("runbook rejects malformed persisted execution evidence", async (t) => {
-  const spec = await fixture(t);
+  const spec = await fixture(t, "multi-slice");
   const taskPath = path.join(spec, "execution/tasks/slice-02.md");
   const task = await fs.readFile(taskPath, "utf8");
   await fs.writeFile(taskPath, task.replace("## Validation Findings\n\n- none", `## Validation Findings

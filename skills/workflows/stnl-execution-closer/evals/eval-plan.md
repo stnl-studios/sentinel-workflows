@@ -20,6 +20,6 @@ update_policy: Extend when closure accepts an inconsistent or changed workspace.
 6. Never runs tests, invokes a runner, changes artifacts, repairs evidence, or completes pending slices.
 7. Accepts resolved/superseded historical findings/divergences and blocks only active blocking records.
 8. Rejects stale requirements authority or authority change without a current-revision PASS reconciliation/corrective slice.
-9. Routes immutable drift, missing integration, or corrective work to executable `REPLAN`; never prescribes validation of a concluded slice.
+9. Routes immutable drift, missing explicitly required cross-Slice behavior/operational milestone, or corrective work to executable `REPLAN`; never prescribes validation of a concluded Slice and never invents a generic integration/stabilization Slice.
 10. Returns only `EXECUTION_APPROVED` or `EXECUTION_BLOCKED`, distinct from documentary `SPEC_CLOSED`.
 11. Allows and preserves arbitrary lifecycle-external/user-owned SPEC-root siblings while rejecting non-canonical execution paths and unsafe reserved entries.

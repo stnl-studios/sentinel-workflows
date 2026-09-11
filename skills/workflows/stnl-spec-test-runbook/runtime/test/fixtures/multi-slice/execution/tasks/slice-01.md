@@ -17,7 +17,7 @@ update_policy: MATERIALIZE_TASKS created it; executor and quality manager update
 - Slice: 01
 - Plan: `../plans/slice-01.md`
 - Requirements source: `../../feature_spec.md`
-- Requirements authority: sha256:11aba916db71705bfb2f518aac2b8f808c5f410559b1693949764b318b0f6424
+- Requirements authority: sha256:192ae470f8133be19542972aa1617d9ec3356e849f3e28e5c6da4fd4e1f5dbfc
 - Plan revision: 1
 - Global tasks: `../tasks.md`
 
@@ -25,8 +25,6 @@ update_policy: MATERIALIZE_TASKS created it; executor and quality manager update
 
 - [x] 1.1 Implement eligible invitation acceptance. | observable result: HTTP 201 and one participation | expected areas: invitation service | requirement: AC-001
 - [x] 1.2 Reject expired invitations. | observable result: public error and no participation | expected areas: invitation service | requirement: AC-002
-- [ ] 1.3 Present approved confirmation copy. | observable result: confirmation UI shows approved copy | expected areas: invitation UI and browser tests | requirement: AC-001
-- [ ] 1.4 Verify delivery telemetry. | observable result: approved automated checks confirm delivery telemetry is emitted | expected areas: telemetry instrumentation and automated checks | requirement: R-003
 
 ## Expected Tests
 
@@ -97,7 +95,7 @@ update_policy: MATERIALIZE_TASKS created it; executor and quality manager update
 
 ## Diff Summary
 
-- Eligible, expired, persistence, confirmation, and delivery-telemetry paths are represented for validation.
+- Eligible and expired invitation paths are present for validation.
 
 ## Final Result
 

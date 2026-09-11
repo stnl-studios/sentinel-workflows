@@ -23,7 +23,7 @@ update_policy: PLAN or REPLAN creates as draft; REVIEW_PLAN corrects only the mu
 
 ## Objective and Observable Result
 
-<One coherent delivery and how it is observed.>
+<One coherent outcome or milestone, how it is observed and validated, and why it is one boundary. Technical layers belong in Tasks.>
 
 ## Requirements
 
@@ -35,7 +35,7 @@ update_policy: PLAN or REPLAN creates as draft; REVIEW_PLAN corrects only the mu
 
 ## Out of Scope and Boundaries
 
-- <excluded work and boundary with later slices>
+- <excluded work and the semantic boundary with later Slices; do not use a technical layer as the boundary>
 
 ## Likely Areas
 

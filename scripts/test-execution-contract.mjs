@@ -147,7 +147,7 @@ async function renderArtifacts(fixture, { materialized = true, planStatus = "rea
   let slicePlan = replaceAll(slicePlanTemplate, [
     ["<Name>", "Delivery"], ["`<relative path>`", `\`${detailSource}\``],
     ["sha256:<64hex>", `sha256:${authority}`], ["<positive integer>", String(revision)],
-    ["<One coherent delivery and how it is observed.>", "Deliver observable behavior."],
+    ["<One coherent outcome or milestone, how it is observed and validated, and why it is one boundary. Technical layers belong in Tasks.>", "Deliver observable behavior as one bounded milestone."],
     ["<included work>", "Implement the approved behavior."], ["<excluded work and boundary with later slices>", "No unrelated work."],
     ["<path, contract, subsystem, or test area>", "src/example.txt"], ["<earlier slice or none>", "none"],
     ["<risk and mitigation>", "Low risk; focused validation."], ["<bounded approach>", "One bounded change."],
@@ -162,6 +162,12 @@ async function renderArtifacts(fixture, { materialized = true, planStatus = "rea
 
 async function editTask(fixture, transform) {
   const file = path.join(fixture.execution, "tasks/slice-01.md");
+  const before = await fs.readFile(file, "utf8");
+  await fs.writeFile(file, transform(before), "utf8");
+}
+
+async function editSliceTask(fixture, slice, transform) {
+  const file = path.join(fixture.execution, "tasks", `${slice}.md`);
   const before = await fs.readFile(file, "utf8");
   await fs.writeFile(file, transform(before), "utf8");
 }
@@ -208,13 +214,17 @@ async function replacePlanningOnly(fixture, oldHash, newHash, { ready = false } 
   ));
 }
 
-async function appendRecoveryPlan(fixture, oldHash, newHash, { ready = false, supersedes = "slice-01 -> slice-02" } = {}) {
+async function appendRecoveryPlan(fixture, oldHash, newHash, {
+  ready = false,
+  supersedes = "slice-01 -> slice-02",
+  requirements = "AC-001",
+} = {}) {
   await editPlan(fixture, (value) => {
     let result = reviseAuthority(value, oldHash, newHash, 1, 2).replace("status: ready", `status: ${ready ? "ready" : "draft"}`).replace("- Review state: approved", `- Review state: ${ready ? "approved" : "pending"}`);
-    result = result.replace("- Objective: Deliver observable behavior", `- Revision mode: append-only-extension\n- Replan reason: requirements or integration authority changed\n- Supersedes open slices: ${supersedes}\n- Objective: Deliver observable behavior`);
+    result = result.replace("- Objective: Deliver observable behavior", `- Revision mode: append-only-extension\n- Replan reason: requirements or operational authority changed\n- Supersedes open slices: ${supersedes}\n- Objective: Deliver observable behavior`);
     return result.replace(
       "| 01 - Delivery | observable result | - | AC-001 | src/example.txt | plans/slice-01.md |",
-      "| 01 - Delivery | observable result | - | AC-001 | src/example.txt | plans/slice-01.md |\n| 02 - Recovery | reconciled result | 01 | AC-001 | src/example.txt | plans/slice-02.md |",
+      `| 01 - Delivery | observable result | - | AC-001 | src/example.txt | plans/slice-01.md |\n| 02 - Recovery | reconciled result | 01 | ${requirements} | src/example.txt | plans/slice-02.md |`,
     );
   });
   // Historical plan/task authority remains immutable.
@@ -226,6 +236,8 @@ async function appendRecoveryPlan(fixture, oldHash, newHash, { ready = false, su
     .replaceAll("Delivery", "Recovery")
     .replaceAll(`sha256:${oldHash}`, `sha256:${newHash}`)
     .replaceAll("Plan revision: 1", "Plan revision: 2")
+    .replace(/^- none\.?$/mu, "- slice-01.")
+    .replace(/(## Requirements\n\n)- AC-001(?=\n)/u, `$1- ${requirements.replaceAll(", ", "\n- ")}`)
     .replace("status: ready", `status: ${ready ? "ready" : "draft"}`)
     .replace("Review state: approved", `Review state: ${ready ? "approved" : "pending"}`);
   await fs.writeFile(path.join(fixture.execution, "plans/slice-02.md"), appended, "utf8");
@@ -258,7 +270,8 @@ async function addSecondPristineSlice(fixture) {
     "| 01 - Delivery | observable result | - | AC-001 | src/example.txt | plans/slice-01.md |\n| 02 - Later | later result | 01 | AC-001 | src/later.txt | plans/slice-02.md |",
   ));
   const plan = (await fs.readFile(path.join(fixture.execution, "plans/slice-01.md"), "utf8"))
-    .replaceAll("Slice 01", "Slice 02").replaceAll("- Slice: 01", "- Slice: 02").replaceAll("Delivery", "Later");
+    .replaceAll("Slice 01", "Slice 02").replaceAll("- Slice: 01", "- Slice: 02").replaceAll("Delivery", "Later")
+    .replace(/^- none\.?$/mu, "- slice-01.");
   await fs.writeFile(path.join(fixture.execution, "plans/slice-02.md"), plan, "utf8");
   await editTasksIndex(fixture, (value) => value.replace(
     "| [ ] | 01 - Delivery | observable result | - | tasks/slice-01.md | pending | pending |",
@@ -282,6 +295,7 @@ async function stageThirdRecovery(fixture, authority, { ready = false } = {}) {
     ));
   let plan = await fs.readFile(path.join(fixture.execution, "plans/slice-02.md"), "utf8");
   plan = plan.replaceAll("Slice 02", "Slice 03").replaceAll("- Slice: 02", "- Slice: 03")
+    .replace(/^- slice-01\.?$/mu, "- slice-02.")
     .replace("Plan revision: 2", "Plan revision: 3")
     .replace("status: ready", `status: ${ready ? "ready" : "draft"}`)
     .replace("Review state: approved", `Review state: ${ready ? "approved" : "pending"}`)
@@ -562,6 +576,56 @@ test("actual templates render a machine-unambiguous MATERIALIZED_PRISTINE task",
   assert.doesNotMatch(task, /^### (?:implementation-check|findings-check|attempt)-/gmu);
   assert.equal((await inspectExecutionState(fixture.requirements)).state, "MATERIALIZED_PRISTINE");
   assert.equal((await preflightExecutionOperation(fixture.requirements, "REVIEW_TASKS")).state, "MATERIALIZED_PRISTINE");
+});
+
+test("task quantity, files, layers, and context fit never create a semantic REPLAN", async (t) => {
+  const fixture = await standaloneWorkspace(t);
+  await renderArtifacts(fixture);
+  const extraTasks = Array.from({ length: 24 }, (_, index) => {
+    const number = index + 2;
+    return `- [ ] 1.${number} Implement part ${number}. | observable result: part ${number} remains observable | expected areas: src/example.txt | requirement: AC-001`;
+  }).join("\n");
+  await editTask(fixture, (value) => value.replace("\n## Expected Tests", `\n${extraTasks}\n\n## Expected Tests`));
+  const state = await inspectExecutionState(fixture.requirements);
+  assert.equal(state.state, "MATERIALIZED_PRISTINE");
+  assert.equal(state.legalOperations.some(({ operation }) => operation === "REPLAN"), true);
+  assert.equal(state.requiredRecoveryHandoff, null);
+});
+
+test("outcome-oriented decomposition guidance is explicit, adversarial, and count-neutral", async () => {
+  const paths = [
+    "skills/workflows/stnl-execution-planner/SKILL.md",
+    "skills/workflows/stnl-plan-reviewer/SKILL.md",
+    "skills/workflows/stnl-task-materializer/SKILL.md",
+    "skills/workflows/stnl-task-reviewer/SKILL.md",
+    "skills/workflows/stnl-execution-planner/evals/eval-plan.md",
+    "skills/workflows/stnl-plan-reviewer/evals/eval-plan.md",
+    "skills/workflows/stnl-task-materializer/evals/eval-plan.md",
+    "skills/workflows/stnl-task-reviewer/evals/eval-plan.md",
+  ];
+  const documents = await Promise.all(paths.map((file) => fs.readFile(path.join(ROOT, file), "utf8")));
+  const combined = documents.join("\n");
+  for (const phrase of [
+    /smallest cohesive, observable, and validatable milestone/u,
+    /Business.*UX\/Design.*Architecture.*Engineering/u,
+    /agent\/context limits/u,
+    /Foundation/u,
+    /Integration\/Stabilization/u,
+    /SPEC boundary/u,
+    /split.*merge.*reorder/u,
+    /coverage/u,
+    /circular/u,
+    /late semantic boundary gate/u,
+    /NEEDS_REPLAN/u,
+  ]) assert.match(combined, phrase);
+  assert.doesNotMatch(combined, /\b(?:maxSlices|minSlices|targetSlices)\b/u);
+  assert.doesNotMatch(combined, /(?:ideal|preferred)\s+(?:minimum|maximum|target)?\s*(?:number|count)\s+of\s+Slices/iu);
+
+  const representative = await fs.readFile(path.join(ROOT, "skills/workflows/stnl-spec-test-runbook/runtime/test/fixtures/representative/execution/plan.md"), "utf8");
+  assert.equal((representative.match(/^\| [0-9]{2} - /gmu) ?? []).length, 1);
+  const multiSlice = await fs.readFile(path.join(ROOT, "skills/workflows/stnl-spec-test-runbook/runtime/test/fixtures/multi-slice/execution/plan.md"), "utf8");
+  assert.match(multiSlice, /Verify Delivery Telemetry/iu);
+  assert.match(multiSlice, /\| 02 - Verify Delivery Telemetry \|[\s\S]*\| R-003 \|/u);
 });
 
 test("normal workflow sequence is operation-aware and preserves independent legality", async (t) => {
@@ -1106,7 +1170,7 @@ test("legacy classification requires a complete historical producer signature", 
     const fixture = await standaloneWorkspace(t);
     await renderArtifacts(fixture);
     await editPlan(fixture, (value) => value.replace(
-      "- <risk, boundary, or explicit final integration slice>",
+      "- <global risk, cross-slice boundary, or explicitly required independent operational milestone>",
       `- no material integration risk\n\n${insertion}`,
     ));
     assert.equal((await inspectExecutionState(fixture.requirements)).state, "MATERIALIZED_PRISTINE");
@@ -1515,6 +1579,70 @@ test("execution artifacts enforce purpose owners and canonical cross-references"
   await assert.rejects(inspectExecutionState(plan.requirements), /non-canonical Global plan/u);
 });
 
+test("plan coverage and dependency transformations remain canonical across split, merge, and reorder", async (t) => {
+  const split = await standaloneWorkspace(t);
+  await fs.appendFile(split.requirements, "\n- AC-002: independent observable behavior\n", "utf8");
+  await renderArtifacts(split);
+  await addSecondPristineSlice(split);
+  await editPlan(split, (value) => value.replace(
+    "| 02 - Later | later result | 01 | AC-001 | src/later.txt | plans/slice-02.md |",
+    "| 02 - Later | later result | 01 | AC-002 | src/later.txt | plans/slice-02.md |",
+  ));
+  await editSlicePlan(split, "slice-02", (value) => value.replace("## Requirements\n\n- AC-001", "## Requirements\n\n- AC-002"));
+  await editSliceTask(split, "slice-02", (value) => value.replace("requirement: AC-001", "requirement: AC-002"));
+  assert.equal((await inspectExecutionState(split.requirements)).state, "MATERIALIZED_PRISTINE");
+
+  const merge = await standaloneWorkspace(t);
+  const { authority: oldMergeAuthority } = await renderArtifacts(merge, { materialized: false });
+  await fs.appendFile(merge.requirements, "\n- AC-002: merged observable behavior\n", "utf8");
+  const newMergeAuthority = await computeRequirementsAuthority(merge.requirements);
+  await editPlan(merge, (value) => reviseAuthority(value, oldMergeAuthority, newMergeAuthority, 1, 1)
+    .replace("| 01 - Delivery | observable result | - | AC-001 | src/example.txt | plans/slice-01.md |", "| 01 - Delivery | observable result | - | AC-001, AC-002 | src/example.txt | plans/slice-01.md |"));
+  await editSlicePlan(merge, "slice-01", (value) => reviseAuthority(value, oldMergeAuthority, newMergeAuthority, 1, 1)
+    .replace("## Requirements\n\n- AC-001", "## Requirements\n\n- AC-001\n- AC-002"));
+  assert.equal((await inspectExecutionState(merge.requirements)).state, "PLANNED_READY");
+
+  const reorder = await standaloneWorkspace(t);
+  await fs.appendFile(reorder.requirements, "\n- AC-002: reordered observable behavior\n", "utf8");
+  await renderArtifacts(reorder);
+  await addSecondPristineSlice(reorder);
+  await editPlan(reorder, (value) => value
+    .replace("| 02 - Later | later result | 01 | AC-001 | src/later.txt | plans/slice-02.md |", "| 02 - Later | later result | - | AC-002 | src/later.txt | plans/slice-02.md |")
+    .replace("| 01 - Delivery | observable result | - | AC-001 | src/example.txt | plans/slice-01.md |\n| 02 - Later | later result | - | AC-002 | src/later.txt | plans/slice-02.md |", "| 02 - Later | later result | - | AC-002 | src/later.txt | plans/slice-02.md |\n| 01 - Delivery | observable result | - | AC-001 | src/example.txt | plans/slice-01.md |"));
+  await editSlicePlan(reorder, "slice-02", (value) => value.replace("## Requirements\n\n- AC-001", "## Requirements\n\n- AC-002").replace("## Dependencies\n\n- slice-01", "## Dependencies\n\n- none"));
+  await editSliceTask(reorder, "slice-02", (value) => value.replace("requirement: AC-001", "requirement: AC-002"));
+  await editTasksIndex(reorder, (value) => value
+    .replace("| [ ] | 02 - Later | later result | 01 | tasks/slice-02.md | pending | pending |", "| [ ] | 02 - Later | later result | - | tasks/slice-02.md | pending | pending |")
+    .replace("| [ ] | 01 - Delivery | observable result | - | tasks/slice-01.md | pending | pending |\n| [ ] | 02 - Later | later result | - | tasks/slice-02.md | pending | pending |", "| [ ] | 02 - Later | later result | - | tasks/slice-02.md | pending | pending |\n| [ ] | 01 - Delivery | observable result | - | tasks/slice-01.md | pending | pending |"));
+  assert.equal((await inspectExecutionState(reorder.requirements)).state, "MATERIALIZED_PRISTINE");
+
+  const circular = await standaloneWorkspace(t);
+  await renderArtifacts(circular);
+  await addSecondPristineSlice(circular);
+  await editPlan(circular, (value) => value.replace(
+    "| 01 - Delivery | observable result | - | AC-001 | src/example.txt | plans/slice-01.md |",
+    "| 01 - Delivery | observable result | 02 | AC-001 | src/example.txt | plans/slice-01.md |",
+  ));
+  await assert.rejects(inspectExecutionState(circular.requirements), /circular dependency/u);
+
+  const future = await standaloneWorkspace(t);
+  await renderArtifacts(future);
+  await addSecondPristineSlice(future);
+  await editPlan(future, (value) => value
+    .replace("| 01 - Delivery | observable result | - | AC-001 | src/example.txt | plans/slice-01.md |", "| 01 - Delivery | observable result | 02 | AC-001 | src/example.txt | plans/slice-01.md |")
+    .replace("| 02 - Later | later result | 01 | AC-001 | src/later.txt | plans/slice-02.md |", "| 02 - Later | later result | - | AC-001 | src/later.txt | plans/slice-02.md |"));
+  await assert.rejects(inspectExecutionState(future.requirements), /must appear earlier/u);
+
+  const taskDependency = await standaloneWorkspace(t);
+  await renderArtifacts(taskDependency);
+  await addSecondPristineSlice(taskDependency);
+  await editTasksIndex(taskDependency, (value) => value.replace(
+    "| [ ] | 02 - Later | later result | 01 | tasks/slice-02.md | pending | pending |",
+    "| [ ] | 02 - Later | later result | - | tasks/slice-02.md | pending | pending |",
+  ));
+  await assert.rejects(inspectExecutionState(taskDependency.requirements), /task index Dependencies disagree/u);
+});
+
 test("plan-only materialization preflight parses every detailed plan and review state", async (t) => {
   const malformed = await standaloneWorkspace(t);
   await renderArtifacts(malformed, { materialized: false });
@@ -1563,6 +1691,11 @@ test("reviewed planning made stale before tasks replans without historical recov
 
   const newHash = await computeRequirementsAuthority(fixture.requirements);
   await replacePlanningOnly(fixture, oldHash, newHash);
+  await editPlan(fixture, (value) => value.replace(
+    "| 01 - Delivery | observable result | - | AC-001 | src/example.txt | plans/slice-01.md |",
+    "| 01 - Delivery | observable result | - | AC-001, AC-002 | src/example.txt | plans/slice-01.md |",
+  ));
+  await editSlicePlan(fixture, "slice-01", (value) => value.replace("## Requirements\n\n- AC-001", "## Requirements\n\n- AC-001\n- AC-002"));
   const replacement = await inspectExecutionState(fixture.requirements);
   assert.equal(replacement.state, "PLANNED_DRAFT");
   assert.equal(replacement.globalPlan.revision, 1);
@@ -1620,6 +1753,11 @@ test("pristine REVIEW_TASKS replan dead end has draft, review, and atomic materi
   await fs.appendFile(fixture.requirements, "- AC-002: clarified planning boundary\n");
   const newHash = await computeRequirementsAuthority(fixture.requirements);
   await stagePristineReplacement(fixture, oldHash, newHash);
+  await editPlan(fixture, (value) => value.replace(
+    "| 01 - Delivery | observable result | - | AC-001 | src/example.txt | plans/slice-01.md |",
+    "| 01 - Delivery | observable result | - | AC-001, AC-002 | src/example.txt | plans/slice-01.md |",
+  ));
+  await editSlicePlan(fixture, "slice-01", (value) => value.replace("## Requirements\n\n- AC-001", "## Requirements\n\n- AC-001\n- AC-002"));
   assert.equal((await preflightExecutionOperation(fixture.requirements, "REVIEW_PLAN")).state, "PENDING_REPLAN_DRAFT");
   await editPlan(fixture, (value) => value.replace("status: draft", "status: ready").replace("Review state: pending", "Review state: approved"));
   await editSlicePlan(fixture, "slice-01", (value) => value.replace("status: draft", "status: ready").replace("Review state: pending", "Review state: approved"));
@@ -1634,7 +1772,7 @@ test("pending REPLAN requires canonical fields, one revision increment, and vali
     const { authority: oldHash } = await renderArtifacts(fixture);
     if (authorityChange) await fs.appendFile(fixture.requirements, "- AC-002: revised authority\n");
     const newHash = await computeRequirementsAuthority(fixture.requirements);
-    await appendRecoveryPlan(fixture, oldHash, newHash);
+    await appendRecoveryPlan(fixture, oldHash, newHash, { requirements: authorityChange ? "AC-001, AC-002" : "AC-001" });
     return fixture;
   }
 
@@ -1643,7 +1781,7 @@ test("pending REPLAN requires canonical fields, one revision increment, and vali
   await assert.rejects(inspectExecutionState(missingReason.requirements), /Replan reason/u);
 
   const placeholderReason = await pending();
-  await editPlan(placeholderReason, (value) => value.replace("- Replan reason: requirements or integration authority changed", "- Replan reason: pending"));
+  await editPlan(placeholderReason, (value) => value.replace("- Replan reason: requirements or operational authority changed", "- Replan reason: pending"));
   await assert.rejects(inspectExecutionState(placeholderReason.requirements), /Replan reason must be objective/u);
 
   const nonIncrementing = await pending();
@@ -2400,7 +2538,7 @@ test("append-only requirements recovery preserves history and requires later PAS
   await fs.appendFile(fixture.requirements, "- AC-002: changed after partial execution\n");
   const newHash = await computeRequirementsAuthority(fixture.requirements);
   assert.equal((await preflightExecutionOperation(fixture.requirements, "REPLAN")).state, "REQUIREMENTS_CHANGED");
-  await appendRecoveryPlan(fixture, oldHash, newHash);
+  await appendRecoveryPlan(fixture, oldHash, newHash, { requirements: "AC-001, AC-002" });
   assert.equal((await preflightExecutionOperation(fixture.requirements, "REVIEW_PLAN")).state, "PENDING_REPLAN_DRAFT");
   await editPlan(fixture, (value) => value.replace("status: draft", "status: ready").replace("Review state: pending", "Review state: approved"));
   await editSlicePlan(fixture, "slice-02", (value) => value.replace("status: draft", "status: ready").replace("Review state: pending", "Review state: approved"));
@@ -2420,7 +2558,7 @@ test("append-only requirements recovery preserves history and requires later PAS
   await assert.rejects(inspectExecutionState(fixture.requirements), /committed supersessions do not exactly match|invalid later replacement slice/u);
 });
 
-test("a later missing integration slice has an executable append-only REPLAN path", async (t) => {
+test("a later missing corrective milestone has an executable append-only REPLAN path", async (t) => {
   const fixture = await standaloneWorkspace(t);
   const { authority } = await renderArtifacts(fixture);
   await editTask(fixture, (value) => {
@@ -2440,9 +2578,9 @@ test("superseded historical paths become closable only through a later current-a
   const fixture = await standaloneWorkspace(t);
   const { authority: oldHash } = await renderArtifacts(fixture);
   await editTask(fixture, (value) => replaceSection(value, "Changed Areas", "- `../../src/example.txt`"));
-  await fs.appendFile(fixture.requirements, "- AC-002: corrective integration\n");
+  await fs.appendFile(fixture.requirements, "- AC-002: corrective authority\n");
   const newHash = await computeRequirementsAuthority(fixture.requirements);
-  await appendRecoveryPlan(fixture, oldHash, newHash, { ready: true });
+  await appendRecoveryPlan(fixture, oldHash, newHash, { ready: true, requirements: "AC-001, AC-002" });
   await commitAppendRecovery(fixture, oldHash, newHash);
   const second = path.join(fixture.execution, "tasks/slice-02.md");
   let task = await fs.readFile(second, "utf8");
@@ -4044,7 +4182,8 @@ async function addThirdPristineSlice(fixture) {
   ));
   const plan = (await fs.readFile(path.join(fixture.execution, "plans/slice-02.md"), "utf8"))
     .replaceAll("Slice 02", "Slice 03").replaceAll("- Slice: 02", "- Slice: 03")
-    .replaceAll("Later", "Final").replaceAll("slice-02", "slice-03");
+    .replace(/^- slice-01\.?$/mu, "- slice-02.")
+    .replaceAll("Later", "Final");
   await fs.writeFile(path.join(fixture.execution, "plans/slice-03.md"), plan, "utf8");
   await editTasksIndex(fixture, (value) => value.replace(
     "| [ ] | 02 - Later | later result | 01 | tasks/slice-02.md | pending | pending |",

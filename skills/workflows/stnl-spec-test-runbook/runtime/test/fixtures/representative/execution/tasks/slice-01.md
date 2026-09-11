@@ -1,16 +1,16 @@
 # File Purpose Header
 
 ```yaml
-purpose: Operational checklist and evidence record for invitation API slice 01.
+purpose: Operational checklist and evidence record for the complete invitation acceptance Slice.
 status: ready
-read_when: Executing, validating, or auditing slice 01.
+read_when: Executing, validating, or auditing the invitation acceptance Slice.
 do_not_read_when: Another slice is active and no dependency requires this record.
 contains: References, checklist, tests, changes, overlap, divergences, evidence, validation, corrections, effective base, diff, and result.
 owner: stnl-task-materializer
 update_policy: MATERIALIZE_TASKS created it; executor and quality manager update only their authorized sections.
 ```
 
-# Slice 01 Tasks - Invitation API
+# Slice 01 Tasks - Accept Invitation
 
 ## References
 
@@ -25,10 +25,12 @@ update_policy: MATERIALIZE_TASKS created it; executor and quality manager update
 
 - [x] 1.1 Implement eligible invitation acceptance. | observable result: HTTP 201 and one participation | expected areas: invitation service | requirement: AC-001
 - [x] 1.2 Reject expired invitations. | observable result: public error and no participation | expected areas: invitation service | requirement: AC-002
+- [ ] 1.3 Present approved confirmation copy. | observable result: confirmation UI shows approved copy | expected areas: invitation UI and browser tests | requirement: AC-001
+- [ ] 1.4 Verify delivery telemetry. | observable result: approved automated checks confirm delivery telemetry is emitted | expected areas: telemetry instrumentation and automated checks | requirement: R-003
 
 ## Expected Tests
 
-- API integration tests for eligible, duplicate, and expired invitations.
+- API, persistence, and browser tests for eligible, duplicate, expired, and confirmation behavior.
 
 ## Changed Areas
 
@@ -95,7 +97,7 @@ update_policy: MATERIALIZE_TASKS created it; executor and quality manager update
 
 ## Diff Summary
 
-- Eligible and expired invitation paths are present for validation.
+- Eligible, expired, persistence, confirmation, and delivery-telemetry paths are represented for validation.
 
 ## Final Result
 

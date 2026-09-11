@@ -35,6 +35,6 @@ For revision 1, including a planning-only replacement before tasks exist, omit t
 
 ## Global Risks and Integration
 
-- <risk, boundary, or explicit final integration slice>
+- <global risk, cross-slice boundary, or explicitly required independent operational milestone>
 
 `tasks.md` is the only global progress authority and does not exist until approved plans are materialized.

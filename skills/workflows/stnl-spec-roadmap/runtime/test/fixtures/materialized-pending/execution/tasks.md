@@ -1,7 +1,7 @@
 # File Purpose Header
 
 ```yaml
-purpose: Compact global progress authority for invitation acceptance slices.
+purpose: Compact global progress authority for the invitation acceptance Slice.
 status: ready
 read_when: Checking global completion, eligibility, or dependencies.
 do_not_read_when: A selected task file supplies all necessary local detail.
@@ -16,7 +16,6 @@ Use only `[ ]` and `[x]`. This is the sole global progress authority. `PASS` and
 
 | Done | Slice | Delivery | Dependencies | Detail | Validation | Result |
 |---|---|---|---|---|---|---|
-| [ ] | 01 - Invitation API | Eligible and expired API behavior is deterministic. | - | tasks/slice-01.md | pending | pending |
-| [ ] | 02 - Confirmation UI | Approved confirmation copy is presented. | slice-01 | tasks/slice-02.md | pending | pending |
+| [ ] | 01 - Accept Invitation | Eligible and expired API, persistence, confirmation, and delivery-telemetry behavior is deterministic. | - | tasks/slice-01.md | pending | pending |
 
 After materialization, historical plans and task records are immutable. A wholly pristine canonical set may be atomically replaced only by explicit approved replanning. After any operational evidence, the index cannot be recreated and historical checklists cannot be rematerialized: an approved append-only revision adds only monotonically numbered rows/files. A current valid `PASS` atomically changes its selected row to `[x]`, validation `PASS`, result `PASS`. The same approved-replan materialization that appends a replacement slice may terminalize its named open predecessor as `[x]`, validation `SUPERSEDED`, result `SUPERSEDED`; it never changes a prior `PASS`.

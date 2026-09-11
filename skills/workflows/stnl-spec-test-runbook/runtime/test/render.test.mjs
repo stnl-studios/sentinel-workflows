@@ -9,9 +9,9 @@ import { validateManifest, validateManifestEvidence } from "../lib/manifest.mjs"
 import { renderRunbook } from "../lib/render.mjs";
 import { copyFixture, readManifest } from "./helpers.mjs";
 
-async function validated(t) {
-  const root = await copyFixture(t);
-  const raw = await readManifest(root);
+async function validated(t, fixtureName = "representative") {
+  const root = await copyFixture(t, `stnl runbook ${fixtureName} validation fixture `, fixtureName);
+  const raw = await readManifest(root, fixtureName);
   const inspection = await inspectWorkspace(root, raw.scope.kind, raw.scope.selection);
   return { root, raw, inspection, manifest: validateManifest(raw, inspection) };
 }
@@ -276,10 +276,10 @@ test("source files, declared IDs, origins, and coverage are backed by inspected 
   await assert.rejects(validateManifestEvidence(validateManifest(narrativeOnlyId, inspection), inspection), /D-011 is not present as an exact canonical token/u);
 
   const incidentalTask = structuredClone(raw);
-  const taskSource = incidentalTask.sources.find((source) => source.path.endsWith("/execution/tasks/slice-02.md"));
+  const taskSource = incidentalTask.sources.find((source) => source.path.endsWith("/execution/tasks/slice-01.md"));
   taskSource.ids.push("9.9");
   incidentalTask.scenarios[0].origins.push({ kind: "task", ref: "9.9" });
-  await fs.appendFile(path.join(root, "execution", "tasks", "slice-02.md"), "\n- [ ] 9.9 Incidental evidence only.\n", "utf8");
+  await fs.appendFile(path.join(root, "execution", "tasks", "slice-01.md"), "\n- [ ] 9.9 Incidental evidence only.\n", "utf8");
   await assert.rejects(validateManifestEvidence(validateManifest(incidentalTask, inspection), inspection), /9.9 is not present as an exact canonical token/u);
 
   const incidentalSlice = structuredClone(raw);
@@ -303,7 +303,7 @@ test("source files, declared IDs, origins, and coverage are backed by inspected 
 });
 
 test("slice and task evidence cannot include an unselected slice or task", async (t) => {
-  const { root, raw } = await validated(t);
+  const { root, raw } = await validated(t, "multi-slice");
   const sliceInspection = await inspectWorkspace(root, "SLICE", { slice: "1" });
   raw.scope = { kind: "SLICE", selection: { slice: "1" } };
   const sliceManifest = validateManifest(raw, sliceInspection);

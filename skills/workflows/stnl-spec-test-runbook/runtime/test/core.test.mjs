@@ -53,7 +53,7 @@ test("requires explicit scope selection and returns bounded canonical sources", 
 });
 
 test("orders an explicit multi-slice set by the canonical serial plan", async (t) => {
-  const root = await copyFixture(t);
+  const root = await copyFixture(t, "stnl runbook multi-slice fixture ", "multi-slice");
   const inspected = await inspectWorkspace(root, "MULTI_SLICE", { slices: ["2", "1"] });
   assert.deepEqual(inspected.scope.selection, { slices: ["slice-01", "slice-02"] });
   await assert.rejects(inspectWorkspace(root, "MULTI_SLICE", { slices: ["1", "1"] }), /duplicates/u);
@@ -98,7 +98,7 @@ test("execution discovery requires canonical approved plan and task artifacts", 
   );
   await assert.rejects(inspectWorkspace(orphanRoot, "EXECUTION", {}), /non-canonical paths.*tasks.*slice-99\.md/u);
 
-  const pairedOrphanRoot = await copyFixture(t);
+  const pairedOrphanRoot = await copyFixture(t, "stnl runbook multi-slice orphan fixture ", "multi-slice");
   for (const directory of ["plans", "tasks"]) {
     await fs.copyFile(
       path.join(pairedOrphanRoot, "execution", directory, "slice-02.md"),
@@ -107,7 +107,7 @@ test("execution discovery requires canonical approved plan and task artifacts", 
   }
   await assert.rejects(inspectWorkspace(pairedOrphanRoot, "EXECUTION", {}), /plans directory does not exactly match the current Serial Slice Order/u);
 
-  const missingGlobalRowRoot = await copyFixture(t);
+  const missingGlobalRowRoot = await copyFixture(t, "stnl runbook multi-slice missing-row fixture ", "multi-slice");
   const globalTasks = path.join(missingGlobalRowRoot, "execution", "tasks.md");
   await fs.writeFile(
     globalTasks,

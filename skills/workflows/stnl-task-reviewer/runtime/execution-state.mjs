@@ -37,6 +37,8 @@ const OPERATION_STATES = new Map([
   ["CLOSE", new Set(["COMPLETE"])],
 ]);
 const CURRENT_AUTHORITY = /^sha256:([0-9a-f]{64})$/u;
+const CANONICAL_AUTHORITY_REFERENCE = /^(?:R|AC|D|C|RK|Q)-[0-9]{3}$/u;
+const CANONICAL_AUTHORITY_REFERENCE_PATTERN = /\b(?:R|AC|D|C|RK|Q)-[0-9]{3}\b/gu;
 // v1 persists only terminal harness observations.  OBSERVED, evidence-level
 // SUPERSEDED and STALE_EVIDENCE have no producer or authorized transition.
 const VALIDATION_EVIDENCE_LIFECYCLE = new Map([
@@ -364,6 +366,28 @@ export async function computeRequirementsAuthority(specPath) {
     ? await fs.readFile(workspace.authorityPath)
     : stableEncode(await lifecycleProjection(workspace));
   return createHash("sha256").update(HASH_DOMAIN).update(payload).digest("hex");
+}
+
+function authorityRecordIsActive(body) {
+  const status = body.match(/^- status: (\S+)$/mu)?.[1]?.toLowerCase() ?? null;
+  return !new Set(["closed", "out_of_scope", "retired", "resolved", "superseded", "not_applicable"]).has(status);
+}
+
+async function authorityReferenceSets(workspace) {
+  if (workspace.kind === "standalone") {
+    const text = await fs.readFile(workspace.authorityPath, "utf8");
+    const known = new Set(text.match(CANONICAL_AUTHORITY_REFERENCE_PATTERN) ?? []);
+    const acceptance = new Set([...known].filter((value) => value.startsWith("AC-")));
+    const requirements = new Set([...known].filter((value) => value.startsWith("R-")));
+    return { known, required: acceptance.size !== 0 ? acceptance : requirements };
+  }
+  const projection = await lifecycleProjection(workspace);
+  const records = projection.records.map(([id, body]) => ({ id, body })).filter(({ id }) => CANONICAL_AUTHORITY_REFERENCE.test(id));
+  const known = new Set(records.map(({ id }) => id));
+  const active = records.filter(({ body }) => authorityRecordIsActive(body));
+  const acceptance = new Set(active.filter(({ id }) => id.startsWith("AC-")).map(({ id }) => id));
+  const requirements = new Set(active.filter(({ id }) => id.startsWith("R-")).map(({ id }) => id));
+  return { known, required: acceptance.size !== 0 ? acceptance : requirements };
 }
 
 function referenceValue(body, name, expected, label) {
@@ -2160,6 +2184,84 @@ function markdownStructuralText(text) {
   }).join("\n");
 }
 
+function parseCanonicalReferenceList(value, label, { permitNone = false } = {}) {
+  const normalized = normalizeText(value);
+  if (permitNone && new Set(["-", "- none", "none"]).has(normalized.toLowerCase())) return [];
+  if (normalized.length === 0 || /^(?:-|none)$/iu.test(normalized)) {
+    throw new ExecutionContractError(`${label} must contain at least one canonical authority reference`);
+  }
+  const tokens = normalized.split(/\n|,/u).map((entry) => entry.trim().replace(/^[-*]\s+/u, "").replace(/[.;:]$/u, ""))
+    .filter((entry) => entry.length !== 0);
+  if (tokens.length === 0 || tokens.some((token) => !CANONICAL_AUTHORITY_REFERENCE.test(token))) {
+    throw new ExecutionContractError(`${label} has malformed canonical authority references`);
+  }
+  const references = [...new Set(tokens)].sort((left, right) => left.localeCompare(right, "en"));
+  if (references.length !== tokens.length) throw new ExecutionContractError(`${label} has duplicate authority references`);
+  return references;
+}
+
+function parseDependencyList(value, label) {
+  const normalized = normalizeText(value);
+  const sentinel = normalized.replace(/[.;:]$/u, "").toLowerCase();
+  if (new Set(["", "-", "- none", "none"]).has(sentinel)) return [];
+  const tokens = normalized.split(/\n|,/u).map((entry) => entry.trim().replace(/^[-*]\s+/u, "").replace(/[.;:]$/u, ""))
+    .filter((entry) => entry.length !== 0);
+  const dependencies = tokens.map((token) => {
+    const match = token.match(/^(?:slice-)?([0-9]+)$/u);
+    if (match === null) throw new ExecutionContractError(`${label} has malformed slice dependency: ${token}`);
+    return `slice-${match[1].padStart(2, "0")}`;
+  });
+  const unique = [...new Set(dependencies)].sort((left, right) => left.localeCompare(right, "en"));
+  if (unique.length !== dependencies.length) throw new ExecutionContractError(`${label} has duplicate slice dependencies`);
+  return unique;
+}
+
+function validateSliceDependencyGraph(sliceOrder, sliceRows, label = "Serial Slice Order") {
+  const known = new Set(sliceOrder);
+  const visiting = new Set();
+  const visited = new Set();
+  function visit(slice) {
+    if (visiting.has(slice)) throw new ExecutionContractError(`${label} contains a circular dependency involving ${slice}`);
+    if (visited.has(slice)) return;
+    visiting.add(slice);
+    for (const dependency of sliceRows.get(slice).dependencies) visit(dependency);
+    visiting.delete(slice);
+    visited.add(slice);
+  }
+  for (const [slice, row] of sliceRows) {
+    for (const dependency of row.dependencies) {
+      if (!known.has(dependency)) throw new ExecutionContractError(`${label} references unknown dependency ${dependency} from ${slice}`);
+      if (dependency === slice) throw new ExecutionContractError(`${label} has a self-dependency on ${slice}`);
+    }
+  }
+  for (const slice of sliceOrder) visit(slice);
+  const positions = new Map(sliceOrder.map((slice, index) => [slice, index]));
+  for (const [slice, row] of sliceRows) {
+    for (const dependency of row.dependencies) {
+      if (positions.get(dependency) >= positions.get(slice)) {
+        throw new ExecutionContractError(`${label} dependency ${dependency} for ${slice} must appear earlier in Serial Slice Order`);
+      }
+    }
+  }
+}
+
+async function validatePlanCoverage({ workspace, globalPlan, sliceOrder, sliceRows, plans, currentFingerprint }) {
+  if (globalPlan.fingerprint !== currentFingerprint) return;
+  const authority = await authorityReferenceSets(workspace);
+  if (authority.known.size === 0) return;
+  const currentSlices = sliceOrder.filter((slice) => plans.get(slice)?.fingerprint === globalPlan.fingerprint);
+  const covered = new Set(currentSlices.flatMap((slice) => sliceRows.get(slice).requirements));
+  for (const reference of covered) {
+    if (!authority.known.has(reference)) {
+      throw new ExecutionContractError(`current plan references unknown authority ${reference}`);
+    }
+  }
+  const missing = [...authority.required].filter((reference) => !covered.has(reference));
+  if (missing.length !== 0) {
+    throw new ExecutionContractError(`current plan coverage omits authority ${missing.join(", ")}`);
+  }
+}
+
 function parseGlobalRows(text) {
   const { header, body } = parsePurpose(text, "tasks.md");
   if (header.get("owner") !== "stnl-task-materializer" || header.get("status") !== "ready") {
@@ -2184,7 +2286,13 @@ function parseGlobalRows(text) {
     if (columns.length !== 7 || !/^\[[ x]\]$/u.test(columns[0])) throw new ExecutionContractError(`tasks.md has malformed row: ${line}`);
     const sliceMatch = columns[1].match(/^([0-9]{2,}) - \S.*$/u);
     if (sliceMatch === null || columns[4] !== `tasks/slice-${sliceMatch[1]}.md`) throw new ExecutionContractError(`tasks.md has malformed slice mapping: ${line}`);
-    rows.push({ done: columns[0] === "[x]", slice: `slice-${sliceMatch[1]}`, validation: columns[5], result: columns[6] });
+    rows.push({
+      done: columns[0] === "[x]",
+      slice: `slice-${sliceMatch[1]}`,
+      dependencies: parseDependencyList(columns[3], `tasks.md ${sliceMatch[1]} Dependencies`),
+      validation: columns[5],
+      result: columns[6],
+    });
   }
   if (rows.length === 0) throw new ExecutionContractError("tasks.md has no slice rows");
   if (new Set(rows.map((row) => row.slice)).size !== rows.length) throw new ExecutionContractError("tasks.md has duplicate slice rows");
@@ -2224,7 +2332,7 @@ function requirementsReference(workspace, directory) {
   return path.relative(directory, workspace.authorityPath).split(path.sep).join("/");
 }
 
-async function readPlanArtifacts(workspace) {
+async function readPlanArtifacts(workspace, { currentFingerprint = null } = {}) {
   const globalPlanPath = path.join(workspace.executionRoot, "plan.md");
   await requireRealFile(globalPlanPath, "execution plan.md");
   const globalPlanText = await fs.readFile(globalPlanPath, "utf8");
@@ -2238,16 +2346,23 @@ async function readPlanArtifacts(workspace) {
     "|---|---|---|---|---|---|",
     "Serial Slice Order",
   );
-  const sliceOrder = serialRows.map((line) => {
+  const serialEntries = serialRows.map((line) => {
     const columns = line.split("|").slice(1, -1).map((column) => column.trim());
     if (columns.length !== 6) throw new ExecutionContractError(`Serial Slice Order has malformed row: ${line}`);
     const slice = columns[0].match(/^([0-9]{2,}) - \S.*$/u)?.[1];
     if (slice === undefined || columns[5] !== `plans/slice-${slice}.md`) {
       throw new ExecutionContractError(`Serial Slice Order has malformed row: ${line}`);
     }
-    return `slice-${slice}`;
+    return {
+      slice: `slice-${slice}`,
+      dependencies: parseDependencyList(columns[2], `Serial Slice Order ${slice} Dependencies`),
+      requirements: parseCanonicalReferenceList(columns[3], `Serial Slice Order ${slice} Requirements`),
+    };
   });
+  const sliceOrder = serialEntries.map((entry) => entry.slice);
   if (new Set(sliceOrder).size !== sliceOrder.length) throw new ExecutionContractError("plan.md has missing or duplicate detailed plan mappings");
+  const sliceRows = new Map(serialEntries.map((entry) => [entry.slice, entry]));
+  validateSliceDependencyGraph(sliceOrder, sliceRows);
   const plans = new Map();
   const planDirectory = path.join(workspace.executionRoot, "plans");
   const directoryFindings = [];
@@ -2263,15 +2378,33 @@ async function readPlanArtifacts(workspace) {
   for (const slice of sliceOrder) {
     const detailedPath = path.join(planDirectory, `${slice}.md`);
     await requireRealFile(detailedPath, `${slice} detailed plan`);
-    plans.set(slice, parsePlan(await fs.readFile(detailedPath, "utf8"), `${slice} plan`, slice, {
+    const plan = parsePlan(await fs.readFile(detailedPath, "utf8"), `${slice} plan`, slice, {
       requirementsSource: requirementsReference(workspace, planDirectory),
-    }));
+    });
+    const detailRequirements = parseCanonicalReferenceList(plan.sections.get("Requirements"), `${slice} plan Requirements`);
+    const detailDependencies = parseDependencyList(plan.sections.get("Dependencies"), `${slice} plan Dependencies`);
+    const globalRow = sliceRows.get(slice);
+    if (JSON.stringify(detailRequirements) !== JSON.stringify(globalRow.requirements)) {
+      throw new ExecutionContractError(`${slice} detailed plan Requirements disagree with Serial Slice Order`);
+    }
+    if (JSON.stringify(detailDependencies) !== JSON.stringify(globalRow.dependencies)) {
+      throw new ExecutionContractError(`${slice} detailed plan Dependencies disagree with Serial Slice Order`);
+    }
+    plans.set(slice, plan);
   }
-  return { globalPlan, globalPlanText, sliceOrder, plans };
+  await validatePlanCoverage({
+    workspace,
+    globalPlan,
+    sliceOrder,
+    sliceRows,
+    plans,
+    currentFingerprint: currentFingerprint ?? await computeRequirementsAuthority(workspace.authorityPath),
+  });
+  return { globalPlan, globalPlanText, sliceOrder, sliceRows, plans };
 }
 
-async function executionArtifacts(workspace) {
-  const { globalPlan, sliceOrder, plans } = await readPlanArtifacts(workspace);
+async function executionArtifacts(workspace, currentFingerprint = null) {
+  const { globalPlan, sliceOrder, sliceRows, plans } = await readPlanArtifacts(workspace, { currentFingerprint });
   const tasksIndexPath = path.join(workspace.executionRoot, "tasks.md");
   await requireRealFile(tasksIndexPath, "execution tasks.md");
   const tasksIndexText = await fs.readFile(tasksIndexPath, "utf8");
@@ -2285,6 +2418,10 @@ async function executionArtifacts(workspace) {
     const task = parseTask(await fs.readFile(taskPath, "utf8"), taskPath, row.slice, {
       requirementsSource: requirementsReference(workspace, taskDirectory),
     });
+    const planRow = sliceRows.get(row.slice);
+    if (JSON.stringify(row.dependencies) !== JSON.stringify(planRow.dependencies)) {
+      throw new ExecutionContractError(`${row.slice} task index Dependencies disagree with Serial Slice Order`);
+    }
     const plan = plans.get(row.slice);
     if (plan !== undefined && (task.fingerprint !== plan.fingerprint || task.revision !== plan.revision)) pairMismatches.push(row.slice);
     if (row.done && SUCCESS_RESULTS.has(row.result)) {
@@ -2468,7 +2605,7 @@ export async function inspectExecutionState(specPath) {
   const hasTasks = await lstatOrNull(path.join(workspace.executionRoot, "tasks.md")) !== null;
   await validateExecutionLayout(specPath, { allowPlanned: !hasTasks });
   if (!hasTasks) {
-    const { globalPlan, plans } = await readPlanArtifacts(workspace);
+    const { globalPlan, plans } = await readPlanArtifacts(workspace, { currentFingerprint });
     if (globalPlan.revisionMode === null && globalPlan.revision !== 1) {
       throw new ExecutionContractError("planning-only authority must use Plan revision 1, including replacement by REPLAN");
     }
@@ -2485,7 +2622,7 @@ export async function inspectExecutionState(specPath) {
     const state = stale ? "REQUIREMENTS_CHANGED" : globalPlan.status === "ready" ? "PLANNED_READY" : "PLANNED_DRAFT";
     return withRecoveryTargets({ state, workspace, currentFingerprint, globalPlan, stale });
   }
-  const artifacts = await executionArtifacts(workspace);
+  const artifacts = await executionArtifacts(workspace, currentFingerprint);
   const stale = artifacts.globalPlan.fingerprint !== currentFingerprint;
   const allPristine = artifacts.rows.every((row) => !row.done && artifacts.tasks.get(row.slice).pristine);
   if (artifacts.pendingReplan) {

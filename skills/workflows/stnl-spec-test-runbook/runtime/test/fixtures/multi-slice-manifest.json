@@ -15,10 +15,12 @@
     "locale": "en-US"
   },
   "sources": [
-    {"path": "docs/SPEC/invitation-acceptance/execution/plan.md", "role": "global_plan", "ids": ["slice-01"]},
-    {"path": "docs/SPEC/invitation-acceptance/execution/plans/slice-01.md", "role": "approved_plan", "ids": ["AC-001", "AC-002", "R-003"]},
-    {"path": "docs/SPEC/invitation-acceptance/execution/tasks.md", "role": "global_progress", "ids": ["slice-01"]},
-    {"path": "docs/SPEC/invitation-acceptance/execution/tasks/slice-01.md", "role": "execution_evidence", "ids": ["1.1", "1.2", "1.3", "1.4"]},
+    {"path": "docs/SPEC/invitation-acceptance/execution/plan.md", "role": "global_plan", "ids": ["slice-01", "slice-02"]},
+    {"path": "docs/SPEC/invitation-acceptance/execution/plans/slice-01.md", "role": "approved_plan", "ids": ["AC-001", "AC-002"]},
+    {"path": "docs/SPEC/invitation-acceptance/execution/plans/slice-02.md", "role": "approved_plan", "ids": ["R-003"]},
+    {"path": "docs/SPEC/invitation-acceptance/execution/tasks.md", "role": "global_progress", "ids": ["slice-01", "slice-02"]},
+    {"path": "docs/SPEC/invitation-acceptance/execution/tasks/slice-01.md", "role": "execution_evidence", "ids": ["1.1", "1.2"]},
+    {"path": "docs/SPEC/invitation-acceptance/execution/tasks/slice-02.md", "role": "execution_evidence", "ids": ["2.1"]},
     {"path": "docs/SPEC/invitation-acceptance/feature_spec.md", "role": "spec_index", "ids": []},
     {"path": "docs/SPEC/invitation-acceptance/shared/acceptance-criteria.md", "role": "acceptance_criteria", "ids": ["AC-001", "AC-002"]},
     {"path": "docs/SPEC/invitation-acceptance/shared/requirements.md", "role": "requirements", "ids": ["R-001", "R-002", "R-003"]},
@@ -27,7 +29,7 @@
   ],
   "setup": [
     {"title": "Reach the staging service", "detail": "Confirm the staging UI and API are reachable; credentials are supplied through the approved team mechanism and are never embedded here."},
-    {"title": "Product decision", "detail": "Confirmation copy remains undecided, so the UI presentation scenario is blocked."}
+    {"title": "Manual telemetry evidence access", "detail": "No safe, authorized log-viewing procedure exists, so the telemetry milestone remains blocked for manual execution."}
   ],
   "data_preparation": [
     {"title": "Invitation states", "method": "fixture", "status": "reused", "instructions": "Use the existing eligible and expired invitation records; do not create a second seed system.", "source": "test/fixtures/invitations.json"},
@@ -94,35 +96,35 @@
     },
     {
       "id": "TR-003",
-      "title": "Present approved confirmation copy",
-      "objective": "Demonstrate the confirmation part of the complete invitation acceptance outcome after product approval.",
-      "domain": "Invitation acceptance",
-      "types": ["acceptance", "functional"],
+      "title": "Verify delivery telemetry",
+      "objective": "Verify the independent delivery-telemetry milestone for the accepted invitation flow.",
+      "domain": "Delivery telemetry",
+      "types": ["integration", "regression"],
       "criticality": "medium",
       "initial_status": "blocked",
-      "origins": [{"kind": "slice", "ref": "slice-01"}, {"kind": "task", "ref": "1.3"}],
-      "preconditions": ["Product approves the final confirmation copy; this precondition is not currently determined."],
+      "origins": [{"kind": "slice", "ref": "slice-02"}, {"kind": "task", "ref": "2.1"}],
+      "preconditions": ["The accepted invitation flow is available.", "The approved automated telemetry checks are available; safe manual log access is not currently available."],
       "inputs": [],
-      "preparation": ["Obtain the persisted decision before execution."],
-      "steps": [{"action": "Accept an eligible invitation through the UI.", "expected": "The approved confirmation copy is presented.", "evidence": ["screenshot", "video"]}],
-      "evidence": ["screenshot", "video", "message_to_user"],
+      "preparation": ["Run the approved automated telemetry checks for an eligible invitation."],
+      "steps": [{"action": "Run the approved delivery-telemetry checks.", "expected": "The automated evidence confirms delivery telemetry remains emitted for the accepted flow.", "evidence": ["events"]}],
+      "evidence": ["events"],
       "cleanup": ["Use the bounded participation cleanup described for TR-001."],
       "regressions": [],
       "risks": [],
       "notes": [],
-      "known_issues": ["Final confirmation copy is not yet authoritative."],
-      "approval_criteria": ["The displayed text exactly matches the approved decision."]
+      "known_issues": ["Manual log evidence is not currently available through an approved access path."],
+      "approval_criteria": ["The automated telemetry evidence is reproducible and names the operational owner."]
     }
   ],
   "coverage": [
     {"source_id": "R-001", "title": "Accept an eligible invitation", "status": "covered", "scenario_ids": ["TR-001"], "rationale": "Happy path is operationally reproducible and traced through AC-001 and task 1.1."},
     {"source_id": "R-002", "title": "Reject an expired invitation", "status": "covered", "scenario_ids": ["TR-002"], "rationale": "Negative path includes the clock risk and persistence check."},
-    {"source_id": "R-003", "title": "Audit delivery telemetry", "status": "not_manually_testable", "scenario_ids": [], "rationale": "Current evidence assigns telemetry to automated checks and provides no safe manual log access."}
+    {"source_id": "R-003", "title": "Audit delivery telemetry", "status": "not_manually_testable", "scenario_ids": [], "rationale": "Current evidence assigns telemetry to automated checks and provides no safe manual log access."},
+    {"source_id": "slice-02", "title": "Verify Delivery Telemetry", "status": "blocked", "scenario_ids": ["TR-003"], "rationale": "The explicit observability milestone exists but cannot pass manually without an approved evidence path."}
   ],
   "risks": [{"title": "Clock boundary", "detail": "Avoid near-boundary data and record the service UTC time when executing TR-002."}],
-  "known_issues": [{"title": "Confirmation copy pending", "detail": "Do not infer final UI text from implementation placeholders."}],
+  "known_issues": [{"title": "Manual telemetry evidence pending", "detail": "Do not claim the operational milestone is manually validated without an approved evidence path."}],
   "gaps": [
-    {"title": "Final confirmation copy", "detail": "A product decision is required before TR-003 becomes executable.", "kind": "decision_required"},
     {"title": "Manual telemetry access", "detail": "No safe, authorized log-viewing procedure exists in the current evidence.", "kind": "not_executable"}
   ],
   "cleanup": [{"title": "Bounded cleanup", "detail": "Remove only IDs recorded during this run; never run broad deletion or truncate shared data."}],

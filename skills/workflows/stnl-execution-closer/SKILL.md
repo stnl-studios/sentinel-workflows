@@ -28,11 +28,11 @@ Then start with `plan.md`, `tasks.md`, compact summaries, final results, and Eff
 
 Verify every slice is terminal `[x]`; serial dependencies were respected; every plan has exactly one task and no orphan exists; no effective active blocking finding or divergence remains; every final result is `PASS`, `ACCEPTED` or `SUPERSEDED`; every `SUPERSEDED` slice points to an existing later replacement; every `PASS`/`ACCEPTED` slice has exactly one valid Effective Validation Base originating from an attempt with its matching result; current requirements authority matches the current global plan; after any authority change at least one current-revision `PASS`/`ACCEPTED` reconciliation/corrective slice covers affected requirements and final paths; plans, tasks, and results agree; and no final workspace change lacks association with a validated current delivery slice.
 
-Treat the preflight's final-ownership and drift verdict as structural truth; do not reimplement or soften it through model interpretation. Semantic review remains responsible only for requirements coverage, reconciliation intent, cross-slice consistency, and whether an explicit current-revision integration/stabilization slice was required and passed.
+Treat the preflight's final-ownership and drift verdict as structural truth; do not reimplement or soften it through model interpretation. Semantic review remains responsible only for requirements coverage, reconciliation intent, cross-slice consistency, and whether an explicitly required current-revision cross-slice or operational milestone was delivered and passed. Ordinary integration belongs to the Slice that delivers the behavior; do not infer a missing generic integration/stabilization Slice from the existence of multiple Slices.
 
 Every drift diagnostic identifies path, last responsible slice, expected hash or `REMOVED`, current hash/state, and required action. Because execution close starts only after all rows are terminal and terminal history is immutable, route drift to explicit `REPLAN` with this diagnostic as `REPLAN_REASON`; the approved append-only revision creates a corrective/reconciliation slice, then `MATERIALIZE_TASKS`, `EXECUTE_SLICE`, and `VALIDATE_SLICE` establish new ownership. Never prescribe validation of a concluded slice. Do not inspect hashes stored inside Validation Attempts or silently revalidate. Do not run tests.
 
-If a needed cross-slice integration check has no explicit current-revision `PASS`/`ACCEPTED` integration slice, return `EXECUTION_BLOCKED` with `REPLAN_REASON` and explicit `REPLAN` as the next operation. Do not create that slice or run a suite during closing.
+If a needed cross-slice behavior or operational milestone has no explicit current-revision `PASS`/`ACCEPTED` owner, return `EXECUTION_BLOCKED` with `REPLAN_REASON` and explicit `REPLAN` as the next operation. Do not create a generic integration/stabilization Slice or run a suite during closing.
 
 ## Minimum Reads
 
@@ -47,7 +47,7 @@ If a needed cross-slice integration check has no explicit current-revision `PASS
 
 ## Blocks
 
-Block incomplete progress, a non-canonical execution path or unsafe reserved SPEC entry reported by preflight, invalid order or mapping, active blocking findings/divergences, invalid terminal results, missing/multiple/invalid Effective Validation Bases for `PASS`/`ACCEPTED` slices, malformed supersession, stale requirements authority, missing current-revision reconciliation, changed final-owner paths, later omissions, unowned changes, invalid removals/reappearances, missing coverage, contradictions, or absent required integration work. Arbitrary lifecycle-external/user-owned SPEC-root siblings are preserved and do not block. Never delete an unknown path.
+Block incomplete progress, a non-canonical execution path or unsafe reserved SPEC entry reported by preflight, invalid order or mapping, active blocking findings/divergences, invalid terminal results, missing/multiple/invalid Effective Validation Bases for `PASS`/`ACCEPTED` slices, malformed supersession, stale requirements authority, missing current-revision reconciliation, changed final-owner paths, later omissions, unowned changes, invalid removals/reappearances, missing coverage, contradictions, or an absent explicitly required cross-slice/operational milestone. Arbitrary lifecycle-external/user-owned SPEC-root siblings are preserved and do not block. Never delete an unknown path.
 
 ## Output
 

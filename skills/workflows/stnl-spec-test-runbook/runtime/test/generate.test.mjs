@@ -16,7 +16,7 @@ test("generates a real representative index.html and regenerates byte-identicall
   const bytes = await fs.readFile(first.output);
   assert.equal(first.status, "GENERATED");
   assert.equal(first.scenarios, 3);
-  assert.equal(first.coverage_records, 4);
+  assert.equal(first.coverage_records, 3);
   assert.equal(hasOwnershipMarker(bytes.toString("utf8")), true);
   const second = await generateRunbook(path.join(root, "feature_spec.md"), manifest);
   assert.deepEqual(await fs.readFile(second.output), bytes);
@@ -139,9 +139,7 @@ test("manifest inside the SPEC is rejected to preserve lifecycle layout", async 
 test("generates valid explicitly selected SLICE and TASK runbooks", async (t) => {
   const root = await copyFixture(t);
   const base = JSON.parse(await fs.readFile(await externalManifest(root, "base-manifest.json"), "utf8"));
-  base.sources = base.sources.filter((source) => !source.path.includes("slice-02"));
   base.scenarios = base.scenarios.filter((scenario) => scenario.id !== "TR-003");
-  base.coverage = base.coverage.filter((item) => item.source_id !== "slice-02");
 
   const sliceManifest = await externalManifest(root, "slice-manifest.json");
   base.scope = { kind: "SLICE", selection: { slice: "1" } };

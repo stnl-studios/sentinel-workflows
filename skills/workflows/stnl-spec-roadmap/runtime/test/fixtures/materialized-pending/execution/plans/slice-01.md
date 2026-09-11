@@ -1,16 +1,16 @@
 # File Purpose Header
 
 ```yaml
-purpose: Approved plan for the invitation acceptance API slice.
+purpose: Approved plan for the complete invitation acceptance outcome.
 status: ready
-read_when: Executing or reviewing slice 01.
+read_when: Executing or reviewing the invitation acceptance Slice.
 do_not_read_when: Another slice is active and no dependency requires this plan.
 contains: References, result, scope, boundaries, dependencies, risks, strategy, expected tests, and completion criterion.
 owner: stnl-execution-planner
 update_policy: PLAN created it as draft; REVIEW_PLAN approved it and made it immutable to execution skills.
 ```
 
-# Slice 01 - Invitation API
+# Slice 01 - Accept Invitation
 
 ## References
 
@@ -23,24 +23,25 @@ update_policy: PLAN created it as draft; REVIEW_PLAN approved it and made it imm
 
 ## Objective and Observable Result
 
-Eligible and expired invitations produce the persistence and HTTP results defined by AC-001 and AC-002.
+An eligible invitation can be accepted exactly once and presents the approved confirmation outcome; an expired invitation returns the approved error without persistence; and automated delivery telemetry remains verifiable. The API, persistence, UI, telemetry, and their integration/browser validation form one observable vertical milestone under AC-001, AC-002, and R-003.
 
 ## Requirements
 
 - AC-001
 - AC-002
+- R-003
 
 ## Included Scope
 
-- Eligible acceptance, duplicate prevention, and expired rejection.
+- Eligible acceptance, duplicate prevention, expired rejection, delivery-telemetry verification, and the corresponding persistence, confirmation, and integration/browser validation.
 
 ## Out of Scope and Boundaries
 
-- Confirmation copy belongs to slice 02.
+- Delivery channels or unrelated invitation-management capabilities are out of scope; frontend, backend, persistence, telemetry, and tests are internal work for this Slice.
 
 ## Likely Areas
 
-- Invitation service and API integration tests.
+- Invitation service, persistence boundary, invitation UI, telemetry instrumentation, API integration tests, and browser tests.
 
 ## Dependencies
 
@@ -53,8 +54,8 @@ Eligible and expired invitations produce the persistence and HTTP results define
 
 ## Expected Tests
 
-- API integration tests for eligible, duplicate, and expired invitation behavior.
+- API, persistence, browser, and automated telemetry checks for eligible, duplicate, expired, confirmation, and delivery-telemetry behavior.
 
 ## Completion Criterion
 
-- AC-001 and AC-002 are observable through stable API and persistence results.
+- AC-001 and AC-002 are observable end to end through stable API, persistence, and user-visible results, and R-003 has reproducible automated telemetry evidence within the same Slice.
