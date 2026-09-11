@@ -8,7 +8,7 @@ import path from "node:path";
 
 const ROOT_FILES = new Set(["plan.md", "tasks.md"]);
 const ROOT_DIRECTORIES = new Set(["plans", "tasks"]);
-const SLICE_FILE = /^slice-[0-9]{2,}\.md$/u;
+const SLICE_FILE = /^slice-(?:[0-9]{2}|[1-9][0-9]{2,})\.md$/u;
 const SLICE_OPERATIONS = new Set(["EXECUTE_SLICE", "APPLY_FINDINGS", "VALIDATE_SLICE"]);
 const OPERATIONS = new Set([
   "PLAN", "REVIEW_PLAN", "MATERIALIZE_TASKS", "REVIEW_TASKS", "REPLAN",
@@ -37,6 +37,19 @@ const OPERATION_STATES = new Map([
   ["CLOSE", new Set(["COMPLETE"])],
 ]);
 const CURRENT_AUTHORITY = /^sha256:([0-9a-f]{64})$/u;
+// v1 persists only terminal harness observations.  OBSERVED, evidence-level
+// SUPERSEDED and STALE_EVIDENCE have no producer or authorized transition.
+const VALIDATION_EVIDENCE_LIFECYCLE = new Map([
+  ["VERIFIED", new Map([["NONE", new Set(["NONE", "VALIDATION_FINDING", "CODE_REGRESSION"])]] )],
+  ["INVALID", new Map([
+    ["VALIDATION_SIDE_EFFECT", new Set(["NONE"])],
+    ["INVALID_REPLAY", new Set(["NONE"])],
+  ])],
+]);
+const VALIDATION_EVIDENCE_STATES = new Set(VALIDATION_EVIDENCE_LIFECYCLE.keys());
+const VALIDATION_EVIDENCE_CLASSIFICATIONS = new Set([...VALIDATION_EVIDENCE_LIFECYCLE.values()]
+  .flatMap((classifications) => [...classifications.keys()]));
+const VALIDATION_CONCLUSIONS = new Set(["NONE", "VALIDATION_FINDING", "CODE_REGRESSION"]);
 const HASH_DOMAIN = Buffer.from("stnl-requirements-authority-v1\0", "utf8");
 const PRISTINE = new Map([
   ["Changed Areas", "- pending"],
@@ -323,7 +336,9 @@ async function lifecycleProjection(workspace) {
       for (const entry of (await fs.readdir(shared, { withFileTypes: true })).sort((left, right) => left.name.localeCompare(right.name, "en"))) {
         if (isIgnoredMetadata(entry.name)) continue;
         if (entry.isSymbolicLink() || !entry.isFile() || !entry.name.endsWith(".md")) throw new ExecutionContractError(`shared contains a non-canonical authority entry: ${entry.name}`);
-        const sharedText = await fs.readFile(path.join(shared, entry.name), "utf8");
+        const sharedPath = path.join(shared, entry.name);
+        await requireRealFile(sharedPath, `shared authority entry ${entry.name}`);
+        const sharedText = await fs.readFile(sharedPath, "utf8");
         records.push(...canonicalRecords(parsePurpose(sharedText, entry.name).body));
       }
     }
@@ -723,6 +738,257 @@ function exactObject(value, keys, label) {
   }
 }
 
+const EVIDENCE_PROVENANCE_KEYS = new Set([
+  "version", "evidenceId", "priorEvidenceId", "state", "classification", "conclusion",
+  "operation", "slice", "round", "workspace", "inputs", "subjects", "commands", "replay",
+]);
+const EVIDENCE_WORKSPACE_KEYS = new Set([
+  "kind", "workspaceId", "cwd", "executionRoot", "liveExecutionFingerprintBefore",
+  "liveExecutionFingerprintAfter", "liveWorkspaceFingerprintBefore", "liveWorkspaceFingerprintAfter",
+  "isolatedExecutionFingerprintBefore", "isolatedExecutionFingerprintAfter", "cleanup", "sideEffects",
+]);
+const EVIDENCE_INPUT_KEYS = new Set([
+  "requirementsAuthority", "planRevision", "head", "sourceFingerprint", "manifestFingerprint",
+  "baselineFingerprint", "changedScopeFingerprint", "executionFingerprint",
+]);
+const EVIDENCE_SUBJECT_KEYS = new Set(["path", "expected"]);
+const EVIDENCE_COMMAND_KEYS = new Set([
+  "display", "argv", "cwd", "writePaths", "envFingerprint", "executableFingerprint", "timeoutMs", "exit",
+  "stdoutFingerprint", "stderrFingerprint",
+]);
+const EVIDENCE_REPLAY_KEYS = new Set([
+  "originalEvidenceId", "originalFingerprint", "currentFingerprint", "equivalent", "mismatches",
+]);
+const EVIDENCE_REPLAY_COMPONENTS = new Set([
+  "operation", "slice", "round", "cwd", "executionRoot", "requirementsAuthority", "planRevision",
+  "head", "sourceFingerprint", "manifestFingerprint", "baselineFingerprint", "changedScopeFingerprint",
+  "commandsFingerprint", "executionFingerprint",
+]);
+
+function deterministicDigest(domain, value) {
+  const canonical = (input) => {
+    if (Array.isArray(input)) return input.map(canonical);
+    if (input !== null && typeof input === "object") {
+      return Object.fromEntries(Object.keys(input).sort().map((key) => [key, canonical(input[key])]));
+    }
+    return input;
+  };
+  return `sha256:${createHash("sha256").update(JSON.stringify(canonical([domain, value]))).digest("hex")}`;
+}
+
+function canonicalEvidenceMaterial(provenance) {
+  const { evidenceId: _evidenceId, ...material } = provenance;
+  return material;
+}
+
+export function validationEvidenceIdentity(provenance) {
+  return deterministicDigest("stnl-validation-evidence-v1", canonicalEvidenceMaterial(provenance));
+}
+
+function validateProjectRelativePath(value, label) {
+  if (value === ".") return value;
+  if (typeof value !== "string" || value.length === 0 || value.includes("\\") || value.includes("\0")
+    || value.endsWith("/") || path.posix.isAbsolute(value) || path.posix.normalize(value) !== value
+    || value === ".." || value.startsWith("../")) {
+    throw new ExecutionContractError(`${label} is not a normalized project-relative path: ${value}`);
+  }
+  return value;
+}
+
+function evidenceSubjectFingerprint(subjects) {
+  return deterministicDigest("stnl-validation-subject-manifest-v1", subjects);
+}
+
+function changedScopeFingerprint(subjects) {
+  return deterministicDigest("stnl-validation-changed-scope-v1", subjects.map((entry) => entry.path));
+}
+
+function evidenceExecutionFingerprint(provenance) {
+  const commands = provenance.commands.map(({ stdoutFingerprint: _stdout, stderrFingerprint: _stderr, exit: _exit, ...command }) => command);
+  const inputs = { ...provenance.inputs };
+  delete inputs.executionFingerprint;
+  return deterministicDigest("stnl-validation-execution-v1", {
+    operation: provenance.operation,
+    slice: provenance.slice,
+    round: provenance.round,
+    cwd: provenance.workspace.cwd,
+    executionRoot: provenance.workspace.executionRoot,
+    subjects: provenance.subjects,
+    commands,
+    inputs,
+  });
+}
+
+function parseEvidenceProvenance(record, authority, { operation, round, required = false }) {
+  const raw = field(record.body, "Evidence provenance", { required: false });
+  if (raw === null) {
+    if (required) throw new ExecutionContractError(`${record.id} v1 validation evidence requires structured provenance`);
+    return null;
+  }
+  let provenance;
+  try { provenance = JSON.parse(raw); } catch { throw new ExecutionContractError(`${record.id} Evidence provenance must be inline JSON`); }
+  exactObject(provenance, EVIDENCE_PROVENANCE_KEYS, `${record.id} Evidence provenance`);
+  if (provenance.version !== 1 || !VALIDATION_EVIDENCE_STATES.has(provenance.state)
+    || !VALIDATION_EVIDENCE_CLASSIFICATIONS.has(provenance.classification)
+    || !VALIDATION_CONCLUSIONS.has(provenance.conclusion)) {
+    throw new ExecutionContractError(`${record.id} Evidence provenance has an unsupported version or lifecycle value`);
+  }
+  if (!VALIDATION_EVIDENCE_LIFECYCLE.get(provenance.state)?.get(provenance.classification)?.has(provenance.conclusion)) {
+    throw new ExecutionContractError(`${record.id} Evidence provenance has an illegal lifecycle combination`);
+  }
+  if (provenance.operation !== operation || provenance.slice !== authority.slice || provenance.round !== round) {
+    throw new ExecutionContractError(`${record.id} Evidence provenance origin disagrees with its record`);
+  }
+  if (provenance.priorEvidenceId !== null && (typeof provenance.priorEvidenceId !== "string" || !CURRENT_AUTHORITY.test(provenance.priorEvidenceId))) {
+    throw new ExecutionContractError(`${record.id} Evidence provenance priorEvidenceId is malformed`);
+  }
+  exactObject(provenance.workspace, EVIDENCE_WORKSPACE_KEYS, `${record.id} Evidence workspace`);
+  const workspace = provenance.workspace;
+  if (workspace.kind !== "isolated-copy" || workspace.cleanup !== "clean") {
+    if (provenance.state !== "INVALID" || provenance.classification !== "VALIDATION_SIDE_EFFECT") {
+      throw new ExecutionContractError(`${record.id} non-isolated or unclean validation workspace must be invalid`);
+    }
+  }
+  for (const [value, label] of [
+    [workspace.workspaceId, "workspaceId"],
+    [workspace.liveExecutionFingerprintBefore, "live execution before fingerprint"],
+    [workspace.liveExecutionFingerprintAfter, "live execution after fingerprint"],
+    [workspace.liveWorkspaceFingerprintBefore, "live workspace before fingerprint"],
+    [workspace.liveWorkspaceFingerprintAfter, "live workspace after fingerprint"],
+    [workspace.isolatedExecutionFingerprintBefore, "isolated execution before fingerprint"],
+    [workspace.isolatedExecutionFingerprintAfter, "isolated execution after fingerprint"],
+  ]) {
+    if (typeof value !== "string" || !CURRENT_AUTHORITY.test(value)) throw new ExecutionContractError(`${record.id} ${label} is malformed`);
+  }
+  validateProjectRelativePath(workspace.cwd, `${record.id} workspace cwd`);
+  validateProjectRelativePath(workspace.executionRoot, `${record.id} workspace execution root`);
+  if (!Array.isArray(workspace.sideEffects) || workspace.sideEffects.some((entry) => typeof entry !== "string" || entry.length === 0)
+    || new Set(workspace.sideEffects).size !== workspace.sideEffects.length
+    || workspace.sideEffects.some((entry, index) => index > 0 && entry.localeCompare(workspace.sideEffects[index - 1], "en") <= 0)) {
+    throw new ExecutionContractError(`${record.id} Evidence workspace sideEffects must be a unique ordered array`);
+  }
+
+  exactObject(provenance.inputs, EVIDENCE_INPUT_KEYS, `${record.id} Evidence inputs`);
+  const inputs = provenance.inputs;
+  if (inputs.requirementsAuthority !== `sha256:${authority.fingerprint}` || inputs.planRevision !== authority.revision) {
+    throw new ExecutionContractError(`${record.id} Evidence inputs are stale relative to current authority`);
+  }
+  if (inputs.head !== "not_available" && (typeof inputs.head !== "string" || !/^[0-9a-f]{40,64}$/u.test(inputs.head))) {
+    throw new ExecutionContractError(`${record.id} Evidence HEAD is malformed`);
+  }
+  if (field(record.body, "HEAD") !== inputs.head) {
+    throw new ExecutionContractError(`${record.id} HEAD disagrees with Evidence provenance`);
+  }
+  for (const name of ["sourceFingerprint", "manifestFingerprint", "changedScopeFingerprint", "executionFingerprint"]) {
+    if (typeof inputs[name] !== "string" || !CURRENT_AUTHORITY.test(inputs[name])) throw new ExecutionContractError(`${record.id} Evidence ${name} is malformed`);
+  }
+  if (inputs.baselineFingerprint !== null && (typeof inputs.baselineFingerprint !== "string" || !CURRENT_AUTHORITY.test(inputs.baselineFingerprint))) {
+    throw new ExecutionContractError(`${record.id} Evidence baselineFingerprint is malformed`);
+  }
+
+  if (!Array.isArray(provenance.subjects)) throw new ExecutionContractError(`${record.id} Evidence subjects must be an array`);
+  const subjectPaths = [];
+  for (const subject of provenance.subjects) {
+    exactObject(subject, EVIDENCE_SUBJECT_KEYS, `${record.id} Evidence subject`);
+    subject.path = validateRelativeEvidencePath(subject.path, `${record.id} Evidence subject path`);
+    if (typeof subject.expected !== "string" || (subject.expected !== "REMOVED" && !CURRENT_AUTHORITY.test(subject.expected))) {
+      throw new ExecutionContractError(`${record.id} Evidence subject has malformed expected state`);
+    }
+    subjectPaths.push(subject.path);
+  }
+  if (new Set(subjectPaths).size !== subjectPaths.length
+    || subjectPaths.some((entry, index) => index > 0 && entry.localeCompare(subjectPaths[index - 1], "en") <= 0)) {
+    throw new ExecutionContractError(`${record.id} Evidence subjects must preserve unique file identity in lexical order`);
+  }
+  if (inputs.manifestFingerprint !== evidenceSubjectFingerprint(provenance.subjects)
+    || inputs.changedScopeFingerprint !== changedScopeFingerprint(provenance.subjects)) {
+    throw new ExecutionContractError(`${record.id} Evidence subject fingerprints do not match the persisted subjects`);
+  }
+
+  if (!Array.isArray(provenance.commands)) throw new ExecutionContractError(`${record.id} Evidence commands must be an array`);
+  for (const command of provenance.commands) {
+    exactObject(command, EVIDENCE_COMMAND_KEYS, `${record.id} Evidence command`);
+    if (typeof command.display !== "string" || command.display.length === 0 || !Array.isArray(command.argv)
+      || command.argv.length === 0 || command.argv.some((entry) => typeof entry !== "string")
+      || !Array.isArray(command.writePaths)
+      || command.writePaths.some((entry) => validateProjectRelativePath(entry, `${record.id} Evidence command write path`) !== entry)
+      || new Set(command.writePaths).size !== command.writePaths.length
+      || command.writePaths.some((entry, index) => index > 0 && entry.localeCompare(command.writePaths[index - 1], "en") <= 0)
+      || !Number.isSafeInteger(command.timeoutMs) || command.timeoutMs <= 0 || !Number.isSafeInteger(command.exit)) {
+      throw new ExecutionContractError(`${record.id} Evidence command is malformed`);
+    }
+    validateProjectRelativePath(command.cwd, `${record.id} Evidence command cwd`);
+    for (const name of ["envFingerprint", "executableFingerprint", "stdoutFingerprint", "stderrFingerprint"]) {
+      if (typeof command[name] !== "string" || !CURRENT_AUTHORITY.test(command[name])) throw new ExecutionContractError(`${record.id} Evidence command ${name} is malformed`);
+    }
+  }
+  if (record.commands.length !== provenance.commands.length || record.commands.some((command, index) => (
+    command.command !== provenance.commands[index].display || command.exit !== provenance.commands[index].exit
+  ))) throw new ExecutionContractError(`${record.id} Commands disagree with Evidence provenance`);
+  if (inputs.executionFingerprint !== evidenceExecutionFingerprint(provenance)
+    || workspace.workspaceId !== inputs.executionFingerprint) {
+    throw new ExecutionContractError(`${record.id} Evidence execution identity is inconsistent`);
+  }
+
+  if (provenance.replay !== null) {
+    exactObject(provenance.replay, EVIDENCE_REPLAY_KEYS, `${record.id} Evidence replay`);
+    const replay = provenance.replay;
+    if (typeof replay.originalEvidenceId !== "string" || !CURRENT_AUTHORITY.test(replay.originalEvidenceId)
+      || typeof replay.originalFingerprint !== "string" || !CURRENT_AUTHORITY.test(replay.originalFingerprint)
+      || replay.currentFingerprint !== inputs.executionFingerprint || typeof replay.equivalent !== "boolean"
+      || !Array.isArray(replay.mismatches)
+      || replay.mismatches.some((entry) => typeof entry !== "string" || !EVIDENCE_REPLAY_COMPONENTS.has(entry))
+      || new Set(replay.mismatches).size !== replay.mismatches.length
+      || replay.mismatches.some((entry, index) => index > 0 && entry.localeCompare(replay.mismatches[index - 1], "en") <= 0)) {
+      throw new ExecutionContractError(`${record.id} Evidence replay is malformed`);
+    }
+    if (replay.equivalent !== (replay.originalFingerprint === replay.currentFingerprint)
+      || replay.equivalent !== (replay.mismatches.length === 0)) {
+      throw new ExecutionContractError(`${record.id} Evidence replay equivalence is internally inconsistent`);
+    }
+    if (!replay.equivalent && (provenance.state !== "INVALID"
+      || !new Set(["INVALID_REPLAY", "VALIDATION_SIDE_EFFECT"]).has(provenance.classification)
+      || provenance.conclusion !== "NONE")) {
+      throw new ExecutionContractError(`${record.id} invalid replay cannot support a validation conclusion`);
+    }
+  } else if (provenance.classification === "INVALID_REPLAY" || provenance.conclusion === "CODE_REGRESSION") {
+    throw new ExecutionContractError(`${record.id} code regression requires an explicit replay equivalence record`);
+  }
+
+  const sideEffect = workspace.sideEffects.length !== 0
+    || workspace.liveExecutionFingerprintBefore !== workspace.liveExecutionFingerprintAfter
+    || workspace.liveWorkspaceFingerprintBefore !== workspace.liveWorkspaceFingerprintAfter
+    || workspace.isolatedExecutionFingerprintBefore !== workspace.isolatedExecutionFingerprintAfter
+    || workspace.cleanup !== "clean";
+  if (sideEffect !== (provenance.classification === "VALIDATION_SIDE_EFFECT")) {
+    throw new ExecutionContractError(`${record.id} validation side-effect classification disagrees with workspace evidence`);
+  }
+  if (sideEffect && (provenance.state !== "INVALID" || provenance.conclusion !== "NONE")) {
+    throw new ExecutionContractError(`${record.id} validation side effect must invalidate the evidence`);
+  }
+  if (provenance.state === "VERIFIED" && provenance.classification !== "NONE") {
+    throw new ExecutionContractError(`${record.id} verified evidence cannot retain an invalid classification`);
+  }
+  if (provenance.state === "INVALID" && record.status !== "BLOCKED") {
+    throw new ExecutionContractError(`${record.id} invalid evidence can only produce BLOCKED`);
+  }
+  if (["PASS", "ACCEPTED", "NEEDS_FIX", "TESTS_PASS", "TESTS_ACCEPTED", "TESTS_FAIL", "TESTS_NOT_APPLICABLE"].includes(record.status)
+    && provenance.state !== "VERIFIED") {
+    throw new ExecutionContractError(`${record.id} material conclusion requires VERIFIED evidence`);
+  }
+  if (["PASS", "ACCEPTED", "TESTS_PASS", "TESTS_ACCEPTED", "TESTS_NOT_APPLICABLE"].includes(record.status)
+    && provenance.conclusion !== "NONE") {
+    throw new ExecutionContractError(`${record.id} successful or non-applicable evidence cannot assert a finding`);
+  }
+  if (["NEEDS_FIX", "TESTS_FAIL"].includes(record.status) && provenance.conclusion === "NONE") {
+    throw new ExecutionContractError(`${record.id} failing evidence requires a structured conclusion`);
+  }
+  if (provenance.evidenceId !== validationEvidenceIdentity(provenance)) {
+    throw new ExecutionContractError(`${record.id} Evidence identity does not match its provenance`);
+  }
+  return Object.freeze(provenance);
+}
+
 export function qualityGateIdentity(gate, authority) {
   // Observation timestamps, prose and unrelated working-tree changes are not an
   // identity. Diagnostic content and the authority/obligation boundary are.
@@ -816,7 +1082,7 @@ function validateGateResult(record, authority) {
 }
 
 const CHECK_FIELD_NAMES = new Set([
-  "Gate assessments", "Automatic check round", "Status", "HEAD", "Tested scope", "Tested state", "Fileless reason", "Discovery sources",
+  "Gate assessments", "Evidence provenance", "Automatic check round", "Status", "HEAD", "Tested scope", "Tested state", "Fileless reason", "Discovery sources",
   "Discovery actions", "Verification types considered", "Commands", "Selected checks", "Selection rationale",
   "Coverage", "Failures", "Blockers", "Unexpected workspace effects", "Persistence summary",
   "Prior-round failure", "Correction applied", "Correction paths", "Updated scope", "In-slice rationale",
@@ -830,7 +1096,7 @@ const IMPLEMENTATION_CHECK_FIELD_NAMES = new Set(
   [...CHECK_FIELD_NAMES].filter((name) => !FINDINGS_CHECK_ONLY_FIELD_NAMES.has(name)),
 );
 const ATTEMPT_FIELD_NAMES = new Set([
-  "Gate assessments", "Type", "Status", "HEAD", "Verified scope", "Commands", "Evidence", "Finding references", "Finding dispositions",
+  "Gate assessments", "Evidence provenance", "Type", "Status", "HEAD", "Verified scope", "Commands", "Evidence", "Finding references", "Finding dispositions",
   "Blockers", "Unexpected workspace effects", "Persistence summary",
 ]);
 
@@ -1049,6 +1315,14 @@ function parseChecks(section, prefix, context = {}, authority = {}) {
       permitNone: new Set(["TESTS_NOT_APPLICABLE", "BLOCKED"]).has(record.status),
       requireZero: false,
     });
+    record.provenance = parseEvidenceProvenance(record, authority, {
+      operation: prefix === "implementation-check" ? "EXECUTE_SLICE" : "APPLY_FINDINGS",
+      round: `${record.round}/3`,
+      required: context.evidenceContract === "stnl-validation-evidence/v1",
+    });
+    if (record.provenance !== null && JSON.stringify(record.provenance.subjects) !== JSON.stringify(
+      record.testedState.map(({ path: subjectPath, expected }) => ({ path: subjectPath, expected })),
+    )) throw new ExecutionContractError(`${record.id} Tested state disagrees with Evidence provenance subjects`);
     validateGateResult(record, authority);
     if (record.status === "TESTS_FAIL" && !record.commands.some((entry) => entry.exit !== 0)) {
       throw new ExecutionContractError(`${record.id} TESTS_FAIL must contain a nonzero command exit`);
@@ -1115,6 +1389,12 @@ function parseChecks(section, prefix, context = {}, authority = {}) {
     } else {
       throw new ExecutionContractError(`${record.id} appears after terminal automatic-check record ${previous.id}`);
     }
+    if (record.provenance !== null) {
+      const expectedPrior = previous?.provenance?.evidenceId ?? null;
+      if (record.provenance.priorEvidenceId !== expectedPrior) {
+        throw new ExecutionContractError(`${record.id} Evidence provenance does not follow the prior validation record`);
+      }
+    }
     previous = record;
   }
   return records;
@@ -1122,6 +1402,12 @@ function parseChecks(section, prefix, context = {}, authority = {}) {
 
 function baseState(section, attempts) {
   if (section === "- none") return { present: false, paths: [], entries: [] };
+  const allowedFields = new Set(["Origin attempt", "Attempt type", "HEAD", "Result", "Files", "Fileless reason", "Authoritative commands", "Evidence summary"]);
+  const fieldNames = [...section.matchAll(/^- ([^:\n]+):/gmu)].map((match) => match[1]);
+  const unknownField = fieldNames.find((name) => !allowedFields.has(name));
+  if (unknownField !== undefined) throw new ExecutionContractError(`Effective Validation Base has an unknown field: ${unknownField}`);
+  const duplicateField = fieldNames.find((name, index) => fieldNames.indexOf(name) !== index);
+  if (duplicateField !== undefined) throw new ExecutionContractError(`Effective Validation Base must contain exactly one ${duplicateField} field`);
   const origin = field(section, "Origin attempt");
   const owningAttempt = attempts.at(-1);
   if (owningAttempt?.id !== origin || !SUCCESS_RESULTS.has(owningAttempt?.status)) throw new ExecutionContractError("Effective Validation Base does not originate from the latest successful validation attempt");
@@ -1187,6 +1473,9 @@ function baseState(section, attempts) {
   if (evidenceSummary !== field(owningAttempt.body, "Evidence")) {
     throw new ExecutionContractError("Effective Validation Base Evidence summary disagrees with its origin attempt");
   }
+  if (owningAttempt.provenance !== null && JSON.stringify(owningAttempt.provenance.subjects) !== JSON.stringify(
+    entries.map(({ path: subjectPath, expected }) => ({ path: subjectPath, expected })),
+  )) throw new ExecutionContractError("Effective Validation Base disagrees with its origin evidence subjects");
   return { present: true, fileless, paths, entries };
 }
 
@@ -1199,7 +1488,7 @@ function finalState(section) {
   return { result: "SUPERSEDED", supersededBy: superseded[1], planRevision: Number(superseded[2]) };
 }
 
-function parseAttempts(section, authority) {
+function parseAttempts(section, authority, evidenceContract = null) {
   const attempts = operationRecords(section, "attempt", { statusValues: new Set(["PASS", "ACCEPTED", "NEEDS_FIX", "BLOCKED"]) });
   const firstSuccessIndex = attempts.findIndex((attempt) => SUCCESS_RESULTS.has(attempt.status));
   if (firstSuccessIndex >= 0 && firstSuccessIndex !== attempts.length - 1) {
@@ -1214,6 +1503,9 @@ function parseAttempts(section, authority) {
       requirePresentValue(field(attempt.body, name), `${attempt.id} ${name}`);
     }
     attempt.commands = requireCommands(attempt, { permitNone: attempt.status === "BLOCKED", requireZero: false });
+    attempt.provenance = parseEvidenceProvenance(attempt, authority, {
+      operation: "VALIDATE_SLICE", round: null, required: evidenceContract === "stnl-validation-evidence/v1",
+    });
     validateGateResult(attempt, authority);
     attempt.findingReferences = parseCanonicalFindingIds(
       field(attempt.body, "Finding references"),
@@ -1226,7 +1518,34 @@ function parseAttempts(section, authority) {
       throw new ExecutionContractError(`${attempt.id} Finding references and dispositions disagree`);
     }
   }
+  for (let index = 0; index < attempts.length; index += 1) {
+    const current = attempts[index];
+    if (current.provenance === null) continue;
+    const expectedPrior = attempts[index - 1]?.provenance?.evidenceId ?? null;
+    if (current.provenance.priorEvidenceId !== expectedPrior) {
+      throw new ExecutionContractError(`${current.id} Evidence provenance does not follow the prior validation attempt`);
+    }
+  }
   return attempts;
+}
+
+function parsePriorValidationOverlaps(section, label, evidenceContract) {
+  if (section === "- none") return [];
+  if (evidenceContract !== "stnl-validation-evidence/v1") return [];
+  const records = [];
+  const blocks = String(section).trim().split(/\n\n(?=### overlap-[0-9]{2,}\n)/u);
+  for (const block of blocks) {
+    const match = block.match(/^### (overlap-[0-9]{2,})\n\n- Prior slice: (slice-[0-9]{2,})\n- Paths: ([^\n]+)\n- Affected behavior: ([^\n]+)\n- Regressions: ([^\n]+)$/u);
+    if (match === null) throw new ExecutionContractError(`${label} has malformed Prior Validation Overlap`);
+    const [, id, priorSlice, pathsValue, behavior, regressions] = match;
+    requireNonPlaceholder(behavior, `${id} Affected behavior`);
+    requireNonPlaceholder(regressions, `${id} Regressions`);
+    records.push({ id, priorSlice, paths: parseInlinePathSet(pathsValue, `${id} Paths`), behavior, regressions });
+  }
+  if (new Set(records.map((record) => record.id)).size !== records.length) {
+    throw new ExecutionContractError(`${label} has duplicate Prior Validation Overlap identifiers`);
+  }
+  return records;
 }
 
 function parseDelegationBlocker(section, operationRecordsByName) {
@@ -1236,6 +1555,7 @@ function parseDelegationBlocker(section, operationRecordsByName) {
   const kind = field(section, "Kind");
   const state = field(section, "State");
   const afterRecord = field(section, "After record");
+  const pendingRoundValue = field(section, "Pending automatic round", { required: false });
   if (!SLICE_OPERATIONS.has(operation)) throw new ExecutionContractError("Delegation Blocker has invalid Operation");
   if (!new Set(["initialization", "malformed-output"]).has(kind)) throw new ExecutionContractError("Delegation Blocker has invalid Kind");
   if (!new Set(["active", "resolved"]).has(state)) throw new ExecutionContractError("Delegation Blocker has invalid State");
@@ -1248,6 +1568,20 @@ function parseDelegationBlocker(section, operationRecordsByName) {
   const priorIndex = afterRecord === "none" ? -1 : records.findIndex((record) => record.id === afterRecord);
   if (afterRecord !== "none" && priorIndex < 0) throw new ExecutionContractError("Delegation Blocker After record does not exist for its Operation");
   if (state === "active" && priorIndex !== records.length - 1) throw new ExecutionContractError("active Delegation Blocker must be resolved after a later valid record");
+  let pendingRound = null;
+  if (operation === "VALIDATE_SLICE") {
+    if (pendingRoundValue !== null && pendingRoundValue !== "none") throw new ExecutionContractError("VALIDATE_SLICE Delegation Blocker cannot carry an automatic round");
+  } else if (pendingRoundValue !== null) {
+    const match = pendingRoundValue.match(/^([123])\/3$/u);
+    if (match === null) throw new ExecutionContractError("Delegation Blocker has invalid Pending automatic round");
+    pendingRound = Number(match[1]);
+    const prior = priorIndex < 0 ? null : records[priorIndex];
+    const expected = prior === null || prior.status === "BLOCKED" ? 1
+      : prior.status === "TESTS_FAIL" && prior.round < 3 ? prior.round + 1 : null;
+    if (expected === null || pendingRound !== expected) {
+      throw new ExecutionContractError("Delegation Blocker pending round disagrees with the interrupted logical invocation");
+    }
+  }
   if (state === "resolved") {
     if (records.length <= priorIndex + 1) throw new ExecutionContractError("resolved Delegation Blocker requires a later valid record");
     const resolvingRecord = records[priorIndex + 1].id;
@@ -1257,7 +1591,7 @@ function parseDelegationBlocker(section, operationRecordsByName) {
       throw new ExecutionContractError(`Delegation Blocker Resolution must name ${resolvingRecord}`);
     }
   }
-  return { operation, kind, state, afterRecord };
+  return { operation, kind, state, afterRecord, pendingRound };
 }
 
 function validateFindingLifecycle(findings, attempts, findingsChecks) {
@@ -1358,7 +1692,8 @@ function changedPathClaims(section, label, sentinels) {
 }
 
 function validateRelativeEvidencePath(value, label) {
-  if (value.length === 0 || value.includes("\\") || path.posix.isAbsolute(value) || path.posix.normalize(value) !== value || value === ".") {
+  if (value.length === 0 || value.includes("\\") || value.includes("\0") || value.endsWith("/")
+    || path.posix.isAbsolute(value) || path.posix.normalize(value) !== value || value === ".") {
     throw new ExecutionContractError(`${label} is not a normalized relative path: ${value}`);
   }
   return value;
@@ -1444,6 +1779,10 @@ function parseTask(text, label, expectedSlice, references = {}) {
   requireCanonicalSections(taskSections, TASK_SECTIONS, label);
   if (!taskSections.has("References")) throw new ExecutionContractError(`${label} is missing References`);
   const state = authorityFields(taskSections.get("References"), label);
+  const evidenceContract = field(taskSections.get("References"), "Validation evidence contract", { required: false });
+  if (evidenceContract !== null && evidenceContract !== "stnl-validation-evidence/v1") {
+    throw new ExecutionContractError(`${label} has an unsupported Validation evidence contract`);
+  }
   if (references.requirementsSource !== undefined) referenceValue(taskSections.get("References"), "Requirements source", references.requirementsSource, label);
   referenceValue(taskSections.get("References"), "Plan", `../plans/${expectedSlice}.md`, label);
   referenceValue(taskSections.get("References"), "Global tasks", "../tasks.md", label);
@@ -1458,13 +1797,15 @@ function parseTask(text, label, expectedSlice, references = {}) {
     artifact: label,
     section: "Implementation Test Evidence",
     declaredFindingIds,
+    evidenceContract,
   }, gateAuthority);
   const findingsChecks = parseChecks(taskSections.get("Findings Test Evidence"), "findings-check", {
     artifact: label,
     section: "Findings Test Evidence",
     declaredFindingIds,
+    evidenceContract,
   }, gateAuthority);
-  const attempts = parseAttempts(taskSections.get("Validation Attempts"), gateAuthority);
+  const attempts = parseAttempts(taskSections.get("Validation Attempts"), gateAuthority, evidenceContract);
   const findings = blockerRecords(taskSections.get("Validation Findings"), "finding");
   const divergences = blockerRecords(taskSections.get("Divergences"), "divergence");
   const qualityRecords = chronologicalQualityRecords(implementationChecks, findingsChecks, attempts);
@@ -1478,12 +1819,18 @@ function parseTask(text, label, expectedSlice, references = {}) {
   const delegationBlocker = parseDelegationBlocker(taskSections.get("Delegation Blocker"), new Map([
     ["EXECUTE_SLICE", implementationChecks], ["APPLY_FINDINGS", findingsChecks], ["VALIDATE_SLICE", attempts],
   ]));
+  if (evidenceContract === "stnl-validation-evidence/v1"
+    && delegationBlocker?.operation !== "VALIDATE_SLICE"
+    && delegationBlocker?.pendingRound === null) {
+    throw new ExecutionContractError(`${label} v1 auxiliary Delegation Blocker requires Pending automatic round`);
+  }
   const base = baseState(taskSections.get("Effective Validation Base"), attempts);
   for (const entry of base.entries) validateRelativeEvidencePath(entry.path, `${label} Effective Validation Base path`);
   const final = finalState(taskSections.get("Final Result"));
   const changedAreasSection = taskSections.get("Changed Areas");
   const changedAreas = changedPathClaims(changedAreasSection, `${label} Changed Areas`, new Set(["- pending", "- none"]));
   const corrections = changedPathClaims(taskSections.get("Corrections Applied"), `${label} Corrections Applied`, new Set(["- none"]));
+  const priorValidationOverlaps = parsePriorValidationOverlaps(taskSections.get("Prior Validation Overlap"), label, evidenceContract);
   if (corrections.some((claim) => !changedAreas.includes(claim))) throw new ExecutionContractError(`${label} correction path is absent from Changed Areas`);
   const changedClaims = [...new Set([...changedAreas, ...corrections])];
   const checklist = taskSections.get("Checklist") ?? "";
@@ -1527,6 +1874,9 @@ function parseTask(text, label, expectedSlice, references = {}) {
   if (final.result === "SUPERSEDED" && base.present) throw new ExecutionContractError(`${label} SUPERSEDED must not retain an Effective Validation Base`);
   if (SUCCESS_RESULTS.has(final.result) && changedClaims.some((claim) => !base.paths.includes(claim))) {
     throw new ExecutionContractError(`${label} has a changed/corrected path with no validation owner`);
+  }
+  if (SUCCESS_RESULTS.has(final.result) && base.paths.some((entry) => !changedClaims.includes(entry))) {
+    throw new ExecutionContractError(`${label} Effective Validation Base path is absent from Changed Areas/Corrections Applied`);
   }
   const latestAttempt = attempts.at(-1);
   const latestNeedsFix = attempts.filter((attempt) => attempt.status === "NEEDS_FIX").at(-1);
@@ -1604,9 +1954,9 @@ function parseTask(text, label, expectedSlice, references = {}) {
     }
   }
   return {
-    ...state, body, sections: taskSections, pristine, attempts, findings, divergences, activeBlockers,
+    ...state, evidenceContract, body, sections: taskSections, pristine, attempts, findings, divergences, activeBlockers,
     base, final, implementationChecks, findingsChecks, delegationBlocker, retryExhausted, checklistComplete,
-    changedClaims, claims: [...new Set([...changedClaims, ...base.paths])],
+    changedClaims, priorValidationOverlaps, claims: [...new Set([...changedClaims, ...base.paths])],
   };
 }
 
@@ -1634,16 +1984,91 @@ async function trustedProjectRoot(workspace) {
   return workspace.specRoot ?? path.dirname(workspace.authorityPath);
 }
 
-async function validateFinalOwnership(result) {
+export async function computeValidationSourceFingerprint(projectRoot, executionRoot) {
+  const trustedRoot = await fs.realpath(projectRoot);
+  const excludedRoot = path.resolve(executionRoot);
+  if (!pathIsWithin(excludedRoot, trustedRoot)) {
+    throw new ExecutionContractError("validation execution root is outside its trusted project root");
+  }
+  const entries = [];
+  async function visit(directory) {
+    for (const entry of (await fs.readdir(directory, { withFileTypes: true }))
+      .sort((a, b) => a.name.localeCompare(b.name, "en"))) {
+      if (entry.name === ".git" || isIgnoredMetadata(entry.name)) continue;
+      const entryPath = path.join(directory, entry.name);
+      if (entryPath === excludedRoot || pathIsWithin(entryPath, excludedRoot)) continue;
+      const relative = path.relative(trustedRoot, entryPath).split(path.sep).join("/");
+      const metadata = await fs.lstat(entryPath);
+      const mode = metadata.mode & 0o777;
+      if (metadata.isSymbolicLink()) {
+        const physical = await fs.realpath(entryPath);
+        if (!pathIsWithin(physical, trustedRoot)) {
+          throw new ExecutionContractError(`validation source symlink escapes its trusted project: ${relative}`);
+        }
+        entries.push([relative, "symlink", mode, await fs.readlink(entryPath)]);
+      } else if (metadata.isDirectory()) {
+        entries.push([relative, "directory", mode]);
+        await visit(entryPath);
+      } else if (metadata.isFile()) {
+        if (metadata.nlink !== 1) throw new ExecutionContractError(`validation source contains a hardlink: ${relative}`);
+        entries.push([
+          relative, "file", mode,
+          createHash("sha256").update(await fs.readFile(entryPath)).digest("hex"),
+        ]);
+      } else throw new ExecutionContractError(`validation source contains an unsupported entry: ${relative}`);
+    }
+  }
+  await visit(trustedRoot);
+  return deterministicDigest("stnl-validation-source-v1", entries);
+}
+
+export async function readValidationHead(projectRoot) {
+  try {
+    const marker = path.join(projectRoot, ".git");
+    const metadata = await fs.lstat(marker);
+    let gitDirectory = marker;
+    if (metadata.isFile()) {
+      const pointer = (await fs.readFile(marker, "utf8")).trim().match(/^gitdir: ([^\n\r]+)$/u)?.[1];
+      if (pointer === undefined || path.isAbsolute(pointer) || pointer.includes("\\") || pointer.split("/").includes("..")) return "not_available";
+      gitDirectory = path.resolve(projectRoot, pointer);
+    } else if (!metadata.isDirectory() || metadata.isSymbolicLink()) return "not_available";
+    const head = (await fs.readFile(path.join(gitDirectory, "HEAD"), "utf8")).trim();
+    if (/^[0-9a-f]{40,64}$/u.test(head)) return head;
+    const reference = head.match(/^ref: (refs\/[A-Za-z0-9._/-]+)$/u)?.[1];
+    if (reference === undefined || reference.split("/").includes("..")) return "not_available";
+    const direct = (await fs.readFile(path.join(gitDirectory, reference), "utf8").catch(() => "")).trim();
+    if (/^[0-9a-f]{40,64}$/u.test(direct)) return direct;
+    const packed = await fs.readFile(path.join(gitDirectory, "packed-refs"), "utf8").catch(() => "");
+    const match = packed.match(new RegExp(`^([0-9a-f]{40,64}) ${reference.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")}$`, "mu"));
+    return match?.[1] ?? "not_available";
+  } catch {
+    return "not_available";
+  }
+}
+
+async function validateFinalOwnership(result, { onlySlices = null } = {}) {
   const owners = new Map();
   const trustedRoot = await trustedProjectRoot(result.workspace);
   for (const row of result.rows) {
     if (!SUCCESS_RESULTS.has(row.result)) continue;
+    if (onlySlices !== null && !onlySlices.has(row.slice)) continue;
     const task = result.tasks.get(row.slice);
     const taskDirectory = path.join(result.workspace.executionRoot, "tasks");
+    const manifestTargets = new Set();
+    const manifestPhysicalFiles = new Set();
     for (const entry of task.base.entries) {
       const target = path.resolve(taskDirectory, entry.path);
       await rejectSymlinkComponents(target, trustedRoot);
+      if (manifestTargets.has(target)) throw new ExecutionContractError(`${row.slice} manifest aliases the same path: ${entry.path}`);
+      manifestTargets.add(target);
+      const metadata = await lstatOrNull(target);
+      if (metadata !== null && metadata.isFile() && !metadata.isSymbolicLink()) {
+        const physicalIdentity = `${metadata.dev}:${metadata.ino}`;
+        if (manifestPhysicalFiles.has(physicalIdentity)) {
+          throw new ExecutionContractError(`${row.slice} manifest paths alias the same physical file: ${entry.path}`);
+        }
+        manifestPhysicalFiles.add(physicalIdentity);
+      }
       owners.set(target, { ...entry, slice: row.slice, target });
     }
   }
@@ -1654,7 +2079,7 @@ async function validateFinalOwnership(result) {
       if (metadata !== null) findings.push(`${owner.target} (${owner.slice}: expected REMOVED)`);
       continue;
     }
-    if (metadata === null || metadata.isSymbolicLink() || !metadata.isFile()) {
+    if (metadata === null || metadata.isSymbolicLink() || !metadata.isFile() || metadata.nlink !== 1) {
       findings.push(`${owner.target} (${owner.slice}: expected sha256:${owner.hash}, current absent/non-file)`);
       continue;
     }
@@ -1662,6 +2087,37 @@ async function validateFinalOwnership(result) {
     if (actual !== owner.hash) findings.push(`${owner.target} (${owner.slice}: expected sha256:${owner.hash}, current sha256:${actual})`);
   }
   if (findings.length !== 0) throw new ExecutionContractError("final validation ownership does not match the workspace", findings);
+}
+
+function validateTerminalOverlapDeclarations(result, { onlySlices = null } = {}) {
+  for (const row of result.rows) {
+    if (!SUCCESS_RESULTS.has(row.result) || (onlySlices !== null && !onlySlices.has(row.slice))) continue;
+    const task = result.tasks.get(row.slice);
+    if (task.evidenceContract !== "stnl-validation-evidence/v1") continue;
+    const rowIndex = result.rows.indexOf(row);
+    const expected = new Map();
+    for (const priorRow of result.rows.slice(0, rowIndex)) {
+      if (!SUCCESS_RESULTS.has(priorRow.result)) continue;
+      const prior = result.tasks.get(priorRow.slice);
+      const paths = task.changedClaims.filter((claim) => prior.base.paths.includes(claim));
+      if (paths.length !== 0) expected.set(priorRow.slice, paths.sort((a, b) => a.localeCompare(b, "en")));
+    }
+    const declared = new Map();
+    for (const overlap of task.priorValidationOverlaps) {
+      if (overlap.priorSlice === row.slice || declared.has(overlap.priorSlice)) {
+        throw new ExecutionContractError(`${row.slice} has duplicate or self-referential Prior Validation Overlap`);
+      }
+      declared.set(overlap.priorSlice, overlap.paths);
+    }
+    if (expected.size !== declared.size) {
+      throw new ExecutionContractError(`${row.slice} Prior Validation Overlap does not declare every changed terminal-base intersection`);
+    }
+    for (const [slice, paths] of expected) {
+      if (JSON.stringify(declared.get(slice)) !== JSON.stringify(paths)) {
+        throw new ExecutionContractError(`${row.slice} Prior Validation Overlap is incomplete or stale for ${slice}`);
+      }
+    }
+  }
 }
 
 function markdownStructuralText(text) {
@@ -2218,7 +2674,7 @@ export function deriveRecoveryTargets(result) {
         targets = [scoped(blocker.operation, blocker.slice, {
           owner: "delegation-blocker",
           record: prior?.id ?? null,
-          round: prior?.round ?? null,
+          round: blocker.pendingRound ?? prior?.round ?? null,
           sameOperationResumeRequired: true,
         })];
       }
@@ -2429,23 +2885,31 @@ function pathIsWithin(candidate, root) {
 }
 
 async function createCandidateShadow(workspace) {
+  const liveProjectRoot = await trustedProjectRoot(workspace);
   const liveContainer = workspace.kind === "lifecycle" ? workspace.specRoot : path.dirname(workspace.authorityPath);
-  const shadowParent = path.dirname(liveContainer);
+  if (!pathIsWithin(liveContainer, liveProjectRoot) || !pathIsWithin(workspace.executionRoot, liveProjectRoot)) {
+    throw new ExecutionContractError("live execution workspace is outside its trusted project root");
+  }
+  const shadowParent = await fs.realpath(os.tmpdir());
   const shadowRoot = await fs.realpath(await fs.mkdtemp(path.join(
     shadowParent,
     `.${path.basename(liveContainer)}.stnl-execution-candidate-`,
   )));
   try {
+    const shadowProjectRoot = path.join(shadowRoot, "project");
+    await fs.mkdir(path.join(shadowProjectRoot, ".git"), { recursive: true });
+    const shadowContainer = path.join(shadowProjectRoot, path.relative(liveProjectRoot, liveContainer));
+    await fs.mkdir(shadowContainer, { recursive: true });
     if (workspace.kind === "standalone") {
-      const authority = path.join(shadowRoot, path.basename(workspace.authorityPath));
+      const authority = path.join(shadowContainer, path.basename(workspace.authorityPath));
       await fs.copyFile(workspace.authorityPath, authority);
       return {
         shadowRoot,
         specPath: authority,
-        executionRoot: path.join(shadowRoot, path.basename(workspace.executionRoot)),
+        executionRoot: path.join(shadowProjectRoot, path.relative(liveProjectRoot, workspace.executionRoot)),
       };
     }
-    const specRoot = shadowRoot;
+    const specRoot = shadowContainer;
     await fs.copyFile(workspace.authorityPath, path.join(specRoot, "feature_spec.md"));
     const shared = path.join(workspace.specRoot, "shared");
     const sharedMetadata = await lstatOrNull(shared);
@@ -2488,6 +2952,49 @@ async function validateCurrentGateSnapshots(result, liveRecords = null) {
   }
 }
 
+async function validateCurrentEvidenceSubjects(result, liveRecords = null) {
+  const trustedRoot = await trustedProjectRoot(result.workspace);
+  const taskDirectory = path.join(result.workspace.executionRoot, "tasks");
+  let currentSourceFingerprint = null;
+  let currentHead = null;
+  for (const [slice, task] of result.tasks ?? []) {
+    const records = chronologicalQualityRecords(task.implementationChecks, task.findingsChecks, task.attempts);
+    for (const record of records) {
+      if (record.provenance === null || record.provenance.state !== "VERIFIED") continue;
+      if (liveRecords !== null && liveRecords.has(`${slice}/${record.id}`)) continue;
+      currentSourceFingerprint ??= await computeValidationSourceFingerprint(trustedRoot, result.workspace.executionRoot);
+      if (record.provenance.inputs.sourceFingerprint !== currentSourceFingerprint) {
+        throw new ExecutionContractError(`${slice}/${record.id} evidence source fingerprint is stale`);
+      }
+      currentHead ??= await readValidationHead(trustedRoot);
+      if (record.provenance.inputs.head !== currentHead) {
+        throw new ExecutionContractError(`${slice}/${record.id} evidence HEAD is stale`);
+      }
+      const physicalSubjects = new Set();
+      for (const entry of record.provenance.subjects) {
+        const target = path.resolve(taskDirectory, entry.path);
+        await rejectSymlinkComponents(target, trustedRoot);
+        const metadata = await lstatOrNull(target);
+        let actual = "REMOVED";
+        if (metadata !== null) {
+          if (metadata.isSymbolicLink() || !metadata.isFile() || metadata.nlink !== 1) {
+            throw new ExecutionContractError(`${slice}/${record.id} evidence subject is not a single-link file: ${entry.path}`);
+          }
+          const physicalIdentity = `${metadata.dev}:${metadata.ino}`;
+          if (physicalSubjects.has(physicalIdentity)) {
+            throw new ExecutionContractError(`${slice}/${record.id} evidence subjects alias the same physical file: ${entry.path}`);
+          }
+          physicalSubjects.add(physicalIdentity);
+          actual = `sha256:${createHash("sha256").update(await fs.readFile(target)).digest("hex")}`;
+        }
+        if (actual !== entry.expected) {
+          throw new ExecutionContractError(`${slice}/${record.id} evidence is stale for ${entry.path}; expected ${entry.expected}, current ${actual}`);
+        }
+      }
+    }
+  }
+}
+
 // Compare the persisted record, not just its final semantic classification.
 // Removing only these scalar disposition lines preserves every other original
 // field (including unknown extensions and omitted legacy Kind) without a second
@@ -2508,6 +3015,8 @@ function assertHistoricalRecord(original, candidate, label, { disposition = fals
 
 async function validateCandidateHistory(workspace, result) {
   const liveRecords = new Map();
+  const newTerminalSlices = new Set();
+  const liveSlices = new Set();
   const taskDirectory = path.join(workspace.executionRoot, "tasks");
   const entries = await fs.readdir(taskDirectory, { withFileTypes: true }).catch((error) => {
     if (error.code === "ENOENT") return [];
@@ -2517,15 +3026,23 @@ async function validateCandidateHistory(workspace, result) {
   // comparison. Pristine replacement has no operational records to preserve.
   for (const entry of entries.filter((item) => !isIgnoredMetadata(item.name))) {
     const livePath = path.join(taskDirectory, entry.name);
-    if (!/^slice-[0-9]{2,}\.md$/u.test(entry.name)) throw new ExecutionContractError(`non-canonical live task: ${livePath}`, [livePath]);
+    if (!SLICE_FILE.test(entry.name)) throw new ExecutionContractError(`non-canonical live task: ${livePath}`, [livePath]);
     await requireRealFile(livePath, "live historical task");
     const slice = entry.name.slice(0, -3);
+    liveSlices.add(slice);
     const original = parseTask(await fs.readFile(livePath, "utf8"), livePath, slice);
     const candidate = result.tasks?.get(slice);
     if (candidate === undefined && original.pristine) continue;
     if (candidate === undefined) throw new ExecutionContractError(`${slice} historical task cannot be removed`);
+    if (original.evidenceContract === "stnl-validation-evidence/v1"
+      && candidate.evidenceContract !== original.evidenceContract) {
+      throw new ExecutionContractError(`${slice} cannot remove or downgrade its validation evidence contract`);
+    }
     if (original.final.result !== "pending" && original.body !== candidate.body) {
       throw new ExecutionContractError(`${slice} terminal task, validation base and supersession ownership are immutable`);
+    }
+    if (original.final.result === "pending" && SUCCESS_RESULTS.has(candidate.final.result)) {
+      newTerminalSlices.add(slice);
     }
     if (!original.pristine && original.sections.get("References") !== candidate.sections.get("References")) {
       throw new ExecutionContractError(`${slice} historical task authority is immutable`);
@@ -2536,6 +3053,47 @@ async function validateCandidateHistory(workspace, result) {
       for (const record of original[name]) {
         assertHistoricalRecord(record, candidates.get(record.id), `${slice}/${record.id}`, { disposition });
         if (!disposition) liveRecords.set(`${slice}/${record.id}`, record.body);
+      }
+      if (!disposition) {
+        const historical = new Set(original[name].map((record) => record.id));
+        for (const record of candidate[name].filter((candidateRecord) => !historical.has(candidateRecord.id))) {
+          if (candidate.evidenceContract === "stnl-validation-evidence/v1" && record.provenance === null) {
+            throw new ExecutionContractError(`${slice}/${record.id} newly persisted validation evidence requires structured provenance`);
+          }
+        }
+      }
+    }
+    const historicalEvidence = new Map([
+      ...original.implementationChecks, ...original.findingsChecks, ...original.attempts,
+    ].filter((record) => record.provenance !== null)
+      .map((record) => [record.provenance.evidenceId, record.provenance]));
+    for (const record of [
+      ...candidate.implementationChecks, ...candidate.findingsChecks, ...candidate.attempts,
+    ]) {
+      const replay = record.provenance?.replay;
+      if (replay === null || replay === undefined) continue;
+      const origin = historicalEvidence.get(replay.originalEvidenceId);
+      if (origin === undefined || origin.state !== "VERIFIED"
+        || origin.inputs.executionFingerprint !== replay.originalFingerprint) {
+        throw new ExecutionContractError(`${slice}/${record.id} replay origin is not bound to persisted historical evidence`);
+      }
+    }
+    const historicalFindings = new Set(original.findings.map((record) => record.id));
+    for (const finding of candidate.findings.filter((record) => !historicalFindings.has(record.id))) {
+      if (candidate.evidenceContract !== "stnl-validation-evidence/v1") continue;
+      const kind = field(finding.body, "Kind");
+      const evidenceIdentity = field(finding.body, "Evidence identity");
+      if (!new Set(["implementation_defect", "code_regression"]).has(kind)) {
+        throw new ExecutionContractError(`${slice}/${finding.id} has invalid finding Kind`);
+      }
+      const origin = candidate.attempts.find((attempt) => attempt.id === finding.origin);
+      if (origin?.provenance === null || origin?.provenance?.state !== "VERIFIED"
+        || evidenceIdentity !== origin.provenance.evidenceId) {
+        throw new ExecutionContractError(`${slice}/${finding.id} is not bound to verified origin evidence`);
+      }
+      const expectedConclusion = kind === "code_regression" ? "CODE_REGRESSION" : "VALIDATION_FINDING";
+      if (origin.provenance.conclusion !== expectedConclusion) {
+        throw new ExecutionContractError(`${slice}/${finding.id} classification disagrees with its verified evidence`);
       }
     }
     for (const divergence of candidate.divergences) {
@@ -2551,20 +3109,34 @@ async function validateCandidateHistory(workspace, result) {
         candidate.delegationBlocker === null ? undefined : { body: candidate.sections.get("Delegation Blocker") },
         `${slice}/Delegation Blocker`, { disposition: true, supersession: false },
       );
+    } else if (candidate.delegationBlocker !== null
+      && candidate.delegationBlocker.operation !== "VALIDATE_SLICE"
+      && field(candidate.sections.get("Delegation Blocker"), "Pending automatic round", { required: false }) === null) {
+      throw new ExecutionContractError(`${slice}/Delegation Blocker newly persisted auxiliary recovery requires Pending automatic round`);
     }
   }
-  return liveRecords;
+  for (const [slice, candidate] of result.tasks ?? []) {
+    if (!liveSlices.has(slice) && candidate.evidenceContract !== "stnl-validation-evidence/v1") {
+      throw new ExecutionContractError(`${slice} newly materialized task requires validation evidence contract stnl-validation-evidence/v1`);
+    }
+    if (!liveSlices.has(slice) && !candidate.pristine) {
+      throw new ExecutionContractError(`${slice} newly materialized task must be pristine before execution evidence can exist`);
+    }
+  }
+  return { liveRecords, newTerminalSlices };
 }
 
 export async function validateExecutionCandidate(specPath, candidateExecutionRoot) {
   const workspace = await resolveExecutionWorkspace(specPath);
-  const candidate = path.resolve(String(candidateExecutionRoot));
+  let candidate = path.resolve(String(candidateExecutionRoot));
   await assertNoSymlinkComponents(candidate, "candidate execution root");
   const metadata = await lstatOrNull(candidate);
   if (metadata === null || metadata.isSymbolicLink() || !metadata.isDirectory()) {
     throw new ExecutionContractError(`candidate execution root must be a real directory: ${candidate}`, [candidate]);
   }
-  if (pathIsWithin(candidate, workspace.executionRoot) || pathIsWithin(workspace.executionRoot, candidate)) {
+  candidate = await fs.realpath(candidate);
+  const liveExecutionRoot = await fs.realpath(workspace.executionRoot);
+  if (pathIsWithin(candidate, liveExecutionRoot) || pathIsWithin(liveExecutionRoot, candidate)) {
     throw new ExecutionContractError("candidate execution root must be isolated from live execution artifacts", [candidate]);
   }
   await assertCandidateTreeSafe(candidate);
@@ -2580,8 +3152,13 @@ export async function validateExecutionCandidate(specPath, candidateExecutionRoo
         result.recoveryTargets,
       );
     }
-    const liveRecords = await validateCandidateHistory(workspace, result);
+    const { liveRecords, newTerminalSlices } = await validateCandidateHistory(workspace, result);
     await validateCurrentGateSnapshots({ ...result, workspace }, liveRecords);
+    await validateCurrentEvidenceSubjects({ ...result, workspace }, liveRecords);
+    if (result.rows !== undefined) {
+      validateTerminalOverlapDeclarations(result, { onlySlices: newTerminalSlices });
+      await validateFinalOwnership({ ...result, workspace }, { onlySlices: newTerminalSlices });
+    }
     return Object.freeze({
       state: result.state,
       currentFingerprint: result.currentFingerprint,
@@ -3053,7 +3630,10 @@ export async function preflightExecutionOperation(specPath, operation, sliceValu
     }
     await validateCurrentGateSnapshots(result);
   }
-  if (normalizedOperation === "CLOSE") await validateFinalOwnership(result);
+  if (normalizedOperation === "CLOSE") {
+    validateTerminalOverlapDeclarations(result);
+    await validateFinalOwnership(result);
+  }
   const revalidation = slice === null ? [] : blockerRevalidation(result.tasks.get(slice));
   return { ...result, operation: normalizedOperation, slice, revalidation };
 }

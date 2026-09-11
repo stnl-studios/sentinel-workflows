@@ -19,6 +19,7 @@ update_policy: MATERIALIZE_TASKS creates; later operations replace only their au
 - Requirements source: `<relative path>`
 - Requirements authority: sha256:<64hex>
 - Plan revision: <positive integer>
+- Validation evidence contract: stnl-validation-evidence/v1
 - Global tasks: `../tasks.md`
 
 ## Checklist

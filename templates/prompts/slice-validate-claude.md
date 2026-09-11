@@ -2,6 +2,8 @@ Use `stnl-slice-quality-manager`.
 OPERATION=VALIDATE_SLICE
 SPEC_PATH={{SPEC_PATH}}
 SLICE={{SLICE}}
+VALIDATION_HARNESS_PATH=<SKILL_ROOT>/runtime/run-validation-session.mjs
+Envie ao runner o harness path, formal round null, evidence ID da tentativa anterior, baseline material, subjects task-relative file-granular e comandos estruturados com argv/cwd/writePaths/env/timeout. Todo verification command deve passar exclusivamente pelo harness isolado; persista seu Evidence provenance inline sem reconstrução. Evidence INVALID, side effect, stale ou INVALID_REPLAY só pode produzir BLOCKED. CODE_REGRESSION exige replay equivalente ancorado em evidence histórica persistida.
 Treat the concrete recovery operation and slice returned by the shared deterministic preflight as authority; derive neither from the current request, and report both exactly when blocked.
 Se evidência terminal de implementação coexistir com checklist obrigatório incompleto, não inicie validação: preserve e reporte exatamente o recovery target `stnl-slice-executor / EXECUTE_SLICE / slice-NN` retornado pelo preflight. Validação volta a ser legal somente após essa mesma slice ficar completa.
 Delegue obrigatoriamente a validação independente em uma sessão delegada independente sem histórico da conversa, com somente `OPERATION=VALIDATE_SLICE`, `SPEC_PATH`, execution root derivado, slice, paths de plans e tasks, Requirements authority, Plan revision, evidências compactas de implementação e findings, incluindo `TESTS_NOT_APPLICABLE`, resumo de findings ativos/históricos e tentativas válidas, escopo alterado, diff, overlaps e contexto adicional estritamente necessário para:

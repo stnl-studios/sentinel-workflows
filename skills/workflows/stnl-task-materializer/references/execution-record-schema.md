@@ -14,6 +14,8 @@ update_policy: Change only when persisted execution-record identity or lifecycle
 
 Fresh materialization contains only its exact section sentinels (`- none` or `- pending`). The headings below are operational records, never template examples and never pristine placeholders.
 
+Every newly materialized task, pristine replacement, and append-only recovery task carries exact `- Validation evidence contract: stnl-validation-evidence/v1` under References. Existing historical tasks without the marker remain readable under the legacy contract and are not silently retrofitted. Once present, the marker cannot be removed or downgraded. Every new auxiliary check or formal attempt in a v1 task requires structured Evidence provenance emitted by the bundled validation harness.
+
 ## Strict write check and exact contract repair
 
 The parser accepts only canonical `Finding IDs`, `Discovery sources`, and `Discovery actions`. The model-authored execution-record writer contract requires an isolated candidate and the bundled `node "<SKILL_ROOT>/runtime/validate-execution-state.mjs" <SPEC_PATH> --candidate <CANDIDATE_EXECUTION_ROOT>` before publication. That invocation and mutation ownership are contract/model enforced; when invoked, the runtime strictly parses the complete candidate and compares persisted task history against live artifacts without changing live execution. It is not a generic publisher and does not prove an authorized diff.
@@ -40,6 +42,8 @@ The same comparison preserves complete prior attempts/checks and their gate/bypa
 - Severity: blocking|advisory
 - State: active|resolved|superseded
 - Origin: <operation/attempt>
+- Kind: implementation_defect|code_regression
+- Evidence identity: sha256:<64 lowercase hexadecimal characters>
 - Problem: <compact problem>
 - Evidence: <compact objective evidence>
 - Impact: <requirement or behavior impact>
@@ -67,6 +71,23 @@ The atomic `MATERIALIZE_TASKS` commit of an approved `REPLAN` may change applica
 
 Records with `Severity: blocking` and `State: active` require revalidation before corrective action. They block completion or execution close unless the exact current optional finding is explicitly bypassed under the gate contract; divergences cannot be bypassed. Resolved and superseded records remain auditable history.
 
+Every new finding's `Evidence identity` equals the `VERIFIED` evidence ID of its origin attempt. `implementation_defect` requires conclusion `VALIDATION_FINDING`; `code_regression` requires conclusion `CODE_REGRESSION` backed by equivalent replay anchored to persisted historical evidence. Evidence `INVALID` or stale cannot create or sustain a finding. v1's closed persisted lifecycle is only `VERIFIED/NONE/{NONE,VALIDATION_FINDING,CODE_REGRESSION}`, `INVALID/VALIDATION_SIDE_EFFECT/NONE`, or `INVALID/INVALID_REPLAY/NONE`; `OBSERVED`, evidence `SUPERSEDED`, and `STALE_EVIDENCE` are not persistible because v1 has no harness producer or authorized transition for them.
+
+## Prior Validation Overlap
+
+`- none` is valid only when no changed or corrected path intersects an earlier terminal `PASS`/`ACCEPTED` base. In a v1 task, every such intersection is declared exactly once and only as:
+
+```markdown
+### overlap-NN
+
+- Prior slice: slice-NN
+- Paths: <canonical comma-space task-relative paths>
+- Affected behavior: <non-placeholder behavior>
+- Regressions: <non-placeholder checks or observations>
+```
+
+The declared paths equal the intersection exactly. Every file-backed path in a successful Effective Validation Base must also be a Changed Areas claim (and correction claims remain a subset of Changed Areas), so a new owner cannot bypass this derived intersection through an undeclared base entry. A later terminal slice without this declaration is rejected; this records a derived relationship and never rewrites the earlier base.
+
 On a terminal `SUPERSEDED` slice, unresolved records remain preserved historical context but no longer block the replacement slice or execution close. Its required later `PASS`/`ACCEPTED` owner is the effective authority.
 
 ## Delegation blocker singleton
@@ -78,12 +99,15 @@ Fresh materialization persists only `- none` under `## Delegation Blocker`. A de
 - Kind: initialization|malformed-output
 - State: active
 - After record: none|implementation-check-NN|findings-check-NN|attempt-NN
+- Pending automatic round: 1/3|2/3|3/3
 - Causes:
   - <objective compact cause>
 - Required action: <objective executable recovery>
 ```
 
 `After record` is the latest valid record for the named operation when the blocker was persisted. Only the same operation on the same slice may resume directly at delegation. A later valid operation record atomically changes the singleton to `State: resolved` and adds `- Resolution: <objective result naming that later record>`. `Resolution` is forbidden while active and mandatory while resolved. A resolved singleton remains historical. It is invalid to keep the blocker active after a later valid record or to mark it resolved without one.
+
+For `EXECUTE_SLICE` and `APPLY_FINDINGS`, `Pending automatic round` is mandatory in v1 tasks and reserves the logical invocation that failed to start: `1/3` before any record or after `BLOCKED`, otherwise the immediate successor of round 1 or 2 `TESTS_FAIL`. `VALIDATE_SLICE` uses no automatic round and omits this field. Recovery resumes the reserved round; transport failure does not consume or reset it.
 
 ## Auxiliary check evidence
 
@@ -94,6 +118,7 @@ Each record uses the next section-global identifier, `implementation-check-NN` o
 - HEAD, tested scope, complete tested state hashes/removals, or exact `Tested state: none` plus an objective `Fileless reason`;
 - canonical discovery sources and relevant read-only discovery actions;
 - verification types considered and exact commands with numeric exits;
+- exact inline `Evidence provenance` returned by the validation harness;
 - non-applicability rationale and no-command confirmation when applicable;
 - selected checks, rationale, coverage, failures, blockers, unexpected effects, and persistence summary;
 - prior-round failure, correction, files, and updated in-slice rationale when applicable;
@@ -105,11 +130,23 @@ For `EXECUTE_SLICE`, every mandatory checklist item and related execution state 
 
 A round `3/3 TESTS_FAIL` persists normally and enters `IMPLEMENTATION_RETRY_EXHAUSTED` or `FINDINGS_RETRY_EXHAUSTED`. The executor cannot re-enter either operation until explicit `VALIDATE_SLICE` records the next formal verdict, except for the exact same-slice incomplete-implementation recovery above.
 
+In a v1 task, `Evidence provenance` is mandatory in every new auxiliary record in addition to the exact fields above. Its subjects equal file-backed `Tested state`, and its recorded command displays/exits equal `Commands`; fileless evidence uses empty subjects and commands as permitted by status.
+
 ## Validation Attempts
 
 Every successfully started formal validation with valid output appends the next `attempt-NN`. `attempt-01` is `initial`; later attempts are `revalidation`. Each records exact status `PASS|ACCEPTED|NEEDS_FIX|BLOCKED`, HEAD, verified scope, commands and exits, evidence, finding references, blockers, unexpected effects, and persistence summary. Transport and malformed-output blockers remain outside attempts under their singleton contracts.
 
 The exact mandatory attempt fields are `Type`, `Status`, `HEAD`, `Verified scope`, `Commands`, `Evidence`, `Finding references`, `Finding dispositions`, `Blockers`, `Unexpected workspace effects`, and `Persistence summary`. Scalar summaries stay inline and opaque. Commands have numeric exits and remain structurally scoped to `Commands`; only `BLOCKED` may use exact `none`. `Finding references` uses exact `none` or `finding-NN, finding-NN`. `Finding dispositions` uses exact `none` or `finding-NN=active|resolved|superseded, finding-NN=active|resolved|superseded`. Both use unique lexicographically ordered canonical IDs with identical identifier sets, and every attempt disposes every finding whose origin is at or before that attempt according to the deterministic timeline. A finding `Origin` names an existing `NEEDS_FIX` attempt. Resolution and supersession authority is strictly later than that origin. The first `PASS` or `ACCEPTED` attempt is terminal: no later `PASS`, `ACCEPTED`, `NEEDS_FIX`, `BLOCKED`, or other `attempt-NN` may exist. Prior `NEEDS_FIX` history and the final owning PASS/ACCEPTED remain valid.
+
+In a v1 task, exact inline `Evidence provenance` is also mandatory in every new Validation Attempt. The deterministic `priorEvidenceId` links the immediately prior record in the same validation stream; an invalid observation remains auditable but cannot act as a verified baseline for its successor.
+
+## Structured evidence provenance
+
+`Evidence provenance` is one deterministic inline JSON object with version, evidence ID, prior evidence ID, lifecycle state, classification, proposed conclusion, operation, slice, round, workspace, inputs, subjects, commands, and optional replay. The workspace records isolated-copy identity, cwd/execution root, before/after fingerprints for live execution, live workspace and isolated execution, cleanup, and ordered side effects. Inputs record current requirements authority, plan revision, Git `HEAD` or exact `not_available`, source, subject manifest, baseline, changed scope, and execution fingerprints. Subjects preserve each normalized task-relative file identity with SHA-256 or `REMOVED`; directory-level collapse, basename aliases, duplicates, symlinks and hardlinks are invalid. Commands preserve display, argv, cwd, ordered bounded `writePaths`, environment/executable fingerprints, timeout, exit, and stdout/stderr fingerprints.
+
+The harness first derives and verifies the legal operation, slice, round and immediate prior evidence ID from current lifecycle state, then executes verification only in an operating-system sandbox over an isolated copy. Live and copied execution state are protected; HOME/TMP and explicit non-overlapping `writePaths` are the only mutable locations. Cleanup or sandbox failure, any protected side effect, stale source/manifest/scope/authority, or invalid reproduction makes evidence `INVALID` and permits only `BLOCKED`. A replay origin must be a prior persisted `VERIFIED` evidence record. `VERIFIED` evidence is still not persistence authority.
+
+Replay additionally records original/current execution fingerprints, equivalence and ordered material mismatches. The original evidence ID must resolve to prior persisted evidence of the same slice. Equivalence covers operation, slice, round, cwd, execution root, authority/revision, the source snapshot excluding execution state, file manifest, baseline, changed scope, argv/write paths/environment/executable, and execution fingerprint. A mismatch is `INVALID_REPLAY`, skips execution, has conclusion `NONE`, and cannot support `code_regression`.
 
 ## Effective Validation Base
 
@@ -129,6 +166,8 @@ At most one current base exists and it originates from the current `PASS` or `AC
 ```
 
 A valid fileless PASS/ACCEPTED uses the same record with exact `- Files: none`, followed immediately by `- Fileless reason: <objective non-placeholder reason>`. It keeps authoritative commands and the owning attempt's exact evidence summary. A file-backed base forbids `Fileless reason`; a fileless base forbids path/hash tuples and requires `Changed Areas` to be exact `- none`.
+
+For v1, the base `Files` equals the owning attempt's provenance subjects exactly; its authoritative commands/exits and evidence summary remain identical to that attempt. Candidate validation rechecks current bytes before a newly terminal PASS/ACCEPTED is publishable, and CLOSE repeats ownership verification against every terminal base.
 
 ## Superseded slice terminal record
 

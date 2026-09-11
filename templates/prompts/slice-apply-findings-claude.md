@@ -2,6 +2,8 @@ Use `stnl-slice-executor`.
 OPERATION=APPLY_FINDINGS
 SPEC_PATH={{SPEC_PATH}}
 SLICE={{SLICE}}
+VALIDATION_HARNESS_PATH=<SKILL_ROOT>/runtime/run-validation-session.mjs
+Envie ao runner o harness path, o evidence ID anterior, baseline material, subjects task-relative file-granular e comandos estruturados com argv/cwd/writePaths/env/timeout. Todo verification command deve passar exclusivamente pelo harness isolado; persista seu Evidence provenance inline sem reconstrução. Evidence INVALID, side effect, stale ou INVALID_REPLAY só pode produzir BLOCKED. Se transporte falhar, o Delegation Blocker reserva a mesma Pending automatic round N/3 ainda não consumida.
 Treat the concrete recovery operation and slice returned by the shared deterministic preflight as authority; derive neither from the current request, and report both exactly when blocked.
 Após aplicar os findings e registrar correções e escopo alterado, delegue obrigatoriamente a primeira chamada dos testes desta operação em uma sessão independente, sem histórico da conversa, com somente `OPERATION=APPLY_FINDINGS`, `SPEC_PATH`, execution root derivado, slice, paths de plans e tasks, Requirements authority, Plan revision, findings ativos, correções aplicáveis, evidências compactas relevantes, escopo alterado, rodada automática e contexto adicional estritamente necessário para:
 @agent-stnl-validation-runner

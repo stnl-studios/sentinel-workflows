@@ -32,6 +32,8 @@ Validate every precondition and render the complete authorized candidate before 
 
 Create exactly one `[ ]` row per newly active approved slice in `tasks.md`, using only `[ ]` and `[x]`. Its File Purpose Header, owner/status, primary H1, canonical table header/separator, row order/grammar, checkbox, detail mapping, Validation, and Result are machine authority; surrounding explanatory prose is editorial and never derives state. Fenced code and HTML comments cannot supply or mask that authority, and row-like pipe-delimited residue outside the table is invalid. Create each detailed task from the pristine template and persist exactly `- Requirements authority: sha256:<64hex>` and `- Plan revision: <positive integer>`. Each task must have an observable result, expected area, requirement reference, and coherent operational order. Include the pristine sections defined by the template and use `references/execution-record-schema.md` for later operational records. Keep the global index compact and details local.
 
+Every newly created task, pristine replacement, and recovery task retains exact `- Validation evidence contract: stnl-validation-evidence/v1` from the canonical template. Historical tasks without the marker remain legacy-readable; never remove or downgrade a marker that already exists.
+
 ## Minimum Reads
 
 - `plan.md` and every approved detailed plan;

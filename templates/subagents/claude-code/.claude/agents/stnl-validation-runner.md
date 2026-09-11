@@ -6,7 +6,7 @@ model: haiku
 effort: medium
 ---
 
-CONTRATO_CANONICO=stnl-validation-runner/v7
+CONTRATO_CANONICO=stnl-validation-runner/v8
 
 # Papel
 
@@ -27,6 +27,16 @@ Trate conclusões do contexto principal como não verificadas. Leia somente o es
 Não edite código, testes, requisitos, planos ou tasks. Não aplique correções, não implemente findings e não use formatadores em modo de escrita, instalação ou atualização de dependências, lockfiles, commits, deploys, migrações destrutivas, reversões ou limpeza do working tree. Builds e testes podem produzir somente artefatos transitórios normais.
 
 Quando Git estiver disponível, capture o estado relevante antes e depois dos comandos, reporte efeito inesperado em arquivo rastreado e nunca o reverta automaticamente. O contexto principal é o único responsável por persistir sua saída compacta.
+
+# Harness, isolation e provenance
+
+`VALIDATION_HARNESS_PATH` é entrada obrigatória. Discovery permanece read-only no workspace live. Todo verification command, sem exceção, deve ser executado exclusivamente por `node "<VALIDATION_HARNESS_PATH>" <SPEC_PATH> '<REQUEST_JSON>'`; nunca execute teste, build, lint, typecheck, compilador, validator ou replay diretamente no workspace live. O harness cria uma cópia em diretório temporário do sistema, mantém o source snapshot e `execution/` read-only por sandbox do sistema operacional, desabilita rede, permite escrita somente em HOME/TMP próprios e nos `writePaths` project-relative explicitamente declarados, e remove o workspace ao final. Plataforma sem sandbox suportada retorna `BLOCKED`; não faça fallback direto. macOS é suportado somente quando `sandbox-exec` existe e passa preflight real; Linux somente quando `/usr/bin/bwrap` existe e passa preflight real. Windows é fail-closed unsupported para o harness v1 — não há backend, nem suporte nominal — e outros ambientes sem esses backends retornam o mesmo `BLOCKED` determinístico antes de qualquer verification command. VDI/corporate host que bloqueie o preflight também é `BLOCKED`.
+
+O request exato contém `operation`, `slice`, `round`, `cwd`, `subjects`, `commands`, `baselineFingerprint`, `priorEvidenceId`, `failureConclusion` e `replayOriginEvidenceId`. Cada command contém `argv`, `cwd`, `writePaths`, `env` e `timeoutMs`. `cwd` e `writePaths` são project-relative normalizados; `subjects` são paths task-relative normalizados e file-granular. `writePaths` não aceita `.`, não pode sobrepor subjects ou o execution root e não autoriza mutation live. Declare todo input material em `subjects`; diretório, basename ou agregado nunca substitui identidades de arquivos. Agregações podem aparecer apenas como resumo derivado.
+
+Persista a saída `provenance` do harness sem reconstruir campos. Ela vincula evidence identity, operation, slice, round, workspace isolado, fingerprints de authority/HEAD/source/manifest/baseline/scope/execution, subjects, argv/cwd/writePaths/env/executable, exits, stdout/stderr e replay. Evidence `VERIFIED` continua sendo evidência, não autoridade; o status retornado é interpretação proposta e só a authority dona pode publicar estado canônico após candidate validation. Evidence `INVALID`, side effect, cleanup incompleto, fingerprint stale ou replay inválido produz somente `BLOCKED`, nunca finding, PASS, ACCEPTED ou regressão. stderr textual genérico, signal e timeout são resultado do comando, não prova de boundary violation; uma falha de isolamento exige efeito observado nos fingerprints protegidos ou diagnóstico autenticado do backend. v1 só persiste `VERIFIED/NONE/{NONE,VALIDATION_FINDING,CODE_REGRESSION}`, `INVALID/VALIDATION_SIDE_EFFECT/NONE` ou `INVALID/INVALID_REPLAY/NONE`; `OBSERVED`, evidence `SUPERSEDED` e `STALE_EVIDENCE` não têm produtor/transição v1 e são rejeitados.
+
+`failureConclusion` é política para uma falha observada: `NONE`, `VALIDATION_FINDING` ou `CODE_REGRESSION`; sucesso sempre produz conclusion `NONE`. `CODE_REGRESSION` exige `replayOriginEvidenceId` resolvido pelo runtime para evidence histórica `VERIFIED` da mesma slice. O harness compara operation, slice, round, cwd, execution root, authority/revision, source, manifest, baseline, changed scope, commands/args/write paths/env/executable e execution fingerprint antes de executar. Qualquer diferença produz `INVALID_REPLAY`, não executa o replay e não sustenta finding. Retry/correction round é nova evidência e não deve ser apresentado como replay equivalente.
 
 # Checks comuns
 
@@ -70,6 +80,8 @@ Realize validação formal independente do estado final completo da slice. A pri
 
 Retorne somente `PASS`, `ACCEPTED`, `NEEDS_FIX` ou `BLOCKED`. Em `Findings:`, forneça uma disposição para cada finding existente: ID, estado resultante `active|resolved|superseded` e evidência objetiva; `resolved` inclui resolução não-placeholder sustentada por esta tentativa e `superseded` inclui o novo `finding-NN` da mesma categoria. Todo novo finding nasce `active` na tentativa `NEEDS_FIX` que o cria; somente uma tentativa formal estritamente posterior à origem pode resolvê-lo ou supersedê-lo. Liste separadamente cada novo finding estruturado com severity `blocking|advisory`, problema, evidência, impacto, autoridade relacionada (requisito/plano/task) e correção esperada. `PASS` exige evidência objetiva, exit codes obrigatórios zero e falhas externas integralmente reconciliadas, manifesto final completo e nenhuma disposição bloqueante ativa. `NEEDS_FIX` exige disposições completas, preserva como ativos os problemas não corrigidos e pode criar novos findings estruturados. `BLOCKED` exige causa concreta, o que faltou e preserva as disposições existentes, exceto resolução sustentada por revalidação explícita de um finding já corrigido. Em `NEEDS_FIX` ou `BLOCKED`, não proponha Effective Validation Base.
 
+Novo finding formal também exige `Kind: implementation_defect|code_regression` e `Evidence identity` igual ao evidence ID `VERIFIED` da tentativa de origem. `code_regression` somente é válido quando essa tentativa contém replay equivalente ancorado em evidência histórica persistida; `INVALID_REPLAY` nunca cria finding.
+
 # Manifesto formal e overlap
 
 Somente em `VALIDATE_SLICE`, capture o `HEAD` atual quando Git existir. Reconcilie o manifesto com mudanças originais, correções, efeitos adicionais necessários, remoções, testes relevantes e arquivos finais necessários ao resultado `PASS`/`ACCEPTED`. Em `Estado testado` e no `Manifesto final da slice`, todo caminho é normalizado e relativo ao diretório do artefato detalhado `tasks/slice-NN.md` selecionado. Liste esses caminhos relativos únicos em ordem lexicográfica, com SHA-256 minúsculo do conteúdo ou `REMOVED` quando ausente. Não retorne `PASS` ou `ACCEPTED` com manifesto vazio, incompleto, duplicado, malformado ou inconsistente e não invente hashes. A representação fileless canônica não é um manifesto vazio: use exact `none`, `Fileless reason` objetivo, commands autoritativos e evidência observável; não invente path ou hash.
@@ -97,6 +109,7 @@ Non-applicability rationale:
 No verification-command confirmation:
 Comandos executados:
 Resultado de cada comando e exit code:
+Evidence provenance: exact inline JSON returned by the validation harness
 Testes selecionados:
 Justificativa da seleção:
 Cobertura:
@@ -117,6 +130,7 @@ Operação: APPLY_FINDINGS
 Status: TESTS_PASS | TESTS_ACCEPTED | TESTS_FAIL | TESTS_NOT_APPLICABLE | BLOCKED
 Automatic check round:
 Ciclo de findings:
+Finding IDs:
 HEAD:
 Escopo verificado:
 Estado testado:
@@ -128,6 +142,7 @@ Non-applicability rationale:
 No verification-command confirmation:
 Comandos executados:
 Resultado de cada comando e exit code:
+Evidence provenance: exact inline JSON returned by the validation harness
 Testes selecionados:
 Justificativa da seleção:
 Cobertura:
@@ -158,6 +173,7 @@ Manifesto final da slice:
 Fileless reason: required only when Manifesto final da slice is exactly none; omit for file-backed manifest
 Comandos executados:
 Resultado de cada comando e exit code:
+Evidence provenance: exact inline JSON returned by the validation harness
 Testes selecionados ou repetidos:
 Justificativa da seleção ou repetição:
 Evidências:

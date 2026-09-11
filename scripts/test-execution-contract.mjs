@@ -22,6 +22,7 @@ import {
   workflowSkillForOperation,
 } from "../skills/workflows/stnl-execution-closer/runtime/execution-state.mjs";
 import { EXECUTION_OPERATION_SKILLS, WORKFLOW_OPERATIONS } from "./lib/skill-registry.mjs";
+import { runValidationSession, validationSandboxBackend } from "../skills/workflows/stnl-slice-executor/runtime/run-validation-session.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
 const SKILLS = [
@@ -104,7 +105,7 @@ function setPlanReviewState(text, ready) {
     .replace(/^- Review state: (?:pending|approved)$/gmu, `- Review state: ${ready ? "approved" : "pending"}`);
 }
 
-async function renderTasks(fixture, { revision = 1, fingerprint = null } = {}) {
+async function renderTasks(fixture, { revision = 1, fingerprint = null, evidenceContract = false } = {}) {
   const authority = fingerprint ?? await computeRequirementsAuthority(fixture.requirements);
   const requirementsMetadata = await fs.stat(fixture.requirements);
   const authorityPath = requirementsMetadata.isDirectory() ? path.join(fixture.requirements, "feature_spec.md") : fixture.requirements;
@@ -116,12 +117,13 @@ async function renderTasks(fixture, { revision = 1, fingerprint = null } = {}) {
   ]);
   await fs.writeFile(path.join(fixture.execution, "tasks.md"), tasks);
   const taskTemplate = await fs.readFile(path.join(ROOT, "skills/workflows/stnl-task-materializer/templates/slice-tasks.template.md"), "utf8");
-  const task = replaceAll(taskTemplate, [
+  let task = replaceAll(taskTemplate, [
     ["<Name>", "Delivery"], ["`<relative path>`", `\`${detailSource}\``],
     ["sha256:<64hex>", `sha256:${authority}`], ["<positive integer>", String(revision)],
     ["<task>", "Implement behavior"], ["<result>", "observable result"], ["<areas>", "src/example.txt"],
     ["<test, command, suite, or observable check>", "node --test"],
   ]);
+  if (!evidenceContract) task = task.replace("- Validation evidence contract: stnl-validation-evidence/v1\n", "");
   await fs.writeFile(path.join(fixture.execution, "tasks/slice-01.md"), task);
 }
 
@@ -431,11 +433,11 @@ function publishPassResult(text) {
   );
 }
 
-function delegationBlocker(operation, kind, { state = "active", after = "none", resolution = null } = {}) {
+function delegationBlocker(operation, kind, { state = "active", after = "none", pendingRound = null, resolution = null } = {}) {
   return `- Operation: ${operation}
 - Kind: ${kind}
 - State: ${state}
-- After record: ${after}
+- After record: ${after}${pendingRound === null ? "" : `\n- Pending automatic round: ${pendingRound}/3`}
 - Causes:
   - configured independent runner could not produce a valid result
 - Required action: retry the same operation after restoring the runner${resolution === null ? "" : `\n- Resolution: ${resolution}`}`;
@@ -2449,6 +2451,9 @@ test("superseded historical paths become closable only through a later current-a
   task = replaceSection(task, "Validation Attempts", PASS_ATTEMPT);
   task = replaceSection(task, "Effective Validation Base", PASS_BASE);
   task = publishPassResult(task);
+  // This legacy-history ownership fixture predates harness provenance; new
+  // candidate materialization is separately required to retain v1.
+  task = task.replace("- Validation evidence contract: stnl-validation-evidence/v1\n", "");
   await fs.writeFile(second, task);
   await editTasksIndex(fixture, (value) => value.replace("| [ ] | 02 - Recovery | reconciled result | 01 | tasks/slice-02.md | pending | pending |", "| [x] | 02 - Recovery | reconciled result | 01 | tasks/slice-02.md | PASS | PASS |"));
   await writeValidatedPath(fixture);
@@ -3974,4 +3979,628 @@ test("candidate history rejects rewriting a resolved divergence disposition", as
   const candidate = await executionCandidate(fixture);
   await editTask(candidate, (value) => value.replace("the original condition is absent.", "a different reason replaces the historical disposition."));
   await assertCandidateRejectedWithoutMutation(fixture, candidate, /divergence-01.*immutable/u);
+});
+
+async function validationSessionFixture(t) {
+  const fixture = await standaloneWorkspace(t);
+  await renderArtifacts(fixture);
+  await renderTasks(fixture, { evidenceContract: true });
+  await writeValidatedPath(fixture);
+  return fixture;
+}
+
+async function editNamedTask(fixture, slice, transform) {
+  const file = path.join(fixture.execution, "tasks", `${slice}.md`);
+  await fs.writeFile(file, transform(await fs.readFile(file, "utf8")), "utf8");
+}
+
+function provenanceBase(provenance, status = "PASS") {
+  return `- Origin attempt: attempt-01
+- Attempt type: initial
+- HEAD: ${provenance.inputs.head}
+- Result: ${status}
+- Files:
+${provenance.subjects.map((subject) => `  - \`${subject.path}\` | ${subject.expected}`).join("\n")}
+- Authoritative commands:
+${provenance.commands.map((command) => `  - \`${command.display}\` | exit:${command.exit}`).join("\n")}
+- Evidence summary: isolated validation evidence`;
+}
+
+function overlapRecord(id, priorSlice, paths, behavior = "Preserve the prior validated behavior.", regressions = "Run the focused prior behavior regression.") {
+  return `### ${id}\n\n- Prior slice: ${priorSlice}\n- Paths: ${paths.join(", ")}\n- Affected behavior: ${behavior}\n- Regressions: ${regressions}`;
+}
+
+async function terminalizeV1Slice(fixture, slice, paths, { overlaps = "- none", command = "/usr/bin/true" } = {}) {
+  const subjects = [...paths].sort((a, b) => a.localeCompare(b, "en"));
+  for (const subject of subjects) await writeValidatedPath(fixture, subject);
+  const implementation = await runValidationSession(fixture.requirements, validationRequest({
+    slice, subjects, failureConclusion: "NONE", argv: [command],
+  }));
+  await editNamedTask(fixture, slice, (value) => {
+    let next = value.replace(/- \[ \] ([0-9]+\.[0-9]+)/u, "- [x] $1");
+    next = replaceSection(next, "Changed Areas", subjects.map((subject) => `- \`${subject}\``).join("\n"));
+    next = replaceSection(next, "Prior Validation Overlap", overlaps);
+    return replaceSection(next, "Implementation Test Evidence", evidenceCheckRecord(implementation.provenance));
+  });
+  const validation = await runValidationSession(fixture.requirements, validationRequest({
+    operation: "VALIDATE_SLICE", slice, round: null, subjects, failureConclusion: "NONE", argv: [command],
+  }));
+  await editNamedTask(fixture, slice, (value) => {
+    let next = replaceSection(value, "Validation Attempts", evidenceAttemptRecord(validation.provenance, "PASS"));
+    next = replaceSection(next, "Effective Validation Base", provenanceBase(validation.provenance));
+    return publishPassResult(next);
+  });
+  await editTasksIndex(fixture, (value) => value.replace(
+    new RegExp(`\\| \\[ \\] \\| [^|]+ \\| [^|]+ \\| [^|]* \\| tasks/${slice}\\.md \\| pending \\| pending \\|`, "u"),
+    (match) => match.replace("[ ]", "[x]").replace("pending | pending", "PASS | PASS"),
+  ));
+  return { implementation, validation };
+}
+
+async function addThirdPristineSlice(fixture) {
+  await editPlan(fixture, (value) => value.replace(
+    "| 02 - Later | later result | 01 | AC-001 | src/later.txt | plans/slice-02.md |",
+    "| 02 - Later | later result | 01 | AC-001 | src/later.txt | plans/slice-02.md |\n| 03 - Final | final result | 02 | AC-001 | src/example.txt | plans/slice-03.md |",
+  ));
+  const plan = (await fs.readFile(path.join(fixture.execution, "plans/slice-02.md"), "utf8"))
+    .replaceAll("Slice 02", "Slice 03").replaceAll("- Slice: 02", "- Slice: 03")
+    .replaceAll("Later", "Final").replaceAll("slice-02", "slice-03");
+  await fs.writeFile(path.join(fixture.execution, "plans/slice-03.md"), plan, "utf8");
+  await editTasksIndex(fixture, (value) => value.replace(
+    "| [ ] | 02 - Later | later result | 01 | tasks/slice-02.md | pending | pending |",
+    "| [ ] | 02 - Later | later result | 01 | tasks/slice-02.md | pending | pending |\n| [ ] | 03 - Final | final result | 02 | tasks/slice-03.md | pending | pending |",
+  ));
+  const task = (await fs.readFile(path.join(fixture.execution, "tasks/slice-02.md"), "utf8"))
+    .replaceAll("Slice 02", "Slice 03").replaceAll("- Slice: 02", "- Slice: 03")
+    .replaceAll("slice-02", "slice-03").replaceAll("Later", "Final").replace("2.1", "3.1");
+  await fs.writeFile(path.join(fixture.execution, "tasks/slice-03.md"), task, "utf8");
+}
+
+async function twoSliceOverlapFixture(t, priorPaths = ["../../src/example.txt"]) {
+  const fixture = await validationSessionFixture(t);
+  await addSecondPristineSlice(fixture);
+  await terminalizeV1Slice(fixture, "slice-01", priorPaths);
+  return fixture;
+}
+
+test("Prior Validation Overlap 1 valid overlap passes and CLOSE verifies it", async (t) => {
+  const fixture = await twoSliceOverlapFixture(t);
+  await terminalizeV1Slice(fixture, "slice-02", ["../../src/example.txt"], {
+    overlaps: overlapRecord("overlap-01", "slice-01", ["../../src/example.txt"]),
+  });
+  assert.equal((await inspectExecutionState(fixture.requirements)).state, "COMPLETE");
+  assert.equal((await preflightExecutionOperation(fixture.requirements, "CLOSE")).state, "COMPLETE");
+});
+
+test("Prior Validation Overlap 2 missing overlap is rejected deterministically", async (t) => {
+  const fixture = await twoSliceOverlapFixture(t);
+  await terminalizeV1Slice(fixture, "slice-02", ["../../src/example.txt"]);
+  await assert.rejects(preflightExecutionOperation(fixture.requirements, "CLOSE"), /does not declare every changed terminal-base intersection/u);
+});
+
+test("Prior Validation Overlap 3 incomplete paths are rejected", async (t) => {
+  const paths = ["../../src/a.txt", "../../src/b.txt"];
+  const fixture = await twoSliceOverlapFixture(t, paths);
+  await terminalizeV1Slice(fixture, "slice-02", paths, {
+    overlaps: overlapRecord("overlap-01", "slice-01", [paths[0]]),
+  });
+  await assert.rejects(preflightExecutionOperation(fixture.requirements, "CLOSE"), /incomplete or stale/u);
+});
+
+test("Prior Validation Overlap 4 excessive stale path is rejected", async (t) => {
+  const fixture = await twoSliceOverlapFixture(t);
+  await terminalizeV1Slice(fixture, "slice-02", ["../../src/example.txt"], {
+    overlaps: overlapRecord("overlap-01", "slice-01", ["../../src/example.txt", "../../src/stale.txt"]),
+  });
+  await assert.rejects(preflightExecutionOperation(fixture.requirements, "CLOSE"), /incomplete or stale/u);
+});
+
+test("Prior Validation Overlap 5 duplicate prior slice is rejected", async (t) => {
+  const fixture = await twoSliceOverlapFixture(t);
+  const overlap = overlapRecord("overlap-01", "slice-01", ["../../src/example.txt"]);
+  await terminalizeV1Slice(fixture, "slice-02", ["../../src/example.txt"], { overlaps: `${overlap}\n\n${overlap.replace("overlap-01", "overlap-02")}` });
+  await assert.rejects(preflightExecutionOperation(fixture.requirements, "CLOSE"), /duplicate Prior Validation Overlap|duplicate or self-referential/u);
+});
+
+test("Prior Validation Overlap 6 self overlap is rejected", async (t) => {
+  const fixture = await twoSliceOverlapFixture(t);
+  await terminalizeV1Slice(fixture, "slice-02", ["../../src/example.txt"], {
+    overlaps: overlapRecord("overlap-01", "slice-02", ["../../src/example.txt"]),
+  });
+  await assert.rejects(preflightExecutionOperation(fixture.requirements, "CLOSE"), /duplicate or self-referential/u);
+});
+
+test("Prior Validation Overlap 7 Corrections Applied remains owned and still requires overlap", async (t) => {
+  const fixture = await twoSliceOverlapFixture(t);
+  await terminalizeV1Slice(fixture, "slice-02", ["../../src/example.txt"]);
+  await editNamedTask(fixture, "slice-02", (value) => replaceSection(value, "Corrections Applied", "- `../../src/example.txt`"));
+  await assert.rejects(preflightExecutionOperation(fixture.requirements, "CLOSE"), /does not declare every changed terminal-base intersection/u);
+});
+
+test("Prior Validation Overlap 8 multiple terminal prior slices require exact per-slice declarations", async (t) => {
+  const fixture = await validationSessionFixture(t);
+  await addSecondPristineSlice(fixture);
+  await addThirdPristineSlice(fixture);
+  await terminalizeV1Slice(fixture, "slice-01", ["../../src/example.txt"]);
+  await terminalizeV1Slice(fixture, "slice-02", ["../../src/example.txt", "../../src/second.txt"], {
+    overlaps: overlapRecord("overlap-01", "slice-01", ["../../src/example.txt"]),
+  });
+  await terminalizeV1Slice(fixture, "slice-03", ["../../src/example.txt", "../../src/second.txt"], {
+    overlaps: `${overlapRecord("overlap-01", "slice-01", ["../../src/example.txt"])}\n\n${overlapRecord("overlap-02", "slice-02", ["../../src/example.txt", "../../src/second.txt"])}`,
+  });
+  assert.equal((await inspectExecutionState(fixture.requirements)).state, "COMPLETE");
+  const candidate = await executionCandidate(fixture);
+  await editNamedTask(candidate, "slice-03", (value) => replaceSection(value, "Prior Validation Overlap", overlapRecord("overlap-01", "slice-01", ["../../src/second.txt"]) + "\n\n" + overlapRecord("overlap-02", "slice-02", ["../../src/example.txt", "../../src/second.txt"])));
+  await assert.rejects(validateExecutionCandidate(fixture.requirements, candidate.execution), /terminal task, validation base and supersession ownership are immutable|incomplete or stale/u);
+});
+
+test("Prior Validation Overlap 9 sequential ownership keeps slice-01 and slice-02 history terminal", async (t) => {
+  const fixture = await validationSessionFixture(t);
+  await addSecondPristineSlice(fixture);
+  await addThirdPristineSlice(fixture);
+  await terminalizeV1Slice(fixture, "slice-01", ["../../src/example.txt"]);
+  await terminalizeV1Slice(fixture, "slice-02", ["../../src/example.txt"], {
+    overlaps: overlapRecord("overlap-01", "slice-01", ["../../src/example.txt"]),
+  });
+  await terminalizeV1Slice(fixture, "slice-03", ["../../src/example.txt"], {
+    overlaps: `${overlapRecord("overlap-01", "slice-01", ["../../src/example.txt"])}\n\n${overlapRecord("overlap-02", "slice-02", ["../../src/example.txt"])}`,
+  });
+  const state = await inspectExecutionState(fixture.requirements);
+  assert.equal(state.rows[0].result, "PASS");
+  assert.equal(state.rows[1].result, "PASS");
+  assert.equal(state.rows[2].result, "PASS");
+  assert.equal((await preflightExecutionOperation(fixture.requirements, "CLOSE")).state, "COMPLETE");
+});
+
+test("Prior Validation Overlap 10 rejects Base ownership without Changed Areas in a cross-slice candidate", async (t) => {
+  const fixture = await twoSliceOverlapFixture(t);
+  await terminalizeV1Slice(fixture, "slice-02", ["../../src/example.txt"], {
+    overlaps: overlapRecord("overlap-01", "slice-01", ["../../src/example.txt"]),
+  });
+  const candidate = await executionCandidate(fixture);
+  await editNamedTask(candidate, "slice-02", (value) => replaceSection(value, "Changed Areas", "- `../../src/undeclared.txt`"));
+  await assert.rejects(validateExecutionCandidate(fixture.requirements, candidate.execution), /changed\/corrected path with no validation owner|Effective Validation Base path is absent/u);
+});
+
+test("Prior Validation Overlap contract keeps paths, IDs, and prior references canonical", async (t) => {
+  const fixture = await twoSliceOverlapFixture(t);
+  await terminalizeV1Slice(fixture, "slice-02", ["../../src/example.txt"], {
+    overlaps: overlapRecord("overlap-01", "slice-01", ["../../src/example.txt"]),
+  });
+  const taskFile = path.join(fixture.execution, "tasks/slice-02.md");
+  const original = await fs.readFile(taskFile, "utf8");
+  const cases = [
+    ["unsorted paths", overlapRecord("overlap-01", "slice-01", ["../../src/z.txt", "../../src/a.txt"]), /paths are not lexicographically ordered/u],
+    ["duplicate path", overlapRecord("overlap-01", "slice-01", ["../../src/example.txt", "../../src/example.txt"]), /duplicate paths/u],
+    ["duplicate overlap id", `${overlapRecord("overlap-01", "slice-01", ["../../src/example.txt"])}\n\n${overlapRecord("overlap-01", "slice-01", ["../../src/example.txt"])}`, /duplicate Prior Validation Overlap identifiers/u],
+    ["nonexistent prior", overlapRecord("overlap-01", "slice-99", ["../../src/example.txt"]), /incomplete or stale/u],
+    ["posterior prior", overlapRecord("overlap-01", "slice-03", ["../../src/example.txt"]), /incomplete or stale/u],
+  ];
+  for (const [, overlap, expected] of cases) {
+    await fs.writeFile(taskFile, replaceSection(original, "Prior Validation Overlap", overlap), "utf8");
+    await assert.rejects(preflightExecutionOperation(fixture.requirements, "CLOSE"), expected);
+  }
+  await fs.writeFile(taskFile, original, "utf8");
+});
+
+function validationRequest({
+  operation = "EXECUTE_SLICE", slice = "slice-01", round = "1/3", subjects = ["../../src/example.txt"],
+  argv = [process.execPath, "-e", "process.exit(0)"], writePaths = [], priorEvidenceId = null,
+  failureConclusion = "VALIDATION_FINDING", replayOriginEvidenceId = null,
+} = {}) {
+  return {
+    operation, slice, round, cwd: ".", subjects,
+    commands: [{ argv, cwd: ".", writePaths, env: {}, timeoutMs: 10_000 }],
+    baselineFingerprint: null, priorEvidenceId, failureConclusion, replayOriginEvidenceId,
+  };
+}
+
+function provenanceCommands(provenance) {
+  return provenance.commands.map((command) => `  - \`${command.display}\` | exit:${command.exit}`).join("\n");
+}
+
+function evidenceCheckRecord(provenance, { status = "TESTS_PASS", number = 1 } = {}) {
+  const identifier = String(number).padStart(2, "0");
+  const testedState = provenance.subjects.map((subject) => `  - \`${subject.path}\` | ${subject.expected}`).join("\n");
+  return `### implementation-check-${identifier}
+
+- Automatic check round: ${provenance.round}
+- Status: ${status}
+- HEAD: ${provenance.inputs.head}
+- Tested scope: ${provenance.subjects.map((subject) => subject.path).join(", ")}
+- Tested state:
+${testedState}
+- Discovery sources: approved task and repository tests
+- Discovery actions: inspected applicable test commands
+- Verification types considered: focused automated test
+- Commands:
+${provenanceCommands(provenance)}
+- Evidence provenance: ${JSON.stringify(provenance)}
+- Selected checks: isolated validation session
+- Selection rationale: bounded authoritative behavior check
+- Coverage: AC-001 observable behavior
+- Failures: ${status === "TESTS_FAIL" ? "observable mismatch" : "none"}
+- Blockers: ${status === "BLOCKED" ? "validation evidence is invalid" : "none"}
+- Unexpected workspace effects: ${provenance.workspace.sideEffects.join(", ") || "none"}
+- Persistence summary: ${status} persisted.`;
+}
+
+function evidenceAttemptRecord(provenance, status, { number = 1 } = {}) {
+  const identifier = String(number).padStart(2, "0");
+  const findingFields = status === "NEEDS_FIX"
+    ? ["finding-01", "finding-01=active"] : ["none", "none"];
+  return `### attempt-${identifier}
+
+- Type: ${number === 1 ? "initial" : "revalidation"}
+- Status: ${status}
+- HEAD: ${provenance.inputs.head}
+- Verified scope: ${provenance.subjects.map((subject) => subject.path).join(", ")}
+- Commands:
+${provenanceCommands(provenance)}
+- Evidence provenance: ${JSON.stringify(provenance)}
+- Evidence: isolated validation evidence
+- Finding references: ${findingFields[0]}
+- Finding dispositions: ${findingFields[1]}
+- Blockers: ${status === "BLOCKED" ? "invalid reproduction" : "none"}
+- Unexpected workspace effects: ${provenance.workspace.sideEffects.join(", ") || "none"}
+- Persistence summary: ${status} persisted.`;
+}
+
+async function externalExecutionCandidate(t, fixture) {
+  const holder = await temporary(t, "stnl-validation-candidate-");
+  return { root: holder, requirements: fixture.requirements, execution: await copyDirectory(fixture.execution, path.join(holder, "execution")) };
+}
+
+test("real macOS sandbox denial invalidates evidence and cannot become a finding", async (t) => {
+  const fixture = await validationSessionFixture(t);
+  const liveTask = path.join(fixture.execution, "tasks/slice-01.md");
+  const original = await fs.readFile(liveTask, "utf8");
+  const result = await runValidationSession(fixture.requirements, validationRequest({
+    argv: [process.execPath, "-e", "require('node:fs').writeFileSync(process.argv[1], 'corrupt')", liveTask],
+    failureConclusion: "VALIDATION_FINDING",
+  }));
+  assert.equal(await fs.readFile(liveTask, "utf8"), original);
+  assert.notEqual(result.outputs[0].exit, 0);
+  assert.equal(result.provenance.state, "INVALID");
+  assert.equal(result.provenance.classification, "VALIDATION_SIDE_EFFECT");
+  assert.equal(result.provenance.conclusion, "NONE");
+  assert.ok(result.provenance.workspace.sideEffects.includes("validation-sandbox-boundary-violation"));
+  assert.equal(result.outputs[0].sandboxViolation, true);
+});
+
+test("a real sandbox denial cannot become CODE_REGRESSION", async (t) => {
+  const fixture = await validationSessionFixture(t);
+  const implementation = await runValidationSession(fixture.requirements, validationRequest({ failureConclusion: "NONE" }));
+  await editTask(fixture, (value) => {
+    let next = value.replace("- [ ] 1.1", "- [x] 1.1");
+    next = replaceSection(next, "Changed Areas", "- `../../src/example.txt`");
+    next = replaceSection(next, "Implementation Test Evidence", evidenceCheckRecord(implementation.provenance));
+    return next;
+  });
+  const original = await runValidationSession(fixture.requirements, validationRequest({
+    operation: "VALIDATE_SLICE", round: null, failureConclusion: "VALIDATION_FINDING",
+    argv: ["/usr/bin/false"],
+  }));
+  assert.equal(original.provenance.conclusion, "VALIDATION_FINDING");
+  await editTask(fixture, (value) => replaceSection(
+    replaceSection(value, "Validation Attempts", evidenceAttemptRecord(original.provenance, "NEEDS_FIX")),
+    "Validation Findings", `${ACTIVE_FINDING}\n- Kind: implementation_defect\n- Evidence identity: ${original.provenance.evidenceId}`,
+  ));
+  await assert.rejects(runValidationSession(fixture.requirements, validationRequest({
+    operation: "VALIDATE_SLICE", round: null, priorEvidenceId: original.provenance.evidenceId, failureConclusion: "CODE_REGRESSION",
+    argv: [process.execPath, "-e", "require('node:fs').writeFileSync(process.argv[1], 'corrupt')", path.join(fixture.root, "src/example.txt")],
+  })), /CODE_REGRESSION requires an original replay descriptor/u);
+  const denied = await runValidationSession(fixture.requirements, validationRequest({
+    operation: "VALIDATE_SLICE", round: null, priorEvidenceId: original.provenance.evidenceId,
+    replayOriginEvidenceId: original.provenance.evidenceId, failureConclusion: "CODE_REGRESSION",
+    argv: [process.execPath, "-e", "require('node:fs').writeFileSync(process.argv[1], 'corrupt')", path.join(fixture.root, "src/example.txt")],
+  }));
+  assert.equal(denied.provenance.state, "INVALID");
+  assert.equal(denied.provenance.classification, "INVALID_REPLAY");
+  assert.equal(denied.provenance.conclusion, "NONE");
+  assert.equal(denied.outputs[0].sandboxViolation, false);
+});
+
+test("equivalent sandbox denials have deterministic evidence identity", async (t) => {
+  const fixture = await validationSessionFixture(t);
+  const request = validationRequest({
+    failureConclusion: "VALIDATION_FINDING",
+    argv: [process.execPath, "-e", "require('node:fs').writeFileSync('src/example.txt', 'corrupt')"],
+  });
+  const first = await runValidationSession(fixture.requirements, request);
+  const second = await runValidationSession(fixture.requirements, request);
+  assert.equal(first.provenance.state, "INVALID");
+  assert.equal(second.provenance.state, "INVALID");
+  assert.equal(first.provenance.classification, "VALIDATION_SIDE_EFFECT");
+  assert.equal(second.provenance.classification, "VALIDATION_SIDE_EFFECT");
+  assert.equal(first.provenance.commands[0].stderrFingerprint, second.provenance.commands[0].stderrFingerprint);
+  assert.equal(first.provenance.evidenceId, second.provenance.evidenceId);
+  assert.equal(first.provenance.inputs.executionFingerprint, second.provenance.inputs.executionFingerprint);
+});
+
+test("sandbox classification does not infer a side effect from application text, signals, or timeout", async (t) => {
+  for (const diagnostic of ["permission denied", "operation not permitted", "read-only file system", "sandbox", "STNL_VALIDATION_SANDBOX:spoof"]) {
+    const fixture = await validationSessionFixture(t);
+    const result = await runValidationSession(fixture.requirements, validationRequest({
+      argv: [process.execPath, "-e", `process.stderr.write(${JSON.stringify(diagnostic)}); process.exit(1)`],
+      failureConclusion: "NONE",
+    }));
+    assert.equal(result.provenance.state, "VERIFIED", diagnostic);
+    assert.equal(result.provenance.classification, "NONE", diagnostic);
+    assert.equal(result.outputs[0].sandboxViolation, false, diagnostic);
+  }
+  for (const signal of ["SIGTERM", "SIGABRT"]) {
+    const fixture = await validationSessionFixture(t);
+    const result = await runValidationSession(fixture.requirements, validationRequest({
+      argv: [process.execPath, "-e", `process.kill(process.pid, ${JSON.stringify(signal)})`], failureConclusion: "NONE",
+    }));
+    assert.equal(result.provenance.state, "VERIFIED", signal);
+    assert.equal(result.provenance.classification, "NONE", signal);
+    assert.equal(result.outputs[0].sandboxViolation, false, signal);
+  }
+  const fixture = await validationSessionFixture(t);
+  const request = validationRequest({
+    argv: [process.execPath, "-e", "setTimeout(() => {}, 1000)"], failureConclusion: "NONE",
+  });
+  request.commands[0].timeoutMs = 20;
+  const timedOut = await runValidationSession(fixture.requirements, request);
+  assert.equal(timedOut.provenance.state, "VERIFIED");
+  assert.equal(timedOut.provenance.classification, "NONE");
+  assert.equal(timedOut.outputs[0].timedOut, true);
+  assert.equal(timedOut.outputs[0].sandboxViolation, false);
+});
+
+test("normal application failure remains a material finding when no sandbox denial is authenticated", async (t) => {
+  const fixture = await validationSessionFixture(t);
+  const result = await runValidationSession(fixture.requirements, validationRequest({
+    argv: ["/usr/bin/false"], failureConclusion: "VALIDATION_FINDING",
+  }));
+  assert.equal(result.outputs[0].exit, 1);
+  assert.equal(result.outputs[0].sandboxViolation, false);
+  assert.equal(result.provenance.state, "VERIFIED");
+  assert.equal(result.provenance.classification, "NONE");
+  assert.equal(result.provenance.conclusion, "VALIDATION_FINDING");
+});
+
+test("declared isolated write boundaries remain writable without a sandbox finding", async (t) => {
+  const fixture = await validationSessionFixture(t);
+  const result = await runValidationSession(fixture.requirements, validationRequest({
+    argv: [process.execPath, "-e", "require('node:fs').writeFileSync('out/isolated-output.txt', 'ok')"],
+    writePaths: ["out"], failureConclusion: "VALIDATION_FINDING",
+  }));
+  assert.equal(result.provenance.state, "VERIFIED");
+  assert.equal(result.provenance.classification, "NONE");
+  assert.equal(result.provenance.conclusion, "NONE");
+  assert.equal(result.outputs[0].sandboxViolation, false);
+  await assert.rejects(fs.access(path.join(fixture.root, "out/isolated-output.txt")));
+});
+
+test("Linux bwrap without an authenticated denial channel fails closed on non-signal failures", async () => {
+  const harness = await fs.readFile(path.join(ROOT, "skills/workflows/stnl-slice-executor/runtime/run-validation-session.mjs"), "utf8");
+  assert.match(harness, /kind === "linux-bwrap" && payload\.exit !== 0 && !payload\.timedOut && !payload\.signaled/u);
+  assert.match(harness, /validation-sandbox-outcome-indeterminate/u);
+  assert.match(harness, /violationMarker: null/u);
+});
+
+test("macOS marker redaction is private, exact, and authentication-gated", async () => {
+  const harness = await fs.readFile(path.join(ROOT, "skills/workflows/stnl-slice-executor/runtime/run-validation-session.mjs"), "utf8");
+  assert.match(harness, /const violationMarker = observeDenials \? `STNL_VALIDATION_SANDBOX:\$\{randomUUID\(\)\}` : null/u);
+  assert.match(harness, /stderrForEvidence: sandboxViolation \? redactAuthenticatedMarker\(payload\.stderr, isolated\.violationMarker\) : payload\.stderr/u);
+  assert.doesNotMatch(harness, /replaceAll\(.*(?:permission denied|operation not permitted|read-only file system)/iu);
+});
+
+test("platform contract reports Windows as unsupported without a skipped runtime test", async () => {
+  assert.equal(await validationSandboxBackend("win32"), null);
+  assert.equal(await validationSandboxBackend("unsupported"), null);
+  assert.ok(await validationSandboxBackend(process.platform));
+});
+
+test("v1 evidence lifecycle is closed and provenance cannot be omitted", async (t) => {
+  const fixture = await validationSessionFixture(t);
+  const observed = await runValidationSession(fixture.requirements, validationRequest({ failureConclusion: "NONE" }));
+  const cases = [
+    ["OBSERVED", "NONE", "NONE"],
+    ["INVALID", "NONE", "NONE"],
+    ["VERIFIED", "STALE_EVIDENCE", "NONE"],
+    ["INVALID", "INVALID_REPLAY", "VALIDATION_FINDING"],
+  ];
+  for (const [state, classification, conclusion] of cases) {
+    const candidate = await externalExecutionCandidate(t, fixture);
+    const provenance = { ...observed.provenance, state, classification, conclusion };
+    await editTask(candidate, (value) => {
+      let next = replaceSection(value.replace("- [ ] 1.1", "- [x] 1.1"), "Changed Areas", "- `../../src/example.txt`");
+      return replaceSection(next, "Implementation Test Evidence", evidenceCheckRecord(provenance));
+    });
+    await assert.rejects(validateExecutionCandidate(fixture.requirements, candidate.execution), /unsupported version or lifecycle value|illegal lifecycle combination/u);
+  }
+  const missing = await externalExecutionCandidate(t, fixture);
+  await editTask(missing, (value) => {
+    let next = replaceSection(value.replace("- [ ] 1.1", "- [x] 1.1"), "Changed Areas", "- `../../src/example.txt`");
+    return replaceSection(next, "Implementation Test Evidence", checkRecord("implementation-check", 1, "TESTS_PASS", 1));
+  });
+  await assert.rejects(validateExecutionCandidate(fixture.requirements, missing.execution), /v1 validation evidence requires structured provenance/u);
+});
+
+test("a successful validation base cannot introduce an undeclared ownership path", async (t) => {
+  const fixture = await standaloneWorkspace(t);
+  await renderArtifacts(fixture);
+  await writeValidatedPath(fixture, "../../src/extra.txt", "extra validated behavior\n");
+  const extraHash = createHash("sha256").update("extra validated behavior\n").digest("hex");
+  await editTask(fixture, (value) => {
+    let next = value.replace("- [ ] 1.1", "- [x] 1.1");
+    next = replaceSection(next, "Changed Areas", "- `../../src/example.txt`");
+    next = replaceSection(next, "Validation Attempts", PASS_ATTEMPT);
+    next = replaceSection(next, "Effective Validation Base", PASS_BASE.replace(
+      "- Authoritative commands:", `  - \`../../src/extra.txt\` | sha256:${extraHash}\n- Authoritative commands:`,
+    ));
+    return publishPassResult(next);
+  });
+  await assert.rejects(inspectExecutionState(fixture.requirements), /Effective Validation Base path is absent from Changed Areas\/Corrections Applied/u);
+});
+
+test("validation evidence preserves per-file manifest identity and rejects directory collapse", async (t) => {
+  const fixture = await validationSessionFixture(t);
+  const subjects = ["../../foo/a.json", "../../foo/b.json", "../../nested/a.json"];
+  for (const subject of subjects) {
+    const target = path.resolve(fixture.execution, "tasks", subject);
+    await fs.mkdir(path.dirname(target), { recursive: true });
+    await fs.writeFile(target, `${subject}\n`);
+  }
+  const result = await runValidationSession(fixture.requirements, validationRequest({ subjects }));
+  assert.deepEqual(result.provenance.subjects.map((subject) => subject.path), subjects);
+  assert.equal(new Set(result.provenance.subjects.map((subject) => subject.path)).size, 3);
+  await assert.rejects(
+    runValidationSession(fixture.requirements, validationRequest({ subjects: ["../../foo/"] })),
+    /normalized relative path/u,
+  );
+});
+
+test("structured provenance round-trips and stale unlisted source cannot support a candidate finding", async (t) => {
+  const fixture = await validationSessionFixture(t);
+  const dependency = path.join(fixture.root, "src/dependency.txt");
+  await fs.writeFile(dependency, "first\n");
+  const result = await runValidationSession(fixture.requirements, validationRequest({ failureConclusion: "NONE" }));
+  assert.equal(result.provenance.state, "VERIFIED", JSON.stringify(result));
+  const candidate = await externalExecutionCandidate(t, fixture);
+  await editTask(candidate, (value) => {
+    let next = replaceSection(value.replace("- [ ] 1.1", "- [x] 1.1"), "Changed Areas", "- `../../src/example.txt`");
+    return replaceSection(next, "Implementation Test Evidence", evidenceCheckRecord(result.provenance));
+  });
+  assert.equal((await validateExecutionCandidate(fixture.requirements, candidate.execution)).state, "IMPLEMENTED_AWAITING_VALIDATION");
+  await fs.writeFile(dependency, "changed\n");
+  await assert.rejects(validateExecutionCandidate(fixture.requirements, candidate.execution), /source fingerprint is stale/u);
+});
+
+test("invalid replay is anchored to historical evidence and cannot become code regression", async (t) => {
+  const fixture = await validationSessionFixture(t);
+  const implementation = await runValidationSession(fixture.requirements, validationRequest({ failureConclusion: "NONE" }));
+  const implemented = await externalExecutionCandidate(t, fixture);
+  await editTask(implemented, (value) => {
+    let next = replaceSection(value.replace("- [ ] 1.1", "- [x] 1.1"), "Changed Areas", "- `../../src/example.txt`");
+    return replaceSection(next, "Implementation Test Evidence", evidenceCheckRecord(implementation.provenance));
+  });
+  await validateExecutionCandidate(fixture.requirements, implemented.execution);
+  await fs.copyFile(path.join(implemented.execution, "tasks/slice-01.md"), path.join(fixture.execution, "tasks/slice-01.md"));
+  const original = await runValidationSession(fixture.requirements, validationRequest({
+    operation: "VALIDATE_SLICE", round: null,
+    argv: [process.execPath, "-e", "process.exit(1)"], failureConclusion: "VALIDATION_FINDING",
+  }));
+  assert.equal(original.provenance.conclusion, "VALIDATION_FINDING", JSON.stringify(original));
+  const candidate = await externalExecutionCandidate(t, fixture);
+  const finding = `${ACTIVE_FINDING}\n- Kind: implementation_defect\n- Evidence identity: ${original.provenance.evidenceId}`;
+  await editTask(candidate, (value) => {
+    let next = replaceSection(value.replace("- [ ] 1.1", "- [x] 1.1"), "Changed Areas", "- `../../src/example.txt`");
+    next = replaceSection(next, "Validation Attempts", evidenceAttemptRecord(original.provenance, "NEEDS_FIX"));
+    return replaceSection(next, "Validation Findings", finding);
+  });
+  await validateExecutionCandidate(fixture.requirements, candidate.execution);
+  await fs.copyFile(path.join(candidate.execution, "tasks/slice-01.md"), path.join(fixture.execution, "tasks/slice-01.md"));
+
+  await assert.rejects(runValidationSession(fixture.requirements, validationRequest({
+    operation: "VALIDATE_SLICE", round: null, priorEvidenceId: original.provenance.evidenceId,
+    replayOriginEvidenceId: `sha256:${"a".repeat(64)}`,
+    failureConclusion: "CODE_REGRESSION",
+  })), /not anchored to persisted slice evidence/u);
+
+  const equivalent = await runValidationSession(fixture.requirements, validationRequest({
+    operation: "VALIDATE_SLICE", round: null, priorEvidenceId: original.provenance.evidenceId,
+    replayOriginEvidenceId: original.provenance.evidenceId,
+    argv: [process.execPath, "-e", "process.exit(1)"], failureConclusion: "CODE_REGRESSION",
+  }));
+  assert.equal(equivalent.provenance.state, "VERIFIED");
+  assert.equal(equivalent.provenance.replay.equivalent, true);
+  assert.equal(equivalent.provenance.conclusion, "CODE_REGRESSION");
+
+  const replay = await runValidationSession(fixture.requirements, validationRequest({
+    operation: "VALIDATE_SLICE", round: null, priorEvidenceId: original.provenance.evidenceId,
+    replayOriginEvidenceId: original.provenance.evidenceId,
+    argv: [process.execPath, "-e", "process.exit(1)", "extra-argument"], failureConclusion: "CODE_REGRESSION",
+  }));
+  assert.equal(replay.provenance.state, "INVALID");
+  assert.equal(replay.provenance.classification, "INVALID_REPLAY");
+  assert.equal(replay.provenance.conclusion, "NONE");
+  assert.ok(replay.provenance.replay.mismatches.includes("commandsFingerprint"));
+  const invalidCandidate = await externalExecutionCandidate(t, fixture);
+  await editTask(invalidCandidate, (value) => replaceSection(
+    value,
+    "Validation Attempts",
+    `${evidenceAttemptRecord(original.provenance, "NEEDS_FIX")}\n\n${evidenceAttemptRecord(replay.provenance, "NEEDS_FIX", { number: 2 })}`,
+  ));
+  await assert.rejects(validateExecutionCandidate(fixture.requirements, invalidCandidate.execution), /invalid evidence can only produce BLOCKED/u);
+});
+
+test("v1 candidate cannot downgrade provenance and interrupted round resumes its reserved successor", async (t) => {
+  const fixture = await validationSessionFixture(t);
+  const downgraded = await externalExecutionCandidate(t, fixture);
+  await editTask(downgraded, (value) => replaceSection(
+    replaceSection(value.replace("- Validation evidence contract: stnl-validation-evidence/v1\n", ""), "Changed Areas", "- `../../src/example.txt`"),
+    "Implementation Test Evidence",
+    checkRecord("implementation-check", 1, "BLOCKED", 1),
+  ));
+  await assert.rejects(validateExecutionCandidate(fixture.requirements, downgraded.execution), /cannot remove or downgrade/u);
+
+  const legacy = await standaloneWorkspace(t);
+  await renderArtifacts(legacy);
+  await editTask(legacy, (value) => {
+    let next = replaceSection(value.replace("- [ ] 1.1", "- [x] 1.1"), "Changed Areas", "- `../../src/example.txt`");
+    next = replaceSection(next, "Implementation Test Evidence", checkRecord("implementation-check", 1, "TESTS_FAIL", 1));
+    return replaceSection(next, "Delegation Blocker", delegationBlocker("EXECUTE_SLICE", "initialization", {
+      after: "implementation-check-01", pendingRound: 2,
+    }));
+  });
+  const state = await inspectExecutionState(legacy.requirements);
+  assertRecoveryTarget(state, { operation: "EXECUTE_SLICE", slice: "slice-01", round: 2 });
+});
+
+test("new tasks require v1 and harness rejects stale round authority before execution", async (t) => {
+  const fixture = await validationSessionFixture(t);
+  const candidate = await externalExecutionCandidate(t, fixture);
+  await addSecondPristineSlice(candidate);
+  const second = path.join(candidate.execution, "tasks/slice-02.md");
+  await fs.writeFile(second, (await fs.readFile(second, "utf8")).replace(
+    "- Validation evidence contract: stnl-validation-evidence/v1\n", "",
+  ));
+  await assert.rejects(
+    validateExecutionCandidate(fixture.requirements, candidate.execution),
+    /newly materialized task requires validation evidence contract/u,
+  );
+
+  const liveTask = path.join(fixture.execution, "tasks/slice-01.md");
+  const original = await fs.readFile(liveTask, "utf8");
+  await assert.rejects(runValidationSession(fixture.requirements, validationRequest({
+    round: "3/3", priorEvidenceId: `sha256:${"c".repeat(64)}`,
+    argv: [process.execPath, "-e", "require('node:fs').writeFileSync(process.argv[1], 'corrupt')", liveTask],
+  })), /round or prior evidence does not match current lifecycle state/u);
+  assert.equal(await fs.readFile(liveTask, "utf8"), original);
+});
+
+test("invalid persisted evidence cannot be a replay origin", async (t) => {
+  const fixture = await validationSessionFixture(t);
+  const implementation = await runValidationSession(fixture.requirements, validationRequest({ failureConclusion: "NONE" }));
+  const implemented = await externalExecutionCandidate(t, fixture);
+  await editTask(implemented, (value) => {
+    let next = replaceSection(value.replace("- [ ] 1.1", "- [x] 1.1"), "Changed Areas", "- `../../src/example.txt`");
+    return replaceSection(next, "Implementation Test Evidence", evidenceCheckRecord(implementation.provenance));
+  });
+  await validateExecutionCandidate(fixture.requirements, implemented.execution);
+  await fs.copyFile(path.join(implemented.execution, "tasks/slice-01.md"), path.join(fixture.execution, "tasks/slice-01.md"));
+
+  const liveTask = path.join(fixture.execution, "tasks/slice-01.md");
+  const invalid = await runValidationSession(fixture.requirements, validationRequest({
+    operation: "VALIDATE_SLICE", round: null, failureConclusion: "NONE",
+    replayOriginEvidenceId: implementation.provenance.evidenceId,
+  }));
+  assert.equal(invalid.provenance.state, "INVALID");
+  const blocked = await externalExecutionCandidate(t, fixture);
+  await editTask(blocked, (value) => replaceSection(
+    value, "Validation Attempts", evidenceAttemptRecord(invalid.provenance, "BLOCKED"),
+  ));
+  await validateExecutionCandidate(fixture.requirements, blocked.execution);
+  await fs.copyFile(path.join(blocked.execution, "tasks/slice-01.md"), liveTask);
+
+  await assert.rejects(runValidationSession(fixture.requirements, validationRequest({
+    operation: "VALIDATE_SLICE", round: null, priorEvidenceId: invalid.provenance.evidenceId,
+    replayOriginEvidenceId: invalid.provenance.evidenceId,
+    argv: [process.execPath, "-e", "process.exit(1)"], failureConclusion: "CODE_REGRESSION",
+  })), /replay origin must be verified persisted evidence/u);
 });

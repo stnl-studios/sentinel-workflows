@@ -160,6 +160,7 @@ const checkSchemas = {
     "No verification-command confirmation:",
     "Comandos executados:",
     "Resultado de cada comando e exit code:",
+    "Evidence provenance: exact inline JSON returned by the validation harness",
     "Testes selecionados:",
     "Justificativa da seleção:",
     "Cobertura:",
@@ -177,6 +178,7 @@ const checkSchemas = {
     "Status: TESTS_PASS | TESTS_ACCEPTED | TESTS_FAIL | TESTS_NOT_APPLICABLE | BLOCKED",
     "Automatic check round:",
     "Ciclo de findings:",
+    "Finding IDs:",
     "HEAD:",
     "Escopo verificado:",
     "Estado testado:",
@@ -188,6 +190,7 @@ const checkSchemas = {
     "No verification-command confirmation:",
     "Comandos executados:",
     "Resultado de cada comando e exit code:",
+    "Evidence provenance: exact inline JSON returned by the validation harness",
     "Testes selecionados:",
     "Justificativa da seleção:",
     "Cobertura:",
@@ -215,6 +218,7 @@ const checkSchemas = {
     "Fileless reason: required only when Manifesto final da slice is exactly none; omit for file-backed manifest",
     "Comandos executados:",
     "Resultado de cada comando e exit code:",
+    "Evidence provenance: exact inline JSON returned by the validation harness",
     "Testes selecionados ou repetidos:",
     "Justificativa da seleção ou repetição:",
     "Evidências:",
@@ -269,7 +273,7 @@ function checkRunner(root) {
   const contract = String(codex.developer_instructions ?? "").trim();
   if (contract !== claude.body) reject("R003_EQUIVALENCE", "runner platform contracts diverge");
 
-  requirePattern(contract, /^CONTRATO_CANONICO=stnl-validation-runner\/v[0-9]+$/mu, "R013_SYNTAX", "canonical runner contract ID is missing");
+  requirePattern(contract, /^CONTRATO_CANONICO=stnl-validation-runner\/v8$/mu, "R013_SYNTAX", "canonical runner contract ID is missing or stale");
   const operations = /^OPERACOES_SUPORTADAS=([^\n]+)$/mu.exec(contract)?.[1];
   if (operations !== "EXECUTE_SLICE|APPLY_FINDINGS|VALIDATE_SLICE") reject("R004_OPERATION_SCOPE", `invalid runner operations: ${operations ?? "missing"}`);
   if (!contract.includes("STATUS_CHECKS=TESTS_PASS|TESTS_ACCEPTED|TESTS_FAIL|TESTS_NOT_APPLICABLE|BLOCKED") || !contract.includes("STATUS_VALIDACAO=PASS|ACCEPTED|NEEDS_FIX|BLOCKED")) {
@@ -288,6 +292,13 @@ function checkRunner(root) {
   requirePattern(contract, /conclusões do contexto principal como não verificadas/iu, "R014_INDEPENDENCE", "runner does not independently verify main-context claims");
   requirePattern(contract, /Leia somente o escopo necessário/iu, "R014_INDEPENDENCE", "runner read scope is not bounded");
   requirePattern(contract, /Não confie apenas em checkboxes ou em resultados anteriores/iu, "R014_INDEPENDENCE", "runner can trust historical claims without verification");
+  requirePattern(contract, /Todo verification command, sem exceção[\s\S]{0,180}VALIDATION_HARNESS_PATH/iu, "R017_ISOLATION", "verification commands do not require the validation harness");
+  requirePattern(contract, /sandbox do sistema operacional[\s\S]{0,260}`writePaths`/iu, "R017_ISOLATION", "filesystem isolation and explicit write boundaries are missing");
+  requirePattern(contract, /Plataforma sem sandbox suportada retorna `BLOCKED`[^\n]{0,80}não faça fallback direto/iu, "R017_ISOLATION", "sandbox availability does not fail closed");
+  requirePattern(contract, /Evidence `INVALID`[^\n]{0,220}(?:somente `BLOCKED`|produz somente `BLOCKED`)/iu, "R018_PROVENANCE", "invalid evidence may support a material verdict");
+  requirePattern(contract, /Evidence `VERIFIED`[^\n]{0,180}não autoridade/iu, "R018_PROVENANCE", "evidence and authority are conflated");
+  requirePattern(contract, /`CODE_REGRESSION` exige `replayOriginEvidenceId`[\s\S]{0,500}`INVALID_REPLAY`[^\n]{0,100}não sustenta finding/iu, "R019_REPLAY", "replay equivalence is not a precondition for code regression");
+  requirePattern(contract, /diretório, basename ou agregado nunca substitui identidades de arquivos/iu, "R020_EVIDENCE_IDENTITY", "file-granular evidence identity is not enforced by contract");
 
   const execute = /# EXECUTE_SLICE\n([\s\S]*?)# APPLY_FINDINGS\n/u.exec(contract)?.[1] ?? "";
   const findings = /# APPLY_FINDINGS\n([\s\S]*?)# VALIDATE_SLICE\n/u.exec(contract)?.[1] ?? "";
@@ -405,12 +416,12 @@ const launcherSpecs = {
   "execution-tasks": ["stnl-task-materializer", "OPERATION", "MATERIALIZE_TASKS", [["SPEC_PATH", "{{SPEC_PATH}}"]]],
   "execution-tasks-review": ["stnl-task-reviewer", "OPERATION", "REVIEW_TASKS", [["SPEC_PATH", "{{SPEC_PATH}}"]]],
   "execution-close": ["stnl-execution-closer", "OPERATION", "CLOSE", [["SPEC_PATH", "{{SPEC_PATH}}"]]],
-  "slice-execute-codex": ["stnl-slice-executor", "OPERATION", "EXECUTE_SLICE", [["SPEC_PATH", "{{SPEC_PATH}}"], ["SLICE", "{{SLICE}}"]]],
-  "slice-execute-claude": ["stnl-slice-executor", "OPERATION", "EXECUTE_SLICE", [["SPEC_PATH", "{{SPEC_PATH}}"], ["SLICE", "{{SLICE}}"]]],
-  "slice-apply-findings-codex": ["stnl-slice-executor", "OPERATION", "APPLY_FINDINGS", [["SPEC_PATH", "{{SPEC_PATH}}"], ["SLICE", "{{SLICE}}"]]],
-  "slice-apply-findings-claude": ["stnl-slice-executor", "OPERATION", "APPLY_FINDINGS", [["SPEC_PATH", "{{SPEC_PATH}}"], ["SLICE", "{{SLICE}}"]]],
-  "slice-validate-codex": ["stnl-slice-quality-manager", "OPERATION", "VALIDATE_SLICE", [["SPEC_PATH", "{{SPEC_PATH}}"], ["SLICE", "{{SLICE}}"]]],
-  "slice-validate-claude": ["stnl-slice-quality-manager", "OPERATION", "VALIDATE_SLICE", [["SPEC_PATH", "{{SPEC_PATH}}"], ["SLICE", "{{SLICE}}"]]],
+  "slice-execute-codex": ["stnl-slice-executor", "OPERATION", "EXECUTE_SLICE", [["SPEC_PATH", "{{SPEC_PATH}}"], ["SLICE", "{{SLICE}}"], ["VALIDATION_HARNESS_PATH", "<SKILL_ROOT>/runtime/run-validation-session.mjs"]]],
+  "slice-execute-claude": ["stnl-slice-executor", "OPERATION", "EXECUTE_SLICE", [["SPEC_PATH", "{{SPEC_PATH}}"], ["SLICE", "{{SLICE}}"], ["VALIDATION_HARNESS_PATH", "<SKILL_ROOT>/runtime/run-validation-session.mjs"]]],
+  "slice-apply-findings-codex": ["stnl-slice-executor", "OPERATION", "APPLY_FINDINGS", [["SPEC_PATH", "{{SPEC_PATH}}"], ["SLICE", "{{SLICE}}"], ["VALIDATION_HARNESS_PATH", "<SKILL_ROOT>/runtime/run-validation-session.mjs"]]],
+  "slice-apply-findings-claude": ["stnl-slice-executor", "OPERATION", "APPLY_FINDINGS", [["SPEC_PATH", "{{SPEC_PATH}}"], ["SLICE", "{{SLICE}}"], ["VALIDATION_HARNESS_PATH", "<SKILL_ROOT>/runtime/run-validation-session.mjs"]]],
+  "slice-validate-codex": ["stnl-slice-quality-manager", "OPERATION", "VALIDATE_SLICE", [["SPEC_PATH", "{{SPEC_PATH}}"], ["SLICE", "{{SLICE}}"], ["VALIDATION_HARNESS_PATH", "<SKILL_ROOT>/runtime/run-validation-session.mjs"]]],
+  "slice-validate-claude": ["stnl-slice-quality-manager", "OPERATION", "VALIDATE_SLICE", [["SPEC_PATH", "{{SPEC_PATH}}"], ["SLICE", "{{SLICE}}"], ["VALIDATION_HARNESS_PATH", "<SKILL_ROOT>/runtime/run-validation-session.mjs"]]],
 };
 
 const runnerLaunchers = new Set(Object.keys(launcherSpecs).filter((name) => name.startsWith("slice-")));
@@ -437,7 +448,8 @@ function parseLauncher(file, spec) {
   }
   if (JSON.stringify(assignments) !== JSON.stringify(spec[3])) reject("L004_INPUTS", `${file}: expected ${JSON.stringify(spec[3])}, got ${JSON.stringify(assignments)}`);
   const placeholders = [...text.matchAll(/\{\{([^{}]+)\}\}/gu)].map((match) => match[1]).sort();
-  const expected = spec[3].map(([key]) => key).sort();
+  const expected = spec[3].filter(([, value]) => value.startsWith("{{") && value.endsWith("}}"))
+    .map(([key]) => key).sort();
   if (JSON.stringify(placeholders) !== JSON.stringify(expected)) reject("L004_INPUTS", `${file}: placeholder set changed`);
   return { text, instructions: body.slice(index).join("\n") };
 }
@@ -651,6 +663,14 @@ function checkRepository(root) {
     for (const file of files) if (!fs.statSync(file, { throwIfNoEntry: false })?.isFile()) reject("C006_DISTRIBUTION", `execution skill is missing shared runtime: ${file}`);
     const authority = fs.readFileSync(files[0]);
     for (const file of files.slice(1)) if (!authority.equals(fs.readFileSync(file))) reject("C006_DISTRIBUTION", `shared runtime copies differ: ${runtime}`);
+  }
+  const harnessFiles = ["stnl-slice-executor", "stnl-slice-quality-manager"]
+    .map((name) => path.join(workflowRoot, name, "runtime/run-validation-session.mjs"));
+  for (const file of harnessFiles) if (!fs.statSync(file, { throwIfNoEntry: false })?.isFile()) {
+    reject("C006_DISTRIBUTION", `validation owner is missing shared validation harness: ${file}`);
+  }
+  if (!fs.readFileSync(harnessFiles[0]).equals(fs.readFileSync(harnessFiles[1]))) {
+    reject("C006_DISTRIBUTION", "validation harness copies differ: run-validation-session.mjs");
   }
   for (const auxiliary of AUXILIARY_WORKFLOW_SKILLS) {
     const authorityRuntime = path.join(workflowRoot, auxiliary, "runtime/execution-state.mjs");
