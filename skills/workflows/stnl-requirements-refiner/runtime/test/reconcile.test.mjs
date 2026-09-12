@@ -166,6 +166,25 @@ test("reconciliation history is append-only and cannot be edited, deleted, or re
   assert.throws(() => validateRefinement(reordered), /rounds must be contiguous and monotonic/u);
 });
 
+test("disputed-context references in published attempts are append-only", async () => {
+  const raw = await historyRaw();
+  raw.questions[1].reconciliation_attempts.push({
+    round: 2,
+    human_response: "Use exact matching instead of LIKE matching.",
+    assessment: "CONFLICTING_INFORMATION",
+    established_context: ["Exact matching is required."],
+    disputed_context: ["Search uses LIKE matching."],
+    remaining_gaps: ["Choose the matching rule."],
+    affected_finding_ids: ["FND-002"],
+  });
+  raw.questions[1].remaining_gaps = ["Choose the matching rule."];
+  const before = validateRefinement(raw);
+  const changed = clone(raw);
+  changed.questions[1].reconciliation_attempts[1].disputed_context = ["Search composes after filters."];
+  const candidate = validateRefinement(changed);
+  assert.throws(() => validateReconcile(before, candidate), /append-only and prior entries are immutable/u);
+});
+
 test("reconcile rejects changing Requirement scope or moving a Source to hide prior Cross context", async () => {
   const before = validateRefinement(await historyRaw());
   const hiddenCross = await historyRaw();

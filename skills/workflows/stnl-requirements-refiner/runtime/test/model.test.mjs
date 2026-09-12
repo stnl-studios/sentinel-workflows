@@ -372,6 +372,7 @@ test("duplicate and conflicting follow-up responses use explicit assessments", a
     human_response: "Contrary to the first response, search must use exact matching.",
     assessment: "CONFLICTING_INFORMATION",
     established_context: ["The new response contradicts the earlier LIKE matching decision."],
+    disputed_context: ["Search uses LIKE matching."],
     remaining_gaps: ["A single matching rule must be selected explicitly."],
     affected_finding_ids: ["FND-002"],
   });

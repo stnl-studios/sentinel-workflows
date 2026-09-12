@@ -50,7 +50,7 @@ function parsePublished(published, refinementPath, { allowLegacy = false } = {})
     if (!allowLegacy) throw new ValidationError("persisted contract v1 is readable only through the controlled MIGRATE operation");
     return validateLegacyRefinement(raw);
   }
-  return validateRefinement(raw, { refinementPath });
+  return validateRefinement(raw, { refinementPath, validationContext: "PERSISTED" });
 }
 
 export async function generateRefinement({
@@ -107,7 +107,7 @@ export async function generateRefinement({
       legacyHtmlFingerprint: expectedHtmlFingerprint,
     });
     let model = await hydrateFingerprints(modelBeforeHydration, context.projectRoot);
-    model = validateRefinement(model, { refinementPath: context.refinementPath });
+    model = validateRefinement(model, { refinementPath: context.refinementPath, validationContext: "MIGRATE" });
     const authorityAfter = await snapshotAuthorityInputs(model, context.projectRoot);
     const rendered = renderRefinement(model, { refinementPath: context.refinementPath });
     const publishedResult = await publishRefinement({
@@ -138,10 +138,10 @@ export async function generateRefinement({
     throw new ValidationError(`${operation} requires an external candidate refinement model`);
   }
   const raw = await readExternalCandidate(candidatePath, context);
-  let model = validateRefinement(raw, { refinementPath: context.refinementPath });
+  let model = validateRefinement(raw, { refinementPath: context.refinementPath, validationContext: operation });
   const authorityBefore = await snapshotAuthorityInputs(model, context.projectRoot);
   model = await hydrateFingerprints(model, context.projectRoot);
-  model = validateRefinement(model, { refinementPath: context.refinementPath });
+  model = validateRefinement(model, { refinementPath: context.refinementPath, validationContext: operation });
   if (previous !== null) validateReconcile(previous, model);
   const authorityAfter = await snapshotAuthorityInputs(model, context.projectRoot);
   if (authorityAfter !== authorityBefore) throw new ValidationError("repository authority changed during refinement projection");

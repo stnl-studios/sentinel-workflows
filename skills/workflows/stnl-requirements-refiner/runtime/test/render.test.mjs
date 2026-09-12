@@ -214,6 +214,7 @@ test("history fixture renders local, Cross, answered, follow-up, and untouched s
   assert.match(html, /Follow-up required/u);
   assert.match(html, /Answered/u);
   assert.match(html, /Previous response/u);
+  assert.match(html, /Current established context/u);
   assert.match(html, /What this established/u);
   assert.match(html, /Accent sensitivity and minimum query length remain undefined/u);
   assert.match(html, /Previous reconciliation attempts <span>1<\/span>/u);
@@ -230,13 +231,13 @@ test("follow-up prompts carry canonical context while first and answered questio
   const followUp = buildDecisionPrompt(model, model.questions[1], "The minimum query length is three characters.");
   assert.match(followUp, /Interaction: FOLLOW_UP_REQUIRED/u);
   assert.match(followUp, /Previous response:\nLIKE matching is required/u);
-  assert.match(followUp, /What this established:\nSearch uses LIKE matching\./u);
+  assert.match(followUp, /Current established context:\nSearch uses LIKE matching\./u);
   assert.match(followUp, /Still unresolved:\nAccent sensitivity and minimum query length remain undefined\./u);
   assert.doesNotMatch(followUp, /Previous canonical answer/u);
 
   const first = buildDecisionPrompt(model, model.questions[0], "Region and status are in scope.");
   assert.match(first, /Interaction: AWAITING_DECISION/u);
-  assert.doesNotMatch(first, /Previous response|What this established|Still unresolved/u);
+  assert.doesNotMatch(first, /Previous response|Current established context|Still unresolved/u);
   assert.equal(buildDecisionPrompt(model, model.questions[2], "Do not accept a new answer."), "");
   assert.equal(buildDecisionPrompt(model, { id: "QST-999", status: "OPEN" }, "Stale question"), "");
 });

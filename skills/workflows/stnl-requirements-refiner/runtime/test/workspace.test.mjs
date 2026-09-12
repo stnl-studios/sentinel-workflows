@@ -69,9 +69,10 @@ class FakeDecisionCard extends FakeElement {
         migrationNotice: questionMigrationNotice(question) ?? "",
         previousCanonicalAnswer: questionPreviousCanonicalAnswer(question) ?? "",
         reopenedReason: question.reopened_reason ?? "",
-        establishedContext: questionEstablishedContext(question).join("\n"),
-        previousEstablishedContext: conflict?.previous_context.join("\n") ?? "",
-        conflictingInformation: conflict?.conflicting_context.join("\n") ?? "",
+        currentEstablishedContext: questionEstablishedContext(question).join("\n"),
+        conflictActive: conflict === undefined ? "false" : "true",
+        previousDisputedContext: conflict?.previous_disputed_context.join("\n") ?? "",
+        newConflictingInformation: conflict?.conflicting_context.join("\n") ?? "",
         remainingGaps: questionCurrentGaps(question).join("\n"),
       },
     });
@@ -369,6 +370,7 @@ test("Node and browser prompt serializers agree on disputed current context", as
     human_response: "Actually search should use exact matching.",
     assessment: "CONFLICTING_INFORMATION",
     established_context: ["Exact matching is required."],
+    disputed_context: ["Search uses LIKE matching."],
     remaining_gaps: ["Choose the matching rule for the shared result."],
     affected_finding_ids: ["FND-002"],
   });
@@ -384,10 +386,114 @@ test("Node and browser prompt serializers agree on disputed current context", as
   assert.equal(runtime.copied.length, 0);
   card.copy.dispatch("click");
   assert.equal(runtime.copied.at(-1), buildDecisionPrompt(model, question, decisions.get("QST-002"), "planning/refinement"));
-  assert.match(expected, /Previous established context:\nSearch uses LIKE matching\./u);
+  assert.match(expected, /Previous disputed context:\nSearch uses LIKE matching\./u);
   assert.match(expected, /New conflicting information:\nExact matching is required\./u);
+  assert.match(expected, /Current established context:\nSearch composes after filters\./u);
   assert.match(expected, /Current status: Conflict requires reconciliation/u);
-  assert.doesNotMatch(expected, /What this established:\nSearch uses LIKE matching\./u);
+  assert.doesNotMatch(expected, /Current established context:[\s\S]*Search uses LIKE matching\./u);
+});
+
+test("real client VM stays byte-identical through cumulative, active-conflict, unrelated-follow-up, and accepted states", async () => {
+  const cumulativeRaw = await historyRaw();
+  const question = cumulativeRaw.questions[1];
+  question.reconciliation_attempts.push({
+    round: 2,
+    human_response: "The minimum query length is three characters.",
+    assessment: "FOLLOW_UP_REQUIRED",
+    established_context: ["Minimum query length is 3."],
+    remaining_gaps: ["Accent sensitivity remains undefined."],
+    affected_finding_ids: ["FND-002"],
+  });
+  question.remaining_gaps = ["Accent sensitivity remains undefined."];
+  const cumulative = validateRefinement(cumulativeRaw);
+
+  const conflictRaw = clone(cumulativeRaw);
+  const conflictQuestion = conflictRaw.questions[1];
+  conflictQuestion.reconciliation_attempts.push({
+    round: 3,
+    human_response: "Use exact matching instead of LIKE matching.",
+    assessment: "CONFLICTING_INFORMATION",
+    established_context: ["Exact matching is required."],
+    disputed_context: ["Search uses LIKE matching."],
+    remaining_gaps: ["Choose the matching rule."],
+    affected_finding_ids: ["FND-002"],
+  });
+  conflictQuestion.remaining_gaps = ["Choose the matching rule."];
+  const conflicting = validateRefinement(conflictRaw);
+
+  const followUpRaw = clone(conflictRaw);
+  const followUpQuestion = followUpRaw.questions[1];
+  followUpQuestion.reconciliation_attempts.push({
+    round: 4,
+    human_response: "Search is case-sensitive.",
+    assessment: "FOLLOW_UP_REQUIRED",
+    established_context: ["Search is case-sensitive."],
+    remaining_gaps: ["Choose the matching rule."],
+    affected_finding_ids: ["FND-002"],
+  });
+  followUpQuestion.remaining_gaps = ["Choose the matching rule."];
+  const followUp = validateRefinement(followUpRaw);
+
+  const acceptedRaw = clone(followUpRaw);
+  const acceptedQuestion = acceptedRaw.questions[1];
+  const canonicalAnswer = "Search uses exact, case-sensitive matching after filters with a minimum length of three.";
+  acceptedQuestion.reconciliation_attempts.push({
+    round: 5,
+    human_response: "Confirm exact, case-sensitive matching after filters with three characters minimum.",
+    assessment: "ACCEPTED",
+    established_context: [
+      "Search composes after filters.",
+      "Minimum query length is 3.",
+      "Exact matching is required.",
+      "Search is case-sensitive.",
+    ],
+    remaining_gaps: [],
+    affected_finding_ids: ["FND-002"],
+    canonical_answer: canonicalAnswer,
+  });
+  acceptedQuestion.status = "ANSWERED";
+  acceptedQuestion.answer = canonicalAnswer;
+  acceptedQuestion.canonical_answer_history = [canonicalAnswer];
+  delete acceptedQuestion.remaining_gaps;
+  acceptedRaw.handoff.payload.question_ids = ["QST-001"];
+  const accepted = validateRefinement(acceptedRaw);
+
+  for (const [model, decision] of [
+    [cumulative, "Continue cumulative reconciliation."],
+    [conflicting, "Resolve the active conflict."],
+    [followUp, "Continue after the unrelated follow-up."],
+  ]) {
+    const runtime = browserRuntime(model, "planning/refinement");
+    const draft = runtime.cards.find((item) => item.textarea.dataset.questionId === "QST-002");
+    draft.textarea.value = decision;
+    draft.textarea.dispatch("input");
+    assert.equal(
+      runtime.elements.get("continue-prompt").value,
+      buildAggregateDecisionPrompt(model, new Map([["QST-002", decision]]), "planning/refinement"),
+    );
+  }
+
+  const cumulativePrompt = buildDecisionPrompt(cumulative, cumulative.questions[1], "Continue cumulative reconciliation.", "planning/refinement");
+  assert.match(cumulativePrompt, /Current established context:\nSearch uses LIKE matching\.\nSearch composes after filters\.\nMinimum query length is 3\./u);
+  const conflictPrompt = buildDecisionPrompt(conflicting, conflicting.questions[1], "Resolve the active conflict.", "planning/refinement");
+  assert.match(conflictPrompt, /Previous disputed context:\nSearch uses LIKE matching\./u);
+  assert.match(conflictPrompt, /Current established context:\nSearch composes after filters\.\nMinimum query length is 3\./u);
+  const followUpPrompt = buildDecisionPrompt(followUp, followUp.questions[1], "Continue after the unrelated follow-up.", "planning/refinement");
+  assert.match(followUpPrompt, /Current established context:\nSearch composes after filters\.\nMinimum query length is 3\.\nSearch is case-sensitive\./u);
+  assert.match(followUpPrompt, /Previous disputed context:\nSearch uses LIKE matching\./u);
+
+  const acceptedRuntime = browserRuntime(accepted, "planning/refinement");
+  assert.equal(acceptedRuntime.cards.some((item) => item.textarea.dataset.questionId === "QST-002"), false);
+  const remainingDecision = "Resolve the remaining filter question.";
+  const remainingDraft = acceptedRuntime.cards.find((item) => item.textarea.dataset.questionId === "QST-001");
+  remainingDraft.textarea.value = remainingDecision;
+  remainingDraft.textarea.dispatch("input");
+  assert.equal(
+    acceptedRuntime.elements.get("continue-prompt").value,
+    buildAggregateDecisionPrompt(accepted, new Map([["QST-001", remainingDecision]]), "planning/refinement"),
+  );
+  assert.match(acceptedRuntime.html, /Canonical answer/u);
+  assert.match(acceptedRuntime.html, /CONFLICTING_INFORMATION/u);
 });
 
 test("renderer contains one active implementation and one client script", async () => {

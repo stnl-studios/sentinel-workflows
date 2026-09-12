@@ -450,5 +450,5 @@ export function migrateLegacyRefinement(raw, { legacyModelFingerprint, legacyHtm
       requirement_ownership_rule: LEGACY_REQUIREMENT_OWNERSHIP_RULE,
     },
   };
-  return validateRefinement(migrated);
+  return validateRefinement(migrated, { validationContext: "MIGRATE" });
 }

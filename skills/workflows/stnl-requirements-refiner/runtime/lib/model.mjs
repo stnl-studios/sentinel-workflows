@@ -51,7 +51,8 @@ const FINDING_FIELDS = new Set([
   "question_ids", "problem", "why_it_matters", "impact", "resolution", "bypass", "reopened_reason",
 ]);
 const ATTEMPT_FIELDS = new Set([
-  "round", "human_response", "assessment", "established_context", "remaining_gaps", "affected_finding_ids", "canonical_answer",
+  "round", "human_response", "assessment", "established_context", "disputed_context", "remaining_gaps", "affected_finding_ids",
+  "canonical_answer",
 ]);
 const RESOLUTION_FIELDS = new Set([
   "proposal", "verdict", "rationale", "checks", "supporting_evidence_ids", "remaining_gap",
@@ -99,6 +100,7 @@ const CHECK_VALUES = new Set(["PASS", "FAIL", "UNKNOWN", "NOT_APPLICABLE"]);
 const BOUNDARIES = new Set(["UNITARY", "MULTIPLE", "AMBIGUOUS", "UNESTABLISHED"]);
 const DECOMPOSITION_VALUES = new Set(["NONE", "MATERIAL", "UNCLEAR"]);
 const OUTCOMES = new Set(["BLOCKED", "READY_FOR_SPEC", "READY_FOR_ROADMAP"]);
+const VALIDATION_CONTEXTS = new Set(["NATIVE", "INIT", "MIGRATE", "RECONCILE", "PERSISTED"]);
 
 const SECRET_PATTERNS = [
   /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/u,
@@ -361,6 +363,9 @@ function reconciliationAttempt(value, label) {
   ]), label);
   const assessment = enumValue(item.assessment, ATTEMPT_ASSESSMENTS, `${label}.assessment`);
   const established = textArray(item.established_context, `${label}.established_context`, { maximum: 100, itemMaximum: 4_000 });
+  const disputed = item.disputed_context === undefined
+    ? undefined
+    : textArray(item.disputed_context, `${label}.disputed_context`, { minimum: 1, maximum: 100, itemMaximum: 4_000 });
   const remaining = textArray(item.remaining_gaps, `${label}.remaining_gaps`, { maximum: 100, itemMaximum: 4_000 });
   const canonicalAnswer = text(item.canonical_answer, `${label}.canonical_answer`, { optional: true, maximum: 12_000 });
   if (assessment === "ACCEPTED") {
@@ -375,11 +380,22 @@ function reconciliationAttempt(value, label) {
   if (assessment === "NO_MATERIAL_PROGRESS" && established.length !== 0) {
     throw new ValidationError(`${label} NO_MATERIAL_PROGRESS cannot establish context`);
   }
+  if (assessment === "CONFLICTING_INFORMATION") {
+    if (established.length === 0 || disputed === undefined) {
+      throw new ValidationError(`${label} CONFLICTING_INFORMATION requires conflicting established_context and non-empty disputed_context`);
+    }
+    if (disputed.some((entry) => established.includes(entry))) {
+      throw new ValidationError(`${label}.disputed_context cannot also be new conflicting established_context`);
+    }
+  } else if (disputed !== undefined) {
+    throw new ValidationError(`${label}.disputed_context is reserved for CONFLICTING_INFORMATION`);
+  }
   return {
     round: integer(item.round, `${label}.round`, { minimum: 1, maximum: 1_000 }),
     human_response: text(item.human_response, `${label}.human_response`, { maximum: 100_000 }),
     assessment,
     established_context: established,
+    ...(disputed === undefined ? {} : { disputed_context: disputed }),
     remaining_gaps: remaining,
     affected_finding_ids: identifierArray(item.affected_finding_ids, `${label}.affected_finding_ids`, /^FND-[0-9]{3}$/u, { maximum: 100 }),
     ...(canonicalAnswer === undefined ? {} : { canonical_answer: canonicalAnswer }),
@@ -562,7 +578,7 @@ function question(value, label) {
       throw new ValidationError(`${label} ANSWERED question requires a latest accepted attempt matching answer`);
     }
   }
-  return {
+  const normalized = {
     id: questionId,
     question: text(item.question, `${label}.question`, { maximum: 2_000 }),
     status,
@@ -580,6 +596,8 @@ function question(value, label) {
     reopen_events: events,
     ...(migrationHistory === undefined ? {} : { migration_history: migrationHistory }),
   };
+  reduceQuestionContext(normalized, { validate: true, label });
+  return normalized;
 }
 
 function constraint(value, label) {
@@ -944,10 +962,24 @@ export function scanSensitive(value, location = "refinement") {
   }
 }
 
-export function validateRefinement(raw, { refinementPath = "docs/refinement" } = {}) {
+export function validateRefinement(raw, { refinementPath = "docs/refinement", validationContext = "NATIVE" } = {}) {
+  if (!VALIDATION_CONTEXTS.has(validationContext)) {
+    throw new ValidationError(`unsupported refinement validation context: ${String(validationContext)}`);
+  }
   const root = object(raw, "refinement");
   exact(root, TOP_LEVEL_FIELDS, new Set([...TOP_LEVEL_FIELDS].filter((field) => field !== "migration_provenance")), "refinement");
   if (root.contract_version !== 2) throw new ValidationError("refinement.contract_version must be 2");
+  if (new Set(["NATIVE", "INIT"]).has(validationContext)) {
+    if (root.migration_provenance !== undefined) {
+      throw new ValidationError(`${validationContext} cannot author migration_provenance; migration provenance is owned by MIGRATE`);
+    }
+    const forgedHistory = Array.isArray(root.questions)
+      ? root.questions.find((item) => item !== null && typeof item === "object" && !Array.isArray(item) && item.migration_history !== undefined)
+      : undefined;
+    if (forgedHistory !== undefined) {
+      throw new ValidationError(`${validationContext} cannot author ${String(forgedHistory.id ?? "a Question")}.migration_history; migration history is owned by MIGRATE`);
+    }
+  }
   const migration = migrationProvenance(root.migration_provenance);
   const partial = {
     contract_version: 2,
@@ -979,6 +1011,13 @@ export function validateRefinement(raw, { refinementPath = "docs/refinement" } =
     if (item.migration_history?.status === "LEGACY_CANONICAL_ANSWER"
       && item.canonical_answer_history.length === 0) {
       throw new ValidationError(`${item.id} legacy canonical-answer provenance requires canonical answer history`);
+    }
+  }
+  if (validationContext === "MIGRATE") {
+    if (migration === undefined) throw new ValidationError("MIGRATE must materialize migration_provenance");
+    const nativeQuestion = partial.questions.find((item) => item.migration_history === undefined);
+    if (nativeQuestion !== undefined) {
+      throw new ValidationError(`MIGRATE must materialize ${nativeQuestion.id}.migration_history for every imported Question`);
     }
   }
   requireReferences(partial, refinementPath);
@@ -1037,31 +1076,70 @@ function attemptContext(attempt) {
   return attempt.assessment === "ACCEPTED" && attempt.canonical_answer !== undefined ? [attempt.canonical_answer] : [];
 }
 
-function challengedAcceptedAttemptIndex(question) {
-  if (question.status !== "OPEN" || (question.reopen_events?.length ?? 0) === 0) return -1;
-  const latestAnswer = question.canonical_answer_history?.at(-1);
-  if (latestAnswer === undefined) return -1;
-  return [...(question.reconciliation_attempts ?? [])].map((attempt, index) => ({ attempt, index }))
-    .reverse().find(({ attempt }) => attempt.assessment === "ACCEPTED" && attempt.canonical_answer === latestAnswer)?.index ?? -1;
+function appendUniqueContext(context, additions) {
+  const next = [...context];
+  for (const entry of additions) if (!next.includes(entry)) next.push(entry);
+  return next;
+}
+
+function challengedAcceptedAttemptIndexes(question) {
+  const importedCanonicalOffset = question.migration_history?.status === "LEGACY_CANONICAL_ANSWER" ? 1 : 0;
+  let challengedNativeAcceptances = Math.max(0, (question.reopen_events?.length ?? 0) - importedCanonicalOffset);
+  const indexes = new Set();
+  for (const [index, attempt] of (question.reconciliation_attempts ?? []).entries()) {
+    if (attempt.assessment !== "ACCEPTED" || challengedNativeAcceptances === 0) continue;
+    indexes.add(index);
+    challengedNativeAcceptances -= 1;
+  }
+  return indexes;
+}
+
+function reduceQuestionContext(question, { validate = false, label = question.id ?? "question" } = {}) {
+  let context = [];
+  let conflict;
+  const challengedIndexes = challengedAcceptedAttemptIndexes(question);
+  for (const [index, attempt] of (question.reconciliation_attempts ?? []).entries()) {
+    if (attempt.assessment === "CONFLICTING_INFORMATION") {
+      if (validate && conflict !== undefined) {
+        throw new ValidationError(`${label}.reconciliation_attempts[${index}] cannot introduce another conflict while round ${conflict.round} remains active`);
+      }
+      const disputed = attempt.disputed_context ?? [];
+      if (validate) {
+        const missing = disputed.filter((entry) => !context.includes(entry));
+        if (missing.length !== 0) {
+          throw new ValidationError(`${label}.reconciliation_attempts[${index}].disputed_context references context that is not currently established: ${missing.join(" | ")}`);
+        }
+      }
+      context = context.filter((entry) => !disputed.includes(entry));
+      conflict = {
+        round: attempt.round,
+        previous_disputed_context: [...disputed],
+        conflicting_context: [...attempt.established_context],
+        remaining_gaps: [...attempt.remaining_gaps],
+      };
+    } else if (attempt.assessment === "ACCEPTED") {
+      context = [...new Set(attemptContext(attempt))];
+      conflict = undefined;
+      if (challengedIndexes.has(index)) context = [];
+    } else if (attempt.assessment === "FOLLOW_UP_REQUIRED" && attempt.established_context.length !== 0) {
+      if (validate && conflict !== undefined) {
+        const activeConflictFacts = new Set([
+          ...conflict.previous_disputed_context,
+          ...conflict.conflicting_context,
+        ]);
+        const conflictingAdditions = attempt.established_context.filter((entry) => activeConflictFacts.has(entry));
+        if (conflictingAdditions.length !== 0) {
+          throw new ValidationError(`${label}.reconciliation_attempts[${index}] cannot restore active conflict facts through FOLLOW_UP_REQUIRED; resolve them with ACCEPTED`);
+        }
+      }
+      context = appendUniqueContext(context, attempt.established_context);
+    }
+  }
+  return { context, conflict };
 }
 
 export function questionEstablishedContext(question) {
-  let context = [];
-  let conflictActive = false;
-  const challengedIndex = challengedAcceptedAttemptIndex(question);
-  for (const [index, attempt] of (question.reconciliation_attempts ?? []).entries()) {
-    if (attempt.assessment === "CONFLICTING_INFORMATION") {
-      context = [];
-      conflictActive = true;
-    } else if (attempt.assessment === "ACCEPTED") {
-      context = [...new Set(attemptContext(attempt))];
-      conflictActive = false;
-      if (index === challengedIndex) context = [];
-    } else if (attempt.assessment === "FOLLOW_UP_REQUIRED" && !conflictActive && attempt.established_context.length !== 0) {
-      context = [...new Set(attempt.established_context)];
-    }
-  }
-  return context;
+  return reduceQuestionContext(question).context;
 }
 
 export function questionHistoricalEstablishedContext(question) {
@@ -1069,26 +1147,7 @@ export function questionHistoricalEstablishedContext(question) {
 }
 
 export function questionConflictContext(question) {
-  let context = [];
-  let conflict;
-  const challengedIndex = challengedAcceptedAttemptIndex(question);
-  for (const [index, attempt] of (question.reconciliation_attempts ?? []).entries()) {
-    if (attempt.assessment === "CONFLICTING_INFORMATION") {
-      conflict = {
-        round: attempt.round,
-        previous_context: context,
-        conflicting_context: attempt.established_context,
-        remaining_gaps: attempt.remaining_gaps,
-      };
-    } else if (attempt.assessment === "ACCEPTED") {
-      context = [...new Set(attemptContext(attempt))];
-      conflict = undefined;
-      if (index === challengedIndex) context = [];
-    } else if (attempt.assessment === "FOLLOW_UP_REQUIRED" && conflict === undefined && attempt.established_context.length !== 0) {
-      context = [...new Set(attempt.established_context)];
-    }
-  }
-  return conflict;
+  return reduceQuestionContext(question).conflict;
 }
 
 export function questionMigrationNotice(question) {
@@ -1165,6 +1224,12 @@ export function validateReconcile(previous, next) {
     }
   }
   const nextQuestions = new Map(next.questions.map((item) => [item.id, item]));
+  const previousQuestionIds = new Set(previous.questions.map((item) => item.id));
+  for (const added of next.questions.filter((item) => !previousQuestionIds.has(item.id))) {
+    if (added.migration_history !== undefined) {
+      throw new ValidationError(`${added.id} is native-v2 and cannot receive migration_history during RECONCILE`);
+    }
+  }
   for (const before of previous.questions) {
     const after = nextQuestions.get(before.id);
     ensureAppendOnly(before.reconciliation_attempts, after.reconciliation_attempts, `${before.id} reconciliation attempts`);

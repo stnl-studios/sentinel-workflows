@@ -27,7 +27,7 @@ function parsePublished(published, refinementPath, { allowLegacy = false } = {})
     if (!allowLegacy) throw new ValidationError("persisted contract v1 is readable only through the controlled MIGRATE operation");
     return validateLegacyRefinement(raw);
   }
-  return validateRefinement(raw, { refinementPath });
+  return validateRefinement(raw, { refinementPath, validationContext: "PERSISTED" });
 }
 
 export async function inspectRefinement(operation, projectRoot, refinementPath) {
