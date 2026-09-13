@@ -305,7 +305,9 @@ async function validateReadme(root) {
     ".claude/agents/stnl-validation-runner.md",
     ".claude/agents/stnl-spec-context-scout.md",
     "Esses caminhos são de fonte, não de instalação.",
-    "o mecanismo de instalação não faz parte deste repositório nesta fase",
+    "scripts/install-sentinel.mjs",
+    ".sentinel/prompts/",
+    ".claude/commands/",
     "Nunca misture os adaptadores das duas plataformas no mesmo projeto",
   ];
   for (const marker of required) {

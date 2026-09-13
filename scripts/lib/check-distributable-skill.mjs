@@ -1,6 +1,6 @@
 import { isBuiltin } from "node:module";
-import { readFile, readdir, stat } from "node:fs/promises";
-import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { readFile, readdir } from "node:fs/promises";
+import { basename, extname, join, posix, relative, resolve, sep } from "node:path";
 
 const FORBIDDEN_EXECUTABLE_EXTENSIONS = new Set([
   ".js", ".cjs", ".ts", ".mts", ".cts", ".jsx", ".tsx",
@@ -441,20 +441,22 @@ export function nonliteralDynamicImportCount(source) {
   return count;
 }
 
-export async function checkDistributableSkill(skillRoot, policy = {}) {
-  const root = resolve(skillRoot);
-  const findings = [];
-  const files = await regularFiles(root, findings);
-  const relativeFiles = new Set(files.map((path) => normalizedRelative(root, path)));
+export function checkDistributableSkillContents(skillName, files, policy = {}, initialFindings = []) {
+  const findings = [...initialFindings];
+  const normalizedFiles = files.map((file) => ({
+    relativePath: file.relativePath,
+    source: Buffer.from(file.bytes).toString("utf8"),
+  }));
+  const relativeFiles = new Set(normalizedFiles.map((file) => file.relativePath));
   for (const entrypoint of policy.requiredEntrypoints ?? []) {
     if (!relativeFiles.has(`runtime/${entrypoint}`)) {
       findings.push(`missing runtime entrypoint: ${entrypoint}`);
     }
   }
-  for (const path of files) {
-    const relativePath = normalizedRelative(root, path);
+  for (const file of normalizedFiles) {
+    const { relativePath, source } = file;
     const filename = relativePath.split("/").at(-1);
-    const extension = extname(path).toLowerCase();
+    const extension = extname(relativePath).toLowerCase();
     if (PACKAGE_MANIFESTS.has(filename)) {
       findings.push(`the distributed skill must not require package.json: ${relativePath}`);
     }
@@ -474,7 +476,6 @@ export async function checkDistributableSkill(skillRoot, policy = {}) {
     if (![".md", ".json", ".mjs"].includes(extension)) {
       continue;
     }
-    const source = await readFile(path, "utf8");
     for (const [pattern, label] of policy.forbiddenOperationalPatterns ?? []) {
       pattern.lastIndex = 0;
       if (pattern.test(source)) {
@@ -517,18 +518,16 @@ export async function checkDistributableSkill(skillRoot, policy = {}) {
         findings.push(`external module import in ${relativePath}: ${specifier}`);
         continue;
       }
-      const importedPath = resolve(dirname(path), specifier);
-      const escaped = relative(root, importedPath);
-      if (escaped === ".." || escaped.startsWith(`..${sep}`) || isAbsolute(escaped)) {
+      const importedPath = posix.normalize(posix.join(posix.dirname(relativePath), specifier));
+      if (importedPath === ".." || importedPath.startsWith("../") || posix.isAbsolute(importedPath)) {
         findings.push(`import escapes the distributed skill in ${relativePath}: ${specifier}`);
         continue;
       }
-      const importedMetadata = await stat(importedPath).catch(() => null);
-      if (!importedMetadata?.isFile()) {
+      if (!relativeFiles.has(importedPath)) {
         findings.push(`missing relative import in ${relativePath}: ${specifier}`);
       }
     }
-    const validationHarnessOwner = new Set(["stnl-slice-executor", "stnl-slice-quality-manager"]).has(basename(root))
+    const validationHarnessOwner = new Set(["stnl-slice-executor", "stnl-slice-quality-manager"]).has(skillName)
       && relativePath === "runtime/run-validation-session.mjs";
     if (
       relativePath.startsWith("runtime/") &&
@@ -540,4 +539,15 @@ export async function checkDistributableSkill(skillRoot, policy = {}) {
     }
   }
   return findings.sort();
+}
+
+export async function checkDistributableSkill(skillRoot, policy = {}) {
+  const root = resolve(skillRoot);
+  const findings = [];
+  const paths = await regularFiles(root, findings);
+  const files = await Promise.all(paths.map(async (file) => ({
+    relativePath: normalizedRelative(root, file),
+    bytes: await readFile(file),
+  })));
+  return checkDistributableSkillContents(basename(root), files, policy, findings);
 }
