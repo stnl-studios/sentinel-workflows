@@ -22,6 +22,9 @@ const STAGE_PREFIX = ".sentinel-install-stage-";
 const BACKUP_PREFIX = ".sentinel-install-backup-";
 const MANIFEST_SCHEMA_VERSION = 1;
 const JUNK_NAMES = new Set([".DS_Store", "__MACOSX", "Thumbs.db", "desktop.ini"]);
+const TRANSIENT_CLEANUP_ERROR_CODES = new Set(["EBUSY", "ENOTEMPTY", "EPERM"]);
+const CLEANUP_MAX_ATTEMPTS = 3;
+const CLEANUP_RETRY_DELAY_MS = 25;
 
 export const SHARED_PRODUCTION_PROMPTS = Object.freeze([
   "execution-close.md",
@@ -90,7 +93,9 @@ export function assertSafeRelativePath(relativePath) {
     throw new Error("distribution path must be a non-empty string without NUL bytes");
   }
   if (relativePath.includes("\\")) throw new Error(`distribution path must use POSIX separators: ${relativePath}`);
-  if (path.posix.isAbsolute(relativePath)) throw new Error(`absolute distribution path is forbidden: ${relativePath}`);
+  if (path.posix.isAbsolute(relativePath) || path.win32.parse(relativePath).root) {
+    throw new Error(`absolute or drive-qualified distribution path is forbidden: ${relativePath}`);
+  }
   const normalized = path.posix.normalize(relativePath);
   if (normalized !== relativePath || normalized === ".." || normalized.startsWith("../")) {
     throw new Error(`distribution path escapes or is not canonical: ${relativePath}`);
@@ -111,6 +116,22 @@ function joinWithin(root, relativePath) {
 
 async function metadata(file) {
   return fs.lstat(file).catch((error) => error.code === "ENOENT" ? null : Promise.reject(error));
+}
+
+function cleanupRetryDelay(attempt) {
+  return new Promise((resolve) => setTimeout(resolve, CLEANUP_RETRY_DELAY_MS * attempt));
+}
+
+async function retryTransientCleanup(operation) {
+  for (let attempt = 1; attempt <= CLEANUP_MAX_ATTEMPTS; attempt += 1) {
+    try {
+      return await operation();
+    } catch (error) {
+      if (!TRANSIENT_CLEANUP_ERROR_CODES.has(error.code) || attempt === CLEANUP_MAX_ATTEMPTS) throw error;
+      await cleanupRetryDelay(attempt);
+    }
+  }
+  throw new Error("unreachable cleanup retry state");
 }
 
 async function walkRegularFiles(root, options = {}) {
@@ -426,7 +447,7 @@ async function writeStage(plan, projectRoot) {
     await fs.writeFile(manifest, manifestBytes(plan), { flag: "wx", mode: 0o600 });
     return stageRoot;
   } catch (error) {
-    await fs.rm(stageRoot, { recursive: true, force: true }).catch(() => {});
+    await retryTransientCleanup(() => fs.rm(stageRoot, { recursive: true, force: true })).catch(() => {});
     throw error;
   }
 }
@@ -575,23 +596,31 @@ export async function acquireSentinelInstallLock(projectRoot) {
   return Object.freeze({ projectRoot: root, path: lockPath, token });
 }
 
-export async function releaseSentinelInstallLock(lock) {
+export async function releaseSentinelInstallLock(lock, options = {}) {
   if (!lock || typeof lock.path !== "string" || typeof lock.token !== "string") {
     throw new Error("invalid Sentinel installation lock identity");
   }
-  let value;
-  try {
-    value = JSON.parse(await fs.readFile(lock.path, "utf8"));
-  } catch (error) {
-    if (error.code === "ENOENT") return Object.freeze({ released: false, reason: "missing" });
-    if (error instanceof SyntaxError) throw new Error("Sentinel installation lock metadata is malformed; refusing to release it", { cause: error });
-    throw error;
-  }
-  if (value.token !== lock.token) {
-    throw new Error("Sentinel installation lock ownership changed; refusing to release it");
-  }
-  await fs.unlink(lock.path);
-  return Object.freeze({ released: true });
+  const unlink = options.unlink ?? fs.unlink;
+  return retryTransientCleanup(async () => {
+    let value;
+    try {
+      value = JSON.parse(await fs.readFile(lock.path, "utf8"));
+    } catch (error) {
+      if (error.code === "ENOENT") return Object.freeze({ released: false, reason: "missing" });
+      if (error instanceof SyntaxError) throw new Error("Sentinel installation lock metadata is malformed; refusing to release it", { cause: error });
+      throw error;
+    }
+    if (value.token !== lock.token) {
+      throw new Error("Sentinel installation lock ownership changed; refusing to release it");
+    }
+    try {
+      await unlink(lock.path);
+    } catch (error) {
+      if (error.code === "ENOENT") return Object.freeze({ released: false, reason: "missing" });
+      throw error;
+    }
+    return Object.freeze({ released: true });
+  });
 }
 
 export async function inspectSentinelTransactionArtifacts(projectRoot) {
@@ -845,7 +874,7 @@ async function publishStage(repositoryRoot, projectRoot, stageRoot, plan, cleanu
   }
   try {
     const removeBackupRoot = options.removeBackupRoot ?? ((directory) => fs.rm(directory, { recursive: true, force: true }));
-    await removeBackupRoot(backupRoot);
+    await retryTransientCleanup(() => removeBackupRoot(backupRoot));
     return Object.freeze({ warnings: Object.freeze([]) });
   } catch (error) {
     return Object.freeze({
@@ -865,6 +894,8 @@ export async function installSentinel({
   stageMutator,
   beforePublishUnit,
   removeBackupRoot,
+  removeStageRoot,
+  unlinkInstallLock,
   afterLockAcquired,
   validateSourceContracts = true,
 }) {
@@ -898,7 +929,8 @@ export async function installSentinel({
   }
   if (stageRoot) {
     try {
-      await fs.rm(stageRoot, { recursive: true, force: true });
+      const remove = removeStageRoot ?? ((directory) => fs.rm(directory, { recursive: true, force: true }));
+      await retryTransientCleanup(() => remove(stageRoot));
     } catch (error) {
       finalizationErrors.push(error);
       finalizationWarnings.push({
@@ -909,7 +941,7 @@ export async function installSentinel({
     }
   }
   try {
-    const released = await releaseSentinelInstallLock(lock);
+    const released = await releaseSentinelInstallLock(lock, { unlink: unlinkInstallLock });
     if (!released.released) {
       finalizationErrors.push(new Error(`installation lock was already missing: ${INSTALL_LOCK_PATH}`));
       finalizationWarnings.push({

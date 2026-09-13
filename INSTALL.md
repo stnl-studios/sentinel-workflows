@@ -21,8 +21,18 @@ Each consumer project has one exclusive installer transaction lock at
 file creation and records a random ownership token plus diagnostic process/time
 metadata. A concurrent installer for the same project fails with `Sentinel
 installation already in progress`; installers for other projects are
-independent. The owner verifies its token and releases the lock during final
-cleanup, including after pre-commit failure. Dry runs do not create the lock.
+independent. The owner verifies its token immediately before each bounded lock
+release attempt, including after pre-commit failure. Missing, malformed, or
+changed lock metadata fails closed rather than risking another owner's lock.
+Dry runs do not create the lock.
+
+Node does not expose a portable conditional unlink operation that removes a
+path only when it still identifies a previously opened file. An external actor
+must therefore not remove or replace a live installer lock: pathname replacement
+in the final verify-to-unlink interval is outside the cooperative installer
+lock's threat model. Holding the file open or relying on inode identity would
+introduce platform-specific behavior and would not close that pathname race on
+Windows.
 
 Locks are never stolen automatically. If an interrupted process leaves a stale
 lock, first verify that no installer is active, then remove that exact
@@ -94,6 +104,12 @@ with a `POST_COMMIT_BACKUP_CLEANUP_FAILED` warning and a residual backup path;
 the committed installation is not rolled back. Unpublished stages and other
 transaction-finalization residuals are also surfaced explicitly.
 
+Backup removal after commit, stage removal during finalization, and lock unlink
+retry transient `EPERM`, `EBUSY`, and `ENOTEMPTY` failures. Cleanup is bounded to
+three total attempts with short deterministic delays. Persistent cleanup
+failure remains an explicit residual warning; it never rolls back a committed
+installation. Publication and ownership decisions are not retried.
+
 Publication spans several native roots, so it is a rollback transaction rather
 than a single filesystem-atomic rename. An abrupt process or machine termination
 during the publication window can leave hidden stage/backup directories and
@@ -127,3 +143,23 @@ unusable source/manifest or an active installer lock. Residual stage and backup
 directories are warnings reported separately; a healthy committed installation
 remains `OK` when only cleanup residuals exist. Doctor never repairs or removes
 locks, stages, backups, or installed files.
+
+## Windows and constrained VDI validation
+
+The installer requires only a user-writable project directory and does not
+write to HOME or require administrator rights. On the actual Windows or
+corporate VDI image, run these commands from this repository in PowerShell or
+Command Prompt:
+
+```text
+node --check scripts/lib/sentinel-distribution.mjs
+node --check scripts/lib/sentinel-doctor.mjs
+node --test scripts/test-sentinel-distribution.mjs scripts/test-sentinel-doctor.mjs
+node scripts/doctor-sentinel.mjs --source-only
+```
+
+Also perform one Codex and one Claude Code install into a representative deeply
+nested, space-containing local project path, then run `doctor --project` for
+each. This portable test suite injects common Windows cleanup error codes, but
+physical validation remains necessary for site-specific antivirus, indexing,
+filesystem policy, and path-length behavior.

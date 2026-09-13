@@ -16,6 +16,7 @@ import {
   installSentinel,
   planSentinelDistribution,
   releaseSentinelInstallLock,
+  validateInstalledManifest,
   validateDistributionPlan,
 } from "./lib/sentinel-distribution.mjs";
 import { registrySkills } from "./lib/skill-registry.mjs";
@@ -65,6 +66,10 @@ function destinationSet(plan) {
 
 async function exists(file) {
   return Boolean(await fs.lstat(file).catch((error) => error.code === "ENOENT" ? null : Promise.reject(error)));
+}
+
+function filesystemError(code) {
+  return Object.assign(new Error(`injected ${code}`), { code });
 }
 
 async function waitForPath(file, timeoutMs = 10_000) {
@@ -217,9 +222,16 @@ test("OS metadata and targets have zero influence on plan or fingerprint", async
 
 test("external source symlinks fail planning", async (t) => {
   const source = await sourceFixture(t);
-  const external = path.join(await temporaryDirectory(t, "stnl-external-"), "outside.mjs");
-  await fs.writeFile(external, "export default true;\n");
-  await fs.symlink(external, path.join(source, "skills/workflows/stnl-execution-planner/runtime/external.mjs"));
+  const externalRoot = await temporaryDirectory(t, "stnl-external-");
+  const runtime = path.join(source, "skills/workflows/stnl-execution-planner/runtime");
+  if (process.platform === "win32") {
+    await fs.writeFile(path.join(externalRoot, "outside.mjs"), "export default true;\n");
+    await fs.symlink(externalRoot, path.join(runtime, "external"), "junction");
+  } else {
+    const external = path.join(externalRoot, "outside.mjs");
+    await fs.writeFile(external, "export default true;\n");
+    await fs.symlink(external, path.join(runtime, "external.mjs"));
+  }
   await assert.rejects(fixturePlan(source), /unexpected symlink/u);
 });
 
@@ -258,7 +270,7 @@ test("special files cannot hide behind development-only top-level names", { skip
 });
 
 test("path traversal and absolute paths are rejected", () => {
-  for (const value of ["../escape", "skills/../escape", "/absolute", "C:\\escape", "a\\b"]) {
+  for (const value of ["../escape", "skills/../escape", "/absolute", "C:\\escape", "C:/escape", "C:escape", "a\\b"]) {
     assert.throws(() => assertSafeRelativePath(value), /path|absolute|separators/u);
   }
   assert.equal(assertSafeRelativePath(codexSkillPath("stnl-testing", "SKILL.md")), codexSkillPath("stnl-testing", "SKILL.md"));
@@ -393,6 +405,63 @@ test("filesystem lock identity cannot be released by a non-owner", async (t) => 
   assert.equal(await exists(lock.path), false);
 });
 
+test("lock release rechecks ownership after transient unlink contention", async (t) => {
+  const project = await temporaryDirectory(t, "stnl-project-");
+  const lock = await acquireSentinelInstallLock(project);
+  let attempts = 0;
+  await assert.rejects(
+    releaseSentinelInstallLock(lock, {
+      unlink: async (lockPath) => {
+        attempts += 1;
+        await fs.unlink(lockPath);
+        await fs.writeFile(lockPath, `${JSON.stringify({ schemaVersion: 1, token: "replacement-owner", pid: 123, createdAt: new Date(0).toISOString() })}\n`, { flag: "wx" });
+        throw filesystemError("EPERM");
+      },
+    }),
+    /ownership changed/u,
+  );
+  assert.equal(attempts, 1);
+  assert.equal(JSON.parse(await fs.readFile(lock.path, "utf8")).token, "replacement-owner");
+});
+
+test("malformed replacement lock fails closed", async (t) => {
+  const project = await temporaryDirectory(t, "stnl-project-");
+  const lock = await acquireSentinelInstallLock(project);
+  await fs.writeFile(lock.path, "{malformed\n");
+  await assert.rejects(releaseSentinelInstallLock(lock), /metadata is malformed/u);
+  assert.equal(await fs.readFile(lock.path, "utf8"), "{malformed\n");
+});
+
+test("transient lock unlink contention is retried and bounded", async (t) => {
+  const project = await temporaryDirectory(t, "stnl-project-");
+  const lock = await acquireSentinelInstallLock(project);
+  let attempts = 0;
+  const result = await releaseSentinelInstallLock(lock, {
+    unlink: async (lockPath) => {
+      attempts += 1;
+      if (attempts < 3) throw filesystemError("EBUSY");
+      await fs.unlink(lockPath);
+    },
+  });
+  assert.deepEqual(result, { released: true });
+  assert.equal(attempts, 3);
+  assert.equal(await exists(lock.path), false);
+});
+
+test("lock cleanup does not retry unrecognized filesystem errors", async (t) => {
+  const project = await temporaryDirectory(t, "stnl-project-");
+  const lock = await acquireSentinelInstallLock(project);
+  let attempts = 0;
+  await assert.rejects(releaseSentinelInstallLock(lock, {
+    unlink: async () => {
+      attempts += 1;
+      throw filesystemError("EACCES");
+    },
+  }), /injected EACCES/u);
+  assert.equal(attempts, 1);
+  assert.equal(await exists(lock.path), true);
+});
+
 test("concurrent process cannot enter the same project transaction", async (t) => {
   const source = await sourceFixture(t);
   const project = await temporaryDirectory(t, "stnl-project-");
@@ -456,25 +525,65 @@ test("locks are project-local and do not block a different consumer project", as
   }
 });
 
-test("post-commit backup cleanup failure returns success with an explicit residual", async (t) => {
+test("transient post-commit backup cleanup contention is retried successfully", async (t) => {
   const source = await sourceFixture(t);
   const project = await temporaryDirectory(t, "stnl-project-");
   await fixtureInstall(source, project, "codex");
+  let attempts = 0;
   const result = await fixtureInstall(source, project, "claude-code", {
-    removeBackupRoot: async () => { throw new Error("injected EPERM"); },
+    removeBackupRoot: async (backupRoot) => {
+      attempts += 1;
+      if (attempts < 3) throw filesystemError("EPERM");
+      await fs.rm(backupRoot, { recursive: true, force: true });
+    },
   });
   assert.equal(result.changed, true);
   assert.equal(result.commitStatus, "committed");
   assert.equal(result.fingerprint, (await fixturePlan(source, "claude-code")).fingerprint);
-  assert.ok(result.warnings.some((warning) => warning.code === "POST_COMMIT_BACKUP_CLEANUP_FAILED"));
-  assert.equal(result.residuals.backups.length, 1);
+  assert.equal(attempts, 3);
+  assert.equal(result.warnings.some((warning) => warning.code === "POST_COMMIT_BACKUP_CLEANUP_FAILED"), false);
+  assert.deepEqual(result.residuals.backups, []);
   assert.equal(await exists(path.join(project, ".claude/agents/stnl-validation-runner.md")), true);
   assert.equal(await exists(path.join(project, ".codex/agents/stnl_validation_runner.toml")), false);
   const manifest = JSON.parse(await fs.readFile(path.join(project, ...SENTINEL_INSTALLATION_CONTRACT.manifestPath.split("/")), "utf8"));
+  validateInstalledManifest(manifest);
   assert.equal(manifest.fingerprint, result.fingerprint);
-  const retry = await fixtureInstall(source, project, "claude-code");
-  assert.equal(retry.changed, false);
-  assert.ok(retry.warnings.some((warning) => warning.code === "TRANSACTION_BACKUP_RESIDUAL"));
+});
+
+test("installation supports nested project paths containing spaces", async (t) => {
+  const root = await temporaryDirectory(t, "stnl path root ");
+  const project = path.join(root, "nested workspace", "consumer project", "sentinel target");
+  await fs.mkdir(project, { recursive: true });
+  const result = await installSentinel({ repositoryRoot: ROOT, projectRoot: project, platform: "codex" });
+  assert.equal(result.commitStatus, "committed");
+  assert.equal(result.residuals.lock, null);
+  assert.deepEqual(result.residuals.stages, []);
+  assert.deepEqual(result.residuals.backups, []);
+  const manifest = JSON.parse(await fs.readFile(path.join(project, ...SENTINEL_INSTALLATION_CONTRACT.manifestPath.split("/")), "utf8"));
+  validateInstalledManifest(manifest);
+  assert.equal(manifest.fingerprint, result.fingerprint);
+});
+
+test("pre-existing transaction residuals are observed but never trusted or consumed", async (t) => {
+  const source = await sourceFixture(t);
+  const project = await temporaryDirectory(t, "stnl-project-");
+  const staleStage = path.join(project, `${SENTINEL_INSTALLATION_CONTRACT.stagePrefix}operator-review`);
+  const staleBackup = path.join(project, `${SENTINEL_INSTALLATION_CONTRACT.backupPrefix}operator-review`);
+  await fs.mkdir(path.join(staleStage, ".sentinel"), { recursive: true });
+  await fs.writeFile(path.join(staleStage, ".sentinel", "install-manifest.json"), "untrusted stage bytes\n");
+  await fs.mkdir(staleBackup);
+  await fs.writeFile(path.join(staleBackup, "evidence.txt"), "preserve for review\n");
+
+  const plan = await fixturePlan(source, "codex");
+  const result = await fixtureInstall(source, project, "codex");
+  assert.equal(result.fingerprint, plan.fingerprint);
+  assert.ok(result.warnings.some((warning) => warning.code === "TRANSACTION_STAGE_RESIDUAL"));
+  assert.ok(result.warnings.some((warning) => warning.code === "TRANSACTION_BACKUP_RESIDUAL"));
+  assert.equal(await fs.readFile(path.join(staleStage, ".sentinel", "install-manifest.json"), "utf8"), "untrusted stage bytes\n");
+  assert.equal(await fs.readFile(path.join(staleBackup, "evidence.txt"), "utf8"), "preserve for review\n");
+  const manifest = JSON.parse(await fs.readFile(path.join(project, ...SENTINEL_INSTALLATION_CONTRACT.manifestPath.split("/")), "utf8"));
+  validateInstalledManifest(manifest);
+  assert.equal(manifest.fingerprint, plan.fingerprint);
 });
 
 test("cross-component incomplete plans cannot validate or publish", async () => {
@@ -488,7 +597,7 @@ test("destination symlinks fail without changing the external target", async (t)
   const project = await temporaryDirectory(t, "stnl-project-");
   const external = await temporaryDirectory(t, "stnl-external-");
   await fs.mkdir(path.join(project, ".codex"));
-  await fs.symlink(external, path.join(project, ".codex/agents"), "dir");
+  await fs.symlink(external, path.join(project, ".codex/agents"), process.platform === "win32" ? "junction" : "dir");
   await fs.writeFile(path.join(external, "marker.txt"), "external\n");
   await assert.rejects(installSentinel({ repositoryRoot: ROOT, projectRoot: project, platform: "codex" }), /destination path contains a symlink/u);
   assert.equal(await fs.readFile(path.join(external, "marker.txt"), "utf8"), "external\n");

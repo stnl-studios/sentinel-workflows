@@ -68,6 +68,10 @@ function warningCodes(report) {
   return new Set(report.installation.warnings.map((warning) => warning.code));
 }
 
+function filesystemError(code) {
+  return Object.assign(new Error(`injected ${code}`), { code });
+}
+
 test("source-only doctor validates both platforms without a consumer project or writes", async (t) => {
   const source = await sourceFixture(t);
   const before = await snapshotTree(source);
@@ -190,20 +194,83 @@ test("doctor reports an active installer lock and never removes it", async (t) =
   }
 });
 
-test("doctor sees a committed install as healthy after backup cleanup failure", async (t) => {
-  const project = await temporaryDirectory(t, "stnl-doctor-commit-");
-  await install(project, "codex");
+test("persistent Windows cleanup errors preserve a healthy committed install and residual backup", async (t) => {
+  for (const code of ["EPERM", "EBUSY", "ENOTEMPTY"]) {
+    await t.test(code, async (t) => {
+      const project = await temporaryDirectory(t, `stnl-doctor-commit-${code}-`);
+      await install(project, "codex");
+      let attempts = 0;
+      const result = await installSentinel({
+        repositoryRoot: ROOT,
+        projectRoot: project,
+        platform: "claude-code",
+        validateSourceContracts: false,
+        removeBackupRoot: async () => {
+          attempts += 1;
+          throw filesystemError(code);
+        },
+      });
+      assert.equal(result.commitStatus, "committed");
+      assert.equal(attempts, 3);
+      assert.ok(result.warnings.some((warning) => warning.code === "POST_COMMIT_BACKUP_CLEANUP_FAILED"));
+      assert.equal(result.residuals.backups.length, 1);
+      assert.equal(await fs.readFile(path.join(project, ".claude/agents/stnl-validation-runner.md"), "utf8"), await fs.readFile(path.join(ROOT, "integrations/claude-code/agents/stnl-validation-runner.md"), "utf8"));
+
+      const report = await doctorSentinelInstallation({ repositoryRoot: ROOT, projectRoot: project });
+      assert.equal(report.status, "OK");
+      assert.equal(report.installation.liveStatus, "OK");
+      assert.equal(report.installation.fingerprintMatches, true);
+      assert.ok(warningCodes(report).has("RESIDUAL_BACKUP"));
+    });
+  }
+});
+
+test("persistent stage cleanup contention is a committed-install residual warning", async (t) => {
+  const project = await temporaryDirectory(t, "stnl-doctor-stage-cleanup-");
+  let attempts = 0;
   const result = await installSentinel({
     repositoryRoot: ROOT,
     projectRoot: project,
-    platform: "claude-code",
+    platform: "codex",
     validateSourceContracts: false,
-    removeBackupRoot: async () => { throw new Error("injected EPERM"); },
+    removeStageRoot: async () => {
+      attempts += 1;
+      throw filesystemError("ENOTEMPTY");
+    },
   });
   assert.equal(result.commitStatus, "committed");
+  assert.equal(attempts, 3);
+  assert.ok(result.warnings.some((warning) => warning.code === "STAGE_CLEANUP_FAILED"));
+  assert.equal(result.residuals.stages.length, 1);
+
   const report = await doctorSentinelInstallation({ repositoryRoot: ROOT, projectRoot: project });
   assert.equal(report.status, "OK");
   assert.equal(report.installation.liveStatus, "OK");
+  assert.ok(warningCodes(report).has("RESIDUAL_STAGE"));
+});
+
+test("persistent lock cleanup contention preserves commit and blocks later installs", async (t) => {
+  const project = await temporaryDirectory(t, "stnl-doctor-lock-cleanup-");
+  let attempts = 0;
+  const result = await installSentinel({
+    repositoryRoot: ROOT,
+    projectRoot: project,
+    platform: "codex",
+    validateSourceContracts: false,
+    unlinkInstallLock: async () => {
+      attempts += 1;
+      throw filesystemError("EBUSY");
+    },
+  });
+  assert.equal(result.commitStatus, "committed");
+  assert.equal(attempts, 3);
+  assert.ok(result.warnings.some((warning) => warning.code === "INSTALL_LOCK_RELEASE_FAILED"));
+  assert.ok(result.residuals.lock);
+
+  const report = await doctorSentinelInstallation({ repositoryRoot: ROOT, projectRoot: project });
+  assert.equal(report.status, "BLOCKED");
+  assert.equal(report.installation.liveStatus, "OK");
   assert.equal(report.installation.fingerprintMatches, true);
-  assert.ok(warningCodes(report).has("RESIDUAL_BACKUP"));
+  assert.ok(report.installation.blockers.some((blocker) => blocker.code === "ACTIVE_INSTALLER_LOCK"));
+  await assert.rejects(install(project, "codex"), /installation already in progress/u);
 });
