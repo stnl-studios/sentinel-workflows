@@ -4,17 +4,21 @@ import * as fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { pathToFileURL } from "node:url";
 
 import {
   SENTINEL_INSTALLATION_CONTRACT,
+  SUPPORTED_PRODUCTION_PLATFORMS,
   acquireSentinelInstallLock,
   installSentinel,
+  planSentinelDistribution,
   releaseSentinelInstallLock,
 } from "./lib/sentinel-distribution.mjs";
 import {
   doctorSentinelInstallation,
   doctorSentinelSource,
 } from "./lib/sentinel-doctor.mjs";
+import { runDoctorCli } from "./doctor-sentinel.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
 const CLI = path.join(ROOT, "scripts/doctor-sentinel.mjs");
@@ -30,9 +34,8 @@ async function sourceFixture(t) {
   for (const directory of ["skills", "integrations", "templates"]) {
     await fs.cp(path.join(ROOT, directory), path.join(fixture, directory), { recursive: true });
   }
-  await fs.mkdir(path.join(fixture, "scripts/lib"), { recursive: true });
+  await fs.cp(path.join(ROOT, "scripts/lib"), path.join(fixture, "scripts/lib"), { recursive: true });
   await fs.copyFile(path.join(ROOT, "scripts/check-contracts.mjs"), path.join(fixture, "scripts/check-contracts.mjs"));
-  await fs.copyFile(path.join(ROOT, "scripts/lib/skill-registry.mjs"), path.join(fixture, "scripts/lib/skill-registry.mjs"));
   return fixture;
 }
 
@@ -72,17 +75,68 @@ function filesystemError(code) {
   return Object.assign(new Error(`injected ${code}`), { code });
 }
 
-test("source-only doctor validates both platforms without a consumer project or writes", async (t) => {
+test("source-only doctor validates individual and default all-platform health without writes", async (t) => {
   const source = await sourceFixture(t);
+  const home = await temporaryDirectory(t, "stnl-doctor-home-");
   const before = await snapshotTree(source);
+  const homeBefore = await snapshotTree(home);
   const report = await doctorSentinelSource({ repositoryRoot: source });
+  const expectedDefaultPlan = await planSentinelDistribution({ repositoryRoot: source, scope: "user", platform: "all" });
   assert.equal(report.status, "OK");
-  assert.deepEqual(report.source.platforms.map((item) => item.platform), ["codex", "claude-code"]);
+  assert.deepEqual(report.source.platforms.map((item) => item.platform), SUPPORTED_PRODUCTION_PLATFORMS);
   assert.ok(report.source.platforms.every((item) => /^sha256:[0-9a-f]{64}$/u.test(item.fingerprint)));
-  assert.deepEqual(await snapshotTree(source), before);
-  const cli = spawnSync(process.execPath, [CLI, "--source-only"], { encoding: "utf8" });
+  assert.deepEqual(report.source.defaultInstallation, {
+    status: "OK",
+    scope: "user",
+    platforms: SUPPORTED_PRODUCTION_PLATFORMS,
+    policyVersion: expectedDefaultPlan.policyVersion,
+    fingerprint: expectedDefaultPlan.fingerprint,
+    fileCount: expectedDefaultPlan.entries.length,
+  });
+  const directCliReport = await runDoctorCli(["--source-only"], {
+    repositoryRoot: source,
+    homeDirectory: () => home,
+  });
+  assert.equal(directCliReport.status, "OK");
+  const cli = spawnSync(process.execPath, [CLI, "--source-only"], {
+    encoding: "utf8",
+    env: { ...process.env, HOME: home },
+  });
   assert.equal(cli.status, 0, cli.stderr);
-  assert.equal(JSON.parse(cli.stdout).status, "OK");
+  const cliReport = JSON.parse(cli.stdout);
+  assert.equal(cliReport.status, "OK");
+  assert.deepEqual(cliReport.source.defaultInstallation.platforms, SUPPORTED_PRODUCTION_PLATFORMS);
+  assert.deepEqual(await snapshotTree(source), before);
+  assert.deepEqual(await snapshotTree(home), homeBefore);
+});
+
+test("source doctor fails closed when only the canonical all-platform composition collides", async (t) => {
+  const source = await sourceFixture(t);
+  await fs.copyFile(path.join(ROOT, "scripts/doctor-sentinel.mjs"), path.join(source, "scripts/doctor-sentinel.mjs"));
+  const distributionModule = path.join(source, "scripts/lib/sentinel-distribution.mjs");
+  const distributionSource = await fs.readFile(distributionModule, "utf8");
+  const collisionSource = distributionSource.replace(
+    /("claude-code": Object\.freeze\(\{\n\s+skillRoot: )"\.claude\/skills"/u,
+    '$1".agents/skills"',
+  );
+  assert.notEqual(collisionSource, distributionSource);
+  await fs.writeFile(distributionModule, collisionSource);
+
+  const isolatedDistribution = await import(`${pathToFileURL(distributionModule).href}?collision=${Date.now()}`);
+  for (const platform of SUPPORTED_PRODUCTION_PLATFORMS) {
+    const individualPlan = await isolatedDistribution.planSentinelDistribution({
+      repositoryRoot: source,
+      scope: "user",
+      platform,
+    });
+    assert.equal(isolatedDistribution.validatePlannedDistribution(individualPlan), true);
+  }
+
+  const cli = spawnSync(process.execPath, [path.join(source, "scripts/doctor-sentinel.mjs"), "--source-only"], { encoding: "utf8" });
+  assert.equal(cli.status, 2, cli.stdout);
+  const report = JSON.parse(cli.stdout);
+  assert.equal(report.status, "BLOCKED");
+  assert.match(report.blockers[0].message, /duplicate installation destination/u);
 });
 
 test("source doctor fails closed for missing canonical material", async (t) => {

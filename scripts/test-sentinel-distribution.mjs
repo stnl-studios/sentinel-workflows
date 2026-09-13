@@ -328,23 +328,44 @@ test("manual full Sentinel skill copies are reconciled without deleting third-pa
   assert.equal(await fs.readFile(path.join(project, ".agents/skills/third-party/SKILL.md"), "utf8"), "third party\n");
 });
 
-test("a conflicting pre-existing skill identity blocks ownership", async (t) => {
+test("an exact canonical skill root replaces unmanaged content regardless of declared identity", async (t) => {
   const project = await temporaryDirectory(t, "stnl-project-");
   const destination = path.join(project, ".agents", "skills", "stnl-testing");
   await fs.mkdir(destination, { recursive: true });
   await fs.writeFile(path.join(destination, "SKILL.md"), "---\nname: someone-else\n---\n");
-  await assert.rejects(installSentinel({ repositoryRoot: ROOT, projectRoot: project, platform: "codex" }), /identity conflicts/u);
-  assert.match(await fs.readFile(path.join(destination, "SKILL.md"), "utf8"), /someone-else/u);
+  await fs.writeFile(path.join(destination, "stale.txt"), "stale\n");
+  await installSentinel({ repositoryRoot: ROOT, projectRoot: project, platform: "codex" });
+  assert.ok((await fs.readFile(path.join(destination, "SKILL.md"))).equals(await fs.readFile(path.join(ROOT, "skills/domains/stnl-testing/SKILL.md"))));
+  assert.equal(await exists(path.join(destination, "stale.txt")), false);
 });
 
-test("an unowned same-name agent collision blocks replacement", async (t) => {
+test("explicit project install authoritatively replaces an unmanaged different canonical agent", async (t) => {
   const project = await temporaryDirectory(t, "stnl-project-");
-  const destination = path.join(project, ".codex/agents/stnl_validation_runner.toml");
+  const destination = path.join(project, ".claude/agents/stnl-validation-runner.md");
   await fs.mkdir(path.dirname(destination), { recursive: true });
-  await fs.writeFile(destination, "user-owned = true\n");
-  await assert.rejects(installSentinel({ repositoryRoot: ROOT, projectRoot: project, platform: "codex" }), /cannot be attributed to Sentinel/u);
-  assert.equal(await fs.readFile(destination, "utf8"), "user-owned = true\n");
-  assert.equal(await exists(path.join(project, ".sentinel/install-manifest.json")), false);
+  await fs.writeFile(destination, "old manual project-local Claude agent\n");
+  const installed = spawnSync(process.execPath, [CLI, "--scope", "project", "--project", project], { encoding: "utf8" });
+  assert.equal(installed.status, 0, installed.stderr);
+  assert.ok((await fs.readFile(destination)).equals(await fs.readFile(path.join(ROOT, "integrations/claude-code/agents/stnl-validation-runner.md"))));
+  const manifest = JSON.parse(await fs.readFile(path.join(project, ".sentinel/install-manifest.json"), "utf8"));
+  validateInstalledManifest(manifest);
+  assert.equal(manifest.scope, "project");
+  assert.deepEqual(manifest.platforms, ["codex", "claude-code"]);
+});
+
+test("ordinary directories at exact canonical file destinations are replaced", async (t) => {
+  const project = await temporaryDirectory(t, "stnl-project-");
+  const agent = path.join(project, ".claude/agents/stnl-validation-runner.md");
+  const manifestPath = path.join(project, ".sentinel/install-manifest.json");
+  for (const destination of [agent, manifestPath]) {
+    await fs.mkdir(destination, { recursive: true });
+    await fs.writeFile(path.join(destination, "stale.txt"), "stale directory content\n");
+  }
+  await installSentinel({ repositoryRoot: ROOT, projectRoot: project, platform: "all" });
+  assert.equal((await fs.stat(agent)).isFile(), true);
+  assert.ok((await fs.readFile(agent)).equals(await fs.readFile(path.join(ROOT, "integrations/claude-code/agents/stnl-validation-runner.md"))));
+  assert.equal((await fs.stat(manifestPath)).isFile(), true);
+  validateInstalledManifest(JSON.parse(await fs.readFile(manifestPath, "utf8")));
 });
 
 test("switching platforms removes only known opposite Sentinel artifacts", async (t) => {

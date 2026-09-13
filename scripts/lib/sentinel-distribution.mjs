@@ -770,22 +770,6 @@ export async function inspectSentinelTransactionArtifacts(installationRoot) {
   return Object.freeze({ stages: Object.freeze(stages), backups: Object.freeze(backups), lock: lock ? Object.freeze(lock) : null });
 }
 
-function canonicalSkillNameFromText(source) {
-  return /^---\r?\n[\s\S]*?^name:\s*([^\r\n]+)\r?$/mu.exec(source)?.[1].trim() ?? null;
-}
-
-async function assertClaimableSkillDirectory(projectRoot, relativeRoot, expectedName) {
-  const directory = joinWithin(projectRoot, relativeRoot);
-  const value = await metadata(directory);
-  if (!value) return;
-  if (!value.isDirectory() || value.isSymbolicLink()) throw new Error(`canonical Sentinel skill destination is not a real directory: ${relativeRoot}`);
-  const skillFile = path.join(directory, "SKILL.md");
-  const skillMetadata = await metadata(skillFile);
-  if (!skillMetadata?.isFile() || skillMetadata.isSymbolicLink()) throw new Error(`existing skill cannot be attributed to Sentinel: ${relativeRoot}`);
-  const name = canonicalSkillNameFromText(await fs.readFile(skillFile, "utf8"));
-  if (name !== expectedName) throw new Error(`existing skill identity conflicts with Sentinel: ${relativeRoot}`);
-}
-
 function allKnownSkillRoots() {
   return [".agents/skills", ".codex/skills", ".claude/skills"];
 }
@@ -802,44 +786,6 @@ function isKnownSentinelPath(relativePath) {
   if (relativePath === MANIFEST_PATH) return true;
   if (knownAgentPaths().includes(relativePath) || knownPromptPaths().includes(relativePath)) return true;
   return allKnownSkillRoots().some((root) => registrySkills().some((name) => relativePath === `${root}/${name}` || relativePath.startsWith(`${root}/${name}/`)));
-}
-
-function manifestOwnsPath(manifest, relativePath) {
-  return Boolean(manifest?.managedUnits?.some((unit) => relativePath === unit || relativePath.startsWith(`${unit}/`)));
-}
-
-function canonicalSourceForKnownFile(relativePath) {
-  for (const config of Object.values(PLATFORMS)) {
-    for (const file of config.agentFiles) {
-      if (relativePath === `${config.agentDestinationRoot}/${file}`) return `${config.agentSourceRoot}/${file}`;
-    }
-  }
-  for (const promptRoot of [".sentinel/prompts", ".claude/commands"]) {
-    const prefix = `${promptRoot}/`;
-    if (!relativePath.startsWith(prefix)) continue;
-    const prompt = relativePath.slice(prefix.length);
-    if (ALL_PROMPTS.includes(prompt)) return `templates/prompts/${prompt}`;
-  }
-  return null;
-}
-
-async function assertClaimableKnownFile(repositoryRoot, projectRoot, relativePath, installedManifest) {
-  if (manifestOwnsPath(installedManifest, relativePath)) return;
-  const sourceRelativePath = canonicalSourceForKnownFile(relativePath);
-  if (!sourceRelativePath) throw new Error(`path is not a known Sentinel file: ${relativePath}`);
-  const destination = joinWithin(projectRoot, relativePath);
-  const destinationMetadata = await metadata(destination);
-  if (!destinationMetadata?.isFile() || destinationMetadata.isSymbolicLink()) {
-    throw new Error(`existing Sentinel file destination is not a regular file: ${relativePath}`);
-  }
-  const source = joinWithin(repositoryRoot, sourceRelativePath);
-  const sourceMetadata = await metadata(source);
-  if (!sourceMetadata?.isFile() || sourceMetadata.isSymbolicLink()) {
-    throw new Error(`canonical Sentinel file source is not a regular file: ${sourceRelativePath}`);
-  }
-  if (!(await fs.readFile(destination)).equals(await fs.readFile(source))) {
-    throw new Error(`existing file cannot be attributed to Sentinel: ${relativePath}`);
-  }
 }
 
 export function validateInstalledManifest(value, options = {}) {
@@ -898,7 +844,21 @@ export async function readInstalledManifest(projectRoot, options = {}) {
   }
 }
 
-async function existingKnownCleanupUnits(repositoryRoot, projectRoot, plan, installedManifest) {
+async function readInstalledManifestForInstallation(projectRoot) {
+  const manifest = joinWithin(projectRoot, MANIFEST_PATH);
+  const value = await metadata(manifest);
+  if (!value) return null;
+  await assertDestinationSafe(projectRoot, MANIFEST_PATH);
+  if (!value.isFile()) return null;
+  const bytes = await fs.readFile(manifest);
+  try {
+    return validateInstalledManifest(JSON.parse(bytes.toString("utf8")));
+  } catch {
+    return null;
+  }
+}
+
+async function existingKnownCleanupUnits(projectRoot, plan, installedManifest) {
   const desired = new Set(desiredManagedUnits(plan));
   const cleanup = new Set(installedManifest?.managedUnits?.filter((item) => !desired.has(item)) ?? []);
   const selectedSkillRoots = new Set(plan.platforms.map((platform) => PLATFORMS[platform].skillRoot));
@@ -907,29 +867,25 @@ async function existingKnownCleanupUnits(repositoryRoot, projectRoot, plan, inst
     for (const name of registrySkills()) {
       const relativeRoot = `${root}/${name}`;
       if (await metadata(joinWithin(projectRoot, relativeRoot))) {
-        await assertClaimableSkillDirectory(projectRoot, relativeRoot, name);
         cleanup.add(relativeRoot);
       }
     }
   }
   for (const agentPath of knownAgentPaths()) {
     if (!desired.has(agentPath) && await metadata(joinWithin(projectRoot, agentPath))) {
-      await assertClaimableKnownFile(repositoryRoot, projectRoot, agentPath, installedManifest);
       cleanup.add(agentPath);
     }
   }
   for (const promptPath of knownPromptPaths()) {
     if (!desired.has(promptPath) && await metadata(joinWithin(projectRoot, promptPath))) {
-      await assertClaimableKnownFile(repositoryRoot, projectRoot, promptPath, installedManifest);
       cleanup.add(promptPath);
     }
   }
   return [...cleanup].sort();
 }
 
-async function liveMatchesPlan(projectRoot, plan, cleanupUnits) {
+async function liveMatchesPlan(projectRoot, plan, cleanupUnits, manifest) {
   if (cleanupUnits.length > 0) return false;
-  const manifest = await readInstalledManifest(projectRoot);
   if (!manifest || manifest.schemaVersion !== MANIFEST_SCHEMA_VERSION || manifest.scope !== plan.scope || !sameStringArray(manifest.platforms, plan.platforms) || manifest.fingerprint !== plan.fingerprint) return false;
   for (const entry of plan.entries) {
     const file = joinWithin(projectRoot, entry.destinationRelativePath);
@@ -975,22 +931,12 @@ async function removeExplicitUnits(root, units) {
   for (const unit of [...units].reverse()) await fs.rm(joinWithin(root, unit), { recursive: true, force: true });
 }
 
-async function publishStage(repositoryRoot, projectRoot, stageRoot, plan, cleanupUnits, installedManifest, options = {}) {
+async function publishStage(projectRoot, stageRoot, plan, cleanupUnits, options = {}) {
   const desiredUnits = desiredManagedUnits(plan);
   const existingDesired = [];
   for (const unit of desiredUnits) {
     await assertDestinationSafe(projectRoot, unit);
     if (await metadata(joinWithin(projectRoot, unit))) existingDesired.push(unit);
-  }
-  for (const platform of plan.platforms) {
-    for (const name of registrySkills()) {
-      await assertClaimableSkillDirectory(projectRoot, `${PLATFORMS[platform].skillRoot}/${name}`, name);
-    }
-  }
-  for (const unit of existingDesired) {
-    if (canonicalSourceForKnownFile(unit)) {
-      await assertClaimableKnownFile(repositoryRoot, projectRoot, unit, installedManifest);
-    }
   }
   for (const unit of cleanupUnits) await assertDestinationSafe(projectRoot, unit);
   const backupRoot = await fs.mkdtemp(path.join(projectRoot, BACKUP_PREFIX));
@@ -1065,12 +1011,12 @@ export async function installSentinel({
     stageRoot = await writeStage(plan, root);
     if (stageMutator) await stageMutator(stageRoot, plan);
     await validateStagedInstallation(plan, stageRoot);
-    const installedManifest = await readInstalledManifest(root);
-    const cleanupUnits = await existingKnownCleanupUnits(sourceRoot, root, plan, installedManifest);
-    if (await liveMatchesPlan(root, plan, cleanupUnits)) {
+    const installedManifest = await readInstalledManifestForInstallation(root);
+    const cleanupUnits = await existingKnownCleanupUnits(root, plan, installedManifest);
+    if (await liveMatchesPlan(root, plan, cleanupUnits, installedManifest)) {
       outcome = { changed: false, commitStatus: "already-current", scope: plan.scope, platforms: plan.platforms, fingerprint: plan.fingerprint, files: manifestForPlan(plan).files, warnings: [] };
     } else {
-      const publication = await publishStage(sourceRoot, root, stageRoot, plan, cleanupUnits, installedManifest, {
+      const publication = await publishStage(root, stageRoot, plan, cleanupUnits, {
         beforePublishUnit,
         removeBackupRoot,
       });

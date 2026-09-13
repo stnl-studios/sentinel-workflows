@@ -16,6 +16,7 @@ import {
   planSentinelDistribution,
   readInstalledManifest,
   releaseSentinelInstallLock,
+  validateInstalledManifest,
 } from "./lib/sentinel-distribution.mjs";
 import { registrySkills } from "./lib/skill-registry.mjs";
 import { parseInstallArguments, runInstallCli } from "./install-sentinel.mjs";
@@ -169,6 +170,82 @@ test("no-argument installer and doctor use fake user home with all production pl
   assert.equal(report.installation.installationRoot, home);
 });
 
+test("default user install authoritatively replaces exact manual Sentinel artifacts and preserves neighbors", async (t) => {
+  const home = await nestedFakeHome(t);
+  const oldCanonical = new Map([
+    [".codex/agents/stnl_validation_runner.toml", Buffer.from("old manual Codex agent\n")],
+    [".claude/agents/stnl-validation-runner.md", Buffer.from("old manual Claude agent\n")],
+    [".claude/commands/execution-plan.md", Buffer.from("old manual Claude command\n")],
+    [".sentinel/prompts/execution-plan.md", Buffer.from("old manual Codex prompt\n")],
+    [SENTINEL_INSTALLATION_CONTRACT.manifestPath, Buffer.from("old non-JSON manifest bytes\n")],
+  ]);
+  const unrelated = new Map([
+    [".codex/agents/my_custom_agent.toml", Buffer.from([0x00, 0x43, 0x6f, 0x64, 0x65, 0x78])],
+    [".claude/agents/my-custom-agent.md", Buffer.from([0x00, 0x43, 0x6c, 0x61, 0x75, 0x64, 0x65])],
+    [".claude/commands/my-command.md", Buffer.from("custom command\r\n")],
+    [".sentinel/prompts/my-prompt.md", Buffer.from("custom prompt\n")],
+    [".agents/skills/third-party/SKILL.md", Buffer.from("third-party Codex skill\n")],
+    [".claude/skills/third-party/SKILL.md", Buffer.from("third-party Claude skill\n")],
+  ]);
+  for (const [relativePath, bytes] of [...oldCanonical, ...unrelated]) {
+    const destination = managedPath(home, relativePath);
+    await fs.mkdir(path.dirname(destination), { recursive: true });
+    await fs.writeFile(destination, bytes);
+  }
+
+  const skillDestination = managedPath(home, nativeSkillPath("codex", "stnl-testing"));
+  await fs.mkdir(path.join(skillDestination, "runtime"), { recursive: true });
+  await fs.mkdir(path.join(skillDestination, "evals"), { recursive: true });
+  await fs.mkdir(path.join(skillDestination, "examples"), { recursive: true });
+  await fs.mkdir(path.join(skillDestination, "maintenance"), { recursive: true });
+  await fs.writeFile(path.join(skillDestination, "SKILL.md"), "---\nname: obsolete-manual-copy\n---\n");
+  await fs.writeFile(path.join(skillDestination, "runtime/stale.mjs"), "stale runtime\n");
+  await fs.writeFile(path.join(skillDestination, "evals/stale.json"), "{}\n");
+  await fs.writeFile(path.join(skillDestination, "examples/stale.md"), "stale example\n");
+  await fs.writeFile(path.join(skillDestination, "maintenance/stale.md"), "stale maintenance\n");
+
+  const environment = { ...process.env, HOME: home, USERPROFILE: home };
+  const installProcess = spawnSync(process.execPath, [INSTALL_CLI], { encoding: "utf8", env: environment });
+  assert.equal(installProcess.status, 0, installProcess.stderr);
+  assert.equal(JSON.parse(installProcess.stdout).status, "installed");
+
+  for (const [destination, source] of [
+    [".codex/agents/stnl_validation_runner.toml", "integrations/codex/agents/stnl_validation_runner.toml"],
+    [".claude/agents/stnl-validation-runner.md", "integrations/claude-code/agents/stnl-validation-runner.md"],
+    [".claude/commands/execution-plan.md", "templates/prompts/execution-plan.md"],
+    [".sentinel/prompts/execution-plan.md", "templates/prompts/execution-plan.md"],
+  ]) {
+    assert.ok((await fs.readFile(managedPath(home, destination))).equals(await fs.readFile(path.join(ROOT, source))), destination);
+  }
+
+  const manifest = JSON.parse(await fs.readFile(managedPath(home, SENTINEL_INSTALLATION_CONTRACT.manifestPath), "utf8"));
+  validateInstalledManifest(manifest);
+  assert.equal(manifest.schemaVersion, 2);
+  assert.equal(manifest.scope, "user");
+  assert.deepEqual(manifest.platforms, ["codex", "claude-code"]);
+
+  const plan = await planSentinelDistribution({ repositoryRoot: ROOT, scope: "user", platform: "all", validateSourceContracts: false });
+  const skillPrefix = `${nativeSkillPath("codex", "stnl-testing")}/`;
+  const expectedSkill = plan.entries
+    .filter((entry) => entry.destinationRelativePath.startsWith(skillPrefix))
+    .map((entry) => [entry.destinationRelativePath.slice(skillPrefix.length), Buffer.from(entry.bytes).toString("base64")]);
+  assert.deepEqual(await snapshotTree(skillDestination), expectedSkill);
+
+  for (const [relativePath, bytes] of unrelated) {
+    assert.ok((await fs.readFile(managedPath(home, relativePath))).equals(bytes), relativePath);
+  }
+
+  const doctorProcess = spawnSync(process.execPath, [DOCTOR_CLI], { encoding: "utf8", env: environment });
+  assert.equal(doctorProcess.status, 0, doctorProcess.stderr);
+  assert.equal(JSON.parse(doctorProcess.stdout).status, "OK");
+
+  const installedSnapshot = await snapshotTree(home);
+  const reinstallProcess = spawnSync(process.execPath, [INSTALL_CLI], { encoding: "utf8", env: environment });
+  assert.equal(reinstallProcess.status, 0, reinstallProcess.stderr);
+  assert.equal(JSON.parse(reinstallProcess.stdout).status, "unchanged");
+  assert.deepEqual(await snapshotTree(home), installedSnapshot);
+});
+
 test("default dry-run plans user/all without creating metadata", async (t) => {
   const home = await nestedFakeHome(t);
   const result = await runInstallCli(["--dry-run"], { repositoryRoot: ROOT, homeDirectory: homeResolver(home) });
@@ -252,6 +329,36 @@ test("partial publication failure restores the previous complete all-platform in
   }), /injected combined publication failure/u);
   assert.ok(moved > 1);
   assert.deepEqual(await snapshotTree(home), before);
+});
+
+test("pre-commit failure restores different manual canonical artifacts byte-for-byte", async (t) => {
+  const home = await nestedFakeHome(t);
+  const oldCanonical = new Map([
+    [nativeSkillPath("codex", "stnl-backend-dotnet", "SKILL.md"), Buffer.from("old manual skill\r\n")],
+    [".codex/agents/stnl_validation_runner.toml", Buffer.from("old Codex agent\n")],
+    [".claude/agents/stnl-validation-runner.md", Buffer.from("old Claude agent\n")],
+    [".claude/commands/execution-plan.md", Buffer.from("old Claude command\n")],
+    [".sentinel/prompts/execution-plan.md", Buffer.from("old Codex prompt\n")],
+    [SENTINEL_INSTALLATION_CONTRACT.manifestPath, Buffer.from("old invalid manifest\n")],
+  ]);
+  for (const [relativePath, bytes] of oldCanonical) {
+    const destination = managedPath(home, relativePath);
+    await fs.mkdir(path.dirname(destination), { recursive: true });
+    await fs.writeFile(destination, bytes);
+  }
+  const before = await snapshotTree(home);
+  let publications = 0;
+  await assert.rejects(installUser(home, "all", {
+    beforePublishUnit: async () => {
+      publications += 1;
+      if (publications === 2) throw new Error("injected authoritative publication failure");
+    },
+  }), /injected authoritative publication failure/u);
+  assert.equal(publications, 2);
+  assert.deepEqual(await snapshotTree(home), before);
+  for (const [relativePath, bytes] of oldCanonical) {
+    assert.ok((await fs.readFile(managedPath(home, relativePath))).equals(bytes), relativePath);
+  }
 });
 
 test("combined fingerprint is stable, root-independent, scope-aware, and changes with either platform", async (t) => {

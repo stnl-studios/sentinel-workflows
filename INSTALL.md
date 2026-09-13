@@ -196,13 +196,18 @@ operational `templates/**`, explicitly classified production references, and
 Codex `agents/openai.yaml` metadata where applicable. Development-only material
 remains excluded.
 
-Unknown skill content, references, prompts, symlinks, special files, path
-escapes, drive-qualified paths, and incomplete plans fail closed. A Sentinel
-skill root is claimed only when `SKILL.md` declares its canonical Sentinel
-identity. A known agent, prompt, or command without manifest ownership is
-claimable only when its bytes match canonical source. Native directories are
-never swept; only exact Sentinel-known managed paths can be replaced or
-removed.
+Unknown source content, references, prompts, symlinks, special files, path
+escapes, drive-qualified paths, and incomplete plans fail closed. Sentinel is
+authoritative over every exact canonical destination in its installation plan
+and every exact known Sentinel unit reconciled during a platform transition.
+Old or manually copied Sentinel skills, agents, prompts, commands, and manifest
+files are replaced automatically even when their bytes differ; no `--force` or
+migration step is required.
+
+Authority remains path-specific. Native platform directories are never swept:
+unrelated skills, agents, commands, prompts, and other neighboring content are
+left untouched. Destination symlinks and special filesystem objects continue
+to fail closed.
 
 ## Locking and cleanup
 

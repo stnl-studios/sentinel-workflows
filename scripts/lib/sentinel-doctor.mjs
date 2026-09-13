@@ -89,6 +89,17 @@ function sourceSummary(plan) {
   });
 }
 
+function defaultInstallationSummary(plan) {
+  return Object.freeze({
+    status: "OK",
+    scope: plan.scope,
+    platforms: plan.platforms,
+    policyVersion: plan.policyVersion,
+    fingerprint: plan.fingerprint,
+    fileCount: plan.entries.length,
+  });
+}
+
 async function buildSourceHealth(repositoryRoot, scope = "user") {
   const root = await canonicalDirectory(repositoryRoot, "repository root");
   const plans = new Map();
@@ -99,9 +110,17 @@ async function buildSourceHealth(repositoryRoot, scope = "user") {
     plans.set(platform, plan);
     platforms.push(sourceSummary(plan));
   }
+  const defaultPlan = await planSentinelDistribution({ repositoryRoot: root, platform: "all", scope });
+  validatePlannedDistribution(defaultPlan);
+  plans.set("all", defaultPlan);
   return {
     plans,
-    report: Object.freeze({ status: "OK", repository: root, platforms: Object.freeze(platforms) }),
+    report: Object.freeze({
+      status: "OK",
+      repository: root,
+      platforms: Object.freeze(platforms),
+      defaultInstallation: defaultInstallationSummary(defaultPlan),
+    }),
   };
 }
 
