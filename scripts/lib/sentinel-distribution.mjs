@@ -1,6 +1,8 @@
 import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
+import { constants as fsConstants } from "node:fs";
 import * as fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 
 import {
@@ -20,7 +22,8 @@ const MANIFEST_PATH = ".sentinel/install-manifest.json";
 const INSTALL_LOCK_PATH = ".sentinel/install.lock";
 const STAGE_PREFIX = ".sentinel-install-stage-";
 const BACKUP_PREFIX = ".sentinel-install-backup-";
-const MANIFEST_SCHEMA_VERSION = 1;
+const PLAN_SCHEMA_VERSION = 2;
+const MANIFEST_SCHEMA_VERSION = 2;
 const JUNK_NAMES = new Set([".DS_Store", "__MACOSX", "Thumbs.db", "desktop.ini"]);
 const TRANSIENT_CLEANUP_ERROR_CODES = new Set(["EBUSY", "ENOTEMPTY", "EPERM"]);
 const CLEANUP_MAX_ATTEMPTS = 3;
@@ -57,6 +60,9 @@ export const PLATFORM_LAUNCHERS = Object.freeze({
   ]),
 });
 
+export const SUPPORTED_PRODUCTION_PLATFORMS = Object.freeze(["codex", "claude-code"]);
+export const SUPPORTED_INSTALLATION_SCOPES = Object.freeze(["user", "project"]);
+
 const PLATFORMS = Object.freeze({
   codex: Object.freeze({
     skillRoot: ".agents/skills",
@@ -74,11 +80,28 @@ const PLATFORMS = Object.freeze({
   }),
 });
 
+if (
+  JSON.stringify(Object.keys(PLATFORMS)) !== JSON.stringify(SUPPORTED_PRODUCTION_PLATFORMS)
+  || JSON.stringify(Object.keys(PLATFORM_LAUNCHERS)) !== JSON.stringify(SUPPORTED_PRODUCTION_PLATFORMS)
+) {
+  throw new Error("production platform configuration differs from the canonical platform authority");
+}
+
 const ALL_PROMPTS = Object.freeze([
   ...SHARED_PRODUCTION_PROMPTS,
-  ...PLATFORM_LAUNCHERS.codex,
-  ...PLATFORM_LAUNCHERS["claude-code"],
+  ...SUPPORTED_PRODUCTION_PLATFORMS.flatMap((platform) => PLATFORM_LAUNCHERS[platform]),
 ].sort());
+
+export function resolvePlatformSelection(platform = "all") {
+  if (platform === "all") return SUPPORTED_PRODUCTION_PLATFORMS;
+  if (!SUPPORTED_PRODUCTION_PLATFORMS.includes(platform)) throw new Error(`unsupported platform: ${platform}`);
+  return Object.freeze([platform]);
+}
+
+export function resolveInstallationScope(scope = "user") {
+  if (!SUPPORTED_INSTALLATION_SCOPES.includes(scope)) throw new Error(`unsupported installation scope: ${scope}`);
+  return scope;
+}
 
 function isJunkName(name) {
   return JUNK_NAMES.has(name) || name.startsWith("._");
@@ -302,13 +325,51 @@ async function classifyAgents(repositoryRoot, platform) {
   }
 }
 
-export function fingerprintEntries(platform, entries) {
-  if (!PLATFORMS[platform]) throw new Error(`unsupported platform: ${platform}`);
+function normalizeFingerprintArguments(scopeOrPlatform, platformsOrEntries, maybeEntries) {
+  if (maybeEntries !== undefined) {
+    return {
+      scope: resolveInstallationScope(scopeOrPlatform),
+      platforms: normalizeSelectedPlatforms(platformsOrEntries),
+      entries: maybeEntries,
+    };
+  }
+  if (scopeOrPlatform && typeof scopeOrPlatform === "object" && !Array.isArray(scopeOrPlatform)) {
+    return {
+      scope: resolveInstallationScope(scopeOrPlatform.scope),
+      platforms: normalizeSelectedPlatforms(scopeOrPlatform.platforms),
+      entries: platformsOrEntries,
+    };
+  }
+  return {
+    scope: "project",
+    platforms: resolvePlatformSelection(scopeOrPlatform),
+    entries: platformsOrEntries,
+  };
+}
+
+function normalizeSelectedPlatforms(platforms) {
+  if (!Array.isArray(platforms) || platforms.length === 0 || new Set(platforms).size !== platforms.length) {
+    throw new Error("selected platforms must be a non-empty unique array");
+  }
+  if (platforms.some((platform) => !SUPPORTED_PRODUCTION_PLATFORMS.includes(platform))) {
+    throw new Error(`unsupported selected platform: ${platforms.find((platform) => !SUPPORTED_PRODUCTION_PLATFORMS.includes(platform))}`);
+  }
+  const normalized = SUPPORTED_PRODUCTION_PLATFORMS.filter((platform) => platforms.includes(platform));
+  if (JSON.stringify(platforms) !== JSON.stringify(normalized)) {
+    throw new Error("selected platforms must use canonical production order");
+  }
+  return Object.freeze(normalized);
+}
+
+export function fingerprintEntries(scopeOrPlatform, platformsOrEntries, maybeEntries) {
+  const { scope, platforms, entries } = normalizeFingerprintArguments(scopeOrPlatform, platformsOrEntries, maybeEntries);
   const hash = createHash("sha256");
-  hash.update(`sentinel-distribution\0${SENTINEL_DISTRIBUTION_POLICY_VERSION}\0${platform}\0`, "utf8");
+  hash.update(`sentinel-distribution\0${SENTINEL_DISTRIBUTION_POLICY_VERSION}\0${scope}\0${platforms.join("\0")}\0`, "utf8");
   for (const entry of [...entries].sort((left, right) => left.destinationRelativePath.localeCompare(right.destinationRelativePath, "en"))) {
     assertSafeRelativePath(entry.destinationRelativePath);
     const bytes = Buffer.from(entry.bytes);
+    hash.update(entry.platform ?? "legacy", "utf8");
+    hash.update("\0", "utf8");
     hash.update(entry.destinationRelativePath, "utf8");
     hash.update("\0", "utf8");
     hash.update(String(bytes.length), "utf8");
@@ -319,14 +380,14 @@ export function fingerprintEntries(platform, entries) {
   return `sha256:${hash.digest("hex")}`;
 }
 
-export async function planSentinelDistribution({ repositoryRoot, platform, validateSourceContracts = true }) {
-  if (!PLATFORMS[platform]) throw new Error(`unsupported platform: ${platform}`);
+export async function planSentinelDistribution({ repositoryRoot, platform = "all", scope = "user", validateSourceContracts = true }) {
+  const normalizedScope = resolveInstallationScope(scope);
+  const selectedPlatforms = resolvePlatformSelection(platform);
   const root = await fs.realpath(path.resolve(repositoryRoot));
   if (validateSourceContracts) await validateCanonicalSourceContracts(root);
   await classifyPrompts(root);
-  await classifyAgents(root, platform);
+  for (const selectedPlatform of selectedPlatforms) await classifyAgents(root, selectedPlatform);
 
-  const config = PLATFORMS[platform];
   const discovery = discoverCanonicalSkills(root);
   await validateCanonicalSkillInventory(root, discovery);
   const descriptors = [...discovery.workflows, ...discovery.domains];
@@ -336,33 +397,40 @@ export async function planSentinelDistribution({ repositoryRoot, platform, valid
   }
 
   const entries = [];
-  for (const descriptor of descriptors) {
-    for (const skillFile of await productionSkillFiles(root, descriptor, platform)) {
-      const sourceRelativePath = `${toPosix(path.relative(root, sourceSkillRoot(root, descriptor)))}/${skillFile}`;
-      const destinationRelativePath = `${config.skillRoot}/${descriptor.name}/${skillFile}`;
-      addPlannedEntry(entries, await readPlannedEntry(root, "skill", sourceRelativePath, destinationRelativePath));
+  for (const selectedPlatform of selectedPlatforms) {
+    const config = PLATFORMS[selectedPlatform];
+    for (const descriptor of descriptors) {
+      for (const skillFile of await productionSkillFiles(root, descriptor, selectedPlatform)) {
+        const sourceRelativePath = `${toPosix(path.relative(root, sourceSkillRoot(root, descriptor)))}/${skillFile}`;
+        const destinationRelativePath = `${config.skillRoot}/${descriptor.name}/${skillFile}`;
+        addPlannedEntry(entries, { platform: selectedPlatform, ...await readPlannedEntry(root, "skill", sourceRelativePath, destinationRelativePath) });
+      }
     }
-  }
-  for (const agentFile of config.agentFiles) {
-    const sourceRelativePath = `${config.agentSourceRoot}/${agentFile}`;
-    const destinationRelativePath = `${config.agentDestinationRoot}/${agentFile}`;
-    addPlannedEntry(entries, await readPlannedEntry(root, "agent", sourceRelativePath, destinationRelativePath));
-  }
-  for (const prompt of [...SHARED_PRODUCTION_PROMPTS, ...PLATFORM_LAUNCHERS[platform]].sort()) {
-    addPlannedEntry(entries, await readPlannedEntry(
-      root,
-      "prompt",
-      `templates/prompts/${prompt}`,
-      `${config.promptRoot}/${prompt}`,
-    ));
+    for (const agentFile of config.agentFiles) {
+      const sourceRelativePath = `${config.agentSourceRoot}/${agentFile}`;
+      const destinationRelativePath = `${config.agentDestinationRoot}/${agentFile}`;
+      addPlannedEntry(entries, { platform: selectedPlatform, ...await readPlannedEntry(root, "agent", sourceRelativePath, destinationRelativePath) });
+    }
+    for (const prompt of [...SHARED_PRODUCTION_PROMPTS, ...PLATFORM_LAUNCHERS[selectedPlatform]].sort()) {
+      addPlannedEntry(entries, {
+        platform: selectedPlatform,
+        ...await readPlannedEntry(
+          root,
+          "prompt",
+          `templates/prompts/${prompt}`,
+          `${config.promptRoot}/${prompt}`,
+        ),
+      });
+    }
   }
   entries.sort((left, right) => left.destinationRelativePath.localeCompare(right.destinationRelativePath, "en"));
   const plan = Object.freeze({
-    schemaVersion: 1,
+    schemaVersion: PLAN_SCHEMA_VERSION,
     policyVersion: SENTINEL_DISTRIBUTION_POLICY_VERSION,
-    platform,
+    scope: normalizedScope,
+    platforms: selectedPlatforms,
     entries: Object.freeze(entries),
-    fingerprint: fingerprintEntries(platform, entries),
+    fingerprint: fingerprintEntries(normalizedScope, selectedPlatforms, entries),
   });
   validateDistributionPlan(plan);
   return plan;
@@ -372,49 +440,79 @@ function planPaths(plan) {
   return new Set(plan.entries.map((entry) => entry.destinationRelativePath));
 }
 
+function platformOwnsPlannedEntry(entry) {
+  const config = PLATFORMS[entry.platform];
+  if (!config) return false;
+  if (entry.family === "skill") {
+    return registrySkills().some((name) => entry.destinationRelativePath.startsWith(`${config.skillRoot}/${name}/`));
+  }
+  if (entry.family === "agent") {
+    return config.agentFiles.some((file) => entry.destinationRelativePath === `${config.agentDestinationRoot}/${file}`);
+  }
+  if (entry.family === "prompt") {
+    return [...SHARED_PRODUCTION_PROMPTS, ...PLATFORM_LAUNCHERS[entry.platform]]
+      .some((file) => entry.destinationRelativePath === `${config.promptRoot}/${file}`);
+  }
+  return false;
+}
+
 function expectedSkillRoots(platform) {
   return registrySkills().map((name) => `${PLATFORMS[platform].skillRoot}/${name}`);
 }
 
 function desiredManagedUnits(plan) {
-  const config = PLATFORMS[plan.platform];
-  return [
-    ...expectedSkillRoots(plan.platform),
-    ...config.agentFiles.map((file) => `${config.agentDestinationRoot}/${file}`),
-    ...[...SHARED_PRODUCTION_PROMPTS, ...PLATFORM_LAUNCHERS[plan.platform]].map((file) => `${config.promptRoot}/${file}`),
+  return [...new Set([
+    ...plan.platforms.flatMap((platform) => expectedSkillRoots(platform)),
+    ...plan.platforms.flatMap((platform) => {
+      const config = PLATFORMS[platform];
+      return config.agentFiles.map((file) => `${config.agentDestinationRoot}/${file}`);
+    }),
+    ...plan.platforms.flatMap((platform) => {
+      const config = PLATFORMS[platform];
+      return [...SHARED_PRODUCTION_PROMPTS, ...PLATFORM_LAUNCHERS[platform]].map((file) => `${config.promptRoot}/${file}`);
+    }),
     MANIFEST_PATH,
-  ].sort();
+  ])].sort();
 }
 
 export function validateDistributionPlan(plan) {
-  if (!plan || plan.schemaVersion !== 1 || plan.policyVersion !== SENTINEL_DISTRIBUTION_POLICY_VERSION || !PLATFORMS[plan.platform]) {
+  if (!plan || plan.schemaVersion !== PLAN_SCHEMA_VERSION || plan.policyVersion !== SENTINEL_DISTRIBUTION_POLICY_VERSION) {
     throw new Error("invalid Sentinel distribution plan metadata");
   }
+  if (typeof plan.scope !== "string") throw new Error("invalid Sentinel distribution plan scope");
+  resolveInstallationScope(plan.scope);
+  normalizeSelectedPlatforms(plan.platforms);
   const paths = planPaths(plan);
   if (paths.size !== plan.entries.length) throw new Error("distribution plan contains duplicate destinations");
   for (const entry of plan.entries) {
     assertSafeRelativePath(entry.sourceRelativePath);
     assertSafeRelativePath(entry.destinationRelativePath);
+    if (!plan.platforms.includes(entry.platform)) throw new Error(`distribution entry has an unselected platform: ${entry.platform}`);
+    if (!platformOwnsPlannedEntry(entry)) throw new Error(`distribution entry is outside its platform contract: ${entry.destinationRelativePath}`);
     if (!Buffer.isBuffer(entry.bytes) && !(entry.bytes instanceof Uint8Array)) throw new Error(`missing planned bytes: ${entry.destinationRelativePath}`);
   }
-  const config = PLATFORMS[plan.platform];
-  for (const name of registrySkills()) {
-    if (!paths.has(`${config.skillRoot}/${name}/SKILL.md`)) throw new Error(`plan omits canonical skill: ${name}`);
+  for (const platform of plan.platforms) {
+    const config = PLATFORMS[platform];
+    for (const name of registrySkills()) {
+      if (!paths.has(`${config.skillRoot}/${name}/SKILL.md`)) throw new Error(`plan omits canonical skill for ${platform}: ${name}`);
+    }
+    for (const agent of config.agentFiles) {
+      if (!paths.has(`${config.agentDestinationRoot}/${agent}`)) throw new Error(`plan omits platform agent: ${agent}`);
+    }
+    for (const prompt of SHARED_PRODUCTION_PROMPTS) {
+      if (!paths.has(`${config.promptRoot}/${prompt}`)) throw new Error(`plan omits shared prompt for ${platform}: ${prompt}`);
+    }
+    for (const launcher of PLATFORM_LAUNCHERS[platform]) {
+      if (!paths.has(`${config.promptRoot}/${launcher}`)) throw new Error(`plan omits platform launcher: ${launcher}`);
+    }
   }
-  for (const agent of config.agentFiles) {
-    if (!paths.has(`${config.agentDestinationRoot}/${agent}`)) throw new Error(`plan omits platform agent: ${agent}`);
+  for (const platform of SUPPORTED_PRODUCTION_PLATFORMS.filter((candidate) => !plan.platforms.includes(candidate))) {
+    const config = PLATFORMS[platform];
+    if (plan.entries.some((entry) => entry.platform === platform || entry.destinationRelativePath.startsWith(`${config.agentDestinationRoot}/`) || PLATFORM_LAUNCHERS[platform].some((name) => entry.destinationRelativePath.endsWith(`/${name}`)))) {
+      throw new Error("distribution plan mixes selected and nonselected platform artifacts");
+    }
   }
-  for (const prompt of SHARED_PRODUCTION_PROMPTS) {
-    if (!paths.has(`${config.promptRoot}/${prompt}`)) throw new Error(`plan omits shared prompt: ${prompt}`);
-  }
-  for (const launcher of PLATFORM_LAUNCHERS[plan.platform]) {
-    if (!paths.has(`${config.promptRoot}/${launcher}`)) throw new Error(`plan omits platform launcher: ${launcher}`);
-  }
-  const opposite = plan.platform === "codex" ? "claude-code" : "codex";
-  if (plan.entries.some((entry) => entry.destinationRelativePath.startsWith(`${PLATFORMS[opposite].agentDestinationRoot}/`) || PLATFORM_LAUNCHERS[opposite].some((name) => entry.destinationRelativePath.endsWith(`/${name}`)))) {
-    throw new Error("distribution plan mixes platform-specific adapters or launchers");
-  }
-  if (plan.fingerprint !== fingerprintEntries(plan.platform, plan.entries)) throw new Error("distribution plan fingerprint is invalid");
+  if (plan.fingerprint !== fingerprintEntries(plan.scope, plan.platforms, plan.entries)) throw new Error("distribution plan fingerprint is invalid");
   return true;
 }
 
@@ -422,7 +520,8 @@ export function manifestForPlan(plan) {
   return {
     schemaVersion: MANIFEST_SCHEMA_VERSION,
     policyVersion: plan.policyVersion,
-    platform: plan.platform,
+    scope: plan.scope,
+    platforms: [...plan.platforms],
     fingerprint: plan.fingerprint,
     files: [...plan.entries.map((entry) => entry.destinationRelativePath), MANIFEST_PATH].sort(),
     managedUnits: desiredManagedUnits(plan),
@@ -476,8 +575,8 @@ function textualResourceReferences(source, relativeFile, skillName) {
   return references;
 }
 
-function plannedSkillFiles(plan, skillName) {
-  const config = PLATFORMS[plan.platform];
+function plannedSkillFiles(plan, platform, skillName) {
+  const config = PLATFORMS[platform];
   const skillPrefix = `${config.skillRoot}/${skillName}/`;
   return plan.entries
     .filter((entry) => entry.destinationRelativePath.startsWith(skillPrefix))
@@ -504,11 +603,13 @@ function validateTextualResourceClosure(plan, skillName, files) {
 
 export function validatePlannedDistribution(plan) {
   validateDistributionPlan(plan);
-  for (const name of registrySkills()) {
-    const files = plannedSkillFiles(plan, name);
-    const findings = checkDistributableSkillContents(name, files, distributablePolicyForSkill(name));
-    if (findings.length > 0) throw new Error(`planned skill is not distributable (${name}): ${findings.join("; ")}`);
-    validateTextualResourceClosure(plan, name, files);
+  for (const platform of plan.platforms) {
+    for (const name of registrySkills()) {
+      const files = plannedSkillFiles(plan, platform, name);
+      const findings = checkDistributableSkillContents(name, files, distributablePolicyForSkill(name));
+      if (findings.length > 0) throw new Error(`planned skill is not distributable (${platform}/${name}): ${findings.join("; ")}`);
+      validateTextualResourceClosure(plan, name, files);
+    }
   }
   return true;
 }
@@ -531,20 +632,35 @@ export async function validateStagedInstallation(plan, stageRoot) {
   const stagedManifest = await fs.readFile(joinWithin(stageRoot, MANIFEST_PATH));
   if (!stagedManifest.equals(manifestBytes(plan))) throw new Error("staged installation manifest differs from plan");
 
-  const config = PLATFORMS[plan.platform];
-  for (const name of registrySkills()) {
-    const skillRoot = joinWithin(stageRoot, `${config.skillRoot}/${name}`);
-    const findings = await checkDistributableSkill(skillRoot, distributablePolicyForSkill(name));
-    if (findings.length > 0) throw new Error(`staged skill is not distributable (${name}): ${findings.join("; ")}`);
+  for (const platform of plan.platforms) {
+    const config = PLATFORMS[platform];
+    for (const name of registrySkills()) {
+      const skillRoot = joinWithin(stageRoot, `${config.skillRoot}/${name}`);
+      const findings = await checkDistributableSkill(skillRoot, distributablePolicyForSkill(name));
+      if (findings.length > 0) throw new Error(`staged skill is not distributable (${platform}/${name}): ${findings.join("; ")}`);
+    }
   }
   return true;
 }
 
-async function canonicalProjectRoot(projectRoot) {
-  const requested = path.resolve(projectRoot);
+async function canonicalInstallationRoot(installationRoot, label, options = {}) {
+  if (typeof installationRoot !== "string" || installationRoot.length === 0) throw new Error(`${label} is unavailable`);
+  const requested = path.resolve(installationRoot);
   const value = await metadata(requested);
-  if (!value?.isDirectory() || value.isSymbolicLink()) throw new Error(`project root must be an existing real directory: ${requested}`);
+  if (!value?.isDirectory() || value.isSymbolicLink()) throw new Error(`${label} must be an existing real directory: ${requested}`);
+  await fs.access(requested, fsConstants.R_OK | (options.requireWritable === false ? 0 : fsConstants.W_OK));
   return fs.realpath(requested);
+}
+
+export async function resolveSentinelInstallationRoot({ scope = "user", projectRoot, homeDirectory = os.homedir, requireWritable = true } = {}) {
+  const normalizedScope = resolveInstallationScope(scope);
+  if (normalizedScope === "user") {
+    if (projectRoot !== undefined) throw new Error("--project cannot be used with user scope");
+    const homeRoot = typeof homeDirectory === "function" ? homeDirectory() : homeDirectory;
+    return canonicalInstallationRoot(homeRoot, "user home directory", { requireWritable });
+  }
+  if (projectRoot === undefined) throw new Error("project scope requires --project <path>");
+  return canonicalInstallationRoot(projectRoot, "project root", { requireWritable });
 }
 
 async function assertDestinationSafe(projectRoot, relativePath) {
@@ -561,8 +677,8 @@ async function assertDestinationSafe(projectRoot, relativePath) {
   }
 }
 
-export async function acquireSentinelInstallLock(projectRoot) {
-  const root = await canonicalProjectRoot(projectRoot);
+export async function acquireSentinelInstallLock(installationRoot) {
+  const root = await canonicalInstallationRoot(installationRoot, "installation root");
   await assertDestinationSafe(root, INSTALL_LOCK_PATH);
   const lockPath = joinWithin(root, INSTALL_LOCK_PATH);
   await fs.mkdir(path.dirname(lockPath), { recursive: true });
@@ -572,7 +688,7 @@ export async function acquireSentinelInstallLock(projectRoot) {
     handle = await fs.open(lockPath, "wx", 0o600);
   } catch (error) {
     if (error.code === "EEXIST") {
-      const locked = new Error(`Sentinel installation already in progress for project: ${root}`);
+      const locked = new Error(`Sentinel installation already in progress for installation root: ${root}`);
       locked.code = "SENTINEL_INSTALL_LOCKED";
       throw locked;
     }
@@ -623,8 +739,8 @@ export async function releaseSentinelInstallLock(lock, options = {}) {
   });
 }
 
-export async function inspectSentinelTransactionArtifacts(projectRoot) {
-  const root = await canonicalProjectRoot(projectRoot);
+export async function inspectSentinelTransactionArtifacts(installationRoot) {
+  const root = await canonicalInstallationRoot(installationRoot, "installation root", { requireWritable: false });
   const entries = await fs.readdir(root, { withFileTypes: true });
   const stages = entries.filter((entry) => entry.name.startsWith(STAGE_PREFIX)).map((entry) => entry.name).sort();
   const backups = entries.filter((entry) => entry.name.startsWith(BACKUP_PREFIX)).map((entry) => entry.name).sort();
@@ -728,8 +844,24 @@ async function assertClaimableKnownFile(repositoryRoot, projectRoot, relativePat
 
 export function validateInstalledManifest(value, options = {}) {
   const requireCurrentPolicy = options.requireCurrentPolicy ?? true;
-  if (!value || value.schemaVersion !== MANIFEST_SCHEMA_VERSION || typeof value.policyVersion !== "string" || value.policyVersion.length === 0 || !PLATFORMS[value.platform] || !/^sha256:[0-9a-f]{64}$/u.test(value.fingerprint)) {
+  const legacy = value?.schemaVersion === 1;
+  const current = value?.schemaVersion === MANIFEST_SCHEMA_VERSION;
+  if (!value || (!legacy && !current) || typeof value.policyVersion !== "string" || value.policyVersion.length === 0 || !/^sha256:[0-9a-f]{64}$/u.test(value.fingerprint)) {
     throw new Error("existing Sentinel installation manifest has invalid metadata");
+  }
+  let scope;
+  let platforms;
+  if (legacy) {
+    if (!PLATFORMS[value.platform] || "scope" in value || "platforms" in value) {
+      throw new Error("existing Sentinel installation manifest has invalid legacy metadata");
+    }
+    scope = "project";
+    platforms = Object.freeze([value.platform]);
+  } else {
+    if ("platform" in value) throw new Error("current Sentinel installation manifest must not contain singular platform metadata");
+    if (typeof value.scope !== "string") throw new Error("current Sentinel installation manifest is missing scope metadata");
+    scope = resolveInstallationScope(value.scope);
+    platforms = normalizeSelectedPlatforms(value.platforms);
   }
   if (requireCurrentPolicy && value.policyVersion !== SENTINEL_DISTRIBUTION_POLICY_VERSION) {
     throw new Error("existing Sentinel installation manifest has an unsupported policy version");
@@ -741,7 +873,16 @@ export function validateInstalledManifest(value, options = {}) {
     for (const item of value[field]) assertSafeRelativePath(item);
     if (new Set(value[field]).size !== value[field].length) throw new Error(`existing Sentinel installation manifest has duplicate ${field}`);
   }
-  return value;
+  return Object.freeze({
+    schemaVersion: value.schemaVersion,
+    scope,
+    platforms,
+    policyVersion: value.policyVersion,
+    fingerprint: value.fingerprint,
+    files: Object.freeze([...value.files]),
+    managedUnits: Object.freeze([...value.managedUnits]),
+    legacy,
+  });
 }
 
 export async function readInstalledManifest(projectRoot, options = {}) {
@@ -760,9 +901,9 @@ export async function readInstalledManifest(projectRoot, options = {}) {
 async function existingKnownCleanupUnits(repositoryRoot, projectRoot, plan, installedManifest) {
   const desired = new Set(desiredManagedUnits(plan));
   const cleanup = new Set(installedManifest?.managedUnits?.filter((item) => !desired.has(item)) ?? []);
-  const selectedSkillRoot = PLATFORMS[plan.platform].skillRoot;
+  const selectedSkillRoots = new Set(plan.platforms.map((platform) => PLATFORMS[platform].skillRoot));
   for (const root of allKnownSkillRoots()) {
-    if (root === selectedSkillRoot) continue;
+    if (selectedSkillRoots.has(root)) continue;
     for (const name of registrySkills()) {
       const relativeRoot = `${root}/${name}`;
       if (await metadata(joinWithin(projectRoot, relativeRoot))) {
@@ -789,22 +930,28 @@ async function existingKnownCleanupUnits(repositoryRoot, projectRoot, plan, inst
 async function liveMatchesPlan(projectRoot, plan, cleanupUnits) {
   if (cleanupUnits.length > 0) return false;
   const manifest = await readInstalledManifest(projectRoot);
-  if (!manifest || manifest.fingerprint !== plan.fingerprint || manifest.platform !== plan.platform) return false;
+  if (!manifest || manifest.schemaVersion !== MANIFEST_SCHEMA_VERSION || manifest.scope !== plan.scope || !sameStringArray(manifest.platforms, plan.platforms) || manifest.fingerprint !== plan.fingerprint) return false;
   for (const entry of plan.entries) {
     const file = joinWithin(projectRoot, entry.destinationRelativePath);
     const value = await metadata(file);
     if (!value?.isFile() || value.isSymbolicLink()) return false;
     if (!(await fs.readFile(file)).equals(Buffer.from(entry.bytes))) return false;
   }
-  const config = PLATFORMS[plan.platform];
-  for (const name of registrySkills()) {
-    const root = joinWithin(projectRoot, `${config.skillRoot}/${name}`);
-    const files = await walkRegularFiles(root);
-    const prefix = `${config.skillRoot}/${name}/`;
-    const expected = plan.entries.filter((entry) => entry.destinationRelativePath.startsWith(prefix)).map((entry) => entry.destinationRelativePath.slice(prefix.length)).sort();
-    if (JSON.stringify(files) !== JSON.stringify(expected)) return false;
+  for (const platform of plan.platforms) {
+    const config = PLATFORMS[platform];
+    for (const name of registrySkills()) {
+      const root = joinWithin(projectRoot, `${config.skillRoot}/${name}`);
+      const files = await walkRegularFiles(root);
+      const prefix = `${config.skillRoot}/${name}/`;
+      const expected = plan.entries.filter((entry) => entry.destinationRelativePath.startsWith(prefix)).map((entry) => entry.destinationRelativePath.slice(prefix.length)).sort();
+      if (JSON.stringify(files) !== JSON.stringify(expected)) return false;
+    }
   }
   return true;
+}
+
+function sameStringArray(left, right) {
+  return JSON.stringify(left) === JSON.stringify(right);
 }
 
 function collapseNestedUnits(units) {
@@ -835,8 +982,10 @@ async function publishStage(repositoryRoot, projectRoot, stageRoot, plan, cleanu
     await assertDestinationSafe(projectRoot, unit);
     if (await metadata(joinWithin(projectRoot, unit))) existingDesired.push(unit);
   }
-  for (const name of registrySkills()) {
-    await assertClaimableSkillDirectory(projectRoot, `${PLATFORMS[plan.platform].skillRoot}/${name}`, name);
+  for (const platform of plan.platforms) {
+    for (const name of registrySkills()) {
+      await assertClaimableSkillDirectory(projectRoot, `${PLATFORMS[platform].skillRoot}/${name}`, name);
+    }
   }
   for (const unit of existingDesired) {
     if (canonicalSourceForKnownFile(unit)) {
@@ -890,7 +1039,9 @@ async function publishStage(repositoryRoot, projectRoot, stageRoot, plan, cleanu
 export async function installSentinel({
   repositoryRoot,
   projectRoot,
-  platform,
+  scope,
+  platform = "all",
+  homeDirectory = os.homedir,
   stageMutator,
   beforePublishUnit,
   removeBackupRoot,
@@ -899,9 +1050,10 @@ export async function installSentinel({
   afterLockAcquired,
   validateSourceContracts = true,
 }) {
-  const root = await canonicalProjectRoot(projectRoot);
+  const normalizedScope = resolveInstallationScope(scope ?? (projectRoot === undefined ? "user" : "project"));
+  const root = await resolveSentinelInstallationRoot({ scope: normalizedScope, projectRoot, homeDirectory });
   const sourceRoot = await fs.realpath(path.resolve(repositoryRoot));
-  const plan = await planSentinelDistribution({ repositoryRoot: sourceRoot, platform, validateSourceContracts });
+  const plan = await planSentinelDistribution({ repositoryRoot: sourceRoot, platform, scope: normalizedScope, validateSourceContracts });
   const lock = await acquireSentinelInstallLock(root);
   let stageRoot = null;
   let outcome = null;
@@ -916,13 +1068,13 @@ export async function installSentinel({
     const installedManifest = await readInstalledManifest(root);
     const cleanupUnits = await existingKnownCleanupUnits(sourceRoot, root, plan, installedManifest);
     if (await liveMatchesPlan(root, plan, cleanupUnits)) {
-      outcome = { changed: false, commitStatus: "already-current", platform, fingerprint: plan.fingerprint, files: manifestForPlan(plan).files, warnings: [] };
+      outcome = { changed: false, commitStatus: "already-current", scope: plan.scope, platforms: plan.platforms, fingerprint: plan.fingerprint, files: manifestForPlan(plan).files, warnings: [] };
     } else {
       const publication = await publishStage(sourceRoot, root, stageRoot, plan, cleanupUnits, installedManifest, {
         beforePublishUnit,
         removeBackupRoot,
       });
-      outcome = { changed: true, commitStatus: "committed", platform, fingerprint: plan.fingerprint, files: manifestForPlan(plan).files, warnings: [...publication.warnings] };
+      outcome = { changed: true, commitStatus: "committed", scope: plan.scope, platforms: plan.platforms, fingerprint: plan.fingerprint, files: manifestForPlan(plan).files, warnings: [...publication.warnings] };
     }
   } catch (error) {
     operationError = error;
@@ -1001,10 +1153,12 @@ export function summarizePlan(plan) {
   return {
     schemaVersion: plan.schemaVersion,
     policyVersion: plan.policyVersion,
-    platform: plan.platform,
+    scope: plan.scope,
+    platforms: [...plan.platforms],
     fingerprint: plan.fingerprint,
     files: plan.entries.map((entry) => ({
       family: entry.family,
+      platform: entry.platform,
       source: entry.sourceRelativePath,
       destination: entry.destinationRelativePath,
       bytes: Buffer.from(entry.bytes).length,
@@ -1019,5 +1173,7 @@ export const SENTINEL_INSTALLATION_CONTRACT = Object.freeze({
   stagePrefix: STAGE_PREFIX,
   backupPrefix: BACKUP_PREFIX,
   knownSkillRoots: Object.freeze(allKnownSkillRoots()),
+  supportedScopes: SUPPORTED_INSTALLATION_SCOPES,
+  supportedPlatforms: SUPPORTED_PRODUCTION_PLATFORMS,
   platforms: PLATFORMS,
 });

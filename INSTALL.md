@@ -1,165 +1,287 @@
-# Sentinel production installer
+# Install Sentinel
 
-The repository is the only installation source. The installer does not use a
-registry, network access, global package installation, or content under
-`targets/`.
+Install or update Sentinel once for the current user, on every supported AI
+coding platform:
 
-Run it from this repository with an existing consumer-project directory:
+```text
+node scripts/install-sentinel.mjs
+```
+
+Validate that installation:
+
+```text
+node scripts/doctor-sentinel.mjs
+```
+
+These no-argument commands are the normal workflow. They mean `scope=user` and
+`platform=all`; `all` currently resolves from the production platform registry
+to Codex and Claude Code. The repository is the only source. Installation does
+not use the network, a remote registry, a global npm package, administrator
+access, or content under `targets/`.
+
+Running the install command again is the update operation.
+
+## User installation layout
+
+The installer resolves the current user's home with Node's portable home
+directory API. Callers do not provide `HOME`, a project path, or native
+destination paths.
+
+Codex receives:
+
+```text
+~/.agents/skills/<canonical-skill>/...
+~/.codex/agents/stnl_spec_context_scout.toml
+~/.codex/agents/stnl_validation_runner.toml
+~/.sentinel/prompts/<shared-or-codex-prompt>.md
+```
+
+Claude Code receives:
+
+```text
+~/.claude/skills/<canonical-skill>/...
+~/.claude/agents/stnl-spec-context-scout.md
+~/.claude/agents/stnl-validation-runner.md
+~/.claude/commands/<shared-or-claude-prompt>.md
+```
+
+Shared Sentinel metadata for the complete user installation is:
+
+```text
+~/.sentinel/install-manifest.json
+~/.sentinel/install.lock
+```
+
+The lock exists only while an install transaction is active. The Codex prompt
+catalog remains explicitly Sentinel-owned at `~/.sentinel/prompts/`; the
+installer does not use deprecated global Codex custom-prompt mechanisms.
+
+All paths above are logical layouts. The implementation uses Node path APIs and
+does not assume Unix separators or shell expansion of `~`.
+The resolved installation root must be an existing real directory rather than
+a symlink; an install also verifies that the root is user-writable before it
+creates a lock or stage. Tests inject nested temporary homes and never install
+into the test runner's real home.
+
+## Explicit alternatives
+
+Filter a user installation to one platform:
+
+```text
+node scripts/install-sentinel.mjs --platform codex
+node scripts/install-sentinel.mjs --platform claude-code
+```
+
+Create an isolated project installation:
+
+```text
+node scripts/install-sentinel.mjs --scope project --project <path>
+node scripts/install-sentinel.mjs --scope project --project <path> --platform codex
+node scripts/install-sentinel.mjs --scope project --project <path> --platform claude-code
+```
+
+Project scope defaults to all platforms when no filter is supplied. Its native
+destinations remain unchanged:
+
+```text
+# Codex
+<project>/.agents/skills/<canonical-skill>/...
+<project>/.codex/agents/...
+<project>/.sentinel/prompts/...
+
+# Claude Code
+<project>/.claude/skills/<canonical-skill>/...
+<project>/.claude/agents/...
+<project>/.claude/commands/...
+
+# Shared project metadata
+<project>/.sentinel/install-manifest.json
+<project>/.sentinel/install.lock
+```
+
+For compatibility, an existing explicit form such as the following still means
+project scope; it is never reinterpreted as a user install:
 
 ```text
 node scripts/install-sentinel.mjs --platform codex --project <path>
-node scripts/install-sentinel.mjs --platform claude-code --project <path>
 ```
 
-Add `--dry-run` to print the sorted source/destination plan, byte sizes, hashes,
-and final distribution fingerprint without changing the consumer project.
+`--scope user --project <path>`, project scope without `--project`, and unknown
+scope or platform values fail closed. The only scopes are `user` and `project`;
+the platform selector accepts `all`, `codex`, or `claude-code`.
 
-## Locking
+## Dry run
 
-Each consumer project has one exclusive installer transaction lock at
-`.sentinel/install.lock`. The installer creates it with Node's exclusive `wx`
-file creation and records a random ownership token plus diagnostic process/time
-metadata. A concurrent installer for the same project fails with `Sentinel
-installation already in progress`; installers for other projects are
-independent. The owner verifies its token immediately before each bounded lock
-release attempt, including after pre-commit failure. Missing, malformed, or
-changed lock metadata fails closed rather than risking another owner's lock.
-Dry runs do not create the lock.
-
-Node does not expose a portable conditional unlink operation that removes a
-path only when it still identifies a previously opened file. An external actor
-must therefore not remove or replace a live installer lock: pathname replacement
-in the final verify-to-unlink interval is outside the cooperative installer
-lock's threat model. Holding the file open or relying on inode identity would
-introduce platform-specific behavior and would not close that pathname race on
-Windows.
-
-Locks are never stolen automatically. If an interrupted process leaves a stale
-lock, first verify that no installer is active, then remove that exact
-project-local lock file manually. `doctor` reports a present lock but never
-removes it.
-
-## Installed layout
-
-Codex uses the current repository-local skill discovery path and the existing
-native agent contract:
+Use `--dry-run` with any valid scope/platform combination:
 
 ```text
-.agents/skills/<canonical-skill>/...
-.codex/agents/stnl_validation_runner.toml
-.codex/agents/stnl_spec_context_scout.toml
-.sentinel/prompts/<shared-or-codex-prompt>.md
-.sentinel/install-manifest.json
+node scripts/install-sentinel.mjs --dry-run
+node scripts/install-sentinel.mjs --platform codex --dry-run
+node scripts/install-sentinel.mjs --scope project --project <path> --dry-run
 ```
 
-Codex custom prompts are user-home-only and deprecated, so Sentinel does not
-write `~/.codex/prompts` or invent a project-local `.codex/prompts` contract.
-The checked-in, project-local `.sentinel/prompts/` directory is the explicit
-portable launcher catalog for Codex.
+The output identifies the scope, selected platforms, resolved installation root
+and root type, combined fingerprint, and every sorted source/destination
+mapping with byte size and content hash. A dry run creates no lock, stage,
+manifest, or installed file. Absolute installation roots may be displayed for
+operator clarity, but they are not inputs to the fingerprint.
 
-Claude Code uses its native project-local skill, agent, and command paths:
+## One multi-platform transaction
+
+An `all` install is one logical transaction, not two committed platform runs:
 
 ```text
-.claude/skills/<canonical-skill>/...
-.claude/agents/stnl-validation-runner.md
-.claude/agents/stnl-spec-context-scout.md
-.claude/commands/<shared-or-claude-prompt>.md
-.sentinel/install-manifest.json
+validate canonical source
+→ build one deterministic scope/platform plan
+→ stage every selected platform under the installation root
+→ validate the complete stage
+→ publish all selected managed units with one backup/rollback boundary
+→ read back all managed bytes and the manifest
+→ commit
 ```
 
-Only the selected platform's three slice launchers and two agents are present.
-All other classified prompts are shared production prompts.
+The common installation root is the user's home for user scope and the consumer
+project for project scope. Stages and backups are created directly under that
+root so publication renames remain on one filesystem as much as practical.
+Publication never begins until the complete Codex/Claude stage validates. A
+pre-commit failure removes newly published units and restores the previous
+installation across every selected platform. Success is reported only after
+all selected bytes and the final manifest read back correctly.
 
-## Production policy and ownership
+Residual stages or backups from interrupted/cleanup-constrained operations are
+untrusted. They are reported for operator review and are never resumed or
+consumed automatically.
+
+## Plan, fingerprint, manifest, and transitions
+
+The deterministic plan records schema and policy versions, scope, the canonical
+ordered platform set, artifact ownership, normalized logical destination paths,
+source mappings, and bytes. `all` is resolved from the single exported
+production-platform authority shared by installer, doctor, and source doctor.
+
+The combined fingerprint covers policy version, scope, selected platforms,
+each entry's platform/logical destination, length, and bytes. It deliberately
+excludes absolute user/project roots, usernames, OS separators, timestamps,
+UUIDs, temporary paths, and traversal order. Scope is included even when two
+layouts currently use the same relative mapping: user and project installs have
+different operational identity, ownership roots, and doctor expectations.
+Changing material Codex or Claude content changes an `all` fingerprint.
+
+Manifest schema v2 uses an explicit platform array:
+
+```json
+{
+  "schemaVersion": 2,
+  "scope": "user",
+  "platforms": ["codex", "claude-code"]
+}
+```
+
+The full manifest also records policy, fingerprint, files, and managed
+publication units. Schema-v1 project manifests with singular `platform` remain
+readable and retain their ownership data. Doctor reports them as requiring an
+upgrade. The next successful project install normalizes that ownership and
+publishes an unambiguous schema-v2 manifest; doctor never upgrades metadata.
+
+Transitions between `all`, `codex`, and `claude-code` reconcile exact known
+Sentinel units. Artifacts owned by the previous manifest but omitted by the new
+selection may be removed. Unrelated skills, agents, commands, prompts, and
+neighboring files are preserved.
+
+## Ownership and collision safety
 
 Every canonical skill comes from `scripts/lib/skill-registry.mjs`. Production
 installs include `SKILL.md`, operational `runtime/**` except `runtime/test/**`,
-operational `templates/**`, and explicitly classified runtime references.
-Codex also receives a skill's `agents/openai.yaml` when present; Claude Code
-does not. Evals, examples, maintenance material, maintenance README files, and
-the lifecycle manager's evaluation/token-economy references are excluded.
-Unknown skill top-level content, unknown references, unknown prompts, symlinks,
-special files, and path escapes fail planning.
+operational `templates/**`, explicitly classified production references, and
+Codex `agents/openai.yaml` metadata where applicable. Development-only material
+remains excluded.
 
-The manifest is a small ownership receipt, not a package database. It records
-the selected platform, deterministic fingerprint, installed files, and managed
-publication units. A canonical Sentinel skill directory is owned as a unit, so
-reinstalling replaces an old manual/full copy and removes stale tests, evals,
-examples, and maintenance files. A pre-existing directory is claimed only when
-its `SKILL.md` declares the expected canonical Sentinel name. Unrelated skills,
-agents, commands, prompts, and neighboring project files are never swept.
-A same-name agent or prompt without manifest ownership is claimed only when its
-bytes equal the canonical source; differing content fails without replacement.
+Unknown skill content, references, prompts, symlinks, special files, path
+escapes, drive-qualified paths, and incomplete plans fail closed. A Sentinel
+skill root is claimed only when `SKILL.md` declares its canonical Sentinel
+identity. A known agent, prompt, or command without manifest ownership is
+claimable only when its bytes match canonical source. Native directories are
+never swept; only exact Sentinel-known managed paths can be replaced or
+removed.
 
-## Transaction semantics
+## Locking and cleanup
 
-The pipeline is source → plan → stage → validate staged installation → publish.
-Staging occurs under the consumer project so renames remain on one filesystem.
-Publication backs up only Sentinel-owned units, installs the validated units,
-performs byte-for-byte readback, and validates the published manifest. That
-successful readback is the logical commit point. Any failure before it attempts
-rollback from the transaction backup. After it, the new installation is
-committed: failure to delete the old backup is reported as a successful install
-with a `POST_COMMIT_BACKUP_CLEANUP_FAILED` warning and a residual backup path;
-the committed installation is not rolled back. Unpublished stages and other
-transaction-finalization residuals are also surfaced explicitly.
+There is one lock per installation root:
 
-Backup removal after commit, stage removal during finalization, and lock unlink
-retry transient `EPERM`, `EBUSY`, and `ENOTEMPTY` failures. Cleanup is bounded to
-three total attempts with short deterministic delays. Persistent cleanup
-failure remains an explicit residual warning; it never rolls back a committed
-installation. Publication and ownership decisions are not retried.
+```text
+user:    ~/.sentinel/install.lock
+project: <project>/.sentinel/install.lock
+```
 
-Publication spans several native roots, so it is a rollback transaction rather
-than a single filesystem-atomic rename. An abrupt process or machine termination
-during the publication window can leave hidden stage/backup directories and
-requires operator inspection; the installer does not claim crash atomicity.
+It protects the complete selected platform set and uses exclusive `wx`
+creation, a random ownership token, and diagnostic process/time metadata. Lock
+release rechecks token ownership on every bounded cleanup attempt. Missing,
+malformed, or replaced metadata fails closed. Locks are never stolen
+automatically. A user lock does not block an unrelated project install, and
+different project roots remain independent.
 
-The fingerprint covers the policy version, selected platform, sorted installed
-relative paths, and file bytes. It contains no timestamps, UUIDs, temporary or
-absolute paths. An identical verified installation is reported as `unchanged`.
+If an interrupted process leaves a lock, first verify that no installer is
+active, then remove that exact lock manually. Doctor observes locks and
+residuals but never deletes or repairs them. Common transient Windows cleanup
+errors are retried a bounded number of times; a post-commit cleanup failure is
+reported without misreporting the committed installation as rolled back.
 
 ## Doctor
 
-Doctor is read-only and emits deterministic structured JSON:
+The default doctor expects one coherent user-scope all-platform installation:
+
+```text
+node scripts/doctor-sentinel.mjs
+```
+
+Explicit checks are also available:
+
+```text
+node scripts/doctor-sentinel.mjs --scope user --platform codex
+node scripts/doctor-sentinel.mjs --scope user --platform claude-code
+node scripts/doctor-sentinel.mjs --scope project --project <path>
+node scripts/doctor-sentinel.mjs --scope project --project <path> --platform codex
+node scripts/doctor-sentinel.mjs --source-only
+```
+
+For backward compatibility, `doctor --project <path>` without an explicit scope
+or platform diagnoses the platform selection recorded by an existing
+single-platform project manifest. Explicit project scope defaults to `all`.
+
+Installed doctor validates manifest schema, scope, platform set, policy,
+combined fingerprint, exact managed bytes and skill contents, ownership units,
+omitted-platform residue, active lock, residual stage, and residual backup. A
+default `all` check cannot be healthy when only one platform matches. `OK` means
+source and live managed state are healthy; `DRIFT` means live state differs;
+`BLOCKED` identifies unusable source/metadata or an active lock. Doctor is
+read-only.
+
+Source-only doctor validates every platform from the same canonical production
+authority and performs no installation writes:
 
 ```text
 node scripts/doctor-sentinel.mjs --source-only
-node scripts/doctor-sentinel.mjs --project <path>
 ```
-
-Source-only mode validates the canonical registry/discovery inventory,
-production classification, agent and launcher contracts, runtime/resource
-closure, deterministic plans, and fingerprints for both Codex and Claude Code.
-Installed-project mode derives the platform from
-`.sentinel/install-manifest.json`, repeats source validation, and compares the
-manifest, ownership units, managed file bytes, exact managed skill contents,
-platform agents, prompts, and launchers with the current plan. Unrelated
-third-party content is ignored.
-
-`OK` means the source and live managed installation are healthy. `DRIFT` means
-managed live state differs from the current plan. `BLOCKED` identifies an
-unusable source/manifest or an active installer lock. Residual stage and backup
-directories are warnings reported separately; a healthy committed installation
-remains `OK` when only cleanup residuals exist. Doctor never repairs or removes
-locks, stages, backups, or installed files.
 
 ## Windows and constrained VDI validation
 
-The installer requires only a user-writable project directory and does not
-write to HOME or require administrator rights. On the actual Windows or
-corporate VDI image, run these commands from this repository in PowerShell or
-Command Prompt:
+The implementation uses Node home/path APIs, accepts nested roots containing
+spaces, rejects Windows drive-qualified relative destinations, and requires
+only user-writable native paths. It does not require administrator privileges.
+
+On the actual Windows or corporate VDI image, run from this repository in
+PowerShell or Command Prompt:
 
 ```text
 node --check scripts/lib/sentinel-distribution.mjs
 node --check scripts/lib/sentinel-doctor.mjs
-node --test scripts/test-sentinel-distribution.mjs scripts/test-sentinel-doctor.mjs
+node --test scripts/test-sentinel-distribution.mjs scripts/test-sentinel-doctor.mjs scripts/test-sentinel-global-installation.mjs
 node scripts/doctor-sentinel.mjs --source-only
+node scripts/install-sentinel.mjs --dry-run
 ```
 
-Also perform one Codex and one Claude Code install into a representative deeply
-nested, space-containing local project path, then run `doctor --project` for
-each. This portable test suite injects common Windows cleanup error codes, but
-physical validation remains necessary for site-specific antivirus, indexing,
-filesystem policy, and path-length behavior.
+Then install and doctor user/all plus a representative deeply nested,
+space-containing project/all target. The portable suite injects common Windows
+cleanup error codes, but physical execution is still required to validate local
+antivirus, indexing, filesystem policy, VDI redirection, and path-length
+behavior.

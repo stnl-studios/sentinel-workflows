@@ -308,7 +308,8 @@ async function validateReadme(root) {
     "scripts/install-sentinel.mjs",
     ".sentinel/prompts/",
     ".claude/commands/",
-    "Nunca misture os adaptadores das duas plataformas no mesmo projeto",
+    "sem filtro, as duas integrações participam da mesma transação",
+    "Um filtro `--platform` instala somente o adapter escolhido",
   ];
   for (const marker of required) {
     assert.ok(readme.includes(marker), `subagent README lacks ${JSON.stringify(marker)}`);

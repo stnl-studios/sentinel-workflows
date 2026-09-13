@@ -9,7 +9,19 @@ A fonte canônica dos adapters vive diretamente nas fronteiras de integração d
 - Codex: `integrations/codex/agents/stnl_validation_runner.toml` e `integrations/codex/agents/stnl_spec_context_scout.toml`.
 - Claude Code: `integrations/claude-code/agents/stnl-validation-runner.md` e `integrations/claude-code/agents/stnl-spec-context-scout.md`.
 
-Esses caminhos são de fonte, não de instalação. O layout nativo de destino permanece `.codex/agents/stnl_validation_runner.toml` e `.codex/agents/stnl_spec_context_scout.toml` no Codex, e `.claude/agents/stnl-validation-runner.md` e `.claude/agents/stnl-spec-context-scout.md` no Claude Code. `scripts/install-sentinel.mjs` materializa somente os dois adapters da plataforma escolhida nesses destinos. Nunca misture os adaptadores das duas plataformas no mesmo projeto e não altere configurações globais do usuário.
+Esses caminhos são de fonte, não de instalação. O fluxo principal
+`node scripts/install-sentinel.mjs` instala Codex e Claude Code juntos para o
+usuário atual: `~/.codex/agents/` no Codex e `~/.claude/agents/` no Claude Code,
+além das skills e catálogos nativos de cada plataforma. O modo secundário
+`--scope project --project <path>` usa os mesmos layouts relativos dentro do
+projeto consumidor. Um filtro `--platform` instala somente o adapter escolhido;
+sem filtro, as duas integrações participam da mesma transação. Consulte
+`INSTALL.md` para layouts, ownership, transições e opções completas.
+
+Os nomes nativos permanecem `.codex/agents/stnl_validation_runner.toml` e
+`.codex/agents/stnl_spec_context_scout.toml` no Codex, e
+`.claude/agents/stnl-validation-runner.md` e
+`.claude/agents/stnl-spec-context-scout.md` no Claude Code.
 
 ## `stnl-validation-runner`
 
@@ -46,7 +58,17 @@ As três operações que usam o runner possuem launcher específico por platafor
 - Codex: `slice-execute-codex.md`, `slice-apply-findings-codex.md` e `slice-validate-codex.md`.
 - Claude Code: `slice-execute-claude.md`, `slice-apply-findings-claude.md` e `slice-validate-claude.md`.
 
-O instalador copia somente os três launchers da plataforma usada a partir de `templates/prompts/`, preservando os nomes acima. No Claude Code, o destino project-local nativo é `.claude/commands/`. Como o Codex não possui um destino nativo project-local de prompts e o mecanismo antigo é global e deprecated, o catálogo explícito do projeto fica em `.sentinel/prompts/`, sem escrita global. Os adapters canônicos vêm de `integrations/codex/agents/` ou `integrations/claude-code/agents/`, conforme a plataforma. `execution-plan.md`, `execution-replan.md`, `execution-plan-review.md`, `execution-tasks.md`, `execution-tasks-review.md` e `execution-close.md` continuam compartilhados; as demais famílias compartilhadas classificadas pelo instalador também são distribuídas. Consulte `INSTALL.md` para o contrato completo.
+O instalador copia os três launchers nativos de cada plataforma selecionada a
+partir de `templates/prompts/`, preservando os nomes acima. Claude Code usa
+`.claude/commands/` sob a raiz de instalação escolhida. Como o Codex não possui
+um destino nativo equivalente e o mecanismo antigo é deprecated, o catálogo
+explícito Sentinel usa `.sentinel/prompts/` tanto na raiz do usuário quanto na
+raiz do projeto. Os adapters canônicos continuam vindo de
+`integrations/codex/agents/` e `integrations/claude-code/agents/`.
+`execution-plan.md`, `execution-replan.md`, `execution-plan-review.md`,
+`execution-tasks.md`, `execution-tasks-review.md` e `execution-close.md`
+continuam compartilhados; as demais famílias classificadas também são
+distribuídas. Consulte `INSTALL.md` para o contrato completo.
 
 No Codex, os launchers fazem spawn do agente customizado `stnl_validation_runner` em sessão independente com `fork_turns="none"`; nunca combinam o agente customizado com fork completo da thread ou do contexto principal. No Claude Code, delegam diretamente a `@agent-stnl-validation-runner` sem histórico da conversa. Os payloads mínimos incluem somente operação, `SPEC_PATH`, execution root derivado, slice, paths de plans e tasks, Requirements authority, Plan revision, findings ou correções aplicáveis, escopo alterado, evidências compactas, rodada automática quando aplicável e contexto adicional estritamente necessário. Históricos e logs completos não são encaminhados.
 

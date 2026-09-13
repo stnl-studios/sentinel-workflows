@@ -113,7 +113,7 @@ test("doctor reports healthy Codex and Claude installations and ignores third-pa
       const report = await doctorSentinelInstallation({ repositoryRoot: ROOT, projectRoot: project });
       assert.equal(report.status, "OK");
       assert.equal(report.installation.liveStatus, "OK");
-      assert.equal(report.installation.manifest.platform, platform);
+      assert.deepEqual(report.installation.manifest.platforms, [platform]);
       assert.equal(report.installation.fingerprintMatches, true);
       assert.deepEqual(await snapshotTree(project), before);
     });

@@ -6,14 +6,17 @@ import {
   PLATFORM_LAUNCHERS,
   SENTINEL_INSTALLATION_CONTRACT,
   SHARED_PRODUCTION_PROMPTS,
+  SUPPORTED_PRODUCTION_PLATFORMS,
   inspectSentinelTransactionArtifacts,
   manifestForPlan,
   planSentinelDistribution,
   readInstalledManifest,
+  resolveInstallationScope,
+  resolvePlatformSelection,
+  resolveSentinelInstallationRoot,
   validatePlannedDistribution,
 } from "./sentinel-distribution.mjs";
 
-const SUPPORTED_PLATFORMS = Object.freeze(["codex", "claude-code"]);
 const JUNK_NAMES = new Set([".DS_Store", "__MACOSX", "Thumbs.db", "desktop.ini"]);
 
 function isJunkName(name) {
@@ -79,19 +82,19 @@ async function regularFilesForDoctor(root, findings, relativeRoot) {
 function sourceSummary(plan) {
   return Object.freeze({
     status: "OK",
-    platform: plan.platform,
+    platform: plan.platforms[0],
     policyVersion: plan.policyVersion,
     fingerprint: plan.fingerprint,
     fileCount: plan.entries.length,
   });
 }
 
-async function buildSourceHealth(repositoryRoot) {
+async function buildSourceHealth(repositoryRoot, scope = "user") {
   const root = await canonicalDirectory(repositoryRoot, "repository root");
   const plans = new Map();
   const platforms = [];
-  for (const platform of SUPPORTED_PLATFORMS) {
-    const plan = await planSentinelDistribution({ repositoryRoot: root, platform });
+  for (const platform of SUPPORTED_PRODUCTION_PLATFORMS) {
+    const plan = await planSentinelDistribution({ repositoryRoot: root, platform, scope });
     validatePlannedDistribution(plan);
     plans.set(platform, plan);
     platforms.push(sourceSummary(plan));
@@ -110,8 +113,9 @@ export async function doctorSentinelSource({ repositoryRoot }) {
 function knownNonselectedPaths(plan) {
   const expected = new Set(plan.entries.map((entry) => entry.destinationRelativePath));
   const paths = [];
+  const selectedSkillRoots = new Set(plan.platforms.map((platform) => SENTINEL_INSTALLATION_CONTRACT.platforms[platform].skillRoot));
   for (const root of SENTINEL_INSTALLATION_CONTRACT.knownSkillRoots) {
-    if (root === SENTINEL_INSTALLATION_CONTRACT.platforms[plan.platform].skillRoot) continue;
+    if (selectedSkillRoots.has(root)) continue;
     for (const name of registrySkills()) paths.push(`${root}/${name}`);
   }
   for (const config of Object.values(SENTINEL_INSTALLATION_CONTRACT.platforms)) {
@@ -120,7 +124,7 @@ function knownNonselectedPaths(plan) {
       if (!expected.has(relativePath)) paths.push(relativePath);
     }
   }
-  const allPrompts = [...SHARED_PRODUCTION_PROMPTS, ...PLATFORM_LAUNCHERS.codex, ...PLATFORM_LAUNCHERS["claude-code"]];
+  const allPrompts = [...SHARED_PRODUCTION_PROMPTS, ...SUPPORTED_PRODUCTION_PLATFORMS.flatMap((platform) => PLATFORM_LAUNCHERS[platform])];
   for (const root of new Set(Object.values(SENTINEL_INSTALLATION_CONTRACT.platforms).map((config) => config.promptRoot))) {
     for (const prompt of allPrompts) {
       const relativePath = `${root}/${prompt}`;
@@ -130,8 +134,7 @@ function knownNonselectedPaths(plan) {
   return [...new Set(paths)].sort();
 }
 
-async function inspectInstalledHealth(projectRoot, plans) {
-  const root = await canonicalDirectory(projectRoot, "project root");
+async function inspectInstalledHealth(root, plan) {
   const artifacts = await inspectSentinelTransactionArtifacts(root);
   const issues = [];
   const blockers = [];
@@ -151,7 +154,8 @@ async function inspectInstalledHealth(projectRoot, plans) {
     return Object.freeze({
       status: "BLOCKED",
       liveStatus: "UNKNOWN",
-      project: root,
+      scope: plan.scope,
+      installationRoot: root,
       manifest: null,
       expected: null,
       transactionArtifacts: artifacts,
@@ -161,8 +165,10 @@ async function inspectInstalledHealth(projectRoot, plans) {
     });
   }
 
-  const plan = plans.get(manifest.platform);
   const expectedManifest = manifestForPlan(plan);
+  if (manifest.schemaVersion !== expectedManifest.schemaVersion) addFinding(issues, "MANIFEST_SCHEMA_UPGRADE_REQUIRED", `installed manifest schema ${manifest.schemaVersion} must be upgraded to ${expectedManifest.schemaVersion}`, SENTINEL_INSTALLATION_CONTRACT.manifestPath);
+  if (manifest.scope !== plan.scope) addFinding(issues, "INSTALLATION_SCOPE_DRIFT", `installed scope ${manifest.scope} differs from expected ${plan.scope}`, SENTINEL_INSTALLATION_CONTRACT.manifestPath);
+  if (!sameArray(manifest.platforms, plan.platforms)) addFinding(issues, "PLATFORM_SELECTION_DRIFT", `installed platforms ${JSON.stringify(manifest.platforms)} differ from expected ${JSON.stringify(plan.platforms)}`, SENTINEL_INSTALLATION_CONTRACT.manifestPath);
   if (manifest.policyVersion !== plan.policyVersion) addFinding(issues, "POLICY_VERSION_DRIFT", `installed policy ${manifest.policyVersion} differs from expected ${plan.policyVersion}`);
   if (manifest.fingerprint !== plan.fingerprint) addFinding(issues, "FINGERPRINT_DRIFT", `installed fingerprint ${manifest.fingerprint} differs from expected ${plan.fingerprint}`);
   if (!sameArray(manifest.files, expectedManifest.files)) addFinding(issues, "MANIFEST_FILES_DRIFT", "manifest files do not match the current installation plan", SENTINEL_INSTALLATION_CONTRACT.manifestPath);
@@ -181,15 +187,17 @@ async function inspectInstalledHealth(projectRoot, plans) {
     if (!(await fs.readFile(manifestInspection.path)).equals(expectedBytes)) addFinding(issues, "MANIFEST_BYTES_DRIFT", "installation manifest bytes differ from the current canonical manifest", SENTINEL_INSTALLATION_CONTRACT.manifestPath);
   }
 
-  const config = SENTINEL_INSTALLATION_CONTRACT.platforms[plan.platform];
-  for (const name of registrySkills()) {
-    const relativeRoot = `${config.skillRoot}/${name}`;
-    const inspected = await inspectManagedPath(root, relativeRoot);
-    if (inspected.kind !== "directory") continue;
-    const actual = await regularFilesForDoctor(inspected.path, issues, relativeRoot);
-    const prefix = `${relativeRoot}/`;
-    const expected = plan.entries.filter((entry) => entry.destinationRelativePath.startsWith(prefix)).map((entry) => entry.destinationRelativePath.slice(prefix.length)).sort();
-    for (const stale of actual.filter((file) => !expected.includes(file))) addFinding(issues, "STALE_MANAGED_SKILL_FILE", `unexpected file remains in managed skill root: ${relativeRoot}/${stale}`, `${relativeRoot}/${stale}`);
+  for (const platform of plan.platforms) {
+    const config = SENTINEL_INSTALLATION_CONTRACT.platforms[platform];
+    for (const name of registrySkills()) {
+      const relativeRoot = `${config.skillRoot}/${name}`;
+      const inspected = await inspectManagedPath(root, relativeRoot);
+      if (inspected.kind !== "directory") continue;
+      const actual = await regularFilesForDoctor(inspected.path, issues, relativeRoot);
+      const prefix = `${relativeRoot}/`;
+      const expected = plan.entries.filter((entry) => entry.destinationRelativePath.startsWith(prefix)).map((entry) => entry.destinationRelativePath.slice(prefix.length)).sort();
+      for (const stale of actual.filter((file) => !expected.includes(file))) addFinding(issues, "STALE_MANAGED_SKILL_FILE", `unexpected file remains in managed skill root: ${relativeRoot}/${stale}`, `${relativeRoot}/${stale}`);
+    }
   }
 
   for (const relativePath of knownNonselectedPaths(plan)) {
@@ -202,15 +210,21 @@ async function inspectInstalledHealth(projectRoot, plans) {
   return Object.freeze({
     status,
     liveStatus,
-    project: root,
+    scope: plan.scope,
+    installationRoot: root,
     manifest: Object.freeze({
       status: "VALID",
-      platform: manifest.platform,
+      schemaVersion: manifest.schemaVersion,
+      scope: manifest.scope,
+      platforms: manifest.platforms,
+      upgradeRequired: manifest.legacy,
       policyVersion: manifest.policyVersion,
       fingerprint: manifest.fingerprint,
     }),
     expected: Object.freeze({
-      platform: plan.platform,
+      schemaVersion: expectedManifest.schemaVersion,
+      scope: plan.scope,
+      platforms: plan.platforms,
       policyVersion: plan.policyVersion,
       fingerprint: plan.fingerprint,
     }),
@@ -222,12 +236,27 @@ async function inspectInstalledHealth(projectRoot, plans) {
   });
 }
 
-export async function doctorSentinelInstallation({ repositoryRoot, projectRoot }) {
-  const source = await buildSourceHealth(repositoryRoot);
-  const installation = await inspectInstalledHealth(projectRoot, source.plans);
+export async function doctorSentinelInstallation({ repositoryRoot, scope, projectRoot, platform, homeDirectory } = {}) {
+  const inferredLegacyProjectCall = scope === undefined && projectRoot !== undefined && platform === undefined;
+  const normalizedScope = resolveInstallationScope(scope ?? (projectRoot === undefined ? "user" : "project"));
+  const installationRoot = await resolveSentinelInstallationRoot({ scope: normalizedScope, projectRoot, homeDirectory, requireWritable: false });
+  let selectedPlatform = platform ?? "all";
+  if (inferredLegacyProjectCall) {
+    const installed = await readInstalledManifest(installationRoot, { requireCurrentPolicy: false }).catch(() => null);
+    if (installed?.platforms.length === 1) [selectedPlatform] = installed.platforms;
+  }
+  resolvePlatformSelection(selectedPlatform);
+  const source = await buildSourceHealth(repositoryRoot, normalizedScope);
+  const plan = await planSentinelDistribution({
+    repositoryRoot,
+    scope: normalizedScope,
+    platform: selectedPlatform,
+    validateSourceContracts: false,
+  });
+  const installation = await inspectInstalledHealth(installationRoot, plan);
   return Object.freeze({
     status: installation.status,
-    mode: "installed-project",
+    mode: normalizedScope === "user" ? "installed-user" : "installed-project",
     source: source.report,
     installation,
   });

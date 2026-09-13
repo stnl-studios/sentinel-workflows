@@ -47,7 +47,7 @@ async function sourceFixture(t) {
 }
 
 async function fixturePlan(root, platform = "codex") {
-  return planSentinelDistribution({ repositoryRoot: root, platform, validateSourceContracts: false });
+  return planSentinelDistribution({ repositoryRoot: root, scope: "project", platform, validateSourceContracts: false });
 }
 
 async function fixtureInstall(source, project, platform, options = {}) {
@@ -289,7 +289,7 @@ test("plans and fingerprints are deterministic across source locations", async (
 test("fingerprint changes with material bytes and rejects an altered plan", async () => {
   const plan = await planSentinelDistribution({ repositoryRoot: ROOT, platform: "codex" });
   const entries = plan.entries.map((entry, index) => index === 0 ? { ...entry, bytes: Buffer.concat([Buffer.from(entry.bytes), Buffer.from("changed")]) } : entry);
-  assert.notEqual(fingerprintEntries(plan.platform, entries), plan.fingerprint);
+  assert.notEqual(fingerprintEntries(plan.scope, plan.platforms, entries), plan.fingerprint);
   assert.throws(() => validateDistributionPlan({ ...plan, entries }), /fingerprint is invalid/u);
 });
 
@@ -589,7 +589,7 @@ test("pre-existing transaction residuals are observed but never trusted or consu
 test("cross-component incomplete plans cannot validate or publish", async () => {
   const plan = await planSentinelDistribution({ repositoryRoot: ROOT, platform: "codex" });
   const entries = plan.entries.filter((entry) => entry.destinationRelativePath !== ".codex/agents/stnl_validation_runner.toml");
-  const invalid = { ...plan, entries, fingerprint: fingerprintEntries(plan.platform, entries) };
+  const invalid = { ...plan, entries, fingerprint: fingerprintEntries(plan.scope, plan.platforms, entries) };
   assert.throws(() => validateDistributionPlan(invalid), /omits platform agent/u);
 });
 
