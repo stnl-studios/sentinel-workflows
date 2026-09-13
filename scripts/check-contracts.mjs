@@ -294,9 +294,11 @@ function checkRunner(root) {
   requirePattern(contract, /Não confie apenas em checkboxes ou em resultados anteriores/iu, "R014_INDEPENDENCE", "runner can trust historical claims without verification");
   requirePattern(contract, /Todo verification command, sem exceção[\s\S]{0,180}VALIDATION_HARNESS_PATH/iu, "R017_ISOLATION", "verification commands do not require the validation harness");
   requirePattern(contract, /sandbox do sistema operacional[\s\S]{0,260}`writePaths`/iu, "R017_ISOLATION", "filesystem isolation and explicit write boundaries are missing");
+  requirePattern(contract, /Symlink de source[^\n]{0,180}target canônico final[^\n]{0,220}(?:preservado|rebaseado)[^\n]{0,220}target externo[^\n]{0,120}bloqueia/iu, "R017_ISOLATION", "source symlink admission is not bound to canonical project containment");
   requirePattern(contract, /Plataforma sem sandbox suportada retorna `BLOCKED`[^\n]{0,80}não faça fallback direto/iu, "R017_ISOLATION", "sandbox availability does not fail closed");
   requirePattern(contract, /Evidence `INVALID`[^\n]{0,220}(?:somente `BLOCKED`|produz somente `BLOCKED`)/iu, "R018_PROVENANCE", "invalid evidence may support a material verdict");
   requirePattern(contract, /Evidence `VERIFIED`[^\n]{0,180}não autoridade/iu, "R018_PROVENANCE", "evidence and authority are conflated");
+  requirePattern(contract, /Um bloqueio de infraestrutura\/source-isolation[^\n]{0,240}stdout[\s\S]{0,700}provenance\.classification=INFRASTRUCTURE_BLOCKED[\s\S]{0,700}Kind: infrastructure[\s\S]{0,300}sem consumir a rodada/iu, "R018_PROVENANCE", "authenticated pre-check blockers cannot be persisted without provenance or may consume validation evidence");
   requirePattern(contract, /`CODE_REGRESSION` exige `replayOriginEvidenceId`[\s\S]{0,500}`INVALID_REPLAY`[^\n]{0,100}não sustenta finding/iu, "R019_REPLAY", "replay equivalence is not a precondition for code regression");
   requirePattern(contract, /diretório, basename ou agregado nunca substitui identidades de arquivos/iu, "R020_EVIDENCE_IDENTITY", "file-granular evidence identity is not enforced by contract");
 

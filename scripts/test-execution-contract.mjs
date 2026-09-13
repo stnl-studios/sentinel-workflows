@@ -4609,6 +4609,204 @@ async function externalExecutionCandidate(t, fixture) {
   return { root: holder, requirements: fixture.requirements, execution: await copyDirectory(fixture.execution, path.join(holder, "execution")) };
 }
 
+function infrastructureDelegationBlocker(provenance) {
+  return `- Operation: ${provenance.operation}
+- Kind: infrastructure
+- State: active
+- After record: none
+- Pending automatic round: ${provenance.round}
+- HEAD: ${provenance.inputs.head}
+- Evidence provenance: ${JSON.stringify(provenance)}
+- Causes:
+  - ${provenance.blocker.code}: ${provenance.blocker.message}
+- Required action: restore the trusted validation infrastructure and resume the same logical runner invocation`;
+}
+
+async function packageBinSymlink(fixture, rawTarget) {
+  const executable = path.join(fixture.root, "node_modules/acorn/bin/acorn");
+  const link = path.join(fixture.root, "node_modules/.bin/acorn");
+  await fs.mkdir(path.dirname(executable), { recursive: true });
+  await fs.mkdir(path.dirname(link), { recursive: true });
+  await fs.writeFile(executable, "#!/bin/sh\nexit 0\n", "utf8");
+  await fs.chmod(executable, 0o755);
+  await fs.symlink(rawTarget, link);
+  return { executable, link };
+}
+
+test("validation source admits package-manager relative symlinks by canonical target and executes the copied binary", async (t) => {
+  const fixture = await validationSessionFixture(t);
+  const { link } = await packageBinSymlink(fixture, "../acorn/bin/acorn");
+  const result = await runValidationSession(fixture.requirements, validationRequest({ argv: [link] }));
+  assert.equal(result.provenance.state, "VERIFIED", JSON.stringify(result));
+  assert.equal(result.provenance.classification, "NONE");
+  assert.equal(result.provenance.commands[0].exit, 0);
+  assert.equal(result.outputs[0].exit, 0);
+});
+
+test("validation source rebases an absolute symlink whose canonical target remains inside the project", async (t) => {
+  const fixture = await validationSessionFixture(t);
+  const executable = path.join(fixture.root, "node_modules/acorn/bin/acorn");
+  const { link } = await packageBinSymlink(fixture, executable);
+  const result = await runValidationSession(fixture.requirements, validationRequest({ argv: [link] }));
+  assert.equal(result.provenance.state, "VERIFIED", JSON.stringify(result));
+  assert.equal(result.outputs[0].exit, 0);
+});
+
+test("validation source admits a chained symlink only when its final canonical target is inside the project", async (t) => {
+  const fixture = await validationSessionFixture(t);
+  const executable = path.join(fixture.root, "node_modules/acorn/bin/acorn");
+  const { link } = await packageBinSymlink(fixture, "acorn-chain");
+  await fs.symlink("../acorn/bin/acorn", path.join(path.dirname(link), "acorn-chain"));
+  const result = await runValidationSession(fixture.requirements, validationRequest({ argv: [link] }));
+  assert.equal(result.provenance.state, "VERIFIED", JSON.stringify(result));
+  assert.equal(result.outputs[0].exit, 0);
+  assert.equal(await fs.realpath(link), executable);
+});
+
+test("validation source rejects relative and absolute symlink escapes before executing a command", async (t) => {
+  for (const kind of ["relative", "absolute"]) {
+    const fixture = await validationSessionFixture(t);
+    const outside = await temporary(t, `stnl-validation-outside-${kind}-`);
+    const outsideExecutable = path.join(outside, "acorn");
+    await fs.writeFile(outsideExecutable, "#!/bin/sh\nexit 99\n", "utf8");
+    await fs.chmod(outsideExecutable, 0o755);
+    const bin = path.join(fixture.root, "node_modules/.bin");
+    await fs.mkdir(bin, { recursive: true });
+    const link = path.join(bin, "acorn");
+    const target = kind === "relative" ? path.relative(bin, outsideExecutable) : outsideExecutable;
+    await fs.symlink(target, link);
+    const result = await runValidationSession(fixture.requirements, validationRequest({ argv: [link] }));
+    assert.equal(result.provenance.state, "INVALID", kind);
+    assert.equal(result.provenance.classification, "INFRASTRUCTURE_BLOCKED", kind);
+    assert.equal(result.provenance.blocker.kind, "source-isolation", kind);
+    assert.equal(result.provenance.blocker.code, "SYMLINK_ESCAPE", kind);
+    assert.deepEqual(result.provenance.commands, [], kind);
+    assert.deepEqual(result.outputs, [], kind);
+  }
+});
+
+test("validation harness CLI emits canonical BLOCKED provenance on stdout for a pre-check isolation denial", async (t) => {
+  const fixture = await validationSessionFixture(t);
+  const outside = await temporary(t, "stnl-validation-cli-blocked-");
+  const outsideExecutable = path.join(outside, "acorn");
+  await fs.writeFile(outsideExecutable, "#!/bin/sh\nexit 99\n", "utf8");
+  await fs.chmod(outsideExecutable, 0o755);
+  const bin = path.join(fixture.root, "node_modules/.bin");
+  await fs.mkdir(bin, { recursive: true });
+  const link = path.join(bin, "acorn");
+  await fs.symlink(outsideExecutable, link);
+  const harness = path.join(ROOT, "skills/workflows/stnl-slice-executor/runtime/run-validation-session.mjs");
+  const invocation = await spawnResult(process.execPath, [
+    harness, fixture.requirements, JSON.stringify(validationRequest({ argv: [link] })),
+  ], { cwd: ROOT });
+  assert.equal(invocation.status, 1);
+  assert.equal(invocation.stderr, "");
+  const result = JSON.parse(invocation.stdout);
+  assert.equal(result.provenance.classification, "INFRASTRUCTURE_BLOCKED");
+  assert.equal(result.provenance.blocker.code, "SYMLINK_ESCAPE");
+  assert.deepEqual(result.provenance.commands, []);
+  assert.deepEqual(result.outputs, []);
+});
+
+test("canonical containment rejects a sibling path sharing the trusted-root textual prefix and broken links", async (t) => {
+  for (const kind of ["prefix-sibling", "broken"]) {
+    const fixture = await validationSessionFixture(t);
+    const bin = path.join(fixture.root, "node_modules/.bin");
+    await fs.mkdir(bin, { recursive: true });
+    const link = path.join(bin, "acorn");
+    if (kind === "prefix-sibling") {
+      const sibling = `${fixture.root}-sibling`;
+      t.after(() => fs.rm(sibling, { recursive: true, force: true }));
+      await fs.mkdir(sibling, { recursive: true });
+      const target = path.join(sibling, "acorn");
+      await fs.writeFile(target, "outside\n", "utf8");
+      await fs.symlink(target, link);
+    } else await fs.symlink("../missing/bin/acorn", link);
+    const result = await runValidationSession(fixture.requirements, validationRequest({ argv: [link] }));
+    assert.equal(result.provenance.classification, "INFRASTRUCTURE_BLOCKED", kind);
+    assert.equal(result.provenance.blocker.code, kind === "broken" ? "UNRESOLVED_SYMLINK" : "SYMLINK_ESCAPE", kind);
+    assert.deepEqual(result.provenance.commands, [], kind);
+  }
+});
+
+test("authenticated pre-check BLOCKED provenance persists the real blocker without consuming a check round", async (t) => {
+  const fixture = await validationSessionFixture(t);
+  const outside = await temporary(t, "stnl-validation-blocked-provenance-");
+  const bin = path.join(fixture.root, "node_modules/.bin");
+  await fs.mkdir(bin, { recursive: true });
+  const link = path.join(bin, "acorn");
+  await fs.symlink(path.join(outside, "acorn"), link);
+  const blocked = await runValidationSession(fixture.requirements, validationRequest({ argv: [link] }));
+  const candidate = await externalExecutionCandidate(t, fixture);
+  await editTask(candidate, (value) => {
+    let next = value.replace("- [ ] 1.1", "- [x] 1.1");
+    next = replaceSection(next, "Changed Areas", "- `../../src/example.txt`");
+    return replaceSection(next, "Delegation Blocker", infrastructureDelegationBlocker(blocked.provenance));
+  });
+  const validated = await validateExecutionCandidate(fixture.requirements, candidate.execution);
+  assert.equal(validated.state, "RUNNER_RESULT_BLOCKED");
+  const tampered = await externalExecutionCandidate(t, fixture);
+  const tamperedProvenance = {
+    ...blocked.provenance,
+    blocker: { ...blocked.provenance.blocker, message: "a substituted unauthenticated blocker" },
+  };
+  await editTask(tampered, (value) => {
+    let next = value.replace("- [ ] 1.1", "- [x] 1.1");
+    next = replaceSection(next, "Changed Areas", "- `../../src/example.txt`");
+    return replaceSection(next, "Delegation Blocker", infrastructureDelegationBlocker(tamperedProvenance));
+  });
+  await assert.rejects(
+    validateExecutionCandidate(fixture.requirements, tampered.execution),
+    /source fingerprint is inconsistent|Evidence identity does not match/u,
+  );
+  await fs.copyFile(
+    path.join(candidate.execution, "tasks/slice-01.md"),
+    path.join(fixture.execution, "tasks/slice-01.md"),
+  );
+  const state = await inspectExecutionState(fixture.requirements);
+  assert.equal(state.state, "RUNNER_RESULT_BLOCKED");
+  assert.equal(state.tasks.get("slice-01").delegationBlocker.kind, "infrastructure");
+  assert.equal(state.tasks.get("slice-01").delegationBlocker.provenance.blocker.code, "UNRESOLVED_SYMLINK");
+  assert.equal(state.tasks.get("slice-01").implementationChecks.length, 0);
+  assertRecoveryTarget(state, { operation: "EXECUTE_SLICE", slice: "slice-01", round: 1, sameOperationResumeRequired: true });
+  assert.equal(state.legalOperations.some((target) => target.operation === "VALIDATE_SLICE"), false);
+  const resumed = await preflightExecutionOperation(fixture.requirements, "EXECUTE_SLICE", "1");
+  assert.equal(resumed.state, "RUNNER_RESULT_BLOCKED");
+  assertRecoveryTarget(resumed, { operation: "EXECUTE_SLICE", slice: "slice-01", round: 1, sameOperationResumeRequired: true });
+  await assert.rejects(
+    preflightExecutionOperation(fixture.requirements, "VALIDATE_SLICE", "1"),
+    /VALIDATE_SLICE is not legal from RUNNER_RESULT_BLOCKED.*EXECUTE_SLICE for slice-01/u,
+  );
+});
+
+test("missing authenticated pre-check provenance is rejected while genuinely malformed runner output remains classified as malformed", async (t) => {
+  const fixture = await validationSessionFixture(t);
+  const missing = await externalExecutionCandidate(t, fixture);
+  await editTask(missing, (value) => {
+    let next = value.replace("- [ ] 1.1", "- [x] 1.1");
+    next = replaceSection(next, "Changed Areas", "- `../../src/example.txt`");
+    return replaceSection(next, "Delegation Blocker", delegationBlocker("EXECUTE_SLICE", "infrastructure", { pendingRound: 1 }));
+  });
+  await assert.rejects(validateExecutionCandidate(fixture.requirements, missing.execution), /requires structured provenance|expected exactly one 'Evidence provenance'/u);
+
+  const malformed = await externalExecutionCandidate(t, fixture);
+  await editTask(malformed, (value) => {
+    let next = value.replace("- [ ] 1.1", "- [x] 1.1");
+    next = replaceSection(next, "Changed Areas", "- `../../src/example.txt`");
+    return replaceSection(next, "Delegation Blocker", delegationBlocker("EXECUTE_SLICE", "malformed-output", { pendingRound: 1 }));
+  });
+  const validated = await validateExecutionCandidate(fixture.requirements, malformed.execution);
+  assert.equal(validated.state, "RUNNER_RESULT_BLOCKED");
+  await fs.copyFile(
+    path.join(malformed.execution, "tasks/slice-01.md"),
+    path.join(fixture.execution, "tasks/slice-01.md"),
+  );
+  const state = await inspectExecutionState(fixture.requirements);
+  assert.equal(state.state, "RUNNER_RESULT_BLOCKED");
+  assert.equal(state.tasks.get("slice-01").delegationBlocker.kind, "malformed-output");
+  assert.equal(state.tasks.get("slice-01").implementationChecks.length, 0);
+});
+
 test("real macOS sandbox denial invalidates evidence and cannot become a finding", async (t) => {
   const fixture = await validationSessionFixture(t);
   const liveTask = path.join(fixture.execution, "tasks/slice-01.md");

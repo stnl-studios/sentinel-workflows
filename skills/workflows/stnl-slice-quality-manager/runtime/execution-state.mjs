@@ -46,6 +46,7 @@ const VALIDATION_EVIDENCE_LIFECYCLE = new Map([
   ["INVALID", new Map([
     ["VALIDATION_SIDE_EFFECT", new Set(["NONE"])],
     ["INVALID_REPLAY", new Set(["NONE"])],
+    ["INFRASTRUCTURE_BLOCKED", new Set(["NONE"])],
   ])],
 ]);
 const VALIDATION_EVIDENCE_STATES = new Set(VALIDATION_EVIDENCE_LIFECYCLE.keys());
@@ -789,6 +790,8 @@ const EVIDENCE_PROVENANCE_KEYS = new Set([
   "version", "evidenceId", "priorEvidenceId", "state", "classification", "conclusion",
   "operation", "slice", "round", "workspace", "inputs", "subjects", "commands", "replay",
 ]);
+const EVIDENCE_PROVENANCE_BLOCKED_KEYS = new Set([...EVIDENCE_PROVENANCE_KEYS, "blocker"]);
+const EVIDENCE_BLOCKER_KEYS = new Set(["kind", "stage", "code", "message", "target"]);
 const EVIDENCE_WORKSPACE_KEYS = new Set([
   "kind", "workspaceId", "cwd", "executionRoot", "liveExecutionFingerprintBefore",
   "liveExecutionFingerprintAfter", "liveWorkspaceFingerprintBefore", "liveWorkspaceFingerprintAfter",
@@ -874,7 +877,11 @@ function parseEvidenceProvenance(record, authority, { operation, round, required
   }
   let provenance;
   try { provenance = JSON.parse(raw); } catch { throw new ExecutionContractError(`${record.id} Evidence provenance must be inline JSON`); }
-  exactObject(provenance, EVIDENCE_PROVENANCE_KEYS, `${record.id} Evidence provenance`);
+  exactObject(
+    provenance,
+    Object.hasOwn(provenance, "blocker") ? EVIDENCE_PROVENANCE_BLOCKED_KEYS : EVIDENCE_PROVENANCE_KEYS,
+    `${record.id} Evidence provenance`,
+  );
   if (provenance.version !== 1 || !VALIDATION_EVIDENCE_STATES.has(provenance.state)
     || !VALIDATION_EVIDENCE_CLASSIFICATIONS.has(provenance.classification)
     || !VALIDATION_CONCLUSIONS.has(provenance.conclusion)) {
@@ -889,9 +896,34 @@ function parseEvidenceProvenance(record, authority, { operation, round, required
   if (provenance.priorEvidenceId !== null && (typeof provenance.priorEvidenceId !== "string" || !CURRENT_AUTHORITY.test(provenance.priorEvidenceId))) {
     throw new ExecutionContractError(`${record.id} Evidence provenance priorEvidenceId is malformed`);
   }
+  const infrastructureBlocked = provenance.classification === "INFRASTRUCTURE_BLOCKED";
+  if (infrastructureBlocked) {
+    exactObject(provenance.blocker, EVIDENCE_BLOCKER_KEYS, `${record.id} Evidence blocker`);
+    if (!new Set(["infrastructure", "source-isolation"]).has(provenance.blocker.kind)
+      || !new Set(["sandbox-preflight", "source-admission", "source-copy"]).has(provenance.blocker.stage)
+      || typeof provenance.blocker.code !== "string" || !/^[A-Z][A-Z0-9_]*$/u.test(provenance.blocker.code)
+      || typeof provenance.blocker.message !== "string" || provenance.blocker.message.length === 0
+      || (provenance.blocker.target !== null
+        && validateProjectRelativePath(provenance.blocker.target, `${record.id} Evidence blocker target`) !== provenance.blocker.target)) {
+      throw new ExecutionContractError(`${record.id} Evidence blocker is malformed`);
+    }
+  } else if (Object.hasOwn(provenance, "blocker")) {
+    throw new ExecutionContractError(`${record.id} non-infrastructure evidence cannot contain a blocker`);
+  }
   exactObject(provenance.workspace, EVIDENCE_WORKSPACE_KEYS, `${record.id} Evidence workspace`);
   const workspace = provenance.workspace;
-  if (workspace.kind !== "isolated-copy" || workspace.cleanup !== "clean") {
+  if (infrastructureBlocked) {
+    const unavailable = deterministicDigest("stnl-validation-isolated-not-created-v1", []);
+    const expectedCleanup = provenance.blocker.stage === "source-copy" ? "clean" : "not-required";
+    if (workspace.kind !== "pre-check" || workspace.cleanup !== expectedCleanup
+      || workspace.isolatedExecutionFingerprintBefore !== unavailable
+      || workspace.isolatedExecutionFingerprintAfter !== unavailable
+      || !Array.isArray(workspace.sideEffects) || workspace.sideEffects.length !== 0
+      || workspace.liveExecutionFingerprintBefore !== workspace.liveExecutionFingerprintAfter
+      || workspace.liveWorkspaceFingerprintBefore !== workspace.liveWorkspaceFingerprintAfter) {
+      throw new ExecutionContractError(`${record.id} infrastructure blocker has invalid pre-check workspace evidence`);
+    }
+  } else if (workspace.kind !== "isolated-copy" || workspace.cleanup !== "clean") {
     if (provenance.state !== "INVALID" || provenance.classification !== "VALIDATION_SIDE_EFFECT") {
       throw new ExecutionContractError(`${record.id} non-isolated or unclean validation workspace must be invalid`);
     }
@@ -931,6 +963,12 @@ function parseEvidenceProvenance(record, authority, { operation, round, required
   }
   if (inputs.baselineFingerprint !== null && (typeof inputs.baselineFingerprint !== "string" || !CURRENT_AUTHORITY.test(inputs.baselineFingerprint))) {
     throw new ExecutionContractError(`${record.id} Evidence baselineFingerprint is malformed`);
+  }
+  if (infrastructureBlocked && inputs.sourceFingerprint !== deterministicDigest(
+    "stnl-validation-source-precheck-v1",
+    { liveWorkspaceBefore: workspace.liveWorkspaceFingerprintBefore, blocker: provenance.blocker },
+  )) {
+    throw new ExecutionContractError(`${record.id} infrastructure blocker source fingerprint is inconsistent`);
   }
 
   if (!Array.isArray(provenance.subjects)) throw new ExecutionContractError(`${record.id} Evidence subjects must be an array`);
@@ -972,6 +1010,9 @@ function parseEvidenceProvenance(record, authority, { operation, round, required
   if (record.commands.length !== provenance.commands.length || record.commands.some((command, index) => (
     command.command !== provenance.commands[index].display || command.exit !== provenance.commands[index].exit
   ))) throw new ExecutionContractError(`${record.id} Commands disagree with Evidence provenance`);
+  if (infrastructureBlocked && (provenance.subjects.length !== 0 || provenance.commands.length !== 0 || provenance.replay !== null)) {
+    throw new ExecutionContractError(`${record.id} infrastructure blocker cannot claim subjects, commands, or replay`);
+  }
   if (inputs.executionFingerprint !== evidenceExecutionFingerprint(provenance)
     || workspace.workspaceId !== inputs.executionFingerprint) {
     throw new ExecutionContractError(`${record.id} Evidence execution identity is inconsistent`);
@@ -1006,7 +1047,7 @@ function parseEvidenceProvenance(record, authority, { operation, round, required
     || workspace.liveExecutionFingerprintBefore !== workspace.liveExecutionFingerprintAfter
     || workspace.liveWorkspaceFingerprintBefore !== workspace.liveWorkspaceFingerprintAfter
     || workspace.isolatedExecutionFingerprintBefore !== workspace.isolatedExecutionFingerprintAfter
-    || workspace.cleanup !== "clean";
+    || (!infrastructureBlocked && workspace.cleanup !== "clean");
   if (sideEffect !== (provenance.classification === "VALIDATION_SIDE_EFFECT")) {
     throw new ExecutionContractError(`${record.id} validation side-effect classification disagrees with workspace evidence`);
   }
@@ -1595,7 +1636,7 @@ function parsePriorValidationOverlaps(section, label, evidenceContract) {
   return records;
 }
 
-function parseDelegationBlocker(section, operationRecordsByName) {
+function parseDelegationBlocker(section, operationRecordsByName, authority, evidenceContract) {
   if (section === "- none") return null;
   if (/<[^>\n]+>/u.test(section)) throw new ExecutionContractError("Delegation Blocker contains template placeholder content");
   const operation = field(section, "Operation");
@@ -1604,9 +1645,9 @@ function parseDelegationBlocker(section, operationRecordsByName) {
   const afterRecord = field(section, "After record");
   const pendingRoundValue = field(section, "Pending automatic round", { required: false });
   if (!SLICE_OPERATIONS.has(operation)) throw new ExecutionContractError("Delegation Blocker has invalid Operation");
-  if (!new Set(["initialization", "malformed-output"]).has(kind)) throw new ExecutionContractError("Delegation Blocker has invalid Kind");
+  if (!new Set(["initialization", "malformed-output", "infrastructure"]).has(kind)) throw new ExecutionContractError("Delegation Blocker has invalid Kind");
   if (!new Set(["active", "resolved"]).has(state)) throw new ExecutionContractError("Delegation Blocker has invalid State");
-  requireList(section, "Causes", "Delegation Blocker");
+  const causes = requireList(section, "Causes", "Delegation Blocker");
   requireNonPlaceholder(field(section, "Required action"), "Delegation Blocker Required action");
   const resolution = field(section, "Resolution", { required: false });
   if (state === "active" && resolution !== null) throw new ExecutionContractError("active Delegation Blocker cannot contain Resolution");
@@ -1629,6 +1670,28 @@ function parseDelegationBlocker(section, operationRecordsByName) {
       throw new ExecutionContractError("Delegation Blocker pending round disagrees with the interrupted logical invocation");
     }
   }
+  let provenance = null;
+  if (kind === "infrastructure") {
+    if (evidenceContract !== "stnl-validation-evidence/v1") {
+      throw new ExecutionContractError("infrastructure Delegation Blocker requires the v1 evidence contract");
+    }
+    provenance = parseEvidenceProvenance(
+      { id: "Delegation Blocker", body: section, status: "BLOCKED", commands: [] },
+      authority,
+      { operation, round: operation === "VALIDATE_SLICE" ? null : `${pendingRound}/3`, required: true },
+    );
+    const expectedCause = `${provenance.blocker.code}: ${provenance.blocker.message}`;
+    if (causes.length !== 1 || causes[0] !== expectedCause) {
+      throw new ExecutionContractError("infrastructure Delegation Blocker cause disagrees with Evidence provenance");
+    }
+    const prior = priorIndex < 0 ? null : records[priorIndex];
+    if (provenance.priorEvidenceId !== (prior?.provenance?.evidenceId ?? null)) {
+      throw new ExecutionContractError("infrastructure Delegation Blocker Evidence provenance does not follow the prior validation record");
+    }
+  } else if (field(section, "Evidence provenance", { required: false }) !== null
+    || field(section, "HEAD", { required: false }) !== null) {
+    throw new ExecutionContractError(`${kind} Delegation Blocker cannot claim validation Evidence provenance`);
+  }
   if (state === "resolved") {
     if (records.length <= priorIndex + 1) throw new ExecutionContractError("resolved Delegation Blocker requires a later valid record");
     const resolvingRecord = records[priorIndex + 1].id;
@@ -1638,7 +1701,7 @@ function parseDelegationBlocker(section, operationRecordsByName) {
       throw new ExecutionContractError(`Delegation Blocker Resolution must name ${resolvingRecord}`);
     }
   }
-  return { operation, kind, state, afterRecord, pendingRound };
+  return { operation, kind, state, afterRecord, pendingRound, provenance };
 }
 
 function validateFindingLifecycle(findings, attempts, findingsChecks) {
@@ -1865,7 +1928,7 @@ function parseTask(text, label, expectedSlice, references = {}) {
   }
   const delegationBlocker = parseDelegationBlocker(taskSections.get("Delegation Blocker"), new Map([
     ["EXECUTE_SLICE", implementationChecks], ["APPLY_FINDINGS", findingsChecks], ["VALIDATE_SLICE", attempts],
-  ]));
+  ]), gateAuthority, evidenceContract);
   if (evidenceContract === "stnl-validation-evidence/v1"
     && delegationBlocker?.operation !== "VALIDATE_SLICE"
     && delegationBlocker?.pendingRound === null) {

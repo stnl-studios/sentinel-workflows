@@ -26,6 +26,13 @@ const REQUEST_KEYS = new Set([
 ]);
 const COMMAND_KEYS = new Set(["argv", "cwd", "writePaths", "env", "timeoutMs"]);
 
+class ValidationInfrastructureError extends ExecutionContractError {
+  constructor(kind, stage, code, message, target = null) {
+    super(message, target === null ? [] : [target]);
+    this.blocker = Object.freeze({ kind, stage, code, message, target });
+  }
+}
+
 function exactObject(value, keys, label) {
   if (value === null || typeof value !== "object" || Array.isArray(value)
     || Object.keys(value).length !== keys.size || Object.keys(value).some((key) => !keys.has(key))) {
@@ -68,6 +75,13 @@ async function lstatOrNull(filePath) {
   }
 }
 
+async function statOrNull(filePath) {
+  try { return await fs.stat(filePath); } catch (error) {
+    if (error?.code === "ENOENT" || error?.code === "ENOTDIR" || error?.code === "ELOOP") return null;
+    throw error;
+  }
+}
+
 async function trustedProjectRoot(workspace) {
   let current = path.dirname(workspace.authorityPath);
   for (;;) {
@@ -79,19 +93,57 @@ async function trustedProjectRoot(workspace) {
   }
 }
 
-async function assertCopySourceSafe(directory, projectRoot) {
+async function assertCopySourceSafe(directory, projectRoot, canonicalRoot = null, symlinks = []) {
+  canonicalRoot ??= await fs.realpath(projectRoot);
   for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
     if (entry.name === ".git" || isIgnoredMetadata(entry.name)) continue;
     const entryPath = path.join(directory, entry.name);
     const metadata = await fs.lstat(entryPath);
     if (metadata.isSymbolicLink()) {
-      const raw = await fs.readlink(entryPath);
-      const physical = await fs.realpath(entryPath);
-      if (path.isAbsolute(raw) || !within(physical, projectRoot)) {
-        throw new ExecutionContractError(`validation source contains an unsafe symlink: ${entryPath}`);
+      const relative = path.relative(projectRoot, entryPath).split(path.sep).join("/");
+      let physical;
+      try {
+        physical = await fs.realpath(entryPath);
+      } catch (error) {
+        if (error?.code === "ENOENT" || error?.code === "ENOTDIR" || error?.code === "ELOOP") {
+          throw new ValidationInfrastructureError(
+            "source-isolation", "source-admission", "UNRESOLVED_SYMLINK",
+            `validation source symlink cannot be resolved: ${relative}`, relative,
+          );
+        }
+        throw error;
       }
-    } else if (metadata.isDirectory()) await assertCopySourceSafe(entryPath, projectRoot);
+      if (!within(physical, canonicalRoot)) {
+        throw new ValidationInfrastructureError(
+          "source-isolation", "source-admission", "SYMLINK_ESCAPE",
+          `validation source symlink escapes its trusted project: ${relative}`, relative,
+        );
+      }
+      symlinks.push({
+        relative,
+        raw: await fs.readlink(entryPath),
+        targetRelative: path.relative(canonicalRoot, physical),
+      });
+    } else if (metadata.isDirectory()) await assertCopySourceSafe(entryPath, projectRoot, canonicalRoot, symlinks);
   }
+  return symlinks;
+}
+
+async function copyValidationSource(projectRoot, copiedRoot, symlinks) {
+  await fs.cp(projectRoot, copiedRoot, {
+    recursive: true,
+    verbatimSymlinks: true,
+    filter: (source) => path.basename(source) !== ".git" && !isIgnoredMetadata(path.basename(source)),
+  });
+  // Absolute links that canonically point into the live project are safe source
+  // entries, but they must be rebased so the isolated copy cannot read live files.
+  for (const symlink of symlinks.filter((entry) => path.isAbsolute(entry.raw))) {
+    const copiedLink = path.join(copiedRoot, symlink.relative);
+    const copiedTarget = path.join(copiedRoot, symlink.targetRelative);
+    await fs.unlink(copiedLink);
+    await fs.symlink(path.relative(path.dirname(copiedLink), copiedTarget), copiedLink);
+  }
+  await assertCopySourceSafe(copiedRoot, copiedRoot);
 }
 
 async function fingerprintTree(root) {
@@ -150,7 +202,7 @@ async function resolveExecutable(command, environment, cwd) {
       : String(environment.PATH ?? "").split(path.delimiter).filter(Boolean)
         .map((directory) => path.resolve(cwd, directory, executable));
   for (const candidate of candidates) {
-    const metadata = await lstatOrNull(candidate);
+    const metadata = await statOrNull(candidate);
     if (metadata?.isFile()) return digest("stnl-validation-executable-v1", await fs.readFile(candidate));
   }
   return digest("stnl-validation-executable-v1", { unresolved: executable, path: environment.PATH ?? "" });
@@ -327,6 +379,7 @@ async function preparePermissiveProbe({ command, backend, cwd, environment, sess
   const probeRoot = await fs.mkdtemp(path.join(sessionRoot, "probe-"));
   await fs.cp(copiedRoot, probeRoot, {
     recursive: true,
+    verbatimSymlinks: true,
     filter: (source) => path.basename(source) !== ".git" && !isIgnoredMetadata(path.basename(source)),
   });
   const probeRuntimeRoot = await fs.mkdtemp(path.join(sessionRoot, "probe-runtime-"));
@@ -458,6 +511,50 @@ function expectedValidationInvocation(task, operation) {
   return { round, priorEvidenceId: records.at(-1)?.provenance?.evidenceId ?? null };
 }
 
+async function blockedPrecheckResult({
+  specPath, request, task, workspace, projectRoot, liveExecutionBefore, liveWorkspaceBefore, blocker,
+  cleanup = "not-required",
+}) {
+  const liveExecutionAfter = await fingerprintTree(workspace.executionRoot);
+  const liveWorkspaceAfter = await fingerprintTree(projectRoot);
+  if (liveExecutionBefore !== liveExecutionAfter || liveWorkspaceBefore !== liveWorkspaceAfter) {
+    throw new ExecutionContractError("validation pre-check changed protected live state; authenticated infrastructure provenance is unavailable");
+  }
+  const executionRoot = path.relative(projectRoot, workspace.executionRoot).split(path.sep).join("/");
+  const unavailable = digest("stnl-validation-isolated-not-created-v1", []);
+  const subjects = [];
+  const commands = [];
+  const inputs = {
+    requirementsAuthority: `sha256:${await computeRequirementsAuthority(specPath)}`,
+    planRevision: task.revision,
+    head: await readValidationHead(projectRoot),
+    sourceFingerprint: digest("stnl-validation-source-precheck-v1", { liveWorkspaceBefore, blocker }),
+    manifestFingerprint: digest("stnl-validation-subject-manifest-v1", subjects),
+    baselineFingerprint: request.baselineFingerprint,
+    changedScopeFingerprint: digest("stnl-validation-changed-scope-v1", []),
+    executionFingerprint: "",
+  };
+  inputs.executionFingerprint = digest("stnl-validation-execution-v1", {
+    operation: request.operation, slice: request.slice, round: request.round, cwd: request.cwd,
+    executionRoot, subjects, commands, inputs: { ...inputs, executionFingerprint: undefined },
+  });
+  const provenance = {
+    version: 1, evidenceId: "", priorEvidenceId: request.priorEvidenceId, state: "INVALID",
+    classification: "INFRASTRUCTURE_BLOCKED", conclusion: "NONE",
+    operation: request.operation, slice: request.slice, round: request.round,
+    workspace: {
+      kind: "pre-check", workspaceId: inputs.executionFingerprint, cwd: request.cwd, executionRoot,
+      liveExecutionFingerprintBefore: liveExecutionBefore, liveExecutionFingerprintAfter: liveExecutionAfter,
+      liveWorkspaceFingerprintBefore: liveWorkspaceBefore, liveWorkspaceFingerprintAfter: liveWorkspaceAfter,
+      isolatedExecutionFingerprintBefore: unavailable, isolatedExecutionFingerprintAfter: unavailable,
+      cleanup, sideEffects: [],
+    },
+    inputs, subjects, commands, replay: null, blocker,
+  };
+  provenance.evidenceId = validationEvidenceIdentity(provenance);
+  return Object.freeze({ provenance: Object.freeze(provenance), outputs: Object.freeze([]) });
+}
+
 export async function runValidationSession(specPath, request) {
   exactObject(request, REQUEST_KEYS, "validation session request");
   if (!OPERATIONS.has(request.operation) || !/^slice-(?:[0-9]{2}|[1-9][0-9]{2,})$/u.test(request.slice)) {
@@ -490,25 +587,67 @@ export async function runValidationSession(specPath, request) {
     || request.priorEvidenceId !== expectedInvocation.priorEvidenceId) {
     throw new ExecutionContractError("validation session round or prior evidence does not match current lifecycle state");
   }
-  const projectRoot = await trustedProjectRoot(workspace);
-  const sandboxBackend = await validationSandboxBackend();
-  if (sandboxBackend === null) {
-    throw new ExecutionContractError("validation requires a supported, available OS filesystem sandbox; Windows and other platforms are fail-closed unsupported for v1");
-  }
-  await assertSandboxBackendAvailable(sandboxBackend);
+  const projectRoot = await fs.realpath(await trustedProjectRoot(workspace));
   const liveExecutionBefore = await fingerprintTree(workspace.executionRoot);
   const liveWorkspaceBefore = await fingerprintTree(projectRoot);
-  await assertCopySourceSafe(projectRoot, projectRoot);
+  let sandboxBackend;
+  let sourceSymlinks;
+  let sourceFingerprint;
+  try {
+    sandboxBackend = await validationSandboxBackend();
+    if (sandboxBackend === null) {
+      throw new ValidationInfrastructureError(
+        "infrastructure", "sandbox-preflight", "SANDBOX_UNAVAILABLE",
+        "validation requires a supported, available OS filesystem sandbox; Windows and other platforms are fail-closed unsupported for v1",
+      );
+    }
+    try {
+      await assertSandboxBackendAvailable(sandboxBackend);
+    } catch (error) {
+      throw new ValidationInfrastructureError(
+        "infrastructure", "sandbox-preflight", "SANDBOX_PREFLIGHT_FAILED",
+        error instanceof Error ? error.message : "validation OS filesystem sandbox is unavailable",
+      );
+    }
+    sourceSymlinks = await assertCopySourceSafe(projectRoot, projectRoot);
+    try {
+      sourceFingerprint = await computeValidationSourceFingerprint(projectRoot, workspace.executionRoot);
+    } catch (error) {
+      throw new ValidationInfrastructureError(
+        "source-isolation", "source-admission", "SOURCE_SNAPSHOT_REJECTED",
+        error instanceof Error ? error.message : "validation source snapshot was rejected",
+      );
+    }
+  } catch (error) {
+    if (!(error instanceof ValidationInfrastructureError)) throw error;
+    return blockedPrecheckResult({
+      specPath, request, task, workspace, projectRoot, liveExecutionBefore, liveWorkspaceBefore,
+      blocker: error.blocker,
+    });
+  }
   const sessionRoot = await fs.realpath(await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), "stnl-validation-session-")));
   const copiedRoot = path.join(sessionRoot, "workspace");
   const runtimeRoot = path.join(sessionRoot, "runtime");
   let cleanup = "clean";
   let result;
   try {
-    await fs.cp(projectRoot, copiedRoot, {
-      recursive: true,
-      filter: (source) => path.basename(source) !== ".git" && !isIgnoredMetadata(path.basename(source)),
-    });
+    try {
+      await copyValidationSource(projectRoot, copiedRoot, sourceSymlinks);
+    } catch (error) {
+      const blocker = error instanceof ValidationInfrastructureError ? error.blocker : Object.freeze({
+        kind: "source-isolation", stage: "source-copy", code: "SOURCE_COPY_FAILED",
+        message: error instanceof Error ? error.message : "validation source copy failed", target: null,
+      });
+      try {
+        await fs.rm(sessionRoot, { recursive: true, force: true });
+      } catch {
+        throw new ExecutionContractError("validation source copy failed and its temporary workspace could not be cleaned");
+      }
+      return await blockedPrecheckResult({
+        specPath, request, task, workspace, projectRoot, liveExecutionBefore, liveWorkspaceBefore,
+        blocker, cleanup: "clean",
+      });
+    }
     await fs.mkdir(path.join(runtimeRoot, "home"), { recursive: true });
     await fs.mkdir(path.join(runtimeRoot, "tmp"), { recursive: true });
     const executionRelative = path.relative(projectRoot, workspace.executionRoot).split(path.sep).join("/");
@@ -516,7 +655,6 @@ export async function runValidationSession(specPath, request) {
     const copiedTaskDirectory = path.join(copiedRoot, executionRelative, "tasks");
     const isolatedExecutionBefore = await fingerprintTree(copiedExecutionRoot);
     const beforeSubjects = await subjectManifest(copiedTaskDirectory, subjects, copiedRoot);
-    const sourceFingerprint = await computeValidationSourceFingerprint(copiedRoot, copiedExecutionRoot);
     const manifestFingerprint = digest("stnl-validation-subject-manifest-v1", beforeSubjects);
     const changedScope = digest("stnl-validation-changed-scope-v1", beforeSubjects.map((entry) => entry.path));
     const stableEnvironment = {
