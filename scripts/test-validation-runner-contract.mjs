@@ -7,7 +7,7 @@ import test from "node:test";
 
 const repository = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
 const checker = path.join(repository, "scripts/check-contracts.mjs");
-const canonical = path.join(repository, "templates/subagents");
+const canonical = path.join(repository, "integrations");
 
 async function fixture(t) {
   const temporary = await fs.mkdtemp(path.join(os.tmpdir(), "stnl-runner-"));
@@ -28,8 +28,8 @@ async function replace(file, oldValue, newValue) {
 }
 
 async function replaceBoth(root, oldValue, newValue) {
-  await replace(path.join(root, "codex/.codex/agents/stnl_validation_runner.toml"), oldValue, newValue);
-  await replace(path.join(root, "claude-code/.claude/agents/stnl-validation-runner.md"), oldValue, newValue);
+  await replace(path.join(root, "codex/agents/stnl_validation_runner.toml"), oldValue, newValue);
+  await replace(path.join(root, "claude-code/agents/stnl-validation-runner.md"), oldValue, newValue);
 }
 
 function expectCategory(result, category) {
@@ -39,7 +39,7 @@ function expectCategory(result, category) {
 
 test("accepts canonical runner adapters with ignored metadata", async (t) => {
   const root = await fixture(t);
-  await fs.writeFile(path.join(root, "codex/.codex/agents/.DS_Store"), "ignored\n");
+  await fs.writeFile(path.join(root, "codex/agents/.DS_Store"), "ignored\n");
   assert.equal(check(root).status, 0);
 });
 
@@ -51,7 +51,7 @@ test("accepts harmless runner prose paraphrasing", async (t) => {
 
 test("runner documents structured findings and correction-path persistence grammar", async (t) => {
   const root = await fixture(t);
-  const contract = await fs.readFile(path.join(root, "claude-code/.claude/agents/stnl-validation-runner.md"), "utf8");
+  const contract = await fs.readFile(path.join(root, "claude-code/agents/stnl-validation-runner.md"), "utf8");
   assert.match(contract, /Findings verificados[\s\S]{0,160}subconjunto canônico[\s\S]{0,120}Finding IDs[\s\S]{0,180}Findings ainda não sustentados[\s\S]{0,180}exatamente os findings ativos[\s\S]{0,180}nunca se sobrepõem/u);
   assert.match(contract, /caminhos de correção[\s\S]{0,260}normalizados[\s\S]{0,160}comma-space[\s\S]{0,100}correção fileless[\s\S]{0,80}Correction paths[\s\S]{0,60}exact `none`/u);
 });
@@ -59,10 +59,10 @@ test("runner documents structured findings and correction-path persistence gramm
 const cases = [
   ["only TESTS_ACCEPTED removed", "R006_VERDICTS", (root) => replaceBoth(root, "STATUS_CHECKS=TESTS_PASS|TESTS_ACCEPTED|TESTS_FAIL|TESTS_NOT_APPLICABLE|BLOCKED", "STATUS_CHECKS=TESTS_PASS|TESTS_FAIL|TESTS_NOT_APPLICABLE|BLOCKED")],
   ["only ACCEPTED removed", "R006_VERDICTS", (root) => replaceBoth(root, "STATUS_VALIDACAO=PASS|ACCEPTED|NEEDS_FIX|BLOCKED", "STATUS_VALIDACAO=PASS|NEEDS_FIX|BLOCKED")],
-  ["Codex model", "R001_ADAPTER_METADATA", (root) => replace(path.join(root, "codex/.codex/agents/stnl_validation_runner.toml"), 'model = "gpt-5.6-luna"', 'model = "gpt-5.6-sol"')],
-  ["Claude tools", "R001_ADAPTER_METADATA", (root) => replace(path.join(root, "claude-code/.claude/agents/stnl-validation-runner.md"), "tools: Read, Glob, Grep, Bash", "tools: Read, Glob, Grep, Bash, Write")],
-  ["missing adapter", "R002_REGISTRY", (root) => fs.unlink(path.join(root, "claude-code/.claude/agents/stnl-validation-runner.md"))],
-  ["platform divergence", "R003_EQUIVALENCE", (root) => replace(path.join(root, "claude-code/.claude/agents/stnl-validation-runner.md"), "Não invente comandos", "Você pode inventar comandos")],
+  ["Codex model", "R001_ADAPTER_METADATA", (root) => replace(path.join(root, "codex/agents/stnl_validation_runner.toml"), 'model = "gpt-5.6-luna"', 'model = "gpt-5.6-sol"')],
+  ["Claude tools", "R001_ADAPTER_METADATA", (root) => replace(path.join(root, "claude-code/agents/stnl-validation-runner.md"), "tools: Read, Glob, Grep, Bash", "tools: Read, Glob, Grep, Bash, Write")],
+  ["missing adapter", "R002_REGISTRY", (root) => fs.unlink(path.join(root, "claude-code/agents/stnl-validation-runner.md"))],
+  ["platform divergence", "R003_EQUIVALENCE", (root) => replace(path.join(root, "claude-code/agents/stnl-validation-runner.md"), "Não invente comandos", "Você pode inventar comandos")],
   ["missing operation", "R004_OPERATION_SCOPE", (root) => replaceBoth(root, "OPERACOES_SUPORTADAS=EXECUTE_SLICE|APPLY_FINDINGS|VALIDATE_SLICE", "OPERACOES_SUPORTADAS=EXECUTE_SLICE|VALIDATE_SLICE")],
   ["extra operation", "R004_OPERATION_SCOPE", (root) => replaceBoth(root, "OPERACOES_SUPORTADAS=EXECUTE_SLICE|APPLY_FINDINGS|VALIDATE_SLICE", "OPERACOES_SUPORTADAS=EXECUTE_SLICE|APPLY_FINDINGS|VALIDATE_SLICE|CLOSE")],
   ["fourth round", "R004_OPERATION_SCOPE", (root) => replaceBoth(root, "`1/3`, `2/3` ou `3/3`", "`1/4`, `2/4`, `3/4` ou `4/4`")],
@@ -87,19 +87,19 @@ const cases = [
     "fontes em `Discovery sources`, métodos em `Discovery actions`",
     "fontes em `Check discovery sources`, métodos em `Check discovery actions`",
   )],
-  ["Codex name", "R001_ADAPTER_METADATA", (root) => replace(path.join(root, "codex/.codex/agents/stnl_validation_runner.toml"), 'name = "stnl_validation_runner"', 'name = "runner"')],
-  ["Codex description", "R001_ADAPTER_METADATA", (root) => replace(path.join(root, "codex/.codex/agents/stnl_validation_runner.toml"), "Runner barato e isolado", "Runner genérico")],
-  ["Codex effort", "R001_ADAPTER_METADATA", (root) => replace(path.join(root, "codex/.codex/agents/stnl_validation_runner.toml"), 'model_reasoning_effort = "medium"', 'model_reasoning_effort = "high"')],
-  ["Codex sandbox", "R001_ADAPTER_METADATA", (root) => replace(path.join(root, "codex/.codex/agents/stnl_validation_runner.toml"), 'sandbox_mode = "workspace-write"', 'sandbox_mode = "danger-full-access"')],
-  ["Codex max depth", "R001_ADAPTER_METADATA", (root) => replace(path.join(root, "codex/.codex/agents/stnl_validation_runner.toml"), "max_depth = 1", "max_depth = 2")],
-  ["Codex extra metadata", "R001_ADAPTER_METADATA", (root) => replace(path.join(root, "codex/.codex/agents/stnl_validation_runner.toml"), 'name = "stnl_validation_runner"', 'name = "stnl_validation_runner"\napproval_policy = "never"')],
-  ["Claude name", "R001_ADAPTER_METADATA", (root) => replace(path.join(root, "claude-code/.claude/agents/stnl-validation-runner.md"), "name: stnl-validation-runner", "name: runner")],
-  ["Claude description", "R001_ADAPTER_METADATA", (root) => replace(path.join(root, "claude-code/.claude/agents/stnl-validation-runner.md"), "Runner barato e isolado", "Runner genérico")],
-  ["Claude model", "R001_ADAPTER_METADATA", (root) => replace(path.join(root, "claude-code/.claude/agents/stnl-validation-runner.md"), "model: haiku", "model: sonnet")],
-  ["Claude effort", "R001_ADAPTER_METADATA", (root) => replace(path.join(root, "claude-code/.claude/agents/stnl-validation-runner.md"), "effort: medium", "effort: high")],
-  ["Claude extra metadata", "R001_ADAPTER_METADATA", (root) => replace(path.join(root, "claude-code/.claude/agents/stnl-validation-runner.md"), "effort: medium", "effort: medium\npermission: write")],
-  ["missing Codex adapter", "R002_REGISTRY", (root) => fs.unlink(path.join(root, "codex/.codex/agents/stnl_validation_runner.toml"))],
-  ["duplicate Claude frontmatter", "R013_SYNTAX", (root) => replace(path.join(root, "claude-code/.claude/agents/stnl-validation-runner.md"), "name: stnl-validation-runner", "name: stnl-validation-runner\nname: duplicate")],
+  ["Codex name", "R001_ADAPTER_METADATA", (root) => replace(path.join(root, "codex/agents/stnl_validation_runner.toml"), 'name = "stnl_validation_runner"', 'name = "runner"')],
+  ["Codex description", "R001_ADAPTER_METADATA", (root) => replace(path.join(root, "codex/agents/stnl_validation_runner.toml"), "Runner barato e isolado", "Runner genérico")],
+  ["Codex effort", "R001_ADAPTER_METADATA", (root) => replace(path.join(root, "codex/agents/stnl_validation_runner.toml"), 'model_reasoning_effort = "medium"', 'model_reasoning_effort = "high"')],
+  ["Codex sandbox", "R001_ADAPTER_METADATA", (root) => replace(path.join(root, "codex/agents/stnl_validation_runner.toml"), 'sandbox_mode = "workspace-write"', 'sandbox_mode = "danger-full-access"')],
+  ["Codex max depth", "R001_ADAPTER_METADATA", (root) => replace(path.join(root, "codex/agents/stnl_validation_runner.toml"), "max_depth = 1", "max_depth = 2")],
+  ["Codex extra metadata", "R001_ADAPTER_METADATA", (root) => replace(path.join(root, "codex/agents/stnl_validation_runner.toml"), 'name = "stnl_validation_runner"', 'name = "stnl_validation_runner"\napproval_policy = "never"')],
+  ["Claude name", "R001_ADAPTER_METADATA", (root) => replace(path.join(root, "claude-code/agents/stnl-validation-runner.md"), "name: stnl-validation-runner", "name: runner")],
+  ["Claude description", "R001_ADAPTER_METADATA", (root) => replace(path.join(root, "claude-code/agents/stnl-validation-runner.md"), "Runner barato e isolado", "Runner genérico")],
+  ["Claude model", "R001_ADAPTER_METADATA", (root) => replace(path.join(root, "claude-code/agents/stnl-validation-runner.md"), "model: haiku", "model: sonnet")],
+  ["Claude effort", "R001_ADAPTER_METADATA", (root) => replace(path.join(root, "claude-code/agents/stnl-validation-runner.md"), "effort: medium", "effort: high")],
+  ["Claude extra metadata", "R001_ADAPTER_METADATA", (root) => replace(path.join(root, "claude-code/agents/stnl-validation-runner.md"), "effort: medium", "effort: medium\npermission: write")],
+  ["missing Codex adapter", "R002_REGISTRY", (root) => fs.unlink(path.join(root, "codex/agents/stnl_validation_runner.toml"))],
+  ["duplicate Claude frontmatter", "R013_SYNTAX", (root) => replace(path.join(root, "claude-code/agents/stnl-validation-runner.md"), "name: stnl-validation-runner", "name: stnl-validation-runner\nname: duplicate")],
   ["missing canonical ID", "R013_SYNTAX", (root) => replaceBoth(root, "CONTRATO_CANONICO=stnl-validation-runner/v8", "runner contract")],
   ["verification harness removed", "R017_ISOLATION", (root) => replaceBoth(root, "Todo verification command, sem exceção", "Alguns verification commands")],
   ["sandbox fallback enabled", "R017_ISOLATION", (root) => replaceBoth(root, "não faça fallback direto", "faça fallback direto")],

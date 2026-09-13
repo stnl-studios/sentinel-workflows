@@ -20,4 +20,4 @@ node --test scripts/test-lifecycle-contracts.mjs
 node --test scripts/test-lifecycle-validator-adversarial.mjs scripts/test-lifecycle-readiness-adversarial.mjs scripts/test-lifecycle-renderer-adversarial.mjs
 node --test scripts/test-lifecycle-distribution.mjs
 node --test scripts/test-runtime-context-budget.mjs
-node --test scripts/test-subagent-packages.mjs
+node --test scripts/test-subagent-integrations.mjs

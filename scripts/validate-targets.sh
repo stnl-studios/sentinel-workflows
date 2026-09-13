@@ -29,11 +29,11 @@ command -v node >/dev/null 2>&1 || { echo "FAIL: node is unavailable" >&2; exit 
 
 while IFS= read -r -d '' module; do
   node --check "$module"
-done < <(find scripts skills templates -type f -name '*.mjs' -print0)
+done < <(find scripts skills templates integrations -type f -name '*.mjs' -print0)
 
 node scripts/check-contracts.mjs repository --root "$ROOT"
 node scripts/check-contracts.mjs launchers --root templates/prompts
-node scripts/check-contracts.mjs subagents --root templates/subagents
+node scripts/check-contracts.mjs subagents --root integrations
 
 execution_skills=(
   skills/workflows/stnl-execution-planner

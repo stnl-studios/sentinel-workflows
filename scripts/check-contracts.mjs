@@ -240,8 +240,8 @@ function extractSchema(contract, operation) {
 
 function checkRunner(root) {
   if (!fs.statSync(root, { throwIfNoEntry: false })?.isDirectory()) throw new InfrastructureError(`not a directory: ${root}`);
-  const codexFile = path.join(root, "codex/.codex/agents/stnl_validation_runner.toml");
-  const claudeFile = path.join(root, "claude-code/.claude/agents/stnl-validation-runner.md");
+  const codexFile = path.join(root, "codex/agents/stnl_validation_runner.toml");
+  const claudeFile = path.join(root, "claude-code/agents/stnl-validation-runner.md");
   const readmeFile = path.join(root, "README.md");
   for (const file of [codexFile, claudeFile, readmeFile]) {
     if (!fs.statSync(file, { throwIfNoEntry: false })?.isFile()) reject("R002_REGISTRY", `missing runner file: ${file}`);
@@ -348,6 +348,25 @@ function checkRunner(root) {
   requirePattern(contract, /nunca o reverta automaticamente/iu, "R005_READ_ONLY", "runner may automatically revert workspace effects");
 
   const readme = read(readmeFile, "R002_REGISTRY");
+  for (const source of [
+    "integrations/codex/agents/stnl_validation_runner.toml",
+    "integrations/codex/agents/stnl_spec_context_scout.toml",
+    "integrations/claude-code/agents/stnl-validation-runner.md",
+    "integrations/claude-code/agents/stnl-spec-context-scout.md",
+  ]) {
+    if (!readme.includes(source)) reject("R012_README", `runner README omits canonical source: ${source}`);
+  }
+  for (const destination of [
+    ".codex/agents/stnl_validation_runner.toml",
+    ".codex/agents/stnl_spec_context_scout.toml",
+    ".claude/agents/stnl-validation-runner.md",
+    ".claude/agents/stnl-spec-context-scout.md",
+  ]) {
+    if (!readme.includes(destination)) reject("R012_README", `runner README omits native destination: ${destination}`);
+  }
+  const obsoleteSourceRoot = ["templates", "subagents"].join("/");
+  if (readme.includes(obsoleteSourceRoot)) reject("R012_README", "runner README retains the obsolete canonical source root");
+  requirePattern(readme, /caminhos são de fonte, não de instalação/iu, "R012_README", "README conflates canonical sources with native installation paths");
   for (const launcher of ["slice-execute-codex.md", "slice-execute-claude.md", "slice-apply-findings-codex.md", "slice-apply-findings-claude.md", "slice-validate-codex.md", "slice-validate-claude.md"]) {
     if (!readme.includes(launcher)) reject("R012_README", `runner README omits launcher: ${launcher}`);
   }
@@ -365,8 +384,8 @@ function checkRunner(root) {
 }
 
 function checkScout(root) {
-  const codexFile = path.join(root, "codex/.codex/agents/stnl_spec_context_scout.toml");
-  const claudeFile = path.join(root, "claude-code/.claude/agents/stnl-spec-context-scout.md");
+  const codexFile = path.join(root, "codex/agents/stnl_spec_context_scout.toml");
+  const claudeFile = path.join(root, "claude-code/agents/stnl-spec-context-scout.md");
   const codex = parseToml(codexFile, "S007_SYNTAX");
   const claude = parseFrontmatter(claudeFile, "S007_SYNTAX");
   const description = "Read-only exception scout for one explicitly authorized lifecycle evidence gap; never auto-select or delegate.";
@@ -390,14 +409,20 @@ function checkScout(root) {
 
 function checkSubagents(root) {
   const expected = new Set([
-    "README.md",
-    "codex/.codex/agents/stnl_validation_runner.toml",
-    "codex/.codex/agents/stnl_spec_context_scout.toml",
-    "claude-code/.claude/agents/stnl-validation-runner.md",
-    "claude-code/.claude/agents/stnl-spec-context-scout.md",
+    "codex/agents/stnl_validation_runner.toml",
+    "codex/agents/stnl_spec_context_scout.toml",
+    "claude-code/agents/stnl-validation-runner.md",
+    "claude-code/agents/stnl-spec-context-scout.md",
   ]);
-  const actual = new Set(realFiles(root).map((file) => path.relative(root, file).split(path.sep).join("/")));
+  const actual = new Set(["codex", "claude-code"].flatMap((platform) => {
+    const agents = path.join(root, platform, "agents");
+    if (!fs.statSync(agents, { throwIfNoEntry: false })?.isDirectory()) reject("S002_REGISTRY", `missing agents directory: ${agents}`);
+    return realFiles(agents).map((file) => path.relative(root, file).split(path.sep).join("/"));
+  }));
   if (actual.size !== expected.size || [...actual].some((file) => !expected.has(file))) reject("S002_REGISTRY", `subagent registry mismatch; actual=${JSON.stringify([...actual].sort())}`);
+  for (const nestedRoot of ["codex/.codex", "codex/.claude", "claude-code/.codex", "claude-code/.claude"]) {
+    if (fs.existsSync(path.join(root, nestedRoot))) reject("S002_REGISTRY", `native installation path must not exist in canonical sources: ${nestedRoot}`);
+  }
   checkRunner(root);
   checkScout(root);
 }

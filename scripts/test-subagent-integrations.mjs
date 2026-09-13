@@ -18,8 +18,7 @@ import test from "node:test";
 
 const SCRIPT_ROOT = path.dirname(fileURLToPath(import.meta.url));
 const REPOSITORY_ROOT = path.resolve(SCRIPT_ROOT, "..");
-const DISTRIBUTION_ROOT = path.join(REPOSITORY_ROOT, "templates", "subagents");
-const LEGACY_DIRECTORY = ["context", "scout"].join("-");
+const INTEGRATIONS_ROOT = path.join(REPOSITORY_ROOT, "integrations");
 
 const RUNNER_DESCRIPTION =
   "Runner barato e isolado para checks de implementação, checks de findings e validação formal independente de uma slice.";
@@ -27,37 +26,39 @@ const SCOUT_DESCRIPTION =
   "Read-only exception scout for one explicitly authorized lifecycle evidence gap; never auto-select or delegate.";
 const SCOUT_CONTRACT_SHA256 =
   "d9119fb83e790db7f18a6090dd3e7ae925bf01de15d6309a201941049c20970d";
+const IGNORED_DIRECTORIES = new Set([".git", "node_modules", "targets", "__MACOSX"]);
+const TEXT_EXTENSIONS = new Set([".md", ".mjs", ".sh", ".json", ".toml", ".yaml", ".yml"]);
 
 const PLATFORMS = {
   codex: {
     directory: "codex",
-    ownRoot: ".codex",
-    foreignRoot: ".claude",
+    nativeRoot: ".codex",
+    foreignNativeRoot: ".claude",
     files: [
-      ".codex/agents/stnl_spec_context_scout.toml",
-      ".codex/agents/stnl_validation_runner.toml",
+      "stnl_spec_context_scout.toml",
+      "stnl_validation_runner.toml",
     ],
   },
   "claude-code": {
     directory: "claude-code",
-    ownRoot: ".claude",
-    foreignRoot: ".codex",
+    nativeRoot: ".claude",
+    foreignNativeRoot: ".codex",
     files: [
-      ".claude/agents/stnl-spec-context-scout.md",
-      ".claude/agents/stnl-validation-runner.md",
+      "stnl-spec-context-scout.md",
+      "stnl-validation-runner.md",
     ],
   },
 };
 
-class PackageContractError extends Error {
+class IntegrationContractError extends Error {
   constructor(message) {
     super(message);
-    this.name = "PackageContractError";
+    this.name = "IntegrationContractError";
   }
 }
 
 function reject(message) {
-  throw new PackageContractError(message);
+  throw new IntegrationContractError(message);
 }
 
 function toPosix(value) {
@@ -108,6 +109,27 @@ async function listFiles(root) {
 
   await visit(root);
   return files.sort();
+}
+
+async function listOperationalTextFiles(root) {
+  const files = [];
+
+  async function visit(directory) {
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      if (IGNORED_DIRECTORIES.has(entry.name) || entry.name === ".DS_Store" || entry.name.startsWith("._")) {
+        continue;
+      }
+      const absolutePath = path.join(directory, entry.name);
+      if (entry.isDirectory()) {
+        await visit(absolutePath);
+      } else if (entry.isFile() && TEXT_EXTENSIONS.has(path.extname(entry.name))) {
+        files.push(absolutePath);
+      }
+    }
+  }
+
+  await visit(root);
+  return files;
 }
 
 function assertExactFiles(actual, expected, label) {
@@ -207,18 +229,15 @@ function assertRunnerContract(contract, label) {
   assert.doesNotMatch(contract, /(?:você pode|é permitido|you may)[^\n]{0,80}(?:editar|implementar|aplicar correções|criar subagentes|delegar)/iu, `${label} enables a harmful action`);
 }
 
-async function validateCodexPackage(root) {
+async function validateCodexIntegration(root) {
   const config = PLATFORMS.codex;
-  if (await exists(path.join(root, config.foreignRoot))) {
-    reject("Codex package contains Claude files");
+  if (await exists(path.join(root, config.nativeRoot)) || await exists(path.join(root, config.foreignNativeRoot))) {
+    reject("Codex canonical source contains a native installation root");
   }
-  if (await exists(path.join(root, LEGACY_DIRECTORY))) {
-    reject("Codex package contains the removed intermediate directory");
-  }
-  assertExactFiles(await listFiles(root), config.files, "Codex package");
+  assertExactFiles(await listFiles(path.join(root, "agents")), config.files, "Codex agents");
 
-  const runnerPath = path.join(root, ".codex", "agents", "stnl_validation_runner.toml");
-  const scoutPath = path.join(root, ".codex", "agents", "stnl_spec_context_scout.toml");
+  const runnerPath = path.join(root, "agents", "stnl_validation_runner.toml");
+  const scoutPath = path.join(root, "agents", "stnl_spec_context_scout.toml");
   const runner = parseTomlAdapter(await readFile(runnerPath, "utf8"), "Codex runner");
   const scout = parseTomlAdapter(await readFile(scoutPath, "utf8"), "Codex scout");
   assert.deepEqual(runner.metadata, {
@@ -244,18 +263,15 @@ async function validateCodexPackage(root) {
   return { runner: runner.contract, scout: scout.contract };
 }
 
-async function validateClaudePackage(root) {
+async function validateClaudeIntegration(root) {
   const config = PLATFORMS["claude-code"];
-  if (await exists(path.join(root, config.foreignRoot))) {
-    reject("Claude Code package contains Codex files");
+  if (await exists(path.join(root, config.nativeRoot)) || await exists(path.join(root, config.foreignNativeRoot))) {
+    reject("Claude Code canonical source contains a native installation root");
   }
-  if (await exists(path.join(root, LEGACY_DIRECTORY))) {
-    reject("Claude Code package contains the removed intermediate directory");
-  }
-  assertExactFiles(await listFiles(root), config.files, "Claude Code package");
+  assertExactFiles(await listFiles(path.join(root, "agents")), config.files, "Claude Code agents");
 
-  const runnerPath = path.join(root, ".claude", "agents", "stnl-validation-runner.md");
-  const scoutPath = path.join(root, ".claude", "agents", "stnl-spec-context-scout.md");
+  const runnerPath = path.join(root, "agents", "stnl-validation-runner.md");
+  const scoutPath = path.join(root, "agents", "stnl-spec-context-scout.md");
   const runner = parseClaudeAdapter(await readFile(runnerPath, "utf8"), "Claude runner");
   const scout = parseClaudeAdapter(await readFile(scoutPath, "utf8"), "Claude scout");
   assert.deepEqual(runner.metadata, {
@@ -280,37 +296,29 @@ async function validateClaudePackage(root) {
 async function validateReadme(root) {
   const readme = await readFile(path.join(root, "README.md"), "utf8");
   const required = [
-    "copie somente o conteúdo de `codex/`",
+    "integrations/codex/agents/stnl_validation_runner.toml",
+    "integrations/codex/agents/stnl_spec_context_scout.toml",
+    "integrations/claude-code/agents/stnl-validation-runner.md",
+    "integrations/claude-code/agents/stnl-spec-context-scout.md",
     ".codex/agents/stnl_validation_runner.toml",
     ".codex/agents/stnl_spec_context_scout.toml",
-    "copie somente o conteúdo de `claude-code/`",
     ".claude/agents/stnl-validation-runner.md",
     ".claude/agents/stnl-spec-context-scout.md",
-    "Uma única cópia instala os dois subagentes da plataforma escolhida.",
-    "Nunca copie os adaptadores das duas plataformas para o mesmo projeto",
+    "Esses caminhos são de fonte, não de instalação.",
+    "o mecanismo de instalação não faz parte deste repositório nesta fase",
+    "Nunca misture os adaptadores das duas plataformas no mesmo projeto",
   ];
   for (const marker of required) {
     assert.ok(readme.includes(marker), `subagent README lacks ${JSON.stringify(marker)}`);
   }
-  for (const platform of ["codex", "claude-code"]) {
-    const removedReference = `${LEGACY_DIRECTORY}/${platform}/`;
-    assert.ok(!readme.includes(removedReference), `subagent README retains ${removedReference}`);
-  }
+  const obsoleteSourceRoot = ["templates", "subagents"].join("/");
+  assert.equal(readme.includes(obsoleteSourceRoot), false, "integration README retains the obsolete canonical source root");
 }
 
-async function validateDistribution(root) {
-  if (await exists(path.join(root, LEGACY_DIRECTORY))) {
-    reject("removed intermediate directory was recreated");
-  }
-  const expectedFiles = [
-    "README.md",
-    ...PLATFORMS.codex.files.map((file) => `codex/${file}`),
-    ...PLATFORMS["claude-code"].files.map((file) => `claude-code/${file}`),
-  ];
-  assertExactFiles(await listFiles(root), expectedFiles, "subagent distribution");
+async function validateIntegrations(root) {
   await validateReadme(root);
-  const codex = await validateCodexPackage(path.join(root, "codex"));
-  const claude = await validateClaudePackage(path.join(root, "claude-code"));
+  const codex = await validateCodexIntegration(path.join(root, "codex"));
+  const claude = await validateClaudeIntegration(path.join(root, "claude-code"));
   assert.equal(codex.runner, claude.runner, "runner platform contracts diverge");
   assert.equal(codex.scout, claude.scout, "scout platform contracts diverge");
 }
@@ -324,20 +332,10 @@ async function withTemporaryDirectory(prefix, operation) {
   }
 }
 
-async function withDistributionFixture(operation) {
-  return withTemporaryDirectory("stnl subagents distribution ", async (temporaryRoot) => {
-    const fixture = path.join(temporaryRoot, "distribution with spaces");
-    await cp(DISTRIBUTION_ROOT, fixture, { recursive: true });
-    return operation(fixture);
-  });
-}
-
-async function withPlatformFixture(platform, operation) {
-  return withTemporaryDirectory(`stnl ${platform} package `, async (temporaryRoot) => {
-    const fixture = path.join(temporaryRoot, "consumer project with spaces");
-    await cp(path.join(DISTRIBUTION_ROOT, PLATFORMS[platform].directory), fixture, {
-      recursive: true,
-    });
+async function withIntegrationsFixture(operation) {
+  return withTemporaryDirectory("stnl subagent integrations ", async (temporaryRoot) => {
+    const fixture = path.join(temporaryRoot, "integrations with spaces");
+    await cp(INTEGRATIONS_ROOT, fixture, { recursive: true });
     return operation(fixture);
   });
 }
@@ -350,48 +348,80 @@ async function replaceOnce(file, before, after) {
   await writeFile(file, text.replace(before, after), "utf8");
 }
 
-async function expectRejectedDistribution(mutate) {
-  await withDistributionFixture(async (fixture) => {
+async function expectRejectedIntegrations(mutate) {
+  await withIntegrationsFixture(async (fixture) => {
     await mutate(fixture);
-    await assert.rejects(() => validateDistribution(fixture));
+    await assert.rejects(() => validateIntegrations(fixture));
   });
 }
 
-test("canonical distribution contains exactly two complete platform bundles", async () => {
-  await validateDistribution(DISTRIBUTION_ROOT);
+test("canonical integrations contain exactly two active adapters per platform", async () => {
+  await validateIntegrations(INTEGRATIONS_ROOT);
 });
 
-test("Codex installs both agents from only the Codex folder", async () => {
-  await withPlatformFixture("codex", validateCodexPackage);
+test("operational sources contain no obsolete subagent source paths or active duplicate tree", async () => {
+  const obsoleteMarkers = [
+    ["templates", "subagents"].join("/"),
+    ["codex", ".codex", "agents"].join("/"),
+    ["claude-code", ".claude", "agents"].join("/"),
+  ];
+  for (const file of await listOperationalTextFiles(REPOSITORY_ROOT)) {
+    const source = await readFile(file, "utf8");
+    for (const marker of obsoleteMarkers) {
+      assert.equal(source.includes(marker), false, `${toPosix(path.relative(REPOSITORY_ROOT, file))} retains ${marker}`);
+    }
+  }
+
+  const obsoleteSourceDirectory = path.join(REPOSITORY_ROOT, "templates", "subagents");
+  if (await exists(obsoleteSourceDirectory)) {
+    assert.deepEqual(await listFiles(obsoleteSourceDirectory), [], "obsolete source tree still contains active files");
+  }
 });
 
-test("Claude Code installs both agents from only the Claude Code folder", async () => {
-  await withPlatformFixture("claude-code", validateClaudePackage);
+test("Codex keeps both canonical agents directly under its integration boundary", async () => {
+  await validateCodexIntegration(path.join(INTEGRATIONS_ROOT, "codex"));
 });
 
-test("rejects a Codex bundle missing its scout", async () => {
-  await expectRejectedDistribution((fixture) =>
-    rm(path.join(fixture, "codex", ".codex", "agents", "stnl_spec_context_scout.toml")),
+test("Claude Code keeps both canonical agents directly under its integration boundary", async () => {
+  await validateClaudeIntegration(path.join(INTEGRATIONS_ROOT, "claude-code"));
+});
+
+test("allows unrelated platform integration files outside the agents boundary", async () => {
+  await withIntegrationsFixture(async (fixture) => {
+    for (const platform of ["codex", "claude-code"]) {
+      await writeFile(
+        path.join(fixture, platform, "some-future-integration-file.mjs"),
+        "export {};\n",
+        "utf8",
+      );
+    }
+    await validateIntegrations(fixture);
+  });
+});
+
+test("rejects a Codex integration missing its scout", async () => {
+  await expectRejectedIntegrations((fixture) =>
+    rm(path.join(fixture, "codex", "agents", "stnl_spec_context_scout.toml")),
   );
 });
 
-test("rejects a Claude Code bundle missing its runner", async () => {
-  await expectRejectedDistribution((fixture) =>
-    rm(path.join(fixture, "claude-code", ".claude", "agents", "stnl-validation-runner.md")),
+test("rejects a Claude Code integration missing its runner", async () => {
+  await expectRejectedIntegrations((fixture) =>
+    rm(path.join(fixture, "claude-code", "agents", "stnl-validation-runner.md")),
   );
 });
 
 test("rejects an agent moved to the wrong directory", async () => {
-  await expectRejectedDistribution(async (fixture) => {
-    const source = path.join(fixture, "codex", ".codex", "agents", "stnl_spec_context_scout.toml");
-    const destination = path.join(fixture, "codex", ".codex", "stnl_spec_context_scout.toml");
+  await expectRejectedIntegrations(async (fixture) => {
+    const source = path.join(fixture, "codex", "agents", "stnl_spec_context_scout.toml");
+    const destination = path.join(fixture, "codex", "stnl_spec_context_scout.toml");
     await rename(source, destination);
   });
 });
 
-test("rejects an agent file with the wrong installed name", async () => {
-  await expectRejectedDistribution(async (fixture) => {
-    const agents = path.join(fixture, "claude-code", ".claude", "agents");
+test("rejects an agent file with the wrong canonical name", async () => {
+  await expectRejectedIntegrations(async (fixture) => {
+    const agents = path.join(fixture, "claude-code", "agents");
     await rename(
       path.join(agents, "stnl-spec-context-scout.md"),
       path.join(agents, "stnl_spec_context_scout.md"),
@@ -400,55 +430,47 @@ test("rejects an agent file with the wrong installed name", async () => {
 });
 
 test("rejects an altered internal agent identity", async () => {
-  await expectRejectedDistribution((fixture) =>
+  await expectRejectedIntegrations((fixture) =>
     replaceOnce(
-      path.join(fixture, "codex", ".codex", "agents", "stnl_validation_runner.toml"),
+      path.join(fixture, "codex", "agents", "stnl_validation_runner.toml"),
       'name = "stnl_validation_runner"',
       'name = "other_runner"',
     ),
   );
 });
 
-test("rejects a package mixing platform adapters", async () => {
-  await withPlatformFixture("codex", async (fixture) => {
-    const foreignDirectory = path.join(fixture, ".claude", "agents");
-    await mkdir(foreignDirectory, { recursive: true });
+test("rejects an integration mixing platform adapters", async () => {
+  await expectRejectedIntegrations(async (fixture) => {
     await cp(
-      path.join(
-        DISTRIBUTION_ROOT,
-        "claude-code",
-        ".claude",
-        "agents",
-        "stnl-validation-runner.md",
-      ),
-      path.join(foreignDirectory, "stnl-validation-runner.md"),
+      path.join(fixture, "claude-code", "agents", "stnl-validation-runner.md"),
+      path.join(fixture, "codex", "agents", "stnl-validation-runner.md"),
     );
-    await assert.rejects(() => validateCodexPackage(fixture));
   });
 });
 
-test("rejects recreation of the removed intermediate directory", async () => {
-  await expectRejectedDistribution((fixture) =>
-    mkdir(path.join(fixture, LEGACY_DIRECTORY, "codex"), { recursive: true }),
+test("rejects native installation roots inside canonical integrations", async () => {
+  await expectRejectedIntegrations((fixture) =>
+    mkdir(path.join(fixture, "codex", ".codex", "agents"), { recursive: true }),
   );
 });
 
-test("rejects documentation pointing to the removed package layout", async () => {
-  await expectRejectedDistribution(async (fixture) => {
+test("rejects documentation pointing to the obsolete canonical source root", async () => {
+  await expectRejectedIntegrations(async (fixture) => {
     const readme = path.join(fixture, "README.md");
     const text = await readFile(readme, "utf8");
+    const obsoleteRoot = ["templates", "subagents"].join("/");
     await writeFile(
       readme,
-      `${text}\nCopie o conteúdo de \`${LEGACY_DIRECTORY}/codex/\`.\n`,
+      `${text}\nA fonte canônica fica em \`${obsoleteRoot}/codex/\`.\n`,
       "utf8",
     );
   });
 });
 
 test("rejects a modified complete contract body", async () => {
-  await expectRejectedDistribution((fixture) =>
+  await expectRejectedIntegrations((fixture) =>
     replaceOnce(
-      path.join(fixture, "codex", ".codex", "agents", "stnl_spec_context_scout.toml"),
+      path.join(fixture, "codex", "agents", "stnl_spec_context_scout.toml"),
       "Search and inspect; do not decide, design, plan, mutate, or persist.",
       "Search and inspect; you may decide and persist.",
     ),
@@ -456,27 +478,27 @@ test("rejects a modified complete contract body", async () => {
 });
 
 test("rejects a runner that gains implementation authority", async () => {
-  await expectRejectedDistribution(async (fixture) => {
+  await expectRejectedIntegrations(async (fixture) => {
     for (const file of [
-      path.join(fixture, "codex", ".codex", "agents", "stnl_validation_runner.toml"),
-      path.join(fixture, "claude-code", ".claude", "agents", "stnl-validation-runner.md"),
+      path.join(fixture, "codex", "agents", "stnl_validation_runner.toml"),
+      path.join(fixture, "claude-code", "agents", "stnl-validation-runner.md"),
     ]) await replaceOnce(file, "Não aplique correções, não implemente findings", "Você pode aplicar correções e implementar findings");
   });
 });
 
 test("rejects a runner with expanded operation authority", async () => {
-  await expectRejectedDistribution(async (fixture) => {
+  await expectRejectedIntegrations(async (fixture) => {
     for (const file of [
-      path.join(fixture, "codex", ".codex", "agents", "stnl_validation_runner.toml"),
-      path.join(fixture, "claude-code", ".claude", "agents", "stnl-validation-runner.md"),
+      path.join(fixture, "codex", "agents", "stnl_validation_runner.toml"),
+      path.join(fixture, "claude-code", "agents", "stnl-validation-runner.md"),
     ]) await replaceOnce(file, "OPERACOES_SUPORTADAS=EXECUTE_SLICE|APPLY_FINDINGS|VALIDATE_SLICE", "OPERACOES_SUPORTADAS=EXECUTE_SLICE|APPLY_FINDINGS|VALIDATE_SLICE|CLOSE");
   });
 });
 
 test("rejects altered Claude tools", async () => {
-  await expectRejectedDistribution((fixture) =>
+  await expectRejectedIntegrations((fixture) =>
     replaceOnce(
-      path.join(fixture, "claude-code", ".claude", "agents", "stnl-spec-context-scout.md"),
+      path.join(fixture, "claude-code", "agents", "stnl-spec-context-scout.md"),
       "tools: Read, Glob, Grep",
       "tools: Read, Glob, Grep, Bash",
     ),
@@ -484,9 +506,9 @@ test("rejects altered Claude tools", async () => {
 });
 
 test("rejects an altered Codex model", async () => {
-  await expectRejectedDistribution((fixture) =>
+  await expectRejectedIntegrations((fixture) =>
     replaceOnce(
-      path.join(fixture, "codex", ".codex", "agents", "stnl_validation_runner.toml"),
+      path.join(fixture, "codex", "agents", "stnl_validation_runner.toml"),
       'model = "gpt-5.6-luna"',
       'model = "gpt-5.6-sol"',
     ),
@@ -494,9 +516,9 @@ test("rejects an altered Codex model", async () => {
 });
 
 test("rejects altered Claude effort", async () => {
-  await expectRejectedDistribution((fixture) =>
+  await expectRejectedIntegrations((fixture) =>
     replaceOnce(
-      path.join(fixture, "claude-code", ".claude", "agents", "stnl-validation-runner.md"),
+      path.join(fixture, "claude-code", "agents", "stnl-validation-runner.md"),
       "effort: medium",
       "effort: high",
     ),
@@ -510,9 +532,9 @@ for (const [label, before, after] of [
   ["delegation depth", "max_depth = 1", "max_depth = 2"],
 ]) {
   test(`rejects altered Codex scout ${label}`, async () => {
-    await expectRejectedDistribution((fixture) =>
+    await expectRejectedIntegrations((fixture) =>
       replaceOnce(
-        path.join(fixture, "codex", ".codex", "agents", "stnl_spec_context_scout.toml"),
+        path.join(fixture, "codex", "agents", "stnl_spec_context_scout.toml"),
         before,
         after,
       ),
@@ -520,9 +542,9 @@ for (const [label, before, after] of [
   });
 }
 
-test("rejects duplicated agents", async () => {
-  await expectRejectedDistribution(async (fixture) => {
-    const agents = path.join(fixture, "codex", ".codex", "agents");
+test("rejects an unexpected duplicated agent file inside the agents boundary", async () => {
+  await expectRejectedIntegrations(async (fixture) => {
+    const agents = path.join(fixture, "codex", "agents");
     await cp(
       path.join(agents, "stnl_validation_runner.toml"),
       path.join(agents, "stnl_validation_runner_copy.toml"),
