@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { watch, writeFileSync } from "node:fs";
+import { unlinkSync, watch, writeFileSync } from "node:fs";
 import * as fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -18,10 +18,12 @@ import {
   inspectExecutionState,
   preflightExecutionOperation,
   repairExecutionContract,
+  validationEvidenceIdentity,
   validateExecutionCandidate,
   workflowSkillForOperation,
 } from "../skills/workflows/stnl-execution-closer/runtime/execution-state.mjs";
 import { EXECUTION_OPERATION_SKILLS, WORKFLOW_OPERATIONS } from "./lib/skill-registry.mjs";
+import { checkDistributableSkill } from "./lib/check-distributable-skill.mjs";
 import { runValidationSession, validationSandboxBackend } from "../skills/workflows/stnl-slice-executor/runtime/run-validation-session.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
@@ -568,6 +570,18 @@ test("all execution skills bundle byte-identical self-contained state runtimes",
     const source = copies[0].toString("utf8");
     assert.doesNotMatch(source, /stnl-spec-lifecycle-manager|\.\.\/\.\.\//u);
   }
+});
+
+test("only canonical validation harness owners receive operational child-process distribution authority", async (t) => {
+  for (const skill of ["stnl-slice-executor", "stnl-slice-quality-manager"]) {
+    const root = path.join(ROOT, "skills/workflows", skill);
+    assert.deepEqual(await checkDistributableSkill(root), [], skill);
+  }
+  const copied = path.join(await temporary(t), "stnl-slice-executor");
+  await fs.cp(path.join(ROOT, "skills/workflows/stnl-slice-executor"), copied, { recursive: true });
+  await fs.writeFile(path.join(copied, "runtime/extra-process.mjs"), 'import "node:child_process";\n', "utf8");
+  const findings = await checkDistributableSkill(copied);
+  assert.ok(findings.some((finding) => finding.includes("operational runtime must not execute external commands")));
 });
 
 test("an isolated copied skill runs the stable self-contained preflight CLI", async (t) => {
@@ -4544,11 +4558,11 @@ test("Prior Validation Overlap contract keeps paths, IDs, and prior references c
 function validationRequest({
   operation = "EXECUTE_SLICE", slice = "slice-01", round = "1/3", subjects = ["../../src/example.txt"],
   argv = [process.execPath, "-e", "process.exit(0)"], writePaths = [], priorEvidenceId = null,
-  failureConclusion = "VALIDATION_FINDING", replayOriginEvidenceId = null,
+  env = {}, failureConclusion = "VALIDATION_FINDING", replayOriginEvidenceId = null,
 } = {}) {
   return {
     operation, slice, round, cwd: ".", subjects,
-    commands: [{ argv, cwd: ".", writePaths, env: {}, timeoutMs: 10_000 }],
+    commands: [{ argv, cwd: ".", writePaths, env, timeoutMs: 10_000 }],
     baselineFingerprint: null, priorEvidenceId, failureConclusion, replayOriginEvidenceId,
   };
 }
@@ -4633,6 +4647,56 @@ async function packageBinSymlink(fixture, rawTarget) {
   return { executable, link };
 }
 
+async function fakeExternalToolchain(t, { version = "v1", packageManifest = true } = {}) {
+  const external = await temporary(t, "stnl-external-toolchain-");
+  const root = path.join(external, "versions/node", version);
+  const bin = path.join(root, "bin");
+  const packageRoot = path.join(root, "lib/node_modules/fake-npm");
+  const cli = path.join(packageRoot, "bin/npm-cli.js");
+  const runtime = path.join(packageRoot, "runtime.txt");
+  await fs.mkdir(bin, { recursive: true });
+  await fs.mkdir(path.dirname(cli), { recursive: true });
+  await fs.writeFile(path.join(bin, "node"), `#!/bin/sh
+toolchain_root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
+export TOOLCHAIN_ROOT="$toolchain_root"
+exec /bin/sh "$@"
+`, "utf8");
+  await fs.chmod(path.join(bin, "node"), 0o755);
+  if (packageManifest) await fs.writeFile(path.join(packageRoot, "package.json"), '{"name":"fake-npm"}\n', "utf8");
+  await fs.writeFile(runtime, "trusted-runtime\n", "utf8");
+  await fs.writeFile(cli, `#!/usr/bin/env node
+runtime="$TOOLCHAIN_ROOT/lib/node_modules/fake-npm/runtime.txt"
+test "$(cat "$runtime")" = "trusted-runtime" || exit 41
+test -f package-body.txt || exit 42
+if [ "\${1:-}" = "--write-toolchain" ]; then printf 'mutated\\n' > "$runtime" || exit 43; fi
+if [ "\${1:-}" = "--sleep" ]; then sleep 0.8; fi
+if [ "\${1:-}" = "--fail" ]; then exit 9; fi
+printf 'toolchain-ready\\n'
+`, "utf8");
+  await fs.chmod(cli, 0o755);
+  await fs.symlink("../lib/node_modules/fake-npm/bin/npm-cli.js", path.join(bin, "npm"));
+  return { external, root, bin, packageRoot, cli, runtime, launcher: path.join(bin, "npm") };
+}
+
+async function withInheritedPath(bin, operation) {
+  const previous = process.env.PATH;
+  process.env.PATH = `${bin}${path.delimiter}${previous ?? ""}`;
+  try { return await operation(); } finally {
+    if (previous === undefined) delete process.env.PATH;
+    else process.env.PATH = previous;
+  }
+}
+
+async function runDuringLiveMutation(fixture, mutate, { timeoutMs = 10_000 } = {}) {
+  const request = validationRequest({
+    argv: [process.execPath, "-e", "setTimeout(() => {}, 700)"], failureConclusion: "NONE",
+  });
+  request.commands[0].timeoutMs = timeoutMs;
+  const pending = runValidationSession(fixture.requirements, request);
+  const timer = setTimeout(() => { void mutate(); }, 250);
+  try { return await pending; } finally { clearTimeout(timer); }
+}
+
 test("validation source admits package-manager relative symlinks by canonical target and executes the copied binary", async (t) => {
   const fixture = await validationSessionFixture(t);
   const { link } = await packageBinSymlink(fixture, "../acorn/bin/acorn");
@@ -4641,6 +4705,310 @@ test("validation source admits package-manager relative symlinks by canonical ta
   assert.equal(result.provenance.classification, "NONE");
   assert.equal(result.provenance.commands[0].exit, 0);
   assert.equal(result.outputs[0].exit, 0);
+});
+
+test("authenticated NVM-like external toolchain reaches project verification through its read-only snapshot", async (t) => {
+  const fixture = await validationSessionFixture(t);
+  await fs.writeFile(path.join(fixture.root, "package-body.txt"), "project-body\n", "utf8");
+  const toolchain = await fakeExternalToolchain(t);
+  const result = await withInheritedPath(toolchain.bin, () => runValidationSession(
+    fixture.requirements, validationRequest({ argv: ["npm"], failureConclusion: "NONE" }),
+  ));
+  assert.equal(result.provenance.state, "VERIFIED", JSON.stringify(result));
+  assert.equal(result.provenance.commands[0].exit, 0);
+  assert.match(result.outputs[0].stdout, /toolchain-ready/u);
+  assert.match(result.provenance.commands[0].toolchainFingerprint, /^sha256:[0-9a-f]{64}$/u);
+  assert.equal(
+    result.provenance.commands[0].toolchainFingerprintAfter,
+    result.provenance.commands[0].toolchainFingerprint,
+  );
+});
+
+test("trusted external toolchain is read-only and project writePaths cannot grant it mutable authority", async (t) => {
+  const fixture = await validationSessionFixture(t);
+  await fs.writeFile(path.join(fixture.root, "package-body.txt"), "project-body\n", "utf8");
+  const toolchain = await fakeExternalToolchain(t);
+  const original = await fs.readFile(toolchain.runtime, "utf8");
+  const denied = await withInheritedPath(toolchain.bin, () => runValidationSession(
+    fixture.requirements, validationRequest({ argv: ["npm", "--write-toolchain"], failureConclusion: "NONE" }),
+  ));
+  assert.notEqual(denied.provenance.commands[0].exit, 0);
+  assert.equal(denied.provenance.state, "INVALID");
+  assert.equal(denied.provenance.classification, "VALIDATION_SIDE_EFFECT");
+  assert.ok(denied.provenance.workspace.sideEffects.includes("validation-sandbox-boundary-violation"));
+  assert.equal(denied.provenance.workspace.liveWorkspaceDelta, null);
+  assert.equal(await fs.readFile(toolchain.runtime, "utf8"), original);
+  const binAlias = path.join(toolchain.external, "canonical-bin-alias");
+  await fs.symlink(toolchain.bin, binAlias);
+  const aliasDenied = await withInheritedPath(binAlias, () => runValidationSession(
+    fixture.requirements, validationRequest({ argv: ["npm", "--write-toolchain"], failureConclusion: "NONE" }),
+  ));
+  assert.equal(aliasDenied.provenance.state, "INVALID");
+  assert.equal(await fs.readFile(toolchain.runtime, "utf8"), original);
+  await assert.rejects(
+    withInheritedPath(toolchain.bin, () => runValidationSession(fixture.requirements, validationRequest({
+      argv: ["npm"], writePaths: [path.relative(fixture.root, toolchain.packageRoot)], failureConclusion: "NONE",
+    }))),
+    /normalized relative path/u,
+  );
+});
+
+test("external toolchain admission rejects caller roots, unresolved boundaries, escapes, chains, and prefix siblings", async (t) => {
+  const fixture = await validationSessionFixture(t);
+  await fs.writeFile(path.join(fixture.root, "package-body.txt"), "project-body\n", "utf8");
+  await assert.rejects(
+    runValidationSession(fixture.requirements, validationRequest({ argv: ["stnl-definitely-unresolved-tool"], failureConclusion: "NONE" })),
+    /validation executable cannot be resolved/u,
+  );
+  const caller = await fakeExternalToolchain(t);
+  await assert.rejects(runValidationSession(fixture.requirements, validationRequest({
+    argv: ["npm"], env: { PATH: `${caller.bin}${path.delimiter}/usr/bin${path.delimiter}/bin` }, failureConclusion: "NONE",
+  })), /inherited canonical toolchain bin directory/u);
+
+  const unresolved = await fakeExternalToolchain(t, { packageManifest: false });
+  await assert.rejects(
+    withInheritedPath(unresolved.bin, () => runValidationSession(fixture.requirements, validationRequest({ argv: ["npm"], failureConclusion: "NONE" }))),
+    /dependency root cannot be safely determined/u,
+  );
+
+  const escaping = await fakeExternalToolchain(t);
+  const outside = path.join(escaping.external, "outside.txt");
+  await fs.writeFile(outside, "outside\n", "utf8");
+  await fs.symlink(outside, path.join(escaping.packageRoot, "escape"));
+  await assert.rejects(
+    withInheritedPath(escaping.bin, () => runValidationSession(fixture.requirements, validationRequest({ argv: ["npm"], failureConclusion: "NONE" }))),
+    /dependency (?:symlink leaves|escapes) its canonical package boundary/u,
+  );
+
+  const returning = await fakeExternalToolchain(t);
+  const outsideAlias = path.join(returning.external, "outside-alias");
+  await fs.symlink(returning.runtime, outsideAlias);
+  await fs.symlink(outsideAlias, path.join(returning.packageRoot, "outside-hop-returning-inside"));
+  await assert.rejects(
+    withInheritedPath(returning.bin, () => runValidationSession(fixture.requirements, validationRequest({ argv: ["npm"], failureConclusion: "NONE" }))),
+    /dependency symlink leaves its canonical package boundary/u,
+  );
+
+  const hardlinked = await fakeExternalToolchain(t);
+  const hardlinkSource = path.join(hardlinked.external, "hardlink-source");
+  await fs.writeFile(hardlinkSource, "aliased\n", "utf8");
+  await fs.link(hardlinkSource, path.join(hardlinked.packageRoot, "hardlink-alias"));
+  await assert.rejects(
+    withInheritedPath(hardlinked.bin, () => runValidationSession(fixture.requirements, validationRequest({ argv: ["npm"], failureConclusion: "NONE" }))),
+    /dependency aliases a file outside its canonical package boundary/u,
+  );
+
+  const interpreterEscape = await fakeExternalToolchain(t);
+  const outsideInterpreter = path.join(interpreterEscape.external, "outside-node");
+  await fs.writeFile(outsideInterpreter, "#!/bin/sh\nexec /bin/sh \"$@\"\n", "utf8");
+  await fs.chmod(outsideInterpreter, 0o755);
+  await fs.unlink(path.join(interpreterEscape.bin, "node"));
+  await fs.symlink(outsideInterpreter, path.join(interpreterEscape.bin, "node"));
+  await assert.rejects(
+    withInheritedPath(interpreterEscape.bin, () => runValidationSession(fixture.requirements, validationRequest({ argv: ["npm"], failureConclusion: "NONE" }))),
+    /interpreter escapes its canonical installation boundary/u,
+  );
+
+  const chained = await fakeExternalToolchain(t);
+  await fs.unlink(chained.launcher);
+  await fs.symlink("npm-chain", chained.launcher);
+  await fs.symlink("../lib/node_modules/fake-npm/bin/npm-cli.js", path.join(chained.bin, "npm-chain"));
+  await assert.rejects(
+    withInheritedPath(chained.bin, () => runValidationSession(fixture.requirements, validationRequest({ argv: ["npm"], failureConclusion: "NONE" }))),
+    /ambiguous or escaping dependency chain/u,
+  );
+
+  const prefix = await fakeExternalToolchain(t);
+  const sibling = `${prefix.root}-sibling`;
+  t.after(() => fs.rm(sibling, { recursive: true, force: true }));
+  const siblingPackage = path.join(sibling, "lib/node_modules/fake-npm/bin");
+  await fs.mkdir(siblingPackage, { recursive: true });
+  await fs.writeFile(path.join(siblingPackage, "npm-cli.js"), "#!/bin/sh\nexit 0\n", "utf8");
+  await fs.chmod(path.join(siblingPackage, "npm-cli.js"), 0o755);
+  await fs.unlink(prefix.launcher);
+  await fs.symlink(path.join(siblingPackage, "npm-cli.js"), prefix.launcher);
+  await assert.rejects(
+    withInheritedPath(prefix.bin, () => runValidationSession(fixture.requirements, validationRequest({ argv: ["npm"], failureConclusion: "NONE" }))),
+    /unsafe canonical installation boundary/u,
+  );
+});
+
+test("external toolchain identity covers runtime material, evidence, replay inputs, and mutation during execution", async (t) => {
+  const fixture = await validationSessionFixture(t);
+  await fs.writeFile(path.join(fixture.root, "package-body.txt"), "project-body\n", "utf8");
+  const firstToolchain = await fakeExternalToolchain(t, { version: "v1" });
+  const first = await withInheritedPath(firstToolchain.bin, () => runValidationSession(
+    fixture.requirements, validationRequest({ argv: ["npm"], failureConclusion: "NONE" }),
+  ));
+  await fs.writeFile(firstToolchain.runtime, "different-runtime\n", "utf8");
+  const changed = await withInheritedPath(firstToolchain.bin, () => runValidationSession(
+    fixture.requirements, validationRequest({ argv: ["npm"], failureConclusion: "NONE" }),
+  ));
+  assert.notEqual(changed.provenance.commands[0].toolchainFingerprint, first.provenance.commands[0].toolchainFingerprint);
+  assert.notEqual(changed.provenance.inputs.executionFingerprint, first.provenance.inputs.executionFingerprint);
+  assert.notEqual(changed.provenance.evidenceId, first.provenance.evidenceId);
+
+  await fs.writeFile(firstToolchain.runtime, "trusted-runtime\n", "utf8");
+  const pending = withInheritedPath(firstToolchain.bin, () => runValidationSession(
+    fixture.requirements, validationRequest({ argv: ["npm", "--sleep"], failureConclusion: "NONE" }),
+  ));
+  setTimeout(() => writeFileSync(firstToolchain.runtime, "concurrent-mutation\n"), 250);
+  const mutated = await pending;
+  assert.equal(mutated.provenance.state, "INVALID");
+  assert.equal(mutated.provenance.classification, "VALIDATION_SIDE_EFFECT");
+  assert.ok(mutated.provenance.workspace.sideEffects.includes("trusted-external-toolchain-state-changed"));
+  assert.notEqual(
+    mutated.provenance.commands[0].toolchainFingerprint,
+    mutated.provenance.commands[0].toolchainFingerprintAfter,
+  );
+
+  const candidate = await externalExecutionCandidate(t, fixture);
+  const tampered = structuredClone(first.provenance);
+  tampered.commands[0].toolchainFingerprint = `sha256:${"f".repeat(64)}`;
+  await editTask(candidate, (value) => {
+    let next = value.replace("- [ ] 1.1", "- [x] 1.1");
+    next = replaceSection(next, "Changed Areas", "- `../../src/example.txt`");
+    return replaceSection(next, "Implementation Test Evidence", evidenceCheckRecord(tampered));
+  });
+  await assert.rejects(
+    validateExecutionCandidate(fixture.requirements, candidate.execution),
+    /execution identity is inconsistent|Evidence identity does not match/u,
+  );
+});
+
+test("replay cannot substitute a different external toolchain root or version", async (t) => {
+  const fixture = await validationSessionFixture(t);
+  await fs.writeFile(path.join(fixture.root, "package-body.txt"), "project-body\n", "utf8");
+  const implementation = await runValidationSession(
+    fixture.requirements, validationRequest({ failureConclusion: "NONE" }),
+  );
+  await editTask(fixture, (value) => {
+    let next = value.replace("- [ ] 1.1", "- [x] 1.1");
+    next = replaceSection(next, "Changed Areas", "- `../../src/example.txt`");
+    return replaceSection(next, "Implementation Test Evidence", evidenceCheckRecord(implementation.provenance));
+  });
+  const firstToolchain = await fakeExternalToolchain(t, { version: "v1" });
+  const original = await withInheritedPath(firstToolchain.bin, () => runValidationSession(
+    fixture.requirements, validationRequest({
+      operation: "VALIDATE_SLICE", round: null, argv: ["npm", "--fail"], failureConclusion: "VALIDATION_FINDING",
+    }),
+  ));
+  assert.equal(original.provenance.conclusion, "VALIDATION_FINDING");
+  await editTask(fixture, (value) => replaceSection(
+    replaceSection(value, "Validation Attempts", evidenceAttemptRecord(original.provenance, "NEEDS_FIX")),
+    "Validation Findings", `${ACTIVE_FINDING}\n- Kind: implementation_defect\n- Evidence identity: ${original.provenance.evidenceId}`,
+  ));
+  const replacement = await fakeExternalToolchain(t, { version: "v2" });
+  const replay = await withInheritedPath(replacement.bin, () => runValidationSession(
+    fixture.requirements, validationRequest({
+      operation: "VALIDATE_SLICE", round: null, priorEvidenceId: original.provenance.evidenceId,
+      replayOriginEvidenceId: original.provenance.evidenceId, argv: ["npm", "--fail"], failureConclusion: "CODE_REGRESSION",
+    }),
+  ));
+  assert.equal(replay.provenance.state, "INVALID");
+  assert.equal(replay.provenance.classification, "INVALID_REPLAY");
+  assert.equal(replay.provenance.conclusion, "NONE");
+  assert.ok(replay.provenance.replay.mismatches.includes("commandsFingerprint"));
+  assert.notEqual(
+    replay.provenance.commands[0].toolchainFingerprint,
+    original.provenance.commands[0].toolchainFingerprint,
+  );
+});
+
+test("live workspace delta is absent without change and reports one modified, added, or removed identity", async (t) => {
+  const unchangedFixture = await validationSessionFixture(t);
+  const unchanged = await runValidationSession(
+    unchangedFixture.requirements, validationRequest({ failureConclusion: "NONE" }),
+  );
+  assert.equal(unchanged.provenance.workspace.liveWorkspaceDelta, null);
+  assert.equal(
+    unchanged.provenance.workspace.liveWorkspaceFingerprintBefore,
+    unchanged.provenance.workspace.liveWorkspaceFingerprintAfter,
+  );
+
+  for (const disposition of ["modified", "added", "removed"]) {
+    const fixture = await validationSessionFixture(t);
+    const relative = `live-${disposition}.txt`;
+    const target = path.join(fixture.root, relative);
+    if (disposition !== "added") await fs.writeFile(target, "before\n", "utf8");
+    const result = await runDuringLiveMutation(fixture, () => {
+      if (disposition === "removed") unlinkSync(target);
+      else writeFileSync(target, "after\n");
+    });
+    assert.equal(result.provenance.state, "INVALID", disposition);
+    assert.equal(result.provenance.classification, "VALIDATION_SIDE_EFFECT", disposition);
+    assert.ok(result.provenance.workspace.sideEffects.includes("protected-live-workspace-state-changed"), disposition);
+    assert.deepEqual(result.provenance.workspace.liveWorkspaceDelta.changes, [{ path: relative, disposition }]);
+    assert.deepEqual(result.provenance.workspace.liveWorkspaceDelta.counts, {
+      added: disposition === "added" ? 1 : 0,
+      modified: disposition === "modified" ? 1 : 0,
+      removed: disposition === "removed" ? 1 : 0,
+    });
+  }
+});
+
+test("live workspace delta follows ignored metadata policy and orders multiple changes deterministically", async (t) => {
+  const ignoredFixture = await validationSessionFixture(t);
+  const ignored = await runDuringLiveMutation(
+    ignoredFixture, () => writeFileSync(path.join(ignoredFixture.root, ".DS_Store"), "metadata\n"),
+  );
+  assert.equal(ignored.provenance.workspace.liveWorkspaceDelta, null);
+  assert.equal(ignored.provenance.state, "VERIFIED");
+
+  const fixture = await validationSessionFixture(t);
+  const removed = path.join(fixture.root, "z-removed.txt");
+  const modified = path.join(fixture.root, "m-modified.txt");
+  await fs.writeFile(removed, "before\n", "utf8");
+  await fs.writeFile(modified, "before\n", "utf8");
+  const result = await runDuringLiveMutation(fixture, () => {
+    writeFileSync(modified, "after\n");
+    writeFileSync(path.join(fixture.root, "a-added.txt"), "created\n");
+    unlinkSync(removed);
+  });
+  assert.deepEqual(result.provenance.workspace.liveWorkspaceDelta.changes, [
+    { path: "a-added.txt", disposition: "added" },
+    { path: "m-modified.txt", disposition: "modified" },
+    { path: "z-removed.txt", disposition: "removed" },
+  ]);
+});
+
+test("live workspace delta truncation is bounded and deterministic", async (t) => {
+  async function observedDelta() {
+    const fixture = await validationSessionFixture(t);
+    const result = await runDuringLiveMutation(fixture, () => {
+      for (let index = 0; index < 70; index += 1) {
+        writeFileSync(path.join(fixture.root, `bulk-${String(index).padStart(2, "0")}.txt`), "changed\n");
+      }
+    });
+    return result.provenance.workspace.liveWorkspaceDelta;
+  }
+  const first = await observedDelta();
+  const second = await observedDelta();
+  assert.equal(first.limit, 64);
+  assert.equal(first.total, 70);
+  assert.equal(first.changes.length, 64);
+  assert.equal(first.truncated, true);
+  assert.deepEqual(first.counts, { added: 70, modified: 0, removed: 0 });
+  assert.deepEqual(second, first);
+});
+
+test("candidate validation rejects tampered live workspace side-effect diagnostics", async (t) => {
+  const fixture = await validationSessionFixture(t);
+  const result = await runDuringLiveMutation(
+    fixture, () => writeFileSync(path.join(fixture.root, "diagnostic-change.txt"), "changed\n"),
+  );
+  const candidate = await externalExecutionCandidate(t, fixture);
+  const tampered = structuredClone(result.provenance);
+  tampered.workspace.liveWorkspaceDelta.changes[0].path = "substituted.txt";
+  await editTask(candidate, (value) => {
+    let next = value.replace("- [ ] 1.1", "- [x] 1.1");
+    next = replaceSection(next, "Changed Areas", "- `../../src/example.txt`");
+    return replaceSection(next, "Implementation Test Evidence", evidenceCheckRecord(tampered, { status: "BLOCKED" }));
+  });
+  await assert.rejects(
+    validateExecutionCandidate(fixture.requirements, candidate.execution),
+    /live workspace delta is not deterministic|Evidence identity does not match/u,
+  );
 });
 
 test("validation source rebases an absolute symlink whose canonical target remains inside the project", async (t) => {
@@ -4777,6 +5145,41 @@ test("authenticated pre-check BLOCKED provenance persists the real blocker witho
     preflightExecutionOperation(fixture.requirements, "VALIDATE_SLICE", "1"),
     /VALIDATE_SLICE is not legal from RUNNER_RESULT_BLOCKED.*EXECUTE_SLICE for slice-01/u,
   );
+});
+
+test("historical pre-toolchain BLOCKED provenance remains resumable on the same operation, slice, and round", async (t) => {
+  const fixture = await validationSessionFixture(t);
+  const outside = await temporary(t, "stnl-validation-legacy-blocker-");
+  const bin = path.join(fixture.root, "node_modules/.bin");
+  await fs.mkdir(bin, { recursive: true });
+  await fs.symlink(path.join(outside, "missing"), path.join(bin, "legacy"));
+  const current = await runValidationSession(
+    fixture.requirements, validationRequest({ argv: [path.join(bin, "legacy")] }),
+  );
+  const legacy = structuredClone(current.provenance);
+  delete legacy.workspace.liveWorkspaceDelta;
+  legacy.evidenceId = validationEvidenceIdentity(legacy);
+  const newlyAppended = await externalExecutionCandidate(t, fixture);
+  await editTask(newlyAppended, (value) => {
+    let next = value.replace("- [ ] 1.1", "- [x] 1.1");
+    next = replaceSection(next, "Changed Areas", "- `../../src/example.txt`");
+    return replaceSection(next, "Delegation Blocker", infrastructureDelegationBlocker(legacy));
+  });
+  await assert.rejects(
+    validateExecutionCandidate(fixture.requirements, newlyAppended.execution),
+    /cannot append legacy validation provenance/u,
+  );
+  await editTask(fixture, (value) => {
+    let next = value.replace("- [ ] 1.1", "- [x] 1.1");
+    next = replaceSection(next, "Changed Areas", "- `../../src/example.txt`");
+    return replaceSection(next, "Delegation Blocker", infrastructureDelegationBlocker(legacy));
+  });
+  const state = await inspectExecutionState(fixture.requirements);
+  assert.equal(state.state, "RUNNER_RESULT_BLOCKED");
+  assert.equal(state.tasks.get("slice-01").implementationChecks.length, 0);
+  assertRecoveryTarget(state, {
+    operation: "EXECUTE_SLICE", slice: "slice-01", round: 1, sameOperationResumeRequired: true,
+  });
 });
 
 test("missing authenticated pre-check provenance is rejected while genuinely malformed runner output remains classified as malformed", async (t) => {
@@ -4936,12 +5339,16 @@ test("Linux bwrap without an authenticated denial channel fails closed on non-si
   assert.match(harness, /kind === "linux-bwrap" && payload\.exit !== 0 && !payload\.timedOut && !payload\.signaled/u);
   assert.match(harness, /validation-sandbox-outcome-indeterminate/u);
   assert.match(harness, /violationMarker: null/u);
+  assert.match(harness, /"--tmpfs", os\.homedir\(\)/u);
+  assert.match(harness, /arguments_\.push\("--ro-bind", toolchainRoot, toolchainRoot\)/u);
+  assert.doesNotMatch(harness, /arguments_\.push\("--bind", toolchainRoot/u);
 });
 
 test("macOS marker redaction is private, exact, and authentication-gated", async () => {
   const harness = await fs.readFile(path.join(ROOT, "skills/workflows/stnl-slice-executor/runtime/run-validation-session.mjs"), "utf8");
   assert.match(harness, /const violationMarker = observeDenials \? `STNL_VALIDATION_SANDBOX:\$\{randomUUID\(\)\}` : null/u);
   assert.match(harness, /stderrForEvidence: sandboxViolation \? redactAuthenticatedMarker\(payload\.stderr, isolated\.violationMarker\) : payload\.stderr/u);
+  assert.match(harness, /audit\.stop\(true\)/u);
   assert.doesNotMatch(harness, /replaceAll\(.*(?:permission denied|operation not permitted|read-only file system)/iu);
 });
 

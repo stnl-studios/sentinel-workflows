@@ -795,17 +795,28 @@ const EVIDENCE_BLOCKER_KEYS = new Set(["kind", "stage", "code", "message", "targ
 const EVIDENCE_WORKSPACE_KEYS = new Set([
   "kind", "workspaceId", "cwd", "executionRoot", "liveExecutionFingerprintBefore",
   "liveExecutionFingerprintAfter", "liveWorkspaceFingerprintBefore", "liveWorkspaceFingerprintAfter",
-  "isolatedExecutionFingerprintBefore", "isolatedExecutionFingerprintAfter", "cleanup", "sideEffects",
+  "liveWorkspaceDelta", "isolatedExecutionFingerprintBefore", "isolatedExecutionFingerprintAfter", "cleanup", "sideEffects",
 ]);
+const LEGACY_EVIDENCE_WORKSPACE_KEYS = new Set(
+  [...EVIDENCE_WORKSPACE_KEYS].filter((key) => key !== "liveWorkspaceDelta"),
+);
+const EVIDENCE_WORKSPACE_DELTA_KEYS = new Set([
+  "limit", "total", "counts", "changes", "truncated", "fingerprint",
+]);
+const EVIDENCE_WORKSPACE_DELTA_COUNT_KEYS = new Set(["added", "modified", "removed"]);
+const EVIDENCE_WORKSPACE_DELTA_CHANGE_KEYS = new Set(["path", "disposition"]);
 const EVIDENCE_INPUT_KEYS = new Set([
   "requirementsAuthority", "planRevision", "head", "sourceFingerprint", "manifestFingerprint",
   "baselineFingerprint", "changedScopeFingerprint", "executionFingerprint",
 ]);
 const EVIDENCE_SUBJECT_KEYS = new Set(["path", "expected"]);
 const EVIDENCE_COMMAND_KEYS = new Set([
-  "display", "argv", "cwd", "writePaths", "envFingerprint", "executableFingerprint", "timeoutMs", "exit",
-  "stdoutFingerprint", "stderrFingerprint",
+  "display", "argv", "cwd", "writePaths", "envFingerprint", "executableFingerprint", "toolchainFingerprint",
+  "toolchainFingerprintAfter", "timeoutMs", "exit", "stdoutFingerprint", "stderrFingerprint",
 ]);
+const LEGACY_EVIDENCE_COMMAND_KEYS = new Set(
+  [...EVIDENCE_COMMAND_KEYS].filter((key) => key !== "toolchainFingerprint" && key !== "toolchainFingerprintAfter"),
+);
 const EVIDENCE_REPLAY_KEYS = new Set([
   "originalEvidenceId", "originalFingerprint", "currentFingerprint", "equivalent", "mismatches",
 ]);
@@ -854,7 +865,10 @@ function changedScopeFingerprint(subjects) {
 }
 
 function evidenceExecutionFingerprint(provenance) {
-  const commands = provenance.commands.map(({ stdoutFingerprint: _stdout, stderrFingerprint: _stderr, exit: _exit, ...command }) => command);
+  const commands = provenance.commands.map(({
+    stdoutFingerprint: _stdout, stderrFingerprint: _stderr, exit: _exit,
+    toolchainFingerprintAfter: _toolchainFingerprintAfter, ...command
+  }) => command);
   const inputs = { ...provenance.inputs };
   delete inputs.executionFingerprint;
   return deterministicDigest("stnl-validation-execution-v1", {
@@ -897,6 +911,13 @@ function parseEvidenceProvenance(record, authority, { operation, round, required
     throw new ExecutionContractError(`${record.id} Evidence provenance priorEvidenceId is malformed`);
   }
   const infrastructureBlocked = provenance.classification === "INFRASTRUCTURE_BLOCKED";
+  const legacySecurityModel = provenance.workspace !== null
+    && typeof provenance.workspace === "object"
+    && !Array.isArray(provenance.workspace)
+    && !Object.hasOwn(provenance.workspace, "liveWorkspaceDelta")
+    && Array.isArray(provenance.commands)
+    && provenance.commands.every((command) => !Object.hasOwn(command, "toolchainFingerprint")
+      && !Object.hasOwn(command, "toolchainFingerprintAfter"));
   if (infrastructureBlocked) {
     exactObject(provenance.blocker, EVIDENCE_BLOCKER_KEYS, `${record.id} Evidence blocker`);
     if (!new Set(["infrastructure", "source-isolation"]).has(provenance.blocker.kind)
@@ -910,7 +931,11 @@ function parseEvidenceProvenance(record, authority, { operation, round, required
   } else if (Object.hasOwn(provenance, "blocker")) {
     throw new ExecutionContractError(`${record.id} non-infrastructure evidence cannot contain a blocker`);
   }
-  exactObject(provenance.workspace, EVIDENCE_WORKSPACE_KEYS, `${record.id} Evidence workspace`);
+  exactObject(
+    provenance.workspace,
+    legacySecurityModel ? LEGACY_EVIDENCE_WORKSPACE_KEYS : EVIDENCE_WORKSPACE_KEYS,
+    `${record.id} Evidence workspace`,
+  );
   const workspace = provenance.workspace;
   if (infrastructureBlocked) {
     const unavailable = deterministicDigest("stnl-validation-isolated-not-created-v1", []);
@@ -945,6 +970,40 @@ function parseEvidenceProvenance(record, authority, { operation, round, required
     || new Set(workspace.sideEffects).size !== workspace.sideEffects.length
     || workspace.sideEffects.some((entry, index) => index > 0 && entry.localeCompare(workspace.sideEffects[index - 1], "en") <= 0)) {
     throw new ExecutionContractError(`${record.id} Evidence workspace sideEffects must be a unique ordered array`);
+  }
+  if (!legacySecurityModel && workspace.liveWorkspaceDelta !== null) {
+    const delta = workspace.liveWorkspaceDelta;
+    exactObject(delta, EVIDENCE_WORKSPACE_DELTA_KEYS, `${record.id} live workspace delta`);
+    exactObject(delta.counts, EVIDENCE_WORKSPACE_DELTA_COUNT_KEYS, `${record.id} live workspace delta counts`);
+    if (delta.limit !== 64 || !Number.isSafeInteger(delta.total) || delta.total <= 0
+      || Object.values(delta.counts).some((value) => !Number.isSafeInteger(value) || value < 0)
+      || Object.values(delta.counts).reduce((sum, value) => sum + value, 0) !== delta.total
+      || typeof delta.truncated !== "boolean" || delta.truncated !== (delta.total > delta.limit)
+      || typeof delta.fingerprint !== "string" || !CURRENT_AUTHORITY.test(delta.fingerprint)
+      || !Array.isArray(delta.changes) || delta.changes.length !== Math.min(delta.total, delta.limit)) {
+      throw new ExecutionContractError(`${record.id} live workspace delta is malformed`);
+    }
+    const identities = [];
+    for (const change of delta.changes) {
+      exactObject(change, EVIDENCE_WORKSPACE_DELTA_CHANGE_KEYS, `${record.id} live workspace delta change`);
+      validateProjectRelativePath(change.path, `${record.id} live workspace delta path`);
+      if (!EVIDENCE_WORKSPACE_DELTA_COUNT_KEYS.has(change.disposition)) {
+        throw new ExecutionContractError(`${record.id} live workspace delta disposition is malformed`);
+      }
+      identities.push(change.path);
+    }
+    if (new Set(identities).size !== identities.length
+      || identities.some((entry, index) => index > 0 && entry.localeCompare(identities[index - 1], "en") <= 0)
+      || [...EVIDENCE_WORKSPACE_DELTA_COUNT_KEYS].some((disposition) => (
+        delta.changes.filter((entry) => entry.disposition === disposition).length > delta.counts[disposition]
+      ))
+      || (!delta.truncated && delta.fingerprint !== deterministicDigest("stnl-validation-live-workspace-delta-v1", delta.changes))) {
+      throw new ExecutionContractError(`${record.id} live workspace delta is not deterministic`);
+    }
+  }
+  if (!legacySecurityModel && (workspace.liveWorkspaceFingerprintBefore === workspace.liveWorkspaceFingerprintAfter)
+    !== (workspace.liveWorkspaceDelta === null)) {
+    throw new ExecutionContractError(`${record.id} live workspace delta disagrees with the global fingerprint`);
   }
 
   exactObject(provenance.inputs, EVIDENCE_INPUT_KEYS, `${record.id} Evidence inputs`);
@@ -992,7 +1051,7 @@ function parseEvidenceProvenance(record, authority, { operation, round, required
 
   if (!Array.isArray(provenance.commands)) throw new ExecutionContractError(`${record.id} Evidence commands must be an array`);
   for (const command of provenance.commands) {
-    exactObject(command, EVIDENCE_COMMAND_KEYS, `${record.id} Evidence command`);
+    exactObject(command, legacySecurityModel ? LEGACY_EVIDENCE_COMMAND_KEYS : EVIDENCE_COMMAND_KEYS, `${record.id} Evidence command`);
     if (typeof command.display !== "string" || command.display.length === 0 || !Array.isArray(command.argv)
       || command.argv.length === 0 || command.argv.some((entry) => typeof entry !== "string")
       || !Array.isArray(command.writePaths)
@@ -1005,6 +1064,16 @@ function parseEvidenceProvenance(record, authority, { operation, round, required
     validateProjectRelativePath(command.cwd, `${record.id} Evidence command cwd`);
     for (const name of ["envFingerprint", "executableFingerprint", "stdoutFingerprint", "stderrFingerprint"]) {
       if (typeof command[name] !== "string" || !CURRENT_AUTHORITY.test(command[name])) throw new ExecutionContractError(`${record.id} Evidence command ${name} is malformed`);
+    }
+    if (!legacySecurityModel) {
+      for (const name of ["toolchainFingerprint", "toolchainFingerprintAfter"]) {
+        if (command[name] !== null && (typeof command[name] !== "string" || !CURRENT_AUTHORITY.test(command[name]))) {
+          throw new ExecutionContractError(`${record.id} Evidence command ${name} is malformed`);
+        }
+      }
+      if ((command.toolchainFingerprint === null) !== (command.toolchainFingerprintAfter === null)) {
+        throw new ExecutionContractError(`${record.id} Evidence command toolchain identity is incomplete`);
+      }
     }
   }
   if (record.commands.length !== provenance.commands.length || record.commands.some((command, index) => (
@@ -1047,6 +1116,7 @@ function parseEvidenceProvenance(record, authority, { operation, round, required
     || workspace.liveExecutionFingerprintBefore !== workspace.liveExecutionFingerprintAfter
     || workspace.liveWorkspaceFingerprintBefore !== workspace.liveWorkspaceFingerprintAfter
     || workspace.isolatedExecutionFingerprintBefore !== workspace.isolatedExecutionFingerprintAfter
+    || provenance.commands.some((command) => command.toolchainFingerprint !== command.toolchainFingerprintAfter)
     || (!infrastructureBlocked && workspace.cleanup !== "clean");
   if (sideEffect !== (provenance.classification === "VALIDATION_SIDE_EFFECT")) {
     throw new ExecutionContractError(`${record.id} validation side-effect classification disagrees with workspace evidence`);
@@ -1074,6 +1144,7 @@ function parseEvidenceProvenance(record, authority, { operation, round, required
   if (provenance.evidenceId !== validationEvidenceIdentity(provenance)) {
     throw new ExecutionContractError(`${record.id} Evidence identity does not match its provenance`);
   }
+  if (legacySecurityModel) Object.defineProperty(provenance, "legacySecurityModel", { value: true, enumerable: false });
   return Object.freeze(provenance);
 }
 
@@ -3318,6 +3389,9 @@ async function validateCandidateHistory(workspace, result) {
           if (candidate.evidenceContract === "stnl-validation-evidence/v1" && record.provenance === null) {
             throw new ExecutionContractError(`${slice}/${record.id} newly persisted validation evidence requires structured provenance`);
           }
+          if (record.provenance?.legacySecurityModel === true) {
+            throw new ExecutionContractError(`${slice}/${record.id} cannot append legacy validation provenance under the current harness contract`);
+          }
         }
       }
     }
@@ -3367,10 +3441,14 @@ async function validateCandidateHistory(workspace, result) {
         candidate.delegationBlocker === null ? undefined : { body: candidate.sections.get("Delegation Blocker") },
         `${slice}/Delegation Blocker`, { disposition: true, supersession: false },
       );
-    } else if (candidate.delegationBlocker !== null
-      && candidate.delegationBlocker.operation !== "VALIDATE_SLICE"
-      && field(candidate.sections.get("Delegation Blocker"), "Pending automatic round", { required: false }) === null) {
-      throw new ExecutionContractError(`${slice}/Delegation Blocker newly persisted auxiliary recovery requires Pending automatic round`);
+    } else if (candidate.delegationBlocker !== null) {
+      if (candidate.delegationBlocker.provenance?.legacySecurityModel === true) {
+        throw new ExecutionContractError(`${slice}/Delegation Blocker cannot append legacy validation provenance under the current harness contract`);
+      }
+      if (candidate.delegationBlocker.operation !== "VALIDATE_SLICE"
+        && field(candidate.sections.get("Delegation Blocker"), "Pending automatic round", { required: false }) === null) {
+        throw new ExecutionContractError(`${slice}/Delegation Blocker newly persisted auxiliary recovery requires Pending automatic round`);
+      }
     }
   }
   for (const [slice, candidate] of result.tasks ?? []) {

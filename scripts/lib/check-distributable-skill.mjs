@@ -1,6 +1,6 @@
 import { isBuiltin } from "node:module";
 import { readFile, readdir, stat } from "node:fs/promises";
-import { dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 const FORBIDDEN_EXECUTABLE_EXTENSIONS = new Set([
   ".js", ".cjs", ".ts", ".mts", ".cts", ".jsx", ".tsx",
@@ -528,10 +528,13 @@ export async function checkDistributableSkill(skillRoot, policy = {}) {
         findings.push(`missing relative import in ${relativePath}: ${specifier}`);
       }
     }
+    const validationHarnessOwner = new Set(["stnl-slice-executor", "stnl-slice-quality-manager"]).has(basename(root))
+      && relativePath === "runtime/run-validation-session.mjs";
     if (
       relativePath.startsWith("runtime/") &&
       !relativePath.startsWith("runtime/test/") &&
-      specifiers.includes("node:child_process")
+      specifiers.includes("node:child_process") &&
+      !validationHarnessOwner
     ) {
       findings.push(`operational runtime must not execute external commands: ${relativePath}`);
     }

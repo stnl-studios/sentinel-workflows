@@ -19,6 +19,8 @@ import {
 } from "./execution-state.mjs";
 
 const HASH = /^sha256:[0-9a-f]{64}$/u;
+const LIVE_WORKSPACE_DELTA_LIMIT = 64;
+const SYSTEM_READ_ROOTS = ["/System", "/Library/Apple", "/usr", "/bin", "/sbin", "/private/etc"];
 const OPERATIONS = new Set(["EXECUTE_SLICE", "APPLY_FINDINGS", "VALIDATE_SLICE"]);
 const REQUEST_KEYS = new Set([
   "operation", "slice", "round", "cwd", "subjects", "commands", "baselineFingerprint",
@@ -146,26 +148,55 @@ async function copyValidationSource(projectRoot, copiedRoot, symlinks) {
   await assertCopySourceSafe(copiedRoot, copiedRoot);
 }
 
-async function fingerprintTree(root) {
+async function snapshotTree(root, { ignoreMetadata = true } = {}) {
   const metadata = await lstatOrNull(root);
-  if (metadata === null) return digest("stnl-validation-tree-v1", []);
+  if (metadata === null) return { fingerprint: digest("stnl-validation-tree-v1", []), entries: [] };
   const entries = [];
   async function visit(directory) {
     for (const entry of (await fs.readdir(directory, { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name, "en"))) {
-      if (isIgnoredMetadata(entry.name)) continue;
+      if (ignoreMetadata && isIgnoredMetadata(entry.name)) continue;
       const entryPath = path.join(directory, entry.name);
       const relative = path.relative(root, entryPath).split(path.sep).join("/");
       const item = await fs.lstat(entryPath);
-      if (item.isSymbolicLink()) entries.push([relative, "symlink", await fs.readlink(entryPath)]);
+      if (item.isSymbolicLink()) entries.push([relative, "symlink", item.mode & 0o777, await fs.readlink(entryPath)]);
       else if (item.isDirectory()) {
-        entries.push([relative, "directory"]);
+        entries.push([relative, "directory", item.mode & 0o777]);
         await visit(entryPath);
-      } else if (item.isFile()) entries.push([relative, "file", createHash("sha256").update(await fs.readFile(entryPath)).digest("hex")]);
-      else entries.push([relative, "other"]);
+      } else if (item.isFile()) entries.push([relative, "file", item.mode & 0o777, createHash("sha256").update(await fs.readFile(entryPath)).digest("hex")]);
+      else entries.push([relative, "other", item.mode & 0o777]);
     }
   }
   await visit(root);
-  return digest("stnl-validation-tree-v1", entries);
+  return { fingerprint: digest("stnl-validation-tree-v1", entries), entries };
+}
+
+async function fingerprintTree(root) {
+  return (await snapshotTree(root)).fingerprint;
+}
+
+function treeDelta(before, after) {
+  const beforeEntries = new Map(before.entries.map((entry) => [entry[0], entry]));
+  const afterEntries = new Map(after.entries.map((entry) => [entry[0], entry]));
+  const changes = [];
+  for (const identity of [...new Set([...beforeEntries.keys(), ...afterEntries.keys()])].sort((a, b) => a.localeCompare(b, "en"))) {
+    const previous = beforeEntries.get(identity);
+    const current = afterEntries.get(identity);
+    if (previous === undefined) changes.push({ path: identity, disposition: "added" });
+    else if (current === undefined) changes.push({ path: identity, disposition: "removed" });
+    else if (JSON.stringify(previous) !== JSON.stringify(current)) changes.push({ path: identity, disposition: "modified" });
+  }
+  if (changes.length === 0) return null;
+  const counts = Object.fromEntries(["added", "modified", "removed"].map((disposition) => [
+    disposition, changes.filter((entry) => entry.disposition === disposition).length,
+  ]));
+  return {
+    limit: LIVE_WORKSPACE_DELTA_LIMIT,
+    total: changes.length,
+    counts,
+    changes: changes.slice(0, LIVE_WORKSPACE_DELTA_LIMIT),
+    truncated: changes.length > LIVE_WORKSPACE_DELTA_LIMIT,
+    fingerprint: digest("stnl-validation-live-workspace-delta-v1", changes),
+  };
 }
 
 async function subjectManifest(taskDirectory, subjects, projectRoot) {
@@ -195,17 +226,252 @@ function shellDisplay(argv) {
   return argv.map((value) => /^[A-Za-z0-9_./:=+-]+$/u.test(value) ? value : `'${value.replaceAll("'", `'\\''`)}'`).join(" ");
 }
 
-async function resolveExecutable(command, environment, cwd) {
+async function fileIdentity(filePath) {
+  const metadata = await fs.stat(filePath);
+  return {
+    mode: metadata.mode & 0o777,
+    content: createHash("sha256").update(await fs.readFile(filePath)).digest("hex"),
+  };
+}
+
+function isSystemPath(candidate) {
+  return SYSTEM_READ_ROOTS.some((root) => within(candidate, root));
+}
+
+async function inheritedPathDirectories(cwd) {
+  const output = new Set();
+  for (const entry of String(process.env.PATH ?? "").split(path.delimiter).filter(Boolean)) {
+    const candidate = path.resolve(cwd, entry);
+    const metadata = await statOrNull(candidate);
+    if (metadata?.isDirectory()) output.add(await fs.realpath(candidate));
+  }
+  return output;
+}
+
+async function assertSymlinkTreeBounded(directory, boundary) {
+  async function visit(current) {
+    for (const entry of await fs.readdir(current, { withFileTypes: true })) {
+      const entryPath = path.join(current, entry.name);
+      const metadata = await fs.lstat(entryPath);
+      if (metadata.isSymbolicLink()) {
+        const rawTarget = await fs.readlink(entryPath);
+        const directTarget = path.resolve(path.dirname(entryPath), rawTarget);
+        if (path.isAbsolute(rawTarget) || !within(directTarget, boundary)) {
+          throw new ExecutionContractError("external toolchain dependency symlink leaves its canonical package boundary");
+        }
+        let target;
+        try { target = await fs.realpath(entryPath); } catch {
+          throw new ExecutionContractError("external toolchain contains an unresolved dependency symlink");
+        }
+        if (!within(target, boundary)) {
+          throw new ExecutionContractError("external toolchain dependency escapes its canonical package boundary");
+        }
+      } else if (metadata.isDirectory()) await visit(entryPath);
+      else if (metadata.isFile() && metadata.nlink !== 1) {
+        throw new ExecutionContractError("external toolchain dependency aliases a file outside its canonical package boundary");
+      } else if (!metadata.isFile()) {
+        throw new ExecutionContractError("external toolchain dependency contains an unsupported filesystem entry");
+      }
+    }
+  }
+  await visit(directory);
+}
+
+async function packageBoundary(executable, installationRoot) {
+  let current = path.dirname(executable);
+  while (current !== installationRoot && within(current, installationRoot)) {
+    const manifest = path.join(current, "package.json");
+    const metadata = await lstatOrNull(manifest);
+    if (metadata?.isFile() && !metadata.isSymbolicLink()) {
+      let parsed;
+      try { parsed = JSON.parse(await fs.readFile(manifest, "utf8")); } catch {
+        throw new ExecutionContractError("external toolchain package boundary has invalid package metadata");
+      }
+      if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
+        && typeof parsed.name === "string" && parsed.name.length !== 0) return current;
+      throw new ExecutionContractError("external toolchain package boundary has invalid package metadata");
+    }
+    current = path.dirname(current);
+  }
+  throw new ExecutionContractError("external executable dependency root cannot be safely determined");
+}
+
+async function shebangInterpreter(executable, installationRoot, binDirectory) {
+  const firstLine = (await fs.readFile(executable, "utf8")).split(/\r?\n/u, 1)[0];
+  if (!firstLine.startsWith("#!")) throw new ExecutionContractError("external launcher target has no bounded interpreter dependency");
+  const words = firstLine.slice(2).trim().split(/\s+/u).filter(Boolean);
+  if (words.length === 0) throw new ExecutionContractError("external launcher target has an invalid interpreter dependency");
+  let interpreter = words[0];
+  if (path.basename(interpreter) === "env") {
+    const name = words.find((entry, index) => index > 0 && !entry.startsWith("-"));
+    if (name === undefined || name.includes(path.sep)) {
+      throw new ExecutionContractError("external launcher target has an ambiguous env interpreter dependency");
+    }
+    interpreter = path.join(binDirectory, name);
+  }
+  const canonical = await fs.realpath(interpreter).catch(() => null);
+  if (canonical === null) throw new ExecutionContractError("external launcher interpreter dependency is unresolved");
+  if (isSystemPath(canonical)) return null;
+  if (!within(canonical, installationRoot)) {
+    throw new ExecutionContractError("external launcher interpreter escapes its canonical installation boundary");
+  }
+  const metadata = await fs.stat(canonical);
+  if (!metadata.isFile() || metadata.nlink !== 1 || (metadata.mode & 0o111) === 0) {
+    throw new ExecutionContractError("external launcher interpreter dependency is not executable");
+  }
+  return canonical;
+}
+
+async function externalToolchain(candidate, canonicalExecutable, trustedPathDirectories) {
+  const candidateDirectory = await fs.realpath(path.dirname(candidate));
+  if (!trustedPathDirectories.has(candidateDirectory) || path.basename(candidateDirectory) !== "bin") {
+    throw new ExecutionContractError("external executable is not rooted in an inherited canonical toolchain bin directory");
+  }
+  const installationRoot = await fs.realpath(path.dirname(candidateDirectory));
+  if (installationRoot === path.parse(installationRoot).root || within(os.homedir(), installationRoot)
+    || !within(canonicalExecutable, installationRoot)) {
+    throw new ExecutionContractError("external executable has an unsafe canonical installation boundary");
+  }
+  const rawLauncher = await fs.readlink(candidate);
+  const directTarget = path.resolve(path.dirname(candidate), rawLauncher);
+  if (!within(directTarget, installationRoot) || (await fs.lstat(directTarget)).isSymbolicLink()) {
+    throw new ExecutionContractError("external launcher has an ambiguous or escaping dependency chain");
+  }
+  const packageRoot = await packageBoundary(canonicalExecutable, installationRoot);
+  await assertSymlinkTreeBounded(packageRoot, packageRoot);
+  const interpreter = await shebangInterpreter(canonicalExecutable, installationRoot, candidateDirectory);
+  const packageSnapshot = await snapshotTree(packageRoot, { ignoreMetadata: false });
+  const material = {
+    launcher: path.relative(installationRoot, candidate).split(path.sep).join("/"),
+    launcherTarget: path.relative(installationRoot, canonicalExecutable).split(path.sep).join("/"),
+    launcherValue: rawLauncher,
+    packageRoot: path.relative(installationRoot, packageRoot).split(path.sep).join("/"),
+    packageFingerprint: packageSnapshot.fingerprint,
+    interpreter: interpreter === null ? null : path.relative(installationRoot, interpreter).split(path.sep).join("/"),
+    interpreterIdentity: interpreter === null ? null : await fileIdentity(interpreter),
+  };
+  return {
+    sourceRoot: installationRoot, sourceBin: candidateDirectory, packageRoot, interpreter,
+    material, fingerprint: digest("stnl-validation-external-toolchain-v1", {
+      root: digest("stnl-validation-external-toolchain-root-v1", installationRoot), material,
+    }),
+  };
+}
+
+async function resolveExecutable(command, environment, cwd, copiedRoot) {
   const executable = command.argv[0];
   const candidates = path.isAbsolute(executable) ? [executable]
     : executable.includes(path.sep) ? [path.resolve(cwd, executable)]
       : String(environment.PATH ?? "").split(path.delimiter).filter(Boolean)
         .map((directory) => path.resolve(cwd, directory, executable));
+  const trustedPathDirectories = await inheritedPathDirectories(cwd);
   for (const candidate of candidates) {
     const metadata = await statOrNull(candidate);
-    if (metadata?.isFile()) return digest("stnl-validation-executable-v1", await fs.readFile(candidate));
+    if (!metadata?.isFile() || (metadata.mode & 0o111) === 0) continue;
+    const physicalCandidate = path.join(await fs.realpath(path.dirname(candidate)), path.basename(candidate));
+    const canonicalExecutable = await fs.realpath(physicalCandidate);
+    const candidateMetadata = await fs.lstat(physicalCandidate);
+    const stablePath = within(canonicalExecutable, copiedRoot)
+      ? `$PROJECT/${path.relative(copiedRoot, canonicalExecutable).split(path.sep).join("/")}` : canonicalExecutable;
+    const executableFingerprint = digest("stnl-validation-executable-v2", {
+      path: stablePath, identity: await fileIdentity(canonicalExecutable),
+    });
+    if (within(canonicalExecutable, copiedRoot) || isSystemPath(canonicalExecutable)
+      || (!candidateMetadata.isSymbolicLink() && canonicalExecutable === await fs.realpath(process.execPath))) {
+      return { candidate: physicalCandidate, canonicalExecutable, executableFingerprint, toolchain: null };
+    }
+    if (!candidateMetadata.isSymbolicLink()) {
+      throw new ExecutionContractError("external executable has no safely derivable dependency boundary");
+    }
+    return {
+      candidate: physicalCandidate, canonicalExecutable, executableFingerprint,
+      toolchain: await externalToolchain(physicalCandidate, canonicalExecutable, trustedPathDirectories),
+    };
   }
-  return digest("stnl-validation-executable-v1", { unresolved: executable, path: environment.PATH ?? "" });
+  throw new ExecutionContractError(`validation executable cannot be resolved: ${executable}`);
+}
+
+async function currentToolchainFingerprint(toolchain) {
+  const canonicalExecutable = await fs.realpath(path.join(toolchain.sourceRoot, toolchain.material.launcher)).catch(() => null);
+  if (canonicalExecutable === null) return null;
+  try {
+    const current = await externalToolchain(
+      path.join(toolchain.sourceRoot, toolchain.material.launcher),
+      canonicalExecutable,
+      new Set([toolchain.sourceBin]),
+    );
+    return current.fingerprint;
+  } catch {
+    return null;
+  }
+}
+
+async function copyTrustedToolchain(toolchain, toolchainsRoot) {
+  const destination = path.join(toolchainsRoot, toolchain.fingerprint.slice("sha256:".length));
+  const packageRelative = path.relative(toolchain.sourceRoot, toolchain.packageRoot);
+  await fs.mkdir(path.dirname(path.join(destination, packageRelative)), { recursive: true });
+  await fs.cp(toolchain.packageRoot, path.join(destination, packageRelative), {
+    recursive: true, verbatimSymlinks: true,
+  });
+  if (toolchain.interpreter !== null) {
+    const interpreterRelative = path.relative(toolchain.sourceRoot, toolchain.interpreter);
+    await fs.mkdir(path.dirname(path.join(destination, interpreterRelative)), { recursive: true });
+    await fs.copyFile(toolchain.interpreter, path.join(destination, interpreterRelative));
+    await fs.chmod(path.join(destination, interpreterRelative), (await fs.stat(toolchain.interpreter)).mode & 0o777);
+  }
+  const launcher = path.join(toolchain.sourceRoot, toolchain.material.launcher);
+  const copiedLauncher = path.join(destination, toolchain.material.launcher);
+  await fs.mkdir(path.dirname(copiedLauncher), { recursive: true });
+  const rawLauncher = await fs.readlink(launcher);
+  const copiedTarget = path.join(destination, toolchain.material.launcherTarget);
+  await fs.symlink(path.isAbsolute(rawLauncher) ? path.relative(path.dirname(copiedLauncher), copiedTarget) : rawLauncher, copiedLauncher);
+  const copiedCanonical = await fs.realpath(copiedLauncher).catch(() => null);
+  if (copiedCanonical === null || copiedCanonical !== copiedTarget) {
+    throw new ExecutionContractError("external toolchain snapshot did not preserve its canonical launcher identity");
+  }
+  const copiedPackage = await snapshotTree(path.join(destination, packageRelative), { ignoreMetadata: false });
+  if (copiedPackage.fingerprint !== toolchain.material.packageFingerprint
+    || (toolchain.interpreter !== null
+      && JSON.stringify(await fileIdentity(path.join(destination, toolchain.material.interpreter)))
+        !== JSON.stringify(toolchain.material.interpreterIdentity))
+    || await currentToolchainFingerprint(toolchain) !== toolchain.fingerprint) {
+    throw new ExecutionContractError("external toolchain changed while its authenticated snapshot was created");
+  }
+  return {
+    root: destination,
+    bin: path.join(destination, path.relative(toolchain.sourceRoot, toolchain.sourceBin)),
+    launcher: copiedLauncher,
+  };
+}
+
+async function admittedToolchainFingerprintAfter(toolchain, snapshot) {
+  if (await currentToolchainFingerprint(toolchain) !== toolchain.fingerprint) return null;
+  try {
+    const copiedTarget = path.join(snapshot.root, toolchain.material.launcherTarget);
+    if (await fs.realpath(snapshot.launcher) !== copiedTarget) return null;
+    const packageRoot = path.join(snapshot.root, toolchain.material.packageRoot);
+    if ((await snapshotTree(packageRoot, { ignoreMetadata: false })).fingerprint
+      !== toolchain.material.packageFingerprint) return null;
+    if (toolchain.material.interpreter !== null
+      && JSON.stringify(await fileIdentity(path.join(snapshot.root, toolchain.material.interpreter)))
+        !== JSON.stringify(toolchain.material.interpreterIdentity)) return null;
+    return toolchain.fingerprint;
+  } catch {
+    return null;
+  }
+}
+
+async function sandboxPath(environmentPath, cwd, copiedRoot, toolchain, snapshot) {
+  const output = [];
+  for (const entry of String(environmentPath ?? "").split(path.delimiter).filter(Boolean)) {
+    const candidate = path.resolve(cwd, entry);
+    let canonical;
+    try { canonical = await fs.realpath(candidate); } catch { continue; }
+    if (within(canonical, copiedRoot) || isSystemPath(canonical)) output.push(candidate);
+    else if (toolchain !== null && canonical === toolchain.sourceBin) output.push(snapshot.bin);
+  }
+  if (toolchain !== null && !output.includes(snapshot.bin)) output.unshift(snapshot.bin);
+  return [...new Set(output)].join(path.delimiter);
 }
 
 function logicalEnvironment(environment) {
@@ -334,12 +600,12 @@ function authenticatedSandboxLog(transcript, marker) {
   return new RegExp(`\\(Sandbox\\)[\\s\\S]{0,65536}?deny\\(\\d+\\)\\s+file-write[\\s\\S]{0,65536}?${escaped}`, "u").test(transcript);
 }
 
-async function sandboxInvocation(command, { backend, cwd, environment, sessionRoot, copiedRoot, runtimeRoot, writePaths, observeDenials = true }) {
+async function sandboxInvocation(command, { backend, cwd, environment, sessionRoot, copiedRoot, runtimeRoot, writePaths, toolchainRoots = [], observeDenials = true }) {
   if (backend.kind === "darwin-sandbox-exec") {
     const readRoots = await existingReadPaths([
-      copiedRoot, runtimeRoot, "/System", "/Library/Apple", "/usr", "/bin", "/sbin", "/private/etc",
+      copiedRoot, runtimeRoot, ...toolchainRoots, ...SYSTEM_READ_ROOTS,
       ...String(environment.PATH ?? "").split(path.delimiter).filter(Boolean).map((entry) => path.resolve(cwd, entry)),
-      path.dirname(command.argv[0]),
+      ...(path.isAbsolute(command.argv[0]) ? [command.argv[0]] : []),
       path.join(os.homedir(), ".CFUserTextEncoding"),
     ]);
     const writable = [runtimeRoot, ...writePaths];
@@ -359,8 +625,10 @@ async function sandboxInvocation(command, { backend, cwd, environment, sessionRo
   if (backend.kind === "linux-bwrap") {
     const arguments_ = [
       backend.executable, "--die-with-parent", "--unshare-net", "--ro-bind", "/", "/",
+      "--tmpfs", os.homedir(),
       "--bind", runtimeRoot, runtimeRoot,
     ];
+    for (const toolchainRoot of toolchainRoots) arguments_.push("--ro-bind", toolchainRoot, toolchainRoot);
     for (const writable of writePaths) arguments_.push("--bind", writable, writable);
     arguments_.push("--chdir", cwd, "--", ...command.argv);
     return { argv: arguments_, cwd, violationMarker: null };
@@ -373,7 +641,7 @@ function remapSandboxPath(value, sourceRoot, targetRoot) {
     ? path.join(targetRoot, path.relative(sourceRoot, value)) : value;
 }
 
-async function preparePermissiveProbe({ command, backend, cwd, environment, sessionRoot, copiedRoot, runtimeRoot }) {
+async function preparePermissiveProbe({ command, backend, cwd, environment, sessionRoot, copiedRoot, runtimeRoot, toolchainRoots }) {
   // A fresh isolated permissive copy is used only to disambiguate a failed
   // protected run; its outputs never become evidence or replay material.
   const probeRoot = await fs.mkdtemp(path.join(sessionRoot, "probe-"));
@@ -398,15 +666,15 @@ async function preparePermissiveProbe({ command, backend, cwd, environment, sess
     options: {
       backend, cwd: probeCommand.cwd, environment: probeEnvironment, sessionRoot,
       copiedRoot: probeRoot, runtimeRoot: probeRuntimeRoot, writePaths: [probeRoot],
-      observeDenials: false,
+      toolchainRoots, observeDenials: false,
     },
   };
 }
 
-async function execute(command, { backend, cwd, environment, sessionRoot, copiedRoot, runtimeRoot, writePaths, probeOnFailure = true, observeDenials = true }) {
+async function execute(command, { backend, cwd, environment, sessionRoot, copiedRoot, runtimeRoot, writePaths, toolchainRoots = [], probeOnFailure = true, observeDenials = true }) {
   const probe = probeOnFailure && backend.kind === "darwin-sandbox-exec"
-    ? await preparePermissiveProbe({ command, backend, cwd, sessionRoot, copiedRoot, runtimeRoot, environment }) : null;
-  const isolated = await sandboxInvocation(command, { backend, cwd, environment, sessionRoot, copiedRoot, runtimeRoot, writePaths, observeDenials });
+    ? await preparePermissiveProbe({ command, backend, cwd, sessionRoot, copiedRoot, runtimeRoot, environment, toolchainRoots }) : null;
+  const isolated = await sandboxInvocation(command, { backend, cwd, environment, sessionRoot, copiedRoot, runtimeRoot, writePaths, toolchainRoots, observeDenials });
   const audit = isolated.violationMarker === null ? null : await startDarwinSandboxAudit(isolated.violationMarker);
   return await new Promise((resolve, reject) => {
     const controller = new AbortController();
@@ -430,7 +698,9 @@ async function execute(command, { backend, cwd, environment, sessionRoot, copied
     const finish = async (payload) => {
       if (settled) return;
       settled = true;
-      let sandboxViolation = audit === null ? false : await audit.stop(payload.exit !== 0 && !payload.timedOut && !payload.signaled);
+      // A launcher may catch or mask a denied write and still exit zero. Always
+      // authenticate the matching audit stream before evidence can be VERIFIED.
+      let sandboxViolation = audit === null ? false : await audit.stop(true);
       if (!sandboxViolation && probe !== null && payload.exit !== 0 && !payload.timedOut && !payload.signaled) {
         const permissive = await execute(probe.command, { ...probe.options, probeOnFailure: false });
         sandboxViolation = permissive.exit === 0 && !permissive.timedOut && !permissive.signaled;
@@ -467,8 +737,8 @@ function replayComponentMap({ operation, slice, round, cwd, executionRoot, input
     baselineFingerprint: inputs.baselineFingerprint,
     changedScopeFingerprint: inputs.changedScopeFingerprint,
     commandsFingerprint: digest("stnl-validation-commands-v1", commands.map(({
-      display, argv, cwd, writePaths, envFingerprint, executableFingerprint, timeoutMs,
-    }) => ({ display, argv, cwd, writePaths, envFingerprint, executableFingerprint, timeoutMs }))),
+      display, argv, cwd, writePaths, envFingerprint, executableFingerprint, toolchainFingerprint, timeoutMs,
+    }) => ({ display, argv, cwd, writePaths, envFingerprint, executableFingerprint, toolchainFingerprint, timeoutMs }))),
   };
 }
 
@@ -546,6 +816,7 @@ async function blockedPrecheckResult({
       kind: "pre-check", workspaceId: inputs.executionFingerprint, cwd: request.cwd, executionRoot,
       liveExecutionFingerprintBefore: liveExecutionBefore, liveExecutionFingerprintAfter: liveExecutionAfter,
       liveWorkspaceFingerprintBefore: liveWorkspaceBefore, liveWorkspaceFingerprintAfter: liveWorkspaceAfter,
+      liveWorkspaceDelta: null,
       isolatedExecutionFingerprintBefore: unavailable, isolatedExecutionFingerprintAfter: unavailable,
       cleanup, sideEffects: [],
     },
@@ -589,7 +860,8 @@ export async function runValidationSession(specPath, request) {
   }
   const projectRoot = await fs.realpath(await trustedProjectRoot(workspace));
   const liveExecutionBefore = await fingerprintTree(workspace.executionRoot);
-  const liveWorkspaceBefore = await fingerprintTree(projectRoot);
+  const liveWorkspaceBeforeSnapshot = await snapshotTree(projectRoot);
+  const liveWorkspaceBefore = liveWorkspaceBeforeSnapshot.fingerprint;
   let sandboxBackend;
   let sourceSymlinks;
   let sourceFingerprint;
@@ -628,6 +900,7 @@ export async function runValidationSession(specPath, request) {
   const sessionRoot = await fs.realpath(await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), "stnl-validation-session-")));
   const copiedRoot = path.join(sessionRoot, "workspace");
   const runtimeRoot = path.join(sessionRoot, "runtime");
+  const toolchainsRoot = path.join(sessionRoot, "toolchains");
   let cleanup = "clean";
   let result;
   try {
@@ -650,6 +923,7 @@ export async function runValidationSession(specPath, request) {
     }
     await fs.mkdir(path.join(runtimeRoot, "home"), { recursive: true });
     await fs.mkdir(path.join(runtimeRoot, "tmp"), { recursive: true });
+    await fs.mkdir(toolchainsRoot, { recursive: true });
     const executionRelative = path.relative(projectRoot, workspace.executionRoot).split(path.sep).join("/");
     const copiedExecutionRoot = path.join(copiedRoot, executionRelative);
     const copiedTaskDirectory = path.join(copiedRoot, executionRelative, "tasks");
@@ -663,6 +937,7 @@ export async function runValidationSession(specPath, request) {
     };
     const commandPlans = [];
     const actualEnvironments = [];
+    const toolchainSnapshots = new Map();
     for (const [index, command] of request.commands.entries()) {
       exactObject(command, COMMAND_KEYS, `validation command ${index + 1}`);
       if (!Array.isArray(command.argv) || command.argv.length === 0 || command.argv.some((entry) => typeof entry !== "string" || entry.length === 0)
@@ -697,6 +972,19 @@ export async function runValidationSession(specPath, request) {
       const logicalEnv = { ...stableEnvironment, ...command.env };
       const actualEnv = { ...logicalEnv, HOME: path.join(runtimeRoot, "home"), TMPDIR: path.join(runtimeRoot, "tmp") };
       const actualArgv = command.argv.map((value, position) => mapArgument(value, projectRoot, copiedRoot, { executable: position === 0 }));
+      const resolution = await resolveExecutable({ argv: actualArgv }, actualEnv, path.join(copiedRoot, command.cwd), copiedRoot);
+      let toolchainSnapshot = null;
+      if (resolution.toolchain !== null) {
+        toolchainSnapshot = toolchainSnapshots.get(resolution.toolchain.fingerprint) ?? null;
+        if (toolchainSnapshot === null) {
+          toolchainSnapshot = await copyTrustedToolchain(resolution.toolchain, toolchainsRoot);
+          toolchainSnapshots.set(resolution.toolchain.fingerprint, toolchainSnapshot);
+        }
+        actualArgv[0] = toolchainSnapshot.launcher;
+      }
+      actualEnv.PATH = await sandboxPath(
+        actualEnv.PATH, path.join(copiedRoot, command.cwd), copiedRoot, resolution.toolchain, toolchainSnapshot,
+      );
       commandPlans.push({
         display: shellDisplay(command.argv.map((value) => path.isAbsolute(value) && within(value, projectRoot)
           ? `$PROJECT/${path.relative(projectRoot, value).split(path.sep).join("/")}` : value)),
@@ -705,13 +993,16 @@ export async function runValidationSession(specPath, request) {
         cwd: command.cwd,
         writePaths,
         envFingerprint: digest("stnl-validation-environment-v1", logicalEnvironment(logicalEnv)),
-        executableFingerprint: await resolveExecutable({ argv: actualArgv }, actualEnv, path.join(copiedRoot, command.cwd)),
+        executableFingerprint: resolution.executableFingerprint,
+        toolchainFingerprint: resolution.toolchain?.fingerprint ?? null,
         timeoutMs: command.timeoutMs,
-        actualArgv,
+        actualArgv, toolchain: resolution.toolchain, toolchainRoot: toolchainSnapshot?.root ?? null,
       });
       actualEnvironments.push(actualEnv);
     }
-    const materialCommands = commandPlans.map(({ actualArgv: _actualArgv, ...command }) => command);
+    const materialCommands = commandPlans.map(({
+      actualArgv: _actualArgv, toolchain: _toolchain, toolchainRoot: _toolchainRoot, ...command
+    }) => command);
     const inputs = {
       requirementsAuthority: `sha256:${await computeRequirementsAuthority(specPath)}`,
       planRevision: task.revision,
@@ -746,6 +1037,9 @@ export async function runValidationSession(specPath, request) {
       if (originRecord.provenance.state !== "VERIFIED") {
         throw new ExecutionContractError("validation replay origin must be verified persisted evidence");
       }
+      if (originRecord.provenance.legacySecurityModel === true) {
+        throw new ExecutionContractError("validation replay origin predates authenticated external toolchain provenance");
+      }
       const origin = replayDescriptor(originRecord.provenance);
       const mismatches = Object.keys(currentReplay).filter((key) => origin[key] !== currentReplay[key]).sort();
       replayInvalid = mismatches.length !== 0;
@@ -773,11 +1067,14 @@ export async function runValidationSession(specPath, request) {
           cwd: path.join(copiedRoot, request.commands[index].cwd), environment: actualEnvironments[index],
           sessionRoot, copiedRoot, runtimeRoot,
           writePaths: plan.writePaths.map((entry) => path.resolve(copiedRoot, entry)),
+          toolchainRoots: plan.toolchainRoot === null ? [] : [plan.toolchainRoot],
         });
       commandEvidence.push({
         display: plan.display, argv: plan.argv, cwd: plan.cwd, writePaths: plan.writePaths,
         envFingerprint: plan.envFingerprint,
-        executableFingerprint: plan.executableFingerprint, timeoutMs: plan.timeoutMs, exit: execution.exit,
+        executableFingerprint: plan.executableFingerprint,
+        toolchainFingerprint: plan.toolchainFingerprint, toolchainFingerprintAfter: plan.toolchainFingerprint,
+        timeoutMs: plan.timeoutMs, exit: execution.exit,
         stdoutFingerprint: digest("stnl-validation-stdout-v1", execution.stdout),
         stderrFingerprint: digest("stnl-validation-stderr-v1", execution.stderrForEvidence),
       });
@@ -788,15 +1085,28 @@ export async function runValidationSession(specPath, request) {
       });
     }
     const afterSubjects = await subjectManifest(copiedTaskDirectory, subjects, copiedRoot);
+    for (let index = 0; index < commandPlans.length; index += 1) {
+      const toolchain = commandPlans[index].toolchain;
+      commandEvidence[index].toolchainFingerprintAfter = toolchain === null
+        ? null : await admittedToolchainFingerprintAfter(
+          toolchain, toolchainSnapshots.get(commandPlans[index].toolchainFingerprint),
+        );
+    }
     const sideEffects = [];
     if (outputs.some((output) => output.sandboxViolation)) sideEffects.push("validation-sandbox-boundary-violation");
     if (outputs.some((output) => output.sandboxOutcomeUncertain)) sideEffects.push("validation-sandbox-outcome-indeterminate");
     if (JSON.stringify(beforeSubjects) !== JSON.stringify(afterSubjects)) sideEffects.push("validation-subject-state-changed");
+    if (commandEvidence.some((command) => command.toolchainFingerprint !== command.toolchainFingerprintAfter)) {
+      sideEffects.push("trusted-external-toolchain-state-changed");
+    }
     const isolatedExecutionAfter = await fingerprintTree(copiedExecutionRoot);
     if (isolatedExecutionBefore !== isolatedExecutionAfter) sideEffects.push("isolated-execution-state-changed");
     const liveExecutionAfter = await fingerprintTree(workspace.executionRoot);
     if (liveExecutionBefore !== liveExecutionAfter) sideEffects.push("protected-live-execution-state-changed");
-    const liveWorkspaceAfter = await fingerprintTree(projectRoot);
+    const liveWorkspaceAfterSnapshot = await snapshotTree(projectRoot);
+    const liveWorkspaceAfter = liveWorkspaceAfterSnapshot.fingerprint;
+    const liveWorkspaceDelta = liveWorkspaceBefore === liveWorkspaceAfter
+      ? null : treeDelta(liveWorkspaceBeforeSnapshot, liveWorkspaceAfterSnapshot);
     if (liveWorkspaceBefore !== liveWorkspaceAfter) sideEffects.push("protected-live-workspace-state-changed");
     let classification = sideEffects.length !== 0 ? "VALIDATION_SIDE_EFFECT" : replayInvalid ? "INVALID_REPLAY" : "NONE";
     let evidenceState = classification === "NONE" ? "VERIFIED" : "INVALID";
@@ -811,6 +1121,7 @@ export async function runValidationSession(specPath, request) {
           executionRoot: executionRelative, liveExecutionFingerprintBefore: liveExecutionBefore,
           liveExecutionFingerprintAfter: liveExecutionAfter,
           liveWorkspaceFingerprintBefore: liveWorkspaceBefore, liveWorkspaceFingerprintAfter: liveWorkspaceAfter,
+          liveWorkspaceDelta,
           isolatedExecutionFingerprintBefore: isolatedExecutionBefore, isolatedExecutionFingerprintAfter: isolatedExecutionAfter,
           cleanup: "clean", sideEffects: sideEffects.sort(),
         },
