@@ -45,6 +45,7 @@ const VALIDATION_EVIDENCE_LIFECYCLE = new Map([
   ["VERIFIED", new Map([["NONE", new Set(["NONE", "VALIDATION_FINDING", "CODE_REGRESSION"])]] )],
   ["INVALID", new Map([
     ["VALIDATION_SIDE_EFFECT", new Set(["NONE"])],
+    ["SANDBOX_BOUNDARY_BLOCKED", new Set(["NONE"])],
     ["INVALID_REPLAY", new Set(["NONE"])],
     ["INFRASTRUCTURE_BLOCKED", new Set(["NONE"])],
   ])],
@@ -796,10 +797,18 @@ const EVIDENCE_WORKSPACE_KEYS = new Set([
   "kind", "workspaceId", "cwd", "executionRoot", "liveExecutionFingerprintBefore",
   "liveExecutionFingerprintAfter", "liveWorkspaceFingerprintBefore", "liveWorkspaceFingerprintAfter",
   "liveWorkspaceDelta", "isolatedExecutionFingerprintBefore", "isolatedExecutionFingerprintAfter", "cleanup", "sideEffects",
+  "boundaryViolations",
 ]);
-const LEGACY_EVIDENCE_WORKSPACE_KEYS = new Set(
-  [...EVIDENCE_WORKSPACE_KEYS].filter((key) => key !== "liveWorkspaceDelta"),
+const PRE_BOUNDARY_EVIDENCE_WORKSPACE_KEYS = new Set(
+  [...EVIDENCE_WORKSPACE_KEYS].filter((key) => key !== "boundaryViolations"),
 );
+const LEGACY_EVIDENCE_WORKSPACE_KEYS = new Set(
+  [...EVIDENCE_WORKSPACE_KEYS].filter((key) => !new Set(["liveWorkspaceDelta", "boundaryViolations"]).has(key)),
+);
+const EVIDENCE_BOUNDARY_KEYS = new Set([
+  "kind", "operation", "process", "command", "commandExecutable", "requestedPath", "resolvedPath",
+  "trustedRoot", "boundary", "rule", "deniedBeforeMutation", "liveWorkspaceChanged",
+]);
 const EVIDENCE_WORKSPACE_DELTA_KEYS = new Set([
   "limit", "total", "counts", "changes", "truncated", "fingerprint",
 ]);
@@ -811,11 +820,14 @@ const EVIDENCE_INPUT_KEYS = new Set([
 ]);
 const EVIDENCE_SUBJECT_KEYS = new Set(["path", "expected"]);
 const EVIDENCE_COMMAND_KEYS = new Set([
-  "display", "argv", "cwd", "writePaths", "envFingerprint", "executableFingerprint", "toolchainFingerprint",
+  "display", "argv", "cwd", "writePaths", "writeFiles", "envFingerprint", "executableFingerprint", "toolchainFingerprint",
   "toolchainFingerprintAfter", "timeoutMs", "exit", "stdoutFingerprint", "stderrFingerprint",
 ]);
+const PRE_WRITE_FILE_EVIDENCE_COMMAND_KEYS = new Set(
+  [...EVIDENCE_COMMAND_KEYS].filter((key) => key !== "writeFiles"),
+);
 const LEGACY_EVIDENCE_COMMAND_KEYS = new Set(
-  [...EVIDENCE_COMMAND_KEYS].filter((key) => key !== "toolchainFingerprint" && key !== "toolchainFingerprintAfter"),
+  [...EVIDENCE_COMMAND_KEYS].filter((key) => !new Set(["writeFiles", "toolchainFingerprint", "toolchainFingerprintAfter"]).has(key)),
 );
 const EVIDENCE_REPLAY_KEYS = new Set([
   "originalEvidenceId", "originalFingerprint", "currentFingerprint", "equivalent", "mismatches",
@@ -911,6 +923,10 @@ function parseEvidenceProvenance(record, authority, { operation, round, required
     throw new ExecutionContractError(`${record.id} Evidence provenance priorEvidenceId is malformed`);
   }
   const infrastructureBlocked = provenance.classification === "INFRASTRUCTURE_BLOCKED";
+  const boundaryModel = provenance.workspace !== null
+    && typeof provenance.workspace === "object"
+    && !Array.isArray(provenance.workspace)
+    && Object.hasOwn(provenance.workspace, "boundaryViolations");
   const legacySecurityModel = provenance.workspace !== null
     && typeof provenance.workspace === "object"
     && !Array.isArray(provenance.workspace)
@@ -933,7 +949,8 @@ function parseEvidenceProvenance(record, authority, { operation, round, required
   }
   exactObject(
     provenance.workspace,
-    legacySecurityModel ? LEGACY_EVIDENCE_WORKSPACE_KEYS : EVIDENCE_WORKSPACE_KEYS,
+    boundaryModel ? EVIDENCE_WORKSPACE_KEYS
+      : legacySecurityModel ? LEGACY_EVIDENCE_WORKSPACE_KEYS : PRE_BOUNDARY_EVIDENCE_WORKSPACE_KEYS,
     `${record.id} Evidence workspace`,
   );
   const workspace = provenance.workspace;
@@ -944,6 +961,7 @@ function parseEvidenceProvenance(record, authority, { operation, round, required
       || workspace.isolatedExecutionFingerprintBefore !== unavailable
       || workspace.isolatedExecutionFingerprintAfter !== unavailable
       || !Array.isArray(workspace.sideEffects) || workspace.sideEffects.length !== 0
+      || (boundaryModel && (!Array.isArray(workspace.boundaryViolations) || workspace.boundaryViolations.length !== 0))
       || workspace.liveExecutionFingerprintBefore !== workspace.liveExecutionFingerprintAfter
       || workspace.liveWorkspaceFingerprintBefore !== workspace.liveWorkspaceFingerprintAfter) {
       throw new ExecutionContractError(`${record.id} infrastructure blocker has invalid pre-check workspace evidence`);
@@ -970,6 +988,49 @@ function parseEvidenceProvenance(record, authority, { operation, round, required
     || new Set(workspace.sideEffects).size !== workspace.sideEffects.length
     || workspace.sideEffects.some((entry, index) => index > 0 && entry.localeCompare(workspace.sideEffects[index - 1], "en") <= 0)) {
     throw new ExecutionContractError(`${record.id} Evidence workspace sideEffects must be a unique ordered array`);
+  }
+  if (boundaryModel) {
+    if (!Array.isArray(workspace.boundaryViolations)) {
+      throw new ExecutionContractError(`${record.id} Evidence workspace boundaryViolations must be an array`);
+    }
+    const encoded = [];
+    for (const violation of workspace.boundaryViolations) {
+      exactObject(violation, EVIDENCE_BOUNDARY_KEYS, `${record.id} Evidence boundary violation`);
+      if (!new Set(["sandbox-denial", "sandbox-outcome-indeterminate"]).has(violation.kind)
+        || typeof violation.operation !== "string" || !/^(?:[a-z0-9]+)(?:-[a-z0-9]+)*$/u.test(violation.operation)
+        || (violation.process !== null && (typeof violation.process !== "string" || !/^[A-Za-z0-9._+-]+$/u.test(violation.process)))
+        || !Number.isSafeInteger(violation.command) || violation.command < 1
+        || !Array.isArray(provenance.commands) || violation.command > provenance.commands.length
+        || typeof violation.commandExecutable !== "string" || !CURRENT_AUTHORITY.test(violation.commandExecutable)
+        || !new Set(["isolated-workspace", "validation-runtime", "authenticated-toolchain", "live-workspace", "user-home", "system-temp", "system", "external", "unavailable"]).has(violation.trustedRoot)
+        || typeof violation.boundary !== "string" || !/^[a-z][a-z0-9-]*$/u.test(violation.boundary)
+        || typeof violation.rule !== "string" || !/^[a-z][a-z0-9-]*$/u.test(violation.rule)
+        || !new Set([true, null]).has(violation.deniedBeforeMutation)
+        || typeof violation.liveWorkspaceChanged !== "boolean") {
+        throw new ExecutionContractError(`${record.id} Evidence boundary violation is malformed`);
+      }
+      for (const name of ["requestedPath", "resolvedPath"]) {
+        const value = violation[name];
+        if (value !== null && (typeof value !== "string"
+          || !/^\$(?:PROJECT|VALIDATION_RUNTIME|AUTHENTICATED_TOOLCHAIN|LIVE_PROJECT|HOME|SYSTEM_TEMP|SYSTEM|ABSOLUTE)(?:\/[^\\\0]+)?$/u.test(value)
+          || value.split("/").some((entry) => entry === "..")
+          || /timestamp-[0-9]+-[0-9a-f]+|[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/iu.test(value)
+          || /^\$SYSTEM_TEMP\/[^/]+-[A-Za-z0-9]{6}(?:\/|$)/u.test(value))) {
+          throw new ExecutionContractError(`${record.id} Evidence boundary violation ${name} is malformed`);
+        }
+      }
+      if ((violation.kind === "sandbox-outcome-indeterminate") !== (violation.requestedPath === null)
+        || (violation.requestedPath === null) !== (violation.resolvedPath === null)
+        || (violation.operation.startsWith("write") ? violation.deniedBeforeMutation !== true : violation.deniedBeforeMutation !== null)
+        || violation.liveWorkspaceChanged !== (workspace.liveWorkspaceFingerprintBefore !== workspace.liveWorkspaceFingerprintAfter)) {
+        throw new ExecutionContractError(`${record.id} Evidence boundary violation is internally inconsistent`);
+      }
+      encoded.push(JSON.stringify(violation));
+    }
+    if (new Set(encoded).size !== encoded.length
+      || encoded.some((entry, index) => index > 0 && entry.localeCompare(encoded[index - 1], "en") <= 0)) {
+      throw new ExecutionContractError(`${record.id} Evidence boundary violations must be unique and ordered`);
+    }
   }
   if (!legacySecurityModel && workspace.liveWorkspaceDelta !== null) {
     const delta = workspace.liveWorkspaceDelta;
@@ -1051,7 +1112,9 @@ function parseEvidenceProvenance(record, authority, { operation, round, required
 
   if (!Array.isArray(provenance.commands)) throw new ExecutionContractError(`${record.id} Evidence commands must be an array`);
   for (const command of provenance.commands) {
-    exactObject(command, legacySecurityModel ? LEGACY_EVIDENCE_COMMAND_KEYS : EVIDENCE_COMMAND_KEYS, `${record.id} Evidence command`);
+    const writeFileModel = Object.hasOwn(command, "writeFiles");
+    exactObject(command, writeFileModel ? EVIDENCE_COMMAND_KEYS
+      : legacySecurityModel ? LEGACY_EVIDENCE_COMMAND_KEYS : PRE_WRITE_FILE_EVIDENCE_COMMAND_KEYS, `${record.id} Evidence command`);
     if (typeof command.display !== "string" || command.display.length === 0 || !Array.isArray(command.argv)
       || command.argv.length === 0 || command.argv.some((entry) => typeof entry !== "string")
       || !Array.isArray(command.writePaths)
@@ -1060,6 +1123,13 @@ function parseEvidenceProvenance(record, authority, { operation, round, required
       || command.writePaths.some((entry, index) => index > 0 && entry.localeCompare(command.writePaths[index - 1], "en") <= 0)
       || !Number.isSafeInteger(command.timeoutMs) || command.timeoutMs <= 0 || !Number.isSafeInteger(command.exit)) {
       throw new ExecutionContractError(`${record.id} Evidence command is malformed`);
+    }
+    if (writeFileModel && (!Array.isArray(command.writeFiles)
+      || command.writeFiles.some((entry) => validateProjectRelativePath(entry, `${record.id} Evidence command write file`) !== entry)
+      || new Set(command.writeFiles).size !== command.writeFiles.length
+      || command.writeFiles.some((entry, index) => index > 0 && entry.localeCompare(command.writeFiles[index - 1], "en") <= 0)
+      || command.writeFiles.some((entry) => command.writePaths.some((directory) => entry === directory || entry.startsWith(`${directory}/`))))) {
+      throw new ExecutionContractError(`${record.id} Evidence command writeFiles are malformed`);
     }
     validateProjectRelativePath(command.cwd, `${record.id} Evidence command cwd`);
     for (const name of ["envFingerprint", "executableFingerprint", "stdoutFingerprint", "stderrFingerprint"]) {
@@ -1119,7 +1189,14 @@ function parseEvidenceProvenance(record, authority, { operation, round, required
     || provenance.commands.some((command) => command.toolchainFingerprint !== command.toolchainFingerprintAfter)
     || (!infrastructureBlocked && workspace.cleanup !== "clean");
   if (sideEffect !== (provenance.classification === "VALIDATION_SIDE_EFFECT")) {
-    throw new ExecutionContractError(`${record.id} validation side-effect classification disagrees with workspace evidence`);
+    if (!(sideEffect && provenance.classification === "VALIDATION_SIDE_EFFECT")) {
+      throw new ExecutionContractError(`${record.id} validation side-effect classification disagrees with workspace evidence`);
+    }
+  }
+  const boundaryBlocked = boundaryModel && workspace.boundaryViolations.length !== 0;
+  if (boundaryBlocked !== (provenance.classification === "SANDBOX_BOUNDARY_BLOCKED")
+    && !(boundaryBlocked && provenance.classification === "VALIDATION_SIDE_EFFECT")) {
+    throw new ExecutionContractError(`${record.id} sandbox-boundary classification disagrees with its diagnostics`);
   }
   if (sideEffect && (provenance.state !== "INVALID" || provenance.conclusion !== "NONE")) {
     throw new ExecutionContractError(`${record.id} validation side effect must invalidate the evidence`);
@@ -1544,7 +1621,9 @@ function parseChecks(section, prefix, context = {}, authority = {}) {
     } else if (previous.status === "TESTS_FAIL" && previous.round < 3) {
       if (record.round !== previous.round + 1 && !(record.round === 1 && record.gates.some((gate) => gate.revalidates?.startsWith("divergence-")))) throw new ExecutionContractError(`${record.id} must immediately follow ${previous.id} at round ${previous.round + 1}/3`);
     } else if (previous.status === "BLOCKED") {
-      if (record.round !== 1) throw new ExecutionContractError(`${record.id} must restart at round 1/3 after ${previous.id} BLOCKED`);
+      if (record.round !== previous.round) {
+        throw new ExecutionContractError(`${record.id} must resume reserved round ${previous.round}/3 after ${previous.id} BLOCKED`);
+      }
     } else {
       throw new ExecutionContractError(`${record.id} appears after terminal automatic-check record ${previous.id}`);
     }
@@ -1735,7 +1814,7 @@ function parseDelegationBlocker(section, operationRecordsByName, authority, evid
     if (match === null) throw new ExecutionContractError("Delegation Blocker has invalid Pending automatic round");
     pendingRound = Number(match[1]);
     const prior = priorIndex < 0 ? null : records[priorIndex];
-    const expected = prior === null || prior.status === "BLOCKED" ? 1
+    const expected = prior === null ? 1 : prior.status === "BLOCKED" ? prior.round
       : prior.status === "TESTS_FAIL" && prior.round < 3 ? prior.round + 1 : null;
     if (expected === null || pendingRound !== expected) {
       throw new ExecutionContractError("Delegation Blocker pending round disagrees with the interrupted logical invocation");
@@ -1772,7 +1851,10 @@ function parseDelegationBlocker(section, operationRecordsByName, authority, evid
       throw new ExecutionContractError(`Delegation Blocker Resolution must name ${resolvingRecord}`);
     }
   }
-  return { operation, kind, state, afterRecord, pendingRound, provenance };
+  return {
+    operation, kind, state, afterRecord, pendingRound, provenance,
+    effectiveState: state === "active" ? "active" : "historical-resolved",
+  };
 }
 
 function validateFindingLifecycle(findings, attempts, findingsChecks) {
@@ -2859,6 +2941,25 @@ export async function inspectExecutionState(specPath) {
     return [];
   });
   if (auxiliaryBlocked.length > 1) throw new ExecutionContractError("multiple current auxiliary blockers make resume ambiguous");
+  const effectiveBlockers = [
+    ...activeDelegationBlockers.map((blocker) => ({
+      slice: blocker.slice, state: "active", source: "Delegation Blocker", kind: blocker.kind,
+      operation: blocker.operation, record: blocker.afterRecord === "none" ? null : blocker.afterRecord,
+      round: blocker.pendingRound,
+    })),
+    ...auxiliaryBlocked.map((blocker) => ({
+      slice: blocker.slice, state: "active", source: blocker.record, kind: "auxiliary-check",
+      operation: blocker.operation, record: blocker.record, round: blocker.round,
+    })),
+  ];
+  const historicalDelegationBlockers = effectiveSlices.flatMap((slice) => {
+    const blocker = artifacts.tasks.get(slice).delegationBlocker;
+    return blocker?.state === "resolved" ? [{
+      slice, state: "historical-resolved", source: "Delegation Blocker", kind: blocker.kind,
+      operation: blocker.operation, record: blocker.afterRecord === "none" ? null : blocker.afterRecord,
+      round: blocker.pendingRound,
+    }] : [];
+  });
   const findingsCorrected = effectiveSlices.filter((slice) => {
     const task = artifacts.tasks.get(slice);
     const latestAttempt = task.attempts.at(-1);
@@ -2892,6 +2993,7 @@ export async function inspectExecutionState(specPath) {
   else if (allTerminal) state = "REPLAN_REQUIRED";
   return withRecoveryTargets({
     state, workspace, currentFingerprint, stale, activeFindings, activeDivergences, activeDelegationBlockers,
+    effectiveBlockers, historicalDelegationBlockers,
     exhausted, incompleteExecutionChecklists, auxiliaryBlocked, findingsCorrected, implementedAwaitingValidation,
     validationBlocked, ...artifacts,
   });

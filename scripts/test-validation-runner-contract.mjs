@@ -56,6 +56,19 @@ test("runner documents structured findings and correction-path persistence gramm
   assert.match(contract, /caminhos de correção[\s\S]{0,260}normalizados[\s\S]{0,160}comma-space[\s\S]{0,100}correção fileless[\s\S]{0,80}Correction paths[\s\S]{0,60}exact `none`/u);
 });
 
+test("runner resolves the packaged runtime internally without operator path plumbing", async (t) => {
+  const root = await fixture(t);
+  for (const relative of ["codex/agents/stnl_validation_runner.toml", "claude-code/agents/stnl-validation-runner.md"]) {
+    const contract = await fs.readFile(path.join(root, relative), "utf8");
+    assert.doesNotMatch(contract, /VALIDATION_HARNESS_PATH|<SKILL_ROOT>|run-validation-session\.mjs/u);
+    assert.doesNotMatch(contract, /execution root derivado, paths de plans e tasks|cujo path acompanha o payload/u);
+    assert.match(contract, /resolve internamente[\s\S]{0,220}localização carregada/u);
+    assert.match(contract, /Derive internamente de `SPEC_PATH`[\s\S]{0,260}artefatos exatos de plan\/task/u);
+    assert.match(contract, /`writePaths`[\s\S]{0,120}`writeFiles`/u);
+    assert.match(contract, /SANDBOX_BOUNDARY_BLOCKED[\s\S]{0,700}mesma rodada ou tentativa/u);
+  }
+});
+
 const cases = [
   ["only TESTS_ACCEPTED removed", "R006_VERDICTS", (root) => replaceBoth(root, "STATUS_CHECKS=TESTS_PASS|TESTS_ACCEPTED|TESTS_FAIL|TESTS_NOT_APPLICABLE|BLOCKED", "STATUS_CHECKS=TESTS_PASS|TESTS_FAIL|TESTS_NOT_APPLICABLE|BLOCKED")],
   ["only ACCEPTED removed", "R006_VERDICTS", (root) => replaceBoth(root, "STATUS_VALIDACAO=PASS|ACCEPTED|NEEDS_FIX|BLOCKED", "STATUS_VALIDACAO=PASS|NEEDS_FIX|BLOCKED")],
@@ -100,8 +113,13 @@ const cases = [
   ["Claude extra metadata", "R001_ADAPTER_METADATA", (root) => replace(path.join(root, "claude-code/agents/stnl-validation-runner.md"), "effort: medium", "effort: medium\npermission: write")],
   ["missing Codex adapter", "R002_REGISTRY", (root) => fs.unlink(path.join(root, "codex/agents/stnl_validation_runner.toml"))],
   ["duplicate Claude frontmatter", "R013_SYNTAX", (root) => replace(path.join(root, "claude-code/agents/stnl-validation-runner.md"), "name: stnl-validation-runner", "name: stnl-validation-runner\nname: duplicate")],
-  ["missing canonical ID", "R013_SYNTAX", (root) => replaceBoth(root, "CONTRATO_CANONICO=stnl-validation-runner/v8", "runner contract")],
+  ["missing canonical ID", "R013_SYNTAX", (root) => replaceBoth(root, "CONTRATO_CANONICO=stnl-validation-runner/v9", "runner contract")],
   ["verification harness removed", "R017_ISOLATION", (root) => replaceBoth(root, "Todo verification command, sem exceção", "Alguns verification commands")],
+  ["operator harness path reintroduced", "R017_ISOLATION", (root) => replaceBoth(root, "Discovery permanece read-only", "VALIDATION_HARNESS_PATH=/physical/runtime.mjs\nDiscovery permanece read-only")],
+  ["derivable execution paths reintroduced", "R017_ISOLATION", (root) => replaceBoth(root, "nenhum path físico derivável acompanha o payload", "execution root derivado, paths de plans e tasks acompanham o payload")],
+  ["internal runtime resolution removed", "R017_ISOLATION", (root) => replaceBoth(root, "resolve internamente a partir de sua própria localização carregada", "recebe do operador")],
+  ["exact write files removed", "R017_ISOLATION", (root) => replaceBoth(root, "`writePaths` e nos arquivos exatos `writeFiles`", "`writePaths`")],
+  ["boundary recovery removed", "R018_PROVENANCE", (root) => replaceBoth(root, "mesma rodada ou tentativa lógica", "uma rodada nova")],
   ["sandbox fallback enabled", "R017_ISOLATION", (root) => replaceBoth(root, "não faça fallback direto", "faça fallback direto")],
   ["source symlink loses canonical containment", "R017_ISOLATION", (root) => replaceBoth(root, "target canônico final", "texto lexical do link")],
   ["invalid evidence promotes verdict", "R018_PROVENANCE", (root) => replaceBoth(root, "produz somente `BLOCKED`", "pode produzir PASS")],

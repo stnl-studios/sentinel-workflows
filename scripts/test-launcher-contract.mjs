@@ -46,6 +46,18 @@ test("accepts a harmless prose paraphrase while preserving semantics", async (t)
   assert.equal(check(root).status, 0, check(root).stderr);
 });
 
+test("execution and validation launchers expose only intent and identity", async () => {
+  for (const name of ["slice-execute-codex.md", "slice-execute-claude.md", "slice-apply-findings-codex.md", "slice-apply-findings-claude.md", "slice-validate-codex.md", "slice-validate-claude.md"]) {
+    const text = await fs.readFile(path.join(canonical, name), "utf8");
+    const assignments = text.split(/\r?\n/u).filter((line) => /^[A-Z_]+=/u.test(line));
+    assert.deepEqual(assignments.map((line) => line.slice(0, line.indexOf("="))), ["OPERATION", "SPEC_PATH", "SLICE"], name);
+    assert.doesNotMatch(text, /VALIDATION_HARNESS_PATH|<SKILL_ROOT>|run-validation-session\.mjs|(?:^|\/)runtime\/[A-Za-z0-9._/-]*validation[A-Za-z0-9._/-]*/u, name);
+    assert.doesNotMatch(text, /`SPEC_PATH`, execution root derivado|paths de plans e tasks/u, name);
+    assert.match(text, /resolve internamente[\s\S]{0,180}própria localização carregada/u, name);
+    assert.match(text, /execution root, plan\/task, schema e runtime[^\n]{0,120}derivados internamente/u, name);
+  }
+});
+
 const cases = [
   ...["slice-execute-codex.md", "slice-execute-claude.md", "slice-apply-findings-codex.md", "slice-apply-findings-claude.md"].map((name) => [
     `only TESTS_ACCEPTED removed from ${name}`, name, (text) => text.replace(/TESTS_ACCEPTED/gu, ""), "L014_AUTOMATIC_RECHECK",
@@ -58,6 +70,10 @@ const cases = [
   ["wrong skill", "execution-plan.md", (text) => text.replace("stnl-execution-planner", "stnl-spec-execution-manager"), "L002_SKILL"],
   ["wrong operation", "execution-plan.md", (text) => text.replace("OPERATION=PLAN", "OPERATION=FINALIZE_SLICE"), "L003_OPERATION"],
   ["missing slice", "slice-execute-codex.md", (text) => text.replace(/^SLICE=.*\n/mu, ""), "L004_INPUTS"],
+  ["operator harness input", "slice-execute-codex.md", (text) => text.replace(/^SLICE=.*\n/mu, (line) => `${line}VALIDATION_HARNESS_PATH=/physical/runtime.mjs\n`), "L004_INPUTS"],
+  ["skill root leakage", "slice-execute-claude.md", (text) => text.replace("Contexto adicional (opcional):", "Use <SKILL_ROOT>.\n\nContexto adicional (opcional):"), "L004_INPUTS"],
+  ["physical runtime leakage", "slice-validate-codex.md", (text) => text.replace("Contexto adicional (opcional):", "Use runtime/run-validation-session.mjs.\n\nContexto adicional (opcional):"), "L004_INPUTS"],
+  ["derivable execution paths leakage", "slice-validate-claude.md", (text) => text.replace("slice, Requirements authority", "slice, execution root derivado, paths de plans e tasks, Requirements authority"), "L004_INPUTS"],
   ["missing replan reason", "execution-replan.md", (text) => text.replace(/^REPLAN_REASON=.*\n/mu, ""), "L004_INPUTS"],
   ["removed operation", "execution-plan.md", (text) => text.replace("Contexto adicional (opcional):", "RUN_TESTS\n\nContexto adicional (opcional):"), "L005_REMOVED_CONTRACT"],
   ["shared vendor syntax", "execution-close.md", (text) => text.replace("Contexto adicional (opcional):", "Codex stnl_validation_runner\n\nContexto adicional (opcional):"), "L006_SHARED_ISOLATION"],

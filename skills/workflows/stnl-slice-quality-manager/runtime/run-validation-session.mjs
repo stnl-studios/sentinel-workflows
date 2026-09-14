@@ -20,13 +20,21 @@ import {
 
 const HASH = /^sha256:[0-9a-f]{64}$/u;
 const LIVE_WORKSPACE_DELTA_LIMIT = 64;
-const SYSTEM_READ_ROOTS = ["/System", "/Library/Apple", "/usr", "/bin", "/sbin", "/private/etc"];
+const SYSTEM_READ_ROOTS = [
+  "/System", "/Library/Apple", "/Library/Preferences", "/usr/bin", "/usr/lib", "/usr/libexec", "/usr/sbin", "/usr/share",
+  "/bin", "/sbin", "/private/etc", "/private/var/db/timezone",
+];
+const SYSTEM_READ_FILES = [
+  "/", "/dev/autofs_nowait", "/dev/dtracehelper", "/dev/null", "/dev/random", "/dev/tty", "/dev/urandom",
+  "/private/var/select/sh",
+];
 const OPERATIONS = new Set(["EXECUTE_SLICE", "APPLY_FINDINGS", "VALIDATE_SLICE"]);
 const REQUEST_KEYS = new Set([
   "operation", "slice", "round", "cwd", "subjects", "commands", "baselineFingerprint",
   "priorEvidenceId", "failureConclusion", "replayOriginEvidenceId",
 ]);
-const COMMAND_KEYS = new Set(["argv", "cwd", "writePaths", "env", "timeoutMs"]);
+const COMMAND_KEYS = new Set(["argv", "cwd", "writePaths", "writeFiles", "env", "timeoutMs"]);
+const LEGACY_COMMAND_KEYS = new Set([...COMMAND_KEYS].filter((key) => key !== "writeFiles"));
 
 class ValidationInfrastructureError extends ExecutionContractError {
   constructor(kind, stage, code, message, target = null) {
@@ -36,9 +44,14 @@ class ValidationInfrastructureError extends ExecutionContractError {
 }
 
 function exactObject(value, keys, label) {
-  if (value === null || typeof value !== "object" || Array.isArray(value)
-    || Object.keys(value).length !== keys.size || Object.keys(value).some((key) => !keys.has(key))) {
-    throw new ExecutionContractError(`${label} has missing or unknown fields`);
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new ExecutionContractError(`${label} must be an object with exact fields`);
+  }
+  const actual = Object.keys(value).sort((left, right) => left.localeCompare(right, "en"));
+  const missing = [...keys].filter((key) => !Object.hasOwn(value, key)).sort((left, right) => left.localeCompare(right, "en"));
+  const unknown = actual.filter((key) => !keys.has(key));
+  if (missing.length !== 0 || unknown.length !== 0) {
+    throw new ExecutionContractError(`${label} field mismatch; missing=${missing.join(",") || "none"}; unknown=${unknown.join(",") || "none"}`);
   }
 }
 
@@ -511,6 +524,20 @@ async function existingReadPaths(paths) {
   return [...new Set(output)];
 }
 
+async function existingReadFiles(paths) {
+  const output = [];
+  for (const candidate of paths) {
+    const metadata = await lstatOrNull(candidate);
+    if (metadata?.isFile() || metadata?.isDirectory()) output.push(candidate);
+    else if (metadata?.isSymbolicLink()) {
+      output.push(candidate);
+      const target = await fs.realpath(candidate).catch(() => null);
+      if (target !== null) output.push(target);
+    }
+  }
+  return [...new Set(output)];
+}
+
 export async function validationSandboxBackend(platform = process.platform) {
   if (platform === "darwin") {
     const metadata = await lstatOrNull("/usr/bin/sandbox-exec");
@@ -567,12 +594,12 @@ async function startDarwinSandboxAudit(marker) {
     throw error;
   }
   return {
-    async stop(shouldQuery) {
+    async stop(shouldQuery, supplementalTranscript = "") {
       // Unified Log delivery is asynchronous; retain the authenticated observer
       // briefly after the child has exited before collecting its result.
       if (!shouldQuery) {
         watcher.kill();
-        return false;
+        return [];
       }
       await new Promise((resolve) => setTimeout(resolve, 1_500));
       watcher.kill();
@@ -584,8 +611,7 @@ async function startDarwinSandboxAudit(marker) {
         query.once("error", () => resolve(""));
         query.once("close", () => resolve(output));
       });
-      const authenticated = authenticatedSandboxLog(`${transcript}\n${historical}`, marker);
-      return authenticated;
+      return authenticatedSandboxEvents(`${transcript}\n${historical}\n${supplementalTranscript}`, marker);
     },
   };
 }
@@ -595,12 +621,23 @@ function redactAuthenticatedMarker(stderr, marker) {
   return Buffer.from(stderr.toString("utf8").replaceAll(marker, "STNL_VALIDATION_SANDBOX:<authenticated>"));
 }
 
-function authenticatedSandboxLog(transcript, marker) {
+function authenticatedSandboxEvents(transcript, marker) {
   const escaped = marker.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
-  return new RegExp(`\\(Sandbox\\)[\\s\\S]{0,65536}?deny\\(\\d+\\)\\s+file-write[\\s\\S]{0,65536}?${escaped}`, "u").test(transcript);
+  const pattern = new RegExp(
+    `(?:Sandbox:\\s+)?([A-Za-z0-9._+-]+)\\(\\d+\\)\\s+deny\\(\\d+\\)\\s+(file-[a-z0-9-]+)\\s+([^\\n]+?)(?:\\n|\\s)+${escaped}(?=\\n|$)`,
+    "gu",
+  );
+  const unique = new Map();
+  for (const match of transcript.matchAll(pattern)) {
+    const event = { process: match[1], operation: match[2], requestedPath: match[3].trim() };
+    if (event.operation.startsWith("file-read")
+      && (SYSTEM_READ_FILES.includes(event.requestedPath) || isSystemPath(event.requestedPath))) continue;
+    unique.set(JSON.stringify(event), event);
+  }
+  return [...unique.values()].sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right), "en"));
 }
 
-async function sandboxInvocation(command, { backend, cwd, environment, sessionRoot, copiedRoot, runtimeRoot, writePaths, toolchainRoots = [], observeDenials = true }) {
+async function sandboxInvocation(command, { backend, cwd, environment, sessionRoot, copiedRoot, runtimeRoot, writePaths, writeFiles = [], toolchainRoots = [], observeDenials = true }) {
   if (backend.kind === "darwin-sandbox-exec") {
     const readRoots = await existingReadPaths([
       copiedRoot, runtimeRoot, ...toolchainRoots, ...SYSTEM_READ_ROOTS,
@@ -608,17 +645,31 @@ async function sandboxInvocation(command, { backend, cwd, environment, sessionRo
       ...(path.isAbsolute(command.argv[0]) ? [command.argv[0]] : []),
       path.join(os.homedir(), ".CFUserTextEncoding"),
     ]);
-    const writable = [runtimeRoot, ...writePaths];
+    const readFiles = await existingReadFiles(SYSTEM_READ_FILES);
+    const writableDirectories = [runtimeRoot, ...writePaths];
     // The nonce is not in the child environment or argv. The observer authenticates
     // only the matching macOS Unified Log file-write event, never application stderr.
     const violationMarker = observeDenials ? `STNL_VALIDATION_SANDBOX:${randomUUID()}` : null;
     const profile = [
       "(version 1)", `(deny default${violationMarker === null ? "" : ` (with message ${sandboxLiteral(violationMarker)})`})`,
       '(import "system.sb")', "(deny network*)", "(allow process*)",
-      ...parentDirectories(readRoots).map((entry) => `(allow file-read-metadata file-test-existence (subpath ${sandboxLiteral(entry)}))`),
-      `(allow file-read* file-test-existence ${readRoots.map((entry) => `(subpath ${sandboxLiteral(entry)})`).join(" ")})`,
-      `(deny file-write* (require-all ${writable.map((entry) => `(require-not (subpath ${sandboxLiteral(entry)}))`).join(" ")})${violationMarker === null ? "" : ` (with message ${sandboxLiteral(violationMarker)})`})`,
-      `(allow file-write* ${writable.map((entry) => `(subpath ${sandboxLiteral(entry)})`).join(" ")})`,
+      ...parentDirectories([...readRoots, ...readFiles]).map((entry) => `(allow file-read-metadata file-test-existence (literal ${sandboxLiteral(entry)}))`),
+      `(deny file-read* (require-all ${[
+        ...readRoots.map((entry) => `(require-not (subpath ${sandboxLiteral(entry)}))`),
+        ...readFiles.map((entry) => `(require-not (literal ${sandboxLiteral(entry)}))`),
+      ].join(" ")})${violationMarker === null ? "" : ` (with message ${sandboxLiteral(violationMarker)})`})`,
+      `(allow file-read* file-test-existence ${[
+        ...readRoots.map((entry) => `(subpath ${sandboxLiteral(entry)})`),
+        ...readFiles.map((entry) => `(literal ${sandboxLiteral(entry)})`),
+      ].join(" ")})`,
+      `(deny file-write* (require-all ${[
+        ...writableDirectories.map((entry) => `(require-not (subpath ${sandboxLiteral(entry)}))`),
+        ...writeFiles.map((entry) => `(require-not (literal ${sandboxLiteral(entry)}))`),
+      ].join(" ")})${violationMarker === null ? "" : ` (with message ${sandboxLiteral(violationMarker)})`})`,
+      `(allow file-write* ${[
+        ...writableDirectories.map((entry) => `(subpath ${sandboxLiteral(entry)})`),
+        ...writeFiles.map((entry) => `(literal ${sandboxLiteral(entry)})`),
+      ].join(" ")})`,
     ].join(" ");
     return { argv: [backend.executable, "-p", profile, "--", ...command.argv], cwd, violationMarker };
   }
@@ -630,6 +681,7 @@ async function sandboxInvocation(command, { backend, cwd, environment, sessionRo
     ];
     for (const toolchainRoot of toolchainRoots) arguments_.push("--ro-bind", toolchainRoot, toolchainRoot);
     for (const writable of writePaths) arguments_.push("--bind", writable, writable);
+    for (const writable of writeFiles) arguments_.push("--bind", writable, writable);
     arguments_.push("--chdir", cwd, "--", ...command.argv);
     return { argv: arguments_, cwd, violationMarker: null };
   }
@@ -641,6 +693,112 @@ function remapSandboxPath(value, sourceRoot, targetRoot) {
     ? path.join(targetRoot, path.relative(sourceRoot, value)) : value;
 }
 
+function normalizeGeneratedPath(value) {
+  return value
+    .replace(/timestamp-[0-9]+-[0-9a-f]+(?=\.)/gu, "timestamp-<generated>")
+    .replace(/\/([^/]+)-[A-Za-z0-9]{6}(?=\/|$)/gu, "/$1-<generated>")
+    .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/giu, "<nonce>");
+}
+
+async function resolvedAccessPath(requestedPath) {
+  if (requestedPath === null || !path.isAbsolute(requestedPath)) return requestedPath;
+  let current = requestedPath;
+  const suffix = [];
+  for (;;) {
+    try {
+      const canonical = await fs.realpath(current);
+      return path.join(canonical, ...suffix.reverse());
+    } catch (error) {
+      if (!new Set(["ENOENT", "ENOTDIR"]).has(error?.code)) return requestedPath;
+    }
+    const parent = path.dirname(current);
+    if (parent === current) return requestedPath;
+    suffix.push(path.basename(current));
+    current = parent;
+  }
+}
+
+function classifiedPath(value, roots) {
+  if (value === null) return { value: null, trustedRoot: "unavailable" };
+  const mappings = [
+    [roots.copiedRoot, "$PROJECT", "isolated-workspace"],
+    [roots.runtimeRoot, "$VALIDATION_RUNTIME", "validation-runtime"],
+    ...roots.toolchainRoots.map((root) => [root, "$AUTHENTICATED_TOOLCHAIN", "authenticated-toolchain"]),
+    [roots.projectRoot, "$LIVE_PROJECT", "live-workspace"],
+    [os.homedir(), "$HOME", "user-home"],
+    ...roots.systemTempRoots.map((root) => [root, "$SYSTEM_TEMP", "system-temp"]),
+    ...SYSTEM_READ_ROOTS.map((root) => [root, "$SYSTEM", "system"]),
+  ];
+  for (const [root, label, trustedRoot] of mappings) {
+    if (!within(value, root)) continue;
+    const relative = path.relative(root, value).split(path.sep).join("/");
+    return { value: normalizeGeneratedPath(relative === "" ? label : `${label}/${relative}`), trustedRoot };
+  }
+  const basename = path.basename(value);
+  return {
+    value: normalizeGeneratedPath(`$ABSOLUTE/<external>/${basename === path.parse(value).root ? "<root>" : basename}`),
+    trustedRoot: "external",
+  };
+}
+
+async function boundaryDiagnostic(event, {
+  commandIndex, commandExecutable, copiedRoot, runtimeRoot, toolchainRoots, projectRoot,
+  executionRoot, subjects, writePaths, writeFiles, liveWorkspaceChanged,
+}) {
+  const systemTempRoots = [...new Set([
+    os.tmpdir(), await fs.realpath(os.tmpdir()).catch(() => os.tmpdir()),
+  ])];
+  const classificationRoots = { copiedRoot, runtimeRoot, toolchainRoots, projectRoot, systemTempRoots };
+  const resolvedRaw = await resolvedAccessPath(event.requestedPath);
+  const requested = classifiedPath(event.requestedPath, classificationRoots);
+  const resolved = classifiedPath(resolvedRaw, classificationRoots);
+  const target = resolvedRaw ?? event.requestedPath;
+  const writeOperation = typeof event.operation === "string" && event.operation.startsWith("file-write");
+  const operation = typeof event.operation === "string" && event.operation.startsWith("file-")
+    ? event.operation.slice("file-".length) : "unknown";
+  let boundary = "external-filesystem";
+  let rule = "external-path-denied";
+  if (target !== null && within(target, copiedRoot)) {
+    const inExecution = within(target, executionRoot);
+    const inSubject = subjects.some((subject) => target === subject || within(target, subject) || within(subject, target));
+    const declaredDirectory = writePaths.some((allowed) => within(target, allowed));
+    const declaredFile = writeFiles.some((allowed) => target === allowed);
+    boundary = inExecution || inSubject ? "protected-validation-inputs" : "declared-isolated-outputs";
+    rule = inExecution || inSubject ? "protected-input-write-denied"
+      : declaredDirectory || declaredFile ? "declared-output-rule-mismatch"
+        : writeOperation ? "write-outside-declared-isolated-outputs" : "read-outside-isolated-source";
+  } else if (target !== null && toolchainRoots.some((root) => within(target, root))) {
+    boundary = "authenticated-toolchain-snapshot";
+    rule = writeOperation ? "authenticated-toolchain-is-read-only" : "toolchain-read-rule-mismatch";
+  } else if (target !== null && within(target, projectRoot)) {
+    boundary = "live-workspace";
+    rule = "live-workspace-access-denied";
+  } else if (target !== null && within(target, runtimeRoot)) {
+    boundary = "validation-runtime";
+    rule = "validation-runtime-rule-mismatch";
+  } else if (target !== null && within(target, os.homedir())) {
+    boundary = "user-home";
+    rule = "unrelated-user-home-access-denied";
+  } else if (target !== null && systemTempRoots.some((root) => within(target, root))) {
+    boundary = "system-temp";
+    rule = "unmanaged-system-temp-access-denied";
+  }
+  return {
+    kind: event.requestedPath === null ? "sandbox-outcome-indeterminate" : "sandbox-denial",
+    operation,
+    process: event.process,
+    command: commandIndex,
+    commandExecutable,
+    requestedPath: requested.value,
+    resolvedPath: resolved.value,
+    trustedRoot: resolved.trustedRoot,
+    boundary,
+    rule,
+    deniedBeforeMutation: writeOperation ? true : null,
+    liveWorkspaceChanged,
+  };
+}
+
 async function preparePermissiveProbe({ command, backend, cwd, environment, sessionRoot, copiedRoot, runtimeRoot, toolchainRoots }) {
   // A fresh isolated permissive copy is used only to disambiguate a failed
   // protected run; its outputs never become evidence or replay material.
@@ -650,6 +808,7 @@ async function preparePermissiveProbe({ command, backend, cwd, environment, sess
     verbatimSymlinks: true,
     filter: (source) => path.basename(source) !== ".git" && !isIgnoredMetadata(path.basename(source)),
   });
+  const beforeSnapshot = await snapshotTree(probeRoot);
   const probeRuntimeRoot = await fs.mkdtemp(path.join(sessionRoot, "probe-runtime-"));
   await fs.mkdir(path.join(probeRuntimeRoot, "home"), { recursive: true });
   await fs.mkdir(path.join(probeRuntimeRoot, "tmp"), { recursive: true });
@@ -663,18 +822,20 @@ async function preparePermissiveProbe({ command, backend, cwd, environment, sess
   };
   return {
     command: probeCommand,
+    beforeSnapshot,
     options: {
       backend, cwd: probeCommand.cwd, environment: probeEnvironment, sessionRoot,
-      copiedRoot: probeRoot, runtimeRoot: probeRuntimeRoot, writePaths: [probeRoot],
+      copiedRoot: probeRoot, runtimeRoot: probeRuntimeRoot, writePaths: [probeRoot], writeFiles: [],
       toolchainRoots, observeDenials: false,
     },
   };
 }
 
-async function execute(command, { backend, cwd, environment, sessionRoot, copiedRoot, runtimeRoot, writePaths, toolchainRoots = [], probeOnFailure = true, observeDenials = true }) {
+async function execute(command, { backend, cwd, environment, sessionRoot, copiedRoot, runtimeRoot, writePaths, writeFiles = [], toolchainRoots = [], probeOnFailure = true, observeDenials = true }) {
   const probe = probeOnFailure && backend.kind === "darwin-sandbox-exec"
     ? await preparePermissiveProbe({ command, backend, cwd, sessionRoot, copiedRoot, runtimeRoot, environment, toolchainRoots }) : null;
-  const isolated = await sandboxInvocation(command, { backend, cwd, environment, sessionRoot, copiedRoot, runtimeRoot, writePaths, toolchainRoots, observeDenials });
+  const isolatedBeforeSnapshot = probe === null ? null : await snapshotTree(copiedRoot);
+  const isolated = await sandboxInvocation(command, { backend, cwd, environment, sessionRoot, copiedRoot, runtimeRoot, writePaths, writeFiles, toolchainRoots, observeDenials });
   const audit = isolated.violationMarker === null ? null : await startDarwinSandboxAudit(isolated.violationMarker);
   return await new Promise((resolve, reject) => {
     const controller = new AbortController();
@@ -700,14 +861,27 @@ async function execute(command, { backend, cwd, environment, sessionRoot, copied
       settled = true;
       // A launcher may catch or mask a denied write and still exit zero. Always
       // authenticate the matching audit stream before evidence can be VERIFIED.
-      let sandboxViolation = audit === null ? false : await audit.stop(true);
-      if (!sandboxViolation && probe !== null && payload.exit !== 0 && !payload.timedOut && !payload.signaled) {
+      let sandboxEvents = audit === null ? [] : await audit.stop(true, payload.stderr.toString("utf8"));
+      if (sandboxEvents.length === 0 && probe !== null && payload.exit !== 0 && !payload.timedOut && !payload.signaled) {
+        const isolatedDelta = treeDelta(isolatedBeforeSnapshot, await snapshotTree(copiedRoot));
         const permissive = await execute(probe.command, { ...probe.options, probeOnFailure: false });
-        sandboxViolation = permissive.exit === 0 && !permissive.timedOut && !permissive.signaled;
+        const delta = treeDelta(probe.beforeSnapshot, await snapshotTree(probe.options.copiedRoot));
+        const isolatedPaths = new Set((isolatedDelta?.changes ?? []).map((change) => normalizeGeneratedPath(change.path)));
+        const deniedChanges = (delta?.changes ?? []).filter((change) => !isolatedPaths.has(normalizeGeneratedPath(change.path)));
+        if (deniedChanges.length !== 0) {
+          sandboxEvents = deniedChanges.map((change) => ({
+            process: path.basename(command.argv[0]),
+            operation: change.disposition === "added" ? "file-write-create"
+              : change.disposition === "removed" ? "file-write-unlink" : "file-write-data",
+            requestedPath: path.join(copiedRoot, change.path),
+          }));
+        } else if (permissive.exit === 0 && !permissive.timedOut && !permissive.signaled) {
+          sandboxEvents = [{ process: null, operation: "unknown", requestedPath: null }];
+        }
       }
       const sandboxOutcomeUncertain = backend.kind === "linux-bwrap" && payload.exit !== 0 && !payload.timedOut && !payload.signaled;
-      resolve({ ...payload, sandboxViolation, sandboxOutcomeUncertain,
-        stderrForEvidence: sandboxViolation ? redactAuthenticatedMarker(payload.stderr, isolated.violationMarker) : payload.stderr });
+      resolve({ ...payload, sandboxViolation: sandboxEvents.length !== 0, sandboxEvents, sandboxOutcomeUncertain,
+        stderrForEvidence: sandboxEvents.length !== 0 ? redactAuthenticatedMarker(payload.stderr, isolated.violationMarker) : payload.stderr });
     };
     child.on("error", (error) => {
       clearTimeout(timer);
@@ -737,8 +911,8 @@ function replayComponentMap({ operation, slice, round, cwd, executionRoot, input
     baselineFingerprint: inputs.baselineFingerprint,
     changedScopeFingerprint: inputs.changedScopeFingerprint,
     commandsFingerprint: digest("stnl-validation-commands-v1", commands.map(({
-      display, argv, cwd, writePaths, envFingerprint, executableFingerprint, toolchainFingerprint, timeoutMs,
-    }) => ({ display, argv, cwd, writePaths, envFingerprint, executableFingerprint, toolchainFingerprint, timeoutMs }))),
+      display, argv, cwd, writePaths, writeFiles, envFingerprint, executableFingerprint, toolchainFingerprint, timeoutMs,
+    }) => ({ display, argv, cwd, writePaths, writeFiles, envFingerprint, executableFingerprint, toolchainFingerprint, timeoutMs }))),
   };
 }
 
@@ -774,7 +948,7 @@ function expectedValidationInvocation(task, operation) {
   const previous = cycleRecords.at(-1) ?? null;
   let round = "1/3";
   if (previous?.status === "TESTS_FAIL" && previous.round < 3) round = `${previous.round + 1}/3`;
-  else if (previous?.status === "BLOCKED") round = "1/3";
+  else if (previous?.status === "BLOCKED") round = `${previous.round}/3`;
   else if (previous !== null) return null;
   if (task.delegationBlocker?.state === "active" && task.delegationBlocker.operation === operation
     && task.delegationBlocker.pendingRound !== null) round = `${task.delegationBlocker.pendingRound}/3`;
@@ -818,7 +992,7 @@ async function blockedPrecheckResult({
       liveWorkspaceFingerprintBefore: liveWorkspaceBefore, liveWorkspaceFingerprintAfter: liveWorkspaceAfter,
       liveWorkspaceDelta: null,
       isolatedExecutionFingerprintBefore: unavailable, isolatedExecutionFingerprintAfter: unavailable,
-      cleanup, sideEffects: [],
+      cleanup, sideEffects: [], boundaryViolations: [],
     },
     inputs, subjects, commands, replay: null, blocker,
   };
@@ -936,10 +1110,11 @@ export async function runValidationSession(specPath, request) {
       HOME: "$VALIDATION_HOME", TMPDIR: "$VALIDATION_TMPDIR",
     };
     const commandPlans = [];
+    const declaredExactWriteFiles = new Set();
     const actualEnvironments = [];
     const toolchainSnapshots = new Map();
     for (const [index, command] of request.commands.entries()) {
-      exactObject(command, COMMAND_KEYS, `validation command ${index + 1}`);
+      exactObject(command, Object.hasOwn(command, "writeFiles") ? COMMAND_KEYS : LEGACY_COMMAND_KEYS, `validation command ${index + 1}`);
       if (!Array.isArray(command.argv) || command.argv.length === 0 || command.argv.some((entry) => typeof entry !== "string" || entry.length === 0)
         || !Number.isSafeInteger(command.timeoutMs) || command.timeoutMs <= 0) throw new ExecutionContractError(`validation command ${index + 1} is malformed`);
       normalizedRelative(command.cwd, `validation command ${index + 1} cwd`);
@@ -948,6 +1123,15 @@ export async function runValidationSession(specPath, request) {
         .sort((a, b) => a.localeCompare(b, "en"));
       if (new Set(writePaths).size !== writePaths.length || writePaths.includes(".")) {
         throw new ExecutionContractError(`validation command ${index + 1} writePaths must be unique bounded paths`);
+      }
+      if (command.writeFiles !== undefined && !Array.isArray(command.writeFiles)) {
+        throw new ExecutionContractError(`validation command ${index + 1} writeFiles must be an array`);
+      }
+      const writeFiles = (command.writeFiles ?? []).map((entry) => normalizedRelative(entry, `validation command ${index + 1} write file`))
+        .sort((a, b) => a.localeCompare(b, "en"));
+      if (new Set(writeFiles).size !== writeFiles.length || writeFiles.includes(".")
+        || writeFiles.some((entry) => writePaths.some((directory) => entry === directory || entry.startsWith(`${directory}/`)))) {
+        throw new ExecutionContractError(`validation command ${index + 1} writeFiles must be unique and outside declared writePaths`);
       }
       for (const writePath of writePaths) {
         if (writePath === executionRelative || writePath.startsWith(`${executionRelative}/`)
@@ -961,6 +1145,27 @@ export async function runValidationSession(specPath, request) {
             return within(absoluteSubject, absoluteWrite) || within(absoluteWrite, absoluteSubject);
           })) throw new ExecutionContractError(`validation command ${index + 1} write path overlaps validation inputs`);
         await fs.mkdir(absoluteWrite, { recursive: true });
+      }
+      for (const writeFile of writeFiles) {
+        if (writeFile === executionRelative || writeFile.startsWith(`${executionRelative}/`)) {
+          throw new ExecutionContractError(`validation command ${index + 1} cannot write protected execution state`);
+        }
+        const absoluteWrite = path.resolve(copiedRoot, writeFile);
+        if (!within(absoluteWrite, copiedRoot)
+          || subjects.some((subject) => {
+            const absoluteSubject = path.resolve(copiedTaskDirectory, subject);
+            return absoluteWrite === absoluteSubject;
+          })) throw new ExecutionContractError(`validation command ${index + 1} write file overlaps validation inputs`);
+        const metadata = await lstatOrNull(absoluteWrite);
+        if (metadata?.isSymbolicLink() || (metadata !== null && !metadata.isFile())) {
+          throw new ExecutionContractError(`validation command ${index + 1} write file must be a regular isolated file`);
+        }
+        if (metadata !== null && !declaredExactWriteFiles.has(writeFile)) {
+          throw new ExecutionContractError(`validation command ${index + 1} write file must identify a new isolated generated output`);
+        }
+        await fs.mkdir(path.dirname(absoluteWrite), { recursive: true });
+        if (metadata === null) await fs.writeFile(absoluteWrite, "", { flag: "wx" });
+        declaredExactWriteFiles.add(writeFile);
       }
       if (command.env === null || typeof command.env !== "object" || Array.isArray(command.env)
         || Object.entries(command.env).some(([key, value]) => !/^[A-Za-z_][A-Za-z0-9_]*$/u.test(key) || typeof value !== "string")) {
@@ -991,7 +1196,7 @@ export async function runValidationSession(specPath, request) {
         argv: command.argv.map((value) => path.isAbsolute(value) && within(value, projectRoot)
           ? `$PROJECT/${path.relative(projectRoot, value).split(path.sep).join("/")}` : value),
         cwd: command.cwd,
-        writePaths,
+        writePaths, writeFiles,
         envFingerprint: digest("stnl-validation-environment-v1", logicalEnvironment(logicalEnv)),
         executableFingerprint: resolution.executableFingerprint,
         toolchainFingerprint: resolution.toolchain?.fingerprint ?? null,
@@ -1060,17 +1265,19 @@ export async function runValidationSession(specPath, request) {
       const plan = commandPlans[index];
       const execution = replayInvalid ? {
         exit: 125, stdout: Buffer.alloc(0), stderr: Buffer.from("replay inputs are not equivalent\n"),
-        timedOut: false, sandboxViolation: false,
+        stderrForEvidence: Buffer.from("replay inputs are not equivalent\n"),
+        timedOut: false, signaled: false, sandboxViolation: false, sandboxEvents: [], sandboxOutcomeUncertain: false,
       }
         : await execute({ argv: plan.actualArgv, timeoutMs: plan.timeoutMs }, {
           backend: sandboxBackend,
           cwd: path.join(copiedRoot, request.commands[index].cwd), environment: actualEnvironments[index],
           sessionRoot, copiedRoot, runtimeRoot,
           writePaths: plan.writePaths.map((entry) => path.resolve(copiedRoot, entry)),
+          writeFiles: plan.writeFiles.map((entry) => path.resolve(copiedRoot, entry)),
           toolchainRoots: plan.toolchainRoot === null ? [] : [plan.toolchainRoot],
         });
       commandEvidence.push({
-        display: plan.display, argv: plan.argv, cwd: plan.cwd, writePaths: plan.writePaths,
+        display: plan.display, argv: plan.argv, cwd: plan.cwd, writePaths: plan.writePaths, writeFiles: plan.writeFiles,
         envFingerprint: plan.envFingerprint,
         executableFingerprint: plan.executableFingerprint,
         toolchainFingerprint: plan.toolchainFingerprint, toolchainFingerprintAfter: plan.toolchainFingerprint,
@@ -1081,6 +1288,7 @@ export async function runValidationSession(specPath, request) {
       outputs.push({
         display: plan.display, exit: execution.exit, timedOut: execution.timedOut,
         sandboxViolation: execution.sandboxViolation, sandboxOutcomeUncertain: execution.sandboxOutcomeUncertain,
+        sandboxEvents: execution.sandboxEvents,
         stdout: execution.stdout.toString("utf8").slice(-4000), stderr: execution.stderr.toString("utf8").slice(-4000),
       });
     }
@@ -1093,8 +1301,6 @@ export async function runValidationSession(specPath, request) {
         );
     }
     const sideEffects = [];
-    if (outputs.some((output) => output.sandboxViolation)) sideEffects.push("validation-sandbox-boundary-violation");
-    if (outputs.some((output) => output.sandboxOutcomeUncertain)) sideEffects.push("validation-sandbox-outcome-indeterminate");
     if (JSON.stringify(beforeSubjects) !== JSON.stringify(afterSubjects)) sideEffects.push("validation-subject-state-changed");
     if (commandEvidence.some((command) => command.toolchainFingerprint !== command.toolchainFingerprintAfter)) {
       sideEffects.push("trusted-external-toolchain-state-changed");
@@ -1108,7 +1314,26 @@ export async function runValidationSession(specPath, request) {
     const liveWorkspaceDelta = liveWorkspaceBefore === liveWorkspaceAfter
       ? null : treeDelta(liveWorkspaceBeforeSnapshot, liveWorkspaceAfterSnapshot);
     if (liveWorkspaceBefore !== liveWorkspaceAfter) sideEffects.push("protected-live-workspace-state-changed");
-    let classification = sideEffects.length !== 0 ? "VALIDATION_SIDE_EFFECT" : replayInvalid ? "INVALID_REPLAY" : "NONE";
+    const liveWorkspaceChanged = liveWorkspaceBefore !== liveWorkspaceAfter;
+    const boundaryViolations = (await Promise.all(outputs.flatMap((output, index) => [
+      ...output.sandboxEvents,
+      ...(output.sandboxOutcomeUncertain && output.sandboxEvents.length === 0
+        ? [{ process: null, operation: "unknown", requestedPath: null }] : []),
+    ].map((event) => boundaryDiagnostic(event, {
+      commandIndex: index + 1,
+      commandExecutable: commandEvidence[index].executableFingerprint,
+      copiedRoot, runtimeRoot,
+      toolchainRoots: commandPlans[index].toolchainRoot === null ? [] : [commandPlans[index].toolchainRoot],
+      projectRoot, executionRoot: copiedExecutionRoot,
+      subjects: subjects.map((subject) => path.resolve(copiedTaskDirectory, subject)),
+      writePaths: commandPlans[index].writePaths.map((entry) => path.resolve(copiedRoot, entry)),
+      writeFiles: commandPlans[index].writeFiles.map((entry) => path.resolve(copiedRoot, entry)),
+      liveWorkspaceChanged,
+    }))))).sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right), "en"));
+    for (const output of outputs) delete output.sandboxEvents;
+    let classification = sideEffects.length !== 0 ? "VALIDATION_SIDE_EFFECT"
+      : boundaryViolations.length !== 0 ? "SANDBOX_BOUNDARY_BLOCKED"
+        : replayInvalid ? "INVALID_REPLAY" : "NONE";
     let evidenceState = classification === "NONE" ? "VERIFIED" : "INVALID";
     const failed = commandEvidence.some((command) => command.exit !== 0);
     let conclusion = evidenceState === "VERIFIED" && failed ? request.failureConclusion : "NONE";
@@ -1123,7 +1348,7 @@ export async function runValidationSession(specPath, request) {
           liveWorkspaceFingerprintBefore: liveWorkspaceBefore, liveWorkspaceFingerprintAfter: liveWorkspaceAfter,
           liveWorkspaceDelta,
           isolatedExecutionFingerprintBefore: isolatedExecutionBefore, isolatedExecutionFingerprintAfter: isolatedExecutionAfter,
-          cleanup: "clean", sideEffects: sideEffects.sort(),
+          cleanup: "clean", sideEffects: sideEffects.sort(), boundaryViolations,
         },
         inputs, subjects: beforeSubjects, commands: commandEvidence, replay,
       },
@@ -1161,6 +1386,12 @@ export async function main(arguments_) {
   }
 }
 
-const executed = process.argv[1] !== undefined
-  && path.basename(process.argv[1]) === path.basename(fileURLToPath(import.meta.url));
-if (executed) process.exitCode = await main(process.argv.slice(2));
+async function isDirectInvocation() {
+  if (process.argv[1] === undefined) return false;
+  const modulePath = fileURLToPath(import.meta.url);
+  const invokedPath = await fs.realpath(path.resolve(process.argv[1])).catch(() => path.resolve(process.argv[1]));
+  const canonicalModule = await fs.realpath(modulePath).catch(() => modulePath);
+  return invokedPath === canonicalModule;
+}
+
+if (await isDirectInvocation()) process.exitCode = await main(process.argv.slice(2));

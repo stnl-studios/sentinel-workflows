@@ -2631,7 +2631,11 @@ test("terminal auxiliary outcomes and scoped blocker resumes have exact phases",
     let result = replaceSection(value, "Implementation Test Evidence", checkRecord("implementation-check", 1, "TESTS_PASS", 1));
     return replaceSection(result, "Delegation Blocker", delegationBlocker("EXECUTE_SLICE", "initialization", { state: "resolved", resolution: "implementation-check-01 returned a valid result" }));
   });
-  assert.equal((await inspectExecutionState(initialized.requirements)).state, "IMPLEMENTED_AWAITING_VALIDATION");
+  const initializedRecovered = await inspectExecutionState(initialized.requirements);
+  assert.equal(initializedRecovered.state, "IMPLEMENTED_AWAITING_VALIDATION");
+  assert.deepEqual(initializedRecovered.effectiveBlockers, []);
+  assert.equal(initializedRecovered.historicalDelegationBlockers[0].state, "historical-resolved");
+  assert.equal(initializedRecovered.tasks.get("slice-01").delegationBlocker.effectiveState, "historical-resolved");
 
   const malformed = await standaloneWorkspace(t);
   await renderArtifacts(malformed);
@@ -2743,7 +2747,10 @@ test("auxiliary BLOCKED resumes only its originating operation and later records
   await renderArtifacts(fixture);
   await editTask(fixture, (value) => {
     let result = replaceSection(value, "Changed Areas", "- `../../src/example.txt`");
-    return replaceSection(result, "Implementation Test Evidence", checkRecord("implementation-check", 1, "BLOCKED", 1));
+    result = replaceSection(result, "Implementation Test Evidence", checkRecord("implementation-check", 1, "BLOCKED", 1));
+    return replaceSection(result, "Delegation Blocker", delegationBlocker("EXECUTE_SLICE", "initialization", {
+      state: "resolved", pendingRound: 1, resolution: "implementation-check-01 returned a valid result",
+    }));
   });
   const blocked = await inspectExecutionState(fixture.requirements);
   assert.equal(blocked.state, "AUXILIARY_BLOCKED");
@@ -2755,10 +2762,47 @@ test("auxiliary BLOCKED resumes only its originating operation and later records
     round: 1,
     sameOperationResumeRequired: true,
   });
+  assert.equal(blocked.historicalDelegationBlockers[0].state, "historical-resolved");
+  assert.deepEqual(blocked.effectiveBlockers, [{
+    slice: "slice-01", state: "active", source: "implementation-check-01", kind: "auxiliary-check",
+    operation: "EXECUTE_SLICE", record: "implementation-check-01", round: 1,
+  }]);
   assert.equal((await preflightExecutionOperation(fixture.requirements, "EXECUTE_SLICE", "1")).state, "AUXILIARY_BLOCKED");
   await assert.rejects(preflightExecutionOperation(fixture.requirements, "APPLY_FINDINGS", "1"), /legal next operation is EXECUTE_SLICE for slice-01/u);
   await editTask(fixture, (value) => replaceSection(value, "Implementation Test Evidence", `${checkRecord("implementation-check", 1, "BLOCKED", 1)}\n\n${checkRecord("implementation-check", 2, "TESTS_PASS", 1)}`));
-  assert.equal((await inspectExecutionState(fixture.requirements)).state, "IMPLEMENTED_AWAITING_VALIDATION");
+  const recovered = await inspectExecutionState(fixture.requirements);
+  assert.equal(recovered.state, "IMPLEMENTED_AWAITING_VALIDATION");
+  assert.deepEqual(recovered.effectiveBlockers, []);
+  assert.equal(recovered.historicalDelegationBlockers[0].state, "historical-resolved");
+});
+
+test("a blocked later automatic round resumes in place without duplicate or fourth-round allocation", async (t) => {
+  const fixture = await standaloneWorkspace(t);
+  await renderArtifacts(fixture);
+  const failed = checkRecord("implementation-check", 1, "TESTS_FAIL", 1);
+  const blocked = checkRecord("implementation-check", 2, "BLOCKED", 2);
+  await editTask(fixture, (value) => {
+    let next = value.replace("- [ ] 1.1", "- [x] 1.1");
+    next = replaceSection(next, "Changed Areas", "- `../../src/example.txt`");
+    next = replaceSection(next, "Corrections Applied", "- `../../src/example.txt`");
+    return replaceSection(next, "Implementation Test Evidence", `${failed}\n\n${blocked}`);
+  });
+  const pending = await inspectExecutionState(fixture.requirements);
+  assert.equal(pending.state, "AUXILIARY_BLOCKED");
+  assertRecoveryTarget(pending, {
+    operation: "EXECUTE_SLICE", slice: "slice-01", record: "implementation-check-02",
+    round: 2, sameOperationResumeRequired: true,
+  });
+  await editTask(fixture, (value) => replaceSection(
+    value,
+    "Implementation Test Evidence",
+    `${failed}\n\n${blocked}\n\n${checkRecord("implementation-check", 3, "TESTS_PASS", 2)}`,
+  ));
+  const recovered = await inspectExecutionState(fixture.requirements);
+  assert.equal(recovered.state, "IMPLEMENTED_AWAITING_VALIDATION");
+  assert.deepEqual(recovered.tasks.get("slice-01").implementationChecks.map((record) => record.round), [1, 2, 2]);
+  await editTask(fixture, (value) => value.replace("Automatic check round: 2/3\n- Status: TESTS_PASS", "Automatic check round: 3/3\n- Status: TESTS_PASS"));
+  await assert.rejects(inspectExecutionState(fixture.requirements), /must resume reserved round 2\/3/u);
 });
 
 test("append-only requirements recovery preserves history and requires later PASS ownership", async (t) => {
@@ -4557,12 +4601,12 @@ test("Prior Validation Overlap contract keeps paths, IDs, and prior references c
 
 function validationRequest({
   operation = "EXECUTE_SLICE", slice = "slice-01", round = "1/3", subjects = ["../../src/example.txt"],
-  argv = [process.execPath, "-e", "process.exit(0)"], writePaths = [], priorEvidenceId = null,
+  argv = [process.execPath, "-e", "process.exit(0)"], writePaths = [], writeFiles = [], priorEvidenceId = null,
   env = {}, failureConclusion = "VALIDATION_FINDING", replayOriginEvidenceId = null,
 } = {}) {
   return {
     operation, slice, round, cwd: ".", subjects,
-    commands: [{ argv, cwd: ".", writePaths, env, timeoutMs: 10_000 }],
+    commands: [{ argv, cwd: ".", writePaths, writeFiles, env, timeoutMs: 10_000 }],
     baselineFingerprint: null, priorEvidenceId, failureConclusion, replayOriginEvidenceId,
   };
 }
@@ -4669,6 +4713,7 @@ runtime="$TOOLCHAIN_ROOT/lib/node_modules/fake-npm/runtime.txt"
 test "$(cat "$runtime")" = "trusted-runtime" || exit 41
 test -f package-body.txt || exit 42
 if [ "\${1:-}" = "--write-toolchain" ]; then printf 'mutated\\n' > "$runtime" || exit 43; fi
+if [ "\${1:-}" = "--read-sibling" ]; then cat "$UNRELATED_NVM_FILE" >/dev/null || exit 44; fi
 if [ "\${1:-}" = "--sleep" ]; then sleep 0.8; fi
 if [ "\${1:-}" = "--fail" ]; then exit 9; fi
 printf 'toolchain-ready\\n'
@@ -4724,6 +4769,72 @@ test("authenticated NVM-like external toolchain reaches project verification thr
   );
 });
 
+test("authenticated real npm recovery declares only observed isolated tool outputs and preserves mixed exits", async (t) => {
+  const fixture = await validationSessionFixture(t);
+  await fs.mkdir(path.join(fixture.root, "node_modules/.vite-temp"), { recursive: true });
+  await fs.mkdir(path.join(fixture.root, "node_modules/.vite/vitest/stable"), { recursive: true });
+  await fs.writeFile(path.join(fixture.root, "package.json"), `${JSON.stringify({
+    name: "validation-npm-boundary-fixture",
+    private: true,
+    scripts: {
+      focused: "node -e \"const f=require('node:fs');try{f.mkdirSync('node_modules/.vite-temp',{recursive:true});f.writeFileSync('node_modules/.vite-temp/vitest.config.ts.timestamp-1789401293238-7fcb742219988.mjs','generated')}catch{}process.exit(1)\"",
+      typecheck: "node -e \"process.exit(2)\"",
+      lint: "node -e \"process.exit(0)\"",
+      format: "node -e \"const f=require('node:fs');try{f.writeFileSync('firebase-debug.log','generated')}catch{}process.exit(1)\"",
+      rules: "node -e \"process.exit(1)\"",
+      purchase: "node -e \"const f=require('node:fs');try{f.mkdirSync('node_modules/.vite/vitest/stable',{recursive:true});f.writeFileSync('node_modules/.vite/vitest/stable/results.json','generated')}catch{}process.exit(1)\"",
+    },
+  }, null, 2)}\n`, "utf8");
+  const request = validationRequest({ failureConclusion: "VALIDATION_FINDING" });
+  request.commands = [
+    ["npm", "run", "focused"],
+    ["npm", "run", "typecheck"],
+    ["npm", "run", "lint"],
+    ["npm", "run", "format"],
+    ["npm", "run", "rules"],
+    ["npm", "run", "purchase"],
+  ].map((argv) => ({ argv, cwd: ".", writePaths: [], env: {}, timeoutMs: 10_000 }));
+  const blocked = await runValidationSession(fixture.requirements, request);
+  assert.equal(blocked.provenance.state, "INVALID", JSON.stringify(blocked));
+  assert.equal(blocked.provenance.classification, "SANDBOX_BOUNDARY_BLOCKED");
+  assert.deepEqual(blocked.provenance.commands.map((command) => command.exit), [1, 2, 0, 1, 1, 1], JSON.stringify(blocked));
+  assert.deepEqual(blocked.provenance.workspace.sideEffects, []);
+  assert.equal(blocked.provenance.workspace.liveWorkspaceDelta, null);
+  assert.equal(blocked.provenance.workspace.cleanup, "clean");
+  const diagnostics = new Map(blocked.provenance.workspace.boundaryViolations.map((entry) => [entry.requestedPath, entry]));
+  assert.ok(diagnostics.size > 0, JSON.stringify(blocked));
+  assert.ok([...diagnostics.values()].every((entry) => entry.rule === "write-outside-declared-isolated-outputs"));
+  assert.ok([...diagnostics.values()].every((entry) => entry.deniedBeforeMutation === true));
+  const viteTemp = diagnostics.get("$PROJECT/node_modules/.vite-temp/vitest.config.ts.timestamp-<generated>.mjs");
+  if (viteTemp !== undefined) assert.equal(viteTemp.process, "node");
+  const vitestResults = diagnostics.get("$PROJECT/node_modules/.vite/vitest/stable/results.json");
+  if (vitestResults !== undefined) assert.equal(vitestResults.deniedBeforeMutation, true);
+
+  request.commands[0].writePaths = ["node_modules/.vite-temp"];
+  request.commands[3].writeFiles = ["firebase-debug.log"];
+  request.commands[5].writePaths = ["node_modules/.vite/vitest"];
+  const result = await runValidationSession(fixture.requirements, request);
+  assert.equal(result.provenance.state, "VERIFIED", JSON.stringify(result));
+  assert.equal(result.provenance.classification, "NONE");
+  assert.deepEqual(result.provenance.commands.map((command) => command.exit), [1, 2, 0, 1, 1, 1]);
+  assert.ok(result.provenance.commands.every((command) => command.toolchainFingerprint !== null));
+  assert.ok(result.provenance.commands.every((command) => (
+    command.toolchainFingerprintAfter === command.toolchainFingerprint
+  )));
+  assert.equal(
+    result.provenance.workspace.liveExecutionFingerprintAfter,
+    result.provenance.workspace.liveExecutionFingerprintBefore,
+  );
+  assert.equal(
+    result.provenance.workspace.liveWorkspaceFingerprintAfter,
+    result.provenance.workspace.liveWorkspaceFingerprintBefore,
+  );
+  assert.equal(result.provenance.workspace.liveWorkspaceDelta, null);
+  assert.equal(result.provenance.workspace.cleanup, "clean");
+  assert.deepEqual(result.provenance.workspace.sideEffects, []);
+  assert.deepEqual(result.provenance.workspace.boundaryViolations, []);
+});
+
 test("trusted external toolchain is read-only and project writePaths cannot grant it mutable authority", async (t) => {
   const fixture = await validationSessionFixture(t);
   await fs.writeFile(path.join(fixture.root, "package-body.txt"), "project-body\n", "utf8");
@@ -4734,8 +4845,11 @@ test("trusted external toolchain is read-only and project writePaths cannot gran
   ));
   assert.notEqual(denied.provenance.commands[0].exit, 0);
   assert.equal(denied.provenance.state, "INVALID");
-  assert.equal(denied.provenance.classification, "VALIDATION_SIDE_EFFECT");
-  assert.ok(denied.provenance.workspace.sideEffects.includes("validation-sandbox-boundary-violation"));
+  assert.equal(denied.provenance.classification, "SANDBOX_BOUNDARY_BLOCKED");
+  assert.deepEqual(denied.provenance.workspace.sideEffects, []);
+  const toolchainWrite = denied.provenance.workspace.boundaryViolations.find((entry) => entry.rule === "authenticated-toolchain-is-read-only");
+  assert.ok(toolchainWrite, JSON.stringify(denied.provenance.workspace.boundaryViolations));
+  assert.equal(toolchainWrite.trustedRoot, "authenticated-toolchain");
   assert.equal(denied.provenance.workspace.liveWorkspaceDelta, null);
   assert.equal(await fs.readFile(toolchain.runtime, "utf8"), original);
   const binAlias = path.join(toolchain.external, "canonical-bin-alias");
@@ -4751,6 +4865,80 @@ test("trusted external toolchain is read-only and project writePaths cannot gran
     }))),
     /normalized relative path/u,
   );
+});
+
+test("caller external roots, unrelated HOME, and subprocess access remain fail-closed with actionable diagnostics", async (t) => {
+  const fixture = await validationSessionFixture(t);
+  const external = await temporary(t, "stnl-unrelated-external-");
+  const outsideFile = path.join(external, "read-target.txt");
+  const subprocessFile = path.join(external, "subprocess-target.txt");
+  await fs.writeFile(outsideFile, "outside\n", "utf8");
+  await fs.writeFile(subprocessFile, "subprocess\n", "utf8");
+  const unrelatedHomeEntry = (await fs.readdir(os.homedir(), { withFileTypes: true }))
+    .filter((entry) => entry.name !== ".CFUserTextEncoding")
+    .sort((left, right) => Number(right.isDirectory()) - Number(left.isDirectory()) || left.name.localeCompare(right.name, "en"))[0];
+  assert.ok(unrelatedHomeEntry, "HOME must contain one existing entry for the read-only boundary probe");
+  const unrelatedHomePath = path.join(os.homedir(), unrelatedHomeEntry.name);
+  const command = (argv, env) => ({ argv, cwd: ".", writePaths: [], writeFiles: [], env, timeoutMs: 10_000 });
+  const request = validationRequest({ failureConclusion: "NONE" });
+  request.commands = [
+    command([process.execPath, "-e", "require('node:fs').statSync(process.env.UNRELATED_HOME)"], { UNRELATED_HOME: unrelatedHomePath }),
+    command([process.execPath, "-e", "process.exit(require('node:child_process').spawnSync('/bin/cat',[process.env.UNRELATED_EXTERNAL]).status ?? 1)"], { UNRELATED_EXTERNAL: subprocessFile }),
+  ];
+  const result = await runValidationSession(fixture.requirements, request);
+  assert.equal(result.provenance.state, "INVALID", JSON.stringify(result));
+  assert.equal(result.provenance.classification, "SANDBOX_BOUNDARY_BLOCKED");
+  assert.deepEqual(result.provenance.workspace.sideEffects, []);
+  assert.equal(result.provenance.workspace.liveWorkspaceDelta, null);
+  assert.equal(await fs.readFile(outsideFile, "utf8"), "outside\n");
+  const diagnostics = result.provenance.workspace.boundaryViolations;
+  assert.equal(JSON.stringify(diagnostics).includes(path.basename(external)), false);
+  const homeAccess = diagnostics.find((entry) => entry.command === 1 && entry.rule === "unrelated-user-home-access-denied");
+  assert.ok(homeAccess, JSON.stringify(diagnostics));
+  assert.equal(homeAccess.resolvedPath.startsWith("$HOME/"), true);
+  assert.equal(homeAccess.operation.startsWith("read"), true);
+  assert.equal(homeAccess.deniedBeforeMutation, null);
+  const subprocessRead = diagnostics.find((entry) => entry.command === 2 && entry.process === "cat");
+  assert.ok(subprocessRead, JSON.stringify(diagnostics));
+  assert.equal(subprocessRead.rule, "unmanaged-system-temp-access-denied");
+  assert.equal(subprocessRead.operation.startsWith("read"), true);
+  assert.match(subprocessRead.resolvedPath, /^\$SYSTEM_TEMP\//u);
+  assert.ok(diagnostics.every((entry) => entry.liveWorkspaceChanged === false));
+
+  const callerRoot = validationRequest();
+  callerRoot.commands[0].readPaths = [external];
+  await assert.rejects(
+    runValidationSession(fixture.requirements, callerRoot),
+    /validation command 1 field mismatch; missing=none; unknown=readPaths/u,
+  );
+  await assert.rejects(
+    runValidationSession(fixture.requirements, validationRequest({ writePaths: [external] })),
+    /normalized relative path/u,
+  );
+  await fs.writeFile(path.join(fixture.root, "existing-source.txt"), "source\n", "utf8");
+  await assert.rejects(
+    runValidationSession(fixture.requirements, validationRequest({ writeFiles: ["existing-source.txt"] })),
+    /write file must identify a new isolated generated output/u,
+  );
+});
+
+test("an NVM-style sibling outside the authenticated package closure stays denied", async (t) => {
+  const fixture = await validationSessionFixture(t);
+  await fs.writeFile(path.join(fixture.root, "package-body.txt"), "project-body\n", "utf8");
+  const toolchain = await fakeExternalToolchain(t);
+  const sibling = path.join(toolchain.external, "nvm.sh");
+  await fs.writeFile(sibling, "unrelated sibling\n", "utf8");
+  const denied = await withInheritedPath(toolchain.bin, () => runValidationSession(
+    fixture.requirements,
+    validationRequest({ argv: ["npm", "--read-sibling"], env: { UNRELATED_NVM_FILE: sibling }, failureConclusion: "NONE" }),
+  ));
+  assert.equal(denied.provenance.state, "INVALID", JSON.stringify(denied));
+  assert.equal(denied.provenance.classification, "SANDBOX_BOUNDARY_BLOCKED");
+  const diagnostic = denied.provenance.workspace.boundaryViolations.find((entry) => entry.process === "cat");
+  assert.ok(diagnostic, JSON.stringify(denied.provenance.workspace.boundaryViolations));
+  assert.match(diagnostic.resolvedPath, /^\$SYSTEM_TEMP\//u);
+  assert.notEqual(diagnostic.trustedRoot, "authenticated-toolchain");
+  assert.equal(diagnostic.rule, "unmanaged-system-temp-access-denied");
 });
 
 test("external toolchain admission rejects caller roots, unresolved boundaries, escapes, chains, and prefix siblings", async (t) => {
@@ -5158,6 +5346,7 @@ test("historical pre-toolchain BLOCKED provenance remains resumable on the same 
   );
   const legacy = structuredClone(current.provenance);
   delete legacy.workspace.liveWorkspaceDelta;
+  delete legacy.workspace.boundaryViolations;
   legacy.evidenceId = validationEvidenceIdentity(legacy);
   const newlyAppended = await externalExecutionCandidate(t, fixture);
   await editTask(newlyAppended, (value) => {
@@ -5221,9 +5410,14 @@ test("real macOS sandbox denial invalidates evidence and cannot become a finding
   assert.equal(await fs.readFile(liveTask, "utf8"), original);
   assert.notEqual(result.outputs[0].exit, 0);
   assert.equal(result.provenance.state, "INVALID");
-  assert.equal(result.provenance.classification, "VALIDATION_SIDE_EFFECT");
+  assert.equal(result.provenance.classification, "SANDBOX_BOUNDARY_BLOCKED");
   assert.equal(result.provenance.conclusion, "NONE");
-  assert.ok(result.provenance.workspace.sideEffects.includes("validation-sandbox-boundary-violation"));
+  assert.deepEqual(result.provenance.workspace.sideEffects, []);
+  assert.equal(result.provenance.workspace.boundaryViolations[0].operation, "write-data");
+  assert.equal(result.provenance.workspace.boundaryViolations[0].requestedPath, "$PROJECT/requirements-execution/tasks/slice-01.md");
+  assert.equal(result.provenance.workspace.boundaryViolations[0].boundary, "protected-validation-inputs");
+  assert.equal(result.provenance.workspace.boundaryViolations[0].deniedBeforeMutation, true);
+  assert.equal(result.provenance.workspace.boundaryViolations[0].liveWorkspaceChanged, false);
   assert.equal(result.outputs[0].sandboxViolation, true);
 });
 
@@ -5270,8 +5464,9 @@ test("equivalent sandbox denials have deterministic evidence identity", async (t
   const second = await runValidationSession(fixture.requirements, request);
   assert.equal(first.provenance.state, "INVALID");
   assert.equal(second.provenance.state, "INVALID");
-  assert.equal(first.provenance.classification, "VALIDATION_SIDE_EFFECT");
-  assert.equal(second.provenance.classification, "VALIDATION_SIDE_EFFECT");
+  assert.equal(first.provenance.classification, "SANDBOX_BOUNDARY_BLOCKED");
+  assert.equal(second.provenance.classification, "SANDBOX_BOUNDARY_BLOCKED");
+  assert.deepEqual(first.provenance.workspace.boundaryViolations, second.provenance.workspace.boundaryViolations);
   assert.equal(first.provenance.commands[0].stderrFingerprint, second.provenance.commands[0].stderrFingerprint);
   assert.equal(first.provenance.evidenceId, second.provenance.evidenceId);
   assert.equal(first.provenance.inputs.executionFingerprint, second.provenance.inputs.executionFingerprint);
@@ -5337,7 +5532,7 @@ test("declared isolated write boundaries remain writable without a sandbox findi
 test("Linux bwrap without an authenticated denial channel fails closed on non-signal failures", async () => {
   const harness = await fs.readFile(path.join(ROOT, "skills/workflows/stnl-slice-executor/runtime/run-validation-session.mjs"), "utf8");
   assert.match(harness, /kind === "linux-bwrap" && payload\.exit !== 0 && !payload\.timedOut && !payload\.signaled/u);
-  assert.match(harness, /validation-sandbox-outcome-indeterminate/u);
+  assert.match(harness, /sandbox-outcome-indeterminate/u);
   assert.match(harness, /violationMarker: null/u);
   assert.match(harness, /"--tmpfs", os\.homedir\(\)/u);
   assert.match(harness, /arguments_\.push\("--ro-bind", toolchainRoot, toolchainRoot\)/u);
@@ -5347,8 +5542,8 @@ test("Linux bwrap without an authenticated denial channel fails closed on non-si
 test("macOS marker redaction is private, exact, and authentication-gated", async () => {
   const harness = await fs.readFile(path.join(ROOT, "skills/workflows/stnl-slice-executor/runtime/run-validation-session.mjs"), "utf8");
   assert.match(harness, /const violationMarker = observeDenials \? `STNL_VALIDATION_SANDBOX:\$\{randomUUID\(\)\}` : null/u);
-  assert.match(harness, /stderrForEvidence: sandboxViolation \? redactAuthenticatedMarker\(payload\.stderr, isolated\.violationMarker\) : payload\.stderr/u);
-  assert.match(harness, /audit\.stop\(true\)/u);
+  assert.match(harness, /stderrForEvidence: sandboxEvents\.length !== 0 \? redactAuthenticatedMarker\(payload\.stderr, isolated\.violationMarker\) : payload\.stderr/u);
+  assert.match(harness, /audit\.stop\(true, payload\.stderr\.toString\("utf8"\)\)/u);
   assert.doesNotMatch(harness, /replaceAll\(.*(?:permission denied|operation not permitted|read-only file system)/iu);
 });
 
@@ -5432,6 +5627,83 @@ test("structured provenance round-trips and stale unlisted source cannot support
   assert.equal((await validateExecutionCandidate(fixture.requirements, candidate.execution)).state, "IMPLEMENTED_AWAITING_VALIDATION");
   await fs.writeFile(dependency, "changed\n");
   await assert.rejects(validateExecutionCandidate(fixture.requirements, candidate.execution), /source fingerprint is stale/u);
+});
+
+test("invalid boundary evidence preserves and resumes the same reserved automatic round", async (t) => {
+  const fixture = await validationSessionFixture(t);
+  const request = validationRequest({
+    argv: [process.execPath, "-e", "const fs=require('node:fs'); fs.mkdirSync('out', {recursive:true}); fs.writeFileSync('out/cache.json', 'generated')"],
+    failureConclusion: "NONE",
+  });
+  const blocked = await runValidationSession(fixture.requirements, request);
+  assert.equal(blocked.provenance.state, "INVALID", JSON.stringify(blocked));
+  assert.equal(blocked.provenance.classification, "SANDBOX_BOUNDARY_BLOCKED");
+  assert.equal(blocked.provenance.round, "1/3");
+  assert.equal(blocked.provenance.workspace.liveWorkspaceDelta, null);
+
+  const unstable = structuredClone(blocked.provenance);
+  unstable.workspace.boundaryViolations[0].requestedPath = "$SYSTEM_TEMP/session-Ab12Cd/out.json";
+  unstable.workspace.boundaryViolations[0].resolvedPath = "$SYSTEM_TEMP/session-Ab12Cd/out.json";
+  unstable.evidenceId = validationEvidenceIdentity(unstable);
+  const unstableCandidate = await externalExecutionCandidate(t, fixture);
+  await editTask(unstableCandidate, (value) => {
+    let next = replaceSection(value.replace("- [ ] 1.1", "- [x] 1.1"), "Changed Areas", "- `../../src/example.txt`");
+    return replaceSection(next, "Implementation Test Evidence", evidenceCheckRecord(unstable, {
+      status: "BLOCKED", number: 1,
+    }));
+  });
+  await assert.rejects(
+    validateExecutionCandidate(fixture.requirements, unstableCandidate.execution),
+    /Evidence boundary violation (?:requestedPath|resolvedPath) is malformed/u,
+  );
+
+  const blockedCandidate = await externalExecutionCandidate(t, fixture);
+  await editTask(blockedCandidate, (value) => {
+    let next = replaceSection(value.replace("- [ ] 1.1", "- [x] 1.1"), "Changed Areas", "- `../../src/example.txt`");
+    return replaceSection(next, "Implementation Test Evidence", evidenceCheckRecord(blocked.provenance, {
+      status: "BLOCKED", number: 1,
+    }));
+  });
+  const blockedState = await validateExecutionCandidate(fixture.requirements, blockedCandidate.execution);
+  assert.equal(blockedState.state, "AUXILIARY_BLOCKED");
+  assert.deepEqual(blockedState.mandatoryRecovery, {
+    operation: "EXECUTE_SLICE", slice: "slice-01", owner: "auxiliary-check",
+    record: "implementation-check-01", round: 1, retryState: null, authorityMode: null,
+    invocation: null, sameOperationResumeRequired: true,
+  });
+  await fs.copyFile(
+    path.join(blockedCandidate.execution, "tasks/slice-01.md"),
+    path.join(fixture.execution, "tasks/slice-01.md"),
+  );
+
+  request.priorEvidenceId = blocked.provenance.evidenceId;
+  request.commands[0].writePaths = ["out"];
+  const resumed = await runValidationSession(fixture.requirements, request);
+  assert.equal(resumed.provenance.state, "VERIFIED", JSON.stringify(resumed));
+  assert.equal(resumed.provenance.round, "1/3");
+  assert.equal(resumed.provenance.priorEvidenceId, blocked.provenance.evidenceId);
+  assert.deepEqual(resumed.provenance.workspace.boundaryViolations, []);
+
+  const recoveredCandidate = await externalExecutionCandidate(t, fixture);
+  await editTask(recoveredCandidate, (value) => replaceSection(
+    value,
+    "Implementation Test Evidence",
+    `${evidenceCheckRecord(blocked.provenance, { status: "BLOCKED", number: 1 })}\n\n${evidenceCheckRecord(resumed.provenance, { status: "TESTS_PASS", number: 2 })}`,
+  ));
+  const candidateResult = await validateExecutionCandidate(fixture.requirements, recoveredCandidate.execution);
+  assert.equal(candidateResult.state, "IMPLEMENTED_AWAITING_VALIDATION");
+  await fs.copyFile(
+    path.join(recoveredCandidate.execution, "tasks/slice-01.md"),
+    path.join(fixture.execution, "tasks/slice-01.md"),
+  );
+  const recovered = await inspectExecutionState(fixture.requirements);
+  assert.deepEqual(recovered.effectiveBlockers, []);
+  assert.equal(recovered.tasks.get("slice-01").implementationChecks.length, 2);
+  assert.deepEqual(recovered.tasks.get("slice-01").implementationChecks.map((record) => record.round), [1, 1]);
+  assert.equal(
+    recovered.tasks.get("slice-01").implementationChecks[0].provenance.evidenceId,
+    blocked.provenance.evidenceId,
+  );
 });
 
 test("invalid replay is anchored to historical evidence and cannot become code regression", async (t) => {

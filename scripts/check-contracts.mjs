@@ -273,7 +273,7 @@ function checkRunner(root) {
   const contract = String(codex.developer_instructions ?? "").trim();
   if (contract !== claude.body) reject("R003_EQUIVALENCE", "runner platform contracts diverge");
 
-  requirePattern(contract, /^CONTRATO_CANONICO=stnl-validation-runner\/v8$/mu, "R013_SYNTAX", "canonical runner contract ID is missing or stale");
+  requirePattern(contract, /^CONTRATO_CANONICO=stnl-validation-runner\/v9$/mu, "R013_SYNTAX", "canonical runner contract ID is missing or stale");
   const operations = /^OPERACOES_SUPORTADAS=([^\n]+)$/mu.exec(contract)?.[1];
   if (operations !== "EXECUTE_SLICE|APPLY_FINDINGS|VALIDATE_SLICE") reject("R004_OPERATION_SCOPE", `invalid runner operations: ${operations ?? "missing"}`);
   if (!contract.includes("STATUS_CHECKS=TESTS_PASS|TESTS_ACCEPTED|TESTS_FAIL|TESTS_NOT_APPLICABLE|BLOCKED") || !contract.includes("STATUS_VALIDACAO=PASS|ACCEPTED|NEEDS_FIX|BLOCKED")) {
@@ -292,8 +292,13 @@ function checkRunner(root) {
   requirePattern(contract, /conclusões do contexto principal como não verificadas/iu, "R014_INDEPENDENCE", "runner does not independently verify main-context claims");
   requirePattern(contract, /Leia somente o escopo necessário/iu, "R014_INDEPENDENCE", "runner read scope is not bounded");
   requirePattern(contract, /Não confie apenas em checkboxes ou em resultados anteriores/iu, "R014_INDEPENDENCE", "runner can trust historical claims without verification");
-  requirePattern(contract, /Todo verification command, sem exceção[\s\S]{0,180}VALIDATION_HARNESS_PATH/iu, "R017_ISOLATION", "verification commands do not require the validation harness");
-  requirePattern(contract, /sandbox do sistema operacional[\s\S]{0,260}`writePaths`/iu, "R017_ISOLATION", "filesystem isolation and explicit write boundaries are missing");
+  requirePattern(contract, /Todo verification command, sem exceção[\s\S]{0,220}runtime de validação empacotado/iu, "R017_ISOLATION", "verification commands do not require the bundled validation runtime");
+  requirePattern(contract, /resolve internamente[\s\S]{0,220}localização carregada/iu, "R017_ISOLATION", "validation runtime is not resolved from the loaded owning skill");
+  forbidPattern(contract, /VALIDATION_HARNESS_PATH|<SKILL_ROOT>|run-validation-session\.mjs/iu, "R017_ISOLATION", "runner exposes physical validation runtime plumbing");
+  requirePattern(contract, /Derive internamente de `SPEC_PATH`[^\n]{0,180}execution root canônico[^\n]{0,160}artefatos exatos de plan\/task/iu, "R017_ISOLATION", "runner does not derive execution artifacts from intent and identity");
+  forbidPattern(contract, /execution root derivado, paths de plans e tasks|cujo path acompanha o payload/iu, "R017_ISOLATION", "runner payload exposes derivable execution plumbing");
+  requirePattern(contract, /sandbox do sistema operacional[\s\S]{0,300}`writePaths`[\s\S]{0,120}`writeFiles`/iu, "R017_ISOLATION", "filesystem isolation and explicit write boundaries are missing");
+  requirePattern(contract, /SANDBOX_BOUNDARY_BLOCKED[\s\S]{0,600}mesma (?:rodada|tentativa)[\s\S]{0,400}outputs isolados exatos/iu, "R018_PROVENANCE", "boundary recovery is not bounded to exact isolated outputs");
   requirePattern(contract, /Symlink de source[^\n]{0,180}target canônico final[^\n]{0,220}(?:preservado|rebaseado)[^\n]{0,220}target externo[^\n]{0,120}bloqueia/iu, "R017_ISOLATION", "source symlink admission is not bound to canonical project containment");
   requirePattern(contract, /Plataforma sem sandbox suportada retorna `BLOCKED`[^\n]{0,80}não faça fallback direto/iu, "R017_ISOLATION", "sandbox availability does not fail closed");
   requirePattern(contract, /Evidence `INVALID`[^\n]{0,220}(?:somente `BLOCKED`|produz somente `BLOCKED`)/iu, "R018_PROVENANCE", "invalid evidence may support a material verdict");
@@ -443,12 +448,12 @@ const launcherSpecs = {
   "execution-tasks": ["stnl-task-materializer", "OPERATION", "MATERIALIZE_TASKS", [["SPEC_PATH", "{{SPEC_PATH}}"]]],
   "execution-tasks-review": ["stnl-task-reviewer", "OPERATION", "REVIEW_TASKS", [["SPEC_PATH", "{{SPEC_PATH}}"]]],
   "execution-close": ["stnl-execution-closer", "OPERATION", "CLOSE", [["SPEC_PATH", "{{SPEC_PATH}}"]]],
-  "slice-execute-codex": ["stnl-slice-executor", "OPERATION", "EXECUTE_SLICE", [["SPEC_PATH", "{{SPEC_PATH}}"], ["SLICE", "{{SLICE}}"], ["VALIDATION_HARNESS_PATH", "<SKILL_ROOT>/runtime/run-validation-session.mjs"]]],
-  "slice-execute-claude": ["stnl-slice-executor", "OPERATION", "EXECUTE_SLICE", [["SPEC_PATH", "{{SPEC_PATH}}"], ["SLICE", "{{SLICE}}"], ["VALIDATION_HARNESS_PATH", "<SKILL_ROOT>/runtime/run-validation-session.mjs"]]],
-  "slice-apply-findings-codex": ["stnl-slice-executor", "OPERATION", "APPLY_FINDINGS", [["SPEC_PATH", "{{SPEC_PATH}}"], ["SLICE", "{{SLICE}}"], ["VALIDATION_HARNESS_PATH", "<SKILL_ROOT>/runtime/run-validation-session.mjs"]]],
-  "slice-apply-findings-claude": ["stnl-slice-executor", "OPERATION", "APPLY_FINDINGS", [["SPEC_PATH", "{{SPEC_PATH}}"], ["SLICE", "{{SLICE}}"], ["VALIDATION_HARNESS_PATH", "<SKILL_ROOT>/runtime/run-validation-session.mjs"]]],
-  "slice-validate-codex": ["stnl-slice-quality-manager", "OPERATION", "VALIDATE_SLICE", [["SPEC_PATH", "{{SPEC_PATH}}"], ["SLICE", "{{SLICE}}"], ["VALIDATION_HARNESS_PATH", "<SKILL_ROOT>/runtime/run-validation-session.mjs"]]],
-  "slice-validate-claude": ["stnl-slice-quality-manager", "OPERATION", "VALIDATE_SLICE", [["SPEC_PATH", "{{SPEC_PATH}}"], ["SLICE", "{{SLICE}}"], ["VALIDATION_HARNESS_PATH", "<SKILL_ROOT>/runtime/run-validation-session.mjs"]]],
+  "slice-execute-codex": ["stnl-slice-executor", "OPERATION", "EXECUTE_SLICE", [["SPEC_PATH", "{{SPEC_PATH}}"], ["SLICE", "{{SLICE}}"]]],
+  "slice-execute-claude": ["stnl-slice-executor", "OPERATION", "EXECUTE_SLICE", [["SPEC_PATH", "{{SPEC_PATH}}"], ["SLICE", "{{SLICE}}"]]],
+  "slice-apply-findings-codex": ["stnl-slice-executor", "OPERATION", "APPLY_FINDINGS", [["SPEC_PATH", "{{SPEC_PATH}}"], ["SLICE", "{{SLICE}}"]]],
+  "slice-apply-findings-claude": ["stnl-slice-executor", "OPERATION", "APPLY_FINDINGS", [["SPEC_PATH", "{{SPEC_PATH}}"], ["SLICE", "{{SLICE}}"]]],
+  "slice-validate-codex": ["stnl-slice-quality-manager", "OPERATION", "VALIDATE_SLICE", [["SPEC_PATH", "{{SPEC_PATH}}"], ["SLICE", "{{SLICE}}"]]],
+  "slice-validate-claude": ["stnl-slice-quality-manager", "OPERATION", "VALIDATE_SLICE", [["SPEC_PATH", "{{SPEC_PATH}}"], ["SLICE", "{{SLICE}}"]]],
 };
 
 const runnerLaunchers = new Set(Object.keys(launcherSpecs).filter((name) => name.startsWith("slice-")));
@@ -527,6 +532,10 @@ function checkLaunchers(root) {
       requirePattern(instructions, /handoff manual/iu, "L022_REFINEMENT_BOUNDARY", `${name}: manual handoff boundary is missing`);
     }
     if (!runnerLaunchers.has(name)) continue;
+    forbidPattern(text, /VALIDATION_HARNESS_PATH|<SKILL_ROOT>|run-validation-session\.mjs|(?:^|\/)runtime\/[A-Za-z0-9._/-]*validation[A-Za-z0-9._/-]*/iu, "L004_INPUTS", `${name}: internal validation path leaked into the operator contract`);
+    forbidPattern(text, /`SPEC_PATH`, execution root derivado|paths de plans e tasks/iu, "L004_INPUTS", `${name}: derivable execution paths leaked into the delegated payload`);
+    requirePattern(instructions, /resolve internamente[\s\S]{0,180}própria localização carregada/iu, "L012_CHECK_DELEGATION", `${name}: owning skill does not resolve its bundled validation runtime internally`);
+    requirePattern(instructions, /execution root, plan\/task, schema e runtime[^\n]{0,120}derivados internamente/iu, "L012_CHECK_DELEGATION", `${name}: derivable execution plumbing is not internally resolved`);
     requirePattern(
       instructions,
       /concrete recovery operation and slice[^\n]{0,100}shared deterministic preflight[^\n]{0,80}authority[^\n]{0,120}derive neither from the current request[^\n]{0,100}report both exactly/iu,
