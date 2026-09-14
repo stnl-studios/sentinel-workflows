@@ -633,7 +633,7 @@ test("CLI dry-run is deterministic and installation writes the ownership manifes
   assert.equal(second.status, 0, second.stderr);
   assert.deepEqual(JSON.parse(first.stdout), JSON.parse(second.stdout));
   assert.equal(await exists(path.join(project, ...SENTINEL_INSTALLATION_CONTRACT.lockPath.split("/"))), false);
-  const install = spawnSync(process.execPath, [CLI, "--platform", "claude-code", "--project", project], { encoding: "utf8" });
+  const install = spawnSync(process.execPath, [CLI, "--platform", "claude-code", "--project", project, "--json"], { encoding: "utf8" });
   assert.equal(install.status, 0, install.stderr);
   const result = JSON.parse(install.stdout);
   assert.equal(result.status, "installed");

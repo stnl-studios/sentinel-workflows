@@ -19,6 +19,20 @@ to Codex and Claude Code. The repository is the only source. Installation does
 not use the network, a remote registry, a global npm package, administrator
 access, or content under `targets/`.
 
+Both commands print concise human-readable status by default. Use `--json` when
+automation or troubleshooting needs the complete structured installer result or
+doctor report:
+
+```text
+node scripts/install-sentinel.mjs --json
+node scripts/doctor-sentinel.mjs --json
+```
+
+The JSON form preserves installation roots, fingerprints, file lists,
+transaction details, warnings, residuals, and diagnostic metadata. Selecting
+JSON changes presentation only; operation semantics and exit codes are the
+same.
+
 Running the install command again is the update operation.
 
 ## User installation layout
@@ -118,6 +132,7 @@ Use `--dry-run` with any valid scope/platform combination:
 node scripts/install-sentinel.mjs --dry-run
 node scripts/install-sentinel.mjs --platform codex --dry-run
 node scripts/install-sentinel.mjs --scope project --project <path> --dry-run
+node scripts/install-sentinel.mjs --dry-run --json
 ```
 
 The output identifies the scope, selected platforms, resolved installation root
@@ -125,6 +140,8 @@ and root type, combined fingerprint, and every sorted source/destination
 mapping with byte size and content hash. A dry run creates no lock, stage,
 manifest, or installed file. Absolute installation roots may be displayed for
 operator clarity, but they are not inputs to the fingerprint.
+Dry-run output intentionally remains detailed even without `--json`; combining
+the flags is supported and emits the same complete structured plan.
 
 ## One multi-platform transaction
 
@@ -247,6 +264,7 @@ node scripts/doctor-sentinel.mjs --scope user --platform claude-code
 node scripts/doctor-sentinel.mjs --scope project --project <path>
 node scripts/doctor-sentinel.mjs --scope project --project <path> --platform codex
 node scripts/doctor-sentinel.mjs --source-only
+node scripts/doctor-sentinel.mjs --source-only --json
 ```
 
 For backward compatibility, `doctor --project <path>` without an explicit scope
@@ -267,6 +285,9 @@ authority and performs no installation writes:
 ```text
 node scripts/doctor-sentinel.mjs --source-only
 ```
+
+Its default output is a concise source/platform/default-installation summary;
+`--json` retains the complete per-platform and combined-plan diagnostics.
 
 ## Windows and constrained VDI validation
 

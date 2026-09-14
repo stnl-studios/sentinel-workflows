@@ -123,11 +123,11 @@ async function installProject(project, platform = "all", options = {}) {
 test("no-argument installer and doctor use fake user home with all production platforms", async (t) => {
   const home = await nestedFakeHome(t);
   assert.notEqual(home, path.resolve(os.homedir()));
-  assert.deepEqual(parseInstallArguments([]), { dryRun: false, scope: "user", platform: "all", projectRoot: undefined });
+  assert.deepEqual(parseInstallArguments([]), { dryRun: false, json: false, scope: "user", platform: "all", projectRoot: undefined });
   assert.deepEqual(SUPPORTED_PRODUCTION_PLATFORMS, ["codex", "claude-code"]);
 
   const fakeHomeEnvironment = { ...process.env, HOME: home, USERPROFILE: home };
-  const installProcess = spawnSync(process.execPath, [INSTALL_CLI], { encoding: "utf8", env: fakeHomeEnvironment });
+  const installProcess = spawnSync(process.execPath, [INSTALL_CLI, "--json"], { encoding: "utf8", env: fakeHomeEnvironment });
   assert.equal(installProcess.status, 0, installProcess.stderr);
   const installed = JSON.parse(installProcess.stdout);
   assert.equal(installed.status, "installed");
@@ -160,8 +160,8 @@ test("no-argument installer and doctor use fake user home with all production pl
   assert.deepEqual(manifest.platforms, ["codex", "claude-code"]);
   assert.equal("platform" in manifest, false);
 
-  assert.deepEqual(parseDoctorArguments([]), { sourceOnly: false, scope: "user", platform: "all", projectRoot: undefined });
-  const doctorProcess = spawnSync(process.execPath, [DOCTOR_CLI], { encoding: "utf8", env: fakeHomeEnvironment });
+  assert.deepEqual(parseDoctorArguments([]), { sourceOnly: false, json: false, scope: "user", platform: "all", projectRoot: undefined });
+  const doctorProcess = spawnSync(process.execPath, [DOCTOR_CLI, "--json"], { encoding: "utf8", env: fakeHomeEnvironment });
   assert.equal(doctorProcess.status, 0, doctorProcess.stderr);
   const report = JSON.parse(doctorProcess.stdout);
   assert.equal(report.status, "OK");
@@ -205,7 +205,7 @@ test("default user install authoritatively replaces exact manual Sentinel artifa
   await fs.writeFile(path.join(skillDestination, "maintenance/stale.md"), "stale maintenance\n");
 
   const environment = { ...process.env, HOME: home, USERPROFILE: home };
-  const installProcess = spawnSync(process.execPath, [INSTALL_CLI], { encoding: "utf8", env: environment });
+  const installProcess = spawnSync(process.execPath, [INSTALL_CLI, "--json"], { encoding: "utf8", env: environment });
   assert.equal(installProcess.status, 0, installProcess.stderr);
   assert.equal(JSON.parse(installProcess.stdout).status, "installed");
 
@@ -235,12 +235,12 @@ test("default user install authoritatively replaces exact manual Sentinel artifa
     assert.ok((await fs.readFile(managedPath(home, relativePath))).equals(bytes), relativePath);
   }
 
-  const doctorProcess = spawnSync(process.execPath, [DOCTOR_CLI], { encoding: "utf8", env: environment });
+  const doctorProcess = spawnSync(process.execPath, [DOCTOR_CLI, "--json"], { encoding: "utf8", env: environment });
   assert.equal(doctorProcess.status, 0, doctorProcess.stderr);
   assert.equal(JSON.parse(doctorProcess.stdout).status, "OK");
 
   const installedSnapshot = await snapshotTree(home);
-  const reinstallProcess = spawnSync(process.execPath, [INSTALL_CLI], { encoding: "utf8", env: environment });
+  const reinstallProcess = spawnSync(process.execPath, [INSTALL_CLI, "--json"], { encoding: "utf8", env: environment });
   assert.equal(reinstallProcess.status, 0, reinstallProcess.stderr);
   assert.equal(JSON.parse(reinstallProcess.stdout).status, "unchanged");
   assert.deepEqual(await snapshotTree(home), installedSnapshot);
@@ -262,6 +262,7 @@ test("CLI scope combinations fail closed and preserve project shorthand", () => 
   const project = path.resolve("consumer project");
   assert.deepEqual(parseInstallArguments(["--platform", "codex", "--project", project]), {
     dryRun: false,
+    json: false,
     scope: "project",
     platform: "codex",
     projectRoot: project,

@@ -15,10 +15,11 @@ const REPOSITORY_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)
 
 function usage() {
   return [
-    "usage: node scripts/install-sentinel.mjs [--scope <user|project>] [--platform <all|codex|claude-code>] [--project <path>] [--dry-run]",
+    "usage: node scripts/install-sentinel.mjs [--scope <user|project>] [--platform <all|codex|claude-code>] [--project <path>] [--dry-run] [--json]",
     "",
     "defaults: --scope user --platform all",
     "--project <path> without --scope is a backwards-compatible project-scope shorthand",
+    "--json emits the complete structured result; dry-run remains detailed by default",
     "",
   ].join("\n");
 }
@@ -28,6 +29,8 @@ export function parseInstallArguments(argv) {
   let platform = "all";
   let projectRoot;
   let dryRun = false;
+  let json = false;
+  let help = false;
   const seen = new Set();
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
@@ -36,7 +39,15 @@ export function parseInstallArguments(argv) {
       dryRun = true;
       continue;
     }
-    if (argument === "--help" || argument === "-h") return { help: true };
+    if (argument === "--json") {
+      if (json) throw new Error("duplicate argument: --json");
+      json = true;
+      continue;
+    }
+    if (argument === "--help" || argument === "-h") {
+      help = true;
+      continue;
+    }
     if (!["--scope", "--platform", "--project"].includes(argument)) throw new Error(`unknown argument: ${argument}`);
     if (seen.has(argument)) throw new Error(`duplicate argument: ${argument}`);
     seen.add(argument);
@@ -47,11 +58,23 @@ export function parseInstallArguments(argv) {
     else if (argument === "--platform") platform = value;
     else projectRoot = value;
   }
+  if (help) return { help: true };
   const normalizedScope = resolveInstallationScope(scope ?? (projectRoot === undefined ? "user" : "project"));
   resolvePlatformSelection(platform);
   if (normalizedScope === "user" && projectRoot !== undefined) throw new Error("--project cannot be used with user scope");
   if (normalizedScope === "project" && projectRoot === undefined) throw new Error("project scope requires --project <path>");
-  return { dryRun, scope: normalizedScope, platform, projectRoot: projectRoot === undefined ? undefined : path.resolve(projectRoot) };
+  return { dryRun, json, scope: normalizedScope, platform, projectRoot: projectRoot === undefined ? undefined : path.resolve(projectRoot) };
+}
+
+export function renderInstallResult(result) {
+  const lines = [result.status === "unchanged" ? "✓ Sentinel already up to date" : "✓ Sentinel installed"];
+  lines.push("", `Scope: ${result.scope}`, `Platforms: ${result.platforms.join(", ")}`);
+  if (result.status === "installed") lines.push(`Files: ${result.files.length}`);
+  if (result.warnings.length > 0) {
+    lines.push("", "Warnings:");
+    for (const warning of result.warnings) lines.push(`- ${warning.message}`);
+  }
+  return `${lines.join("\n")}\n`;
 }
 
 export async function runInstallCli(argv, options = {}) {
@@ -88,8 +111,9 @@ export async function runInstallCli(argv, options = {}) {
 
 async function main() {
   const argv = process.argv.slice(2);
+  let parsed;
   try {
-    parseInstallArguments(argv);
+    parsed = parseInstallArguments(argv);
   } catch (error) {
     process.stderr.write(`ERROR: ${error.message}\n${usage()}`);
     process.exitCode = 2;
@@ -97,7 +121,9 @@ async function main() {
   }
   try {
     const result = await runInstallCli(argv);
-    process.stdout.write(result.help ? result.output : `${JSON.stringify(result, null, 2)}\n`);
+    if (result.help) process.stdout.write(result.output);
+    else if (parsed.json || parsed.dryRun) process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    else process.stdout.write(renderInstallResult(result));
   } catch (error) {
     process.stderr.write(`ERROR: ${error.message}\n`);
     process.exitCode = 1;

@@ -98,7 +98,7 @@ test("source-only doctor validates individual and default all-platform health wi
     homeDirectory: () => home,
   });
   assert.equal(directCliReport.status, "OK");
-  const cli = spawnSync(process.execPath, [CLI, "--source-only"], {
+  const cli = spawnSync(process.execPath, [CLI, "--source-only", "--json"], {
     encoding: "utf8",
     env: { ...process.env, HOME: home },
   });
@@ -132,7 +132,7 @@ test("source doctor fails closed when only the canonical all-platform compositio
     assert.equal(isolatedDistribution.validatePlannedDistribution(individualPlan), true);
   }
 
-  const cli = spawnSync(process.execPath, [path.join(source, "scripts/doctor-sentinel.mjs"), "--source-only"], { encoding: "utf8" });
+  const cli = spawnSync(process.execPath, [path.join(source, "scripts/doctor-sentinel.mjs"), "--source-only", "--json"], { encoding: "utf8" });
   assert.equal(cli.status, 2, cli.stdout);
   const report = JSON.parse(cli.stdout);
   assert.equal(report.status, "BLOCKED");
