@@ -528,7 +528,10 @@ export function checkDistributableSkillContents(skillName, files, policy = {}, i
       }
     }
     const validationHarnessOwner = new Set(["stnl-slice-executor", "stnl-slice-quality-manager"]).has(skillName)
-      && relativePath === "runtime/run-validation-session.mjs";
+      && new Set([
+        "runtime/resolve-validation-runtime.mjs",
+        "runtime/run-validation-session.mjs",
+      ]).has(relativePath);
     if (
       relativePath.startsWith("runtime/") &&
       !relativePath.startsWith("runtime/test/") &&

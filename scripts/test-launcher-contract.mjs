@@ -73,6 +73,7 @@ const cases = [
   ["operator harness input", "slice-execute-codex.md", (text) => text.replace(/^SLICE=.*\n/mu, (line) => `${line}VALIDATION_HARNESS_PATH=/physical/runtime.mjs\n`), "L004_INPUTS"],
   ["skill root leakage", "slice-execute-claude.md", (text) => text.replace("Contexto adicional (opcional):", "Use <SKILL_ROOT>.\n\nContexto adicional (opcional):"), "L004_INPUTS"],
   ["physical runtime leakage", "slice-validate-codex.md", (text) => text.replace("Contexto adicional (opcional):", "Use runtime/run-validation-session.mjs.\n\nContexto adicional (opcional):"), "L004_INPUTS"],
+  ["physical resolver leakage", "slice-execute-claude.md", (text) => text.replace("Contexto adicional (opcional):", "Use runtime/resolve-validation-runtime.mjs.\n\nContexto adicional (opcional):"), "L004_INPUTS"],
   ["derivable execution paths leakage", "slice-validate-claude.md", (text) => text.replace("slice, Requirements authority", "slice, execution root derivado, paths de plans e tasks, Requirements authority"), "L004_INPUTS"],
   ["missing replan reason", "execution-replan.md", (text) => text.replace(/^REPLAN_REASON=.*\n/mu, ""), "L004_INPUTS"],
   ["removed operation", "execution-plan.md", (text) => text.replace("Contexto adicional (opcional):", "RUN_TESTS\n\nContexto adicional (opcional):"), "L005_REMOVED_CONTRACT"],

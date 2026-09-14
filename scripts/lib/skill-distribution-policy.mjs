@@ -19,6 +19,7 @@ const VALIDATION_RUNTIME_POLICY = Object.freeze({
   ...EXECUTION_RUNTIME_POLICY,
   requiredEntrypoints: Object.freeze([
     ...EXECUTION_RUNTIME_POLICY.requiredEntrypoints,
+    "resolve-validation-runtime.mjs",
     "run-validation-session.mjs",
   ]),
 });

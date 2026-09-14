@@ -294,7 +294,7 @@ function checkRunner(root) {
   requirePattern(contract, /Não confie apenas em checkboxes ou em resultados anteriores/iu, "R014_INDEPENDENCE", "runner can trust historical claims without verification");
   requirePattern(contract, /Todo verification command, sem exceção[\s\S]{0,220}runtime de validação empacotado/iu, "R017_ISOLATION", "verification commands do not require the bundled validation runtime");
   requirePattern(contract, /resolve internamente[\s\S]{0,220}localização carregada/iu, "R017_ISOLATION", "validation runtime is not resolved from the loaded owning skill");
-  forbidPattern(contract, /VALIDATION_HARNESS_PATH|<SKILL_ROOT>|run-validation-session\.mjs/iu, "R017_ISOLATION", "runner exposes physical validation runtime plumbing");
+  forbidPattern(contract, /VALIDATION_HARNESS_PATH|<SKILL_ROOT>|resolve-validation-runtime\.mjs|run-validation-session\.mjs/iu, "R017_ISOLATION", "runner exposes physical validation runtime plumbing");
   requirePattern(contract, /Derive internamente de `SPEC_PATH`[^\n]{0,180}execution root canônico[^\n]{0,160}artefatos exatos de plan\/task/iu, "R017_ISOLATION", "runner does not derive execution artifacts from intent and identity");
   forbidPattern(contract, /execution root derivado, paths de plans e tasks|cujo path acompanha o payload/iu, "R017_ISOLATION", "runner payload exposes derivable execution plumbing");
   requirePattern(contract, /sandbox do sistema operacional[\s\S]{0,300}`writePaths`[\s\S]{0,120}`writeFiles`/iu, "R017_ISOLATION", "filesystem isolation and explicit write boundaries are missing");
@@ -532,7 +532,7 @@ function checkLaunchers(root) {
       requirePattern(instructions, /handoff manual/iu, "L022_REFINEMENT_BOUNDARY", `${name}: manual handoff boundary is missing`);
     }
     if (!runnerLaunchers.has(name)) continue;
-    forbidPattern(text, /VALIDATION_HARNESS_PATH|<SKILL_ROOT>|run-validation-session\.mjs|(?:^|\/)runtime\/[A-Za-z0-9._/-]*validation[A-Za-z0-9._/-]*/iu, "L004_INPUTS", `${name}: internal validation path leaked into the operator contract`);
+    forbidPattern(text, /VALIDATION_HARNESS_PATH|<SKILL_ROOT>|resolve-validation-runtime\.mjs|run-validation-session\.mjs|(?:^|\/)runtime\/[A-Za-z0-9._/-]*validation[A-Za-z0-9._/-]*/iu, "L004_INPUTS", `${name}: internal validation path leaked into the operator contract`);
     forbidPattern(text, /`SPEC_PATH`, execution root derivado|paths de plans e tasks/iu, "L004_INPUTS", `${name}: derivable execution paths leaked into the delegated payload`);
     requirePattern(instructions, /resolve internamente[\s\S]{0,180}própria localização carregada/iu, "L012_CHECK_DELEGATION", `${name}: owning skill does not resolve its bundled validation runtime internally`);
     requirePattern(instructions, /execution root, plan\/task, schema e runtime[^\n]{0,120}derivados internamente/iu, "L012_CHECK_DELEGATION", `${name}: derivable execution plumbing is not internally resolved`);
@@ -651,6 +651,13 @@ function checkRepository(root) {
     const file = path.join(workflowRoot, name, "SKILL.md");
     const { metadata, body } = parseFrontmatter(file);
     if (metadata.name !== name || !metadata.description) reject("C003_SKILL_SCHEMA", `invalid skill frontmatter: ${file}`);
+    const validationOwner = name === "stnl-slice-executor" || name === "stnl-slice-quality-manager";
+    if (validationOwner && metadata["validation-runtime"] !== "runtime/run-validation-session.mjs") {
+      reject("C003_SKILL_SCHEMA", `${file}: missing canonical internal validation runtime declaration`);
+    }
+    if (!validationOwner && Object.hasOwn(metadata, "validation-runtime")) {
+      reject("C003_SKILL_SCHEMA", `${file}: non-owner declares a validation runtime`);
+    }
     for (const section of requiredSections) if (!body.includes(`## ${section}`)) reject("C003_SKILL_SCHEMA", `${file}: missing ${section}`);
     const declaredOperations = [...body.matchAll(/^## ([A-Z][A-Z0-9_]*)$/gmu)].map((match) => match[1]).sort();
     if (JSON.stringify(declaredOperations) !== JSON.stringify([...expectedOperations].sort())) reject("C003_SKILL_SCHEMA", `${file}: operation set mismatch; expected=${JSON.stringify(expectedOperations)}, actual=${JSON.stringify(declaredOperations)}`);
@@ -700,13 +707,15 @@ function checkRepository(root) {
     const authority = fs.readFileSync(files[0]);
     for (const file of files.slice(1)) if (!authority.equals(fs.readFileSync(file))) reject("C006_DISTRIBUTION", `shared runtime copies differ: ${runtime}`);
   }
-  const harnessFiles = ["stnl-slice-executor", "stnl-slice-quality-manager"]
-    .map((name) => path.join(workflowRoot, name, "runtime/run-validation-session.mjs"));
-  for (const file of harnessFiles) if (!fs.statSync(file, { throwIfNoEntry: false })?.isFile()) {
-    reject("C006_DISTRIBUTION", `validation owner is missing shared validation harness: ${file}`);
-  }
-  if (!fs.readFileSync(harnessFiles[0]).equals(fs.readFileSync(harnessFiles[1]))) {
-    reject("C006_DISTRIBUTION", "validation harness copies differ: run-validation-session.mjs");
+  for (const runtime of ["resolve-validation-runtime.mjs", "run-validation-session.mjs"]) {
+    const files = ["stnl-slice-executor", "stnl-slice-quality-manager"]
+      .map((name) => path.join(workflowRoot, name, "runtime", runtime));
+    for (const file of files) if (!fs.statSync(file, { throwIfNoEntry: false })?.isFile()) {
+      reject("C006_DISTRIBUTION", `validation owner is missing shared validation runtime: ${file}`);
+    }
+    if (!fs.readFileSync(files[0]).equals(fs.readFileSync(files[1]))) {
+      reject("C006_DISTRIBUTION", `validation runtime copies differ: ${runtime}`);
+    }
   }
   for (const auxiliary of AUXILIARY_WORKFLOW_SKILLS) {
     const authorityRuntime = path.join(workflowRoot, auxiliary, "runtime/execution-state.mjs");

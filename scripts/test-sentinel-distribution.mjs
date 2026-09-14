@@ -131,6 +131,8 @@ test("skill production filtering preserves runtime closure and excludes developm
   assert.ok(paths.includes(codexSkillPath("stnl-spec-test-runbook", "references/runbook-manifest.md")));
   assert.ok(paths.includes(codexSkillPath("stnl-slice-executor", "runtime/run-validation-session.mjs")));
   assert.ok(paths.includes(codexSkillPath("stnl-slice-quality-manager", "runtime/run-validation-session.mjs")));
+  assert.ok(paths.includes(codexSkillPath("stnl-slice-executor", "runtime/resolve-validation-runtime.mjs")));
+  assert.ok(paths.includes(codexSkillPath("stnl-slice-quality-manager", "runtime/resolve-validation-runtime.mjs")));
   assert.equal(paths.some((file) => file.includes("/runtime/test/")), false);
   assert.equal(paths.some((file) => file.includes("/evals/")), false);
   assert.equal(paths.some((file) => file.includes("/examples/")), false);
@@ -140,7 +142,7 @@ test("skill production filtering preserves runtime closure and excludes developm
   assert.equal(paths.some((file) => file.endsWith("/references/token-economy.md")), false);
 });
 
-test("installed Codex and Claude skills resolve their self-contained validation runtime without operator paths", async (t) => {
+test("installed Codex and Claude skills expose their self-contained validation resolver without operator paths", async (t) => {
   for (const platform of ["codex", "claude-code"]) {
     const holder = await temporaryDirectory(t, `stnl-installed-${platform}-`);
     const project = path.join(holder, `${platform} project with spaces`);
@@ -149,22 +151,22 @@ test("installed Codex and Claude skills resolve their self-contained validation 
     const skillPath = platform === "codex" ? codexSkillPath : claudeSkillPath;
     for (const skill of ["stnl-slice-executor", "stnl-slice-quality-manager"]) {
       const skillRoot = path.join(project, skillPath(skill));
-      const harness = path.join(skillRoot, "runtime/run-validation-session.mjs");
-      assert.equal(await exists(harness), true, `${platform}:${skill}`);
-      const syntax = spawnSync(process.execPath, ["--check", harness], { encoding: "utf8" });
+      const resolver = path.join(skillRoot, "runtime/resolve-validation-runtime.mjs");
+      assert.equal(await exists(resolver), true, `${platform}:${skill}`);
+      const syntax = spawnSync(process.execPath, ["--check", resolver], { encoding: "utf8" });
       assert.equal(syntax.status, 0, syntax.stderr);
-      const imported = spawnSync(process.execPath, ["--input-type=module", "--eval", "const m=await import(process.argv[1]); if(typeof m.runValidationSession !== 'function') process.exit(1);", pathToFileURL(harness).href], { encoding: "utf8" });
+      const imported = spawnSync(process.execPath, ["--input-type=module", "--eval", "const {pathToFileURL}=await import('node:url'); const m=await import(process.argv[1]); const r=await m.resolveOwnValidationRuntime(); const h=await import(pathToFileURL(r.runtimePath).href); if(typeof h.runValidationSession !== 'function') process.exit(1);", pathToFileURL(resolver).href], { encoding: "utf8" });
       assert.equal(imported.status, 0, imported.stderr);
       const instructions = await fs.readFile(path.join(skillRoot, "SKILL.md"), "utf8");
       assert.doesNotMatch(instructions, /VALIDATION_HARNESS_PATH/u);
-      assert.match(instructions, /resolves its packaged validation entrypoint internally from the loaded skill location/u);
+      assert.match(instructions, /loaded location for this `SKILL\.md` is the sole bootstrap authority/u);
     }
     const promptRoot = platform === "codex" ? path.join(project, ".sentinel/prompts") : path.join(project, ".claude/commands");
     for (const prompt of platform === "codex"
       ? ["slice-execute-codex.md", "slice-validate-codex.md"]
       : ["slice-execute-claude.md", "slice-validate-claude.md"]) {
       const text = await fs.readFile(path.join(promptRoot, prompt), "utf8");
-      assert.doesNotMatch(text, /VALIDATION_HARNESS_PATH|<SKILL_ROOT>|run-validation-session\.mjs/u);
+      assert.doesNotMatch(text, /VALIDATION_HARNESS_PATH|<SKILL_ROOT>|(?:resolve|run)-validation-runtime\.mjs|run-validation-session\.mjs/u);
       assert.doesNotMatch(text, /`SPEC_PATH`, execution root derivado|paths de plans e tasks/u);
       assert.match(text, /execution root, plan\/task, schema e runtime[^\n]{0,120}derivados internamente/u);
     }

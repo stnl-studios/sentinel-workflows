@@ -24,7 +24,11 @@ import {
 } from "../skills/workflows/stnl-execution-closer/runtime/execution-state.mjs";
 import { EXECUTION_OPERATION_SKILLS, WORKFLOW_OPERATIONS } from "./lib/skill-registry.mjs";
 import { checkDistributableSkill } from "./lib/check-distributable-skill.mjs";
-import { runValidationSession, validationSandboxBackend } from "../skills/workflows/stnl-slice-executor/runtime/run-validation-session.mjs";
+import {
+  runValidationSession,
+  validationSandboxBackend,
+  validationSandboxSupportsExactWriteFiles,
+} from "../skills/workflows/stnl-slice-executor/runtime/run-validation-session.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
 const SKILLS = [
@@ -4611,6 +4615,18 @@ function validationRequest({
   };
 }
 
+async function assertExactFileBackend(result) {
+  const backend = await validationSandboxBackend();
+  if (backend?.kind !== "linux-bwrap") return true;
+  assert.equal(result.provenance.state, "INVALID", JSON.stringify(result));
+  assert.equal(result.provenance.classification, "INFRASTRUCTURE_BLOCKED");
+  assert.equal(result.provenance.blocker?.code, "LINUX_EXACT_WRITE_FILE_UNSUPPORTED");
+  assert.equal(result.provenance.workspace.kind, "pre-check");
+  assert.deepEqual(result.provenance.commands, []);
+  assert.deepEqual(result.outputs, []);
+  return false;
+}
+
 function provenanceCommands(provenance) {
   return provenance.commands.map((command) => `  - \`${command.display}\` | exit:${command.exit}`).join("\n");
 }
@@ -4875,14 +4891,14 @@ test("caller external roots, unrelated HOME, and subprocess access remain fail-c
   await fs.writeFile(outsideFile, "outside\n", "utf8");
   await fs.writeFile(subprocessFile, "subprocess\n", "utf8");
   const unrelatedHomeEntry = (await fs.readdir(os.homedir(), { withFileTypes: true }))
-    .filter((entry) => entry.name !== ".CFUserTextEncoding")
-    .sort((left, right) => Number(right.isDirectory()) - Number(left.isDirectory()) || left.name.localeCompare(right.name, "en"))[0];
-  assert.ok(unrelatedHomeEntry, "HOME must contain one existing entry for the read-only boundary probe");
+    .filter((entry) => entry.isFile() && entry.name !== ".CFUserTextEncoding")
+    .sort((left, right) => left.name.localeCompare(right.name, "en"))[0];
+  assert.ok(unrelatedHomeEntry, "HOME must contain one existing file for the read-data boundary probe");
   const unrelatedHomePath = path.join(os.homedir(), unrelatedHomeEntry.name);
   const command = (argv, env) => ({ argv, cwd: ".", writePaths: [], writeFiles: [], env, timeoutMs: 10_000 });
   const request = validationRequest({ failureConclusion: "NONE" });
   request.commands = [
-    command([process.execPath, "-e", "require('node:fs').statSync(process.env.UNRELATED_HOME)"], { UNRELATED_HOME: unrelatedHomePath }),
+    command([process.execPath, "-e", "require('node:fs').readFileSync(process.env.UNRELATED_HOME)"], { UNRELATED_HOME: unrelatedHomePath }),
     command([process.execPath, "-e", "process.exit(require('node:child_process').spawnSync('/bin/cat',[process.env.UNRELATED_EXTERNAL]).status ?? 1)"], { UNRELATED_EXTERNAL: subprocessFile }),
   ];
   const result = await runValidationSession(fixture.requirements, request);
@@ -4892,6 +4908,7 @@ test("caller external roots, unrelated HOME, and subprocess access remain fail-c
   assert.equal(result.provenance.workspace.liveWorkspaceDelta, null);
   assert.equal(await fs.readFile(outsideFile, "utf8"), "outside\n");
   const diagnostics = result.provenance.workspace.boundaryViolations;
+  assert.notEqual(result.outputs[0].exit, 0, JSON.stringify(result.outputs));
   assert.equal(JSON.stringify(diagnostics).includes(path.basename(external)), false);
   const homeAccess = diagnostics.find((entry) => entry.command === 1 && entry.rule === "unrelated-user-home-access-denied");
   assert.ok(homeAccess, JSON.stringify(diagnostics));
@@ -4920,6 +4937,186 @@ test("caller external roots, unrelated HOME, and subprocess access remain fail-c
     runValidationSession(fixture.requirements, validationRequest({ writeFiles: ["existing-source.txt"] })),
     /write file must identify a new isolated generated output/u,
   );
+});
+
+test("writeFiles preserves initial absence and permits exclusive creation without a placeholder", async (t) => {
+  const fixture = await validationSessionFixture(t);
+  await fs.mkdir(path.join(fixture.root, "generated"));
+  const target = path.join(fixture.root, "generated/result.json");
+  const result = await runValidationSession(fixture.requirements, validationRequest({
+    argv: [process.execPath, "-e", `
+      const fs = require("node:fs");
+      const target = "generated/result.json";
+      if (fs.existsSync(target)) process.exit(41);
+      const descriptor = fs.openSync(target, "wx");
+      fs.writeFileSync(descriptor, "exclusive");
+      fs.closeSync(descriptor);
+    `],
+    writeFiles: ["generated/result.json"], failureConclusion: "NONE",
+  }));
+  if (!await assertExactFileBackend(result)) {
+    await assert.rejects(fs.access(target));
+    return;
+  }
+  assert.equal(result.provenance.state, "VERIFIED", JSON.stringify(result));
+  assert.equal(result.provenance.classification, "NONE");
+  assert.equal(result.provenance.commands[0].exit, 0);
+  assert.equal(result.outputs[0].exit, 0);
+  assert.equal(result.outputs[0].sandboxViolation, false);
+  assert.deepEqual(result.provenance.workspace.boundaryViolations, []);
+  assert.deepEqual(result.provenance.workspace.sideEffects, []);
+  assert.equal(result.provenance.workspace.liveWorkspaceDelta, null);
+  await assert.rejects(fs.access(target));
+});
+
+test("writeFiles target remains absent at process start and need not be produced", async (t) => {
+  const fixture = await validationSessionFixture(t);
+  await fs.mkdir(path.join(fixture.root, "generated"));
+  const result = await runValidationSession(fixture.requirements, validationRequest({
+    argv: [process.execPath, "-e", `
+      const fs = require("node:fs");
+      if (fs.existsSync("generated/optional.json")) process.exit(42);
+      process.stdout.write("initially-absent\\n");
+    `],
+    writeFiles: ["generated/optional.json"], failureConclusion: "NONE",
+  }));
+  if (!await assertExactFileBackend(result)) return;
+  assert.equal(result.provenance.state, "VERIFIED", JSON.stringify(result));
+  assert.equal(result.provenance.commands[0].exit, 0);
+  assert.match(result.outputs[0].stdout, /initially-absent/u);
+  assert.deepEqual(result.provenance.workspace.boundaryViolations, []);
+  await assert.rejects(fs.access(path.join(fixture.root, "generated/optional.json")));
+});
+
+test("writeFiles denies an undeclared sibling without granting writable-parent authority", async (t) => {
+  const fixture = await validationSessionFixture(t);
+  await fs.mkdir(path.join(fixture.root, "generated"));
+  const liveBefore = await fs.readdir(path.join(fixture.root, "generated"));
+  const result = await runValidationSession(fixture.requirements, validationRequest({
+    argv: [process.execPath, "-e", `
+      const fs = require("node:fs");
+      fs.writeFileSync("generated/result.json", "allowed");
+      fs.writeFileSync("generated/other.json", "denied");
+    `],
+    writeFiles: ["generated/result.json"], failureConclusion: "VALIDATION_FINDING",
+  }));
+  if (!await assertExactFileBackend(result)) return;
+  assert.equal(result.provenance.state, "INVALID", JSON.stringify(result));
+  assert.equal(result.provenance.classification, "SANDBOX_BOUNDARY_BLOCKED");
+  assert.equal(result.provenance.conclusion, "NONE");
+  assert.notEqual(result.provenance.commands[0].exit, 0);
+  assert.deepEqual(result.provenance.workspace.sideEffects, []);
+  assert.equal(result.provenance.workspace.liveWorkspaceDelta, null);
+  const sibling = result.provenance.workspace.boundaryViolations.find((entry) => (
+    entry.requestedPath === "$PROJECT/generated/other.json"
+  ));
+  assert.ok(sibling, JSON.stringify(result.provenance.workspace.boundaryViolations));
+  assert.equal(sibling.operation, "write-create");
+  assert.equal(sibling.process, "node");
+  assert.equal(sibling.resolvedPath, "$PROJECT/generated/other.json");
+  assert.equal(sibling.trustedRoot, "isolated-workspace");
+  assert.equal(sibling.boundary, "declared-isolated-outputs");
+  assert.equal(sibling.rule, "write-outside-declared-isolated-outputs");
+  assert.equal(sibling.deniedBeforeMutation, true);
+  assert.equal(sibling.liveWorkspaceChanged, false);
+  assert.deepEqual(await fs.readdir(path.join(fixture.root, "generated")), liveBefore);
+});
+
+test("writeFiles authority is explicit per command and repeated declarations follow real isolated state", async (t) => {
+  const fixture = await validationSessionFixture(t);
+  await fs.mkdir(path.join(fixture.root, "generated"));
+  const command = (source, writeFiles) => ({
+    argv: [process.execPath, "-e", source], cwd: ".", writePaths: [], writeFiles, env: {}, timeoutMs: 10_000,
+  });
+  const repeated = validationRequest({ failureConclusion: "NONE" });
+  repeated.commands = [
+    command("require('node:fs').writeFileSync('generated/repeated.json','first')", ["generated/repeated.json"]),
+    command("require('node:fs').writeFileSync('generated/repeated.json','second')", ["generated/repeated.json"]),
+  ];
+  const allowed = await runValidationSession(fixture.requirements, repeated);
+  if (!await assertExactFileBackend(allowed)) return;
+  assert.equal(allowed.provenance.state, "VERIFIED", JSON.stringify(allowed));
+  assert.deepEqual(allowed.provenance.commands.map((entry) => entry.exit), [0, 0]);
+
+  const undeclared = validationRequest({ failureConclusion: "NONE" });
+  undeclared.commands = [
+    command("require('node:fs').writeFileSync('generated/per-command.json','first')", ["generated/per-command.json"]),
+    command("require('node:fs').writeFileSync('generated/per-command.json','second')", []),
+  ];
+  const denied = await runValidationSession(fixture.requirements, undeclared);
+  assert.equal(denied.provenance.state, "INVALID", JSON.stringify(denied));
+  assert.equal(denied.provenance.classification, "SANDBOX_BOUNDARY_BLOCKED");
+  assert.deepEqual(denied.provenance.commands.map((entry) => entry.writeFiles), [["generated/per-command.json"], []]);
+  assert.ok(denied.provenance.workspace.boundaryViolations.some((entry) => (
+    entry.command === 2 && entry.requestedPath === "$PROJECT/generated/per-command.json"
+  )));
+});
+
+test("writeFiles rejects protected, external, symlinked, and initially existing identities", async (t) => {
+  const fixture = await validationSessionFixture(t);
+  await fs.mkdir(path.join(fixture.root, "generated"));
+  await fs.writeFile(path.join(fixture.root, "generated/source.json"), "source\n", "utf8");
+  await assert.rejects(
+    runValidationSession(fixture.requirements, validationRequest({ writeFiles: ["src/example.txt"] })),
+    /write file overlaps validation inputs/u,
+  );
+  await assert.rejects(
+    runValidationSession(fixture.requirements, validationRequest({ writeFiles: ["requirements-execution/tasks/slice-01.md"] })),
+    /cannot write protected execution state/u,
+  );
+  await assert.rejects(
+    runValidationSession(fixture.requirements, validationRequest({ writeFiles: ["generated/source.json"] })),
+    /must identify a new isolated generated output/u,
+  );
+  await assert.rejects(
+    runValidationSession(fixture.requirements, validationRequest({ writeFiles: [path.join(fixture.root, "generated/external.json")] })),
+    /normalized relative path/u,
+  );
+  const external = await temporary(t, "stnl-exact-write-external-");
+  await assert.rejects(
+    runValidationSession(fixture.requirements, validationRequest({ writeFiles: [path.relative(fixture.root, path.join(external, "external.json"))] })),
+    /normalized relative path/u,
+  );
+  const toolchain = await fakeExternalToolchain(t);
+  await assert.rejects(
+    runValidationSession(fixture.requirements, validationRequest({ writeFiles: [path.relative(fixture.root, toolchain.runtime)] })),
+    /normalized relative path/u,
+  );
+  await assert.rejects(
+    runValidationSession(fixture.requirements, validationRequest({ writeFiles: ["missing-parent/result.json"] })),
+    /requires an existing real source parent directory/u,
+  );
+  await assert.rejects(fs.access(path.join(fixture.root, "missing-parent")));
+  await fs.symlink(external, path.join(fixture.root, "generated-link"));
+  const symlinked = await runValidationSession(fixture.requirements, validationRequest({
+    writeFiles: ["generated-link/escaped.json"], failureConclusion: "NONE",
+  }));
+  assert.equal(symlinked.provenance.state, "INVALID");
+  assert.equal(symlinked.provenance.classification, "INFRASTRUCTURE_BLOCKED");
+  assert.equal(symlinked.provenance.blocker.code, "SYMLINK_ESCAPE");
+  await assert.rejects(fs.access(path.join(external, "escaped.json")));
+});
+
+test("writeFiles source identity comes from the initial snapshot, not prior command ordering", async (t) => {
+  const fixture = await validationSessionFixture(t);
+  await fs.mkdir(path.join(fixture.root, "generated"));
+  await fs.writeFile(path.join(fixture.root, "generated/source.json"), "source\n", "utf8");
+  const request = validationRequest({ failureConclusion: "NONE" });
+  request.commands = [
+    {
+      argv: [process.execPath, "-e", "require('node:fs').rmSync('generated/source.json')"],
+      cwd: ".", writePaths: ["generated"], writeFiles: [], env: {}, timeoutMs: 10_000,
+    },
+    {
+      argv: [process.execPath, "-e", "require('node:fs').writeFileSync('generated/source.json','replacement')"],
+      cwd: ".", writePaths: [], writeFiles: ["generated/source.json"], env: {}, timeoutMs: 10_000,
+    },
+  ];
+  await assert.rejects(
+    runValidationSession(fixture.requirements, request),
+    /write file must identify a new isolated generated output/u,
+  );
+  assert.equal(await fs.readFile(path.join(fixture.root, "generated/source.json"), "utf8"), "source\n");
 });
 
 test("an NVM-style sibling outside the authenticated package closure stays denied", async (t) => {
@@ -5530,6 +5727,9 @@ test("declared isolated write boundaries remain writable without a sandbox findi
 });
 
 test("Linux bwrap without an authenticated denial channel fails closed on non-signal failures", async () => {
+  assert.equal(validationSandboxSupportsExactWriteFiles({ kind: "darwin-sandbox-exec" }), true);
+  assert.equal(validationSandboxSupportsExactWriteFiles({ kind: "linux-bwrap" }), false);
+  assert.equal(validationSandboxSupportsExactWriteFiles(null), false);
   const harness = await fs.readFile(path.join(ROOT, "skills/workflows/stnl-slice-executor/runtime/run-validation-session.mjs"), "utf8");
   assert.match(harness, /kind === "linux-bwrap" && payload\.exit !== 0 && !payload\.timedOut && !payload\.signaled/u);
   assert.match(harness, /sandbox-outcome-indeterminate/u);
@@ -5537,6 +5737,9 @@ test("Linux bwrap without an authenticated denial channel fails closed on non-si
   assert.match(harness, /"--tmpfs", os\.homedir\(\)/u);
   assert.match(harness, /arguments_\.push\("--ro-bind", toolchainRoot, toolchainRoot\)/u);
   assert.doesNotMatch(harness, /arguments_\.push\("--bind", toolchainRoot/u);
+  assert.doesNotMatch(harness, /for \(const writable of writeFiles\) arguments_\.push\("--bind"/u);
+  assert.match(harness, /LINUX_EXACT_WRITE_FILE_UNSUPPORTED/u);
+  assert.match(harness, /cannot authorize creation of one absent exact file without pre-creating it or granting writable-parent sibling authority/u);
 });
 
 test("macOS marker redaction is private, exact, and authentication-gated", async () => {

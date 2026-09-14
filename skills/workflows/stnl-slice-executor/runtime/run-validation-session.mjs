@@ -78,6 +78,37 @@ function normalizedRelative(value, label, { allowParent = false } = {}) {
   return value;
 }
 
+function validationCommandContract(command, index) {
+  const label = `validation command ${index + 1}`;
+  exactObject(command, Object.hasOwn(command, "writeFiles") ? COMMAND_KEYS : LEGACY_COMMAND_KEYS, label);
+  if (!Array.isArray(command.argv) || command.argv.length === 0
+    || command.argv.some((entry) => typeof entry !== "string" || entry.length === 0)
+    || !Number.isSafeInteger(command.timeoutMs) || command.timeoutMs <= 0) {
+    throw new ExecutionContractError(`${label} is malformed`);
+  }
+  normalizedRelative(command.cwd, `${label} cwd`);
+  if (!Array.isArray(command.writePaths)) throw new ExecutionContractError(`${label} writePaths must be an array`);
+  const writePaths = command.writePaths.map((entry) => normalizedRelative(entry, `${label} write path`))
+    .sort((left, right) => left.localeCompare(right, "en"));
+  if (new Set(writePaths).size !== writePaths.length || writePaths.includes(".")) {
+    throw new ExecutionContractError(`${label} writePaths must be unique bounded paths`);
+  }
+  if (command.writeFiles !== undefined && !Array.isArray(command.writeFiles)) {
+    throw new ExecutionContractError(`${label} writeFiles must be an array`);
+  }
+  const writeFiles = (command.writeFiles ?? []).map((entry) => normalizedRelative(entry, `${label} write file`))
+    .sort((left, right) => left.localeCompare(right, "en"));
+  if (new Set(writeFiles).size !== writeFiles.length || writeFiles.includes(".")
+    || writeFiles.some((entry) => writePaths.some((directory) => entry === directory || entry.startsWith(`${directory}/`)))) {
+    throw new ExecutionContractError(`${label} writeFiles must be unique and outside declared writePaths`);
+  }
+  if (command.env === null || typeof command.env !== "object" || Array.isArray(command.env)
+    || Object.entries(command.env).some(([key, value]) => !/^[A-Za-z_][A-Za-z0-9_]*$/u.test(key) || typeof value !== "string")) {
+    throw new ExecutionContractError(`${label} env is malformed`);
+  }
+  return Object.freeze({ writePaths: Object.freeze(writePaths), writeFiles: Object.freeze(writeFiles) });
+}
+
 function within(candidate, root) {
   const relative = path.relative(root, candidate);
   return relative === "" || (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
@@ -210,6 +241,46 @@ function treeDelta(before, after) {
     truncated: changes.length > LIVE_WORKSPACE_DELTA_LIMIT,
     fingerprint: digest("stnl-validation-live-workspace-delta-v1", changes),
   };
+}
+
+async function assertExactWriteFileDeclarations(commandContracts, {
+  root, initialSnapshot, executionRoot, taskDirectory, subjects,
+}) {
+  const initialEntries = new Map(initialSnapshot.entries.map((entry) => [entry[0], entry]));
+  const executionRelative = path.relative(root, executionRoot).split(path.sep).join("/");
+  const absoluteSubjects = subjects.map((subject) => path.resolve(taskDirectory, subject));
+  const allWritePaths = commandContracts.flatMap((command) => command.writePaths);
+  for (const [index, contract] of commandContracts.entries()) {
+    for (const writeFile of contract.writeFiles) {
+      if (writeFile === executionRelative || writeFile.startsWith(`${executionRelative}/`)) {
+        throw new ExecutionContractError(`validation command ${index + 1} cannot write protected execution state`);
+      }
+      const absoluteWrite = path.resolve(root, writeFile);
+      if (!within(absoluteWrite, root) || absoluteSubjects.some((subject) => absoluteWrite === subject)) {
+        throw new ExecutionContractError(`validation command ${index + 1} write file overlaps validation inputs`);
+      }
+      if (initialEntries.has(writeFile)) {
+        throw new ExecutionContractError(`validation command ${index + 1} write file must identify a new isolated generated output`);
+      }
+      if (allWritePaths.some((directory) => directory === writeFile || directory.startsWith(`${writeFile}/`))) {
+        throw new ExecutionContractError(`validation command ${index + 1} write file conflicts with declared directory output authority`);
+      }
+      const parentRelative = path.posix.dirname(writeFile);
+      if (parentRelative !== "." && initialEntries.get(parentRelative)?.[1] !== "directory") {
+        throw new ExecutionContractError(`validation command ${index + 1} write file requires an existing real source parent directory`);
+      }
+      const parent = path.dirname(absoluteWrite);
+      const parentMetadata = await fs.lstat(parent);
+      const canonicalParent = await fs.realpath(parent);
+      if (parentMetadata.isSymbolicLink() || !parentMetadata.isDirectory()
+        || canonicalParent !== parent || !within(canonicalParent, root)) {
+        throw new ExecutionContractError(`validation command ${index + 1} write file parent is not a canonical isolated directory`);
+      }
+      if (await lstatOrNull(absoluteWrite) !== null) {
+        throw new ExecutionContractError(`validation command ${index + 1} write file must be absent before validation commands start`);
+      }
+    }
+  }
 }
 
 async function subjectManifest(taskDirectory, subjects, projectRoot) {
@@ -552,6 +623,10 @@ export async function validationSandboxBackend(platform = process.platform) {
   return null;
 }
 
+export function validationSandboxSupportsExactWriteFiles(backend) {
+  return backend?.kind === "darwin-sandbox-exec";
+}
+
 async function assertSandboxBackendAvailable(backend) {
   const argv = backend.kind === "darwin-sandbox-exec"
     ? [backend.executable, "-p", "(version 1) (allow default)", "--", "/usr/bin/true"]
@@ -674,6 +749,9 @@ async function sandboxInvocation(command, { backend, cwd, environment, sessionRo
     return { argv: [backend.executable, "-p", profile, "--", ...command.argv], cwd, violationMarker };
   }
   if (backend.kind === "linux-bwrap") {
+    if (writeFiles.length !== 0) {
+      throw new ExecutionContractError("Linux bwrap exact future-file authorization must fail during sandbox preflight");
+    }
     const arguments_ = [
       backend.executable, "--die-with-parent", "--unshare-net", "--ro-bind", "/", "/",
       "--tmpfs", os.homedir(),
@@ -681,7 +759,6 @@ async function sandboxInvocation(command, { backend, cwd, environment, sessionRo
     ];
     for (const toolchainRoot of toolchainRoots) arguments_.push("--ro-bind", toolchainRoot, toolchainRoot);
     for (const writable of writePaths) arguments_.push("--bind", writable, writable);
-    for (const writable of writeFiles) arguments_.push("--bind", writable, writable);
     arguments_.push("--chdir", cwd, "--", ...command.argv);
     return { argv: arguments_, cwd, violationMarker: null };
   }
@@ -1012,6 +1089,7 @@ export async function runValidationSession(specPath, request) {
   const subjects = request.subjects.map((entry) => normalizedRelative(entry, "validation session subject", { allowParent: true })).sort((a, b) => a.localeCompare(b, "en"));
   if (new Set(subjects).size !== subjects.length) throw new ExecutionContractError("validation session subjects must be unique");
   if (!Array.isArray(request.commands)) throw new ExecutionContractError("validation session commands must be an array");
+  const commandContracts = request.commands.map(validationCommandContract);
   if (request.baselineFingerprint !== null && !HASH.test(request.baselineFingerprint)) throw new ExecutionContractError("validation session baseline fingerprint is invalid");
   if (request.priorEvidenceId !== null && !HASH.test(request.priorEvidenceId)) throw new ExecutionContractError("validation session prior evidence ID is invalid");
   if (request.replayOriginEvidenceId !== null && !HASH.test(request.replayOriginEvidenceId)) {
@@ -1064,6 +1142,20 @@ export async function runValidationSession(specPath, request) {
         error instanceof Error ? error.message : "validation source snapshot was rejected",
       );
     }
+    await assertExactWriteFileDeclarations(commandContracts, {
+      root: projectRoot,
+      initialSnapshot: liveWorkspaceBeforeSnapshot,
+      executionRoot: workspace.executionRoot,
+      taskDirectory: path.join(workspace.executionRoot, "tasks"),
+      subjects,
+    });
+    if (!validationSandboxSupportsExactWriteFiles(sandboxBackend)
+      && commandContracts.some((command) => command.writeFiles.length !== 0)) {
+      throw new ValidationInfrastructureError(
+        "infrastructure", "sandbox-preflight", "LINUX_EXACT_WRITE_FILE_UNSUPPORTED",
+        "Linux bwrap cannot authorize creation of one absent exact file without pre-creating it or granting writable-parent sibling authority",
+      );
+    }
   } catch (error) {
     if (!(error instanceof ValidationInfrastructureError)) throw error;
     return blockedPrecheckResult({
@@ -1095,12 +1187,20 @@ export async function runValidationSession(specPath, request) {
         blocker, cleanup: "clean",
       });
     }
-    await fs.mkdir(path.join(runtimeRoot, "home"), { recursive: true });
-    await fs.mkdir(path.join(runtimeRoot, "tmp"), { recursive: true });
-    await fs.mkdir(toolchainsRoot, { recursive: true });
+    const initialCopiedSource = await snapshotTree(copiedRoot);
     const executionRelative = path.relative(projectRoot, workspace.executionRoot).split(path.sep).join("/");
     const copiedExecutionRoot = path.join(copiedRoot, executionRelative);
     const copiedTaskDirectory = path.join(copiedRoot, executionRelative, "tasks");
+    await assertExactWriteFileDeclarations(commandContracts, {
+      root: copiedRoot,
+      initialSnapshot: initialCopiedSource,
+      executionRoot: copiedExecutionRoot,
+      taskDirectory: copiedTaskDirectory,
+      subjects,
+    });
+    await fs.mkdir(path.join(runtimeRoot, "home"), { recursive: true });
+    await fs.mkdir(path.join(runtimeRoot, "tmp"), { recursive: true });
+    await fs.mkdir(toolchainsRoot, { recursive: true });
     const isolatedExecutionBefore = await fingerprintTree(copiedExecutionRoot);
     const beforeSubjects = await subjectManifest(copiedTaskDirectory, subjects, copiedRoot);
     const manifestFingerprint = digest("stnl-validation-subject-manifest-v1", beforeSubjects);
@@ -1110,29 +1210,10 @@ export async function runValidationSession(specPath, request) {
       HOME: "$VALIDATION_HOME", TMPDIR: "$VALIDATION_TMPDIR",
     };
     const commandPlans = [];
-    const declaredExactWriteFiles = new Set();
     const actualEnvironments = [];
     const toolchainSnapshots = new Map();
     for (const [index, command] of request.commands.entries()) {
-      exactObject(command, Object.hasOwn(command, "writeFiles") ? COMMAND_KEYS : LEGACY_COMMAND_KEYS, `validation command ${index + 1}`);
-      if (!Array.isArray(command.argv) || command.argv.length === 0 || command.argv.some((entry) => typeof entry !== "string" || entry.length === 0)
-        || !Number.isSafeInteger(command.timeoutMs) || command.timeoutMs <= 0) throw new ExecutionContractError(`validation command ${index + 1} is malformed`);
-      normalizedRelative(command.cwd, `validation command ${index + 1} cwd`);
-      if (!Array.isArray(command.writePaths)) throw new ExecutionContractError(`validation command ${index + 1} writePaths must be an array`);
-      const writePaths = command.writePaths.map((entry) => normalizedRelative(entry, `validation command ${index + 1} write path`))
-        .sort((a, b) => a.localeCompare(b, "en"));
-      if (new Set(writePaths).size !== writePaths.length || writePaths.includes(".")) {
-        throw new ExecutionContractError(`validation command ${index + 1} writePaths must be unique bounded paths`);
-      }
-      if (command.writeFiles !== undefined && !Array.isArray(command.writeFiles)) {
-        throw new ExecutionContractError(`validation command ${index + 1} writeFiles must be an array`);
-      }
-      const writeFiles = (command.writeFiles ?? []).map((entry) => normalizedRelative(entry, `validation command ${index + 1} write file`))
-        .sort((a, b) => a.localeCompare(b, "en"));
-      if (new Set(writeFiles).size !== writeFiles.length || writeFiles.includes(".")
-        || writeFiles.some((entry) => writePaths.some((directory) => entry === directory || entry.startsWith(`${directory}/`)))) {
-        throw new ExecutionContractError(`validation command ${index + 1} writeFiles must be unique and outside declared writePaths`);
-      }
+      const { writePaths, writeFiles } = commandContracts[index];
       for (const writePath of writePaths) {
         if (writePath === executionRelative || writePath.startsWith(`${executionRelative}/`)
           || executionRelative.startsWith(`${writePath}/`)) {
@@ -1145,31 +1226,6 @@ export async function runValidationSession(specPath, request) {
             return within(absoluteSubject, absoluteWrite) || within(absoluteWrite, absoluteSubject);
           })) throw new ExecutionContractError(`validation command ${index + 1} write path overlaps validation inputs`);
         await fs.mkdir(absoluteWrite, { recursive: true });
-      }
-      for (const writeFile of writeFiles) {
-        if (writeFile === executionRelative || writeFile.startsWith(`${executionRelative}/`)) {
-          throw new ExecutionContractError(`validation command ${index + 1} cannot write protected execution state`);
-        }
-        const absoluteWrite = path.resolve(copiedRoot, writeFile);
-        if (!within(absoluteWrite, copiedRoot)
-          || subjects.some((subject) => {
-            const absoluteSubject = path.resolve(copiedTaskDirectory, subject);
-            return absoluteWrite === absoluteSubject;
-          })) throw new ExecutionContractError(`validation command ${index + 1} write file overlaps validation inputs`);
-        const metadata = await lstatOrNull(absoluteWrite);
-        if (metadata?.isSymbolicLink() || (metadata !== null && !metadata.isFile())) {
-          throw new ExecutionContractError(`validation command ${index + 1} write file must be a regular isolated file`);
-        }
-        if (metadata !== null && !declaredExactWriteFiles.has(writeFile)) {
-          throw new ExecutionContractError(`validation command ${index + 1} write file must identify a new isolated generated output`);
-        }
-        await fs.mkdir(path.dirname(absoluteWrite), { recursive: true });
-        if (metadata === null) await fs.writeFile(absoluteWrite, "", { flag: "wx" });
-        declaredExactWriteFiles.add(writeFile);
-      }
-      if (command.env === null || typeof command.env !== "object" || Array.isArray(command.env)
-        || Object.entries(command.env).some(([key, value]) => !/^[A-Za-z_][A-Za-z0-9_]*$/u.test(key) || typeof value !== "string")) {
-        throw new ExecutionContractError(`validation command ${index + 1} env is malformed`);
       }
       for (const value of Object.values(command.env)) if (value.includes(projectRoot)) {
         throw new ExecutionContractError(`validation command ${index + 1} env leaks a live project path`);
