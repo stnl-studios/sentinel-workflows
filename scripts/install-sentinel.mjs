@@ -77,6 +77,21 @@ export function renderInstallResult(result) {
   return `${lines.join("\n")}\n`;
 }
 
+function writeJsonResult(result) {
+  process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+}
+
+function installationFailureReport(error) {
+  return {
+    status: "BLOCKED",
+    mode: "installation",
+    blockers: [{
+      code: typeof error?.code === "string" && error.code.length > 0 ? error.code : "INSTALLATION_FAILED",
+      message: error instanceof Error ? error.message : String(error),
+    }],
+  };
+}
+
 export async function runInstallCli(argv, options = {}) {
   const parsed = parseInstallArguments(argv);
   if (parsed.help) return { help: true, output: usage() };
@@ -111,21 +126,31 @@ export async function runInstallCli(argv, options = {}) {
 
 async function main() {
   const argv = process.argv.slice(2);
+  const jsonRequested = argv.includes("--json");
   let parsed;
   try {
     parsed = parseInstallArguments(argv);
   } catch (error) {
-    process.stderr.write(`ERROR: ${error.message}\n${usage()}`);
+    if (jsonRequested) {
+      writeJsonResult({
+        status: "BLOCKED",
+        mode: "arguments",
+        blockers: [{ code: "INVALID_ARGUMENTS", message: error.message }],
+      });
+    } else {
+      process.stderr.write(`ERROR: ${error.message}\n${usage()}`);
+    }
     process.exitCode = 2;
     return;
   }
   try {
     const result = await runInstallCli(argv);
     if (result.help) process.stdout.write(result.output);
-    else if (parsed.json || parsed.dryRun) process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    else if (parsed.json || parsed.dryRun) writeJsonResult(result);
     else process.stdout.write(renderInstallResult(result));
   } catch (error) {
-    process.stderr.write(`ERROR: ${error.message}\n`);
+    if (parsed.json) writeJsonResult(installationFailureReport(error));
+    else process.stderr.write(`ERROR: ${error.message}\n`);
     process.exitCode = 1;
   }
 }

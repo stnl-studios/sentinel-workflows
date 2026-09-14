@@ -109,12 +109,74 @@ test("installer dry-run stays detailed and supports --json", async (t) => {
   await assert.rejects(fs.access(path.join(project, ".sentinel")), { code: "ENOENT" });
 });
 
-test("installer rejects duplicate --json with a precise argument error", () => {
-  const result = run(INSTALL_CLI, ["--json", "--json"]);
+test("installer invalid arguments remain human-readable without --json", () => {
+  const result = run(INSTALL_CLI, ["--scope", "project"]);
   assert.equal(result.status, 2);
   assert.equal(result.stdout, "");
-  assert.match(result.stderr, /^ERROR: duplicate argument: --json$/mu);
+  assert.match(result.stderr, /^ERROR: project scope requires --project <path>$/mu);
   assert.match(result.stderr, /usage: node scripts\/install-sentinel\.mjs/u);
+});
+
+test("installer invalid arguments are structured with --json", () => {
+  const result = run(INSTALL_CLI, ["--json", "--scope", "project"]);
+  assert.equal(result.status, 2);
+  assert.equal(result.stderr, "");
+  assert.doesNotMatch(result.stdout, /ERROR:/u);
+  assert.deepEqual(JSON.parse(result.stdout), {
+    status: "BLOCKED",
+    mode: "arguments",
+    blockers: [{
+      code: "INVALID_ARGUMENTS",
+      message: "project scope requires --project <path>",
+    }],
+  });
+});
+
+test("installer duplicate --json failure is structured JSON", () => {
+  const result = run(INSTALL_CLI, ["--json", "--json"]);
+  assert.equal(result.status, 2);
+  assert.equal(result.stderr, "");
+  const report = JSON.parse(result.stdout);
+  assert.equal(report.status, "BLOCKED");
+  assert.equal(report.mode, "arguments");
+  assert.equal(report.blockers[0].code, "INVALID_ARGUMENTS");
+  assert.match(report.blockers[0].message, /duplicate argument: --json/u);
+  assert.doesNotMatch(result.stdout, /ERROR:|usage:/u);
+});
+
+test("installer unknown argument failure is structured with --json", () => {
+  const result = run(INSTALL_CLI, ["--json", "--unknown"]);
+  assert.equal(result.status, 2);
+  assert.equal(result.stderr, "");
+  const report = JSON.parse(result.stdout);
+  assert.equal(report.status, "BLOCKED");
+  assert.equal(report.mode, "arguments");
+  assert.equal(report.blockers[0].code, "INVALID_ARGUMENTS");
+  assert.equal(report.blockers[0].message, "unknown argument: --unknown");
+  assert.doesNotMatch(result.stdout, /ERROR:|usage:/u);
+});
+
+test("installer runtime failures use JSON only when explicitly requested", async (t) => {
+  const project = await temporaryProject(t, "stnl-cli-lock-");
+  const lock = await acquireSentinelInstallLock(project);
+  try {
+    const human = run(INSTALL_CLI, projectArguments(project));
+    assert.equal(human.status, 1);
+    assert.equal(human.stdout, "");
+    assert.match(human.stderr, /^ERROR: Sentinel installation already in progress for installation root:/u);
+
+    const machine = run(INSTALL_CLI, [...projectArguments(project), "--json"]);
+    assert.equal(machine.status, 1);
+    assert.equal(machine.stderr, "");
+    assert.doesNotMatch(machine.stdout, /ERROR:/u);
+    const report = JSON.parse(machine.stdout);
+    assert.equal(report.status, "BLOCKED");
+    assert.equal(report.mode, "installation");
+    assert.equal(report.blockers[0].code, "SENTINEL_INSTALL_LOCKED");
+    assert.match(report.blockers[0].message, /Sentinel installation already in progress for installation root:/u);
+  } finally {
+    await releaseSentinelInstallLock(lock);
+  }
 });
 
 test("healthy doctor output is concise while --json preserves the complete report", async (t) => {

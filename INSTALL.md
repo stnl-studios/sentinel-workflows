@@ -28,10 +28,11 @@ node scripts/install-sentinel.mjs --json
 node scripts/doctor-sentinel.mjs --json
 ```
 
-The JSON form preserves installation roots, fingerprints, file lists,
-transaction details, warnings, residuals, and diagnostic metadata. Selecting
-JSON changes presentation only; operation semantics and exit codes are the
-same.
+The JSON form returns structured output for successful and failed operations,
+and preserves installation roots, fingerprints, file lists, transaction
+details, warnings, residuals, and diagnostic metadata where applicable.
+Selecting JSON changes presentation only; operation semantics and exit codes
+are the same.
 
 Running the install command again is the update operation.
 
