@@ -779,6 +779,9 @@ const SUCCESS_RESULTS = new Set(["PASS", "ACCEPTED"]);
 const SUCCESS_CHECKS = new Set(["TESTS_PASS", "TESTS_ACCEPTED", "TESTS_NOT_APPLICABLE"]);
 const NON_BLOCKING_GATES = new Set(["resolved", "non_blocking", "bypassed"]);
 const GATE_KEYS = new Set(["id", "command", "kind", "scope", "causality", "state", "problem", "evidence", "diagnostic", "correction", "correctionEvidence", "revalidates", "snapshot", "bypass"]);
+const VALIDATION_RUNNER_PROTOCOL = "stnl-validation-runner/v10";
+const VALIDATION_HARNESS_PROTOCOL = "stnl-validation-harness/v10";
+const EVIDENCE_PROTOCOL_KEYS = new Set(["runner", "harness"]);
 
 function exactObject(value, keys, label) {
   if (value === null || typeof value !== "object" || Array.isArray(value)
@@ -792,6 +795,8 @@ const EVIDENCE_PROVENANCE_KEYS = new Set([
   "operation", "slice", "round", "workspace", "inputs", "subjects", "commands", "replay",
 ]);
 const EVIDENCE_PROVENANCE_BLOCKED_KEYS = new Set([...EVIDENCE_PROVENANCE_KEYS, "blocker"]);
+const CURRENT_EVIDENCE_PROVENANCE_KEYS = new Set([...EVIDENCE_PROVENANCE_KEYS, "protocol", "receipt"]);
+const CURRENT_EVIDENCE_PROVENANCE_BLOCKED_KEYS = new Set([...CURRENT_EVIDENCE_PROVENANCE_KEYS, "blocker"]);
 const EVIDENCE_BLOCKER_KEYS = new Set(["kind", "stage", "code", "message", "target"]);
 const EVIDENCE_WORKSPACE_KEYS = new Set([
   "kind", "workspaceId", "cwd", "executionRoot", "liveExecutionFingerprintBefore",
@@ -815,25 +820,41 @@ const EVIDENCE_WORKSPACE_DELTA_KEYS = new Set([
 const EVIDENCE_WORKSPACE_DELTA_COUNT_KEYS = new Set(["added", "modified", "removed"]);
 const EVIDENCE_WORKSPACE_DELTA_CHANGE_KEYS = new Set(["path", "disposition"]);
 const EVIDENCE_INPUT_KEYS = new Set([
+  "protocol",
   "requirementsAuthority", "planRevision", "head", "sourceFingerprint", "manifestFingerprint",
   "baselineFingerprint", "changedScopeFingerprint", "executionFingerprint",
 ]);
+const HISTORICAL_EVIDENCE_INPUT_KEYS = new Set([...EVIDENCE_INPUT_KEYS].filter((key) => key !== "protocol"));
 const EVIDENCE_SUBJECT_KEYS = new Set(["path", "expected"]);
 const EVIDENCE_COMMAND_KEYS = new Set([
-  "display", "argv", "cwd", "writePaths", "writeFiles", "envFingerprint", "executableFingerprint", "toolchainFingerprint",
+  "display", "argv", "cwd", "executionEnvironment", "writePaths", "writeFiles", "envFingerprint", "executableFingerprint", "toolchainFingerprint",
   "toolchainFingerprintAfter", "timeoutMs", "exit", "stdoutFingerprint", "stderrFingerprint",
 ]);
+const PRE_EXECUTION_ENVIRONMENT_EVIDENCE_COMMAND_KEYS = new Set(
+  [...EVIDENCE_COMMAND_KEYS].filter((key) => key !== "executionEnvironment"),
+);
 const PRE_WRITE_FILE_EVIDENCE_COMMAND_KEYS = new Set(
-  [...EVIDENCE_COMMAND_KEYS].filter((key) => key !== "writeFiles"),
+  [...PRE_EXECUTION_ENVIRONMENT_EVIDENCE_COMMAND_KEYS].filter((key) => key !== "writeFiles"),
 );
 const LEGACY_EVIDENCE_COMMAND_KEYS = new Set(
-  [...EVIDENCE_COMMAND_KEYS].filter((key) => !new Set(["writeFiles", "toolchainFingerprint", "toolchainFingerprintAfter"]).has(key)),
+  [...PRE_EXECUTION_ENVIRONMENT_EVIDENCE_COMMAND_KEYS].filter((key) => !new Set(["writeFiles", "toolchainFingerprint", "toolchainFingerprintAfter"]).has(key)),
 );
+const HOST_EVIDENCE_ENVIRONMENT_KEYS = new Set(["kind"]);
+const COMPOSE_EVIDENCE_ENVIRONMENT_KEYS = new Set([
+  "kind", "composeFile", "service", "imageReference", "authoritySources", "composeIdentity",
+  "composeConfigurationFingerprint", "imageId", "imageFingerprint",
+]);
+const COMPOSE_CACHE_EVIDENCE_ENVIRONMENT_KEYS = new Set([...COMPOSE_EVIDENCE_ENVIRONMENT_KEYS, "cacheVolumes"]);
+const EVIDENCE_CACHE_VOLUME_KEYS = new Set([
+  "source", "target", "volumeName", "volumeFingerprint", "snapshotFingerprint",
+]);
+const EVIDENCE_AUTHORITY_SOURCE_KEYS = new Set(["path", "identity"]);
+const EVIDENCE_FILE_IDENTITY_KEYS = new Set(["mode", "content"]);
 const EVIDENCE_REPLAY_KEYS = new Set([
   "originalEvidenceId", "originalFingerprint", "currentFingerprint", "equivalent", "mismatches",
 ]);
 const EVIDENCE_REPLAY_COMPONENTS = new Set([
-  "operation", "slice", "round", "cwd", "executionRoot", "requirementsAuthority", "planRevision",
+  "protocol", "operation", "slice", "round", "cwd", "executionRoot", "requirementsAuthority", "planRevision",
   "head", "sourceFingerprint", "manifestFingerprint", "baselineFingerprint", "changedScopeFingerprint",
   "commandsFingerprint", "executionFingerprint",
 ]);
@@ -855,7 +876,13 @@ function canonicalEvidenceMaterial(provenance) {
 }
 
 export function validationEvidenceIdentity(provenance) {
-  return deterministicDigest("stnl-validation-evidence-v1", canonicalEvidenceMaterial(provenance));
+  return deterministicDigest(Object.hasOwn(provenance, "protocol")
+    ? "stnl-validation-evidence-v10" : "stnl-validation-evidence-v1", canonicalEvidenceMaterial(provenance));
+}
+
+function validationEvidenceReceipt(provenance) {
+  const { evidenceId: _evidenceId, receipt: _receipt, ...material } = provenance;
+  return deterministicDigest("stnl-validation-harness-receipt-v10", material);
 }
 
 function validateProjectRelativePath(value, label) {
@@ -884,6 +911,7 @@ function evidenceExecutionFingerprint(provenance) {
   const inputs = { ...provenance.inputs };
   delete inputs.executionFingerprint;
   return deterministicDigest("stnl-validation-execution-v1", {
+    ...(Object.hasOwn(provenance, "protocol") ? { protocol: provenance.protocol } : {}),
     operation: provenance.operation,
     slice: provenance.slice,
     round: provenance.round,
@@ -895,6 +923,75 @@ function evidenceExecutionFingerprint(provenance) {
   });
 }
 
+function validateEvidenceFileIdentity(identity, label) {
+  exactObject(identity, EVIDENCE_FILE_IDENTITY_KEYS, label);
+  if (!Number.isSafeInteger(identity.mode) || identity.mode < 0 || identity.mode > 0o777
+    || typeof identity.content !== "string" || !/^[0-9a-f]{64}$/u.test(identity.content)) {
+    throw new ExecutionContractError(`${label} is malformed`);
+  }
+}
+
+function validateEvidenceExecutionEnvironment(environment, label) {
+  if (environment?.kind === "host") {
+    exactObject(environment, HOST_EVIDENCE_ENVIRONMENT_KEYS, label);
+    return;
+  }
+  exactObject(environment, Object.hasOwn(environment, "cacheVolumes")
+    ? COMPOSE_CACHE_EVIDENCE_ENVIRONMENT_KEYS : COMPOSE_EVIDENCE_ENVIRONMENT_KEYS, label);
+  if (environment.kind !== "docker-compose"
+    || validateProjectRelativePath(environment.composeFile, `${label} composeFile`) !== environment.composeFile
+    || !new Set(["compose.yml", "compose.yaml", "docker-compose.yml", "docker-compose.yaml"])
+      .has(path.posix.basename(environment.composeFile))
+    || typeof environment.service !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/u.test(environment.service)
+    || typeof environment.imageReference !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._/:@-]{0,255}$/u.test(environment.imageReference)
+    || environment.imageReference.includes("..") || environment.imageReference.endsWith("/") || environment.imageReference.endsWith(":")
+    || !Array.isArray(environment.authoritySources) || environment.authoritySources.length === 0
+    || typeof environment.composeConfigurationFingerprint !== "string"
+    || !CURRENT_AUTHORITY.test(environment.composeConfigurationFingerprint)
+    || typeof environment.imageId !== "string" || !CURRENT_AUTHORITY.test(environment.imageId)
+    || typeof environment.imageFingerprint !== "string" || !CURRENT_AUTHORITY.test(environment.imageFingerprint)) {
+    throw new ExecutionContractError(`${label} is malformed`);
+  }
+  validateEvidenceFileIdentity(environment.composeIdentity, `${label} composeIdentity`);
+  const paths = [];
+  for (const source of environment.authoritySources) {
+    exactObject(source, EVIDENCE_AUTHORITY_SOURCE_KEYS, `${label} authority source`);
+    if (validateProjectRelativePath(source.path, `${label} authority source path`) !== source.path) {
+      throw new ExecutionContractError(`${label} authority source is malformed`);
+    }
+    validateEvidenceFileIdentity(source.identity, `${label} authority source identity`);
+    paths.push(source.path);
+  }
+  if (new Set(paths).size !== paths.length
+    || paths.some((entry, index) => index > 0 && entry.localeCompare(paths[index - 1], "en") <= 0)
+    || paths.includes(environment.composeFile)) {
+    throw new ExecutionContractError(`${label} authority sources are malformed`);
+  }
+  if (Object.hasOwn(environment, "cacheVolumes")) {
+    if (!Array.isArray(environment.cacheVolumes) || environment.cacheVolumes.length === 0) {
+      throw new ExecutionContractError(`${label} cacheVolumes are malformed`);
+    }
+    const encoded = [];
+    for (const cache of environment.cacheVolumes) {
+      exactObject(cache, EVIDENCE_CACHE_VOLUME_KEYS, `${label} cache volume`);
+      if (typeof cache.source !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/u.test(cache.source)
+        || typeof cache.target !== "string" || !path.posix.isAbsolute(cache.target)
+        || path.posix.normalize(cache.target) !== cache.target || cache.target === "/"
+        || cache.target === "/workspace" || cache.target.startsWith("/workspace/")
+        || typeof cache.volumeName !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,255}$/u.test(cache.volumeName)
+        || typeof cache.volumeFingerprint !== "string" || !CURRENT_AUTHORITY.test(cache.volumeFingerprint)
+        || typeof cache.snapshotFingerprint !== "string" || !CURRENT_AUTHORITY.test(cache.snapshotFingerprint)) {
+        throw new ExecutionContractError(`${label} cache volume is malformed`);
+      }
+      encoded.push(JSON.stringify(cache));
+    }
+    if (new Set(encoded).size !== encoded.length
+      || encoded.some((entry, index) => index > 0 && entry.localeCompare(encoded[index - 1], "en") <= 0)) {
+      throw new ExecutionContractError(`${label} cache volumes must be unique and ordered`);
+    }
+  }
+}
+
 function parseEvidenceProvenance(record, authority, { operation, round, required = false }) {
   const raw = field(record.body, "Evidence provenance", { required: false });
   if (raw === null) {
@@ -903,9 +1000,12 @@ function parseEvidenceProvenance(record, authority, { operation, round, required
   }
   let provenance;
   try { provenance = JSON.parse(raw); } catch { throw new ExecutionContractError(`${record.id} Evidence provenance must be inline JSON`); }
+  const historicalProtocolModel = !Object.hasOwn(provenance, "protocol") && !Object.hasOwn(provenance, "receipt");
   exactObject(
     provenance,
-    Object.hasOwn(provenance, "blocker") ? EVIDENCE_PROVENANCE_BLOCKED_KEYS : EVIDENCE_PROVENANCE_KEYS,
+    historicalProtocolModel
+      ? Object.hasOwn(provenance, "blocker") ? EVIDENCE_PROVENANCE_BLOCKED_KEYS : EVIDENCE_PROVENANCE_KEYS
+      : Object.hasOwn(provenance, "blocker") ? CURRENT_EVIDENCE_PROVENANCE_BLOCKED_KEYS : CURRENT_EVIDENCE_PROVENANCE_KEYS,
     `${record.id} Evidence provenance`,
   );
   if (provenance.version !== 1 || !VALIDATION_EVIDENCE_STATES.has(provenance.state)
@@ -923,6 +1023,16 @@ function parseEvidenceProvenance(record, authority, { operation, round, required
     throw new ExecutionContractError(`${record.id} Evidence provenance priorEvidenceId is malformed`);
   }
   const infrastructureBlocked = provenance.classification === "INFRASTRUCTURE_BLOCKED";
+  let protocolMismatch = false;
+  if (!historicalProtocolModel) {
+    exactObject(provenance.protocol, EVIDENCE_PROTOCOL_KEYS, `${record.id} Evidence protocol`);
+    if ((provenance.protocol.runner !== null && typeof provenance.protocol.runner !== "string")
+      || provenance.protocol.harness !== VALIDATION_HARNESS_PROTOCOL
+      || typeof provenance.receipt !== "string" || !CURRENT_AUTHORITY.test(provenance.receipt)) {
+      throw new ExecutionContractError(`${record.id} Evidence protocol or harness receipt is malformed`);
+    }
+    protocolMismatch = provenance.protocol.runner !== VALIDATION_RUNNER_PROTOCOL;
+  }
   const boundaryModel = provenance.workspace !== null
     && typeof provenance.workspace === "object"
     && !Array.isArray(provenance.workspace)
@@ -936,16 +1046,27 @@ function parseEvidenceProvenance(record, authority, { operation, round, required
       && !Object.hasOwn(command, "toolchainFingerprintAfter"));
   if (infrastructureBlocked) {
     exactObject(provenance.blocker, EVIDENCE_BLOCKER_KEYS, `${record.id} Evidence blocker`);
-    if (!new Set(["infrastructure", "source-isolation"]).has(provenance.blocker.kind)
-      || !new Set(["sandbox-preflight", "source-admission", "source-copy"]).has(provenance.blocker.stage)
+    if (!new Set(["infrastructure", "source-isolation", "execution-environment"]).has(provenance.blocker.kind)
+      || !new Set(["protocol-preflight", "sandbox-preflight", "source-admission", "source-copy", "environment-preflight", "environment-execution"]).has(provenance.blocker.stage)
       || typeof provenance.blocker.code !== "string" || !/^[A-Z][A-Z0-9_]*$/u.test(provenance.blocker.code)
       || typeof provenance.blocker.message !== "string" || provenance.blocker.message.length === 0
       || (provenance.blocker.target !== null
         && validateProjectRelativePath(provenance.blocker.target, `${record.id} Evidence blocker target`) !== provenance.blocker.target)) {
       throw new ExecutionContractError(`${record.id} Evidence blocker is malformed`);
     }
+    const environmentStage = new Set(["environment-preflight", "environment-execution"]).has(provenance.blocker.stage);
+    if ((provenance.blocker.kind === "execution-environment") !== environmentStage) {
+      throw new ExecutionContractError(`${record.id} execution-environment blocker is inconsistent`);
+    }
+    if ((provenance.blocker.stage === "protocol-preflight") !== protocolMismatch
+      || (protocolMismatch && (provenance.blocker.kind !== "infrastructure"
+        || provenance.blocker.code !== "VALIDATION_PROTOCOL_INCOMPATIBLE"))) {
+      throw new ExecutionContractError(`${record.id} validation protocol blocker is inconsistent`);
+    }
   } else if (Object.hasOwn(provenance, "blocker")) {
     throw new ExecutionContractError(`${record.id} non-infrastructure evidence cannot contain a blocker`);
+  } else if (protocolMismatch) {
+    throw new ExecutionContractError(`${record.id} incompatible validation protocol cannot produce material evidence`);
   }
   exactObject(
     provenance.workspace,
@@ -954,7 +1075,9 @@ function parseEvidenceProvenance(record, authority, { operation, round, required
     `${record.id} Evidence workspace`,
   );
   const workspace = provenance.workspace;
-  if (infrastructureBlocked) {
+  const executionInfrastructureBlocked = infrastructureBlocked
+    && provenance.blocker.stage === "environment-execution";
+  if (infrastructureBlocked && !executionInfrastructureBlocked) {
     const unavailable = deterministicDigest("stnl-validation-isolated-not-created-v1", []);
     const expectedCleanup = provenance.blocker.stage === "source-copy" ? "clean" : "not-required";
     if (workspace.kind !== "pre-check" || workspace.cleanup !== expectedCleanup
@@ -965,6 +1088,12 @@ function parseEvidenceProvenance(record, authority, { operation, round, required
       || workspace.liveExecutionFingerprintBefore !== workspace.liveExecutionFingerprintAfter
       || workspace.liveWorkspaceFingerprintBefore !== workspace.liveWorkspaceFingerprintAfter) {
       throw new ExecutionContractError(`${record.id} infrastructure blocker has invalid pre-check workspace evidence`);
+    }
+  } else if (executionInfrastructureBlocked) {
+    if (workspace.kind !== "isolated-copy"
+      || !new Set(["clean", "failed"]).has(workspace.cleanup)
+      || (boundaryModel && (!Array.isArray(workspace.boundaryViolations) || workspace.boundaryViolations.length !== 0))) {
+      throw new ExecutionContractError(`${record.id} execution-environment runtime blocker has invalid isolated workspace evidence`);
     }
   } else if (workspace.kind !== "isolated-copy" || workspace.cleanup !== "clean") {
     if (provenance.state !== "INVALID" || provenance.classification !== "VALIDATION_SIDE_EFFECT") {
@@ -1067,8 +1196,11 @@ function parseEvidenceProvenance(record, authority, { operation, round, required
     throw new ExecutionContractError(`${record.id} live workspace delta disagrees with the global fingerprint`);
   }
 
-  exactObject(provenance.inputs, EVIDENCE_INPUT_KEYS, `${record.id} Evidence inputs`);
+  exactObject(provenance.inputs, historicalProtocolModel ? HISTORICAL_EVIDENCE_INPUT_KEYS : EVIDENCE_INPUT_KEYS, `${record.id} Evidence inputs`);
   const inputs = provenance.inputs;
+  if (!historicalProtocolModel && JSON.stringify(inputs.protocol) !== JSON.stringify(provenance.protocol)) {
+    throw new ExecutionContractError(`${record.id} Evidence protocol disagrees with its fingerprint inputs`);
+  }
   if (inputs.requirementsAuthority !== `sha256:${authority.fingerprint}` || inputs.planRevision !== authority.revision) {
     throw new ExecutionContractError(`${record.id} Evidence inputs are stale relative to current authority`);
   }
@@ -1084,7 +1216,7 @@ function parseEvidenceProvenance(record, authority, { operation, round, required
   if (inputs.baselineFingerprint !== null && (typeof inputs.baselineFingerprint !== "string" || !CURRENT_AUTHORITY.test(inputs.baselineFingerprint))) {
     throw new ExecutionContractError(`${record.id} Evidence baselineFingerprint is malformed`);
   }
-  if (infrastructureBlocked && inputs.sourceFingerprint !== deterministicDigest(
+  if (infrastructureBlocked && !executionInfrastructureBlocked && inputs.sourceFingerprint !== deterministicDigest(
     "stnl-validation-source-precheck-v1",
     { liveWorkspaceBefore: workspace.liveWorkspaceFingerprintBefore, blocker: provenance.blocker },
   )) {
@@ -1113,8 +1245,10 @@ function parseEvidenceProvenance(record, authority, { operation, round, required
   if (!Array.isArray(provenance.commands)) throw new ExecutionContractError(`${record.id} Evidence commands must be an array`);
   for (const command of provenance.commands) {
     const writeFileModel = Object.hasOwn(command, "writeFiles");
-    exactObject(command, writeFileModel ? EVIDENCE_COMMAND_KEYS
-      : legacySecurityModel ? LEGACY_EVIDENCE_COMMAND_KEYS : PRE_WRITE_FILE_EVIDENCE_COMMAND_KEYS, `${record.id} Evidence command`);
+    const executionEnvironmentModel = Object.hasOwn(command, "executionEnvironment");
+    exactObject(command, executionEnvironmentModel ? EVIDENCE_COMMAND_KEYS
+      : writeFileModel ? PRE_EXECUTION_ENVIRONMENT_EVIDENCE_COMMAND_KEYS
+        : legacySecurityModel ? LEGACY_EVIDENCE_COMMAND_KEYS : PRE_WRITE_FILE_EVIDENCE_COMMAND_KEYS, `${record.id} Evidence command`);
     if (typeof command.display !== "string" || command.display.length === 0 || !Array.isArray(command.argv)
       || command.argv.length === 0 || command.argv.some((entry) => typeof entry !== "string")
       || !Array.isArray(command.writePaths)
@@ -1132,6 +1266,9 @@ function parseEvidenceProvenance(record, authority, { operation, round, required
       throw new ExecutionContractError(`${record.id} Evidence command writeFiles are malformed`);
     }
     validateProjectRelativePath(command.cwd, `${record.id} Evidence command cwd`);
+    if (executionEnvironmentModel) {
+      validateEvidenceExecutionEnvironment(command.executionEnvironment, `${record.id} Evidence command executionEnvironment`);
+    }
     for (const name of ["envFingerprint", "executableFingerprint", "stdoutFingerprint", "stderrFingerprint"]) {
       if (typeof command[name] !== "string" || !CURRENT_AUTHORITY.test(command[name])) throw new ExecutionContractError(`${record.id} Evidence command ${name} is malformed`);
     }
@@ -1149,8 +1286,18 @@ function parseEvidenceProvenance(record, authority, { operation, round, required
   if (record.commands.length !== provenance.commands.length || record.commands.some((command, index) => (
     command.command !== provenance.commands[index].display || command.exit !== provenance.commands[index].exit
   ))) throw new ExecutionContractError(`${record.id} Commands disagree with Evidence provenance`);
-  if (infrastructureBlocked && (provenance.subjects.length !== 0 || provenance.commands.length !== 0 || provenance.replay !== null)) {
+  if (infrastructureBlocked && !executionInfrastructureBlocked
+    && (provenance.subjects.length !== 0 || provenance.commands.length !== 0 || provenance.replay !== null)) {
     throw new ExecutionContractError(`${record.id} infrastructure blocker cannot claim subjects, commands, or replay`);
+  }
+  if (executionInfrastructureBlocked) {
+    const matchingCommands = provenance.commands.filter((command) => command.executionEnvironment?.kind === "docker-compose"
+      && command.exit === 125
+      && (provenance.blocker.target === null
+        || command.executionEnvironment.composeFile === provenance.blocker.target));
+    if (matchingCommands.length === 0 || provenance.replay !== null) {
+      throw new ExecutionContractError(`${record.id} execution-environment runtime blocker is not anchored to an executed Docker command`);
+    }
   }
   if (inputs.executionFingerprint !== evidenceExecutionFingerprint(provenance)
     || workspace.workspaceId !== inputs.executionFingerprint) {
@@ -1188,7 +1335,8 @@ function parseEvidenceProvenance(record, authority, { operation, round, required
     || workspace.isolatedExecutionFingerprintBefore !== workspace.isolatedExecutionFingerprintAfter
     || provenance.commands.some((command) => command.toolchainFingerprint !== command.toolchainFingerprintAfter)
     || (!infrastructureBlocked && workspace.cleanup !== "clean");
-  if (sideEffect !== (provenance.classification === "VALIDATION_SIDE_EFFECT")) {
+  if (sideEffect !== (provenance.classification === "VALIDATION_SIDE_EFFECT")
+    && !(sideEffect && executionInfrastructureBlocked)) {
     if (!(sideEffect && provenance.classification === "VALIDATION_SIDE_EFFECT")) {
       throw new ExecutionContractError(`${record.id} validation side-effect classification disagrees with workspace evidence`);
     }
@@ -1221,7 +1369,11 @@ function parseEvidenceProvenance(record, authority, { operation, round, required
   if (provenance.evidenceId !== validationEvidenceIdentity(provenance)) {
     throw new ExecutionContractError(`${record.id} Evidence identity does not match its provenance`);
   }
+  if (!historicalProtocolModel && provenance.receipt !== validationEvidenceReceipt(provenance)) {
+    throw new ExecutionContractError(`${record.id} Evidence harness receipt does not match its provenance`);
+  }
   if (legacySecurityModel) Object.defineProperty(provenance, "legacySecurityModel", { value: true, enumerable: false });
+  if (historicalProtocolModel) Object.defineProperty(provenance, "historicalProtocolModel", { value: true, enumerable: false });
   return Object.freeze(provenance);
 }
 
@@ -3491,7 +3643,7 @@ async function validateCandidateHistory(workspace, result) {
           if (candidate.evidenceContract === "stnl-validation-evidence/v1" && record.provenance === null) {
             throw new ExecutionContractError(`${slice}/${record.id} newly persisted validation evidence requires structured provenance`);
           }
-          if (record.provenance?.legacySecurityModel === true) {
+          if (record.provenance?.legacySecurityModel === true || record.provenance?.historicalProtocolModel === true) {
             throw new ExecutionContractError(`${slice}/${record.id} cannot append legacy validation provenance under the current harness contract`);
           }
         }
@@ -3508,6 +3660,7 @@ async function validateCandidateHistory(workspace, result) {
       if (replay === null || replay === undefined) continue;
       const origin = historicalEvidence.get(replay.originalEvidenceId);
       if (origin === undefined || origin.state !== "VERIFIED"
+        || origin.historicalProtocolModel === true
         || origin.inputs.executionFingerprint !== replay.originalFingerprint) {
         throw new ExecutionContractError(`${slice}/${record.id} replay origin is not bound to persisted historical evidence`);
       }
@@ -3544,7 +3697,8 @@ async function validateCandidateHistory(workspace, result) {
         `${slice}/Delegation Blocker`, { disposition: true, supersession: false },
       );
     } else if (candidate.delegationBlocker !== null) {
-      if (candidate.delegationBlocker.provenance?.legacySecurityModel === true) {
+      if (candidate.delegationBlocker.provenance?.legacySecurityModel === true
+        || candidate.delegationBlocker.provenance?.historicalProtocolModel === true) {
         throw new ExecutionContractError(`${slice}/Delegation Blocker cannot append legacy validation provenance under the current harness contract`);
       }
       if (candidate.delegationBlocker.operation !== "VALIDATE_SLICE"

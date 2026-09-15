@@ -7,6 +7,8 @@ import { fileURLToPath } from "node:url";
 
 const VALIDATION_OWNERS = new Set(["stnl-slice-executor", "stnl-slice-quality-manager"]);
 const RESOLVER_FILENAME = "resolve-validation-runtime.mjs";
+export const VALIDATION_RUNNER_PROTOCOL = "stnl-validation-runner/v10";
+export const VALIDATION_HARNESS_PROTOCOL = "stnl-validation-harness/v10";
 
 export class ValidationRuntimeResolutionError extends Error {
   constructor(code, message) {
@@ -59,6 +61,30 @@ function declaredEntrypoint(metadata) {
   return entrypoint;
 }
 
+async function runtimeProtocolHandshake(runtimePath) {
+  const result = await new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [runtimePath, "--capabilities"], { stdio: ["ignore", "pipe", "pipe"] });
+    const stdout = [];
+    const stderr = [];
+    child.stdout.on("data", (chunk) => stdout.push(chunk));
+    child.stderr.on("data", (chunk) => stderr.push(chunk));
+    child.once("error", reject);
+    child.once("close", (code, signal) => resolve({
+      code: Number.isInteger(code) ? code : signal === null ? 1 : 128,
+      stdout: Buffer.concat(stdout).toString("utf8"), stderr: Buffer.concat(stderr).toString("utf8"),
+    }));
+  });
+  let capability;
+  try { capability = JSON.parse(result.stdout); } catch { capability = null; }
+  if (result.code !== 0 || result.stderr !== "" || result.stdout.length > 512
+    || capability === null || typeof capability !== "object" || Array.isArray(capability)
+    || Object.keys(capability).sort().join(",") !== "harness,runner"
+    || capability.runner !== VALIDATION_RUNNER_PROTOCOL
+    || capability.harness !== VALIDATION_HARNESS_PROTOCOL) {
+    fail("INCOMPATIBLE_VALIDATION_PROTOCOL", "packaged validation runtime failed the v10 protocol handshake");
+  }
+}
+
 export async function resolveOwnValidationRuntime(...callerArguments) {
   if (callerArguments.length !== 0) {
     fail("CALLER_RUNTIME_PATH_FORBIDDEN", "validation runtime resolution accepts no caller-supplied path or root");
@@ -87,6 +113,10 @@ export async function resolveOwnValidationRuntime(...callerArguments) {
   if (!VALIDATION_OWNERS.has(skillName) || metadata.name !== skillName) {
     fail("INVALID_SKILL_OWNER", "loaded package is not a canonical validation-owning skill");
   }
+  if (metadata["validation-runner-protocol"] !== VALIDATION_RUNNER_PROTOCOL
+    || metadata["validation-harness-protocol"] !== VALIDATION_HARNESS_PROTOCOL) {
+    fail("INCOMPATIBLE_VALIDATION_PROTOCOL", "owning skill does not declare the canonical validation runner and harness protocols");
+  }
   const entrypoint = declaredEntrypoint(metadata);
   const requestedRuntime = path.resolve(skillRoot, ...entrypoint.split("/"));
   if (!within(requestedRuntime, skillRoot)) {
@@ -109,7 +139,11 @@ export async function resolveOwnValidationRuntime(...callerArguments) {
   if (!runtimeMetadata.isFile() || runtimeMetadata.nlink !== 1) {
     fail("INVALID_VALIDATION_RUNTIME", "declared validation runtime must be a single-link regular file");
   }
-  return Object.freeze({ skillName, skillRoot, entrypoint, runtimePath: canonicalRuntime });
+  await runtimeProtocolHandshake(canonicalRuntime);
+  return Object.freeze({
+    skillName, skillRoot, entrypoint, runtimePath: canonicalRuntime,
+    runnerProtocol: VALIDATION_RUNNER_PROTOCOL, harnessProtocol: VALIDATION_HARNESS_PROTOCOL,
+  });
 }
 
 export async function invokeOwnValidationRuntime(arguments_) {
@@ -136,6 +170,11 @@ export async function main(arguments_) {
   try {
     if (arguments_.length === 1 && arguments_[0] === "--resolve") {
       process.stdout.write(`${(await resolveOwnValidationRuntime()).runtimePath}\n`);
+      return 0;
+    }
+    if (arguments_.length === 1 && arguments_[0] === "--capabilities") {
+      const resolved = await resolveOwnValidationRuntime();
+      process.stdout.write(`${JSON.stringify({ runner: resolved.runnerProtocol, harness: resolved.harnessProtocol })}\n`);
       return 0;
     }
     return await invokeOwnValidationRuntime(arguments_);

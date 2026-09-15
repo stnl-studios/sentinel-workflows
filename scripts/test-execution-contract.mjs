@@ -25,6 +25,8 @@ import {
 import { EXECUTION_OPERATION_SKILLS, WORKFLOW_OPERATIONS } from "./lib/skill-registry.mjs";
 import { checkDistributableSkill } from "./lib/check-distributable-skill.mjs";
 import {
+  createDockerEngine,
+  DockerEnvironmentError,
   runValidationSession,
   validationSandboxBackend,
   validationSandboxSupportsExactWriteFiles,
@@ -4606,14 +4608,611 @@ test("Prior Validation Overlap contract keeps paths, IDs, and prior references c
 function validationRequest({
   operation = "EXECUTE_SLICE", slice = "slice-01", round = "1/3", subjects = ["../../src/example.txt"],
   argv = [process.execPath, "-e", "process.exit(0)"], writePaths = [], writeFiles = [], priorEvidenceId = null,
-  env = {}, failureConclusion = "VALIDATION_FINDING", replayOriginEvidenceId = null,
+  env = {}, executionEnvironment = { kind: "host" }, failureConclusion = "VALIDATION_FINDING", replayOriginEvidenceId = null,
+  protocol = { runner: "stnl-validation-runner/v10", harness: "stnl-validation-harness/v10" },
 } = {}) {
   return {
-    operation, slice, round, cwd: ".", subjects,
-    commands: [{ argv, cwd: ".", writePaths, writeFiles, env, timeoutMs: 10_000 }],
+    protocol, operation, slice, round, cwd: ".", subjects,
+    commands: [{ argv, cwd: ".", executionEnvironment, writePaths, writeFiles, env, timeoutMs: 10_000 }],
     baselineFingerprint: null, priorEvidenceId, failureConclusion, replayOriginEvidenceId,
   };
 }
+
+function validationDigest(domain, value) {
+  const canonical = (input) => {
+    if (Array.isArray(input)) return input.map(canonical);
+    if (input !== null && typeof input === "object") {
+      return Object.fromEntries(Object.keys(input).sort().map((key) => [key, canonical(input[key])]));
+    }
+    return input;
+  };
+  return `sha256:${createHash("sha256").update(JSON.stringify(canonical([domain, value]))).digest("hex")}`;
+}
+
+async function dockerAuthorityFixture(fixture) {
+  await fs.mkdir(path.join(fixture.root, "ops"), { recursive: true });
+  await fs.writeFile(path.join(fixture.root, "ops/docker-compose.yml"), "services:\n  backend:\n    image: fixture/backend:dev\n", "utf8");
+  await fs.writeFile(path.join(fixture.root, "DEVELOPMENT.md"), "Development toolchains run only through Docker Compose.\n", "utf8");
+  return {
+    kind: "docker-compose",
+    composeFile: "ops/docker-compose.yml",
+    service: "backend",
+    image: "fixture/backend:dev",
+    authoritySources: ["DEVELOPMENT.md"],
+  };
+}
+
+async function dockerCacheAuthorityFixture(fixture) {
+  const authority = await dockerAuthorityFixture(fixture);
+  await fs.writeFile(path.join(fixture.root, "ops/docker-compose.yml"), `name: fixture
+services:
+  backend:
+    image: fixture/backend:dev
+    volumes:
+      - fixture-cache:/var/cache/fixture
+      - ../source:/source
+volumes:
+  fixture-cache:
+`, "utf8");
+  return { ...authority, cacheVolumes: [{ source: "fixture-cache", target: "/var/cache/fixture" }] };
+}
+
+function fakeDockerEngine(fixture, { containers = null, imageError = false, run = null } = {}) {
+  const imageId = `sha256:${"d".repeat(64)}`;
+  const calls = [];
+  const engine = {
+    calls,
+    async composeContainers(service) {
+      calls.push({ kind: "containers", service });
+      return containers ?? [{
+        ImageID: imageId,
+        Labels: {
+          "com.docker.compose.service": service,
+          "com.docker.compose.project.working_dir": path.join(fixture.root, "ops"),
+          "com.docker.compose.project.config_files": path.join(fixture.root, "ops/docker-compose.yml"),
+          "com.docker.compose.config-hash": "fixture-config",
+        },
+      }];
+    },
+    async image(requested) {
+      calls.push({ kind: "image", imageId: requested });
+      if (imageError) throw new Error("missing image");
+      return { Id: imageId, RepoDigests: ["fixture@sha256:" + "e".repeat(64)], Config: { WorkingDir: "/app" } };
+    },
+    async run(options) {
+      calls.push({ kind: "run", options });
+      if (run !== null) return run(options);
+      return {
+        exit: 0, stdout: Buffer.from("container-toolchain-ready\n"), stderr: Buffer.alloc(0),
+        stderrForEvidence: Buffer.alloc(0), timedOut: false, signaled: false,
+        sandboxViolation: false, sandboxEvents: [], sandboxOutcomeUncertain: false,
+      };
+    },
+  };
+  return engine;
+}
+
+function dockerRuntimeFailureEngine(fixture, failure) {
+  const engine = fakeDockerEngine(fixture);
+  const containerId = "a".repeat(64);
+  const residualContainers = new Set();
+  const runtimeCalls = [];
+  const fail = (code, message) => { throw new DockerEnvironmentError(code, message); };
+  const requestDocker = async (method, requestPath) => {
+    runtimeCalls.push({ method, requestPath });
+    if (requestPath.startsWith("/containers/create")) {
+      if (failure === "create") fail("DOCKER_CREATE_FAILED", "authenticated create failure");
+      residualContainers.add(containerId);
+      return Buffer.from(JSON.stringify({ Id: containerId }));
+    }
+    if (requestPath === `/containers/${containerId}/start`) {
+      if (failure === "start") fail("DOCKER_START_FAILED", "authenticated start failure");
+      return Buffer.alloc(0);
+    }
+    if (requestPath === `/containers/${containerId}/wait?condition=not-running`) {
+      if (failure === "wait") fail("DOCKER_WAIT_FAILED", "authenticated wait failure");
+      if (failure === "kill") {
+        const aborted = new Error("authenticated wait timeout");
+        aborted.name = "AbortError";
+        throw aborted;
+      }
+      return Buffer.from(JSON.stringify({ StatusCode: 0 }));
+    }
+    if (requestPath === `/containers/${containerId}/kill`) {
+      if (failure === "kill") fail("DOCKER_KILL_FAILED", "authenticated kill failure");
+      return Buffer.alloc(0);
+    }
+    if (requestPath === `/containers/${containerId}/logs?stdout=1&stderr=1`) {
+      if (failure === "logs") return Buffer.from([1, 0, 0]);
+      return Buffer.alloc(0);
+    }
+    if (requestPath === `/containers/${containerId}?force=1&v=1` && method === "DELETE") {
+      if (failure === "cleanup") fail("DOCKER_CLEANUP_FAILED", "authenticated cleanup failure");
+      residualContainers.delete(containerId);
+      return Buffer.alloc(0);
+    }
+    throw new Error(`unexpected fake Docker request: ${method} ${requestPath}`);
+  };
+  engine.run = createDockerEngine(requestDocker, () => "00000000-0000-4000-8000-000000000000").run;
+  engine.runtimeCalls = runtimeCalls;
+  engine.residualContainers = residualContainers;
+  return engine;
+}
+
+function fakeDockerCacheEngine(fixture, { snapshotFingerprint = `sha256:${"c".repeat(64)}`, run = null } = {}) {
+  const engine = fakeDockerEngine(fixture, { run });
+  engine.asyncCacheRoots = [];
+  engine.volume = async (volumeName) => ({
+    Name: volumeName, Driver: "local", Scope: "local", Options: null,
+    Labels: { "com.docker.compose.project": "fixture", "com.docker.compose.volume": "fixture-cache" },
+  });
+  engine.snapshotCacheVolumes = async ({ cacheVolumes, destinationRoot }) => {
+    const snapshotPath = path.join(destinationRoot, "0");
+    await fs.mkdir(snapshotPath, { recursive: true });
+    await fs.writeFile(path.join(snapshotPath, "cached-input"), "authenticated cache\n", "utf8");
+    engine.asyncCacheRoots.push(destinationRoot);
+    return cacheVolumes.map((cache) => ({ ...cache, snapshotPath, snapshotFingerprint }));
+  };
+  return engine;
+}
+
+test("Docker-authoritative validation resolves the logical toolchain only inside the admitted Compose image", async (t) => {
+  const fixture = await validationSessionFixture(t);
+  const executionEnvironment = await dockerAuthorityFixture(fixture);
+  const engine = fakeDockerEngine(fixture);
+  const result = await runValidationSession(fixture.requirements, validationRequest({
+    argv: ["stnl-host-tool-that-does-not-exist", "build"], executionEnvironment, failureConclusion: "NONE",
+  }), { dockerEngine: engine });
+  assert.equal(result.provenance.state, "VERIFIED", JSON.stringify(result));
+  assert.equal(result.provenance.commands[0].executionEnvironment.kind, "docker-compose");
+  assert.equal(result.provenance.commands[0].argv[0], "stnl-host-tool-that-does-not-exist");
+  assert.match(result.outputs[0].stdout, /container-toolchain-ready/u);
+  assert.equal(engine.calls.filter((call) => call.kind === "run").length, 1);
+  assert.match(result.provenance.commands[0].toolchainFingerprint, /^sha256:[0-9a-f]{64}$/u);
+  assert.equal(result.provenance.commands[0].toolchainFingerprintAfter, result.provenance.commands[0].toolchainFingerprint);
+  const candidate = await externalExecutionCandidate(t, fixture);
+  await editTask(candidate, (value) => {
+    let next = replaceSection(value.replace("- [ ] 1.1", "- [x] 1.1"), "Changed Areas", "- `../../src/example.txt`");
+    return replaceSection(next, "Implementation Test Evidence", evidenceCheckRecord(result.provenance));
+  });
+  assert.equal((await validateExecutionCandidate(fixture.requirements, candidate.execution)).state, "IMPLEMENTED_AWAITING_VALIDATION");
+});
+
+test("host-authoritative validation preserves external executable resolution and does not consult Docker", async (t) => {
+  const fixture = await validationSessionFixture(t);
+  const engine = fakeDockerEngine(fixture, { containers: [], imageError: true });
+  const result = await runValidationSession(fixture.requirements, validationRequest({
+    executionEnvironment: { kind: "host" }, failureConclusion: "NONE",
+  }), { dockerEngine: engine });
+  assert.equal(result.provenance.state, "VERIFIED", JSON.stringify(result));
+  assert.deepEqual(result.provenance.commands[0].executionEnvironment, { kind: "host" });
+  assert.deepEqual(engine.calls, []);
+});
+
+test("Docker artifacts alone do not change explicitly selected host execution", async (t) => {
+  const fixture = await validationSessionFixture(t);
+  await fs.writeFile(path.join(fixture.root, "Dockerfile"), "FROM scratch\n", "utf8");
+  const engine = fakeDockerEngine(fixture, { containers: [], imageError: true });
+  await fs.writeFile(path.join(fixture.root, "compose.yml"), "services: {}\n", "utf8");
+  const result = await runValidationSession(fixture.requirements, validationRequest({
+    executionEnvironment: { kind: "host" }, failureConclusion: "NONE",
+  }), { dockerEngine: engine });
+  assert.equal(result.provenance.state, "VERIFIED", JSON.stringify(result));
+  assert.deepEqual(result.provenance.commands[0].executionEnvironment, { kind: "host" });
+  assert.deepEqual(engine.calls, []);
+});
+
+test("new validation requests without executionEnvironment fail closed before any command", async (t) => {
+  const fixture = await validationSessionFixture(t);
+  const marker = path.join(fixture.root, "direct-command-marker");
+  const request = validationRequest({
+    argv: [process.execPath, "-e", "require('node:fs').writeFileSync(process.argv[1], 'spawned')", marker],
+    failureConclusion: "NONE",
+  });
+  delete request.commands[0].executionEnvironment;
+  const blocked = await runValidationSession(fixture.requirements, request);
+  assert.equal(blocked.provenance.state, "INVALID");
+  assert.equal(blocked.provenance.classification, "INFRASTRUCTURE_BLOCKED");
+  assert.deepEqual(blocked.provenance.blocker, {
+    kind: "execution-environment", stage: "environment-preflight", code: "EXECUTION_ENVIRONMENT_REQUIRED",
+    message: "every validation command must declare executionEnvironment explicitly for a new execution", target: null,
+  });
+  assert.deepEqual(blocked.provenance.commands, []);
+  await assert.rejects(fs.access(marker));
+});
+
+test("validation protocol v10 handshakes and mixed, missing, or unknown versions fail closed before commands", async (t) => {
+  const cases = [
+    ["missing", undefined],
+    ["runner-v9", { runner: "stnl-validation-runner/v9", harness: "stnl-validation-harness/v10" }],
+    ["old-harness", { runner: "stnl-validation-runner/v10", harness: "stnl-validation-harness/v9" }],
+    ["unknown", { runner: "stnl-validation-runner/future", harness: "stnl-validation-harness/future" }],
+  ];
+  for (const [name, protocol] of cases) {
+    const fixture = await validationSessionFixture(t);
+    const marker = path.join(fixture.root, `protocol-${name}-marker`);
+    const request = validationRequest({
+      protocol,
+      argv: [process.execPath, "-e", "require('node:fs').writeFileSync(process.argv[1], 'spawned')", marker],
+      failureConclusion: "VALIDATION_FINDING",
+    });
+    if (protocol === undefined) delete request.protocol;
+    const blocked = await runValidationSession(fixture.requirements, request);
+    assert.equal(blocked.provenance.state, "INVALID", name);
+    assert.equal(blocked.provenance.classification, "INFRASTRUCTURE_BLOCKED", name);
+    assert.equal(blocked.provenance.conclusion, "NONE", name);
+    assert.equal(blocked.provenance.blocker.stage, "protocol-preflight", name);
+    assert.equal(blocked.provenance.blocker.code, "VALIDATION_PROTOCOL_INCOMPATIBLE", name);
+    assert.deepEqual(blocked.provenance.commands, [], name);
+    assert.deepEqual(blocked.provenance.subjects, [], name);
+    await assert.rejects(fs.access(marker), undefined, name);
+  }
+});
+
+test("protocol mismatch provenance persists only as an infrastructure blocker without consuming the round", async (t) => {
+  const fixture = await validationSessionFixture(t);
+  const request = validationRequest({ protocol: undefined });
+  delete request.protocol;
+  const blocked = await runValidationSession(fixture.requirements, request);
+  const candidate = await externalExecutionCandidate(t, fixture);
+  await editTask(candidate, (value) => {
+    let next = value.replace("- [ ] 1.1", "- [x] 1.1");
+    next = replaceSection(next, "Changed Areas", "- `../../src/example.txt`");
+    return replaceSection(next, "Delegation Blocker", infrastructureDelegationBlocker(blocked.provenance));
+  });
+  const state = await validateExecutionCandidate(fixture.requirements, candidate.execution);
+  assert.equal(state.state, "RUNNER_RESULT_BLOCKED");
+  assert.equal(blocked.provenance.round, "1/3");
+  assert.equal(blocked.provenance.conclusion, "NONE");
+  assert.deepEqual(blocked.provenance.commands, []);
+});
+
+test("ambiguous execution authority and injected Compose identifiers fail closed before Docker or host execution", async (t) => {
+  const fixture = await validationSessionFixture(t);
+  const engine = fakeDockerEngine(fixture);
+  await assert.rejects(runValidationSession(fixture.requirements, validationRequest({
+    executionEnvironment: { kind: "auto" },
+  }), { dockerEngine: engine }), /executionEnvironment kind is invalid/u);
+  const authority = await dockerAuthorityFixture(fixture);
+  await assert.rejects(runValidationSession(fixture.requirements, validationRequest({
+    executionEnvironment: { ...authority, service: "backend; touch escaped" },
+  }), { dockerEngine: engine }), /compose service is invalid/u);
+  await assert.rejects(runValidationSession(fixture.requirements, validationRequest({
+    executionEnvironment: { ...authority, image: "fixture/backend;touch escaped" },
+  }), { dockerEngine: engine }), /compose image reference is invalid/u);
+  await assert.rejects(runValidationSession(fixture.requirements, validationRequest({
+    executionEnvironment: { ...authority, image: "fixture/other:dev" },
+  }), { dockerEngine: engine }), /image disagrees with the authorized Compose service/u);
+  assert.deepEqual(engine.calls, []);
+});
+
+test("Docker authority sources and Compose files reject symlink indirection", async (t) => {
+  const instructionFixture = await validationSessionFixture(t);
+  const instructionEnvironment = await dockerAuthorityFixture(instructionFixture);
+  const instructionEngine = fakeDockerEngine(instructionFixture);
+  await fs.writeFile(path.join(instructionFixture.root, "ACTUAL-DEVELOPMENT.md"), "Docker Compose is authoritative.\n", "utf8");
+  await fs.unlink(path.join(instructionFixture.root, "DEVELOPMENT.md"));
+  await fs.symlink("ACTUAL-DEVELOPMENT.md", path.join(instructionFixture.root, "DEVELOPMENT.md"));
+  await assert.rejects(runValidationSession(instructionFixture.requirements, validationRequest({
+    executionEnvironment: instructionEnvironment,
+  }), { dockerEngine: instructionEngine }), /Docker authority source must be a canonical single-link project file/u);
+  assert.equal(instructionEngine.calls.some((call) => call.kind === "run"), false);
+
+  const composeFixture = await validationSessionFixture(t);
+  const composeEnvironment = await dockerAuthorityFixture(composeFixture);
+  const composeEngine = fakeDockerEngine(composeFixture);
+  const composePath = path.join(composeFixture.root, "ops/docker-compose.yml");
+  await fs.writeFile(path.join(composeFixture.root, "ops/actual-compose.yml"), await fs.readFile(composePath));
+  await fs.unlink(composePath);
+  await fs.symlink("actual-compose.yml", composePath);
+  await assert.rejects(runValidationSession(composeFixture.requirements, validationRequest({
+    executionEnvironment: composeEnvironment,
+  }), { dockerEngine: composeEngine }), /Docker Compose file must be a canonical single-link project file/u);
+  assert.equal(composeEngine.calls.some((call) => call.kind === "run"), false);
+});
+
+test("Docker engine uses argv arrays and mounts no absolute caller path", async (t) => {
+  const copiedRoot = await temporary(t, "stnl-validation-docker-payload-");
+  const containerId = "a".repeat(64);
+  const calls = [];
+  const requestDocker = async (method, requestPath, body = null) => {
+    calls.push({ method, requestPath, body });
+    if (requestPath.startsWith("/containers/create")) return Buffer.from(JSON.stringify({ Id: containerId }));
+    if (requestPath === `/containers/${containerId}/start`) return Buffer.alloc(0);
+    if (requestPath === `/containers/${containerId}/wait?condition=not-running`) {
+      return Buffer.from(JSON.stringify({ StatusCode: 0 }));
+    }
+    if (requestPath === `/containers/${containerId}/logs?stdout=1&stderr=1`) return Buffer.alloc(0);
+    if (requestPath === `/containers/${containerId}?force=1&v=1` && method === "DELETE") return Buffer.alloc(0);
+    throw new Error(`unexpected Docker request ${method} ${requestPath}`);
+  };
+  const externalArgv = ["/Users/untrusted/bin/tool", "$(touch /tmp/escaped)"];
+  await createDockerEngine(requestDocker, () => "00000000-0000-4000-8000-000000000000").run({
+    imageId: `sha256:${"d".repeat(64)}`, argv: externalArgv, cwd: ".", environment: {},
+    copiedRoot, writePaths: [], cacheMounts: [], timeoutMs: 10_000,
+  });
+  const create = calls.find((call) => call.requestPath.startsWith("/containers/create"));
+  assert.deepEqual(create.body.Entrypoint, [externalArgv[0]]);
+  assert.deepEqual(create.body.Cmd, [externalArgv[1]]);
+  assert.equal(create.body.HostConfig.NetworkMode, "none");
+  assert.equal(create.body.HostConfig.ReadonlyRootfs, true);
+  assert.deepEqual(create.body.HostConfig.CapDrop, ["ALL"]);
+  assert.deepEqual(create.body.HostConfig.SecurityOpt, ["no-new-privileges"]);
+  assert.deepEqual(create.body.HostConfig.Mounts, [{
+    Type: "bind", Source: copiedRoot, Target: "/workspace", ReadOnly: true,
+  }]);
+  assert.equal(create.body.HostConfig.Mounts.some((mount) => mount.Source === externalArgv[0]), false);
+  assert.equal(JSON.stringify(create.body.HostConfig.Mounts).includes("docker.sock"), false);
+  assert.equal(calls.some((call) => call.method === "DELETE"), true);
+});
+
+test("Docker command planning is deterministic and mounts only the isolated copy with bounded writes", async (t) => {
+  const fixture = await validationSessionFixture(t);
+  const executionEnvironment = await dockerAuthorityFixture(fixture);
+  await fs.mkdir(path.join(fixture.root, "out"));
+  const observed = [];
+  const engine = fakeDockerEngine(fixture, { run(options) {
+    observed.push(options);
+    assert.notEqual(options.copiedRoot, fixture.root);
+    assert.ok(path.basename(path.dirname(options.copiedRoot)).startsWith("stnl-validation-session-"));
+    assert.deepEqual(options.writePaths, ["out"]);
+    return {
+      exit: 0, stdout: Buffer.alloc(0), stderr: Buffer.alloc(0), stderrForEvidence: Buffer.alloc(0),
+      timedOut: false, signaled: false, sandboxViolation: false, sandboxEvents: [], sandboxOutcomeUncertain: false,
+    };
+  } });
+  const request = validationRequest({
+    argv: ["dotnet", "build", "value; touch escaped"], executionEnvironment, writePaths: ["out"], failureConclusion: "NONE",
+  });
+  const first = await runValidationSession(fixture.requirements, request, { dockerEngine: engine });
+  const second = await runValidationSession(fixture.requirements, request, { dockerEngine: engine });
+  assert.equal(first.provenance.inputs.executionFingerprint, second.provenance.inputs.executionFingerprint);
+  assert.equal(first.provenance.evidenceId, second.provenance.evidenceId);
+  assert.equal(observed.length, 2);
+  assert.ok(observed.every((entry) => JSON.stringify(entry.argv) === JSON.stringify(["dotnet", "build", "value; touch escaped"])));
+  assert.equal(first.provenance.workspace.liveWorkspaceDelta, null);
+  await assert.rejects(fs.access(path.join(fixture.root, "out/generated-by-container")));
+});
+
+test("Docker named cache authority is snapshotted, fingerprinted, and mounted read-only from temporary state", async (t) => {
+  const fixture = await validationSessionFixture(t);
+  const executionEnvironment = await dockerCacheAuthorityFixture(fixture);
+  let observed = null;
+  const engine = fakeDockerCacheEngine(fixture, { run(options) {
+    observed = options;
+    assert.equal(options.cacheMounts.length, 1);
+    assert.equal(options.cacheMounts[0].target, "/var/cache/fixture");
+    assert.notEqual(options.cacheMounts[0].snapshotPath, fixture.root);
+    assert.ok(options.cacheMounts[0].snapshotPath.includes("stnl-validation-cache-"));
+    return {
+      exit: 0, stdout: Buffer.from("cache-ready\n"), stderr: Buffer.alloc(0), stderrForEvidence: Buffer.alloc(0),
+      timedOut: false, signaled: false, sandboxViolation: false, sandboxEvents: [], sandboxOutcomeUncertain: false,
+    };
+  } });
+  const result = await runValidationSession(fixture.requirements, validationRequest({
+    argv: ["fixture-tool"], executionEnvironment, failureConclusion: "NONE",
+  }), { dockerEngine: engine });
+  assert.equal(result.provenance.state, "VERIFIED", JSON.stringify(result));
+  assert.equal(result.provenance.commands[0].executionEnvironment.cacheVolumes[0].source, "fixture-cache");
+  assert.equal(result.provenance.commands[0].executionEnvironment.cacheVolumes[0].snapshotFingerprint, `sha256:${"c".repeat(64)}`);
+  assert.match(result.provenance.commands[0].toolchainFingerprint, /^sha256:[0-9a-f]{64}$/u);
+  assert.equal(observed.copiedRoot === fixture.root, false);
+  for (const root of engine.asyncCacheRoots) await assert.rejects(fs.access(root));
+  const candidate = await externalExecutionCandidate(t, fixture);
+  await editTask(candidate, (value) => {
+    let next = replaceSection(value.replace("- [ ] 1.1", "- [x] 1.1"), "Changed Areas", "- `../../src/example.txt`");
+    return replaceSection(next, "Implementation Test Evidence", evidenceCheckRecord(result.provenance));
+  });
+  assert.equal((await validateExecutionCandidate(fixture.requirements, candidate.execution)).state, "IMPLEMENTED_AWAITING_VALIDATION");
+});
+
+test("Docker cache authority rejects unlisted volumes, injected sources, writable roots, and workspace targets", async (t) => {
+  const fixture = await validationSessionFixture(t);
+  const executionEnvironment = await dockerCacheAuthorityFixture(fixture);
+  const engine = fakeDockerCacheEngine(fixture);
+  for (const [cacheVolumes, expected] of [
+    [[{ source: "fixture-cache;touch", target: "/var/cache/fixture" }], /cache volume source is invalid/u],
+    [[{ source: "other-cache", target: "/var/cache/fixture" }], /disagrees with the authorized Compose service/u],
+    [[{ source: "fixture-cache", target: "/" }], /cache volume target is invalid/u],
+    [[{ source: "fixture-cache", target: "/workspace" }], /cache volume target is invalid/u],
+    [[{ source: "fixture-cache", target: "/workspace/escaped" }], /cache volume target is invalid/u],
+  ]) {
+    await assert.rejects(runValidationSession(fixture.requirements, validationRequest({
+      argv: ["fixture-tool"], executionEnvironment: { ...executionEnvironment, cacheVolumes }, failureConclusion: "NONE",
+    }), { dockerEngine: engine }), expected);
+  }
+  assert.equal(engine.calls.some((call) => call.kind === "run"), false);
+});
+
+test("Docker cache snapshot content participates in deterministic evidence identity", async (t) => {
+  const fixture = await validationSessionFixture(t);
+  const executionEnvironment = await dockerCacheAuthorityFixture(fixture);
+  const request = validationRequest({ argv: ["fixture-tool"], executionEnvironment, failureConclusion: "NONE" });
+  const first = await runValidationSession(fixture.requirements, request, {
+    dockerEngine: fakeDockerCacheEngine(fixture, { snapshotFingerprint: `sha256:${"c".repeat(64)}` }),
+  });
+  const repeated = await runValidationSession(fixture.requirements, request, {
+    dockerEngine: fakeDockerCacheEngine(fixture, { snapshotFingerprint: `sha256:${"c".repeat(64)}` }),
+  });
+  const changed = await runValidationSession(fixture.requirements, request, {
+    dockerEngine: fakeDockerCacheEngine(fixture, { snapshotFingerprint: `sha256:${"f".repeat(64)}` }),
+  });
+  assert.equal(first.provenance.evidenceId, repeated.provenance.evidenceId);
+  assert.equal(first.provenance.inputs.executionFingerprint, repeated.provenance.inputs.executionFingerprint);
+  assert.notEqual(first.provenance.evidenceId, changed.provenance.evidenceId);
+  assert.notEqual(first.provenance.inputs.executionFingerprint, changed.provenance.inputs.executionFingerprint);
+});
+
+test("Docker cache snapshot is reused across equivalent commands and always cleaned", async (t) => {
+  const fixture = await validationSessionFixture(t);
+  const executionEnvironment = await dockerCacheAuthorityFixture(fixture);
+  const engine = fakeDockerCacheEngine(fixture);
+  const request = validationRequest({ argv: ["fixture-tool"], executionEnvironment, failureConclusion: "NONE" });
+  request.commands = [structuredClone(request.commands[0]), structuredClone(request.commands[0]), structuredClone(request.commands[0])];
+  const result = await runValidationSession(fixture.requirements, request, { dockerEngine: engine });
+  assert.equal(result.provenance.state, "VERIFIED", JSON.stringify(result));
+  assert.equal(engine.asyncCacheRoots.length, 1);
+  assert.equal(engine.calls.filter((call) => call.kind === "run").length, 3);
+  assert.equal(new Set(result.provenance.commands.map((command) => (
+    command.executionEnvironment.cacheVolumes[0].snapshotFingerprint
+  ))).size, 1);
+  await assert.rejects(fs.access(engine.asyncCacheRoots[0]));
+});
+
+test("Docker cache snapshot rejects symlinks and removes its helper container", async (t) => {
+  const destinationRoot = await temporary(t, "stnl-validation-cache-safety-");
+  const containerId = "a".repeat(64);
+  const calls = [];
+  const requestDocker = async (method, requestPath, body = null) => {
+    calls.push({ method, requestPath, body });
+    if (requestPath.startsWith("/containers/create")) {
+      const destination = body.HostConfig.Mounts.find((mount) => mount.Target === "/stnl-cache-target").Source;
+      await fs.symlink("/etc/passwd", path.join(destination, "escaped-link"));
+      return Buffer.from(JSON.stringify({ Id: containerId }));
+    }
+    if (requestPath === `/containers/${containerId}/start`) return Buffer.alloc(0);
+    if (requestPath === `/containers/${containerId}/wait?condition=not-running`) {
+      return Buffer.from(JSON.stringify({ StatusCode: 0 }));
+    }
+    if (requestPath === `/containers/${containerId}?force=1&v=1` && method === "DELETE") return Buffer.alloc(0);
+    throw new Error(`unexpected Docker request ${method} ${requestPath}`);
+  };
+  await assert.rejects(createDockerEngine(requestDocker).snapshotCacheVolumes({
+    imageId: `sha256:${"d".repeat(64)}`,
+    cacheVolumes: [{ source: "fixture-cache", target: "/var/cache/fixture", volumeName: "fixture_fixture-cache" }],
+    destinationRoot,
+  }), /cache snapshot contains an unsafe filesystem entry/u);
+  assert.equal(calls.some((call) => call.method === "DELETE"), true);
+});
+
+test("Docker image mutation after admission invalidates otherwise successful evidence", async (t) => {
+  const fixture = await validationSessionFixture(t);
+  const executionEnvironment = await dockerAuthorityFixture(fixture);
+  const engine = fakeDockerEngine(fixture);
+  let imageReads = 0;
+  engine.image = async () => {
+    imageReads += 1;
+    const id = imageReads === 1 ? `sha256:${"d".repeat(64)}` : `sha256:${"f".repeat(64)}`;
+    return { Id: id, RepoDigests: [`fixture@${id}`], Config: { WorkingDir: "/app" } };
+  };
+  const result = await runValidationSession(fixture.requirements, validationRequest({
+    argv: ["fixture-tool"], executionEnvironment, failureConclusion: "VALIDATION_FINDING",
+  }), { dockerEngine: engine });
+  assert.equal(result.provenance.state, "INVALID");
+  assert.equal(result.provenance.classification, "VALIDATION_SIDE_EFFECT");
+  assert.equal(result.provenance.conclusion, "NONE");
+  assert.ok(result.provenance.workspace.sideEffects.includes("trusted-container-image-state-changed"));
+  assert.equal(result.provenance.commands[0].toolchainFingerprintAfter, null);
+});
+
+test("Docker environment initialization failure returns valid pre-check BLOCKED provenance", async (t) => {
+  const fixture = await validationSessionFixture(t);
+  const executionEnvironment = await dockerAuthorityFixture(fixture);
+  const engine = fakeDockerEngine(fixture, { containers: [], imageError: true });
+  const blocked = await runValidationSession(fixture.requirements, validationRequest({
+    executionEnvironment, failureConclusion: "NONE",
+  }), { dockerEngine: engine });
+  assert.equal(blocked.provenance.state, "INVALID");
+  assert.equal(blocked.provenance.classification, "INFRASTRUCTURE_BLOCKED");
+  assert.equal(blocked.provenance.blocker.kind, "execution-environment");
+  assert.equal(blocked.provenance.blocker.stage, "environment-preflight");
+  assert.equal(blocked.provenance.blocker.code, "DOCKER_IMAGE_UNAVAILABLE");
+  assert.deepEqual(blocked.provenance.commands, []);
+  assert.deepEqual(blocked.outputs, []);
+  assert.equal(validationEvidenceIdentity(blocked.provenance), blocked.provenance.evidenceId);
+  const candidate = await externalExecutionCandidate(t, fixture);
+  await editTask(candidate, (value) => {
+    let next = value.replace("- [ ] 1.1", "- [x] 1.1");
+    next = replaceSection(next, "Changed Areas", "- `../../src/example.txt`");
+    return replaceSection(next, "Delegation Blocker", infrastructureDelegationBlocker(blocked.provenance));
+  });
+  assert.equal((await validateExecutionCandidate(fixture.requirements, candidate.execution)).state, "RUNNER_RESULT_BLOCKED");
+});
+
+for (const [failure, code] of [
+  ["create", "DOCKER_CREATE_FAILED"],
+  ["start", "DOCKER_START_FAILED"],
+  ["wait", "DOCKER_WAIT_FAILED"],
+  ["logs", "DOCKER_LOGS_MALFORMED"],
+  ["kill", "DOCKER_KILL_FAILED"],
+]) {
+  test(`Docker ${failure} failure returns validator-accepted execution-time infrastructure evidence`, async (t) => {
+    const fixture = await validationSessionFixture(t);
+    const executionEnvironment = await dockerAuthorityFixture(fixture);
+    const engine = dockerRuntimeFailureEngine(fixture, failure);
+    const request = validationRequest({ argv: ["fixture-tool"], executionEnvironment, failureConclusion: "VALIDATION_FINDING" });
+    const blocked = await runValidationSession(fixture.requirements, request, { dockerEngine: engine });
+    assert.equal(blocked.provenance.state, "INVALID", JSON.stringify(blocked));
+    assert.equal(blocked.provenance.classification, "INFRASTRUCTURE_BLOCKED");
+    assert.equal(blocked.provenance.conclusion, "NONE");
+    assert.deepEqual(blocked.provenance.blocker, {
+      kind: "execution-environment", stage: "environment-execution", code,
+      message: failure === "logs" ? "Docker returned malformed container logs" : `authenticated ${failure} failure`,
+      target: "ops/docker-compose.yml",
+    });
+    assert.equal(blocked.provenance.workspace.kind, "isolated-copy");
+    assert.equal(blocked.provenance.commands[0].exit, 125);
+    assert.equal(blocked.outputs[0].environmentBlocker.stage, "environment-execution");
+    assert.equal(blocked.provenance.evidenceId, validationEvidenceIdentity(blocked.provenance));
+    assert.equal(engine.residualContainers.size, 0, JSON.stringify(engine.runtimeCalls));
+
+    const candidate = await externalExecutionCandidate(t, fixture);
+    await editTask(candidate, (value) => {
+      let next = value.replace("- [ ] 1.1", "- [x] 1.1");
+      next = replaceSection(next, "Changed Areas", "- `../../src/example.txt`");
+      return replaceSection(next, "Implementation Test Evidence", evidenceCheckRecord(blocked.provenance, { status: "BLOCKED" }));
+    });
+    assert.equal((await validateExecutionCandidate(fixture.requirements, candidate.execution)).state, "AUXILIARY_BLOCKED");
+  });
+}
+
+test("Docker runtime infrastructure evidence and fingerprints remain deterministic", async (t) => {
+  const fixture = await validationSessionFixture(t);
+  const executionEnvironment = await dockerAuthorityFixture(fixture);
+  const request = validationRequest({ argv: ["fixture-tool"], executionEnvironment, failureConclusion: "VALIDATION_FINDING" });
+  const firstEngine = dockerRuntimeFailureEngine(fixture, "create");
+  const secondEngine = dockerRuntimeFailureEngine(fixture, "create");
+  const first = await runValidationSession(fixture.requirements, request, { dockerEngine: firstEngine });
+  const second = await runValidationSession(fixture.requirements, request, { dockerEngine: secondEngine });
+  assert.equal(first.provenance.inputs.executionFingerprint, second.provenance.inputs.executionFingerprint);
+  assert.equal(first.provenance.evidenceId, second.provenance.evidenceId);
+  assert.deepEqual(first.provenance.blocker, second.provenance.blocker);
+});
+
+test("Docker cleanup failure remains a validation side effect and invalidates evidence", async (t) => {
+  const fixture = await validationSessionFixture(t);
+  const executionEnvironment = await dockerAuthorityFixture(fixture);
+  const engine = dockerRuntimeFailureEngine(fixture, "cleanup");
+  const blocked = await runValidationSession(fixture.requirements, validationRequest({
+    argv: ["fixture-tool"], executionEnvironment, failureConclusion: "VALIDATION_FINDING",
+  }), { dockerEngine: engine });
+  assert.equal(blocked.provenance.state, "INVALID");
+  assert.equal(blocked.provenance.classification, "VALIDATION_SIDE_EFFECT");
+  assert.equal(blocked.provenance.conclusion, "NONE");
+  assert.deepEqual(blocked.provenance.workspace.sideEffects, ["docker-validation-container-cleanup-failed"]);
+  assert.equal(engine.residualContainers.size, 1);
+});
+
+test("Docker authority cannot grant an external root or exact-file sibling authority", async (t) => {
+  const fixture = await validationSessionFixture(t);
+  const executionEnvironment = await dockerAuthorityFixture(fixture);
+  const engine = fakeDockerEngine(fixture);
+  await assert.rejects(runValidationSession(fixture.requirements, validationRequest({
+    executionEnvironment: { ...executionEnvironment, composeFile: "../external/docker-compose.yml" },
+  }), { dockerEngine: engine }), /compose file must be a normalized relative path/u);
+  await assert.rejects(runValidationSession(fixture.requirements, validationRequest({
+    executionEnvironment, writePaths: ["."], failureConclusion: "NONE",
+  }), { dockerEngine: engine }), /writePaths must be unique bounded paths/u);
+  await assert.rejects(runValidationSession(fixture.requirements, validationRequest({
+    executionEnvironment, writePaths: ["../external"], failureConclusion: "NONE",
+  }), { dockerEngine: engine }), /write path must be a normalized relative path/u);
+  const blocked = await runValidationSession(fixture.requirements, validationRequest({
+    executionEnvironment, writeFiles: ["future.json"], failureConclusion: "NONE",
+  }), { dockerEngine: engine });
+  assert.equal(blocked.provenance.classification, "INFRASTRUCTURE_BLOCKED");
+  assert.equal(blocked.provenance.blocker.code, "DOCKER_EXACT_WRITE_FILE_UNSUPPORTED");
+  assert.deepEqual(blocked.provenance.commands, []);
+});
 
 async function assertExactFileBackend(result) {
   const backend = await validationSandboxBackend();
@@ -4739,6 +5338,15 @@ printf 'toolchain-ready\\n'
   return { external, root, bin, packageRoot, cli, runtime, launcher: path.join(bin, "npm") };
 }
 
+async function fakeDotnetToolchain(t, { withSdk = true } = {}) {
+  const root = await temporary(t, "stnl-dotnet-toolchain-");
+  if (withSdk) await fs.mkdir(path.join(root, "sdk/9.0.100"), { recursive: true });
+  const executable = path.join(root, "dotnet");
+  await fs.writeFile(executable, "#!/bin/sh\nprintf 'dotnet-host-ready\\n'\n", "utf8");
+  await fs.chmod(executable, 0o755);
+  return { root, bin: root, executable };
+}
+
 async function withInheritedPath(bin, operation) {
   const previous = process.env.PATH;
   process.env.PATH = `${bin}${path.delimiter}${previous ?? ""}`;
@@ -4785,6 +5393,24 @@ test("authenticated NVM-like external toolchain reaches project verification thr
   );
 });
 
+test("host-authoritative direct .NET SDK layout is admitted independently of Docker authority", async (t) => {
+  const fixture = await validationSessionFixture(t);
+  const toolchain = await fakeDotnetToolchain(t);
+  const result = await withInheritedPath(toolchain.bin, () => runValidationSession(
+    fixture.requirements,
+    validationRequest({ argv: ["dotnet", "build"], executionEnvironment: { kind: "host" }, failureConclusion: "NONE" }),
+  ));
+  assert.equal(result.provenance.state, "VERIFIED", JSON.stringify(result));
+  assert.match(result.outputs[0].stdout, /dotnet-host-ready/u);
+  assert.match(result.provenance.commands[0].toolchainFingerprint, /^sha256:[0-9a-f]{64}$/u);
+
+  const incomplete = await fakeDotnetToolchain(t, { withSdk: false });
+  await assert.rejects(withInheritedPath(incomplete.bin, () => runValidationSession(
+    fixture.requirements,
+    validationRequest({ argv: ["dotnet", "build"], executionEnvironment: { kind: "host" }, failureConclusion: "NONE" }),
+  )), /inherited canonical toolchain bin directory|dependency boundary/u);
+});
+
 test("authenticated real npm recovery declares only observed isolated tool outputs and preserves mixed exits", async (t) => {
   const fixture = await validationSessionFixture(t);
   await fs.mkdir(path.join(fixture.root, "node_modules/.vite-temp"), { recursive: true });
@@ -4809,7 +5435,9 @@ test("authenticated real npm recovery declares only observed isolated tool outpu
     ["npm", "run", "format"],
     ["npm", "run", "rules"],
     ["npm", "run", "purchase"],
-  ].map((argv) => ({ argv, cwd: ".", writePaths: [], env: {}, timeoutMs: 10_000 }));
+  ].map((argv) => ({
+    argv, cwd: ".", executionEnvironment: { kind: "host" }, writePaths: [], writeFiles: [], env: {}, timeoutMs: 10_000,
+  }));
   const blocked = await runValidationSession(fixture.requirements, request);
   assert.equal(blocked.provenance.state, "INVALID", JSON.stringify(blocked));
   assert.equal(blocked.provenance.classification, "SANDBOX_BOUNDARY_BLOCKED");
@@ -4895,7 +5523,9 @@ test("caller external roots, unrelated HOME, and subprocess access remain fail-c
     .sort((left, right) => left.name.localeCompare(right.name, "en"))[0];
   assert.ok(unrelatedHomeEntry, "HOME must contain one existing file for the read-data boundary probe");
   const unrelatedHomePath = path.join(os.homedir(), unrelatedHomeEntry.name);
-  const command = (argv, env) => ({ argv, cwd: ".", writePaths: [], writeFiles: [], env, timeoutMs: 10_000 });
+  const command = (argv, env) => ({
+    argv, cwd: ".", executionEnvironment: { kind: "host" }, writePaths: [], writeFiles: [], env, timeoutMs: 10_000,
+  });
   const request = validationRequest({ failureConclusion: "NONE" });
   request.commands = [
     command([process.execPath, "-e", "require('node:fs').readFileSync(process.env.UNRELATED_HOME)"], { UNRELATED_HOME: unrelatedHomePath }),
@@ -5026,7 +5656,8 @@ test("writeFiles authority is explicit per command and repeated declarations fol
   const fixture = await validationSessionFixture(t);
   await fs.mkdir(path.join(fixture.root, "generated"));
   const command = (source, writeFiles) => ({
-    argv: [process.execPath, "-e", source], cwd: ".", writePaths: [], writeFiles, env: {}, timeoutMs: 10_000,
+    argv: [process.execPath, "-e", source], cwd: ".", executionEnvironment: { kind: "host" },
+    writePaths: [], writeFiles, env: {}, timeoutMs: 10_000,
   });
   const repeated = validationRequest({ failureConclusion: "NONE" });
   repeated.commands = [
@@ -5105,11 +5736,11 @@ test("writeFiles source identity comes from the initial snapshot, not prior comm
   request.commands = [
     {
       argv: [process.execPath, "-e", "require('node:fs').rmSync('generated/source.json')"],
-      cwd: ".", writePaths: ["generated"], writeFiles: [], env: {}, timeoutMs: 10_000,
+      cwd: ".", executionEnvironment: { kind: "host" }, writePaths: ["generated"], writeFiles: [], env: {}, timeoutMs: 10_000,
     },
     {
       argv: [process.execPath, "-e", "require('node:fs').writeFileSync('generated/source.json','replacement')"],
-      cwd: ".", writePaths: [], writeFiles: ["generated/source.json"], env: {}, timeoutMs: 10_000,
+      cwd: ".", executionEnvironment: { kind: "host" }, writePaths: [], writeFiles: ["generated/source.json"], env: {}, timeoutMs: 10_000,
     },
   ];
   await assert.rejects(
@@ -5542,8 +6173,18 @@ test("historical pre-toolchain BLOCKED provenance remains resumable on the same 
     fixture.requirements, validationRequest({ argv: [path.join(bin, "legacy")] }),
   );
   const legacy = structuredClone(current.provenance);
+  delete legacy.protocol;
+  delete legacy.receipt;
+  delete legacy.inputs.protocol;
+  for (const command of legacy.commands) delete command.executionEnvironment;
   delete legacy.workspace.liveWorkspaceDelta;
   delete legacy.workspace.boundaryViolations;
+  legacy.inputs.executionFingerprint = validationDigest("stnl-validation-execution-v1", {
+    operation: legacy.operation, slice: legacy.slice, round: legacy.round, cwd: legacy.workspace.cwd,
+    executionRoot: legacy.workspace.executionRoot, subjects: legacy.subjects, commands: legacy.commands,
+    inputs: { ...legacy.inputs, executionFingerprint: undefined },
+  });
+  legacy.workspace.workspaceId = legacy.inputs.executionFingerprint;
   legacy.evidenceId = validationEvidenceIdentity(legacy);
   const newlyAppended = await externalExecutionCandidate(t, fixture);
   await editTask(newlyAppended, (value) => {
@@ -5780,6 +6421,42 @@ test("v1 evidence lifecycle is closed and provenance cannot be omitted", async (
     return replaceSection(next, "Implementation Test Evidence", checkRecord("implementation-check", 1, "TESTS_PASS", 1));
   });
   await assert.rejects(validateExecutionCandidate(fixture.requirements, missing.execution), /v1 validation evidence requires structured provenance/u);
+});
+
+test("the real candidate publication boundary rejects raw direct-runner PASS or BLOCKED without harness provenance", async (t) => {
+  for (const status of ["TESTS_PASS", "BLOCKED"]) {
+    const fixture = await validationSessionFixture(t);
+    const candidate = await externalExecutionCandidate(t, fixture);
+    await editTask(candidate, (value) => {
+      let next = replaceSection(value.replace("- [ ] 1.1", "- [x] 1.1"), "Changed Areas", "- `../../src/example.txt`");
+      const raw = checkRecord("implementation-check", 1, status, 1)
+        .replace(`${status} persisted.`, `${status} persisted from exit code 0, stdout: 47 tests passed, textual ${status === "TESTS_PASS" ? "PASS" : "BLOCKED"}.`);
+      return replaceSection(next, "Implementation Test Evidence", raw);
+    });
+    await assert.rejects(
+      validateExecutionCandidate(fixture.requirements, candidate.execution),
+      /requires structured provenance/u,
+      status,
+    );
+    assert.equal((await inspectExecutionState(fixture.requirements)).state, "MATERIALIZED_PRISTINE", status);
+  }
+});
+
+test("tampered or reconstructed v10 provenance without the original harness receipt cannot publish", async (t) => {
+  const fixture = await validationSessionFixture(t);
+  const result = await runValidationSession(fixture.requirements, validationRequest({ failureConclusion: "NONE" }));
+  const tampered = structuredClone(result.provenance);
+  tampered.commands[0].stdoutFingerprint = `sha256:${"a".repeat(64)}`;
+  tampered.evidenceId = validationEvidenceIdentity(tampered);
+  const candidate = await externalExecutionCandidate(t, fixture);
+  await editTask(candidate, (value) => {
+    let next = replaceSection(value.replace("- [ ] 1.1", "- [x] 1.1"), "Changed Areas", "- `../../src/example.txt`");
+    return replaceSection(next, "Implementation Test Evidence", evidenceCheckRecord(tampered));
+  });
+  await assert.rejects(
+    validateExecutionCandidate(fixture.requirements, candidate.execution),
+    /harness receipt does not match its provenance/u,
+  );
 });
 
 test("a successful validation base cannot introduce an undeclared ownership path", async (t) => {

@@ -69,6 +69,25 @@ test("runner resolves the packaged runtime internally without operator path plum
   }
 });
 
+test("runner resolves project-defined execution authority before physical toolchain lookup", async (t) => {
+  const root = await fixture(t);
+  for (const relative of ["codex/agents/stnl_validation_runner.toml", "claude-code/agents/stnl-validation-runner.md"]) {
+    const contract = await fs.readFile(path.join(root, relative), "utf8");
+    assert.match(contract, /executionEnvironment\.kind=host[\s\S]{0,700}executionEnvironment\.kind=docker-compose/u);
+    assert.match(contract, /composeFile[\s\S]{0,100}service[\s\S]{0,120}`image`[\s\S]{0,160}authoritySources/u);
+    assert.match(contract, /Dockerfile[\s\S]{0,220}não constitui autoridade/u);
+    assert.match(contract, /ambíguo[\s\S]{0,100}`BLOCKED`[\s\S]{0,100}fallback/u);
+    assert.match(contract, /não executa `docker compose exec`[\s\S]{0,800}não é procurado nem autenticado no PATH do host/u);
+    assert.match(contract, /cópia isolada montada read-only[\s\S]{0,160}`writePaths`/u);
+    assert.match(contract, /environment-preflight/u);
+    assert.match(contract, /environment-execution/u);
+    assert.match(contract, /environment-execution[\s\S]{0,320}nunca[^\n]{0,160}(?:finding|regressão|VERIFIED)/u);
+    assert.match(contract, /`cacheVolumes`[\s\S]{0,220}named volume local[\s\S]{0,700}snapshot read-only/u);
+    assert.match(contract, /nunca monta o volume Compose live[\s\S]{0,260}(?:evidence|execution fingerprint)[\s\S]{0,100}replay/u);
+    assert.match(contract, /Não use cache[\s\S]{0,180}(?:rede|network)[\s\S]{0,180}(?:path externo|volume arbitrário)/u);
+  }
+});
+
 const cases = [
   ["only TESTS_ACCEPTED removed", "R006_VERDICTS", (root) => replaceBoth(root, "STATUS_CHECKS=TESTS_PASS|TESTS_ACCEPTED|TESTS_FAIL|TESTS_NOT_APPLICABLE|BLOCKED", "STATUS_CHECKS=TESTS_PASS|TESTS_FAIL|TESTS_NOT_APPLICABLE|BLOCKED")],
   ["only ACCEPTED removed", "R006_VERDICTS", (root) => replaceBoth(root, "STATUS_VALIDACAO=PASS|ACCEPTED|NEEDS_FIX|BLOCKED", "STATUS_VALIDACAO=PASS|NEEDS_FIX|BLOCKED")],
@@ -113,8 +132,13 @@ const cases = [
   ["Claude extra metadata", "R001_ADAPTER_METADATA", (root) => replace(path.join(root, "claude-code/agents/stnl-validation-runner.md"), "effort: medium", "effort: medium\npermission: write")],
   ["missing Codex adapter", "R002_REGISTRY", (root) => fs.unlink(path.join(root, "codex/agents/stnl_validation_runner.toml"))],
   ["duplicate Claude frontmatter", "R013_SYNTAX", (root) => replace(path.join(root, "claude-code/agents/stnl-validation-runner.md"), "name: stnl-validation-runner", "name: stnl-validation-runner\nname: duplicate")],
-  ["missing canonical ID", "R013_SYNTAX", (root) => replaceBoth(root, "CONTRATO_CANONICO=stnl-validation-runner/v9", "runner contract")],
+  ["missing canonical ID", "R013_SYNTAX", (root) => replaceBoth(root, "CONTRATO_CANONICO=stnl-validation-runner/v10", "runner contract")],
+  ["missing runner handshake", "R018_PROVENANCE", (root) => replaceBoth(root, "RUNNER_PROTOCOL=stnl-validation-runner/v10", "RUNNER_PROTOCOL=missing")],
+  ["missing harness handshake", "R018_PROVENANCE", (root) => replaceBoth(root, "HARNESS_PROTOCOL=stnl-validation-harness/v10", "HARNESS_PROTOCOL=missing")],
   ["verification harness removed", "R017_ISOLATION", (root) => replaceBoth(root, "Todo verification command, sem exceção", "Alguns verification commands")],
+  ["project-defined execution authority removed", "R017_ISOLATION", (root) => replaceBoth(root, "executionEnvironment.kind=docker-compose", "executionEnvironment.kind=container")],
+  ["Docker live-container execution enabled", "R017_ISOLATION", (root) => replaceBoth(root, "não executa `docker compose exec`", "executa `docker compose exec`")],
+  ["Docker image authority removed", "R017_ISOLATION", (root) => replaceBoth(root, "{kind:\"docker-compose\",composeFile,service,image,authoritySources}", "{kind:\"docker-compose\",composeFile,service,authoritySources}")],
   ["operator harness path reintroduced", "R017_ISOLATION", (root) => replaceBoth(root, "Discovery permanece read-only", "VALIDATION_HARNESS_PATH=/physical/runtime.mjs\nDiscovery permanece read-only")],
   ["derivable execution paths reintroduced", "R017_ISOLATION", (root) => replaceBoth(root, "nenhum path físico derivável acompanha o payload", "execution root derivado, paths de plans e tasks acompanham o payload")],
   ["internal runtime resolution removed", "R017_ISOLATION", (root) => replaceBoth(root, "resolve internamente a partir de sua própria localização carregada", "recebe do operador")],

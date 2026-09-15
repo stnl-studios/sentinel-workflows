@@ -86,16 +86,25 @@ test("installed Codex and Claude user/project skills self-resolve and import aft
       assert.equal(resolved.skillName, owner);
       assert.equal(resolved.skillRoot, canonicalSkillRoot);
       assert.equal(resolved.entrypoint, "runtime/run-validation-session.mjs");
+      assert.equal(resolved.runnerProtocol, "stnl-validation-runner/v10");
+      assert.equal(resolved.harnessProtocol, "stnl-validation-harness/v10");
       assert.equal(isWithin(resolved.runtimePath, canonicalSkillRoot), true);
       assert.equal(resolved.runtimePath, await fs.realpath(resolved.runtimePath));
       moduleNonce += 1;
       const runtime = await import(`${pathToFileURL(resolved.runtimePath).href}?installed=${moduleNonce}`);
       assert.equal(typeof runtime.runValidationSession, "function");
       assert.equal(typeof runtime.main, "function");
+      assert.equal(runtime.VALIDATION_RUNNER_PROTOCOL, resolved.runnerProtocol);
+      assert.equal(runtime.VALIDATION_HARNESS_PROTOCOL, resolved.harnessProtocol);
 
       const cli = spawnSync(process.execPath, [resolverPath, "--resolve"], { encoding: "utf8" });
       assert.equal(cli.status, 0, cli.stderr);
       assert.equal(cli.stdout.trim(), resolved.runtimePath);
+      const capabilities = spawnSync(process.execPath, [resolverPath, "--capabilities"], { encoding: "utf8" });
+      assert.equal(capabilities.status, 0, capabilities.stderr);
+      assert.deepEqual(JSON.parse(capabilities.stdout), {
+        runner: "stnl-validation-runner/v10", harness: "stnl-validation-harness/v10",
+      });
     }
   }
 });
@@ -134,6 +143,21 @@ test("installed resolver fails deterministically when the declared runtime is mi
   const resolved = await module.resolveOwnValidationRuntime();
   await fs.rm(resolved.runtimePath);
   await expectResolutionCode(module.resolveOwnValidationRuntime(), "VALIDATION_RUNTIME_MISSING");
+});
+
+test("installed resolver rejects a mixed current runner and incompatible harness before dispatch", async (t) => {
+  const fixture = await installFixture(t, { platform: "codex", scope: "project" });
+  const runtimePath = path.join(
+    path.dirname(path.dirname(loadedResolverPath(fixture, "stnl-slice-executor"))),
+    "runtime/run-validation-session.mjs",
+  );
+  const source = await fs.readFile(runtimePath, "utf8");
+  await fs.writeFile(runtimePath, source.replace(
+    'export const VALIDATION_HARNESS_PROTOCOL = "stnl-validation-harness/v10";',
+    'export const VALIDATION_HARNESS_PROTOCOL = "stnl-validation-harness/v9";',
+  ), "utf8");
+  const { module } = await loadResolver(fixture, "stnl-slice-executor");
+  await expectResolutionCode(module.resolveOwnValidationRuntime(), "INCOMPATIBLE_VALIDATION_PROTOCOL");
 });
 
 test("installed resolver rejects a declared runtime symlink that escapes its skill package", async (t) => {

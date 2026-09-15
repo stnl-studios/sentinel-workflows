@@ -211,7 +211,11 @@ function assertContract(contract, expectedHash, label) {
 }
 
 function assertRunnerContract(contract, label) {
-  assert.match(contract, /^CONTRATO_CANONICO=stnl-validation-runner\/v[0-9]+$/mu, `${label} contract ID changed`);
+  assert.match(contract, /^CONTRATO_CANONICO=stnl-validation-runner\/v10$/mu, `${label} contract ID changed`);
+  assert.match(contract, /^RUNNER_PROTOCOL=stnl-validation-runner\/v10$/mu, `${label} runner handshake changed`);
+  assert.match(contract, /^HARNESS_PROTOCOL=stnl-validation-harness\/v10$/mu, `${label} harness handshake changed`);
+  assert.match(contract, /não este agente, é o executor físico de todo verification command/iu, `${label} owns physical verification`);
+  assert.match(contract, /sem provenance e receipt exatos do harness[\s\S]{0,160}nunca pode publicar TASK ou lifecycle/iu, `${label} raw results can publish`);
   assert.match(contract, /^OPERACOES_SUPORTADAS=EXECUTE_SLICE\|APPLY_FINDINGS\|VALIDATE_SLICE$/mu, `${label} operations changed`);
   assert.match(contract, /^STATUS_CHECKS=TESTS_PASS\|TESTS_ACCEPTED\|TESTS_FAIL\|TESTS_NOT_APPLICABLE\|BLOCKED$/mu, `${label} check statuses changed`);
   assert.match(contract, /^STATUS_VALIDACAO=PASS\|ACCEPTED\|NEEDS_FIX\|BLOCKED$/mu, `${label} validation statuses changed`);

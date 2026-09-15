@@ -273,7 +273,9 @@ function checkRunner(root) {
   const contract = String(codex.developer_instructions ?? "").trim();
   if (contract !== claude.body) reject("R003_EQUIVALENCE", "runner platform contracts diverge");
 
-  requirePattern(contract, /^CONTRATO_CANONICO=stnl-validation-runner\/v9$/mu, "R013_SYNTAX", "canonical runner contract ID is missing or stale");
+  requirePattern(contract, /^CONTRATO_CANONICO=stnl-validation-runner\/v10$/mu, "R013_SYNTAX", "canonical runner contract ID is missing or stale");
+  requirePattern(contract, /^RUNNER_PROTOCOL=stnl-validation-runner\/v10$/mu, "R018_PROVENANCE", "runner protocol handshake is missing");
+  requirePattern(contract, /^HARNESS_PROTOCOL=stnl-validation-harness\/v10$/mu, "R018_PROVENANCE", "harness protocol handshake is missing");
   const operations = /^OPERACOES_SUPORTADAS=([^\n]+)$/mu.exec(contract)?.[1];
   if (operations !== "EXECUTE_SLICE|APPLY_FINDINGS|VALIDATE_SLICE") reject("R004_OPERATION_SCOPE", `invalid runner operations: ${operations ?? "missing"}`);
   if (!contract.includes("STATUS_CHECKS=TESTS_PASS|TESTS_ACCEPTED|TESTS_FAIL|TESTS_NOT_APPLICABLE|BLOCKED") || !contract.includes("STATUS_VALIDACAO=PASS|ACCEPTED|NEEDS_FIX|BLOCKED")) {
@@ -293,6 +295,19 @@ function checkRunner(root) {
   requirePattern(contract, /Leia somente o escopo necessário/iu, "R014_INDEPENDENCE", "runner read scope is not bounded");
   requirePattern(contract, /Não confie apenas em checkboxes ou em resultados anteriores/iu, "R014_INDEPENDENCE", "runner can trust historical claims without verification");
   requirePattern(contract, /Todo verification command, sem exceção[\s\S]{0,220}runtime de validação empacotado/iu, "R017_ISOLATION", "verification commands do not require the bundled validation runtime");
+  requirePattern(contract, /não este agente, é o executor físico de todo verification command/iu, "R017_ISOLATION", "runner still owns physical verification execution");
+  requirePattern(contract, /Não execute diretamente build, teste, lint, typecheck, compilador, project validator ou regressão/iu, "R017_ISOLATION", "runner direct execution boundary is missing");
+  requirePattern(contract, /`protocol` é exatamente `\{runner:"stnl-validation-runner\/v10",harness:"stnl-validation-harness\/v10"\}`/u, "R018_PROVENANCE", "runner/harness request handshake is missing");
+  requirePattern(contract, /`executionEnvironment` é obrigatório[\s\S]{0,160}ausência nunca significa host/iu, "R017_ISOLATION", "new requests can retain implicit host execution");
+  requirePattern(contract, /byte-for-byte[\s\S]{0,240}nunca reconstrua[\s\S]{0,260}receipt/iu, "R018_PROVENANCE", "harness provenance transport is not exact");
+  requirePattern(contract, /Resultado textual[\s\S]{0,240}sem provenance e receipt exatos[\s\S]{0,180}nunca pode publicar TASK ou lifecycle/iu, "R018_PROVENANCE", "raw runner results can claim formal authority");
+  requirePattern(contract, /executionEnvironment\.kind=host[\s\S]{0,700}executionEnvironment\.kind=docker-compose/iu, "R017_ISOLATION", "project-defined execution authority is not explicit");
+  requirePattern(contract, /Dockerfile[\s\S]{0,220}não constitui autoridade[\s\S]{0,220}ambíguo[\s\S]{0,100}`BLOCKED`/iu, "R017_ISOLATION", "Docker selection can be inferred without explicit project authority");
+  requirePattern(contract, /não executa `docker compose exec`[\s\S]{0,420}cópia isolada montada read-only[\s\S]{0,180}`writePaths`/iu, "R017_ISOLATION", "Docker execution does not preserve isolated workspace boundaries");
+  requirePattern(contract, /`\{kind:"docker-compose",composeFile,service,image,authoritySources\}`/u, "R017_ISOLATION", "Docker execution environment request is incomplete");
+  requirePattern(contract, /`cacheVolumes`[\s\S]{0,220}named volume local[\s\S]{0,700}snapshot read-only/iu, "R017_ISOLATION", "Docker cache authority is not bounded to an isolated named-volume snapshot");
+  requirePattern(contract, /nunca monta o volume Compose live[\s\S]{0,260}(?:evidence|execution fingerprint)[\s\S]{0,100}replay/iu, "R017_ISOLATION", "Docker cache identity or live-volume isolation is missing");
+  requirePattern(contract, /Não use cache[\s\S]{0,180}(?:rede|network)[\s\S]{0,180}(?:path externo|volume arbitrário)/iu, "R017_ISOLATION", "Docker cache capability can broaden network or host-path authority");
   requirePattern(contract, /resolve internamente[\s\S]{0,220}localização carregada/iu, "R017_ISOLATION", "validation runtime is not resolved from the loaded owning skill");
   forbidPattern(contract, /VALIDATION_HARNESS_PATH|<SKILL_ROOT>|resolve-validation-runtime\.mjs|run-validation-session\.mjs/iu, "R017_ISOLATION", "runner exposes physical validation runtime plumbing");
   requirePattern(contract, /Derive internamente de `SPEC_PATH`[^\n]{0,180}execution root canônico[^\n]{0,160}artefatos exatos de plan\/task/iu, "R017_ISOLATION", "runner does not derive execution artifacts from intent and identity");
