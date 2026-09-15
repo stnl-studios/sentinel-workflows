@@ -4821,12 +4821,14 @@ test("new validation requests without executionEnvironment fail closed before an
   await assert.rejects(fs.access(marker));
 });
 
-test("validation protocol v10 handshakes and mixed, missing, or unknown versions fail closed before commands", async (t) => {
+test("protocol-preflight blockers for mixed, missing, or unknown versions publish without consuming the round", async (t) => {
   const cases = [
     ["missing", undefined],
     ["runner-v9", { runner: "stnl-validation-runner/v9", harness: "stnl-validation-harness/v10" }],
-    ["old-harness", { runner: "stnl-validation-runner/v10", harness: "stnl-validation-harness/v9" }],
-    ["unknown", { runner: "stnl-validation-runner/future", harness: "stnl-validation-harness/future" }],
+    ["harness-v9", { runner: "stnl-validation-runner/v10", harness: "stnl-validation-harness/v9" }],
+    ["runner-unknown", { runner: "stnl-validation-runner/future", harness: "stnl-validation-harness/v10" }],
+    ["harness-unknown", { runner: "stnl-validation-runner/v10", harness: "stnl-validation-harness/future" }],
+    ["fully-unknown", { runner: "stnl-validation-runner/future", harness: "stnl-validation-harness/future" }],
   ];
   for (const [name, protocol] of cases) {
     const fixture = await validationSessionFixture(t);
@@ -4845,26 +4847,151 @@ test("validation protocol v10 handshakes and mixed, missing, or unknown versions
     assert.equal(blocked.provenance.blocker.code, "VALIDATION_PROTOCOL_INCOMPATIBLE", name);
     assert.deepEqual(blocked.provenance.commands, [], name);
     assert.deepEqual(blocked.provenance.subjects, [], name);
+    assert.deepEqual(blocked.outputs, [], name);
+    assert.deepEqual(blocked.provenance.protocol, {
+      runner: "stnl-validation-runner/v10", harness: "stnl-validation-harness/v10",
+    }, name);
+    assert.deepEqual(blocked.provenance.inputs.protocol, blocked.provenance.protocol, name);
+    const { evidenceId: _evidenceId, receipt: _receipt, ...receiptMaterial } = blocked.provenance;
+    assert.equal(
+      blocked.provenance.receipt,
+      validationDigest("stnl-validation-harness-receipt-v10", receiptMaterial),
+      `${name} receipt`,
+    );
+    assert.equal(blocked.provenance.evidenceId, validationEvidenceIdentity(blocked.provenance), `${name} evidence ID`);
     await assert.rejects(fs.access(marker), undefined, name);
+
+    const candidate = await externalExecutionCandidate(t, fixture);
+    await editTask(candidate, (value) => {
+      let next = value.replace("- [ ] 1.1", "- [x] 1.1");
+      next = replaceSection(next, "Changed Areas", "- `../../src/example.txt`");
+      return replaceSection(next, "Delegation Blocker", infrastructureDelegationBlocker(blocked.provenance));
+    });
+    const state = await validateExecutionCandidate(fixture.requirements, candidate.execution);
+    assert.equal(state.state, "RUNNER_RESULT_BLOCKED", name);
+    assert.deepEqual(state.mandatoryRecovery, {
+      operation: "EXECUTE_SLICE", slice: "slice-01", owner: "delegation-blocker",
+      record: null, round: 1, retryState: null, authorityMode: null, invocation: null,
+      sameOperationResumeRequired: true,
+    }, name);
+    await fs.copyFile(
+      path.join(candidate.execution, "tasks/slice-01.md"),
+      path.join(fixture.execution, "tasks/slice-01.md"),
+    );
+    const persisted = await inspectExecutionState(fixture.requirements);
+    assert.equal(persisted.state, "RUNNER_RESULT_BLOCKED", name);
+    assert.equal(persisted.tasks.get("slice-01").implementationChecks.length, 0, name);
+    assert.equal(
+      persisted.tasks.get("slice-01").delegationBlocker.provenance.evidenceId,
+      blocked.provenance.evidenceId,
+      name,
+    );
   }
 });
 
-test("protocol mismatch provenance persists only as an infrastructure blocker without consuming the round", async (t) => {
+test("protocol-preflight evidence rejects protocol and blocker fabrication at publication", async (t) => {
   const fixture = await validationSessionFixture(t);
   const request = validationRequest({ protocol: undefined });
   delete request.protocol;
   const blocked = await runValidationSession(fixture.requirements, request);
-  const candidate = await externalExecutionCandidate(t, fixture);
-  await editTask(candidate, (value) => {
-    let next = value.replace("- [ ] 1.1", "- [x] 1.1");
-    next = replaceSection(next, "Changed Areas", "- `../../src/example.txt`");
-    return replaceSection(next, "Delegation Blocker", infrastructureDelegationBlocker(blocked.provenance));
-  });
-  const state = await validateExecutionCandidate(fixture.requirements, candidate.execution);
-  assert.equal(state.state, "RUNNER_RESULT_BLOCKED");
-  assert.equal(blocked.provenance.round, "1/3");
-  assert.equal(blocked.provenance.conclusion, "NONE");
-  assert.deepEqual(blocked.provenance.commands, []);
+
+  const reseal = (provenance, { receipt = true } = {}) => {
+    provenance.inputs.sourceFingerprint = validationDigest("stnl-validation-source-precheck-v1", {
+      liveWorkspaceBefore: provenance.workspace.liveWorkspaceFingerprintBefore,
+      blocker: provenance.blocker,
+    });
+    provenance.inputs.executionFingerprint = validationDigest("stnl-validation-execution-v1", {
+      protocol: provenance.inputs.protocol,
+      operation: provenance.operation,
+      slice: provenance.slice,
+      round: provenance.round,
+      cwd: provenance.workspace.cwd,
+      executionRoot: provenance.workspace.executionRoot,
+      subjects: provenance.subjects,
+      commands: provenance.commands,
+      inputs: { ...provenance.inputs, executionFingerprint: undefined },
+    });
+    provenance.workspace.workspaceId = provenance.inputs.executionFingerprint;
+    if (receipt) {
+      const { evidenceId: _evidenceId, receipt: _receipt, ...receiptMaterial } = provenance;
+      provenance.receipt = validationDigest("stnl-validation-harness-receipt-v10", receiptMaterial);
+    }
+    provenance.evidenceId = validationEvidenceIdentity(provenance);
+    return provenance;
+  };
+  const rejects = async (provenance, expected, name) => {
+    const candidate = await externalExecutionCandidate(t, fixture);
+    await editTask(candidate, (value) => {
+      let next = value.replace("- [ ] 1.1", "- [x] 1.1");
+      next = replaceSection(next, "Changed Areas", "- `../../src/example.txt`");
+      return replaceSection(next, "Delegation Blocker", infrastructureDelegationBlocker(provenance));
+    });
+    await assert.rejects(validateExecutionCandidate(fixture.requirements, candidate.execution), expected, name);
+  };
+
+  for (const [field, value] of [
+    ["runner", "stnl-validation-runner/v9"],
+    ["harness", "stnl-validation-harness/v9"],
+  ]) {
+    const tampered = structuredClone(blocked.provenance);
+    tampered.protocol[field] = value;
+    tampered.inputs.protocol[field] = value;
+    reseal(tampered);
+    await rejects(tampered, /Evidence protocol or harness receipt is malformed/u, `${field} downgrade`);
+  }
+
+  const missingReceipt = structuredClone(blocked.provenance);
+  delete missingReceipt.receipt;
+  await rejects(missingReceipt, /missing or unknown fields/u, "missing receipt");
+
+  const receiptTampered = structuredClone(blocked.provenance);
+  receiptTampered.blocker.message = "fabricated incompatible protocol claim";
+  reseal(receiptTampered, { receipt: false });
+  await rejects(receiptTampered, /harness receipt does not match its provenance/u, "recomputed evidence ID only");
+
+  const verified = structuredClone(blocked.provenance);
+  verified.state = "VERIFIED";
+  verified.classification = "NONE";
+  reseal(verified);
+  await rejects(verified, /non-infrastructure evidence cannot contain a blocker/u, "protocol blocker made VERIFIED");
+
+  const wrongStage = structuredClone(blocked.provenance);
+  wrongStage.blocker.stage = "sandbox-preflight";
+  reseal(wrongStage);
+  await rejects(wrongStage, /validation protocol blocker is inconsistent/u, "protocol code outside protocol-preflight");
+
+  const wrongCode = structuredClone(blocked.provenance);
+  wrongCode.blocker.code = "PROTOCOL_PREFLIGHT_FAILED";
+  reseal(wrongCode);
+  await rejects(wrongCode, /validation protocol blocker is inconsistent/u, "protocol-preflight with another code");
+});
+
+test("current material evidence rejects old or unknown producer protocols", async (t) => {
+  const fixture = await validationSessionFixture(t);
+  const result = await runValidationSession(fixture.requirements, validationRequest({ failureConclusion: "NONE" }));
+  for (const [field, value] of [
+    ["runner", "stnl-validation-runner/v9"],
+    ["runner", "stnl-validation-runner/future"],
+    ["harness", "stnl-validation-harness/v9"],
+    ["harness", "stnl-validation-harness/future"],
+  ]) {
+    const tampered = structuredClone(result.provenance);
+    tampered.protocol[field] = value;
+    tampered.inputs.protocol[field] = value;
+    const { evidenceId: _evidenceId, receipt: _receipt, ...receiptMaterial } = tampered;
+    tampered.receipt = validationDigest("stnl-validation-harness-receipt-v10", receiptMaterial);
+    tampered.evidenceId = validationEvidenceIdentity(tampered);
+    const candidate = await externalExecutionCandidate(t, fixture);
+    await editTask(candidate, (task) => {
+      let next = replaceSection(task.replace("- [ ] 1.1", "- [x] 1.1"), "Changed Areas", "- `../../src/example.txt`");
+      return replaceSection(next, "Implementation Test Evidence", evidenceCheckRecord(tampered));
+    });
+    await assert.rejects(
+      validateExecutionCandidate(fixture.requirements, candidate.execution),
+      /Evidence protocol or harness receipt is malformed/u,
+      `${field}=${value}`,
+    );
+  }
 });
 
 test("ambiguous execution authority and injected Compose identifiers fail closed before Docker or host execution", async (t) => {

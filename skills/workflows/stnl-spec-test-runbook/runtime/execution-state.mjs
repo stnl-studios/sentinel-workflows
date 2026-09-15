@@ -1023,15 +1023,13 @@ function parseEvidenceProvenance(record, authority, { operation, round, required
     throw new ExecutionContractError(`${record.id} Evidence provenance priorEvidenceId is malformed`);
   }
   const infrastructureBlocked = provenance.classification === "INFRASTRUCTURE_BLOCKED";
-  let protocolMismatch = false;
   if (!historicalProtocolModel) {
     exactObject(provenance.protocol, EVIDENCE_PROTOCOL_KEYS, `${record.id} Evidence protocol`);
-    if ((provenance.protocol.runner !== null && typeof provenance.protocol.runner !== "string")
+    if (provenance.protocol.runner !== VALIDATION_RUNNER_PROTOCOL
       || provenance.protocol.harness !== VALIDATION_HARNESS_PROTOCOL
       || typeof provenance.receipt !== "string" || !CURRENT_AUTHORITY.test(provenance.receipt)) {
       throw new ExecutionContractError(`${record.id} Evidence protocol or harness receipt is malformed`);
     }
-    protocolMismatch = provenance.protocol.runner !== VALIDATION_RUNNER_PROTOCOL;
   }
   const boundaryModel = provenance.workspace !== null
     && typeof provenance.workspace === "object"
@@ -1058,15 +1056,15 @@ function parseEvidenceProvenance(record, authority, { operation, round, required
     if ((provenance.blocker.kind === "execution-environment") !== environmentStage) {
       throw new ExecutionContractError(`${record.id} execution-environment blocker is inconsistent`);
     }
-    if ((provenance.blocker.stage === "protocol-preflight") !== protocolMismatch
-      || (protocolMismatch && (provenance.blocker.kind !== "infrastructure"
-        || provenance.blocker.code !== "VALIDATION_PROTOCOL_INCOMPATIBLE"))) {
+    const protocolPreflight = provenance.blocker.stage === "protocol-preflight";
+    const protocolIncompatible = provenance.blocker.code === "VALIDATION_PROTOCOL_INCOMPATIBLE";
+    if ((!historicalProtocolModel && (protocolPreflight !== protocolIncompatible
+      || (protocolPreflight && provenance.blocker.kind !== "infrastructure")))
+      || (historicalProtocolModel && protocolPreflight)) {
       throw new ExecutionContractError(`${record.id} validation protocol blocker is inconsistent`);
     }
   } else if (Object.hasOwn(provenance, "blocker")) {
     throw new ExecutionContractError(`${record.id} non-infrastructure evidence cannot contain a blocker`);
-  } else if (protocolMismatch) {
-    throw new ExecutionContractError(`${record.id} incompatible validation protocol cannot produce material evidence`);
   }
   exactObject(
     provenance.workspace,

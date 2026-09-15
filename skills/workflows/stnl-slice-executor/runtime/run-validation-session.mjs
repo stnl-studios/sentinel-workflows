@@ -183,12 +183,13 @@ export function validationExecutionEnvironmentContract(value, label = "validatio
 }
 
 function requestProtocol(value) {
-  if (value === undefined) return Object.freeze({ runner: null, harness: VALIDATION_HARNESS_PROTOCOL });
-  exactObject(value, PROTOCOL_KEYS, "validation session protocol");
-  if (typeof value.runner !== "string" || typeof value.harness !== "string") {
-    throw new ExecutionContractError("validation session protocol values must be strings");
+  if (value !== undefined) {
+    exactObject(value, PROTOCOL_KEYS, "validation session protocol");
+    if (typeof value.runner !== "string" || typeof value.harness !== "string") {
+      throw new ExecutionContractError("validation session protocol values must be strings");
+    }
   }
-  return Object.freeze({ runner: value.runner, harness: VALIDATION_HARNESS_PROTOCOL });
+  return Object.freeze({ runner: VALIDATION_RUNNER_PROTOCOL, harness: VALIDATION_HARNESS_PROTOCOL });
 }
 
 function protocolBlocker(value) {
