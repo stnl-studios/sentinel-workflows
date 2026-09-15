@@ -781,7 +781,7 @@ const NON_BLOCKING_GATES = new Set(["resolved", "non_blocking", "bypassed"]);
 const GATE_KEYS = new Set(["id", "command", "kind", "scope", "causality", "state", "problem", "evidence", "diagnostic", "correction", "correctionEvidence", "revalidates", "snapshot", "bypass"]);
 const VALIDATION_RUNNER_PROTOCOL = "stnl-validation-runner/v10";
 const VALIDATION_HARNESS_PROTOCOL = "stnl-validation-harness/v10";
-const VALIDATION_CAPABILITY_IDENTITY = "sha256:6efcd1733f5b77598e7abcff116ef82499a8755897aee2442123e8c54f3effa2";
+const VALIDATION_CAPABILITY_IDENTITY = "sha256:7f9a7fcf5a24debbff72c1591876012c134552c7319a18e16703ddb37fbf4ed5";
 const EVIDENCE_PROTOCOL_KEYS = new Set(["runner", "harness", "capability"]);
 
 function exactObject(value, keys, label) {
@@ -3753,21 +3753,26 @@ async function validateCandidateHistory(workspace, result) {
         }
       }
     }
+    const evidenceCollections = ["implementationChecks", "findingsChecks", "attempts"];
     const historicalEvidence = new Map([
       ...original.implementationChecks, ...original.findingsChecks, ...original.attempts,
     ].filter((record) => record.provenance !== null)
       .map((record) => [record.provenance.evidenceId, record.provenance]));
-    for (const record of [
-      ...candidate.implementationChecks, ...candidate.findingsChecks, ...candidate.attempts,
-    ]) {
-      const replay = record.provenance?.replay;
-      if (replay === null || replay === undefined) continue;
-      const origin = historicalEvidence.get(replay.originalEvidenceId);
-      if (origin === undefined || origin.state !== "VERIFIED"
-        || origin.historicalProtocolModel === true
-        || origin.historicalCapabilityModel === true
-        || origin.inputs.executionFingerprint !== replay.originalFingerprint) {
-        throw new ExecutionContractError(`${slice}/${record.id} replay origin is not bound to persisted historical evidence`);
+    for (const name of evidenceCollections) {
+      // Collection-local IDs become preservation authority only after the exact
+      // historical body checks above have proved the candidate record immutable.
+      const historicalRecords = new Set(original[name].map((record) => record.id));
+      for (const record of candidate[name]) {
+        const replay = record.provenance?.replay;
+        if (replay === null || replay === undefined) continue;
+        const preservedHistoricalRecord = historicalRecords.has(record.id);
+        const origin = historicalEvidence.get(replay.originalEvidenceId);
+        if (origin === undefined || origin.state !== "VERIFIED"
+          || origin.historicalProtocolModel === true
+          || (!preservedHistoricalRecord && origin.historicalCapabilityModel === true)
+          || origin.inputs.executionFingerprint !== replay.originalFingerprint) {
+          throw new ExecutionContractError(`${slice}/${record.id} replay origin is not bound to persisted historical evidence`);
+        }
       }
     }
     const historicalFindings = new Set(original.findings.map((record) => record.id));

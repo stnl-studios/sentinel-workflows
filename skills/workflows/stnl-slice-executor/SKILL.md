@@ -4,7 +4,7 @@ description: Execute one explicitly selected slice or apply its persisted findin
 validation-runtime: runtime/run-validation-session.mjs
 validation-runner-protocol: stnl-validation-runner/v10
 validation-harness-protocol: stnl-validation-harness/v10
-validation-capability-identity: sha256:6efcd1733f5b77598e7abcff116ef82499a8755897aee2442123e8c54f3effa2
+validation-capability-identity: sha256:7f9a7fcf5a24debbff72c1591876012c134552c7319a18e16703ddb37fbf4ed5
 ---
 
 # stnl-slice-executor

@@ -3,7 +3,7 @@ import * as fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-export const VALIDATION_CAPABILITY_IDENTITY = "sha256:6efcd1733f5b77598e7abcff116ef82499a8755897aee2442123e8c54f3effa2";
+export const VALIDATION_CAPABILITY_IDENTITY = "sha256:7f9a7fcf5a24debbff72c1591876012c134552c7319a18e16703ddb37fbf4ed5";
 
 function canonical(value) {
   if (Array.isArray(value)) return value.map(canonical);

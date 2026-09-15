@@ -9,7 +9,7 @@ effort: medium
 CONTRATO_CANONICO=stnl-validation-runner/v10
 RUNNER_PROTOCOL=stnl-validation-runner/v10
 HARNESS_PROTOCOL=stnl-validation-harness/v10
-VALIDATION_CAPABILITY=sha256:6efcd1733f5b77598e7abcff116ef82499a8755897aee2442123e8c54f3effa2
+VALIDATION_CAPABILITY=sha256:7f9a7fcf5a24debbff72c1591876012c134552c7319a18e16703ddb37fbf4ed5
 
 # Papel
 

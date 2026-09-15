@@ -5607,6 +5607,23 @@ function historicalCapabilityProvenance(provenance) {
   return historical;
 }
 
+function historicalReplayCapabilityProvenance(provenance, origin) {
+  const historical = historicalCapabilityProvenance(provenance);
+  historical.priorEvidenceId = origin.evidenceId;
+  historical.replay.originalEvidenceId = origin.evidenceId;
+  historical.replay.originalFingerprint = origin.inputs.executionFingerprint;
+  historical.replay.currentFingerprint = historical.inputs.executionFingerprint;
+  return resignValidationProvenance(historical);
+}
+
+function resignValidationProvenance(provenance) {
+  const resigned = structuredClone(provenance);
+  const { evidenceId: _evidenceId, receipt: _receipt, ...receiptMaterial } = resigned;
+  resigned.receipt = validationDigest("stnl-validation-harness-receipt-v10", receiptMaterial);
+  resigned.evidenceId = validationEvidenceIdentity(resigned);
+  return resigned;
+}
+
 function directHistoricalEvidence(record, provenance) {
   return record.replace(provenanceTransport(provenance), JSON.stringify(provenance));
 }
@@ -6800,6 +6817,159 @@ test("historical P0 provenance is readable only when already persisted, never as
   );
 });
 
+test("candidate history preserves an unchanged persisted P0 replay", async (t) => {
+  const fixture = await validationSessionFixture(t);
+  const origin = await runValidationSession(fixture.requirements, validationRequest({
+    argv: [process.execPath, "-e", "process.exit(1)"],
+    failureConclusion: "NONE",
+  }));
+  const currentOriginRecord = evidenceCheckRecord(origin.provenance, { status: "BLOCKED" });
+  const originated = await externalExecutionCandidate(t, fixture);
+  await editTask(originated, (value) => {
+    let next = value.replace("- [ ] 1.1", "- [x] 1.1");
+    next = replaceSection(next, "Changed Areas", "- `../../src/example.txt`");
+    return replaceSection(next, "Implementation Test Evidence", currentOriginRecord);
+  });
+  await validateExecutionCandidate(fixture.requirements, originated.execution);
+  await fs.copyFile(
+    path.join(originated.execution, "tasks/slice-01.md"),
+    path.join(fixture.execution, "tasks/slice-01.md"),
+  );
+
+  const replay = await runValidationSession(fixture.requirements, validationRequest({
+    priorEvidenceId: origin.provenance.evidenceId,
+    replayOriginEvidenceId: origin.provenance.evidenceId,
+    argv: [process.execPath, "-e", "process.exit(1)"],
+    failureConclusion: "NONE",
+  }));
+  assert.equal(replay.provenance.replay.equivalent, true);
+  const currentReplayCandidate = await externalExecutionCandidate(t, fixture);
+  await editTask(currentReplayCandidate, (value) => replaceSection(
+    value,
+    "Implementation Test Evidence",
+    `${currentOriginRecord}\n\n${evidenceCheckRecord(replay.provenance, { status: "BLOCKED", number: 2 })}`,
+  ));
+  await assert.doesNotReject(validateExecutionCandidate(
+    fixture.requirements, currentReplayCandidate.execution,
+  ));
+
+  const historicalOrigin = historicalCapabilityProvenance(origin.provenance);
+  const historicalReplay = historicalReplayCapabilityProvenance(replay.provenance, historicalOrigin);
+  const historicalOriginRecord = directHistoricalEvidence(
+    evidenceCheckRecord(historicalOrigin, { status: "BLOCKED" }), historicalOrigin,
+  );
+  const historicalReplayRecord = directHistoricalEvidence(
+    evidenceCheckRecord(historicalReplay, { status: "BLOCKED", number: 2 }), historicalReplay,
+  );
+  const historicalRecords = `${historicalOriginRecord}\n\n${historicalReplayRecord}`;
+  await editTask(fixture, (value) => replaceSection(
+    value,
+    "Implementation Test Evidence",
+    historicalRecords,
+  ));
+  assert.equal((await inspectExecutionState(fixture.requirements)).state, "AUXILIARY_BLOCKED");
+  const candidate = await externalExecutionCandidate(t, fixture);
+  await assert.doesNotReject(validateExecutionCandidate(fixture.requirements, candidate.execution));
+
+  const currentAddition = await runValidationSession(fixture.requirements, validationRequest({
+    priorEvidenceId: historicalReplay.evidenceId,
+    argv: [process.execPath, "-e", "process.exit(1)"],
+    failureConclusion: "NONE",
+  }));
+  assert.equal(currentAddition.provenance.replay, null);
+  const appended = await externalExecutionCandidate(t, fixture);
+  await editTask(appended, (value) => replaceSection(
+    value,
+    "Implementation Test Evidence",
+    `${historicalRecords}\n\n${evidenceCheckRecord(currentAddition.provenance, { status: "BLOCKED", number: 3 })}`,
+  ));
+  await assert.doesNotReject(validateExecutionCandidate(fixture.requirements, appended.execution));
+  assert.ok((await fs.readFile(path.join(appended.execution, "tasks/slice-01.md"), "utf8")).includes(historicalRecords));
+
+  const unauthorizedReplay = structuredClone(replay.provenance);
+  unauthorizedReplay.priorEvidenceId = historicalReplay.evidenceId;
+  unauthorizedReplay.state = "INVALID";
+  unauthorizedReplay.classification = "INVALID_REPLAY";
+  unauthorizedReplay.conclusion = "NONE";
+  unauthorizedReplay.replay.originalEvidenceId = historicalOrigin.evidenceId;
+  unauthorizedReplay.replay.originalFingerprint = historicalOrigin.inputs.executionFingerprint;
+  unauthorizedReplay.replay.equivalent = false;
+  unauthorizedReplay.replay.mismatches = ["protocol"];
+  const resignedUnauthorizedReplay = resignValidationProvenance(unauthorizedReplay);
+  const unauthorized = await externalExecutionCandidate(t, fixture);
+  await editTask(unauthorized, (value) => replaceSection(
+    value,
+    "Implementation Test Evidence",
+    `${historicalRecords}\n\n${evidenceCheckRecord(resignedUnauthorizedReplay, { status: "BLOCKED", number: 3 })}`,
+  ));
+  await assert.rejects(
+    validateExecutionCandidate(fixture.requirements, unauthorized.execution),
+    /replay origin is not bound to persisted historical evidence/u,
+  );
+
+  const copiedReplay = resignValidationProvenance({
+    ...historicalReplay,
+    priorEvidenceId: historicalReplay.evidenceId,
+  });
+  const copied = await externalExecutionCandidate(t, fixture);
+  await editTask(copied, (value) => replaceSection(
+    value,
+    "Implementation Test Evidence",
+    `${historicalRecords}\n\n${directHistoricalEvidence(evidenceCheckRecord(copiedReplay, { status: "BLOCKED", number: 3 }), copiedReplay)}`,
+  ));
+  await assert.rejects(
+    validateExecutionCandidate(fixture.requirements, copied.execution),
+    /cannot append legacy validation provenance or a historical capability/u,
+  );
+
+  const tamperedOrigin = resignValidationProvenance({
+    ...historicalReplay,
+    replay: { ...historicalReplay.replay, originalEvidenceId: `sha256:${"a".repeat(64)}` },
+  });
+  const tamperedFingerprint = resignValidationProvenance({
+    ...historicalReplay,
+    state: "INVALID",
+    classification: "INVALID_REPLAY",
+    conclusion: "NONE",
+    replay: {
+      ...historicalReplay.replay,
+      originalFingerprint: `sha256:${"b".repeat(64)}`,
+      equivalent: false,
+      mismatches: ["protocol"],
+    },
+  });
+  for (const [name, tamperedReplay] of [
+    ["origin", tamperedOrigin],
+    ["fingerprint", tamperedFingerprint],
+  ]) {
+    const tampered = await externalExecutionCandidate(t, fixture);
+    await editTask(tampered, (value) => replaceSection(
+      value,
+      "Implementation Test Evidence",
+      `${historicalOriginRecord}\n\n${directHistoricalEvidence(evidenceCheckRecord(tamperedReplay, { status: "BLOCKED", number: 2 }), tamperedReplay)}`,
+    ));
+    await assert.rejects(
+      validateExecutionCandidate(fixture.requirements, tampered.execution),
+      /historical identity and authority are immutable/u,
+      name,
+    );
+  }
+
+  const removed = await externalExecutionCandidate(t, fixture);
+  await editTask(removed, (value) => replaceSection(value, "Implementation Test Evidence", historicalOriginRecord));
+  await assert.rejects(
+    validateExecutionCandidate(fixture.requirements, removed.execution),
+    /historical record cannot be removed/u,
+  );
+  const renamed = await externalExecutionCandidate(t, fixture);
+  await editTask(renamed, (value) => replaceSection(
+    value,
+    "Implementation Test Evidence",
+    historicalRecords.replace("### implementation-check-02", "### implementation-check-03"),
+  ));
+  await assert.rejects(validateExecutionCandidate(fixture.requirements, renamed.execution));
+});
+
 test("historical P0 provenance cannot be appended as a new formal attempt", async (t) => {
   const fixture = await validationSessionFixture(t);
   const implementation = await runValidationSession(
@@ -6875,11 +7045,31 @@ test("a generated capability B reads immutable capability A history but requires
     path.join(persistedA.execution, "tasks/slice-01.md"),
     path.join(fixture.execution, "tasks/slice-01.md"),
   );
+  const generationAReplay = await runValidationSession(fixture.requirements, validationRequest({
+    priorEvidenceId: generationA.provenance.evidenceId,
+    replayOriginEvidenceId: generationA.provenance.evidenceId,
+    argv: [process.execPath, "-e", "process.exit(1)"],
+    failureConclusion: "NONE",
+  }));
+  assert.equal(generationAReplay.provenance.replay.equivalent, true);
+  const generationAReplayRecord = evidenceCheckRecord(
+    generationAReplay.provenance, { status: "BLOCKED", number: 2 },
+  );
+  const generationAHistory = `${generationARecord}\n\n${generationAReplayRecord}`;
+  const persistedReplayA = await externalExecutionCandidate(t, fixture);
+  await editTask(persistedReplayA, (value) => replaceSection(
+    value, "Implementation Test Evidence", generationAHistory,
+  ));
+  await validateExecutionCandidate(fixture.requirements, persistedReplayA.execution);
+  await fs.copyFile(
+    path.join(persistedReplayA.execution, "tasks/slice-01.md"),
+    path.join(fixture.execution, "tasks/slice-01.md"),
+  );
   const persistedBytes = await fs.readFile(path.join(fixture.execution, "tasks/slice-01.md"), "utf8");
 
   const staleGenerationA = await runValidationSession(fixture.requirements, validationRequest({
     round: "1/3",
-    priorEvidenceId: generationA.provenance.evidenceId,
+    priorEvidenceId: generationAReplay.provenance.evidenceId,
     failureConclusion: "NONE",
   }));
   assert.equal(staleGenerationA.provenance.protocol.capability, VALIDATION_CAPABILITY_IDENTITY);
@@ -6920,6 +7110,11 @@ test("a generated capability B reads immutable capability A history but requires
   const readByB = await generationBState.inspectExecutionState(fixture.requirements);
   assert.equal(readByB.tasks.get("slice-01").implementationChecks[0].provenance.evidenceId, generationA.provenance.evidenceId);
   assert.equal(readByB.tasks.get("slice-01").implementationChecks[0].provenance.receipt, generationA.provenance.receipt);
+  assert.equal(readByB.tasks.get("slice-01").implementationChecks[1].provenance.evidenceId, generationAReplay.provenance.evidenceId);
+  assert.equal(readByB.tasks.get("slice-01").implementationChecks[1].provenance.replay.originalEvidenceId, generationA.provenance.evidenceId);
+  assert.equal(await fs.readFile(path.join(fixture.execution, "tasks/slice-01.md"), "utf8"), persistedBytes);
+  const unchangedByB = await externalExecutionCandidate(t, fixture);
+  await generationBState.validateExecutionCandidate(fixture.requirements, unchangedByB.execution);
   assert.equal(await fs.readFile(path.join(fixture.execution, "tasks/slice-01.md"), "utf8"), persistedBytes);
 
   const protocolB = {
@@ -6930,16 +7125,16 @@ test("a generated capability B reads immutable capability A history but requires
   const generationB = await generationBRunner.runValidationSession(fixture.requirements, validationRequest({
     protocol: protocolB,
     round: "1/3",
-    priorEvidenceId: generationA.provenance.evidenceId,
+    priorEvidenceId: generationAReplay.provenance.evidenceId,
     failureConclusion: "NONE",
   }));
   assert.equal(generationB.provenance.protocol.capability, generationBCapability);
-  assert.equal(generationB.provenance.priorEvidenceId, generationA.provenance.evidenceId);
+  assert.equal(generationB.provenance.priorEvidenceId, generationAReplay.provenance.evidenceId);
   const admittedB = await externalExecutionCandidate(t, fixture);
   await editTask(admittedB, (value) => replaceSection(
     value,
     "Implementation Test Evidence",
-    `${generationARecord}\n\n${evidenceCheckRecord(generationB.provenance, { number: 2 })}`,
+    `${generationAHistory}\n\n${evidenceCheckRecord(generationB.provenance, { number: 3 })}`,
   ));
   const accepted = await generationBState.validateExecutionCandidate(fixture.requirements, admittedB.execution);
   assert.equal(accepted.state, "IMPLEMENTED_AWAITING_VALIDATION");
@@ -6948,7 +7143,7 @@ test("a generated capability B reads immutable capability A history but requires
   await editTask(rejectedA, (value) => replaceSection(
     value,
     "Implementation Test Evidence",
-    `${generationARecord}\n\n${evidenceCheckRecord(staleGenerationA.provenance, { number: 2 })}`,
+    `${generationAHistory}\n\n${evidenceCheckRecord(staleGenerationA.provenance, { number: 3 })}`,
   ));
   await assert.rejects(
     generationBState.validateExecutionCandidate(fixture.requirements, rejectedA.execution),
@@ -6968,7 +7163,7 @@ test("a generated capability B reads immutable capability A history but requires
   const incompatibleReplay = await generationBRunner.runValidationSession(fixture.requirements, validationRequest({
     protocol: protocolB,
     round: "1/3",
-    priorEvidenceId: generationA.provenance.evidenceId,
+    priorEvidenceId: generationAReplay.provenance.evidenceId,
     replayOriginEvidenceId: generationA.provenance.evidenceId,
     argv: [process.execPath, "-e", "process.exit(1)"],
     failureConclusion: "CODE_REGRESSION",
