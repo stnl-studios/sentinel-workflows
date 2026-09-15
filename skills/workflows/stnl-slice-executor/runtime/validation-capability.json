@@ -1,16 +1,16 @@
 {
-  "identity": "sha256:a0fe14e372062808af664e0bf2525f18f1e89f04b0bafbf4f0f3c24d78499320",
+  "identity": "sha256:e1753469c0fed10913b3356688e7d9bac520eb1b06aa7d5c352a4c4e184b63dc",
   "schemaVersion": 1,
   "runnerProtocol": "stnl-validation-runner/v11",
   "harnessProtocol": "stnl-validation-harness/v10",
   "package": {
     "owner": "stnl-slice-executor",
-    "fingerprint": "sha256:f5a13be9b9aeb38949f19cac1046a8711d7c96d46c3370fd6b4157c15018f320",
+    "fingerprint": "sha256:2b1d6a2a2955530c7903fde53887468557b7ba37e2f8b61166d09ca089a65997",
     "files": {
       "SKILL.md": "sha256:93639cdd5673b84030cbe18f016d6297fc2071a50ac01beb370bc362d4c18710",
-      "references/execution-record-schema.md": "sha256:88a68380ae4d40ed2a13a8748bed2f4a80d95102ea70f7b9278dabdaf1a3451a",
-      "runtime/execution-state.mjs": "sha256:dc5cf436558ec87db5c17c890850f4915375b7a1225992eaa3954a4fff5d961e",
-      "runtime/resolve-validation-runtime.mjs": "sha256:bd3daeb1c85bf136a3af0e2b4fe77d1e9658419fb99f1693102f49e8bc6957be",
+      "references/execution-record-schema.md": "sha256:90a2e8cb4a62fa57bf01ef010c10ffdc119ed022bef8c3492ed4312dc3a714cb",
+      "runtime/execution-state.mjs": "sha256:8678b85c566b52ecc2dc03909e510cef7ecfc38394d25e00c7f7dabd9d5525c8",
+      "runtime/resolve-validation-runtime.mjs": "sha256:8fac2088314946ce7b06a0ff72e26ee0e3dc36ad4fe25f560092e4ba5de81e48",
       "runtime/run-validation-session.mjs": "sha256:61e78ddabc35235ee00cb464cb13f0178cc810f6c51dee7d23a8164323ba997b",
       "runtime/validate-execution-state.mjs": "sha256:685a9c6971851b62675cbca4802276b819b06d577ab7a22a7eda3a7f0bea67a6",
       "runtime/validation-capability.mjs": "sha256:9d1dfcd457209c381ce927ad5e98ca9f3e156ad4281e9b4a997a580331a25f61"

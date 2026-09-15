@@ -144,100 +144,6 @@ function checkFilePurposeHeader(file, owner) {
   if ((text.match(/```yaml/gu) ?? []).length !== 1) reject("C008_FILE_HEADERS", `extra YAML block in execution resource: ${file}`);
 }
 
-const checkSchemas = {
-  EXECUTE_SLICE: [
-    "Operação: EXECUTE_SLICE",
-    "Status: TESTS_PASS | TESTS_ACCEPTED | TESTS_FAIL | TESTS_NOT_APPLICABLE | BLOCKED",
-    "Automatic check round:",
-    "HEAD:",
-    "Escopo verificado:",
-    "Estado testado:",
-    "Fileless reason: required only when Estado testado is exactly none; omit for file-backed state",
-    "Discovery sources:",
-    "Discovery actions:",
-    "Verification types considered:",
-    "Non-applicability rationale:",
-    "No verification-command confirmation:",
-    "Comandos executados:",
-    "Resultado de cada comando e exit code:",
-    "Evidence provenance: exact opaque transport returned by the validation resolver",
-    "Testes selecionados:",
-    "Justificativa da seleção:",
-    "Cobertura:",
-    "Falhas:",
-    "Correções cobertas:",
-    "Evidências ou resumo da falha:",
-    "Arquivos ou comportamentos afetados:",
-    "Bloqueios:",
-    "Efeitos inesperados no workspace:",
-    "Gate assessments: optional inline JSON; required for non-blocking failures, bypass, divergence recovery or gate-driven REPLAN",
-    "Resumo para persistência:",
-  ],
-  APPLY_FINDINGS: [
-    "Operação: APPLY_FINDINGS",
-    "Status: TESTS_PASS | TESTS_ACCEPTED | TESTS_FAIL | TESTS_NOT_APPLICABLE | BLOCKED",
-    "Automatic check round:",
-    "Ciclo de findings:",
-    "Finding IDs:",
-    "HEAD:",
-    "Escopo verificado:",
-    "Estado testado:",
-    "Fileless reason: required only when Estado testado is exactly none; omit for file-backed state",
-    "Discovery sources:",
-    "Discovery actions:",
-    "Verification types considered:",
-    "Non-applicability rationale:",
-    "No verification-command confirmation:",
-    "Comandos executados:",
-    "Resultado de cada comando e exit code:",
-    "Evidence provenance: exact opaque transport returned by the validation resolver",
-    "Testes selecionados:",
-    "Justificativa da seleção:",
-    "Cobertura:",
-    "Findings verificados:",
-    "Correções cobertas:",
-    "Regressões selecionadas:",
-    "Findings ainda não sustentados pelos testes:",
-    "Falhas:",
-    "Evidências ou resumo da falha:",
-    "Arquivos ou comportamentos afetados:",
-    "Bloqueios:",
-    "Efeitos inesperados no workspace:",
-    "Gate assessments: optional inline JSON; required for non-blocking failures, bypass, divergence recovery or gate-driven REPLAN",
-    "Resumo para persistência:",
-  ],
-  VALIDATE_SLICE: [
-    "Operação: VALIDATE_SLICE",
-    "Tipo de validação: initial | revalidation",
-    "Status: PASS | ACCEPTED | NEEDS_FIX | BLOCKED",
-    "Escopo verificado:",
-    "HEAD:",
-    "Evidências anteriores avaliadas:",
-    "Atualidade e suficiência das evidências:",
-    "Manifesto final da slice:",
-    "Fileless reason: required only when Manifesto final da slice is exactly none; omit for file-backed manifest",
-    "Comandos executados:",
-    "Resultado de cada comando e exit code:",
-    "Evidence provenance: exact opaque transport returned by the validation resolver",
-    "Testes selecionados ou repetidos:",
-    "Justificativa da seleção ou repetição:",
-    "Evidências:",
-    "Findings:",
-    "Bloqueios:",
-    "Overlap com bases anteriores:",
-    "Regressões justificadas executadas:",
-    "Efeitos inesperados no workspace:",
-    "Gate assessments: optional inline JSON; required for non-blocking failures, bypass, divergence recovery or gate-driven REPLAN",
-    "Resumo para persistência:",
-  ],
-};
-
-function extractSchema(contract, operation) {
-  const match = new RegExp(`## Schema ${operation}\\n\\n\\x60\\x60\\x60text\\n([\\s\\S]*?)\\x60\\x60\\x60`, "u").exec(contract);
-  if (!match) reject("R007_OUTPUT_SCHEMA", `runner output schema is missing: ${operation}`);
-  return match[1].split("\n").filter(Boolean);
-}
-
 function checkRunner(root) {
   if (!fs.statSync(root, { throwIfNoEntry: false })?.isDirectory()) throw new InfrastructureError(`not a directory: ${root}`);
   const codexFile = path.join(root, "codex/agents/stnl_validation_runner.toml");
@@ -246,209 +152,92 @@ function checkRunner(root) {
   for (const file of [codexFile, claudeFile, readmeFile]) {
     if (!fs.statSync(file, { throwIfNoEntry: false })?.isFile()) reject("R002_REGISTRY", `missing runner file: ${file}`);
   }
-  {
-    const currentCodex = parseToml(codexFile, "R013_SYNTAX");
-    const currentClaude = parseFrontmatter(claudeFile, "R013_SYNTAX");
-    const description = "Planner independente de verificações e assessor formal pós-harness de uma slice.";
-    const expectedCodexMetadata = {
-      name: "stnl_validation_runner", description, model: "gpt-5.6-luna",
-      model_reasoning_effort: "medium", sandbox_mode: "read-only",
-      developer_instructions: currentCodex.developer_instructions, agents: { max_depth: 1 },
-    };
-    if (!keysEqual(currentCodex, expectedCodexMetadata)
-      || Object.entries(expectedCodexMetadata).some(([key, value]) => !new Set(["developer_instructions", "agents"]).has(key) && currentCodex[key] !== value)
-      || currentCodex.agents?.max_depth !== 1) {
-      reject("R001_ADAPTER_METADATA", "Codex planner adapter metadata changed");
-    }
-    const expectedClaudeMetadata = {
-      name: "stnl-validation-runner", description, tools: "Read, Glob, Grep", model: "haiku", effort: "medium",
-    };
-    if (!keysEqual(currentClaude.metadata, expectedClaudeMetadata)
-      || Object.entries(expectedClaudeMetadata).some(([key, value]) => currentClaude.metadata[key] !== value)) {
-      reject("R001_ADAPTER_METADATA", "Claude planner adapter metadata changed");
-    }
-    const currentContract = String(currentCodex.developer_instructions ?? "").trim();
-    if (currentContract !== currentClaude.body) reject("R003_EQUIVALENCE", "runner platform contracts diverge");
-    for (const [pattern, category, message] of [
-      [/^CONTRATO_CANONICO=stnl-validation-runner\/v11$/mu, "R013_SYNTAX", "canonical planner contract is missing"],
-      [/^RUNNER_PROTOCOL=stnl-validation-runner\/v11$/mu, "R018_PROVENANCE", "planner protocol is stale"],
-      [/^HARNESS_PROTOCOL=stnl-validation-harness\/v10$/mu, "R018_PROVENANCE", "harness protocol changed"],
-      [/^PLAN_SCHEMA=stnl-validation-plan\/v1$/mu, "R007_OUTPUT_SCHEMA", "plan schema is missing"],
-      [/^ASSESSMENT_SCHEMA=stnl-validation-assessment\/v1$/mu, "R007_OUTPUT_SCHEMA", "assessment schema is missing"],
-      [/Não tente descobrir, ler, importar ou invocar o harness/iu, "R017_ISOLATION", "planner can locate or invoke the harness"],
-      [/Não execute build, teste, lint, typecheck/iu, "R017_ISOLATION", "planner direct-execution boundary is missing"],
-      [/Um plano pronto não significa `TESTS_PASS`/u, "R006_VERDICTS", "accepted plans can masquerade as results"],
-      [/Não inclua `status`, exit code, test count[\s\S]{0,120}provenance/iu, "R007_OUTPUT_SCHEMA", "plan/result boundary is missing"],
-      [/`executionEnvironment` é sempre explícito/iu, "R017_ISOLATION", "explicit execution environment is missing"],
-      [/Preserve a capability já carregada[\s\S]{0,100}nunca a substitua/iu, "R018_PROVENANCE", "loaded planner identity can be substituted"],
-      [/stnl-validation-planning-blocker\/v1/u, "R006_VERDICTS", "planning failure contract is missing"],
-      [/Somente quando o owner solicitar explicitamente assessment/iu, "R014_INDEPENDENCE", "post-harness assessment boundary is missing"],
-    ]) requirePattern(currentContract, pattern, category, message);
-    forbidPattern(currentContract, /VALIDATION_HARNESS_PATH|<SKILL_ROOT>|resolve-validation-runtime\.mjs|run-validation-session\.mjs/iu, "R017_ISOLATION", "planner exposes physical validation infrastructure");
-    const readme = read(readmeFile, "R012_README");
-    for (const marker of ["stnl-validation-runner/v11", "Ele não localiza nem invoca o harness", "skill dona chama seu bridge", "remove Bash"]) {
-      if (!readme.includes(marker)) reject("R012_README", `integration README lacks ${marker}`);
-    }
-    return;
-  }
+
   const codex = parseToml(codexFile, "R013_SYNTAX");
   const claude = parseFrontmatter(claudeFile, "R013_SYNTAX");
+  const description = "Planner independente de verificações e assessor formal pós-harness de uma slice.";
   const expectedCodex = {
     name: "stnl_validation_runner",
-    description: "Runner barato e isolado para checks de implementação, checks de findings e validação formal independente de uma slice.",
+    description,
     model: "gpt-5.6-luna",
     model_reasoning_effort: "medium",
-    sandbox_mode: "workspace-write",
+    sandbox_mode: "read-only",
     developer_instructions: codex.developer_instructions,
     agents: { max_depth: 1 },
   };
-  if (!keysEqual(codex, expectedCodex) || Object.entries(expectedCodex).some(([key, value]) => key !== "developer_instructions" && key !== "agents" && codex[key] !== value) || codex.agents?.max_depth !== 1) {
-    reject("R001_ADAPTER_METADATA", "Codex runner adapter metadata changed");
+  if (!keysEqual(codex, expectedCodex)
+    || Object.entries(expectedCodex).some(([key, value]) => !new Set(["developer_instructions", "agents"]).has(key) && codex[key] !== value)
+    || codex.agents?.max_depth !== 1) {
+    reject("R001_ADAPTER_METADATA", "Codex planner adapter metadata changed");
   }
   const expectedClaude = {
     name: "stnl-validation-runner",
-    description: expectedCodex.description,
-    tools: "Read, Glob, Grep, Bash",
+    description,
+    tools: "Read, Glob, Grep",
     model: "haiku",
     effort: "medium",
   };
-  if (!keysEqual(claude.metadata, expectedClaude) || Object.entries(expectedClaude).some(([key, value]) => claude.metadata[key] !== value)) {
-    reject("R001_ADAPTER_METADATA", "Claude runner adapter metadata changed");
+  if (!keysEqual(claude.metadata, expectedClaude)
+    || Object.entries(expectedClaude).some(([key, value]) => claude.metadata[key] !== value)) {
+    reject("R001_ADAPTER_METADATA", "Claude planner adapter metadata changed");
   }
+
   const contract = String(codex.developer_instructions ?? "").trim();
   if (contract !== claude.body) reject("R003_EQUIVALENCE", "runner platform contracts diverge");
 
-  requirePattern(contract, /^CONTRATO_CANONICO=stnl-validation-runner\/v10$/mu, "R013_SYNTAX", "canonical runner contract ID is missing or stale");
-  requirePattern(contract, /^RUNNER_PROTOCOL=stnl-validation-runner\/v10$/mu, "R018_PROVENANCE", "runner protocol handshake is missing");
-  requirePattern(contract, /^HARNESS_PROTOCOL=stnl-validation-harness\/v10$/mu, "R018_PROVENANCE", "harness protocol handshake is missing");
-  requirePattern(contract, /^VALIDATION_CAPABILITY=sha256:[0-9a-f]{64}$/mu, "R018_PROVENANCE", "loaded validation capability identity is missing");
+  for (const [pattern, category, message] of [
+    [/^CONTRATO_CANONICO=stnl-validation-runner\/v11$/mu, "R013_SYNTAX", "canonical planner contract is missing"],
+    [/^RUNNER_PROTOCOL=stnl-validation-runner\/v11$/mu, "R018_PROVENANCE", "planner protocol is stale"],
+    [/^HARNESS_PROTOCOL=stnl-validation-harness\/v10$/mu, "R018_PROVENANCE", "harness protocol changed"],
+    [/^VALIDATION_CAPABILITY=sha256:[0-9a-f]{64}$/mu, "R018_PROVENANCE", "loaded capability identity is missing"],
+    [/^PLAN_SCHEMA=stnl-validation-plan\/v1$/mu, "R007_OUTPUT_SCHEMA", "plan schema is missing"],
+    [/^ASSESSMENT_SCHEMA=stnl-validation-assessment\/v1$/mu, "R007_OUTPUT_SCHEMA", "assessment schema is missing"],
+  ]) requirePattern(contract, pattern, category, message);
+
   const operations = /^OPERACOES_SUPORTADAS=([^\n]+)$/mu.exec(contract)?.[1];
-  if (operations !== "EXECUTE_SLICE|APPLY_FINDINGS|VALIDATE_SLICE") reject("R004_OPERATION_SCOPE", `invalid runner operations: ${operations ?? "missing"}`);
-  if (!contract.includes("STATUS_CHECKS=TESTS_PASS|TESTS_ACCEPTED|TESTS_FAIL|TESTS_NOT_APPLICABLE|BLOCKED") || !contract.includes("STATUS_VALIDACAO=PASS|ACCEPTED|NEEDS_FIX|BLOCKED")) {
-    reject("R006_VERDICTS", "runner statuses differ from the canonical protocol sets");
+  if (operations !== "EXECUTE_SLICE|APPLY_FINDINGS|VALIDATE_SLICE") {
+    reject("R004_OPERATION_SCOPE", `invalid planner operations: ${operations ?? "missing"}`);
   }
-  for (const [operation, expected] of Object.entries(checkSchemas)) {
-    const actual = extractSchema(contract, operation);
-    if (actual.length !== expected.length || actual.some((line, index) => line !== expected[index])) reject("R007_OUTPUT_SCHEMA", `${operation} output schema changed`);
-  }
-  for (const heading of ["EXECUTE_SLICE", "APPLY_FINDINGS", "VALIDATE_SLICE"]) {
-    requirePattern(contract, new RegExp(`^# ${heading}$`, "mu"), "R004_OPERATION_SCOPE", `missing runner section: ${heading}`);
-  }
-  forbidPattern(contract, /^# (?:CLOSE|REPLAN|FINALIZE_SLICE|PARALLELIZE_SLICES|RUN_TESTS)$/mu, "R004_OPERATION_SCOPE", "runner contains a forbidden operation");
-  requirePattern(contract, /1\/3[\s\S]{0,80}2\/3[\s\S]{0,80}3\/3/u, "R004_OPERATION_SCOPE", "runner lacks the exact three-round input set");
-  forbidPattern(contract, /(?:1\/4|2\/4|3\/4|4\/4)/u, "R004_OPERATION_SCOPE", "runner permits a fourth automatic round");
-  requirePattern(contract, /conclusões do contexto principal como não verificadas/iu, "R014_INDEPENDENCE", "runner does not independently verify main-context claims");
-  requirePattern(contract, /Leia somente o escopo necessário/iu, "R014_INDEPENDENCE", "runner read scope is not bounded");
-  requirePattern(contract, /Não confie apenas em checkboxes ou em resultados anteriores/iu, "R014_INDEPENDENCE", "runner can trust historical claims without verification");
-  requirePattern(contract, /Todo verification command, sem exceção[\s\S]{0,220}runtime de validação empacotado/iu, "R017_ISOLATION", "verification commands do not require the bundled validation runtime");
-  requirePattern(contract, /não este agente, é o executor físico de todo verification command/iu, "R017_ISOLATION", "runner still owns physical verification execution");
-  requirePattern(contract, /Não execute diretamente build, teste, lint, typecheck, compilador, project validator ou regressão/iu, "R017_ISOLATION", "runner direct execution boundary is missing");
-  requirePattern(contract, /`protocol` é exatamente `\{runner:"stnl-validation-runner\/v10",harness:"stnl-validation-harness\/v10",capability:VALIDATION_CAPABILITY\}`/u, "R018_PROVENANCE", "runner/harness/capability request handshake is missing");
-  requirePattern(contract, /`executionEnvironment` é obrigatório[\s\S]{0,160}ausência nunca significa host/iu, "R017_ISOLATION", "new requests can retain implicit host execution");
-  requirePattern(contract, /byte-for-byte[\s\S]{0,160}envelope opaco[\s\S]{0,180}nunca extraia ou reconstrua[\s\S]{0,300}receipt/iu, "R018_PROVENANCE", "harness provenance transport is not exact");
-  requirePattern(contract, /Resultado textual[\s\S]{0,240}sem provenance e receipt exatos[\s\S]{0,180}nunca pode publicar TASK ou lifecycle/iu, "R018_PROVENANCE", "raw runner results can claim formal authority");
-  requirePattern(contract, /executionEnvironment\.kind=host[\s\S]{0,700}executionEnvironment\.kind=docker-compose/iu, "R017_ISOLATION", "project-defined execution authority is not explicit");
-  requirePattern(contract, /Dockerfile[\s\S]{0,220}não constitui autoridade[\s\S]{0,220}ambíguo[\s\S]{0,100}`BLOCKED`/iu, "R017_ISOLATION", "Docker selection can be inferred without explicit project authority");
-  requirePattern(contract, /não executa `docker compose exec`[\s\S]{0,420}cópia isolada montada read-only[\s\S]{0,180}`writePaths`/iu, "R017_ISOLATION", "Docker execution does not preserve isolated workspace boundaries");
-  requirePattern(contract, /`\{kind:"docker-compose",composeFile,service,image,authoritySources\}`/u, "R017_ISOLATION", "Docker execution environment request is incomplete");
-  requirePattern(contract, /`cacheVolumes`[\s\S]{0,220}named volume local[\s\S]{0,700}snapshot read-only/iu, "R017_ISOLATION", "Docker cache authority is not bounded to an isolated named-volume snapshot");
-  requirePattern(contract, /nunca monta o volume Compose live[\s\S]{0,260}(?:evidence|execution fingerprint)[\s\S]{0,100}replay/iu, "R017_ISOLATION", "Docker cache identity or live-volume isolation is missing");
-  requirePattern(contract, /Não use cache[\s\S]{0,180}(?:rede|network)[\s\S]{0,180}(?:path externo|volume arbitrário)/iu, "R017_ISOLATION", "Docker cache capability can broaden network or host-path authority");
-  requirePattern(contract, /resolve internamente[\s\S]{0,220}localização carregada/iu, "R017_ISOLATION", "validation runtime is not resolved from the loaded owning skill");
-  forbidPattern(contract, /VALIDATION_HARNESS_PATH|<SKILL_ROOT>|resolve-validation-runtime\.mjs|run-validation-session\.mjs/iu, "R017_ISOLATION", "runner exposes physical validation runtime plumbing");
-  requirePattern(contract, /Derive internamente de `SPEC_PATH`[^\n]{0,180}execution root canônico[^\n]{0,160}artefatos exatos de plan\/task/iu, "R017_ISOLATION", "runner does not derive execution artifacts from intent and identity");
-  forbidPattern(contract, /execution root derivado, paths de plans e tasks|cujo path acompanha o payload/iu, "R017_ISOLATION", "runner payload exposes derivable execution plumbing");
-  requirePattern(contract, /sandbox do sistema operacional[\s\S]{0,300}`writePaths`[\s\S]{0,120}`writeFiles`/iu, "R017_ISOLATION", "filesystem isolation and explicit write boundaries are missing");
-  requirePattern(contract, /SANDBOX_BOUNDARY_BLOCKED[\s\S]{0,500}harness deriva deterministicamente[\s\S]{0,300}mesma (?:rodada|tentativa)[\s\S]{0,500}runner nunca reconstrói paths/iu, "R018_PROVENANCE", "boundary recovery is not bounded to exact isolated outputs");
-  requirePattern(contract, /Symlink de source[^\n]{0,180}target canônico final[^\n]{0,220}(?:preservado|rebaseado)[^\n]{0,220}target externo[^\n]{0,120}bloqueia/iu, "R017_ISOLATION", "source symlink admission is not bound to canonical project containment");
-  requirePattern(contract, /Plataforma sem sandbox suportada retorna `BLOCKED`[^\n]{0,80}não faça fallback direto/iu, "R017_ISOLATION", "sandbox availability does not fail closed");
-  requirePattern(contract, /Evidence `INVALID`[^\n]{0,220}(?:somente `BLOCKED`|produz somente `BLOCKED`)/iu, "R018_PROVENANCE", "invalid evidence may support a material verdict");
-  requirePattern(contract, /Evidence `VERIFIED`[^\n]{0,180}não autoridade/iu, "R018_PROVENANCE", "evidence and authority are conflated");
-  requirePattern(contract, /Um bloqueio de infraestrutura\/source-isolation[^\n]{0,240}stdout[\s\S]{0,700}provenance\.classification=INFRASTRUCTURE_BLOCKED[\s\S]{0,700}Kind: infrastructure[\s\S]{0,300}sem consumir a rodada/iu, "R018_PROVENANCE", "authenticated pre-check blockers cannot be persisted without provenance or may consume validation evidence");
-  requirePattern(contract, /`CODE_REGRESSION` exige `replayOriginEvidenceId`[\s\S]{0,500}`INVALID_REPLAY`[^\n]{0,100}não sustenta finding/iu, "R019_REPLAY", "replay equivalence is not a precondition for code regression");
-  requirePattern(contract, /diretório, basename ou agregado nunca substitui identidades de arquivos/iu, "R020_EVIDENCE_IDENTITY", "file-granular evidence identity is not enforced by contract");
+  requirePattern(contract, /`1\/3`, `2\/3` ou `3\/3`[^\n]{0,100}`VALIDATE_SLICE` recebe `round:null`/u, "R004_OPERATION_SCOPE", "planner lacks the exact auxiliary/formal round set");
+  forbidPattern(contract, /(?:1\/4|2\/4|3\/4|4\/4|quarta rodada|fourth round)/iu, "R004_OPERATION_SCOPE", "planner permits a fourth automatic round");
 
-  const execute = /# EXECUTE_SLICE\n([\s\S]*?)# APPLY_FINDINGS\n/u.exec(contract)?.[1] ?? "";
-  const findings = /# APPLY_FINDINGS\n([\s\S]*?)# VALIDATE_SLICE\n/u.exec(contract)?.[1] ?? "";
-  for (const [operation, section] of [["EXECUTE_SLICE", execute], ["APPLY_FINDINGS", findings]]) {
-    forbidPattern(section, /(?:crie|create|emita|emit|marque|mark).{0,80}(?:Validation Attempt|Effective Validation Base|PASS formal|conclusão `\[x\]`)/iu, "R015_CHECK_AUTHORITY", `${operation} claims formal authority`);
-  }
-  forbidPattern(contract, /(?:^|\n)(?:Edite|Edit|Aplique correções|Apply corrections|Crie subagentes|Create subagents)/iu, "R005_READ_ONLY", "runner permits mutation or delegation");
-  requirePattern(contract, /Não (?:edite|implemente)[\s\S]{0,250}(?:código|code)/iu, "R005_READ_ONLY", "runner read-only boundary is missing");
-  requirePattern(contract, /Não aplique correções[\s\S]{0,300}(?:lockfiles|commits|deploys|migrações|working tree)/iu, "R005_READ_ONLY", "runner mutation and cleanup prohibitions are incomplete");
-  requirePattern(contract, /limpeza do working tree/iu, "R005_READ_ONLY", "runner working-tree cleanup prohibition is missing");
-  requirePattern(contract, /Não crie subagentes nem delegue|Do not create subagents or delegate/iu, "R005_READ_ONLY", "runner no-delegation boundary is missing");
-  forbidPattern(contract, /(?:você pode|você deve|é permitido|you may|you must|you can)[^\n]{0,80}(?:editar|edit|implementar|implement|aplicar correções|apply corrections|criar subagentes|create subagents|delegar|delegate)/iu, "R005_READ_ONLY", "runner includes affirmative mutation or delegation authority");
-  requirePattern(contract, /TESTS_NOT_APPLICABLE[\s\S]{0,700}(?:descoberta objetiva|objective discovery)/iu, "R016_NOT_APPLICABLE", "non-applicability lacks objective discovery");
-  requirePattern(contract, /TESTS_NOT_APPLICABLE[\s\S]{0,1200}(?:nenhum verification command|no verification command)/iu, "R016_NOT_APPLICABLE", "non-applicability permits verification commands");
-  requirePattern(contract, /confirmação de que nenhum verification command foi executado/iu, "R016_NOT_APPLICABLE", "non-applicability lacks no-command confirmation");
-  requirePattern(contract, /TESTS_NOT_APPLICABLE[\s\S]{0,900}(?:motivo objetivo|objective rationale)/iu, "R016_NOT_APPLICABLE", "non-applicability lacks an objective rationale");
-  forbidPattern(contract, /(?:ferramenta ausente|missing tool).{0,120}TESTS_NOT_APPLICABLE|verification command.{0,100}(?:falh|fail).{0,100}TESTS_NOT_APPLICABLE/iu, "R016_NOT_APPLICABLE", "runner masks a blocker or failure as non-applicability");
-  requirePattern(contract, /ferramenta ausente[\s\S]{0,500}(?:BLOCKED|TESTS_FAIL)/iu, "R016_NOT_APPLICABLE", "missing tools are not separated from non-applicability");
-  forbidPattern(contract, /TESTS_NOT_APPLICABLE[^\n]{0,180}(?:comandos executados|verification commands executed)[^\n]{0,60}(?!nenhum|none)/iu, "R016_NOT_APPLICABLE", "non-applicability can include a verification command");
-  requirePattern(contract, /NEEDS_FIX[\s\S]{0,700}(?:finding estruturado|structured finding)/iu, "R006_VERDICTS", "NEEDS_FIX lacks structured findings");
-  requirePattern(contract, /NEEDS_FIX[^\n]{0,300}pode criar novos findings estruturados/iu, "R006_VERDICTS", "NEEDS_FIX cannot persist structured findings");
-  requirePattern(contract, /`TESTS_PASS` exige[^\n]{0,160}exit code zero/iu, "R006_VERDICTS", "TESTS_PASS lacks zero-exit authority");
-  requirePattern(contract, /Em `TESTS_PASS` ou `TESTS_ACCEPTED`[^\n]{0,260}`Escopo verificado`[^\n]{0,160}`Verification types considered`[^\n]{0,160}`Testes selecionados`[^\n]{0,160}`Cobertura`[^\n]{0,120}(?:nunca podem ser exact `none`|must not be exact `none`)/iu, "R006_VERDICTS", "TESTS_PASS/TESTS_ACCEPTED permits none in an objective summary field");
-  requirePattern(contract, /`TESTS_FAIL` exige[^\n]{0,160}(?:comandos que falharam|commands that failed)/iu, "R006_VERDICTS", "TESTS_FAIL lacks command-failure evidence");
-  requirePattern(contract, /`BLOCKED` exige[^\n]{0,180}(?:impossibilidade objetiva|objective impossibility)/iu, "R006_VERDICTS", "BLOCKED lacks an objective cause");
-  forbidPattern(contract, /(?:NEEDS_FIX|BLOCKED)[\s\S]{0,160}(?:(?<!não )proponha|create|(?<!não )crie) Effective Validation Base/iu, "R006_VERDICTS", "unsuccessful verdict creates an effective base");
-  requirePattern(contract, /caminhos relativos únicos[\s\S]{0,180}SHA-256[\s\S]{0,100}`REMOVED`/iu, "R008_MANIFEST", "final manifest path/hash/removal semantics are incomplete");
-  requirePattern(contract, /Estado testado[\s\S]{0,180}Manifesto final da slice[\s\S]{0,220}relativo ao diretório do artefato detalhado `tasks\/slice-NN\.md`/iu, "R008_MANIFEST", "tested-state and manifest path base is ambiguous");
-  requirePattern(contract, /fontes consultadas em `Discovery sources`[\s\S]{0,160}`Discovery actions`/iu, "R007_OUTPUT_SCHEMA", "discovery sources and actions are not distinct");
-  requirePattern(contract, /rodadas posteriores file-backed[^\n]{0,180}caminhos de correção[^\n]{0,180}task-relative normalizados[^\n]{0,160}comma-space/iu, "R007_OUTPUT_SCHEMA", "file-backed correction-path persistence grammar is missing");
-  requirePattern(contract, /correção fileless[^\n]{0,80}`Correction paths`[^\n]{0,40}exact `none`/iu, "R007_OUTPUT_SCHEMA", "fileless correction paths cannot be exact none");
-  requirePattern(contract, /`Findings verificados`[^\n]{0,100}subconjunto canônico[^\n]{0,100}`Finding IDs`/iu, "R007_OUTPUT_SCHEMA", "verified findings are not constrained to the target subset");
-  requirePattern(contract, /`Findings ainda não sustentados pelos testes`[^\n]{0,140}exatamente os findings ativos[^\n]{0,180}(?:nunca se sobrepõem|never overlap)/iu, "R007_OUTPUT_SCHEMA", "unsupported active findings are not the exact disjoint remainder");
-  requirePattern(contract, /não retorne `PASS` ou `ACCEPTED` com manifesto vazio, incompleto, duplicado, malformado ou inconsistente/iu, "R008_MANIFEST", "manifest rejection cases are incomplete");
-  requirePattern(contract, /fileless[\s\S]{0,300}`Fileless reason`[\s\S]{0,300}(?:não invente|never invent).{0,80}(?:path|caminho|hash)/iu, "R008_MANIFEST", "fileless manifest contract is incomplete");
-  requirePattern(contract, /overlap[\s\S]{0,500}regressões[\s\S]{0,300}(?:NEEDS_FIX|BLOCKED)/iu, "R010_OVERLAP", "overlap and regression obligations are incomplete");
-  requirePattern(contract, /Para cada overlap[^\n]{0,100}valide o comportamento atual e regressões/iu, "R010_OVERLAP", "overlap behavior/regression validation is missing");
-  requirePattern(contract, /primeira tentativa[^\n]{0,40}`initial`[^\n]{0,80}`revalidation`/iu, "R009_VALIDATION_ATTEMPT", "attempt type progression is missing");
-  requirePattern(contract, /PASS[^\n]{0,240}manifesto final completo/iu, "R009_VALIDATION_ATTEMPT", "PASS does not require a complete final manifest");
-  requirePattern(contract, /Findings:[^\n]{0,180}(?:disposição para cada finding|disposition for every finding)/iu, "R009_VALIDATION_ATTEMPT", "formal validation lacks per-finding disposition");
-  requirePattern(contract, /novo finding nasce `active`[^\n]{0,180}tentativa formal estritamente posterior/iu, "R009_VALIDATION_ATTEMPT", "new findings can be disposed at their origin attempt");
-  requirePattern(contract, /PASS[^\n]{0,260}nenhuma disposição bloqueante ativa/iu, "R009_VALIDATION_ATTEMPT", "PASS may leave a blocking finding active");
-  requirePattern(contract, /Checks nunca emitem[^\n]{0,160}(?:Validation Attempt|Effective Validation Base)/iu, "R015_CHECK_AUTHORITY", "check/formal authority separation is incomplete");
-  requirePattern(contract, /Responda somente de forma compacta[^\n]{0,120}sem logs completos/iu, "R011_COMPACT_OUTPUT", "runner compact-output boundary is missing");
-  requirePattern(contract, /nunca o reverta automaticamente/iu, "R005_READ_ONLY", "runner may automatically revert workspace effects");
+  for (const [pattern, category, message] of [
+    [/Não tente descobrir, ler, importar ou invocar o harness/iu, "R017_ISOLATION", "planner can locate or invoke the harness"],
+    [/Não execute build, teste, lint, typecheck/iu, "R017_ISOLATION", "planner direct-execution boundary is missing"],
+    [/Discovery é read-only/iu, "R005_READ_ONLY", "planner discovery is not read-only"],
+    [/Não edite nem limpe o working tree/iu, "R005_READ_ONLY", "planner may mutate or clean the working tree"],
+    [/Não persista, publique, implemente, corrija, finalize, crie subagentes nem delegue/iu, "R005_READ_ONLY", "planner gained owner or delegation authority"],
+    [/trate conclusões do owner e resultados anteriores como não verificados/iu, "R014_INDEPENDENCE", "planner trusts owner conclusions"],
+    [/Leia somente requirements, plan\/task, manifests, CI, scripts, testes, diff e dependências necessários/iu, "R014_INDEPENDENCE", "planner discovery scope is unbounded"],
+    [/Um plano pronto não significa `TESTS_PASS`, `PASS` ou execução observada/iu, "R006_VERDICTS", "accepted plans can masquerade as results"],
+    [/Não inclua `status`, exit code, test count, stdout\/stderr, provenance, receipt, evidence ID/iu, "R007_OUTPUT_SCHEMA", "plan/result boundary is missing"],
+    [/Preserve a capability já carregada[^\n]{0,100}nunca a substitua pela atual do owner/iu, "R018_PROVENANCE", "loaded planner identity can be substituted"],
+    [/`protocol` é exatamente `\{runner:"stnl-validation-runner\/v11",harness:"stnl-validation-harness\/v10",capability:VALIDATION_CAPABILITY\}`/u, "R018_PROVENANCE", "plan protocol identity is incomplete"],
+    [/`executionEnvironment` é sempre explícito[\s\S]{0,500}Nunca infira host por ausência/iu, "R017_ISOLATION", "execution environment can implicitly fall back to host"],
+    [/Preserve project-defined execution[^\n]{0,180}ausência de fallback/iu, "R017_ISOLATION", "project-defined execution or no-fallback boundary is missing"],
+    [/Ferramenta ou ambiente ausente não é não aplicabilidade/iu, "R016_NOT_APPLICABLE", "tool unavailability is confused with non-applicability"],
+    [/Plano sem commands requer discovery real[^\n]{0,120}`nonApplicabilityRationale` objetivo[^\n]{0,100}não vira sucesso/iu, "R016_NOT_APPLICABLE", "non-applicability lacks objective discovery and rationale"],
+    [/`assessment` é `independent` em `VALIDATE_SLICE`/u, "R014_INDEPENDENCE", "formal validation lacks independent assessment"],
+    [/Somente quando o owner solicitar explicitamente assessment/iu, "R014_INDEPENDENCE", "post-harness assessment boundary is missing"],
+    [/não peça nem copie o envelope[^\n]{0,100}não execute checks[^\n]{0,100}não reconstrua evidence/iu, "R018_PROVENANCE", "assessment can access or reconstruct opaque evidence"],
+    [/O assessment não publica/iu, "R015_CHECK_AUTHORITY", "assessment gained publication authority"],
+    [/PASS`\/`ACCEPTED` formal exige assessment independente completo e candidate validation pelo owner/iu, "R015_CHECK_AUTHORITY", "formal publication can bypass assessment or owner validation"],
+    [/Descoberta, bridge execution e assessment não alocam nova rodada de correção/iu, "R004_OPERATION_SCOPE", "planning or assessment can consume a correction round"],
+  ]) requirePattern(contract, pattern, category, message);
 
-  const readme = read(readmeFile, "R002_REGISTRY");
-  for (const source of [
-    "integrations/codex/agents/stnl_validation_runner.toml",
-    "integrations/codex/agents/stnl_spec_context_scout.toml",
-    "integrations/claude-code/agents/stnl-validation-runner.md",
-    "integrations/claude-code/agents/stnl-spec-context-scout.md",
+  forbidPattern(contract, /VALIDATION_HARNESS_PATH|<SKILL_ROOT>|resolve-validation-runtime\.mjs|run-validation-session\.mjs/iu, "R017_ISOLATION", "planner exposes physical validation infrastructure");
+  forbidPattern(contract, /Em `(?:EXECUTE_SLICE|APPLY_FINDINGS)`[^\n]{0,160}(?:publique|emita|crie)[^\n]{0,80}(?:PASS formal|Validation Attempt|Effective Validation Base|conclusão `\[x\]`)/iu, "R015_CHECK_AUTHORITY", "auxiliary planning claims formal authority");
+
+  const readme = read(readmeFile, "R012_README");
+  for (const marker of [
+    "stnl-validation-runner/v11",
+    "Ele não localiza nem invoca o harness",
+    "skill dona chama seu bridge",
+    "remove Bash",
   ]) {
-    if (!readme.includes(source)) reject("R012_README", `runner README omits canonical source: ${source}`);
+    if (!readme.includes(marker)) reject("R012_README", `integration README lacks ${marker}`);
   }
-  for (const destination of [
-    ".codex/agents/stnl_validation_runner.toml",
-    ".codex/agents/stnl_spec_context_scout.toml",
-    ".claude/agents/stnl-validation-runner.md",
-    ".claude/agents/stnl-spec-context-scout.md",
-  ]) {
-    if (!readme.includes(destination)) reject("R012_README", `runner README omits native destination: ${destination}`);
-  }
-  const obsoleteSourceRoot = ["templates", "subagents"].join("/");
-  if (readme.includes(obsoleteSourceRoot)) reject("R012_README", "runner README retains the obsolete canonical source root");
-  requirePattern(readme, /caminhos são de fonte, não de instalação/iu, "R012_README", "README conflates canonical sources with native installation paths");
-  for (const launcher of ["slice-execute-codex.md", "slice-execute-claude.md", "slice-apply-findings-codex.md", "slice-apply-findings-claude.md", "slice-validate-codex.md", "slice-validate-claude.md"]) {
-    if (!readme.includes(launcher)) reject("R012_README", `runner README omits launcher: ${launcher}`);
-  }
-  forbidPattern(readme, /(?:CLOSE).{0,100}(?:(?<!não )usa|(?<!não )invoca).{0,80}(?:runner|test)/iu, "R012_README", "README makes CLOSE invoke validation");
-  requirePattern(readme, /não existe fallback/iu, "R012_README", "README fallback boundary is missing");
-  requirePattern(readme, /não existe passo manual adicional de testes/iu, "R012_README", "README manual-test-step boundary is missing");
-  requirePattern(readme, /no mínimo uma vez e no máximo três vezes/iu, "R012_README", "README bounded automatic-round policy is missing");
-  requirePattern(readme, /sem histórico da conversa[\s\S]{0,500}Históricos e logs completos não são encaminhados/iu, "R012_README", "README history/minimum-payload boundary is missing");
-  requirePattern(readme, /Falha de inicialização ou transporte[\s\S]{0,300}não consomem rodada `N\/3`/iu, "R012_README", "README transport/round separation is missing");
-  requirePattern(readme, /não criam `implementation-check-NN`, `findings-check-NN` ou `attempt-NN`/iu, "R012_README", "README transport/evidence separation is missing");
-  requirePattern(readme, /retoma diretamente na delegação[\s\S]{0,240}não reinicia identificadores/iu, "R012_README", "README initialization-resume semantics are missing");
-  requirePattern(readme, /terceira falha entra em `IMPLEMENTATION_RETRY_EXHAUSTED` ou `FINDINGS_RETRY_EXHAUSTED`[\s\S]{0,180}`VALIDATE_SLICE` é a única próxima operação/iu, "R012_README", "README third-failure recovery is missing");
-  requirePattern(readme, /fontes em `Discovery sources`, métodos em `Discovery actions`/iu, "R007_OUTPUT_SCHEMA", "README discovery labels are not canonical");
-  forbidPattern(readme, /`Check discovery (?:sources|actions)`/iu, "R007_OUTPUT_SCHEMA", "README authorizes historical discovery labels");
 }
-
 function checkScout(root) {
   const codexFile = path.join(root, "codex/agents/stnl_spec_context_scout.toml");
   const claudeFile = path.join(root, "claude-code/agents/stnl-spec-context-scout.md");
@@ -594,6 +383,7 @@ function checkLaunchers(root) {
     }
     if (!runnerLaunchers.has(name)) continue;
     forbidPattern(text, /VALIDATION_HARNESS_PATH|<SKILL_ROOT>|resolve-validation-runtime\.mjs|run-validation-session\.mjs|(?:^|\/)runtime\/[A-Za-z0-9._/-]*validation[A-Za-z0-9._/-]*/iu, "L004_INPUTS", `${name}: internal validation path leaked into the operator contract`);
+    forbidPattern(text, /`SPEC_PATH`, execution root derivado|paths de plans e tasks/iu, "L004_INPUTS", `${name}: derivable execution paths leaked into the delegated payload`);
     for (const [pattern, category, message] of [
       [/stnl-validation-plan\/v1/u, "L012_CHECK_DELEGATION", "planner output schema is missing"],
       [/loaded (?:skill location|owner package|bridge)|loaded packaged bridge/iu, "L012_CHECK_DELEGATION", "owner bridge bootstrap is missing"],
@@ -601,6 +391,9 @@ function checkLaunchers(root) {
       [/result-shaped|statuses\/exits\/counts\/provenance/iu, "L013_CHECK_AUTHORITY", "plan/result rejection is missing"],
       [/Não faça fallback/iu, "L008_VALIDATION_FLOW", "fallback is enabled"],
       [/read-back/iu, "L008_VALIDATION_FLOW", "candidate read-back is missing"],
+      [/concrete recovery operation and slice returned by deterministic preflight[\s\S]{0,100}derive neither from this request/iu, "L019_RECOVERY_TARGET", "state-derived recovery target is missing"],
+      [/owner (?:then )?invokes? (?:the |its )?(?:loaded )?(?:packaged )?bridge/iu, "L013_CHECK_AUTHORITY", "owner-to-bridge authority is missing"],
+      [/(?:isolated candidate|stages derived[\s\S]{0,120}candidate)/iu, "L008_VALIDATION_FLOW", "candidate staging boundary is missing"],
     ]) requirePattern(instructions, pattern, category, `${name}: ${message}`);
     const currentIsCodex = name.endsWith("-codex");
     if (currentIsCodex) {
@@ -612,89 +405,57 @@ function checkLaunchers(root) {
       requirePattern(instructions, /delegue obrigatoriamente/iu, "L007_PLATFORM_IDENTITY", `${name}: mandatory Claude planner delegation is missing`);
     }
     requirePattern(instructions, /sem histórico|no[^\n]{0,40}conversation history|no inherited thread/iu, "L012_CHECK_DELEGATION", `${name}: no-history boundary is missing`);
+    forbidPattern(instructions, /(?:(?<!não )envie|(?<!do not )forward|(?<!do not )include)[^\n]{0,40}(?:histórico da conversa|conversation history|inherited thread)/iu, "L012_CHECK_DELEGATION", `${name}: conversation history is forwarded`);
     requirePattern(instructions, /at most one|no máximo uma nova tentativa/iu, "L012_CHECK_DELEGATION", `${name}: initialization retry is not bounded`);
+    requirePattern(instructions, /Malformed (?:planner )?output has no (?:transport )?retry|malformed planner output does not receive transport retry|saída malformada[^\n]{0,100}não recebe retry/iu, "L016_TRANSPORT", `${name}: malformed output is confused with transport initialization`);
+    forbidPattern(instructions, /(?<!Não )Faça fallback|(?<!Do not )use fallback|fallback (?:is )?(?:enabled|allowed)|fallback para host/iu, "L008_VALIDATION_FLOW", `${name}: fallback is enabled`);
+    requirePattern(instructions, /(?:do not send|never send|não (?:passe|envie|encaminhe))[^\n]{0,180}(?:full logs|logs)/iu, "L012_CHECK_DELEGATION", `${name}: minimum-payload log boundary is missing`);
     if (spec[2] === "VALIDATE_SLICE") {
       requirePattern(instructions, /stnl-validation-assessment\/v1/u, "L008_VALIDATION_FLOW", `${name}: independent assessment phase is missing`);
       requirePattern(instructions, /Exit 0 or accepted plan alone cannot publish/iu, "L013_CHECK_AUTHORITY", `${name}: accepted plan can publish formal success`);
+      requirePattern(instructions, /PASS\s*\|\s*ACCEPTED\s*\|\s*NEEDS_FIX\s*\|\s*BLOCKED/u, "L008_VALIDATION_FLOW", `${name}: formal status set changed`);
+      requirePattern(instructions, /(?:Exija|Require)[^\n]{0,60}(?:revisão|review) independente[^\n]{0,100}(?:non-applicability|não aplicabilidade)/iu, "L008_VALIDATION_FLOW", `${name}: non-applicability is not independently reviewed`);
+      forbidPattern(instructions, /(?<!Não )Promova não aplicabilidade a `PASS`|(?<!do not )promote non-applicability to `?PASS`?/iu, "L013_CHECK_AUTHORITY", `${name}: non-applicability is promoted to PASS`);
+      requirePattern(instructions, /não repete testes|does not (?:repeat|run)[^\n]{0,40}tests/iu, "L013_CHECK_AUTHORITY", `${name}: formal assessment may repeat checks`);
+      requirePattern(instructions, /(?:do not|não) (?:create\/consume|criam? nem consomem?)[^\n]{0,40}`?attempt-NN`?/iu, "L016_TRANSPORT", `${name}: transport failure may allocate a formal attempt`);
+      requirePattern(instructions, /(?:do not change|do not create\/consume[^\n]{0,80}or change|não mudam?)[^\n]{0,40}initial[^\n]{0,40}revalidation/iu, "L016_TRANSPORT", `${name}: transport failure may change validation type`);
     } else {
       requirePattern(instructions, /(?:no mínimo uma vez|at least once)[\s\S]{0,80}(?:no máximo três vezes|at most three times)/iu, "L014_AUTOMATIC_RECHECK", `${name}: one-to-three planning budget is missing`);
       requirePattern(instructions, /1\/3[\s\S]{0,40}2\/3[\s\S]{0,40}3\/3/u, "L014_AUTOMATIC_RECHECK", `${name}: round set is missing`);
       requirePattern(instructions, /TESTS_NOT_APPLICABLE[\s\S]{0,180}(?:objective discovery|descoberta objetiva)[\s\S]{0,180}(?:nenhum comando|no-command)/iu, "L013_CHECK_AUTHORITY", `${name}: non-applicability proof is missing`);
-    }
-    continue;
-    forbidPattern(text, /VALIDATION_HARNESS_PATH|<SKILL_ROOT>|resolve-validation-runtime\.mjs|run-validation-session\.mjs|(?:^|\/)runtime\/[A-Za-z0-9._/-]*validation[A-Za-z0-9._/-]*/iu, "L004_INPUTS", `${name}: internal validation path leaked into the operator contract`);
-    forbidPattern(text, /`SPEC_PATH`, execution root derivado|paths de plans e tasks/iu, "L004_INPUTS", `${name}: derivable execution paths leaked into the delegated payload`);
-    requirePattern(instructions, /resolve internamente[\s\S]{0,180}própria localização carregada/iu, "L012_CHECK_DELEGATION", `${name}: owning skill does not resolve its bundled validation runtime internally`);
-    requirePattern(instructions, /execution root, plan\/task, schema e runtime[^\n]{0,120}derivados internamente/iu, "L012_CHECK_DELEGATION", `${name}: derivable execution plumbing is not internally resolved`);
-    requirePattern(
-      instructions,
-      /concrete recovery operation and slice[^\n]{0,100}shared deterministic preflight[^\n]{0,80}authority[^\n]{0,120}derive neither from the current request[^\n]{0,100}report both exactly/iu,
-      "L019_RECOVERY_TARGET",
-      `${name}: state-derived concrete recovery target is missing`,
-    );
-    const isCodex = name.endsWith("-codex");
-    if (isCodex) {
-      if ((text.match(/stnl_validation_runner/gu) ?? []).length !== 1 || text.includes("@agent-") || /\bClaude\b/u.test(text)) reject("L007_PLATFORM_IDENTITY", `${name}: invalid Codex identity`);
-      requirePattern(instructions, /(?:faça|make|must).{0,40}spawn|spawn.{0,50}(?:obrigat|must)/iu, "L007_PLATFORM_IDENTITY", `${name}: mandatory Codex spawn is missing`);
-      requirePattern(instructions, /fork_turns="none"/u, "L016_TRANSPORT", `${name}: Codex must start without inherited turns`);
-      forbidPattern(instructions, /fork_turns="(?:all|[1-9][0-9]*)"/u, "L016_TRANSPORT", `${name}: full/history fork is forbidden`);
-    } else {
-      if ((text.match(/^@agent-stnl-validation-runner$/gmu) ?? []).length !== 1 || text.includes("stnl_validation_runner") || /\bCodex\b/u.test(text)) reject("L007_PLATFORM_IDENTITY", `${name}: invalid Claude identity`);
-      requirePattern(instructions, /deleg.{0,40}(?:obrigat|must)|(?:obrigat|must).{0,40}deleg/iu, "L007_PLATFORM_IDENTITY", `${name}: mandatory Claude delegation is missing`);
-    }
-    requirePattern(instructions, /(?:sem histórico|não envie histórico|without inherited|no conversation history)/iu, "L012_CHECK_DELEGATION", `${name}: conversation history boundary is missing`);
-    forbidPattern(instructions, /(?:(?<!não )envie|(?<!do not )forward|(?<!do not )include).{0,30}(?:histórico da conversa|conversation history)/iu, "L012_CHECK_DELEGATION", `${name}: forwards conversation history`);
-    requirePattern(instructions, /(?:no máximo uma nova tentativa|at most one (?:new )?(?:transport )?retry|retry.{0,40}once)/iu, "L012_CHECK_DELEGATION", `${name}: transport retry must be bounded to one`);
-    requirePattern(instructions, /Runner Initialization Blocker/u, "L012_CHECK_DELEGATION", `${name}: missing singleton initialization blocker`);
-    forbidPattern(instructions, /(?:(?<!não )faça|(?<!do not )use|(?<!do not )perform).{0,30}fallback|fallback.{0,30}(?:permit|allowed)/iu, "L008_VALIDATION_FLOW", `${name}: fallback is enabled`);
-    requirePattern(instructions, /não (?:passe|envie|encaminhe)[^\n]{0,60}logs completos|do not (?:send|forward)[^\n]{0,60}full logs/iu, "L012_CHECK_DELEGATION", `${name}: minimum-payload boundary omits the full-log prohibition`);
-    requirePattern(instructions, /tentativas[^\n]{0,80}não consomem rodada|transport[^\n]{0,80}(?:does not|do not) consume[^\n]{0,30}round/iu, "L016_TRANSPORT", `${name}: transport failures can consume a semantic round`);
-    requirePattern(instructions, /saída malformada[^\n]{0,100}não recebe retry de transporte|malformed[^\n]{0,100}no transport retry/iu, "L016_TRANSPORT", `${name}: malformed output is confused with transport initialization`);
-    requirePattern(instructions, /retome diretamente (?:no spawn|na delegação)|resume directly (?:at|with) (?:spawn|delegation)/iu, "L016_TRANSPORT", `${name}: initialization-blocker resume path is missing`);
-    forbidPattern(instructions, /(?<!não )(?:faça|crie|execute|use)[^\n]{0,40}(?:fallback|retry manual)|(?:fallback|manual retry)[^\n]{0,40}(?:permitid|allowed)/iu, "L008_VALIDATION_FLOW", `${name}: fallback or manual retry is enabled`);
-    if (spec[2] === "VALIDATE_SLICE") {
-      requirePattern(instructions, /PASS\s*\|\s*ACCEPTED\s*\|\s*NEEDS_FIX\s*\|\s*BLOCKED/u, "L008_VALIDATION_FLOW", `${name}: formal status set changed`);
-      requirePattern(instructions, /Effective Validation Base[\s\S]{0,100}(?:finaliza|complete)/iu, "L008_VALIDATION_FLOW", `${name}: PASS/ACCEPTED does not atomically finalize`);
-      requirePattern(instructions, /(?:Exija|Require)[^\n]{0,40}(?:revisão|review) independente[^\n]{0,100}TESTS_NOT_APPLICABLE/iu, "L008_VALIDATION_FLOW", `${name}: non-applicability is not independently reviewed`);
-      forbidPattern(instructions, /(?<!não )(?:promova|converta|trate)[^\n]{0,80}TESTS_NOT_APPLICABLE[^\n]{0,80}(?:PASS|aprova)/iu, "L013_CHECK_AUTHORITY", `${name}: non-applicability is promoted to PASS`);
-      requirePattern(instructions, /não (?:repete|executa)[^\n]{0,80}testes|does not (?:repeat|run)[^\n]{0,80}tests/iu, "L013_CHECK_AUTHORITY", `${name}: main context may repeat formal checks`);
-      requirePattern(instructions, /não criam? nem consomem? `attempt-NN`|does not (?:create|consume)[^\n]{0,30}attempt/iu, "L016_TRANSPORT", `${name}: transport failure may allocate a formal attempt`);
-      requirePattern(instructions, /não mudam? `initial` para `revalidation`|does not change[^\n]{0,30}initial[^\n]{0,30}revalidation/iu, "L016_TRANSPORT", `${name}: transport failure may change validation type`);
-    } else {
-      requirePattern(instructions, /TESTS_PASS[\s\S]{0,80}TESTS_ACCEPTED[\s\S]{0,80}TESTS_FAIL[\s\S]{0,80}TESTS_NOT_APPLICABLE[\s\S]{0,80}BLOCKED/u, "L014_AUTOMATIC_RECHECK", `${name}: auxiliary status set changed`);
-      requirePattern(instructions, /(?:no mínimo uma vez|at least once)[\s\S]{0,80}(?:no máximo três vezes|at most three times)/iu, "L014_AUTOMATIC_RECHECK", `${name}: one-to-three runner budget is missing`);
-      requirePattern(instructions, /1\/3[\s\S]{0,40}2\/3[\s\S]{0,40}3\/3/u, "L014_AUTOMATIC_RECHECK", `${name}: exact round set is missing`);
-      forbidPattern(instructions, /(?<!nunca )faça uma quarta chamada|(?<!never )make a fourth call|(?<!nem )(?<!não )use loop ilimitado|(?<!never )use an unbounded loop/iu, "L014_AUTOMATIC_RECHECK", `${name}: retry cycle is unbounded`);
-      forbidPattern(instructions, /(?:zero a três|zero to three|runner invocation is optional|Pode invocar o runner|(?<!Não )Pule o runner)/iu, "L014_AUTOMATIC_RECHECK", `${name}: runner invocation became optional`);
-      forbidPattern(instructions, /(?<!não )(?:Emita `PASS` formal|Crie Validation Attempt|Crie Effective Validation Base|Marque a conclusão `\[x\]`)/iu, "L013_CHECK_AUTHORITY", `${name}: auxiliary check claims formal authority`);
-      requirePattern(instructions, /Não execute no contexto principal[^\n]{0,120}(?:testes|builds|linters|typechecks|compila)|Do not run[^\n]{0,120}(?:tests|builds|linters|typechecks)[^\n]{0,40}main context/iu, "L013_CHECK_AUTHORITY", `${name}: main-context verification prohibition is missing`);
-      requirePattern(instructions, /TESTS_NOT_APPLICABLE[^\n]{0,240}(?:descoberta objetiva|objective discovery)[\s\S]{0,220}(?:nenhum comando de verificação|no verification command)/iu, "L013_CHECK_AUTHORITY", `${name}: non-applicability evidence is incomplete`);
-      forbidPattern(instructions, /(?<!não )(?:promova|trate|converta)[^\n]{0,80}TESTS_NOT_APPLICABLE[^\n]{0,80}(?:PASS|aprova)/iu, "L013_CHECK_AUTHORITY", `${name}: non-applicability is promoted to PASS`);
-      requirePattern(instructions, /não criam `(?:implementation|findings)-check-NN`|does not create[^\n]{0,40}(?:implementation|findings)-check/iu, "L016_TRANSPORT", `${name}: transport failure may allocate check evidence`);
-      requirePattern(instructions, /não autorizam correção|does not authorize correction/iu, "L016_TRANSPORT", `${name}: transport failure may authorize correction`);
-      requirePattern(instructions, /não (?:reimplemente|reaplique findings)|do not (?:reimplement|reapply findings)/iu, "L016_TRANSPORT", `${name}: resume may repeat implementation or findings correction`);
-      requirePattern(instructions, /terceira falha[\s\S]{0,220}VALIDATE_SLICE|third failure[\s\S]{0,220}VALIDATE_SLICE/iu, "L014_AUTOMATIC_RECHECK", `${name}: third failure lacks a formal-validation continuation`);
-      requirePattern(instructions, /não (?:inicie|invoque) `VALIDATE_SLICE`|do not (?:start|invoke) `VALIDATE_SLICE`/iu, "L013_CHECK_AUTHORITY", `${name}: automatic formal-validation prohibition is missing`);
-      requirePattern(instructions, /TESTS_FAIL`? nas rodadas 1 ou 2|TESTS_FAIL`? in rounds 1 or 2/iu, "L014_AUTOMATIC_RECHECK", `${name}: correction is not limited to the first two failures`);
+      forbidPattern(instructions, /(?<!never )make a fourth call|(?<!nunca )faça uma quarta chamada|use (?:an )?unbounded loop|loop ilimitado/iu, "L014_AUTOMATIC_RECHECK", `${name}: auxiliary planning cycle is unbounded`);
+      forbidPattern(instructions, /(?:zero a três|zero to three|planner invocation is optional|Pode invocar o planner)/iu, "L014_AUTOMATIC_RECHECK", `${name}: planner invocation became optional`);
+      forbidPattern(instructions, /(?<!Never )(?<!Do not )(?<!Não )(?:Create|Crie|Emita|Marque)[^\n]{0,80}(?:Validation Attempt|Effective Validation Base|PASS formal|`\[x\]`)/iu, "L013_CHECK_AUTHORITY", `${name}: auxiliary check claims formal authority`);
+      requirePattern(instructions, /(?:attempts?|tentativas?|it)[^\n]{0,60}(?:não consomem?|does not consume|do not consume)[^\n]{0,40}(?:rodada|round)/iu, "L016_TRANSPORT", `${name}: transport failure may consume an auxiliary round`);
+      requirePattern(instructions, /(?:do not create|does not create|não criam?)[^\n]{0,50}(?:implementation|findings)-check-NN/iu, "L016_TRANSPORT", `${name}: transport failure may allocate auxiliary evidence`);
+      requirePattern(instructions, /(?:do not authorize|does not create[^\n]{0,80}or authorize|não autorizam?)[^\n]{0,30}correction|(?:do not authorize|não autorizam?)[^\n]{0,30}correção/iu, "L016_TRANSPORT", `${name}: transport failure may authorize correction`);
+      requirePattern(instructions, /(?:without|sem|não)[^\n]{0,80}(?:reimplementation|reimplement|reaplique findings)/iu, "L016_TRANSPORT", `${name}: resume may repeat implementation or findings correction`);
+      requirePattern(instructions, /(?:round 3|terceira falha)[\s\S]{0,180}(?:VALIDATE_SLICE|única próxima ação)|(?:VALIDATE_SLICE|única próxima ação)[\s\S]{0,180}(?:round 3|terceira falha)/iu, "L014_AUTOMATIC_RECHECK", `${name}: third failure lacks formal-validation continuation`);
+      requirePattern(instructions, /TESTS_FAIL[^\n]{0,40}(?:rounds 1 or 2|rodadas 1 ou 2)/iu, "L014_AUTOMATIC_RECHECK", `${name}: correction is not limited to the first two failures`);
       if (spec[2] === "APPLY_FINDINGS") {
-        requirePattern(instructions, /terceira falha[^\n]{0,120}(?:preserve os findings ativos|preserve active findings)|preserve os findings ativos[^\n]{0,120}terceira falha/iu, "L014_AUTOMATIC_RECHECK", `${name}: third findings failure does not preserve active findings`);
-        requirePattern(instructions, /não resolve findings por si só|does not resolve findings by itself/iu, "L013_CHECK_AUTHORITY", `${name}: auxiliary non-applicability may resolve findings`);
+        requirePattern(instructions, /(?:round 3|terceira falha)[^\n]{0,120}(?:preserves? active findings|preserva? os findings ativos)|(?:preserves? active findings|preserva? os findings ativos)[^\n]{0,120}(?:round 3|terceira falha)/iu, "L014_AUTOMATIC_RECHECK", `${name}: third findings failure does not preserve active findings`);
+        requirePattern(instructions, /não resolve findings por si só|does not resolve findings by itself/iu, "L013_CHECK_AUTHORITY", `${name}: non-applicability may resolve findings`);
       }
     }
   }
 
-  return;
   for (const operation of ["execute", "apply-findings", "validate"]) {
     const signatures = ["codex", "claude"].map((platform) => {
       const { instructions } = parseLauncher(actual[`slice-${operation}-${platform}`], launcherSpecs[`slice-${operation}-${platform}`]);
       return {
-        statuses: operation === "validate" ? /PASS\s*\|\s*ACCEPTED\s*\|\s*NEEDS_FIX\s*\|\s*BLOCKED/u.test(instructions) : /TESTS_PASS[\s\S]*TESTS_ACCEPTED[\s\S]*TESTS_FAIL[\s\S]*TESTS_NOT_APPLICABLE[\s\S]*BLOCKED/u.test(instructions),
-        retry: /no máximo uma nova tentativa/iu.test(instructions),
-        singleton: /Runner Initialization Blocker/u.test(instructions),
-        history: /sem histórico|não envie histórico/iu.test(instructions),
+        formal: operation === "validate",
+        plan: /stnl-validation-plan\/v1/u.test(instructions),
+        bridge: /loaded (?:skill location|bridge)|loaded packaged bridge/iu.test(instructions),
+        retry: /no máximo uma nova tentativa|at most one/iu.test(instructions),
+        history: /sem histórico|no[^\n]{0,40}conversation history|no inherited thread/iu.test(instructions),
         fallback: /Não faça fallback/iu.test(instructions),
+        readBack: /read-back/iu.test(instructions),
         nonApplicable: /TESTS_NOT_APPLICABLE/iu.test(instructions),
-        thirdFailure: /terceira falha/iu.test(instructions),
+        thirdFailure: operation === "validate" ? null : /round 3|terceira falha/iu.test(instructions),
+        assessment: operation === "validate" ? /stnl-validation-assessment\/v1/u.test(instructions) : null,
+        recoveryHistory: operation === "execute"
+          ? /preserve[^\n]{0,60}historical[^\n]{0,40}(?:blocker|blockers)/iu.test(instructions)
+          : operation === "validate" ? /Preserve the singleton Delegation Blocker/iu.test(instructions) : null,
       };
     });
     if (JSON.stringify(signatures[0]) !== JSON.stringify(signatures[1])) reject("L018_PLATFORM_EQUIVALENCE", `${operation}: Codex and Claude semantic contracts diverge`);

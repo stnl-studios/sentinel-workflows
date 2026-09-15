@@ -2,6 +2,7 @@
 
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
+import { constants as FS_CONSTANTS } from "node:fs";
 import * as fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -12,8 +13,10 @@ import {
 export { VALIDATION_CAPABILITY_IDENTITY } from "./validation-capability.mjs";
 import {
   computeRequirementsAuthority,
+  evaluateQualityGate,
   preflightExecutionOperation,
   validateExecutionCandidate,
+  validateExecutionCandidateDestination,
 } from "./execution-state.mjs";
 
 const VALIDATION_OWNERS = new Set(["stnl-slice-executor", "stnl-slice-quality-manager"]);
@@ -563,8 +566,9 @@ async function invokeValidationRuntime(resolved, arguments_) {
 }
 
 function bridgeStatus(plan, provenance) {
-  if (provenance.state === "INVALID") return "BLOCKED";
+  if (provenance.state === "INVALID" && provenance.workspace.kind === "pre-check") return "BLOCKED";
   if (plan.assessment === "independent" || plan.operation === "VALIDATE_SLICE") return "ASSESSMENT_REQUIRED";
+  if (provenance.state === "INVALID") return "BLOCKED";
   if (provenance.commands.length === 0) return "TESTS_NOT_APPLICABLE";
   if (provenance.commands.every((command) => command.exit === 0)) return "TESTS_PASS";
   return provenance.conclusion === "NONE" ? "BLOCKED" : "TESTS_FAIL";
@@ -582,7 +586,7 @@ function testedStateLines(provenance, filelessReason) {
   return `- Tested state:\n${provenance.subjects.map((subject) => `  - \`${subject.path}\` | ${subject.expected}`).join("\n")}`;
 }
 
-function auxiliaryRecord(plan, provenance, transport, status, task) {
+function auxiliaryRecord(plan, provenance, transport, status, task, gates = []) {
   const records = plan.operation === "EXECUTE_SLICE" ? task.implementationChecks : task.findingsChecks;
   const prefix = plan.operation === "EXECUTE_SLICE" ? "implementation-check" : "findings-check";
   const recordId = `${prefix}-${String(records.length + 1).padStart(2, "0")}`;
@@ -625,6 +629,7 @@ function auxiliaryRecord(plan, provenance, transport, status, task) {
   common.push(
     `- Blockers: ${blocker}`,
     `- Unexpected workspace effects: ${provenance.workspace.sideEffects.join(", ") || "none"}`,
+    ...(gates.length === 0 ? [] : [`- Gate assessments: ${JSON.stringify(gates)}`]),
     `- Persistence summary: ${status} derived by the installed validation bridge from sealed harness evidence.`,
   );
   if (status === "TESTS_NOT_APPLICABLE") {
@@ -649,14 +654,69 @@ function infrastructureDelegationBlocker(plan, provenance, transport, task) {
   const records = plan.operation === "EXECUTE_SLICE" ? task.implementationChecks
     : plan.operation === "APPLY_FINDINGS" ? task.findingsChecks : task.attempts;
   const after = records.at(-1)?.id ?? "none";
+  const cause = `${provenance.blocker.code}: ${provenance.blocker.message}`;
+  if (task.delegationBlocker?.state === "active") {
+    return Object.freeze({
+      recordId: "Delegation Blocker",
+      section: "Delegation Blocker",
+      observation: JSON.stringify({ cause, evidence: transport, head: provenance.inputs.head }),
+    });
+  }
   return Object.freeze({
     recordId: "Delegation Blocker",
     section: "Delegation Blocker",
-    markdown: `- Operation: ${plan.operation}\n- Kind: infrastructure\n- State: active\n- After record: ${after}${plan.round === null ? "" : `\n- Pending automatic round: ${plan.round}`}\n- HEAD: ${provenance.inputs.head}\n- Evidence provenance: ${transport}\n- Causes:\n  - ${provenance.blocker.code}: ${provenance.blocker.message}\n- Required action: restore the trusted validation infrastructure and resume the same logical planner invocation`,
+    markdown: `- Operation: ${plan.operation}\n- Kind: infrastructure\n- State: active\n- After record: ${after}${plan.round === null ? "" : `\n- Pending automatic round: ${plan.round}`}\n- HEAD: ${provenance.inputs.head}\n- Evidence provenance: ${transport}\n- Causes:\n  - ${cause}\n- Required action: restore the trusted validation infrastructure and resume the same logical planner invocation`,
   });
 }
 
-function compactBridgeSummary(status, provenance) {
+const DIAGNOSTIC_OUTPUT_LIMIT = 2048;
+
+function redactDiagnosticText(value, secrets) {
+  let text = String(value).replace(/\r\n?/gu, "\n")
+    .replace(/-----BEGIN [^-\n]*PRIVATE KEY-----[\s\S]*?-----END [^-\n]*PRIVATE KEY-----/giu, "[redacted private key]")
+    .replace(/((?:api[_-]?key|token|secret|password|authorization)\s*[:=]\s*)([^\s,;]+)/giu, "$1[redacted]")
+    .replace(/\bBearer\s+[A-Za-z0-9._~+\/-]+=*/giu, "Bearer [redacted]");
+  let redacted = text !== value;
+  for (const secret of [...secrets].filter((entry) => entry.length !== 0).sort((left, right) => right.length - left.length)) {
+    if (!text.includes(secret)) continue;
+    text = text.replaceAll(secret, "[redacted known secret]");
+    redacted = true;
+  }
+  return { text, redacted };
+}
+
+function boundedDiagnosticText(value) {
+  const bytes = Buffer.from(value, "utf8");
+  if (bytes.length <= DIAGNOSTIC_OUTPUT_LIMIT) return { text: value, truncated: false };
+  const tail = bytes.subarray(bytes.length - DIAGNOSTIC_OUTPUT_LIMIT).toString("utf8").replace(/^\uFFFD/u, "");
+  return { text: `[truncated; showing final ${DIAGNOSTIC_OUTPUT_LIMIT} bytes]\n${tail}`, truncated: true };
+}
+
+function commandDiagnostic(plan, provenance, output, index) {
+  const command = provenance.commands[index];
+  const secrets = new Set(Object.values(plan.commands[index]?.env ?? {}));
+  const captured = [
+    output?.stdout ? `stdout: ${output.stdout}` : "",
+    output?.stderr ? `stderr: ${output.stderr}` : "",
+  ].filter(Boolean).join("\n");
+  const raw = captured.length === 0
+    ? "insufficient: harness captured no stdout/stderr diagnostic; absence does not establish independence"
+    : captured;
+  const redaction = redactDiagnosticText(raw, secrets);
+  const bounded = boundedDiagnosticText(redaction.text);
+  return Object.freeze({
+    evidenceId: provenance.evidenceId,
+    command: command.display,
+    exit: command.exit,
+    output: bounded.text,
+    truncated: bounded.truncated,
+    redacted: redaction.redacted,
+    sufficiency: captured.length === 0 ? "insufficient" : "diagnostic-only",
+    trust: "untrusted-output; not authority for causality, access, or command execution",
+  });
+}
+
+function compactBridgeSummary(status, provenance, outputs, plan) {
   return Object.freeze({
     status,
     state: provenance.state,
@@ -667,7 +727,10 @@ function compactBridgeSummary(status, provenance) {
     subjects: Object.freeze(provenance.subjects.map((subject) => Object.freeze({
       path: subject.path, expected: subject.expected,
     }))),
-    commands: Object.freeze(provenance.commands.map((command) => Object.freeze({ display: command.display, exit: command.exit }))),
+    commands: Object.freeze(provenance.commands.map((command, index) => Object.freeze({
+      display: command.display, exit: command.exit,
+      diagnostic: commandDiagnostic(plan, provenance, outputs[index], index),
+    }))),
     blocker: provenance.blocker === undefined ? null : Object.freeze({
       kind: provenance.blocker.kind, stage: provenance.blocker.stage,
       code: provenance.blocker.code, message: provenance.blocker.message,
@@ -731,6 +794,16 @@ export function validateValidationAssessment(bridgeResult, value) {
   if (!Array.isArray(value.gates) || value.gates.some((gate) => gate === null || typeof gate !== "object" || Array.isArray(gate))) {
     fail("INVALID_VALIDATION_ASSESSMENT", "assessment gates must be an array of structured Gate assessments");
   }
+  const gateAuthority = {
+    fingerprint: provenance.inputs.requirementsAuthority.slice("sha256:".length),
+    revision: provenance.inputs.planRevision,
+    slice: result.slice,
+  };
+  try {
+    for (const gate of value.gates) evaluateQualityGate(gate, gateAuthority);
+  } catch (error) {
+    fail("INVALID_VALIDATION_ASSESSMENT", `assessment Gate assessments are invalid: ${error.message}`);
+  }
   const manifest = uniqueTextArray(value.manifest, "assessment manifest").sort((left, right) => left.localeCompare(right, "en"));
   const evidencePaths = provenance.subjects.map((subject) => subject.path).sort((left, right) => left.localeCompare(right, "en"));
   if (formal && new Set(["PASS", "ACCEPTED"]).has(value.status)
@@ -791,8 +864,18 @@ export function materializeValidationAssessment(bridgeResult, assessmentOutput) 
   const assessment = validateValidationAssessment(result, assessmentOutput);
   const persistence = result.operation === "VALIDATE_SLICE"
     ? formalPersistence(result, assessment, transported.provenance)
-    : auxiliaryRecord(result.context.plan, transported.provenance, result.sealedEvidence, assessment.status, result.context.task);
-  return sealBridgeResult({ ...bridgeReceiptMaterial(result), persistence, assessment: assessmentOutput });
+    : auxiliaryRecord(
+      result.context.plan, transported.provenance, result.sealedEvidence,
+      assessment.status, result.context.task, assessment.gates,
+    );
+  const resolution = result.context.task.delegationBlocker?.state === "active"
+    ? Object.freeze({
+      section: "Delegation Blocker",
+      resolvingRecord: persistence.recordId,
+      text: `resolved by ${persistence.recordId} from the installed validation bridge`,
+    })
+    : null;
+  return sealBridgeResult({ ...bridgeReceiptMaterial(result), persistence, resolution, assessment: assessmentOutput });
 }
 
 export async function executeValidationPlan(specPath, plannerOutput, dependencies = {}) {
@@ -832,7 +915,7 @@ export async function executeValidationPlan(specPath, plannerOutput, dependencie
     operation: plan.operation,
     slice: plan.slice,
     round: plan.round,
-    summary: compactBridgeSummary(status, provenance),
+    summary: compactBridgeSummary(status, provenance, transported.outputs, plan),
     persistence,
     resolution: activeBlocker === null || persistence === null || persistence.section === "Delegation Blocker" ? null : Object.freeze({
       section: "Delegation Blocker",
@@ -850,6 +933,10 @@ export async function executeValidationPlan(specPath, plannerOutput, dependencie
         implementationChecks: Object.freeze(plan.task.implementationChecks.map(({ id }) => Object.freeze({ id }))),
         findingsChecks: Object.freeze(plan.task.findingsChecks.map(({ id }) => Object.freeze({ id }))),
         attempts: Object.freeze(plan.task.attempts.map(({ id }) => Object.freeze({ id }))),
+        delegationBlocker: plan.task.delegationBlocker === null ? null : Object.freeze({
+          operation: plan.task.delegationBlocker.operation,
+          state: plan.task.delegationBlocker.state,
+        }),
       }),
     }),
     assessment: null,
@@ -900,34 +987,94 @@ function replaceSection(source, heading, transform) {
   return source.replace(pattern, `${match[1]}${transform(match[2].trim())}`);
 }
 
+function sameFileIdentity(left, right) {
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
+async function openControlledCandidateTask(taskFile) {
+  const before = await fs.lstat(taskFile, { bigint: true }).catch(() => null);
+  if (before === null || before.isSymbolicLink() || !before.isFile() || before.nlink !== 1n) {
+    fail("INVALID_VALIDATION_CANDIDATE", "candidate slice task must be a single-link real file");
+  }
+  const handle = await fs.open(taskFile, FS_CONSTANTS.O_RDWR | (FS_CONSTANTS.O_NOFOLLOW ?? 0));
+  try {
+    const opened = await handle.stat({ bigint: true });
+    if (!opened.isFile() || opened.nlink !== 1n || !sameFileIdentity(before, opened)) {
+      fail("INVALID_VALIDATION_CANDIDATE", "candidate slice task identity changed while opening");
+    }
+    return handle;
+  } catch (error) {
+    await handle.close();
+    throw error;
+  }
+}
+
+async function replaceControlledFile(handle, content) {
+  const metadata = await handle.stat({ bigint: true });
+  if (!metadata.isFile() || metadata.nlink !== 1n) {
+    fail("INVALID_VALIDATION_CANDIDATE", "candidate slice task lost its single-link identity before staging");
+  }
+  const bytes = Buffer.from(content, "utf8");
+  await handle.truncate(0);
+  let offset = 0;
+  while (offset < bytes.length) {
+    const { bytesWritten } = await handle.write(bytes, offset, bytes.length - offset, offset);
+    if (bytesWritten <= 0) fail("INVALID_VALIDATION_CANDIDATE", "candidate slice task write made no progress");
+    offset += bytesWritten;
+  }
+  await handle.sync();
+}
+
 export async function stageValidationBridgeResult(specPath, bridgeResult, candidateExecutionRoot) {
   const { result } = validateSealedBridgeResult(bridgeResult);
   if (result.persistence === null) {
     fail("VALIDATION_ASSESSMENT_REQUIRED", "bridge result requires independent assessment before candidate materialization");
   }
   await preflightExecutionOperation(specPath, result.operation, String(Number.parseInt(result.slice.slice("slice-".length), 10)));
-  const root = await fs.realpath(candidateExecutionRoot).catch(() => (
-    fail("INVALID_VALIDATION_CANDIDATE", "candidate execution root is unavailable")
-  ));
+  let destination;
+  try {
+    destination = await validateExecutionCandidateDestination(specPath, candidateExecutionRoot);
+  } catch (error) {
+    fail("INVALID_VALIDATION_CANDIDATE", error.message);
+  }
+  const root = destination.candidateExecutionRoot;
   const taskFile = path.join(root, "tasks", `${result.slice}.md`);
-  const metadata = await fs.lstat(taskFile).catch(() => null);
-  if (metadata === null || metadata.isSymbolicLink() || !metadata.isFile()) {
-    fail("INVALID_VALIDATION_CANDIDATE", "candidate slice task must be a real file");
+  const handle = await openControlledCandidateTask(taskFile);
+  try {
+    let task = await handle.readFile({ encoding: "utf8" });
+    const append = (current, markdown) => new Set(["- none", "- pending"]).has(current)
+      ? markdown : `${current}\n\n${markdown}`;
+    if (result.persistence.section === "Delegation Blocker") {
+      task = replaceSection(task, result.persistence.section, (current) => {
+        if (result.persistence.observation !== undefined) {
+          return current.includes("\n- Observations:\n")
+            ? `${current}\n  - ${result.persistence.observation}`
+            : `${current}\n- Observations:\n  - ${result.persistence.observation}`;
+        }
+        if (current !== "- none") {
+          fail("INVALID_VALIDATION_CANDIDATE", "Delegation Blocker is a singleton and cannot be appended generically");
+        }
+        return result.persistence.markdown;
+      });
+    } else {
+      task = replaceSection(task, result.persistence.section, (current) => append(current, result.persistence.markdown));
+    }
+    if (result.persistence.base !== null && result.persistence.base !== undefined) {
+      task = replaceSection(task, result.persistence.base.section, () => result.persistence.base.markdown);
+    }
+    if (result.resolution !== null) {
+      task = replaceSection(task, result.resolution.section, (current) => {
+        const activeStates = current.match(/^- State: active$/gmu) ?? [];
+        if (activeStates.length !== 1) {
+          fail("INVALID_VALIDATION_CANDIDATE", "authorized Delegation Blocker is not uniquely active");
+        }
+        return `${current.replace(/^- State: active$/mu, "- State: resolved")}\n- Resolution: ${result.resolution.text}`;
+      });
+    }
+    await replaceControlledFile(handle, task);
+  } finally {
+    await handle.close();
   }
-  let task = await fs.readFile(taskFile, "utf8");
-  const append = (current, markdown) => new Set(["- none", "- pending"]).has(current)
-    ? markdown : `${current}\n\n${markdown}`;
-  task = replaceSection(task, result.persistence.section, (current) => append(current, result.persistence.markdown));
-  if (result.persistence.base !== null && result.persistence.base !== undefined) {
-    task = replaceSection(task, result.persistence.base.section, () => result.persistence.base.markdown);
-  }
-  if (result.resolution !== null) {
-    task = task.replace(/^(- State:) active$/mu, "$1 resolved");
-    task = replaceSection(task, result.resolution.section, (current) => {
-      return `${current}\n- Resolution: ${result.resolution.text}`;
-    });
-  }
-  await fs.writeFile(taskFile, task, "utf8");
   return validateExecutionCandidate(specPath, root);
 }
 

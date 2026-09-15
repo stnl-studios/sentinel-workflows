@@ -782,7 +782,7 @@ const GATE_KEYS = new Set(["id", "command", "kind", "scope", "causality", "state
 const VALIDATION_RUNNER_PROTOCOL = "stnl-validation-runner/v11";
 const HISTORICAL_VALIDATION_RUNNER_PROTOCOLS = new Set(["stnl-validation-runner/v10"]);
 const VALIDATION_HARNESS_PROTOCOL = "stnl-validation-harness/v10";
-const VALIDATION_CAPABILITY_IDENTITY = "sha256:a0fe14e372062808af664e0bf2525f18f1e89f04b0bafbf4f0f3c24d78499320";
+const VALIDATION_CAPABILITY_IDENTITY = "sha256:e1753469c0fed10913b3356688e7d9bac520eb1b06aa7d5c352a4c4e184b63dc";
 const EVIDENCE_PROTOCOL_KEYS = new Set(["runner", "harness", "capability"]);
 
 function exactObject(value, keys, label) {
@@ -2056,6 +2056,42 @@ function parseDelegationBlocker(section, operationRecordsByName, authority, evid
       throw new ExecutionContractError("Delegation Blocker pending round disagrees with the interrupted logical invocation");
     }
   }
+  const observationValues = (() => {
+    const markers = [...section.matchAll(/^- Observations:$/gmu)];
+    if (markers.length === 0) return [];
+    if (markers.length !== 1) throw new ExecutionContractError("Delegation Blocker must contain at most one Observations list");
+    return requireList(section, "Observations", "Delegation Blocker");
+  })();
+  const observations = observationValues.map((raw, index) => {
+    let observation;
+    try { observation = JSON.parse(raw); } catch {
+      throw new ExecutionContractError("Delegation Blocker observation must be canonical inline JSON");
+    }
+    exactObject(observation, new Set(["cause", "evidence", "head"]), "Delegation Blocker observation");
+    if (JSON.stringify(observation) !== raw || typeof observation.cause !== "string" || observation.cause.length === 0
+      || typeof observation.evidence !== "string" || typeof observation.head !== "string") {
+      throw new ExecutionContractError("Delegation Blocker observation is malformed");
+    }
+    const observationRecord = {
+      id: `Delegation Blocker observation ${index + 1}`,
+      body: `- HEAD: ${observation.head}\n- Evidence provenance: ${observation.evidence}`,
+      status: "BLOCKED",
+      commands: [],
+    };
+    const observationProvenance = parseEvidenceProvenance(observationRecord, authority, {
+      operation, round: operation === "VALIDATE_SLICE" ? null : `${pendingRound}/3`, required: true,
+    });
+    if (observationProvenance.state !== "INVALID"
+      || observationProvenance.classification !== "INFRASTRUCTURE_BLOCKED"
+      || observationProvenance.workspace.kind !== "pre-check") {
+      throw new ExecutionContractError("Delegation Blocker observation must be authenticated pre-check infrastructure evidence");
+    }
+    const expectedCause = `${observationProvenance.blocker.code}: ${observationProvenance.blocker.message}`;
+    if (observation.cause !== expectedCause || observation.head !== observationProvenance.inputs.head) {
+      throw new ExecutionContractError("Delegation Blocker observation cause disagrees with Evidence provenance");
+    }
+    return Object.freeze({ raw, cause: observation.cause, evidence: observation.evidence, provenance: observationProvenance });
+  });
   let provenance = null;
   if (kind === "infrastructure") {
     if (evidenceContract !== "stnl-validation-evidence/v1") {
@@ -2078,6 +2114,15 @@ function parseDelegationBlocker(section, operationRecordsByName, authority, evid
     || field(section, "HEAD", { required: false }) !== null) {
     throw new ExecutionContractError(`${kind} Delegation Blocker cannot claim validation Evidence provenance`);
   }
+  const expectedPriorEvidenceId = (priorIndex < 0 ? null : records[priorIndex]?.provenance?.evidenceId ?? null);
+  if (observations.some((observation) => observation.provenance.priorEvidenceId !== expectedPriorEvidenceId)) {
+    throw new ExecutionContractError("Delegation Blocker observation Evidence provenance does not follow the prior validation record");
+  }
+  const blockerEvidenceIds = [provenance, ...observations.map((observation) => observation.provenance)]
+    .filter((entry) => entry !== null).map((entry) => entry.evidenceId);
+  if (new Set(blockerEvidenceIds).size !== blockerEvidenceIds.length) {
+    throw new ExecutionContractError("Delegation Blocker reuses evidence across its history");
+  }
   if (state === "resolved") {
     if (records.length <= priorIndex + 1) throw new ExecutionContractError("resolved Delegation Blocker requires a later valid record");
     const resolvingRecord = records[priorIndex + 1].id;
@@ -2088,7 +2133,7 @@ function parseDelegationBlocker(section, operationRecordsByName, authority, evid
     }
   }
   return {
-    operation, kind, state, afterRecord, pendingRound, provenance,
+    operation, kind, state, afterRecord, pendingRound, provenance, observations,
     effectiveState: state === "active" ? "active" : "historical-resolved",
   };
 }
@@ -3680,6 +3725,24 @@ function assertHistoricalRecord(original, candidate, label, { disposition = fals
   throw new ExecutionContractError(`${label} historical identity and authority are immutable`);
 }
 
+function delegationBodyWithoutObservations(body) {
+  return normalizeText(String(body).replace(/^- Observations:\n(?:  - \S.*(?:\n|$))+/mu, ""));
+}
+
+function assertHistoricalDelegationBlocker(original, candidate, label) {
+  if (candidate === null) throw new ExecutionContractError(`${label} historical record cannot be removed`);
+  if (original.state !== "active") {
+    if (original.body === candidate.body) return;
+    throw new ExecutionContractError(`${label} historical identity and authority are immutable`);
+  }
+  const originalBase = originalRecordBody(delegationBodyWithoutObservations(original.body), false);
+  const candidateBase = originalRecordBody(delegationBodyWithoutObservations(candidate.body), false);
+  const historyPreserved = candidate.observations.length >= original.observations.length
+    && original.observations.every((observation, index) => observation.raw === candidate.observations[index].raw);
+  if (originalBase === candidateBase && historyPreserved) return;
+  throw new ExecutionContractError(`${label} historical identity, authority and observation history are immutable`);
+}
+
 function admitCurrentEvidence(record, label, persistedEvidenceIds, admittedEvidenceIds) {
   const provenance = record.provenance;
   if (provenance === null) {
@@ -3740,6 +3803,7 @@ async function validateCandidateHistory(workspace, result) {
       ...original.implementationChecks, ...original.findingsChecks, ...original.attempts,
       ...(original.delegationBlocker?.provenance === null || original.delegationBlocker === null
         ? [] : [original.delegationBlocker]),
+      ...(original.delegationBlocker?.observations ?? []),
     ].filter((record) => record.provenance !== null).map((record) => record.provenance.evidenceId));
     const admittedEvidenceIds = new Set();
     for (const name of ["implementationChecks", "findingsChecks", "attempts", "findings", "divergences"]) {
@@ -3806,11 +3870,20 @@ async function validateCandidateHistory(workspace, result) {
       }
     }
     if (original.delegationBlocker !== null) {
-      assertHistoricalRecord(
-        { body: original.sections.get("Delegation Blocker") },
-        candidate.delegationBlocker === null ? undefined : { body: candidate.sections.get("Delegation Blocker") },
-        `${slice}/Delegation Blocker`, { disposition: true, supersession: false },
+      assertHistoricalDelegationBlocker(
+        { ...original.delegationBlocker, body: original.sections.get("Delegation Blocker") },
+        candidate.delegationBlocker === null ? null
+          : { ...candidate.delegationBlocker, body: candidate.sections.get("Delegation Blocker") },
+        `${slice}/Delegation Blocker`,
       );
+      const historicalObservationIds = new Set(original.delegationBlocker.observations
+        .map((observation) => observation.provenance.evidenceId));
+      for (const observation of candidate.delegationBlocker.observations
+        .filter((entry) => !historicalObservationIds.has(entry.provenance.evidenceId))) {
+        admitCurrentEvidence(
+          observation, `${slice}/Delegation Blocker observation`, persistedEvidenceIds, admittedEvidenceIds,
+        );
+      }
     } else if (candidate.delegationBlocker !== null) {
       if (candidate.delegationBlocker.kind === "infrastructure") {
         admitCurrentEvidence(
@@ -3834,7 +3907,7 @@ async function validateCandidateHistory(workspace, result) {
   return { liveRecords, newTerminalSlices };
 }
 
-export async function validateExecutionCandidate(specPath, candidateExecutionRoot) {
+export async function validateExecutionCandidateDestination(specPath, candidateExecutionRoot) {
   const workspace = await resolveExecutionWorkspace(specPath);
   let candidate = path.resolve(String(candidateExecutionRoot));
   await assertNoSymlinkComponents(candidate, "candidate execution root");
@@ -3848,6 +3921,13 @@ export async function validateExecutionCandidate(specPath, candidateExecutionRoo
     throw new ExecutionContractError("candidate execution root must be isolated from live execution artifacts", [candidate]);
   }
   await assertCandidateTreeSafe(candidate);
+  return Object.freeze({ workspace, candidateExecutionRoot: candidate, liveExecutionRoot });
+}
+
+export async function validateExecutionCandidate(specPath, candidateExecutionRoot) {
+  const destination = await validateExecutionCandidateDestination(specPath, candidateExecutionRoot);
+  const { workspace } = destination;
+  const candidate = destination.candidateExecutionRoot;
   const shadow = await createCandidateShadow(workspace);
   try {
     await fs.cp(candidate, shadow.executionRoot, { recursive: true });

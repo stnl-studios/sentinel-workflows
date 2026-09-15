@@ -48,6 +48,15 @@ for (const [name, category, mutation] of [
   ["Claude regains Bash", "R001_ADAPTER_METADATA", (root) => replace(root, "claude-code/agents/stnl-validation-runner.md", "tools: Read, Glob, Grep", "tools: Read, Glob, Grep, Bash")],
   ["Codex regains workspace write", "R001_ADAPTER_METADATA", (root) => replace(root, "codex/agents/stnl_validation_runner.toml", 'sandbox_mode = "read-only"', 'sandbox_mode = "workspace-write"')],
   ["platform contracts diverge", "R003_EQUIVALENCE", (root) => replace(root, "claude-code/agents/stnl-validation-runner.md", "Plano sem commands requer", "Plano vazio requer")],
+  ["exact operation set gains CLOSE in both adapters", "R004_OPERATION_SCOPE", (root) => replaceBoth(root, "OPERACOES_SUPORTADAS=EXECUTE_SLICE|APPLY_FINDINGS|VALIDATE_SLICE", "OPERACOES_SUPORTADAS=EXECUTE_SLICE|APPLY_FINDINGS|VALIDATE_SLICE|CLOSE")],
+  ["automatic round set gains a fourth round", "R004_OPERATION_SCOPE", (root) => replaceBoth(root, "`1/3`, `2/3` ou `3/3`", "`1/4`, `2/4`, `3/4` ou `4/4`")],
+  ["planner gains persistence authority", "R005_READ_ONLY", (root) => replaceBoth(root, "Não persista, publique, implemente, corrija, finalize", "Persista, publique, implemente e finalize")],
+  ["planner trusts owner conclusions", "R014_INDEPENDENCE", (root) => replaceBoth(root, "trate conclusões do owner e resultados anteriores como não verificados", "trate conclusões do owner como verificadas")],
+  ["host fallback is enabled", "R017_ISOLATION", (root) => replaceBoth(root, "ausência de fallback", "fallback para host permitido")],
+  ["missing tool becomes non-applicability", "R016_NOT_APPLICABLE", (root) => replaceBoth(root, "Ferramenta ou ambiente ausente não é não aplicabilidade", "Ferramenta ou ambiente ausente é não aplicabilidade")],
+  ["formal validation loses independent assessment", "R014_INDEPENDENCE", (root) => replaceBoth(root, "`assessment` é `independent` em `VALIDATE_SLICE`", "`assessment` é `none` em `VALIDATE_SLICE`")],
+  ["auxiliary planner claims formal publication", "R015_CHECK_AUTHORITY", (root) => replaceBoth(root, "Em `EXECUTE_SLICE`, planeje checks", "Em `EXECUTE_SLICE`, publique PASS formal e planeje checks")],
+  ["opaque evidence is reconstructed", "R018_PROVENANCE", (root) => replaceBoth(root, "não reconstrua evidence", "reconstrua evidence")],
 ]) {
   test(`rejects ${name}`, async (t) => {
     const root = await fixture(t);

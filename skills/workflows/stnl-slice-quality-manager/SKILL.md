@@ -4,7 +4,7 @@ description: Delegate independent validation, own formal finding disposition, an
 validation-runtime: runtime/run-validation-session.mjs
 validation-runner-protocol: stnl-validation-runner/v11
 validation-harness-protocol: stnl-validation-harness/v10
-validation-capability-identity: sha256:a0fe14e372062808af664e0bf2525f18f1e89f04b0bafbf4f0f3c24d78499320
+validation-capability-identity: sha256:e1753469c0fed10913b3356688e7d9bac520eb1b06aa7d5c352a4c4e184b63dc
 ---
 
 # stnl-slice-quality-manager
