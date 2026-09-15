@@ -168,7 +168,9 @@ test("installed Codex and Claude skills expose their self-contained validation r
       const text = await fs.readFile(path.join(promptRoot, prompt), "utf8");
       assert.doesNotMatch(text, /VALIDATION_HARNESS_PATH|<SKILL_ROOT>|(?:resolve|run)-validation-runtime\.mjs|run-validation-session\.mjs/u);
       assert.doesNotMatch(text, /`SPEC_PATH`, execution root derivado|paths de plans e tasks/u);
-      assert.match(text, /execution root, plan\/task, schema e runtime[^\n]{0,120}derivados internamente/u);
+      assert.match(text, /returns only[^\n]{0,80}`stnl-validation-plan\/v1`/u);
+      assert.match(text, /owner (?:then )?invokes (?:the packaged bridge|its loaded bridge)/u);
+      assert.match(text, /(?:Never|Do not) send (?:installation\/skill|skill\/install)\/runtime\/harness paths/u);
     }
   }
 });

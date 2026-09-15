@@ -21,7 +21,7 @@ const REPOSITORY_ROOT = path.resolve(SCRIPT_ROOT, "..");
 const INTEGRATIONS_ROOT = path.join(REPOSITORY_ROOT, "integrations");
 
 const RUNNER_DESCRIPTION =
-  "Runner barato e isolado para checks de implementação, checks de findings e validação formal independente de uma slice.";
+  "Planner independente de verificações e assessor formal pós-harness de uma slice.";
 const SCOUT_DESCRIPTION =
   "Read-only exception scout for one explicitly authorized lifecycle evidence gap; never auto-select or delegate.";
 const SCOUT_CONTRACT_SHA256 =
@@ -211,24 +211,18 @@ function assertContract(contract, expectedHash, label) {
 }
 
 function assertRunnerContract(contract, label) {
-  assert.match(contract, /^CONTRATO_CANONICO=stnl-validation-runner\/v10$/mu, `${label} contract ID changed`);
-  assert.match(contract, /^RUNNER_PROTOCOL=stnl-validation-runner\/v10$/mu, `${label} runner handshake changed`);
+  assert.match(contract, /^CONTRATO_CANONICO=stnl-validation-runner\/v11$/mu, `${label} contract ID changed`);
+  assert.match(contract, /^RUNNER_PROTOCOL=stnl-validation-runner\/v11$/mu, `${label} runner handshake changed`);
   assert.match(contract, /^HARNESS_PROTOCOL=stnl-validation-harness\/v10$/mu, `${label} harness handshake changed`);
-  assert.match(contract, /não este agente, é o executor físico de todo verification command/iu, `${label} owns physical verification`);
-  assert.match(contract, /sem provenance e receipt exatos do harness[\s\S]{0,160}nunca pode publicar TASK ou lifecycle/iu, `${label} raw results can publish`);
+  assert.match(contract, /^PLAN_SCHEMA=stnl-validation-plan\/v1$/mu, `${label} plan schema changed`);
+  assert.match(contract, /Não tente descobrir, ler, importar ou invocar o harness/iu, `${label} may locate the harness`);
+  assert.match(contract, /Um plano pronto não significa `TESTS_PASS`/u, `${label} conflates plan and result`);
   assert.match(contract, /^OPERACOES_SUPORTADAS=EXECUTE_SLICE\|APPLY_FINDINGS\|VALIDATE_SLICE$/mu, `${label} operations changed`);
-  assert.match(contract, /^STATUS_CHECKS=TESTS_PASS\|TESTS_ACCEPTED\|TESTS_FAIL\|TESTS_NOT_APPLICABLE\|BLOCKED$/mu, `${label} check statuses changed`);
-  assert.match(contract, /^STATUS_VALIDACAO=PASS\|ACCEPTED\|NEEDS_FIX\|BLOCKED$/mu, `${label} validation statuses changed`);
-  for (const heading of ["# EXECUTE_SLICE", "# APPLY_FINDINGS", "# VALIDATE_SLICE"]) {
-    assert.equal(contract.split(heading).length - 1, 1, `${label} heading changed: ${heading}`);
-  }
   for (const boundary of [
-    "Não edite código, testes, requisitos, planos ou tasks.",
-    "Não aplique correções, não implemente findings",
-    "Não crie subagentes nem delegue.",
-    "Checks nunca emitem `PASS` ou `ACCEPTED` formal",
-    "Não corrija automaticamente código quando um check falhar.",
-    "Não retorne `PASS` ou `ACCEPTED` com manifesto vazio, incompleto, duplicado, malformado ou inconsistente",
+    "Não persista, publique, implemente, corrija, finalize, crie subagentes nem delegue.",
+    "Não execute build, teste, lint, typecheck",
+    "Não inclua `status`, exit code, test count",
+    "Preserve a capability já carregada neste contrato",
   ]) assert.ok(contract.includes(boundary), `${label} lacks harmful-action boundary: ${boundary}`);
   assert.doesNotMatch(contract, /(?:você pode|é permitido|you may)[^\n]{0,80}(?:editar|implementar|aplicar correções|criar subagentes|delegar)/iu, `${label} enables a harmful action`);
 }
@@ -249,7 +243,7 @@ async function validateCodexIntegration(root) {
     description: RUNNER_DESCRIPTION,
     model: "gpt-5.6-luna",
     model_reasoning_effort: "medium",
-    sandbox_mode: "workspace-write",
+    sandbox_mode: "read-only",
     agents: { max_depth: 1 },
   });
   assert.deepEqual(scout.metadata, {
@@ -281,7 +275,7 @@ async function validateClaudeIntegration(root) {
   assert.deepEqual(runner.metadata, {
     name: "stnl-validation-runner",
     description: RUNNER_DESCRIPTION,
-    tools: "Read, Glob, Grep, Bash",
+    tools: "Read, Glob, Grep",
     model: "haiku",
     effort: "medium",
   });
@@ -489,7 +483,7 @@ test("rejects a runner that gains implementation authority", async () => {
     for (const file of [
       path.join(fixture, "codex", "agents", "stnl_validation_runner.toml"),
       path.join(fixture, "claude-code", "agents", "stnl-validation-runner.md"),
-    ]) await replaceOnce(file, "Não aplique correções, não implemente findings", "Você pode aplicar correções e implementar findings");
+    ]) await replaceOnce(file, "Não persista, publique, implemente, corrija, finalize, crie subagentes nem delegue.", "Você pode aplicar correções e implementar findings.");
   });
 });
 

@@ -1455,28 +1455,30 @@ test("auxiliary runner output contract round-trips through model-owned persisten
     fs.readFile(path.join(ROOT, "integrations/codex/agents/stnl_validation_runner.toml"), "utf8"),
   ]);
   const persisted = checkRecord("implementation-check", 1, "TESTS_PASS", 1);
-  for (const [runnerField, recordField] of [
-    ["Automatic check round:", "- Automatic check round: 1/3"],
-    ["Status:", "- Status: TESTS_PASS"],
-    ["Escopo verificado:", "- Tested scope: ../../src/example.txt"],
-    ["Estado testado:", "- Tested state:"],
-    ["Discovery sources:", "- Discovery sources:"],
-    ["Discovery actions:", "- Discovery actions:"],
-    ["Verification types considered:", "- Verification types considered:"],
-    ["Comandos executados:", "- Commands:"],
-    ["Testes selecionados:", "- Selected checks:"],
-  ]) {
-    for (const contract of contracts) assert.ok(contract.includes(runnerField), runnerField);
-    assert.ok(persisted.includes(recordField), recordField);
-  }
+  for (const runnerField of [
+    "stnl-validation-plan/v1",
+    "discovery",
+    "verificationTypes",
+    "selectedChecks",
+    "executionEnvironment",
+    "nonApplicabilityRationale",
+  ]) for (const contract of contracts) assert.ok(contract.includes(runnerField), runnerField);
+  for (const recordField of [
+    "- Automatic check round: 1/3",
+    "- Status: TESTS_PASS",
+    "- Tested scope: ../../src/example.txt",
+    "- Tested state:",
+    "- Discovery sources:",
+    "- Discovery actions:",
+    "- Verification types considered:",
+    "- Commands:",
+    "- Selected checks:",
+  ]) assert.ok(persisted.includes(recordField), recordField);
   assert.match(persisted, /^- Tested scope: \S.*$/mu);
   assert.match(persisted, /^- Tested state:\n  - `[^`]+` \| sha256:[0-9a-f]{64}$/mu);
   assert.match(persisted, /^- Commands:\n  - `[^`]+` \| exit:0$/mu);
   assert.doesNotMatch(persisted, /^- Fileless reason:/mu);
-  for (const contract of contracts) {
-    assert.match(contract, /Fileless reason: required only when Estado testado is exactly none; omit for file-backed state/u);
-    assert.match(contract, /Fileless reason: required only when Manifesto final da slice is exactly none; omit for file-backed manifest/u);
-  }
+  for (const contract of contracts) assert.match(contract, /filelessReason[^\n]+subjects vazios/u);
   const filelessPersisted = persisted.replace(
     `- Tested state:\n  - \`../../src/example.txt\` | sha256:${"b".repeat(64)}`,
     "- Tested state: none\n- Fileless reason: no repository file participates in the observable state",
@@ -1509,7 +1511,7 @@ test("auxiliary runner output contract round-trips through model-owned persisten
 
 test("formal validation output round-trips through NEEDS_FIX, correction, PASS, base, final, and handoff", async (t) => {
   const runnerContract = await fs.readFile(path.join(ROOT, "integrations/claude-code/agents/stnl-validation-runner.md"), "utf8");
-  for (const fieldName of ["Tipo de validação:", "Status: PASS | ACCEPTED | NEEDS_FIX | BLOCKED", "Manifesto final da slice:", "Evidências:", "Findings:"]) {
+  for (const fieldName of ["stnl-validation-assessment/v1", "status", "manifest", "evidence", "findingReferences", "findingDispositions", "gates"]) {
     assert.ok(runnerContract.includes(fieldName), fieldName);
   }
   const fixture = await standaloneWorkspace(t);
@@ -4614,7 +4616,7 @@ function validationRequest({
   argv = [process.execPath, "-e", "process.exit(0)"], writePaths = [], writeFiles = [], priorEvidenceId = null,
   env = {}, executionEnvironment = { kind: "host" }, failureConclusion = "VALIDATION_FINDING", replayOriginEvidenceId = null,
   protocol = {
-    runner: "stnl-validation-runner/v10",
+    runner: "stnl-validation-runner/v11",
     harness: "stnl-validation-harness/v10",
     capability: VALIDATION_CAPABILITY_IDENTITY,
   },
@@ -4856,12 +4858,12 @@ test("protocol-preflight blockers for mixed, missing, or unknown versions publis
   const cases = [
     ["missing", undefined, "protocol-preflight", "VALIDATION_PROTOCOL_INCOMPATIBLE"],
     ["runner-v9", { runner: "stnl-validation-runner/v9", harness: "stnl-validation-harness/v10" }, "protocol-preflight", "VALIDATION_PROTOCOL_INCOMPATIBLE"],
-    ["harness-v9", { runner: "stnl-validation-runner/v10", harness: "stnl-validation-harness/v9" }, "protocol-preflight", "VALIDATION_PROTOCOL_INCOMPATIBLE"],
+    ["harness-v9", { runner: "stnl-validation-runner/v11", harness: "stnl-validation-harness/v9" }, "protocol-preflight", "VALIDATION_PROTOCOL_INCOMPATIBLE"],
     ["runner-unknown", { runner: "stnl-validation-runner/future", harness: "stnl-validation-harness/v10" }, "protocol-preflight", "VALIDATION_PROTOCOL_INCOMPATIBLE"],
-    ["harness-unknown", { runner: "stnl-validation-runner/v10", harness: "stnl-validation-harness/future" }, "protocol-preflight", "VALIDATION_PROTOCOL_INCOMPATIBLE"],
+    ["harness-unknown", { runner: "stnl-validation-runner/v11", harness: "stnl-validation-harness/future" }, "protocol-preflight", "VALIDATION_PROTOCOL_INCOMPATIBLE"],
     ["fully-unknown", { runner: "stnl-validation-runner/future", harness: "stnl-validation-harness/future" }, "protocol-preflight", "VALIDATION_PROTOCOL_INCOMPATIBLE"],
-    ["loaded-capability-missing", { runner: "stnl-validation-runner/v10", harness: "stnl-validation-harness/v10" }, "identity-preflight", "VALIDATION_CAPABILITY_IDENTITY_MISMATCH"],
-    ["loaded-capability-stale", { runner: "stnl-validation-runner/v10", harness: "stnl-validation-harness/v10", capability: `sha256:${"0".repeat(64)}` }, "identity-preflight", "VALIDATION_CAPABILITY_IDENTITY_MISMATCH"],
+    ["loaded-capability-missing", { runner: "stnl-validation-runner/v11", harness: "stnl-validation-harness/v10" }, "identity-preflight", "VALIDATION_CAPABILITY_IDENTITY_MISMATCH"],
+    ["loaded-capability-stale", { runner: "stnl-validation-runner/v11", harness: "stnl-validation-harness/v10", capability: `sha256:${"0".repeat(64)}` }, "identity-preflight", "VALIDATION_CAPABILITY_IDENTITY_MISMATCH"],
   ];
   for (const [name, protocol, stage, code] of cases) {
     const fixture = await validationSessionFixture(t);
@@ -4882,7 +4884,7 @@ test("protocol-preflight blockers for mixed, missing, or unknown versions publis
     assert.deepEqual(blocked.provenance.subjects, [], name);
     assert.deepEqual(blocked.outputs, [], name);
     assert.deepEqual(blocked.provenance.protocol, {
-      runner: "stnl-validation-runner/v10", harness: "stnl-validation-harness/v10",
+      runner: "stnl-validation-runner/v11", harness: "stnl-validation-harness/v10",
       capability: VALIDATION_CAPABILITY_IDENTITY,
     }, name);
     assert.deepEqual(blocked.provenance.inputs.protocol, blocked.provenance.protocol, name);
@@ -7118,7 +7120,7 @@ test("a generated capability B reads immutable capability A history but requires
   assert.equal(await fs.readFile(path.join(fixture.execution, "tasks/slice-01.md"), "utf8"), persistedBytes);
 
   const protocolB = {
-    runner: "stnl-validation-runner/v10",
+    runner: "stnl-validation-runner/v11",
     harness: "stnl-validation-harness/v10",
     capability: generationBCapability,
   };

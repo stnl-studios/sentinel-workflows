@@ -779,9 +779,10 @@ const SUCCESS_RESULTS = new Set(["PASS", "ACCEPTED"]);
 const SUCCESS_CHECKS = new Set(["TESTS_PASS", "TESTS_ACCEPTED", "TESTS_NOT_APPLICABLE"]);
 const NON_BLOCKING_GATES = new Set(["resolved", "non_blocking", "bypassed"]);
 const GATE_KEYS = new Set(["id", "command", "kind", "scope", "causality", "state", "problem", "evidence", "diagnostic", "correction", "correctionEvidence", "revalidates", "snapshot", "bypass"]);
-const VALIDATION_RUNNER_PROTOCOL = "stnl-validation-runner/v10";
+const VALIDATION_RUNNER_PROTOCOL = "stnl-validation-runner/v11";
+const HISTORICAL_VALIDATION_RUNNER_PROTOCOLS = new Set(["stnl-validation-runner/v10"]);
 const VALIDATION_HARNESS_PROTOCOL = "stnl-validation-harness/v10";
-const VALIDATION_CAPABILITY_IDENTITY = "sha256:7f9a7fcf5a24debbff72c1591876012c134552c7319a18e16703ddb37fbf4ed5";
+const VALIDATION_CAPABILITY_IDENTITY = "sha256:a0fe14e372062808af664e0bf2525f18f1e89f04b0bafbf4f0f3c24d78499320";
 const EVIDENCE_PROTOCOL_KEYS = new Set(["runner", "harness", "capability"]);
 
 function exactObject(value, keys, label) {
@@ -1026,6 +1027,8 @@ function parseEvidenceProvenance(record, authority, { operation, round, required
   }
   const historicalProtocolModel = !Object.hasOwn(provenance, "protocol") && !Object.hasOwn(provenance, "receipt");
   const historicalCapabilityModel = !historicalProtocolModel && !Object.hasOwn(provenance.protocol ?? {}, "capability");
+  const historicalRunnerProtocolModel = !historicalProtocolModel
+    && HISTORICAL_VALIDATION_RUNNER_PROTOCOLS.has(provenance.protocol?.runner);
   if (!opaqueTransport && !historicalProtocolModel && !historicalCapabilityModel) {
     throw new ExecutionContractError(`${record.id} current validation provenance requires exact resolver transport`);
   }
@@ -1055,7 +1058,7 @@ function parseEvidenceProvenance(record, authority, { operation, round, required
   const infrastructureBlocked = provenance.classification === "INFRASTRUCTURE_BLOCKED";
   if (!historicalProtocolModel) {
     exactObject(provenance.protocol, historicalCapabilityModel ? new Set(["runner", "harness"]) : EVIDENCE_PROTOCOL_KEYS, `${record.id} Evidence protocol`);
-    if (provenance.protocol.runner !== VALIDATION_RUNNER_PROTOCOL
+    if (!(provenance.protocol.runner === VALIDATION_RUNNER_PROTOCOL || historicalRunnerProtocolModel)
       || provenance.protocol.harness !== VALIDATION_HARNESS_PROTOCOL
       || (!historicalCapabilityModel && (typeof provenance.protocol.capability !== "string"
         || !CURRENT_AUTHORITY.test(provenance.protocol.capability)))
@@ -1453,6 +1456,7 @@ function parseEvidenceProvenance(record, authority, { operation, round, required
   if (legacySecurityModel) Object.defineProperty(provenance, "legacySecurityModel", { value: true, enumerable: false });
   if (historicalProtocolModel) Object.defineProperty(provenance, "historicalProtocolModel", { value: true, enumerable: false });
   if (historicalCapabilityModel) Object.defineProperty(provenance, "historicalCapabilityModel", { value: true, enumerable: false });
+  if (historicalRunnerProtocolModel) Object.defineProperty(provenance, "historicalRunnerProtocolModel", { value: true, enumerable: false });
   if (opaqueTransport) Object.defineProperty(provenance, "opaqueTransport", { value: true, enumerable: false });
   return Object.freeze(provenance);
 }
@@ -3685,6 +3689,7 @@ function admitCurrentEvidence(record, label, persistedEvidenceIds, admittedEvide
     || provenance.legacySecurityModel === true
     || provenance.historicalProtocolModel === true
     || provenance.historicalCapabilityModel === true
+    || provenance.historicalRunnerProtocolModel === true
     || provenance.protocol?.capability !== VALIDATION_CAPABILITY_IDENTITY) {
     throw new ExecutionContractError(`${label} cannot append legacy validation provenance or a historical capability under the current harness contract`);
   }

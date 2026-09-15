@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import * as fs from "node:fs/promises";
 import path from "node:path";
 
-export const VALIDATION_RUNNER_PROTOCOL = "stnl-validation-runner/v10";
+export const VALIDATION_RUNNER_PROTOCOL = "stnl-validation-runner/v11";
 export const VALIDATION_HARNESS_PROTOCOL = "stnl-validation-harness/v10";
 export const VALIDATION_CAPABILITY_SCHEMA_VERSION = 1;
 export const VALIDATION_CAPABILITY_MANIFEST = "runtime/validation-capability.json";

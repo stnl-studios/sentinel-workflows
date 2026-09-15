@@ -88,7 +88,7 @@ test("installed Codex and Claude user/project skills self-resolve and import aft
       assert.equal(resolved.skillName, owner);
       assert.equal(resolved.skillRoot, canonicalSkillRoot);
       assert.equal(resolved.entrypoint, "runtime/run-validation-session.mjs");
-      assert.equal(resolved.runnerProtocol, "stnl-validation-runner/v10");
+      assert.equal(resolved.runnerProtocol, "stnl-validation-runner/v11");
       assert.equal(resolved.harnessProtocol, "stnl-validation-harness/v10");
       assert.equal(resolved.capabilityIdentity, sourceCapability.identity);
       assert.equal(resolved.packageIdentity, sourceCapability.packages[owner].fingerprint);
@@ -108,7 +108,7 @@ test("installed Codex and Claude user/project skills self-resolve and import aft
       const capabilities = spawnSync(process.execPath, [resolverPath, "--capabilities"], { encoding: "utf8" });
       assert.equal(capabilities.status, 0, capabilities.stderr);
       assert.deepEqual(JSON.parse(capabilities.stdout), {
-        runner: "stnl-validation-runner/v10", harness: "stnl-validation-harness/v10",
+        runner: "stnl-validation-runner/v11", harness: "stnl-validation-harness/v10",
         capability: sourceCapability.identity,
         packageIdentity: sourceCapability.packages[owner].fingerprint,
         packageCoherent: true,
@@ -125,7 +125,7 @@ test("installed resolver detects same-v10 package byte drift before dispatch", a
   const statePath = path.join(path.dirname(path.dirname(resolverPath)), "runtime/execution-state.mjs");
   await fs.appendFile(statePath, "\n// same nominal v10, different bytes\n", "utf8");
   const drifted = await module.resolveOwnValidationRuntime();
-  assert.equal(drifted.runnerProtocol, "stnl-validation-runner/v10");
+  assert.equal(drifted.runnerProtocol, "stnl-validation-runner/v11");
   assert.equal(drifted.harnessProtocol, "stnl-validation-harness/v10");
   assert.equal(drifted.capabilityIdentity, current.capabilityIdentity);
   assert.notEqual(drifted.packageIdentity, current.packageIdentity);
@@ -162,6 +162,16 @@ test("installed resolver dispatches the owning runtime without a caller-supplied
   assert.match(dispatched.stderr, /MALFORMED_HARNESS_OUTPUT/u);
   assert.equal(dispatched.stdout, "");
   assert.doesNotMatch(dispatched.stderr, /external\.mjs/u);
+});
+
+test("installed owner exposes a planner-only bridge before harness dispatch", async (t) => {
+  const fixture = await installFixture(t, { platform: "codex", scope: "project", relocate: true });
+  const { module } = await loadResolver(fixture, "stnl-slice-executor");
+  assert.equal(
+    typeof module.executeValidationPlan,
+    "function",
+    "the installed owner has no plan -> bridge -> harness entrypoint",
+  );
 });
 
 test("internal validation entrypoint declaration fails closed when it escapes the installed skill", async (t) => {

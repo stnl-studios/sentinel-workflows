@@ -1,19 +1,19 @@
 {
-  "identity": "sha256:7f9a7fcf5a24debbff72c1591876012c134552c7319a18e16703ddb37fbf4ed5",
+  "identity": "sha256:a0fe14e372062808af664e0bf2525f18f1e89f04b0bafbf4f0f3c24d78499320",
   "schemaVersion": 1,
-  "runnerProtocol": "stnl-validation-runner/v10",
+  "runnerProtocol": "stnl-validation-runner/v11",
   "harnessProtocol": "stnl-validation-harness/v10",
   "package": {
     "owner": "stnl-slice-executor",
-    "fingerprint": "sha256:4850907e865e71b848389f357cce46815bd9247f53f9f0e3a2d4e1ecb42a92a3",
+    "fingerprint": "sha256:f5a13be9b9aeb38949f19cac1046a8711d7c96d46c3370fd6b4157c15018f320",
     "files": {
-      "SKILL.md": "sha256:0a8354c7451185cdf97384d149ebde2372ffb2179ca6fd0c36ee3ef9a9a52611",
-      "references/execution-record-schema.md": "sha256:69d5b7fd7e5eae4396399bd44fc62c31b6be1c4bd74486d72e954b01c1674635",
-      "runtime/execution-state.mjs": "sha256:82e85f97461337cdbfddf699f4a3ded46a7c565ca8424a114449854b540e71c1",
-      "runtime/resolve-validation-runtime.mjs": "sha256:f61f7f10ec145d7c53c54d500d29b944a0f2ae67c577b150263f1a77f4402922",
-      "runtime/run-validation-session.mjs": "sha256:121fb2583c582c76f1f34a688528c58bda30727bfbacaaaa3fc87c05196415f6",
+      "SKILL.md": "sha256:93639cdd5673b84030cbe18f016d6297fc2071a50ac01beb370bc362d4c18710",
+      "references/execution-record-schema.md": "sha256:88a68380ae4d40ed2a13a8748bed2f4a80d95102ea70f7b9278dabdaf1a3451a",
+      "runtime/execution-state.mjs": "sha256:dc5cf436558ec87db5c17c890850f4915375b7a1225992eaa3954a4fff5d961e",
+      "runtime/resolve-validation-runtime.mjs": "sha256:bd3daeb1c85bf136a3af0e2b4fe77d1e9658419fb99f1693102f49e8bc6957be",
+      "runtime/run-validation-session.mjs": "sha256:61e78ddabc35235ee00cb464cb13f0178cc810f6c51dee7d23a8164323ba997b",
       "runtime/validate-execution-state.mjs": "sha256:685a9c6971851b62675cbca4802276b819b06d577ab7a22a7eda3a7f0bea67a6",
-      "runtime/validation-capability.mjs": "sha256:5fc726fa5dae8ab16c35f0fba63a31799f6e853e9132879c742be209d35610b6"
+      "runtime/validation-capability.mjs": "sha256:9d1dfcd457209c381ce927ad5e98ca9f3e156ad4281e9b4a997a580331a25f61"
     }
   }
 }

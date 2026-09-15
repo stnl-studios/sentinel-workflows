@@ -3,7 +3,7 @@ import * as fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-export const VALIDATION_CAPABILITY_IDENTITY = "sha256:7f9a7fcf5a24debbff72c1591876012c134552c7319a18e16703ddb37fbf4ed5";
+export const VALIDATION_CAPABILITY_IDENTITY = "sha256:a0fe14e372062808af664e0bf2525f18f1e89f04b0bafbf4f0f3c24d78499320";
 
 function canonical(value) {
   if (Array.isArray(value)) return value.map(canonical);
@@ -46,7 +46,7 @@ export async function inspectOwnValidationCapability(moduleUrl = import.meta.url
   }
   if (manifest?.identity !== VALIDATION_CAPABILITY_IDENTITY
     || manifest?.schemaVersion !== 1
-    || manifest?.runnerProtocol !== "stnl-validation-runner/v10"
+    || manifest?.runnerProtocol !== "stnl-validation-runner/v11"
     || manifest?.harnessProtocol !== "stnl-validation-harness/v10"
     || manifest?.package?.owner !== owner
     || manifest?.package?.files === null

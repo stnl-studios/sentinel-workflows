@@ -34,7 +34,7 @@ const SYSTEM_READ_FILES = [
   "/private/var/select/sh",
 ];
 const OPERATIONS = new Set(["EXECUTE_SLICE", "APPLY_FINDINGS", "VALIDATE_SLICE"]);
-export const VALIDATION_RUNNER_PROTOCOL = "stnl-validation-runner/v10";
+export const VALIDATION_RUNNER_PROTOCOL = "stnl-validation-runner/v11";
 export const VALIDATION_HARNESS_PROTOCOL = "stnl-validation-harness/v10";
 const PROTOCOL_KEYS = new Set(["runner", "harness", "capability"]);
 const REQUEST_KEYS = new Set([
@@ -2331,7 +2331,8 @@ async function runValidationSessionOnce(specPath, request, dependencies = {}) {
       }
       if (originRecord.provenance.legacySecurityModel === true
         || originRecord.provenance.historicalProtocolModel === true
-        || originRecord.provenance.historicalCapabilityModel === true) {
+        || originRecord.provenance.historicalCapabilityModel === true
+        || originRecord.provenance.historicalRunnerProtocolModel === true) {
         throw new ExecutionContractError("validation replay origin predates the current authenticated validation protocol");
       }
       const origin = replayDescriptor(originRecord.provenance);
