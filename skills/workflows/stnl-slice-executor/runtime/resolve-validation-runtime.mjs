@@ -1,9 +1,13 @@
 #!/usr/bin/env node
 
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import * as fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  VALIDATION_CAPABILITY_IDENTITY,
+} from "./validation-capability.mjs";
 
 const VALIDATION_OWNERS = new Set(["stnl-slice-executor", "stnl-slice-quality-manager"]);
 const RESOLVER_FILENAME = "resolve-validation-runtime.mjs";
@@ -61,6 +65,23 @@ function declaredEntrypoint(metadata) {
   return entrypoint;
 }
 
+function canonical(value) {
+  if (Array.isArray(value)) return value.map(canonical);
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonical(value[key])]));
+  }
+  return value;
+}
+
+function digest(domain, value) {
+  return `sha256:${createHash("sha256").update(JSON.stringify(canonical([domain, value]))).digest("hex")}`;
+}
+
+function exactKeys(value, keys) {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    && Object.keys(value).sort().join(",") === [...keys].sort().join(",");
+}
+
 async function runtimeProtocolHandshake(runtimePath) {
   const result = await new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [runtimePath, "--capabilities"], { stdio: ["ignore", "pipe", "pipe"] });
@@ -76,13 +97,19 @@ async function runtimeProtocolHandshake(runtimePath) {
   });
   let capability;
   try { capability = JSON.parse(result.stdout); } catch { capability = null; }
-  if (result.code !== 0 || result.stderr !== "" || result.stdout.length > 512
+  if (![0, 1].includes(result.code) || result.stderr !== "" || result.stdout.length > 1024
     || capability === null || typeof capability !== "object" || Array.isArray(capability)
-    || Object.keys(capability).sort().join(",") !== "harness,runner"
+    || !exactKeys(capability, new Set(["runner", "harness", "capability", "packageIdentity", "packageCoherent"]))
     || capability.runner !== VALIDATION_RUNNER_PROTOCOL
-    || capability.harness !== VALIDATION_HARNESS_PROTOCOL) {
+    || capability.harness !== VALIDATION_HARNESS_PROTOCOL
+    || capability.capability !== VALIDATION_CAPABILITY_IDENTITY
+    || typeof capability.packageCoherent !== "boolean"
+    || capability.packageCoherent !== (result.code === 0)
+    || (capability.packageIdentity !== null
+      && (typeof capability.packageIdentity !== "string" || !/^sha256:[0-9a-f]{64}$/u.test(capability.packageIdentity))) ) {
     fail("INCOMPATIBLE_VALIDATION_PROTOCOL", "packaged validation runtime failed the v10 protocol handshake");
   }
+  return Object.freeze(capability);
 }
 
 export async function resolveOwnValidationRuntime(...callerArguments) {
@@ -139,11 +166,33 @@ export async function resolveOwnValidationRuntime(...callerArguments) {
   if (!runtimeMetadata.isFile() || runtimeMetadata.nlink !== 1) {
     fail("INVALID_VALIDATION_RUNTIME", "declared validation runtime must be a single-link regular file");
   }
-  await runtimeProtocolHandshake(canonicalRuntime);
+  const packageCapability = await runtimeProtocolHandshake(canonicalRuntime);
   return Object.freeze({
     skillName, skillRoot, entrypoint, runtimePath: canonicalRuntime,
     runnerProtocol: VALIDATION_RUNNER_PROTOCOL, harnessProtocol: VALIDATION_HARNESS_PROTOCOL,
+    capabilityIdentity: VALIDATION_CAPABILITY_IDENTITY,
+    packageIdentity: packageCapability.packageIdentity,
+    packageCoherent: packageCapability.packageCoherent,
   });
+}
+
+export function validationResultTransport(stdout, code, stderr) {
+  if (![0, 1].includes(code) || stderr !== "" || stdout.length === 0 || stdout.length > 2_097_152
+    || !stdout.endsWith("\n") || stdout.slice(0, -1).includes("\n")) return null;
+  let result;
+  try { result = JSON.parse(stdout); } catch { return null; }
+  if (!exactKeys(result, new Set(["provenance", "outputs"])) || !Array.isArray(result.outputs)) return null;
+  const provenance = result.provenance;
+  if (provenance?.protocol?.runner !== VALIDATION_RUNNER_PROTOCOL
+    || provenance?.protocol?.harness !== VALIDATION_HARNESS_PROTOCOL
+    || provenance?.protocol?.capability !== VALIDATION_CAPABILITY_IDENTITY
+    || typeof provenance?.receipt !== "string" || typeof provenance?.evidenceId !== "string") return null;
+  const { evidenceId: _evidenceId, receipt: _receipt, ...receiptMaterial } = provenance;
+  if (provenance.receipt !== digest("stnl-validation-harness-receipt-v10", receiptMaterial)) return null;
+  const { evidenceId: _ignored, ...evidenceMaterial } = provenance;
+  if (provenance.evidenceId !== digest("stnl-validation-evidence-v10", evidenceMaterial)) return null;
+  if ((provenance.state === "INVALID") !== (code === 1)) return null;
+  return `stnl-validation-result/v1:${Buffer.from(stdout, "utf8").toString("base64url")}`;
 }
 
 export async function invokeOwnValidationRuntime(arguments_) {
@@ -153,9 +202,26 @@ export async function invokeOwnValidationRuntime(arguments_) {
   }
   const resolved = await resolveOwnValidationRuntime();
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [resolved.runtimePath, ...arguments_], { stdio: "inherit" });
+    const child = spawn(process.execPath, [resolved.runtimePath, ...arguments_], { stdio: ["ignore", "pipe", "pipe"] });
+    const stdout = [];
+    const stderr = [];
+    child.stdout.on("data", (chunk) => stdout.push(chunk));
+    child.stderr.on("data", (chunk) => stderr.push(chunk));
     child.once("error", reject);
-    child.once("close", (code, signal) => resolve(Number.isInteger(code) ? code : signal === null ? 1 : 128));
+    child.once("close", (code, signal) => {
+      const exit = Number.isInteger(code) ? code : signal === null ? 1 : 128;
+      const output = Buffer.concat(stdout).toString("utf8");
+      const errors = Buffer.concat(stderr).toString("utf8");
+      const transport = validationResultTransport(output, exit, errors);
+      if (transport === null) {
+        if (errors !== "") process.stderr.write(errors);
+        process.stderr.write("BLOCKED: MALFORMED_HARNESS_OUTPUT: packaged harness produced no valid formal provenance\n");
+        resolve(1);
+        return;
+      }
+      process.stdout.write(`${transport}\n`);
+      resolve(exit);
+    });
   });
 }
 
@@ -174,8 +240,13 @@ export async function main(arguments_) {
     }
     if (arguments_.length === 1 && arguments_[0] === "--capabilities") {
       const resolved = await resolveOwnValidationRuntime();
-      process.stdout.write(`${JSON.stringify({ runner: resolved.runnerProtocol, harness: resolved.harnessProtocol })}\n`);
-      return 0;
+      process.stdout.write(`${JSON.stringify({
+        runner: resolved.runnerProtocol, harness: resolved.harnessProtocol,
+        capability: resolved.capabilityIdentity,
+        packageIdentity: resolved.packageIdentity,
+        packageCoherent: resolved.packageCoherent,
+      })}\n`);
+      return resolved.packageCoherent ? 0 : 1;
     }
     return await invokeOwnValidationRuntime(arguments_);
   } catch (error) {

@@ -17,6 +17,7 @@ const EXECUTION_RUNTIME_POLICY = Object.freeze({
 
 const VALIDATION_RUNTIME_POLICY = Object.freeze({
   ...EXECUTION_RUNTIME_POLICY,
+  allowedRuntimeExtensions: Object.freeze([".mjs", ".json"]),
   requiredEntrypoints: Object.freeze([
     ...EXECUTION_RUNTIME_POLICY.requiredEntrypoints,
     "resolve-validation-runtime.mjs",

@@ -83,6 +83,8 @@ test("source-only doctor validates individual and default all-platform health wi
   const report = await doctorSentinelSource({ repositoryRoot: source });
   const expectedDefaultPlan = await planSentinelDistribution({ repositoryRoot: source, scope: "user", platform: "all" });
   assert.equal(report.status, "OK");
+  assert.equal(report.source.validationCapability.status, "OK");
+  assert.match(report.source.validationCapability.identity, /^sha256:[0-9a-f]{64}$/u);
   assert.deepEqual(report.source.platforms.map((item) => item.platform), SUPPORTED_PRODUCTION_PLATFORMS);
   assert.ok(report.source.platforms.every((item) => /^sha256:[0-9a-f]{64}$/u.test(item.fingerprint)));
   assert.deepEqual(report.source.defaultInstallation, {
@@ -145,6 +147,15 @@ test("source doctor fails closed for missing canonical material", async (t) => {
   await assert.rejects(doctorSentinelSource({ repositoryRoot: source }), /launcher registry mismatch|classified production prompt is missing/u);
 });
 
+test("source doctor detects validation distribution identity drift", async (t) => {
+  const source = await sourceFixture(t);
+  await fs.appendFile(path.join(source, "integrations/codex/agents/stnl_validation_runner.toml"), "\n# drift\n", "utf8");
+  await assert.rejects(
+    doctorSentinelSource({ repositoryRoot: source }),
+    /validation capability manifest differs from canonical source/u,
+  );
+});
+
 test("source doctor fails closed for unknown prompt and reference content", async (t) => {
   const promptSource = await sourceFixture(t);
   await fs.writeFile(path.join(promptSource, "templates/prompts/unknown.md"), "unknown\n");
@@ -169,6 +180,7 @@ test("doctor reports healthy Codex and Claude installations and ignores third-pa
       assert.equal(report.installation.liveStatus, "OK");
       assert.deepEqual(report.installation.manifest.platforms, [platform]);
       assert.equal(report.installation.fingerprintMatches, true);
+      assert.deepEqual(report.installation.validationCapability, { status: "OK", affectedPaths: [] });
       assert.deepEqual(await snapshotTree(project), before);
     });
   }
@@ -188,6 +200,21 @@ test("doctor detects managed byte drift and a missing managed file", async (t) =
   const missingReport = await doctorSentinelInstallation({ repositoryRoot: ROOT, projectRoot: missingProject });
   assert.equal(missingReport.status, "DRIFT");
   assert.ok(issueCodes(missingReport).has("MISSING_MANAGED_FILE"));
+  assert.equal(missingReport.installation.validationCapability.status, "DRIFT");
+  assert.deepEqual(missingReport.installation.validationCapability.affectedPaths, [".claude/agents/stnl-validation-runner.md"]);
+});
+
+test("doctor identifies owning validation package drift separately", async (t) => {
+  const project = await temporaryDirectory(t, "stnl-doctor-validation-package-");
+  await install(project, "codex");
+  const runtime = path.join(project, ".agents", "skills", "stnl-slice-executor", "runtime", "run-validation-session.mjs");
+  await fs.appendFile(runtime, "\n// drift\n", "utf8");
+  const report = await doctorSentinelInstallation({ repositoryRoot: ROOT, projectRoot: project });
+  assert.equal(report.status, "DRIFT");
+  assert.equal(report.installation.validationCapability.status, "DRIFT");
+  assert.deepEqual(report.installation.validationCapability.affectedPaths, [
+    path.posix.join(".agents", "skills", "stnl-slice-executor", "runtime", "run-validation-session.mjs"),
+  ]);
 });
 
 test("doctor detects stale files inside a Sentinel-owned skill root", async (t) => {

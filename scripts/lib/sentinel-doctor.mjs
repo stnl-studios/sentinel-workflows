@@ -16,6 +16,7 @@ import {
   resolveSentinelInstallationRoot,
   validatePlannedDistribution,
 } from "./sentinel-distribution.mjs";
+import { validateValidationCapabilitySource } from "./validation-capability.mjs";
 
 const JUNK_NAMES = new Set([".DS_Store", "__MACOSX", "Thumbs.db", "desktop.ini"]);
 
@@ -102,6 +103,7 @@ function defaultInstallationSummary(plan) {
 
 async function buildSourceHealth(repositoryRoot, scope = "user") {
   const root = await canonicalDirectory(repositoryRoot, "repository root");
+  const validationCapability = await validateValidationCapabilitySource(root);
   const plans = new Map();
   const platforms = [];
   for (const platform of SUPPORTED_PRODUCTION_PLATFORMS) {
@@ -120,6 +122,12 @@ async function buildSourceHealth(repositoryRoot, scope = "user") {
       repository: root,
       platforms: Object.freeze(platforms),
       defaultInstallation: defaultInstallationSummary(defaultPlan),
+      validationCapability: Object.freeze({
+        status: "OK",
+        identity: validationCapability.identity,
+        runnerProtocol: validationCapability.runnerProtocol,
+        harnessProtocol: validationCapability.harnessProtocol,
+      }),
     }),
   };
 }
@@ -226,6 +234,19 @@ async function inspectInstalledHealth(root, plan) {
 
   const liveStatus = issues.length > 0 ? "DRIFT" : "OK";
   const status = blockers.length > 0 ? "BLOCKED" : liveStatus;
+  const validationPaths = plan.entries
+    .filter((entry) => entry.destinationRelativePath.includes("stnl-validation-runner")
+      || entry.destinationRelativePath.includes("stnl_validation_runner")
+      || entry.destinationRelativePath.includes("stnl-slice-executor/")
+      || entry.destinationRelativePath.includes("stnl-slice-quality-manager/"))
+    .map((entry) => entry.destinationRelativePath);
+  const validationDriftPaths = issues
+    .filter((issue) => issue.path !== undefined && validationPaths.some((relative) => (
+      issue.path === relative || issue.path.startsWith(`${relative}/`) || relative.startsWith(`${issue.path}/`)
+    )))
+    .map((issue) => issue.path)
+    .filter((value, index, values) => values.indexOf(value) === index)
+    .sort();
   return Object.freeze({
     status,
     liveStatus,
@@ -248,6 +269,10 @@ async function inspectInstalledHealth(root, plan) {
       fingerprint: plan.fingerprint,
     }),
     fingerprintMatches: manifest.fingerprint === plan.fingerprint,
+    validationCapability: Object.freeze({
+      status: validationDriftPaths.length === 0 ? "OK" : "DRIFT",
+      affectedPaths: Object.freeze(validationDriftPaths),
+    }),
     transactionArtifacts: artifacts,
     blockers: Object.freeze(sortFindings(blockers)),
     issues: Object.freeze(sortFindings(issues)),

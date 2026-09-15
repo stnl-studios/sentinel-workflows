@@ -17,6 +17,7 @@ import {
   distributablePolicyForSkill,
   referenceDecisionsForSkill,
 } from "./skill-distribution-policy.mjs";
+import { validateValidationCapabilitySource } from "./validation-capability.mjs";
 
 const MANIFEST_PATH = ".sentinel/install-manifest.json";
 const INSTALL_LOCK_PATH = ".sentinel/install.lock";
@@ -198,6 +199,7 @@ async function runSourceContract(repositoryRoot, scope, root) {
 async function validateCanonicalSourceContracts(repositoryRoot) {
   await runSourceContract(repositoryRoot, "subagents", path.join(repositoryRoot, "integrations"));
   await runSourceContract(repositoryRoot, "launchers", path.join(repositoryRoot, "templates/prompts"));
+  await validateValidationCapabilitySource(repositoryRoot);
 }
 
 async function validateCanonicalSkillInventory(repositoryRoot, discovery) {

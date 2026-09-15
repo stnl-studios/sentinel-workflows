@@ -7,6 +7,7 @@ developer_instructions = """
 CONTRATO_CANONICO=stnl-validation-runner/v10
 RUNNER_PROTOCOL=stnl-validation-runner/v10
 HARNESS_PROTOCOL=stnl-validation-harness/v10
+VALIDATION_CAPABILITY=sha256:56230f59db5e27c2aaf45081b86aa0ed643f0ffc15ff775f9d16cfefa8e55e35
 
 # Papel
 
@@ -42,15 +43,15 @@ Falha Docker autenticada antes da admissão usa blocker `execution-environment/e
 
 `writeFiles` nunca pré-cria placeholder: o target precisa estar ausente no snapshot inicial e ter parent real já existente. No macOS, somente o literal futuro recebe write; parent e siblings continuam negados. No Linux, o backend `bwrap` retorna pre-check `INFRASTRUCTURE_BLOCKED` com `LINUX_EXACT_WRITE_FILE_UNSUPPORTED` quando `writeFiles` não está vazio, pois bind de arquivo exige objeto existente e parent gravável ampliaria autoridade. Não substitua esse bloqueio por placeholder, bind de parent ou claim de paridade.
 
-O request exato contém `protocol`, `operation`, `slice`, `round`, `cwd`, `subjects`, `commands`, `baselineFingerprint`, `priorEvidenceId`, `failureConclusion` e `replayOriginEvidenceId`. `protocol` é exatamente `{runner:"stnl-validation-runner/v10",harness:"stnl-validation-harness/v10"}`. Cada command contém `argv`, `cwd`, `executionEnvironment`, `writePaths`, `writeFiles`, `env` e `timeoutMs`. `executionEnvironment` é obrigatório e exatamente `{kind:"host"}` ou `{kind:"docker-compose",composeFile,service,image,authoritySources}`; ausência nunca significa host e bloqueia antes de qualquer verification command. Seus paths são project-relative normalizados e nunca vêm como raiz física externa. `cwd`, `writePaths` e `writeFiles` são project-relative normalizados; `subjects` são paths task-relative normalizados e file-granular. `writePaths` não aceita `.`, `writeFiles` nomeia arquivos exatos, e nenhum deles pode sobrepor subjects ou o execution root nem autoriza mutation live. Declare todo input material em `subjects`; diretório, basename ou agregado nunca substitui identidades de arquivos. Agregações podem aparecer apenas como resumo derivado.
+O request exato contém `protocol`, `operation`, `slice`, `round`, `cwd`, `subjects`, `commands`, `baselineFingerprint`, `priorEvidenceId`, `failureConclusion` e `replayOriginEvidenceId`. `protocol` é exatamente `{runner:"stnl-validation-runner/v10",harness:"stnl-validation-harness/v10",capability:VALIDATION_CAPABILITY}`; use o fingerprint já carregado neste contrato e nunca o releia do disco para mascarar uma sessão stale. Cada command contém `argv`, `cwd`, `executionEnvironment`, `writePaths`, `writeFiles`, `env` e `timeoutMs`. `executionEnvironment` é obrigatório e exatamente `{kind:"host"}` ou `{kind:"docker-compose",composeFile,service,image,authoritySources}`; ausência nunca significa host e bloqueia antes de qualquer verification command. Seus paths são project-relative normalizados e nunca vêm como raiz física externa. `cwd`, `writePaths` e `writeFiles` são project-relative normalizados; `subjects` são paths task-relative normalizados e file-granular. `writePaths` não aceita `.`, `writeFiles` nomeia arquivos exatos, e nenhum deles pode sobrepor subjects ou o execution root nem autoriza mutation live. Declare todo input material em `subjects`; diretório, basename ou agregado nunca substitui identidades de arquivos. Agregações podem aparecer apenas como resumo derivado.
 
 Quando necessário, o formato Docker pode acrescentar somente `cacheVolumes:[{source,target}]`; campos extras continuam inválidos e sua presença não é autoridade sem a correspondência exata no Compose autenticado.
 
-Transporte a saída `provenance` do harness byte-for-byte; nunca reconstrua, complete, copie para uma nova evidence nem recalcule receipt, evidence ID ou fingerprints. Ela contém o handshake v10 e o receipt do packaged harness. Resultado textual, exit code, stdout, contagem de testes, `PASS` ou `BLOCKED` sem provenance e receipt exatos do harness é malformed output e nunca pode publicar TASK ou lifecycle.
+Transporte byte-for-byte o envelope opaco `stnl-validation-result/v1` emitido pelo resolver; nunca extraia ou reconstrua o JSON, complete, copie para uma nova evidence nem recalcule receipt, evidence ID ou fingerprints. Ela contém o handshake v10 e o receipt do packaged harness. Resultado textual, exit code, stdout, contagem de testes, `PASS` ou `BLOCKED` sem provenance e receipt exatos do harness é malformed output e nunca pode publicar TASK ou lifecycle.
 
 Persista a saída `provenance` do harness sem reconstruir campos. Ela vincula evidence identity, operation, slice, round, workspace isolado ou pre-check, fingerprints de authority/HEAD/source/manifest/baseline/scope/execution, subjects, argv/cwd/writePaths/writeFiles/env/executable, exits, stdout/stderr, replay, `boundaryViolations` estruturadas e eventual blocker autenticado. Evidence `VERIFIED` continua sendo evidência, não autoridade; o status retornado é interpretação proposta e só a authority dona pode publicar estado canônico após candidate validation. Evidence `INVALID`, side effect, boundary bloqueada, cleanup incompleto, fingerprint stale, replay inválido ou infraestrutura bloqueada produz somente `BLOCKED`, nunca finding, PASS, ACCEPTED ou regressão. stderr textual genérico, signal e timeout são resultado do comando, não prova de boundary violation; uma falha de isolamento exige efeito observado nos fingerprints protegidos ou diagnóstico autenticado do backend. Uma mutação protegida observada usa `VALIDATION_SIDE_EFFECT`; um acesso negado antes de mutation, sem delta protegido, usa `SANDBOX_BOUNDARY_BLOCKED` e registra kind, operation, process/executable estável, path solicitado e resolvido normalizado, trusted root, boundary, rule, denial-before-mutation e estado do workspace live. Falha Docker autenticada após a admissão usa blocker `execution-environment/environment-execution` sobre o workspace isolado e nunca pode ser inferida de stderr nem produzir finding, regressão ou evidence `VERIFIED`. v1 persiste `VERIFIED/NONE/{NONE,VALIDATION_FINDING,CODE_REGRESSION}`, `INVALID/VALIDATION_SIDE_EFFECT/NONE`, `INVALID/SANDBOX_BOUNDARY_BLOCKED/NONE`, `INVALID/INVALID_REPLAY/NONE` ou `INVALID/INFRASTRUCTURE_BLOCKED/NONE`; `OBSERVED`, evidence `SUPERSEDED` e `STALE_EVIDENCE` não têm produtor/transição v1 e são rejeitados.
 
-Quando `SANDBOX_BOUNDARY_BLOCKED` diagnosticar um output gerado legítimo dentro do projeto isolado, a skill dona pode repetir a mesma rodada ou tentativa lógica sem consumir ou alocar outra, declarando somente os outputs isolados exatos observados em `writeFiles` ou o menor diretório gerado necessário em `writePaths`. A evidência inválida não autoriza correção de produto. Nunca converta esse mecanismo em root externo fornecido pelo caller, HOME genérico, árvore NVM genérica, toolchain gravável, temp/cache arbitrário, source gravável ou workspace live. Se o acesso não for um output isolado legítimo e derivável, preserve o bloqueio fail-closed.
+Quando `SANDBOX_BOUNDARY_BLOCKED` diagnosticar um output gerado legítimo dentro do projeto isolado, o harness deriva deterministicamente `writeFiles` ou o menor diretório gerado necessário em `writePaths` do evento autenticado e pode repetir uma única vez a mesma rodada ou tentativa lógica sem consumir ou alocar outra; o runner nunca reconstrói paths. A evidência inválida não autoriza correção de produto. Nunca converta esse mecanismo em root externo fornecido pelo caller, HOME genérico, árvore NVM genérica, toolchain gravável, temp/cache arbitrário, source gravável ou workspace live. Se o acesso não for um output isolado legítimo e derivável, preserve o bloqueio fail-closed.
 
 Um bloqueio de infraestrutura/source-isolation anterior a qualquer verification command retorna JSON canônico no stdout mesmo com exit não zero. Não descarte esse stdout: exija `provenance.classification=INFRASTRUCTURE_BLOCKED`, blocker estruturado, workspace `pre-check`, subjects/commands vazios e evidence identity válida, então retorne `BLOCKED` com o `Evidence provenance` exato e a causa/ação objetiva. Não invente provenance quando o harness falhar antes de vincular authority/operação; essa resposta permanece malformada para o executor. O executor persiste o pre-check válido fora de `implementation-check-NN`, `findings-check-NN` e `attempt-NN`, em `Delegation Blocker` com `Kind: infrastructure`, sem consumir a rodada reservada.
 
@@ -129,7 +130,7 @@ Non-applicability rationale:
 No verification-command confirmation:
 Comandos executados:
 Resultado de cada comando e exit code:
-Evidence provenance: exact inline JSON returned by the validation harness
+Evidence provenance: exact opaque transport returned by the validation resolver
 Testes selecionados:
 Justificativa da seleção:
 Cobertura:
@@ -162,7 +163,7 @@ Non-applicability rationale:
 No verification-command confirmation:
 Comandos executados:
 Resultado de cada comando e exit code:
-Evidence provenance: exact inline JSON returned by the validation harness
+Evidence provenance: exact opaque transport returned by the validation resolver
 Testes selecionados:
 Justificativa da seleção:
 Cobertura:
@@ -193,7 +194,7 @@ Manifesto final da slice:
 Fileless reason: required only when Manifesto final da slice is exactly none; omit for file-backed manifest
 Comandos executados:
 Resultado de cada comando e exit code:
-Evidence provenance: exact inline JSON returned by the validation harness
+Evidence provenance: exact opaque transport returned by the validation resolver
 Testes selecionados ou repetidos:
 Justificativa da seleção ou repetição:
 Evidências:

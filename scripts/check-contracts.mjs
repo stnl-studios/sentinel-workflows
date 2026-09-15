@@ -160,7 +160,7 @@ const checkSchemas = {
     "No verification-command confirmation:",
     "Comandos executados:",
     "Resultado de cada comando e exit code:",
-    "Evidence provenance: exact inline JSON returned by the validation harness",
+    "Evidence provenance: exact opaque transport returned by the validation resolver",
     "Testes selecionados:",
     "Justificativa da seleção:",
     "Cobertura:",
@@ -190,7 +190,7 @@ const checkSchemas = {
     "No verification-command confirmation:",
     "Comandos executados:",
     "Resultado de cada comando e exit code:",
-    "Evidence provenance: exact inline JSON returned by the validation harness",
+    "Evidence provenance: exact opaque transport returned by the validation resolver",
     "Testes selecionados:",
     "Justificativa da seleção:",
     "Cobertura:",
@@ -218,7 +218,7 @@ const checkSchemas = {
     "Fileless reason: required only when Manifesto final da slice is exactly none; omit for file-backed manifest",
     "Comandos executados:",
     "Resultado de cada comando e exit code:",
-    "Evidence provenance: exact inline JSON returned by the validation harness",
+    "Evidence provenance: exact opaque transport returned by the validation resolver",
     "Testes selecionados ou repetidos:",
     "Justificativa da seleção ou repetição:",
     "Evidências:",
@@ -276,6 +276,7 @@ function checkRunner(root) {
   requirePattern(contract, /^CONTRATO_CANONICO=stnl-validation-runner\/v10$/mu, "R013_SYNTAX", "canonical runner contract ID is missing or stale");
   requirePattern(contract, /^RUNNER_PROTOCOL=stnl-validation-runner\/v10$/mu, "R018_PROVENANCE", "runner protocol handshake is missing");
   requirePattern(contract, /^HARNESS_PROTOCOL=stnl-validation-harness\/v10$/mu, "R018_PROVENANCE", "harness protocol handshake is missing");
+  requirePattern(contract, /^VALIDATION_CAPABILITY=sha256:[0-9a-f]{64}$/mu, "R018_PROVENANCE", "loaded validation capability identity is missing");
   const operations = /^OPERACOES_SUPORTADAS=([^\n]+)$/mu.exec(contract)?.[1];
   if (operations !== "EXECUTE_SLICE|APPLY_FINDINGS|VALIDATE_SLICE") reject("R004_OPERATION_SCOPE", `invalid runner operations: ${operations ?? "missing"}`);
   if (!contract.includes("STATUS_CHECKS=TESTS_PASS|TESTS_ACCEPTED|TESTS_FAIL|TESTS_NOT_APPLICABLE|BLOCKED") || !contract.includes("STATUS_VALIDACAO=PASS|ACCEPTED|NEEDS_FIX|BLOCKED")) {
@@ -297,9 +298,9 @@ function checkRunner(root) {
   requirePattern(contract, /Todo verification command, sem exceção[\s\S]{0,220}runtime de validação empacotado/iu, "R017_ISOLATION", "verification commands do not require the bundled validation runtime");
   requirePattern(contract, /não este agente, é o executor físico de todo verification command/iu, "R017_ISOLATION", "runner still owns physical verification execution");
   requirePattern(contract, /Não execute diretamente build, teste, lint, typecheck, compilador, project validator ou regressão/iu, "R017_ISOLATION", "runner direct execution boundary is missing");
-  requirePattern(contract, /`protocol` é exatamente `\{runner:"stnl-validation-runner\/v10",harness:"stnl-validation-harness\/v10"\}`/u, "R018_PROVENANCE", "runner/harness request handshake is missing");
+  requirePattern(contract, /`protocol` é exatamente `\{runner:"stnl-validation-runner\/v10",harness:"stnl-validation-harness\/v10",capability:VALIDATION_CAPABILITY\}`/u, "R018_PROVENANCE", "runner/harness/capability request handshake is missing");
   requirePattern(contract, /`executionEnvironment` é obrigatório[\s\S]{0,160}ausência nunca significa host/iu, "R017_ISOLATION", "new requests can retain implicit host execution");
-  requirePattern(contract, /byte-for-byte[\s\S]{0,240}nunca reconstrua[\s\S]{0,260}receipt/iu, "R018_PROVENANCE", "harness provenance transport is not exact");
+  requirePattern(contract, /byte-for-byte[\s\S]{0,160}envelope opaco[\s\S]{0,180}nunca extraia ou reconstrua[\s\S]{0,300}receipt/iu, "R018_PROVENANCE", "harness provenance transport is not exact");
   requirePattern(contract, /Resultado textual[\s\S]{0,240}sem provenance e receipt exatos[\s\S]{0,180}nunca pode publicar TASK ou lifecycle/iu, "R018_PROVENANCE", "raw runner results can claim formal authority");
   requirePattern(contract, /executionEnvironment\.kind=host[\s\S]{0,700}executionEnvironment\.kind=docker-compose/iu, "R017_ISOLATION", "project-defined execution authority is not explicit");
   requirePattern(contract, /Dockerfile[\s\S]{0,220}não constitui autoridade[\s\S]{0,220}ambíguo[\s\S]{0,100}`BLOCKED`/iu, "R017_ISOLATION", "Docker selection can be inferred without explicit project authority");
@@ -313,7 +314,7 @@ function checkRunner(root) {
   requirePattern(contract, /Derive internamente de `SPEC_PATH`[^\n]{0,180}execution root canônico[^\n]{0,160}artefatos exatos de plan\/task/iu, "R017_ISOLATION", "runner does not derive execution artifacts from intent and identity");
   forbidPattern(contract, /execution root derivado, paths de plans e tasks|cujo path acompanha o payload/iu, "R017_ISOLATION", "runner payload exposes derivable execution plumbing");
   requirePattern(contract, /sandbox do sistema operacional[\s\S]{0,300}`writePaths`[\s\S]{0,120}`writeFiles`/iu, "R017_ISOLATION", "filesystem isolation and explicit write boundaries are missing");
-  requirePattern(contract, /SANDBOX_BOUNDARY_BLOCKED[\s\S]{0,600}mesma (?:rodada|tentativa)[\s\S]{0,400}outputs isolados exatos/iu, "R018_PROVENANCE", "boundary recovery is not bounded to exact isolated outputs");
+  requirePattern(contract, /SANDBOX_BOUNDARY_BLOCKED[\s\S]{0,500}harness deriva deterministicamente[\s\S]{0,300}mesma (?:rodada|tentativa)[\s\S]{0,500}runner nunca reconstrói paths/iu, "R018_PROVENANCE", "boundary recovery is not bounded to exact isolated outputs");
   requirePattern(contract, /Symlink de source[^\n]{0,180}target canônico final[^\n]{0,220}(?:preservado|rebaseado)[^\n]{0,220}target externo[^\n]{0,120}bloqueia/iu, "R017_ISOLATION", "source symlink admission is not bound to canonical project containment");
   requirePattern(contract, /Plataforma sem sandbox suportada retorna `BLOCKED`[^\n]{0,80}não faça fallback direto/iu, "R017_ISOLATION", "sandbox availability does not fail closed");
   requirePattern(contract, /Evidence `INVALID`[^\n]{0,220}(?:somente `BLOCKED`|produz somente `BLOCKED`)/iu, "R018_PROVENANCE", "invalid evidence may support a material verdict");

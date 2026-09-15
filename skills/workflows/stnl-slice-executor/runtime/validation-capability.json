@@ -1,0 +1,19 @@
+{
+  "identity": "sha256:56230f59db5e27c2aaf45081b86aa0ed643f0ffc15ff775f9d16cfefa8e55e35",
+  "schemaVersion": 1,
+  "runnerProtocol": "stnl-validation-runner/v10",
+  "harnessProtocol": "stnl-validation-harness/v10",
+  "package": {
+    "owner": "stnl-slice-executor",
+    "fingerprint": "sha256:2b68d5cc4459b5b2394c6e3e8e5ce88124f2f11b59f0353aed04248b1dfd4d4c",
+    "files": {
+      "SKILL.md": "sha256:0a8354c7451185cdf97384d149ebde2372ffb2179ca6fd0c36ee3ef9a9a52611",
+      "references/execution-record-schema.md": "sha256:69d5b7fd7e5eae4396399bd44fc62c31b6be1c4bd74486d72e954b01c1674635",
+      "runtime/execution-state.mjs": "sha256:120a73076f410347f1ab9910d40ff1214ccd75990364bb7200ce43d7d220eb78",
+      "runtime/resolve-validation-runtime.mjs": "sha256:f61f7f10ec145d7c53c54d500d29b944a0f2ae67c577b150263f1a77f4402922",
+      "runtime/run-validation-session.mjs": "sha256:ec0773ed1026fa0849d3f99e125665bd707e1d8580f0c82964ab775fe5272bf9",
+      "runtime/validate-execution-state.mjs": "sha256:685a9c6971851b62675cbca4802276b819b06d577ab7a22a7eda3a7f0bea67a6",
+      "runtime/validation-capability.mjs": "sha256:5fc726fa5dae8ab16c35f0fba63a31799f6e853e9132879c742be209d35610b6"
+    }
+  }
+}

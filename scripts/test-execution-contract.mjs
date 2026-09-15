@@ -31,6 +31,8 @@ import {
   validationSandboxBackend,
   validationSandboxSupportsExactWriteFiles,
 } from "../skills/workflows/stnl-slice-executor/runtime/run-validation-session.mjs";
+import { VALIDATION_CAPABILITY_IDENTITY } from "../skills/workflows/stnl-slice-executor/runtime/validation-capability.mjs";
+import { validationResultTransport } from "../skills/workflows/stnl-slice-executor/runtime/resolve-validation-runtime.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
 const SKILLS = [
@@ -4609,7 +4611,11 @@ function validationRequest({
   operation = "EXECUTE_SLICE", slice = "slice-01", round = "1/3", subjects = ["../../src/example.txt"],
   argv = [process.execPath, "-e", "process.exit(0)"], writePaths = [], writeFiles = [], priorEvidenceId = null,
   env = {}, executionEnvironment = { kind: "host" }, failureConclusion = "VALIDATION_FINDING", replayOriginEvidenceId = null,
-  protocol = { runner: "stnl-validation-runner/v10", harness: "stnl-validation-harness/v10" },
+  protocol = {
+    runner: "stnl-validation-runner/v10",
+    harness: "stnl-validation-harness/v10",
+    capability: VALIDATION_CAPABILITY_IDENTITY,
+  },
 } = {}) {
   return {
     protocol, operation, slice, round, cwd: ".", subjects,
@@ -4706,7 +4712,7 @@ function dockerRuntimeFailureEngine(fixture, failure) {
       return Buffer.from(JSON.stringify({ Id: containerId }));
     }
     if (requestPath === `/containers/${containerId}/start`) {
-      if (failure === "start") fail("DOCKER_START_FAILED", "authenticated start failure");
+      if (["start", "start-cleanup"].includes(failure)) fail("DOCKER_START_FAILED", "authenticated start failure");
       return Buffer.alloc(0);
     }
     if (requestPath === `/containers/${containerId}/wait?condition=not-running`) {
@@ -4727,7 +4733,7 @@ function dockerRuntimeFailureEngine(fixture, failure) {
       return Buffer.alloc(0);
     }
     if (requestPath === `/containers/${containerId}?force=1&v=1` && method === "DELETE") {
-      if (failure === "cleanup") fail("DOCKER_CLEANUP_FAILED", "authenticated cleanup failure");
+      if (["cleanup", "start-cleanup"].includes(failure)) fail("DOCKER_CLEANUP_FAILED", "authenticated cleanup failure");
       residualContainers.delete(containerId);
       return Buffer.alloc(0);
     }
@@ -4823,14 +4829,16 @@ test("new validation requests without executionEnvironment fail closed before an
 
 test("protocol-preflight blockers for mixed, missing, or unknown versions publish without consuming the round", async (t) => {
   const cases = [
-    ["missing", undefined],
-    ["runner-v9", { runner: "stnl-validation-runner/v9", harness: "stnl-validation-harness/v10" }],
-    ["harness-v9", { runner: "stnl-validation-runner/v10", harness: "stnl-validation-harness/v9" }],
-    ["runner-unknown", { runner: "stnl-validation-runner/future", harness: "stnl-validation-harness/v10" }],
-    ["harness-unknown", { runner: "stnl-validation-runner/v10", harness: "stnl-validation-harness/future" }],
-    ["fully-unknown", { runner: "stnl-validation-runner/future", harness: "stnl-validation-harness/future" }],
+    ["missing", undefined, "protocol-preflight", "VALIDATION_PROTOCOL_INCOMPATIBLE"],
+    ["runner-v9", { runner: "stnl-validation-runner/v9", harness: "stnl-validation-harness/v10" }, "protocol-preflight", "VALIDATION_PROTOCOL_INCOMPATIBLE"],
+    ["harness-v9", { runner: "stnl-validation-runner/v10", harness: "stnl-validation-harness/v9" }, "protocol-preflight", "VALIDATION_PROTOCOL_INCOMPATIBLE"],
+    ["runner-unknown", { runner: "stnl-validation-runner/future", harness: "stnl-validation-harness/v10" }, "protocol-preflight", "VALIDATION_PROTOCOL_INCOMPATIBLE"],
+    ["harness-unknown", { runner: "stnl-validation-runner/v10", harness: "stnl-validation-harness/future" }, "protocol-preflight", "VALIDATION_PROTOCOL_INCOMPATIBLE"],
+    ["fully-unknown", { runner: "stnl-validation-runner/future", harness: "stnl-validation-harness/future" }, "protocol-preflight", "VALIDATION_PROTOCOL_INCOMPATIBLE"],
+    ["loaded-capability-missing", { runner: "stnl-validation-runner/v10", harness: "stnl-validation-harness/v10" }, "identity-preflight", "VALIDATION_CAPABILITY_IDENTITY_MISMATCH"],
+    ["loaded-capability-stale", { runner: "stnl-validation-runner/v10", harness: "stnl-validation-harness/v10", capability: `sha256:${"0".repeat(64)}` }, "identity-preflight", "VALIDATION_CAPABILITY_IDENTITY_MISMATCH"],
   ];
-  for (const [name, protocol] of cases) {
+  for (const [name, protocol, stage, code] of cases) {
     const fixture = await validationSessionFixture(t);
     const marker = path.join(fixture.root, `protocol-${name}-marker`);
     const request = validationRequest({
@@ -4843,13 +4851,14 @@ test("protocol-preflight blockers for mixed, missing, or unknown versions publis
     assert.equal(blocked.provenance.state, "INVALID", name);
     assert.equal(blocked.provenance.classification, "INFRASTRUCTURE_BLOCKED", name);
     assert.equal(blocked.provenance.conclusion, "NONE", name);
-    assert.equal(blocked.provenance.blocker.stage, "protocol-preflight", name);
-    assert.equal(blocked.provenance.blocker.code, "VALIDATION_PROTOCOL_INCOMPATIBLE", name);
+    assert.equal(blocked.provenance.blocker.stage, stage, name);
+    assert.equal(blocked.provenance.blocker.code, code, name);
     assert.deepEqual(blocked.provenance.commands, [], name);
     assert.deepEqual(blocked.provenance.subjects, [], name);
     assert.deepEqual(blocked.outputs, [], name);
     assert.deepEqual(blocked.provenance.protocol, {
       runner: "stnl-validation-runner/v10", harness: "stnl-validation-harness/v10",
+      capability: VALIDATION_CAPABILITY_IDENTITY,
     }, name);
     assert.deepEqual(blocked.provenance.inputs.protocol, blocked.provenance.protocol, name);
     const { evidenceId: _evidenceId, receipt: _receipt, ...receiptMaterial } = blocked.provenance;
@@ -4887,6 +4896,29 @@ test("protocol-preflight blockers for mixed, missing, or unknown versions publis
       name,
     );
   }
+});
+
+test("installed package identity drift blocks before any verification command", async (t) => {
+  const fixture = await validationSessionFixture(t);
+  const marker = path.join(fixture.root, "package-identity-command-marker");
+  const blocked = await runValidationSession(fixture.requirements, validationRequest({
+    argv: [process.execPath, "-e", "require('node:fs').writeFileSync(process.argv[1], 'spawned')", marker],
+    failureConclusion: "NONE",
+  }), {
+    validationCapability: {
+      identity: VALIDATION_CAPABILITY_IDENTITY,
+      packageIdentity: `sha256:${"0".repeat(64)}`,
+      coherent: false,
+      mismatches: ["runtime/execution-state.mjs"],
+    },
+  });
+  assert.equal(blocked.provenance.classification, "INFRASTRUCTURE_BLOCKED");
+  assert.deepEqual(blocked.provenance.blocker, {
+    kind: "infrastructure", stage: "identity-preflight", code: "VALIDATION_PACKAGE_IDENTITY_MISMATCH",
+    message: "packaged validation capability is incoherent: runtime/execution-state.mjs", target: null,
+  });
+  assert.deepEqual(blocked.provenance.commands, []);
+  await assert.rejects(fs.access(marker));
 });
 
 test("protocol-preflight evidence rejects protocol and blocker fabrication at publication", async (t) => {
@@ -5212,6 +5244,113 @@ test("Docker cache snapshot rejects symlinks and removes its helper container", 
   assert.equal(calls.some((call) => call.method === "DELETE"), true);
 });
 
+test("Docker cache helper create, start, and wait failures preserve their root cause", async (t) => {
+  const containerId = "a".repeat(64);
+  for (const [failure, code] of [
+    ["create", "DOCKER_CACHE_CREATE_FAILED"],
+    ["start", "DOCKER_CACHE_START_FAILED"],
+    ["wait", "DOCKER_CACHE_WAIT_FAILED"],
+  ]) {
+    const destinationRoot = await temporary(t, `stnl-validation-cache-${failure}-`);
+    let removed = false;
+    const requestDocker = async (method, requestPath) => {
+      if (requestPath.startsWith("/containers/create")) {
+        if (failure === "create") throw new DockerEnvironmentError(code, `authenticated cache ${failure} failure`);
+        return Buffer.from(JSON.stringify({ Id: containerId }));
+      }
+      if (requestPath === `/containers/${containerId}/start`) {
+        if (failure === "start") throw new DockerEnvironmentError(code, `authenticated cache ${failure} failure`);
+        return Buffer.alloc(0);
+      }
+      if (requestPath === `/containers/${containerId}/wait?condition=not-running`) {
+        if (failure === "wait") throw new DockerEnvironmentError(code, `authenticated cache ${failure} failure`);
+        return Buffer.from(JSON.stringify({ StatusCode: 0 }));
+      }
+      if (method === "DELETE" && requestPath === `/containers/${containerId}?force=1&v=1`) {
+        removed = true;
+        return Buffer.alloc(0);
+      }
+      throw new Error(`unexpected Docker cache request ${method} ${requestPath}`);
+    };
+    await assert.rejects(createDockerEngine(requestDocker).snapshotCacheVolumes({
+      imageId: `sha256:${"d".repeat(64)}`,
+      cacheVolumes: [{ source: "fixture-cache", target: "/var/cache/fixture", volumeName: "fixture_fixture-cache" }],
+      destinationRoot,
+    }), (error) => error instanceof DockerEnvironmentError && error.code === code);
+    assert.equal(removed, failure !== "create", failure);
+  }
+});
+
+test("Docker cache helper cleanup failure augments rather than replaces the root blocker", async (t) => {
+  const destinationRoot = await temporary(t, "stnl-validation-cache-root-and-cleanup-");
+  const containerId = "a".repeat(64);
+  const requestDocker = async (method, requestPath) => {
+    if (requestPath.startsWith("/containers/create")) return Buffer.from(JSON.stringify({ Id: containerId }));
+    if (requestPath === `/containers/${containerId}/start`) {
+      throw new DockerEnvironmentError("DOCKER_CACHE_START_FAILED", "authenticated cache start failure");
+    }
+    if (method === "DELETE" && requestPath === `/containers/${containerId}?force=1&v=1`) {
+      throw new DockerEnvironmentError("DOCKER_CACHE_CLEANUP_FAILED", "authenticated cache cleanup failure");
+    }
+    throw new Error(`unexpected Docker cache request ${method} ${requestPath}`);
+  };
+  await assert.rejects(createDockerEngine(requestDocker).snapshotCacheVolumes({
+    imageId: `sha256:${"d".repeat(64)}`,
+    cacheVolumes: [{ source: "fixture-cache", target: "/var/cache/fixture", volumeName: "fixture_fixture-cache" }],
+    destinationRoot,
+  }), (error) => {
+    assert.equal(error.code, "DOCKER_CACHE_START_FAILED");
+    assert.deepEqual(error.environmentSideEffects, ["docker-cache-helper-container-cleanup-failed"]);
+    return true;
+  });
+});
+
+test("cache snapshot temp-root cleanup failure remains formal infrastructure provenance", async (t) => {
+  const fixture = await validationSessionFixture(t);
+  const executionEnvironment = await dockerCacheAuthorityFixture(fixture);
+  const engine = fakeDockerCacheEngine(fixture);
+  engine.snapshotCacheVolumes = async () => {
+    throw new DockerEnvironmentError("DOCKER_CACHE_WAIT_FAILED", "authenticated cache wait failure");
+  };
+  const blocked = await runValidationSession(fixture.requirements, validationRequest({
+    argv: ["fixture-tool"], executionEnvironment, failureConclusion: "NONE",
+  }), {
+    dockerEngine: engine,
+    removeTree: async (target) => {
+      if (path.basename(target).startsWith("stnl-validation-cache-")) throw new Error("simulated cache root cleanup failure");
+      await fs.rm(target, { recursive: true, force: true });
+    },
+  });
+  assert.equal(blocked.provenance.classification, "INFRASTRUCTURE_BLOCKED");
+  assert.equal(blocked.provenance.blocker.code, "DOCKER_CACHE_WAIT_FAILED");
+  assert.equal(blocked.provenance.workspace.cleanup, "failed");
+  assert.deepEqual(blocked.provenance.workspace.sideEffects, ["docker-cache-snapshot-root-cleanup-failed"]);
+  const candidate = await externalExecutionCandidate(t, fixture);
+  await editTask(candidate, (value) => {
+    let next = value.replace("- [ ] 1.1", "- [x] 1.1");
+    next = replaceSection(next, "Changed Areas", "- `../../src/example.txt`");
+    return replaceSection(next, "Delegation Blocker", infrastructureDelegationBlocker(blocked.provenance));
+  });
+  assert.equal((await validateExecutionCandidate(fixture.requirements, candidate.execution)).state, "RUNNER_RESULT_BLOCKED");
+});
+
+test("simultaneous session and cache cleanup failures preserve every known residual", async (t) => {
+  const fixture = await validationSessionFixture(t);
+  const executionEnvironment = await dockerCacheAuthorityFixture(fixture);
+  const blocked = await runValidationSession(fixture.requirements, validationRequest({
+    argv: ["fixture-tool"], executionEnvironment, failureConclusion: "NONE",
+  }), {
+    dockerEngine: fakeDockerCacheEngine(fixture),
+    removeTree: async () => { throw new Error("simulated simultaneous cleanup failure"); },
+  });
+  assert.equal(blocked.provenance.classification, "VALIDATION_SIDE_EFFECT");
+  assert.equal(blocked.provenance.workspace.cleanup, "failed");
+  assert.deepEqual(blocked.provenance.workspace.sideEffects, [
+    "docker-cache-snapshot-root-cleanup-failed",
+    "validation-session-root-cleanup-failed",
+  ]);
+});
+
 test("Docker image mutation after admission invalidates otherwise successful evidence", async (t) => {
   const fixture = await validationSessionFixture(t);
   const executionEnvironment = await dockerAuthorityFixture(fixture);
@@ -5320,6 +5459,60 @@ test("Docker cleanup failure remains a validation side effect and invalidates ev
   assert.equal(engine.residualContainers.size, 1);
 });
 
+test("Docker execution blocker and cleanup residual coexist in validator-accepted provenance", async (t) => {
+  const fixture = await validationSessionFixture(t);
+  const executionEnvironment = await dockerAuthorityFixture(fixture);
+  const engine = dockerRuntimeFailureEngine(fixture, "start-cleanup");
+  const blocked = await runValidationSession(fixture.requirements, validationRequest({
+    argv: ["fixture-tool"], executionEnvironment, failureConclusion: "VALIDATION_FINDING",
+  }), { dockerEngine: engine });
+  assert.equal(blocked.provenance.state, "INVALID");
+  assert.equal(blocked.provenance.classification, "INFRASTRUCTURE_BLOCKED");
+  assert.equal(blocked.provenance.conclusion, "NONE");
+  assert.equal(blocked.provenance.blocker.code, "DOCKER_START_FAILED");
+  assert.equal(blocked.provenance.workspace.cleanup, "failed");
+  assert.deepEqual(blocked.provenance.workspace.sideEffects, ["docker-validation-container-cleanup-failed"]);
+  assert.equal(engine.residualContainers.size, 1);
+  const candidate = await externalExecutionCandidate(t, fixture);
+  await editTask(candidate, (value) => {
+    let next = value.replace("- [ ] 1.1", "- [x] 1.1");
+    next = replaceSection(next, "Changed Areas", "- `../../src/example.txt`");
+    return replaceSection(next, "Implementation Test Evidence", evidenceCheckRecord(blocked.provenance, { status: "BLOCKED" }));
+  });
+  assert.equal((await validateExecutionCandidate(fixture.requirements, candidate.execution)).state, "AUXILIARY_BLOCKED");
+});
+
+test("validation session temp-root cleanup failure remains a formal side effect", async (t) => {
+  const fixture = await validationSessionFixture(t);
+  const blocked = await runValidationSession(fixture.requirements, validationRequest({ failureConclusion: "NONE" }), {
+    removeTree: async (target) => {
+      if (path.basename(target).startsWith("stnl-validation-session-")) throw new Error("simulated session cleanup failure");
+      await fs.rm(target, { recursive: true, force: true });
+    },
+  });
+  assert.equal(blocked.provenance.state, "INVALID");
+  assert.equal(blocked.provenance.classification, "VALIDATION_SIDE_EFFECT");
+  assert.equal(blocked.provenance.workspace.cleanup, "failed");
+  assert.deepEqual(blocked.provenance.workspace.sideEffects, ["validation-session-root-cleanup-failed"]);
+});
+
+test("session preparation error plus cleanup failure cannot collapse to malformed output", async (t) => {
+  const fixture = await validationSessionFixture(t);
+  const blocked = await runValidationSession(fixture.requirements, validationRequest({
+    argv: ["stnl-definitely-missing-verification-tool"], failureConclusion: "NONE",
+  }), {
+    removeTree: async (target) => {
+      if (path.basename(target).startsWith("stnl-validation-session-")) throw new Error("simulated session cleanup failure");
+      await fs.rm(target, { recursive: true, force: true });
+    },
+  });
+  assert.equal(blocked.provenance.classification, "INFRASTRUCTURE_BLOCKED");
+  assert.equal(blocked.provenance.blocker.code, "VALIDATION_SESSION_FAILED");
+  assert.equal(blocked.provenance.workspace.cleanup, "failed");
+  assert.deepEqual(blocked.provenance.workspace.sideEffects, ["validation-session-root-cleanup-failed"]);
+  assert.deepEqual(blocked.provenance.commands, []);
+});
+
 test("Docker authority cannot grant an external root or exact-file sibling authority", async (t) => {
   const fixture = await validationSessionFixture(t);
   const executionEnvironment = await dockerAuthorityFixture(fixture);
@@ -5357,6 +5550,11 @@ function provenanceCommands(provenance) {
   return provenance.commands.map((command) => `  - \`${command.display}\` | exit:${command.exit}`).join("\n");
 }
 
+function provenanceTransport(provenance, outputs = []) {
+  const stdout = `${JSON.stringify({ provenance, outputs })}\n`;
+  return `stnl-validation-result/v1:${Buffer.from(stdout, "utf8").toString("base64url")}`;
+}
+
 function evidenceCheckRecord(provenance, { status = "TESTS_PASS", number = 1 } = {}) {
   const identifier = String(number).padStart(2, "0");
   const testedState = provenance.subjects.map((subject) => `  - \`${subject.path}\` | ${subject.expected}`).join("\n");
@@ -5373,7 +5571,7 @@ ${testedState}
 - Verification types considered: focused automated test
 - Commands:
 ${provenanceCommands(provenance)}
-- Evidence provenance: ${JSON.stringify(provenance)}
+- Evidence provenance: ${provenanceTransport(provenance)}
 - Selected checks: isolated validation session
 - Selection rationale: bounded authoritative behavior check
 - Coverage: AC-001 observable behavior
@@ -5395,7 +5593,7 @@ function evidenceAttemptRecord(provenance, status, { number = 1 } = {}) {
 - Verified scope: ${provenance.subjects.map((subject) => subject.path).join(", ")}
 - Commands:
 ${provenanceCommands(provenance)}
-- Evidence provenance: ${JSON.stringify(provenance)}
+- Evidence provenance: ${provenanceTransport(provenance)}
 - Evidence: isolated validation evidence
 - Finding references: ${findingFields[0]}
 - Finding dispositions: ${findingFields[1]}
@@ -5416,7 +5614,7 @@ function infrastructureDelegationBlocker(provenance) {
 - After record: none
 - Pending automatic round: ${provenance.round}
 - HEAD: ${provenance.inputs.head}
-- Evidence provenance: ${JSON.stringify(provenance)}
+- Evidence provenance: ${provenanceTransport(provenance)}
 - Causes:
   - ${provenance.blocker.code}: ${provenance.blocker.message}
 - Required action: restore the trusted validation infrastructure and resume the same logical runner invocation`;
@@ -5538,6 +5736,85 @@ test("host-authoritative direct .NET SDK layout is admitted independently of Doc
   )), /inherited canonical toolchain bin directory|dependency boundary/u);
 });
 
+test("authenticated generated output denial derives one minimal same-round harness retry", { skip: process.platform !== "darwin" }, async (t) => {
+  const fixture = await validationSessionFixture(t);
+  const liveBefore = await snapshotTree(fixture.root);
+  const request = validationRequest({
+    argv: [process.execPath, "-e", [
+      "const fs=require('node:fs')",
+      "fs.mkdirSync('transient-output/nested',{recursive:true})",
+      "fs.writeFileSync('transient-output/nested/result.bin','generated')",
+      "process.exit(fs.readFileSync('transient-output/nested/result.bin','utf8')==='generated'?0:9)",
+    ].join(";")],
+    failureConclusion: "NONE",
+  });
+  const result = await runValidationSession(fixture.requirements, request);
+  assert.equal(result.provenance.state, "VERIFIED", JSON.stringify(result));
+  assert.equal(result.provenance.classification, "NONE");
+  assert.equal(result.provenance.round, "1/3");
+  assert.match(result.provenance.recovery.originEvidenceId, /^sha256:[0-9a-f]{64}$/u);
+  assert.equal(result.provenance.recovery.sameRound, true);
+  assert.deepEqual(result.provenance.recovery.authorizations, [
+    { command: 1, kind: "writePath", path: "transient-output" },
+  ]);
+  assert.deepEqual(result.provenance.commands[0].writeFiles, []);
+  assert.deepEqual(result.provenance.commands[0].writePaths, ["transient-output"]);
+  assert.deepEqual(result.provenance.workspace.boundaryViolations, []);
+  assert.deepEqual(result.provenance.workspace.sideEffects, []);
+  assert.equal(result.provenance.workspace.cleanup, "clean");
+  assert.deepEqual(await snapshotTree(fixture.root), liveBefore);
+  await assert.rejects(fs.access(path.join(fixture.root, "transient-output/nested/result.bin")));
+});
+
+test("authenticated generated overwrite grants only the existing transient file", { skip: process.platform !== "darwin" }, async (t) => {
+  const fixture = await validationSessionFixture(t);
+  await fs.mkdir(path.join(fixture.root, "transient-state"), { recursive: true });
+  await fs.writeFile(path.join(fixture.root, "transient-state/result.bin"), "stale", "utf8");
+  const liveBefore = await snapshotTree(fixture.root);
+  const result = await runValidationSession(fixture.requirements, validationRequest({
+    argv: [process.execPath, "-e", [
+      "const fs=require('node:fs')",
+      "fs.writeFileSync('transient-state/result.bin','fresh')",
+      "process.exit(fs.readFileSync('transient-state/result.bin','utf8')==='fresh'?0:9)",
+    ].join(";")],
+    failureConclusion: "NONE",
+  }));
+  assert.equal(result.provenance.state, "VERIFIED", JSON.stringify(result));
+  assert.deepEqual(result.provenance.recovery.authorizations, [
+    { command: 1, kind: "writeFile", path: "transient-state/result.bin" },
+  ]);
+  assert.deepEqual(result.provenance.commands[0].writeFiles, ["transient-state/result.bin"]);
+  assert.deepEqual(result.provenance.commands[0].writePaths, []);
+  assert.deepEqual(await snapshotTree(fixture.root), liveBefore);
+  assert.equal(await fs.readFile(path.join(fixture.root, "transient-state/result.bin"), "utf8"), "stale");
+});
+
+test("authenticated sequential transient denials accumulate bounded authority in one logical round", { skip: process.platform !== "darwin" }, async (t) => {
+  const fixture = await validationSessionFixture(t);
+  const liveBefore = await snapshotTree(fixture.root);
+  const result = await runValidationSession(fixture.requirements, validationRequest({
+    argv: [process.execPath, "-e", [
+      "const fs=require('node:fs')",
+      "fs.mkdirSync('persistent-output',{recursive:true})",
+      "fs.writeFileSync('persistent-output/result.bin','generated')",
+      "fs.mkdirSync('ephemeral-output',{recursive:true})",
+      "fs.writeFileSync('ephemeral-output/staging.bin','generated')",
+      "fs.rmSync('ephemeral-output',{recursive:true})",
+    ].join(";")],
+    failureConclusion: "NONE",
+  }));
+  assert.equal(result.provenance.state, "VERIFIED", JSON.stringify(result));
+  assert.equal(result.provenance.round, "1/3");
+  assert.equal(result.provenance.recovery.sameRound, true);
+  assert.deepEqual(result.provenance.recovery.authorizations, [
+    { command: 1, kind: "writePath", path: "ephemeral-output" },
+    { command: 1, kind: "writePath", path: "persistent-output" },
+  ]);
+  assert.deepEqual(result.provenance.commands[0].writePaths, ["ephemeral-output", "persistent-output"]);
+  assert.deepEqual(result.provenance.workspace.boundaryViolations, []);
+  assert.deepEqual(await snapshotTree(fixture.root), liveBefore);
+});
+
 test("authenticated real npm recovery declares only observed isolated tool outputs and preserves mixed exits", async (t) => {
   const fixture = await validationSessionFixture(t);
   await fs.mkdir(path.join(fixture.root, "node_modules/.vite-temp"), { recursive: true });
@@ -5565,7 +5842,7 @@ test("authenticated real npm recovery declares only observed isolated tool outpu
   ].map((argv) => ({
     argv, cwd: ".", executionEnvironment: { kind: "host" }, writePaths: [], writeFiles: [], env: {}, timeoutMs: 10_000,
   }));
-  const blocked = await runValidationSession(fixture.requirements, request);
+  const blocked = await runValidationSession(fixture.requirements, request, { generatedWriteRecoveryAttempted: true });
   assert.equal(blocked.provenance.state, "INVALID", JSON.stringify(blocked));
   assert.equal(blocked.provenance.classification, "SANDBOX_BOUNDARY_BLOCKED");
   assert.deepEqual(blocked.provenance.commands.map((command) => command.exit), [1, 2, 0, 1, 1, 1], JSON.stringify(blocked));
@@ -5577,7 +5854,7 @@ test("authenticated real npm recovery declares only observed isolated tool outpu
   assert.ok([...diagnostics.values()].every((entry) => entry.rule === "write-outside-declared-isolated-outputs"));
   assert.ok([...diagnostics.values()].every((entry) => entry.deniedBeforeMutation === true));
   const viteTemp = diagnostics.get("$PROJECT/node_modules/.vite-temp/vitest.config.ts.timestamp-<generated>.mjs");
-  if (viteTemp !== undefined) assert.equal(viteTemp.process, "node");
+  if (viteTemp !== undefined) assert.ok(["node", "npm"].includes(viteTemp.process));
   const vitestResults = diagnostics.get("$PROJECT/node_modules/.vite/vitest/stable/results.json");
   if (vitestResults !== undefined) assert.equal(vitestResults.deniedBeforeMutation, true);
 
@@ -5745,6 +6022,24 @@ test("writeFiles target remains absent at process start and need not be produced
   await assert.rejects(fs.access(path.join(fixture.root, "generated/optional.json")));
 });
 
+test("writeFiles cannot turn one exact generated file identity into an authoritative writable tree", async (t) => {
+  const fixture = await validationSessionFixture(t);
+  await fs.mkdir(path.join(fixture.root, "generated"));
+  const result = await runValidationSession(fixture.requirements, validationRequest({
+    argv: [process.execPath, "-e", [
+      "const fs=require('node:fs')",
+      "fs.mkdirSync('generated/result.json')",
+      "fs.writeFileSync('generated/result.json/child','expanded')",
+    ].join(";")],
+    writeFiles: ["generated/result.json"], failureConclusion: "NONE",
+  }));
+  if (!await assertExactFileBackend(result)) return;
+  assert.equal(result.provenance.state, "INVALID", JSON.stringify(result));
+  assert.equal(result.provenance.classification, "VALIDATION_SIDE_EFFECT");
+  assert.deepEqual(result.provenance.workspace.sideEffects, ["isolated-exact-output-type-changed"]);
+  assert.deepEqual(await fs.readdir(path.join(fixture.root, "generated")), []);
+});
+
 test("writeFiles denies an undeclared sibling without granting writable-parent authority", async (t) => {
   const fixture = await validationSessionFixture(t);
   await fs.mkdir(path.join(fixture.root, "generated"));
@@ -5756,7 +6051,7 @@ test("writeFiles denies an undeclared sibling without granting writable-parent a
       fs.writeFileSync("generated/other.json", "denied");
     `],
     writeFiles: ["generated/result.json"], failureConclusion: "VALIDATION_FINDING",
-  }));
+  }), { generatedWriteRecoveryAttempted: true });
   if (!await assertExactFileBackend(result)) return;
   assert.equal(result.provenance.state, "INVALID", JSON.stringify(result));
   assert.equal(result.provenance.classification, "SANDBOX_BOUNDARY_BLOCKED");
@@ -6300,6 +6595,7 @@ test("historical pre-toolchain BLOCKED provenance remains resumable on the same 
     fixture.requirements, validationRequest({ argv: [path.join(bin, "legacy")] }),
   );
   const legacy = structuredClone(current.provenance);
+  delete legacy.recovery;
   delete legacy.protocol;
   delete legacy.receipt;
   delete legacy.inputs.protocol;
@@ -6362,6 +6658,43 @@ test("missing authenticated pre-check provenance is rejected while genuinely mal
   assert.equal(state.state, "RUNNER_RESULT_BLOCKED");
   assert.equal(state.tasks.get("slice-01").delegationBlocker.kind, "malformed-output");
   assert.equal(state.tasks.get("slice-01").implementationChecks.length, 0);
+});
+
+test("valid harness BLOCKED uses exact opaque transport while absent provenance stays malformed", async (t) => {
+  const fixture = await validationSessionFixture(t);
+  const request = validationRequest({ failureConclusion: "NONE" });
+  delete request.commands[0].executionEnvironment;
+  const blocked = await runValidationSession(fixture.requirements, request);
+  const stdout = `${JSON.stringify(blocked)}\n`;
+  const transport = validationResultTransport(stdout, 1, "");
+  assert.match(transport, /^stnl-validation-result\/v1:[A-Za-z0-9_-]+$/u);
+  assert.equal(
+    Buffer.from(transport.slice("stnl-validation-result/v1:".length), "base64url").toString("utf8"),
+    stdout,
+  );
+  assert.equal(validationResultTransport("", 1, "BLOCKED: crashed before provenance\n"), null);
+  assert.equal(validationResultTransport("BLOCKED\n", 1, ""), null);
+
+  const candidate = await externalExecutionCandidate(t, fixture);
+  await editTask(candidate, (value) => {
+    let next = value.replace("- [ ] 1.1", "- [x] 1.1");
+    next = replaceSection(next, "Changed Areas", "- `../../src/example.txt`");
+    return replaceSection(next, "Delegation Blocker", infrastructureDelegationBlocker(blocked.provenance));
+  });
+  const state = await validateExecutionCandidate(fixture.requirements, candidate.execution);
+  assert.equal(state.state, "RUNNER_RESULT_BLOCKED");
+
+  const direct = await externalExecutionCandidate(t, fixture);
+  await editTask(direct, (value) => {
+    let next = value.replace("- [ ] 1.1", "- [x] 1.1");
+    next = replaceSection(next, "Changed Areas", "- `../../src/example.txt`");
+    return replaceSection(next, "Delegation Blocker", infrastructureDelegationBlocker(blocked.provenance)
+      .replace(provenanceTransport(blocked.provenance), JSON.stringify(blocked.provenance)));
+  });
+  await assert.rejects(
+    validateExecutionCandidate(fixture.requirements, direct.execution),
+    /current validation provenance requires exact resolver transport/u,
+  );
 });
 
 test("real macOS sandbox denial invalidates evidence and cannot become a finding", async (t) => {
@@ -6642,7 +6975,7 @@ test("invalid boundary evidence preserves and resumes the same reserved automati
     argv: [process.execPath, "-e", "const fs=require('node:fs'); fs.mkdirSync('out', {recursive:true}); fs.writeFileSync('out/cache.json', 'generated')"],
     failureConclusion: "NONE",
   });
-  const blocked = await runValidationSession(fixture.requirements, request);
+  const blocked = await runValidationSession(fixture.requirements, request, { generatedWriteRecoveryAttempted: true });
   assert.equal(blocked.provenance.state, "INVALID", JSON.stringify(blocked));
   assert.equal(blocked.provenance.classification, "SANDBOX_BOUNDARY_BLOCKED");
   assert.equal(blocked.provenance.round, "1/3");

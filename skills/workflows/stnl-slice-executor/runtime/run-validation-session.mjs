@@ -18,6 +18,10 @@ import {
   resolveExecutionWorkspace,
   validationEvidenceIdentity,
 } from "./execution-state.mjs";
+import {
+  inspectOwnValidationCapability,
+  VALIDATION_CAPABILITY_IDENTITY,
+} from "./validation-capability.mjs";
 
 const HASH = /^sha256:[0-9a-f]{64}$/u;
 const LIVE_WORKSPACE_DELTA_LIMIT = 64;
@@ -32,7 +36,7 @@ const SYSTEM_READ_FILES = [
 const OPERATIONS = new Set(["EXECUTE_SLICE", "APPLY_FINDINGS", "VALIDATE_SLICE"]);
 export const VALIDATION_RUNNER_PROTOCOL = "stnl-validation-runner/v10";
 export const VALIDATION_HARNESS_PROTOCOL = "stnl-validation-harness/v10";
-const PROTOCOL_KEYS = new Set(["runner", "harness"]);
+const PROTOCOL_KEYS = new Set(["runner", "harness", "capability"]);
 const REQUEST_KEYS = new Set([
   "protocol", "operation", "slice", "round", "cwd", "subjects", "commands", "baselineFingerprint",
   "priorEvidenceId", "failureConclusion", "replayOriginEvidenceId",
@@ -49,11 +53,14 @@ const CONTAINER_IMAGE_REFERENCE = /^[A-Za-z0-9][A-Za-z0-9._/:@-]{0,255}$/u;
 const DOCKER_SOCKET = "/var/run/docker.sock";
 const DOCKER_RESPONSE_LIMIT = 1_048_576;
 const CONTAINER_PROJECT_ROOT = "/workspace";
+const GENERATED_WRITE_RECOVERY = Symbol("generated-write-recovery");
+const MAX_GENERATED_WRITE_RECOVERY_ATTEMPTS = 4;
 
 class ValidationInfrastructureError extends ExecutionContractError {
-  constructor(kind, stage, code, message, target = null) {
+  constructor(kind, stage, code, message, target = null, environmentSideEffects = []) {
     super(message, target === null ? [] : [target]);
     this.blocker = Object.freeze({ kind, stage, code, message, target });
+    this.environmentSideEffects = Object.freeze([...environmentSideEffects]);
   }
 }
 
@@ -184,21 +191,45 @@ export function validationExecutionEnvironmentContract(value, label = "validatio
 
 function requestProtocol(value) {
   if (value !== undefined) {
-    exactObject(value, PROTOCOL_KEYS, "validation session protocol");
-    if (typeof value.runner !== "string" || typeof value.harness !== "string") {
+    if (value === null || typeof value !== "object" || Array.isArray(value)
+      || Object.keys(value).some((key) => !PROTOCOL_KEYS.has(key))) {
+      throw new ExecutionContractError("validation session protocol has unknown fields");
+    }
+    if ((Object.hasOwn(value, "runner") && typeof value.runner !== "string")
+      || (Object.hasOwn(value, "harness") && typeof value.harness !== "string")
+      || (Object.hasOwn(value, "capability") && typeof value.capability !== "string")) {
       throw new ExecutionContractError("validation session protocol values must be strings");
     }
   }
-  return Object.freeze({ runner: VALIDATION_RUNNER_PROTOCOL, harness: VALIDATION_HARNESS_PROTOCOL });
+  return Object.freeze({
+    runner: VALIDATION_RUNNER_PROTOCOL,
+    harness: VALIDATION_HARNESS_PROTOCOL,
+    capability: VALIDATION_CAPABILITY_IDENTITY,
+  });
 }
 
-function protocolBlocker(value) {
+function protocolBlocker(value, capability) {
+  if (!capability.coherent) {
+    return Object.freeze({
+      kind: "infrastructure", stage: "identity-preflight", code: "VALIDATION_PACKAGE_IDENTITY_MISMATCH",
+      message: `packaged validation capability is incoherent: ${capability.mismatches.join(", ") || "unknown package drift"}`,
+      target: null,
+    });
+  }
   if (value?.runner !== VALIDATION_RUNNER_PROTOCOL || value?.harness !== VALIDATION_HARNESS_PROTOCOL) {
     const claimedRunner = typeof value?.runner === "string" ? value.runner : "missing";
     const claimedHarness = typeof value?.harness === "string" ? value.harness : "missing";
     return Object.freeze({
       kind: "infrastructure", stage: "protocol-preflight", code: "VALIDATION_PROTOCOL_INCOMPATIBLE",
       message: `validation requires runner ${VALIDATION_RUNNER_PROTOCOL} and harness ${VALIDATION_HARNESS_PROTOCOL}; received runner ${claimedRunner} and harness ${claimedHarness}`,
+      target: null,
+    });
+  }
+  if (value?.capability !== VALIDATION_CAPABILITY_IDENTITY) {
+    const claimed = typeof value?.capability === "string" ? value.capability : "missing";
+    return Object.freeze({
+      kind: "infrastructure", stage: "identity-preflight", code: "VALIDATION_CAPABILITY_IDENTITY_MISMATCH",
+      message: `loaded validation runner capability ${claimed} differs from installed capability ${VALIDATION_CAPABILITY_IDENTITY}`,
       target: null,
     });
   }
@@ -391,13 +422,28 @@ export function createDockerEngine(requestDocker = dockerApiRequest, createUuid 
             try { await requestDocker("DELETE", `/containers/${containerId}?force=1&v=1`); } catch { cleanupFailed = true; }
           }
         }
+        if (executionError !== null) {
+          if (cleanupFailed && executionError instanceof DockerEnvironmentError) {
+            throw new DockerEnvironmentError(
+              executionError.code, executionError.message, executionError.target,
+              [...executionError.environmentSideEffects, "docker-cache-helper-container-cleanup-failed"],
+            );
+          }
+          if (cleanupFailed) {
+            throw new DockerEnvironmentError(
+              "DOCKER_CACHE_SNAPSHOT_FAILED",
+              executionError instanceof Error ? executionError.message : "the authorized Compose cache could not be snapshotted",
+              null, ["docker-cache-helper-container-cleanup-failed"],
+            );
+          }
+          throw executionError;
+        }
         if (cleanupFailed) {
           throw new DockerEnvironmentError(
             "DOCKER_CACHE_SNAPSHOT_CLEANUP_FAILED", "the Docker cache snapshot container could not be removed", null,
-            ["docker-validation-container-cleanup-failed"],
+            ["docker-cache-helper-container-cleanup-failed"],
           );
         }
-        if (executionError !== null) throw executionError;
         await assertCacheSnapshotSafe(destination);
         snapshots.push({ ...cache, snapshotPath: destination, snapshotFingerprint: await fingerprintTree(destination) });
       }
@@ -631,7 +677,7 @@ function treeDelta(before, after) {
 }
 
 async function assertExactWriteFileDeclarations(commandContracts, {
-  root, initialSnapshot, executionRoot, taskDirectory, subjects,
+  root, initialSnapshot, executionRoot, taskDirectory, subjects, recovery = null,
 }) {
   const initialEntries = new Map(initialSnapshot.entries.map((entry) => [entry[0], entry]));
   const executionRelative = path.relative(root, executionRoot).split(path.sep).join("/");
@@ -639,6 +685,9 @@ async function assertExactWriteFileDeclarations(commandContracts, {
   const allWritePaths = commandContracts.flatMap((command) => command.writePaths);
   for (const [index, contract] of commandContracts.entries()) {
     for (const writeFile of contract.writeFiles) {
+      const recoveredExistingFile = recovery?.authorizations.some((entry) => (
+        entry.command === index + 1 && entry.kind === "writeFile" && entry.path === writeFile
+      )) === true;
       if (writeFile === executionRelative || writeFile.startsWith(`${executionRelative}/`)) {
         throw new ExecutionContractError(`validation command ${index + 1} cannot write protected execution state`);
       }
@@ -646,7 +695,7 @@ async function assertExactWriteFileDeclarations(commandContracts, {
       if (!within(absoluteWrite, root) || absoluteSubjects.some((subject) => absoluteWrite === subject)) {
         throw new ExecutionContractError(`validation command ${index + 1} write file overlaps validation inputs`);
       }
-      if (initialEntries.has(writeFile)) {
+      if (initialEntries.has(writeFile) && !recoveredExistingFile) {
         throw new ExecutionContractError(`validation command ${index + 1} write file must identify a new isolated generated output`);
       }
       if (allWritePaths.some((directory) => directory === writeFile || directory.startsWith(`${writeFile}/`))) {
@@ -663,10 +712,29 @@ async function assertExactWriteFileDeclarations(commandContracts, {
         || canonicalParent !== parent || !within(canonicalParent, root)) {
         throw new ExecutionContractError(`validation command ${index + 1} write file parent is not a canonical isolated directory`);
       }
-      if (await lstatOrNull(absoluteWrite) !== null) {
+      const writeMetadata = await lstatOrNull(absoluteWrite);
+      if (writeMetadata !== null && (!recoveredExistingFile || !writeMetadata.isFile()
+        || writeMetadata.isSymbolicLink() || writeMetadata.nlink !== 1
+        || await fs.realpath(absoluteWrite).catch(() => null) !== absoluteWrite)) {
         throw new ExecutionContractError(`validation command ${index + 1} write file must be absent before validation commands start`);
       }
     }
+  }
+}
+
+async function resetRecoveredExistingWriteFiles(root, recovery) {
+  if (recovery === null) return;
+  for (const authorization of recovery.authorizations) {
+    if (authorization.kind !== "writeFile") continue;
+    const target = path.resolve(root, ...authorization.path.split("/"));
+    if (!within(target, root)) throw new ExecutionContractError("generated write recovery escapes the isolated project");
+    const metadata = await lstatOrNull(target);
+    if (metadata === null) continue;
+    if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.nlink !== 1
+      || await fs.realpath(target).catch(() => null) !== target) {
+      throw new ExecutionContractError("generated write recovery cannot reset a non-canonical isolated file");
+    }
+    await fs.unlink(target);
   }
 }
 
@@ -1431,11 +1499,17 @@ async function sandboxInvocation(command, { backend, cwd, environment, sessionRo
       ].join(" ")})`,
       `(deny file-write* (require-all ${[
         ...writableDirectories.map((entry) => `(require-not (subpath ${sandboxLiteral(entry)}))`),
-        ...writeFiles.map((entry) => `(require-not (literal ${sandboxLiteral(entry)}))`),
+        ...writeFiles.flatMap((entry) => [
+          `(require-not (literal ${sandboxLiteral(entry)}))`,
+          `(require-not (subpath ${sandboxLiteral(entry)}))`,
+        ]),
       ].join(" ")})${violationMarker === null ? "" : ` (with message ${sandboxLiteral(violationMarker)})`})`,
       `(allow file-write* ${[
         ...writableDirectories.map((entry) => `(subpath ${sandboxLiteral(entry)})`),
-        ...writeFiles.map((entry) => `(literal ${sandboxLiteral(entry)})`),
+        ...writeFiles.flatMap((entry) => [
+          `(literal ${sandboxLiteral(entry)})`,
+          `(subpath ${sandboxLiteral(entry)})`,
+        ]),
       ].join(" ")})`,
     ].join(" ");
     return { argv: [backend.executable, "-p", profile, "--", ...command.argv], cwd, violationMarker };
@@ -1552,7 +1626,7 @@ async function boundaryDiagnostic(event, {
     boundary = "system-temp";
     rule = "unmanaged-system-temp-access-denied";
   }
-  return {
+  const diagnostic = {
     kind: event.requestedPath === null ? "sandbox-outcome-indeterminate" : "sandbox-denial",
     operation,
     process: event.process,
@@ -1566,6 +1640,100 @@ async function boundaryDiagnostic(event, {
     deniedBeforeMutation: writeOperation ? true : null,
     liveWorkspaceChanged,
   };
+  if (writeOperation && target !== null && within(target, copiedRoot)) {
+    Object.defineProperty(diagnostic, "recoveryCandidate", {
+      enumerable: false,
+      value: Object.freeze({
+        absolutePath: target,
+        projectRelative: path.relative(copiedRoot, target).split(path.sep).join("/"),
+        generatedType: event.generatedType ?? null,
+      }),
+    });
+  }
+  return diagnostic;
+}
+
+async function generatedWriteRecovery(provenance, {
+  backend, copiedRoot, executionRoot, subjects, initialSnapshot,
+}) {
+  if (provenance.classification !== "SANDBOX_BOUNDARY_BLOCKED"
+    || provenance.workspace.liveWorkspaceFingerprintBefore !== provenance.workspace.liveWorkspaceFingerprintAfter) return null;
+  const initialEntries = new Map(initialSnapshot.entries.map((entry) => [entry[0], entry]));
+  const authorizations = [];
+  for (const violation of provenance.workspace.boundaryViolations) {
+    const candidate = violation.recoveryCandidate;
+    if (candidate === undefined || violation.kind !== "sandbox-denial"
+      || !violation.operation.startsWith("write") || violation.deniedBeforeMutation !== true
+      || violation.trustedRoot !== "isolated-workspace"
+      || violation.rule !== "write-outside-declared-isolated-outputs") continue;
+    const relative = candidate.projectRelative;
+    if (relative === "." || normalizedRelative(relative, "generated write recovery") !== relative) continue;
+    const absolute = path.resolve(copiedRoot, ...relative.split("/"));
+    if (!within(absolute, copiedRoot)
+      || within(absolute, executionRoot) || within(executionRoot, absolute)
+      || subjects.some((subject) => absolute === subject || within(absolute, subject) || within(subject, absolute))) continue;
+    const parts = relative.split("/");
+    let firstAbsent = null;
+    let unsafe = false;
+    for (let index = 0; index < parts.length; index += 1) {
+      const prefix = parts.slice(0, index + 1).join("/");
+      const target = path.resolve(copiedRoot, ...parts.slice(0, index + 1));
+      const metadata = await lstatOrNull(target);
+      if (metadata === null) {
+        firstAbsent ??= prefix;
+        continue;
+      }
+      if (firstAbsent !== null || metadata.isSymbolicLink() || (!metadata.isDirectory() && index < parts.length - 1)
+        || (metadata.isFile() && metadata.nlink !== 1) || (!metadata.isFile() && !metadata.isDirectory())) {
+        unsafe = true;
+        break;
+      }
+      const canonicalTarget = await fs.realpath(target).catch(() => null);
+      if (canonicalTarget === null || !within(canonicalTarget, copiedRoot)) {
+        unsafe = true;
+        break;
+      }
+    }
+    const existingExactFile = firstAbsent === null
+      && initialEntries.get(relative)?.[1] === "file"
+      && candidate.generatedType === "file"
+      && validationSandboxSupportsExactWriteFiles(backend);
+    if (unsafe || (!existingExactFile && (firstAbsent === null || firstAbsent === "."))) continue;
+    if (firstAbsent !== null) {
+      const firstAbsentAbsolute = path.resolve(copiedRoot, ...firstAbsent.split("/"));
+      if (within(firstAbsentAbsolute, executionRoot) || within(executionRoot, firstAbsentAbsolute)
+        || subjects.some((subject) => firstAbsentAbsolute === subject
+          || within(firstAbsentAbsolute, subject) || within(subject, firstAbsentAbsolute))) continue;
+    }
+    const exactFile = existingExactFile || (firstAbsent === relative && candidate.generatedType === "file"
+      && validationSandboxSupportsExactWriteFiles(backend));
+    authorizations.push(Object.freeze({
+      command: violation.command,
+      kind: exactFile ? "writeFile" : "writePath",
+      path: exactFile ? relative : firstAbsent,
+    }));
+  }
+  const unique = [...new Map(authorizations.map((entry) => [JSON.stringify(entry), entry])).values()]
+    .sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right), "en"));
+  if (unique.length === 0 || unique.length > 16) return null;
+  const paths = unique.map((entry) => entry.path);
+  if (paths.some((entry, index) => paths.some((other, otherIndex) => index !== otherIndex
+    && (entry.startsWith(`${other}/`) || other.startsWith(`${entry}/`))))) return null;
+  return Object.freeze({ authorizations: Object.freeze(unique), sameRound: true });
+}
+
+function requestWithGeneratedWriteRecovery(request, recovery) {
+  const commands = request.commands.map((command, index) => {
+    const additions = recovery.authorizations.filter((entry) => entry.command === index + 1);
+    return {
+      ...command,
+      writePaths: [...new Set([...command.writePaths, ...additions.filter((entry) => entry.kind === "writePath").map((entry) => entry.path)])].sort(),
+      writeFiles: [...new Set([...(command.writeFiles ?? []), ...additions.filter((entry) => entry.kind === "writeFile").map((entry) => entry.path)])].sort(),
+    };
+  });
+  const recovered = { ...request, commands };
+  Object.defineProperty(recovered, GENERATED_WRITE_RECOVERY, { value: recovery });
+  return recovered;
 }
 
 async function preparePermissiveProbe({ command, backend, cwd, environment, sessionRoot, copiedRoot, runtimeRoot, toolchainRoots }) {
@@ -1631,20 +1799,26 @@ async function execute(command, { backend, cwd, environment, sessionRoot, copied
       // A launcher may catch or mask a denied write and still exit zero. Always
       // authenticate the matching audit stream before evidence can be VERIFIED.
       let sandboxEvents = audit === null ? [] : await audit.stop(true, payload.stderr.toString("utf8"));
-      if (sandboxEvents.length === 0 && probe !== null && payload.exit !== 0 && !payload.timedOut && !payload.signaled) {
+      if (probe !== null && payload.exit !== 0 && !payload.timedOut && !payload.signaled) {
         const isolatedDelta = treeDelta(isolatedBeforeSnapshot, await snapshotTree(copiedRoot));
         const permissive = await execute(probe.command, { ...probe.options, probeOnFailure: false });
-        const delta = treeDelta(probe.beforeSnapshot, await snapshotTree(probe.options.copiedRoot));
+        const probeAfterSnapshot = await snapshotTree(probe.options.copiedRoot);
+        const delta = treeDelta(probe.beforeSnapshot, probeAfterSnapshot);
+        const probeEntries = new Map(probeAfterSnapshot.entries.map((entry) => [entry[0], entry]));
         const isolatedPaths = new Set((isolatedDelta?.changes ?? []).map((change) => normalizeGeneratedPath(change.path)));
         const deniedChanges = (delta?.changes ?? []).filter((change) => !isolatedPaths.has(normalizeGeneratedPath(change.path)));
         if (deniedChanges.length !== 0) {
-          sandboxEvents = deniedChanges.map((change) => ({
+          const observedChanges = deniedChanges.map((change) => ({
             process: path.basename(command.argv[0]),
             operation: change.disposition === "added" ? "file-write-create"
               : change.disposition === "removed" ? "file-write-unlink" : "file-write-data",
             requestedPath: path.join(copiedRoot, change.path),
+            generatedType: probeEntries.get(change.path)?.[1] ?? null,
           }));
-        } else if (permissive.exit === 0 && !permissive.timedOut && !permissive.signaled) {
+          sandboxEvents = [...new Map([...sandboxEvents, ...observedChanges]
+            .map((event) => [JSON.stringify([event.process, event.operation, event.requestedPath]), event])).values()]
+            .sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right), "en"));
+        } else if (sandboxEvents.length === 0 && permissive.exit === 0 && !permissive.timedOut && !permissive.signaled) {
           sandboxEvents = [{ process: null, operation: "unknown", requestedPath: null }];
         }
       }
@@ -1754,7 +1928,7 @@ function expectedValidationInvocation(task, operation) {
 
 async function blockedPrecheckResult({
   specPath, request, task, workspace, projectRoot, liveExecutionBefore, liveWorkspaceBefore, blocker,
-  cleanup = "not-required",
+  cleanup = "not-required", sideEffects = [],
 }) {
   const liveExecutionAfter = await fingerprintTree(workspace.executionRoot);
   const liveWorkspaceAfter = await fingerprintTree(projectRoot);
@@ -1791,15 +1965,15 @@ async function blockedPrecheckResult({
       liveWorkspaceFingerprintBefore: liveWorkspaceBefore, liveWorkspaceFingerprintAfter: liveWorkspaceAfter,
       liveWorkspaceDelta: null,
       isolatedExecutionFingerprintBefore: unavailable, isolatedExecutionFingerprintAfter: unavailable,
-      cleanup, sideEffects: [], boundaryViolations: [],
+      cleanup, sideEffects: [...new Set(sideEffects)].sort(), boundaryViolations: [],
     },
-    inputs, subjects, commands, replay: null, blocker,
+    inputs, subjects, commands, replay: null, recovery: null, blocker,
   };
   sealProvenance(provenance);
-  return Object.freeze({ provenance: Object.freeze(provenance), outputs: Object.freeze([]) });
+  return Object.freeze({ provenance, outputs: Object.freeze([]) });
 }
 
-export async function runValidationSession(specPath, request, dependencies = {}) {
+async function runValidationSessionOnce(specPath, request, dependencies = {}) {
   exactObject(request, Object.hasOwn(request, "protocol") ? REQUEST_KEYS : PRE_PROTOCOL_REQUEST_KEYS, "validation session request");
   if (!OPERATIONS.has(request.operation) || !/^slice-(?:[0-9]{2}|[1-9][0-9]{2,})$/u.test(request.slice)) {
     throw new ExecutionContractError("validation session operation or slice is invalid");
@@ -1837,7 +2011,8 @@ export async function runValidationSession(specPath, request, dependencies = {})
   const liveExecutionBefore = await fingerprintTree(workspace.executionRoot);
   const liveWorkspaceBeforeSnapshot = await snapshotTree(projectRoot);
   const liveWorkspaceBefore = liveWorkspaceBeforeSnapshot.fingerprint;
-  const incompatibleProtocol = protocolBlocker(claimedProtocol);
+  const capability = dependencies.validationCapability ?? await inspectOwnValidationCapability(import.meta.url);
+  const incompatibleProtocol = protocolBlocker(claimedProtocol, capability);
   if (incompatibleProtocol !== null) {
     return blockedPrecheckResult({
       specPath, request: { ...request, protocol: evidenceProtocol }, task, workspace, projectRoot,
@@ -1856,6 +2031,7 @@ export async function runValidationSession(specPath, request, dependencies = {})
     });
   }
   const commandContracts = request.commands.map(validationCommandContract);
+  const removeTree = dependencies.removeTree ?? ((target) => fs.rm(target, { recursive: true, force: true }));
   let sandboxBackend;
   let physicalEnvironments;
   const cacheSnapshotRoots = [];
@@ -1901,6 +2077,7 @@ export async function runValidationSession(specPath, request, dependencies = {})
       if (error instanceof DockerEnvironmentError) {
         throw new ValidationInfrastructureError(
           "execution-environment", "environment-preflight", error.code, error.message, error.target,
+          error.environmentSideEffects,
         );
       }
       throw error;
@@ -1939,6 +2116,7 @@ export async function runValidationSession(specPath, request, dependencies = {})
       executionRoot: workspace.executionRoot,
       taskDirectory: path.join(workspace.executionRoot, "tasks"),
       subjects,
+      recovery: request[GENERATED_WRITE_RECOVERY] ?? null,
     });
     if (physicalEnvironments.some((environment, index) => environment.kind === "host"
       && commandContracts[index].writeFiles.length !== 0)
@@ -1949,23 +2127,38 @@ export async function runValidationSession(specPath, request, dependencies = {})
       );
     }
   } catch (error) {
-    try {
-      await Promise.all(cacheSnapshotRoots.map((root) => fs.rm(root, { recursive: true, force: true })));
-    } catch {
-      throw new ExecutionContractError("validation environment preflight failed and its cache snapshot could not be cleaned");
+    const cleanupResults = await Promise.allSettled(cacheSnapshotRoots.map((root) => removeTree(root)));
+    const cleanupFailed = cleanupResults.some((entry) => entry.status === "rejected");
+    const inheritedEffects = error instanceof ValidationInfrastructureError ? error.environmentSideEffects : [];
+    const sideEffects = [...new Set([
+      ...inheritedEffects,
+      ...(cleanupFailed ? ["docker-cache-snapshot-root-cleanup-failed"] : []),
+    ])].sort();
+    if (!(error instanceof ValidationInfrastructureError)) {
+      if (!cleanupFailed) throw error;
+      return blockedPrecheckResult({
+        specPath, request, task, workspace, projectRoot, liveExecutionBefore, liveWorkspaceBefore,
+        blocker: Object.freeze({
+          kind: "infrastructure", stage: "sandbox-preflight", code: "VALIDATION_PREFLIGHT_FAILED",
+          message: error instanceof Error ? error.message : "validation preflight failed", target: null,
+        }),
+        cleanup: "failed", sideEffects,
+      });
     }
-    if (!(error instanceof ValidationInfrastructureError)) throw error;
     return blockedPrecheckResult({
       specPath, request, task, workspace, projectRoot, liveExecutionBefore, liveWorkspaceBefore,
-      blocker: error.blocker,
+      blocker: error.blocker, cleanup: sideEffects.length === 0 ? "not-required" : "failed", sideEffects,
     });
   }
   const sessionRoot = await fs.realpath(await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), "stnl-validation-session-")));
   const copiedRoot = path.join(sessionRoot, "workspace");
   const runtimeRoot = path.join(sessionRoot, "runtime");
   const toolchainsRoot = path.join(sessionRoot, "toolchains");
-  let cleanup = "clean";
   let result;
+  let recoveryContext = null;
+  let derivedRecovery = null;
+  let sessionFailure = null;
+  let finalCleanupEffects = [];
   try {
     try {
       await copyValidationSource(projectRoot, copiedRoot, sourceSymlinks);
@@ -1975,25 +2168,35 @@ export async function runValidationSession(specPath, request, dependencies = {})
         message: error instanceof Error ? error.message : "validation source copy failed", target: null,
       });
       try {
-        await fs.rm(sessionRoot, { recursive: true, force: true });
+        await removeTree(sessionRoot);
       } catch {
-        throw new ExecutionContractError("validation source copy failed and its temporary workspace could not be cleaned");
+        return await blockedPrecheckResult({
+          specPath, request, task, workspace, projectRoot, liveExecutionBefore, liveWorkspaceBefore,
+          blocker, cleanup: "failed", sideEffects: ["validation-session-root-cleanup-failed"],
+        });
       }
       return await blockedPrecheckResult({
         specPath, request, task, workspace, projectRoot, liveExecutionBefore, liveWorkspaceBefore,
         blocker, cleanup: "clean",
       });
     }
+    await resetRecoveredExistingWriteFiles(copiedRoot, request[GENERATED_WRITE_RECOVERY] ?? null);
     const initialCopiedSource = await snapshotTree(copiedRoot);
     const executionRelative = path.relative(projectRoot, workspace.executionRoot).split(path.sep).join("/");
     const copiedExecutionRoot = path.join(copiedRoot, executionRelative);
     const copiedTaskDirectory = path.join(copiedRoot, executionRelative, "tasks");
+    recoveryContext = {
+      backend: sandboxBackend, copiedRoot, executionRoot: copiedExecutionRoot,
+      subjects: subjects.map((subject) => path.resolve(copiedTaskDirectory, subject)),
+      initialSnapshot: initialCopiedSource,
+    };
     await assertExactWriteFileDeclarations(commandContracts, {
       root: copiedRoot,
       initialSnapshot: initialCopiedSource,
       executionRoot: copiedExecutionRoot,
       taskDirectory: copiedTaskDirectory,
       subjects,
+      recovery: request[GENERATED_WRITE_RECOVERY] ?? null,
     });
     await fs.mkdir(path.join(runtimeRoot, "home"), { recursive: true });
     await fs.mkdir(path.join(runtimeRoot, "tmp"), { recursive: true });
@@ -2120,7 +2323,8 @@ export async function runValidationSession(specPath, request, dependencies = {})
         throw new ExecutionContractError("validation replay origin must be verified persisted evidence");
       }
       if (originRecord.provenance.legacySecurityModel === true
-        || originRecord.provenance.historicalProtocolModel === true) {
+        || originRecord.provenance.historicalProtocolModel === true
+        || originRecord.provenance.historicalCapabilityModel === true) {
         throw new ExecutionContractError("validation replay origin predates the current authenticated validation protocol");
       }
       const origin = replayDescriptor(originRecord.provenance);
@@ -2195,6 +2399,16 @@ export async function runValidationSession(specPath, request, dependencies = {})
         );
     }
     const sideEffects = [...environmentSideEffects];
+    for (const plan of commandPlans) {
+      for (const writeFile of plan.writeFiles) {
+        const target = path.resolve(copiedRoot, writeFile);
+        const metadata = await lstatOrNull(target);
+        if (metadata !== null && (!metadata.isFile() || metadata.isSymbolicLink() || metadata.nlink !== 1
+          || await fs.realpath(target).catch(() => null) !== target)) {
+          sideEffects.push("isolated-exact-output-type-changed");
+        }
+      }
+    }
     if (JSON.stringify(beforeSubjects) !== JSON.stringify(afterSubjects)) sideEffects.push("validation-subject-state-changed");
     if (commandEvidence.some((command) => command.executionEnvironment.kind === "host"
       && command.toolchainFingerprint !== command.toolchainFingerprintAfter)) {
@@ -2250,38 +2464,98 @@ export async function runValidationSession(specPath, request, dependencies = {})
           liveWorkspaceFingerprintBefore: liveWorkspaceBefore, liveWorkspaceFingerprintAfter: liveWorkspaceAfter,
           liveWorkspaceDelta,
           isolatedExecutionFingerprintBefore: isolatedExecutionBefore, isolatedExecutionFingerprintAfter: isolatedExecutionAfter,
-          cleanup: "clean", sideEffects: sideEffects.sort(), boundaryViolations,
+          cleanup: environmentSideEffects.some((entry) => entry.includes("cleanup-failed")) ? "failed" : "clean",
+          sideEffects: sideEffects.sort(), boundaryViolations,
         },
-        inputs, subjects: beforeSubjects, commands: commandEvidence, replay,
+        inputs, subjects: beforeSubjects, commands: commandEvidence, replay, recovery: null,
         ...(environmentBlocker === null ? {} : { blocker: environmentBlocker }),
       },
       outputs,
     };
+    derivedRecovery = await generatedWriteRecovery(result.provenance, recoveryContext);
+  } catch (error) {
+    sessionFailure = error;
   } finally {
-    try {
-      await Promise.all([
-        fs.rm(sessionRoot, { recursive: true, force: true }),
-        ...cacheSnapshotRoots.map((root) => fs.rm(root, { recursive: true, force: true })),
-      ]);
-    } catch { cleanup = "failed"; }
-  }
-  if (cleanup !== "clean") {
-    result.provenance.workspace.cleanup = cleanup;
-    result.provenance.workspace.sideEffects = [...new Set([...result.provenance.workspace.sideEffects, "validation-workspace-cleanup-failed"])].sort();
-    result.provenance.state = "INVALID";
-    if (result.provenance.classification !== "INFRASTRUCTURE_BLOCKED") {
-      result.provenance.classification = "VALIDATION_SIDE_EFFECT";
+    const cleanupTargets = [
+      [sessionRoot, "validation-session-root-cleanup-failed"],
+      ...cacheSnapshotRoots.map((root) => [root, "docker-cache-snapshot-root-cleanup-failed"]),
+    ];
+    const cleanupResults = await Promise.allSettled(cleanupTargets.map(([target]) => removeTree(target)));
+    finalCleanupEffects = cleanupResults.flatMap((entry, index) => entry.status === "rejected" ? [cleanupTargets[index][1]] : []);
+    if (finalCleanupEffects.length !== 0) {
+      if (result?.provenance !== undefined) {
+        result.provenance.workspace.cleanup = "failed";
+        result.provenance.workspace.sideEffects = [...new Set([
+          ...result.provenance.workspace.sideEffects, ...finalCleanupEffects,
+        ])].sort();
+        result.provenance.state = "INVALID";
+        if (result.provenance.classification !== "INFRASTRUCTURE_BLOCKED") {
+          result.provenance.classification = "VALIDATION_SIDE_EFFECT";
+        }
+        result.provenance.conclusion = "NONE";
+        sealProvenance(result.provenance);
+      }
     }
-    result.provenance.conclusion = "NONE";
+  }
+  if (sessionFailure !== null && result === undefined) {
+    if (finalCleanupEffects.length === 0) throw sessionFailure;
+    const blocker = sessionFailure instanceof ValidationInfrastructureError ? sessionFailure.blocker : Object.freeze({
+      kind: "infrastructure", stage: "sandbox-preflight", code: "VALIDATION_SESSION_FAILED",
+      message: sessionFailure instanceof Error ? sessionFailure.message : "validation session failed", target: null,
+    });
+    result = await blockedPrecheckResult({
+      specPath, request, task, workspace, projectRoot, liveExecutionBefore, liveWorkspaceBefore,
+      blocker, cleanup: "failed", sideEffects: finalCleanupEffects,
+    });
   }
   sealProvenance(result.provenance);
+  if (derivedRecovery !== null && result.provenance.classification === "SANDBOX_BOUNDARY_BLOCKED") {
+    Object.defineProperty(result, "generatedWriteRecovery", { enumerable: false, value: derivedRecovery });
+  }
   return Object.freeze(result);
+}
+
+export async function runValidationSession(specPath, request, dependencies = {}) {
+  let current = await runValidationSessionOnce(specPath, request, dependencies);
+  if (dependencies.generatedWriteRecoveryAttempted === true) return current;
+  let originEvidenceId = null;
+  let authorizations = [];
+  for (let attempt = 0; attempt < MAX_GENERATED_WRITE_RECOVERY_ATTEMPTS; attempt += 1) {
+    const recovery = current.generatedWriteRecovery ?? null;
+    if (recovery === null) break;
+    originEvidenceId ??= current.provenance.evidenceId;
+    const combined = [...new Map([...authorizations, ...recovery.authorizations]
+      .map((entry) => [JSON.stringify(entry), entry])).values()]
+      .sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right), "en"));
+    const paths = combined.map((entry) => entry.path);
+    if (combined.length === authorizations.length || combined.length > 16
+      || paths.some((entry, index) => paths.some((other, otherIndex) => index !== otherIndex
+        && (entry.startsWith(`${other}/`) || other.startsWith(`${entry}/`))))) break;
+    authorizations = combined;
+    current = await runValidationSessionOnce(specPath, requestWithGeneratedWriteRecovery(request, {
+      authorizations: Object.freeze(authorizations), sameRound: true,
+    }), { ...dependencies, generatedWriteRecoveryAttempted: true });
+  }
+  if (originEvidenceId !== null) {
+    current.provenance.recovery = Object.freeze({
+      originEvidenceId, authorizations: Object.freeze(authorizations), sameRound: true,
+    });
+    sealProvenance(current.provenance);
+  }
+  return Object.freeze(current);
 }
 
 export async function main(arguments_) {
   if (arguments_.length === 1 && arguments_[0] === "--capabilities") {
-    process.stdout.write(`${JSON.stringify({ runner: VALIDATION_RUNNER_PROTOCOL, harness: VALIDATION_HARNESS_PROTOCOL })}\n`);
-    return 0;
+    const capability = await inspectOwnValidationCapability(import.meta.url);
+    process.stdout.write(`${JSON.stringify({
+      runner: VALIDATION_RUNNER_PROTOCOL,
+      harness: VALIDATION_HARNESS_PROTOCOL,
+      capability: capability.identity,
+      packageIdentity: capability.packageIdentity,
+      packageCoherent: capability.coherent,
+    })}\n`);
+    return capability.coherent ? 0 : 1;
   }
   if (arguments_.length !== 2) {
     process.stderr.write("usage: run-validation-session.mjs SPEC_PATH REQUEST_JSON\n");

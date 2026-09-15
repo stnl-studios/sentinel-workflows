@@ -7,6 +7,7 @@ import test from "node:test";
 import { pathToFileURL } from "node:url";
 
 import { installSentinel } from "./lib/sentinel-distribution.mjs";
+import { validateValidationCapabilitySource } from "./lib/validation-capability.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
 const OWNERS = ["stnl-slice-executor", "stnl-slice-quality-manager"];
@@ -71,6 +72,7 @@ async function expectResolutionCode(operation, code) {
 }
 
 test("installed Codex and Claude user/project skills self-resolve and import after relocation and paths with spaces", async (t) => {
+  const sourceCapability = await validateValidationCapabilitySource(ROOT);
   const installations = [
     { platform: "codex", scope: "user" },
     { platform: "claude-code", scope: "user", relocate: true },
@@ -88,6 +90,9 @@ test("installed Codex and Claude user/project skills self-resolve and import aft
       assert.equal(resolved.entrypoint, "runtime/run-validation-session.mjs");
       assert.equal(resolved.runnerProtocol, "stnl-validation-runner/v10");
       assert.equal(resolved.harnessProtocol, "stnl-validation-harness/v10");
+      assert.equal(resolved.capabilityIdentity, sourceCapability.identity);
+      assert.equal(resolved.packageIdentity, sourceCapability.packages[owner].fingerprint);
+      assert.equal(resolved.packageCoherent, true);
       assert.equal(isWithin(resolved.runtimePath, canonicalSkillRoot), true);
       assert.equal(resolved.runtimePath, await fs.realpath(resolved.runtimePath));
       moduleNonce += 1;
@@ -104,9 +109,42 @@ test("installed Codex and Claude user/project skills self-resolve and import aft
       assert.equal(capabilities.status, 0, capabilities.stderr);
       assert.deepEqual(JSON.parse(capabilities.stdout), {
         runner: "stnl-validation-runner/v10", harness: "stnl-validation-harness/v10",
+        capability: sourceCapability.identity,
+        packageIdentity: sourceCapability.packages[owner].fingerprint,
+        packageCoherent: true,
       });
     }
   }
+});
+
+test("installed resolver detects same-v10 package byte drift before dispatch", async (t) => {
+  const fixture = await installFixture(t, { platform: "codex", scope: "project" });
+  const { module, resolverPath } = await loadResolver(fixture, "stnl-slice-executor");
+  const current = await module.resolveOwnValidationRuntime();
+  assert.equal(current.packageCoherent, true);
+  const statePath = path.join(path.dirname(path.dirname(resolverPath)), "runtime/execution-state.mjs");
+  await fs.appendFile(statePath, "\n// same nominal v10, different bytes\n", "utf8");
+  const drifted = await module.resolveOwnValidationRuntime();
+  assert.equal(drifted.runnerProtocol, "stnl-validation-runner/v10");
+  assert.equal(drifted.harnessProtocol, "stnl-validation-harness/v10");
+  assert.equal(drifted.capabilityIdentity, current.capabilityIdentity);
+  assert.notEqual(drifted.packageIdentity, current.packageIdentity);
+  assert.equal(drifted.packageCoherent, false);
+  const capabilities = spawnSync(process.execPath, [resolverPath, "--capabilities"], { encoding: "utf8" });
+  assert.equal(capabilities.status, 1, capabilities.stderr);
+  assert.equal(JSON.parse(capabilities.stdout).packageCoherent, false);
+});
+
+test("installed resolver detects an adulterated validation capability manifest", async (t) => {
+  const fixture = await installFixture(t, { platform: "claude-code", scope: "project" });
+  const { module, resolverPath } = await loadResolver(fixture, "stnl-slice-quality-manager");
+  const manifestPath = path.join(path.dirname(path.dirname(resolverPath)), "runtime/validation-capability.json");
+  const manifest = JSON.parse(await fs.readFile(manifestPath, "utf8"));
+  manifest.identity = `sha256:${"0".repeat(64)}`;
+  await fs.writeFile(manifestPath, `${JSON.stringify(manifest)}\n`, "utf8");
+  const drifted = await module.resolveOwnValidationRuntime();
+  assert.equal(drifted.packageCoherent, false);
+  assert.equal(drifted.packageIdentity, null);
 });
 
 test("installed resolver dispatches the owning runtime without a caller-supplied root or harness path", async (t) => {
@@ -121,6 +159,8 @@ test("installed resolver dispatches the owning runtime without a caller-supplied
   const dispatched = spawnSync(process.execPath, [resolverPath, "unused-spec", "{}"], { encoding: "utf8" });
   assert.equal(dispatched.status, 1);
   assert.match(dispatched.stderr, /validation session request field mismatch/u);
+  assert.match(dispatched.stderr, /MALFORMED_HARNESS_OUTPUT/u);
+  assert.equal(dispatched.stdout, "");
   assert.doesNotMatch(dispatched.stderr, /external\.mjs/u);
 });
 

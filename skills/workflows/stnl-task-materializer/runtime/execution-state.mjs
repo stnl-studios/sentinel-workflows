@@ -781,7 +781,8 @@ const NON_BLOCKING_GATES = new Set(["resolved", "non_blocking", "bypassed"]);
 const GATE_KEYS = new Set(["id", "command", "kind", "scope", "causality", "state", "problem", "evidence", "diagnostic", "correction", "correctionEvidence", "revalidates", "snapshot", "bypass"]);
 const VALIDATION_RUNNER_PROTOCOL = "stnl-validation-runner/v10";
 const VALIDATION_HARNESS_PROTOCOL = "stnl-validation-harness/v10";
-const EVIDENCE_PROTOCOL_KEYS = new Set(["runner", "harness"]);
+const VALIDATION_CAPABILITY_IDENTITY = "sha256:56230f59db5e27c2aaf45081b86aa0ed643f0ffc15ff775f9d16cfefa8e55e35";
+const EVIDENCE_PROTOCOL_KEYS = new Set(["runner", "harness", "capability"]);
 
 function exactObject(value, keys, label) {
   if (value === null || typeof value !== "object" || Array.isArray(value)
@@ -795,8 +796,10 @@ const EVIDENCE_PROVENANCE_KEYS = new Set([
   "operation", "slice", "round", "workspace", "inputs", "subjects", "commands", "replay",
 ]);
 const EVIDENCE_PROVENANCE_BLOCKED_KEYS = new Set([...EVIDENCE_PROVENANCE_KEYS, "blocker"]);
-const CURRENT_EVIDENCE_PROVENANCE_KEYS = new Set([...EVIDENCE_PROVENANCE_KEYS, "protocol", "receipt"]);
+const P0_EVIDENCE_PROVENANCE_KEYS = new Set([...EVIDENCE_PROVENANCE_KEYS, "protocol", "receipt"]);
+const CURRENT_EVIDENCE_PROVENANCE_KEYS = new Set([...P0_EVIDENCE_PROVENANCE_KEYS, "recovery"]);
 const CURRENT_EVIDENCE_PROVENANCE_BLOCKED_KEYS = new Set([...CURRENT_EVIDENCE_PROVENANCE_KEYS, "blocker"]);
+const P0_EVIDENCE_PROVENANCE_BLOCKED_KEYS = new Set([...P0_EVIDENCE_PROVENANCE_KEYS, "blocker"]);
 const EVIDENCE_BLOCKER_KEYS = new Set(["kind", "stage", "code", "message", "target"]);
 const EVIDENCE_WORKSPACE_KEYS = new Set([
   "kind", "workspaceId", "cwd", "executionRoot", "liveExecutionFingerprintBefore",
@@ -853,6 +856,8 @@ const EVIDENCE_FILE_IDENTITY_KEYS = new Set(["mode", "content"]);
 const EVIDENCE_REPLAY_KEYS = new Set([
   "originalEvidenceId", "originalFingerprint", "currentFingerprint", "equivalent", "mismatches",
 ]);
+const EVIDENCE_RECOVERY_KEYS = new Set(["originEvidenceId", "authorizations", "sameRound"]);
+const EVIDENCE_RECOVERY_AUTHORIZATION_KEYS = new Set(["command", "kind", "path"]);
 const EVIDENCE_REPLAY_COMPONENTS = new Set([
   "protocol", "operation", "slice", "round", "cwd", "executionRoot", "requirementsAuthority", "planRevision",
   "head", "sourceFingerprint", "manifestFingerprint", "baselineFingerprint", "changedScopeFingerprint",
@@ -999,13 +1004,38 @@ function parseEvidenceProvenance(record, authority, { operation, round, required
     return null;
   }
   let provenance;
-  try { provenance = JSON.parse(raw); } catch { throw new ExecutionContractError(`${record.id} Evidence provenance must be inline JSON`); }
+  const opaqueTransport = raw.startsWith("stnl-validation-result/v1:");
+  if (opaqueTransport) {
+    const encoded = raw.slice("stnl-validation-result/v1:".length);
+    if (!/^[A-Za-z0-9_-]+$/u.test(encoded)) throw new ExecutionContractError(`${record.id} Evidence transport is malformed`);
+    let stdout;
+    try { stdout = Buffer.from(encoded, "base64url").toString("utf8"); } catch {
+      throw new ExecutionContractError(`${record.id} Evidence transport is malformed`);
+    }
+    if (Buffer.from(stdout, "utf8").toString("base64url") !== encoded
+      || !stdout.endsWith("\n") || stdout.slice(0, -1).includes("\n")) {
+      throw new ExecutionContractError(`${record.id} Evidence transport is not canonical`);
+    }
+    let transported;
+    try { transported = JSON.parse(stdout); } catch { throw new ExecutionContractError(`${record.id} Evidence transport payload is malformed`); }
+    exactObject(transported, new Set(["provenance", "outputs"]), `${record.id} Evidence transport payload`);
+    if (!Array.isArray(transported.outputs)) throw new ExecutionContractError(`${record.id} Evidence transport outputs are malformed`);
+    provenance = transported.provenance;
+  } else {
+    try { provenance = JSON.parse(raw); } catch { throw new ExecutionContractError(`${record.id} Evidence provenance must be inline JSON or an exact harness transport`); }
+  }
   const historicalProtocolModel = !Object.hasOwn(provenance, "protocol") && !Object.hasOwn(provenance, "receipt");
+  const historicalCapabilityModel = !historicalProtocolModel && !Object.hasOwn(provenance.protocol ?? {}, "capability");
+  if (!opaqueTransport && !historicalProtocolModel && !historicalCapabilityModel) {
+    throw new ExecutionContractError(`${record.id} current validation provenance requires exact resolver transport`);
+  }
   exactObject(
     provenance,
     historicalProtocolModel
       ? Object.hasOwn(provenance, "blocker") ? EVIDENCE_PROVENANCE_BLOCKED_KEYS : EVIDENCE_PROVENANCE_KEYS
-      : Object.hasOwn(provenance, "blocker") ? CURRENT_EVIDENCE_PROVENANCE_BLOCKED_KEYS : CURRENT_EVIDENCE_PROVENANCE_KEYS,
+      : historicalCapabilityModel
+        ? Object.hasOwn(provenance, "blocker") ? P0_EVIDENCE_PROVENANCE_BLOCKED_KEYS : P0_EVIDENCE_PROVENANCE_KEYS
+        : Object.hasOwn(provenance, "blocker") ? CURRENT_EVIDENCE_PROVENANCE_BLOCKED_KEYS : CURRENT_EVIDENCE_PROVENANCE_KEYS,
     `${record.id} Evidence provenance`,
   );
   if (provenance.version !== 1 || !VALIDATION_EVIDENCE_STATES.has(provenance.state)
@@ -1024,9 +1054,10 @@ function parseEvidenceProvenance(record, authority, { operation, round, required
   }
   const infrastructureBlocked = provenance.classification === "INFRASTRUCTURE_BLOCKED";
   if (!historicalProtocolModel) {
-    exactObject(provenance.protocol, EVIDENCE_PROTOCOL_KEYS, `${record.id} Evidence protocol`);
+    exactObject(provenance.protocol, historicalCapabilityModel ? new Set(["runner", "harness"]) : EVIDENCE_PROTOCOL_KEYS, `${record.id} Evidence protocol`);
     if (provenance.protocol.runner !== VALIDATION_RUNNER_PROTOCOL
       || provenance.protocol.harness !== VALIDATION_HARNESS_PROTOCOL
+      || (!historicalCapabilityModel && provenance.protocol.capability !== VALIDATION_CAPABILITY_IDENTITY)
       || typeof provenance.receipt !== "string" || !CURRENT_AUTHORITY.test(provenance.receipt)) {
       throw new ExecutionContractError(`${record.id} Evidence protocol or harness receipt is malformed`);
     }
@@ -1045,7 +1076,7 @@ function parseEvidenceProvenance(record, authority, { operation, round, required
   if (infrastructureBlocked) {
     exactObject(provenance.blocker, EVIDENCE_BLOCKER_KEYS, `${record.id} Evidence blocker`);
     if (!new Set(["infrastructure", "source-isolation", "execution-environment"]).has(provenance.blocker.kind)
-      || !new Set(["protocol-preflight", "sandbox-preflight", "source-admission", "source-copy", "environment-preflight", "environment-execution"]).has(provenance.blocker.stage)
+      || !new Set(["protocol-preflight", "identity-preflight", "sandbox-preflight", "source-admission", "source-copy", "environment-preflight", "environment-execution"]).has(provenance.blocker.stage)
       || typeof provenance.blocker.code !== "string" || !/^[A-Z][A-Z0-9_]*$/u.test(provenance.blocker.code)
       || typeof provenance.blocker.message !== "string" || provenance.blocker.message.length === 0
       || (provenance.blocker.target !== null
@@ -1063,6 +1094,13 @@ function parseEvidenceProvenance(record, authority, { operation, round, required
       || (historicalProtocolModel && protocolPreflight)) {
       throw new ExecutionContractError(`${record.id} validation protocol blocker is inconsistent`);
     }
+    const identityPreflight = provenance.blocker.stage === "identity-preflight";
+    const identityCode = new Set([
+      "VALIDATION_CAPABILITY_IDENTITY_MISMATCH", "VALIDATION_PACKAGE_IDENTITY_MISMATCH",
+    ]).has(provenance.blocker.code);
+    if (!historicalCapabilityModel && identityPreflight !== identityCode) {
+      throw new ExecutionContractError(`${record.id} validation identity blocker is inconsistent`);
+    }
   } else if (Object.hasOwn(provenance, "blocker")) {
     throw new ExecutionContractError(`${record.id} non-infrastructure evidence cannot contain a blocker`);
   }
@@ -1078,10 +1116,13 @@ function parseEvidenceProvenance(record, authority, { operation, round, required
   if (infrastructureBlocked && !executionInfrastructureBlocked) {
     const unavailable = deterministicDigest("stnl-validation-isolated-not-created-v1", []);
     const expectedCleanup = provenance.blocker.stage === "source-copy" ? "clean" : "not-required";
-    if (workspace.kind !== "pre-check" || workspace.cleanup !== expectedCleanup
+    const cleanupResidual = workspace.cleanup === "failed"
+      && Array.isArray(workspace.sideEffects) && workspace.sideEffects.length !== 0
+      && workspace.sideEffects.every((entry) => entry.endsWith("cleanup-failed"));
+    if (workspace.kind !== "pre-check" || (!cleanupResidual && workspace.cleanup !== expectedCleanup)
       || workspace.isolatedExecutionFingerprintBefore !== unavailable
       || workspace.isolatedExecutionFingerprintAfter !== unavailable
-      || !Array.isArray(workspace.sideEffects) || workspace.sideEffects.length !== 0
+      || !Array.isArray(workspace.sideEffects) || (!cleanupResidual && workspace.sideEffects.length !== 0)
       || (boundaryModel && (!Array.isArray(workspace.boundaryViolations) || workspace.boundaryViolations.length !== 0))
       || workspace.liveExecutionFingerprintBefore !== workspace.liveExecutionFingerprintAfter
       || workspace.liveWorkspaceFingerprintBefore !== workspace.liveWorkspaceFingerprintAfter) {
@@ -1327,6 +1368,44 @@ function parseEvidenceProvenance(record, authority, { operation, round, required
     throw new ExecutionContractError(`${record.id} code regression requires an explicit replay equivalence record`);
   }
 
+  if (!historicalProtocolModel && !historicalCapabilityModel) {
+    if (provenance.recovery !== null) {
+      exactObject(provenance.recovery, EVIDENCE_RECOVERY_KEYS, `${record.id} Evidence recovery`);
+      if (typeof provenance.recovery.originEvidenceId !== "string"
+        || !CURRENT_AUTHORITY.test(provenance.recovery.originEvidenceId)
+        || provenance.recovery.sameRound !== true
+        || !Array.isArray(provenance.recovery.authorizations)
+        || provenance.recovery.authorizations.length === 0) {
+        throw new ExecutionContractError(`${record.id} Evidence recovery is malformed`);
+      }
+      const encoded = [];
+      for (const authorization of provenance.recovery.authorizations) {
+        exactObject(authorization, EVIDENCE_RECOVERY_AUTHORIZATION_KEYS, `${record.id} Evidence recovery authorization`);
+        if (!Number.isSafeInteger(authorization.command) || authorization.command < 1
+          || authorization.command > provenance.commands.length
+          || !new Set(["writeFile", "writePath"]).has(authorization.kind)
+          || validateProjectRelativePath(authorization.path, `${record.id} Evidence recovery path`) !== authorization.path
+          || authorization.path === ".") {
+          throw new ExecutionContractError(`${record.id} Evidence recovery authorization is malformed`);
+        }
+        const command = provenance.commands[authorization.command - 1];
+        const declared = authorization.kind === "writeFile" ? command.writeFiles : command.writePaths;
+        if (!declared.includes(authorization.path)
+          || authorization.path === workspace.executionRoot
+          || authorization.path.startsWith(`${workspace.executionRoot}/`)
+          || provenance.subjects.some((subject) => authorization.path === subject.path
+            || authorization.path.startsWith(`${subject.path}/`) || subject.path.startsWith(`${authorization.path}/`))) {
+          throw new ExecutionContractError(`${record.id} Evidence recovery exceeds its derived isolated authority`);
+        }
+        encoded.push(JSON.stringify(authorization));
+      }
+      if (new Set(encoded).size !== encoded.length
+        || encoded.some((entry, index) => index > 0 && entry.localeCompare(encoded[index - 1], "en") <= 0)) {
+        throw new ExecutionContractError(`${record.id} Evidence recovery authorizations must be unique and ordered`);
+      }
+    }
+  }
+
   const sideEffect = workspace.sideEffects.length !== 0
     || workspace.liveExecutionFingerprintBefore !== workspace.liveExecutionFingerprintAfter
     || workspace.liveWorkspaceFingerprintBefore !== workspace.liveWorkspaceFingerprintAfter
@@ -1334,7 +1413,7 @@ function parseEvidenceProvenance(record, authority, { operation, round, required
     || provenance.commands.some((command) => command.toolchainFingerprint !== command.toolchainFingerprintAfter)
     || (!infrastructureBlocked && workspace.cleanup !== "clean");
   if (sideEffect !== (provenance.classification === "VALIDATION_SIDE_EFFECT")
-    && !(sideEffect && executionInfrastructureBlocked)) {
+    && !(sideEffect && infrastructureBlocked)) {
     if (!(sideEffect && provenance.classification === "VALIDATION_SIDE_EFFECT")) {
       throw new ExecutionContractError(`${record.id} validation side-effect classification disagrees with workspace evidence`);
     }
@@ -1372,6 +1451,7 @@ function parseEvidenceProvenance(record, authority, { operation, round, required
   }
   if (legacySecurityModel) Object.defineProperty(provenance, "legacySecurityModel", { value: true, enumerable: false });
   if (historicalProtocolModel) Object.defineProperty(provenance, "historicalProtocolModel", { value: true, enumerable: false });
+  if (historicalCapabilityModel) Object.defineProperty(provenance, "historicalCapabilityModel", { value: true, enumerable: false });
   return Object.freeze(provenance);
 }
 
