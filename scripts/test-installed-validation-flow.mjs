@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
+import { isDeepStrictEqual } from "node:util";
 
 import { computeRequirementsAuthority, inspectExecutionState } from "../skills/workflows/stnl-slice-executor/runtime/execution-state.mjs";
 import { installSentinel } from "./lib/sentinel-distribution.mjs";
@@ -36,6 +37,34 @@ async function renderExecution(project) {
   await fs.mkdir(path.join(execution, "tasks"), { recursive: true });
   await fs.mkdir(path.join(project, "src"), { recursive: true });
   await fs.writeFile(path.join(project, "src/example.txt"), "installed bridge fixture\n", "utf8");
+  await fs.mkdir(path.join(project, ".vscode"), { recursive: true });
+  await fs.writeFile(path.join(project, ".vscode/launch.json"), JSON.stringify({
+    version: "0.2.0",
+    configurations: [
+      {
+        name: "Project host", type: "node", request: "launch",
+        sentinelComponent: "project-check", cwd: "${workspaceFolder}", preLaunchTask: "project-host-check",
+      },
+      {
+        name: "Project Docker", type: "node", request: "launch",
+        sentinelComponent: "project-check", cwd: "${workspaceFolder}", preLaunchTask: "project-docker-check",
+      },
+    ],
+  }), "utf8");
+  await fs.writeFile(path.join(project, ".vscode/tasks.json"), JSON.stringify({
+    version: "2.0.0",
+    tasks: [
+      {
+        label: "project-host-check", type: "shell", command: "true",
+        sentinelExecutionEnvironment: "host",
+      },
+      {
+        label: "project-docker-check", type: "shell", command: "docker",
+        args: ["compose", "-f", "ops/docker-compose.yml", "run", "--rm", "backend", "fixture-tool"],
+        options: { cwd: "${workspaceFolder}" },
+      },
+    ],
+  }), "utf8");
   const authority = await computeRequirementsAuthority(requirements);
   const globalSource = "../requirements.md";
   const detailSource = "../../requirements.md";
@@ -121,7 +150,7 @@ function planFor(fixture, overrides = {}) {
     cwd: ".", subjects: ["../../src/example.txt"],
     commands: [{
       argv: ["true"], cwd: ".", writePaths: [], writeFiles: [], env: {},
-      timeoutMs: 10_000, executionEnvironment: { kind: "host" },
+      timeoutMs: 10_000, environmentScope: "project-check", executionEnvironment: { kind: "host" },
     }],
     baselineFingerprint: null, failureConclusion: "VALIDATION_FINDING", replayOriginEvidenceId: null,
     coverage: {
@@ -132,6 +161,37 @@ function planFor(fixture, overrides = {}) {
     findings: null, priorRound: null, assessment: "none",
   };
   return Object.assign(plan, overrides);
+}
+
+async function selectionForPlan(fixture, owner, plan) {
+  const scopes = [...new Map(plan.commands.map((command) => [command.environmentScope, command])).values()];
+  assert.equal(scopes.length, 1, "installed fixture expects one independently discovered environment scope");
+  const command = scopes[0];
+  const discovery = await owner.discoverValidationEnvironments(fixture.requirements, {
+    componentScopes: [{
+      scope: command.environmentScope, component: "project-check", cwd: command.cwd,
+      references: [".vscode/launch.json"],
+    }],
+  });
+  const discoveredScope = discovery.scopes.find((entry) => entry.scope === command.environmentScope);
+  const option = discoveredScope?.options.find((entry) => isDeepStrictEqual(
+    entry.environment, command.executionEnvironment,
+  ));
+  assert.ok(option, "plan environment must be one concrete option discovered from the installed fixture");
+  const choices = discoveredScope.status === "resolved" ? {} : { [command.environmentScope]: option.id };
+  const environmentSelection = owner.resolveValidationEnvironmentSelection(discovery, choices);
+  plan.discovery.sources = [...new Set([
+    ...plan.discovery.sources,
+    ...environmentSelection.entries.flatMap((entry) => entry.sources.map((source) => source.path)),
+  ])];
+  return environmentSelection;
+}
+
+async function executePlan(fixture, owner, plan, dependencies = {}) {
+  return owner.executeValidationPlan(fixture.requirements, plan, {
+    ...dependencies,
+    environmentSelection: await selectionForPlan(fixture, owner, plan),
+  });
 }
 
 async function stageAndPublish(t, fixture, result) {
@@ -178,8 +238,9 @@ function requestForPlan(plan, { omitExecutionEnvironment = false } = {}) {
     protocol: plan.protocol, operation: plan.operation, slice: plan.slice, round: plan.round,
     cwd: plan.cwd, subjects: plan.subjects,
     commands: plan.commands.map((command) => {
-      if (!omitExecutionEnvironment) return command;
-      const { executionEnvironment: _executionEnvironment, ...legacy } = command;
+      const { environmentScope: _environmentScope, ...runtimeCommand } = command;
+      if (!omitExecutionEnvironment) return runtimeCommand;
+      const { executionEnvironment: _executionEnvironment, ...legacy } = runtimeCommand;
       return legacy;
     }),
     baselineFingerprint: plan.baselineFingerprint, priorEvidenceId: plan.priorEvidenceId,
@@ -188,7 +249,8 @@ function requestForPlan(plan, { omitExecutionEnvironment = false } = {}) {
 }
 
 async function executeWithHarnessEvidence(fixture, owner, plan, dependencies = {}, requestOptions = {}) {
-  const validatedPlan = await owner.validateValidationPlan(fixture.requirements, plan);
+  const environmentSelection = await selectionForPlan(fixture, owner, plan);
+  const validatedPlan = await owner.validateValidationPlan(fixture.requirements, plan, { environmentSelection });
   const raw = await fixture.harness.runValidationSession(
     fixture.requirements, requestForPlan(validatedPlan, requestOptions), dependencies,
   );
@@ -196,6 +258,7 @@ async function executeWithHarnessEvidence(fixture, owner, plan, dependencies = {
   const transport = owner.validationResultTransport(`${JSON.stringify(raw)}\n`, exit, "");
   assert.match(transport, /^stnl-validation-result\/v1:/u);
   const result = await owner.executeValidationPlan(fixture.requirements, plan, {
+    environmentSelection,
     invoke: async () => ({ exit, transport, errors: "" }),
   });
   return { raw, result };
@@ -207,7 +270,7 @@ async function dockerPlanEnvironment(fixture) {
   await fs.writeFile(path.join(fixture.project, "DEVELOPMENT.md"), "Validation uses the project Docker Compose toolchain.\n", "utf8");
   return {
     kind: "docker-compose", composeFile: "ops/docker-compose.yml", service: "backend",
-    image: "fixture/backend:dev", authoritySources: ["DEVELOPMENT.md"],
+    image: "fixture/backend:dev", authoritySources: [".vscode/launch.json", ".vscode/tasks.json"],
   };
 }
 
@@ -271,10 +334,10 @@ function nonBlockingGate(bridge, command) {
 }
 
 async function publishActiveFinding(t, fixture, { correct = true } = {}) {
-  await stageAndPublish(t, fixture, await fixture.resolver.executeValidationPlan(fixture.requirements, planFor(fixture)));
+  await stageAndPublish(t, fixture, await executePlan(fixture, fixture.resolver, planFor(fixture)));
   const plan = planFor(fixture, { operation: "VALIDATE_SLICE", round: null, assessment: "independent" });
   plan.commands[0].argv = ["false"];
-  const bridge = await fixture.qualityResolver.executeValidationPlan(fixture.requirements, plan);
+  const bridge = await executePlan(fixture, fixture.qualityResolver, plan);
   const assessed = fixture.qualityResolver.materializeValidationAssessment(
     bridge,
     assessmentFor(bridge, {
@@ -311,7 +374,7 @@ async function publishActiveFinding(t, fixture, { correct = true } = {}) {
     cycle: "attempt-01", ids: ["finding-01"], correctionsCovered: "../../src/example.txt",
     regressions: "focused installed-flow command",
   };
-  const findingsResult = await fixture.resolver.executeValidationPlan(fixture.requirements, findingsPlan);
+  const findingsResult = await executePlan(fixture, fixture.resolver, findingsPlan);
   await stagePublishAndRead(t, fixture, fixture.resolver, findingsResult, { expectedState: "FINDINGS_CORRECTED" });
   return bridge;
 }
@@ -339,7 +402,7 @@ test("relocated installed owner executes a planner-only plan through the real ha
   const fixture = await installedFixture(t);
   const before = await inspectExecutionState(fixture.requirements);
   assert.equal(before.tasks.get("slice-01").implementationChecks.length, 0);
-  const result = await fixture.resolver.executeValidationPlan(fixture.requirements, planFor(fixture));
+  const result = await executePlan(fixture, fixture.resolver, planFor(fixture));
   assert.equal(result.summary.status, "TESTS_PASS", JSON.stringify(result.summary));
   assert.equal(result.summary.commands.length, 1);
   assert.equal(result.summary.commands[0].exit, 0);
@@ -352,7 +415,7 @@ test("relocated installed owner executes a planner-only plan through the real ha
 
 test("installed staging rejects live and redirected destinations before any protected byte changes", async (t) => {
   const fixture = await installedFixture(t);
-  const result = await fixture.resolver.executeValidationPlan(fixture.requirements, planFor(fixture));
+  const result = await executePlan(fixture, fixture.resolver, planFor(fixture));
   const liveTask = path.join(fixture.execution, "tasks/slice-01.md");
   const protectedBefore = await snapshotTaskFile(fixture.execution);
 
@@ -400,10 +463,10 @@ test("installed staging rejects live and redirected destinations before any prot
 
 test("installed quality owner requires assessment, stages sealed formal evidence and publishes PASS by read-back", async (t) => {
   const fixture = await installedFixture(t);
-  const auxiliary = await fixture.resolver.executeValidationPlan(fixture.requirements, planFor(fixture));
+  const auxiliary = await executePlan(fixture, fixture.resolver, planFor(fixture));
   await stageAndPublish(t, fixture, auxiliary);
   const formalPlan = planFor(fixture, { operation: "VALIDATE_SLICE", round: null, assessment: "independent" });
-  const bridge = await fixture.qualityResolver.executeValidationPlan(fixture.requirements, formalPlan);
+  const bridge = await executePlan(fixture, fixture.qualityResolver, formalPlan);
   assert.equal(bridge.summary.status, "ASSESSMENT_REQUIRED");
   assert.equal(bridge.persistence, null);
   const assessment = {
@@ -439,10 +502,10 @@ test("installed quality owner requires assessment, stages sealed formal evidence
 
 test("installed owners preserve formal finding authority across VALIDATE_SLICE and APPLY_FINDINGS", async (t) => {
   const fixture = await installedFixture(t);
-  await stageAndPublish(t, fixture, await fixture.resolver.executeValidationPlan(fixture.requirements, planFor(fixture)));
+  await stageAndPublish(t, fixture, await executePlan(fixture, fixture.resolver, planFor(fixture)));
   const formalPlan = planFor(fixture, { operation: "VALIDATE_SLICE", round: null, assessment: "independent" });
   formalPlan.commands[0].argv = ["false"];
-  const bridge = await fixture.qualityResolver.executeValidationPlan(fixture.requirements, formalPlan);
+  const bridge = await executePlan(fixture, fixture.qualityResolver, formalPlan);
   const assessment = {
     schema: "stnl-validation-assessment/v1", planIdentity: bridge.planIdentity,
     evidenceId: bridge.summary.evidenceId, operation: "VALIDATE_SLICE", slice: "slice-01", round: null,
@@ -483,7 +546,7 @@ test("installed owners preserve formal finding authority across VALIDATE_SLICE a
     regressions: "focused installed-flow command",
   };
   findingsPlan.commands = [findingsPlan.commands[0], { ...findingsPlan.commands[0], argv: ["false"] }];
-  const findingsBridge = await fixture.resolver.executeValidationPlan(fixture.requirements, findingsPlan);
+  const findingsBridge = await executePlan(fixture, fixture.resolver, findingsPlan);
   assert.equal(findingsBridge.summary.status, "ASSESSMENT_REQUIRED");
   const gate = nonBlockingGate(findingsBridge, findingsBridge.summary.commands[1].display);
   const findingsResult = fixture.resolver.materializeValidationAssessment(
@@ -513,7 +576,7 @@ test("malformed-output recovery keeps round one and historical blocker while new
   assert.equal(before.state, "RUNNER_RESULT_BLOCKED");
   assert.equal(before.tasks.get("slice-01").implementationChecks.length, 0);
   const originalTask = await fs.readFile(path.join(fixture.execution, "tasks/slice-01.md"), "utf8");
-  const result = await fixture.resolver.executeValidationPlan(fixture.requirements, planFor(fixture));
+  const result = await executePlan(fixture, fixture.resolver, planFor(fixture));
   assert.equal(result.round, "1/3");
   assert.equal(result.resolution.section, "Delegation Blocker");
   const readback = await stageAndPublish(t, fixture, result);
@@ -545,7 +608,7 @@ test("chain A keeps a singleton blocker across repeated preflight and resumes th
   assert.equal(blockedReadback.tasks.get("slice-01").implementationChecks.length, 0, "preflight must not consume the pending round");
   assert.equal(blockedReadback.tasks.get("slice-01").delegationBlocker.pendingRound, 1);
 
-  const resumed = await fixture.resolver.executeValidationPlan(fixture.requirements, planFor(fixture));
+  const resumed = await executePlan(fixture, fixture.resolver, planFor(fixture));
   assert.equal(resumed.round, "1/3");
   const resumedReadback = await stagePublishAndRead(t, fixture, fixture.resolver, resumed, {
     expectedState: "IMPLEMENTED_AWAITING_VALIDATION",
@@ -581,7 +644,7 @@ test("one installed SPEC preserves successive auxiliary and formal delegation ep
   });
   assert.equal(readback.tasks.get("slice-01").delegationBlocker.observations.length, 2, "identical evidence is not duplicated");
 
-  const auxiliary = await fixture.resolver.executeValidationPlan(fixture.requirements, auxiliaryPlan);
+  const auxiliary = await executePlan(fixture, fixture.resolver, auxiliaryPlan);
   assert.equal(auxiliary.summary.commands[0].exit, 0, "the installed harness executes the real minimal success command");
   readback = await stagePublishAndRead(t, fixture, fixture.resolver, auxiliary, {
     expectedState: "IMPLEMENTED_AWAITING_VALIDATION",
@@ -655,8 +718,8 @@ test("one installed SPEC preserves successive auxiliary and formal delegation ep
   assert.equal(readback.effectiveBlockers[0].record, "attempt-01");
   assert.equal(readback.tasks.get("slice-01").attempts.length, 1, "preflight must not create attempt-02");
 
-  const passingBridge = await fixture.qualityResolver.executeValidationPlan(
-    fixture.requirements,
+  const passingBridge = await executePlan(
+    fixture, fixture.qualityResolver,
     planFor(fixture, { operation: "VALIDATE_SLICE", round: null, assessment: "independent", failureConclusion: "NONE" }),
   );
   assert.equal(passingBridge.summary.commands[0].exit, 0);
@@ -749,7 +812,7 @@ test("APPLY_FINDINGS can open a new delegation episode after resolving an earlie
 
 test("VALIDATE_SLICE post-admission infrastructure failure persists a formal BLOCKED attempt", async (t) => {
   const fixture = await installedFixture(t);
-  await stageAndPublish(t, fixture, await fixture.resolver.executeValidationPlan(fixture.requirements, planFor(fixture)));
+  await stageAndPublish(t, fixture, await executePlan(fixture, fixture.resolver, planFor(fixture)));
   const executionEnvironment = await dockerPlanEnvironment(fixture);
   const plan = planFor(fixture, { operation: "VALIDATE_SLICE", round: null, assessment: "independent" });
   plan.commands[0] = { ...plan.commands[0], argv: ["fixture-tool"], executionEnvironment };
@@ -786,7 +849,7 @@ test("VALIDATE_SLICE post-admission infrastructure failure persists a formal BLO
 
 test("chain B resumes preflight and post-admission blockers through formal PASS publication and read-back", async (t) => {
   const fixture = await installedFixture(t);
-  await stageAndPublish(t, fixture, await fixture.resolver.executeValidationPlan(fixture.requirements, planFor(fixture)));
+  await stageAndPublish(t, fixture, await executePlan(fixture, fixture.resolver, planFor(fixture)));
 
   const formalPlan = planFor(fixture, { operation: "VALIDATE_SLICE", round: null, assessment: "independent" });
   const { raw: preflightEvidence, result: preflightBlocked } = await executeWithHarnessEvidence(
@@ -830,7 +893,7 @@ test("chain B resumes preflight and post-admission blockers through formal PASS 
     operation: "VALIDATE_SLICE", round: null, assessment: "independent", failureConclusion: "NONE",
   });
   passingPlan.commands = [passingPlan.commands[0], { ...passingPlan.commands[0], argv: ["false"] }];
-  const passingBridge = await fixture.qualityResolver.executeValidationPlan(fixture.requirements, passingPlan);
+  const passingBridge = await executePlan(fixture, fixture.qualityResolver, passingPlan);
   assert.equal(passingBridge.summary.status, "ASSESSMENT_REQUIRED");
   assert.equal(passingBridge.summary.commands[0].exit, 0, "the real installed harness must execute mandatory evidence");
   assert.equal(passingBridge.summary.commands[1].exit, 1);
@@ -881,7 +944,7 @@ test("auxiliary assessment preserves non-blocking Gate assessments and the origi
       argv: ["false"],
     },
   ];
-  const bridge = await fixture.resolver.executeValidationPlan(fixture.requirements, plan);
+  const bridge = await executePlan(fixture, fixture.resolver, plan);
   assert.equal(bridge.summary.status, "ASSESSMENT_REQUIRED");
   assert.equal(bridge.summary.commands[0].exit, 0);
   assert.equal(bridge.summary.commands[1].exit, 1);
@@ -926,7 +989,7 @@ test("formal blocker resolution is derived after assessment and changes only the
   assert.equal(readback.tasks.get("slice-01").findings[0].state, "active");
   assert.equal(readback.tasks.get("slice-01").delegationBlocker.state, "active");
 
-  const resumed = await fixture.qualityResolver.executeValidationPlan(fixture.requirements, blockedPlan);
+  const resumed = await executePlan(fixture, fixture.qualityResolver, blockedPlan);
   assert.equal(resumed.summary.status, "ASSESSMENT_REQUIRED");
   assert.equal(resumed.persistence, null);
   assert.equal(resumed.resolution, null, "execution alone must not resolve the blocker before assessment");
@@ -1011,6 +1074,8 @@ test("installed bridge rejects result-shaped, infrastructure-leaking, implicit, 
     [planFor(fixture, { round: "2/3" }), "VALIDATION_PLAN_ROUND_MISMATCH"],
     [planFor(fixture, { requirementsAuthority: `sha256:${"1".repeat(64)}` }), "VALIDATION_PLAN_AUTHORITY_MISMATCH"],
     [planFor(fixture, { planRevision: 2 }), "VALIDATION_PLAN_AUTHORITY_MISMATCH"],
+    [(() => { const value = planFor(fixture); value.coverage.verificationTypes = ["focused"]; return value; })(), "INVALID_VALIDATION_PLAN_TEXT"],
+    [(() => { const value = planFor(fixture); value.coverage.selectedChecks = ["true"]; return value; })(), "INVALID_VALIDATION_PLAN_TEXT"],
   ];
   for (const [candidate, code] of cases) {
     await assert.rejects(fixture.resolver.validateValidationPlan(fixture.requirements, candidate), (error) => (
@@ -1032,7 +1097,7 @@ test("installed bridge preserves a real infrastructure BLOCKED envelope and neve
   });
   const transport = fixture.resolver.validationResultTransport(`${JSON.stringify(raw)}\n`, 1, "");
   assert.match(transport, /^stnl-validation-result\/v1:/u);
-  const blocked = await fixture.resolver.executeValidationPlan(fixture.requirements, planFor(fixture), {
+  const blocked = await executePlan(fixture, fixture.resolver, planFor(fixture), {
     invoke: async () => ({ exit: 1, transport, errors: "" }),
   });
   assert.equal(blocked.summary.state, "INVALID");
@@ -1044,14 +1109,14 @@ test("installed bridge preserves a real infrastructure BLOCKED envelope and neve
   const accepted = await fixture.resolver.stageValidationBridgeResult(fixture.requirements, blocked, candidate);
   assert.equal(accepted.state, "RUNNER_RESULT_BLOCKED");
   await assert.rejects(
-    fixture.resolver.executeValidationPlan(fixture.requirements, planFor(fixture), { invoke: async () => ({ exit: 1, transport: null, errors: "raw failure" }) }),
+    executePlan(fixture, fixture.resolver, planFor(fixture), { invoke: async () => ({ exit: 1, transport: null, errors: "raw failure" }) }),
     (error) => error.code === "MALFORMED_HARNESS_OUTPUT",
   );
 });
 
 test("tampered envelope is rejected and an accepted plan alone cannot be staged or published", async (t) => {
   const fixture = await installedFixture(t);
-  const result = await fixture.resolver.executeValidationPlan(fixture.requirements, planFor(fixture));
+  const result = await executePlan(fixture, fixture.resolver, planFor(fixture));
   const tampered = { ...result, sealedEvidence: `${result.sealedEvidence}x` };
   const candidateHolder = await temporary(t, "stnl tampered candidate ");
   const candidate = path.join(candidateHolder, "execution");

@@ -1,0 +1,28 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "verify-api-compose",
+      "type": "shell",
+      "command": "docker",
+      "args": ["compose", "-f", "shared/compose.yml", "run", "--rm", "api-check", "node", "test.mjs"],
+      "options": { "cwd": "${workspaceFolder}" }
+    },
+    {
+      "label": "verify-web-compose",
+      "type": "shell",
+      "command": "docker",
+      "args": ["compose", "-f", "shared/compose.yml", "run", "--rm", "web-check", "node", "test.mjs"],
+      "options": { "cwd": "${workspaceFolder}" }
+    },
+    {
+      "label": "verify-web-host",
+      "type": "shell",
+      "command": "node",
+      "args": ["test.mjs"],
+      "options": { "cwd": "${workspaceFolder}/components/web-client" },
+      "sentinelExecutionEnvironment": "host"
+    }
+  ]
+}
+

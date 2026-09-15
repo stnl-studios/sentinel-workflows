@@ -1,19 +1,20 @@
 {
-  "identity": "sha256:4ac7ecf1129a2b230a8d4e9b745ffdc2097e7489be2e1630ca71675d5577108a",
+  "identity": "sha256:ab5b709127a710e1022829964733a4c9a3d3d45b1e88ec3c1f8c3e57a483d82e",
   "schemaVersion": 1,
   "runnerProtocol": "stnl-validation-runner/v11",
   "harnessProtocol": "stnl-validation-harness/v10",
   "package": {
     "owner": "stnl-slice-quality-manager",
-    "fingerprint": "sha256:522a2131d87ecc40427ffb372def205f289d3d59bf9e237ce8abf3fb95316d49",
+    "fingerprint": "sha256:ab7e19760cd2d85fed917af0e1d243446c3defd30d032806aa1ecc4903a6ba02",
     "files": {
-      "SKILL.md": "sha256:59928235c88a450f1148f11e2bb74279fd86e28468b8c01ca2d64f3088253c7f",
+      "SKILL.md": "sha256:b3dcf6e21b8d392c102f43f32de41d37cd59cbfa66f1623ee3ddd19508b3aadc",
       "references/execution-record-schema.md": "sha256:aa3fda0d2c1abf13cd882035080bea5ab17d4bf6ed0cb0b8dc82569aaabb4aa6",
       "references/validation-base.md": "sha256:c392bc10447421f10bec4ebfd6b65b562ac99d12a3c98a5640a67f6334d0828d",
       "runtime/execution-state.mjs": "sha256:0c0e87de43d4f405c1d2cfc37eaa16e47bb85eb86424567246b8e47a9e27b052",
-      "runtime/resolve-validation-runtime.mjs": "sha256:5ccbd729991d2c9ab7f8491af87e231c533aac31449d280f07e3d0bf93909620",
+      "runtime/resolve-validation-runtime.mjs": "sha256:b415189b9e6fc14cd23234fa8f891b583ce9cb0cb7dcd2f41283ff25a23e7122",
       "runtime/run-validation-session.mjs": "sha256:61e78ddabc35235ee00cb464cb13f0178cc810f6c51dee7d23a8164323ba997b",
       "runtime/validate-execution-state.mjs": "sha256:685a9c6971851b62675cbca4802276b819b06d577ab7a22a7eda3a7f0bea67a6",
+      "runtime/validation-environment-selection.mjs": "sha256:3f545ac5fcb97a897da8e2d201faad1bc0e03562cd4f4f7f184ace4e579e16dc",
       "runtime/validation-capability.mjs": "sha256:9d1dfcd457209c381ce927ad5e98ca9f3e156ad4281e9b4a997a580331a25f61"
     }
   }

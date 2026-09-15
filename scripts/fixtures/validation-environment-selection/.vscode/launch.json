@@ -1,0 +1,41 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "API checks in Compose",
+      "type": "node",
+      "request": "launch",
+      "sentinelComponent": "service-api",
+      "cwd": "${workspaceFolder}/components/service-api",
+      "preLaunchTask": "verify-api-compose"
+    },
+    {
+      "name": "Web checks in Compose",
+      "type": "node",
+      "request": "launch",
+      "sentinelComponent": "web-client",
+      "cwd": "${workspaceFolder}/components/web-client",
+      "preLaunchTask": "verify-web-compose"
+    },
+    {
+      "name": "Web checks on authorized host",
+      "type": "node",
+      "request": "launch",
+      "sentinelComponent": "web-client",
+      "cwd": "${workspaceFolder}/components/web-client",
+      "preLaunchTask": "verify-web-host"
+    },
+    {
+      "name": "Unsupported remote debugger profile",
+      "type": "coreclr",
+      "request": "launch",
+      "sentinelComponent": "service-api",
+      "cwd": "${workspaceFolder}/components/service-api",
+      "pipeTransport": {
+        "pipeProgram": "ssh",
+        "pipeArgs": ["development-host"]
+      }
+    }
+  ]
+}
+

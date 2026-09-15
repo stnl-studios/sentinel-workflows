@@ -18,6 +18,17 @@ import {
   validateExecutionCandidate,
   validateExecutionCandidateDestination,
 } from "./execution-state.mjs";
+import {
+  ValidationEnvironmentSelectionError,
+  discoverValidationEnvironments,
+  enforceValidationEnvironmentSelection,
+  resolveValidationEnvironmentSelection,
+  validateValidationEnvironmentSelection,
+} from "./validation-environment-selection.mjs";
+export {
+  discoverValidationEnvironments,
+  resolveValidationEnvironmentSelection,
+} from "./validation-environment-selection.mjs";
 
 const VALIDATION_OWNERS = new Set(["stnl-slice-executor", "stnl-slice-quality-manager"]);
 const RESOLVER_FILENAME = "resolve-validation-runtime.mjs";
@@ -39,7 +50,7 @@ const COVERAGE_KEYS = new Set([
   "verificationTypes", "selectedChecks", "rationale", "coverage", "filelessReason", "nonApplicabilityRationale",
 ]);
 const COMMAND_KEYS = new Set([
-  "argv", "cwd", "writePaths", "writeFiles", "env", "timeoutMs", "executionEnvironment",
+  "argv", "cwd", "writePaths", "writeFiles", "env", "timeoutMs", "environmentScope", "executionEnvironment",
 ]);
 const HOST_ENVIRONMENT_KEYS = new Set(["kind"]);
 const COMPOSE_ENVIRONMENT_KEYS = new Set([
@@ -247,6 +258,10 @@ function validatePlanCommand(command, index) {
     || !Number.isSafeInteger(command.timeoutMs) || command.timeoutMs <= 0) {
     planFail("INVALID_VALIDATION_PLAN_COMMAND", `${label} must carry logical argv and a positive timeout`);
   }
+  if (typeof command.environmentScope !== "string"
+    || !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/u.test(command.environmentScope)) {
+    planFail("INVALID_VALIDATION_PLAN_ENVIRONMENT", `${label} environmentScope is malformed`);
+  }
   const cwd = normalizedRelative(command.cwd, `${label} cwd`);
   const writePaths = uniqueTextArray(command.writePaths, `${label} writePaths`)
     .map((entry) => normalizedRelative(entry, `${label} write path`)).sort((left, right) => left.localeCompare(right, "en"));
@@ -264,6 +279,7 @@ function validatePlanCommand(command, index) {
     argv: Object.freeze([...command.argv]), cwd,
     writePaths: Object.freeze(writePaths), writeFiles: Object.freeze(writeFiles),
     env: Object.freeze({ ...command.env }), timeoutMs: command.timeoutMs,
+    environmentScope: command.environmentScope,
     executionEnvironment: validateExecutionEnvironment(command.executionEnvironment, label),
   });
 }
@@ -331,7 +347,7 @@ function validatePriorRound(value, round) {
   });
 }
 
-export async function validateValidationPlan(specPath, value, { resolved = null } = {}) {
+export async function validateValidationPlan(specPath, value, { resolved = null, environmentSelection = null } = {}) {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
     planFail("INVALID_VALIDATION_PLAN", "planner output must be one structured plan object");
   }
@@ -378,6 +394,14 @@ export async function validateValidationPlan(specPath, value, { resolved = null 
   const subjects = uniqueTextArray(value.subjects, "validation plan subjects")
     .map((entry) => normalizedRelative(entry, "validation plan subject", { allowParent: true }))
     .sort((left, right) => left.localeCompare(right, "en"));
+  const subjectClaims = new Set(task.claims);
+  const unexpectedSubjects = subjects.filter((entry) => !subjectClaims.has(entry));
+  if (unexpectedSubjects.length !== 0) {
+    planFail(
+      "VALIDATION_PLAN_SUBJECT_BASE_MISMATCH",
+      `subjects must use the task-relative Changed Areas base: ${unexpectedSubjects.join(", ")}`,
+    );
+  }
   if (!Array.isArray(value.commands)) planFail("INVALID_VALIDATION_PLAN_COMMAND", "commands must be an array");
   const commands = Object.freeze(value.commands.map(validatePlanCommand));
   if (value.baselineFingerprint !== null && !HASH.test(value.baselineFingerprint)) {
@@ -413,6 +437,8 @@ export async function validateValidationPlan(specPath, value, { resolved = null 
     || (value.operation === "VALIDATE_SLICE" && value.assessment !== "independent")) {
     planFail("INVALID_VALIDATION_PLAN_ASSESSMENT", "formal validation requires independent post-harness assessment");
   }
+  const selection = await validateValidationEnvironmentSelection(specPath, environmentSelection);
+  enforceValidationEnvironmentSelection({ commands, discovery }, selection);
   return Object.freeze({
     schema: value.schema, protocol: Object.freeze({ ...value.protocol }), operation: value.operation,
     slice: value.slice, round: value.round, requirementsAuthority: value.requirementsAuthority,
@@ -421,7 +447,7 @@ export async function validateValidationPlan(specPath, value, { resolved = null 
     replayOriginEvidenceId: value.replayOriginEvidenceId, coverage,
     findings: validateFindingsPlan(value.findings, value.operation, task),
     priorRound: validatePriorRound(value.priorRound, value.round), assessment: value.assessment,
-    priorEvidenceId: expected.priorEvidenceId, task, preflight,
+    priorEvidenceId: expected.priorEvidenceId, task, preflight, environmentSelection: selection,
   });
 }
 
@@ -739,6 +765,8 @@ function compactBridgeSummary(status, provenance, outputs, plan) {
     }))),
     commands: Object.freeze(provenance.commands.map((command, index) => Object.freeze({
       display: command.display, exit: command.exit,
+      environmentScope: plan.commands[index].environmentScope,
+      executionEnvironment: command.executionEnvironment,
       diagnostic: commandDiagnostic(plan, provenance, outputs[index], index),
     }))),
     blocker: provenance.blocker === undefined ? null : Object.freeze({
@@ -890,7 +918,9 @@ export function materializeValidationAssessment(bridgeResult, assessmentOutput) 
 
 export async function executeValidationPlan(specPath, plannerOutput, dependencies = {}) {
   const resolved = dependencies.resolved ?? await resolveOwnValidationRuntime();
-  const plan = await validateValidationPlan(specPath, plannerOutput, { resolved });
+  const plan = await validateValidationPlan(specPath, plannerOutput, {
+    resolved, environmentSelection: dependencies.environmentSelection,
+  });
   const request = {
     protocol: plan.protocol,
     operation: plan.operation,
@@ -898,7 +928,7 @@ export async function executeValidationPlan(specPath, plannerOutput, dependencie
     round: plan.round,
     cwd: plan.cwd,
     subjects: plan.subjects,
-    commands: plan.commands,
+    commands: plan.commands.map(({ environmentScope: _environmentScope, ...command }) => command),
     baselineFingerprint: plan.baselineFingerprint,
     priorEvidenceId: plan.priorEvidenceId,
     failureConclusion: plan.failureConclusion,
@@ -921,7 +951,9 @@ export async function executeValidationPlan(specPath, plannerOutput, dependencie
   const activeBlocker = plan.task.delegationBlocker?.state === "active" ? plan.task.delegationBlocker : null;
   return sealBridgeResult({
     schema: VALIDATION_BRIDGE_RESULT_SCHEMA,
-    planIdentity: digest("stnl-validation-plan-v1", plannerOutput),
+    planIdentity: digest("stnl-validation-plan-v1", {
+      plannerOutput, environmentSelection: plan.environmentSelection.fingerprint,
+    }),
     operation: plan.operation,
     slice: plan.slice,
     round: plan.round,
@@ -938,6 +970,7 @@ export async function executeValidationPlan(specPath, plannerOutput, dependencie
       plan: Object.freeze({
         operation: plan.operation, round: plan.round, discovery: plan.discovery, coverage: plan.coverage,
         findings: plan.findings, priorRound: plan.priorRound,
+        environmentSelectionFingerprint: plan.environmentSelection.fingerprint,
       }),
       task: Object.freeze({
         implementationChecks: Object.freeze(plan.task.implementationChecks.map(({ id }) => Object.freeze({ id }))),
@@ -1122,12 +1155,36 @@ export async function main(arguments_) {
       })}\n`);
       return resolved.packageCoherent ? 0 : 1;
     }
-    if (arguments_.length === 3 && arguments_[0] === "--execute-plan") {
+    if (arguments_.length === 3 && arguments_[0] === "--discover-environments") {
+      let request;
+      try { request = JSON.parse(arguments_[2]); } catch {
+        fail("INVALID_ENVIRONMENT_DISCOVERY_SCOPE", "environment discovery request is not valid JSON");
+      }
+      process.stdout.write(`${JSON.stringify(await discoverValidationEnvironments(arguments_[1], request))}\n`);
+      return 0;
+    }
+    if (arguments_.length === 3 && arguments_[0] === "--resolve-environment-selection") {
+      let discovery;
+      let choices;
+      try {
+        discovery = JSON.parse(arguments_[1]);
+        choices = JSON.parse(arguments_[2]);
+      } catch {
+        fail("INVALID_ENVIRONMENT_DISCOVERY", "environment discovery or choices are not valid JSON");
+      }
+      process.stdout.write(`${JSON.stringify(resolveValidationEnvironmentSelection(discovery, choices))}\n`);
+      return 0;
+    }
+    if (arguments_.length === 4 && arguments_[0] === "--execute-plan") {
       let plan;
       try { plan = JSON.parse(arguments_[2]); } catch {
         fail("INVALID_VALIDATION_PLAN", "planner output is not valid JSON");
       }
-      const result = await executeValidationPlan(arguments_[1], plan);
+      let environmentSelection;
+      try { environmentSelection = JSON.parse(arguments_[3]); } catch {
+        fail("VALIDATION_ENVIRONMENT_SELECTION_REQUIRED", "independent environment selection is not valid JSON");
+      }
+      const result = await executeValidationPlan(arguments_[1], plan, { environmentSelection });
       const resultFile = await writeBridgeReceipt(result);
       process.stdout.write(`${JSON.stringify({
         schema: result.schema, planIdentity: result.planIdentity, operation: result.operation,
@@ -1157,7 +1214,7 @@ export async function main(arguments_) {
     }
     return await invokeOwnValidationRuntime(arguments_);
   } catch (error) {
-    if (error instanceof ValidationRuntimeResolutionError) {
+    if (error instanceof ValidationRuntimeResolutionError || error instanceof ValidationEnvironmentSelectionError) {
       process.stderr.write(`BLOCKED: ${error.code}: ${error.message}\n`);
       return 1;
     }

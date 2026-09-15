@@ -15,6 +15,7 @@ export const VALIDATION_CAPABILITY_PACKAGES = Object.freeze({
     "runtime/resolve-validation-runtime.mjs",
     "runtime/run-validation-session.mjs",
     "runtime/validate-execution-state.mjs",
+    "runtime/validation-environment-selection.mjs",
     "runtime/validation-capability.mjs",
   ]),
   "stnl-slice-quality-manager": Object.freeze([
@@ -25,6 +26,7 @@ export const VALIDATION_CAPABILITY_PACKAGES = Object.freeze({
     "runtime/resolve-validation-runtime.mjs",
     "runtime/run-validation-session.mjs",
     "runtime/validate-execution-state.mjs",
+    "runtime/validation-environment-selection.mjs",
     "runtime/validation-capability.mjs",
   ]),
 });

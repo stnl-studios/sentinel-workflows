@@ -1,0 +1,8 @@
+services:
+  api-check:
+    image: sentinel-fixture/api-toolchain:1
+    working_dir: /workspace/components/service-api
+  web-check:
+    image: sentinel-fixture/web-toolchain:1
+    working_dir: /workspace/components/web-client
+
