@@ -394,6 +394,13 @@ function replaceSection(text, heading, content) {
   return text.replace(pattern, `$1${content}\n`);
 }
 
+function sectionBody(text, heading) {
+  const pattern = new RegExp(`## ${heading}\\n\\n([\\s\\S]*?)(?=\\n## |$)`, "u");
+  const match = text.match(pattern);
+  assert.ok(match, `missing ${heading}`);
+  return match[1].trim();
+}
+
 const ACTIVE_FINDING = `### finding-01
 
 - Severity: blocking
@@ -522,6 +529,10 @@ function delegationBlocker(operation, kind, { state = "active", after = "none", 
 - Causes:
   - configured independent runner could not produce a valid result
 - Required action: retry the same operation after restoring the runner${resolution === null ? "" : `\n- Resolution: ${resolution}`}`;
+}
+
+function appendDelegationEpisode(history, number, episode) {
+  return `${history}\n\n### delegation-blocker-${String(number).padStart(2, "0")}\n\n${episode}`;
 }
 
 async function rejectedWithRecovery(promise, expected) {
@@ -4349,6 +4360,117 @@ test("candidate history protects delegation blocker identity while allowing its 
   await assertCandidateRejectedWithoutMutation(fixture, candidate, /Delegation Blocker.*immutable/u);
 });
 
+test("Delegation Blocker episode history is append-only, singularly active, and resolved only by its later record", async (t) => {
+  const fixture = await qualityFixture(t);
+  const firstActive = delegationBlocker("EXECUTE_SLICE", "initialization", { pendingRound: 1 });
+  await editTask(fixture, (value) => replaceSection(value, "Delegation Blocker", firstActive));
+  const firstResolvedCandidate = await executionCandidate(fixture);
+  const firstResolved = delegationBlocker("EXECUTE_SLICE", "initialization", {
+    state: "resolved", pendingRound: 1, resolution: "implementation-check-01 returned a valid result",
+  });
+  await editTask(firstResolvedCandidate, (value) => replaceSection(
+    replaceSection(value, "Implementation Test Evidence", checkRecord("implementation-check", 1, "TESTS_PASS", 1)),
+    "Delegation Blocker",
+    firstResolved,
+  ));
+  await validateExecutionCandidate(fixture.requirements, firstResolvedCandidate.execution);
+  await fs.copyFile(
+    path.join(firstResolvedCandidate.execution, "tasks/slice-01.md"),
+    path.join(fixture.execution, "tasks/slice-01.md"),
+  );
+
+  const secondActive = delegationBlocker("VALIDATE_SLICE", "malformed-output");
+  const secondActiveCandidate = await executionCandidate(fixture);
+  await editTask(secondActiveCandidate, (value) => replaceSection(
+    value, "Delegation Blocker", appendDelegationEpisode(sectionBody(value, "Delegation Blocker"), 2, secondActive),
+  ));
+  let state = await validateExecutionCandidate(fixture.requirements, secondActiveCandidate.execution);
+  assert.equal(state.state, "RUNNER_RESULT_BLOCKED");
+  await fs.copyFile(
+    path.join(secondActiveCandidate.execution, "tasks/slice-01.md"),
+    path.join(fixture.execution, "tasks/slice-01.md"),
+  );
+  state = await inspectExecutionState(fixture.requirements);
+  assert.equal(state.tasks.get("slice-01").delegationBlockers.length, 2);
+  assert.equal(state.tasks.get("slice-01").delegationBlocker.id, "delegation-blocker-02");
+  assertRecoveryTarget(state, { operation: "VALIDATE_SLICE", slice: "slice-01", record: null });
+
+  const secondResolvedCandidate = await executionCandidate(fixture);
+  const secondResolved = delegationBlocker("VALIDATE_SLICE", "malformed-output", {
+    state: "resolved", resolution: "attempt-01 returned valid output",
+  });
+  await editTask(secondResolvedCandidate, (value) => replaceSection(
+    replaceSection(value, "Validation Attempts", BLOCKED_ATTEMPT),
+    "Delegation Blocker",
+    appendDelegationEpisode(firstResolved, 2, secondResolved),
+  ));
+  await validateExecutionCandidate(fixture.requirements, secondResolvedCandidate.execution);
+  await fs.copyFile(
+    path.join(secondResolvedCandidate.execution, "tasks/slice-01.md"),
+    path.join(fixture.execution, "tasks/slice-01.md"),
+  );
+
+  const altered = await executionCandidate(fixture);
+  await editTask(altered, (value) => value.replace(
+    "configured independent runner could not produce a valid result",
+    "rewritten historical cause",
+  ));
+  await assertCandidateRejectedWithoutMutation(fixture, altered, /Delegation Blocker delegation-blocker-01.*immutable/u);
+
+  const removed = await executionCandidate(fixture);
+  await editTask(removed, (value) => replaceSection(value, "Delegation Blocker", firstResolved));
+  await assertCandidateRejectedWithoutMutation(fixture, removed, /historical episode cannot be removed/u);
+
+  const reordered = await executionCandidate(fixture);
+  await editTask(reordered, (value) => replaceSection(
+    value, "Delegation Blocker", appendDelegationEpisode(secondResolved, 2, firstResolved),
+  ));
+  await assertCandidateRejectedWithoutMutation(fixture, reordered, /Delegation Blocker|resolved Delegation Blocker/u);
+
+  const thirdActive = delegationBlocker("VALIDATE_SLICE", "initialization", { after: "attempt-01" });
+  const thirdActiveCandidate = await executionCandidate(fixture);
+  await editTask(thirdActiveCandidate, (value) => replaceSection(
+    value, "Delegation Blocker", appendDelegationEpisode(sectionBody(value, "Delegation Blocker"), 3, thirdActive),
+  ));
+  state = await validateExecutionCandidate(fixture.requirements, thirdActiveCandidate.execution);
+  assert.equal(state.state, "RUNNER_INITIALIZATION_BLOCKED");
+
+  await fs.copyFile(
+    path.join(thirdActiveCandidate.execution, "tasks/slice-01.md"),
+    path.join(fixture.execution, "tasks/slice-01.md"),
+  );
+  state = await inspectExecutionState(fixture.requirements);
+  assert.equal(state.tasks.get("slice-01").delegationBlocker.id, "delegation-blocker-03");
+  assertRecoveryTarget(state, { operation: "VALIDATE_SLICE", slice: "slice-01", record: "attempt-01" });
+
+  const concurrent = await executionCandidate(fixture);
+  await editTask(concurrent, (value) => replaceSection(
+    value,
+    "Delegation Blocker",
+    appendDelegationEpisode(
+      sectionBody(value, "Delegation Blocker"), 4,
+      delegationBlocker("VALIDATE_SLICE", "malformed-output", { after: "attempt-01" }),
+    ),
+  ));
+  await assert.rejects(
+    validateExecutionCandidate(fixture.requirements, concurrent.execution),
+    /multiple active episodes/u,
+  );
+
+  const premature = await executionCandidate(fixture);
+  await editTask(premature, (value) => replaceSection(
+    value,
+    "Delegation Blocker",
+    sectionBody(value, "Delegation Blocker")
+      .replace(/- State: active(?![\s\S]*- State: active)/u, "- State: resolved")
+      .concat("\n- Resolution: attempt-01 reused a record from before this episode"),
+  ));
+  await assert.rejects(
+    validateExecutionCandidate(fixture.requirements, premature.execution),
+    /requires a later valid record/u,
+  );
+});
+
 test("candidate history rejects removal and renumbering of persisted divergences", async (t) => {
   const fixture = await qualityFixture(t);
   await editTask(fixture, (value) => replaceSection(value, "Divergences", ACTIVE_DIVERGENCE));
@@ -5609,6 +5731,29 @@ function historicalCapabilityProvenance(provenance) {
   return historical;
 }
 
+function historicalRunnerProvenance(provenance) {
+  const historical = structuredClone(provenance);
+  historical.protocol.runner = "stnl-validation-runner/v10";
+  historical.inputs.protocol.runner = "stnl-validation-runner/v10";
+  const commands = historical.commands.map(({
+    stdoutFingerprint: _stdout, stderrFingerprint: _stderr, exit: _exit,
+    toolchainFingerprintAfter: _toolchainFingerprintAfter, ...command
+  }) => command);
+  historical.inputs.executionFingerprint = validationDigest("stnl-validation-execution-v1", {
+    protocol: historical.protocol,
+    operation: historical.operation,
+    slice: historical.slice,
+    round: historical.round,
+    cwd: historical.workspace.cwd,
+    executionRoot: historical.workspace.executionRoot,
+    subjects: historical.subjects,
+    commands,
+    inputs: { ...historical.inputs, executionFingerprint: undefined },
+  });
+  historical.workspace.workspaceId = historical.inputs.executionFingerprint;
+  return resignValidationProvenance(historical);
+}
+
 function historicalReplayCapabilityProvenance(provenance, origin) {
   const historical = historicalCapabilityProvenance(provenance);
   historical.priorEvidenceId = origin.evidenceId;
@@ -5687,17 +5832,24 @@ async function externalExecutionCandidate(t, fixture) {
   return { root: holder, requirements: fixture.requirements, execution: await copyDirectory(fixture.execution, path.join(holder, "execution")) };
 }
 
-function infrastructureDelegationBlocker(provenance) {
+function infrastructureDelegationBlocker(provenance, { after = "none" } = {}) {
   return `- Operation: ${provenance.operation}
 - Kind: infrastructure
 - State: active
-- After record: none
-- Pending automatic round: ${provenance.round}
+- After record: ${after}${provenance.round === null ? "" : `\n- Pending automatic round: ${provenance.round}`}
 - HEAD: ${provenance.inputs.head}
 - Evidence provenance: ${provenanceTransport(provenance)}
 - Causes:
   - ${provenance.blocker.code}: ${provenance.blocker.message}
 - Required action: restore the trusted validation infrastructure and resume the same logical runner invocation`;
+}
+
+function delegationObservation(provenance, { historical = false } = {}) {
+  return JSON.stringify({
+    cause: `${provenance.blocker.code}: ${provenance.blocker.message}`,
+    evidence: historical ? JSON.stringify(provenance) : provenanceTransport(provenance),
+    head: provenance.inputs.head,
+  });
 }
 
 async function packageBinSymlink(fixture, rawTarget) {
@@ -7027,6 +7179,174 @@ test("historical P0 provenance cannot be appended as a new Delegation Blocker", 
     validateExecutionCandidate(fixture.requirements, candidate.execution),
     /cannot append legacy validation provenance or a historical capability/u,
   );
+});
+
+test("first Delegation Blocker creation admits every observation through the current evidence boundary", async (t) => {
+  const fixture = await validationSessionFixture(t);
+  const outside = await temporary(t, "stnl-validation-initial-observation-");
+  const bin = path.join(fixture.root, "node_modules/.bin");
+  await fs.mkdir(bin, { recursive: true });
+  const firstLink = path.join(bin, "current-primary");
+  const secondLink = path.join(bin, "legacy-observation");
+  await fs.symlink(path.join(outside, "missing-primary"), firstLink);
+  await fs.symlink(path.join(outside, "missing-observation"), secondLink);
+  const primaryRequest = validationRequest({ argv: [firstLink] });
+  delete primaryRequest.commands[0].executionEnvironment;
+  const primary = await runValidationSession(fixture.requirements, primaryRequest);
+  const observation = await runValidationSession(fixture.requirements, validationRequest({ argv: [secondLink] }));
+  const currentCandidate = await externalExecutionCandidate(t, fixture);
+  await editTask(currentCandidate, (value) => {
+    let next = value.replace("- [ ] 1.1", "- [x] 1.1");
+    next = replaceSection(next, "Changed Areas", "- `../../src/example.txt`");
+    return replaceSection(next, "Delegation Blocker", `${infrastructureDelegationBlocker(primary.provenance)}\n- Observations:\n  - ${delegationObservation(observation.provenance)}`);
+  });
+  assert.equal((await validateExecutionCandidate(fixture.requirements, currentCandidate.execution)).state, "RUNNER_RESULT_BLOCKED");
+
+  const reusedWithinEpisode = await externalExecutionCandidate(t, fixture);
+  await editTask(reusedWithinEpisode, (value) => {
+    let next = value.replace("- [ ] 1.1", "- [x] 1.1");
+    next = replaceSection(next, "Changed Areas", "- `../../src/example.txt`");
+    return replaceSection(next, "Delegation Blocker", `${infrastructureDelegationBlocker(primary.provenance)}\n- Observations:\n  - ${delegationObservation(primary.provenance)}`);
+  });
+  await assert.rejects(
+    validateExecutionCandidate(fixture.requirements, reusedWithinEpisode.execution),
+    /reuses evidence across its history/u,
+  );
+
+  for (const [name, legacy, direct] of [
+    ["historical capability", historicalCapabilityProvenance(observation.provenance), true],
+    ["runner v10", historicalRunnerProvenance(observation.provenance), false],
+  ]) {
+    const candidate = await externalExecutionCandidate(t, fixture);
+    await editTask(candidate, (value) => {
+      let next = value.replace("- [ ] 1.1", "- [x] 1.1");
+      next = replaceSection(next, "Changed Areas", "- `../../src/example.txt`");
+      return replaceSection(next, "Delegation Blocker", `${infrastructureDelegationBlocker(primary.provenance)}\n- Observations:\n  - ${delegationObservation(legacy, { historical: direct })}`);
+    });
+    await assert.rejects(
+      validateExecutionCandidate(fixture.requirements, candidate.execution),
+      /cannot append legacy validation provenance or a historical capability/u,
+      name,
+    );
+  }
+});
+
+test("Delegation Blocker observation admission distinguishes persisted history from append authority", async (t) => {
+  const fixture = await validationSessionFixture(t);
+  const outside = await temporary(t, "stnl-validation-observation-history-");
+  const bin = path.join(fixture.root, "node_modules/.bin");
+  await fs.mkdir(bin, { recursive: true });
+  const primaryLink = path.join(bin, "primary");
+  const observationLink = path.join(bin, "observation");
+  await fs.symlink(path.join(outside, "missing-primary"), primaryLink);
+  await fs.symlink(path.join(outside, "missing-observation"), observationLink);
+  const primaryRequest = validationRequest({ argv: [primaryLink] });
+  delete primaryRequest.commands[0].executionEnvironment;
+  const primary = await runValidationSession(fixture.requirements, primaryRequest);
+  const observed = await runValidationSession(fixture.requirements, validationRequest({ argv: [observationLink] }));
+  const historical = historicalCapabilityProvenance(observed.provenance);
+  await editTask(fixture, (value) => {
+    let next = value.replace("- [ ] 1.1", "- [x] 1.1");
+    next = replaceSection(next, "Changed Areas", "- `../../src/example.txt`");
+    return replaceSection(next, "Delegation Blocker", `${infrastructureDelegationBlocker(primary.provenance)}\n- Observations:\n  - ${delegationObservation(historical, { historical: true })}`);
+  });
+  const persisted = await inspectExecutionState(fixture.requirements);
+  assert.equal(persisted.tasks.get("slice-01").delegationBlocker.observations[0].provenance.historicalCapabilityModel, true);
+  const unchanged = await externalExecutionCandidate(t, fixture);
+  await validateExecutionCandidate(fixture.requirements, unchanged.execution);
+
+  for (const [name, legacy, direct] of [
+    ["historical capability", historicalCapabilityProvenance(primary.provenance), true],
+    ["runner v10", historicalRunnerProvenance(observed.provenance), false],
+  ]) {
+    const appended = await externalExecutionCandidate(t, fixture);
+    await editTask(appended, (value) => replaceSection(
+      value,
+      "Delegation Blocker",
+      `${sectionBody(value, "Delegation Blocker")}\n  - ${delegationObservation(legacy, { historical: direct })}`,
+    ));
+    await assert.rejects(
+      validateExecutionCandidate(fixture.requirements, appended.execution),
+      /cannot append legacy validation provenance or a historical capability/u,
+      name,
+    );
+  }
+});
+
+test("a later Delegation Blocker episode admits current observations and rejects legacy observations", async (t) => {
+  const fixture = await validationSessionFixture(t);
+  const initialRequest = validationRequest();
+  delete initialRequest.commands[0].executionEnvironment;
+  const initial = await runValidationSession(fixture.requirements, initialRequest);
+  const initialCandidate = await externalExecutionCandidate(t, fixture);
+  await editTask(initialCandidate, (value) => {
+    let next = value.replace("- [ ] 1.1", "- [x] 1.1");
+    next = replaceSection(next, "Changed Areas", "- `../../src/example.txt`");
+    return replaceSection(next, "Delegation Blocker", infrastructureDelegationBlocker(initial.provenance));
+  });
+  await validateExecutionCandidate(fixture.requirements, initialCandidate.execution);
+  await fs.copyFile(
+    path.join(initialCandidate.execution, "tasks/slice-01.md"),
+    path.join(fixture.execution, "tasks/slice-01.md"),
+  );
+
+  const implementation = await runValidationSession(fixture.requirements, validationRequest({ failureConclusion: "NONE" }));
+  const resolvedCandidate = await externalExecutionCandidate(t, fixture);
+  await editTask(resolvedCandidate, (value) => {
+    const resolved = sectionBody(value, "Delegation Blocker")
+      .replace("- State: active", "- State: resolved")
+      .concat("\n- Resolution: implementation-check-01 returned valid output");
+    return replaceSection(
+      replaceSection(value, "Implementation Test Evidence", evidenceCheckRecord(implementation.provenance)),
+      "Delegation Blocker",
+      resolved,
+    );
+  });
+  await validateExecutionCandidate(fixture.requirements, resolvedCandidate.execution);
+  await fs.copyFile(
+    path.join(resolvedCandidate.execution, "tasks/slice-01.md"),
+    path.join(fixture.execution, "tasks/slice-01.md"),
+  );
+
+  const formalPrimaryRequest = validationRequest({ operation: "VALIDATE_SLICE", round: null, failureConclusion: "NONE" });
+  delete formalPrimaryRequest.commands[0].executionEnvironment;
+  const formalPrimary = await runValidationSession(fixture.requirements, formalPrimaryRequest);
+  const outside = await temporary(t, "stnl-validation-later-observation-");
+  const bin = path.join(fixture.root, "node_modules/.bin");
+  await fs.mkdir(bin, { recursive: true });
+  const link = path.join(bin, "later-observation");
+  await fs.symlink(path.join(outside, "missing"), link);
+  const formalObservation = await runValidationSession(fixture.requirements, validationRequest({
+    operation: "VALIDATE_SLICE", round: null, failureConclusion: "NONE", argv: [link],
+  }));
+  const history = sectionBody(await fs.readFile(path.join(fixture.execution, "tasks/slice-01.md"), "utf8"), "Delegation Blocker");
+
+  const currentCandidate = await externalExecutionCandidate(t, fixture);
+  await editTask(currentCandidate, (value) => replaceSection(
+    value,
+    "Delegation Blocker",
+    appendDelegationEpisode(
+      history, 2,
+      `${infrastructureDelegationBlocker(formalPrimary.provenance)}\n- Observations:\n  - ${delegationObservation(formalObservation.provenance)}`,
+    ),
+  ));
+  assert.equal((await validateExecutionCandidate(fixture.requirements, currentCandidate.execution)).state, "RUNNER_RESULT_BLOCKED");
+
+  const legacyCandidate = await externalExecutionCandidate(t, fixture);
+  const legacy = historicalCapabilityProvenance(formalObservation.provenance);
+  await editTask(legacyCandidate, (value) => replaceSection(
+    value,
+    "Delegation Blocker",
+    appendDelegationEpisode(
+      history, 2,
+      `${infrastructureDelegationBlocker(formalPrimary.provenance)}\n- Observations:\n  - ${delegationObservation(legacy, { historical: true })}`,
+    ),
+  ));
+  await assert.rejects(
+    validateExecutionCandidate(fixture.requirements, legacyCandidate.execution),
+    /cannot append legacy validation provenance or a historical capability/u,
+  );
+
 });
 
 test("a generated capability B reads immutable capability A history but requires B for every new record", async (t) => {

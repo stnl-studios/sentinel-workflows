@@ -782,7 +782,7 @@ const GATE_KEYS = new Set(["id", "command", "kind", "scope", "causality", "state
 const VALIDATION_RUNNER_PROTOCOL = "stnl-validation-runner/v11";
 const HISTORICAL_VALIDATION_RUNNER_PROTOCOLS = new Set(["stnl-validation-runner/v10"]);
 const VALIDATION_HARNESS_PROTOCOL = "stnl-validation-harness/v10";
-const VALIDATION_CAPABILITY_IDENTITY = "sha256:e1753469c0fed10913b3356688e7d9bac520eb1b06aa7d5c352a4c4e184b63dc";
+const VALIDATION_CAPABILITY_IDENTITY = "sha256:4ac7ecf1129a2b230a8d4e9b745ffdc2097e7489be2e1630ca71675d5577108a";
 const EVIDENCE_PROTOCOL_KEYS = new Set(["runner", "harness", "capability"]);
 
 function exactObject(value, keys, label) {
@@ -2022,8 +2022,7 @@ function parsePriorValidationOverlaps(section, label, evidenceContract) {
   return records;
 }
 
-function parseDelegationBlocker(section, operationRecordsByName, authority, evidenceContract) {
-  if (section === "- none") return null;
+function parseDelegationBlockerEpisode(section, operationRecordsByName, authority, evidenceContract, id) {
   if (/<[^>\n]+>/u.test(section)) throw new ExecutionContractError("Delegation Blocker contains template placeholder content");
   const operation = field(section, "Operation");
   const kind = field(section, "Kind");
@@ -2133,9 +2132,47 @@ function parseDelegationBlocker(section, operationRecordsByName, authority, evid
     }
   }
   return {
-    operation, kind, state, afterRecord, pendingRound, provenance, observations,
+    id, body: section, operation, kind, state, afterRecord, pendingRound, provenance, observations, causes, resolution,
     effectiveState: state === "active" ? "active" : "historical-resolved",
   };
+}
+
+function parseDelegationBlockers(section, operationRecordsByName, authority, evidenceContract) {
+  if (section === "- none") return [];
+  const markers = [...section.matchAll(/^### delegation-blocker-([0-9]{2,})$/gmu)];
+  const episodes = [];
+  if (markers.length === 0) {
+    episodes.push(parseDelegationBlockerEpisode(
+      section, operationRecordsByName, authority, evidenceContract, "delegation-blocker-01",
+    ));
+  } else {
+    const firstBody = section.slice(0, markers[0].index).trim();
+    if (firstBody.length === 0) {
+      throw new ExecutionContractError("Delegation Blocker episode history must retain its original singleton as episode 01");
+    }
+    episodes.push(parseDelegationBlockerEpisode(
+      firstBody, operationRecordsByName, authority, evidenceContract, "delegation-blocker-01",
+    ));
+    for (let index = 0; index < markers.length; index += 1) {
+      const expected = String(index + 2).padStart(2, "0");
+      if (markers[index][1] !== expected) {
+        throw new ExecutionContractError("Delegation Blocker episode identifiers must be contiguous and ordered");
+      }
+      const start = markers[index].index + markers[index][0].length;
+      const end = markers[index + 1]?.index ?? section.length;
+      const body = section.slice(start, end).trim();
+      if (body.length === 0) throw new ExecutionContractError(`delegation-blocker-${expected} is empty`);
+      episodes.push(parseDelegationBlockerEpisode(
+        body, operationRecordsByName, authority, evidenceContract, `delegation-blocker-${expected}`,
+      ));
+    }
+  }
+  const active = episodes.filter((episode) => episode.state === "active");
+  if (active.length > 1) throw new ExecutionContractError("Delegation Blocker history contains multiple active episodes");
+  if (active.length === 1 && active[0] !== episodes.at(-1)) {
+    throw new ExecutionContractError("an active Delegation Blocker episode must be the latest episode");
+  }
+  return episodes;
 }
 
 function validateFindingLifecycle(findings, attempts, findingsChecks) {
@@ -2360,12 +2397,13 @@ function parseTask(text, label, expectedSlice, references = {}) {
     if (record === undefined || !record.gates.some((gate) => gate.revalidates === divergence.id
       && ["resolved", "non_blocking"].includes(gate.decision))) throw new ExecutionContractError(`${divergence.id} resolution lacks current revalidation evidence`);
   }
-  const delegationBlocker = parseDelegationBlocker(taskSections.get("Delegation Blocker"), new Map([
+  const delegationBlockers = parseDelegationBlockers(taskSections.get("Delegation Blocker"), new Map([
     ["EXECUTE_SLICE", implementationChecks], ["APPLY_FINDINGS", findingsChecks], ["VALIDATE_SLICE", attempts],
   ]), gateAuthority, evidenceContract);
+  const delegationBlocker = delegationBlockers.find((episode) => episode.state === "active")
+    ?? delegationBlockers.at(-1) ?? null;
   if (evidenceContract === "stnl-validation-evidence/v1"
-    && delegationBlocker?.operation !== "VALIDATE_SLICE"
-    && delegationBlocker?.pendingRound === null) {
+    && delegationBlockers.some((episode) => episode.operation !== "VALIDATE_SLICE" && episode.pendingRound === null)) {
     throw new ExecutionContractError(`${label} v1 auxiliary Delegation Blocker requires Pending automatic round`);
   }
   const base = baseState(taskSections.get("Effective Validation Base"), attempts);
@@ -2392,7 +2430,7 @@ function parseTask(text, label, expectedSlice, references = {}) {
   const checklistComplete = checklistRows.every((row) => row.done);
   const workStarted = checklistRows.some((row) => row.done) || implementationChecks.length !== 0
     || findingsChecks.length !== 0 || attempts.length !== 0 || corrections.length !== 0
-    || delegationBlocker !== null || normalizeText(taskSections.get("Diff Summary")) !== "- pending";
+    || delegationBlockers.length !== 0 || normalizeText(taskSections.get("Diff Summary")) !== "- pending";
   if (attempts.length !== 0 && !checklistComplete) throw new ExecutionContractError(`${label} has Validation Attempts before the mandatory checklist is complete`);
   const pristine = [...PRISTINE].every(([name, sentinel]) => taskSections.get(name) === sentinel)
     && !/^- \[x\]/gmu.test(taskSections.get("Checklist") ?? "");
@@ -2503,7 +2541,7 @@ function parseTask(text, label, expectedSlice, references = {}) {
   }
   return {
     ...state, evidenceContract, body, sections: taskSections, pristine, attempts, findings, divergences, activeBlockers,
-    base, final, implementationChecks, findingsChecks, delegationBlocker, retryExhausted, checklistComplete,
+    base, final, implementationChecks, findingsChecks, delegationBlockers, delegationBlocker, retryExhausted, checklistComplete,
     changedClaims, priorValidationOverlaps, checklistRows,
     coverageReferences: [...new Set(checklistRows.flatMap((row) => row.requirements))].sort((left, right) => left.localeCompare(right, "en")),
     claims: [...new Set([...changedClaims, ...base.paths])],
@@ -3191,10 +3229,8 @@ export async function inspectExecutionState(specPath) {
   const activeDivergences = effectiveSlices.flatMap((slice) => artifacts.tasks.get(slice).divergences
     .filter((record) => record.severity === "blocking" && record.state === "active")
     .map((record) => Object.freeze({ slice, record: record.id, requiredAuthorityOperation: record.requiredAuthorityOperation })));
-  const activeDelegationBlockers = effectiveSlices.flatMap((slice) => {
-    const blocker = artifacts.tasks.get(slice).delegationBlocker;
-    return blocker?.state === "active" ? [{ slice, ...blocker }] : [];
-  });
+  const activeDelegationBlockers = effectiveSlices.flatMap((slice) => artifacts.tasks.get(slice).delegationBlockers
+    .filter((blocker) => blocker.state === "active").map((blocker) => ({ slice, ...blocker })));
   if (activeDelegationBlockers.length > 1) throw new ExecutionContractError("multiple active Delegation Blockers make resume ambiguous");
   const exhausted = effectiveSlices.map((slice) => [slice, artifacts.tasks.get(slice).retryExhausted]).filter(([, value]) => value !== null);
   const incompleteExecutionChecklists = effectiveSlices.flatMap((slice) => {
@@ -3225,6 +3261,7 @@ export async function inspectExecutionState(specPath) {
   const effectiveBlockers = [
     ...activeDelegationBlockers.map((blocker) => ({
       slice: blocker.slice, state: "active", source: "Delegation Blocker", kind: blocker.kind,
+      episode: blocker.id,
       operation: blocker.operation, record: blocker.afterRecord === "none" ? null : blocker.afterRecord,
       round: blocker.pendingRound,
     })),
@@ -3233,14 +3270,13 @@ export async function inspectExecutionState(specPath) {
       operation: blocker.operation, record: blocker.record, round: blocker.round,
     })),
   ];
-  const historicalDelegationBlockers = effectiveSlices.flatMap((slice) => {
-    const blocker = artifacts.tasks.get(slice).delegationBlocker;
-    return blocker?.state === "resolved" ? [{
+  const historicalDelegationBlockers = effectiveSlices.flatMap((slice) => artifacts.tasks.get(slice).delegationBlockers
+    .filter((blocker) => blocker.state === "resolved").map((blocker) => ({
       slice, state: "historical-resolved", source: "Delegation Blocker", kind: blocker.kind,
+      episode: blocker.id,
       operation: blocker.operation, record: blocker.afterRecord === "none" ? null : blocker.afterRecord,
       round: blocker.pendingRound,
-    }] : [];
-  });
+    })));
   const findingsCorrected = effectiveSlices.filter((slice) => {
     const task = artifacts.tasks.get(slice);
     const latestAttempt = task.attempts.at(-1);
@@ -3801,9 +3837,8 @@ async function validateCandidateHistory(workspace, result) {
     }
     const persistedEvidenceIds = new Set([
       ...original.implementationChecks, ...original.findingsChecks, ...original.attempts,
-      ...(original.delegationBlocker?.provenance === null || original.delegationBlocker === null
-        ? [] : [original.delegationBlocker]),
-      ...(original.delegationBlocker?.observations ?? []),
+      ...original.delegationBlockers.filter((episode) => episode.provenance !== null),
+      ...original.delegationBlockers.flatMap((episode) => episode.observations),
     ].filter((record) => record.provenance !== null).map((record) => record.provenance.evidenceId));
     const admittedEvidenceIds = new Set();
     for (const name of ["implementationChecks", "findingsChecks", "attempts", "findings", "divergences"]) {
@@ -3869,30 +3904,48 @@ async function validateCandidateHistory(workspace, result) {
         throw new ExecutionContractError(`${slice}/${divergence.id} resolution requires a newly appended revalidation record`);
       }
     }
-    if (original.delegationBlocker !== null) {
+    if (candidate.delegationBlockers.length < original.delegationBlockers.length) {
+      throw new ExecutionContractError(`${slice}/Delegation Blocker historical episode cannot be removed`);
+    }
+    for (let index = 0; index < original.delegationBlockers.length; index += 1) {
+      const originalEpisode = original.delegationBlockers[index];
+      const candidateEpisode = candidate.delegationBlockers[index] ?? null;
+      if (candidateEpisode?.id !== originalEpisode.id) {
+        throw new ExecutionContractError(`${slice}/${originalEpisode.id} historical episode cannot be removed or reordered`);
+      }
       assertHistoricalDelegationBlocker(
-        { ...original.delegationBlocker, body: original.sections.get("Delegation Blocker") },
-        candidate.delegationBlocker === null ? null
-          : { ...candidate.delegationBlocker, body: candidate.sections.get("Delegation Blocker") },
-        `${slice}/Delegation Blocker`,
+        originalEpisode, candidateEpisode, `${slice}/Delegation Blocker ${originalEpisode.id}`,
       );
-      const historicalObservationIds = new Set(original.delegationBlocker.observations
-        .map((observation) => observation.provenance.evidenceId));
-      for (const observation of candidate.delegationBlocker.observations
-        .filter((entry) => !historicalObservationIds.has(entry.provenance.evidenceId))) {
+      for (const observation of candidateEpisode.observations.slice(originalEpisode.observations.length)) {
         admitCurrentEvidence(
-          observation, `${slice}/Delegation Blocker observation`, persistedEvidenceIds, admittedEvidenceIds,
+          observation, `${slice}/${originalEpisode.id} observation`, persistedEvidenceIds, admittedEvidenceIds,
         );
       }
-    } else if (candidate.delegationBlocker !== null) {
-      if (candidate.delegationBlocker.kind === "infrastructure") {
+    }
+    const newEpisodes = candidate.delegationBlockers.slice(original.delegationBlockers.length);
+    if (newEpisodes.length > 1) {
+      throw new ExecutionContractError(`${slice}/Delegation Blocker can append only one current episode per candidate`);
+    }
+    if (newEpisodes.length !== 0) {
+      if (original.delegationBlockers.some((episode) => episode.state === "active")) {
+        throw new ExecutionContractError(`${slice}/Delegation Blocker cannot append an episode while an earlier episode is active`);
+      }
+      const episode = newEpisodes[0];
+      if (episode.state !== "active") {
+        throw new ExecutionContractError(`${slice}/${episode.id} must be persisted active before a later record can resolve it`);
+      }
+      if (episode.kind === "infrastructure") {
         admitCurrentEvidence(
-          candidate.delegationBlocker, `${slice}/Delegation Blocker`, persistedEvidenceIds, admittedEvidenceIds,
+          episode, `${slice}/${episode.id}`, persistedEvidenceIds, admittedEvidenceIds,
         );
       }
-      if (candidate.delegationBlocker.operation !== "VALIDATE_SLICE"
-        && field(candidate.sections.get("Delegation Blocker"), "Pending automatic round", { required: false }) === null) {
-        throw new ExecutionContractError(`${slice}/Delegation Blocker newly persisted auxiliary recovery requires Pending automatic round`);
+      for (const observation of episode.observations) {
+        admitCurrentEvidence(
+          observation, `${slice}/${episode.id} observation`, persistedEvidenceIds, admittedEvidenceIds,
+        );
+      }
+      if (episode.operation !== "VALIDATE_SLICE" && episode.pendingRound === null) {
+        throw new ExecutionContractError(`${slice}/${episode.id} newly persisted auxiliary recovery requires Pending automatic round`);
       }
     }
   }

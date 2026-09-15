@@ -656,15 +656,25 @@ function infrastructureDelegationBlocker(plan, provenance, transport, task) {
   const after = records.at(-1)?.id ?? "none";
   const cause = `${provenance.blocker.code}: ${provenance.blocker.message}`;
   if (task.delegationBlocker?.state === "active") {
+    const evidenceIds = [task.delegationBlocker.provenance, ...task.delegationBlocker.observations]
+      .filter((entry) => entry !== null).map((entry) => entry.provenance?.evidenceId ?? entry.evidenceId);
+    if (evidenceIds.includes(provenance.evidenceId)) {
+      return Object.freeze({
+        recordId: "Delegation Blocker", section: "Delegation Blocker",
+        episodeId: task.delegationBlocker.id, unchanged: true,
+      });
+    }
     return Object.freeze({
       recordId: "Delegation Blocker",
       section: "Delegation Blocker",
+      episodeId: task.delegationBlocker.id,
       observation: JSON.stringify({ cause, evidence: transport, head: provenance.inputs.head }),
     });
   }
   return Object.freeze({
     recordId: "Delegation Blocker",
     section: "Delegation Blocker",
+    episodeId: `delegation-blocker-${String(task.delegationBlockers.length + 1).padStart(2, "0")}`,
     markdown: `- Operation: ${plan.operation}\n- Kind: infrastructure\n- State: active\n- After record: ${after}${plan.round === null ? "" : `\n- Pending automatic round: ${plan.round}`}\n- HEAD: ${provenance.inputs.head}\n- Evidence provenance: ${transport}\n- Causes:\n  - ${cause}\n- Required action: restore the trusted validation infrastructure and resume the same logical planner invocation`,
   });
 }
@@ -1046,15 +1056,26 @@ export async function stageValidationBridgeResult(specPath, bridgeResult, candid
       ? markdown : `${current}\n\n${markdown}`;
     if (result.persistence.section === "Delegation Blocker") {
       task = replaceSection(task, result.persistence.section, (current) => {
+        if (result.persistence.unchanged === true) return current;
         if (result.persistence.observation !== undefined) {
-          return current.includes("\n- Observations:\n")
+          const latestMarker = current.lastIndexOf("\n### delegation-blocker-");
+          const activeEpisode = current.slice(latestMarker < 0 ? 0 : latestMarker);
+          if (activeEpisode.split("\n").includes(`  - ${result.persistence.observation}`)) return current;
+          return activeEpisode.includes("\n- Observations:\n")
             ? `${current}\n  - ${result.persistence.observation}`
             : `${current}\n- Observations:\n  - ${result.persistence.observation}`;
         }
-        if (current !== "- none") {
-          fail("INVALID_VALIDATION_CANDIDATE", "Delegation Blocker is a singleton and cannot be appended generically");
+        if (current === "- none") {
+          if (result.persistence.episodeId !== "delegation-blocker-01") {
+            fail("INVALID_VALIDATION_CANDIDATE", "first Delegation Blocker episode identity is inconsistent");
+          }
+          return result.persistence.markdown;
         }
-        return result.persistence.markdown;
+        const next = `delegation-blocker-${String((current.match(/^### delegation-blocker-[0-9]{2,}$/gmu) ?? []).length + 2).padStart(2, "0")}`;
+        if (result.persistence.episodeId !== next) {
+          fail("INVALID_VALIDATION_CANDIDATE", "next Delegation Blocker episode identity is inconsistent");
+        }
+        return `${current}\n\n### ${next}\n\n${result.persistence.markdown}`;
       });
     } else {
       task = replaceSection(task, result.persistence.section, (current) => append(current, result.persistence.markdown));
