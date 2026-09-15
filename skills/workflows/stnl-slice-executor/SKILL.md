@@ -4,7 +4,7 @@ description: Execute one explicitly selected slice or apply its persisted findin
 validation-runtime: runtime/run-validation-session.mjs
 validation-runner-protocol: stnl-validation-runner/v11
 validation-harness-protocol: stnl-validation-harness/v10
-validation-capability-identity: sha256:021b75ac83d1490c850005cd946afbeb277df8d8bf2303b981e4b793e94055e2
+validation-capability-identity: sha256:bf364af8b8d1750a86ed64a59f937c94ad62ff2828c4ff9df744f432513c1af0
 ---
 
 # stnl-slice-executor
@@ -31,6 +31,7 @@ Execution preflight is read-only. An accepted mandatory resume includes a struct
 
 - `plan.md`, `tasks.md`, selected detailed plan and task file;
 - requirements referenced by the selected slice;
+- local `references/validation-environment-selection.md` before resolving or resuming environment discovery;
 - local `references/execution-record-schema.md` before persisting or interpreting findings, divergences, checks, or supersession;
 - directly related code, tests, imports, dependencies, and prior compact test evidence only.
 
@@ -46,11 +47,11 @@ Before planning, identify only the component/check groups implicated by the slic
 
 The bridge collects and fingerprints supported references without executing verification. Sources are bounded to aggregate and involved-repository instructions, development/test documentation, execution/debug profiles, referenced tasks/scripts and concrete Docker/Compose configuration. Do not scan unrelated repositories, dependency trees, SDKs or HOME. Follow a profile only far enough to identify the concrete supported environment; it does not authorize debugger/setup/service/migration execution. A logical command, `local` label, Dockerfile, available daemon or prior host failure does not select an environment.
 
-Resolve that exact discovery through the same installed entrypoint, with `{}` for an unambiguous initial discovery or with only explicit operator option IDs after an answer:
+Resolve that exact discovery through the same installed entrypoint. Read `references/validation-environment-selection.md` for the compact choice contract: `{}` is limited to already-resolved structured configuration; an `optionId` is sufficient only for an option that does not require direct Compose confirmation; `confirmation-required` uses the operator-confirmed `{configurationPath,service}` form plus only explicitly confirmed `cacheVolumes`. If an answer names a file not yet inspected, add that exact file to the affected bounded scope and rerun discovery before resolving:
 
 `node "<SKILL_ROOT>/runtime/resolve-validation-runtime.mjs" --resolve-environment-selection '<DISCOVERY_JSON>' '<CHOICES_JSON>'`
 
-When the discovery has one compatible option for every scope, use the returned temporary `stnl-validation-environment-selection/v1` descriptor without asking. Its shape is `{schema,workspaceIdentity,requirementsAuthority,discoveryFingerprint,entries:[{scope,component,cwd,environment,sources:[{path,identity}]}],fingerprint}`; it contains no absolute project root or secret and is not persisted as a global preference. For ambiguity or missing information, give the runner the concrete discovery and resolver blocker so it can return the structured clarification described by its contract. Present the affected component/scope, only the options actually found with their file/profile/service, the recommendation and short reason when present, and the exact missing information; accept either an option or another project file/profile. Do not invent alternatives or ask only "which environment?".
+When discovery has one compatible option backed by structured authority for every scope, use the returned temporary `stnl-validation-environment-selection/v1` descriptor without asking. Its shape is `{schema,workspaceIdentity,requirementsAuthority,discoveryFingerprint,entries:[{scope,component,cwd,environment,sources:[{path,identity}],confirmation?}],fingerprint}`; it contains no absolute project root or secret and is not persisted as a global preference. A prose reference is not authorization: review `instructionReferences` for prohibitions, examples, stale guidance and conflicts, and clarify unresolved conflicts before execution. Never manufacture `authoritySources` or let planner output serve as authority. Give the selection to the planner as a restriction, then pass the same owner-held descriptor separately to the bridge. For ambiguity or missing information, give the runner the concrete discovery and resolver blocker so it can return the structured clarification described by its contract. Present the affected component/scope, only the options actually found with their file/profile/service, the recommendation and short reason when present, and the exact missing information; accept either a valid choice form or another project file/profile. Do not invent alternatives or ask only "which environment?".
 
 Start each logical runner invocation in a new independent delegated session with no inherited conversation history, using the platform launcher supplied by the caller. Send only operation, `SPEC_PATH`, selected slice, current requirements fingerprint and plan revision, applicable active findings or corrections, current changed scope, compact relevant evidence, automatic round when applicable, bounded environment discovery, the resolved `environmentSelection` as a mandatory restriction when available, references necessary for project discovery, and strictly necessary additional context. Never send the loaded skill root, installation path, resolver/runtime filename, harness path, packaged schema path, secret infrastructure value, conversation history or full logs. The runner remains read-only and returns one `stnl-validation-plan/v1` object or one contract-valid planning clarification, not TESTS_PASS, counts, exits or provenance.
 

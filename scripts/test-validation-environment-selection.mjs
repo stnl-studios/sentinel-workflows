@@ -144,6 +144,9 @@ async function installFixture(t, { blocked = false } = {}) {
   const resolverPath = path.join(
     relocated, ".agents/skills/stnl-slice-executor/runtime/resolve-validation-runtime.mjs",
   );
+  const qualityResolverPath = path.join(
+    relocated, ".agents/skills/stnl-slice-quality-manager/runtime/resolve-validation-runtime.mjs",
+  );
   const harnessPath = path.join(
     relocated, ".agents/skills/stnl-slice-executor/runtime/run-validation-session.mjs",
   );
@@ -151,10 +154,12 @@ async function installFixture(t, { blocked = false } = {}) {
   const resolver = await import(`${pathToFileURL(resolverPath).href}?selection=${importNonce}`);
   importNonce += 1;
   const harness = await import(`${pathToFileURL(harnessPath).href}?selection-harness=${importNonce}`);
+  importNonce += 1;
+  const qualityResolver = await import(`${pathToFileURL(qualityResolverPath).href}?selection-quality=${importNonce}`);
   return {
     ...fixture, ...rendered, project: relocated,
     specPath: path.join(relocated, "requirements.md"),
-    execution: path.join(relocated, "requirements-execution"), resolver, harness,
+    execution: path.join(relocated, "requirements-execution"), resolver, harness, qualityResolver,
   };
 }
 
@@ -452,7 +457,7 @@ test("discovery keeps the aggregator root and follows real child/profile/task/Co
   assert.equal(await fs.stat(path.join(fixture.project, "components/web-client/.git")).then((entry) => entry.isDirectory()), true);
 });
 
-test("an unequivocal project instruction selects an existing Compose service without launch or task files", async (t) => {
+test("a Compose service mentioned only in prose remains a candidate that requires confirmation", async (t) => {
   const fixture = await copyProjectFixture(t);
   const resolver = await sourceResolver();
   await fs.rm(path.join(fixture.project, ".vscode"), { recursive: true, force: true });
@@ -468,12 +473,74 @@ Do not run API validation on the host. Use \`shared/compose.yml\`, service \`api
     }],
   });
   const api = scopeResult(discovery, "api-check");
-  assert.equal(api.status, "resolved", JSON.stringify(api));
+  assert.equal(api.status, "confirmation-required", JSON.stringify(api));
   const option = optionFor(api, (entry) => entry.environment?.service === "api-check");
   assert.equal(option.environment.composeFile, "shared/compose.yml");
   assert.equal(option.environment.image, "sentinel-fixture/api-toolchain:1");
-  assert.deepEqual(option.environment.authoritySources, ["AGENTS.md"]);
+  assert.deepEqual(option.environment.authoritySources, []);
+  assert.deepEqual(api.instructionReferences, ["AGENTS.md"]);
   assert.ok(option.sources.some((source) => source.path === "shared/compose.yml"));
+});
+
+test("negative, Portuguese, old and example prose never becomes Compose authorization", async (t) => {
+  const cases = [
+    { conflict: true, prose: "Do not use shared/compose.yml, service api-check, for validation of components/service-api. Ask the operator for a different environment." },
+    { conflict: true, prose: "Não use shared/compose.yml, serviço api-check, para validar components/service-api. Peça outro ambiente ao operador." },
+    { conflict: false, prose: "Old configuration: shared/compose.yml with service api-check is retained only for historical reference." },
+    { conflict: false, prose: "Example only: shared/compose.yml can contain a service named api-check; this is not an execution instruction." },
+  ];
+  for (const [index, { conflict, prose }] of cases.entries()) {
+    const fixture = await copyProjectFixture(t, `stnl prose authority fixture ${index} `);
+    const resolver = await sourceResolver();
+    await fs.rm(path.join(fixture.project, ".vscode"), { recursive: true, force: true });
+    await fs.writeFile(path.join(fixture.project, "AGENTS.md"), `${prose}\n`, "utf8");
+    const discovery = await resolver.discoverValidationEnvironments(fixture.specPath, {
+      componentScopes: [{
+        ...apiScope(), references: ["AGENTS.md", "shared/compose.yml"],
+      }],
+    });
+    const api = scopeResult(discovery, "api-check");
+    assert.equal(api.status, "confirmation-required", JSON.stringify(api));
+    assert.deepEqual(api.instructionReferences, ["AGENTS.md"]);
+    assert.deepEqual(api.conflictingInstructionReferences, conflict ? ["AGENTS.md"] : []);
+    assert.deepEqual(optionFor(api, (entry) => entry.environment?.service === "api-check").environment.authoritySources, []);
+    assert.match(api.missingInformation, /reference|restriction|conflict|confirm/iu);
+    const blocker = resolver.resolveValidationEnvironmentSelection(discovery);
+    assert.equal(blocker.schema, "stnl-validation-planning-blocker/v1");
+    const confirmation = () => resolver.resolveValidationEnvironmentSelection(discovery, {
+      "api-check": { configurationPath: "shared/compose.yml", service: "api-check" },
+    });
+    if (conflict) {
+      await assert.rejects(Promise.resolve().then(confirmation), (error) => error.code === "ENVIRONMENT_INSTRUCTION_CONFLICT");
+    } else {
+      assert.equal(selectionEntry(confirmation(), "api-check").environment.service, "api-check");
+    }
+  }
+});
+
+test("a prose restriction conflicts with otherwise structured Compose authority and prevents execution", async (t) => {
+  const fixture = await copyProjectFixture(t);
+  const resolver = await sourceResolver();
+  await fs.writeFile(path.join(fixture.project, "AGENTS.md"), [
+    "# Conflicting aggregate instructions",
+    "Do not use shared/compose.yml, service api-check, for validation of components/service-api.",
+    "The launch and task files remain present for migration reference.",
+    "",
+  ].join("\n"), "utf8");
+  const discovery = await resolver.discoverValidationEnvironments(fixture.specPath, {
+    componentScopes: [apiScope()],
+  });
+  const api = scopeResult(discovery, "api-check");
+  assert.equal(api.status, "confirmation-required");
+  assert.deepEqual(api.instructionReferences, ["AGENTS.md"]);
+  assert.deepEqual(api.conflictingInstructionReferences, ["AGENTS.md"]);
+  const structured = optionFor(api, (entry) => entry.environment?.service === "api-check");
+  await assert.rejects(
+    Promise.resolve().then(() => resolver.resolveValidationEnvironmentSelection(discovery, {
+      "api-check": structured.id,
+    })),
+    (error) => error.code === "ENVIRONMENT_INSTRUCTION_CONFLICT",
+  );
 });
 
 test("an operator can directly confirm a referenced Compose service without a previously known option id", async (t) => {
@@ -794,12 +861,181 @@ test("simulated authenticated Docker engine receives one coherent plan selected 
   assert.equal(observedRuns[0].cwd, "components/service-api");
 });
 
+test("direct Compose confirmation without documentary authority survives evidence, staging, publication and formal reuse", async (t) => {
+  const fixture = await installFixture(t);
+  await fs.rm(path.join(fixture.project, ".vscode"), { recursive: true, force: true });
+  await fs.writeFile(path.join(fixture.project, "AGENTS.md"), "# Aggregate fixture\n\nNo execution environment is documented here.\n", "utf8");
+  await fs.writeFile(path.join(fixture.project, "components/service-api/AGENTS.md"), "# Service API fixture\n", "utf8");
+  const discovery = await fixture.resolver.discoverValidationEnvironments(fixture.specPath, {
+    componentScopes: [{ ...apiScope(), references: ["shared/compose.yml"] }],
+  });
+  assert.equal(scopeResult(discovery, "api-check").status, "confirmation-required");
+  const blocker = fixture.resolver.resolveValidationEnvironmentSelection(discovery);
+  assert.equal(blocker.code, "ENVIRONMENT_SELECTION_REQUIRED");
+  assert.equal((await inspectExecutionState(fixture.specPath)).tasks.get("slice-01").implementationChecks.length, 0);
+
+  const offered = optionFor(scopeResult(discovery, "api-check"), () => true);
+  const plannerOnlyEntry = {
+    scope: "api-check", component: "service-api", cwd: "components/service-api",
+    environment: offered.environment, sources: offered.sources, confirmation: null,
+  };
+  const plannerOnlySelection = {
+    schema: "stnl-validation-environment-selection/v1",
+    entries: [plannerOnlyEntry],
+  };
+  let unconfirmedDispatches = 0;
+  await assert.rejects(
+    fixture.resolver.executeValidationPlan(
+      fixture.specPath,
+      planFor(fixture, plannerOnlySelection, [commandFor(plannerOnlyEntry)]),
+      { invoke: async () => { unconfirmedDispatches += 1; throw new Error("must not dispatch"); } },
+    ),
+    (error) => /ENVIRONMENT/u.test(error.code) && /selection|required|independent/iu.test(error.message),
+  );
+  assert.equal(unconfirmedDispatches, 0, "an offered Compose reference is not executable without owner confirmation");
+
+  const selection = fixture.resolver.resolveValidationEnvironmentSelection(discovery, {
+    "api-check": { configurationPath: "shared/compose.yml", service: "api-check" },
+  });
+  const api = selectionEntry(selection, "api-check");
+  assert.deepEqual(api.environment.authoritySources, []);
+  const plan = planFor(fixture, selection, [commandFor(api)]);
+  const tamperedSelection = structuredClone(selection);
+  tamperedSelection.entries[0].confirmation.service = "web-check";
+  let tamperedDispatches = 0;
+  await assert.rejects(
+    fixture.resolver.executeValidationPlan(fixture.specPath, plan, {
+      environmentSelection: tamperedSelection,
+      invoke: async () => { tamperedDispatches += 1; throw new Error("must not dispatch"); },
+    }),
+    (error) => /ENVIRONMENT/u.test(error.code) && /confirmation|fingerprint|selection|service/iu.test(error.message),
+  );
+  assert.equal(tamperedDispatches, 0, "tampering with owner confirmation must fail before harness dispatch");
+  const observedRuns = [];
+  let rawEvidence;
+  const bridge = await fixture.resolver.executeValidationPlan(fixture.specPath, plan, {
+    environmentSelection: selection,
+    invoke: async ([specPath, requestJson]) => {
+      rawEvidence = await fixture.harness.runValidationSession(specPath, JSON.parse(requestJson), {
+        dockerEngine: simulatedAuthenticatedDockerEngine(fixture, observedRuns),
+      });
+      const exit = rawEvidence.provenance.state === "INVALID" ? 1 : 0;
+      return {
+        exit,
+        transport: fixture.resolver.validationResultTransport(`${JSON.stringify(rawEvidence)}\n`, exit, ""),
+        errors: "",
+      };
+    },
+  });
+  assert.equal(bridge.summary.status, "TESTS_PASS", JSON.stringify(bridge.summary));
+  assert.equal(observedRuns.length, 1);
+  assert.equal(rawEvidence.provenance.commands[0].executionEnvironment.authoritySources.length, 0);
+  assert.equal(
+    rawEvidence.provenance.commands[0].executionEnvironment.operationalAuthority.selectionFingerprint,
+    selection.fingerprint,
+  );
+
+  const candidateHolder = await temporary(t, "stnl direct confirmation candidate ");
+  const candidate = path.join(candidateHolder, "requirements-execution");
+  await fs.cp(fixture.execution, candidate, { recursive: true });
+  const accepted = await fixture.resolver.stageValidationBridgeResult(fixture.specPath, bridge, candidate);
+  assert.equal(accepted.state, "IMPLEMENTED_AWAITING_VALIDATION");
+  await fs.copyFile(path.join(candidate, "tasks/slice-01.md"), path.join(fixture.execution, "tasks/slice-01.md"));
+  const readBack = await inspectExecutionState(fixture.specPath);
+  assert.equal(readBack.tasks.get("slice-01").implementationChecks.at(-1).provenance.evidenceId, bridge.summary.evidenceId);
+
+  const formalPlan = planFor(fixture, selection, [commandFor(api)]);
+  formalPlan.operation = "VALIDATE_SLICE";
+  formalPlan.round = null;
+  formalPlan.assessment = "independent";
+  let formalEvidence;
+  const formalBridge = await fixture.qualityResolver.executeValidationPlan(fixture.specPath, formalPlan, {
+    environmentSelection: selection,
+    invoke: async ([specPath, requestJson]) => {
+      formalEvidence = await fixture.harness.runValidationSession(specPath, JSON.parse(requestJson), {
+        dockerEngine: simulatedAuthenticatedDockerEngine(fixture, []),
+      });
+      const exit = formalEvidence.provenance.state === "INVALID" ? 1 : 0;
+      return {
+        exit,
+        transport: fixture.qualityResolver.validationResultTransport(`${JSON.stringify(formalEvidence)}\n`, exit, ""),
+        errors: "",
+      };
+    },
+  });
+  assert.equal(formalBridge.summary.status, "ASSESSMENT_REQUIRED");
+  const assessed = fixture.qualityResolver.materializeValidationAssessment(formalBridge, {
+    schema: "stnl-validation-assessment/v1", planIdentity: formalBridge.planIdentity,
+    evidenceId: formalBridge.summary.evidenceId, operation: "VALIDATE_SLICE", slice: "slice-01", round: null,
+    status: "PASS", evidence: "Sealed direct-confirmation evidence passed.",
+    verifiedScope: "both fixture sources", findingReferences: "none", findingDispositions: "none",
+    blockers: "none", gates: [], manifest: formalBridge.summary.subjects.map((entry) => entry.path),
+    filelessReason: null, overlaps: "none", regressions: "direct confirmation and evidence parsing",
+    persistenceSummary: "Formal assessment is bound to the same independently confirmed selection.",
+  });
+  assert.equal(assessed.persistence.section, "Validation Attempts");
+  assert.equal(formalEvidence.provenance.commands[0].executionEnvironment.operationalAuthority.selectionFingerprint, selection.fingerprint);
+});
+
+test("document-free Compose execution cannot omit its bridge-derived operational authority", async (t) => {
+  const fixture = await installFixture(t);
+  assert.throws(
+    () => fixture.harness.validationExecutionEnvironmentContract({
+      kind: "docker-compose", composeFile: "shared/compose.yml", service: "api-check",
+      image: "sentinel-fixture/api-toolchain:1", authoritySources: [],
+    }),
+    /exactly one documentary or operator-confirmation authority/iu,
+  );
+});
+
+test("a post-admission infrastructure failure after direct confirmation remains valid BLOCKED evidence", async (t) => {
+  const fixture = await installFixture(t);
+  await fs.rm(path.join(fixture.project, ".vscode"), { recursive: true, force: true });
+  const discovery = await fixture.resolver.discoverValidationEnvironments(fixture.specPath, {
+    componentScopes: [{ ...apiScope(), references: ["shared/compose.yml"] }],
+  });
+  const selection = fixture.resolver.resolveValidationEnvironmentSelection(discovery, {
+    "api-check": { configurationPath: "shared/compose.yml", service: "api-check" },
+  });
+  const api = selectionEntry(selection, "api-check");
+  const plan = planFor(fixture, selection, [commandFor(api)]);
+  let rawEvidence;
+  const engine = simulatedAuthenticatedDockerEngine(fixture, []);
+  engine.run = async () => {
+    throw new fixture.harness.DockerEnvironmentError(
+      "DOCKER_START_FAILED", "simulated authenticated post-admission failure", "shared/compose.yml",
+    );
+  };
+  const bridge = await fixture.resolver.executeValidationPlan(fixture.specPath, plan, {
+    environmentSelection: selection,
+    invoke: async ([specPath, requestJson]) => {
+      rawEvidence = await fixture.harness.runValidationSession(specPath, JSON.parse(requestJson), { dockerEngine: engine });
+      return {
+        exit: 1,
+        transport: fixture.resolver.validationResultTransport(`${JSON.stringify(rawEvidence)}\n`, 1, ""),
+        errors: "",
+      };
+    },
+  });
+  assert.equal(bridge.summary.status, "BLOCKED");
+  assert.equal(bridge.summary.blocker.stage, "environment-execution");
+  assert.equal(rawEvidence.provenance.commands[0].executionEnvironment.operationalAuthority.selectionFingerprint, selection.fingerprint);
+  const candidateHolder = await temporary(t, "stnl direct confirmation blocker candidate ");
+  const candidate = path.join(candidateHolder, "requirements-execution");
+  await fs.cp(fixture.execution, candidate, { recursive: true });
+  const accepted = await fixture.resolver.stageValidationBridgeResult(fixture.specPath, bridge, candidate);
+  assert.equal(accepted.state, "AUXILIARY_BLOCKED");
+});
+
 test("selected cache reaches installed snapshot and read-only harness execution with source identity checks", async (t) => {
   const fixture = await installFixture(t);
   await configureAuthorizedApiCache(fixture);
+  await fs.rm(path.join(fixture.project, ".vscode"), { recursive: true, force: true });
+  await fs.writeFile(path.join(fixture.project, "AGENTS.md"), "# Aggregate fixture without environment authority\n", "utf8");
   const discovery = await fixture.resolver.discoverValidationEnvironments(fixture.specPath, {
-    componentScopes: [apiScope()],
+    componentScopes: [{ ...apiScope(), references: ["shared/compose.yml"] }],
   });
+  assert.equal(scopeResult(discovery, "api-check").status, "confirmation-required");
   const confirmation = {
     configurationPath: "shared/compose.yml", service: "api-check",
     cacheVolumes: [{ source: "api-deps", target: "/var/cache/api-deps" }],
@@ -831,6 +1067,10 @@ test("selected cache reaches installed snapshot and read-only harness execution 
   assert.equal(observedRuns[0].cacheMounts.length, 1);
   assert.equal(observedRuns[0].cacheMounts[0].target, "/var/cache/api-deps");
   assert.equal(rawEvidence.provenance.commands[0].executionEnvironment.cacheVolumes[0].source, "api-deps");
+  assert.equal(
+    rawEvidence.provenance.commands[0].executionEnvironment.operationalAuthority.selectionFingerprint,
+    selection.fingerprint,
+  );
   assert.match(
     rawEvidence.provenance.commands[0].executionEnvironment.cacheVolumes[0].snapshotFingerprint,
     /^sha256:[0-9a-f]{64}$/u,
@@ -948,9 +1188,34 @@ services:
 volumes:
   api-deps:
 `, "utf8");
+  await fs.rm(path.join(fixture.project, ".vscode"), { recursive: true, force: true });
+  await fs.writeFile(path.join(fixture.project, "AGENTS.md"), "# Aggregate fixture without environment authority\n", "utf8");
+  await fs.writeFile(path.join(fixture.project, "components/service-api/AGENTS.md"), "# Service API fixture\n", "utf8");
+
+  const removedRelative = "../../components/web-client/src/removed.txt";
+  const removedPath = path.join(fixture.project, "components/web-client/src/removed.txt");
+  const childRepository = path.join(fixture.project, "components/web-client");
+  await fs.writeFile(removedPath, "real Docker staged-removal proof\n", "utf8");
+  await fs.rm(path.join(childRepository, ".git"), { recursive: true, force: true });
+  await runCommand("git", ["init", "-q"], { cwd: childRepository });
+  await runCommand("git", ["add", "--", "src/message.txt", "src/removed.txt"], { cwd: childRepository });
+  await runCommand("git", [
+    "-c", "user.name=Sentinel Fixture", "-c", "user.email=fixture@invalid.example",
+    "commit", "-qm", "real Docker staged-removal baseline",
+  ], { cwd: childRepository });
+  await fs.rm(removedPath);
+  await runCommand("git", ["add", "-u", "--", "src/removed.txt"], { cwd: childRepository });
+  const taskFile = path.join(fixture.execution, "tasks/slice-01.md");
+  await fs.writeFile(taskFile, replaceSection(await fs.readFile(taskFile, "utf8"), "Changed Areas", [
+    "- `../../components/service-api/src/message.txt`",
+    "- `../../components/web-client/src/message.txt`",
+    `- \`${removedRelative}\``,
+  ].join("\n")), "utf8");
+
   const discovery = await fixture.resolver.discoverValidationEnvironments(fixture.specPath, {
-    componentScopes: [apiScope()],
+    componentScopes: [{ ...apiScope(), references: ["shared/compose.yml"] }],
   });
+  assert.equal(scopeResult(discovery, "api-check").status, "confirmation-required");
   const selection = fixture.resolver.resolveValidationEnvironmentSelection(discovery, {
     "api-check": {
       configurationPath: "shared/compose.yml", service: "api-check",
@@ -964,8 +1229,9 @@ set -eu
 test "$(cat /workspace/components/service-api/src/message.txt)" = "api source exists"
 test "$(cat /workspace/components/web-client/src/message.txt)" = "web source exists"
 test "$(cat /var/cache/api-deps/cached-input)" = "real authorized cache"
-`, "utf8");
+  `, "utf8");
   const plan = planFor(fixture, selection, [commandFor(api, { argv: ["sh", "verify-real.sh"] })]);
+  plan.subjects.push(removedRelative);
   const bridge = await fixture.resolver.executeValidationPlan(fixture.specPath, plan, {
     environmentSelection: selection,
   });
@@ -982,7 +1248,17 @@ test "$(cat /var/cache/api-deps/cached-input)" = "real authorized cache"
     identities["../../components/web-client/src/message.txt"],
     digestFile(await fs.readFile(path.join(fixture.project, "components/web-client/src/message.txt"))),
   );
-  assert.equal((await inspectExecutionState(fixture.specPath)).tasks.get("slice-01").implementationChecks.length, 0);
+  assert.equal(identities[removedRelative], "REMOVED");
+  const candidateHolder = await temporary(t, "stnl real Docker candidate ");
+  const candidate = path.join(candidateHolder, "requirements-execution");
+  await fs.cp(fixture.execution, candidate, { recursive: true });
+  const accepted = await fixture.resolver.stageValidationBridgeResult(fixture.specPath, bridge, candidate);
+  assert.equal(accepted.state, "IMPLEMENTED_AWAITING_VALIDATION");
+  await fs.copyFile(path.join(candidate, "tasks/slice-01.md"), taskFile);
+  assert.equal(
+    (await inspectExecutionState(fixture.specPath)).tasks.get("slice-01").implementationChecks.at(-1).provenance.evidenceId,
+    bridge.summary.evidenceId,
+  );
 });
 
 test("service, Compose, workspace and component identity mismatches fail before dispatch", async (t) => {
@@ -1368,7 +1644,7 @@ test("a selected cwd with a symlink ancestor is rejected by the bridge before di
   assert.equal(dispatched, 0);
 });
 
-test("legitimate removed subject remains representable without changing the project/task base", async (t) => {
+test("legitimate removed subject remains representable before and after staging in its child repository", async (t) => {
   const fixture = await installFixture(t);
   const removedRelative = "../../components/web-client/src/removed.txt";
   const removedPath = path.join(fixture.project, "components/web-client/src/removed.txt");
@@ -1400,6 +1676,11 @@ test("legitimate removed subject remains representable without changing the proj
   const web = selectionEntry(selection, "web-check");
   const plan = planFor(fixture, selection, [commandFor(web, { argv: ["true"] })]);
   plan.subjects.push(removedRelative);
+  const unstaged = await fixture.resolver.validateValidationPlan(fixture.specPath, plan, {
+    environmentSelection: selection,
+  });
+  assert.ok(unstaged.subjects.includes(removedRelative));
+  await runCommand("git", ["add", "-u", "--", "src/removed.txt"], { cwd: repository });
   const bridge = await fixture.resolver.executeValidationPlan(fixture.specPath, plan, {
     environmentSelection: selection,
   });
@@ -1407,6 +1688,71 @@ test("legitimate removed subject remains representable without changing the proj
   const removed = bridge.summary.subjects.find((entry) => entry.path === removedRelative);
   assert.equal(removed.expected, "REMOVED");
   assert.equal(bridge.summary.status, "TESTS_PASS");
+
+  await fs.writeFile(removedPath, "restored before a later execution\n", "utf8");
+  const restoredBridge = await fixture.resolver.executeValidationPlan(fixture.specPath, plan, {
+    environmentSelection: selection,
+  });
+  assert.equal(
+    restoredBridge.summary.subjects.find((entry) => entry.path === removedRelative).expected,
+    digestFile(await fs.readFile(removedPath)),
+  );
+});
+
+test("an existing untracked subject is hashed and a homonymous path in another child repository proves nothing", async (t) => {
+  const fixture = await installFixture(t);
+  const webRepository = path.join(fixture.project, "components/web-client");
+  const apiRepository = path.join(fixture.project, "components/service-api");
+  for (const repository of [webRepository, apiRepository]) {
+    await fs.rm(path.join(repository, ".git"), { recursive: true, force: true });
+    await runCommand("git", ["init", "-q"], { cwd: repository });
+  }
+  const untrackedRelative = "../../components/web-client/src/untracked file.txt";
+  const untrackedPath = path.join(webRepository, "src/untracked file.txt");
+  await fs.writeFile(untrackedPath, "real untracked bytes\n", "utf8");
+  const homonym = path.join(apiRepository, "src/only-here.txt");
+  await fs.writeFile(homonym, "tracked only in the API repository\n", "utf8");
+  await runCommand("git", ["add", "--", "src/only-here.txt"], { cwd: apiRepository });
+  await runCommand("git", [
+    "-c", "user.name=Sentinel Fixture", "-c", "user.email=fixture@invalid.example",
+    "commit", "-qm", "homonymous path baseline",
+  ], { cwd: apiRepository });
+
+  const taskFile = path.join(fixture.execution, "tasks/slice-01.md");
+  const original = await fs.readFile(taskFile, "utf8");
+  await fs.writeFile(taskFile, replaceSection(original, "Changed Areas", [
+    "- `../../components/service-api/src/message.txt`",
+    `- \`${untrackedRelative}\``,
+  ].join("\n")), "utf8");
+  const discovery = await fixture.resolver.discoverValidationEnvironments(fixture.specPath, {
+    componentScopes: [webScope()],
+  });
+  const webDiscovery = scopeResult(discovery, "web-check");
+  const host = optionFor(webDiscovery, (entry) => entry.environment?.kind === "host");
+  const selection = fixture.resolver.resolveValidationEnvironmentSelection(discovery, { "web-check": host.id });
+  const web = selectionEntry(selection, "web-check");
+  const plan = planFor(fixture, selection, [commandFor(web, { argv: ["true"] })]);
+  plan.subjects = ["../../components/service-api/src/message.txt", untrackedRelative];
+  const bridge = await fixture.resolver.executeValidationPlan(fixture.specPath, plan, {
+    environmentSelection: selection,
+  });
+  assert.equal(
+    bridge.summary.subjects.find((entry) => entry.path === untrackedRelative).expected,
+    digestFile(await fs.readFile(untrackedPath)),
+  );
+
+  const absentRelative = "../../components/web-client/src/only-here.txt";
+  const task = await fs.readFile(taskFile, "utf8");
+  await fs.writeFile(taskFile, replaceSection(task, "Changed Areas", [
+    "- `../../components/service-api/src/message.txt`",
+    `- \`${absentRelative}\``,
+  ].join("\n")), "utf8");
+  const rejected = planFor(fixture, selection, [commandFor(web, { argv: ["true"] })]);
+  rejected.subjects = ["../../components/service-api/src/message.txt", absentRelative];
+  await assert.rejects(
+    fixture.resolver.validateValidationPlan(fixture.specPath, rejected, { environmentSelection: selection }),
+    (error) => error.code === "VALIDATION_PLAN_SUBJECT_IDENTITY_UNRESOLVED",
+  );
 });
 
 test("an absent subject without child-repository removal proof cannot become REMOVED success", async (t) => {
@@ -1451,11 +1797,7 @@ test("installed blocked resume combines direct Compose, authorized cache, path c
   const fixture = await installFixture(t, { blocked: true });
   await fs.rm(path.join(fixture.project, ".vscode"), { recursive: true, force: true });
   await configureAuthorizedApiCache(fixture);
-  await fs.writeFile(path.join(fixture.project, "AGENTS.md"), `# Aggregate validation instructions
-
-Host validation is forbidden. Validate \`components/service-api\` with \`shared/compose.yml\`,
-service \`api-check\`. The operator separately confirms any authorized cache binding.
-`, "utf8");
+  await fs.writeFile(path.join(fixture.project, "AGENTS.md"), "# Aggregate fixture without environment authority\n", "utf8");
   const liveTask = path.join(fixture.execution, "tasks/slice-01.md");
   const historicalCause = Buffer.from("  - an earlier host attempt could not initialize the project toolchain", "utf8");
   const blockedTask = await fs.readFile(liveTask, "utf8");
@@ -1471,7 +1813,7 @@ service \`api-check\`. The operator separately confirms any authorized cache bin
     }],
   });
   const discoveredApi = scopeResult(discovery, "api-check");
-  assert.equal(discoveredApi.status, "resolved", JSON.stringify(discoveredApi));
+  assert.equal(discoveredApi.status, "confirmation-required", JSON.stringify(discoveredApi));
   const confirmation = {
     configurationPath: "shared/compose.yml", service: "api-check",
     cacheVolumes: [{ source: "api-deps", target: "/var/cache/api-deps" }],

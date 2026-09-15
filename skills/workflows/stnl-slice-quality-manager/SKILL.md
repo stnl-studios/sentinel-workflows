@@ -4,7 +4,7 @@ description: Delegate independent validation, own formal finding disposition, an
 validation-runtime: runtime/run-validation-session.mjs
 validation-runner-protocol: stnl-validation-runner/v11
 validation-harness-protocol: stnl-validation-harness/v10
-validation-capability-identity: sha256:021b75ac83d1490c850005cd946afbeb277df8d8bf2303b981e4b793e94055e2
+validation-capability-identity: sha256:bf364af8b8d1750a86ed64a59f937c94ad62ff2828c4ff9df744f432513c1af0
 ---
 
 # stnl-slice-quality-manager
@@ -31,6 +31,7 @@ Execution preflight is read-only. An accepted mandatory resume includes a struct
 
 - `tasks.md`, selected detailed plan and task file, referenced requirements;
 - `references/validation-base.md` before persisting a result;
+- local `references/validation-environment-selection.md` before resolving or resuming environment discovery;
 - local `references/execution-record-schema.md` before interpreting or changing findings, divergences, attempts, or terminal state;
 - Implementation Test Evidence and Findings Test Evidence for the selected slice;
 - only artifacts needed for cheap prerequisites and faithful persistence.
@@ -65,11 +66,11 @@ Before planning, identify only component/check groups implicated by the slice an
 
 The bridge collects and fingerprints only supported references needed for those scopes: aggregate and involved-repository instructions, development/test documentation, execution/debug profiles, referenced tasks/scripts and concrete Docker/Compose configuration. Do not scan unrelated repositories, dependency trees, SDKs or HOME. Profiles are environment clues, not authority to run debugger/setup/services/migrations; labels such as `local`, a logical command, Dockerfile, available daemon or earlier host failure do not choose an environment.
 
-Resolve that exact discovery through the same installed entrypoint, with `{}` for an unambiguous initial discovery or only explicit operator option IDs after an answer:
+Resolve that exact discovery through the same installed entrypoint. Read `references/validation-environment-selection.md` for the compact choice contract: `{}` is limited to already-resolved structured configuration; an `optionId` is sufficient only for an option that does not require direct Compose confirmation; `confirmation-required` uses the operator-confirmed `{configurationPath,service}` form plus only explicitly confirmed `cacheVolumes`. If an answer names a file not yet inspected, add that exact file to the affected bounded scope and rerun discovery before resolving:
 
 `node "<SKILL_ROOT>/runtime/resolve-validation-runtime.mjs" --resolve-environment-selection '<DISCOVERY_JSON>' '<CHOICES_JSON>'`
 
-When every scope has one compatible option, accept the bridge-returned temporary descriptor `{schema:"stnl-validation-environment-selection/v1",workspaceIdentity,requirementsAuthority,discoveryFingerprint,entries:[{scope,component,cwd,environment,sources:[{path,identity}]}],fingerprint}` without asking. It carries no absolute root or secret and is not a persisted/global preference. Give bounded discovery and this `environmentSelection` to the runner as a mandatory constraint; the planner cannot create or edit it. For ambiguity or missing information, give the runner the concrete discovery and resolver blocker so it returns its structured planning clarification, then present the affected component/scope, only concrete options found with file/profile/service, recommendation/reason when present, and exact missing information. Accept an option or another project file/profile; do not invent choices or ask only "which environment?".
+When every scope has one compatible option backed by structured authority, accept the bridge-returned temporary descriptor `{schema:"stnl-validation-environment-selection/v1",workspaceIdentity,requirementsAuthority,discoveryFingerprint,entries:[{scope,component,cwd,environment,sources:[{path,identity}],confirmation?}],fingerprint}` without asking. It carries no absolute root or secret and is not a persisted/global preference. A prose reference is not authorization: review `instructionReferences` for prohibitions, examples, stale guidance and conflicts, and clarify unresolved conflicts before execution. Never manufacture `authoritySources` or let planner output serve as authority. Give bounded discovery and the selection to the runner as a mandatory constraint; after planning, pass the same owner-held descriptor separately to the bridge. For ambiguity or missing information, give the runner the concrete discovery and resolver blocker so it returns its structured planning clarification, then present the affected component/scope, only concrete options found with file/profile/service, recommendation/reason when present, and exact missing information. Accept a valid choice form or another project file/profile; do not invent choices or ask only "which environment?".
 
 Prior test evidence is auxiliary, never a formal verdict. Pass it to the runner with the selected diff and scope for independent discovery and planning. The runner reviews prior non-applicability, coverage, risks and overlaps but does not execute. After the bridge/harness returns sealed evidence, send only its compact summary, evidence ID and plan identity back to the independent role for the required `stnl-validation-assessment/v1`; do not send or ask it to copy the opaque envelope. The assessment evaluates actual exits, coverage, Gate assessments, findings/dispositions and overlap without executing checks, reconstructing evidence or publishing. Neither plan acceptance nor auxiliary success guarantees a formal verdict.
 

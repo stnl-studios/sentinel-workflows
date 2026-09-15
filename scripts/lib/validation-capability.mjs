@@ -11,6 +11,7 @@ export const VALIDATION_CAPABILITY_PACKAGES = Object.freeze({
   "stnl-slice-executor": Object.freeze([
     "SKILL.md",
     "references/execution-record-schema.md",
+    "references/validation-environment-selection.md",
     "runtime/execution-state.mjs",
     "runtime/resolve-validation-runtime.mjs",
     "runtime/run-validation-session.mjs",
@@ -22,6 +23,7 @@ export const VALIDATION_CAPABILITY_PACKAGES = Object.freeze({
     "SKILL.md",
     "references/execution-record-schema.md",
     "references/validation-base.md",
+    "references/validation-environment-selection.md",
     "runtime/execution-state.mjs",
     "runtime/resolve-validation-runtime.mjs",
     "runtime/run-validation-session.mjs",

@@ -386,18 +386,35 @@ async function nearestRepository(target, projectRoot) {
   return null;
 }
 
+async function gitOutput(repository, arguments_) {
+  return new Promise((resolve) => {
+    const child = spawn("git", ["-C", repository, ...arguments_], {
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    const stdout = [];
+    child.stdout.on("data", (chunk) => stdout.push(chunk));
+    child.once("error", () => resolve(null));
+    child.once("close", (code) => resolve(code === 0 ? Buffer.concat(stdout) : null));
+  });
+}
+
+function exactGitPaths(output) {
+  if (output === null) return [];
+  return output.toString("utf8").split("\0").filter(Boolean).map((entry) => {
+    const separator = entry.indexOf("\t");
+    return separator < 0 ? null : entry.slice(separator + 1);
+  }).filter((entry) => entry !== null);
+}
+
 async function gitTracksAbsentPath(target, projectRoot) {
   const repository = await nearestRepository(target, projectRoot);
   if (repository === null) return false;
   const relative = path.relative(repository, target).split(path.sep).join("/");
   if (relative === "" || relative === ".." || relative.startsWith("../")) return false;
-  return new Promise((resolve) => {
-    const child = spawn("git", ["-C", repository, "ls-files", "--error-unmatch", "--", relative], {
-      stdio: ["ignore", "ignore", "ignore"],
-    });
-    child.once("error", () => resolve(false));
-    child.once("close", (code) => resolve(code === 0));
-  });
+  const indexed = exactGitPaths(await gitOutput(repository, ["ls-files", "--stage", "-z", "--", relative]));
+  if (indexed.includes(relative)) return true;
+  const committed = exactGitPaths(await gitOutput(repository, ["ls-tree", "-rz", "--full-tree", "HEAD", "--", relative]));
+  return committed.includes(relative);
 }
 
 function historicalSubjectIdentity(task, claim) {
@@ -932,6 +949,16 @@ function validateSealedBridgeResult(result) {
   if (canonicalTransport !== result.sealedEvidence || transported.provenance.evidenceId !== result.summary?.evidenceId) {
     fail("INVALID_VALIDATION_BRIDGE_RESULT", "sealed harness evidence is malformed or was altered");
   }
+  const selectionFingerprint = result.context?.plan?.environmentSelectionFingerprint;
+  for (const [index, command] of transported.provenance.commands.entries()) {
+    const operationalAuthority = command.executionEnvironment?.operationalAuthority;
+    if (operationalAuthority === undefined) continue;
+    if (operationalAuthority.selectionFingerprint !== selectionFingerprint
+      || operationalAuthority.scope !== result.summary?.commands?.[index]?.environmentScope
+      || operationalAuthority.cwd !== command.cwd) {
+      fail("INVALID_VALIDATION_BRIDGE_RESULT", "sealed operator-confirmation authority is not bound to the owner-held environment selection");
+    }
+  }
   return { result, transported };
 }
 
@@ -972,7 +999,8 @@ export function validateValidationAssessment(bridgeResult, value) {
   } catch (error) {
     fail("INVALID_VALIDATION_ASSESSMENT", `assessment Gate assessments are invalid: ${error.message}`);
   }
-  const manifest = uniqueTextArray(value.manifest, "assessment manifest").sort((left, right) => left.localeCompare(right, "en"));
+  const manifest = [...uniqueTextArray(value.manifest, "assessment manifest")]
+    .sort((left, right) => left.localeCompare(right, "en"));
   const evidencePaths = provenance.subjects.map((subject) => subject.path).sort((left, right) => left.localeCompare(right, "en"));
   if (formal && new Set(["PASS", "ACCEPTED"]).has(value.status)
     && (manifest.length !== evidencePaths.length || manifest.some((entry, index) => entry !== evidencePaths[index]))) {
@@ -1046,6 +1074,32 @@ export function materializeValidationAssessment(bridgeResult, assessmentOutput) 
   return sealBridgeResult({ ...bridgeReceiptMaterial(result), persistence, resolution, assessment: assessmentOutput });
 }
 
+function harnessExecutionEnvironment(plan, command) {
+  if (command.executionEnvironment.kind !== "docker-compose"
+    || command.executionEnvironment.authoritySources.length !== 0) return command.executionEnvironment;
+  const entry = plan.environmentSelection.entries.find((candidate) => candidate.scope === command.environmentScope);
+  if (entry?.confirmation === null || entry?.confirmation === undefined) {
+    fail("VALIDATION_ENVIRONMENT_SELECTION_REQUIRED", "document-free Compose execution requires an owner-held direct confirmation");
+  }
+  const operationalAuthority = Object.freeze({
+    kind: "operator-confirmation",
+    selectionFingerprint: plan.environmentSelection.fingerprint,
+    scope: entry.scope,
+    component: entry.component,
+    cwd: entry.cwd,
+    confirmationFingerprint: digest("stnl-validation-environment-confirmation-v1", {
+      workspaceIdentity: plan.environmentSelection.workspaceIdentity,
+      requirementsAuthority: plan.environmentSelection.requirementsAuthority,
+      discoveryFingerprint: plan.environmentSelection.discoveryFingerprint,
+      scope: entry.scope,
+      component: entry.component,
+      cwd: entry.cwd,
+      confirmation: entry.confirmation,
+    }),
+  });
+  return Object.freeze({ ...command.executionEnvironment, operationalAuthority });
+}
+
 export async function executeValidationPlan(specPath, plannerOutput, dependencies = {}) {
   const resolved = dependencies.resolved ?? await resolveOwnValidationRuntime();
   const plan = await validateValidationPlan(specPath, plannerOutput, {
@@ -1058,7 +1112,13 @@ export async function executeValidationPlan(specPath, plannerOutput, dependencie
     round: plan.round,
     cwd: plan.cwd,
     subjects: plan.subjects,
-    commands: plan.commands.map(({ environmentScope: _environmentScope, ...command }) => command),
+    commands: plan.commands.map((command) => {
+      const { environmentScope: _environmentScope, ...runtimeCommand } = command;
+      return Object.freeze({
+        ...runtimeCommand,
+        executionEnvironment: harnessExecutionEnvironment(plan, command),
+      });
+    }),
     baselineFingerprint: plan.baselineFingerprint,
     priorEvidenceId: plan.priorEvidenceId,
     failureConclusion: plan.failureConclusion,
@@ -1071,6 +1131,17 @@ export async function executeValidationPlan(specPath, plannerOutput, dependencie
   }
   const transported = transportedValidationResult(execution.transport);
   const provenance = transported.provenance;
+  if (provenance.commands.length !== 0) {
+    const authorityMismatch = provenance.commands.length !== plan.commands.length
+      || plan.commands.some((command, index) => {
+        const expected = harnessExecutionEnvironment(plan, command).operationalAuthority ?? null;
+        const actual = provenance.commands[index]?.executionEnvironment?.operationalAuthority ?? null;
+        return JSON.stringify(canonical(actual)) !== JSON.stringify(canonical(expected));
+      });
+    if (authorityMismatch) {
+      fail("MALFORMED_HARNESS_OUTPUT", "packaged harness evidence lost or altered the owner-held environment authority binding");
+    }
+  }
   const status = bridgeStatus(plan, provenance);
   let persistence = null;
   if (status !== "ASSESSMENT_REQUIRED") {

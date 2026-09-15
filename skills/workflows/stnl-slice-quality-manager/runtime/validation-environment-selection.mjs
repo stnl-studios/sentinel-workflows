@@ -253,12 +253,22 @@ function scopeSourcePaths(scope, sourceRecords) {
   return [...paths];
 }
 
-function documentedAuthoritySources(paths, sourceRecords, composeFile, service) {
+function proseInstructionReferences(paths, sourceRecords, composeFile, service) {
   return paths.filter((relative) => {
     if (COMPOSE_NAMES.has(path.posix.basename(relative)) || /(?:launch|tasks)\.jsonc?$/u.test(relative)) return false;
     const text = sourceRecords.get(relative)?.text ?? "";
     return text.includes(composeFile) && text.includes(service);
   }).sort((left, right) => left.localeCompare(right, "en"));
+}
+
+function explicitConflictReferences(paths, sourceRecords, composeFile, service) {
+  return proseInstructionReferences(paths, sourceRecords, composeFile, service).filter((relative) => {
+    const text = sourceRecords.get(relative)?.text ?? "";
+    return text.split(/\n|(?<=[.!?])\s+/u).some((sentence) => sentence.includes(composeFile)
+      && sentence.includes(service)
+      && (/^\s*(?:do not|don't|never)\s+(?:use|run|select|choose)\b/iu.test(sentence)
+        || /^\s*(?:não|nao)\s+(?:use|utilize|execute|selecione|escolha)\b/iu.test(sentence)));
+  });
 }
 
 function availableCacheVolumes(configuration, service) {
@@ -269,9 +279,8 @@ function availableCacheVolumes(configuration, service) {
 
 function composeOption(scope, composeFile, sourceRecords, configuration, service, paths) {
   const availableCaches = availableCacheVolumes(configuration, service);
-  const authoritySources = documentedAuthoritySources(paths, sourceRecords, composeFile, service.service);
   const environment = {
-    kind: "docker-compose", composeFile, service: service.service, image: service.image, authoritySources,
+    kind: "docker-compose", composeFile, service: service.service, image: service.image, authoritySources: [],
   };
   const material = { profile: `Compose service ${service.service}`, source: composeFile, environment };
   return Object.freeze({
@@ -456,8 +465,7 @@ export async function discoverValidationEnvironments(specPath, request) {
       }
       const cwdTarget = `/workspace/${scope.cwd === "." ? "" : scope.cwd}`.replace(/\/$/u, "");
       const matched = configuration.services.filter((entry) => entry.service === scope.scope
-        || entry.service === scope.component || entry.workingDirectory === cwdTarget
-        || documentedAuthoritySources(paths, sourceRecords, composeFile, entry.service).length !== 0);
+        || entry.service === scope.component || entry.workingDirectory === cwdTarget);
       const plausible = matched.length !== 0 ? matched : configuration.services;
       for (const service of plausible) {
         if (existingComposeServices.has(`${composeFile}\0${service.service}`)) continue;
@@ -465,22 +473,33 @@ export async function discoverValidationEnvironments(specPath, request) {
       }
     }
     options.sort((left, right) => left.profile.localeCompare(right.profile, "en"));
+    const instructionReferences = [...new Set(options.flatMap((option) => option.environment.kind === "docker-compose"
+      ? proseInstructionReferences(paths, sourceRecords, option.environment.composeFile, option.environment.service) : []))]
+      .sort((left, right) => left.localeCompare(right, "en"));
+    const conflictingInstructionReferences = [...new Set(options.flatMap((option) => option.environment.kind === "docker-compose"
+      ? explicitConflictReferences(paths, sourceRecords, option.environment.composeFile, option.environment.service) : []))]
+      .sort((left, right) => left.localeCompare(right, "en"));
     const requiresConfirmation = options.length === 1 && options[0].environment.kind === "docker-compose"
-      && options[0].environment.authoritySources.length === 0;
+      && (options[0].environment.authoritySources.length === 0 || conflictingInstructionReferences.length !== 0);
     const status = requiresConfirmation ? "confirmation-required"
       : options.length === 1 ? "resolved" : options.length > 1 ? "ambiguous"
         : unsupported.length > 0 ? "unsupported" : "missing";
     const recommended = options.find((option) => option.environment.kind === "docker-compose") ?? options[0] ?? null;
     return Object.freeze({
       scope: scope.scope, component: scope.component, cwd: scope.cwd, status,
-      options: Object.freeze(options),
+      options: Object.freeze(options), instructionReferences: Object.freeze(instructionReferences),
+      conflictingInstructionReferences: Object.freeze(conflictingInstructionReferences),
       recommendation: recommended === null ? null : Object.freeze({
         optionId: recommended.id,
         reason: recommended.environment.kind === "docker-compose"
-          ? "Compose matches the shared project-defined environment" : "the project explicitly authorizes this host profile",
+          ? "Compose is a concrete inspected candidate; prose references do not authorize it" : "the project explicitly authorizes this host profile",
       }),
       missingInformation: status === "ambiguous" ? `select or confirm one project profile for ${scope.scope}`
-        : status === "confirmation-required" ? `confirm the inspected Compose file and service for ${scope.scope}`
+        : status === "confirmation-required" ? conflictingInstructionReferences.length !== 0
+          ? `resolve explicit instruction conflicts for ${scope.scope}: ${conflictingInstructionReferences.join(", ")}`
+          : instructionReferences.length === 0
+          ? `confirm the inspected Compose file and service for ${scope.scope}`
+          : `review the referenced prose, then confirm the inspected Compose file and service for ${scope.scope}`
         : status === "missing" ? `identify the project file or profile that authorizes ${scope.scope}`
           : status === "unsupported" ? `the discovered profile uses an unsupported backend: ${unsupported.join("; ")}` : null,
       unsupported: Object.freeze(unsupported),
@@ -503,6 +522,8 @@ function planningBlocker(scope) {
     requiredAction: Object.freeze({
       scope: scope.scope, component: scope.component, cwd: scope.cwd,
       options: scope.options,
+      instructionReferences: scope.instructionReferences ?? Object.freeze([]),
+      conflictingInstructionReferences: scope.conflictingInstructionReferences ?? Object.freeze([]),
       recommendation: scope.recommendation,
       missingInformation: scope.missingInformation,
     }),
@@ -545,6 +566,12 @@ function directChoice(scope, choice) {
   if (option === undefined) {
     environmentFail("INVALID_ENVIRONMENT_CHOICE", `direct choice for ${scope.scope} does not match an inspected project Compose service`);
   }
+  if ((scope.conflictingInstructionReferences ?? []).length !== 0) {
+    environmentFail(
+      "ENVIRONMENT_INSTRUCTION_CONFLICT",
+      `direct choice for ${scope.scope} cannot silently override explicit instruction conflicts: ${scope.conflictingInstructionReferences.join(", ")}`,
+    );
+  }
   const requestedCaches = Object.hasOwn(choice, "cacheVolumes")
     ? normalizeCacheChoice(choice.cacheVolumes, `direct choice for ${scope.scope}`) : null;
   if (requestedCaches !== null && requestedCaches.some((requested) => !(option.availableCacheVolumes ?? [])
@@ -571,6 +598,12 @@ export function resolveValidationEnvironmentSelection(discovery, choices = {}) {
   for (const scope of discovery.scopes) {
     const choice = choices[scope.scope];
     if (scope.status !== "resolved" && choice === undefined) return planningBlocker(scope);
+    if ((scope.conflictingInstructionReferences ?? []).length !== 0 && choice !== undefined) {
+      environmentFail(
+        "ENVIRONMENT_INSTRUCTION_CONFLICT",
+        `choice for ${scope.scope} cannot silently override explicit instruction conflicts: ${scope.conflictingInstructionReferences.join(", ")}`,
+      );
+    }
     let option;
     let environment;
     let confirmation = null;
@@ -625,6 +658,32 @@ export async function validateValidationEnvironmentSelection(specPath, selection
       || normalizedRelative(entry.cwd, "selected component cwd") !== entry.cwd
       || !Array.isArray(entry.sources) || entry.sources.length === 0) {
       environmentFail("INVALID_VALIDATION_ENVIRONMENT_SELECTION", "selection entry is malformed");
+    }
+    if (entry.environment?.kind === "docker-compose") {
+      const expectedConfirmationKeys = Object.hasOwn(entry.environment, "cacheVolumes")
+        ? "cacheVolumes,configurationPath,service" : "configurationPath,service";
+      const confirmationValid = entry.confirmation !== null && typeof entry.confirmation === "object"
+        && !Array.isArray(entry.confirmation)
+        && Object.keys(entry.confirmation).sort().join(",") === expectedConfirmationKeys
+        && entry.confirmation.configurationPath === entry.environment.composeFile
+        && entry.confirmation.service === entry.environment.service
+        && JSON.stringify(canonical(entry.confirmation.cacheVolumes ?? []))
+          === JSON.stringify(canonical(entry.environment.cacheVolumes ?? []));
+      if (!Array.isArray(entry.environment.authoritySources)
+        || (entry.environment.authoritySources.length === 0 && !confirmationValid)
+        || (entry.confirmation !== null && !confirmationValid)) {
+        environmentFail(
+          "INVALID_VALIDATION_ENVIRONMENT_SELECTION",
+          `selection entry ${entry.scope} does not preserve its documentary or direct-confirmation authority`,
+        );
+      }
+      const sourcePaths = new Set(entry.sources.map((source) => source.path));
+      if (!sourcePaths.has(entry.environment.composeFile)
+        || entry.environment.authoritySources.some((source) => !sourcePaths.has(source))) {
+        environmentFail("INVALID_VALIDATION_ENVIRONMENT_SELECTION", `selection entry ${entry.scope} omits environment authority identities`);
+      }
+    } else if (entry.confirmation !== null) {
+      environmentFail("INVALID_VALIDATION_ENVIRONMENT_SELECTION", `selection entry ${entry.scope} has an invalid host confirmation`);
     }
     await admittedDirectory(root, entry.cwd, entry.component);
     for (const source of entry.sources) {

@@ -782,7 +782,7 @@ const GATE_KEYS = new Set(["id", "command", "kind", "scope", "causality", "state
 const VALIDATION_RUNNER_PROTOCOL = "stnl-validation-runner/v11";
 const HISTORICAL_VALIDATION_RUNNER_PROTOCOLS = new Set(["stnl-validation-runner/v10"]);
 const VALIDATION_HARNESS_PROTOCOL = "stnl-validation-harness/v10";
-const VALIDATION_CAPABILITY_IDENTITY = "sha256:021b75ac83d1490c850005cd946afbeb277df8d8bf2303b981e4b793e94055e2";
+const VALIDATION_CAPABILITY_IDENTITY = "sha256:bf364af8b8d1750a86ed64a59f937c94ad62ff2828c4ff9df744f432513c1af0";
 const EVIDENCE_PROTOCOL_KEYS = new Set(["runner", "harness", "capability"]);
 
 function exactObject(value, keys, label) {
@@ -849,10 +849,17 @@ const COMPOSE_EVIDENCE_ENVIRONMENT_KEYS = new Set([
   "composeConfigurationFingerprint", "imageId", "imageFingerprint",
 ]);
 const COMPOSE_CACHE_EVIDENCE_ENVIRONMENT_KEYS = new Set([...COMPOSE_EVIDENCE_ENVIRONMENT_KEYS, "cacheVolumes"]);
+const COMPOSE_OPERATIONAL_EVIDENCE_ENVIRONMENT_KEYS = new Set([...COMPOSE_EVIDENCE_ENVIRONMENT_KEYS, "operationalAuthority"]);
+const COMPOSE_CACHE_OPERATIONAL_EVIDENCE_ENVIRONMENT_KEYS = new Set([
+  ...COMPOSE_CACHE_EVIDENCE_ENVIRONMENT_KEYS, "operationalAuthority",
+]);
 const EVIDENCE_CACHE_VOLUME_KEYS = new Set([
   "source", "target", "volumeName", "volumeFingerprint", "snapshotFingerprint",
 ]);
 const EVIDENCE_AUTHORITY_SOURCE_KEYS = new Set(["path", "identity"]);
+const EVIDENCE_OPERATIONAL_AUTHORITY_KEYS = new Set([
+  "kind", "selectionFingerprint", "scope", "component", "cwd", "confirmationFingerprint",
+]);
 const EVIDENCE_FILE_IDENTITY_KEYS = new Set(["mode", "content"]);
 const EVIDENCE_REPLAY_KEYS = new Set([
   "originalEvidenceId", "originalFingerprint", "currentFingerprint", "equivalent", "mismatches",
@@ -942,8 +949,12 @@ function validateEvidenceExecutionEnvironment(environment, label) {
     exactObject(environment, HOST_EVIDENCE_ENVIRONMENT_KEYS, label);
     return;
   }
-  exactObject(environment, Object.hasOwn(environment, "cacheVolumes")
-    ? COMPOSE_CACHE_EVIDENCE_ENVIRONMENT_KEYS : COMPOSE_EVIDENCE_ENVIRONMENT_KEYS, label);
+  const hasCache = Object.hasOwn(environment ?? {}, "cacheVolumes");
+  const hasOperationalAuthority = Object.hasOwn(environment ?? {}, "operationalAuthority");
+  exactObject(environment, hasCache
+    ? hasOperationalAuthority ? COMPOSE_CACHE_OPERATIONAL_EVIDENCE_ENVIRONMENT_KEYS : COMPOSE_CACHE_EVIDENCE_ENVIRONMENT_KEYS
+    : hasOperationalAuthority ? COMPOSE_OPERATIONAL_EVIDENCE_ENVIRONMENT_KEYS : COMPOSE_EVIDENCE_ENVIRONMENT_KEYS,
+  label);
   if (environment.kind !== "docker-compose"
     || validateProjectRelativePath(environment.composeFile, `${label} composeFile`) !== environment.composeFile
     || !new Set(["compose.yml", "compose.yaml", "docker-compose.yml", "docker-compose.yaml"])
@@ -951,7 +962,7 @@ function validateEvidenceExecutionEnvironment(environment, label) {
     || typeof environment.service !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/u.test(environment.service)
     || typeof environment.imageReference !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._/:@-]{0,255}$/u.test(environment.imageReference)
     || environment.imageReference.includes("..") || environment.imageReference.endsWith("/") || environment.imageReference.endsWith(":")
-    || !Array.isArray(environment.authoritySources) || environment.authoritySources.length === 0
+    || !Array.isArray(environment.authoritySources)
     || typeof environment.composeConfigurationFingerprint !== "string"
     || !CURRENT_AUTHORITY.test(environment.composeConfigurationFingerprint)
     || typeof environment.imageId !== "string" || !CURRENT_AUTHORITY.test(environment.imageId)
@@ -972,6 +983,21 @@ function validateEvidenceExecutionEnvironment(environment, label) {
     || paths.some((entry, index) => index > 0 && entry.localeCompare(paths[index - 1], "en") <= 0)
     || paths.includes(environment.composeFile)) {
     throw new ExecutionContractError(`${label} authority sources are malformed`);
+  }
+  if (hasOperationalAuthority) {
+    const authority = environment.operationalAuthority;
+    exactObject(authority, EVIDENCE_OPERATIONAL_AUTHORITY_KEYS, `${label} operationalAuthority`);
+    if (authority.kind !== "operator-confirmation"
+      || typeof authority.selectionFingerprint !== "string" || !CURRENT_AUTHORITY.test(authority.selectionFingerprint)
+      || typeof authority.confirmationFingerprint !== "string" || !CURRENT_AUTHORITY.test(authority.confirmationFingerprint)
+      || typeof authority.scope !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/u.test(authority.scope)
+      || typeof authority.component !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/u.test(authority.component)
+      || validateProjectRelativePath(authority.cwd, `${label} operationalAuthority cwd`) !== authority.cwd) {
+      throw new ExecutionContractError(`${label} operationalAuthority is malformed`);
+    }
+  }
+  if ((paths.length === 0) !== hasOperationalAuthority) {
+    throw new ExecutionContractError(`${label} must contain exactly one documentary or operator-confirmation authority mechanism`);
   }
   if (Object.hasOwn(environment, "cacheVolumes")) {
     if (!Array.isArray(environment.cacheVolumes) || environment.cacheVolumes.length === 0) {

@@ -47,7 +47,12 @@ const PRE_EXECUTION_ENVIRONMENT_COMMAND_KEYS = new Set([...COMMAND_KEYS].filter(
 const HOST_EXECUTION_ENVIRONMENT_KEYS = new Set(["kind"]);
 const COMPOSE_EXECUTION_ENVIRONMENT_KEYS = new Set(["kind", "composeFile", "service", "image", "authoritySources"]);
 const COMPOSE_CACHE_EXECUTION_ENVIRONMENT_KEYS = new Set([...COMPOSE_EXECUTION_ENVIRONMENT_KEYS, "cacheVolumes"]);
+const COMPOSE_OPERATIONAL_EXECUTION_ENVIRONMENT_KEYS = new Set([...COMPOSE_EXECUTION_ENVIRONMENT_KEYS, "operationalAuthority"]);
+const COMPOSE_CACHE_OPERATIONAL_EXECUTION_ENVIRONMENT_KEYS = new Set([...COMPOSE_CACHE_EXECUTION_ENVIRONMENT_KEYS, "operationalAuthority"]);
 const COMPOSE_CACHE_KEYS = new Set(["source", "target"]);
+const OPERATIONAL_AUTHORITY_KEYS = new Set([
+  "kind", "selectionFingerprint", "scope", "component", "cwd", "confirmationFingerprint",
+]);
 const COMPOSE_SERVICE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/u;
 const CONTAINER_IMAGE_REFERENCE = /^[A-Za-z0-9][A-Za-z0-9._/:@-]{0,255}$/u;
 const DOCKER_SOCKET = "/var/run/docker.sock";
@@ -141,8 +146,12 @@ export function validationExecutionEnvironmentContract(value, label = "validatio
   if (value?.kind !== "docker-compose") {
     throw new ExecutionContractError(`${label} executionEnvironment kind is invalid`);
   }
-  exactObject(value, Object.hasOwn(value, "cacheVolumes")
-    ? COMPOSE_CACHE_EXECUTION_ENVIRONMENT_KEYS : COMPOSE_EXECUTION_ENVIRONMENT_KEYS, `${label} executionEnvironment`);
+  const hasCache = Object.hasOwn(value, "cacheVolumes");
+  const hasOperationalAuthority = Object.hasOwn(value, "operationalAuthority");
+  exactObject(value, hasCache
+    ? hasOperationalAuthority ? COMPOSE_CACHE_OPERATIONAL_EXECUTION_ENVIRONMENT_KEYS : COMPOSE_CACHE_EXECUTION_ENVIRONMENT_KEYS
+    : hasOperationalAuthority ? COMPOSE_OPERATIONAL_EXECUTION_ENVIRONMENT_KEYS : COMPOSE_EXECUTION_ENVIRONMENT_KEYS,
+  `${label} executionEnvironment`);
   const composeFile = normalizedRelative(value.composeFile, `${label} compose file`);
   if (!COMPOSE_SERVICE.test(value.service)) {
     throw new ExecutionContractError(`${label} compose service is invalid`);
@@ -159,6 +168,21 @@ export function validationExecutionEnvironmentContract(value, label = "validatio
     .sort((left, right) => left.localeCompare(right, "en"));
   if (new Set(authoritySources).size !== authoritySources.length || authoritySources.includes(composeFile)) {
     throw new ExecutionContractError(`${label} Docker authority sources must be unique project instructions, separate from the Compose file`);
+  }
+  let operationalAuthority = null;
+  if (hasOperationalAuthority) {
+    exactObject(value.operationalAuthority, OPERATIONAL_AUTHORITY_KEYS, `${label} operational authority`);
+    const authority = value.operationalAuthority;
+    if (authority.kind !== "operator-confirmation" || !HASH.test(authority.selectionFingerprint ?? "")
+      || !HASH.test(authority.confirmationFingerprint ?? "") || !COMPOSE_SERVICE.test(authority.scope ?? "")
+      || !COMPOSE_SERVICE.test(authority.component ?? "")
+      || normalizedRelative(authority.cwd, `${label} operational authority cwd`) !== authority.cwd) {
+      throw new ExecutionContractError(`${label} operational authority is malformed`);
+    }
+    operationalAuthority = Object.freeze({ ...authority });
+  }
+  if ((authoritySources.length === 0) !== (operationalAuthority !== null)) {
+    throw new ExecutionContractError(`${label} must carry exactly one documentary or operator-confirmation authority mechanism`);
   }
   const cacheVolumes = (value.cacheVolumes ?? []).map((entry) => {
     exactObject(entry, COMPOSE_CACHE_KEYS, `${label} Docker cache volume`);
@@ -185,7 +209,9 @@ export function validationExecutionEnvironmentContract(value, label = "validatio
   }
   return Object.freeze({
     kind: "docker-compose", composeFile, service: value.service, image: value.image,
-    authoritySources: Object.freeze(authoritySources), cacheVolumes: Object.freeze(cacheVolumes),
+    authoritySources: Object.freeze(authoritySources),
+    ...(operationalAuthority === null ? {} : { operationalAuthority }),
+    cacheVolumes: Object.freeze(cacheVolumes),
   });
 }
 
@@ -991,6 +1017,7 @@ export async function resolveDockerComposeEnvironment(projectRoot, contract, doc
     service: contract.service,
     imageReference: contract.image,
     authoritySources,
+    ...(contract.operationalAuthority === undefined ? {} : { operationalAuthority: contract.operationalAuthority }),
     composeIdentity: compose.identity,
     composeConfigurationFingerprint: digest("stnl-validation-compose-config-v1", configHashes.length === 1
       ? { state: "materialized", value: configHashes[0] }

@@ -54,11 +54,11 @@ const REFERENCE_DECISIONS = Object.freeze({
     development: Object.freeze([]),
   }),
   "stnl-slice-executor": Object.freeze({
-    production: Object.freeze(["execution-record-schema.md"]),
+    production: Object.freeze(["execution-record-schema.md", "validation-environment-selection.md"]),
     development: Object.freeze([]),
   }),
   "stnl-slice-quality-manager": Object.freeze({
-    production: Object.freeze(["execution-record-schema.md", "validation-base.md"]),
+    production: Object.freeze(["execution-record-schema.md", "validation-base.md", "validation-environment-selection.md"]),
     development: Object.freeze([]),
   }),
   "stnl-spec-lifecycle-manager": Object.freeze({

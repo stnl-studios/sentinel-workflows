@@ -1,20 +1,21 @@
 {
-  "identity": "sha256:021b75ac83d1490c850005cd946afbeb277df8d8bf2303b981e4b793e94055e2",
+  "identity": "sha256:bf364af8b8d1750a86ed64a59f937c94ad62ff2828c4ff9df744f432513c1af0",
   "schemaVersion": 1,
   "runnerProtocol": "stnl-validation-runner/v11",
   "harnessProtocol": "stnl-validation-harness/v10",
   "package": {
     "owner": "stnl-slice-quality-manager",
-    "fingerprint": "sha256:91f2e3fa6ad0ea76e21f50d81cb3b379db1276852f2cf014d9ee720387056c68",
+    "fingerprint": "sha256:252f78f139cf28d46c378d93289c11bd1515d08626a22ba0b8a805ddcf4ebd49",
     "files": {
-      "SKILL.md": "sha256:b3dcf6e21b8d392c102f43f32de41d37cd59cbfa66f1623ee3ddd19508b3aadc",
-      "references/execution-record-schema.md": "sha256:aa3fda0d2c1abf13cd882035080bea5ab17d4bf6ed0cb0b8dc82569aaabb4aa6",
+      "SKILL.md": "sha256:bef6eb06bb9b967f8b32274cd31cb824ee20b65c9b80340cfd3b10dfe98da022",
+      "references/execution-record-schema.md": "sha256:43de5c78488ea412fc9d43a0072aadd0eeeb96aafa2b26012d7fa8f61df3fb01",
       "references/validation-base.md": "sha256:c392bc10447421f10bec4ebfd6b65b562ac99d12a3c98a5640a67f6334d0828d",
-      "runtime/execution-state.mjs": "sha256:0c0e87de43d4f405c1d2cfc37eaa16e47bb85eb86424567246b8e47a9e27b052",
-      "runtime/resolve-validation-runtime.mjs": "sha256:6aff13766090e771eaab6a581bf7e8f31f2ed356bf92da8564015c3ac6f49d82",
-      "runtime/run-validation-session.mjs": "sha256:1bfd479b53d76908a59e09251163264b277fda9057c6eec9177775dc5a0fd877",
+      "references/validation-environment-selection.md": "sha256:8e2249a264ea23aeb54ba8bce83b710dd0dec37c17cee9b368021a2da15948ee",
+      "runtime/execution-state.mjs": "sha256:a1dba791fbde31fb42532dffb167661b619379a0c3a622909893aa22d0c943d3",
+      "runtime/resolve-validation-runtime.mjs": "sha256:b88a8e9727fe1afd86306a27d38adefe8d08e2bdf0c7259495a96e49ab7e5933",
+      "runtime/run-validation-session.mjs": "sha256:dcc9aa6bce31e2eb51acdb8a94ac873a73efedf6473a402529998a4d971259ee",
       "runtime/validate-execution-state.mjs": "sha256:685a9c6971851b62675cbca4802276b819b06d577ab7a22a7eda3a7f0bea67a6",
-      "runtime/validation-environment-selection.mjs": "sha256:bcfbf5317adaaa5277a204715db3aaacce9261bee4e2f8ad24cafbb6b56eb21a",
+      "runtime/validation-environment-selection.mjs": "sha256:8bf334a21aed324924b1a048c682b86d39d5c0c4691d09054585c3f116a83f98",
       "runtime/validation-capability.mjs": "sha256:9d1dfcd457209c381ce927ad5e98ca9f3e156ad4281e9b4a997a580331a25f61"
     }
   }

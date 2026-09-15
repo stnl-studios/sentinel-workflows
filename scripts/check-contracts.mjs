@@ -462,6 +462,32 @@ function checkLaunchers(root) {
   }
 }
 
+function checkValidationEnvironmentOwner(workflowRoot, name, body) {
+  const referenceFile = path.join(workflowRoot, name, "references/validation-environment-selection.md");
+  const reference = read(referenceFile, "C020_VALIDATION_ENVIRONMENT_AUTHORITY");
+  for (const [pattern, message] of [
+    [/"scope":"optionId"/u, "optionId choice form is missing"],
+    [/configurationPath[\s\S]{0,120}service/u, "direct Compose confirmation form is missing"],
+    [/cacheVolumes[\s\S]{0,180}explicitly confirms/iu, "explicit cache confirmation boundary is missing"],
+    [/instructionReferences[\s\S]{0,180}not documentary authority/iu, "prose reference/authority distinction is missing"],
+    [/Never fabricate `authoritySources`/u, "owner may fabricate documentary authority"],
+    [/planner as a read-only restriction[\s\S]{0,220}separately to `--execute-plan`/iu, "planner/bridge selection separation is missing"],
+    [/bridge, not the owner or planner, binds/iu, "plan can act as its own operational authority"],
+  ]) requirePattern(reference, pattern, "C020_VALIDATION_ENVIRONMENT_AUTHORITY", `${name}: ${message}`);
+  requirePattern(body, /references\/validation-environment-selection\.md/u,
+    "C020_VALIDATION_ENVIRONMENT_AUTHORITY", `${name}: owner does not load the environment selection reference`);
+  forbidPattern(body, /only explicit operator option IDs/iu,
+    "C020_VALIDATION_ENVIRONMENT_AUTHORITY", `${name}: legacy optionId-only instruction remains`);
+}
+
+function checkValidationEnvironmentOwners(root) {
+  const workflowRoot = path.join(root, "skills", "workflows");
+  for (const name of ["stnl-slice-executor", "stnl-slice-quality-manager"]) {
+    const { body } = parseFrontmatter(path.join(workflowRoot, name, "SKILL.md"));
+    checkValidationEnvironmentOwner(workflowRoot, name, body);
+  }
+}
+
 function checkRepository(root) {
   checkPortability(root);
   const skillsRoot = path.join(root, "skills");
@@ -510,6 +536,7 @@ function checkRepository(root) {
     if (!validationOwner && Object.hasOwn(metadata, "validation-runtime")) {
       reject("C003_SKILL_SCHEMA", `${file}: non-owner declares a validation runtime`);
     }
+    if (validationOwner) checkValidationEnvironmentOwner(workflowRoot, name, body);
     for (const section of requiredSections) if (!body.includes(`## ${section}`)) reject("C003_SKILL_SCHEMA", `${file}: missing ${section}`);
     const declaredOperations = [...body.matchAll(/^## ([A-Z][A-Z0-9_]*)$/gmu)].map((match) => match[1]).sort();
     if (JSON.stringify(declaredOperations) !== JSON.stringify([...expectedOperations].sort())) reject("C003_SKILL_SCHEMA", `${file}: operation set mismatch; expected=${JSON.stringify(expectedOperations)}, actual=${JSON.stringify(declaredOperations)}`);
@@ -650,9 +677,9 @@ function checkRefinementStatic(root) {
 }
 
 function parseArguments(argv) {
-  if (argv.length < 3) throw new InfrastructureError("usage: check-contracts.mjs <launchers|validation-runner|subagents|repository> --root PATH [--executor PATH]");
+  if (argv.length < 3) throw new InfrastructureError("usage: check-contracts.mjs <launchers|validation-runner|subagents|validation-environment-owners|repository> --root PATH [--executor PATH]");
   const scope = argv[0];
-  if (!["launchers", "validation-runner", "subagents", "repository"].includes(scope)) throw new InfrastructureError(`unknown scope: ${scope}`);
+  if (!["launchers", "validation-runner", "subagents", "validation-environment-owners", "repository"].includes(scope)) throw new InfrastructureError(`unknown scope: ${scope}`);
   let root;
   let executor;
   for (let index = 1; index < argv.length; index += 2) {
@@ -673,6 +700,7 @@ export function run(arguments_) {
     if (scope === "launchers") checkLaunchers(root);
     else if (scope === "validation-runner") checkRunner(root);
     else if (scope === "subagents") checkSubagents(root);
+    else if (scope === "validation-environment-owners") checkValidationEnvironmentOwners(root);
     else checkRepository(root);
     process.stdout.write(`PASS: semantic ${scope} contract: ${root}\n`);
     return 0;
