@@ -6,6 +6,7 @@ import * as fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { pathToFileURL } from "node:url";
 
 import {
   deriveNormalHandoff,
@@ -27,6 +28,7 @@ import { checkDistributableSkill } from "./lib/check-distributable-skill.mjs";
 import {
   createDockerEngine,
   DockerEnvironmentError,
+  enrichAuthenticatedSandboxEvents,
   runValidationSession,
   validationSandboxBackend,
   validationSandboxSupportsExactWriteFiles,
@@ -4635,6 +4637,29 @@ function validationDigest(domain, value) {
   return `sha256:${createHash("sha256").update(JSON.stringify(canonical([domain, value]))).digest("hex")}`;
 }
 
+test("probe observations never create sandbox authority and only enrich the matching authenticated denial", () => {
+  const denial = {
+    process: "node",
+    operation: "file-write-create",
+    requestedPath: "/isolated/A.json",
+  };
+  const observations = [
+    { requestedPath: "/isolated/A.json", generatedType: "file" },
+    { requestedPath: "/isolated/B.json", generatedType: "file" },
+  ];
+  assert.deepEqual(enrichAuthenticatedSandboxEvents([], observations), []);
+  assert.deepEqual(enrichAuthenticatedSandboxEvents([denial], observations), [
+    { ...denial, generatedType: "file" },
+  ]);
+  assert.deepEqual(enrichAuthenticatedSandboxEvents([
+    { ...denial, operation: "file-read-data" },
+    { ...denial, requestedPath: null },
+  ], observations), [
+    { ...denial, operation: "file-read-data" },
+    { ...denial, requestedPath: null },
+  ]);
+});
+
 async function dockerAuthorityFixture(fixture) {
   await fs.mkdir(path.join(fixture.root, "ops"), { recursive: true });
   await fs.writeFile(path.join(fixture.root, "ops/docker-compose.yml"), "services:\n  backend:\n    image: fixture/backend:dev\n", "utf8");
@@ -5555,6 +5580,37 @@ function provenanceTransport(provenance, outputs = []) {
   return `stnl-validation-result/v1:${Buffer.from(stdout, "utf8").toString("base64url")}`;
 }
 
+function historicalCapabilityProvenance(provenance) {
+  const historical = structuredClone(provenance);
+  delete historical.protocol.capability;
+  delete historical.inputs.protocol.capability;
+  delete historical.recovery;
+  const commands = historical.commands.map(({
+    stdoutFingerprint: _stdout, stderrFingerprint: _stderr, exit: _exit,
+    toolchainFingerprintAfter: _toolchainFingerprintAfter, ...command
+  }) => command);
+  historical.inputs.executionFingerprint = validationDigest("stnl-validation-execution-v1", {
+    protocol: historical.protocol,
+    operation: historical.operation,
+    slice: historical.slice,
+    round: historical.round,
+    cwd: historical.workspace.cwd,
+    executionRoot: historical.workspace.executionRoot,
+    subjects: historical.subjects,
+    commands,
+    inputs: { ...historical.inputs, executionFingerprint: undefined },
+  });
+  historical.workspace.workspaceId = historical.inputs.executionFingerprint;
+  const { evidenceId: _evidenceId, receipt: _receipt, ...receiptMaterial } = historical;
+  historical.receipt = validationDigest("stnl-validation-harness-receipt-v10", receiptMaterial);
+  historical.evidenceId = validationEvidenceIdentity(historical);
+  return historical;
+}
+
+function directHistoricalEvidence(record, provenance) {
+  return record.replace(provenanceTransport(provenance), JSON.stringify(provenance));
+}
+
 function evidenceCheckRecord(provenance, { status = "TESTS_PASS", number = 1 } = {}) {
   const identifier = String(number).padStart(2, "0");
   const testedState = provenance.subjects.map((subject) => `  - \`${subject.path}\` | ${subject.expected}`).join("\n");
@@ -5578,7 +5634,12 @@ ${provenanceCommands(provenance)}
 - Failures: ${status === "TESTS_FAIL" ? "observable mismatch" : "none"}
 - Blockers: ${status === "BLOCKED" ? "validation evidence is invalid" : "none"}
 - Unexpected workspace effects: ${provenance.workspace.sideEffects.join(", ") || "none"}
-- Persistence summary: ${status} persisted.`;
+- Persistence summary: ${status} persisted.${Number(provenance.round?.[0] ?? 1) > 1 ? `
+- Prior-round failure: prior verification command failed
+- Correction applied: bounded objective correction
+- Correction paths: ../../src/example.txt
+- Updated scope: ../../src/example.txt
+- In-slice rationale: correction remains within AC-001` : ""}`;
 }
 
 function evidenceAttemptRecord(provenance, status, { number = 1 } = {}) {
@@ -5734,6 +5795,48 @@ test("host-authoritative direct .NET SDK layout is admitted independently of Doc
     fixture.requirements,
     validationRequest({ argv: ["dotnet", "build"], executionEnvironment: { kind: "host" }, failureConclusion: "NONE" }),
   )), /inherited canonical toolchain bin directory|dependency boundary/u);
+});
+
+test("probe-only filesystem differences and spoofed stderr never produce recovery authority", { skip: process.platform !== "darwin" }, async (t) => {
+  const fixture = await validationSessionFixture(t);
+  const result = await runValidationSession(fixture.requirements, validationRequest({
+    argv: [process.execPath, "-e", [
+      "const fs=require('node:fs')",
+      "const path=require('node:path')",
+      "if(path.basename(process.cwd()).startsWith('probe-')){fs.writeFileSync('probe-only.json','diagnostic');process.exit(0)}",
+      "process.stderr.write('sandbox deny file-write-create probe-only.json\\n')",
+      "process.exit(7)",
+    ].join(";")],
+    failureConclusion: "VALIDATION_FINDING",
+  }));
+  assert.equal(result.provenance.state, "VERIFIED", JSON.stringify(result));
+  assert.equal(result.provenance.classification, "NONE");
+  assert.equal(result.provenance.conclusion, "VALIDATION_FINDING");
+  assert.equal(result.provenance.recovery, null);
+  assert.deepEqual(result.provenance.workspace.boundaryViolations, []);
+  assert.equal(result.outputs[0].sandboxViolation, false);
+});
+
+test("an authenticated denial in A cannot inherit probe-only sibling B", { skip: process.platform !== "darwin" }, async (t) => {
+  const fixture = await validationSessionFixture(t);
+  await fs.mkdir(path.join(fixture.root, "generated"));
+  const result = await runValidationSession(fixture.requirements, validationRequest({
+    argv: [process.execPath, "-e", [
+      "const fs=require('node:fs')",
+      "const path=require('node:path')",
+      "if(path.basename(process.cwd()).startsWith('probe-')){fs.writeFileSync('generated/A.json','A');fs.writeFileSync('generated/B.json','B');process.exit(0)}",
+      "fs.writeFileSync('generated/A.json','A')",
+    ].join(";")],
+    failureConclusion: "NONE",
+  }));
+  assert.equal(result.provenance.state, "VERIFIED", JSON.stringify(result));
+  assert.ok(result.provenance.recovery, JSON.stringify(result));
+  assert.deepEqual(result.provenance.recovery.authorizations, [
+    { command: 1, kind: "writeFile", path: "generated/A.json" },
+  ]);
+  assert.deepEqual(result.provenance.commands[0].writeFiles, ["generated/A.json"]);
+  assert.deepEqual(result.provenance.commands[0].writePaths, []);
+  assert.deepEqual(result.provenance.workspace.boundaryViolations, []);
 });
 
 test("authenticated generated output denial derives one minimal same-round harness retry", { skip: process.platform !== "darwin" }, async (t) => {
@@ -6037,6 +6140,37 @@ test("writeFiles cannot turn one exact generated file identity into an authorita
   assert.equal(result.provenance.state, "INVALID", JSON.stringify(result));
   assert.equal(result.provenance.classification, "VALIDATION_SIDE_EFFECT");
   assert.deepEqual(result.provenance.workspace.sideEffects, ["isolated-exact-output-type-changed"]);
+  const descendant = result.provenance.workspace.boundaryViolations.find((entry) => (
+    entry.requestedPath === "$PROJECT/generated/result.json/child"
+  ));
+  assert.ok(descendant, JSON.stringify(result.provenance.workspace.boundaryViolations));
+  assert.equal(descendant.deniedBeforeMutation, true);
+  assert.equal(descendant.operation, "write-create");
+  assert.deepEqual(await fs.readdir(path.join(fixture.root, "generated")), []);
+});
+
+test("writeFiles denies a transient descendant even when the command restores the exact path as a regular file", async (t) => {
+  const fixture = await validationSessionFixture(t);
+  await fs.mkdir(path.join(fixture.root, "generated"));
+  const result = await runValidationSession(fixture.requirements, validationRequest({
+    argv: [process.execPath, "-e", [
+      "const fs=require('node:fs')",
+      "fs.mkdirSync('generated/result.json')",
+      "try{fs.writeFileSync('generated/result.json/transient','expanded')}catch{}",
+      "fs.rmSync('generated/result.json',{recursive:true,force:true})",
+      "fs.writeFileSync('generated/result.json','final')",
+    ].join(";")],
+    writeFiles: ["generated/result.json"], failureConclusion: "NONE",
+  }), { generatedWriteRecoveryAttempted: true });
+  if (!await assertExactFileBackend(result)) return;
+  assert.equal(result.provenance.state, "INVALID", JSON.stringify(result));
+  assert.equal(result.provenance.classification, "SANDBOX_BOUNDARY_BLOCKED");
+  const descendant = result.provenance.workspace.boundaryViolations.find((entry) => (
+    entry.requestedPath === "$PROJECT/generated/result.json/transient"
+  ));
+  assert.ok(descendant, JSON.stringify(result.provenance.workspace.boundaryViolations));
+  assert.equal(descendant.deniedBeforeMutation, true);
+  assert.equal(descendant.operation, "write-create");
   assert.deepEqual(await fs.readdir(path.join(fixture.root, "generated")), []);
 });
 
@@ -6630,6 +6764,219 @@ test("historical pre-toolchain BLOCKED provenance remains resumable on the same 
   assertRecoveryTarget(state, {
     operation: "EXECUTE_SLICE", slice: "slice-01", round: 1, sameOperationResumeRequired: true,
   });
+});
+
+test("historical P0 provenance is readable only when already persisted, never as new operational authority", async (t) => {
+  const persisted = await validationSessionFixture(t);
+  const current = await runValidationSession(
+    persisted.requirements,
+    validationRequest({ failureConclusion: "NONE" }),
+  );
+  const historical = historicalCapabilityProvenance(current.provenance);
+  await editTask(persisted, (value) => {
+    let next = value.replace("- [ ] 1.1", "- [x] 1.1");
+    next = replaceSection(next, "Changed Areas", "- `../../src/example.txt`");
+    return replaceSection(next, "Implementation Test Evidence", directHistoricalEvidence(
+      evidenceCheckRecord(historical), historical,
+    ));
+  });
+  const readable = await inspectExecutionState(persisted.requirements);
+  assert.equal(readable.state, "IMPLEMENTED_AWAITING_VALIDATION");
+  assert.equal(readable.tasks.get("slice-01").implementationChecks[0].provenance.evidenceId, historical.evidenceId);
+  assert.equal(readable.tasks.get("slice-01").implementationChecks[0].provenance.receipt, historical.receipt);
+
+  const appended = await validationSessionFixture(t);
+  const candidate = await externalExecutionCandidate(t, appended);
+  await editTask(candidate, (value) => {
+    let next = value.replace("- [ ] 1.1", "- [x] 1.1");
+    next = replaceSection(next, "Changed Areas", "- `../../src/example.txt`");
+    return replaceSection(next, "Implementation Test Evidence", directHistoricalEvidence(
+      evidenceCheckRecord(historical), historical,
+    ));
+  });
+  await assert.rejects(
+    validateExecutionCandidate(appended.requirements, candidate.execution),
+    /cannot append legacy validation provenance or a historical capability/u,
+  );
+});
+
+test("historical P0 provenance cannot be appended as a new formal attempt", async (t) => {
+  const fixture = await validationSessionFixture(t);
+  const implementation = await runValidationSession(
+    fixture.requirements,
+    validationRequest({ failureConclusion: "NONE" }),
+  );
+  await editTask(fixture, (value) => {
+    let next = value.replace("- [ ] 1.1", "- [x] 1.1");
+    next = replaceSection(next, "Changed Areas", "- `../../src/example.txt`");
+    return replaceSection(next, "Implementation Test Evidence", evidenceCheckRecord(implementation.provenance));
+  });
+  const liveTask = path.join(fixture.execution, "tasks/slice-01.md");
+  const invalid = await runValidationSession(fixture.requirements, validationRequest({
+    operation: "VALIDATE_SLICE",
+    round: null,
+    failureConclusion: "NONE",
+    argv: [process.execPath, "-e", "require('node:fs').writeFileSync(process.argv[1], 'corrupt')", liveTask],
+  }));
+  assert.equal(invalid.provenance.state, "INVALID");
+  const historical = historicalCapabilityProvenance(invalid.provenance);
+  const candidate = await externalExecutionCandidate(t, fixture);
+  await editTask(candidate, (value) => replaceSection(
+    value,
+    "Validation Attempts",
+    directHistoricalEvidence(evidenceAttemptRecord(historical, "BLOCKED"), historical),
+  ));
+  await assert.rejects(
+    validateExecutionCandidate(fixture.requirements, candidate.execution),
+    /cannot append legacy validation provenance or a historical capability/u,
+  );
+});
+
+test("historical P0 provenance cannot be appended as a new Delegation Blocker", async (t) => {
+  const fixture = await validationSessionFixture(t);
+  const outside = await temporary(t, "stnl-validation-p0-blocker-");
+  const bin = path.join(fixture.root, "node_modules/.bin");
+  await fs.mkdir(bin, { recursive: true });
+  await fs.symlink(path.join(outside, "missing"), path.join(bin, "legacy"));
+  const current = await runValidationSession(
+    fixture.requirements,
+    validationRequest({ argv: [path.join(bin, "legacy")] }),
+  );
+  const historical = historicalCapabilityProvenance(current.provenance);
+  const candidate = await externalExecutionCandidate(t, fixture);
+  await editTask(candidate, (value) => {
+    let next = value.replace("- [ ] 1.1", "- [x] 1.1");
+    next = replaceSection(next, "Changed Areas", "- `../../src/example.txt`");
+    return replaceSection(next, "Delegation Blocker", directHistoricalEvidence(
+      infrastructureDelegationBlocker(historical), historical,
+    ));
+  });
+  await assert.rejects(
+    validateExecutionCandidate(fixture.requirements, candidate.execution),
+    /cannot append legacy validation provenance or a historical capability/u,
+  );
+});
+
+test("a generated capability B reads immutable capability A history but requires B for every new record", async (t) => {
+  const fixture = await validationSessionFixture(t);
+  const generationA = await runValidationSession(fixture.requirements, validationRequest({
+    argv: [process.execPath, "-e", "process.exit(1)"],
+    failureConclusion: "NONE",
+  }));
+  const generationARecord = evidenceCheckRecord(generationA.provenance, { status: "BLOCKED" });
+  const persistedA = await externalExecutionCandidate(t, fixture);
+  await editTask(persistedA, (value) => {
+    let next = value.replace("- [ ] 1.1", "- [x] 1.1");
+    next = replaceSection(next, "Changed Areas", "- `../../src/example.txt`");
+    return replaceSection(next, "Implementation Test Evidence", generationARecord);
+  });
+  await validateExecutionCandidate(fixture.requirements, persistedA.execution);
+  await fs.copyFile(
+    path.join(persistedA.execution, "tasks/slice-01.md"),
+    path.join(fixture.execution, "tasks/slice-01.md"),
+  );
+  const persistedBytes = await fs.readFile(path.join(fixture.execution, "tasks/slice-01.md"), "utf8");
+
+  const staleGenerationA = await runValidationSession(fixture.requirements, validationRequest({
+    round: "1/3",
+    priorEvidenceId: generationA.provenance.evidenceId,
+    failureConclusion: "NONE",
+  }));
+  assert.equal(staleGenerationA.provenance.protocol.capability, VALIDATION_CAPABILITY_IDENTITY);
+
+  const holder = await temporary(t, "stnl-capability-generation-b-");
+  const generationBRoot = path.join(holder, "source");
+  await fs.cp(ROOT, generationBRoot, {
+    recursive: true,
+    verbatimSymlinks: true,
+    filter: (source) => {
+      const relative = path.relative(ROOT, source);
+      return relative === "" || (!relative.startsWith(`.git${path.sep}`)
+        && !relative.startsWith(`tmp${path.sep}`)
+        && !relative.split(path.sep).some((part) => part === "__MACOSX" || part === ".DS_Store"));
+    },
+  });
+  for (const owner of ["stnl-slice-executor", "stnl-slice-quality-manager"]) {
+    const runtime = path.join(generationBRoot, "skills/workflows", owner, "runtime/run-validation-session.mjs");
+    await fs.appendFile(runtime, "\n// capability generation B fixture\n", "utf8");
+  }
+  const generated = spawnSync(process.execPath, [path.join(generationBRoot, "scripts/update-validation-capability.mjs")], {
+    cwd: generationBRoot,
+    encoding: "utf8",
+  });
+  assert.equal(generated.status, 0, generated.stderr);
+  const generationBCapabilityModule = await import(`${pathToFileURL(path.join(
+    generationBRoot, "skills/workflows/stnl-slice-executor/runtime/validation-capability.mjs",
+  )).href}?generation=b`);
+  const generationBCapability = generationBCapabilityModule.VALIDATION_CAPABILITY_IDENTITY;
+  assert.match(generationBCapability, /^sha256:[0-9a-f]{64}$/u);
+  assert.notEqual(generationBCapability, VALIDATION_CAPABILITY_IDENTITY);
+  const generationBState = await import(`${pathToFileURL(path.join(
+    generationBRoot, "skills/workflows/stnl-slice-executor/runtime/execution-state.mjs",
+  )).href}?generation=b`);
+  const generationBRunner = await import(`${pathToFileURL(path.join(
+    generationBRoot, "skills/workflows/stnl-slice-executor/runtime/run-validation-session.mjs",
+  )).href}?generation=b`);
+  const readByB = await generationBState.inspectExecutionState(fixture.requirements);
+  assert.equal(readByB.tasks.get("slice-01").implementationChecks[0].provenance.evidenceId, generationA.provenance.evidenceId);
+  assert.equal(readByB.tasks.get("slice-01").implementationChecks[0].provenance.receipt, generationA.provenance.receipt);
+  assert.equal(await fs.readFile(path.join(fixture.execution, "tasks/slice-01.md"), "utf8"), persistedBytes);
+
+  const protocolB = {
+    runner: "stnl-validation-runner/v10",
+    harness: "stnl-validation-harness/v10",
+    capability: generationBCapability,
+  };
+  const generationB = await generationBRunner.runValidationSession(fixture.requirements, validationRequest({
+    protocol: protocolB,
+    round: "1/3",
+    priorEvidenceId: generationA.provenance.evidenceId,
+    failureConclusion: "NONE",
+  }));
+  assert.equal(generationB.provenance.protocol.capability, generationBCapability);
+  assert.equal(generationB.provenance.priorEvidenceId, generationA.provenance.evidenceId);
+  const admittedB = await externalExecutionCandidate(t, fixture);
+  await editTask(admittedB, (value) => replaceSection(
+    value,
+    "Implementation Test Evidence",
+    `${generationARecord}\n\n${evidenceCheckRecord(generationB.provenance, { number: 2 })}`,
+  ));
+  const accepted = await generationBState.validateExecutionCandidate(fixture.requirements, admittedB.execution);
+  assert.equal(accepted.state, "IMPLEMENTED_AWAITING_VALIDATION");
+
+  const rejectedA = await externalExecutionCandidate(t, fixture);
+  await editTask(rejectedA, (value) => replaceSection(
+    value,
+    "Implementation Test Evidence",
+    `${generationARecord}\n\n${evidenceCheckRecord(staleGenerationA.provenance, { number: 2 })}`,
+  ));
+  await assert.rejects(
+    generationBState.validateExecutionCandidate(fixture.requirements, rejectedA.execution),
+    /cannot append legacy validation provenance or a historical capability/u,
+  );
+
+  const tampered = await externalExecutionCandidate(t, fixture);
+  await editTask(tampered, (value) => value.replace(
+    "- Blockers: validation evidence is invalid",
+    "- Blockers: rewritten historical blocker",
+  ));
+  await assert.rejects(
+    generationBState.validateExecutionCandidate(fixture.requirements, tampered.execution),
+    /historical identity and authority are immutable/u,
+  );
+
+  const incompatibleReplay = await generationBRunner.runValidationSession(fixture.requirements, validationRequest({
+    protocol: protocolB,
+    round: "1/3",
+    priorEvidenceId: generationA.provenance.evidenceId,
+    replayOriginEvidenceId: generationA.provenance.evidenceId,
+    argv: [process.execPath, "-e", "process.exit(1)"],
+    failureConclusion: "CODE_REGRESSION",
+  }));
+  assert.equal(incompatibleReplay.provenance.state, "INVALID");
+  assert.equal(incompatibleReplay.provenance.classification, "INVALID_REPLAY");
+  assert.equal(incompatibleReplay.provenance.conclusion, "NONE");
+  assert.ok(incompatibleReplay.provenance.replay.mismatches.includes("protocol"));
 });
 
 test("missing authenticated pre-check provenance is rejected while genuinely malformed runner output remains classified as malformed", async (t) => {

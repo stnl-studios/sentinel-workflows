@@ -781,7 +781,7 @@ const NON_BLOCKING_GATES = new Set(["resolved", "non_blocking", "bypassed"]);
 const GATE_KEYS = new Set(["id", "command", "kind", "scope", "causality", "state", "problem", "evidence", "diagnostic", "correction", "correctionEvidence", "revalidates", "snapshot", "bypass"]);
 const VALIDATION_RUNNER_PROTOCOL = "stnl-validation-runner/v10";
 const VALIDATION_HARNESS_PROTOCOL = "stnl-validation-harness/v10";
-const VALIDATION_CAPABILITY_IDENTITY = "sha256:56230f59db5e27c2aaf45081b86aa0ed643f0ffc15ff775f9d16cfefa8e55e35";
+const VALIDATION_CAPABILITY_IDENTITY = "sha256:6efcd1733f5b77598e7abcff116ef82499a8755897aee2442123e8c54f3effa2";
 const EVIDENCE_PROTOCOL_KEYS = new Set(["runner", "harness", "capability"]);
 
 function exactObject(value, keys, label) {
@@ -1057,7 +1057,8 @@ function parseEvidenceProvenance(record, authority, { operation, round, required
     exactObject(provenance.protocol, historicalCapabilityModel ? new Set(["runner", "harness"]) : EVIDENCE_PROTOCOL_KEYS, `${record.id} Evidence protocol`);
     if (provenance.protocol.runner !== VALIDATION_RUNNER_PROTOCOL
       || provenance.protocol.harness !== VALIDATION_HARNESS_PROTOCOL
-      || (!historicalCapabilityModel && provenance.protocol.capability !== VALIDATION_CAPABILITY_IDENTITY)
+      || (!historicalCapabilityModel && (typeof provenance.protocol.capability !== "string"
+        || !CURRENT_AUTHORITY.test(provenance.protocol.capability)))
       || typeof provenance.receipt !== "string" || !CURRENT_AUTHORITY.test(provenance.receipt)) {
       throw new ExecutionContractError(`${record.id} Evidence protocol or harness receipt is malformed`);
     }
@@ -1452,6 +1453,7 @@ function parseEvidenceProvenance(record, authority, { operation, round, required
   if (legacySecurityModel) Object.defineProperty(provenance, "legacySecurityModel", { value: true, enumerable: false });
   if (historicalProtocolModel) Object.defineProperty(provenance, "historicalProtocolModel", { value: true, enumerable: false });
   if (historicalCapabilityModel) Object.defineProperty(provenance, "historicalCapabilityModel", { value: true, enumerable: false });
+  if (opaqueTransport) Object.defineProperty(provenance, "opaqueTransport", { value: true, enumerable: false });
   return Object.freeze(provenance);
 }
 
@@ -3674,6 +3676,27 @@ function assertHistoricalRecord(original, candidate, label, { disposition = fals
   throw new ExecutionContractError(`${label} historical identity and authority are immutable`);
 }
 
+function admitCurrentEvidence(record, label, persistedEvidenceIds, admittedEvidenceIds) {
+  const provenance = record.provenance;
+  if (provenance === null) {
+    throw new ExecutionContractError(`${label} newly persisted validation evidence requires structured provenance`);
+  }
+  if (provenance.opaqueTransport !== true
+    || provenance.legacySecurityModel === true
+    || provenance.historicalProtocolModel === true
+    || provenance.historicalCapabilityModel === true
+    || provenance.protocol?.capability !== VALIDATION_CAPABILITY_IDENTITY) {
+    throw new ExecutionContractError(`${label} cannot append legacy validation provenance or a historical capability under the current harness contract`);
+  }
+  if (persistedEvidenceIds.has(provenance.evidenceId)) {
+    throw new ExecutionContractError(`${label} cannot reuse persisted historical evidence as new authority`);
+  }
+  if (admittedEvidenceIds.has(provenance.evidenceId)) {
+    throw new ExecutionContractError(`${label} duplicates newly persisted validation evidence authority`);
+  }
+  admittedEvidenceIds.add(provenance.evidenceId);
+}
+
 async function validateCandidateHistory(workspace, result) {
   const liveRecords = new Map();
   const newTerminalSlices = new Set();
@@ -3708,6 +3731,12 @@ async function validateCandidateHistory(workspace, result) {
     if (!original.pristine && original.sections.get("References") !== candidate.sections.get("References")) {
       throw new ExecutionContractError(`${slice} historical task authority is immutable`);
     }
+    const persistedEvidenceIds = new Set([
+      ...original.implementationChecks, ...original.findingsChecks, ...original.attempts,
+      ...(original.delegationBlocker?.provenance === null || original.delegationBlocker === null
+        ? [] : [original.delegationBlocker]),
+    ].filter((record) => record.provenance !== null).map((record) => record.provenance.evidenceId));
+    const admittedEvidenceIds = new Set();
     for (const name of ["implementationChecks", "findingsChecks", "attempts", "findings", "divergences"]) {
       const disposition = name === "findings" || name === "divergences";
       const candidates = new Map(candidate[name].map((record) => [record.id, record]));
@@ -3718,11 +3747,8 @@ async function validateCandidateHistory(workspace, result) {
       if (!disposition) {
         const historical = new Set(original[name].map((record) => record.id));
         for (const record of candidate[name].filter((candidateRecord) => !historical.has(candidateRecord.id))) {
-          if (candidate.evidenceContract === "stnl-validation-evidence/v1" && record.provenance === null) {
-            throw new ExecutionContractError(`${slice}/${record.id} newly persisted validation evidence requires structured provenance`);
-          }
-          if (record.provenance?.legacySecurityModel === true || record.provenance?.historicalProtocolModel === true) {
-            throw new ExecutionContractError(`${slice}/${record.id} cannot append legacy validation provenance under the current harness contract`);
+          if (candidate.evidenceContract === "stnl-validation-evidence/v1" || record.provenance !== null) {
+            admitCurrentEvidence(record, `${slice}/${record.id}`, persistedEvidenceIds, admittedEvidenceIds);
           }
         }
       }
@@ -3739,6 +3765,7 @@ async function validateCandidateHistory(workspace, result) {
       const origin = historicalEvidence.get(replay.originalEvidenceId);
       if (origin === undefined || origin.state !== "VERIFIED"
         || origin.historicalProtocolModel === true
+        || origin.historicalCapabilityModel === true
         || origin.inputs.executionFingerprint !== replay.originalFingerprint) {
         throw new ExecutionContractError(`${slice}/${record.id} replay origin is not bound to persisted historical evidence`);
       }
@@ -3775,9 +3802,10 @@ async function validateCandidateHistory(workspace, result) {
         `${slice}/Delegation Blocker`, { disposition: true, supersession: false },
       );
     } else if (candidate.delegationBlocker !== null) {
-      if (candidate.delegationBlocker.provenance?.legacySecurityModel === true
-        || candidate.delegationBlocker.provenance?.historicalProtocolModel === true) {
-        throw new ExecutionContractError(`${slice}/Delegation Blocker cannot append legacy validation provenance under the current harness contract`);
+      if (candidate.delegationBlocker.kind === "infrastructure") {
+        admitCurrentEvidence(
+          candidate.delegationBlocker, `${slice}/Delegation Blocker`, persistedEvidenceIds, admittedEvidenceIds,
+        );
       }
       if (candidate.delegationBlocker.operation !== "VALIDATE_SLICE"
         && field(candidate.sections.get("Delegation Blocker"), "Pending automatic round", { required: false }) === null) {

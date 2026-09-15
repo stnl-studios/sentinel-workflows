@@ -1499,17 +1499,11 @@ async function sandboxInvocation(command, { backend, cwd, environment, sessionRo
       ].join(" ")})`,
       `(deny file-write* (require-all ${[
         ...writableDirectories.map((entry) => `(require-not (subpath ${sandboxLiteral(entry)}))`),
-        ...writeFiles.flatMap((entry) => [
-          `(require-not (literal ${sandboxLiteral(entry)}))`,
-          `(require-not (subpath ${sandboxLiteral(entry)}))`,
-        ]),
+        ...writeFiles.map((entry) => `(require-not (literal ${sandboxLiteral(entry)}))`),
       ].join(" ")})${violationMarker === null ? "" : ` (with message ${sandboxLiteral(violationMarker)})`})`,
       `(allow file-write* ${[
         ...writableDirectories.map((entry) => `(subpath ${sandboxLiteral(entry)})`),
-        ...writeFiles.flatMap((entry) => [
-          `(literal ${sandboxLiteral(entry)})`,
-          `(subpath ${sandboxLiteral(entry)})`,
-        ]),
+        ...writeFiles.map((entry) => `(literal ${sandboxLiteral(entry)})`),
       ].join(" ")})`,
     ].join(" ");
     return { argv: [backend.executable, "-p", profile, "--", ...command.argv], cwd, violationMarker };
@@ -1768,10 +1762,25 @@ async function preparePermissiveProbe({ command, backend, cwd, environment, sess
   };
 }
 
+export function enrichAuthenticatedSandboxEvents(authenticatedEvents, probeObservations) {
+  const observedTypes = new Map();
+  for (const observation of probeObservations) {
+    if (typeof observation?.requestedPath !== "string" || typeof observation.generatedType !== "string") continue;
+    const identity = normalizeGeneratedPath(observation.requestedPath);
+    const types = observedTypes.get(identity) ?? new Set();
+    types.add(observation.generatedType);
+    observedTypes.set(identity, types);
+  }
+  return authenticatedEvents.map((event) => {
+    if (typeof event?.operation !== "string" || !event.operation.startsWith("file-write")
+      || typeof event.requestedPath !== "string") return event;
+    const types = observedTypes.get(normalizeGeneratedPath(event.requestedPath));
+    if (types?.size !== 1) return event;
+    return { ...event, generatedType: [...types][0] };
+  });
+}
+
 async function execute(command, { backend, cwd, environment, sessionRoot, copiedRoot, runtimeRoot, writePaths, writeFiles = [], toolchainRoots = [], probeOnFailure = true, observeDenials = true }) {
-  const probe = probeOnFailure && backend.kind === "darwin-sandbox-exec"
-    ? await preparePermissiveProbe({ command, backend, cwd, sessionRoot, copiedRoot, runtimeRoot, environment, toolchainRoots }) : null;
-  const isolatedBeforeSnapshot = probe === null ? null : await snapshotTree(copiedRoot);
   const isolated = await sandboxInvocation(command, { backend, cwd, environment, sessionRoot, copiedRoot, runtimeRoot, writePaths, writeFiles, toolchainRoots, observeDenials });
   const audit = isolated.violationMarker === null ? null : await startDarwinSandboxAudit(isolated.violationMarker);
   return await new Promise((resolve, reject) => {
@@ -1799,28 +1808,26 @@ async function execute(command, { backend, cwd, environment, sessionRoot, copied
       // A launcher may catch or mask a denied write and still exit zero. Always
       // authenticate the matching audit stream before evidence can be VERIFIED.
       let sandboxEvents = audit === null ? [] : await audit.stop(true, payload.stderr.toString("utf8"));
-      if (probe !== null && payload.exit !== 0 && !payload.timedOut && !payload.signaled) {
-        const isolatedDelta = treeDelta(isolatedBeforeSnapshot, await snapshotTree(copiedRoot));
-        const permissive = await execute(probe.command, { ...probe.options, probeOnFailure: false });
+      const probeEligibleEvents = sandboxEvents.filter((event) => (
+        typeof event.operation === "string" && event.operation.startsWith("file-write")
+        && typeof event.requestedPath === "string" && path.isAbsolute(event.requestedPath)
+        && within(event.requestedPath, copiedRoot)
+      ));
+      if (probeOnFailure && backend.kind === "darwin-sandbox-exec"
+        && payload.exit !== 0 && !payload.timedOut && !payload.signaled
+        && probeEligibleEvents.length !== 0) {
+        const probe = await preparePermissiveProbe({
+          command, backend, cwd, sessionRoot, copiedRoot, runtimeRoot, environment, toolchainRoots,
+        });
+        await execute(probe.command, { ...probe.options, probeOnFailure: false });
         const probeAfterSnapshot = await snapshotTree(probe.options.copiedRoot);
         const delta = treeDelta(probe.beforeSnapshot, probeAfterSnapshot);
         const probeEntries = new Map(probeAfterSnapshot.entries.map((entry) => [entry[0], entry]));
-        const isolatedPaths = new Set((isolatedDelta?.changes ?? []).map((change) => normalizeGeneratedPath(change.path)));
-        const deniedChanges = (delta?.changes ?? []).filter((change) => !isolatedPaths.has(normalizeGeneratedPath(change.path)));
-        if (deniedChanges.length !== 0) {
-          const observedChanges = deniedChanges.map((change) => ({
-            process: path.basename(command.argv[0]),
-            operation: change.disposition === "added" ? "file-write-create"
-              : change.disposition === "removed" ? "file-write-unlink" : "file-write-data",
-            requestedPath: path.join(copiedRoot, change.path),
-            generatedType: probeEntries.get(change.path)?.[1] ?? null,
-          }));
-          sandboxEvents = [...new Map([...sandboxEvents, ...observedChanges]
-            .map((event) => [JSON.stringify([event.process, event.operation, event.requestedPath]), event])).values()]
-            .sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right), "en"));
-        } else if (sandboxEvents.length === 0 && permissive.exit === 0 && !permissive.timedOut && !permissive.signaled) {
-          sandboxEvents = [{ process: null, operation: "unknown", requestedPath: null }];
-        }
+        const probeObservations = (delta?.changes ?? []).map((change) => ({
+          requestedPath: path.join(copiedRoot, change.path),
+          generatedType: probeEntries.get(change.path)?.[1] ?? null,
+        }));
+        sandboxEvents = enrichAuthenticatedSandboxEvents(sandboxEvents, probeObservations);
       }
       const sandboxOutcomeUncertain = backend.kind === "linux-bwrap" && payload.exit !== 0 && !payload.timedOut && !payload.signaled;
       resolve({ ...payload, sandboxViolation: sandboxEvents.length !== 0, sandboxEvents, sandboxOutcomeUncertain,
