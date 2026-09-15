@@ -782,7 +782,7 @@ const GATE_KEYS = new Set(["id", "command", "kind", "scope", "causality", "state
 const VALIDATION_RUNNER_PROTOCOL = "stnl-validation-runner/v11";
 const HISTORICAL_VALIDATION_RUNNER_PROTOCOLS = new Set(["stnl-validation-runner/v10"]);
 const VALIDATION_HARNESS_PROTOCOL = "stnl-validation-harness/v10";
-const VALIDATION_CAPABILITY_IDENTITY = "sha256:ab5b709127a710e1022829964733a4c9a3d3d45b1e88ec3c1f8c3e57a483d82e";
+const VALIDATION_CAPABILITY_IDENTITY = "sha256:021b75ac83d1490c850005cd946afbeb277df8d8bf2303b981e4b793e94055e2";
 const EVIDENCE_PROTOCOL_KEYS = new Set(["runner", "harness", "capability"]);
 
 function exactObject(value, keys, label) {

@@ -15,6 +15,7 @@ import {
   computeRequirementsAuthority,
   evaluateQualityGate,
   preflightExecutionOperation,
+  resolveExecutionWorkspace,
   validateExecutionCandidate,
   validateExecutionCandidateDestination,
 } from "./execution-state.mjs";
@@ -217,7 +218,7 @@ function validateExecutionEnvironment(value, label) {
     || value.image.includes("..") || value.image.endsWith("/") || value.image.endsWith(":")) {
     planFail("INVALID_VALIDATION_PLAN_ENVIRONMENT", `${label} docker-compose identity is malformed`);
   }
-  const authoritySources = uniqueTextArray(value.authoritySources, `${label} authoritySources`, { minimum: 1 })
+  const authoritySources = uniqueTextArray(value.authoritySources, `${label} authoritySources`)
     .map((entry) => normalizedRelative(entry, `${label} authority source`))
     .sort((left, right) => left.localeCompare(right, "en"));
   if (new Set(authoritySources).size !== authoritySources.length || authoritySources.includes(composeFile)) {
@@ -347,6 +348,122 @@ function validatePriorRound(value, round) {
   });
 }
 
+async function aggregateProjectRoot(specPath) {
+  const workspace = await resolveExecutionWorkspace(specPath);
+  let current = path.dirname(workspace.authorityPath);
+  for (;;) {
+    const marker = await lstatOrNull(path.join(current, ".git"));
+    if (marker !== null && !marker.isSymbolicLink() && (marker.isDirectory() || marker.isFile())) {
+      return fs.realpath(current);
+    }
+    const parent = path.dirname(current);
+    if (parent === current) return fs.realpath(workspace.specRoot ?? path.dirname(workspace.authorityPath));
+    current = parent;
+  }
+}
+
+async function existingCanonicalFile(target, label) {
+  const metadata = await lstatOrNull(target);
+  if (metadata === null) return null;
+  if (metadata.isSymbolicLink() || !metadata.isFile() || metadata.nlink !== 1) {
+    planFail("VALIDATION_PLAN_SUBJECT_IDENTITY_INVALID", `${label} is not a single-link real file`);
+  }
+  const physical = await fs.realpath(target);
+  if (physical !== target) {
+    planFail("VALIDATION_PLAN_SUBJECT_IDENTITY_INVALID", `${label} is not canonically addressed`);
+  }
+  return physical;
+}
+
+async function nearestRepository(target, projectRoot) {
+  let current = path.dirname(target);
+  while (within(current, projectRoot)) {
+    const marker = await lstatOrNull(path.join(current, ".git"));
+    if (marker !== null && !marker.isSymbolicLink() && (marker.isDirectory() || marker.isFile())) return current;
+    if (current === projectRoot) break;
+    current = path.dirname(current);
+  }
+  return null;
+}
+
+async function gitTracksAbsentPath(target, projectRoot) {
+  const repository = await nearestRepository(target, projectRoot);
+  if (repository === null) return false;
+  const relative = path.relative(repository, target).split(path.sep).join("/");
+  if (relative === "" || relative === ".." || relative.startsWith("../")) return false;
+  return new Promise((resolve) => {
+    const child = spawn("git", ["-C", repository, "ls-files", "--error-unmatch", "--", relative], {
+      stdio: ["ignore", "ignore", "ignore"],
+    });
+    child.once("error", () => resolve(false));
+    child.once("close", (code) => resolve(code === 0));
+  });
+}
+
+function historicalSubjectIdentity(task, claim) {
+  const records = [
+    ...(task.implementationChecks ?? []), ...(task.findingsChecks ?? []), ...(task.attempts ?? []),
+  ];
+  return (task.base?.entries ?? []).some((entry) => entry.path === claim && HASH.test(entry.expected ?? ""))
+    || records.some((record) => (record.testedState ?? record.provenance?.subjects ?? [])
+      .some((entry) => entry.path === claim && HASH.test(entry.expected ?? "")));
+}
+
+async function resolveTaskSubjectClaims(specPath, task) {
+  const workspace = await resolveExecutionWorkspace(specPath);
+  const projectRoot = await aggregateProjectRoot(specPath);
+  const taskDirectory = path.join(workspace.executionRoot, "tasks");
+  const resolved = new Map();
+  for (const claim of task.claims) {
+    const taskTarget = path.resolve(taskDirectory, claim);
+    const projectTarget = path.resolve(projectRoot, claim);
+    const taskContained = within(taskTarget, projectRoot);
+    const projectContained = within(projectTarget, projectRoot);
+    const taskFile = taskContained ? await existingCanonicalFile(taskTarget, `task-relative subject ${claim}`) : null;
+    const projectFile = projectContained ? await existingCanonicalFile(projectTarget, `project-relative subject ${claim}`) : null;
+    if (taskFile !== null && projectFile !== null && taskFile !== projectFile) {
+      planFail(
+        "VALIDATION_PLAN_SUBJECT_BASE_AMBIGUOUS",
+        `subject ${claim} identifies distinct files from the task and aggregate project bases; operator clarification is required`,
+      );
+    }
+    if (taskFile !== null) {
+      resolved.set(claim, claim);
+      continue;
+    }
+    if (projectFile !== null) {
+      const corrected = path.relative(taskDirectory, projectFile).split(path.sep).join("/");
+      resolved.set(claim, normalizedRelative(corrected, "corrected validation subject", { allowParent: true }));
+      continue;
+    }
+    if (taskContained && (claim === ".." || claim.startsWith("../"))
+      && (historicalSubjectIdentity(task, claim) || await gitTracksAbsentPath(taskTarget, projectRoot))) {
+      resolved.set(claim, claim);
+      continue;
+    }
+    planFail(
+      "VALIDATION_PLAN_SUBJECT_IDENTITY_UNRESOLVED",
+      `subject ${claim} is absent under both known bases and has no supported task-relative removal identity`,
+    );
+  }
+  const claims = [...new Set(resolved.values())].sort((left, right) => left.localeCompare(right, "en"));
+  if (claims.length !== resolved.size) {
+    planFail("VALIDATION_PLAN_SUBJECT_BASE_AMBIGUOUS", "multiple Changed Areas claims normalize to the same current file identity");
+  }
+  const from = [...task.changedClaims].sort((left, right) => left.localeCompare(right, "en"));
+  const to = [...new Set(from.map((claim) => resolved.get(claim) ?? claim))]
+    .sort((left, right) => left.localeCompare(right, "en"));
+  if (to.length !== from.length) {
+    planFail("VALIDATION_PLAN_SUBJECT_BASE_AMBIGUOUS", "Changed Areas normalization would collapse distinct scope claims");
+  }
+  return Object.freeze({
+    claims: Object.freeze(claims),
+    correction: JSON.stringify(from) === JSON.stringify(to) ? null : Object.freeze({
+      section: "Changed Areas", from: Object.freeze(from), to: Object.freeze(to),
+    }),
+  });
+}
+
 export async function validateValidationPlan(specPath, value, { resolved = null, environmentSelection = null } = {}) {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
     planFail("INVALID_VALIDATION_PLAN", "planner output must be one structured plan object");
@@ -394,7 +511,8 @@ export async function validateValidationPlan(specPath, value, { resolved = null,
   const subjects = uniqueTextArray(value.subjects, "validation plan subjects")
     .map((entry) => normalizedRelative(entry, "validation plan subject", { allowParent: true }))
     .sort((left, right) => left.localeCompare(right, "en"));
-  const subjectClaims = new Set(task.claims);
+  const subjectResolution = await resolveTaskSubjectClaims(specPath, task);
+  const subjectClaims = new Set(subjectResolution.claims);
   const unexpectedSubjects = subjects.filter((entry) => !subjectClaims.has(entry));
   if (unexpectedSubjects.length !== 0) {
     planFail(
@@ -448,6 +566,7 @@ export async function validateValidationPlan(specPath, value, { resolved = null,
     findings: validateFindingsPlan(value.findings, value.operation, task),
     priorRound: validatePriorRound(value.priorRound, value.round), assessment: value.assessment,
     priorEvidenceId: expected.priorEvidenceId, task, preflight, environmentSelection: selection,
+    pathCorrection: subjectResolution.correction,
   });
 }
 
@@ -797,6 +916,17 @@ function validateSealedBridgeResult(result) {
     || !result.sealedEvidence.startsWith("stnl-validation-result/v1:")) {
     fail("INVALID_VALIDATION_BRIDGE_RESULT", "validation bridge result is malformed or was altered");
   }
+  if (result.pathCorrection !== null && (result.pathCorrection === undefined
+    || !exactKeys(result.pathCorrection, new Set(["section", "from", "to"]))
+    || result.pathCorrection.section !== "Changed Areas"
+    || !Array.isArray(result.pathCorrection.from) || !Array.isArray(result.pathCorrection.to)
+    || result.pathCorrection.from.length === 0
+    || result.pathCorrection.from.length !== result.pathCorrection.to.length
+    || [...result.pathCorrection.from, ...result.pathCorrection.to].some((entry) => {
+      try { return normalizedRelative(entry, "bridge path correction", { allowParent: true }) !== entry; } catch { return true; }
+    }))) {
+    fail("INVALID_VALIDATION_BRIDGE_RESULT", "sealed bridge path correction is malformed");
+  }
   const transported = transportedValidationResult(result.sealedEvidence);
   const canonicalTransport = validationResultTransport(`${JSON.stringify(transported)}\n`, transported.provenance.state === "INVALID" ? 1 : 0, "");
   if (canonicalTransport !== result.sealedEvidence || transported.provenance.evidenceId !== result.summary?.evidenceId) {
@@ -957,6 +1087,7 @@ export async function executeValidationPlan(specPath, plannerOutput, dependencie
     operation: plan.operation,
     slice: plan.slice,
     round: plan.round,
+    pathCorrection: plan.pathCorrection,
     summary: compactBridgeSummary(status, provenance, transported.outputs, plan),
     persistence,
     resolution: activeBlocker === null || persistence === null || persistence.section === "Delegation Blocker" ? null : Object.freeze({
@@ -1087,6 +1218,15 @@ export async function stageValidationBridgeResult(specPath, bridgeResult, candid
     let task = await handle.readFile({ encoding: "utf8" });
     const append = (current, markdown) => new Set(["- none", "- pending"]).has(current)
       ? markdown : `${current}\n\n${markdown}`;
+    if (result.pathCorrection !== null) {
+      task = replaceSection(task, result.pathCorrection.section, (current) => {
+        const expected = result.pathCorrection.from.map((entry) => `- \`${entry}\``).join("\n");
+        if (current !== expected) {
+          fail("INVALID_VALIDATION_CANDIDATE", "candidate Changed Areas no longer matches the authorized path correction source");
+        }
+        return result.pathCorrection.to.map((entry) => `- \`${entry}\``).join("\n");
+      });
+    }
     if (result.persistence.section === "Delegation Blocker") {
       task = replaceSection(task, result.persistence.section, (current) => {
         if (result.persistence.unchanged === true) return current;

@@ -158,6 +158,132 @@ function composeImage(source, service) {
   return null;
 }
 
+function composeScalar(value) {
+  let scalar = value.trim().replace(/\s+#.*$/u, "").trim();
+  if ((scalar.startsWith("\"") && scalar.endsWith("\"")) || (scalar.startsWith("'") && scalar.endsWith("'"))) {
+    scalar = scalar.slice(1, -1);
+  }
+  return scalar.includes("${") ? null : scalar;
+}
+
+function composeConfiguration(source) {
+  if (source.includes("\t")) return null;
+  const lines = source.replaceAll("\r\n", "\n").split("\n");
+  const meaningful = lines.map((text, index) => ({ text, index, indent: text.match(/^ */u)[0].length }))
+    .filter(({ text }) => text.trim().length !== 0 && !text.trimStart().startsWith("#"));
+  const servicesLines = meaningful.filter(({ text, indent }) => indent === 0 && text.trim() === "services:");
+  if (servicesLines.length !== 1) return null;
+  const afterServices = meaningful.filter(({ index }) => index > servicesLines[0].index);
+  const servicesEnd = afterServices.find(({ indent }) => indent === 0)?.index ?? lines.length;
+  const section = afterServices.filter(({ index }) => index < servicesEnd);
+  const serviceIndent = section.reduce((minimum, entry) => Math.min(minimum, entry.indent), Infinity);
+  if (!Number.isFinite(serviceIndent) || serviceIndent <= 0) return null;
+  const headers = section.filter(({ indent, text }) => indent === serviceIndent
+    && /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}:\s*$/u.test(text.trim()));
+  const services = [];
+  for (const header of headers) {
+    const service = header.text.trim().slice(0, -1);
+    const afterService = section.filter(({ index }) => index > header.index);
+    const serviceEnd = afterService.find(({ indent }) => indent <= serviceIndent)?.index ?? servicesEnd;
+    const body = afterService.filter(({ index }) => index < serviceEnd);
+    const propertyIndent = body.reduce((minimum, entry) => Math.min(minimum, entry.indent), Infinity);
+    const imageLines = body.filter(({ indent, text }) => indent === propertyIndent && /^image\s*:/u.test(text.trim()));
+    if (imageLines.length !== 1) continue;
+    const image = composeScalar(imageLines[0].text.trim().replace(/^image\s*:/u, ""));
+    if (image === null || !/^[A-Za-z0-9][A-Za-z0-9._/:@-]{0,255}$/u.test(image)
+      || image.includes("..") || image.endsWith("/") || image.endsWith(":")) continue;
+    const workingLines = body.filter(({ indent, text }) => indent === propertyIndent && /^working_dir\s*:/u.test(text.trim()));
+    const workingDirectory = workingLines.length === 1
+      ? composeScalar(workingLines[0].text.trim().replace(/^working_dir\s*:/u, "")) : null;
+    const volumeProperties = body.filter(({ indent, text }) => indent === propertyIndent && text.trim() === "volumes:");
+    const volumes = [];
+    if (volumeProperties.length === 1) {
+      const afterVolumes = body.filter(({ index }) => index > volumeProperties[0].index);
+      const volumesEnd = afterVolumes.find(({ indent }) => indent <= propertyIndent)?.index ?? serviceEnd;
+      const volumeLines = afterVolumes.filter(({ index }) => index < volumesEnd);
+      const volumeIndent = volumeLines.reduce((minimum, entry) => Math.min(minimum, entry.indent), Infinity);
+      for (const { text, indent } of volumeLines) {
+        if (indent !== volumeIndent) continue;
+        const scalar = text.trim();
+        if (!scalar.startsWith("- ") || scalar.includes("${") || scalar.includes("#")) continue;
+        const parts = scalar.slice(2).trim().split(":");
+        if (parts.length < 2 || parts.length > 3 || !SAFE_SCOPE.test(parts[0])
+          || !path.posix.isAbsolute(parts[1]) || path.posix.normalize(parts[1]) !== parts[1]
+          || (parts.length === 3 && !new Set(["ro", "rw"]).has(parts[2]))) continue;
+        volumes.push({ source: parts[0], target: parts[1] });
+      }
+    }
+    services.push({ service, image, workingDirectory, volumes });
+  }
+  const nameLines = meaningful.filter(({ text, indent }) => indent === 0 && /^name\s*:/u.test(text.trim()));
+  const projectName = nameLines.length === 1
+    ? composeScalar(nameLines[0].text.trim().replace(/^name\s*:/u, "")) : null;
+  const topVolumes = meaningful.filter(({ text, indent }) => indent === 0 && text.trim() === "volumes:");
+  const declaredVolumes = new Set();
+  if (topVolumes.length === 1) {
+    const afterTop = meaningful.filter(({ index }) => index > topVolumes[0].index);
+    const topEnd = afterTop.find(({ indent }) => indent === 0)?.index ?? lines.length;
+    const body = afterTop.filter(({ index }) => index < topEnd);
+    const directIndent = body.reduce((minimum, entry) => Math.min(minimum, entry.indent), Infinity);
+    for (const { text, indent } of body) {
+      if (indent !== directIndent) continue;
+      const match = /^([A-Za-z0-9][A-Za-z0-9_.-]{0,127}):\s*$/u.exec(text.trim());
+      if (match !== null) declaredVolumes.add(match[1]);
+    }
+  }
+  return { projectName, declaredVolumes, services };
+}
+
+function scopeSourcePaths(scope, sourceRecords) {
+  const queue = [...scope.references];
+  const paths = new Set();
+  for (let cursor = 0; cursor < queue.length && cursor < 64; cursor += 1) {
+    const relative = queue[cursor];
+    const record = sourceRecords.get(relative);
+    if (record === undefined || paths.has(relative)) continue;
+    paths.add(relative);
+    for (const reference of referencedPaths(record.text)) if (!queue.includes(reference)) queue.push(reference);
+    if (/launch\.jsonc?$/u.test(relative)) {
+      for (const name of ["tasks.json", "tasks.jsonc"]) {
+        const tasks = path.posix.join(path.posix.dirname(relative), name);
+        if (!queue.includes(tasks)) queue.push(tasks);
+      }
+    }
+  }
+  return [...paths];
+}
+
+function documentedAuthoritySources(paths, sourceRecords, composeFile, service) {
+  return paths.filter((relative) => {
+    if (COMPOSE_NAMES.has(path.posix.basename(relative)) || /(?:launch|tasks)\.jsonc?$/u.test(relative)) return false;
+    const text = sourceRecords.get(relative)?.text ?? "";
+    return text.includes(composeFile) && text.includes(service);
+  }).sort((left, right) => left.localeCompare(right, "en"));
+}
+
+function availableCacheVolumes(configuration, service) {
+  if (!SAFE_SCOPE.test(configuration.projectName ?? "")) return [];
+  return service.volumes.filter((entry) => configuration.declaredVolumes.has(entry.source))
+    .sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right), "en"));
+}
+
+function composeOption(scope, composeFile, sourceRecords, configuration, service, paths) {
+  const availableCaches = availableCacheVolumes(configuration, service);
+  const authoritySources = documentedAuthoritySources(paths, sourceRecords, composeFile, service.service);
+  const environment = {
+    kind: "docker-compose", composeFile, service: service.service, image: service.image, authoritySources,
+  };
+  const material = { profile: `Compose service ${service.service}`, source: composeFile, environment };
+  return Object.freeze({
+    id: digest("stnl-validation-environment-option-v1", { scope: scope.scope, ...material }),
+    ...material,
+    availableCacheVolumes: Object.freeze(availableCaches.map((entry) => Object.freeze({ ...entry }))),
+    sources: Object.freeze(paths.filter((entry) => sourceRecords.has(entry))
+      .map((entry) => sourceIdentity(sourceRecords.get(entry)))
+      .sort((left, right) => left.path.localeCompare(right.path, "en"))),
+  });
+}
+
 function taskEnvironment(task, taskSource, sourceRecords, root) {
   if (task?.sentinelExecutionEnvironment === "host") return { environment: { kind: "host" }, supported: true };
   const tokens = [task?.command, ...(Array.isArray(task?.args) ? task.args : [])].filter((entry) => typeof entry === "string");
@@ -276,13 +402,15 @@ export async function discoverValidationEnvironments(specPath, request) {
   const scopeResults = scopes.map((scope) => {
     const options = [];
     const unsupported = [];
+    const paths = scopeSourcePaths(scope, sourceRecords);
     for (const candidate of profiles) {
       const profileCwd = workspaceRelative(candidate.profile?.cwd, ".");
       const hasComponent = typeof candidate.profile?.sentinelComponent === "string";
       const hasCwd = typeof candidate.profile?.cwd === "string";
       if ((hasComponent && candidate.profile.sentinelComponent !== scope.component)
         || (hasCwd && profileCwd !== scope.cwd) || (!hasComponent && !hasCwd)) continue;
-      if (candidate.profile?.pipeTransport !== undefined) {
+      if (candidate.profile?.pipeTransport !== undefined
+        && path.posix.basename(candidate.profile.pipeTransport?.pipeProgram ?? "") !== "docker") {
         unsupported.push(`${candidate.profile.name ?? "unnamed profile"}: pipeTransport/${candidate.profile.pipeTransport?.pipeProgram ?? "unsupported backend"}`);
         continue;
       }
@@ -307,15 +435,41 @@ export async function discoverValidationEnvironments(specPath, request) {
         ? { ...resolved.environment, authoritySources: [candidate.source, linked.source].sort() }
         : resolved.environment;
       const material = { profile: candidate.profile.name, source: candidate.source, environment };
+      const configuration = environment.kind === "docker-compose"
+        ? composeConfiguration(sourceRecords.get(environment.composeFile)?.text ?? "") : null;
+      const service = configuration?.services.find((entry) => entry.service === environment.service);
+      const availableCaches = service === undefined ? [] : availableCacheVolumes(configuration, service);
       options.push(Object.freeze({
         id: digest("stnl-validation-environment-option-v1", { scope: scope.scope, ...material }),
         ...material,
+        availableCacheVolumes: Object.freeze(availableCaches.map((entry) => Object.freeze({ ...entry }))),
         sources: Object.freeze(scopeSourcePaths.map((entry) => sourceIdentity(sourceRecords.get(entry)))),
       }));
     }
+    const existingComposeServices = new Set(options.filter((option) => option.environment.kind === "docker-compose")
+      .map((option) => `${option.environment.composeFile}\0${option.environment.service}`));
+    for (const composeFile of paths.filter((entry) => COMPOSE_NAMES.has(path.posix.basename(entry)))) {
+      const configuration = composeConfiguration(sourceRecords.get(composeFile)?.text ?? "");
+      if (configuration === null) {
+        unsupported.push(`${composeFile}: Compose structure is not supported`);
+        continue;
+      }
+      const cwdTarget = `/workspace/${scope.cwd === "." ? "" : scope.cwd}`.replace(/\/$/u, "");
+      const matched = configuration.services.filter((entry) => entry.service === scope.scope
+        || entry.service === scope.component || entry.workingDirectory === cwdTarget
+        || documentedAuthoritySources(paths, sourceRecords, composeFile, entry.service).length !== 0);
+      const plausible = matched.length !== 0 ? matched : configuration.services;
+      for (const service of plausible) {
+        if (existingComposeServices.has(`${composeFile}\0${service.service}`)) continue;
+        options.push(composeOption(scope, composeFile, sourceRecords, configuration, service, paths));
+      }
+    }
     options.sort((left, right) => left.profile.localeCompare(right.profile, "en"));
-    const status = options.length === 1 ? "resolved" : options.length > 1 ? "ambiguous"
-      : unsupported.length > 0 ? "unsupported" : "missing";
+    const requiresConfirmation = options.length === 1 && options[0].environment.kind === "docker-compose"
+      && options[0].environment.authoritySources.length === 0;
+    const status = requiresConfirmation ? "confirmation-required"
+      : options.length === 1 ? "resolved" : options.length > 1 ? "ambiguous"
+        : unsupported.length > 0 ? "unsupported" : "missing";
     const recommended = options.find((option) => option.environment.kind === "docker-compose") ?? options[0] ?? null;
     return Object.freeze({
       scope: scope.scope, component: scope.component, cwd: scope.cwd, status,
@@ -326,6 +480,7 @@ export async function discoverValidationEnvironments(specPath, request) {
           ? "Compose matches the shared project-defined environment" : "the project explicitly authorizes this host profile",
       }),
       missingInformation: status === "ambiguous" ? `select or confirm one project profile for ${scope.scope}`
+        : status === "confirmation-required" ? `confirm the inspected Compose file and service for ${scope.scope}`
         : status === "missing" ? `identify the project file or profile that authorizes ${scope.scope}`
           : status === "unsupported" ? `the discovered profile uses an unsupported backend: ${unsupported.join("; ")}` : null,
       unsupported: Object.freeze(unsupported),
@@ -342,7 +497,8 @@ export async function discoverValidationEnvironments(specPath, request) {
 function planningBlocker(scope) {
   return Object.freeze({
     schema: VALIDATION_PLANNING_BLOCKER_SCHEMA,
-    code: scope.status === "ambiguous" ? "ENVIRONMENT_SELECTION_REQUIRED" : "ENVIRONMENT_CONFIGURATION_REQUIRED",
+    code: new Set(["ambiguous", "confirmation-required"]).has(scope.status)
+      ? "ENVIRONMENT_SELECTION_REQUIRED" : "ENVIRONMENT_CONFIGURATION_REQUIRED",
     message: scope.missingInformation,
     requiredAction: Object.freeze({
       scope: scope.scope, component: scope.component, cwd: scope.cwd,
@@ -351,6 +507,58 @@ function planningBlocker(scope) {
       missingInformation: scope.missingInformation,
     }),
   });
+}
+
+function normalizeCacheChoice(value, label) {
+  if (!Array.isArray(value) || value.length === 0) {
+    environmentFail("INVALID_ENVIRONMENT_CHOICE", `${label} must be a non-empty cache binding array`);
+  }
+  const normalized = value.map((entry, index) => {
+    if (entry === null || typeof entry !== "object" || Array.isArray(entry)
+      || Object.keys(entry).sort().join(",") !== "source,target"
+      || !SAFE_SCOPE.test(entry.source ?? "") || typeof entry.target !== "string"
+      || !path.posix.isAbsolute(entry.target) || path.posix.normalize(entry.target) !== entry.target
+      || entry.target === "/" || entry.target.endsWith("/")) {
+      environmentFail("INVALID_ENVIRONMENT_CHOICE", `${label} cache binding ${index + 1} is malformed`);
+    }
+    return Object.freeze({ source: entry.source, target: entry.target });
+  }).sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right), "en"));
+  if (new Set(normalized.map((entry) => `${entry.source}\0${entry.target}`)).size !== normalized.length) {
+    environmentFail("INVALID_ENVIRONMENT_CHOICE", `${label} cache bindings must be unique`);
+  }
+  return normalized;
+}
+
+function directChoice(scope, choice) {
+  const keys = Object.hasOwn(choice, "cacheVolumes")
+    ? "cacheVolumes,configurationPath,service" : "configurationPath,service";
+  if (choice === null || typeof choice !== "object" || Array.isArray(choice)
+    || Object.keys(choice).sort().join(",") !== keys) {
+    environmentFail("INVALID_ENVIRONMENT_CHOICE", `direct choice for ${scope.scope} is malformed`);
+  }
+  const configurationPath = normalizedRelative(choice.configurationPath, "direct environment configuration");
+  if (!COMPOSE_NAMES.has(path.posix.basename(configurationPath)) || !SAFE_SCOPE.test(choice.service ?? "")) {
+    environmentFail("INVALID_ENVIRONMENT_CHOICE", `direct choice for ${scope.scope} must identify a supported Compose file and service`);
+  }
+  const option = scope.options.find((entry) => entry.environment?.kind === "docker-compose"
+    && entry.environment.composeFile === configurationPath && entry.environment.service === choice.service);
+  if (option === undefined) {
+    environmentFail("INVALID_ENVIRONMENT_CHOICE", `direct choice for ${scope.scope} does not match an inspected project Compose service`);
+  }
+  const requestedCaches = Object.hasOwn(choice, "cacheVolumes")
+    ? normalizeCacheChoice(choice.cacheVolumes, `direct choice for ${scope.scope}`) : null;
+  if (requestedCaches !== null && requestedCaches.some((requested) => !(option.availableCacheVolumes ?? [])
+    .some((available) => available.source === requested.source && available.target === requested.target))) {
+    environmentFail("INVALID_ENVIRONMENT_CHOICE", `direct choice for ${scope.scope} requests a cache not declared for the selected Compose service/project`);
+  }
+  const environment = requestedCaches === null ? option.environment : Object.freeze({
+    ...option.environment, cacheVolumes: Object.freeze(requestedCaches),
+  });
+  const confirmation = Object.freeze({
+    configurationPath, service: choice.service,
+    ...(requestedCaches === null ? {} : { cacheVolumes: Object.freeze(requestedCaches) }),
+  });
+  return { option, environment, confirmation };
 }
 
 export function resolveValidationEnvironmentSelection(discovery, choices = {}) {
@@ -363,11 +571,22 @@ export function resolveValidationEnvironmentSelection(discovery, choices = {}) {
   for (const scope of discovery.scopes) {
     const choice = choices[scope.scope];
     if (scope.status !== "resolved" && choice === undefined) return planningBlocker(scope);
-    const option = choice === undefined ? scope.options[0] : scope.options.find((entry) => entry.id === choice);
-    if (option === undefined) environmentFail("INVALID_ENVIRONMENT_CHOICE", `choice for ${scope.scope} is not one of the discovered options`);
+    let option;
+    let environment;
+    let confirmation = null;
+    if (choice !== null && typeof choice === "object" && !Array.isArray(choice)) {
+      ({ option, environment, confirmation } = directChoice(scope, choice));
+    } else {
+      option = choice === undefined ? scope.options[0] : scope.options.find((entry) => entry.id === choice);
+      if (option === undefined) environmentFail("INVALID_ENVIRONMENT_CHOICE", `choice for ${scope.scope} is not one of the discovered options`);
+      if (option.environment?.kind === "docker-compose" && option.environment.authoritySources.length === 0) {
+        environmentFail("INVALID_ENVIRONMENT_CHOICE", `choice for ${scope.scope} requires explicit Compose file and service confirmation`);
+      }
+      environment = option.environment;
+    }
     entries.push(Object.freeze({
       scope: scope.scope, component: scope.component, cwd: scope.cwd,
-      environment: option.environment, sources: option.sources,
+      environment, sources: option.sources, confirmation,
     }));
   }
   const material = {
@@ -431,8 +650,15 @@ export function enforceValidationEnvironmentSelection(plan, selection) {
     if (command.cwd !== entry.cwd) {
       environmentFail("VALIDATION_ENVIRONMENT_COMPONENT_MISMATCH", `command ${index + 1} cwd differs from selected component ${entry.component}`);
     }
-    if (JSON.stringify(canonical(command.executionEnvironment)) !== JSON.stringify(canonical(entry.environment))) {
+    const { cacheVolumes: selectedCaches = [], ...selectedEnvironment } = entry.environment;
+    const { cacheVolumes: commandCaches = [], ...commandEnvironment } = command.executionEnvironment;
+    if (JSON.stringify(canonical(commandEnvironment)) !== JSON.stringify(canonical(selectedEnvironment))) {
       environmentFail("VALIDATION_ENVIRONMENT_IDENTITY_MISMATCH", `command ${index + 1} environment contradicts the independently selected environment`);
+    }
+    if (commandCaches.some((requested) => !selectedCaches.some((authorized) => (
+      requested.source === authorized.source && requested.target === authorized.target
+    )))) {
+      environmentFail("VALIDATION_ENVIRONMENT_CACHE_MISMATCH", `command ${index + 1} requests a cache outside the independently selected environment`);
     }
     const declaredSources = new Set(plan.discovery.sources);
     if (entry.sources.some((source) => !declaredSources.has(source.path))) {

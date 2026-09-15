@@ -1,20 +1,20 @@
 {
-  "identity": "sha256:ab5b709127a710e1022829964733a4c9a3d3d45b1e88ec3c1f8c3e57a483d82e",
+  "identity": "sha256:021b75ac83d1490c850005cd946afbeb277df8d8bf2303b981e4b793e94055e2",
   "schemaVersion": 1,
   "runnerProtocol": "stnl-validation-runner/v11",
   "harnessProtocol": "stnl-validation-harness/v10",
   "package": {
     "owner": "stnl-slice-quality-manager",
-    "fingerprint": "sha256:ab7e19760cd2d85fed917af0e1d243446c3defd30d032806aa1ecc4903a6ba02",
+    "fingerprint": "sha256:91f2e3fa6ad0ea76e21f50d81cb3b379db1276852f2cf014d9ee720387056c68",
     "files": {
       "SKILL.md": "sha256:b3dcf6e21b8d392c102f43f32de41d37cd59cbfa66f1623ee3ddd19508b3aadc",
       "references/execution-record-schema.md": "sha256:aa3fda0d2c1abf13cd882035080bea5ab17d4bf6ed0cb0b8dc82569aaabb4aa6",
       "references/validation-base.md": "sha256:c392bc10447421f10bec4ebfd6b65b562ac99d12a3c98a5640a67f6334d0828d",
       "runtime/execution-state.mjs": "sha256:0c0e87de43d4f405c1d2cfc37eaa16e47bb85eb86424567246b8e47a9e27b052",
-      "runtime/resolve-validation-runtime.mjs": "sha256:b415189b9e6fc14cd23234fa8f891b583ce9cb0cb7dcd2f41283ff25a23e7122",
-      "runtime/run-validation-session.mjs": "sha256:61e78ddabc35235ee00cb464cb13f0178cc810f6c51dee7d23a8164323ba997b",
+      "runtime/resolve-validation-runtime.mjs": "sha256:6aff13766090e771eaab6a581bf7e8f31f2ed356bf92da8564015c3ac6f49d82",
+      "runtime/run-validation-session.mjs": "sha256:1bfd479b53d76908a59e09251163264b277fda9057c6eec9177775dc5a0fd877",
       "runtime/validate-execution-state.mjs": "sha256:685a9c6971851b62675cbca4802276b819b06d577ab7a22a7eda3a7f0bea67a6",
-      "runtime/validation-environment-selection.mjs": "sha256:3f545ac5fcb97a897da8e2d201faad1bc0e03562cd4f4f7f184ace4e579e16dc",
+      "runtime/validation-environment-selection.mjs": "sha256:bcfbf5317adaaa5277a204715db3aaacce9261bee4e2f8ad24cafbb6b56eb21a",
       "runtime/validation-capability.mjs": "sha256:9d1dfcd457209c381ce927ad5e98ca9f3e156ad4281e9b4a997a580331a25f61"
     }
   }

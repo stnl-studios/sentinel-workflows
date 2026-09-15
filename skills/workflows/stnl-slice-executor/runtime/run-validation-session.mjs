@@ -151,8 +151,8 @@ export function validationExecutionEnvironmentContract(value, label = "validatio
     || value.image.includes("..") || value.image.endsWith("/") || value.image.endsWith(":")) {
     throw new ExecutionContractError(`${label} compose image reference is invalid`);
   }
-  if (!Array.isArray(value.authoritySources) || value.authoritySources.length === 0) {
-    throw new ExecutionContractError(`${label} Docker authority requires explicit project authority sources`);
+  if (!Array.isArray(value.authoritySources)) {
+    throw new ExecutionContractError(`${label} Docker authority sources must be an array`);
   }
   const authoritySources = value.authoritySources
     .map((entry) => normalizedRelative(entry, `${label} Docker authority source`))
