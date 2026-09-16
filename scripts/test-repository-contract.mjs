@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 
 const repository = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const checker = path.join(repository, "scripts/check-contracts.mjs");
-const validationScripts = ["validate-targets.sh", "smoke-structure.sh", "test-launcher-contract.sh", "test-validation-runner-contract.sh"];
+const validationScripts = ["validate.sh", "smoke-structure.sh", "test-launcher-contract.sh", "test-validation-runner-contract.sh"];
 
 async function fixture(t) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "stnl-repository-contract-"));
@@ -27,9 +27,25 @@ function check(root) {
 
 test("repository contract rejects a required validation entrypoint that invokes Python", async (t) => {
   const root = await fixture(t);
-  const target = path.join(root, "scripts/validate-targets.sh");
+  const target = path.join(root, "scripts/validate.sh");
   await fs.appendFile(target, "\npython3 scripts/legacy-check.py\n", "utf8");
   const result = check(root);
   assert.equal(result.status, 1, result.stdout + result.stderr);
   assert.match(result.stderr, /CONTRACT_ERROR\[C007_PORTABILITY\]/u);
+});
+
+test("repository contract rejects recreation of targets", async (t) => {
+  const root = await fixture(t);
+  await fs.mkdir(path.join(root, "targets"));
+  const result = check(root);
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stderr, /CONTRACT_ERROR\[C019_REMOVED_ROOTS\].*targets/u);
+});
+
+test("repository contract rejects recreation of agents/base", async (t) => {
+  const root = await fixture(t);
+  await fs.mkdir(path.join(root, "agents/base"), { recursive: true });
+  const result = check(root);
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stderr, /CONTRACT_ERROR\[C019_REMOVED_ROOTS\].*agents\/base/u);
 });

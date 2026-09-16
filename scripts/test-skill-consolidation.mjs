@@ -20,14 +20,13 @@ import { discoverClaudeSkills, loadClaudeSkill } from "../integrations/claude-co
 import { discoverCodexSkills, loadCodexSkill } from "../integrations/codex/skill-discovery.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
-const AGENTS = ["coder", "planner", "reviewer", "test-planner", "validator"];
 const OBSOLETE_NAMES = [
   "stnl-backend-quality",
   "stnl-backend-sql-quality",
   "stnl-frontend-quality",
   "stnl-database-migrations",
 ];
-const IGNORED_DIRECTORIES = new Set(["targets", "__MACOSX", "node_modules", ".git", "tmp", "dist", "coverage"]);
+const IGNORED_DIRECTORIES = new Set(["__MACOSX", "node_modules", ".git", "tmp", "dist", "coverage"]);
 const TEXT_EXTENSIONS = new Set([".md", ".mjs", ".sh", ".json", ".toml", ".yaml", ".yml"]);
 
 async function directNames(directory) {
@@ -102,14 +101,6 @@ test("repository contract rejects unknown skills and flat duplicates", async (t)
   const duplicateResult = runRepositoryContract(duplicate);
   assert.equal(duplicateResult.status, 1, duplicateResult.stdout + duplicateResult.stderr);
   assert.match(duplicateResult.stderr, /C002_SKILL_REGISTRY/u);
-});
-
-test("agent allowlists expose every canonical domain and remove obsolete migrations", async () => {
-  for (const agent of AGENTS) {
-    const source = await fs.readFile(path.join(ROOT, "agents/base", `${agent}.md`), "utf8");
-    for (const name of DOMAIN_SKILLS) assert.match(source, new RegExp(`\\x60${name}\\x60`, "u"), `${agent}: ${name}`);
-    assert.doesNotMatch(source, /\bstnl-database-migrations\b/u);
-  }
 });
 
 test("semantic routing selects a primary and only applicable specialized domains", () => {

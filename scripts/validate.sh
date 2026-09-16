@@ -5,7 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SKIP_SMOKE=0
 
 usage() {
-  echo "usage: scripts/validate-targets.sh [--no-smoke]" >&2
+  echo "usage: scripts/validate.sh [--no-smoke]" >&2
 }
 
 case "$#" in
@@ -53,4 +53,4 @@ if [[ "$SKIP_SMOKE" == "0" ]]; then
   bash scripts/smoke-structure.sh
 fi
 
-echo "PASS: target alignment checks"
+echo "PASS: repository validation checks"

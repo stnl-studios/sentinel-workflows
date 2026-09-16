@@ -43,7 +43,6 @@ function realFiles(root) {
         entry.name === ".DS_Store" ||
         entry.name.startsWith("._") ||
         entry.name === "__MACOSX" ||
-        entry.name === "targets" ||
         entry.name === "node_modules"
       ) continue;
       const child = path.join(current, entry.name);
@@ -382,11 +381,8 @@ function checkSubagents(root) {
     "claude-code/.claude/agents/stnl-validation-runner.md",
     "claude-code/.claude/agents/stnl-spec-context-scout.md",
   ]);
-  // Subagent bundles share agents/ with the pre-existing base-agent contracts.
-  // Validate the package registry without treating that known sibling as a package file.
   const actual = new Set(realFiles(root)
-    .map((file) => path.relative(root, file).split(path.sep).join("/"))
-    .filter((file) => !file.startsWith("base/")));
+    .map((file) => path.relative(root, file).split(path.sep).join("/")));
   if (actual.size !== expected.size || [...actual].some((file) => !expected.has(file))) reject("S002_REGISTRY", `subagent registry mismatch; actual=${JSON.stringify([...actual].sort())}`);
   checkRunner(root);
   checkScout(root);
@@ -556,6 +552,9 @@ function checkLaunchers(root) {
 }
 
 function checkRepository(root) {
+  for (const relative of ["targets", "agents/base"]) {
+    if (fs.existsSync(path.join(root, relative))) reject("C019_REMOVED_ROOTS", `removed repository root was recreated: ${relative}`);
+  }
   checkPortability(root);
   const skillsRoot = path.join(root, "skills");
   for (const relative of [
@@ -658,7 +657,7 @@ function checkRepository(root) {
 }
 
 function checkPortability(root) {
-  for (const relative of ["scripts/validate-targets.sh", "scripts/smoke-structure.sh", "scripts/test-launcher-contract.sh", "scripts/test-validation-runner-contract.sh"]) {
+  for (const relative of ["scripts/validate.sh", "scripts/smoke-structure.sh", "scripts/test-launcher-contract.sh", "scripts/test-validation-runner-contract.sh"]) {
     const text = read(path.join(root, relative));
     if (/(?:^|[\s"'])python(?:3)?(?:[\s"']|$)|check-contracts\.py|test-serial-workflow\.py/imu.test(text)) reject("C007_PORTABILITY", `required validation path retains Python: ${relative}`);
   }

@@ -307,9 +307,7 @@ async function validateDistribution(root) {
     ...PLATFORMS.codex.files.map((file) => `codex/${file}`),
     ...PLATFORMS["claude-code"].files.map((file) => `claude-code/${file}`),
   ];
-  // The distributable subagent bundles now live beside the pre-existing base agents.
-  // Keep the package registry strict while excluding that known, non-package sibling.
-  const distributionFiles = (await listFiles(root)).filter((file) => !file.startsWith("base/"));
+  const distributionFiles = await listFiles(root);
   assertExactFiles(distributionFiles, expectedFiles, "subagent distribution");
   await validateReadme(root);
   const codex = await validateCodexPackage(path.join(root, "codex"));
@@ -434,6 +432,13 @@ test("rejects recreation of the removed intermediate directory", async () => {
   await expectRejectedDistribution((fixture) =>
     mkdir(path.join(fixture, LEGACY_DIRECTORY, "codex"), { recursive: true }),
   );
+});
+
+test("rejects an unexpected sibling in the agents registry", async () => {
+  await expectRejectedDistribution(async (fixture) => {
+    await mkdir(path.join(fixture, "base"), { recursive: true });
+    await writeFile(path.join(fixture, "base", "coder.md"), "legacy\n", "utf8");
+  });
 });
 
 test("rejects documentation pointing to the removed package layout", async () => {
