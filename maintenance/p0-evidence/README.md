@@ -11,6 +11,8 @@ This directory preserves compact, human-readable engineering evidence for Sentin
 - `s3-benchmark-pilot.md` — preserved Production Pilot #1 evidence.
 - `s3-benchmark-correction-01.md` — Benchmark Correction #1 evidence.
 - `s3-benchmark-pilot-02.md` — Production Pilot #2 evidence.
+- `s3-benchmark-correction-02.md` — terminal collector and ownership diagnostic
+  correction evidence.
 
 ## P0 Gates
 

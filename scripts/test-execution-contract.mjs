@@ -3518,6 +3518,63 @@ test("non-canonical execution residue blocks preflight while arbitrary external 
   await assert.rejects(preflightExecutionOperation(escaped.requirements, "VALIDATE_SLICE", "1"), /unsafe validation-owned path/u);
 });
 
+test("Effective Validation Base ownership reproducer covers path basis, hash, drift, and strict readback", async (t) => {
+  const fixture = await standaloneWorkspace(t);
+  await renderArtifacts(fixture);
+  const target = await writeValidatedPath(fixture);
+  const liveTask = path.join(fixture.execution, "tasks/slice-01.md");
+  const liveIndex = path.join(fixture.execution, "tasks.md");
+  const liveBefore = await Promise.all([fs.readFile(liveTask), fs.readFile(liveIndex)]);
+
+  const terminalCandidate = async (name, { baseRelative = "../../src/example.txt", hash = VALIDATED_HASH } = {}) => {
+    const candidate = await copyDirectory(fixture.execution, path.join(fixture.root, name));
+    const candidateTask = path.join(candidate, "tasks/slice-01.md");
+    let task = await fs.readFile(candidateTask, "utf8");
+    task = task.replace("- [ ] 1.1", "- [x] 1.1");
+    task = replaceSection(task, "Changed Areas", "- `../../src/example.txt`");
+    task = replaceSection(task, "Validation Attempts", PASS_ATTEMPT);
+    task = replaceSection(task, "Effective Validation Base", passBase({ relative: baseRelative, hash }));
+    await fs.writeFile(candidateTask, publishPassResult(task), "utf8");
+    await fs.writeFile(path.join(candidate, "tasks.md"), (await fs.readFile(path.join(candidate, "tasks.md"), "utf8")).replace(
+      "| [ ] | 01 - Delivery | observable result | - | tasks/slice-01.md | pending | pending |",
+      "| [x] | 01 - Delivery | observable result | - | tasks/slice-01.md | PASS | PASS |",
+    ), "utf8");
+    return candidate;
+  };
+
+  const correct = await terminalCandidate("candidate-correct");
+  assert.equal((await validateExecutionCandidate(fixture.requirements, correct)).state, "COMPLETE", "R1 correct candidate");
+  assert.deepEqual(await Promise.all([fs.readFile(liveTask), fs.readFile(liveIndex)]), liveBefore, "candidate validation published implicitly");
+
+  const wrongBasis = await terminalCandidate("candidate-wrong-basis", { baseRelative: "src/example.txt" });
+  await assert.rejects(validateExecutionCandidate(fixture.requirements, wrongBasis), (error) => {
+    assert.ok(error instanceof ExecutionContractError);
+    assert.match(error.message, /final validation ownership does not match|changed\/corrected path with no validation owner/u);
+    return true;
+  });
+  assert.deepEqual(await Promise.all([fs.readFile(liveTask), fs.readFile(liveIndex)]), liveBefore, "wrong-basis candidate published implicitly");
+
+  const wrongHash = await terminalCandidate("candidate-wrong-hash", { hash: "0".repeat(64) });
+  await assert.rejects(validateExecutionCandidate(fixture.requirements, wrongHash), (error) => {
+    assert.ok(error instanceof ExecutionContractError);
+    assert.match(error.message, /final validation ownership does not match/u);
+    assert.equal(error.findings.some((item) => item.includes("expected sha256:") && item.includes("current sha256:")), true);
+    return true;
+  });
+
+  await fs.copyFile(path.join(correct, "tasks/slice-01.md"), liveTask);
+  await fs.copyFile(path.join(correct, "tasks.md"), liveIndex);
+  assert.equal((await inspectExecutionState(fixture.requirements)).state, "COMPLETE", "R5 strict readback without drift");
+
+  await fs.writeFile(target, "post-PASS drift\n", "utf8");
+  await assert.rejects(inspectExecutionState(fixture.requirements), (error) => {
+    assert.ok(error instanceof ExecutionContractError);
+    assert.match(error.message, /final validation ownership does not match/u);
+    assert.equal(error.recoveryTargets.some(({ operation, owner }) => operation === "REPLAN" && owner === "terminal-integrity"), true);
+    return true;
+  });
+});
+
 test("terminal inspection detects hash drift and REMOVED reappearance without rewriting PASS history", async (t) => {
   const matching = await standaloneWorkspace(t);
   await renderArtifacts(matching);

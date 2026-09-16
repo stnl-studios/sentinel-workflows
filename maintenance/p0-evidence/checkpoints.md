@@ -38,3 +38,11 @@
   - The artificial INIT parent retry was removed by preparing an empty
     `specs/` parent.
   - The comparator now blocks incompatible result definitions.
+- `abefcb5d7a5d1e0a3a752388f69b74fd3f299648`
+  - Production Pilot #2 reached execution `COMPLETE`, GLOBAL READY, lifecycle
+    `CLOSED`, and final tests PASS.
+  - The Luna Production Profile was proven at runtime with five Luna/medium
+    validation runners, zero fallback, and zero Sol escalation.
+  - The collector finalized Case A as `BLOCKED`, and a later official terminal
+    inspection exposed an ownership inconsistency.
+  - Cases B and C stopped under the stop-loss rule; P0 remained open.

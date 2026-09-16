@@ -101,6 +101,7 @@ requirements
   -> VALIDATE_SLICE again
   -> next slice
   -> execution state COMPLETE
+  -> lifecycle READINESS with GLOBAL scope
   -> lifecycle MODE=CLOSE
   -> result
 ```
@@ -144,13 +145,22 @@ journal. Its only side effect is the explicit result output.
 - the requirements hash is SHA-256 of prepared `requirements.md`;
 - the seed hash is calculated from the immutable source seed.
 
-The benchmark does not reproduce the Sentinel state machine. It requires an
-observed final execution readback from `VALIDATE_SLICE` with
-`resultingState=COMPLETE` immediately before terminal `SPEC_CLOSE`, and checks
-only minimal terminal execution-artifact structure. Documentary closure is
-validated read-only by the official lifecycle validator rather than inferred by
-the benchmark. For `case` and `full`, final COMPLETE, official closure, and final
-tests are required; a focal run may intentionally stop earlier.
+The benchmark does not reproduce the Sentinel state machine. For `case` and
+`full`, the journal must end with a successful
+`VALIDATE_SLICE(resultingState=COMPLETE) ->
+SPEC_READINESS(resultingState=GLOBAL_READY) -> SPEC_CLOSE` sequence, with no
+later execution operation, one terminal readiness, and one terminal close.
+`finalize` then invokes the official execution validator read-only and accepts
+terminal success only when it independently derives `COMPLETE`. Documentary
+closure is likewise validated read-only by the official lifecycle validator.
+Final tests and minimal terminal artifact structure must also pass; a focal run
+may intentionally stop earlier.
+
+`ABORTED_BUDGET` remains dominant. A recovered historical `BLOCKED` event stays
+in journal metrics but does not condemn an otherwise healthy terminal run.
+`BLOCKED` is reserved for an effective current blocker, including an official
+execution inspection that rejects the terminal state or requires recovery;
+other inconsistent terminal facts produce `FAIL`.
 
 The journal SHA must match the actual `sentinel-workflows` checkout HEAD, both at
 initialization and final collection. `finalize` also compares the prepared

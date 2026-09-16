@@ -15,6 +15,10 @@ const LIFECYCLE_VALIDATOR = path.join(
   REPOSITORY_ROOT,
   'skills', 'workflows', 'stnl-spec-lifecycle-manager', 'runtime', 'validate-spec-lifecycle.mjs',
 );
+const EXECUTION_VALIDATOR = path.join(
+  REPOSITORY_ROOT,
+  'skills', 'workflows', 'stnl-execution-planner', 'runtime', 'validate-execution-state.mjs',
+);
 const MODELS = new Set(['GPT-5.6-Sol', 'GPT-5.6-Terra', 'GPT-5.6-Luna']);
 const EFFORTS = new Set(['low', 'medium', 'high', 'xhigh']);
 const RUN_MODES = new Set(['focal', 'case', 'full']);
@@ -800,13 +804,28 @@ async function finalize(options) {
   if (budget !== null && journal.status !== 'ABORTED_BUDGET') throw new CliError('journal exceeds a budget without terminal abort state');
 
   const artifacts = await artifactMetrics(realSpec);
-  const executionEvents = journal.events.filter((event) => !event.operation.startsWith('SPEC_') && event.resultingState !== undefined);
-  const finalExecutionState = executionEvents.at(-1)?.resultingState ?? null;
-  const completeEvent = executionEvents.findLast((event) => event.operation === 'VALIDATE_SLICE' && event.resultingState === 'COMPLETE');
+  const operationalEvents = journal.events.filter((event) => !event.operation.startsWith('SPEC_'));
+  const reportedExecutionEvents = operationalEvents.filter((event) => event.resultingState !== undefined);
+  const reportedExecutionState = reportedExecutionEvents.at(-1)?.resultingState ?? null;
+  const completeEvent = operationalEvents.findLast((event) => (
+    event.operation === 'VALIDATE_SLICE' && event.result === 'PASS' && event.resultingState === 'COMPLETE'
+  ));
+  const readinessEventsAfterComplete = completeEvent === undefined ? [] : journal.events.filter((event) => (
+    event.operation === 'SPEC_READINESS' && event.index > completeEvent.index
+  ));
+  const terminalReadiness = readinessEventsAfterComplete[0];
   const closeEvents = journal.events.filter((event) => event.operation === 'SPEC_CLOSE');
   const closeEvent = closeEvents[0];
-  const completeBeforeClose = completeEvent !== undefined && closeEvents.length === 1
-    && completeEvent.index + 1 === closeEvent.index && closeEvent.index === journal.events.length;
+  const terminalSequence = completeEvent !== undefined
+    && operationalEvents.at(-1) === completeEvent
+    && readinessEventsAfterComplete.length === 1
+    && terminalReadiness.result === 'PASS'
+    && terminalReadiness.resultingState === 'GLOBAL_READY'
+    && terminalReadiness.index === completeEvent.index + 1
+    && closeEvents.length === 1
+    && closeEvent.result === 'PASS'
+    && closeEvent.index === terminalReadiness.index + 1
+    && closeEvent.index === journal.events.length;
   const lifecycleValidation = run(process.execPath, [LIFECYCLE_VALIDATOR, 'workspace', realSpec], REPOSITORY_ROOT);
   const specClosed = lifecycleValidation.exitCode === 0 && / status=closed ids=[0-9]+\n?$/u.test(lifecycleValidation.stdout);
   const requirementsHash = await sha256File(path.join(realWorkspace, 'requirements.md'));
@@ -816,13 +835,31 @@ async function finalize(options) {
   const tests = run(process.execPath, ['--test'], realWorkspace);
   const finalTestsPassed = tests.exitCode === 0;
   const needsClosure = journal.runMode === 'case' || journal.runMode === 'full';
-  const terminalEvidence = completeBeforeClose && finalExecutionState === 'COMPLETE' && artifacts.structurallyTerminal;
+  const executionValidation = needsClosure
+    ? run(process.execPath, [EXECUTION_VALIDATOR, realSpec], REPOSITORY_ROOT)
+    : null;
+  const officialStateMatch = executionValidation?.exitCode === 0
+    ? /^PASS: execution state=([A-Z][A-Z0-9_]*) authority=sha256:[0-9a-f]{64}\n?$/u.exec(executionValidation.stdout)
+    : null;
+  const finalExecutionState = needsClosure ? officialStateMatch?.[1] ?? null : reportedExecutionState;
+  const officialExecutionBlocked = needsClosure && executionValidation.exitCode !== 0
+    && /^(?:BLOCKED|RECOVERY_TARGETS):/mu.test(executionValidation.stderr);
+  const lastOperationalEvent = operationalEvents.at(-1);
+  const lastLifecycleEvent = journal.events.filter((event) => event.operation.startsWith('SPEC_')).at(-1);
+  const effectiveBlocked = lastOperationalEvent?.result === 'BLOCKED'
+    || lastLifecycleEvent?.result === 'BLOCKED'
+    || officialExecutionBlocked;
+  const terminalEvidence = terminalSequence
+    && finalExecutionState === 'COMPLETE'
+    && artifacts.structurallyTerminal;
+  const commonPass = requirementsHashMatches && sentinelShaMatchesCheckout && finalTestsPassed;
+  const passed = commonPass && (needsClosure ? terminalEvidence && specClosed : !effectiveBlocked);
 
-  let status = 'PASS';
+  let status;
   if (journal.status === 'ABORTED_BUDGET') status = 'ABORTED_BUDGET';
-  else if (journal.events.some((event) => event.result === 'BLOCKED')) status = 'BLOCKED';
-  else if (!requirementsHashMatches || !sentinelShaMatchesCheckout || !finalTestsPassed
-    || (needsClosure && (!terminalEvidence || !specClosed))) status = 'FAIL';
+  else if (passed) status = 'PASS';
+  else if (effectiveBlocked) status = 'BLOCKED';
+  else status = 'FAIL';
 
   const workspaceMetrics = await gitWorkspaceMetrics(realWorkspace);
   const result = {
