@@ -1331,6 +1331,57 @@ test("successful model-owned candidate publication has strict success and live r
   );
 });
 
+test("candidate shadows use external OS temp, preserve standalone logical paths, and clean owned storage", async (t) => {
+  const fixture = await standaloneWorkspace(t);
+  await renderArtifacts(fixture);
+  await passFirstSlice(fixture);
+  const candidate = await copyDirectory(fixture.execution, path.join(fixture.root, "valid-candidate"));
+  const liveTask = path.join(fixture.execution, "tasks/slice-01.md");
+  const liveSource = path.join(fixture.root, "src/example.txt");
+  const liveTaskBefore = await fs.readFile(liveTask);
+  const liveSourceBefore = await fs.readFile(liveSource);
+  const controlledTemp = await temporary(t, "stnl-candidate-storage-");
+  const originalTmpdir = process.env.TMPDIR;
+  process.env.TMPDIR = controlledTemp;
+  t.after(() => {
+    if (originalTmpdir === undefined) delete process.env.TMPDIR;
+    else process.env.TMPDIR = originalTmpdir;
+  });
+
+  assert.equal((await validateExecutionCandidate(fixture.requirements, candidate)).state, "COMPLETE");
+  assert.deepEqual(await fs.readdir(controlledTemp), [], "successful candidate left owned temp storage");
+
+  const invalidCandidate = await copyDirectory(fixture.execution, path.join(fixture.root, "invalid-candidate"));
+  await fs.writeFile(path.join(invalidCandidate, "scratch.md"), "reject\n", "utf8");
+  let rejection;
+  await assert.rejects(validateExecutionCandidate(fixture.requirements, invalidCandidate), (error) => {
+    rejection = error;
+    return error instanceof ExecutionContractError && error.findings.some((finding) => finding.endsWith(`${path.sep}scratch.md`));
+  });
+  const physicalFinding = rejection.findings.find((finding) => finding.endsWith(`${path.sep}scratch.md`));
+  const relativeFinding = path.relative(controlledTemp, physicalFinding);
+  assert.ok(relativeFinding !== "" && !relativeFinding.startsWith(`..${path.sep}`) && !path.isAbsolute(relativeFinding));
+  const shadowName = relativeFinding.split(path.sep)[0];
+  assert.match(shadowName, /^\.stnl-execution-candidate-/u);
+  await assert.rejects(fs.stat(path.join(controlledTemp, shadowName)), { code: "ENOENT" });
+  assert.deepEqual(await fs.readdir(controlledTemp), [], "rejected candidate left owned temp storage");
+
+  const formerLocalPrefix = `.${path.basename(fixture.root)}.stnl-execution-candidate-`;
+  assert.deepEqual(
+    (await fs.readdir(path.dirname(fixture.root))).filter((name) => name.startsWith(formerLocalPrefix)),
+    [],
+    "candidate shadow appeared beside the standalone workspace",
+  );
+  assert.deepEqual(await fs.readFile(liveTask), liveTaskBefore, "candidate validation changed the live task");
+  assert.deepEqual(await fs.readFile(liveSource), liveSourceBefore, "candidate validation changed the live source");
+
+  const nestedCandidate = path.join(fixture.execution, "candidate-inside-live-execution");
+  await fs.mkdir(nestedCandidate);
+  await assert.rejects(validateExecutionCandidate(fixture.requirements, nestedCandidate), /must be isolated from live execution artifacts/u);
+  await fs.rm(nestedCandidate, { recursive: true });
+  await assert.rejects(validateExecutionCandidate(fixture.requirements, fixture.root), /must be isolated from live execution artifacts/u);
+});
+
 test("auxiliary runner output contract round-trips through model-owned persistence and derived state", async (t) => {
   const contracts = await Promise.all([
     fs.readFile(path.join(ROOT, "agents/claude-code/.claude/agents/stnl-validation-runner.md"), "utf8"),
@@ -3279,11 +3330,11 @@ test("CLOSE verifies real final-owner hashes, removals, and changed-path ownersh
 
 test("lifecycle CLOSE trusts repository-owned paths outside a nested SPEC and rejects repository escape", async (t) => {
   const root = await temporary(t);
-  const repository = path.join(root, "repository");
+  const repository = path.join(root, "repository with space ü");
   await fs.mkdir(path.join(repository, ".git"), { recursive: true });
   const workspace = await copyDirectory(
     path.join(ROOT, "skills/workflows/stnl-spec-lifecycle-manager/examples/validator-fixtures/ready"),
-    path.join(repository, "specs/feature"),
+    path.join(repository, "specs", "área segura", "feature Ω"),
   );
   const fixture = { root: repository, requirements: workspace, execution: path.join(workspace, "execution") };
   await renderArtifacts(fixture);
@@ -3301,8 +3352,14 @@ test("lifecycle CLOSE trusts repository-owned paths outside a nested SPEC and re
   });
   await editTasksIndex(fixture, (value) => value.replace("| [ ] | 01 - Delivery | observable result | - | tasks/slice-01.md | pending | pending |", "| [x] | 01 - Delivery | observable result | - | tasks/slice-01.md | PASS | PASS |"));
   assert.equal((await preflightExecutionOperation(workspace, "CLOSE")).state, "COMPLETE");
-  const candidate = await copyDirectory(fixture.execution, path.join(root, "nested-lifecycle-candidate"));
+  const candidate = await copyDirectory(fixture.execution, path.join(root, "nested lifecycle candidate"));
   assert.equal((await validateExecutionCandidate(workspace, candidate)).state, "COMPLETE");
+  const formerLocalPrefix = `.${path.basename(workspace)}.stnl-execution-candidate-`;
+  assert.deepEqual(
+    (await fs.readdir(path.dirname(workspace))).filter((name) => name.startsWith(formerLocalPrefix)),
+    [],
+    "candidate shadow appeared beside the nested lifecycle SPEC",
+  );
 
   const escapedPath = path.join(root, "escaped.txt");
   const escapedRelative = path.relative(taskDirectory, escapedPath).split(path.sep).join("/");

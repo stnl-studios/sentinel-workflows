@@ -1432,7 +1432,8 @@ async function rejectSymlinkComponents(targetPath, trustedRoot) {
 }
 
 async function trustedProjectRoot(workspace) {
-  let current = path.dirname(workspace.authorityPath);
+  const logicalWorkspace = logicalWorkspaceFor(workspace);
+  let current = path.dirname(logicalWorkspace.authorityPath);
   for (;;) {
     const marker = await lstatOrNull(path.join(current, ".git"));
     if (marker !== null && !marker.isSymbolicLink() && (marker.isDirectory() || marker.isFile())) return current;
@@ -1440,16 +1441,17 @@ async function trustedProjectRoot(workspace) {
     if (parent === current) break;
     current = parent;
   }
-  return workspace.specRoot ?? path.dirname(workspace.authorityPath);
+  return logicalWorkspace.specRoot ?? path.dirname(logicalWorkspace.authorityPath);
 }
 
 async function validateFinalOwnership(result) {
   const owners = new Map();
   const trustedRoot = await trustedProjectRoot(result.workspace);
+  const logicalWorkspace = logicalWorkspaceFor(result.workspace);
   for (const row of result.rows) {
     if (row.result !== "PASS") continue;
     const task = result.tasks.get(row.slice);
-    const taskDirectory = path.join(result.workspace.executionRoot, "tasks");
+    const taskDirectory = path.join(logicalWorkspace.executionRoot, "tasks");
     for (const entry of task.base.entries) {
       const target = path.resolve(taskDirectory, entry.path);
       await rejectSymlinkComponents(target, trustedRoot);
@@ -1574,7 +1576,9 @@ function canonicalTableRows(section, header, separator, label, { allowedOutside 
 }
 
 function requirementsReference(workspace, directory) {
-  return path.relative(directory, workspace.authorityPath).split(path.sep).join("/");
+  const logicalWorkspace = logicalWorkspaceFor(workspace);
+  const logicalDirectory = logicalExecutionPath(workspace, directory);
+  return path.relative(logicalDirectory, logicalWorkspace.authorityPath).split(path.sep).join("/");
 }
 
 async function readPlanArtifacts(workspace) {
@@ -1653,7 +1657,7 @@ async function executionArtifacts(workspace) {
     tasks.set(row.slice, task);
   }
   const trustedRoot = await trustedProjectRoot(workspace);
-  const taskDirectory = path.join(workspace.executionRoot, "tasks");
+  const taskDirectory = path.join(logicalWorkspaceFor(workspace).executionRoot, "tasks");
   for (const [slice, task] of tasks) {
     for (const claim of task.claims) {
       await rejectSymlinkComponents(path.resolve(taskDirectory, claim), trustedRoot).catch((error) => {
@@ -1804,7 +1808,14 @@ async function executionArtifacts(workspace) {
 }
 
 export async function inspectExecutionState(specPath) {
-  const workspace = await resolveExecutionWorkspace(specPath);
+  return inspectExecutionStateWithContext(specPath, null);
+}
+
+async function inspectExecutionStateWithContext(specPath, logicalWorkspace) {
+  const physicalWorkspace = await resolveExecutionWorkspace(specPath);
+  const workspace = logicalWorkspace === null
+    ? physicalWorkspace
+    : { ...physicalWorkspace, logicalWorkspace };
   const currentFingerprint = await computeRequirementsAuthority(specPath);
   const rootMetadata = await lstatOrNull(workspace.executionRoot);
   if (rootMetadata === null) {
@@ -2217,14 +2228,30 @@ function pathIsWithin(candidate, root) {
   return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative));
 }
 
+function logicalWorkspaceFor(workspace) {
+  return workspace.logicalWorkspace ?? workspace;
+}
+
+function logicalExecutionPath(workspace, physicalPath) {
+  const logicalWorkspace = logicalWorkspaceFor(workspace);
+  if (logicalWorkspace === workspace) return physicalPath;
+  const relative = path.relative(workspace.executionRoot, physicalPath);
+  if (relative.startsWith(`..${path.sep}`) || relative === ".." || path.isAbsolute(relative)) {
+    throw new ExecutionContractError(`physical execution path cannot be mapped to the logical workspace: ${physicalPath}`, [physicalPath]);
+  }
+  return path.join(logicalWorkspace.executionRoot, relative);
+}
+
 async function createCandidateShadow(workspace) {
-  const liveContainer = workspace.kind === "lifecycle" ? workspace.specRoot : path.dirname(workspace.authorityPath);
-  const shadowParent = path.dirname(liveContainer);
   const shadowRoot = await fs.realpath(await fs.mkdtemp(path.join(
-    shadowParent,
-    `.${path.basename(liveContainer)}.stnl-execution-candidate-`,
+    os.tmpdir(),
+    ".stnl-execution-candidate-",
   )));
   try {
+    const projectRoot = await trustedProjectRoot(workspace);
+    if (pathIsWithin(shadowRoot, projectRoot)) {
+      throw new ExecutionContractError(`candidate shadow must be outside the logical project: ${shadowRoot}`, [shadowRoot]);
+    }
     if (workspace.kind === "standalone") {
       const authority = path.join(shadowRoot, path.basename(workspace.authorityPath));
       await fs.copyFile(workspace.authorityPath, authority);
@@ -2273,7 +2300,7 @@ export async function validateExecutionCandidate(specPath, candidateExecutionRoo
   const shadow = await createCandidateShadow(workspace);
   try {
     await fs.cp(candidate, shadow.executionRoot, { recursive: true });
-    const result = await inspectExecutionState(shadow.specPath);
+    const result = await inspectExecutionStateWithContext(shadow.specPath, workspace);
     if ((result.incompleteExecutionChecklists?.length ?? 0) !== 0) {
       const inconsistency = result.incompleteExecutionChecklists[0];
       throw new ExecutionContractError(
@@ -2570,7 +2597,7 @@ export async function repairExecutionContract(specPath) {
     let candidateState;
     while (true) {
       try {
-        candidateState = await inspectExecutionState(shadow.specPath);
+        candidateState = await inspectExecutionStateWithContext(shadow.specPath, workspace);
         break;
       } catch (error) {
         if (!(error instanceof ExecutionContractError) || error.contractViolation?.repairability !== "mechanical") throw error;
