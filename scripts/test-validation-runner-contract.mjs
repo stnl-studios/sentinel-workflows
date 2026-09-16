@@ -57,7 +57,7 @@ test("runner documents structured findings and correction-path persistence gramm
 });
 
 const cases = [
-  ["Codex model", "R001_ADAPTER_METADATA", (root) => replace(path.join(root, "codex/.codex/agents/stnl_validation_runner.toml"), 'model = "gpt-5.4-mini"', 'model = "gpt-5.4"')],
+  ["Codex model", "R001_ADAPTER_METADATA", (root) => replace(path.join(root, "codex/.codex/agents/stnl_validation_runner.toml"), 'model = "gpt-5.6-luna"', 'model = "gpt-5.6-sol"')],
   ["Claude tools", "R001_ADAPTER_METADATA", (root) => replace(path.join(root, "claude-code/.claude/agents/stnl-validation-runner.md"), "tools: Read, Glob, Grep, Bash", "tools: Read, Glob, Grep, Bash, Write")],
   ["missing adapter", "R002_REGISTRY", (root) => fs.unlink(path.join(root, "claude-code/.claude/agents/stnl-validation-runner.md"))],
   ["platform divergence", "R003_EQUIVALENCE", (root) => replace(path.join(root, "claude-code/.claude/agents/stnl-validation-runner.md"), "Não invente comandos", "Você pode inventar comandos")],
@@ -93,7 +93,7 @@ const cases = [
   ["Codex extra metadata", "R001_ADAPTER_METADATA", (root) => replace(path.join(root, "codex/.codex/agents/stnl_validation_runner.toml"), 'name = "stnl_validation_runner"', 'name = "stnl_validation_runner"\napproval_policy = "never"')],
   ["Claude name", "R001_ADAPTER_METADATA", (root) => replace(path.join(root, "claude-code/.claude/agents/stnl-validation-runner.md"), "name: stnl-validation-runner", "name: runner")],
   ["Claude description", "R001_ADAPTER_METADATA", (root) => replace(path.join(root, "claude-code/.claude/agents/stnl-validation-runner.md"), "Runner barato e isolado", "Runner genérico")],
-  ["Claude model", "R001_ADAPTER_METADATA", (root) => replace(path.join(root, "claude-code/.claude/agents/stnl-validation-runner.md"), "model: haiku", "model: sonnet")],
+  ["Claude model", "R001_ADAPTER_METADATA", (root) => replace(path.join(root, "claude-code/.claude/agents/stnl-validation-runner.md"), "model: claude-sonnet-5", "model: haiku")],
   ["Claude effort", "R001_ADAPTER_METADATA", (root) => replace(path.join(root, "claude-code/.claude/agents/stnl-validation-runner.md"), "effort: medium", "effort: high")],
   ["Claude extra metadata", "R001_ADAPTER_METADATA", (root) => replace(path.join(root, "claude-code/.claude/agents/stnl-validation-runner.md"), "effort: medium", "effort: medium\npermission: write")],
   ["missing Codex adapter", "R002_REGISTRY", (root) => fs.unlink(path.join(root, "codex/.codex/agents/stnl_validation_runner.toml"))],

@@ -1296,9 +1296,39 @@ test("successful model-owned candidate publication has strict success and live r
 
   // Publication remains model-owned; this test performs the authorized selected-task copy only after candidate PASS.
   await fs.copyFile(candidateTask, liveTask);
-  const readback = await inspectExecutionState(fixture.requirements);
+  const published = await inspectExecutionState(fixture.requirements);
+  assert.equal(published.state, "IMPLEMENTED_AWAITING_VALIDATION");
+  assert.equal(published.tasks.get("slice-01").implementationChecks.at(-1).status, "TESTS_PASS");
+
+  const liveArtifacts = [
+    path.join(fixture.execution, "plan.md"),
+    path.join(fixture.execution, "plans/slice-01.md"),
+    path.join(fixture.execution, "tasks.md"),
+    liveTask,
+  ];
+  const beforeReadback = await Promise.all(liveArtifacts.map((file) => fs.readFile(file)));
+  const readbackResult = spawnSync(process.execPath, [
+    path.join(ROOT, "skills/workflows/stnl-slice-executor/runtime/validate-execution-state.mjs"),
+    fixture.requirements,
+    "--handoff-after",
+    "EXECUTE_SLICE",
+  ], { encoding: "utf8" });
+  assert.equal(readbackResult.status, 0, readbackResult.stderr);
+  const readback = JSON.parse(readbackResult.stdout);
   assert.equal(readback.state, "IMPLEMENTED_AWAITING_VALIDATION");
-  assert.equal(readback.tasks.get("slice-01").implementationChecks.at(-1).status, "TESTS_PASS");
+  assert.equal(readback.normal_handoff.invocation, "OPERATION=VALIDATE_SLICE");
+  assert.equal(readback.normal_handoff.slice, "slice-01");
+  assert.equal(readback.legal_operations.some(({ operation }) => operation === "VALIDATE_SLICE"), true);
+  assert.equal(readback.legal_operations.some(({ operation }) => operation === "EXECUTE_SLICE"), false);
+  assert.equal(readback.mandatory_recovery, null);
+  assert.equal(readback.required_recovery_handoff, null);
+  assert.deepEqual(await Promise.all(liveArtifacts.map((file) => fs.readFile(file))), beforeReadback, "handoff readback mutated live execution artifacts");
+
+  await assert.rejects(
+    preflightExecutionOperation(fixture.requirements, "EXECUTE_SLICE", "1"),
+    /not legal/u,
+    "published implementation unexpectedly permitted a second EXECUTE_SLICE",
+  );
 });
 
 test("auxiliary runner output contract round-trips through model-owned persistence and derived state", async (t) => {
