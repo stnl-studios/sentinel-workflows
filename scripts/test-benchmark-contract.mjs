@@ -102,6 +102,7 @@ update_policy: Test fixture only.
 
 async function completeJournal(file, { mismatch = false, includeComplete = true, regressAfterComplete = false } = {}) {
   requireSuccess(event(file, 'SPEC_INIT', 'SPEC', 'GPT-5.6-Terra', 'high'), 'SPEC_INIT');
+  requireSuccess(event(file, 'SPEC_READINESS', 'REVIEW_VALIDATE', 'GPT-5.6-Luna', 'high'), 'SPEC_READINESS');
   requireSuccess(event(file, 'PLAN', 'PLAN', mismatch ? 'GPT-5.6-Sol' : 'GPT-5.6-Terra', mismatch ? 'xhigh' : 'high'), 'PLAN');
   requireSuccess(event(file, 'REVIEW_PLAN', 'REVIEW_VALIDATE', 'GPT-5.6-Luna', 'high'), 'REVIEW_PLAN');
   requireSuccess(event(file, 'MATERIALIZE_TASKS', 'TASKS', 'GPT-5.6-Terra', 'high'), 'MATERIALIZE_TASKS');
@@ -173,6 +174,10 @@ test('B04 — prepare is reproducible, isolated, locally configured, and clean',
     outputs[name] = JSON.parse(prepared.stdout);
     assert.equal(outputs[name].gitWorkingTreeClean, true);
     assert.equal(outputs[name].gitConfigLocal, true);
+    const specsParent = await fs.lstat(path.join(output, 'specs'));
+    assert.equal(specsParent.isDirectory(), true);
+    assert.equal(specsParent.isSymbolicLink(), false);
+    assert.deepEqual(await fs.readdir(path.join(output, 'specs')), []);
     assert.equal((await fs.lstat(outputs[name].specPath).catch(() => null)), null);
     assert.deepEqual(
       await fs.readFile(path.join(output, 'requirements.md')),
@@ -214,6 +219,15 @@ test('B05 — journal persists actual dispatches, optional telemetry, children, 
     role: 'spec-context-scout', model: 'GPT-5.6-Luna', effort: 'medium',
   });
 
+  const mappingJournal = path.join(root, 'mapping.json');
+  await initJournal(mappingJournal);
+  requireSuccess(event(mappingJournal, 'SPEC_INIT', 'SPEC', 'GPT-5.6-Terra', 'high'), 'mapped SPEC_INIT');
+  assert.equal(event(mappingJournal, 'SPEC_INIT', 'REVIEW_VALIDATE', 'GPT-5.6-Terra', 'high').status, 2);
+  requireSuccess(event(mappingJournal, 'SPEC_READINESS', 'REVIEW_VALIDATE', 'GPT-5.6-Luna', 'high'), 'mapped SPEC_READINESS');
+  assert.equal(event(mappingJournal, 'SPEC_READINESS', 'SPEC', 'GPT-5.6-Luna', 'high').status, 2);
+  requireSuccess(event(mappingJournal, 'SPEC_CLOSE', 'SPEC', 'GPT-5.6-Terra', 'high'), 'mapped SPEC_CLOSE');
+  assert.equal(event(mappingJournal, 'SPEC_CLOSE', 'REVIEW_VALIDATE', 'GPT-5.6-Terra', 'high').status, 2);
+
   const budgetJournal = path.join(root, 'budget.json');
   await initJournal(budgetJournal);
   requireSuccess(event(budgetJournal, 'REVIEW_PLAN', 'REVIEW_VALIDATE', 'GPT-5.6-Luna', 'high'), 'review 1');
@@ -241,16 +255,28 @@ test('B06 — finalize collects raw facts and enforces COMPLETE, CLOSED, and fin
   assert.equal(result.decomposition.slices, 1);
   assert.equal(result.decomposition.tasks, 2);
   assert.deepEqual(result.decomposition.tasksPerSlice, { 'slice-01': 2 });
-  assert.equal(result.operations.total, 8);
+  assert.equal(result.operations.total, 9);
   assert.equal(result.operations.executeCalls, 1);
   assert.equal(result.operations.validateCalls, 1);
-  assert.equal(result.modelUse.profileMismatches.length, 1);
+  assert.deepEqual(result.modelUse.profileMismatches.map((entry) => entry.operation), ['PLAN']);
+  assert.deepEqual(result.modelUse.actualModelsByPhase.SPEC, ['GPT-5.6-Terra']);
+  assert.deepEqual(result.modelUse.actualModelsByPhase.REVIEW_VALIDATE, ['GPT-5.6-Luna']);
   assert.equal(result.finalExecutionState, 'COMPLETE');
   assert.equal(result.specClosed, true);
   assert.equal(result.finalTestsPassed, true);
   assert.equal(result.contextCost.actualTokenTelemetryAvailable, false);
   assert.equal(result.contextCost.inputTokens, null);
   assert.ok(result.contextCost.planBytes > 0 && result.contextCost.tasksWords > 0);
+
+  const alignedJournal = path.join(root, 'aligned-journal.json');
+  await initJournal(alignedJournal);
+  await completeJournal(alignedJournal);
+  const alignedOutput = path.join(root, 'aligned-result.json');
+  requireSuccess(cli([
+    'finalize', '--workspace', workspace, '--case', 'A', '--spec', spec,
+    '--journal', alignedJournal, '--output', alignedOutput,
+  ]), 'finalize aligned profile');
+  assert.deepEqual((await readJson(alignedOutput)).modelUse.profileMismatches, []);
 
   const missingComplete = path.join(root, 'missing-complete.json');
   await initJournal(missingComplete);
@@ -373,4 +399,18 @@ test('B07 — compare reports deltas and dispatch changes without fabricated tel
   const mismatchPath = path.join(root, 'other-case.json');
   await fs.writeFile(mismatchPath, `${JSON.stringify(syntheticResult('B', 1, true), null, 2)}\n`, 'utf8');
   assert.equal(cli(['compare', '--before', beforePath, '--after', mismatchPath]).status, 1);
+
+  for (const [name, mutate, diagnosis] of [
+    ['requirements', (result) => { result.workspace.requirementsHash = `sha256:${'c'.repeat(64)}`; }, /requirements hash/u],
+    ['seed', (result) => { result.workspace.seedContentHash = `sha256:${'c'.repeat(64)}`; }, /seed content hash/u],
+    ['profile', (result) => { result.productionProfileId = 'production-v2'; }, /production profile/u],
+  ]) {
+    const incompatible = syntheticResult('A', 1, false);
+    mutate(incompatible);
+    const incompatiblePath = path.join(root, `${name}-mismatch.json`);
+    await fs.writeFile(incompatiblePath, `${JSON.stringify(incompatible, null, 2)}\n`, 'utf8');
+    const rejected = cli(['compare', '--before', beforePath, '--after', incompatiblePath]);
+    assert.equal(rejected.status, 1);
+    assert.match(rejected.stderr, diagnosis);
+  }
 });

@@ -46,8 +46,8 @@
       "class": "small",
       "sourcePath": "cases/case-a-small.md",
       "specPath": "specs/benchmark-case-a",
-      "requirementsHash": "sha256:5ceb3ce5210e3cb13e185edb8f9b0d3bc3e13b88575e494e42d92c0118456426",
-      "fixtureContentHash": "sha256:6d7a62d97c37cec8c3f1c80e3644ca87894769745f7b1aef814448a19c5198bd",
+      "requirementsHash": "sha256:e5934bc22267756c3c10b31c46b7a9cd894b78e961b11975b0f14f7085349a24",
+      "fixtureContentHash": "sha256:e0c3233c14356e93accff61b334704a91fb8e4f82a60209768259144d88a10d5",
       "budgets": {
         "maxReviewPlanEvents": 2,
         "maxReviewTasksEvents": 2,
@@ -62,8 +62,8 @@
       "class": "medium",
       "sourcePath": "cases/case-b-medium.md",
       "specPath": "specs/benchmark-case-b",
-      "requirementsHash": "sha256:64a3a54d392756b6359cb61ae408140b9949acf9d94d33a426032181c83365e0",
-      "fixtureContentHash": "sha256:0e06aec3c2e4abfc87cae4a4309deeec790b4c919f81a81de29c79aa5a7342fb",
+      "requirementsHash": "sha256:0388a84f8c5a9c45fcd5b1d0b59e7d376979e98717d8e028067701f00a16fc57",
+      "fixtureContentHash": "sha256:107d1057e48506a20da4460ee33febca26280dd35c85f645b0de6b81ffb33e10",
       "budgets": {
         "maxReviewPlanEvents": 2,
         "maxReviewTasksEvents": 2,
@@ -78,8 +78,8 @@
       "class": "transversal",
       "sourcePath": "cases/case-c-transversal.md",
       "specPath": "specs/benchmark-case-c",
-      "requirementsHash": "sha256:5f516425856f128152efcdda3f990e8b5be1b310f941e265176f5c10bd54f80f",
-      "fixtureContentHash": "sha256:37018823a932cc79656c4f9a882650e812ac775933167966e65cb989a859e4c2",
+      "requirementsHash": "sha256:a896026d591f06776ade1d88fde292c4e5f0d015e5e18374e9cf754ecce4efcb",
+      "fixtureContentHash": "sha256:a9700e1844ce7106809491f924b0fea37d8bf15700afa14c920cc1ee139fdd44",
       "budgets": {
         "maxReviewPlanEvents": 2,
         "maxReviewTasksEvents": 2,

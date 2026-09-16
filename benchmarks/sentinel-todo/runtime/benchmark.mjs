@@ -25,7 +25,7 @@ const OPERATIONS = new Set([
 const RESULTS = new Set(['PASS', 'FAIL', 'BLOCKED', 'NEEDS_FIX', 'REJECTED', 'COMPLETE']);
 const PHASES = ['SPEC', 'PLAN', 'TASKS', 'EXECUTE', 'REVIEW_VALIDATE'];
 const OPERATION_PHASE = new Map([
-  ['SPEC_INIT', 'SPEC'], ['SPEC_READINESS', 'SPEC'], ['SPEC_CLOSE', 'SPEC'],
+  ['SPEC_INIT', 'SPEC'], ['SPEC_READINESS', 'REVIEW_VALIDATE'], ['SPEC_CLOSE', 'SPEC'],
   ['PLAN', 'PLAN'], ['REPLAN', 'PLAN'],
   ['MATERIALIZE_TASKS', 'TASKS'],
   ['EXECUTE_SLICE', 'EXECUTE'], ['APPLY_FINDINGS', 'EXECUTE'],
@@ -306,7 +306,9 @@ async function prepare(options) {
   try {
     await copyTree(path.join(BENCHMARK_ROOT, configuration.seedPath), stage);
     await fs.copyFile(path.join(BENCHMARK_ROOT, item.sourcePath), path.join(stage, 'requirements.md'));
-    if (await fs.lstat(path.join(stage, ...item.specPath.split('/'))).catch(() => null) !== null) {
+    const specPath = path.join(stage, ...item.specPath.split('/'));
+    await fs.mkdir(path.dirname(specPath), { recursive: true });
+    if (await fs.lstat(specPath).catch(() => null) !== null) {
       throw new CliError('prepared SPEC_PATH must be absent');
     }
     const tests = run(process.execPath, ['--test'], stage);
@@ -927,12 +929,19 @@ function compareMarkdown(before, after) {
 async function compare(options) {
   const before = await readJson(requireAbsolute(options['--before'], '--before'), 'before result');
   const after = await readJson(requireAbsolute(options['--after'], '--after'), 'after result');
+  const incompatible = [
+    ['benchmark id', before?.benchmarkId, after?.benchmarkId],
+    ['benchmark version', before?.benchmarkVersion, after?.benchmarkVersion],
+    ['case', before?.caseId, after?.caseId],
+    ['production profile', before?.productionProfileId, after?.productionProfileId],
+    ['seed content hash', before?.workspace?.seedContentHash, after?.workspace?.seedContentHash],
+    ['requirements hash', before?.workspace?.requirementsHash, after?.workspace?.requirementsHash],
+  ].filter(([, left, right]) => left !== right).map(([label]) => label);
+  if (incompatible.length > 0) {
+    throw new CliError(`results are not comparable; mismatched ${incompatible.join(', ')}`);
+  }
   validateResult(before);
   validateResult(after);
-  if (before.benchmarkId !== after.benchmarkId || before.caseId !== after.caseId
-    || before.benchmarkVersion !== after.benchmarkVersion) {
-    throw new CliError('results must have matching benchmark id, version, and case');
-  }
   const markdown = compareMarkdown(before, after);
   process.stdout.write(markdown);
   if (options['--output'] !== undefined) {

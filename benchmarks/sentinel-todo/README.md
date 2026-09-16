@@ -12,16 +12,18 @@ records each observed operation immediately in the external journal.
 ## Layout and isolation
 
 - `seed/` is the original Todo CLI copied for every Case.
-- `cases/` contains requirements sources, not prewritten SPECs.
+- `cases/` contains complete behavioral requirements sources, not prewritten
+  SPECs or technical designs.
 - `benchmark.json` owns the reproducible Production Profile, fixed SPEC paths,
   budgets, run modes, and schema versions.
 - `runtime/benchmark.mjs` prepares workspaces, records a journal, enforces
   budgets, collects raw facts, and compares results.
 - `schemas/` documents the journal and result JSON contracts.
 
-Every prepared workspace contains only the seed files plus the selected Case as
-`requirements.md`. It never receives the manifest, schemas, budgets, profile,
-prior results, evidence, rubric, or expected answers. Cases are independent:
+Every prepared workspace contains only the seed files, the selected Case as
+`requirements.md`, and an empty `specs/` parent directory. It never receives the
+manifest, schemas, budgets, profile, prior results, evidence, rubric, or
+expected answers. Cases are independent:
 
 ```text
 seed -> A
@@ -31,7 +33,8 @@ seed -> C
 
 The fixed paths are `specs/benchmark-case-a`,
 `specs/benchmark-case-b`, and `specs/benchmark-case-c`. The selected SPEC path
-must not exist after `prepare`.
+must not exist after `prepare`; only its empty parent is prepared so lifecycle
+INIT can create the destination directly.
 
 ## Production Profile v1
 
@@ -45,7 +48,8 @@ must not exist after `prepare`.
 
 The journal stores actual dispatches. A difference from this expected profile is
 preserved as a mismatch; the runtime never silently substitutes a model or
-effort.
+effort. `SPEC_INIT` and `SPEC_CLOSE` use the `SPEC` phase, while read-only
+`SPEC_READINESS` uses `REVIEW_VALIDATE`.
 
 ## Commands
 
@@ -163,8 +167,10 @@ telemetry is explicitly unavailable and totals are `null`.
 
 ## Comparison
 
-`compare` requires matching benchmark id, version, and Case. It prints raw
-before/after values and numeric `after - before` deltas, then shows expected and
-actual model/effort use and outcome facts. Optional telemetry appears only when
-available on both sides. It does not rank the runs or collapse them into an
-aggregate value.
+`compare` requires matching benchmark id, version, Case, seed content hash,
+requirements hash, and Production Profile id. Results from different benchmark
+definitions are rejected rather than normalized. For compatible results it
+prints raw before/after values and numeric `after - before` deltas, then shows
+expected and actual model/effort use and outcome facts. Optional telemetry
+appears only when available on both sides. It does not rank the runs or collapse
+them into an aggregate value.

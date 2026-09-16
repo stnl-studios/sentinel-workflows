@@ -26,3 +26,8 @@
   - Production Profile v1 with an external journal and bounded budgets.
   - Raw result collection and before/after comparator.
   - Cheap deterministic integrity tests.
+- `577928c5af65df0f61782f3e907a222899eb7557`
+  - First Production Pilot attempted on the `e7e5289` benchmark.
+  - Case A stopped at lifecycle DRAFT/READINESS.
+  - Cases B and C were not executed under the stop-loss rule.
+  - The raw blocked result was preserved and P0 remained open.
