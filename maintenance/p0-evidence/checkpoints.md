@@ -46,3 +46,10 @@
   - The collector finalized Case A as `BLOCKED`, and a later official terminal
     inspection exposed an ownership inconsistency.
   - Cases B and C stopped under the stop-loss rule; P0 remained open.
+- `81e0258295c8e6b57e85d81f083c47f76469fda8`
+  - Terminal collector semantics corrected.
+  - Recovered `BLOCKED` made historical after effective recovery.
+  - Terminal flow aligned to `COMPLETE -> GLOBAL READY -> CLOSE`.
+  - Final execution authority delegated to the official runtime.
+  - Ownership R1-R5 reproducer passed.
+  - No functional Sentinel runtime changed.
