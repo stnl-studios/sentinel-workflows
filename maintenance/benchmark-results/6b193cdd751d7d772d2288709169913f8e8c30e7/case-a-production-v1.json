@@ -1,0 +1,155 @@
+{
+  "schemaVersion": 1,
+  "benchmarkVersion": 1,
+  "benchmarkId": "sentinel-todo",
+  "caseId": "A",
+  "runMode": "case",
+  "sentinelSha": "6b193cdd751d7d772d2288709169913f8e8c30e7",
+  "productionProfileId": "production-v1",
+  "status": "BLOCKED",
+  "finalExecutionState": "COMPLETE",
+  "specClosed": true,
+  "finalTestsPassed": true,
+  "decomposition": {
+    "slices": 2,
+    "tasks": 6,
+    "tasksPerSlice": {
+      "slice-01": 4,
+      "slice-02": 2
+    }
+  },
+  "operations": {
+    "total": 12,
+    "reviewPlanRounds": 1,
+    "reviewTasksRounds": 1,
+    "replans": 0,
+    "executeCalls": 3,
+    "validateCalls": 2,
+    "applyFindingsCalls": 0,
+    "findingsCycles": 0,
+    "mechanicalRejections": 4,
+    "retries": 1
+  },
+  "modelUse": {
+    "expectedProfile": {
+      "SPEC": {
+        "model": "GPT-5.6-Terra",
+        "effort": "high"
+      },
+      "PLAN": {
+        "model": "GPT-5.6-Terra",
+        "effort": "high"
+      },
+      "TASKS": {
+        "model": "GPT-5.6-Terra",
+        "effort": "high"
+      },
+      "EXECUTE": {
+        "model": "GPT-5.6-Luna",
+        "effort": "high"
+      },
+      "REVIEW_VALIDATE": {
+        "model": "GPT-5.6-Luna",
+        "effort": "high"
+      }
+    },
+    "actualModelsByPhase": {
+      "SPEC": [
+        "GPT-5.6-Terra"
+      ],
+      "PLAN": [
+        "GPT-5.6-Terra"
+      ],
+      "TASKS": [
+        "GPT-5.6-Terra"
+      ],
+      "EXECUTE": [
+        "GPT-5.6-Luna"
+      ],
+      "REVIEW_VALIDATE": [
+        "GPT-5.6-Luna"
+      ]
+    },
+    "actualEffortsByPhase": {
+      "SPEC": [
+        "high"
+      ],
+      "PLAN": [
+        "high"
+      ],
+      "TASKS": [
+        "high"
+      ],
+      "EXECUTE": [
+        "high"
+      ],
+      "REVIEW_VALIDATE": [
+        "high"
+      ]
+    },
+    "childDispatches": [
+      {
+        "parentEventIndex": 6,
+        "parentOperation": "EXECUTE_SLICE",
+        "role": "stnl_validation_runner",
+        "model": "GPT-5.6-Luna",
+        "effort": "medium"
+      },
+      {
+        "parentEventIndex": 7,
+        "parentOperation": "EXECUTE_SLICE",
+        "role": "stnl_validation_runner",
+        "model": "GPT-5.6-Luna",
+        "effort": "medium"
+      },
+      {
+        "parentEventIndex": 8,
+        "parentOperation": "VALIDATE_SLICE",
+        "role": "stnl_validation_runner",
+        "model": "GPT-5.6-Luna",
+        "effort": "medium"
+      },
+      {
+        "parentEventIndex": 9,
+        "parentOperation": "EXECUTE_SLICE",
+        "role": "stnl_validation_runner",
+        "model": "GPT-5.6-Luna",
+        "effort": "medium"
+      },
+      {
+        "parentEventIndex": 10,
+        "parentOperation": "VALIDATE_SLICE",
+        "role": "stnl_validation_runner",
+        "model": "GPT-5.6-Luna",
+        "effort": "medium"
+      }
+    ],
+    "profileMismatches": [],
+    "solEscalations": 0
+  },
+  "contextCost": {
+    "planBytes": 9210,
+    "planWords": 1209,
+    "tasksBytes": 20788,
+    "tasksWords": 2313,
+    "handoffBytes": null,
+    "observableReads": null,
+    "actualTokenTelemetryAvailable": false,
+    "inputTokens": null,
+    "outputTokens": null
+  },
+  "workspace": {
+    "changedFileCount": 12,
+    "finalDiffBytes": 44990,
+    "seedContentHash": "sha256:9d93fbfa52b2e20607452f43d0ecb21e74f1872bb7a2da1b94dc2c814e7552e8",
+    "requirementsHash": "sha256:e5934bc22267756c3c10b31c46b7a9cd894b78e961b11975b0f14f7085349a24",
+    "requirementsHashMatches": true,
+    "observedSentinelSha": "6b193cdd751d7d772d2288709169913f8e8c30e7",
+    "sentinelShaMatchesCheckout": true
+  },
+  "finalTests": {
+    "command": "node --test",
+    "exitCode": 0,
+    "passed": true
+  }
+}

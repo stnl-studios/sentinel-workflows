@@ -31,3 +31,10 @@
   - Case A stopped at lifecycle DRAFT/READINESS.
   - Cases B and C were not executed under the stop-loss rule.
   - The raw blocked result was preserved and P0 remained open.
+- `6b193cdd751d7d772d2288709169913f8e8c30e7`
+  - Benchmark Correction #1 matured A/B/C into self-contained behavioral
+    requirements.
+  - `SPEC_READINESS` aligned to `REVIEW_VALIDATE`.
+  - The artificial INIT parent retry was removed by preparing an empty
+    `specs/` parent.
+  - The comparator now blocks incompatible result definitions.

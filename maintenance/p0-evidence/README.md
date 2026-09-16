@@ -8,6 +8,9 @@ This directory preserves compact, human-readable engineering evidence for Sentin
 - `s2-baseline.md` — S2 baseline evidence.
 - `s2-terra-qualification.md` — GPT-5.6-Terra qualification result.
 - `s2-path-semantics.md` — artifact-relative path hardening evidence.
+- `s3-benchmark-pilot.md` — preserved Production Pilot #1 evidence.
+- `s3-benchmark-correction-01.md` — Benchmark Correction #1 evidence.
+- `s3-benchmark-pilot-02.md` — Production Pilot #2 evidence.
 
 ## P0 Gates
 
@@ -23,7 +26,7 @@ This directory preserves compact, human-readable engineering evidence for Sentin
 - G1 = PROVEN
 - G2 = PARTIAL
 - G3 = PARTIAL
-- G4 = NOT_YET_RUNTIME_PROVEN
+- G4 = PROVEN
 - G5 = PROVEN
 - G6 = NOT_YET_PROVEN
 
