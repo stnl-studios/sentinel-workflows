@@ -37,7 +37,7 @@ test("roadmap bundles exact lifecycle and execution authority runtimes", async (
   }
   assert.deepEqual(
     await fs.readFile(path.join(SKILL_ROOT, "runtime/execution-state.mjs")),
-    await fs.readFile(path.join(REPOSITORY_ROOT, "skills/workflows/stnl-execution-closer/runtime/execution-state.mjs")),
+    await fs.readFile(path.join(REPOSITORY_ROOT, "skills/workflows/stnl-slice-quality-manager/runtime/execution-state.mjs")),
   );
 });
 

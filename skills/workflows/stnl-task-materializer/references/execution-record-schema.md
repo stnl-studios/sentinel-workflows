@@ -3,7 +3,7 @@
 ```yaml
 purpose: Define operational task-record schemas that must never appear in a freshly materialized pristine task.
 status: not_applicable
-read_when: EXECUTE_SLICE, APPLY_FINDINGS, VALIDATE_SLICE, REPLAN materialization, or CLOSE persists or interprets operational records.
+read_when: EXECUTE_SLICE, APPLY_FINDINGS, VALIDATE_SLICE, REPLAN materialization, or terminal runtime inspection interprets operational records.
 do_not_read_when: Only a pristine task is being rendered or reviewed.
 contains: Check evidence, findings, divergences, attempts, supersession, effective validation base, and lifecycle transitions.
 owner: stnl-task-materializer

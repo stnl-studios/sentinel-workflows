@@ -64,7 +64,7 @@
       "expected_mode": null
     },
     {
-      "id": "exclude-execution-close",
+      "id": "exclude-delivery-completion",
       "request": "Close the delivery execution and archive its evidence.",
       "expected_trigger": false,
       "expected_mode": null

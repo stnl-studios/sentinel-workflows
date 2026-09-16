@@ -12,7 +12,7 @@ update_policy: Change only when documentary closure or preservation policy chang
 
 # CLOSE Policy
 
-`MODE=CLOSE` returns documentary `SPEC_CLOSED`, not execution `OPERATION=CLOSE`/delivery approval. It preserves requirements authority; substantive `RESUME` requires `REPLAN`. Lifecycle never rewrites execution artifacts.
+`MODE=CLOSE` returns documentary `SPEC_CLOSED`, not durable delivery approval. It preserves requirements authority; substantive `RESUME` requires `REPLAN`. Lifecycle never rewrites execution artifacts.
 
 ## Preconditions
 

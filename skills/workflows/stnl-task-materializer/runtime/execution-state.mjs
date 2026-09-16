@@ -12,7 +12,7 @@ const SLICE_FILE = /^slice-[0-9]{2,}\.md$/u;
 const SLICE_OPERATIONS = new Set(["EXECUTE_SLICE", "APPLY_FINDINGS", "VALIDATE_SLICE"]);
 const OPERATIONS = new Set([
   "PLAN", "REVIEW_PLAN", "MATERIALIZE_TASKS", "REVIEW_TASKS", "REPLAN",
-  "EXECUTE_SLICE", "APPLY_FINDINGS", "VALIDATE_SLICE", "CLOSE",
+  "EXECUTE_SLICE", "APPLY_FINDINGS", "VALIDATE_SLICE",
 ]);
 export const EXECUTION_WORKFLOW_SKILLS = Object.freeze({
   PLAN: "stnl-execution-planner",
@@ -23,7 +23,6 @@ export const EXECUTION_WORKFLOW_SKILLS = Object.freeze({
   EXECUTE_SLICE: "stnl-slice-executor",
   APPLY_FINDINGS: "stnl-slice-executor",
   VALIDATE_SLICE: "stnl-slice-quality-manager",
-  CLOSE: "stnl-execution-closer",
 });
 const OPERATION_STATES = new Map([
   ["PLAN", new Set(["EMPTY"])],
@@ -34,7 +33,6 @@ const OPERATION_STATES = new Map([
   ["EXECUTE_SLICE", new Set(["MATERIALIZED_PRISTINE", "EXECUTION_STARTED", "AUXILIARY_BLOCKED", "RUNNER_INITIALIZATION_BLOCKED", "RUNNER_RESULT_BLOCKED"])],
   ["APPLY_FINDINGS", new Set(["VALIDATION_NEEDS_FIX", "AUXILIARY_BLOCKED", "RUNNER_INITIALIZATION_BLOCKED", "RUNNER_RESULT_BLOCKED"])],
   ["VALIDATE_SLICE", new Set(["IMPLEMENTED_AWAITING_VALIDATION", "FINDINGS_CORRECTED", "VALIDATION_BLOCKED", "IMPLEMENTATION_RETRY_EXHAUSTED", "FINDINGS_RETRY_EXHAUSTED", "RUNNER_INITIALIZATION_BLOCKED", "RUNNER_RESULT_BLOCKED"])],
-  ["CLOSE", new Set(["COMPLETE"])],
 ]);
 const CURRENT_AUTHORITY = /^sha256:([0-9a-f]{64})$/u;
 const HASH_DOMAIN = Buffer.from("stnl-requirements-authority-v1\0", "utf8");
@@ -1461,18 +1459,31 @@ async function validateFinalOwnership(result) {
   const findings = [];
   for (const owner of owners.values()) {
     const metadata = await lstatOrNull(owner.target);
+    let observed = "absent";
+    if (metadata?.isSymbolicLink()) observed = "symlink";
+    else if (metadata !== null && !metadata.isFile()) observed = "non-file";
+    else if (metadata?.isFile()) {
+      observed = `sha256:${createHash("sha256").update(await fs.readFile(owner.target)).digest("hex")}`;
+    }
     if (owner.expected === "REMOVED") {
-      if (metadata !== null) findings.push(`${owner.target} (${owner.slice}: expected REMOVED)`);
+      if (metadata !== null) findings.push(`${owner.target} (${owner.slice}: expected REMOVED, current ${observed})`);
       continue;
     }
     if (metadata === null || metadata.isSymbolicLink() || !metadata.isFile()) {
-      findings.push(`${owner.target} (${owner.slice}: expected sha256:${owner.hash}, current absent/non-file)`);
+      findings.push(`${owner.target} (${owner.slice}: expected sha256:${owner.hash}, current ${observed})`);
       continue;
     }
-    const actual = createHash("sha256").update(await fs.readFile(owner.target)).digest("hex");
-    if (actual !== owner.hash) findings.push(`${owner.target} (${owner.slice}: expected sha256:${owner.hash}, current sha256:${actual})`);
+    if (observed !== `sha256:${owner.hash}`) {
+      findings.push(`${owner.target} (${owner.slice}: expected sha256:${owner.hash}, current ${observed})`);
+    }
   }
-  if (findings.length !== 0) throw new ExecutionContractError("final validation ownership does not match the workspace", findings);
+  if (findings.length !== 0) {
+    throw new ExecutionContractError(
+      "final validation ownership does not match the workspace",
+      findings,
+      [recoveryTarget("REPLAN", { owner: "terminal-integrity" })],
+    );
+  }
 }
 
 function markdownStructuralText(text) {
@@ -1811,7 +1822,7 @@ export async function inspectExecutionState(specPath) {
   return inspectExecutionStateWithContext(specPath, null);
 }
 
-async function inspectExecutionStateWithContext(specPath, logicalWorkspace) {
+async function inspectExecutionStateWithContext(specPath, logicalWorkspace, { validateTerminalOwnership = true } = {}) {
   const physicalWorkspace = await resolveExecutionWorkspace(specPath);
   const workspace = logicalWorkspace === null
     ? physicalWorkspace
@@ -1925,11 +1936,13 @@ async function inspectExecutionStateWithContext(specPath, logicalWorkspace) {
   else if (allPristine) state = "MATERIALIZED_PRISTINE";
   else if (allTerminal && currentPass) state = "COMPLETE";
   else if (allTerminal) state = "REPLAN_REQUIRED";
-  return withRecoveryTargets({
+  const result = withRecoveryTargets({
     state, workspace, currentFingerprint, stale, activeFindings, activeDivergences, activeDelegationBlockers,
     exhausted, incompleteExecutionChecklists, auxiliaryBlocked, findingsCorrected, implementedAwaitingValidation,
     validationBlocked, ...artifacts,
   });
+  if (validateTerminalOwnership && state === "COMPLETE") await validateFinalOwnership(result);
+  return result;
 }
 
 function recoveryTarget(operation, {
@@ -2082,7 +2095,7 @@ export function deriveRecoveryTargets(result) {
       ];
       break;
     case "REPLAN_REQUIRED": targets = [unscoped("REPLAN", "current-authority")]; break;
-    case "COMPLETE": targets = [unscoped("CLOSE", "complete-execution"), unscoped("REPLAN", "complete-execution")]; break;
+    case "COMPLETE": targets = [unscoped("REPLAN", "complete-execution")]; break;
     default: targets = [];
   }
   for (const target of targets) {
@@ -2157,13 +2170,11 @@ export function deriveNormalHandoff(result, completedOperation = null) {
     else if (completedOperation === "APPLY_FINDINGS" && result.state === "FINDINGS_CORRECTED") operation = "VALIDATE_SLICE";
     else if (completedOperation === "VALIDATE_SLICE" && result.state === "VALIDATION_NEEDS_FIX") operation = "APPLY_FINDINGS";
     else if (completedOperation === "VALIDATE_SLICE" && result.state === "EXECUTION_STARTED") operation = "EXECUTE_SLICE";
-    else if (completedOperation === "VALIDATE_SLICE" && result.state === "COMPLETE") operation = "CLOSE";
   } else if (result.state === "EMPTY") operation = "PLAN";
   else if (result.state === "PLANNED_DRAFT") operation = "REVIEW_PLAN";
   else if (result.state === "PLANNED_READY") operation = "MATERIALIZE_TASKS";
   else if (result.state === "EXECUTION_STARTED") operation = "EXECUTE_SLICE";
   else if (result.state === "IMPLEMENTED_AWAITING_VALIDATION" || result.state === "FINDINGS_CORRECTED") operation = "VALIDATE_SLICE";
-  else if (result.state === "COMPLETE") operation = "CLOSE";
   if (operation === null) return null;
   const target = uniqueNormalTarget(result, operation);
   return target === null ? null : handoffForTarget(target);
@@ -2696,7 +2707,9 @@ export async function repairExecutionContract(specPath) {
 
 export async function preflightExecutionOperation(specPath, operation, sliceValue = null) {
   const normalizedOperation = String(operation);
-  const result = await inspectExecutionState(specPath);
+  const result = await inspectExecutionStateWithContext(specPath, null, {
+    validateTerminalOwnership: normalizedOperation !== "REPLAN",
+  });
   if (!OPERATIONS.has(normalizedOperation)) {
     throw new ExecutionContractError(
       `unsupported operation ${normalizedOperation}${recoverySuffix(result.recoveryTargets)}`,
@@ -2769,6 +2782,5 @@ export async function preflightExecutionOperation(specPath, operation, sliceValu
   if (normalizedOperation === "APPLY_FINDINGS" && !result.tasks.get(slice).findings.some((record) => record.severity === "blocking" && record.state === "active")) {
     throw new ExecutionContractError(`${slice} has no active blocking finding`);
   }
-  if (normalizedOperation === "CLOSE") await validateFinalOwnership(result);
   return { ...result, operation: normalizedOperation, slice };
 }

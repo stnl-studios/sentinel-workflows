@@ -3,7 +3,7 @@
 ```yaml
 purpose: Separate append-only validation attempts from the one replaceable effective PASS base used for final drift detection.
 status: not_applicable
-read_when: VALIDATE_SLICE persists a runner result or CLOSE verifies post-validation drift.
+read_when: VALIDATE_SLICE persists a runner result or terminal runtime inspection verifies post-validation drift.
 do_not_read_when: Executing or correcting a slice before independent validation.
 contains: Attempt sequence, effective PASS authority, complete manifests, overlap, hashes, removed-file marker, commands, and replacement rules.
 owner: stnl-slice-quality-manager

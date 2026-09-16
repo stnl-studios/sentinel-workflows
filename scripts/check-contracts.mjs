@@ -335,7 +335,7 @@ function checkRunner(root) {
   for (const launcher of ["slice-execute-codex.md", "slice-execute-claude.md", "slice-apply-findings-codex.md", "slice-apply-findings-claude.md", "slice-validate-codex.md", "slice-validate-claude.md"]) {
     if (!readme.includes(launcher)) reject("R012_README", `runner README omits launcher: ${launcher}`);
   }
-  forbidPattern(readme, /(?:CLOSE).{0,100}(?:(?<!não )usa|(?<!não )invoca).{0,80}(?:runner|test)/iu, "R012_README", "README makes CLOSE invoke validation");
+  forbidPattern(readme, /stnl-execution-closer|OPERATION=CLOSE|EXECUTION_(?:APPROVED|BLOCKED)/u, "R012_README", "README retains the removed execution closer contract");
   requirePattern(readme, /não existe fallback/iu, "R012_README", "README fallback boundary is missing");
   requirePattern(readme, /não existe passo manual adicional de testes/iu, "R012_README", "README manual-test-step boundary is missing");
   requirePattern(readme, /no mínimo uma vez e no máximo três vezes/iu, "R012_README", "README bounded automatic-round policy is missing");
@@ -344,6 +344,8 @@ function checkRunner(root) {
   requirePattern(readme, /não criam `implementation-check-NN`, `findings-check-NN` ou `attempt-NN`/iu, "R012_README", "README transport/evidence separation is missing");
   requirePattern(readme, /retoma diretamente na delegação[\s\S]{0,240}não reinicia identificadores/iu, "R012_README", "README initialization-resume semantics are missing");
   requirePattern(readme, /terceira falha entra em `IMPLEMENTATION_RETRY_EXHAUSTED` ou `FINDINGS_RETRY_EXHAUSTED`[\s\S]{0,180}`VALIDATE_SLICE` é a única próxima operação/iu, "R012_README", "README third-failure recovery is missing");
+  requirePattern(readme, /última slice aberta[\s\S]{0,320}cobertura global[\s\S]{0,180}cross-slice[\s\S]{0,180}`BLOCKED`[\s\S]{0,80}`REPLAN`/iu, "R017_TERMINAL_VALIDATION", "README terminal semantic validation is missing");
+  requirePattern(readme, /`COMPLETE`[\s\S]{0,260}runtime[\s\S]{0,260}ownership final[\s\S]{0,180}drift[\s\S]{0,180}`REPLAN`/iu, "R018_TERMINAL_INTEGRITY", "README terminal deterministic inspection is missing");
   requirePattern(readme, /fontes em `Discovery sources`, métodos em `Discovery actions`/iu, "R007_OUTPUT_SCHEMA", "README discovery labels are not canonical");
   forbidPattern(readme, /`Check discovery (?:sources|actions)`/iu, "R007_OUTPUT_SCHEMA", "README authorizes historical discovery labels");
 }
@@ -403,7 +405,6 @@ const launcherSpecs = {
   "execution-plan-review": ["stnl-plan-reviewer", "OPERATION", "REVIEW_PLAN", [["SPEC_PATH", "{{SPEC_PATH}}"]]],
   "execution-tasks": ["stnl-task-materializer", "OPERATION", "MATERIALIZE_TASKS", [["SPEC_PATH", "{{SPEC_PATH}}"]]],
   "execution-tasks-review": ["stnl-task-reviewer", "OPERATION", "REVIEW_TASKS", [["SPEC_PATH", "{{SPEC_PATH}}"]]],
-  "execution-close": ["stnl-execution-closer", "OPERATION", "CLOSE", [["SPEC_PATH", "{{SPEC_PATH}}"]]],
   "slice-execute-codex": ["stnl-slice-executor", "OPERATION", "EXECUTE_SLICE", [["SPEC_PATH", "{{SPEC_PATH}}"], ["SLICE", "{{SLICE}}"]]],
   "slice-execute-claude": ["stnl-slice-executor", "OPERATION", "EXECUTE_SLICE", [["SPEC_PATH", "{{SPEC_PATH}}"], ["SLICE", "{{SLICE}}"]]],
   "slice-apply-findings-codex": ["stnl-slice-executor", "OPERATION", "APPLY_FINDINGS", [["SPEC_PATH", "{{SPEC_PATH}}"], ["SLICE", "{{SLICE}}"]]],
@@ -413,7 +414,7 @@ const launcherSpecs = {
 };
 
 const runnerLaunchers = new Set(Object.keys(launcherSpecs).filter((name) => name.startsWith("slice-")));
-const sharedExecution = new Set(["execution-plan", "execution-replan", "execution-plan-review", "execution-tasks", "execution-tasks-review", "execution-close", "spec-roadmap-init", "spec-roadmap-reconcile"]);
+const sharedExecution = new Set(["execution-plan", "execution-replan", "execution-plan-review", "execution-tasks", "execution-tasks-review", "spec-roadmap-init", "spec-roadmap-reconcile"]);
 
 function parseLauncher(file, spec) {
   const text = read(file, "L001_REGISTRY");
@@ -449,7 +450,6 @@ function checkLaunchers(root) {
     if (sharedExecution.has(name)) {
       forbidPattern(text, /(?:stnl[_-]validation[_-]runner|@agent-|\bCodex\b|\bClaude\b|fork_turns|\bspawn\b|\bdeleg)/iu, "L006_SHARED_ISOLATION", `${name}: shared launcher contains platform invocation syntax`);
     }
-    if (name === "execution-close") forbidPattern(instructions, /(?:runner|spawn|deleg|testes?|builds?|linters?|typechecks?|compila|retry|correç)/iu, "L006_SHARED_ISOLATION", "execution CLOSE invokes validation or repair");
     if (name === "execution-replan") {
       requirePattern(text, /OPERATION=REPLAN/u, "L003_OPERATION", "REPLAN launcher operation is missing");
       requirePattern(text, /REPLAN_REASON=\{\{REPLAN_REASON\}\}/u, "L004_INPUTS", "REPLAN_REASON is missing");
@@ -512,6 +512,9 @@ function checkLaunchers(root) {
       requirePattern(instructions, /não (?:repete|executa)[^\n]{0,80}testes|does not (?:repeat|run)[^\n]{0,80}tests/iu, "L013_CHECK_AUTHORITY", `${name}: main context may repeat formal checks`);
       requirePattern(instructions, /não criam? nem consomem? `attempt-NN`|does not (?:create|consume)[^\n]{0,30}attempt/iu, "L016_TRANSPORT", `${name}: transport failure may allocate a formal attempt`);
       requirePattern(instructions, /não mudam? `initial` para `revalidation`|does not change[^\n]{0,30}initial[^\n]{0,30}revalidation/iu, "L016_TRANSPORT", `${name}: transport failure may change validation type`);
+      requirePattern(instructions, /última slice aberta[^\n]{0,180}Somente nesse caso inclua[^\n]{0,140}global plan[^\n]{0,100}ordem serial/iu, "L022_TERMINAL_VALIDATION", `${name}: terminal-only global payload is missing`);
+      requirePattern(instructions, /cobertura global[^\n]{0,120}reconciliação[^\n]{0,120}cross-slice[^\n]{0,160}integration\/stabilization/iu, "L022_TERMINAL_VALIDATION", `${name}: terminal semantic review is incomplete`);
+      requirePattern(instructions, /Falta de authority[^\n]{0,180}`BLOCKED`[^\n]{0,120}`REPLAN`/iu, "L022_TERMINAL_VALIDATION", `${name}: terminal strategy gap does not route to REPLAN`);
     } else {
       requirePattern(instructions, /TESTS_PASS[\s\S]{0,80}TESTS_FAIL[\s\S]{0,80}TESTS_NOT_APPLICABLE[\s\S]{0,80}BLOCKED/u, "L014_AUTOMATIC_RECHECK", `${name}: auxiliary status set changed`);
       requirePattern(instructions, /(?:no mínimo uma vez|at least once)[\s\S]{0,80}(?:no máximo três vezes|at most three times)/iu, "L014_AUTOMATIC_RECHECK", `${name}: one-to-three runner budget is missing`);
@@ -614,7 +617,7 @@ function checkRepository(root) {
   const vendor = /\bCodex\b|\bClaude(?: Code)?\b|@agent-|stnl[_-]validation[_-]runner|fork_turns|\bgpt-[0-9]|\bhaiku\b|\bsonnet\b/iu;
   for (const [file, text] of genericTexts) if (vendor.test(text)) reject("C004_VENDOR_NEUTRALITY", `${file}: generic execution skill contains vendor invocation syntax`);
   const allExecutionText = genericTexts.map(([, text]) => text).join("\n");
-  for (const token of ["stnl-spec-execution-manager", "FINALIZE_SLICE", "PARALLELIZE_SLICES", "EXECUTE_SLICES", "RUN_TESTS", "RETRY_TESTS", "FIX_TESTS", "TEST_SLICE", "TEST_FINDINGS", "VALIDATE_IMPLEMENTATION"]) {
+  for (const token of ["stnl-spec-execution-manager", "stnl-execution-closer", "OPERATION=CLOSE", "EXECUTION_APPROVED", "EXECUTION_BLOCKED", "FINALIZE_SLICE", "PARALLELIZE_SLICES", "EXECUTE_SLICES", "RUN_TESTS", "RETRY_TESTS", "FIX_TESTS", "TEST_SLICE", "TEST_FINDINGS", "VALIDATE_IMPLEMENTATION"]) {
     if (allExecutionText.includes(token)) reject("C009_REMOVED_TOKENS", `removed execution token remains: ${token}`);
   }
   const plannerContract = ["SKILL.md", "templates/plan.template.md", "templates/slice-plan.template.md"].map((relative) => read(path.join(workflowRoot, "stnl-execution-planner", relative))).join("\n");

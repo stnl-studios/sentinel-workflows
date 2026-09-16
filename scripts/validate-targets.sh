@@ -42,7 +42,6 @@ execution_skills=(
   skills/workflows/stnl-task-reviewer
   skills/workflows/stnl-slice-executor
   skills/workflows/stnl-slice-quality-manager
-  skills/workflows/stnl-execution-closer
 )
 node scripts/check-distributable-skills.mjs \
   "${execution_skills[@]}" \

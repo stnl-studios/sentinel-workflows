@@ -21,7 +21,7 @@ Do not accept absolute, traversal, secret-bearing, backslash, symlinked, or meta
 
 ## Authority
 
-`<ROADMAP_PATH>/roadmap.json` owns only roadmap title/summary, source snapshots and needs, stable candidate identity, suggested SPEC paths, coverage dispositions, overlaps, dependencies, and gaps. Canonical SPEC workspaces own documentary lifecycle. Canonical execution artifacts own mechanical execution state. Only a current semantic `EXECUTION_APPROVED` verdict from `stnl-execution-closer` can satisfy a dependency; because this repository has no durable structured attestation for that verdict, the runtime reports mechanical `COMPLETE` as `UNKNOWN`, never `SATISFIED`.
+`<ROADMAP_PATH>/roadmap.json` owns only roadmap title/summary, source snapshots and needs, stable candidate identity, suggested SPEC paths, coverage dispositions, overlaps, dependencies, and gaps. Canonical SPEC workspaces own documentary lifecycle. Canonical execution artifacts own mechanical execution state. This repository has no durable structured semantic delivery attestation consumable by the roadmap, so the runtime reports mechanical `COMPLETE` as `UNKNOWN`, never `SATISFIED`.
 
 The generated `index.html` is a deterministic projection. Browser statuses, notes, focus, search, filters, imports, and exports are local convenience only. They never mutate or override roadmap, lifecycle, execution, validation, or completion authority.
 

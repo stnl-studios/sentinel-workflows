@@ -44,10 +44,10 @@ test("only a lifecycle-valid workspace is materialized and pending execution is 
   assert.equal(first.lifecycle_handoff, null);
 });
 
-test("mechanical COMPLETE cannot satisfy a dependency without current EXECUTION_APPROVED semantics", () => {
+test("mechanical COMPLETE cannot satisfy a dependency without durable semantic delivery evidence", () => {
   assert.deepEqual(projectExecutionDependency("COMPLETE"), {
     verdict: "UNKNOWN",
-    detail: "Execution is mechanically COMPLETE, but only a current stnl-execution-closer EXECUTION_APPROVED verdict can satisfy dependencies.",
+    detail: "Execution is mechanically COMPLETE, but no durable structured semantic delivery attestation is available to satisfy dependencies.",
   });
   assert.equal(projectExecutionDependency("IN_PROGRESS").verdict, "UNSATISFIED");
 });

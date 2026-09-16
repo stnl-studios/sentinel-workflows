@@ -17,13 +17,13 @@ import {
   repairExecutionContract,
   validateExecutionCandidate,
   workflowSkillForOperation,
-} from "../skills/workflows/stnl-execution-closer/runtime/execution-state.mjs";
+} from "../skills/workflows/stnl-slice-quality-manager/runtime/execution-state.mjs";
 import { EXECUTION_OPERATION_SKILLS, WORKFLOW_OPERATIONS } from "./lib/skill-registry.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
 const SKILLS = [
   "stnl-execution-planner", "stnl-plan-reviewer", "stnl-task-materializer", "stnl-task-reviewer",
-  "stnl-slice-executor", "stnl-slice-quality-manager", "stnl-execution-closer",
+  "stnl-slice-executor", "stnl-slice-quality-manager",
 ];
 
 async function temporary(t, prefix = "stnl-execution-contract-") {
@@ -541,13 +541,22 @@ test("an isolated copied skill runs the stable self-contained preflight CLI", as
 test("every touched model-authored execution writer requires candidate validation and strict readback", async () => {
   for (const skill of SKILLS) {
     const source = await fs.readFile(path.join(ROOT, `skills/workflows/${skill}/SKILL.md`), "utf8");
-    if (skill !== "stnl-execution-closer") {
-      assert.match(source, /validate-execution-state\.mjs" <SPEC_PATH> --candidate <CANDIDATE_EXECUTION_ROOT>/u, skill);
-      assert.match(source, /contract\/model(?:-| )(?:enforced|enforcement|owned)/u, skill);
-      assert.match(source, /strict(?:ly)? read(?:back| back)/u, skill);
-    }
+    assert.match(source, /validate-execution-state\.mjs" <SPEC_PATH> --candidate <CANDIDATE_EXECUTION_ROOT>/u, skill);
+    assert.match(source, /contract\/model(?:-| )(?:enforced|enforcement|owned)/u, skill);
+    assert.match(source, /strict(?:ly)? read(?:back| back)/u, skill);
     assert.match(source, /Findings IDs[\s\S]{0,180}Check discovery sources[\s\S]{0,80}Check discovery actions[\s\S]{0,240}--repair-known-contract/u, skill);
   }
+});
+
+test("the last VALIDATE_SLICE owns bounded global semantic review before terminal PASS", async () => {
+  const source = await fs.readFile(
+    path.join(ROOT, "skills/workflows/stnl-slice-quality-manager/SKILL.md"),
+    "utf8",
+  );
+  assert.match(source, /last open effective slice[\s\S]{0,700}global plan and serial order[\s\S]{0,500}Effective Validation Bases/iu);
+  assert.match(source, /global requirements coverage[\s\S]{0,180}current authority[\s\S]{0,180}cross-slice consistency[\s\S]{0,220}integration or stabilization/iu);
+  assert.match(source, /Missing authority, strategy, or unmaterialized integration work[\s\S]{0,180}`BLOCKED`[\s\S]{0,160}`REPLAN`/iu);
+  assert.doesNotMatch(source, /GLOBAL_VALIDATE|FINALIZE_EXECUTION|stnl-execution-closer|OPERATION=CLOSE/u);
 });
 
 test("actual templates render a machine-unambiguous MATERIALIZED_PRISTINE task", async (t) => {
@@ -954,7 +963,7 @@ test("strict readback failure rolls back only the repair-owned publication", asy
   t.after(() => watcher.close());
 
   const outcome = await spawnResult(process.execPath, [
-    path.join(ROOT, "skills/workflows/stnl-execution-closer/runtime/validate-execution-state.mjs"),
+    path.join(ROOT, "skills/workflows/stnl-slice-quality-manager/runtime/validate-execution-state.mjs"),
     fixture.requirements,
     "--repair-known-contract",
   ], { cwd: fixture.root });
@@ -1190,7 +1199,7 @@ test("preflight is read-only and exact safe contract repair is an explicit deter
   await prepareFindingsCorrection(fixture, "Findings IDs");
   const taskPath = path.join(fixture.execution, "tasks/slice-01.md");
   const before = await fs.readFile(taskPath);
-  for (const [operation, slice] of [["VALIDATE_SLICE", "1"], ["CLOSE", null], ["DELETE", null]]) {
+  for (const [operation, slice] of [["VALIDATE_SLICE", "1"], ["REPLAN", null], ["DELETE", null]]) {
     await assert.rejects(preflightExecutionOperation(fixture.requirements, operation, slice), (error) => {
       assert.equal(error.contractViolation.repairability, "mechanical");
       return true;
@@ -1198,7 +1207,7 @@ test("preflight is read-only and exact safe contract repair is an explicit deter
     assert.deepEqual(await fs.readFile(taskPath), before, `${operation} preflight mutated live execution`);
   }
   const repair = spawnSync(process.execPath, [
-    path.join(ROOT, "skills/workflows/stnl-execution-closer/runtime/validate-execution-state.mjs"),
+    path.join(ROOT, "skills/workflows/stnl-slice-quality-manager/runtime/validate-execution-state.mjs"),
     fixture.requirements,
     "--repair-known-contract",
   ], { encoding: "utf8", cwd: fixture.root });
@@ -1486,7 +1495,23 @@ test("formal validation output round-trips through NEEDS_FIX, correction, PASS, 
   assert.equal(complete.tasks.get("slice-01").base.present, true);
   assert.equal(complete.tasks.get("slice-01").base.paths[0], "../../src/example.txt");
   assert.equal(complete.tasks.get("slice-01").final.result, "PASS");
-  assert.equal(deriveNormalHandoff(complete, "VALIDATE_SLICE").operation, "CLOSE");
+  assert.equal(deriveNormalHandoff(complete, "VALIDATE_SLICE"), null);
+  assert.deepEqual(complete.legalOperations, [{ operation: "REPLAN", slice: null }]);
+});
+
+test("an intermediate PASS hands off to the next serial execution frontier", async (t) => {
+  const fixture = await standaloneWorkspace(t);
+  await renderArtifacts(fixture);
+  await addSecondPristineSlice(fixture);
+  await passFirstSlice(fixture);
+  const state = await inspectExecutionState(fixture.requirements);
+  assert.equal(state.state, "EXECUTION_STARTED");
+  assert.deepEqual(deriveNormalHandoff(state, "VALIDATE_SLICE"), {
+    workflowSkill: "stnl-slice-executor",
+    operation: "EXECUTE_SLICE",
+    invocation: "OPERATION=EXECUTE_SLICE",
+    slice: "slice-02",
+  });
 });
 
 test("real planner and materializer templates round-trip through review and materialization handoffs", async (t) => {
@@ -1509,7 +1534,7 @@ test("real planner and materializer templates round-trip through review and mate
 
 test("distributed execution schemas and runtime agree on corrected semantic boundaries", async (t) => {
   const schemaPaths = [
-    "stnl-execution-closer", "stnl-slice-executor", "stnl-slice-quality-manager", "stnl-task-materializer",
+    "stnl-slice-executor", "stnl-slice-quality-manager", "stnl-task-materializer",
   ].map((skill) => path.join(ROOT, `skills/workflows/${skill}/references/execution-record-schema.md`));
   const schemas = await Promise.all(schemaPaths.map((schemaPath) => fs.readFile(schemaPath, "utf8")));
   for (const schema of schemas.slice(1)) assert.equal(schema, schemas[0]);
@@ -1775,6 +1800,7 @@ test("requirements authority detects unchanged and stale planning at every reque
         return publishPassResult(result);
       });
       await editTasksIndex(fixture, (value) => value.replace("| [ ] | 01 - Delivery | observable result | - | tasks/slice-01.md | pending | pending |", "| [x] | 01 - Delivery | observable result | - | tasks/slice-01.md | PASS | PASS |"));
+      await writeValidatedPath(fixture);
       assert.equal((await inspectExecutionState(fixture.requirements)).state, "COMPLETE");
     }
     await fs.appendFile(fixture.requirements, "- AC-002: changed authority\n");
@@ -1819,7 +1845,7 @@ test("finding resolution is historical while only active blocking findings block
   });
   await editTasksIndex(fixture, (value) => value.replace("| [ ] | 01 - Delivery | observable result | - | tasks/slice-01.md | pending | pending |", "| [x] | 01 - Delivery | observable result | - | tasks/slice-01.md | PASS | PASS |"));
   await writeValidatedPath(fixture);
-  assert.equal((await preflightExecutionOperation(fixture.requirements, "CLOSE")).state, "COMPLETE");
+  assert.equal((await inspectExecutionState(fixture.requirements)).state, "COMPLETE");
 });
 
 test("partial finding correction may revalidate NEEDS_FIX before eventual PASS dispositions", async (t) => {
@@ -1843,6 +1869,7 @@ test("partial finding correction may revalidate NEEDS_FIX before eventual PASS d
     return publishPassResult(result);
   });
   await editTasksIndex(fixture, (value) => value.replace("| [ ] | 01 - Delivery | observable result | - | tasks/slice-01.md | pending | pending |", "| [x] | 01 - Delivery | observable result | - | tasks/slice-01.md | PASS | PASS |"));
+  await writeValidatedPath(fixture);
   assert.equal((await inspectExecutionState(fixture.requirements)).state, "COMPLETE");
 });
 
@@ -2121,7 +2148,7 @@ test("incomplete execution finalization is rejected for candidates and live hist
   const acceptedMetadata = JSON.parse(acceptedCli.stdout.split("\n")
     .find((line) => line.startsWith("MANDATORY_RECOVERY: ")).slice("MANDATORY_RECOVERY: ".length));
   assert.deepEqual(acceptedMetadata, inconsistent.mandatoryRecovery);
-  for (const [operation, slice] of [["EXECUTE_SLICE", "2"], ["VALIDATE_SLICE", "1"], ["REPLAN", null], ["CLOSE", null]]) {
+  for (const [operation, slice] of [["EXECUTE_SLICE", "2"], ["VALIDATE_SLICE", "1"], ["REPLAN", null]]) {
     const rejected = await rejectedWithRecovery(
       preflightExecutionOperation(fixture.requirements, operation, slice),
       /legal next operation is EXECUTE_SLICE for slice-01/u,
@@ -2512,7 +2539,7 @@ test("a later missing integration slice has an executable append-only REPLAN pat
   assert.equal((await preflightExecutionOperation(fixture.requirements, "REVIEW_PLAN")).state, "PENDING_REPLAN_DRAFT");
 });
 
-test("superseded historical paths become closable only through a later current-authority PASS", async (t) => {
+test("superseded historical paths become terminal only through a later current-authority PASS", async (t) => {
   const fixture = await standaloneWorkspace(t);
   const { authority: oldHash } = await renderArtifacts(fixture);
   await editTask(fixture, (value) => replaceSection(value, "Changed Areas", "- `../../src/example.txt`"));
@@ -2531,11 +2558,9 @@ test("superseded historical paths become closable only through a later current-a
   await editTasksIndex(fixture, (value) => value.replace("| [ ] | 02 - Recovery | reconciled result | 01 | tasks/slice-02.md | pending | pending |", "| [x] | 02 - Recovery | reconciled result | 01 | tasks/slice-02.md | PASS | PASS |"));
   await writeValidatedPath(fixture);
   const complete = await inspectExecutionState(fixture.requirements);
-  assert.deepEqual(new Set(complete.legalOperations.map(({ operation }) => operation)), new Set(["CLOSE", "REPLAN"]));
-  assert.equal(complete.normalHandoff.invocation, "OPERATION=CLOSE");
-  assert.equal(complete.normalHandoff.invocation.startsWith("MODE="), false);
-  assert.equal((await preflightExecutionOperation(fixture.requirements, "CLOSE")).state, "COMPLETE");
-  assert.equal((await preflightExecutionOperation(fixture.requirements, "REPLAN")).state, "COMPLETE", "CLOSE recovery must permit a corrective replan from COMPLETE");
+  assert.deepEqual(complete.legalOperations, [{ operation: "REPLAN", slice: null }]);
+  assert.equal(complete.normalHandoff, null);
+  assert.equal((await preflightExecutionOperation(fixture.requirements, "REPLAN")).state, "COMPLETE", "terminal recovery must permit a corrective replan from COMPLETE");
 });
 
 test("repeated append-only REPLAN preserves older supersession revisions and commits exact current mappings", async (t) => {
@@ -2711,7 +2736,6 @@ test("fileless PASS uses an explicit none manifest with objective reason and evi
     "| [x] | 01 - Delivery | observable result | - | tasks/slice-01.md | PASS | PASS |",
   ));
   assert.equal((await inspectExecutionState(valid.requirements)).state, "COMPLETE");
-  assert.equal((await preflightExecutionOperation(valid.requirements, "CLOSE")).state, "COMPLETE");
 
   for (const [name, baseMutation, error, attemptMutation = (attempt) => attempt] of [
     ["missing reason", (base) => base.replace(/^- Fileless reason:.*\n/mu, ""), /Fileless reason/u],
@@ -3286,7 +3310,7 @@ test("non-canonical execution residue blocks preflight while arbitrary external 
   await assert.rejects(preflightExecutionOperation(escaped.requirements, "VALIDATE_SLICE", "1"), /unsafe validation-owned path/u);
 });
 
-test("CLOSE verifies real final-owner hashes, removals, and changed-path ownership", async (t) => {
+test("terminal inspection detects hash drift and REMOVED reappearance without rewriting PASS history", async (t) => {
   const matching = await standaloneWorkspace(t);
   await renderArtifacts(matching);
   await editTask(matching, (value) => {
@@ -3298,9 +3322,25 @@ test("CLOSE verifies real final-owner hashes, removals, and changed-path ownersh
   });
   await editTasksIndex(matching, (value) => value.replace("| [ ] | 01 - Delivery | observable result | - | tasks/slice-01.md | pending | pending |", "| [x] | 01 - Delivery | observable result | - | tasks/slice-01.md | PASS | PASS |"));
   const target = await writeValidatedPath(matching);
-  assert.equal((await preflightExecutionOperation(matching.requirements, "CLOSE")).state, "COMPLETE");
+  const complete = await inspectExecutionState(matching.requirements);
+  assert.equal(complete.state, "COMPLETE");
+  assert.equal(complete.normalHandoff, null);
+  assert.deepEqual(complete.legalOperations, [{ operation: "REPLAN", slice: null }]);
+  const taskPath = path.join(matching.execution, "tasks/slice-01.md");
+  const historyBeforeDrift = await fs.readFile(taskPath);
   await fs.writeFile(target, "drifted behavior\n");
-  await assert.rejects(preflightExecutionOperation(matching.requirements, "CLOSE"), /final validation ownership does not match/u);
+  await assert.rejects(inspectExecutionState(matching.requirements), (error) => {
+    assert.ok(error instanceof ExecutionContractError);
+    assert.match(error.message, /final validation ownership does not match/u);
+    assert.equal(error.findings.some((item) => item.includes(target)
+      && item.includes("slice-01") && item.includes("expected sha256:") && item.includes("current sha256:")), true);
+    assert.deepEqual(error.recoveryTargets.map(({ operation, slice, owner }) => ({ operation, slice, owner })), [
+      { operation: "REPLAN", slice: null, owner: "terminal-integrity" },
+    ]);
+    return true;
+  });
+  assert.deepEqual(await fs.readFile(taskPath), historyBeforeDrift, "terminal drift inspection rewrote PASS history");
+  assert.equal((await preflightExecutionOperation(matching.requirements, "REPLAN")).state, "COMPLETE");
 
   const removed = await standaloneWorkspace(t);
   await renderArtifacts(removed);
@@ -3312,9 +3352,11 @@ test("CLOSE verifies real final-owner hashes, removals, and changed-path ownersh
     return publishPassResult(result);
   });
   await editTasksIndex(removed, (value) => value.replace("| [ ] | 01 - Delivery | observable result | - | tasks/slice-01.md | pending | pending |", "| [x] | 01 - Delivery | observable result | - | tasks/slice-01.md | PASS | PASS |"));
-  assert.equal((await preflightExecutionOperation(removed.requirements, "CLOSE")).state, "COMPLETE");
+  assert.equal((await inspectExecutionState(removed.requirements)).state, "COMPLETE");
   await writeValidatedPath(removed, "../../src/removed.txt");
-  await assert.rejects(preflightExecutionOperation(removed.requirements, "CLOSE"), (error) => error instanceof ExecutionContractError && error.findings.some((item) => item.includes("expected REMOVED")));
+  await assert.rejects(inspectExecutionState(removed.requirements), (error) => error instanceof ExecutionContractError
+    && error.findings.some((item) => item.includes("slice-01") && item.includes("expected REMOVED, current sha256:"))
+    && error.recoveryTargets.some((target_) => target_.operation === "REPLAN"));
 
   const unowned = await standaloneWorkspace(t);
   await renderArtifacts(unowned);
@@ -3328,7 +3370,39 @@ test("CLOSE verifies real final-owner hashes, removals, and changed-path ownersh
   await assert.rejects(inspectExecutionState(unowned.requirements), /changed\/corrected path with no validation owner/u);
 });
 
-test("lifecycle CLOSE trusts repository-owned paths outside a nested SPEC and rejects repository escape", async (t) => {
+test("terminal candidates reject invalid final ownership and preserve live execution bytes", async (t) => {
+  const fixture = await standaloneWorkspace(t);
+  await renderArtifacts(fixture);
+  const liveTask = path.join(fixture.execution, "tasks/slice-01.md");
+  const liveIndex = path.join(fixture.execution, "tasks.md");
+  const liveBefore = await Promise.all([fs.readFile(liveTask), fs.readFile(liveIndex)]);
+  const candidate = await copyDirectory(fixture.execution, path.join(fixture.root, "terminal-candidate"));
+  const candidateTask = path.join(candidate, "tasks/slice-01.md");
+  let task = await fs.readFile(candidateTask, "utf8");
+  task = task.replace("- [ ] 1.1", "- [x] 1.1");
+  task = replaceSection(task, "Changed Areas", "- `../../src/example.txt`");
+  task = replaceSection(task, "Validation Attempts", PASS_ATTEMPT);
+  task = replaceSection(task, "Effective Validation Base", PASS_BASE);
+  await fs.writeFile(candidateTask, publishPassResult(task), "utf8");
+  const candidateIndex = path.join(candidate, "tasks.md");
+  await fs.writeFile(candidateIndex, (await fs.readFile(candidateIndex, "utf8")).replace(
+    "| [ ] | 01 - Delivery | observable result | - | tasks/slice-01.md | pending | pending |",
+    "| [x] | 01 - Delivery | observable result | - | tasks/slice-01.md | PASS | PASS |",
+  ), "utf8");
+  await writeValidatedPath(fixture, "../../src/example.txt", "candidate hash mismatch\n");
+
+  await assert.rejects(validateExecutionCandidate(fixture.requirements, candidate), (error) => {
+    assert.ok(error instanceof ExecutionContractError);
+    assert.match(error.message, /final validation ownership does not match/u);
+    assert.equal(error.findings.some((item) => item.includes("slice-01")
+      && item.includes("expected sha256:") && item.includes("current sha256:")), true);
+    return true;
+  });
+  assert.deepEqual(await Promise.all([fs.readFile(liveTask), fs.readFile(liveIndex)]), liveBefore);
+  assert.equal((await inspectExecutionState(fixture.requirements)).state, "MATERIALIZED_PRISTINE");
+});
+
+test("terminal integrity trusts repository-owned paths outside a nested SPEC and rejects repository escape", async (t) => {
   const root = await temporary(t);
   const repository = path.join(root, "repository with space ü");
   await fs.mkdir(path.join(repository, ".git"), { recursive: true });
@@ -3351,7 +3425,7 @@ test("lifecycle CLOSE trusts repository-owned paths outside a nested SPEC and re
     return publishPassResult(result);
   });
   await editTasksIndex(fixture, (value) => value.replace("| [ ] | 01 - Delivery | observable result | - | tasks/slice-01.md | pending | pending |", "| [x] | 01 - Delivery | observable result | - | tasks/slice-01.md | PASS | PASS |"));
-  assert.equal((await preflightExecutionOperation(workspace, "CLOSE")).state, "COMPLETE");
+  assert.equal((await inspectExecutionState(workspace)).state, "COMPLETE");
   const candidate = await copyDirectory(fixture.execution, path.join(root, "nested lifecycle candidate"));
   assert.equal((await validateExecutionCandidate(workspace, candidate)).state, "COMPLETE");
   const formerLocalPrefix = `.${path.basename(workspace)}.stnl-execution-candidate-`;
@@ -3369,5 +3443,5 @@ test("lifecycle CLOSE trusts repository-owned paths outside a nested SPEC and re
     result = replaceSection(result, "Effective Validation Base", passBase({ relative: escapedRelative }));
     return result;
   });
-  await assert.rejects(preflightExecutionOperation(workspace, "CLOSE"), /unsafe validation-owned path/u);
+  await assert.rejects(inspectExecutionState(workspace), /unsafe validation-owned path/u);
 });

@@ -28,7 +28,7 @@ import test from "node:test";
 import {
   ExecutionContractError,
   inspectExecutionState,
-} from "../skills/workflows/stnl-execution-closer/runtime/execution-state.mjs";
+} from "../skills/workflows/stnl-slice-quality-manager/runtime/execution-state.mjs";
 import { WORKFLOW_OPERATIONS } from "./lib/skill-registry.mjs";
 
 const ROOT = fileURLToPath(new URL("../", import.meta.url));

@@ -143,6 +143,8 @@ const cases = [
   ["README resets identifiers", "R012_README", (root) => replace(path.join(root, "README.md"), "não reinicia identificadores", "reinicia identificadores")],
   ["README loses third-failure state", "R012_README", (root) => replace(path.join(root, "README.md"), "terceira falha entra em `IMPLEMENTATION_RETRY_EXHAUSTED` ou `FINDINGS_RETRY_EXHAUSTED`", "terceira falha encerra sem estado")],
   ["README loses third-failure continuation", "R012_README", (root) => replace(path.join(root, "README.md"), "`VALIDATE_SLICE` é a única próxima operação", "não há próxima operação")],
+  ["README loses terminal semantic review", "R017_TERMINAL_VALIDATION", (root) => replace(path.join(root, "README.md"), "cobertura global", "cobertura local")],
+  ["README loses terminal deterministic integrity", "R018_TERMINAL_INTEGRITY", (root) => replace(path.join(root, "README.md"), "ownership final", "revisão genérica")],
 ];
 
 for (const [name, category, mutation] of cases) {
