@@ -15,3 +15,9 @@
   - Legacy `targets/` and `agents/base/` removed.
   - `validate.sh` became the entrypoint.
   - S1 declared ready for candidate freeze.
+- `51af7df0d8e1abad319b514cfb548c121e571211`
+  - Deterministic artifact-relative implementation-path enforcement.
+  - PLAN/TASKS path claims explicitly delimited.
+  - Invalid candidates rejected before publication or execution.
+  - Safe future targets preserved.
+  - P0 evidence history added.

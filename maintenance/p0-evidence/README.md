@@ -24,7 +24,7 @@ This directory preserves compact, human-readable engineering evidence for Sentin
 - G2 = PARTIAL
 - G3 = PARTIAL
 - G4 = NOT_YET_RUNTIME_PROVEN
-- G5 = NOT_YET_PROVEN
+- G5 = PROVEN
 - G6 = NOT_YET_PROVEN
 
 Actual token telemetry: unavailable
