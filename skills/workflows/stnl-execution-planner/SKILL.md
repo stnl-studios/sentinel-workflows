@@ -29,6 +29,8 @@ Before content reads or writes, execute `node "<SKILL_ROOT>/runtime/validate-exe
 
 Read `references/workspace.md`, the requirements needed for coverage, shallow project structure, and only code or tests directly needed to understand impact. Define observable, testable slices in strict serial order. Record explicit dependencies, requirement coverage, included and excluded scope, boundaries, risks, likely areas, expected tests, and integration needs. Avoid microtasks and broad slices.
 
+In global `Expected areas` and detailed `Likely Areas`, wrap each concrete filesystem path in one Markdown code span and compute it from that specific artifact. Keep conceptual labels and explanations outside code spans. Candidate validation rejects non-canonical, escaping, symlinked, execution-root, or accidental lifecycle-SPEC-local implementation targets; never substitute project-root resolution or rewrite a rejected claim heuristically.
+
 If several slices require real integration verification, add a final explicit integration or stabilization slice. Do not defer that verification to closing.
 
 Create `plan.md` and every foreseeable `plans/slice-NN.md` using the templates. Set each File Purpose Header status to `draft`; this means planning exists but independent review has not approved it.

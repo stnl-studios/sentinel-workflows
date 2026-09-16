@@ -1248,6 +1248,14 @@ function validateRelativeEvidencePath(value, label) {
   return value;
 }
 
+function delimitedImplementationPathClaims(value, label) {
+  const source = String(value);
+  const matches = [...source.matchAll(/`([^`\n]+)`/gu)];
+  const residue = source.replace(/`[^`\n]+`/gu, "");
+  if (residue.includes("`")) throw new ExecutionContractError(`${label} has an unmatched implementation-path delimiter`);
+  return matches.map((match) => match[1]);
+}
+
 function parseTask(text, label, expectedSlice, references = {}) {
   const { header, body } = parsePurpose(text, label);
   if (header.get("status") !== "ready") throw new ExecutionContractError(`${label} must have status ready`);
@@ -1298,7 +1306,13 @@ function parseTask(text, label, expectedSlice, references = {}) {
   const checklistRows = checklist.split("\n").filter((line) => line.length !== 0).map((line) => {
     const match = line.match(/^- \[([ x])\] ([0-9]+\.[0-9]+) \S.* \| observable result: \S.* \| expected areas: \S.* \| requirement: \S.*$/u);
     if (match === null) throw new ExecutionContractError(`${label} has malformed Checklist row: ${line}`);
-    return { done: match[1] === "x", id: match[2] };
+    const expectedAreas = line.match(/\| expected areas: (\S.*?) \| requirement: /u)?.[1];
+    if (expectedAreas === undefined) throw new ExecutionContractError(`${label} has malformed Checklist expected areas: ${line}`);
+    return {
+      done: match[1] === "x",
+      id: match[2],
+      implementationPathClaims: delimitedImplementationPathClaims(expectedAreas, `${label} Checklist ${match[2]} expected areas`),
+    };
   });
   if (checklistRows.length === 0) throw new ExecutionContractError(`${label} has no canonical checklist rows`);
   if (new Set(checklistRows.map((row) => row.id)).size !== checklistRows.length) throw new ExecutionContractError(`${label} has duplicate Checklist rows`);
@@ -1414,6 +1428,9 @@ function parseTask(text, label, expectedSlice, references = {}) {
     ...state, body, sections: taskSections, pristine, attempts, findings, divergences, activeBlockers,
     base, final, implementationChecks, findingsChecks, delegationBlocker, retryExhausted, checklistComplete,
     changedClaims, claims: [...new Set([...changedClaims, ...base.paths])],
+    implementationPathClaims: checklistRows.flatMap((row) => row.implementationPathClaims.map((raw) => ({
+      field: `Checklist ${row.id} expected areas`, raw,
+    }))),
   };
 }
 
@@ -1440,6 +1457,134 @@ async function trustedProjectRoot(workspace) {
     current = parent;
   }
   return logicalWorkspace.specRoot ?? path.dirname(logicalWorkspace.authorityPath);
+}
+
+function implementationPathDiagnostic({ artifact, field, raw, resolved, reason, trustedRoot, existingProjectTarget = null }) {
+  const artifactLabel = pathIsWithin(artifact, trustedRoot)
+    ? path.relative(trustedRoot, artifact).split(path.sep).join("/") || "."
+    : artifact;
+  const details = [
+    `artifact=${JSON.stringify(artifactLabel)}`,
+    `field=${JSON.stringify(field)}`,
+    `raw=${JSON.stringify(raw)}`,
+    `resolved=${JSON.stringify(resolved)}`,
+    `reason=${JSON.stringify(reason)}`,
+    `trusted-root=${JSON.stringify(trustedRoot)}`,
+  ];
+  if (existingProjectTarget !== null) details.push(`existing-project-target=${JSON.stringify(existingProjectTarget)}`);
+  return new ExecutionContractError(`invalid artifact-relative implementation path: ${details.join("; ")}`, [artifact, resolved]);
+}
+
+function projectRelativeCandidate(raw, trustedRoot) {
+  const segments = raw.split("/");
+  while (segments[0] === "." || segments[0] === "..") segments.shift();
+  return segments.length === 0 ? null : path.resolve(trustedRoot, ...segments);
+}
+
+async function validateImplementationPathClaim(workspace, { artifact, field, raw }) {
+  const logicalWorkspace = logicalWorkspaceFor(workspace);
+  const logicalArtifact = logicalExecutionPath(workspace, artifact);
+  const trustedRoot = await trustedProjectRoot(workspace);
+  const resolved = path.resolve(path.dirname(logicalArtifact), raw);
+  try {
+    validateRelativeEvidencePath(raw, `${field} implementation path`);
+  } catch (error) {
+    throw implementationPathDiagnostic({
+      artifact: logicalArtifact,
+      field,
+      raw,
+      resolved,
+      reason: error.message,
+      trustedRoot,
+    });
+  }
+  try {
+    await rejectSymlinkComponents(resolved, trustedRoot);
+  } catch (error) {
+    throw implementationPathDiagnostic({
+      artifact: logicalArtifact,
+      field,
+      raw,
+      resolved,
+      reason: error.message,
+      trustedRoot,
+    });
+  }
+  if (pathIsWithin(resolved, logicalWorkspace.executionRoot)) {
+    throw implementationPathDiagnostic({
+      artifact: logicalArtifact,
+      field,
+      raw,
+      resolved,
+      reason: "artifact-relative implementation path resolves inside the execution root",
+      trustedRoot,
+    });
+  }
+  if (logicalWorkspace.kind === "lifecycle" && trustedRoot !== logicalWorkspace.specRoot
+    && pathIsWithin(resolved, logicalWorkspace.specRoot)) {
+    const projectTarget = projectRelativeCandidate(raw, trustedRoot);
+    const projectMetadata = projectTarget === null || projectTarget === resolved ? null : await lstatOrNull(projectTarget);
+    throw implementationPathDiagnostic({
+      artifact: logicalArtifact,
+      field,
+      raw,
+      resolved,
+      reason: "artifact-relative implementation path resolves inside the lifecycle SPEC workspace",
+      trustedRoot,
+      existingProjectTarget: projectMetadata === null ? null : projectTarget,
+    });
+  }
+  const resolvedMetadata = await lstatOrNull(resolved);
+  if (resolvedMetadata === null) {
+    const projectTarget = projectRelativeCandidate(raw, trustedRoot);
+    const projectMetadata = projectTarget === null || projectTarget === resolved ? null : await lstatOrNull(projectTarget);
+    if (projectMetadata !== null && !projectMetadata.isSymbolicLink()) {
+      await rejectSymlinkComponents(projectTarget, trustedRoot);
+      throw implementationPathDiagnostic({
+        artifact: logicalArtifact,
+        field,
+        raw,
+        resolved,
+        reason: "possible path-basis error: artifact-relative target is absent while the same project-root target exists",
+        trustedRoot,
+        existingProjectTarget: projectTarget,
+      });
+    }
+  }
+}
+
+async function validatePlanningImplementationPaths(workspace, globalPlan, plans) {
+  const serialRows = canonicalTableRows(
+    globalPlan.sections.get("Serial Slice Order"),
+    "| Slice | Observable delivery | Dependencies | Requirements | Expected areas | Detailed plan |",
+    "|---|---|---|---|---|---|",
+    "Serial Slice Order",
+  );
+  const claims = [];
+  const globalArtifact = path.join(workspace.executionRoot, "plan.md");
+  for (const line of serialRows) {
+    const columns = line.split("|").slice(1, -1).map((column) => column.trim());
+    const slice = columns[0]?.match(/^([0-9]{2,}) - \S.*$/u)?.[1] ?? "unknown";
+    for (const raw of delimitedImplementationPathClaims(columns[4], `plan.md Serial Slice Order ${slice} Expected areas`)) {
+      claims.push({ artifact: globalArtifact, field: `Serial Slice Order ${slice} Expected areas`, raw });
+    }
+  }
+  for (const [slice, plan] of plans) {
+    const artifact = path.join(workspace.executionRoot, "plans", `${slice}.md`);
+    for (const raw of delimitedImplementationPathClaims(plan.sections.get("Likely Areas"), `${slice} plan Likely Areas`)) {
+      claims.push({ artifact, field: "Likely Areas", raw });
+    }
+  }
+  for (const claim of claims) await validateImplementationPathClaim(workspace, claim);
+}
+
+async function validateTaskImplementationPaths(workspace, tasks) {
+  for (const [slice, task] of tasks) {
+    const artifact = path.join(workspace.executionRoot, "tasks", `${slice}.md`);
+    for (const claim of task.implementationPathClaims) {
+      await validateImplementationPathClaim(workspace, { artifact, ...claim });
+    }
+  }
 }
 
 async function validateFinalOwnership(result) {
@@ -1592,7 +1737,7 @@ function requirementsReference(workspace, directory) {
   return path.relative(logicalDirectory, logicalWorkspace.authorityPath).split(path.sep).join("/");
 }
 
-async function readPlanArtifacts(workspace) {
+async function readPlanArtifacts(workspace, { validateImplementationPaths = false } = {}) {
   const globalPlanPath = path.join(workspace.executionRoot, "plan.md");
   await requireRealFile(globalPlanPath, "execution plan.md");
   const globalPlanText = await fs.readFile(globalPlanPath, "utf8");
@@ -1635,11 +1780,12 @@ async function readPlanArtifacts(workspace) {
       requirementsSource: requirementsReference(workspace, planDirectory),
     }));
   }
+  if (validateImplementationPaths) await validatePlanningImplementationPaths(workspace, globalPlan, plans);
   return { globalPlan, globalPlanText, sliceOrder, plans };
 }
 
-async function executionArtifacts(workspace) {
-  const { globalPlan, sliceOrder, plans } = await readPlanArtifacts(workspace);
+async function executionArtifacts(workspace, { validateImplementationPaths = false } = {}) {
+  const { globalPlan, sliceOrder, plans } = await readPlanArtifacts(workspace, { validateImplementationPaths });
   const tasksIndexPath = path.join(workspace.executionRoot, "tasks.md");
   await requireRealFile(tasksIndexPath, "execution tasks.md");
   const tasksIndexText = await fs.readFile(tasksIndexPath, "utf8");
@@ -1667,6 +1813,7 @@ async function executionArtifacts(workspace) {
     }
     tasks.set(row.slice, task);
   }
+  if (validateImplementationPaths) await validateTaskImplementationPaths(workspace, tasks);
   const trustedRoot = await trustedProjectRoot(workspace);
   const taskDirectory = path.join(logicalWorkspaceFor(workspace).executionRoot, "tasks");
   for (const [slice, task] of tasks) {
@@ -1822,7 +1969,10 @@ export async function inspectExecutionState(specPath) {
   return inspectExecutionStateWithContext(specPath, null);
 }
 
-async function inspectExecutionStateWithContext(specPath, logicalWorkspace, { validateTerminalOwnership = true } = {}) {
+async function inspectExecutionStateWithContext(specPath, logicalWorkspace, {
+  validateTerminalOwnership = true,
+  validateImplementationPaths = false,
+} = {}) {
   const physicalWorkspace = await resolveExecutionWorkspace(specPath);
   const workspace = logicalWorkspace === null
     ? physicalWorkspace
@@ -1843,7 +1993,7 @@ async function inspectExecutionStateWithContext(specPath, logicalWorkspace, { va
   const hasTasks = await lstatOrNull(path.join(workspace.executionRoot, "tasks.md")) !== null;
   await validateExecutionLayout(specPath, { allowPlanned: !hasTasks });
   if (!hasTasks) {
-    const { globalPlan, plans } = await readPlanArtifacts(workspace);
+    const { globalPlan, plans } = await readPlanArtifacts(workspace, { validateImplementationPaths });
     if (globalPlan.revisionMode === null && globalPlan.revision !== 1) {
       throw new ExecutionContractError("planning-only authority must use Plan revision 1, including replacement by REPLAN");
     }
@@ -1860,7 +2010,7 @@ async function inspectExecutionStateWithContext(specPath, logicalWorkspace, { va
     const state = stale ? "REQUIREMENTS_CHANGED" : globalPlan.status === "ready" ? "PLANNED_READY" : "PLANNED_DRAFT";
     return withRecoveryTargets({ state, workspace, currentFingerprint, globalPlan, stale });
   }
-  const artifacts = await executionArtifacts(workspace);
+  const artifacts = await executionArtifacts(workspace, { validateImplementationPaths });
   const stale = artifacts.globalPlan.fingerprint !== currentFingerprint;
   const allPristine = artifacts.rows.every((row) => !row.done && artifacts.tasks.get(row.slice).pristine);
   if (artifacts.pendingReplan) {
@@ -2311,7 +2461,7 @@ export async function validateExecutionCandidate(specPath, candidateExecutionRoo
   const shadow = await createCandidateShadow(workspace);
   try {
     await fs.cp(candidate, shadow.executionRoot, { recursive: true });
-    const result = await inspectExecutionStateWithContext(shadow.specPath, workspace);
+    const result = await inspectExecutionStateWithContext(shadow.specPath, workspace, { validateImplementationPaths: true });
     if ((result.incompleteExecutionChecklists?.length ?? 0) !== 0) {
       const inconsistency = result.incompleteExecutionChecklists[0];
       throw new ExecutionContractError(
@@ -2709,6 +2859,7 @@ export async function preflightExecutionOperation(specPath, operation, sliceValu
   const normalizedOperation = String(operation);
   const result = await inspectExecutionStateWithContext(specPath, null, {
     validateTerminalOwnership: normalizedOperation !== "REPLAN",
+    validateImplementationPaths: new Set(["MATERIALIZE_TASKS", "EXECUTE_SLICE"]).has(normalizedOperation),
   });
   if (!OPERATIONS.has(normalizedOperation)) {
     throw new ExecutionContractError(

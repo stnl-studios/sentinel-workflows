@@ -23,7 +23,7 @@ update_policy: MATERIALIZE_TASKS creates; later operations replace only their au
 
 ## Checklist
 
-- [ ] 1.1 <task> | observable result: <result> | expected areas: <areas> | requirement: AC-001
+- [ ] 1.1 <task> | observable result: <result> | expected areas: `<artifact-relative path>`; <optional conceptual area> | requirement: AC-001
 
 ## Expected Tests
 

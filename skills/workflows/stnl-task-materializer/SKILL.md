@@ -20,6 +20,8 @@ The current approved `plan.md` and approved detailed plans are the only material
 
 Execution preflight is read-only. Only when it reports a mechanical violation for the exact `Findings IDs` alias or the exact historical `Check discovery sources` / `Check discovery actions` pair may this skill explicitly run `node "<SKILL_ROOT>/runtime/validate-execution-state.mjs" <SPEC_PATH> --repair-known-contract` once and repeat the original preflight; every other contract violation blocks.
 
+In checklist `expected areas`, wrap each concrete filesystem path in one Markdown code span and rebase it to the detailed task that will contain it; do not copy plan text with its old relative basis. Keep conceptual labels outside code spans. Candidate validation rejects non-canonical, escaping, symlinked, execution-root, or accidental lifecycle-SPEC-local implementation targets without fallback or autocorrection.
+
 ## MATERIALIZE_TASKS
 
 Before content reads or writes, execute `node "<SKILL_ROOT>/runtime/validate-execution-state.mjs" <SPEC_PATH> MATERIALIZE_TASKS`. Require a complete approved current revision, matching fingerprints and revision fields, consistent slice sets/order/dependencies/scope/references, and a deterministic materialization mode.

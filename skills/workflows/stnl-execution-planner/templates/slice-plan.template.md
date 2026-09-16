@@ -39,7 +39,7 @@ update_policy: PLAN or REPLAN creates as draft; REVIEW_PLAN corrects only the mu
 
 ## Likely Areas
 
-- <path, contract, subsystem, or test area>
+- `<artifact-relative path>` — <optional contract, subsystem, test area, or explanation>
 
 ## Dependencies
 

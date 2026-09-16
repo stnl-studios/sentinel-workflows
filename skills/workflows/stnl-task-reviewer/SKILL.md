@@ -30,6 +30,8 @@ Check that no plan obligation was lost and no task was invented. Verify fidelity
 
 Compose any model-authored task corrections in an isolated complete execution candidate and execute `node "<SKILL_ROOT>/runtime/validate-execution-state.mjs" <SPEC_PATH> --candidate <CANDIDATE_EXECUTION_ROOT>` before publication. This is contract/model enforcement; runtime parsing is not publication authority. Candidate rejection preserves live bytes. After PASS publish only task-review-owned paths and use the final handoff command as strict readback.
 
+In checklist `expected areas`, treat only Markdown code spans as concrete filesystem claims and verify each relative to the detailed task. Keep conceptual labels outside code spans. Correct the claim itself when candidate validation reports a path-basis error—never reinterpret it as project-root-relative or publish an automatic rewrite.
+
 ## Minimum Reads
 
 - `plan.md` and every detailed plan;

@@ -106,6 +106,11 @@ async function renderTasks(fixture, { revision = 1, fingerprint = null } = {}) {
   const requirementsMetadata = await fs.stat(fixture.requirements);
   const authorityPath = requirementsMetadata.isDirectory() ? path.join(fixture.requirements, "feature_spec.md") : fixture.requirements;
   const detailSource = path.relative(path.join(fixture.execution, "plans"), authorityPath).split(path.sep).join("/");
+  const implementationRoot = fixture.root ?? (requirementsMetadata.isDirectory() ? fixture.requirements : path.dirname(fixture.requirements));
+  const taskImplementationPath = path.relative(
+    path.join(fixture.execution, "tasks"),
+    path.join(implementationRoot, "src/example.txt"),
+  ).split(path.sep).join("/");
   await fs.mkdir(path.join(fixture.execution, "tasks"), { recursive: true });
   const tasksTemplate = await fs.readFile(path.join(ROOT, "skills/workflows/stnl-task-materializer/templates/tasks.template.md"), "utf8");
   const tasks = replaceAll(tasksTemplate, [
@@ -116,7 +121,8 @@ async function renderTasks(fixture, { revision = 1, fingerprint = null } = {}) {
   const task = replaceAll(taskTemplate, [
     ["<Name>", "Delivery"], ["`<relative path>`", `\`${detailSource}\``],
     ["sha256:<64hex>", `sha256:${authority}`], ["<positive integer>", String(revision)],
-    ["<task>", "Implement behavior"], ["<result>", "observable result"], ["<areas>", "src/example.txt"],
+    ["<task>", "Implement behavior"], ["<result>", "observable result"],
+    ["`<artifact-relative path>`; <optional conceptual area>", `\`${taskImplementationPath}\`; example implementation`],
     ["<test, command, suite, or observable check>", "node --test"],
   ]);
   await fs.writeFile(path.join(fixture.execution, "tasks/slice-01.md"), task);
@@ -128,13 +134,18 @@ async function renderArtifacts(fixture, { materialized = true, planStatus = "rea
   const authorityPath = requirementsMetadata.isDirectory() ? path.join(fixture.requirements, "feature_spec.md") : fixture.requirements;
   const globalSource = path.relative(fixture.execution, authorityPath).split(path.sep).join("/");
   const detailSource = path.relative(path.join(fixture.execution, "plans"), authorityPath).split(path.sep).join("/");
+  const implementationRoot = fixture.root ?? (requirementsMetadata.isDirectory() ? fixture.requirements : path.dirname(fixture.requirements));
+  const implementationTarget = path.join(implementationRoot, "src/example.txt");
+  const globalImplementationPath = path.relative(fixture.execution, implementationTarget).split(path.sep).join("/");
+  const detailImplementationPath = path.relative(path.join(fixture.execution, "plans"), implementationTarget).split(path.sep).join("/");
   await fs.mkdir(path.join(fixture.execution, "plans"), { recursive: true });
   const planTemplate = await fs.readFile(path.join(ROOT, "skills/workflows/stnl-execution-planner/templates/plan.template.md"), "utf8");
   let global = omitInitialRecoveryFields(replaceAll(planTemplate, [
     ["`<relative path>`", `\`${globalSource}\``], ["sha256:<64hex>", `sha256:${authority}`],
     ["<positive integer>", String(revision)], ["<compact objective>", "Deliver observable behavior"],
     ["<compact strategy>", "Implement and validate serially"], ["01 - <name>", "01 - Delivery"],
-    ["<result>", "observable result"], ["<areas>", "src/example.txt"],
+    ["<result>", "observable result"],
+    ["`<artifact-relative path>`; <optional conceptual area>", `\`${globalImplementationPath}\`; example implementation`],
   ]));
   if (planStatus === "ready") global = headerReady(global);
   await fs.writeFile(path.join(fixture.execution, "plan.md"), global);
@@ -144,7 +155,8 @@ async function renderArtifacts(fixture, { materialized = true, planStatus = "rea
     ["sha256:<64hex>", `sha256:${authority}`], ["<positive integer>", String(revision)],
     ["<One coherent delivery and how it is observed.>", "Deliver observable behavior."],
     ["<included work>", "Implement the approved behavior."], ["<excluded work and boundary with later slices>", "No unrelated work."],
-    ["<path, contract, subsystem, or test area>", "src/example.txt"], ["<earlier slice or none>", "none"],
+    ["`<artifact-relative path>` — <optional contract, subsystem, test area, or explanation>", `\`${detailImplementationPath}\` — example implementation`],
+    ["<earlier slice or none>", "none"],
     ["<risk and mitigation>", "Low risk; focused validation."], ["<bounded approach>", "One bounded change."],
     ["<test, command, suite, or observable check>", "node --test"], ["<objective result and preserved boundary>", "Behavior is observable and bounded."],
   ]);
@@ -153,6 +165,44 @@ async function renderArtifacts(fixture, { materialized = true, planStatus = "rea
   if (!materialized) return { authority };
   await renderTasks(fixture, { revision, fingerprint: authority });
   return { authority };
+}
+
+async function setImplementationAreas(fixture, { global, detail, task } = {}) {
+  if (global !== undefined) {
+    await editPlan(fixture, (value) => value.replace(
+      /`[^`\n]+`; example implementation/u,
+      `\`${global}\`; example implementation`,
+    ));
+  }
+  if (detail !== undefined) {
+    await editSlicePlan(fixture, "slice-01", (value) => value.replace(
+      /`[^`\n]+` — example implementation/u,
+      `\`${detail}\` — example implementation`,
+    ));
+  }
+  if (task !== undefined) {
+    await editTask(fixture, (value) => value.replace(
+      /(\| expected areas: )`[^`\n]+`; example implementation( \| requirement:)/u,
+      `$1\`${task}\`; example implementation$2`,
+    ));
+  }
+}
+
+async function nestedLifecycleWorkspace(t, { materialized = true, planStatus = "ready" } = {}) {
+  const root = await temporary(t, "stnl-path-semantics-");
+  const repository = path.join(root, "repository with space ü");
+  await fs.mkdir(path.join(repository, ".git"), { recursive: true });
+  const requirements = await copyDirectory(
+    path.join(ROOT, "skills/workflows/stnl-spec-lifecycle-manager/examples/validator-fixtures/ready"),
+    path.join(repository, "specs", "área segura", "feature Ω"),
+  );
+  const fixture = { root: repository, repository, requirements, execution: path.join(requirements, "execution") };
+  await fs.mkdir(path.join(repository, "scripts"), { recursive: true });
+  await fs.writeFile(path.join(repository, "scripts/validate.sh"), "#!/bin/sh\n", "utf8");
+  await fs.mkdir(path.join(repository, "skills/workflows"), { recursive: true });
+  await fs.writeFile(path.join(repository, "skills/workflows/example.mjs"), "export {};\n", "utf8");
+  await renderArtifacts(fixture, { materialized, planStatus });
+  return fixture;
 }
 
 async function editTask(fixture, transform) {
@@ -208,8 +258,8 @@ async function appendRecoveryPlan(fixture, oldHash, newHash, { ready = false, su
     let result = reviseAuthority(value, oldHash, newHash, 1, 2).replace("status: ready", `status: ${ready ? "ready" : "draft"}`).replace("- Review state: approved", `- Review state: ${ready ? "approved" : "pending"}`);
     result = result.replace("- Objective: Deliver observable behavior", `- Revision mode: append-only-extension\n- Replan reason: requirements or integration authority changed\n- Supersedes open slices: ${supersedes}\n- Objective: Deliver observable behavior`);
     return result.replace(
-      "| 01 - Delivery | observable result | - | AC-001 | src/example.txt | plans/slice-01.md |",
-      "| 01 - Delivery | observable result | - | AC-001 | src/example.txt | plans/slice-01.md |\n| 02 - Recovery | reconciled result | 01 | AC-001 | src/example.txt | plans/slice-02.md |",
+      "| 01 - Delivery | observable result | - | AC-001 | `../src/example.txt`; example implementation | plans/slice-01.md |",
+      "| 01 - Delivery | observable result | - | AC-001 | `../src/example.txt`; example implementation | plans/slice-01.md |\n| 02 - Recovery | reconciled result | 01 | AC-001 | `../src/example.txt`; example implementation | plans/slice-02.md |",
     );
   });
   // Historical plan/task authority remains immutable.
@@ -241,7 +291,8 @@ async function commitAppendRecovery(fixture, oldHash, newHash, { resolveDivergen
     ["Slice 01", "Slice 02"], ["- Slice: 01", "- Slice: 02"], ["<Name>", "Recovery"],
     ["plans/slice-01.md", "plans/slice-02.md"], ["`<relative path>`", "`../../requirements.md`"],
     ["sha256:<64hex>", `sha256:${newHash}`], ["<positive integer>", "2"],
-    ["<task>", "Reconcile behavior"], ["<result>", "reconciled result"], ["<areas>", "src/example.txt"],
+    ["<task>", "Reconcile behavior"], ["<result>", "reconciled result"],
+    ["`<artifact-relative path>`; <optional conceptual area>", "`../../src/example.txt`; example implementation"],
     ["<test, command, suite, or observable check>", "node --test"],
   ]);
   await fs.writeFile(path.join(fixture.execution, "tasks/slice-02.md"), appended, "utf8");
@@ -249,8 +300,8 @@ async function commitAppendRecovery(fixture, oldHash, newHash, { resolveDivergen
 
 async function addSecondPristineSlice(fixture) {
   await editPlan(fixture, (value) => value.replace(
-    "| 01 - Delivery | observable result | - | AC-001 | src/example.txt | plans/slice-01.md |",
-    "| 01 - Delivery | observable result | - | AC-001 | src/example.txt | plans/slice-01.md |\n| 02 - Later | later result | 01 | AC-001 | src/later.txt | plans/slice-02.md |",
+    "| 01 - Delivery | observable result | - | AC-001 | `../src/example.txt`; example implementation | plans/slice-01.md |",
+    "| 01 - Delivery | observable result | - | AC-001 | `../src/example.txt`; example implementation | plans/slice-01.md |\n| 02 - Later | later result | 01 | AC-001 | `../src/later.txt`; later implementation | plans/slice-02.md |",
   ));
   const plan = (await fs.readFile(path.join(fixture.execution, "plans/slice-01.md"), "utf8"))
     .replaceAll("Slice 01", "Slice 02").replaceAll("- Slice: 01", "- Slice: 02").replaceAll("Delivery", "Later");
@@ -272,8 +323,8 @@ async function stageThirdRecovery(fixture, authority, { ready = false } = {}) {
     .replace("Review state: approved", `Review state: ${ready ? "approved" : "pending"}`)
     .replace("- Supersedes open slices: slice-01 -> slice-02", "- Supersedes open slices: slice-02 -> slice-03")
     .replace(
-      "| 02 - Recovery | reconciled result | 01 | AC-001 | src/example.txt | plans/slice-02.md |",
-      "| 02 - Recovery | reconciled result | 01 | AC-001 | src/example.txt | plans/slice-02.md |\n| 03 - Recovery | reconciled result | 02 | AC-001 | src/example.txt | plans/slice-03.md |",
+      "| 02 - Recovery | reconciled result | 01 | AC-001 | `../src/example.txt`; example implementation | plans/slice-02.md |",
+      "| 02 - Recovery | reconciled result | 01 | AC-001 | `../src/example.txt`; example implementation | plans/slice-02.md |\n| 03 - Recovery | reconciled result | 02 | AC-001 | `../src/example.txt`; example implementation | plans/slice-03.md |",
     ));
   let plan = await fs.readFile(path.join(fixture.execution, "plans/slice-02.md"), "utf8");
   plan = plan.replaceAll("Slice 02", "Slice 03").replaceAll("- Slice: 02", "- Slice: 03")
@@ -296,7 +347,8 @@ async function commitThirdRecovery(fixture, authority) {
     ["Slice 01", "Slice 03"], ["- Slice: 01", "- Slice: 03"], ["<Name>", "Recovery"],
     ["plans/slice-01.md", "plans/slice-03.md"], ["`<relative path>`", "`../../requirements.md`"],
     ["sha256:<64hex>", `sha256:${authority}`], ["<positive integer>", "3"],
-    ["<task>", "Reconcile behavior again"], ["<result>", "reconciled result"], ["<areas>", "src/example.txt"],
+    ["<task>", "Reconcile behavior again"], ["<result>", "reconciled result"],
+    ["`<artifact-relative path>`; <optional conceptual area>", "`../../src/example.txt`; example implementation"],
     ["<test, command, suite, or observable check>", "node --test"], ["1.1", "3.1"],
   ]);
   await fs.writeFile(path.join(fixture.execution, "tasks/slice-03.md"), third, "utf8");
@@ -1389,6 +1441,162 @@ test("candidate shadows use external OS temp, preserve standalone logical paths,
   await assert.rejects(validateExecutionCandidate(fixture.requirements, nestedCandidate), /must be isolated from live execution artifacts/u);
   await fs.rm(nestedCandidate, { recursive: true });
   await assert.rejects(validateExecutionCandidate(fixture.requirements, fixture.root), /must be isolated from live execution artifacts/u);
+});
+
+test("artifact-relative planning paths reject lifecycle-local candidates before publication", async (t) => {
+  const initial = await nestedLifecycleWorkspace(t, { materialized: false, planStatus: "draft" });
+  const candidate = await copyDirectory(initial.execution, path.join(path.dirname(initial.repository), "initial plan candidate"));
+  const candidateFixture = { ...initial, execution: candidate };
+  const requirementsBefore = await fs.readFile(path.join(initial.requirements, "feature_spec.md"));
+  await setImplementationAreas(initial, { global: "scripts/validate.sh" });
+  assert.equal((await preflightExecutionOperation(initial.requirements, "REVIEW_PLAN")).state, "PLANNED_DRAFT");
+  await fs.rm(initial.execution, { recursive: true });
+  await setImplementationAreas(candidateFixture, { global: "scripts/validate.sh" });
+  await assert.rejects(validateExecutionCandidate(initial.requirements, candidate), (error) => {
+    assert.ok(error instanceof ExecutionContractError);
+    assert.match(error.message, /artifact="specs\/área segura\/feature Ω\/execution\/plan\.md"/u);
+    assert.match(error.message, /field="Serial Slice Order 01 Expected areas"/u);
+    assert.match(error.message, /raw="scripts\/validate\.sh"/u);
+    assert.match(error.message, /resolves inside the execution root/u);
+    assert.match(error.message, /trusted-root=/u);
+    return true;
+  });
+  await assert.rejects(fs.stat(initial.execution), { code: "ENOENT" });
+  assert.deepEqual(await fs.readFile(path.join(initial.requirements, "feature_spec.md")), requirementsBefore);
+
+  const reviewed = await nestedLifecycleWorkspace(t, { materialized: false, planStatus: "ready" });
+  const reviewedCandidate = await copyDirectory(reviewed.execution, path.join(path.dirname(reviewed.repository), "reviewed plan candidate"));
+  const reviewedFixture = { ...reviewed, execution: reviewedCandidate };
+  const liveBefore = await Promise.all([
+    fs.readFile(path.join(reviewed.execution, "plan.md")),
+    fs.readFile(path.join(reviewed.execution, "plans/slice-01.md")),
+  ]);
+  await setImplementationAreas(reviewedFixture, { detail: "../../skills/workflows/example.mjs" });
+  await assert.rejects(validateExecutionCandidate(reviewed.requirements, reviewedCandidate), (error) => {
+    assert.match(error.message, /field="Likely Areas"/u);
+    assert.match(error.message, /resolves inside the lifecycle SPEC workspace/u);
+    assert.match(error.message, /existing-project-target=/u);
+    return true;
+  });
+  const correctExisting = path.relative(
+    path.join(reviewed.requirements, "execution/plans"),
+    path.join(reviewed.repository, "scripts/validate.sh"),
+  ).split(path.sep).join("/");
+  await setImplementationAreas(reviewedFixture, { detail: correctExisting });
+  assert.equal((await validateExecutionCandidate(reviewed.requirements, reviewedCandidate)).state, "PLANNED_READY");
+  assert.deepEqual(await Promise.all([
+    fs.readFile(path.join(reviewed.execution, "plan.md")),
+    fs.readFile(path.join(reviewed.execution, "plans/slice-01.md")),
+  ]), liveBefore);
+});
+
+test("materialization and task-review gates preserve valid future artifact-relative paths", async (t) => {
+  const planOnly = await nestedLifecycleWorkspace(t, { materialized: false, planStatus: "ready" });
+  await setImplementationAreas(planOnly, { global: "scripts/validate.sh" });
+  const invalidPlanBefore = await fs.readFile(path.join(planOnly.execution, "plan.md"));
+  await assert.rejects(
+    preflightExecutionOperation(planOnly.requirements, "MATERIALIZE_TASKS"),
+    /resolves inside the execution root/u,
+  );
+  assert.deepEqual(await fs.readFile(path.join(planOnly.execution, "plan.md")), invalidPlanBefore);
+
+  const fixture = await nestedLifecycleWorkspace(t);
+  const candidate = await copyDirectory(fixture.execution, path.join(path.dirname(fixture.repository), "task review candidate"));
+  const candidateFixture = { ...fixture, execution: candidate };
+  const liveBefore = await Promise.all([
+    fs.readFile(path.join(fixture.execution, "plan.md")),
+    fs.readFile(path.join(fixture.execution, "plans/slice-01.md")),
+    fs.readFile(path.join(fixture.execution, "tasks.md")),
+    fs.readFile(path.join(fixture.execution, "tasks/slice-01.md")),
+  ]);
+  const futureTarget = path.join(fixture.repository, "skills/workflows/stnl-user-story-refiner/runtime/refine.mjs");
+  const shortFuture = "../../skills/workflows/stnl-user-story-refiner/runtime/refine.mjs";
+  await setImplementationAreas(candidateFixture, { task: shortFuture });
+  await assert.rejects(validateExecutionCandidate(fixture.requirements, candidate), (error) => {
+    assert.match(error.message, /field="Checklist 1\.1 expected areas"/u);
+    assert.match(error.message, /resolves inside the lifecycle SPEC workspace/u);
+    return true;
+  });
+  const taskFuture = path.relative(path.join(fixture.execution, "tasks"), futureTarget).split(path.sep).join("/");
+  await setImplementationAreas(candidateFixture, { task: taskFuture });
+  assert.equal((await validateExecutionCandidate(fixture.requirements, candidate)).state, "MATERIALIZED_PRISTINE");
+  await assert.rejects(fs.stat(futureTarget), { code: "ENOENT" });
+  assert.deepEqual(await Promise.all([
+    fs.readFile(path.join(fixture.execution, "plan.md")),
+    fs.readFile(path.join(fixture.execution, "plans/slice-01.md")),
+    fs.readFile(path.join(fixture.execution, "tasks.md")),
+    fs.readFile(path.join(fixture.execution, "tasks/slice-01.md")),
+  ]), liveBefore);
+
+  await setImplementationAreas(fixture, { task: shortFuture });
+  const invalidTaskBefore = await fs.readFile(path.join(fixture.execution, "tasks/slice-01.md"));
+  assert.equal((await preflightExecutionOperation(fixture.requirements, "REVIEW_TASKS")).state, "MATERIALIZED_PRISTINE");
+  await assert.rejects(
+    preflightExecutionOperation(fixture.requirements, "EXECUTE_SLICE", "1"),
+    /resolves inside the lifecycle SPEC workspace/u,
+  );
+  assert.deepEqual(await fs.readFile(path.join(fixture.execution, "tasks/slice-01.md")), invalidTaskBefore);
+});
+
+test("standalone path basis, Unicode, future targets, and symlink safety stay deterministic", async (t) => {
+  const root = await temporary(t, "stnl-standalone-paths-");
+  const repository = path.join(root, "repository with space ü");
+  await fs.mkdir(path.join(repository, ".git"), { recursive: true });
+  const requirements = path.join(repository, "docs/nested/requirements.md");
+  await fs.mkdir(path.dirname(requirements), { recursive: true });
+  await fs.writeFile(requirements, "# Requirements\n\n- AC-001: observable behavior\n", "utf8");
+  const fixture = {
+    root: repository,
+    repository,
+    requirements,
+    execution: path.join(path.dirname(requirements), "requirements-execution"),
+  };
+  await fs.mkdir(path.join(repository, "scripts"), { recursive: true });
+  const existingTarget = path.join(repository, "scripts/validate.sh");
+  await fs.writeFile(existingTarget, "#!/bin/sh\n", "utf8");
+  await fs.mkdir(path.join(repository, "skills/workflows"), { recursive: true });
+  await renderArtifacts(fixture);
+  const candidate = await copyDirectory(fixture.execution, path.join(root, "standalone candidate"));
+  const candidateFixture = { ...fixture, execution: candidate };
+  const areasFor = (target) => ({
+    global: path.relative(fixture.execution, target).split(path.sep).join("/"),
+    detail: path.relative(path.join(fixture.execution, "plans"), target).split(path.sep).join("/"),
+    task: path.relative(path.join(fixture.execution, "tasks"), target).split(path.sep).join("/"),
+  });
+
+  await setImplementationAreas(candidateFixture, areasFor(existingTarget));
+  assert.equal((await validateExecutionCandidate(requirements, candidate)).state, "MATERIALIZED_PRISTINE");
+
+  const shortDetail = areasFor(existingTarget).detail.replace(/^\.\.\//u, "");
+  await setImplementationAreas(candidateFixture, { detail: shortDetail });
+  await assert.rejects(validateExecutionCandidate(requirements, candidate), (error) => {
+    assert.match(error.message, /possible path-basis error/u);
+    assert.match(error.message, /existing-project-target=/u);
+    return true;
+  });
+
+  const unicodeLocal = path.join(path.dirname(requirements), "área local/arquivo Ω.txt");
+  await fs.mkdir(path.dirname(unicodeLocal), { recursive: true });
+  await fs.writeFile(unicodeLocal, "local\n", "utf8");
+  await setImplementationAreas(candidateFixture, areasFor(unicodeLocal));
+  assert.equal((await validateExecutionCandidate(requirements, candidate)).state, "MATERIALIZED_PRISTINE");
+
+  const futureTarget = path.join(repository, "skills/workflows/stnl-user-story-refiner/novo Ω.mjs");
+  await setImplementationAreas(candidateFixture, areasFor(futureTarget));
+  assert.equal((await validateExecutionCandidate(requirements, candidate)).state, "MATERIALIZED_PRISTINE");
+  await assert.rejects(fs.stat(futureTarget), { code: "ENOENT" });
+
+  const outside = path.join(root, "outside");
+  await fs.mkdir(outside);
+  await fs.symlink(outside, path.join(repository, "linked"), "dir");
+  const symlinkFuture = path.join(repository, "linked/future.txt");
+  await setImplementationAreas(candidateFixture, areasFor(symlinkFuture));
+  await assert.rejects(validateExecutionCandidate(requirements, candidate), /traverses a symlink/u);
+
+  await setImplementationAreas(candidateFixture, { global: "/absolute/path.txt" });
+  await assert.rejects(validateExecutionCandidate(requirements, candidate), /not a normalized relative path/u);
+  await setImplementationAreas(candidateFixture, { global: "../../../../../../escaped.txt" });
+  await assert.rejects(validateExecutionCandidate(requirements, candidate), /escapes its trusted workspace/u);
 });
 
 test("auxiliary runner output contract round-trips through model-owned persistence and derived state", async (t) => {
@@ -2865,8 +3073,8 @@ test("canonical execution tables and checklists reject every unexpected structur
   const malformedPlan = await standaloneWorkspace(t);
   await renderArtifacts(malformedPlan);
   await editPlan(malformedPlan, (value) => value.replace(
-    "| 01 - Delivery | observable result | - | AC-001 | src/example.txt | plans/slice-01.md |",
-    "| 01 - Delivery | observable result | - | AC-001 | src/example.txt | plans/slice-01.md |\n| malformed serial row |",
+    "| 01 - Delivery | observable result | - | AC-001 | `../src/example.txt`; example implementation | plans/slice-01.md |",
+    "| 01 - Delivery | observable result | - | AC-001 | `../src/example.txt`; example implementation | plans/slice-01.md |\n| malformed serial row |",
   ));
   await assert.rejects(inspectExecutionState(malformedPlan.requirements), /Serial Slice Order.*malformed row/u);
 
@@ -2881,8 +3089,8 @@ test("canonical execution tables and checklists reject every unexpected structur
   const nonPipePlan = await standaloneWorkspace(t);
   await renderArtifacts(nonPipePlan);
   await editPlan(nonPipePlan, (value) => value.replace(
-    "| 01 - Delivery | observable result | - | AC-001 | src/example.txt | plans/slice-01.md |",
-    "| 01 - Delivery | observable result | - | AC-001 | src/example.txt | plans/slice-01.md |\nmalformed serial row without pipes",
+    "| 01 - Delivery | observable result | - | AC-001 | `../src/example.txt`; example implementation | plans/slice-01.md |",
+    "| 01 - Delivery | observable result | - | AC-001 | `../src/example.txt`; example implementation | plans/slice-01.md |\nmalformed serial row without pipes",
   ));
   await assert.rejects(inspectExecutionState(nonPipePlan.requirements), /Serial Slice Order.*unexpected structural row/u);
 
@@ -2897,8 +3105,8 @@ test("canonical execution tables and checklists reject every unexpected structur
   const malformedChecklist = await standaloneWorkspace(t);
   await renderArtifacts(malformedChecklist);
   await editTask(malformedChecklist, (value) => value.replace(
-    "- [ ] 1.1 Implement behavior | observable result: observable result | expected areas: src/example.txt | requirement: AC-001",
-    "- [ ] 1.1 Implement behavior | observable result: observable result | expected areas: src/example.txt | requirement: AC-001\n- [ ] malformed checklist row",
+    "- [ ] 1.1 Implement behavior | observable result: observable result | expected areas: `../../src/example.txt`; example implementation | requirement: AC-001",
+    "- [ ] 1.1 Implement behavior | observable result: observable result | expected areas: `../../src/example.txt`; example implementation | requirement: AC-001\n- [ ] malformed checklist row",
   ));
   await assert.rejects(inspectExecutionState(malformedChecklist.requirements), /malformed Checklist row/u);
 });
