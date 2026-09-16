@@ -4,7 +4,7 @@ Cada pacote de plataforma contém todos os subagentes Sentinel distribuíveis: o
 
 ## Instalação
 
-A cópia parte da pasta `templates/subagents/` deste repositório. Escolha uma plataforma e copie somente o conteúdo da pasta correspondente para a raiz do projeto:
+A cópia parte da pasta `agents/` deste repositório. Escolha uma plataforma e copie somente o conteúdo da pasta correspondente para a raiz do projeto:
 
 - Codex: copie somente o conteúdo de `codex/`. Os arquivos resultantes devem ser `.codex/agents/stnl_validation_runner.toml` e `.codex/agents/stnl_spec_context_scout.toml`.
 - Claude Code: copie somente o conteúdo de `claude-code/`. Os arquivos resultantes devem ser `.claude/agents/stnl-validation-runner.md` e `.claude/agents/stnl-spec-context-scout.md`.

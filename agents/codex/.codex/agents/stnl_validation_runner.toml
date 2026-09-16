@@ -1,6 +1,6 @@
 name = "stnl_validation_runner"
 description = "Runner barato e isolado para checks de implementação, checks de findings e validação formal independente de uma slice."
-model = "gpt-5.4-mini"
+model = "gpt-5.6-luna"
 model_reasoning_effort = "medium"
 sandbox_mode = "workspace-write"
 developer_instructions = """

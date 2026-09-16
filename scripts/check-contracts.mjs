@@ -380,7 +380,11 @@ function checkSubagents(root) {
     "claude-code/.claude/agents/stnl-validation-runner.md",
     "claude-code/.claude/agents/stnl-spec-context-scout.md",
   ]);
-  const actual = new Set(realFiles(root).map((file) => path.relative(root, file).split(path.sep).join("/")));
+  // Subagent bundles share agents/ with the pre-existing base-agent contracts.
+  // Validate the package registry without treating that known sibling as a package file.
+  const actual = new Set(realFiles(root)
+    .map((file) => path.relative(root, file).split(path.sep).join("/"))
+    .filter((file) => !file.startsWith("base/")));
   if (actual.size !== expected.size || [...actual].some((file) => !expected.has(file))) reject("S002_REGISTRY", `subagent registry mismatch; actual=${JSON.stringify([...actual].sort())}`);
   checkRunner(root);
   checkScout(root);

@@ -7,7 +7,7 @@ import test from "node:test";
 
 const repository = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
 const checker = path.join(repository, "scripts/check-contracts.mjs");
-const canonical = path.join(repository, "templates/subagents");
+const canonical = path.join(repository, "agents");
 
 async function fixture(t) {
   const temporary = await fs.mkdtemp(path.join(os.tmpdir(), "stnl-runner-"));

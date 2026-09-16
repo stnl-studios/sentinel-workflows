@@ -18,7 +18,7 @@ import test from "node:test";
 
 const SCRIPT_ROOT = path.dirname(fileURLToPath(import.meta.url));
 const REPOSITORY_ROOT = path.resolve(SCRIPT_ROOT, "..");
-const DISTRIBUTION_ROOT = path.join(REPOSITORY_ROOT, "templates", "subagents");
+const DISTRIBUTION_ROOT = path.join(REPOSITORY_ROOT, "agents");
 const LEGACY_DIRECTORY = ["context", "scout"].join("-");
 
 const RUNNER_DESCRIPTION =
@@ -307,7 +307,10 @@ async function validateDistribution(root) {
     ...PLATFORMS.codex.files.map((file) => `codex/${file}`),
     ...PLATFORMS["claude-code"].files.map((file) => `claude-code/${file}`),
   ];
-  assertExactFiles(await listFiles(root), expectedFiles, "subagent distribution");
+  // The distributable subagent bundles now live beside the pre-existing base agents.
+  // Keep the package registry strict while excluding that known, non-package sibling.
+  const distributionFiles = (await listFiles(root)).filter((file) => !file.startsWith("base/"));
+  assertExactFiles(distributionFiles, expectedFiles, "subagent distribution");
   await validateReadme(root);
   const codex = await validateCodexPackage(path.join(root, "codex"));
   const claude = await validateClaudePackage(path.join(root, "claude-code"));

@@ -2,7 +2,7 @@
 name: stnl-validation-runner
 description: Runner barato e isolado para checks de implementação, checks de findings e validação formal independente de uma slice.
 tools: Read, Glob, Grep, Bash
-model: haiku
+model: claude-sonnet-5
 effort: medium
 ---
 

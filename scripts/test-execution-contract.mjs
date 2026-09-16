@@ -1303,8 +1303,8 @@ test("successful model-owned candidate publication has strict success and live r
 
 test("auxiliary runner output contract round-trips through model-owned persistence and derived state", async (t) => {
   const contracts = await Promise.all([
-    fs.readFile(path.join(ROOT, "templates/subagents/claude-code/.claude/agents/stnl-validation-runner.md"), "utf8"),
-    fs.readFile(path.join(ROOT, "templates/subagents/codex/.codex/agents/stnl_validation_runner.toml"), "utf8"),
+    fs.readFile(path.join(ROOT, "agents/claude-code/.claude/agents/stnl-validation-runner.md"), "utf8"),
+    fs.readFile(path.join(ROOT, "agents/codex/.codex/agents/stnl_validation_runner.toml"), "utf8"),
   ]);
   const persisted = checkRecord("implementation-check", 1, "TESTS_PASS", 1);
   for (const [runnerField, recordField] of [
@@ -1360,7 +1360,7 @@ test("auxiliary runner output contract round-trips through model-owned persisten
 });
 
 test("formal validation output round-trips through NEEDS_FIX, correction, PASS, base, final, and handoff", async (t) => {
-  const runnerContract = await fs.readFile(path.join(ROOT, "templates/subagents/claude-code/.claude/agents/stnl-validation-runner.md"), "utf8");
+  const runnerContract = await fs.readFile(path.join(ROOT, "agents/claude-code/.claude/agents/stnl-validation-runner.md"), "utf8");
   for (const fieldName of ["Tipo de validação:", "Status: PASS | NEEDS_FIX | BLOCKED", "Manifesto final da slice:", "Evidências:", "Findings:"]) {
     assert.ok(runnerContract.includes(fieldName), fieldName);
   }

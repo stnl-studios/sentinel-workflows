@@ -33,7 +33,7 @@ done < <(find scripts skills templates -type f -name '*.mjs' -print0)
 
 node scripts/check-contracts.mjs repository --root "$ROOT"
 node scripts/check-contracts.mjs launchers --root templates/prompts
-node scripts/check-contracts.mjs subagents --root templates/subagents
+node scripts/check-contracts.mjs subagents --root agents
 
 execution_skills=(
   skills/workflows/stnl-execution-planner
