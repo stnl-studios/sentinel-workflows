@@ -29,7 +29,10 @@ command -v node >/dev/null 2>&1 || { echo "FAIL: node is unavailable" >&2; exit 
 
 while IFS= read -r -d '' module; do
   node --check "$module"
-done < <(find scripts skills templates -type f -name '*.mjs' -print0)
+done < <(find scripts skills templates benchmarks -type f -name '*.mjs' -print0)
+
+node --test benchmarks/sentinel-todo/seed/test/*.test.mjs
+node scripts/test-benchmark-contract.mjs
 
 node scripts/check-contracts.mjs repository --root "$ROOT"
 node scripts/check-contracts.mjs launchers --root templates/prompts

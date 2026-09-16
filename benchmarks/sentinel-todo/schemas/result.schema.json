@@ -1,0 +1,181 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sentinel.local/schemas/benchmark-result-v1.json",
+  "title": "Sentinel Benchmark Result v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "benchmarkVersion", "benchmarkId", "caseId", "runMode", "sentinelSha", "productionProfileId", "status", "finalExecutionState", "specClosed", "finalTestsPassed", "decomposition", "operations", "modelUse", "contextCost", "workspace", "finalTests"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "benchmarkVersion": { "const": 1 },
+    "benchmarkId": { "const": "sentinel-todo" },
+    "caseId": { "enum": ["A", "B", "C"] },
+    "runMode": { "enum": ["focal", "case", "full"] },
+    "sentinelSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "productionProfileId": { "const": "production-v1" },
+    "status": { "enum": ["PASS", "FAIL", "BLOCKED", "ABORTED_BUDGET"] },
+    "finalExecutionState": { "type": ["string", "null"] },
+    "specClosed": { "type": "boolean" },
+    "finalTestsPassed": { "type": "boolean" },
+    "decomposition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["slices", "tasks", "tasksPerSlice"],
+      "properties": {
+        "slices": { "type": "integer", "minimum": 0 },
+        "tasks": { "type": "integer", "minimum": 0 },
+        "tasksPerSlice": { "type": "object", "additionalProperties": { "type": "integer", "minimum": 0 } }
+      }
+    },
+    "operations": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["total", "reviewPlanRounds", "reviewTasksRounds", "replans", "executeCalls", "validateCalls", "applyFindingsCalls", "findingsCycles", "mechanicalRejections", "retries"],
+      "properties": {
+        "total": { "type": "integer", "minimum": 0 },
+        "reviewPlanRounds": { "type": "integer", "minimum": 0 },
+        "reviewTasksRounds": { "type": "integer", "minimum": 0 },
+        "replans": { "type": "integer", "minimum": 0 },
+        "executeCalls": { "type": "integer", "minimum": 0 },
+        "validateCalls": { "type": "integer", "minimum": 0 },
+        "applyFindingsCalls": { "type": "integer", "minimum": 0 },
+        "findingsCycles": { "type": "integer", "minimum": 0 },
+        "mechanicalRejections": { "type": "integer", "minimum": 0 },
+        "retries": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "modelUse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["expectedProfile", "actualModelsByPhase", "actualEffortsByPhase", "childDispatches", "profileMismatches", "solEscalations"],
+      "properties": {
+        "expectedProfile": { "$ref": "#/$defs/profile" },
+        "actualModelsByPhase": { "$ref": "#/$defs/actualModels" },
+        "actualEffortsByPhase": { "$ref": "#/$defs/actualEfforts" },
+        "childDispatches": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["parentEventIndex", "parentOperation", "role", "model", "effort"],
+            "properties": {
+              "parentEventIndex": { "type": "integer", "minimum": 1 },
+              "parentOperation": { "type": "string", "minLength": 1 },
+              "role": { "type": "string", "minLength": 1 },
+              "model": { "$ref": "#/$defs/model" },
+              "effort": { "$ref": "#/$defs/effort" }
+            }
+          }
+        },
+        "profileMismatches": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["eventIndex", "operation", "phase", "expectedModel", "actualModel", "expectedEffort", "actualEffort"],
+            "properties": {
+              "eventIndex": { "type": "integer", "minimum": 1 },
+              "operation": { "type": "string", "minLength": 1 },
+              "phase": { "$ref": "#/$defs/phase" },
+              "expectedModel": { "$ref": "#/$defs/model" },
+              "actualModel": { "$ref": "#/$defs/model" },
+              "expectedEffort": { "$ref": "#/$defs/effort" },
+              "actualEffort": { "$ref": "#/$defs/effort" }
+            }
+          }
+        },
+        "solEscalations": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "contextCost": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["planBytes", "planWords", "tasksBytes", "tasksWords", "handoffBytes", "observableReads", "actualTokenTelemetryAvailable", "inputTokens", "outputTokens"],
+      "properties": {
+        "planBytes": { "type": "integer", "minimum": 0 },
+        "planWords": { "type": "integer", "minimum": 0 },
+        "tasksBytes": { "type": "integer", "minimum": 0 },
+        "tasksWords": { "type": "integer", "minimum": 0 },
+        "handoffBytes": { "type": ["integer", "null"], "minimum": 0 },
+        "observableReads": { "type": ["integer", "null"], "minimum": 0 },
+        "actualTokenTelemetryAvailable": { "type": "boolean" },
+        "inputTokens": { "type": ["integer", "null"], "minimum": 0 },
+        "outputTokens": { "type": ["integer", "null"], "minimum": 0 }
+      }
+    },
+    "workspace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["changedFileCount", "finalDiffBytes", "seedContentHash", "requirementsHash", "requirementsHashMatches", "observedSentinelSha", "sentinelShaMatchesCheckout"],
+      "properties": {
+        "changedFileCount": { "type": "integer", "minimum": 0 },
+        "finalDiffBytes": { "type": "integer", "minimum": 0 },
+        "seedContentHash": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "requirementsHash": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "requirementsHashMatches": { "type": "boolean" },
+        "observedSentinelSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "sentinelShaMatchesCheckout": { "type": "boolean" }
+      }
+    },
+    "finalTests": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["command", "exitCode", "passed"],
+      "properties": {
+        "command": { "const": "node --test" },
+        "exitCode": { "type": "integer" },
+        "passed": { "type": "boolean" }
+      }
+    }
+  },
+  "$defs": {
+    "model": { "enum": ["GPT-5.6-Sol", "GPT-5.6-Terra", "GPT-5.6-Luna"] },
+    "effort": { "enum": ["low", "medium", "high", "xhigh"] },
+    "phase": { "enum": ["SPEC", "PLAN", "TASKS", "EXECUTE", "REVIEW_VALIDATE"] },
+    "dispatch": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["model", "effort"],
+      "properties": {
+        "model": { "$ref": "#/$defs/model" },
+        "effort": { "$ref": "#/$defs/effort" }
+      }
+    },
+    "profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["SPEC", "PLAN", "TASKS", "EXECUTE", "REVIEW_VALIDATE"],
+      "properties": {
+        "SPEC": { "$ref": "#/$defs/dispatch" },
+        "PLAN": { "$ref": "#/$defs/dispatch" },
+        "TASKS": { "$ref": "#/$defs/dispatch" },
+        "EXECUTE": { "$ref": "#/$defs/dispatch" },
+        "REVIEW_VALIDATE": { "$ref": "#/$defs/dispatch" }
+      }
+    },
+    "actualModels": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["SPEC", "PLAN", "TASKS", "EXECUTE", "REVIEW_VALIDATE"],
+      "properties": {
+        "SPEC": { "type": "array", "items": { "$ref": "#/$defs/model" }, "uniqueItems": true },
+        "PLAN": { "type": "array", "items": { "$ref": "#/$defs/model" }, "uniqueItems": true },
+        "TASKS": { "type": "array", "items": { "$ref": "#/$defs/model" }, "uniqueItems": true },
+        "EXECUTE": { "type": "array", "items": { "$ref": "#/$defs/model" }, "uniqueItems": true },
+        "REVIEW_VALIDATE": { "type": "array", "items": { "$ref": "#/$defs/model" }, "uniqueItems": true }
+      }
+    },
+    "actualEfforts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["SPEC", "PLAN", "TASKS", "EXECUTE", "REVIEW_VALIDATE"],
+      "properties": {
+        "SPEC": { "type": "array", "items": { "$ref": "#/$defs/effort" }, "uniqueItems": true },
+        "PLAN": { "type": "array", "items": { "$ref": "#/$defs/effort" }, "uniqueItems": true },
+        "TASKS": { "type": "array", "items": { "$ref": "#/$defs/effort" }, "uniqueItems": true },
+        "EXECUTE": { "type": "array", "items": { "$ref": "#/$defs/effort" }, "uniqueItems": true },
+        "REVIEW_VALIDATE": { "type": "array", "items": { "$ref": "#/$defs/effort" }, "uniqueItems": true }
+      }
+    }
+  }
+}
