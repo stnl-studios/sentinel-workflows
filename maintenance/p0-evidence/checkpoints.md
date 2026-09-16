@@ -21,3 +21,8 @@
   - Invalid candidates rejected before publication or execution.
   - Safe future targets preserved.
   - P0 evidence history added.
+- `e7e5289dcc7f9e9cebf035e5962be989ee1db046`
+  - Reusable `sentinel-todo` benchmark with independent A/B/C fixture cases.
+  - Production Profile v1 with an external journal and bounded budgets.
+  - Raw result collection and before/after comparator.
+  - Cheap deterministic integrity tests.
