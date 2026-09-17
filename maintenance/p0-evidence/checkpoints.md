@@ -82,3 +82,16 @@
   - Both producers preserved 11/11 explicit authorities; no invention was observed.
   - Case A requirements were sufficient; Terra variance was observed.
   - No environment or Agent Harness blocker was observed.
+- `03724a7f646d6d20f57b7cb85ea6358bdf29c999`
+  - Production Profile v2 published with Case A SPEC on Sol/high.
+  - All other A/B/C model and effort assignments were preserved.
+  - Profile regression checks passed.
+  - No Production Pilot was executed in that checkpoint.
+- `pending user commit`
+  - Production Pilot #4 stopped Case A in `AUXILIARY_BLOCKED` after three
+    state-authorized `EXECUTE_SLICE` attempts for `slice-01`.
+  - Cases B and C were not run because the canary gate failed.
+  - A truthful partial production-v2 raw was preserved; no baseline or P0 gate
+    was promoted.
+  - The single final reviewer invocation failed before session creation and was
+    not retried.

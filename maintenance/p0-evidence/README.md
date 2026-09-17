@@ -24,6 +24,8 @@ This directory preserves compact, human-readable engineering evidence for Sentin
   harness controls.
 - `s3-production-profile-v2.md` — current Production Profile v2 decision and
   deterministic contract evidence before Pilot #4.
+- `s3-benchmark-pilot-04.md` — blocked Production Pilot #4 evidence for the
+  production-v2 Case A canary; Cases B/C were not authorized.
 
 ## P0 Gates
 

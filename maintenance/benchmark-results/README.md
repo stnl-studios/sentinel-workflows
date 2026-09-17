@@ -19,3 +19,16 @@ maintenance/benchmark-results/<sentinel-sha>/
 ```
 
 No synthetic or placeholder result belongs in this directory.
+
+## Production Pilot #4
+
+Candidate `03724a7f646d6d20f57b7cb85ea6358bdf29c999` used
+`production-v2`. The canary stopped before B/C authorization, so only the
+truthful partial Case A raw exists:
+
+- `03724a7f646d6d20f57b7cb85ea6358bdf29c999/case-a-production-v2.json`
+  - status: `BLOCKED`
+  - final execution state: `AUXILIARY_BLOCKED`
+  - SHA-256: `fa6b421fe4861a497f15f5432acfdb7f3b5d22e5e3c48780398181f6a794a202`
+
+No official production-v2 baseline is established.
