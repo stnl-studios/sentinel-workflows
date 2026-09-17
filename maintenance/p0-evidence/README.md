@@ -63,6 +63,9 @@ This directory preserves compact, human-readable engineering evidence for Sentin
 - `s3-pilot-orchestration-authority-v1.md` — official-readback-first Pilot
   authority rule, D01–D05 regression, and the blocked one-shot Case A live
   proof whose non-canonical workspace path was rejected before model start.
+- `s3-benchmark-pilot-09.md` — Production Pilot #9 evidence; all deterministic
+  checks passed, but the mandatory one-shot Luna/medium sandbox probe returned
+  `PROBE_BLOCKED`, so no Case, reviewer, or raw was created.
 
 ## P0 Gates
 

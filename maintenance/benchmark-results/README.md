@@ -108,3 +108,15 @@ cleanup:
 
 Cases B/C and the final reviewer were not run. The official production-v2
 baseline remains not established.
+
+## Production Pilot #9
+
+Candidate `22e2cc7950de01353a0099f5917ede4b76fd2025` used
+`production-v2`. All frozen-candidate and deterministic repository checks
+passed, but the mandatory one-shot GPT-5.6-Luna/medium sandbox probe blocked:
+the Harness completed one turn with retry `0`, its only command exited `2`, and
+the model returned `PROBE_BLOCKED`.
+
+The probe was not repeated. Pilot Case A, Cases B/C, and the final reviewer
+were not run, so no Pilot #9 raw or candidate result directory was created. The
+official production-v2 baseline remains not established.

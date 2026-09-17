@@ -192,10 +192,18 @@
   - The canonical `BLOCKED` raw was copied byte-for-byte and hashed before
     managed cleanup; B/C and the reviewer were not run.
   - No baseline or gate was promoted, and P0 remains open.
-- `pending user commit` — Pilot orchestration authority v1
+- `22e2cc7950de01353a0099f5917ede4b76fd2025`
   - The external decision rule now uses official readbacks instead of model
     prose or ad hoc artifact parsing; D01–D05 passed.
   - The single fresh Case A Harness request was rejected before provider start
     because its `/tmp` workspace path was not canonical on this host.
   - No SPEC, benchmark raw, functional Sentinel diff, retry, PLAN, review, or
     Production Pilot #9 was produced; the P0 ledger remains unchanged.
+- `pending user commit` — Production Pilot #9
+  - Candidate and functional-equivalence checks plus all deterministic
+    repository checks and static Environment/Harness checks passed.
+  - The mandatory one-shot Luna/medium sandbox probe used canonical CWD/TMPDIR
+    and zero retry, but its only command exited `2` and returned
+    `PROBE_BLOCKED`.
+  - Stop-loss prevented a second probe, Case A, B/C, and the reviewer; no raw,
+    baseline, or gate promotion was produced and P0 remains open.
