@@ -143,7 +143,7 @@
   - The collector created a `BLOCKED` raw in the ephemeral Case root, but the
     driver failed to preserve it before cleanup, so finalization blocked.
   - No baseline or P0 gate was promoted; P0 remains open.
-- `pending user commit`
+- `6de87f5d3d8f02ee27b8826942481c0529496291`
   - Production Pilot #6 passed the frozen-candidate, functional-equivalence,
     environment, Harness, and deterministic preconditions.
   - Case A stopped at the first executor preflight because the driver supplied
@@ -153,3 +153,14 @@
   - The Pilot #5 terminal-integrity mismatch boundary was not reached; B/C and
     the reviewer were not run, no baseline or gate was promoted, and P0 remains
     open.
+- `pending user commit`
+  - Production Pilot #7 passed the frozen-candidate, functional-equivalence,
+    environment, Harness, historical-integrity, and slice-rendering
+    preconditions.
+  - Case A stopped during PLAN candidate validation on invalid resolved path
+    `plans/list`; the rejected plan was not published and no slice operation
+    started.
+  - The collector's canonical `BLOCKED` raw was copied byte-for-byte and hashed
+    before managed-session cleanup.
+  - The terminal-integrity boundary was not reached; B/C and the reviewer were
+    not run, no baseline or gate was promoted, and P0 remains open.

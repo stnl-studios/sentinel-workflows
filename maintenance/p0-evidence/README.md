@@ -45,6 +45,10 @@ This directory preserves compact, human-readable engineering evidence for Sentin
   terminal-integrity forensic evidence; the blocked Case A raw was preserved
   before cleanup, while the canary stopped at the first EXECUTE input preflight
   before the prior terminal mismatch boundary.
+- `s3-benchmark-pilot-07.md` — Production Pilot #7 evidence; canonical numeric
+  slice rendering passed, durable finalization preserved the Case A raw, and
+  the canary stopped during PLAN candidate validation before any slice
+  operation.
 
 ## P0 Gates
 

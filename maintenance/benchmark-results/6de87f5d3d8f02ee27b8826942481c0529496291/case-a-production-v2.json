@@ -1,0 +1,104 @@
+{
+  "schemaVersion": 1,
+  "benchmarkVersion": 1,
+  "benchmarkId": "sentinel-todo",
+  "caseId": "A",
+  "runMode": "case",
+  "sentinelSha": "6de87f5d3d8f02ee27b8826942481c0529496291",
+  "productionProfileId": "production-v2",
+  "status": "BLOCKED",
+  "finalExecutionState": "EMPTY",
+  "specClosed": false,
+  "finalTestsPassed": true,
+  "decomposition": {
+    "slices": 0,
+    "tasks": 0,
+    "tasksPerSlice": {}
+  },
+  "operations": {
+    "total": 2,
+    "reviewPlanRounds": 0,
+    "reviewTasksRounds": 0,
+    "replans": 0,
+    "executeCalls": 0,
+    "validateCalls": 0,
+    "applyFindingsCalls": 0,
+    "findingsCycles": 0,
+    "mechanicalRejections": 0,
+    "retries": 0
+  },
+  "modelUse": {
+    "expectedProfile": {
+      "SPEC": {
+        "model": "GPT-5.6-Sol",
+        "effort": "high"
+      },
+      "PLAN": {
+        "model": "GPT-5.6-Terra",
+        "effort": "high"
+      },
+      "TASKS": {
+        "model": "GPT-5.6-Terra",
+        "effort": "high"
+      },
+      "EXECUTE": {
+        "model": "GPT-5.6-Luna",
+        "effort": "high"
+      },
+      "REVIEW_VALIDATE": {
+        "model": "GPT-5.6-Luna",
+        "effort": "high"
+      }
+    },
+    "actualModelsByPhase": {
+      "SPEC": [
+        "GPT-5.6-Sol"
+      ],
+      "PLAN": [
+        "GPT-5.6-Terra"
+      ],
+      "TASKS": [],
+      "EXECUTE": [],
+      "REVIEW_VALIDATE": []
+    },
+    "actualEffortsByPhase": {
+      "SPEC": [
+        "high"
+      ],
+      "PLAN": [
+        "high"
+      ],
+      "TASKS": [],
+      "EXECUTE": [],
+      "REVIEW_VALIDATE": []
+    },
+    "childDispatches": [],
+    "profileMismatches": [],
+    "solEscalations": 0
+  },
+  "contextCost": {
+    "planBytes": 0,
+    "planWords": 0,
+    "tasksBytes": 0,
+    "tasksWords": 0,
+    "handoffBytes": null,
+    "observableReads": null,
+    "actualTokenTelemetryAvailable": false,
+    "inputTokens": null,
+    "outputTokens": null
+  },
+  "workspace": {
+    "changedFileCount": 4,
+    "finalDiffBytes": 7788,
+    "seedContentHash": "sha256:9d93fbfa52b2e20607452f43d0ecb21e74f1872bb7a2da1b94dc2c814e7552e8",
+    "requirementsHash": "sha256:e5934bc22267756c3c10b31c46b7a9cd894b78e961b11975b0f14f7085349a24",
+    "requirementsHashMatches": true,
+    "observedSentinelSha": "6de87f5d3d8f02ee27b8826942481c0529496291",
+    "sentinelShaMatchesCheckout": true
+  },
+  "finalTests": {
+    "command": "node --test",
+    "exitCode": 0,
+    "passed": true
+  }
+}

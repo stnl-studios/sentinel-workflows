@@ -66,3 +66,24 @@ before managed-session cleanup:
 
 Cases B/C and the final reviewer were not run. The official production-v2
 baseline remains not established.
+
+## Production Pilot #7
+
+Candidate `6de87f5d3d8f02ee27b8826942481c0529496291` used
+`production-v2`. The canonical slice-input rendering preflight passed for
+`slice-01`, `slice-02`, and `slice-10`, but Case A stopped earlier during
+`PLAN`: candidate validation rejected `plans/slice-02.md` because its resolved
+implementation path was the invalid `plans/list`. The rejected planning
+candidate was not published and execution remained `EMPTY`.
+
+The canonical collector returned its documented non-zero `BLOCKED` exit after
+creating the result. The output was parsed, identity-checked, copied
+byte-for-byte, and hashed before managed-session cleanup:
+
+- `6de87f5d3d8f02ee27b8826942481c0529496291/case-a-production-v2.json`
+  - status: `BLOCKED`
+  - final execution state: `EMPTY`
+  - SHA-256: `b6fb0f60a54e06095155fc60b01fef8ef8cabaf53f12ca1b07fb9340fdc80ab3`
+
+No slice operation, Case B, Case C, or reviewer was run. The official
+production-v2 baseline remains not established.
