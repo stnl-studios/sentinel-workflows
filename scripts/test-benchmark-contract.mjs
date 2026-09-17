@@ -30,6 +30,7 @@ const TASKS_TEMPLATE = path.join(ROOT, 'skills', 'workflows', 'stnl-task-materia
 const SLICE_TASKS_TEMPLATE = path.join(ROOT, 'skills', 'workflows', 'stnl-task-materializer', 'templates', 'slice-tasks.template.md');
 const SHA = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: ROOT, encoding: 'utf8', shell: false }).stdout.trim();
 const PHASES = ['SPEC', 'PLAN', 'TASKS', 'EXECUTE', 'REVIEW_VALIDATE'];
+const CURRENT_PROFILE = 'production-v2';
 const VALIDATED_CONTENT = 'validated behavior\n';
 const VALIDATED_HASH = createHash('sha256').update(VALIDATED_CONTENT).digest('hex');
 
@@ -67,7 +68,7 @@ function event(journal, operation, phase, model, effort, result = 'PASS', extra 
 async function initJournal(file, caseId = 'A', runMode = 'case') {
   requireSuccess(cli([
     'journal-init', '--output', file, '--case', caseId, '--sentinel-sha', SHA,
-    '--run-mode', runMode, '--production-profile', 'production-v1',
+    '--run-mode', runMode, '--production-profile', CURRENT_PROFILE,
   ]), 'journal-init');
 }
 
@@ -204,6 +205,8 @@ async function writeSyntheticArtifacts(workspace, caseId = 'A', { closed = true,
 
 async function completeJournal(file, {
   mismatch = false,
+  specModel = 'GPT-5.6-Sol',
+  specCloseModel = specModel,
   includeInitialReadiness = true,
   includeComplete = true,
   regressAfterComplete = false,
@@ -213,7 +216,7 @@ async function completeJournal(file, {
   extraAfterClose = false,
   multipleClose = false,
 } = {}) {
-  requireSuccess(event(file, 'SPEC_INIT', 'SPEC', 'GPT-5.6-Terra', 'high'), 'SPEC_INIT');
+  requireSuccess(event(file, 'SPEC_INIT', 'SPEC', specModel, 'high'), 'SPEC_INIT');
   if (includeInitialReadiness) {
     requireSuccess(event(file, 'SPEC_READINESS', 'REVIEW_VALIDATE', 'GPT-5.6-Luna', 'high'), 'SPEC_READINESS');
   }
@@ -237,7 +240,7 @@ async function completeJournal(file, {
     const readinessExtra = terminalReadinessState === null ? [] : ['--resulting-state', terminalReadinessState];
     requireSuccess(event(file, 'SPEC_READINESS', 'REVIEW_VALIDATE', 'GPT-5.6-Luna', 'high', 'PASS', readinessExtra), 'terminal SPEC_READINESS');
   }
-  requireSuccess(event(file, 'SPEC_CLOSE', 'SPEC', 'GPT-5.6-Terra', 'high', 'PASS', ['--resulting-state', 'SPEC_CLOSED']), 'SPEC_CLOSE');
+  requireSuccess(event(file, 'SPEC_CLOSE', 'SPEC', specCloseModel, 'high', 'PASS', ['--resulting-state', 'SPEC_CLOSED']), 'SPEC_CLOSE');
   if (multipleClose) {
     requireSuccess(event(file, 'SPEC_CLOSE', 'SPEC', 'GPT-5.6-Terra', 'high', 'PASS', ['--resulting-state', 'SPEC_CLOSED']), 'duplicate SPEC_CLOSE');
   }
@@ -250,6 +253,7 @@ test('B01 — manifest has bounded cases, profiles, paths, and schemas', async (
   const configuration = await readJson(path.join(BENCHMARK, 'benchmark.json'));
   assert.equal(configuration.benchmarkId, 'sentinel-todo');
   assert.equal(configuration.benchmarkVersion, 1);
+  assert.equal(configuration.productionProfile.id, CURRENT_PROFILE);
   assert.deepEqual(configuration.cases.map((entry) => entry.id), ['A', 'B', 'C']);
   assert.equal(new Set(configuration.cases.map((entry) => entry.id)).size, 3);
   for (const item of configuration.cases) {
@@ -263,6 +267,74 @@ test('B01 — manifest has bounded cases, profiles, paths, and schemas', async (
   }
   for (const schema of Object.values(configuration.schemas)) await fs.access(path.join(BENCHMARK, schema));
   requireSuccess(cli(['verify']), 'benchmark verify');
+});
+
+test('B09 — production profile v2 is current and dispatch enforcement is deterministic', async (t) => {
+  const configuration = await readJson(path.join(BENCHMARK, 'benchmark.json'));
+  assert.equal(configuration.productionProfile.id, 'production-v2');
+  for (const relative of ['schemas/journal.schema.json', 'schemas/result.schema.json']) {
+    const schema = await readJson(path.join(BENCHMARK, relative));
+    assert.deepEqual(schema.properties.productionProfileId.enum, ['production-v1', 'production-v2']);
+  }
+  assert.deepEqual(configuration.productionProfile.cases.A, {
+    SPEC: { model: 'GPT-5.6-Sol', effort: 'high' },
+    PLAN: { model: 'GPT-5.6-Terra', effort: 'high' },
+    TASKS: { model: 'GPT-5.6-Terra', effort: 'high' },
+    EXECUTE: { model: 'GPT-5.6-Luna', effort: 'high' },
+    REVIEW_VALIDATE: { model: 'GPT-5.6-Luna', effort: 'high' },
+  });
+  assert.deepEqual(configuration.productionProfile.cases.B, {
+    SPEC: { model: 'GPT-5.6-Terra', effort: 'high' },
+    PLAN: { model: 'GPT-5.6-Terra', effort: 'high' },
+    TASKS: { model: 'GPT-5.6-Terra', effort: 'high' },
+    EXECUTE: { model: 'GPT-5.6-Luna', effort: 'xhigh' },
+    REVIEW_VALIDATE: { model: 'GPT-5.6-Luna', effort: 'xhigh' },
+  });
+  assert.deepEqual(configuration.productionProfile.cases.C, {
+    SPEC: { model: 'GPT-5.6-Sol', effort: 'high' },
+    PLAN: { model: 'GPT-5.6-Sol', effort: 'high' },
+    TASKS: { model: 'GPT-5.6-Terra', effort: 'high' },
+    EXECUTE: { model: 'GPT-5.6-Luna', effort: 'xhigh' },
+    REVIEW_VALIDATE: { model: 'GPT-5.6-Luna', effort: 'xhigh' },
+  });
+  assert.deepEqual(configuration.cases.map(({ id, budgets }) => ({ id, budgets })), [
+    { id: 'A', budgets: { maxReviewPlanEvents: 2, maxReviewTasksEvents: 2, maxReplans: 1, maxExecuteSliceAttemptsPerSlice: 3, maxApplyFindingsPerSlice: 2, maxWorkflowEvents: 14 } },
+    { id: 'B', budgets: { maxReviewPlanEvents: 2, maxReviewTasksEvents: 2, maxReplans: 1, maxExecuteSliceAttemptsPerSlice: 3, maxApplyFindingsPerSlice: 2, maxWorkflowEvents: 20 } },
+    { id: 'C', budgets: { maxReviewPlanEvents: 2, maxReviewTasksEvents: 2, maxReplans: 1, maxExecuteSliceAttemptsPerSlice: 3, maxApplyFindingsPerSlice: 2, maxWorkflowEvents: 24 } },
+  ]);
+  assert.deepEqual(configuration.cases.map(({ id, requirementsHash, fixtureContentHash }) => ({ id, requirementsHash, fixtureContentHash })), [
+    { id: 'A', requirementsHash: 'sha256:e5934bc22267756c3c10b31c46b7a9cd894b78e961b11975b0f14f7085349a24', fixtureContentHash: 'sha256:e0c3233c14356e93accff61b334704a91fb8e4f82a60209768259144d88a10d5' },
+    { id: 'B', requirementsHash: 'sha256:0388a84f8c5a9c45fcd5b1d0b59e7d376979e98717d8e028067701f00a16fc57', fixtureContentHash: 'sha256:107d1057e48506a20da4460ee33febca26280dd35c85f645b0de6b81ffb33e10' },
+    { id: 'C', requirementsHash: 'sha256:a896026d591f06776ade1d88fde292c4e5f0d015e5e18374e9cf754ecce4efcb', fixtureContentHash: 'sha256:a9700e1844ce7106809491f924b0fea37d8bf15700afa14c920cc1ee139fdd44' },
+  ]);
+  assert.equal(configuration.integrity.seedContentHash, 'sha256:9d93fbfa52b2e20607452f43d0ecb21e74f1872bb7a2da1b94dc2c814e7552e8');
+
+  const root = await temporaryRoot(t, 'sentinel production profile v2');
+  const workspace = path.join(root, 'workspace');
+  requireSuccess(cli(['prepare', '--case', 'A', '--output', workspace]), 'prepare profile fixture');
+  const { spec } = await writeSyntheticArtifacts(workspace);
+  const finalize = (journal, output) => cli([
+    'finalize', '--workspace', workspace, '--case', 'A', '--spec', spec,
+    '--journal', journal, '--output', output,
+  ]);
+  const alignedJournal = path.join(root, 'aligned-journal.json');
+  await initJournal(alignedJournal);
+  await completeJournal(alignedJournal);
+  const alignedOutput = path.join(root, 'aligned-result.json');
+  requireSuccess(finalize(alignedJournal, alignedOutput), 'finalize Sol/high profile fixture');
+  const alignedResult = await readJson(alignedOutput);
+  assert.equal(alignedResult.productionProfileId, 'production-v2');
+  assert.deepEqual(alignedResult.modelUse.profileMismatches, []);
+
+  const terraJournal = path.join(root, 'terra-journal.json');
+  await initJournal(terraJournal);
+  await completeJournal(terraJournal, { specModel: 'GPT-5.6-Terra', specCloseModel: 'GPT-5.6-Sol' });
+  const terraOutput = path.join(root, 'terra-result.json');
+  requireSuccess(finalize(terraJournal, terraOutput), 'finalize Terra/high mismatch fixture');
+  const terraResult = await readJson(terraOutput);
+  assert.deepEqual(terraResult.modelUse.profileMismatches.map((entry) => [entry.phase, entry.expectedModel, entry.actualModel]), [
+    ['SPEC', 'GPT-5.6-Sol', 'GPT-5.6-Terra'],
+  ]);
 });
 
 test('B02 — seed is dependency-free, complete, and green', async () => {
@@ -330,7 +402,7 @@ test('B05 — journal persists actual dispatches, optional telemetry, children, 
   await initJournal(journal);
   assert.equal(cli([
     'journal-init', '--output', path.join(root, 'wrong-sha.json'), '--case', 'A',
-    '--sentinel-sha', '0'.repeat(40), '--run-mode', 'case', '--production-profile', 'production-v1',
+    '--sentinel-sha', '0'.repeat(40), '--run-mode', 'case', '--production-profile', CURRENT_PROFILE,
   ]).status, 1);
   requireSuccess(event(journal, 'SPEC_INIT', 'SPEC', 'GPT-5.6-Terra', 'high', 'PASS', [
     '--input-tokens', '10', '--output-tokens', '5', '--child-role', 'spec-context-scout',
@@ -391,7 +463,7 @@ test('B06 — finalize collects raw facts and enforces official terminal semanti
   assert.equal(result.operations.executeCalls, 1);
   assert.equal(result.operations.validateCalls, 1);
   assert.deepEqual(result.modelUse.profileMismatches.map((entry) => entry.operation), ['PLAN']);
-  assert.deepEqual(result.modelUse.actualModelsByPhase.SPEC, ['GPT-5.6-Terra']);
+  assert.deepEqual(result.modelUse.actualModelsByPhase.SPEC, ['GPT-5.6-Sol']);
   assert.deepEqual(result.modelUse.actualModelsByPhase.REVIEW_VALIDATE, ['GPT-5.6-Luna']);
   assert.equal(result.finalExecutionState, 'COMPLETE');
   assert.equal(result.specClosed, true);
@@ -646,9 +718,7 @@ test('B07 — compare reports deltas and dispatch changes without fabricated tel
 
 test('B08 — doctor routing is offline and separate from benchmark definitions', async () => {
   const manifestPath = path.join(BENCHMARK, 'benchmark.json');
-  const committedManifest = run('git', ['show', 'HEAD:benchmarks/sentinel-todo/benchmark.json']);
-  requireSuccess(committedManifest, 'committed benchmark manifest');
-  assert.equal(await fs.readFile(manifestPath, 'utf8'), committedManifest.stdout);
+  const manifestBefore = await fs.readFile(manifestPath, 'utf8');
   assert.equal(cli(['doctor', '--unknown', 'value']).status, 2);
   assert.equal(cli(['doctor', '--scratch-parent']).status, 2);
   assert.equal(cli(['doctor', '--probe-workspace', ROOT]).status, 2);
@@ -666,4 +736,5 @@ test('B08 — doctor routing is offline and separate from benchmark definitions'
   assert.match(source, /ENVIRONMENT_BLOCKED/u);
   assert.doesNotMatch(source, /\b(?:fetch|https?|provider|openai)\b/iu);
   assert.doesNotMatch(source, /benchmark\.json|productionProfile|budgets|cases\//u);
+  assert.equal(await fs.readFile(manifestPath, 'utf8'), manifestBefore);
 });

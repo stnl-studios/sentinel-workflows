@@ -39,17 +39,18 @@ The fixed paths are `specs/benchmark-case-a`,
 must not exist after `prepare`; only its empty parent is prepared so lifecycle
 INIT can create the destination directly.
 
-## Production Profile v1
+## Production Profile v2 (current)
 
 | Phase | Case A | Case B | Case C |
 | --- | --- | --- | --- |
-| SPEC | Terra / high | Terra / high | Sol / high |
+| SPEC | Sol / high | Terra / high | Sol / high |
 | PLAN | Terra / high | Terra / high | Sol / high |
 | TASKS | Terra / high | Terra / high | Terra / high |
 | EXECUTE / APPLY_FINDINGS | Luna / high | Luna / xhigh | Luna / xhigh |
 | REVIEW / VALIDATE | Luna / high | Luna / xhigh | Luna / xhigh |
 
-The journal stores actual dispatches. A difference from this expected profile is
+Production Pilots #1–#3 remain historical `production-v1` records; this table is
+the current definition for the next Pilot. The journal stores actual dispatches. A difference from this expected profile is
 preserved as a mismatch; the runtime never silently substitutes a model or
 effort. `SPEC_INIT` and `SPEC_CLOSE` use the `SPEC` phase, while read-only
 `SPEC_READINESS` uses `REVIEW_VALIDATE`.
@@ -63,7 +64,7 @@ spaces and Unicode are supported.
 node benchmarks/sentinel-todo/runtime/benchmark.mjs verify
 node benchmarks/sentinel-todo/runtime/benchmark.mjs doctor
 node benchmarks/sentinel-todo/runtime/benchmark.mjs prepare --case A --output <absolute-absent-path>
-node benchmarks/sentinel-todo/runtime/benchmark.mjs journal-init --output <absolute-journal.json> --case A --sentinel-sha <sha> --run-mode case --production-profile production-v1
+node benchmarks/sentinel-todo/runtime/benchmark.mjs journal-init --output <absolute-journal.json> --case A --sentinel-sha <sha> --run-mode case --production-profile production-v2
 node benchmarks/sentinel-todo/runtime/benchmark.mjs journal-event --journal <absolute-journal.json> --operation PLAN --phase PLAN --model GPT-5.6-Terra --effort high --result PASS
 node benchmarks/sentinel-todo/runtime/benchmark.mjs finalize --workspace <absolute-workspace> --case A --spec <absolute-spec-path> --journal <absolute-journal.json> --output <absolute-result.json>
 node benchmarks/sentinel-todo/runtime/benchmark.mjs compare --before <absolute-result.json> --after <absolute-result.json>

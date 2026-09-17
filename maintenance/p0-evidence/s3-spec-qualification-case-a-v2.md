@@ -444,7 +444,7 @@ Do not start it automatically.
 
 ## Resulting commit
 
-`pending user commit`
+`8d9e35d4e3e1d0e6aeab53cd2511ec2d4f639b6d`
 
 Suggested commit:
 

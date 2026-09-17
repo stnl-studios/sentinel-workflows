@@ -15,10 +15,10 @@
     "seedContentHash": "sha256:9d93fbfa52b2e20607452f43d0ecb21e74f1872bb7a2da1b94dc2c814e7552e8"
   },
   "productionProfile": {
-    "id": "production-v1",
+    "id": "production-v2",
     "cases": {
       "A": {
-        "SPEC": { "model": "GPT-5.6-Terra", "effort": "high" },
+        "SPEC": { "model": "GPT-5.6-Sol", "effort": "high" },
         "PLAN": { "model": "GPT-5.6-Terra", "effort": "high" },
         "TASKS": { "model": "GPT-5.6-Terra", "effort": "high" },
         "EXECUTE": { "model": "GPT-5.6-Luna", "effort": "high" },

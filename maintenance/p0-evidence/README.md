@@ -22,6 +22,8 @@ This directory preserves compact, human-readable engineering evidence for Sentin
 - `s3-spec-qualification-case-a-v2.md` — clean Case A SPEC qualification of
   GPT-5.6-Terra/high and GPT-5.6-Sol/high under qualified environment and
   harness controls.
+- `s3-production-profile-v2.md` — current Production Profile v2 decision and
+  deterministic contract evidence before Pilot #4.
 
 ## P0 Gates
 

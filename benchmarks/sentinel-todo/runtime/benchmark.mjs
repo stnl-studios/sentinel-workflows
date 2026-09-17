@@ -23,6 +23,7 @@ const EXECUTION_VALIDATOR = path.join(
 );
 const MODELS = new Set(['GPT-5.6-Sol', 'GPT-5.6-Terra', 'GPT-5.6-Luna']);
 const EFFORTS = new Set(['low', 'medium', 'high', 'xhigh']);
+const PROFILE_IDS = new Set(['production-v1', 'production-v2']);
 const RUN_MODES = new Set(['focal', 'case', 'full']);
 const OPERATIONS = new Set([
   'SPEC_INIT', 'SPEC_READINESS', 'PLAN', 'REVIEW_PLAN', 'MATERIALIZE_TASKS',
@@ -133,7 +134,7 @@ function assertManifest(configuration) {
   if (configuration.benchmarkId !== 'sentinel-todo' || configuration.benchmarkVersion !== 1) {
     throw new CliError('manifest benchmark identity is invalid');
   }
-  if (configuration.seedPath !== 'seed' || configuration.productionProfile?.id !== 'production-v1') {
+  if (configuration.seedPath !== 'seed' || configuration.productionProfile?.id !== 'production-v2') {
     throw new CliError('manifest seed or profile identity is invalid');
   }
   if (JSON.stringify(configuration.supportedRunModes) !== JSON.stringify(['focal', 'case', 'full'])) {
@@ -704,7 +705,7 @@ function validateResult(value) {
     || JSON.stringify(Object.keys(value).sort()) !== JSON.stringify(topKeys)) throw new CliError('result has unknown or missing fields');
   if (!['A', 'B', 'C'].includes(value.caseId) || !RUN_MODES.has(value.runMode)
     || !['PASS', 'FAIL', 'BLOCKED', 'ABORTED_BUDGET'].includes(value.status)
-    || !/^[0-9a-f]{40}$/u.test(value.sentinelSha) || value.productionProfileId !== 'production-v1'
+    || !/^[0-9a-f]{40}$/u.test(value.sentinelSha) || !PROFILE_IDS.has(value.productionProfileId)
     || (value.finalExecutionState !== null && typeof value.finalExecutionState !== 'string')
     || typeof value.specClosed !== 'boolean' || typeof value.finalTestsPassed !== 'boolean') throw new CliError('result outcome is invalid');
   for (const section of ['decomposition', 'operations', 'modelUse', 'contextCost', 'workspace', 'finalTests']) {

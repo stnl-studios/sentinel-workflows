@@ -77,3 +77,8 @@
   - A one-shot Luna/medium live probe passed through the official harness.
   - Benchmark Environment Qualification v1 remained READY.
   - No Sentinel functional behavior changed.
+- `8d9e35d4e3e1d0e6aeab53cd2511ec2d4f639b6d`
+  - Case A SPEC Qualification v2: Terra/high READY and Sol/high READY.
+  - Both producers preserved 11/11 explicit authorities; no invention was observed.
+  - Case A requirements were sufficient; Terra variance was observed.
+  - No environment or Agent Harness blocker was observed.

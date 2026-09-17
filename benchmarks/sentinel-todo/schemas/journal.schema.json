@@ -12,7 +12,7 @@
     "caseId": { "enum": ["A", "B", "C"] },
     "runMode": { "enum": ["focal", "case", "full"] },
     "sentinelSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
-    "productionProfileId": { "const": "production-v1" },
+    "productionProfileId": { "enum": ["production-v1", "production-v2"] },
     "status": { "enum": ["ACTIVE", "ABORTED_BUDGET"] },
     "abortReason": {
       "anyOf": [
