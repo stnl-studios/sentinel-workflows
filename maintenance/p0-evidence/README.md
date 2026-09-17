@@ -60,6 +60,9 @@ This directory preserves compact, human-readable engineering evidence for Sentin
   produced a ready SPEC, but the external measurement driver misclassified the
   canonical lifecycle status and terminalized the canary before PLAN. The
   blocked raw was preserved durably; B/C and the reviewer were not run.
+- `s3-pilot-orchestration-authority-v1.md` — official-readback-first Pilot
+  authority rule, D01–D05 regression, and the blocked one-shot Case A live
+  proof whose non-canonical workspace path was rejected before model start.
 
 ## P0 Gates
 
