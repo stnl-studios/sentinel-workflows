@@ -14,6 +14,7 @@ import { computeRequirementsAuthority } from '../skills/workflows/stnl-execution
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const BENCHMARK = path.join(ROOT, 'benchmarks', 'sentinel-todo');
 const RUNTIME = path.join(BENCHMARK, 'runtime', 'benchmark.mjs');
+const ENVIRONMENT_RUNTIME = path.join(BENCHMARK, 'runtime', 'benchmark-environment.mjs');
 const SEED = path.join(BENCHMARK, 'seed');
 const CLOSED_SPEC_FIXTURE = path.join(
   ROOT, 'skills', 'workflows', 'stnl-spec-lifecycle-manager',
@@ -641,4 +642,28 @@ test('B07 — compare reports deltas and dispatch changes without fabricated tel
     assert.equal(rejected.status, 1);
     assert.match(rejected.stderr, diagnosis);
   }
+});
+
+test('B08 — doctor routing is offline and separate from benchmark definitions', async () => {
+  const manifestPath = path.join(BENCHMARK, 'benchmark.json');
+  const committedManifest = run('git', ['show', 'HEAD:benchmarks/sentinel-todo/benchmark.json']);
+  requireSuccess(committedManifest, 'committed benchmark manifest');
+  assert.equal(await fs.readFile(manifestPath, 'utf8'), committedManifest.stdout);
+  assert.equal(cli(['doctor', '--unknown', 'value']).status, 2);
+  assert.equal(cli(['doctor', '--scratch-parent']).status, 2);
+  assert.equal(cli(['doctor', '--probe-workspace', ROOT]).status, 2);
+  assert.equal(cli(['doctor', '--scratch-parent', path.join(ROOT, 'benchmarks')]).status, 2);
+
+  const runtimeSource = await fs.readFile(RUNTIME, 'utf8');
+  const source = await fs.readFile(ENVIRONMENT_RUNTIME, 'utf8');
+  assert.match(runtimeSource, /command === 'doctor'/u);
+  assert.match(runtimeSource, /runDoctor\(\{/u);
+  for (const field of [
+    'status', 'contractVersion', 'platform', 'arch', 'nodeVersion', 'gitVersion',
+    'checks', 'globalGitConfigPreserved', 'blockers',
+  ]) assert.match(source, new RegExp(`\\b${field}\\b`, 'u'));
+  assert.match(source, /ENVIRONMENT_READY/u);
+  assert.match(source, /ENVIRONMENT_BLOCKED/u);
+  assert.doesNotMatch(source, /\b(?:fetch|https?|provider|openai)\b/iu);
+  assert.doesNotMatch(source, /benchmark\.json|productionProfile|budgets|cases\//u);
 });

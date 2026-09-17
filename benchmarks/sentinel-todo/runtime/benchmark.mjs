@@ -7,6 +7,8 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
+import { runDoctor, runProbeDoctor } from './benchmark-environment.mjs';
+
 const RUNTIME_ROOT = path.dirname(fileURLToPath(import.meta.url));
 const BENCHMARK_ROOT = path.resolve(RUNTIME_ROOT, '..');
 const REPOSITORY_ROOT = path.resolve(BENCHMARK_ROOT, '../..');
@@ -998,6 +1000,30 @@ const EVENT_OPTIONS = new Set([
 export async function main(argv) {
   const [command, ...tokens] = argv;
   if (command === 'verify' && tokens.length === 0) return verify();
+  if (command === 'doctor') {
+    const options = parseOptions(tokens, new Set(['--scratch-parent', '--probe-workspace', '--expect-tmpdir']));
+    const probeRequested = options['--probe-workspace'] !== undefined || options['--expect-tmpdir'] !== undefined;
+    if (probeRequested) {
+      if (options['--scratch-parent'] !== undefined
+        || options['--probe-workspace'] === undefined
+        || options['--expect-tmpdir'] === undefined) {
+        throw new CliError('doctor probe mode requires --probe-workspace and --expect-tmpdir only', 2);
+      }
+      const report = await runProbeDoctor({
+        workspace: requireAbsolute(options['--probe-workspace'], '--probe-workspace'),
+        expectedTmpdir: requireAbsolute(options['--expect-tmpdir'], '--expect-tmpdir'),
+      });
+      process.stdout.write(`${JSON.stringify(report)}\n`);
+      return report.status === 'PASS' ? 0 : 1;
+    }
+    const result = await runDoctor({
+      repositoryRoot: REPOSITORY_ROOT,
+      benchmarkRoot: BENCHMARK_ROOT,
+      scratchParent: options['--scratch-parent'],
+    });
+    process.stdout.write(`${JSON.stringify(result.report)}\n`);
+    return result.exitCode;
+  }
   if (command === 'prepare') return prepare(parseOptions(tokens, new Set(['--case', '--output']), ['--case', '--output']));
   if (command === 'journal-init') return journalInit(parseOptions(tokens,
     new Set(['--output', '--case', '--sentinel-sha', '--run-mode', '--production-profile']),
@@ -1009,12 +1035,13 @@ export async function main(argv) {
     ['--workspace', '--case', '--spec', '--journal', '--output']));
   if (command === 'compare') return compare(parseOptions(tokens,
     new Set(['--before', '--after', '--output']), ['--before', '--after']));
-  throw new CliError('usage: benchmark.mjs {verify|prepare|journal-init|journal-event|finalize|compare} ...', 2);
+  throw new CliError('usage: benchmark.mjs {verify|doctor|prepare|journal-init|journal-event|finalize|compare} ...', 2);
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
   try {
-    await main(process.argv.slice(2));
+    const exitCode = await main(process.argv.slice(2));
+    if (Number.isInteger(exitCode)) process.exitCode = exitCode;
   } catch (error) {
     process.stderr.write(`FAIL: ${error.message}\n`);
     process.exitCode = error.exitCode ?? 1;

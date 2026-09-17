@@ -53,3 +53,8 @@
   - Final execution authority delegated to the official runtime.
   - Ownership R1-R5 reproducer passed.
   - No functional Sentinel runtime changed.
+- `2f4bf84e45d94e6b2bdb503edcbb2f8927e133de`
+  - Production Pilot #3 stopped Case A in documentary readiness.
+  - The Pilot #2 ownership inconsistency did not recur.
+  - No environment retry or failure was observed in that run.
+  - Cases B and C were not run; P0 remained open.

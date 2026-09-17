@@ -58,12 +58,54 @@ spaces and Unicode are supported.
 
 ```text
 node benchmarks/sentinel-todo/runtime/benchmark.mjs verify
+node benchmarks/sentinel-todo/runtime/benchmark.mjs doctor
 node benchmarks/sentinel-todo/runtime/benchmark.mjs prepare --case A --output <absolute-absent-path>
 node benchmarks/sentinel-todo/runtime/benchmark.mjs journal-init --output <absolute-journal.json> --case A --sentinel-sha <sha> --run-mode case --production-profile production-v1
 node benchmarks/sentinel-todo/runtime/benchmark.mjs journal-event --journal <absolute-journal.json> --operation PLAN --phase PLAN --model GPT-5.6-Terra --effort high --result PASS
 node benchmarks/sentinel-todo/runtime/benchmark.mjs finalize --workspace <absolute-workspace> --case A --spec <absolute-spec-path> --journal <absolute-journal.json> --output <absolute-result.json>
 node benchmarks/sentinel-todo/runtime/benchmark.mjs compare --before <absolute-result.json> --after <absolute-result.json>
 ```
+
+`doctor` is the offline Benchmark Environment Qualification v1 preflight. It
+uses only Node built-ins and the installed Git executable, emits one sanitized
+JSON line, and returns `0` for `ENVIRONMENT_READY`, `1` for
+`ENVIRONMENT_BLOCKED`, or `2` for invalid invocation. An optional
+`--scratch-parent <absolute-existing-path>` lets deterministic tests select an
+outside-checkout parent; the doctor creates and removes only its own child.
+The command never calls a provider or model and is not a benchmark metric.
+
+## Environment preflight and managed temp
+
+Every Production Pilot starts, in order, with benchmark `verify`, seed tests,
+benchmark contracts, required execution contracts, the environment `doctor`,
+and one GPT-5.6-Luna / medium sandbox probe. Case A may start only after all
+mandatory checks pass. The sandbox probe is environment-only evidence and does
+not promote any P0 gate.
+
+Each benchmark session owns a unique OS-temp-derived, realpath-canonicalized
+root outside this checkout with these children:
+
+```text
+SESSION_ROOT/
+  workspaces/
+  journals/
+  results/
+  runner-tmp/
+```
+
+Processes that may create temporary files—including operation agents,
+validation runners, Node tests, and helpers—receive `runner-tmp` as `TMPDIR` in
+their process environment. They must inherit it; commands inside an agent do
+not redefine it. The policy never changes the user environment, shell profile,
+or global Git configuration. A session cleans only paths it created, fails
+closed on cleanup failure, and never persists the real session path.
+
+Requalify the environment after a host, OS, architecture, relevant Node or Git
+change; a doctor contract, sandbox mechanism, validation-runner environment
+adapter, or TMPDIR policy change; or any environment-related Pilot blocker.
+Run the doctor for every future Pilot. Run the Luna probe before the first Case
+of a new qualification/session, whenever the fingerprint or sandbox mechanism
+changes, or after an environment-related blocker.
 
 `prepare` rejects an existing target and any target inside this checkout. It
 copies regular seed files byte-for-byte, rejects symlinks, runs `node --test`,

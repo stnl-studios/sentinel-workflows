@@ -14,6 +14,7 @@ This directory preserves compact, human-readable engineering evidence for Sentin
 - `s3-benchmark-correction-02.md` — terminal collector and ownership diagnostic
   correction evidence.
 - `s3-benchmark-pilot-03.md` — Production Pilot #3 evidence.
+- `s3-benchmark-environment-v1.md` — Benchmark Environment Qualification v1.
 
 ## P0 Gates
 
