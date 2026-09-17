@@ -135,7 +135,7 @@
   - The critical fixture covers the complete expired-invitation contract.
   - The fresh rehearsal passed R01-R13, including independent review, parallel
     B/C isolation, and all required deterministic checks; no Pilot was run.
-- `pending user commit`
+- `a546cfe1ddad925da75af6d46e7722549208342a`
   - Production Pilot #5 passed all checkpoint preconditions and historical
     integrity checks against `1ad5a1b` with `production-v2`.
   - Case A reached the terminal validation of `slice-02`, where official
@@ -143,3 +143,13 @@
   - The collector created a `BLOCKED` raw in the ephemeral Case root, but the
     driver failed to preserve it before cleanup, so finalization blocked.
   - No baseline or P0 gate was promoted; P0 remains open.
+- `pending user commit`
+  - Production Pilot #6 passed the frozen-candidate, functional-equivalence,
+    environment, Harness, and deterministic preconditions.
+  - Case A stopped at the first executor preflight because the driver supplied
+    `slice-01` instead of the contracted unsigned decimal `1`.
+  - The collector's canonical `BLOCKED` raw was copied byte-for-byte and hashed
+    before managed-session cleanup, proving durable non-PASS finalization.
+  - The Pilot #5 terminal-integrity mismatch boundary was not reached; B/C and
+    the reviewer were not run, no baseline or gate was promoted, and P0 remains
+    open.

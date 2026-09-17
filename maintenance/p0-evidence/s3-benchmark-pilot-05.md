@@ -216,4 +216,4 @@ evidence and benchmark results bookkeeping.
 
 ## Resulting commit
 
-`pending user commit`
+`a546cfe1ddad925da75af6d46e7722549208342a`

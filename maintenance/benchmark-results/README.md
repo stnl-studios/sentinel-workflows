@@ -46,3 +46,23 @@ raw.
 No Pilot #5 raw is persisted. No placeholder or reconstructed raw was created.
 Cases B/C and the final reviewer were not run. The official production-v2
 baseline remains not established.
+
+## Production Pilot #6
+
+Candidate `a546cfe1ddad925da75af6d46e7722549208342a` used
+`production-v2`. Case A stopped in the first `EXECUTE_SLICE` preflight because
+the driver supplied normalized `slice-01` where the operation input contract
+requires unsigned decimal `1`. No implementation or validation occurred, so
+the Pilot #5 terminal-integrity mismatch was not reproduced.
+
+The canonical collector returned its documented non-zero `BLOCKED` exit after
+creating the result. The driver parsed and copied the output byte-for-byte
+before managed-session cleanup:
+
+- `a546cfe1ddad925da75af6d46e7722549208342a/case-a-production-v2.json`
+  - status: `BLOCKED`
+  - final execution state: `MATERIALIZED_PRISTINE`
+  - SHA-256: `6c2d421fbdc0aa7341a8874fe6e29e8de4fd557dcf739cbcb3f9c537e15e92f8`
+
+Cases B/C and the final reviewer were not run. The official production-v2
+baseline remains not established.

@@ -1,0 +1,119 @@
+{
+  "schemaVersion": 1,
+  "benchmarkVersion": 1,
+  "benchmarkId": "sentinel-todo",
+  "caseId": "A",
+  "runMode": "case",
+  "sentinelSha": "a546cfe1ddad925da75af6d46e7722549208342a",
+  "productionProfileId": "production-v2",
+  "status": "BLOCKED",
+  "finalExecutionState": "MATERIALIZED_PRISTINE",
+  "specClosed": false,
+  "finalTestsPassed": true,
+  "decomposition": {
+    "slices": 2,
+    "tasks": 4,
+    "tasksPerSlice": {
+      "slice-01": 2,
+      "slice-02": 2
+    }
+  },
+  "operations": {
+    "total": 6,
+    "reviewPlanRounds": 1,
+    "reviewTasksRounds": 1,
+    "replans": 0,
+    "executeCalls": 1,
+    "validateCalls": 0,
+    "applyFindingsCalls": 0,
+    "findingsCycles": 0,
+    "mechanicalRejections": 1,
+    "retries": 0
+  },
+  "modelUse": {
+    "expectedProfile": {
+      "SPEC": {
+        "model": "GPT-5.6-Sol",
+        "effort": "high"
+      },
+      "PLAN": {
+        "model": "GPT-5.6-Terra",
+        "effort": "high"
+      },
+      "TASKS": {
+        "model": "GPT-5.6-Terra",
+        "effort": "high"
+      },
+      "EXECUTE": {
+        "model": "GPT-5.6-Luna",
+        "effort": "high"
+      },
+      "REVIEW_VALIDATE": {
+        "model": "GPT-5.6-Luna",
+        "effort": "high"
+      }
+    },
+    "actualModelsByPhase": {
+      "SPEC": [
+        "GPT-5.6-Sol"
+      ],
+      "PLAN": [
+        "GPT-5.6-Terra"
+      ],
+      "TASKS": [
+        "GPT-5.6-Terra"
+      ],
+      "EXECUTE": [
+        "GPT-5.6-Luna"
+      ],
+      "REVIEW_VALIDATE": [
+        "GPT-5.6-Luna"
+      ]
+    },
+    "actualEffortsByPhase": {
+      "SPEC": [
+        "high"
+      ],
+      "PLAN": [
+        "high"
+      ],
+      "TASKS": [
+        "high"
+      ],
+      "EXECUTE": [
+        "high"
+      ],
+      "REVIEW_VALIDATE": [
+        "high"
+      ]
+    },
+    "childDispatches": [],
+    "profileMismatches": [],
+    "solEscalations": 0
+  },
+  "contextCost": {
+    "planBytes": 11174,
+    "planWords": 1554,
+    "tasksBytes": 6693,
+    "tasksWords": 894,
+    "handoffBytes": null,
+    "observableReads": null,
+    "actualTokenTelemetryAvailable": false,
+    "inputTokens": null,
+    "outputTokens": null
+  },
+  "workspace": {
+    "changedFileCount": 10,
+    "finalDiffBytes": 28131,
+    "seedContentHash": "sha256:9d93fbfa52b2e20607452f43d0ecb21e74f1872bb7a2da1b94dc2c814e7552e8",
+    "requirementsHash": "sha256:e5934bc22267756c3c10b31c46b7a9cd894b78e961b11975b0f14f7085349a24",
+    "requirementsHashMatches": true,
+    "observedSentinelSha": "a546cfe1ddad925da75af6d46e7722549208342a",
+    "sentinelShaMatchesCheckout": true
+  },
+  "finalTests": {
+    "command": "node --test",
+    "exitCode": 0,
+    "passed": true
+  }
+}

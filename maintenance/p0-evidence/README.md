@@ -41,6 +41,10 @@ This directory preserves compact, human-readable engineering evidence for Sentin
 - `s3-benchmark-pilot-05.md` — final Production Pilot #5 evidence; Case A
   reached terminal validation but official readback blocked and raw persistence
   failed, so B/C were not authorized and no baseline was established.
+- `s3-benchmark-pilot-06.md` — Production Pilot #6 durable-finalization and
+  terminal-integrity forensic evidence; the blocked Case A raw was preserved
+  before cleanup, while the canary stopped at the first EXECUTE input preflight
+  before the prior terminal mismatch boundary.
 
 ## P0 Gates
 
