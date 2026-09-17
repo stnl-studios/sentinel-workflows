@@ -11,6 +11,7 @@ import {
   computeRequirementsAuthority,
   inspectExecutionState,
   preflightExecutionOperation,
+  validateExecutionCandidate,
 } from '../../../skills/workflows/stnl-execution-planner/runtime/execution-state.mjs';
 import {
   cleanupManagedBenchmarkSession,
@@ -93,6 +94,43 @@ function omitInitialRecoveryFields(text) {
   return text.replace(/\nFor revision 1,[\s\S]*?\n## Serial Slice Order/u, '\n## Serial Slice Order');
 }
 
+function artifactRelativePath(artifact, target) {
+  return path.relative(path.dirname(artifact), target).split(path.sep).join('/');
+}
+
+function pathIsWithin(candidate, root) {
+  const relative = path.relative(root, candidate);
+  return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
+}
+
+function replaceSection(text, heading, content) {
+  const pattern = new RegExp(`(## ${heading}\\n\\n)[\\s\\S]*?(?=\\n## |$)`, 'u');
+  if (!pattern.test(text)) throw new Error(`fixture section is absent: ${heading}`);
+  return text.replace(pattern, `$1${content}\n`);
+}
+
+function section(text, heading) {
+  const match = new RegExp(`## ${heading}\\n\\n([\\s\\S]*?)(?=\\n## |$)`, 'u').exec(text);
+  if (match === null) throw new Error(`fixture section is absent: ${heading}`);
+  return match[1];
+}
+
+function fixturePathAuthority(workspace, spec) {
+  const implementation = path.join(workspace, 'src/invitation.mjs');
+  const globalPlan = path.join(spec, 'execution/plan.md');
+  const slicePlan = path.join(spec, 'execution/plans/slice-01.md');
+  const sliceTask = path.join(spec, 'execution/tasks/slice-01.md');
+  return Object.freeze({
+    implementation,
+    globalPlan,
+    slicePlan,
+    sliceTask,
+    globalImplementation: artifactRelativePath(globalPlan, implementation),
+    detailImplementation: artifactRelativePath(slicePlan, implementation),
+    taskImplementation: artifactRelativePath(sliceTask, implementation),
+  });
+}
+
 async function treeHash(root) {
   const hash = createHash('sha256');
   async function visit(directory, prefix = '') {
@@ -121,13 +159,10 @@ async function writeCanonicalExecution(spec) {
   await fs.mkdir(tasks, { recursive: true });
   const authority = await computeRequirementsAuthority(spec);
   const feature = path.join(spec, 'feature_spec.md');
-  const implementation = path.join(path.dirname(spec), 'src/invitation.mjs');
-  const globalSource = path.relative(execution, feature).split(path.sep).join('/');
-  const detailSource = path.relative(plans, feature).split(path.sep).join('/');
-  const taskSource = path.relative(tasks, feature).split(path.sep).join('/');
-  const globalImplementation = path.relative(execution, implementation).split(path.sep).join('/');
-  const detailImplementation = path.relative(plans, implementation).split(path.sep).join('/');
-  const taskImplementation = path.relative(tasks, implementation).split(path.sep).join('/');
+  const paths = fixturePathAuthority(path.dirname(spec), spec);
+  const globalSource = artifactRelativePath(path.join(execution, 'plan.md'), feature);
+  const detailSource = artifactRelativePath(path.join(plans, 'slice-01.md'), feature);
+  const taskSource = artifactRelativePath(path.join(tasks, 'slice-01.md'), feature);
 
   const global = approved(omitInitialRecoveryFields(replaceAll(await fs.readFile(PLAN_TEMPLATE, 'utf8'), [
     ['`<relative path>`', `\`${globalSource}\``],
@@ -137,7 +172,7 @@ async function writeCanonicalExecution(spec) {
     ['<compact strategy>', 'Complete one bounded function and validate its focused test'],
     ['01 - <name>', '01 - Invitation expiration'],
     ['<result>', 'expired invitations are detected at the UTC boundary'],
-    ['`<artifact-relative path>`; <optional conceptual area>', `\`${globalImplementation}\`; invitation expiration`],
+    ['`<artifact-relative path>`; <optional conceptual area>', `\`${paths.globalImplementation}\`; invitation expiration`],
     ['<risk, boundary, or explicit final integration slice>', 'UTC boundary behavior is covered by the focused test'],
   ])));
   await fs.writeFile(path.join(execution, 'plan.md'), global, 'utf8');
@@ -150,7 +185,7 @@ async function writeCanonicalExecution(spec) {
     ['<One coherent delivery and how it is observed.>', 'Implement the expiration predicate and observe it through the focused Node test.'],
     ['<included work>', 'Implement `isInvitationExpired` in `src/invitation.mjs`.'],
     ['<excluded work and boundary with later slices>', 'No lifecycle, storage, HTTP, or delivery-channel changes.'],
-    ['`<artifact-relative path>` — <optional contract, subsystem, test area, or explanation>', `\`${detailImplementation}\` — invitation expiration predicate`],
+    ['`<artifact-relative path>` — <optional contract, subsystem, test area, or explanation>', `\`${paths.detailImplementation}\` — invitation expiration predicate`],
     ['<earlier slice or none>', 'none'],
     ['<risk and mitigation>', 'UTC boundary errors; cover equality and before/after cases.'],
     ['<bounded approach>', 'Change only the predicate implementation.'],
@@ -172,7 +207,7 @@ async function writeCanonicalExecution(spec) {
     ['<positive integer>', '1'],
     ['<task>', 'Implement `isInvitationExpired` using the UTC timestamp boundary'],
     ['<result>', 'expired at equality or after, active before expiration'],
-    ['`<artifact-relative path>`; <optional conceptual area>', `\`${taskImplementation}\`; invitation expiration predicate`],
+    ['`<artifact-relative path>`; <optional conceptual area>', `\`${paths.taskImplementation}\`; invitation expiration predicate`],
     ['<test, command, suite, or observable check>', 'node --test'],
   ]);
   await fs.writeFile(path.join(tasks, 'slice-01.md'), task, 'utf8');
@@ -208,7 +243,140 @@ export async function createCriticalFixture(workspace) {
   const authority = await writeCanonicalExecution(spec);
   const state = await inspectExecutionState(spec);
   if (state.state !== 'MATERIALIZED_PRISTINE') throw new Error(`fixture state=${state.state}`);
-  return { spec, authority };
+  return { workspace, spec, authority, paths: fixturePathAuthority(workspace, spec) };
+}
+
+function extractFixturePathClaims({ globalPlan, slicePlan, sliceTask, taskText, requirePostR06 }) {
+  const globalText = globalPlan.text;
+  const slicePlanText = slicePlan.text;
+  const checklist = section(taskText, 'Checklist');
+  const globalStored = globalText.match(/\| `([^`]+)`; invitation expiration \| plans\/slice-01\.md \|/u)?.[1];
+  const detailStored = section(slicePlanText, 'Likely Areas').match(/^- `([^`]+)`/mu)?.[1];
+  const checklistStored = checklist.match(/expected areas: `([^`]+)`/u)?.[1];
+  if ([globalStored, detailStored, checklistStored].some((value) => value === undefined)) {
+    throw new Error('canonical fixture path claims could not be read');
+  }
+  const claims = [
+    { artifact: globalPlan.path, label: 'Global plan expected area', storedPath: globalStored, hash: null },
+    { artifact: slicePlan.path, label: 'Slice plan likely area', storedPath: detailStored, hash: null },
+    { artifact: sliceTask.path, label: 'Task checklist expected area', storedPath: checklistStored, hash: null },
+  ];
+  if (!requirePostR06) return claims;
+  const changed = section(taskText, 'Changed Areas').match(/^- `([^`]+)`$/mu)?.[1];
+  const tested = section(taskText, 'Implementation Test Evidence').match(/^- Tested state:\n  - `([^`]+)` \| sha256:([0-9a-f]{64})$/mu);
+  if (changed === undefined || tested === null) throw new Error('POST-R06 file-backed path claims could not be read');
+  claims.push(
+    { artifact: sliceTask.path, label: 'Changed Areas', storedPath: changed, hash: null },
+    { artifact: sliceTask.path, label: 'Implementation tested state', storedPath: tested[1], hash: tested[2] },
+  );
+  return claims;
+}
+
+export async function inspectFixturePathBasis({ workspace, spec, requirePostR06 = true }) {
+  const expected = path.join(workspace, 'src/invitation.mjs');
+  const globalPlanPath = path.join(spec, 'execution/plan.md');
+  const slicePlanPath = path.join(spec, 'execution/plans/slice-01.md');
+  const sliceTaskPath = path.join(spec, 'execution/tasks/slice-01.md');
+  const [globalText, slicePlanText, taskText] = await Promise.all([
+    fs.readFile(globalPlanPath, 'utf8'),
+    fs.readFile(slicePlanPath, 'utf8'),
+    fs.readFile(sliceTaskPath, 'utf8'),
+  ]);
+  const claims = extractFixturePathClaims({
+    globalPlan: { path: globalPlanPath, text: globalText },
+    slicePlan: { path: slicePlanPath, text: slicePlanText },
+    sliceTask: { path: sliceTaskPath },
+    taskText,
+    requirePostR06,
+  });
+  const expectedCanonical = await fs.realpath(expected).catch(() => path.resolve(expected));
+  const rows = await Promise.all(claims.map(async (claim) => {
+    const resolved = path.resolve(path.dirname(claim.artifact), claim.storedPath);
+    const canonical = await fs.realpath(resolved).catch(() => path.resolve(resolved));
+    const exists = await fs.stat(resolved).then((entry) => entry.isFile()).catch(() => false);
+    const actualHash = exists ? sha256(await fs.readFile(resolved)) : null;
+    const inWorkspace = pathIsWithin(canonical, workspace);
+    const outsideSpec = !pathIsWithin(canonical, spec);
+    const expectedTarget = canonical === expectedCanonical;
+    const hashMatches = claim.hash === null || claim.hash === actualHash;
+    return {
+      artifact: claim.artifact,
+      label: claim.label,
+      storedPath: claim.storedPath,
+      resolvedPath: canonical,
+      expectedTarget: expectedCanonical,
+      exists,
+      inWorkspace,
+      outsideSpec,
+      expectedTargetMatches: expectedTarget,
+      hash: claim.hash === null ? 'not_applicable' : (hashMatches ? 'PASS' : 'FAIL'),
+      result: exists && inWorkspace && outsideSpec && expectedTarget && hashMatches ? 'PASS' : 'FAIL',
+    };
+  }));
+  const passed = rows.every((row) => row.result === 'PASS');
+  return Object.freeze({
+    status: passed ? 'FIXTURE_PATH_BASIS_PASS' : 'FIXTURE_PATH_BASIS_BLOCKED',
+    category: passed ? null : 'FIXTURE_PATH_BASIS',
+    rows,
+  });
+}
+
+export async function preparePostR06Fixture(fixture) {
+  const implementation = fixture.paths.implementation;
+  await fs.writeFile(
+    implementation,
+    'export function isInvitationExpired(expiresAt, now) {\n  return Date.parse(now) >= Date.parse(expiresAt);\n}\n',
+    'utf8',
+  );
+  const tests = spawnSync(process.execPath, ['--test'], {
+    cwd: fixture.workspace, encoding: 'utf8', shell: false,
+  });
+  if (tests.status !== 0) throw new Error(`POST-R06 fixture tests failed: ${(tests.stderr || tests.stdout).trim()}`);
+  const implementationHash = sha256(await fs.readFile(implementation));
+  const candidateRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'stnl-post-r06-candidate-')));
+  try {
+    const candidateExecution = path.join(candidateRoot, 'execution');
+    await fs.cp(path.join(fixture.spec, 'execution'), candidateExecution, { recursive: true });
+    const candidateTask = path.join(candidateExecution, 'tasks/slice-01.md');
+    let task = await fs.readFile(candidateTask, 'utf8');
+    const stored = fixture.paths.taskImplementation;
+    task = task.replace('- [ ] 1.1', '- [x] 1.1');
+    task = replaceSection(task, 'Changed Areas', `- \`${stored}\``);
+    task = replaceSection(task, 'Implementation Test Evidence', `### implementation-check-01
+
+- Automatic check round: 1/3
+- Status: TESTS_PASS
+- HEAD: not_available
+- Tested scope: invitation expiration predicate
+- Tested state:
+  - \`${stored}\` | sha256:${implementationHash}
+- Discovery sources: approved task, package scripts, and focused repository test
+- Discovery actions: inspected package.json and test/invitation.test.mjs
+- Verification types considered: focused automated Node test
+- Commands:
+  - \`node --test\` | exit:0
+- Selected checks: node --test
+- Selection rationale: focused authoritative behavior check
+- Coverage: UTC equality and before/after expiration behavior
+- Failures: none
+- Blockers: none
+- Unexpected workspace effects: none
+- Persistence summary: TESTS_PASS persisted for the current implementation bytes.`);
+    task = replaceSection(task, 'Diff Summary', '- Implemented the deterministic UTC invitation-expiration predicate.');
+    await fs.writeFile(candidateTask, task, 'utf8');
+    const candidate = await validateExecutionCandidate(fixture.spec, candidateExecution);
+    if (candidate.state !== 'IMPLEMENTED_AWAITING_VALIDATION') {
+      throw new Error(`POST-R06 candidate state=${candidate.state}`);
+    }
+    await fs.copyFile(candidateTask, path.join(fixture.spec, 'execution/tasks/slice-01.md'));
+    const readback = await inspectExecutionState(fixture.spec);
+    if (readback.state !== 'IMPLEMENTED_AWAITING_VALIDATION') {
+      throw new Error(`POST-R06 readback state=${readback.state}`);
+    }
+    return Object.freeze({ state: readback.state, implementationHash, storedPath: stored });
+  } finally {
+    await fs.rm(candidateRoot, { recursive: true, force: true });
+  }
 }
 
 export function applyBlockedStopPolicy(current, runnerResult) {
@@ -227,7 +395,7 @@ export function applyBlockedStopPolicy(current, runnerResult) {
   return Object.freeze(next);
 }
 
-async function runnerContractMutation() {
+async function runnerContractMutation(from, to) {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'stnl-rehearsal-runner-')));
   try {
     const agents = path.join(root, 'agents');
@@ -238,10 +406,7 @@ async function runnerContractMutation() {
     ];
     for (const file of files) {
       const source = await fs.readFile(file, 'utf8');
-      await fs.writeFile(file, source.replace(
-        'Não calcule Requirements authority por SHA direto de `shared/requirements.md`',
-        'Calcule o SHA de `shared/requirements.md` como Requirements authority',
-      ), 'utf8');
+      await fs.writeFile(file, source.replace(from, to), 'utf8');
     }
     return spawnSync(process.execPath, [path.join(REPOSITORY_ROOT, 'scripts/check-contracts.mjs'), 'validation-runner', '--root', agents], {
       cwd: REPOSITORY_ROOT,
@@ -304,13 +469,22 @@ export async function runDeterministicStages({ keepFixture = false, workspace = 
     const canonicalContracts = spawnSync(process.execPath, [
       path.join(REPOSITORY_ROOT, 'scripts/check-contracts.mjs'), 'validation-runner', '--root', path.join(REPOSITORY_ROOT, 'agents'),
     ], { cwd: REPOSITORY_ROOT, encoding: 'utf8', shell: false });
-    const mutation = await runnerContractMutation();
+    const authorityMutation = await runnerContractMutation(
+      'Não calcule Requirements authority por SHA direto de `shared/requirements.md`',
+      'Calcule o SHA de `shared/requirements.md` como Requirements authority',
+    );
+    const exactCommandMutation = await runnerContractMutation(
+      'Nunca abrevie path ou argumento',
+      'Você pode abreviar path ou argumento',
+    );
     const r03 = canonicalContracts.status === 0
-      && mutation.status === 1
-      && /CONTRACT_ERROR\[R019_REQUIREMENTS_AUTHORITY\]/u.test(mutation.stderr);
+      && authorityMutation.status === 1
+      && /CONTRACT_ERROR\[R019_REQUIREMENTS_AUTHORITY\]/u.test(authorityMutation.stderr)
+      && exactCommandMutation.status === 1
+      && /CONTRACT_ERROR\[R020_EXACT_COMMANDS\]/u.test(exactCommandMutation.stderr);
     stages.push(r03
-      ? pass('R03', 'RUNNER_SEMANTIC', 'canonical adapters accepted; raw shared-hash mutation rejected as R019')
-      : fail('R03', 'RUNNER_SEMANTIC', 'runner authority anti-regression failed'));
+      ? pass('R03', 'RUNNER_SEMANTIC', 'runner v8 accepted; raw-file authority rejected as R019; abbreviated commands rejected as R020')
+      : fail('R03', 'RUNNER_SEMANTIC', 'runner authority/exact-command anti-regression failed'));
     if (!r03) return { status: 'PRE_PILOT_REHEARSAL_BLOCKED', stages, fixture };
 
     const stopped = applyBlockedStopPolicy({
@@ -333,11 +507,17 @@ export async function runDeterministicStages({ keepFixture = false, workspace = 
     if (!r04) return { status: 'PRE_PILOT_REHEARSAL_BLOCKED', stages, fixture };
 
     const pristine = await inspectExecutionState(fixture.spec);
+    const pristinePathGate = await inspectFixturePathBasis({
+      workspace: target,
+      spec: fixture.spec,
+      requirePostR06: false,
+    });
     const r05 = pristine.state === 'MATERIALIZED_PRISTINE'
-      && pristine.currentFingerprint === fixture.authority;
+      && pristine.currentFingerprint === fixture.authority
+      && pristinePathGate.status === 'FIXTURE_PATH_BASIS_PASS';
     stages.push(r05
-      ? pass('R05', 'EXECUTION', `temporary critical fixture state=${pristine.state}`)
-      : fail('R05', 'EXECUTION', `fixture state=${pristine.state}`));
+      ? pass('R05', 'EXECUTION', `temporary critical fixture state=${pristine.state}; canonical fixture path gate PASS`)
+      : fail('R05', pristinePathGate.category ?? 'EXECUTION', `fixture state=${pristine.state}; pathGate=${pristinePathGate.status}`));
     return {
       status: r05 ? 'PRE_PILOT_REHEARSAL_READY' : 'PRE_PILOT_REHEARSAL_BLOCKED',
       stages,
@@ -392,6 +572,61 @@ function preSessionHarnessFailure(status) {
   return new Set(['HARNESS_INIT_FAILED', 'HARNESS_TIMEOUT', 'HARNESS_PROTOCOL_ERROR', 'HARNESS_CAPABILITY_MISSING']).has(status);
 }
 
+export async function runIsolatedR07() {
+  const session = await createManagedBenchmarkSession({ repositoryRoot: REPOSITORY_ROOT });
+  try {
+    const workspace = path.join(session.workspaces, 'r07-isolated');
+    await fs.mkdir(workspace, { recursive: true });
+    const fixture = await createCriticalFixture(workspace);
+    const postR06 = await preparePostR06Fixture(fixture);
+    const gate = await inspectFixturePathBasis({ workspace, spec: fixture.spec, requirePostR06: true });
+    if (gate.status !== 'FIXTURE_PATH_BASIS_PASS') {
+      return {
+        status: 'PRE_PILOT_REHEARSAL_BLOCKED',
+        failure: { category: 'FIXTURE_PATH_BASIS_BLOCKED', message: 'POST-R06 fixture path gate rejected the fresh fixture before live validation' },
+        preState: postR06.state,
+        pathGate: gate,
+        liveCalls: 0,
+      };
+    }
+    const validateCall = await harnessStage(session, workspace, {
+      model: 'GPT-5.6-Luna', effort: 'high', sandbox: 'workspace-write',
+      prompt: await launcherPrompt({ launcher: VALIDATE_LAUNCHER, skill: QUALITY_SKILL, spec: fixture.spec, operation: 'VALIDATE_SLICE' }),
+    });
+    const afterValidate = await inspectExecutionState(fixture.spec).catch(() => null);
+    const task = afterValidate?.tasks?.get('slice-01');
+    const attempts = task?.attempts ?? [];
+    const complete = harnessStarted(validateCall)
+      && afterValidate?.state === 'COMPLETE'
+      && attempts.length === 1
+      && attempts[0].status === 'PASS'
+      && task?.base !== null;
+    return {
+      status: complete ? 'ISOLATED_R07_COMPLETE' : 'PRE_PILOT_REHEARSAL_BLOCKED',
+      failure: complete ? null : {
+        category: afterValidate?.state === 'IMPLEMENTED_AWAITING_VALIDATION'
+          && /path|manifest|ownership/iu.test(validateCall.result.finalAssistantMessage ?? '')
+          ? 'FIXTURE_PATH_CORRECTION_DID_NOT_ADVANCE'
+          : (preSessionHarnessFailure(validateCall.result.status) ? 'HARNESS' : 'RUNNER_SEMANTIC'),
+        message: compactMessage(validateCall.result),
+      },
+      preState: postR06.state,
+      pathGate: gate,
+      harness: validateCall.result.status,
+      mainSessionStarted: validateCall.result.sessionStarted === true,
+      turnStarted: validateCall.result.turnStarted === true,
+      runnerResult: attempts[0]?.status ?? (/(?:runner|validation)[^\n]{0,80}\bPASS\b/iu.test(validateCall.result.finalAssistantMessage ?? '') ? 'PASS' : 'not_persisted'),
+      candidatePublication: complete ? 'accepted' : 'not_accepted',
+      finalState: afterValidate?.state ?? 'unreadable',
+      attemptCount: attempts.length,
+      liveCalls: 1,
+      finalMessage: compactMessage(validateCall.result),
+    };
+  } finally {
+    await cleanupManagedBenchmarkSession(session);
+  }
+}
+
 export async function runLiveStages() {
   const stages = [];
   const calls = [];
@@ -431,6 +666,12 @@ export async function runLiveStages() {
       : fail('R06', preSessionHarnessFailure(executeCall.result.status) ? 'HARNESS' : 'EXECUTION', `harness=${executeCall.result.status}; state=${afterExecute?.state ?? 'unreadable'}; result=${compactMessage(executeCall.result)}`));
     if (!r06) return { status: 'PRE_PILOT_REHEARSAL_BLOCKED', stages, calls };
 
+    const preLivePathGate = await inspectFixturePathBasis({ workspace, spec, requirePostR06: true });
+    if (preLivePathGate.status !== 'FIXTURE_PATH_BASIS_PASS') {
+      stages.push(fail('R07', 'FIXTURE_PATH_BASIS', 'pre-live path gate rejected POST-R06 fixture; zero VALIDATE_SLICE calls started'));
+      return { status: 'PRE_PILOT_REHEARSAL_BLOCKED', stages, calls, preLivePathGate };
+    }
+
     const validateCall = await harnessStage(session, workspace, {
       model: 'GPT-5.6-Luna', effort: 'high', sandbox: 'workspace-write',
       prompt: await launcherPrompt({ launcher: VALIDATE_LAUNCHER, skill: QUALITY_SKILL, spec, operation: 'VALIDATE_SLICE' }),
@@ -443,7 +684,7 @@ export async function runLiveStages() {
       && attempts.length === 1
       && attempts[0].status === 'PASS';
     stages.push(r07
-      ? pass('R07', 'EXECUTION', 'formal PASS persisted; Effective Validation Base present; state=COMPLETE')
+      ? pass('R07', 'EXECUTION', 'pre-live path gate PASS; formal PASS persisted; Effective Validation Base present; state=COMPLETE')
       : fail('R07', preSessionHarnessFailure(validateCall.result.status) ? 'HARNESS' : 'RUNNER_SEMANTIC', `harness=${validateCall.result.status}; state=${afterValidate?.state ?? 'unreadable'}; result=${compactMessage(validateCall.result)}`));
     if (!r07) return { status: 'PRE_PILOT_REHEARSAL_BLOCKED', stages, calls };
 
@@ -516,10 +757,11 @@ export async function runLiveStages() {
     await fs.writeFile(path.join(reviewerWorkspace, 'review-input.md'), [
       '# Pre-pilot correction review',
       '',
-      '- Base: 29b4d6f1979d8d2590260b4888cf15b696631961',
-      '- Pilot blocker: runner compared canonical authority with raw shared/requirements.md SHA.',
-      '- Canonical rule: runner must use official execution preflight; raw lifecycle file hashes are forbidden.',
-      '- BLOCKED rule: valid runner BLOCKED terminates the current benchmark Case with zero automatic re-entry.',
+      '- Base: bfe0a190993d48428acaaa827b84a6db2e4124b1',
+      '- Previous blocker: FIXTURE_PATH_BASIS in the deterministic POST-R06 rehearsal fixture.',
+      '- Correction rule: artifact-relative implementation paths are derived from the final detailed task artifact, never a candidate/session root.',
+      '- Runtime rule: terminal ownership, existence, containment, and hash validation remain strict.',
+      '- Runner rule: canonical authority and exact complete VALIDATE_SLICE commands remain mandatory under v8.',
       '',
       '## R01-R10',
       ...stages.map((stage) => `- ${stage.id}: ${stage.result} — ${stage.evidence}`),
@@ -532,7 +774,7 @@ export async function runLiveStages() {
     const reviewerPrompt = [
       'Read only review-input.md in this reviewer workspace. Do not modify files.',
       'Answer exactly PASS or BLOCKING_FINDING followed by compact evidence.',
-      'Check: runtime-owned canonical authority; no raw shared or feature hash authority; drift detection retained; Codex/Claude equivalence; valid BLOCKED stops benchmark re-entry; R06 TESTS_PASS; R07 COMPLETE; R09/R10 preserve execution; and any concrete blocker to a new Production Pilot.',
+      'Check these questions: was the path-basis bug confined to the fixture; did execution runtime remain strict; does the fixture derive paths from the canonical detailed-task basis; is the observed invalid path rejected pre-live; does canonical authority remain correct; does runner v8 still require exact commands; did R06 legitimately reach IMPLEMENTED_AWAITING_VALIDATION; did R07 legitimately reach COMPLETE; did terminal ownership accept real paths and hashes; did GLOBAL READY preserve execution; did CLOSE preserve execution; and is there any concrete blocker to a new Production Pilot.',
     ].join('\n');
     const reviewerCall = await harnessStage(reviewerSession, reviewerWorkspace, {
       model: 'GPT-5.6-Sol', effort: 'high', sandbox: 'read-only', prompt: reviewerPrompt,
@@ -629,13 +871,23 @@ export function runFinalSuite() {
 
 export async function main(argv) {
   const [command] = argv;
-  if (!new Set(['deterministic', 'live', 'all']).has(command)) {
-    process.stderr.write('usage: benchmark-rehearsal.mjs deterministic|live|all\n');
+  if (!new Set(['deterministic', 'isolated', 'live', 'all']).has(command)) {
+    process.stderr.write('usage: benchmark-rehearsal.mjs deterministic|isolated|live|all\n');
     return 2;
   }
   let report;
   if (command === 'deterministic') report = await runDeterministicStages();
-  else report = await runLiveStages();
+  else if (command === 'isolated') report = await runIsolatedR07();
+  else if (command === 'live') report = await runLiveStages();
+  else {
+    const isolatedR07 = await runIsolatedR07();
+    if (isolatedR07.status !== 'ISOLATED_R07_COMPLETE') {
+      report = { status: 'PRE_PILOT_REHEARSAL_BLOCKED', isolatedR07, stages: [], calls: [] };
+    } else {
+      report = await runLiveStages();
+      report.isolatedR07 = isolatedR07;
+    }
+  }
   if (command === 'all' && report.status === 'PRE_PILOT_REHEARSAL_READY') {
     const final = runFinalSuite();
     report.stages.push(final.status === 'R13_PASS'
@@ -645,7 +897,7 @@ export async function main(argv) {
     report.status = final.status === 'R13_PASS' ? 'PRE_PILOT_REHEARSAL_READY' : 'PRE_PILOT_REHEARSAL_BLOCKED';
   }
   process.stdout.write(`${JSON.stringify(report, (key, value) => ['fixture', 'ownedRoot'].includes(key) ? undefined : value, 2)}\n`);
-  return report.status === 'PRE_PILOT_REHEARSAL_READY' ? 0 : 1;
+  return new Set(['PRE_PILOT_REHEARSAL_READY', 'ISOLATED_R07_COMPLETE']).has(report.status) ? 0 : 1;
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {

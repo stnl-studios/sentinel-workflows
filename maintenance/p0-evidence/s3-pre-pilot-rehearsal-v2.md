@@ -187,4 +187,4 @@ malformed-output cause.
 
 ## Resulting commit
 
-`pending user commit`
+`bfe0a190993d48428acaaa827b84a6db2e4124b1`

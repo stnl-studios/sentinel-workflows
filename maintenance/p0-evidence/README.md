@@ -30,6 +30,8 @@ This directory preserves compact, human-readable engineering evidence for Sentin
   R01–R06 and stopped on malformed R07 runner output.
 - `s3-pre-pilot-rehearsal-v2.md` — R07 forensic, focal runner-contract
   correction, and blocked isolated-validation evidence.
+- `s3-pre-pilot-rehearsal-v3.md` — fixture path-basis correction, successful
+  isolated R07 and R01–R10 rehearsal evidence, blocked at reviewer initialization.
 
 ## P0 Gates
 
