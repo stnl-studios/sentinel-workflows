@@ -58,3 +58,9 @@
   - The Pilot #2 ownership inconsistency did not recur.
   - No environment retry or failure was observed in that run.
   - Cases B and C were not run; P0 remained open.
+- `eeac1c293147c1e14a50e71e8ac8e7b26d6a5ecd`
+  - Benchmark Environment Qualification v1.
+  - Doctor passed twice during qualification.
+  - Managed TMPDIR and the Luna/medium sandbox probe were qualified.
+  - Git, global configuration, and repository bytes were preserved.
+  - The environment was frozen as READY.
