@@ -56,6 +56,10 @@ This directory preserves compact, human-readable engineering evidence for Sentin
   rerun; PLAN candidate validation, publication, and strict readback passed as
   `PLANNED_DRAFT`, with a durable semantic-command ledger and candidate
   snapshot.
+- `s3-benchmark-pilot-08.md` — Production Pilot #8 evidence; Case A INIT
+  produced a ready SPEC, but the external measurement driver misclassified the
+  canonical lifecycle status and terminalized the canary before PLAN. The
+  blocked raw was preserved durably; B/C and the reviewer were not run.
 
 ## P0 Gates
 

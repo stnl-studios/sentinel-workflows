@@ -87,3 +87,24 @@ byte-for-byte, and hashed before managed-session cleanup:
 
 No slice operation, Case B, Case C, or reviewer was run. The official
 production-v2 baseline remains not established.
+
+## Production Pilot #8
+
+Candidate `0be86e69801f51ae32612275bb31f8823b52a5bf` used
+`production-v2`. The Sol/high Case A `SPEC_INIT` turn published lifecycle
+status `ready`, and official execution readback derived `EMPTY` with legal
+handoff `PLAN`. The external measurement driver misread the canonical fenced
+YAML status field, recorded the event as `BLOCKED`, and terminalized the Case
+before PLAN. The zero-rerun stop policy was honored.
+
+Canonical finalization created the recorded `BLOCKED` raw. It was parsed,
+identity-checked, copied byte-for-byte, and hashed before managed-session
+cleanup:
+
+- `0be86e69801f51ae32612275bb31f8823b52a5bf/case-a-production-v2.json`
+  - status: `BLOCKED`
+  - final execution state: `EMPTY`
+  - SHA-256: `31ba5fb8de3bfcb32235b72d54c9e293a72fab0bbefdf11566ab83633b631b9c`
+
+Cases B/C and the final reviewer were not run. The official production-v2
+baseline remains not established.

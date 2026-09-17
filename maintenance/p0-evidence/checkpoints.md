@@ -173,7 +173,7 @@
     Sol/high and zero retry.
   - The isolated Terra/high PLAN proof did not publish planning artifacts;
     official readback remained `EMPTY`, so Pilot #8 is not authorized.
-- `pending user commit`
+- `0be86e69801f51ae32612275bb31f8823b52a5bf`
   - A one-shot fresh Case A observability rerun completed one Sol/high
     `SPEC_INIT` and one Terra/high `PLAN`, both with zero retry.
   - PLAN candidate validation, publication, and strict readback passed;
@@ -183,3 +183,12 @@
     spans or invalid resolutions.
   - No P0 gate or baseline was promoted; Production Pilot #8 is the next
     authorized step.
+- `pending user commit`
+  - Production Pilot #8 passed its frozen-candidate, functional-equivalence,
+    Environment, Harness, historical-integrity, and deterministic preconditions.
+  - Case A INIT produced lifecycle `ready` with execution `EMPTY`, but the
+    external measurement driver misread the canonical status field and
+    terminalized the canary before PLAN.
+  - The canonical `BLOCKED` raw was copied byte-for-byte and hashed before
+    managed cleanup; B/C and the reviewer were not run.
+  - No baseline or gate was promoted, and P0 remains open.

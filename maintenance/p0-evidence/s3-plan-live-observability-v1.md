@@ -76,3 +76,7 @@ Baseline: `NOT_YET_ESTABLISHED`
 
 The published path-carrier correction is now live-proven. The next authorized
 step is Production Pilot #8 directly, without another rehearsal.
+
+## Resulting commit
+
+`0be86e69801f51ae32612275bb31f8823b52a5bf`
