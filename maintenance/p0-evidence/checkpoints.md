@@ -117,7 +117,7 @@
   - Isolated R07 reached `COMPLETE`; the fresh full rehearsal passed R01–R10.
   - R11 repeated the historical pre-session reviewer initialization failure,
     so R12/R13 were not run and no Production Pilot was authorized.
-- `pending user commit`
+- `b1fb9e182c15a2442aba09872cf11f3e6d49dd13`
   - Reviewer and B/C smoke workspaces are initialized as isolated local Git
     repositories and rejected before model launch when Git is not ready.
   - The Git-geometry hypothesis was confirmed; isolated R11 and isolated R12
@@ -126,3 +126,12 @@
     task-relative `src/invitation.mjs` claims emitted by the real EXECUTE turn.
   - R07 started zero validation calls; R08-R13 and Production Pilot were not
     run, and no second remediation was attempted.
+- `pending user commit`
+  - File-backed execution records now derive task-relative paths from the final
+    task artifact and reject wrong basis, physical identity, or hash before
+    candidate publication.
+  - Delegated validation preserves canonical `SPEC_PATH`; execution producers
+    preserve the exact canonical preflight authority.
+  - The critical fixture covers the complete expired-invitation contract.
+  - The fresh rehearsal passed R01-R13, including independent review, parallel
+    B/C isolation, and all required deterministic checks; no Pilot was run.

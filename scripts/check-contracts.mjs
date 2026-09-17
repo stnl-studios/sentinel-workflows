@@ -316,7 +316,9 @@ function checkRunner(root) {
   requirePattern(contract, /`BLOCKED` exige[^\n]{0,180}(?:impossibilidade objetiva|objective impossibility)/iu, "R006_VERDICTS", "BLOCKED lacks an objective cause");
   forbidPattern(contract, /(?:NEEDS_FIX|BLOCKED)[\s\S]{0,160}(?:(?<!não )proponha|create|(?<!não )crie) Effective Validation Base/iu, "R006_VERDICTS", "non-PASS verdict creates an effective base");
   requirePattern(contract, /caminhos relativos únicos[\s\S]{0,180}SHA-256[\s\S]{0,100}`REMOVED`/iu, "R008_MANIFEST", "final manifest path/hash/removal semantics are incomplete");
-  requirePattern(contract, /Estado testado[\s\S]{0,180}Manifesto final da slice[\s\S]{0,220}relativo ao diretório do artefato detalhado `tasks\/slice-NN\.md`/iu, "R008_MANIFEST", "tested-state and manifest path base is ambiguous");
+  requirePattern(contract, /Estado testado[\s\S]{0,180}Manifesto final da slice[\s\S]{0,220}relativo ao diretório do artefato detalhado(?: final)? `tasks\/slice-NN\.md`/iu, "R008_MANIFEST", "tested-state and manifest path base is ambiguous");
+  requirePattern(contract, /Em qualquer operação[\s\S]{0,160}`Estado testado`[\s\S]{0,160}task-relative[\s\S]{0,220}`path\.relative\(dirname\(taskArtifact\), target\)`[\s\S]{0,220}nunca use CWD[\s\S]{0,220}candidate root/iu, "R008_MANIFEST", "auxiliary tested-state task-relative derivation is missing or ambiguous");
+  requirePattern(contract, /caminho armazenado deve resolver exatamente ao target físico cujo hash foi calculado/iu, "R008_MANIFEST", "tested-state path/hash physical identity is missing");
   requirePattern(contract, /fontes consultadas em `Discovery sources`[\s\S]{0,160}`Discovery actions`/iu, "R007_OUTPUT_SCHEMA", "discovery sources and actions are not distinct");
   requirePattern(contract, /rodadas posteriores file-backed[^\n]{0,180}caminhos de correção[^\n]{0,180}task-relative normalizados[^\n]{0,160}comma-space/iu, "R007_OUTPUT_SCHEMA", "file-backed correction-path persistence grammar is missing");
   requirePattern(contract, /correção fileless[^\n]{0,80}`Correction paths`[^\n]{0,40}exact `none`/iu, "R007_OUTPUT_SCHEMA", "fileless correction paths cannot be exact none");
@@ -510,6 +512,8 @@ function checkLaunchers(root) {
     requirePattern(instructions, /retome diretamente (?:no spawn|na delegação)|resume directly (?:at|with) (?:spawn|delegation)/iu, "L016_TRANSPORT", `${name}: initialization-blocker resume path is missing`);
     forbidPattern(instructions, /(?<!não )(?:faça|crie|execute|use)[^\n]{0,40}(?:fallback|retry manual)|(?:fallback|manual retry)[^\n]{0,40}(?:permitid|allowed)/iu, "L008_VALIDATION_FLOW", `${name}: fallback or manual retry is enabled`);
     if (spec[2] === "VALIDATE_SLICE") {
+      requirePattern(instructions, /valor concreto de `SPEC_PATH`[\s\S]{0,180}absoluto, canônico, existente[\s\S]{0,180}official preflight[\s\S]{0,180}byte-identical[\s\S]{0,260}Nunca o substitua por execution root[\s\S]{0,220}path reconstruído/iu, "L025_SPEC_PATH_IDENTITY", `${name}: delegated validation does not preserve exact canonical SPEC_PATH identity`);
+      requirePattern(instructions, /não tente iniciar o runner por shell[\s\S]{0,120}path como agent identifier/iu, "L025_SPEC_PATH_IDENTITY", `${name}: delegated validation may confuse runner identity with a filesystem path`);
       requirePattern(instructions, /PASS\s*\|\s*NEEDS_FIX\s*\|\s*BLOCKED/u, "L008_VALIDATION_FLOW", `${name}: formal status set changed`);
       requirePattern(instructions, /Effective Validation Base[\s\S]{0,100}(?:finaliza|complete)/iu, "L008_VALIDATION_FLOW", `${name}: PASS does not atomically finalize`);
       requirePattern(instructions, /(?:Exija|Require)[^\n]{0,40}(?:revisão|review) independente[^\n]{0,100}TESTS_NOT_APPLICABLE/iu, "L008_VALIDATION_FLOW", `${name}: non-applicability is not independently reviewed`);
@@ -522,6 +526,9 @@ function checkLaunchers(root) {
       requirePattern(instructions, /Falta de authority[^\n]{0,180}`BLOCKED`[^\n]{0,120}`REPLAN`/iu, "L022_TERMINAL_VALIDATION", `${name}: terminal strategy gap does not route to REPLAN`);
     } else {
       requirePattern(instructions, /TESTS_PASS[\s\S]{0,80}TESTS_FAIL[\s\S]{0,80}TESTS_NOT_APPLICABLE[\s\S]{0,80}BLOCKED/u, "L014_AUTOMATIC_RECHECK", `${name}: auxiliary status set changed`);
+      requirePattern(instructions, /`path\.relative\(dirname\(tasks\/slice-NN\.md\), target\)`[\s\S]{0,160}artefato detalhado final[\s\S]{0,180}`Changed Areas`[\s\S]{0,200}`Tested state`[\s\S]{0,220}nunca use CWD[\s\S]{0,220}candidate root/iu, "L024_PATH_BASIS", `${name}: task-relative execution-record path derivation is missing`);
+      requirePattern(instructions, /Requirements authority` exclusivamente do campo exato `authority=sha256:<64hex>`[\s\S]{0,200}mesmo official preflight[\s\S]{0,220}copie o valor byte-identical/iu, "L026_AUTHORITY_IDENTITY", `${name}: canonical preflight authority is not preserved byte-identically`);
+      requirePattern(instructions, /Nunca calcule hash raw de `shared\/requirements\.md` ou `feature_spec\.md`[\s\S]{0,160}nem reconstrua a authority/iu, "L026_AUTHORITY_IDENTITY", `${name}: raw or reconstructed requirements authority is not forbidden`);
       requirePattern(instructions, /(?:no mínimo uma vez|at least once)[\s\S]{0,80}(?:no máximo três vezes|at most three times)/iu, "L014_AUTOMATIC_RECHECK", `${name}: one-to-three runner budget is missing`);
       requirePattern(instructions, /1\/3[\s\S]{0,40}2\/3[\s\S]{0,40}3\/3/u, "L014_AUTOMATIC_RECHECK", `${name}: exact round set is missing`);
       forbidPattern(instructions, /(?<!nunca )faça uma quarta chamada|(?<!never )make a fourth call|(?<!nem )(?<!não )use loop ilimitado|(?<!never )use an unbounded loop/iu, "L014_AUTOMATIC_RECHECK", `${name}: retry cycle is unbounded`);

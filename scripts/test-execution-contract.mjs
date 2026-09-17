@@ -164,6 +164,8 @@ async function renderArtifacts(fixture, { materialized = true, planStatus = "rea
   await fs.writeFile(path.join(fixture.execution, "plans/slice-01.md"), slicePlan);
   if (!materialized) return { authority };
   await renderTasks(fixture, { revision, fingerprint: authority });
+  await fs.mkdir(path.dirname(implementationTarget), { recursive: true });
+  await fs.writeFile(implementationTarget, VALIDATED_CONTENT, "utf8");
   return { authority };
 }
 
@@ -424,7 +426,7 @@ function checkRecord(prefix, number, status, round, { cycle = null } = {}) {
 - HEAD: fixture
 - Tested scope: ../../src/example.txt
 - Tested state:
-  - \`../../src/example.txt\` | sha256:${"b".repeat(64)}
+  - \`../../src/example.txt\` | sha256:${VALIDATED_HASH}
 - Discovery sources: approved task and repository tests
 - Discovery actions: inspected applicable test commands
 - Verification types considered: focused automated test
@@ -1628,7 +1630,7 @@ test("auxiliary runner output contract round-trips through model-owned persisten
     assert.match(contract, /Fileless reason: required only when Manifesto final da slice is exactly none; omit for file-backed manifest/u);
   }
   const filelessPersisted = persisted.replace(
-    `- Tested state:\n  - \`../../src/example.txt\` | sha256:${"b".repeat(64)}`,
+    `- Tested state:\n  - \`../../src/example.txt\` | sha256:${VALIDATED_HASH}`,
     "- Tested state: none\n- Fileless reason: no repository file participates in the observable state",
   );
   assert.match(filelessPersisted, /^- Tested state: none\n- Fileless reason: \S.*$/mu);
@@ -2913,7 +2915,7 @@ test("Effective Validation Base commands and evidence are exact provenance of th
 test("fileless PASS uses an explicit none manifest with objective reason and evidence", async (t) => {
   const filelessAttempt = attemptRecord(1, "PASS", { evidence: "validated observable behavior" });
   const filelessCheck = checkRecord("implementation-check", 1, "TESTS_PASS", 1)
-    .replace(`- Tested state:\n  - \`../../src/example.txt\` | sha256:${"b".repeat(64)}`, "- Tested state: none\n- Fileless reason: no repository file participates in the observable configuration state");
+    .replace(`- Tested state:\n  - \`../../src/example.txt\` | sha256:${VALIDATED_HASH}`, "- Tested state: none\n- Fileless reason: no repository file participates in the observable configuration state");
   const filelessBase = `- Origin attempt: attempt-01
 - Attempt type: initial
 - HEAD: fixture
@@ -2977,7 +2979,7 @@ test("fileless PASS uses an explicit none manifest with objective reason and evi
 
 test("fileless APPLY_FINDINGS needs objective evidence but no fabricated path", async (t) => {
   const fileless = (record) => record.replace(
-    `- Tested state:\n  - \`../../src/example.txt\` | sha256:${"b".repeat(64)}`,
+    `- Tested state:\n  - \`../../src/example.txt\` | sha256:${VALIDATED_HASH}`,
     "- Tested state: none\n- Fileless reason: the correction changes observable authority without filesystem ownership",
   ).replace("- Corrections covered: ../../src/example.txt", "- Corrections covered: objective authority-only correction");
 
@@ -3015,7 +3017,7 @@ test("fileless APPLY_FINDINGS needs objective evidence but no fabricated path", 
 
 test("only the current state-driving auxiliary check controls fileless Changed Areas", async (t) => {
   const fileless = (record) => record.replace(
-    `- Tested state:\n  - \`../../src/example.txt\` | sha256:${"b".repeat(64)}`,
+    `- Tested state:\n  - \`../../src/example.txt\` | sha256:${VALIDATED_HASH}`,
     "- Tested state: none\n- Fileless reason: no repository file participates in current tested state",
   );
 
@@ -3133,12 +3135,12 @@ test("scalar summaries stay inline while Tested state and Commands stay structur
     [(record) => record.replace("- Tested scope: ../../src/example.txt", "- Tested scope: ../../src/example.txt\n  1. second value"), /unexpected nested/u],
     [(record) => record.replace("- Tested scope: ../../src/example.txt", "- Tested scope:\n  - ../../src/example.txt"), /Tested scope|unexpected nested/u],
     [(record) => record.replace(
-      `  - \`../../src/example.txt\` | sha256:${"b".repeat(64)}`,
-      `  - \`../../src/example.txt\` | sha256:${"b".repeat(64)}\n  - \`../../src/example.txt\` | sha256:${"b".repeat(64)}`,
+      `  - \`../../src/example.txt\` | sha256:${VALIDATED_HASH}`,
+      `  - \`../../src/example.txt\` | sha256:${VALIDATED_HASH}\n  - \`../../src/example.txt\` | sha256:${VALIDATED_HASH}`,
     ), /duplicate Tested state paths/u],
     [(record) => record.replace(
-      `  - \`../../src/example.txt\` | sha256:${"b".repeat(64)}`,
-      `  - \`../../src/z.txt\` | sha256:${"b".repeat(64)}\n  - \`../../src/a.txt\` | sha256:${"b".repeat(64)}`,
+      `  - \`../../src/example.txt\` | sha256:${VALIDATED_HASH}`,
+      `  - \`../../src/z.txt\` | sha256:${VALIDATED_HASH}\n  - \`../../src/a.txt\` | sha256:${VALIDATED_HASH}`,
     ), /Tested state paths are not lexicographically ordered/u],
     [(record) => record.replace("`../../src/example.txt`", "`../../../outside.txt`"), /unsafe Tested state path/u],
     [(record) => record
@@ -3162,7 +3164,7 @@ test("scalar summaries stay inline while Tested state and Commands stay structur
     let result = value.replace("- [ ] 1.1", "- [x] 1.1");
     result = replaceSection(result, "Changed Areas", "- none");
     const fileless = checkRecord("implementation-check", 1, "TESTS_PASS", 1)
-      .replace(`- Tested state:\n  - \`../../src/example.txt\` | sha256:${"b".repeat(64)}`, "- Tested state: none\n- Fileless reason:   ");
+      .replace(`- Tested state:\n  - \`../../src/example.txt\` | sha256:${VALIDATED_HASH}`, "- Tested state: none\n- Fileless reason:   ");
     return replaceSection(result, "Implementation Test Evidence", fileless);
   });
   await assert.rejects(inspectExecutionState(whitespaceReason.requirements), /Fileless reason/u);

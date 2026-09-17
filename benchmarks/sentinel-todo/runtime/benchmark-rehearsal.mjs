@@ -233,12 +233,12 @@ async function writeCanonicalExecution(spec) {
     ['`<relative path>`', `\`${globalSource}\``],
     ['sha256:<64hex>', `sha256:${authority}`],
     ['<positive integer>', '1'],
-    ['<compact objective>', 'Implement deterministic invitation expiration'],
-    ['<compact strategy>', 'Complete one bounded function and validate its focused test'],
+    ['<compact objective>', 'Implement deterministic expired-invitation rejection'],
+    ['<compact strategy>', 'Complete one bounded acceptance function and validate UTC rejection, the public error envelope, and absence of participation'],
     ['01 - <name>', '01 - Invitation expiration'],
-    ['<result>', 'expired invitations are detected at the UTC boundary'],
+    ['<result>', 'expired invitations are rejected with the stable public envelope and no participation'],
     ['`<artifact-relative path>`; <optional conceptual area>', `\`${paths.globalImplementation}\`; invitation expiration`],
-    ['<risk, boundary, or explicit final integration slice>', 'UTC boundary behavior is covered by the focused test'],
+    ['<risk, boundary, or explicit final integration slice>', 'UTC equality, public envelope, and no-participation behavior are covered by the focused test'],
   ])));
   await fs.writeFile(path.join(execution, 'plan.md'), global, 'utf8');
 
@@ -247,13 +247,13 @@ async function writeCanonicalExecution(spec) {
     ['`<relative path>`', `\`${detailSource}\``],
     ['sha256:<64hex>', `sha256:${authority}`],
     ['<positive integer>', '1'],
-    ['<One coherent delivery and how it is observed.>', 'Implement the expiration predicate and observe it through the focused Node test.'],
-    ['<included work>', 'Implement `isInvitationExpired` in `src/invitation.mjs`.'],
-    ['<excluded work and boundary with later slices>', 'No lifecycle, storage, HTTP, or delivery-channel changes.'],
-    ['`<artifact-relative path>` — <optional contract, subsystem, test area, or explanation>', `\`${paths.detailImplementation}\` — invitation expiration predicate`],
+    ['<One coherent delivery and how it is observed.>', 'Implement expired-invitation rejection and observe the UTC decision, stable HTTP envelope, and participation boundary through the focused Node test.'],
+    ['<included work>', 'Implement `acceptInvitation` in `src/invitation.mjs` so an expired invitation returns the existing public error envelope without creating participation.'],
+    ['<excluded work and boundary with later slices>', 'No lifecycle, storage-schema, router, or delivery-channel changes.'],
+    ['`<artifact-relative path>` — <optional contract, subsystem, test area, or explanation>', `\`${paths.detailImplementation}\` — invitation expiration acceptance boundary`],
     ['<earlier slice or none>', 'none'],
-    ['<risk and mitigation>', 'UTC boundary errors; cover equality and before/after cases.'],
-    ['<bounded approach>', 'Change only the predicate implementation.'],
+    ['<risk and mitigation>', 'UTC boundary or side-effect drift; cover equality, the exact public envelope, and zero participation for rejection.'],
+    ['<bounded approach>', 'Change only the bounded acceptance function implementation.'],
     ['<test, command, suite, or observable check>', 'node --test'],
     ['<objective result and preserved boundary>', 'Focused tests pass and no unrelated path changes.'],
   ]));
@@ -261,7 +261,7 @@ async function writeCanonicalExecution(spec) {
 
   const tasksIndex = replaceAll(await fs.readFile(TASKS_TEMPLATE, 'utf8'), [
     ['01 - <name>', '01 - Invitation expiration'],
-    ['<observable delivery>', 'expired invitations are detected at the UTC boundary'],
+    ['<observable delivery>', 'expired invitations are rejected with the stable envelope and no participation'],
   ]);
   await fs.writeFile(path.join(execution, 'tasks.md'), tasksIndex, 'utf8');
 
@@ -270,9 +270,9 @@ async function writeCanonicalExecution(spec) {
     ['`<relative path>`', `\`${taskSource}\``],
     ['sha256:<64hex>', `sha256:${authority}`],
     ['<positive integer>', '1'],
-    ['<task>', 'Implement `isInvitationExpired` using the UTC timestamp boundary'],
-    ['<result>', 'expired at equality or after, active before expiration'],
-    ['`<artifact-relative path>`; <optional conceptual area>', `\`${paths.taskImplementation}\`; invitation expiration predicate`],
+    ['<task>', 'Implement `acceptInvitation` using the service UTC boundary, the stable expired-invitation HTTP envelope, and no participation on rejection'],
+    ['<result>', 'expired invitations return the stable 410 envelope without participation; active invitations create participation'],
+    ['`<artifact-relative path>`; <optional conceptual area>', `\`${paths.taskImplementation}\`; invitation expiration acceptance boundary`],
     ['<test, command, suite, or observable check>', 'node --test'],
   ]);
   await fs.writeFile(path.join(tasks, 'slice-01.md'), task, 'utf8');
@@ -292,17 +292,23 @@ export async function createCriticalFixture(workspace) {
   );
   const spec = path.join(workspace, 'spec');
   await fs.cp(READY_LIFECYCLE_FIXTURE, spec, { recursive: true });
+  await fs.mkdir(path.join(workspace, 'docs/core'), { recursive: true });
+  await fs.writeFile(
+    path.join(workspace, 'docs/core/CONTRACTS.md'),
+    '# Contracts\n\n## 5. Expired invitation\n\nAn expired invitation returns HTTP 410 with `{ "error": { "code": "INVITATION_EXPIRED", "message": "Invitation has expired" } }` and creates no participation.\n',
+    'utf8',
+  );
   await fs.mkdir(path.join(workspace, 'src'), { recursive: true });
   await fs.mkdir(path.join(workspace, 'test'), { recursive: true });
   await fs.writeFile(path.join(workspace, 'package.json'), `${JSON.stringify({ type: 'module', scripts: { test: 'node --test' } }, null, 2)}\n`, 'utf8');
   await fs.writeFile(
     path.join(workspace, 'src/invitation.mjs'),
-    'export function isInvitationExpired(expiresAt, now) {\n  throw new Error("TODO: implement UTC expiration boundary");\n}\n',
+    'export function acceptInvitation(invitation, now, participations) {\n  throw new Error("TODO: implement expired-invitation rejection");\n}\n',
     'utf8',
   );
   await fs.writeFile(
     path.join(workspace, 'test/invitation.test.mjs'),
-    `import assert from 'node:assert/strict';\nimport test from 'node:test';\nimport { isInvitationExpired } from '../src/invitation.mjs';\n\ntest('expiration uses the UTC equality boundary', () => {\n  assert.equal(isInvitationExpired('2030-01-01T00:00:00.000Z', '2029-12-31T23:59:59.999Z'), false);\n  assert.equal(isInvitationExpired('2030-01-01T00:00:00.000Z', '2030-01-01T00:00:00.000Z'), true);\n  assert.equal(isInvitationExpired('2030-01-01T00:00:00.000Z', '2030-01-01T00:00:00.001Z'), true);\n});\n`,
+    `import assert from 'node:assert/strict';\nimport test from 'node:test';\nimport { acceptInvitation } from '../src/invitation.mjs';\n\ntest('expired invitation returns the stable envelope without participation', () => {\n  const participations = [];\n  const response = acceptInvitation(\n    { id: 'inv-expired', expiresAt: '2030-01-01T00:00:00.000Z' },\n    '2030-01-01T00:00:00.000Z',\n    participations,\n  );\n  assert.deepEqual(response, {\n    status: 410,\n    body: { error: { code: 'INVITATION_EXPIRED', message: 'Invitation has expired' } },\n  });\n  assert.deepEqual(participations, []);\n});\n\ntest('active invitation creates participation', () => {\n  const participations = [];\n  const response = acceptInvitation(\n    { id: 'inv-active', expiresAt: '2030-01-01T00:00:00.000Z' },\n    '2029-12-31T23:59:59.999Z',\n    participations,\n  );\n  assert.deepEqual(response, { status: 204, body: null });\n  assert.deepEqual(participations, [{ invitationId: 'inv-active' }]);\n});\n`,
     'utf8',
   );
   const authority = await writeCanonicalExecution(spec);
@@ -390,7 +396,7 @@ export async function preparePostR06Fixture(fixture) {
   const implementation = fixture.paths.implementation;
   await fs.writeFile(
     implementation,
-    'export function isInvitationExpired(expiresAt, now) {\n  return Date.parse(now) >= Date.parse(expiresAt);\n}\n',
+    `export function acceptInvitation(invitation, now, participations) {\n  if (Date.parse(now) >= Date.parse(invitation.expiresAt)) {\n    return {\n      status: 410,\n      body: { error: { code: 'INVITATION_EXPIRED', message: 'Invitation has expired' } },\n    };\n  }\n  participations.push({ invitationId: invitation.id });\n  return { status: 204, body: null };\n}\n`,
     'utf8',
   );
   const tests = spawnSync(process.execPath, ['--test'], {
@@ -412,7 +418,7 @@ export async function preparePostR06Fixture(fixture) {
 - Automatic check round: 1/3
 - Status: TESTS_PASS
 - HEAD: not_available
-- Tested scope: invitation expiration predicate
+- Tested scope: expired-invitation acceptance boundary
 - Tested state:
   - \`${stored}\` | sha256:${implementationHash}
 - Discovery sources: approved task, package scripts, and focused repository test
@@ -422,12 +428,12 @@ export async function preparePostR06Fixture(fixture) {
   - \`node --test\` | exit:0
 - Selected checks: node --test
 - Selection rationale: focused authoritative behavior check
-- Coverage: UTC equality and before/after expiration behavior
+- Coverage: UTC equality rejection, stable HTTP envelope, zero participation on rejection, and active participation creation
 - Failures: none
 - Blockers: none
 - Unexpected workspace effects: none
 - Persistence summary: TESTS_PASS persisted for the current implementation bytes.`);
-    task = replaceSection(task, 'Diff Summary', '- Implemented the deterministic UTC invitation-expiration predicate.');
+    task = replaceSection(task, 'Diff Summary', '- Implemented deterministic expired-invitation rejection with the stable envelope and no rejected participation.');
     await fs.writeFile(candidateTask, task, 'utf8');
     const candidate = await validateExecutionCandidate(fixture.spec, candidateExecution);
     if (candidate.state !== 'IMPLEMENTED_AWAITING_VALIDATION') {
@@ -542,13 +548,19 @@ export async function runDeterministicStages({ keepFixture = false, workspace = 
       'Nunca abrevie path ou argumento',
       'Você pode abreviar path ou argumento',
     );
+    const testedStateBasisMutation = await runnerContractMutation(
+      'Em qualquer operação, todo caminho file-backed de `Estado testado` é task-relative',
+      'Somente em VALIDATE_SLICE, o Estado testado tem um caminho relativo',
+    );
     const r03 = canonicalContracts.status === 0
       && authorityMutation.status === 1
       && /CONTRACT_ERROR\[R019_REQUIREMENTS_AUTHORITY\]/u.test(authorityMutation.stderr)
       && exactCommandMutation.status === 1
-      && /CONTRACT_ERROR\[R020_EXACT_COMMANDS\]/u.test(exactCommandMutation.stderr);
+      && /CONTRACT_ERROR\[R020_EXACT_COMMANDS\]/u.test(exactCommandMutation.stderr)
+      && testedStateBasisMutation.status === 1
+      && /CONTRACT_ERROR\[R008_MANIFEST\]/u.test(testedStateBasisMutation.stderr);
     stages.push(r03
-      ? pass('R03', 'RUNNER_SEMANTIC', 'runner v8 accepted; raw-file authority rejected as R019; abbreviated commands rejected as R020')
+      ? pass('R03', 'RUNNER_SEMANTIC', 'runner v8 accepted; raw-file authority rejected as R019; abbreviated commands rejected as R020; ambiguous auxiliary Tested state basis rejected as R008')
       : fail('R03', 'RUNNER_SEMANTIC', 'runner authority/exact-command anti-regression failed'));
     if (!r03) return { status: 'PRE_PILOT_REHEARSAL_BLOCKED', stages, fixture };
 
@@ -640,18 +652,51 @@ function preSessionHarnessFailure(status) {
 export async function runIsolatedR07() {
   const session = await createManagedBenchmarkSession({ repositoryRoot: REPOSITORY_ROOT });
   try {
-    const workspace = path.join(session.workspaces, 'r07-isolated');
+    const workspace = path.join(session.workspaces, 'r06-r07-isolated');
     await fs.mkdir(workspace, { recursive: true });
     const fixture = await createCriticalFixture(workspace);
-    const postR06 = await preparePostR06Fixture(fixture);
+    const preState = await inspectExecutionState(fixture.spec);
+    const executeCall = await harnessStage(session, workspace, {
+      model: 'GPT-5.6-Luna', effort: 'high', sandbox: 'workspace-write',
+      prompt: await launcherPrompt({
+        launcher: EXECUTE_LAUNCHER,
+        skill: EXECUTOR_SKILL,
+        spec: fixture.spec,
+        operation: 'EXECUTE_SLICE',
+        extra: 'This is the isolated R06-to-R07 causal chain. Persist every file-backed execution-record path relative to the selected final tasks/slice-01.md artifact and stop after the official EXECUTE readback.',
+      }),
+    });
+    const afterExecute = await inspectExecutionState(fixture.spec).catch(() => null);
+    const executeTask = afterExecute?.tasks?.get('slice-01');
+    const implementationChecks = executeTask?.implementationChecks ?? [];
+    const r06 = preState.state === 'MATERIALIZED_PRISTINE'
+      && harnessStarted(executeCall)
+      && afterExecute?.state === 'IMPLEMENTED_AWAITING_VALIDATION'
+      && implementationChecks.length === 1
+      && implementationChecks[0].status === 'TESTS_PASS';
+    if (!r06) {
+      return {
+        status: 'PRE_PILOT_REHEARSAL_BLOCKED',
+        failure: {
+          category: preSessionHarnessFailure(executeCall.result.status) ? 'HARNESS' : 'EXECUTION',
+          message: compactMessage(executeCall.result),
+        },
+        preState: preState.state,
+        postExecuteState: afterExecute?.state ?? 'unreadable',
+        executeHarness: executeCall.result.status,
+        liveCalls: 1,
+      };
+    }
     const gate = await inspectFixturePathBasis({ workspace, spec: fixture.spec, requirePostR06: true });
     if (gate.status !== 'FIXTURE_PATH_BASIS_PASS') {
       return {
         status: 'PRE_PILOT_REHEARSAL_BLOCKED',
         failure: { category: 'FIXTURE_PATH_BASIS_BLOCKED', message: 'POST-R06 fixture path gate rejected the fresh fixture before live validation' },
-        preState: postR06.state,
+        preState: preState.state,
+        postExecuteState: afterExecute.state,
+        executeHarness: executeCall.result.status,
         pathGate: gate,
-        liveCalls: 0,
+        liveCalls: 1,
       };
     }
     const validateCall = await harnessStage(session, workspace, {
@@ -667,7 +712,7 @@ export async function runIsolatedR07() {
       && attempts[0].status === 'PASS'
       && task?.base !== null;
     return {
-      status: complete ? 'ISOLATED_R07_COMPLETE' : 'PRE_PILOT_REHEARSAL_BLOCKED',
+      status: complete ? 'ISOLATED_R06_R07_COMPLETE' : 'PRE_PILOT_REHEARSAL_BLOCKED',
       failure: complete ? null : {
         category: afterValidate?.state === 'IMPLEMENTED_AWAITING_VALIDATION'
           && /path|manifest|ownership/iu.test(validateCall.result.finalAssistantMessage ?? '')
@@ -675,16 +720,20 @@ export async function runIsolatedR07() {
           : (preSessionHarnessFailure(validateCall.result.status) ? 'HARNESS' : 'RUNNER_SEMANTIC'),
         message: compactMessage(validateCall.result),
       },
-      preState: postR06.state,
+      preState: preState.state,
+      postExecuteState: afterExecute.state,
+      changedAreas: executeTask.changedAreas,
+      testedState: implementationChecks[0].testedState,
       pathGate: gate,
-      harness: validateCall.result.status,
+      executeHarness: executeCall.result.status,
+      validateHarness: validateCall.result.status,
       mainSessionStarted: validateCall.result.sessionStarted === true,
       turnStarted: validateCall.result.turnStarted === true,
       runnerResult: attempts[0]?.status ?? (/(?:runner|validation)[^\n]{0,80}\bPASS\b/iu.test(validateCall.result.finalAssistantMessage ?? '') ? 'PASS' : 'not_persisted'),
       candidatePublication: complete ? 'accepted' : 'not_accepted',
       finalState: afterValidate?.state ?? 'unreadable',
       attemptCount: attempts.length,
-      liveCalls: 1,
+      liveCalls: 2,
       finalMessage: compactMessage(validateCall.result),
     };
   } finally {
@@ -1005,17 +1054,23 @@ export async function runLiveStages() {
 
     reviewerSession = await createManagedBenchmarkSession({ repositoryRoot: REPOSITORY_ROOT });
     const reviewerWorkspace = await prepareHarnessWorkspace(reviewerSession, 'reviewer');
-    const diff = spawnSync('git', ['diff', '--', 'agents', 'templates/prompts', 'scripts', 'benchmarks/sentinel-todo', 'maintenance/p0-evidence'], {
+    const diff = spawnSync('git', ['diff', '--', 'agents', 'skills/workflows', 'templates/prompts', 'scripts', 'benchmarks/sentinel-todo', 'maintenance/p0-evidence'], {
       cwd: REPOSITORY_ROOT, encoding: 'utf8', shell: false,
     });
     await fs.writeFile(path.join(reviewerWorkspace, 'review-input.md'), [
       '# Pre-pilot correction review',
       '',
-      '- Base: f3aea3598620a4f9d214ab3df44e0f935e058168',
-      '- Previous blocker: R11 HARNESS_INIT_FAILED before session start.',
-      '- Root cause: reviewer and parallel-smoke managed workspaces were not local Git repositories.',
-      '- Correction: initialize only those rehearsal-owned workspaces with local git init and preflight rev-parse before model calls.',
-      '- Frozen facts: authority, runner v8, fixture path basis, execution runtime, lifecycle runtime, and Harness core are unchanged.',
+      '- Base: b1fb9e182c15a2442aba09872cf11f3e6d49dd13',
+      '- Initial blocker: EXECUTION_ARTIFACT_PATH_BASIS after live R06.',
+      '- Root cause: EXECUTE producers could use workspace/CWD-relative values for task-relative Changed Areas and Tested state, while candidate validation did not verify the physical path/hash identity of current file-backed evidence.',
+      '- Correction: make the producer basis explicit at the executor, runner, and launcher boundaries; reject wrong-basis, absent, mismatched-hash, or incompletely owned file-backed candidate evidence before publication.',
+      '- Later blocker: delegated R07 did not preserve the concrete canonical SPEC_PATH/registered runner boundary consistently.',
+      '- Correction: require byte-identical absolute SPEC_PATH forwarding after official preflight and forbid shell/path substitution for the registered runner identity.',
+      '- Later blocker: the critical fixture planned only a UTC predicate while R-001/AC-001 require the stable HTTP envelope and no participation on rejection.',
+      '- Correction: align the bounded fixture plan, public contract, implementation target, and focused test with the full expired-invitation behavior.',
+      '- Later blocker: live R06 reconstructed a raw requirements hash instead of preserving the canonical preflight authority, creating a false divergence.',
+      '- Correction: require executor and EXECUTE/APPLY launchers to copy the exact preflight authority byte-identically and forbid raw or reconstructed hashes.',
+      '- Frozen facts: canonical authority algorithm, lifecycle runtime semantics, benchmark Cases, budgets, production-v2, Environment core, and Harness core are unchanged.',
       '',
       '## R01-R10',
       ...stages.map((stage) => `- ${stage.id}: ${stage.result} — ${stage.evidence}`),
@@ -1041,7 +1096,7 @@ export async function runLiveStages() {
     const reviewerPrompt = [
       'Read only review-input.md in this reviewer workspace. Do not modify files.',
       'Answer exactly PASS or BLOCKING_FINDING followed by compact evidence.',
-      'Check these questions: is the Git-backed reviewer workspace correction confined to rehearsal callers; did Agent Harness core remain unchanged; did R01-R10 pass on the stated base; and is there any concrete blocker to a new Production Pilot.',
+      'Check these questions: do producers derive task-relative execution-record paths from the selected final task artifact; does candidate validation reject wrong basis or hash before publication without silent correction; did R01-R10 pass on the stated base; and is there any concrete blocker to a new Production Pilot.',
     ].join('\n');
     const reviewerCall = await harnessStage(reviewerSession, reviewerWorkspace, {
       model: 'GPT-5.6-Sol', effort: 'high', sandbox: 'read-only', prompt: reviewerPrompt,
@@ -1140,7 +1195,7 @@ export async function main(argv) {
   process.stdout.write(`${JSON.stringify(report, (key, value) => ['fixture', 'ownedRoot'].includes(key) ? undefined : value, 2)}\n`);
   return new Set([
     'PRE_PILOT_REHEARSAL_READY',
-    'ISOLATED_R07_COMPLETE',
+    'ISOLATED_R06_R07_COMPLETE',
     'ISOLATED_R11_PASS',
     'ISOLATED_R12_PASS',
   ]).has(report.status) ? 0 : 1;

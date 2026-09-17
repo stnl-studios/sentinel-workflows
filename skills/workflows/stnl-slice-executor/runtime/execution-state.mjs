@@ -1427,7 +1427,8 @@ function parseTask(text, label, expectedSlice, references = {}) {
   return {
     ...state, body, sections: taskSections, pristine, attempts, findings, divergences, activeBlockers,
     base, final, implementationChecks, findingsChecks, delegationBlocker, retryExhausted, checklistComplete,
-    changedClaims, claims: [...new Set([...changedClaims, ...base.paths])],
+    changedAreas, corrections, changedClaims, currentAuxiliaryCheck,
+    claims: [...new Set([...changedClaims, ...base.paths])],
     implementationPathClaims: checklistRows.flatMap((row) => row.implementationPathClaims.map((raw) => ({
       field: `Checklist ${row.id} expected areas`, raw,
     }))),
@@ -1583,6 +1584,63 @@ async function validateTaskImplementationPaths(workspace, tasks) {
     const artifact = path.join(workspace.executionRoot, "tasks", `${slice}.md`);
     for (const claim of task.implementationPathClaims) {
       await validateImplementationPathClaim(workspace, { artifact, ...claim });
+    }
+  }
+}
+
+async function validateCandidateExecutionRecordPaths(result) {
+  if (!(result.tasks instanceof Map)) return;
+  const logicalWorkspace = logicalWorkspaceFor(result.workspace);
+  const trustedRoot = await trustedProjectRoot(result.workspace);
+  for (const [slice, task] of result.tasks) {
+    const artifact = path.join(result.workspace.executionRoot, "tasks", `${slice}.md`);
+    const logicalArtifact = logicalExecutionPath(result.workspace, artifact);
+    const evidenceOwner = task.base.present ? "Effective Validation Base" : task.currentAuxiliaryCheck?.id ?? null;
+    const entries = task.base.present ? task.base.entries : task.currentAuxiliaryCheck?.testedState ?? [];
+    if (entries.length === 0) continue;
+    for (const entry of entries) {
+      const field = task.base.present ? "Effective Validation Base Files" : `${evidenceOwner} Tested state`;
+      await validateImplementationPathClaim(result.workspace, { artifact, field, raw: entry.path });
+      const target = path.resolve(path.dirname(logicalArtifact), entry.path);
+      const metadata = await lstatOrNull(target);
+      let observed = "absent";
+      if (metadata?.isSymbolicLink()) observed = "symlink";
+      else if (metadata !== null && !metadata.isFile()) observed = "non-file";
+      else if (metadata?.isFile()) observed = `sha256:${createHash("sha256").update(await fs.readFile(target)).digest("hex")}`;
+      const matches = entry.expected === "REMOVED"
+        ? metadata === null
+        : metadata?.isFile() === true && observed === entry.expected;
+      if (!matches) {
+        throw implementationPathDiagnostic({
+          artifact: logicalArtifact,
+          field,
+          raw: entry.path,
+          resolved: target,
+          reason: `file-backed candidate evidence expected ${entry.expected} but observed ${observed}`,
+          trustedRoot,
+        });
+      }
+    }
+    const owned = new Set(entries.map((entry) => entry.path));
+    const unowned = task.changedClaims.filter((claim) => !owned.has(claim));
+    if (unowned.length !== 0) {
+      throw new ExecutionContractError(
+        `${slice} current file-backed candidate evidence does not own every Changed Areas/Corrections Applied path`,
+        unowned.map((claim) => path.resolve(path.dirname(logicalArtifact), claim)),
+      );
+    }
+    for (const entry of entries) {
+      const resolved = path.resolve(path.dirname(logicalArtifact), entry.path);
+      if (!pathIsWithin(resolved, trustedRoot) || pathIsWithin(resolved, logicalWorkspace.executionRoot)) {
+        throw implementationPathDiagnostic({
+          artifact: logicalArtifact,
+          field: `${evidenceOwner} file-backed path`,
+          raw: entry.path,
+          resolved,
+          reason: "candidate evidence path violates project containment",
+          trustedRoot,
+        });
+      }
     }
   }
 }
@@ -2462,6 +2520,7 @@ export async function validateExecutionCandidate(specPath, candidateExecutionRoo
   try {
     await fs.cp(candidate, shadow.executionRoot, { recursive: true });
     const result = await inspectExecutionStateWithContext(shadow.specPath, workspace, { validateImplementationPaths: true });
+    await validateCandidateExecutionRecordPaths(result);
     if ((result.incompleteExecutionChecklists?.length ?? 0) !== 0) {
       const inconsistency = result.incompleteExecutionChecklists[0];
       throw new ExecutionContractError(

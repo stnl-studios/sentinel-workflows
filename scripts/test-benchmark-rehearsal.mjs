@@ -21,6 +21,10 @@ import {
   preparePostR06Fixture,
   runDeterministicStages,
 } from '../benchmarks/sentinel-todo/runtime/benchmark-rehearsal.mjs';
+import {
+  ExecutionContractError,
+  validateExecutionCandidate,
+} from '../skills/workflows/stnl-slice-executor/runtime/execution-state.mjs';
 
 const REPOSITORY_ROOT = path.resolve(import.meta.dirname, '..');
 
@@ -97,6 +101,69 @@ test('POST-R06 fixture derives every implementation path from its canonical arti
   assert.equal(gate.rows.every((row) => row.result === 'PASS'), true);
   assert.equal(gate.rows.every((row) => row.exists && row.inWorkspace && row.outsideSpec && row.expectedTargetMatches), true);
   assert.equal(gate.rows.find((row) => row.label === 'Implementation tested state')?.hash, 'PASS');
+});
+
+test('critical fixture plans and tests cover the complete expired-invitation contract', async (t) => {
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'stnl-rehearsal-semantic-')));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const workspace = path.join(root, 'workspace');
+  await fs.mkdir(workspace, { recursive: true });
+  const fixture = await createCriticalFixture(workspace);
+  const [globalPlan, slicePlan, task, focusedTest, publicContract] = await Promise.all([
+    fs.readFile(path.join(fixture.spec, 'execution/plan.md'), 'utf8'),
+    fs.readFile(path.join(fixture.spec, 'execution/plans/slice-01.md'), 'utf8'),
+    fs.readFile(path.join(fixture.spec, 'execution/tasks/slice-01.md'), 'utf8'),
+    fs.readFile(path.join(workspace, 'test/invitation.test.mjs'), 'utf8'),
+    fs.readFile(path.join(workspace, 'docs/core/CONTRACTS.md'), 'utf8'),
+  ]);
+  for (const artifact of [globalPlan, slicePlan, task]) {
+    assert.match(artifact, /expired invitation|expired-invitation/iu);
+    assert.match(artifact, /envelope/iu);
+    assert.match(artifact, /participation/iu);
+  }
+  assert.match(focusedTest, /status: 410/u);
+  assert.match(focusedTest, /INVITATION_EXPIRED/u);
+  assert.match(focusedTest, /assert\.deepEqual\(participations, \[\]\)/u);
+  assert.match(publicContract, /HTTP 410/u);
+  assert.match(publicContract, /creates no participation/u);
+});
+
+test('EXECUTE candidate validation rejects wrong task basis or hash before live publication', async (t) => {
+  const fixture = await temporaryFixture(t, 'candidate-path-basis');
+  const liveTask = path.join(fixture.spec, 'execution/tasks/slice-01.md');
+  const liveBefore = await fs.readFile(liveTask);
+  const canonical = fixture.paths.taskImplementation;
+  const cases = [
+    {
+      name: 'changed-areas-basis',
+      mutate: (text) => text.replace(`## Changed Areas\n\n- \`${canonical}\``, '## Changed Areas\n\n- `src/invitation.mjs`'),
+      expected: /Changed Areas|file-backed candidate evidence/u,
+    },
+    {
+      name: 'tested-state-basis',
+      mutate: (text) => text.replace(`  - \`${canonical}\` | sha256:`, '  - `src/invitation.mjs` | sha256:'),
+      expected: /Tested state|artifact-relative implementation path/u,
+    },
+    {
+      name: 'tested-state-hash',
+      mutate: (text) => text.replace(/(## Implementation Test Evidence[\s\S]*?sha256:)[0-9a-f]{64}/u, `$1${'0'.repeat(64)}`),
+      expected: /expected sha256:[0-9a-f]{64} but observed sha256:[0-9a-f]{64}/u,
+    },
+  ];
+  for (const current of cases) {
+    const candidateRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), `stnl-${current.name}-`)));
+    t.after(() => fs.rm(candidateRoot, { recursive: true, force: true }));
+    const candidateExecution = path.join(candidateRoot, 'execution');
+    await fs.cp(path.join(fixture.spec, 'execution'), candidateExecution, { recursive: true });
+    const candidateTask = path.join(candidateExecution, 'tasks/slice-01.md');
+    await fs.writeFile(candidateTask, current.mutate(await fs.readFile(candidateTask, 'utf8')), 'utf8');
+    await assert.rejects(validateExecutionCandidate(fixture.spec, candidateExecution), (error) => {
+      assert.ok(error instanceof ExecutionContractError);
+      assert.match(error.message, current.expected);
+      return true;
+    });
+    assert.deepEqual(await fs.readFile(liveTask), liveBefore, `${current.name} candidate changed live execution`);
+  }
 });
 
 test('observed r07-isolated workspace-segment path is rejected before a model call without correction', async (t) => {

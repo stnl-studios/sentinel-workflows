@@ -35,6 +35,9 @@ This directory preserves compact, human-readable engineering evidence for Sentin
 - `s3-pre-pilot-rehearsal-v4.md` — Git-backed reviewer/parallel workspace
   correction, successful isolated R11/R12, and fresh rehearsal blocked by a new
   R07 path-basis output before validation.
+- `s3-pre-pilot-rehearsal-v5.md` — autonomous four-cycle convergence, complete
+  isolated R06→R07 proof, and one fresh R01–R13 rehearsal READY for the final
+  Production Pilot #4 checkpoint.
 
 ## P0 Gates
 
