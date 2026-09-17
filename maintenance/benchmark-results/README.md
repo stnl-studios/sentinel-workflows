@@ -32,3 +32,17 @@ truthful partial Case A raw exists:
   - SHA-256: `fa6b421fe4861a497f15f5432acfdb7f3b5d22e5e3c48780398181f6a794a202`
 
 No official production-v2 baseline is established.
+
+## Production Pilot #5
+
+Candidate `1ad5a1b327d1bfbe3c8b2e6c6e987e649ead5f13` used
+`production-v2`. Case A reached terminal validation of `slice-02`; official
+execution readback rejected terminal integrity because the recorded and current
+SHA-256 values for `src/cli.mjs` differed. The collector created a `BLOCKED`
+result in the managed Case root, but the driver treated its expected non-zero
+blocked exit as a finalization failure and cleaned the root before copying the
+raw.
+
+No Pilot #5 raw is persisted. No placeholder or reconstructed raw was created.
+Cases B/C and the final reviewer were not run. The official production-v2
+baseline remains not established.

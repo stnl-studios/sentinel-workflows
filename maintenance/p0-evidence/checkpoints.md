@@ -126,7 +126,7 @@
     task-relative `src/invitation.mjs` claims emitted by the real EXECUTE turn.
   - R07 started zero validation calls; R08-R13 and Production Pilot were not
     run, and no second remediation was attempted.
-- `pending user commit`
+- `1ad5a1b327d1bfbe3c8b2e6c6e987e649ead5f13`
   - File-backed execution records now derive task-relative paths from the final
     task artifact and reject wrong basis, physical identity, or hash before
     candidate publication.
@@ -135,3 +135,11 @@
   - The critical fixture covers the complete expired-invitation contract.
   - The fresh rehearsal passed R01-R13, including independent review, parallel
     B/C isolation, and all required deterministic checks; no Pilot was run.
+- `pending user commit`
+  - Production Pilot #5 passed all checkpoint preconditions and historical
+    integrity checks against `1ad5a1b` with `production-v2`.
+  - Case A reached the terminal validation of `slice-02`, where official
+    readback rejected drift in `src/cli.mjs`; B/C were not authorized.
+  - The collector created a `BLOCKED` raw in the ephemeral Case root, but the
+    driver failed to preserve it before cleanup, so finalization blocked.
+  - No baseline or P0 gate was promoted; P0 remains open.
