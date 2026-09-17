@@ -31,7 +31,7 @@ For revision 1, including a planning-only replacement before tasks exist, omit t
 
 | Slice | Observable delivery | Dependencies | Requirements | Expected areas | Detailed plan |
 |---|---|---|---|---|---|
-| 01 - <name> | <result> | - | AC-001 | `<artifact-relative path>`; <optional conceptual area> | plans/slice-01.md |
+| 01 - <name> | <result> | - | AC-001 | Filesystem path: `<artifact-relative path>`; <optional conceptual area> (plain-text description) | plans/slice-01.md |
 
 ## Global Risks and Integration
 

@@ -49,6 +49,9 @@ This directory preserves compact, human-readable engineering evidence for Sentin
   slice rendering passed, durable finalization preserved the Case A raw, and
   the canary stopped during PLAN candidate validation before any slice
   operation.
+- `s3-plan-path-carrier-correction-v1.md` — focused execution-planner producer
+  correction and blocked isolated Case A PLAN proof; no Production Pilot was
+  run.
 
 ## P0 Gates
 

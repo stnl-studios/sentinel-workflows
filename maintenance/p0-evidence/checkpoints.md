@@ -153,7 +153,7 @@
   - The Pilot #5 terminal-integrity mismatch boundary was not reached; B/C and
     the reviewer were not run, no baseline or gate was promoted, and P0 remains
     open.
-- `pending user commit`
+- `c3be9c353890e45a51e4d8f8db1329bce8a1b7d5`
   - Production Pilot #7 passed the frozen-candidate, functional-equivalence,
     environment, Harness, historical-integrity, and slice-rendering
     preconditions.
@@ -164,3 +164,12 @@
     before managed-session cleanup.
   - The terminal-integrity boundary was not reached; B/C and the reviewer were
     not run, no baseline or gate was promoted, and P0 remains open.
+- `pending user commit`
+  - The execution planner now reserves code spans in `Expected areas` and
+    `Likely Areas` exclusively for concrete artifact-relative filesystem paths.
+  - Focused P01-P05 regression, execution contracts, repository contracts, and
+    the canonical no-smoke validation passed without changing runtime semantics.
+  - Fresh Case A `SPEC_INIT` reached lifecycle `ready` with execution `EMPTY` on
+    Sol/high and zero retry.
+  - The isolated Terra/high PLAN proof did not publish planning artifacts;
+    official readback remained `EMPTY`, so Pilot #8 is not authorized.

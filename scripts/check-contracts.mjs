@@ -636,6 +636,10 @@ function checkRepository(root) {
     if (allExecutionText.includes(token)) reject("C009_REMOVED_TOKENS", `removed execution token remains: ${token}`);
   }
   const plannerContract = ["SKILL.md", "templates/plan.template.md", "templates/slice-plan.template.md"].map((relative) => read(path.join(workflowRoot, "stnl-execution-planner", relative))).join("\n");
+  const globalPlanTemplate = read(path.join(workflowRoot, "stnl-execution-planner/templates/plan.template.md"));
+  const detailedPlanTemplate = read(path.join(workflowRoot, "stnl-execution-planner/templates/slice-plan.template.md"));
+  if (!globalPlanTemplate.includes("Filesystem path: `<artifact-relative path>`; <optional conceptual area> (plain-text description)")) reject("C005_PATH_CARRIERS", "global Expected areas template must separate its code-delimited path from plain-text description");
+  if (!detailedPlanTemplate.includes("Filesystem path: `<artifact-relative path>` — <optional contract, subsystem, test area, or explanation> (plain-text description)")) reject("C005_PATH_CARRIERS", "detailed Likely Areas template must separate its code-delimited path from plain-text description");
   const taskContract = ["SKILL.md", "templates/tasks.template.md", "templates/slice-tasks.template.md"].map((relative) => read(path.join(workflowRoot, "stnl-task-materializer", relative))).join("\n");
   for (const [label, contract] of [["planning", plannerContract], ["tasks", taskContract]]) {
     if (!contract.includes("Requirements authority: sha256:<64hex>")) reject("C005_AUTHORITY_FIELDS", `${label} contract lacks exact Requirements authority field`);

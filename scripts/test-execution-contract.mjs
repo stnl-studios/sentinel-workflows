@@ -260,8 +260,8 @@ async function appendRecoveryPlan(fixture, oldHash, newHash, { ready = false, su
     let result = reviseAuthority(value, oldHash, newHash, 1, 2).replace("status: ready", `status: ${ready ? "ready" : "draft"}`).replace("- Review state: approved", `- Review state: ${ready ? "approved" : "pending"}`);
     result = result.replace("- Objective: Deliver observable behavior", `- Revision mode: append-only-extension\n- Replan reason: requirements or integration authority changed\n- Supersedes open slices: ${supersedes}\n- Objective: Deliver observable behavior`);
     return result.replace(
-      "| 01 - Delivery | observable result | - | AC-001 | `../src/example.txt`; example implementation | plans/slice-01.md |",
-      "| 01 - Delivery | observable result | - | AC-001 | `../src/example.txt`; example implementation | plans/slice-01.md |\n| 02 - Recovery | reconciled result | 01 | AC-001 | `../src/example.txt`; example implementation | plans/slice-02.md |",
+      "| 01 - Delivery | observable result | - | AC-001 | Filesystem path: `../src/example.txt`; example implementation (plain-text description) | plans/slice-01.md |",
+      "| 01 - Delivery | observable result | - | AC-001 | Filesystem path: `../src/example.txt`; example implementation (plain-text description) | plans/slice-01.md |\n| 02 - Recovery | reconciled result | 01 | AC-001 | Filesystem path: `../src/example.txt`; example implementation (plain-text description) | plans/slice-02.md |",
     );
   });
   // Historical plan/task authority remains immutable.
@@ -302,8 +302,8 @@ async function commitAppendRecovery(fixture, oldHash, newHash, { resolveDivergen
 
 async function addSecondPristineSlice(fixture) {
   await editPlan(fixture, (value) => value.replace(
-    "| 01 - Delivery | observable result | - | AC-001 | `../src/example.txt`; example implementation | plans/slice-01.md |",
-    "| 01 - Delivery | observable result | - | AC-001 | `../src/example.txt`; example implementation | plans/slice-01.md |\n| 02 - Later | later result | 01 | AC-001 | `../src/later.txt`; later implementation | plans/slice-02.md |",
+    "| 01 - Delivery | observable result | - | AC-001 | Filesystem path: `../src/example.txt`; example implementation (plain-text description) | plans/slice-01.md |",
+    "| 01 - Delivery | observable result | - | AC-001 | Filesystem path: `../src/example.txt`; example implementation (plain-text description) | plans/slice-01.md |\n| 02 - Later | later result | 01 | AC-001 | Filesystem path: `../src/later.txt`; later implementation (plain-text description) | plans/slice-02.md |",
   ));
   const plan = (await fs.readFile(path.join(fixture.execution, "plans/slice-01.md"), "utf8"))
     .replaceAll("Slice 01", "Slice 02").replaceAll("- Slice: 01", "- Slice: 02").replaceAll("Delivery", "Later");
@@ -325,8 +325,8 @@ async function stageThirdRecovery(fixture, authority, { ready = false } = {}) {
     .replace("Review state: approved", `Review state: ${ready ? "approved" : "pending"}`)
     .replace("- Supersedes open slices: slice-01 -> slice-02", "- Supersedes open slices: slice-02 -> slice-03")
     .replace(
-      "| 02 - Recovery | reconciled result | 01 | AC-001 | `../src/example.txt`; example implementation | plans/slice-02.md |",
-      "| 02 - Recovery | reconciled result | 01 | AC-001 | `../src/example.txt`; example implementation | plans/slice-02.md |\n| 03 - Recovery | reconciled result | 02 | AC-001 | `../src/example.txt`; example implementation | plans/slice-03.md |",
+      "| 02 - Recovery | reconciled result | 01 | AC-001 | Filesystem path: `../src/example.txt`; example implementation (plain-text description) | plans/slice-02.md |",
+      "| 02 - Recovery | reconciled result | 01 | AC-001 | Filesystem path: `../src/example.txt`; example implementation (plain-text description) | plans/slice-02.md |\n| 03 - Recovery | reconciled result | 02 | AC-001 | Filesystem path: `../src/example.txt`; example implementation (plain-text description) | plans/slice-03.md |",
     ));
   let plan = await fs.readFile(path.join(fixture.execution, "plans/slice-02.md"), "utf8");
   plan = plan.replaceAll("Slice 02", "Slice 03").replaceAll("- Slice: 02", "- Slice: 03")
@@ -1490,6 +1490,36 @@ test("artifact-relative planning paths reject lifecycle-local candidates before 
     fs.readFile(path.join(reviewed.execution, "plan.md")),
     fs.readFile(path.join(reviewed.execution, "plans/slice-01.md")),
   ]), liveBefore);
+});
+
+test("planning path carriers distinguish concrete paths from conceptual descriptions", async (t) => {
+  const fixture = await nestedLifecycleWorkspace(t, { materialized: false, planStatus: "ready" });
+  const implementationTarget = path.join(fixture.repository, "scripts/validate.sh");
+  const globalClaim = path.relative(fixture.execution, implementationTarget).split(path.sep).join("/");
+  const detailClaim = path.relative(path.join(fixture.execution, "plans"), implementationTarget).split(path.sep).join("/");
+
+  await setImplementationAreas(fixture, { global: globalClaim, detail: detailClaim });
+  await editPlan(fixture, (value) => value.replace("example implementation", "list command behavior"));
+  await editSlicePlan(fixture, "slice-01", (value) => value.replace("example implementation", "list command behavior"));
+  const candidate = await copyDirectory(fixture.execution, path.join(path.dirname(fixture.repository), "path carrier candidate"));
+  const candidateFixture = { ...fixture, execution: candidate };
+  await fs.rm(fixture.execution, { recursive: true });
+
+  assert.equal(path.resolve(fixture.execution, globalClaim), implementationTarget, "P04 global claim resolves to the physical target");
+  assert.equal(path.resolve(fixture.execution, "plans", detailClaim), implementationTarget, "P01/P05 detailed claim resolves to the physical target");
+  assert.equal((await validateExecutionCandidate(fixture.requirements, candidate)).state, "PLANNED_READY", "P01/P02/P04/P05 valid path claims and plain-text concepts pass");
+
+  await editSlicePlan(candidateFixture, "slice-01", (value) => value.replace(
+    /`[^`\n]+` — list command behavior/u,
+    "`list` — list command behavior",
+  ));
+  await assert.rejects(validateExecutionCandidate(fixture.requirements, candidate), (error) => {
+    assert.ok(error instanceof ExecutionContractError);
+    assert.match(error.message, /field="Likely Areas"/u);
+    assert.match(error.message, /raw="list"/u);
+    assert.match(error.message, /resolves inside the execution root/u);
+    return true;
+  }, "P03 conceptual code span remains a rejected path claim");
 });
 
 test("materialization and task-review gates preserve valid future artifact-relative paths", async (t) => {
@@ -3075,8 +3105,8 @@ test("canonical execution tables and checklists reject every unexpected structur
   const malformedPlan = await standaloneWorkspace(t);
   await renderArtifacts(malformedPlan);
   await editPlan(malformedPlan, (value) => value.replace(
-    "| 01 - Delivery | observable result | - | AC-001 | `../src/example.txt`; example implementation | plans/slice-01.md |",
-    "| 01 - Delivery | observable result | - | AC-001 | `../src/example.txt`; example implementation | plans/slice-01.md |\n| malformed serial row |",
+    "| 01 - Delivery | observable result | - | AC-001 | Filesystem path: `../src/example.txt`; example implementation (plain-text description) | plans/slice-01.md |",
+    "| 01 - Delivery | observable result | - | AC-001 | Filesystem path: `../src/example.txt`; example implementation (plain-text description) | plans/slice-01.md |\n| malformed serial row |",
   ));
   await assert.rejects(inspectExecutionState(malformedPlan.requirements), /Serial Slice Order.*malformed row/u);
 
@@ -3091,8 +3121,8 @@ test("canonical execution tables and checklists reject every unexpected structur
   const nonPipePlan = await standaloneWorkspace(t);
   await renderArtifacts(nonPipePlan);
   await editPlan(nonPipePlan, (value) => value.replace(
-    "| 01 - Delivery | observable result | - | AC-001 | `../src/example.txt`; example implementation | plans/slice-01.md |",
-    "| 01 - Delivery | observable result | - | AC-001 | `../src/example.txt`; example implementation | plans/slice-01.md |\nmalformed serial row without pipes",
+    "| 01 - Delivery | observable result | - | AC-001 | Filesystem path: `../src/example.txt`; example implementation (plain-text description) | plans/slice-01.md |",
+    "| 01 - Delivery | observable result | - | AC-001 | Filesystem path: `../src/example.txt`; example implementation (plain-text description) | plans/slice-01.md |\nmalformed serial row without pipes",
   ));
   await assert.rejects(inspectExecutionState(nonPipePlan.requirements), /Serial Slice Order.*unexpected structural row/u);
 
