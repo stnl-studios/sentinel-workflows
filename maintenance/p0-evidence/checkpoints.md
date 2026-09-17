@@ -70,3 +70,10 @@
   - The Luna probe was blocked before session creation by an invalid external
     harness invocation.
   - Terra and Sol were not run, and the P0 ledger remained unchanged.
+- `9972a4534cf7c80a9923fd66570a9504a2a3facf`
+  - Benchmark Agent Harness v1 centralized external provider invocation.
+  - Provider capabilities and the sanitized fingerprint were qualified.
+  - The invalid `-a` placement regression was covered deterministically.
+  - A one-shot Luna/medium live probe passed through the official harness.
+  - Benchmark Environment Qualification v1 remained READY.
+  - No Sentinel functional behavior changed.

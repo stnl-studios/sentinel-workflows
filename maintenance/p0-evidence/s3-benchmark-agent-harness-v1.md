@@ -244,4 +244,4 @@ No gate was promoted or reopened.
 
 ## Resulting commit
 
-`pending user commit`
+`9972a4534cf7c80a9923fd66570a9504a2a3facf`

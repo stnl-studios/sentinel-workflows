@@ -19,6 +19,9 @@ This directory preserves compact, human-readable engineering evidence for Sentin
   qualification.
 - `s3-benchmark-agent-harness-v1.md` — Benchmark Agent Harness Qualification
   v1.
+- `s3-spec-qualification-case-a-v2.md` — clean Case A SPEC qualification of
+  GPT-5.6-Terra/high and GPT-5.6-Sol/high under qualified environment and
+  harness controls.
 
 ## P0 Gates
 
