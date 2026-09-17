@@ -52,6 +52,10 @@ This directory preserves compact, human-readable engineering evidence for Sentin
 - `s3-plan-path-carrier-correction-v1.md` — focused execution-planner producer
   correction and blocked isolated Case A PLAN proof; no Production Pilot was
   run.
+- `s3-plan-live-observability-v1.md` — one-shot fresh Case A observability
+  rerun; PLAN candidate validation, publication, and strict readback passed as
+  `PLANNED_DRAFT`, with a durable semantic-command ledger and candidate
+  snapshot.
 
 ## P0 Gates
 

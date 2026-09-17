@@ -164,7 +164,7 @@
     before managed-session cleanup.
   - The terminal-integrity boundary was not reached; B/C and the reviewer were
     not run, no baseline or gate was promoted, and P0 remains open.
-- `pending user commit`
+- `c0efb3f7a38897c545798cb0ac57599b5fc240da`
   - The execution planner now reserves code spans in `Expected areas` and
     `Likely Areas` exclusively for concrete artifact-relative filesystem paths.
   - Focused P01-P05 regression, execution contracts, repository contracts, and
@@ -173,3 +173,13 @@
     Sol/high and zero retry.
   - The isolated Terra/high PLAN proof did not publish planning artifacts;
     official readback remained `EMPTY`, so Pilot #8 is not authorized.
+- `pending user commit`
+  - A one-shot fresh Case A observability rerun completed one Sol/high
+    `SPEC_INIT` and one Terra/high `PLAN`, both with zero retry.
+  - PLAN candidate validation, publication, and strict readback passed;
+    execution reached `PLANNED_DRAFT` with `REVIEW_PLAN` handoff.
+  - The durable ledger captured 13 semantic commands, all exit `0`, and the
+    candidate snapshot contained 13 valid path claims with zero non-path code
+    spans or invalid resolutions.
+  - No P0 gate or baseline was promoted; Production Pilot #8 is the next
+    authorized step.
