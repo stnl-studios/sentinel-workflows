@@ -80,6 +80,7 @@ const cases = [
   ["missing Codex spawn", "slice-apply-findings-codex.md", (text) => text.replace("faça spawn obrigatório", "use uma chamada"), "L007_PLATFORM_IDENTITY"],
   ["missing Claude delegation", "slice-validate-claude.md", (text) => text.replace("Delegue obrigatoriamente", "Execute"), "L007_PLATFORM_IDENTITY"],
   ["missing no-history boundary", "slice-execute-claude.md", (text) => text.replace("sem histórico da conversa", "com contexto"), "L012_CHECK_DELEGATION"],
+  ["missing official authority checker payload", "slice-execute-codex.md", (text) => text.replace("o official execution validator/preflight aplicável, ", ""), "L023_REQUIREMENTS_AUTHORITY"],
   ["Codex loses concrete recovery target", "slice-execute-codex.md", (text) => text.replace("concrete recovery operation and slice", "generic recovery target"), "L019_RECOVERY_TARGET"],
   ["Claude infers recovery from request", "slice-validate-claude.md", (text) => text.replace("derive neither from the current request", "derive both from the current request"), "L019_RECOVERY_TARGET"],
   ["missing full-log boundary", "slice-validate-claude.md", (text) => text.replace("Não passe logs completos.", "Passe logs."), "L012_CHECK_DELEGATION"],

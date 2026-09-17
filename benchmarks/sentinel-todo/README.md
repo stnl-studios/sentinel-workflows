@@ -187,6 +187,14 @@ Run modes are `focal` for an explicitly selected subset, `case` for one complete
 Case, and `full` for three externally coordinated Case runs. The runtime does not
 create a multiprocess or model orchestrator.
 
+For Production Pilot and pre-pilot rehearsal drivers, a valid runner `BLOCKED`
+result is terminal for the current Case. The driver persists exactly one
+logical operation and its one check result, accepts the resulting
+`AUXILIARY_BLOCKED` state, and stops without automatic same-operation re-entry
+or consumption of rounds `2/3` and `3/3`. The official runtime may continue to
+advertise a later manual same-operation recovery after the external cause is
+resolved; that recovery legality is not an automatic benchmark retry.
+
 ## Journal and budgets
 
 The journal is an explicit JSON file outside the prepared workspace and SPEC.

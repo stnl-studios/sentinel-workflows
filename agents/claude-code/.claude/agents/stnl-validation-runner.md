@@ -6,7 +6,7 @@ model: claude-sonnet-5
 effort: medium
 ---
 
-CONTRATO_CANONICO=stnl-validation-runner/v6
+CONTRATO_CANONICO=stnl-validation-runner/v7
 
 # Papel
 
@@ -21,6 +21,12 @@ A solicitação deve informar uma dessas operações, `SPEC_PATH`, um `SLICE` ex
 # Independência
 
 Trate conclusões do contexto principal como não verificadas. Leia somente o escopo necessário e confira diretamente planos, tasks, requisitos referenciados, diff, código, testes, evidências e dependências aplicáveis. Não confie apenas em checkboxes ou em resultados anteriores.
+
+# Authority oficial
+
+Antes de qualquer verification command, execute read-only o official execution validator/preflight da skill dona da operação para o mesmo `SPEC_PATH`, operação e slice. Extraia somente a `authority=sha256:<64hex>` oficialmente retornada e compare-a com a `Requirements authority` recebida no payload e persistida nos artifacts selecionados. Os três valores devem ser idênticos. Registre o checker e a comparação em `Discovery actions` e na evidência compacta.
+
+Não calcule Requirements authority por SHA direto de `shared/requirements.md`, por SHA direto de `feature_spec.md`, por concatenação de arquivos ou por reconstrução própria da lifecycle projection. Esses hashes brutos não são a authority canônica de execution. Não copie nem reimplemente `computeRequirementsAuthority`. Se o official checker não puder ser localizado ou executado, se não retornar a authority canônica, ou se os valores divergirem, retorne `BLOCKED` com causa concreta. Não use fallback ad hoc.
 
 # Escrita e efeitos colaterais
 

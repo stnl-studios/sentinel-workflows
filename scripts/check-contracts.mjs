@@ -284,6 +284,11 @@ function checkRunner(root) {
   requirePattern(contract, /conclusões do contexto principal como não verificadas/iu, "R014_INDEPENDENCE", "runner does not independently verify main-context claims");
   requirePattern(contract, /Leia somente o escopo necessário/iu, "R014_INDEPENDENCE", "runner read scope is not bounded");
   requirePattern(contract, /Não confie apenas em checkboxes ou em resultados anteriores/iu, "R014_INDEPENDENCE", "runner can trust historical claims without verification");
+  requirePattern(contract, /official execution validator\/preflight[\s\S]{0,320}mesmo `SPEC_PATH`, operação e slice/iu, "R019_REQUIREMENTS_AUTHORITY", "runner does not invoke the official execution authority checker");
+  requirePattern(contract, /authority=sha256:<64hex>[\s\S]{0,360}`Requirements authority` recebida no payload[\s\S]{0,240}artifacts selecionados[\s\S]{0,120}idênticos/iu, "R019_REQUIREMENTS_AUTHORITY", "runner does not compare payload, artifact, and runtime canonical authority");
+  requirePattern(contract, /Não calcule Requirements authority[\s\S]{0,180}`shared\/requirements\.md`[\s\S]{0,160}`feature_spec\.md`/iu, "R019_REQUIREMENTS_AUTHORITY", "runner does not forbid raw lifecycle file hashes");
+  requirePattern(contract, /Não copie nem reimplemente `computeRequirementsAuthority`[\s\S]{0,320}retorne `BLOCKED`[\s\S]{0,120}Não use fallback ad hoc/iu, "R019_REQUIREMENTS_AUTHORITY", "runner authority failure does not fail closed");
+  forbidPattern(contract, /(?:^|\n)(?:Calcule|Compute)[^\n]{0,120}(?:shared\/requirements\.md|feature_spec\.md)[^\n]{0,120}(?:Requirements authority|requirements authority)/iu, "R019_REQUIREMENTS_AUTHORITY", "runner reintroduces a raw-file authority algorithm");
 
   const execute = /# EXECUTE_SLICE\n([\s\S]*?)# APPLY_FINDINGS\n/u.exec(contract)?.[1] ?? "";
   const findings = /# APPLY_FINDINGS\n([\s\S]*?)# VALIDATE_SLICE\n/u.exec(contract)?.[1] ?? "";
@@ -491,6 +496,7 @@ function checkLaunchers(root) {
       requirePattern(instructions, /deleg.{0,40}(?:obrigat|must)|(?:obrigat|must).{0,40}deleg/iu, "L007_PLATFORM_IDENTITY", `${name}: mandatory Claude delegation is missing`);
     }
     requirePattern(instructions, /(?:sem histórico|não envie histórico|without inherited|no conversation history)/iu, "L012_CHECK_DELEGATION", `${name}: conversation history boundary is missing`);
+    requirePattern(instructions, /official execution validator\/preflight aplicável/iu, "L023_REQUIREMENTS_AUTHORITY", `${name}: runner payload omits the official execution authority checker`);
     forbidPattern(instructions, /(?:(?<!não )envie|(?<!do not )forward|(?<!do not )include).{0,30}(?:histórico da conversa|conversation history)/iu, "L012_CHECK_DELEGATION", `${name}: forwards conversation history`);
     requirePattern(instructions, /(?:no máximo uma nova tentativa|at most one (?:new )?(?:transport )?retry|retry.{0,40}once)/iu, "L012_CHECK_DELEGATION", `${name}: transport retry must be bounded to one`);
     requirePattern(instructions, /Runner Initialization Blocker/u, "L012_CHECK_DELEGATION", `${name}: missing singleton initialization blocker`);
