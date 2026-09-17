@@ -15,6 +15,10 @@ This directory preserves compact, human-readable engineering evidence for Sentin
   correction evidence.
 - `s3-benchmark-pilot-03.md` — Production Pilot #3 evidence.
 - `s3-benchmark-environment-v1.md` — Benchmark Environment Qualification v1.
+- `s3-spec-qualification-case-a.md` — preserved blocked Case A SPEC model
+  qualification.
+- `s3-benchmark-agent-harness-v1.md` — Benchmark Agent Harness Qualification
+  v1.
 
 ## P0 Gates
 

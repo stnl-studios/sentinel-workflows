@@ -5,9 +5,10 @@ measuring raw Sentinel workflow behavior. It is engineering infrastructure, not
 requirements authority, runtime authority, execution authority, or an implicit
 context source for any skill.
 
-The benchmark runtime never calls a provider, starts an agent, selects a model,
-or orchestrates the workflow. A later Codex-run protocol drives Sentinel and
-records each observed operation immediately in the external journal.
+The benchmark lifecycle runtime does not select a model or orchestrate the
+workflow. External model turns pass through the separate, versioned Benchmark
+Agent Harness v1; callers still drive Sentinel and record each observed
+operation immediately in the external journal.
 
 ## Layout and isolation
 
@@ -18,6 +19,8 @@ records each observed operation immediately in the external journal.
   budgets, run modes, and schema versions.
 - `runtime/benchmark.mjs` prepares workspaces, records a journal, enforces
   budgets, collects raw facts, and compares results.
+- `runtime/benchmark-agent-harness.mjs` is the only authority for external
+  provider discovery, model invocation, isolation, timeout, and JSONL parsing.
 - `schemas/` documents the journal and result JSON contracts.
 
 Every prepared workspace contains only the seed files, the selected Case as
@@ -64,6 +67,8 @@ node benchmarks/sentinel-todo/runtime/benchmark.mjs journal-init --output <absol
 node benchmarks/sentinel-todo/runtime/benchmark.mjs journal-event --journal <absolute-journal.json> --operation PLAN --phase PLAN --model GPT-5.6-Terra --effort high --result PASS
 node benchmarks/sentinel-todo/runtime/benchmark.mjs finalize --workspace <absolute-workspace> --case A --spec <absolute-spec-path> --journal <absolute-journal.json> --output <absolute-result.json>
 node benchmarks/sentinel-todo/runtime/benchmark.mjs compare --before <absolute-result.json> --after <absolute-result.json>
+node benchmarks/sentinel-todo/runtime/benchmark-agent-harness.mjs check
+node benchmarks/sentinel-todo/runtime/benchmark-agent-harness.mjs run --request <absolute-request.json>
 ```
 
 `doctor` is the offline Benchmark Environment Qualification v1 preflight. It
@@ -74,13 +79,36 @@ JSON line, and returns `0` for `ENVIRONMENT_READY`, `1` for
 outside-checkout parent; the doctor creates and removes only its own child.
 The command never calls a provider or model and is not a benchmark metric.
 
+`benchmark-agent-harness.mjs check` performs no model call. It discovers the
+installed Codex CLI surface and emits a sanitized capability fingerprint.
+`run` accepts exactly one strict request containing `model`, `effort`,
+`sandbox`, `cwd`, `tmpdir`, `prompt`, and `timeoutMs`; it starts exactly one
+model turn and never retries. The request file is transport into the harness;
+the provider receives the prompt byte-for-byte through stdin.
+
+Harness v1 accepts only GPT-5.6-Luna, GPT-5.6-Terra, and GPT-5.6-Sol; efforts
+`low`, `medium`, `high`, and `xhigh`; and sandboxes `read-only` and
+`workspace-write`. CWD must be a canonical real directory under the managed
+session `workspaces/`, while TMPDIR must be that session's canonical
+`runner-tmp`. Unknown values fail closed without starting a provider process.
+
+The Codex adapter uses explicit model, effort, sandbox, approval, and CWD
+settings; ephemeral state; ignored user config and rules; disabled project
+instruction discovery; a minimal process environment; structured JSONL; and a
+harness-owned wall-clock timeout and output bound. It distinguishes provider
+initialization, timeout, protocol, and model-turn failures from Sentinel
+outcomes. Public summaries do not expose absolute paths, credentials, the
+process environment, or provider logs.
+
 ## Environment preflight and managed temp
 
 Every Production Pilot starts, in order, with benchmark `verify`, seed tests,
 benchmark contracts, required execution contracts, the environment `doctor`,
-and one GPT-5.6-Luna / medium sandbox probe. Case A may start only after all
-mandatory checks pass. The sandbox probe is environment-only evidence and does
-not promote any P0 gate.
+the agent harness `check`, and one GPT-5.6-Luna / medium sandbox probe launched
+through Benchmark Agent Harness v1. Case A may start only after
+`BENCHMARK_ENVIRONMENT_READY` and `BENCHMARK_AGENT_HARNESS_READY` and all other
+mandatory checks pass. The sandbox probe is precondition evidence and does not
+promote any P0 gate.
 
 Each benchmark session owns a unique OS-temp-derived, realpath-canonicalized
 root outside this checkout with these children:
@@ -103,9 +131,12 @@ closed on cleanup failure, and never persists the real session path.
 Requalify the environment after a host, OS, architecture, relevant Node or Git
 change; a doctor contract, sandbox mechanism, validation-runner environment
 adapter, or TMPDIR policy change; or any environment-related Pilot blocker.
-Run the doctor for every future Pilot. Run the Luna probe before the first Case
-of a new qualification/session, whenever the fingerprint or sandbox mechanism
-changes, or after an environment-related blocker.
+Run the doctor for every future Pilot. Requalify the harness after the provider
+CLI version or capability fingerprint, harness contract, model/effort/sandbox
+mapping, config isolation, prompt transport, or structured-output protocol
+changes. Run the Luna probe before the first Case of a new
+qualification/session, whenever either fingerprint or the sandbox mechanism
+changes, or after an environment/harness blocker.
 
 `prepare` rejects an existing target and any target inside this checkout. It
 copies regular seed files byte-for-byte, rejects symlinks, runs `node --test`,

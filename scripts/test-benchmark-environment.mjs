@@ -9,6 +9,11 @@ import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
+import {
+  cleanupManagedBenchmarkSession,
+  createManagedBenchmarkSession,
+} from '../benchmarks/sentinel-todo/runtime/benchmark-environment.mjs';
+
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const RUNTIME = path.join(ROOT, 'benchmarks', 'sentinel-todo', 'runtime', 'benchmark.mjs');
 const SEED = path.join(ROOT, 'benchmarks', 'sentinel-todo', 'seed');
@@ -123,4 +128,15 @@ test('E04 — doctor preserves checkout and benchmark seed bytes', async () => {
   parseReady(runDoctor());
   assert.equal(gitStatus(), statusBefore);
   assert.equal(await treeHash(SEED), seedBefore);
+});
+
+test('E05 — exported session ownership supplies the harness layout and bounded cleanup', async () => {
+  const session = await createManagedBenchmarkSession({ repositoryRoot: ROOT });
+  assert.equal(path.dirname(session.workspaces), session.root);
+  assert.equal(path.dirname(session.runnerTmp), session.root);
+  assert.equal(path.basename(session.workspaces), 'workspaces');
+  assert.equal(path.basename(session.runnerTmp), 'runner-tmp');
+  await cleanupManagedBenchmarkSession(session);
+  await assert.rejects(fs.access(session.root));
+  await assert.rejects(cleanupManagedBenchmarkSession(session), /not owned/u);
 });

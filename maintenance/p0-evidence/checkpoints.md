@@ -64,3 +64,9 @@
   - Managed TMPDIR and the Luna/medium sandbox probe were qualified.
   - Git, global configuration, and repository bytes were preserved.
   - The environment was frozen as READY.
+- `6a7939b2f5b8ffee24223182c61cebf3a16d7236`
+  - Case A SPEC Qualification was attempted after deterministic environment
+    checks passed.
+  - The Luna probe was blocked before session creation by an invalid external
+    harness invocation.
+  - Terra and Sol were not run, and the P0 ledger remained unchanged.

@@ -150,6 +150,11 @@ qualification/session, changed fingerprint or sandbox mechanism, or prior
 environment blocker also requires the one-shot Luna environment probe before
 Case A.
 
+This historical environment result remains valid and independent. After the
+separate Agent Harness Qualification v1, every future model sandbox probe must
+be launched through the versioned Benchmark Agent Harness; environment READY
+alone does not establish that a provider invocation can start a model session.
+
 ## Scope preservation
 
 - `skills/**`, `agents/**`, and `templates/**`: unchanged.

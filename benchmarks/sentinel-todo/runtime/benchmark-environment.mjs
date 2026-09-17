@@ -5,6 +5,8 @@ import os from 'node:os';
 import path from 'node:path';
 
 const CONTRACT_VERSION = 1;
+const SESSION_PREFIX = 'sentinel-benchmark-session-';
+const ownedSessions = new WeakSet();
 const CHECK_IDS = [
   'NODE_RUNTIME',
   'GIT_LOCAL',
@@ -164,6 +166,59 @@ async function validateOsTemp(repositoryRoot) {
   return canonical;
 }
 
+export async function createManagedBenchmarkSession({ repositoryRoot, scratchParent }) {
+  const canonicalRepository = await fs.realpath(repositoryRoot);
+  const selectedParent = await validateScratchParent(scratchParent, canonicalRepository);
+  const osTemp = await validateOsTemp(canonicalRepository);
+  const parent = selectedParent ?? osTemp;
+  const root = await fs.realpath(await fs.mkdtemp(path.join(parent, SESSION_PREFIX)));
+  if (!inside(root, parent) || inside(root, canonicalRepository)) {
+    await fs.rm(root, { recursive: true, force: true });
+    throw new EnvironmentError('TEMP_PARENT_UNSAFE', 'MANAGED_SESSION_TEMP', 'managed session root is unsafe');
+  }
+  const session = Object.freeze({
+    root,
+    parent,
+    repositoryRoot: canonicalRepository,
+    workspaces: path.join(root, 'workspaces'),
+    journals: path.join(root, 'journals'),
+    results: path.join(root, 'results'),
+    runnerTmp: path.join(root, 'runner-tmp'),
+  });
+  try {
+    await Promise.all([
+      session.workspaces,
+      session.journals,
+      session.results,
+      session.runnerTmp,
+    ].map((directory) => fs.mkdir(directory)));
+  } catch (error) {
+    await fs.rm(root, { recursive: true, force: true });
+    throw error;
+  }
+  ownedSessions.add(session);
+  return session;
+}
+
+export async function cleanupManagedBenchmarkSession(session) {
+  if (!session || !ownedSessions.has(session)) {
+    throw new EnvironmentError('CLEANUP_FAILED', 'CLEANUP', 'session is not owned by this environment process');
+  }
+  const canonicalRoot = await fs.realpath(session.root).catch(() => null);
+  if (canonicalRoot !== session.root
+    || path.basename(canonicalRoot) === ''
+    || !path.basename(canonicalRoot).startsWith(SESSION_PREFIX)
+    || !inside(canonicalRoot, session.parent)
+    || inside(canonicalRoot, session.repositoryRoot)) {
+    throw new EnvironmentError('CLEANUP_FAILED', 'CLEANUP', 'managed session root is no longer safe');
+  }
+  await fs.rm(canonicalRoot, { recursive: true });
+  if (await fs.lstat(canonicalRoot).catch(() => null) !== null) {
+    throw new EnvironmentError('CLEANUP_FAILED', 'CLEANUP', 'managed session root remains after cleanup');
+  }
+  ownedSessions.delete(session);
+}
+
 async function filesystemChecks(workspaces) {
   const spaceRoot = path.join(workspaces, 'path with spaces');
   const unicodeRoot = path.join(workspaces, 'path ü 漢字');
@@ -287,7 +342,7 @@ function markPass(checks, ...ids) {
 
 export async function runDoctor({ repositoryRoot, benchmarkRoot, scratchParent }) {
   const canonicalRepository = await fs.realpath(repositoryRoot);
-  const selectedParent = await validateScratchParent(scratchParent, canonicalRepository);
+  await validateScratchParent(scratchParent, canonicalRepository);
   const checks = Object.fromEntries(CHECK_IDS.map((id) => [id, 'NOT_RUN']));
   const blockers = [];
   const report = {
@@ -301,7 +356,7 @@ export async function runDoctor({ repositoryRoot, benchmarkRoot, scratchParent }
     globalGitConfigPreserved: false,
     blockers,
   };
-  let sessionRoot = null;
+  let session = null;
   let globalBefore;
   let repositoryBefore;
   let seedBefore;
@@ -329,16 +384,16 @@ export async function runDoctor({ repositoryRoot, benchmarkRoot, scratchParent }
 
     const osTemp = await validateOsTemp(canonicalRepository);
     markPass(checks, 'OS_TEMP');
-    const parent = selectedParent ?? osTemp;
-    sessionRoot = await fs.realpath(await fs.mkdtemp(path.join(parent, 'sentinel-benchmark-env-')));
-    if (!inside(sessionRoot, parent) || inside(sessionRoot, canonicalRepository)) {
-      throw new EnvironmentError('TEMP_PARENT_UNSAFE', 'MANAGED_SESSION_TEMP', 'managed session root is unsafe');
-    }
-    const workspaces = path.join(sessionRoot, 'workspaces');
-    const journals = path.join(sessionRoot, 'journals');
-    const results = path.join(sessionRoot, 'results');
-    const runnerTmp = path.join(sessionRoot, 'runner-tmp');
-    await Promise.all([workspaces, journals, results, runnerTmp].map((directory) => fs.mkdir(directory)));
+    session = await createManagedBenchmarkSession({
+      repositoryRoot: canonicalRepository,
+      scratchParent,
+    });
+    const {
+      root: sessionRoot,
+      parent,
+      workspaces,
+      runnerTmp,
+    } = session;
     markPass(checks, 'MANAGED_SESSION_TEMP');
 
     const { spaceRoot, unicodeRoot } = await filesystemChecks(workspaces);
@@ -357,7 +412,9 @@ export async function runDoctor({ repositoryRoot, benchmarkRoot, scratchParent }
     const canonicalOsTemp = await fs.realpath(os.tmpdir());
     const canonicalParent = await fs.realpath(parent);
     if (process.platform === 'darwin') {
-      if (!inside(sessionRoot, canonicalParent) || inside(sessionRoot, canonicalRepository) || !inside(canonicalParent, canonicalOsTemp) && selectedParent === null) {
+      if (!inside(sessionRoot, canonicalParent)
+        || inside(sessionRoot, canonicalRepository)
+        || (!inside(canonicalParent, canonicalOsTemp) && scratchParent === undefined)) {
         throw new EnvironmentError('PATH_CANONICALIZATION_FAILED', 'PLATFORM_CANONICALIZATION', 'macOS canonical temp relationship failed');
       }
       checks.PLATFORM_CANONICALIZATION = 'PASS';
@@ -374,10 +431,9 @@ export async function runDoctor({ repositoryRoot, benchmarkRoot, scratchParent }
     if (Object.hasOwn(checks, primaryError.check)) checks[primaryError.check] = 'BLOCKED';
     blockers.push(primaryError.code);
   } finally {
-    if (sessionRoot !== null) {
+    if (session !== null) {
       try {
-        await fs.rm(sessionRoot, { recursive: true });
-        if (await fs.lstat(sessionRoot).catch(() => null) !== null) throw new Error('session root remains');
+        await cleanupManagedBenchmarkSession(session);
         checks.CLEANUP = 'PASS';
       } catch {
         checks.CLEANUP = 'BLOCKED';
