@@ -333,6 +333,9 @@ function checkRunner(root) {
   requirePattern(contract, /PASS[^\n]{0,260}nenhuma disposição bloqueante ativa/iu, "R009_VALIDATION_ATTEMPT", "PASS may leave a blocking finding active");
   requirePattern(contract, /Checks nunca emitem[^\n]{0,160}(?:Validation Attempt|Effective Validation Base)/iu, "R015_CHECK_AUTHORITY", "check/formal authority separation is incomplete");
   requirePattern(contract, /Responda somente de forma compacta[^\n]{0,120}sem logs completos/iu, "R011_COMPACT_OUTPUT", "runner compact-output boundary is missing");
+  requirePattern(contract, /Em `VALIDATE_SLICE`, `Comandos executados`[^\n]{0,180}forma exata e completa[^\n]{0,180}official execution validator\/preflight/iu, "R020_EXACT_COMMANDS", "formal validation does not require exact complete commands");
+  requirePattern(contract, /Nunca abrevie path ou argumento[^\n]{0,120}`\.\.\.`[^\n]{0,100}`<SPEC_PATH>`[^\n]{0,160}argumento omitido/iu, "R020_EXACT_COMMANDS", "formal validation permits abbreviated commands");
+  requirePattern(contract, /não emita `PASS` com comando abreviado/iu, "R020_EXACT_COMMANDS", "formal validation can pass with an abbreviated command");
   requirePattern(contract, /nunca o reverta automaticamente/iu, "R005_READ_ONLY", "runner may automatically revert workspace effects");
 
   const readme = read(readmeFile, "R002_REGISTRY");

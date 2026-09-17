@@ -87,7 +87,7 @@
   - All other A/B/C model and effort assignments were preserved.
   - Profile regression checks passed.
   - No Production Pilot was executed in that checkpoint.
-- `pending user commit`
+- `29b4d6f1979d8d2590260b4888cf15b696631961`
   - Production Pilot #4 stopped Case A in `AUXILIARY_BLOCKED` after three
     state-authorized `EXECUTE_SLICE` attempts for `slice-01`.
   - Cases B and C were not run because the canary gate failed.
@@ -95,3 +95,17 @@
     was promoted.
   - The single final reviewer invocation failed before session creation and was
     not retried.
+- `5d9ecc9b4aa143519948f020ab771f257d0186b0`
+  - Validation-runner authority verification was aligned to the official
+    canonical execution authority.
+  - Pre-Pilot Rehearsal v1 passed R01–R06.
+  - Live R07 started its child but classified the child result as malformed.
+  - The rehearsal stopped BLOCKED; no Production Pilot was executed.
+- `pending user commit`
+  - R07 forensic identified an abbreviated official-preflight command as the
+    exact malformed field value.
+  - Runner contract v8 now requires complete commands and has focused
+    regression coverage for the observed ellipsis abbreviation.
+  - Isolated R07 advanced to a valid runner PASS but terminal publication was
+    blocked by an invalid path basis in the deterministic POST-R06 fixture.
+  - Full R01–R13 rehearsal was not authorized; no Production Pilot was run.

@@ -56,6 +56,19 @@ test("runner documents structured findings and correction-path persistence gramm
   assert.match(contract, /caminhos de correção[\s\S]{0,260}normalizados[\s\S]{0,160}comma-space[\s\S]{0,100}correção fileless[\s\S]{0,80}Correction paths[\s\S]{0,60}exact `none`/u);
 });
 
+test("VALIDATE_SLICE requires complete commands and rejects the observed ellipsis abbreviation", async () => {
+  const contract = await fs.readFile(path.join(canonical, "claude-code/.claude/agents/stnl-validation-runner.md"), "utf8");
+  assert.match(contract, /Comandos executados[^\n]{0,180}forma exata e completa/iu);
+  assert.match(contract, /Nunca abrevie path ou argumento[^\n]{0,120}`\.\.\.`/iu);
+  assert.match(contract, /não emita `PASS` com comando abreviado/iu);
+
+  const observedMalformed = "- `node /repo/validate-execution-state.mjs ... VALIDATE_SLICE 1` — exit: 0";
+  const expectedExact = "- `node /repo/validate-execution-state.mjs /tmp/workspace/spec VALIDATE_SLICE 1` — exit: 0";
+  const containsCommandAbbreviation = (line) => /`[^`]*(?:\.\.\.|<SPEC_PATH>)[^`]*`/u.test(line);
+  assert.equal(containsCommandAbbreviation(expectedExact), false);
+  assert.equal(containsCommandAbbreviation(observedMalformed), true);
+});
+
 const cases = [
   ["Codex model", "R001_ADAPTER_METADATA", (root) => replace(path.join(root, "codex/.codex/agents/stnl_validation_runner.toml"), 'model = "gpt-5.6-luna"', 'model = "gpt-5.6-sol"')],
   ["Claude tools", "R001_ADAPTER_METADATA", (root) => replace(path.join(root, "claude-code/.claude/agents/stnl-validation-runner.md"), "tools: Read, Glob, Grep, Bash", "tools: Read, Glob, Grep, Bash, Write")],
@@ -98,7 +111,8 @@ const cases = [
   ["Claude extra metadata", "R001_ADAPTER_METADATA", (root) => replace(path.join(root, "claude-code/.claude/agents/stnl-validation-runner.md"), "effort: medium", "effort: medium\npermission: write")],
   ["missing Codex adapter", "R002_REGISTRY", (root) => fs.unlink(path.join(root, "codex/.codex/agents/stnl_validation_runner.toml"))],
   ["duplicate Claude frontmatter", "R013_SYNTAX", (root) => replace(path.join(root, "claude-code/.claude/agents/stnl-validation-runner.md"), "name: stnl-validation-runner", "name: stnl-validation-runner\nname: duplicate")],
-  ["missing canonical ID", "R013_SYNTAX", (root) => replaceBoth(root, "CONTRATO_CANONICO=stnl-validation-runner/v7", "runner contract")],
+  ["missing canonical ID", "R013_SYNTAX", (root) => replaceBoth(root, "CONTRATO_CANONICO=stnl-validation-runner/v8", "runner contract")],
+  ["formal validation permits abbreviated command", "R020_EXACT_COMMANDS", (root) => replaceBoth(root, "Nunca abrevie path ou argumento", "Você pode abreviar path ou argumento")],
   ["batch operation", "R004_OPERATION_SCOPE", (root) => replaceBoth(root, "OPERACOES_SUPORTADAS=EXECUTE_SLICE|APPLY_FINDINGS|VALIDATE_SLICE", "OPERACOES_SUPORTADAS=EXECUTE_SLICE|APPLY_FINDINGS|VALIDATE_SLICE|EXECUTE_SLICES")],
   ["finalize operation", "R004_OPERATION_SCOPE", (root) => replaceBoth(root, "OPERACOES_SUPORTADAS=EXECUTE_SLICE|APPLY_FINDINGS|VALIDATE_SLICE", "OPERACOES_SUPORTADAS=EXECUTE_SLICE|APPLY_FINDINGS|VALIDATE_SLICE|FINALIZE_SLICE")],
   ["missing round one", "R004_OPERATION_SCOPE", (root) => replaceBoth(root, "`1/3`, `2/3` ou `3/3`", "`2/3` ou `3/3`")],

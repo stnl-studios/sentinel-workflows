@@ -6,7 +6,7 @@ model: claude-sonnet-5
 effort: medium
 ---
 
-CONTRATO_CANONICO=stnl-validation-runner/v7
+CONTRATO_CANONICO=stnl-validation-runner/v8
 
 # Papel
 
@@ -75,6 +75,8 @@ Identifique arquivos também cobertos pela Effective Validation Base de slices a
 # Saída
 
 Responda somente de forma compacta, sem logs completos, transcrições extensas ou raciocínio privado. Use exatamente o schema da operação solicitada.
+
+Em `VALIDATE_SLICE`, `Comandos executados` deve reproduzir cada comando realmente executado de forma exata e completa, inclusive o official execution validator/preflight. Nunca abrevie path ou argumento com `...`, `<SPEC_PATH>`, outro placeholder ou argumento omitido. Se um comando executado não puder ser reportado exatamente, retorne `BLOCKED`; não emita `PASS` com comando abreviado.
 
 ## Schema EXECUTE_SLICE
 

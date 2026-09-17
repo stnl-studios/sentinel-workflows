@@ -26,6 +26,10 @@ This directory preserves compact, human-readable engineering evidence for Sentin
   deterministic contract evidence before Pilot #4.
 - `s3-benchmark-pilot-04.md` — blocked Production Pilot #4 evidence for the
   production-v2 Case A canary; Cases B/C were not authorized.
+- `s3-pre-pilot-rehearsal-v1.md` — historical blocked rehearsal that proved
+  R01–R06 and stopped on malformed R07 runner output.
+- `s3-pre-pilot-rehearsal-v2.md` — R07 forensic, focal runner-contract
+  correction, and blocked isolated-validation evidence.
 
 ## P0 Gates
 
