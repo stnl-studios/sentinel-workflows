@@ -32,6 +32,9 @@ This directory preserves compact, human-readable engineering evidence for Sentin
   correction, and blocked isolated-validation evidence.
 - `s3-pre-pilot-rehearsal-v3.md` — fixture path-basis correction, successful
   isolated R07 and R01–R10 rehearsal evidence, blocked at reviewer initialization.
+- `s3-pre-pilot-rehearsal-v4.md` — Git-backed reviewer/parallel workspace
+  correction, successful isolated R11/R12, and fresh rehearsal blocked by a new
+  R07 path-basis output before validation.
 
 ## P0 Gates
 

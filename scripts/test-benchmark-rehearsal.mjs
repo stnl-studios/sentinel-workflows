@@ -1,18 +1,38 @@
 #!/usr/bin/env node
 
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
 import {
+  cleanupManagedBenchmarkSession,
+  createManagedBenchmarkSession,
+} from '../benchmarks/sentinel-todo/runtime/benchmark-environment.mjs';
+import {
   applyBlockedStopPolicy,
   createCriticalFixture,
+  inspectHarnessWorkspaceGitGeometry,
   inspectFixturePathBasis,
+  prepareHarnessWorkspace,
   preparePostR06Fixture,
   runDeterministicStages,
 } from '../benchmarks/sentinel-todo/runtime/benchmark-rehearsal.mjs';
+
+const REPOSITORY_ROOT = path.resolve(import.meta.dirname, '..');
+
+function globalGitFingerprint() {
+  const result = spawnSync('git', ['config', '--global', '--list', '--show-origin', '--show-scope', '-z'], {
+    cwd: REPOSITORY_ROOT,
+    encoding: 'utf8',
+    shell: false,
+  });
+  assert.equal(result.status, 0, result.stderr);
+  return createHash('sha256').update(result.stdout).digest('hex');
+}
 
 async function temporaryFixture(t, name) {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), `stnl-rehearsal-${name}-`)));
@@ -101,4 +121,53 @@ test('fixture path gate rejects a task-relative workspace escape', async (t) => 
   const gate = await inspectFixturePathBasis({ workspace: fixture.workspace, spec: fixture.spec });
   assert.equal(gate.status, 'FIXTURE_PATH_BASIS_BLOCKED');
   assert.equal(gate.rows.some((row) => row.inWorkspace === false), true);
+});
+
+test('raw managed workspace is rejected as HARNESS_WORKSPACE_GIT_NOT_READY before a model call', async (t) => {
+  const session = await createManagedBenchmarkSession({ repositoryRoot: REPOSITORY_ROOT });
+  t.after(() => cleanupManagedBenchmarkSession(session));
+  const workspace = path.join(session.workspaces, 'raw-mkdir-only');
+  await fs.mkdir(workspace, { recursive: true });
+  const facts = await inspectHarnessWorkspaceGitGeometry({ session, workspace });
+  assert.equal(facts.status, 'HARNESS_WORKSPACE_GIT_NOT_READY');
+  assert.equal(facts.directoryExists, true);
+  assert.equal(facts.canonical, true);
+  assert.equal(facts.managed, true);
+  assert.equal(facts.outsideRepository, true);
+  assert.equal(facts.gitExists, false);
+  assert.equal(facts.revParseTrue, false);
+});
+
+test('G01-G05 prepare independent Git-backed reviewer, B, and C workspaces without global mutation', async (t) => {
+  const sessions = await Promise.all([
+    createManagedBenchmarkSession({ repositoryRoot: REPOSITORY_ROOT }),
+    createManagedBenchmarkSession({ repositoryRoot: REPOSITORY_ROOT }),
+    createManagedBenchmarkSession({ repositoryRoot: REPOSITORY_ROOT }),
+  ]);
+  t.after(async () => {
+    for (const session of sessions.reverse()) await cleanupManagedBenchmarkSession(session);
+  });
+  const globalBefore = globalGitFingerprint();
+  const names = ['reviewer', 'b-smoke', 'c-smoke'];
+  const workspaces = [];
+  for (let index = 0; index < sessions.length; index += 1) {
+    workspaces.push(await prepareHarnessWorkspace(sessions[index], names[index]));
+  }
+  const facts = await Promise.all(workspaces.map((workspace, index) => (
+    inspectHarnessWorkspaceGitGeometry({ session: sessions[index], workspace })
+  )));
+  for (const row of facts) {
+    assert.equal(row.status, 'HARNESS_WORKSPACE_GIT_READY');
+    assert.equal(row.directoryExists, true);
+    assert.equal(row.canonical, true);
+    assert.equal(row.managed, true);
+    assert.equal(row.outsideRepository, true);
+    assert.equal(row.gitExists, true);
+    assert.equal(row.revParseTrue, true);
+  }
+  assert.notEqual(facts[1].workspace, facts[2].workspace);
+  assert.notEqual(facts[1].gitDirectory, facts[2].gitDirectory);
+  assert.notEqual(facts[1].sessionRoot, facts[2].sessionRoot);
+  assert.notEqual(facts[1].runnerTmp, facts[2].runnerTmp);
+  assert.equal(globalGitFingerprint(), globalBefore);
 });

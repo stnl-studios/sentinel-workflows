@@ -103,6 +103,71 @@ function pathIsWithin(candidate, root) {
   return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
 }
 
+export async function inspectHarnessWorkspaceGitGeometry({ session, workspace }) {
+  const metadata = await fs.lstat(workspace).catch(() => null);
+  const directoryExists = metadata?.isDirectory() === true && metadata.isSymbolicLink() === false;
+  const canonicalWorkspace = directoryExists ? await fs.realpath(workspace) : path.resolve(workspace);
+  const canonicalWorkspacesRoot = await fs.realpath(session.workspaces);
+  const canonicalRepository = await fs.realpath(REPOSITORY_ROOT);
+  const canonical = directoryExists && canonicalWorkspace === path.resolve(workspace);
+  const managed = canonical && canonicalWorkspace !== canonicalWorkspacesRoot
+    && pathIsWithin(canonicalWorkspace, canonicalWorkspacesRoot);
+  const outsideRepository = canonical && !pathIsWithin(canonicalWorkspace, canonicalRepository);
+  const gitPath = path.join(canonicalWorkspace, '.git');
+  const gitExists = directoryExists && await fs.lstat(gitPath).then(() => true).catch(() => false);
+  const revParse = directoryExists
+    ? spawnSync('git', ['rev-parse', '--is-inside-work-tree'], {
+      cwd: canonicalWorkspace, encoding: 'utf8', shell: false,
+    })
+    : { status: null, stdout: '' };
+  const revParseTrue = revParse.status === 0 && revParse.stdout.trim() === 'true';
+  const gitDirectory = revParseTrue
+    ? spawnSync('git', ['rev-parse', '--absolute-git-dir'], {
+      cwd: canonicalWorkspace, encoding: 'utf8', shell: false,
+    }).stdout.trim()
+    : null;
+  const structuralReady = directoryExists && canonical && managed && outsideRepository;
+  const status = structuralReady && gitExists && revParseTrue
+    ? 'HARNESS_WORKSPACE_GIT_READY'
+    : (structuralReady && !revParseTrue
+      ? 'HARNESS_WORKSPACE_GIT_NOT_READY'
+      : 'HARNESS_WORKSPACE_GEOMETRY_BLOCKED');
+  return Object.freeze({
+    status,
+    workspace: canonicalWorkspace,
+    directoryExists,
+    canonical,
+    managed,
+    outsideRepository,
+    gitExists,
+    revParseExitCode: revParse.status,
+    revParseTrue,
+    gitDirectory,
+    sessionRoot: session.root,
+    runnerTmp: session.runnerTmp,
+  });
+}
+
+export async function prepareHarnessWorkspace(session, name) {
+  const requested = path.join(session.workspaces, name);
+  await fs.mkdir(requested, { recursive: true });
+  const before = await inspectHarnessWorkspaceGitGeometry({ session, workspace: requested });
+  if (before.status !== 'HARNESS_WORKSPACE_GIT_NOT_READY') {
+    throw new Error(`rehearsal workspace pre-init geometry=${before.status}`);
+  }
+  const initialized = spawnSync('git', ['init', '--quiet'], {
+    cwd: before.workspace, encoding: 'utf8', shell: false,
+  });
+  if (initialized.status !== 0) {
+    throw new Error(`rehearsal workspace git init failed: ${initialized.stderr.trim()}`);
+  }
+  const after = await inspectHarnessWorkspaceGitGeometry({ session, workspace: before.workspace });
+  if (after.status !== 'HARNESS_WORKSPACE_GIT_READY') {
+    throw new Error(`rehearsal workspace post-init geometry=${after.status}`);
+  }
+  return after.workspace;
+}
+
 function replaceSection(text, heading, content) {
   const pattern = new RegExp(`(## ${heading}\\n\\n)[\\s\\S]*?(?=\\n## |$)`, 'u');
   if (!pattern.test(text)) throw new Error(`fixture section is absent: ${heading}`);
@@ -627,13 +692,203 @@ export async function runIsolatedR07() {
   }
 }
 
+export async function runIsolatedR11() {
+  const session = await createManagedBenchmarkSession({ repositoryRoot: REPOSITORY_ROOT });
+  try {
+    const workspace = await prepareHarnessWorkspace(session, 'reviewer');
+    await fs.writeFile(path.join(workspace, 'review-input.md'), [
+      '# Isolated R11 reviewer smoke',
+      '',
+      '- Purpose: prove the reviewer provider session starts from a Git-backed managed workspace.',
+      '- R01-R10: all PASS in the previous published rehearsal evidence.',
+      '- Requested changes: none.',
+      '',
+      'Question: is this input legible with no structural blocker?',
+    ].join('\n'), 'utf8');
+    const preflight = await inspectHarnessWorkspaceGitGeometry({ session, workspace });
+    if (preflight.status !== 'HARNESS_WORKSPACE_GIT_READY') {
+      return {
+        status: 'PRE_PILOT_REHEARSAL_BLOCKED',
+        failure: { category: preflight.status, message: 'reviewer workspace failed rehearsal Git preflight' },
+        preflight,
+        liveCalls: 0,
+      };
+    }
+    const call = await harnessStage(session, workspace, {
+      model: 'GPT-5.6-Sol',
+      effort: 'high',
+      sandbox: 'read-only',
+      prompt: [
+        'Read review-input.md in the current workspace.',
+        'Do not modify files.',
+        'Respond PASS if the input is legible and there is no structural blocker; otherwise respond BLOCKING_FINDING.',
+      ].join('\n'),
+    });
+    const passed = harnessStarted(call)
+      && call.result.providerInvocationAccepted === true
+      && /^PASS\b/u.test((call.result.finalAssistantMessage ?? '').trim())
+      && call.result.retryCount === 0;
+    return {
+      status: passed ? 'ISOLATED_R11_PASS' : 'PRE_PILOT_REHEARSAL_BLOCKED',
+      failure: passed ? null : {
+        category: call.result.status,
+        message: compactMessage(call.result),
+      },
+      preflight,
+      model: 'GPT-5.6-Sol',
+      effort: 'high',
+      harness: call.result.status,
+      providerInvocationAccepted: call.result.providerInvocationAccepted === true,
+      sessionStarted: call.result.sessionStarted === true,
+      turnStarted: call.result.turnStarted === true,
+      semanticVerdict: compactMessage(call.result),
+      providerErrorCategory: call.result.providerErrorCategory ?? null,
+      capabilityFingerprint: call.result.capabilityFingerprint ?? null,
+      retryCount: call.result.retryCount ?? 0,
+      liveCalls: 1,
+    };
+  } finally {
+    await cleanupManagedBenchmarkSession(session);
+  }
+}
+
+async function runParallelHarnessSmoke() {
+  const bSession = await createManagedBenchmarkSession({ repositoryRoot: REPOSITORY_ROOT });
+  const cSession = await createManagedBenchmarkSession({ repositoryRoot: REPOSITORY_ROOT });
+  let report = null;
+  try {
+    const bWorkspace = await prepareHarnessWorkspace(bSession, 'b-smoke');
+    const cWorkspace = await prepareHarnessWorkspace(cSession, 'c-smoke');
+    await fs.writeFile(path.join(bWorkspace, 'marker.txt'), 'B_ONLY_71f2\n', 'utf8');
+    await fs.writeFile(path.join(cWorkspace, 'marker.txt'), 'C_ONLY_9ac4\n', 'utf8');
+    const [bPreflight, cPreflight] = await Promise.all([
+      inspectHarnessWorkspaceGitGeometry({ session: bSession, workspace: bWorkspace }),
+      inspectHarnessWorkspaceGitGeometry({ session: cSession, workspace: cWorkspace }),
+    ]);
+    const independentGeometry = bWorkspace !== cWorkspace
+      && bPreflight.gitDirectory !== cPreflight.gitDirectory
+      && bSession.root !== cSession.root
+      && bSession.runnerTmp !== cSession.runnerTmp;
+    if (bPreflight.status !== 'HARNESS_WORKSPACE_GIT_READY'
+      || cPreflight.status !== 'HARNESS_WORKSPACE_GIT_READY'
+      || !independentGeometry) {
+      report = {
+        status: 'PRE_PILOT_REHEARSAL_BLOCKED',
+        failure: { category: 'HARNESS_WORKSPACE_GIT_GEOMETRY', message: 'parallel smoke preflight failed' },
+        b: { preflight: bPreflight },
+        c: { preflight: cPreflight },
+        overlap: false,
+        isolation: false,
+        liveCalls: 0,
+      };
+      return report;
+    }
+    const smokePrompt = (name, token) => [
+      `This is isolated smoke ${name}.`,
+      'Read marker.txt in your current working directory.',
+      'Using Node, create a temporary directory under inherited TMPDIR, write/read a marker with the same token, then remove that temporary directory.',
+      `Write smoke-result.txt in the current working directory containing exactly ${token} and report cwd identity plus os.tmpdir() identity.`,
+      'Do not inspect parent directories or any sibling workspace.',
+    ].join('\n');
+    let bEnd;
+    let cEnd;
+    const bStart = Date.now();
+    const bPromise = runHarness({
+      cwd: bWorkspace,
+      tmpdir: bSession.runnerTmp,
+      timeoutMs: 300_000,
+      model: 'GPT-5.6-Luna',
+      effort: 'medium',
+      sandbox: 'workspace-write',
+      prompt: smokePrompt('B', 'B_ONLY_71f2'),
+    }).finally(() => { bEnd = Date.now(); });
+    const cStart = Date.now();
+    const cPromise = runHarness({
+      cwd: cWorkspace,
+      tmpdir: cSession.runnerTmp,
+      timeoutMs: 300_000,
+      model: 'GPT-5.6-Luna',
+      effort: 'medium',
+      sandbox: 'workspace-write',
+      prompt: smokePrompt('C', 'C_ONLY_9ac4'),
+    }).finally(() => { cEnd = Date.now(); });
+    const [bResult, cResult] = await Promise.all([bPromise, cPromise]);
+    const overlap = Math.max(bStart, cStart) <= Math.min(bEnd, cEnd);
+    const bMarker = await fs.readFile(path.join(bWorkspace, 'smoke-result.txt'), 'utf8').catch(() => '');
+    const cMarker = await fs.readFile(path.join(cWorkspace, 'smoke-result.txt'), 'utf8').catch(() => '');
+    const bMessage = bResult.finalAssistantMessage ?? '';
+    const cMessage = cResult.finalAssistantMessage ?? '';
+    const outputIsolated = bMarker.trim() === 'B_ONLY_71f2'
+      && cMarker.trim() === 'C_ONLY_9ac4'
+      && !bMarker.includes('C_ONLY_9ac4')
+      && !cMarker.includes('B_ONLY_71f2')
+      && !bMessage.includes('C_ONLY_9ac4')
+      && !cMessage.includes('B_ONLY_71f2');
+    const passed = bResult.status === 'HARNESS_COMPLETED'
+      && cResult.status === 'HARNESS_COMPLETED'
+      && bResult.sessionStarted === true
+      && cResult.sessionStarted === true
+      && bResult.turnStarted === true
+      && cResult.turnStarted === true
+      && overlap
+      && independentGeometry
+      && outputIsolated;
+    report = {
+      status: passed ? 'ISOLATED_R12_PASS' : 'PRE_PILOT_REHEARSAL_BLOCKED',
+      failure: passed ? null : {
+        category: 'PARALLEL_ORCHESTRATION',
+        message: `B=${bResult.status}; C=${cResult.status}; overlap=${overlap}; outputIsolated=${outputIsolated}`,
+      },
+      b: {
+        harness: bResult.status,
+        sessionStarted: bResult.sessionStarted === true,
+        turnStarted: bResult.turnStarted === true,
+        preflight: bPreflight,
+        marker: bMarker.trim(),
+        retryCount: bResult.retryCount ?? 0,
+      },
+      c: {
+        harness: cResult.status,
+        sessionStarted: cResult.sessionStarted === true,
+        turnStarted: cResult.turnStarted === true,
+        preflight: cPreflight,
+        marker: cMarker.trim(),
+        retryCount: cResult.retryCount ?? 0,
+      },
+      overlap,
+      isolation: independentGeometry && outputIsolated,
+      liveCalls: 2,
+    };
+    return report;
+  } finally {
+    const cleanup = await Promise.allSettled([
+      cleanupManagedBenchmarkSession(bSession),
+      cleanupManagedBenchmarkSession(cSession),
+    ]);
+    const rootsRemoved = await Promise.all([
+      fs.stat(bSession.root).then(() => false).catch(() => true),
+      fs.stat(cSession.root).then(() => false).catch(() => true),
+    ]);
+    const cleanupPassed = cleanup.every((item) => item.status === 'fulfilled') && rootsRemoved.every(Boolean);
+    if (report !== null) {
+      report.cleanup = cleanupPassed ? 'PASS' : 'BLOCKED';
+      if (!cleanupPassed) {
+        report.status = 'PRE_PILOT_REHEARSAL_BLOCKED';
+        report.failure = { category: 'CLEANUP', message: 'parallel managed session cleanup failed' };
+      }
+    }
+  }
+}
+
+export async function runIsolatedR12() {
+  return runParallelHarnessSmoke();
+}
+
 export async function runLiveStages() {
   const stages = [];
   const calls = [];
   const session = await createManagedBenchmarkSession({ repositoryRoot: REPOSITORY_ROOT });
   let reviewerSession = null;
-  let bSession = null;
-  let cSession = null;
   try {
     const workspace = path.join(session.workspaces, 'critical-fixture');
     await fs.mkdir(workspace, { recursive: true });
@@ -749,19 +1004,18 @@ export async function runLiveStages() {
     if (!r10) return { status: 'PRE_PILOT_REHEARSAL_BLOCKED', stages, calls };
 
     reviewerSession = await createManagedBenchmarkSession({ repositoryRoot: REPOSITORY_ROOT });
-    const reviewerWorkspace = path.join(reviewerSession.workspaces, 'reviewer');
-    await fs.mkdir(reviewerWorkspace, { recursive: true });
+    const reviewerWorkspace = await prepareHarnessWorkspace(reviewerSession, 'reviewer');
     const diff = spawnSync('git', ['diff', '--', 'agents', 'templates/prompts', 'scripts', 'benchmarks/sentinel-todo', 'maintenance/p0-evidence'], {
       cwd: REPOSITORY_ROOT, encoding: 'utf8', shell: false,
     });
     await fs.writeFile(path.join(reviewerWorkspace, 'review-input.md'), [
       '# Pre-pilot correction review',
       '',
-      '- Base: bfe0a190993d48428acaaa827b84a6db2e4124b1',
-      '- Previous blocker: FIXTURE_PATH_BASIS in the deterministic POST-R06 rehearsal fixture.',
-      '- Correction rule: artifact-relative implementation paths are derived from the final detailed task artifact, never a candidate/session root.',
-      '- Runtime rule: terminal ownership, existence, containment, and hash validation remain strict.',
-      '- Runner rule: canonical authority and exact complete VALIDATE_SLICE commands remain mandatory under v8.',
+      '- Base: f3aea3598620a4f9d214ab3df44e0f935e058168',
+      '- Previous blocker: R11 HARNESS_INIT_FAILED before session start.',
+      '- Root cause: reviewer and parallel-smoke managed workspaces were not local Git repositories.',
+      '- Correction: initialize only those rehearsal-owned workspaces with local git init and preflight rev-parse before model calls.',
+      '- Frozen facts: authority, runner v8, fixture path basis, execution runtime, lifecycle runtime, and Harness core are unchanged.',
       '',
       '## R01-R10',
       ...stages.map((stage) => `- ${stage.id}: ${stage.result} — ${stage.evidence}`),
@@ -771,73 +1025,66 @@ export async function runLiveStages() {
       diff.stdout,
       '```',
     ].join('\n'), 'utf8');
+    const reviewerPreflight = await inspectHarnessWorkspaceGitGeometry({
+      session: reviewerSession,
+      workspace: reviewerWorkspace,
+    });
+    if (reviewerPreflight.status !== 'HARNESS_WORKSPACE_GIT_READY') {
+      stages.push(fail('R11', reviewerPreflight.status, 'reviewer workspace failed rehearsal Git preflight; zero model calls started'));
+      return {
+        status: 'PRE_PILOT_REHEARSAL_BLOCKED',
+        stages,
+        calls,
+        reviewer: { preflight: reviewerPreflight, liveCalls: 0 },
+      };
+    }
     const reviewerPrompt = [
       'Read only review-input.md in this reviewer workspace. Do not modify files.',
       'Answer exactly PASS or BLOCKING_FINDING followed by compact evidence.',
-      'Check these questions: was the path-basis bug confined to the fixture; did execution runtime remain strict; does the fixture derive paths from the canonical detailed-task basis; is the observed invalid path rejected pre-live; does canonical authority remain correct; does runner v8 still require exact commands; did R06 legitimately reach IMPLEMENTED_AWAITING_VALIDATION; did R07 legitimately reach COMPLETE; did terminal ownership accept real paths and hashes; did GLOBAL READY preserve execution; did CLOSE preserve execution; and is there any concrete blocker to a new Production Pilot.',
+      'Check these questions: is the Git-backed reviewer workspace correction confined to rehearsal callers; did Agent Harness core remain unchanged; did R01-R10 pass on the stated base; and is there any concrete blocker to a new Production Pilot.',
     ].join('\n');
     const reviewerCall = await harnessStage(reviewerSession, reviewerWorkspace, {
       model: 'GPT-5.6-Sol', effort: 'high', sandbox: 'read-only', prompt: reviewerPrompt,
     });
     calls.push({ stage: 'R11', purpose: 'independent correction reviewer', model: 'GPT-5.6-Sol', effort: 'high', status: reviewerCall.result.status, retryCount: 0 });
     const r11 = harnessStarted(reviewerCall)
-      && /^PASS\b/u.test((reviewerCall.result.finalAssistantMessage ?? '').trim());
+      && reviewerCall.result.providerInvocationAccepted === true
+      && /^PASS\b/u.test((reviewerCall.result.finalAssistantMessage ?? '').trim())
+      && reviewerCall.result.retryCount === 0;
+    const reviewer = {
+      preflight: reviewerPreflight,
+      harness: reviewerCall.result.status,
+      providerInvocationAccepted: reviewerCall.result.providerInvocationAccepted === true,
+      sessionStarted: reviewerCall.result.sessionStarted === true,
+      turnStarted: reviewerCall.result.turnStarted === true,
+      semanticVerdict: compactMessage(reviewerCall.result),
+      providerErrorCategory: reviewerCall.result.providerErrorCategory ?? null,
+      capabilityFingerprint: reviewerCall.result.capabilityFingerprint ?? null,
+      retryCount: reviewerCall.result.retryCount ?? 0,
+      liveCalls: 1,
+    };
     stages.push(r11
       ? pass('R11', 'REVIEWER', 'reviewer session started and returned PASS')
       : fail('R11', reviewerCall.result.status.startsWith('HARNESS_') ? 'HARNESS' : 'REVIEWER', `harness=${reviewerCall.result.status}; verdict=${reviewerCall.result.finalAssistantMessage ?? 'none'}`));
-    if (!r11) return { status: 'PRE_PILOT_REHEARSAL_BLOCKED', stages, calls };
+    if (!r11) return { status: 'PRE_PILOT_REHEARSAL_BLOCKED', stages, calls, reviewer };
 
-    bSession = await createManagedBenchmarkSession({ repositoryRoot: REPOSITORY_ROOT });
-    cSession = await createManagedBenchmarkSession({ repositoryRoot: REPOSITORY_ROOT });
-    const bWorkspace = path.join(bSession.workspaces, 'b-smoke');
-    const cWorkspace = path.join(cSession.workspaces, 'c-smoke');
-    await fs.mkdir(bWorkspace, { recursive: true });
-    await fs.mkdir(cWorkspace, { recursive: true });
-    await fs.writeFile(path.join(bWorkspace, 'marker.txt'), 'B_ONLY_71f2\n', 'utf8');
-    await fs.writeFile(path.join(cWorkspace, 'marker.txt'), 'C_ONLY_9ac4\n', 'utf8');
-    const smokePrompt = (name, token) => [
-      `This is isolated smoke ${name}.`,
-      'Read marker.txt in your current working directory.',
-      'Using Node, create a temporary directory under inherited TMPDIR, write/read a marker with the same token, then remove that temporary directory.',
-      `Write smoke-result.txt in the current working directory containing exactly ${token} and report cwd identity plus os.tmpdir() identity.`,
-      'Do not inspect parent directories or any sibling workspace.',
-    ].join('\n');
-    let bEnd;
-    let cEnd;
-    const bStart = Date.now();
-    const bPromise = runHarness({
-      cwd: bWorkspace, tmpdir: bSession.runnerTmp, timeoutMs: 300_000,
-      model: 'GPT-5.6-Luna', effort: 'medium', sandbox: 'workspace-write', prompt: smokePrompt('B', 'B_ONLY_71f2'),
-    }).finally(() => { bEnd = Date.now(); });
-    const cStart = Date.now();
-    const cPromise = runHarness({
-      cwd: cWorkspace, tmpdir: cSession.runnerTmp, timeoutMs: 300_000,
-      model: 'GPT-5.6-Luna', effort: 'medium', sandbox: 'workspace-write', prompt: smokePrompt('C', 'C_ONLY_9ac4'),
-    }).finally(() => { cEnd = Date.now(); });
-    const [bResult, cResult] = await Promise.all([bPromise, cPromise]);
+    const parallelSmoke = await runParallelHarnessSmoke();
     calls.push(
-      { stage: 'R12-B', purpose: 'parallel harness B smoke', model: 'GPT-5.6-Luna', effort: 'medium', status: bResult.status, retryCount: 0 },
-      { stage: 'R12-C', purpose: 'parallel harness C smoke', model: 'GPT-5.6-Luna', effort: 'medium', status: cResult.status, retryCount: 0 },
+      { stage: 'R12-B', purpose: 'parallel harness B smoke', model: 'GPT-5.6-Luna', effort: 'medium', status: parallelSmoke.b?.harness ?? parallelSmoke.failure?.category, retryCount: parallelSmoke.b?.retryCount ?? 0 },
+      { stage: 'R12-C', purpose: 'parallel harness C smoke', model: 'GPT-5.6-Luna', effort: 'medium', status: parallelSmoke.c?.harness ?? parallelSmoke.failure?.category, retryCount: parallelSmoke.c?.retryCount ?? 0 },
     );
-    const overlap = Math.max(bStart, cStart) <= Math.min(bEnd, cEnd);
-    const bMarker = await fs.readFile(path.join(bWorkspace, 'smoke-result.txt'), 'utf8').catch(() => '');
-    const cMarker = await fs.readFile(path.join(cWorkspace, 'smoke-result.txt'), 'utf8').catch(() => '');
-    const r12 = bResult.status === 'HARNESS_COMPLETED'
-      && cResult.status === 'HARNESS_COMPLETED'
-      && bResult.sessionStarted === true
-      && cResult.sessionStarted === true
-      && overlap
-      && bWorkspace !== cWorkspace
-      && bSession.runnerTmp !== cSession.runnerTmp
-      && bMarker.trim() === 'B_ONLY_71f2'
-      && cMarker.trim() === 'C_ONLY_9ac4';
+    const r12 = parallelSmoke.status === 'ISOLATED_R12_PASS' && parallelSmoke.cleanup === 'PASS';
     stages.push(r12
-      ? pass('R12', 'PARALLEL_ORCHESTRATION', 'B/C sessions completed; intervals overlap; CWD/TMPDIR/output isolated')
-      : fail('R12', 'PARALLEL_ORCHESTRATION', `B=${bResult.status}; C=${cResult.status}; overlap=${overlap}`));
-    return { status: r12 ? 'PRE_PILOT_REHEARSAL_READY' : 'PRE_PILOT_REHEARSAL_BLOCKED', stages, calls };
+      ? pass('R12', 'PARALLEL_ORCHESTRATION', 'B/C sessions completed; intervals overlap; CWD/session/TMPDIR/Git/output isolated; cleanup PASS')
+      : fail('R12', parallelSmoke.failure?.category ?? 'PARALLEL_ORCHESTRATION', parallelSmoke.failure?.message ?? 'parallel smoke blocked'));
+    return {
+      status: r12 ? 'PRE_PILOT_REHEARSAL_READY' : 'PRE_PILOT_REHEARSAL_BLOCKED',
+      stages,
+      calls,
+      reviewer,
+      parallelSmoke,
+    };
   } finally {
-    if (cSession !== null) await cleanupManagedBenchmarkSession(cSession);
-    if (bSession !== null) await cleanupManagedBenchmarkSession(bSession);
     if (reviewerSession !== null) await cleanupManagedBenchmarkSession(reviewerSession);
     await cleanupManagedBenchmarkSession(session);
   }
@@ -871,23 +1118,17 @@ export function runFinalSuite() {
 
 export async function main(argv) {
   const [command] = argv;
-  if (!new Set(['deterministic', 'isolated', 'live', 'all']).has(command)) {
-    process.stderr.write('usage: benchmark-rehearsal.mjs deterministic|isolated|live|all\n');
+  if (!new Set(['deterministic', 'isolated', 'isolated-r11', 'isolated-r12', 'live', 'all']).has(command)) {
+    process.stderr.write('usage: benchmark-rehearsal.mjs deterministic|isolated|isolated-r11|isolated-r12|live|all\n');
     return 2;
   }
   let report;
   if (command === 'deterministic') report = await runDeterministicStages();
   else if (command === 'isolated') report = await runIsolatedR07();
+  else if (command === 'isolated-r11') report = await runIsolatedR11();
+  else if (command === 'isolated-r12') report = await runIsolatedR12();
   else if (command === 'live') report = await runLiveStages();
-  else {
-    const isolatedR07 = await runIsolatedR07();
-    if (isolatedR07.status !== 'ISOLATED_R07_COMPLETE') {
-      report = { status: 'PRE_PILOT_REHEARSAL_BLOCKED', isolatedR07, stages: [], calls: [] };
-    } else {
-      report = await runLiveStages();
-      report.isolatedR07 = isolatedR07;
-    }
-  }
+  else report = await runLiveStages();
   if (command === 'all' && report.status === 'PRE_PILOT_REHEARSAL_READY') {
     const final = runFinalSuite();
     report.stages.push(final.status === 'R13_PASS'
@@ -897,7 +1138,12 @@ export async function main(argv) {
     report.status = final.status === 'R13_PASS' ? 'PRE_PILOT_REHEARSAL_READY' : 'PRE_PILOT_REHEARSAL_BLOCKED';
   }
   process.stdout.write(`${JSON.stringify(report, (key, value) => ['fixture', 'ownedRoot'].includes(key) ? undefined : value, 2)}\n`);
-  return new Set(['PRE_PILOT_REHEARSAL_READY', 'ISOLATED_R07_COMPLETE']).has(report.status) ? 0 : 1;
+  return new Set([
+    'PRE_PILOT_REHEARSAL_READY',
+    'ISOLATED_R07_COMPLETE',
+    'ISOLATED_R11_PASS',
+    'ISOLATED_R12_PASS',
+  ]).has(report.status) ? 0 : 1;
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {

@@ -109,7 +109,7 @@
   - Isolated R07 advanced to a valid runner PASS but terminal publication was
     blocked by an invalid path basis in the deterministic POST-R06 fixture.
   - Full R01–R13 rehearsal was not authorized; no Production Pilot was run.
-- `pending user commit`
+- `f3aea3598620a4f9d214ab3df44e0f935e058168`
   - The rehearsal fixture now derives implementation paths from each final
     artifact directory and rejects invalid file-backed paths before live R07.
   - The observed `workspaces/r07-isolated` path regression is covered without
@@ -117,3 +117,12 @@
   - Isolated R07 reached `COMPLETE`; the fresh full rehearsal passed R01–R10.
   - R11 repeated the historical pre-session reviewer initialization failure,
     so R12/R13 were not run and no Production Pilot was authorized.
+- `pending user commit`
+  - Reviewer and B/C smoke workspaces are initialized as isolated local Git
+    repositories and rejected before model launch when Git is not ready.
+  - The Git-geometry hypothesis was confirmed; isolated R11 and isolated R12
+    both passed with zero retry and independent cleanup.
+  - A fresh full rehearsal passed R01-R06, then the pre-live R07 gate rejected
+    task-relative `src/invitation.mjs` claims emitted by the real EXECUTE turn.
+  - R07 started zero validation calls; R08-R13 and Production Pilot were not
+    run, and no second remediation was attempted.
