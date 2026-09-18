@@ -21,6 +21,9 @@ operation immediately in the external journal.
   budgets, collects raw facts, and compares results.
 - `runtime/benchmark-agent-harness.mjs` is the only authority for external
   provider discovery, model invocation, isolation, timeout, and JSONL parsing.
+- `runtime/benchmark-production-pilot.mjs` is the versioned Production Pilot
+  driver. It owns only preconditions, Case scheduling, official readback,
+  durable evidence, and cleanup; Sentinel remains the workflow authority.
 - `schemas/` documents the journal and result JSON contracts.
 
 Every prepared workspace contains only the seed files, the selected Case as
@@ -70,7 +73,29 @@ node benchmarks/sentinel-todo/runtime/benchmark.mjs finalize --workspace <absolu
 node benchmarks/sentinel-todo/runtime/benchmark.mjs compare --before <absolute-result.json> --after <absolute-result.json>
 node benchmarks/sentinel-todo/runtime/benchmark-agent-harness.mjs check
 node benchmarks/sentinel-todo/runtime/benchmark-agent-harness.mjs run --request <absolute-request.json>
+node benchmarks/sentinel-todo/runtime/benchmark-production-pilot.mjs run --output <absolute-absent-path>
 ```
+
+The Production Pilot driver runs deterministic preconditions without a model,
+reuses the versioned qualified sandbox probe only when the current Harness
+fingerprint matches, and takes model/effort exclusively from `production-v2`.
+It runs Case A as a canary and starts independent B/C sessions concurrently
+only after A produces a canonical `PASS`. There is no outer operation retry,
+happy-path reviewer, rehearsal, or observability turn. The optional forensic
+review boundary is recorded as disabled and is not invoked.
+
+Every semantic decision follows `official readback > model prose > ad hoc
+parsing`. Slice launchers receive unsigned decimal input (`1`, `2`, ...), while
+the journal retains canonical `slice-NN` labels. Operation evidence is written
+outside the candidate workspace as it is produced. Finalization always checks,
+copies, and hashes a valid canonical raw before managed-session cleanup,
+including when the finalizer returns non-zero for `BLOCKED`.
+
+The output contains `preconditions.json`, per-operation evidence and a
+`case-summary.json` for every started Case, preserved raw result JSON when the
+canonical finalizer can produce it, and `pilot-summary.json`. A complete
+A/B/C `PASS` with no profile mismatch and unchanged historical raws is the only
+baseline-eligible result.
 
 `doctor` is the offline Benchmark Environment Qualification v1 preflight. It
 uses only Node built-ins and the installed Git executable, emits one sanitized

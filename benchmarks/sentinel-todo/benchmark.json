@@ -40,6 +40,17 @@
       }
     }
   },
+  "productionPilot": {
+    "driverVersion": 1,
+    "qualification": {
+      "harnessContractVersion": 1,
+      "providerVersion": "codex-cli 0.154.0",
+      "capabilitiesHash": "a35d6560c398bc4665b67df364432079a63032c394b03ec85194f552a1e60441",
+      "sandboxProbeEvidence": "maintenance/p0-evidence/s3-sandbox-probe-v1.md",
+      "sandboxProbeEvidenceSha256": "39f762e7fbce171c22f435b968d2d7a40a91466ea6fb62833579d3a233a4a8e9",
+      "sandboxProbeStatus": "SANDBOX_PROBE_PASS"
+    }
+  },
   "cases": [
     {
       "id": "A",

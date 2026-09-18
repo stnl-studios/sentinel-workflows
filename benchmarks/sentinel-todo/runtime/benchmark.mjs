@@ -137,6 +137,16 @@ function assertManifest(configuration) {
   if (configuration.seedPath !== 'seed' || configuration.productionProfile?.id !== 'production-v2') {
     throw new CliError('manifest seed or profile identity is invalid');
   }
+  const qualification = configuration.productionPilot?.qualification;
+  if (configuration.productionPilot?.driverVersion !== 1
+    || qualification?.harnessContractVersion !== 1
+    || !/^codex-cli \S+$/u.test(qualification?.providerVersion ?? '')
+    || !/^[0-9a-f]{64}$/u.test(qualification?.capabilitiesHash ?? '')
+    || qualification?.sandboxProbeEvidence !== 'maintenance/p0-evidence/s3-sandbox-probe-v1.md'
+    || !/^[0-9a-f]{64}$/u.test(qualification?.sandboxProbeEvidenceSha256 ?? '')
+    || qualification?.sandboxProbeStatus !== 'SANDBOX_PROBE_PASS') {
+    throw new CliError('production Pilot qualification authority is invalid');
+  }
   if (JSON.stringify(configuration.supportedRunModes) !== JSON.stringify(['focal', 'case', 'full'])) {
     throw new CliError('manifest run modes are invalid');
   }
@@ -200,6 +210,10 @@ async function verify() {
   for (const schemaPath of Object.values(configuration.schemas)) {
     const schema = await readJson(path.join(BENCHMARK_ROOT, schemaPath), schemaPath);
     if (schema.$schema !== 'https://json-schema.org/draft/2020-12/schema') throw new CliError(`${schemaPath} has an invalid dialect`);
+  }
+  const probeEvidence = path.join(REPOSITORY_ROOT, configuration.productionPilot.qualification.sandboxProbeEvidence);
+  if (await sha256File(probeEvidence) !== `sha256:${configuration.productionPilot.qualification.sandboxProbeEvidenceSha256}`) {
+    throw new CliError('sandbox probe evidence hash does not match the manifest');
   }
   if (await contentHash(path.join(BENCHMARK_ROOT, configuration.seedPath)) !== configuration.integrity.seedContentHash) {
     throw new CliError('seed content hash does not match the manifest');
