@@ -120,3 +120,21 @@ the model returned `PROBE_BLOCKED`.
 The probe was not repeated. Pilot Case A, Cases B/C, and the final reviewer
 were not run, so no Pilot #9 raw or candidate result directory was created. The
 official production-v2 baseline remains not established.
+
+## Production Pilot #10
+
+Candidate `b434bad628bf5050f2c8df94426bb47238ba374e` used the versioned Pilot
+driver (`productionPilotDriverVersion=1`) with `production-v2`. Preconditions
+passed. Case A stopped on its second `EXECUTE_SLICE` when official readback
+reported `AUXILIARY_BLOCKED` for `slice-02`; the runner recorded blocker
+`OFFICIAL_AUXILIARY_BLOCKED`, zero retry, and cleanup `PASS`.
+
+The canonical raw produced by the driver was preserved byte-for-byte:
+
+- `b434bad628bf5050f2c8df94426bb47238ba374e/case-a-production-v2.json`
+  - status: `BLOCKED`
+  - final execution state: `AUXILIARY_BLOCKED`
+  - SHA-256: `619cf604d81f4d5731d6170f8ac2e5b19c3094829a6abecc1cbd8cb0668a2201`
+
+Cases B/C were not run. No placeholders were created. The official
+production-v2 baseline remains not established.

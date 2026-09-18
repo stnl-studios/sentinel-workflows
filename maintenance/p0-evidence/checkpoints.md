@@ -207,7 +207,7 @@
     `PROBE_BLOCKED`.
   - Stop-loss prevented a second probe, Case A, B/C, and the reviewer; no raw,
     baseline, or gate promotion was produced and P0 remains open.
-- `pending user commit` — Sandbox probe v1
+- `364300e4f64a13e7f13ce7d5f9ab48da1b0987e6` — Sandbox probe v1
   - The official managed session prepared one Git-backed Case A workspace for
     infrastructure probing only; canonical CWD/TMPDIR guards passed.
   - One GPT-5.6-Luna/medium Harness turn executed exactly one official doctor
@@ -216,3 +216,10 @@
     managed cleanup passed with no functional Sentinel diff.
   - Production Pilot #10 is authorized directly with the same deterministic
     probe construction; no additional rehearsal or qualification is required.
+- `pending user commit` — Production Pilot #10
+  - The versioned Pilot driver ran once against
+    `b434bad628bf5050f2c8df94426bb47238ba374e`; all preconditions passed.
+  - Case A stopped at `AUXILIARY_BLOCKED` during the second `EXECUTE_SLICE`,
+    with blocker `OFFICIAL_AUXILIARY_BLOCKED`, zero retry, and cleanup `PASS`.
+  - The canonical Case A raw was preserved and hashed; B/C were not run.
+  - No baseline or gate was promoted, and P0 remains open.

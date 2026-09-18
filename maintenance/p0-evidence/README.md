@@ -69,6 +69,9 @@ This directory preserves compact, human-readable engineering evidence for Sentin
 - `s3-sandbox-probe-v1.md` — deterministic one-shot Luna/medium sandbox probe;
   the exact official doctor command and JSON passed with zero retry, clean
   checkout integrity, and managed cleanup.
+- `s3-benchmark-pilot-10.md` — Production Pilot #10 evidence; preconditions
+  passed, Case A stopped at `AUXILIARY_BLOCKED` on `slice-02`, the canonical
+  raw was preserved, and B/C were not run.
 
 ## P0 Gates
 
