@@ -1,0 +1,18 @@
+{
+  "caseId": "A",
+  "status": "BLOCKED",
+  "blocker": "OFFICIAL_TRANSITION_NOT_OBSERVED",
+  "profileId": "production-v2",
+  "profileMismatches": [],
+  "rawPath": "case-a-production-v2.json",
+  "rawSha256": "46112cb76b8d9df7a825f92dd5cc9354e4dd5e3a8276b20a8fa5e7da1f935940",
+  "finalizer": {
+    "exitCode": 1,
+    "stdout": "{\"output\":\"<path-2>/results/case-a-production-v2.json\",\"status\":\"BLOCKED\"}\n",
+    "stderr": "FAIL: finalized with status BLOCKED\n"
+  },
+  "operations": 2,
+  "retryCount": 0,
+  "blockerArtifact": null,
+  "cleanup": "PASS"
+}

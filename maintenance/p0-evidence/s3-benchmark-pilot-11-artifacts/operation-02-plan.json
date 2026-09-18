@@ -1,0 +1,166 @@
+{
+  "sequence": 2,
+  "operation": "PLAN",
+  "slice": null,
+  "renderedSlice": null,
+  "dispatch": {
+    "phase": "PLAN",
+    "model": "GPT-5.6-Terra",
+    "effort": "high"
+  },
+  "harness": {
+    "status": "HARNESS_COMPLETED",
+    "requestedModel": "GPT-5.6-Terra",
+    "requestedEffort": "high",
+    "retryCount": 0,
+    "sessionStarted": true,
+    "turnStarted": true,
+    "commandLedger": [
+      {
+        "index": 1,
+        "source": "harness-structured-command",
+        "command": "not-exposed-by-harness-v1",
+        "exitCode": 0
+      },
+      {
+        "index": 2,
+        "source": "harness-structured-command",
+        "command": "not-exposed-by-harness-v1",
+        "exitCode": 0
+      },
+      {
+        "index": 3,
+        "source": "harness-structured-command",
+        "command": "not-exposed-by-harness-v1",
+        "exitCode": 0
+      },
+      {
+        "index": 4,
+        "source": "harness-structured-command",
+        "command": "not-exposed-by-harness-v1",
+        "exitCode": 0
+      },
+      {
+        "index": 5,
+        "source": "harness-structured-command",
+        "command": "not-exposed-by-harness-v1",
+        "exitCode": 0
+      },
+      {
+        "index": 6,
+        "source": "harness-structured-command",
+        "command": "not-exposed-by-harness-v1",
+        "exitCode": 0
+      },
+      {
+        "index": 7,
+        "source": "harness-structured-command",
+        "command": "not-exposed-by-harness-v1",
+        "exitCode": 0
+      },
+      {
+        "index": 8,
+        "source": "harness-structured-command",
+        "command": "not-exposed-by-harness-v1",
+        "exitCode": 1
+      }
+    ],
+    "stdout": "PLAN terminou como `BLOCKED` na validação oficial do candidato.\n\nNenhum artefato foi publicado no SPEC. O bloqueio apontou referências de caminho inválidas no candidato:\n\n- `execution/plan.md`\n- caminho resolvido como `specs/src/cli.mjs`\n\nConforme instruído, não repeti o resultado `BLOCKED` nem iniciei qualquer operação posterior.",
+    "stderr": ""
+  },
+  "preflight": {
+    "state": "EMPTY",
+    "currentFingerprint": "43a4c89d7bdb98401fd3469ec82af6ba32057683f23e5d6250e2186a4081f72a",
+    "legalOperations": [
+      {
+        "operation": "PLAN",
+        "slice": null
+      }
+    ],
+    "normalHandoff": {
+      "workflowSkill": "stnl-execution-planner",
+      "operation": "PLAN",
+      "invocation": "OPERATION=PLAN",
+      "slice": null
+    },
+    "requiredRecoveryHandoff": null,
+    "recoveryTargets": [
+      {
+        "operation": "PLAN",
+        "slice": null,
+        "owner": "empty-workspace",
+        "record": null,
+        "round": null,
+        "retryState": null,
+        "authorityMode": null,
+        "invocation": null,
+        "sameOperationResumeRequired": false
+      }
+    ],
+    "rows": []
+  },
+  "preflightBlocker": null,
+  "official": {
+    "lifecycle": {
+      "status": "ready",
+      "closed": false,
+      "openQuestions": 0,
+      "blockingQuestions": 0,
+      "brokenReferences": 0,
+      "documentaryGaps": 0
+    },
+    "execution": {
+      "state": "EMPTY",
+      "currentFingerprint": "43a4c89d7bdb98401fd3469ec82af6ba32057683f23e5d6250e2186a4081f72a",
+      "legalOperations": [
+        {
+          "operation": "PLAN",
+          "slice": null
+        }
+      ],
+      "normalHandoff": {
+        "workflowSkill": "stnl-execution-planner",
+        "operation": "PLAN",
+        "invocation": "OPERATION=PLAN",
+        "slice": null
+      },
+      "requiredRecoveryHandoff": null,
+      "recoveryTargets": [
+        {
+          "operation": "PLAN",
+          "slice": null,
+          "owner": "empty-workspace",
+          "record": null,
+          "round": null,
+          "retryState": null,
+          "authorityMode": null,
+          "invocation": null,
+          "sameOperationResumeRequired": false
+        }
+      ],
+      "rows": []
+    }
+  },
+  "blockerArtifact": null,
+  "candidateSnapshot": {
+    "gitStatusExit": 0,
+    "changedPaths": [
+      "?? specs/.benchmark-case-a.lifecycle.lock",
+      "?? specs/benchmark-case-a/feature_spec.md",
+      "?? specs/benchmark-case-a/shared/acceptance-criteria.md",
+      "?? specs/benchmark-case-a/shared/requirements.md"
+    ],
+    "diffSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "specExists": true
+  },
+  "journal": {
+    "exitCode": 0,
+    "stdout": "{\"index\":2,\"status\":\"ACTIVE\"}\n",
+    "stderr": ""
+  },
+  "outcome": {
+    "result": "BLOCKED",
+    "blocker": "OFFICIAL_TRANSITION_NOT_OBSERVED"
+  },
+  "durationMs": 135128
+}

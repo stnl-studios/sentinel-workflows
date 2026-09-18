@@ -223,3 +223,11 @@
     with blocker `OFFICIAL_AUXILIARY_BLOCKED`, zero retry, and cleanup `PASS`.
   - The canonical Case A raw was preserved and hashed; B/C were not run.
   - No baseline or gate was promoted, and P0 remains open.
+- `pending user commit` — Production Pilot #11
+  - The versioned Pilot driver v2 ran once against
+    `19b7cde141252f49cce0dde3aef4723a9185830e`; all preconditions passed.
+  - Case A stopped during PLAN with blocker
+    `OFFICIAL_TRANSITION_NOT_OBSERVED`, final execution state `EMPTY`, zero
+    retry, and cleanup `PASS`.
+  - The canonical Case A raw was preserved and hashed; B/C were not run.
+  - No baseline or gate was promoted, and P0 remains open.

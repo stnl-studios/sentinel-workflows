@@ -138,3 +138,21 @@ The canonical raw produced by the driver was preserved byte-for-byte:
 
 Cases B/C were not run. No placeholders were created. The official
 production-v2 baseline remains not established.
+
+## Production Pilot #11
+
+Candidate `19b7cde141252f49cce0dde3aef4723a9185830e` used the versioned Pilot
+driver (`productionPilotDriverVersion=2`) with `production-v2`. Preconditions
+passed. Case A stopped after the `PLAN` operation when official readback
+reported `OFFICIAL_TRANSITION_NOT_OBSERVED`; the final execution state was
+`EMPTY`, retry count was `0`, and cleanup passed.
+
+The canonical raw produced by the driver was preserved byte-for-byte:
+
+- `19b7cde141252f49cce0dde3aef4723a9185830e/case-a-production-v2.json`
+  - status: `BLOCKED`
+  - final execution state: `EMPTY`
+  - SHA-256: `46112cb76b8d9df7a825f92dd5cc9354e4dd5e3a8276b20a8fa5e7da1f935940`
+
+Cases B/C were not run. No placeholders were created. The official
+production-v2 baseline remains not established.
