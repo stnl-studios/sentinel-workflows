@@ -188,4 +188,4 @@ bookkeeping.
 
 ## Resulting commit
 
-`pending user commit`
+`5929e883e7d3bd8f0e6e69ad7544f27990222b03`

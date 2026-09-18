@@ -66,6 +66,9 @@ This directory preserves compact, human-readable engineering evidence for Sentin
 - `s3-benchmark-pilot-09.md` — Production Pilot #9 evidence; all deterministic
   checks passed, but the mandatory one-shot Luna/medium sandbox probe returned
   `PROBE_BLOCKED`, so no Case, reviewer, or raw was created.
+- `s3-sandbox-probe-v1.md` — deterministic one-shot Luna/medium sandbox probe;
+  the exact official doctor command and JSON passed with zero retry, clean
+  checkout integrity, and managed cleanup.
 
 ## P0 Gates
 

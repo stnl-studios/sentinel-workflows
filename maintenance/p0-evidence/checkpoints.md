@@ -199,7 +199,7 @@
     because its `/tmp` workspace path was not canonical on this host.
   - No SPEC, benchmark raw, functional Sentinel diff, retry, PLAN, review, or
     Production Pilot #9 was produced; the P0 ledger remains unchanged.
-- `pending user commit` — Production Pilot #9
+- `5929e883e7d3bd8f0e6e69ad7544f27990222b03` — Production Pilot #9
   - Candidate and functional-equivalence checks plus all deterministic
     repository checks and static Environment/Harness checks passed.
   - The mandatory one-shot Luna/medium sandbox probe used canonical CWD/TMPDIR
@@ -207,3 +207,12 @@
     `PROBE_BLOCKED`.
   - Stop-loss prevented a second probe, Case A, B/C, and the reviewer; no raw,
     baseline, or gate promotion was produced and P0 remains open.
+- `pending user commit` — Sandbox probe v1
+  - The official managed session prepared one Git-backed Case A workspace for
+    infrastructure probing only; canonical CWD/TMPDIR guards passed.
+  - One GPT-5.6-Luna/medium Harness turn executed exactly one official doctor
+    command; exit `0`, official JSON `PASS`, and model result `PROBE_PASS`.
+  - Retry remained zero; workspace cleanliness, checkout integrity, and
+    managed cleanup passed with no functional Sentinel diff.
+  - Production Pilot #10 is authorized directly with the same deterministic
+    probe construction; no additional rehearsal or qualification is required.
