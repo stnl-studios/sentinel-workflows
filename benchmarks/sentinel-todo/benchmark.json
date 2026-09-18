@@ -41,7 +41,7 @@
     }
   },
   "productionPilot": {
-    "driverVersion": 1,
+    "driverVersion": 2,
     "qualification": {
       "harnessContractVersion": 1,
       "providerVersion": "codex-cli 0.154.0",

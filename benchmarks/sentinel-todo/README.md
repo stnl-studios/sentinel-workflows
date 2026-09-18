@@ -220,6 +220,18 @@ or consumption of rounds `2/3` and `3/3`. The official runtime may continue to
 advertise a later manual same-operation recovery after the external cause is
 resolved; that recovery legality is not an automatic benchmark retry.
 
+Production Pilot driver v2 also preserves the blocked slice task artifact at
+`case-x/operations/NN-operation/task-slice-NN.md` before managed-session
+cleanup. Operation evidence and the Case summary record its relative path,
+SHA-256, official blocker, and available recovery record/round. This is a local
+copy only and does not require another model call.
+
+`IMPLEMENTATION_RETRY_EXHAUSTED` and `FINDINGS_RETRY_EXHAUSTED` are not terminal
+for the Case. The driver consumes the runtime's `requiredRecoveryHandoff` and
+runs `VALIDATE_SLICE` for that slice. Normal `VALIDATION_NEEDS_FIX` and
+`FINDINGS_CORRECTED` handoffs continue through `APPLY_FINDINGS` and back to
+`VALIDATE_SLICE`; none of these transitions is an outer retry.
+
 ## Journal and budgets
 
 The journal is an explicit JSON file outside the prepared workspace and SPEC.

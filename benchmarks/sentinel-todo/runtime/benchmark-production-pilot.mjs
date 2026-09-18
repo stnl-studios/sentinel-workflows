@@ -7,7 +7,6 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import {
-  deriveNormalHandoff,
   inspectExecutionState,
   preflightExecutionOperation,
 } from '../../../skills/workflows/stnl-execution-planner/runtime/execution-state.mjs';
@@ -19,7 +18,7 @@ import {
   runDoctor,
 } from './benchmark-environment.mjs';
 
-export const productionPilotDriverVersion = 1;
+export const productionPilotDriverVersion = 2;
 
 const RUNTIME_ROOT = path.dirname(fileURLToPath(import.meta.url));
 const BENCHMARK_ROOT = path.resolve(RUNTIME_ROOT, '..');
@@ -27,8 +26,7 @@ const REPOSITORY_ROOT = path.resolve(BENCHMARK_ROOT, '../..');
 const BENCHMARK_RUNTIME = path.join(RUNTIME_ROOT, 'benchmark.mjs');
 const MANIFEST_PATH = path.join(BENCHMARK_ROOT, 'benchmark.json');
 const BLOCKED_EXECUTION_STATES = new Set([
-  'AUXILIARY_BLOCKED', 'DIVERGENCE_BLOCKED', 'FINDINGS_RETRY_EXHAUSTED',
-  'IMPLEMENTATION_RETRY_EXHAUSTED', 'REPLAN_REQUIRED', 'REQUIREMENTS_CHANGED',
+  'AUXILIARY_BLOCKED', 'DIVERGENCE_BLOCKED', 'REPLAN_REQUIRED', 'REQUIREMENTS_CHANGED',
   'RUNNER_INITIALIZATION_BLOCKED', 'RUNNER_RESULT_BLOCKED', 'VALIDATION_BLOCKED',
 ]);
 const PHASE_BY_OPERATION = Object.freeze({
@@ -184,6 +182,10 @@ export function decideOfficialOutcome({ operation, official, harnessStatus }) {
       return { result: 'NEEDS_FIX', blocker: null };
     }
     if (accepted[operation]?.has(execution?.state)) return { result: 'PASS', blocker: null };
+    if ((operation === 'EXECUTE_SLICE' || operation === 'APPLY_FINDINGS')
+      && execution?.requiredRecoveryHandoff?.operation === 'VALIDATE_SLICE') {
+      return { result: 'PASS', blocker: null };
+    }
   }
   return { result: 'BLOCKED', blocker: 'OFFICIAL_TRANSITION_NOT_OBSERVED' };
 }
@@ -255,15 +257,79 @@ async function recordJournalEvent({ journal, operation, dispatch, result, slice,
   return benchmarkCommand(args);
 }
 
-function nextHandoff(operation, readback) {
+export function nextHandoff(operation, readback) {
   if (readback.executionRaw?.state === 'COMPLETE') return { operation: 'SPEC_READINESS', slice: null };
   if (operation === 'SPEC_READINESS') return { operation: 'SPEC_CLOSE', slice: null };
   if (operation === 'SPEC_CLOSE') return null;
-  const handoff = deriveNormalHandoff(
-    readback.executionRaw,
-    operation === 'SPEC_INIT' ? null : operation,
-  );
-  return handoff === null ? null : { operation: handoff.operation, slice: handoff.slice };
+  const handoff = readback.executionRaw?.requiredRecoveryHandoff
+    ?? readback.executionRaw?.normalHandoff
+    ?? null;
+  return handoff?.operation == null ? null : { operation: handoff.operation, slice: handoff.slice };
+}
+
+function blockerArtifactMetadata({ operation, slice, officialBlocker, recoveryTarget }) {
+  return {
+    slice,
+    operation,
+    officialBlocker,
+    recoveryRecord: recoveryTarget?.record ?? null,
+    recoveryRound: recoveryTarget?.round ?? null,
+  };
+}
+
+export async function preserveAuxiliaryBlockerArtifact({
+  specPath, evidenceDirectory, sequence, operation, slice, officialExecution, officialBlocker,
+}) {
+  const recoveryTarget = officialExecution?.recoveryTargets?.find((target) => (
+    target.owner === 'auxiliary-check' && target.operation === operation && target.slice === slice
+  ));
+  const metadata = blockerArtifactMetadata({ operation, slice, officialBlocker, recoveryTarget });
+  if (slice === null || !/^slice-[0-9]{2,}$/u.test(slice)) {
+    return { status: 'FAILED', path: null, sha256: null, failure: 'INVALID_SLICE', ...metadata };
+  }
+
+  const sourceRelative = path.posix.join('execution', 'tasks', `${slice}.md`);
+  const source = path.join(specPath, 'execution', 'tasks', `${slice}.md`);
+  const sourceMetadata = await fs.lstat(source).catch(() => null);
+  if (sourceMetadata === null) {
+    return { status: 'FAILED', path: null, sha256: null, source: sourceRelative, failure: 'SOURCE_MISSING', ...metadata };
+  }
+  if (!sourceMetadata.isFile() || sourceMetadata.isSymbolicLink()) {
+    return { status: 'FAILED', path: null, sha256: null, source: sourceRelative, failure: 'SOURCE_NOT_REGULAR_FILE', ...metadata };
+  }
+
+  const canonicalSpec = await fs.realpath(specPath).catch(() => null);
+  const canonicalSource = await fs.realpath(source).catch(() => null);
+  const relativeSource = canonicalSpec === null || canonicalSource === null
+    ? '..'
+    : path.relative(canonicalSpec, canonicalSource);
+  if (canonicalSpec === null || canonicalSource === null || path.isAbsolute(relativeSource)
+    || relativeSource === '..' || relativeSource.startsWith(`..${path.sep}`)) {
+    return { status: 'FAILED', path: null, sha256: null, source: sourceRelative, failure: 'SOURCE_OUTSIDE_SPEC', ...metadata };
+  }
+
+  const operationDirectory = `${String(sequence).padStart(2, '0')}-${operation.toLowerCase()}`;
+  const destinationRelative = path.posix.join('operations', operationDirectory, `task-${slice}.md`);
+  const destination = path.join(evidenceDirectory, 'operations', operationDirectory, `task-${slice}.md`);
+  try {
+    const sourceBytes = await fs.readFile(canonicalSource);
+    await fs.mkdir(path.dirname(destination), { recursive: true });
+    await fs.copyFile(canonicalSource, destination, fs.constants.COPYFILE_EXCL);
+    const destinationBytes = await fs.readFile(destination);
+    if (!destinationBytes.equals(sourceBytes)) {
+      return { status: 'FAILED', path: destinationRelative, sha256: null, source: sourceRelative, failure: 'COPY_MISMATCH', ...metadata };
+    }
+    return {
+      status: 'PRESERVED',
+      path: destinationRelative,
+      sha256: sha256(destinationBytes),
+      source: sourceRelative,
+      failure: null,
+      ...metadata,
+    };
+  } catch {
+    return { status: 'FAILED', path: destinationRelative, sha256: null, source: sourceRelative, failure: 'COPY_FAILED', ...metadata };
+  }
 }
 
 async function runOperation(context, target, sequence) {
@@ -312,6 +378,17 @@ async function runOperation(context, target, sequence) {
   if (journalResult.exitCode !== 0 && outcome.result !== 'BLOCKED') {
     outcome = { result: 'BLOCKED', blocker: 'JOURNAL_REJECTED' };
   }
+  const blockerArtifact = official.execution?.state === 'AUXILIARY_BLOCKED'
+    ? await preserveAuxiliaryBlockerArtifact({
+      specPath: context.specPath,
+      evidenceDirectory: context.evidenceDirectory,
+      sequence,
+      operation,
+      slice,
+      officialExecution: official.execution,
+      officialBlocker: outcome.blocker,
+    })
+    : null;
   const evidence = {
     sequence,
     operation,
@@ -334,6 +411,7 @@ async function runOperation(context, target, sequence) {
     preflight,
     preflightBlocker,
     official: { lifecycle: official.lifecycle, execution: official.execution },
+    blockerArtifact,
     candidateSnapshot: await workspaceSnapshot(context.workspace, context.specPath),
     journal: {
       exitCode: journalResult.exitCode,
@@ -345,6 +423,26 @@ async function runOperation(context, target, sequence) {
   };
   await writeJson(path.join(context.evidenceDirectory, 'operations', `${String(sequence).padStart(2, '0')}-${operation.toLowerCase()}.json`), evidence);
   return { outcome, readback: official, evidence };
+}
+
+export async function runPilotOperationLoop({ maxWorkflowEvents, executeOperation, initialTarget = { operation: 'SPEC_INIT', slice: null } }) {
+  let target = initialTarget;
+  let terminal = null;
+  let sequence = 0;
+  let blockerArtifact = null;
+  while (target !== null) {
+    sequence += 1;
+    if (sequence > maxWorkflowEvents) {
+      terminal = { result: 'BLOCKED', blocker: 'DRIVER_EVENT_LIMIT' };
+      break;
+    }
+    const completed = await executeOperation(target, sequence);
+    terminal = completed.outcome;
+    blockerArtifact = completed.evidence?.blockerArtifact ?? blockerArtifact;
+    if (completed.outcome.result === 'BLOCKED' || completed.outcome.result === 'FAIL') break;
+    target = nextHandoff(target.operation, completed.readback);
+  }
+  return { terminal, operations: sequence, retryCount: 0, blockerArtifact };
 }
 
 export async function finalizeAndPreserve({ finalize, rawPath, destination, expectedCaseId, expectedProfileId }) {
@@ -401,20 +499,11 @@ async function runCase(caseId, options, dependencies = {}) {
       caseId, configuration, evidenceDirectory, journal, requirementsPath, session, specPath, workspace,
       runHarness: dependencies.runHarness ?? runHarness,
     };
-    let target = { operation: 'SPEC_INIT', slice: null };
-    let terminal = null;
-    let sequence = 0;
-    while (target !== null) {
-      sequence += 1;
-      if (sequence > caseConfiguration.budgets.maxWorkflowEvents) {
-        terminal = { result: 'BLOCKED', blocker: 'DRIVER_EVENT_LIMIT' };
-        break;
-      }
-      const operation = await runOperation(context, target, sequence);
-      terminal = operation.outcome;
-      if (operation.outcome.result === 'BLOCKED' || operation.outcome.result === 'FAIL') break;
-      target = nextHandoff(target.operation, operation.readback);
-    }
+    const operationRun = await runPilotOperationLoop({
+      maxWorkflowEvents: caseConfiguration.budgets.maxWorkflowEvents,
+      executeOperation: (target, sequence) => runOperation(context, target, sequence),
+    });
+    const terminal = operationRun.terminal;
 
     const rawPath = path.join(session.results, `case-${caseId.toLowerCase()}-production-v2.json`);
     const destination = path.join(options.output, path.basename(rawPath));
@@ -444,8 +533,9 @@ async function runCase(caseId, options, dependencies = {}) {
         stdout: sanitizeText(preserved.finalizer.stdout, [workspace, session.root, REPOSITORY_ROOT]),
         stderr: sanitizeText(preserved.finalizer.stderr, [workspace, session.root, REPOSITORY_ROOT]),
       },
-      operations: sequence,
-      retryCount: 0,
+      operations: operationRun.operations,
+      retryCount: operationRun.retryCount,
+      blockerArtifact: operationRun.blockerArtifact,
     };
   } catch (error) {
     result = {

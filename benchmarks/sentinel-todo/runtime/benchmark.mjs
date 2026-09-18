@@ -138,7 +138,7 @@ function assertManifest(configuration) {
     throw new CliError('manifest seed or profile identity is invalid');
   }
   const qualification = configuration.productionPilot?.qualification;
-  if (configuration.productionPilot?.driverVersion !== 1
+  if (configuration.productionPilot?.driverVersion !== 2
     || qualification?.harnessContractVersion !== 1
     || !/^codex-cli \S+$/u.test(qualification?.providerVersion ?? '')
     || !/^[0-9a-f]{64}$/u.test(qualification?.capabilitiesHash ?? '')
