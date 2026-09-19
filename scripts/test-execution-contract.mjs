@@ -18,6 +18,7 @@ import {
   validateExecutionCandidate,
   workflowSkillForOperation,
 } from "../skills/workflows/stnl-slice-quality-manager/runtime/execution-state.mjs";
+import { resolveExecutionWorkspace as resolveMaterializerExecutionWorkspace } from "../skills/workflows/stnl-task-materializer/runtime/execution-state.mjs";
 import { EXECUTION_OPERATION_SKILLS, WORKFLOW_OPERATIONS } from "./lib/skill-registry.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
@@ -85,6 +86,14 @@ async function standaloneWorkspace(t, { count = 1 } = {}) {
   await fs.writeFile(requirements, "# Requirements\n\n- AC-001: observable behavior\n", "utf8");
   const execution = path.join(root, "requirements-execution");
   return { root, requirements, execution, count };
+}
+
+async function rebasePlanClaimToTask({ specPath, planArtifact, planClaim, slice = "01" }) {
+  const { executionRoot } = await resolveMaterializerExecutionWorkspace(specPath);
+  const physicalTarget = path.resolve(path.dirname(planArtifact), planClaim);
+  const taskPath = path.join(executionRoot, "tasks", `slice-${slice}.md`);
+  const taskClaim = path.relative(path.dirname(taskPath), physicalTarget).split(path.sep).join("/");
+  return { executionRoot, physicalTarget, taskPath, taskClaim };
 }
 
 function headerReady(text) {
@@ -1587,8 +1596,13 @@ test("Pilot #11 planning claims use the containing artifact basis", async (t) =>
 test("materialization and task-review gates preserve valid future artifact-relative paths", async (t) => {
   const materializerSkill = await fs.readFile(path.join(ROOT, "skills/workflows/stnl-task-materializer/SKILL.md"), "utf8");
   const materializerPrompt = await fs.readFile(path.join(ROOT, "templates/prompts/execution-tasks.md"), "utf8");
-  assert.match(materializerSkill, /recompute the task claim mechanically as `path\.relative\(path\.dirname\(path\.join\(SPEC_PATH, "execution", "tasks", "slice-NN\.md"\)\), physicalTarget\)`/u);
-  assert.match(materializerPrompt, /recalcule o claim a partir do próprio arquivo/u);
+  for (const contract of [materializerSkill, materializerPrompt]) {
+    assert.match(contract, /resolveExecutionWorkspace\(SPEC_PATH\)/u);
+    assert.match(contract, /taskPath = path\.join\(executionRoot, "tasks", "slice-NN\.md"\)/u);
+    assert.doesNotMatch(contract, /path\.join\(SPEC_PATH, "execution"/u);
+    assert.doesNotMatch(contract, /SPEC_PATH\/execution\/tasks/u);
+    assert.doesNotMatch(contract, /benchmark-case-a|todo-service\.mjs/u);
+  }
 
   const planOnly = await nestedLifecycleWorkspace(t, { materialized: false, planStatus: "ready" });
   await setImplementationAreas(planOnly, { global: "scripts/validate.sh" });
@@ -1635,6 +1649,90 @@ test("materialization and task-review gates preserve valid future artifact-relat
     /resolves inside the lifecycle SPEC workspace/u,
   );
   assert.deepEqual(await fs.readFile(path.join(fixture.execution, "tasks/slice-01.md")), invalidTaskBefore);
+});
+
+test("materializer rebases PLAN claims from the official execution workspace for every SPEC_PATH form", async (t) => {
+  const lifecycle = await nestedLifecycleWorkspace(t);
+  const lifecycleFeature = path.join(lifecycle.requirements, "feature_spec.md");
+  const physicalTarget = path.join(lifecycle.repository, "src/example.txt");
+  const planArtifact = path.join(lifecycle.execution, "plan.md");
+  const planClaim = path.relative(path.dirname(planArtifact), physicalTarget).split(path.sep).join("/");
+
+  const directoryRebase = await rebasePlanClaimToTask({
+    specPath: lifecycle.requirements,
+    planArtifact,
+    planClaim,
+  });
+  assert.equal(directoryRebase.executionRoot, lifecycle.execution, "R1 lifecycle directory executionRoot");
+  assert.equal(directoryRebase.taskPath, path.join(lifecycle.execution, "tasks/slice-01.md"), "R1 lifecycle directory taskPath");
+  assert.equal(path.resolve(path.dirname(directoryRebase.taskPath), directoryRebase.taskClaim), physicalTarget, "R1 task claim resolves to the PLAN physical target");
+  assert.notEqual(directoryRebase.taskClaim, planClaim, "R4 PLAN and TASK claims use different artifact bases");
+  assert.equal(path.resolve(path.dirname(planArtifact), planClaim), physicalTarget, "R4 PLAN claim resolves to the physical target");
+
+  const directoryCandidate = await copyDirectory(lifecycle.execution, path.join(path.dirname(lifecycle.repository), "directory-form-candidate"));
+  await setImplementationAreas({ ...lifecycle, execution: directoryCandidate }, {
+    global: planClaim,
+    task: directoryRebase.taskClaim,
+  });
+  assert.equal((await validateExecutionCandidate(lifecycle.requirements, directoryCandidate)).state, "MATERIALIZED_PRISTINE", "R1 lifecycle directory candidate");
+
+  const directRebase = await rebasePlanClaimToTask({
+    specPath: lifecycleFeature,
+    planArtifact,
+    planClaim,
+  });
+  assert.equal(directRebase.executionRoot, lifecycle.execution, "R2 direct feature_spec.md executionRoot");
+  assert.equal(directRebase.taskPath, directoryRebase.taskPath, "R2 direct feature_spec.md taskPath matches directory form");
+  assert.equal(path.resolve(path.dirname(directRebase.taskPath), directRebase.taskClaim), physicalTarget, "R2 direct feature_spec.md claim resolves to the physical target");
+  const directCandidate = await copyDirectory(lifecycle.execution, path.join(path.dirname(lifecycle.repository), "direct-form-candidate"));
+  await setImplementationAreas({ ...lifecycle, execution: directCandidate }, { task: directRebase.taskClaim });
+  assert.equal((await validateExecutionCandidate(lifecycleFeature, directCandidate)).state, "MATERIALIZED_PRISTINE", "R2 direct feature_spec.md candidate");
+
+  const copiedPlanCandidate = await copyDirectory(lifecycle.execution, path.join(path.dirname(lifecycle.repository), "copied-plan-basis-candidate"));
+  await setImplementationAreas({ ...lifecycle, execution: copiedPlanCandidate }, { task: planClaim });
+  await assert.rejects(validateExecutionCandidate(lifecycleFeature, copiedPlanCandidate), /artifact-relative implementation path/u, "R5 copied PLAN basis remains invalid for TASK validation");
+
+  const legacyDirectTaskPath = path.join(lifecycleFeature, "execution", "tasks", "slice-01.md");
+  const legacyDirectClaim = path.relative(path.dirname(legacyDirectTaskPath), physicalTarget).split(path.sep).join("/");
+  assert.notEqual(legacyDirectClaim, directRebase.taskClaim, "R2 old SPEC_PATH/execution basis differs for direct feature_spec.md");
+  const legacyDirectCandidate = await copyDirectory(lifecycle.execution, path.join(path.dirname(lifecycle.repository), "legacy-direct-candidate"));
+  await setImplementationAreas({ ...lifecycle, execution: legacyDirectCandidate }, { task: legacyDirectClaim });
+  await assert.rejects(validateExecutionCandidate(lifecycleFeature, legacyDirectCandidate), /artifact-relative implementation path/u, "R2 old direct-file basis is rejected");
+
+  const standaloneRoot = await temporary(t, "stnl-materializer-standalone-");
+  const standaloneRepository = path.join(standaloneRoot, "repository");
+  await fs.mkdir(path.join(standaloneRepository, ".git"), { recursive: true });
+  const standaloneRequirements = path.join(standaloneRepository, "requirements/feature-x.md");
+  await fs.mkdir(path.dirname(standaloneRequirements), { recursive: true });
+  await fs.writeFile(standaloneRequirements, "# Requirements\n\n- AC-001: observable behavior\n", "utf8");
+  const standalone = {
+    root: standaloneRepository,
+    repository: standaloneRepository,
+    requirements: standaloneRequirements,
+    execution: path.join(path.dirname(standaloneRequirements), "feature-x-execution"),
+  };
+  await renderArtifacts(standalone);
+  const standaloneTarget = path.join(standaloneRepository, "src/example.txt");
+  const standalonePlan = path.join(standalone.execution, "plan.md");
+  const standalonePlanClaim = path.relative(path.dirname(standalonePlan), standaloneTarget).split(path.sep).join("/");
+  const standaloneRebase = await rebasePlanClaimToTask({
+    specPath: standaloneRequirements,
+    planArtifact: standalonePlan,
+    planClaim: standalonePlanClaim,
+  });
+  assert.equal(standaloneRebase.executionRoot, standalone.execution, "R3 standalone requirements executionRoot");
+  assert.equal(standaloneRebase.taskPath, path.join(standalone.execution, "tasks/slice-01.md"), "R3 standalone requirements taskPath");
+  assert.equal(path.resolve(path.dirname(standaloneRebase.taskPath), standaloneRebase.taskClaim), standaloneTarget, "R3 standalone claim resolves to the physical target");
+  const standaloneCandidate = await copyDirectory(standalone.execution, path.join(standaloneRoot, "standalone-form-candidate"));
+  await setImplementationAreas({ ...standalone, execution: standaloneCandidate }, { task: standaloneRebase.taskClaim });
+  assert.equal((await validateExecutionCandidate(standaloneRequirements, standaloneCandidate)).state, "MATERIALIZED_PRISTINE", "R3 standalone requirements candidate");
+
+  const legacyStandaloneTaskPath = path.join(standaloneRequirements, "execution", "tasks", "slice-01.md");
+  const legacyStandaloneClaim = path.relative(path.dirname(legacyStandaloneTaskPath), standaloneTarget).split(path.sep).join("/");
+  assert.notEqual(legacyStandaloneClaim, standaloneRebase.taskClaim, "R3 old SPEC_PATH/execution basis differs for standalone requirements");
+  const legacyStandaloneCandidate = await copyDirectory(standalone.execution, path.join(standaloneRoot, "legacy-standalone-candidate"));
+  await setImplementationAreas({ ...standalone, execution: legacyStandaloneCandidate }, { task: legacyStandaloneClaim });
+  await assert.rejects(validateExecutionCandidate(standaloneRequirements, legacyStandaloneCandidate), /artifact-relative implementation path/u, "R3 old standalone-file basis is rejected");
 });
 
 test("standalone path basis, Unicode, future targets, and symlink safety stay deterministic", async (t) => {
