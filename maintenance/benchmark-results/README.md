@@ -159,12 +159,18 @@ production-v2 baseline remains not established.
 
 ## Production Pilot #12
 
-Candidate `f5240116feac9b9847beaf956307da69c58fbf42` did not enter the Pilot.
-Its post-commit audit found that the new task-materialization path formula
-assumes directory-form `SPEC_PATH` and conflicts with the official execution
-workspace resolution for direct `feature_spec.md` and standalone requirements
-files.
+Candidate `84ea82fef528487b0d3b0472def1199c277b340e` used the versioned Pilot
+driver (`driverVersion=2`) with `production-v2`. Preconditions passed. Case A
+blocked at operation 8 (`EXECUTE_SLICE`, `slice-02`) with
+`OFFICIAL_TRANSITION_NOT_OBSERVED`; retry count was `0`, cleanup passed, and
+the driver preserved no causal blocker artifact.
 
-The audit stop-loss prevented all provider/model/Harness calls and all Cases.
-No Pilot #12 raw, case summary, operation evidence, or placeholder was created.
-The official production-v2 baseline remains not established.
+The canonical Case A raw was preserved byte-for-byte:
+
+- `84ea82fef528487b0d3b0472def1199c277b340e/case-a-production-v2.json`
+  - status: `BLOCKED`
+  - final execution state: `EXECUTION_STARTED`
+  - SHA-256: `c416b19ef4bf147ad87deb190987b3fc88656f6ffc8154bae11b42f357ff2631`
+
+Cases B/C were not run. No baseline or gate was promoted; the official
+production-v2 baseline remains not established.

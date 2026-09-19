@@ -75,6 +75,12 @@ This directory preserves compact, human-readable engineering evidence for Sentin
 - `s3-benchmark-pilot-11.md` — Production Pilot #11 evidence; preconditions
   passed, Case A stopped at `OFFICIAL_TRANSITION_NOT_OBSERVED` during PLAN,
   the canonical raw was preserved, and B/C were not run.
+- `s3-benchmark-pilot-12.md` — Production Pilot #12 evidence; preconditions
+  passed, Case A stopped at `OFFICIAL_TRANSITION_NOT_OBSERVED` during
+  `EXECUTE_SLICE`, the canonical raw and minimal blocker artifacts were
+  preserved, and B/C were not run.
+- `s3-benchmark-pilot-12-artifacts/` — Pilot #12 summary, Case A summary, and
+  terminal operation evidence.
 - `s3-post-commit-audit-f524011.md` — blocked audit of the published path
   correction; task rebasing assumes directory-form `SPEC_PATH`, so Production
   Pilot #12 was not run.

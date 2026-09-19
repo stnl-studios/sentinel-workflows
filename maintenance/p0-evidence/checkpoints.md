@@ -238,3 +238,11 @@
     the supported direct `feature_spec.md` and standalone requirements forms.
   - The audit stopped before local tests and Production Pilot #12; no raw or
     Pilot evidence was created, no gate was promoted, and P0 remains open.
+- `pending user commit` — Production Pilot #12
+  - The versioned Pilot driver ran exactly once against
+    `84ea82fef528487b0d3b0472def1199c277b340e`; preconditions passed.
+  - Case A stopped at operation 8 (`EXECUTE_SLICE`, `slice-02`) with
+    `OFFICIAL_TRANSITION_NOT_OBSERVED`, zero retry, and cleanup `PASS`.
+  - The canonical Case A raw and only the minimal summary/case/terminal
+    operation artifacts were preserved; B/C were not run.
+  - No baseline or gate was promoted; P0 remains open.

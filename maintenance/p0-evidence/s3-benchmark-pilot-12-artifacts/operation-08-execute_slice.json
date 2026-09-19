@@ -1,0 +1,384 @@
+{
+  "sequence": 8,
+  "operation": "EXECUTE_SLICE",
+  "slice": "slice-02",
+  "renderedSlice": "2",
+  "dispatch": {
+    "phase": "EXECUTE",
+    "model": "GPT-5.6-Luna",
+    "effort": "high"
+  },
+  "harness": {
+    "status": "HARNESS_COMPLETED",
+    "requestedModel": "GPT-5.6-Luna",
+    "requestedEffort": "high",
+    "retryCount": 0,
+    "sessionStarted": true,
+    "turnStarted": true,
+    "commandLedger": [
+      {
+        "index": 1,
+        "source": "harness-structured-command",
+        "command": "not-exposed-by-harness-v1",
+        "exitCode": 0
+      },
+      {
+        "index": 2,
+        "source": "harness-structured-command",
+        "command": "not-exposed-by-harness-v1",
+        "exitCode": 0
+      },
+      {
+        "index": 3,
+        "source": "harness-structured-command",
+        "command": "not-exposed-by-harness-v1",
+        "exitCode": 0
+      },
+      {
+        "index": 4,
+        "source": "harness-structured-command",
+        "command": "not-exposed-by-harness-v1",
+        "exitCode": 0
+      },
+      {
+        "index": 5,
+        "source": "harness-structured-command",
+        "command": "not-exposed-by-harness-v1",
+        "exitCode": 0
+      },
+      {
+        "index": 6,
+        "source": "harness-structured-command",
+        "command": "not-exposed-by-harness-v1",
+        "exitCode": 0
+      },
+      {
+        "index": 7,
+        "source": "harness-structured-command",
+        "command": "not-exposed-by-harness-v1",
+        "exitCode": 0
+      },
+      {
+        "index": 8,
+        "source": "harness-structured-command",
+        "command": "not-exposed-by-harness-v1",
+        "exitCode": 0
+      },
+      {
+        "index": 9,
+        "source": "harness-structured-command",
+        "command": "not-exposed-by-harness-v1",
+        "exitCode": 0
+      },
+      {
+        "index": 10,
+        "source": "harness-structured-command",
+        "command": "not-exposed-by-harness-v1",
+        "exitCode": 0
+      },
+      {
+        "index": 11,
+        "source": "harness-structured-command",
+        "command": "not-exposed-by-harness-v1",
+        "exitCode": 0
+      },
+      {
+        "index": 12,
+        "source": "harness-structured-command",
+        "command": "not-exposed-by-harness-v1",
+        "exitCode": 0
+      },
+      {
+        "index": 13,
+        "source": "harness-structured-command",
+        "command": "not-exposed-by-harness-v1",
+        "exitCode": 0
+      },
+      {
+        "index": 14,
+        "source": "harness-structured-command",
+        "command": "not-exposed-by-harness-v1",
+        "exitCode": 0
+      },
+      {
+        "index": 15,
+        "source": "harness-structured-command",
+        "command": "not-exposed-by-harness-v1",
+        "exitCode": 0
+      },
+      {
+        "index": 16,
+        "source": "harness-structured-command",
+        "command": "not-exposed-by-harness-v1",
+        "exitCode": 0
+      },
+      {
+        "index": 17,
+        "source": "harness-structured-command",
+        "command": "not-exposed-by-harness-v1",
+        "exitCode": 0
+      },
+      {
+        "index": 18,
+        "source": "harness-structured-command",
+        "command": "not-exposed-by-harness-v1",
+        "exitCode": 0
+      },
+      {
+        "index": 19,
+        "source": "harness-structured-command",
+        "command": "not-exposed-by-harness-v1",
+        "exitCode": 0
+      },
+      {
+        "index": 20,
+        "source": "harness-structured-command",
+        "command": "not-exposed-by-harness-v1",
+        "exitCode": 0
+      },
+      {
+        "index": 21,
+        "source": "harness-structured-command",
+        "command": "not-exposed-by-harness-v1",
+        "exitCode": 0
+      },
+      {
+        "index": 22,
+        "source": "harness-structured-command",
+        "command": "not-exposed-by-harness-v1",
+        "exitCode": 0
+      },
+      {
+        "index": 23,
+        "source": "harness-structured-command",
+        "command": "not-exposed-by-harness-v1",
+        "exitCode": 0
+      },
+      {
+        "index": 24,
+        "source": "harness-structured-command",
+        "command": "not-exposed-by-harness-v1",
+        "exitCode": 1
+      },
+      {
+        "index": 25,
+        "source": "harness-structured-command",
+        "command": "not-exposed-by-harness-v1",
+        "exitCode": 1
+      },
+      {
+        "index": 26,
+        "source": "harness-structured-command",
+        "command": "not-exposed-by-harness-v1",
+        "exitCode": 0
+      },
+      {
+        "index": 27,
+        "source": "harness-structured-command",
+        "command": "not-exposed-by-harness-v1",
+        "exitCode": 0
+      },
+      {
+        "index": 28,
+        "source": "harness-structured-command",
+        "command": "not-exposed-by-harness-v1",
+        "exitCode": 0
+      },
+      {
+        "index": 29,
+        "source": "harness-structured-command",
+        "command": "not-exposed-by-harness-v1",
+        "exitCode": 0
+      },
+      {
+        "index": 30,
+        "source": "harness-structured-command",
+        "command": "not-exposed-by-harness-v1",
+        "exitCode": 0
+      },
+      {
+        "index": 31,
+        "source": "harness-structured-command",
+        "command": "not-exposed-by-harness-v1",
+        "exitCode": 0
+      }
+    ],
+    "stdout": "`EXECUTE_SLICE` na `slice-02` ficou bloqueado antes da publicação do artifact.\n\n- Preflight: PASS; autoridade `sha256:18b8afeb0b565fa1141adcee00468ddbad17f43fb886824ed98d45441b0388d5`\n- Runner: `TESTS_PASS`, rodada `1/3`\n- Candidate validation: `BLOCKED` (exit 1)\n  - `.../specs/benchmark-case-a/execution/tasks/slice-01.md`\n  - `.../test/cli.test.mjs`\n\nNenhum registro live foi publicado; não iniciei retry, validação formal ou operação posterior.",
+    "stderr": ""
+  },
+  "preflight": {
+    "state": "EXECUTION_STARTED",
+    "currentFingerprint": "18b8afeb0b565fa1141adcee00468ddbad17f43fb886824ed98d45441b0388d5",
+    "legalOperations": [
+      {
+        "operation": "REPLAN",
+        "slice": null
+      },
+      {
+        "operation": "EXECUTE_SLICE",
+        "slice": "slice-02"
+      }
+    ],
+    "normalHandoff": {
+      "workflowSkill": "stnl-slice-executor",
+      "operation": "EXECUTE_SLICE",
+      "invocation": "OPERATION=EXECUTE_SLICE",
+      "slice": "slice-02"
+    },
+    "requiredRecoveryHandoff": null,
+    "recoveryTargets": [
+      {
+        "operation": "EXECUTE_SLICE",
+        "slice": "slice-02",
+        "owner": "serial-frontier",
+        "record": null,
+        "round": null,
+        "retryState": null,
+        "authorityMode": null,
+        "invocation": null,
+        "sameOperationResumeRequired": false
+      },
+      {
+        "operation": "REPLAN",
+        "slice": null,
+        "owner": "execution-history",
+        "record": null,
+        "round": null,
+        "retryState": null,
+        "authorityMode": null,
+        "invocation": null,
+        "sameOperationResumeRequired": false
+      }
+    ],
+    "rows": [
+      {
+        "slice": "slice-01",
+        "done": true,
+        "result": "PASS"
+      },
+      {
+        "slice": "slice-02",
+        "done": false,
+        "result": "pending"
+      },
+      {
+        "slice": "slice-03",
+        "done": false,
+        "result": "pending"
+      }
+    ]
+  },
+  "preflightBlocker": null,
+  "official": {
+    "lifecycle": {
+      "status": "ready",
+      "closed": false,
+      "openQuestions": 0,
+      "blockingQuestions": 0,
+      "brokenReferences": 0,
+      "documentaryGaps": 0
+    },
+    "execution": {
+      "state": "EXECUTION_STARTED",
+      "currentFingerprint": "18b8afeb0b565fa1141adcee00468ddbad17f43fb886824ed98d45441b0388d5",
+      "legalOperations": [
+        {
+          "operation": "REPLAN",
+          "slice": null
+        },
+        {
+          "operation": "EXECUTE_SLICE",
+          "slice": "slice-02"
+        }
+      ],
+      "normalHandoff": {
+        "workflowSkill": "stnl-slice-executor",
+        "operation": "EXECUTE_SLICE",
+        "invocation": "OPERATION=EXECUTE_SLICE",
+        "slice": "slice-02"
+      },
+      "requiredRecoveryHandoff": null,
+      "recoveryTargets": [
+        {
+          "operation": "EXECUTE_SLICE",
+          "slice": "slice-02",
+          "owner": "serial-frontier",
+          "record": null,
+          "round": null,
+          "retryState": null,
+          "authorityMode": null,
+          "invocation": null,
+          "sameOperationResumeRequired": false
+        },
+        {
+          "operation": "REPLAN",
+          "slice": null,
+          "owner": "execution-history",
+          "record": null,
+          "round": null,
+          "retryState": null,
+          "authorityMode": null,
+          "invocation": null,
+          "sameOperationResumeRequired": false
+        }
+      ],
+      "rows": [
+        {
+          "slice": "slice-01",
+          "done": true,
+          "result": "PASS"
+        },
+        {
+          "slice": "slice-02",
+          "done": false,
+          "result": "pending"
+        },
+        {
+          "slice": "slice-03",
+          "done": false,
+          "result": "pending"
+        }
+      ]
+    }
+  },
+  "blockerArtifact": null,
+  "candidateSnapshot": {
+    "gitStatusExit": 0,
+    "changedPaths": [
+      " M src/cli.mjs",
+      " M test/cli.test.mjs",
+      "?? .sentinel-validation-candidate/plan.md",
+      "?? .sentinel-validation-candidate/plans/slice-01.md",
+      "?? .sentinel-validation-candidate/plans/slice-02.md",
+      "?? .sentinel-validation-candidate/plans/slice-03.md",
+      "?? .sentinel-validation-candidate/tasks.md",
+      "?? .sentinel-validation-candidate/tasks/slice-01.md",
+      "?? .sentinel-validation-candidate/tasks/slice-02.md",
+      "?? .sentinel-validation-candidate/tasks/slice-03.md",
+      "?? specs/.benchmark-case-a.lifecycle.lock",
+      "?? specs/benchmark-case-a/execution/plan.md",
+      "?? specs/benchmark-case-a/execution/plans/slice-01.md",
+      "?? specs/benchmark-case-a/execution/plans/slice-02.md",
+      "?? specs/benchmark-case-a/execution/plans/slice-03.md",
+      "?? specs/benchmark-case-a/execution/tasks.md",
+      "?? specs/benchmark-case-a/execution/tasks/slice-01.md",
+      "?? specs/benchmark-case-a/execution/tasks/slice-02.md",
+      "?? specs/benchmark-case-a/execution/tasks/slice-03.md",
+      "?? specs/benchmark-case-a/feature_spec.md",
+      "?? specs/benchmark-case-a/shared/acceptance-criteria.md",
+      "?? specs/benchmark-case-a/shared/requirements.md"
+    ],
+    "diffSha256": "815d6bd5c2bb1f75981f9dfbc92952b554c2ca1d8fb5402ac4fe64e70aefcac8",
+    "specExists": true
+  },
+  "journal": {
+    "exitCode": 0,
+    "stdout": "{\"index\":8,\"status\":\"ACTIVE\"}\n",
+    "stderr": ""
+  },
+  "outcome": {
+    "result": "BLOCKED",
+    "blocker": "OFFICIAL_TRANSITION_NOT_OBSERVED"
+  },
+  "durationMs": 514168
+}
