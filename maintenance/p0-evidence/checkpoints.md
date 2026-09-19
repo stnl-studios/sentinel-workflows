@@ -231,3 +231,10 @@
     retry, and cleanup `PASS`.
   - The canonical Case A raw was preserved and hashed; B/C were not run.
   - No baseline or gate was promoted, and P0 remains open.
+- `pending user commit` — post-commit audit of `f524011`
+  - Branch, HEAD, parent, published remote ref, clean worktree, diff file set,
+    and initial `git diff --check` matched the required audit base.
+  - The materializer's new `SPEC_PATH/execution/tasks/...` basis is invalid for
+    the supported direct `feature_spec.md` and standalone requirements forms.
+  - The audit stopped before local tests and Production Pilot #12; no raw or
+    Pilot evidence was created, no gate was promoted, and P0 remains open.

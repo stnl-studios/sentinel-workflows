@@ -156,3 +156,15 @@ The canonical raw produced by the driver was preserved byte-for-byte:
 
 Cases B/C were not run. No placeholders were created. The official
 production-v2 baseline remains not established.
+
+## Production Pilot #12
+
+Candidate `f5240116feac9b9847beaf956307da69c58fbf42` did not enter the Pilot.
+Its post-commit audit found that the new task-materialization path formula
+assumes directory-form `SPEC_PATH` and conflicts with the official execution
+workspace resolution for direct `feature_spec.md` and standalone requirements
+files.
+
+The audit stop-loss prevented all provider/model/Harness calls and all Cases.
+No Pilot #12 raw, case summary, operation evidence, or placeholder was created.
+The official production-v2 baseline remains not established.
