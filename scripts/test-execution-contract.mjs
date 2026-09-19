@@ -260,8 +260,8 @@ async function appendRecoveryPlan(fixture, oldHash, newHash, { ready = false, su
     let result = reviseAuthority(value, oldHash, newHash, 1, 2).replace("status: ready", `status: ${ready ? "ready" : "draft"}`).replace("- Review state: approved", `- Review state: ${ready ? "approved" : "pending"}`);
     result = result.replace("- Objective: Deliver observable behavior", `- Revision mode: append-only-extension\n- Replan reason: requirements or integration authority changed\n- Supersedes open slices: ${supersedes}\n- Objective: Deliver observable behavior`);
     return result.replace(
-      "| 01 - Delivery | observable result | - | AC-001 | Filesystem path: `../src/example.txt`; example implementation (plain-text description) | plans/slice-01.md |",
-      "| 01 - Delivery | observable result | - | AC-001 | Filesystem path: `../src/example.txt`; example implementation (plain-text description) | plans/slice-01.md |\n| 02 - Recovery | reconciled result | 01 | AC-001 | Filesystem path: `../src/example.txt`; example implementation (plain-text description) | plans/slice-02.md |",
+      "| 01 - Delivery | observable result | - | AC-001 | Implementation filesystem path (outside generated execution artifacts): `../src/example.txt`; example implementation (plain-text description) | plans/slice-01.md |",
+      "| 01 - Delivery | observable result | - | AC-001 | Implementation filesystem path (outside generated execution artifacts): `../src/example.txt`; example implementation (plain-text description) | plans/slice-01.md |\n| 02 - Recovery | reconciled result | 01 | AC-001 | Implementation filesystem path (outside generated execution artifacts): `../src/example.txt`; example implementation (plain-text description) | plans/slice-02.md |",
     );
   });
   // Historical plan/task authority remains immutable.
@@ -302,8 +302,8 @@ async function commitAppendRecovery(fixture, oldHash, newHash, { resolveDivergen
 
 async function addSecondPristineSlice(fixture) {
   await editPlan(fixture, (value) => value.replace(
-    "| 01 - Delivery | observable result | - | AC-001 | Filesystem path: `../src/example.txt`; example implementation (plain-text description) | plans/slice-01.md |",
-    "| 01 - Delivery | observable result | - | AC-001 | Filesystem path: `../src/example.txt`; example implementation (plain-text description) | plans/slice-01.md |\n| 02 - Later | later result | 01 | AC-001 | Filesystem path: `../src/later.txt`; later implementation (plain-text description) | plans/slice-02.md |",
+    "| 01 - Delivery | observable result | - | AC-001 | Implementation filesystem path (outside generated execution artifacts): `../src/example.txt`; example implementation (plain-text description) | plans/slice-01.md |",
+    "| 01 - Delivery | observable result | - | AC-001 | Implementation filesystem path (outside generated execution artifacts): `../src/example.txt`; example implementation (plain-text description) | plans/slice-01.md |\n| 02 - Later | later result | 01 | AC-001 | Implementation filesystem path (outside generated execution artifacts): `../src/later.txt`; later implementation (plain-text description) | plans/slice-02.md |",
   ));
   const plan = (await fs.readFile(path.join(fixture.execution, "plans/slice-01.md"), "utf8"))
     .replaceAll("Slice 01", "Slice 02").replaceAll("- Slice: 01", "- Slice: 02").replaceAll("Delivery", "Later");
@@ -325,8 +325,8 @@ async function stageThirdRecovery(fixture, authority, { ready = false } = {}) {
     .replace("Review state: approved", `Review state: ${ready ? "approved" : "pending"}`)
     .replace("- Supersedes open slices: slice-01 -> slice-02", "- Supersedes open slices: slice-02 -> slice-03")
     .replace(
-      "| 02 - Recovery | reconciled result | 01 | AC-001 | Filesystem path: `../src/example.txt`; example implementation (plain-text description) | plans/slice-02.md |",
-      "| 02 - Recovery | reconciled result | 01 | AC-001 | Filesystem path: `../src/example.txt`; example implementation (plain-text description) | plans/slice-02.md |\n| 03 - Recovery | reconciled result | 02 | AC-001 | Filesystem path: `../src/example.txt`; example implementation (plain-text description) | plans/slice-03.md |",
+      "| 02 - Recovery | reconciled result | 01 | AC-001 | Implementation filesystem path (outside generated execution artifacts): `../src/example.txt`; example implementation (plain-text description) | plans/slice-02.md |",
+      "| 02 - Recovery | reconciled result | 01 | AC-001 | Implementation filesystem path (outside generated execution artifacts): `../src/example.txt`; example implementation (plain-text description) | plans/slice-02.md |\n| 03 - Recovery | reconciled result | 02 | AC-001 | Implementation filesystem path (outside generated execution artifacts): `../src/example.txt`; example implementation (plain-text description) | plans/slice-03.md |",
     ));
   let plan = await fs.readFile(path.join(fixture.execution, "plans/slice-02.md"), "utf8");
   plan = plan.replaceAll("Slice 02", "Slice 03").replaceAll("- Slice: 02", "- Slice: 03")
@@ -599,6 +599,15 @@ test("every touched model-authored execution writer requires candidate validatio
     assert.match(source, /contract\/model(?:-| )(?:enforced|enforcement|owned)/u, skill);
     assert.match(source, /strict(?:ly)? read(?:back| back)/u, skill);
     assert.match(source, /Findings IDs[\s\S]{0,180}Check discovery sources[\s\S]{0,80}Check discovery actions[\s\S]{0,240}--repair-known-contract/u, skill);
+  }
+});
+
+test("executor producer instructions require complete computed Tested state digests", async () => {
+  const skill = await fs.readFile(path.join(ROOT, "skills/workflows/stnl-slice-executor/SKILL.md"), "utf8");
+  const prompt = await fs.readFile(path.join(ROOT, "templates/prompts/slice-execute-codex.md"), "utf8");
+  for (const source of [skill, prompt]) {
+    assert.match(source, /file-backed[\s\S]{0,260}digest[\s\S]{0,260}64(?:[- ]hex| caracteres hexadecimais)/u);
+    assert.match(source, /(?:Never|Nunca)[\s\S]{0,180}(?:hand-type|digite manualmente)[\s\S]{0,180}(?:truncate|trunque)/iu);
   }
 });
 
@@ -1522,7 +1531,65 @@ test("planning path carriers distinguish concrete paths from conceptual descript
   }, "P03 conceptual code span remains a rejected path claim");
 });
 
+test("Pilot #11 planning claims use the containing artifact basis", async (t) => {
+  const fixture = await nestedLifecycleWorkspace(t, { materialized: false, planStatus: "ready" });
+  const implementationTarget = path.join(fixture.repository, "src", "cli.mjs");
+  await fs.mkdir(path.dirname(implementationTarget), { recursive: true });
+  await fs.writeFile(implementationTarget, "#!/usr/bin/env node\n", "utf8");
+
+  const candidate = await copyDirectory(fixture.execution, path.join(path.dirname(fixture.repository), "pilot-11-plan-candidate"));
+  const candidateFixture = { ...fixture, execution: candidate };
+  await fs.rm(fixture.execution, { recursive: true });
+
+  const plannerSkill = await fs.readFile(path.join(ROOT, "skills/workflows/stnl-execution-planner/SKILL.md"), "utf8");
+  const globalTemplate = await fs.readFile(path.join(ROOT, "skills/workflows/stnl-execution-planner/templates/plan.template.md"), "utf8");
+  const detailedTemplate = await fs.readFile(path.join(ROOT, "skills/workflows/stnl-execution-planner/templates/slice-plan.template.md"), "utf8");
+  assert.match(plannerSkill, /These carriers are implementation-only/u);
+  assert.match(plannerSkill, /nearest ancestor of the normalized requirements source that contains a real `\.git` marker/u);
+  assert.match(plannerSkill, /`SPEC_PATH` is not necessarily the project root/u);
+  assert.match(globalTemplate, /Implementation filesystem path \(outside generated execution artifacts\)/u);
+  assert.match(detailedTemplate, /Implementation filesystem path \(outside generated execution artifacts\)/u);
+
+  const globalClaim = path.relative(fixture.execution, implementationTarget).split(path.sep).join("/");
+  const detailDirectory = path.join(fixture.requirements, "execution", "plans");
+  const detailClaim = path.relative(detailDirectory, implementationTarget).split(path.sep).join("/");
+  const wrongResolved = path.join(fixture.repository, "specs", "src", "cli.mjs");
+  const wrongDetailClaim = path.relative(detailDirectory, wrongResolved).split(path.sep).join("/");
+
+  await setImplementationAreas(candidateFixture, { global: "execution/plan.md", detail: wrongDetailClaim });
+  const invalidGlobalBefore = await fs.readFile(path.join(candidate, "plan.md"));
+  await assert.rejects(validateExecutionCandidate(fixture.requirements, candidate), (error) => {
+    assert.ok(error instanceof ExecutionContractError);
+    assert.match(error.message, /field="Serial Slice Order 01 Expected areas"/u);
+    assert.match(error.message, /raw="execution\/plan\.md"/u);
+    assert.match(error.message, /resolves inside the execution root/u);
+    return true;
+  });
+  assert.deepEqual(await fs.readFile(path.join(candidate, "plan.md")), invalidGlobalBefore);
+
+  await setImplementationAreas(candidateFixture, { global: globalClaim });
+  const invalidDetailBefore = await fs.readFile(path.join(candidate, "plans/slice-01.md"));
+  await assert.rejects(validateExecutionCandidate(fixture.requirements, candidate), (error) => {
+    assert.ok(error instanceof ExecutionContractError);
+    assert.match(error.message, /field="Likely Areas"/u);
+    assert.ok(error.message.includes(`raw=${JSON.stringify(wrongDetailClaim)}`));
+    assert.ok(error.message.includes(`resolved=${JSON.stringify(wrongResolved)}`));
+    assert.match(error.message, /possible path-basis error: artifact-relative target is absent while the same project-root target exists/u);
+    assert.ok(error.message.includes(`existing-project-target=${JSON.stringify(implementationTarget)}`));
+    return true;
+  });
+  assert.deepEqual(await fs.readFile(path.join(candidate, "plans/slice-01.md")), invalidDetailBefore);
+
+  await setImplementationAreas(candidateFixture, { detail: detailClaim });
+  assert.equal((await validateExecutionCandidate(fixture.requirements, candidate)).state, "PLANNED_READY");
+});
+
 test("materialization and task-review gates preserve valid future artifact-relative paths", async (t) => {
+  const materializerSkill = await fs.readFile(path.join(ROOT, "skills/workflows/stnl-task-materializer/SKILL.md"), "utf8");
+  const materializerPrompt = await fs.readFile(path.join(ROOT, "templates/prompts/execution-tasks.md"), "utf8");
+  assert.match(materializerSkill, /recompute the task claim mechanically as `path\.relative\(path\.dirname\(path\.join\(SPEC_PATH, "execution", "tasks", "slice-NN\.md"\)\), physicalTarget\)`/u);
+  assert.match(materializerPrompt, /recalcule o claim a partir do próprio arquivo/u);
+
   const planOnly = await nestedLifecycleWorkspace(t, { materialized: false, planStatus: "ready" });
   await setImplementationAreas(planOnly, { global: "scripts/validate.sh" });
   const invalidPlanBefore = await fs.readFile(path.join(planOnly.execution, "plan.md"));
@@ -2529,6 +2596,22 @@ test("incomplete checklist recovery overrides only validation-bound implementati
   assert.equal((await preflightExecutionOperation(delegatedValidation.requirements, "VALIDATE_SLICE", "1")).state, "RUNNER_INITIALIZATION_BLOCKED");
 });
 
+test("file-backed Tested state rejects a truncated SHA-256 digest", async (t) => {
+  const fixture = await standaloneWorkspace(t);
+  await renderArtifacts(fixture);
+  await editTask(fixture, (value) => {
+    let result = value.replace("- [ ] 1.1", "- [x] 1.1");
+    result = replaceSection(result, "Changed Areas", "- `../../src/example.txt`");
+    const malformed = checkRecord("implementation-check", 1, "TESTS_PASS", 1)
+      .replace(`sha256:${VALIDATED_HASH}`, `sha256:${VALIDATED_HASH.slice(1)}`);
+    return replaceSection(result, "Implementation Test Evidence", malformed);
+  });
+  await assert.rejects(
+    inspectExecutionState(fixture.requirements),
+    /implementation-check-01 has (?:malformed Tested state|unexpected nested or continuation content under Tested state)/u,
+  );
+});
+
 test("terminal auxiliary outcomes and scoped blocker resumes have exact phases", async (t) => {
   const implemented = await standaloneWorkspace(t);
   await renderArtifacts(implemented);
@@ -3105,8 +3188,8 @@ test("canonical execution tables and checklists reject every unexpected structur
   const malformedPlan = await standaloneWorkspace(t);
   await renderArtifacts(malformedPlan);
   await editPlan(malformedPlan, (value) => value.replace(
-    "| 01 - Delivery | observable result | - | AC-001 | Filesystem path: `../src/example.txt`; example implementation (plain-text description) | plans/slice-01.md |",
-    "| 01 - Delivery | observable result | - | AC-001 | Filesystem path: `../src/example.txt`; example implementation (plain-text description) | plans/slice-01.md |\n| malformed serial row |",
+    "| 01 - Delivery | observable result | - | AC-001 | Implementation filesystem path (outside generated execution artifacts): `../src/example.txt`; example implementation (plain-text description) | plans/slice-01.md |",
+    "| 01 - Delivery | observable result | - | AC-001 | Implementation filesystem path (outside generated execution artifacts): `../src/example.txt`; example implementation (plain-text description) | plans/slice-01.md |\n| malformed serial row |",
   ));
   await assert.rejects(inspectExecutionState(malformedPlan.requirements), /Serial Slice Order.*malformed row/u);
 
@@ -3121,8 +3204,8 @@ test("canonical execution tables and checklists reject every unexpected structur
   const nonPipePlan = await standaloneWorkspace(t);
   await renderArtifacts(nonPipePlan);
   await editPlan(nonPipePlan, (value) => value.replace(
-    "| 01 - Delivery | observable result | - | AC-001 | Filesystem path: `../src/example.txt`; example implementation (plain-text description) | plans/slice-01.md |",
-    "| 01 - Delivery | observable result | - | AC-001 | Filesystem path: `../src/example.txt`; example implementation (plain-text description) | plans/slice-01.md |\nmalformed serial row without pipes",
+    "| 01 - Delivery | observable result | - | AC-001 | Implementation filesystem path (outside generated execution artifacts): `../src/example.txt`; example implementation (plain-text description) | plans/slice-01.md |",
+    "| 01 - Delivery | observable result | - | AC-001 | Implementation filesystem path (outside generated execution artifacts): `../src/example.txt`; example implementation (plain-text description) | plans/slice-01.md |\nmalformed serial row without pipes",
   ));
   await assert.rejects(inspectExecutionState(nonPipePlan.requirements), /Serial Slice Order.*unexpected structural row/u);
 

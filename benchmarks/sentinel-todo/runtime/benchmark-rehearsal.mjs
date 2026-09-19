@@ -321,8 +321,8 @@ function extractFixturePathClaims({ globalPlan, slicePlan, sliceTask, taskText, 
   const globalText = globalPlan.text;
   const slicePlanText = slicePlan.text;
   const checklist = section(taskText, 'Checklist');
-  const globalStored = globalText.match(/\| `([^`]+)`; invitation expiration \| plans\/slice-01\.md \|/u)?.[1];
-  const detailStored = section(slicePlanText, 'Likely Areas').match(/^- `([^`]+)`/mu)?.[1];
+  const globalStored = globalText.match(/\| Implementation filesystem path \(outside generated execution artifacts\): `([^`]+)`; invitation expiration \(plain-text description\) \| plans\/slice-01\.md \|/u)?.[1];
+  const detailStored = section(slicePlanText, 'Likely Areas').match(/^- Implementation filesystem path \(outside generated execution artifacts\): `([^`]+)`/mu)?.[1];
   const checklistStored = checklist.match(/expected areas: `([^`]+)`/u)?.[1];
   if ([globalStored, detailStored, checklistStored].some((value) => value === undefined)) {
     throw new Error('canonical fixture path claims could not be read');

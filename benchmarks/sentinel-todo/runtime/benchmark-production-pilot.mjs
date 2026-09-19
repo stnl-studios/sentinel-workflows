@@ -7,6 +7,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import {
+  deriveNormalHandoff,
   inspectExecutionState,
   preflightExecutionOperation,
 } from '../../../skills/workflows/stnl-execution-planner/runtime/execution-state.mjs';
@@ -258,12 +259,14 @@ async function recordJournalEvent({ journal, operation, dispatch, result, slice,
 }
 
 export function nextHandoff(operation, readback) {
-  if (readback.executionRaw?.state === 'COMPLETE') return { operation: 'SPEC_READINESS', slice: null };
-  if (operation === 'SPEC_READINESS') return { operation: 'SPEC_CLOSE', slice: null };
   if (operation === 'SPEC_CLOSE') return null;
+  if (operation === 'SPEC_READINESS') return { operation: 'SPEC_CLOSE', slice: null };
+  if (readback.executionRaw?.state === 'COMPLETE') return { operation: 'SPEC_READINESS', slice: null };
   const handoff = readback.executionRaw?.requiredRecoveryHandoff
     ?? readback.executionRaw?.normalHandoff
-    ?? null;
+    ?? (readback.executionRaw === null || readback.executionRaw === undefined
+      ? null
+      : deriveNormalHandoff(readback.executionRaw, operation));
   return handoff?.operation == null ? null : { operation: handoff.operation, slice: handoff.slice };
 }
 

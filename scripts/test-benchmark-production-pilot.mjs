@@ -14,6 +14,7 @@ import {
   decideOfficialOutcome,
   dispatchForOperation,
   finalizeAndPreserve,
+  nextHandoff,
   preserveAuxiliaryBlockerArtifact,
   runPilotOperationLoop,
   runPilotSchedule,
@@ -105,6 +106,40 @@ test('P04 — canonical slice labels render as unsigned decimal launcher input',
   assert.equal(canonicalSliceInput('slice-02'), '2');
   assert.equal(canonicalSliceInput('slice-10'), '10');
   assert.throws(() => canonicalSliceInput('1'), /invalid canonical slice label/u);
+});
+
+test('P04b — materialized state derives the REVIEW_TASKS handoff from the completed operation', () => {
+  const readback = {
+    executionRaw: {
+      state: 'MATERIALIZED_PRISTINE',
+      mandatoryRecovery: null,
+      normalHandoff: null,
+      legalOperations: [
+        { operation: 'REVIEW_TASKS', slice: null },
+        { operation: 'REPLAN', slice: null },
+        { operation: 'EXECUTE_SLICE', slice: 'slice-01' },
+      ],
+    },
+  };
+  assert.deepEqual(nextHandoff('MATERIALIZE_TASKS', readback), {
+    operation: 'REVIEW_TASKS',
+    slice: null,
+  });
+});
+
+test('P04c — terminal execution advances through readiness and closes exactly once', () => {
+  const completeReadback = {
+    executionRaw: { state: 'COMPLETE', normalHandoff: null, requiredRecoveryHandoff: null },
+  };
+  assert.deepEqual(nextHandoff('VALIDATE_SLICE', completeReadback), {
+    operation: 'SPEC_READINESS',
+    slice: null,
+  });
+  assert.deepEqual(nextHandoff('SPEC_READINESS', completeReadback), {
+    operation: 'SPEC_CLOSE',
+    slice: null,
+  });
+  assert.equal(nextHandoff('SPEC_CLOSE', completeReadback), null);
 });
 
 test('P05 — blocked Case A gates B/C and no case receives an outer retry', async () => {
