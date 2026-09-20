@@ -1,0 +1,26 @@
+{
+  "issueId": "C06",
+  "case": "C",
+  "operation": "EXECUTE_SLICE",
+  "slice": "slice-03",
+  "officialState": "RUNNER_RESULT_BLOCKED",
+  "blocker": "OFFICIAL_RUNNER_RESULT_BLOCKED",
+  "dispatch": {
+    "model": "GPT-5.6-Luna",
+    "effort": "xhigh"
+  },
+  "authority": "sha256:a134343db6cc928687edc1a08cba94cf9081abccd6f171392256f54c05405d2f",
+  "runnerOutcome": "TESTS_PASS",
+  "malformedField": "Tested state",
+  "runnerDiagnostic": "The runner returned file-backed Tested state paths src/cli.mjs and test/cli.test.mjs instead of the canonical task-relative paths ../../../../src/cli.mjs and ../../../../test/cli.test.mjs.",
+  "strictBehavior": "Candidate validation did not rebase or accept the paths; it persisted the canonical malformed-output Delegation Blocker.",
+  "recovery": {
+    "operation": "EXECUTE_SLICE",
+    "slice": "slice-03",
+    "owner": "delegation-blocker",
+    "sameOperationResumeRequired": true
+  },
+  "preservedTaskArtifact": "c06-case-c-execute-slice-03/task-slice-03.md",
+  "sourceReplayOutput": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-convergence-c-uVPLmc",
+  "evidenceNote": "C passed slices 01 and 02, including formal validation, before this distinct malformed auxiliary result at slice 03."
+}

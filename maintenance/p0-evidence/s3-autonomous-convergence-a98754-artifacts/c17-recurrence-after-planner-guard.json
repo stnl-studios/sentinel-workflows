@@ -1,0 +1,14 @@
+{
+  "issue": "C17",
+  "attempt": "after-planner-guard",
+  "caseId": "C",
+  "operations": 5,
+  "status": "BLOCKED",
+  "blocker": "OFFICIAL_TRANSITION_NOT_OBSERVED",
+  "samePointAndCause": true,
+  "operation": "MATERIALIZE_TASKS",
+  "diagnostic": "Candidate validation again rejected slice-01 claim ../../../src/validation.mjs as resolving from plans/slice-01.md to specs/src/validation.mjs.",
+  "replaySummary": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-convergence-c-ZIjzSu/summary.json",
+  "objectiveProgressBeforeBlocker": ["SPEC_INIT PASS", "PLAN PASS", "REVIEW_PLAN PASS"],
+  "conclusion": "The planner-only contract guard was insufficient; the independent plan-review producer must perform the same physical path identity check before approval. No validator relaxation is justified."
+}

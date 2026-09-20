@@ -1588,10 +1588,24 @@ async function validateTaskImplementationPaths(workspace, tasks) {
   }
 }
 
+function currentCandidateEvidenceOwners(result) {
+  const owners = new Map();
+  for (const row of result.rows) {
+    const task = result.tasks.get(row.slice);
+    if (task === undefined) continue;
+    const entries = task.base.present
+      ? task.base.entries
+      : task.currentAuxiliaryCheck?.testedState ?? [];
+    for (const entry of entries) owners.set(entry.path, row.slice);
+  }
+  return owners;
+}
+
 async function validateCandidateExecutionRecordPaths(result) {
   if (!(result.tasks instanceof Map)) return;
   const logicalWorkspace = logicalWorkspaceFor(result.workspace);
   const trustedRoot = await trustedProjectRoot(result.workspace);
+  const currentOwners = currentCandidateEvidenceOwners(result);
   for (const [slice, task] of result.tasks) {
     const artifact = path.join(result.workspace.executionRoot, "tasks", `${slice}.md`);
     const logicalArtifact = logicalExecutionPath(result.workspace, artifact);
@@ -1602,23 +1616,26 @@ async function validateCandidateExecutionRecordPaths(result) {
       const field = task.base.present ? "Effective Validation Base Files" : `${evidenceOwner} Tested state`;
       await validateImplementationPathClaim(result.workspace, { artifact, field, raw: entry.path });
       const target = path.resolve(path.dirname(logicalArtifact), entry.path);
-      const metadata = await lstatOrNull(target);
-      let observed = "absent";
-      if (metadata?.isSymbolicLink()) observed = "symlink";
-      else if (metadata !== null && !metadata.isFile()) observed = "non-file";
-      else if (metadata?.isFile()) observed = `sha256:${createHash("sha256").update(await fs.readFile(target)).digest("hex")}`;
-      const matches = entry.expected === "REMOVED"
-        ? metadata === null
-        : metadata?.isFile() === true && observed === entry.expected;
-      if (!matches) {
-        throw implementationPathDiagnostic({
-          artifact: logicalArtifact,
-          field,
-          raw: entry.path,
-          resolved: target,
-          reason: `file-backed candidate evidence expected ${entry.expected} but observed ${observed}`,
-          trustedRoot,
-        });
+      const isCurrentOwner = currentOwners.get(entry.path) === slice;
+      if (isCurrentOwner) {
+        const metadata = await lstatOrNull(target);
+        let observed = "absent";
+        if (metadata?.isSymbolicLink()) observed = "symlink";
+        else if (metadata !== null && !metadata.isFile()) observed = "non-file";
+        else if (metadata?.isFile()) observed = `sha256:${createHash("sha256").update(await fs.readFile(target)).digest("hex")}`;
+        const matches = entry.expected === "REMOVED"
+          ? metadata === null
+          : metadata?.isFile() === true && observed === entry.expected;
+        if (!matches) {
+          throw implementationPathDiagnostic({
+            artifact: logicalArtifact,
+            field,
+            raw: entry.path,
+            resolved: target,
+            reason: `file-backed candidate evidence expected ${entry.expected} but observed ${observed}`,
+            trustedRoot,
+          });
+        }
       }
     }
     const owned = new Set(entries.map((entry) => entry.path));

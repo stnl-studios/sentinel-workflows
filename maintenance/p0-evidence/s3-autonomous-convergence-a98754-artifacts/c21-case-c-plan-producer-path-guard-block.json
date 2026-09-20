@@ -1,0 +1,22 @@
+{
+  "issue": "C21",
+  "caseId": "C",
+  "operation": "02",
+  "operationName": "PLAN",
+  "officialState": "EMPTY",
+  "status": "BLOCKED",
+  "blocker": "OFFICIAL_TRANSITION_NOT_OBSERVED",
+  "producerStatus": "BLOCKED",
+  "producerDiagnostic": "Claim ../../src/validation.mjs was rejected because the mechanically recomputed path is ../../../src/validation.mjs.",
+  "evidence": {
+    "replaySummary": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-convergence-c-SdLoSe/summary.json",
+    "operationEvidence": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-convergence-c-SdLoSe/case-c/operations/02-plan.json",
+    "legalOperationAfterBlock": "PLAN",
+    "publishedArtifacts": false,
+    "outerRetry": 0,
+    "model": "GPT-5.6-Sol",
+    "effort": "high",
+    "modelCalls": 2
+  },
+  "rootCauseAssessment": "The model producer generated a non-canonical detailed-plan claim and correctly failed closed under the new physical-identity guard. No repository/runtime defect or legal recovery artifact was produced; a fresh workspace is required."
+}

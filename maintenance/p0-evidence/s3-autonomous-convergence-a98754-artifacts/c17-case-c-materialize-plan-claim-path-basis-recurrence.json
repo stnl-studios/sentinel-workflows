@@ -1,0 +1,19 @@
+{
+  "issue": "C17",
+  "caseId": "C",
+  "operation": 4,
+  "operationName": "MATERIALIZE_TASKS",
+  "slice": null,
+  "officialState": "PLANNED_READY",
+  "status": "BLOCKED",
+  "blocker": "OFFICIAL_TRANSITION_NOT_OBSERVED",
+  "diagnostic": "Candidate validation rejected slice-01 plan claim ../../../src/validation.mjs because it resolved from plans/slice-01.md to specs/src/validation.mjs instead of the physical project target.",
+  "evidence": {
+    "replaySummary": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-convergence-c-XcwJFY/summary.json",
+    "operationEvidence": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-convergence-c-XcwJFY/case-c/operations/04-materialize_tasks.json",
+    "recoveryOperation": "REPLAN",
+    "recoveryState": "PLANNED_DRAFT",
+    "outerRetry": 0
+  },
+  "rootCauseAssessment": "The planner producer emitted a plan-relative claim using a higher-level basis. Candidate validation correctly rejected it; the existing skill guidance was semantically correct but lacked a high-salience pre-publication mechanical realpath/re-relative guard that forces the producer to verify every declared claim before publication."
+}

@@ -1,0 +1,19 @@
+{
+  "issue": "C02",
+  "case": "C",
+  "operation": "MATERIALIZE_TASKS",
+  "slice": null,
+  "profile": "production-v2",
+  "officialState": "PLANNED_READY",
+  "outcome": "BLOCKED",
+  "blocker": "OFFICIAL_TRANSITION_NOT_OBSERVED",
+  "evidence": {
+    "source": "controlled convergence replay",
+    "externalOutput": "sentinel-convergence-c-5gLH18/case-c/operations/04-materialize_tasks.json",
+    "modelSummary": "MATERIALIZE_TASKS candidate validation rejected paths in tasks/slice-01.md: ../../../src/validation.mjs resolved to specs/src/validation.mjs, outside the valid project target.",
+    "stateAfter": "PLANNED_READY",
+    "tasksMaterialized": false,
+    "legalRecovery": "REPLAN",
+    "outerRetry": 0
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "issueId": "C05",
+  "case": "C",
+  "operation": "EXECUTE_SLICE",
+  "slice": "slice-01",
+  "officialState": "AUXILIARY_BLOCKED",
+  "blocker": "OFFICIAL_AUXILIARY_BLOCKED",
+  "dispatch": {
+    "model": "GPT-5.6-Luna",
+    "effort": "xhigh"
+  },
+  "automaticRound": "1/3",
+  "authority": "sha256:bca2f51fa8ea7002534bc02f5d6121c7f2e21a11a6c3c945ea8789c666de55ed",
+  "runnerOutcome": "BLOCKED",
+  "runnerDiagnostic": "The paths supplied to the independent runner did not exist in the delegated session; no verification command was executed.",
+  "runnerClaimedPaths": ["SPEC_PATH", "EXECUTION_ROOT", "PLAN_PATH", "TASK_PATH"],
+  "recovery": {
+    "operation": "EXECUTE_SLICE",
+    "slice": "slice-01",
+    "record": "implementation-check-01",
+    "round": 1,
+    "sameOperationResumeRequired": true
+  },
+  "preservedTaskArtifact": "c05-case-c-execute-slice-01/task-slice-01.md",
+  "sourceReplayOutput": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-convergence-c-stj78s",
+  "evidenceNote": "The official preflight was PASS with state MATERIALIZED_PRISTINE; candidate validation preserved the blocker and did not publish implementation evidence."
+}

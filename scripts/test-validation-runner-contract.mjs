@@ -52,13 +52,13 @@ test("accepts harmless runner prose paraphrasing", async (t) => {
 test("runner documents structured findings and correction-path persistence grammar", async (t) => {
   const root = await fixture(t);
   const contract = await fs.readFile(path.join(root, "claude-code/.claude/agents/stnl-validation-runner.md"), "utf8");
-  assert.match(contract, /Findings verificados[\s\S]{0,160}subconjunto canônico[\s\S]{0,120}Finding IDs[\s\S]{0,180}Findings ainda não sustentados[\s\S]{0,180}exatamente os findings ativos[\s\S]{0,180}nunca se sobrepõem/u);
+  assert.match(contract, /Findings verified[\s\S]{0,160}subconjunto canônico[\s\S]{0,120}Finding IDs[\s\S]{0,180}Unsupported active findings[\s\S]{0,180}exatamente os findings ativos[\s\S]{0,180}nunca se sobrepõem/u);
   assert.match(contract, /caminhos de correção[\s\S]{0,260}normalizados[\s\S]{0,160}comma-space[\s\S]{0,100}correção fileless[\s\S]{0,80}Correction paths[\s\S]{0,60}exact `none`/u);
 });
 
 test("VALIDATE_SLICE requires complete commands and rejects the observed ellipsis abbreviation", async () => {
   const contract = await fs.readFile(path.join(canonical, "claude-code/.claude/agents/stnl-validation-runner.md"), "utf8");
-  assert.match(contract, /Comandos executados[^\n]{0,180}forma exata e completa/iu);
+  assert.match(contract, /Commands[^\n]{0,180}forma exata e completa/iu);
   assert.match(contract, /Nunca abrevie path ou argumento[^\n]{0,120}`\.\.\.`/iu);
   assert.match(contract, /não emita `PASS` com comando abreviado/iu);
 
@@ -67,6 +67,113 @@ test("VALIDATE_SLICE requires complete commands and rejects the observed ellipsi
   const containsCommandAbbreviation = (line) => /`[^`]*(?:\.\.\.|<SPEC_PATH>)[^`]*`/u.test(line);
   assert.equal(containsCommandAbbreviation(expectedExact), false);
   assert.equal(containsCommandAbbreviation(observedMalformed), true);
+});
+
+test("runner schemas use the canonical execution-record field labels", async () => {
+  const contracts = await Promise.all([
+    fs.readFile(path.join(canonical, "claude-code/.claude/agents/stnl-validation-runner.md"), "utf8"),
+    fs.readFile(path.join(canonical, "codex/.codex/agents/stnl_validation_runner.toml"), "utf8"),
+  ]);
+  for (const contract of contracts) {
+    assert.match(contract, /## Schema EXECUTE_SLICE[\s\S]*?Tested scope:[\s\S]*?Tested state:[\s\S]*?Commands:[\s\S]*?Selected checks:/u);
+    assert.match(contract, /## Schema APPLY_FINDINGS[\s\S]*?Tested scope:[\s\S]*?Tested state:[\s\S]*?Commands:[\s\S]*?Selected checks:/u);
+    assert.match(contract, /## Schema VALIDATE_SLICE[\s\S]*?Verified scope:[\s\S]*?Commands:[\s\S]*?Evidence:[\s\S]*?Finding references:[\s\S]*?Finding dispositions:/u);
+    assert.doesNotMatch(contract, /(?:^|\n)(?:Operação|Escopo verificado|Estado testado|Comandos executados|Testes selecionados|Tipo de validação):/u);
+  }
+});
+
+test("VALIDATE_SLICE writes the exact payload SPEC_PATH into formal command evidence", async (t) => {
+  const root = await fixture(t);
+  await replaceBoth(
+    root,
+    "copy the exact full `SPEC_PATH` string received in the payload",
+    "copy a shortened `SPEC_PATH` string received in the payload",
+  );
+  expectCategory(check(root), "R020_EXACT_COMMANDS");
+});
+
+test("VALIDATE_SLICE requires the official preflight invocation as formal command evidence", async (t) => {
+  const root = await fixture(t);
+  await replaceBoth(
+    root,
+    "the first formal command-evidence item MUST be the exact official execution validator/preflight invocation actually run",
+    "the first formal command-evidence item may summarize the official execution validator/preflight invocation",
+  );
+  expectCategory(check(root), "R020_EXACT_COMMANDS");
+});
+
+test("runner requires task-relative Tested state paths before returning a status", async (t) => {
+  const root = await fixture(t);
+  await replaceBoth(
+    root,
+    "Antes de retornar qualquer status, para cada entrada file-backed de `Tested state`, recompute mecanicamente",
+    "Antes de retornar qualquer status, omita a base task-relative e recompute mecanicamente",
+  );
+  expectCategory(check(root), "R021_PATH_BASIS");
+});
+
+test("runner cannot use a raw requirements digest as auxiliary authority", async (t) => {
+  const root = await fixture(t);
+  await replaceBoth(
+    root,
+    "um raw digest não é authority e não pode bloquear",
+    "um raw digest é authority e pode bloquear",
+  );
+  expectCategory(check(root), "R022_AUTHORITY_IDENTITY");
+});
+
+test("runner must verify task-relative claims resolve to the physical target", async (t) => {
+  const root = await fixture(t);
+  await replaceBoth(
+    root,
+    "compare por `realpath`",
+    "compare por uma aproximação",
+  );
+  expectCategory(check(root), "R023_PHYSICAL_PATH_IDENTITY");
+});
+
+test("runner must fail closed on truncated or malformed digests", async (t) => {
+  const root = await fixture(t);
+  await replaceBoth(root, "64 caracteres hexadecimais minúsculos", "um digest aproximado");
+  expectCategory(check(root), "R024_DIGEST_FORMAT");
+});
+
+test("runner names the canonical digest delimiter and rejects sha256 equals output", async (t) => {
+  const root = await fixture(t);
+  await replaceBoth(
+    root,
+    "the literal `sha256:` separator; `sha256=` is malformed output",
+    "an arbitrary digest separator is accepted",
+  );
+  expectCategory(check(root), "R025_DIGEST_PREFIX");
+});
+
+test("runner requires a complete byte-for-byte canonical response gate", async (t) => {
+  const root = await fixture(t);
+  await replaceBoth(
+    root,
+    "Before returning any result for `EXECUTE_SLICE`, `APPLY_FINDINGS`, or `VALIDATE_SLICE`",
+    "Before returning a prose summary for `EXECUTE_SLICE`, `APPLY_FINDINGS`, or `VALIDATE_SLICE`",
+  );
+  expectCategory(check(root), "R026_OUTPUT_GATE");
+});
+
+test("runner requires the exact pipe-delimited Tested state and Commands grammar", async (t) => {
+  const root = await fixture(t);
+  await replaceBoth(root, "The serialized tuple forms are exact", "The serialized tuple forms are approximate");
+  expectCategory(check(root), "R027_TUPLE_GRAMMAR");
+});
+
+test("runner requires the literal field sequence at the final response gate", async (t) => {
+  const root = await fixture(t);
+  await replaceBoth(root, "The final response MUST start immediately with the first literal label", "The final response may start with a prose summary");
+  expectCategory(check(root), "R028_FIELD_SEQUENCE");
+});
+
+test("runner requires scalar fields outside Tested state and Commands", async (t) => {
+  const root = await fixture(t);
+  await replaceBoth(root, "MUST NOT be nested bullet lists", "may be nested bullet lists");
+  expectCategory(check(root), "R029_FIELD_SHAPE");
 });
 
 const cases = [
@@ -90,7 +197,7 @@ const cases = [
   ["PASS objective summaries allow none", "R006_VERDICTS", (root) => replaceBoth(root, "nunca podem ser exact `none`", "podem ser exact `none`")],
   ["finding disposed at origin", "R009_VALIDATION_ATTEMPT", (root) => replaceBoth(root, "Todo novo finding nasce `active` na tentativa `NEEDS_FIX` que o cria; somente uma tentativa formal estritamente posterior à origem pode resolvê-lo ou supersedê-lo.", "Todo novo finding pode nascer resolvido na tentativa que o cria.")],
   ["manifest task path base removed", "R008_MANIFEST", (root) => replaceBoth(root, "relativo ao diretório do artefato detalhado final `tasks/slice-NN.md`", "relativo a qualquer raiz")],
-  ["auxiliary tested-state path base removed", "R008_MANIFEST", (root) => replaceBoth(root, "Em qualquer operação, todo caminho file-backed de `Estado testado` é task-relative", "Somente em VALIDATE_SLICE, o Estado testado tem um caminho relativo")],
+  ["auxiliary tested-state path base removed", "R008_MANIFEST", (root) => replaceBoth(root, "Em qualquer operação, todo caminho file-backed de `Tested state` é task-relative", "Somente em VALIDATE_SLICE, o Tested state tem um caminho relativo")],
   ["tested-state physical identity removed", "R008_MANIFEST", (root) => replaceBoth(root, "O caminho armazenado deve resolver exatamente ao target físico cujo hash foi calculado.", "O caminho armazenado pode apontar para um target semelhante.")],
   ["manifest hash weakened", "R008_MANIFEST", (root) => replaceBoth(root, "caminhos relativos únicos em ordem lexicográfica, com SHA-256 minúsculo do conteúdo ou `REMOVED`", "caminhos arbitrários com qualquer hash")],
   ["tool absence becomes non-applicable", "R016_NOT_APPLICABLE", (root) => replaceBoth(root, "check aplicável que não pode ser executado por ferramenta, credencial, dependência externa, ambiente, serviço, permissão ou comando autoritativo objetivamente indisponível é `BLOCKED`", "ferramenta ausente produz TESTS_NOT_APPLICABLE")],

@@ -145,82 +145,74 @@ function checkFilePurposeHeader(file, owner) {
 
 const checkSchemas = {
   EXECUTE_SLICE: [
-    "Operação: EXECUTE_SLICE",
+    "Operation: EXECUTE_SLICE",
     "Status: TESTS_PASS | TESTS_FAIL | TESTS_NOT_APPLICABLE | BLOCKED",
     "Automatic check round:",
     "HEAD:",
-    "Escopo verificado:",
-    "Estado testado:",
-    "Fileless reason: required only when Estado testado is exactly none; omit for file-backed state",
+    "Tested scope:",
+    "Tested state:",
+    "Fileless reason: required only when Tested state is exactly none; omit for file-backed state",
     "Discovery sources:",
     "Discovery actions:",
     "Verification types considered:",
     "Non-applicability rationale:",
     "No verification-command confirmation:",
-    "Comandos executados:",
-    "Resultado de cada comando e exit code:",
-    "Testes selecionados:",
-    "Justificativa da seleção:",
-    "Cobertura:",
-    "Falhas:",
-    "Correções cobertas:",
-    "Evidências ou resumo da falha:",
-    "Arquivos ou comportamentos afetados:",
-    "Bloqueios:",
-    "Efeitos inesperados no workspace:",
-    "Resumo para persistência:",
+    "Commands:",
+    "Result of each command and exit code:",
+    "Selected checks:",
+    "Selection rationale:",
+    "Coverage:",
+    "Failures:",
+    "Corrections covered:",
+    "Evidence or failure summary:",
+    "Affected files or behaviors:",
+    "Blockers:",
+    "Unexpected workspace effects:",
+    "Persistence summary:",
   ],
   APPLY_FINDINGS: [
-    "Operação: APPLY_FINDINGS",
+    "Operation: APPLY_FINDINGS",
     "Status: TESTS_PASS | TESTS_FAIL | TESTS_NOT_APPLICABLE | BLOCKED",
     "Automatic check round:",
-    "Ciclo de findings:",
+    "Findings cycle:",
     "HEAD:",
-    "Escopo verificado:",
-    "Estado testado:",
-    "Fileless reason: required only when Estado testado is exactly none; omit for file-backed state",
+    "Tested scope:",
+    "Tested state:",
+    "Fileless reason: required only when Tested state is exactly none; omit for file-backed state",
     "Discovery sources:",
     "Discovery actions:",
     "Verification types considered:",
     "Non-applicability rationale:",
     "No verification-command confirmation:",
-    "Comandos executados:",
-    "Resultado de cada comando e exit code:",
-    "Testes selecionados:",
-    "Justificativa da seleção:",
-    "Cobertura:",
-    "Findings verificados:",
-    "Correções cobertas:",
-    "Regressões selecionadas:",
-    "Findings ainda não sustentados pelos testes:",
-    "Falhas:",
-    "Evidências ou resumo da falha:",
-    "Arquivos ou comportamentos afetados:",
-    "Bloqueios:",
-    "Efeitos inesperados no workspace:",
-    "Resumo para persistência:",
+    "Commands:",
+    "Result of each command and exit code:",
+    "Selected checks:",
+    "Selection rationale:",
+    "Coverage:",
+    "Findings verified:",
+    "Corrections covered:",
+    "Regressions selected:",
+    "Unsupported active findings:",
+    "Failures:",
+    "Evidence or failure summary:",
+    "Affected files or behaviors:",
+    "Blockers:",
+    "Unexpected workspace effects:",
+    "Persistence summary:",
   ],
   VALIDATE_SLICE: [
-    "Operação: VALIDATE_SLICE",
-    "Tipo de validação: initial | revalidation",
+    "Operation: VALIDATE_SLICE",
+    "Type: initial | revalidation",
     "Status: PASS | NEEDS_FIX | BLOCKED",
-    "Escopo verificado:",
+    "Verified scope:",
     "HEAD:",
-    "Evidências anteriores avaliadas:",
-    "Atualidade e suficiência das evidências:",
-    "Manifesto final da slice:",
-    "Fileless reason: required only when Manifesto final da slice is exactly none; omit for file-backed manifest",
-    "Comandos executados:",
-    "Resultado de cada comando e exit code:",
-    "Testes selecionados ou repetidos:",
-    "Justificativa da seleção ou repetição:",
-    "Evidências:",
-    "Findings:",
-    "Bloqueios:",
-    "Overlap com bases anteriores:",
-    "Regressões justificadas executadas:",
-    "Efeitos inesperados no workspace:",
-    "Resumo para persistência:",
+    "Commands:",
+    "Evidence:",
+    "Finding references:",
+    "Finding dispositions:",
+    "Blockers:",
+    "Unexpected workspace effects:",
+    "Persistence summary:",
   ],
 };
 
@@ -289,9 +281,18 @@ function checkRunner(root) {
   requirePattern(contract, /Não calcule Requirements authority[\s\S]{0,180}`shared\/requirements\.md`[\s\S]{0,160}`feature_spec\.md`/iu, "R019_REQUIREMENTS_AUTHORITY", "runner does not forbid raw lifecycle file hashes");
   requirePattern(contract, /Não copie nem reimplemente `computeRequirementsAuthority`[\s\S]{0,320}retorne `BLOCKED`[\s\S]{0,120}Não use fallback ad hoc/iu, "R019_REQUIREMENTS_AUTHORITY", "runner authority failure does not fail closed");
   forbidPattern(contract, /(?:^|\n)(?:Calcule|Compute)[^\n]{0,120}(?:shared\/requirements\.md|feature_spec\.md)[^\n]{0,120}(?:Requirements authority|requirements authority)/iu, "R019_REQUIREMENTS_AUTHORITY", "runner reintroduces a raw-file authority algorithm");
+  requirePattern(contract, /Antes de qualquer verification command ou status de check auxiliar[\s\S]{0,260}official execution preflight[\s\S]{0,220}igualdade entre preflight, payload e artifact[\s\S]{0,260}Nunca calcule, compare ou use SHA[\s\S]{0,220}raw digest não é authority e não pode bloquear/iu, "R022_AUTHORITY_IDENTITY", "runner may compare non-canonical raw requirements hashes");
 
   const execute = /# EXECUTE_SLICE\n([\s\S]*?)# APPLY_FINDINGS\n/u.exec(contract)?.[1] ?? "";
   const findings = /# APPLY_FINDINGS\n([\s\S]*?)# VALIDATE_SLICE\n/u.exec(contract)?.[1] ?? "";
+  requirePattern(contract, /Antes de retornar qualquer status[\s\S]{0,280}Tested state[\s\S]{0,260}path\.relative\(dirname\(tasks\/slice-NN\.md\), target\)[\s\S]{0,300}(?:rejeite|reject)[\s\S]{0,220}(?:nunca rebase|never rebase)/iu, "R021_PATH_BASIS", "runner does not fail closed on non-task-relative Tested state paths");
+  requirePattern(contract, /Depois de derivar cada claim task-relative[\s\S]{0,260}path\.resolve\(dirname\(taskArtifact\), claim\)[\s\S]{0,220}compare por `realpath`[\s\S]{0,260}não emita `TESTS_PASS`[\s\S]{0,180}target/iu, "R023_PHYSICAL_PATH_IDENTITY", "runner does not verify task-relative claims against the physical target");
+  requirePattern(contract, /Antes de emitir qualquer status[\s\S]{0,260}digest file-backed[\s\S]{0,220}formato exato `sha256:`[\s\S]{0,160}64 caracteres hexadecimais minúsculos[\s\S]{0,260}retorne `BLOCKED`[\s\S]{0,160}nunca emita `PASS`/iu, "R024_DIGEST_FORMAT", "runner may emit a status with a truncated or malformed digest");
+  requirePattern(contract, /Every file-backed Tested state and formal-manifest tuple MUST use the literal `sha256:` separator; `sha256=` is malformed output[\s\S]{0,120}return `BLOCKED`, never `PASS`/u, "R025_DIGEST_PREFIX", "runner does not reject the sha256 equals-sign delimiter");
+  requirePattern(contract, /# Canonical response gate\n(?:Field shape is also strict:[^\n]*\n)?Before returning any result for `EXECUTE_SLICE`, `APPLY_FINDINGS`, or `VALIDATE_SLICE`, emit exactly the requested schema block below in its exact field order[\s\S]{0,520}complete requested schema with `Status: BLOCKED`[\s\S]{0,120}never return a prose summary, abbreviated record, or `PASS`/u, "R026_OUTPUT_GATE", "runner lacks a byte-for-byte canonical response gate");
+  requirePattern(contract, /The serialized tuple forms are exact:[\s\S]{0,360}each `Commands` line MUST be[\s\S]{0,260}colon-only, em-dash, prose, or missing delimiters are malformed[\s\S]{0,160}Status: BLOCKED/u, "R027_TUPLE_GRAMMAR", "runner does not state the exact parser tuple grammar");
+  requirePattern(contract, /The final response MUST start immediately with the first literal label and use this exact sequence without preamble, translation, reorder, omission, or postamble[\s\S]{0,1800}For `VALIDATE_SLICE`: `Operation`, `Type`, `Status`, `Verified scope`, `HEAD`, `Commands`, `Evidence`, `Finding references`, `Finding dispositions`, `Blockers`, `Unexpected workspace effects`, `Persistence summary`\./u, "R028_FIELD_SEQUENCE", "runner does not require the literal field sequence at the final response gate");
+  requirePattern(contract, /Field shape is also strict:[\s\S]{0,700}MUST NOT be nested bullet lists[\s\S]{0,240}Only `Tested state` and `Commands` may use their exact nested tuple lines[\s\S]{0,160}Status: BLOCKED/u, "R029_FIELD_SHAPE", "runner does not require scalar inline fields outside the two tuple fields");
   for (const [operation, section] of [["EXECUTE_SLICE", execute], ["APPLY_FINDINGS", findings]]) {
     forbidPattern(section, /(?:crie|create|emita|emit|marque|mark).{0,80}(?:Validation Attempt|Effective Validation Base|PASS formal|conclusão `\[x\]`)/iu, "R015_CHECK_AUTHORITY", `${operation} claims formal authority`);
   }
@@ -311,19 +312,19 @@ function checkRunner(root) {
   requirePattern(contract, /NEEDS_FIX[\s\S]{0,700}(?:finding estruturado|structured finding)/iu, "R006_VERDICTS", "NEEDS_FIX lacks structured findings");
   requirePattern(contract, /NEEDS_FIX[^\n]{0,300}pode criar novos findings estruturados/iu, "R006_VERDICTS", "NEEDS_FIX cannot persist structured findings");
   requirePattern(contract, /`TESTS_PASS` exige[^\n]{0,160}exit code zero/iu, "R006_VERDICTS", "TESTS_PASS lacks zero-exit authority");
-  requirePattern(contract, /Em `TESTS_PASS`[^\n]{0,260}`Escopo verificado`[^\n]{0,160}`Verification types considered`[^\n]{0,160}`Testes selecionados`[^\n]{0,160}`Cobertura`[^\n]{0,120}(?:nunca podem ser exact `none`|must not be exact `none`)/iu, "R006_VERDICTS", "TESTS_PASS permits none in an objective summary field");
+  requirePattern(contract, /Em `TESTS_PASS`[^\n]{0,260}`Tested scope`[^\n]{0,160}`Verification types considered`[^\n]{0,160}`Selected checks`[^\n]{0,160}`Coverage`[^\n]{0,120}(?:nunca podem ser exact `none`|must not be exact `none`)/iu, "R006_VERDICTS", "TESTS_PASS permits none in an objective summary field");
   requirePattern(contract, /`TESTS_FAIL` exige[^\n]{0,160}(?:comandos que falharam|commands that failed)/iu, "R006_VERDICTS", "TESTS_FAIL lacks command-failure evidence");
   requirePattern(contract, /`BLOCKED` exige[^\n]{0,180}(?:impossibilidade objetiva|objective impossibility)/iu, "R006_VERDICTS", "BLOCKED lacks an objective cause");
   forbidPattern(contract, /(?:NEEDS_FIX|BLOCKED)[\s\S]{0,160}(?:(?<!não )proponha|create|(?<!não )crie) Effective Validation Base/iu, "R006_VERDICTS", "non-PASS verdict creates an effective base");
   requirePattern(contract, /caminhos relativos únicos[\s\S]{0,180}SHA-256[\s\S]{0,100}`REMOVED`/iu, "R008_MANIFEST", "final manifest path/hash/removal semantics are incomplete");
-  requirePattern(contract, /Estado testado[\s\S]{0,180}Manifesto final da slice[\s\S]{0,220}relativo ao diretório do artefato detalhado(?: final)? `tasks\/slice-NN\.md`/iu, "R008_MANIFEST", "tested-state and manifest path base is ambiguous");
-  requirePattern(contract, /Em qualquer operação[\s\S]{0,160}`Estado testado`[\s\S]{0,160}task-relative[\s\S]{0,220}`path\.relative\(dirname\(taskArtifact\), target\)`[\s\S]{0,220}nunca use CWD[\s\S]{0,220}candidate root/iu, "R008_MANIFEST", "auxiliary tested-state task-relative derivation is missing or ambiguous");
+  requirePattern(contract, /Tested state[\s\S]{0,180}(?:manifesto final da slice|manifesto final)[\s\S]{0,220}relativo ao diretório do artefato detalhado(?: final)? `tasks\/slice-NN\.md`/iu, "R008_MANIFEST", "tested-state and manifest path base is ambiguous");
+  requirePattern(contract, /Em qualquer operação[\s\S]{0,160}`Tested state`[\s\S]{0,160}task-relative[\s\S]{0,220}`path\.relative\(dirname\(taskArtifact\), target\)`[\s\S]{0,220}nunca use CWD[\s\S]{0,220}candidate root/iu, "R008_MANIFEST", "auxiliary tested-state task-relative derivation is missing or ambiguous");
   requirePattern(contract, /caminho armazenado deve resolver exatamente ao target físico cujo hash foi calculado/iu, "R008_MANIFEST", "tested-state path/hash physical identity is missing");
   requirePattern(contract, /fontes consultadas em `Discovery sources`[\s\S]{0,160}`Discovery actions`/iu, "R007_OUTPUT_SCHEMA", "discovery sources and actions are not distinct");
   requirePattern(contract, /rodadas posteriores file-backed[^\n]{0,180}caminhos de correção[^\n]{0,180}task-relative normalizados[^\n]{0,160}comma-space/iu, "R007_OUTPUT_SCHEMA", "file-backed correction-path persistence grammar is missing");
   requirePattern(contract, /correção fileless[^\n]{0,80}`Correction paths`[^\n]{0,40}exact `none`/iu, "R007_OUTPUT_SCHEMA", "fileless correction paths cannot be exact none");
-  requirePattern(contract, /`Findings verificados`[^\n]{0,100}subconjunto canônico[^\n]{0,100}`Finding IDs`/iu, "R007_OUTPUT_SCHEMA", "verified findings are not constrained to the target subset");
-  requirePattern(contract, /`Findings ainda não sustentados pelos testes`[^\n]{0,140}exatamente os findings ativos[^\n]{0,180}(?:nunca se sobrepõem|never overlap)/iu, "R007_OUTPUT_SCHEMA", "unsupported active findings are not the exact disjoint remainder");
+  requirePattern(contract, /`Findings verified`[^\n]{0,100}subconjunto canônico[^\n]{0,100}`Finding IDs`/iu, "R007_OUTPUT_SCHEMA", "verified findings are not constrained to the target subset");
+  requirePattern(contract, /`Unsupported active findings`[^\n]{0,140}exatamente os findings ativos[^\n]{0,180}(?:nunca se sobrepõem|never overlap)/iu, "R007_OUTPUT_SCHEMA", "unsupported active findings are not the exact disjoint remainder");
   requirePattern(contract, /não retorne `PASS` com manifesto vazio, incompleto, duplicado, malformado ou inconsistente/iu, "R008_MANIFEST", "manifest rejection cases are incomplete");
   requirePattern(contract, /fileless[\s\S]{0,300}`Fileless reason`[\s\S]{0,300}(?:não invente|never invent).{0,80}(?:path|caminho|hash)/iu, "R008_MANIFEST", "fileless manifest contract is incomplete");
   requirePattern(contract, /overlap[\s\S]{0,500}regressões[\s\S]{0,300}(?:NEEDS_FIX|BLOCKED)/iu, "R010_OVERLAP", "overlap and regression obligations are incomplete");
@@ -335,9 +336,11 @@ function checkRunner(root) {
   requirePattern(contract, /PASS[^\n]{0,260}nenhuma disposição bloqueante ativa/iu, "R009_VALIDATION_ATTEMPT", "PASS may leave a blocking finding active");
   requirePattern(contract, /Checks nunca emitem[^\n]{0,160}(?:Validation Attempt|Effective Validation Base)/iu, "R015_CHECK_AUTHORITY", "check/formal authority separation is incomplete");
   requirePattern(contract, /Responda somente de forma compacta[^\n]{0,120}sem logs completos/iu, "R011_COMPACT_OUTPUT", "runner compact-output boundary is missing");
-  requirePattern(contract, /Em `VALIDATE_SLICE`, `Comandos executados`[^\n]{0,180}forma exata e completa[^\n]{0,180}official execution validator\/preflight/iu, "R020_EXACT_COMMANDS", "formal validation does not require exact complete commands");
+  requirePattern(contract, /Em `VALIDATE_SLICE`, `Commands`[^\n]{0,180}forma exata e completa[^\n]{0,180}official execution validator\/preflight/iu, "R020_EXACT_COMMANDS", "formal validation does not require exact complete commands");
   requirePattern(contract, /Nunca abrevie path ou argumento[^\n]{0,120}`\.\.\.`[^\n]{0,100}`<SPEC_PATH>`[^\n]{0,160}argumento omitido/iu, "R020_EXACT_COMMANDS", "formal validation permits abbreviated commands");
   requirePattern(contract, /não emita `PASS` com comando abreviado/iu, "R020_EXACT_COMMANDS", "formal validation can pass with an abbreviated command");
+  requirePattern(contract, /copy the exact full `SPEC_PATH` string received in the payload[\s\S]{0,320}return `BLOCKED`[\s\S]{0,80}never return `PASS`/iu, "R020_EXACT_COMMANDS", "formal validation does not require exact payload SPEC_PATH write-back");
+  requirePattern(contract, /the first formal command-evidence item MUST be the exact official execution validator\/preflight invocation actually run[\s\S]{0,300}(?:executable path|full `SPEC_PATH`)[\s\S]{0,220}numeric exit code[\s\S]{0,180}return `BLOCKED`[\s\S]{0,80}never return `PASS`/iu, "R020_EXACT_COMMANDS", "formal validation does not require the official preflight command item");
   requirePattern(contract, /nunca o reverta automaticamente/iu, "R005_READ_ONLY", "runner may automatically revert workspace effects");
 
   const readme = read(readmeFile, "R002_REGISTRY");
@@ -478,6 +481,15 @@ function checkLaunchers(root) {
       requirePattern(instructions, /Exemplo em inglês[\s\S]{0,500}"en-US"/u, "L020_RUNBOOK_OPTIONS", "runbook launcher omits the en-US example");
       requirePattern(instructions, /Exemplo em português do Brasil[\s\S]{0,800}"pt-BR"/u, "L020_RUNBOOK_OPTIONS", "runbook launcher omits the pt-BR example");
     }
+    if (name === "execution-tasks") {
+      requirePattern(instructions, /Antes de validar o candidate[\s\S]{0,400}templates\/tasks\.template\.md[\s\S]{0,350}bloco completo `# File Purpose Header`[\s\S]{0,350}sete campos ordenados[\s\S]{0,350}owner: stnl-task-materializer[\s\S]{0,300}nunca publique um índice parcial/iu, "L032_TASK_INDEX_HEADER", `${name}: global task-index File Purpose Header guard is missing`);
+    }
+    if (name === "execution-plan") {
+      requirePattern(instructions, /recompute every plan claim from its declaring artifact[\s\S]{0,260}`path\.relative\(path\.dirname\(artifact\), physicalTarget\)`[\s\S]{0,220}compare by `realpath`[\s\S]{0,180}return `BLOCKED` without publication[\s\S]{0,120}never publish a plan claim/iu, "L035_PLAN_PATH_IDENTITY", `${name}: plan claim physical-identity guard is missing`);
+    }
+    if (name === "execution-plan-review") {
+      requirePattern(instructions, /recompute every reviewed plan claim from its declaring artifact[\s\S]{0,260}`path\.relative\(path\.dirname\(artifact\), physicalTarget\)`[\s\S]{0,220}compare by `realpath`[\s\S]{0,180}return `BLOCKED` without publication[\s\S]{0,120}never approve a plan claim/iu, "L036_REVIEW_PLAN_PATH_IDENTITY", `${name}: reviewed plan claim physical-identity guard is missing`);
+    }
     if (name.startsWith("spec-roadmap-")) {
       requirePattern(instructions, /roadmap\.json/u, "L021_ROADMAP_BOUNDARY", `${name}: roadmap authority is missing`);
       requirePattern(instructions, /browser.{0,120}(?:não é|never).{0,80}(?:Sentinel|authority|autoridade)/iu, "L021_ROADMAP_BOUNDARY", `${name}: browser-state boundary is missing`);
@@ -502,6 +514,20 @@ function checkLaunchers(root) {
     }
     requirePattern(instructions, /(?:sem histórico|não envie histórico|without inherited|no conversation history)/iu, "L012_CHECK_DELEGATION", `${name}: conversation history boundary is missing`);
     requirePattern(instructions, /official execution validator\/preflight aplicável/iu, "L023_REQUIREMENTS_AUTHORITY", `${name}: runner payload omits the official execution authority checker`);
+    if (spec[2] === "EXECUTE_SLICE") {
+      requirePattern(instructions, /(?:Antes do spawn|Antes da delegação)[\s\S]{0,900}(?:SPEC_PATH|`SPEC_PATH`)[\s\S]{0,350}(?:executionRoot|execution root)[\s\S]{0,350}(?:PLAN_PATH|plan path)[\s\S]{0,350}(?:TASK_PATH|task path)[\s\S]{0,350}(?:lstat|existentes|existing)[\s\S]{0,350}managed workspace/iu, "L027_DELEGATION_PATHS", `${name}: runner payload path identity and availability guard is missing`);
+      requirePattern(instructions, /(?:Nunca envie|não envie|never send)[\s\S]{0,240}(?:source checkout|source-checkout|CWD|candidate|placeholder|reconstruído|reconstructed)[\s\S]{0,260}(?:corrija a derivação|repair the derivation)[\s\S]{0,180}(?:antes de invocar o runner|before invoking the runner)/iu, "L027_DELEGATION_PATHS", `${name}: invalid runner paths are not repaired before spawn`);
+      requirePattern(instructions, /Antes de aceitar qualquer status[\s\S]{0,260}Tested state[\s\S]{0,240}dirname\(tasks\/slice-NN\.md\)[\s\S]{0,260}src\/\.\.\.[\s\S]{0,220}saída malformada[\s\S]{0,220}Não rebaseie/iu, "L028_TESTED_STATE_PATHS", `${name}: runner Tested state output path basis guard is missing`);
+      requirePattern(instructions, /Depois de derivar cada claim[\s\S]{0,220}path\.resolve\(dirname\(taskArtifact\), claim\)[\s\S]{0,220}compare por `realpath`[\s\S]{0,260}não aceite `TESTS_PASS`[\s\S]{0,180}target/iu, "L030_PHYSICAL_PATH_IDENTITY", `${name}: runner Tested state claim is not checked against its physical target`);
+      requirePattern(instructions, /Antes de aceitar `TESTS_PASS` do runner[\s\S]{0,240}formato exato `sha256:`[\s\S]{0,160}64 caracteres hexadecimais minúsculos[\s\S]{0,240}malformed output[\s\S]{0,160}RUNNER_RESULT_BLOCKED/iu, "L033_EXECUTE_DIGEST_FORMAT", `${name}: execute caller digest guard is missing`);
+      requirePattern(instructions, /Every file-backed `Tested state` tuple MUST use the literal `sha256:` delimiter; `sha256=` or any other separator is malformed output[\s\S]{0,100}RUNNER_RESULT_BLOCKED/u, "L037_EXECUTE_DIGEST_PREFIX", `${name}: execute caller digest delimiter guard is missing`);
+      requirePattern(instructions, /Exija do runner uma resposta exatamente no schema solicitado e na ordem literal dos campos[\s\S]{0,360}resposta abreviada como `TESTS_PASS`/u, "L038_EXECUTE_OUTPUT_GATE", `${name}: execute caller canonical response gate is missing`);
+      requirePattern(instructions, /Exija também a serialização literal:[\s\S]{0,380}cada linha de `Commands` deve ser[\s\S]{0,260}delimiter ausente é malformed[\s\S]{0,120}RUNNER_RESULT_BLOCKED/u, "L039_EXECUTE_TUPLE_GRAMMAR", `${name}: execute caller tuple grammar guard is missing`);
+      requirePattern(instructions, /Exija que a resposta do runner comece imediatamente por `Operation`[\s\S]{0,1500}sem tradução, reordenação, omissão[\s\S]{0,1500}em `VALIDATE_SLICE`/u, "L040_EXECUTE_FIELD_SEQUENCE", `${name}: execute caller literal field-sequence guard is missing`);
+      requirePattern(instructions, /Exija forma estrita dos campos:[\s\S]{0,700}nunca podem ser listas aninhadas[\s\S]{0,220}Somente `Tested state` e `Commands` admitem[\s\S]{0,180}Status: BLOCKED/iu, "L041_EXECUTE_FIELD_SHAPE", `${name}: execute caller scalar field-shape guard is missing`);
+      requirePattern(instructions, /Ao classificar o retorno do runner[\s\S]{0,260}preflight, payload e artifact têm o mesmo token oficial[\s\S]{0,260}descarte qualquer SHA raw[\s\S]{0,220}não crie `BLOCKED`[\s\S]{0,220}Somente ausência ou desigualdade do token oficial/iu, "L034_EXECUTE_RAW_AUTHORITY_DISPOSITION", `${name}: execute caller may block on a raw digest despite agreeing official authority`);
+      requirePattern(instructions, /Para o check auxiliar[\s\S]{0,180}autoridade é somente o token exato do official preflight[\s\S]{0,180}igualdade com payload e artifact[\s\S]{0,220}nunca calcule, compare ou use SHA raw[\s\S]{0,200}Um raw digest não é authority e não pode bloquear/iu, "L029_RAW_AUTHORITY", `${name}: auxiliary checks may use a raw requirements digest as authority`);
+    }
     forbidPattern(instructions, /(?:(?<!não )envie|(?<!do not )forward|(?<!do not )include).{0,30}(?:histórico da conversa|conversation history)/iu, "L012_CHECK_DELEGATION", `${name}: forwards conversation history`);
     requirePattern(instructions, /(?:no máximo uma nova tentativa|at most one (?:new )?(?:transport )?retry|retry.{0,40}once)/iu, "L012_CHECK_DELEGATION", `${name}: transport retry must be bounded to one`);
     requirePattern(instructions, /Runner Initialization Blocker/u, "L012_CHECK_DELEGATION", `${name}: missing singleton initialization blocker`);
@@ -524,6 +550,10 @@ function checkLaunchers(root) {
       requirePattern(instructions, /última slice aberta[^\n]{0,180}Somente nesse caso inclua[^\n]{0,140}global plan[^\n]{0,100}ordem serial/iu, "L022_TERMINAL_VALIDATION", `${name}: terminal-only global payload is missing`);
       requirePattern(instructions, /cobertura global[^\n]{0,120}reconciliação[^\n]{0,120}cross-slice[^\n]{0,160}integration\/stabilization/iu, "L022_TERMINAL_VALIDATION", `${name}: terminal semantic review is incomplete`);
       requirePattern(instructions, /Falta de authority[^\n]{0,180}`BLOCKED`[^\n]{0,120}`REPLAN`/iu, "L022_TERMINAL_VALIDATION", `${name}: terminal strategy gap does not route to REPLAN`);
+      requirePattern(instructions, /Requirements authority` exclusivamente do campo exato `authority=sha256:<64hex>`[\s\S]{0,200}mesmo official preflight[\s\S]{0,220}copie o valor byte-identical/iu, "L026_AUTHORITY_IDENTITY", `${name}: canonical preflight authority is not preserved byte-identically`);
+      requirePattern(instructions, /Nunca calcule hash raw de `shared\/requirements\.md` ou `feature_spec\.md`[\s\S]{0,160}nem reconstrua a authority/iu, "L026_AUTHORITY_IDENTITY", `${name}: raw or reconstructed requirements authority is not forbidden`);
+      requirePattern(instructions, /`Commands` deve incluir o comando completo e exato[\s\S]{0,180}official execution validator\/preflight[\s\S]{0,180}`SPEC_PATH`[\s\S]{0,120}exit code numérico/iu, "L020_EXACT_COMMANDS", `${name}: formal validation may omit the complete official preflight command`);
+      requirePattern(instructions, /Antes de aceitar qualquer `PASS`[\s\S]{0,260}digests file-backed[\s\S]{0,220}(?:formato exato|deve ser exatamente) `sha256:`[\s\S]{0,160}64 caracteres hexadecimais minúsculos[\s\S]{0,260}saída malformada[\s\S]{0,120}`BLOCKED`/iu, "L031_DIGEST_FORMAT", `${name}: formal validation digest format guard is missing`);
     } else {
       requirePattern(instructions, /TESTS_PASS[\s\S]{0,80}TESTS_FAIL[\s\S]{0,80}TESTS_NOT_APPLICABLE[\s\S]{0,80}BLOCKED/u, "L014_AUTOMATIC_RECHECK", `${name}: auxiliary status set changed`);
       requirePattern(instructions, /`path\.relative\(dirname\(tasks\/slice-NN\.md\), target\)`[\s\S]{0,160}artefato detalhado final[\s\S]{0,180}`Changed Areas`[\s\S]{0,200}`Tested state`[\s\S]{0,220}nunca use CWD[\s\S]{0,220}candidate root/iu, "L024_PATH_BASIS", `${name}: task-relative execution-record path derivation is missing`);

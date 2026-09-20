@@ -1,0 +1,19 @@
+{
+  "issueId": "C14",
+  "case": "C",
+  "operation": "EXECUTE_SLICE",
+  "slice": "slice-01",
+  "officialState": "RUNNER_RESULT_BLOCKED",
+  "blocker": "OFFICIAL_RUNNER_RESULT_BLOCKED",
+  "dispatch": {
+    "model": "GPT-5.6-Luna",
+    "effort": "xhigh"
+  },
+  "authority": "sha256:556920f531f150e8dae1ec2140e0fbf1ff99b6dd53046176fcd67b0a457e4509",
+  "runnerOutcome": "malformed-output",
+  "runnerDiagnostic": "The execute producer reported a raw requirements-file digest as an authority divergence and returned non-canonical auxiliary output even though official preflight, payload, and selected artifact carried the same official token.",
+  "strictBehavior": "The owner persisted a malformed-output blocker, did not allocate implementation-check-01, did not retry, and kept same-operation EXECUTE_SLICE recovery mandatory.",
+  "rootCauseEvidence": "The execute caller still treated a raw digest mentioned by the runner as a blocking authority comparison instead of discarding it when the three official authority tokens agree. This is a recurrence of C08 on the caller disposition surface, distinct from C13's truncated hash.",
+  "sourceReplayOutput": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-convergence-c-PIgplx",
+  "evidenceNote": "C13's digest-format blocker was not the cause in this replay; C12 materialization and task review passed."
+}

@@ -1,0 +1,19 @@
+{
+  "issueId": "C07",
+  "case": "C",
+  "operation": "SPEC_CLOSE",
+  "officialStateBeforeClose": "COMPLETE",
+  "blocker": "OFFICIAL_CLOSE_BLOCKED",
+  "dispatch": {
+    "model": "GPT-5.6-Sol",
+    "effort": "high"
+  },
+  "harnessStatus": "MODEL_TURN_FAILED",
+  "harnessSessionStarted": true,
+  "harnessTurnStarted": true,
+  "assistantMessage": "",
+  "commandExitCodes": [],
+  "sourceMutationObserved": false,
+  "evidenceNote": "All three slices had execution and formal validation PASS, SPEC_READINESS was PASS, execution state was COMPLETE, and no lifecycle close mutation occurred. The harness exposed no provider diagnostic beyond MODEL_TURN_FAILED; no source correction is justified by this artifact.",
+  "sourceReplayOutput": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-convergence-c-HmmKv6"
+}

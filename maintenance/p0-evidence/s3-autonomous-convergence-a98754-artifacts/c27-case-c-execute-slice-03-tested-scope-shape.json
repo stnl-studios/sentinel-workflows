@@ -1,0 +1,26 @@
+{
+  "issue": "C27",
+  "case": "C",
+  "operation": "EXECUTE_SLICE",
+  "slice": "slice-03",
+  "officialState": "RUNNER_RESULT_BLOCKED",
+  "status": "RUNNER_RESULT_BLOCKED",
+  "evidence": {
+    "operationArtifact": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-convergence-c-0tQOOb/case-c/operations/10-execute_slice.json",
+    "finalAssistantMessage": "Tested scope was returned as a nested bullet list; the execution-record contract requires the scalar field inline, so no implementation check was allocated.",
+    "preservedTaskArtifact": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-convergence-c-0tQOOb/case-c/operations/10-execute_slice/task-slice-03.md",
+    "outerRetry": 0,
+    "authority": "sha256:979e9a08ba3a26b565a837fb51e147f513aac2bac03d6e6b3f3722a9bbda9daf",
+    "workflowOperations": 10,
+    "priorProgress": "slice-01 and slice-02 execution/validation PASS"
+  },
+  "rootCause": "The producer output used nested structure for the scalar Tested scope field. The execution-record contract allows nested list structure only for Tested state and Commands; the strict parser correctly rejected the malformed runner response.",
+  "responsibleComponents": [
+    "agents/codex/.codex/agents/stnl_validation_runner.toml",
+    "agents/claude-code/.claude/agents/stnl-validation-runner.md",
+    "templates/prompts/slice-execute-codex.md",
+    "templates/prompts/slice-execute-claude.md",
+    "skills/workflows/stnl-slice-executor/SKILL.md"
+  ],
+  "authorityDecision": "Preserve scalar parser semantics and malformed-output blocking. Add the exact scalar-vs-nested field-shape rule to producer instructions; do not parse nested Tested scope as equivalent."
+}

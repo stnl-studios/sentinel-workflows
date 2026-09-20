@@ -1,0 +1,22 @@
+{
+  "issue": "C25",
+  "case": "C",
+  "operation": "REVIEW_PLAN",
+  "slice": null,
+  "officialState": "PLANNED_DRAFT",
+  "status": "OFFICIAL_TRANSITION_NOT_OBSERVED",
+  "evidence": {
+    "operationArtifact": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-convergence-c-oScsyB/case-c/operations/03-review_plan.json",
+    "finalAssistantMessage": "REVIEW_PLAN was blocked because candidate validation received an invalid SPEC_PATH; no publication occurred.",
+    "recoveryArtifact": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-convergence-c-oScsyB/case-c/operations/04-replan.json",
+    "recoveryResult": "REPLAN returned PLANNED_DRAFT with revision 1",
+    "outerRetry": 0,
+    "workflowOperations": 4,
+    "sourceMutation": false
+  },
+  "rootCause": "The live REVIEW_PLAN producer failed to publish because its candidate SPEC_PATH was invalid. The preserved evidence does not identify a repository or runtime defect beyond the producer turn; the strict candidate validator and official recovery remained in control.",
+  "responsibleComponents": [
+    "live REVIEW_PLAN producer turn"
+  ],
+  "authorityDecision": "No source change. Use one fresh C retry to obtain a valid review-plan publication and test C24; do not relax SPEC_PATH validation or add a retry to the workflow state machine."
+}

@@ -1,0 +1,19 @@
+{
+  "issue": "C03",
+  "case": "B",
+  "operation": "VALIDATE_SLICE",
+  "slice": "slice-02",
+  "profile": "production-v2",
+  "officialState": "VALIDATION_BLOCKED",
+  "outcome": "BLOCKED",
+  "blocker": "OFFICIAL_VALIDATION_BLOCKED",
+  "evidence": {
+    "source": "controlled convergence replay",
+    "externalOutput": "sentinel-convergence-b-21Exoh/case-b/operations/09-validate_slice.json",
+    "preflightAuthority": "sha256:a199bf18f2c993f1798a3e6d8fe4e1844737ec52205b4edd58659c1db6c69e26",
+    "runnerReportedAuthority": "sha256:70b880...a4a20",
+    "modelSummary": "Validation attempt BLOCKED because the reported current authority diverged from the preflight/artifact authority; no finding or Effective Validation Base was changed.",
+    "legalRecovery": ["REPLAN", "VALIDATE_SLICE slice-02"],
+    "outerRetry": 0
+  }
+}

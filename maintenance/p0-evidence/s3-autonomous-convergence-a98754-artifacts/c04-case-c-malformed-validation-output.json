@@ -1,0 +1,19 @@
+{
+  "issue": "C04",
+  "case": "C",
+  "operation": "VALIDATE_SLICE",
+  "slice": "slice-02",
+  "profile": "production-v2",
+  "officialState": "RUNNER_RESULT_BLOCKED",
+  "outcome": "BLOCKED",
+  "blocker": "OFFICIAL_RUNNER_RESULT_BLOCKED",
+  "evidence": {
+    "source": "controlled convergence replay after C03 authority correction",
+    "externalOutput": "sentinel-convergence-c-dWLhcz/case-c/operations/09-validate_slice.json",
+    "authority": "sha256:8feab943cf4067a57dd64594c1a051e8aef6024af5c8d1c72b48606687da00a8",
+    "modelSummary": "Formal validation output was malformed because Comandos executados omitted the complete official preflight command; no attempt, base, finding, or global row was changed.",
+    "mandatoryRecovery": "VALIDATE_SLICE slice-02",
+    "sameOperationResumeRequired": true,
+    "outerRetry": 0
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "issue": "C29",
+  "category": "PRODUCER_CONTRACT",
+  "case": "C",
+  "operation": "EXECUTE_SLICE",
+  "slice": "slice-01",
+  "evidence": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-convergence-c-hiSDBU/case-c/operations/06-execute_slice.json",
+  "officialState": "RUNNER_RESULT_BLOCKED",
+  "symptom": "Runner returned a file-backed Tested state token with sha256: followed by 63 lowercase hexadecimal characters.",
+  "authorityResult": "Caller rejected the malformed digest; candidate validation and readback passed the blocked state; no check, retry, or publication was fabricated.",
+  "outerRetry": 0,
+  "preservedTaskArtifact": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-convergence-c-hiSDBU/case-c/operations/06-execute_slice/task-slice-01.md",
+  "replayOutput": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-convergence-c-hiSDBU",
+  "liveCalls": 6
+}

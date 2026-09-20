@@ -1,0 +1,17 @@
+{
+  "issue": "C01",
+  "kind": "deterministic-regression-before-fix",
+  "test": "candidate validation permits declared later-slice ownership of a historical overlap",
+  "command": "node --test --test-name-pattern='candidate validation permits declared later-slice ownership of a historical overlap' scripts/test-execution-contract.mjs",
+  "exitCode": 1,
+  "observed": {
+    "validator": "validateCandidateExecutionRecordPaths",
+    "artifact": "requirements-execution/tasks/slice-01.md",
+    "field": "Effective Validation Base Files",
+    "path": "../../src/example.txt",
+    "reason": "historical slice-01 hash did not match the later physical file state"
+  },
+  "expected": "accept the candidate when slice-02 owns and strictly validates the current overlapping path",
+  "currentEvidence": "slice-02 current evidence remains hash-checked by the regression",
+  "liveModelCalls": 0
+}

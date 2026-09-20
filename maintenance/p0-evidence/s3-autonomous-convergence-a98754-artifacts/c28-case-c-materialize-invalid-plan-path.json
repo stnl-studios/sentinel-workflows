@@ -1,0 +1,41 @@
+{
+  "issue": "C28",
+  "category": "PATH_BASIS",
+  "case": "C",
+  "operations": [
+    {
+      "operation": "MATERIALIZE_TASKS",
+      "sequence": 4,
+      "evidence": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-convergence-c-b4kV8I/case-c/operations/04-materialize_tasks.json",
+      "officialState": "PLANNED_READY",
+      "blocker": "Candidate validation rejected slice 01 expected area ../../../src/validation.mjs because it resolved to specs/src/validation.mjs; nothing was published."
+    },
+    {
+      "operation": "REPLAN",
+      "sequence": 5,
+      "evidence": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-convergence-c-b4kV8I/case-c/operations/05-replan.json",
+      "officialState": "PLANNED_DRAFT",
+      "blocker": "The authorized recovery replan completed, but the replay ended at OFFICIAL_TRANSITION_NOT_OBSERVED before tasks or execution could start."
+    }
+  ],
+  "authorityResult": "The candidate validator correctly rejected the invalid path in every occurrence; no runtime relaxation or historical rewrite was made.",
+  "replays": [
+    {
+      "output": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-convergence-c-b4kV8I",
+      "operations": "MATERIALIZE_TASKS then REPLAN",
+      "liveCalls": 5
+    },
+    {
+      "output": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-convergence-c-u4Wplu",
+      "operations": "MATERIALIZE_TASKS then REPLAN",
+      "liveCalls": 5
+    },
+    {
+      "output": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-convergence-c-3LUD8j",
+      "operations": "MATERIALIZE_TASKS then REPLAN",
+      "liveCalls": 5
+    }
+  ],
+  "outerRetry": 0,
+  "liveCalls": 15
+}

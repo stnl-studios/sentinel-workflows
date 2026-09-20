@@ -1,0 +1,25 @@
+{
+  "issue": "C24",
+  "case": "C",
+  "operation": "EXECUTE_SLICE",
+  "slice": "slice-02",
+  "officialState": "EXECUTION_STARTED",
+  "status": "OFFICIAL_TRANSITION_NOT_OBSERVED",
+  "evidence": {
+    "operationArtifact": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-convergence-c-6mLYuX/case-c/operations/08-execute_slice.json",
+    "finalAssistantMessage": "Runner response was classified as malformed because Tested state and Commands tuples lacked required delimiters; candidate publication was not observed.",
+    "outerRetry": 0,
+    "authority": "sha256:b83891dea40adab040b424bd5a5a1a4730e16b57c887774f53ea9bd1b6c3dbea",
+    "workflowOperations": 8,
+    "priorProgress": "slice-01 EXECUTE_SLICE and VALIDATE_SLICE both passed in the same fresh replay"
+  },
+  "rootCause": "The runner output gate required complete paths and digests but did not spell out the exact pipe-delimited tuple grammar consumed by the execution-record parser. The producer returned tuple-like prose without the required `| sha256:<64hex>` and `| exit:<integer>` delimiters.",
+  "responsibleComponents": [
+    "agents/codex/.codex/agents/stnl_validation_runner.toml",
+    "agents/claude-code/.claude/agents/stnl-validation-runner.md",
+    "templates/prompts/slice-execute-codex.md",
+    "templates/prompts/slice-execute-claude.md",
+    "skills/workflows/stnl-slice-executor/SKILL.md"
+  ],
+  "authorityDecision": "Preserve strict parser tuple grammar and malformed-output classification. Add the exact serialized forms to the producer instructions; do not add aliases or repair delimiters in the caller."
+}

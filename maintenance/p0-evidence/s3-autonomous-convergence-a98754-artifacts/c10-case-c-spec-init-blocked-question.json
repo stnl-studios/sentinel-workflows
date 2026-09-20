@@ -1,0 +1,24 @@
+{
+  "issueId": "C10",
+  "case": "C",
+  "operation": "SPEC_INIT",
+  "slice": null,
+  "officialState": "EMPTY",
+  "blocker": "OFFICIAL_LIFECYCLE_BLOCKED",
+  "dispatch": {
+    "model": "GPT-5.6-Sol",
+    "effort": "high"
+  },
+  "runnerOutcome": "not_applicable",
+  "lifecycle": {
+    "status": "blocked",
+    "blockingQuestion": "Q-001",
+    "question": "definição da representação canônica de archived=false",
+    "validation": "PASS, 21 IDs",
+    "legalOperations": []
+  },
+  "rootCauseEvidence": "The live SPEC producer published a blocking open question instead of resolving the representation before handoff. No runtime, path, authority, or environment failure was reported.",
+  "strictBehavior": "Official readback exposed OFFICIAL_LIFECYCLE_BLOCKED and did not invent recovery or continue into execution.",
+  "sourceReplayOutput": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-convergence-c-imTJAp",
+  "evidenceNote": "This was a fresh-workspace producer nondeterminism after C09 edits; no source correction is authorized by the evidence."
+}

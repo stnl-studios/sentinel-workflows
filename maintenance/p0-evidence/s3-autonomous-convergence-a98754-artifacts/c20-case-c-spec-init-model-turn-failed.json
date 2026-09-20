@@ -1,0 +1,18 @@
+{
+  "issue": "C20",
+  "caseId": "C",
+  "operation": "01",
+  "operationName": "SPEC_INIT",
+  "officialState": "SPEC path absent",
+  "status": "BLOCKED",
+  "blocker": "OFFICIAL_LIFECYCLE_BLOCKED",
+  "evidence": {
+    "replaySummary": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-convergence-c-aGKw84/summary.json",
+    "operationEvidence": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-convergence-c-aGKw84/case-c/operations/01-spec_init.json",
+    "model": "GPT-5.6-Sol",
+    "effort": "high",
+    "outerRetry": 0,
+    "modelCalls": 1
+  },
+  "rootCauseAssessment": "The model turn ended before publishing the SPEC artifact. The official readback correctly found no SPEC path; the preserved evidence does not establish a repository, runtime, authority, or driver defect, so no source correction is justified."
+}

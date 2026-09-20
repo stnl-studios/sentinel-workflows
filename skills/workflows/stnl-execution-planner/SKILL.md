@@ -33,6 +33,8 @@ In global `Expected areas` and detailed `Likely Areas`, every Markdown code span
 
 Resolve every implementation claim from the containing artifact to the nearest ancestor of the normalized requirements source that contains a real `.git` marker. `SPEC_PATH` is not necessarily the project root: when the SPEC is nested under `specs/...`, include every `..` component required to reach the repository implementation target. Never derive the claim from CWD, a temporary candidate/session root, or the parent of `SPEC_PATH` by assumption.
 
+Before candidate validation, recompute every plan claim from its declaring artifact with `path.relative(path.dirname(artifact), physicalTarget)`, normalize `/`, compare by `realpath` with the physical target, and return `BLOCKED` without publication if any claim differs; never publish a plan claim that resolves to another path.
+
 Do not invent a filesystem path to fill either carrier. When only a conceptual area is known, keep it as plain text where the contract permits; when a concrete claim is required but no physical target is supported by observed structure, block planning instead of fabricating a path.
 
 If several slices require real integration verification, add a final explicit integration or stabilization slice. Do not defer that verification to closing.

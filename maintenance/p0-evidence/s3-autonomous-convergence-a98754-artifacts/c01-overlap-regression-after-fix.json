@@ -1,0 +1,10 @@
+{
+  "issue": "C01",
+  "kind": "deterministic-regression-after-fix",
+  "command": "node --test --test-name-pattern='candidate validation permits declared later-slice ownership of a historical overlap' scripts/test-execution-contract.mjs",
+  "exitCode": 0,
+  "accepted": "current slice evidence owns and exactly hashes the physical overlapping path",
+  "rejected": "current slice evidence with an incorrect hash remains blocked",
+  "historical": "slice-01 historical manifest remains unchanged and is checked structurally/for containment",
+  "liveModelCalls": 0
+}

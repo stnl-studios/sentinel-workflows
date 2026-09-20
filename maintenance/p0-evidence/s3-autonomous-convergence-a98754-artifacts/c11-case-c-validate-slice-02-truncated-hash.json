@@ -1,0 +1,18 @@
+{
+  "issueId": "C11",
+  "case": "C",
+  "operation": "VALIDATE_SLICE",
+  "slice": "slice-02",
+  "officialState": "RUNNER_RESULT_BLOCKED",
+  "blocker": "OFFICIAL_RUNNER_RESULT_BLOCKED",
+  "dispatch": {
+    "model": "GPT-5.6-Luna",
+    "effort": "xhigh"
+  },
+  "authority": "sha256:256cb2c0be9c96bb930f841392e3577f01ec51516d1cee6e92feb285c8c55f66",
+  "runnerOutcome": "PASS",
+  "runnerDiagnostic": "Formal runner returned PASS with a 47-hex-character digest for ../../../../test/todo-service.test.mjs instead of a lowercase 64-hex SHA-256 token.",
+  "strictBehavior": "The owner persisted a malformed-output delegation blocker, created no Validation Attempt or Effective Validation Base, and required same-operation VALIDATE_SLICE recovery.",
+  "sourceReplayOutput": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-convergence-c-q0Wkbq",
+  "evidenceNote": "The exact official preflight command was present and exited 0; the defect was the runner's malformed file-backed manifest hash."
+}

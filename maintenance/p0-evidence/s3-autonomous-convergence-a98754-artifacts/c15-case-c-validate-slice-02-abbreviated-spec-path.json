@@ -1,0 +1,19 @@
+{
+  "issue": "C15",
+  "caseId": "C",
+  "operation": "VALIDATE_SLICE",
+  "slice": "slice-02",
+  "officialState": "RUNNER_RESULT_BLOCKED",
+  "status": "BLOCKED",
+  "runnerStatus": "PASS",
+  "cause": "The formal validation runner abbreviated SPEC_PATH with an ellipsis in Comandos executados, so the delegated output could not reproduce the exact official preflight command.",
+  "authority": "sha256:57245dbba39512271a2c4ca14a5316051c020c3ce199851b58aa2d5391eb7062",
+  "evidence": {
+    "replaySummary": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-convergence-c-TTzrf2/summary.json",
+    "operationEvidence": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-convergence-c-TTzrf2/case-c/operations/09-validate_slice.json",
+    "observedDiagnostic": "Runner returned PASS, but abbreviated SPEC_PATH with ... in the formal command evidence; output was malformed.",
+    "retryCount": 0,
+    "outerRetry": 0
+  },
+  "preservedTaskArtifact": "maintenance/p0-evidence/s3-autonomous-convergence-a98754-artifacts/c15-case-c-validate-slice-02-abbreviated-spec-path/task-slice-02.md"
+}

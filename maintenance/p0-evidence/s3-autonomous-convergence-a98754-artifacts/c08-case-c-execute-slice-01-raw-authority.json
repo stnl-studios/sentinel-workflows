@@ -1,0 +1,27 @@
+{
+  "issueId": "C08",
+  "case": "C",
+  "operation": "EXECUTE_SLICE",
+  "slice": "slice-01",
+  "officialState": "AUXILIARY_BLOCKED",
+  "blocker": "OFFICIAL_AUXILIARY_BLOCKED",
+  "dispatch": {
+    "model": "GPT-5.6-Luna",
+    "effort": "xhigh"
+  },
+  "automaticRound": "1/3",
+  "authority": "sha256:ceb301c2ac77f830c8ec8927f895948eb7f611f5b6acc9a8e5c3e7a9e219947b",
+  "runnerOutcome": "BLOCKED",
+  "runnerDiagnostic": "Runner reported a producer-authority comparison against a separately computed raw requirements digest; official preflight and selected artifacts agreed, so no documentary divergence existed.",
+  "strictBehavior": "No verification command or correction was authorized; the canonical auxiliary blocker was persisted and same-operation recovery remained required.",
+  "recovery": {
+    "operation": "EXECUTE_SLICE",
+    "slice": "slice-01",
+    "record": "implementation-check-01",
+    "round": 1,
+    "sameOperationResumeRequired": true
+  },
+  "preservedTaskArtifact": "c08-case-c-execute-slice-01-raw-authority/task-slice-01.md",
+  "sourceReplayOutput": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-convergence-c-2b7jBm",
+  "evidenceNote": "This is distinct from C05: the task paths were canonical and the blocker was a non-canonical raw authority comparison."
+}

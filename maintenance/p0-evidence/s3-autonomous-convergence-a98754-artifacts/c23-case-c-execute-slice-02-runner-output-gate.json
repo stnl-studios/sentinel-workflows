@@ -1,0 +1,24 @@
+{
+  "issue": "C23",
+  "case": "C",
+  "operation": "EXECUTE_SLICE",
+  "slice": "slice-02",
+  "officialState": "RUNNER_RESULT_BLOCKED",
+  "status": "RUNNER_RESULT_BLOCKED",
+  "evidence": {
+    "operationArtifact": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-convergence-c-FnhhCD/case-c/operations/08-execute_slice.json",
+    "finalAssistantMessage": "Runner response was classified as malformed: non-canonical schema, abbreviated SPEC_PATH with ..., and incomplete file-backed Tested state hashes.",
+    "outerRetry": 0,
+    "authority": "sha256:74fc647690dd024e86b861dc32e171fd2c22ee761fbf50167968758e8c3cd7f8",
+    "workflowOperations": 8,
+    "priorProgress": "slice-01 EXECUTE_SLICE and VALIDATE_SLICE both passed after C22 correction"
+  },
+  "rootCause": "The live runner producer did not reliably apply the already-canonical output schema at the return boundary for a later slice. The response gate was not sufficiently salient to prevent translated or abbreviated output and incomplete digest tuples.",
+  "responsibleComponents": [
+    "agents/codex/.codex/agents/stnl_validation_runner.toml",
+    "agents/claude-code/.claude/agents/stnl-validation-runner.md",
+    "templates/prompts/slice-execute-codex.md",
+    "templates/prompts/slice-execute-claude.md"
+  ],
+  "authorityDecision": "Keep strict schema, path, and digest validation. Do not add aliases, repair output, or downgrade the blocker. Add a producer-side canonical output gate only."
+}

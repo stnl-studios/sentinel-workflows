@@ -1,0 +1,18 @@
+{
+  "issue": "C16",
+  "caseId": "C",
+  "operation": "PLAN",
+  "slice": null,
+  "officialState": "EMPTY",
+  "status": "BLOCKED",
+  "blocker": "OFFICIAL_TRANSITION_NOT_OBSERVED",
+  "producerDiagnostic": "plan.md has non-canonical Requirements source",
+  "evidence": {
+    "replaySummary": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-convergence-c-hNqeae/summary.json",
+    "operationEvidence": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-convergence-c-hNqeae/case-c/operations/02-plan.json",
+    "officialLegalOperationAfterBlock": "PLAN",
+    "publishedArtifacts": false,
+    "outerRetry": 0
+  },
+  "rootCauseAssessment": "The live PLAN producer returned a fail-closed non-canonical Requirements source diagnostic before publishing a plan. The preserved evidence does not establish a repository source, runtime authority, or driver defect. A fresh workspace is required because no legal recovery artifact was published."
+}

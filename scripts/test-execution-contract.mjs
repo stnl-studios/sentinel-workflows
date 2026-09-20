@@ -1805,13 +1805,13 @@ test("auxiliary runner output contract round-trips through model-owned persisten
   for (const [runnerField, recordField] of [
     ["Automatic check round:", "- Automatic check round: 1/3"],
     ["Status:", "- Status: TESTS_PASS"],
-    ["Escopo verificado:", "- Tested scope: ../../src/example.txt"],
-    ["Estado testado:", "- Tested state:"],
+    ["Tested scope:", "- Tested scope: ../../src/example.txt"],
+    ["Tested state:", "- Tested state:"],
     ["Discovery sources:", "- Discovery sources:"],
     ["Discovery actions:", "- Discovery actions:"],
     ["Verification types considered:", "- Verification types considered:"],
-    ["Comandos executados:", "- Commands:"],
-    ["Testes selecionados:", "- Selected checks:"],
+    ["Commands:", "- Commands:"],
+    ["Selected checks:", "- Selected checks:"],
   ]) {
     for (const contract of contracts) assert.ok(contract.includes(runnerField), runnerField);
     assert.ok(persisted.includes(recordField), recordField);
@@ -1821,8 +1821,7 @@ test("auxiliary runner output contract round-trips through model-owned persisten
   assert.match(persisted, /^- Commands:\n  - `[^`]+` \| exit:0$/mu);
   assert.doesNotMatch(persisted, /^- Fileless reason:/mu);
   for (const contract of contracts) {
-    assert.match(contract, /Fileless reason: required only when Estado testado is exactly none; omit for file-backed state/u);
-    assert.match(contract, /Fileless reason: required only when Manifesto final da slice is exactly none; omit for file-backed manifest/u);
+    assert.match(contract, /Fileless reason: required only when Tested state is exactly none; omit for file-backed state/u);
   }
   const filelessPersisted = persisted.replace(
     `- Tested state:\n  - \`../../src/example.txt\` | sha256:${VALIDATED_HASH}`,
@@ -1856,7 +1855,7 @@ test("auxiliary runner output contract round-trips through model-owned persisten
 
 test("formal validation output round-trips through NEEDS_FIX, correction, PASS, base, final, and handoff", async (t) => {
   const runnerContract = await fs.readFile(path.join(ROOT, "agents/claude-code/.claude/agents/stnl-validation-runner.md"), "utf8");
-  for (const fieldName of ["Tipo de validação:", "Status: PASS | NEEDS_FIX | BLOCKED", "Manifesto final da slice:", "Evidências:", "Findings:"]) {
+  for (const fieldName of ["Type: initial | revalidation", "Status: PASS | NEEDS_FIX | BLOCKED", "Verified scope:", "Evidence:", "Finding references:", "Finding dispositions:"]) {
     assert.ok(runnerContract.includes(fieldName), fieldName);
   }
   const fixture = await standaloneWorkspace(t);
@@ -3784,6 +3783,52 @@ test("Effective Validation Base ownership reproducer covers path basis, hash, dr
     assert.ok(error instanceof ExecutionContractError);
     assert.match(error.message, /final validation ownership does not match/u);
     assert.equal(error.recoveryTargets.some(({ operation, owner }) => operation === "REPLAN" && owner === "terminal-integrity"), true);
+    return true;
+  });
+});
+
+test("candidate validation permits declared later-slice ownership of a historical overlap", async (t) => {
+  const fixture = await standaloneWorkspace(t);
+  await renderArtifacts(fixture);
+  await addSecondPristineSlice(fixture);
+  await passFirstSlice(fixture);
+
+  const currentContent = "later validated behavior\n";
+  const currentHash = createHash("sha256").update(currentContent).digest("hex");
+  await writeValidatedPath(fixture, "../../src/example.txt", currentContent);
+
+  const candidate = await copyDirectory(fixture.execution, path.join(fixture.root, "historical-overlap-candidate"));
+  const candidateTask = path.join(candidate, "tasks/slice-02.md");
+  let task = await fs.readFile(candidateTask, "utf8");
+  task = task.replace("- [ ] 2.1", "- [x] 2.1");
+  task = replaceSection(task, "Changed Areas", "- `../../src/example.txt`");
+  task = replaceSection(
+    task,
+    "Prior Validation Overlap",
+    "### overlap-01\n\n- Prior slice: slice-01\n- Paths: ../../src/example.txt\n- Affected behavior: Preserve the previously validated CLI behavior.\n- Regressions: Re-run the focused CLI regression against the changed test file.",
+  );
+  task = replaceSection(
+    task,
+    "Implementation Test Evidence",
+    checkRecord("implementation-check", 1, "TESTS_PASS", 1).replaceAll(`sha256:${VALIDATED_HASH}`, `sha256:${currentHash}`),
+  );
+  await fs.writeFile(candidateTask, task, "utf8");
+
+  const liveTask = await fs.readFile(path.join(fixture.execution, "tasks/slice-02.md"));
+  assert.equal((await validateExecutionCandidate(fixture.requirements, candidate)).state, "IMPLEMENTED_AWAITING_VALIDATION");
+  assert.deepEqual(await fs.readFile(path.join(fixture.execution, "tasks/slice-02.md")), liveTask);
+
+  const invalidCurrent = await copyDirectory(candidate, path.join(fixture.root, "historical-overlap-invalid-current"));
+  const invalidTaskPath = path.join(invalidCurrent, "tasks/slice-02.md");
+  await fs.writeFile(
+    invalidTaskPath,
+    (await fs.readFile(invalidTaskPath, "utf8")).replaceAll(`sha256:${currentHash}`, `sha256:${"0".repeat(64)}`),
+    "utf8",
+  );
+  await assert.rejects(validateExecutionCandidate(fixture.requirements, invalidCurrent), (error) => {
+    assert.ok(error instanceof ExecutionContractError);
+    assert.match(error.message, /file-backed candidate evidence expected/u);
+    assert.equal(error.findings.some((item) => item.includes("slice-02") || item.includes("tasks/slice-02.md")), true);
     return true;
   });
 });

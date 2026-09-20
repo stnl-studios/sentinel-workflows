@@ -1,0 +1,20 @@
+{
+  "issue": "C22",
+  "caseId": "C",
+  "operation": "06",
+  "operationName": "EXECUTE_SLICE",
+  "slice": "slice-01",
+  "officialState": "RUNNER_RESULT_BLOCKED",
+  "status": "BLOCKED",
+  "runnerStatus": "TESTS_PASS",
+  "cause": "The execute runner returned file-backed Tested state using sha256=<digest> instead of the canonical sha256:<64 lowercase hex> token; the strict caller classified the response as malformed.",
+  "authority": "sha256:1984c352d8e5dde2cb90b82b18ed95ea26f2a8e5aaf62bff525fbaceabc9f9c5",
+  "evidence": {
+    "replaySummary": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-convergence-c-JIHKX3/summary.json",
+    "operationEvidence": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-convergence-c-JIHKX3/case-c/operations/06-execute_slice.json",
+    "preservedTaskArtifact": "maintenance/p0-evidence/s3-autonomous-convergence-a98754-artifacts/c22-case-c-execute-slice-01-sha256-equals-delimiter/task-slice-01.md",
+    "retryCount": 0,
+    "outerRetry": 0
+  },
+  "rootCauseAssessment": "The runner violated the already strict digest grammar at the delimiter level. The caller did not recompute, repair, or accept the malformed token; an explicit delimiter guard is required to make the producer contract operationally unambiguous."
+}

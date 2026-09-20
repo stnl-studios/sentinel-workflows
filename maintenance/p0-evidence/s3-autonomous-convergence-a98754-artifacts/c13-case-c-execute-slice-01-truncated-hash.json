@@ -1,0 +1,19 @@
+{
+  "issueId": "C13",
+  "case": "C",
+  "operation": "EXECUTE_SLICE",
+  "slice": "slice-01",
+  "officialState": "RUNNER_RESULT_BLOCKED",
+  "blocker": "OFFICIAL_RUNNER_RESULT_BLOCKED",
+  "dispatch": {
+    "model": "GPT-5.6-Luna",
+    "effort": "xhigh"
+  },
+  "authority": "sha256:bd2e35a2bbaba6be5f1419da4dbf541393fa582d58a6ff4992728ce1310db597",
+  "runnerOutcome": "malformed-output",
+  "runnerDiagnostic": "The runner returned a malformed digest for ../../../../test/todo-store.test.mjs during EXECUTE_SLICE; the owner did not allocate implementation-check-01.",
+  "strictBehavior": "Candidate/readback remained strict, no hash was recalculated or repaired, and same-operation EXECUTE_SLICE recovery remained mandatory.",
+  "rootCauseEvidence": "The C11 correction made the formal-validation caller explicit, but the execution caller still relied on a less salient digest rule. This operation exposed the same producer-contract defect on the EXECUTE_SLICE surface.",
+  "sourceReplayOutput": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-convergence-c-KnqPy5",
+  "evidenceNote": "C12 materialization passed; all preflight authority tokens were canonical."
+}

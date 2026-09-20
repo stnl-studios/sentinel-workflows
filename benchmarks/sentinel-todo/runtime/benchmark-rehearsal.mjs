@@ -549,8 +549,8 @@ export async function runDeterministicStages({ keepFixture = false, workspace = 
       'Você pode abreviar path ou argumento',
     );
     const testedStateBasisMutation = await runnerContractMutation(
-      'Em qualquer operação, todo caminho file-backed de `Estado testado` é task-relative',
-      'Somente em VALIDATE_SLICE, o Estado testado tem um caminho relativo',
+      'Em qualquer operação, todo caminho file-backed de `Tested state` é task-relative',
+      'Somente em VALIDATE_SLICE, o Tested state tem um caminho relativo',
     );
     const r03 = canonicalContracts.status === 0
       && authorityMutation.status === 1

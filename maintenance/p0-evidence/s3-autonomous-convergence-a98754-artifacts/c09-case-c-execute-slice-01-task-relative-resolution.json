@@ -1,0 +1,21 @@
+{
+  "issueId": "C09",
+  "case": "C",
+  "operation": "EXECUTE_SLICE",
+  "slice": "slice-01",
+  "officialState": "RUNNER_RESULT_BLOCKED",
+  "blocker": "OFFICIAL_RUNNER_RESULT_BLOCKED",
+  "dispatch": {
+    "model": "GPT-5.6-Luna",
+    "effort": "xhigh"
+  },
+  "automaticRound": "1/3",
+  "authority": "sha256:c16ab980e94f84cc70348308f631cad48eede997236a81a3313154afe57a9624",
+  "runnerOutcome": "BLOCKED",
+  "runnerDiagnostic": "Runner returned Tested state claims ../../../src/validation.mjs and ../../../test/todo-store.test.mjs; resolving from dirname(tasks/slice-01.md) lands under specs/src and specs/test instead of the physical project targets.",
+  "strictBehavior": "The owner persisted a malformed-output delegation blocker, did not allocate implementation-check-01, did not run implementation-check verification, and kept same-operation EXECUTE_SLICE recovery mandatory.",
+  "priorCorrectionResult": "The C08 official-authority guard eliminated the raw-authority blocker from the preceding replay; this replay exposed a distinct task-relative physical-resolution defect.",
+  "preservedTaskArtifact": "c09-case-c-execute-slice-01-task-relative-resolution/task-slice-01.md",
+  "sourceReplayOutput": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-convergence-c-lGwYuZ",
+  "evidenceNote": "The task artifact declares canonical claims ../../../../src/validation.mjs and ../../../../test/todo-store.test.mjs; the runner's shorter claims are not equivalent and were not rebased."
+}

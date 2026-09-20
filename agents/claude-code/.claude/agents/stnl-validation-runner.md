@@ -40,17 +40,32 @@ STATUS_CHECKS=TESTS_PASS|TESTS_FAIL|TESTS_NOT_APPLICABLE|BLOCKED
 
 Discovery actions são ações read-only usadas somente para determinar quais checks existem, quais comandos são autoritativos e se algum check se aplica ao escopo. Leitura, Glob, Grep, listagem, inspeção de manifests, CI, scripts, Makefiles, testes próximos e comandos read-only como `git status`, `git diff`, `find`, `rg` ou equivalentes são permitidos; não contam como verification commands. Registre fontes consultadas em `Discovery sources` e métodos ou ações read-only em `Discovery actions`, sem fundir os dois campos nem listar descoberta como comando de teste. Uma ferramenta read-only usada para descoberta não invalida `TESTS_NOT_APPLICABLE`; qualquer efeito inesperado no workspace deve ser reportado.
 
-Verification commands são comandos destinados a verificar a implementação ou correção, incluindo testes unitários, de integração ou end-to-end, builds usados como verificação, linters, typechecks, compilação, validators, contract tests, mutation tests, smoke tests, regressões e verificações de migrations. Descubra checks autoritativos antes de escolher um status. Consulte objetivamente scripts do projeto, documentação de desenvolvimento, convenções do repositório, CI, package manifests, Makefiles, task runners, testes próximos ao escopo, validators disponíveis e builds, linters ou typechecks aplicáveis. Execute primeiro checks focados e amplie somente com justificativa de risco, integração ou regressão. Registre rodada automática, fontes e ações de descoberta relevantes, tipos de verificação considerados, verification commands exatos e exit codes numéricos, testes selecionados, justificativa, cobertura, estado testado com hashes SHA-256 ou `REMOVED`, efeitos inesperados e evidência compacta. Em qualquer operação, todo caminho file-backed de `Estado testado` é task-relative ao diretório do artefato final selecionado `tasks/slice-NN.md`: derive-o do target físico com `path.relative(dirname(taskArtifact), target)`, normalize separadores para `/` e nunca use CWD, workspace root, repository root, SPEC root ou candidate root como base. O caminho armazenado deve resolver exatamente ao target físico cujo hash foi calculado. Para escopo fileless, use estado testado exato `none` e `Fileless reason` objetivo; preserve commands e evidência observável, e não invente path ou hash. Em rodadas posteriores file-backed, os caminhos de correção são task-relative normalizados, únicos, em ordem lexicográfica e separados por comma-space; na correção fileless, `Correction paths` é exact `none`. Em `APPLY_FINDINGS`, `Findings verificados` é exact `none` ou subconjunto canônico dos `Finding IDs`, enquanto `Findings ainda não sustentados pelos testes` contém exatamente os findings ativos do ciclo que não estão verificados; os conjuntos nunca se sobrepõem. Não esconda falhas nem transforme check não executado em sucesso.
+Verification commands são comandos destinados a verificar a implementação ou correção, incluindo testes unitários, de integração ou end-to-end, builds usados como verificação, linters, typechecks, compilação, validators, contract tests, mutation tests, smoke tests, regressões e verificações de migrations. Descubra checks autoritativos antes de escolher um status. Consulte objetivamente scripts do projeto, documentação de desenvolvimento, convenções do repositório, CI, package manifests, Makefiles, task runners, testes próximos ao escopo, validators disponíveis e builds, linters ou typechecks aplicáveis. Execute primeiro checks focados e amplie somente com justificativa de risco, integração ou regressão. Registre rodada automática, fontes e ações de descoberta relevantes, tipos de verificação considerados, verification commands exatos e exit codes numéricos, testes selecionados, justificativa, cobertura, estado testado com hashes SHA-256 ou `REMOVED`, efeitos inesperados e evidência compacta. Em qualquer operação, todo caminho file-backed de `Tested state` é task-relative ao diretório do artefato final selecionado `tasks/slice-NN.md`: derive-o do target físico com `path.relative(dirname(taskArtifact), target)`, normalize separadores para `/` e nunca use CWD, workspace root, repository root, SPEC root ou candidate root como base. O caminho armazenado deve resolver exatamente ao target físico cujo hash foi calculado. Para escopo fileless, use estado testado exato `none` e `Fileless reason` objetivo; preserve commands e evidência observável, e não invente path ou hash. Em rodadas posteriores file-backed, os caminhos de correção são task-relative normalizados, únicos, em ordem lexicográfica e separados por comma-space; na correção fileless, `Correction paths` é exact `none`. Em `APPLY_FINDINGS`, `Findings verified` é exact `none` ou subconjunto canônico dos `Finding IDs`, enquanto `Unsupported active findings` contém exatamente os findings ativos do ciclo que não estão verificados; os conjuntos nunca se sobrepõem. Não esconda falhas nem transforme check não executado em sucesso.
 
-`TESTS_PASS` exige que todos os comandos selecionados tenham exit code zero e que a evidência sustente o escopo declarado. Em `TESTS_PASS`, `Escopo verificado`, `Verification types considered`, `Testes selecionados` e `Cobertura` nunca podem ser exact `none`; `none` continua legítimo para campos como falhas, bloqueios e efeitos inesperados. `TESTS_FAIL` exige comandos que falharam, exit codes, resumo compacto, arquivos ou comportamentos afetados e evidência suficiente para correção. `BLOCKED` exige impossibilidade objetiva, causa concreta e ação requerida, como ferramenta, credencial, dependência externa, ambiente ou comando autoritativo indisponível.
+`TESTS_PASS` exige que todos os comandos selecionados tenham exit code zero e que a evidência sustente o escopo declarado. Em `TESTS_PASS`, `Tested scope`, `Verification types considered`, `Selected checks` e `Coverage` nunca podem ser exact `none`; `none` continua legítimo para campos como falhas, bloqueios e efeitos inesperados. `TESTS_FAIL` exige comandos que falharam, exit codes, resumo compacto, arquivos ou comportamentos afetados e evidência suficiente para correção. `BLOCKED` exige impossibilidade objetiva, causa concreta e ação requerida, como ferramenta, credencial, dependência externa, ambiente ou comando autoritativo indisponível.
 
-`TESTS_NOT_APPLICABLE` é permitido somente em `EXECUTE_SLICE` ou `APPLY_FINDINGS` quando o runner foi efetivamente invocado, executou descoberta objetiva e demonstrou que nenhum verification command é aplicável ao escopo. Registre escopo analisado, fontes consultadas, ações read-only relevantes, tipos considerados, motivo objetivo, confirmação de que nenhum verification command foi executado, efeitos inesperados e resumo para persistência. Nesse status, `Comandos executados` e `Resultado de cada comando e exit code` devem declarar que nenhum verification command foi executado; discovery actions não são registradas como comandos de teste. Nunca retorne `TESTS_NOT_APPLICABLE` sem a invocação e a descoberta do runner, nem quando algum verification command tiver sido executado.
+`TESTS_NOT_APPLICABLE` é permitido somente em `EXECUTE_SLICE` ou `APPLY_FINDINGS` quando o runner foi efetivamente invocado, executou descoberta objetiva e demonstrou que nenhum verification command é aplicável ao escopo. Registre escopo analisado, fontes consultadas, ações read-only relevantes, tipos considerados, motivo objetivo, confirmação de que nenhum verification command foi executado, efeitos inesperados e resumo para persistência. Nesse status, `Commands` e `Result of each command and exit code` devem declarar que nenhum verification command foi executado; discovery actions não são registradas como comandos de teste. Nunca retorne `TESTS_NOT_APPLICABLE` sem a invocação e a descoberta do runner, nem quando algum verification command tiver sido executado.
 
 Não use `TESTS_NOT_APPLICABLE` por investigação rápida, custo, simplicidade aparente, comando que falhou, ferramenta ausente, dependência indisponível, permissão insuficiente ou ambiente incompatível. Falha de verification command é `TESTS_FAIL`; a existência de check aplicável que não pode ser executado por ferramenta, credencial, dependência externa, ambiente, serviço, permissão ou comando autoritativo objetivamente indisponível é `BLOCKED`. A ausência objetiva de qualquer verification command aplicável, sem omitir check aplicável, é a única base de `TESTS_NOT_APPLICABLE`.
 
 Checks nunca emitem `PASS` formal, manifesto final autoritativo, Validation Attempt, Effective Validation Base, resultado final ou conclusão `[x]`. Não corrija automaticamente código quando um check falhar.
 
+# Antes de qualquer verification command ou status de check auxiliar, use exclusivamente o token `authority=sha256:<64hex>` retornado pelo official execution preflight e confirme apenas a igualdade entre preflight, payload e artifact. Nunca calcule, compare ou use SHA de `shared/requirements.md` ou `feature_spec.md` como Requirements authority; um raw digest não é authority e não pode bloquear quando os três tokens oficiais concordam.
+
+# Antes de retornar qualquer status, para cada entrada file-backed de `Tested state`, recompute mecanicamente `path.relative(dirname(tasks/slice-NN.md), target)` no artifact task selecionado; rejeite `src/...`, `test/...`, paths absolutos ou paths relativos ao workspace/repository e nunca rebase ou aceite esses paths como equivalentes.
+
+# Depois de derivar cada claim task-relative, faça a verificação física final: resolva `path.resolve(dirname(taskArtifact), claim)` e compare por `realpath` com o target físico que será hashado. Não derive o claim de `SPEC_PATH`, SPEC root, plan, CWD ou workspace root, não omita um parent da base do task artifact e não emita `TESTS_PASS` se a resolução não for exatamente o target; retorne `BLOCKED` por malformed output.
+
+# Antes de emitir qualquer status, confira cada digest file-backed de `Tested state` e do manifesto formal por formato exato `sha256:` seguido de 64 caracteres hexadecimais minúsculos. Obtenha o valor de um comando read-only, não o digite, trunque, arredonde ou recalcule; se o token não tiver exatamente esse formato, retorne `BLOCKED` por malformed output e nunca emita `PASS`.
+Every file-backed Tested state and formal-manifest tuple MUST use the literal `sha256:` separator; `sha256=` is malformed output and must return `BLOCKED`, never `PASS`.
+
 # EXECUTE_SLICE
+
+# Canonical response gate
+Field shape is also strict: every field other than `Tested state` and `Commands` is one scalar inline value on its field line; `Tested scope`, `HEAD`, `Discovery sources`, `Discovery actions`, `Verification types considered`, `Selected checks`, `Coverage`, `Failures`, `Blockers`, and all formal-validation scalar fields MUST NOT be nested bullet lists. Only `Tested state` and `Commands` may use their exact nested tuple lines. If a scalar cannot be serialized inline, return the complete schema with `Status: BLOCKED`.
+Before returning any result for `EXECUTE_SLICE`, `APPLY_FINDINGS`, or `VALIDATE_SLICE`, emit exactly the requested schema block below in its exact field order and copy every field label byte-for-byte. Do not translate labels, change `Commands`, `Tested state`, or `Verified scope`, summarize the schema, or replace any path with `...`, `<SPEC_PATH>`, or an omitted component. For every file-backed `Tested state` or formal manifest, include every task-relative tuple with its complete literal `sha256:` token followed by 64 lowercase hexadecimal characters. If any required value cannot be reported exactly, return the complete requested schema with `Status: BLOCKED` and the concrete omission; never return a prose summary, abbreviated record, or `PASS`.
+The serialized tuple forms are exact: each file-backed `Tested state` line MUST be `- \`<task-relative path>\` | sha256:<64 lowercase hex>` or `- \`<task-relative path>\` | REMOVED`, and each `Commands` line MUST be `- \`<full command>\` | exit:<integer>`. The pipe, backticks, literal `sha256:` or `REMOVED`, and `exit:` marker are mandatory; colon-only, em-dash, prose, or missing delimiters are malformed and must return the complete schema with `Status: BLOCKED`.
+The final response MUST start immediately with the first literal label and use this exact sequence without preamble, translation, reorder, omission, or postamble. For `EXECUTE_SLICE` and `APPLY_FINDINGS`: `Operation`, `Status`, `Automatic check round`, `Findings cycle` only for `APPLY_FINDINGS`, `HEAD`, `Tested scope`, `Tested state`, `Fileless reason` only when applicable, `Discovery sources`, `Discovery actions`, `Verification types considered`, `Non-applicability rationale`, `No verification-command confirmation`, `Commands`, `Result of each command and exit code`, `Selected checks`, `Selection rationale`, `Coverage`, `Findings verified`/`Corrections covered`/`Regressions selected`/`Unsupported active findings` only for `APPLY_FINDINGS`, `Failures`, `Corrections covered` only for `EXECUTE_SLICE`, `Evidence or failure summary`, `Affected files or behaviors`, `Blockers`, `Unexpected workspace effects`, `Persistence summary`. For `VALIDATE_SLICE`: `Operation`, `Type`, `Status`, `Verified scope`, `HEAD`, `Commands`, `Evidence`, `Finding references`, `Finding dispositions`, `Blockers`, `Unexpected workspace effects`, `Persistence summary`.
 
 Execute os checks aplicáveis depois da implementação, usando escopo alterado, testes esperados e convenções reais. Mantenha descoberta de suites, logs, stack traces e resultados intermediários fora do contexto principal. Retorne somente o schema `EXECUTE_SLICE` com um status de checks.
 
@@ -68,7 +83,7 @@ Retorne somente `PASS`, `NEEDS_FIX` ou `BLOCKED`. Em `Findings:`, forneça uma d
 
 # Manifesto formal e overlap
 
-Somente em `VALIDATE_SLICE`, capture o `HEAD` atual quando Git existir. Reconcilie o manifesto com mudanças originais, correções, efeitos adicionais necessários, remoções, testes relevantes e arquivos finais necessários ao `PASS`. Em `Estado testado` de qualquer operação e no `Manifesto final da slice`, todo caminho é normalizado e relativo ao diretório do artefato detalhado final `tasks/slice-NN.md` selecionado. Liste esses caminhos relativos únicos em ordem lexicográfica, com SHA-256 minúsculo do conteúdo ou `REMOVED` quando ausente. Não retorne `PASS` com manifesto vazio, incompleto, duplicado, malformado ou inconsistente e não invente hashes. A representação fileless canônica não é um manifesto vazio: use exact `none`, `Fileless reason` objetivo, commands autoritativos e evidência observável; não invente path ou hash.
+Somente em `VALIDATE_SLICE`, capture o `HEAD` atual quando Git existir. Reconcilie o manifesto com mudanças originais, correções, efeitos adicionais necessários, remoções, testes relevantes e arquivos finais necessários ao `PASS`. Em `Tested state` de qualquer operação e no manifesto final da slice, todo caminho é normalizado e relativo ao diretório do artefato detalhado final `tasks/slice-NN.md` selecionado. Liste esses caminhos relativos únicos em ordem lexicográfica, com SHA-256 minúsculo do conteúdo ou `REMOVED` quando ausente. Não retorne `PASS` com manifesto vazio, incompleto, duplicado, malformado ou inconsistente e não invente hashes. A representação fileless canônica não é um manifesto vazio: use exact `none`, `Fileless reason` objetivo, commands autoritativos e evidência observável; não invente path ou hash.
 
 Identifique arquivos também cobertos pela Effective Validation Base de slices anteriores. Para cada overlap, valide o comportamento atual e regressões diretamente justificadas dos comportamentos anteriores afetados. Inclua o path final no manifesto da slice atual. Se o impacto não puder ser validado, retorne `NEEDS_FIX` ou `BLOCKED` conforme a causa objetiva; não reabra a slice anterior.
 
@@ -76,93 +91,87 @@ Identifique arquivos também cobertos pela Effective Validation Base de slices a
 
 Responda somente de forma compacta, sem logs completos, transcrições extensas ou raciocínio privado. Use exatamente o schema da operação solicitada.
 
-Em `VALIDATE_SLICE`, `Comandos executados` deve reproduzir cada comando realmente executado de forma exata e completa, inclusive o official execution validator/preflight. Nunca abrevie path ou argumento com `...`, `<SPEC_PATH>`, outro placeholder ou argumento omitido. Se um comando executado não puder ser reportado exatamente, retorne `BLOCKED`; não emita `PASS` com comando abreviado.
+Em `VALIDATE_SLICE`, `Commands` deve reproduzir cada comando realmente executado de forma exata e completa, inclusive o official execution validator/preflight. Nunca abrevie path ou argumento com `...`, `<SPEC_PATH>`, outro placeholder ou argumento omitido. Se um comando executado não puder ser reportado exatamente, retorne `BLOCKED`; não emita `PASS` com comando abreviado.
+In `VALIDATE_SLICE`, before returning any status, copy the exact full `SPEC_PATH` string received in the payload into the official preflight command evidence under `Commands`; never shorten it, replace any interior component with `...`, use `<SPEC_PATH>`, or omit an argument. If this exact command cannot be reproduced, return `BLOCKED` and never return `PASS`.
+In `VALIDATE_SLICE`, the first formal command-evidence item MUST be the exact official execution validator/preflight invocation actually run, copied with its executable path, full `SPEC_PATH`, operation, slice, and numeric exit code; if that item is absent or any component is omitted, return `BLOCKED` and never return `PASS`.
 
 ## Schema EXECUTE_SLICE
 
 ```text
-Operação: EXECUTE_SLICE
+Operation: EXECUTE_SLICE
 Status: TESTS_PASS | TESTS_FAIL | TESTS_NOT_APPLICABLE | BLOCKED
 Automatic check round:
 HEAD:
-Escopo verificado:
-Estado testado:
-Fileless reason: required only when Estado testado is exactly none; omit for file-backed state
+Tested scope:
+Tested state:
+Fileless reason: required only when Tested state is exactly none; omit for file-backed state
 Discovery sources:
 Discovery actions:
 Verification types considered:
 Non-applicability rationale:
 No verification-command confirmation:
-Comandos executados:
-Resultado de cada comando e exit code:
-Testes selecionados:
-Justificativa da seleção:
-Cobertura:
-Falhas:
-Correções cobertas:
-Evidências ou resumo da falha:
-Arquivos ou comportamentos afetados:
-Bloqueios:
-Efeitos inesperados no workspace:
-Resumo para persistência:
+Commands:
+Result of each command and exit code:
+Selected checks:
+Selection rationale:
+Coverage:
+Failures:
+Corrections covered:
+Evidence or failure summary:
+Affected files or behaviors:
+Blockers:
+Unexpected workspace effects:
+Persistence summary:
 ```
 
 ## Schema APPLY_FINDINGS
 
 ```text
-Operação: APPLY_FINDINGS
+Operation: APPLY_FINDINGS
 Status: TESTS_PASS | TESTS_FAIL | TESTS_NOT_APPLICABLE | BLOCKED
 Automatic check round:
-Ciclo de findings:
+Findings cycle:
 HEAD:
-Escopo verificado:
-Estado testado:
-Fileless reason: required only when Estado testado is exactly none; omit for file-backed state
+Tested scope:
+Tested state:
+Fileless reason: required only when Tested state is exactly none; omit for file-backed state
 Discovery sources:
 Discovery actions:
 Verification types considered:
 Non-applicability rationale:
 No verification-command confirmation:
-Comandos executados:
-Resultado de cada comando e exit code:
-Testes selecionados:
-Justificativa da seleção:
-Cobertura:
-Findings verificados:
-Correções cobertas:
-Regressões selecionadas:
-Findings ainda não sustentados pelos testes:
-Falhas:
-Evidências ou resumo da falha:
-Arquivos ou comportamentos afetados:
-Bloqueios:
-Efeitos inesperados no workspace:
-Resumo para persistência:
+Commands:
+Result of each command and exit code:
+Selected checks:
+Selection rationale:
+Coverage:
+Findings verified:
+Corrections covered:
+Regressions selected:
+Unsupported active findings:
+Failures:
+Evidence or failure summary:
+Affected files or behaviors:
+Blockers:
+Unexpected workspace effects:
+Persistence summary:
 ```
 
 ## Schema VALIDATE_SLICE
 
 ```text
-Operação: VALIDATE_SLICE
-Tipo de validação: initial | revalidation
+Operation: VALIDATE_SLICE
+Type: initial | revalidation
 Status: PASS | NEEDS_FIX | BLOCKED
-Escopo verificado:
+Verified scope:
 HEAD:
-Evidências anteriores avaliadas:
-Atualidade e suficiência das evidências:
-Manifesto final da slice:
-Fileless reason: required only when Manifesto final da slice is exactly none; omit for file-backed manifest
-Comandos executados:
-Resultado de cada comando e exit code:
-Testes selecionados ou repetidos:
-Justificativa da seleção ou repetição:
-Evidências:
-Findings:
-Bloqueios:
-Overlap com bases anteriores:
-Regressões justificadas executadas:
-Efeitos inesperados no workspace:
-Resumo para persistência:
+Commands:
+Evidence:
+Finding references:
+Finding dispositions:
+Blockers:
+Unexpected workspace effects:
+Persistence summary:
 ```
 
 Não invente comandos, resultados, hashes ou raciocínio. Não recomende trabalho fora do escopo.

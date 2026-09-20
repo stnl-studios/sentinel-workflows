@@ -1,0 +1,33 @@
+{
+  "issue": "C01",
+  "replayType": "controlled-convergence-replay",
+  "caseId": "A",
+  "status": "PASS",
+  "productionProfileId": "production-v2",
+  "sentinelSha": "a98754cf2eea8329d9af246e77fc39417d5c63af",
+  "operations": 11,
+  "retryCount": 0,
+  "decomposition": {
+    "slices": 2,
+    "tasks": 5,
+    "tasksPerSlice": {
+      "slice-01": 3,
+      "slice-02": 2
+    }
+  },
+  "operationCounts": {
+    "reviewPlanRounds": 1,
+    "reviewTasksRounds": 1,
+    "executeCalls": 2,
+    "validateCalls": 2,
+    "applyFindingsCalls": 0,
+    "replans": 0,
+    "retries": 0
+  },
+  "profileMismatches": [],
+  "finalExecutionState": "COMPLETE",
+  "specClosed": true,
+  "finalTestsPassed": true,
+  "sourceWorkspacePreserved": true,
+  "note": "EXECUTE_SLICE slice-02 passed at the historical Pilot #12 blocker checkpoint after the overlap correction."
+}

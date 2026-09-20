@@ -1,0 +1,20 @@
+{
+  "issue": "C19",
+  "caseId": "C",
+  "operation": "06",
+  "operationName": "EXECUTE_SLICE",
+  "slice": "slice-01",
+  "officialState": "RUNNER_RESULT_BLOCKED",
+  "status": "BLOCKED",
+  "runnerStatus": "TESTS_PASS",
+  "cause": "The runner declared the mandatory auxiliary record fields with Portuguese labels such as Escopo verificado, Estado testado, Comandos executados, and Testes selecionados, while the execution-record parser accepts the canonical English field names Tested scope, Tested state, Commands, and Selected checks.",
+  "authority": "sha256:d4143169e3a30839e660329ec5c44353d2af6fc35e483fa524ec1b2b1d176212",
+  "evidence": {
+    "replaySummary": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-convergence-c-nez7XG/summary.json",
+    "operationEvidence": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-convergence-c-nez7XG/case-c/operations/06-execute_slice.json",
+    "preservedTaskArtifact": "maintenance/p0-evidence/s3-autonomous-convergence-a98754-artifacts/c19-case-c-execute-slice-01-runner-schema-labels/task-slice-01.md",
+    "retryCount": 0,
+    "outerRetry": 0
+  },
+  "rootCauseAssessment": "The runner contracts and contract checker advertised translated field labels that contradicted the canonical English execution-record schema and runtime parser. The caller correctly failed closed; no runtime relaxation or label alias was justified."
+}

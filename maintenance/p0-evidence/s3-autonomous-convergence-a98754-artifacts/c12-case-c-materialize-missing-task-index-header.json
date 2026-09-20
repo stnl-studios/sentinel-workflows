@@ -1,0 +1,17 @@
+{
+  "issueId": "C12",
+  "case": "C",
+  "operation": "MATERIALIZE_TASKS",
+  "slice": null,
+  "officialState": "PLANNED_READY",
+  "blocker": "OFFICIAL_TRANSITION_NOT_OBSERVED",
+  "dispatch": {
+    "model": "GPT-5.6-Terra",
+    "effort": "high"
+  },
+  "producerDiagnostic": "Materializer candidate validation rejected tasks.md because the required File Purpose Header was missing; no live execution artifacts were published.",
+  "strictBehavior": "The candidate was removed without retry or partial publication. Official recovery remained planning-authority MATERIALIZE_TASKS/REPLAN; controlled REPLAN then returned PLANNED_DRAFT and required REVIEW_PLAN before materialization.",
+  "rootCauseEvidence": "The materializer model omitted the required seven-field tasks.md File Purpose Header. This is a producer contract failure; the runtime correctly enforced the header.",
+  "sourceReplayOutput": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-convergence-c-smCP3J",
+  "evidenceNote": "The preceding SPEC, PLAN, and REVIEW_PLAN operations passed. No source, authority, or benchmark fixture mutation was implicated."
+}

@@ -1,0 +1,18 @@
+{
+  "issue": "C18",
+  "caseId": "C",
+  "operation": "VALIDATE_SLICE",
+  "slice": "slice-01",
+  "officialState": "RUNNER_RESULT_BLOCKED",
+  "status": "BLOCKED",
+  "runnerStatus": "PASS",
+  "cause": "The validation runner omitted the complete official execution validator/preflight invocation from Comandos executados.",
+  "authority": "sha256:c5dd0e20e9d5b328554e178941ab782b25e06d0d26d6b641dd815ee2e7cf1937",
+  "evidence": {
+    "replaySummary": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-convergence-c-uCExz9/summary.json",
+    "operationEvidence": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-convergence-c-uCExz9/case-c/operations/07-validate_slice.json",
+    "retryCount": 0,
+    "outerRetry": 0
+  },
+  "rootCauseAssessment": "The runner had no high-salience mandatory field requiring the actual official preflight invocation to be present before returning PASS. The validation caller correctly failed closed and persisted only a malformed-output blocker."
+}
