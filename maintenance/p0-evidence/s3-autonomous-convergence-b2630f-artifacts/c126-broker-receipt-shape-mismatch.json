@@ -1,0 +1,70 @@
+{
+  "issue": "C126",
+  "category": "MECHANICAL_SERIALIZATION",
+  "case": "C",
+  "operation": "EXECUTE_SLICE",
+  "slice": "slice-01",
+  "symptom": "The configured validation runner completed and captured its semantic response, but the parent broker classified the result as invalid and the official operation published RUNNER_INITIALIZATION_BLOCKED.",
+  "officialState": "RUNNER_INITIALIZATION_BLOCKED",
+  "evidence": {
+    "freshReplayRoot": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-functional-convergence-mUbmjF",
+    "sessionRoot": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-benchmark-session-Va1YQp",
+    "operationArtifact": "case-c/operations/06-execute_slice.json",
+    "sequence": 6,
+    "dispatch": {
+      "operationModel": "GPT-5.6-Luna",
+      "operationEffort": "xhigh",
+      "outerRetry": 0
+    },
+    "configuredRunnerReceipts": [
+      {
+        "attempt": 1,
+        "runnerModel": "GPT-5.6-Luna",
+        "runnerEffort": "medium",
+        "status": "RUNNER_RESPONSE_CAPTURED",
+        "harnessStatus": "HARNESS_COMPLETED",
+        "sessionStarted": true,
+        "semanticResponseCaptured": true
+      },
+      {
+        "attempt": 2,
+        "runnerModel": "GPT-5.6-Luna",
+        "runnerEffort": "medium",
+        "status": "RUNNER_RESPONSE_CAPTURED",
+        "harnessStatus": "HARNESS_COMPLETED",
+        "sessionStarted": true,
+        "semanticResponseCaptured": true
+      }
+    ],
+    "mainOperation": {
+      "runnerCommand": "node <repository>/benchmarks/sentinel-todo/runtime/benchmark-validation-runner.mjs --official-broker --operation EXECUTE_SLICE --sequence 6 --slice \"slice-01\"",
+      "commandExitCodes": [1, 1],
+      "safeFailure": "BROKER_RESULT_INVALID",
+      "reportedReceipt": false
+    },
+    "recoveryAuthority": {
+      "legalOperation": "EXECUTE_SLICE",
+      "slice": "slice-01",
+      "sameOperationResumeRequired": true
+    },
+    "sourceContract": "invokeConfiguredValidationRunner returns one flat official receipt carrying status, sequence, operation, slice, and exitCode. The broker expected an extra nested result.receipt property before it would serialize its IPC response. The captured per-attempt receipt files confirm the configured runner had already started and captured semantic output.",
+    "staleDriverRecovery": "Sequence 7 was launched by the already-running wrapper, which had loaded the pre-correction broker module. It is required-state recovery evidence but cannot prove the C126 source fix."
+  },
+  "rootCause": "The producer/consumer IPC shapes disagreed: the configured runner helper returns a flat receipt plus exitCode, while the broker validator incorrectly required the helper callback to return { receipt, exitCode }. It rejected successful runner receipts as BROKER_RESULT_INVALID; the main operation then persisted a delegation blocker.",
+  "semanticOrMechanical": "mechanical",
+  "responsibleBoundary": "benchmark-runner-broker.mjs normalization of the existing configured-runner return contract into the broker IPC envelope",
+  "correction": "Validate operation, sequence, slice, status, and exitCode directly on the configured runner's flat official receipt; mechanically separate exitCode and serialize the remaining receipt into the broker response envelope. The broker still fails closed on any invalid identity, status, or exit code and performs no retry or fallback.",
+  "whyCodeInsteadOfPrompt": "The runner's valid semantic response was already captured; the failure occurred after it returned, during deterministic receipt-shape validation. Prompt changes cannot repair this consumer-side serialization mismatch.",
+  "filesChanged": [
+    "benchmarks/sentinel-todo/runtime/benchmark-runner-broker.mjs",
+    "scripts/test-benchmark-runner-broker.mjs"
+  ],
+  "regression": {
+    "command": "node --test scripts/test-benchmark-runner-broker.mjs scripts/test-benchmark-production-pilot.mjs",
+    "result": "PASS (31 tests)",
+    "behavior": "The configured runner's flat receipt is serialized without identity changes; an unexpected nested callback shape is rejected exactly once without fallback; existing initialization-blocked, target-mismatch, and no-active-broker behavior remains strict."
+  },
+  "localValidation": "PASS: focused broker and production-pilot suites (31/31), syntax checks, and git diff --check.",
+  "liveReplay": "The earlier fresh Case C proved the configured runner can start and capture semantic output, then reproduced BROKER_RESULT_INVALID twice. A later fresh Case C did not reach receipt-shape validation: C128 omitted the top-level SPEC_PATH required before configured-runner receipt creation. The C126 local regression still passes; live post-fix receipt-shape proof remains pending after C128.",
+  "result": "CAUSE_PROVEN; DETERMINISTIC_FIX_AND_REGRESSION_PASS; LIVE_POST_FIX_RECEIPT_VALIDATION_PENDING_AFTER_C128"
+}

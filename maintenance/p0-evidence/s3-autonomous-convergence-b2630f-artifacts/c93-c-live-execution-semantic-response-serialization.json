@@ -1,0 +1,57 @@
+{
+  "issue": "C93",
+  "category": "PRODUCER_CONTRACT",
+  "case": "C",
+  "operation": "EXECUTE_SLICE",
+  "slice": "slice-02",
+  "freshOutputRoot": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-functional-convergence-TrCnOI",
+  "evidence": [
+    "case-c/operations/09-execute_slice.json",
+    "case-c/operations/10-execute_slice.json",
+    "case-c/operations/11-execute_slice.json"
+  ],
+  "officialState": "RUNNER_RESULT_BLOCKED",
+  "officialRecovery": {
+    "operation": "EXECUTE_SLICE",
+    "slice": "slice-02",
+    "sameOperationResumeRequired": true
+  },
+  "symptom": "Three consecutive production-v2 EXECUTE_SLICE invocations reached the official runner-result blocker; no implementation-check candidate was published and the official state did not advance.",
+  "rawEvidence": {
+    "sequence09": "Malformed runner output with disallowed and non-contract keys.",
+    "sequence10": "Serializer rejected the semantic response because the temporary file contained a JSON string literal instead of one canonical JSON object.",
+    "sequence11": "Malformed runner output: priorRoundFailure was empty and serializer exited 1."
+  },
+  "localCausalProof": {
+    "source": "case-c/operations/10-execute_slice.json harness.finalAssistantMessage",
+    "method": "Parsed the preserved final semantic message as JSON, wrote that object unchanged to an external temporary response file, and invoked the repository serializer against the preserved Case C workspace.",
+    "serializerExit": 0,
+    "result": "The canonical semantic object is accepted and produces implementation-check-01; the live failure is in response-file materialization, not in the strict serializer or candidate validator."
+  },
+  "rootCause": "The live semantic response crossing the runner-to-serializer boundary was not a single canonical JSON object accepted by parseSemanticExecutionPayload. The strict serializer correctly rejected it, so the blocker is producer-format failure rather than a workspace-path or validator defect.",
+  "semanticOrMechanical": "mechanical",
+  "responsibleBoundary": "validation-runner semantic response file / deterministic execution evidence serializer boundary",
+  "correction": "Introduced a pre-serializer capture helper that parses the delegated runner JSONL, selects the final agent_message, rejects wrappers, and writes the object unchanged before the existing strict serializer.",
+  "whyCodeVsPrompt": "The live failure was JSONL-to-file serialization performed by the model context. A deterministic extractor removes that mechanical responsibility without unwrapping rejected payloads or changing semantic fields.",
+  "filesChanged": [
+    "skills/workflows/stnl-slice-executor/runtime/capture-runner-response.mjs",
+    "benchmarks/sentinel-todo/runtime/benchmark-production-pilot.mjs",
+    "templates/prompts/slice-execute-codex.md",
+    "templates/prompts/slice-execute-claude.md",
+    "templates/prompts/slice-apply-findings-codex.md",
+    "templates/prompts/slice-apply-findings-claude.md",
+    "templates/prompts/slice-validate-codex.md",
+    "templates/prompts/slice-validate-claude.md",
+    "skills/workflows/stnl-slice-executor/SKILL.md",
+    "skills/workflows/stnl-slice-quality-manager/SKILL.md",
+    "scripts/check-contracts.mjs",
+    "scripts/test-execution-contract.mjs",
+    "scripts/test-benchmark-production-pilot.mjs",
+    "scripts/test-launcher-contract.mjs"
+  ],
+  "authorityImpact": "none",
+  "regressionRequired": "scripts/test-execution-contract.mjs exercises canonical object acceptance, JSON-string-literal rejection, and prose rejection; scripts/test-benchmark-production-pilot.mjs verifies launcher path rendering; scripts/test-launcher-contract.mjs verifies removal of the capture boundary is rejected.",
+  "localValidation": "execution contract 133/133 PASS; production-pilot contract 24/24 PASS; launcher contract 119/119 PASS; validation-runner contract 113/113 PASS; repository contract PASS; git diff --check PASS.",
+  "liveReplay": "Fresh Case C sequence 6 EXECUTE_SLICE slice-01 passed directly with the capture boundary. Fresh Case C sequences 8, 11 and 12 still recorded malformed runner responses on later slices; those recoveries are documented in C97 and C98 and did not prevent Case C completion.",
+  "result": "CORRECTED_WITH_OFFICIAL_RECOVERY; RESIDUAL_RECURRENCE_C97_C98"
+}

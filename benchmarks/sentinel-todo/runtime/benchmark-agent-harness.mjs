@@ -56,6 +56,7 @@ const INVOCATION_POLICY = Object.freeze({
 const REQUIRED_CAPABILITIES = Object.freeze([
   'exec',
   'structuredOutput',
+  'structuredResponseSchema',
   'stdin',
   'sandbox',
   'modelOverride',
@@ -66,6 +67,7 @@ const REQUIRED_CAPABILITIES = Object.freeze([
   'ephemeral',
   'ignoreUserConfig',
   'ignoreRules',
+  'featureDisableControl',
 ]);
 
 const ENVIRONMENT_ALLOWLIST = Object.freeze([
@@ -124,6 +126,12 @@ function providerSpec(providerCommand) {
     throw new TypeError('test provider command must contain command and string argsPrefix');
   }
   return { command: providerCommand.command, argsPrefix: [...providerCommand.argsPrefix] };
+}
+
+export function modelLabelForProviderId(providerModel) {
+  const match = Object.entries(MODEL_MAPPING).find(([, id]) => id === providerModel);
+  if (match === undefined) throw new TypeError(`unsupported provider model: ${providerModel}`);
+  return match[0];
 }
 
 function minimalEnvironment(tmpdir) {
@@ -240,6 +248,7 @@ function capabilityBooleans(rootHelp, execHelp) {
   return {
     exec: /Usage:\s+codex exec\b/u.test(execHelp),
     structuredOutput: has(execHelp, '--json'),
+    structuredResponseSchema: has(execHelp, '--output-schema'),
     stdin: /instructions are read from stdin/iu.test(execHelp),
     sandbox: has(execHelp, '--sandbox') && has(execHelp, 'read-only') && has(execHelp, 'workspace-write'),
     modelOverride: has(execHelp, '--model'),
@@ -250,6 +259,7 @@ function capabilityBooleans(rootHelp, execHelp) {
     ephemeral: has(execHelp, '--ephemeral'),
     ignoreUserConfig: has(execHelp, '--ignore-user-config'),
     ignoreRules: has(execHelp, '--ignore-rules'),
+    featureDisableControl: has(rootHelp, '--disable'),
   };
 }
 
@@ -306,6 +316,7 @@ export async function discoverProviderCapabilities({ providerCommand } = {}) {
     providerVersion,
     capabilitiesHash: sha256(stableJson(fingerprintSource)),
     structuredOutput: capabilities.structuredOutput,
+    structuredResponseSchema: capabilities.structuredResponseSchema,
     stdin: capabilities.stdin,
     sandbox: capabilities.sandbox,
     modelOverride: capabilities.modelOverride,
@@ -340,8 +351,11 @@ export async function validateHarnessRequest(request) {
   if (request === null || typeof request !== 'object' || Array.isArray(request)) {
     throw new HarnessInvocationError('HARNESS_INIT_FAILED', 'request must be an object');
   }
-  const expectedKeys = ['cwd', 'effort', 'model', 'prompt', 'sandbox', 'timeoutMs', 'tmpdir'];
-  if (stableJson(Object.keys(request).sort()) !== stableJson(expectedKeys)) {
+  const requiredKeys = ['cwd', 'effort', 'model', 'prompt', 'sandbox', 'timeoutMs', 'tmpdir'];
+  const requestKeys = Object.keys(request).sort();
+  if (!requiredKeys.every((key) => requestKeys.includes(key))
+    || requestKeys.some((key) => !requiredKeys.includes(key)
+      && !new Set(['outputSchema', 'structuredOutputFile', 'disabledFeatures']).has(key))) {
     throw new HarnessInvocationError('HARNESS_INIT_FAILED', 'request fields are incomplete or unknown');
   }
   if (!Object.hasOwn(MODEL_MAPPING, request.model)) {
@@ -355,6 +369,30 @@ export async function validateHarnessRequest(request) {
   }
   if (typeof request.prompt !== 'string' || request.prompt.length === 0) {
     throw new HarnessInvocationError('HARNESS_INIT_FAILED', 'prompt must be a non-empty string');
+  }
+  let disabledFeatures;
+  if (request.disabledFeatures !== undefined) {
+    if (!Array.isArray(request.disabledFeatures)
+      || request.disabledFeatures.length === 0
+      || request.disabledFeatures.some((feature) => feature !== 'multi_agent')
+      || new Set(request.disabledFeatures).size !== request.disabledFeatures.length) {
+      throw new HarnessInvocationError('HARNESS_INIT_FAILED', 'disabledFeatures must contain unique supported feature names');
+    }
+    disabledFeatures = [...request.disabledFeatures];
+  }
+  let outputSchema;
+  if (request.outputSchema !== undefined) {
+    if (typeof request.outputSchema !== 'string' || !path.isAbsolute(request.outputSchema)) {
+      throw new HarnessInvocationError('HARNESS_INIT_FAILED', 'outputSchema must be an absolute path');
+    }
+    const metadata = await fs.lstat(request.outputSchema).catch(() => null);
+    if (metadata === null || !metadata.isFile() || metadata.isSymbolicLink()) {
+      throw new HarnessInvocationError('HARNESS_INIT_FAILED', 'outputSchema must be a real existing file');
+    }
+    outputSchema = await fs.realpath(request.outputSchema);
+    if (outputSchema !== path.resolve(request.outputSchema)) {
+      throw new HarnessInvocationError('HARNESS_INIT_FAILED', 'outputSchema must already be canonical');
+    }
   }
   if (!Number.isSafeInteger(request.timeoutMs) || request.timeoutMs < 100 || request.timeoutMs > 3_600_000) {
     throw new HarnessInvocationError('HARNESS_INIT_FAILED', 'timeoutMs must be an integer from 100 through 3600000');
@@ -371,13 +409,34 @@ export async function validateHarnessRequest(request) {
     || inside(tmpdir, REPOSITORY_ROOT)) {
     throw new HarnessInvocationError('HARNESS_INIT_FAILED', 'cwd and tmpdir must belong to one managed benchmark session');
   }
-  return Object.freeze({ ...request, cwd, tmpdir });
+  let structuredOutputFile;
+  if (request.structuredOutputFile !== undefined) {
+    if (typeof request.structuredOutputFile !== 'string' || !path.isAbsolute(request.structuredOutputFile)) {
+      throw new HarnessInvocationError('HARNESS_INIT_FAILED', 'structuredOutputFile must be absolute');
+    }
+    structuredOutputFile = path.resolve(request.structuredOutputFile);
+    if (path.dirname(structuredOutputFile) !== tmpdir
+      || await fs.lstat(structuredOutputFile).catch(() => null) !== null) {
+      throw new HarnessInvocationError('HARNESS_INIT_FAILED', 'structuredOutputFile must be absent directly under runner-tmp');
+    }
+  }
+  return Object.freeze({
+    ...request,
+    cwd,
+    tmpdir,
+    ...(outputSchema === undefined ? {} : { outputSchema }),
+    ...(structuredOutputFile === undefined ? {} : { structuredOutputFile }),
+    ...(disabledFeatures === undefined ? {} : { disabledFeatures }),
+  });
 }
 
 export function buildCanonicalArgv(request) {
   const argv = [
     '--ask-for-approval',
     'never',
+  ];
+  for (const feature of request.disabledFeatures ?? []) argv.push('--disable', feature);
+  argv.push(
     'exec',
     '--strict-config',
     '--ephemeral',
@@ -394,8 +453,9 @@ export function buildCanonicalArgv(request) {
     request.cwd,
     '--config',
     `model_reasoning_effort=${JSON.stringify(EFFORT_MAPPING[request.effort])}`,
-  ];
+  );
   for (const override of STATIC_CONFIG_OVERRIDES) argv.push('--config', override);
+  if (request.outputSchema !== undefined) argv.push('--output-schema', request.outputSchema);
   argv.push('-');
   return argv;
 }
@@ -405,6 +465,18 @@ function providerErrorCategory(stderr) {
   if (/unexpected argument|invalid value|usage:/iu.test(stderr)) return 'INVOCATION_REJECTED';
   if (/rate.?limit|too many requests/iu.test(stderr)) return 'RATE_LIMIT';
   return stderr.trim() === '' ? null : 'PROVIDER_ERROR';
+}
+
+function providerErrorDiagnosticCode(stderr) {
+  if (/app-server/iu.test(stderr) && /operation not permitted|permission denied/iu.test(stderr)) {
+    return 'APP_SERVER_PERMISSION_DENIED';
+  }
+  if (/operation not permitted|permission denied/iu.test(stderr)) return 'PERMISSION_DENIED';
+  if (/auth|credential|log[ -]?in|unauthorized/iu.test(stderr)) return 'AUTHENTICATION';
+  if (/unexpected argument|invalid value|usage:/iu.test(stderr)) return 'INVOCATION_REJECTED';
+  if (/rate.?limit|too many requests/iu.test(stderr)) return 'RATE_LIMIT';
+  if (/app-server|failed to initialize/iu.test(stderr)) return 'APP_SERVER_INITIALIZATION';
+  return stderr.trim() === '' ? null : 'UNCLASSIFIED_PROVIDER_ERROR';
 }
 
 function parseStructuredOutput(stdout, processResult) {
@@ -470,6 +542,7 @@ function baseResult(request, capabilityResult) {
     structuredOutput: true,
     capabilityFingerprint: capabilityResult.fingerprint,
     providerErrorCategory: null,
+    providerErrorDiagnosticCode: null,
     finalAssistantMessage: null,
   };
 }
@@ -515,13 +588,33 @@ export async function runHarness(request, { providerCommand, outputLimit = DEFAU
   });
   const result = baseResult(validated, capabilityResult);
   if (processResult.spawnError !== null) {
-    return { ...result, status: 'HARNESS_INIT_FAILED', exitCode: 1 };
+    return {
+      ...result,
+      status: 'HARNESS_INIT_FAILED',
+      providerErrorDiagnosticCode: 'SPAWN_ERROR',
+      exitCode: 1,
+    };
   }
   if (processResult.timedOut) {
     return { ...result, status: 'HARNESS_TIMEOUT', exitCode: 1 };
   }
   if (processResult.outputExceeded) {
     return { ...result, status: 'HARNESS_PROTOCOL_ERROR', providerErrorCategory: 'OUTPUT_LIMIT', exitCode: 1 };
+  }
+
+  if (validated.structuredOutputFile !== undefined) {
+    try {
+      await fs.writeFile(validated.structuredOutputFile, processResult.stdout, { encoding: 'utf8', flag: 'wx' });
+    } catch {
+      return {
+        ...result,
+        status: 'HARNESS_PROTOCOL_ERROR',
+        providerInvocationAccepted: false,
+        providerErrorCategory: 'STRUCTURED_OUTPUT_PERSISTENCE',
+        structuredOutputFile: null,
+        exitCode: 1,
+      };
+    }
   }
 
   const parsed = parseStructuredOutput(processResult.stdout, processResult);
@@ -531,6 +624,10 @@ export async function runHarness(request, { providerCommand, outputLimit = DEFAU
     providerInvocationAccepted: parsed.sessionStarted,
     terminal: parsed.status === 'HARNESS_COMPLETED' || parsed.status === 'MODEL_TURN_FAILED',
     providerErrorCategory: parsed.status === 'HARNESS_COMPLETED' ? null : providerErrorCategory(processResult.stderr),
+    providerErrorDiagnosticCode: parsed.status === 'HARNESS_COMPLETED'
+      ? null
+      : providerErrorDiagnosticCode(processResult.stderr),
+    structuredOutputFile: validated.structuredOutputFile ?? null,
     exitCode: parsed.status === 'HARNESS_COMPLETED' ? 0 : 1,
   };
 }

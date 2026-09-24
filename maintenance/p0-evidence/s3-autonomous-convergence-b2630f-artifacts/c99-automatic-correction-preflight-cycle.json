@@ -1,0 +1,43 @@
+{
+  "category": "RUNTIME_AUTHORITY",
+  "case": "C",
+  "operation": "EXECUTE_SLICE",
+  "slice": "slice-02",
+  "symptom": "After implementation-check-01 TESTS_FAIL and an in-scope correction to the focused test, the delegated runner's mandatory official preflight rejected EXECUTE_SLICE before implementation-check-02 could run with 'unterminated implementation automatic correction cycle without a blocking divergence'. The subsequent persisted BLOCKED record then correctly required a new round-1 cycle, so bounded same-operation recovery could not reach the intended round 2.",
+  "officialState": "EXECUTION_STARTED before the second runner preflight; RUNNER_RESULT_BLOCKED after the persisted recovery blocker",
+  "evidence": {
+    "taskArtifact": "/private/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-benchmark-session-rOnLys/workspaces/case-c/specs/benchmark-case-c/execution/tasks/slice-02.md",
+    "operationArtifacts": [
+      "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-functional-convergence-1FKg1e/case-c/operations/10-execute_slice.json",
+      "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-functional-convergence-1FKg1e/case-c/operations/11-execute_slice.json",
+      "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-functional-convergence-1FKg1e/case-c/operations/12-execute_slice.json"
+    ],
+    "roundOne": "implementation-check-01 TESTS_FAIL; focused test command exited 1 because the test expected active IDs [1,2] after archiving without unarchiving item 1",
+    "persistedCorrection": "Corrections Applied contains ../../../../test/todo-service.test.mjs; implementation-check-02 records the corrected scope",
+    "preflightDiagnostic": "unterminated implementation automatic correction cycle without a blocking divergence",
+    "recoveryDiagnostic": "Candidate validation rejected implementation-check-03 because it must restart at round 1/3 after implementation-check-02 BLOCKED"
+  },
+  "rootCause": "The state validator treated every latest TESTS_FAIL round below 3 as invalid until a Delegation Blocker was persisted. That guard protects stale/incomplete records, but it did not distinguish a legitimate in-scope correction that is explicitly waiting for the next bounded automatic check. The runner contract requires the official preflight before the next runner invocation, creating a deterministic phase deadlock.",
+  "semanticOrMechanical": "authority/driver orchestration",
+  "responsibleBoundary": "shared execution-state automatic-check lifecycle guard, consumed by the EXECUTE_SLICE runner preflight",
+  "correction": "Allow the next automatic EXECUTE_SLICE check only when the latest TESTS_FAIL is followed by a persisted non-empty Corrections Applied scope that is already part of Changed Areas; preserve rejection for TESTS_FAIL without such a correction and preserve the existing sequential round/terminal checks.",
+  "whyCodeVsPrompt": "The distinction between a stale open cycle and a corrected cycle is persisted artifact state and deterministic lifecycle validation. Additional prompt prose cannot make the official preflight authorize the next legal round, and bypassing the preflight would violate the runner contract.",
+  "filesChanged": [
+    "skills/workflows/stnl-execution-planner/runtime/execution-state.mjs",
+    "skills/workflows/stnl-plan-reviewer/runtime/execution-state.mjs",
+    "skills/workflows/stnl-slice-executor/runtime/execution-state.mjs",
+    "skills/workflows/stnl-slice-quality-manager/runtime/execution-state.mjs",
+    "skills/workflows/stnl-spec-roadmap/runtime/execution-state.mjs",
+    "skills/workflows/stnl-spec-test-runbook/runtime/execution-state.mjs",
+    "skills/workflows/stnl-task-materializer/runtime/execution-state.mjs",
+    "skills/workflows/stnl-task-reviewer/runtime/execution-state.mjs",
+    "scripts/test-execution-contract.mjs",
+    "maintenance/p0-evidence/s3-autonomous-convergence-b2630f.md"
+  ],
+  "regression": "Add a behavioral execution-state regression proving: TESTS_FAIL without persisted correction remains blocked; TESTS_FAIL with an in-scope persisted correction authorizes the next EXECUTE_SLICE preflight; skipped/invalid rounds and a BLOCKED record remain rejected; all shared runtime copies remain byte-identical.",
+  "localValidation": "Pending deterministic runtime regression and focused contract suite.",
+  "liveReplay": "Current fresh Case C stopped at sequence 12 before the correction; no workspace mutation or hidden repair was applied.",
+  "result": "CONFIRMED_BLOCKER_PENDING_CORRECTION",
+  "workflowProgress": "C reached slice-02 and exposed a real correction-cycle authority deadlock after prior slice-01 PASS; A had already PASSed in the same final run, while B stopped at a legitimate SPEC_INIT draft transition.",
+  "liveCalls": "Fresh final run Case C sequences 10, 11 and 12 used GPT-5.6-Luna/xhigh; sequence 10 was preflight-blocked, sequence 11 malformed-output blocked, and sequence 12 candidate-validation blocked on the required round restart."
+}

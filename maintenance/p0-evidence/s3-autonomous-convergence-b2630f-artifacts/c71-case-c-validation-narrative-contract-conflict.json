@@ -1,0 +1,22 @@
+{
+  "issue": "C71",
+  "category": "PRODUCER_CONTRACT",
+  "case": "C",
+  "operation": "VALIDATE_SLICE",
+  "slice": "slice-03",
+  "symptom": "The next validation recovery persisted an active malformed-output delegation blocker because the independent runner returned narrative text instead of the required semantic JSON object.",
+  "evidence": {
+    "sequence": 15,
+    "harnessStatus": "HARNESS_COMPLETED",
+    "officialState": "RUNNER_RESULT_BLOCKED",
+    "delegationBlocker": "kind=malformed-output",
+    "requiredRecovery": "VALIDATE_SLICE/slice-03, same operation",
+    "reproduction": "The runner adapter still contained `Retorne somente PASS...` and `Em Findings:` beside the JSON schema."
+  },
+  "rootCause": "A legacy narrative validation-output instruction conflicted with the newer machine-key JSON schema, so the strict producer boundary was repeatedly fed non-canonical output.",
+  "semanticOrMechanical": "mechanical serialization contract",
+  "correction": "Both Codex and Claude runner contracts now explicitly classify the status line as enum-only, require JSON `status`/`findingDispositions`, forbid narrative headings, and retain byte-equivalent bodies. The contract checker and regression suite reject reintroduction of the conflict.",
+  "regression": "scripts/test-validation-runner-contract.mjs: 113/113, including narrative-contract mutation; scripts/check-contracts.mjs validation-runner",
+  "liveResult": "Sequence 16 completed official VALIDATE_SLICE with PASS and state COMPLETE; lifecycle readiness and close also passed.",
+  "authorityImpact": "none"
+}

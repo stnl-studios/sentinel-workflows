@@ -1,0 +1,20 @@
+{
+  "issue": "C94",
+  "category": "PRODUCER_CONTRACT",
+  "case": "A",
+  "operation": "EXECUTE_SLICE",
+  "slice": "slice-01",
+  "freshOutputRoot": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-functional-convergence-A9Wztc",
+  "evidence": "case-a/operations/06-execute_slice.json",
+  "officialState": "RUNNER_RESULT_BLOCKED",
+  "symptom": "The production executor persisted a malformed-output delegation blocker because the deterministic semantic serializer rejected an unknown field named operacao.",
+  "rootCause": "The delegated runner response crossed the semantic JSON boundary with a non-contract key instead of the exact lowerCamelCase schema. The strict producer rejected the response before candidate publication; the outer model reported the official recovery target.",
+  "semanticOrMechanical": "mechanical",
+  "responsibleBoundary": "delegated validation-runner semantic response schema",
+  "correction": "No automatic key rename. Preserve the singleton blocker and test the legal same-operation recovery; only a valid exact-schema response may proceed.",
+  "whyCodeVsPrompt": "The existing strict agent contract already names the exact schema. Renaming operacao would be hidden repair and could change semantic meaning; a deterministic boundary may reject but must not infer a replacement key.",
+  "authorityImpact": "none",
+  "regressionRequired": "Preserve strict unknown-key rejection and verify that a canonical lowerCamelCase object is accepted; no candidate publication follows the malformed response.",
+  "liveReplay": "Fresh Case C sequence 6 EXECUTE_SLICE slice-01 passed directly with the closed structured-response schema; the prior unknown-key recurrence was not observed on that critical path.",
+  "result": "CORRECTED_AND_REPLAYED"
+}

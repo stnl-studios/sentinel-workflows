@@ -1,0 +1,39 @@
+{
+  "category": "MECHANICAL_SERIALIZATION",
+  "case": "C",
+  "operation": "VALIDATE_SLICE",
+  "slice": "slice-02",
+  "symptom": "The sequence-11 validation runner returned PASS and the evidence bundle was produced, but official candidate validation rejected the candidate because the resolved Delegation Blocker claimed After record=attempt-01 and therefore had no later valid record.",
+  "officialState": "RUNNER_RESULT_BLOCKED",
+  "evidence": {
+    "rejectedCandidate": "candidate-execution-case-c-validation/tasks/slice-02.md",
+    "rejectedFields": [
+      "State: resolved",
+      "After record: attempt-01",
+      "Resolution: Resolved by attempt-01 PASS."
+    ],
+    "strictDiagnostic": "resolved Delegation Blocker requires a later valid record",
+    "authority": "execution-record-schema.md defines After record as the latest valid record present when the blocker was persisted; the resolving attempt must be a later record.",
+    "correctedCandidateFieldsAtSequence12": [
+      "State: resolved",
+      "After record: none",
+      "Resolution: Resolved by attempt-01 PASS."
+    ],
+    "officialRecovery": "Sequence 12 passed candidate validation and readback; slice-02 result PASS, state EXECUTION_STARTED."
+  },
+  "rootCause": "The main quality-manager context serialized the resolution record into After record instead of preserving the blocker's original checkpoint. This was a mechanical record-link error; the validator's strict rejection was correct.",
+  "semanticOrMechanical": "mechanical",
+  "responsibleBoundary": "quality-manager candidate artifact assembly before strict candidate validation",
+  "correction": "No source change or post-rejection repair. The official same-operation recovery regenerated the candidate with After record preserved as none and attempt-01 named only as the later resolving record.",
+  "whyCodeVsPrompt": "The field relationship is deterministic, but this occurrence recovered on the next official same-operation call. A deterministic producer change is deferred unless this exact serialization error recurs; the validator was not relaxed.",
+  "filesChanged": [],
+  "regression": "Live invariant exercise: candidate with After record=attempt-01 was rejected; canonical candidate with After record=none and resolution naming attempt-01 passed. Existing validator contract remained unchanged.",
+  "localValidation": "No source edits for C114; official candidate validator and readback provided direct regression evidence.",
+  "liveReplay": "Fresh Case C sequence 11 BLOCKED at candidate validation; sequence 12 official same-operation recovery PASS.",
+  "result": "RECOVERED_OFFICIAL",
+  "workflowProgress": "Case C advanced to 9/13 milestones; two slices are formally PASS, slice-03 remains open.",
+  "liveCalls": [
+    "GPT-5.6-Luna/xhigh sequence 11",
+    "GPT-5.6-Luna/xhigh sequence 12"
+  ]
+}

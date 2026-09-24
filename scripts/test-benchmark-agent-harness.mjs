@@ -10,8 +10,14 @@ import {
   agentHarnessContractVersion,
   buildCanonicalArgv,
   discoverProviderCapabilities,
+  modelLabelForProviderId,
   runHarness,
 } from '../benchmarks/sentinel-todo/runtime/benchmark-agent-harness.mjs';
+import { invokeConfiguredValidationRunner } from '../benchmarks/sentinel-todo/runtime/benchmark-validation-runner.mjs';
+import {
+  collectConfiguredRunnerReceipts,
+  SEMANTIC_RESPONSE_SCHEMA_PATH_BY_OPERATION,
+} from '../benchmarks/sentinel-todo/runtime/benchmark-production-pilot.mjs';
 import {
   cleanupManagedBenchmarkSession,
   createManagedBenchmarkSession,
@@ -29,8 +35,9 @@ const rootHelp = [
   'Usage: codex [OPTIONS] <COMMAND>',
   '  --ask-for-approval <APPROVAL_POLICY>',
   '  never',
+  '  --disable <FEATURE>',
   control.rootHelpSuffix ?? '',
-].join('\n');
+].filter((line) => !(control.missing ?? []).some((token) => line.includes(token))).join('\n');
 const execHelp = [
   'Run Codex non-interactively',
   'Usage: codex exec [OPTIONS] [PROMPT]',
@@ -44,6 +51,7 @@ const execHelp = [
   '  --ephemeral',
   '  --ignore-user-config',
   '  --ignore-rules',
+  '  --output-schema <FILE>',
   control.execHelpSuffix ?? '',
 ].filter((line) => !(control.missing ?? []).some((token) => line.includes(token))).join('\n');
 
@@ -80,7 +88,7 @@ if (control.behavior === 'malformed') {
   process.exit(0);
 }
 if (control.behavior === 'init-failure') {
-  process.stderr.write('provider initialization rejected\n');
+  process.stderr.write(control.stderrMessage ?? 'provider initialization rejected\n');
   process.exit(7);
 }
 if (control.behavior === 'model-failure') {
@@ -135,6 +143,32 @@ async function capture(item) {
   return JSON.parse(await fs.readFile(item.capturePath, 'utf8'));
 }
 
+async function runnerPreflightFixture(item, { recovery = false } = {}) {
+  const specPath = path.join(item.workspace, 'specs', 'benchmark-case-c');
+  await fs.mkdir(specPath, { recursive: true });
+  await fs.writeFile(path.join(specPath, 'feature_spec.md'), '# Runner fixture\n', 'utf8');
+  const mandatoryRecovery = recovery ? {
+    operation: 'EXECUTE_SLICE',
+    slice: 'slice-01',
+    owner: 'delegation-blocker',
+    sameOperationResumeRequired: true,
+  } : null;
+  return {
+    specPath,
+    officialPreflight: {
+      exitCode: 0,
+      operation: 'EXECUTE_SLICE',
+      slice: 'slice-01',
+      inputSlice: '1',
+      specPath,
+      state: recovery ? 'RUNNER_INITIALIZATION_BLOCKED' : 'MATERIALIZED_PRISTINE',
+      authority: `sha256:${'a'.repeat(64)}`,
+      legalOperations: [{ operation: 'EXECUTE_SLICE', slice: 'slice-01' }],
+      mandatoryRecovery,
+    },
+  };
+}
+
 test('H01 — capability discovery accepts the complete fake CLI surface', async (t) => {
   const item = await fixture(t);
   const result = await discoverProviderCapabilities({ providerCommand: item.providerCommand });
@@ -144,7 +178,7 @@ test('H01 — capability discovery accepts the complete fake CLI surface', async
 });
 
 test('H02 — each mandatory structured/model/sandbox/effort capability fails closed', async (t) => {
-  for (const token of ['--json', '--sandbox', '--model', '--config']) {
+  for (const token of ['--json', '--output-schema', '--sandbox', '--model', '--config', '--disable']) {
     await t.test(token, async (subtest) => {
       const item = await fixture(subtest, { missing: [token] });
       const result = await discoverProviderCapabilities({ providerCommand: item.providerCommand });
@@ -166,10 +200,34 @@ test('H03 — approval control is long-form, global, and never placed after exec
   assert.equal(argv.slice(execIndex + 1).includes('--ask-for-approval'), false);
 });
 
+test('H03b — native multi-agent delegation can be disabled before exec', () => {
+  const argv = buildCanonicalArgv({
+    model: 'GPT-5.6-Luna', effort: 'medium', sandbox: 'workspace-write', cwd: '/canonical',
+    disabledFeatures: ['multi_agent'],
+  });
+  const execIndex = argv.indexOf('exec');
+  const disableIndex = argv.indexOf('--disable');
+  assert.ok(disableIndex >= 0 && disableIndex < execIndex);
+  assert.deepEqual(argv.slice(disableIndex, disableIndex + 2), ['--disable', 'multi_agent']);
+  assert.equal(modelLabelForProviderId('gpt-5.6-luna'), 'GPT-5.6-Luna');
+  assert.throws(() => modelLabelForProviderId('unsupported-model'), /unsupported provider model/u);
+});
+
 test('H04 — canonical argv is deterministic and independent of request property order', () => {
   const first = buildCanonicalArgv({ model: 'GPT-5.6-Terra', effort: 'high', sandbox: 'read-only', cwd: '/canonical' });
   const second = buildCanonicalArgv({ cwd: '/canonical', sandbox: 'read-only', effort: 'high', model: 'GPT-5.6-Terra' });
   assert.deepEqual(first, second);
+});
+
+test('H04b — semantic slice requests append the canonical structured-response schema', () => {
+  const schema = '/canonical/runner-semantic-response.schema.json';
+  const argv = buildCanonicalArgv({
+    model: 'GPT-5.6-Luna', effort: 'xhigh', sandbox: 'workspace-write', cwd: '/canonical', outputSchema: schema,
+  });
+  const option = argv.indexOf('--output-schema');
+  assert.ok(option >= 0);
+  assert.equal(argv[option + 1], schema);
+  assert.equal(argv.at(-1), '-');
 });
 
 test('H05 — Luna, Terra, and Sol each map once; unknown model rejects before spawn', async (t) => {
@@ -253,6 +311,18 @@ test('H12 — valid JSONL session and terminal turn produce HARNESS_COMPLETED', 
   assert.equal(result.finalAssistantMessage, 'terminal success');
 });
 
+test('H12b — outputSchema is validated as a canonical regular file and reaches the provider', async (t) => {
+  const item = await fixture(t);
+  const schema = path.join(item.session.results, 'runner-semantic-response.schema.json');
+  await fs.writeFile(schema, '{}\n', 'utf8');
+  const result = await runHarness({ ...item.request, outputSchema: schema }, { providerCommand: item.providerCommand });
+  assert.equal(result.status, 'HARNESS_COMPLETED');
+  const observed = await capture(item);
+  const option = observed.args.indexOf('--output-schema');
+  assert.ok(option >= 0);
+  assert.equal(observed.args[option + 1], await fs.realpath(schema));
+});
+
 test('H13 — malformed structured output produces HARNESS_PROTOCOL_ERROR', async (t) => {
   const item = await fixture(t, { behavior: 'malformed' });
   const result = await runHarness(item.request, { providerCommand: item.providerCommand });
@@ -260,10 +330,16 @@ test('H13 — malformed structured output produces HARNESS_PROTOCOL_ERROR', asyn
 });
 
 test('H14 — provider nonzero before session start produces HARNESS_INIT_FAILED', async (t) => {
-  const item = await fixture(t, { behavior: 'init-failure' });
+  const item = await fixture(t, {
+    behavior: 'init-failure',
+    stderrMessage: 'failed to initialize in-process app-server client: Operation not permitted; token=secret-sentinel\n',
+  });
   const result = await runHarness(item.request, { providerCommand: item.providerCommand });
   assert.equal(result.status, 'HARNESS_INIT_FAILED');
   assert.equal(result.providerInvocationAccepted, false);
+  assert.equal(result.providerErrorCategory, 'PROVIDER_ERROR');
+  assert.equal(result.providerErrorDiagnosticCode, 'APP_SERVER_PERMISSION_DENIED');
+  assert.doesNotMatch(JSON.stringify(result), /Operation not permitted|secret-sentinel/u);
 });
 
 test('H15 — terminal failure after session start produces MODEL_TURN_FAILED', async (t) => {
@@ -308,6 +384,189 @@ test('H19 — identical capability surfaces produce identical fingerprints', asy
   const first = await discoverProviderCapabilities({ providerCommand: item.providerCommand });
   const second = await discoverProviderCapabilities({ providerCommand: item.providerCommand });
   assert.equal(first.fingerprint.capabilitiesHash, second.fingerprint.capabilitiesHash);
+});
+
+test('H20 — raw JSONL is persisted byte-for-byte only in the managed runner tmpdir', async (t) => {
+  const item = await fixture(t);
+  const structuredOutputFile = path.join(item.session.runnerTmp, 'raw-runner.jsonl');
+  const result = await runHarness({ ...item.request, structuredOutputFile }, { providerCommand: item.providerCommand });
+  assert.equal(result.status, 'HARNESS_COMPLETED');
+  assert.equal(result.structuredOutputFile, structuredOutputFile);
+  const expected = [
+    JSON.stringify({ type: 'thread.started', thread_id: 'fake' }),
+    JSON.stringify({ type: 'turn.started' }),
+    JSON.stringify({ type: 'item.completed', item: { type: 'command_execution', exit_code: 0 } }),
+    JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: 'PASS' } }),
+    JSON.stringify({ type: 'turn.completed' }),
+    '',
+  ].join('\n');
+  assert.equal(await fs.readFile(structuredOutputFile, 'utf8'), expected);
+
+  const outside = path.join(item.session.results, 'outside.jsonl');
+  const rejected = await runHarness({ ...item.request, structuredOutputFile: outside }, { providerCommand: item.providerCommand });
+  assert.equal(rejected.status, 'HARNESS_INIT_FAILED');
+  await assert.rejects(fs.access(outside));
+});
+
+test('H21 — configured runner uses the actual operation schema and preserves its raw semantic response', async (t) => {
+  const item = await fixture(t, { message: '{"status":"BLOCKED"}' });
+  const agents = path.join(item.workspace, '.codex', 'agents');
+  await fs.mkdir(agents, { recursive: true });
+  await fs.writeFile(path.join(agents, 'stnl_validation_runner.toml'), [
+    'name = "stnl_validation_runner"',
+    'description = "fixture runner config"',
+    'model = "gpt-5.6-luna"',
+    'model_reasoning_effort = "medium"',
+    'sandbox_mode = "workspace-write"',
+    'developer_instructions = """',
+    'Perform independent checks. Return only the requested JSON object.',
+    '"""',
+    '',
+  ].join('\n'), 'utf8');
+
+  const runnerPreflight = await runnerPreflightFixture(item, { recovery: true });
+
+  const result = await invokeConfiguredValidationRunner({
+    operation: 'EXECUTE_SLICE',
+    sequence: 7,
+    slice: 'slice-01',
+    ...runnerPreflight,
+    prompt: 'OPERATION=EXECUTE_SLICE; current approved task context only.',
+    workspace: item.workspace,
+    tmpdir: item.session.runnerTmp,
+    providerCommand: item.providerCommand,
+  });
+  assert.equal(result.status, 'RUNNER_RESPONSE_CAPTURED');
+  assert.equal(result.requestedModel, 'GPT-5.6-Luna');
+  assert.equal(result.requestedEffort, 'medium');
+  assert.equal(result.retryCount, 0);
+  assert.equal(result.outputSchemaAttached, true);
+  assert.equal(await fs.readFile(result.semanticResponseFile, 'utf8'), '{"status":"BLOCKED"}');
+  assert.equal(path.dirname(result.structuredOutputFile), item.session.runnerTmp);
+
+  const observed = await capture(item);
+  const schemaIndex = observed.args.indexOf('--output-schema');
+  assert.ok(schemaIndex >= 0);
+  assert.equal(observed.args[schemaIndex + 1], SEMANTIC_RESPONSE_SCHEMA_PATH_BY_OPERATION.EXECUTE_SLICE);
+  assert.equal(observed.args[observed.args.indexOf('--model') + 1], 'gpt-5.6-luna');
+  assert.ok(observed.args.includes('model_reasoning_effort="medium"'));
+  const disableIndex = observed.args.indexOf('--disable');
+  assert.deepEqual(observed.args.slice(disableIndex, disableIndex + 2), ['--disable', 'multi_agent']);
+  assert.equal(observed.cwd, item.workspace);
+  assert.ok(observed.prompt.includes('Perform independent checks. Return only the requested JSON object.'));
+  assert.ok(observed.prompt.includes('OPERATION=EXECUTE_SLICE; current approved task context only.'));
+  assert.ok(observed.prompt.includes(`OFFICIAL_EXECUTION_PREFLIGHT=${JSON.stringify(runnerPreflight.officialPreflight)}`));
+  assert.match(observed.prompt, /already ran the exact official execution preflight[\s\S]{0,180}Do not rerun or reconstruct/u);
+  assert.match(observed.prompt, /mandatory recovery target matches/u);
+});
+
+test('H22 — malformed configured-runner output remains blocked and receives no repair or fallback', async (t) => {
+  const item = await fixture(t, { message: 'translated prose, not JSON' });
+  const agents = path.join(item.workspace, '.codex', 'agents');
+  await fs.mkdir(agents, { recursive: true });
+  await fs.writeFile(path.join(agents, 'stnl_validation_runner.toml'), [
+    'name = "stnl_validation_runner"',
+    'model = "gpt-5.6-luna"',
+    'model_reasoning_effort = "medium"',
+    'sandbox_mode = "workspace-write"',
+    'developer_instructions = """',
+    'Return raw JSON.',
+    '"""',
+    '',
+  ].join('\n'), 'utf8');
+  const runnerPreflight = await runnerPreflightFixture(item);
+  const result = await invokeConfiguredValidationRunner({
+    operation: 'EXECUTE_SLICE', sequence: 9, slice: 'slice-01', prompt: 'execute check',
+    ...runnerPreflight,
+    workspace: item.workspace, tmpdir: item.session.runnerTmp, providerCommand: item.providerCommand,
+  });
+  assert.equal(result.status, 'RUNNER_RESULT_BLOCKED');
+  assert.equal(result.semanticResponseFile, null);
+  assert.match(result.captureFailure, /final runner message is not valid JSON/u);
+  assert.equal(result.retryCount, 0);
+  await assert.rejects(fs.access(path.join(item.session.runnerTmp, 'stnl-runner-009-execute_slice-slice-01-attempt-1.response.json')));
+});
+
+test('H23 — pre-session runner failure persists only a safe diagnostic code in its receipt', async (t) => {
+  const errorText = 'failed to initialize in-process app-server client: Operation not permitted; token=secret-sentinel\n';
+  const item = await fixture(t, { behavior: 'init-failure', stderrMessage: errorText });
+  const agents = path.join(item.workspace, '.codex', 'agents');
+  await fs.mkdir(agents, { recursive: true });
+  await fs.writeFile(path.join(agents, 'stnl_validation_runner.toml'), [
+    'name = "stnl_validation_runner"',
+    'model = "gpt-5.6-luna"',
+    'model_reasoning_effort = "medium"',
+    'sandbox_mode = "workspace-write"',
+    'developer_instructions = """',
+    'Return raw JSON.',
+    '"""',
+    '',
+  ].join('\n'), 'utf8');
+  const runnerPreflight = await runnerPreflightFixture(item);
+  const result = await invokeConfiguredValidationRunner({
+    operation: 'EXECUTE_SLICE', sequence: 10, slice: 'slice-01', prompt: 'execute check',
+    ...runnerPreflight,
+    workspace: item.workspace, tmpdir: item.session.runnerTmp, providerCommand: item.providerCommand,
+  });
+  assert.equal(result.status, 'RUNNER_INITIALIZATION_BLOCKED');
+  assert.equal(result.sessionStarted, false);
+  assert.equal(result.providerErrorDiagnosticCode, 'APP_SERVER_PERMISSION_DENIED');
+  const receiptFile = path.join(item.session.runnerTmp, 'stnl-runner-010-execute_slice-slice-01-attempt-1.receipt.json');
+  const receiptText = await fs.readFile(receiptFile, 'utf8');
+  const receipt = JSON.parse(receiptText);
+  assert.equal(receipt.providerErrorDiagnosticCode, 'APP_SERVER_PERMISSION_DENIED');
+  assert.doesNotMatch(receiptText, /Operation not permitted|secret-sentinel/u);
+  const evidence = await collectConfiguredRunnerReceipts({
+    tmpdir: item.session.runnerTmp, sequence: 10, operation: 'EXECUTE_SLICE', slice: 'slice-01',
+  });
+  assert.deepEqual(evidence, [{
+    attempt: 1,
+    status: 'RUNNER_INITIALIZATION_BLOCKED',
+    runnerAgent: 'stnl_validation_runner',
+    requestedModel: 'GPT-5.6-Luna',
+    requestedEffort: 'medium',
+    outputSchemaAttached: true,
+    harnessStatus: 'HARNESS_INIT_FAILED',
+    retryCount: 0,
+    sessionStarted: false,
+    providerErrorCategory: 'PROVIDER_ERROR',
+    providerErrorDiagnosticCode: 'APP_SERVER_PERMISSION_DENIED',
+    semanticResponseCaptured: false,
+  }]);
+});
+
+test('H24 — configured runner rejects a mismatched official recovery preflight before creating an invocation', async (t) => {
+  const item = await fixture(t);
+  const agents = path.join(item.workspace, '.codex', 'agents');
+  await fs.mkdir(agents, { recursive: true });
+  await fs.writeFile(path.join(agents, 'stnl_validation_runner.toml'), [
+    'name = "stnl_validation_runner"',
+    'model = "gpt-5.6-luna"',
+    'model_reasoning_effort = "medium"',
+    'sandbox_mode = "workspace-write"',
+    'developer_instructions = """',
+    'Return raw JSON.',
+    '"""',
+    '',
+  ].join('\n'), 'utf8');
+  const runnerPreflight = await runnerPreflightFixture(item, { recovery: true });
+  runnerPreflight.officialPreflight = {
+    ...runnerPreflight.officialPreflight,
+    slice: 'slice-02',
+  };
+  await assert.rejects(
+    () => invokeConfiguredValidationRunner({
+      operation: 'EXECUTE_SLICE', sequence: 12, slice: 'slice-01',
+      ...runnerPreflight, prompt: 'execute check', workspace: item.workspace,
+      tmpdir: item.session.runnerTmp, providerCommand: item.providerCommand,
+    }),
+    /RUNNER_PREFLIGHT_INVALID/u,
+  );
+  await assert.rejects(fs.access(path.join(
+    item.session.runnerTmp,
+    'stnl-runner-012-execute_slice-slice-01-attempt-1.invocation.json',
+  )));
+  await assert.rejects(fs.access(item.capturePath));
 });
 
 test('H20 — provider version or help changes invalidate the capability fingerprint', async (t) => {

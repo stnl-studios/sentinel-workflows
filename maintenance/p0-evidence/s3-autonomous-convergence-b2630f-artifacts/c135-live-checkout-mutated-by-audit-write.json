@@ -1,0 +1,23 @@
+{
+  "issue": "C135",
+  "category": "EVIDENCE_PERSISTENCE",
+  "case": "C",
+  "operation": "functional source-checkout preservation check",
+  "slice": "slice-02",
+  "symptom": "A fresh production-v2 Case C reached VALIDATE_SLICE/slice-02, but the replay summary reported SOURCE_CHECKOUT_CHANGED and preserved=false.",
+  "officialState": "The case itself stopped at operation 10 with OFFICIAL_TRANSITION_NOT_OBSERVED; the functional replay was additionally invalidated because its source fingerprint changed.",
+  "evidence": {
+    "functionalSummary": "/tmp/sentinel-functional-convergence-b2630f-c-BXRLk2/case-c/functional-case-summary.json",
+    "operationEvidence": "/tmp/sentinel-functional-convergence-b2630f-c-BXRLk2/case-c/case-c/operations/10-validate_slice.json",
+    "sentinelSha": "b2630fac3529f72146d050ce662ada3b145b4280",
+    "sourceCheckoutCleanAtStart": false,
+    "sourceCheckoutPreserved": false,
+    "sourceStateSha256": "45947ff790b82628c5edca958e99b1ea41de474fe063f624c071e97e77b05e18",
+    "outerRetry": 0
+  },
+  "rootCause": "Audit ledger/artifact files were edited in the repository while the live replay was running, changing the working-tree fingerprint that the functional replay is required to preserve.",
+  "semanticOrMechanical": "Evidence-integrity process error; not a benchmark execution defect.",
+  "correction": "Complete and validate all source and audit edits before replay. Freeze the complete repository, including maintenance evidence, until the case process exits and source preservation is read back.",
+  "liveReplay": "The official operations progressed through 9 successful operations and the 10th validation attempt; the replay is not usable as convergence evidence because source preservation failed.",
+  "liveCalls": "Included in the post-C134 Case C run: 10 main-context calls and 4 configured validation-runner calls; the audit write itself made no model call."
+}

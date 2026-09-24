@@ -1,0 +1,22 @@
+{
+  "issue": "C70",
+  "category": "MECHANICAL_SERIALIZATION",
+  "case": "C",
+  "operation": "VALIDATE_SLICE",
+  "slice": "slice-03",
+  "symptom": "The first formal validation after slice-03 execution returned OFFICIAL_TRANSITION_NOT_OBSERVED; the semantic validation producer rejected the temporary response before candidate validation with `semantic validation response must be a single raw JSON object`.",
+  "evidence": {
+    "sequence": 14,
+    "harnessStatus": "HARNESS_COMPLETED",
+    "officialState": "IMPLEMENTED_AWAITING_VALIDATION",
+    "runnerChecks": "official validator, cli tests, npm test, and package manifest check all exited 0",
+    "attemptCreated": false,
+    "outerRetry": 0
+  },
+  "rootCause": "The main validation context still depended on the model to persist the exact raw JSON file and invoke the deterministic producer correctly; the semantic final message alone was not evidence that the file boundary had been honored.",
+  "semanticOrMechanical": "mechanical",
+  "correction": "Keep VALIDATE_SLICE on the strict JSON producer boundary and remove conflicting narrative instructions from the delegated runner contract; no fallback or post-validation repair was added.",
+  "regression": "scripts/test-execution-contract.mjs formal validation round-trip and scripts/test-validation-runner-contract.mjs JSON schema/producer guards",
+  "liveResult": "A later same-operation recovery passed and terminalized the slice after the contract correction.",
+  "authorityImpact": "none"
+}

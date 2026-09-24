@@ -1,0 +1,22 @@
+{
+  "issue": "C69",
+  "category": "DRIVER_ORCHESTRATION",
+  "case": "C",
+  "operation": "EXECUTE_SLICE",
+  "slice": "slice-03",
+  "symptom": "The first resumed execution reached HARNESS_TIMEOUT after 900063ms with official state EXECUTION_STARTED and outer retry 0.",
+  "evidence": {
+    "dispatch": { "model": "GPT-5.6-Luna", "effort": "xhigh" },
+    "harnessStatus": "HARNESS_TIMEOUT",
+    "officialState": "EXECUTION_STARTED",
+    "commandExitCodes": [],
+    "workspaceProgress": "Implementation files were changed and the external semantic response contained TESTS_PASS with npm test exit 0 and 20 tests passing.",
+    "recovery": "EXECUTE_SLICE/slice-03"
+  },
+  "rootCause": "The production-v2 driver applied a single 900000ms wall-clock limit to long implementation and validation turns; slice-03 required more time even though the provider was doing work.",
+  "semanticOrMechanical": "mechanical",
+  "correction": "production-v2 now uses 1800000ms only for EXECUTE_SLICE, APPLY_FINDINGS, and VALIDATE_SLICE; shorter operations retain 900000ms. Harness retry remains zero.",
+  "regression": "scripts/test-benchmark-production-pilot.mjs P03b",
+  "liveResult": "The bounded 1800000ms continuation completed EXECUTE_SLICE/slice-03 with PASS; no timeout was accepted as PASS.",
+  "authorityImpact": "none"
+}

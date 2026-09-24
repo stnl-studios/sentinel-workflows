@@ -1,0 +1,32 @@
+{
+  "category": "PRODUCER_CONTRACT",
+  "case": "A",
+  "operation": "PLAN",
+  "slice": null,
+  "symptom": "Fresh Case A after C103 passed SPEC_INIT, then the Terra/high PLAN call completed with a valid model turn but the deterministic plan serializer rejected the isolated candidate because slice-01 detailed Likely Areas contained more path claims than its global Expected areas row. No plan artifact was published and official state remained EMPTY.",
+  "officialState": "EMPTY",
+  "evidence": {
+    "operationArtifact": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-functional-convergence-YKRjKH/case-a/operations/02-plan.json",
+    "preservedWorkspace": "/private/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-benchmark-session-Svur2m/workspaces/case-a",
+    "modelMessage": "The deterministic path serializer rejected the isolated candidate: slice-01 plan Likely Areas contains more path claims than its global slice row",
+    "harnessStatus": "HARNESS_COMPLETED",
+    "commandExitCodes": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0],
+    "candidateSnapshot": "Only prepared SPEC and runner projection remained; no execution/plan artifacts were published",
+    "profile": "production-v2",
+    "outerRetry": 0
+  },
+  "rootCause": "The planner model emitted a detailed Likely Areas section whose Markdown path-claim cardinality did not match the single semantic path claim in the corresponding global Serial Slice Order row. The serializer correctly treats the global row as semantic target authority and refuses to guess whether the extra detailed claim should be added, removed, or re-scoped.",
+  "semanticOrMechanical": "semantic",
+  "responsibleBoundary": "PLAN model-owned semantic decomposition, checked by the deterministic plan path serializer before candidate validation",
+  "correction": "No source correction from this single occurrence. Preserve the strict cardinality check and do not auto-union, delete, or choose a target. A fresh independent replay will distinguish stochastic model non-conformance from a recurring producer-contract failure; if recurring, strengthen the plan producer contract at the smallest boundary without changing target ownership.",
+  "whyCodeVsPrompt": "The mismatch is not a path transformation: code cannot safely decide which implementation target is semantically intended. The existing serializer already performs the mechanical transformation and blocks ambiguity. Choosing or dropping a target in code would move semantic decomposition out of the model and could silently change scope.",
+  "filesChanged": [
+    "maintenance/p0-evidence/s3-autonomous-convergence-b2630f-artifacts/c104-plan-global-detail-cardinality.json"
+  ],
+  "regression": "Existing execution-contract fixture creates two detailed code-span claims against one global claim, verifies the strict serializer rejects without mutating the candidate, and separately verifies canonical one-to-one claims serialize and validate. No validator relaxation or new source behavior was introduced.",
+  "localValidation": "No source edit; the prior C103 final local suite remains green, including execution contract 113/113, production-pilot 25/25, validation-runner 113/113, launcher 124/124, rehearsal/benchmark 19/19, benchmark verify, repository contract, validate.sh --no-smoke, and git diff --check.",
+  "liveReplay": "Fresh A stopped legally at PLAN; B and C were gated. This replay is diagnostic and cannot count as convergence.",
+  "result": "OBSERVED_STOCHASTIC_CONTRACT_VIOLATION_PENDING_REPLAY",
+  "workflowProgress": "Fresh A completed 1/unknown milestones; no slices or tasks were published.",
+  "liveCalls": "Sequence 01: GPT-5.6-Sol/high SPEC_INIT PASS in 255550ms. Sequence 02: GPT-5.6-Terra/high PLAN BLOCKED in 198733ms. No same-operation retry, fallback, outer retry, or hidden repair occurred."
+}

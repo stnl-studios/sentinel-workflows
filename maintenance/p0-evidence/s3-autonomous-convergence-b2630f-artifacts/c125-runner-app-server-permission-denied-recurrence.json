@@ -1,0 +1,68 @@
+{
+  "issue": "C125",
+  "category": "AUXILIARY_RUNNER",
+  "case": "C",
+  "operation": "EXECUTE_SLICE",
+  "slice": "slice-01",
+  "symptom": "The official same-operation recovery still could not start the configured independent validation runner.",
+  "officialState": "RUNNER_INITIALIZATION_BLOCKED",
+  "evidence": {
+    "freshReplayRoot": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-functional-convergence-68bUyK",
+    "operationArtifact": "case-c/operations/07-execute_slice.json",
+    "sequence": 7,
+    "dispatch": {
+      "operationModel": "GPT-5.6-Luna",
+      "operationEffort": "xhigh",
+      "outerRetry": 0
+    },
+    "configuredRunnerReceipts": [
+      {
+        "attempt": 1,
+        "runnerModel": "GPT-5.6-Luna",
+        "runnerEffort": "medium",
+        "status": "RUNNER_INITIALIZATION_BLOCKED",
+        "harnessStatus": "HARNESS_INIT_FAILED",
+        "sessionStarted": false,
+        "providerErrorCategory": "PROVIDER_ERROR",
+        "providerErrorDiagnosticCode": "APP_SERVER_PERMISSION_DENIED",
+        "semanticResponseCaptured": false
+      },
+      {
+        "attempt": 2,
+        "runnerModel": "GPT-5.6-Luna",
+        "runnerEffort": "medium",
+        "status": "RUNNER_INITIALIZATION_BLOCKED",
+        "harnessStatus": "HARNESS_INIT_FAILED",
+        "sessionStarted": false,
+        "providerErrorCategory": "PROVIDER_ERROR",
+        "providerErrorDiagnosticCode": "APP_SERVER_PERMISSION_DENIED",
+        "semanticResponseCaptured": false
+      }
+    ],
+    "recoveryAuthority": {
+      "legalOperation": "EXECUTE_SLICE",
+      "slice": "slice-01",
+      "sameOperationResumeRequired": true
+    },
+    "priorIssue": "C121/C122 documented the same safe provider diagnostic and its evidence projection. This event is a recurrence, not a new diagnosis or permission to change the runner authority, model profile, or retry budget.",
+    "subsequentSequence8": "In the previous long-lived process, the next official same-operation recovery sequence 8 did not reach the provider; its already-loaded driver rejected --slice \"1\" again. It is evidence for C124, not another APP_SERVER_PERMISSION_DENIED event.",
+    "freshPostFixReplay": {
+      "replayRoot": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-functional-convergence-Iv2vBB",
+      "operationArtifact": "case-c/operations/06-execute_slice.json",
+      "sequence": 6,
+      "officialSlice": "slice-01",
+      "runnerInvocationSlice": "slice-01",
+      "attempts": 2,
+      "diagnostic": "APP_SERVER_PERMISSION_DENIED",
+      "result": "C124 slice-label rejection is absent; same provider initialization failure recurred. Official same-operation recovery is active."
+    }
+  },
+  "rootCause": "The configured auxiliary runner failed before session start when spawned from the sandboxed primary workflow operation. In the same fresh workflow after introducing the host-side official runner broker, the configured runner started and captured semantic responses without APP_SERVER_PERMISSION_DENIED. This isolates the failure to the nested spawn boundary; it does not implicate runner instructions, profile selection, or validation authority.",
+  "semanticOrMechanical": "runtime process-ownership boundary",
+  "responsibleBoundary": "driver-owned configured validation-runner invocation outside the primary operation sandbox",
+  "correction": "C126 moved only the spawn of the same configured runner, with the same model, effort, sandbox, schema, prompt, and receipt helper, to the parent driver via an explicit fail-closed broker. No model override, sandbox relaxation, validator change, retry, or fallback was added.",
+  "whyCodeVsPrompt": "The provider rejected runner initialization before semantic work; changing model prose could not affect process ownership. The host-side broker changes the spawn boundary while preserving the configured runner contract.",
+  "regression": "C126 broker regressions exercise host-owned dispatch, exact flat receipt serialization, strict target identity, and no retry/fallback; C122 H14/H23 continue to preserve only safe provider diagnostic codes.",
+  "liveReplay": "In fresh Case C root /var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-functional-convergence-mUbmjF, sequence 6 launched both configured runner attempts successfully: each receipt reports RUNNER_RESPONSE_CAPTURED, HARNESS_COMPLETED, sessionStarted=true, semanticResponseCaptured=true, with null provider error diagnostics. The enclosing operation remained blocked by the separate C126 BROKER_RESULT_INVALID receipt-shape defect. This is live proof that the C125 provider initialization failure is removed, not a Case C PASS.",
+  "result": "C125_PROVIDER_BLOCK_REMOVED_LIVE; ENCLOSING_OPERATION_BLOCKED_BY_C126"
+}

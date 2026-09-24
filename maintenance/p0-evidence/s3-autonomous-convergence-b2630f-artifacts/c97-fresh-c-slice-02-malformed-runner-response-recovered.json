@@ -1,0 +1,28 @@
+{
+  "category": "MECHANICAL_SERIALIZATION",
+  "case": "C",
+  "operation": "EXECUTE_SLICE",
+  "slice": "slice-02",
+  "symptom": "Fresh Case C sequence 08 reached RUNNER_RESULT_BLOCKED after the delegated runner returned malformed prose instead of the required semantic JSON object; no implementation check was allocated.",
+  "officialState": "RUNNER_RESULT_BLOCKED",
+  "evidence": {
+    "operationArtifact": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-functional-convergence-AaWbgD/case-c/operations/08-execute_slice.json",
+    "finalAssistantMessage": "runner returned malformed prose instead of strict semantic JSON",
+    "requiredRecovery": "EXECUTE_SLICE / slice-02; same-operation resume required"
+  },
+  "rootCause": "The delegated runner-to-capture boundary still received a non-JSON final agent message on this attempt. The capture helper correctly rejected it before the strict semantic serializer and candidate publication.",
+  "semanticOrMechanical": "mechanical",
+  "responsibleBoundary": "delegated runner response capture before serialize-runner-evidence.mjs",
+  "correction": "No hidden repair was applied. The existing deterministic capture helper and strict schema/serializer remained authoritative, and the official same-operation recovery was invoked.",
+  "whyCodeVsPrompt": "The invariant is response shape/materialization, not a semantic choice. Code must reject and preserve the malformed response; official recovery is the allowed continuation. The schema gate reduced the surface but cannot rewrite a provider response.",
+  "filesChanged": [
+    "skills/workflows/stnl-slice-executor/runtime/capture-runner-response.mjs",
+    "skills/workflows/stnl-slice-executor/runtime/runner-semantic-response.schema.json"
+  ],
+  "regression": "node --test scripts/test-execution-contract.mjs; node --test scripts/test-launcher-contract.mjs; fresh Case C sequence 09 recovered EXECUTE_SLICE slice-02 and published IMPLEMENTED_AWAITING_VALIDATION",
+  "localValidation": "Focused execution, launcher, production-pilot and repository contract checks passed before replay.",
+  "liveReplay": "Fresh Case C: sequence 08 BLOCKED; sequence 09 official same-operation recovery PASS; slice-02 validation sequence 10 PASS.",
+  "result": "RECOVERED_OFFICIAL",
+  "workflowProgress": "Case C advanced through slice-02 after the bounded official recovery; no outer retry and no workspace repair were used.",
+  "liveCalls": "GPT-5.6-Luna/xhigh sequences 08 and 09."
+}

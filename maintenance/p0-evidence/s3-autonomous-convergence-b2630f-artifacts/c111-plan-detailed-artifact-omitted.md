@@ -1,0 +1,21 @@
+# C111 — PLAN candidate omitted a detailed slice artifact on retry
+
+- Category: PRODUCER_CONTRACT
+- Case: A
+- Operation: PLAN
+- Slice: none
+- Symptom: The second PLAN attempt passed candidate header preparation but the deterministic plan-path serializer blocked because `plans/slice-01.md` was absent from the isolated candidate while the global plan referenced it. Candidate validation and publication did not run; live state remained empty.
+- Official state: `EMPTY`; only `PLAN` was legal and no planning artifact was published. Outer retry remained `0`.
+- Evidence: `/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-functional-convergence-QXIAue/case-a/operations/03-plan.json`; final assistant output explicitly reports the absent detailed plan in the isolated candidate.
+- Root cause: The planner model's isolated candidate was internally incomplete: its global serial order declared slice-01 without including the corresponding detailed plan artifact. The deterministic serializer correctly refuses to invent detailed semantic plan content.
+- Semantic or mechanical: Candidate completeness with semantic content ownership; the missing file is mechanical, but generating its content would be semantic.
+- Responsible boundary: Planner candidate assembly before deterministic path serialization.
+- Correction: Keep the candidate strict and retry only the legal PLAN while the state is EMPTY. Do not synthesize a slice plan, relax serializer checks, or publish a partial plan set.
+- Why code vs prompt: Code can detect the missing artifact but cannot choose the slice objective, requirements, tests, risks, or completion criterion. A bounded model retry is the only coherent correction.
+- Files changed: None in the repository for this issue; replay evidence only.
+- Regression: Existing planner serializer and candidate-validation tests reject missing detailed plans and preserve live bytes.
+- Local validation: Focused execution `113/113`, launcher `124/124`, validation-runner `113/113`, production-pilot `25/25`, repository contract, `validate.sh --no-smoke`, and `git diff --check` were PASS before this replay.
+- Live replay: Fresh A sequence 3 used GPT-5.6-Terra/high and blocked before publication; a third bounded PLAN attempt is being made in the same empty workspace.
+- Result: No authority was relaxed and no partial plan was published; final proof remains open.
+- Workflow progress: `SPEC_INIT` PASS; PLAN still pending; `0` slices/tasks materialized.
+- Live calls: Fresh A through sequence 3 used GPT-5.6-Sol/high 1 and GPT-5.6-Terra/high 2.

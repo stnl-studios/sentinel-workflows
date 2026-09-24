@@ -1,0 +1,34 @@
+{
+  "category": "MECHANICAL_SERIALIZATION",
+  "case": "C",
+  "operation": "EXECUTE_SLICE",
+  "slice": "slice-03",
+  "symptom": "Fresh Case C sequences 11 and 12 reached RUNNER_RESULT_BLOCKED after the delegated runner returned malformed structured output; no implementation check was allocated on either attempt.",
+  "officialState": "RUNNER_RESULT_BLOCKED",
+  "evidence": {
+    "operationArtifacts": [
+      "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-functional-convergence-AaWbgD/case-c/operations/11-execute_slice.json",
+      "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-functional-convergence-AaWbgD/case-c/operations/12-execute_slice.json"
+    ],
+    "finalAssistantMessages": [
+      "capture-runner-response.mjs rejected its structured output as invalid JSON",
+      "Runner: resposta malformada; nenhum check foi aceito ou alocado"
+    ],
+    "requiredRecovery": "EXECUTE_SLICE / slice-03; second attempt required same-operation resume"
+  },
+  "rootCause": "The delegated runner response was not a canonical JSON object at the capture boundary on two bounded attempts. The deterministic helper rejected it before semantic serialization; the official state preserved the exact same-operation recovery target.",
+  "semanticOrMechanical": "mechanical",
+  "responsibleBoundary": "delegated runner response capture before serialize-runner-evidence.mjs",
+  "correction": "No silent repair or fallback was used. The existing capture helper, structured schema gate, strict serializer and official recovery handoff remained in force; the third bounded invocation produced a valid semantic response.",
+  "whyCodeVsPrompt": "JSONL extraction, object shape and rejection are deterministic serialization invariants. The response cannot be repaired after rejection without violating strict evidence ownership; the workflow correctly retries only through the persisted same-operation recovery.",
+  "filesChanged": [
+    "skills/workflows/stnl-slice-executor/runtime/capture-runner-response.mjs",
+    "skills/workflows/stnl-slice-executor/runtime/runner-semantic-response.schema.json"
+  ],
+  "regression": "node --test scripts/test-execution-contract.mjs; node --test scripts/test-launcher-contract.mjs; fresh Case C sequence 13 recovered EXECUTE_SLICE slice-03 and published IMPLEMENTED_AWAITING_VALIDATION",
+  "localValidation": "Focused execution, launcher, production-pilot and repository contract checks passed before replay.",
+  "liveReplay": "Fresh Case C: sequences 11 and 12 BLOCKED; sequence 13 official same-operation recovery PASS; sequence 14 validation PASS and state COMPLETE.",
+  "result": "RECOVERED_OFFICIAL",
+  "workflowProgress": "Case C reached COMPLETE with production-v2, outer retry 0 and profile mismatches empty.",
+  "liveCalls": "GPT-5.6-Luna/xhigh sequences 11, 12 and 13."
+}

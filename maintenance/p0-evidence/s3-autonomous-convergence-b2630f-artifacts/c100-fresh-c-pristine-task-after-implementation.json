@@ -1,0 +1,33 @@
+{
+  "category": "PRODUCER_CONTRACT",
+  "case": "C",
+  "operation": "EXECUTE_SLICE",
+  "slice": "slice-01",
+  "symptom": "Fresh Case C sequence 06 completed implementation work and the delegated runner reported TESTS_PASS, but the execution task artifact remained pristine: Checklist rows were unchecked and Changed Areas was still - pending. The deterministic serializer rejected the candidate before publishing any implementation check, so official state remained MATERIALIZED_PRISTINE.",
+  "officialState": "MATERIALIZED_PRISTINE",
+  "evidence": {
+    "operationArtifact": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-functional-convergence-TxFsrf/case-c/operations/06-execute_slice.json",
+    "taskArtifact": "/private/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-benchmark-session-f6F9CD/workspaces/case-c/specs/benchmark-case-c/execution/tasks/slice-01.md",
+    "physicalChanges": [
+      "src/validation.mjs",
+      "test/todo-store.test.mjs"
+    ],
+    "serializerDiagnostic": "Changed Areas cannot remain pending after execution work",
+    "runnerMessage": "Runner returned TESTS_PASS (1/3), but deterministic serialization failed; no execution record was published and no later operation was initiated"
+  },
+  "rootCause": "The model made the semantic implementation changes but did not persist the executor-owned checklist completion and final Changed Areas scope before invoking the deterministic evidence serializer. The strict producer correctly refused to infer ownership from the aggregate worktree diff because that could claim prior-slice or out-of-scope files.",
+  "semanticOrMechanical": "semantic producer contract",
+  "responsibleBoundary": "EXECUTE_SLICE model-owned task-artifact finalization before serializeRunnerExecutionBundleFromResponse",
+  "correction": "No hidden task edit was applied. Reuse the same fresh workspace and re-enter the still-legal EXECUTE_SLICE operation so the executor can finalize its own checklist, scope and diff summary, then let candidate validation and strict readback decide publication.",
+  "whyCodeVsPrompt": "Affected-file ownership and checklist completion describe what the executor actually implemented, so they remain semantic. The deterministic serializer must continue rejecting pending scope; deriving scope from the aggregate worktree would violate the existing ownership authority and C85 regression.",
+  "filesChanged": [
+    "maintenance/p0-evidence/s3-autonomous-convergence-b2630f-artifacts/c100-fresh-c-pristine-task-after-implementation.json",
+    "maintenance/p0-evidence/s3-autonomous-convergence-b2630f.md"
+  ],
+  "regression": "Existing C85-style regression and execution-contract coverage continue to prove pending Changed Areas are rejected; fresh replay verifies that an official re-entry with persisted scope reaches candidate validation without source-worktree repair.",
+  "localValidation": "Focused execution contract, production-pilot, validation-runner, launcher, rehearsal/benchmark, repository contract, benchmark verify, validate.sh and diff-check passed before this replay.",
+  "liveReplay": "Fresh Case C sequence 06 stopped before publication; same workspace is preserved for a legal EXECUTE_SLICE re-entry. No artifact repair or outer retry was used.",
+  "result": "OPEN_RECOVERABLE",
+  "workflowProgress": "Fresh A PASSed completely; B is progressing in parallel; C reached MATERIALIZED_PRISTINE with 3 slices and 7 tasks, then exposed the C85 semantic finalization recurrence at slice-01.",
+  "liveCalls": "Fresh C sequence 06 used GPT-5.6-Luna/xhigh; the resumed operation will be recorded as the next official EXECUTE_SLICE event in the same production-v2 workspace."
+}

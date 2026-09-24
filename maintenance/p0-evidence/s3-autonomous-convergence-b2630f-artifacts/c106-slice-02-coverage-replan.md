@@ -1,0 +1,21 @@
+# C106 — slice-02 validation requires append-only coverage replan
+
+- Category: OTHER
+- Case: A
+- Operation: VALIDATE_SLICE
+- Slice: slice-02
+- Symptom: After runner initialization recovery, the formal validator returned `BLOCKED` for `slice-02` even though the selected implementation and existing tests passed. It identified incomplete materialized integration coverage: no-match cases, unfiltered storage preservation, both conflicting-flag orders, and add/complete compatibility error cases were absent.
+- Official state: `VALIDATION_BLOCKED`; `slice-02` remained open with `Final Result: pending`. Readback legal operations were `REPLAN` and repeat `VALIDATE_SLICE slice-02`; the persisted attempt was `attempt-01` with status `BLOCKED` and no Effective Validation Base.
+- Evidence: `/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-functional-convergence-EQv25b/case-a/operations/13-validate_slice.json` and `14-validate_slice.json`. The runner response records exit-0 `node --test test/cli.test.mjs` and `npm test`, then explicitly requires an append-only correction slice/task and `REPLAN`.
+- Root cause: The planner/materializer/model-generated slice-02 task was too narrow for the acceptance coverage the independent validator derived from the requirements and global integration context. This is a semantic strategy/coverage omission, not a path, hash, delimiter, schema, or persistence serialization defect.
+- Semantic or mechanical: Semantic.
+- Responsible boundary: Planner/reviewer/task strategy boundary, with formal validation correctly detecting the missing integration coverage.
+- Correction: Follow the official `REPLAN` handoff in the preserved managed workspace, requiring an append-only correction slice/task, then review/materialize/review it before executing and validating the new frontier. Do not mark the existing slice PASS and do not fabricate a finding disposition.
+- Why code vs prompt: The missing cases require model judgment about acceptance coverage and a new task strategy; moving this decision into deterministic code would be an authority violation. The strict validator remains the discovery authority.
+- Files changed: None in the repository for this issue; only managed-workspace replay artifacts changed.
+- Regression: No source regression is appropriate; the live validator itself is the causal check. Existing state-contract tests protect `VALIDATION_BLOCKED → REPLAN` legality and immutable attempt history.
+- Local validation: Focused contract suites, benchmark verification, repository contract check, `validate.sh --no-smoke`, and `git diff --check` were PASS before the replay.
+- Live replay: Fresh Case A sequence 13 first produced the valid blocked attempt after two initialization failures; sequence 14 repeated the same official `VALIDATION_BLOCKED` state. Outer retry remained `0`.
+- Result: Genuine progress: the runner and strict producer worked, and the hidden coverage gap became explicit. Case A is not PASS until the authorized replan is completed.
+- Workflow progress: `1/2` slices PASS, `4/4` existing tasks executed, `8/11` unique milestones completed before replan; the replan will extend the total workflow milestones.
+- Live calls: Sequence 13–14 used GPT-5.6-Luna/high; fresh Case A total through sequence 14 was GPT-5.6-Sol/high 1, GPT-5.6-Terra/high 2, GPT-5.6-Luna/high 11.

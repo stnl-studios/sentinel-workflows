@@ -1,0 +1,28 @@
+{
+  "issue": "C52",
+  "category": "PRODUCER_CONTRACT",
+  "case": "C",
+  "operation": "EXECUTE_SLICE",
+  "slice": "slice-01",
+  "replay": "fresh replay after C51 validation Type boundary edit",
+  "outputRoot": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-c32-case-c-0Bd4vr",
+  "operationArtifact": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-c32-case-c-0Bd4vr/case-c/operations/06-execute_slice.json",
+  "symptom": "The live EXECUTE_SLICE runner started but returned malformed noncanonical labels; the official context persisted RUNNER_RESULT_BLOCKED before accepting auxiliary evidence.",
+  "officialState": "RUNNER_RESULT_BLOCKED",
+  "evidence": {
+    "harnessStatus": "HARNESS_COMPLETED",
+    "blocker": "OFFICIAL_RUNNER_RESULT_BLOCKED",
+    "reportedCause": "Runner response used translated labels and noncanonical field names, so it cannot produce auxiliary evidence.",
+    "testedScopeInFallback": "../../../../src/validation.mjs, ../../../../test/todo-store.test.mjs",
+    "outerRetryCount": 0,
+    "profileId": "production-v2",
+    "profileMismatches": []
+  },
+  "rootCause": "EXECUTE_SLICE still delegated the complete mechanical response schema and its labels/order to the live runner. Although a serializer helper existed, the producer boundary was only prose-enforced inside the delegated model; the live runner violated the literal labels before the helper could own the artifact.",
+  "semanticOrMechanical": "mechanical",
+  "responsibleBoundary": "stnl-slice-executor EXECUTE_SLICE response/evidence producer boundary",
+  "correction": "Move EXECUTE_SLICE/APPLY_FINDINGS response and evidence serialization to the main deterministic producer: the runner returns only semantic fields and command tuples, while code derives task-relative targets from the current canonical task, validates physical identity, emits labels/order/tuples/paths/hashes, and publishes the complete candidate bundle before strict validation.",
+  "whyCodeVsPrompt": "Literal labels, field order, task-relative paths, tuple delimiters, and hashes are mechanical and had already failed in multiple live producer episodes. Keeping them in delegated model prose allowed a translated-label failure despite strict instructions; a pre-candidate code boundary removes that recurring ownership ambiguity without deciding the tests, verdict, or semantic findings.",
+  "regression": "Add a semantic EXECUTE_SLICE producer regression that accepts model-owned Status/commands/content, derives canonical task-relative scope and Tested state, emits the exact response/record bundle, and rejects explicit mechanical Operation/Tested state/translated labels.",
+  "status": "open"
+}

@@ -1,0 +1,14 @@
+{
+  "issue": "C43",
+  "category": "PRODUCER_CONTRACT",
+  "case": "C",
+  "operation": "MATERIALIZE_TASKS",
+  "slice": "slice-02",
+  "officialState": "PLANNED_READY",
+  "symptom": "The materializer candidate contained three Checklist `expected areas` code spans for slice-02 while the approved detailed plan contained two `Likely Areas` targets.",
+  "evidence": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-c32-case-c-xXIaqp/case-c/operations/04-materialize_tasks.json",
+  "rootCause": "The live task producer supplied an ambiguous semantic task shape with an extra path claim. The deterministic task serializer correctly refused to guess which claim to discard and blocked before candidate validation/publication.",
+  "semanticOrMechanical": "semantic input mismatch at a mechanical serialization boundary",
+  "correction": "No code correction yet: the strict serializer and existing causal regression already fail closed on extra claims. A fresh C replay is required to distinguish producer nondeterminism from a repeatable contract defect.",
+  "outerRetry": 0
+}

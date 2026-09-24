@@ -1,0 +1,14 @@
+{
+  "issue": "C47",
+  "category": "MECHANICAL_SERIALIZATION",
+  "case": "C",
+  "operation": "VALIDATE_SLICE",
+  "slice": "slice-02",
+  "officialState": "RUNNER_RESULT_BLOCKED",
+  "symptom": "After a fresh replay passed slice-01, the live validation runner completed its tests for slice-02 but omitted the required validation-bundle sections entirely.",
+  "evidence": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-c32-case-c-Uy4NsI/case-c/operations/09-validate_slice.json",
+  "rootCause": "The validation producer still required the delegated model to remember to invoke the deterministic bundle CLI and copy all three sections; code strictness rejected omission but could not prevent it before candidate publication.",
+  "semanticOrMechanical": "mechanical serialization",
+  "correction": "Pending causal correction: remove bundle invocation/section serialization from the model-owned boundary and produce the mechanical validation evidence from a deterministic runner boundary using the selected semantic targets, commands, and values.",
+  "outerRetry": 0
+}

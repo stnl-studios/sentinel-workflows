@@ -1,0 +1,28 @@
+{
+  "issue": "C79",
+  "category": "DRIVER_ORCHESTRATION",
+  "case": "A",
+  "operation": "EXECUTE_SLICE",
+  "slice": "slice-03",
+  "sequence": 11,
+  "model": "GPT-5.6-Luna",
+  "effort": "high",
+  "harness": "HARNESS_COMPLETED",
+  "outerRetry": 0,
+  "result": "BLOCKED",
+  "officialState": "EXECUTION_STARTED",
+  "symptom": "The main operation reported that deterministic serialization failed because RUNNER_EVIDENCE_SERIALIZER was not resolved; no execution check or artifact was published and the driver did not observe the required transition.",
+  "sourceEvidence": {
+    "renderPrompt": "benchmark-production-pilot.mjs replaced __RUNNER_EVIDENCE_SERIALIZER__ in the payload declaration but left the invocation as node \"$RUNNER_EVIDENCE_SERIALIZER\".",
+    "renderedPrompt": "The actual rendered prompt contained the absolute serializer in the payload declaration but still contained node \"$RUNNER_EVIDENCE_SERIALIZER\" in both execution producer instructions.",
+    "liveArtifact": "case-a/operations/11-execute_slice.json",
+    "candidatePublished": false,
+    "attemptOrCheckPublished": false
+  },
+  "rootCause": "The benchmark prompt renderer did not substitute the launcher-owned serializer path at the command use site. The model was instructed with a shell variable notation that was not guaranteed to exist as an exported environment variable, so a purely mechanical invocation value remained unresolved in the live operation.",
+  "semanticOrMechanical": "mechanical",
+  "responsibleBoundary": "benchmark production-pilot renderPrompt command materialization",
+  "correction": "After resolving the canonical serializer path once, renderPrompt now substitutes both the payload token and every exact producer invocation with the absolute path. The semantic model still owns only the check result and command selection; the driver owns the mechanical executable path.",
+  "whyCode": "The path is already a driver-owned constant and the failure is deterministic command serialization, not a semantic choice. Prompt prose cannot guarantee shell-variable binding.",
+  "regression": "scripts/test-benchmark-production-pilot.mjs P04c asserts the rendered validation invocation contains the absolute serializer path and no unresolved $RUNNER_EVIDENCE_SERIALIZER use site."
+}

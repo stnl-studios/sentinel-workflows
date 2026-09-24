@@ -14,6 +14,7 @@ import {
   validateWorkspace,
   workspaceSnapshot,
 } from '../lib/lifecycle.mjs';
+import { prepareInitCandidate } from '../lib/init-candidate.mjs';
 import { copyFixture, replace, RUNTIME_ROOT, temporary } from './helpers.mjs';
 
 test('validates active, blocked, and closed canonical fixtures', () => {
@@ -49,6 +50,100 @@ test('INIT, READINESS, and CLOSE transitions preserve their boundaries', (t) => 
   assert.equal(validateCloseTransition(ready, closed)[1].closed, true);
   replace(path.join(readinessCopy, 'feature_spec.md'), 'Provide deterministic', 'Provide changed');
   assert.throws(() => validateReadinessTransition(ready, readinessCopy, 'LOCAL'), /mutated the workspace/u);
+});
+
+test('INIT candidate preparation serializes only the canonical lifecycle owner before strict validation', async (t) => {
+  const root = temporary(t, 'stnl init owner serialization ');
+  const candidate = copyFixture(root, 'ready', 'candidate workspace');
+  const target = path.join(root, 'published', 'feature');
+  const changedFiles = [
+    'feature_spec.md',
+    'shared/requirements.md',
+    'shared/acceptance-criteria.md',
+  ];
+  for (const relative of changedFiles) {
+    replace(path.join(candidate, relative), 'owner: stnl-spec-lifecycle-manager', 'owner: Production Pilot');
+  }
+  const featurePath = path.join(candidate, 'feature_spec.md');
+  const beforeIdentity = fs.statSync(featurePath);
+  const beforeRealPath = fs.realpathSync(featurePath);
+
+  const prepared = await prepareInitCandidate({ target, candidate });
+
+  assert.deepEqual(prepared.changedFiles, changedFiles);
+  assert.equal(validateWorkspace(candidate).status, 'ready');
+  for (const relative of changedFiles) {
+    assert.match(fs.readFileSync(path.join(candidate, relative), 'utf8'), /^owner: stnl-spec-lifecycle-manager$/mu);
+  }
+  const afterIdentity = fs.statSync(featurePath);
+  assert.equal(fs.realpathSync(featurePath), beforeRealPath);
+  assert.equal(afterIdentity.dev, beforeIdentity.dev);
+  assert.equal(afterIdentity.ino, beforeIdentity.ino);
+});
+
+test('INIT candidate preparation leaves already canonical artifacts byte-identical', async (t) => {
+  const root = temporary(t, 'stnl init owner canonical ');
+  const candidate = copyFixture(root, 'ready', 'candidate workspace');
+  const target = path.join(root, 'published', 'feature');
+  const before = workspaceSnapshot(candidate);
+
+  const prepared = await prepareInitCandidate({ target, candidate });
+
+  assert.deepEqual(prepared.changedFiles, []);
+  assert.deepEqual(workspaceSnapshot(candidate), before);
+});
+
+test('official INIT candidate validator still rejects a noncanonical owner without preparation', (t) => {
+  const root = temporary(t, 'stnl init owner strict validator ');
+  const candidate = copyFixture(root, 'ready', 'candidate workspace');
+  replace(
+    path.join(candidate, 'feature_spec.md'),
+    'owner: stnl-spec-lifecycle-manager',
+    'owner: Production Pilot',
+  );
+  assert.throws(() => validateWorkspace(candidate), /wrong File Purpose Header owner/u);
+});
+
+test('INIT candidate preparation blocks malformed headers before changing any artifact', async (t) => {
+  const root = temporary(t, 'stnl init owner malformed ');
+  const candidate = copyFixture(root, 'ready', 'candidate workspace');
+  const target = path.join(root, 'published', 'feature');
+  const feature = path.join(candidate, 'feature_spec.md');
+  const requirements = path.join(candidate, 'shared', 'requirements.md');
+  replace(feature, 'owner: stnl-spec-lifecycle-manager', 'owner: Production Pilot');
+  replace(
+    requirements,
+    'owner: stnl-spec-lifecycle-manager',
+    'owner: Production Pilot\nowner: Production Pilot',
+  );
+  const beforeFeature = fs.readFileSync(feature);
+  const beforeRequirements = fs.readFileSync(requirements);
+
+  await assert.rejects(prepareInitCandidate({ target, candidate }), /duplicate File Purpose Header field owner/u);
+
+  assert.deepEqual(fs.readFileSync(feature), beforeFeature);
+  assert.deepEqual(fs.readFileSync(requirements), beforeRequirements);
+});
+
+test('INIT candidate preparation does not touch an existing destination', async (t) => {
+  const root = temporary(t, 'stnl init owner existing target ');
+  const candidate = copyFixture(root, 'ready', 'candidate workspace');
+  const target = path.join(root, 'published feature');
+  fs.mkdirSync(target);
+  const sentinel = path.join(target, 'preserve.txt');
+  fs.writeFileSync(sentinel, 'existing destination remains untouched\n', 'utf8');
+  replace(
+    path.join(candidate, 'feature_spec.md'),
+    'owner: stnl-spec-lifecycle-manager',
+    'owner: Production Pilot',
+  );
+  const beforeCandidate = fs.readFileSync(path.join(candidate, 'feature_spec.md'));
+  const beforeTarget = fs.readFileSync(sentinel);
+
+  await assert.rejects(prepareInitCandidate({ target, candidate }), /INIT destination must not exist/u);
+
+  assert.deepEqual(fs.readFileSync(path.join(candidate, 'feature_spec.md')), beforeCandidate);
+  assert.deepEqual(fs.readFileSync(sentinel), beforeTarget);
 });
 
 test('RESUME manifest binds the pre-state and exact feature authority', (t) => {

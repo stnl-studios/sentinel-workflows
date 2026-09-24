@@ -1,0 +1,54 @@
+{
+  "issue": "C85",
+  "category": "PRODUCER_CONTRACT",
+  "case": "A",
+  "operation": "EXECUTE_SLICE",
+  "slice": "slice-02",
+  "sequence": 10,
+  "model": "GPT-5.6-Luna",
+  "effort": "high",
+  "harness": "HARNESS_COMPLETED",
+  "retryCount": 0,
+  "result": "BLOCKED",
+  "officialState": "EXECUTION_STARTED",
+  "evidence": {
+    "operationArtifact": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-functional-convergence-RwBYfD/case-a/operations/10-execute_slice.json",
+    "taskArtifact": "/private/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-benchmark-session-Ul4THY/workspaces/case-a/specs/benchmark-case-a/execution/tasks/slice-02.md",
+    "approvedChecklistAreas": [
+      "../../../../src/cli.mjs",
+      "../../../../test/cli.test.mjs"
+    ],
+    "persistedChangedAreas": "- pending",
+    "physicalSourceChangesAtFailure": [
+      "src/cli.mjs",
+      "test/cli.test.mjs",
+      "src/todo-service.mjs",
+      "test/todo-service.test.mjs"
+    ],
+    "modelFinalMessage": "Status: BLOCKED\n\nOperation: EXECUTE_SLICE\nSlice: slice-02\nCause: deterministic serializer exited 1: Changed Areas cannot remain pending after execution work.\n\nNo artifact was published; no retry or later operation was started.",
+    "producerExitCode": 1,
+    "noCheckPublished": true,
+    "noCandidatePublished": true,
+    "outerRetry": 0
+  },
+  "rootCause": "The execution model completed implementation work in the approved slice but did not persist the executor-owned Changed Areas section, leaving the pristine sentinel - pending. The deterministic producer correctly rejected that incomplete execution record before candidate validation. The workspace also contained changes from the preceding slice, so deriving scope from the aggregate repository diff would be ambiguous and could claim another slice's ownership.",
+  "semanticOrMechanical": "semantic",
+  "responsibleBoundary": "EXECUTE_SLICE model-owned execution-record update before deterministic evidence serialization",
+  "correction": "Make the executor contract explicit that Changed Areas must be finalized before the runner response after any file-backed implementation, with - none reserved for a genuinely fileless execution and an objective fileless reason. Keep the producer rejection strict.",
+  "whyCodeVsPrompt": "The affected-file decision is semantic ownership, not merely path serialization. Code cannot safely infer the current slice's scope from the aggregate working-tree diff because prior slice changes are present; the model must declare the final affected scope and the existing producer only canonicalizes and validates it.",
+  "regression": "Add a contract regression that a work-started task with Changed Areas still equal to - pending remains rejected, while the execution prompt and both runner-agent contracts explicitly require final scope persistence.",
+  "localValidation": "node --test scripts/test-execution-contract.mjs: PASS (108/108); node --test scripts/test-validation-runner-contract.mjs: PASS (113/113); node --test scripts/test-launcher-contract.mjs: PASS (119/119); repository contract: PASS; git diff --check: PASS",
+  "liveReplay": "open; fresh A stopped before slice-02 transition, B/C not run; fresh replay required after C85/C86",
+  "workflowProgress": "A passed SPEC_INIT through REVIEW_TASKS, recovered EXECUTE_SLICE slice-01, recovered VALIDATE_SLICE slice-01, then reached the first slice-02 implementation attempt",
+  "liveCalls": [
+    {
+      "sequence": 10,
+      "case": "A",
+      "operation": "EXECUTE_SLICE",
+      "model": "GPT-5.6-Luna",
+      "effort": "high",
+      "purpose": "fresh replay slice-02 implementation",
+      "outcome": "OFFICIAL_TRANSITION_NOT_OBSERVED"
+    }
+  ]
+}

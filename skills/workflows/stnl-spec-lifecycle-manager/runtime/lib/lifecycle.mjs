@@ -31,6 +31,7 @@ export { ValidationError, canonicalPathWithoutSymlinks, filesystemComponentKey, 
 export const HEADER_FIELDS = [
   'purpose', 'status', 'read_when', 'do_not_read_when', 'contains', 'owner', 'update_policy',
 ];
+export const HEADER_OWNER = 'stnl-spec-lifecycle-manager';
 const HEADER_STATUSES = new Set(['draft', 'ready', 'blocked', 'done', 'closed', 'not_applicable']);
 const FEATURE_ACTIVE_STATUSES = new Set(['draft', 'ready', 'blocked']);
 const CANONICAL_PREFIXES = ['R', 'AC', 'D', 'C', 'RK', 'Q'];
@@ -138,8 +139,7 @@ function readText(file) {
   return decodeLifecycleUtf8(fs.readFileSync(file));
 }
 
-export function parseFilePurposeHeader(file) {
-  const text = readText(file);
+function parseFilePurposeHeaderText(text, file, { allowNoncanonicalOwner = false } = {}) {
   const match = text.match(/^# File Purpose Header\n\n```yaml\n([\s\S]*?)```\n/u);
   if (match === null) fail('missing normalized File Purpose Header', file);
   const data = Object.create(null);
@@ -161,8 +161,22 @@ export function parseFilePurposeHeader(file) {
   const placeholders = HEADER_FIELDS.filter((field) => containsTemplatePlaceholder(data[field]));
   if (placeholders.length) fail(`File Purpose Header fields contain placeholder content: [${placeholders.map((field) => `'${field}'`).join(', ')}]`, file);
   if (!HEADER_STATUSES.has(data.status)) fail(`invalid File Purpose Header status '${data.status}'`, file);
-  if (data.owner !== 'stnl-spec-lifecycle-manager') fail('wrong File Purpose Header owner', file);
-  return [data, text.slice(match[0].length)];
+  if (!allowNoncanonicalOwner && data.owner !== HEADER_OWNER) fail('wrong File Purpose Header owner', file);
+  return { data, body: text.slice(match[0].length), header: match[0] };
+}
+
+export function canonicalizeInitFilePurposeHeader(text, file = '<INIT candidate>') {
+  const source = String(text);
+  const parsed = parseFilePurposeHeaderText(source, file, { allowNoncanonicalOwner: true });
+  if (parsed.data.owner === HEADER_OWNER) return source;
+  const canonicalHeader = parsed.header.replace(/^owner:[^\n]*$/mu, `owner: ${HEADER_OWNER}`);
+  if (canonicalHeader === parsed.header) fail('File Purpose Header owner could not be serialized', file);
+  return canonicalHeader + source.slice(parsed.header.length);
+}
+
+export function parseFilePurposeHeader(file) {
+  const parsed = parseFilePurposeHeaderText(readText(file), file);
+  return [parsed.data, parsed.body];
 }
 
 function validateFeatureRoot(text, file) {

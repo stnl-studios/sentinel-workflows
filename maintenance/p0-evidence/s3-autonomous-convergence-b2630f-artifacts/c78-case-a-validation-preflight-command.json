@@ -1,0 +1,42 @@
+{
+  "issue": "C78",
+  "category": "MECHANICAL_SERIALIZATION",
+  "case": "A",
+  "operation": "VALIDATE_SLICE",
+  "slice": "slice-02",
+  "sequence": 9,
+  "model": "GPT-5.6-Luna",
+  "effort": "high",
+  "harness": "HARNESS_COMPLETED",
+  "outerRetry": 0,
+  "result": "BLOCKED",
+  "officialState": "RUNNER_RESULT_BLOCKED",
+  "preflightState": "IMPLEMENTED_AWAITING_VALIDATION",
+  "currentFingerprint": "5652ffa05e87b0d213f7e33b53ab921e3c151a2bc7eae1b28991046c404b3bc3",
+  "semanticCommands": [
+    { "command": "node --test test/cli.test.mjs", "exit": 0 },
+    { "command": "npm test", "exit": 0 },
+    { "command": "git diff --check", "exit": 0 },
+    { "command": "validate-execution-state.mjs SPEC_PATH VALIDATE_SLICE 2", "exit": 0 }
+  ],
+  "observedMessage": "The runner returned malformed output: its Commands omitted the required absolute official preflight command. No attempt, PASS, findings, or Effective Validation Base was created.",
+  "requiredCanonicalCommand": "node \"<REPOSITORY_ROOT>/skills/workflows/stnl-slice-quality-manager/runtime/validate-execution-state.mjs\" \"<absolute SPEC_PATH>\" VALIDATE_SLICE 2",
+  "recovery": {
+    "sameOperation": "VALIDATE_SLICE / slice-02",
+    "owner": "delegation-blocker",
+    "required": true,
+    "sequence10": "PASS",
+    "retryCount": 0
+  },
+  "rootCause": "The runner repeatedly treated the launcher-owned official preflight as a model-serialized command. The semantic response used an incomplete alias/placeholder instead of the exact absolute invocation, so the strict validation boundary correctly blocked before creating an attempt or candidate.",
+  "semanticOrMechanical": "mechanical",
+  "responsibleBoundary": "VALIDATE_SLICE semantic-response producer and its runner contract",
+  "correctionPlan": "Keep the semantic runner commands model-owned, reject semantic preflight attempts, and deterministically derive and prepend the exact official preflight command from the supplied SPEC_PATH and numeric slice before candidate validation.",
+  "evidence": {
+    "operation": "maintenance/p0-evidence runtime output 09-validate_slice.json",
+    "taskArtifact": "tasks/slice-02.md",
+    "workspace": "preserved managed workspace outside repository; not copied here",
+    "candidatePublished": false,
+    "attemptCreated": false
+  }
+}

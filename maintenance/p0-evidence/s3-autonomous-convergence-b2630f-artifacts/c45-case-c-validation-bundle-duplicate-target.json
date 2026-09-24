@@ -1,0 +1,14 @@
+{
+  "issue": "C45",
+  "category": "MECHANICAL_SERIALIZATION",
+  "case": "C",
+  "operation": "VALIDATE_SLICE",
+  "slice": "slice-01",
+  "officialState": "RUNNER_RESULT_BLOCKED",
+  "symptom": "The first live validation-bundle invocation selected the same physical target twice and the strict serializer rejected the duplicate task-relative claim.",
+  "evidence": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-c32-case-c-FxCt9M/case-c/operations/07-validate_slice.json",
+  "rootCause": "The producer prompt described one target per file but did not explicitly state that the --target inputs form a unique set; the model repeated the todo-store target and the deterministic boundary correctly failed closed.",
+  "semanticOrMechanical": "mechanical serialization input grammar",
+  "correction": "Pending causal correction: make unique-target-set semantics explicit at the producer boundary while retaining strict duplicate rejection in code.",
+  "outerRetry": 0
+}

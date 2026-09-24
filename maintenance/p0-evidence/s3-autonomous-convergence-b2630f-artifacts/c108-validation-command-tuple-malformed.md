@@ -1,0 +1,21 @@
+# C108 — validation runner command tuple was rejected before publication
+
+- Category: PRODUCER_CONTRACT
+- Case: A
+- Operation: VALIDATE_SLICE
+- Slice: slice-01
+- Symptom: The independent validation runner started, but the deterministic validation-bundle producer rejected semantic command tuple 1 because the object contained fields other than `command` and `exit`. No Validation Attempt, candidate, or Effective Validation Base was published.
+- Official state: Readback remained `IMPLEMENTED_AWAITING_VALIDATION`; legal operations were `VALIDATE_SLICE slice-01` and `REPLAN`. The task and execution history were unchanged.
+- Evidence: `/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-functional-convergence-jPhb0H/case-a/operations/07-validate_slice.json`. The final semantic response reported `Kind: malformed-output` and the producer cause `semantic validation payload command 1 must contain only command and exit`.
+- Root cause: The nested validation runner's semantic command tuple was not accepted by the strict producer. The top-level structured response was itself a valid BLOCKED object, but the producer rejected the nested command shape before candidate validation.
+- Semantic or mechanical: Mechanical serialization/schema shape.
+- Responsible boundary: Delegated runner response → capture → validation-bundle producer boundary.
+- Correction: Preserve the strict producer rejection and repeat only the still-legal `VALIDATE_SLICE` operation in the same workspace. Do not add an attempt, repair the tuple, unwrap or remap fields, or mark the slice complete.
+- Why code vs prompt: The exact tuple shape is already a deterministic producer invariant and must remain code-owned; the live evidence shows the producer enforced it. Any future source correction must target the nested provider schema/transport boundary only if this repeats after a valid replay, not relax the validator.
+- Files changed: None in the repository for this issue; replay evidence only.
+- Regression: Existing provider-schema, capture, serializer, and validation-runner contract tests cover closed `{command, exit}` tuples and reject extra fields before publication.
+- Local validation: Focused contract suites, benchmark verification, repository contract check, `validate.sh --no-smoke`, and `git diff --check` were PASS before this replay.
+- Live replay: Fresh A sequence 7 used GPT-5.6-Luna/high, returned `HARNESS_COMPLETED`, and was blocked by `OFFICIAL_TRANSITION_NOT_OBSERVED` because the strict producer had rejected the malformed nested tuple. Outer retry remained `0`.
+- Result: Strictness worked; the case remains open and is legally retryable at the same validation operation.
+- Workflow progress: `6/11` unique milestones had passed before this rejection; `4/6` tasks were complete and no slice was formally PASS.
+- Live calls: Fresh A total through sequence 7 was GPT-5.6-Sol/high 1, GPT-5.6-Terra/high 2, GPT-5.6-Luna/high 4.

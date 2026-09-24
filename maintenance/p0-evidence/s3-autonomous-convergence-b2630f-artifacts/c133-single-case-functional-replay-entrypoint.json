@@ -1,0 +1,30 @@
+{
+  "issue": "C133",
+  "category": "DRIVER_ORCHESTRATION",
+  "case": "C first; reused later for final fresh A/B/C",
+  "operation": "functional convergence case scheduling",
+  "symptom": "After local fixes, the only CLI command was the full Production Pilot, which enforces a clean published checkout and schedules A before B/C. The required functional phase needs an isolated fresh Case C while the candidate remains uncommitted, without invoking or bypassing official Pilot eligibility.",
+  "officialState": "No live state before this correction; official Pilot clean-check and baseline eligibility remain unchanged.",
+  "evidence": {
+    "entrypointBefore": "benchmark-production-pilot.mjs main accepted only run",
+    "singleCaseImplementation": "runCase was private and always invoked through runPilotSchedule",
+    "requiredSequence": "C functional convergence first; after the final source edit, fresh A, then fresh B and C",
+    "baseHead": "b2630fac3529f72146d050ce662ada3b145b4280",
+    "sourceCheckout": "intentionally dirty by uncommitted convergence changes"
+  },
+  "rootCause": "The production case operation loop existed and already owned official preflight/readback/candidate/handoff behavior, but it was inaccessible as a one-case functional replay; the full Pilot entrypoint correctly refused the dirty working tree.",
+  "semanticOrMechanical": "deterministic orchestration and evidence labeling",
+  "responsibleBoundary": "benchmark-production-pilot.mjs case-level driver entrypoint, reusing runCase and preserving runProductionPilot preconditions",
+  "correction": "Added the explicit functional-case command. It runs one selected A/B/C case through the existing runCase loop, production-v2 dispatch, qualified harness preflight, managed fresh workspace, and official operation preflight/readback/candidate/handoff. It records the real Git HEAD plus a working-tree fingerprint, verifies source preservation, fixes outerRetry at zero, and always marks baselineEligible=false and officialPilotExecuted=false. The original run command and clean-check remain unchanged.",
+  "whyCodeVsPrompt": "Case selection and result labeling are deterministic driver responsibilities. A prose instruction cannot expose the existing case loop or separate functional evidence from official Pilot eligibility.",
+  "filesChanged": [
+    "benchmarks/sentinel-todo/runtime/benchmark-production-pilot.mjs",
+    "scripts/test-benchmark-production-pilot.mjs"
+  ],
+  "regression": "P15 proves one requested production-v2 case runs exactly once, preserves actual HEAD/source fingerprint, uses outerRetry=0, and cannot emit Pilot eligibility or pilot-summary.json. P16 proves failed preflight prevents case execution and remains non-baseline evidence. Existing P05/P06 and clean Pilot path are unchanged.",
+  "localValidation": "PASS: production-pilot/agent-harness/runner-broker 70/70; benchmark verify; repository contract; git diff --check.",
+  "liveReplay": "The functional-case command started a fresh Case C under production-v2 and completed SPEC_INIT, SPEC_READINESS, PLAN, REVIEW_PLAN, MATERIALIZE_TASKS, and REVIEW_TASKS. It is not an official Production Pilot baseline. The driver then exited 13 before sequence 7 because of C134.",
+  "result": "ENTRYPOINT_PROVEN; CASE_CONTINUATION_BLOCKED_BY_C134",
+  "workflowProgress": "6/13 operations PASS; state MATERIALIZED_PRISTINE permits EXECUTE_SLICE/slice-01. Zero slices have formally passed. A fresh Case C is required after the C134 source correction.",
+  "liveCalls": 6
+}

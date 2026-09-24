@@ -1,0 +1,41 @@
+{
+  "category": "AUXILIARY_RUNNER",
+  "case": "C",
+  "operation": "EXECUTE_SLICE",
+  "slice": "slice-01",
+  "symptom": "The first fresh Case C execution attempt completed its main turn after implementation edits, but the delegated runner response contained unknown operation/translated fields instead of the exact lowerCamelCase semantic schema.",
+  "officialState": "RUNNER_RESULT_BLOCKED",
+  "evidence": {
+    "operationArtifact": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-functional-convergence-YmrKlR/case-c/operations/06-execute_slice.json",
+    "taskArtifact": "managed Case C specs/benchmark-case-c/execution/tasks/slice-01.md",
+    "preflightState": "MATERIALIZED_PRISTINE",
+    "candidateReadback": "The strict task candidate and official readback preserved the active malformed-output Delegation Blocker. State RUNNER_RESULT_BLOCKED; legal recovery is EXECUTE_SLICE/slice-01; sameOperationResumeRequired=true.",
+    "implementationState": "Three slice-01 checklist boxes were marked, but no implementation-check evidence or terminal task result was accepted. The slice remains pending after all three official attempts.",
+    "attempts": [
+      "Sequence 06: malformed output was summarized as unknown and translated fields instead of the exact lowerCamelCase schema; official same-operation recovery required.",
+      "Sequence 07: malformed output was summarized as human-readable translated labels/prose instead of the exact lowerCamelCase schema; the singleton Delegation Blocker remained active and the same recovery was required.",
+      "Sequence 08: final budgeted attempt also returned human-readable translated labels/prose instead of the exact lowerCamelCase schema; no valid runner evidence was accepted and the event budget was exhausted."
+    ],
+    "model": "GPT-5.6-Luna/xhigh",
+    "durationMs": 527876,
+    "profile": "production-v2",
+    "outerRetry": 0
+  },
+  "rootCause": "A delegated runner returned a malformed semantic response on three consecutive official EXECUTE_SLICE attempts after delegation started. The strict capture/serialization boundary refused every attempt and preserved the official delegation blocker instead of allocating an implementation-check record. The available operation artifacts contain the main model's BLOCKED summaries but do not preserve the raw malformed runner objects, so the exact invalid keys/values cannot be identified.",
+  "semanticOrMechanical": "mechanical response-schema conformance at the auxiliary runner boundary; exact producer cause not yet established",
+  "responsibleBoundary": "Independent delegated validation runner response, then deterministic response capture and execution bundle serializer",
+  "correction": "No source or authority was relaxed. The exact failure recurred across the initial attempt and both same-operation recoveries; the official per-slice budget of three is exhausted. Preserve this workspace as BLOCKED, inspect the actual nested runner invocation/schema boundary and existing C97/C98/C113 evidence, then make a causal producer-boundary correction only if that inspection proves the structured schema is not being enforced at the nested runner call.",
+  "whyCodeVsPrompt": "The same mechanically specified response-shape failure occurred three times despite explicit lowerCamelCase JSON/schema instructions, and prior C97/C98/C113 records show this is a recurring family. The capture helper and serializer correctly rejected it. Further prose alone is not justified; the next diagnosis must establish whether the nested runner call actually receives the concrete provider schema or whether only the outer model does.",
+  "filesChanged": [],
+  "regression": "Live readback verifies malformed runner output creates RUNNER_RESULT_BLOCKED and exposes only same-operation EXECUTE_SLICE/slice-01 recovery, with no implementation-check record or PASS.",
+  "localValidation": "No source edit; official candidate validation, journal persistence, and readback succeeded.",
+  "liveReplay": "Sequences 06, 07, and 08 all returned RUNNER_RESULT_BLOCKED. Sequences 07 and 08 were official same-operation recovery events. The third EXECUTE_SLICE event exhausted the per-slice budget; finalizer preserved Case C BLOCKED with operations=8, recoveryCount=2, production-v2, profileMismatches=[], outerRetry=0.",
+  "result": "BLOCKED_AFTER_THREE_MALFORMED_RUNNER_RESPONSES",
+  "workflowProgress": "Fresh C: 3 slices / 8 tasks; 3 tasks have execution checkboxes marked but 0/8 tasks are terminal. Five of 13 unique workflow milestones have passed; slice-01 is first and requires successful runner evidence plus formal validation.",
+  "liveCalls": [
+    "GPT-5.6-Luna/xhigh: fresh Case C sequence 06, first EXECUTE_SLICE/slice-01 attempt; malformed delegated-runner response; official same-operation recovery required",
+    "GPT-5.6-Luna/xhigh: fresh Case C sequence 07, official same-operation recovery; second malformed delegated-runner response; singleton blocker preserved",
+    "GPT-5.6-Luna/xhigh: fresh Case C sequence 08, second official same-operation recovery and third/final budgeted attempt; malformed delegated-runner response; finalizer BLOCKED"
+  ],
+  "priorIssue": "Material recurrence of the malformed auxiliary-runner response family in C97, C98, and C113; those earlier incidents recovered through official operation handoffs. Current deterministic capture gate remained strict and refused invalid output."
+}

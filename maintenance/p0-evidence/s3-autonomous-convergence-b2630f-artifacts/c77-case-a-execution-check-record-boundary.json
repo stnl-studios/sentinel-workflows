@@ -1,0 +1,28 @@
+{
+  "issue": "C77",
+  "category": ["PRODUCER_CONTRACT", "MECHANICAL_SERIALIZATION"],
+  "case": "A",
+  "operation": "EXECUTE_SLICE",
+  "slice": "slice-01",
+  "attempts": [
+    {
+      "sequence": 6,
+      "officialState": "RUNNER_RESULT_BLOCKED",
+      "diagnostic": "runner returned labeled prose instead of raw semantic JSON"
+    },
+    {
+      "sequence": 7,
+      "officialState": "RUNNER_RESULT_BLOCKED",
+      "diagnostic": "implementation-check-01 has unknown field 'Evidence or failure summary'"
+    }
+  ],
+  "evidence": {
+    "sequence7": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-functional-convergence-Uwud63/case-a/operations/07-execute_slice.json",
+    "persistedBlocker": "Delegation Blocker remained the only live artifact after candidate rejection"
+  },
+  "rootCause": "The execution producer emitted a response-oriented bundle and left the model responsible for remapping it into the canonical Implementation Test Evidence record. The model copied the response-only Evidence or failure summary label into the task check record, where the strict validator correctly rejects it.",
+  "semanticOrMechanical": "mechanical",
+  "correctionBoundary": "skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs",
+  "correction": "Make the execution bundle emit the complete canonical implementation or findings check record, including the next check identifier and only fields allowed by the target section; keep semantic status, evidence, commands, and findings values model-owned.",
+  "authorityPreserved": ["candidate validation remains strict", "delegation recovery remains legal", "no post-rejection repair", "outer retry remains zero"]
+}

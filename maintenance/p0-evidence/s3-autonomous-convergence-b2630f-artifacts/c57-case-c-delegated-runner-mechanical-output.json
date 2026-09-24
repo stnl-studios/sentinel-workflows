@@ -1,0 +1,29 @@
+{
+  "issue": "C57",
+  "category": "AUXILIARY_RUNNER",
+  "case": "Case C",
+  "operation": "EXECUTE_SLICE",
+  "slice": "slice-01",
+  "symptom": "The fresh EXECUTE_SLICE harness completed and every recorded command exit code was 0, but the delegated runner still returned a BLOCKED response reporting non-canonical translated and mechanical fields. The official state remained RUNNER_RESULT_BLOCKED.",
+  "officialState": "RUNNER_RESULT_BLOCKED",
+  "evidenceRoot": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-c32-case-c-uI46oj",
+  "operationArtifact": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-c32-case-c-uI46oj/case-c/operations/06-execute_slice.json",
+  "evidence": {
+    "harnessStatus": "HARNESS_COMPLETED",
+    "commandExitCodes": "33/33 zero",
+    "reportedRunnerCause": "Runner returned non-canonical translated and mechanical fields.",
+    "preflightState": "MATERIALIZED_PRISTINE",
+    "readbackState": "RUNNER_RESULT_BLOCKED",
+    "productionProfile": "production-v2",
+    "outerRetry": 0,
+    "profileMismatches": [],
+    "candidateChangedPathsHadNoProjectAgent": true
+  },
+  "rootCause": "The production pilot prepared the fresh managed workspace from the benchmark seed but did not project the repository's canonical project-scoped Codex validation-runner configuration into that workspace. The harness deliberately invokes Codex with user configuration ignored, while the rehearsal's critical fixture explicitly installs .codex/agents/stnl_validation_runner.toml before exercising the same delegated runner. The live main context therefore had the semantic producer instructions, but the independent runner boundary lacked the strict runner contract and returned mechanical fields that the main producer correctly rejected.",
+  "semanticOrMechanical": "mechanical",
+  "responsibleBoundary": "benchmark-production-pilot managed-workspace runner configuration projection",
+  "correction": "Add a deterministic production-v2 setup step that copies the canonical repository agent file byte-for-byte into the fresh managed workspace at .codex/agents/stnl_validation_runner.toml before the first operation. Reject an unsafe pre-existing destination instead of overwriting or repairing it, and verify copied bytes before the first model call.",
+  "whyCodeVsPrompt": "The missing project-scoped agent configuration is an execution-environment invariant. More prompt prose cannot load the configured independent runner or make an unconfigured runner adopt the repository contract; the pilot boundary must materialize the exact existing authority before delegation.",
+  "regression": "Add a production-pilot test that projects the canonical runner configuration into a temporary managed workspace, asserts regular-file identity and byte equality, and rejects a pre-existing destination. Preserve strict validation-runner contract tests.",
+  "status": "open"
+}

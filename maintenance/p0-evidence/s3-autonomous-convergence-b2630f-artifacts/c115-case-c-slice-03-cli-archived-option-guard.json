@@ -1,0 +1,36 @@
+{
+  "category": "PRODUCER_CONTRACT",
+  "case": "C",
+  "operation": "EXECUTE_SLICE",
+  "slice": "slice-03",
+  "symptom": "The first automatic verification round failed the new CLI integration test: list --archived returned exit code 2 instead of 0. The full suite also failed with the same one test failure.",
+  "officialState": "AUXILIARY_BLOCKED",
+  "evidence": {
+    "operation": "fresh Case C sequence 13",
+    "taskArtifact": "specs/benchmark-case-c/execution/tasks/slice-03.md",
+    "failedCommand": "node --test test/cli.test.mjs",
+    "runnerRound1": "TESTS_FAIL; 4 passed, 1 failed",
+    "physicalCause": "An early generic guard rejected every argument beginning with '-' before the later list --archived route could handle the supported flag.",
+    "correctionObserved": "The managed workspace narrowed the guard to permit exactly list --archived while retaining unknown-flag rejection.",
+    "round2Checks": [
+      "node --test test/cli.test.mjs: exit 0",
+      "npm test: exit 0; 18 tests passed"
+    ]
+  },
+  "rootCause": "The model-generated CLI implementation placed a broad unknown-flag check before the supported archived-list option, making the valid feature unreachable.",
+  "semanticOrMechanical": "semantic implementation logic",
+  "responsibleBoundary": "Case C slice-03 implementation in the managed benchmark workspace",
+  "correction": "The official EXECUTE_SLICE operation applied the narrow route exception in the managed workspace. Round 2 checks passed but the auxiliary runner returned BLOCKED for the separate C116 authority claim; after official recovery from C116/C117, implementation-check-03 returned TESTS_PASS and readback reached IMPLEMENTED_AWAITING_VALIDATION.",
+  "whyCodeVsPrompt": "This is observable feature behavior, so the slice executor owns the code correction. No benchmark seed or repository source was changed.",
+  "filesChanged": [
+    "managed Case C workspace: src/cli.mjs"
+  ],
+  "regression": "Managed Case C workspace: node --test test/cli.test.mjs and npm test passed on automatic round 2; official operation remains blocked pending same-operation recovery.",
+  "localValidation": "No repository-source change; the live managed-workspace tests are the relevant checks.",
+  "liveReplay": "Sequence 13 round 1 TESTS_FAIL; round 2 checks passed but returned BLOCKED due the separate authority mismatch. Sequence 14 initialization recovery was blocked; sequence 15 official same-operation recovery returned TESTS_PASS and readback reached IMPLEMENTED_AWAITING_VALIDATION.",
+  "result": "RECOVERED_OFFICIAL",
+  "workflowProgress": "Case C advanced to 10/13 milestones; slice-03 is implemented and all three slices now await only slice-03 formal validation and SPEC closure.",
+  "liveCalls": [
+    "GPT-5.6-Luna/xhigh sequence 13"
+  ]
+}

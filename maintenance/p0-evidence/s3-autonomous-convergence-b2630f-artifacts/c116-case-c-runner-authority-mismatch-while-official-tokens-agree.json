@@ -1,0 +1,33 @@
+{
+  "category": "RUNTIME_AUTHORITY",
+  "case": "C",
+  "operation": "EXECUTE_SLICE",
+  "slice": "slice-03",
+  "symptom": "The auxiliary runner returned BLOCKED in automatic check round 2, alleging that the supplied Requirements authority did not match the current feature specification artifact, although official preflight and persisted planning/task authorities agreed.",
+  "officialState": "AUXILIARY_BLOCKED",
+  "evidence": {
+    "operation": "fresh Case C sequence 13",
+    "officialPreflight": "EXECUTE_SLICE preflight state=EXECUTION_STARTED slice=slice-03 authority=sha256:b37eec34cc8fa1935ecab867a6caaefbc83e1afc23adcbd3e42b220256054241",
+    "persistedAuthorities": "Global plan, detailed plans, and task artifacts all contain the same sha256:b37eec34cc8fa1935ecab867a6caaefbc83e1afc23adcbd3e42b220256054241 token.",
+    "runnerEvidence": "implementation-check-02 persisted status BLOCKED with reason: supplied requirements authority does not match current feature specification artifact.",
+    "checks": "node --test test/cli.test.mjs and npm test both exited 0 in round 2.",
+    "priorRecurrence": "C89 recorded a validation runner comparing a raw requirements.md digest with the official authority token despite official preflight/artifact agreement.",
+    "requiredRecovery": "EXECUTE_SLICE / slice-03; owner=auxiliary-check; record=implementation-check-02; round=2; sameOperationResumeRequired=true. Sequence 14 then persisted a separate initialization blocker; sequence 15 resumed that official blocker and recorded implementation-check-03 TESTS_PASS."
+  },
+  "rootCause": "The runner's authority-mismatch claim conflicts with the official token and persisted execution authorities. The present operation evidence does not expose the runner's compared digest, so a raw-file-hash comparison is suspected from C89 but is not asserted as proven for C116.",
+  "semanticOrMechanical": "mechanical authority handling",
+  "responsibleBoundary": "auxiliary runner authority gate and the EXECUTE_SLICE delegation payload",
+  "correction": "No source change. The exact official same-operation recovery flow was followed; after the separate initialization blocker, sequence 15 produced implementation-check-03 TESTS_PASS. The authority token and validators were unchanged; the prior BLOCKED record remains immutable.",
+  "whyCodeVsPrompt": "Official-token identity is deterministic and existing instructions already prohibit raw hashing. C89 is a prior recurrence; if this recovery repeats the false mismatch, the authority comparison/input boundary will be moved to a small deterministic check using existing official preflight/state helpers, without duplicating the authority algorithm or promoting BLOCKED to PASS.",
+  "filesChanged": [],
+  "regression": "Live official preflight and persisted artifact comparison proves the supplied/persisted official token is consistent; C89 provides the prior raw-hash recurrence. The official same-operation recovery will test whether the runner can now honor that authority.",
+  "localValidation": "No local source edits for C116; read-only official preflight returned the same token persisted by all plan/task artifacts.",
+  "liveReplay": "Sequence 13 BLOCKED after the round-2 auxiliary response; sequence 14 hit the official runner initialization blocker; sequence 15 resumed the same operation and returned TESTS_PASS with readback IMPLEMENTED_AWAITING_VALIDATION.",
+  "result": "RECOVERED_OFFICIAL",
+  "workflowProgress": "Case C advanced to 10/13 milestones with outer retry 0; slice-03 implementation checks are terminal TESTS_PASS, and formal validation is next.",
+  "liveCalls": [
+    "GPT-5.6-Luna/xhigh sequence 13",
+    "GPT-5.6-Luna/xhigh sequence 14",
+    "GPT-5.6-Luna/xhigh sequence 15"
+  ]
+}

@@ -1,0 +1,40 @@
+{
+  "issue": "C141",
+  "case": "B",
+  "event": {
+    "sequence": 5,
+    "operation": "MATERIALIZE_TASKS",
+    "model": "GPT-5.6-Terra",
+    "effort": "high",
+    "durationMs": 142748,
+    "result": "BLOCKED",
+    "blocker": "OFFICIAL_TRANSITION_NOT_OBSERVED"
+  },
+  "producerDiagnostic": "BLOCKED: the official publisher rejected `tasks/slice-01.md` for a non-canonical `Requirements source`.\n\nNo live artifacts were published, and I did not retry or modify the rejected candidate.",
+  "preflight": {
+    "state": "PLANNED_READY",
+    "currentFingerprint": "1118d0f06894646efc1fb6f075205a9f8813cc6b221b21792f34ea7631d58027",
+    "legalTarget": { "operation": "MATERIALIZE_TASKS", "slice": null },
+    "requiredRecoveryHandoff": null
+  },
+  "officialReadbackAfterRejection": {
+    "state": "PLANNED_READY",
+    "currentFingerprint": "1118d0f06894646efc1fb6f075205a9f8813cc6b221b21792f34ea7631d58027",
+    "legalTarget": { "operation": "MATERIALIZE_TASKS", "slice": null },
+    "requiredRecoveryHandoff": null,
+    "rows": []
+  },
+  "liveTaskArtifactsInWorkspaceSnapshot": [],
+  "journal": { "exitCode": 0, "event": { "index": 5, "status": "ACTIVE" } },
+  "run": {
+    "profile": "production-v2",
+    "outerRetry": 0,
+    "controllerRecoveries": 0,
+    "cleanup": "PASS"
+  },
+  "controllerDecision": {
+    "canonicalRequirementsSourceFromResolvedAuthority": "../../feature_spec.md",
+    "allowedAction": "one fresh MATERIALIZE_TASKS model call while PLANNED_READY and the exact operation remain official; preserve original BLOCKED event; rerun strict publisher",
+    "notAllowed": ["silently edit rejected candidate", "skip validation", "advance to REVIEW_TASKS", "increment outer retry"]
+  }
+}

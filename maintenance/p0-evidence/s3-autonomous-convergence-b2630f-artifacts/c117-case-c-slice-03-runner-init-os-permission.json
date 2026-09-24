@@ -1,0 +1,31 @@
+{
+  "category": "AUXILIARY_RUNNER",
+  "case": "C",
+  "operation": "EXECUTE_SLICE",
+  "slice": "slice-03",
+  "symptom": "Fresh Case C sequence 14 could not start the independent runner on either bounded initialization attempt; both exited before session start with failed to initialize in-process app-server client: Operation not permitted.",
+  "officialState": "RUNNER_INITIALIZATION_BLOCKED",
+  "evidence": {
+    "preflightState": "AUXILIARY_BLOCKED",
+    "preflightAuthority": "sha256:b37eec34cc8fa1935ecab867a6caaefbc83e1afc23adcbd3e42b220256054241",
+    "attempts": "Two independent starts failed before runner session; no verification command executed and no automatic check round 3 was allocated.",
+    "candidateAndReadback": "Candidate validation and official handoff readback exited 0; state RUNNER_INITIALIZATION_BLOCKED.",
+    "recovery": "EXECUTE_SLICE / slice-03; owner=delegation-blocker; after record=implementation-check-02; sameOperationResumeRequired=true. Sequence 15 resumed this exact operation and recorded implementation-check-03 TESTS_PASS.",
+    "priorRecurrence": "C105 recorded the same app-server Operation not permitted initialization failure and successful official same-operation recoveries in Case A."
+  },
+  "rootCause": "The native app-server client intermittently rejects delegated runner startup at the environment/transport boundary. This occurs before runner reasoning or seed checks; the precise OS permission source is not exposed by the official evidence.",
+  "semanticOrMechanical": "mechanical transport/initialization",
+  "responsibleBoundary": "Codex delegated runner startup before auxiliary checks",
+  "correction": "No source, seed, authority, or validator changes. The bounded official retry was exhausted and the singleton blocker was persisted; continue only through the official same-operation recovery.",
+  "whyCodeVsPrompt": "The contract already permits one independent technical start retry and requires same-operation recovery. Changing prose or implementation cannot infer a successful runner session from a pre-session OS error; no fallback or outer retry is allowed.",
+  "filesChanged": [],
+  "regression": "Live sequence 14 confirms both failed starts created no check record, the strict candidate validator accepted only the canonical initialization blocker, and readback requires the same operation/slice.",
+  "localValidation": "No repository source edit; official candidate validation and readback passed.",
+  "liveReplay": "Sequence 14 BLOCKED; sequence 15 official same-operation recovery started the runner, returned TESTS_PASS, and read back IMPLEMENTED_AWAITING_VALIDATION.",
+  "result": "RECOVERED_OFFICIAL",
+  "workflowProgress": "Case C advanced to 10/13 milestones; slice-01 and slice-02 PASS, slice-03 now has terminal implementation TESTS_PASS and awaits formal validation.",
+  "liveCalls": [
+    "GPT-5.6-Luna/xhigh sequence 14",
+    "GPT-5.6-Luna/xhigh sequence 15"
+  ]
+}

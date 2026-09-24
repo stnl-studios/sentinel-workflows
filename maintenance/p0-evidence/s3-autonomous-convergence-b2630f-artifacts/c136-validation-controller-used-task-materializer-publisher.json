@@ -1,0 +1,35 @@
+{
+  "issue": "C136",
+  "category": "VALIDATION_OWNERSHIP",
+  "case": "C",
+  "operation": "VALIDATE_SLICE",
+  "slice": "slice-02",
+  "symptom": "The configured runner returned a captured PASS with no findings. The main-context turn returned BLOCKED because the task-materializer publication path rejected the historical validation task.",
+  "officialState": {
+    "before": "IMPLEMENTED_AWAITING_VALIDATION",
+    "after": "IMPLEMENTED_AWAITING_VALIDATION",
+    "legalNext": "VALIDATE_SLICE/slice-02 or REPLAN",
+    "operationOutcome": "BLOCKED / OFFICIAL_TRANSITION_NOT_OBSERVED",
+    "candidateCleanup": "PRESERVED_WITHOUT_OFFICIAL_TRANSITION"
+  },
+  "evidence": {
+    "operationArtifact": "/tmp/sentinel-functional-convergence-b2630f-c-BXRLk2/case-c/case-c/operations/10-validate_slice.json",
+    "runnerReceipt": "RUNNER_RESPONSE_CAPTURED; GPT-5.6-Luna/medium; retryCount=0",
+    "mainContext": "GPT-5.6-Luna/xhigh; HARNESS_COMPLETED; durationMs=491445",
+    "capturedRunnerResult": "The receipt exists and the main-context response reports runner PASS, authority and digests matched, candidate preparation and strict validation PASS.",
+    "blockedDiagnostic": "Publication rejected: task path serialization blocked because slice-02 historical task changed during materialization. Recovery targets: VALIDATE_SLICE / slice-02 or REPLAN.",
+    "candidateReportedByModel": "attempt-01 and PASS records; no live persistence",
+    "outerRetry": 0,
+    "workflowProgress": "10/24 allowed operation events reached (13 is the nominal no-findings path); slice-01 formally PASS (1/3); slice-02 implementation complete but formal validation not published."
+  },
+  "rootCause": "VALIDATE_SLICE attempted publication through the task-materializer publisher, whose strict historical-task invariant correctly rejected this validation candidate. That publisher does not own formal validation publication.",
+  "semanticOrMechanical": "Mechanical operation ownership/publication routing; the runner's formal semantic decision remains authoritative.",
+  "responsibleBoundary": "Production-v2 controller after the official runner receipt: deterministic candidate preparation followed by the VALIDATE_SLICE-specific strict validator and publisher.",
+  "correction": "For normal validation, the controller consumes exactly one captured runner response, calls the existing deterministic validation candidate preparer, then calls the validation-specific atomic publisher. For this exact previously observed task-materializer-publisher rejection, the controller does not edit or repair the candidate; it attempts the VALIDATE_SLICE-specific publisher, which reruns strict candidate validation and official readback. The recovery is recorded separately from outer retry.",
+  "whyCodeVsPrompt": "The producer and publisher choice is deterministic operation routing. Existing explicit prose did not prevent a live model from selecting the wrong publisher; the controller can own the operation and preserve strict candidate validation without another model call.",
+  "regression": "scripts/test-execution-contract.mjs — valid PASS candidate is rejected by the task-materializer publisher without live mutation, then controller recovery publishes the unchanged candidate through strict validation; a separate NEEDS_FIX case publishes official VALIDATION_NEEDS_FIX and retains APPLY_FINDINGS.",
+  "localValidation": "PASS: execution-contract 117/117; production-pilot 32/32; validation-runner 112/112; launcher 126/126; rehearsal + benchmark contract 19/19; production-pilot + runner-broker 39/39; benchmark verify; repository contract; validate.sh --no-smoke; git diff --check.",
+  "liveReplay": "Pending fresh Case C after local changes; prior case ended at operation 10 and is not resumable after source edits.",
+  "result": "Cause proven; deterministic controller path and strict regression pass locally; fresh live proof pending.",
+  "liveCalls": "No new calls for C136 correction. The diagnostic failure used one Luna/xhigh main-context call and one Luna/medium configured runner call at operation 10."
+}

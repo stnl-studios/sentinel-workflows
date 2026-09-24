@@ -1,0 +1,14 @@
+{
+  "issue": "C46",
+  "category": "DRIVER_ORCHESTRATION",
+  "case": "C",
+  "operation": "EXECUTE_SLICE",
+  "slice": "slice-03",
+  "officialState": "EXECUTION_STARTED",
+  "symptom": "The fresh Case C replay passed SPEC_INIT through VALIDATE_SLICE slice-02, then the official production-v2 Luna/xhigh harness exceeded its 900000 ms timeout on EXECUTE_SLICE slice-03 without producing an assistant response.",
+  "evidence": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-c32-case-c-WUndh4/case-c/operations/10-execute_slice.json",
+  "rootCause": "Provider/harness latency exceeded the configured per-operation timeout; no producer artifact, validator rejection, or authority violation was observed.",
+  "semanticOrMechanical": "execution orchestration",
+  "correction": "No source correction; preserve the official timeout evidence and rerun the same production-v2 flow in a fresh managed workspace.",
+  "outerRetry": 0
+}

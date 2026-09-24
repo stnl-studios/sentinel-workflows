@@ -1,0 +1,17 @@
+{
+  "issue": "C76",
+  "category": ["PRODUCER_CONTRACT", "MECHANICAL_SERIALIZATION"],
+  "case": "C",
+  "operation": "EXECUTE_SLICE",
+  "slice": "slice-02",
+  "officialState": "EXECUTION_STARTED",
+  "result": "OFFICIAL_TRANSITION_NOT_OBSERVED",
+  "automaticCheckRound": "2/3",
+  "runnerDiagnostic": "candidate validator exit 1: unknown field Corrections covered in implementation-check-01",
+  "candidateEvidence": "/private/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-benchmark-session-9VKR6e/runner-tmp/case-c-execution-candidate/tasks/slice-02.md",
+  "rootCause": "The live execution producer schema admitted the findings-only Corrections covered label for an implementation retry and omitted the required round-two Prior-round failure, Correction applied, and In-slice rationale fields.",
+  "semanticOrMechanical": "mechanical",
+  "correctionBoundary": "skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs",
+  "correction": "The semantic runner payload now uses execution-specific correction fields; the deterministic producer derives Correction paths and Updated scope from the canonical task claims.",
+  "authorityPreserved": ["candidate validator remains strict", "APPLY_FINDINGS retains Corrections covered", "no silent repair"]
+}

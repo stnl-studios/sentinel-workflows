@@ -1325,11 +1325,13 @@ function parseTask(text, label, expectedSlice, references = {}) {
     && !/^- \[x\]/gmu.test(taskSections.get("Checklist") ?? "");
   const activeBlockers = [...findings, ...divergences].filter((record) => record.severity === "blocking" && record.state === "active");
   const activeBlockingDivergence = divergences.some((record) => record.severity === "blocking" && record.state === "active");
+  const correctionCycleHasPersistedScope = corrections.length !== 0 && corrections.every((claim) => changedAreas.includes(claim));
   for (const [name, latest] of [["implementation", implementationChecks.at(-1)], ["findings", findingsChecks.at(-1)]]) {
     const expectedOperation = name === "implementation" ? "EXECUTE_SLICE" : "APPLY_FINDINGS";
     const pausedByDelegation = delegationBlocker?.state === "active" && delegationBlocker.operation === expectedOperation
       && delegationBlocker.afterRecord === latest?.id;
-    if (latest?.status === "TESTS_FAIL" && latest.round < 3 && !activeBlockingDivergence && !pausedByDelegation) {
+    if (latest?.status === "TESTS_FAIL" && latest.round < 3 && !activeBlockingDivergence
+      && !pausedByDelegation && !correctionCycleHasPersistedScope) {
       throw new ExecutionContractError(`${label} has an unterminated ${name} automatic correction cycle without a blocking divergence`);
     }
   }
@@ -1482,7 +1484,7 @@ function projectRelativeCandidate(raw, trustedRoot) {
   return segments.length === 0 ? null : path.resolve(trustedRoot, ...segments);
 }
 
-async function validateImplementationPathClaim(workspace, { artifact, field, raw }) {
+async function resolveImplementationPathClaim(workspace, { artifact, field, raw }) {
   const logicalWorkspace = logicalWorkspaceFor(workspace);
   const logicalArtifact = logicalExecutionPath(workspace, artifact);
   const trustedRoot = await trustedProjectRoot(workspace);
@@ -1552,6 +1554,46 @@ async function validateImplementationPathClaim(workspace, { artifact, field, raw
       });
     }
   }
+  return Object.freeze({
+    resolved,
+    physicalTarget: resolvedMetadata === null ? resolved : await fs.realpath(resolved),
+  });
+}
+
+async function validateImplementationPathClaim(workspace, claim) {
+  await resolveImplementationPathClaim(workspace, claim);
+}
+
+export async function resolvePhysicalImplementationTarget(specPath, { artifact, field = "implementation path", raw }) {
+  const workspace = await resolveExecutionWorkspace(specPath);
+  return resolveImplementationPathClaim(workspace, {
+    artifact: path.resolve(String(artifact)),
+    field,
+    raw,
+  });
+}
+
+export async function resolveSemanticPhysicalImplementationTarget(specPath, { raw }) {
+  const workspace = await resolveExecutionWorkspace(specPath);
+  const trustedRoot = await trustedProjectRoot(workspace);
+  if (typeof raw !== "string" || raw.length === 0 || raw.includes("\\")
+    || path.posix.isAbsolute(raw) || path.posix.normalize(raw) !== raw
+    || raw.split("/").some((segment) => segment === "" || segment === "." || segment === "..")) {
+    throw new ExecutionContractError(
+      `semantic physical implementation target must be a normalized repository-relative path: ${String(raw)}`,
+      [String(raw)],
+    );
+  }
+  const resolved = path.resolve(trustedRoot, ...raw.split("/"));
+  if (!pathIsWithin(resolved, trustedRoot)) {
+    throw new ExecutionContractError(`semantic physical implementation target escapes the trusted project root: ${raw}`, [resolved]);
+  }
+  await rejectSymlinkComponents(resolved, trustedRoot);
+  const metadata = await lstatOrNull(resolved);
+  return Object.freeze({
+    resolved,
+    physicalTarget: metadata === null ? resolved : await fs.realpath(resolved),
+  });
 }
 
 async function validatePlanningImplementationPaths(workspace, globalPlan, plans) {

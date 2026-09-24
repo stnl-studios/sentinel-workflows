@@ -1,0 +1,28 @@
+{
+  "issue": "C56",
+  "category": "PRODUCER_CONTRACT",
+  "case": "Case C",
+  "operation": "EXECUTE_SLICE",
+  "slice": "slice-01",
+  "symptom": "After C55's code correction, the fresh replay still reached `RUNNER_RESULT_BLOCKED`; the harness completed, the runner returned a fallback `Status: BLOCKED`, and three command executions exited 1 before the official state remained blocked.",
+  "officialState": "RUNNER_RESULT_BLOCKED",
+  "evidenceRoot": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-c32-case-c-Wt0Ubz",
+  "operationArtifact": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-c32-case-c-Wt0Ubz/case-c/operations/06-execute_slice.json",
+  "evidence": {
+    "productionProfile": "production-v2",
+    "outerRetry": 0,
+    "profileMismatches": [],
+    "harnessStatus": "HARNESS_COMPLETED",
+    "commandExitCodesWithFailurePositions": "13:1, 14:1, 15:1",
+    "finalAssistantMessage": "Status: BLOCKED ... Persistence summary: operation remains blocked pending same-operation recovery",
+    "preflightState": "MATERIALIZED_PRISTINE",
+    "readbackState": "RUNNER_RESULT_BLOCKED"
+  },
+  "rootCause": "The execution templates contained two producer-invocation instructions. The primary one carried the canonical workspace, SPEC_PATH, and slice inputs, but the later final-response instruction repeated only `--execution-bundle --operation <requested-operation> --semantic-response-file`, omitting the required resolver inputs. This was a conflicting mechanical invocation contract and could make the live context invoke the producer without enough information to derive the canonical task artifact.",
+  "semanticOrMechanical": "mechanical",
+  "responsibleBoundary": "EXECUTE_SLICE launcher template / producer invocation contract",
+  "correction": "Make the later final-response instruction repeat the complete canonical invocation with `--workspace`, `--spec-path`, and `--slice` in both Codex and Claude templates. Add a contract guard rejecting the incomplete invocation and a mutation regression.",
+  "whyCodeVsPrompt": "The producer already computes the task artifact deterministically; the remaining defect was a contradictory producer command in the launcher text. Removing the incomplete form prevents the model from selecting an invocation that cannot resolve the official artifact.",
+  "regression": "`scripts/test-launcher-contract.mjs` now rejects the incomplete final invocation; the semantic execution producer regression remains green.",
+  "result": "pending fresh replay"
+}

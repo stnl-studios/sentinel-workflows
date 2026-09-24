@@ -1,0 +1,32 @@
+{
+  "category": "AUXILIARY_RUNNER",
+  "case": "C",
+  "operation": "VALIDATE_SLICE",
+  "slice": "slice-02",
+  "symptom": "Official sequence 10 reached RUNNER_RESULT_BLOCKED because the independent validation runner output was reported as commands-as-strings, results replacing per-command exits, and missing semantic fields. No Validation Attempt or Effective Validation Base was created.",
+  "officialState": "RUNNER_RESULT_BLOCKED",
+  "evidence": {
+    "operation": "fresh Case C sequence 10",
+    "preflightState": "IMPLEMENTED_AWAITING_VALIDATION",
+    "requiredRecovery": "VALIDATE_SLICE / slice-02; sameOperationResumeRequired=true",
+    "outerModel": "GPT-5.6-Luna/xhigh",
+    "sourceArtifact": "specs/benchmark-case-c/execution/tasks/slice-02.md",
+    "diagnosticLimit": "The operation evidence preserved the main assistant's malformed-output classification, not the delegated runner's raw JSONL response."
+  },
+  "rootCause": "The delegated runner-to-main-context boundary did not yield the required semantic JSON shape on the first started call. Available evidence cannot distinguish model non-adherence from a nested-runner invocation/capture gap; it does establish that seed implementation checks were not the cause and the strict state machine correctly refused publication.",
+  "semanticOrMechanical": "mechanical",
+  "responsibleBoundary": "independent validation runner response and capture before candidate publication",
+  "correction": "No source or seed changes. The official same-operation recovery was followed. Sequence 11 obtained a valid PASS response but failed candidate validation for the separate C114 blocker-link serialization issue; sequence 12 produced a valid candidate, passed official candidate validation, and read back as PASS / EXECUTION_STARTED.",
+  "whyCodeVsPrompt": "Response shape is mechanically specified and the runner schema/capture/serializer remain strict. This event was recovered by the official operation flow; raw nested output was unavailable, so no unsupported code change was made.",
+  "filesChanged": [],
+  "regression": "Live strict rejection at sequence 10 followed by same-operation sequence 12 PASS; no Validation Attempt was fabricated for the malformed response.",
+  "localValidation": "Existing focused execution/runner contract suites had passed before this replay; no local source change was made for C113.",
+  "liveReplay": "Fresh Case C sequence 10 BLOCKED; sequence 11 candidate blocked for C114; sequence 12 official recovery PASS. Slice-02 is now formally PASS.",
+  "result": "RECOVERED_OFFICIAL",
+  "workflowProgress": "Case C advanced from slice-02 IMPLEMENTED_AWAITING_VALIDATION to slice-02 PASS; official progress is 9/13 milestones, with outer retry 0.",
+  "liveCalls": [
+    "GPT-5.6-Luna/xhigh sequence 10",
+    "GPT-5.6-Luna/xhigh sequence 11",
+    "GPT-5.6-Luna/xhigh sequence 12"
+  ]
+}

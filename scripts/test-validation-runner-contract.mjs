@@ -56,11 +56,11 @@ test("runner documents structured findings and correction-path persistence gramm
   assert.match(contract, /caminhos de correção[\s\S]{0,260}normalizados[\s\S]{0,160}comma-space[\s\S]{0,100}correção fileless[\s\S]{0,80}Correction paths[\s\S]{0,60}exact `none`/u);
 });
 
-test("VALIDATE_SLICE requires complete commands and rejects the observed ellipsis abbreviation", async () => {
+test("VALIDATE_SLICE keeps the official preflight in the deterministic producer and rejects mechanical abbreviations", async () => {
   const contract = await fs.readFile(path.join(canonical, "claude-code/.claude/agents/stnl-validation-runner.md"), "utf8");
-  assert.match(contract, /Commands[^\n]{0,180}forma exata e completa/iu);
-  assert.match(contract, /Nunca abrevie path ou argumento[^\n]{0,120}`\.\.\.`/iu);
-  assert.match(contract, /não emita `PASS` com comando abreviado/iu);
+  assert.match(contract, /`commands` deve reproduzir somente cada verification command[^\n]{0,420}producer determinístico insere o preflight oficial completo/iu);
+  assert.match(contract, /não abrevie argumentos[^\n]{0,120}`\.\.\.`/iu);
+  assert.match(contract, /retorne `BLOCKED`[^\n]{0,180}não corrija/iu);
 
   const observedMalformed = "- `node /repo/validate-execution-state.mjs ... VALIDATE_SLICE 1` — exit: 0";
   const expectedExact = "- `node /repo/validate-execution-state.mjs /tmp/workspace/spec VALIDATE_SLICE 1` — exit: 0";
@@ -75,9 +75,9 @@ test("runner schemas use the canonical execution-record field labels", async () 
     fs.readFile(path.join(canonical, "codex/.codex/agents/stnl_validation_runner.toml"), "utf8"),
   ]);
   for (const contract of contracts) {
-    assert.match(contract, /## Schema EXECUTE_SLICE[\s\S]*?Tested scope:[\s\S]*?Tested state:[\s\S]*?Commands:[\s\S]*?Selected checks:/u);
-    assert.match(contract, /## Schema APPLY_FINDINGS[\s\S]*?Tested scope:[\s\S]*?Tested state:[\s\S]*?Commands:[\s\S]*?Selected checks:/u);
-    assert.match(contract, /## Schema VALIDATE_SLICE[\s\S]*?Verified scope:[\s\S]*?Commands:[\s\S]*?Evidence:[\s\S]*?Finding references:[\s\S]*?Finding dispositions:/u);
+    assert.match(contract, /## Schema EXECUTE_SLICE[\s\S]*?"status": "TESTS_PASS \| TESTS_FAIL \| TESTS_NOT_APPLICABLE \| BLOCKED"[\s\S]*?"head": "<semantic value>"[\s\S]*?"discoverySources": "<semantic value>"[\s\S]*?"commands": \[\{"command": "<full command>", "exit": 0\}\][\s\S]*?"selectedChecks":/u);
+    assert.match(contract, /## Schema APPLY_FINDINGS[\s\S]*?"status": "TESTS_PASS \| TESTS_FAIL \| TESTS_NOT_APPLICABLE \| BLOCKED"[\s\S]*?"findingsCycle": "<semantic value>"[\s\S]*?"head": "<semantic value>"[\s\S]*?"discoverySources": "<semantic value>"[\s\S]*?"commands": \[\{"command": "<full command>", "exit": 0\}\][\s\S]*?"selectedChecks":/u);
+    assert.match(contract, /## Schema VALIDATE_SLICE[\s\S]*?"status": "PASS \| NEEDS_FIX \| BLOCKED"[\s\S]*?"head": "<semantic value>"[\s\S]*?"commands": \[\{"command": "<full command>", "exit": 0\}\][\s\S]*?"findingReferences": "<semantic value>"[\s\S]*?"findingDispositions": "<semantic value>"/u);
     assert.doesNotMatch(contract, /(?:^|\n)(?:Operação|Escopo verificado|Estado testado|Comandos executados|Testes selecionados|Tipo de validação):/u);
   }
 });
@@ -86,18 +86,18 @@ test("VALIDATE_SLICE writes the exact payload SPEC_PATH into formal command evid
   const root = await fixture(t);
   await replaceBoth(
     root,
-    "copy the exact full `SPEC_PATH` string received in the payload",
-    "copy a shortened `SPEC_PATH` string received in the payload",
+    "com o `SPEC_PATH` exato",
+    "com um `SPEC_PATH` aproximado",
   );
   expectCategory(check(root), "R020_EXACT_COMMANDS");
 });
 
-test("VALIDATE_SLICE requires the official preflight invocation as formal command evidence", async (t) => {
+test("VALIDATE_SLICE requires the producer-owned official preflight invocation", async (t) => {
   const root = await fixture(t);
   await replaceBoth(
     root,
-    "the first formal command-evidence item MUST be the exact official execution validator/preflight invocation actually run",
-    "the first formal command-evidence item may summarize the official execution validator/preflight invocation",
+    "producer determinístico insere o preflight oficial completo como primeiro item do bundle final",
+    "producer determinístico pode omitir o preflight oficial do bundle final",
   );
   expectCategory(check(root), "R020_EXACT_COMMANDS");
 });
@@ -120,6 +120,16 @@ test("runner cannot use a raw requirements digest as auxiliary authority", async
     "um raw digest é authority e pode bloquear",
   );
   expectCategory(check(root), "R022_AUTHORITY_IDENTITY");
+});
+
+test("runner consumes the launcher-owned exact recovery preflight instead of reconstructing its mechanical CLI input", async (t) => {
+  const root = await fixture(t);
+  await replaceBoth(
+    root,
+    "Não invoque nem reconstrua esse comando no modelo.",
+    "Reconstrua o comando de preflight no modelo.",
+  );
+  expectCategory(check(root), "R019_REQUIREMENTS_AUTHORITY");
 });
 
 test("runner must verify task-relative claims resolve to the physical target", async (t) => {
@@ -148,31 +158,63 @@ test("runner names the canonical digest delimiter and rejects sha256 equals outp
   expectCategory(check(root), "R025_DIGEST_PREFIX");
 });
 
+test("runner must use the deterministic evidence serializer for recurring digest and path tuples", async (t) => {
+  const root = await fixture(t);
+  await replaceBoth(
+    root,
+    "The operation payload MUST include an absolute `RUNNER_EVIDENCE_SERIALIZER` path",
+    "The operation payload may omit the evidence serializer path",
+  );
+  expectCategory(check(root), "R030_DETERMINISTIC_EVIDENCE_SERIALIZATION");
+});
+
+test("runner must let code serialize the complete execution evidence bundle", async (t) => {
+  const root = await fixture(t);
+  await replaceBoth(root, "--execution-bundle --operation <requested-operation>", "without the execution bundle operation");
+  expectCategory(check(root), "R030_DETERMINISTIC_EVIDENCE_SERIALIZATION");
+});
+
+test("runner must let code serialize the complete canonical execution record", async (t) => {
+  const root = await fixture(t);
+  await replaceBoth(root, "owns path-relative serialization, ordering, labels, delimiters, hashes, next check identifier, and the complete canonical", "does not own canonical execution-record serialization");
+  expectCategory(check(root), "R030_DETERMINISTIC_EVIDENCE_SERIALIZATION");
+});
+
 test("runner requires a complete byte-for-byte canonical response gate", async (t) => {
   const root = await fixture(t);
   await replaceBoth(
     root,
-    "Before returning any result for `EXECUTE_SLICE`, `APPLY_FINDINGS`, or `VALIDATE_SLICE`",
-    "Before returning a prose summary for `EXECUTE_SLICE`, `APPLY_FINDINGS`, or `VALIDATE_SLICE`",
+    "Before returning any result for `EXECUTE_SLICE`, `APPLY_FINDINGS`, or `VALIDATE_SLICE`, emit exactly the machine-key JSON schema for that operation",
+    "Before returning a prose summary for `EXECUTE_SLICE`, `APPLY_FINDINGS`, or `VALIDATE_SLICE`, emit exactly the machine-key JSON schema for that operation",
   );
   expectCategory(check(root), "R026_OUTPUT_GATE");
 });
 
-test("runner requires the exact pipe-delimited Tested state and Commands grammar", async (t) => {
+test("runner cannot reintroduce narrative validation output beside the JSON schema", async (t) => {
   const root = await fixture(t);
-  await replaceBoth(root, "The serialized tuple forms are exact", "The serialized tuple forms are approximate");
+  await replaceBoth(
+    root,
+    "# VALIDATE_SLICE\n\nSTATUS_VALIDACAO=PASS|NEEDS_FIX|BLOCKED\n",
+    "# VALIDATE_SLICE\n\nSTATUS_VALIDACAO=PASS|NEEDS_FIX|BLOCKED\n\nRetorne somente `PASS`, `NEEDS_FIX` ou `BLOCKED`. Em `Findings:`, forneça uma disposição para cada finding existente.\n",
+  );
+  expectCategory(check(root), "R026_OUTPUT_GATE");
+});
+
+test("runner requires the exact semantic Commands tuple grammar", async (t) => {
+  const root = await fixture(t);
+  await replaceBoth(root, "The JSON `commands` form is exact", "The JSON `commands` form is approximate");
   expectCategory(check(root), "R027_TUPLE_GRAMMAR");
 });
 
 test("runner requires the literal field sequence at the final response gate", async (t) => {
   const root = await fixture(t);
-  await replaceBoth(root, "The final response MUST start immediately with the first literal label", "The final response may start with a prose summary");
+  await replaceBoth(root, "The machine-key schema is fixed", "The machine-key schema may vary");
   expectCategory(check(root), "R028_FIELD_SEQUENCE");
 });
 
-test("runner requires scalar fields outside Tested state and Commands", async (t) => {
+test("runner requires scalar semantic fields outside Commands", async (t) => {
   const root = await fixture(t);
-  await replaceBoth(root, "MUST NOT be nested bullet lists", "may be nested bullet lists");
+  await replaceBoth(root, "every semantic property except `commands` is one scalar string", "every semantic property may be nested");
   expectCategory(check(root), "R029_FIELD_SHAPE");
 });
 
@@ -188,8 +230,8 @@ const cases = [
   ["runner may edit", "R005_READ_ONLY", (root) => replaceBoth(root, "Não edite código", "Edite código")],
   ["missing check status", "R006_VERDICTS", (root) => replaceBoth(root, "STATUS_CHECKS=TESTS_PASS|TESTS_FAIL|TESTS_NOT_APPLICABLE|BLOCKED", "STATUS_CHECKS=TESTS_PASS|TESTS_FAIL|BLOCKED")],
   ["missing formal status", "R006_VERDICTS", (root) => replaceBoth(root, "STATUS_VALIDACAO=PASS|NEEDS_FIX|BLOCKED", "STATUS_VALIDACAO=PASS|BLOCKED")],
-  ["schema field removed", "R007_OUTPUT_SCHEMA", (root) => replaceBoth(root, "Discovery sources:\n", "")],
-  ["discovery actions field removed", "R007_OUTPUT_SCHEMA", (root) => replaceBoth(root, "Discovery actions:\n", "")],
+  ["schema field removed", "R007_OUTPUT_SCHEMA", (root) => replaceBoth(root, "  \"discoverySources\": \"<semantic value>\",\n", "")],
+  ["discovery actions field removed", "R007_OUTPUT_SCHEMA", (root) => replaceBoth(root, "  \"discoveryActions\": \"<semantic value>\",\n", "")],
   ["correction path grammar removed", "R007_OUTPUT_SCHEMA", (root) => replaceBoth(root, "caminhos de correção são task-relative normalizados", "caminhos de correção são descritos")],
   ["finding target subset removed", "R007_OUTPUT_SCHEMA", (root) => replaceBoth(root, "subconjunto canônico dos `Finding IDs`", "uma lista livre")],
   ["unsupported finding remainder removed", "R007_OUTPUT_SCHEMA", (root) => replaceBoth(root, "contém exatamente os findings ativos do ciclo que não estão verificados; os conjuntos nunca se sobrepõem", "usa uma lista livre")],
@@ -221,12 +263,12 @@ const cases = [
   ["missing Codex adapter", "R002_REGISTRY", (root) => fs.unlink(path.join(root, "codex/.codex/agents/stnl_validation_runner.toml"))],
   ["duplicate Claude frontmatter", "R013_SYNTAX", (root) => replace(path.join(root, "claude-code/.claude/agents/stnl-validation-runner.md"), "name: stnl-validation-runner", "name: stnl-validation-runner\nname: duplicate")],
   ["missing canonical ID", "R013_SYNTAX", (root) => replaceBoth(root, "CONTRATO_CANONICO=stnl-validation-runner/v8", "runner contract")],
-  ["formal validation permits abbreviated command", "R020_EXACT_COMMANDS", (root) => replaceBoth(root, "Nunca abrevie path ou argumento", "Você pode abreviar path ou argumento")],
+  ["formal validation permits abbreviated command", "R020_EXACT_COMMANDS", (root) => replaceBoth(root, "não abrevie argumentos", "Você pode abreviar argumentos")],
   ["batch operation", "R004_OPERATION_SCOPE", (root) => replaceBoth(root, "OPERACOES_SUPORTADAS=EXECUTE_SLICE|APPLY_FINDINGS|VALIDATE_SLICE", "OPERACOES_SUPORTADAS=EXECUTE_SLICE|APPLY_FINDINGS|VALIDATE_SLICE|EXECUTE_SLICES")],
   ["finalize operation", "R004_OPERATION_SCOPE", (root) => replaceBoth(root, "OPERACOES_SUPORTADAS=EXECUTE_SLICE|APPLY_FINDINGS|VALIDATE_SLICE", "OPERACOES_SUPORTADAS=EXECUTE_SLICE|APPLY_FINDINGS|VALIDATE_SLICE|FINALIZE_SLICE")],
   ["missing round one", "R004_OPERATION_SCOPE", (root) => replaceBoth(root, "`1/3`, `2/3` ou `3/3`", "`2/3` ou `3/3`")],
   ["missing independence", "R014_INDEPENDENCE", (root) => replaceBoth(root, "Trate conclusões do contexto principal como não verificadas.", "Aceite conclusões anteriores.")],
-  ["missing official authority checker", "R019_REQUIREMENTS_AUTHORITY", (root) => replaceBoth(root, "official execution validator/preflight", "local file inspection")],
+  ["missing launcher-owned official authority preflight", "R019_REQUIREMENTS_AUTHORITY", (root) => replaceBoth(root, "objeto confiável `OFFICIAL_EXECUTION_PREFLIGHT` fornecido pelo launcher production-v2", "resultado arbitrário")],
   ["raw shared hash authority", "R019_REQUIREMENTS_AUTHORITY", (root) => replaceBoth(root, "Não calcule Requirements authority por SHA direto de `shared/requirements.md`", "Calcule o SHA de `shared/requirements.md` como Requirements authority")],
   ["raw feature hash authority", "R019_REQUIREMENTS_AUTHORITY", (root) => replaceBoth(root, "Não calcule Requirements authority por SHA direto de `shared/requirements.md`, por SHA direto de `feature_spec.md`", "Calcule o SHA de `feature_spec.md` como Requirements authority")],
   ["authority fallback enabled", "R019_REQUIREMENTS_AUTHORITY", (root) => replaceBoth(root, "Não use fallback ad hoc.", "Use fallback ad hoc." )],

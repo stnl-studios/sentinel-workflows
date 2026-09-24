@@ -1,0 +1,50 @@
+{
+  "issue": "C124",
+  "category": "DRIVER_ORCHESTRATION",
+  "case": "C",
+  "operation": "EXECUTE_SLICE",
+  "slice": "slice-01",
+  "symptom": "The official operation entered RUNNER_INITIALIZATION_BLOCKED before an independent validation-runner session started.",
+  "officialState": "RUNNER_INITIALIZATION_BLOCKED",
+  "evidence": {
+    "freshReplayRoot": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-functional-convergence-68bUyK",
+    "operationArtifact": "case-c/operations/06-execute_slice.json",
+    "sequence": 6,
+    "durationMs": 497549,
+    "profile": {
+      "model": "GPT-5.6-Luna",
+      "effort": "xhigh",
+      "outerRetry": 0
+    },
+    "officialSlice": "slice-01",
+    "renderedSlice": "1",
+    "runner": {
+      "attempts": 2,
+      "sessionStarted": false,
+      "command": "node <repository>/benchmarks/sentinel-todo/runtime/benchmark-validation-runner.mjs --operation EXECUTE_SLICE --sequence 6 --slice \"1\"",
+      "exitCodes": [
+        1,
+        1
+      ],
+      "diagnostic": "slice must be canonical"
+    },
+    "recoveryAuthority": {
+      "legalOperation": "EXECUTE_SLICE",
+      "slice": "slice-01",
+      "sameOperationResumeRequired": true
+    },
+    "priorIssueDistinction": "C121 concerned provider initialization with no exact diagnostic. C124 is an exact deterministic launcher-argument rejection before provider initialization; it is not evidence of Luna transport instability."
+  },
+  "rootCause": "renderPrompt reused canonicalSliceInput, which converts the official canonical slice label to an unsigned decimal for the separate preflight interface. That decimal was rendered as SLICE and copied into the strict benchmark-validation-runner and evidence-serializer arguments, both of which require the canonical slice-NN label.",
+  "semanticOrMechanical": "mechanical",
+  "responsibleBoundary": "benchmark-production-pilot.mjs renderPrompt slice placeholder serialization",
+  "correction": "Render and record the validated canonical slice label for workflow and evidence-producer inputs; retain the numeric conversion only for official preflight input. Implemented in benchmark-production-pilot.mjs.",
+  "whyCodeInsteadOfPrompt": "The live failure is a deterministic representation mismatch at the driver boundary. The model copied the provided value as instructed; adding prose would not repair the wrong value already serialized by the launcher.",
+  "regression": {
+    "test": "node --test --test-name-pattern='P04' scripts/test-benchmark-production-pilot.mjs",
+    "result": "PASS (8 tests)",
+    "behavior": "P04 proves decimal preflight input remains 1 while canonical payload labels remain slice-01/slice-02/slice-10. P04c exercises rendered VALIDATE_SLICE and EXECUTE_SLICE prompts and checks canonical labels reach both strict helper arguments."
+  },
+  "liveReplay": "The first old-process Case C sequence 6 rejected --slice \"1\" twice; sequence 8 did the same because that long-lived driver had imported the old module. In the new process loaded after the source edit, fresh Case C reached EXECUTE_SLICE/slice-01. Its official runner invocation receipts record slice=\"slice-01\" for both bounded attempts, and the launcher advanced to provider session initialization instead of rejecting the slice. This proves the C124 serialization correction live. That operation then blocked on the distinct C125 APP_SERVER_PERMISSION_DENIED; same-operation recovery is active.",
+  "result": "CAUSE_PROVEN; FIX_AND_FOCUSED_REGRESSION_PASS; LIVE_C124_PASS; CASE_C_RECOVERY_IN_PROGRESS"
+}

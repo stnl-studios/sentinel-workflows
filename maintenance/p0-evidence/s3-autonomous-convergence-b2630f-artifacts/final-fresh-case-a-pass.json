@@ -1,0 +1,53 @@
+{
+  "executionKind": "FUNCTIONAL_CASE_REPLAY",
+  "caseId": "A",
+  "status": "PASS",
+  "profileId": "production-v2",
+  "sentinelSha": "b2630fac3529f72146d050ce662ada3b145b4280",
+  "rawResultSha256": "5a1c2545743ad02878453612d6745ae1e4f2f4ae1b25283c024b9a7303ba0fe2",
+  "preflight": "PASS",
+  "finalExecutionState": "COMPLETE",
+  "specReadiness": {
+    "operation": 2,
+    "position": "immediately after SPEC_INIT",
+    "result": "PASS"
+  },
+  "specClosed": true,
+  "operations": {
+    "total": 11,
+    "pass": 11,
+    "slices": 2,
+    "tasks": 2,
+    "executeCalls": 2,
+    "validateCalls": 2,
+    "applyFindingsCalls": 0,
+    "replans": 0,
+    "mechanicalRejections": 0,
+    "findingsCycles": 0,
+    "runnerRetries": 0,
+    "controllerRecoveries": 0,
+    "outerRetry": 0
+  },
+  "modelCalls": {
+    "primary": {
+      "total": 11,
+      "GPT-5.6-Sol/high": 2,
+      "GPT-5.6-Terra/high": 2,
+      "GPT-5.6-Luna/high": 7
+    },
+    "configuredRunner": {
+      "total": 5,
+      "GPT-5.6-Luna/medium": 5
+    },
+    "total": 16,
+    "actualTokenTelemetryAvailable": false
+  },
+  "durationMs": 2910299,
+  "averageOperationDurationMs": 264573,
+  "profileMismatches": [],
+  "sourceCheckoutPreserved": true,
+  "finalTestsPassed": true,
+  "cleanup": "PASS",
+  "baselineEligible": false,
+  "officialPilotExecuted": false
+}

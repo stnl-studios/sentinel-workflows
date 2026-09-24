@@ -1,0 +1,40 @@
+{
+  "issue": "C67",
+  "category": "MECHANICAL_SERIALIZATION",
+  "case": "C",
+  "operation": "MATERIALIZE_TASKS",
+  "slice": null,
+  "symptom": "Fresh Case C reached MATERIALIZE_TASKS after PLAN and REVIEW_PLAN PASS, but official execution readback remained blocked after the materializer reported no later operation.",
+  "officialStateBefore": "PLANNED_READY",
+  "officialStateAfter": null,
+  "officialOutcome": "BLOCKED / OFFICIAL_EXECUTION_READBACK_BLOCKED",
+  "evidence": {
+    "replayRoot": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-c32-case-c-VP79Lx",
+    "operationArtifact": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-c32-case-c-VP79Lx/case-c/operations/04-materialize_tasks.json",
+    "producerModel": "GPT-5.6-Terra",
+    "reasoningEffort": "high",
+    "profile": "production-v2",
+    "profileMismatches": [],
+    "outerRetry": 0,
+    "harnessStatus": "HARNESS_COMPLETED",
+    "commandExitCodes": [0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+    "finalAssistantMessage": "BLOCKED: o handoff oficial bloqueou em `execution/tasks.md`. Não realizei retry nem iniciei outra operação.",
+    "officialReadbackError": "execution tasks.md must be a single-link real file: /private/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-benchmark-session-6U3CgP/workspaces/case-c/specs/benchmark-case-c/execution/tasks.md",
+    "candidateSnapshot": [
+      "?? specs/benchmark-case-c/execution/tasks.md",
+      "?? specs/benchmark-case-c/execution/tasks/slice-01.md",
+      "?? specs/benchmark-case-c/execution/tasks/slice-02.md",
+      "?? specs/benchmark-case-c/execution/tasks/slice-03.md"
+    ]
+  },
+  "rootCause": "The materializer produced task artifacts, but the published execution/tasks.md did not satisfy the official single-link real-file identity check. The live evidence establishes a publication/identity contract failure, but the cleaned managed workspace did not preserve lstat metadata needed to distinguish a hardlink, directory, or other non-canonical entry.",
+  "semanticOrMechanical": "mechanical",
+  "responsibleBoundary": "task materializer candidate publication boundary; exact failing identity must be captured before selecting the code correction",
+  "correction": "Do not relax the strict validator or add another prose guard. Preserve the next failed materializer workspace and lstat metadata for tasks.md and every published task. Then move only the proven publication/identity transformation to a deterministic boundary, if the live evidence confirms it is recurrent.",
+  "whyCodeVsPrompt": "The validator already enforces the invariant and the prompt already requires an isolated complete candidate and strict readback. The remaining question is deterministic file identity during publication, not semantic task selection.",
+  "authorityImpact": "None. Candidate validation remained strict, official state did not advance, no silent repair was applied, and outer retry remained zero.",
+  "noSilentRepair": true,
+  "regression": "Pending exact lstat classification from a preserved replay; the regression must prove canonical candidate publication yields single-link real files and that hardlink, directory, symlink, and ambiguous publication forms remain rejected.",
+  "liveReplay": "C67",
+  "result": "BLOCKED_PENDING_IDENTITY_EVIDENCE"
+}

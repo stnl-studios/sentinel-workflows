@@ -1,0 +1,31 @@
+{
+  "issue": "C74",
+  "category": "PRODUCER_CONTRACT",
+  "case": "A",
+  "operation": "PLAN",
+  "model": "GPT-5.6-Terra",
+  "effort": "high",
+  "harness": "HARNESS_COMPLETED",
+  "officialState": "EMPTY",
+  "officialOutcome": "OFFICIAL_TRANSITION_NOT_OBSERVED",
+  "outerRetry": 0,
+  "finalAssistantMessage": "BLOCKED — no plan was published. The independent path-readback check did not run successfully before candidate validation, so the required validation order was not met. I stopped without retrying or publishing any execution artifact.",
+  "workspaceEvidence": {
+    "executionArtifactsPublished": false,
+    "candidateSnapshot": [
+      ".codex/agents/stnl_validation_runner.toml",
+      ".stnl-init-candidate-benchmark-case-a/feature_spec.md",
+      ".stnl-init-candidate-benchmark-case-a/shared/acceptance-criteria.md",
+      ".stnl-init-candidate-benchmark-case-a/shared/requirements.md",
+      "specs/.benchmark-case-a.lifecycle.lock",
+      "specs/benchmark-case-a/feature_spec.md",
+      "specs/benchmark-case-a/shared/acceptance-criteria.md",
+      "specs/benchmark-case-a/shared/requirements.md"
+    ]
+  },
+  "rootCause": "The PLAN prompt and planner skill stated a generic artifact-relative path readback before the deterministic serializer while also defining global Expected areas as repository-relative semantic input. The producer interpreted the raw semantic claim as already persisted, blocked before serialization, and left the official EMPTY state unchanged.",
+  "semanticOrMechanical": "PRODUCER_CONTRACT",
+  "correctionRequired": "State explicitly that raw global Expected areas are semantic selections and are excluded from persisted path readback until serialize-plan-paths has produced canonical global and detailed claims; strict readback applies only after serialization.",
+  "liveEvidenceDirectory": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-functional-convergence-jJyL1B/case-a",
+  "preservedSessionRoot": "/private/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-benchmark-session-kmZpyK"
+}

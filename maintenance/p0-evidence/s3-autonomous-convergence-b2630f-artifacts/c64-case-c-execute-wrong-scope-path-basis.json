@@ -1,0 +1,30 @@
+{
+  "issue": "C64",
+  "category": "PATH_BASIS",
+  "case": "C",
+  "operation": "EXECUTE_SLICE",
+  "slice": "slice-01",
+  "symptom": "The live execution producer returned the required semantic JSON object, but deterministic evidence serialization exited nonzero before publishing the candidate bundle.",
+  "officialState": "EXECUTION_STARTED",
+  "officialOutcome": "BLOCKED / OFFICIAL_TRANSITION_NOT_OBSERVED",
+  "evidence": {
+    "replayRoot": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-c32-case-c-uwhNrI",
+    "operationArtifact": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-c32-case-c-uwhNrI/case-c/operations/06-execute_slice.json",
+    "producerModel": "GPT-5.6-Luna",
+    "reasoningEffort": "xhigh",
+    "profile": "production-v2",
+    "profileMismatches": [],
+    "outerRetry": 0,
+    "harnessCommandExitCodes": "30 commands; first 29 exited 0 and the final command exited 1",
+    "candidatePublished": false,
+    "semanticResponse": "Strict JSON with BLOCKED status, empty commands, explicit no-verification confirmation, and no post-rejection repair"
+  },
+  "rootCause": "The model persisted a Changed Areas claim using a workspace-relative path (src/...) while the final task artifact contract requires a path relative to the task artifact directory (../../src/...). The serializer resolved the claim from the task-artifact basis, reached specs/src/..., and rejected it before evidence publication.",
+  "physicalTarget": "src/validation.mjs",
+  "pathPersisted": "src/validation.mjs",
+  "requiredBasis": "dirname(tasks/slice-01.md)",
+  "requiredCanonicalPath": "../../src/validation.mjs",
+  "correction": "Introduce a pre-candidate deterministic scope producer that maps an unambiguous workspace alias to the approved physical Checklist target, computes path.relative(dirname(taskArtifact), physicalTarget), normalizes separators, verifies identity, and blocks ambiguous or unresolvable claims.",
+  "noSilentRepair": true,
+  "regression": "scripts/test-execution-contract.mjs covers canonicalization of a workspace alias, physical-target identity, and rejection of ambiguity across task and workspace bases."
+}

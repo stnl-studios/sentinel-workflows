@@ -1,0 +1,28 @@
+{
+  "issue": "C53",
+  "category": "DRIVER_ORCHESTRATION",
+  "case": "Case C",
+  "operation": "EXECUTE_SLICE",
+  "slice": "slice-01",
+  "symptom": "The harness completed with final assistant output `Status: BLOCKED`, while the official execution state remained `EXECUTION_STARTED`; the driver returned `OFFICIAL_TRANSITION_NOT_OBSERVED` and no implementation test evidence was persisted.",
+  "officialState": "EXECUTION_STARTED",
+  "evidenceRoot": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-c32-case-c-2Q8ryR",
+  "operationArtifact": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-c32-case-c-2Q8ryR/case-c/operations/06-execute_slice.json",
+  "evidence": {
+    "productionProfile": "production-v2",
+    "outerRetry": 0,
+    "profileMismatches": [],
+    "preflightState": "MATERIALIZED_PRISTINE",
+    "readbackState": "EXECUTION_STARTED",
+    "finalAssistantMessage": "Status: BLOCKED",
+    "candidateSnapshotHadImplementationEvidence": false,
+    "journalEvent": "ACTIVE"
+  },
+  "rootCause": "The live execution prompt still exposed a model-filled `<absolute-task-artifact>` placeholder in the serializer invocation. The deterministic producer already required either a concrete task artifact or the official `SPEC_PATH` plus `SLICE` inputs, so the model-owned placeholder could not establish the canonical task artifact. The resulting blocked producer path did not produce a legal evidence transition.",
+  "semanticOrMechanical": "mechanical",
+  "responsibleBoundary": "EXECUTE_SLICE deterministic producer invocation",
+  "correction": "Use `--execution-bundle --operation <requested-operation> --workspace <managed workspace> --spec-path <SPEC_PATH> --slice <SLICE> --semantic-response-file <absolute-temp-file>`. The producer derives the canonical task artifact through the official resolver, then derives targets, verifies physical identity, and serializes the candidate before strict validation.",
+  "whyCodeVsPrompt": "The artifact path is a deterministic serialization input, not a semantic decision. Passing the canonical SPEC_PATH and slice lets the existing producer resolver compute it without asking the model to invent or carry a physical task path.",
+  "regression": "Launcher contract tests require the SPEC_PATH-plus-slice producer invocation; execution contract tests exercise deterministic semantic-to-record serialization and reject noncanonical model-owned fields.",
+  "result": "pending fresh replay"
+}

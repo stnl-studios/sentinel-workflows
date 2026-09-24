@@ -1,0 +1,28 @@
+{
+  "issue": "C49",
+  "category": "MECHANICAL_SERIALIZATION",
+  "case": "C",
+  "operation": "VALIDATE_SLICE",
+  "slice": "slice-01",
+  "replay": "fresh replay after C48 semantic-schema edit",
+  "outputRoot": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-c32-case-c-y55BqF",
+  "operationArtifact": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-c32-case-c-y55BqF/case-c/operations/07-validate_slice.json",
+  "symptom": "Formal validation was BLOCKED after the live context attempted the legacy record-mode serializer with two command pairs but omitted the second --command option; the parser reported missing value for the second test command.",
+  "officialState": "VALIDATION_BLOCKED",
+  "evidence": {
+    "harnessStatus": "HARNESS_COMPLETED",
+    "blocker": "OFFICIAL_VALIDATION_BLOCKED",
+    "finalAssistantMessage": "The required record-mode serializer invocation exited 1 with BLOCKED: missing value for node --test test/todo-store.test.mjs when two command pairs were supplied",
+    "commandExitCodes": [0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    "outerRetryCount": 0,
+    "profileId": "production-v2",
+    "profileMismatches": []
+  },
+  "rootCause": "The live validation context still followed the old model-authored record serialization path and produced an incomplete repeated --command invocation instead of using the single semantic-response validation-bundle boundary. The delegated runner contract also still exposed Operation in the visible VALIDATE_SLICE schema, allowing the main context to treat the response as the old full mechanical artifact.",
+  "semanticOrMechanical": "mechanical",
+  "responsibleBoundary": "validation runner semantic schema plus stnl-slice-quality-manager VALIDATE_SLICE producer boundary",
+  "correction": "Make the delegated VALIDATE_SLICE schema begin at Type and exclude launcher-owned Operation; state that the main boundary must use only --validation-bundle --semantic-response-file and must never use --record or --response. Keep Operation injection in the deterministic producer and add a multi-command serializer regression.",
+  "whyCodeVsPrompt": "The command tuple flags, operation ownership, and response shape are mechanical. The producer already has the exact command parser and can serialize repeated command tuples deterministically; exposing the legacy path to the model caused a live malformed invocation.",
+  "regression": "Add a direct CLI regression with two complete command pairs and assert both tuples are serialized in order; assert the semantic validation schema has no Operation input and the generated bundle contains the producer-owned Operation line.",
+  "status": "open"
+}

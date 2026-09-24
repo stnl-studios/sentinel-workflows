@@ -1,0 +1,70 @@
+{
+  "issue": "C129",
+  "category": "MECHANICAL_SERIALIZATION",
+  "case": "C",
+  "operation": "VALIDATE_SLICE",
+  "sequence": 12,
+  "slice": "slice-03",
+  "productionProfile": "production-v2",
+  "outerRetry": 0,
+  "officialStateBefore": "IMPLEMENTED_AWAITING_VALIDATION",
+  "runnerResponse": {
+    "status": "PASS",
+    "head": "d05f8d47c8eec59cebb06e795b5354ac6aaef1c8",
+    "commands": [
+      { "command": "node --test test/cli.test.mjs", "exit": 0 },
+      { "command": "npm test", "exit": 0 }
+    ],
+    "findingReferences": "none",
+    "findingDispositions": "none",
+    "blockers": "none",
+    "unexpectedWorkspaceEffects": "none"
+  },
+  "persistedCandidate": {
+    "effectiveBaseHead": "d05f8d47c8eec59cebb06e795b5354ac6e8",
+    "effectiveBaseFileDigests": [
+      "sha256:1cb193a68f486656e2ca9a7ee67a0ea95916f2b4dc82e39f7c7c0ad9b949630c",
+      "sha256:4868177f596a917c33ed1b3634ff349b9e8c3a4c1e8e029907978cf2f8a9098f"
+    ],
+    "secondDigestHexLength": 61
+  },
+  "strictCandidateValidator": {
+    "command": "validate-execution-state.mjs SPEC_PATH --candidate CANDIDATE_EXECUTION_ROOT",
+    "result": "BLOCKED",
+    "diagnostic": "Effective Validation Base HEAD disagrees with its origin attempt"
+  },
+  "rootCause": "The semantic runner returned the correct full HEAD and canonical fields, but the main LLM context manually serialized a truncated Effective Validation Base HEAD and file digest. Candidate validation correctly rejected the inconsistent record.",
+  "semanticOrMechanical": "mechanical",
+  "responsibleBoundary": "Validation candidate production before the strict official candidate validator.",
+  "correction": "Prepare an isolated, complete byte-identical candidate tree before the model turn; derive attempt/base/commands/paths/digests through prepare-validation-candidate.mjs and the existing execution-state and evidence serializer; then run the unchanged strict candidate validator once.",
+  "noSilentRepair": "The deterministic producer runs before candidate validation. A rejected candidate is preserved and is never repaired or resubmitted.",
+  "filesChanged": [
+    "benchmarks/sentinel-todo/runtime/benchmark-production-pilot.mjs",
+    "skills/workflows/stnl-slice-quality-manager/SKILL.md",
+    "skills/workflows/stnl-slice-quality-manager/runtime/prepare-validation-candidate.mjs",
+    "skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs",
+    "templates/prompts/slice-validate-codex.md",
+    "templates/prompts/slice-validate-claude.md",
+    "scripts/test-benchmark-production-pilot.mjs",
+    "scripts/test-execution-contract.mjs",
+    "scripts/check-contracts.mjs",
+    "scripts/test-launcher-contract.mjs"
+  ],
+  "regression": "scripts/test-execution-contract.mjs: canonical candidate passes; wrong base HEAD and malformed semantic fields are blocked; rejected candidates remain unchanged. scripts/test-benchmark-production-pilot.mjs P04c1 proves isolation/byte identity and safe candidate ownership.",
+  "liveEvidence": {
+    "result": "BLOCKED",
+    "operations": 12,
+    "slices": 3,
+    "formallyPassedSlices": ["slice-01", "slice-02"],
+    "slice03Execution": "PASS",
+    "slice03Validation": "BLOCKED",
+    "profileMismatches": [],
+    "liveRunnerResponseArtifact": "runner-tmp/stnl-runner-012-validate_slice-slice-03-attempt-1.response.json",
+    "liveCandidateArtifact": "workspaces/case-c/.candidate-execution-case-c/tasks/slice-03.md"
+  },
+  "localValidation": "PASS: node --test scripts/test-benchmark-production-pilot.mjs scripts/test-execution-contract.mjs (142 tests); current focused benchmark/launcher suite 162/162; repository contract and git diff --check PASS.",
+  "liveReplay": "Pending; the prior Case C run is diagnostic and does not count as convergence.",
+  "result": "FIXED_LOCALLY_PENDING_LIVE_REPLAY",
+  "workflowProgress": "Prior Case C reached slice-03 formal validation with 2/3 slices PASS; same-state run was blocked by main-context mechanical serialization.",
+  "liveCalls": "No model calls after the local correction. The recorded operation was sequence 12 under production-v2; outer retry remained 0."
+}

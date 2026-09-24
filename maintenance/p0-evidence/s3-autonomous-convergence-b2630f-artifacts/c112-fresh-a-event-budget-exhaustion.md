@@ -1,0 +1,21 @@
+# C112 — fresh A exhausted remaining event budget after legal runner recoveries
+
+- Category: DRIVER_ORCHESTRATION
+- Case: A
+- Operation: EXECUTE_SLICE and subsequent terminal workflow
+- Slice: slice-02
+- Symptom: The fresh Case A replay advanced through slice-01 PASS, then slice-02 execution encountered one malformed delegated-runner response and two runner initialization failures. The official same-operation recovery remained legal, but the journal could not fit all remaining required operations within the configured 14-event budget.
+- Official state: `RUNNER_INITIALIZATION_BLOCKED`; legal recovery remained exactly `EXECUTE_SLICE slice-02`. Official finalizer recorded `BLOCKED`.
+- Evidence: Journal `/private/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-benchmark-session-A0UPdD/journals/case-a.json`; operation artifacts `10-execute_slice.json`, `11-execute_slice.json`, and `12-execute_slice.json` under `/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-functional-convergence-QXIAue/case-a/operations/`; official finalizer output `/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-functional-convergence-QXIAue/case-a/case-a-sequence-12-blocked-final.json`.
+- Root cause: The 14-event authority allows only three events beyond the 11 required milestones for this two-slice Case A. This replay used two PLAN retries (sequences 2–4), one malformed delegated-runner result (sequence 10), and two same-operation initialization recoveries (sequences 11–12). At 12 events, four required milestones remained: execute slice-02, validate slice-02, SPEC_READINESS, and SPEC_CLOSE.
+- Semantic or mechanical: Driver/workflow budget interaction; the individual model and runner failures were producer/transport failures, while the inability to finish this journal is mechanical budget arithmetic.
+- Responsible boundary: Official benchmark journal budget and same-operation recovery orchestration.
+- Correction: None in source. Do not raise the official event budget, omit model calls, mislabel recoveries, or finalize incomplete execution as PASS. Preserve the official BLOCKED result and restart with a new fresh Case A journal.
+- Why code vs prompt: No prompt can make an OS-level runner initialization failure deterministic, and no safe serializer can invent missing semantic runner evidence. Increasing the configured budget would alter benchmark authority rather than repair this replay.
+- Files changed: This evidence artifact only; no functional source change.
+- Regression: No source regression applies. Existing production-pilot tests enforce budget accounting and preserve `outerRetry = 0`.
+- Local validation: `git diff --check` PASS; official finalizer returned status `BLOCKED` as expected for the incomplete journal.
+- Live replay: Fresh Case A sequences 1–12; GPT-5.6-Sol/high 1, GPT-5.6-Terra/high 3, GPT-5.6-Luna/high 8. Slice-01 execution and formal validation passed. Slice-02 execution was blocked by malformed nested runner output at sequence 10, then by runner initialization failures at sequences 11 and 12.
+- Result: Case A did not PASS. Four required milestones cannot fit in the two remaining official event slots. No validator or budget was relaxed.
+- Workflow progress: `SPEC_INIT → PLAN → REVIEW_PLAN → MATERIALIZE_TASKS → REVIEW_TASKS → EXECUTE slice-01 PASS → VALIDATE slice-01 PASS → EXECUTE slice-02 BLOCKED`; 2 slices, 6 tasks, 5 of 11 unique milestones completed, 12 of 14 journal events consumed.
+- Live calls: Counts above include the three PLAN attempts and all three slice-02 execution attempts; `outerRetry = 0`.

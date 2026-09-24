@@ -1,0 +1,18 @@
+{
+  "issue": "C42",
+  "category": "MECHANICAL_SERIALIZATION",
+  "case": "C",
+  "operation": "VALIDATE_SLICE",
+  "slice": "slice-01",
+  "officialState": "RUNNER_RESULT_BLOCKED",
+  "symptom": "The live runner tried to invoke the response serializer with the translated mechanical field label `Tipo de validação`; the helper rejected the unknown field and no validation attempt was created.",
+  "rootCause": "The live CLI still accepted model-supplied `--field Label=value` pairs, leaving literal response-label serialization to the model despite the strict canonical schema.",
+  "evidence": {
+    "output": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-c32-case-c-jjcaAU/case-c/operations/07-validate_slice.json",
+    "candidateValidationExitCode": 0,
+    "harnessRetryCount": 0,
+    "commandExitCodes": 28
+  },
+  "correction": "The live response interface now accepts only ordered semantic `--value` arguments; code injects the operation label, all field labels, order, and nested shape. The old `--field` interface is rejected.",
+  "result": "Local regression passes; a fresh C replay is required after this edit."
+}

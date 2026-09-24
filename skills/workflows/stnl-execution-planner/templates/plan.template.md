@@ -31,7 +31,7 @@ For revision 1, including a planning-only replacement before tasks exist, omit t
 
 | Slice | Observable delivery | Dependencies | Requirements | Expected areas | Detailed plan |
 |---|---|---|---|---|---|
-| 01 - <name> | <result> | - | AC-001 | Implementation filesystem path (outside generated execution artifacts): `<artifact-relative path>`; <optional conceptual area> (plain-text description) | plans/slice-01.md |
+| 01 - <name> | <result> | - | AC-001 | Model-selected physical target (repository-relative before serialization): `<repository-relative physical target>`; <optional conceptual area> (plain-text description) | plans/slice-01.md |
 
 ## Global Risks and Integration
 

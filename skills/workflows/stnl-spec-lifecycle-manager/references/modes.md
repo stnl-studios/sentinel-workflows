@@ -12,17 +12,18 @@ update_policy: Change only when lifecycle semantics change.
 
 # Lifecycle MODEs
 
-Require exactly one explicit `MODE=INIT|RESUME|READINESS|CLOSE`. Reject aliases, case variants, combined modes, and inference. Transient context cannot replace persisted authority, required inputs, or mode boundaries. A material conflict blocks the affected work and names the artifact or ID.
+Require one exact `MODE=INIT|RESUME|READINESS|CLOSE`; reject aliases, variants, combinations, or inference. Transient context cannot replace persisted authority, required inputs, or mode boundaries. Material conflicts block the affected work and name the artifact or ID.
 
 ## Mutable-mode publication
 
 `INIT`, `RESUME`, and `CLOSE` use the same recovery-safe boundary:
 
-1. Resolve authority and snapshot the live lifecycle state and protected external paths.
-2. Build the complete candidate in an isolated, disjoint directory; never incrementally edit live state.
-3. Validate candidate structure and the mode transition against the unchanged source.
-4. Publish only with `node "<SKILL_ROOT>/runtime/publish-spec-lifecycle.mjs"`. Its portable exclusive lock precedes recovery; verify the renamed backup digest before promotion. Conflicts restore exact state; other failures retain or restore valid state. This is recovery safety, not filesystem-wide atomicity.
-5. Revalidate the published state and external snapshot. Report any failure without continuing the lifecycle operation.
+1. Resolve authority; snapshot live state and protected paths.
+2. Build the complete disjoint candidate; never edit live state.
+3. Before INIT validation, run `node "<SKILL_ROOT>/runtime/prepare-init-candidate.mjs" <TARGET> <CANDIDATE>`; owner-only serialization blocks malformed headers. Never after rejection.
+4. Validate candidate structure and mode transition against unchanged source.
+5. Publish only with `node "<SKILL_ROOT>/runtime/publish-spec-lifecycle.mjs"`. Its portable exclusive lock precedes recovery; verify renamed backup digest before promotion. Conflicts restore exact state; failures retain or restore valid state. It is not filesystem-wide atomic.
+6. Revalidate published state and external snapshot; report failures and stop.
 
 The candidate cannot justify its changes. The runtime proves structure, relations, preservation, rendering, and publication; the model owns semantic sufficiency and non-invention.
 

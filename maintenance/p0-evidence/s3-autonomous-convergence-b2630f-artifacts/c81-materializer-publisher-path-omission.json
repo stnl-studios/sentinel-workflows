@@ -1,0 +1,47 @@
+{
+  "issue": "C81",
+  "category": "PATH_BASIS",
+  "case": "A",
+  "operation": "MATERIALIZE_TASKS",
+  "slice": "slice-02",
+  "sequence": 4,
+  "model": "GPT-5.6-Terra",
+  "effort": "high",
+  "result": "PASS",
+  "officialState": "MATERIALIZED_PRISTINE",
+  "evidence": {
+    "operationArtifact": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-functional-convergence-JxJ5Br/case-a/operations/04-materialize_tasks.json",
+    "detailedPlan": "/private/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-benchmark-session-XoKb3u/workspaces/case-a/specs/benchmark-case-a/execution/plans/slice-02.md",
+    "approvedPhysicalTargets": [
+      "/private/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-benchmark-session-XoKb3u/workspaces/case-a/src/cli.mjs",
+      "/private/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-benchmark-session-XoKb3u/workspaces/case-a/test/cli.test.mjs"
+    ],
+    "persistedTask": "/private/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-benchmark-session-XoKb3u/workspaces/case-a/specs/benchmark-case-a/execution/tasks/slice-02.md",
+    "wrongClaims": [
+      "../../../src/cli.mjs",
+      "../../../test/cli.test.mjs"
+    ],
+    "canonicalClaimsRequired": [
+      "../../../../src/cli.mjs",
+      "../../../../test/cli.test.mjs"
+    ],
+    "candidateSnapshot": [
+      "?? specs/benchmark-case-a/execution/tasks/slice-02.md",
+      "?? .codex/agents/stnl_validation_runner.toml"
+    ],
+    "serializerAvailableButInvocationWasModelOwned": true,
+    "publisherRevalidatedSerializerBeforeThisFix": false
+  },
+  "rootCause": "The materializer prompt required the deterministic task-path serializer, but the publisher trusted the model-authored candidate after candidate validation and publication. A live fresh-A candidate therefore retained plan/task-basis claims with one parent omitted. The smallest reliable boundary is the publisher itself: derive the physical targets from the approved detailed plans and serialize the final task claims immediately before strict validation.",
+  "semanticOrMechanical": "mechanical",
+  "responsibleBoundary": "stnl-task-materializer publication boundary",
+  "correction": "publishTaskMaterializationCandidate now invokes serializeTaskPathClaims against the isolated candidate before validateExecutionCandidate; it reports the number of claims serialized while preserving strict validation and readback.",
+  "whyCodeVsPrompt": "The path transformation is deterministic and the live producer skipped the prompt-owned invocation. Re-running the existing serializer at the publication boundary prevents a malformed task artifact from reaching candidate validation without adding a second authority or accepting an invalid path.",
+  "regression": "scripts/test-execution-contract.mjs: a deliberately parent-shortened task claim is rejected by direct candidate validation, then canonicalized by the publisher before strict validation and published with the physical target identity intact.",
+  "liveCall": {
+    "sequence": 4,
+    "purpose": "fresh-A materialization producer evidence",
+    "outcome": "PASS with non-canonical slice-02 task claims",
+    "outerRetry": 0
+  }
+}

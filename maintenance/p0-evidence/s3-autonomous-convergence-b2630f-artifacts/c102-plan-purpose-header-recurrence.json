@@ -1,0 +1,39 @@
+{
+  "category": "PRODUCER_CONTRACT",
+  "case": "A",
+  "operation": "PLAN",
+  "slice": null,
+  "symptom": "Fresh Case A sequence 02 completed the Terra/high model call, but the model's candidate was rejected because plan.md was missing the required File Purpose Header. No plan artifact was published; official execution state remained EMPTY and the official handoff remained PLAN.",
+  "officialState": "EMPTY",
+  "evidence": {
+    "operationArtifact": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-functional-convergence-4t6S5V/case-a/operations/02-plan.json",
+    "preservedWorkspace": "/private/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-benchmark-session-pnCzVS/workspaces/case-a",
+    "modelMessage": "BLOCKED — the official candidate validation reported: plan.md is missing the File Purpose Header.",
+    "candidateOutcome": "Candidate files were removed; live specs/benchmark-case-a/execution contains no plan.md or plans/ artifacts.",
+    "officialReadback": "state EMPTY; legal PLAN; normal handoff OPERATION=PLAN",
+    "profile": "production-v2",
+    "outerRetry": 0
+  },
+  "rootCause": "The planner model produced a candidate plan without the canonical structural header even though the skill, plan template, and launcher guards required it. The strict candidate validator correctly rejected the candidate. Existing prose guards verify that instructions distribute the contract, but they cannot guarantee that a stochastic producer persists a purely mechanical template header before validation.",
+  "semanticOrMechanical": "mechanical",
+  "responsibleBoundary": "PLAN and REVIEW_PLAN isolated candidate production immediately before path serialization and candidate validation",
+  "correction": "Introduce a small deterministic plan-candidate preparer that reads the canonical plan and slice-plan template headers, prepends the exact header only when the candidate has no File Purpose Header marker, and blocks malformed or conflicting header markers. Invoke it before candidate validation and before path serialization in PLAN and REVIEW_PLAN. It never edits live artifacts and never repairs a rejected candidate.",
+  "whyCodeVsPrompt": "The seven header fields, labels, order, owner, and draft status are fixed template mechanics, not model judgment. C12 already demonstrated the same producer omission at MATERIALIZE_TASKS; repeating prose guards live at PLAN proves that this invariant needs a prevalidation deterministic boundary while semantic slices, coverage, and targets remain model-owned.",
+  "filesChanged": [
+    "skills/workflows/stnl-execution-planner/runtime/prepare-plan-candidate.mjs",
+    "skills/workflows/stnl-execution-planner/SKILL.md",
+    "skills/workflows/stnl-plan-reviewer/SKILL.md",
+    "templates/prompts/execution-plan.md",
+    "templates/prompts/execution-plan-review.md",
+    "benchmarks/sentinel-todo/runtime/benchmark-production-pilot.mjs",
+    "scripts/check-contracts.mjs",
+    "scripts/test-execution-contract.mjs",
+    "scripts/test-launcher-contract.mjs"
+  ],
+  "regression": "Local fixture reproduces a valid semantic plan with its global and detailed File Purpose Headers removed; the preparer restores only the canonical mechanical headers before strict validation, preserves target/path content and physical identity, is idempotent, and blocks a malformed partial header without mutation.",
+  "localValidation": "Deterministic candidate-preparation regression passes; execution contract 112/112, production-pilot 25/25, validation-runner 113/113, launcher 124/124, rehearsal/benchmark 19/19, benchmark verify, repository contract, validate.sh --no-smoke, and git diff --check pass.",
+  "liveReplay": "Fresh A stopped at PLAN before any plan publication; it is diagnostic only and will not count as final convergence.",
+  "result": "CONFIRMED_BLOCKER_PENDING_CORRECTION",
+  "workflowProgress": "Fresh A had 1/unknown official milestones complete; no slices or tasks existed because PLAN did not publish its decomposition.",
+  "liveCalls": "Fresh A sequence 02 used GPT-5.6-Terra/high after sequence 01 SPEC_INIT GPT-5.6-Sol/high; no fallback, retry, or hidden repair was used."
+}

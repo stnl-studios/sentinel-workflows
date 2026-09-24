@@ -1,0 +1,30 @@
+{
+  "issue": "C82",
+  "category": "MECHANICAL_SERIALIZATION",
+  "case": "A",
+  "operation": "VALIDATE_SLICE",
+  "slice": "slice-02",
+  "sequence": 12,
+  "model": "GPT-5.6-Luna",
+  "effort": "high",
+  "harness": "HARNESS_COMPLETED",
+  "outerRetry": 0,
+  "officialState": "RUNNER_RESULT_BLOCKED",
+  "operationEvidence": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-functional-convergence-JxJ5Br/case-a/operations/12-validate_slice.json",
+  "symptom": "The validation producer rejected findingDispositions=unchanged and persisted no validation attempt or Effective Validation Base.",
+  "taskAuthority": {
+    "validationFindings": "none",
+    "findingReferences": "none",
+    "expectedFindingDispositions": "none"
+  },
+  "evidence": "The runner response used findingReferences=none but emitted findingDispositions=unchanged. The task had no Validation Findings. The response also contained a prose requirements-hash divergence claim, but the official authority matched and the raw prose hash was not treated as authority.",
+  "rootCause": "The semantic producer forwarded a model synonym for an empty finding disposition into the strict record schema instead of deriving the only canonical empty representation from the selected task authority.",
+  "semanticOrMechanical": "mechanical",
+  "responsibleBoundary": "serializeRunnerValidationBundleFromResponse before candidate validation and publication",
+  "correction": "Derive findingReferences=none and findingDispositions=none from inspectExecutionState when the selected task has no findings. Preserve strict rejection for non-empty finding authority and malformed references.",
+  "whyCodeVsPrompt": "The empty-set representation is deterministic schema serialization. Prompt guidance remains, but repeated live synonyms cannot be made reliable by adding prose alone.",
+  "regression": "scripts/test-execution-contract.mjs: semantic validation response with findingDispositions=unchanged serializes to none/none and contains no unchanged token",
+  "liveResult": "The official same-operation recovery later passed VALIDATE_SLICE slice-02, sequence 14, with outer retry 0. This replay is diagnostic because it predates the current producer edit.",
+  "workflowProgress": "slice-02 advanced from RUNNER_RESULT_BLOCKED to COMPLETE through legal VALIDATE_SLICE recovery",
+  "liveCalls": 3
+}

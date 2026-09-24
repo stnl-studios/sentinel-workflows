@@ -1,0 +1,33 @@
+{
+  "issue": "C50",
+  "category": "PATH_BASIS",
+  "case": "C",
+  "operation": "EXECUTE_SLICE",
+  "slice": "slice-01",
+  "replay": "fresh replay after C49 semantic-schema edit",
+  "outputRoot": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-c32-case-c-00qIU0",
+  "operationArtifact": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-c32-case-c-00qIU0/case-c/operations/06-execute_slice.json",
+  "symptom": "The live EXECUTE_SLICE response was BLOCKED because Tested scope contained ../../../src/... claims resolving under specs, while the physical Tested state tuples used the canonical ../../../../ task-relative basis.",
+  "officialState": "RUNNER_RESULT_BLOCKED",
+  "evidence": {
+    "harnessStatus": "HARNESS_COMPLETED",
+    "blocker": "OFFICIAL_RUNNER_RESULT_BLOCKED",
+    "testedScope": "malformed runner claims: ../../../src/todo-store.mjs, ../../../src/validation.mjs, ../../../test/todo-store.test.mjs",
+    "testedStateClaims": [
+      "../../../../src/todo-store.mjs",
+      "../../../../src/validation.mjs",
+      "../../../../test/todo-store.test.mjs"
+    ],
+    "commands": ["node --test test/todo-store.test.mjs | exit:0"],
+    "outerRetryCount": 0,
+    "profileId": "production-v2",
+    "profileMismatches": []
+  },
+  "rootCause": "The response serializer mechanically generated Tested state from physical targets but left the path-bearing Tested scope scalar under model control. The live producer repeatedly used one fewer task-artifact parent in that scalar, so the main context correctly rejected the mismatch before publishing an implementation check.",
+  "semanticOrMechanical": "mechanical",
+  "responsibleBoundary": "skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs EXECUTE_SLICE/APPLY_FINDINGS response serializer",
+  "correction": "Reuse the existing canonical evidence target resolver to derive Tested scope claims from the physical target/removal inputs, normalize and order them with the task-artifact basis, and override the model-owned scalar before response serialization. Preserve strict physical identity and candidate validation.",
+  "whyCodeVsPrompt": "Tested scope path claims are a deterministic projection of the already-selected physical targets. Keeping that projection in the model response allowed recurring basis drift despite explicit guards; the serializer can guarantee the same invariant before candidate validation.",
+  "regression": "The execution-contract regression supplies a malformed semantic Tested scope with a valid physical target and asserts the serializer emits only the canonical task-relative claim; the CLI multi-command regression remains PASS.",
+  "status": "open"
+}

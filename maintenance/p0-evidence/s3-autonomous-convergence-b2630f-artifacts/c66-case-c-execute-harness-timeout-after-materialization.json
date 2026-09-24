@@ -1,0 +1,28 @@
+{
+  "issue": "C66",
+  "category": "DRIVER_ORCHESTRATION",
+  "case": "C",
+  "operation": "EXECUTE_SLICE",
+  "slice": "slice-01",
+  "symptom": "The fresh replay reached EXECUTE_SLICE after successful task materialization, but the official harness timed out after 900073 ms without a final assistant message or command ledger.",
+  "officialState": "EXECUTION_STARTED",
+  "officialOutcome": "BLOCKED / HARNESS_HARNESS_TIMEOUT",
+  "evidence": {
+    "replayRoot": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-c32-case-c-EoH2iQ",
+    "operationArtifact": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-c32-case-c-EoH2iQ/case-c/operations/06-execute_slice.json",
+    "producerModel": "GPT-5.6-Luna",
+    "reasoningEffort": "xhigh",
+    "profile": "production-v2",
+    "profileMismatches": [],
+    "outerRetry": 0,
+    "harnessStatus": "HARNESS_TIMEOUT",
+    "commandExitCodes": [],
+    "durationMs": 900073,
+    "stateHandoff": "Official normalHandoff remained EXECUTE_SLICE/slice-01; requiredRecoveryHandoff was null"
+  },
+  "rootCause": "Provider/harness execution exceeded the bounded 900-second turn window after the operation had advanced the official state; this is the same external timeout class previously evidenced by C54, not a candidate-validation or producer-format failure.",
+  "authorityImpact": "None. The official state remained legal for EXECUTE_SLICE/slice-01, candidate validation was not relaxed, no outer retry was recorded, and no final PASS was claimed.",
+  "correction": "Use the already legal official normal handoff to continue the same operation in a controlled fresh replay when a harness timeout leaves EXECUTION_STARTED and no mandatory recovery target. Do not count this as an outer retry or invent a recovery state.",
+  "noSilentRepair": true,
+  "regression": "The focal driver continuation is constrained to one state-derived same-operation continuation and preserves outer retry 0; no repository authority is changed."
+}

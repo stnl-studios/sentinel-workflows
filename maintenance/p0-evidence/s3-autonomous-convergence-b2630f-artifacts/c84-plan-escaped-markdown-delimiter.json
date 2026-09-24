@@ -1,0 +1,34 @@
+{
+  "issue": "C84",
+  "category": "MECHANICAL_SERIALIZATION",
+  "case": "A",
+  "operation": "PLAN",
+  "slice": null,
+  "sequence": 2,
+  "model": "GPT-5.6-Terra",
+  "effort": "high",
+  "harness": "HARNESS_COMPLETED",
+  "outerRetry": 0,
+  "officialState": "EMPTY",
+  "operationEvidence": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-functional-convergence-mLN9Xm/case-a/operations/02-plan.json",
+  "symptom": "PLAN remained EMPTY because the deterministic plan serializer rejected the semantic target as src/cli.mjs\\, even though the model intended a Markdown code-span closing delimiter and the physical target was src/cli.mjs.",
+  "evidence": "The live harness completed with command exit codes containing producer failure, and the final assistant message reported: semantic physical implementation target must be a normalized repository-relative path: src/cli.mjs\\. No plan artifacts were published; official readback stayed EMPTY and the driver returned OFFICIAL_TRANSITION_NOT_OBSERVED.",
+  "rootCause": "The planner producer treated a model-escaped closing Markdown fence in a path-only code span as a literal trailing backslash in the semantic physical target. The existing strict semantic path authority correctly rejected backslashes, but the producer lacked the narrow delimiter normalization boundary.",
+  "semanticOrMechanical": "mechanical",
+  "responsibleBoundary": "stnl-execution-planner runtime/serialize-plan-paths.mjs code-span extraction before semantic target resolution",
+  "correction": "Normalize only one trailing backslash in a path-only code span when it is the escaped closing-fence marker; preserve interior backslashes so the existing semantic path authority still blocks malformed paths. Serialize canonical artifact-relative claims before candidate validation and publication.",
+  "whyCodeVsPrompt": "The boundary is Markdown delimiter parsing plus deterministic path-carrier normalization. A prompt-only prohibition cannot reliably prevent the model from escaping a code-span delimiter.",
+  "filesChanged": [
+    "skills/workflows/stnl-execution-planner/runtime/serialize-plan-paths.mjs",
+    "scripts/test-execution-contract.mjs"
+  ],
+  "regression": "scripts/test-execution-contract.mjs: escaped closing-fence carrier serializes to the canonical physical target and strict validation then passes; malformed path-basis input remains rejected.",
+  "localValidation": "Focused execution contract passed after the regression was added.",
+  "liveReplay": "Fresh A stopped legally at PLAN before publication; B and C were gated. Replay is diagnostic and cannot count as final because it predates this correction.",
+  "result": "OPEN_REPAIR",
+  "workflowProgress": "SPEC_INIT passed; PLAN reached producer boundary and exposed a distinct delimiter-format blocker with outer retry 0.",
+  "liveCalls": [
+    {"sequence": 1, "case": "A", "operation": "SPEC_INIT", "model": "GPT-5.6-Sol", "effort": "high", "result": "PASS"},
+    {"sequence": 2, "case": "A", "operation": "PLAN", "model": "GPT-5.6-Terra", "effort": "high", "result": "BLOCKED"}
+  ]
+}

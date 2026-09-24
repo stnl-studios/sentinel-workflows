@@ -1,0 +1,20 @@
+{
+  "issue": "C96",
+  "category": "DRIVER_ORCHESTRATION",
+  "case": "C",
+  "operation": "EXECUTE_SLICE",
+  "slice": "slice-02",
+  "freshOutputRoot": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-functional-convergence-A9Wztc",
+  "evidence": "case-c/operations/09-execute_slice.json and specs/benchmark-case-c/execution/tasks/slice-02.md",
+  "officialState": "RUNNER_INITIALIZATION_BLOCKED",
+  "symptom": "The live task artifact recorded runner initialization failure because the literal __RUNNER_RESPONSE_SCHEMA__ placeholder was unavailable; the subsequent independent retry also reported Operation not permitted.",
+  "rootCause": "The diagnostic driver process had loaded benchmark-production-pilot.mjs before the schema placeholder replacement was added. Its cached renderPrompt function later read the edited template but did not perform the new replacement, producing a stale literal path during the same long-lived run.",
+  "semanticOrMechanical": "mechanical",
+  "responsibleBoundary": "fresh driver process / renderPrompt placeholder substitution",
+  "correction": "Do not repair the managed artifact or retry through the stale process. Restart the driver after the final source edit, and verify rendered prompts contain the canonical absolute schema path before any live call.",
+  "whyCodeVsPrompt": "No pipeline source correction is required beyond the existing deterministic replacement; this is a process-lifetime cache artifact caused by editing during an active diagnostic run.",
+  "authorityImpact": "none",
+  "regressionRequired": "P04c prompt rendering must assert the absolute schema path and absence of __RUNNER_RESPONSE_SCHEMA__; the fresh convergence driver must start after the final edit.",
+  "liveReplay": "Diagnostic run invalidated for final convergence; no result from this stale-process sequence is counted.",
+  "result": "DIAGNOSTIC_ONLY"
+}

@@ -1,0 +1,30 @@
+{
+  "issue": "C54",
+  "category": "DRIVER_ORCHESTRATION",
+  "case": "Case C",
+  "operation": "EXECUTE_SLICE",
+  "slice": "slice-01",
+  "symptom": "The fresh harness timed out after 900023 ms with no final assistant message or structured command ledger. The official state had already advanced from `MATERIALIZED_PRISTINE` to `IMPLEMENTED_AWAITING_VALIDATION`, but the driver correctly returned `HARNESS_HARNESS_TIMEOUT`.",
+  "officialState": "IMPLEMENTED_AWAITING_VALIDATION",
+  "evidenceRoot": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-c32-case-c-RxmTj3",
+  "operationArtifact": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-c32-case-c-RxmTj3/case-c/operations/06-execute_slice.json",
+  "evidence": {
+    "productionProfile": "production-v2",
+    "outerRetry": 0,
+    "profileMismatches": [],
+    "preflightState": "MATERIALIZED_PRISTINE",
+    "readbackState": "IMPLEMENTED_AWAITING_VALIDATION",
+    "harnessStatus": "HARNESS_TIMEOUT",
+    "providerErrorCategory": "",
+    "commandExitCodes": [],
+    "journalEvent": "ACTIVE",
+    "durationMs": 900023
+  },
+  "rootCause": "The evidence establishes a provider/harness timeout rather than a producer serialization rejection: the harness exposed no final response, no command ledger, and no producer exit code, while the official state mutation completed. It is therefore not causal evidence for another code change in the deterministic producer.",
+  "semanticOrMechanical": "neither; external harness timeout",
+  "responsibleBoundary": "official model harness/provider execution",
+  "correction": "No functional source change. Preserve the strict driver outcome and retry only through a new legal fresh Case C replay; do not treat the state mutation as a PASS or add hidden retry/repair.",
+  "whyCodeVsPrompt": "No code-vs-prompt correction is justified because the harness supplied no producer or command evidence from which to infer a source defect.",
+  "regression": "Existing benchmark harness contract covers timeout classification; the saved operation artifact is the replay evidence.",
+  "result": "pending fresh replay"
+}

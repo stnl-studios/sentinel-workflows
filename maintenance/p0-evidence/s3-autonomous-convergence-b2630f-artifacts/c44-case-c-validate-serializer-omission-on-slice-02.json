@@ -1,0 +1,14 @@
+{
+  "issue": "C44",
+  "category": "MECHANICAL_SERIALIZATION",
+  "case": "C",
+  "operation": "VALIDATE_SLICE",
+  "slice": "slice-02",
+  "officialState": "RUNNER_RESULT_BLOCKED",
+  "symptom": "The live validation producer passed execution and tests but omitted all required deterministic --response, --record, and --manifest outputs on slice-02.",
+  "evidence": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-c32-case-c-X6pUly/case-c/operations/09-validate_slice.json",
+  "rootCause": "Formal validation still depended on the delegated model remembering three separate mechanical serializer invocations and byte-for-byte copying; the strict owner correctly created no attempt or Effective Validation Base.",
+  "semanticOrMechanical": "mechanical serialization",
+  "correction": "Pending causal correction: consolidate formal validation's deterministic response/record/manifest production at one code boundary rather than adding another prose reminder.",
+  "outerRetry": 0
+}

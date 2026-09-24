@@ -1,0 +1,21 @@
+# C105 — runner initialization recovery remains an official same-operation path
+
+- Category: AUXILIARY_RUNNER
+- Case: A
+- Operation: EXECUTE_SLICE and VALIDATE_SLICE
+- Slice: slice-01 and slice-02
+- Symptom: Fresh Case A repeatedly reached `RUNNER_INITIALIZATION_BLOCKED` before a delegated validation/implementation runner started. The first execute blocker reported an invalid temporary-output attempt followed by a misplaced `--ask-for-approval` option. Later validation starts reported `failed to initialize in-process app-server client: Operation not permitted (os error 1)` in both permitted starts.
+- Official state: `RUNNER_INITIALIZATION_BLOCKED`; the readback exposed the same operation and slice as the mandatory recovery target. Outer retry remained `0`.
+- Evidence: Fresh Case A workspace `/private/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-benchmark-session-6wdUGo/workspaces/case-a`; operation evidence under `/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-functional-convergence-EQv25b/case-a/operations/06-execute_slice.json`, `09-execute_slice.json`, `11-validate_slice.json`, and `12-validate_slice.json`. The subsequent official same-operation recoveries succeeded for both executes and for `VALIDATE_SLICE` slice-01; the slice-02 validation initialization recovered before the later semantic validation blocker.
+- Root cause: The delegated runner transport/start boundary is probabilistic and can fail before semantic work. In the first execute attempt the live model also produced an invalid nested launch form; in later validation attempts the native in-process app-server client returned an OS permission error. No validator or execution-state authority was relaxed.
+- Semantic or mechanical: Mechanical transport/initialization.
+- Responsible boundary: Independent runner spawn/initialization boundary owned by the operation context, before candidate production and formal validation.
+- Correction: Preserve the official singleton and same-operation recovery semantics. Do not convert initialization failure into a validation attempt, do not fall back to main-context validation, and do not add an outer retry. No source edit was justified during this replay because the official recovery subsequently reached valid runner execution.
+- Why code vs prompt: The existing launcher and skill already specify the deterministic capture/schema/serializer boundaries and forbid shell fallback. This evidence concerns provider startup/transport, not a missing serialization transformation; further prose would not create a valid runner session.
+- Files changed: None in the repository for this issue; replay evidence only.
+- Regression: Existing execution/launcher/validation-runner contract suites cover strict initialization ownership, one technical retry, same-operation recovery, and no hidden fallback.
+- Local validation: All focused suites and repository validation were PASS before this live replay; see current convergence ledger.
+- Live replay: Fresh Case A sequence 06 blocked, sequence 07 passed; sequence 09 blocked, sequence 10 passed; sequence 11 and 12 blocked during slice-02 validation initialization. Sequence 13 then started the runner and exposed the independent semantic coverage blocker (C106).
+- Result: Recovery behavior was proven, but the case remained open on C106; this issue did not consume outer retry and did not justify a functional source edit.
+- Workflow progress: `SPEC_INIT → PLAN → REVIEW_PLAN → MATERIALIZE_TASKS → REVIEW_TASKS → EXECUTE slice-01 → VALIDATE slice-01 → EXECUTE slice-02`; slice-01 PASS, slice-02 execution PASS, slice-02 validation reached semantic review after recovery.
+- Live calls: GPT-5.6-Sol/high 1; GPT-5.6-Terra/high 2; GPT-5.6-Luna/high 11 in the fresh Case A replay through sequence 14.

@@ -1,0 +1,21 @@
+# C109 — compact overlap carrier needed deterministic path serialization
+
+- Category: MECHANICAL_SERIALIZATION
+- Case: A
+- Operation: VALIDATE_SLICE
+- Slice: slice-02
+- Symptom: The executor persisted a semantically complete prior-slice overlap sentence, `- Slice 01 overlap: <paths>; <behavior and regression rationale>`, but the validation producer required the mechanically serialized label `- Paths:` and blocked before producing the validation bundle.
+- Official state: `IMPLEMENTED_AWAITING_VALIDATION`; no Validation Attempt or Effective Validation Base existed for slice-02. The official readback continued to allow `VALIDATE_SLICE slice-02` and `REPLAN`; no invalid candidate was published.
+- Evidence: `/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-functional-convergence-jPhb0H/case-a/operations/10-validate_slice.json`. The persisted task section was `Prior Validation Overlap` with paths `../../../../test/cli.test.mjs` and `../../../../test/todo-service.test.mjs` plus the required behavior/rationale, but no `- Paths:` line.
+- Root cause: The producer treated the final field label as a model responsibility even though only the physical overlap path claims are semantic input. This is a recurring label/order/delimiter serialization invariant, not a semantic choice about which prior slice or regression is required.
+- Semantic or mechanical: Mechanical.
+- Responsible boundary: `serialize-runner-evidence.mjs` validation-bundle producer, before candidate validation/publication.
+- Correction: Accept one closed semantic carrier `- Slice NN overlap: <path claims>; <rationale>` in addition to the existing canonical `- Paths:` representation. Consume only the path carrier, retain strict normalized-relative parsing, realpath containment, duplicate rejection, physical identity, path.relative, ordering, and SHA-256 generation. Do not mutate the task artifact or repair after producer rejection.
+- Why code vs prompt: The label and path serialization are deterministic; recurring live prose failures proved that keeping the label mechanical owner in the model was unnecessary. The producer does not choose overlap behavior or regressions and therefore does not move semantic authority into code.
+- Files changed: `skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs`, `skills/workflows/stnl-slice-executor/SKILL.md`, `skills/workflows/stnl-slice-quality-manager/SKILL.md`, `templates/prompts/slice-validate-codex.md`, `templates/prompts/slice-validate-claude.md`, `scripts/test-execution-contract.mjs`.
+- Regression: `scripts/test-execution-contract.mjs` now proves the compact semantic carrier yields canonical validation evidence, leaves the source task bytes unchanged, and retains strict canonical overlap rejection for malformed path carriers.
+- Local validation: Focused execution contract `113/113`, launcher contract `124/124`, validation-runner contract `25/25`, production-pilot contract `25/25`, repository contract, and `git diff --check` passed after correction.
+- Live replay: Fresh A sequence 10 used GPT-5.6-Luna/high. The independent runner reported `npm test` exit 0 but the deterministic producer rejected the overlap label before publication; no outer retry was consumed.
+- Result: Source correction applied and locally proven. All fresh A/B/C proof must restart after this final functional edit.
+- Workflow progress: The affected fresh A had `slice-01` validation PASS and `slice-02` execution PASS; the replay stopped before `slice-02` formal validation could publish.
+- Live calls: Fresh A through sequence 10 used GPT-5.6-Sol/high 1, GPT-5.6-Terra/high 2, GPT-5.6-Luna/high 6, plus the preceding same-workspace validation recovery sequence 8 using GPT-5.6-Luna/high.

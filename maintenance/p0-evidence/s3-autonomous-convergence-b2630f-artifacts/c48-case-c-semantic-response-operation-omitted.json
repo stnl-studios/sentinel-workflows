@@ -1,0 +1,27 @@
+{
+  "issue": "C48",
+  "category": "MECHANICAL_SERIALIZATION",
+  "case": "C",
+  "operation": "VALIDATE_SLICE",
+  "slice": "slice-01",
+  "replay": "fresh replay after C47 producer-boundary edit",
+  "outputRoot": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-c32-case-c-kjXX2V",
+  "operationArtifact": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-c32-case-c-kjXX2V/case-c/operations/07-validate_slice.json",
+  "symptom": "The deterministic semantic-response producer exited 1 because the live validation runner response omitted the Operation field.",
+  "officialState": "RUNNER_RESULT_BLOCKED",
+  "evidence": {
+    "harnessStatus": "HARNESS_COMPLETED",
+    "blocker": "OFFICIAL_RUNNER_RESULT_BLOCKED",
+    "producerCause": "serializer exited 1 because the runner response was not in canonical schema (Operation missing)",
+    "outerRetryCount": 0,
+    "profileId": "production-v2",
+    "profileMismatches": []
+  },
+  "rootCause": "The requested operation is already authoritative at the main validation boundary, but the new semantic-response parser incorrectly required the model to repeat that mechanical operation field. The live runner returned the model-owned semantic fields without Operation, so the producer rejected before candidate publication.",
+  "semanticOrMechanical": "mechanical",
+  "responsibleBoundary": "skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs semantic-response producer",
+  "correction": "Move Operation ownership fully to the deterministic producer: parse only model-owned semantic fields, require the boundary operation to be VALIDATE_SLICE, and serialize the literal Operation field into the generated Runner response. Update the runner contracts to exclude Operation from the semantic payload.",
+  "whyCodeVsPrompt": "The operation is supplied by the official launcher/preflight and is not a model decision. Requiring the model to copy it created a recurring mechanical format failure; the producer can serialize it deterministically before candidate validation without repairing a rejected artifact.",
+  "regression": "Extend the semantic-response regression so canonical model-owned input without Operation produces Operation: VALIDATE_SLICE, while an explicit Operation field is rejected as producer-owned output.",
+  "status": "open"
+}

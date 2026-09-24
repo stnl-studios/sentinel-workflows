@@ -237,7 +237,7 @@ async function writeCanonicalExecution(spec) {
     ['<compact strategy>', 'Complete one bounded acceptance function and validate UTC rejection, the public error envelope, and absence of participation'],
     ['01 - <name>', '01 - Invitation expiration'],
     ['<result>', 'expired invitations are rejected with the stable public envelope and no participation'],
-    ['`<artifact-relative path>`; <optional conceptual area>', `\`${paths.globalImplementation}\`; invitation expiration`],
+    ['Model-selected physical target (repository-relative before serialization): `<repository-relative physical target>`; <optional conceptual area> (plain-text description)', `\`${paths.globalImplementation}\`; invitation expiration (plain-text description)`],
     ['<risk, boundary, or explicit final integration slice>', 'UTC equality, public envelope, and no-participation behavior are covered by the focused test'],
   ])));
   await fs.writeFile(path.join(execution, 'plan.md'), global, 'utf8');
@@ -321,7 +321,7 @@ function extractFixturePathClaims({ globalPlan, slicePlan, sliceTask, taskText, 
   const globalText = globalPlan.text;
   const slicePlanText = slicePlan.text;
   const checklist = section(taskText, 'Checklist');
-  const globalStored = globalText.match(/\| Implementation filesystem path \(outside generated execution artifacts\): `([^`]+)`; invitation expiration \(plain-text description\) \| plans\/slice-01\.md \|/u)?.[1];
+  const globalStored = globalText.match(/\| `([^`]+)`; invitation expiration \(plain-text description\) \| plans\/slice-01\.md \|/u)?.[1];
   const detailStored = section(slicePlanText, 'Likely Areas').match(/^- Implementation filesystem path \(outside generated execution artifacts\): `([^`]+)`/mu)?.[1];
   const checklistStored = checklist.match(/expected areas: `([^`]+)`/u)?.[1];
   if ([globalStored, detailStored, checklistStored].some((value) => value === undefined)) {
@@ -545,8 +545,8 @@ export async function runDeterministicStages({ keepFixture = false, workspace = 
       'Calcule o SHA de `shared/requirements.md` como Requirements authority',
     );
     const exactCommandMutation = await runnerContractMutation(
-      'Nunca abrevie path ou argumento',
-      'Você pode abreviar path ou argumento',
+      'não abrevie argumentos com `...`, `<SPEC_PATH>` ou outro placeholder',
+      'permita abreviar argumentos com `...`, `<SPEC_PATH>` ou outro placeholder',
     );
     const testedStateBasisMutation = await runnerContractMutation(
       'Em qualquer operação, todo caminho file-backed de `Tested state` é task-relative',

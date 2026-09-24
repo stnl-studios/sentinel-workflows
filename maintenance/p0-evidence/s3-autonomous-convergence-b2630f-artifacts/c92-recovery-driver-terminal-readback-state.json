@@ -1,0 +1,27 @@
+{
+  "issue": "C92",
+  "category": "DRIVER_ORCHESTRATION",
+  "case": "A",
+  "operation": "SPEC_READINESS",
+  "slice": null,
+  "symptom": "The preserved fresh A workspace reached COMPLETE and SPEC_CLOSE PASS, but the auxiliary recovery script finalized FAIL because it journaled SPEC_READINESS with resultingState COMPLETE instead of the official terminal handoff state GLOBAL_READY.",
+  "officialState": "COMPLETE",
+  "evidence": {
+    "recoverySummary": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-functional-convergence-2Z33Ew/case-a/case-a-recovery-summary.json",
+    "finalResult": "/private/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-benchmark-session-Y64P3R/results/case-a-recovery-production-v2.json",
+    "journal": "/private/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-benchmark-session-Y64P3R/journals/case-a.json"
+  },
+  "rootCause": "The temporary recovery driver recorded the raw execution readback state for every operation and omitted the production driver's terminal projection of SPEC_READINESS to GLOBAL_READY. The repository benchmark finalizer correctly rejected the inconsistent journal.",
+  "semanticOrMechanical": "mechanical driver serialization",
+  "responsibleBoundary": "temporary recovery-driver journal event construction; repository production driver already contains the correct GLOBAL_READY projection",
+  "correction": "Exclude this diagnostic workspace from final proof; use the corrected fresh driver, which preserves the official finalizer projection and supports legal EXECUTE_SLICE recovery.",
+  "whyNotPromptOnly": "This is an auxiliary harness bookkeeping defect, not a workflow authority or model decision. It must be fixed in the driver before the next fresh proof, not by weakening finalizer checks.",
+  "regression": "The fresh driver path already projects SPEC_READINESS to GLOBAL_READY; final fresh A/B/C finalizers will verify terminal sequence and closure.",
+  "liveReplay": "The recovery sequence 10-13 all returned PASS, but the diagnostic finalizer returned FAIL. No repository code changed and no official baseline claim was made.",
+  "result": "DIAGNOSTIC_ONLY",
+  "workflowProgress": "C91 recovery advanced A to COMPLETE and SPEC_CLOSE; the only failure was auxiliary journal-state projection.",
+  "liveCalls": [
+    { "sequence": 12, "model": "GPT-5.6-Luna", "effort": "high", "outcome": "PASS" },
+    { "sequence": 13, "model": "GPT-5.6-Sol", "effort": "high", "outcome": "PASS" }
+  ]
+}

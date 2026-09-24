@@ -1,0 +1,83 @@
+{
+  "issue": "C123",
+  "category": "MECHANICAL_SERIALIZATION",
+  "case": "C",
+  "operation": "SPEC_INIT",
+  "slice": null,
+  "symptom": "Fresh production-v2 Case C completed its first live SPEC_INIT turn, but official structural validation rejected the isolated candidate before publication with 'feature_spec.md: wrong File Purpose Header owner'.",
+  "officialState": {
+    "lifecycle": "SPEC path was not created",
+    "execution": "SPEC path was not created",
+    "destination": "specs/benchmark-case-c absent",
+    "outcome": "BLOCKED / OFFICIAL_LIFECYCLE_BLOCKED",
+    "outerRetry": 0
+  },
+  "evidence": {
+    "operationArtifact": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-functional-convergence-RjIqlF/case-c/operations/01-spec_init.json",
+    "candidateRoot": ".stnl-init-candidate-benchmark-case-c",
+    "candidateOwnerValues": {
+      "feature_spec.md": "Production Pilot",
+      "shared/requirements.md": "Production Pilot",
+      "shared/acceptance-criteria.md": "Production Pilot"
+    },
+    "canonicalOwner": "stnl-spec-lifecycle-manager",
+    "authoritySources": [
+      "skills/workflows/stnl-spec-lifecycle-manager/templates/feature_spec.template.md",
+      "skills/workflows/stnl-spec-lifecycle-manager/templates/shared-requirements.template.md",
+      "skills/workflows/stnl-spec-lifecycle-manager/templates/shared-acceptance-criteria.template.md",
+      "skills/workflows/stnl-spec-lifecycle-manager/runtime/lib/lifecycle.mjs: parseFilePurposeHeader"
+    ],
+    "model": "GPT-5.6-Sol",
+    "effort": "high",
+    "durationMs": 263086,
+    "modelTurnStarted": true,
+    "harnessRetryCount": 0
+  },
+  "rootCause": "The model serialized the fixed lifecycle owner from benchmark context into all three fresh INIT headers. The lifecycle skill and templates state the canonical owner, and the official validator correctly rejects any different value, but the INIT producer had no deterministic header-serialization boundary before validation.",
+  "semanticOrMechanical": "Mechanical: the owner token is a fixed lifecycle contract field; it is not a feature decision or model-selected semantic value.",
+  "responsibleBoundary": "The lifecycle INIT isolated-candidate producer, immediately after candidate construction and before any candidate validator or publisher call.",
+  "correction": "Added an INIT-only prevalidation serializer that reuses HEADER_OWNER, HEADER_FIELDS, CATEGORIES, and the existing strict header parser. It changes only owner in canonical lifecycle candidate artifacts, blocks malformed/ambiguous headers, and leaves candidate validation and publication strict. RESUME and CLOSE do not use it.",
+  "whyCodeVsPrompt": "This fixed metadata token is mechanically known and was wrong in every materialized candidate document in the live turn despite existing template and skill guidance. Repeating prose cannot add an invariant; deterministic serialization can guarantee the token before strict validation without changing semantic content.",
+  "filesChanged": [
+    "skills/workflows/stnl-spec-lifecycle-manager/runtime/lib/lifecycle.mjs",
+    "skills/workflows/stnl-spec-lifecycle-manager/runtime/lib/init-candidate.mjs",
+    "skills/workflows/stnl-spec-lifecycle-manager/runtime/prepare-init-candidate.mjs",
+    "skills/workflows/stnl-spec-lifecycle-manager/runtime/test/lifecycle.test.mjs",
+    "skills/workflows/stnl-spec-lifecycle-manager/SKILL.md",
+    "skills/workflows/stnl-spec-lifecycle-manager/references/modes.md",
+    "skills/workflows/stnl-spec-lifecycle-manager/README.md",
+    "templates/prompts/spec-init.md",
+    "scripts/lib/check-distributable-skill.mjs",
+    "scripts/test-lifecycle-distribution.mjs",
+    "scripts/check-contracts.mjs",
+    "scripts/test-launcher-contract.mjs"
+  ],
+  "regression": "INIT candidate behavior tests assert wrong-owner canonical input becomes validator-accepted output with only the owner changed, physical file identity preserved, already canonical bytes unchanged, malformed duplicate owner blocked without partial mutation, and destination existence blocks without touching either side. Distribution test executes the installed helper before the unchanged official publisher. Launcher contract requires the producer hook; removal is a negative control.",
+  "localValidation": {
+    "node --test scripts/test-lifecycle-contracts.mjs": "PASS, 190 tests",
+    "node --test skills/workflows/stnl-spec-lifecycle-manager/runtime/test/lifecycle.test.mjs": "PASS, 13 tests",
+    "node --test skills/workflows/stnl-spec-lifecycle-manager/runtime/test/core.test.mjs skills/workflows/stnl-spec-lifecycle-manager/runtime/test/lifecycle.test.mjs skills/workflows/stnl-spec-lifecycle-manager/runtime/test/readiness.test.mjs skills/workflows/stnl-spec-lifecycle-manager/runtime/test/closed-spec.test.mjs skills/workflows/stnl-spec-lifecycle-manager/runtime/test/publisher.test.mjs": "PASS, 137 tests",
+    "node --test scripts/test-lifecycle-distribution.mjs": "PASS, 43 tests; isolated package invoked serializer then strict publisher",
+    "node --test scripts/test-runtime-context-budget.mjs": "PASS; all six mode contexts within existing ceilings",
+    "node --test scripts/test-subagent-packages.mjs": "PASS, 23 tests",
+    "bash scripts/test-validation-runner-contract.sh": "PASS, 113 tests",
+    "node --test scripts/test-launcher-contract.mjs": "PASS, 125 tests",
+    "node scripts/check-contracts.mjs repository --root <repo>": "PASS",
+    "node scripts/check-contracts.mjs launchers --root templates/prompts": "PASS",
+    "node --check lifecycle runtime files and git diff --check": "PASS"
+  },
+  "liveReplay": "The failing replay predates the producer helper. A fresh Case C is required after focused local contracts pass; the failed candidate is not resumed or relabeled.",
+  "result": "Correction implemented; live convergence not yet established.",
+  "workflowProgress": "Case C fresh replay stopped at SPEC_INIT sequence 1; no SPEC, plan, slice, or task was published. The corrected code is ready for local integration checks followed by a new fresh Case C.",
+  "liveCalls": [
+    {
+      "sequence": 1,
+      "case": "C",
+      "operation": "SPEC_INIT",
+      "model": "GPT-5.6-Sol",
+      "effort": "high",
+      "purpose": "Fresh production-v2 functional convergence attempt",
+      "outcome": "BLOCKED at strict lifecycle candidate validation before publication"
+    }
+  ]
+}

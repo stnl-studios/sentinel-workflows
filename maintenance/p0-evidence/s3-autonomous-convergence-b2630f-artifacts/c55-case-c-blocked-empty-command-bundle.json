@@ -1,0 +1,30 @@
+{
+  "issue": "C55",
+  "category": "MECHANICAL_SERIALIZATION",
+  "case": "Case C",
+  "operation": "EXECUTE_SLICE",
+  "slice": "slice-01",
+  "symptom": "The fresh runner returned the exact semantic schema with `Status: BLOCKED` and `Commands: none`. The official producer exited nonzero, the execution state became `RUNNER_RESULT_BLOCKED`, and the driver stopped with `OFFICIAL_RUNNER_RESULT_BLOCKED`.",
+  "officialState": "RUNNER_RESULT_BLOCKED",
+  "evidenceRoot": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-c32-case-c-kJdd3r",
+  "operationArtifact": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-c32-case-c-kJdd3r/case-c/operations/06-execute_slice.json",
+  "evidence": {
+    "productionProfile": "production-v2",
+    "outerRetry": 0,
+    "profileMismatches": [],
+    "runnerStatus": "HARNESS_COMPLETED",
+    "semanticStatus": "BLOCKED",
+    "semanticCommands": "none",
+    "commandExitCodesIncludedProducerFailure": true,
+    "preflightState": "MATERIALIZED_PRISTINE",
+    "readbackState": "RUNNER_RESULT_BLOCKED",
+    "finalAssistantMessageHadCanonicalFieldOrder": true
+  },
+  "rootCause": "`parseSemanticExecutionResponse` explicitly accepts `Commands: none` for `BLOCKED`, but `serializeRunnerExecutionBundleFromResponse` unconditionally passed the empty command list to `serializeRunnerRecord`, whose generic strict API requires at least one executed command. The semantic BLOCKED contract and the execution bundle producer therefore disagreed at a mechanical boundary.",
+  "semanticOrMechanical": "mechanical",
+  "responsibleBoundary": "serializeRunnerExecutionBundleFromResponse / execution record serialization",
+  "correction": "Allow the execution bundle producer to serialize `Commands: none` only when the already-parsed semantic status is `BLOCKED` or `TESTS_NOT_APPLICABLE`; retain the generic record serializer's strict non-empty command requirement for ordinary records. Emit no command tuple and do not synthesize a command.",
+  "whyCodeVsPrompt": "The parser already defines the semantic allowance and the record format already permits scalar `Commands: none` for BLOCKED/TNA. This is a deterministic shape mismatch; another prompt sentence cannot make the existing producer accept the contract.",
+  "regression": "Add a semantic execution producer test for BLOCKED with Commands: none, assert the generated record preserves Commands: none, and retain the existing generic empty-command rejection and invalid-output tests.",
+  "result": "pending local regression and fresh replay"
+}

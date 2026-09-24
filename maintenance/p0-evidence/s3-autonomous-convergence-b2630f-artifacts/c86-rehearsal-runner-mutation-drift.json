@@ -1,0 +1,30 @@
+{
+  "issue": "C86",
+  "category": "DRIVER_ORCHESTRATION",
+  "case": "local rehearsal",
+  "operation": "REHEARSAL_DETERMINISTIC",
+  "slice": "n/a",
+  "symptom": "The required rehearsal test returned PRE_PILOT_REHEARSAL_BLOCKED at R03 even though the validation-runner contract itself passed.",
+  "officialState": "n/a",
+  "evidence": {
+    "command": "node benchmarks/sentinel-todo/runtime/benchmark-rehearsal.mjs deterministic",
+    "before": "R01_PASS, R02_PASS, R03_FAIL",
+    "failure": "runner authority/exact-command anti-regression failed",
+    "baseContractCheck": "node scripts/check-contracts.mjs validation-runner --root agents: PASS",
+    "staleMutation": "benchmark-rehearsal.mjs searched for the obsolete phrase Nunca abrevie path ou argumento, while both current runner contracts use the canonical no-abbreviation sentence with explicit placeholders"
+  },
+  "rootCause": "The rehearsal's R03 mutation fixture was coupled to a superseded wording fragment and therefore did not mutate the live exact-command guard; the production contract remained strict, but the rehearsal falsely reported that its anti-regression mutation failed.",
+  "semanticOrMechanical": "mechanical",
+  "responsibleBoundary": "benchmark-rehearsal R03 runner-contract mutation fixture",
+  "correction": "Update only the R03 mutation's source substring and replacement to target the current canonical exact-command prohibition; retain the expected R020 rejection and all contract rules.",
+  "whyCodeVsPrompt": "The defect was in deterministic local test fixture selection, not model semantics or an authority. Updating the fixture to the current contract is the smallest causal correction.",
+  "filesChanged": [
+    "benchmarks/sentinel-todo/runtime/benchmark-rehearsal.mjs"
+  ],
+  "regression": "R01-R05 deterministic rehearsal and test-benchmark-rehearsal.mjs",
+  "localValidation": "PRE_PILOT_REHEARSAL_READY; scripts/test-benchmark-rehearsal.mjs and scripts/test-benchmark-contract.mjs PASS (19/19)",
+  "liveReplay": "not applicable; local-only blocker",
+  "result": "CLOSED",
+  "workflowProgress": "All required local contract gates are now green; fresh A/B/C may start after this final functional edit",
+  "liveCalls": []
+}

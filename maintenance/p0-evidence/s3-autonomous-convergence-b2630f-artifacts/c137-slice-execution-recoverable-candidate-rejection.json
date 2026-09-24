@@ -1,0 +1,60 @@
+{
+  "issue": "C137",
+  "category": "DRIVER_ORCHESTRATION",
+  "case": "C",
+  "operation": "EXECUTE_SLICE",
+  "sequence": 11,
+  "slice": "slice-03",
+  "model": "GPT-5.6-Luna",
+  "effort": "xhigh",
+  "durationMs": 802662,
+  "harness": {
+    "status": "HARNESS_COMPLETED",
+    "outerRetry": 0,
+    "configuredRunner": {
+      "model": "GPT-5.6-Luna",
+      "effort": "medium",
+      "status": "RUNNER_RESPONSE_CAPTURED",
+      "semanticResult": "TESTS_PASS"
+    }
+  },
+  "producer": {
+    "serializerExitCode": 0,
+    "strictCandidateValidationExitCode": 1,
+    "rejectedPaths": [
+      "specs/benchmark-case-c/execution/tasks/slice-01.md",
+      "test/todo-store.test.mjs"
+    ],
+    "candidatePublished": false,
+    "executionRecordPublished": false
+  },
+  "official": {
+    "stateBefore": "EXECUTION_STARTED",
+    "stateAfter": "EXECUTION_STARTED",
+    "sameOperationStillLegal": true,
+    "legalTarget": "EXECUTE_SLICE/slice-03",
+    "completedSlices": ["slice-01", "slice-02"],
+    "pendingSlices": ["slice-03"]
+  },
+  "result": {
+    "caseStatus": "BLOCKED",
+    "blocker": "OFFICIAL_TRANSITION_NOT_OBSERVED",
+    "controllerRecoveryCount": 0,
+    "outerRetry": 0,
+    "workflowEvents": 11,
+    "maxWorkflowEvents": 24,
+    "nominalWorkflowEvents": 13,
+    "cleanup": "PASS",
+    "sourceCheckoutPreserved": true,
+    "profileMismatches": []
+  },
+  "rootCause": "The model-produced slice-03 candidate included edits rejected by strict candidate validation, including a historical slice-01 task artifact. The official execution state did not transition and still allowed the same EXECUTE_SLICE/slice-03 operation. The controller treated the model's failed producer attempt as terminal, then cleaned the managed workspace, so the legal in-process correction opportunity was lost.",
+  "recoveryDecision": "A bounded same-operation controller recovery is safe only for this explicit pre-publication candidate-validation rejection while official readback proves the same operation/slice remains legal. The next model turn must correct the candidate; code must not edit or republish rejected files. A formal official BLOCKED state and VALIDATE_SLICE NEEDS_FIX remain on their existing paths.",
+  "sourceEvidence": {
+    "caseOutput": "/tmp/sentinel-functional-convergence-c136-case-c-nOywWq/replay/case-c/operations/11-execute_slice.json",
+    "caseSummary": "/tmp/sentinel-functional-convergence-c136-case-c-nOywWq/replay/case-c/case-summary.json",
+    "functionalSummary": "/tmp/sentinel-functional-convergence-c136-case-c-nOywWq/replay/functional-case-summary.json",
+    "rawResult": "/tmp/sentinel-functional-convergence-c136-case-c-nOywWq/replay/case-c-production-v2.json",
+    "managedWorkspaceAndRunnerTmp": "Removed by official cleanup after the blocked replay; concise runner and operation results were captured here before cleanup."
+  }
+}

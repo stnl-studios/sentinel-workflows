@@ -1,0 +1,35 @@
+{
+  "issue": "C140",
+  "responsibleBoundary": "benchmark-production-pilot.mjs recoverable-operation detectors",
+  "observedCompactPreflightKeys": [
+    "currentFingerprint",
+    "legalOperations",
+    "normalHandoff",
+    "recoveryTargets",
+    "requiredRecoveryHandoff",
+    "rows",
+    "state"
+  ],
+  "identityFieldsAbsent": ["operation", "slice"],
+  "oldDetectorAssumption": "preflight.operation and preflight.slice exactly identify the current operation",
+  "effect": "C137 and the new C138/C139 recovery detections would all return null against actual runOperation evidence despite exact legalOperations targets",
+  "actualEvidenceReclassification": {
+    "caseC": {
+      "operation": "EXECUTE_SLICE",
+      "slice": "slice-01",
+      "result": "C138_OFFICIAL_RUNNER_SAME_OPERATION_RECOVERY",
+      "officialState": "RUNNER_RESULT_BLOCKED",
+      "officialTargetOwner": "delegation-blocker"
+    },
+    "caseB": {
+      "operation": "EXECUTE_SLICE",
+      "slice": "slice-02",
+      "result": "C139_EXECUTION_SCHEMA_REJECTION_RECOVERY",
+      "officialState": "EXECUTION_STARTED",
+      "rejectedField": "Evidence or failure summary"
+    }
+  },
+  "correction": "Use the explicit operation/slice arguments and require the exact requested target in both official legalOperations arrays; keep fingerprint/state and recovery-owner checks strict.",
+  "regression": "scripts/test-benchmark-production-pilot.mjs P14c/P14f/P14h use compact preflight shapes without operation or slice properties.",
+  "liveCalls": 0
+}

@@ -1,0 +1,43 @@
+{
+  "category": "MECHANICAL_SERIALIZATION",
+  "case": "A",
+  "operation": "PLAN",
+  "slice": null,
+  "symptom": "A fresh Case A completed SPEC_INIT, then PLAN returned BLOCKED before publishing any execution artifact. The model emitted the complete global File Purpose Header but paraphrased the fixed update_policy value by inserting the word 'only'.",
+  "officialState": "EMPTY",
+  "evidence": {
+    "operationArtifact": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-functional-convergence-MEpgZ2/case-a/operations/02-plan.json",
+    "caseSummary": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-functional-convergence-MEpgZ2/case-a/case-summary.json",
+    "candidatePlan": "/private/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-benchmark-session-5rksLh/runner-tmp/sentinel-plan-candidate.XXXXXX.OZKoUJnXrd/plan.md",
+    "canonicalValue": "REVIEW_PLAN corrects the mutable draft and changes it to ready.",
+    "modelValue": "REVIEW_PLAN corrects only the mutable draft and changes it to ready.",
+    "candidateOutcome": "The deterministic preparer rejected the complete-but-conflicting header. No execution plan was published; candidate validation and later operations were not run.",
+    "officialReadback": "Execution state EMPTY; only PLAN legal; normal handoff PLAN; lifecycle ready.",
+    "profile": "production-v2",
+    "outerRetry": 0
+  },
+  "rootCause": "The prevalidation preparer only inserted a canonical header when the marker was absent and blocked any complete header whose static metadata value differed. The fixed header metadata was therefore still model-serialized despite being defined by the canonical templates. A2 repeated the same producer-boundary family previously observed in C102, with a different malformed shape (value paraphrase rather than omission).",
+  "semanticOrMechanical": "mechanical",
+  "responsibleBoundary": "PLAN and REVIEW_PLAN isolated candidate production, before path serialization and strict candidate validation",
+  "correction": "Extend the small deterministic prevalidation producer to require one well-formed header with exactly the template field set and one valid draft/ready status, then serialize fixed metadata values and field order from the canonical template while preserving status and all content outside the header. Malformed, duplicate, missing, or unknown fields still block before candidate validation. The strict official validator and live artifacts remain unchanged.",
+  "whyCodeVsPrompt": "The exact fixed metadata values and field order are mechanical template serialization, and the live candidate demonstrates prose instructions did not keep that value canonical. PLAN and REVIEW_PLAN already have an isolated candidate boundary before official candidate validation, so no new framework or post-rejection repair is needed.",
+  "filesChanged": [
+    "skills/workflows/stnl-execution-planner/runtime/prepare-plan-candidate.mjs",
+    "skills/workflows/stnl-execution-planner/SKILL.md",
+    "skills/workflows/stnl-plan-reviewer/SKILL.md",
+    "templates/prompts/execution-plan.md",
+    "templates/prompts/execution-plan-review.md",
+    "scripts/test-execution-contract.mjs",
+    "scripts/check-contracts.mjs"
+  ],
+  "regression": "scripts/test-execution-contract.mjs reproduces the live value mutation by inserting 'only' into the canonical update_policy, verifies deterministic canonical output with unchanged plan body, then passes the strict official candidate validator and verifies idempotency. A duplicate status key remains rejected before mutation and remains rejected by the validator.",
+  "localValidation": "Regression-first focused plan-candidate test PASS (1/1), related plan-path tests PASS (2/2), prompt/launcher rendering checks PASS (3/3), execution contract PASS (113/113), production-pilot PASS (25/25), validation-runner suite PASS, launcher contract PASS (124/124 after correcting an escaped-pipe regex in its new L043 check), rehearsal and benchmark contract PASS (19/19), benchmark verify PASS, repository contract PASS, validate.sh --no-smoke PASS, and git diff --check PASS.",
+  "liveReplay": "Diagnostic fresh Case A sequence 02 reached PLAN after SPEC_INIT PASS and BLOCKED before publication. This replay does not count as convergence. A fresh replay after correction is required.",
+  "result": "CONFIRMED_MECHANICAL_PRODUCER_DEFECT_PENDING_FRESH_REPLAY",
+  "workflowProgress": "Fresh A #2 completed SPEC_INIT (1 operation) and stopped at PLAN (sequence 2). No plan, slices, or tasks were published. Current edit invalidates the previously successful Case C proof; C must be replayed fresh before final A then B/C.",
+  "liveCalls": [
+    "GPT-5.6-Sol/high: Case A SPEC_INIT sequence 01",
+    "GPT-5.6-Terra/high: Case A PLAN sequence 02"
+  ],
+  "priorIssue": "C102: earlier fresh Case A PLAN omitted the File Purpose Header; its correction inserted a deterministic prevalidation header producer but left static metadata values model-owned. This case is a material recurrence of the same header producer invariant with a distinct malformed-value shape."
+}

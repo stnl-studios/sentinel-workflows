@@ -1,0 +1,46 @@
+{
+  "category": "AUXILIARY_RUNNER",
+  "case": "C",
+  "operation": "EXECUTE_SLICE",
+  "slice": "slice-01",
+  "symptom": "The fresh production-v2 Case C replay passed SPEC_INIT, PLAN, REVIEW_PLAN, MATERIALIZE_TASKS, and REVIEW_TASKS, then all three bounded EXECUTE_SLICE events ended RUNNER_INITIALIZATION_BLOCKED. Each event's configured runner made two initialization attempts; no runner session started and no structured response was produced.",
+  "officialState": "RUNNER_INITIALIZATION_BLOCKED",
+  "evidence": {
+    "operationArtifacts": [
+      "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-functional-convergence-FCOAYk/case-c/operations/06-execute_slice.json",
+      "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-functional-convergence-FCOAYk/case-c/operations/07-execute_slice.json",
+      "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-functional-convergence-FCOAYk/case-c/operations/08-execute_slice.json"
+    ],
+    "runnerReceipts": [
+      "/private/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-benchmark-session-LOW4Hw/runner-tmp/stnl-runner-006-execute_slice-slice-01-attempt-1.receipt.json",
+      "/private/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-benchmark-session-LOW4Hw/runner-tmp/stnl-runner-006-execute_slice-slice-01-attempt-2.receipt.json",
+      "/private/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-benchmark-session-LOW4Hw/runner-tmp/stnl-runner-008-execute_slice-slice-01-attempt-1.receipt.json",
+      "/private/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-benchmark-session-LOW4Hw/runner-tmp/stnl-runner-008-execute_slice-slice-01-attempt-2.receipt.json"
+    ],
+    "runnerStatus": "HARNESS_INIT_FAILED",
+    "runnerSessionStarted": false,
+    "runnerStructuredOutputBytes": 0,
+    "providerErrorCategory": "PROVIDER_ERROR",
+    "recoveryBudget": "Three official EXECUTE_SLICE events were consumed; sequences 7 and 8 were official same-operation recoveries.",
+    "finalResult": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-functional-convergence-FCOAYk/case-c-production-v2.json"
+  },
+  "rootCause": "The failure is before the independent runner session and verification commands, at the configured runner's provider initialization boundary. It is consistent with the earlier C117/C118 transport-initialization family, but the current harness preserved only the generic PROVIDER_ERROR category and empty JSONL, so the exact provider/OS diagnostic is not established.",
+  "semanticOrMechanical": "mechanical transport initialization",
+  "responsibleBoundary": "benchmark-validation-runner.mjs invoking benchmark-agent-harness.mjs from the EXECUTE_SLICE model session",
+  "correction": "No launch-policy or authority change is justified from the generic error alone. Preserve the blocked run. Add a closed, secret-safe provider diagnostic code to the harness receipt and operation evidence, then use a fresh managed Case C replay to distinguish permission/app-server initialization from other provider failures. Do not run an extra runner call outside the official operation budget.",
+  "whyCodeVsPrompt": "The configured runner was invoked and twice failed before any runner session existed in each official event. Additional executor prose cannot repair provider startup. The missing data is a deterministic evidence-classification gap, not a semantic decision.",
+  "filesChanged": [
+    "benchmarks/sentinel-todo/runtime/benchmark-agent-harness.mjs",
+    "benchmarks/sentinel-todo/runtime/benchmark-validation-runner.mjs",
+    "benchmarks/sentinel-todo/runtime/benchmark-production-pilot.mjs",
+    "scripts/test-benchmark-agent-harness.mjs",
+    "scripts/test-benchmark-production-pilot.mjs",
+    "maintenance/p0-evidence/s3-autonomous-convergence-b2630f-artifacts/c121-fresh-c-runner-initialization-blocked.json"
+  ],
+  "regression": "Pending: focused harness test must prove known provider startup diagnostics map to a closed code without persisting stderr; pilot test must prove nested runner receipts are included in operation evidence.",
+  "localValidation": "The final local suite passed before this replay; focused diagnostics regression is pending.",
+  "liveReplay": "Fresh Case C sequence 6, 7, and 8 returned BLOCKED for EXECUTE_SLICE/slice-01. Five of 13 unique milestones passed; 1 of 3 materialized tasks remains pending. Finalizer status BLOCKED, production-v2, profileMismatches=[], outerRetry=0. Total elapsed 42m12s. The six runner-start attempts did not create model sessions.",
+  "result": "OPEN_DIAGNOSTIC_GAP",
+  "workflowProgress": "5/13 unique milestones PASS; slice-01 task record is pending and no slice is terminal. The official per-slice operation budget is exhausted in this managed Case C workspace; no fourth EXECUTE_SLICE event was attempted.",
+  "liveCalls": "Outer production-v2 calls: 8 total — GPT-5.6-Sol/high x2, GPT-5.6-Terra/high x1, GPT-5.6-Luna/xhigh x5. Six configured runner starts returned before session initialization; they were not model calls. Outer retry remained 0."
+}

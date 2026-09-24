@@ -1,0 +1,42 @@
+{
+  "issue": "C80",
+  "category": "MECHANICAL_SERIALIZATION",
+  "case": "A",
+  "operation": "EXECUTE_SLICE",
+  "slice": "slice-01",
+  "sequence": 7,
+  "model": "GPT-5.6-Luna",
+  "effort": "high",
+  "harness": "HARNESS_COMPLETED",
+  "retryCount": 0,
+  "result": "BLOCKED",
+  "officialState": "RUNNER_RESULT_BLOCKED",
+  "evidence": {
+    "operationArtifact": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-functional-convergence-JxJ5Br/case-a/operations/07-execute_slice.json",
+    "preflightState": "RUNNER_RESULT_BLOCKED",
+    "requirementsAuthority": "sha256:8ff7a1b2801cef3ab7448ac28becb772968617199b0e00b87f0d288072df6b45",
+    "finalAssistantMessage": "The deterministic serializer exited nonzero because Changed Areas contained an unresolvable task-relative path. No check record, candidate publication, or formal validation was created. No later operation was started.",
+    "taskArtifact": "/private/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-benchmark-session-XoKb3u/workspaces/case-a/specs/benchmark-case-a/execution/tasks/slice-01.md",
+    "persistedTaskChangedAreasAfterReadback": [
+      "../../../../src/todo-service.mjs",
+      "../../../../test/todo-service.test.mjs"
+    ],
+    "candidateSnapshotSourceFiles": [
+      "src/todo-service.mjs",
+      "test/todo-service.test.mjs"
+    ],
+    "noCheckPublished": true,
+    "noCandidatePublished": true
+  },
+  "rootCause": "The live EXECUTE_SLICE recovery reached the deterministic scope producer, but the context submitted a Changed Areas value that the producer could not resolve from the selected task artifact to an approved physical target. The persisted post-failure artifact is canonical, so the transient malformed producer input was not preserved verbatim by the harness.",
+  "semanticOrMechanical": "mechanical",
+  "responsibleBoundary": "EXECUTE_SLICE main-context scope serialization before candidate validation",
+  "correctionStatus": "pending causal correction",
+  "regressionNeeded": "A behavioral producer regression must prove canonical task-relative serialization from an approved physical target, reject a wrong-basis/unresolvable claim without repair, and preserve strict candidate rejection.",
+  "liveCall": {
+    "sequence": 7,
+    "purpose": "official same-operation recovery after C80 predecessor malformed-output blocker",
+    "outcome": "OFFICIAL_RUNNER_RESULT_BLOCKED",
+    "outerRetry": 0
+  }
+}

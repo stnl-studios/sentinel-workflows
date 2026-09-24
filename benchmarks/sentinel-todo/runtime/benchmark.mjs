@@ -824,24 +824,29 @@ async function finalize(options) {
   const operationalEvents = journal.events.filter((event) => !event.operation.startsWith('SPEC_'));
   const reportedExecutionEvents = operationalEvents.filter((event) => event.resultingState !== undefined);
   const reportedExecutionState = reportedExecutionEvents.at(-1)?.resultingState ?? null;
+  const initEvents = journal.events.filter((event) => event.operation === 'SPEC_INIT');
+  const initEvent = initEvents[0];
+  const readinessEvents = journal.events.filter((event) => event.operation === 'SPEC_READINESS');
+  const initialReadiness = readinessEvents[0];
+  const firstOperationalEvent = operationalEvents[0];
   const completeEvent = operationalEvents.findLast((event) => (
     event.operation === 'VALIDATE_SLICE' && event.result === 'PASS' && event.resultingState === 'COMPLETE'
   ));
-  const readinessEventsAfterComplete = completeEvent === undefined ? [] : journal.events.filter((event) => (
-    event.operation === 'SPEC_READINESS' && event.index > completeEvent.index
-  ));
-  const terminalReadiness = readinessEventsAfterComplete[0];
   const closeEvents = journal.events.filter((event) => event.operation === 'SPEC_CLOSE');
   const closeEvent = closeEvents[0];
-  const terminalSequence = completeEvent !== undefined
+  const terminalSequence = initEvents.length === 1
+    && initEvent.result === 'PASS'
+    && readinessEvents.length === 1
+    && initialReadiness.result === 'PASS'
+    && initialReadiness.resultingState === 'GLOBAL_READY'
+    && initialReadiness.index === initEvent.index + 1
+    && firstOperationalEvent?.operation === 'PLAN'
+    && firstOperationalEvent.index === initialReadiness.index + 1
+    && completeEvent !== undefined
     && operationalEvents.at(-1) === completeEvent
-    && readinessEventsAfterComplete.length === 1
-    && terminalReadiness.result === 'PASS'
-    && terminalReadiness.resultingState === 'GLOBAL_READY'
-    && terminalReadiness.index === completeEvent.index + 1
     && closeEvents.length === 1
     && closeEvent.result === 'PASS'
-    && closeEvent.index === terminalReadiness.index + 1
+    && closeEvent.index === completeEvent.index + 1
     && closeEvent.index === journal.events.length;
   const lifecycleValidation = run(process.execPath, [LIFECYCLE_VALIDATOR, 'workspace', realSpec], REPOSITORY_ROOT);
   const specClosed = lifecycleValidation.exitCode === 0 && / status=closed ids=[0-9]+\n?$/u.test(lifecycleValidation.stdout);

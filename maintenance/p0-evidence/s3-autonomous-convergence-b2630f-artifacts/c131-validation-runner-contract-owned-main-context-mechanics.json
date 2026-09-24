@@ -1,0 +1,34 @@
+{
+  "issue": "C131",
+  "category": "PRODUCER_CONTRACT",
+  "case": "all",
+  "operation": "VALIDATE_SLICE contract validation",
+  "symptom": "The complete local suite reported 65 failures in test-validation-runner-contract.mjs. R032_VALIDATION_BUNDLE was emitted before the intended mutation-specific error, including for the unmodified canonical runner contract.",
+  "evidence": {
+    "command": "node --test scripts/test-validation-runner-contract.mjs scripts/test-benchmark-rehearsal.mjs",
+    "initialResult": "validation-runner contract cases failed at R032; rehearsal failed because its validation-runner contract check returned BLOCKED",
+    "checkerLocation": "scripts/check-contracts.mjs checkRunner contract checks",
+    "misplacedInvariant": "The independent semantic runner was required to describe main-context candidate preparation and launcher-owned candidate tree copying. Those are not runner responsibilities.",
+    "correctOwners": [
+      "scripts/check-contracts.mjs launcher checks L046/L047",
+      "scripts/test-launcher-contract.mjs L046/L047 mutation regressions",
+      "scripts/test-execution-contract.mjs deterministic candidate behavior regressions",
+      "scripts/test-benchmark-production-pilot.mjs P04c1 candidate copy/isolation regression"
+    ]
+  },
+  "rootCause": "R032_VALIDATION_BUNDLE had been added to the independent validation-runner contract checker and its test suite, conflating semantic response ownership with deterministic main-context producer mechanics.",
+  "semanticOrMechanical": "contract ownership boundary",
+  "responsibleBoundary": "The runner contract checks semantic JSON only; launcher/producer and behavioral tests prove deterministic candidate setup and serialization.",
+  "correction": "Remove only the two R032 checks from the runner-contract checker and the two tests that mutate runner docs to require main-context work. Preserve L046/L047 launch-contract checks and behavioral candidate tests.",
+  "whyCodeVsPrompt": "No runtime behavior changed. This restores the established ownership split and avoids requiring auxiliary runners to own main-context mechanics.",
+  "filesChanged": [
+    "scripts/check-contracts.mjs",
+    "scripts/test-validation-runner-contract.mjs"
+  ],
+  "regression": "scripts/test-validation-runner-contract.mjs still proves strict semantic schema and mutation-specific guards; scripts/test-launcher-contract.mjs retains deterministic candidate command/copy checks; scripts/test-execution-contract.mjs and scripts/test-benchmark-production-pilot.mjs cover runtime behavior.",
+  "localValidation": "PASS: node --test scripts/test-validation-runner-contract.mjs scripts/test-benchmark-rehearsal.mjs (122/122); node --test scripts/test-launcher-contract.mjs (126/126); validation-runner contract checker PASS; repository contract PASS; git diff --check PASS.",
+  "liveReplay": "Not applicable; discovered and corrected locally before any model call.",
+  "result": "FIXED_LOCALLY",
+  "workflowProgress": "Focused validation and rehearsal regressions are green; full required local suite remains to rerun.",
+  "liveCalls": 0
+}

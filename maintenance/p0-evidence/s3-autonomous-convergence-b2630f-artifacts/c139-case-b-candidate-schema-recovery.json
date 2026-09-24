@@ -1,0 +1,62 @@
+{
+  "issue": "C139",
+  "case": "B",
+  "operation": {
+    "sequence": 9,
+    "name": "EXECUTE_SLICE",
+    "slice": "slice-02",
+    "durationMs": 656412
+  },
+  "replay": {
+    "profileId": "production-v2",
+    "preflight": "PASS",
+    "outerRetry": 0,
+    "profileMismatches": [],
+    "sourceCheckoutPreserved": true,
+    "cleanup": "PASS",
+    "operations": 9,
+    "formalSlicesPassed": 1,
+    "primaryCalls": 9,
+    "runnerCalls": 3,
+    "primaryModelCounts": {
+      "GPT-5.6-Terra/high": 3,
+      "GPT-5.6-Luna/xhigh": 6
+    },
+    "runnerModelCounts": {
+      "GPT-5.6-Luna/medium": 3
+    }
+  },
+  "officialBeforeAndAfter": {
+    "state": "EXECUTION_STARTED",
+    "currentFingerprint": "0631d3ff39ff632ab62245bef2bc4e94a882cab4f2dad050b65198ab58d4c783",
+    "legalOperation": {
+      "operation": "EXECUTE_SLICE",
+      "slice": "slice-02"
+    },
+    "requiredRecoveryHandoff": null
+  },
+  "runner": {
+    "model": "GPT-5.6-Luna",
+    "effort": "medium",
+    "receipt": "RUNNER_RESPONSE_CAPTURED",
+    "focusedAndFullTests": "TESTS_FAIL",
+    "focusedExit": 1,
+    "fullExit": 1
+  },
+  "rejection": {
+    "blocker": "OFFICIAL_TRANSITION_NOT_OBSERVED",
+    "candidateValidation": "strict candidate validation rejected the unpublished record",
+    "rejectedField": "Evidence or failure summary",
+    "publishedCandidate": false,
+    "controllerRecoveryRequest": null
+  },
+  "correctedDetectorAgainstPreservedOperationEvidence": {
+    "code": "C139_EXECUTION_SCHEMA_REJECTION_RECOVERY",
+    "operation": "EXECUTE_SLICE",
+    "slice": "slice-02",
+    "officialState": "EXECUTION_STARTED",
+    "rejectedField": "Evidence or failure summary"
+  },
+  "workspace": "case workspace was cleaned after the driver exited; this evidence is diagnostic and cannot be resumed",
+  "liveRecoveryAttempted": false
+}

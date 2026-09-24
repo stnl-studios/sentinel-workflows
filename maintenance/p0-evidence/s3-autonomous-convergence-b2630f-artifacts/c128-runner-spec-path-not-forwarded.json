@@ -1,0 +1,51 @@
+{
+  "issue": "C128",
+  "category": "MECHANICAL_SERIALIZATION",
+  "case": "C",
+  "operation": "EXECUTE_SLICE",
+  "slice": "slice-01",
+  "symptom": "The implementation candidate was published, but all official runner starts failed with BROKER_DISPATCH_FAILED before any runner receipt or verification command was produced.",
+  "officialState": "RUNNER_INITIALIZATION_BLOCKED",
+  "evidence": {
+    "freshReplayRoot": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-functional-convergence-SwCW1C",
+    "sessionRoot": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-benchmark-session-0oYD4n",
+    "sequences": [6, 7, 8],
+    "officialOperationArtifacts": [
+      "case-c/operations/06-execute_slice.json",
+      "case-c/operations/07-execute_slice.json",
+      "case-c/operations/08-execute_slice.json"
+    ],
+    "runnerReceipts": "[] for all three official events; no semantic runner response was captured and no verification command ran.",
+    "recoveryPreflight": {
+      "sequences": [7, 8],
+      "inputSlice": "1",
+      "slice": "slice-01",
+      "specPath": "canonical managed SPEC_PATH present in the trusted officialPreflight object",
+      "mandatoryRecovery": {
+        "operation": "EXECUTE_SLICE",
+        "slice": "slice-01",
+        "owner": "delegation-blocker",
+        "sameOperationResumeRequired": true
+      }
+    },
+    "modelReportedFailure": "BROKER_DISPATCH_FAILED on both permitted launcher attempts for every sequence; sequences 7 and 8 state that canonical path and official authority checks passed before runner dispatch.",
+    "boundaryEvidence": "startOfficialRunnerBroker built callback input from identity {workspace,tmpdir,operation,sequence,slice}, officialPreflight, and prompt, omitting the top-level specPath required by invokeConfiguredValidationRunner. The preflight object itself contained the canonical specPath.",
+    "consumerEvidence": "invokeConfiguredValidationRunner calls canonicalWorkspaceEntry(specPath, workspace, 'SPEC_PATH') before official-preflight validation and before reserveInvocation. An omitted value throws before runner session start, leaving no configured-runner receipt. The broker catches this unclassified exception as BROKER_DISPATCH_FAILED."
+  },
+  "rootCause": "The broker failed to mechanically copy the already-authorized canonical SPEC_PATH from officialPreflight into the configured runner callback contract. The consumer requires this top-level field and rejects its absence before runner initialization.",
+  "semanticOrMechanical": "mechanical",
+  "responsibleBoundary": "benchmark-runner-broker.mjs construction of the trusted configured-runner callback request",
+  "correction": "Pass specPath: officialPreflight.specPath alongside the broker identity and the exact officialPreflight object. Do not recompute or normalize the path; the official preflight remains the sole source.",
+  "whyCodeInsteadOfPrompt": "SPEC_PATH is a deterministic field already computed and validated by the production driver. Requiring the auxiliary model to recover it from prose would repeat a mechanical handoff error and could weaken canonical-path validation.",
+  "filesChanged": [
+    "benchmarks/sentinel-todo/runtime/benchmark-runner-broker.mjs",
+    "scripts/test-benchmark-runner-broker.mjs"
+  ],
+  "regression": {
+    "behavior": "Broker callback receives the exact canonical SPEC_PATH from the official preflight, including on mandatory same-operation recovery; flat receipt identity and strict rejection behavior remain unchanged.",
+    "test": "scripts/test-benchmark-runner-broker.mjs"
+  },
+  "localValidation": "PASS: focused broker, production-pilot, agent-harness, and validation-runner contract suites; syntax checks; and git diff --check.",
+  "liveReplay": "Fresh Case C sequences 6-8 reproduced the missing handoff before runner invocation. A new fresh Case C after this correction is required for live proof.",
+  "result": "CAUSE_PROVEN; DETERMINISTIC_FIX_AND_LOCAL_REGRESSION_PASS; FRESH_CASE_C_PENDING"
+}

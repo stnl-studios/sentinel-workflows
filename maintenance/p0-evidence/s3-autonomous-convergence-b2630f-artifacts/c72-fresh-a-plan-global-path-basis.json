@@ -1,0 +1,37 @@
+{
+  "id": "C72",
+  "category": "PATH_BASIS",
+  "case": "A",
+  "operation": "PLAN",
+  "slice": null,
+  "symptom": "Fresh Case A PLAN completed at the harness but official readback stayed EMPTY; the producer reported that ../../test/cli.test.mjs resolves to specs/test/cli.test.mjs instead of the physical test/cli.test.mjs target.",
+  "officialState": "EMPTY",
+  "evidence": {
+    "operationEvidence": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-functional-convergence-584m2v/case-a/operations/02-plan.json",
+    "workspace": "/private/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-benchmark-session-ESGgeJ/workspaces/case-a",
+    "harnessStatus": "HARNESS_COMPLETED",
+    "commandExitCodes": [0, 0, 0, 0, 0, 0, 0, 0, 1],
+    "assistantConclusion": "BLOCKED — deterministic path serialization failed before candidate validation or publication.",
+    "invalidClaim": "../../test/cli.test.mjs",
+    "wrongResolution": "specs/test/cli.test.mjs",
+    "physicalTarget": "test/cli.test.mjs"
+  },
+  "rootCause": "The model's semantic physical-target selection and the artifact-relative claim persisted in global Expected areas were treated as the same value. The live producer then resolved a project-root test target from the nested execution artifact with one missing parent traversal.",
+  "semanticOrMechanical": "mechanical",
+  "responsibleBoundary": "stnl-execution-planner deterministic plan-path producer boundary",
+  "correction": "Separate project-root-relative semantic target selection from the final artifact-relative claim. Resolve semantic selections through the existing execution workspace authority, rewrite global and detailed plan claims before candidate validation, and retain strict candidate validation after serialization.",
+  "whyCodeVsPrompt": "The failure is path.relative/path.resolve serialization, and the live model repeatedly produced the wrong persisted basis despite explicit prose. Code can serialize an unambiguous physical target deterministically; it must block malformed or ambiguous semantic input and never repair after candidate rejection.",
+  "regression": "scripts/test-execution-contract.mjs: canonical semantic project target serializes global and detailed claims; malformed or ambiguous semantic input blocks without publication.",
+  "localValidation": [
+    "node --test scripts/test-execution-contract.mjs",
+    "node scripts/check-contracts.mjs repository --root /Users/ajfiumanee/projects/private/sentinel-workflows",
+    "bash scripts/validate.sh --no-smoke"
+  ],
+  "liveReplay": "Fresh A stopped at PLAN; B and C were correctly gated and not run.",
+  "result": "OPEN_REPAIR",
+  "workflowProgress": "A reached PLAN after SPEC_INIT PASS; no outer retry was used.",
+  "liveCalls": [
+    {"sequence": 1, "case": "A", "operation": "SPEC_INIT", "model": "GPT-5.6-Sol", "effort": "high", "result": "PASS"},
+    {"sequence": 2, "case": "A", "operation": "PLAN", "model": "GPT-5.6-Terra", "effort": "high", "result": "BLOCKED"}
+  ]
+}

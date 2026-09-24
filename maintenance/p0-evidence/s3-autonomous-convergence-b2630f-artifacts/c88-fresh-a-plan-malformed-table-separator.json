@@ -1,0 +1,49 @@
+{
+  "id": "C88",
+  "title": "fresh Case A PLAN candidate had a non-canonical table separator",
+  "category": "PRODUCER_CONTRACT",
+  "case": "A",
+  "operation": "PLAN",
+  "slice": null,
+  "symptom": "The official PLAN operation returned OFFICIAL_TRANSITION_NOT_OBSERVED with outer retry 0; the lifecycle remained EMPTY and no plan artifact was published.",
+  "officialState": "EMPTY",
+  "evidence": {
+    "operationArtifact": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-functional-convergence-yB5EBU/case-a/operations/02-plan.json",
+    "model": "GPT-5.6-Terra",
+    "effort": "high",
+    "finalAssistantMessage": "The required serializer rejected the isolated candidate: plan.md has no canonical Serial Slice Order table (malformed separator row). No candidate validation, readback, or publication was performed.",
+    "candidateSnapshot": "Only the prepared SPEC and runner projection remained; no execution artifacts were created.",
+    "preflight": "PLAN was legal from EMPTY; recoveryTarget was PLAN/empty-workspace with no same-operation recovery requirement; outer retry remained 0"
+  },
+  "rootCause": "The live planner candidate did not contain the exact separator row required by the deterministic Serial Slice Order parser. The serializer correctly failed before candidate validation and publication, so the exact malformed row was not persisted in the managed workspace.",
+  "semanticOrMechanical": "mechanical",
+  "responsibleBoundary": "planner model candidate -> skills/workflows/stnl-execution-planner/runtime/serialize-plan-paths.mjs",
+  "correction": "No source correction was made from this single stochastic occurrence. The strict serializer and candidate validator remain unchanged; a new independent fresh Case A replay is required to determine whether the format violation recurs before moving the separator grammar into a deterministic pre-validation producer.",
+  "whyCodeVsPrompt": "The separator is purely mechanical, but one occurrence is insufficient evidence to add a normalizing producer without knowing the malformed row. A replay distinguishes transient model formatting variance from a recurring producer boundary bug; any code change will be considered only if the same failure recurs with causal evidence.",
+  "filesChanged": [
+    "maintenance/p0-evidence/s3-autonomous-convergence-b2630f-artifacts/c88-fresh-a-plan-malformed-table-separator.json"
+  ],
+  "regression": {
+    "test": "Existing deterministic plan serializer and candidate-validation coverage in scripts/test-execution-contract.mjs",
+    "coverage": [
+      "canonical Serial Slice Order header/separator/rows are required",
+      "malformed serial rows remain blocked",
+      "no source artifact is mutated when serialization rejects the candidate"
+    ]
+  },
+  "localValidation": "No source edit for C88; prior C87 local suite remains PASS",
+  "liveReplay": "fresh Case A replay pending",
+  "result": "observed and preserved; not yet classified as recurring",
+  "workflowProgress": "The prior post-C87 replay had A PASS and C PASS but B stopped at C87; this new replay stopped at A PLAN before B/C gating.",
+  "liveCalls": [
+    {
+      "sequence": 2,
+      "case": "A",
+      "operation": "PLAN",
+      "model": "GPT-5.6-Terra",
+      "effort": "high",
+      "purpose": "create the initial execution plan",
+      "outcome": "BLOCKED: OFFICIAL_TRANSITION_NOT_OBSERVED; isolated candidate rejected by planner serializer"
+    }
+  ]
+}

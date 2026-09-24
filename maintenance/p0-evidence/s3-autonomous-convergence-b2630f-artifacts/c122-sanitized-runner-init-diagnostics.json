@@ -1,0 +1,32 @@
+{
+  "category": "EVIDENCE_PERSISTENCE",
+  "case": "C",
+  "operation": "EXECUTE_SLICE",
+  "slice": "slice-01",
+  "symptom": "C121 preserved the runner's generic PROVIDER_ERROR category and empty JSONL, but discarded the provider stderr distinction needed to tell an app-server permission failure from a different initialization cause. The helper receipt also was not projected into durable operation evidence.",
+  "officialState": "RUNNER_INITIALIZATION_BLOCKED",
+  "evidence": {
+    "sourceRun": "maintenance/p0-evidence/s3-autonomous-convergence-b2630f-artifacts/c121-fresh-c-runner-initialization-blocked.json",
+    "currentHarnessBehavior": "providerErrorCategory classifies nonempty unknown stderr as PROVIDER_ERROR; raw stderr is intentionally not returned or persisted.",
+    "requiredPrivacyBoundary": "Persist only a closed diagnostic code; never persist raw stderr, arbitrary provider text, or secrets.",
+    "recoveryPolicy": "No new provider invocation or retry is authorized by this evidence-only correction."
+  },
+  "rootCause": "The harness retained only a coarse provider category, and the operation evidence omitted the configured runner's safe receipt summary. This prevented exact diagnosis of the repeated pre-session initialization failure without reading raw provider output.",
+  "semanticOrMechanical": "mechanical evidence classification and projection",
+  "responsibleBoundary": "benchmark-agent-harness provider stderr classifier -> configured runner receipt -> production-pilot operation evidence",
+  "correction": "Add providerErrorDiagnosticCode from a closed enum, including APP_SERVER_PERMISSION_DENIED, to the harness result and configured runner receipt. Add a strict receipt collector that copies only allowlisted identities/statuses/codes into operation evidence. Do not persist raw stderr or modify execution state, retry budgets, candidate validation, or model profile.",
+  "whyCodeVsPrompt": "The diagnostic is a deterministic transformation of provider stderr and receipt fields. A prompt cannot recover information that the harness discarded, and raw logging would create unnecessary secret exposure.",
+  "filesChanged": [
+    "benchmarks/sentinel-todo/runtime/benchmark-agent-harness.mjs",
+    "benchmarks/sentinel-todo/runtime/benchmark-validation-runner.mjs",
+    "benchmarks/sentinel-todo/runtime/benchmark-production-pilot.mjs",
+    "scripts/test-benchmark-agent-harness.mjs",
+    "maintenance/p0-evidence/s3-autonomous-convergence-b2630f-artifacts/c122-sanitized-runner-init-diagnostics.json"
+  ],
+  "regression": "H14 verifies app-server permission denial maps to APP_SERVER_PERMISSION_DENIED without returning raw stderr; H23 verifies the helper receipt and production evidence projection contain only the safe code and do not expose the sentinel error text.",
+  "localValidation": "node --test scripts/test-benchmark-agent-harness.mjs PASS (33 tests); node --test scripts/test-benchmark-production-pilot.mjs PASS (25 tests); node --check passed for all three changed runtime modules. Repository contract and git diff checks pending.",
+  "liveReplay": "Pending a fresh managed Case C replay after this evidence-boundary change; no extra or out-of-budget runner call was made.",
+  "result": "DIAGNOSTIC_BOUNDARY_IMPLEMENTED; RUNNER_STARTUP_UNRESOLVED",
+  "workflowProgress": "C121 remains blocked at 5/13 unique milestones. This change adds diagnosis only and cannot convert that run or its pending task into PASS.",
+  "liveCalls": "None for C122. Prior C121 recorded 8 production-v2 outer operation calls and six configured runner starts that did not create model sessions; outer retry 0."
+}

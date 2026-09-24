@@ -1,0 +1,45 @@
+{
+  "id": "C89",
+  "title": "formal validation runner compared the raw requirements digest again",
+  "category": "RUNTIME_AUTHORITY",
+  "case": "A",
+  "operation": "VALIDATE_SLICE",
+  "slice": "slice-01",
+  "symptom": "The fresh Case A validation returned OFFICIAL_VALIDATION_BLOCKED after persisting attempt-01 as BLOCKED; no Effective Validation Base or completed row was published and outer retry remained 0.",
+  "officialState": "VALIDATION_BLOCKED",
+  "evidence": {
+    "operationArtifact": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-functional-convergence-CDtFM0/case-a/operations/07-validate_slice.json",
+    "officialAuthority": "sha256:17cfb10197543843acf0871661ea1e83bcb885495cebe8dbefdf4ef2d5acaa76",
+    "runnerReportedRawDigest": "5299ea8373b21d2191270d1446ba8319dd791db376c1cd6d86537d198e083a3e",
+    "runnerBlocker": "Requirements authority mismatch: supplied official token does not match current specs/benchmark-case-a/shared/requirements.md hash",
+    "preflightAndArtifact": "preflight currentFingerprint and selected execution artifacts carried the same official authority token",
+    "recovery": "VALIDATE_SLICE slice-01 is legal again; recovery owner is validation-attempt and no APPLY_FINDINGS target exists because no finding was created"
+  },
+  "rootCause": "Despite explicit official-only authority instructions, the live validation runner independently hashed shared/requirements.md and treated that raw file digest as comparable authority. The official authority is a domain-separated execution-state token, so the raw digest is non-authoritative and cannot create a mismatch.",
+  "semanticOrMechanical": "mechanical authority handling",
+  "responsibleBoundary": "validation runner authority gate and VALIDATE_SLICE caller/producer contract",
+  "correction": "No source edit yet. Preserve strict official-token equality and use the legal VALIDATE_SLICE recovery. If the same behavior recurs after recovery, move the raw-authority disposition into a deterministic pre-run/response boundary without overriding a semantic verdict or silently repairing a candidate.",
+  "whyCodeVsPrompt": "This is a recurrence of the same invariant after explicit prose guards in C08/C14. The official authority token is already supplied by deterministic preflight; comparing or copying it is mechanical. Code may reject non-authoritative raw-hash claims as malformed runner output, but it must not convert BLOCKED into PASS.",
+  "filesChanged": [
+    "maintenance/p0-evidence/s3-autonomous-convergence-b2630f-artifacts/c89-fresh-a-validation-raw-authority-recurrence.json"
+  ],
+  "regression": {
+    "existingCoverage": "runner and launcher contract mutations reject raw authority comparison and require official-token identity",
+    "requiredFollowup": "add a behavioral semantic-response regression if a deterministic raw-authority boundary is introduced"
+  },
+  "localValidation": "No source edit for C89; prior C87 local suite remains PASS",
+  "liveReplay": "formal VALIDATE_SLICE recovery pending",
+  "result": "recurrence preserved; recovery is the next official operation",
+  "workflowProgress": "Fresh A passed through PLAN, REVIEW_PLAN, MATERIALIZE_TASKS, REVIEW_TASKS, and EXECUTE_SLICE slice-01 before formal validation blocked; B/C were correctly gated.",
+  "liveCalls": [
+    {
+      "sequence": 7,
+      "case": "A",
+      "operation": "VALIDATE_SLICE",
+      "model": "GPT-5.6-Luna",
+      "effort": "high",
+      "purpose": "initial formal validation of slice-01",
+      "outcome": "BLOCKED: OFFICIAL_VALIDATION_BLOCKED after raw requirements digest comparison"
+    }
+  ]
+}

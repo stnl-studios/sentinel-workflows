@@ -208,17 +208,18 @@ async function completeJournal(file, {
   specModel = 'GPT-5.6-Sol',
   specCloseModel = specModel,
   includeInitialReadiness = true,
+  initialReadinessState = 'GLOBAL_READY',
   includeComplete = true,
   regressAfterComplete = false,
-  includeTerminalReadiness = true,
-  terminalReadinessState = 'GLOBAL_READY',
+  lateReadiness = false,
   recoveredBlocked = false,
   extraAfterClose = false,
   multipleClose = false,
 } = {}) {
   requireSuccess(event(file, 'SPEC_INIT', 'SPEC', specModel, 'high'), 'SPEC_INIT');
   if (includeInitialReadiness) {
-    requireSuccess(event(file, 'SPEC_READINESS', 'REVIEW_VALIDATE', 'GPT-5.6-Luna', 'high'), 'SPEC_READINESS');
+    const readinessExtra = initialReadinessState === null ? [] : ['--resulting-state', initialReadinessState];
+    requireSuccess(event(file, 'SPEC_READINESS', 'REVIEW_VALIDATE', 'GPT-5.6-Luna', 'high', 'PASS', readinessExtra), 'SPEC_READINESS');
   }
   requireSuccess(event(file, 'PLAN', 'PLAN', mismatch ? 'GPT-5.6-Sol' : 'GPT-5.6-Terra', mismatch ? 'xhigh' : 'high'), 'PLAN');
   requireSuccess(event(file, 'REVIEW_PLAN', 'REVIEW_VALIDATE', 'GPT-5.6-Luna', 'high'), 'REVIEW_PLAN');
@@ -236,9 +237,8 @@ async function completeJournal(file, {
       '--slice', 'slice-01', '--round', '2', '--resulting-state', 'NEEDS_FIX',
     ]), 'regressed VALIDATE_SLICE');
   }
-  if (includeTerminalReadiness) {
-    const readinessExtra = terminalReadinessState === null ? [] : ['--resulting-state', terminalReadinessState];
-    requireSuccess(event(file, 'SPEC_READINESS', 'REVIEW_VALIDATE', 'GPT-5.6-Luna', 'high', 'PASS', readinessExtra), 'terminal SPEC_READINESS');
+  if (lateReadiness) {
+    requireSuccess(event(file, 'SPEC_READINESS', 'REVIEW_VALIDATE', 'GPT-5.6-Luna', 'high'), 'late SPEC_READINESS');
   }
   requireSuccess(event(file, 'SPEC_CLOSE', 'SPEC', specCloseModel, 'high', 'PASS', ['--resulting-state', 'SPEC_CLOSED']), 'SPEC_CLOSE');
   if (multipleClose) {
@@ -459,7 +459,10 @@ test('B06 — finalize collects raw facts and enforces official terminal semanti
   assert.equal(result.decomposition.slices, 1);
   assert.equal(result.decomposition.tasks, 1);
   assert.deepEqual(result.decomposition.tasksPerSlice, { 'slice-01': 1 });
-  assert.equal(result.operations.total, 10);
+  assert.equal(result.operations.total, 9);
+  assert.deepEqual((await readJson(journal)).events.slice(0, 3).map((entry) => entry.operation), [
+    'SPEC_INIT', 'SPEC_READINESS', 'PLAN',
+  ]);
   assert.equal(result.operations.executeCalls, 1);
   assert.equal(result.operations.validateCalls, 1);
   assert.deepEqual(result.modelUse.profileMismatches.map((entry) => entry.operation), ['PLAN']);
@@ -524,22 +527,29 @@ test('B06 — finalize collects raw facts and enforces official terminal semanti
 
   const missingReadiness = path.join(root, 'missing-readiness.json');
   await initJournal(missingReadiness);
-  await completeJournal(missingReadiness, { includeInitialReadiness: false, includeTerminalReadiness: false });
+  await completeJournal(missingReadiness, { includeInitialReadiness: false });
   const missingReadinessOutput = path.join(root, 'missing-readiness-result.json');
   assert.equal(finalize(missingReadiness, missingReadinessOutput).status, 1);
   assert.equal((await readJson(missingReadinessOutput)).status, 'FAIL');
 
-  const earlyReadiness = path.join(root, 'early-readiness-only.json');
-  await initJournal(earlyReadiness);
-  await completeJournal(earlyReadiness, { includeTerminalReadiness: false });
-  const earlyReadinessOutput = path.join(root, 'early-readiness-only-result.json');
-  assert.equal(finalize(earlyReadiness, earlyReadinessOutput).status, 1);
-  assert.equal((await readJson(earlyReadinessOutput)).status, 'FAIL');
+  const lateReadiness = path.join(root, 'late-readiness.json');
+  await initJournal(lateReadiness);
+  await completeJournal(lateReadiness, { includeInitialReadiness: false, lateReadiness: true });
+  const lateReadinessOutput = path.join(root, 'late-readiness-result.json');
+  assert.equal(finalize(lateReadiness, lateReadinessOutput).status, 1);
+  assert.equal((await readJson(lateReadinessOutput)).status, 'FAIL');
 
-  for (const [name, terminalReadinessState] of [['missing-global-state', null], ['wrong-global-state', 'READY']]) {
+  const duplicateReadiness = path.join(root, 'duplicate-readiness.json');
+  await initJournal(duplicateReadiness);
+  await completeJournal(duplicateReadiness, { lateReadiness: true });
+  const duplicateReadinessOutput = path.join(root, 'duplicate-readiness-result.json');
+  assert.equal(finalize(duplicateReadiness, duplicateReadinessOutput).status, 1);
+  assert.equal((await readJson(duplicateReadinessOutput)).status, 'FAIL');
+
+  for (const [name, initialReadinessState] of [['missing-global-state', null], ['wrong-global-state', 'READY']]) {
     const readinessJournal = path.join(root, `${name}.json`);
     await initJournal(readinessJournal);
-    await completeJournal(readinessJournal, { terminalReadinessState });
+    await completeJournal(readinessJournal, { initialReadinessState });
     const readinessOutput = path.join(root, `${name}-result.json`);
     assert.equal(finalize(readinessJournal, readinessOutput).status, 1);
     assert.equal((await readJson(readinessOutput)).status, 'FAIL');

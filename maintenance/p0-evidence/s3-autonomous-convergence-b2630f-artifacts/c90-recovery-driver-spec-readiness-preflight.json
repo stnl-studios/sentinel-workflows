@@ -1,0 +1,43 @@
+{
+  "id": "C90",
+  "title": "auxiliary recovery driver applied execution preflight to SPEC_READINESS",
+  "category": "DRIVER_ORCHESTRATION",
+  "case": "A",
+  "operation": "SPEC_READINESS",
+  "slice": null,
+  "symptom": "The auxiliary continuation script marked SPEC_READINESS BLOCKED with OFFICIAL_PREFLIGHT_BLOCKED and recorded a NOT_RUN journal event even though official execution state was already COMPLETE.",
+  "officialState": "COMPLETE",
+  "evidence": {
+    "recoveryScript": "/tmp/sentinel-recover-a.mjs",
+    "operationEvidence": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-functional-convergence-CDtFM0/case-a/operations/13-spec_readiness.json",
+    "observed": "harness=NOT_RUN; preflightExecutionOperation was incorrectly attempted for a SPEC_* lifecycle operation; no model call occurred",
+    "finalizer": "No raw result was produced because the auxiliary command path was invalid"
+  },
+  "rootCause": "The temporary recovery driver omitted the official driver's guard that execution preflight applies only to non-SPEC operations. It treated SPEC_READINESS as an execution operation and persisted a driver-owned journal event for a call that never reached the harness.",
+  "semanticOrMechanical": "mechanical driver orchestration",
+  "responsibleBoundary": "/tmp/sentinel-recover-a.mjs auxiliary continuation only; repository production driver was not changed",
+  "correction": "Correct the auxiliary driver to skip execution preflight for every SPEC_* operation, preserve this workspace as diagnostic evidence, and do not use its journal as final convergence evidence.",
+  "whyCodeVsPrompt": "This is a test-driver condition, not a workflow authority or model semantic issue. The repository production pilot already contains the correct SPEC_* guard; no repository source or validator was changed.",
+  "filesChanged": [
+    "maintenance/p0-evidence/s3-autonomous-convergence-b2630f-artifacts/c90-recovery-driver-spec-readiness-preflight.json"
+  ],
+  "regression": {
+    "test": "Existing benchmark production-pilot coverage for lifecycle operations and preflight routing",
+    "result": "repository production driver unchanged; auxiliary script correction pending before any continuation"
+  },
+  "localValidation": "No repository source edit; C87 local suite remained PASS",
+  "liveReplay": "auxiliary continuation must be restarted from a clean fresh workspace for final evidence",
+  "result": "diagnostic only; excluded from final convergence",
+  "workflowProgress": "A reached COMPLETE before the driver-only mistake; prior slice validations passed via legal recovery.",
+  "liveCalls": [
+    {
+      "sequence": 13,
+      "case": "A",
+      "operation": "SPEC_READINESS",
+      "model": "GPT-5.6-Luna",
+      "effort": "high",
+      "purpose": "none; call was not dispatched because the auxiliary driver preflighted illegally",
+      "outcome": "BLOCKED by auxiliary driver before model call; harness NOT_RUN"
+    }
+  ]
+}

@@ -1,0 +1,47 @@
+{
+  "issue": "C68",
+  "category": "MECHANICAL_SERIALIZATION",
+  "case": "C",
+  "operation": "VALIDATE_SLICE",
+  "slice": "slice-01",
+  "symptom": "Fresh Case C reached EXECUTE_SLICE PASS and IMPLEMENTED_AWAITING_VALIDATION, then VALIDATE_SLICE persisted a runner delegation blocker because the semantic response used a localized field label instead of the canonical runner label.",
+  "officialStateBefore": "IMPLEMENTED_AWAITING_VALIDATION",
+  "officialStateAfter": "RUNNER_RESULT_BLOCKED",
+  "officialOutcome": "BLOCKED / OFFICIAL_RUNNER_RESULT_BLOCKED",
+  "evidence": {
+    "replayRoot": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-c32-case-c-eHQ9Rl",
+    "operationArtifact": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-c32-case-c-eHQ9Rl/case-c/operations/07-validate_slice.json",
+    "producerModel": "GPT-5.6-Luna",
+    "reasoningEffort": "xhigh",
+    "profile": "production-v2",
+    "profileMismatches": [],
+    "outerRetry": 0,
+    "harnessStatus": "HARNESS_COMPLETED",
+    "commandExitCodes": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 1],
+    "semanticResponseIssue": "Escopo verificado was emitted instead of canonical Verified scope",
+    "blocker": "malformed-output",
+    "findings": "none",
+    "mandatoryRecovery": {
+      "operation": "VALIDATE_SLICE",
+      "slice": "slice-01",
+      "owner": "delegation-blocker",
+      "sameOperationResumeRequired": true
+    },
+    "taskMetadata": {
+      "tasks.md": {"type": "file", "nlink": 1, "size": 2261, "mode": 33188},
+      "tasks/slice-01.md": {"type": "file", "nlink": 1, "size": 4468, "mode": 33188},
+      "tasks/slice-02.md": {"type": "file", "nlink": 1, "size": 2275, "mode": 33188},
+      "tasks/slice-03.md": {"type": "file", "nlink": 1, "size": 2716, "mode": 33188}
+    }
+  },
+  "rootCause": "The live validation runner still owned a mechanically exact response schema and localized one canonical field label. Strict serializer validation rejected the response before a validation attempt or finding disposition could be persisted.",
+  "semanticOrMechanical": "mechanical",
+  "responsibleBoundary": "validation runner semantic-response serialization boundary",
+  "correction": "Use the existing deterministic runner serializer/strict validator boundary to canonicalize only the mechanical response envelope before candidate validation, while preserving the model's semantic commands, scope, findings, and conclusions. Continue through the official same-operation recovery target.",
+  "whyCodeVsPrompt": "The label, field order, scalar shape, delimiters, and exact schema are serialization invariants already guarded by strict validation; another prose reminder would leave the recurrent mechanical choice with the model.",
+  "authorityImpact": "None. The validator remained strict, no validation attempt was published, history was not rewritten, no findings were invented, and outer retry stayed zero.",
+  "noSilentRepair": true,
+  "regression": "Add behavior-level coverage that canonical runner serialization accepts semantically equivalent localized/variant input only through the pre-candidate serializer, preserves semantic fields, rejects ambiguous or missing semantic values, and leaves strict validator rejection intact for malformed final output.",
+  "liveReplay": "C68",
+  "result": "BLOCKED_RECOVERY_REQUIRED"
+}

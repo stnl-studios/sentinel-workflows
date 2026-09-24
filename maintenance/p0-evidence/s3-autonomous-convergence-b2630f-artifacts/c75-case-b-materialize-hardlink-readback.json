@@ -1,0 +1,21 @@
+{
+  "issue": "C75",
+  "category": ["PRODUCER_CONTRACT", "MECHANICAL_SERIALIZATION", "VALIDATION_OWNERSHIP"],
+  "case": "B",
+  "operation": "MATERIALIZE_TASKS",
+  "officialState": "PLANNED_READY",
+  "result": "OFFICIAL_EXECUTION_READBACK_BLOCKED",
+  "diagnostic": "execution tasks.md must be a single-link real file",
+  "liveTask": "/private/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-benchmark-session-wb73Uu/workspaces/case-b/specs/benchmark-case-b/execution/tasks.md",
+  "candidateTask": "/private/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-benchmark-session-wb73Uu/runner-tmp/stnl-materialize-candidate-SEsqUS/tasks.md",
+  "lstat": {
+    "liveNlink": 2,
+    "candidateNlink": 2,
+    "sameInode": true,
+    "liveIsRegularFile": true
+  },
+  "rootCause": "The live materializer publication used a hard link between the candidate and live tasks.md, violating strict single-link readback even though candidate validation passed.",
+  "semanticOrMechanical": "mechanical",
+  "correctionBoundary": "skills/workflows/stnl-task-materializer/runtime/publish-task-candidate.mjs",
+  "authorityPreserved": ["candidate validation remains strict", "official readback remains strict", "no post-rejection repair"]
+}

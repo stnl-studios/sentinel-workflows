@@ -1,0 +1,26 @@
+{
+  "issue": "C91",
+  "category": "PRODUCER_CONTRACT",
+  "case": "A",
+  "operation": "EXECUTE_SLICE",
+  "slice": "slice-02",
+  "symptom": "The fresh production-v2 execution returned BLOCKED after the semantic executor reported malformed output and a prior-slice ownership overlap; no execution record was published and official state remained EXECUTION_STARTED.",
+  "officialState": "EXECUTION_STARTED",
+  "evidence": {
+    "operation": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-functional-convergence-2Z33Ew/case-a/operations/09-execute_slice.json",
+    "sessionWorkspace": "/private/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-benchmark-session-Y64P3R/workspaces/case-a",
+    "freshSummary": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-functional-convergence-2Z33Ew/fresh-convergence-summary.json"
+  },
+  "rootCause": "The slice-02 plan selected test/cli.test.mjs, which was already owned by the completed slice-01 validation base. The live executor detected the overlap but returned a malformed semantic BLOCKED object and did not persist a canonical auxiliary record, so the official state did not transition.",
+  "semanticOrMechanical": "semantic producer contract and recovery orchestration",
+  "responsibleBoundary": "stnl-slice-executor semantic response plus the official EXECUTE_SLICE recovery boundary",
+  "correction": "No repository functional edit yet. Preserve strict candidate validation and continue only through the legal EXECUTE_SLICE handoff while determining whether the overlap is a valid regression ownership transfer or requires a planning correction.",
+  "whyNotPromptOnly": "The overlap decision is semantic and must remain model-owned; the malformed response is already fail-closed by the strict producer. The immediate next action is an official legal recovery, not a hidden repair or validator relaxation.",
+  "regression": "Pending focused regression after causal disposition; current local producer and candidate tests remain green.",
+  "liveReplay": "Fresh A reached sequence 9 after C87; sequence 7 RUNNER_RESULT_BLOCKED recovered legally at sequence 8, then sequence 9 exposed C91. A final status BLOCKED, B/C not run.",
+  "result": "OPEN",
+  "workflowProgress": "C28 remained absent; A advanced through PLAN, REVIEW_PLAN, MATERIALIZE_TASKS, REVIEW_TASKS, EXECUTE_SLICE slice-01 and VALIDATE_SLICE slice-01 before C91.",
+  "liveCalls": [
+    { "sequence": 9, "model": "GPT-5.6-Luna", "effort": "high", "outcome": "BLOCKED", "outerRetry": 0 }
+  ]
+}

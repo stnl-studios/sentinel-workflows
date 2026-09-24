@@ -1,0 +1,36 @@
+{
+  "category": "AUXILIARY_RUNNER",
+  "case": "A",
+  "operation": "EXECUTE_SLICE",
+  "slice": "slice-01",
+  "symptom": "Fresh Case A sequences 6–8 could not initialize the delegated runner. Sequence 6 reported an unsupported --ask-for-approval argument on one start and app-server initialization Operation not permitted on the other; sequences 7 and 8 each reported Operation not permitted on both independent starts. No verification command ran.",
+  "officialState": "RUNNER_INITIALIZATION_BLOCKED",
+  "evidence": {
+    "preflightState": "MATERIALIZED_PRISTINE",
+    "preflightFingerprint": "3336e6844d9dafd70ea9917d9c109aef82fa6c92c7d72063235495d40c2af3c4",
+    "runner": "GPT-5.6-Luna/high; three official EXECUTE_SLICE events each returned HARNESS_COMPLETED with retryCount=0. Across six independent runner starts, five failed in-process app-server initialization with Operation not permitted and one was rejected for unsupported --ask-for-approval. No runner session or verification command started.",
+    "candidateAndReadback": "For each event, candidate validation, journal-event, and official readback succeeded. After sequences 6 and 7 the official readback required same-operation EXECUTE_SLICE/slice-01 recovery. Sequence 8 remained RUNNER_INITIALIZATION_BLOCKED; the benchmark's maxExecuteSliceAttemptsPerSlice=3 budget was exhausted and finalizer returned BLOCKED.",
+    "candidateSnapshot": [
+      "src/todo-service.mjs modified",
+      "test/todo-service.test.mjs modified",
+      "task artifact slice-01 still pending"
+    ],
+    "priorRecurrence": "Case C sequence 14 (C117) and earlier Case A evidence C105 record the same app-server Operation not permitted initialization family; Case C sequence 15 recovered through the official same-operation handoff. This fresh A did not recover within its official three-event operation budget."
+  },
+  "rootCause": "The dominant repeated failure is delegated runner startup at the in-process app-server boundary (`Operation not permitted`), before runner reasoning or checks. One separate model-generated CLI attempt placed an unsupported --ask-for-approval argument. Evidence does not identify the underlying OS permission source; the Case C same-boundary recovery proves the path can succeed intermittently, not that the seed or benchmark plan caused this A failure.",
+  "semanticOrMechanical": "mechanical transport/initialization",
+  "responsibleBoundary": "Codex delegated runner startup before slice auxiliary checks",
+  "correction": "No source, seed, authority, or validator change. All same-operation recovery events allowed by the fresh A benchmark budget were consumed. Preserve this blocked run; any further final proof must use a new fresh managed A workspace and the unchanged production-v2 profile. Do not bypass the runner or count the task as complete.",
+  "whyCodeVsPrompt": "The official skill already requires a new independent session and allows one technical start retry per logical invocation; the driver honored persisted same-operation recovery twice. The one unsupported flag is an isolated model-generated command-shape error, while five starts failed before command execution with an OS/app-server permission error. No deterministic in-repository fix can be justified from these artifacts without changing runner ownership or bypassing the configured independent check.",
+  "filesChanged": [],
+  "regression": "Live evidence confirms no verification command ran, the strict candidate validator accepted only the canonical initialization blocker, and official readback exposed the exact recovery operation/slice.",
+  "localValidation": "No repository source edit; official candidate validation, journal write, and readback passed.",
+  "liveReplay": "Sequences 6, 7, and 8 each BLOCKED with RUNNER_INITIALIZATION_BLOCKED. Sequences 7 and 8 were official same-operation recovery events. The finalizer preserved the managed workspace and returned status BLOCKED, operations=8, recoveryCount=2, profileMismatches=[], outerRetry=0.",
+  "result": "BLOCKED_NO_RUNNER_INITIALIZATION",
+  "workflowProgress": "Fresh Case A reached 5/13 unique milestones; 3 slices and 3 tasks exist, none is terminal, and slice-01 remains pending. Case A finalizer BLOCKED; B and C were not run in this A-only replay. Outer retry 0.",
+  "liveCalls": [
+    "GPT-5.6-Luna/high sequence 6",
+    "GPT-5.6-Luna/high sequence 7 (official same-operation recovery)",
+    "GPT-5.6-Luna/high sequence 8 (official same-operation recovery)"
+  ]
+}

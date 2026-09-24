@@ -1,0 +1,27 @@
+{
+  "issue": "C65",
+  "category": "MECHANICAL_SERIALIZATION",
+  "case": "C",
+  "operation": "MATERIALIZE_TASKS",
+  "slice": null,
+  "symptom": "The live materializer completed model-side work but returned BLOCKED because the task-path serializer was invoked without the correct isolated candidate execution root; no candidate was published.",
+  "officialState": "PLANNED_READY",
+  "officialOutcome": "BLOCKED / OFFICIAL_TRANSITION_NOT_OBSERVED",
+  "evidence": {
+    "replayRoot": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-c32-case-c-IH8DP5",
+    "operationArtifact": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-c32-case-c-IH8DP5/case-c/operations/04-materialize_tasks.json",
+    "producerModel": "GPT-5.6-Terra",
+    "reasoningEffort": "high",
+    "profile": "production-v2",
+    "profileMismatches": [],
+    "outerRetry": 0,
+    "harnessStatus": "HARNESS_COMPLETED",
+    "commandExitCodes": "13 commands; 12 exited 0 and one exited 1",
+    "finalAssistantMessage": "BLOCKED — o serializer falhou antes da validação candidata, pois não recebeu a raiz candidata correta. Nenhum artifact live foi publicado ou alterado; as árvores de staging foram removidas."
+  },
+  "rootCause": "Candidate staging and candidate-root transport remained model-authored mechanical work. The producer had a strict serializer, but no deterministic boundary allocated and returned the isolated complete candidate root, so the live invocation supplied an invalid or unavailable root to serialize-task-paths.mjs.",
+  "authorityImpact": "None. Official state remained PLANNED_READY, live artifacts were not published, and candidate validation was not relaxed.",
+  "correction": "Introduce a small deterministic materializer candidate-preparation boundary that resolves the official execution workspace, creates an external isolated candidate, copies the complete execution tree, and returns the exact candidate root before model-authored task content is written. The existing serializer and candidate validator remain strict.",
+  "noSilentRepair": true,
+  "regression": "Add a behavior-level test proving the prepared candidate is external and isolated, contains the complete execution tree, preserves physical plan identity, and blocks invalid or non-canonical SPEC_PATH input."
+}

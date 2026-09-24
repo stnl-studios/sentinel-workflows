@@ -1,0 +1,13 @@
+{
+  "issue": "C41",
+  "category": "PRODUCER_CONTRACT",
+  "case": "C",
+  "operation": "VALIDATE_SLICE",
+  "slice": "slice-03",
+  "officialState": "RUNNER_RESULT_BLOCKED",
+  "symptom": "The validation runner returned a PASS-shaped result without the required deterministic --record block and complete formal candidate manifest.",
+  "rootCause": "The validation producer was still allowed to treat the formal record and manifest as prose output even though deterministic serializers existed.",
+  "outerRetry": 0,
+  "output": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-c32-case-c-EXqYdx/case-c/operations/11-validate_slice.json",
+  "correction": "The validation skill, launcher prompts, runner adapters, contract checker, and serializer tests now require --manifest and byte-identical copying of deterministic record/manifest output before candidate validation or PASS."
+}

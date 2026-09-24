@@ -40,6 +40,7 @@ export const LIFECYCLE_DISTRIBUTION_POLICY = Object.freeze({
     "create-readiness-attestation.mjs",
     "build-closed-spec.mjs",
     "publish-spec-lifecycle.mjs",
+    "prepare-init-candidate.mjs",
   ],
   forbiddenOperationalPatterns: [
     [/(?:^|[^A-Za-z])python3?(?:[^A-Za-z]|$)/iu, "Python runtime reference"],

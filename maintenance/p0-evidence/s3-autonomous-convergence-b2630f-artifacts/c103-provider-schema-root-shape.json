@@ -1,0 +1,41 @@
+{
+  "category": "PRODUCER_CONTRACT",
+  "case": "A",
+  "operation": "EXECUTE_SLICE",
+  "slice": "slice-01",
+  "symptom": "After C102, fresh Case A completed SPEC_INIT, PLAN, REVIEW_PLAN, MATERIALIZE_TASKS, and REVIEW_TASKS, then the first EXECUTE_SLICE call failed in 2393ms before any command execution or evidence publication. Official state remained MATERIALIZED_PRISTINE and the harness reported MODEL_TURN_FAILED with an empty final assistant message.",
+  "officialState": "MATERIALIZED_PRISTINE",
+  "evidence": {
+    "operationArtifact": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-functional-convergence-XWWrmD/case-a/operations/06-execute_slice.json",
+    "preservedFinal": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-functional-convergence-XWWrmD/case-a-production-v2.json",
+    "harnessStatus": "MODEL_TURN_FAILED",
+    "sessionStarted": true,
+    "turnStarted": true,
+    "commandExitCodes": [],
+    "finalAssistantMessage": "",
+    "providerErrorCategory": null,
+    "firstProductionUseOfOutputSchema": true,
+    "previousSchemaRoot": "oneOf[EXECUTE_SLICE, APPLY_FINDINGS, VALIDATE_SLICE]",
+    "profile": "production-v2",
+    "outerRetry": 0
+  },
+  "rootCause": "The production harness began passing runner-semantic-response.schema.json through Codex --output-schema. That schema used a top-level oneOf whose branches were concrete objects. The official local validator accepted the logical union, but the provider structured-output boundary failed immediately on the first live use, before the runner could produce a message. This root-shape incompatibility is established by the change boundary and failure signature; no semantic runner work or workspace command ran.",
+  "semanticOrMechanical": "mechanical",
+  "responsibleBoundary": "Production harness structured-response schema selection, before provider invocation",
+  "correction": "Keep the closed union schema for local logical-shape regression, and add one concrete closed object schema for each structured slice operation. The production pilot now selects the operation-specific schema for both the top-level harness request and the nested runner prompt. Each schema has a concrete object root, exact required keys, additionalProperties=false, and the same command tuple contract; no response is repaired after rejection.",
+  "whyCodeVsPrompt": "The provider root shape, operation-to-schema mapping, required key set, and command tuple schema are serialization mechanics. Prompt prose cannot change a provider's root-schema acceptance rules, and the failure occurred before model semantic output existed. The runner semantic values remain model-owned and all downstream capture, serializer, candidate validation, and readback gates remain strict.",
+  "filesChanged": [
+    "skills/workflows/stnl-slice-executor/runtime/runner-execute-response.schema.json",
+    "skills/workflows/stnl-slice-executor/runtime/runner-apply-findings-response.schema.json",
+    "skills/workflows/stnl-slice-executor/runtime/runner-validate-response.schema.json",
+    "benchmarks/sentinel-todo/runtime/benchmark-production-pilot.mjs",
+    "scripts/test-benchmark-production-pilot.mjs",
+    "scripts/test-execution-contract.mjs"
+  ],
+  "regression": "Local structural regression compares every provider schema with its corresponding logical operation branch, requires a concrete closed object root, exact required/property key equality, and exact command object shape. Pilot regression verifies EXECUTE_SLICE, APPLY_FINDINGS, and VALIDATE_SLICE each receive their own canonical schema and non-slice operations receive none.",
+  "localValidation": "Execution contract 113/113, production-pilot 25/25, validation-runner 113/113, launcher 124/124, agent-harness 27/27, rehearsal/benchmark 19/19, benchmark verify, repository contract, and git diff --check pass.",
+  "liveReplay": "Pending. The C102 fresh A replay stopped at this infrastructure boundary and is diagnostic only; it cannot count toward final convergence because the schema boundary changed afterward.",
+  "result": "CONFIRMED_BLOCKER_PENDING_FRESH_REPLAY",
+  "workflowProgress": "Fresh A reached 5/11 official milestones before EXECUTE_SLICE; 6 milestones remained, with 2 slices and 4 tasks materialized. The failed call did not advance the official state.",
+  "liveCalls": "Fresh A sequence 06 used GPT-5.6-Luna/high after sequences 01-05 used the production-v2 dispatches Sol/high, Terra/high, Luna/high, Terra/high, and Luna/high. No retry, fallback, or hidden repair was used."
+}

@@ -1,0 +1,31 @@
+{
+  "issue": "C132",
+  "category": "RUNTIME_AUTHORITY",
+  "case": "all",
+  "operation": "VALIDATE_SLICE candidate preparation",
+  "slice": "not applicable",
+  "symptom": "The full repository validation rejected the quality-manager skill as not self-contained because its candidate producer imported a serializer from the executor skill.",
+  "officialState": "No live benchmark state; local distribution validation blocked before any new model call.",
+  "evidence": {
+    "diagnostic": "SELF_CONTAINMENT_ERROR: import escapes the distributed skill in runtime/prepare-validation-candidate.mjs: ../../stnl-slice-executor/runtime/serialize-runner-evidence.mjs",
+    "validator": "bash scripts/validate.sh --no-smoke",
+    "invariant": "Each distributed skill must remain self-contained; the serialized runner-evidence format must remain byte-identical across its packaged copies."
+  },
+  "rootCause": "The validation candidate producer in stnl-slice-quality-manager imported a helper outside its distributable skill directory, violating the repository's isolation contract.",
+  "semanticOrMechanical": "mechanical distribution/package boundary; serializer semantics are unchanged",
+  "responsibleBoundary": "Package the existing canonical serializer as a byte-identical local copy within the quality-manager skill.",
+  "correction": "Copied serialize-runner-evidence.mjs byte-for-byte into stnl-slice-quality-manager/runtime and changed the producer import to that local path. No serializer logic or authority was duplicated.",
+  "whyCodeVsPrompt": "This is a module/package resolution invariant enforced by the repository validator, not model-authored semantics; prose cannot make an escaping import distributable.",
+  "filesChanged": [
+    "skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs",
+    "skills/workflows/stnl-slice-quality-manager/runtime/serialize-runner-evidence.mjs",
+    "skills/workflows/stnl-slice-quality-manager/runtime/prepare-validation-candidate.mjs",
+    "scripts/test-execution-contract.mjs"
+  ],
+  "regression": "scripts/test-execution-contract.mjs asserts byte identity between the canonical executor serializer and its distributable quality-manager copy; existing candidate behavior tests continue to cover canonical production and strict rejection without repair.",
+  "localValidation": "PASS: node --test scripts/test-execution-contract.mjs (116/116); bash scripts/validate.sh --no-smoke; node scripts/check-contracts.mjs repository --root .; git diff --check (re-run pending after this ledger update).",
+  "liveReplay": "No new model calls. Fresh Case C remains pending after local validation.",
+  "result": "FIXED_LOCALLY_PENDING_FRESH_CASE_C",
+  "workflowProgress": "Self-containment validation now passes; corrected fresh Case C remains at 0/13 operations and 0/3 formally passing slices.",
+  "liveCalls": 0
+}

@@ -1,0 +1,67 @@
+{
+  "issue": "C137",
+  "caseId": "C",
+  "executionKind": "FUNCTIONAL_CASE_REPLAY",
+  "sentinelSha": "b2630fac3529f72146d050ce662ada3b145b4280",
+  "status": "PASS",
+  "profileId": "production-v2",
+  "preflight": "PASS",
+  "officialFinalState": "COMPLETE",
+  "slices": {
+    "slice-01": "PASS",
+    "slice-02": "PASS",
+    "slice-03": "PASS"
+  },
+  "decomposition": {
+    "sliceCount": 3,
+    "taskCount": 6,
+    "tasksPerSlice": 2
+  },
+  "operations": {
+    "total": 13,
+    "executeCalls": 3,
+    "validateCalls": 3,
+    "applyFindingsCalls": 0,
+    "replans": 0,
+    "findingsCycles": 0,
+    "mechanicalRejections": 0,
+    "outerRetry": 0,
+    "controllerRecoveryCount": 0,
+    "durationsMs": [177114, 83447, 298311, 327303, 159051, 242509, 489071, 274998, 451423, 239217, 376030, 323764, 122985],
+    "durationTotalMs": 3565223,
+    "durationAverageMs": 274248
+  },
+  "modelCalls": {
+    "total": 19,
+    "primaryOperations": {
+      "GPT-5.6-Sol/high": 3,
+      "GPT-5.6-Terra/high": 1,
+      "GPT-5.6-Luna/xhigh": 9
+    },
+    "configuredRunner": {
+      "GPT-5.6-Luna/medium": 6,
+      "retryCount": 0
+    },
+    "profileMismatches": []
+  },
+  "finalTests": {
+    "command": "node --test",
+    "exitCode": 0,
+    "passed": true
+  },
+  "sourceCheckout": {
+    "preserved": true,
+    "clean": false,
+    "stateSha256": "d955a786aa21ad59d800508cb4cd5d3b81d027823b5fe628d0498648977b152c"
+  },
+  "result": {
+    "rawSha256": "c093602424537ba63fd6c25a9fcebbbbe6ce1c2ec14eda3f8000e2a412fc817f",
+    "cleanup": "PASS",
+    "officialPilotExecuted": false,
+    "baselineEligible": false
+  },
+  "score": {
+    "numericScoreEmitted": false,
+    "note": "The production-v2 case result reports PASS and workflow metrics; scalar score and token telemetry are not emitted."
+  }
+}

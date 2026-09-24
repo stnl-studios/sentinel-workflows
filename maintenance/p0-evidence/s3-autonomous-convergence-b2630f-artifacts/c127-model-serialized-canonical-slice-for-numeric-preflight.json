@@ -1,0 +1,48 @@
+{
+  "issue": "C127",
+  "category": "MECHANICAL_SERIALIZATION",
+  "case": "C",
+  "operation": "EXECUTE_SLICE",
+  "slice": "slice-01",
+  "symptom": "During mandatory same-operation recovery, the configured runner stopped before checks because its official preflight received the canonical label where the CLI accepts only an unsigned decimal slice input.",
+  "officialState": "RUNNER_INITIALIZATION_BLOCKED",
+  "evidence": {
+    "freshReplayRoot": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-functional-convergence-mUbmjF",
+    "sequences": [7, 8],
+    "configuredRunnerReceipts": "Both sequences produced two RUNNER_RESPONSE_CAPTURED receipts; the model's semantic response was BLOCKED before any verification command because preflight did not return authority.",
+    "runnerCommand": "node \"<repository>/skills/workflows/stnl-slice-executor/runtime/validate-execution-state.mjs\" \"<managed SPEC_PATH>\" EXECUTE_SLICE slice-01",
+    "reproductionCanonicalLabel": {
+      "exitCode": 1,
+      "diagnostic": "EXECUTE_SLICE is not legal from RUNNER_INITIALIZATION_BLOCKED; legal next operation is EXECUTE_SLICE for slice-01",
+      "recoveryTarget": {
+        "operation": "EXECUTE_SLICE",
+        "slice": "slice-01",
+        "owner": "delegation-blocker",
+        "sameOperationResumeRequired": true
+      }
+    },
+    "reproductionNumericInput": {
+      "commandInput": "EXECUTE_SLICE 1",
+      "exitCode": 0,
+      "diagnostic": "PASS: EXECUTE_SLICE preflight state=RUNNER_INITIALIZATION_BLOCKED slice=slice-01 authority=sha256:52942b58db225e113c58613646c51415297a46170ddf6904bc653b1513d0d9f2",
+      "mandatoryRecovery": {
+        "operation": "EXECUTE_SLICE",
+        "slice": "slice-01",
+        "owner": "delegation-blocker",
+        "sameOperationResumeRequired": true
+      }
+    },
+    "priorNormalStateEvidence": "The same configured runner returned TESTS_PASS and the correct authority in sequence 6 from MATERIALIZED_PRISTINE; the error appears on the recovery path when the runner model constructs the preflight command from the canonical recovery slice label."
+  },
+  "rootCause": "The shared official preflight API intentionally accepts an unsigned decimal slice argument and normalizes it to slice-NN. The parent driver already converts canonical labels with canonicalSliceInput, but the auxiliary model re-created the preflight command using slice-01 during same-operation recovery. This caused the strict official gate to report no authority before any check could run.",
+  "semanticOrMechanical": "mechanical",
+  "responsibleBoundary": "production runner launcher handoff of the already-authorized official preflight result to the configured independent runner",
+  "correction": "Replace model-generated duplicate preflight invocation with the exact official result computed by the production driver using the existing canonicalSliceInput and preflightExecutionOperation exports. The driver will deliver the result as trusted launcher-owned payload; the runner will compare its operation, slice, SPEC_PATH, and sha256 authority with the request and selected artifacts, then resume at the logical runner invocation when mandatoryRecovery matches. The strict execution runtime remains unchanged.",
+  "whyCodeInsteadOfPrompt": "The model selected the canonical label required by the runner payload, but the CLI has a different numeric argument representation. This deterministic conversion already exists in the driver; another instruction would leave the LLM responsible for serializing a known mechanical value.",
+  "regression": {
+    "plannedBehavior": "A synthetic mandatory-recovery result from the official preflight is supplied byte-exactly to the configured runner without a second model-authored CLI invocation; mismatched operation, slice, SPEC_PATH, authority, or recovery target is rejected before runner start.",
+    "runtimeInvariant": "The numeric official preflight accepts only the exact legal same-operation recovery; the canonical label remains valid in the workflow payload and runner interface."
+  },
+  "liveReplay": "Local regressions pass. In fresh Case C sequences 7 and 8, the production-v2 driver supplied numeric inputSlice=1 and the exact mandatory recovery preflight. The runner callback then failed earlier because C128 omitted the separate top-level SPEC_PATH field; no runner receipt was created, so those events do not prove the auxiliary runner consumed C127's trusted preflight.",
+  "result": "CAUSE_PROVEN; DETERMINISTIC_FIX_AND_LOCAL_REGRESSION_PASS; LIVE_RUNNER_CONSUMPTION_PENDING_AFTER_C128"
+}

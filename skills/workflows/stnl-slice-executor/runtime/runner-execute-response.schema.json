@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sentinel.local/schemas/stnl-runner-execute-response-v1.json",
+  "title": "Sentinel EXECUTE_SLICE semantic response v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "status", "automaticCheckRound", "head", "discoverySources", "discoveryActions",
+    "verificationTypesConsidered", "nonApplicabilityRationale", "noVerificationCommandConfirmation",
+    "commands", "resultOfEachCommandAndExitCode", "selectedChecks", "selectionRationale", "coverage",
+    "failures", "priorRoundFailure", "correctionApplied", "inSliceRationale", "evidenceOrFailureSummary",
+    "affectedFilesOrBehaviors", "blockers", "unexpectedWorkspaceEffects", "persistenceSummary"
+  ],
+  "properties": {
+    "status": { "enum": ["TESTS_PASS", "TESTS_FAIL", "TESTS_NOT_APPLICABLE", "BLOCKED"] },
+    "automaticCheckRound": { "enum": ["1/3", "2/3", "3/3"] },
+    "head": { "type": "string" },
+    "discoverySources": { "type": "string" },
+    "discoveryActions": { "type": "string" },
+    "verificationTypesConsidered": { "type": "string" },
+    "nonApplicabilityRationale": { "type": "string" },
+    "noVerificationCommandConfirmation": { "type": "string" },
+    "commands": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["command", "exit"],
+        "properties": {
+          "command": { "type": "string" },
+          "exit": { "type": "integer" }
+        }
+      }
+    },
+    "resultOfEachCommandAndExitCode": { "type": "string" },
+    "selectedChecks": { "type": "string" },
+    "selectionRationale": { "type": "string" },
+    "coverage": { "type": "string" },
+    "failures": { "type": "string" },
+    "priorRoundFailure": { "type": "string" },
+    "correctionApplied": { "type": "string" },
+    "inSliceRationale": { "type": "string" },
+    "evidenceOrFailureSummary": { "type": "string" },
+    "affectedFilesOrBehaviors": { "type": "string" },
+    "blockers": { "type": "string" },
+    "unexpectedWorkspaceEffects": { "type": "string" },
+    "persistenceSummary": { "type": "string" }
+  }
+}

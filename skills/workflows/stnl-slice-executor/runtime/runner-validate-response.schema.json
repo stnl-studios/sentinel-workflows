@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sentinel.local/schemas/stnl-runner-validate-response-v1.json",
+  "title": "Sentinel VALIDATE_SLICE semantic response v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "status", "head", "commands", "evidence", "findingReferences", "findingDispositions",
+    "blockers", "unexpectedWorkspaceEffects", "persistenceSummary"
+  ],
+  "properties": {
+    "status": { "enum": ["PASS", "NEEDS_FIX", "BLOCKED"] },
+    "head": { "type": "string" },
+    "commands": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["command", "exit"],
+        "properties": {
+          "command": { "type": "string" },
+          "exit": { "type": "integer" }
+        }
+      }
+    },
+    "evidence": { "type": "string" },
+    "findingReferences": { "type": "string" },
+    "findingDispositions": { "type": "string" },
+    "blockers": { "type": "string" },
+    "unexpectedWorkspaceEffects": { "type": "string" },
+    "persistenceSummary": { "type": "string" }
+  }
+}

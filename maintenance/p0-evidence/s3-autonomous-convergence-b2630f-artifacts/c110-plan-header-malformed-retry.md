@@ -1,0 +1,21 @@
+# C110 — PLAN candidate had a malformed purpose header and was safely retryable
+
+- Category: PRODUCER_CONTRACT
+- Case: A
+- Operation: PLAN
+- Slice: none
+- Symptom: The Terra/high planner returned `BLOCKED` because the deterministic `prepare-plan-candidate.mjs` rejected a malformed `File Purpose Header` in the isolated plan candidate. No path serialization, candidate validation, publication, or retry was performed inside that model turn.
+- Official state: `EMPTY`; live execution artifacts remained absent and the only legal operation was `PLAN`. Outer retry remained `0`.
+- Evidence: `/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-functional-convergence-QXIAue/case-a/operations/02-plan.json`; fresh session workspace `/private/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-benchmark-session-A0UPdD/workspaces/case-a`.
+- Root cause: Model-authored candidate header syntax did not match either canonical draft/ready template variant. The deterministic prevalidation boundary correctly blocks malformed/conflicting markers and preserves live bytes.
+- Semantic or mechanical: Mechanical artifact-header serialization.
+- Responsible boundary: Planner model candidate → `prepare-plan-candidate.mjs` prevalidation, before path serialization and strict candidate validation.
+- Correction: Repeat only the legal `PLAN` operation in the preserved empty workspace. Do not repair the rejected candidate, edit live artifacts, or add another prose guard.
+- Why code vs prompt: The header is a canonical template token and the existing deterministic preparer already owns its exact serialization; the evidence does not justify relaxing it. A bounded model retry is sufficient because the live state is unchanged.
+- Files changed: None in the repository for this issue; replay evidence only.
+- Regression: Existing execution-contract and launcher-contract tests cover canonical header preparation, malformed/conflicting marker blocking, no live mutation, and idempotence.
+- Local validation: Focused execution `113/113`, launcher `124/124`, validation-runner `113/113`, production-pilot `25/25`, repository contract, `validate.sh --no-smoke`, and `git diff --check` were PASS before this replay.
+- Live replay: Fresh A sequence 2 used GPT-5.6-Terra/high and blocked before publication; the same workspace is being resumed at PLAN as sequence 3.
+- Result: No pipeline state was damaged; final proof remains open after the legal retry.
+- Workflow progress: `SPEC_INIT` PASS; PLAN pending retry; `0` slices/tasks materialized.
+- Live calls: Fresh A through sequence 2 used GPT-5.6-Sol/high 1 and GPT-5.6-Terra/high 1.

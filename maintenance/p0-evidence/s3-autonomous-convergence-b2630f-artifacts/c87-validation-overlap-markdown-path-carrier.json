@@ -1,0 +1,51 @@
+{
+  "id": "C87",
+  "title": "validation producer rejected Markdown-formatted overlap paths",
+  "category": "MECHANICAL_SERIALIZATION",
+  "case": "B",
+  "operation": "VALIDATE_SLICE",
+  "slice": "slice-03",
+  "symptom": "The official validation operation returned OFFICIAL_TRANSITION_NOT_OBSERVED with outer retry 0 before candidate validation or persistence.",
+  "officialState": "IMPLEMENTED_AWAITING_VALIDATION",
+  "evidence": {
+    "operationArtifact": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-functional-convergence-QpVYH7/case-b/operations/12-validate_slice.json",
+    "taskArtifact": "/private/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-benchmark-session-VxaogP/workspaces/case-b/specs/benchmark-case-b/execution/tasks/slice-03.md",
+    "persistedClaim": "- Paths: `../../../../test/todo-service.test.mjs`, `../../../../test/todo-store.test.mjs`",
+    "producerError": "Prior Validation Overlap path must be a normalized relative path",
+    "preflight": "VALIDATE_SLICE slice-03 was legal; no candidate mutation was persisted; outer retry remained 0",
+    "finalSemanticResponse": "status=BLOCKED; persistenceSummary reported that no Validation Attempt, Effective Validation Base, task-row update, or candidate publication was persisted"
+  },
+  "rootCause": "parseOverlapPathSection split the Paths value on comma-space and passed Markdown code spans, including backticks, directly to normalizedRelative. The path normalizer therefore saw a different string from the physical task-relative claim and rejected it before the validation bundle could be generated.",
+  "semanticOrMechanical": "mechanical",
+  "responsibleBoundary": "skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs, parseOverlapPathSection",
+  "correction": "The producer now accepts only an exact comma-separated list of raw relative claims or an exact comma-separated list of balanced Markdown path carriers, extracts the carrier values before strict normalizedRelative validation, rejects mixed/ambiguous carriers, and continues deriving physical targets and hashes through the existing validation producer.",
+  "whyCodeVsPrompt": "The model had already made the semantic overlap decision and persisted the correct physical claims. Removing Markdown presentation delimiters and validating the resulting path list is deterministic serialization; adding another prose warning would leave the recurring mechanical boundary model-owned.",
+  "filesChanged": [
+    "skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs",
+    "scripts/test-execution-contract.mjs",
+    "maintenance/p0-evidence/s3-autonomous-convergence-b2630f-artifacts/c87-validation-overlap-markdown-path-carrier.json"
+  ],
+  "regression": {
+    "test": "deterministic runner evidence serializer emits physical task-relative SHA-256 tuples",
+    "coverage": [
+      "balanced Markdown overlap path carriers produce the same physical task-relative bundle",
+      "mixed/ambiguous overlap path carriers are rejected without mutating the task",
+      "realpath identity and strict candidate validation remain covered by the existing producer/candidate assertions"
+    ]
+  },
+  "localValidation": "node --test scripts/test-execution-contract.mjs: PASS (108/108)",
+  "liveReplay": "pending fresh replay after this functional edit",
+  "result": "corrected locally; fresh replay required",
+  "workflowProgress": "Case A and Case C passed before this edit; Case B reached slice-03 validation and stopped at the producer boundary",
+  "liveCalls": [
+    {
+      "sequence": 12,
+      "case": "B",
+      "operation": "VALIDATE_SLICE",
+      "model": "GPT-5.6-Luna",
+      "effort": "xhigh",
+      "purpose": "formal validation of slice-03",
+      "outcome": "BLOCKED: OFFICIAL_TRANSITION_NOT_OBSERVED; producer rejected overlap path carrier"
+    }
+  ]
+}

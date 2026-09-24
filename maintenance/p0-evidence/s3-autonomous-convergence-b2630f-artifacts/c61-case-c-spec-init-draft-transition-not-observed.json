@@ -1,0 +1,32 @@
+{
+  "issue": "C61",
+  "category": "DRIVER_ORCHESTRATION",
+  "case": "C",
+  "operation": "SPEC_INIT",
+  "slice": null,
+  "replay": "fresh Case C after C60 contract contradiction correction",
+  "evidenceRoot": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-c32-case-c-9Lp3b3",
+  "operationArtifact": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-c32-case-c-9Lp3b3/case-c/operations/01-spec_init.json",
+  "officialState": "EMPTY",
+  "symptom": "The fresh SPEC_INIT harness completed and created a structurally valid SPEC, but the model returned lifecycle status draft. Official readback therefore remained lifecycle draft plus execution EMPTY, so the production driver correctly did not advance to PLAN and recorded OFFICIAL_TRANSITION_NOT_OBSERVED.",
+  "evidence": {
+    "harnessStatus": "HARNESS_COMPLETED",
+    "dispatch": { "model": "GPT-5.6-Sol", "effort": "high" },
+    "commandExitCodes": [0, 0, 0, 0, 0, 0, 0, 0, 0],
+    "finalAssistantMessage": "MODE=INIT concluded with status draft; feature_spec.md and shared requirements/acceptance artifacts were created; no later operation was started.",
+    "lifecycleStatus": "draft",
+    "executionState": "EMPTY",
+    "productionProfile": "production-v2",
+    "outerRetry": 0,
+    "profileMismatches": []
+  },
+  "rootCause": "A single live semantic producer response selected the allowed INIT draft outcome even though the benchmark Case C path requires a globally ready SPEC before PLAN. The skill permits draft when readiness is not justified, while the driver only advances an official INIT readback when lifecycle status is ready. The evidence does not establish a mechanical serialization defect or a repeated causal regression.",
+  "semanticOrMechanical": "semantic",
+  "responsibleBoundary": "SPEC_INIT lifecycle producer decision",
+  "correction": "No code correction was made: the official driver correctly preserved the draft and stopped rather than fabricating readiness or silently running a later operation. Re-run a fresh Case C under the same production-v2 profile to distinguish one-off model variability from a recurring semantic contract failure.",
+  "whyCodeVsPrompt": "Moving readiness selection into code would override lifecycle authority and invent a semantic decision. One draft response is insufficient evidence to weaken the lifecycle validator or add a deterministic status mutation.",
+  "strictBehavior": "No readiness was fabricated, no execution state was advanced, no retry was hidden, and no artifact was repaired.",
+  "liveCalls": 1,
+  "workflowProgress": ["SPEC_INIT created valid draft", "official transition not observed", "PLAN not started"],
+  "status": "replay-required"
+}

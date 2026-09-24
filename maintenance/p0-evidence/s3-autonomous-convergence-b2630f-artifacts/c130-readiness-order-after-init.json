@@ -1,0 +1,37 @@
+{
+  "issue": "C130",
+  "category": "DRIVER_ORCHESTRATION",
+  "case": "C",
+  "operation": "SPEC_INIT -> SPEC_READINESS -> PLAN; COMPLETE -> SPEC_CLOSE",
+  "symptom": "The preserved Case C journal recorded SPEC_INIT PASS/EMPTY at event 1 and PLAN at event 2, with no SPEC_READINESS before planning. The production driver instead routed COMPLETE to SPEC_READINESS, and the finalizer required that late event.",
+  "officialState": {
+    "caseCEvent1": { "operation": "SPEC_INIT", "result": "PASS", "resultingState": "EMPTY" },
+    "caseCEvent2": { "operation": "PLAN", "result": "PASS", "resultingState": "PLANNED_DRAFT" },
+    "readinessEventsInPreservedJournal": 0
+  },
+  "evidence": [
+    "maintenance/p0-evidence/s3-autonomous-convergence-a98754.md and its c01-c29 artifact directory are the preserved prior history.",
+    "skills/workflows/stnl-spec-lifecycle-manager/references/modes.md: READINESS is a read-only lifecycle mode; after active ready, lifecycle handoff returns OPERATION=PLAN.",
+    "skills/workflows/stnl-spec-lifecycle-manager/references/close-policy.md: CLOSE separately requires a final-Q GLOBAL/READY attestation for the current lifecycle snapshot.",
+    "The lifecycle readiness attestation hashes canonical lifecycle authority files; execution/ is outside that authority snapshot, so the initial readiness check does not mutate or become execution evidence.",
+    "The preserved Case C journal at the session's journals/case-c.json contains INIT then PLAN and no READINESS."
+  ],
+  "rootCause": "The production driver scheduled SPEC_READINESS after execution COMPLETE, accepted readiness only when execution state was COMPLETE, and benchmark finalization required exactly that terminal readiness placement. This inverted the lifecycle readiness checkpoint and skipped it between initialization and planning.",
+  "semanticOrMechanical": "mechanical driver orchestration against lifecycle operation semantics",
+  "responsibleBoundary": "benchmark-production-pilot nextHandoff/official outcome and benchmark finalizer terminal-sequence validation",
+  "correction": "Schedule one official SPEC_READINESS immediately after passing SPEC_INIT; accept it only with active ready lifecycle state and execution EMPTY; then use the official execution handoff to PLAN. After execution reaches COMPLETE, go directly to SPEC_CLOSE. Finalization now requires exactly one PASS/GLOBAL_READY immediately after INIT, PLAN immediately after readiness, COMPLETE as the last execution event, and one successful CLOSE immediately after COMPLETE. CLOSE's existing final-Q readiness and strict attestation requirements remain unchanged.",
+  "whyCodeVsPrompt": "Operation ordering, official state gating, and journal position are deterministic orchestration invariants; model prose cannot enforce the driver schedule. This corrects the benchmark's workflow boundary without relaxing lifecycle or candidate validators.",
+  "filesChanged": [
+    "benchmarks/sentinel-todo/runtime/benchmark-production-pilot.mjs",
+    "benchmarks/sentinel-todo/runtime/benchmark.mjs",
+    "scripts/test-benchmark-production-pilot.mjs",
+    "scripts/test-benchmark-contract.mjs"
+  ],
+  "regression": "scripts/test-benchmark-production-pilot.mjs P02/P04c covers official EMPTY readiness, blocks late readiness, verifies INIT->READINESS->PLAN and COMPLETE->CLOSE. scripts/test-benchmark-contract.mjs B06 accepts the correct order and rejects absent, late, duplicate, and wrong-state readiness.",
+  "localValidation": "PASS: node --test scripts/test-benchmark-production-pilot.mjs scripts/test-benchmark-contract.mjs scripts/test-launcher-contract.mjs (162/162); node scripts/check-contracts.mjs repository --root .; git diff --check.",
+  "liveReplay": "Pending; the preserved Case C run lacks the required initial readiness event and cannot prove this correction.",
+  "result": "FIXED_LOCALLY_PENDING_FRESH_CASE_C",
+  "workflowProgress": "No new live call made; preserve previous Case C implementation only as diagnostic evidence. Corrected Case C must start fresh to prove operation order.",
+  "priorIssuesMateriallyRevisited": ["C90", "C92"],
+  "liveCalls": 0
+}

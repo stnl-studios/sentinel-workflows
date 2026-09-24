@@ -1,0 +1,59 @@
+{
+  "issue": "C142",
+  "case": "C",
+  "event": {
+    "sequence": 7,
+    "operation": "EXECUTE_SLICE",
+    "slice": "slice-01",
+    "model": "GPT-5.6-Luna",
+    "effort": "xhigh",
+    "durationMs": 500474,
+    "result": "BLOCKED",
+    "blocker": "OFFICIAL_TRANSITION_NOT_OBSERVED"
+  },
+  "producerDiagnostic": {
+    "status": "BLOCKED",
+    "failures": "Deterministic execution-bundle serialization exited 1: Changed Areas cannot remain pending after execution work.",
+    "blockers": "Required evidence serialization failed; no record or handoff may be published.",
+    "persistenceSummary": "No implementation-check record was copied to the artifact or candidate; no handoff readback was performed.",
+    "commands": []
+  },
+  "preflight": {
+    "state": "MATERIALIZED_PRISTINE",
+    "currentFingerprint": "64bf0cfd45af0cc55fb35c428db7fcec0a55076c494ba69775de8436f9ae577c",
+    "legalTarget": { "operation": "EXECUTE_SLICE", "slice": "slice-01" },
+    "selectedRow": { "slice": "slice-01", "done": false, "result": "pending" }
+  },
+  "officialReadbackAfterRejection": {
+    "state": "EXECUTION_STARTED",
+    "currentFingerprint": "64bf0cfd45af0cc55fb35c428db7fcec0a55076c494ba69775de8436f9ae577c",
+    "legalTarget": { "operation": "EXECUTE_SLICE", "slice": "slice-01" },
+    "requiredRecoveryHandoff": null,
+    "selectedRow": { "slice": "slice-01", "done": false, "result": "pending" }
+  },
+  "configuredRunner": {
+    "requestedModel": "GPT-5.6-Luna",
+    "requestedEffort": "medium",
+    "status": "RUNNER_RESPONSE_CAPTURED",
+    "semanticResponseCaptured": true,
+    "retryCount": 0,
+    "runnerBrokerErrors": []
+  },
+  "candidateSnapshot": {
+    "changedImplementationFiles": ["src/validation.mjs", "test/todo-store.test.mjs"],
+    "executionEvidencePublished": false,
+    "affectedTask": "specs/benchmark-case-c/execution/tasks/slice-01.md"
+  },
+  "outerRun": {
+    "status": "BLOCKED",
+    "blocker": "SOURCE_CHECKOUT_CHANGED",
+    "sourceCheckoutPreserved": false,
+    "reason": "The controller source was edited while this diagnostic live call was still running; this replay is not final convergence evidence.",
+    "outerRetry": 0,
+    "managedCaseCleanup": "PASS"
+  },
+  "controllerDecision": {
+    "allowedAction": "one fresh EXECUTE_SLICE/slice-01 model call while the same target remains legal and the authority fingerprint is unchanged; preserve current in-scope edits; rerun the configured runner and strict deterministic evidence/candidate/publication gates",
+    "notAllowed": ["count the prior BLOCKED attempt as PASS", "discard current work", "reuse prior runner evidence as current", "skip strict serialization or candidate validation", "increment outer retry"]
+  }
+}

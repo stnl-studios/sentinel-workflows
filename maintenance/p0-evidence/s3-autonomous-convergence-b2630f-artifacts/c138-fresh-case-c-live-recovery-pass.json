@@ -1,0 +1,87 @@
+{
+  "issue": "C138",
+  "case": "C",
+  "evidenceKind": "fresh managed functional replay after C138-C140",
+  "sentinelSha": "b2630fac3529f72146d050ce662ada3b145b4280",
+  "status": "PASS",
+  "profileId": "production-v2",
+  "profileMismatches": [],
+  "preflight": "PASS",
+  "outerRetry": 0,
+  "sourceCheckout": {
+    "preserved": true,
+    "clean": false,
+    "baselineEligible": false
+  },
+  "operations": 14,
+  "formalSlices": {
+    "total": 3,
+    "pass": 3
+  },
+  "findingsCycles": 0,
+  "applyFindingsCalls": 0,
+  "controllerRecoveryCount": 1,
+  "recoveryProof": {
+    "blockedSequence": 7,
+    "blockedResult": "OFFICIAL_RUNNER_RESULT_BLOCKED",
+    "officialState": "RUNNER_RESULT_BLOCKED",
+    "legalOperation": "EXECUTE_SLICE/slice-01",
+    "recoveryOwner": "delegation-blocker",
+    "sameOperationResumeRequired": true,
+    "fingerprint": "4e314a87636bf4d0d56706b3b25356b543f9e06cd2ac5d90ed30fff91ab49cae",
+    "recoverySequence": 8,
+    "recoveryCode": "C138_OFFICIAL_RUNNER_SAME_OPERATION_RECOVERY",
+    "recoveryResult": "PASS",
+    "recoveryFingerprintUnchanged": true,
+    "strictRunnerChecks": {
+      "focused": "PASS",
+      "fullSuite": "PASS",
+      "candidateValidation": "PASS"
+    },
+    "journalKeptBlockedEvent": true
+  },
+  "finalState": {
+    "execution": "COMPLETE",
+    "lifecycle": "closed",
+    "closureResult": "PASS"
+  },
+  "counts": {
+    "primaryModelCalls": 14,
+    "runnerCalls": 7,
+    "totalModelCalls": 21,
+    "primaryByProfile": {
+      "GPT-5.6-Sol/high": 3,
+      "GPT-5.6-Terra/high": 1,
+      "GPT-5.6-Luna/xhigh": 10
+    },
+    "runnerByProfile": {
+      "GPT-5.6-Luna/medium": 7
+    },
+    "runnerRetries": 0,
+    "outerRetry": 0
+  },
+  "timing": {
+    "operationTimeMs": 4776060,
+    "averageOperationMs": 341147.14
+  },
+  "cleanup": "PASS",
+  "baselineEligible": false,
+  "officialPilotExecuted": false,
+  "rawCaseSha256": "3b0beb8246a47526c2df15b4eed5b6ea51f3f6d4e57cd39a0dfa1dfbfdaf3191",
+  "operationLedger": [
+    { "sequence": 1, "operation": "SPEC_INIT", "result": "PASS", "durationMs": 191236 },
+    { "sequence": 2, "operation": "SPEC_READINESS", "result": "PASS", "durationMs": 110573 },
+    { "sequence": 3, "operation": "PLAN", "result": "PASS", "durationMs": 251419 },
+    { "sequence": 4, "operation": "REVIEW_PLAN", "result": "PASS", "durationMs": 380663 },
+    { "sequence": 5, "operation": "MATERIALIZE_TASKS", "result": "PASS", "durationMs": 164236 },
+    { "sequence": 6, "operation": "REVIEW_TASKS", "result": "PASS", "durationMs": 107111 },
+    { "sequence": 7, "operation": "EXECUTE_SLICE/slice-01", "result": "BLOCKED", "blocker": "OFFICIAL_RUNNER_RESULT_BLOCKED", "durationMs": 477379 },
+    { "sequence": 8, "operation": "EXECUTE_SLICE/slice-01", "result": "PASS", "recovery": true, "durationMs": 537018 },
+    { "sequence": 9, "operation": "VALIDATE_SLICE/slice-01", "result": "PASS", "durationMs": 308793 },
+    { "sequence": 10, "operation": "EXECUTE_SLICE/slice-02", "result": "PASS", "durationMs": 1014292 },
+    { "sequence": 11, "operation": "VALIDATE_SLICE/slice-02", "result": "PASS", "durationMs": 262722 },
+    { "sequence": 12, "operation": "EXECUTE_SLICE/slice-03", "result": "PASS", "durationMs": 566116 },
+    { "sequence": 13, "operation": "VALIDATE_SLICE/slice-03", "result": "PASS", "durationMs": 324715 },
+    { "sequence": 14, "operation": "SPEC_CLOSE", "result": "PASS", "durationMs": 79787 }
+  ]
+}

@@ -1,0 +1,85 @@
+{
+  "issue": "C134",
+  "category": "RUNTIME_AUTHORITY",
+  "case": "C",
+  "operation": "transition after REVIEW_TASKS into EXECUTE_SLICE slice-01",
+  "symptom": "The functional-case process exited 13 with Node's 'Detected unsettled top-level await' warning after operation 6; no sequence-7 operation artifact or case summary was written.",
+  "officialState": "REVIEW_TASKS PASS; execution state MATERIALIZED_PRISTINE; journal ACTIVE with six PASS events; legal next operation EXECUTE_SLICE/slice-01; no mandatory recovery; outer retry 0.",
+  "evidence": {
+    "functionalOutput": "/tmp/sentinel-functional-convergence-7unnhL/case-c",
+    "sessionRoot": "/private/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-benchmark-session-1dH6F2",
+    "lastCompletedOperationArtifact": "case-c/operations/06-review_tasks.json",
+    "lastCompletedOperation": {
+      "sequence": 6,
+      "operation": "REVIEW_TASKS",
+      "model": "GPT-5.6-Luna",
+      "effort": "xhigh",
+      "harnessStatus": "HARNESS_COMPLETED",
+      "officialOutcome": "PASS",
+      "officialState": "MATERIALIZED_PRISTINE",
+      "durationMs": 59922,
+      "reportedNextHandoff": "EXECUTE_SLICE/slice-01"
+    },
+    "journalEvents": 6,
+    "runnerBrokerArtifacts": "none; no operation-7 broker directory, runner receipt, or operation evidence exists",
+    "processResult": {
+      "exitCode": 13,
+      "stderr": "Warning: Detected unsettled top-level await at benchmark-production-pilot.mjs while awaiting main(...)"
+    },
+    "readOnlyReconciliation": {
+      "preflightExecutionOperation": "PASS for EXECUTE_SLICE/input slice 1",
+      "nextHandoff": "EXECUTE_SLICE/slice-01",
+      "caseSummary": "absent",
+      "functionalCaseSummary": "absent"
+    }
+  },
+  "rootCause": "The CLI entrypoint in benchmark-production-pilot.mjs awaits main() at top level. During the awaited Case C loop, EXECUTE_SLICE dynamically imports benchmark-validation-runner.mjs; that module statically imports canonicalSliceInput, LONG_MODEL_OPERATION_TIMEOUT_MS, and SEMANTIC_RESPONSE_SCHEMA_PATH_BY_OPERATION from the still-evaluating benchmark-production-pilot.mjs. The dynamic import therefore formed an async module cycle through the entrypoint's pending top-level await. Node exited 13 before the runner broker started.",
+  "semanticOrMechanical": "mechanical module dependency and evaluation lifecycle",
+  "responsibleBoundary": "Shared benchmark runner contract values imported by both the production driver and auxiliary validation runner.",
+  "correction": "Moved canonicalSliceInput, LONG_MODEL_OPERATION_TIMEOUT_MS, and SEMANTIC_RESPONSE_SCHEMA_PATH_BY_OPERATION into the narrow benchmark-runner-contract.mjs authority imported by both driver and runner. The CLI now statically imports invokeConfiguredValidationRunner before its top-level main await, and the runner no longer imports from the CLI module. The driver re-exports the shared values for compatibility. Operation state, profile, runner preflight, candidate validation, and retry behavior are unchanged.",
+  "whyCodeVsPrompt": "This is an ECMAScript module evaluation cycle, not model behavior. Prose cannot settle a pending module import; shared constants/helpers must have an acyclic owner.",
+  "filesChanged": [
+    "benchmarks/sentinel-todo/runtime/benchmark-runner-contract.mjs",
+    "benchmarks/sentinel-todo/runtime/benchmark-production-pilot.mjs",
+    "benchmarks/sentinel-todo/runtime/benchmark-validation-runner.mjs",
+    "scripts/test-benchmark-production-pilot.mjs"
+  ],
+  "regression": "P03d spawns the actual CLI with an invalid functional-case option, which loads the statically imported configured runner before the CLI top-level await; it asserts the expected exit 2 and absence of the unsettled-top-level-await failure. Existing canonical slice and schema behavior tests, including H21, retain canonical input/schema coverage. Fresh Case C must advance past EXECUTE_SLICE after the fix.",
+  "localValidation": "PASS: node --test scripts/test-benchmark-production-pilot.mjs scripts/test-benchmark-agent-harness.mjs scripts/test-benchmark-runner-broker.mjs (71/71); bash scripts/validate.sh --no-smoke; node benchmarks/sentinel-todo/runtime/benchmark.mjs verify; node --check on all three affected runtime modules. Run git diff --check again after audit-log updates.",
+  "liveReplay": "The affected fresh Case C stopped after six official PASS events; no operation-7 call was made. The preserved state was legally eligible for EXECUTE_SLICE/slice-01, but the shared import-boundary correction requires a new fresh Case C for proof.",
+  "correctedFreshReplay": {
+    "status": "IN_PROGRESS",
+    "caseOutput": "/tmp/sentinel-functional-convergence-b2630f-c-BXRLk2/case-c",
+    "managedSession": "/private/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-benchmark-session-EKmRxe",
+    "profile": "production-v2",
+    "operationsPassed": 9,
+    "minimumOperations": 13,
+    "formalSlicesPassed": 1,
+    "formalSlicesTotal": 3,
+    "outerRetry": 0,
+    "events": [
+      { "sequence": 1, "operation": "SPEC_INIT", "model": "GPT-5.6-Sol", "effort": "high", "result": "PASS", "durationMs": 208994, "state": "EMPTY" },
+      { "sequence": 2, "operation": "SPEC_READINESS", "model": "GPT-5.6-Luna", "effort": "xhigh", "result": "PASS", "durationMs": 127544, "state": "GLOBAL_READY" },
+      { "sequence": 3, "operation": "PLAN", "model": "GPT-5.6-Sol", "effort": "high", "result": "PASS", "durationMs": 295348, "state": "PLANNED_DRAFT" },
+      { "sequence": 4, "operation": "REVIEW_PLAN", "model": "GPT-5.6-Luna", "effort": "xhigh", "result": "PASS", "durationMs": 347689, "state": "PLANNED_READY" },
+      { "sequence": 5, "operation": "MATERIALIZE_TASKS", "model": "GPT-5.6-Terra", "effort": "high", "result": "PASS", "durationMs": 143171, "state": "MATERIALIZED_PRISTINE" },
+      { "sequence": 6, "operation": "REVIEW_TASKS", "model": "GPT-5.6-Luna", "effort": "xhigh", "result": "PASS", "durationMs": 87494, "state": "MATERIALIZED_PRISTINE" },
+      { "sequence": 7, "operation": "EXECUTE_SLICE", "slice": "slice-01", "model": "GPT-5.6-Luna", "effort": "xhigh", "result": "PASS", "durationMs": 554599, "state": "IMPLEMENTED_AWAITING_VALIDATION", "officialRunner": "RUNNER_RESPONSE_CAPTURED; GPT-5.6-Luna/medium; retryCount 0" },
+      { "sequence": 8, "operation": "VALIDATE_SLICE", "slice": "slice-01", "model": "GPT-5.6-Luna", "effort": "xhigh", "result": "PASS", "durationMs": 528599, "state": "EXECUTION_STARTED", "sliceResult": "PASS", "sliceDone": true, "officialRunner": "RUNNER_RESPONSE_CAPTURED; response PASS with no findings; GPT-5.6-Luna/medium; retryCount 0" },
+      { "sequence": 9, "operation": "EXECUTE_SLICE", "slice": "slice-02", "model": "GPT-5.6-Luna", "effort": "xhigh", "result": "PASS", "durationMs": 488210, "state": "IMPLEMENTED_AWAITING_VALIDATION", "officialRunner": "RUNNER_RESPONSE_CAPTURED; TESTS_PASS; focused 7/7 and full workspace 15/15; GPT-5.6-Luna/medium; retryCount 0" }
+    ],
+    "currentOperation": { "sequence": 10, "operation": "VALIDATE_SLICE", "slice": "slice-02", "model": "GPT-5.6-Luna", "effort": "xhigh", "status": "IN_PROGRESS", "officialPreflight": "PASS", "validationCandidate": "isolated candidate prepared", "officialRunner": "RUNNER_RESPONSE_CAPTURED; response PASS/no findings; GPT-5.6-Luna/medium; retryCount 0" },
+    "readinessOrder": "SPEC_INIT -> SPEC_READINESS -> PLAN; readiness PASS with GLOBAL_READY before planning",
+    "evidence": "The managed journal and operation JSONs are being written in the listed session/output roots."
+  },
+  "result": "FIXED_LOCALLY; FRESH_CASE_C_REQUIRED",
+  "workflowProgress": "6/13 operations PASS; 0/3 formal slices; no official blocker persisted; outer retry 0/0.",
+  "liveCalls": [
+    "GPT-5.6-Sol/high: Case C sequence 1 SPEC_INIT",
+    "GPT-5.6-Luna/xhigh: Case C sequence 2 SPEC_READINESS",
+    "GPT-5.6-Sol/high: Case C sequence 3 PLAN",
+    "GPT-5.6-Luna/xhigh: Case C sequence 4 REVIEW_PLAN",
+    "GPT-5.6-Terra/high: Case C sequence 5 MATERIALIZE_TASKS",
+    "GPT-5.6-Luna/xhigh: Case C sequence 6 REVIEW_TASKS"
+  ]
+}

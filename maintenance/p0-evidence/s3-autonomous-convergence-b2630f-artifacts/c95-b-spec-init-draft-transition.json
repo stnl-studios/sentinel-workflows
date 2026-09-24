@@ -1,0 +1,20 @@
+{
+  "issue": "C95",
+  "category": "DRIVER_ORCHESTRATION",
+  "case": "B",
+  "operation": "SPEC_INIT",
+  "slice": null,
+  "freshOutputRoot": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-functional-convergence-A9Wztc",
+  "evidence": "case-b/operations/01-spec_init.json",
+  "officialState": "EMPTY",
+  "symptom": "The model completed SPEC_INIT and published a structurally valid draft SPEC, but the production driver requires the initial operation to leave lifecycle status ready; official execution remained EMPTY and the transition was not observed.",
+  "rootCause": "SPEC_INIT is allowed by the lifecycle authority to return draft when readiness is not globally justified. This live Case B response did not establish ready, so the production-v2 handoff could not enter PLAN. The driver correctly did not invent a readiness transition or silently call a later operation.",
+  "semanticOrMechanical": "semantic",
+  "responsibleBoundary": "SPEC_INIT lifecycle decision and production-v2 handoff",
+  "correction": "No code change yet. Preserve the official draft and investigate whether Case B has objective readiness blockers or whether this was a stochastic under-claim before selecting a legal recovery.",
+  "whyCodeVsPrompt": "Promoting draft to ready is a lifecycle semantic decision and cannot be moved to a mechanical serializer or patched in the driver without using the official lifecycle authority.",
+  "authorityImpact": "none",
+  "regressionRequired": "If addressed, test the exact legal draft/readiness path; do not change SPEC_INIT outcome rules or synthesize ready status from model prose.",
+  "liveReplay": "Fresh A/B/C proof; B stopped at sequence 1 while C continued independently.",
+  "result": "OPEN"
+}

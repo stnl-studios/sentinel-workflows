@@ -1,0 +1,73 @@
+{
+  "issue": "C138",
+  "case": "C",
+  "operation": {
+    "sequence": 7,
+    "name": "EXECUTE_SLICE",
+    "slice": "slice-01",
+    "durationMs": 497725
+  },
+  "replay": {
+    "profileId": "production-v2",
+    "preflight": "PASS",
+    "outerRetry": 0,
+    "profileMismatches": [],
+    "sourceCheckoutPreserved": true,
+    "cleanup": "PASS",
+    "operations": 7,
+    "formalSlicesPassed": 0,
+    "primaryCalls": 7,
+    "runnerCalls": 1,
+    "primaryModelCounts": {
+      "GPT-5.6-Sol/high": 2,
+      "GPT-5.6-Terra/high": 1,
+      "GPT-5.6-Luna/xhigh": 4
+    },
+    "runnerModelCounts": {
+      "GPT-5.6-Luna/medium": 1
+    }
+  },
+  "preflightBefore": {
+    "state": "MATERIALIZED_PRISTINE",
+    "currentFingerprint": "6c817e33bdc11d645409566bcf5e4bcbb0aca1ef14c71bf738a79a203dece924",
+    "legalOperation": {
+      "operation": "EXECUTE_SLICE",
+      "slice": "slice-01"
+    }
+  },
+  "runner": {
+    "model": "GPT-5.6-Luna",
+    "effort": "medium",
+    "receipt": "RUNNER_RESPONSE_CAPTURED",
+    "reportedTests": "TESTS_PASS",
+    "serializerFailure": "nonApplicabilityRationale must be a complete single-line scalar without backticks"
+  },
+  "controllerAtFailure": {
+    "result": "BLOCKED",
+    "blocker": "OFFICIAL_RUNNER_RESULT_BLOCKED",
+    "controllerRecoveryRequest": null
+  },
+  "officialAfter": {
+    "state": "RUNNER_RESULT_BLOCKED",
+    "currentFingerprint": "6c817e33bdc11d645409566bcf5e4bcbb0aca1ef14c71bf738a79a203dece924",
+    "legalOperation": {
+      "operation": "EXECUTE_SLICE",
+      "slice": "slice-01"
+    },
+    "recoveryTarget": {
+      "owner": "delegation-blocker",
+      "operation": "EXECUTE_SLICE",
+      "slice": "slice-01",
+      "sameOperationResumeRequired": true
+    }
+  },
+  "workspace": "case workspace was cleaned after the driver exited; this evidence is diagnostic and cannot be resumed",
+  "correctedDetectorAgainstPreservedOperationEvidence": {
+    "code": "C138_OFFICIAL_RUNNER_SAME_OPERATION_RECOVERY",
+    "operation": "EXECUTE_SLICE",
+    "slice": "slice-01",
+    "officialState": "RUNNER_RESULT_BLOCKED",
+    "sameOperationResumeRequired": true
+  },
+  "liveRecoveryAttempted": false
+}

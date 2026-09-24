@@ -1,0 +1,21 @@
+# C107 — Case A official event budget exhausted before replan continuation
+
+- Category: DRIVER_ORCHESTRATION
+- Case: A
+- Operation: REPLAN
+- Slice: none (append-only extension `slice-03` superseding open `slice-02`)
+- Symptom: The validator's explicit `REPLAN` handoff was valid and the planner published `PENDING_REPLAN_DRAFT`, but the Case A journal had already consumed its configured 14 workflow events. The next journal event was recorded as event 15 and the journal became `ABORTED_BUDGET`, so the replay could not continue through `REVIEW_PLAN` and `MATERIALIZE_TASKS`.
+- Official state: The execution readback after REPLAN was `PENDING_REPLAN_DRAFT` with only `REVIEW_PLAN` legal. The journal authority then reported `status: ABORTED_BUDGET`, `budget: maxWorkflowEvents`, `limit: 14`, `observed: 15`.
+- Evidence: `/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-functional-convergence-EQv25b/case-a/operations/15-replan.json`; journal `/private/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-benchmark-session-6wdUGo/journals/case-a.json`; planner output added `plans/slice-03.md` and revision 2 in the preserved workspace.
+- Root cause: This replay's generated plan required a legal append-only replan after the semantic coverage blocker, but Case A's fixed official workflow-event budget had no remaining capacity. The continuation driver also attempted to reuse the terminal journal and correctly surfaced `JOURNAL_REJECTED`; it did not mutate or repair the history.
+- Semantic or mechanical: Driver/budget orchestration; the underlying replan decision was semantic and valid.
+- Responsible boundary: Benchmark journal budget and replay orchestration, not the candidate validator or execution-state authority.
+- Correction: Preserve the aborted replay and start a fresh managed Case A. Do not raise the official budget, append to the terminal journal, or call the replay an official PASS. The next fresh run must either produce complete accepted coverage in the initial plan/tasks or remain within the official budget if a legal replan is required.
+- Why code vs prompt: Changing the budget would relax an official benchmark authority merely to accommodate a failed model plan. The evidence does not justify that. A semantic model replay is the appropriate next action; any source prompt change requires its own causal evidence.
+- Files changed: None in the repository for this issue; replay evidence only.
+- Regression: Existing journal/budget contract tests cover terminal budget abort and immutable event history.
+- Local validation: Focused contract suites, benchmark verification, repository contract check, `validate.sh --no-smoke`, and `git diff --check` were PASS before the replay.
+- Live replay: Fresh Case A sequences 1–14 consumed the budget; sequence 15 REPLAN published its draft but the journal rejected continuation as over budget. Outer retry remained `0`.
+- Result: The replay is not PASS and is intentionally discarded as a final proof. No source authority was weakened.
+- Workflow progress: Before REPLAN, `1/2` slices were PASS and `4/4` original tasks executed; REPLAN produced a pending corrective slice but did not reach review/materialization.
+- Live calls: Continuation used GPT-5.6-Terra/high for REPLAN; fresh Case A total before it was GPT-5.6-Sol/high 1, GPT-5.6-Terra/high 2, GPT-5.6-Luna/high 11.

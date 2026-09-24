@@ -1,0 +1,30 @@
+{
+  "issue": "C58",
+  "category": "PRODUCER_CONTRACT",
+  "case": "Case C",
+  "operation": "EXECUTE_SLICE",
+  "slice": "slice-01",
+  "replay": "fresh replay after C57 project-scoped runner configuration projection",
+  "symptom": "The managed workspace contained the projected .codex/agents/stnl_validation_runner.toml and the harness completed with 23 zero command exits, but the runner still returned a BLOCKED semantic response reporting a noncanonical label and extra fields. Official state remained RUNNER_RESULT_BLOCKED.",
+  "officialState": "RUNNER_RESULT_BLOCKED",
+  "evidenceRoot": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-c32-case-c-xHJEb0",
+  "operationArtifact": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-c32-case-c-xHJEb0/case-c/operations/06-execute_slice.json",
+  "evidence": {
+    "harnessStatus": "HARNESS_COMPLETED",
+    "commandExitCodes": "23/23 zero",
+    "finalAssistantMessage": "Status: BLOCKED ... Evidence or failure summary: noncanonical label and extra fields",
+    "projectedRunnerConfigurationPresent": true,
+    "preflightState": "MATERIALIZED_PRISTINE",
+    "readbackState": "RUNNER_RESULT_BLOCKED",
+    "productionProfile": "production-v2",
+    "outerRetry": 0,
+    "profileMismatches": []
+  },
+  "rootCause": "The project-scoped runner configuration was available, but the shared stnl-slice-executor skill still contained an earlier general field-shape rule requiring the runner to emit Tested state and the complete mechanical schema. The runner configuration also retained nearby instructions describing tested-state and formal-manifest output before the later semantic-only boundary. Those instructions contradicted the explicit deterministic producer ownership of Operation, paths, labels, hashes, records, and manifests, so the live runner produced extra mechanical fields and the strict semantic parser rejected them.",
+  "semanticOrMechanical": "mechanical",
+  "responsibleBoundary": "stnl-slice-executor shared runner-output contract and canonical Codex runner instructions",
+  "correction": "Replace the stale general runner field-shape rule with the semantic-only contract and explicitly state that tested-state tuples, records, and formal manifests are inspected by the runner but serialized by the deterministic producer. Keep the strict semantic parser and candidate validation unchanged.",
+  "whyCodeVsPrompt": "The failure is a contradictory producer contract, not a missing semantic decision. Reconciling the already-existing instructions removes the ambiguity at the model boundary; accepting or normalizing extra fields in code would be silent repair and would weaken the strict candidate path.",
+  "regression": "Extend the launcher/execution contract tests to require the shared skill's semantic-only ownership rule and forbid the stale full-schema field-shape wording; keep the live parser rejection of unknown/extra semantic fields.",
+  "status": "open"
+}

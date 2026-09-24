@@ -1,0 +1,41 @@
+{
+  "category": "MECHANICAL_SERIALIZATION",
+  "case": "B",
+  "operation": "VALIDATE_SLICE",
+  "slice": "slice-03",
+  "symptom": "Fresh production-v2 validation calls repeatedly produced malformed or schema-incompatible runner messages despite the capture helper, strict semantic serializer, closed response schema, launcher guards, and official same-operation recovery. The observed failures included exitCode instead of exit and prose/fenced JSON, followed by a valid-looking object rejected because Prior Validation Overlap was not in the canonical carrier format.",
+  "officialState": "RUNNER_RESULT_BLOCKED",
+  "evidence": {
+    "finalRaw": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-functional-convergence-TxFsrf/case-b-resumed/case-b-production-v2-final.json",
+    "operationArtifacts": [
+      "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-functional-convergence-TxFsrf/case-b/operations/11-validate_slice-resume.json",
+      "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-functional-convergence-TxFsrf/case-b/operations/12-validate_slice-resume.json",
+      "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-functional-convergence-TxFsrf/case-b/operations/13-validate_slice-resume.json"
+    ],
+    "profile": "production-v2",
+    "outerRetry": 0,
+    "sliceAndTaskCounts": "3 slices; 6/6 task checklists complete; slice-03 implementation complete and validation pending",
+    "observedProducerFailures": [
+      "runner output used exitCode rather than the required exit field",
+      "runner output was prose/fenced JSON and was rejected by strict capture",
+      "runner output reached semantic validation but did not serialize the required canonical Prior Validation Overlap carrier"
+    ]
+  },
+  "rootCause": "The top-level production harness invoked codex exec with JSON event output but did not pass the canonical semantic response schema. The schema existed in the prompt and nested runner instructions, but the actual provider boundary remained free to emit an arbitrary final agent_message shape. The downstream capture/serializer correctly rejected those messages; additional prose could not make the provider boundary mechanically enforce the object shape.",
+  "semanticOrMechanical": "mechanical",
+  "responsibleBoundary": "benchmark-agent-harness canonical argv, selected by benchmark-production-pilot for slice operations",
+  "correction": "Require structuredResponseSchema as a discovered provider capability; validate an absolute canonical outputSchema file in harness requests; append --output-schema before stdin; and make production-v2 pass the closed runner-semantic-response.schema.json for EXECUTE_SLICE, APPLY_FINDINGS, and VALIDATE_SLICE. Keep capture, semantic serialization, candidate validation, and readback strict.",
+  "whyCodeVsPrompt": "The missing guarantee was a provider invocation flag and capability check, not a semantic decision. The deterministic harness is the smallest boundary that can enforce the schema before the provider emits output; it does not repair or reinterpret an invalid response.",
+  "filesChanged": [
+    "benchmarks/sentinel-todo/runtime/benchmark-agent-harness.mjs",
+    "benchmarks/sentinel-todo/runtime/benchmark-production-pilot.mjs",
+    "scripts/test-benchmark-agent-harness.mjs",
+    "scripts/test-benchmark-production-pilot.mjs"
+  ],
+  "regression": "Harness tests cover capability fail-closed behavior, canonical argv placement, canonical outputSchema validation and provider receipt; production-pilot tests prove slice operations receive the schema while PLAN does not; the live replay must prove malformed runner messages no longer require hidden repair.",
+  "localValidation": "Focused harness/production-pilot tests passed 52/52; execution contract 111/111; validation-runner contract 113/113; launcher contract 122/122; rehearsal/benchmark 19/19; benchmark verify, repository contract, validate.sh --no-smoke, and git diff --check passed.",
+  "liveReplay": "Pending fresh Case A/B/C after this edit. Prior B replay remains diagnostic and is not a convergence result.",
+  "result": "FIXED_PENDING_FRESH_REPLAY",
+  "workflowProgress": "The previous B run reached 2/3 validated slices and 6/6 completed tasks before the validation producer boundary blocked slice-03; this fix targets that boundary without changing profile, retry, validator, or authority semantics.",
+  "liveCalls": "Prior B sequences 11-16 used GPT-5.6-Luna/xhigh under production-v2 with outerRetry 0; no fallback model or hidden repair was used."
+}

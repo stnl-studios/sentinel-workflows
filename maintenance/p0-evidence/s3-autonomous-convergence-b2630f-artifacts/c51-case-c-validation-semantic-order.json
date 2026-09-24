@@ -1,0 +1,28 @@
+{
+  "issue": "C51",
+  "category": "MECHANICAL_SERIALIZATION",
+  "case": "C",
+  "operation": "VALIDATE_SLICE",
+  "slice": "slice-01",
+  "replay": "fresh replay after C50 Tested scope producer edit",
+  "outputRoot": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-c32-case-c-Dc6i9D",
+  "operationArtifact": "/var/folders/yx/psjzdbd91pg9v2h4hm5m_vbr0000gn/T/sentinel-c32-case-c-Dc6i9D/case-c/operations/07-validate_slice.json",
+  "symptom": "The live semantic validation producer exited 1 after the runner started; the official error was semantic validation response must contain Status in canonical order.",
+  "officialState": "RUNNER_RESULT_BLOCKED",
+  "evidence": {
+    "harnessStatus": "HARNESS_COMPLETED",
+    "blocker": "OFFICIAL_RUNNER_RESULT_BLOCKED",
+    "producerCause": "serializer rejected the unchanged runner response because Status was not at the parser's canonical semantic boundary",
+    "reportedResponseExcerpt": "Type: VALIDATE_SLICE\\nStatus: BLOCKED\\nVerified scope: ../../../../src/validation.mjs, ../../../../test/todo-store.test.mjs",
+    "outerRetryCount": 0,
+    "profileId": "production-v2",
+    "profileMismatches": []
+  },
+  "rootCause": "The validation producer still made the model responsible for the mechanically derived Type field and the exact semantic field ordering. The official state already determines whether the next formal validation is initial or revalidation, and the producer already owns canonical output ordering; allowing the live model to serialize that boundary caused a repeated malformed response before candidate publication.",
+  "semanticOrMechanical": "mechanical",
+  "responsibleBoundary": "skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs semantic-response validation producer",
+  "correction": "Make the semantic input begin with model-owned Status and content fields only. Derive Type from the existing execution-state authority (zero prior Validation Attempts means initial; otherwise revalidation), then emit the complete canonical Runner response with producer-owned Type, Operation, labels, and order.",
+  "whyCodeVsPrompt": "Type and field order are deterministic serialization/state projections, not validation judgment. The producer can derive the type through the existing execution-state inspector and emit the strict canonical response before candidate validation without repairing a rejected artifact or changing the verdict, scope, findings, or commands selected by the model.",
+  "regression": "Update the semantic-response regression to require a Status-first model payload, derive initial from a clean task state, reject explicit producer-owned Type input, and preserve strict rejection of unknown/preamble fields.",
+  "status": "open"
+}
