@@ -45,6 +45,7 @@ testem.log
 /tmp/*
 /.playwright-cli/*
 /output/*
+/benchmark-temp/
 
 
 # System files
