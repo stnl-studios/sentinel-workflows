@@ -22,7 +22,6 @@ import { preparePlanCandidate } from "../skills/workflows/stnl-execution-planner
 import { serializePlanPathClaims } from "../skills/workflows/stnl-execution-planner/runtime/serialize-plan-paths.mjs";
 import { prepareValidationCandidate } from "../skills/workflows/stnl-slice-quality-manager/runtime/prepare-validation-candidate.mjs";
 import { publishValidationCandidate } from "../skills/workflows/stnl-slice-quality-manager/runtime/publish-validation-candidate.mjs";
-import { publishValidationCandidateFromController } from "../benchmarks/sentinel-todo/runtime/benchmark-production-pilot.mjs";
 import { resolveExecutionWorkspace as resolveMaterializerExecutionWorkspace } from "../skills/workflows/stnl-task-materializer/runtime/execution-state.mjs";
 import { prepareTaskMaterializationCandidate } from "../skills/workflows/stnl-task-materializer/runtime/prepare-task-candidate.mjs";
 import { publishTaskMaterializationCandidate } from "../skills/workflows/stnl-task-materializer/runtime/publish-task-candidate.mjs";
@@ -38,6 +37,7 @@ import {
   serializeRunnerValidationBundleFromResponse,
 } from "../skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs";
 import { captureRunnerResponse } from "../skills/workflows/stnl-slice-executor/runtime/capture-runner-response.mjs";
+import { prepareExecutionCopy, publishExecutionCopy } from "../skills/workflows/stnl-slice-executor/runtime/prepare-execution-copy.mjs";
 import { EXECUTION_OPERATION_SKILLS, WORKFLOW_OPERATIONS } from "./lib/skill-registry.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
@@ -1138,12 +1138,52 @@ test("execution producer blocks omitted Changed Areas without inferring scope fr
   );
   assert.equal(await fs.readFile(taskArtifact, "utf8"), before);
 
-  const executorPrompt = await fs.readFile(
-    path.join(ROOT, "templates/prompts/slice-execute-codex.md"),
-    "utf8",
-  );
-  assert.match(executorPrompt, /`Changed Areas` não pode permanecer `- pending`/u);
-  assert.match(executorPrompt, /serializer somente canonicaliza e valida/u);
+  const executorSkill = await fs.readFile(path.join(ROOT, "skills/workflows/stnl-slice-executor/SKILL.md"), "utf8");
+  assert.match(executorSkill, /`Changed Areas` MUST NOT remain the pristine `- pending` sentinel/u);
+});
+
+test("execution evidence is produced on a same-depth candidate and published as one task replacement", async (t) => {
+  const fixture = await nestedLifecycleWorkspace(t);
+  const liveTask = path.join(fixture.execution, "tasks/slice-01.md");
+  const liveBefore = await fs.readFile(liveTask, "utf8");
+  const prepared = await prepareExecutionCopy({ specPath: fixture.requirements, slice: "slice-01" });
+  t.after(() => fs.rm(prepared.candidateRoot, { recursive: true, force: true }));
+  assert.equal(path.dirname(prepared.candidateRoot), path.dirname(fixture.requirements));
+  assert.equal(path.relative(prepared.candidateTaskArtifact, path.join(fixture.root, "src/example.txt")),
+    path.relative(liveTask, path.join(fixture.root, "src/example.txt")));
+  const target = path.join(fixture.root, "src/example.txt");
+  const claim = path.relative(path.dirname(liveTask), target).split(path.sep).join("/");
+  let candidateText = await fs.readFile(prepared.candidateTaskArtifact, "utf8");
+  candidateText = candidateText.replace("- [ ] 1.1", "- [x] 1.1");
+  candidateText = replaceSection(candidateText, "Changed Areas", `- \`${claim}\``);
+  await fs.writeFile(prepared.candidateTaskArtifact, candidateText, "utf8");
+  const response = JSON.stringify({
+    status: "TESTS_PASS", automaticCheckRound: "1/3", head: "fixture-head",
+    discoverySources: "task and package scripts", discoveryActions: "read-only inspection",
+    verificationTypesConsidered: "unit tests", nonApplicabilityRationale: "none",
+    noVerificationCommandConfirmation: "not applicable",
+    commands: [{ command: "node --test test/example.test.mjs", exit: 0 }],
+    resultOfEachCommandAndExitCode: "all passed", selectedChecks: "node --test test/example.test.mjs",
+    selectionRationale: "direct coverage", coverage: "changed behavior", failures: "none",
+    priorRoundFailure: "none", correctionApplied: "none", inSliceRationale: "none",
+    evidenceOrFailureSummary: "focused tests passed", affectedFilesOrBehaviors: "example behavior",
+    blockers: "none", unexpectedWorkspaceEffects: "none", persistenceSummary: "record persisted",
+  });
+  const record = await serializeRunnerExecutionBundleFromResponse({
+    operation: "EXECUTE_SLICE", response, workspace: fixture.root,
+    taskArtifact: prepared.candidateTaskArtifact,
+  });
+  candidateText = await fs.readFile(prepared.candidateTaskArtifact, "utf8");
+  await fs.writeFile(prepared.candidateTaskArtifact,
+    replaceSection(candidateText, "Implementation Test Evidence", record), "utf8");
+  assert.equal(await fs.readFile(liveTask, "utf8"), liveBefore);
+  assert.equal((await validateExecutionCandidate(fixture.requirements, prepared.candidateExecutionRoot)).state,
+    "IMPLEMENTED_AWAITING_VALIDATION");
+  const published = await publishExecutionCopy({ specPath: fixture.requirements,
+    slice: "slice-01", candidateRoot: prepared.candidateRoot });
+  assert.equal(published.state, "IMPLEMENTED_AWAITING_VALIDATION");
+  assert.match(await fs.readFile(liveTask, "utf8"), /### implementation-check-01/u);
+  await assert.rejects(fs.stat(prepared.candidateRoot), { code: "ENOENT" });
 });
 
 test("materializer candidate preparation copies the complete execution tree into an isolated root", async (t) => {
@@ -1168,6 +1208,35 @@ test("materializer candidate preparation copies the complete execution tree into
     prepareTaskMaterializationCandidate({ specPath: alias }),
     /symlink component/u,
   );
+});
+
+test("candidate helper CLIs execute from a frozen skill path containing spaces", async (t) => {
+  const fixture = await nestedLifecycleWorkspace(t, { materialized: false, planStatus: "ready" });
+  const root = await temporary(t, "stnl-helper-path-space-");
+  const bundle = path.join(root, "frozen skill bundle");
+  await fs.mkdir(bundle);
+  for (const skill of ["stnl-execution-planner", "stnl-task-materializer"]) {
+    await fs.cp(path.join(ROOT, "skills/workflows", skill), path.join(bundle, skill), { recursive: true });
+  }
+  const environment = { ...process.env, TMPDIR: root };
+  const preparer = path.join(bundle, "stnl-task-materializer/runtime/prepare-task-candidate.mjs");
+  const prepared = spawnSync(process.execPath, [preparer, "--prepare", "--spec-path", fixture.requirements], {
+    encoding: "utf8", env: environment,
+  });
+  assert.equal(prepared.status, 0, prepared.stderr);
+  const result = JSON.parse(prepared.stdout);
+  assert.equal(result.status, "PASS");
+  assert.equal(path.dirname(result.candidateExecutionRoot), root);
+  assert.equal((await fs.lstat(path.join(result.candidateExecutionRoot, "plan.md"))).isFile(), true);
+  for (const helper of [
+    "stnl-execution-planner/runtime/prepare-plan-candidate.mjs",
+    "stnl-execution-planner/runtime/serialize-plan-paths.mjs",
+    "stnl-task-materializer/runtime/serialize-task-paths.mjs",
+  ]) {
+    const invoked = spawnSync(process.execPath, [path.join(bundle, helper)], { encoding: "utf8", env: environment });
+    assert.notEqual(invoked.status, 0, `${helper} silently skipped its CLI guard`);
+    assert.match(invoked.stderr, /usage:/u);
+  }
 });
 
 test("materializer candidate publication revalidates and never publishes hard-linked execution files", async (t) => {
@@ -1800,11 +1869,8 @@ test("every touched model-authored execution writer requires candidate validatio
 
 test("executor producer instructions require complete computed Tested state digests", async () => {
   const skill = await fs.readFile(path.join(ROOT, "skills/workflows/stnl-slice-executor/SKILL.md"), "utf8");
-  const prompt = await fs.readFile(path.join(ROOT, "templates/prompts/slice-execute-codex.md"), "utf8");
-  for (const source of [skill, prompt]) {
-    assert.match(source, /file-backed[\s\S]{0,260}digest[\s\S]{0,260}64(?:[- ]hex| caracteres hexadecimais)/u);
-    assert.match(source, /(?:Never|Nunca)[\s\S]{0,180}(?:hand-type|digite manualmente)[\s\S]{0,180}(?:truncate|trunque)/iu);
-  }
+  assert.match(skill, /file-backed[\s\S]{0,260}digest[\s\S]{0,260}64[- ]hex/u);
+  assert.match(skill, /Never hand-type, truncate/u);
 });
 
 test("the last VALIDATE_SLICE owns bounded global semantic review before terminal PASS", async () => {
@@ -2727,7 +2793,7 @@ test("planning path carriers distinguish concrete paths from conceptual descript
   }, "P03 conceptual code span remains a rejected path claim");
 });
 
-test("Pilot #11 planning claims use the containing artifact basis", async (t) => {
+test("planning claims use the containing artifact basis", async (t) => {
   const fixture = await nestedLifecycleWorkspace(t, { materialized: false, planStatus: "ready" });
   const implementationTarget = path.join(fixture.repository, "src", "cli.mjs");
   await fs.mkdir(path.dirname(implementationTarget), { recursive: true });
@@ -2740,8 +2806,6 @@ test("Pilot #11 planning claims use the containing artifact basis", async (t) =>
   const plannerSkill = await fs.readFile(path.join(ROOT, "skills/workflows/stnl-execution-planner/SKILL.md"), "utf8");
   const globalTemplate = await fs.readFile(path.join(ROOT, "skills/workflows/stnl-execution-planner/templates/plan.template.md"), "utf8");
   const detailedTemplate = await fs.readFile(path.join(ROOT, "skills/workflows/stnl-execution-planner/templates/slice-plan.template.md"), "utf8");
-  const plannerPrompt = await fs.readFile(path.join(ROOT, "templates/prompts/execution-plan.md"), "utf8");
-  const reviewerPrompt = await fs.readFile(path.join(ROOT, "templates/prompts/execution-plan-review.md"), "utf8");
   assert.match(plannerSkill, /These carriers are implementation-only/u);
   assert.match(plannerSkill, /nearest ancestor of the normalized requirements source that contains a real `\.git` marker/u);
   assert.match(plannerSkill, /`SPEC_PATH` is not necessarily the project root/u);
@@ -2749,10 +2813,6 @@ test("Pilot #11 planning claims use the containing artifact basis", async (t) =>
   assert.match(plannerSkill, /never apply this artifact-relative readback to the raw semantic input before serialization/u);
   assert.match(globalTemplate, /Model-selected physical target \(repository-relative before serialization\)/u);
   assert.match(detailedTemplate, /Implementation filesystem path \(outside generated execution artifacts\)/u);
-  assert.match(plannerPrompt, /Raw global `Expected areas` code spans are semantic repository-relative selections, not persisted artifact-relative claims/u);
-  assert.match(plannerPrompt, /do not run this artifact-relative readback against the raw semantic input before serialization/u);
-  assert.match(reviewerPrompt, /Raw global `Expected areas` code spans are semantic repository-relative selections, not persisted artifact-relative claims/u);
-  assert.match(reviewerPrompt, /do not run this artifact-relative readback against the raw semantic input before serialization/u);
 
   const globalClaim = path.relative(fixture.execution, implementationTarget).split(path.sep).join("/");
   const detailDirectory = path.join(fixture.requirements, "execution", "plans");
@@ -2790,15 +2850,10 @@ test("Pilot #11 planning claims use the containing artifact basis", async (t) =>
 
 test("materialization and task-review gates preserve valid future artifact-relative paths", async (t) => {
   const materializerSkill = await fs.readFile(path.join(ROOT, "skills/workflows/stnl-task-materializer/SKILL.md"), "utf8");
-  const materializerPrompt = await fs.readFile(path.join(ROOT, "templates/prompts/execution-tasks.md"), "utf8");
-  for (const contract of [materializerSkill, materializerPrompt]) {
-    assert.match(contract, /resolveExecutionWorkspace\(SPEC_PATH\)/u);
-    assert.match(contract, /taskPath = path\.join\(executionRoot, "tasks", "slice-NN\.md"\)/u);
-    assert.doesNotMatch(contract, /path\.join\(SPEC_PATH, "execution"/u);
-    assert.doesNotMatch(contract, /SPEC_PATH\/execution\/tasks/u);
-    assert.doesNotMatch(contract, /benchmark-case-a|todo-service\.mjs/u);
-  }
-  assert.match(materializerPrompt, /__MATERIALIZER_TASK_CANDIDATE_PREPARER__/u);
+  assert.match(materializerSkill, /resolveExecutionWorkspace\(SPEC_PATH\)/u);
+  assert.match(materializerSkill, /taskPath = path\.join\(executionRoot, "tasks", "slice-NN\.md"\)/u);
+  assert.doesNotMatch(materializerSkill, /path\.join\(SPEC_PATH, "execution"/u);
+  assert.doesNotMatch(materializerSkill, /benchmark-case-a|todo-service\.mjs/u);
   assert.match(materializerSkill, /runtime\/prepare-task-candidate\.mjs/u);
 
   const planOnly = await nestedLifecycleWorkspace(t, { materialized: false, planStatus: "ready" });
@@ -3162,7 +3217,7 @@ test("validation candidate preparation writes canonical attempt and PASS base be
   assert.equal(await fs.readFile(malformedTask, "utf8"), malformedBefore, "malformed semantic input must not create a candidate record");
 });
 
-test("validation publisher recovers the historical-task materializer rejection without weakening candidate validation", async (t) => {
+test("validation publisher accepts its own complete candidate after the materializer rejects it", async (t) => {
   const fixture = await standaloneWorkspace(t);
   await renderArtifacts(fixture);
   const physicalTarget = path.join(fixture.root, "src", "validation target.mjs");
@@ -3225,40 +3280,16 @@ test("validation publisher recovers the historical-task materializer rejection w
   assert.deepEqual(await fs.readFile(liveIndexPath), liveIndexBefore);
   assert.equal((await inspectExecutionState(fixture.requirements)).state, "IMPLEMENTED_AWAITING_VALIDATION");
 
-  const preparedCandidateBeforeController = await fs.readFile(path.join(candidateRoot, "tasks", "slice-01.md"));
-  await assert.rejects(publishValidationCandidateFromController({
+  const preparedCandidateBeforePublish = await fs.readFile(path.join(candidateRoot, "tasks", "slice-01.md"));
+  const controllerResult = await publishValidationCandidate({
     specPath: fixture.requirements,
     slice: "slice-01",
-    workspace: fixture.root,
-    semanticResponseFile,
     candidateExecutionRoot: candidateRoot,
-    modelResponseText: JSON.stringify({ status: "BLOCKED", blockers: "unrelated blocker" }),
-  }), /candidate Validation Attempts must remain byte-identical to live authority/u,
-  "only the exact observed task-materializer publisher rejection may take the strict republish path");
-  assert.deepEqual(await fs.readFile(path.join(candidateRoot, "tasks", "slice-01.md")), preparedCandidateBeforeController);
-  assert.equal((await inspectExecutionState(fixture.requirements)).state, "IMPLEMENTED_AWAITING_VALIDATION");
-
-  const controllerResult = await publishValidationCandidateFromController({
-    specPath: fixture.requirements,
-    slice: "slice-01",
-    workspace: fixture.root,
-    semanticResponseFile,
-    candidateExecutionRoot: candidateRoot,
-    modelResponseText: JSON.stringify({
-      status: "BLOCKED",
-      blockers: "Publication rejected: task path serialization blocked because slice-01 historical task changed during materialization. Recovery targets: VALIDATE_SLICE / slice-01 or REPLAN.",
-    }),
   });
-  assert.equal(controllerResult.status, "PUBLISHED");
-  assert.equal(controllerResult.producer, "STRICT_VALIDATION_PUBLISHER_RECOVERY");
-  assert.equal(controllerResult.formalStatus, "PASS");
-  assert.equal(controllerResult.officialState, "COMPLETE");
-  assert.deepEqual(controllerResult.controllerRecovery, {
-    code: "C136_TASK_MATERIALIZER_PUBLISHER_REUSED",
-    count: 1,
-  });
-  assert.deepEqual(await fs.readFile(path.join(candidateRoot, "tasks", "slice-01.md")), preparedCandidateBeforeController,
-    "controller recovery must publish the already prepared candidate without rewriting it");
+  assert.equal(controllerResult.status, "PASS");
+  assert.equal(controllerResult.state, "COMPLETE");
+  assert.deepEqual(await fs.readFile(path.join(candidateRoot, "tasks", "slice-01.md")), preparedCandidateBeforePublish,
+    "strict publisher must publish the already prepared candidate without rewriting it");
   assert.equal((await inspectExecutionState(fixture.requirements)).state, "COMPLETE");
   assert.deepEqual(
     await fs.readFile(path.join(fixture.execution, "tasks", "slice-01.md")),
@@ -3300,19 +3331,21 @@ test("validation candidate preparation preserves a new semantic NEEDS_FIX findin
   await fs.writeFile(candidateTask, replaceSection(await fs.readFile(candidateTask, "utf8"), "Validation Findings", ACTIVE_FINDING), "utf8");
 
   assert.equal(await fs.readFile(liveTask, "utf8").then((value) => value.includes("### attempt-01")), false);
-  const published = await publishValidationCandidateFromController({
+  const prepared = await prepareValidationCandidate({
     specPath: fixture.requirements,
     slice: "slice-01",
     workspace: fixture.root,
     candidateExecutionRoot: candidateRoot,
     semanticResponseFile,
-    modelResponseText: JSON.stringify({ status: "NEEDS_FIX" }),
   });
-  assert.equal(published.status, "PUBLISHED");
-  assert.equal(published.producer, "CONTROLLER_PREPARED");
-  assert.equal(published.formalStatus, "NEEDS_FIX");
-  assert.equal(published.officialState, "VALIDATION_NEEDS_FIX");
-  assert.equal(published.controllerRecovery, null);
+  assert.equal(prepared.formalStatus, "NEEDS_FIX");
+  const published = await publishValidationCandidate({
+    specPath: fixture.requirements,
+    slice: "slice-01",
+    candidateExecutionRoot: candidateRoot,
+  });
+  assert.equal(published.status, "PASS");
+  assert.equal(published.state, "VALIDATION_NEEDS_FIX");
   const taskText = await fs.readFile(candidateTask, "utf8");
   assert.ok(taskText.includes("- Finding references: finding-01"));
   assert.ok(taskText.includes("- Finding dispositions: finding-01=active"));

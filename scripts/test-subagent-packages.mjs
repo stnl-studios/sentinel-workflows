@@ -36,6 +36,12 @@ const PLATFORMS = {
     files: [
       ".codex/agents/stnl_spec_context_scout.toml",
       ".codex/agents/stnl_validation_runner.toml",
+      "package.json",
+      "package-lock.json",
+      "runtime/isolated-home.mjs",
+      "runtime/runner-broker.mjs",
+      "runtime/sdk-transport.mjs",
+      "runtime/validation-runner.mjs",
     ],
   },
   "claude-code": {
@@ -94,7 +100,7 @@ async function listFiles(root) {
     entries.sort((left, right) => left.name.localeCompare(right.name, "en"));
     for (const entry of entries) {
       const relativePath = path.join(relativeDirectory, entry.name);
-      if (isPackagingMetadata(relativePath)) {
+      if (isPackagingMetadata(relativePath) || entry.name === "node_modules") {
         continue;
       }
       const absolutePath = path.join(directory, entry.name);
@@ -226,7 +232,6 @@ async function validateCodexPackage(root) {
     description: RUNNER_DESCRIPTION,
     model: "gpt-5.6-luna",
     model_reasoning_effort: "medium",
-    sandbox_mode: "workspace-write",
     agents: { max_depth: 1 },
   });
   assert.deepEqual(scout.metadata, {
@@ -328,7 +333,7 @@ async function withTemporaryDirectory(prefix, operation) {
 async function withDistributionFixture(operation) {
   return withTemporaryDirectory("stnl subagents distribution ", async (temporaryRoot) => {
     const fixture = path.join(temporaryRoot, "distribution with spaces");
-    await cp(DISTRIBUTION_ROOT, fixture, { recursive: true });
+    await cp(DISTRIBUTION_ROOT, fixture, { recursive: true, filter: (source) => path.basename(source) !== "node_modules" });
     return operation(fixture);
   });
 }
@@ -338,6 +343,7 @@ async function withPlatformFixture(platform, operation) {
     const fixture = path.join(temporaryRoot, "consumer project with spaces");
     await cp(path.join(DISTRIBUTION_ROOT, PLATFORMS[platform].directory), fixture, {
       recursive: true,
+      filter: (source) => path.basename(source) !== "node_modules",
     });
     return operation(fixture);
   });

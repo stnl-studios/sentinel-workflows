@@ -234,7 +234,6 @@ function checkRunner(root) {
     description: "Runner barato e isolado para checks de implementação, checks de findings e validação formal independente de uma slice.",
     model: "gpt-5.6-luna",
     model_reasoning_effort: "medium",
-    sandbox_mode: "workspace-write",
     developer_instructions: codex.developer_instructions,
     agents: { max_depth: 1 },
   };
@@ -287,7 +286,8 @@ function checkRunner(root) {
   requirePattern(contract, /Depois de derivar cada claim task-relative[\s\S]{0,260}path\.resolve\(dirname\(taskArtifact\), claim\)[\s\S]{0,220}compare por `realpath`[\s\S]{0,260}não emita `TESTS_PASS`[\s\S]{0,180}target/iu, "R023_PHYSICAL_PATH_IDENTITY", "runner does not verify task-relative claims against the physical target");
   requirePattern(contract, /Antes de emitir qualquer status[\s\S]{0,260}digest file-backed[\s\S]{0,220}formato exato `sha256:`[\s\S]{0,160}64 caracteres hexadecimais minúsculos[\s\S]{0,260}retorne `BLOCKED`[\s\S]{0,160}nunca emita `PASS`/iu, "R024_DIGEST_FORMAT", "runner may emit a status with a truncated or malformed digest");
   requirePattern(contract, /Every file-backed Tested state and formal-manifest tuple MUST use the literal `sha256:` separator; `sha256=` is malformed output[\s\S]{0,120}return `BLOCKED`, never `PASS`/u, "R025_DIGEST_PREFIX", "runner does not reject the sha256 equals-sign delimiter");
-  requirePattern(contract, /The operation payload MUST include an absolute `RUNNER_EVIDENCE_SERIALIZER` path[\s\S]{0,900}raw JSON object[\s\S]{0,900}--execution-bundle --operation[\s\S]{0,700}--workspace[\s\S]{0,500}--spec-path[\s\S]{0,400}--slice[\s\S]{0,500}--semantic-response-file[\s\S]{0,1000}deterministic producer[\s\S]{0,700}(?:path-relative serialization|path\.relative)[\s\S]{0,500}(?:labels|delimiters)[\s\S]{0,500}(?:hashes|response, and record)[\s\S]{0,400}(?:producer exits nonzero|producer failure)[\s\S]{0,300}(?:Status: BLOCKED|`BLOCKED`)/u, "R030_DETERMINISTIC_EVIDENCE_SERIALIZATION", "runner leaves recurring evidence serialization to the model");
+  requirePattern(contract, /The operation payload MUST include an absolute `RUNNER_EVIDENCE_SERIALIZER` path[\s\S]*?--execution-bundle --operation <requested-operation> --workspace <managed workspace> --task-artifact <candidateTaskArtifact> --semantic-response-file <absolute-temp-file>/u, "R030_DETERMINISTIC_EVIDENCE_SERIALIZATION", "runner does not require candidate-based deterministic execution evidence");
+  requirePattern(contract, /The deterministic producer rejects unknown or missing keys[\s\S]{0,800}path-relative serialization, ordering, labels, delimiters, hashes/u, "R030_DETERMINISTIC_EVIDENCE_SERIALIZATION", "runner leaves recurring evidence serialization to the model");
   requirePattern(contract, /# Canonical response gate\nField shape is strict at the JSON boundary:[\s\S]{0,500}payload is one raw JSON object[\s\S]{0,700}Before returning any result for `EXECUTE_SLICE`, `APPLY_FINDINGS`, or `VALIDATE_SLICE`, emit exactly the machine-key JSON schema (?:below|for that operation)[\s\S]{0,700}status: "BLOCKED"[\s\S]{0,300}never return a prose summary/u, "R026_OUTPUT_GATE", "runner lacks a byte-for-byte canonical semantic response gate");
   forbidPattern(contract, /^Retorne somente `PASS`, `NEEDS_FIX` ou `BLOCKED`\.[\s\S]{0,500}Em `Findings:`/mu, "R026_OUTPUT_GATE", "validation contract reintroduces a narrative output shape alongside the JSON gate");
   forbidPattern(contract, /(?:^|\n)Em `Findings:`, forneça uma disposição/iu, "R026_OUTPUT_GATE", "validation findings are not constrained to the semantic JSON field");
@@ -390,6 +390,12 @@ function checkSubagents(root) {
     "README.md",
     "codex/.codex/agents/stnl_validation_runner.toml",
     "codex/.codex/agents/stnl_spec_context_scout.toml",
+    "codex/package.json",
+    "codex/package-lock.json",
+    "codex/runtime/isolated-home.mjs",
+    "codex/runtime/runner-broker.mjs",
+    "codex/runtime/sdk-transport.mjs",
+    "codex/runtime/validation-runner.mjs",
     "claude-code/.claude/agents/stnl-validation-runner.md",
     "claude-code/.claude/agents/stnl-spec-context-scout.md",
   ]);
@@ -401,50 +407,41 @@ function checkSubagents(root) {
 }
 
 const launcherSpecs = {
-  "spec-init": ["stnl-spec-lifecycle-manager", "MODE", "INIT", [["SPEC_PATH", "{{SPEC_PATH}}"], ["REQUIREMENTS_SOURCE", "{{REQUIREMENTS_SOURCE}}"]]],
-  "spec-resume": ["stnl-spec-lifecycle-manager", "MODE", "RESUME", [["SPEC_PATH", "{{SPEC_PATH}}"], ["NEW_INFORMATION", "{{NEW_INFORMATION}}"]]],
-  "spec-readiness": ["stnl-spec-lifecycle-manager", "MODE", "READINESS", [["SPEC_PATH", "{{SPEC_PATH}}"], ["READINESS_SCOPE", "{{READINESS_SCOPE}}"], ["READINESS_FOCUS", "{{READINESS_FOCUS}}"]]],
-  "spec-close": ["stnl-spec-lifecycle-manager", "MODE", "CLOSE", [["SPEC_PATH", "{{SPEC_PATH}}"]]],
-  "spec-test-runbook": ["stnl-spec-test-runbook", "OPERATION", "GENERATE_RUNBOOK", [["SPEC_PATH", "{{SPEC_PATH}}"], ["RUNBOOK_SCOPE", "{{RUNBOOK_SCOPE}}"], ["RUNBOOK_SELECTION", "{{RUNBOOK_SELECTION}}"], ["RUNBOOK_OPTIONS", "{{RUNBOOK_OPTIONS}}"]]],
-  "spec-roadmap-init": ["stnl-spec-roadmap", "OPERATION", "INIT", [["PROJECT_ROOT", "{{PROJECT_ROOT}}"], ["ROADMAP_PATH", "{{ROADMAP_PATH}}"], ["ROADMAP_SOURCE", "{{ROADMAP_SOURCE}}"]]],
-  "spec-roadmap-reconcile": ["stnl-spec-roadmap", "OPERATION", "RECONCILE", [["PROJECT_ROOT", "{{PROJECT_ROOT}}"], ["ROADMAP_PATH", "{{ROADMAP_PATH}}"], ["NEW_INFORMATION", "{{NEW_INFORMATION}}"]]],
-  "execution-plan": ["stnl-execution-planner", "OPERATION", "PLAN", [["SPEC_PATH", "{{SPEC_PATH}}"]]],
-  "execution-replan": ["stnl-execution-planner", "OPERATION", "REPLAN", [["SPEC_PATH", "{{SPEC_PATH}}"], ["REPLAN_REASON", "{{REPLAN_REASON}}"]]],
-  "execution-plan-review": ["stnl-plan-reviewer", "OPERATION", "REVIEW_PLAN", [["SPEC_PATH", "{{SPEC_PATH}}"]]],
-  "execution-tasks": ["stnl-task-materializer", "OPERATION", "MATERIALIZE_TASKS", [["SPEC_PATH", "{{SPEC_PATH}}"]]],
-  "execution-tasks-review": ["stnl-task-reviewer", "OPERATION", "REVIEW_TASKS", [["SPEC_PATH", "{{SPEC_PATH}}"]]],
-  "slice-execute-codex": ["stnl-slice-executor", "OPERATION", "EXECUTE_SLICE", [["SPEC_PATH", "{{SPEC_PATH}}"], ["SLICE", "{{SLICE}}"], ["MANAGED_WORKSPACE", "{{MANAGED_WORKSPACE}}"], ["BENCHMARK_SEQUENCE", "{{BENCHMARK_SEQUENCE}}"]]],
-  "slice-execute-claude": ["stnl-slice-executor", "OPERATION", "EXECUTE_SLICE", [["SPEC_PATH", "{{SPEC_PATH}}"], ["SLICE", "{{SLICE}}"], ["MANAGED_WORKSPACE", "{{MANAGED_WORKSPACE}}"]]],
-  "slice-apply-findings-codex": ["stnl-slice-executor", "OPERATION", "APPLY_FINDINGS", [["SPEC_PATH", "{{SPEC_PATH}}"], ["SLICE", "{{SLICE}}"], ["MANAGED_WORKSPACE", "{{MANAGED_WORKSPACE}}"], ["BENCHMARK_SEQUENCE", "{{BENCHMARK_SEQUENCE}}"]]],
-  "slice-apply-findings-claude": ["stnl-slice-executor", "OPERATION", "APPLY_FINDINGS", [["SPEC_PATH", "{{SPEC_PATH}}"], ["SLICE", "{{SLICE}}"], ["MANAGED_WORKSPACE", "{{MANAGED_WORKSPACE}}"]]],
-  "slice-validate-codex": ["stnl-slice-quality-manager", "OPERATION", "VALIDATE_SLICE", [["SPEC_PATH", "{{SPEC_PATH}}"], ["SLICE", "{{SLICE}}"], ["MANAGED_WORKSPACE", "{{MANAGED_WORKSPACE}}"], ["CANDIDATE_EXECUTION_ROOT", "{{CANDIDATE_EXECUTION_ROOT}}"], ["BENCHMARK_SEQUENCE", "{{BENCHMARK_SEQUENCE}}"]]],
-  "slice-validate-claude": ["stnl-slice-quality-manager", "OPERATION", "VALIDATE_SLICE", [["SPEC_PATH", "{{SPEC_PATH}}"], ["SLICE", "{{SLICE}}"], ["MANAGED_WORKSPACE", "{{MANAGED_WORKSPACE}}"], ["CANDIDATE_EXECUTION_ROOT", "{{CANDIDATE_EXECUTION_ROOT}}"]]],
+  "spec-init": ["stnl-spec-lifecycle-manager", "MODE", "INIT", ["SPEC_PATH", "REQUIREMENTS_SOURCE"]],
+  "spec-resume": ["stnl-spec-lifecycle-manager", "MODE", "RESUME", ["SPEC_PATH", "NEW_INFORMATION"]],
+  "spec-readiness": ["stnl-spec-lifecycle-manager", "MODE", "READINESS", ["SPEC_PATH", "READINESS_SCOPE", "READINESS_FOCUS"]],
+  "spec-close": ["stnl-spec-lifecycle-manager", "MODE", "CLOSE", ["SPEC_PATH"]],
+  "spec-test-runbook": ["stnl-spec-test-runbook", "OPERATION", "GENERATE_RUNBOOK", ["SPEC_PATH", "RUNBOOK_SCOPE", "RUNBOOK_SELECTION", "RUNBOOK_OPTIONS"]],
+  "spec-roadmap-init": ["stnl-spec-roadmap", "OPERATION", "INIT", ["PROJECT_ROOT", "ROADMAP_PATH", "ROADMAP_SOURCE"]],
+  "spec-roadmap-reconcile": ["stnl-spec-roadmap", "OPERATION", "RECONCILE", ["PROJECT_ROOT", "ROADMAP_PATH", "NEW_INFORMATION"]],
+  "execution-plan": ["stnl-execution-planner", "OPERATION", "PLAN", ["SPEC_PATH"]],
+  "execution-replan": ["stnl-execution-planner", "OPERATION", "REPLAN", ["SPEC_PATH", "REPLAN_REASON"]],
+  "execution-plan-review": ["stnl-plan-reviewer", "OPERATION", "REVIEW_PLAN", ["SPEC_PATH"]],
+  "execution-tasks": ["stnl-task-materializer", "OPERATION", "MATERIALIZE_TASKS", ["SPEC_PATH"]],
+  "execution-tasks-review": ["stnl-task-reviewer", "OPERATION", "REVIEW_TASKS", ["SPEC_PATH"]],
+  "slice-execute-codex": ["stnl-slice-executor", "OPERATION", "EXECUTE_SLICE", ["SPEC_PATH", "SLICE"]],
+  "slice-execute-claude": ["stnl-slice-executor", "OPERATION", "EXECUTE_SLICE", ["SPEC_PATH", "SLICE"]],
+  "slice-apply-findings-codex": ["stnl-slice-executor", "OPERATION", "APPLY_FINDINGS", ["SPEC_PATH", "SLICE"]],
+  "slice-apply-findings-claude": ["stnl-slice-executor", "OPERATION", "APPLY_FINDINGS", ["SPEC_PATH", "SLICE"]],
+  "slice-validate-codex": ["stnl-slice-quality-manager", "OPERATION", "VALIDATE_SLICE", ["SPEC_PATH", "SLICE"]],
+  "slice-validate-claude": ["stnl-slice-quality-manager", "OPERATION", "VALIDATE_SLICE", ["SPEC_PATH", "SLICE"]],
 };
-
-const runnerLaunchers = new Set(Object.keys(launcherSpecs).filter((name) => name.startsWith("slice-")));
-const sharedExecution = new Set(["execution-plan", "execution-replan", "execution-plan-review", "execution-tasks", "execution-tasks-review", "spec-roadmap-init", "spec-roadmap-reconcile"]);
 
 function parseLauncher(file, spec) {
   const text = read(file, "L001_REGISTRY");
-  const lines = text.split(/\r?\n/u);
-  const context = lines.lastIndexOf("Contexto adicional (opcional):");
-  if (context < 0 || lines.slice(context + 1).some((line) => line !== "")) reject("L009_CONTEXT_FORMAT", `${file}: optional context must be the final heading`);
-  const body = lines.slice(0, context);
-  while (body.at(-1) === "") body.pop();
-  if (body[0] !== `Use \`${spec[0]}\`.`) reject("L002_SKILL", `${file}: wrong skill`);
-  if (body[1] !== `${spec[1]}=${spec[2]}`) reject("L003_OPERATION", `${file}: wrong operation`);
-  const assignments = [];
-  let index = 2;
-  while (/^[A-Z_]+=/u.test(body[index] ?? "")) {
-    const split = body[index].indexOf("=");
-    assignments.push([body[index].slice(0, split), body[index].slice(split + 1)]);
-    index += 1;
+  const expected = [
+    `Use ` + "`" + `${spec[0]}` + "`" + `.`,
+    `${spec[1]}=${spec[2]}`,
+    ...spec[3].map((name) => `${name}={{${name}}}`),
+    "",
+    "Contexto adicional (opcional):",
+    "",
+  ].join("\n");
+  if (text !== expected) reject("L004_INPUTS", `${file}: launcher must contain only the registered skill, operation, parameters, and optional context`);
+  if (/__[^_\s]+__|BENCHMARK_SEQUENCE|MANAGED_WORKSPACE|CANDIDATE_EXECUTION_ROOT|runtime\/|broker|serializer|publisher/iu.test(text)) {
+    reject("L010_MECHANICS", `${file}: internal mechanics leaked into a human launcher`);
   }
-  if (JSON.stringify(assignments) !== JSON.stringify(spec[3])) reject("L004_INPUTS", `${file}: expected ${JSON.stringify(spec[3])}, got ${JSON.stringify(assignments)}`);
-  const placeholders = [...new Set([...text.matchAll(/\{\{([^{}]+)\}\}/gu)].map((match) => match[1]))].sort();
-  const expected = spec[3].map(([key]) => key).sort();
-  if (JSON.stringify(placeholders) !== JSON.stringify(expected)) reject("L004_INPUTS", `${file}: placeholder set changed`);
-  return { text, instructions: body.slice(index).join("\n") };
+  return text;
 }
 
 function checkLaunchers(root) {
@@ -452,202 +449,11 @@ function checkLaunchers(root) {
     .filter((entry) => entry.isFile() && entry.name.endsWith(".md") && entry.name !== ".DS_Store" && !entry.name.startsWith("._"))
     .map((entry) => [entry.name.slice(0, -3), path.join(root, entry.name)]));
   if (!keysEqual(actual, launcherSpecs)) reject("L001_REGISTRY", `launcher registry mismatch; actual=${JSON.stringify(Object.keys(actual).sort())}`);
-  for (const [name, spec] of Object.entries(launcherSpecs)) {
-    const { text, instructions } = parseLauncher(actual[name], spec);
-    forbidPattern(text, /(?:FINALIZE_SLICE|PARALLELIZE_SLICES|RUN_TESTS|RETRY_TESTS|FIX_TESTS|EXECUTE_SLICES|MODE=PLANNING|^SLICES=|paraleliz)/imu, "L005_REMOVED_CONTRACT", `${name}: removed operation remains`);
-    if (sharedExecution.has(name)) {
-      forbidPattern(text, /(?:stnl[_-]validation[_-]runner|@agent-|\bCodex\b|\bClaude\b|fork_turns|\bspawn\b|\bdeleg)/iu, "L006_SHARED_ISOLATION", `${name}: shared launcher contains platform invocation syntax`);
-    }
-    if (name === "execution-replan") {
-      requirePattern(text, /OPERATION=REPLAN/u, "L003_OPERATION", "REPLAN launcher operation is missing");
-      requirePattern(text, /REPLAN_REASON=\{\{REPLAN_REASON\}\}/u, "L004_INPUTS", "REPLAN_REASON is missing");
-      requirePattern(instructions, /planning-only atomic replacement[\s\S]{0,120}revision 1[\s\S]{0,160}materialized-pristine replacement[\s\S]{0,160}append-only extension/iu, "L019_RECOVERY_TARGET", "REPLAN launcher does not distinguish all three mutation classes");
-    }
-    if (name === "spec-readiness") {
-      requirePattern(instructions, /(?:only|somente).{0,40}`LOCAL`.{0,30}`GLOBAL`|`LOCAL`.{0,30}`GLOBAL`.{0,80}(?:case-sensitive|sem aliases)/iu, "L015_READINESS_SCOPE", "READINESS exact scope set is missing");
-      requirePattern(instructions, /READINESS_FOCUS.{0,100}(?:obrigat|required)/iu, "L015_READINESS_SCOPE", "LOCAL focus requirement is missing");
-      forbidPattern(instructions, /`(?:local|global|localized|repository)`/u, "L015_READINESS_SCOPE", "READINESS scope alias is present");
-    }
-    if (name === "spec-init") {
-      requirePattern(
-        instructions,
-        /Depois de concluir o candidate INIT isolado e antes de qualquer validação ou publicação, execute exatamente uma vez `node "<SKILL_ROOT>\/runtime\/prepare-init-candidate\.mjs" <SPEC_PATH> <CANDIDATE>`[\s\S]{0,220}serializa somente o `owner` fixo[\s\S]{0,180}não a execute depois de uma rejeição/iu,
-        "L051_INIT_HEADER_SERIALIZATION",
-        "INIT launcher lacks the deterministic prevalidation owner serializer boundary",
-      );
-    }
-    if (name === "spec-test-runbook") {
-      for (const key of ["audience", "test_types", "environment", "depth", "data_preparation", "evidence", "presentation", "helpers", "locale"]) {
-        requirePattern(instructions, new RegExp(`\\b${key}\\b`, "u"), "L020_RUNBOOK_OPTIONS", `runbook launcher omits canonical option ${key}`);
-      }
-      requirePattern(instructions, /locale.{0,80}`en-US`.{0,30}`pt-BR`|`en-US`.{0,30}`pt-BR`.{0,80}locale/iu, "L020_RUNBOOK_OPTIONS", "runbook launcher omits the exact locale set");
-      requirePattern(instructions, /locale="en-US"/u, "L020_RUNBOOK_OPTIONS", "runbook launcher omits the en-US default");
-      requirePattern(instructions, /não (?:é |será )?detectado automaticamente|sem detecção automática|never (?:automatically )?detected/iu, "L020_RUNBOOK_OPTIONS", "runbook launcher permits automatic locale detection");
-      requirePattern(instructions, /pt_BR.{0,60}pt-br.{0,60}es-ES.{0,60}auto.{0,60}system/u, "L020_RUNBOOK_OPTIONS", "runbook launcher omits representative invalid locales");
-      requirePattern(instructions, /Chaves desconhecidas.{0,100}tipos incorretos.{0,100}enums inválidos.{0,100}arrays inválidos/iu, "L020_RUNBOOK_OPTIONS", "runbook launcher omits deterministic rejection rules");
-      requirePattern(instructions, /Exemplo em inglês[\s\S]{0,500}"en-US"/u, "L020_RUNBOOK_OPTIONS", "runbook launcher omits the en-US example");
-      requirePattern(instructions, /Exemplo em português do Brasil[\s\S]{0,800}"pt-BR"/u, "L020_RUNBOOK_OPTIONS", "runbook launcher omits the pt-BR example");
-    }
-    if (name === "execution-tasks") {
-      requirePattern(instructions, /Antes de validar o candidate[\s\S]{0,400}templates\/tasks\.template\.md[\s\S]{0,350}bloco completo `# File Purpose Header`[\s\S]{0,350}sete campos ordenados[\s\S]{0,350}owner: stnl-task-materializer[\s\S]{0,300}nunca publique um índice parcial/iu, "L032_TASK_INDEX_HEADER", `${name}: global task-index File Purpose Header guard is missing`);
-      requirePattern(instructions, /code spans `Likely Areas` dos detailed plans aprovados[\s\S]{0,320}serializer determinístico em `__MATERIALIZER_TASK_PATH_SERIALIZER__`[\s\S]{0,700}sem invocar candidate validation nem publicar/iu, "L043_TASK_PATH_SERIALIZATION", `${name}: deterministic task-path serializer boundary is missing`);
-      requirePattern(instructions, /(?:candidate execution root deve começar como uma cópia completa e isolada|helper cria uma cópia completa e isolada)[\s\S]{0,360}`plan\.md`[\s\S]{0,220}`plans\/slice-NN\.md`[\s\S]{0,220}`tasks\.md`[\s\S]{0,180}não crie um candidate contendo somente `tasks\//iu, "L045_COMPLETE_TASK_CANDIDATE", `${name}: materializer may validate a candidate without the complete plan/task tree`);
-      requirePattern(instructions, /Antes de criar ou editar qualquer task[\s\S]{0,260}__MATERIALIZER_TASK_CANDIDATE_PREPARER__[\s\S]{0,260}--prepare --spec-path[\s\S]{0,320}Use exatamente essa saída absoluta[\s\S]{0,260}não derive, encurte, substitua ou reconstrua a raiz/iu, "L047_CANDIDATE_ROOT_PREPARATION", `${name}: deterministic candidate-root preparation boundary is missing`);
-      requirePattern(instructions, /boundary determinística `__MATERIALIZER_TASK_CANDIDATE_PUBLISHER__`[\s\S]{0,420}--publish --spec-path[\s\S]{0,260}--candidate-execution-root[\s\S]{0,500}(?:hard links|hard-link|hard links)/iu, "L048_CANDIDATE_PUBLICATION", `${name}: deterministic regular-file candidate publication boundary is missing`);
-    }
-    if (name === "execution-plan") {
-      requirePattern(instructions, /recompute every plan claim from its declaring artifact[\s\S]{0,260}`path\.relative\(path\.dirname\(artifact\), physicalTarget\)`[\s\S]{0,220}compare by `realpath`[\s\S]{0,180}return `BLOCKED` without publication[\s\S]{0,120}never publish a plan claim/iu, "L035_PLAN_PATH_IDENTITY", `${name}: plan claim physical-identity guard is missing`);
-      requirePattern(instructions, /global plan `Expected areas` code spans[\s\S]{0,220}deterministic serializer at `__PLANNER_PLAN_PATH_SERIALIZER__`[\s\S]{0,800}(?:then )?invoke the official `validateExecutionCandidate` authority[\s\S]{0,240}same `SPEC_PATH` and candidate root[\s\S]{0,240}Do not separately assemble or invoke the candidate-validator command/iu, "L042_PLAN_PATH_SERIALIZATION", `${name}: deterministic plan serialization and official candidate-validation boundary is missing`);
-      requirePattern(instructions, /deterministic plan-candidate preparer at `__PLANNER_PLAN_CANDIDATE_PREPARER__`[\s\S]{0,320}--candidate-execution-root[\s\S]{0,500}exactly the template field set[\s\S]{0,180}status: draft[|]ready[\s\S]{0,260}serializes all fixed metadata values and field order[\s\S]{0,240}preserving that status[\s\S]{0,360}missing, duplicate, or unknown fields[\s\S]{0,260}(?:never edits live|not a repair after candidate rejection)/iu, "L043_PLAN_CANDIDATE_HEADER", `${name}: deterministic plan-candidate header boundary is missing`);
-    }
-    if (name === "execution-plan-review") {
-      requirePattern(instructions, /recompute every reviewed plan claim from its declaring artifact[\s\S]{0,260}`path\.relative\(path\.dirname\(artifact\), physicalTarget\)`[\s\S]{0,220}compare by `realpath`[\s\S]{0,180}return `BLOCKED` without publication[\s\S]{0,120}never approve a plan claim/iu, "L036_REVIEW_PLAN_PATH_IDENTITY", `${name}: reviewed plan claim physical-identity guard is missing`);
-      requirePattern(instructions, /candidate global plan `Expected areas` code spans[\s\S]{0,220}deterministic serializer at `__PLANNER_PLAN_PATH_SERIALIZER__`[\s\S]{0,800}(?:then )?invoke the official `validateExecutionCandidate` authority[\s\S]{0,240}same `SPEC_PATH` and candidate root[\s\S]{0,240}Do not separately assemble or invoke the candidate-validator command/iu, "L042_PLAN_PATH_SERIALIZATION", `${name}: deterministic plan serialization and official candidate-validation boundary is missing`);
-      requirePattern(instructions, /deterministic plan-candidate preparer at `__PLANNER_PLAN_CANDIDATE_PREPARER__`[\s\S]{0,320}--candidate-execution-root[\s\S]{0,500}exactly the template field set[\s\S]{0,180}status: draft[|]ready[\s\S]{0,260}serializes all fixed metadata values and field order[\s\S]{0,240}preserving that status[\s\S]{0,360}missing, duplicate, or unknown fields[\s\S]{0,260}(?:never edits live|not a repair after candidate rejection)/iu, "L043_PLAN_CANDIDATE_HEADER", `${name}: deterministic plan-candidate header boundary is missing`);
-    }
-    if (name.startsWith("spec-roadmap-")) {
-      requirePattern(instructions, /roadmap\.json/u, "L021_ROADMAP_BOUNDARY", `${name}: roadmap authority is missing`);
-      requirePattern(instructions, /browser.{0,120}(?:não é|never).{0,80}(?:Sentinel|authority|autoridade)/iu, "L021_ROADMAP_BOUNDARY", `${name}: browser-state boundary is missing`);
-      requirePattern(instructions, /não (?:crie|altere|invoque).{0,100}SPEC|do not (?:create|change|invoke).{0,100}SPEC/iu, "L021_ROADMAP_BOUNDARY", `${name}: SPEC mutation boundary is missing`);
-    }
-    if (!runnerLaunchers.has(name)) continue;
-    requirePattern(
-      instructions,
-      /concrete recovery operation and slice[^\n]{0,100}shared deterministic preflight[^\n]{0,80}authority[^\n]{0,120}derive neither from the current request[^\n]{0,100}report both exactly/iu,
-      "L019_RECOVERY_TARGET",
-      `${name}: state-derived concrete recovery target is missing`,
-    );
-    const isCodex = name.endsWith("-codex");
-    if (isCodex) {
-      if ((text.match(/stnl_validation_runner/gu) ?? []).length !== 1 || text.includes("@agent-") || /\bClaude\b/u.test(text)) reject("L007_PLATFORM_IDENTITY", `${name}: invalid Codex identity`);
-      requirePattern(instructions, /__RUNNER_INVOCATION_HELPER__[\s\S]{0,220}--operation[\s\S]{0,180}--sequence \{\{BENCHMARK_SEQUENCE\}\}[\s\S]{0,180}--slice/iu, "L007_PLATFORM_IDENTITY", `${name}: deterministic Codex runner launcher is missing`);
-      requirePattern(instructions, /(?:uma )?nova sessão `codex exec` sem histórico/iu, "L016_TRANSPORT", `${name}: Codex runner must be isolated without inherited history`);
-      requirePattern(instructions, /(?:não há fallback|no fallback)/iu, "L016_TRANSPORT", `${name}: Codex runner fallback is forbidden`);
-      requirePattern(instructions, /subagent nativo/iu, "L016_TRANSPORT", `${name}: native Codex delegation is forbidden`);
-      forbidPattern(instructions, /fork_turns|faça spawn obrigatório|mandatory Codex spawn/iu, "L016_TRANSPORT", `${name}: native subagent transport is forbidden for the schema-bound runner`);
-    } else {
-      if ((text.match(/^@agent-stnl-validation-runner$/gmu) ?? []).length !== 1 || text.includes("stnl_validation_runner") || /\bCodex\b/u.test(text)) reject("L007_PLATFORM_IDENTITY", `${name}: invalid Claude identity`);
-      requirePattern(instructions, /deleg.{0,40}(?:obrigat|must)|(?:obrigat|must).{0,40}deleg/iu, "L007_PLATFORM_IDENTITY", `${name}: mandatory Claude delegation is missing`);
-    }
-    requirePattern(instructions, /(?:sem histórico|não envie histórico|nunca envie histórico|without inherited|no conversation history)/iu, "L012_CHECK_DELEGATION", `${name}: conversation history boundary is missing`);
-    requirePattern(instructions, /official execution validator\/preflight aplicável/iu, "L023_REQUIREMENTS_AUTHORITY", `${name}: runner payload omits the official execution authority checker`);
-    if (spec[2] === "VALIDATE_SLICE") {
-      requirePattern(instructions, /RUNNER_EVIDENCE_SERIALIZER=__RUNNER_EVIDENCE_SERIALIZER__[\s\S]{0,1800}__VALIDATION_CANDIDATE_PREPARER__[\s\S]{0,100}--prepare --spec-path[\s\S]{0,500}--candidate-execution-root "\{\{CANDIDATE_EXECUTION_ROOT\}\}"[\s\S]{0,350}--semantic-response-file/u, "L046_VALIDATION_BUNDLE", `${name}: validation candidate preparer command is missing`);
-      requirePattern(instructions, /--semantic-response-file[\s\S]{0,700}SHA-256 completos[\s\S]{0,500}validator oficial estrito do candidate[\s\S]{0,350}não reapresente nem repare/u, "L046_VALIDATION_BUNDLE", `${name}: validation candidate must retain strict validation without repair`);
-      requirePattern(instructions, /driver oficial já preparou `CANDIDATE_EXECUTION_ROOT` como cópia completa e byte-identical[\s\S]{0,160}Não copie, recrie ou mova essa árvore/u, "L047_VALIDATION_CANDIDATE_COPY", `${name}: launcher does not own a complete isolated validation candidate before model output`);
-    } else {
-      requirePattern(instructions, /RUNNER_EVIDENCE_SERIALIZER=__RUNNER_EVIDENCE_SERIALIZER__[\s\S]{0,1800}--execution-bundle --operation[\s\S]{0,700}--semantic-response-file[\s\S]{0,900}(?:deterministic producer|boundary determinística)[\s\S]{0,700}(?:labels|delimiters|response, and record|registro canônico|complete canonical)/iu, "L044_DETERMINISTIC_EVIDENCE_SERIALIZATION", `${name}: semantic execution producer boundary is missing`);
-      requirePattern(instructions, /--execution-bundle --operation[\s\S]{0,1800}(?=[\s\S]{0,1800}(?:path-relative serialization|path\.relative))(?=[\s\S]{0,1800}realpath)(?=[\s\S]{0,1800}(?:hashes|SHA-256|sha256|digest))(?=[\s\S]{0,1800}(?:producer exits nonzero|serialização sair diferente de zero|Status: BLOCKED|`BLOCKED`))/iu, "L044_DETERMINISTIC_EVIDENCE_SERIALIZATION", `${name}: producer physical serialization boundary is missing`);
-      requirePattern(instructions, /--execution-bundle --operation[\s\S]{0,700}--semantic-response-file[\s\S]{0,900}(?:response, and record|response e record|registro canônico|complete canonical)/iu, "L044_DETERMINISTIC_EVIDENCE_SERIALIZATION", `${name}: producer response serialization boundary is missing`);
-      forbidPattern(instructions, /--execution-bundle --operation <requested-operation> --semantic-response-file/iu, "L044_DETERMINISTIC_EVIDENCE_SERIALIZATION", `${name}: execution producer invocation omits canonical workspace, SPEC_PATH, or slice inputs`);
-    }
-    if (isCodex) {
-      requirePattern(
-        instructions,
-        /__RUNNER_INVOCATION_HELPER__[\s\S]{0,900}anexa ao argv real o schema fechado/iu,
-        "L050_STRUCTURED_RESPONSE_SCHEMA",
-        `${name}: deterministic runner helper must attach the response schema and preserve its raw captured output`,
-      );
-      requirePattern(
-        instructions,
-        /persiste o JSONL bruto[\s\S]{0,200}(?:captureRunnerResponse|extrai deterministicamente)[\s\S]{0,200}semanticResponseFile/iu,
-        "L049_DETERMINISTIC_RESPONSE_CAPTURE",
-        `${name}: Codex runner response must cross the deterministic capture boundary`,
-      );
-    } else {
-      requirePattern(
-        instructions,
-        /__RUNNER_RESPONSE_CAPTURE__[\s\S]{0,260}--structured-output-file[\s\S]{0,180}--output[\s\S]{0,360}(?:JSON\.stringify|jq -R|JSON string|não desembrulhe|manual unwrapping)/iu,
-        "L049_DETERMINISTIC_RESPONSE_CAPTURE",
-        `${name}: delegated JSONL response must cross the deterministic capture boundary`,
-      );
-      requirePattern(
-        instructions,
-        /(?:schema estruturado|structured output schema)[\s\S]{0,260}__RUNNER_RESPONSE_SCHEMA__[\s\S]{0,260}(?:gate de shape|shape gate)/iu,
-        "L050_STRUCTURED_RESPONSE_SCHEMA",
-        `${name}: delegated runner lacks the deterministic structured-response schema gate`,
-      );
-    }
-    if (spec[2] === "EXECUTE_SLICE") {
-      requirePattern(instructions, /(?:Antes do spawn|Antes da delegação)[\s\S]{0,900}(?:SPEC_PATH|`SPEC_PATH`)[\s\S]{0,350}(?:executionRoot|execution root)[\s\S]{0,350}(?:PLAN_PATH|plan path)[\s\S]{0,350}(?:TASK_PATH|task path)[\s\S]{0,350}(?:lstat|existentes|existing)[\s\S]{0,350}managed workspace/iu, "L027_DELEGATION_PATHS", `${name}: runner payload path identity and availability guard is missing`);
-      requirePattern(instructions, /(?:Nunca envie|não envie|never send)[\s\S]{0,240}(?:source checkout|source-checkout|CWD|candidate|placeholder|reconstruído|reconstructed)[\s\S]{0,260}(?:corrija a derivação|repair the derivation)[\s\S]{0,180}(?:antes de invocar o runner|before invoking the runner)/iu, "L027_DELEGATION_PATHS", `${name}: invalid runner paths are not repaired before spawn`);
-      requirePattern(instructions, /(?:The operation payload MUST include|Inclua no payload do runner)[\s\S]{0,1800}--execution-bundle --operation[\s\S]{0,500}--spec-path[\s\S]{0,500}--slice[\s\S]{0,500}--semantic-response-file[\s\S]{0,1100}(?:(?:deterministic producer|boundary determinística)[\s\S]{0,700}(?:canonical task artifact|final task artifact|artefato detalhado final|task artifact|taskArtifact|dirname\(taskArtifact\))[\s\S]{0,800}(?:derives targets|os targets físicos|physical targets|targets canônicos)[\s\S]{0,800}(?:path-relative serialization|path\.relative)[\s\S]{0,400}(?:labels|delimiters)[\s\S]{0,400}(?:hashes|response, and record|hashes, response e record)|boundary determinística[\s\S]{0,900}dirname\(taskArtifact\)[\s\S]{0,900}targets canônicos[\s\S]{0,700}path\.relative[\s\S]{0,700}registro canônico)/u, "L028_TESTED_STATE_PATHS", `${name}: deterministic producer path/evidence boundary is missing`);
-      requirePattern(instructions, /(?:deterministic producer|boundary determinística)[\s\S]{0,800}(?:derives targets|os targets físicos|physical targets)[\s\S]{0,700}(?:verifies physical identity|verifica `realpath`)[\s\S]{0,500}(?:path-relative serialization|path\.relative)/u, "L030_PHYSICAL_PATH_IDENTITY", `${name}: producer physical identity guard is missing`);
-      requirePattern(instructions, /(?:deterministic producer|boundary determinística)[\s\S]{0,1800}(?=[\s\S]{0,1800}(?:hashes|SHA-256|sha256|digest))(?=[\s\S]{0,1800}(?:Status: BLOCKED|producer exits nonzero|serialização sair diferente de zero))/iu, "L033_EXECUTE_DIGEST_FORMAT", `${name}: producer digest failure boundary is missing`);
-      requirePattern(instructions, /Every file-backed `?Tested state`?(?: and formal-manifest)? tuple MUST use the literal `sha256:` (?:separator|delimiter)/u, "L037_EXECUTE_DIGEST_PREFIX", `${name}: digest delimiter guard is missing`);
-      requirePattern(instructions, /(?:Field shape is strict at the JSON boundary:[\s\S]{0,500}payload is one raw JSON object[\s\S]{0,700}Before returning any result for `EXECUTE_SLICE` or `APPLY_FINDINGS`[\s\S]{0,700}status: "BLOCKED"|Exija forma estrita do payload semântico:[\s\S]{0,700}JSON válido, objeto único[\s\S]{0,500}retorne um objeto JSON completo com `status: "BLOCKED"`)/u, "L038_EXECUTE_OUTPUT_GATE", `${name}: semantic response gate is missing`);
-      requirePattern(instructions, /(?:The JSON `commands` form is exact:[\s\S]{0,360}each item MUST be an object containing only `command`[\s\S]{0,260}`exit` \(integer\)|Exija forma estrita do payload semântico:[\s\S]{0,700}`commands` como array de `\{command, exit\}`[\s\S]{0,120}`exit` inteiro)/u, "L039_EXECUTE_TUPLE_GRAMMAR", `${name}: semantic command tuple grammar guard is missing`);
-      requirePattern(instructions, /(?:The machine-key schema is fixed\.[\s\S]{0,1200}For `APPLY_FINDINGS`, insert `findingsCycle` after `automaticCheckRound`|Exija forma estrita do payload semântico:[\s\S]{0,300}exatamente as chaves lowerCamelCase da operação)/u, "L040_EXECUTE_FIELD_SEQUENCE", `${name}: semantic field-sequence guard is missing`);
-      requirePattern(instructions, /(?:Field shape is strict at the JSON boundary:[\s\S]{0,500}every semantic property except `commands` is one scalar string[\s\S]{0,300}`commands` is an array|Exija forma estrita do payload semântico:[\s\S]{0,700}todos os valores escalares como strings[\s\S]{0,300}`commands` como array)/iu, "L041_EXECUTE_FIELD_SHAPE", `${name}: semantic scalar field-shape guard is missing`);
-      requirePattern(instructions, /Ao classificar o retorno do runner[\s\S]{0,260}preflight, payload e artifact têm o mesmo token oficial[\s\S]{0,260}descarte qualquer SHA raw[\s\S]{0,220}não crie `BLOCKED`[\s\S]{0,220}Somente ausência ou desigualdade do token oficial/iu, "L034_EXECUTE_RAW_AUTHORITY_DISPOSITION", `${name}: execute caller may block on a raw digest despite agreeing official authority`);
-      requirePattern(instructions, /Para o check auxiliar[\s\S]{0,180}autoridade é somente o token exato do official preflight[\s\S]{0,180}igualdade com payload e artifact[\s\S]{0,220}nunca calcule, compare ou use SHA raw[\s\S]{0,200}Um raw digest não é authority e não pode bloquear/iu, "L029_RAW_AUTHORITY", `${name}: auxiliary checks may use a raw requirements digest as authority`);
-    }
-    forbidPattern(instructions, /(?:(?<!não )envie|(?<!do not )forward|(?<!do not )include).{0,30}(?:histórico da conversa|conversation history)/iu, "L012_CHECK_DELEGATION", `${name}: forwards conversation history`);
-    requirePattern(instructions, /(?:no máximo uma nova tentativa|at most one (?:new )?(?:transport )?retry|retry.{0,40}once)/iu, "L012_CHECK_DELEGATION", `${name}: transport retry must be bounded to one`);
-    requirePattern(instructions, /Runner Initialization Blocker/u, "L012_CHECK_DELEGATION", `${name}: missing singleton initialization blocker`);
-    forbidPattern(instructions, /(?:(?<!não )faça|(?<!do not )use|(?<!do not )perform).{0,30}fallback|fallback.{0,30}(?:permit|allowed)/iu, "L008_VALIDATION_FLOW", `${name}: fallback is enabled`);
-    requirePattern(instructions, /não (?:passe|envie|encaminhe)[^\n]{0,60}logs completos|do not (?:send|forward)[^\n]{0,60}full logs/iu, "L012_CHECK_DELEGATION", `${name}: minimum-payload boundary omits the full-log prohibition`);
-    requirePattern(instructions, /tentativas[^\n]{0,80}não consomem rodada|transport[^\n]{0,80}(?:does not|do not) consume[^\n]{0,30}round/iu, "L016_TRANSPORT", `${name}: transport failures can consume a semantic round`);
-    requirePattern(instructions, /saída malformada[^\n]{0,100}não recebe retry de transporte|malformed[^\n]{0,100}no transport retry/iu, "L016_TRANSPORT", `${name}: malformed output is confused with transport initialization`);
-    requirePattern(instructions, /retome diretamente (?:no spawn|na delegação)|resume directly (?:at|with) (?:spawn|delegation)/iu, "L016_TRANSPORT", `${name}: initialization-blocker resume path is missing`);
-    forbidPattern(instructions, /(?<!não )(?:faça|crie|execute|use)[^\n]{0,40}(?:fallback|retry manual)|(?:fallback|manual retry)[^\n]{0,40}(?:permitid|allowed)/iu, "L008_VALIDATION_FLOW", `${name}: fallback or manual retry is enabled`);
-    if (spec[2] === "VALIDATE_SLICE") {
-      requirePattern(instructions, /valor concreto de `SPEC_PATH`[\s\S]{0,180}absoluto, canônico, existente[\s\S]{0,180}official preflight[\s\S]{0,180}byte-identical[\s\S]{0,260}Nunca o substitua por execution root[\s\S]{0,220}path reconstruído/iu, "L025_SPEC_PATH_IDENTITY", `${name}: delegated validation does not preserve exact canonical SPEC_PATH identity`);
-      requirePattern(instructions, /não tente iniciar o runner por shell[\s\S]{0,120}path como agent identifier/iu, "L025_SPEC_PATH_IDENTITY", `${name}: delegated validation may confuse runner identity with a filesystem path`);
-      requirePattern(instructions, /PASS\s*\|\s*NEEDS_FIX\s*\|\s*BLOCKED/u, "L008_VALIDATION_FLOW", `${name}: formal status set changed`);
-      requirePattern(instructions, /Effective Validation Base[\s\S]{0,100}(?:finaliza|complete)/iu, "L008_VALIDATION_FLOW", `${name}: PASS does not atomically finalize`);
-      requirePattern(instructions, /(?:Exija|Require)[^\n]{0,40}(?:revisão|review) independente[^\n]{0,100}TESTS_NOT_APPLICABLE/iu, "L008_VALIDATION_FLOW", `${name}: non-applicability is not independently reviewed`);
-      forbidPattern(instructions, /(?<!não )(?:promova|converta|trate)[^\n]{0,80}TESTS_NOT_APPLICABLE[^\n]{0,80}(?:PASS|aprova)/iu, "L013_CHECK_AUTHORITY", `${name}: non-applicability is promoted to PASS`);
-      requirePattern(instructions, /não (?:repete|executa)[^\n]{0,80}testes|does not (?:repeat|run)[^\n]{0,80}tests/iu, "L013_CHECK_AUTHORITY", `${name}: main context may repeat formal checks`);
-      requirePattern(instructions, /não criam? nem consomem? `attempt-NN`|does not (?:create|consume)[^\n]{0,30}attempt/iu, "L016_TRANSPORT", `${name}: transport failure may allocate a formal attempt`);
-      requirePattern(instructions, /não mudam? `initial` para `revalidation`|does not change[^\n]{0,30}initial[^\n]{0,30}revalidation/iu, "L016_TRANSPORT", `${name}: transport failure may change validation type`);
-      requirePattern(instructions, /última slice aberta[^\n]{0,180}Somente nesse caso inclua[^\n]{0,140}global plan[^\n]{0,100}ordem serial/iu, "L022_TERMINAL_VALIDATION", `${name}: terminal-only global payload is missing`);
-      requirePattern(instructions, /cobertura global[^\n]{0,120}reconciliação[^\n]{0,120}cross-slice[^\n]{0,160}integration\/stabilization/iu, "L022_TERMINAL_VALIDATION", `${name}: terminal semantic review is incomplete`);
-      requirePattern(instructions, /Falta de authority[^\n]{0,180}`BLOCKED`[^\n]{0,120}`REPLAN`/iu, "L022_TERMINAL_VALIDATION", `${name}: terminal strategy gap does not route to REPLAN`);
-      requirePattern(instructions, /Requirements authority` exclusivamente do campo exato `authority=sha256:<64hex>`[\s\S]{0,200}mesmo official preflight[\s\S]{0,220}copie o valor byte-identical/iu, "L026_AUTHORITY_IDENTITY", `${name}: canonical preflight authority is not preserved byte-identically`);
-      requirePattern(instructions, /Nunca calcule hash raw de `shared\/requirements\.md` ou `feature_spec\.md`[\s\S]{0,160}nem reconstrua a authority/iu, "L026_AUTHORITY_IDENTITY", `${name}: raw or reconstructed requirements authority is not forbidden`);
-      requirePattern(instructions, /campo semântico `commands` contém somente verification commands[\s\S]{0,260}producer determinístico launcher-owned insere como primeiro command[\s\S]{0,320}official execution validator\/preflight[\s\S]{0,180}`SPEC_PATH`[\s\S]{0,140}exit code `0`/iu, "L020_EXACT_COMMANDS", `${name}: formal validation producer does not own the complete official preflight command`);
-      requirePattern(instructions, /Antes de aceitar qualquer `PASS`[\s\S]{0,260}digests file-backed[\s\S]{0,220}(?:formato exato|deve ser exatamente) `sha256:`[\s\S]{0,160}64 caracteres hexadecimais minúsculos[\s\S]{0,260}saída malformada[\s\S]{0,120}`BLOCKED`/iu, "L031_DIGEST_FORMAT", `${name}: formal validation digest format guard is missing`);
-    } else {
-      requirePattern(instructions, /TESTS_PASS[\s\S]{0,80}TESTS_FAIL[\s\S]{0,80}TESTS_NOT_APPLICABLE[\s\S]{0,80}BLOCKED/u, "L014_AUTOMATIC_RECHECK", `${name}: auxiliary status set changed`);
-      requirePattern(instructions, /`path\.relative\(dirname\(tasks\/slice-NN\.md\), target\)`[\s\S]{0,160}artefato detalhado final[\s\S]{0,180}`Changed Areas`[\s\S]{0,200}`Tested state`[\s\S]{0,220}nunca use CWD[\s\S]{0,220}candidate root/iu, "L024_PATH_BASIS", `${name}: task-relative execution-record path derivation is missing`);
-      requirePattern(instructions, /Requirements authority` exclusivamente do campo exato `authority=sha256:<64hex>`[\s\S]{0,200}mesmo official preflight[\s\S]{0,220}copie o valor byte-identical/iu, "L026_AUTHORITY_IDENTITY", `${name}: canonical preflight authority is not preserved byte-identically`);
-      requirePattern(instructions, /Nunca calcule hash raw de `shared\/requirements\.md` ou `feature_spec\.md`[\s\S]{0,160}nem reconstrua a authority/iu, "L026_AUTHORITY_IDENTITY", `${name}: raw or reconstructed requirements authority is not forbidden`);
-      requirePattern(instructions, /(?:no mínimo uma vez|at least once)[\s\S]{0,80}(?:no máximo três vezes|at most three times)/iu, "L014_AUTOMATIC_RECHECK", `${name}: one-to-three runner budget is missing`);
-      requirePattern(instructions, /1\/3[\s\S]{0,40}2\/3[\s\S]{0,40}3\/3/u, "L014_AUTOMATIC_RECHECK", `${name}: exact round set is missing`);
-      forbidPattern(instructions, /(?<!nunca )faça uma quarta chamada|(?<!never )make a fourth call|(?<!nem )(?<!não )use loop ilimitado|(?<!never )use an unbounded loop/iu, "L014_AUTOMATIC_RECHECK", `${name}: retry cycle is unbounded`);
-      forbidPattern(instructions, /(?:zero a três|zero to three|runner invocation is optional|Pode invocar o runner|(?<!Não )Pule o runner)/iu, "L014_AUTOMATIC_RECHECK", `${name}: runner invocation became optional`);
-      forbidPattern(instructions, /(?<!não )(?:Emita `PASS` formal|Crie Validation Attempt|Crie Effective Validation Base|Marque a conclusão `\[x\]`)/iu, "L013_CHECK_AUTHORITY", `${name}: auxiliary check claims formal authority`);
-      requirePattern(instructions, /Não execute no contexto principal[^\n]{0,120}(?:testes|builds|linters|typechecks|compila)|Do not run[^\n]{0,120}(?:tests|builds|linters|typechecks)[^\n]{0,40}main context/iu, "L013_CHECK_AUTHORITY", `${name}: main-context verification prohibition is missing`);
-      requirePattern(instructions, /TESTS_NOT_APPLICABLE[^\n]{0,240}(?:descoberta objetiva|objective discovery)[\s\S]{0,220}(?:nenhum comando de verificação|no verification command)/iu, "L013_CHECK_AUTHORITY", `${name}: non-applicability evidence is incomplete`);
-      forbidPattern(instructions, /(?<!não )(?:promova|trate|converta)[^\n]{0,80}TESTS_NOT_APPLICABLE[^\n]{0,80}(?:PASS|aprova)/iu, "L013_CHECK_AUTHORITY", `${name}: non-applicability is promoted to PASS`);
-      requirePattern(instructions, /não criam `(?:implementation|findings)-check-NN`|does not create[^\n]{0,40}(?:implementation|findings)-check/iu, "L016_TRANSPORT", `${name}: transport failure may allocate check evidence`);
-      requirePattern(instructions, /não autorizam correção|does not authorize correction/iu, "L016_TRANSPORT", `${name}: transport failure may authorize correction`);
-      requirePattern(instructions, /não (?:reimplemente|reaplique findings)|do not (?:reimplement|reapply findings)/iu, "L016_TRANSPORT", `${name}: resume may repeat implementation or findings correction`);
-      requirePattern(instructions, /terceira falha[\s\S]{0,220}VALIDATE_SLICE|third failure[\s\S]{0,220}VALIDATE_SLICE/iu, "L014_AUTOMATIC_RECHECK", `${name}: third failure lacks a formal-validation continuation`);
-      requirePattern(instructions, /não (?:inicie|invoque) `VALIDATE_SLICE`|do not (?:start|invoke) `VALIDATE_SLICE`/iu, "L013_CHECK_AUTHORITY", `${name}: automatic formal-validation prohibition is missing`);
-      requirePattern(instructions, /TESTS_FAIL`? nas rodadas 1 ou 2|TESTS_FAIL`? in rounds 1 or 2/iu, "L014_AUTOMATIC_RECHECK", `${name}: correction is not limited to the first two failures`);
-      if (spec[2] === "APPLY_FINDINGS") {
-        requirePattern(instructions, /terceira falha[^\n]{0,120}(?:preserve os findings ativos|preserve active findings)|preserve os findings ativos[^\n]{0,120}terceira falha/iu, "L014_AUTOMATIC_RECHECK", `${name}: third findings failure does not preserve active findings`);
-        requirePattern(instructions, /não resolve findings por si só|does not resolve findings by itself/iu, "L013_CHECK_AUTHORITY", `${name}: auxiliary non-applicability may resolve findings`);
-      }
-    }
-  }
-
+  for (const [name, spec] of Object.entries(launcherSpecs)) parseLauncher(actual[name], spec);
   for (const operation of ["execute", "apply-findings", "validate"]) {
-    const signatures = ["codex", "claude"].map((platform) => {
-      const { instructions } = parseLauncher(actual[`slice-${operation}-${platform}`], launcherSpecs[`slice-${operation}-${platform}`]);
-      return {
-        statuses: operation === "validate" ? /PASS\s*\|\s*NEEDS_FIX\s*\|\s*BLOCKED/u.test(instructions) : /TESTS_PASS[\s\S]*TESTS_FAIL[\s\S]*TESTS_NOT_APPLICABLE[\s\S]*BLOCKED/u.test(instructions),
-        retry: /no máximo uma nova tentativa/iu.test(instructions),
-        singleton: /Runner Initialization Blocker/u.test(instructions),
-        history: /sem histórico|não envie histórico/iu.test(instructions),
-        fallback: /Não faça fallback/iu.test(instructions),
-        nonApplicable: /TESTS_NOT_APPLICABLE/iu.test(instructions),
-        thirdFailure: /terceira falha/iu.test(instructions),
-      };
-    });
-    if (JSON.stringify(signatures[0]) !== JSON.stringify(signatures[1])) reject("L018_PLATFORM_EQUIVALENCE", `${operation}: Codex and Claude semantic contracts diverge`);
+    const codex = read(actual[`slice-${operation}-codex`]);
+    const claude = read(actual[`slice-${operation}-claude`]);
+    if (codex !== claude) reject("L018_PLATFORM_EQUIVALENCE", `${operation}: human launchers diverge across platforms`);
   }
 }
 

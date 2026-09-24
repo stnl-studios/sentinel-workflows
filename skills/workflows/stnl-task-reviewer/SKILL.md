@@ -28,9 +28,9 @@ Any marked local task, actual change, operational record, non-pending result, or
 
 Check that no plan obligation was lost and no task was invented. Verify fidelity, coverage, granularity, order, dependencies, objective results, tests, slice isolation, absence of work belonging elsewhere, consistency between global and detailed tasks, and economy of context for execution. Correct task artifacts directly when the approved plan already determines the answer.
 
-Compose any model-authored task corrections in an isolated complete execution candidate and execute `node "<SKILL_ROOT>/runtime/validate-execution-state.mjs" <SPEC_PATH> --candidate <CANDIDATE_EXECUTION_ROOT>` before publication. This is contract/model enforcement; runtime parsing is not publication authority. Candidate rejection preserves live bytes. After PASS publish only task-review-owned paths and use the final handoff command as strict readback.
+Compose any model-authored task corrections in an isolated complete execution candidate and execute `node "<SKILL_ROOT>/runtime/validate-execution-state.mjs" <SPEC_PATH> --candidate <CANDIDATE_EXECUTION_ROOT>` before publication. This is contract/model enforcement; runtime parsing is not publication authority. Candidate rejection preserves live bytes and the rejected candidate. If official preflight still authorizes REVIEW_TASKS on unchanged live authority, create a fresh complete candidate for a diagnosed correctable defect and validate it strictly. After PASS publish only task-review-owned paths and use the final handoff command as strict readback.
 
-In checklist `expected areas`, treat only Markdown code spans as concrete filesystem claims and verify each relative to the detailed task. Keep conceptual labels outside code spans. Correct the claim itself when candidate validation reports a path-basis error—never reinterpret it as project-root-relative or publish an automatic rewrite.
+In checklist `expected areas`, treat only Markdown code spans as concrete filesystem claims and verify each relative to the detailed task. Keep conceptual labels outside code spans. On a path-basis rejection, preserve the rejected candidate and correct the claim in a fresh complete candidate; never reinterpret it as project-root-relative or publish an automatic rewrite.
 
 ## Minimum Reads
 

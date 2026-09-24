@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import {
   startOfficialRunnerBroker,
   submitOfficialRunnerRequest,
-} from '../benchmarks/sentinel-todo/runtime/benchmark-runner-broker.mjs';
+} from '../agents/codex/runtime/runner-broker.mjs';
 
 const REPOSITORY = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -188,13 +188,12 @@ test('official runner broker fails closed when no active driver broker exists', 
   );
 });
 
-test('validation-runner CLI requires the explicit broker and never starts a direct nested runner', async (t) => {
+test('validation-runner CLI requires the active broker and never starts a direct nested runner', async (t) => {
   const { workspace, tmpdir } = await fixture(t);
-  const helper = path.join(REPOSITORY, 'benchmarks/sentinel-todo/runtime/benchmark-validation-runner.mjs');
+  const helper = path.join(REPOSITORY, 'agents/codex/runtime/validation-runner.mjs');
   const result = spawnSync(process.execPath, [
     helper,
     '--operation', 'EXECUTE_SLICE',
-    '--sequence', '1',
     '--slice', 'slice-01',
   ], {
     cwd: workspace,
@@ -203,7 +202,7 @@ test('validation-runner CLI requires the explicit broker and never starts a dire
     env: { ...process.env, TMPDIR: tmpdir },
   });
   assert.equal(result.status, 1);
-  assert.match(result.stderr, /official benchmark runner broker is required/u);
+  assert.match(result.stderr, /active\.json/u);
   assert.deepEqual(await fs.readdir(tmpdir), []);
 });
 

@@ -1,0 +1,9 @@
+{
+  "name": "@sentinel/codex-adapter",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@openai/codex-sdk": "0.154.0"
+  }
+}

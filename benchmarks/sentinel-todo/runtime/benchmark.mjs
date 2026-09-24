@@ -12,6 +12,8 @@ import { runDoctor, runProbeDoctor } from './benchmark-environment.mjs';
 const RUNTIME_ROOT = path.dirname(fileURLToPath(import.meta.url));
 const BENCHMARK_ROOT = path.resolve(RUNTIME_ROOT, '..');
 const REPOSITORY_ROOT = path.resolve(BENCHMARK_ROOT, '../..');
+const VISIBLE_RUNS_ROOT = path.join(REPOSITORY_ROOT, 'benchmark-temp');
+const VISIBLE_RUN_MARKER = 'sentinel-todo-run-v2\n';
 const MANIFEST_PATH = path.join(BENCHMARK_ROOT, 'benchmark.json');
 const LIFECYCLE_VALIDATOR = path.join(
   REPOSITORY_ROOT,
@@ -312,7 +314,25 @@ async function assertOutsideRepository(target, label) {
     throw new CliError(`${label} parent must already exist: ${error.message}`, 2);
   });
   const resolved = path.join(parent, path.basename(target));
-  if (inside(resolved, repository)) throw new CliError(`${label} must be outside the sentinel-workflows checkout`, 2);
+  if (!inside(resolved, repository)) return;
+
+  const visibleRoot = await fs.realpath(VISIBLE_RUNS_ROOT).catch(() => null);
+  const run = path.dirname(parent);
+  if (visibleRoot === null || path.dirname(run) !== visibleRoot
+    || !/^case-[abc]$/u.test(path.basename(parent))
+    || path.basename(resolved) !== 'workspace'
+    || !/^[a-z0-9][a-z0-9-]{7,}$/u.test(path.basename(run))) {
+    throw new CliError(`${label} must be outside the checkout or in an owned visible run`, 2);
+  }
+  const runMetadata = await fs.lstat(run).catch(() => null);
+  const marker = path.join(run, '.sentinel-benchmark-owned');
+  const markerMetadata = await fs.lstat(marker).catch(() => null);
+  if (!runMetadata?.isDirectory() || runMetadata.isSymbolicLink()
+    || await fs.realpath(run) !== run
+    || !markerMetadata?.isFile() || markerMetadata.isSymbolicLink()
+    || await fs.readFile(marker, 'utf8') !== VISIBLE_RUN_MARKER) {
+    throw new CliError(`${label} visible run ownership is invalid`, 2);
+  }
 }
 
 async function prepare(options) {
@@ -828,6 +848,7 @@ async function finalize(options) {
   const initEvent = initEvents[0];
   const readinessEvents = journal.events.filter((event) => event.operation === 'SPEC_READINESS');
   const initialReadiness = readinessEvents[0];
+  const terminalReadiness = readinessEvents[1];
   const firstOperationalEvent = operationalEvents[0];
   const completeEvent = operationalEvents.findLast((event) => (
     event.operation === 'VALIDATE_SLICE' && event.result === 'PASS' && event.resultingState === 'COMPLETE'
@@ -836,7 +857,7 @@ async function finalize(options) {
   const closeEvent = closeEvents[0];
   const terminalSequence = initEvents.length === 1
     && initEvent.result === 'PASS'
-    && readinessEvents.length === 1
+    && readinessEvents.length === 2
     && initialReadiness.result === 'PASS'
     && initialReadiness.resultingState === 'GLOBAL_READY'
     && initialReadiness.index === initEvent.index + 1
@@ -844,9 +865,12 @@ async function finalize(options) {
     && firstOperationalEvent.index === initialReadiness.index + 1
     && completeEvent !== undefined
     && operationalEvents.at(-1) === completeEvent
+    && terminalReadiness.result === 'PASS'
+    && terminalReadiness.resultingState === 'GLOBAL_READY'
+    && terminalReadiness.index === completeEvent.index + 1
     && closeEvents.length === 1
     && closeEvent.result === 'PASS'
-    && closeEvent.index === completeEvent.index + 1
+    && closeEvent.index === terminalReadiness.index + 1
     && closeEvent.index === journal.events.length;
   const lifecycleValidation = run(process.execPath, [LIFECYCLE_VALIDATOR, 'workspace', realSpec], REPOSITORY_ROOT);
   const specClosed = lifecycleValidation.exitCode === 0 && / status=closed ids=[0-9]+\n?$/u.test(lifecycleValidation.stdout);

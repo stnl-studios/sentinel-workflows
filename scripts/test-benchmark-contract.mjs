@@ -208,6 +208,7 @@ async function completeJournal(file, {
   specModel = 'GPT-5.6-Sol',
   specCloseModel = specModel,
   includeInitialReadiness = true,
+  includeTerminalReadiness = true,
   initialReadinessState = 'GLOBAL_READY',
   includeComplete = true,
   regressAfterComplete = false,
@@ -236,6 +237,10 @@ async function completeJournal(file, {
     requireSuccess(event(file, 'VALIDATE_SLICE', 'REVIEW_VALIDATE', 'GPT-5.6-Luna', 'high', 'NEEDS_FIX', [
       '--slice', 'slice-01', '--round', '2', '--resulting-state', 'NEEDS_FIX',
     ]), 'regressed VALIDATE_SLICE');
+  }
+  if (includeTerminalReadiness) {
+    requireSuccess(event(file, 'SPEC_READINESS', 'REVIEW_VALIDATE', 'GPT-5.6-Luna', 'high', 'PASS',
+      ['--resulting-state', 'GLOBAL_READY']), 'terminal SPEC_READINESS');
   }
   if (lateReadiness) {
     requireSuccess(event(file, 'SPEC_READINESS', 'REVIEW_VALIDATE', 'GPT-5.6-Luna', 'high'), 'late SPEC_READINESS');
@@ -459,7 +464,7 @@ test('B06 — finalize collects raw facts and enforces official terminal semanti
   assert.equal(result.decomposition.slices, 1);
   assert.equal(result.decomposition.tasks, 1);
   assert.deepEqual(result.decomposition.tasksPerSlice, { 'slice-01': 1 });
-  assert.equal(result.operations.total, 9);
+  assert.equal(result.operations.total, 10);
   assert.deepEqual((await readJson(journal)).events.slice(0, 3).map((entry) => entry.operation), [
     'SPEC_INIT', 'SPEC_READINESS', 'PLAN',
   ]);
@@ -531,6 +536,13 @@ test('B06 — finalize collects raw facts and enforces official terminal semanti
   const missingReadinessOutput = path.join(root, 'missing-readiness-result.json');
   assert.equal(finalize(missingReadiness, missingReadinessOutput).status, 1);
   assert.equal((await readJson(missingReadinessOutput)).status, 'FAIL');
+
+  const missingTerminalReadiness = path.join(root, 'missing-terminal-readiness.json');
+  await initJournal(missingTerminalReadiness);
+  await completeJournal(missingTerminalReadiness, { includeTerminalReadiness: false });
+  const missingTerminalReadinessOutput = path.join(root, 'missing-terminal-readiness-result.json');
+  assert.equal(finalize(missingTerminalReadiness, missingTerminalReadinessOutput).status, 1);
+  assert.equal((await readJson(missingTerminalReadinessOutput)).status, 'FAIL');
 
   const lateReadiness = path.join(root, 'late-readiness.json');
   await initJournal(lateReadiness);

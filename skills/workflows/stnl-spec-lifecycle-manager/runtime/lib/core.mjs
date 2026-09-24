@@ -57,6 +57,14 @@ function canonicalExistingComponent(parent, name, metadata) {
   try {
     entries = fs.readdirSync(parent);
   } catch (error) {
+    if (error?.code === 'EPERM' || error?.code === 'EACCES') {
+      const candidate = path.join(parent, name);
+      try {
+        if (fs.realpathSync.native(candidate) === candidate) return name;
+      } catch {
+        // Preserve the original access diagnostic below.
+      }
+    }
     fail(`cannot canonicalize existing path component ${path.join(parent, name)}: ${error.message}`);
   }
   for (const entry of entries) {

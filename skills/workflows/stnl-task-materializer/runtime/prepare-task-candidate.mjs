@@ -3,6 +3,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 
 import { resolveExecutionWorkspace } from "./execution-state.mjs";
 
@@ -62,10 +63,10 @@ async function main() {
     throw new Error("usage: prepare-task-candidate.mjs --prepare --spec-path SPEC_PATH");
   }
   const result = await prepareTaskMaterializationCandidate({ specPath: arguments_[2] });
-  process.stdout.write(`${result.candidateExecutionRoot}\n`);
+  process.stdout.write(`${JSON.stringify(result)}\n`);
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
   main().catch((error) => {
     process.stderr.write(`${error.message}\n`);
     process.exitCode = 1;

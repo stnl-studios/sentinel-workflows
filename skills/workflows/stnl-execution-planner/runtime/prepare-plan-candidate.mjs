@@ -2,7 +2,7 @@
 
 import * as fs from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const RUNTIME_ROOT = path.dirname(fileURLToPath(import.meta.url));
 const SKILL_ROOT = path.dirname(RUNTIME_ROOT);
@@ -152,7 +152,7 @@ async function main() {
   process.stdout.write(`${JSON.stringify(result)}\n`);
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
   main().catch((error) => {
     process.stderr.write(`${error.message}\n`);
     process.exitCode = 1;
