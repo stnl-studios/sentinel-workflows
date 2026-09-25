@@ -2,10 +2,10 @@
 import { buildClosedCandidate } from './lib/closed-spec.mjs';
 import { cliError, helpRequested, parseOptions, printHelp } from './lib/cli.mjs';
 
-const usage = 'build-closed-spec.mjs source candidate --readiness-attestation READINESS_ATTESTATION';
+const usage = 'build-closed-spec.mjs source candidate';
 const tokens = process.argv.slice(2);
 const parsed = parseOptions(tokens, {
-  '--readiness-attestation': { required: true },
+  '--readiness-attestation': { required: false },
 });
 if (helpRequested(tokens)) printHelp(usage);
 else if (parsed.error) cliError(parsed.error, usage);

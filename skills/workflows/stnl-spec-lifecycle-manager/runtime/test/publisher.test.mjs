@@ -1090,7 +1090,7 @@ test("CLOSE requires a fresh attestation and the exact deterministic renderer ca
     const stable = snapshot(target);
     await assert.rejects(
       publishCandidate("CLOSE", target, candidate, { readinessAttestation: attestation }),
-      /readiness attestation requires an active ready workspace/u,
+      /CLOSE requires an active ready workspace/u,
     );
     assert.equal(snapshot(target), stable);
     assert.deepEqual(await transactionResidues(target), []);
@@ -1144,7 +1144,7 @@ test("CLOSE requires a fresh attestation and the exact deterministic renderer ca
     const sourceState = snapshot(target);
     await assert.rejects(
       publishCandidate("CLOSE", target, candidate, { readinessAttestation: attestation }),
-      /CLOSE candidate is not the exact deterministic rendering of the attested source/u,
+      /CLOSE candidate is not the exact deterministic rendering of the active source/u,
     );
     assert.equal(snapshot(target), sourceState);
     assert.deepEqual(await transactionResidues(target), []);

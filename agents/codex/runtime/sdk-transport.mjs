@@ -22,7 +22,9 @@ export async function runCodexTurn({
     || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1) {
     throw new Error('invalid Codex SDK turn configuration');
   }
-  const codex = new Codex({ env });
+  // The manager admits and counts independent runner turns through its adapter.
+  // Prevent SDK turns from starting untracked collaboration subagents.
+  const codex = new Codex({ env, config: { features: { multi_agent: false } } });
   const options = {
     model,
     modelReasoningEffort: effort,
@@ -39,6 +41,7 @@ export async function runCodexTurn({
   const startedMs = Date.now();
   let actualThreadId = threadId;
   let usage = null;
+  let turnStarted = false;
   let response = null;
   let completed = false;
   let error = null;
@@ -50,6 +53,7 @@ export async function runCodexTurn({
       await file.writeFile(`${JSON.stringify(persistentEvent(event, operationId))}\n`);
       onEvent(event);
       if (event.type === 'thread.started') actualThreadId = event.thread_id;
+      if (event.type === 'thread.started' || event.type === 'turn.started') turnStarted = true;
       if (event.type === 'turn.completed') { usage = event.usage ?? null; completed = true; }
       if (event.type === 'turn.failed') error = event.error?.message ?? 'turn failed';
       if (event.type === 'error') error = event.message;
@@ -74,6 +78,7 @@ export async function runCodexTurn({
     endedAt: new Date().toISOString(),
     durationMs: Date.now() - startedMs,
     completed,
+    turnStarted,
     error,
     response,
     usage,

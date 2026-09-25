@@ -170,3 +170,116 @@ The 63 paths below are the complete uncommitted working-tree inventory. `M` mean
 ?? skills/workflows/stnl-slice-executor/runtime/prepare-execution-copy.mjs
 ?? skills/workflows/stnl-slice-quality-manager/runtime/prepare-validation-copy.mjs
 ```
+
+## 2026-09-25 correction mission — in progress
+
+The preceding statement that initial and terminal READINESS are required is **superseded** by the approved product flow. A valid INIT may be ready, draft, or blocked. Ready INIT advances to PLAN; draft or blocked INIT enters read-only GLOBAL READINESS and evidence-supported RESUME cycles. A material RESUME requires another GLOBAL READINESS. GLOBAL/READY on unchanged draft content permits the official status-only promotion; PLAN requires effective ready status. Official execution COMPLETE advances directly to CLOSE, without terminal READINESS or a mandatory CLOSE attestation. Historical v1 journals/raws retain their original interpretation.
+
+Preflight for this mission confirmed branch `feature/atlas-p0`, required base HEAD `36d06341987b0e071602b2684e4ef268d0999040`, parent `9f9bd4a52becd78f4d4372dcd4d52ba22d97b971`, remote branch at the same SHA over HTTPS, clean functional tree, `git diff --check`, and no active campaign process. The SSH remote probe lacked a local key; HTTPS verified the publication. The historical 100/100 ledger and retained A/B/C run were present. The additive authorization changed only the ceiling to 180 and recorded six completed maintenance worker turns, numbers 101–106; the pre-live balance was 74. The principal session's platform usage is not exposed by this controllable-turn ledger and is reported separately as unmetered.
+
+### Template responsibility migration, parent → base → current correction
+
+The comparison is scoped to responsibility removed between parent `9f9bd4a` and base `36d0634`. Repeated instructions were grouped by owner. “Manual” means a normal launcher reaches the same installed skill/runtime path without the benchmark manager or fabricated `active.json`; it is an execution-path check, not a claim that every branch was exercised live in a standalone manual task.
+
+| Responsibility removed | Nature | Destination / effective consumer | Manual? | Proof | Decision |
+| --- | --- | --- | --- | --- | --- |
+| PLAN preparation, authority read, candidate validation and publication | Procedure/mechanics | `stnl-execution-planner` skill and runtime; `execution-plan.md` supplies normal inputs | Yes | Planner/runtime handoff and execution contract tests; manager sends the versioned template | Keep out of launcher |
+| Independent plan and task review | Separate role and verdict | `stnl-plan-reviewer` and `stnl-task-reviewer` skills, official review state | Yes | Skills invoke independent review; contract and materialization handoff tests | Keep independent |
+| Task rebasing and path serialization | Candidate mechanics | `stnl-task-materializer` runtime, `prepare-task-candidate.mjs`, `serialize-task-paths.mjs` | Yes | Runtime tests and materialization contracts | Keep in runtime |
+| File Purpose Headers and canonical sections | Document contract | Skill references and runtime validators/serializers | Yes | Distribution and execution/lifecycle validation | Keep in product authority |
+| Runner invocation and capture | Platform transport/semantic evidence | Slice skills choose `STNL_RUNNER_ADAPTER` when configured, otherwise the installed independent `stnl_validation_runner`; `agents/codex/runtime/` adapter and serializer own broker/capture | Yes, via normal runner fallback | Installed agent registry, skill path, broker/adapter and execution contract tests; no manual `active.json` requirement | Keep normal fallback; benchmark supplies adapter only in isolated home |
+| Auxiliary test rounds and authorized in-slice recovery | Workflow procedure | Slice executor skill and execution-state/producer runtime | Yes | Execution contract covers rounds and rejected candidate recovery | Keep in skill/runtime |
+| Requirements authority, SPEC_PATH and context parameters | Authority/input | Versioned launcher parameters, lifecycle/execution skills, runtime preflight | Yes | Launcher grammar and exact rendered-prompt test; authority validators | Keep normal parameter grammar; multiline semantic input allowed |
+| Candidate ownership and strict publication | Safety boundary | Lifecycle, planner, materializer, executor and quality-manager preparers/validators/publishers | Yes | Publisher/lifecycle and execution contracts, source/target identity checks | Keep product-owned |
+| Findings, formal validation and effective base | Review authority | `stnl-slice-quality-manager`, official execution-state, validation publisher | Yes | Execution contract, independent runner response capture, Prior Validation Overlap guard | Keep formal validator independent |
+| SPEC lifecycle and closing | Documentary authority | `stnl-spec-lifecycle-manager` modes/runtime; manager follows official handoff | Yes | Direct CLOSE builder/publisher tests and structured READINESS snapshot test | Apply approved INIT/READINESS/RESUME and COMPLETE→CLOSE flow |
+| Roadmap and test runbook launcher detail | Adjacent entry parameters | Existing `stnl-spec-roadmap` and `stnl-spec-test-runbook` skills/runtime | Yes | Launcher/distribution contracts; no feature redesign | Retain existing owners |
+
+| Issue | Cause | Decision and files | Proof before live |
+| --- | --- | --- | --- |
+| INIT/READINESS/RESUME and final CLOSE | Old manager/journal assumed fixed initial and terminal readiness | Structured snapshot-bound result in lifecycle runtime; manager schedules official handoffs; journal/result protocol v2 reads v1 unchanged; direct CLOSE in lifecycle builder/publisher | Lifecycle 154 pass, 1 environment skip; benchmark contract 12 pass; manager focused tests pass |
+| C explanatory backticks | Schema accepted text but execution scalar parser rejected literal delimiters | Canonical `json:` plus JSON string for explanatory single-line values in mirrored serializers; technical fields stay strict | Execution contracts 119 pass, including C payload and malformed controls |
+| Budget exhaustion and B/C concurrency | Runner start could occur without remaining global capacity | Serialized ledger reservations for main and mandatory runner, extra runner admission, confirmed-start accounting, administrative pause | Manager code review and focused tests; concurrent live B/C still pending |
+| Cumulative usage | Retained SDK events increase on resumed threads | Per-thread/segment difference with known baseline, duplicate detection and separate runner source; partial/unavailable retained | Adapter tests and offline derived report |
+| Human feedback | JSON-only delayed observation | Deterministic reporter with TTY/non-TTY/JSON modes and operation start/progress | Reporter 6 pass; live feedback in progress |
+
+The old run's derived, non-destructive telemetry is `benchmark-temp/run-20260924210317-4bc02b11/derived-usage-v2.json`. Its 33 observed completions were all attributable from known per-thread starts: A 13,823,739 input / 97,780 output, B 7,846,637 / 83,157, C 10,777,598 / 80,134. Cached input and reasoning output are subcategories, not added again to total. These are SDK usage counters, not a charge or a comparable efficiency claim. Original raws and journals were not rewritten.
+
+Pre-live checks: lifecycle runtime tests 154 pass, 1 skip; execution contracts 119 pass; benchmark contract 12 pass; `bash scripts/validate.sh --no-smoke` exit 0; `benchmark.mjs verify` exit 0; `git diff --check` exit 0. Workers: runner contract/telemetry, template audit/protocol/UI, and lifecycle CLOSE, each on GPT-5.6-Luna/medium in bounded files. Their patches were reviewed and integrated by the principal. No source stage, commit, or push occurred.
+
+The fresh full run started through `node benchmarks/sentinel-todo/runtime/benchmark-manager.mjs run --full` at `benchmark-temp/run-20260925191022-51497c69/`. Its frozen base is the required HEAD and the **functional** source identity is `sha256:6443cb7413b1df530117afe529e3f724f1d3315d0fd8943457bbc30fa7dd8554`; snapshot identity is `sha256:16365ff40811dea31d8163880db5852e298d0df6eb7f96c339528f4ae0a2f207` (277 functional source files, 294 with pinned dependencies). The working tree is intentionally uncommitted. This section records a run in progress, not a PASS claim.
+
+### First fresh run result and bounded correction
+
+`run-20260925191022-51497c69` ended with A `PASS`, B `BLOCKED`, C `BLOCKED`, on one immutable functional snapshot. A produced ready directly at INIT, passed PLAN/reviews/tasks, implemented and formally validated three slices, reached official `COMPLETE`, called `SPEC_CLOSE` immediately, and finalized `closed`/`PASS` with no READINESS event. Its cost was 12 main plus 7 runner turns. B published ready INIT, PLAN and tasks, but its first `EXECUTE_SLICE` ended `RUNNER_RESULT_BLOCKED` after 6 main and 1 runner turn. C completed the same preparation and its first implementation and formal validation, proving the C parser no longer rejects its semantic response; its second `EXECUTE_SLICE` ended `RUNNER_RESULT_BLOCKED` after 8 main and 3 runner turns. The run consumed 37 controlled turns, moving the ledger from 106 to 143/180. All raw results, rejected candidates, events, private-home cleanup records and diagnostics remain under the owned run; no blocked result was rewritten as PASS.
+
+Both new blockers have one demonstrated cause class: the independent runner returned an invalid technical `head` for EXECUTE. B's semantic JSON had `TESTS_PASS`, executed commands, but `head` was explanatory text saying Git was unavailable; C's second runner returned `TESTS_PASS` with `head` empty. The deterministic producer/validator rejected the responses and the main contexts persisted delegation blockers without publishing false validation. Retained C first-runner events show that `git rev-parse HEAD` exited 0 and returned a valid 40-character SHA even though Apple Git emitted xcrun cache/FSEvents warnings on stderr; B had only inspected `git status` and misread those warnings as loss of HEAD. The distributed runner instructions previously said to capture HEAD only in `VALIDATE_SLICE`, despite the EXECUTE/APPLY semantic schema requiring it. This is the causal contract gap; it is not a reason to accept placeholders or relax sandbox permissions.
+
+The correction changed the mirrored Codex and Claude runner contracts to obtain `git rev-parse HEAD` for EXECUTE/APPLY/VALIDATE and use a valid stdout SHA when exit is 0, while returning BLOCKED for a genuinely unavailable SHA. `scripts/test-validation-runner-contract.mjs` now guards the rule and the prior serializer/validator tests still reject malformed technical fields. The focused runner contract passed 113/113, execution contracts 119/119, repository `validate.sh --no-smoke` exited 0, `benchmark.mjs verify` exited 0, and `git diff --check` exited 0. The first run is diagnostic evidence for the previous snapshot only.
+
+With 37 turns left, the principal froze a second revision and started a new `--full` run at `benchmark-temp/run-20260925203251-059fad36/`. Its functional source identity is `sha256:b282f3ec6c77b23ef3bc96777c270a134a6efc50323800048d6998b5b004c4ed` and snapshot identity is `sha256:cbdeb67272b029a1b0ceb2bf98f04b6597d8283c053ff2e40f1977e88d99bddf`. The manager's serialized ledger admits each operation only with capacity for its mandatory runner; a budget shortfall pauses before dispatch. No convergence is claimed while the second run is active.
+
+### Second fresh run result, budget extension, and current corrections
+
+The user explicitly authorized 30 more controllable turns during the second run. The ledger limit was atomically raised from 180 to 210 while both B/C INIT turns were active, preserving the prior +80 authorization and every historical turn. The manager subsequently read the new ceiling and continued the same immutable run. This was not a reset or per-case quota.
+
+`run-20260925203251-059fad36` ended `BLOCKED` at 2026-09-25T21:42:30Z with one frozen functional revision. A passed all 10 main and 4 runner turns, implemented and formally validated two slices, reached official `COMPLETE`, went directly to `SPEC_CLOSE`, and finalized `closed` with finalizer exit 0. B passed ready INIT, planning, reviews, task materialization/review and its first `EXECUTE_SLICE`; the corrected runner HEAD contract yielded accepted `IMPLEMENTED_AWAITING_VALIDATION`. Its first `VALIDATE_SLICE` stopped with `OFFICIAL_TRANSITION_NOT_OBSERVED` after 7 main and 1 managed runner turns, leaving the live execution state unchanged. C passed the same setup but its first `EXECUTE_SLICE` ended `RUNNER_RESULT_BLOCKED` after 6 main and 1 managed runner turns. Its first product implementation and tests were retained, but no false official PASS was published. A/B/C raw v2 artifacts, candidate diagnostics, semantic responses and events remain in the owned run; the finalizer returned 0 only for A.
+
+The C blocker is an evidence-copy defect distinct from the prior HEAD failure. The deterministic execution producer emitted a valid 64-character SHA-256 for `src/validation.mjs`, but the main context copied only 63 characters into its isolated candidate. Strict candidate validation rejected that draft. The main then mislabeled the transcription error as malformed runner output and persisted a delegation blocker. The source correction adds an owned-candidate-only `--insert-candidate` operation to the mirrored evidence producer, so canonical records and hashes are inserted mechanically. The executor instruction now requires this path, distinguishes producer/candidate failures from runner schema failures, and forbids manual digest transcription. A focused test proves exact insertion, live-byte preservation, duplicate rejection, live-target rejection, and strict candidate acceptance.
+
+In B validation, the main context invoked a collaboration `spawn_agent` instead of the configured managed runner adapter. That child identified a real `priority: null` behavior defect, but returned keys and types outside the runner contract. No managed validation runner request was handled. The main built a valid `RUNNER_RESULT_BLOCKED` candidate, yet the validation publisher rejected the `Delegation Blocker` section because its ownership list omitted that legal blocked transition. The source correction sets `features.multi_agent=false` in the Codex SDK client, verified with the local Codex CLI feature override, so SDK main turns cannot initiate unbudgeted collaboration children; the configured adapter remains the only managed runner path. The validation publisher now permits `Delegation Blocker` changes only for a strictly validated blocked candidate or an existing blocker being resolved. A focused publisher test proves the blocked candidate can be published without changing unrelated sections.
+
+The retained B events contain exactly one `spawn_agent` followed by completed `wait` and `close_agent`; no other collaboration spawn appeared in either fresh run. Because this child's generation was not admitted by the manager, the principal appended a reconciliation entry as turn 173, role `subagent`, without renumbering turns 1–172. Exact child start time and token usage are unavailable; the child is never treated as free. At this checkpoint the global ledger is 173/210, leaving 37. The v2 raw telemetry for the second run reports A 14,777,356 input / 90,194 output, B 8,407,174 / 78,705, C 8,199,634 / 85,163; B's untracked child's tokens are additional but unavailable. These are SDK counters, not billing. The root principal session is also not metered by this ledger.
+
+Post-correction checks: execution contracts 121/121, validation-runner contracts 113/113, benchmark manager contracts 4/4, Codex runner adapter contracts 4/4, `bash scripts/validate.sh --no-smoke` exit 0, `benchmark.mjs verify` exit 0, and `git diff --check` exit 0. The next full-run proof requires a new functional snapshot; the previous A PASS cannot be combined with B/C from that new revision. The observed minimum normal path is about 46 controlled turns before plausible B findings recovery, exceeding the 37 remaining. A further explicit budget decision is pending; no new full run has started.
+
+### Current correction-mission changed-file inventory
+
+The 42 paths below are the complete uncommitted source/document inventory at this checkpoint. Ignored `benchmark-temp/` artifacts are separate. No source file was staged, committed, or pushed.
+
+The current post-correction functional source identity (277 files) is `sha256:9cdce53ac598bd269b7f318415b074f2a446ebd7b78d6a4a3aba7bdd2724c678`. This identity has passed local checks but has **not** been exercised by a fresh full A/B/C run.
+
+```text
+ M agents/claude-code/.claude/agents/stnl-validation-runner.md
+ M agents/codex/.codex/agents/stnl_validation_runner.toml
+ M agents/codex/runtime/sdk-transport.mjs
+ M benchmarks/sentinel-todo/benchmark.json
+ M benchmarks/sentinel-todo/runtime/benchmark-manager.mjs
+ M benchmarks/sentinel-todo/runtime/benchmark.mjs
+ M maintenance/p0-evidence/s3-benchmark-simplification.md
+ M scripts/check-contracts.mjs
+ M scripts/lib/check-distributable-skill.mjs
+ M scripts/test-benchmark-contract.mjs
+ M scripts/test-benchmark-manager.mjs
+ M scripts/test-codex-runner-adapter.mjs
+ M scripts/test-execution-contract.mjs
+ M scripts/test-launcher-contract.mjs
+ M scripts/test-validation-runner-contract.mjs
+ M scripts/validate.sh
+ M skills/workflows/stnl-slice-executor/SKILL.md
+ M skills/workflows/stnl-slice-executor/references/execution-record-schema.md
+ M skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs
+ M skills/workflows/stnl-slice-quality-manager/references/execution-record-schema.md
+ M skills/workflows/stnl-slice-quality-manager/runtime/publish-validation-candidate.mjs
+ M skills/workflows/stnl-slice-quality-manager/runtime/serialize-runner-evidence.mjs
+ M skills/workflows/stnl-spec-lifecycle-manager/SKILL.md
+ M skills/workflows/stnl-spec-lifecycle-manager/references/close-policy.md
+ M skills/workflows/stnl-spec-lifecycle-manager/references/modes.md
+ M skills/workflows/stnl-spec-lifecycle-manager/runtime/build-closed-spec.mjs
+ M skills/workflows/stnl-spec-lifecycle-manager/runtime/lib/closed-spec.mjs
+ M skills/workflows/stnl-spec-lifecycle-manager/runtime/lib/publisher.mjs
+ M skills/workflows/stnl-spec-lifecycle-manager/runtime/test/closed-spec.test.mjs
+ M skills/workflows/stnl-spec-lifecycle-manager/runtime/test/publisher.test.mjs
+ M skills/workflows/stnl-spec-lifecycle-manager/runtime/test/readiness.test.mjs
+ M skills/workflows/stnl-task-materializer/references/execution-record-schema.md
+ M templates/prompts/spec-readiness.md
+?? agents/codex/runtime/usage-accounting.mjs
+?? benchmarks/sentinel-todo/runtime/benchmark-ui.mjs
+?? benchmarks/sentinel-todo/schemas/journal-v2.schema.json
+?? benchmarks/sentinel-todo/schemas/result-v2.schema.json
+?? scripts/test-benchmark-ui.mjs
+?? skills/workflows/stnl-spec-lifecycle-manager/runtime/lib/readiness-result.mjs
+?? skills/workflows/stnl-spec-lifecycle-manager/runtime/readiness-result.schema.json
+?? skills/workflows/stnl-spec-lifecycle-manager/runtime/readiness-snapshot.mjs
+?? templates/prompts/spec-readiness-local.md
+```

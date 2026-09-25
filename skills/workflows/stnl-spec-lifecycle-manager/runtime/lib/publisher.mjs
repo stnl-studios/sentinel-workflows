@@ -727,8 +727,8 @@ async function preflightReadinessAttestationPath(mode, readinessAttestation, tar
   if (mode === "RESUME" && (readinessAttestation === null || readinessAttestation === undefined)) {
     return null;
   }
-  if (readinessAttestation === null || readinessAttestation === undefined) {
-    fail("CLOSE publication requires --readiness-attestation PATH");
+  if (mode === "CLOSE" && (readinessAttestation === null || readinessAttestation === undefined)) {
+    return null;
   }
   const requested = expandUser(readinessAttestation);
   if ((await lstatOrNull(requested))?.isSymbolicLink()) {
@@ -3746,16 +3746,12 @@ async function validateCandidate(
     }
     return validateMaybePromise(validateResumeTransition(target, candidate, manifest));
   } else {
-    if (readinessIdentity === null) fail("CLOSE validation requires a captured readiness identity");
-    await assertEphemeralAttestationIdentity(readinessAttestation, readinessIdentity, "validation start");
-    await validateMaybePromise(validateReadinessAttestation(target, readinessAttestation, { candidate }));
-    await assertEphemeralAttestationIdentity(readinessAttestation, readinessIdentity, "validation end");
     await rejectCloseCandidateMetadata(candidate);
     await validateMaybePromise(validateCloseTransition(target, candidate));
     const expectedFeature = await validateMaybePromise(renderClosedFeature(target));
     const candidateFeature = await fs.readFile(path.join(candidate, "feature_spec.md"));
     if (!candidateFeature.equals(Buffer.from(expectedFeature))) {
-      fail("CLOSE candidate is not the exact deterministic rendering of the attested source", path.join(candidate, "feature_spec.md"));
+      fail("CLOSE candidate is not the exact deterministic rendering of the active source", path.join(candidate, "feature_spec.md"));
     }
     return null;
   }
@@ -3844,10 +3840,10 @@ export async function publishCandidate(mode, target, candidate, {
   validateTestOnlyHookConfiguration();
 
   let preflightCloseAttestationIdentity = null;
-  if (mode === "CLOSE" && !(await lexists(journalPath(targetPath)))) {
+  if (mode === "CLOSE" && attestation !== null && !(await lexists(journalPath(targetPath)))) {
     const workspace = await validateMaybePromise(validateWorkspace(targetPath));
     if (workspace.closed || workspace.status !== "ready") {
-      fail("readiness attestation requires an active ready workspace");
+      fail("CLOSE requires an active ready workspace");
     }
     preflightCloseAttestationIdentity = await captureEphemeralAttestationIdentity(attestation);
     await validateMaybePromise(
@@ -3875,7 +3871,7 @@ export async function publishCandidate(mode, target, candidate, {
     if (mode === "CLOSE") {
       const workspace = await validateMaybePromise(validateWorkspace(targetPath));
       if (workspace.closed || workspace.status !== "ready") {
-        fail("readiness attestation requires an active ready workspace");
+        fail("CLOSE requires an active ready workspace");
       }
     }
 
@@ -3932,7 +3928,7 @@ export async function publishCandidate(mode, target, candidate, {
         sourceSnapshotSha256: sourceDigest,
       };
       await writeOwnership(targetPath, ownership);
-      if (mode === "CLOSE") {
+      if (mode === "CLOSE" && attestation !== null) {
         closeAttestationIdentity = preflightCloseAttestationIdentity ??
           await captureEphemeralAttestationIdentity(attestation);
         await assertEphemeralAttestationIdentity(
@@ -4151,7 +4147,7 @@ export async function publishCandidate(mode, target, candidate, {
         ownership.stageIdentity,
         candidateDigest,
       );
-      if (mode === "CLOSE") {
+      if (mode === "CLOSE" && attestation !== null) {
         await assertOwnedJournal(targetPath, transaction);
         if (beforeAttestationCleanup !== null) await beforeAttestationCleanup({
           target: targetPath, stage, backup, attestation, transactionId,

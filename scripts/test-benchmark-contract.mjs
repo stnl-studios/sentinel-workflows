@@ -70,6 +70,20 @@ async function initJournal(file, caseId = 'A', runMode = 'case') {
     'journal-init', '--output', file, '--case', caseId, '--sentinel-sha', SHA,
     '--run-mode', runMode, '--production-profile', CURRENT_PROFILE,
   ]), 'journal-init');
+  const journal = await readJson(file);
+  journal.schemaVersion = 1;
+  await fs.writeFile(file, `${JSON.stringify(journal, null, 2)}\n`, 'utf8');
+}
+
+async function initV2Journal(file, caseId = 'C', runMode = 'case') {
+  requireSuccess(cli([
+    'journal-init', '--output', file, '--case', caseId, '--sentinel-sha', SHA,
+    '--run-mode', runMode, '--production-profile', CURRENT_PROFILE,
+  ]), 'v2 journal-init');
+}
+
+function readinessArgs(scope, hash = `sha256:${'a'.repeat(64)}`) {
+  return ['--readiness-scope', scope, '--readiness-snapshot-sha256', hash];
 }
 
 function replaceAll(text, values) {
@@ -340,6 +354,60 @@ test('B09 — production profile v2 is current and dispatch enforcement is deter
   assert.deepEqual(terraResult.modelUse.profileMismatches.map((entry) => [entry.phase, entry.expectedModel, entry.actualModel]), [
     ['SPEC', 'GPT-5.6-Sol', 'GPT-5.6-Terra'],
   ]);
+});
+
+test('B10 — v2 maturation lifecycle records global readiness and promotion', async (t) => {
+  const root = await temporaryRoot(t, 'sentinel-benchmark-v2');
+  const journal = path.join(root, 'v2.json');
+  await initV2Journal(journal);
+  requireSuccess(event(journal, 'SPEC_INIT', 'SPEC', 'GPT-5.6-Sol', 'high', 'PASS', ['--resulting-state', 'SPEC_DRAFT']), 'v2 init');
+  const finding = [...readinessArgs('GLOBAL'), '--resulting-state', 'GLOBAL_FINDINGS'];
+  requireSuccess(event(journal, 'SPEC_READINESS', 'REVIEW_VALIDATE', 'GPT-5.6-Luna', 'high', 'NEEDS_FIX', finding), 'v2 global findings');
+  requireSuccess(event(journal, 'SPEC_RESUME', 'SPEC', 'GPT-5.6-Sol', 'high', 'PASS', ['--resulting-state', 'SPEC_DRAFT']), 'v2 resume');
+  requireSuccess(event(journal, 'SPEC_READINESS', 'REVIEW_VALIDATE', 'GPT-5.6-Luna', 'high', 'PASS', [...readinessArgs('GLOBAL'), '--resulting-state', 'GLOBAL_READY']), 'v2 global ready');
+  requireSuccess(event(journal, 'SPEC_PROMOTE', 'SPEC', 'GPT-5.6-Sol', 'high', 'PASS', ['--resulting-state', 'SPEC_READY']), 'v2 promote');
+  const parsed = await readJson(journal);
+  assert.equal(parsed.schemaVersion, 2);
+  assert.equal(parsed.events.at(-1).operation, 'SPEC_PROMOTE');
+});
+
+test('B11 — v2 rejects premature PLAN, LOCAL approval, promotion, terminal readiness, and early close', async (t) => {
+  const root = await temporaryRoot(t, 'sentinel-benchmark-v2-invalid');
+  const journal = path.join(root, 'v2.json');
+  await initV2Journal(journal);
+  requireSuccess(event(journal, 'SPEC_INIT', 'SPEC', 'GPT-5.6-Sol', 'high', 'PASS', ['--resulting-state', 'SPEC_DRAFT']), 'v2 init');
+  assert.notEqual(event(journal, 'PLAN', 'PLAN', 'GPT-5.6-Terra', 'high').status, 0);
+  assert.notEqual(event(journal, 'SPEC_PROMOTE', 'SPEC', 'GPT-5.6-Sol', 'high', 'PASS', ['--resulting-state', 'SPEC_READY']).status, 0);
+  assert.notEqual(event(journal, 'SPEC_READINESS', 'REVIEW_VALIDATE', 'GPT-5.6-Luna', 'high', 'PASS', [...readinessArgs('LOCAL'), '--resulting-state', 'GLOBAL_READY']).status, 0);
+  requireSuccess(event(journal, 'SPEC_READINESS', 'REVIEW_VALIDATE', 'GPT-5.6-Luna', 'high', 'NEEDS_FIX', [...readinessArgs('GLOBAL'), '--resulting-state', 'GLOBAL_FINDINGS']), 'v2 findings');
+  requireSuccess(event(journal, 'SPEC_RESUME', 'SPEC', 'GPT-5.6-Sol', 'high', 'PASS', ['--resulting-state', 'SPEC_READY']), 'v2 resume');
+  requireSuccess(event(journal, 'SPEC_READINESS', 'REVIEW_VALIDATE', 'GPT-5.6-Luna', 'high', 'PASS', [...readinessArgs('GLOBAL'), '--resulting-state', 'GLOBAL_READY']), 'v2 ready');
+  requireSuccess(event(journal, 'PLAN', 'PLAN', 'GPT-5.6-Terra', 'high'), 'v2 plan');
+  assert.notEqual(event(journal, 'SPEC_READINESS', 'REVIEW_VALIDATE', 'GPT-5.6-Luna', 'high', 'PASS', [...readinessArgs('GLOBAL'), '--resulting-state', 'GLOBAL_READY']).status, 0);
+  assert.notEqual(event(journal, 'SPEC_CLOSE', 'SPEC', 'GPT-5.6-Sol', 'high', 'PASS', ['--resulting-state', 'SPEC_CLOSED']).status, 0);
+});
+
+test('B12 — v2 finalization requires immediate close and reports maturation cycles', async (t) => {
+  const root = await temporaryRoot(t, 'sentinel-benchmark-v2-finalize');
+  const workspace = path.join(root, 'workspace');
+  requireSuccess(cli(['prepare', '--case', 'A', '--output', workspace]), 'prepare v2 workspace');
+  const { spec } = await writeSyntheticArtifacts(workspace);
+  const journal = path.join(root, 'v2.json');
+  await initV2Journal(journal, 'A');
+  requireSuccess(event(journal, 'SPEC_INIT', 'SPEC', 'GPT-5.6-Sol', 'high', 'PASS', ['--resulting-state', 'SPEC_READY']), 'v2 init ready');
+  requireSuccess(event(journal, 'PLAN', 'PLAN', 'GPT-5.6-Terra', 'high'), 'v2 plan');
+  requireSuccess(event(journal, 'REVIEW_PLAN', 'REVIEW_VALIDATE', 'GPT-5.6-Luna', 'high'), 'v2 review plan');
+  requireSuccess(event(journal, 'MATERIALIZE_TASKS', 'TASKS', 'GPT-5.6-Terra', 'high'), 'v2 materialize');
+  requireSuccess(event(journal, 'REVIEW_TASKS', 'REVIEW_VALIDATE', 'GPT-5.6-Luna', 'high'), 'v2 review tasks');
+  requireSuccess(event(journal, 'EXECUTE_SLICE', 'EXECUTE', 'GPT-5.6-Luna', 'high', 'PASS', ['--slice', 'slice-01']), 'v2 execute');
+  requireSuccess(event(journal, 'VALIDATE_SLICE', 'REVIEW_VALIDATE', 'GPT-5.6-Luna', 'high', 'PASS', ['--slice', 'slice-01', '--resulting-state', 'COMPLETE']), 'v2 complete');
+  requireSuccess(event(journal, 'SPEC_CLOSE', 'SPEC', 'GPT-5.6-Sol', 'high', 'PASS', ['--resulting-state', 'SPEC_CLOSED']), 'v2 close');
+  const output = path.join(root, 'result.json');
+  requireSuccess(cli(['finalize', '--workspace', workspace, '--case', 'A', '--spec', spec, '--journal', journal, '--output', output]), 'finalize v2');
+  const result = await readJson(output);
+  assert.equal(result.schemaVersion, 2);
+  assert.equal(result.operations.maturationCycles, 0);
+  assert.equal(result.status, 'PASS');
 });
 
 test('B02 — seed is dependency-free, complete, and green', async () => {

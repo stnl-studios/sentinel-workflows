@@ -48,11 +48,11 @@ Preserve H1, IDs/types/titles and unaffected bytes/links/paths; retire in place 
 
 Require `SPEC_PATH`, exactly `READINESS_SCOPE=LOCAL|GLOBAL`, and bounded `READINESS_FOCUS` for `LOCAL`. The mode is read-only: never mutate the workspace or create lifecycle content.
 
-Run `node "<SKILL_ROOT>/runtime/validate-spec-lifecycle.mjs" workspace <SPEC_PATH>` first; stop on failure. On PASS load `readiness-gates.md`: `LOCAL` reads focus/dependencies, `GLOBAL` all authority. Write nothing. After `GLOBAL/READY`, `ready` runs `node "<SKILL_ROOT>/runtime/create-readiness-attestation.mjs" <SPEC_PATH> <EXTERNAL_ATTESTATION> --scope GLOBAL --verdict READY`; `draft` never does and defers creation to the publisher above.
+Run `node "<SKILL_ROOT>/runtime/validate-spec-lifecycle.mjs" workspace <SPEC_PATH>` first; stop on failure. On PASS load `readiness-gates.md`: `LOCAL` reads focus/dependencies, `GLOBAL` all authority. Write nothing. Capture `node "<SKILL_ROOT>/runtime/readiness-snapshot.mjs" <SPEC_PATH>` before and after evaluation and return the exact JSON result described in `SKILL.md`; changed identity is an evaluation error. `LOCAL_CLEAR` is focal only. After `GLOBAL/READY`, `ready` may run `node "<SKILL_ROOT>/runtime/create-readiness-attestation.mjs" <SPEC_PATH> <EXTERNAL_ATTESTATION> --scope GLOBAL --verdict READY` for a legitimate external consumer; `draft` defers status-only promotion attestation creation to the publisher above.
 
 ## CLOSE
 
-Require a valid active `ready` source and strict `GLOBAL/READY` attestation over its current snapshot. Follow `close-policy.md`; the runtime verifies, renders, validates, and publishes. Implementation evidence is never a gate.
+Require a valid active `ready` source. Follow `close-policy.md`; the runtime verifies, renders, validates, and publishes directly. Implementation evidence and terminal readiness attestation are never gates.
 
 ## Outcome contract
 

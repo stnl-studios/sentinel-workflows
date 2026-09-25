@@ -28,13 +28,13 @@ const EFFORTS = new Set(['low', 'medium', 'high', 'xhigh']);
 const PROFILE_IDS = new Set(['production-v1', 'production-v2']);
 const RUN_MODES = new Set(['focal', 'case', 'full']);
 const OPERATIONS = new Set([
-  'SPEC_INIT', 'SPEC_READINESS', 'PLAN', 'REVIEW_PLAN', 'MATERIALIZE_TASKS',
+  'SPEC_INIT', 'SPEC_READINESS', 'SPEC_RESUME', 'SPEC_PROMOTE', 'PLAN', 'REVIEW_PLAN', 'MATERIALIZE_TASKS',
   'REVIEW_TASKS', 'EXECUTE_SLICE', 'VALIDATE_SLICE', 'APPLY_FINDINGS', 'REPLAN', 'SPEC_CLOSE',
 ]);
 const RESULTS = new Set(['PASS', 'FAIL', 'BLOCKED', 'NEEDS_FIX', 'REJECTED', 'COMPLETE']);
 const PHASES = ['SPEC', 'PLAN', 'TASKS', 'EXECUTE', 'REVIEW_VALIDATE'];
 const OPERATION_PHASE = new Map([
-  ['SPEC_INIT', 'SPEC'], ['SPEC_READINESS', 'REVIEW_VALIDATE'], ['SPEC_CLOSE', 'SPEC'],
+  ['SPEC_INIT', 'SPEC'], ['SPEC_READINESS', 'REVIEW_VALIDATE'], ['SPEC_RESUME', 'SPEC'], ['SPEC_PROMOTE', 'SPEC'], ['SPEC_CLOSE', 'SPEC'],
   ['PLAN', 'PLAN'], ['REPLAN', 'PLAN'],
   ['MATERIALIZE_TASKS', 'TASKS'],
   ['EXECUTE_SLICE', 'EXECUTE'], ['APPLY_FINDINGS', 'EXECUTE'],
@@ -182,7 +182,7 @@ function assertManifest(configuration) {
       }
     }
   }
-  if (configuration.schemaVersions?.journal !== 1 || configuration.schemaVersions?.result !== 1) {
+  if (configuration.schemaVersions?.journal !== 2 || configuration.schemaVersions?.result !== 2) {
     throw new CliError('schema versions are invalid');
   }
   if (!/^sha256:[0-9a-f]{64}$/u.test(configuration.integrity?.seedContentHash)) {
@@ -404,7 +404,7 @@ function assertJournal(value, configuration) {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) throw new CliError('journal must be an object');
   const journalKeys = ['abortReason', 'benchmarkId', 'benchmarkVersion', 'caseId', 'events', 'productionProfileId', 'runMode', 'schemaVersion', 'sentinelSha', 'status'];
   if (JSON.stringify(Object.keys(value).sort()) !== JSON.stringify(journalKeys)) throw new CliError('journal has unknown or missing fields');
-  if (value.schemaVersion !== 1 || value.benchmarkVersion !== configuration.benchmarkVersion
+  if (![1, 2].includes(value.schemaVersion) || value.benchmarkVersion !== configuration.benchmarkVersion
     || value.benchmarkId !== configuration.benchmarkId) throw new CliError('journal identity is invalid');
   caseConfig(configuration, value.caseId);
   if (!RUN_MODES.has(value.runMode) || !/^[0-9a-f]{40}$/u.test(value.sentinelSha)
@@ -414,7 +414,8 @@ function assertJournal(value, configuration) {
     const required = ['childDispatches', 'effort', 'index', 'model', 'operation', 'phase', 'result'];
     const optional = [
       'durationMs', 'escalation', 'handoffBytes', 'inputBytes', 'inputTokens', 'mechanicalRejection',
-      'observableReads', 'outputBytes', 'outputTokens', 'resultingState', 'retry', 'round', 'slice',
+      'observableReads', 'outputBytes', 'outputTokens', 'readinessScope', 'readinessSnapshotSha256',
+      'resultingState', 'retry', 'round', 'slice',
     ];
     if (Object.keys(event).some((key) => !required.includes(key) && !optional.includes(key))
       || required.some((key) => !Object.hasOwn(event, key))) throw new CliError(`journal event ${index + 1} has unknown or missing fields`);
@@ -429,6 +430,8 @@ function assertJournal(value, configuration) {
     if (event.round !== undefined && (!Number.isInteger(event.round) || event.round < 1)) throw new CliError(`journal event ${index + 1} has invalid round`);
     if (event.slice !== undefined && !/^slice-[0-9]{2,}$/u.test(event.slice)) throw new CliError(`journal event ${index + 1} has invalid slice`);
     if (event.resultingState !== undefined && (typeof event.resultingState !== 'string' || event.resultingState === '')) throw new CliError(`journal event ${index + 1} has invalid resultingState`);
+    if (event.readinessScope !== undefined && !['GLOBAL', 'LOCAL'].includes(event.readinessScope)) throw new CliError(`journal event ${index + 1} has invalid readinessScope`);
+    if (event.readinessSnapshotSha256 !== undefined && !/^sha256:[0-9a-f]{64}$/u.test(event.readinessSnapshotSha256)) throw new CliError(`journal event ${index + 1} has invalid readinessSnapshotSha256`);
     for (const field of ['escalation', 'mechanicalRejection', 'retry']) {
       if (event[field] !== undefined && typeof event[field] !== 'boolean') throw new CliError(`journal event ${index + 1} has invalid ${field}`);
     }
@@ -452,6 +455,70 @@ function assertJournal(value, configuration) {
       || !Number.isInteger(value.abortReason.eventIndex) || value.abortReason.eventIndex < 1) {
       throw new CliError('journal abortReason is invalid');
     }
+  }
+  if (value.schemaVersion === 2) assertV2Sequence(value.events);
+}
+
+function assertV2Sequence(events) {
+  if (events.length === 0) return;
+  const init = events[0];
+  if (events.length === 1 && init.operation === 'SPEC_INIT' && init.result === 'BLOCKED') return;
+  if (init.operation !== 'SPEC_INIT' || init.result !== 'PASS'
+    || !['SPEC_READY', 'SPEC_DRAFT', 'SPEC_BLOCKED'].includes(init.resultingState)) {
+    throw new CliError('v2 journal must begin with PASS SPEC_INIT and a valid resultingState');
+  }
+  let phase = init.resultingState === 'SPEC_READY' ? 'READY_FOR_PLAN' : 'EXPECT_READINESS';
+  let documentState = init.resultingState;
+  for (const [index, event] of events.entries()) {
+    if (index === 0) continue;
+    if (event.result === 'BLOCKED' && index === events.length - 1
+      && phase !== 'COMPLETE' && phase !== 'CLOSED') continue;
+    if (event.operation === 'SPEC_READINESS' && event.readinessScope === 'LOCAL'
+      && phase === 'EXPECT_READINESS' && event.resultingState !== 'GLOBAL_READY') continue;
+    if (phase === 'EXPECT_READINESS') {
+      if (event.operation !== 'SPEC_READINESS' || event.readinessScope !== 'GLOBAL') {
+        throw new CliError('v2 non-ready SPEC requires GLOBAL READINESS before PLAN');
+      }
+      if (event.result === 'NEEDS_FIX' && event.resultingState === 'GLOBAL_FINDINGS') phase = 'EXPECT_RESUME';
+      else if (event.result === 'PASS' && event.resultingState === 'GLOBAL_READY') {
+        phase = documentState === 'SPEC_READY' ? 'READY_FOR_PLAN' : 'EXPECT_PROMOTION';
+      } else throw new CliError('v2 GLOBAL READINESS requires FINDINGS or READY verdict');
+      continue;
+    }
+    if (phase === 'EXPECT_RESUME') {
+      if (event.operation !== 'SPEC_RESUME' || event.result !== 'PASS'
+        || !['SPEC_READY', 'SPEC_DRAFT', 'SPEC_BLOCKED'].includes(event.resultingState)) {
+        throw new CliError('v2 GLOBAL_FINDINGS requires one supported SPEC_RESUME');
+      }
+      documentState = event.resultingState;
+      phase = 'EXPECT_READINESS';
+      continue;
+    }
+    if (phase === 'EXPECT_PROMOTION') {
+      if (event.operation !== 'SPEC_PROMOTE' || event.result !== 'PASS' || event.resultingState !== 'SPEC_READY') {
+        throw new CliError('v2 draft GLOBAL_READY requires status-only SPEC_PROMOTE');
+      }
+      documentState = 'SPEC_READY';
+      phase = 'READY_FOR_PLAN';
+      continue;
+    }
+    if (phase === 'READY_FOR_PLAN') {
+      if (event.operation !== 'PLAN') throw new CliError('v2 ready SPEC must advance directly to PLAN');
+      phase = 'EXECUTION';
+      continue;
+    }
+    if (phase === 'COMPLETE') {
+      if (event.operation !== 'SPEC_CLOSE' || event.result !== 'PASS' || index !== events.length - 1) {
+        throw new CliError('v2 SPEC_CLOSE must immediately follow COMPLETE');
+      }
+      phase = 'CLOSED';
+      continue;
+    }
+    if (phase === 'CLOSED') throw new CliError('v2 journal cannot contain events after SPEC_CLOSE');
+    if (event.operation.startsWith('SPEC_') || event.operation === 'PLAN') {
+      throw new CliError('v2 execution cannot repeat PLAN or lifecycle maturation');
+    }
+    if (event.operation === 'VALIDATE_SLICE' && event.result === 'PASS' && event.resultingState === 'COMPLETE') phase = 'COMPLETE';
   }
 }
 
@@ -522,6 +589,8 @@ function optionalEventFields(options, event) {
     event.slice = options['--slice'];
   }
   if (options['--resulting-state'] !== undefined) event.resultingState = options['--resulting-state'];
+  if (options['--readiness-scope'] !== undefined) event.readinessScope = options['--readiness-scope'];
+  if (options['--readiness-snapshot-sha256'] !== undefined) event.readinessSnapshotSha256 = options['--readiness-snapshot-sha256'];
 }
 
 async function journalEvent(options) {
@@ -557,7 +626,18 @@ async function journalEvent(options) {
     }
     event.childDispatches.push({ role: options['--child-role'], model: options['--child-model'], effort: options['--child-effort'] });
   }
+  if (journal.schemaVersion === 2) {
+    if (operation === 'SPEC_READINESS' && event.result !== 'BLOCKED' && !['GLOBAL', 'LOCAL'].includes(event.readinessScope)) throw new CliError('v2 SPEC_READINESS requires --readiness-scope');
+    if (operation === 'SPEC_READINESS' && event.result !== 'BLOCKED' && !/^sha256:[0-9a-f]{64}$/u.test(event.readinessSnapshotSha256 ?? '')) throw new CliError('v2 SPEC_READINESS requires --readiness-snapshot-sha256');
+    if (operation === 'SPEC_INIT' && event.result !== 'BLOCKED'
+      && (event.result !== 'PASS' || !['SPEC_READY', 'SPEC_DRAFT', 'SPEC_BLOCKED'].includes(event.resultingState ?? ''))) throw new CliError('v2 SPEC_INIT requires PASS and resultingState');
+    if (operation === 'SPEC_RESUME' && event.result !== 'BLOCKED'
+      && (event.result !== 'PASS' || !['SPEC_READY', 'SPEC_DRAFT', 'SPEC_BLOCKED'].includes(event.resultingState ?? ''))) throw new CliError('v2 SPEC_RESUME requires PASS and resultingState');
+    if (operation === 'SPEC_PROMOTE' && event.result !== 'BLOCKED'
+      && (event.result !== 'PASS' || event.resultingState !== 'SPEC_READY')) throw new CliError('v2 SPEC_PROMOTE requires PASS/SPEC_READY');
+  }
   journal.events.push(event);
+  assertJournal(journal, configuration);
   const item = caseConfig(configuration, journal.caseId);
   const violation = budgetViolation(journal.events, item.budgets);
   if (violation !== null) {
@@ -624,11 +704,11 @@ async function artifactMetrics(specPath) {
   };
 }
 
-function operationMetrics(events) {
+function operationMetrics(events, schemaVersion = 1) {
   const count = (operation) => events.filter((event) => event.operation === operation).length;
   const cycles = new Set(events.filter((event) => event.operation === 'APPLY_FINDINGS')
     .map((event) => `${event.slice ?? 'none'}:${event.round ?? event.index}`));
-  return {
+  const metrics = {
     total: events.length,
     reviewPlanRounds: count('REVIEW_PLAN'),
     reviewTasksRounds: count('REVIEW_TASKS'),
@@ -640,6 +720,8 @@ function operationMetrics(events) {
     mechanicalRejections: events.filter((event) => event.mechanicalRejection === true).length,
     retries: events.filter((event) => event.retry === true).length,
   };
+  if (schemaVersion === 2) metrics.maturationCycles = events.filter((event) => event.operation === 'SPEC_RESUME').length;
+  return metrics;
 }
 
 function modelMetrics(events, expectedProfile) {
@@ -727,7 +809,7 @@ async function sha256File(file) {
 }
 
 function validateResult(value) {
-  if (value?.schemaVersion !== 1 || value?.benchmarkVersion !== 1 || value?.benchmarkId !== 'sentinel-todo') {
+  if (![1, 2].includes(value?.schemaVersion) || value?.benchmarkVersion !== 1 || value?.benchmarkId !== 'sentinel-todo') {
     throw new CliError('result identity is invalid');
   }
   const topKeys = [
@@ -757,10 +839,12 @@ function validateResult(value) {
     || Object.values(value.decomposition.tasksPerSlice).some((count) => !Number.isInteger(count) || count < 0)) {
     throw new CliError('result decomposition is invalid');
   }
-  numericObject(value.operations, [
+  const operationKeys = [
     'total', 'reviewPlanRounds', 'reviewTasksRounds', 'replans', 'executeCalls', 'validateCalls',
     'applyFindingsCalls', 'findingsCycles', 'mechanicalRejections', 'retries',
-  ], 'operations');
+  ];
+  if (value.schemaVersion === 2) operationKeys.push('maturationCycles');
+  numericObject(value.operations, operationKeys, 'operations');
   const modelUseKeys = ['actualEffortsByPhase', 'actualModelsByPhase', 'childDispatches', 'expectedProfile', 'profileMismatches', 'solEscalations'];
   if (JSON.stringify(Object.keys(value.modelUse).sort()) !== JSON.stringify(modelUseKeys)
     || !Number.isInteger(value.modelUse.solEscalations) || value.modelUse.solEscalations < 0
@@ -855,7 +939,7 @@ async function finalize(options) {
   ));
   const closeEvents = journal.events.filter((event) => event.operation === 'SPEC_CLOSE');
   const closeEvent = closeEvents[0];
-  const terminalSequence = initEvents.length === 1
+  const v1TerminalSequence = initEvents.length === 1
     && initEvent.result === 'PASS'
     && readinessEvents.length === 2
     && initialReadiness.result === 'PASS'
@@ -872,6 +956,20 @@ async function finalize(options) {
     && closeEvent.result === 'PASS'
     && closeEvent.index === terminalReadiness.index + 1
     && closeEvent.index === journal.events.length;
+  const v2Events = journal.schemaVersion === 2 ? journal.events : [];
+  const v2Init = v2Events[0];
+  const v2GlobalReady = v2Events.find((event) => event.operation === 'SPEC_READINESS' && event.readinessScope === 'GLOBAL' && event.result === 'PASS' && event.resultingState === 'GLOBAL_READY');
+  const v2Plan = v2Events.find((event) => event.operation === 'PLAN');
+  const v2Close = v2Events.at(-1);
+  const v2TerminalSequence = journal.schemaVersion === 2
+    && v2Init?.operation === 'SPEC_INIT' && v2Init.result === 'PASS'
+    && ['SPEC_READY', 'SPEC_DRAFT', 'SPEC_BLOCKED'].includes(v2Init.resultingState)
+    && (v2Init.resultingState === 'SPEC_READY' || v2GlobalReady !== undefined)
+    && v2Plan !== undefined
+    && completeEvent !== undefined
+    && v2Close?.operation === 'SPEC_CLOSE' && v2Close.result === 'PASS'
+    && v2Close.index === completeEvent.index + 1;
+  const terminalSequence = journal.schemaVersion === 2 ? v2TerminalSequence : v1TerminalSequence;
   const lifecycleValidation = run(process.execPath, [LIFECYCLE_VALIDATOR, 'workspace', realSpec], REPOSITORY_ROOT);
   const specClosed = lifecycleValidation.exitCode === 0 && / status=closed ids=[0-9]+\n?$/u.test(lifecycleValidation.stdout);
   const requirementsHash = await sha256File(path.join(realWorkspace, 'requirements.md'));
@@ -909,7 +1007,7 @@ async function finalize(options) {
 
   const workspaceMetrics = await gitWorkspaceMetrics(realWorkspace);
   const result = {
-    schemaVersion: configuration.schemaVersions.result,
+    schemaVersion: journal.schemaVersion,
     benchmarkVersion: configuration.benchmarkVersion,
     benchmarkId: configuration.benchmarkId,
     caseId: item.id,
@@ -921,7 +1019,7 @@ async function finalize(options) {
     specClosed,
     finalTestsPassed,
     decomposition: { slices: artifacts.slices, tasks: artifacts.tasks, tasksPerSlice: artifacts.tasksPerSlice },
-    operations: operationMetrics(journal.events),
+    operations: operationMetrics(journal.events, journal.schemaVersion),
     modelUse: modelMetrics(journal.events, configuration.productionProfile.cases[item.id]),
     contextCost: contextMetrics(journal.events, artifacts),
     workspace: {
@@ -1038,7 +1136,7 @@ const EVENT_OPTIONS = new Set([
   '--journal', '--operation', '--phase', '--model', '--effort', '--result', '--slice', '--round',
   '--resulting-state', '--duration-ms', '--input-tokens', '--output-tokens', '--input-bytes', '--output-bytes',
   '--handoff-bytes', '--observable-reads', '--mechanical-rejection', '--retry', '--escalation',
-  '--child-role', '--child-model', '--child-effort',
+  '--readiness-scope', '--readiness-snapshot-sha256', '--child-role', '--child-model', '--child-effort',
 ]);
 
 export async function main(argv) {

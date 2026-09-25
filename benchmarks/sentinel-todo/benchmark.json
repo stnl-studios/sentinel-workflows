@@ -4,12 +4,12 @@
   "seedPath": "seed",
   "supportedRunModes": ["focal", "case", "full"],
   "schemaVersions": {
-    "journal": 1,
-    "result": 1
+    "journal": 2,
+    "result": 2
   },
   "schemas": {
-    "journal": "schemas/journal.schema.json",
-    "result": "schemas/result.schema.json"
+    "journal": "schemas/journal-v2.schema.json",
+    "result": "schemas/result-v2.schema.json"
   },
   "integrity": {
     "seedContentHash": "sha256:9d93fbfa52b2e20607452f43d0ecb21e74f1872bb7a2da1b94dc2c814e7552e8"

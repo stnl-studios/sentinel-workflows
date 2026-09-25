@@ -30,7 +30,7 @@ For an existing SPEC, `SPEC_PATH` is its directory or direct `feature_spec.md`. 
 4. Structural links are `blocks`, `blocked_by`, `linked_decision`, `verifies`, and `references`; qualified external narrative references are not local IDs.
 5. Keep facts, hypotheses, decisions, and requirements distinct. Never invent content to pass a gate.
 6. Materialize only categories with real records. A ready SPEC has at least one active, unblocked AC covering an in-scope requirement.
-7. `READINESS` is read-only. `GLOBAL/READY` attests current `ready` state or the publisher's status-only `draft → ready` candidate. `CLOSE` requires it and preserves external paths.
+7. `READINESS` is read-only. `GLOBAL/READY` attests current `ready` state or the publisher's status-only `draft → ready` candidate. `CLOSE` directly closes a valid active `ready` SPEC and preserves external paths; it does not require a terminal readiness attestation.
 8. Every Markdown artifact begins with the exact File Purpose Header contract; `feature_spec.md` header status is the documentary state authority.
 9. A context scout is exceptional: zero by default, search and localized reading first, at most one read-only call per operation, without fan-out, subdelegation, or SPEC decisions.
 
@@ -50,14 +50,14 @@ Load only the operation row, then the SPEC evidence needed:
 
 Load `question-policy.md` only when question classification or resolution is affected, canonical IDs only when allocating or diagnosing identity/relations, and only templates actually materialized. `token-economy.md` and `maintenance/` are never runtime inputs.
 
-On validator failure, stop before semantic review and load only the diagnostic's reference. For validator-green `READINESS`, `LOCAL` reads its focus and dependencies and never claims global readiness; `GLOBAL` reads the complete feature and every materialized record. Economy never removes material authority.
+On validator failure, stop before semantic review and load only the diagnostic's reference. For validator-green `READINESS`, `LOCAL` reads its focus and dependencies and never claims global readiness; `GLOBAL` reads the complete feature and every materialized record. Economy never removes material authority. For both scopes, obtain the read-only identity with `node "<SKILL_ROOT>/runtime/readiness-snapshot.mjs" <SPEC_PATH>` before and after evaluation; a changed identity blocks the result. Return exactly one JSON object matching `runtime/readiness-result.schema.json`, with that workspace path and snapshot digest. `GLOBAL` verdict is `READY` or `FINDINGS`; `LOCAL` verdict is `LOCAL_CLEAR` or `FINDINGS`. Findings have stable `F-###` IDs, normalized SPEC-relative paths, concrete evidence, action `REFINE_FROM_EVIDENCE` or `DECISION_REQUIRED`, and a concrete question only for the latter. A finding alone never supplies an absent product decision.
 
 ## Outcomes
 
 - `INIT`: create the minimum valid workspace and return `draft`, `blocked`, or globally justified `ready`.
 - `RESUME`: apply only authorized deltas, preserve all other bytes, and change status only when gates permit.
 - `READINESS`: return findings without workspace mutation; `GLOBAL/READY` follows invariant 7.
-- `CLOSE`: verify the attestation, render, validate, and publish without model-authored consolidation.
+- `CLOSE`: verify active ready state, render, validate, and publish without model-authored consolidation or an external readiness attestation.
 
 ## Evaluation
 

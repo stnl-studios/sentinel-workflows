@@ -16,20 +16,16 @@ update_policy: Change only when documentary closure or preservation policy chang
 
 ## Preconditions
 
-Require explicit `MODE=CLOSE`, active `ready`, and final-Q `GLOBAL/READY`; use `RESUME` for change.
-
-Require the external attestation; reject unknown fields, wrong identity/verdict, stale digest, symlinks, or internal paths. It is ephemeral, not SPEC authority or content.
+Require explicit `MODE=CLOSE` and active `ready`; use `RESUME` for change. The source snapshot and filesystem identity captured by the publisher protect the operation from source drift.
 
 ## Deterministic pipeline
 
-1. After the verdict, create the external attestation:
-   `node "<SKILL_ROOT>/runtime/create-readiness-attestation.mjs" <SOURCE> <ATTESTATION> --scope GLOBAL --verdict READY`
-2. Build a disjoint candidate without model generation:
-   `node "<SKILL_ROOT>/runtime/build-closed-spec.mjs" <SOURCE> <CANDIDATE> --readiness-attestation <ATTESTATION>`
-3. The renderer verifies attestation and snapshot, copies externals safely, validates closed form and exact transition, then rechecks immediately before and after renaming its inode-backed candidate; stale state rolls that candidate back. Never refresh a stale attestation.
-4. Do not edit the rendered candidate. Publish it only with:
-   `node "<SKILL_ROOT>/runtime/publish-spec-lifecycle.mjs" CLOSE <TARGET> <CANDIDATE> --readiness-attestation <ATTESTATION>`
-5. Publisher revalidates that attestation against the live source and requires the exact deterministic candidate before promotion. Delete it after terminal success; a changed source requires new global readiness.
+1. Build a disjoint candidate without model generation:
+   `node "<SKILL_ROOT>/runtime/build-closed-spec.mjs" <SOURCE> <CANDIDATE>`
+2. The renderer verifies the active ready source and authority snapshot, copies externals safely, validates closed form and exact transition, then rechecks immediately before and after renaming its inode-backed candidate; stale state rolls that candidate back.
+3. Do not edit the rendered candidate. Publish it only with:
+   `node "<SKILL_ROOT>/runtime/publish-spec-lifecycle.mjs" CLOSE <TARGET> <CANDIDATE>`
+4. Publisher revalidates the live source identity and digest and requires the exact deterministic candidate before promotion. A changed source aborts publication.
 
 The model does not copy or paraphrase records, nor rebuild deterministic structure or metadata; renderer and validators do.
 

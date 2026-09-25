@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -11,7 +11,7 @@ function fail(message) {
 }
 
 const CLI_HELP = `Usage:
-  serialize-runner-evidence.mjs --execution-bundle --operation <EXECUTE_SLICE|APPLY_FINDINGS> --workspace <absolute> (--task-artifact <absolute> | --spec-path <absolute> --slice <slice>) --semantic-response-file <absolute>
+  serialize-runner-evidence.mjs --execution-bundle --operation <EXECUTE_SLICE|APPLY_FINDINGS> --workspace <absolute> (--task-artifact <absolute> | --spec-path <absolute> --slice <slice>) --semantic-response-file <absolute> [--insert-candidate]
   serialize-runner-evidence.mjs --record --workspace <absolute> (--task-artifact <absolute> | --spec-path <absolute> --slice <slice>) [--target <absolute>]... [--removed <relative>]... --command "<command>" --exit <integer>...
   serialize-runner-evidence.mjs --response --operation <operation> --workspace <absolute> (--task-artifact <absolute> | --spec-path <absolute> --slice <slice>) [--value "semantic value"]... [--target <absolute>]... [--removed <relative>]... [--command "<command>" --exit <integer>]...
   serialize-runner-evidence.mjs --manifest --workspace <absolute> (--task-artifact <absolute> | --spec-path <absolute> --slice <slice>) [--target <absolute>]... [--removed <relative>]... --command "<command>" --exit <integer>...
@@ -224,15 +224,52 @@ function validateScalarField(name, value) {
   return value;
 }
 
-function canonicalSemanticValidationScalar(name, value) {
+const EXPLANATORY_EXECUTION_FIELDS = new Set([
+  "Discovery sources", "Discovery actions", "Verification types considered", "Non-applicability rationale",
+  "No verification-command confirmation", "Result of each command and exit code", "Selected checks",
+  "Selection rationale", "Coverage", "Failures", "Prior-round failure", "Correction applied",
+  "In-slice rationale", "Evidence or failure summary", "Affected files or behaviors", "Blockers",
+  "Unexpected workspace effects", "Persistence summary", "Regressions selected", "Fileless reason",
+]);
+
+const EXPLANATORY_VALIDATION_FIELDS = new Set([
+  "evidence", "blockers", "unexpectedWorkspaceEffects", "persistenceSummary",
+]);
+
+function serializeMarkdownScalar(name, value, explanatory = false) {
   if (typeof value !== "string" || value.length === 0 || value.includes("\n") || value.includes("\r")) {
     fail(`${name} must be a complete single-line scalar`);
   }
-  const delimiterCount = [...value].filter((character) => character === "`").length;
-  if (delimiterCount % 2 !== 0) {
-    fail(`${name} contains unbalanced Markdown code delimiters`);
+  if (!explanatory) return validateScalarField(name, value);
+  return value.includes("`") || value.startsWith("json:") ? `json:${JSON.stringify(value)}` : value;
+}
+
+function decodeMarkdownScalar(name, value, explanatory = false) {
+  if (!explanatory) return validateScalarField(name, value);
+  if (!value.startsWith("json:")) {
+    serializeMarkdownScalar(name, value, true);
+    return value;
   }
-  return validateScalarField(name, value.replaceAll("`", ""));
+  const encoded = value.slice("json:".length);
+  let decoded;
+  try {
+    decoded = JSON.parse(encoded);
+  } catch {
+    fail(`${name} must use a canonical json-quoted scalar`);
+  }
+  if (typeof decoded !== "string" || decoded.length === 0 || decoded.includes("\n") || decoded.includes("\r")
+    || `json:${JSON.stringify(decoded)}` !== value) {
+    fail(`${name} must use a canonical json-quoted scalar`);
+  }
+  return decoded;
+}
+
+function canonicalSemanticValidationScalar(name, value) {
+  if (EXPLANATORY_VALIDATION_FIELDS.has(name)) {
+    serializeMarkdownScalar(name, value, true);
+    return value;
+  }
+  return validateScalarField(name, value);
 }
 
 function responseFieldNames(operation, fields) {
@@ -259,10 +296,10 @@ function serializeResponseFields(operation, fields) {
   if (unknown.length !== 0) fail(`unknown response field: ${unknown[0]}`);
   for (const name of expected) {
     if (!Object.hasOwn(fields, name)) fail(`missing response field: ${name}`);
-    validateScalarField(name, fields[name]);
+    serializeMarkdownScalar(name, fields[name], EXPLANATORY_EXECUTION_FIELDS.has(name));
   }
   if (fields.Operation !== operation) fail(`response Operation must be ${operation}`);
-  return expected.map((name) => `${name}: ${fields[name]}`);
+  return expected.map((name) => `${name}: ${serializeMarkdownScalar(name, fields[name], EXPLANATORY_EXECUTION_FIELDS.has(name))}`);
 }
 
 function responseFieldsFromValues(operation, values) {
@@ -290,7 +327,7 @@ export async function serializeRunnerRecord({ workspace, taskArtifact, targets =
     if (filelessReason !== null) fail("filelessReason is only valid for a fileless state");
     testedState = await serializeRunnerEvidence({ workspace, taskArtifact, targets, removed, commands });
   } else {
-    testedState = `- Tested state: none\n- Fileless reason: ${validateScalarField("filelessReason", filelessReason ?? "")}`;
+    testedState = `- Tested state: none\n- Fileless reason: ${serializeMarkdownScalar("filelessReason", filelessReason ?? "", true)}`;
   }
   const serializedCommands = serializeCommands(commands);
   if (serializedCommands.length === 0 && !allowEmptyCommands) fail("at least one executed command is required");
@@ -305,7 +342,7 @@ export async function serializeRunnerManifest({ workspace, taskArtifact, targets
     if (filelessReason !== null) fail("filelessReason is only valid for a fileless manifest");
     files = `- Files:\n${await serializeRunnerEvidence({ workspace, taskArtifact, targets, removed })}`;
   } else {
-    files = `- Files: none\n- Fileless reason: ${validateScalarField("filelessReason", filelessReason ?? "")}`;
+    files = `- Files: none\n- Fileless reason: ${serializeMarkdownScalar("filelessReason", filelessReason ?? "", true)}`;
   }
   const serializedCommands = serializeCommands(commands);
   if (serializedCommands.length === 0) fail("at least one authoritative command is required");
@@ -339,7 +376,7 @@ export async function serializeRunnerResponse({ operation, fields, values, works
     if (filelessReason !== null) fail("filelessReason is only valid for a fileless state");
     testedLines = `Tested state:\n${await serializeRunnerEvidence({ workspace, taskArtifact, targets, removed })}`;
   } else {
-    testedLines = `Tested state: none\nFileless reason: ${validateScalarField("filelessReason", filelessReason ?? "")}`;
+    testedLines = `Tested state: none\nFileless reason: ${serializeMarkdownScalar("filelessReason", filelessReason ?? "", true)}`;
   }
   const serializedCommands = serializeCommands(commands);
   if (responseFields.Status !== "BLOCKED" && responseFields.Status !== "TESTS_NOT_APPLICABLE" && serializedCommands.length === 0) {
@@ -392,11 +429,10 @@ function parseSemanticExecutionResponse(text, operation) {
     const prefix = `${field}: `;
     if (!lines[cursor]?.startsWith(prefix)) fail(`semantic execution response must contain ${field} in canonical order`);
     const value = lines[cursor].slice(prefix.length);
-    validateScalarField(field, value);
-    values[field] = value;
+    values[field] = decodeMarkdownScalar(field, value, EXPLANATORY_EXECUTION_FIELDS.has(field));
     cursor += 1;
     if (field === "HEAD" && lines[cursor]?.startsWith("Fileless reason: ")) {
-      values.filelessReason = validateScalarField("Fileless reason", lines[cursor].slice("Fileless reason: ".length));
+      values.filelessReason = decodeMarkdownScalar("Fileless reason", lines[cursor].slice("Fileless reason: ".length), true);
       cursor += 1;
     }
   }
@@ -426,7 +462,7 @@ function parseSemanticExecutionPayload(text, operation) {
   for (const [key] of fields) {
     if (!Object.hasOwn(payload, key)) fail(`missing semantic execution payload field: ${key}`);
     if (key === "commands") continue;
-    validateScalarField(key, payload[key]);
+    serializeMarkdownScalar(key, payload[key], EXPLANATORY_EXECUTION_FIELDS.has(MACHINE_EXECUTION_FIELDS[operation].find(([candidate]) => candidate === key)?.[1]));
   }
   if (!Array.isArray(payload.commands)) fail("semantic execution payload commands must be an array");
   for (const [index, command] of payload.commands.entries()) {
@@ -450,7 +486,7 @@ function parseSemanticExecutionPayload(text, operation) {
       }
     }
   }
-  if (Object.hasOwn(payload, "filelessReason")) validateScalarField("filelessReason", payload.filelessReason);
+  if (Object.hasOwn(payload, "filelessReason")) serializeMarkdownScalar("filelessReason", payload.filelessReason, true);
   return payload;
 }
 
@@ -826,6 +862,7 @@ function canonicalFindingDispositions(value, label) {
 async function serializeCanonicalExecutionCheck({
   operation, parsed, workspace, taskArtifact, taskText, targets, testedScope,
 }) {
+  const scalar = (label, value) => serializeMarkdownScalar(label, value, EXPLANATORY_EXECUTION_FIELDS.has(label));
   const prefix = operation === "EXECUTE_SLICE" ? "implementation-check" : "findings-check";
   const checkId = nextExecutionCheckId(taskText, prefix);
   const testedRecord = await serializeRunnerRecord({
@@ -843,26 +880,26 @@ async function serializeCanonicalExecutionCheck({
     `- HEAD: ${parsed.HEAD}`,
     `- Tested scope: ${testedScope}`,
     testedRecord,
-    `- Discovery sources: ${parsed["Discovery sources"]}`,
-    `- Discovery actions: ${parsed["Discovery actions"]}`,
-    `- Verification types considered: ${parsed["Verification types considered"]}`,
-    `- Non-applicability rationale: ${parsed["Non-applicability rationale"]}`,
-    `- No verification-command confirmation: ${parsed["No verification-command confirmation"]}`,
-    `- Selected checks: ${parsed["Selected checks"]}`,
-    `- Selection rationale: ${parsed["Selection rationale"]}`,
-    `- Coverage: ${parsed.Coverage}`,
-    `- Failures: ${parsed.Failures}`,
-    `- Blockers: ${parsed.Blockers}`,
-    `- Unexpected workspace effects: ${parsed["Unexpected workspace effects"]}`,
-    `- Persistence summary: ${parsed["Persistence summary"]}`,
+    `- Discovery sources: ${scalar("Discovery sources", parsed["Discovery sources"])}`,
+    `- Discovery actions: ${scalar("Discovery actions", parsed["Discovery actions"])}`,
+    `- Verification types considered: ${scalar("Verification types considered", parsed["Verification types considered"])}`,
+    `- Non-applicability rationale: ${scalar("Non-applicability rationale", parsed["Non-applicability rationale"])}`,
+    `- No verification-command confirmation: ${scalar("No verification-command confirmation", parsed["No verification-command confirmation"])}`,
+    `- Selected checks: ${scalar("Selected checks", parsed["Selected checks"])}`,
+    `- Selection rationale: ${scalar("Selection rationale", parsed["Selection rationale"])}`,
+    `- Coverage: ${scalar("Coverage", parsed.Coverage)}`,
+    `- Failures: ${scalar("Failures", parsed.Failures)}`,
+    `- Blockers: ${scalar("Blockers", parsed.Blockers)}`,
+    `- Unexpected workspace effects: ${scalar("Unexpected workspace effects", parsed["Unexpected workspace effects"])}`,
+    `- Persistence summary: ${scalar("Persistence summary", parsed["Persistence summary"])}`,
   ];
   if (parsed["Automatic check round"] !== "1/3") {
     lines.push(
-      `- Prior-round failure: ${parsed["Prior-round failure"]}`,
-      `- Correction applied: ${parsed["Correction applied"]}`,
+      `- Prior-round failure: ${scalar("Prior-round failure", parsed["Prior-round failure"])}`,
+      `- Correction applied: ${scalar("Correction applied", parsed["Correction applied"])}`,
       `- Correction paths: ${parsed.correctionPaths}`,
       `- Updated scope: ${testedScope}`,
-      `- In-slice rationale: ${parsed["In-slice rationale"]}`,
+      `- In-slice rationale: ${scalar("In-slice rationale", parsed["In-slice rationale"])}`,
     );
   }
   if (operation === "APPLY_FINDINGS") {
@@ -875,7 +912,7 @@ async function serializeCanonicalExecutionCheck({
       `- Finding IDs: ${findingIds.length === 0 ? "none" : findingIds.join(", ")}`,
       `- Findings verified: ${parsed["Findings verified"]}`,
       `- Corrections covered: ${correctionClaims.join(", ") || "none"}`,
-      `- Regressions: ${parsed["Regressions selected"]}`,
+      `- Regressions: ${scalar("Regressions selected", parsed["Regressions selected"])}`,
       `- Unsupported active findings: ${parsed["Unsupported active findings"]}`,
     );
   }
@@ -927,6 +964,68 @@ export async function serializeRunnerExecutionBundleFromResponse({
     taskText,
     testedScope,
   });
+}
+
+export async function insertExecutionEvidenceInCandidate({ taskArtifact, operation, bundle }) {
+  if (!new Set(["EXECUTE_SLICE", "APPLY_FINDINGS"]).has(operation)
+    || typeof bundle !== "string" || !/^### (?:implementation|findings)-check-[0-9]{2,}\n/u.test(bundle)) {
+    fail("candidate insertion requires one canonical execution check");
+  }
+  const canonicalTask = await regularFile(taskArtifact, "candidate taskArtifact");
+  const executionRoot = path.dirname(path.dirname(canonicalTask));
+  const roots = [executionRoot, path.dirname(executionRoot)];
+  let candidateRoot = null;
+  for (const root of roots) {
+    if (!path.basename(root).startsWith(".stnl-execution-copy-")) continue;
+    if (await fs.access(path.join(root, ".stnl-execution-copy.json")).then(() => true).catch(() => false)) {
+      candidateRoot = root;
+      break;
+    }
+  }
+  if (candidateRoot === null) fail("evidence insertion requires an owned isolated execution candidate");
+  const markerFile = path.join(candidateRoot, ".stnl-execution-copy.json");
+  await regularFile(markerFile, "candidate marker");
+  const marker = JSON.parse(await fs.readFile(markerFile, "utf8"));
+  const slice = path.basename(canonicalTask, ".md");
+  const expectedTask = path.join(candidateRoot, executionRoot === candidateRoot ? "" : "execution", "tasks", `${slice}.md`);
+  const allowedParents = typeof marker.specPath === "string"
+    ? [path.dirname(marker.specPath), ...(path.basename(marker.specPath) === "feature_spec.md"
+      ? [path.dirname(path.dirname(marker.specPath))] : [])]
+    : [];
+  if (!/^slice-[0-9]{2,}$/u.test(slice) || marker.slice !== slice || canonicalTask !== expectedTask
+    || typeof marker.specPath !== "string" || !path.isAbsolute(marker.specPath)
+    || !allowedParents.includes(path.dirname(candidateRoot))
+    || typeof marker.executionRoot !== "string" || !path.isAbsolute(marker.executionRoot)
+    || inside(candidateRoot, marker.executionRoot)) {
+    fail("candidate task identity does not match its owned marker");
+  }
+  const expectedPrefix = operation === "EXECUTE_SLICE" ? "implementation-check" : "findings-check";
+  if (!bundle.startsWith(`### ${expectedPrefix}-`)) fail("execution check type differs from operation");
+  const section = operation === "EXECUTE_SLICE" ? "Implementation Test Evidence" : "Findings Test Evidence";
+  const taskText = await fs.readFile(canonicalTask, "utf8");
+  const heading = `## ${section}\n\n`;
+  const start = taskText.indexOf(heading);
+  if (start < 0 || taskText.indexOf(heading, start + heading.length) >= 0) fail("candidate evidence section is missing or duplicated");
+  const bodyStart = start + heading.length;
+  const end = taskText.indexOf("\n## ", bodyStart);
+  if (end < 0) fail("candidate evidence section has no following section");
+  const body = taskText.slice(bodyStart, end + 1);
+  const identifier = bundle.split("\n", 1)[0];
+  if (body.includes(identifier)) fail("candidate already contains this execution check");
+  if (body !== "- none\n\n" && (!body.startsWith(`### ${expectedPrefix}-`) || !body.endsWith("\n\n"))) {
+    fail("candidate evidence section is not appendable");
+  }
+  const replacement = body === "- none\n\n" ? `${bundle}\n\n` : `${body}${bundle}\n\n`;
+  const updated = `${taskText.slice(0, bodyStart)}${replacement}${taskText.slice(end + 1)}`;
+  const temporary = `${canonicalTask}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    const mode = (await fs.stat(canonicalTask)).mode & 0o777;
+    await fs.writeFile(temporary, updated, { flag: "wx", mode });
+    await fs.rename(temporary, canonicalTask);
+  } finally {
+    await fs.rm(temporary, { force: true });
+  }
+  return identifier;
 }
 
 export async function prepareRunnerValidationPersistenceFromResponse({
@@ -985,12 +1084,12 @@ export async function prepareRunnerValidationPersistenceFromResponse({
     `- HEAD: ${parsed.head}`,
     `- Verified scope: ${verifiedScope}`,
     `- Commands:\n${serializedCommands}`,
-    `- Evidence: ${parsed.evidence}`,
+    `- Evidence: ${serializeMarkdownScalar("evidence", parsed.evidence, true)}`,
     `- Finding references: ${findingFields.findingReferences}`,
-    `- Finding dispositions: ${findingFields.findingDispositions}`,
-    `- Blockers: ${parsed.blockers}`,
-    `- Unexpected workspace effects: ${parsed.unexpectedWorkspaceEffects}`,
-    `- Persistence summary: ${parsed.persistenceSummary}`,
+    `- Finding dispositions: ${validateScalarField("findingDispositions", findingFields.findingDispositions)}`,
+    `- Blockers: ${serializeMarkdownScalar("blockers", parsed.blockers, true)}`,
+    `- Unexpected workspace effects: ${serializeMarkdownScalar("unexpectedWorkspaceEffects", parsed.unexpectedWorkspaceEffects, true)}`,
+    `- Persistence summary: ${serializeMarkdownScalar("persistenceSummary", parsed.persistenceSummary, true)}`,
   ].join("\n");
   const effectiveValidationBase = parsed.status === "PASS"
     ? [
@@ -999,7 +1098,7 @@ export async function prepareRunnerValidationPersistenceFromResponse({
       `- HEAD: ${parsed.head}`,
       "- Result: PASS",
       formalManifest,
-      `- Evidence summary: ${parsed.evidence}`,
+      `- Evidence summary: ${serializeMarkdownScalar("evidence", parsed.evidence, true)}`,
     ].join("\n")
     : null;
   return Object.freeze({
@@ -1018,7 +1117,7 @@ export async function serializeRunnerValidationBundleFromResponse(options) {
 }
 
 function argumentValues(tokens) {
-  const values = { targets: [], removed: [], commands: [], semanticValues: [], record: false, response: false, manifest: false, executionBundle: false, validationBundle: false };
+  const values = { targets: [], removed: [], commands: [], semanticValues: [], record: false, response: false, manifest: false, executionBundle: false, validationBundle: false, insertCandidate: false };
   for (let index = 0; index < tokens.length; index += 1) {
     const name = tokens[index];
     if (name === "--record") {
@@ -1044,6 +1143,11 @@ function argumentValues(tokens) {
     if (name === "--execution-bundle") {
       if (values.executionBundle) fail("duplicate --execution-bundle");
       values.executionBundle = true;
+      continue;
+    }
+    if (name === "--insert-candidate") {
+      if (values.insertCandidate) fail("duplicate --insert-candidate");
+      values.insertCandidate = true;
       continue;
     }
     if (name === "--command") {
@@ -1116,6 +1220,9 @@ function argumentValues(tokens) {
   if (values.executionBundle && values.semanticResponseFile === undefined) {
     fail("--execution-bundle requires --semantic-response-file");
   }
+  if (values.insertCandidate && (!values.executionBundle || !hasExplicitTaskArtifact)) {
+    fail("--insert-candidate requires --execution-bundle and --task-artifact");
+  }
   if (values.validationBundle && values.operation !== "VALIDATE_SLICE") {
     fail("--validation-bundle requires --operation VALIDATE_SLICE");
   }
@@ -1148,7 +1255,12 @@ if (import.meta.url === pathToFileURL(path.resolve(process.argv[1] ?? "")).href)
         workspace: values.workspace,
         taskArtifact: values.taskArtifact,
       });
-      process.stdout.write(`${bundle}\n`);
+      if (values.insertCandidate) {
+        const identifier = await insertExecutionEvidenceInCandidate({
+          taskArtifact: values.taskArtifact, operation: values.operation, bundle,
+        });
+        process.stdout.write(`${identifier} inserted into isolated candidate\n`);
+      } else process.stdout.write(`${bundle}\n`);
     } else if (values.validationBundle) {
       const bundle = values.semanticResponseFile === undefined
         ? await serializeRunnerValidationBundle({ ...values, values: values.semanticValues })

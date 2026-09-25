@@ -395,6 +395,7 @@ function checkSubagents(root) {
     "codex/runtime/isolated-home.mjs",
     "codex/runtime/runner-broker.mjs",
     "codex/runtime/sdk-transport.mjs",
+    "codex/runtime/usage-accounting.mjs",
     "codex/runtime/validation-runner.mjs",
     "claude-code/.claude/agents/stnl-validation-runner.md",
     "claude-code/.claude/agents/stnl-spec-context-scout.md",
@@ -409,7 +410,8 @@ function checkSubagents(root) {
 const launcherSpecs = {
   "spec-init": ["stnl-spec-lifecycle-manager", "MODE", "INIT", ["SPEC_PATH", "REQUIREMENTS_SOURCE"]],
   "spec-resume": ["stnl-spec-lifecycle-manager", "MODE", "RESUME", ["SPEC_PATH", "NEW_INFORMATION"]],
-  "spec-readiness": ["stnl-spec-lifecycle-manager", "MODE", "READINESS", ["SPEC_PATH", "READINESS_SCOPE", "READINESS_FOCUS"]],
+  "spec-readiness": ["stnl-spec-lifecycle-manager", "MODE", "READINESS", ["SPEC_PATH", "READINESS_SCOPE=GLOBAL"]],
+  "spec-readiness-local": ["stnl-spec-lifecycle-manager", "MODE", "READINESS", ["SPEC_PATH", "READINESS_SCOPE=LOCAL", "READINESS_FOCUS"]],
   "spec-close": ["stnl-spec-lifecycle-manager", "MODE", "CLOSE", ["SPEC_PATH"]],
   "spec-test-runbook": ["stnl-spec-test-runbook", "OPERATION", "GENERATE_RUNBOOK", ["SPEC_PATH", "RUNBOOK_SCOPE", "RUNBOOK_SELECTION", "RUNBOOK_OPTIONS"]],
   "spec-roadmap-init": ["stnl-spec-roadmap", "OPERATION", "INIT", ["PROJECT_ROOT", "ROADMAP_PATH", "ROADMAP_SOURCE"]],
@@ -432,7 +434,7 @@ function parseLauncher(file, spec) {
   const expected = [
     `Use ` + "`" + `${spec[0]}` + "`" + `.`,
     `${spec[1]}=${spec[2]}`,
-    ...spec[3].map((name) => `${name}={{${name}}}`),
+    ...spec[3].map((name) => name.includes('=') ? name : `${name}={{${name}}}`),
     "",
     "Contexto adicional (opcional):",
     "",
@@ -600,7 +602,7 @@ function checkLifecycleStatic(root) {
   for (const [marker, label] of [
     ["never remove, renumber, reuse, fill gaps", "immutable IDs"], ["retired_reason", "tombstone reason"],
     ["runtime/create-readiness-attestation.mjs", "attestation creator"], ["--readiness-attestation", "attestation binding"],
-    ["CLOSE <TARGET> <CANDIDATE> --readiness-attestation <ATTESTATION>", "publisher binding"], ["renamed backup digest before promotion", "post-rename verification"],
+    ["CLOSE <TARGET> <CANDIDATE>", "direct CLOSE publisher binding"], ["renamed backup digest before promotion", "post-rename verification"],
   ]) if (!lifecycleText.includes(marker)) reject("C015_LIFECYCLE_AUTHORITY", `lifecycle contracts lack ${label}`);
   const readme = read(path.join(lifecycle, "README.md"));
   if (!read(path.join(root, ".gitignore")).includes(".*.lifecycle.lock") || !readme.includes(".*.lifecycle.lock")) reject("C015_LIFECYCLE_AUTHORITY", "persistent publisher lock contract is missing");

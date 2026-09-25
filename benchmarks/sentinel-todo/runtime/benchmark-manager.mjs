@@ -7,6 +7,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { assertSnapshotIntegrity, createSnapshot } from './benchmark-snapshot.mjs';
+import { createReporter } from './benchmark-ui.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const RUNS = path.join(ROOT, 'benchmark-temp');
@@ -16,13 +17,15 @@ const LEDGER = path.join(RUNS, '.turn-ledger.json');
 const BENCHMARK = path.join(ROOT, 'benchmarks', 'sentinel-todo', 'runtime', 'benchmark.mjs');
 const MANIFEST = path.join(ROOT, 'benchmarks', 'sentinel-todo', 'benchmark.json');
 const PHASE = {
-  SPEC_INIT: 'SPEC', SPEC_READINESS: 'REVIEW_VALIDATE', SPEC_CLOSE: 'SPEC',
+  SPEC_INIT: 'SPEC', SPEC_READINESS: 'REVIEW_VALIDATE', SPEC_RESUME: 'SPEC',
+  SPEC_PROMOTE: 'SPEC', SPEC_CLOSE: 'SPEC',
   PLAN: 'PLAN', REPLAN: 'PLAN', REVIEW_PLAN: 'REVIEW_VALIDATE',
   MATERIALIZE_TASKS: 'TASKS', REVIEW_TASKS: 'REVIEW_VALIDATE',
   EXECUTE_SLICE: 'EXECUTE', APPLY_FINDINGS: 'EXECUTE', VALIDATE_SLICE: 'REVIEW_VALIDATE',
 };
 const TEMPLATE = {
-  SPEC_INIT: 'spec-init.md', SPEC_READINESS: 'spec-readiness.md', SPEC_CLOSE: 'spec-close.md',
+  SPEC_INIT: 'spec-init.md', SPEC_READINESS: 'spec-readiness.md',
+  SPEC_RESUME: 'spec-resume.md', SPEC_PROMOTE: 'spec-resume.md', SPEC_CLOSE: 'spec-close.md',
   PLAN: 'execution-plan.md', REPLAN: 'execution-replan.md', REVIEW_PLAN: 'execution-plan-review.md',
   MATERIALIZE_TASKS: 'execution-tasks.md', REVIEW_TASKS: 'execution-tasks-review.md',
   EXECUTE_SLICE: 'slice-execute-codex.md', APPLY_FINDINGS: 'slice-apply-findings-codex.md',
@@ -35,7 +38,9 @@ const BLOCKED_STATES = new Set(['AUXILIARY_BLOCKED', 'DIVERGENCE_BLOCKED', 'REPL
 function fail(message) { throw new Error(message); }
 function hash(value) { return `sha256:${createHash('sha256').update(value).digest('hex')}`; }
 function caseName(id) { return `case-${id.toLowerCase()}`; }
-function announce(value) { process.stdout.write(`${JSON.stringify(value)}\n`); }
+let reporter = createReporter({ format: 'human', isTTY: process.stdout.isTTY,
+  width: process.stdout.columns ?? 100, noColor: Object.hasOwn(process.env, 'NO_COLOR') });
+function announce(value) { reporter.emit(value); }
 function command(args, cwd = ROOT) {
   const result = spawnSync(process.execPath, [BENCHMARK, ...args], { cwd, encoding: 'utf8', timeout: 300_000 });
   return { exitCode: result.status ?? 1, stdout: result.stdout ?? '', stderr: result.stderr ?? result.error?.message ?? '' };
@@ -46,6 +51,10 @@ async function atomicJson(file, value) {
   await fs.rename(temporary, file);
 }
 async function readJson(file) { return JSON.parse(await fs.readFile(file, 'utf8')); }
+async function budgetSnapshot() {
+  const ledger = await readJson(LEDGER);
+  return { globalTurns: ledger.total, globalSaldo: ledger.limit - ledger.total - (ledger.reservations?.length ?? 0) };
+}
 async function exists(file) { return fs.lstat(file).then(() => true).catch(() => false); }
 async function assertRun(id) {
   if (!/^[a-z0-9][a-z0-9-]{7,}$/u.test(id)) fail('invalid run ID');
@@ -81,19 +90,78 @@ async function release(id) {
   if (active?.runId === id && active.pid === process.pid) await fs.unlink(ACTIVE);
 }
 let ledgerWrite = Promise.resolve();
-async function reserveTurn({ runId, caseId, role, operation }) {
+function budgetPause() {
+  const error = new Error('global mission turn budget exhausted; operation paused before dispatch');
+  error.code = 'PAUSED_BUDGET_OR_QUOTA';
+  return error;
+}
+async function updateLedger(mutator) {
   const job = ledgerWrite.then(async () => {
     let ledger;
     if (await exists(LEDGER)) ledger = await readJson(LEDGER);
     else ledger = { version: 1, limit: 100, priorS1Turns: 4, continuationProbeTurns: 6, total: 10, turns: [] };
-    if (ledger.total >= ledger.limit) fail('global mission turn budget exhausted');
-    ledger.total += 1;
-    ledger.turns.push({ number: ledger.total, runId, caseId, role, operation, startedAt: new Date().toISOString() });
+    if (!Array.isArray(ledger.reservations)) ledger.reservations = [];
+    ledger.nextNumber ??= Math.max(ledger.total, ...ledger.turns.map((turn) => turn.number));
+    const value = mutator(ledger);
     await atomicJson(LEDGER, ledger);
-    return ledger.total;
+    return value;
   });
   ledgerWrite = job.catch(() => {});
   return job;
+}
+function availableTurns(ledger) { return ledger.limit - ledger.total - ledger.reservations.length; }
+async function admitOperation({ runId, caseId, operation, runnerRequired }) {
+  return updateLedger((ledger) => {
+    if (availableTurns(ledger) < (runnerRequired ? 2 : 1)) throw budgetPause();
+    const main = randomUUID();
+    const runner = runnerRequired ? randomUUID() : null;
+    ledger.reservations.push({ id: main, runId, caseId, role: 'main', operation,
+      reservedAt: new Date().toISOString() });
+    if (runner !== null) ledger.reservations.push({ id: runner, runId, caseId,
+      role: 'runner', operation, reservedAt: new Date().toISOString() });
+    return { main, runner };
+  });
+}
+async function reserveExtraRunner({ runId, caseId, operation }) {
+  return updateLedger((ledger) => {
+    if (availableTurns(ledger) < 1) throw budgetPause();
+    const id = randomUUID();
+    ledger.reservations.push({ id, runId, caseId, role: 'runner', operation,
+      reservedAt: new Date().toISOString() });
+    return id;
+  });
+}
+async function startReservedTurn(id) {
+  return updateLedger((ledger) => {
+    const index = ledger.reservations.findIndex((reservation) => reservation.id === id);
+    if (index < 0) fail('turn reservation is missing');
+    const [reservation] = ledger.reservations.splice(index, 1);
+    const number = ++ledger.nextNumber;
+    ledger.total += 1;
+    ledger.turns.push({ number, runId: reservation.runId, caseId: reservation.caseId,
+      role: reservation.role, operation: reservation.operation, startedAt: new Date().toISOString(),
+      state: 'dispatched' });
+    return number;
+  });
+}
+async function settleTurn(number, turn) {
+  return updateLedger((ledger) => {
+    const entry = ledger.turns.find((item) => item.number === number);
+    if (!entry || entry.state !== 'dispatched') fail('turn ledger settlement is invalid');
+    entry.endedAt = new Date().toISOString();
+    entry.threadId = turn?.threadId ?? null;
+    if (turn?.turnStarted === false) {
+      entry.state = 'not_dispatched';
+      ledger.total -= 1;
+    } else entry.state = turn?.completed ? 'completed' : 'failed';
+  });
+}
+async function releaseReservation(id) {
+  if (id === null) return;
+  return updateLedger((ledger) => {
+    const index = ledger.reservations.findIndex((reservation) => reservation.id === id);
+    if (index >= 0) ledger.reservations.splice(index, 1);
+  });
 }
 
 export function renderLauncher(template, values) {
@@ -101,7 +169,9 @@ export function renderLauncher(template, values) {
   if (new Set(found).size !== found.length) fail('launcher has duplicate parameter placeholders');
   for (const name of found) {
     const value = values[name];
-    if (typeof value !== 'string' || value.trim() === '' || /[\r\n\0]/u.test(value)) fail(`launcher parameter ${name} is missing or malformed`);
+    const semantic = new Set(['NEW_INFORMATION', 'CONTEXT', 'REPLAN_REASON']).has(name);
+    if (typeof value !== 'string' || value.trim() === '' || value.includes('\0')
+      || (!semantic && /[\r\n]/u.test(value))) fail(`launcher parameter ${name} is missing or malformed`);
   }
   const rendered = template.replace(/\{\{([A-Z_]+)\}\}/gu, (_whole, name) => values[name]);
   if (/\{\{[^}]+\}\}|__[^_\s]+__/u.test(rendered)) fail('launcher contains an unresolved placeholder');
@@ -129,17 +199,29 @@ async function officialReadback(product, specPath) {
   return { lifecycle: lifecycle.error ? lifecycle : { status: lifecycle.status, closed: lifecycle.closed },
     execution: compactExecution(executionRaw), executionRaw };
 }
-export function decideOutcome(operation, readback, completed) {
+export function decideOutcome(operation, readback, completed, readinessResult = null) {
   const lifecycle = readback.lifecycle;
   const execution = readback.execution;
   if (!completed) return { result: 'BLOCKED', blocker: 'SDK_TURN_FAILED' };
   if (operation === 'SPEC_INIT') {
-    return lifecycle?.status === 'ready' && execution?.state === 'EMPTY'
-      ? { result: 'PASS', blocker: null } : { result: 'BLOCKED', blocker: 'OFFICIAL_INIT_NOT_READY' };
+    return ['ready', 'draft', 'blocked'].includes(lifecycle?.status) && execution?.state === 'EMPTY'
+      ? { result: 'PASS', blocker: null } : { result: 'BLOCKED', blocker: 'OFFICIAL_INIT_INVALID' };
   }
   if (operation === 'SPEC_READINESS') {
-    return lifecycle?.status === 'ready' && ['EMPTY', 'COMPLETE'].includes(execution?.state)
-      ? { result: 'PASS', blocker: null } : { result: 'BLOCKED', blocker: 'OFFICIAL_GLOBAL_READINESS_BLOCKED' };
+    if (readinessResult === null || execution?.state !== 'EMPTY') return { result: 'BLOCKED', blocker: 'READINESS_RESULT_INVALID' };
+    if (readinessResult.verdict === 'READY') return { result: 'PASS', blocker: null };
+    if (readinessResult.findings.some((finding) => finding.action === 'DECISION_REQUIRED')) {
+      return { result: 'BLOCKED', blocker: 'BLOCKED_REQUIRED_DECISION' };
+    }
+    return { result: 'NEEDS_FIX', blocker: null };
+  }
+  if (operation === 'SPEC_RESUME') {
+    return ['ready', 'draft', 'blocked'].includes(lifecycle?.status) && execution?.state === 'EMPTY'
+      ? { result: 'PASS', blocker: null } : { result: 'BLOCKED', blocker: 'OFFICIAL_RESUME_INVALID' };
+  }
+  if (operation === 'SPEC_PROMOTE') {
+    return lifecycle?.status === 'ready' && execution?.state === 'EMPTY'
+      ? { result: 'PASS', blocker: null } : { result: 'BLOCKED', blocker: 'OFFICIAL_PROMOTION_INVALID' };
   }
   if (operation === 'SPEC_CLOSE') {
     return lifecycle?.status === 'closed' && lifecycle?.closed === true
@@ -160,12 +242,16 @@ export function decideOutcome(operation, readback, completed) {
     && execution?.requiredRecoveryHandoff?.operation === 'VALIDATE_SLICE') return { result: 'PASS', blocker: null };
   return { result: 'BLOCKED', blocker: 'OFFICIAL_TRANSITION_NOT_OBSERVED' };
 }
-export function nextHandoff(operation, readback) {
+export function nextHandoff(operation, readback, readinessResult = null) {
   if (operation === 'SPEC_CLOSE') return null;
-  if (operation === 'SPEC_INIT') return { operation: 'SPEC_READINESS', slice: null };
-  if (readback.executionRaw?.state === 'COMPLETE') {
-    return { operation: operation === 'SPEC_READINESS' ? 'SPEC_CLOSE' : 'SPEC_READINESS', slice: null };
+  if (readback.executionRaw?.state === 'COMPLETE') return { operation: 'SPEC_CLOSE', slice: null };
+  if (operation === 'SPEC_INIT') return { operation: readback.lifecycle?.status === 'ready' ? 'PLAN' : 'SPEC_READINESS', slice: null };
+  if (operation === 'SPEC_READINESS') {
+    if (readinessResult?.verdict === 'FINDINGS') return { operation: 'SPEC_RESUME', slice: null };
+    return { operation: readback.lifecycle?.status === 'ready' ? 'PLAN' : 'SPEC_PROMOTE', slice: null };
   }
+  if (operation === 'SPEC_RESUME') return { operation: 'SPEC_READINESS', slice: null };
+  if (operation === 'SPEC_PROMOTE') return { operation: 'PLAN', slice: null };
   const handoff = readback.executionRaw?.requiredRecoveryHandoff
     ?? readback.executionRaw?.normalHandoff
     ?? (readback.executionRaw ? readback.product?.deriveNormalHandoff?.(readback.executionRaw, operation) : null);
@@ -174,21 +260,30 @@ export function nextHandoff(operation, readback) {
 async function loadProduct(snapshot) {
   const execution = await import(pathToFileURL(path.join(snapshot, 'skills/workflows/stnl-execution-planner/runtime/execution-state.mjs')).href);
   const lifecycle = await import(pathToFileURL(path.join(snapshot, 'skills/workflows/stnl-spec-lifecycle-manager/runtime/lib/lifecycle.mjs')).href);
+  const readiness = await import(pathToFileURL(path.join(snapshot, 'skills/workflows/stnl-spec-lifecycle-manager/runtime/lib/readiness-result.mjs')).href);
   const sdk = await import(pathToFileURL(path.join(snapshot, 'agents/codex/runtime/sdk-transport.mjs')).href);
+  const usage = await import(pathToFileURL(path.join(snapshot, 'agents/codex/runtime/usage-accounting.mjs')).href);
   const home = await import(pathToFileURL(path.join(snapshot, 'agents/codex/runtime/isolated-home.mjs')).href);
   const runner = await import(pathToFileURL(path.join(snapshot, 'agents/codex/runtime/validation-runner.mjs')).href);
   const broker = await import(pathToFileURL(path.join(snapshot, 'agents/codex/runtime/runner-broker.mjs')).href);
-  return { ...execution, validateWorkspace: lifecycle.validateWorkspace, ...sdk, ...home, ...runner, ...broker };
+  return { ...execution, validateWorkspace: lifecycle.validateWorkspace, ...readiness, ...sdk, ...usage,
+    ...home, ...runner, ...broker };
 }
-function argsForJournal({ journal, operation, route, outcome, slice, readback, turn, durationMs, runnerCount }) {
+function argsForJournal({ journal, operation, route, outcome, slice, readback, readinessResult, turn, durationMs, runnerCount }) {
   const args = ['journal-event', '--journal', journal, '--operation', operation, '--phase', route.phase,
     '--model', route.label, '--effort', route.effort, '--result', outcome.result,
     '--duration-ms', String(durationMs), '--input-bytes', String(Buffer.byteLength(turn.prompt)),
     '--output-bytes', String(Buffer.byteLength(turn.response ?? ''))];
   if (slice) args.push('--slice', slice);
-  const state = operation === 'SPEC_READINESS' && outcome.result === 'PASS' ? 'GLOBAL_READY'
-    : operation === 'SPEC_CLOSE' ? null : readback.execution?.state;
+  const state = operation === 'SPEC_READINESS' ? readinessResult?.verdict === 'READY' ? 'GLOBAL_READY'
+    : readinessResult?.verdict === 'FINDINGS' ? 'GLOBAL_FINDINGS' : null
+    : operation === 'SPEC_CLOSE' ? null
+      : operation.startsWith('SPEC_') ? `SPEC_${readback.lifecycle?.status?.toUpperCase()}` : readback.execution?.state;
   if (state) args.push('--resulting-state', state);
+  if (operation === 'SPEC_READINESS' && readinessResult) {
+    args.push('--readiness-scope', readinessResult.scope,
+      '--readiness-snapshot-sha256', readinessResult.snapshotSha256);
+  }
   if (Number.isSafeInteger(turn.usage?.input_tokens)) args.push('--input-tokens', String(turn.usage.input_tokens));
   if (Number.isSafeInteger(turn.usage?.output_tokens)) args.push('--output-tokens', String(turn.usage.output_tokens));
   if (runnerCount > 0) args.push('--child-role', 'stnl_validation_runner', '--child-model', 'GPT-5.6-Luna', '--child-effort', 'medium');
@@ -222,7 +317,17 @@ async function runCase({ runRoot, caseId, configuration, snapshotMetadata, maxOp
   const caseState = resume ? await readJson(path.join(caseRoot, 'case-state.json'))
     : { caseId, status: 'ACTIVE', startedAt: new Date().toISOString(), operations: [],
       workspace, specPath, journal, threads: { author: null }, runnerTurns: 0, mainTurns: 0 };
+  const mainUsage = product.createUsageNormalizer({ baseline: product.ZERO_USAGE, source: 'main' });
+  const runnerUsage = product.createUsageNormalizer({ baseline: product.ZERO_USAGE, source: 'runner' });
+  if (resume) {
+    for (const earlier of caseState.operations) {
+      const recorded = await readJson(earlier.evidencePath);
+      mainUsage.observe({ threadId: earlier.threadId, segment: path.basename(runRoot),
+        usage: recorded.turn?.usage, eventId: `${caseId}-${recorded.sequence}-${earlier.operation}` });
+    }
+  }
   let target = { operation: 'SPEC_INIT', slice: null };
+  let pendingReadinessResult = null;
   if (resume) {
     if (caseState.status !== 'FOCAL_STOP' || caseState.terminal?.result !== 'FOCAL_STOP'
       || caseState.privateHomeSuspended !== true || !caseState.suspendedHome || caseState.workspace !== workspace
@@ -238,7 +343,8 @@ async function runCase({ runRoot, caseId, configuration, snapshotMetadata, maxOp
       || current.lifecycle?.status !== prior.officialReadback?.lifecycle?.status) {
       fail('official state changed since focal stop');
     }
-    target = nextHandoff(last.operation, { ...current, product });
+    pendingReadinessResult = prior.readinessResult ?? null;
+    target = nextHandoff(last.operation, { ...current, product }, pendingReadinessResult);
     if (target === null) fail('focal case has no legal next handoff');
     caseState.status = 'ACTIVE';
     caseState.terminal = null;
@@ -264,7 +370,21 @@ async function runCase({ runRoot, caseId, configuration, snapshotMetadata, maxOp
       await assertSnapshotIntegrity(runRoot);
       await product.verifyIsolatedHome(home);
       const { operation, slice } = target;
+      caseState.pendingTarget = target;
+      await atomicJson(path.join(caseRoot, 'case-state.json'), caseState);
       const route = dispatch(configuration, caseId, operation);
+      if (operation === 'PLAN' && (await officialReadback(product, specPath)).lifecycle?.status !== 'ready') {
+        fail('PLAN requires an effectively ready SPEC');
+      }
+      if (operation === 'SPEC_CLOSE' && (await officialReadback(product, specPath)).execution?.state !== 'COMPLETE') {
+        fail('benchmark CLOSE requires official COMPLETE');
+      }
+      if (operation === 'SPEC_PROMOTE') {
+        if (pendingReadinessResult?.verdict !== 'READY'
+          || product.readinessSnapshot(specPath).snapshotSha256 !== pendingReadinessResult.snapshotSha256) {
+          fail('ready promotion requires the unchanged evaluated snapshot');
+        }
+      }
       let officialPreflight = null;
       if (!operation.startsWith('SPEC_')) {
         const preflight = await product.preflightExecutionOperation(specPath, operation, specInput(slice));
@@ -276,8 +396,17 @@ async function runCase({ runRoot, caseId, configuration, snapshotMetadata, maxOp
       }
       const templatePath = path.join(runRoot, 'snapshot', 'templates', 'prompts', TEMPLATE[operation]);
       const template = await fs.readFile(templatePath, 'utf8');
+      const newInformation = operation === 'SPEC_PROMOTE'
+        ? `GLOBAL/READY confirmado para ${pendingReadinessResult?.snapshotSha256}. Promova somente o status draft → ready, sem alterar conteúdo.`
+        : pendingReadinessResult?.verdict === 'FINDINGS' ? [
+          `Fonte autorizada: ${requirementsPath}`,
+          `Achados GLOBAL do snapshot ${pendingReadinessResult.snapshotSha256}:`,
+          ...pendingReadinessResult.findings.map((finding) => `${finding.id} | ${finding.path} | ${finding.evidence}`),
+          'Refine somente o que as fontes existentes sustentam. Se a resposta exigir decisão de produto, bloqueie com pergunta concreta.',
+        ].join('\n') : '';
       const values = { SPEC_PATH: specPath, REQUIREMENTS_SOURCE: requirementsPath,
         READINESS_SCOPE: 'GLOBAL', READINESS_FOCUS: 'not-applicable',
+        NEW_INFORMATION: newInformation,
         REPLAN_REASON: 'official execution readback requires replanning',
         SLICE: slice === null ? '' : specInput(slice) };
       const prompt = renderLauncher(template, values);
@@ -287,35 +416,128 @@ async function runCase({ runRoot, caseId, configuration, snapshotMetadata, maxOp
       const eventsPath = path.join(caseRoot, 'events.jsonl');
       const startedAt = new Date().toISOString();
       const startedMs = Date.now();
+      const beforeReadiness = operation === 'SPEC_READINESS' ? product.readinessSnapshot(specPath) : null;
+      const beforeResume = operation === 'SPEC_RESUME' ? product.readinessSnapshot(specPath) : null;
       const runnerTurnsBefore = caseState.runnerTurns;
+      const runnerUsageObservations = [];
       let broker = null;
-      if (officialPreflight !== null) {
-        broker = await product.startOfficialRunnerBroker({ workspace, tmpdir, operation, sequence, slice,
+      const admission = await admitOperation({ runId: path.basename(runRoot), caseId, operation,
+        runnerRequired: officialPreflight !== null });
+      let runnerReservation = admission.runner;
+      let currentRunnerNumber = null;
+      let mainTurnNumber;
+      try {
+        if (officialPreflight !== null) {
+          broker = await product.startOfficialRunnerBroker({ workspace, tmpdir, operation, sequence, slice,
           officialPreflight,
           invoke: (request) => product.invokeIndependentRunner({
             ...request, snapshot: path.join(runRoot, 'snapshot'), workspace, tmpdir, env: home.env,
-            onBeforeTurn: async () => { await reserveTurn({ runId: path.basename(runRoot), caseId, role: 'runner', operation }); },
-            onTurn: async ({ turn: runnerTurn }) => { caseState.runnerTurns += 1; caseState.lastRunnerThread = runnerTurn.threadId; },
+            onBeforeTurn: async () => {
+              const reservation = runnerReservation ?? await reserveExtraRunner({ runId: path.basename(runRoot), caseId, operation });
+              runnerReservation = null;
+              currentRunnerNumber = await startReservedTurn(reservation);
+              announce({ kind: 'progress', status: 'RUNNER_STARTED', runId: path.basename(runRoot), caseId,
+                operation, slice, stage: 'independent runner', durationMs: Date.now() - startedMs,
+                mainTurns: caseState.mainTurns, runnerTurns: caseState.runnerTurns + 1,
+                ...await budgetSnapshot(), artifacts: caseRoot });
+            },
+            onTurn: async ({ turn: runnerTurn }) => {
+              await settleTurn(currentRunnerNumber, runnerTurn);
+              if (runnerTurn.turnStarted !== false) caseState.runnerTurns += 1;
+              caseState.lastRunnerThread = runnerTurn.threadId;
+              runnerUsageObservations.push(runnerUsage.observe({ threadId: runnerTurn.threadId,
+                segment: path.basename(runRoot), usage: runnerTurn.usage,
+                eventId: `runner-${caseId}-${sequence}-${runnerUsageObservations.length + 1}` }));
+            },
           }),
-        });
+          });
+        }
+        mainTurnNumber = await startReservedTurn(admission.main);
+      } catch (error) {
+        if (broker !== null) await broker.close();
+        await releaseReservation(admission.main);
+        await releaseReservation(runnerReservation);
+        throw error;
       }
       const contextRole = ['REVIEW_PLAN', 'REVIEW_TASKS', 'VALIDATE_SLICE'].includes(operation) ? `review-${operation.toLowerCase()}` : 'author';
       const threadId = caseState.threads[contextRole] ?? null;
-      await reserveTurn({ runId: path.basename(runRoot), caseId, role: 'main', operation });
+      announce({ kind: 'start', status: 'STARTED', runId: path.basename(runRoot), caseId,
+        operation, slice, model: route.label, effort: route.effort,
+        mainTurns: caseState.mainTurns + 1, runnerTurns: caseState.runnerTurns,
+        ...await budgetSnapshot(), artifacts: caseRoot });
       let turn;
+      let lastProgressMs = 0;
+      const heartbeat = setInterval(() => announce({ kind: 'progress', status: 'RUNNING',
+        runId: path.basename(runRoot), caseId, operation, slice,
+        durationMs: Date.now() - startedMs, model: route.label, effort: route.effort,
+        mainTurns: caseState.mainTurns + 1, runnerTurns: caseState.runnerTurns,
+        artifacts: caseRoot }), 60_000);
       try {
+        const outputSchema = operation === 'SPEC_READINESS'
+          ? await readJson(path.join(runRoot, 'snapshot', 'skills/workflows/stnl-spec-lifecycle-manager/runtime/readiness-result.schema.json'))
+          : undefined;
         turn = await product.runCodexTurn({ env: home.env, cwd: workspace, prompt,
           model: route.model, effort: route.effort, threadId, operationId, eventsPath,
-          timeoutMs: RUNNER_OPERATIONS.has(operation) ? 1_800_000 : 900_000, signal,
+          outputSchema, timeoutMs: RUNNER_OPERATIONS.has(operation) ? 1_800_000 : 900_000, signal,
+          onEvent: (event) => {
+            if (event.type !== 'item.started' && event.type !== 'item.completed') return;
+            const itemType = event.item?.type;
+            if (!['command_execution', 'file_change', 'collab_tool_call', 'mcp_tool_call'].includes(itemType)) return;
+            if (Date.now() - lastProgressMs < 30_000) return;
+            lastProgressMs = Date.now();
+            announce({ kind: 'progress', status: 'RUNNING', runId: path.basename(runRoot), caseId,
+              operation, slice, stage: itemType, durationMs: Date.now() - startedMs,
+              model: route.label, effort: route.effort, artifacts: caseRoot });
+          },
         });
-      } finally { if (broker !== null) await broker.close(); }
-      caseState.mainTurns += 1;
+        await settleTurn(mainTurnNumber, turn);
+      } catch (error) {
+        await settleTurn(mainTurnNumber, { turnStarted: false, threadId: null });
+        throw error;
+      } finally {
+        clearInterval(heartbeat);
+        if (broker !== null) await broker.close();
+        await releaseReservation(runnerReservation);
+      }
+      if (turn.turnStarted !== false) caseState.mainTurns += 1;
       caseState.threads[contextRole] = turn.threadId;
+      const mainUsageObservation = mainUsage.observe({ threadId: turn.threadId,
+        segment: path.basename(runRoot), usage: turn.usage, eventId: operationId,
+        parentThreadId: threadId });
+      const allUsage = [mainUsageObservation, ...runnerUsageObservations];
+      const usageComplete = allUsage.every((observation) => ['attributable', 'duplicate'].includes(observation.status));
+      const normalizedUsage = usageComplete ? {
+        input_tokens: allUsage.reduce((sum, observation) => sum + observation.delta.input, 0),
+        output_tokens: allUsage.reduce((sum, observation) => sum + observation.delta.output, 0),
+        cached_input_tokens: allUsage.reduce((sum, observation) => sum + observation.delta.cachedInput, 0),
+        cache_write_input_tokens: allUsage.reduce((sum, observation) => sum + observation.delta.cacheWrite, 0),
+        reasoning_output_tokens: allUsage.reduce((sum, observation) => sum + observation.delta.reasoningOutput, 0),
+      } : null;
       const readback = await officialReadback(product, specPath);
-      const outcome = decideOutcome(operation, readback, turn.completed);
+      let readinessResult = null;
+      let readinessDiagnostic = null;
+      if (operation === 'SPEC_READINESS' && turn.completed) {
+        try {
+          if (product.readinessSnapshot(specPath).snapshotSha256 !== beforeReadiness.snapshotSha256) {
+            fail('READINESS mutated the evaluated workspace');
+          }
+          readinessResult = product.validateReadinessResult(specPath, JSON.parse(turn.response), { scope: 'GLOBAL' });
+        } catch (error) { readinessDiagnostic = error.message; }
+      }
+      const outcome = decideOutcome(operation, readback, turn.completed, readinessResult);
+      if (broker?.errors.includes('PAUSED_BUDGET_OR_QUOTA')) {
+        outcome.result = 'PAUSED_BUDGET_OR_QUOTA'; outcome.blocker = 'PAUSED_BUDGET_OR_QUOTA';
+      }
+      if (readinessDiagnostic) outcome.blocker = 'READINESS_RESULT_INVALID';
+      if (operation === 'SPEC_RESUME' && outcome.result === 'PASS'
+        && product.readinessSnapshot(specPath).snapshotSha256 === beforeResume.snapshotSha256) {
+        outcome.result = 'BLOCKED'; outcome.blocker = 'RESUME_NO_MATERIAL_PROGRESS';
+      }
       const runnerCount = caseState.runnerTurns - runnerTurnsBefore;
-      const journalResult = command(argsForJournal({ journal, operation, route, outcome, slice, readback,
-        turn: { ...turn, prompt }, durationMs: Date.now() - startedMs, runnerCount }));
+      const journalResult = outcome.result === 'PAUSED_BUDGET_OR_QUOTA'
+        ? { exitCode: 0, stdout: 'administrative pause before a complete operation; journal unchanged', stderr: '' }
+        : command(argsForJournal({ journal, operation, route, outcome, slice, readback, readinessResult,
+          turn: { ...turn, usage: normalizedUsage, prompt }, durationMs: Date.now() - startedMs, runnerCount }));
       if (journalResult.exitCode !== 0) outcome.result = 'BLOCKED', outcome.blocker = 'JOURNAL_REJECTED';
       const evidence = { sequence, operation, slice, promptFile, templatePath, templateSha256: hash(template),
         promptSha256: hash(prompt), context: { role: contextRole, priorThreadId: threadId, threadId: turn.threadId,
@@ -323,9 +545,13 @@ async function runCase({ runRoot, caseId, configuration, snapshotMetadata, maxOp
         dispatch: route, startedAt, endedAt: new Date().toISOString(), durationMs: Date.now() - startedMs,
         turn: { completed: turn.completed, error: turn.error, requestedModel: turn.requestedModel,
           reportedModel: turn.reportedModel, requestedEffort: turn.requestedEffort, usage: turn.usage,
-          toolCalls: turn.toolCalls, eventsPath, response: turn.response },
+          toolCalls: turn.toolCalls, eventsPath, response: turn.response,
+          turnStarted: turn.turnStarted, usageObservation: mainUsageObservation },
         officialPreflight, officialReadback: { lifecycle: readback.lifecycle, execution: readback.execution },
-        runner: { requestsHandled: broker?.requestsHandled ?? 0, errors: broker?.errors ?? [], turns: runnerCount },
+        readinessResult, readinessDiagnostic,
+        runner: { requestsHandled: broker?.requestsHandled ?? 0, errors: broker?.errors ?? [],
+          turns: runnerCount, usageObservations: runnerUsageObservations },
+        normalizedUsage,
         journal: { exitCode: journalResult.exitCode, diagnostic: journalResult.stderr || journalResult.stdout }, outcome };
       const evidencePath = path.join(caseRoot, `${String(sequence).padStart(2, '0')}-${operation.toLowerCase()}.json`);
       await atomicJson(evidencePath, evidence);
@@ -334,14 +560,17 @@ async function runCase({ runRoot, caseId, configuration, snapshotMetadata, maxOp
       announce({ runId: path.basename(runRoot), caseId, operation, slice, state: readback.execution?.state ?? readback.lifecycle?.status,
         result: outcome.result, durationMs: evidence.durationMs, model: route.label, effort: route.effort,
         mainTurns: caseState.mainTurns, runnerTurns: caseState.runnerTurns,
-        globalTurns: (await readJson(LEDGER)).total, artifacts: caseRoot });
+        ...await budgetSnapshot(), artifacts: caseRoot });
       terminal = outcome;
-      if (outcome.result === 'BLOCKED' || outcome.result === 'FAIL') break;
-      target = nextHandoff(operation, { ...readback, product });
+      if (['BLOCKED', 'FAIL', 'PAUSED_BUDGET_OR_QUOTA'].includes(outcome.result)) break;
+      if (operation === 'SPEC_READINESS') pendingReadinessResult = readinessResult;
+      target = nextHandoff(operation, { ...readback, product }, pendingReadinessResult);
       if (target === null && operation !== 'SPEC_CLOSE') { terminal = { result: 'BLOCKED', blocker: 'NO_OFFICIAL_HANDOFF' }; break; }
     }
   } catch (error) {
-    terminal = { result: 'BLOCKED', blocker: 'DRIVER_FAILURE', diagnostic: String(error.message) };
+    terminal = error.code === 'PAUSED_BUDGET_OR_QUOTA'
+      ? { result: 'PAUSED_BUDGET_OR_QUOTA', blocker: 'PAUSED_BUDGET_OR_QUOTA', diagnostic: error.message }
+      : { result: 'BLOCKED', blocker: 'DRIVER_FAILURE', diagnostic: String(error.message) };
   } finally {
     let finalizer = null;
     const rawPath = path.join(caseRoot, resume ? `raw-resume-${caseState.operations.length}.json` : 'raw.json');
@@ -351,6 +580,7 @@ async function runCase({ runRoot, caseId, configuration, snapshotMetadata, maxOp
     }
     const raw = await readJson(rawPath).catch(() => null);
     const status = terminal?.result === 'FOCAL_STOP' ? 'FOCAL_STOP'
+      : terminal?.result === 'PAUSED_BUDGET_OR_QUOTA' ? 'PAUSED_BUDGET_OR_QUOTA'
       : terminal?.result === 'BLOCKED' || terminal?.result === 'FAIL' ? 'BLOCKED'
         : raw?.status ?? 'BLOCKED';
     caseState.status = status;
@@ -365,7 +595,7 @@ async function runCase({ runRoot, caseId, configuration, snapshotMetadata, maxOp
     catch (error) { caseState.integrity = `BLOCKED: ${error.message}`; caseState.status = 'BLOCKED'; }
     if (home !== null) {
       try {
-        if (caseState.status === 'FOCAL_STOP') {
+        if (caseState.status === 'FOCAL_STOP' || caseState.status === 'PAUSED_BUDGET_OR_QUOTA') {
           caseState.suspendedHome = await product.suspendIsolatedHome(home, { runId: path.basename(runRoot), caseId });
           caseState.privateHomeSuspended = true;
           caseState.privateHomeRemoved = false;
@@ -438,10 +668,12 @@ async function run(options) {
       mode: runInfo.mode, product, signal: signalController.signal, resume: !!options.resumeId });
     const allPass = (options.full ? ['A', 'B', 'C'] : [caseId]).every((name) => results[name]?.status === 'PASS');
     const focalStop = options.maxOperations !== null && results[caseId]?.status === 'FOCAL_STOP';
-    summary = { runId: id, status: allPass ? 'PASS' : signalController.signal.aborted ? 'CANCELLED' : focalStop ? 'FOCAL_STOP' : 'BLOCKED',
+    const budgetPaused = Object.values(results).some((result) => result?.status === 'PAUSED_BUDGET_OR_QUOTA');
+    summary = { runId: id, status: allPass ? 'PASS' : signalController.signal.aborted ? 'CANCELLED'
+      : budgetPaused ? 'PAUSED_BUDGET_OR_QUOTA' : focalStop ? 'FOCAL_STOP' : 'BLOCKED',
       mode: runInfo.mode, cases: results, snapshotSha256: snapshotMetadata.snapshotSha256,
       sourceFunctionalSha256: snapshotMetadata.sourceFunctionalSha256,
-      globalTurns: (await readJson(LEDGER)).total, endedAt: new Date().toISOString(), artifacts: runRoot };
+      ...await budgetSnapshot(), endedAt: new Date().toISOString(), artifacts: runRoot };
     await atomicJson(path.join(runRoot, 'summary.json'), summary);
     await atomicJson(path.join(runRoot, 'run.json'), { ...runInfo, status: summary.status, endedAt: summary.endedAt });
   } finally {
@@ -449,7 +681,7 @@ async function run(options) {
     await release(id);
   }
   announce(summary);
-  return summary.status === 'PASS' || options.maxOperations !== null ? 0 : 1;
+  return summary.status === 'PASS' || summary.status === 'FOCAL_STOP' ? 0 : summary.status === 'PAUSED_BUDGET_OR_QUOTA' ? 3 : 1;
 }
 
 async function status(id) {
@@ -461,7 +693,7 @@ async function status(id) {
       cases: (await readJson(path.join(root, 'summary.json')).catch(() => null))?.cases ?? null,
       snapshotSha256: runInfo?.snapshot?.snapshotSha256 ?? null,
       sourceFunctionalSha256: runInfo?.snapshot?.sourceFunctionalSha256 ?? null,
-      artifacts: root });
+      ...await budgetSnapshot(), artifacts: root });
     return 0;
   }
   const runs = [];
@@ -471,7 +703,7 @@ async function status(id) {
     if (!root) continue;
     runs.push({ runId: entry.name, summary: await readJson(path.join(root, 'summary.json')).catch(() => null) });
   }
-  announce({ active: await readJson(ACTIVE).catch(() => null), globalTurns: (await readJson(LEDGER).catch(() => ({ total: 10 }))).total,
+  announce({ kind: 'status', active: await readJson(ACTIVE).catch(() => null), ...await budgetSnapshot(),
     runs: runs.sort((a, b) => b.runId.localeCompare(a.runId)) });
   return 0;
 }
@@ -481,12 +713,19 @@ async function inspect(id, caseId) {
   const cases = {};
   for (const name of selected) {
     const state = await readJson(path.join(root, caseName(name), 'case-state.json')).catch(() => null);
-    if (state) cases[name] = { status: state.status, workspace: state.workspace,
+    if (state) {
+      const lastEvidence = state.operations.length > 0
+        ? await readJson(state.operations.at(-1).evidencePath).catch(() => null) : null;
+      cases[name] = { status: state.status, workspace: state.workspace,
       prompts: path.join(root, caseName(name), 'prompts'), events: path.join(root, caseName(name), 'events.jsonl'),
       tmp: path.join(root, caseName(name), 'tmp'), operations: state.operations,
+      timeline: state.operations.map((item) => `${item.operation}${item.slice ? ` ${item.slice}` : ''}:${item.outcome?.result ?? '?'}`),
+      officialState: lastEvidence?.officialReadback?.execution?.state ?? lastEvidence?.officialReadback?.lifecycle?.status ?? null,
+      recovery: lastEvidence?.officialReadback?.execution?.requiredRecoveryHandoff ?? null,
       finalizer: state.finalizer, terminal: state.terminal };
+    }
   }
-  announce({ runId: id, root, snapshot: path.join(root, 'snapshot'), cases });
+  announce({ kind: 'inspect', runId: id, root, snapshot: path.join(root, 'snapshot'), cases });
   return 0;
 }
 async function clean(id) {
@@ -532,6 +771,7 @@ function parse(argv) {
   const values = {};
   for (let index = 0; index < tokens.length; index += 1) {
     const key = tokens[index];
+    if (key === '--json') { if (values.json) fail('duplicate --json'); values.json = true; continue; }
     if (key === '--full') { if (values.full) fail('duplicate --full'); values.full = true; continue; }
     if (!new Set(['--case', '--run', '--resume', '--max-operations']).has(key) || values[key] !== undefined || !tokens[index + 1]) fail('invalid manager option');
     values[key] = tokens[++index];
@@ -540,6 +780,8 @@ function parse(argv) {
 }
 export async function main(argv) {
   const { verb, values } = parse(argv);
+  reporter = createReporter({ format: values.json ? 'json' : 'human', isTTY: process.stdout.isTTY,
+    width: process.stdout.columns ?? 100, noColor: Object.hasOwn(process.env, 'NO_COLOR') });
   if (verb === 'run') {
     const caseId = values['--case'] ?? null;
     const resumeId = values['--resume'] ?? null;

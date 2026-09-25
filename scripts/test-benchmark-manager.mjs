@@ -28,16 +28,32 @@ async function ownedRun(t) {
   return { id, root };
 }
 
-test('COMPLETE requires one terminal global readiness before lifecycle close', () => {
+test('INIT ready advances directly and COMPLETE closes without terminal readiness', () => {
   const readback = { lifecycle: { status: 'ready' }, execution: { state: 'COMPLETE' },
     executionRaw: { state: 'COMPLETE' } };
-  assert.deepEqual(nextHandoff('VALIDATE_SLICE', readback), { operation: 'SPEC_READINESS', slice: null });
-  assert.deepEqual(decideOutcome('SPEC_READINESS', readback, true), { result: 'PASS', blocker: null });
-  assert.deepEqual(nextHandoff('SPEC_READINESS', readback), { operation: 'SPEC_CLOSE', slice: null });
+  assert.deepEqual(nextHandoff('VALIDATE_SLICE', readback), { operation: 'SPEC_CLOSE', slice: null });
   assert.equal(nextHandoff('SPEC_CLOSE', readback), null);
-  assert.deepEqual(decideOutcome('SPEC_READINESS', {
+  const initial = {
     lifecycle: { status: 'ready' }, execution: { state: 'EMPTY' }, executionRaw: { state: 'EMPTY' },
-  }, true), { result: 'PASS', blocker: null });
+  };
+  assert.deepEqual(decideOutcome('SPEC_INIT', initial, true), { result: 'PASS', blocker: null });
+  assert.deepEqual(nextHandoff('SPEC_INIT', initial), { operation: 'PLAN', slice: null });
+});
+
+test('documentary maturation advances through global findings, RESUME, and status-only promotion', () => {
+  const draft = { lifecycle: { status: 'draft' }, execution: { state: 'EMPTY' }, executionRaw: { state: 'EMPTY' } };
+  const findings = { verdict: 'FINDINGS', findings: [{ action: 'REFINE_FROM_EVIDENCE' }] };
+  const ready = { verdict: 'READY', findings: [] };
+  assert.deepEqual(decideOutcome('SPEC_INIT', draft, true), { result: 'PASS', blocker: null });
+  assert.deepEqual(nextHandoff('SPEC_INIT', draft), { operation: 'SPEC_READINESS', slice: null });
+  assert.deepEqual(decideOutcome('SPEC_READINESS', draft, true, findings), { result: 'NEEDS_FIX', blocker: null });
+  assert.deepEqual(nextHandoff('SPEC_READINESS', draft, findings), { operation: 'SPEC_RESUME', slice: null });
+  assert.deepEqual(nextHandoff('SPEC_RESUME', draft), { operation: 'SPEC_READINESS', slice: null });
+  assert.deepEqual(decideOutcome('SPEC_READINESS', draft, true, ready), { result: 'PASS', blocker: null });
+  assert.deepEqual(nextHandoff('SPEC_READINESS', draft, ready), { operation: 'SPEC_PROMOTE', slice: null });
+  assert.deepEqual(nextHandoff('SPEC_PROMOTE', { ...draft, lifecycle: { status: 'ready' } }), { operation: 'PLAN', slice: null });
+  const decision = { verdict: 'FINDINGS', findings: [{ action: 'DECISION_REQUIRED' }] };
+  assert.deepEqual(decideOutcome('SPEC_READINESS', draft, true, decision), { result: 'BLOCKED', blocker: 'BLOCKED_REQUIRED_DECISION' });
 });
 
 test('status and inspect are read only and clean removes only the selected owned run', async (t) => {
@@ -48,10 +64,10 @@ test('status and inspect are read only and clean removes only the selected owned
   await fs.writeFile(path.join(caseRoot, 'case-state.json'), JSON.stringify({
     status: 'PASS', privateHomeRemoved: true, operations: [], terminal: { result: 'PASS' },
   }));
-  const status = invoke('status', '--run', id);
+  const status = invoke('status', '--run', id, '--json');
   assert.equal(status.status, 0);
   assert.equal(JSON.parse(status.stdout).status, 'PASS');
-  const inspected = invoke('inspect', '--run', id, '--case', 'A');
+  const inspected = invoke('inspect', '--run', id, '--case', 'A', '--json');
   assert.equal(inspected.status, 0);
   assert.equal(JSON.parse(inspected.stdout).cases.A.status, 'PASS');
   assert.equal((await fs.readdir(root)).includes('summary.json'), true);

@@ -17,7 +17,6 @@ import {
   sorted,
 } from './core.mjs';
 import {
-  validateReadinessAttestation,
   workspaceAuthoritySnapshotSha256,
 } from './readiness.mjs';
 
@@ -188,9 +187,9 @@ export function renderClosedFeature(source) {
   return output;
 }
 
-function requireAttestedSnapshot(source, expected) {
+function requireStableAuthoritySnapshot(source, expected) {
   const current = validateWorkspace(source);
-  if (workspaceAuthoritySnapshotSha256(current) !== expected) throw new ValidationError('readiness attestation became stale during CLOSE; rerun READINESS GLOBAL');
+  if (workspaceAuthoritySnapshotSha256(current) !== expected) throw new ValidationError('CLOSE source changed during rendering; rebuild from the current active source');
 }
 
 export function buildClosedCandidate(source, candidate, { readinessAttestation } = {}) {
@@ -208,9 +207,10 @@ export function buildClosedCandidate(source, candidate, { readinessAttestation }
   const relativeSource = path.relative(candidatePath, sourcePath);
   const inside = (relative) => relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
   if (inside(relativeCandidate) || inside(relativeSource)) throw new ValidationError('source and candidate must be disjoint directories');
-  const [, attestedSnapshot] = validateReadinessAttestation(sourcePath, readinessAttestation, { candidate: candidatePath });
+  const sourceWorkspace = validateWorkspace(sourcePath);
+  const sourceSnapshot = workspaceAuthoritySnapshotSha256(sourceWorkspace);
   const rendered = renderClosedFeature(sourcePath);
-  requireAttestedSnapshot(sourcePath, attestedSnapshot);
+  requireStableAuthoritySnapshot(sourcePath, sourceSnapshot);
   const stage = fs.mkdtempSync(path.join(path.dirname(candidatePath), `.${path.basename(candidatePath)}.close-stage-`));
   const stageIdentity = identity(stage, 'CLOSE stage');
   try {
@@ -223,12 +223,12 @@ export function buildClosedCandidate(source, candidate, { readinessAttestation }
     validateExternalLinkGroups(linkGroups);
     validateWorkspace(stage);
     validateCloseTransition(sourcePath, stage);
-    requireAttestedSnapshot(sourcePath, attestedSnapshot);
+    requireStableAuthoritySnapshot(sourcePath, sourceSnapshot);
     if (lexists(candidatePath)) throw new ValidationError(`candidate appeared before publication: ${candidatePath}`);
     fs.renameSync(stage, candidatePath);
     requireIdentity(candidatePath, stageIdentity, 'promoted CLOSE candidate');
     try {
-      requireAttestedSnapshot(sourcePath, attestedSnapshot);
+      requireStableAuthoritySnapshot(sourcePath, sourceSnapshot);
     } catch (error) {
       rollbackPromotedCandidate(candidatePath, stage, stageIdentity);
       throw error;

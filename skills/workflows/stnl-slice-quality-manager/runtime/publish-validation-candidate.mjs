@@ -131,7 +131,7 @@ function taskSections(text, label) {
   return { prefix, names: [...sections.keys()], sections };
 }
 
-function assertValidationTaskScope(liveText, candidateText, slice) {
+function assertValidationTaskScope(liveText, candidateText, slice, candidateState) {
   const live = taskSections(liveText, "live task");
   const candidate = taskSections(candidateText, "candidate task");
   if (live.prefix !== candidate.prefix || live.names.join("\n") !== candidate.names.join("\n")) {
@@ -139,6 +139,9 @@ function assertValidationTaskScope(liveText, candidateText, slice) {
   }
   for (const name of live.names) {
     if (VALIDATION_OWNED_SECTIONS.has(name)) continue;
+    if (name === "Delegation Blocker"
+      && (candidateState === "RUNNER_RESULT_BLOCKED" || candidateState === "RUNNER_INITIALIZATION_BLOCKED"
+        || live.sections.get(name).trim() !== "- none")) continue;
     if (live.sections.get(name) !== candidate.sections.get(name)) {
       fail("candidate changed non-validation task section " + name + " for " + slice);
     }
@@ -180,7 +183,7 @@ function assertTasksIndexScope(liveText, candidateText, slice) {
   if (!unchanged && !passed) fail("candidate selected row must remain unchanged or record formal PASS");
 }
 
-function assertPublicationScope(liveSnapshot, candidateSnapshot, slice, liveRoot, candidateRoot) {
+function assertPublicationScope(liveSnapshot, candidateSnapshot, slice, liveRoot, candidateRoot, candidateState) {
   const selectedTask = path.join("tasks", slice + ".md");
   const allowed = new Set(["tasks.md", selectedTask]);
   const paths = new Set([...liveSnapshot.keys(), ...candidateSnapshot.keys()]);
@@ -198,7 +201,7 @@ function assertPublicationScope(liveSnapshot, candidateSnapshot, slice, liveRoot
     || liveIndex?.kind !== "file" || candidateIndex?.kind !== "file") {
     fail("live and candidate selected task/index must be regular files");
   }
-  assertValidationTaskScope(liveTask.bytes.toString("utf8"), candidateTask.bytes.toString("utf8"), slice);
+  assertValidationTaskScope(liveTask.bytes.toString("utf8"), candidateTask.bytes.toString("utf8"), slice, candidateState);
   assertTasksIndexScope(liveIndex.bytes.toString("utf8"), candidateIndex.bytes.toString("utf8"), slice);
   if (liveRoot === candidateRoot) fail("candidate and live execution roots must be distinct");
 }
@@ -228,7 +231,7 @@ export async function publishValidationCandidate({ specPath, slice: sliceValue, 
   if (!snapshotsMatch(candidateBefore, candidateAfterValidation)) {
     fail("candidate changed while strict validation was running");
   }
-  assertPublicationScope(liveBefore, candidateBefore, slice, liveRoot, candidateRoot);
+  assertPublicationScope(liveBefore, candidateBefore, slice, liveRoot, candidateRoot, candidateState.state);
 
   const parent = path.dirname(liveRoot);
   const stagedRoot = await fs.mkdtemp(path.join(parent, ".stnl-validation-publication-"));

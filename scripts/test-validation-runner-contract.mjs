@@ -82,6 +82,15 @@ test("runner schemas use the canonical execution-record field labels", async () 
   }
 });
 
+test("runner captures a real Git HEAD for every operation despite harmless Git stderr", async () => {
+  for (const relative of ["codex/.codex/agents/stnl_validation_runner.toml", "claude-code/.claude/agents/stnl-validation-runner.md"]) {
+    const contract = await fs.readFile(path.join(canonical, relative), "utf8");
+    assert.match(contract, /Em `EXECUTE_SLICE`, `APPLY_FINDINGS` e `VALIDATE_SLICE`, capture o `HEAD` atual com `git rev-parse HEAD`/u);
+    assert.match(contract, /exit 0 e uma linha stdout com exatamente 40 hex minúsculos[\s\S]{0,180}avisos de cache\/FSEvents em stderr/u);
+    assert.match(contract, /nunca retorne `TESTS_PASS` com `head` vazio, placeholder ou diagnóstico em vez de SHA/u);
+  }
+});
+
 test("VALIDATE_SLICE writes the exact payload SPEC_PATH into formal command evidence", async (t) => {
   const root = await fixture(t);
   await replaceBoth(

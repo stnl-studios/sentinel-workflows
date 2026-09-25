@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "mode", "scope", "verdict", "workspacePath", "snapshotSha256", "findings"],
+  "properties": {
+    "version": { "const": 1 },
+    "mode": { "const": "READINESS" },
+    "scope": { "enum": ["GLOBAL", "LOCAL"] },
+    "verdict": { "enum": ["READY", "FINDINGS", "LOCAL_CLEAR"] },
+    "workspacePath": { "type": "string" },
+    "snapshotSha256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "path", "evidence", "action", "question"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^F-[0-9]{3,}$" },
+          "path": { "type": "string" },
+          "evidence": { "type": "string" },
+          "action": { "enum": ["REFINE_FROM_EVIDENCE", "DECISION_REQUIRED"] },
+          "question": { "type": ["string", "null"] }
+        }
+      }
+    }
+  }
+}
