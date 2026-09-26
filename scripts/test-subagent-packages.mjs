@@ -211,7 +211,7 @@ function assertRunnerContract(contract, label) {
     "Não crie subagentes nem delegue.",
     "Checks nunca emitem `PASS` formal",
     "Não corrija automaticamente código quando um check falhar.",
-    "Não retorne `PASS` com manifesto vazio, incompleto, duplicado, malformado ou inconsistente",
+    "Serialização, persistência e validação determinística pertencem ao runtime/producer.",
   ]) assert.ok(contract.includes(boundary), `${label} lacks harmful-action boundary: ${boundary}`);
   assert.doesNotMatch(contract, /(?:você pode|é permitido|you may)[^\n]{0,80}(?:editar|implementar|aplicar correções|criar subagentes|delegar)/iu, `${label} enables a harmful action`);
 }

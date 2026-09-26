@@ -5,6 +5,7 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import { composeRunnerRequest, readRunnerConfiguration } from '../agents/codex/runtime/validation-runner.mjs';
+import { codexClientConfig } from '../agents/codex/runtime/sdk-transport.mjs';
 import { createUsageNormalizer, ZERO_USAGE } from '../agents/codex/runtime/usage-accounting.mjs';
 import { frozenFileMode } from '../benchmarks/sentinel-todo/runtime/benchmark-snapshot.mjs';
 
@@ -27,7 +28,7 @@ test('validation runner stays directly executable in the frozen benchmark snapsh
   assert.equal(frozenFileMode(metadata.mode), 0o555);
 });
 
-test('independent runner receives adapter-owned serializer and semantic payload without competing mechanical identity', async () => {
+test('independent runner receives mechanical context and semantic payload without role or producer instructions in the request', async () => {
   const configuration = await readRunnerConfiguration(ROOT);
   const workspace = path.join(ROOT, 'benchmark-temp/run-example/case-a/workspace');
   const snapshot = path.join(ROOT, 'benchmark-temp/run-example/snapshot');
@@ -35,13 +36,14 @@ test('independent runner receives adapter-owned serializer and semantic payload 
   const specPath = path.join(workspace, 'specs/benchmark-case-a');
   const officialPreflight = { operation: 'EXECUTE_SLICE', slice: 'slice-01', specPath };
   const prompt = 'Exact main-context semantic payload.';
-  const request = composeRunnerRequest({ configuration, officialPreflight, operation: 'EXECUTE_SLICE',
-    slice: 'slice-01', workspace, serializer, ...runnerArtifacts(workspace), prompt });
+  const request = composeRunnerRequest({ officialPreflight, operation: 'EXECUTE_SLICE',
+    slice: 'slice-01', workspace, ...runnerArtifacts(workspace), prompt });
   assert.equal(configuration.model, 'gpt-5.6-luna');
   assert.equal(configuration.effort, 'medium');
-  assert.equal((request.match(/RUNNER_EVIDENCE_SERIALIZER=/gu) ?? []).length, 1);
-  assert.ok(request.includes(`RUNNER_EVIDENCE_SERIALIZER=${serializer}\n\n`));
-  assert.equal((request.match(/serialize-runner-evidence\.mjs/gu) ?? []).length, 1);
+  assert.equal((request.match(/RUNNER_EVIDENCE_SERIALIZER=/gu) ?? []).length, 0);
+  assert.ok(!request.includes(serializer));
+  assert.equal((request.match(/serialize-runner-evidence\.mjs/gu) ?? []).length, 0);
+  assert.ok(!request.includes(configuration.developerInstructions));
   assert.ok(serializer.startsWith(`${snapshot}${path.sep}`));
   assert.ok(!request.includes(path.join(ROOT, 'skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs')));
   assert.ok(!request.includes('/Library/Application Support/'));
@@ -55,39 +57,53 @@ test('independent runner receives adapter-owned serializer and semantic payload 
   assert.equal((request.match(/^TASK_PATH=/gmu) ?? []).length, 1);
   assert.ok(request.includes(`OFFICIAL_EXECUTION_PREFLIGHT=${JSON.stringify(officialPreflight)}`));
   assert.ok(request.endsWith(prompt));
-  assert.throws(() => composeRunnerRequest({ configuration, officialPreflight, operation: 'EXECUTE_SLICE',
-    slice: 'slice-01', workspace, serializer: 'relative/serializer.mjs', ...runnerArtifacts(workspace), prompt }), /context path is invalid/u);
-  assert.throws(() => composeRunnerRequest({ configuration, officialPreflight, operation: 'EXECUTE_SLICE',
-    slice: 'slice-01', workspace, serializer, ...runnerArtifacts(workspace), prompt: `RUNNER_EVIDENCE_SERIALIZER=/private/installed/skill/runtime/serialize-runner-evidence.mjs` }),
+  assert.throws(() => composeRunnerRequest({ officialPreflight, operation: 'EXECUTE_SLICE',
+    slice: 'slice-01', workspace, ...runnerArtifacts(workspace), executionRoot: 'relative/root', prompt }), /context path is invalid/u);
+  assert.throws(() => composeRunnerRequest({ officialPreflight, operation: 'EXECUTE_SLICE',
+    slice: 'slice-01', workspace, ...runnerArtifacts(workspace), prompt: `RUNNER_EVIDENCE_SERIALIZER=/private/installed/skill/runtime/serialize-runner-evidence.mjs` }),
   /competing serializer authority/u);
 });
 
 test('adapter rejects stale managed context before runner dispatch', async () => {
-  const configuration = await readRunnerConfiguration(ROOT);
   const workspace = path.join(ROOT, 'benchmark-temp/run-ABC123/case-c/workspace');
-  const serializer = path.join(ROOT, 'benchmark-temp/run-ABC123/snapshot/skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs');
   const officialPreflight = { exitCode: 0, operation: 'APPLY_FINDINGS', slice: 'slice-01',
     specPath: path.join(workspace, 'specs/case-c'), authority: `sha256:${'a'.repeat(64)}` };
-  assert.throws(() => composeRunnerRequest({ configuration, officialPreflight,
-    operation: 'EXECUTE_SLICE', slice: 'slice-01', workspace, serializer, ...runnerArtifacts(workspace),
+  assert.throws(() => composeRunnerRequest({ officialPreflight,
+    operation: 'EXECUTE_SLICE', slice: 'slice-01', workspace, ...runnerArtifacts(workspace),
     prompt: 'semantic payload\nOPERATION=APPLY_FINDINGS' }), /competing|mechanical/u);
 });
 
 test('managed validation runner gets the official SPEC_PATH and rejects a private-home declaration', async () => {
-  const configuration = await readRunnerConfiguration(ROOT);
   const workspace = path.join(ROOT, 'benchmark-temp/run-XYZ/case-c/workspace');
   const privateHome = path.join(ROOT, 'benchmark-temp/run-XYZ-c-AbCd12');
   const specPath = path.join(workspace, 'specs/case-c');
   const officialPreflight = { exitCode: 0, operation: 'VALIDATE_SLICE', slice: 'slice-01', specPath };
-  const serializer = path.join(ROOT, 'benchmark-temp/run-XYZ/snapshot/skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs');
-  const request = composeRunnerRequest({ configuration, officialPreflight, operation: 'VALIDATE_SLICE',
-    slice: 'slice-01', workspace, serializer, ...runnerArtifacts(workspace), prompt: 'Review the current slice against requirements.' });
+  const request = composeRunnerRequest({ officialPreflight, operation: 'VALIDATE_SLICE',
+    slice: 'slice-01', workspace, ...runnerArtifacts(workspace), prompt: 'Review the current slice against requirements.' });
   assert.ok(request.includes(`SPEC_PATH=${specPath}\n\nOPERATION=VALIDATE_SLICE\n\nSLICE=slice-01`));
   assert.equal(request.includes(privateHome), false);
-  assert.throws(() => composeRunnerRequest({ configuration, officialPreflight, operation: 'VALIDATE_SLICE',
-    slice: 'slice-01', workspace, serializer, ...runnerArtifacts(workspace),
+  assert.throws(() => composeRunnerRequest({ officialPreflight, operation: 'VALIDATE_SLICE',
+    slice: 'slice-01', workspace, ...runnerArtifacts(workspace),
     prompt: `SPEC_PATH=${path.join(privateHome, 'case-c/workspace/specs/case-c')}` }),
   /competing mechanical identity/u);
+});
+
+test('runner instructions and skill isolation use per-instance public SDK config', async (t) => {
+  const home = await fs.mkdtemp(path.join(ROOT, 'benchmark-temp/runner-config-'));
+  t.after(() => fs.rm(home, { recursive: true, force: true }));
+  const skills = path.join(home, 'skills');
+  await fs.mkdir(path.join(skills, 'stnl-slice-executor'), { recursive: true });
+  await fs.mkdir(path.join(skills, 'stnl-slice-quality-manager'));
+  const configuration = await readRunnerConfiguration(ROOT);
+  const runner = await codexClientConfig({ env: { CODEX_HOME: home },
+    developerInstructions: configuration.developerInstructions, isolateSkills: true });
+  assert.equal(runner.developer_instructions, configuration.developerInstructions);
+  assert.deepEqual(runner.skills.config, [
+    { path: path.join(skills, 'stnl-slice-executor'), enabled: false },
+    { path: path.join(skills, 'stnl-slice-quality-manager'), enabled: false },
+  ]);
+  assert.deepEqual(await codexClientConfig({ env: { CODEX_HOME: home } }), { features: { multi_agent: false } });
+  await assert.rejects(codexClientConfig({ env: { CODEX_HOME: home }, isolateSkills: true }), /instructions are missing/u);
 });
 
 test('usage normalizer attributes cumulative snapshots from a known baseline exactly once', () => {

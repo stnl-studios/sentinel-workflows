@@ -1,8 +1,25 @@
 import fs from 'node:fs/promises';
+import path from 'node:path';
 import { Codex } from '@openai/codex-sdk';
 
 const ALLOWED_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh']);
 const ALLOWED_MODELS = new Set(['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna']);
+
+export async function codexClientConfig({ env, developerInstructions = null, isolateSkills = false }) {
+  const config = { features: { multi_agent: false } };
+  if (developerInstructions === null && !isolateSkills) return config;
+  if (typeof developerInstructions !== 'string' || developerInstructions.trim() === '') {
+    throw new Error('runner developer instructions are missing');
+  }
+  config.developer_instructions = developerInstructions;
+  if (isolateSkills) {
+    const skillsRoot = path.join(env.CODEX_HOME, 'skills');
+    const entries = await fs.readdir(skillsRoot, { withFileTypes: true });
+    config.skills = { config: entries.filter((entry) => entry.isDirectory())
+      .map((entry) => ({ path: path.join(skillsRoot, entry.name), enabled: false })) };
+  }
+  return config;
+}
 
 function persistentEvent(event, operationId) {
   if ((event.type === 'item.started' || event.type === 'item.updated' || event.type === 'item.completed')
@@ -15,6 +32,7 @@ function persistentEvent(event, operationId) {
 export async function runCodexTurn({
   env, cwd, prompt, model, effort, threadId = null, operationId, eventsPath,
   outputSchema = undefined, timeoutMs = 900_000, onEvent = () => {}, signal = null,
+  developerInstructions = null, isolateSkills = false,
 }) {
   if (typeof prompt !== 'string' || prompt.trim() === '' || !ALLOWED_MODELS.has(model)
     || !ALLOWED_EFFORTS.has(effort) || typeof cwd !== 'string' || typeof eventsPath !== 'string'
@@ -24,7 +42,7 @@ export async function runCodexTurn({
   }
   // The manager admits and counts independent runner turns through its adapter.
   // Prevent SDK turns from starting untracked collaboration subagents.
-  const codex = new Codex({ env, config: { features: { multi_agent: false } } });
+  const codex = new Codex({ env, config: await codexClientConfig({ env, developerInstructions, isolateSkills }) });
   const options = {
     model,
     modelReasoningEffort: effort,
