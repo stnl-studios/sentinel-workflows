@@ -10,7 +10,7 @@ import {
   resolveExecutionWorkspace,
   validateExecutionCandidate,
 } from "./execution-state.mjs";
-import { assertManagedAgreement } from "./managed-validation-context.mjs";
+import { assertManagedAgreement } from "./managed-slice-context.mjs";
 
 const VALIDATION_OWNED_SECTIONS = new Set([
   "Validation Attempts",

@@ -6,7 +6,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { resolveExecutionWorkspace } from './execution-state.mjs';
-import { assertManagedAgreement } from './managed-validation-context.mjs';
+import { assertManagedAgreement } from './managed-slice-context.mjs';
 
 function inside(candidate, parent) {
   const relative = path.relative(parent, candidate);

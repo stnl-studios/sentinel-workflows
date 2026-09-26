@@ -6,7 +6,7 @@ import { pathToFileURL } from "node:url";
 
 import { prepareRunnerValidationPersistenceFromResponse } from "./serialize-runner-evidence.mjs";
 import { preflightExecutionOperation, resolveExecutionWorkspace } from "./execution-state.mjs";
-import { assertManagedAgreement } from "./managed-validation-context.mjs";
+import { assertManagedAgreement } from "./managed-slice-context.mjs";
 
 function fail(message) {
   throw new Error(`validation candidate preparation blocked: ${message}`);

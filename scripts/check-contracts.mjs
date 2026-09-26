@@ -393,6 +393,8 @@ function checkSubagents(root) {
     "codex/package.json",
     "codex/package-lock.json",
     "codex/runtime/isolated-home.mjs",
+    "codex/runtime/managed-runner-bridge.mjs",
+    "codex/runtime/managed-slice-preflight.mjs",
     "codex/runtime/runner-broker.mjs",
     "codex/runtime/sdk-transport.mjs",
     "codex/runtime/usage-accounting.mjs",

@@ -178,7 +178,7 @@ export function renderLauncher(template, values) {
   return rendered;
 }
 
-export function assertManagedValidationLauncher(prompt, context, numericSlice) {
+export function assertManagedSliceLauncher(prompt, context, numericSlice) {
   const declarations = [...prompt.matchAll(/^([A-Z_]+)=(.*)$/gmu)];
   const expected = { SPEC_PATH: context.specPath, OPERATION: context.operation, SLICE: numericSlice };
   for (const [name, value] of Object.entries(expected)) {
@@ -274,7 +274,7 @@ async function loadProduct(snapshot) {
   const usage = await import(pathToFileURL(path.join(snapshot, 'agents/codex/runtime/usage-accounting.mjs')).href);
   const home = await import(pathToFileURL(path.join(snapshot, 'agents/codex/runtime/isolated-home.mjs')).href);
   const runner = await import(pathToFileURL(path.join(snapshot, 'agents/codex/runtime/validation-runner.mjs')).href);
-  const managedContext = await import(pathToFileURL(path.join(snapshot, 'skills/workflows/stnl-slice-quality-manager/runtime/managed-validation-context.mjs')).href);
+  const managedContext = await import(pathToFileURL(path.join(snapshot, 'skills/workflows/stnl-slice-quality-manager/runtime/managed-slice-context.mjs')).href);
   const broker = await import(pathToFileURL(path.join(snapshot, 'agents/codex/runtime/runner-broker.mjs')).href);
   return { ...execution, validateWorkspace: lifecycle.validateWorkspace, ...readiness, ...sdk, ...usage,
     ...home, ...runner, ...broker, ...managedContext };
@@ -396,16 +396,18 @@ async function runCase({ runRoot, caseId, configuration, snapshotMetadata, maxOp
         }
       }
       let officialPreflight = null;
-      let managedValidationContext = null;
+      let managedSliceContext = null;
       if (!operation.startsWith('SPEC_')) {
         const preflight = await product.preflightExecutionOperation(specPath, operation, specInput(slice));
         if (RUNNER_OPERATIONS.has(operation)) {
           officialPreflight = { exitCode: 0, operation, slice, inputSlice: specInput(slice),
             specPath, state: preflight.state, authority: `sha256:${preflight.currentFingerprint}`,
             legalOperations: preflight.legalOperations, mandatoryRecovery: preflight.mandatoryRecovery };
-          if (operation === 'VALIDATE_SLICE') {
-            managedValidationContext = await product.createManagedValidationContext({ officialPreflight, workspace });
-          }
+          managedSliceContext = await product.createManagedSliceContext({ officialPreflight, workspace,
+            snapshot: path.join(runRoot, 'snapshot'),
+            adapterPath: home?.env?.STNL_RUNNER_ADAPTER ?? path.join(runRoot, 'snapshot', 'agents/codex/runtime/validation-runner.mjs'),
+            bridgePath: path.join(runRoot, 'snapshot', 'agents/codex/runtime/managed-runner-bridge.mjs'),
+            preflightPath: path.join(runRoot, 'snapshot', 'agents/codex/runtime/managed-slice-preflight.mjs') });
         }
       }
       const templatePath = path.join(runRoot, 'snapshot', 'templates', 'prompts', TEMPLATE[operation]);
@@ -424,8 +426,8 @@ async function runCase({ runRoot, caseId, configuration, snapshotMetadata, maxOp
         REPLAN_REASON: 'official execution readback requires replanning',
         SLICE: slice === null ? '' : specInput(slice) };
       const prompt = renderLauncher(template, values);
-      if (managedValidationContext !== null) {
-        assertManagedValidationLauncher(prompt, managedValidationContext, specInput(slice));
+      if (managedSliceContext !== null) {
+        assertManagedSliceLauncher(prompt, managedSliceContext, specInput(slice));
       }
       const promptFile = path.join(prompts, `${String(sequence).padStart(2, '0')}-${operation.toLowerCase()}.md`);
       await fs.writeFile(promptFile, prompt, { flag: 'wx' });
@@ -443,8 +445,8 @@ async function runCase({ runRoot, caseId, configuration, snapshotMetadata, maxOp
       let runnerReservation = admission.runner;
       let currentRunnerNumber = null;
       let mainTurnNumber;
-      const turnEnv = managedValidationContext === null ? home.env
-        : product.managedEnvironment(home.env, managedValidationContext);
+      const turnEnv = managedSliceContext === null ? home.env
+        : product.managedEnvironment(home.env, managedSliceContext);
       try {
         if (officialPreflight !== null) {
           broker = await product.startOfficialRunnerBroker({ workspace, tmpdir, operation, sequence, slice,

@@ -7,7 +7,9 @@ import { pathToFileURL } from 'node:url';
 import { captureRunnerResponse } from '../../../skills/workflows/stnl-slice-executor/runtime/capture-runner-response.mjs';
 import { runCodexTurn } from './sdk-transport.mjs';
 import { submitOfficialRunnerRequest } from './runner-broker.mjs';
-import { readManagedValidationContext } from '../../../skills/workflows/stnl-slice-quality-manager/runtime/managed-validation-context.mjs';
+import { readManagedSliceContext } from '../../../skills/workflows/stnl-slice-quality-manager/runtime/managed-slice-context.mjs';
+import { resolveExecutionWorkspace } from '../../../skills/workflows/stnl-slice-quality-manager/runtime/execution-state.mjs';
+import { assertManagedSliceFreshness } from './managed-slice-preflight.mjs';
 
 const OPERATIONS = new Set(['EXECUTE_SLICE', 'APPLY_FINDINGS', 'VALIDATE_SLICE']);
 const RUNNER_NAME = 'stnl_validation_runner';
@@ -27,8 +29,9 @@ export async function readRunnerConfiguration(snapshot) {
 }
 
 export function composeRunnerRequest({ configuration, officialPreflight, operation, slice,
-  workspace, serializer, prompt }) {
-  for (const value of [workspace, serializer, officialPreflight?.specPath]) {
+  workspace, serializer, executionRoot, planPath, slicePlanPath, taskPath, prompt }) {
+  for (const value of [workspace, serializer, officialPreflight?.specPath,
+    executionRoot, planPath, slicePlanPath, taskPath]) {
     if (typeof value !== 'string' || !path.isAbsolute(value) || /[\r\n\0]/u.test(value)) {
       fail('runner adapter context path is invalid');
     }
@@ -39,11 +42,9 @@ export function composeRunnerRequest({ configuration, officialPreflight, operati
   if (/RUNNER_EVIDENCE_SERIALIZER\s*=|serialize-runner-evidence\.mjs/u.test(prompt)) {
     fail('runner prompt contains a competing serializer authority');
   }
-  if (operation === 'VALIDATE_SLICE') {
-    const declaredSpecs = [...prompt.matchAll(/^SPEC_PATH=(.*)$/gmu)].map((match) => match[1]);
-    if (declaredSpecs.some((value) => value !== officialPreflight.specPath)) {
-      fail('runner prompt contains a competing SPEC_PATH declaration');
-    }
+  if (/^(?:SPEC_PATH|MANAGED_WORKSPACE|OPERATION|SLICE|EXECUTION_ROOT|PLAN_PATH|SLICE_PLAN_PATH|TASK_PATH|RUNNER_BRIDGE|STNL_RUNNER_ADAPTER)=/gmu.test(prompt)
+    || /"(?:operation|specPath|workspace|slice|executionRoot|planPath|slicePlanPath|taskPath|adapterPath|snapshotPath)"\s*:/u.test(prompt)) {
+    fail('runner payload contains competing mechanical identity');
   }
   return [
     `You are the independent ${RUNNER_NAME} session. Follow its configured instructions.`,
@@ -53,6 +54,10 @@ export function composeRunnerRequest({ configuration, officialPreflight, operati
     `SPEC_PATH=${officialPreflight.specPath}`,
     `OPERATION=${operation}`,
     `SLICE=${slice}`,
+    `EXECUTION_ROOT=${executionRoot}`,
+    `PLAN_PATH=${planPath}`,
+    `SLICE_PLAN_PATH=${slicePlanPath}`,
+    `TASK_PATH=${taskPath}`,
     `OFFICIAL_EXECUTION_PREFLIGHT=${JSON.stringify(officialPreflight)}`,
     'Current operation payload follows. Do not use any prior conversation.',
     prompt,
@@ -63,11 +68,11 @@ export async function invokeIndependentRunner({
   snapshot, workspace, tmpdir, env, operation, sequence, slice, officialPreflight, prompt,
   onBeforeTurn = () => {}, onTurn = () => {},
 }) {
-  const managed = readManagedValidationContext(env);
-  if (managed !== null && (managed.specPath !== officialPreflight?.specPath
-    || managed.workspace !== workspace || managed.operation !== operation || managed.slice !== slice
-    || managed.authority !== officialPreflight.authority || managed.state !== officialPreflight.state)) {
-    fail('managed context disagrees with broker identity or official preflight');
+  const managed = readManagedSliceContext(env);
+  if (managed !== null) {
+    await assertManagedSliceFreshness(env);
+    if (managed.specPath !== officialPreflight?.specPath || managed.workspace !== workspace || managed.operation !== operation || managed.slice !== slice
+      || managed.authority !== officialPreflight.authority || managed.state !== officialPreflight.state) fail('managed context disagrees with broker identity or official preflight');
   }
   const relativeSpec = typeof officialPreflight?.specPath === 'string'
     ? path.relative(workspace, officialPreflight.specPath) : '..';
@@ -103,8 +108,19 @@ export async function invokeIndependentRunner({
   const serializerRelative = path.relative(snapshot, serializer);
   if (serializerRelative === '..' || serializerRelative.startsWith(`..${path.sep}`)
     || path.isAbsolute(serializerRelative)) fail('runner evidence serializer is outside snapshot');
+  const execution = await resolveExecutionWorkspace(officialPreflight.specPath);
+  const executionRoot = await fs.realpath(execution.executionRoot);
+  const planPath = await fs.realpath(path.join(executionRoot, 'plan.md'));
+  const slicePlanPath = await fs.realpath(path.join(executionRoot, 'plans', `${slice}.md`));
+  const taskPath = await fs.realpath(path.join(executionRoot, 'tasks', `${slice}.md`));
+  for (const artifact of [executionRoot, planPath, slicePlanPath, taskPath]) {
+    const relative = path.relative(workspace, artifact);
+    if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+      fail('runner artifact identity is outside managed workspace');
+    }
+  }
   const request = composeRunnerRequest({ configuration, officialPreflight, operation, slice,
-    workspace, serializer, prompt });
+    workspace, serializer, executionRoot, planPath, slicePlanPath, taskPath, prompt });
   const eventsPath = path.join(tmpdir, `${operationName}.events.jsonl`);
   const responsePath = path.join(tmpdir, `${operationName}.response.json`);
   await onBeforeTurn({ role: 'runner', operation, sequence, slice, attempt });
@@ -136,21 +152,32 @@ export async function invokeIndependentRunner({
   return receipt;
 }
 
-export async function main(argv) {
+export async function submitRunnerPayload({
+  environment = process.env,
+  cwd = process.cwd(),
+  operation,
+  slice,
+  prompt,
+}) {
+  const workspace = await fs.realpath(cwd);
+  const tmpdir = await fs.realpath(environment.TMPDIR ?? '');
+  const active = JSON.parse(await fs.readFile(path.join(tmpdir, 'stnl-runner-broker', 'active.json'), 'utf8'));
+  return submitOfficialRunnerRequest({
+    workspace, tmpdir, operation, slice, sequence: active.sequence, prompt,
+  });
+}
+
+export async function main(argv, environment = process.env, input = process.stdin, output = process.stdout) {
   if (argv.length !== 4 || argv[0] !== '--operation' || argv[2] !== '--slice'
     || !OPERATIONS.has(argv[1]) || !/^slice-[0-9]{2,}$/u.test(argv[3])) {
     fail('usage: validation-runner.mjs --operation <operation> --slice <slice-NN>');
   }
-  const workspace = await fs.realpath(process.cwd());
-  const tmpdir = await fs.realpath(process.env.TMPDIR ?? '');
-  const active = JSON.parse(await fs.readFile(path.join(tmpdir, 'stnl-runner-broker', 'active.json'), 'utf8'));
   const chunks = [];
-  for await (const chunk of process.stdin) chunks.push(chunk);
-  const result = await submitOfficialRunnerRequest({
-    workspace, tmpdir, operation: argv[1], slice: argv[3],
-    sequence: active.sequence, prompt: Buffer.concat(chunks).toString('utf8'),
+  for await (const chunk of input) chunks.push(chunk);
+  const result = await submitRunnerPayload({
+    environment, operation: argv[1], slice: argv[3], prompt: Buffer.concat(chunks).toString('utf8'),
   });
-  process.stdout.write(`SENTINEL_RUNNER_RECEIPT ${JSON.stringify(result)}\n`);
+  output.write(`SENTINEL_RUNNER_RECEIPT ${JSON.stringify(result)}\n`);
   return result.exitCode;
 }
 

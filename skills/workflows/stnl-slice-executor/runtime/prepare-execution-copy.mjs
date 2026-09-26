@@ -6,6 +6,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { resolveExecutionWorkspace, validateExecutionCandidate } from './execution-state.mjs';
+import { assertManagedAgreement } from './managed-slice-context.mjs';
 
 const markerName = '.stnl-execution-copy.json';
 
@@ -36,6 +37,7 @@ async function manifest(root) {
 
 async function context(specPath, slice) {
   if (!path.isAbsolute(specPath) || !/^slice-[0-9]{2,}$/u.test(slice)) throw new Error('spec path and slice are invalid');
+  assertManagedAgreement({ specPath, slice });
   const resolved = await resolveExecutionWorkspace(specPath);
   const executionRoot = await fs.realpath(resolved.executionRoot);
   const specRoot = resolved.specRoot === null ? null : await fs.realpath(resolved.specRoot);

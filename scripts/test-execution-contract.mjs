@@ -21,7 +21,7 @@ import {
 import { preparePlanCandidate } from "../skills/workflows/stnl-execution-planner/runtime/prepare-plan-candidate.mjs";
 import { serializePlanPathClaims } from "../skills/workflows/stnl-execution-planner/runtime/serialize-plan-paths.mjs";
 import { prepareValidationCandidate } from "../skills/workflows/stnl-slice-quality-manager/runtime/prepare-validation-candidate.mjs";
-import { createManagedValidationContext, managedEnvironment } from "../skills/workflows/stnl-slice-quality-manager/runtime/managed-validation-context.mjs";
+import { createManagedSliceContext, managedEnvironment } from "../skills/workflows/stnl-slice-quality-manager/runtime/managed-slice-context.mjs";
 import { publishValidationCandidate } from "../skills/workflows/stnl-slice-quality-manager/runtime/publish-validation-candidate.mjs";
 import { resolveExecutionWorkspace as resolveMaterializerExecutionWorkspace } from "../skills/workflows/stnl-task-materializer/runtime/execution-state.mjs";
 import { prepareTaskMaterializationCandidate } from "../skills/workflows/stnl-task-materializer/runtime/prepare-task-candidate.mjs";
@@ -1897,6 +1897,12 @@ test("all execution skills bundle byte-identical self-contained state runtimes",
   }
 });
 
+test("executor and quality-manager bundle one byte-identical managed slice context", async () => {
+  const copies = await Promise.all(["stnl-slice-executor", "stnl-slice-quality-manager"].map((skill) =>
+    fs.readFile(path.join(ROOT, "skills", "workflows", skill, "runtime", "managed-slice-context.mjs"))));
+  assert.deepEqual(copies[0], copies[1]);
+});
+
 test("distributed validation evidence serializers remain byte-identical across isolated skills", async () => {
   const executor = await fs.readFile(path.join(ROOT, "skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs"));
   const qualityManager = await fs.readFile(path.join(ROOT, "skills/workflows/stnl-slice-quality-manager/runtime/serialize-runner-evidence.mjs"));
@@ -3248,7 +3254,16 @@ test("validation candidate preparation writes canonical attempt and PASS base be
   assert.equal((await validateExecutionCandidate(fixture.requirements, candidateRoot)).state, "COMPLETE");
 
   const preflight = await preflightExecutionOperation(fixture.requirements, "VALIDATE_SLICE", "1");
-  const managed = await createManagedValidationContext({ workspace: fixture.root, officialPreflight: {
+  const managedSnapshot = path.join(fixture.root, "managed-snapshot");
+  const managedAdapter = path.join(managedSnapshot, "agents/codex/runtime/validation-runner.mjs");
+  const managedBridge = path.join(managedSnapshot, "agents/codex/runtime/managed-runner-bridge.mjs");
+  const managedHelper = path.join(managedSnapshot, "agents/codex/runtime/managed-slice-preflight.mjs");
+  await fs.mkdir(path.dirname(managedAdapter), { recursive: true });
+  await Promise.all([managedAdapter, managedBridge, managedHelper].map((file) => fs.writeFile(file, "// managed helper\n")));
+  await fs.chmod(managedAdapter, 0o755);
+  const managed = await createManagedSliceContext({ workspace: fixture.root,
+    snapshot: managedSnapshot, adapterPath: managedAdapter, bridgePath: managedBridge,
+    preflightPath: managedHelper, officialPreflight: {
     exitCode: 0, operation: "VALIDATE_SLICE", slice: "slice-01", inputSlice: "1",
     specPath: fixture.requirements, state: preflight.state,
     authority: `sha256:${preflight.currentFingerprint}`,
@@ -3259,7 +3274,7 @@ test("validation candidate preparation writes canonical attempt and PASS base be
   const manualPreflight = spawnSync(process.execPath, [validator, fixture.requirements, "VALIDATE_SLICE", "1"],
     { encoding: "utf8", cwd: fixture.root, env: { PATH: process.env.PATH } });
   assert.equal(manualPreflight.status, 0, manualPreflight.stderr);
-  const managedValidator = path.join(ROOT, "skills/workflows/stnl-slice-quality-manager/runtime/managed-validation-preflight.mjs");
+  const managedValidator = path.join(ROOT, "agents/codex/runtime/managed-slice-preflight.mjs");
   const managedPreflight = spawnSync(process.execPath, [managedValidator],
     { encoding: "utf8", cwd: fixture.root, env: managedEnv });
   assert.equal(managedPreflight.status, 0, managedPreflight.stderr);

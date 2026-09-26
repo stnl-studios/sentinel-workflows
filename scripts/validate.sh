@@ -32,6 +32,7 @@ while IFS= read -r -d '' module; do
 done < <(find scripts skills templates benchmarks agents/codex/runtime -type f -name '*.mjs' -print0)
 
 node --test benchmarks/sentinel-todo/seed/test/*.test.mjs
+node --test scripts/test-execution-contract.mjs
 node scripts/test-benchmark-contract.mjs
 node --test scripts/test-benchmark-manager.mjs scripts/test-benchmark-ui.mjs scripts/test-benchmark-runner-broker.mjs scripts/test-codex-runner-adapter.mjs scripts/test-managed-validation-context.mjs
 
