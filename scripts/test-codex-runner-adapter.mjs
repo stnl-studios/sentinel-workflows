@@ -46,6 +46,23 @@ test('independent runner receives adapter-owned serializer and managed workspace
   /competing serializer authority/u);
 });
 
+test('managed validation runner gets the official SPEC_PATH and rejects a private-home declaration', async () => {
+  const configuration = await readRunnerConfiguration(ROOT);
+  const workspace = path.join(ROOT, 'benchmark-temp/run-XYZ/case-c/workspace');
+  const privateHome = path.join(ROOT, 'benchmark-temp/run-XYZ-c-AbCd12');
+  const specPath = path.join(workspace, 'specs/case-c');
+  const officialPreflight = { exitCode: 0, operation: 'VALIDATE_SLICE', slice: 'slice-01', specPath };
+  const serializer = path.join(ROOT, 'benchmark-temp/run-XYZ/snapshot/skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs');
+  const request = composeRunnerRequest({ configuration, officialPreflight, operation: 'VALIDATE_SLICE',
+    slice: 'slice-01', workspace, serializer, prompt: 'Review the current slice against requirements.' });
+  assert.ok(request.includes(`SPEC_PATH=${specPath}\n\nOPERATION=VALIDATE_SLICE\n\nSLICE=slice-01`));
+  assert.equal(request.includes(privateHome), false);
+  assert.throws(() => composeRunnerRequest({ configuration, officialPreflight, operation: 'VALIDATE_SLICE',
+    slice: 'slice-01', workspace, serializer,
+    prompt: `SPEC_PATH=${path.join(privateHome, 'case-c/workspace/specs/case-c')}` }),
+  /competing SPEC_PATH declaration/u);
+});
+
 test('usage normalizer attributes cumulative snapshots from a known baseline exactly once', () => {
   const normalizer = createUsageNormalizer({ baseline: ZERO_USAGE, source: 'main' });
   const observation = (input_tokens) => normalizer.observe({

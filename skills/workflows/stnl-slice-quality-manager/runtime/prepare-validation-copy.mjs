@@ -6,6 +6,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { resolveExecutionWorkspace } from './execution-state.mjs';
+import { assertManagedAgreement } from './managed-validation-context.mjs';
 
 function inside(candidate, parent) {
   const relative = path.relative(parent, candidate);
@@ -31,6 +32,7 @@ async function manifest(root) {
 }
 
 export async function prepareValidationCopy({ specPath, slice, candidateParent }) {
+  assertManagedAgreement({ specPath, slice });
   if (typeof specPath !== 'string' || !path.isAbsolute(specPath)
     || !/^slice-[0-9]{2,}$/u.test(slice) || typeof candidateParent !== 'string'
     || !path.isAbsolute(candidateParent) || await fs.realpath(candidateParent) !== candidateParent) {

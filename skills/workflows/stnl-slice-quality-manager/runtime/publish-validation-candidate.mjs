@@ -10,6 +10,7 @@ import {
   resolveExecutionWorkspace,
   validateExecutionCandidate,
 } from "./execution-state.mjs";
+import { assertManagedAgreement } from "./managed-validation-context.mjs";
 
 const VALIDATION_OWNED_SECTIONS = new Set([
   "Validation Attempts",
@@ -207,6 +208,7 @@ function assertPublicationScope(liveSnapshot, candidateSnapshot, slice, liveRoot
 }
 
 export async function publishValidationCandidate({ specPath, slice: sliceValue, candidateExecutionRoot }) {
+  assertManagedAgreement({ specPath, slice: sliceValue });
   if (typeof specPath !== "string" || !path.isAbsolute(specPath) || path.resolve(specPath) !== specPath) {
     fail("SPEC_PATH must be absolute and canonical");
   }

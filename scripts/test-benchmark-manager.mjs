@@ -5,11 +5,23 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { decideOutcome, nextHandoff } from '../benchmarks/sentinel-todo/runtime/benchmark-manager.mjs';
+import { assertManagedValidationLauncher, decideOutcome, nextHandoff } from '../benchmarks/sentinel-todo/runtime/benchmark-manager.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const RUNS = path.join(ROOT, 'benchmark-temp');
 const MANAGER = path.join(ROOT, 'benchmarks/sentinel-todo/runtime/benchmark-manager.mjs');
+
+test('managed launcher disagreement stops before SDK and runner dispatch', () => {
+  const context = { operation: 'VALIDATE_SLICE', slice: 'slice-01', specPath: '/run-XYZ/case-c/workspace/specs/case-c' };
+  const prompt = `Use stnl-slice-quality-manager.\nOPERATION=VALIDATE_SLICE\nSPEC_PATH=${context.specPath}\nSLICE=1\n`;
+  assert.doesNotThrow(() => assertManagedValidationLauncher(prompt, context, '1'));
+  assert.throws(() => assertManagedValidationLauncher(prompt.replace('/run-XYZ/', '/run-XYZ-c-AbCd12/'), context, '1'),
+    /managed launcher SPEC_PATH disagrees/u);
+  assert.throws(() => assertManagedValidationLauncher(prompt.replace('SLICE=1', 'SLICE=2'), context, '1'),
+    /managed launcher SLICE disagrees/u);
+  assert.throws(() => assertManagedValidationLauncher(prompt.replace('OPERATION=VALIDATE_SLICE', 'OPERATION=EXECUTE_SLICE'), context, '1'),
+    /managed launcher OPERATION disagrees/u);
+});
 
 function invoke(...args) {
   return spawnSync(process.execPath, [MANAGER, ...args], { cwd: ROOT, encoding: 'utf8' });

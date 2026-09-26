@@ -7,6 +7,7 @@ import { pathToFileURL } from 'node:url';
 import { captureRunnerResponse } from '../../../skills/workflows/stnl-slice-executor/runtime/capture-runner-response.mjs';
 import { runCodexTurn } from './sdk-transport.mjs';
 import { submitOfficialRunnerRequest } from './runner-broker.mjs';
+import { readManagedValidationContext } from '../../../skills/workflows/stnl-slice-quality-manager/runtime/managed-validation-context.mjs';
 
 const OPERATIONS = new Set(['EXECUTE_SLICE', 'APPLY_FINDINGS', 'VALIDATE_SLICE']);
 const RUNNER_NAME = 'stnl_validation_runner';
@@ -38,6 +39,12 @@ export function composeRunnerRequest({ configuration, officialPreflight, operati
   if (/RUNNER_EVIDENCE_SERIALIZER\s*=|serialize-runner-evidence\.mjs/u.test(prompt)) {
     fail('runner prompt contains a competing serializer authority');
   }
+  if (operation === 'VALIDATE_SLICE') {
+    const declaredSpecs = [...prompt.matchAll(/^SPEC_PATH=(.*)$/gmu)].map((match) => match[1]);
+    if (declaredSpecs.some((value) => value !== officialPreflight.specPath)) {
+      fail('runner prompt contains a competing SPEC_PATH declaration');
+    }
+  }
   return [
     `You are the independent ${RUNNER_NAME} session. Follow its configured instructions.`,
     configuration.developerInstructions,
@@ -56,6 +63,12 @@ export async function invokeIndependentRunner({
   snapshot, workspace, tmpdir, env, operation, sequence, slice, officialPreflight, prompt,
   onBeforeTurn = () => {}, onTurn = () => {},
 }) {
+  const managed = readManagedValidationContext(env);
+  if (managed !== null && (managed.specPath !== officialPreflight?.specPath
+    || managed.workspace !== workspace || managed.operation !== operation || managed.slice !== slice
+    || managed.authority !== officialPreflight.authority || managed.state !== officialPreflight.state)) {
+    fail('managed context disagrees with broker identity or official preflight');
+  }
   const relativeSpec = typeof officialPreflight?.specPath === 'string'
     ? path.relative(workspace, officialPreflight.specPath) : '..';
   if (!OPERATIONS.has(operation) || !/^slice-[0-9]{2,}$/u.test(slice)

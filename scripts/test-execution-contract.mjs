@@ -21,6 +21,7 @@ import {
 import { preparePlanCandidate } from "../skills/workflows/stnl-execution-planner/runtime/prepare-plan-candidate.mjs";
 import { serializePlanPathClaims } from "../skills/workflows/stnl-execution-planner/runtime/serialize-plan-paths.mjs";
 import { prepareValidationCandidate } from "../skills/workflows/stnl-slice-quality-manager/runtime/prepare-validation-candidate.mjs";
+import { createManagedValidationContext, managedEnvironment } from "../skills/workflows/stnl-slice-quality-manager/runtime/managed-validation-context.mjs";
 import { publishValidationCandidate } from "../skills/workflows/stnl-slice-quality-manager/runtime/publish-validation-candidate.mjs";
 import { resolveExecutionWorkspace as resolveMaterializerExecutionWorkspace } from "../skills/workflows/stnl-task-materializer/runtime/execution-state.mjs";
 import { prepareTaskMaterializationCandidate } from "../skills/workflows/stnl-task-materializer/runtime/prepare-task-candidate.mjs";
@@ -3245,6 +3246,54 @@ test("validation candidate preparation writes canonical attempt and PASS base be
   assert.equal(prepared.formalStatus, "PASS");
   assert.equal(prepared.attemptId, "attempt-01");
   assert.equal((await validateExecutionCandidate(fixture.requirements, candidateRoot)).state, "COMPLETE");
+
+  const preflight = await preflightExecutionOperation(fixture.requirements, "VALIDATE_SLICE", "1");
+  const managed = await createManagedValidationContext({ workspace: fixture.root, officialPreflight: {
+    exitCode: 0, operation: "VALIDATE_SLICE", slice: "slice-01", inputSlice: "1",
+    specPath: fixture.requirements, state: preflight.state,
+    authority: `sha256:${preflight.currentFingerprint}`,
+    legalOperations: preflight.legalOperations, mandatoryRecovery: preflight.mandatoryRecovery,
+  } });
+  const managedEnv = managedEnvironment({ PATH: process.env.PATH }, managed);
+  const validator = path.join(ROOT, "skills/workflows/stnl-slice-quality-manager/runtime/validate-execution-state.mjs");
+  const manualPreflight = spawnSync(process.execPath, [validator, fixture.requirements, "VALIDATE_SLICE", "1"],
+    { encoding: "utf8", cwd: fixture.root, env: { PATH: process.env.PATH } });
+  assert.equal(manualPreflight.status, 0, manualPreflight.stderr);
+  const managedValidator = path.join(ROOT, "skills/workflows/stnl-slice-quality-manager/runtime/managed-validation-preflight.mjs");
+  const managedPreflight = spawnSync(process.execPath, [managedValidator],
+    { encoding: "utf8", cwd: fixture.root, env: managedEnv });
+  assert.equal(managedPreflight.status, 0, managedPreflight.stderr);
+  assert.match(managedPreflight.stdout, /managed preflight state=IMPLEMENTED_AWAITING_VALIDATION/u);
+  const staleContext = managedEnvironment({ PATH: process.env.PATH },
+    { ...managed, authority: `sha256:${"b".repeat(64)}` });
+  const stalePreflight = spawnSync(process.execPath, [managedValidator],
+    { encoding: "utf8", cwd: fixture.root, env: staleContext });
+  assert.equal(stalePreflight.status, 1);
+  assert.match(stalePreflight.stderr, /identity is stale/u);
+  const copyCli = spawnSync(process.execPath, [
+    path.join(ROOT, "skills/workflows/stnl-slice-quality-manager/runtime/prepare-validation-copy.mjs"),
+    "--spec-path", fixture.requirements, "--slice", "slice-01", "--candidate-parent", candidateParent,
+  ], { encoding: "utf8", cwd: fixture.root, env: managedEnv });
+  assert.equal(copyCli.status, 0, copyCli.stderr);
+  const managedCopy = JSON.parse(copyCli.stdout);
+  assert.equal(managedCopy.executionRoot, fixture.execution);
+  const prepareCli = [
+    path.join(ROOT, "skills/workflows/stnl-slice-quality-manager/runtime/prepare-validation-candidate.mjs"),
+    "--prepare", "--spec-path", fixture.requirements, "--slice", "slice-01",
+    "--workspace", fixture.root, "--candidate-execution-root", managedCopy.candidateExecutionRoot,
+    "--semantic-response-file", semanticResponseFile,
+  ];
+  const disagreement = spawnSync(process.execPath, prepareCli.map((value) => value === fixture.requirements
+    ? path.join(candidateParent, "wrong-spec") : value), { encoding: "utf8", cwd: fixture.root, env: managedEnv });
+  assert.equal(disagreement.status, 1);
+  assert.match(disagreement.stderr, /explicit SPEC_PATH disagrees with managed context/u);
+  const managedPreparation = spawnSync(process.execPath, prepareCli,
+    { encoding: "utf8", cwd: fixture.root, env: managedEnv });
+  assert.equal(managedPreparation.status, 0, managedPreparation.stderr);
+  assert.equal(JSON.parse(managedPreparation.stdout).formalStatus, "PASS");
+  const managedTask = await fs.readFile(path.join(managedCopy.candidateExecutionRoot, "tasks/slice-01.md"), "utf8");
+  assert.match(managedTask, /validate-execution-state\.mjs" "/u,
+    "the deterministic producer retains the canonical replay command in formal evidence");
 
   const candidateTask = path.join(candidateRoot, "tasks", "slice-01.md");
   const candidateText = await fs.readFile(candidateTask, "utf8");

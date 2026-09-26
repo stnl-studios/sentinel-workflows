@@ -178,6 +178,15 @@ export function renderLauncher(template, values) {
   return rendered;
 }
 
+export function assertManagedValidationLauncher(prompt, context, numericSlice) {
+  const declarations = [...prompt.matchAll(/^([A-Z_]+)=(.*)$/gmu)];
+  const expected = { SPEC_PATH: context.specPath, OPERATION: context.operation, SLICE: numericSlice };
+  for (const [name, value] of Object.entries(expected)) {
+    const matches = declarations.filter((match) => match[1] === name);
+    if (matches.length !== 1 || matches[0][2] !== value) fail(`managed launcher ${name} disagrees with official context`);
+  }
+}
+
 function dispatch(configuration, caseId, operation) {
   const phase = PHASE[operation];
   const target = configuration.productionProfile.cases[caseId][phase];
@@ -265,9 +274,10 @@ async function loadProduct(snapshot) {
   const usage = await import(pathToFileURL(path.join(snapshot, 'agents/codex/runtime/usage-accounting.mjs')).href);
   const home = await import(pathToFileURL(path.join(snapshot, 'agents/codex/runtime/isolated-home.mjs')).href);
   const runner = await import(pathToFileURL(path.join(snapshot, 'agents/codex/runtime/validation-runner.mjs')).href);
+  const managedContext = await import(pathToFileURL(path.join(snapshot, 'skills/workflows/stnl-slice-quality-manager/runtime/managed-validation-context.mjs')).href);
   const broker = await import(pathToFileURL(path.join(snapshot, 'agents/codex/runtime/runner-broker.mjs')).href);
   return { ...execution, validateWorkspace: lifecycle.validateWorkspace, ...readiness, ...sdk, ...usage,
-    ...home, ...runner, ...broker };
+    ...home, ...runner, ...broker, ...managedContext };
 }
 function argsForJournal({ journal, operation, route, outcome, slice, readback, readinessResult, turn, durationMs, runnerCount }) {
   const args = ['journal-event', '--journal', journal, '--operation', operation, '--phase', route.phase,
@@ -386,12 +396,16 @@ async function runCase({ runRoot, caseId, configuration, snapshotMetadata, maxOp
         }
       }
       let officialPreflight = null;
+      let managedValidationContext = null;
       if (!operation.startsWith('SPEC_')) {
         const preflight = await product.preflightExecutionOperation(specPath, operation, specInput(slice));
         if (RUNNER_OPERATIONS.has(operation)) {
           officialPreflight = { exitCode: 0, operation, slice, inputSlice: specInput(slice),
             specPath, state: preflight.state, authority: `sha256:${preflight.currentFingerprint}`,
             legalOperations: preflight.legalOperations, mandatoryRecovery: preflight.mandatoryRecovery };
+          if (operation === 'VALIDATE_SLICE') {
+            managedValidationContext = await product.createManagedValidationContext({ officialPreflight, workspace });
+          }
         }
       }
       const templatePath = path.join(runRoot, 'snapshot', 'templates', 'prompts', TEMPLATE[operation]);
@@ -410,6 +424,9 @@ async function runCase({ runRoot, caseId, configuration, snapshotMetadata, maxOp
         REPLAN_REASON: 'official execution readback requires replanning',
         SLICE: slice === null ? '' : specInput(slice) };
       const prompt = renderLauncher(template, values);
+      if (managedValidationContext !== null) {
+        assertManagedValidationLauncher(prompt, managedValidationContext, specInput(slice));
+      }
       const promptFile = path.join(prompts, `${String(sequence).padStart(2, '0')}-${operation.toLowerCase()}.md`);
       await fs.writeFile(promptFile, prompt, { flag: 'wx' });
       const operationId = `${caseId}-${String(sequence).padStart(2, '0')}-${operation}`;
@@ -426,12 +443,14 @@ async function runCase({ runRoot, caseId, configuration, snapshotMetadata, maxOp
       let runnerReservation = admission.runner;
       let currentRunnerNumber = null;
       let mainTurnNumber;
+      const turnEnv = managedValidationContext === null ? home.env
+        : product.managedEnvironment(home.env, managedValidationContext);
       try {
         if (officialPreflight !== null) {
           broker = await product.startOfficialRunnerBroker({ workspace, tmpdir, operation, sequence, slice,
           officialPreflight,
           invoke: (request) => product.invokeIndependentRunner({
-            ...request, snapshot: path.join(runRoot, 'snapshot'), workspace, tmpdir, env: home.env,
+            ...request, snapshot: path.join(runRoot, 'snapshot'), workspace, tmpdir, env: turnEnv,
             onBeforeTurn: async () => {
               const reservation = runnerReservation ?? await reserveExtraRunner({ runId: path.basename(runRoot), caseId, operation });
               runnerReservation = null;
@@ -476,7 +495,7 @@ async function runCase({ runRoot, caseId, configuration, snapshotMetadata, maxOp
         const outputSchema = operation === 'SPEC_READINESS'
           ? await readJson(path.join(runRoot, 'snapshot', 'skills/workflows/stnl-spec-lifecycle-manager/runtime/readiness-result.schema.json'))
           : undefined;
-        turn = await product.runCodexTurn({ env: home.env, cwd: workspace, prompt,
+        turn = await product.runCodexTurn({ env: turnEnv, cwd: workspace, prompt,
           model: route.model, effort: route.effort, threadId, operationId, eventsPath,
           outputSchema, timeoutMs: RUNNER_OPERATIONS.has(operation) ? 1_800_000 : 900_000, signal,
           onEvent: (event) => {
