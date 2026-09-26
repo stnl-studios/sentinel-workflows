@@ -16,6 +16,14 @@ const RUNNER_NAME = 'stnl_validation_runner';
 
 function fail(message) { throw new Error(message); }
 
+export function assertRunnerRoundPayload(operation, prompt) {
+  if (!['EXECUTE_SLICE', 'APPLY_FINDINGS'].includes(operation)) return;
+  const rounds = [...String(prompt).matchAll(/\bautomaticCheckRound["']?\s*(?::|=)\s*["']?([123]\/3)\b/gu)];
+  if (rounds.length !== 1) {
+    fail('semantic runner payload must supply exactly one automaticCheckRound=1/3, 2/3, or 3/3 before dispatch');
+  }
+}
+
 export async function readRunnerConfiguration(snapshot) {
   const file = path.join(snapshot, 'agents', 'codex', '.codex', 'agents', `${RUNNER_NAME}.toml`);
   const value = await fs.readFile(file, 'utf8');
@@ -30,6 +38,7 @@ export async function readRunnerConfiguration(snapshot) {
 
 export function composeRunnerRequest({ officialPreflight, operation, slice,
   workspace, executionRoot, planPath, slicePlanPath, taskPath, prompt }) {
+  assertRunnerRoundPayload(operation, prompt);
   for (const value of [workspace, officialPreflight?.specPath,
     executionRoot, planPath, slicePlanPath, taskPath]) {
     if (typeof value !== 'string' || !path.isAbsolute(value) || /[\r\n\0]/u.test(value)) {
@@ -150,6 +159,7 @@ export async function submitRunnerPayload({
   slice,
   prompt,
 }) {
+  assertRunnerRoundPayload(operation, prompt);
   const workspace = await fs.realpath(cwd);
   const tmpdir = await fs.realpath(environment.TMPDIR ?? '');
   const active = JSON.parse(await fs.readFile(path.join(tmpdir, 'stnl-runner-broker', 'active.json'), 'utf8'));
@@ -162,6 +172,9 @@ export async function main(argv, environment = process.env, input = process.stdi
   if (argv.length !== 4 || argv[0] !== '--operation' || argv[2] !== '--slice'
     || !OPERATIONS.has(argv[1]) || !/^slice-[0-9]{2,}$/u.test(argv[3])) {
     fail('usage: validation-runner.mjs --operation <operation> --slice <slice-NN>');
+  }
+  if (environment.STNL_MANAGED_CONTEXT !== undefined) {
+    fail('managed runner must use the configured pathless bridge');
   }
   const chunks = [];
   for await (const chunk of input) chunks.push(chunk);

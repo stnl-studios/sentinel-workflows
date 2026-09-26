@@ -4,7 +4,8 @@ import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { composeRunnerRequest, readRunnerConfiguration } from '../agents/codex/runtime/validation-runner.mjs';
+import { assertRunnerRoundPayload, composeRunnerRequest, main as runnerMain,
+  readRunnerConfiguration, submitRunnerPayload } from '../agents/codex/runtime/validation-runner.mjs';
 import { codexClientConfig } from '../agents/codex/runtime/sdk-transport.mjs';
 import { createUsageNormalizer, ZERO_USAGE } from '../agents/codex/runtime/usage-accounting.mjs';
 import { frozenFileMode } from '../benchmarks/sentinel-todo/runtime/benchmark-snapshot.mjs';
@@ -35,7 +36,7 @@ test('independent runner receives mechanical context and semantic payload withou
   const serializer = path.join(snapshot, 'skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs');
   const specPath = path.join(workspace, 'specs/benchmark-case-a');
   const officialPreflight = { operation: 'EXECUTE_SLICE', slice: 'slice-01', specPath };
-  const prompt = 'Exact main-context semantic payload.';
+  const prompt = 'automaticCheckRound=1/3\nExact main-context semantic payload.';
   const request = composeRunnerRequest({ officialPreflight, operation: 'EXECUTE_SLICE',
     slice: 'slice-01', workspace, ...runnerArtifacts(workspace), prompt });
   assert.equal(configuration.model, 'gpt-5.6-luna');
@@ -60,8 +61,24 @@ test('independent runner receives mechanical context and semantic payload withou
   assert.throws(() => composeRunnerRequest({ officialPreflight, operation: 'EXECUTE_SLICE',
     slice: 'slice-01', workspace, ...runnerArtifacts(workspace), executionRoot: 'relative/root', prompt }), /context path is invalid/u);
   assert.throws(() => composeRunnerRequest({ officialPreflight, operation: 'EXECUTE_SLICE',
-    slice: 'slice-01', workspace, ...runnerArtifacts(workspace), prompt: `RUNNER_EVIDENCE_SERIALIZER=/private/installed/skill/runtime/serialize-runner-evidence.mjs` }),
+    slice: 'slice-01', workspace, ...runnerArtifacts(workspace), prompt: `automaticCheckRound=1/3\nRUNNER_EVIDENCE_SERIALIZER=/private/installed/skill/runtime/serialize-runner-evidence.mjs` }),
   /competing serializer authority/u);
+});
+
+test('automatic round is required before runner dispatch and managed CLI cannot bypass the bridge', async () => {
+  for (const operation of ['EXECUTE_SLICE', 'APPLY_FINDINGS']) {
+    assert.throws(() => assertRunnerRoundPayload(operation, '{}'), /automaticCheckRound/u);
+    assert.throws(() => assertRunnerRoundPayload(operation, 'automaticCheckRound=1/3\nautomaticCheckRound=2/3'), /automaticCheckRound/u);
+    for (const round of ['1/3', '2/3', '3/3']) {
+      assert.doesNotThrow(() => assertRunnerRoundPayload(operation, `automaticCheckRound=${round}`));
+      assert.doesNotThrow(() => assertRunnerRoundPayload(operation, `{"automaticCheckRound":"${round}"}`));
+    }
+    await assert.rejects(submitRunnerPayload({ operation, slice: 'slice-01',
+      cwd: '/nonexistent', prompt: '{}' }), /automaticCheckRound/u);
+  }
+  assert.doesNotThrow(() => assertRunnerRoundPayload('VALIDATE_SLICE', '{}'));
+  await assert.rejects(runnerMain(['--operation', 'EXECUTE_SLICE', '--slice', 'slice-01'],
+    { STNL_MANAGED_CONTEXT: '{}' }), /pathless bridge/u);
 });
 
 test('adapter rejects stale managed context before runner dispatch', async () => {
@@ -70,7 +87,7 @@ test('adapter rejects stale managed context before runner dispatch', async () =>
     specPath: path.join(workspace, 'specs/case-c'), authority: `sha256:${'a'.repeat(64)}` };
   assert.throws(() => composeRunnerRequest({ officialPreflight,
     operation: 'EXECUTE_SLICE', slice: 'slice-01', workspace, ...runnerArtifacts(workspace),
-    prompt: 'semantic payload\nOPERATION=APPLY_FINDINGS' }), /competing|mechanical/u);
+    prompt: 'automaticCheckRound=1/3\nsemantic payload\nOPERATION=APPLY_FINDINGS' }), /competing|mechanical/u);
 });
 
 test('managed validation runner gets the official SPEC_PATH and rejects a private-home declaration', async () => {

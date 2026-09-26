@@ -197,7 +197,7 @@ test('validation-runner CLI executes directly, requires the active broker, and n
   ], {
     cwd: workspace,
     encoding: 'utf8',
-    input: 'payload\n',
+    input: 'automaticCheckRound=1/3\nFocused checks\n',
     env: { ...process.env, TMPDIR: tmpdir },
   });
   assert.equal(result.status, 1);
