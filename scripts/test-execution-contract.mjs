@@ -80,6 +80,7 @@ test("execution producer inserts exact hashed evidence only into its owned candi
     operation: "EXECUTE_SLICE", response, workspace: fixture.root, taskArtifact: copy.candidateTaskArtifact,
   });
   assert.match(bundle, /sha256:[0-9a-f]{64}/u);
+  assert.doesNotMatch(bundle, /Correction paths:|Prior-round failure:|Updated scope:/u);
   assert.equal(await insertExecutionEvidenceInCandidate({
     taskArtifact: copy.candidateTaskArtifact, operation: "EXECUTE_SLICE", bundle,
   }), "### implementation-check-01");
@@ -3599,8 +3600,14 @@ test("execution producer serializes automatic correction fields and excludes fin
   await editTask(fixture, (value) => replaceSection(
     replaceSection(value, "Changed Areas", `- \`${claim}\``),
     "Corrections Applied",
-    `- \`${claim}\``,
+    "- none",
   ));
+  await editTask(fixture, (value) => replaceSection(
+    value,
+    "Implementation Test Evidence",
+    checkRecord("implementation-check", 1, "TESTS_FAIL", 1),
+  ));
+  await fs.writeFile(physicalTarget, "corrected behavior\n", "utf8");
 
   const roundTwoPayload = {
     status: "TESTS_PASS",
@@ -3650,6 +3657,102 @@ test("execution producer serializes automatic correction fields and excludes fin
   assert.match(bundle, new RegExp(`Updated scope: ${escapedClaim}`));
   assert.match(bundle, /In-slice rationale: the correction remains within the approved slice/u);
   assert.doesNotMatch(bundle, /Corrections covered:/u);
+
+  const missingPriorFailure = await nestedLifecycleWorkspace(t);
+  const missingTask = path.join(missingPriorFailure.execution, "tasks/slice-01.md");
+  await editTask(missingPriorFailure, (value) => replaceSection(value, "Changed Areas", `- \`${path.relative(path.dirname(missingTask), path.join(missingPriorFailure.root, "src/example.txt")).split(path.sep).join("/")}\``));
+  await assert.rejects(
+    serializeRunnerExecutionBundleFromResponse({
+      operation: "EXECUTE_SLICE",
+      response: JSON.stringify(roundTwoPayload),
+      workspace: missingPriorFailure.root,
+      taskArtifact: missingTask,
+    }),
+    /requires prior implementation-check-1\/3 evidence/u,
+  );
+
+  const wrongCorrection = await nestedLifecycleWorkspace(t);
+  const wrongTask = path.join(wrongCorrection.execution, "tasks/slice-01.md");
+  const wrongClaim = path.relative(path.dirname(wrongTask), path.join(wrongCorrection.root, "src/example.txt")).split(path.sep).join("/");
+  await fs.writeFile(path.join(wrongCorrection.root, "src/other.txt"), "unrelated\n", "utf8");
+  await editTask(wrongCorrection, (value) => {
+    let result = replaceSection(value, "Changed Areas", `- \`${wrongClaim}\``);
+    result = replaceSection(result, "Corrections Applied", `- \`../../src/other.txt\``);
+    return replaceSection(result, "Implementation Test Evidence", checkRecord("implementation-check", 1, "TESTS_FAIL", 1));
+  });
+  await fs.writeFile(path.join(wrongCorrection.root, "src/example.txt"), "corrected behavior\n", "utf8");
+  await assert.rejects(
+    serializeRunnerExecutionBundleFromResponse({
+      operation: "EXECUTE_SLICE",
+      response: JSON.stringify(roundTwoPayload),
+      workspace: wrongCorrection.root,
+      taskArtifact: wrongTask,
+    }),
+    /Corrections Applied/u,
+  );
+});
+
+test("round-two correction is inserted into an owned candidate and passes strict validation", async (t) => {
+  const fixture = await standaloneWorkspace(t);
+  await renderArtifacts(fixture);
+  const liveTask = path.join(fixture.execution, "tasks/slice-01.md");
+  const target = path.join(fixture.root, "src/example.txt");
+  const claim = path.relative(path.dirname(liveTask), target).split(path.sep).join("/");
+  await editTask(fixture, (value) => {
+    let result = value.replace("- [ ] 1.1", "- [x] 1.1");
+    result = replaceSection(result, "Changed Areas", `- \`${claim}\``);
+    result = replaceSection(result, "Implementation Test Evidence", checkRecord("implementation-check", 1, "TESTS_FAIL", 1));
+    return replaceSection(result, "Diff Summary", "- Example behavior implemented; first check failed.");
+  });
+  const prepared = await prepareExecutionCopy({ specPath: fixture.requirements, slice: "slice-01" });
+  t.after(() => fs.rm(prepared.candidateRoot, { recursive: true, force: true }));
+  const liveBefore = await fs.readFile(liveTask);
+  await fs.writeFile(target, "corrected behavior\n", "utf8");
+  const response = {
+    status: "TESTS_PASS", automaticCheckRound: "2/3", head: "0123456789abcdef0123456789abcdef01234567",
+    discoverySources: "task and package scripts", discoveryActions: "read-only inspection",
+    verificationTypesConsidered: "unit tests", nonApplicabilityRationale: "none",
+    noVerificationCommandConfirmation: "verification command executed",
+    commands: [{ command: "node --test test/example.test.mjs", exit: 0 }],
+    resultOfEachCommandAndExitCode: "focused check passed", selectedChecks: "focused unit test",
+    selectionRationale: "direct scope", coverage: "corrected example behavior", failures: "none",
+    priorRoundFailure: "first focused check failed", correctionApplied: "corrected example behavior",
+    inSliceRationale: "same approved target", evidenceOrFailureSummary: "focused check passed",
+    affectedFilesOrBehaviors: "example behavior", blockers: "none", unexpectedWorkspaceEffects: "none",
+    persistenceSummary: "no runner writes",
+  };
+  const responseFile = path.join(await temporary(t, "stnl-round-two-response-"), "response.json");
+  await fs.writeFile(responseFile, JSON.stringify(response), "utf8");
+  const inserted = spawnSync(process.execPath, [
+    path.join(ROOT, "skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs"),
+    "--execution-bundle", "--operation", "EXECUTE_SLICE", "--workspace", fixture.root,
+    "--task-artifact", prepared.candidateTaskArtifact, "--semantic-response-file", responseFile,
+    "--insert-candidate",
+  ], { encoding: "utf8" });
+  assert.equal(inserted.status, 0, inserted.stderr);
+  const candidate = await fs.readFile(prepared.candidateTaskArtifact, "utf8");
+  assert.ok(candidate.includes(`## Corrections Applied\n\n- \`${claim}\``));
+  assert.ok(candidate.includes(`- Correction paths: ${claim}`));
+  const strictRoot = path.join(await temporary(t, "stnl-round-two-strict-"), "execution");
+  await copyDirectory(prepared.candidateExecutionRoot, strictRoot);
+  await fs.rm(path.join(strictRoot, ".stnl-execution-copy.json"));
+  assert.equal((await validateExecutionCandidate(fixture.requirements, strictRoot)).state,
+    "IMPLEMENTED_AWAITING_VALIDATION");
+  assert.deepEqual(await fs.readFile(liveTask), liveBefore);
+
+  const missingEvidence = await prepareExecutionCopy({ specPath: fixture.requirements, slice: "slice-01" });
+  t.after(() => fs.rm(missingEvidence.candidateRoot, { recursive: true, force: true }));
+  const missingResponse = path.join(await temporary(t, "stnl-missing-correction-"), "response.json");
+  await fs.writeFile(missingResponse, JSON.stringify({ ...response, correctionApplied: "none" }), "utf8");
+  const rejected = spawnSync(process.execPath, [
+    path.join(ROOT, "skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs"),
+    "--execution-bundle", "--operation", "EXECUTE_SLICE", "--workspace", fixture.root,
+    "--task-artifact", missingEvidence.candidateTaskArtifact, "--semantic-response-file", missingResponse,
+    "--insert-candidate",
+  ], { encoding: "utf8" });
+  assert.equal(rejected.status, 1);
+  assert.match(rejected.stderr, /correctionApplied is required/u);
+  assert.deepEqual(await fs.readFile(liveTask), liveBefore);
 });
 
 test("duplicate or unknown task sections cannot hide operational records", async (t) => {

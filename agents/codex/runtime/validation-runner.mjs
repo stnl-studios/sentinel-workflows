@@ -32,6 +32,12 @@ export function composeRunnerRequest({ configuration, officialPreflight, operati
       fail('runner adapter context path is invalid');
     }
   }
+  // The executor keeps its local serializer authority for candidate persistence.
+  // A concrete serializer reference in the main prompt would compete with the
+  // snapshot path injected by this adapter and can point at an installed skill.
+  if (/RUNNER_EVIDENCE_SERIALIZER\s*=|serialize-runner-evidence\.mjs/u.test(prompt)) {
+    fail('runner prompt contains a competing serializer authority');
+  }
   return [
     `You are the independent ${RUNNER_NAME} session. Follow its configured instructions.`,
     configuration.developerInstructions,
@@ -81,6 +87,9 @@ export async function invokeIndependentRunner({
   const serializerMetadata = await fs.lstat(serializer);
   if (!serializerMetadata.isFile() || serializerMetadata.isSymbolicLink()
     || await fs.realpath(serializer) !== serializer) fail('runner evidence serializer is unavailable');
+  const serializerRelative = path.relative(snapshot, serializer);
+  if (serializerRelative === '..' || serializerRelative.startsWith(`..${path.sep}`)
+    || path.isAbsolute(serializerRelative)) fail('runner evidence serializer is outside snapshot');
   const request = composeRunnerRequest({ configuration, officialPreflight, operation, slice,
     workspace, serializer, prompt });
   const eventsPath = path.join(tmpdir, `${operationName}.events.jsonl`);

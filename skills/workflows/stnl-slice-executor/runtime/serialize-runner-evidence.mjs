@@ -826,6 +826,74 @@ async function deriveExecutionTargetsFromTask({ workspace, taskArtifact }) {
   return targets;
 }
 
+function priorImplementationFailure(taskText, expectedRound) {
+  const records = sectionBody(taskText, "Implementation Test Evidence")
+    .split(/(?=^### implementation-check-[0-9]{2,}$)/mu)
+    .filter((record) => record.trim() !== "");
+  const record = records.at(-1);
+  if (record === undefined) fail(`EXECUTE_SLICE correction requires prior implementation-check-${expectedRound}/3 evidence`);
+  const round = record.match(/^- Automatic check round: ([123])\/3$/mu)?.[1];
+  if (Number(round) !== expectedRound) {
+    fail(`EXECUTE_SLICE correction requires prior implementation-check-${expectedRound}/3 evidence`);
+  }
+  if (!/^- Status: TESTS_FAIL$/mu.test(record)) {
+    fail(`EXECUTE_SLICE correction requires prior round ${expectedRound}/3 TESTS_FAIL evidence`);
+  }
+  const testedState = new Map();
+  for (const match of record.matchAll(/^  - `([^`\n]+)` \| (sha256:[0-9a-f]{64}|REMOVED)$/gmu)) {
+    testedState.set(match[1], match[2]);
+  }
+  return testedState;
+}
+
+async function populateExecutionCorrectionClaims({ workspace, taskArtifact, operation, round }) {
+  if (operation !== "EXECUTE_SLICE" || round === 1) return;
+  const canonicalTask = await regularFile(taskArtifact, "taskArtifact");
+  const before = await fs.readFile(canonicalTask, "utf8");
+  const priorState = priorImplementationFailure(before, round - 1);
+  const workspaceRoot = await canonicalWorkspacePath(workspace);
+  const approvedTargets = await canonicalApprovedTargets({ workspaceRoot, taskArtifact: canonicalTask, taskText: before });
+  const changed = await canonicalizeScopeSection({
+    workspaceRoot,
+    taskArtifact: canonicalTask,
+    taskText: before,
+    approvedTargets,
+    heading: "Changed Areas",
+  });
+  const corrections = [];
+  for (const claim of changed.claims) {
+    const physical = await regularFile(path.resolve(path.dirname(canonicalTask), claim), `Changed Areas target ${claim}`);
+    const digest = `sha256:${createHash("sha256").update(await fs.readFile(physical)).digest("hex")}`;
+    if (priorState.get(claim) !== digest) corrections.push(claim);
+  }
+  const existing = sectionBody(before, "Corrections Applied");
+  if (existing !== "- none") {
+    const declared = await canonicalizeScopeSection({
+      workspaceRoot,
+      taskArtifact: canonicalTask,
+      taskText: before,
+      approvedTargets,
+      heading: "Corrections Applied",
+    });
+    if (JSON.stringify(declared.claims) !== JSON.stringify(corrections)) {
+      fail("Corrections Applied does not match mechanically derived correction paths");
+    }
+    return;
+  }
+  const correctionBody = corrections.length === 0 ? "- none" : corrections.map((claim) => `- \`${claim}\``).join("\n");
+  const after = replaceSectionBody(before, "Corrections Applied", correctionBody);
+  if (after !== before) {
+    const temporary = `${canonicalTask}.stnl-correction-paths-${process.pid}.tmp`;
+    const mode = (await fs.stat(canonicalTask)).mode & 0o777;
+    try {
+      await fs.writeFile(temporary, after, { encoding: "utf8", flag: "wx", mode });
+      await fs.rename(temporary, canonicalTask);
+    } finally {
+      await fs.rm(temporary, { force: true });
+    }
+  }
+}
+
 function nextExecutionCheckId(taskText, prefix) {
   const identifiers = [...taskText.matchAll(new RegExp(`^### ${prefix}-([0-9]{2,})$`, "gmu"))]
     .map((match) => Number(match[1]));
@@ -941,6 +1009,12 @@ export async function serializeRunnerExecutionBundleFromResponse({
     fail("execution bundle operation must be EXECUTE_SLICE or APPLY_FINDINGS");
   }
   const payload = parseSemanticExecutionPayload(response, operation);
+  await populateExecutionCorrectionClaims({
+    workspace,
+    taskArtifact,
+    operation,
+    round: Number(payload.automaticCheckRound.slice(0, -2)),
+  });
   await serializeExecutionScopeClaims({ workspace, taskArtifact });
   const parsed = Object.fromEntries([
     ...MACHINE_EXECUTION_FIELDS[operation].map(([key, label]) => [label, payload[key]]),

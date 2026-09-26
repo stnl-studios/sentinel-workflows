@@ -20,7 +20,8 @@ test('validation runner stays directly executable in the frozen benchmark snapsh
 test('independent runner receives adapter-owned serializer and managed workspace context', async () => {
   const configuration = await readRunnerConfiguration(ROOT);
   const workspace = path.join(ROOT, 'benchmark-temp/run-example/case-a/workspace');
-  const serializer = path.join(ROOT, 'skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs');
+  const snapshot = path.join(ROOT, 'benchmark-temp/run-example/snapshot');
+  const serializer = path.join(snapshot, 'skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs');
   const specPath = path.join(workspace, 'specs/benchmark-case-a');
   const officialPreflight = { operation: 'EXECUTE_SLICE', slice: 'slice-01', specPath };
   const prompt = 'Exact main-context semantic payload.';
@@ -28,13 +29,21 @@ test('independent runner receives adapter-owned serializer and managed workspace
     slice: 'slice-01', workspace, serializer, prompt });
   assert.equal(configuration.model, 'gpt-5.6-luna');
   assert.equal(configuration.effort, 'medium');
+  assert.equal((request.match(/RUNNER_EVIDENCE_SERIALIZER=/gu) ?? []).length, 1);
   assert.ok(request.includes(`RUNNER_EVIDENCE_SERIALIZER=${serializer}\n\n`));
+  assert.equal((request.match(/serialize-runner-evidence\.mjs/gu) ?? []).length, 1);
+  assert.ok(serializer.startsWith(`${snapshot}${path.sep}`));
+  assert.ok(!request.includes(path.join(ROOT, 'skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs')));
+  assert.ok(!request.includes('/Library/Application Support/'));
   assert.ok(request.includes(`MANAGED_WORKSPACE=${workspace}\n\n`));
   assert.ok(request.includes(`SPEC_PATH=${specPath}\n\n`));
   assert.ok(request.includes(`OFFICIAL_EXECUTION_PREFLIGHT=${JSON.stringify(officialPreflight)}`));
   assert.ok(request.endsWith(prompt));
   assert.throws(() => composeRunnerRequest({ configuration, officialPreflight, operation: 'EXECUTE_SLICE',
     slice: 'slice-01', workspace, serializer: 'relative/serializer.mjs', prompt }), /context path is invalid/u);
+  assert.throws(() => composeRunnerRequest({ configuration, officialPreflight, operation: 'EXECUTE_SLICE',
+    slice: 'slice-01', workspace, serializer, prompt: `RUNNER_EVIDENCE_SERIALIZER=/private/installed/skill/runtime/serialize-runner-evidence.mjs` }),
+  /competing serializer authority/u);
 });
 
 test('usage normalizer attributes cumulative snapshots from a known baseline exactly once', () => {
