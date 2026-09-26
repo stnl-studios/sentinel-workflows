@@ -79,13 +79,17 @@ async function copyFiles(source, destination, files) {
   }
 }
 
+export function frozenFileMode(mode) {
+  return mode & 0o111 ? 0o555 : 0o444;
+}
+
 async function freeze(root) {
   const directories = [root];
   const files = await listFiles(root, '', { dependencies: true });
   for (const relative of files) {
     const file = path.join(root, relative);
     const mode = (await fs.stat(file)).mode;
-    await fs.chmod(file, mode & 0o111 ? 0o555 : 0o444);
+    await fs.chmod(file, frozenFileMode(mode));
     let parent = path.dirname(file);
     while (inside(parent, root) && parent !== root) {
       directories.push(parent);

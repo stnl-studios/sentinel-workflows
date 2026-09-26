@@ -188,11 +188,10 @@ test('official runner broker fails closed when no active driver broker exists', 
   );
 });
 
-test('validation-runner CLI requires the active broker and never starts a direct nested runner', async (t) => {
+test('validation-runner CLI executes directly, requires the active broker, and never starts a nested runner', async (t) => {
   const { workspace, tmpdir } = await fixture(t);
   const helper = path.join(REPOSITORY, 'agents/codex/runtime/validation-runner.mjs');
-  const result = spawnSync(process.execPath, [
-    helper,
+  const result = spawnSync(helper, [
     '--operation', 'EXECUTE_SLICE',
     '--slice', 'slice-01',
   ], {

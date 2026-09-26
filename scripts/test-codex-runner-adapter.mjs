@@ -1,12 +1,21 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import { composeRunnerRequest, readRunnerConfiguration } from '../agents/codex/runtime/validation-runner.mjs';
 import { createUsageNormalizer, ZERO_USAGE } from '../agents/codex/runtime/usage-accounting.mjs';
+import { frozenFileMode } from '../benchmarks/sentinel-todo/runtime/benchmark-snapshot.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const RUNNER_ADAPTER = path.join(ROOT, 'agents/codex/runtime/validation-runner.mjs');
+
+test('validation runner stays directly executable in the frozen benchmark snapshot', async () => {
+  const metadata = await fs.stat(RUNNER_ADAPTER);
+  assert.notEqual(metadata.mode & 0o111, 0);
+  assert.equal(frozenFileMode(metadata.mode), 0o555);
+});
 
 test('independent runner receives adapter-owned serializer and managed workspace context', async () => {
   const configuration = await readRunnerConfiguration(ROOT);
