@@ -4,10 +4,10 @@
   "additionalProperties": false,
   "required": ["version", "mode", "scope", "verdict", "workspacePath", "snapshotSha256", "findings"],
   "properties": {
-    "version": { "const": 1 },
-    "mode": { "const": "READINESS" },
-    "scope": { "enum": ["GLOBAL", "LOCAL"] },
-    "verdict": { "enum": ["READY", "FINDINGS", "LOCAL_CLEAR"] },
+    "version": { "type": "integer", "const": 1 },
+    "mode": { "type": "string", "const": "READINESS" },
+    "scope": { "type": "string", "enum": ["GLOBAL", "LOCAL"] },
+    "verdict": { "type": "string", "enum": ["READY", "FINDINGS", "LOCAL_CLEAR"] },
     "workspacePath": { "type": "string" },
     "snapshotSha256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
     "findings": {
@@ -20,7 +20,7 @@
           "id": { "type": "string", "pattern": "^F-[0-9]{3,}$" },
           "path": { "type": "string" },
           "evidence": { "type": "string" },
-          "action": { "enum": ["REFINE_FROM_EVIDENCE", "DECISION_REQUIRED"] },
+          "action": { "type": "string", "enum": ["REFINE_FROM_EVIDENCE", "DECISION_REQUIRED"] },
           "question": { "type": ["string", "null"] }
         }
       }

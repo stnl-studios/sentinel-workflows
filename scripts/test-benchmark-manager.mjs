@@ -56,6 +56,21 @@ test('documentary maturation advances through global findings, RESUME, and statu
   assert.deepEqual(decideOutcome('SPEC_READINESS', draft, true, decision), { result: 'BLOCKED', blocker: 'BLOCKED_REQUIRED_DECISION' });
 });
 
+test('READINESS output schema gives every field a provider-valid type', async () => {
+  const schema = JSON.parse(await fs.readFile(path.join(ROOT,
+    'skills/workflows/stnl-spec-lifecycle-manager/runtime/readiness-result.schema.json'), 'utf8'));
+  function check(node) {
+    assert.ok(node.type, 'each generated field needs an explicit type');
+    if (node.type === 'object') {
+      assert.equal(node.additionalProperties, false);
+      assert.deepEqual([...node.required].sort(), Object.keys(node.properties).sort());
+      for (const property of Object.values(node.properties)) check(property);
+    }
+    if (node.type === 'array') check(node.items);
+  }
+  check(schema);
+});
+
 test('status and inspect are read only and clean removes only the selected owned run', async (t) => {
   const { id, root } = await ownedRun(t);
   const other = await ownedRun(t);
