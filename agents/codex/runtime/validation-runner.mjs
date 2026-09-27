@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import fs from 'node:fs/promises';
+import crypto from 'node:crypto';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -9,12 +10,37 @@ import { runCodexTurn } from './sdk-transport.mjs';
 import { submitOfficialRunnerRequest } from './runner-broker.mjs';
 import { readManagedSliceContext } from '../../../skills/workflows/stnl-slice-quality-manager/runtime/managed-slice-context.mjs';
 import { resolveExecutionWorkspace } from '../../../skills/workflows/stnl-slice-quality-manager/runtime/execution-state.mjs';
+import { inspectExecutionState } from '../../../skills/workflows/stnl-slice-executor/runtime/execution-state.mjs';
 import { assertManagedSliceFreshness } from './managed-slice-preflight.mjs';
 
 const OPERATIONS = new Set(['EXECUTE_SLICE', 'APPLY_FINDINGS', 'VALIDATE_SLICE']);
 const RUNNER_NAME = 'stnl_validation_runner';
 
 function fail(message) { throw new Error(message); }
+
+export async function describeSemanticResponseFile(file) {
+  const bytes = await fs.readFile(file);
+  let response;
+  try { response = JSON.parse(bytes.toString('utf8')); }
+  catch { fail('captured semantic runner response is invalid JSON'); }
+  if (response === null || typeof response !== 'object' || Array.isArray(response)
+    || typeof response.status !== 'string') fail('captured semantic runner response has no status');
+  return {
+    semanticResponseStatus: response.status,
+    semanticResponseSha256: crypto.createHash('sha256').update(bytes).digest('hex'),
+  };
+}
+
+export function scopeApplyFindingsSchema(schema, state, slice) {
+  const latestNeedsFix = state.tasks?.get(slice)?.attempts?.filter((attempt) => attempt.status === 'NEEDS_FIX').at(-1);
+  if (typeof latestNeedsFix?.id !== 'string' || !/^attempt-[0-9]{2,}$/u.test(latestNeedsFix.id)) {
+    fail('APPLY_FINDINGS has no canonical active findings cycle');
+  }
+  return {
+    ...schema,
+    properties: { ...schema.properties, findingsCycle: { type: 'string', enum: [latestNeedsFix.id] } },
+  };
+}
 
 export function assertRunnerRoundPayload(operation, prompt) {
   if (!['EXECUTE_SLICE', 'APPLY_FINDINGS'].includes(operation)) return;
@@ -106,7 +132,10 @@ export async function invokeIndependentRunner({
     APPLY_FINDINGS: 'runner-apply-findings-response.schema.json',
     VALIDATE_SLICE: 'runner-validate-response.schema.json',
   };
-  const schema = JSON.parse(await fs.readFile(path.join(snapshot, 'skills', 'workflows', 'stnl-slice-executor', 'runtime', schemas[operation]), 'utf8'));
+  let schema = JSON.parse(await fs.readFile(path.join(snapshot, 'skills', 'workflows', 'stnl-slice-executor', 'runtime', schemas[operation]), 'utf8'));
+  if (operation === 'APPLY_FINDINGS') {
+    schema = scopeApplyFindingsSchema(schema, await inspectExecutionState(officialPreflight.specPath), slice);
+  }
   const execution = await resolveExecutionWorkspace(officialPreflight.specPath);
   const executionRoot = await fs.realpath(execution.executionRoot);
   const planPath = await fs.realpath(path.join(executionRoot, 'plan.md'));
@@ -132,9 +161,11 @@ export async function invokeIndependentRunner({
   await onTurn({ role: 'runner', operation, sequence, slice, attempt, turn, eventsPath });
   let captureFailure = null;
   let semanticResponseFile = null;
+  let semanticReceipt = { semanticResponseStatus: null, semanticResponseSha256: null };
   if (turn.completed) {
     try {
       await captureRunnerResponse({ structuredOutputFile: eventsPath, outputFile: responsePath });
+      semanticReceipt = await describeSemanticResponseFile(responsePath);
       semanticResponseFile = responsePath;
     } catch (error) { captureFailure = error.message; }
   }
@@ -144,7 +175,7 @@ export async function invokeIndependentRunner({
     status, operation, sequence, slice, attempt, runnerAgent: RUNNER_NAME,
     requestedModel: turn.requestedModel, requestedEffort: turn.requestedEffort,
     reportedModel: turn.reportedModel, threadId: turn.threadId,
-    eventsPath, semanticResponseFile, captureFailure,
+    eventsPath, semanticResponseFile, ...semanticReceipt, captureFailure,
     error: turn.error, usage: turn.usage,
     exitCode: semanticResponseFile === null ? 1 : 0,
   };

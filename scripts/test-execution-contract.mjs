@@ -5721,6 +5721,15 @@ test("candidate validation permits declared later-slice ownership of a historica
   assert.equal((await validateExecutionCandidate(fixture.requirements, candidate)).state, "IMPLEMENTED_AWAITING_VALIDATION");
   assert.deepEqual(await fs.readFile(path.join(fixture.execution, "tasks/slice-02.md")), liveTask);
 
+  const needsFix = await copyDirectory(candidate, path.join(fixture.root, "historical-overlap-needs-fix"));
+  const needsFixTask = path.join(needsFix, "tasks/slice-02.md");
+  let needsFixText = await fs.readFile(needsFixTask, "utf8");
+  needsFixText = replaceSection(needsFixText, "Validation Attempts", NEEDS_FIX_ATTEMPT);
+  needsFixText = replaceSection(needsFixText, "Validation Findings", ACTIVE_FINDING);
+  await fs.writeFile(needsFixTask, needsFixText, "utf8");
+  assert.equal((await validateExecutionCandidate(fixture.requirements, needsFix)).state, "VALIDATION_NEEDS_FIX");
+  assert.deepEqual(await fs.readFile(path.join(fixture.execution, "tasks/slice-02.md")), liveTask);
+
   const invalidCurrent = await copyDirectory(candidate, path.join(fixture.root, "historical-overlap-invalid-current"));
   const invalidTaskPath = path.join(invalidCurrent, "tasks/slice-02.md");
   await fs.writeFile(

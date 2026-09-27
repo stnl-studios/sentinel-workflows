@@ -1,11 +1,14 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import { assertRunnerRoundPayload, composeRunnerRequest, main as runnerMain,
-  readRunnerConfiguration, submitRunnerPayload } from '../agents/codex/runtime/validation-runner.mjs';
+  describeSemanticResponseFile, readRunnerConfiguration, scopeApplyFindingsSchema,
+  submitRunnerPayload } from '../agents/codex/runtime/validation-runner.mjs';
+import { captureRunnerResponse } from '../skills/workflows/stnl-slice-executor/runtime/capture-runner-response.mjs';
 import { codexClientConfig } from '../agents/codex/runtime/sdk-transport.mjs';
 import { createUsageNormalizer, ZERO_USAGE } from '../agents/codex/runtime/usage-accounting.mjs';
 import { frozenFileMode } from '../benchmarks/sentinel-todo/runtime/benchmark-snapshot.mjs';
@@ -79,6 +82,42 @@ test('automatic round is required before runner dispatch and managed CLI cannot 
   assert.doesNotThrow(() => assertRunnerRoundPayload('VALIDATE_SLICE', '{}'));
   await assert.rejects(runnerMain(['--operation', 'EXECUTE_SLICE', '--slice', 'slice-01'],
     { STNL_MANAGED_CONTEXT: '{}' }), /pathless bridge/u);
+});
+
+test('receipt describes the captured final semantic response despite intermediate BLOCKED messages', async (t) => {
+  const root = await fs.mkdtemp(path.join(ROOT, 'benchmark-temp/runner-receipt-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const eventsPath = path.join(root, 'events.jsonl');
+  const responsePath = path.join(root, 'response.json');
+  const intermediate = { status: 'BLOCKED', evidenceOrFailureSummary: 'intermediate update' };
+  const finalResponse = { status: 'TESTS_PASS', evidenceOrFailureSummary: 'all checks pass' };
+  await fs.writeFile(eventsPath, [intermediate, finalResponse].map((value) => JSON.stringify({
+    type: 'item.completed', item: { type: 'agent_message', text: JSON.stringify(value) },
+  })).join('\n') + '\n');
+  await captureRunnerResponse({ structuredOutputFile: eventsPath, outputFile: responsePath });
+  const description = await describeSemanticResponseFile(responsePath);
+  const bytes = await fs.readFile(responsePath);
+  assert.deepEqual(description, {
+    semanticResponseStatus: 'TESTS_PASS',
+    semanticResponseSha256: createHash('sha256').update(bytes).digest('hex'),
+  });
+  assert.equal(JSON.parse(bytes).status, 'TESTS_PASS');
+});
+
+test('APPLY_FINDINGS provider schema uses the exact official NEEDS_FIX cycle', async () => {
+  const schema = JSON.parse(await fs.readFile(path.join(ROOT,
+    'skills/workflows/stnl-slice-executor/runtime/runner-apply-findings-response.schema.json'), 'utf8'));
+  const state = { tasks: new Map([['slice-01', { attempts: [
+    { id: 'attempt-01', status: 'NEEDS_FIX' },
+    { id: 'attempt-02', status: 'NEEDS_FIX' },
+  ] }]]) };
+  const scoped = scopeApplyFindingsSchema(schema, state, 'slice-01');
+  assert.deepEqual(scoped.properties.findingsCycle, { type: 'string', enum: ['attempt-02'] });
+  assert.deepEqual(schema.properties.findingsCycle, { type: 'string' });
+  assert.throws(() => scopeApplyFindingsSchema(schema, state, 'slice-02'), /no canonical active findings cycle/u);
+  assert.throws(() => scopeApplyFindingsSchema(schema, { tasks: new Map([['slice-01', {
+    attempts: [{ id: 'finding-01', status: 'NEEDS_FIX' }],
+  }]]) }, 'slice-01'), /no canonical active findings cycle/u);
 });
 
 test('adapter rejects stale managed context before runner dispatch', async () => {

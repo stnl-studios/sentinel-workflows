@@ -1637,7 +1637,9 @@ function currentCandidateEvidenceOwners(result) {
     if (task === undefined) continue;
     const entries = task.base.present
       ? task.base.entries
-      : task.currentAuxiliaryCheck?.testedState ?? [];
+      : task.currentAuxiliaryCheck?.testedState
+        ?? (task.attempts.at(-1)?.status === "NEEDS_FIX" ? task.implementationChecks.at(-1)?.testedState : null)
+        ?? [];
     for (const entry of entries) owners.set(entry.path, row.slice);
   }
   return owners;
