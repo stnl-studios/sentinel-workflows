@@ -38,6 +38,8 @@ import {
   serializeRunnerValidationBundle,
   serializeRunnerValidationBundleFromResponse,
 } from "../skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs";
+import { serializeRunnerValidationBundleFromResponse as serializeQualityManagerValidationBundleFromResponse }
+  from "../skills/workflows/stnl-slice-quality-manager/runtime/serialize-runner-evidence.mjs";
 import { captureRunnerResponse } from "../skills/workflows/stnl-slice-executor/runtime/capture-runner-response.mjs";
 import { prepareExecutionCopy, publishExecutionCopy } from "../skills/workflows/stnl-slice-executor/runtime/prepare-execution-copy.mjs";
 import { EXECUTION_OPERATION_SKILLS, WORKFLOW_OPERATIONS } from "./lib/skill-registry.mjs";
@@ -1936,6 +1938,44 @@ test("distributed validation evidence serializers remain byte-identical across i
   assert.deepEqual(qualityManager, executor);
 });
 
+test("validation overlap paths may repeat across records but not within one record", async (t) => {
+  const fixture = await standaloneWorkspace(t);
+  await renderArtifacts(fixture);
+  const taskArtifact = path.join(fixture.execution, "tasks/slice-01.md");
+  const claims = ["../../src/example.txt", "../../src/second.txt", "../../src/third.txt"];
+  await Promise.all(claims.slice(1).map((claim) => writeValidatedPath(fixture, claim)));
+  const originalTask = replaceSection(await fs.readFile(taskArtifact, "utf8"),
+    "Changed Areas", `- \`${claims[0]}\``);
+  const overlap = (slice, paths) => `- Slice ${slice} overlap: ${paths.map((claim) => `\`${claim}\``).join(", ")}; preserve prior behavior.`;
+  const response = JSON.stringify({
+    status: "PASS", head: "fixture-head", commands: [{ command: "node --test", exit: 0 }],
+    evidence: "Focused validation passed.", findingReferences: "none", findingDispositions: "none",
+    blockers: "none", unexpectedWorkspaceEffects: "none", persistenceSummary: "No runner writes.",
+  });
+  const options = { operation: "VALIDATE_SLICE", response, workspace: fixture.root,
+    taskArtifact, specPath: fixture.requirements, slice: "1" };
+  const assertDeduplicated = async (task) => {
+    await fs.writeFile(taskArtifact, task, "utf8");
+    const executorBundle = await serializeRunnerValidationBundleFromResponse(options);
+    const managerBundle = await serializeQualityManagerValidationBundleFromResponse(options);
+    assert.equal(managerBundle, executorBundle, "mirrored producers must emit the same evidence");
+    const testedRecord = executorBundle.match(/- Tested record:\n- Tested state:\n([\s\S]*?)\n- Commands:/u)?.[1];
+    assert.ok(testedRecord, "producer must emit a physical tested record");
+    const emitted = [...testedRecord.matchAll(/^  - `([^`]+)` \| sha256:[0-9a-f]{64}$/gmu)].map((match) => match[1]);
+    assert.deepEqual(emitted, claims, "each physical target must appear exactly once");
+  };
+  await assertDeduplicated(replaceSection(originalTask, "Prior Validation Overlap",
+    `${overlap("01", claims)}\n${overlap("02", claims)}`));
+  await assertDeduplicated(replaceSection(originalTask, "Prior Validation Overlap",
+    `### overlap-01\n\n- Prior slice: slice-01\n- Paths: ${claims.join(", ")}\n\n### overlap-02\n\n- Prior slice: slice-02\n- Paths: ${claims.join(", ")}`));
+  await fs.writeFile(taskArtifact, replaceSection(originalTask, "Prior Validation Overlap",
+    overlap("01", [claims[0], claims[0]])), "utf8");
+  await assert.rejects(serializeRunnerValidationBundleFromResponse(options),
+    /Prior Validation Overlap contains duplicate path claim/u);
+  await assert.rejects(serializeQualityManagerValidationBundleFromResponse(options),
+    /Prior Validation Overlap contains duplicate path claim/u);
+});
+
 test("an isolated copied skill runs the stable self-contained preflight CLI", async (t) => {
   const root = await temporary(t);
   const copied = path.join(root, "copied-skill");
@@ -3241,6 +3281,8 @@ test("validation candidate preparation writes canonical attempt and PASS base be
   await editTask(fixture, (value) => {
     let result = value.replace("- [ ] 1.1", "- [x] 1.1");
     result = replaceSection(result, "Changed Areas", `- \`${taskClaim}\``);
+    result = replaceSection(result, "Prior Validation Overlap",
+      `- Slice 01 overlap: \`${taskClaim}\`; preserve prior behavior.\n- Slice 02 overlap: \`${taskClaim}\`; preserve prior behavior.`);
     result = replaceSection(result, "Implementation Test Evidence", replaceAll(
       checkRecord("implementation-check", 1, "TESTS_PASS", 1),
       [["../../src/example.txt", taskClaim]],

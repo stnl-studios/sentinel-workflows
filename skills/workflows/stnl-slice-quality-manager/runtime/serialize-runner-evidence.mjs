@@ -746,10 +746,13 @@ function parseOverlapPathSection(text) {
   const body = sectionBody(text, "Prior Validation Overlap");
   if (body === "- none") return [];
   const paths = [];
+  let recordPaths = new Set();
   for (const line of body.split("\n")) {
+    if (/^### overlap-[0-9]+$/u.test(line)) recordPaths = new Set();
     const canonicalMatch = line.match(/^- Paths: (.+)$/u);
     const semanticMatch = line.match(/^- Slice [0-9]+ overlap: (.+?); (.+)$/u);
     if (canonicalMatch === null && semanticMatch === null) continue;
+    if (semanticMatch !== null) recordPaths = new Set();
     // The compact overlap sentence is a model-owned semantic carrier. The
     // producer consumes only its path carrier; physical identity and all
     // task-relative serialization remain strict below.
@@ -769,7 +772,8 @@ function parseOverlapPathSection(text) {
     }
     for (const raw of rawClaims) {
       const claim = normalizedRelative(raw, "Prior Validation Overlap path");
-      if (paths.includes(claim)) fail(`Prior Validation Overlap contains duplicate path claim: ${claim}`);
+      if (recordPaths.has(claim)) fail(`Prior Validation Overlap contains duplicate path claim: ${claim}`);
+      recordPaths.add(claim);
       paths.push(claim);
     }
   }
