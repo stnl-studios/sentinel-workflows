@@ -9,7 +9,7 @@
     "verificationTypesConsidered", "nonApplicabilityRationale", "noVerificationCommandConfirmation",
     "commands", "resultOfEachCommandAndExitCode", "selectedChecks", "selectionRationale", "coverage",
     "findingsVerified", "correctionsCovered", "regressionsSelected", "unsupportedActiveFindings", "failures",
-    "priorRoundFailure", "correctionApplied", "inSliceRationale", "evidenceOrFailureSummary",
+    "evidenceOrFailureSummary",
     "affectedFilesOrBehaviors", "blockers", "unexpectedWorkspaceEffects", "persistenceSummary"
   ],
   "properties": {
@@ -43,9 +43,6 @@
     "regressionsSelected": { "type": "string" },
     "unsupportedActiveFindings": { "type": "string" },
     "failures": { "type": "string" },
-    "priorRoundFailure": { "type": "string" },
-    "correctionApplied": { "type": "string" },
-    "inSliceRationale": { "type": "string" },
     "evidenceOrFailureSummary": { "type": "string" },
     "affectedFilesOrBehaviors": { "type": "string" },
     "blockers": { "type": "string" },

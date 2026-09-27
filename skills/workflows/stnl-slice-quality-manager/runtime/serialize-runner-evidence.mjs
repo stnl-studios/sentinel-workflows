@@ -228,7 +228,7 @@ const EXPLANATORY_EXECUTION_FIELDS = new Set([
   "Discovery sources", "Discovery actions", "Verification types considered", "Non-applicability rationale",
   "No verification-command confirmation", "Result of each command and exit code", "Selected checks",
   "Selection rationale", "Coverage", "Failures", "Prior-round failure", "Correction applied",
-  "In-slice rationale", "Evidence or failure summary", "Affected files or behaviors", "Blockers",
+  "In-slice rationale", "Evidence", "Evidence or failure summary", "Affected files or behaviors", "Blockers",
   "Unexpected workspace effects", "Persistence summary", "Regressions selected", "Fileless reason",
 ]);
 

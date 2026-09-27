@@ -192,6 +192,13 @@ test("provider response schemas use one closed object root per operation", async
     assert.equal(schema.additionalProperties, false);
     assert.deepEqual(Object.keys(schema.properties).sort(), Object.keys(branch.properties).sort());
     assert.deepEqual([...schema.required].sort(), [...branch.required].sort());
+    if (operation === "APPLY_FINDINGS") {
+      for (const roundTwoOnlyField of ["priorRoundFailure", "correctionApplied", "inSliceRationale"]) {
+        assert.equal(Object.hasOwn(schema.properties, roundTwoOnlyField), false);
+        assert.equal(Object.hasOwn(branch.properties, roundTwoOnlyField), false);
+        assert.equal(branch.required.includes(roundTwoOnlyField), false);
+      }
+    }
     const commandSchema = schema.properties.commands;
     assert.equal(commandSchema.type, "array");
     assert.equal(commandSchema.items.additionalProperties, false);
@@ -746,7 +753,7 @@ test("deterministic runner evidence serializer emits physical task-relative SHA-
     status: "PASS",
     head: "fixture-head",
     commands: [{ command: "node --test test/example.test.mjs", exit: 0 }],
-    evidence: "focused validation passed",
+    evidence: "focused `npm test` validation passed",
     findingReferences: "none",
     findingDispositions: "none",
     blockers: "none",
@@ -766,6 +773,7 @@ test("deterministic runner evidence serializer emits physical task-relative SHA-
     slice: "1",
   });
   assert.match(derivedValidationBundle, /- Runner response:\nOperation: VALIDATE_SLICE\nType: initial\nStatus: PASS/u);
+  assert.match(derivedValidationBundle, /\nEvidence: json:"focused `npm test` validation passed"\n/u);
   assert.equal(derivedValidationBundle.includes(`  - \`${claim}\` | sha256:`), true);
   assert.match(derivedValidationBundle, /- Tested record:[\s\S]+sha256:[0-9a-f]{64}/u);
   assert.equal(
@@ -779,6 +787,25 @@ test("deterministic runner evidence serializer emits physical task-relative SHA-
     ),
     true,
   );
+  await assert.rejects(serializeRunnerValidationBundleFromResponse({
+    operation: "VALIDATE_SLICE",
+    response: JSON.stringify({ ...JSON.parse(semanticValidationResponse), head: "`fixture-head`" }),
+    workspace,
+    taskArtifact,
+    specPath: fixture.requirements,
+    slice: "1",
+  }), /head.*backticks|head.*scalar|canonical HEAD/u);
+  await assert.rejects(serializeRunnerValidationBundleFromResponse({
+    operation: "VALIDATE_SLICE",
+    response: JSON.stringify({
+      ...JSON.parse(semanticValidationResponse),
+      commands: [{ command: "node `--test` test/example.test.mjs", exit: 0 }],
+    }),
+    workspace,
+    taskArtifact,
+    specPath: fixture.requirements,
+    slice: "1",
+  }), /semantic validation payload command 1 is not a complete single-line command/u);
   const taskBeforeOverlap = await fs.readFile(taskArtifact, "utf8");
   const overlapTask = replaceSection(
     taskBeforeOverlap,
@@ -3229,7 +3256,7 @@ test("validation candidate preparation writes canonical attempt and PASS base be
     status: "PASS",
     head: fullHead,
     commands: [{ command: "node --test test/cli.test.mjs", exit: 0 }],
-    evidence: "focused validation passed",
+    evidence: "focused `npm test` validation passed",
     findingReferences: "none",
     findingDispositions: "none",
     blockers: "none",
@@ -3251,6 +3278,8 @@ test("validation candidate preparation writes canonical attempt and PASS base be
   assert.equal(prepared.status, "PREPARED");
   assert.equal(prepared.formalStatus, "PASS");
   assert.equal(prepared.attemptId, "attempt-01");
+  assert.match(await fs.readFile(path.join(candidateRoot, "tasks/slice-01.md"), "utf8"),
+    /Evidence: json:"focused `npm test` validation passed"/u);
   assert.equal((await validateExecutionCandidate(fixture.requirements, candidateRoot)).state, "COMPLETE");
 
   const preflight = await preflightExecutionOperation(fixture.requirements, "VALIDATE_SLICE", "1");
