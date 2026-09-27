@@ -1,5 +1,28 @@
 # Sentinel Todo benchmark
 
+## Formal campaign
+
+From a clean, published checkout at the repository root, run:
+
+```sh
+npm run benchmark
+```
+
+No install is needed. The command checks the checkout and active processes,
+cleans safe prior scratch, runs `verify`, and executes three independent full
+runs in sequence. It exports and compares each measurement against
+`baselines/baseline-v1.json` inside ignored `benchmark-temp/`. Only after all
+three runs pass with one functional source identity and direct comparability
+does it promote `run-01.json`, `run-02.json`, `run-03.json`, and
+`campaign-summary.json` to `measurements/<campaign-id>/` for review and commit.
+The campaign summary retains every value and leaves G2/G3 decisions pending.
+
+A blocked run or Ctrl+C stops the sequence and preserves scratch evidence;
+no partial campaign is promoted. A later campaign may clean terminal, owned
+scratch automatically. Active or ambiguous scratch requires inspection before
+cleanup. `npm run benchmark:verify` and `npm run benchmark:status` are optional
+diagnostics. The Node commands below remain available for advanced debugging.
+
 This benchmark is measurement and regression tooling for the stabilized Sentinel
 workflow on a small Todo CLI. It is not requirements, lifecycle, or execution
 authority.
@@ -30,7 +53,7 @@ run. The durable measurement is
 [`baselines/baseline-v1.json`](baselines/baseline-v1.json); its original raw
 artifacts are temporary diagnostic data.
 
-## Run manager
+## Run manager internals
 
 Run from the repository root:
 
