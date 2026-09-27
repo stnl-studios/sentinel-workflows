@@ -285,6 +285,8 @@ test('B01 — manifest has bounded cases, profiles, paths, and schemas', async (
     for (const budget of Object.values(item.budgets)) assert.ok(Number.isInteger(budget) && budget > 0 && budget <= 100);
   }
   for (const schema of Object.values(configuration.schemas)) await fs.access(path.join(BENCHMARK, schema));
+  assert.equal(configuration.productionPilot.qualification.sandboxProbeEvidence,
+    'benchmarks/sentinel-todo/qualification/sandbox-probe-v1.md');
   requireSuccess(cli(['verify']), 'benchmark verify');
 });
 

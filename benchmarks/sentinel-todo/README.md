@@ -1,10 +1,32 @@
 # Sentinel Todo benchmark
 
-This benchmark measures the published Sentinel workflow on a small Todo CLI.
+This benchmark is measurement and regression tooling for the stabilized Sentinel
+workflow on a small Todo CLI. It is not requirements, lifecycle, or execution
+authority.
 `seed/` contains the starting application. `cases/` contains three independent
 requirements sources. `benchmark.json` fixes the case paths, production-v2
-model profile, budgets, and result schemas. The benchmark is infrastructure;
-the Sentinel skills and their official validators remain workflow authority.
+model profile, budgets, result schemas, and qualification evidence.
+`qualification/` holds the byte-preserved sandbox probe referenced and hashed by
+the manifest. Its P0 status and next step describe the probe date, not the
+current checkpoint. The Sentinel skills and their official validators remain
+workflow authority.
+
+## Functional baseline
+
+The initial comparison reference is the full run
+`run-20260927034729-712b2b42` (2026-09-27 03:47–05:02 UTC), recorded under
+ignored `benchmark-temp/`. A, B, and C each passed on one frozen functional
+revision using `production-v2`; all reached execution `COMPLETE`, closed their
+SPECs, and passed their finalizers. There was no terminal READINESS. The source
+identity was
+`sha256:f27aa88249b86e12ae8fb791e7bddc64027e9119b51178deb4dc3f5ec6650c8a`
+and the frozen snapshot was
+`sha256:756ea114ca305699a95cec0192d7c70c78c3c77dcba6a1a23e4c4b9a5134b93a`.
+The published post-proof checkpoint is
+`1a6195816b78f50c686b36143460b26f157baed6`. This is a measurement
+reference, not a new requirement or workflow authority. The source identity
+belongs to that run; the hygiene edits change today's source hash. Detailed run
+artifacts remain in `benchmark-temp/`, outside the tracked source.
 
 ## Run manager
 
@@ -27,9 +49,8 @@ model and effort from `production-v2`, fills the versioned human launcher for
 that operation, and sends those exact bytes through the pinned official Codex
 SDK. Reviewer operations use independent threads. A focal run can be resumed
 only if its frozen functional source, last official state, and fingerprint
-still match. After execution reaches `COMPLETE`, the manager performs terminal
-global `SPEC_READINESS` before `SPEC_CLOSE`. It does not retry a blocked
-operation by guessing a handoff.
+still match. After execution reaches `COMPLETE`, the manager proceeds directly
+to `SPEC_CLOSE`. It does not retry a blocked operation by guessing a handoff.
 
 Each run stays visible under `benchmark-temp/<run-id>/`: frozen source
 snapshot and hashes, case workspaces, candidates, sent prompts, event JSONL,
@@ -89,5 +110,6 @@ The journal records attempted operations, actual model and effort, outcome,
 duration, and telemetry when supplied. `finalize` reads official lifecycle and
 execution state, verifies the terminal sequence and workspace, runs final
 tests, and writes a canonical raw result even when terminal status is blocked
-and the command exits nonzero. Historical raw results remain intact. A full
-PASS requires a single coherent A/B/C run of one frozen functional revision.
+and the command exits nonzero. Managed runs retain their detailed results in
+ignored `benchmark-temp/`. A full PASS requires a single coherent A/B/C run of
+one frozen functional revision.

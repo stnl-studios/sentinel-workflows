@@ -144,10 +144,10 @@ function assertManifest(configuration) {
     || qualification?.harnessContractVersion !== 1
     || !/^codex-cli \S+$/u.test(qualification?.providerVersion ?? '')
     || !/^[0-9a-f]{64}$/u.test(qualification?.capabilitiesHash ?? '')
-    || qualification?.sandboxProbeEvidence !== 'maintenance/p0-evidence/s3-sandbox-probe-v1.md'
+    || qualification?.sandboxProbeEvidence !== 'benchmarks/sentinel-todo/qualification/sandbox-probe-v1.md'
     || !/^[0-9a-f]{64}$/u.test(qualification?.sandboxProbeEvidenceSha256 ?? '')
     || qualification?.sandboxProbeStatus !== 'SANDBOX_PROBE_PASS') {
-    throw new CliError('production Pilot qualification authority is invalid');
+    throw new CliError('benchmark qualification is invalid');
   }
   if (JSON.stringify(configuration.supportedRunModes) !== JSON.stringify(['focal', 'case', 'full'])) {
     throw new CliError('manifest run modes are invalid');
