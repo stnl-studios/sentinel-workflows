@@ -3,6 +3,9 @@
   "benchmarkVersion": 1,
   "seedPath": "seed",
   "supportedRunModes": ["focal", "case", "full"],
+  "turnBudget": {
+    "maxTurnsPerRun": 100
+  },
   "schemaVersions": {
     "journal": 2,
     "result": 2

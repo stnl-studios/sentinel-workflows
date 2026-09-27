@@ -13,7 +13,6 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../.
 const RUNS = path.join(ROOT, 'benchmark-temp');
 const MARKER = 'sentinel-todo-run-v2\n';
 const ACTIVE = path.join(RUNS, '.active-run.json');
-const LEDGER = path.join(RUNS, '.turn-ledger.json');
 const BENCHMARK = path.join(ROOT, 'benchmarks', 'sentinel-todo', 'runtime', 'benchmark.mjs');
 const MANIFEST = path.join(ROOT, 'benchmarks', 'sentinel-todo', 'benchmark.json');
 const PHASE = {
@@ -51,9 +50,20 @@ async function atomicJson(file, value) {
   await fs.rename(temporary, file);
 }
 async function readJson(file) { return JSON.parse(await fs.readFile(file, 'utf8')); }
-async function budgetSnapshot() {
-  const ledger = await readJson(LEDGER);
-  return { globalTurns: ledger.total, globalSaldo: ledger.limit - ledger.total - (ledger.reservations?.length ?? 0) };
+function ledgerPath(runRoot) { return path.join(runRoot, '.turn-ledger.json'); }
+export async function initializeTurnBudget(runRoot, limit) {
+  if (!Number.isSafeInteger(limit) || limit < 1) fail('turn budget limit must be a positive integer');
+  await atomicJson(ledgerPath(runRoot), { version: 1, limit, total: 0,
+    nextNumber: 0, reservations: [], turns: [] });
+}
+export async function budgetSnapshot(runRoot) {
+  const ledger = await readJson(ledgerPath(runRoot)).catch(() => null);
+  if (!ledger) return { turnBudget: { limit: null, consumed: null, remaining: null, mainTurns: null, runnerTurns: null } };
+  const dispatched = ledger.turns.filter((turn) => turn.state !== 'not_dispatched');
+  return { turnBudget: { limit: ledger.limit, consumed: ledger.total,
+    remaining: ledger.limit - ledger.total - (ledger.reservations?.length ?? 0),
+    mainTurns: dispatched.filter((turn) => turn.role === 'main').length,
+    runnerTurns: dispatched.filter((turn) => turn.role === 'runner').length } };
 }
 async function exists(file) { return fs.lstat(file).then(() => true).catch(() => false); }
 async function assertRun(id) {
@@ -91,27 +101,28 @@ async function release(id) {
 }
 let ledgerWrite = Promise.resolve();
 function budgetPause() {
-  const error = new Error('global mission turn budget exhausted; operation paused before dispatch');
+  const error = new Error('per-run turn budget exhausted; operation paused before dispatch');
   error.code = 'PAUSED_BUDGET_OR_QUOTA';
   return error;
 }
-async function updateLedger(mutator) {
+async function updateLedger(runRoot, mutator, limit) {
   const job = ledgerWrite.then(async () => {
     let ledger;
-    if (await exists(LEDGER)) ledger = await readJson(LEDGER);
-    else ledger = { version: 1, limit: 100, priorS1Turns: 4, continuationProbeTurns: 6, total: 10, turns: [] };
+    const file = ledgerPath(runRoot);
+    if (await exists(file)) ledger = await readJson(file);
+    else fail('run turn budget ledger is missing; refusing to reset consumed turns');
     if (!Array.isArray(ledger.reservations)) ledger.reservations = [];
     ledger.nextNumber ??= Math.max(ledger.total, ...ledger.turns.map((turn) => turn.number));
     const value = mutator(ledger);
-    await atomicJson(LEDGER, ledger);
+    await atomicJson(file, ledger);
     return value;
   });
   ledgerWrite = job.catch(() => {});
   return job;
 }
 function availableTurns(ledger) { return ledger.limit - ledger.total - ledger.reservations.length; }
-async function admitOperation({ runId, caseId, operation, runnerRequired }) {
-  return updateLedger((ledger) => {
+export async function admitOperation({ runRoot, runId, caseId, operation, runnerRequired, limit }) {
+  return updateLedger(runRoot, (ledger) => {
     if (availableTurns(ledger) < (runnerRequired ? 2 : 1)) throw budgetPause();
     const main = randomUUID();
     const runner = runnerRequired ? randomUUID() : null;
@@ -120,19 +131,19 @@ async function admitOperation({ runId, caseId, operation, runnerRequired }) {
     if (runner !== null) ledger.reservations.push({ id: runner, runId, caseId,
       role: 'runner', operation, reservedAt: new Date().toISOString() });
     return { main, runner };
-  });
+  }, limit);
 }
-async function reserveExtraRunner({ runId, caseId, operation }) {
-  return updateLedger((ledger) => {
+export async function reserveExtraRunner({ runRoot, runId, caseId, operation, limit }) {
+  return updateLedger(runRoot, (ledger) => {
     if (availableTurns(ledger) < 1) throw budgetPause();
     const id = randomUUID();
     ledger.reservations.push({ id, runId, caseId, role: 'runner', operation,
       reservedAt: new Date().toISOString() });
     return id;
-  });
+  }, limit);
 }
-async function startReservedTurn(id) {
-  return updateLedger((ledger) => {
+export async function startReservedTurn(runRoot, id, limit) {
+  return updateLedger(runRoot, (ledger) => {
     const index = ledger.reservations.findIndex((reservation) => reservation.id === id);
     if (index < 0) fail('turn reservation is missing');
     const [reservation] = ledger.reservations.splice(index, 1);
@@ -142,10 +153,10 @@ async function startReservedTurn(id) {
       role: reservation.role, operation: reservation.operation, startedAt: new Date().toISOString(),
       state: 'dispatched' });
     return number;
-  });
+  }, limit);
 }
-async function settleTurn(number, turn) {
-  return updateLedger((ledger) => {
+export async function settleTurn(runRoot, number, turn, limit) {
+  return updateLedger(runRoot, (ledger) => {
     const entry = ledger.turns.find((item) => item.number === number);
     if (!entry || entry.state !== 'dispatched') fail('turn ledger settlement is invalid');
     entry.endedAt = new Date().toISOString();
@@ -154,14 +165,14 @@ async function settleTurn(number, turn) {
       entry.state = 'not_dispatched';
       ledger.total -= 1;
     } else entry.state = turn?.completed ? 'completed' : 'failed';
-  });
+  }, limit);
 }
-async function releaseReservation(id) {
+export async function releaseReservation(runRoot, id, limit) {
   if (id === null) return;
-  return updateLedger((ledger) => {
+  return updateLedger(runRoot, (ledger) => {
     const index = ledger.reservations.findIndex((reservation) => reservation.id === id);
     if (index >= 0) ledger.reservations.splice(index, 1);
-  });
+  }, limit);
 }
 
 export function renderLauncher(template, values) {
@@ -302,6 +313,8 @@ function argsForJournal({ journal, operation, route, outcome, slice, readback, r
 function specInput(slice) { return slice === null ? null : BigInt(slice.slice('slice-'.length)).toString(10); }
 
 async function runCase({ runRoot, caseId, configuration, snapshotMetadata, maxOperations, mode, product, signal, resume = false }) {
+  const turnLimit = configuration.turnBudget?.maxTurnsPerRun;
+  if (!Number.isSafeInteger(turnLimit) || turnLimit < 1) fail('benchmark turnBudget.maxTurnsPerRun must be a positive integer');
   const caseRoot = path.join(runRoot, caseName(caseId));
   if (!resume) await fs.mkdir(caseRoot);
   const workspace = path.join(caseRoot, 'workspace');
@@ -440,8 +453,8 @@ async function runCase({ runRoot, caseId, configuration, snapshotMetadata, maxOp
       const runnerTurnsBefore = caseState.runnerTurns;
       const runnerUsageObservations = [];
       let broker = null;
-      const admission = await admitOperation({ runId: path.basename(runRoot), caseId, operation,
-        runnerRequired: officialPreflight !== null });
+      const admission = await admitOperation({ runRoot, runId: path.basename(runRoot), caseId, operation,
+        runnerRequired: officialPreflight !== null, limit: turnLimit });
       let runnerReservation = admission.runner;
       let currentRunnerNumber = null;
       let mainTurnNumber;
@@ -454,16 +467,16 @@ async function runCase({ runRoot, caseId, configuration, snapshotMetadata, maxOp
           invoke: (request) => product.invokeIndependentRunner({
             ...request, snapshot: path.join(runRoot, 'snapshot'), workspace, tmpdir, env: turnEnv,
             onBeforeTurn: async () => {
-              const reservation = runnerReservation ?? await reserveExtraRunner({ runId: path.basename(runRoot), caseId, operation });
+              const reservation = runnerReservation ?? await reserveExtraRunner({ runRoot, runId: path.basename(runRoot), caseId, operation, limit: turnLimit });
               runnerReservation = null;
-              currentRunnerNumber = await startReservedTurn(reservation);
+              currentRunnerNumber = await startReservedTurn(runRoot, reservation, turnLimit);
               announce({ kind: 'progress', status: 'RUNNER_STARTED', runId: path.basename(runRoot), caseId,
                 operation, slice, stage: 'independent runner', durationMs: Date.now() - startedMs,
                 mainTurns: caseState.mainTurns, runnerTurns: caseState.runnerTurns + 1,
-                ...await budgetSnapshot(), artifacts: caseRoot });
+                ...await budgetSnapshot(runRoot), artifacts: caseRoot });
             },
             onTurn: async ({ turn: runnerTurn }) => {
-              await settleTurn(currentRunnerNumber, runnerTurn);
+              await settleTurn(runRoot, currentRunnerNumber, runnerTurn, turnLimit);
               if (runnerTurn.turnStarted !== false) caseState.runnerTurns += 1;
               caseState.lastRunnerThread = runnerTurn.threadId;
               runnerUsageObservations.push(runnerUsage.observe({ threadId: runnerTurn.threadId,
@@ -473,11 +486,11 @@ async function runCase({ runRoot, caseId, configuration, snapshotMetadata, maxOp
           }),
           });
         }
-        mainTurnNumber = await startReservedTurn(admission.main);
+        mainTurnNumber = await startReservedTurn(runRoot, admission.main, turnLimit);
       } catch (error) {
         if (broker !== null) await broker.close();
-        await releaseReservation(admission.main);
-        await releaseReservation(runnerReservation);
+        await releaseReservation(runRoot, admission.main, turnLimit);
+        await releaseReservation(runRoot, runnerReservation, turnLimit);
         throw error;
       }
       const contextRole = ['REVIEW_PLAN', 'REVIEW_TASKS', 'VALIDATE_SLICE'].includes(operation) ? `review-${operation.toLowerCase()}` : 'author';
@@ -485,7 +498,7 @@ async function runCase({ runRoot, caseId, configuration, snapshotMetadata, maxOp
       announce({ kind: 'start', status: 'STARTED', runId: path.basename(runRoot), caseId,
         operation, slice, model: route.label, effort: route.effort,
         mainTurns: caseState.mainTurns + 1, runnerTurns: caseState.runnerTurns,
-        ...await budgetSnapshot(), artifacts: caseRoot });
+        ...await budgetSnapshot(runRoot), artifacts: caseRoot });
       let turn;
       let lastProgressMs = 0;
       const heartbeat = setInterval(() => announce({ kind: 'progress', status: 'RUNNING',
@@ -511,14 +524,14 @@ async function runCase({ runRoot, caseId, configuration, snapshotMetadata, maxOp
               model: route.label, effort: route.effort, artifacts: caseRoot });
           },
         });
-        await settleTurn(mainTurnNumber, turn);
+        await settleTurn(runRoot, mainTurnNumber, turn, turnLimit);
       } catch (error) {
-        await settleTurn(mainTurnNumber, { turnStarted: false, threadId: null });
+        await settleTurn(runRoot, mainTurnNumber, { turnStarted: false, threadId: null }, turnLimit);
         throw error;
       } finally {
         clearInterval(heartbeat);
         if (broker !== null) await broker.close();
-        await releaseReservation(runnerReservation);
+        await releaseReservation(runRoot, runnerReservation, turnLimit);
       }
       if (turn.turnStarted !== false) caseState.mainTurns += 1;
       caseState.threads[contextRole] = turn.threadId;
@@ -581,7 +594,7 @@ async function runCase({ runRoot, caseId, configuration, snapshotMetadata, maxOp
       announce({ runId: path.basename(runRoot), caseId, operation, slice, state: readback.execution?.state ?? readback.lifecycle?.status,
         result: outcome.result, durationMs: evidence.durationMs, model: route.label, effort: route.effort,
         mainTurns: caseState.mainTurns, runnerTurns: caseState.runnerTurns,
-        ...await budgetSnapshot(), artifacts: caseRoot });
+        ...await budgetSnapshot(runRoot), artifacts: caseRoot });
       terminal = outcome;
       if (['BLOCKED', 'FAIL', 'PAUSED_BUDGET_OR_QUOTA'].includes(outcome.result)) break;
       if (operation === 'SPEC_READINESS') pendingReadinessResult = readinessResult;
@@ -655,6 +668,13 @@ async function run(options) {
       await fs.writeFile(path.join(runRoot, '.sentinel-benchmark-owned'), MARKER, { flag: 'wx' });
     }
     const configuration = await readJson(MANIFEST);
+    const turnLimit = configuration.turnBudget?.maxTurnsPerRun;
+    if (!Number.isSafeInteger(turnLimit) || turnLimit < 1) fail('benchmark turnBudget.maxTurnsPerRun must be a positive integer');
+    if (options.resumeId) {
+      if (!await exists(ledgerPath(runRoot))) fail('run turn budget ledger is missing; this focal run cannot be resumed safely');
+    } else {
+      await initializeTurnBudget(runRoot, turnLimit);
+    }
     const snapshotMetadata = options.resumeId
       ? (await readJson(path.join(runRoot, 'run.json'))).snapshot
       : await createSnapshot(runRoot);
@@ -673,7 +693,7 @@ async function run(options) {
         snapshot: snapshotMetadata, startedAt: new Date().toISOString(), profile: 'production-v2' };
     await atomicJson(path.join(runRoot, 'run.json'), runInfo);
     announce({ runId: id, status: 'ACTIVE', mode, artifacts: runRoot, sourceFunctionalSha256: snapshotMetadata.sourceFunctionalSha256,
-      globalTurns: (await readJson(LEDGER).catch(() => ({ total: 10 }))).total });
+      ...await budgetSnapshot(runRoot) });
     const results = {};
     results.A = options.full || caseId === 'A'
       ? await runCase({ runRoot, caseId: 'A', configuration, snapshotMetadata, maxOperations: options.maxOperations,
@@ -694,7 +714,7 @@ async function run(options) {
       : budgetPaused ? 'PAUSED_BUDGET_OR_QUOTA' : focalStop ? 'FOCAL_STOP' : 'BLOCKED',
       mode: runInfo.mode, cases: results, snapshotSha256: snapshotMetadata.snapshotSha256,
       sourceFunctionalSha256: snapshotMetadata.sourceFunctionalSha256,
-      ...await budgetSnapshot(), endedAt: new Date().toISOString(), artifacts: runRoot };
+      ...await budgetSnapshot(runRoot), endedAt: new Date().toISOString(), artifacts: runRoot };
     await atomicJson(path.join(runRoot, 'summary.json'), summary);
     await atomicJson(path.join(runRoot, 'run.json'), { ...runInfo, status: summary.status, endedAt: summary.endedAt });
   } finally {
@@ -714,7 +734,7 @@ async function status(id) {
       cases: (await readJson(path.join(root, 'summary.json')).catch(() => null))?.cases ?? null,
       snapshotSha256: runInfo?.snapshot?.snapshotSha256 ?? null,
       sourceFunctionalSha256: runInfo?.snapshot?.sourceFunctionalSha256 ?? null,
-      ...await budgetSnapshot(), artifacts: root });
+      ...await budgetSnapshot(root), artifacts: root });
     return 0;
   }
   const runs = [];
@@ -724,7 +744,7 @@ async function status(id) {
     if (!root) continue;
     runs.push({ runId: entry.name, summary: await readJson(path.join(root, 'summary.json')).catch(() => null) });
   }
-  announce({ kind: 'status', active: await readJson(ACTIVE).catch(() => null), ...await budgetSnapshot(),
+  announce({ kind: 'status', active: await readJson(ACTIVE).catch(() => null), turnBudget: null,
     runs: runs.sort((a, b) => b.runId.localeCompare(a.runId)) });
   return 0;
 }

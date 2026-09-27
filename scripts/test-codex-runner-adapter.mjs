@@ -85,6 +85,7 @@ test('automatic round is required before runner dispatch and managed CLI cannot 
 });
 
 test('receipt describes the captured final semantic response despite intermediate BLOCKED messages', async (t) => {
+  await fs.mkdir(path.join(ROOT, 'benchmark-temp'), { recursive: true });
   const root = await fs.mkdtemp(path.join(ROOT, 'benchmark-temp/runner-receipt-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const eventsPath = path.join(root, 'events.jsonl');
@@ -145,6 +146,7 @@ test('managed validation runner gets the official SPEC_PATH and rejects a privat
 });
 
 test('runner instructions and skill isolation use per-instance public SDK config', async (t) => {
+  await fs.mkdir(path.join(ROOT, 'benchmark-temp'), { recursive: true });
   const home = await fs.mkdtemp(path.join(ROOT, 'benchmark-temp/runner-config-'));
   t.after(() => fs.rm(home, { recursive: true, force: true }));
   const skills = path.join(home, 'skills');

@@ -4,8 +4,9 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
-import { fileURLToPath } from 'node:url';
-import { assertManagedSliceLauncher, decideOutcome, nextHandoff } from '../benchmarks/sentinel-todo/runtime/benchmark-manager.mjs';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { admitOperation, assertManagedSliceLauncher, budgetSnapshot, decideOutcome,
+  initializeTurnBudget, nextHandoff, settleTurn, startReservedTurn } from '../benchmarks/sentinel-todo/runtime/benchmark-manager.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const RUNS = path.join(ROOT, 'benchmark-temp');
@@ -114,4 +115,56 @@ test('clean refuses a symlink in an owned run and leaves evidence intact', async
   assert.equal(cleaned.status, 1);
   assert.match(cleaned.stderr, /contains a symlink/u);
   assert.equal((await fs.lstat(path.join(root, 'summary.json'))).isFile(), true);
+});
+
+test('fresh per-run budget starts at zero and safely admits concurrent B/C turns within its bound', async (t) => {
+  const tempRoot = await fs.mkdtemp(path.join(process.env.TMPDIR ?? '/tmp', 'sentinel-budget-'));
+  t.after(async () => fs.rm(tempRoot, { recursive: true, force: true }));
+  const root = path.join(tempRoot, 'run-test-budget');
+  await fs.mkdir(root);
+  await fs.writeFile(path.join(tempRoot, '.turn-ledger.json'), JSON.stringify({
+    version: 1, limit: 100, priorS1Turns: 4, continuationProbeTurns: 6, total: 10, turns: [],
+  }));
+  assert.deepEqual((await budgetSnapshot(root)).turnBudget,
+    { limit: null, consumed: null, remaining: null, mainTurns: null, runnerTurns: null });
+  await initializeTurnBudget(root, 4);
+  assert.deepEqual((await budgetSnapshot(root)).turnBudget,
+    { limit: 4, consumed: 0, remaining: 4, mainTurns: 0, runnerTurns: 0 });
+
+  const admissions = await Promise.all(['B', 'C'].map((caseId) => admitOperation({
+    runRoot: root, runId: 'run-test-budget', caseId, operation: 'EXECUTE_SLICE',
+    runnerRequired: true, limit: 4,
+  })));
+  await assert.rejects(admitOperation({ runRoot: root, runId: 'run-test-budget', caseId: 'C',
+    operation: 'VALIDATE_SLICE', runnerRequired: false, limit: 4 }),
+  (error) => error.code === 'PAUSED_BUDGET_OR_QUOTA');
+
+  for (const admission of admissions) {
+    for (const reservation of [admission.main, admission.runner]) {
+      const number = await startReservedTurn(root, reservation, 4);
+      await settleTurn(root, number, { completed: true, turnStarted: true, threadId: `thread-${number}` }, 4);
+    }
+  }
+  assert.deepEqual((await budgetSnapshot(root)).turnBudget,
+    { limit: 4, consumed: 4, remaining: 0, mainTurns: 2, runnerTurns: 2 });
+  await fs.rm(path.join(root, '.turn-ledger.json'));
+  await assert.rejects(admitOperation({ runRoot: root, runId: 'run-test-budget', caseId: 'A',
+    operation: 'PLAN', runnerRequired: false, limit: 4 }),
+  /run turn budget ledger is missing/u);
+  await assert.rejects(fs.lstat(path.join(root, '.turn-ledger.json')), { code: 'ENOENT' });
+});
+
+test('manager status creates an absent benchmark-temp in an isolated checkout fixture', async (t) => {
+  const fixture = await fs.mkdtemp(path.join(process.env.TMPDIR ?? '/tmp', 'sentinel-manager-fixture-'));
+  t.after(async () => fs.rm(fixture, { recursive: true, force: true }));
+  const runtime = path.join(fixture, 'benchmarks/sentinel-todo/runtime');
+  await fs.mkdir(runtime, { recursive: true });
+  for (const name of ['benchmark-manager.mjs', 'benchmark-snapshot.mjs', 'benchmark-ui.mjs']) {
+    await fs.copyFile(path.join(ROOT, 'benchmarks/sentinel-todo/runtime', name), path.join(runtime, name));
+  }
+  const isolatedRuns = path.join(fixture, 'benchmark-temp');
+  await assert.rejects(fs.lstat(isolatedRuns), { code: 'ENOENT' });
+  const manager = await import(pathToFileURL(path.join(runtime, 'benchmark-manager.mjs')).href);
+  assert.equal(await manager.main(['status', '--json']), 0);
+  assert.equal((await fs.stat(isolatedRuns)).isDirectory(), true);
 });

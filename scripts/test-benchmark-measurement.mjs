@@ -1,0 +1,147 @@
+import assert from 'node:assert/strict';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { compareMeasurements, validateMeasurementReport } from '../benchmarks/sentinel-todo/runtime/benchmark-measurement.mjs';
+
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const cli = path.join(root, 'benchmarks/sentinel-todo/runtime/benchmark-measurement.mjs');
+const benchmarkDir = path.join(root, 'benchmarks/sentinel-todo');
+const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'benchmark-measurement-'));
+const runId = `run-measurement-${process.pid}`;
+const benchmarkTempRoot = path.join(root, 'benchmark-temp');
+const hadBenchmarkTemp = await fs.stat(benchmarkTempRoot).then(() => true, () => false);
+const runRoot = path.join(benchmarkTempRoot, runId);
+const snapshotRoot = path.join(runRoot, 'snapshot');
+const UNAVAILABLE = 'unavailable';
+
+async function filesUnder(dir, relative = '') {
+  const files = [];
+  for (const entry of (await fs.readdir(path.join(dir, relative), { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name))) {
+    const child = path.join(relative, entry.name);
+    if (entry.isDirectory()) files.push(...await filesUnder(dir, child));
+    else if (entry.isFile()) files.push(child);
+  }
+  return files;
+}
+
+async function digestFiles(dir, files) {
+  const hash = createHash('sha256').update('sentinel-functional-snapshot-v1\0');
+  for (const rel of [...files].sort()) {
+    const bytes = await fs.readFile(path.join(dir, rel));
+    hash.update(rel.split(path.sep).join('/')).update('\0').update(String(bytes.length)).update('\0').update(bytes);
+  }
+  return `sha256:${hash.digest('hex')}`;
+}
+
+async function makeFixture() {
+  await fs.mkdir(path.join(root, 'benchmark-temp'), { recursive: true });
+  await fs.mkdir(path.join(runRoot, 'case-a'), { recursive: true });
+  await fs.writeFile(path.join(runRoot, '.sentinel-benchmark-owned'), 'sentinel-todo-run-v2\n');
+  for (const dir of ['skills', 'agents', 'templates', 'scripts', 'benchmarks/sentinel-todo/schemas']) await fs.mkdir(path.join(snapshotRoot, dir), { recursive: true });
+  await fs.copyFile(path.join(benchmarkDir, 'benchmark.json'), path.join(snapshotRoot, 'benchmarks/sentinel-todo/benchmark.json'));
+  await fs.copyFile(path.join(benchmarkDir, 'schemas/result-v2.schema.json'), path.join(snapshotRoot, 'benchmarks/sentinel-todo/schemas/result-v2.schema.json'));
+  const sources = [];
+  for (const prefix of ['skills', 'agents', 'templates', 'scripts', 'benchmarks/sentinel-todo']) sources.push(...(await filesUnder(snapshotRoot, prefix)));
+  const allFiles = await filesUnder(snapshotRoot);
+  const config = JSON.parse(await fs.readFile(path.join(snapshotRoot, 'benchmarks/sentinel-todo/benchmark.json'), 'utf8'));
+  const meta = { protocol: 'sentinel-sdk-context-v1', baseSha: 'fixture-base', dirty: false, functionalDiffSha256: 'sha256:fixture-diff',
+    sourceFunctionalSha256: await digestFiles(snapshotRoot, sources), sourceFileCount: sources.length,
+    snapshotSha256: await digestFiles(snapshotRoot, allFiles), snapshotFileCount: allFiles.length, createdAt: '2026-01-01T00:00:00.000Z' };
+  await fs.writeFile(path.join(runRoot, 'snapshot.json'), `${JSON.stringify(meta)}\n`);
+  const now = '2026-01-01T00:00:00.000Z';
+  const evidence = { operation: 'SPEC_INIT', turn: { usageObservation: { status: 'attributable', source: 'main', eventId: 'fixture-main', delta:
+    { input: 100, output: 20, cachedInput: 10, reasoningOutput: 5 } } } };
+  await fs.writeFile(path.join(runRoot, 'case-a/01-spec_init.json'), JSON.stringify(evidence));
+  const raw = { status: 'PASS', finalExecutionState: 'COMPLETE', specClosed: true, finalTestsPassed: true,
+    decomposition: { slices: 0 }, operations: { findingsCycles: 0 } };
+  await fs.writeFile(path.join(runRoot, 'case-a/raw.json'), JSON.stringify(raw));
+  await fs.writeFile(path.join(runRoot, 'case-a/case-state.json'), JSON.stringify({ caseId: 'A', status: 'PASS', startedAt: now, endedAt: now,
+    mainTurns: 1, runnerTurns: 0, finalizer: { exitCode: 0 }, operations: [{ evidencePath: '01-spec_init.json' }] }));
+  await fs.writeFile(path.join(runRoot, 'case-a/journal.json'), JSON.stringify({ events: [{ operation: 'SPEC_INIT', slice: null, childDispatches: [] }] }));
+  const run = { runId, status: 'PASS', mode: 'full', cases: ['A'], profile: 'production-v2', startedAt: now, endedAt: now,
+    snapshot: { sourceFunctionalSha256: meta.sourceFunctionalSha256, snapshotSha256: meta.snapshotSha256 } };
+  await fs.writeFile(path.join(runRoot, 'run.json'), JSON.stringify(run));
+  await fs.writeFile(path.join(runRoot, 'summary.json'), JSON.stringify({ runId, status: 'PASS', mode: 'full', cases: { A:
+    { caseId: 'A', status: 'PASS', operations: 1, mainTurns: 1, runnerTurns: 0 } } }));
+}
+
+try {
+  const baseline = JSON.parse(await fs.readFile(path.join(benchmarkDir, 'baselines/baseline-v1.json'), 'utf8'));
+  validateMeasurementReport(baseline);
+  assert.equal(baseline.schemaVersion, 1);
+  assert.equal(baseline.baselineVersion, 1);
+  assert.equal(baseline.baselineIdentity.functionalCheckpoint, '1a6195816b78f50c686b36143460b26f157baed6');
+  assert.equal(baseline.baselineIdentity.currentHygieneCheckpoint, '3a40958dac6edc8ff28c76b72170611ee3983e05');
+  assert.equal(baseline.run.id, 'run-20260927034729-712b2b42');
+  assert.deepEqual(baseline.cases.map((c) => [c.id, c.status, c.operations, c.mainTurns, c.runnerTurns]), [
+    ['A', 'PASS', 12, 12, 6], ['B', 'PASS', 12, 12, 6], ['C', 'PASS', 12, 12, 7],
+  ]);
+  assert.equal(baseline.aggregate.extraRunnerTurns, 1);
+  assert.deepEqual(baseline.cases.map((c) => c.operationDurations.length), [12, 12, 12]);
+  assert.equal(baseline.aggregate.telemetry.coverage.main, '36/36');
+  assert.equal(baseline.aggregate.telemetry.coverage.runner, '19/19');
+  assert.equal(baseline.aggregate.telemetry.main.input, 42877945);
+  assert.equal(baseline.aggregate.telemetry.runner.input, 2110337);
+  assert.equal(baseline.aggregate.telemetry.main.cachedInput, 40784000);
+  assert.equal(baseline.aggregate.telemetry.main.reasoningOutput, 79444);
+  assert.deepEqual(baseline.cases.map((c) => [c.provider, c.authMode, c.isolation, c.finalTestsPassed, c.profileMismatches]),
+    Array.from({ length: 3 }, () => ['openai', 'chatgpt', 'restricted', true, []]));
+  const baselineCore = structuredClone(baseline); delete baselineCore.baselineIdentity; delete baselineCore.baselineVersion;
+  await makeFixture();
+  const rawPath = path.join(runRoot, 'case-a/raw.json');
+  const rawHash = createHash('sha256').update(await fs.readFile(rawPath)).digest('hex');
+  const first = path.join(temp, 'first.json'); const second = path.join(temp, 'second.json');
+  execFileSync(process.execPath, [cli, 'export', '--run', runId, '--output', first], { cwd: root });
+  execFileSync(process.execPath, [cli, 'export', '--run', runId, '--output', second], { cwd: root });
+  assert.equal(await fs.readFile(first, 'utf8'), await fs.readFile(second, 'utf8'), 'report bytes must be deterministic');
+  const report = JSON.parse(await fs.readFile(first, 'utf8'));
+  validateMeasurementReport(report);
+  assert.equal(report.aggregate.operations, 1);
+  assert.equal(report.cases[0].telemetry.main.input, 100);
+  assert.equal(report.cases[0].telemetry.runner, UNAVAILABLE);
+  assert.equal(report.provenance.baseSha, 'fixture-base');
+  assert.equal(report.cases[0].provider, UNAVAILABLE);
+  assert.equal(report.cases[0].operationDurations[0].durationMs, UNAVAILABLE);
+  assert.equal(compareMeasurements(report, report).deltas.g3.mainInputTokens, 0);
+  const unavailable = structuredClone(report); unavailable.aggregate.telemetry.runner = UNAVAILABLE;
+  validateMeasurementReport(unavailable);
+  assert.equal(compareMeasurements(unavailable, unavailable).deltas.g3.runnerInputTokens, UNAVAILABLE);
+  const partial = structuredClone(report); partial.aggregate.telemetry.main.input = UNAVAILABLE;
+  assert.equal(compareMeasurements(partial, partial).deltas.g3.mainInputTokens, UNAVAILABLE);
+  const partialCoverage = structuredClone(report); partialCoverage.aggregate.telemetry.coverage.main = '0/1';
+  assert.equal(compareMeasurements(report, partialCoverage).deltas.g3.mainInputTokens, UNAVAILABLE);
+  const profileOnly = structuredClone(report); profileOnly.comparability.profile = 'other-profile';
+  assert.equal(compareMeasurements(report, profileOnly, true).profileExperiment, true);
+  const incompatible = structuredClone(profileOnly); incompatible.comparability.metricDefinitions = 'changed';
+  assert.equal(compareMeasurements(report, incompatible, true).deltas, UNAVAILABLE);
+  assert.throws(() => validateMeasurementReport({ schemaVersion: 1 }), /invalid measurement report/);
+  const noOverwrite = spawnSync(process.execPath, [cli, 'export', '--run', runId, '--output', first], { cwd: root, encoding: 'utf8' });
+  assert.notEqual(noOverwrite.status, 0);
+  const runFile = path.join(runRoot, 'run.json'); const originalRun = await fs.readFile(runFile, 'utf8');
+  const mismatched = JSON.parse(originalRun); mismatched.snapshot.snapshotSha256 = 'sha256:wrong';
+  await fs.writeFile(runFile, JSON.stringify(mismatched));
+  const badIdentity = spawnSync(process.execPath, [cli, 'export', '--run', runId, '--output', path.join(temp, 'bad.json')], { cwd: root, encoding: 'utf8' });
+  assert.notEqual(badIdentity.status, 0);
+  await fs.writeFile(runFile, originalRun);
+  const snapshotConfig = path.join(snapshotRoot, 'benchmarks/sentinel-todo/benchmark.json');
+  const originalConfig = await fs.readFile(snapshotConfig);
+  await fs.appendFile(snapshotConfig, ' ');
+  const badSnapshot = spawnSync(process.execPath, [cli, 'export', '--run', runId, '--output', path.join(temp, 'bad-snapshot.json')], { cwd: root, encoding: 'utf8' });
+  assert.notEqual(badSnapshot.status, 0);
+  await fs.writeFile(snapshotConfig, originalConfig);
+  const incomplete = JSON.parse(originalRun); incomplete.status = 'ACTIVE';
+  await fs.writeFile(runFile, JSON.stringify(incomplete));
+  const active = spawnSync(process.execPath, [cli, 'export', '--run', runId, '--output', path.join(temp, 'active.json')], { cwd: root, encoding: 'utf8' });
+  assert.notEqual(active.status, 0);
+  await fs.writeFile(runFile, originalRun);
+  assert.equal(createHash('sha256').update(await fs.readFile(rawPath)).digest('hex'), rawHash, 'export must not mutate raw evidence');
+  console.log('benchmark measurement tests passed');
+} finally {
+  await fs.rm(runRoot, { recursive: true, force: true });
+  await fs.rm(temp, { recursive: true, force: true });
+  if (!hadBenchmarkTemp) await fs.rmdir(benchmarkTempRoot).catch(() => {});
+}

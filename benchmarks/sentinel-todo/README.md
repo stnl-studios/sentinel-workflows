@@ -22,11 +22,13 @@ identity was
 `sha256:f27aa88249b86e12ae8fb791e7bddc64027e9119b51178deb4dc3f5ec6650c8a`
 and the frozen snapshot was
 `sha256:756ea114ca305699a95cec0192d7c70c78c3c77dcba6a1a23e4c4b9a5134b93a`.
-The published post-proof checkpoint is
-`1a6195816b78f50c686b36143460b26f157baed6`. This is a measurement
-reference, not a new requirement or workflow authority. The source identity
-belongs to that run; the hygiene edits change today's source hash. Detailed run
-artifacts remain in `benchmark-temp/`, outside the tracked source.
+The published functional checkpoint is
+`1a6195816b78f50c686b36143460b26f157baed6`; the later repository-hygiene
+checkpoint is `3a40958dac6edc8ff28c76b72170611ee3983e05` and was not
+proved by another live full run. The source identity belongs to the reference
+run. The durable measurement is
+[`baselines/baseline-v1.json`](baselines/baseline-v1.json); its original raw
+artifacts are temporary diagnostic data.
 
 ## Run manager
 
@@ -41,6 +43,8 @@ node benchmarks/sentinel-todo/runtime/benchmark-manager.mjs status
 node benchmarks/sentinel-todo/runtime/benchmark-manager.mjs status --run <run-id>
 node benchmarks/sentinel-todo/runtime/benchmark-manager.mjs inspect --run <run-id> --case A
 node benchmarks/sentinel-todo/runtime/benchmark-manager.mjs clean --run <run-id>
+node benchmarks/sentinel-todo/runtime/benchmark-measurement.mjs export --run <completed-full-run-id> --output <absent-report-path>
+node benchmarks/sentinel-todo/runtime/benchmark-measurement.mjs compare --before <baseline-or-report.json> --after <report.json>
 ```
 
 `run --full` requires A to pass before starting B and C concurrently. The
@@ -52,12 +56,17 @@ only if its frozen functional source, last official state, and fingerprint
 still match. After execution reaches `COMPLETE`, the manager proceeds directly
 to `SPEC_CLOSE`. It does not retry a blocked operation by guessing a handoff.
 
-Each run stays visible under `benchmark-temp/<run-id>/`: frozen source
+While retained, each run is visible under `benchmark-temp/<run-id>/`: frozen source
 snapshot and hashes, case workspaces, candidates, sent prompts, event JSONL,
 operation evidence, journal, finalizer raw, and summaries. A blocked or
 cancelled run is retained. `status` and `inspect` are read only and use no model.
-`clean` requires one explicit owned, inactive, completed run ID. Leave the
-latest run in place for inspection.
+`clean` requires one explicit owned, inactive, completed run ID. Promote an
+important run's canonical measurement before removing its raw directory.
+The versioned `benchmark.json` sets `turnBudget.maxTurnsPerRun` to 100. Every
+new run starts with zero consumed turns and keeps its reservation ledger inside
+that run directory. B and C share that run budget safely while executing
+concurrently. Resume uses the same ledger; the summary records consumed main
+and runner turns. The historical top-level `.turn-ledger.json` is ignored.
 
 The isolated Codex home for each case uses a private ChatGPT login cache copy,
 the frozen skill bundle, and a restricted filesystem profile. The main Codex
@@ -113,3 +122,65 @@ tests, and writes a canonical raw result even when terminal status is blocked
 and the command exits nonzero. Managed runs retain their detailed results in
 ignored `benchmark-temp/`. A full PASS requires a single coherent A/B/C run of
 one frozen functional revision.
+
+## Benchmark Protocol v1
+
+The baseline is the first tracked, machine-readable reference measurement of
+one completed full A/B/C run. A measurement is the canonical report exported
+from a terminal run, with run and snapshot identity, official case results,
+operation counts, token telemetry, and coverage. It is a record of observations,
+not a new workflow authority. The source and frozen snapshot must pass integrity
+checks at export. The source checkout may have advanced since the run.
+
+`benchmark-temp/` is scratch space: runs, snapshots, candidate workspaces,
+prompts, event streams, focals, private runtime metadata, active-run markers,
+and turn ledgers all belong there. `benchmark.json`, this protocol, and promoted
+measurements belong in Git. Export a canonical report for any run used as a
+baseline, comparison reference, or gate evidence, then review and commit that
+small report. Routine diagnostic runs need no promotion. Do not copy raw trees
+into Git. Once a campaign or step is finished and its important reports are
+promoted, the entire `benchmark-temp/` directory may be deleted between
+campaigns. A fresh run recreates its runtime state from the versioned manifest;
+no old ledger, focal artifact, or handshake is required.
+
+### G2: operational repetition
+
+Count official journal operations, main turns, and runner turns per case and
+slice. Show repeated `EXECUTE_SLICE` and `VALIDATE_SLICE` attempts per slice as
+`max(0, attempts - 1)`; show review rounds beyond the first, runner check
+rounds, and `APPLY_FINDINGS`, `REPLAN`, and `SPEC_RESUME` separately. Report
+operations per slice and total turns per case. Recovery operations and findings
+remain visible beside happy-path operations. An extra recovery caused by a real
+finding is evidence of extra work, but does not alone establish unnecessary
+workflow repetition. No opaque repetition score is used.
+
+### G3: observed token and context pressure
+
+Use attributable provider usage deltas for main and runner turns. Report input
+and output token totals separately by role, input per observed turn, peak and
+median turn input, and the observed/expected telemetry coverage. Where actual
+telemetry exposes them, cached input and reasoning output are subcategories of
+those totals and are never added again. Missing or partial telemetry is
+`unavailable` with coverage; it is not zero and is not inferred from text size.
+Input per turn is a context-pressure proxy, not a measurement of context-window
+occupancy or billing.
+
+### Direct comparison and campaign
+
+Compare reports directly only when the measurement schema and metric
+definitions, benchmark version, case requirements hashes, seed hash, result
+schema, qualification contract, and production profile match. A deliberately
+changed profile is an explicit experimental variable and must be labelled as
+such. A difference in metric definitions or fixture/qualification contract
+blocks automatic better/worse conclusions. Durations, slice counts, final
+tests, provider, auth mode, isolation, profile mismatches, and finalizer status
+are diagnostic dimensions where recorded; they are not G2 or G3 scores.
+
+For the first formal comparison, use three independent full runs per
+configuration. Preserve every individual report, and summarize median,
+minimum/maximum, and success rate without hiding outliers. Stop interpreting
+G2/G3 when integrity fails, runs are incomplete, or the comparison contract
+does not match. One isolated PASS is not statistical proof. No retrospective
+threshold is set from the reference run: G2 and G3 stay `PARTIAL` until the
+formal campaign supplies comparable empirical evidence and an explicit gate
+decision. The campaign is not started by this protocol change.

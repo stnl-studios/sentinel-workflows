@@ -43,11 +43,12 @@ function operation(event) {
 function counts(event) {
   const main = event?.mainTurns ?? event?.mainCount;
   const runner = event?.runnerTurns ?? event?.runnerCount;
-  const global = event?.globalTurns ?? event?.globalConsumed;
-  const saldo = event?.globalSaldo ?? event?.globalRemaining ?? event?.saldo;
+  const budget = event?.turnBudget;
   const values = [];
   if (Number.isFinite(main) || Number.isFinite(runner)) values.push(`main ${Number.isFinite(main) ? main : '?'} / runner ${Number.isFinite(runner) ? runner : '?'}`);
-  if (Number.isFinite(global) || Number.isFinite(saldo)) values.push(`global ${Number.isFinite(global) ? global : '?'} / saldo ${Number.isFinite(saldo) ? saldo : '?'}`);
+  if (Number.isFinite(budget?.consumed) || Number.isFinite(budget?.limit)) {
+    values.push(`budget ${Number.isFinite(budget.consumed) ? budget.consumed : '?'} / ${Number.isFinite(budget.limit) ? budget.limit : '?'}${Number.isFinite(budget.remaining) ? ` (${budget.remaining} left)` : ''}`);
+  }
   return values.join(' · ');
 }
 
@@ -110,7 +111,12 @@ function line(event) {
   }
   if (Array.isArray(event?.runs)) {
     parts.push(`${event.runs.length} runs`);
-    const recent = event.runs.slice(0, 3).map((item) => `${item.runId}:${item.summary?.status ?? '?'}`).join(' ');
+    const recent = event.runs.slice(0, 3).map((item) => {
+      const budget = item.summary?.turnBudget;
+      const usage = Number.isFinite(budget?.consumed) && Number.isFinite(budget?.limit)
+        ? `(${budget.consumed}/${budget.limit} turns)` : '';
+      return `${item.runId}:${item.summary?.status ?? '?'}${usage}`;
+    }).join(' ');
     if (recent) parts.push(recent);
   }
   if (event?.active?.runId) parts.push(`active ${event.active.runId}`);

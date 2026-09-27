@@ -11,9 +11,10 @@ test('UI01 — non-TTY is append-only and puts case, operation, counts, state, a
   const out = stream(false);
   const err = stream(false);
   const reporter = createReporter({ stdout: out, stderr: err, isTTY: false });
-  reporter.emit({ kind: 'start', caseId: 'A', operation: 'SPEC_INIT', slice: null, mainTurns: 1, runnerTurns: 0, globalTurns: 11, globalSaldo: 89, artifacts: '/tmp/run/case-a' });
+  reporter.emit({ kind: 'start', caseId: 'A', operation: 'SPEC_INIT', slice: null, mainTurns: 1, runnerTurns: 0,
+    turnBudget: { limit: 100, consumed: 11, remaining: 89, mainTurns: 11, runnerTurns: 0 }, artifacts: '/tmp/run/case-a' });
   reporter.emit({ kind: 'progress', caseId: 'A', operation: 'PLAN', elapsedMs: 2400, model: 'GPT-5.6-Terra', effort: 'high' });
-  assert.match(out.value, /^\[A\].*SPEC_INIT.*main 1 \/ runner 0.*global 11 \/ saldo 89.*\/tmp\/run\/case-a.*\n/m);
+  assert.match(out.value, /^\[A\].*SPEC_INIT.*main 1 \/ runner 0.*budget 11 \/ 100 \(89 left\).*\/tmp\/run\/case-a.*\n/m);
   assert.match(out.value, /\[A\].*PLAN.*2s.*GPT-5\.6-Terra\/high/u);
   assert.doesNotMatch(out.value, /ETA|percent|tests=/iu);
   assert.equal(err.value, '');
@@ -60,12 +61,16 @@ test('UI05 — status and inspect events surface summaries, timeline, official s
   assert.match(out.value, /\[C\].*BLOCKED.*state SPEC_BLOCKED.*recovery SPEC_RESUME.*raw\.json.*SPEC_READINESS > SPEC_RESUME/u);
 });
 
-test('UI06 — global status summarizes recent runs and budget', () => {
+test('UI06 — global status summarizes recent runs with each run budget', () => {
   const out = stream(false);
   createReporter({ stdout: out, stderr: stream(false), isTTY: false }).emit({
-    kind: 'status', globalTurns: 106, globalSaldo: 74,
+    kind: 'status', turnBudget: null,
     active: { runId: 'run-active' },
-    runs: [{ runId: 'run-new', summary: { status: 'PASS' } }, { runId: 'run-old', summary: { status: 'BLOCKED' } }],
+    runs: [
+      { runId: 'run-new', summary: { status: 'PASS', turnBudget: { consumed: 26, limit: 100 } } },
+      { runId: 'run-old', summary: { status: 'BLOCKED', turnBudget: { consumed: 106, limit: 100 } } },
+    ],
   });
-  assert.match(out.value, /global 106 \/ saldo 74.*2 runs.*run-new:PASS.*run-old:BLOCKED.*active run-active/u);
+  assert.match(out.value, /2 runs.*run-new:PASS\(26\/100 turns\).*run-old:BLOCKED\(106\/100 turns\).*active run-active/u);
+  assert.doesNotMatch(out.value, /global|saldo/u);
 });
