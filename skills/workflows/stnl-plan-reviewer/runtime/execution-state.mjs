@@ -1645,6 +1645,59 @@ function currentCandidateEvidenceOwners(result) {
   return owners;
 }
 
+function declaredPriorValidationOverlap(section, slice) {
+  if (section === "- none") return new Set();
+  const declared = new Set();
+  const records = (section.startsWith("- Slice ")
+    ? section.split("\n")
+    : section.split(/(?=^### overlap-[0-9]+$)/mu)).map((record) => record.trim()).filter(Boolean);
+  for (const record of records) {
+    const compact = record.match(/^- Slice ([0-9]{2,}) overlap: (.+); (\S[^\n]*)$/u);
+    const priorSlice = compact === null
+      ? record.match(/^- Prior slice: (slice-[0-9]{2,})$/mu)?.[1]
+      : `slice-${compact[1]}`;
+    const rawPaths = compact?.[2] ?? record.match(/^- Paths: (.+)$/mu)?.[1];
+    if (priorSlice === undefined || rawPaths === undefined
+      || (compact === null && (!/^- Affected behavior: \S/mu.test(record) || !/^- Regressions: \S/mu.test(record)))) {
+      throw new ExecutionContractError(`${slice} Prior Validation Overlap has an incomplete record`);
+    }
+    const paths = rawPaths.split(", ").map((raw) => {
+      const claim = raw.startsWith("`") && raw.endsWith("`") ? raw.slice(1, -1) : raw;
+      if (claim.includes("`")) throw new ExecutionContractError(`${slice} Prior Validation Overlap has malformed path claims`);
+      return validateRelativeEvidencePath(claim, `${slice} Prior Validation Overlap path`);
+    });
+    if (new Set(paths).size !== paths.length) {
+      throw new ExecutionContractError(`${slice} Prior Validation Overlap contains duplicate path claim: ${paths.find((value, index) => paths.indexOf(value) !== index)}`);
+    }
+    for (const claim of paths) declared.add(`${priorSlice}\0${claim}`);
+  }
+  if (records.length === 0) throw new ExecutionContractError(`${slice} Prior Validation Overlap must contain records or - none`);
+  return declared;
+}
+
+function validatePriorValidationOverlap(result) {
+  if (!(result.tasks instanceof Map)) return;
+  const priorBases = [];
+  for (const row of result.rows) {
+    const task = result.tasks.get(row.slice);
+    if (task === undefined) continue;
+    if (!task.pristine && task.changedAreas.length !== 0) {
+      const required = priorBases.flatMap(({ slice, paths }) =>
+        task.changedAreas.filter((claim) => paths.has(claim)).map((claim) => `${slice}\0${claim}`));
+      const declared = declaredPriorValidationOverlap(task.sections.get("Prior Validation Overlap"), row.slice);
+      const missing = required.filter((relation) => !declared.has(relation));
+      if (missing.length !== 0) {
+        throw new ExecutionContractError(
+          `${row.slice} Prior Validation Overlap is missing required prior slice/path coverage: ${missing.map((relation) => relation.replace("\0", " -> ")).join(", ")}`,
+        );
+      }
+    }
+    if (row.result === "PASS" && task.base.present) {
+      priorBases.push({ slice: row.slice, paths: new Set(task.base.paths) });
+    }
+  }
+}
+
 async function validateCandidateExecutionRecordPaths(result) {
   if (!(result.tasks instanceof Map)) return;
   const logicalWorkspace = logicalWorkspaceFor(result.workspace);
@@ -2582,6 +2635,7 @@ export async function validateExecutionCandidate(specPath, candidateExecutionRoo
     await fs.cp(candidate, shadow.executionRoot, { recursive: true });
     const result = await inspectExecutionStateWithContext(shadow.specPath, workspace, { validateImplementationPaths: true });
     await validateCandidateExecutionRecordPaths(result);
+    validatePriorValidationOverlap(result);
     if ((result.incompleteExecutionChecklists?.length ?? 0) !== 0) {
       const inconsistency = result.incompleteExecutionChecklists[0];
       throw new ExecutionContractError(

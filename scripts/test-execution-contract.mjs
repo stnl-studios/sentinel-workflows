@@ -5787,6 +5787,110 @@ test("candidate validation permits declared later-slice ownership of a historica
   });
 });
 
+async function priorOverlapFixture(t, { samePath = false } = {}) {
+  const fixture = await nestedLifecycleWorkspace(t);
+  const claim = (name) => path.relative(path.join(fixture.execution, "tasks"), path.join(fixture.root, "src", name)).split(path.sep).join("/");
+  const a = claim("example.txt");
+  const b = samePath ? a : claim("later.txt");
+  const firstPlanRow = (await fs.readFile(path.join(fixture.execution, "plan.md"), "utf8"))
+    .split("\n").find((line) => line.startsWith("| 01 - Delivery |"));
+  const secondPlanRow = firstPlanRow.replace("01 - Delivery", "02 - Later").replace("| - | AC-001 |", "| 01 | AC-001 |")
+    .replace("example.txt", "later.txt").replace("plans/slice-01.md", "plans/slice-02.md");
+  const thirdPlanRow = secondPlanRow.replace("02 - Later", "03 - Final").replace("| 01 | AC-001 |", "| 02 | AC-001 |")
+    .replace("later.txt", "example.txt").replace("plans/slice-02.md", "plans/slice-03.md");
+  await editPlan(fixture, (value) => value.replace(firstPlanRow, `${firstPlanRow}\n${secondPlanRow}\n${thirdPlanRow}`));
+  const firstTaskRow = (await fs.readFile(path.join(fixture.execution, "tasks.md"), "utf8"))
+    .split("\n").find((line) => line.startsWith("| [ ] | 01 - Delivery |"));
+  const secondTaskRow = firstTaskRow.replace("01 - Delivery", "02 - Later").replace("| - | tasks/", "| 01 | tasks/")
+    .replace("slice-01.md", "slice-02.md");
+  const thirdTaskRow = secondTaskRow.replace("02 - Later", "03 - Final").replace("| 01 | tasks/", "| 02 | tasks/")
+    .replace("slice-02.md", "slice-03.md");
+  await editTasksIndex(fixture, (value) => value.replace(firstTaskRow, `${firstTaskRow}\n${secondTaskRow}\n${thirdTaskRow}`));
+  const firstPlan = await fs.readFile(path.join(fixture.execution, "plans/slice-01.md"), "utf8");
+  await fs.writeFile(path.join(fixture.execution, "plans/slice-02.md"), firstPlan.replaceAll("Slice 01", "Slice 02")
+    .replaceAll("- Slice: 01", "- Slice: 02").replaceAll("Delivery", "Later"), "utf8");
+  await fs.writeFile(path.join(fixture.execution, "plans/slice-03.md"), firstPlan.replaceAll("Slice 01", "Slice 03")
+    .replaceAll("- Slice: 01", "- Slice: 03").replaceAll("Delivery", "Final"), "utf8");
+  const firstTaskPath = path.join(fixture.execution, "tasks/slice-01.md");
+  const firstTask = await fs.readFile(firstTaskPath, "utf8");
+  const secondPristine = firstTask.replaceAll("Slice 01", "Slice 02").replaceAll("- Slice: 01", "- Slice: 02")
+    .replaceAll("plans/slice-01.md", "plans/slice-02.md").replaceAll("Delivery", "Later").replace("1.1", "2.1");
+  const thirdPristine = firstTask.replaceAll("Slice 01", "Slice 03").replaceAll("- Slice: 01", "- Slice: 03")
+    .replaceAll("plans/slice-01.md", "plans/slice-03.md").replaceAll("Delivery", "Final").replace("1.1", "3.1");
+  await fs.writeFile(path.join(fixture.execution, "tasks/slice-02.md"), secondPristine, "utf8");
+  await fs.writeFile(path.join(fixture.execution, "tasks/slice-03.md"), thirdPristine, "utf8");
+  let first = firstTask.replace("- [ ] 1.1", "- [x] 1.1");
+  first = replaceSection(first, "Changed Areas", `- \`${a}\``);
+  first = replaceSection(first, "Validation Attempts", PASS_ATTEMPT);
+  first = replaceSection(first, "Effective Validation Base", PASS_BASE.replaceAll("../../src/example.txt", a));
+  await fs.writeFile(firstTaskPath, publishPassResult(first), "utf8");
+  await writeValidatedPath(fixture, a);
+  await editTasksIndex(fixture, (value) => value.replace(firstTaskRow, firstTaskRow.replace("[ ]", "[x]").replace("| pending | pending |", "| PASS | PASS |")));
+  const secondTaskPath = path.join(fixture.execution, "tasks/slice-02.md");
+  let second = secondPristine.replace("- [ ] 2.1", "- [x] 2.1");
+  second = replaceSection(second, "Changed Areas", `- \`${b}\``);
+  if (samePath) {
+    second = replaceSection(second, "Prior Validation Overlap",
+      `- Slice 01 overlap: \`${b}\`; preserve the first validated behavior with focused regressions.`);
+  }
+  second = replaceSection(second, "Validation Attempts", PASS_ATTEMPT);
+  second = replaceSection(second, "Effective Validation Base", PASS_BASE.replaceAll("../../src/example.txt", b));
+  await fs.writeFile(secondTaskPath, publishPassResult(second), "utf8");
+  await writeValidatedPath(fixture, b);
+  await editTasksIndex(fixture, (value) => value.replace(secondTaskRow, secondTaskRow.replace("[ ]", "[x]").replace("| pending | pending |", "| PASS | PASS |")));
+  return { fixture, a, b, claim };
+}
+
+async function overlapCandidate(fixture, changed, overlap) {
+  const copy = await prepareExecutionCopy({ specPath: fixture.requirements, slice: "slice-03" });
+  let task = await fs.readFile(copy.candidateTaskArtifact, "utf8");
+  task = task.replace("- [ ] 3.1", "- [x] 3.1");
+  task = replaceSection(task, "Changed Areas", changed.map((claim) => `- \`${claim}\``).join("\n"));
+  task = replaceSection(task, "Prior Validation Overlap", overlap);
+  const testedState = changed.map((claim) => `  - \`${claim}\` | sha256:${VALIDATED_HASH}`).join("\n");
+  task = replaceSection(task, "Implementation Test Evidence", checkRecord("implementation-check", 1, "TESTS_PASS", 1)
+    .replace(`  - \`../../src/example.txt\` | sha256:${VALIDATED_HASH}`, testedState));
+  await fs.writeFile(copy.candidateTaskArtifact, task, "utf8");
+  return copy;
+}
+
+test("prior validation overlap is required before execution publication and preserves valid multi-slice claims", async (t) => {
+  const { fixture, a, b, claim } = await priorOverlapFixture(t);
+  const liveTask = path.join(fixture.execution, "tasks/slice-03.md");
+  const liveBefore = await fs.readFile(liveTask);
+  const relation = (slice, claim) => `- Slice ${slice} overlap: \`${claim}\`; preserve earlier behavior with focused regressions.`;
+
+  const missing = await overlapCandidate(fixture, [a], "- none");
+  await assert.rejects(validateExecutionCandidate(fixture.requirements, missing.candidateExecutionRoot),
+    (error) => error.message.includes(`slice-01 -> ${a}`));
+  await assert.rejects(publishExecutionCopy({ specPath: fixture.requirements, slice: "slice-03", candidateRoot: missing.candidateRoot }),
+    /Prior Validation Overlap is missing required prior slice\/path coverage/u);
+  assert.deepEqual(await fs.readFile(liveTask), liveBefore, "R7 failed publication must preserve live task bytes");
+
+  const partial = await overlapCandidate(fixture, [a, b], relation("01", a));
+  await assert.rejects(validateExecutionCandidate(fixture.requirements, partial.candidateExecutionRoot),
+    (error) => error.message.includes(`slice-02 -> ${b}`));
+
+  const complete = await overlapCandidate(fixture, [a, b], `${relation("01", a)}\n${relation("02", b)}`);
+  assert.equal((await validateExecutionCandidate(fixture.requirements, complete.candidateExecutionRoot)).state, "IMPLEMENTED_AWAITING_VALIDATION");
+
+  const duplicate = await overlapCandidate(fixture, [a], relation("01", a).replace(`\`${a}\``, `\`${a}\`, \`${a}\``));
+  await assert.rejects(validateExecutionCandidate(fixture.requirements, duplicate.candidateExecutionRoot), /Prior Validation Overlap contains duplicate path claim/u);
+
+  const disjoint = await overlapCandidate(fixture, [b], "- none");
+  await assert.rejects(validateExecutionCandidate(fixture.requirements, disjoint.candidateExecutionRoot),
+    (error) => error.message.includes(`slice-02 -> ${b}`));
+  await writeValidatedPath(fixture, claim("third.txt"));
+  const legitimateNone = await overlapCandidate(fixture, [claim("third.txt")], "- none");
+  assert.equal((await validateExecutionCandidate(fixture.requirements, legitimateNone.candidateExecutionRoot)).state, "IMPLEMENTED_AWAITING_VALIDATION");
+  assert.deepEqual(await fs.readFile(liveTask), liveBefore);
+
+  const shared = await priorOverlapFixture(t, { samePath: true });
+  const sharedCandidate = await overlapCandidate(shared.fixture, [shared.a], `${relation("01", shared.a)}\n${relation("02", shared.a)}`);
+  assert.equal((await validateExecutionCandidate(shared.fixture.requirements, sharedCandidate.candidateExecutionRoot)).state,
+    "IMPLEMENTED_AWAITING_VALIDATION");
+});
+
 test("terminal inspection detects hash drift and REMOVED reappearance without rewriting PASS history", async (t) => {
   const matching = await standaloneWorkspace(t);
   await renderArtifacts(matching);
