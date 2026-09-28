@@ -585,9 +585,14 @@ function parsePlan(text, label, expectedSlice = null, references = {}) {
   return { ...state, body, sections: parsedSections, status: header.get("status"), reviewState, revisionMode, replanReason, supersessionMappings };
 }
 
+function hasUnencodedTemplatePlaceholder(value) {
+  const withoutEncodedValues = String(value).replace(/json:"(?:\\.|[^"\\])*"/gu, 'json:""');
+  return /<[^>\n]+>/u.test(withoutEncodedValues);
+}
+
 function operationRecords(section, prefix, { statusValues = null } = {}) {
   if (section === "- none") return [];
-  if (/<[^>\n]+>/u.test(section)) throw new ExecutionContractError(`${prefix} section contains template placeholder content`);
+  if (hasUnencodedTemplatePlaceholder(section)) throw new ExecutionContractError(`${prefix} section contains template placeholder content`);
   const pattern = new RegExp(`^### (${prefix}-([0-9]{2,}))$`, "gmu");
   const matches = [...section.matchAll(pattern)];
   if (matches.length === 0) throw new ExecutionContractError(`${prefix} section contains content without canonical records`);
@@ -605,14 +610,14 @@ function operationRecords(section, prefix, { statusValues = null } = {}) {
 }
 
 function requireNonPlaceholder(value, label) {
-  if (value === null || value.length === 0 || /^(?:none|pending|n\/a|not_available)$/iu.test(value) || /<[^>\n]+>/u.test(value)) {
+  if (value === null || value.length === 0 || /^(?:none|pending|n\/a|not_available)$/iu.test(value) || hasUnencodedTemplatePlaceholder(value)) {
     throw new ExecutionContractError(`${label} must be objective non-placeholder content`);
   }
   return value;
 }
 
 function requirePresentValue(value, label) {
-  if (value === null || value.length === 0 || /^(?:pending|n\/a)$/iu.test(value) || /<[^>\n]+>/u.test(value)) {
+  if (value === null || value.length === 0 || /^(?:pending|n\/a)$/iu.test(value) || hasUnencodedTemplatePlaceholder(value)) {
     throw new ExecutionContractError(`${label} must contain a persisted value`);
   }
   return value;
@@ -633,6 +638,28 @@ function requireList(body, name, label) {
   return values;
 }
 
+function parseCommandTuple(line, label) {
+  const match = line.match(/^  - (.+) \| exit:([-]?[0-9]+)$/u);
+  if (match === null) throw new ExecutionContractError(`${label} has malformed Commands`);
+  let command;
+  if (match[1].startsWith("json:")) {
+    try { command = JSON.parse(match[1].slice(5)); } catch {
+      throw new ExecutionContractError(`${label} has malformed json command`);
+    }
+    if (typeof command !== "string" || command.length === 0
+      || !/[`\r\n]/u.test(command) || `json:${JSON.stringify(command)}` !== match[1]) {
+      throw new ExecutionContractError(`${label} has non-canonical json command`);
+    }
+  } else {
+    const plain = match[1].match(/^`([^`\r\n]+)`$/u);
+    if (plain === null) throw new ExecutionContractError(`${label} has malformed Commands`);
+    command = plain[1];
+  }
+  const exit = Number(match[2]);
+  if (!Number.isSafeInteger(exit)) throw new ExecutionContractError(`${label} command exit must be a safe integer`);
+  return Object.freeze({ command, exit });
+}
+
 function requireCommands(record, { permitNone = false, requireZero = false } = {}) {
   const markers = [...record.body.matchAll(/^- Commands:(?:[ \t]+(.*))?$/gmu)];
   if (markers.length !== 1) throw new ExecutionContractError(`${record.id} must contain exactly one Commands field`);
@@ -645,11 +672,7 @@ function requireCommands(record, { permitNone = false, requireZero = false } = {
     return [];
   }
   const lines = block.split("\n").filter((line) => line.length !== 0);
-  const commands = lines.map((line) => {
-    const match = line.match(/^  - `([^`]+)` \| exit:([-]?[0-9]+)$/u);
-    if (match === null) throw new ExecutionContractError(`${record.id} has malformed Commands`);
-    return Object.freeze({ command: match[1], exit: Number(match[2]) });
-  });
+  const commands = lines.map((line) => parseCommandTuple(line, record.id));
   if (commands.length === 0) throw new ExecutionContractError(`${record.id} has no numeric command evidence`);
   if (requireZero && commands.some((entry) => entry.exit !== 0)) throw new ExecutionContractError(`${record.id} PASS commands must exit zero`);
   return commands;
@@ -773,7 +796,7 @@ function validateNestedScoping(record, { allowTestedState = false } = {}) {
       owner = top[1];
       continue;
     }
-    const command = /^  - `[^`]+` \| exit:[-]?[0-9]+$/u.test(line);
+    const command = /^  - (?:`[^`\r\n]+`|json:".*") \| exit:[-]?[0-9]+$/u.test(line);
     const testedState = /^  - `[^`]+` \| (?:sha256:[0-9a-f]{64}|REMOVED)$/u.test(line);
     if ((command && owner === "Commands") || (allowTestedState && testedState && owner === "Tested state")) continue;
     throw new ExecutionContractError(`${record.id} has unexpected nested or continuation content under ${owner ?? "no field"}`);
@@ -1055,13 +1078,10 @@ function baseState(section, attempts) {
   }
   const commandSection = section.slice(commandsMarker, evidenceMarker).trimEnd();
   const commandLines = commandSection.split("\n").slice(1).filter((line) => line.length !== 0);
-  if (commandLines.length === 0 || commandLines.some((line) => !/^  - `[^`]+` \| exit:[-]?[0-9]+$/u.test(line))) {
+  if (commandLines.length === 0) {
     throw new ExecutionContractError("Effective Validation Base has malformed Authoritative commands");
   }
-  const commands = commandLines.map((line) => {
-    const match = line.match(/^  - `([^`]+)` \| exit:([-]?[0-9]+)$/u);
-    return Object.freeze({ command: match[1], exit: Number(match[2]) });
-  });
+  const commands = commandLines.map((line) => parseCommandTuple(line, "Effective Validation Base"));
   if (commands.some((entry) => entry.exit !== 0)) {
     throw new ExecutionContractError("Effective Validation Base authoritative commands must exist and exit zero");
   }
@@ -1291,6 +1311,11 @@ function parseTask(text, label, expectedSlice, references = {}) {
   const findings = blockerRecords(taskSections.get("Validation Findings"), "finding");
   const divergences = blockerRecords(taskSections.get("Divergences"), "divergence");
   validateFindingLifecycle(findings, attempts, findingsChecks);
+  const scopeExpansion = taskSections.get("Scope Expansion");
+  if (/^- (?:Operation|Kind|After record|Required action):/mu.test(scopeExpansion)
+    || /malformed-output/u.test(scopeExpansion)) {
+    throw new ExecutionContractError(`${label} places runner recovery in Scope Expansion instead of Delegation Blocker`);
+  }
   const delegationBlocker = parseDelegationBlocker(taskSections.get("Delegation Blocker"), new Map([
     ["EXECUTE_SLICE", implementationChecks], ["APPLY_FINDINGS", findingsChecks], ["VALIDATE_SLICE", attempts],
   ]));

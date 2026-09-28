@@ -4,7 +4,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { prepareRunnerValidationPersistenceFromResponse } from "./serialize-runner-evidence.mjs";
+import { prepareRunnerValidationPersistenceFromResponse, persistMalformedRunnerResultInCandidate } from "./serialize-runner-evidence.mjs";
 import { preflightExecutionOperation, resolveExecutionWorkspace } from "./execution-state.mjs";
 import { assertManagedAgreement } from "./managed-slice-context.mjs";
 
@@ -84,7 +84,7 @@ async function writeCandidateFiles(entries) {
   }
 }
 
-export async function prepareValidationCandidate({ specPath, slice: sliceValue, workspace, candidateExecutionRoot, semanticResponseFile }) {
+export async function prepareValidationCandidate({ specPath, slice: sliceValue, workspace, candidateExecutionRoot, semanticResponseFile, receiptFile }) {
   assertManagedAgreement({ specPath, workspace, slice: sliceValue });
   if (typeof specPath !== "string" || !path.isAbsolute(specPath)) fail("SPEC_PATH must be absolute");
   if (typeof semanticResponseFile !== "string" || !path.isAbsolute(semanticResponseFile)) {
@@ -135,14 +135,24 @@ export async function prepareValidationCandidate({ specPath, slice: sliceValue, 
   const candidateRow = selectedRow(candidateIndexBefore, slice, "candidate tasks.md");
   if (candidateRow.line !== liveRow.line) fail("candidate selected tasks.md row must remain unchanged until deterministic preparation");
 
-  const prepared = await prepareRunnerValidationPersistenceFromResponse({
-    operation: "VALIDATE_SLICE",
-    response: semanticResponse,
-    workspace: workspaceRoot,
-    taskArtifact: liveTaskFile,
-    specPath,
-    slice: slice.slice(6),
-  });
+  let prepared;
+  try {
+    prepared = await prepareRunnerValidationPersistenceFromResponse({
+      operation: "VALIDATE_SLICE",
+      response: semanticResponse,
+      workspace: workspaceRoot,
+      taskArtifact: liveTaskFile,
+      specPath,
+      slice: slice.slice(6),
+    });
+  } catch (error) {
+    if (receiptFile === undefined) throw error;
+    const recovery = await persistMalformedRunnerResultInCandidate({
+      taskArtifact: candidateTaskFile, operation: "VALIDATE_SLICE",
+      receiptFile, semanticResponseFile: responseFile, diagnostic: error.message,
+    });
+    return Object.freeze({ status: "RUNNER_RESULT_BLOCKED", recovery });
+  }
   if (prepared.attemptId !== `attempt-${String(selected.attempts.length + 1).padStart(2, "0")}`) {
     fail("canonical producer attempt identity disagrees with official preflight");
   }
@@ -187,7 +197,7 @@ export async function prepareValidationCandidate({ specPath, slice: sliceValue, 
 
 export async function main(arguments_) {
   const options = new Map();
-  const valid = new Set(["--prepare", "--spec-path", "--slice", "--workspace", "--candidate-execution-root", "--semantic-response-file"]);
+  const valid = new Set(["--prepare", "--spec-path", "--slice", "--workspace", "--candidate-execution-root", "--semantic-response-file", "--receipt-file"]);
   let prepare = false;
   for (let index = 0; index < arguments_.length; index += 1) {
     const key = arguments_[index];
@@ -204,7 +214,7 @@ export async function main(arguments_) {
     index += 1;
   }
   const required = ["--spec-path", "--slice", "--workspace", "--candidate-execution-root", "--semantic-response-file"];
-  if (!prepare || required.some((key) => !options.has(key)) || options.size !== required.length) {
+  if (!prepare || required.some((key) => !options.has(key)) || options.size > required.length + 1) {
     fail("usage: prepare-validation-candidate.mjs --prepare --spec-path SPEC_PATH --slice SLICE --workspace MANAGED_WORKSPACE --candidate-execution-root CANDIDATE_EXECUTION_ROOT --semantic-response-file RESPONSE_FILE");
   }
   const result = await prepareValidationCandidate({
@@ -213,6 +223,7 @@ export async function main(arguments_) {
     workspace: options.get("--workspace"),
     candidateExecutionRoot: options.get("--candidate-execution-root"),
     semanticResponseFile: options.get("--semantic-response-file"),
+    receiptFile: options.get("--receipt-file"),
   });
   process.stdout.write(`${JSON.stringify(result)}\n`);
   return 0;

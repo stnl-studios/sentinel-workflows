@@ -37,6 +37,7 @@ import {
   serializeRunnerExecutionBundleFromResponse,
   serializeRunnerValidationBundle,
   serializeRunnerValidationBundleFromResponse,
+  persistMalformedRunnerResultInCandidate,
 } from "../skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs";
 import { serializeRunnerValidationBundleFromResponse as serializeQualityManagerValidationBundleFromResponse }
   from "../skills/workflows/stnl-slice-quality-manager/runtime/serialize-runner-evidence.mjs";
@@ -114,6 +115,260 @@ test("execution producer inserts exact hashed evidence only into its owned candi
   assert.match(cli.stdout, /implementation-check-01 inserted into isolated candidate/u);
   assert.match(await fs.readFile(cliCopy.candidateTaskArtifact, "utf8"), /sha256:[0-9a-f]{64}/u);
   assert.equal(await fs.readFile(liveTask, "utf8"), liveBefore);
+});
+
+test("command evidence preserves simple, quoted, backtick, multiline, and heredoc commands", async (t) => {
+  const schema = JSON.parse(await fs.readFile(path.join(ROOT,
+    "skills/workflows/stnl-slice-executor/runtime/runner-execute-response.schema.json"), "utf8"));
+  assert.equal(schema.properties.commands.items.properties.command.pattern, "^[\\s\\S]+$");
+  assert.equal(schema.properties.head.pattern, "^[^\\r\\n`]+$");
+  const commands = [
+    "npm test",
+    `node -e 'console.log("quoted")'`,
+    "node -e `echo legitimate`",
+    "printf 'first\nsecond'\ncat output.txt",
+    "node --input-type=module <<'NODE'\nimport assert from 'node:assert/strict';\nconst value = () => 1 + 1;\nassert.equal(value(), 2);\nNODE",
+  ];
+  for (const command of commands) {
+    const fixture = await standaloneWorkspace(t);
+    await renderArtifacts(fixture);
+    const target = await writeValidatedPath(fixture);
+    const copy = await prepareExecutionCopy({ specPath: fixture.requirements, slice: "slice-01" });
+    const claim = path.relative(path.dirname(copy.candidateTaskArtifact), target).split(path.sep).join("/");
+    let candidate = await fs.readFile(copy.candidateTaskArtifact, "utf8");
+    candidate = candidate.replace("- [ ] 1.1", "- [x] 1.1");
+    candidate = replaceSection(candidate, "Changed Areas", `- \`${claim}\``);
+    candidate = replaceSection(candidate, "Diff Summary", "- Behavior implemented and checked.");
+    await fs.writeFile(copy.candidateTaskArtifact, candidate, "utf8");
+    const response = JSON.stringify({
+      status: "TESTS_PASS", automaticCheckRound: "1/3", head: "fixture-head",
+      discoverySources: "task and package", discoveryActions: "inspected tests",
+      verificationTypesConsidered: "focused test", nonApplicabilityRationale: "none",
+      noVerificationCommandConfirmation: "command executed",
+      commands: [{ command, exit: 0 }], resultOfEachCommandAndExitCode: "passed",
+      selectedChecks: "focused test", selectionRationale: "direct coverage", coverage: "AC-001",
+      failures: "none", priorRoundFailure: "none", correctionApplied: "none", inSliceRationale: "none",
+      evidenceOrFailureSummary: "passed", affectedFilesOrBehaviors: "example behavior",
+      blockers: "none", unexpectedWorkspaceEffects: "none", persistenceSummary: "no changes",
+    });
+    const bundle = await serializeRunnerExecutionBundleFromResponse({
+      operation: "EXECUTE_SLICE", response, workspace: fixture.root, taskArtifact: copy.candidateTaskArtifact,
+    });
+    const carrier = /[`\r\n]/u.test(command) ? `json:${JSON.stringify(command)}` : `\`${command}\``;
+    assert.ok(bundle.includes(`  - ${carrier} | exit:0`));
+    await insertExecutionEvidenceInCandidate({ taskArtifact: copy.candidateTaskArtifact, operation: "EXECUTE_SLICE", bundle });
+    const strictRoot = path.join(await temporary(t, "stnl-command-roundtrip-strict-"), "execution");
+    await copyDirectory(copy.candidateExecutionRoot, strictRoot);
+    await fs.rm(path.join(strictRoot, ".stnl-execution-copy.json"));
+    assert.equal((await validateExecutionCandidate(fixture.requirements, strictRoot)).state,
+      "IMPLEMENTED_AWAITING_VALIDATION");
+    await fs.copyFile(copy.candidateTaskArtifact, path.join(fixture.execution, "tasks/slice-01.md"));
+    const readback = await inspectExecutionState(fixture.requirements);
+    assert.equal(readback.tasks.get("slice-01").implementationChecks[0].commands[0].command, command);
+  }
+});
+
+test("producer rejects empty commands and preserves mechanical status and head rules", async (t) => {
+  const fixture = await standaloneWorkspace(t);
+  await renderArtifacts(fixture);
+  await assert.rejects(serializeRunnerRecord({
+    workspace: fixture.root, taskArtifact: path.join(fixture.execution, "tasks/slice-01.md"),
+    targets: [await writeValidatedPath(fixture)], commands: [{ command: "", exit: 0 }],
+  }), /non-empty command/u);
+  const taskArtifact = path.join(fixture.execution, "tasks/slice-01.md");
+  await fs.writeFile(taskArtifact, replaceSection(await fs.readFile(taskArtifact, "utf8"),
+    "Changed Areas", "- `../../src/example.txt`"), "utf8");
+  const base = {
+    status: "TESTS_PASS", automaticCheckRound: "1/3", head: "fixture-head",
+    discoverySources: "task", discoveryActions: "inspection", verificationTypesConsidered: "unit",
+    nonApplicabilityRationale: "none", noVerificationCommandConfirmation: "ran",
+    commands: [{ command: "npm test", exit: 0 }], resultOfEachCommandAndExitCode: "pass",
+    selectedChecks: "unit", selectionRationale: "direct", coverage: "AC-001", failures: "none",
+    priorRoundFailure: "none", correctionApplied: "none", inSliceRationale: "none",
+    evidenceOrFailureSummary: "pass", affectedFilesOrBehaviors: "example", blockers: "none",
+    unexpectedWorkspaceEffects: "none", persistenceSummary: "none",
+  };
+  for (const invalid of [{ status: "FAKE" }, { automaticCheckRound: "4/3" }, { head: "bad`head" }]) {
+    await assert.rejects(serializeRunnerExecutionBundleFromResponse({ operation: "EXECUTE_SLICE",
+      response: JSON.stringify({ ...base, ...invalid }), workspace: fixture.root, taskArtifact }),
+    /Status|Automatic check round|head|single-line scalar/u);
+  }
+});
+
+test("captured malformed output creates canonical recovery and rejects wrong authority", async (t) => {
+  const fixture = await standaloneWorkspace(t);
+  await renderArtifacts(fixture);
+  await writeValidatedPath(fixture);
+  const copy = await prepareExecutionCopy({ specPath: fixture.requirements, slice: "slice-01" });
+  let preparedTask = await fs.readFile(copy.candidateTaskArtifact, "utf8");
+  preparedTask = preparedTask.replace("- [ ] 1.1", "- [x] 1.1");
+  preparedTask = replaceSection(preparedTask, "Changed Areas", "- `../../src/example.txt`");
+  preparedTask = replaceSection(preparedTask, "Diff Summary", "- Implementation work completed before runner rejection.");
+  await fs.writeFile(copy.candidateTaskArtifact, preparedTask, "utf8");
+  const root = await temporary(t, "stnl-captured-malformed-");
+  const responseFile = path.join(root, "response.json");
+  const receiptFile = path.join(root, "receipt.json");
+  const response = JSON.stringify({ status: "TESTS_PASS", commands: [{ command: "", exit: 0 }] });
+  await fs.writeFile(responseFile, response, "utf8");
+  const receipt = {
+    status: "RUNNER_RESPONSE_CAPTURED", operation: "EXECUTE_SLICE", semanticResponseFile: responseFile,
+    semanticResponseSha256: createHash("sha256").update(response).digest("hex"),
+    captureFailure: null, error: null,
+  };
+  await fs.writeFile(receiptFile, JSON.stringify(receipt), "utf8");
+  const cli = spawnSync(process.execPath, [
+    path.join(ROOT, "skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs"),
+    "--execution-bundle", "--operation", "EXECUTE_SLICE", "--workspace", fixture.root,
+    "--task-artifact", copy.candidateTaskArtifact, "--semantic-response-file", responseFile,
+    "--receipt-file", receiptFile, "--insert-candidate",
+  ], { encoding: "utf8" });
+  assert.equal(cli.status, 0, cli.stderr);
+  assert.equal(JSON.parse(cli.stdout).state, "RUNNER_RESULT_BLOCKED");
+  const candidate = await fs.readFile(copy.candidateTaskArtifact, "utf8");
+  assert.match(candidate, /## Delegation Blocker\n\n- Operation: EXECUTE_SLICE\n- Kind: malformed-output/u);
+  const strictRoot = path.join(await temporary(t, "stnl-malformed-strict-"), "execution");
+  await copyDirectory(copy.candidateExecutionRoot, strictRoot);
+  await fs.rm(path.join(strictRoot, ".stnl-execution-copy.json"));
+  const official = await validateExecutionCandidate(fixture.requirements, strictRoot);
+  assert.equal(official.state, "RUNNER_RESULT_BLOCKED");
+  assert.equal(official.mandatoryRecovery.operation, "EXECUTE_SLICE");
+  const blocker = candidate.match(/## Delegation Blocker\n\n([\s\S]*?)\n## Implementation Test Evidence/u)[1].trim();
+  const wrong = replaceSection(replaceSection(candidate, "Delegation Blocker", "- none"), "Scope Expansion", blocker);
+  await fs.writeFile(path.join(strictRoot, "tasks/slice-01.md"), wrong, "utf8");
+  await assert.rejects(validateExecutionCandidate(fixture.requirements, strictRoot),
+    /runner recovery in Scope Expansion instead of Delegation Blocker/u);
+  await fs.writeFile(copy.candidateTaskArtifact, candidate, "utf8");
+  await fs.writeFile(receiptFile, JSON.stringify({ ...receipt, status: "RUNNER_NOT_STARTED" }), "utf8");
+  await assert.rejects(persistMalformedRunnerResultInCandidate({
+    taskArtifact: copy.candidateTaskArtifact, operation: "EXECUTE_SLICE", receiptFile, semanticResponseFile: responseFile,
+    diagnostic: "invalid command",
+  }), /matching captured runner response/u);
+  assert.equal(await fs.readFile(copy.candidateTaskArtifact, "utf8"), candidate);
+});
+
+test("captured producer rejection resumes APPLY and VALIDATE through their own operations", async (t) => {
+  for (const operation of ["APPLY_FINDINGS", "VALIDATE_SLICE"]) {
+    const fixture = await standaloneWorkspace(t);
+    await renderArtifacts(fixture);
+    await writeValidatedPath(fixture);
+    await editTask(fixture, (value) => {
+      let task = value.replace("- [ ] 1.1", "- [x] 1.1");
+      task = replaceSection(task, "Changed Areas", "- `../../src/example.txt`");
+      task = replaceSection(task, "Implementation Test Evidence", checkRecord("implementation-check", 1, "TESTS_PASS", 1));
+      if (operation === "APPLY_FINDINGS") {
+        task = replaceSection(task, "Validation Attempts", NEEDS_FIX_ATTEMPT);
+        task = replaceSection(task, "Validation Findings", ACTIVE_FINDING);
+      }
+      return task;
+    });
+    const root = await temporary(t, "stnl-operation-recovery-");
+    const responseFile = path.join(root, "response.json");
+    const receiptFile = path.join(root, "receipt.json");
+    const response = "{malformed json";
+    await fs.writeFile(responseFile, response, "utf8");
+    await fs.writeFile(receiptFile, JSON.stringify({
+      status: "RUNNER_RESPONSE_CAPTURED", operation, semanticResponseFile: responseFile,
+      semanticResponseSha256: createHash("sha256").update(response).digest("hex"),
+      captureFailure: null, error: null,
+    }), "utf8");
+    let candidateRoot;
+    if (operation === "APPLY_FINDINGS") {
+      const copy = await prepareExecutionCopy({ specPath: fixture.requirements, slice: "slice-01" });
+      candidateRoot = path.join(root, "execution");
+      const cli = spawnSync(process.execPath, [
+        path.join(ROOT, "skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs"),
+        "--execution-bundle", "--operation", operation, "--workspace", fixture.root,
+        "--task-artifact", copy.candidateTaskArtifact, "--semantic-response-file", responseFile,
+        "--receipt-file", receiptFile, "--insert-candidate",
+      ], { encoding: "utf8" });
+      assert.equal(cli.status, 0, cli.stderr);
+      assert.equal(JSON.parse(cli.stdout).state, "RUNNER_RESULT_BLOCKED");
+      await copyDirectory(copy.candidateExecutionRoot, candidateRoot);
+      await fs.rm(path.join(candidateRoot, ".stnl-execution-copy.json"));
+    } else {
+      candidateRoot = path.join(root, "execution");
+      await copyDirectory(fixture.execution, candidateRoot);
+      const prepared = await prepareValidationCandidate({
+        specPath: fixture.requirements, slice: "1", workspace: fixture.root,
+        candidateExecutionRoot: candidateRoot, semanticResponseFile: responseFile, receiptFile,
+      });
+      assert.equal(prepared.status, "RUNNER_RESULT_BLOCKED");
+    }
+    const strict = await validateExecutionCandidate(fixture.requirements, candidateRoot);
+    assert.equal(strict.state, "RUNNER_RESULT_BLOCKED");
+    assert.equal(strict.mandatoryRecovery.operation, operation);
+  }
+});
+
+test("APPLY and VALIDATE share lossless command and explanatory carriers", async (t) => {
+  const fixture = await standaloneWorkspace(t);
+  await renderArtifacts(fixture);
+  await writeValidatedPath(fixture);
+  const taskArtifact = path.join(fixture.execution, "tasks/slice-01.md");
+  await fs.writeFile(taskArtifact, replaceSection(await fs.readFile(taskArtifact, "utf8"),
+    "Changed Areas", "- `../../src/example.txt`"), "utf8");
+  const command = "node --input-type=module <<'NODE'\nconsole.log(`result`);\nNODE";
+  const explanation = "line one\nline `two`";
+  const execute = {
+    status: "TESTS_PASS", automaticCheckRound: "1/3", head: "fixture-head",
+    discoverySources: explanation, discoveryActions: "inspection", verificationTypesConsidered: "unit",
+    nonApplicabilityRationale: "none", noVerificationCommandConfirmation: "ran",
+    commands: [{ command, exit: 0 }], resultOfEachCommandAndExitCode: "pass",
+    selectedChecks: "unit", selectionRationale: "direct", coverage: "AC-001", failures: "none",
+    evidenceOrFailureSummary: explanation, affectedFilesOrBehaviors: "example", blockers: "none",
+    unexpectedWorkspaceEffects: "none", persistenceSummary: "none",
+  };
+  const apply = {
+    ...execute, findingsCycle: "attempt-01", findingsVerified: "none", correctionsCovered: explanation,
+    regressionsSelected: explanation, unsupportedActiveFindings: "none",
+  };
+  const applyBundle = await serializeRunnerExecutionBundleFromResponse({ operation: "APPLY_FINDINGS",
+    response: JSON.stringify(apply), workspace: fixture.root, taskArtifact });
+  assert.ok(applyBundle.includes(`json:${JSON.stringify(command)} | exit:0`));
+  assert.ok(applyBundle.includes(`json:${JSON.stringify(explanation)}`));
+  const validation = {
+    status: "PASS", head: "fixture-head", commands: [{ command, exit: 0 }], evidence: explanation,
+    findingReferences: "none", findingDispositions: "none", blockers: "none",
+    unexpectedWorkspaceEffects: explanation, persistenceSummary: "none",
+  };
+  const validationBundle = await serializeRunnerValidationBundleFromResponse({ operation: "VALIDATE_SLICE",
+    response: JSON.stringify(validation), workspace: fixture.root, taskArtifact,
+    specPath: fixture.requirements, slice: "1" });
+  assert.equal(validationBundle.split(`json:${JSON.stringify(command)} | exit:0`).length - 1, 3);
+  assert.ok(validationBundle.includes(`Evidence: json:${JSON.stringify(explanation)}`));
+});
+
+test("APPLY round two derives required correction fields from existing authority", async (t) => {
+  const fixture = await standaloneWorkspace(t);
+  await renderArtifacts(fixture);
+  await writeValidatedPath(fixture);
+  await editTask(fixture, (value) => {
+    let task = value.replace("- [ ] 1.1", "- [x] 1.1");
+    task = replaceSection(task, "Changed Areas", "- `../../src/example.txt`");
+    task = replaceSection(task, "Corrections Applied", "- `../../src/example.txt`");
+    task = replaceSection(task, "Implementation Test Evidence", checkRecord("implementation-check", 1, "TESTS_PASS", 1));
+    task = replaceSection(task, "Validation Attempts", NEEDS_FIX_ATTEMPT);
+    task = replaceSection(task, "Validation Findings", ACTIVE_FINDING);
+    return replaceSection(task, "Findings Test Evidence",
+      checkRecord("findings-check", 1, "TESTS_FAIL", 1, { cycle: "attempt-01" }));
+  });
+  const payload = {
+    status: "TESTS_PASS", automaticCheckRound: "2/3", findingsCycle: "attempt-01", head: "fixture-head",
+    discoverySources: "task", discoveryActions: "inspection", verificationTypesConsidered: "unit",
+    nonApplicabilityRationale: "none", noVerificationCommandConfirmation: "ran",
+    commands: [{ command: "npm test", exit: 0 }], resultOfEachCommandAndExitCode: "pass",
+    selectedChecks: "unit", selectionRationale: "same finding correction", coverage: "AC-001",
+    findingsVerified: "finding-01", correctionsCovered: "corrected observable mismatch",
+    regressionsSelected: "unit", unsupportedActiveFindings: "none", failures: "none",
+    evidenceOrFailureSummary: "pass", affectedFilesOrBehaviors: "example", blockers: "none",
+    unexpectedWorkspaceEffects: "none", persistenceSummary: "none",
+  };
+  const bundle = await serializeRunnerExecutionBundleFromResponse({ operation: "APPLY_FINDINGS",
+    response: JSON.stringify(payload), workspace: fixture.root,
+    taskArtifact: path.join(fixture.execution, "tasks/slice-01.md") });
+  assert.match(bundle, /- Prior-round failure: observable mismatch/u);
+  assert.match(bundle, /- Correction applied: corrected observable mismatch/u);
+  assert.match(bundle, /- In-slice rationale: same finding correction/u);
 });
 
 test("deterministic runner response capture preserves the final object and rejects wrappers", async (t) => {
@@ -797,17 +1052,19 @@ test("deterministic runner evidence serializer emits physical task-relative SHA-
     specPath: fixture.requirements,
     slice: "1",
   }), /head.*backticks|head.*scalar|canonical HEAD/u);
-  await assert.rejects(serializeRunnerValidationBundleFromResponse({
+  const quotedCommand = "node `--test` test/example.test.mjs";
+  const quotedBundle = await serializeRunnerValidationBundleFromResponse({
     operation: "VALIDATE_SLICE",
     response: JSON.stringify({
       ...JSON.parse(semanticValidationResponse),
-      commands: [{ command: "node `--test` test/example.test.mjs", exit: 0 }],
+      commands: [{ command: quotedCommand, exit: 0 }],
     }),
     workspace,
     taskArtifact,
     specPath: fixture.requirements,
     slice: "1",
-  }), /semantic validation payload command 1 is not a complete single-line command/u);
+  });
+  assert.ok(quotedBundle.includes(`json:${JSON.stringify(quotedCommand)} | exit:0`));
   const taskBeforeOverlap = await fs.readFile(taskArtifact, "utf8");
   const overlapTask = replaceSection(
     taskBeforeOverlap,
@@ -1211,10 +1468,10 @@ test("deterministic runner evidence serializer emits physical task-relative SHA-
     serializeRunnerResponse({ operation: "EXECUTE_SLICE", fields: { ...responseFields, Operation: "Operação" }, workspace, taskArtifact, targets: [physicalTarget], commands: [{ command: "node --test", exit: 0 }] }),
     /response Operation must be EXECUTE_SLICE/u,
   );
-  await assert.rejects(
-    serializeRunnerRecord({ workspace, taskArtifact, targets: [physicalTarget], commands: [{ command: "node `bad`", exit: 0 }] }),
-    /single-line command without backticks/u,
-  );
+  const backtickRecord = await serializeRunnerRecord({
+    workspace, taskArtifact, targets: [physicalTarget], commands: [{ command: "node `bad`", exit: 0 }],
+  });
+  assert.ok(backtickRecord.includes(`json:${JSON.stringify("node `bad`")} | exit:0`));
   await assert.rejects(
     serializeRunnerRecord({ workspace, taskArtifact, targets: [physicalTarget], commands: [] }),
     /at least one executed command/u,

@@ -114,7 +114,7 @@ test('APPLY_FINDINGS provider schema uses the exact official NEEDS_FIX cycle', a
   ] }]]) };
   const scoped = scopeApplyFindingsSchema(schema, state, 'slice-01');
   assert.deepEqual(scoped.properties.findingsCycle, { type: 'string', enum: ['attempt-02'] });
-  assert.deepEqual(schema.properties.findingsCycle, { type: 'string' });
+  assert.deepEqual(schema.properties.findingsCycle, { type: 'string', pattern: '^[^\\r\\n`]+$' });
   assert.throws(() => scopeApplyFindingsSchema(schema, state, 'slice-02'), /no canonical active findings cycle/u);
   assert.throws(() => scopeApplyFindingsSchema(schema, { tasks: new Map([['slice-01', {
     attempts: [{ id: 'finding-01', status: 'NEEDS_FIX' }],

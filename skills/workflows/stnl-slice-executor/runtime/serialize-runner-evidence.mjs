@@ -11,7 +11,7 @@ function fail(message) {
 }
 
 const CLI_HELP = `Usage:
-  serialize-runner-evidence.mjs --execution-bundle --operation <EXECUTE_SLICE|APPLY_FINDINGS> --workspace <absolute> (--task-artifact <absolute> | --spec-path <absolute> --slice <slice>) --semantic-response-file <absolute> [--insert-candidate]
+  serialize-runner-evidence.mjs --execution-bundle --operation <EXECUTE_SLICE|APPLY_FINDINGS> --workspace <absolute> (--task-artifact <absolute> | --spec-path <absolute> --slice <slice>) --semantic-response-file <absolute> [--receipt-file <absolute> --insert-candidate]
   serialize-runner-evidence.mjs --record --workspace <absolute> (--task-artifact <absolute> | --spec-path <absolute> --slice <slice>) [--target <absolute>]... [--removed <relative>]... --command "<command>" --exit <integer>...
   serialize-runner-evidence.mjs --response --operation <operation> --workspace <absolute> (--task-artifact <absolute> | --spec-path <absolute> --slice <slice>) [--value "semantic value"]... [--target <absolute>]... [--removed <relative>]... [--command "<command>" --exit <integer>]...
   serialize-runner-evidence.mjs --manifest --workspace <absolute> (--task-artifact <absolute> | --spec-path <absolute> --slice <slice>) [--target <absolute>]... [--removed <relative>]... --command "<command>" --exit <integer>...
@@ -110,17 +110,33 @@ async function canonicalTestedScope({ workspace, taskArtifact, targets = [], rem
   return entries.map(({ claim }) => claim).join(", ");
 }
 
+function serializeCommand(command, label) {
+  if (typeof command !== "string" || command.length === 0) fail(`${label} must be a non-empty command`);
+  return /[`\r\n]/u.test(command) ? `json:${JSON.stringify(command)}` : `\`${command}\``;
+}
+
+function decodeCommand(value, label) {
+  if (value.startsWith("json:")) {
+    let command;
+    try { command = JSON.parse(value.slice(5)); } catch { fail(`${label} must use a canonical json-quoted command`); }
+    if (typeof command !== "string" || command.length === 0
+      || serializeCommand(command, label) !== value) fail(`${label} must use a canonical json-quoted command`);
+    return command;
+  }
+  const match = value.match(/^`([^`\r\n]+)`$/u);
+  if (match === null) fail(`${label} is malformed`);
+  return match[1];
+}
+
 function serializeCommands(commands) {
   if (!Array.isArray(commands)) fail("commands must be an array");
   return commands.map((entry, index) => {
     if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
       fail(`command ${index + 1} must be an object`);
     }
-    if (typeof entry.command !== "string" || entry.command.length === 0 || entry.command.includes("\n") || entry.command.includes("\r") || entry.command.includes("`")) {
-      fail(`command ${index + 1} must be a complete single-line command without backticks`);
-    }
+    serializeCommand(entry.command, `command ${index + 1}`);
     if (!Number.isSafeInteger(entry.exit)) fail(`command ${index + 1} exit must be an integer`);
-    return `  - \`${entry.command}\` | exit:${entry.exit}`;
+    return `  - ${serializeCommand(entry.command, `command ${index + 1}`)} | exit:${entry.exit}`;
   }).join("\n");
 }
 
@@ -229,7 +245,7 @@ const EXPLANATORY_EXECUTION_FIELDS = new Set([
   "No verification-command confirmation", "Result of each command and exit code", "Selected checks",
   "Selection rationale", "Coverage", "Failures", "Prior-round failure", "Correction applied",
   "In-slice rationale", "Evidence", "Evidence or failure summary", "Affected files or behaviors", "Blockers",
-  "Unexpected workspace effects", "Persistence summary", "Regressions selected", "Fileless reason",
+  "Unexpected workspace effects", "Persistence summary", "Regressions selected", "Corrections covered", "Fileless reason",
 ]);
 
 const EXPLANATORY_VALIDATION_FIELDS = new Set([
@@ -237,11 +253,9 @@ const EXPLANATORY_VALIDATION_FIELDS = new Set([
 ]);
 
 function serializeMarkdownScalar(name, value, explanatory = false) {
-  if (typeof value !== "string" || value.length === 0 || value.includes("\n") || value.includes("\r")) {
-    fail(`${name} must be a complete single-line scalar`);
-  }
+  if (typeof value !== "string" || value.length === 0) fail(`${name} must be a non-empty scalar`);
   if (!explanatory) return validateScalarField(name, value);
-  return value.includes("`") || value.startsWith("json:") ? `json:${JSON.stringify(value)}` : value;
+  return /[`\r\n]/u.test(value) || value.startsWith("json:") ? `json:${JSON.stringify(value)}` : value;
 }
 
 function decodeMarkdownScalar(name, value, explanatory = false) {
@@ -257,8 +271,8 @@ function decodeMarkdownScalar(name, value, explanatory = false) {
   } catch {
     fail(`${name} must use a canonical json-quoted scalar`);
   }
-  if (typeof decoded !== "string" || decoded.length === 0 || decoded.includes("\n") || decoded.includes("\r")
-    || `json:${JSON.stringify(decoded)}` !== value) {
+  if (typeof decoded !== "string" || decoded.length === 0
+    || serializeMarkdownScalar(name, decoded, true) !== value) {
     fail(`${name} must use a canonical json-quoted scalar`);
   }
   return decoded;
@@ -417,9 +431,9 @@ function parseSemanticExecutionResponse(text, operation) {
       cursor += 1;
       const commands = [];
       while (cursor < lines.length && lines[cursor].startsWith("  - ")) {
-        const match = lines[cursor].match(/^  - `([^`\n]+)` \| exit:(-?[0-9]+)$/u);
+        const match = lines[cursor].match(/^  - (.+) \| exit:(-?[0-9]+)$/u);
         if (match === null) fail("semantic execution response contains a malformed command tuple");
-        commands.push({ command: match[1], exit: Number(match[2]) });
+        commands.push({ command: decodeCommand(match[1], "semantic execution command"), exit: Number(match[2]) });
         cursor += 1;
       }
       if (commands.length === 0) fail("semantic execution response must contain at least one command tuple or Commands: none");
@@ -455,6 +469,12 @@ function parseSemanticExecutionPayload(text, operation) {
   if (payload === null || typeof payload !== "object" || Array.isArray(payload)) {
     fail("semantic execution payload must be one canonical JSON object");
   }
+  if (!["TESTS_PASS", "TESTS_FAIL", "TESTS_NOT_APPLICABLE", "BLOCKED"].includes(payload.status)) {
+    fail("semantic execution payload Status is invalid");
+  }
+  if (!["1/3", "2/3", "3/3"].includes(payload.automaticCheckRound)) {
+    fail("semantic execution payload Automatic check round is invalid");
+  }
   const allowed = new Set([...fields.map(([key]) => key), "filelessReason"]);
   for (const key of Object.keys(payload)) {
     if (!allowed.has(key)) fail(`unknown semantic execution payload field: ${key}`);
@@ -470,16 +490,13 @@ function parseSemanticExecutionPayload(text, operation) {
       || JSON.stringify(Object.keys(command).sort()) !== JSON.stringify(["command", "exit"])) {
       fail(`semantic execution payload command ${index + 1} must contain only command and exit`);
     }
-    if (typeof command.command !== "string" || command.command.length === 0
-      || command.command.includes("\n") || command.command.includes("\r") || command.command.includes("`")) {
-      fail(`semantic execution payload command ${index + 1} is not a complete single-line command`);
-    }
+    serializeCommand(command.command, `semantic execution payload command ${index + 1}`);
     if (!Number.isSafeInteger(command.exit)) fail(`semantic execution payload command ${index + 1} exit must be an integer`);
   }
   if (payload.commands.length === 0 && !new Set(["BLOCKED", "TESTS_NOT_APPLICABLE"]).has(payload.status)) {
     fail("non-blocked semantic execution payload requires executed commands");
   }
-  if (payload.automaticCheckRound !== "1/3") {
+  if (operation === "EXECUTE_SLICE" && payload.automaticCheckRound !== "1/3") {
     for (const key of ["priorRoundFailure", "correctionApplied", "inSliceRationale"]) {
       if (/^(?:none|pending|n\/a)$/iu.test(payload[key])) {
         fail(`${key} is required for automatic check rounds after 1/3`);
@@ -527,10 +544,7 @@ function parseSemanticValidationPayload(text) {
       || JSON.stringify(Object.keys(command).sort()) !== JSON.stringify(["command", "exit"])) {
       fail(`semantic validation payload command ${index + 1} must contain only command and exit`);
     }
-    if (typeof command.command !== "string" || command.command.length === 0
-      || command.command.includes("\n") || command.command.includes("\r") || command.command.includes("`")) {
-      fail(`semantic validation payload command ${index + 1} is not a complete single-line command`);
-    }
+    serializeCommand(command.command, `semantic validation payload command ${index + 1}`);
     if (!Number.isSafeInteger(command.exit)) fail(`semantic validation payload command ${index + 1} exit must be an integer`);
   }
   return payload;
@@ -1026,6 +1040,23 @@ export async function serializeRunnerExecutionBundleFromResponse({
   ]);
   const targets = await deriveExecutionTargetsFromTask({ workspace, taskArtifact });
   const taskText = await fs.readFile(taskArtifact, "utf8");
+  if (operation === "APPLY_FINDINGS" && parsed["Automatic check round"] !== "1/3") {
+    const previous = sectionBody(taskText, "Findings Test Evidence")
+      .split(/(?=^### findings-check-[0-9]{2,}$)/mu).filter((record) => record.trim() !== "").at(-1);
+    const priorRound = Number(parsed["Automatic check round"].slice(0, 1)) - 1;
+    if (previous === undefined || !previous.includes(`- Automatic check round: ${priorRound}/3`)
+      || !previous.includes("- Status: TESTS_FAIL")) {
+      fail("APPLY_FINDINGS correction requires prior TESTS_FAIL findings check");
+    }
+    parsed["Prior-round failure"] = previous.match(/^- Failures: (.+)$/mu)?.[1];
+    parsed["Correction applied"] = payload.correctionsCovered;
+    parsed["In-slice rationale"] = payload.selectionRationale;
+    for (const name of ["Prior-round failure", "Correction applied", "In-slice rationale"]) {
+      if (typeof parsed[name] !== "string" || /^(?:none|pending|n\/a)$/iu.test(parsed[name])) {
+        fail(`APPLY_FINDINGS ${name} is required after round 1/3`);
+      }
+    }
+  }
   parsed.correctionPaths = parseCanonicalPathSection(taskText, "Corrections Applied").join(", ") || "none";
   const filelessReason = parsed.filelessReason ?? null;
   if (targets.length === 0 && filelessReason === null) fail("fileless semantic execution response must include Fileless reason");
@@ -1104,6 +1135,61 @@ export async function insertExecutionEvidenceInCandidate({ taskArtifact, operati
     await fs.rm(temporary, { force: true });
   }
   return identifier;
+}
+
+export async function persistMalformedRunnerResultInCandidate({
+  taskArtifact, operation, receiptFile, semanticResponseFile, diagnostic,
+}) {
+  if (!new Set(["EXECUTE_SLICE", "APPLY_FINDINGS", "VALIDATE_SLICE"]).has(operation)) fail("invalid runner recovery operation");
+  const task = await regularFile(taskArtifact, "candidate taskArtifact");
+  const receiptPath = await regularFile(receiptFile, "runner receipt");
+  const responsePath = await regularFile(semanticResponseFile, "semantic response");
+  const receipt = JSON.parse(await fs.readFile(receiptPath, "utf8"));
+  const responseHash = createHash("sha256").update(await fs.readFile(responsePath)).digest("hex");
+  if (receipt.status !== "RUNNER_RESPONSE_CAPTURED" || receipt.operation !== operation
+    || receipt.semanticResponseFile !== responsePath || receipt.semanticResponseSha256 !== responseHash
+    || receipt.captureFailure !== null || receipt.error !== null) {
+    fail("malformed-output recovery requires a matching captured runner response and receipt");
+  }
+  const executionRoot = path.dirname(path.dirname(task));
+  const candidateRoot = path.basename(executionRoot).startsWith(".stnl-execution-copy-")
+    ? executionRoot : path.dirname(executionRoot);
+  if (!path.basename(candidateRoot).startsWith(".stnl-execution-copy-")
+    || !await fs.access(path.join(candidateRoot, ".stnl-execution-copy.json")).then(() => true).catch(() => false)) {
+    // VALIDATE_SLICE uses its separately verified candidate boundary.
+    if (operation !== "VALIDATE_SLICE") fail("malformed-output recovery requires an owned execution candidate");
+  }
+  const slice = path.basename(task, ".md");
+  if (!/^slice-[0-9]{2,}$/u.test(slice)) fail("malformed-output recovery requires a canonical slice task");
+  let taskText = await fs.readFile(task, "utf8");
+  const section = sectionBody(taskText, "Delegation Blocker");
+  if (section !== "- none" && !section.includes(`- Operation: ${operation}\n`)) {
+    fail("existing Delegation Blocker belongs to another operation");
+  }
+  const recordSection = operation === "EXECUTE_SLICE" ? "Implementation Test Evidence"
+    : operation === "APPLY_FINDINGS" ? "Findings Test Evidence" : "Validation Attempts";
+  const prefix = operation === "EXECUTE_SLICE" ? "implementation-check"
+    : operation === "APPLY_FINDINGS" ? "findings-check" : "attempt";
+  const ids = [...sectionBody(taskText, recordSection).matchAll(new RegExp(`^### (${prefix}-[0-9]{2,})$`, "gmu"))];
+  const afterRecord = ids.at(-1)?.[1] ?? "none";
+  const cause = JSON.stringify(String(diagnostic)).replaceAll("<", "\\u003c").replaceAll(">", "\\u003e");
+  const blocker = [
+    `- Operation: ${operation}`,
+    "- Kind: malformed-output",
+    "- State: active",
+    `- After record: ${afterRecord}`,
+    "- Causes:",
+    `  - Producer rejected captured response sha256:${responseHash}: ${cause}`,
+    `  - Captured response: ${responsePath}; receipt: ${receiptPath}`,
+    `- Required action: Resume ${operation} ${slice} with a valid captured runner response.`,
+  ].join("\n");
+  taskText = replaceSectionBody(taskText, "Delegation Blocker", blocker);
+  const temporary = `${task}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    await fs.writeFile(temporary, taskText, { flag: "wx" });
+    await fs.rename(temporary, task);
+  } finally { await fs.rm(temporary, { force: true }); }
+  return { state: "RUNNER_RESULT_BLOCKED", operation, slice, responseHash, diagnostic: String(diagnostic) };
 }
 
 export async function prepareRunnerValidationPersistenceFromResponse({
@@ -1269,6 +1355,10 @@ function argumentValues(tokens) {
     } else if (name === "--fileless-reason") {
       if (values.filelessReason !== undefined) fail("duplicate --fileless-reason");
       values.filelessReason = value;
+    } else if (name === "--receipt-file") {
+      if (values.receiptFile !== undefined) fail("duplicate --receipt-file");
+      if (!path.isAbsolute(value)) fail("--receipt-file must be absolute");
+      values.receiptFile = value;
     } else if (name === "--semantic-response-file") {
       if (values.semanticResponseFile !== undefined) fail("duplicate --semantic-response-file");
       if (!path.isAbsolute(value)) fail("--semantic-response-file must be absolute");
@@ -1304,6 +1394,9 @@ function argumentValues(tokens) {
   if (values.validationBundle && values.operation !== "VALIDATE_SLICE") {
     fail("--validation-bundle requires --operation VALIDATE_SLICE");
   }
+  if (values.receiptFile !== undefined && (!values.executionBundle || !values.insertCandidate)) {
+    fail("--receipt-file requires --execution-bundle and --insert-candidate");
+  }
   if (values.semanticResponseFile !== undefined && !values.validationBundle && !values.executionBundle) {
     fail("--semantic-response-file requires --execution-bundle or --validation-bundle");
   }
@@ -1327,18 +1420,28 @@ if (import.meta.url === pathToFileURL(path.resolve(process.argv[1] ?? "")).href)
     if (values.response) {
       process.stdout.write(`${await serializeRunnerResponse({ ...values, values: values.semanticValues })}\n`);
     } else if (values.executionBundle) {
-      const bundle = await serializeRunnerExecutionBundleFromResponse({
-        operation: values.operation,
-        response: await fs.readFile(values.semanticResponseFile, "utf8"),
-        workspace: values.workspace,
-        taskArtifact: values.taskArtifact,
-      });
-      if (values.insertCandidate) {
-        const identifier = await insertExecutionEvidenceInCandidate({
-          taskArtifact: values.taskArtifact, operation: values.operation, bundle,
+      try {
+        const bundle = await serializeRunnerExecutionBundleFromResponse({
+          operation: values.operation,
+          response: await fs.readFile(values.semanticResponseFile, "utf8"),
+          workspace: values.workspace,
+          taskArtifact: values.taskArtifact,
         });
-        process.stdout.write(`${identifier} inserted into isolated candidate\n`);
-      } else process.stdout.write(`${bundle}\n`);
+        if (values.insertCandidate) {
+          const identifier = await insertExecutionEvidenceInCandidate({
+            taskArtifact: values.taskArtifact, operation: values.operation, bundle,
+          });
+          process.stdout.write(`${identifier} inserted into isolated candidate\n`);
+        } else process.stdout.write(`${bundle}\n`);
+      } catch (error) {
+        if (!values.insertCandidate || values.receiptFile === undefined) throw error;
+        const recovery = await persistMalformedRunnerResultInCandidate({
+          taskArtifact: values.taskArtifact, operation: values.operation,
+          receiptFile: values.receiptFile, semanticResponseFile: values.semanticResponseFile,
+          diagnostic: error.message,
+        });
+        process.stdout.write(`${JSON.stringify(recovery)}\n`);
+      }
     } else if (values.validationBundle) {
       const bundle = values.semanticResponseFile === undefined
         ? await serializeRunnerValidationBundle({ ...values, values: values.semanticValues })

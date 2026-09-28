@@ -14,12 +14,12 @@
   "properties": {
     "status": { "enum": ["TESTS_PASS", "TESTS_FAIL", "TESTS_NOT_APPLICABLE", "BLOCKED"] },
     "automaticCheckRound": { "enum": ["1/3", "2/3", "3/3"] },
-    "head": { "type": "string" },
-    "discoverySources": { "type": "string" },
-    "discoveryActions": { "type": "string" },
-    "verificationTypesConsidered": { "type": "string" },
-    "nonApplicabilityRationale": { "type": "string" },
-    "noVerificationCommandConfirmation": { "type": "string" },
+    "head": { "type": "string", "pattern": "^[^\\r\\n`]+$" },
+    "discoverySources": { "type": "string", "pattern": "^[\\s\\S]+$" },
+    "discoveryActions": { "type": "string", "pattern": "^[\\s\\S]+$" },
+    "verificationTypesConsidered": { "type": "string", "pattern": "^[\\s\\S]+$" },
+    "nonApplicabilityRationale": { "type": "string", "pattern": "^[\\s\\S]+$" },
+    "noVerificationCommandConfirmation": { "type": "string", "pattern": "^[\\s\\S]+$" },
     "commands": {
       "type": "array",
       "items": {
@@ -27,23 +27,23 @@
         "additionalProperties": false,
         "required": ["command", "exit"],
         "properties": {
-          "command": { "type": "string" },
-          "exit": { "type": "integer" }
+          "command": { "type": "string", "pattern": "^[\\s\\S]+$" },
+          "exit": { "type": "integer", "minimum": -9007199254740991, "maximum": 9007199254740991 }
         }
       }
     },
-    "resultOfEachCommandAndExitCode": { "type": "string" },
-    "selectedChecks": { "type": "string" },
-    "selectionRationale": { "type": "string" },
-    "coverage": { "type": "string" },
-    "failures": { "type": "string" },
-    "priorRoundFailure": { "type": "string" },
-    "correctionApplied": { "type": "string" },
-    "inSliceRationale": { "type": "string" },
-    "evidenceOrFailureSummary": { "type": "string" },
-    "affectedFilesOrBehaviors": { "type": "string" },
-    "blockers": { "type": "string" },
-    "unexpectedWorkspaceEffects": { "type": "string" },
-    "persistenceSummary": { "type": "string" }
+    "resultOfEachCommandAndExitCode": { "type": "string", "pattern": "^[\\s\\S]+$" },
+    "selectedChecks": { "type": "string", "pattern": "^[\\s\\S]+$" },
+    "selectionRationale": { "type": "string", "pattern": "^[\\s\\S]+$" },
+    "coverage": { "type": "string", "pattern": "^[\\s\\S]+$" },
+    "failures": { "type": "string", "pattern": "^[\\s\\S]+$" },
+    "priorRoundFailure": { "type": "string", "pattern": "^[\\s\\S]+$" },
+    "correctionApplied": { "type": "string", "pattern": "^[\\s\\S]+$" },
+    "inSliceRationale": { "type": "string", "pattern": "^[\\s\\S]+$" },
+    "evidenceOrFailureSummary": { "type": "string", "pattern": "^[\\s\\S]+$" },
+    "affectedFilesOrBehaviors": { "type": "string", "pattern": "^[\\s\\S]+$" },
+    "blockers": { "type": "string", "pattern": "^[\\s\\S]+$" },
+    "unexpectedWorkspaceEffects": { "type": "string", "pattern": "^[\\s\\S]+$" },
+    "persistenceSummary": { "type": "string", "pattern": "^[\\s\\S]+$" }
   }
 }

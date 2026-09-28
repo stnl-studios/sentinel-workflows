@@ -10,24 +10,25 @@
   ],
   "properties": {
     "status": { "enum": ["PASS", "NEEDS_FIX", "BLOCKED"] },
-    "head": { "type": "string" },
+    "head": { "type": "string", "pattern": "^[^\\r\\n`]+$" },
     "commands": {
       "type": "array",
+      "minItems": 1,
       "items": {
         "type": "object",
         "additionalProperties": false,
         "required": ["command", "exit"],
         "properties": {
-          "command": { "type": "string" },
-          "exit": { "type": "integer" }
+          "command": { "type": "string", "pattern": "^[\\s\\S]+$" },
+          "exit": { "type": "integer", "minimum": -9007199254740991, "maximum": 9007199254740991 }
         }
       }
     },
-    "evidence": { "type": "string" },
-    "findingReferences": { "type": "string" },
-    "findingDispositions": { "type": "string" },
-    "blockers": { "type": "string" },
-    "unexpectedWorkspaceEffects": { "type": "string" },
-    "persistenceSummary": { "type": "string" }
+    "evidence": { "type": "string", "pattern": "^[\\s\\S]+$" },
+    "findingReferences": { "type": "string", "pattern": "^[^\\r\\n`]+$" },
+    "findingDispositions": { "type": "string", "pattern": "^[^\\r\\n`]+$" },
+    "blockers": { "type": "string", "pattern": "^[\\s\\S]+$" },
+    "unexpectedWorkspaceEffects": { "type": "string", "pattern": "^[\\s\\S]+$" },
+    "persistenceSummary": { "type": "string", "pattern": "^[\\s\\S]+$" }
   }
 }
