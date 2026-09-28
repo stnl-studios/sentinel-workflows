@@ -11,6 +11,44 @@ function fail(message) {
   throw new Error(message);
 }
 
+export class RunnerVerdictEvidenceError extends Error {
+  constructor(operation, status, failedCommands) {
+    super(`${operation} ${status} contradicts ${failedCommands.length} marked verification command(s) with non-zero exit`);
+    this.name = "RunnerVerdictEvidenceError";
+    this.code = "RUNNER_VERDICT_EVIDENCE_CONFLICT";
+    this.operation = operation;
+    this.status = status;
+    this.failedCommands = failedCommands;
+  }
+}
+
+export class RunnerSemanticResultError extends Error {
+  constructor(operation, cause) {
+    super(`${operation} captured semantic result is invalid: ${cause.message}`, { cause });
+    this.name = "RunnerSemanticResultError";
+    this.code = "RUNNER_SEMANTIC_RESULT_INVALID";
+  }
+}
+
+function parseCapturedResult(operation, parse, response) {
+  try { return parse(response, operation); }
+  catch (error) { throw new RunnerSemanticResultError(operation, error); }
+}
+
+export function recoverableRunnerResultDiagnostic(error) {
+  if (!(error instanceof RunnerVerdictEvidenceError || error instanceof RunnerSemanticResultError)) return null;
+  const failed = error instanceof RunnerVerdictEvidenceError
+    ? `; failed verification commands: ${JSON.stringify(error.failedCommands)}` : "";
+  return `${error.code}: ${error.message}${failed}`;
+}
+
+export function assertRunnerVerdictConsistency(operation, status, commands) {
+  const success = operation === "VALIDATE_SLICE" ? status === "PASS" : status === "TESTS_PASS";
+  if (!success) return;
+  const failed = commands.filter(({ exit }) => exit !== 0);
+  if (failed.length !== 0) throw new RunnerVerdictEvidenceError(operation, status, failed);
+}
+
 const CLI_HELP = `Usage:
   serialize-runner-evidence.mjs --execution-bundle --operation <EXECUTE_SLICE|APPLY_FINDINGS> --workspace <absolute> (--task-artifact <absolute> | --spec-path <absolute> --slice <slice>) --semantic-response-file <absolute> [--receipt-file <absolute> --insert-candidate]
   serialize-runner-evidence.mjs --record --workspace <absolute> (--task-artifact <absolute> | --spec-path <absolute> --slice <slice>) [--target <absolute>]... [--removed <relative>]... --command "<command>" --exit <integer>...
@@ -1027,7 +1065,7 @@ export async function serializeRunnerExecutionBundleFromResponse({
   if (!new Set(["EXECUTE_SLICE", "APPLY_FINDINGS"]).has(operation)) {
     fail("execution bundle operation must be EXECUTE_SLICE or APPLY_FINDINGS");
   }
-  const payload = parseSemanticExecutionPayload(response, operation);
+  const payload = parseCapturedResult(operation, parseSemanticExecutionPayload, response);
   const mechanicalCommands = receiptFile === undefined ? payload.commands
     : await resolveRunnerCommandEvents({
       receiptFile, semanticResponseFile, operation, eventIds: verificationEventIds ?? null,
@@ -1035,6 +1073,7 @@ export async function serializeRunnerExecutionBundleFromResponse({
   if (mechanicalCommands.length === 0 && !new Set(["BLOCKED", "TESTS_NOT_APPLICABLE"]).has(payload.status)) {
     fail("runner completed no marked verification command");
   }
+  assertRunnerVerdictConsistency(operation, payload.status, mechanicalCommands);
   await populateExecutionCorrectionClaims({
     workspace,
     taskArtifact,
@@ -1206,7 +1245,7 @@ export async function prepareRunnerValidationPersistenceFromResponse({
   receiptFile, semanticResponseFile, verificationEventIds,
 }) {
   if (operation !== "VALIDATE_SLICE") fail("semantic validation producer operation must be VALIDATE_SLICE");
-  const parsed = parseSemanticValidationPayload(response);
+  const parsed = parseCapturedResult(operation, parseSemanticValidationPayload, response);
   const mechanicalCommands = receiptFile === undefined ? parsed.commands
     : await resolveRunnerCommandEvents({
       receiptFile, semanticResponseFile, operation, eventIds: verificationEventIds ?? null,
@@ -1214,6 +1253,7 @@ export async function prepareRunnerValidationPersistenceFromResponse({
   if (mechanicalCommands.length === 0 && parsed.status !== "BLOCKED") {
     fail("runner completed no marked verification command");
   }
+  assertRunnerVerdictConsistency(operation, parsed.status, mechanicalCommands);
   const state = await inspectExecutionState(specPath);
   const selected = state.tasks?.get(canonicalSliceLabel(String(slice)));
   if (selected === undefined) fail("validation producer could not resolve the selected task");
@@ -1454,11 +1494,12 @@ if (import.meta.url === pathToFileURL(path.resolve(process.argv[1] ?? "")).href)
           process.stdout.write(`${identifier} inserted into isolated candidate\n`);
         } else process.stdout.write(`${bundle}\n`);
       } catch (error) {
-        if (!values.insertCandidate || values.receiptFile === undefined) throw error;
+        const diagnostic = recoverableRunnerResultDiagnostic(error);
+        if (!values.insertCandidate || values.receiptFile === undefined || diagnostic === null) throw error;
         const recovery = await persistMalformedRunnerResultInCandidate({
           taskArtifact: values.taskArtifact, operation: values.operation,
           receiptFile: values.receiptFile, semanticResponseFile: values.semanticResponseFile,
-          diagnostic: error.message,
+          diagnostic,
         });
         process.stdout.write(`${JSON.stringify(recovery)}\n`);
       }

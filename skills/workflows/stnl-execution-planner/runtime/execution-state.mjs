@@ -674,7 +674,10 @@ function requireCommands(record, { permitNone = false, requireZero = false } = {
   const lines = block.split("\n").filter((line) => line.length !== 0);
   const commands = lines.map((line) => parseCommandTuple(line, record.id));
   if (commands.length === 0) throw new ExecutionContractError(`${record.id} has no numeric command evidence`);
-  if (requireZero && commands.some((entry) => entry.exit !== 0)) throw new ExecutionContractError(`${record.id} PASS commands must exit zero`);
+  if (requireZero && commands.some((entry) => entry.exit !== 0)) {
+    throw new ExecutionContractError(`${record.id} PASS commands must exit zero`, [], [],
+      { code: "PASS_COMMAND_EXIT_NONZERO", record: record.id, repairability: "runner-result-recovery" });
+  }
   return commands;
 }
 

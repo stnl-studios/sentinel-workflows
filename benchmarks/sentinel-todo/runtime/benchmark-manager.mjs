@@ -210,6 +210,7 @@ function compactExecution(execution) {
   return { state: execution.state, currentFingerprint: execution.currentFingerprint ?? null,
     legalOperations: execution.legalOperations ?? [], normalHandoff: execution.normalHandoff ?? null,
     requiredRecoveryHandoff: execution.requiredRecoveryHandoff ?? null,
+    mandatoryRecovery: execution.mandatoryRecovery ?? null,
     rows: execution.rows?.map((row) => ({ slice: row.slice, done: row.done, result: row.result })) ?? [] };
 }
 async function officialReadback(product, specPath) {
@@ -272,10 +273,26 @@ export function nextHandoff(operation, readback, readinessResult = null) {
   }
   if (operation === 'SPEC_RESUME') return { operation: 'SPEC_READINESS', slice: null };
   if (operation === 'SPEC_PROMOTE') return { operation: 'PLAN', slice: null };
-  const handoff = readback.executionRaw?.requiredRecoveryHandoff
+  const handoff = readback.executionRaw?.mandatoryRecovery
+    ?? readback.executionRaw?.requiredRecoveryHandoff
     ?? readback.executionRaw?.normalHandoff
     ?? (readback.executionRaw ? readback.product?.deriveNormalHandoff?.(readback.executionRaw, operation) : null);
   return handoff?.operation ? { operation: handoff.operation, slice: handoff.slice ?? null } : null;
+}
+
+export function recoverableRunnerHandoff({ operation, slice, outcome, readback, priorOperations, remainingTurns }) {
+  if (outcome.result !== 'BLOCKED' || outcome.blocker !== 'OFFICIAL_RUNNER_RESULT_BLOCKED'
+    || !RUNNER_OPERATIONS.has(operation) || remainingTurns < 2) return null;
+  const execution = readback.executionRaw;
+  const blocker = execution?.activeDelegationBlockers?.[0];
+  const handoff = execution?.mandatoryRecovery;
+  if (execution?.state !== 'RUNNER_RESULT_BLOCKED' || blocker?.kind !== 'malformed-output'
+    || blocker.operation !== operation || blocker.slice !== slice
+    || handoff?.owner !== 'delegation-blocker' || handoff.operation !== operation
+    || handoff.slice !== slice || handoff.sameOperationResumeRequired !== true
+    || !execution.legalOperations?.some((target) => target.operation === operation && target.slice === slice)
+    || priorOperations.some((entry) => entry.recovery?.operation === operation && entry.recovery.slice === slice)) return null;
+  return { operation, slice, authority: execution.currentFingerprint, state: execution.state };
 }
 async function loadProduct(snapshot) {
   const execution = await import(pathToFileURL(path.join(snapshot, 'skills/workflows/stnl-execution-planner/runtime/execution-state.mjs')).href);
@@ -350,6 +367,7 @@ async function runCase({ runRoot, caseId, configuration, snapshotMetadata, maxOp
     }
   }
   let target = { operation: 'SPEC_INIT', slice: null };
+  let pendingRecovery = null;
   let pendingReadinessResult = null;
   if (resume) {
     if (caseState.status !== 'FOCAL_STOP' || caseState.terminal?.result !== 'FOCAL_STOP'
@@ -393,6 +411,8 @@ async function runCase({ runRoot, caseId, configuration, snapshotMetadata, maxOp
       await assertSnapshotIntegrity(runRoot);
       await product.verifyIsolatedHome(home);
       const { operation, slice } = target;
+      const currentRecovery = pendingRecovery;
+      pendingRecovery = null;
       caseState.pendingTarget = target;
       await atomicJson(path.join(caseRoot, 'case-state.json'), caseState);
       const route = dispatch(configuration, caseId, operation);
@@ -586,16 +606,32 @@ async function runCase({ runRoot, caseId, configuration, snapshotMetadata, maxOp
         runner: { requestsHandled: broker?.requestsHandled ?? 0, errors: broker?.errors ?? [],
           turns: runnerCount, usageObservations: runnerUsageObservations },
         normalizedUsage,
-        journal: { exitCode: journalResult.exitCode, diagnostic: journalResult.stderr || journalResult.stdout }, outcome };
+        journal: { exitCode: journalResult.exitCode, diagnostic: journalResult.stderr || journalResult.stdout }, outcome,
+        recovery: currentRecovery };
       const evidencePath = path.join(caseRoot, `${String(sequence).padStart(2, '0')}-${operation.toLowerCase()}.json`);
       await atomicJson(evidencePath, evidence);
-      caseState.operations.push({ operation, slice, outcome, evidencePath, threadId: turn.threadId });
+      caseState.operations.push({ operation, slice, outcome, evidencePath, threadId: turn.threadId,
+        recovery: currentRecovery });
       await atomicJson(path.join(caseRoot, 'case-state.json'), caseState);
       announce({ runId: path.basename(runRoot), caseId, operation, slice, state: readback.execution?.state ?? readback.lifecycle?.status,
         result: outcome.result, durationMs: evidence.durationMs, model: route.label, effort: route.effort,
         mainTurns: caseState.mainTurns, runnerTurns: caseState.runnerTurns,
         ...await budgetSnapshot(runRoot), artifacts: caseRoot });
       terminal = outcome;
+      if (outcome.result === 'BLOCKED') {
+        const recovery = recoverableRunnerHandoff({ operation, slice, outcome, readback,
+          priorOperations: caseState.operations, remainingTurns: (await budgetSnapshot(runRoot)).turnBudget.remaining });
+        if (recovery !== null) {
+          const fresh = await officialReadback(product, specPath);
+          if (fresh.execution?.state === recovery.state
+            && fresh.execution?.currentFingerprint === recovery.authority) {
+            await product.preflightExecutionOperation(specPath, recovery.operation, specInput(recovery.slice));
+            pendingRecovery = recovery;
+            target = nextHandoff(operation, { ...fresh, product });
+            if (target?.operation === recovery.operation && target.slice === recovery.slice) continue;
+          }
+        }
+      }
       if (['BLOCKED', 'FAIL', 'PAUSED_BUDGET_OR_QUOTA'].includes(outcome.result)) break;
       if (operation === 'SPEC_READINESS') pendingReadinessResult = readinessResult;
       target = nextHandoff(operation, { ...readback, product }, pendingReadinessResult);

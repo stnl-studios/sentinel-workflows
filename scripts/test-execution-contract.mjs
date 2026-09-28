@@ -21,6 +21,9 @@ import {
 import { preparePlanCandidate } from "../skills/workflows/stnl-execution-planner/runtime/prepare-plan-candidate.mjs";
 import { serializePlanPathClaims } from "../skills/workflows/stnl-execution-planner/runtime/serialize-plan-paths.mjs";
 import { prepareValidationCandidate } from "../skills/workflows/stnl-slice-quality-manager/runtime/prepare-validation-candidate.mjs";
+import { prepareValidationCopy } from "../skills/workflows/stnl-slice-quality-manager/runtime/prepare-validation-copy.mjs";
+import { recoverRejectedValidationCandidate } from "../skills/workflows/stnl-slice-quality-manager/runtime/recover-rejected-validation-candidate.mjs";
+import { decideOutcome, nextHandoff, recoverableRunnerHandoff } from "../benchmarks/sentinel-todo/runtime/benchmark-manager.mjs";
 import { createManagedSliceContext, managedEnvironment } from "../skills/workflows/stnl-slice-quality-manager/runtime/managed-slice-context.mjs";
 import { publishValidationCandidate } from "../skills/workflows/stnl-slice-quality-manager/runtime/publish-validation-candidate.mjs";
 import { resolveExecutionWorkspace as resolveMaterializerExecutionWorkspace } from "../skills/workflows/stnl-task-materializer/runtime/execution-state.mjs";
@@ -38,6 +41,7 @@ import {
   serializeRunnerValidationBundle,
   serializeRunnerValidationBundleFromResponse,
   persistMalformedRunnerResultInCandidate,
+  assertRunnerVerdictConsistency,
 } from "../skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs";
 import { serializeRunnerValidationBundleFromResponse as serializeQualityManagerValidationBundleFromResponse }
   from "../skills/workflows/stnl-slice-quality-manager/runtime/serialize-runner-evidence.mjs";
@@ -75,6 +79,199 @@ async function capturedCommandEvidence(t, operation, response, command) {
   }));
   return { receiptFile, semanticResponseFile };
 }
+
+async function capturedVerificationSequence(t, operation, response, exits) {
+  const root = await temporary(t, "stnl-verdict-sequence-");
+  const name = `001-${operation.toLowerCase()}-slice-01-attempt-1`;
+  const semanticResponseFile = path.join(root, `${name}.response.json`);
+  const receiptFile = path.join(root, `${name}.receipt.json`);
+  const eventsPath = path.join(root, `${name}.events.jsonl`);
+  const commands = exits.map((exit, index) => ({ command: `STNL_VERIFICATION_COMMAND=1 node --test check-${index + 1}.mjs`, exit }));
+  const events = commands.flatMap(({ command, exit }, index) => [
+    { operationId: `runner-${name}`, type: "item.started", item: { id: `item_${index + 1}`, type: "command_execution", command, status: "in_progress", exit_code: null } },
+    { operationId: `runner-${name}`, type: "item.completed", item: { id: `item_${index + 1}`, type: "command_execution", command, status: "completed", exit_code: exit } },
+  ]);
+  await fs.writeFile(semanticResponseFile, response);
+  await fs.writeFile(eventsPath, `${events.map((event) => JSON.stringify(event)).join("\n")}\n`);
+  await fs.writeFile(receiptFile, JSON.stringify({ status: "RUNNER_RESPONSE_CAPTURED", operation,
+    eventsPath, semanticResponseFile, semanticResponseSha256: createHash("sha256").update(response).digest("hex"),
+    captureFailure: null, error: null, exitCode: 0 }));
+  return { semanticResponseFile, receiptFile, commands };
+}
+
+test("success verdicts reconcile every mechanical exit without suppressing legitimate failures", () => {
+  for (const operation of ["EXECUTE_SLICE", "APPLY_FINDINGS", "VALIDATE_SLICE"]) {
+    const success = operation === "VALIDATE_SLICE" ? "PASS" : "TESTS_PASS";
+    assert.doesNotThrow(() => assertRunnerVerdictConsistency(operation, success, [{ exit: 0 }]));
+    for (const exits of [[1, 0, 0, 0], [1, 0], [1, 0, 1]]) {
+      assert.throws(() => assertRunnerVerdictConsistency(operation, success, exits.map((exit) => ({ command: "check", exit }))),
+        (error) => error.code === "RUNNER_VERDICT_EVIDENCE_CONFLICT" && error.failedCommands.length === exits.filter(Boolean).length);
+    }
+    const failure = operation === "VALIDATE_SLICE" ? "NEEDS_FIX" : "TESTS_FAIL";
+    assert.doesNotThrow(() => assertRunnerVerdictConsistency(operation, failure, [{ exit: 1 }]));
+    assert.doesNotThrow(() => assertRunnerVerdictConsistency(operation, "BLOCKED", [{ exit: 1 }]));
+  }
+});
+
+test("legacy probe escaping and structured assertion distinguish actual priority from stray words", () => {
+  const correct = '{"id":2,"title":"B","completed":false,"priority":"medium"}\n';
+  const overEscapedItem8Needle = String.raw`\"priority\":\"medium\"`;
+  assert.equal(correct.includes(overEscapedItem8Needle), false,
+    "the item_8 JS string searches for literal backslashes absent from JSON output");
+  function weakItem11Check(output) { return output.includes("priority") && output.includes("medium"); }
+  function structuredCheck(output) {
+    const records = output.trim().split("\n").map((line) => JSON.parse(line));
+    return records.length === 1 && records[0]?.priority === "medium";
+  }
+  for (const output of [correct,
+    '{"id":2,"title":"priority medium","completed":false}\n',
+    '{"id":2,"title":"medium","completed":false,"priority":"high"}\n',
+    'priority medium\n']) {
+    assert.equal(weakItem11Check(output), true);
+  }
+  assert.equal(structuredCheck(correct), true);
+  assert.equal(structuredCheck('{"id":2,"title":"priority medium","completed":false}\n'), false);
+  assert.equal(structuredCheck('{"id":2,"title":"medium","completed":false,"priority":"high"}\n'), false);
+  assert.throws(() => structuredCheck('priority medium\n'), SyntaxError);
+});
+
+test("captured contradiction publishes blocker, manager consumes bounded recovery, and valid new attempt completes", async (t) => {
+  const fixture = await standaloneWorkspace(t);
+  await renderArtifacts(fixture);
+  await writeValidatedPath(fixture);
+  await editTask(fixture, (value) => {
+    let task = value.replace("- [ ] 1.1", "- [x] 1.1");
+    task = replaceSection(task, "Changed Areas", "- `../../src/example.txt`");
+    task = replaceSection(task, "Implementation Test Evidence", checkRecord("implementation-check", 1, "TESTS_PASS", 1));
+    return replaceSection(task, "Diff Summary", "- Verified behavior is implemented.");
+  });
+  const candidateParent = await temporary(t, "stnl-recovery-candidates-");
+  const response = JSON.stringify({ status: "PASS", head: "0123456789abcdef0123456789abcdef01234567",
+    commands: [{ command: "semantic claim", exit: 0 }], evidence: "independent checks cover AC-001",
+    findingReferences: "none", findingDispositions: "none", blockers: "none",
+    unexpectedWorkspaceEffects: "none", persistenceSummary: "no changes" });
+  async function candidateFor(exits, clearBlocker = false) {
+    const captured = await capturedVerificationSequence(t, "VALIDATE_SLICE", response, exits);
+    const copy = await prepareValidationCopy({ specPath: fixture.requirements, slice: "slice-01", candidateParent });
+    const candidateTask = path.join(copy.candidateExecutionRoot, "tasks", "slice-01.md");
+    if (clearBlocker) await fs.writeFile(candidateTask,
+      replaceSection(await fs.readFile(candidateTask, "utf8"), "Delegation Blocker", "- none"));
+    const prepared = await prepareValidationCandidate({ specPath: fixture.requirements, slice: "1",
+      workspace: fixture.root, candidateExecutionRoot: copy.candidateExecutionRoot, ...captured });
+    return { copy, prepared, captured };
+  }
+  const first = await candidateFor([1, 0, 0, 0]);
+  assert.equal(first.prepared.status, "RUNNER_RESULT_BLOCKED");
+  assert.match(first.prepared.recovery.diagnostic, /RUNNER_VERDICT_EVIDENCE_CONFLICT/u);
+  assert.equal((await validateExecutionCandidate(fixture.requirements, first.copy.candidateExecutionRoot)).state,
+    "RUNNER_RESULT_BLOCKED");
+  assert.equal((await publishValidationCandidate({ specPath: fixture.requirements, slice: "slice-01",
+    candidateExecutionRoot: first.copy.candidateExecutionRoot })).state, "RUNNER_RESULT_BLOCKED");
+  const firstReadback = await inspectExecutionState(fixture.requirements);
+  assert.equal(firstReadback.tasks.get("slice-01").attempts.length, 0);
+  const readback = { lifecycle: { status: "ready" }, execution: firstReadback, executionRaw: firstReadback };
+  const blocked = decideOutcome("VALIDATE_SLICE", readback, true);
+  assert.deepEqual(blocked, { result: "BLOCKED", blocker: "OFFICIAL_RUNNER_RESULT_BLOCKED" });
+  const recovery = recoverableRunnerHandoff({ operation: "VALIDATE_SLICE", slice: "slice-01", outcome: blocked,
+    readback, priorOperations: [], remainingTurns: 2 });
+  assert.deepEqual(nextHandoff("VALIDATE_SLICE", readback), { operation: "VALIDATE_SLICE", slice: "slice-01" });
+  assert.equal(recovery?.authority, firstReadback.currentFingerprint);
+  assert.equal((await preflightExecutionOperation(fixture.requirements, recovery.operation, "1")).state,
+    "RUNNER_RESULT_BLOCKED");
+  assert.equal(recoverableRunnerHandoff({ operation: "VALIDATE_SLICE", slice: "slice-01", outcome: blocked,
+    readback, priorOperations: [], remainingTurns: 1 }), null);
+  assert.equal(recoverableRunnerHandoff({ operation: "VALIDATE_SLICE", slice: "slice-01", outcome: blocked,
+    readback, priorOperations: [{ recovery }], remainingTurns: 20 }), null);
+
+  const secondContradiction = await candidateFor([1, 0], true);
+  assert.equal(secondContradiction.prepared.status, "RUNNER_RESULT_BLOCKED");
+  assert.equal((await validateExecutionCandidate(fixture.requirements, secondContradiction.copy.candidateExecutionRoot)).state,
+    "RUNNER_RESULT_BLOCKED");
+  assert.equal((await publishValidationCandidate({ specPath: fixture.requirements, slice: "slice-01",
+    candidateExecutionRoot: secondContradiction.copy.candidateExecutionRoot })).state, "RUNNER_RESULT_BLOCKED");
+  const repeated = await inspectExecutionState(fixture.requirements);
+  const repeatedReadback = { lifecycle: { status: "ready" }, execution: repeated, executionRaw: repeated };
+  const repeatedOutcome = decideOutcome("VALIDATE_SLICE", repeatedReadback, true);
+  assert.equal(recoverableRunnerHandoff({ operation: "VALIDATE_SLICE", slice: "slice-01",
+    outcome: repeatedOutcome, readback: repeatedReadback,
+    priorOperations: [{ recovery }], remainingTurns: 20 }), null);
+  const second = await candidateFor([0, 0], true);
+  assert.equal(second.prepared.status, "PREPARED");
+  assert.equal(second.prepared.formalStatus, "PASS");
+  assert.equal((await validateExecutionCandidate(fixture.requirements, second.copy.candidateExecutionRoot)).state,
+    "COMPLETE");
+  assert.equal((await publishValidationCandidate({ specPath: fixture.requirements, slice: "slice-01",
+    candidateExecutionRoot: second.copy.candidateExecutionRoot })).state, "COMPLETE");
+  const completed = await inspectExecutionState(fixture.requirements);
+  assert.equal(completed.tasks.get("slice-01").attempts.length, 1);
+  assert.deepEqual(decideOutcome("VALIDATE_SLICE", { lifecycle: { status: "ready" },
+    execution: completed, executionRaw: completed }, true), { result: "PASS", blocker: null });
+  assert.deepEqual(nextHandoff("VALIDATE_SLICE", { executionRaw: completed }), { operation: "SPEC_CLOSE", slice: null });
+  assert.match(await fs.readFile(path.join(first.copy.candidateExecutionRoot, "tasks", "slice-01.md"), "utf8"),
+    /RUNNER_VERDICT_EVIDENCE_CONFLICT/u);
+});
+
+test("late strict PASS command rejection preserves candidate and publishes only bound recovery", async (t) => {
+  const fixture = await standaloneWorkspace(t);
+  await renderArtifacts(fixture);
+  await writeValidatedPath(fixture);
+  await editTask(fixture, (value) => {
+    let task = value.replace("- [ ] 1.1", "- [x] 1.1");
+    task = replaceSection(task, "Changed Areas", "- `../../src/example.txt`");
+    task = replaceSection(task, "Implementation Test Evidence", checkRecord("implementation-check", 1, "TESTS_PASS", 1));
+    return replaceSection(task, "Diff Summary", "- Verified behavior is implemented.");
+  });
+  const candidateParent = await temporary(t, "stnl-late-rejection-");
+  const response = JSON.stringify({ status: "PASS", head: "0123456789abcdef0123456789abcdef01234567",
+    commands: [{ command: "semantic claim", exit: 0 }], evidence: "independent checks cover AC-001",
+    findingReferences: "none", findingDispositions: "none", blockers: "none",
+    unexpectedWorkspaceEffects: "none", persistenceSummary: "no changes" });
+  const initial = await capturedVerificationSequence(t, "VALIDATE_SLICE", response, [0]);
+  const copy = await prepareValidationCopy({ specPath: fixture.requirements, slice: "slice-01", candidateParent });
+  assert.equal((await prepareValidationCandidate({ specPath: fixture.requirements, slice: "1",
+    workspace: fixture.root, candidateExecutionRoot: copy.candidateExecutionRoot, ...initial })).status, "PREPARED");
+  const rejectedTask = path.join(copy.candidateExecutionRoot, "tasks", "slice-01.md");
+  const prepared = await fs.readFile(rejectedTask, "utf8");
+  const rejected = prepared.replaceAll("check-1.mjs` | exit:0", "check-1.mjs` | exit:1");
+  assert.notEqual(rejected, prepared);
+  await fs.writeFile(rejectedTask, rejected);
+  const liveBefore = await fs.readFile(path.join(fixture.execution, "tasks", "slice-01.md"));
+  await assert.rejects(validateExecutionCandidate(fixture.requirements, copy.candidateExecutionRoot),
+    (error) => error.contractViolation?.code === "PASS_COMMAND_EXIT_NONZERO");
+  const conflicting = await capturedVerificationSequence(t, "VALIDATE_SLICE", response, [1]);
+  const recovered = await recoverRejectedValidationCandidate({ specPath: fixture.requirements, slice: "slice-01",
+    workspace: fixture.root, rejectedCandidateRoot: copy.candidateExecutionRoot, candidateParent, ...conflicting });
+  assert.equal(recovered.publishedState, "RUNNER_RESULT_BLOCKED");
+  assert.equal(recovered.mandatoryRecovery.operation, "VALIDATE_SLICE");
+  assert.equal(await fs.readFile(rejectedTask, "utf8"), rejected);
+  assert.notDeepEqual(await fs.readFile(path.join(fixture.execution, "tasks", "slice-01.md")), liveBefore);
+  assert.equal((await inspectExecutionState(fixture.requirements)).tasks.get("slice-01").attempts.length, 0);
+});
+
+test("missing mechanical evidence is a hard failure, not a malformed runner blocker", async (t) => {
+  const fixture = await standaloneWorkspace(t);
+  await renderArtifacts(fixture);
+  await writeValidatedPath(fixture);
+  await editTask(fixture, (value) => {
+    let task = value.replace("- [ ] 1.1", "- [x] 1.1");
+    task = replaceSection(task, "Changed Areas", "- `../../src/example.txt`");
+    return replaceSection(task, "Implementation Test Evidence", checkRecord("implementation-check", 1, "TESTS_PASS", 1));
+  });
+  const parent = await temporary(t, "stnl-missing-evidence-");
+  const copy = await prepareValidationCopy({ specPath: fixture.requirements, slice: "slice-01", candidateParent: parent });
+  const response = JSON.stringify({ status: "PASS", head: "0123456789abcdef0123456789abcdef01234567",
+    commands: [{ command: "semantic claim", exit: 0 }], evidence: "independent checks cover AC-001",
+    findingReferences: "none", findingDispositions: "none", blockers: "none",
+    unexpectedWorkspaceEffects: "none", persistenceSummary: "no changes" });
+  const captured = await capturedVerificationSequence(t, "VALIDATE_SLICE", response, [0]);
+  await fs.rm(captured.receiptFile);
+  const task = path.join(copy.candidateExecutionRoot, "tasks", "slice-01.md");
+  const before = await fs.readFile(task);
+  await assert.rejects(prepareValidationCandidate({ specPath: fixture.requirements, slice: "1",
+    workspace: fixture.root, candidateExecutionRoot: copy.candidateExecutionRoot, ...captured }), /ENOENT/u);
+  assert.deepEqual(await fs.readFile(task), before);
+  assert.equal((await inspectExecutionState(fixture.requirements)).state, "IMPLEMENTED_AWAITING_VALIDATION");
+});
 
 test("execution producer publishes SDK command and exit despite semantic placeholder and false exit", async (t) => {
   const fixture = await standaloneWorkspace(t);

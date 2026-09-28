@@ -4,7 +4,8 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { prepareRunnerValidationPersistenceFromResponse, persistMalformedRunnerResultInCandidate } from "./serialize-runner-evidence.mjs";
+import { prepareRunnerValidationPersistenceFromResponse, persistMalformedRunnerResultInCandidate,
+  recoverableRunnerResultDiagnostic } from "./serialize-runner-evidence.mjs";
 import { preflightExecutionOperation, resolveExecutionWorkspace } from "./execution-state.mjs";
 import { assertManagedAgreement } from "./managed-slice-context.mjs";
 
@@ -149,10 +150,11 @@ export async function prepareValidationCandidate({ specPath, slice: sliceValue, 
       verificationEventIds,
     });
   } catch (error) {
-    if (receiptFile === undefined) throw error;
+    const diagnostic = recoverableRunnerResultDiagnostic(error);
+    if (receiptFile === undefined || diagnostic === null) throw error;
     const recovery = await persistMalformedRunnerResultInCandidate({
       taskArtifact: candidateTaskFile, operation: "VALIDATE_SLICE",
-      receiptFile, semanticResponseFile: responseFile, diagnostic: error.message,
+      receiptFile, semanticResponseFile: responseFile, diagnostic,
     });
     return Object.freeze({ status: "RUNNER_RESULT_BLOCKED", recovery });
   }

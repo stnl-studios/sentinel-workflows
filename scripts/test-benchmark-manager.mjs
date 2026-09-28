@@ -6,7 +6,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { admitOperation, assertManagedSliceLauncher, budgetSnapshot, decideOutcome,
-  initializeTurnBudget, nextHandoff, settleTurn, startReservedTurn } from '../benchmarks/sentinel-todo/runtime/benchmark-manager.mjs';
+  initializeTurnBudget, nextHandoff, recoverableRunnerHandoff, settleTurn, startReservedTurn } from '../benchmarks/sentinel-todo/runtime/benchmark-manager.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const RUNS = path.join(ROOT, 'benchmark-temp');
@@ -54,6 +54,31 @@ test('INIT ready advances directly and COMPLETE closes without terminal readines
   };
   assert.deepEqual(decideOutcome('SPEC_INIT', initial, true), { result: 'PASS', blocker: null });
   assert.deepEqual(nextHandoff('SPEC_INIT', initial), { operation: 'PLAN', slice: null });
+});
+
+test('manager dispatches only the legal, bounded runner-result recovery', () => {
+  const execution = { state: 'RUNNER_RESULT_BLOCKED', currentFingerprint: 'authority',
+    activeDelegationBlockers: [{ operation: 'VALIDATE_SLICE', slice: 'slice-02', kind: 'malformed-output' }],
+    mandatoryRecovery: { owner: 'delegation-blocker', operation: 'VALIDATE_SLICE',
+      slice: 'slice-02', sameOperationResumeRequired: true },
+    legalOperations: [{ operation: 'VALIDATE_SLICE', slice: 'slice-02' }] };
+  const readback = { execution, executionRaw: execution };
+  const outcome = decideOutcome('VALIDATE_SLICE', readback, true);
+  assert.deepEqual(outcome, { result: 'BLOCKED', blocker: 'OFFICIAL_RUNNER_RESULT_BLOCKED' });
+  assert.deepEqual(nextHandoff('VALIDATE_SLICE', readback), { operation: 'VALIDATE_SLICE', slice: 'slice-02' });
+  const input = { operation: 'VALIDATE_SLICE', slice: 'slice-02', outcome, readback,
+    priorOperations: [], remainingTurns: 2 };
+  assert.equal(recoverableRunnerHandoff(input)?.authority, 'authority');
+  assert.equal(recoverableRunnerHandoff({ ...input, remainingTurns: 1 }), null);
+  assert.equal(recoverableRunnerHandoff({ ...input, priorOperations: [{ recovery: {
+    operation: 'VALIDATE_SLICE', slice: 'slice-02' } }] }), null);
+  assert.equal(recoverableRunnerHandoff({ ...input, readback: { ...readback,
+    executionRaw: { ...execution, legalOperations: [] } } }), null);
+  assert.equal(recoverableRunnerHandoff({ ...input, readback: { ...readback,
+    executionRaw: { ...execution, mandatoryRecovery: null } } }), null);
+  assert.equal(recoverableRunnerHandoff({ ...input, readback: { ...readback,
+    executionRaw: { ...execution, activeDelegationBlockers: [{ ...execution.activeDelegationBlockers[0], kind: 'initialization' }] } } }), null);
+  assert.equal(recoverableRunnerHandoff({ ...input, outcome: { result: 'BLOCKED', blocker: 'OFFICIAL_REQUIREMENTS_CHANGED' } }), null);
 });
 
 test('documentary maturation advances through global findings, RESUME, and status-only promotion', () => {
