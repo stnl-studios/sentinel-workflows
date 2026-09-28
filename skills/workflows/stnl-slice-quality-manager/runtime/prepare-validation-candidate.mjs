@@ -84,7 +84,7 @@ async function writeCandidateFiles(entries) {
   }
 }
 
-export async function prepareValidationCandidate({ specPath, slice: sliceValue, workspace, candidateExecutionRoot, semanticResponseFile, receiptFile }) {
+export async function prepareValidationCandidate({ specPath, slice: sliceValue, workspace, candidateExecutionRoot, semanticResponseFile, receiptFile, verificationEventIds }) {
   assertManagedAgreement({ specPath, workspace, slice: sliceValue });
   if (typeof specPath !== "string" || !path.isAbsolute(specPath)) fail("SPEC_PATH must be absolute");
   if (typeof semanticResponseFile !== "string" || !path.isAbsolute(semanticResponseFile)) {
@@ -144,6 +144,9 @@ export async function prepareValidationCandidate({ specPath, slice: sliceValue, 
       taskArtifact: liveTaskFile,
       specPath,
       slice: slice.slice(6),
+      receiptFile,
+      semanticResponseFile: responseFile,
+      verificationEventIds,
     });
   } catch (error) {
     if (receiptFile === undefined) throw error;

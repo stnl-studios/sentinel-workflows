@@ -5,6 +5,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { inspectExecutionState, resolveExecutionWorkspace } from "./execution-state.mjs";
+import { resolveRunnerCommandEvents } from "./runner-command-events.mjs";
 
 function fail(message) {
   throw new Error(message);
@@ -1021,12 +1022,19 @@ function executionResponseFields(operation, parsed, testedScope) {
 }
 
 export async function serializeRunnerExecutionBundleFromResponse({
-  operation, response, workspace, taskArtifact,
+  operation, response, workspace, taskArtifact, receiptFile, semanticResponseFile, verificationEventIds,
 }) {
   if (!new Set(["EXECUTE_SLICE", "APPLY_FINDINGS"]).has(operation)) {
     fail("execution bundle operation must be EXECUTE_SLICE or APPLY_FINDINGS");
   }
   const payload = parseSemanticExecutionPayload(response, operation);
+  const mechanicalCommands = receiptFile === undefined ? payload.commands
+    : await resolveRunnerCommandEvents({
+      receiptFile, semanticResponseFile, operation, eventIds: verificationEventIds ?? null,
+    });
+  if (mechanicalCommands.length === 0 && !new Set(["BLOCKED", "TESTS_NOT_APPLICABLE"]).has(payload.status)) {
+    fail("runner completed no marked verification command");
+  }
   await populateExecutionCorrectionClaims({
     workspace,
     taskArtifact,
@@ -1038,6 +1046,7 @@ export async function serializeRunnerExecutionBundleFromResponse({
     ...MACHINE_EXECUTION_FIELDS[operation].map(([key, label]) => [label, payload[key]]),
     ["filelessReason", payload.filelessReason],
   ]);
+  parsed.Commands = mechanicalCommands;
   const targets = await deriveExecutionTargetsFromTask({ workspace, taskArtifact });
   const taskText = await fs.readFile(taskArtifact, "utf8");
   if (operation === "APPLY_FINDINGS" && parsed["Automatic check round"] !== "1/3") {
@@ -1194,9 +1203,17 @@ export async function persistMalformedRunnerResultInCandidate({
 
 export async function prepareRunnerValidationPersistenceFromResponse({
   operation = "VALIDATE_SLICE", response, workspace, taskArtifact, specPath, slice, validationType,
+  receiptFile, semanticResponseFile, verificationEventIds,
 }) {
   if (operation !== "VALIDATE_SLICE") fail("semantic validation producer operation must be VALIDATE_SLICE");
   const parsed = parseSemanticValidationPayload(response);
+  const mechanicalCommands = receiptFile === undefined ? parsed.commands
+    : await resolveRunnerCommandEvents({
+      receiptFile, semanticResponseFile, operation, eventIds: verificationEventIds ?? null,
+    });
+  if (mechanicalCommands.length === 0 && parsed.status !== "BLOCKED") {
+    fail("runner completed no marked verification command");
+  }
   const state = await inspectExecutionState(specPath);
   const selected = state.tasks?.get(canonicalSliceLabel(String(slice)));
   if (selected === undefined) fail("validation producer could not resolve the selected task");
@@ -1207,7 +1224,7 @@ export async function prepareRunnerValidationPersistenceFromResponse({
   const targets = await deriveValidationTargetsFromTask({ workspace, taskArtifact });
   const verifiedScope = await canonicalTestedScope({ workspace, taskArtifact, targets });
   const commands = await canonicalValidationCommands({
-    commands: parsed.commands,
+    commands: mechanicalCommands,
     specPath,
     slice,
   });
@@ -1394,8 +1411,9 @@ function argumentValues(tokens) {
   if (values.validationBundle && values.operation !== "VALIDATE_SLICE") {
     fail("--validation-bundle requires --operation VALIDATE_SLICE");
   }
-  if (values.receiptFile !== undefined && (!values.executionBundle || !values.insertCandidate)) {
-    fail("--receipt-file requires --execution-bundle and --insert-candidate");
+  if (values.receiptFile !== undefined && !(values.executionBundle && values.insertCandidate)
+    && !(values.validationBundle && values.semanticResponseFile !== undefined)) {
+    fail("--receipt-file requires candidate execution or semantic validation bundle");
   }
   if (values.semanticResponseFile !== undefined && !values.validationBundle && !values.executionBundle) {
     fail("--semantic-response-file requires --execution-bundle or --validation-bundle");
@@ -1426,6 +1444,8 @@ if (import.meta.url === pathToFileURL(path.resolve(process.argv[1] ?? "")).href)
           response: await fs.readFile(values.semanticResponseFile, "utf8"),
           workspace: values.workspace,
           taskArtifact: values.taskArtifact,
+          receiptFile: values.receiptFile,
+          semanticResponseFile: values.semanticResponseFile,
         });
         if (values.insertCandidate) {
           const identifier = await insertExecutionEvidenceInCandidate({
@@ -1452,6 +1472,8 @@ if (import.meta.url === pathToFileURL(path.resolve(process.argv[1] ?? "")).href)
           taskArtifact: values.taskArtifact,
           specPath: values.specPath,
           slice: values.slice,
+          receiptFile: values.receiptFile,
+          semanticResponseFile: values.semanticResponseFile,
         });
       process.stdout.write(`${bundle}\n`);
     } else if (values.manifest) {

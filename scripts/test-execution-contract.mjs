@@ -57,6 +57,62 @@ async function temporary(t, prefix = "stnl-execution-contract-") {
   return root;
 }
 
+async function capturedCommandEvidence(t, operation, response, command) {
+  const root = await temporary(t, "stnl-captured-commands-");
+  const name = `001-${operation.toLowerCase()}-slice-01-attempt-1`;
+  const semanticResponseFile = path.join(root, `${name}.response.json`);
+  const receiptFile = path.join(root, `${name}.receipt.json`);
+  const eventsPath = path.join(root, `${name}.events.jsonl`);
+  await fs.writeFile(semanticResponseFile, response);
+  await fs.writeFile(eventsPath, [
+    { operationId: `runner-${name}`, type: "item.started", item: { id: "item_0", type: "command_execution", command, status: "in_progress", exit_code: null } },
+    { operationId: `runner-${name}`, type: "item.completed", item: { id: "item_0", type: "command_execution", command, status: "completed", exit_code: 0 } },
+  ].map((event) => JSON.stringify(event)).join("\n") + "\n");
+  await fs.writeFile(receiptFile, JSON.stringify({
+    status: "RUNNER_RESPONSE_CAPTURED", operation, eventsPath, semanticResponseFile,
+    semanticResponseSha256: createHash("sha256").update(response).digest("hex"),
+    captureFailure: null, error: null, exitCode: 0,
+  }));
+  return { receiptFile, semanticResponseFile };
+}
+
+test("execution producer publishes SDK command and exit despite semantic placeholder and false exit", async (t) => {
+  const fixture = await standaloneWorkspace(t);
+  await renderArtifacts(fixture);
+  await writeValidatedPath(fixture);
+  const copy = await prepareExecutionCopy({ specPath: fixture.requirements, slice: "slice-01" });
+  let candidate = await fs.readFile(copy.candidateTaskArtifact, "utf8");
+  candidate = candidate.replace("- [ ] 1.1", "- [x] 1.1");
+  candidate = replaceSection(candidate, "Changed Areas", "- `../../src/example.txt`");
+  candidate = replaceSection(candidate, "Diff Summary", "- Behavior implemented and checked.");
+  await fs.writeFile(copy.candidateTaskArtifact, candidate);
+  const response = JSON.stringify({
+    status: "TESTS_PASS", automaticCheckRound: "1/3", head: "fixture-head",
+    discoverySources: "task", discoveryActions: "inspected tests", verificationTypesConsidered: "unit",
+    nonApplicabilityRationale: "none", noVerificationCommandConfirmation: "ran",
+    commands: [{ command: "<bounded integration assertions>", exit: 9 }],
+    resultOfEachCommandAndExitCode: "passed", selectedChecks: "focused unit",
+    selectionRationale: "direct", coverage: "AC-001", failures: "none", priorRoundFailure: "none",
+    correctionApplied: "none", inSliceRationale: "none", evidenceOrFailureSummary: "passed",
+    affectedFilesOrBehaviors: "example", blockers: "none", unexpectedWorkspaceEffects: "none",
+    persistenceSummary: "none",
+  });
+  const command = "STNL_VERIFICATION_COMMAND=1 node -e `echo quoted`\ncat <<'EOF'\nlong payload\nEOF";
+  const captured = await capturedCommandEvidence(t, "EXECUTE_SLICE", response, command);
+  const bundle = await serializeRunnerExecutionBundleFromResponse({
+    operation: "EXECUTE_SLICE", response, workspace: fixture.root, taskArtifact: copy.candidateTaskArtifact,
+    ...captured,
+  });
+  assert.ok(bundle.includes(`json:${JSON.stringify(command)} | exit:0`));
+  assert.ok(!bundle.includes("<bounded integration assertions>"));
+  assert.ok(!bundle.includes("exit:9"));
+  await insertExecutionEvidenceInCandidate({ taskArtifact: copy.candidateTaskArtifact, operation: "EXECUTE_SLICE", bundle });
+  const strictRoot = path.join(await temporary(t), "execution");
+  await copyDirectory(copy.candidateExecutionRoot, strictRoot);
+  await fs.rm(path.join(strictRoot, ".stnl-execution-copy.json"));
+  assert.equal((await validateExecutionCandidate(fixture.requirements, strictRoot)).state, "IMPLEMENTED_AWAITING_VALIDATION");
+});
+
 test("execution producer inserts exact hashed evidence only into its owned candidate", async (t) => {
   const fixture = await standaloneWorkspace(t);
   await renderArtifacts(fixture);

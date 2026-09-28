@@ -55,3 +55,4 @@ testem.log
 __MACOSX/
 Thumbs.db
 /diff.txt
+*.zip

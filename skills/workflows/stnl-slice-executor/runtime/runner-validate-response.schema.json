@@ -12,6 +12,7 @@
     "status": { "enum": ["PASS", "NEEDS_FIX", "BLOCKED"] },
     "head": { "type": "string", "pattern": "^[^\\r\\n`]+$" },
     "commands": {
+      "description": "Non-authoritative semantic check claims; exact command and exit come from marked SDK command_execution events.",
       "type": "array",
       "minItems": 1,
       "items": {

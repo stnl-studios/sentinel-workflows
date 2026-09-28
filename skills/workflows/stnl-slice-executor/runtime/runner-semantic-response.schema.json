@@ -101,6 +101,7 @@
   ],
   "$defs": {
     "commands": {
+      "description": "Non-authoritative semantic check claims; exact command and exit come from marked SDK command_execution events.",
       "type": "array",
       "items": {
         "type": "object",
