@@ -144,6 +144,51 @@ async function canonicalEvidenceEntries({ workspace, taskArtifact, targets = [],
   return entries.sort((left, right) => left.claim.localeCompare(right.claim, "en"));
 }
 
+// Capture before control returns to the author. The producer may select a
+// subset later, but it must never read the workspace to reconstruct this round.
+export async function captureRunnerTestedState({ workspace, taskArtifact, changedAreas = null }) {
+  const workspaceRoot = await canonicalWorkspacePath(workspace);
+  const sourceTaskPath = await regularFile(taskArtifact, "source taskArtifact");
+  if (!inside(sourceTaskPath, workspaceRoot)) fail("source taskArtifact must belong to workspace");
+  const taskText = await fs.readFile(sourceTaskPath, "utf8");
+  const claims = changedAreas === null
+    ? parseCanonicalPathSection(taskText, "Changed Areas")
+    : changedAreas;
+  if (!Array.isArray(claims) || claims.some((claim) => typeof claim !== "string")) {
+    fail("runner changedAreas must be a path array");
+  }
+  let expected;
+  const targets = [];
+  const removed = [];
+  for (const raw of [...new Set(claims)]) {
+    const claim = normalizedRelative(raw, "runner changed area");
+    const taskCandidate = path.resolve(path.dirname(sourceTaskPath), claim);
+    const workspaceCandidate = path.resolve(workspaceRoot, claim);
+    const taskPhysical = await existingPhysicalCandidate(taskCandidate, "runner task-relative target");
+    const workspacePhysical = taskCandidate === workspaceCandidate ? taskPhysical
+      : await existingPhysicalCandidate(workspaceCandidate, "runner workspace-relative target");
+    if (taskPhysical !== null && workspacePhysical !== null && taskPhysical !== workspacePhysical) {
+      fail(`runner changed area is ambiguous: ${claim}`);
+    }
+    const physical = taskPhysical ?? workspacePhysical;
+    if (physical !== null) {
+      if (!inside(physical, workspaceRoot)) fail(`runner changed area escapes workspace: ${claim}`);
+      targets.push(physical);
+      continue;
+    }
+    expected ??= new Set(checklistExpectedClaims(taskText));
+    const missing = expected.has(claim) ? taskCandidate : workspaceCandidate;
+    if (!inside(missing, workspaceRoot)) fail(`runner removed area escapes workspace: ${claim}`);
+    const parent = await fs.realpath(path.dirname(missing));
+    if (!inside(parent, workspaceRoot)) fail(`runner removed area escapes workspace: ${claim}`);
+    removed.push(claimFor(sourceTaskPath, missing));
+  }
+  const entries = claims.length === 0 ? [] : await canonicalEvidenceEntries({
+    workspace: workspaceRoot, taskArtifact: sourceTaskPath, targets, removed,
+  });
+  return { workspace: workspaceRoot, sourceTaskPath, entries: entries.map(({ claim, value }) => ({ path: claim, value })) };
+}
+
 async function canonicalTestedScope({ workspace, taskArtifact, targets = [], removed = [] }) {
   const entries = await canonicalEvidenceEntries({ workspace, taskArtifact, targets, removed });
   return entries.map(({ claim }) => claim).join(", ");
@@ -373,12 +418,14 @@ export async function serializeRunnerEvidence({ workspace, taskArtifact, targets
   return entries.map(({ claim, value }) => `  - \`${claim}\` | ${value}`).join("\n");
 }
 
-export async function serializeRunnerRecord({ workspace, taskArtifact, targets = [], removed = [], commands = [], filelessReason = null, allowEmptyCommands = false }) {
-  const hasFileBackedState = targets.length !== 0 || removed.length !== 0;
+export async function serializeRunnerRecord({ workspace, taskArtifact, targets = [], removed = [], capturedEntries = null, commands = [], filelessReason = null, allowEmptyCommands = false }) {
+  const hasFileBackedState = capturedEntries !== null ? capturedEntries.length !== 0 : targets.length !== 0 || removed.length !== 0;
   let testedState;
   if (hasFileBackedState) {
     if (filelessReason !== null) fail("filelessReason is only valid for a fileless state");
-    testedState = await serializeRunnerEvidence({ workspace, taskArtifact, targets, removed, commands });
+    testedState = capturedEntries === null
+      ? await serializeRunnerEvidence({ workspace, taskArtifact, targets, removed, commands })
+      : capturedEntries.map(({ path: claim, value }) => `  - \`${claim}\` | ${value}`).join("\n");
   } else {
     testedState = `- Tested state: none\n- Fileless reason: ${serializeMarkdownScalar("filelessReason", filelessReason ?? "", true)}`;
   }
@@ -700,7 +747,10 @@ async function canonicalApprovedTargets({ workspaceRoot, taskArtifact, taskText 
   const targets = new Map();
   for (const raw of checklistExpectedClaims(taskText)) {
     const candidate = path.resolve(path.dirname(taskArtifact), raw);
-    const physical = await regularFile(candidate, `Checklist expected area ${raw}`);
+    const physical = await existingPhysicalCandidate(candidate, `Checklist expected area ${raw}`) ?? candidate;
+    if (physical === candidate && !inside(await fs.realpath(path.dirname(candidate)), workspaceRoot)) {
+      fail(`Checklist expected area escapes workspace: ${raw}`);
+    }
     if (!inside(physical, workspaceRoot)) fail(`Checklist expected area escapes workspace: ${raw}`);
     targets.set(physical, raw);
   }
@@ -719,7 +769,13 @@ async function canonicalizeScopeClaim({ workspaceRoot, taskArtifact, approvedTar
     fail(`${heading} claim is ambiguous across task and workspace bases: ${claim}`);
   }
   const physical = taskPhysical ?? workspacePhysical;
-  if (physical === null) fail(`${heading} claim does not resolve to a physical target: ${claim}`);
+  if (physical === null) {
+    const missing = approvedTargets.has(taskBasis) ? taskBasis
+      : approvedTargets.has(workspaceBasis) ? workspaceBasis : null;
+    if (missing === null) fail(`${heading} claim does not resolve to an approved target: ${claim}`);
+    if (!inside(await fs.realpath(path.dirname(missing)), workspaceRoot)) fail(`${heading} claim escapes workspace: ${claim}`);
+    return claimFor(taskArtifact, missing);
+  }
   if (!inside(physical, workspaceRoot)) fail(`${heading} claim escapes workspace: ${claim}`);
   if (taskPhysical === null && !approvedTargets.has(physical)) {
     fail(`${heading} workspace-relative claim is not an approved physical target: ${claim}`);
@@ -874,13 +930,21 @@ async function deriveExecutionTargetsFromTask({ workspace, taskArtifact }) {
   }
   const workspaceRoot = await canonicalWorkspacePath(workspace);
   const targets = [];
+  const removed = [];
   for (const claim of uniqueClaims) {
     const physical = path.resolve(path.dirname(taskArtifact), claim);
-    const canonical = await regularFile(physical, `task claim ${claim}`);
-    if (!inside(canonical, workspaceRoot)) fail(`task claim resolves outside workspace: ${claim}`);
-    targets.push(canonical);
+    const canonical = await existingPhysicalCandidate(physical, `task claim ${claim}`);
+    if (canonical === null) {
+      if (!inside(physical, workspaceRoot) || !inside(await fs.realpath(path.dirname(physical)), workspaceRoot)) {
+        fail(`task claim resolves outside workspace: ${claim}`);
+      }
+      removed.push(claim);
+    } else {
+      if (!inside(canonical, workspaceRoot)) fail(`task claim resolves outside workspace: ${claim}`);
+      targets.push(canonical);
+    }
   }
-  return targets;
+  return { targets, removed };
 }
 
 function priorImplementationFailure(taskText, expectedRound) {
@@ -919,8 +983,9 @@ async function populateExecutionCorrectionClaims({ workspace, taskArtifact, oper
   });
   const corrections = [];
   for (const claim of changed.claims) {
-    const physical = await regularFile(path.resolve(path.dirname(canonicalTask), claim), `Changed Areas target ${claim}`);
-    const digest = `sha256:${createHash("sha256").update(await fs.readFile(physical)).digest("hex")}`;
+    const physical = await existingPhysicalCandidate(path.resolve(path.dirname(canonicalTask), claim), `Changed Areas target ${claim}`);
+    const digest = physical === null ? "REMOVED"
+      : `sha256:${createHash("sha256").update(await fs.readFile(physical)).digest("hex")}`;
     if (priorState.get(claim) !== digest) corrections.push(claim);
   }
   const existing = sectionBody(before, "Corrections Applied");
@@ -985,7 +1050,7 @@ function canonicalFindingDispositions(value, label) {
 }
 
 async function serializeCanonicalExecutionCheck({
-  operation, parsed, workspace, taskArtifact, taskText, targets, testedScope,
+  operation, parsed, workspace, taskArtifact, taskText, targets, removed, capturedEntries, testedScope,
 }) {
   const scalar = (label, value) => serializeMarkdownScalar(label, value, EXPLANATORY_EXECUTION_FIELDS.has(label));
   const prefix = operation === "EXECUTE_SLICE" ? "implementation-check" : "findings-check";
@@ -994,6 +1059,8 @@ async function serializeCanonicalExecutionCheck({
     workspace,
     taskArtifact,
     targets,
+    removed,
+    capturedEntries,
     commands: parsed.Commands,
     filelessReason: parsed.filelessReason ?? null,
     allowEmptyCommands: new Set(["BLOCKED", "TESTS_NOT_APPLICABLE"]).has(parsed.Status),
@@ -1044,6 +1111,52 @@ async function serializeCanonicalExecutionCheck({
   return lines.join("\n");
 }
 
+async function capturedExecutionEntries({ receiptFile, operation, workspace, taskArtifact, targets, removed }) {
+  if (receiptFile === undefined) return null;
+  const receipt = JSON.parse(await fs.readFile(receiptFile, "utf8"));
+  if (receipt.testedState === undefined || receipt.testedState === null) {
+    if (Number.isSafeInteger(receipt.attempt)) fail("official runner receipt has no captured Tested state");
+    return null;
+  }
+  const slice = path.basename(taskArtifact, ".md");
+  const stem = `${String(receipt.sequence).padStart(3, "0")}-${operation.toLowerCase()}-${slice}-attempt-${receipt.attempt}`;
+  if (receipt.operation !== operation || receipt.slice !== slice
+    || !Number.isSafeInteger(receipt.sequence) || receipt.sequence < 1
+    || !Number.isSafeInteger(receipt.attempt) || receipt.attempt < 1
+    || path.basename(receiptFile) !== `${stem}.receipt.json`
+    || path.basename(receipt.eventsPath ?? "") !== `${stem}.events.jsonl`
+    || path.basename(receipt.semanticResponseFile ?? "") !== `${stem}.response.json`) {
+    fail("captured Tested state attempt identity mismatch");
+  }
+  const workspaceRoot = await canonicalWorkspacePath(workspace);
+  const candidateTask = await regularFile(taskArtifact, "taskArtifact");
+  const candidateRoot = path.dirname(path.dirname(path.dirname(candidateTask)));
+  const markerFile = path.join(candidateRoot, ".stnl-execution-copy.json");
+  const marker = await fs.readFile(markerFile, "utf8").then(JSON.parse).catch(() => null);
+  const sourceTaskPath = marker === null ? candidateTask : path.join(marker.executionRoot, "tasks", `${slice}.md`);
+  if (marker !== null && marker.slice !== slice) fail("captured Tested state source slice mismatch");
+  if (receipt.testedState.workspace !== workspaceRoot
+    || receipt.testedState.sourceTaskPath !== sourceTaskPath) {
+    fail("captured Tested state workspace/source mismatch");
+  }
+  const entries = receipt.testedState.entries;
+  if (!Array.isArray(entries) || entries.some((entry) => !entry || typeof entry.path !== "string"
+    || !/^(?:sha256:[0-9a-f]{64}|REMOVED)$/u.test(entry.value))) {
+    fail("captured Tested state is malformed");
+  }
+  const claims = entries.map((entry) => normalizedRelative(entry.path, "captured Tested state path"));
+  if (new Set(claims).size !== claims.length
+    || claims.some((claim, index) => index > 0 && claim.localeCompare(claims[index - 1], "en") <= 0)) {
+    fail("captured Tested state paths are not unique and ordered");
+  }
+  const selected = [...targets.map((target) => claimFor(candidateTask, target)), ...removed]
+    .sort((a, b) => a.localeCompare(b, "en"));
+  if (JSON.stringify(selected) !== JSON.stringify(claims)) {
+    fail("captured Tested state does not match candidate target scope");
+  }
+  return entries;
+}
+
 function executionResponseFields(operation, parsed, testedScope) {
   const fields = { Operation: operation };
   for (const name of RESPONSE_FIELDS[operation].slice(1)) {
@@ -1086,7 +1199,8 @@ export async function serializeRunnerExecutionBundleFromResponse({
     ["filelessReason", payload.filelessReason],
   ]);
   parsed.Commands = mechanicalCommands;
-  const targets = await deriveExecutionTargetsFromTask({ workspace, taskArtifact });
+  const { targets, removed } = await deriveExecutionTargetsFromTask({ workspace, taskArtifact });
+  const capturedEntries = await capturedExecutionEntries({ receiptFile, operation, workspace, taskArtifact, targets, removed });
   const taskText = await fs.readFile(taskArtifact, "utf8");
   if (operation === "APPLY_FINDINGS" && parsed["Automatic check round"] !== "1/3") {
     const previous = sectionBody(taskText, "Findings Test Evidence")
@@ -1107,17 +1221,21 @@ export async function serializeRunnerExecutionBundleFromResponse({
   }
   parsed.correctionPaths = parseCanonicalPathSection(taskText, "Corrections Applied").join(", ") || "none";
   const filelessReason = parsed.filelessReason ?? null;
-  if (targets.length === 0 && filelessReason === null) fail("fileless semantic execution response must include Fileless reason");
-  if (targets.length !== 0 && filelessReason !== null) fail("file-backed semantic execution response cannot include Fileless reason");
-  const testedScope = targets.length === 0
+  if (targets.length + removed.length === 0 && filelessReason === null) fail("fileless semantic execution response must include Fileless reason");
+  if (targets.length + removed.length !== 0 && filelessReason !== null) fail("file-backed semantic execution response cannot include Fileless reason");
+  const testedScope = targets.length + removed.length === 0
     ? "none"
-    : await canonicalTestedScope({ workspace, taskArtifact, targets });
+    : capturedEntries === null
+      ? await canonicalTestedScope({ workspace, taskArtifact, targets, removed })
+      : capturedEntries.map((entry) => entry.path).join(", ");
   return serializeCanonicalExecutionCheck({
     operation,
     parsed,
     workspace,
     taskArtifact,
     targets,
+    removed,
+    capturedEntries,
     taskText,
     testedScope,
   });

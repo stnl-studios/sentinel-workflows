@@ -6,6 +6,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { captureRunnerResponse } from '../../../skills/workflows/stnl-slice-executor/runtime/capture-runner-response.mjs';
+import { captureRunnerTestedState } from '../../../skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs';
 import { runCodexTurn } from './sdk-transport.mjs';
 import { submitOfficialRunnerRequest } from './runner-broker.mjs';
 import { readManagedSliceContext } from '../../../skills/workflows/stnl-slice-quality-manager/runtime/managed-slice-context.mjs';
@@ -162,10 +163,19 @@ export async function invokeIndependentRunner({
   let captureFailure = null;
   let semanticResponseFile = null;
   let semanticReceipt = { semanticResponseStatus: null, semanticResponseSha256: null };
+  let testedState = null;
   if (turn.completed) {
     try {
       await captureRunnerResponse({ structuredOutputFile: eventsPath, outputFile: responsePath });
       semanticReceipt = await describeSemanticResponseFile(responsePath);
+      if (operation === 'EXECUTE_SLICE' || operation === 'APPLY_FINDINGS') {
+        let changedAreas = null;
+        try {
+          const payload = JSON.parse(prompt);
+          if (Object.hasOwn(payload, 'changedAreas')) changedAreas = payload.changedAreas;
+        } catch { /* The task artifact remains the source for a manual payload. */ }
+        testedState = await captureRunnerTestedState({ workspace, taskArtifact: taskPath, changedAreas });
+      }
       semanticResponseFile = responsePath;
     } catch (error) { captureFailure = error.message; }
   }
@@ -176,6 +186,7 @@ export async function invokeIndependentRunner({
     requestedModel: turn.requestedModel, requestedEffort: turn.requestedEffort,
     reportedModel: turn.reportedModel, threadId: turn.threadId,
     eventsPath, semanticResponseFile, ...semanticReceipt, captureFailure,
+    testedState,
     error: turn.error, usage: turn.usage,
     exitCode: semanticResponseFile === null ? 1 : 0,
   };
