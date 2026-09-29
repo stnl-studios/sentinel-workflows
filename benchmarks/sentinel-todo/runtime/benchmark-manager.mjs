@@ -33,6 +33,18 @@ const TEMPLATE = {
 const RUNNER_OPERATIONS = new Set(['EXECUTE_SLICE', 'APPLY_FINDINGS', 'VALIDATE_SLICE']);
 const BLOCKED_STATES = new Set(['AUXILIARY_BLOCKED', 'DIVERGENCE_BLOCKED', 'REPLAN_REQUIRED',
   'REQUIREMENTS_CHANGED', 'RUNNER_INITIALIZATION_BLOCKED', 'RUNNER_RESULT_BLOCKED', 'VALIDATION_BLOCKED']);
+const PROVIDER_CONFIGURATION_ERRORS = new Set(['invalid_json_schema', 'invalid_configuration']);
+
+export function providerConfigurationError(events, receiptError = null) {
+  const candidates = [receiptError, ...events].filter(Boolean)
+    .flatMap((item) => [item, item.error].filter(Boolean));
+  const event = candidates.find((item) => PROVIDER_CONFIGURATION_ERRORS.has(item.code)
+    || PROVIDER_CONFIGURATION_ERRORS.has(String(item.message ?? '').match(/\b(?:invalid_json_schema|invalid_configuration)\b/u)?.[0]));
+  if (!event) return null;
+  const code = PROVIDER_CONFIGURATION_ERRORS.has(event.code) ? event.code
+    : String(event.message).match(/\b(?:invalid_json_schema|invalid_configuration)\b/u)[0];
+  return { code, message: String(event.message ?? event.error ?? code) };
+}
 
 export function guardOperationProvenance(outcome, operation, collaborationEvents, capturedReceipts) {
   if (collaborationEvents.length > 0) return { result: 'BLOCKED', blocker: 'UNMANAGED_COLLABORATION' };
@@ -427,7 +439,6 @@ async function runCase({ runRoot, caseId, configuration, snapshotMetadata, maxOp
       if (sequence > caseConfiguration.budgets.maxWorkflowEvents) { terminal = { result: 'BLOCKED', blocker: 'WORKFLOW_EVENT_LIMIT' }; break; }
       if (finalSequence !== null && sequence > finalSequence) { terminal = { result: 'FOCAL_STOP', blocker: null }; break; }
       await assertSnapshotIntegrity(runRoot);
-      await product.verifyIsolatedHome(home);
       const { operation, slice } = target;
       const currentRecovery = pendingRecovery;
       pendingRecovery = null;
@@ -499,6 +510,7 @@ async function runCase({ runRoot, caseId, configuration, snapshotMetadata, maxOp
       let mainTurnNumber;
       const turnEnv = managedSliceContext === null ? home.env
         : product.managedEnvironment(home.env, managedSliceContext);
+      let providerConfigError = null;
       try {
         if (officialPreflight !== null) {
           broker = await product.startOfficialRunnerBroker({ workspace, tmpdir, operation, sequence, slice,
@@ -516,6 +528,7 @@ async function runCase({ runRoot, caseId, configuration, snapshotMetadata, maxOp
             },
             onTurn: async ({ turn: runnerTurn, eventsPath: runnerEventsPath }) => {
               runnerEventPaths.push(runnerEventsPath);
+              providerConfigError ??= providerConfigurationError([], runnerTurn.providerError ?? runnerTurn.errorEvent ?? null);
               await settleTurn(runRoot, currentRunnerNumber, runnerTurn, turnLimit);
               if (runnerTurn.turnStarted !== false) caseState.runnerTurns += 1;
               caseState.lastRunnerThread = runnerTurn.threadId;
@@ -579,6 +592,7 @@ async function runCase({ runRoot, caseId, configuration, snapshotMetadata, maxOp
         segment: path.basename(runRoot), usage: turn.usage, eventId: operationId,
         parentThreadId: threadId });
       const collaborationEvents = await unmanagedCollaborationEvents(eventsPath, operationId, runnerEventPaths);
+      providerConfigError ??= providerConfigurationError([], turn.providerError ?? turn.errorEvent ?? null);
       const allUsage = [mainUsageObservation, ...runnerUsageObservations,
         ...collaborationEvents.map((event) => ({ status: 'unavailable', delta: null,
           reason: 'unmanaged collaboration usage unknown', source: 'unmanaged_collaboration', event }))];
@@ -601,12 +615,14 @@ async function runCase({ runRoot, caseId, configuration, snapshotMetadata, maxOp
           readinessResult = product.validateReadinessResult(specPath, JSON.parse(turn.response), { scope: 'GLOBAL' });
         } catch (error) { readinessDiagnostic = error.message; }
       }
-      const outcome = guardOperationProvenance(decideOutcome(operation, readback, turn.completed, readinessResult),
-        operation, collaborationEvents, broker?.capturedReceipts ?? 0);
+      const outcome = providerConfigError
+        ? { result: 'BLOCKED', blocker: providerConfigError.code, diagnostic: providerConfigError.message }
+        : guardOperationProvenance(decideOutcome(operation, readback, turn.completed, readinessResult),
+          operation, collaborationEvents, broker?.capturedReceipts ?? 0);
       if (broker?.errors.includes('PAUSED_BUDGET_OR_QUOTA')) {
         outcome.result = 'PAUSED_BUDGET_OR_QUOTA'; outcome.blocker = 'PAUSED_BUDGET_OR_QUOTA';
       }
-      if (readinessDiagnostic) outcome.blocker = 'READINESS_RESULT_INVALID';
+      if (readinessDiagnostic && !providerConfigError) outcome.blocker = 'READINESS_RESULT_INVALID';
       if (operation === 'SPEC_RESUME' && outcome.result === 'PASS'
         && product.readinessSnapshot(specPath).snapshotSha256 === beforeResume.snapshotSha256) {
         outcome.result = 'BLOCKED'; outcome.blocker = 'RESUME_NO_MATERIAL_PROGRESS';
@@ -616,7 +632,9 @@ async function runCase({ runRoot, caseId, configuration, snapshotMetadata, maxOp
         ? { exitCode: 0, stdout: 'administrative pause before a complete operation; journal unchanged', stderr: '' }
         : command(argsForJournal({ journal, operation, route, outcome, slice, readback, readinessResult,
           turn: { ...turn, usage: normalizedUsage, prompt }, durationMs: Date.now() - startedMs, runnerCount }));
-      if (journalResult.exitCode !== 0) outcome.result = 'BLOCKED', outcome.blocker = 'JOURNAL_REJECTED';
+      if (journalResult.exitCode !== 0) {
+        if (!providerConfigError) outcome.result = 'BLOCKED', outcome.blocker = 'JOURNAL_REJECTED';
+      }
       const evidence = { sequence, operation, slice, promptFile, templatePath, templateSha256: hash(template),
         promptSha256: hash(prompt), context: { role: contextRole, priorThreadId: threadId, threadId: turn.threadId,
           inheritedAuthorHistory: contextRole === 'author' && threadId !== null },
@@ -627,6 +645,7 @@ async function runCase({ runRoot, caseId, configuration, snapshotMetadata, maxOp
           turnStarted: turn.turnStarted, usageObservation: mainUsageObservation },
         officialPreflight, officialReadback: { lifecycle: readback.lifecycle, execution: readback.execution },
         readinessResult, readinessDiagnostic,
+        providerConfigurationError: providerConfigError,
         runner: { requestsHandled: broker?.requestsHandled ?? 0, capturedReceipts: broker?.capturedReceipts ?? 0,
           errors: broker?.errors ?? [], turns: runnerCount, usageObservations: runnerUsageObservations,
           unmanagedCollaboration: collaborationEvents },
@@ -665,7 +684,8 @@ async function runCase({ runRoot, caseId, configuration, snapshotMetadata, maxOp
   } catch (error) {
     terminal = error.code === 'PAUSED_BUDGET_OR_QUOTA'
       ? { result: 'PAUSED_BUDGET_OR_QUOTA', blocker: 'PAUSED_BUDGET_OR_QUOTA', diagnostic: error.message }
-      : { result: 'BLOCKED', blocker: 'DRIVER_FAILURE', diagnostic: String(error.message) };
+      : { result: 'BLOCKED', blocker: PROVIDER_CONFIGURATION_ERRORS.has(error.code) ? error.code : 'DRIVER_FAILURE',
+        diagnostic: String(error.message) };
   } finally {
     let finalizer = null;
     const rawPath = path.join(caseRoot, resume ? `raw-resume-${caseState.operations.length}.json` : 'raw.json');

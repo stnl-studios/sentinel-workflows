@@ -93,10 +93,14 @@ async function copySkillBundle(snapshot, privateHome) {
   return target;
 }
 
-async function hashTree(root) {
+async function hashTree(root, { workflowBundle = false } = {}) {
   const hash = createHash('sha256').update('sentinel-skill-copy-v1\0');
   async function walk(directory, relative = '') {
-    for (const entry of (await fs.readdir(directory, { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name))) {
+    const entries = (await fs.readdir(directory, { withFileTypes: true }))
+      .filter((entry) => !['.DS_Store', '__MACOSX'].includes(entry.name) && !entry.name.startsWith('._'))
+      .filter((entry) => !workflowBundle || relative !== '' || (entry.isDirectory() && entry.name.startsWith('stnl-')))
+      .sort((a, b) => a.name.localeCompare(b.name));
+    for (const entry of entries) {
       const child = path.join(relative, entry.name);
       const full = path.join(directory, entry.name);
       const metadata = await fs.lstat(full);
@@ -112,20 +116,7 @@ async function hashTree(root) {
   return `sha256:${hash.digest('hex')}`;
 }
 
-async function freezeSkills(root) {
-  async function walk(directory) {
-    for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
-      const full = path.join(directory, entry.name);
-      if (entry.isDirectory()) await walk(full);
-      else if (entry.isFile()) await fs.chmod(full, (await fs.stat(full)).mode & 0o111 ? 0o555 : 0o444);
-      else throw new Error('skill copy contains an unsafe entry');
-    }
-    await fs.chmod(directory, 0o555);
-  }
-  await walk(root);
-}
-
-export async function prepareIsolatedHome({ runId, caseId, snapshot, workspace, candidates, tmpdir }) {
+export async function prepareIsolatedHome({ runId, caseId, snapshot, workspace, candidates, tmpdir }, { authPath = MAIN_AUTH } = {}) {
   if (!/^[a-z0-9][a-z0-9-]{7,}$/u.test(runId) || !/^[ABC]$/u.test(caseId)) {
     throw new Error('invalid isolated home identity');
   }
@@ -134,7 +125,7 @@ export async function prepareIsolatedHome({ runId, caseId, snapshot, workspace, 
       throw new Error(`isolated home input is not a canonical directory: ${directory}`);
     }
   }
-  const authMetadata = await fs.lstat(MAIN_AUTH);
+  const authMetadata = await fs.lstat(authPath);
   if (!authMetadata.isFile() || authMetadata.isSymbolicLink()) throw new Error('official ChatGPT cache is unavailable or unsafe');
   const privateHome = await fs.mkdtemp(path.join(PRIVATE_PARENT, `sentinel-benchmark-${runId}-${caseId.toLowerCase()}-`));
   await fs.chmod(privateHome, 0o700);
@@ -142,33 +133,31 @@ export async function prepareIsolatedHome({ runId, caseId, snapshot, workspace, 
   await fs.writeFile(path.join(privateHome, '.sentinel-owned.json'), `${JSON.stringify(marker)}\n`, { mode: 0o600 });
   const shellHome = path.join(privateHome, 'shell-home');
   await fs.mkdir(shellHome, { mode: 0o700 });
-  await fs.copyFile(MAIN_AUTH, path.join(privateHome, 'auth.json'));
+  await fs.copyFile(authPath, path.join(privateHome, 'auth.json'));
   await fs.chmod(path.join(privateHome, 'auth.json'), 0o600);
+  const snapshotSkills = path.join(snapshot, 'skills', 'workflows');
+  const snapshotSkillsSha256 = await hashTree(snapshotSkills, { workflowBundle: true });
   const skills = await copySkillBundle(snapshot, privateHome);
-  const skillsSha256 = await hashTree(skills);
-  await freezeSkills(skills);
+  if (await hashTree(skills) !== snapshotSkillsSha256) throw new Error('isolated skill copy does not match snapshot provenance');
   const config = configText({ privateHome, snapshot, workspace, candidates, tmpdir });
   await fs.writeFile(path.join(privateHome, 'config.toml'), config, { mode: 0o600 });
   const configSha256 = `sha256:${createHash('sha256').update(config).digest('hex')}`;
-  return { privateHome, shellHome, skillsSha256, configSha256,
+  return { privateHome, shellHome, snapshotSkillsSha256, skillsSha256: snapshotSkillsSha256, configSha256,
     env: childEnvironment({ privateHome, shellHome, tmpdir, snapshot }) };
 }
 
-export async function verifyIsolatedHome(home) {
+export async function verifyIsolatedHome(home, { runCommand = spawnSync } = {}) {
   const config = await fs.readFile(path.join(home.privateHome, 'config.toml'));
   if (`sha256:${createHash('sha256').update(config).digest('hex')}` !== home.configSha256) {
     throw new Error('isolated Codex config changed');
   }
-  if (await hashTree(path.join(home.privateHome, 'skills')) !== home.skillsSha256) {
-    throw new Error('isolated skill bundle changed');
-  }
   const environment = childEnvironment({ privateHome: home.privateHome, shellHome: home.shellHome, tmpdir: home.env.TMPDIR,
     snapshot: path.resolve(home.env.STNL_CODEX_ADAPTER, '../../..') });
-  const login = spawnSync('codex', ['login', 'status'], { env: environment, encoding: 'utf8', timeout: 30_000 });
+  const login = runCommand('codex', ['login', 'status'], { env: environment, encoding: 'utf8', timeout: 30_000 });
   if (login.status !== 0 || `${login.stdout}${login.stderr}`.trim() !== 'Logged in using ChatGPT') {
     throw new Error('isolated Codex login is not ChatGPT');
   }
-  const doctor = spawnSync('codex', ['doctor', '--json'], { env: environment, encoding: 'utf8', timeout: 30_000 });
+  const doctor = runCommand('codex', ['doctor', '--json'], { env: environment, encoding: 'utf8', timeout: 30_000 });
   const report = JSON.parse(doctor.stdout);
   const auth = report.checks?.['auth.credentials']?.details;
   const provider = report.checks?.['config.load']?.details?.['model provider'];
@@ -193,22 +182,24 @@ async function assertOwnedHome(home, { runId, caseId }) {
   return canonical;
 }
 
-export async function suspendIsolatedHome(home, identity) {
+export async function suspendIsolatedHome(home, identity, { runCommand = spawnSync } = {}) {
   const canonical = await assertOwnedHome(home, identity);
   const auth = path.join(canonical, 'auth.json');
   const metadata = await fs.lstat(auth);
   if (!metadata.isFile() || metadata.isSymbolicLink()) throw new Error('isolated auth cache is unsafe');
   await fs.unlink(auth);
-  const login = spawnSync('codex', ['login', 'status'], { env: home.env, encoding: 'utf8', timeout: 30_000 });
+  const login = runCommand('codex', ['login', 'status'], { env: home.env, encoding: 'utf8', timeout: 30_000 });
   if (login.status === 0 && `${login.stdout}${login.stderr}`.includes('Logged in using ChatGPT')) {
     throw new Error('suspended isolated home still has ChatGPT authentication');
   }
   return { privateHome: canonical, shellHome: home.shellHome,
-    skillsSha256: home.skillsSha256, configSha256: home.configSha256 };
+    snapshotSkillsSha256: home.snapshotSkillsSha256 ?? home.skillsSha256,
+    skillsSha256: home.snapshotSkillsSha256 ?? home.skillsSha256, configSha256: home.configSha256 };
 }
 
 export async function resumeIsolatedHome({ runId, caseId, snapshot, workspace, candidates, tmpdir, suspended }) {
-  if (!suspended || typeof suspended.configSha256 !== 'string' || typeof suspended.skillsSha256 !== 'string') {
+  if (!suspended || typeof suspended.configSha256 !== 'string'
+    || typeof (suspended.snapshotSkillsSha256 ?? suspended.skillsSha256) !== 'string') {
     throw new Error('suspended isolated home metadata is invalid');
   }
   const canonical = await assertOwnedHome(suspended, { runId, caseId });
@@ -219,14 +210,16 @@ export async function resumeIsolatedHome({ runId, caseId, snapshot, workspace, c
   const expectedHash = `sha256:${createHash('sha256').update(expectedConfig).digest('hex')}`;
   if (suspended.configSha256 !== expectedHash
     || await fs.readFile(path.join(canonical, 'config.toml'), 'utf8') !== expectedConfig
-    || await hashTree(path.join(canonical, 'skills')) !== suspended.skillsSha256) {
+    || await hashTree(path.join(snapshot, 'skills', 'workflows'), { workflowBundle: true })
+      !== (suspended.snapshotSkillsSha256 ?? suspended.skillsSha256)) {
     throw new Error('suspended isolated home changed');
   }
   const metadata = await fs.lstat(MAIN_AUTH);
   if (!metadata.isFile() || metadata.isSymbolicLink()) throw new Error('official ChatGPT cache is unavailable or unsafe');
   await fs.copyFile(MAIN_AUTH, authPath);
   await fs.chmod(authPath, 0o600);
-  return { ...suspended, privateHome: canonical,
+  return { ...suspended, snapshotSkillsSha256: suspended.snapshotSkillsSha256 ?? suspended.skillsSha256,
+    skillsSha256: suspended.snapshotSkillsSha256 ?? suspended.skillsSha256, privateHome: canonical,
     env: childEnvironment({ privateHome: canonical, shellHome: suspended.shellHome, tmpdir, snapshot }) };
 }
 

@@ -72,6 +72,13 @@ test('independent runner receives mechanical context and semantic payload withou
   /competing serializer authority/u);
 });
 
+test('Sentinel dispatch omits remote canonical output schema independently of replay fixtures', async () => {
+  const source = await fs.readFile(RUNNER_ADAPTER, 'utf8');
+  const invocation = /const turn = await runTurn\(\{([\s\S]*?)\n  \}\);/u.exec(source)?.[1];
+  assert.ok(invocation, 'runner dispatch call must remain visible');
+  assert.doesNotMatch(invocation, /outputSchema/u);
+});
+
 test('automatic round is required before runner dispatch and managed CLI cannot bypass the bridge', async () => {
   for (const operation of ['EXECUTE_SLICE', 'APPLY_FINDINGS']) {
     assert.throws(() => assertRunnerRoundPayload(operation, '{}'), /automaticCheckRound/u);
@@ -109,20 +116,49 @@ test('receipt describes the captured final semantic response despite intermediat
   assert.equal(JSON.parse(bytes).status, 'TESTS_PASS');
 });
 
-test('APPLY_FINDINGS provider schema uses the exact official NEEDS_FIX cycle', async () => {
+test('invalid local semantic JSON is rejected after capture without provider schema', async (t) => {
+  await fs.mkdir(path.join(ROOT, 'benchmark-temp'), { recursive: true });
+  const root = await fs.mkdtemp(path.join(ROOT, 'benchmark-temp/local-semantic-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const eventsPath = path.join(root, 'events.jsonl');
+  await fs.writeFile(eventsPath, `${JSON.stringify({ type: 'item.completed', item: {
+    type: 'agent_message', text: '{"status":' } })}\n`);
+  await assert.rejects(captureRunnerResponse({ structuredOutputFile: eventsPath,
+    outputFile: path.join(root, 'response.json') }), /not valid JSON/u);
+});
+
+test('local APPLY_FINDINGS schema scoping remains available for canonical cycle checks', async () => {
   const schema = JSON.parse(await fs.readFile(path.join(ROOT,
     'skills/workflows/stnl-slice-executor/runtime/runner-apply-findings-response.schema.json'), 'utf8'));
   const state = { tasks: new Map([['slice-01', { attempts: [
-    { id: 'attempt-01', status: 'NEEDS_FIX' },
-    { id: 'attempt-02', status: 'NEEDS_FIX' },
+    { id: 'attempt-01', status: 'NEEDS_FIX' }, { id: 'attempt-02', status: 'NEEDS_FIX' },
   ] }]]) };
-  const scoped = scopeApplyFindingsSchema(schema, state, 'slice-01');
-  assert.deepEqual(scoped.properties.findingsCycle, { type: 'string', enum: ['attempt-02'] });
+  assert.deepEqual(scopeApplyFindingsSchema(schema, state, 'slice-01').properties.findingsCycle,
+    { type: 'string', enum: ['attempt-02'] });
   assert.deepEqual(schema.properties.findingsCycle, { type: 'string', pattern: '^[^\\r\\n`]+$' });
   assert.throws(() => scopeApplyFindingsSchema(schema, state, 'slice-02'), /no canonical active findings cycle/u);
   assert.throws(() => scopeApplyFindingsSchema(schema, { tasks: new Map([['slice-01', {
     attempts: [{ id: 'finding-01', status: 'NEEDS_FIX' }],
   }]]) }, 'slice-01'), /no canonical active findings cycle/u);
+});
+
+test('SDK keeps provider schema event when the CLI later exits with stderr', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'stnl-sdk-schema-error-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const cli = path.join(root, 'fake-codex.mjs');
+  const eventsPath = path.join(root, 'events.jsonl');
+  await fs.writeFile(cli, `#!${process.execPath}\nconsole.log(JSON.stringify({type:'thread.started',thread_id:'thread-schema'}));\nconsole.log(JSON.stringify({type:'error',code:'invalid_json_schema',message:'invalid_json_schema'}));\nconsole.error('process exited after provider error');\nprocess.exit(1);\n`);
+  await fs.chmod(cli, 0o755);
+  const result = await runCodexTurn({ env: { CODEX_HOME: root }, cwd: root, prompt: 'offline',
+    model: 'gpt-5.6-luna', effort: 'medium', operationId: 'schema-error', eventsPath, codexPathOverride: cli });
+  assert.deepEqual(result.errorEvent, {
+    operationId: 'schema-error', type: 'error', code: 'invalid_json_schema', message: 'invalid_json_schema',
+  });
+  assert.equal(result.error, 'invalid_json_schema');
+  assert.match(result.processError, /process exited after provider error/u);
+  assert.equal(result.errorEvent.code, 'invalid_json_schema');
+  const persisted = (await fs.readFile(eventsPath, 'utf8')).trim().split('\n').map(JSON.parse);
+  assert.deepEqual(persisted.find(({ type }) => type === 'error'), result.errorEvent);
 });
 
 test('adapter rejects stale managed context before runner dispatch', async () => {
@@ -188,6 +224,7 @@ test('real SDK forwards delegation policy to CLI on start and resume without a p
   for (const [index, threadId] of [null, 'thread-fixture'].entries()) {
     const result = await runCodexTurn({ env, cwd: root, prompt: 'offline fixture', model: 'gpt-5.6-luna',
       effort: 'medium', threadId, operationId: `offline-${index}`, eventsPath: path.join(root, `events-${index}.jsonl`),
+      ...(index === 0 ? { outputSchema: { type: 'object', properties: { status: { type: 'string' } } } } : {}),
       codexPathOverride: cli });
     assert.equal(result.completed, true, result.error);
   }
@@ -201,6 +238,7 @@ test('real SDK forwards delegation policy to CLI on start and resume without a p
   }
   assert.ok(invocations[1].includes('resume'));
   assert.ok(invocations[1].includes('thread-fixture'));
+  assert.ok(invocations[0].includes('--output-schema'));
   const packagedCli = path.join(ROOT, 'agents/codex/node_modules/.bin/codex');
   const features = spawnSync(packagedCli, ['-c', 'agents.enabled=false', '-c', 'features.multi_agent=false',
     '-c', 'features.multi_agent_v2=false', 'features', 'list'],

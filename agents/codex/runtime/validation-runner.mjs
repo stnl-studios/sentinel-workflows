@@ -11,7 +11,6 @@ import { runCodexTurn } from './sdk-transport.mjs';
 import { submitOfficialRunnerRequest } from './runner-broker.mjs';
 import { readManagedSliceContext } from '../../../skills/workflows/stnl-slice-quality-manager/runtime/managed-slice-context.mjs';
 import { resolveExecutionWorkspace } from '../../../skills/workflows/stnl-slice-quality-manager/runtime/execution-state.mjs';
-import { inspectExecutionState } from '../../../skills/workflows/stnl-slice-executor/runtime/execution-state.mjs';
 import { assertManagedSliceFreshness } from './managed-slice-preflight.mjs';
 
 const OPERATIONS = new Set(['EXECUTE_SLICE', 'APPLY_FINDINGS', 'VALIDATE_SLICE']);
@@ -32,6 +31,8 @@ export async function describeSemanticResponseFile(file) {
   };
 }
 
+// Retained for callers that need to compare a findings payload with the active
+// local cycle. Sentinel runner dispatch intentionally does not send this schema.
 export function scopeApplyFindingsSchema(schema, state, slice) {
   const latestNeedsFix = state.tasks?.get(slice)?.attempts?.filter((attempt) => attempt.status === 'NEEDS_FIX').at(-1);
   if (typeof latestNeedsFix?.id !== 'string' || !/^attempt-[0-9]{2,}$/u.test(latestNeedsFix.id)) {
@@ -175,15 +176,6 @@ export async function invokeIndependentRunner({
     } catch (error) { if (error.code !== 'EEXIST') throw error; }
   }
   if (attempt > 3) fail('runner invocation budget exhausted');
-  const schemas = {
-    EXECUTE_SLICE: 'runner-execute-response.schema.json',
-    APPLY_FINDINGS: 'runner-apply-findings-response.schema.json',
-    VALIDATE_SLICE: 'runner-validate-response.schema.json',
-  };
-  let schema = JSON.parse(await fs.readFile(path.join(snapshot, 'skills', 'workflows', 'stnl-slice-executor', 'runtime', schemas[operation]), 'utf8'));
-  if (operation === 'APPLY_FINDINGS') {
-    schema = scopeApplyFindingsSchema(schema, await inspectExecutionState(officialPreflight.specPath), slice);
-  }
   const execution = await resolveExecutionWorkspace(officialPreflight.specPath);
   const executionRoot = await fs.realpath(execution.executionRoot);
   const planPath = await fs.realpath(path.join(executionRoot, 'plan.md'));
@@ -203,7 +195,7 @@ export async function invokeIndependentRunner({
   const turn = await runTurn({
     env, cwd: workspace, prompt: request, model: configuration.model,
     effort: configuration.effort, operationId: `runner-${operationName}`,
-    eventsPath, outputSchema: schema, timeoutMs: 1_800_000,
+    eventsPath, timeoutMs: 1_800_000,
     developerInstructions: configuration.developerInstructions, isolateSkills: true,
   });
   await onTurn({ role: 'runner', operation, sequence, slice, attempt, turn, eventsPath });
@@ -230,7 +222,8 @@ export async function invokeIndependentRunner({
     reportedModel: turn.reportedModel, threadId: turn.threadId,
     eventsPath, semanticResponseFile, ...semanticReceipt, captureFailure,
     testedState,
-    error: turn.error, usage: turn.usage,
+    providerError: turn.errorEvent ?? null, error: turn.error,
+    processError: turn.processError ?? null, usage: turn.usage,
     exitCode: semanticResponseFile === null ? 1 : 0,
   };
   await fs.writeFile(path.join(tmpdir, `${operationName}.receipt.json`), `${JSON.stringify(receipt, null, 2)}\n`, { flag: 'wx' });

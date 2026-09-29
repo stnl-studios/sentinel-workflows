@@ -37,6 +37,7 @@ node scripts/test-benchmark-contract.mjs
 node scripts/test-benchmark-measurement.mjs
 node --test scripts/test-benchmark-campaign.mjs
 node --test scripts/test-benchmark-manager.mjs scripts/test-benchmark-ui.mjs scripts/test-benchmark-runner-broker.mjs scripts/test-codex-runner-adapter.mjs scripts/test-managed-validation-context.mjs
+node --test scripts/test-isolated-home.mjs
 
 node scripts/check-contracts.mjs repository --root "$ROOT"
 node scripts/check-contracts.mjs launchers --root templates/prompts

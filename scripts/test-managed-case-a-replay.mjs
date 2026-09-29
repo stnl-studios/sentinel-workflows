@@ -48,8 +48,9 @@ test('Case A R1-R6: managed payload, conceptual task, recovery and strict public
   const broker = await startOfficialRunnerBroker({ workspace, tmpdir, operation: 'EXECUTE_SLICE',
     sequence: 8, slice: 'slice-01', officialPreflight,
     invoke: (request) => invokeIndependentRunner({ ...request, snapshot: ROOT, env: environment,
-      runTurn: async ({ eventsPath, operationId, prompt }) => {
+      runTurn: async ({ eventsPath, operationId, prompt, outputSchema }) => {
         turns += 1;
+        assert.equal(outputSchema, undefined);
         assert.match(prompt, /RUNNER_DISPATCH_MODE=SAME_OPERATION_RECOVERY/u);
         const events = [{ operationId, type: 'thread.started', thread_id: 'offline-provider' },
           { operationId, type: 'turn.started' }];
@@ -80,6 +81,11 @@ test('Case A R1-R6: managed payload, conceptual task, recovery and strict public
       payload: JSON.stringify({ ...base, automaticCheckRound: '1/3', changedAreas: ['src/cli.mjs'] }) }),
     /canonical task-relative|match the task/u);
     assert.equal(turns, 0);
+    await assert.rejects(runManagedRunnerBridge({ environment, cwd: workspace,
+      payload: JSON.stringify({ ...base, automaticCheckRound: '1/3', changedAreas: [] }) }),
+    /requires filelessReason/u);
+    assert.equal(turns, 0);
+    assert.equal(broker.requestsHandled, 0);
     const receipt = await runManagedRunnerBridge({ environment, cwd: workspace,
       payload: JSON.stringify({ ...base, automaticCheckRound: '1/3', changedAreas: [CLAIM] }) });
     assert.equal(turns, 1);

@@ -6,6 +6,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { admitOperation, assertManagedSliceLauncher, budgetSnapshot, decideOutcome, guardOperationProvenance, unmanagedCollaborationEvents,
+  providerConfigurationError,
   initializeTurnBudget, nextHandoff, recoverableRunnerHandoff, settleTurn, startReservedTurn } from '../benchmarks/sentinel-todo/runtime/benchmark-manager.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -103,6 +104,30 @@ test('manager dispatches only the legal, bounded runner-result recovery', () => 
   assert.equal(recoverableRunnerHandoff({ ...input, readback: { ...readback,
     executionRaw: { ...execution, activeDelegationBlockers: [{ ...execution.activeDelegationBlockers[0], kind: 'initialization' }] } } }), null);
   assert.equal(recoverableRunnerHandoff({ ...input, outcome: { result: 'BLOCKED', blocker: 'OFFICIAL_REQUIREMENTS_CHANGED' } }), null);
+  assert.equal(recoverableRunnerHandoff({ ...input, outcome: { result: 'BLOCKED', blocker: 'invalid_json_schema' } }), null);
+  assert.equal(recoverableRunnerHandoff(input)?.operation, 'VALIDATE_SLICE');
+});
+
+test('deterministic provider schema rejection is preserved as a terminal cause', async () => {
+  const cause = providerConfigurationError([{ type: 'error', code: 'invalid_json_schema', message: 'additionalProperties rejected' }]);
+  assert.deepEqual(cause, { code: 'invalid_json_schema', message: 'additionalProperties rejected' });
+  assert.equal(providerConfigurationError([{ type: 'error', code: 'rate_limit', message: 'retry later' }]), null);
+  assert.equal(providerConfigurationError([], { code: 'invalid_configuration', message: 'unsupported schema' }).code,
+    'invalid_configuration');
+  assert.equal(providerConfigurationError([{ type: 'error', message: 'provider rejected: invalid_json_schema' }]).code,
+    'invalid_json_schema');
+  assert.deepEqual(providerConfigurationError([{ type: 'turn.failed', error: {
+    code: 'invalid_json_schema', message: 'invalid_json_schema rejected',
+  } }]), { code: 'invalid_json_schema', message: 'invalid_json_schema rejected' });
+});
+
+test('isolated-home verification happens once after preparation or resume, before operations', async () => {
+  const source = await fs.readFile(MANAGER, 'utf8');
+  assert.equal([...source.matchAll(/product\.verifyIsolatedHome\(home\)/gu)].length, 1);
+  assert.match(source, /const auth = await product\.verifyIsolatedHome\(home\);[\s\S]*?for \(let sequence/u);
+  assert.match(source, /providerConfigurationError\(\[\], runnerTurn\.providerError \?\? runnerTurn\.errorEvent/u);
+  assert.match(source, /readinessDiagnostic && !providerConfigError/u);
+  assert.match(source, /if \(!providerConfigError\) outcome\.result = 'BLOCKED', outcome\.blocker = 'JOURNAL_REJECTED'/u);
 });
 
 test('documentary maturation advances through global findings, RESUME, and status-only promotion', () => {

@@ -64,6 +64,8 @@ export async function runCodexTurn({
   let response = null;
   let completed = false;
   let error = null;
+  let errorEvent = null;
+  let processError = null;
   let toolCalls = 0;
   const file = await fs.open(eventsPath, 'a');
   try {
@@ -74,15 +76,22 @@ export async function runCodexTurn({
       if (event.type === 'thread.started') actualThreadId = event.thread_id;
       if (event.type === 'thread.started' || event.type === 'turn.started') turnStarted = true;
       if (event.type === 'turn.completed') { usage = event.usage ?? null; completed = true; }
-      if (event.type === 'turn.failed') error = event.error?.message ?? 'turn failed';
-      if (event.type === 'error') error = event.message;
+      if (event.type === 'turn.failed') {
+        if (event.error && typeof event.error === 'object') errorEvent ??= persistentEvent(event, operationId);
+        error ??= event.error?.message ?? event.error?.code ?? 'turn failed';
+      }
+      if (event.type === 'error') {
+        errorEvent ??= persistentEvent(event, operationId);
+        error ??= event.message ?? event.code ?? 'provider error';
+      }
       if (event.type === 'item.completed') {
         if (event.item.type === 'agent_message') response = event.item.text;
         if (['command_execution', 'file_change', 'mcp_tool_call', 'collab_tool_call'].includes(event.item.type)) toolCalls += 1;
       }
     }
   } catch (caught) {
-    error = String(caught);
+    processError = String(caught);
+    error ??= processError;
   } finally {
     clearTimeout(timer);
     signal?.removeEventListener('abort', onAbort);
@@ -99,6 +108,8 @@ export async function runCodexTurn({
     completed,
     turnStarted,
     error,
+    errorEvent,
+    processError,
     response,
     usage,
     toolCalls,

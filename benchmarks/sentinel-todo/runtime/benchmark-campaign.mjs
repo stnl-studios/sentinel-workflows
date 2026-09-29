@@ -370,8 +370,8 @@ export async function runCampaign({ root = ROOT, hooks = {}, campaignId = null }
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
   if (process.argv.includes('--help')) {
     const config = await readJson(path.join(ROOT, 'benchmarks/sentinel-todo/benchmark.json'));
-    console.log(`Run the formal ${config.campaign.fullRuns}-full campaign: npm run benchmark`);
+    console.log(`Run the formal ${config.campaign.fullRuns}-full campaign: npm run benchmark:campaign`);
   }
-  else if (process.argv.length !== 2) { console.error('usage: npm run benchmark'); process.exitCode = 2; }
+  else if (process.argv.length !== 2) { console.error('usage: npm run benchmark:campaign'); process.exitCode = 2; }
   else runCampaign().catch(() => { process.exitCode = 1; });
 }

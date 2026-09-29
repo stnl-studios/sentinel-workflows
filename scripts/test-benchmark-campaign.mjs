@@ -225,12 +225,15 @@ test('source drift after run 1 blocks before run 2', async (t) => {
   assert.equal(await fs.stat(f.durable).then(() => true, () => false), false);
 });
 
-test('npm benchmark script resolves to campaign runner without running a provider', async () => {
+test('npm benchmark is an isolated full run and formal campaign stays explicit', async () => {
   const pkg = JSON.parse(await fs.readFile(path.join(ROOT, 'package.json'), 'utf8'));
   assert.equal(pkg.private, true);
   assert.equal(pkg.dependencies, undefined);
-  assert.equal(pkg.scripts.benchmark, 'node benchmarks/sentinel-todo/runtime/benchmark-campaign.mjs');
-  const result = spawnSync('npm', ['run', 'benchmark', '--', '--help'], { cwd: ROOT, encoding: 'utf8' });
+  assert.equal(pkg.scripts.benchmark, 'npm run benchmark:verify && node benchmarks/sentinel-todo/runtime/benchmark-manager.mjs run --full');
+  assert.equal(pkg.scripts['benchmark:campaign'], 'node benchmarks/sentinel-todo/runtime/benchmark-campaign.mjs');
+  assert.doesNotMatch(pkg.scripts.benchmark, /campaign|baseline|clean|publish/u);
+  const result = spawnSync(process.execPath, [path.join(ROOT, 'benchmarks/sentinel-todo/runtime/benchmark-campaign.mjs'), '--help'],
+    { cwd: ROOT, encoding: 'utf8' });
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /Run the formal 1-full campaign/u);
+  assert.match(result.stdout, /Run the formal 1-full campaign: npm run benchmark:campaign/u);
 });

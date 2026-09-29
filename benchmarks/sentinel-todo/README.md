@@ -1,27 +1,37 @@
 # Sentinel Todo benchmark
 
-## Formal campaign
+## Running the benchmark
 
-From a clean, published checkout at the repository root, run:
+For a fresh diagnostic full run at the repository root, run:
 
 ```sh
 npm run benchmark
 ```
 
-No install is needed. The command checks the checkout and active processes,
-cleans safe prior scratch, runs `verify`, and executes one full run containing
-A, B, and C. It exports and compares that measurement against
-`baselines/baseline-v1.json` inside ignored `benchmark-temp/`. Once the full
-run passes with one functional source identity and direct comparability,
-it promotes `run-01.json` and
-`campaign-summary.json` to `measurements/<campaign-id>/` for review and commit.
-The campaign summary retains every value and leaves G2/G3 decisions pending.
+No install is needed. It runs the structural `verify` command and starts a new
+full A/B/C manager run, retaining its snapshot and evidence in ignored
+`benchmark-temp/`. The recorded HEAD and source identity are diagnostic context.
+This run retains Sentinel workflow evidence but does not establish clean
+campaign conditions or baseline measurement comparability, and it does not
+publish or clean prior history.
+
+For the formal measurement campaign, explicitly run:
+
+```sh
+npm run benchmark:campaign
+```
+
+That command retains the formal clean-checkout and active-process checks,
+safe-scratch cleanup, baseline comparison, and report promotion to
+`measurements/<campaign-id>/` for review and commit. The campaign summary
+retains every value and leaves G2/G3 decisions pending.
 
 A blocked run or Ctrl+C stops the sequence and preserves scratch evidence;
 no partial campaign is promoted. A later campaign may clean terminal, owned
 scratch automatically. Active or ambiguous scratch requires inspection before
-cleanup. `npm run benchmark:verify` and `npm run benchmark:status` are optional
-diagnostics. The Node commands below remain available for advanced debugging.
+cleanup. `npm run benchmark:verify` and `npm run benchmark:status` remain
+available for standalone diagnostics. The Node commands below remain available
+for advanced debugging.
 
 This benchmark is measurement and regression tooling for the stabilized Sentinel
 workflow on a small Todo CLI. It is not requirements, lifecycle, or execution
