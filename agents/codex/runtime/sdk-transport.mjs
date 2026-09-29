@@ -6,7 +6,7 @@ const ALLOWED_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh']);
 const ALLOWED_MODELS = new Set(['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna']);
 
 export async function codexClientConfig({ env, developerInstructions = null, isolateSkills = false }) {
-  const config = { features: { multi_agent: false } };
+  const config = { agents: { enabled: false }, features: { multi_agent: false, multi_agent_v2: false } };
   if (developerInstructions === null && !isolateSkills) return config;
   if (typeof developerInstructions !== 'string' || developerInstructions.trim() === '') {
     throw new Error('runner developer instructions are missing');
@@ -33,6 +33,7 @@ export async function runCodexTurn({
   env, cwd, prompt, model, effort, threadId = null, operationId, eventsPath,
   outputSchema = undefined, timeoutMs = 900_000, onEvent = () => {}, signal = null,
   developerInstructions = null, isolateSkills = false,
+  codexPathOverride = undefined,
 }) {
   if (typeof prompt !== 'string' || prompt.trim() === '' || !ALLOWED_MODELS.has(model)
     || !ALLOWED_EFFORTS.has(effort) || typeof cwd !== 'string' || typeof eventsPath !== 'string'
@@ -42,7 +43,7 @@ export async function runCodexTurn({
   }
   // The manager admits and counts independent runner turns through its adapter.
   // Prevent SDK turns from starting untracked collaboration subagents.
-  const codex = new Codex({ env, config: await codexClientConfig({ env, developerInstructions, isolateSkills }) });
+  const codex = new Codex({ env, config: await codexClientConfig({ env, developerInstructions, isolateSkills }), codexPathOverride });
   const options = {
     model,
     modelReasoningEffort: effort,

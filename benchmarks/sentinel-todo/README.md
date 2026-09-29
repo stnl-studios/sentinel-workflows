@@ -9,11 +9,11 @@ npm run benchmark
 ```
 
 No install is needed. The command checks the checkout and active processes,
-cleans safe prior scratch, runs `verify`, and executes three independent full
+cleans safe prior scratch, runs `verify`, and executes two independent full
 runs in sequence. It exports and compares each measurement against
 `baselines/baseline-v1.json` inside ignored `benchmark-temp/`. Only after all
-three runs pass with one functional source identity and direct comparability
-does it promote `run-01.json`, `run-02.json`, `run-03.json`, and
+both runs pass with one functional source identity and direct comparability
+does it promote `run-01.json`, `run-02.json`, and
 `campaign-summary.json` to `measurements/<campaign-id>/` for review and commit.
 The campaign summary retains every value and leaves G2/G3 decisions pending.
 
@@ -199,11 +199,13 @@ blocks automatic better/worse conclusions. Durations, slice counts, final
 tests, provider, auth mode, isolation, profile mismatches, and finalizer status
 are diagnostic dimensions where recorded; they are not G2 or G3 scores.
 
-For the first formal comparison, use three independent full runs per
+For the initial economical comparison, use two independent full runs per
 configuration. Preserve every individual report, and summarize median,
 minimum/maximum, and success rate without hiding outliers. Stop interpreting
 G2/G3 when integrity fails, runs are incomplete, or the comparison contract
-does not match. One isolated PASS is not statistical proof. No retrospective
-threshold is set from the reference run: G2 and G3 stay `PARTIAL` until the
-formal campaign supplies comparable empirical evidence and an explicit gate
-decision. The campaign is not started by this protocol change.
+does not match. One isolated PASS is not statistical proof. Two samples are an
+initial measurement, not definitive statistical proof. The versioned
+`campaign.fullRuns` setting can be raised explicitly in the future. No
+retrospective threshold is set from the reference run: G2 and G3 stay
+`PARTIAL` until the campaign supplies comparable empirical evidence and an
+explicit gate decision. This change does not start the campaign.

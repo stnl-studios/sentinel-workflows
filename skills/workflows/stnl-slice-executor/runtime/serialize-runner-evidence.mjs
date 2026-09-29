@@ -6,6 +6,7 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { inspectExecutionState, resolveExecutionWorkspace } from "./execution-state.mjs";
 import { resolveRunnerCommandEvents } from "./runner-command-events.mjs";
+import { assertManagedRunnerReceipt } from "./managed-slice-context.mjs";
 
 function fail(message) {
   throw new Error(message);
@@ -1178,6 +1179,7 @@ export async function serializeRunnerExecutionBundleFromResponse({
   if (!new Set(["EXECUTE_SLICE", "APPLY_FINDINGS"]).has(operation)) {
     fail("execution bundle operation must be EXECUTE_SLICE or APPLY_FINDINGS");
   }
+  await assertManagedRunnerReceipt({ operation, slice: path.basename(taskArtifact, '.md'), workspace, receiptFile, semanticResponseFile });
   const payload = parseCapturedResult(operation, parseSemanticExecutionPayload, response);
   const mechanicalCommands = receiptFile === undefined ? payload.commands
     : await resolveRunnerCommandEvents({
@@ -1363,6 +1365,7 @@ export async function prepareRunnerValidationPersistenceFromResponse({
   receiptFile, semanticResponseFile, verificationEventIds,
 }) {
   if (operation !== "VALIDATE_SLICE") fail("semantic validation producer operation must be VALIDATE_SLICE");
+  await assertManagedRunnerReceipt({ operation, slice, workspace, receiptFile, semanticResponseFile });
   const parsed = parseCapturedResult(operation, parseSemanticValidationPayload, response);
   const mechanicalCommands = receiptFile === undefined ? parsed.commands
     : await resolveRunnerCommandEvents({

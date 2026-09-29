@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { runCampaign } from '../benchmarks/sentinel-todo/runtime/benchmark-campaign.mjs';
+import { campaignSummary, runCampaign } from '../benchmarks/sentinel-todo/runtime/benchmark-campaign.mjs';
 import { currentFunctionalIdentity } from '../benchmarks/sentinel-todo/runtime/benchmark-snapshot.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -33,7 +33,7 @@ async function fixture(t, options = {}) {
     verify: async () => { calls.push('verify'); return { code: 0 }; },
     runFull: async () => {
       runs += 1; calls.push(`run-${runs}`);
-      assert.equal(await fs.stat(durable).then(() => true, () => false), false, 'promotion must wait for all three runs');
+      assert.equal(await fs.stat(durable).then(() => true, () => false), false, 'promotion must wait for both runs');
       for (let previous = 1; previous < runs; previous += 1) {
         assert.equal(await fs.stat(path.join(scratch, 'campaign-test-12345678', `run-0${previous}.json`)).then(() => true, () => false), true,
           'previous report must remain in scratch');
@@ -70,30 +70,35 @@ async function campaign(f) {
   return runCampaign({ root: f.root, hooks: f.hooks, campaignId: 'campaign-test-12345678' });
 }
 
-test('happy path cleans old scratch, verifies, stages three source-pure reports, then promotes', async (t) => {
+test('happy path cleans old scratch, verifies, stages two source-pure reports, then promotes', async (t) => {
   const f = await fixture(t);
   await fs.mkdir(f.scratch);
   await fs.writeFile(path.join(f.scratch, '.turn-ledger.json'), '{}');
   const result = await campaign(f);
   assert.equal(result.status, 'CAMPAIGN_COMPLETE');
-  assert.equal(result.completedRuns, 3);
+  assert.equal(result.plannedRuns, 2);
+  assert.equal(result.completedRuns, 2);
   assert.equal(result.successRate, 1);
-  assert.equal(result.distribution.g2.operations.values.length, 3);
+  assert.equal(result.distribution.g2.operations.sampleCount, 2);
   assert.deepEqual(f.calls.filter((x) => /^(verify|run-|export-|compare-)/u.test(x)), [
     'verify', 'run-1', 'export-run-fixture-1', 'compare-run-fixture-1',
     'run-2', 'export-run-fixture-2', 'compare-run-fixture-2',
-    'run-3', 'export-run-fixture-3', 'compare-run-fixture-3',
   ]);
   assert.equal(await fs.stat(path.join(f.scratch, '.turn-ledger.json')).then(() => true, () => false), false);
-  assert.deepEqual((await fs.readdir(f.durable)).sort(), ['campaign-summary.json', 'run-01.json', 'run-02.json', 'run-03.json']);
+  assert.deepEqual((await fs.readdir(f.durable)).sort(), ['campaign-summary.json', 'run-01.json', 'run-02.json']);
+  const promotedSummary = JSON.parse(await fs.readFile(path.join(f.durable, 'campaign-summary.json'), 'utf8'));
+  assert.equal(promotedSummary.plannedRuns, 2);
+  assert.equal(promotedSummary.completedRuns, 2);
+  assert.equal(promotedSummary.runs.length, 2);
   assert.equal((await fs.readdir(path.join(f.scratch, 'campaign-test-12345678'))).includes('compare-01.json'), true);
+  assert.equal((await fs.readdir(path.join(f.scratch, 'campaign-test-12345678'))).includes('compare-02.json'), true);
   assert.equal(result.sourceFunctionalSha256, IDENTITY);
 });
 
 test('fresh machine initializes absent scratch', async (t) => {
   const f = await fixture(t);
   await campaign(f);
-  assert.equal(f.runs, 3);
+  assert.equal(f.runs, 2);
 });
 
 test('actual functional identity excludes staged reports in benchmark-temp', async () => {
@@ -115,6 +120,32 @@ test('run 2 blocker stops before run 3 and preserves scratch', async (t) => {
   assert.equal(await fs.stat(f.durable).then(() => true, () => false), false);
   assert.equal(await fs.stat(path.join(f.scratch, 'campaign-test-12345678/run-01.json')).then(() => true, () => false), true);
   assert.equal((await fs.readdir(f.scratch)).includes('run-fixture-2'), true);
+});
+
+test('run 1 blocker prevents run 2 and preserves raw evidence', async (t) => {
+  const f = await fixture(t, { blockRun: 1 });
+  await assert.rejects(campaign(f), /FIXTURE_BLOCKER/u);
+  assert.equal(f.runs, 1);
+  assert.equal(await fs.stat(f.durable).then(() => true, () => false), false);
+  assert.equal((await fs.readdir(f.scratch)).includes('run-fixture-1'), true);
+});
+
+test('two samples have an even median and partial coverage remains unavailable', async () => {
+  const baseline = JSON.parse(await fs.readFile(path.join(ROOT, BASELINE), 'utf8'));
+  const reports = [structuredClone(baseline), structuredClone(baseline)];
+  reports[0].aggregate.operations = 10;
+  reports[1].aggregate.operations = 14;
+  reports[1].aggregate.telemetry.main = 'unavailable';
+  const summary = campaignSummary({ campaignId: 'campaign-test-12345678', head: 'fixture-head',
+    startedAt: '2026-01-01T00:00:00Z', endedAt: '2026-01-01T00:00:01Z', baselineRef: {},
+    reports, comparisons: [{}, {}], plannedRuns: 2 });
+  assert.deepEqual(summary.distribution.g2.operations.values.map(({ value }) => value), [10, 14]);
+  assert.equal(summary.distribution.g2.operations.sampleCount, 2);
+  assert.equal(summary.distribution.g2.operations.median, 12);
+  assert.equal(summary.distribution.g2.operations.min, 10);
+  assert.equal(summary.distribution.g2.operations.max, 14);
+  assert.equal(summary.distribution.g3.mainInput.sampleCount, 1);
+  assert.equal(summary.distribution.g3.mainInput.median, 'unavailable');
 });
 
 test('comparison failure stops and does not promote', async (t) => {
@@ -195,5 +226,5 @@ test('npm benchmark script resolves to campaign runner without running a provide
   assert.equal(pkg.scripts.benchmark, 'node benchmarks/sentinel-todo/runtime/benchmark-campaign.mjs');
   const result = spawnSync('npm', ['run', 'benchmark', '--', '--help'], { cwd: ROOT, encoding: 'utf8' });
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /Run the formal three-full campaign/u);
+  assert.match(result.stdout, /Run the formal 2-full campaign/u);
 });

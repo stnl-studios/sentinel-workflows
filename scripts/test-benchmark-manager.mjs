@@ -5,12 +5,36 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { admitOperation, assertManagedSliceLauncher, budgetSnapshot, decideOutcome,
+import { admitOperation, assertManagedSliceLauncher, budgetSnapshot, decideOutcome, guardOperationProvenance, unmanagedCollaborationEvents,
   initializeTurnBudget, nextHandoff, recoverableRunnerHandoff, settleTurn, startReservedTurn } from '../benchmarks/sentinel-todo/runtime/benchmark-manager.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const RUNS = path.join(ROOT, 'benchmark-temp');
 const MANAGER = path.join(ROOT, 'benchmarks/sentinel-todo/runtime/benchmark-manager.mjs');
+
+test('unmanaged collaboration and absent official receipt cannot yield a valid operation sample', () => {
+  const pass = { result: 'PASS', blocker: null };
+  for (const operation of ['EXECUTE_SLICE', 'APPLY_FINDINGS', 'VALIDATE_SLICE']) {
+    assert.deepEqual(guardOperationProvenance(pass, operation, [], 0),
+      { result: 'BLOCKED', blocker: 'OFFICIAL_RUNNER_RECEIPT_MISSING' });
+    assert.deepEqual(guardOperationProvenance(pass, operation, [{ source: 'main', tool: 'spawn_agent' }], 1),
+      { result: 'BLOCKED', blocker: 'UNMANAGED_COLLABORATION' });
+    assert.deepEqual(guardOperationProvenance(pass, operation, [], 1), pass);
+  }
+  assert.deepEqual(guardOperationProvenance({ result: 'NEEDS_FIX', blocker: null }, 'VALIDATE_SLICE', [], 0),
+    { result: 'BLOCKED', blocker: 'OFFICIAL_RUNNER_RECEIPT_MISSING' });
+  assert.deepEqual(guardOperationProvenance(pass, 'PLAN', [{ source: 'main', tool: 'spawn_agent' }], 0),
+    { result: 'BLOCKED', blocker: 'UNMANAGED_COLLABORATION' });
+});
+
+test('historical Case C collaboration events remain detectable as unmeasured delegation', async (t) => {
+  const file = path.join(ROOT, 'benchmark-temp/run-20260929125208-f85c2e3a/case-c/events.jsonl');
+  if (!await fs.access(file).then(() => true, () => false)) { t.skip('historical local replay artifact is absent'); return; }
+  const events = await unmanagedCollaborationEvents(file, 'C-08-VALIDATE_SLICE');
+  assert.ok(events.some((event) => event.source === 'main' && event.tool === 'spawn_agent'));
+  assert.deepEqual(guardOperationProvenance({ result: 'PASS', blocker: null }, 'VALIDATE_SLICE', events, 0),
+    { result: 'BLOCKED', blocker: 'UNMANAGED_COLLABORATION' });
+});
 
 test('managed launcher disagreement stops before SDK and runner dispatch for every runner operation', () => {
   for (const operation of ['EXECUTE_SLICE', 'APPLY_FINDINGS', 'VALIDATE_SLICE']) {

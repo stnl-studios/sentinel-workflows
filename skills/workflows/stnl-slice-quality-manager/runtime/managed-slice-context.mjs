@@ -192,6 +192,61 @@ export function assertManagedAgreement({
   return context;
 }
 
+// A managed operation can consume only the adapter's captured response for the
+// active broker invocation. Manual launches have neither context nor broker.
+export async function assertManagedRunnerReceipt({ operation, slice, workspace, receiptFile, semanticResponseFile, environment = process.env }) {
+  const context = assertManagedAgreement({ operation, slice, workspace, environment });
+  const activeFile = typeof environment.TMPDIR === 'string'
+    ? path.join(environment.TMPDIR, 'stnl-runner-broker', 'active.json') : null;
+  const active = activeFile === null ? null : await fs.readFile(activeFile, 'utf8').then(JSON.parse).catch((error) => {
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  });
+  if (context === null && active === null) return null;
+  if (receiptFile === undefined) fail('managed runner receipt is required; use the configured bridge and supply the receipt returned by the adapter');
+  if (context === null || active === null) fail('managed context and active broker invocation are required');
+  if (active.operation !== context.operation || active.slice !== context.slice
+    || active.workspace !== context.workspace || active.officialPreflight?.specPath !== context.specPath
+    || active.officialPreflight?.authority !== context.authority
+    || !Number.isSafeInteger(active.sequence) || active.sequence < 1) fail('active broker identity disagrees with managed context');
+  const tmpdir = await fs.realpath(environment.TMPDIR);
+  if (active.tmpdir !== tmpdir) fail('active broker tmpdir disagrees');
+  const receiptPath = await fs.realpath(receiptFile);
+  const responsePath = await fs.realpath(semanticResponseFile);
+  if (path.dirname(receiptPath) !== tmpdir || path.dirname(responsePath) !== tmpdir) fail('receipt or response is outside active broker tmpdir');
+  const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
+  const stem = `${String(active.sequence).padStart(3, '0')}-${operation.toLowerCase()}-${context.slice}-attempt-${receipt.attempt}`;
+  const eventsPath = path.join(tmpdir, `${stem}.events.jsonl`);
+  if (receipt.status !== 'RUNNER_RESPONSE_CAPTURED' || receipt.runnerAgent !== 'stnl_validation_runner'
+    || receipt.operation !== operation || receipt.slice !== context.slice || receipt.sequence !== active.sequence
+    || !Number.isSafeInteger(receipt.attempt) || receipt.attempt < 1 || receipt.attempt > 3
+    || receiptPath !== path.join(tmpdir, `${stem}.receipt.json`)
+    || responsePath !== path.join(tmpdir, `${stem}.response.json`)
+    || receipt.semanticResponseFile !== responsePath || receipt.eventsPath !== eventsPath
+    || receipt.exitCode !== 0 || receipt.captureFailure !== null || receipt.error !== null) {
+    fail('receipt does not match the active managed runner invocation');
+  }
+  const started = JSON.parse(await fs.readFile(path.join(tmpdir, `${stem}.started.json`), 'utf8'));
+  if (started.operation !== operation || started.sequence !== active.sequence
+    || started.slice !== context.slice || started.attempt !== receipt.attempt) fail('runner start identity disagrees');
+  const bytes = await fs.readFile(responsePath);
+  if (receipt.semanticResponseSha256 !== createHash('sha256').update(bytes).digest('hex')) fail('receipt response hash disagrees');
+  let finalMessage = null; let completed = false; let threadId = null;
+  for (const line of (await fs.readFile(eventsPath, 'utf8')).split('\n')) {
+    if (!line) continue;
+    const event = JSON.parse(line);
+    if (event.operationId !== `runner-${stem}`) fail('runner SDK event identity disagrees');
+    if (event.item?.type === 'collab_tool_call') fail('unmanaged runner collaboration is not official evidence');
+    if (event.type === 'thread.started') threadId = event.thread_id;
+    if (event.type === 'turn.completed') completed = true;
+    if (event.type === 'item.completed' && event.item?.type === 'agent_message') finalMessage = event.item.text;
+  }
+  if (!completed || threadId !== receipt.threadId || finalMessage !== bytes.toString('utf8')) {
+    fail('receipt is not backed by the completed SDK turn and exact response');
+  }
+  return context;
+}
+
 export async function assertManagedRuntimeIdentity(context, environment = process.env) {
   const current = readManagedSliceContext(environment);
   if (current === null || JSON.stringify(current) !== JSON.stringify(context)) fail('runtime context disagrees');

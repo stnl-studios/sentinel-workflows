@@ -167,15 +167,20 @@ async function runIds(scratch) {
 
 function distribution(reports, getter) {
   const values = reports.map((report, index) => ({ run: index + 1, value: getter(report) }));
-  if (!values.every(({ value }) => Number.isFinite(value))) return { values, median: 'unavailable', min: 'unavailable', max: 'unavailable' };
+  const sampleCount = values.filter(({ value }) => Number.isFinite(value)).length;
+  if (sampleCount !== values.length || sampleCount === 0) return { values, sampleCount, median: 'unavailable', min: 'unavailable', max: 'unavailable' };
   const sorted = values.map(({ value }) => value).sort((a, b) => a - b);
-  return { values, median: sorted[1], min: sorted[0], max: sorted[2],
+  const middle = Math.floor(sorted.length / 2);
+  return { values, sampleCount, median: sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2,
+    min: sorted[0], max: sorted.at(-1),
     extremes: { minRuns: values.filter(({ value }) => value === sorted[0]).map(({ run }) => run),
-      maxRuns: values.filter(({ value }) => value === sorted[2]).map(({ run }) => run) } };
+      maxRuns: values.filter(({ value }) => value === sorted.at(-1)).map(({ run }) => run) } };
 }
 
-export function campaignSummary({ campaignId, head, startedAt, endedAt, baselineRef, reports, comparisons }) {
-  if (reports.length !== 3 || comparisons.length !== 3) throw blocked('BLOCKED_SUMMARY', 'three reports and comparisons are required');
+export function campaignSummary({ campaignId, head, startedAt, endedAt, baselineRef, reports, comparisons, plannedRuns }) {
+  if (!Number.isSafeInteger(plannedRuns) || plannedRuns < 1 || reports.length !== plannedRuns || comparisons.length !== plannedRuns) {
+    throw blocked('BLOCKED_SUMMARY', `${plannedRuns} reports and comparisons are required`);
+  }
   const a = reports[0];
   const metrics = {
     g2: Object.fromEntries([
@@ -195,7 +200,7 @@ export function campaignSummary({ campaignId, head, startedAt, endedAt, baseline
   return { schemaVersion: 1, campaignId, benchmarkId: a.benchmarkId, benchmarkVersion: a.benchmarkVersion,
     baseline: baselineRef, head, profile: a.run.profile,
     sourceFunctionalSha256: a.provenance.sourceFunctionalSha256, startedAt, endedAt,
-    status: 'CAMPAIGN_COMPLETE', comparability: 'PASS', completedRuns: 3, successRate: 1,
+    status: 'CAMPAIGN_COMPLETE', comparability: 'PASS', plannedRuns, completedRuns: reports.length, successRate: 1,
     runs: reports.map((report, index) => ({ index: index + 1, runId: report.run.id, status: report.run.status,
       cases: Object.fromEntries(report.cases.map((row) => [row.id, row.status])),
       operations: report.aggregate.operations, mainTurns: report.aggregate.mainTurns, runnerTurns: report.aggregate.runnerTurns,
@@ -248,6 +253,8 @@ export async function runCampaign({ root = ROOT, hooks = {}, campaignId = null }
     const baseline = validateMeasurementReport(JSON.parse(baselineBytes));
     if (baseline.baselineVersion !== 1 || baseline.run.status !== 'PASS') throw blocked('BLOCKED_BASELINE', 'baseline-v1 is invalid');
     const manifest = await readJson(path.join(root, 'benchmarks/sentinel-todo/benchmark.json'));
+    const plannedRuns = manifest.campaign?.fullRuns;
+    if (!Number.isSafeInteger(plannedRuns) || plannedRuns < 1) throw blocked('BLOCKED_CONFIG', 'campaign.fullRuns must be a positive integer');
     if (manifest.benchmarkVersion !== baseline.benchmarkVersion || manifest.productionProfile?.id !== baseline.run.profile) {
       throw blocked('BLOCKED_BASELINE', 'baseline and manifest version/profile differ');
     }
@@ -277,12 +284,12 @@ export async function runCampaign({ root = ROOT, hooks = {}, campaignId = null }
     const reports = []; const comparisons = []; const files = {};
     const baselineRef = { path: BASELINE, runId: baseline.run.id,
       sha256: `sha256:${createHash('sha256').update(baselineBytes).digest('hex')}` };
-    for (index = 1; index <= 3; index += 1) {
+    for (index = 1; index <= plannedRuns; index += 1) {
       checkCancel();
       if ((await api.gitState()).head !== base.head || (await api.identity()).sha256 !== source.sha256) {
         throw blocked('CAMPAIGN_SOURCE_DRIFT', `checkout or functional source changed before run ${index}`);
       }
-      say(`RUN ${index}/3`);
+      say(`RUN ${index}/${plannedRuns}`);
       const before = await runIds(scratch);
       const result = await api.runFull(signal.signal);
       const created = [...await runIds(scratch)].filter((item) => !before.has(item));
@@ -300,7 +307,7 @@ export async function runCampaign({ root = ROOT, hooks = {}, campaignId = null }
       if (run.snapshot?.sourceFunctionalSha256 !== source.sha256 || (await api.identity()).sha256 !== source.sha256) {
         throw blocked('CAMPAIGN_SOURCE_DRIFT', `functional source changed in run ${index}; raw ${runRoot}`);
       }
-      say(`EXPORT ${index}/3`);
+      say(`EXPORT ${index}/${plannedRuns}`);
       const name = `run-${String(index).padStart(2, '0')}.json`;
       const file = path.join(campaignRoot, name);
       const exported = await api.export(runId, file, signal.signal);
@@ -312,7 +319,7 @@ export async function runCampaign({ root = ROOT, hooks = {}, campaignId = null }
         || report.cases.length !== 3 || ['A', 'B', 'C'].some((key) => report.cases.find((row) => row.id === key)?.status !== 'PASS')) {
         throw blocked('BLOCKED_REPORT', `run ${index} ${runId}: invalid campaign report`);
       }
-      say(`COMPARE ${index}/3`);
+      say(`COMPARE ${index}/${plannedRuns}`);
       const comparison = await api.compare(baseline, report);
       if (!comparison.directlyComparable || comparison.profileExperiment || comparison.mismatches?.length) {
         throw blocked('BLOCKED_COMPARABILITY', `run ${index} ${runId}: ${comparison.mismatches?.join(', ') || 'not directly comparable'}`);
@@ -324,11 +331,11 @@ export async function runCampaign({ root = ROOT, hooks = {}, campaignId = null }
     if ((await api.gitState()).head !== base.head || (await api.identity()).sha256 !== source.sha256) {
       throw blocked('CAMPAIGN_SOURCE_DRIFT', 'checkout or functional source changed before promotion');
     }
-    index = 3;
+    index = plannedRuns;
     checkCancel();
     say('SUMMARY');
     const campaign = campaignSummary({ campaignId: id, head: base.head, startedAt, endedAt: new Date().toISOString(),
-      baselineRef, reports, comparisons });
+      baselineRef, reports, comparisons, plannedRuns });
     files['campaign-summary.json'] = path.join(campaignRoot, 'campaign-summary.json');
     await writeJson(files['campaign-summary.json'], campaign);
     checkCancel();
@@ -338,7 +345,7 @@ export async function runCampaign({ root = ROOT, hooks = {}, campaignId = null }
       { status: 'CAMPAIGN_COMPLETE', campaignId: id, endedAt: campaign.endedAt }).catch((error) => {
       console.error(`scratch status could not be written: ${error.message}`);
     });
-    say(`CAMPAIGN_COMPLETE ${id}: 3/3 PASS`);
+    say(`CAMPAIGN_COMPLETE ${id}: ${plannedRuns}/${plannedRuns} PASS`);
     say(`reports: ${path.relative(root, promoted)}`);
     say(`raws: ${path.relative(root, scratch)}`);
     say('next: review and commit the reports; do not rerun this campaign');
@@ -361,7 +368,10 @@ export async function runCampaign({ root = ROOT, hooks = {}, campaignId = null }
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
-  if (process.argv.includes('--help')) console.log('Run the formal three-full campaign: npm run benchmark');
+  if (process.argv.includes('--help')) {
+    const config = await readJson(path.join(ROOT, 'benchmarks/sentinel-todo/benchmark.json'));
+    console.log(`Run the formal ${config.campaign.fullRuns}-full campaign: npm run benchmark`);
+  }
   else if (process.argv.length !== 2) { console.error('usage: npm run benchmark'); process.exitCode = 2; }
   else runCampaign().catch(() => { process.exitCode = 1; });
 }

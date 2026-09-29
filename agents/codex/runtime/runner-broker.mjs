@@ -134,6 +134,7 @@ export async function startOfficialRunnerBroker({
   let stopping = false;
   const seen = new Set();
   const errors = [];
+  let capturedReceipts = 0;
   const run = async () => {
     while (!stopping) {
       const names = (await fs.readdir(directory)).filter((name) => /^request-[0-9a-f-]{36}\.json$/u.test(name)).sort();
@@ -166,6 +167,7 @@ export async function startOfficialRunnerBroker({
             fail('BROKER_RESULT_INVALID');
           }
           const { exitCode, ...receipt } = result;
+          if (result.status === 'RUNNER_RESPONSE_CAPTURED' && exitCode === 0) capturedReceipts += 1;
           result = { receipt, exitCode };
         } catch (error) {
           errors.push(typeof error?.code === 'string' ? error.code : 'BROKER_DISPATCH_FAILED');
@@ -182,6 +184,7 @@ export async function startOfficialRunnerBroker({
     directory,
     errors,
     get requestsHandled() { return seen.size; },
+    get capturedReceipts() { return capturedReceipts; },
     async close() {
       stopping = true;
       await fs.unlink(activeFile).catch(() => {});

@@ -7,7 +7,7 @@ import { pathToFileURL } from "node:url";
 import { prepareRunnerValidationPersistenceFromResponse, persistMalformedRunnerResultInCandidate,
   recoverableRunnerResultDiagnostic } from "./serialize-runner-evidence.mjs";
 import { preflightExecutionOperation, resolveExecutionWorkspace } from "./execution-state.mjs";
-import { assertManagedAgreement } from "./managed-slice-context.mjs";
+import { assertManagedAgreement, assertManagedRunnerReceipt } from "./managed-slice-context.mjs";
 
 function fail(message) {
   throw new Error(`validation candidate preparation blocked: ${message}`);
@@ -87,6 +87,7 @@ async function writeCandidateFiles(entries) {
 
 export async function prepareValidationCandidate({ specPath, slice: sliceValue, workspace, candidateExecutionRoot, semanticResponseFile, receiptFile, verificationEventIds }) {
   assertManagedAgreement({ specPath, workspace, slice: sliceValue });
+  await assertManagedRunnerReceipt({ operation: "VALIDATE_SLICE", slice: sliceValue, workspace, receiptFile, semanticResponseFile });
   if (typeof specPath !== "string" || !path.isAbsolute(specPath)) fail("SPEC_PATH must be absolute");
   if (typeof semanticResponseFile !== "string" || !path.isAbsolute(semanticResponseFile)) {
     fail("semantic response file must be absolute");

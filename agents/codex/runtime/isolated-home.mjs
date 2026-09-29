@@ -28,12 +28,15 @@ function childEnvironment({ privateHome, shellHome, tmpdir, snapshot }) {
   };
 }
 
-function configText({ privateHome, snapshot, workspace, candidates, tmpdir }) {
+export function configText({ privateHome, snapshot, workspace, candidates, tmpdir }) {
   const nodeVersion = path.dirname(NODE_RUNTIME);
   return `model_provider = "openai"
 default_permissions = "sentinel-case"
 approval_policy = "never"
 web_search = "disabled"
+
+[agents]
+enabled = false
 
 [features]
 apps = false
@@ -41,6 +44,7 @@ plugins = false
 remote_plugin = false
 hooks = false
 multi_agent = false
+multi_agent_v2 = false
 skill_search = false
 browser_use = false
 computer_use = false

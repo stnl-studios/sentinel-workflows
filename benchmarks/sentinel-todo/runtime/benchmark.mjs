@@ -133,6 +133,9 @@ function caseConfig(configuration, caseId) {
 }
 
 function assertManifest(configuration) {
+  if (!Number.isSafeInteger(configuration.campaign?.fullRuns) || configuration.campaign.fullRuns < 1) {
+    throw new CliError('campaign.fullRuns must be a positive integer');
+  }
   if (configuration.benchmarkId !== 'sentinel-todo' || configuration.benchmarkVersion !== 1) {
     throw new CliError('manifest benchmark identity is invalid');
   }

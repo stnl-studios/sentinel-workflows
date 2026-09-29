@@ -34,6 +34,24 @@ const RUNNER_OPERATIONS = new Set(['EXECUTE_SLICE', 'APPLY_FINDINGS', 'VALIDATE_
 const BLOCKED_STATES = new Set(['AUXILIARY_BLOCKED', 'DIVERGENCE_BLOCKED', 'REPLAN_REQUIRED',
   'REQUIREMENTS_CHANGED', 'RUNNER_INITIALIZATION_BLOCKED', 'RUNNER_RESULT_BLOCKED', 'VALIDATION_BLOCKED']);
 
+export function guardOperationProvenance(outcome, operation, collaborationEvents, capturedReceipts) {
+  if (collaborationEvents.length > 0) return { result: 'BLOCKED', blocker: 'UNMANAGED_COLLABORATION' };
+  if (RUNNER_OPERATIONS.has(operation) && ['PASS', 'NEEDS_FIX'].includes(outcome.result) && capturedReceipts < 1) {
+    return { result: 'BLOCKED', blocker: 'OFFICIAL_RUNNER_RECEIPT_MISSING' };
+  }
+  return outcome;
+}
+
+export async function unmanagedCollaborationEvents(eventsPath, operationId, runnerEventPaths = []) {
+  return (await Promise.all([eventsPath, ...runnerEventPaths].map(async (file) =>
+    (await fs.readFile(file, 'utf8')).split('\n').filter(Boolean).map((line) => JSON.parse(line))
+      .filter((event) => (file !== eventsPath || event.operationId === operationId)
+        && event.type === 'item.completed' && event.item?.type === 'collab_tool_call')
+      .map((event) => ({ source: file === eventsPath ? 'main' : 'runner',
+        tool: event.item.tool ?? 'unknown', itemId: event.item.id ?? null,
+        receiverThreadIds: event.item.receiver_thread_ids ?? [] }))))).flat();
+}
+
 function fail(message) { throw new Error(message); }
 function hash(value) { return `sha256:${createHash('sha256').update(value).digest('hex')}`; }
 function caseName(id) { return `case-${id.toLowerCase()}`; }
@@ -472,6 +490,7 @@ async function runCase({ runRoot, caseId, configuration, snapshotMetadata, maxOp
       const beforeResume = operation === 'SPEC_RESUME' ? product.readinessSnapshot(specPath) : null;
       const runnerTurnsBefore = caseState.runnerTurns;
       const runnerUsageObservations = [];
+      const runnerEventPaths = [];
       let broker = null;
       const admission = await admitOperation({ runRoot, runId: path.basename(runRoot), caseId, operation,
         runnerRequired: officialPreflight !== null, limit: turnLimit });
@@ -495,7 +514,8 @@ async function runCase({ runRoot, caseId, configuration, snapshotMetadata, maxOp
                 mainTurns: caseState.mainTurns, runnerTurns: caseState.runnerTurns + 1,
                 ...await budgetSnapshot(runRoot), artifacts: caseRoot });
             },
-            onTurn: async ({ turn: runnerTurn }) => {
+            onTurn: async ({ turn: runnerTurn, eventsPath: runnerEventsPath }) => {
+              runnerEventPaths.push(runnerEventsPath);
               await settleTurn(runRoot, currentRunnerNumber, runnerTurn, turnLimit);
               if (runnerTurn.turnStarted !== false) caseState.runnerTurns += 1;
               caseState.lastRunnerThread = runnerTurn.threadId;
@@ -558,7 +578,10 @@ async function runCase({ runRoot, caseId, configuration, snapshotMetadata, maxOp
       const mainUsageObservation = mainUsage.observe({ threadId: turn.threadId,
         segment: path.basename(runRoot), usage: turn.usage, eventId: operationId,
         parentThreadId: threadId });
-      const allUsage = [mainUsageObservation, ...runnerUsageObservations];
+      const collaborationEvents = await unmanagedCollaborationEvents(eventsPath, operationId, runnerEventPaths);
+      const allUsage = [mainUsageObservation, ...runnerUsageObservations,
+        ...collaborationEvents.map((event) => ({ status: 'unavailable', delta: null,
+          reason: 'unmanaged collaboration usage unknown', source: 'unmanaged_collaboration', event }))];
       const usageComplete = allUsage.every((observation) => ['attributable', 'duplicate'].includes(observation.status));
       const normalizedUsage = usageComplete ? {
         input_tokens: allUsage.reduce((sum, observation) => sum + observation.delta.input, 0),
@@ -578,7 +601,8 @@ async function runCase({ runRoot, caseId, configuration, snapshotMetadata, maxOp
           readinessResult = product.validateReadinessResult(specPath, JSON.parse(turn.response), { scope: 'GLOBAL' });
         } catch (error) { readinessDiagnostic = error.message; }
       }
-      const outcome = decideOutcome(operation, readback, turn.completed, readinessResult);
+      const outcome = guardOperationProvenance(decideOutcome(operation, readback, turn.completed, readinessResult),
+        operation, collaborationEvents, broker?.capturedReceipts ?? 0);
       if (broker?.errors.includes('PAUSED_BUDGET_OR_QUOTA')) {
         outcome.result = 'PAUSED_BUDGET_OR_QUOTA'; outcome.blocker = 'PAUSED_BUDGET_OR_QUOTA';
       }
@@ -603,8 +627,9 @@ async function runCase({ runRoot, caseId, configuration, snapshotMetadata, maxOp
           turnStarted: turn.turnStarted, usageObservation: mainUsageObservation },
         officialPreflight, officialReadback: { lifecycle: readback.lifecycle, execution: readback.execution },
         readinessResult, readinessDiagnostic,
-        runner: { requestsHandled: broker?.requestsHandled ?? 0, errors: broker?.errors ?? [],
-          turns: runnerCount, usageObservations: runnerUsageObservations },
+        runner: { requestsHandled: broker?.requestsHandled ?? 0, capturedReceipts: broker?.capturedReceipts ?? 0,
+          errors: broker?.errors ?? [], turns: runnerCount, usageObservations: runnerUsageObservations,
+          unmanagedCollaboration: collaborationEvents },
         normalizedUsage,
         journal: { exitCode: journalResult.exitCode, diagnostic: journalResult.stderr || journalResult.stdout }, outcome,
         recovery: currentRecovery };

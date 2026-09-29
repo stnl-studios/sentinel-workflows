@@ -99,7 +99,7 @@ export function composeRunnerRequest({ officialPreflight, operation, slice,
 
 export async function invokeIndependentRunner({
   snapshot, workspace, tmpdir, env, operation, sequence, slice, officialPreflight, prompt,
-  onBeforeTurn = () => {}, onTurn = () => {},
+  onBeforeTurn = () => {}, onTurn = () => {}, runTurn = runCodexTurn,
 }) {
   const managed = readManagedSliceContext(env);
   if (managed !== null) {
@@ -153,7 +153,7 @@ export async function invokeIndependentRunner({
   const eventsPath = path.join(tmpdir, `${operationName}.events.jsonl`);
   const responsePath = path.join(tmpdir, `${operationName}.response.json`);
   await onBeforeTurn({ role: 'runner', operation, sequence, slice, attempt });
-  const turn = await runCodexTurn({
+  const turn = await runTurn({
     env, cwd: workspace, prompt: request, model: configuration.model,
     effort: configuration.effort, operationId: `runner-${operationName}`,
     eventsPath, outputSchema: schema, timeoutMs: 1_800_000,

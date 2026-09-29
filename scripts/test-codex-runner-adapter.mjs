@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -9,7 +11,8 @@ import { assertRunnerRoundPayload, composeRunnerRequest, main as runnerMain,
   describeSemanticResponseFile, readRunnerConfiguration, scopeApplyFindingsSchema,
   submitRunnerPayload } from '../agents/codex/runtime/validation-runner.mjs';
 import { captureRunnerResponse } from '../skills/workflows/stnl-slice-executor/runtime/capture-runner-response.mjs';
-import { codexClientConfig } from '../agents/codex/runtime/sdk-transport.mjs';
+import { codexClientConfig, runCodexTurn } from '../agents/codex/runtime/sdk-transport.mjs';
+import { configText } from '../agents/codex/runtime/isolated-home.mjs';
 import { createUsageNormalizer, ZERO_USAGE } from '../agents/codex/runtime/usage-accounting.mjs';
 import { frozenFileMode } from '../benchmarks/sentinel-todo/runtime/benchmark-snapshot.mjs';
 
@@ -160,8 +163,49 @@ test('runner instructions and skill isolation use per-instance public SDK config
     { path: path.join(skills, 'stnl-slice-executor'), enabled: false },
     { path: path.join(skills, 'stnl-slice-quality-manager'), enabled: false },
   ]);
-  assert.deepEqual(await codexClientConfig({ env: { CODEX_HOME: home } }), { features: { multi_agent: false } });
+  const noDelegation = { agents: { enabled: false }, features: { multi_agent: false, multi_agent_v2: false } };
+  assert.deepEqual(await codexClientConfig({ env: { CODEX_HOME: home } }), noDelegation);
+  assert.equal(runner.agents.enabled, false);
+  assert.equal(runner.features.multi_agent_v2, false);
+  const privateConfig = configText({ privateHome: home, snapshot: ROOT, workspace: ROOT,
+    candidates: home, tmpdir: home });
+  assert.match(privateConfig, /\[agents\]\nenabled = false/u);
+  assert.match(privateConfig, /\[features\][\s\S]*?multi_agent = false\nmulti_agent_v2 = false/u);
   await assert.rejects(codexClientConfig({ env: { CODEX_HOME: home }, isolateSkills: true }), /instructions are missing/u);
+});
+
+test('real SDK forwards delegation policy to CLI on start and resume without a provider', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'stnl-sdk-cli-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const cli = path.join(root, 'fake-codex.mjs');
+  const calls = path.join(root, 'calls.jsonl');
+  await fs.writeFile(path.join(root, 'config.toml'), '[agents]\nenabled = true\n[features]\nmulti_agent = true\nmulti_agent_v2 = true\n');
+  await fs.writeFile(cli, `#!${process.execPath}\nimport fs from 'node:fs';\nfs.appendFileSync(process.env.STNL_FAKE_CLI_CAPTURE, JSON.stringify(process.argv.slice(2)) + '\\n');\nconsole.log(JSON.stringify({type:'thread.started',thread_id:'thread-fixture'}));\nconsole.log(JSON.stringify({type:'turn.completed',usage:{input_tokens:1,output_tokens:1}}));\n`);
+  await fs.chmod(cli, 0o755);
+  const env = { CODEX_HOME: root, STNL_FAKE_CLI_CAPTURE: calls };
+  for (const [index, threadId] of [null, 'thread-fixture'].entries()) {
+    const result = await runCodexTurn({ env, cwd: root, prompt: 'offline fixture', model: 'gpt-5.6-luna',
+      effort: 'medium', threadId, operationId: `offline-${index}`, eventsPath: path.join(root, `events-${index}.jsonl`),
+      codexPathOverride: cli });
+    assert.equal(result.completed, true, result.error);
+  }
+  const invocations = (await fs.readFile(calls, 'utf8')).trim().split('\n').map(JSON.parse);
+  assert.equal(invocations.length, 2);
+  for (const args of invocations) {
+    const overrides = args.flatMap((value, index) => args[index - 1] === '--config' ? [value] : []);
+    for (const required of ['agents.enabled=false', 'features.multi_agent=false', 'features.multi_agent_v2=false']) {
+      assert.ok(overrides.includes(required), `${required} must override inherited config`);
+    }
+  }
+  assert.ok(invocations[1].includes('resume'));
+  assert.ok(invocations[1].includes('thread-fixture'));
+  const packagedCli = path.join(ROOT, 'agents/codex/node_modules/.bin/codex');
+  const features = spawnSync(packagedCli, ['-c', 'agents.enabled=false', '-c', 'features.multi_agent=false',
+    '-c', 'features.multi_agent_v2=false', 'features', 'list'],
+  { env: { ...process.env, CODEX_HOME: root }, encoding: 'utf8' });
+  assert.equal(features.status, 0, features.stderr);
+  assert.match(features.stdout, /^multi_agent\s+stable\s+false$/mu);
+  assert.match(features.stdout, /^multi_agent_v2\s+stable\s+false$/mu);
 });
 
 test('usage normalizer attributes cumulative snapshots from a known baseline exactly once', () => {

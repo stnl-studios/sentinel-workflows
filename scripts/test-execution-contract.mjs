@@ -46,6 +46,9 @@ import {
 import { serializeRunnerValidationBundleFromResponse as serializeQualityManagerValidationBundleFromResponse }
   from "../skills/workflows/stnl-slice-quality-manager/runtime/serialize-runner-evidence.mjs";
 import { captureRunnerResponse } from "../skills/workflows/stnl-slice-executor/runtime/capture-runner-response.mjs";
+import { startOfficialRunnerBroker } from "../agents/codex/runtime/runner-broker.mjs";
+import { runManagedRunnerBridge } from "../agents/codex/runtime/managed-runner-bridge.mjs";
+import { invokeIndependentRunner } from "../agents/codex/runtime/validation-runner.mjs";
 import { prepareExecutionCopy, publishExecutionCopy } from "../skills/workflows/stnl-slice-executor/runtime/prepare-execution-copy.mjs";
 import { EXECUTION_OPERATION_SKILLS, WORKFLOW_OPERATIONS } from "./lib/skill-registry.mjs";
 
@@ -3885,11 +3888,8 @@ test("validation candidate preparation writes canonical attempt and PASS base be
   assert.match(disagreement.stderr, /explicit SPEC_PATH disagrees with managed context/u);
   const managedPreparation = spawnSync(process.execPath, prepareCli,
     { encoding: "utf8", cwd: fixture.root, env: managedEnv });
-  assert.equal(managedPreparation.status, 0, managedPreparation.stderr);
-  assert.equal(JSON.parse(managedPreparation.stdout).formalStatus, "PASS");
-  const managedTask = await fs.readFile(path.join(managedCopy.candidateExecutionRoot, "tasks/slice-01.md"), "utf8");
-  assert.match(managedTask, /validate-execution-state\.mjs" "/u,
-    "the deterministic producer retains the canonical replay command in formal evidence");
+  assert.equal(managedPreparation.status, 1);
+  assert.match(managedPreparation.stderr, /managed runner receipt is required; use the configured bridge/u);
 
   const candidateTask = path.join(candidateRoot, "tasks", "slice-01.md");
   const candidateText = await fs.readFile(candidateTask, "utf8");
@@ -3952,6 +3952,125 @@ test("validation candidate preparation writes canonical attempt and PASS base be
     /head must be a complete single-line scalar/u,
   );
   assert.equal(await fs.readFile(malformedTask, "utf8"), malformedBefore, "malformed semantic input must not create a candidate record");
+});
+
+test("managed bridge and broker bind simulated provider evidence through strict publication", async (t) => {
+  const fixture = await standaloneWorkspace(t);
+  await renderArtifacts(fixture);
+  await writeValidatedPath(fixture);
+  await editTask(fixture, (value) => {
+    let task = value.replace("- [ ] 1.1", "- [x] 1.1");
+    task = replaceSection(task, "Changed Areas", "- `../../src/example.txt`");
+    task = replaceSection(task, "Implementation Test Evidence", checkRecord("implementation-check", 1, "TESTS_PASS", 1));
+    return replaceSection(task, "Diff Summary", "- Verified behavior is implemented.");
+  });
+  const preflight = await preflightExecutionOperation(fixture.requirements, "VALIDATE_SLICE", "1");
+  const officialPreflight = { exitCode: 0, operation: "VALIDATE_SLICE", slice: "slice-01", inputSlice: "1",
+    specPath: fixture.requirements, state: preflight.state, authority: `sha256:${preflight.currentFingerprint}`,
+    legalOperations: preflight.legalOperations, mandatoryRecovery: preflight.mandatoryRecovery };
+  const context = await createManagedSliceContext({ officialPreflight, workspace: fixture.root, snapshot: ROOT,
+    adapterPath: path.join(ROOT, "agents/codex/runtime/validation-runner.mjs"),
+    bridgePath: path.join(ROOT, "agents/codex/runtime/managed-runner-bridge.mjs"),
+    preflightPath: path.join(ROOT, "agents/codex/runtime/managed-slice-preflight.mjs") });
+  const tmpdir = await temporary(t, "stnl-managed-provider-");
+  const environment = managedEnvironment({ PATH: process.env.PATH, TMPDIR: tmpdir }, context);
+  const semantic = JSON.stringify({ status: "PASS", head: "0123456789abcdef0123456789abcdef01234567",
+    commands: [{ command: "semantic claim", exit: 0 }], evidence: "simulated independent provider result",
+    findingReferences: "none", findingDispositions: "none", blockers: "none",
+    unexpectedWorkspaceEffects: "none", persistenceSummary: "no runner writes" });
+  const check = "STNL_VERIFICATION_COMMAND=1 node --test test/cli.test.mjs";
+  const broker = await startOfficialRunnerBroker({ workspace: fixture.root, tmpdir,
+    operation: "VALIDATE_SLICE", sequence: 1, slice: "slice-01", officialPreflight,
+    invoke: (request) => invokeIndependentRunner({ ...request, snapshot: ROOT, env: environment,
+      runTurn: async ({ eventsPath, operationId }) => {
+        const events = [
+          { operationId, type: "thread.started", thread_id: "simulated-provider-thread" },
+          { operationId, type: "turn.started" },
+          { operationId, type: "item.started", item: { id: "item_0", type: "command_execution", command: check } },
+          { operationId, type: "item.completed", item: { id: "item_0", type: "command_execution", command: check, status: "completed", exit_code: 0 } },
+          { operationId, type: "item.completed", item: { id: "item_1", type: "agent_message", text: semantic } },
+          { operationId, type: "turn.completed", usage: { input_tokens: 5, output_tokens: 5 } },
+        ];
+        await fs.writeFile(eventsPath, `${events.map(JSON.stringify).join("\n")}\n`);
+        return { completed: true, turnStarted: true, threadId: "simulated-provider-thread",
+          requestedModel: "gpt-5.6-luna", requestedEffort: "medium", reportedModel: null,
+          error: null, usage: { input_tokens: 5, output_tokens: 5 } };
+      } }) });
+  try {
+    const receipt = await runManagedRunnerBridge({ environment, cwd: fixture.root, payload: "Review changed scope and checks." });
+    assert.equal(receipt.status, "RUNNER_RESPONSE_CAPTURED");
+    assert.equal(broker.requestsHandled, 1);
+    assert.equal(broker.capturedReceipts, 1);
+    const copy = await prepareValidationCopy({ specPath: fixture.requirements, slice: "slice-01", candidateParent: tmpdir });
+    const cli = path.join(ROOT, "skills/workflows/stnl-slice-quality-manager/runtime/prepare-validation-candidate.mjs");
+    const args = [cli, "--prepare", "--spec-path", fixture.requirements, "--slice", "slice-01",
+      "--workspace", fixture.root, "--candidate-execution-root", copy.candidateExecutionRoot,
+      "--semantic-response-file", receipt.semanticResponseFile];
+    const missing = spawnSync(process.execPath, args, { cwd: fixture.root, env: environment, encoding: "utf8" });
+    assert.equal(missing.status, 1);
+    assert.match(missing.stderr, /managed runner receipt is required/u);
+    const wrong = path.join(tmpdir, "wrong.receipt.json");
+    await fs.writeFile(wrong, JSON.stringify({ ...receipt, operation: "EXECUTE_SLICE" }));
+    const mismatch = spawnSync(process.execPath, [...args, "--receipt-file", wrong],
+      { cwd: fixture.root, env: environment, encoding: "utf8" });
+    assert.equal(mismatch.status, 1);
+    assert.match(mismatch.stderr, /receipt does not match the active managed runner invocation/u);
+    const capturedBytes = await fs.readFile(receipt.semanticResponseFile);
+    await fs.writeFile(receipt.semanticResponseFile, `${capturedBytes.toString("utf8")} `);
+    const staleResponse = spawnSync(process.execPath, [...args, "--receipt-file",
+      path.join(tmpdir, "001-validate_slice-slice-01-attempt-1.receipt.json")],
+    { cwd: fixture.root, env: environment, encoding: "utf8" });
+    assert.equal(staleResponse.status, 1);
+    assert.match(staleResponse.stderr, /receipt response hash disagrees/u);
+    await fs.writeFile(receipt.semanticResponseFile, capturedBytes);
+    const prepared = spawnSync(process.execPath, [...args, "--receipt-file",
+      path.join(tmpdir, "001-validate_slice-slice-01-attempt-1.receipt.json")],
+    { cwd: fixture.root, env: environment, encoding: "utf8" });
+    assert.equal(prepared.status, 0, prepared.stderr);
+    assert.equal(JSON.parse(prepared.stdout).formalStatus, "PASS", prepared.stdout);
+    assert.equal((await validateExecutionCandidate(fixture.requirements, copy.candidateExecutionRoot)).state, "COMPLETE");
+    assert.equal((await publishValidationCandidate({ specPath: fixture.requirements, slice: "slice-01",
+      candidateExecutionRoot: copy.candidateExecutionRoot })).state, "COMPLETE");
+    const readback = await inspectExecutionState(fixture.requirements);
+    assert.equal(readback.state, "COMPLETE");
+    assert.deepEqual(nextHandoff("VALIDATE_SLICE", { executionRaw: readback }), { operation: "SPEC_CLOSE", slice: null });
+  } finally { await broker.close(); }
+});
+
+test("copied Case C subagent response without receipt cannot replay as official validation", async (t) => {
+  const original = path.join(ROOT, "benchmark-temp/run-20260929125208-f85c2e3a/case-c");
+  if (!await fs.access(path.join(original, "10-validate_slice.json")).then(() => true, () => false)) {
+    t.skip("historical local replay artifact is absent"); return;
+  }
+  const evidence = JSON.parse(await fs.readFile(path.join(original, "10-validate_slice.json"), "utf8"));
+  const copyRoot = await temporary(t, "stnl-case-c-replay-");
+  const workspace = path.join(copyRoot, "workspace");
+  const specPath = path.join(workspace, "specs/benchmark-case-c");
+  const tmpdir = path.join(copyRoot, "tmp");
+  const candidate = path.join(tmpdir, "validation-slice-02-copy");
+  const response = path.join(tmpdir, "validation-slice-02.response.json");
+  await fs.mkdir(path.dirname(specPath), { recursive: true });
+  await fs.mkdir(tmpdir);
+  await fs.cp(path.join(original, "workspace/specs/benchmark-case-c"), specPath, { recursive: true });
+  await fs.cp(path.join(original, "tmp/validation-slice-02-0MT9ZT"), candidate, { recursive: true });
+  await fs.copyFile(path.join(original, "tmp/validation-slice-02.response.json"), response);
+  const before = await fs.readFile(path.join(candidate, "tasks/slice-02.md"));
+  const historical = evidence.officialPreflight;
+  const context = await createManagedSliceContext({ workspace, snapshot: ROOT,
+    adapterPath: path.join(ROOT, "agents/codex/runtime/validation-runner.mjs"),
+    bridgePath: path.join(ROOT, "agents/codex/runtime/managed-runner-bridge.mjs"),
+    preflightPath: path.join(ROOT, "agents/codex/runtime/managed-slice-preflight.mjs"),
+    officialPreflight: { ...historical, specPath } });
+  const environment = managedEnvironment({ PATH: process.env.PATH, TMPDIR: tmpdir }, context);
+  const result = spawnSync(process.execPath, [
+    path.join(ROOT, "skills/workflows/stnl-slice-quality-manager/runtime/prepare-validation-candidate.mjs"),
+    "--prepare", "--spec-path", specPath, "--slice", "slice-02", "--workspace", workspace,
+    "--candidate-execution-root", candidate, "--semantic-response-file", response,
+  ], { cwd: workspace, env: environment, encoding: "utf8" });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /managed runner receipt is required; use the configured bridge/u);
+  assert.deepEqual(await fs.readFile(path.join(candidate, "tasks/slice-02.md")), before);
+  assert.equal(evidence.runner.requestsHandled, 0);
 });
 
 test("validation publisher accepts its own complete candidate after the materializer rejects it", async (t) => {
