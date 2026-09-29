@@ -190,15 +190,17 @@ export async function captureRunnerTestedState({ workspace, taskArtifact, change
   return { workspace: workspaceRoot, sourceTaskPath, entries: entries.map(({ claim, value }) => ({ path: claim, value })) };
 }
 
-// Validate the managed scope before a runner turn is allocated. The task's
-// canonical Changed Areas remains the authorization for file-backed work.
+// Validate prospective scope before allocating a runner turn. Execution edits
+// an isolated candidate: live Changed Areas can be pending or describe a prior
+// attempt. Do not require publishing those edits before collecting their tests.
+// The receipt captures this scope; capturedExecutionEntries and strict candidate
+// validation enforce its exact agreement with the candidate before publication.
 export async function validateManagedChangedAreas({ workspace, taskArtifact, changedAreas }) {
   if (!Array.isArray(changedAreas)) fail("managed changedAreas must be an array");
   const workspaceRoot = await canonicalWorkspacePath(workspace);
   const sourceTaskPath = await regularFile(taskArtifact, "source taskArtifact");
   if (!inside(sourceTaskPath, workspaceRoot)) fail("source taskArtifact must belong to workspace");
   const taskText = await fs.readFile(sourceTaskPath, "utf8");
-  const declared = parseCanonicalPathSection(taskText, "Changed Areas");
   const approvedTargets = await canonicalApprovedTargets({ workspaceRoot, taskArtifact: sourceTaskPath, taskText });
   const normalized = [];
   for (const raw of changedAreas) {
@@ -208,9 +210,6 @@ export async function validateManagedChangedAreas({ workspace, taskArtifact, cha
     if (!normalized.includes(claim)) normalized.push(claim);
   }
   normalized.sort((left, right) => left.localeCompare(right, "en"));
-  if (JSON.stringify(normalized) !== JSON.stringify([...declared].sort((left, right) => left.localeCompare(right, "en")))) {
-    fail("managed changedAreas must match the task's canonical Changed Areas");
-  }
   return normalized;
 }
 

@@ -31,6 +31,8 @@ import { prepareTaskMaterializationCandidate } from "../skills/workflows/stnl-ta
 import { publishTaskMaterializationCandidate } from "../skills/workflows/stnl-task-materializer/runtime/publish-task-candidate.mjs";
 import { serializeTaskPathClaims } from "../skills/workflows/stnl-task-materializer/runtime/serialize-task-paths.mjs";
 import {
+  validateManagedChangedAreas,
+  captureRunnerTestedState,
   serializeRunnerEvidence,
   serializeRunnerManifest,
   serializeRunnerRecord,
@@ -6655,4 +6657,151 @@ test("terminal integrity trusts repository-owned paths outside a nested SPEC and
     return result;
   });
   await assert.rejects(inspectExecutionState(workspace), /unsafe validation-owned path/u);
+});
+
+// A pristine live task must stay pristine until evidence is published from its
+// isolated candidate. Requiring its Changed Areas here deadlocks first execution.
+// This fixture is generated from the versioned templates; no benchmark-temp input.
+test("managed first execution tests candidate scope while the live task remains pristine", async (t) => {
+  const fixture = await nestedLifecycleWorkspace(t);
+  const workspace = fixture.root;
+  const taskArtifact = path.join(fixture.execution, "tasks/slice-01.md");
+  const target = path.join(workspace, "src/example.txt");
+  const related = path.join(workspace, "test/related.txt");
+  await fs.mkdir(path.dirname(related), { recursive: true });
+  await fs.writeFile(related, "related verification input\n");
+  const claims = [target, related].map((file) => path.relative(path.dirname(taskArtifact), file).split(path.sep).join("/"));
+  const liveBefore = await fs.readFile(taskArtifact, "utf8");
+  assert.match(liveBefore, /## Changed Areas\n\n- pending\n/u);
+  const preflight = await preflightExecutionOperation(fixture.requirements, "EXECUTE_SLICE", "1");
+  assert.equal(preflight.state, "MATERIALIZED_PRISTINE");
+  const officialPreflight = { exitCode: 0, operation: "EXECUTE_SLICE", slice: "slice-01", inputSlice: "1",
+    specPath: fixture.requirements, state: preflight.state, authority: `sha256:${preflight.currentFingerprint}`,
+    legalOperations: preflight.legalOperations, mandatoryRecovery: preflight.mandatoryRecovery };
+  const context = await createManagedSliceContext({ officialPreflight, workspace, snapshot: ROOT,
+    adapterPath: path.join(ROOT, "agents/codex/runtime/validation-runner.mjs"),
+    bridgePath: path.join(ROOT, "agents/codex/runtime/managed-runner-bridge.mjs"),
+    preflightPath: path.join(ROOT, "agents/codex/runtime/managed-slice-preflight.mjs") });
+  const tmpdir = await temporary(t, "stnl-pristine-runner-");
+  const environment = managedEnvironment({ ...process.env, TMPDIR: tmpdir }, context);
+  const copy = await prepareExecutionCopy({ specPath: fixture.requirements, slice: "slice-01" });
+  let candidate = liveBefore.replace("- [ ] 1.1", "- [x] 1.1");
+  candidate = replaceSection(candidate, "Changed Areas", claims.map((claim) => `- \`${claim}\``).join("\n"));
+  candidate = replaceSection(candidate, "Diff Summary", "- Implemented behavior and its related verification.");
+  await fs.writeFile(copy.candidateTaskArtifact, candidate);
+  assert.equal((await validateExecutionCandidate(fixture.requirements, copy.candidateExecutionRoot)).state, "EXECUTION_STARTED");
+  let turns = 0;
+  const broker = await startOfficialRunnerBroker({ workspace, tmpdir, operation: "EXECUTE_SLICE", sequence: 1,
+    slice: "slice-01", officialPreflight, pollIntervalMs: 5,
+    invoke: (request) => invokeIndependentRunner({ ...request, snapshot: ROOT, env: environment,
+      runTurn: async ({ eventsPath, operationId, prompt }) => {
+        turns += 1;
+        assert.match(prompt, /RUNNER_DISPATCH_MODE=NORMAL/u);
+        assert.equal(await fs.readFile(taskArtifact, "utf8"), liveBefore);
+        // The model boundary is stubbed; the local check really runs on these bytes.
+        const check = `import fs from 'node:fs'; import assert from 'node:assert/strict'; assert.equal(fs.readFileSync('src/example.txt', 'utf8'), ${JSON.stringify(VALIDATED_CONTENT)}); assert.equal(fs.readFileSync('test/related.txt', 'utf8'), 'related verification input\\n');`;
+        const result = spawnSync(process.execPath, ["--input-type=module", "-e", check], {
+          cwd: workspace, env: { ...process.env, STNL_VERIFICATION_COMMAND: "1" }, encoding: "utf8" });
+        assert.equal(result.status, 0, result.stderr);
+        const command = `STNL_VERIFICATION_COMMAND=1 ${process.execPath} --input-type=module -e ${JSON.stringify(check)}`;
+        const response = {
+          status: "TESTS_PASS", automaticCheckRound: "1/3", head: "1".repeat(40),
+          discoverySources: "task and versioned fixture", discoveryActions: "read fixture inputs",
+          verificationTypesConsidered: "focused verification", nonApplicabilityRationale: "none",
+          noVerificationCommandConfirmation: "applicable check executed", commands: [{ command, exit: result.status }],
+          resultOfEachCommandAndExitCode: "local check passed", selectedChecks: "fixture byte assertions",
+          selectionRationale: "direct scope coverage", coverage: "AC-001", failures: "none",
+          priorRoundFailure: "none", correctionApplied: "none", inSliceRationale: "none",
+          evidenceOrFailureSummary: "real local check passed", affectedFilesOrBehaviors: "example and related verification",
+          blockers: "none", unexpectedWorkspaceEffects: "none", persistenceSummary: "no runner edits",
+        };
+        const events = [
+          { operationId, type: "thread.started", thread_id: "offline-pristine-runner" },
+          { operationId, type: "turn.started" },
+          { operationId, type: "item.started", item: { id: "item_0", type: "command_execution", command } },
+          { operationId, type: "item.completed", item: { id: "item_0", type: "command_execution", command,
+            status: "completed", exit_code: result.status, aggregated_output: result.stdout } },
+          { operationId, type: "item.completed", item: { id: "item_1", type: "agent_message", text: JSON.stringify(response) } },
+          { operationId, type: "turn.completed", usage: { input_tokens: 0, output_tokens: 0 } },
+        ];
+        await fs.writeFile(eventsPath, `${events.map((event) => JSON.stringify(event)).join("\n")}\n`);
+        return { completed: true, turnStarted: true, threadId: "offline-pristine-runner", requestedModel: "gpt-5.6-luna",
+          requestedEffort: "medium", reportedModel: null, error: null, usage: { input_tokens: 0, output_tokens: 0 } };
+      } }) });
+  try {
+    const payload = { automaticCheckRound: "1/3", changedAreas: claims,
+      relevantEvidence: "candidate holds prospective changed scope", requestedChecks: "check the two fixture inputs" };
+    await assert.rejects(runManagedRunnerBridge({ environment, cwd: workspace,
+      payload: JSON.stringify({ ...payload, changedScope: claims, changedAreas: undefined }) }), /changedScope/u);
+    assert.equal(turns, 0);
+    assert.equal(broker.requestsHandled, 0);
+    const receipt = await runManagedRunnerBridge({ environment, cwd: workspace, payload: JSON.stringify(payload) });
+    assert.equal(turns, 1);
+    assert.equal(broker.requestsHandled, 1);
+    assert.equal(receipt.status, "RUNNER_RESPONSE_CAPTURED");
+    assert.deepEqual(receipt.testedState.entries.map((entry) => entry.path), claims);
+    for (const [index, file] of [target, related].entries()) {
+      assert.equal(receipt.testedState.entries[index].value, `sha256:${createHash("sha256").update(await fs.readFile(file)).digest("hex")}`);
+    }
+    assert.equal(await fs.readFile(taskArtifact, "utf8"), liveBefore);
+    const receiptFile = path.join(tmpdir, "001-execute_slice-slice-01-attempt-1.receipt.json");
+    const producer = path.join(ROOT, "skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs");
+    const produce = (artifact) => spawnSync(process.execPath, [producer, "--execution-bundle", "--operation", "EXECUTE_SLICE",
+      "--workspace", workspace, "--task-artifact", artifact, "--semantic-response-file", receipt.semanticResponseFile,
+      "--receipt-file", receiptFile, "--insert-candidate"], { env: environment, encoding: "utf8" });
+    // Prospective dispatch does not authorize publishing a different target set.
+    const incomplete = await prepareExecutionCopy({ specPath: fixture.requirements, slice: "slice-01" });
+    await fs.writeFile(incomplete.candidateTaskArtifact, replaceSection(candidate, "Changed Areas", `- \`${claims[0]}\``));
+    const rejected = produce(incomplete.candidateTaskArtifact);
+    assert.equal(rejected.status, 1);
+    assert.match(rejected.stderr, /captured Tested state does not match candidate target scope/u);
+    assert.equal(await fs.readFile(taskArtifact, "utf8"), liveBefore);
+    const produced = produce(copy.candidateTaskArtifact);
+    assert.equal(produced.status, 0, produced.stderr);
+    assert.equal((await validateExecutionCandidate(fixture.requirements, copy.candidateExecutionRoot)).state,
+      "IMPLEMENTED_AWAITING_VALIDATION");
+    assert.equal(await fs.readFile(taskArtifact, "utf8"), liveBefore);
+    const published = spawnSync(process.execPath, [
+      path.join(ROOT, "skills/workflows/stnl-slice-executor/runtime/prepare-execution-copy.mjs"),
+      "--publish", "--spec-path", fixture.requirements, "--slice", "slice-01", "--candidate-root", copy.candidateRoot,
+    ], { env: environment, encoding: "utf8" });
+    assert.equal(published.status, 0, published.stderr);
+    assert.equal(JSON.parse(published.stdout).state, "IMPLEMENTED_AWAITING_VALIDATION");
+    const readback = await inspectExecutionState(fixture.requirements);
+    assert.equal(readback.state, "IMPLEMENTED_AWAITING_VALIDATION");
+    assert.equal(readback.normalHandoff.operation, "VALIDATE_SLICE");
+  } finally { await broker.close(); }
+});
+
+test("managed prospective scope is canonical without equating it to a prior published attempt", async (t) => {
+  const fixture = await nestedLifecycleWorkspace(t);
+  const taskArtifact = path.join(fixture.execution, "tasks/slice-01.md");
+  const target = path.join(fixture.root, "src/example.txt");
+  const extra = path.join(fixture.root, "src/next.txt");
+  await fs.writeFile(extra, "next attempt\n");
+  const claim = path.relative(path.dirname(taskArtifact), target).split(path.sep).join("/");
+  const extraClaim = path.relative(path.dirname(taskArtifact), extra).split(path.sep).join("/");
+  const options = { workspace: fixture.root, taskArtifact };
+  const before = await fs.readFile(taskArtifact, "utf8");
+  assert.deepEqual(await validateManagedChangedAreas({ ...options, changedAreas: [extraClaim, claim, claim] }), [claim, extraClaim]);
+  await editTask(fixture, (text) => replaceSection(text, "Changed Areas", `- \`${claim}\``));
+  const publishedBefore = await fs.readFile(taskArtifact, "utf8");
+  assert.deepEqual(await validateManagedChangedAreas({ ...options, changedAreas: [claim, extraClaim] }), [claim, extraClaim]);
+  assert.equal(await fs.readFile(taskArtifact, "utf8"), publishedBefore);
+  const outside = path.join(await temporary(t, "stnl-outside-scope-"), "outside.txt");
+  await fs.writeFile(outside, "must not be selected\n");
+  const link = path.join(fixture.root, "src/link.txt");
+  await fs.symlink(outside, link);
+  const relative = (file) => path.relative(path.dirname(taskArtifact), file).split(path.sep).join("/");
+  for (const invalid of [[target], ["src/example.txt"], [relative(outside)], [relative(link)],
+    [claim.replace("example.txt", "missing.txt")], [{ path: claim }]]) {
+    await assert.rejects(validateManagedChangedAreas({ ...options, changedAreas: invalid }));
+  }
+  assert.equal(await fs.readFile(taskArtifact, "utf8"), publishedBefore);
+  // Deletion of an explicitly planned file is still captured as a canonical removal.
+  await fs.rm(target);
+  assert.deepEqual(await validateManagedChangedAreas({ ...options, changedAreas: [claim] }), [claim]);
+  const captured = await captureRunnerTestedState({ ...options, changedAreas: [claim] });
+  assert.deepEqual(captured.entries, [{ path: claim, value: "REMOVED" }]);
+  await fs.writeFile(taskArtifact, before);
 });
