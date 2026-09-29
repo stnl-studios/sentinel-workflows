@@ -83,6 +83,7 @@ test('official runner broker serializes the configured runner flat receipt witho
       ...payload,
       specPath: payload.officialPreflight.specPath,
       officialPreflight: payload.officialPreflight,
+      managedPayload: null,
     }]);
     assert.equal(broker.requestsHandled, 1);
     assert.deepEqual(broker.errors, []);

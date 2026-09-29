@@ -36,6 +36,8 @@ STATUS_CHECKS=TESTS_PASS|TESTS_FAIL|TESTS_NOT_APPLICABLE|BLOCKED
 
 `TESTS_NOT_APPLICABLE` é permitido somente em EXECUTE_SLICE ou APPLY_FINDINGS quando houve descoberta objetiva e nenhum verification command é aplicável. Registre motivo objetivo e confirmação de que nenhum verification command foi executado. Falha de comando, ferramenta ausente, dependência indisponível, permissão insuficiente ou ambiente incompatível exige `TESTS_FAIL` ou `BLOCKED`; nunca use N/A para mascará-los.
 
+Para uma task fileless legítima (`Changed Areas: - none`), inclua `filelessReason` não vazio na resposta semântica. Para uma task file-backed, omita `filelessReason`.
+
 Checks nunca emitem `PASS` formal, manifesto final autoritativo, Validation Attempt, Effective Validation Base, resultado final ou conclusão `[x]`.
 
 # Resposta semântica
@@ -43,6 +45,8 @@ Checks nunca emitem `PASS` formal, manifesto final autoritativo, Validation Atte
 Responda somente de forma compacta, sem logs completos, transcrições extensas ou raciocínio privado. Na fronteira JSON, cada propriedade sem `commands` é uma string escalar; `commands` contém somente objetos {`command`, `exit`} como resumo semântico dos checks, sem autoridade sobre texto literal ou exit. Não copie comandos longos para a resposta; o produtor resolve texto e exit exclusivamente dos eventos SDK marcados. Não emita propriedades mecânicas, paths ou hashes de `Tested state` e manifestos; o `head` semântico continua obrigatório. Serialização, persistência e validação determinística pertencem ao runtime/producer.
 
 O runtime valida `OFFICIAL_EXECUTION_PREFLIGHT` e `Requirements authority` antes do dispatch e fornece contexto confiável. Use artifacts selecionados apenas para determinar escopo; não compare authority ausente no payload nem leia ou invoque a skill executora.
+
+`RUNNER_DISPATCH_MODE=NORMAL` autoriza a execução normal. `RUNNER_DISPATCH_MODE=SAME_OPERATION_RECOVERY` significa que o preflight oficial autorizou esta chamada como retomada da mesma operação e slice: execute discovery e checks normalmente. O blocker anterior é contexto histórico; não retorne `BLOCKED` apenas porque o estado anterior era `RUNNER_RESULT_BLOCKED` ou porque há `mandatoryRecovery`. Retorne `BLOCKED` se surgir um novo impedimento objetivo durante esta tentativa.
 
 # Canonical response gate
 

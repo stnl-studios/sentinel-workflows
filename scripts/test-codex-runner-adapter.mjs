@@ -41,7 +41,8 @@ test('independent runner receives mechanical context and semantic payload withou
   const snapshot = path.join(ROOT, 'benchmark-temp/run-example/snapshot');
   const serializer = path.join(snapshot, 'skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs');
   const specPath = path.join(workspace, 'specs/benchmark-case-a');
-  const officialPreflight = { operation: 'EXECUTE_SLICE', slice: 'slice-01', specPath };
+  const officialPreflight = { exitCode: 0, operation: 'EXECUTE_SLICE', slice: 'slice-01', specPath,
+    legalOperations: [{ operation: 'EXECUTE_SLICE', slice: 'slice-01' }], mandatoryRecovery: null };
   const prompt = 'automaticCheckRound=1/3\nExact main-context semantic payload.';
   const request = composeRunnerRequest({ officialPreflight, operation: 'EXECUTE_SLICE',
     slice: 'slice-01', workspace, ...runnerArtifacts(workspace), prompt });
@@ -137,7 +138,8 @@ test('managed validation runner gets the official SPEC_PATH and rejects a privat
   const workspace = path.join(ROOT, 'benchmark-temp/run-XYZ/case-c/workspace');
   const privateHome = path.join(ROOT, 'benchmark-temp/run-XYZ-c-AbCd12');
   const specPath = path.join(workspace, 'specs/case-c');
-  const officialPreflight = { exitCode: 0, operation: 'VALIDATE_SLICE', slice: 'slice-01', specPath };
+  const officialPreflight = { exitCode: 0, operation: 'VALIDATE_SLICE', slice: 'slice-01', specPath,
+    legalOperations: [{ operation: 'VALIDATE_SLICE', slice: 'slice-01' }], mandatoryRecovery: null };
   const request = composeRunnerRequest({ officialPreflight, operation: 'VALIDATE_SLICE',
     slice: 'slice-01', workspace, ...runnerArtifacts(workspace), prompt: 'Review the current slice against requirements.' });
   assert.ok(request.includes(`SPEC_PATH=${specPath}\n\nOPERATION=VALIDATE_SLICE\n\nSLICE=slice-01`));

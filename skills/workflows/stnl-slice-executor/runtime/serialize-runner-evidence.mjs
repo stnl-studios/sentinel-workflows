@@ -190,6 +190,30 @@ export async function captureRunnerTestedState({ workspace, taskArtifact, change
   return { workspace: workspaceRoot, sourceTaskPath, entries: entries.map(({ claim, value }) => ({ path: claim, value })) };
 }
 
+// Validate the managed scope before a runner turn is allocated. The task's
+// canonical Changed Areas remains the authorization for file-backed work.
+export async function validateManagedChangedAreas({ workspace, taskArtifact, changedAreas }) {
+  if (!Array.isArray(changedAreas)) fail("managed changedAreas must be an array");
+  const workspaceRoot = await canonicalWorkspacePath(workspace);
+  const sourceTaskPath = await regularFile(taskArtifact, "source taskArtifact");
+  if (!inside(sourceTaskPath, workspaceRoot)) fail("source taskArtifact must belong to workspace");
+  const taskText = await fs.readFile(sourceTaskPath, "utf8");
+  const declared = parseCanonicalPathSection(taskText, "Changed Areas");
+  const approvedTargets = await canonicalApprovedTargets({ workspaceRoot, taskArtifact: sourceTaskPath, taskText });
+  const normalized = [];
+  for (const raw of changedAreas) {
+    const claim = await canonicalizeScopeClaim({ workspaceRoot, taskArtifact: sourceTaskPath,
+      approvedTargets, raw, heading: "managed changedAreas" });
+    if (raw !== claim) fail("managed changedAreas must use canonical task-relative path claims");
+    if (!normalized.includes(claim)) normalized.push(claim);
+  }
+  normalized.sort((left, right) => left.localeCompare(right, "en"));
+  if (JSON.stringify(normalized) !== JSON.stringify([...declared].sort((left, right) => left.localeCompare(right, "en")))) {
+    fail("managed changedAreas must match the task's canonical Changed Areas");
+  }
+  return normalized;
+}
+
 async function canonicalTestedScope({ workspace, taskArtifact, targets = [], removed = [] }) {
   const entries = await canonicalEvidenceEntries({ workspace, taskArtifact, targets, removed });
   return entries.map(({ claim }) => claim).join(", ");
@@ -727,10 +751,9 @@ function checklistExpectedClaims(text) {
     const expected = line.match(/\| expected areas: (.*?) \| requirement: /u);
     if (expected === null) fail("Checklist contains a malformed expected-areas field");
     const lineClaims = [...expected[1].matchAll(/`([^`\n]+)`/gu)].map((match) => normalizedRelative(match[1], "Checklist expected area"));
-    if (lineClaims.length === 0) fail("Checklist expected areas contain no concrete path claim");
+    if (expected[1].replace(/`[^`\n]+`/gu, "").includes("`")) fail("Checklist expected areas contain an unmatched path delimiter");
     claims.push(...lineClaims);
   }
-  if (claims.length === 0) fail("Checklist contains no concrete expected area");
   return claims;
 }
 
@@ -1293,7 +1316,13 @@ export async function insertExecutionEvidenceInCandidate({ taskArtifact, operati
     fail("candidate evidence section is not appendable");
   }
   const replacement = body === "- none\n\n" ? `${bundle}\n\n` : `${body}${bundle}\n\n`;
-  const updated = `${taskText.slice(0, bodyStart)}${replacement}${taskText.slice(end + 1)}`;
+  let updated = `${taskText.slice(0, bodyStart)}${replacement}${taskText.slice(end + 1)}`;
+  const blocker = sectionBody(updated, "Delegation Blocker");
+  if (blocker !== "- none" && blocker.includes("- State: active")) {
+    if (!blocker.includes(`- Operation: ${operation}\n`)) fail("active Delegation Blocker belongs to another operation");
+    updated = replaceSectionBody(updated, "Delegation Blocker",
+      `${blocker.replace("- State: active", "- State: resolved")}\n- Resolution: ${identifier.slice(4)} returned a valid runner result`);
+  }
   const temporary = `${canonicalTask}.${process.pid}.${randomUUID()}.tmp`;
   try {
     const mode = (await fs.stat(canonicalTask)).mode & 0o777;

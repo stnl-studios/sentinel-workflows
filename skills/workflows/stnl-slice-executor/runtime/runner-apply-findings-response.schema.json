@@ -48,6 +48,7 @@
     "affectedFilesOrBehaviors": { "type": "string", "pattern": "^[\\s\\S]+$" },
     "blockers": { "type": "string", "pattern": "^[\\s\\S]+$" },
     "unexpectedWorkspaceEffects": { "type": "string", "pattern": "^[\\s\\S]+$" },
-    "persistenceSummary": { "type": "string", "pattern": "^[\\s\\S]+$" }
+    "persistenceSummary": { "type": "string", "pattern": "^[\\s\\S]+$" },
+    "filelessReason": { "type": "string", "pattern": "^[\\s\\S]+$" }
   }
 }

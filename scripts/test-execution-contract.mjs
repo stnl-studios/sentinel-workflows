@@ -680,7 +680,8 @@ test("runner response schema closes every semantic operation shape", async () =>
   for (const branch of schema.oneOf) {
     assert.equal(branch.type, "object");
     assert.equal(branch.additionalProperties, false);
-    assert.deepEqual(Object.keys(branch.properties).sort(), [...branch.required].sort());
+    const optional = branch.title === "VALIDATE_SLICE" ? [] : ["filelessReason"];
+    assert.deepEqual(Object.keys(branch.properties).sort(), [...branch.required, ...optional].sort());
     assert.deepEqual(Object.keys(branch.properties.commands), ["$ref"]);
   }
   const commandSchema = schema.$defs.commands.items;

@@ -3,7 +3,7 @@
   "benchmarkVersion": 1,
   "seedPath": "seed",
   "supportedRunModes": ["focal", "case", "full"],
-  "campaign": { "fullRuns": 2 },
+  "campaign": { "fullRuns": 1 },
   "turnBudget": {
     "maxTurnsPerRun": 100
   },

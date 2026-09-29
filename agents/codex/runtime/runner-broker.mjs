@@ -149,16 +149,21 @@ export async function startOfficialRunnerBroker({
           if (!REQUEST_ID.test(requestId)) fail('BROKER_REQUEST_ID_INVALID');
           const request = await readJsonFile(requestFile);
           const keys = isRecord(request) ? Object.keys(request).sort() : [];
-          if (keys.join(',') !== 'operation,prompt,requestId,sequence,slice,tmpdir,workspace'
+          if (keys.join(',') !== 'managedPayload,operation,prompt,requestId,sequence,slice,tmpdir,workspace'
             || request.requestId !== requestId || !matchesIdentity(request, identity)
             || typeof request.prompt !== 'string' || request.prompt.trim() === '' || Buffer.byteLength(request.prompt) > 256 * 1024) {
             fail('BROKER_REQUEST_REJECTED');
+          }
+          if (request.managedPayload !== null
+            && (!isRecord(request.managedPayload) || JSON.stringify(request.managedPayload) !== request.prompt)) {
+            fail('BROKER_MANAGED_PAYLOAD_INVALID');
           }
           result = await invoke({
             ...identity,
             specPath: officialPreflight.specPath,
             officialPreflight,
             prompt: request.prompt,
+            managedPayload: request.managedPayload,
           });
           if (!isRecord(result)
             || result.sequence !== sequence || result.operation !== operation
@@ -200,6 +205,7 @@ export async function submitOfficialRunnerRequest({
   sequence,
   slice,
   prompt,
+  managedPayload = null,
   timeoutMs = 1_800_000,
   pollIntervalMs = POLL_INTERVAL_MS,
 }) {
@@ -221,7 +227,7 @@ export async function submitOfficialRunnerRequest({
   const requestId = randomUUID();
   const requestFile = path.join(directory, `request-${requestId}.json`);
   const responseFile = path.join(directory, `response-${requestId}.json`);
-  await writeAtomic(requestFile, { ...identity, requestId, prompt });
+  await writeAtomic(requestFile, { ...identity, requestId, prompt, managedPayload });
   const deadline = Date.now() + timeoutMs;
   try {
     while (Date.now() < deadline) {
