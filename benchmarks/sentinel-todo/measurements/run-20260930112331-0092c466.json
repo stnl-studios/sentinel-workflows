@@ -1,0 +1,338 @@
+{
+  "schemaVersion": 1,
+  "benchmarkId": "sentinel-todo",
+  "benchmarkVersion": 1,
+  "resultDefinition": "full run is PASS when manager status is PASS and all included cases have passing finalizers",
+  "run": {
+    "id": "run-20260930112331-0092c466",
+    "status": "BLOCKED",
+    "mode": "full",
+    "profile": "production-v2",
+    "startedAt": "2026-09-30T11:23:32.150Z",
+    "endedAt": "2026-09-30T11:59:58.808Z"
+  },
+  "provenance": {
+    "baseSha": "7bc9e94bcf0eeaaee75482bce6b9eae753fed739",
+    "dirty": false,
+    "functionalDiffSha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "sourceFunctionalSha256": "sha256:00d33d05017881d6d50756b152ae355c246f1b143428005cc0b1439273b4c0a9",
+    "snapshotSha256": "sha256:5406735452309515f3c5a61ab43c11693d5b6748991831ff629c01de20fb3eed",
+    "snapshotCreatedAt": "2026-09-30T11:23:32.138Z"
+  },
+  "comparability": {
+    "schemaVersion": 1,
+    "benchmarkVersion": 1,
+    "profile": "production-v2",
+    "requirementsHashes": {
+      "A": "sha256:e5934bc22267756c3c10b31c46b7a9cd894b78e961b11975b0f14f7085349a24",
+      "B": "sha256:0388a84f8c5a9c45fcd5b1d0b59e7d376979e98717d8e028067701f00a16fc57",
+      "C": "sha256:a896026d591f06776ade1d88fde292c4e5f0d015e5e18374e9cf754ecce4efcb"
+    },
+    "fixtureContentHashes": {
+      "A": "sha256:e0c3233c14356e93accff61b334704a91fb8e4f82a60209768259144d88a10d5",
+      "B": "sha256:107d1057e48506a20da4460ee33febca26280dd35c85f645b0de6b81ffb33e10",
+      "C": "sha256:a9700e1844ce7106809491f924b0fea37d8bf15700afa14c920cc1ee139fdd44"
+    },
+    "seedHash": "sha256:9d93fbfa52b2e20607452f43d0ecb21e74f1872bb7a2da1b94dc2c814e7552e8",
+    "resultSchemaVersion": 2,
+    "resultSchemaHash": "sha256:d19c9eb631797b957f67c85826c619828d092f2eb6e0de83410531dd697ffbd6",
+    "metricDefinitions": "g2-operation-counts-v1;g3-attributable-usage-delta-v1",
+    "qualification": {
+      "harnessContractVersion": 1,
+      "providerVersion": "codex-cli 0.154.0",
+      "capabilitiesHash": "a35d6560c398bc4665b67df364432079a63032c394b03ec85194f552a1e60441",
+      "sandboxProbeStatus": "SANDBOX_PROBE_PASS",
+      "sandboxProbeEvidenceSha256": "39f762e7fbce171c22f435b968d2d7a40a91466ea6fb62833579d3a233a4a8e9"
+    },
+    "resultDefinition": "full-pass-v1"
+  },
+  "cases": [
+    {
+      "id": "A",
+      "status": "BLOCKED",
+      "blocker": "OFFICIAL_TRANSITION_NOT_OBSERVED",
+      "terminalResult": "BLOCKED",
+      "blockingOperation": {
+        "operation": "VALIDATE_SLICE",
+        "slice": "slice-02",
+        "result": "BLOCKED"
+      },
+      "operations": 9,
+      "mainTurns": 9,
+      "runnerTurns": 4,
+      "execution": "IMPLEMENTED_AWAITING_VALIDATION",
+      "specClosed": false,
+      "finalizer": "FAIL",
+      "finalizerExitCode": 1,
+      "finalTestsPassed": true,
+      "finalTestCommand": "node --test",
+      "finalTestExitCode": 0,
+      "profileMismatches": [],
+      "provider": "openai",
+      "authMode": "chatgpt",
+      "isolation": "restricted",
+      "findingsCycles": 0,
+      "recoveryOperations": 0,
+      "extraRunnerTurns": 0,
+      "repeatedReviewRounds": 0,
+      "durationMs": 2186236,
+      "slices": 2,
+      "operationCounts": {
+        "EXECUTE_SLICE": 2,
+        "VALIDATE_SLICE": 2,
+        "APPLY_FINDINGS": 0,
+        "REPLAN": 0,
+        "SPEC_RESUME": 0,
+        "REVIEW_PLAN": 1,
+        "REVIEW_TASKS": 1
+      },
+      "operationsBySlice": {
+        "slice-01": {
+          "execute": 1,
+          "validate": 1,
+          "applyFindings": 0
+        },
+        "slice-02": {
+          "execute": 1,
+          "validate": 1,
+          "applyFindings": 0
+        }
+      },
+      "operationDurations": [
+        {
+          "operation": "SPEC_INIT",
+          "slice": null,
+          "durationMs": 454742
+        },
+        {
+          "operation": "PLAN",
+          "slice": null,
+          "durationMs": 344078
+        },
+        {
+          "operation": "REVIEW_PLAN",
+          "slice": null,
+          "durationMs": 229980
+        },
+        {
+          "operation": "MATERIALIZE_TASKS",
+          "slice": null,
+          "durationMs": 202907
+        },
+        {
+          "operation": "REVIEW_TASKS",
+          "slice": null,
+          "durationMs": 50065
+        },
+        {
+          "operation": "EXECUTE_SLICE",
+          "slice": "slice-01",
+          "durationMs": 265145
+        },
+        {
+          "operation": "VALIDATE_SLICE",
+          "slice": "slice-01",
+          "durationMs": 204449
+        },
+        {
+          "operation": "EXECUTE_SLICE",
+          "slice": "slice-02",
+          "durationMs": 230929
+        },
+        {
+          "operation": "VALIDATE_SLICE",
+          "slice": "slice-02",
+          "durationMs": 196854
+        }
+      ],
+      "repeatedAttemptsBySlice": {
+        "slice-01": {
+          "execute": 0,
+          "validate": 0
+        },
+        "slice-02": {
+          "execute": 0,
+          "validate": 0
+        }
+      },
+      "telemetry": {
+        "coverage": {
+          "main": "9/9",
+          "runner": "4/4"
+        },
+        "main": {
+          "turns": 9,
+          "input": 10909481,
+          "output": 75878,
+          "cachedInput": 10281600,
+          "reasoningOutput": 21033,
+          "observedInput": 10909481,
+          "observedOutput": 75878,
+          "peakInputPerTurn": 2710377,
+          "medianInputPerTurn": 1147071,
+          "meanInputPerTurn": 1212164.5555555555
+        },
+        "runner": {
+          "turns": 4,
+          "input": 304536,
+          "output": 5523,
+          "cachedInput": 203264,
+          "reasoningOutput": 1897,
+          "observedInput": 304536,
+          "observedOutput": 5523,
+          "peakInputPerTurn": 95504,
+          "medianInputPerTurn": 76463,
+          "meanInputPerTurn": 76134
+        }
+      }
+    },
+    {
+      "id": "B",
+      "status": "NOT_RUN",
+      "blocker": "unavailable",
+      "terminalResult": "NOT_RUN",
+      "blockingOperation": "unavailable",
+      "operations": 0,
+      "mainTurns": 0,
+      "runnerTurns": 0,
+      "execution": "unavailable",
+      "specClosed": "unavailable",
+      "finalizer": "unavailable",
+      "finalizerExitCode": "unavailable",
+      "finalTestsPassed": "unavailable",
+      "finalTestCommand": "unavailable",
+      "finalTestExitCode": "unavailable",
+      "profileMismatches": "unavailable",
+      "provider": "unavailable",
+      "authMode": "unavailable",
+      "isolation": "unavailable",
+      "findingsCycles": "unavailable",
+      "recoveryOperations": 0,
+      "extraRunnerTurns": 0,
+      "repeatedReviewRounds": 0,
+      "durationMs": "unavailable",
+      "slices": "unavailable",
+      "operationCounts": {
+        "EXECUTE_SLICE": 0,
+        "VALIDATE_SLICE": 0,
+        "APPLY_FINDINGS": 0,
+        "REPLAN": 0,
+        "SPEC_RESUME": 0,
+        "REVIEW_PLAN": 0,
+        "REVIEW_TASKS": 0
+      },
+      "operationsBySlice": {},
+      "operationDurations": [],
+      "repeatedAttemptsBySlice": {},
+      "telemetry": {
+        "coverage": {
+          "main": "0/0",
+          "runner": "0/0"
+        },
+        "main": "unavailable",
+        "runner": "unavailable"
+      }
+    },
+    {
+      "id": "C",
+      "status": "NOT_RUN",
+      "blocker": "unavailable",
+      "terminalResult": "NOT_RUN",
+      "blockingOperation": "unavailable",
+      "operations": 0,
+      "mainTurns": 0,
+      "runnerTurns": 0,
+      "execution": "unavailable",
+      "specClosed": "unavailable",
+      "finalizer": "unavailable",
+      "finalizerExitCode": "unavailable",
+      "finalTestsPassed": "unavailable",
+      "finalTestCommand": "unavailable",
+      "finalTestExitCode": "unavailable",
+      "profileMismatches": "unavailable",
+      "provider": "unavailable",
+      "authMode": "unavailable",
+      "isolation": "unavailable",
+      "findingsCycles": "unavailable",
+      "recoveryOperations": 0,
+      "extraRunnerTurns": 0,
+      "repeatedReviewRounds": 0,
+      "durationMs": "unavailable",
+      "slices": "unavailable",
+      "operationCounts": {
+        "EXECUTE_SLICE": 0,
+        "VALIDATE_SLICE": 0,
+        "APPLY_FINDINGS": 0,
+        "REPLAN": 0,
+        "SPEC_RESUME": 0,
+        "REVIEW_PLAN": 0,
+        "REVIEW_TASKS": 0
+      },
+      "operationsBySlice": {},
+      "operationDurations": [],
+      "repeatedAttemptsBySlice": {},
+      "telemetry": {
+        "coverage": {
+          "main": "0/0",
+          "runner": "0/0"
+        },
+        "main": "unavailable",
+        "runner": "unavailable"
+      }
+    }
+  ],
+  "aggregate": {
+    "operations": 9,
+    "mainTurns": 9,
+    "runnerTurns": 4,
+    "recoveryOperations": 0,
+    "happyPathOperations": 9,
+    "extraRunnerTurns": 0,
+    "repeatedReviewRounds": 0,
+    "repeatedExecuteAttempts": 0,
+    "repeatedValidateAttempts": 0,
+    "wallDurationMs": 2186658,
+    "summedCaseDurationMs": "unavailable",
+    "telemetry": {
+      "coverage": {
+        "main": "9/9",
+        "runner": "4/4"
+      },
+      "main": {
+        "turns": 9,
+        "input": 10909481,
+        "output": 75878,
+        "cachedInput": 10281600,
+        "reasoningOutput": 21033,
+        "observedInput": 10909481,
+        "observedOutput": 75878,
+        "peakInputPerTurn": 2710377,
+        "medianInputPerTurn": 1147071,
+        "meanInputPerTurn": 1212164.5555555555
+      },
+      "runner": {
+        "turns": 4,
+        "input": 304536,
+        "output": 5523,
+        "cachedInput": 203264,
+        "reasoningOutput": 1897,
+        "observedInput": 304536,
+        "observedOutput": 5523,
+        "peakInputPerTurn": 95504,
+        "medianInputPerTurn": 76463,
+        "meanInputPerTurn": 76134
+      },
+      "peakInputPerTurn": 2710377,
+      "medianInputPerTurn": 681187
+    }
+  },
+  "comparisonToBaseline": {
+    "directlyComparable": false,
+    "mismatches": [
+      "incomplete full-run conclusion"
+    ],
+    "profileExperiment": false,
+    "conclusion": "partial-run; no savings conclusion",
+    "deltas": "unavailable"
+  }
+}

@@ -18,6 +18,29 @@ test("isolated executor and quality-manager use identical event resolvers", asyn
   assert.deepEqual(executor, manager);
 });
 
+test("Codex and Claude validation-runner contracts require isolated marked verification", async () => {
+  const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+  const contracts = await Promise.all([
+    fs.readFile(path.join(root, "agents/codex/.codex/agents/stnl_validation_runner.toml"), "utf8"),
+    fs.readFile(path.join(root, "agents/claude-code/.claude/agents/stnl-validation-runner.md"), "utf8"),
+  ]);
+  const requiredInstructions = [
+    "Cada verification command deve ocupar sua própria `command_execution`",
+    "shell invocation isolada",
+    "`item.command` deve começar literalmente com `STNL_VERIFICATION_COMMAND=1`",
+    "Execute discovery e inspection primeiro, em chamadas separadas",
+    "nunca misture discovery ou inspection com verification na mesma invocation",
+    "nunca anexe comandos antes do marker",
+    "depois do marker, execute somente o verification command pertinente",
+    "`STNL_VERIFICATION_COMMAND=1 npm test`",
+    "`git diff ...; STNL_VERIFICATION_COMMAND=1 npm test`",
+    "`git diff ... && STNL_VERIFICATION_COMMAND=1 npm test`",
+  ];
+  for (const contract of contracts) {
+    for (const instruction of requiredInstructions) assert.ok(contract.includes(instruction), `missing contract instruction: ${instruction}`);
+  }
+});
+
 async function fixture(t, commands, operation = "EXECUTE_SLICE") {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "stnl-command-events-")));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
@@ -72,6 +95,20 @@ test("explicit replay references select only named completed events, in start or
   await assert.rejects(resolveRunnerCommandEvents({ ...options, eventIds: ["item_2", "item_1"] }), /out of start order/u);
   await assert.rejects(resolveRunnerCommandEvents({ ...options, eventIds: ["item_9"] }), /did not complete/u);
   assert.deepEqual(await resolveRunnerCommandEvents(options), []);
+});
+
+test("VALIDATE_SLICE recognizes only standalone commands beginning with the marker", async (t) => {
+  const commands = [
+    { command: "STNL_VERIFICATION_COMMAND=1 npm test", exit: 0 },
+    { command: "npm test", exit: 0 },
+    { command: "git diff; STNL_VERIFICATION_COMMAND=1 npm test", exit: 0 },
+    { command: "git diff && STNL_VERIFICATION_COMMAND=1 npm test", exit: 0 },
+  ];
+  const files = await fixture(t, commands, "VALIDATE_SLICE");
+  assert.deepEqual(
+    await resolveRunnerCommandEvents({ ...files, operation: "VALIDATE_SLICE" }),
+    [commands[0]],
+  );
 });
 
 test("receipt and completion cannot silently diverge", async (t) => {
