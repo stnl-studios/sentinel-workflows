@@ -8,12 +8,27 @@ For a fresh diagnostic full run at the repository root, run:
 npm run benchmark
 ```
 
-No install is needed. It runs the structural `verify` command and starts a new
-full A/B/C manager run, retaining its snapshot and evidence in ignored
-`benchmark-temp/`. The recorded HEAD and source identity are diagnostic context.
-This run retains Sentinel workflow evidence but does not establish clean
-campaign conditions or baseline measurement comparability, and it does not
-publish or clean prior history.
+No install is needed. The functional mode of the existing campaign driver checks
+the benchmark and activity, preserves compact reports from eligible previous
+runs, and cleans only recognized, owned, inactive scratch through the manager's
+cleanup, including private homes. It then starts exactly one new full manager
+run: A first, followed by B/C concurrently only after A passes. Unknown or
+ambiguous data is preserved and reported; a previous run whose report cannot be
+preserved keeps its raw files.
+
+The command publishes terminal results, including BLOCKED, cancellation and
+budget pauses, to [`measurements/latest.json`](measurements/latest.json) and
+[`measurements/latest.md`](measurements/latest.md), with immutable per-run
+history at `measurements/<run-id>.json`. Latest shows the last published round,
+including a blocked round. The Markdown is a deterministic view of that JSON.
+The current run's raw evidence and snapshot remain in ignored `benchmark-temp/`
+for diagnosis until a later preparation can safely preserve and clean them.
+
+A dirty checkout, unpublished HEAD, missing baseline or unavailable comparison
+does not prevent functional use. Reports retain the real HEAD, dirty state and
+frozen source identity. A failure before a terminal run exists does not invent a
+measurement or replace latest. Missing evidence or a publication failure keeps
+scratch and reports the limitation alongside the execution result.
 
 For the formal measurement campaign, explicitly run:
 
@@ -26,10 +41,10 @@ safe-scratch cleanup, baseline comparison, and report promotion to
 `measurements/<campaign-id>/` for review and commit. The campaign summary
 retains every value and leaves G2/G3 decisions pending.
 
-A blocked run or Ctrl+C stops the sequence and preserves scratch evidence;
-no partial campaign is promoted. A later campaign may clean terminal, owned
-scratch automatically. Active or ambiguous scratch requires inspection before
-cleanup. `npm run benchmark:verify` and `npm run benchmark:status` remain
+A blocked run or Ctrl+C stops the formal sequence and preserves scratch evidence;
+no partial formal campaign is promoted. The functional command independently
+publishes the available terminal result. Active or ambiguous scratch requires
+inspection before cleanup. `npm run benchmark:verify` and `npm run benchmark:status` remain
 available for standalone diagnostics. The Node commands below remain available
 for advanced debugging.
 
@@ -76,7 +91,7 @@ node benchmarks/sentinel-todo/runtime/benchmark-manager.mjs status
 node benchmarks/sentinel-todo/runtime/benchmark-manager.mjs status --run <run-id>
 node benchmarks/sentinel-todo/runtime/benchmark-manager.mjs inspect --run <run-id> --case A
 node benchmarks/sentinel-todo/runtime/benchmark-manager.mjs clean --run <run-id>
-node benchmarks/sentinel-todo/runtime/benchmark-measurement.mjs export --run <completed-full-run-id> --output <absent-report-path>
+node benchmarks/sentinel-todo/runtime/benchmark-measurement.mjs export --run <terminal-full-run-id> --output <absent-report-path>
 node benchmarks/sentinel-todo/runtime/benchmark-measurement.mjs compare --before <baseline-or-report.json> --after <report.json>
 ```
 
@@ -170,11 +185,15 @@ prompts, event streams, focals, private runtime metadata, active-run markers,
 and turn ledgers all belong there. `benchmark.json`, this protocol, and promoted
 measurements belong in Git. Export a canonical report for any run used as a
 baseline, comparison reference, or gate evidence, then review and commit that
-small report. Routine diagnostic runs need no promotion. Do not copy raw trees
-into Git. Once a campaign or step is finished and its important reports are
-promoted, the entire `benchmark-temp/` directory may be deleted between
-campaigns. A fresh run recreates its runtime state from the versioned manifest;
-no old ledger, focal artifact, or handshake is required.
+small report. The default command publishes these compact reports automatically;
+the formal campaign retains its explicit promotion. Do not copy raw trees into
+Git. Preparation preserves reports before cleaning eligible scratch and retains
+unrecognized data. A fresh run recreates its runtime state from the versioned
+manifest; no old ledger, focal artifact, or handshake is required.
+
+`measurements/` is output, excluded from functional source selection, copying
+and diffs. Its changes still appear in the real working-tree dirty state.
+Historical snapshots are verified using their original recorded evidence.
 
 ### G2: operational repetition
 
@@ -205,7 +224,12 @@ definitions, benchmark version, case requirements hashes, seed hash, result
 schema, qualification contract, and production profile match. A deliberately
 changed profile is an explicit experimental variable and must be labelled as
 such. A difference in metric definitions or fixture/qualification contract
-blocks automatic better/worse conclusions. Durations, slice counts, final
+blocks automatic better/worse conclusions. Both runs must have the required
+full PASS conclusion before performance deltas are meaningful; token deltas
+also require sufficient observed coverage. A partial run with fewer operations
+or tokens is not an improvement. A missing or incompatible baseline never
+blocks publication and does not replace `baselines/baseline-v1.json`.
+Durations, slice counts, final
 tests, provider, auth mode, isolation, profile mismatches, and finalizer status
 are diagnostic dimensions where recorded; they are not G2 or G3 scores.
 

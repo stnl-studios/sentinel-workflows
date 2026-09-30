@@ -38,16 +38,17 @@ async function assertOwnedRun(runRoot) {
   return run;
 }
 
-async function listFiles(root, relative = '', { dependencies = false } = {}) {
+async function listFiles(root, relative = '', { dependencies = false, excludeMeasurements = false } = {}) {
   const files = [];
   const directory = path.join(root, relative);
   for (const entry of (await fs.readdir(directory, { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name))) {
     if (ignored(entry.name) || entry.name === '.git' || entry.name === 'benchmark-temp'
       || (!dependencies && entry.name === 'node_modules') || (dependencies && entry.name === '.bin')) continue;
     const child = path.join(relative, entry.name);
+    if (excludeMeasurements && child === path.join('benchmarks', 'sentinel-todo', 'measurements')) continue;
     const metadata = await fs.lstat(path.join(root, child));
     if (metadata.isSymbolicLink()) throw new Error(`snapshot source contains a symlink: ${child}`);
-    if (metadata.isDirectory()) files.push(...await listFiles(root, child, { dependencies }));
+    if (metadata.isDirectory()) files.push(...await listFiles(root, child, { dependencies, excludeMeasurements }));
     else if (metadata.isFile()) files.push(child);
     else throw new Error(`snapshot source contains an unsupported entry: ${child}`);
   }
@@ -65,7 +66,7 @@ async function hashFiles(root, files) {
 
 async function sourceFiles() {
   const files = [];
-  for (const root of SOURCE_ROOTS) files.push(...await listFiles(REPOSITORY_ROOT, root));
+  for (const root of SOURCE_ROOTS) files.push(...await listFiles(REPOSITORY_ROOT, root, { excludeMeasurements: true }));
   return files;
 }
 
@@ -111,7 +112,8 @@ export async function createSnapshot(runRoot) {
   await fs.mkdir(snapshot);
   const baseSha = git(['rev-parse', 'HEAD']).trim();
   const gitStatus = git(['status', '--porcelain=v1', '--untracked-files=all']).trimEnd();
-  const functionalDiff = git(['diff', '--binary', 'HEAD', '--', ...SOURCE_ROOTS]);
+  const functionalDiff = git(['diff', '--binary', 'HEAD', '--', ...SOURCE_ROOTS,
+    ':!benchmarks/sentinel-todo/measurements', ':!benchmarks/sentinel-todo/measurements/**']);
   const source = await currentFunctionalIdentity();
   const files = await sourceFiles();
   await copyFiles(REPOSITORY_ROOT, snapshot, files);

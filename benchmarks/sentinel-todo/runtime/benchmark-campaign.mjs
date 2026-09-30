@@ -5,7 +5,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { compareMeasurements, validateMeasurementReport } from './benchmark-measurement.mjs';
+import { compareMeasurements, validateMeasurementReport, exportMeasurement, publishMeasurement } from './benchmark-measurement.mjs';
 import { currentFunctionalIdentity } from './benchmark-snapshot.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
@@ -14,7 +14,7 @@ const BASELINE = path.join('benchmarks', 'sentinel-todo', 'baselines', 'baseline
 const MEASUREMENTS = path.join('benchmarks', 'sentinel-todo', 'measurements');
 const RUN_MARKER = 'sentinel-todo-run-v2\n';
 const CAMPAIGN_MARKER = 'sentinel-todo-campaign-v1\n';
-const TERMINAL = new Set(['PASS', 'BLOCKED', 'FAIL', 'ABORTED', 'CANCELLED', 'PAUSED_BUDGET_OR_QUOTA', 'FOCAL_STOP', 'CAMPAIGN_COMPLETE']);
+const TERMINAL = new Set(['PASS', 'BLOCKED', 'FAIL', 'ABORTED', 'CANCELLED', 'PAUSED_BUDGET_OR_QUOTA', 'FOCAL_STOP', 'NOT_RUN', 'CAMPAIGN_COMPLETE']);
 const readJson = async (file) => JSON.parse(await fs.readFile(file, 'utf8'));
 const exists = async (file) => fs.lstat(file).then(() => true, (error) => { if (error.code === 'ENOENT') return false; throw error; });
 
@@ -155,8 +155,11 @@ function adapters(root) {
     identity: () => currentFunctionalIdentity(),
     verify: (signal) => command(root, path.join(RUNTIME, 'benchmark.mjs'), ['verify'], signal),
     runFull: (signal) => command(root, path.join(RUNTIME, 'benchmark-manager.mjs'), ['run', '--full'], signal),
+    cleanRun: (runId) => command(root, path.join(RUNTIME, 'benchmark-manager.mjs'), ['clean', '--run', runId], new AbortController().signal, true),
     export: (runId, output, signal) => command(root, path.join(RUNTIME, 'benchmark-measurement.mjs'),
       ['export', '--run', runId, '--output', output], signal, true),
+    exportMeasurement: (runId) => exportMeasurement(runId),
+    publishMeasurement: (report, options) => publishMeasurement(report, options),
     compare: (baseline, report) => compareMeasurements(baseline, report),
   };
 }
@@ -367,11 +370,182 @@ export async function runCampaign({ root = ROOT, hooks = {}, campaignId = null }
   }
 }
 
+// The default npm command is deliberately a single functional run. The formal
+// campaign above remains opt-in through `npm run benchmark:campaign`.
+export async function runFunctionalBenchmark({ root = ROOT, hooks = {} } = {}) {
+  const api = { ...adapters(root), ...hooks };
+  const scratch = path.join(root, 'benchmark-temp');
+  const signal = new AbortController();
+  const onSignal = () => signal.abort();
+  process.on('SIGINT', onSignal); process.on('SIGTERM', onSignal);
+  let lock = null;
+  const reportRoot = path.join(root, 'benchmarks', 'sentinel-todo', 'measurements');
+  const say = (line) => console.log(line);
+  const checkCancel = () => { if (signal.signal.aborted) throw blocked('CANCELLED', 'benchmark interrupted'); };
+  async function preserveReport(report, updateLatest = false) {
+    if (report?.run?.id === undefined) throw new Error('report has no run identity');
+    // The publisher validates byte-identical history collisions and refreshes
+    // latest when requested, so an existing ID cannot silently hide new data.
+    await api.publishMeasurement(report, { root: reportRoot, updateLatest });
+    return true;
+  }
+  async function preserve(runId) {
+    try {
+      const report = await api.exportMeasurement(runId);
+      if (report?.run?.id !== runId) throw new Error(`exported report identity mismatch for ${runId}`);
+      return await preserveReport(report);
+    } catch (error) {
+      console.error(`report for ${runId} was not preserved; raw evidence retained: ${error.message}`);
+      return false;
+    }
+  }
+  try {
+    say('VERIFY');
+    const verified = await api.verify(signal.signal);
+    checkCancel();
+    if (verified.code !== 0) throw blocked('BLOCKED_VERIFY', `benchmark verify failed (${verified.code})`);
+    await fs.mkdir(scratch, { recursive: true });
+    const scratchStat = await fs.lstat(scratch);
+    if (!scratchStat.isDirectory() || scratchStat.isSymbolicLink()) throw blocked('BLOCKED_CLEANUP', `scratch root is unsafe: ${scratch}`);
+    if ((await api.processes()).length) throw blocked('BLOCKED_ACTIVE', 'another benchmark process is alive');
+    if (await exists(path.join(scratch, '.active-run.json')) || await exists(path.join(scratch, '.campaign-active.json')))
+      throw blocked('BLOCKED_ACTIVE', `active or interrupted benchmark marker in ${scratch}`);
+    await assertNoSymlinks(scratch);
+    if (await exists(path.join(scratch, '.campaign-state.json'))) {
+      const state = await readJson(path.join(scratch, '.campaign-state.json')).catch(() => null);
+      if (!state || !TERMINAL.has(state.status)) throw blocked('BLOCKED_CLEANUP', 'ambiguous campaign state at scratch root');
+    }
+    if (await exists(path.join(scratch, '.turn-ledger.json')) && !(await fs.lstat(path.join(scratch, '.turn-ledger.json'))).isFile())
+      throw blocked('BLOCKED_CLEANUP', 'turn ledger is not a regular file');
+    for (const entry of await fs.readdir(scratch, { withFileTypes: true })) {
+      if (entry.name === '.DS_Store' || entry.name === '__MACOSX' || entry.name.startsWith('._')
+        || entry.name === '.turn-ledger.json' || entry.name === '.campaign-state.json') continue;
+      const item = path.join(scratch, entry.name);
+      if (!entry.isDirectory()) throw blocked('BLOCKED_CLEANUP', `unknown scratch entry: ${item}`);
+      if (entry.name.startsWith('run-')) {
+        if (await fs.readFile(path.join(item, '.sentinel-benchmark-owned'), 'utf8').catch(() => null) !== RUN_MARKER)
+          throw blocked('BLOCKED_CLEANUP', `unowned scratch directory: ${item}`);
+        const run = await readJson(path.join(item, 'run.json')).catch(() => null);
+        const summary = await readJson(path.join(item, 'summary.json')).catch(() => null);
+        if (!run || run.runId !== entry.name || run.mode !== 'full' || !TERMINAL.has(run.status)
+          || !summary || summary.runId !== run.runId || summary.status !== run.status || !TERMINAL.has(summary.status))
+          throw blocked('BLOCKED_CLEANUP', `active or ambiguous scratch state: ${item}`);
+        for (const child of await fs.readdir(item, { withFileTypes: true })) {
+          if (!child.isDirectory() || !/^case-[a-c]$/u.test(child.name)) continue;
+          const caseRoot = path.join(item, child.name);
+          const state = await readJson(path.join(caseRoot, 'case-state.json')).catch(() => null);
+          if (!state || !TERMINAL.has(state.status)
+            || (state.privateHomeSuspended !== true && state.privateHomeRemoved !== true))
+            throw blocked('BLOCKED_CLEANUP', `active or ambiguous case state: ${caseRoot}`);
+        }
+      } else if (entry.name.startsWith('campaign-')) {
+        if (await fs.readFile(path.join(item, '.sentinel-campaign-owned'), 'utf8').catch(() => null) !== CAMPAIGN_MARKER)
+          throw blocked('BLOCKED_CLEANUP', `unowned scratch directory: ${item}`);
+        const state = await readJson(path.join(item, 'state.json')).catch(() => null);
+        if (!state || !TERMINAL.has(state.status)) throw blocked('BLOCKED_CLEANUP', `active or ambiguous campaign state: ${item}`);
+        for (const child of await fs.readdir(item, { withFileTypes: true })) {
+          if (child.name === '.DS_Store' || child.name === '__MACOSX' || child.name.startsWith('._')) continue;
+          if (!child.isFile() || !new Set(['.sentinel-campaign-owned', 'state.json', 'campaign-summary.json'])
+            .has(child.name) && !/^run-\d+\.json$/u.test(child.name) && !/^compare-\d+\.json$/u.test(child.name))
+            throw blocked('BLOCKED_CLEANUP', `unknown campaign scratch entry: ${path.join(item, child.name)}`);
+        }
+      } else throw blocked('BLOCKED_CLEANUP', `unknown scratch directory: ${item}`);
+    }
+    checkCancel();
+    const lockPath = path.join(scratch, '.campaign-active.json');
+    await fs.writeFile(lockPath, `${JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() })}\n`, { flag: 'wx' });
+    lock = lockPath;
+    if (await exists(path.join(scratch, '.active-run.json')) || (await api.processes()).length)
+      throw blocked('BLOCKED_ACTIVE', 'benchmark became active before cleanup');
+    // Preserve terminal report files before removing old campaign scratch.
+    for (const entry of await fs.readdir(scratch, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const item = path.join(scratch, entry.name);
+      if (entry.name.startsWith('run-')) {
+        const run = await readJson(path.join(item, 'run.json'));
+        const saved = await preserve(run.runId ?? entry.name);
+        if (saved) {
+          const cleaned = await api.cleanRun(run.runId ?? entry.name);
+          if (cleaned.code !== 0) console.error(`manager cleanup retained ${entry.name}: ${cleaned.stderr || cleaned.code}`);
+        }
+      } else if (entry.name.startsWith('campaign-')) {
+        let safeToRemove = true;
+        for (const child of await fs.readdir(item, { withFileTypes: true })) {
+          if (child.isFile() && /^run-\d+\.json$/u.test(child.name)) {
+            const report = await readJson(path.join(item, child.name)).catch(() => null);
+            try { if (!report?.run?.id) throw new Error('missing report identity'); await preserveReport(report); }
+            catch (error) { safeToRemove = false; console.error(`campaign report ${child.name} retained in scratch: ${error.message}`); }
+          }
+        }
+        if (safeToRemove) {
+          const summaryFile = path.join(item, 'campaign-summary.json');
+          if (await exists(summaryFile)) {
+            try {
+              const archive = path.join(reportRoot, entry.name);
+              await fs.mkdir(archive, { recursive: true });
+              const archivedSummary = path.join(archive, 'campaign-summary.json');
+              if (await exists(archivedSummary)) {
+                if (!Buffer.from(await fs.readFile(archivedSummary)).equals(await fs.readFile(summaryFile))) safeToRemove = false;
+              } else await fs.copyFile(summaryFile, archivedSummary, fs.constants.COPYFILE_EXCL);
+            } catch (error) { safeToRemove = false; console.error(`campaign summary retained in scratch: ${error.message}`); }
+          }
+          if (safeToRemove) await fs.rm(item, { recursive: true });
+        }
+      }
+    }
+    for (const name of await fs.readdir(scratch)) {
+      if (name === '.campaign-active.json' || name === '.active-run.json') continue;
+      if (name === '.turn-ledger.json' || name === '.campaign-state.json' || name === '.DS_Store' || name === '__MACOSX' || name.startsWith('._')) {
+        const target = path.join(scratch, name);
+        if ((await fs.lstat(target)).isDirectory()) await fs.rm(target, { recursive: true });
+        else await fs.unlink(target);
+      }
+    }
+    checkCancel();
+    if ((await api.processes()).length || await exists(path.join(scratch, '.active-run.json')))
+      throw blocked('BLOCKED_ACTIVE', 'benchmark activity detected before full run');
+    say('RUN FULL');
+    const before = await runIds(scratch);
+    const result = await api.runFull(signal.signal);
+    const created = [...await runIds(scratch)].filter((item) => !before.has(item));
+    if (created.length !== 1) throw blocked('BLOCKED_RUN_ID', `full run created ${created.length} run directories`);
+    const runId = created[0];
+    const runRoot = path.join(scratch, runId);
+    const run = await readJson(path.join(runRoot, 'run.json')).catch(() => null);
+    const summary = await readJson(path.join(runRoot, 'summary.json')).catch(() => null);
+    const status = signal.signal.aborted ? 'CANCELLED' : (run?.status ?? 'UNAVAILABLE');
+    try {
+      const report = await api.exportMeasurement(runId);
+      if (report?.run?.id !== runId) throw new Error(`exported report identity mismatch for ${runId}`);
+      await preserveReport(report, true);
+    } catch (error) {
+      console.error(`report for ${runId} was not published; raw evidence retained: ${error.message}`);
+      const failure = blocked(status, `run ${runId} outcome ${status}; cases ${JSON.stringify(summary?.cases ?? null)}; manager exit ${result.code}; report publication failed: ${error.message}; raw evidence retained at ${runRoot}`);
+      failure.exitCode = result.code || 1;
+      throw failure;
+    }
+    if (result.code !== 0 || status !== 'PASS') {
+      const failure = blocked(status, `run ${runId} outcome ${status}; cases ${JSON.stringify(summary?.cases ?? null)}; manager exit ${result.code}; raw evidence ${runRoot}`);
+      failure.exitCode = result.code || 1;
+      throw failure;
+    }
+    say(`PASS ${runId}; report published`);
+    return { runId, status, cases: summary?.cases ?? null };
+  } catch (error) {
+    console.error(`${error.code ?? 'BLOCKED'}: ${error.message}`);
+    throw error;
+  } finally {
+    if (lock) await fs.unlink(lock).catch(() => {});
+    process.off('SIGINT', onSignal); process.off('SIGTERM', onSignal);
+  }
+}
+
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
   if (process.argv.includes('--help')) {
     const config = await readJson(path.join(ROOT, 'benchmarks/sentinel-todo/benchmark.json'));
-    console.log(`Run the formal ${config.campaign.fullRuns}-full campaign: npm run benchmark:campaign`);
+    console.log(`Functional single run: npm run benchmark\nFormal ${config.campaign.fullRuns}-full campaign: npm run benchmark:campaign`);
   }
-  else if (process.argv.length !== 2) { console.error('usage: npm run benchmark:campaign'); process.exitCode = 2; }
+  else if (process.argv.length === 3 && process.argv[2] === '--functional') runFunctionalBenchmark().catch((error) => { process.exitCode = error.exitCode ?? 1; });
+  else if (process.argv.length !== 2) { console.error('usage: npm run benchmark:campaign | benchmark-campaign.mjs --functional'); process.exitCode = 2; }
   else runCampaign().catch(() => { process.exitCode = 1; });
 }

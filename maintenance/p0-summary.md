@@ -35,5 +35,15 @@ G2 and G3 remain PARTIAL under their separate criteria. Benchmark Protocol v1
 makes them measurable; comparable repeated full runs and an explicit gate
 decision remain necessary to prove either gate.
 
+The operational entrypoint is now `npm run benchmark`: one fresh full manager
+run, safe preparation, and compact publication of available terminal results,
+including BLOCKED. The most recent published observation is available in
+[`measurements/latest.md`](../benchmarks/sentinel-todo/measurements/latest.md)
+and its faithful
+[`latest.json`](../benchmarks/sentinel-todo/measurements/latest.json); per-run
+JSON history is retained beside them. The formal campaign remains explicit at
+`npm run benchmark:campaign`. These outputs support review of G2/G3 and do not
+change their PARTIAL status or automatically close P0.
+
 Detailed P0 convergence history remains available in Git history before the
 repository-hygiene checkpoint.

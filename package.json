@@ -2,7 +2,7 @@
   "name": "sentinel-workflows",
   "private": true,
   "scripts": {
-    "benchmark": "npm run benchmark:verify && node benchmarks/sentinel-todo/runtime/benchmark-manager.mjs run --full",
+    "benchmark": "node benchmarks/sentinel-todo/runtime/benchmark-campaign.mjs --functional",
     "benchmark:campaign": "node benchmarks/sentinel-todo/runtime/benchmark-campaign.mjs",
     "benchmark:verify": "node benchmarks/sentinel-todo/runtime/benchmark.mjs verify",
     "benchmark:status": "node benchmarks/sentinel-todo/runtime/benchmark-manager.mjs status"
