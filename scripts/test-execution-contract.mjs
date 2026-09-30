@@ -2553,6 +2553,10 @@ test("executor producer instructions require complete computed Tested state dige
   const skill = await fs.readFile(path.join(ROOT, "skills/workflows/stnl-slice-executor/SKILL.md"), "utf8");
   assert.match(skill, /file-backed[\s\S]{0,260}digest[\s\S]{0,260}64[- ]hex/u);
   assert.match(skill, /Never hand-type, truncate/u);
+  assert.match(skill, /managed environment supplies[\s\S]{0,180}\$STNL_RUNNER_EVIDENCE_SERIALIZER/u);
+  assert.match(skill, /do not search for, replace, or derive another serializer path/u);
+  assert.match(skill, /If the variable is absent, stop with a blocker/u);
+  assert.doesNotMatch(skill, /\$RUNNER_EVIDENCE_SERIALIZER\b/u);
 });
 
 test("the last VALIDATE_SLICE owns bounded global semantic review before terminal PASS", async () => {
@@ -3845,8 +3849,12 @@ test("validation candidate preparation writes canonical attempt and PASS base be
   const managedAdapter = path.join(managedSnapshot, "agents/codex/runtime/validation-runner.mjs");
   const managedBridge = path.join(managedSnapshot, "agents/codex/runtime/managed-runner-bridge.mjs");
   const managedHelper = path.join(managedSnapshot, "agents/codex/runtime/managed-slice-preflight.mjs");
+  const managedSerializer = path.join(managedSnapshot,
+    "skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs");
   await fs.mkdir(path.dirname(managedAdapter), { recursive: true });
-  await Promise.all([managedAdapter, managedBridge, managedHelper].map((file) => fs.writeFile(file, "// managed helper\n")));
+  await fs.mkdir(path.dirname(managedSerializer), { recursive: true });
+  await Promise.all([managedAdapter, managedBridge, managedHelper, managedSerializer]
+    .map((file) => fs.writeFile(file, "// managed helper\n")));
   await fs.chmod(managedAdapter, 0o755);
   const managed = await createManagedSliceContext({ workspace: fixture.root,
     snapshot: managedSnapshot, adapterPath: managedAdapter, bridgePath: managedBridge,
@@ -6755,6 +6763,12 @@ test("managed first execution tests candidate scope while the live task remains 
     const rejected = produce(incomplete.candidateTaskArtifact);
     assert.equal(rejected.status, 1);
     assert.match(rejected.stderr, /captured Tested state does not match candidate target scope/u);
+    const blockedPublish = spawnSync(process.execPath, [
+      path.join(ROOT, "skills/workflows/stnl-slice-executor/runtime/prepare-execution-copy.mjs"),
+      "--publish", "--spec-path", fixture.requirements, "--slice", "slice-01", "--candidate-root", incomplete.candidateRoot,
+    ], { env: environment, encoding: "utf8" });
+    assert.equal(blockedPublish.status, 1);
+    assert.match(blockedPublish.stderr, /EXECUTION_STARTED without publishable runner evidence/u);
     assert.equal(await fs.readFile(taskArtifact, "utf8"), liveBefore);
     const produced = produce(copy.candidateTaskArtifact);
     assert.equal(produced.status, 0, produced.stderr);

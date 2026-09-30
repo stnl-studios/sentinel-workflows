@@ -24,10 +24,13 @@ async function fixture(t) {
   const adapterPath = path.join(snapshot, 'agents/codex/runtime/validation-runner.mjs');
   const bridgePath = path.join(snapshot, 'agents/codex/runtime/managed-runner-bridge.mjs');
   const preflightPath = path.join(snapshot, 'agents/codex/runtime/managed-slice-preflight.mjs');
+  const evidenceSerializerPath = path.join(snapshot, 'skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs');
   await fs.mkdir(specPath, { recursive: true });
   await fs.mkdir(path.dirname(adapterPath), { recursive: true });
   await fs.writeFile(path.join(specPath, 'feature_spec.md'), '# Fixture\n');
   for (const file of [adapterPath, bridgePath, preflightPath]) await fs.writeFile(file, '# helper\n');
+  await fs.mkdir(path.dirname(evidenceSerializerPath), { recursive: true });
+  await fs.writeFile(evidenceSerializerPath, '# serializer fixture\n');
   await fs.chmod(adapterPath, 0o755);
   const officialPreflight = {
     exitCode: 0, operation: 'VALIDATE_SLICE', slice: 'slice-01', inputSlice: '1', specPath,
@@ -35,7 +38,7 @@ async function fixture(t) {
     legalOperations: [{ operation: 'VALIDATE_SLICE', slice: 'slice-01' }], mandatoryRecovery: null,
   };
   return { root, runRoot, workspace, specPath, privateHome, snapshot,
-    adapterPath, bridgePath, preflightPath, officialPreflight };
+    adapterPath, bridgePath, preflightPath, evidenceSerializerPath, officialPreflight };
 }
 
 for (const operation of ['EXECUTE_SLICE', 'APPLY_FINDINGS', 'VALIDATE_SLICE']) {
@@ -49,6 +52,8 @@ for (const operation of ['EXECUTE_SLICE', 'APPLY_FINDINGS', 'VALIDATE_SLICE']) {
     const environment = managedEnvironment({ CODEX_HOME: f.privateHome }, context);
     assert.equal(environment.STNL_MANAGED_PREFLIGHT, f.preflightPath);
     assert.equal(environment.STNL_MANAGED_RUNNER_BRIDGE, f.bridgePath);
+    assert.equal(environment.STNL_RUNNER_EVIDENCE_SERIALIZER, f.evidenceSerializerPath);
+    assert.equal(path.isAbsolute(environment.STNL_RUNNER_EVIDENCE_SERIALIZER), true);
     const read = readManagedSliceContext(environment);
     assert.equal(read.specPath, f.specPath);
     assert.equal(read.workspace, f.workspace);
@@ -58,6 +63,7 @@ for (const operation of ['EXECUTE_SLICE', 'APPLY_FINDINGS', 'VALIDATE_SLICE']) {
     assert.equal(read.identity.adapter.path, f.adapterPath);
     assert.equal(read.identity.bridge.path, f.bridgePath);
     assert.equal(read.identity.preflight.path, f.preflightPath);
+    assert.equal(read.identity.evidenceSerializer.path, f.evidenceSerializerPath);
     assert.equal(read.specPath.includes(f.privateHome), false);
     assert.equal(assertManagedAgreement({ specPath: f.specPath, workspace: f.workspace,
       slice: '1', operation, environment }).specPath, f.specPath);

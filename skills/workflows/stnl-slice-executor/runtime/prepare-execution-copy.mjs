@@ -100,6 +100,20 @@ export async function publishExecutionCopy({ specPath, slice, candidateRoot }) {
   }
   const validation = await validateExecutionCandidate(specPath, candidateExecutionRoot);
   if (validation.status === 'BLOCKED') throw new Error(`candidate validation blocked: ${validation.reason ?? 'unknown'}`);
+  const managed = assertManagedAgreement({ specPath, slice });
+  if (managed?.operation === 'EXECUTE_SLICE' && validation.state === 'EXECUTION_STARTED') {
+    const taskText = await fs.readFile(path.join(candidateExecutionRoot, details.taskRelative), 'utf8');
+    const sectionStart = taskText.indexOf('## Implementation Test Evidence\n');
+    const sectionEnd = sectionStart < 0 ? -1 : taskText.indexOf('\n## ', sectionStart + 1);
+    const section = sectionStart < 0 ? '' : taskText.slice(sectionStart, sectionEnd < 0 ? undefined : sectionEnd);
+    const headers = [...section.matchAll(/^### implementation-check-[0-9]{2,}\s*$/gmu)];
+    const latest = headers.length === 0 ? '' : section.slice(headers.at(-1).index);
+    const status = latest.match(/^- Status: (TESTS_FAIL|TESTS_PASS|TESTS_NOT_APPLICABLE|BLOCKED)$/mu)?.[1];
+    const round = latest.match(/^- Automatic check round: ([123])\/3$/mu)?.[1];
+    if (!(status === 'TESTS_FAIL' && (round === '1' || round === '2'))) {
+      throw new Error(`EXECUTE_SLICE candidate remains EXECUTION_STARTED without publishable runner evidence (${status ?? 'missing status'}); refusing publication`);
+    }
+  }
   const candidateTask = path.join(candidateExecutionRoot, details.taskRelative);
   const temporary = `${details.task}.stnl-publish-${process.pid}.tmp`;
   try {

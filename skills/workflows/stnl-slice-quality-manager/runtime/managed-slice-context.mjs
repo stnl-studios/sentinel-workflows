@@ -10,6 +10,7 @@ const SLICE_ENV = 'STNL_MANAGED_SLICE';
 const ADAPTER_ENV = 'STNL_RUNNER_ADAPTER';
 const BRIDGE_ENV = 'STNL_MANAGED_RUNNER_BRIDGE';
 const PREFLIGHT_ENV = 'STNL_MANAGED_PREFLIGHT';
+const EVIDENCE_SERIALIZER_ENV = 'STNL_RUNNER_EVIDENCE_SERIALIZER';
 const OPERATIONS = new Set(['EXECUTE_SLICE', 'APPLY_FINDINGS', 'VALIDATE_SLICE']);
 
 function fail(message) {
@@ -71,6 +72,7 @@ function expectedRuntimePaths(snapshot) {
     adapter: path.join(snapshot, 'agents/codex/runtime/validation-runner.mjs'),
     bridge: path.join(snapshot, 'agents/codex/runtime/managed-runner-bridge.mjs'),
     preflight: path.join(snapshot, 'agents/codex/runtime/managed-slice-preflight.mjs'),
+    evidenceSerializer: path.join(snapshot, 'skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs'),
   };
 }
 
@@ -93,7 +95,8 @@ export async function createManagedSliceContext({
   if (!inside(canonicalSpec, canonicalWorkspace)) fail('SPEC_PATH is outside managed workspace');
 
   const expected = expectedRuntimePaths(canonicalSnapshot);
-  for (const [value, label] of [[adapterPath, 'adapter'], [bridgePath, 'bridge'], [preflightPath, 'preflight']]) {
+  for (const [value, label] of [[adapterPath, 'adapter'], [bridgePath, 'bridge'], [preflightPath, 'preflight'],
+    [expected.evidenceSerializer, 'evidenceSerializer']]) {
     canonical(value, label);
     if (!inside(value, canonicalSnapshot)) fail(`${label} is outside frozen snapshot`);
     if (value !== expected[label]) fail(`${label} is not the snapshot-owned runtime`);
@@ -122,6 +125,7 @@ export async function createManagedSliceContext({
       adapter: await fileIdentity(adapterPath, 'adapter', { executable: true }),
       bridge: await fileIdentity(bridgePath, 'bridge'),
       preflight: await fileIdentity(preflightPath, 'preflight'),
+      evidenceSerializer: await fileIdentity(expected.evidenceSerializer, 'runner evidence serializer'),
     },
   });
 }
@@ -141,12 +145,13 @@ export function managedEnvironment(environment, context) {
     [ADAPTER_ENV]: context.identity.adapter.path,
     [BRIDGE_ENV]: context.identity.bridge.path,
     [PREFLIGHT_ENV]: context.identity.preflight.path,
+    [EVIDENCE_SERIALIZER_ENV]: context.identity.evidenceSerializer.path,
   };
 }
 
 export function readManagedSliceContext(environment = process.env) {
   const raw = environment[CONTEXT_ENV];
-  const managedKeys = [SPEC_ENV, WORKSPACE_ENV, OPERATION_ENV, SLICE_ENV, BRIDGE_ENV, PREFLIGHT_ENV];
+  const managedKeys = [SPEC_ENV, WORKSPACE_ENV, OPERATION_ENV, SLICE_ENV, BRIDGE_ENV, PREFLIGHT_ENV, EVIDENCE_SERIALIZER_ENV];
   if (raw === undefined && managedKeys.every((key) => environment[key] === undefined)) return null;
   if (typeof raw !== 'string' || raw.trim() === '') fail('context is absent or invalid');
   let context;
@@ -167,6 +172,7 @@ export function readManagedSliceContext(environment = process.env) {
     [ADAPTER_ENV, context.identity?.adapter?.path],
     [BRIDGE_ENV, context.identity?.bridge?.path],
     [PREFLIGHT_ENV, context.identity?.preflight?.path],
+    [EVIDENCE_SERIALIZER_ENV, context.identity?.evidenceSerializer?.path],
   ];
   if (expected.some(([key, value]) => typeof value !== 'string' || environment[key] !== value)) {
     fail('derived environment values disagree with context');
@@ -255,13 +261,15 @@ export async function assertManagedRuntimeIdentity(context, environment = proces
     adapter: await fileIdentity(context.identity.adapter.path, 'adapter', { executable: true }),
     bridge: await fileIdentity(context.identity.bridge.path, 'bridge'),
     preflight: await fileIdentity(context.identity.preflight.path, 'preflight'),
+    evidenceSerializer: await fileIdentity(context.identity.evidenceSerializer.path, 'runner evidence serializer'),
   };
   for (const key of Object.keys(actual)) {
     if (JSON.stringify(actual[key]) !== JSON.stringify(context.identity[key])) fail(`${key} identity changed`);
   }
   const expected = expectedRuntimePaths(context.identity.snapshot.path);
   if (context.identity.adapter.path !== expected.adapter || context.identity.bridge.path !== expected.bridge
-    || context.identity.preflight.path !== expected.preflight) fail('managed runtimes are not snapshot-owned');
+    || context.identity.preflight.path !== expected.preflight
+    || context.identity.evidenceSerializer.path !== expected.evidenceSerializer) fail('managed runtimes are not snapshot-owned');
   return true;
 }
 
@@ -274,4 +282,5 @@ export {
   ADAPTER_ENV,
   BRIDGE_ENV,
   PREFLIGHT_ENV,
+  EVIDENCE_SERIALIZER_ENV,
 };
