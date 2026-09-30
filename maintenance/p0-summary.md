@@ -1,5 +1,7 @@
 # P0 Current State
 
+- **Integrated post-P0 checkpoint on `main`:** `e114555f94ceeeb76c83ecf7337fa3b19d621feb` (PR #1).
+- **P0: CLOSED.** Final acceptance is recorded below; BL-01/BL-02 are ATENDIDO.
 - Published checkpoint: `1a6195816b78f50c686b36143460b26f157baed6`.
 - Current repository-hygiene checkpoint: `3a40958dac6edc8ff28c76b72170611ee3983e05`;
   no new live full A/B/C is attributed to it.
@@ -33,8 +35,8 @@
 
 ## Historical residual P0 (before final acceptance)
 
-The following checkpoint assessment is preserved as history and superseded by
-the final acceptance below; it is not the current P0 status.
+The following checkpoint assessment is preserved as pre-acceptance history and
+superseded by the final acceptance below; it is not the current P0 status.
 
 G2 and G3 remain PARTIAL under their separate criteria. Benchmark Protocol v1
 makes them measurable; comparable repeated full runs and an explicit gate
@@ -47,15 +49,16 @@ including BLOCKED. The most recent published observation is available in
 and its faithful
 [`latest.json`](../benchmarks/sentinel-todo/measurements/latest.json); per-run
 JSON history is retained beside them. The formal campaign remains explicit at
-`npm run benchmark:campaign`. These outputs support review of G2/G3 and do not
-change their PARTIAL status or automatically close P0.
+`npm run benchmark:campaign`. At that historical checkpoint, these outputs
+supported review of G2/G3 and did not change their then-PARTIAL status or
+automatically close P0.
 
 Detailed P0 convergence history remains available in Git history before the
 repository-hygiene checkpoint.
 
 ## Final acceptance — 2026-09-30
 
-**Decision: P0 CLOSED.** Scope authority: BL-01/BL-02 in the supplied external
+**Decision: P0 CLOSED.** Scope authority: BL-01/BL-02 from the external
 `Sentinel_Backlog_Referencia_v1.0.md`, consistent with the criteria reproduced
 in the closure request. No new acceptance threshold or gate is introduced.
 

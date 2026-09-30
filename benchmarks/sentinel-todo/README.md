@@ -40,6 +40,11 @@ That command retains the formal clean-checkout and active-process checks,
 safe-scratch cleanup, baseline comparison, and report promotion to
 `measurements/<campaign-id>/` for review and commit. The campaign summary
 retains every value and leaves G2/G3 decisions pending.
+That pending status describes the protocol's historical pre-acceptance
+checkpoint. The final P0 acceptance subsequently recorded G2 and G3 as
+PROVEN in [`maintenance/p0-summary.md`](../../maintenance/p0-summary.md).
+This benchmark README documents measurement procedure; it is not the authority
+for P0 acceptance status.
 
 A blocked run or Ctrl+C stops the formal sequence and preserves scratch evidence;
 no partial formal campaign is promoted. The functional command independently
@@ -240,6 +245,9 @@ G2/G3 when integrity fails, runs are incomplete, or the comparison contract
 does not match. One sample checks function but does not establish a mature
 statistical distribution. The versioned
 `campaign.fullRuns` setting can be raised explicitly in the future. No
-retrospective threshold is set from the reference run: G2 and G3 stay
-`PARTIAL` until the campaign supplies comparable empirical evidence and an
-explicit gate decision. This change does not start the campaign.
+retrospective threshold is set from the reference run. Under the protocol's
+historical pre-acceptance state, G2 and G3 stayed `PARTIAL` pending comparable
+empirical evidence and an explicit gate decision. The later acceptance decision
+is recorded in [`maintenance/p0-summary.md`](../../maintenance/p0-summary.md);
+this protocol text does not describe the current P0 status. This change does not
+start the campaign.
