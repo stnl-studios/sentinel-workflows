@@ -3,8 +3,10 @@
 - Published checkpoint: `1a6195816b78f50c686b36143460b26f157baed6`.
 - Current repository-hygiene checkpoint: `3a40958dac6edc8ff28c76b72170611ee3983e05`;
   no new live full A/B/C is attributed to it.
-- G1 PROVEN; G2 PARTIAL; G3 PARTIAL; G4 PROVEN; G5 PROVEN; G6 PROVEN.
-- E2E functional baseline ESTABLISHED. P0 remains open only for G2 and G3.
+- G1 PROVEN; G2 PROVEN; G3 PROVEN; G4 PROVEN; G5 PROVEN; G6 PROVEN.
+- E2E functional baseline ESTABLISHED; operational benchmark validated.
+- **P0 CLOSED — 2026-09-30 (America/Sao_Paulo).** BL-01 and BL-02 ATENDIDO;
+  final acceptance is recorded below. P1 starts only when requested.
 
 ## Functional baseline
 
@@ -29,7 +31,10 @@
   important measurements are promoted to Git. The benchmark is measurement and
   regression tooling, not requirements, lifecycle, or execution authority.
 
-## Residual P0
+## Historical residual P0 (before final acceptance)
+
+The following checkpoint assessment is preserved as history and superseded by
+the final acceptance below; it is not the current P0 status.
 
 G2 and G3 remain PARTIAL under their separate criteria. Benchmark Protocol v1
 makes them measurable; comparable repeated full runs and an explicit gate
@@ -47,3 +52,57 @@ change their PARTIAL status or automatically close P0.
 
 Detailed P0 convergence history remains available in Git history before the
 repository-hygiene checkpoint.
+
+## Final acceptance — 2026-09-30
+
+**Decision: P0 CLOSED.** Scope authority: BL-01/BL-02 in the supplied external
+`Sentinel_Backlog_Referencia_v1.0.md`, consistent with the criteria reproduced
+in the closure request. No new acceptance threshold or gate is introduced.
+
+- **BL-01 — ATENDIDO.** The documented bounded review produced focused fixes
+  to validation evidence/ownership, runner verification commands and managed
+  evidence serialization (`1a61958`, `b0a01ba`, `04075e0`). Relevant test changes
+  and the existing full PASS runs demonstrate proportional verification and
+  functional convergence. No current functional or formal blocker is demonstrated;
+  resolved findings, recovered model responses and optional improvements do not
+  keep the original objective open.
+- **BL-02 — ATENDIDO.** Real plans/tasks guided execution with explicit scope,
+  decisions, dependencies, observable results and verifiable checks. In the
+  latest case A, the plan review clarified valid filter combinations and the
+  task review passed without corrections; compact indexes reference local
+  checklists rather than copying the entire SPEC. Luna performed execution and
+  review/validation, with independent runner checks and successful completion.
+  Across the three runs, cases used 1–3 slices with no demonstrated systematic
+  fragmentation, concentration or artificially fixed count. Quality, recovery,
+  rework and consumption were observed in real slices; no recurring material
+  structural rework or unnecessary context is demonstrated.
+- **G2 — PROVEN.** Comparable complete runs show zero repeated slice executions
+  and zero repeated plan/task reviews. Findings corrections, revalidation and
+  occasional invalid-response recovery are visible and completed through the
+  official workflow; universal operation-count reduction was not required.
+- **G3 — PROVEN.** Attributable main/runner input/output telemetry has full
+  coverage in all three runs, including mean, median and peak input per turn.
+  This proves observability and reliable evaluation of token/context pressure,
+  not token reduction. Main input increased from baseline **42,877,945** to
+  **65,236,562**, **52,558,099** and **71,091,730**, respectively. There was no
+  formal reduction threshold; material redundant context sufficient to block
+  BL-02 has not been demonstrated. Input per turn remains a pressure proxy,
+  not measured context-window occupancy or billing.
+
+Acceptance evidence (all full `production-v2`, A/B/C PASS, executions COMPLETE,
+SPECs closed, finalizers and final tests PASS, no profile mismatches):
+
+- [`run-20260930004635-bc76d6a3`](../benchmarks/sentinel-todo/measurements/run-20260930004635-bc76d6a3.json).
+- [`run-20260930130114-e85e1d4f`](../benchmarks/sentinel-todo/measurements/run-20260930130114-e85e1d4f.json).
+- [`run-20260930183513-d0009216`](../benchmarks/sentinel-todo/measurements/run-20260930183513-d0009216.json),
+  the latest PASS after the structural corrections, matching `latest.json`.
+  It records five APPLY_FINDINGS operations and three repeat validations. Case A
+  recovered an invalid findings-cycle response by repeating APPLY_FINDINGS,
+  then passed formal validation; these resolved events are non-blocking.
+
+This is the explicit documentary acceptance of existing evidence. The protocol's
+earlier PARTIAL/pending-campaign wording describes the pre-decision checkpoint;
+no new campaign, run, tests or functional implementation was performed for this
+closure. Historical baseline/checkpoint identities remain unchanged.
+
+**Next step: P1 only when requested. Do not start P1 automatically.**
