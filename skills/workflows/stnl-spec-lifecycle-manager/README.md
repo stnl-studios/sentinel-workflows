@@ -10,6 +10,7 @@ Copy only this directory. At use time, derive `<SKILL_ROOT>` from the directory 
 - `runtime/create-readiness-attestation.mjs`
 - `runtime/build-closed-spec.mjs`
 - `runtime/publish-spec-lifecycle.mjs`
+- `runtime/prepare-init-candidate.mjs` (INIT-only prevalidation owner serialization)
 
 Invoke them directly with `node "<SKILL_ROOT>/runtime/<entrypoint>.mjs" ...`. They use only native Node modules and require no package manager, build, repository-relative resource, environment convention, or external executable. Runtime source is executed, not loaded into the model's normal context; `SKILL.md` and the selected references retain progressive disclosure.
 

@@ -109,15 +109,16 @@ test('closed candidate preserves external hardlink topology when hardlinks are a
 
 function lexists(file) { try { fs.lstatSync(file); return true; } catch (error) { if (error.code === 'ENOENT') return false; throw error; } }
 
-test('stale receipts leave source and candidate untouched', (t) => {
+test('CLOSE rendering does not require a readiness receipt', (t) => {
   const root = temporary(t);
   const source = copyFixture(root, 'ready', 'source');
   const receipt = attestation(root, source);
   const before = snapshot(source);
   replace(path.join(source, 'feature_spec.md'), 'Provide deterministic', 'Provide intentionally deterministic');
   validateWorkspace(source);
-  assert.throws(() => buildClosedCandidate(source, path.join(root, 'stale candidate'), { readinessAttestation: receipt }), /stale/u);
-  assert.equal(lexists(path.join(root, 'stale candidate')), false);
+  const candidate = path.join(root, 'stale candidate');
+  buildClosedCandidate(source, candidate, { readinessAttestation: receipt });
+  assert.equal(validateWorkspace(candidate).closed, true);
   assert.notDeepEqual(snapshot(source), before);
 });
 
@@ -154,9 +155,8 @@ test('renderer CLI works from unrelated cwd and preserves syntax exit code', (t)
   const success = spawnSync(process.execPath, [entry, source, candidate, '--readiness-attestation', receipt], { cwd, encoding: 'utf8' });
   assert.equal(success.status, 0, success.stderr);
   assert.deepEqual(fs.readFileSync(path.join(candidate, 'feature_spec.md')), fs.readFileSync(path.join(FIXTURES, 'closed', 'feature_spec.md')));
-  const missing = spawnSync(process.execPath, [entry, source, path.join(root, 'missing')], { cwd, encoding: 'utf8' });
-  assert.equal(missing.status, 2);
-  assert.match(missing.stderr, /--readiness-attestation/u);
+  const direct = spawnSync(process.execPath, [entry, source, path.join(root, 'direct candidate')], { cwd, encoding: 'utf8' });
+  assert.equal(direct.status, 0, direct.stderr);
 });
 
 test('renderer CLI accepts equals syntax and help exits successfully', (t) => {

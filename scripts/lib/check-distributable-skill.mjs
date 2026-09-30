@@ -34,12 +34,14 @@ const DYNAMIC_CODE_IDENTIFIER_PATTERN = new RegExp(
 const DYNAMIC_CODE_MODULES = new Set(["vm", "node:vm"]);
 
 export const LIFECYCLE_DISTRIBUTION_POLICY = Object.freeze({
-  allowedRuntimeExtensions: [".mjs"],
+  allowedRuntimeExtensions: [".mjs", ".json"],
   requiredEntrypoints: [
     "validate-spec-lifecycle.mjs",
     "create-readiness-attestation.mjs",
+    "readiness-snapshot.mjs",
     "build-closed-spec.mjs",
     "publish-spec-lifecycle.mjs",
+    "prepare-init-candidate.mjs",
   ],
   forbiddenOperationalPatterns: [
     [/(?:^|[^A-Za-z])python3?(?:[^A-Za-z]|$)/iu, "Python runtime reference"],

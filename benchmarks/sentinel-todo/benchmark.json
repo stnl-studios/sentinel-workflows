@@ -1,0 +1,108 @@
+{
+  "benchmarkId": "sentinel-todo",
+  "benchmarkVersion": 1,
+  "seedPath": "seed",
+  "supportedRunModes": ["focal", "case", "full"],
+  "campaign": { "fullRuns": 1 },
+  "turnBudget": {
+    "maxTurnsPerRun": 100
+  },
+  "schemaVersions": {
+    "journal": 2,
+    "result": 2
+  },
+  "schemas": {
+    "journal": "schemas/journal-v2.schema.json",
+    "result": "schemas/result-v2.schema.json"
+  },
+  "integrity": {
+    "seedContentHash": "sha256:9d93fbfa52b2e20607452f43d0ecb21e74f1872bb7a2da1b94dc2c814e7552e8"
+  },
+  "productionProfile": {
+    "id": "production-v2",
+    "cases": {
+      "A": {
+        "SPEC": { "model": "GPT-5.6-Sol", "effort": "high" },
+        "PLAN": { "model": "GPT-5.6-Terra", "effort": "high" },
+        "TASKS": { "model": "GPT-5.6-Terra", "effort": "high" },
+        "EXECUTE": { "model": "GPT-5.6-Luna", "effort": "high" },
+        "REVIEW_VALIDATE": { "model": "GPT-5.6-Luna", "effort": "high" }
+      },
+      "B": {
+        "SPEC": { "model": "GPT-5.6-Terra", "effort": "high" },
+        "PLAN": { "model": "GPT-5.6-Terra", "effort": "high" },
+        "TASKS": { "model": "GPT-5.6-Terra", "effort": "high" },
+        "EXECUTE": { "model": "GPT-5.6-Luna", "effort": "xhigh" },
+        "REVIEW_VALIDATE": { "model": "GPT-5.6-Luna", "effort": "xhigh" }
+      },
+      "C": {
+        "SPEC": { "model": "GPT-5.6-Sol", "effort": "high" },
+        "PLAN": { "model": "GPT-5.6-Sol", "effort": "high" },
+        "TASKS": { "model": "GPT-5.6-Terra", "effort": "high" },
+        "EXECUTE": { "model": "GPT-5.6-Luna", "effort": "xhigh" },
+        "REVIEW_VALIDATE": { "model": "GPT-5.6-Luna", "effort": "xhigh" }
+      }
+    }
+  },
+  "productionPilot": {
+    "driverVersion": 2,
+    "qualification": {
+      "harnessContractVersion": 1,
+      "providerVersion": "codex-cli 0.154.0",
+      "capabilitiesHash": "a35d6560c398bc4665b67df364432079a63032c394b03ec85194f552a1e60441",
+      "sandboxProbeEvidence": "benchmarks/sentinel-todo/qualification/sandbox-probe-v1.md",
+      "sandboxProbeEvidenceSha256": "39f762e7fbce171c22f435b968d2d7a40a91466ea6fb62833579d3a233a4a8e9",
+      "sandboxProbeStatus": "SANDBOX_PROBE_PASS"
+    }
+  },
+  "cases": [
+    {
+      "id": "A",
+      "class": "small",
+      "sourcePath": "cases/case-a-small.md",
+      "specPath": "specs/benchmark-case-a",
+      "requirementsHash": "sha256:e5934bc22267756c3c10b31c46b7a9cd894b78e961b11975b0f14f7085349a24",
+      "fixtureContentHash": "sha256:e0c3233c14356e93accff61b334704a91fb8e4f82a60209768259144d88a10d5",
+      "budgets": {
+        "maxReviewPlanEvents": 2,
+        "maxReviewTasksEvents": 2,
+        "maxReplans": 1,
+        "maxExecuteSliceAttemptsPerSlice": 3,
+        "maxApplyFindingsPerSlice": 2,
+        "maxWorkflowEvents": 14
+      }
+    },
+    {
+      "id": "B",
+      "class": "medium",
+      "sourcePath": "cases/case-b-medium.md",
+      "specPath": "specs/benchmark-case-b",
+      "requirementsHash": "sha256:0388a84f8c5a9c45fcd5b1d0b59e7d376979e98717d8e028067701f00a16fc57",
+      "fixtureContentHash": "sha256:107d1057e48506a20da4460ee33febca26280dd35c85f645b0de6b81ffb33e10",
+      "budgets": {
+        "maxReviewPlanEvents": 2,
+        "maxReviewTasksEvents": 2,
+        "maxReplans": 1,
+        "maxExecuteSliceAttemptsPerSlice": 3,
+        "maxApplyFindingsPerSlice": 2,
+        "maxWorkflowEvents": 20
+      }
+    },
+    {
+      "id": "C",
+      "class": "transversal",
+      "sourcePath": "cases/case-c-transversal.md",
+      "specPath": "specs/benchmark-case-c",
+      "requirementsHash": "sha256:a896026d591f06776ade1d88fde292c4e5f0d015e5e18374e9cf754ecce4efcb",
+      "fixtureContentHash": "sha256:a9700e1844ce7106809491f924b0fea37d8bf15700afa14c920cc1ee139fdd44",
+      "budgets": {
+        "maxReviewPlanEvents": 2,
+        "maxReviewTasksEvents": 2,
+        "maxReplans": 1,
+        "maxExecuteSliceAttemptsPerSlice": 3,
+        "maxApplyFindingsPerSlice": 2,
+        "maxWorkflowEvents": 24
+      }
+    }
+  ]
+}

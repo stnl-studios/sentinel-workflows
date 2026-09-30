@@ -19,6 +19,7 @@ const ENTRYPOINTS = Object.freeze({
   attestation: "create-readiness-attestation.mjs",
   renderer: "build-closed-spec.mjs",
   publisher: "publish-spec-lifecycle.mjs",
+  initCandidatePreparer: "prepare-init-candidate.mjs",
 });
 
 async function assertSelfContained(skillRoot) {
@@ -504,6 +505,19 @@ test("copying only the skill supports INIT, RESUME, READINESS, CLOSE, and recove
   const initCandidate = join(consumer, "candidate init with spaces");
   const activeTarget = join(consumer, "published spec with spaces");
   await cp(readyFixture, initCandidate, { recursive: true, verbatimSymlinks: true });
+  for (const relative of ["feature_spec.md", "shared/requirements.md", "shared/acceptance-criteria.md"]) {
+    const file = join(initCandidate, relative);
+    const source = await readFile(file, "utf8");
+    assert.match(source, /^owner: stnl-spec-lifecycle-manager$/mu);
+    await writeFile(file, source.replace("owner: stnl-spec-lifecycle-manager", "owner: Production Pilot"), "utf8");
+  }
+  const ownerPreparation = runNode(
+    commands.initCandidatePreparer,
+    [activeTarget, initCandidate],
+    { cwd: consumer, emptyPath },
+  );
+  assertCliPass(ownerPreparation, "isolated INIT owner serialization");
+  assert.match(ownerPreparation.stdout, /changed files: feature_spec\.md, shared\/requirements\.md, shared\/acceptance-criteria\.md/u);
   assertCliPass(
     runNode(commands.publisher, ["INIT", activeTarget, initCandidate], {
       cwd: consumer,

@@ -12,7 +12,7 @@ const SLICE_FILE = /^slice-[0-9]{2,}\.md$/u;
 const SLICE_OPERATIONS = new Set(["EXECUTE_SLICE", "APPLY_FINDINGS", "VALIDATE_SLICE"]);
 const OPERATIONS = new Set([
   "PLAN", "REVIEW_PLAN", "MATERIALIZE_TASKS", "REVIEW_TASKS", "REPLAN",
-  "EXECUTE_SLICE", "APPLY_FINDINGS", "VALIDATE_SLICE", "CLOSE",
+  "EXECUTE_SLICE", "APPLY_FINDINGS", "VALIDATE_SLICE",
 ]);
 export const EXECUTION_WORKFLOW_SKILLS = Object.freeze({
   PLAN: "stnl-execution-planner",
@@ -23,7 +23,6 @@ export const EXECUTION_WORKFLOW_SKILLS = Object.freeze({
   EXECUTE_SLICE: "stnl-slice-executor",
   APPLY_FINDINGS: "stnl-slice-executor",
   VALIDATE_SLICE: "stnl-slice-quality-manager",
-  CLOSE: "stnl-execution-closer",
 });
 const OPERATION_STATES = new Map([
   ["PLAN", new Set(["EMPTY"])],
@@ -34,7 +33,6 @@ const OPERATION_STATES = new Map([
   ["EXECUTE_SLICE", new Set(["MATERIALIZED_PRISTINE", "EXECUTION_STARTED", "AUXILIARY_BLOCKED", "RUNNER_INITIALIZATION_BLOCKED", "RUNNER_RESULT_BLOCKED"])],
   ["APPLY_FINDINGS", new Set(["VALIDATION_NEEDS_FIX", "AUXILIARY_BLOCKED", "RUNNER_INITIALIZATION_BLOCKED", "RUNNER_RESULT_BLOCKED"])],
   ["VALIDATE_SLICE", new Set(["IMPLEMENTED_AWAITING_VALIDATION", "FINDINGS_CORRECTED", "VALIDATION_BLOCKED", "IMPLEMENTATION_RETRY_EXHAUSTED", "FINDINGS_RETRY_EXHAUSTED", "RUNNER_INITIALIZATION_BLOCKED", "RUNNER_RESULT_BLOCKED"])],
-  ["CLOSE", new Set(["COMPLETE"])],
 ]);
 const CURRENT_AUTHORITY = /^sha256:([0-9a-f]{64})$/u;
 const HASH_DOMAIN = Buffer.from("stnl-requirements-authority-v1\0", "utf8");
@@ -587,9 +585,14 @@ function parsePlan(text, label, expectedSlice = null, references = {}) {
   return { ...state, body, sections: parsedSections, status: header.get("status"), reviewState, revisionMode, replanReason, supersessionMappings };
 }
 
+function hasUnencodedTemplatePlaceholder(value) {
+  const withoutEncodedValues = String(value).replace(/json:"(?:\\.|[^"\\])*"/gu, 'json:""');
+  return /<[^>\n]+>/u.test(withoutEncodedValues);
+}
+
 function operationRecords(section, prefix, { statusValues = null } = {}) {
   if (section === "- none") return [];
-  if (/<[^>\n]+>/u.test(section)) throw new ExecutionContractError(`${prefix} section contains template placeholder content`);
+  if (hasUnencodedTemplatePlaceholder(section)) throw new ExecutionContractError(`${prefix} section contains template placeholder content`);
   const pattern = new RegExp(`^### (${prefix}-([0-9]{2,}))$`, "gmu");
   const matches = [...section.matchAll(pattern)];
   if (matches.length === 0) throw new ExecutionContractError(`${prefix} section contains content without canonical records`);
@@ -607,14 +610,14 @@ function operationRecords(section, prefix, { statusValues = null } = {}) {
 }
 
 function requireNonPlaceholder(value, label) {
-  if (value === null || value.length === 0 || /^(?:none|pending|n\/a|not_available)$/iu.test(value) || /<[^>\n]+>/u.test(value)) {
+  if (value === null || value.length === 0 || /^(?:none|pending|n\/a|not_available)$/iu.test(value) || hasUnencodedTemplatePlaceholder(value)) {
     throw new ExecutionContractError(`${label} must be objective non-placeholder content`);
   }
   return value;
 }
 
 function requirePresentValue(value, label) {
-  if (value === null || value.length === 0 || /^(?:pending|n\/a)$/iu.test(value) || /<[^>\n]+>/u.test(value)) {
+  if (value === null || value.length === 0 || /^(?:pending|n\/a)$/iu.test(value) || hasUnencodedTemplatePlaceholder(value)) {
     throw new ExecutionContractError(`${label} must contain a persisted value`);
   }
   return value;
@@ -635,6 +638,28 @@ function requireList(body, name, label) {
   return values;
 }
 
+function parseCommandTuple(line, label) {
+  const match = line.match(/^  - (.+) \| exit:([-]?[0-9]+)$/u);
+  if (match === null) throw new ExecutionContractError(`${label} has malformed Commands`);
+  let command;
+  if (match[1].startsWith("json:")) {
+    try { command = JSON.parse(match[1].slice(5)); } catch {
+      throw new ExecutionContractError(`${label} has malformed json command`);
+    }
+    if (typeof command !== "string" || command.length === 0
+      || !/[`\r\n]/u.test(command) || `json:${JSON.stringify(command)}` !== match[1]) {
+      throw new ExecutionContractError(`${label} has non-canonical json command`);
+    }
+  } else {
+    const plain = match[1].match(/^`([^`\r\n]+)`$/u);
+    if (plain === null) throw new ExecutionContractError(`${label} has malformed Commands`);
+    command = plain[1];
+  }
+  const exit = Number(match[2]);
+  if (!Number.isSafeInteger(exit)) throw new ExecutionContractError(`${label} command exit must be a safe integer`);
+  return Object.freeze({ command, exit });
+}
+
 function requireCommands(record, { permitNone = false, requireZero = false } = {}) {
   const markers = [...record.body.matchAll(/^- Commands:(?:[ \t]+(.*))?$/gmu)];
   if (markers.length !== 1) throw new ExecutionContractError(`${record.id} must contain exactly one Commands field`);
@@ -647,13 +672,12 @@ function requireCommands(record, { permitNone = false, requireZero = false } = {
     return [];
   }
   const lines = block.split("\n").filter((line) => line.length !== 0);
-  const commands = lines.map((line) => {
-    const match = line.match(/^  - `([^`]+)` \| exit:([-]?[0-9]+)$/u);
-    if (match === null) throw new ExecutionContractError(`${record.id} has malformed Commands`);
-    return Object.freeze({ command: match[1], exit: Number(match[2]) });
-  });
+  const commands = lines.map((line) => parseCommandTuple(line, record.id));
   if (commands.length === 0) throw new ExecutionContractError(`${record.id} has no numeric command evidence`);
-  if (requireZero && commands.some((entry) => entry.exit !== 0)) throw new ExecutionContractError(`${record.id} PASS commands must exit zero`);
+  if (requireZero && commands.some((entry) => entry.exit !== 0)) {
+    throw new ExecutionContractError(`${record.id} PASS commands must exit zero`, [], [],
+      { code: "PASS_COMMAND_EXIT_NONZERO", record: record.id, repairability: "runner-result-recovery" });
+  }
   return commands;
 }
 
@@ -775,7 +799,7 @@ function validateNestedScoping(record, { allowTestedState = false } = {}) {
       owner = top[1];
       continue;
     }
-    const command = /^  - `[^`]+` \| exit:[-]?[0-9]+$/u.test(line);
+    const command = /^  - (?:`[^`\r\n]+`|json:".*") \| exit:[-]?[0-9]+$/u.test(line);
     const testedState = /^  - `[^`]+` \| (?:sha256:[0-9a-f]{64}|REMOVED)$/u.test(line);
     if ((command && owner === "Commands") || (allowTestedState && testedState && owner === "Tested state")) continue;
     throw new ExecutionContractError(`${record.id} has unexpected nested or continuation content under ${owner ?? "no field"}`);
@@ -1057,13 +1081,10 @@ function baseState(section, attempts) {
   }
   const commandSection = section.slice(commandsMarker, evidenceMarker).trimEnd();
   const commandLines = commandSection.split("\n").slice(1).filter((line) => line.length !== 0);
-  if (commandLines.length === 0 || commandLines.some((line) => !/^  - `[^`]+` \| exit:[-]?[0-9]+$/u.test(line))) {
+  if (commandLines.length === 0) {
     throw new ExecutionContractError("Effective Validation Base has malformed Authoritative commands");
   }
-  const commands = commandLines.map((line) => {
-    const match = line.match(/^  - `([^`]+)` \| exit:([-]?[0-9]+)$/u);
-    return Object.freeze({ command: match[1], exit: Number(match[2]) });
-  });
+  const commands = commandLines.map((line) => parseCommandTuple(line, "Effective Validation Base"));
   if (commands.some((entry) => entry.exit !== 0)) {
     throw new ExecutionContractError("Effective Validation Base authoritative commands must exist and exit zero");
   }
@@ -1250,6 +1271,14 @@ function validateRelativeEvidencePath(value, label) {
   return value;
 }
 
+function delimitedImplementationPathClaims(value, label) {
+  const source = String(value);
+  const matches = [...source.matchAll(/`([^`\n]+)`/gu)];
+  const residue = source.replace(/`[^`\n]+`/gu, "");
+  if (residue.includes("`")) throw new ExecutionContractError(`${label} has an unmatched implementation-path delimiter`);
+  return matches.map((match) => match[1]);
+}
+
 function parseTask(text, label, expectedSlice, references = {}) {
   const { header, body } = parsePurpose(text, label);
   if (header.get("status") !== "ready") throw new ExecutionContractError(`${label} must have status ready`);
@@ -1285,6 +1314,11 @@ function parseTask(text, label, expectedSlice, references = {}) {
   const findings = blockerRecords(taskSections.get("Validation Findings"), "finding");
   const divergences = blockerRecords(taskSections.get("Divergences"), "divergence");
   validateFindingLifecycle(findings, attempts, findingsChecks);
+  const scopeExpansion = taskSections.get("Scope Expansion");
+  if (/^- (?:Operation|Kind|After record|Required action):/mu.test(scopeExpansion)
+    || /malformed-output/u.test(scopeExpansion)) {
+    throw new ExecutionContractError(`${label} places runner recovery in Scope Expansion instead of Delegation Blocker`);
+  }
   const delegationBlocker = parseDelegationBlocker(taskSections.get("Delegation Blocker"), new Map([
     ["EXECUTE_SLICE", implementationChecks], ["APPLY_FINDINGS", findingsChecks], ["VALIDATE_SLICE", attempts],
   ]));
@@ -1300,7 +1334,13 @@ function parseTask(text, label, expectedSlice, references = {}) {
   const checklistRows = checklist.split("\n").filter((line) => line.length !== 0).map((line) => {
     const match = line.match(/^- \[([ x])\] ([0-9]+\.[0-9]+) \S.* \| observable result: \S.* \| expected areas: \S.* \| requirement: \S.*$/u);
     if (match === null) throw new ExecutionContractError(`${label} has malformed Checklist row: ${line}`);
-    return { done: match[1] === "x", id: match[2] };
+    const expectedAreas = line.match(/\| expected areas: (\S.*?) \| requirement: /u)?.[1];
+    if (expectedAreas === undefined) throw new ExecutionContractError(`${label} has malformed Checklist expected areas: ${line}`);
+    return {
+      done: match[1] === "x",
+      id: match[2],
+      implementationPathClaims: delimitedImplementationPathClaims(expectedAreas, `${label} Checklist ${match[2]} expected areas`),
+    };
   });
   if (checklistRows.length === 0) throw new ExecutionContractError(`${label} has no canonical checklist rows`);
   if (new Set(checklistRows.map((row) => row.id)).size !== checklistRows.length) throw new ExecutionContractError(`${label} has duplicate Checklist rows`);
@@ -1313,11 +1353,13 @@ function parseTask(text, label, expectedSlice, references = {}) {
     && !/^- \[x\]/gmu.test(taskSections.get("Checklist") ?? "");
   const activeBlockers = [...findings, ...divergences].filter((record) => record.severity === "blocking" && record.state === "active");
   const activeBlockingDivergence = divergences.some((record) => record.severity === "blocking" && record.state === "active");
+  const correctionCycleHasPersistedScope = corrections.length !== 0 && corrections.every((claim) => changedAreas.includes(claim));
   for (const [name, latest] of [["implementation", implementationChecks.at(-1)], ["findings", findingsChecks.at(-1)]]) {
     const expectedOperation = name === "implementation" ? "EXECUTE_SLICE" : "APPLY_FINDINGS";
     const pausedByDelegation = delegationBlocker?.state === "active" && delegationBlocker.operation === expectedOperation
       && delegationBlocker.afterRecord === latest?.id;
-    if (latest?.status === "TESTS_FAIL" && latest.round < 3 && !activeBlockingDivergence && !pausedByDelegation) {
+    if (latest?.status === "TESTS_FAIL" && latest.round < 3 && !activeBlockingDivergence
+      && !pausedByDelegation && !correctionCycleHasPersistedScope) {
       throw new ExecutionContractError(`${label} has an unterminated ${name} automatic correction cycle without a blocking divergence`);
     }
   }
@@ -1415,7 +1457,11 @@ function parseTask(text, label, expectedSlice, references = {}) {
   return {
     ...state, body, sections: taskSections, pristine, attempts, findings, divergences, activeBlockers,
     base, final, implementationChecks, findingsChecks, delegationBlocker, retryExhausted, checklistComplete,
-    changedClaims, claims: [...new Set([...changedClaims, ...base.paths])],
+    changedAreas, corrections, changedClaims, currentAuxiliaryCheck,
+    claims: [...new Set([...changedClaims, ...base.paths])],
+    implementationPathClaims: checklistRows.flatMap((row) => row.implementationPathClaims.map((raw) => ({
+      field: `Checklist ${row.id} expected areas`, raw,
+    }))),
   };
 }
 
@@ -1432,7 +1478,8 @@ async function rejectSymlinkComponents(targetPath, trustedRoot) {
 }
 
 async function trustedProjectRoot(workspace) {
-  let current = path.dirname(workspace.authorityPath);
+  const logicalWorkspace = logicalWorkspaceFor(workspace);
+  let current = path.dirname(logicalWorkspace.authorityPath);
   for (;;) {
     const marker = await lstatOrNull(path.join(current, ".git"));
     if (marker !== null && !marker.isSymbolicLink() && (marker.isDirectory() || marker.isFile())) return current;
@@ -1440,16 +1487,314 @@ async function trustedProjectRoot(workspace) {
     if (parent === current) break;
     current = parent;
   }
-  return workspace.specRoot ?? path.dirname(workspace.authorityPath);
+  return logicalWorkspace.specRoot ?? path.dirname(logicalWorkspace.authorityPath);
+}
+
+function implementationPathDiagnostic({ artifact, field, raw, resolved, reason, trustedRoot, existingProjectTarget = null }) {
+  const artifactLabel = pathIsWithin(artifact, trustedRoot)
+    ? path.relative(trustedRoot, artifact).split(path.sep).join("/") || "."
+    : artifact;
+  const details = [
+    `artifact=${JSON.stringify(artifactLabel)}`,
+    `field=${JSON.stringify(field)}`,
+    `raw=${JSON.stringify(raw)}`,
+    `resolved=${JSON.stringify(resolved)}`,
+    `reason=${JSON.stringify(reason)}`,
+    `trusted-root=${JSON.stringify(trustedRoot)}`,
+  ];
+  if (existingProjectTarget !== null) details.push(`existing-project-target=${JSON.stringify(existingProjectTarget)}`);
+  return new ExecutionContractError(`invalid artifact-relative implementation path: ${details.join("; ")}`, [artifact, resolved]);
+}
+
+function projectRelativeCandidate(raw, trustedRoot) {
+  const segments = raw.split("/");
+  while (segments[0] === "." || segments[0] === "..") segments.shift();
+  return segments.length === 0 ? null : path.resolve(trustedRoot, ...segments);
+}
+
+async function resolveImplementationPathClaim(workspace, { artifact, field, raw }) {
+  const logicalWorkspace = logicalWorkspaceFor(workspace);
+  const logicalArtifact = logicalExecutionPath(workspace, artifact);
+  const trustedRoot = await trustedProjectRoot(workspace);
+  const resolved = path.resolve(path.dirname(logicalArtifact), raw);
+  try {
+    validateRelativeEvidencePath(raw, `${field} implementation path`);
+  } catch (error) {
+    throw implementationPathDiagnostic({
+      artifact: logicalArtifact,
+      field,
+      raw,
+      resolved,
+      reason: error.message,
+      trustedRoot,
+    });
+  }
+  try {
+    await rejectSymlinkComponents(resolved, trustedRoot);
+  } catch (error) {
+    throw implementationPathDiagnostic({
+      artifact: logicalArtifact,
+      field,
+      raw,
+      resolved,
+      reason: error.message,
+      trustedRoot,
+    });
+  }
+  if (pathIsWithin(resolved, logicalWorkspace.executionRoot)) {
+    throw implementationPathDiagnostic({
+      artifact: logicalArtifact,
+      field,
+      raw,
+      resolved,
+      reason: "artifact-relative implementation path resolves inside the execution root",
+      trustedRoot,
+    });
+  }
+  if (logicalWorkspace.kind === "lifecycle" && trustedRoot !== logicalWorkspace.specRoot
+    && pathIsWithin(resolved, logicalWorkspace.specRoot)) {
+    const projectTarget = projectRelativeCandidate(raw, trustedRoot);
+    const projectMetadata = projectTarget === null || projectTarget === resolved ? null : await lstatOrNull(projectTarget);
+    throw implementationPathDiagnostic({
+      artifact: logicalArtifact,
+      field,
+      raw,
+      resolved,
+      reason: "artifact-relative implementation path resolves inside the lifecycle SPEC workspace",
+      trustedRoot,
+      existingProjectTarget: projectMetadata === null ? null : projectTarget,
+    });
+  }
+  const resolvedMetadata = await lstatOrNull(resolved);
+  if (resolvedMetadata === null) {
+    const projectTarget = projectRelativeCandidate(raw, trustedRoot);
+    const projectMetadata = projectTarget === null || projectTarget === resolved ? null : await lstatOrNull(projectTarget);
+    if (projectMetadata !== null && !projectMetadata.isSymbolicLink()) {
+      await rejectSymlinkComponents(projectTarget, trustedRoot);
+      throw implementationPathDiagnostic({
+        artifact: logicalArtifact,
+        field,
+        raw,
+        resolved,
+        reason: "possible path-basis error: artifact-relative target is absent while the same project-root target exists",
+        trustedRoot,
+        existingProjectTarget: projectTarget,
+      });
+    }
+  }
+  return Object.freeze({
+    resolved,
+    physicalTarget: resolvedMetadata === null ? resolved : await fs.realpath(resolved),
+  });
+}
+
+async function validateImplementationPathClaim(workspace, claim) {
+  await resolveImplementationPathClaim(workspace, claim);
+}
+
+export async function resolvePhysicalImplementationTarget(specPath, { artifact, field = "implementation path", raw }) {
+  const workspace = await resolveExecutionWorkspace(specPath);
+  return resolveImplementationPathClaim(workspace, {
+    artifact: path.resolve(String(artifact)),
+    field,
+    raw,
+  });
+}
+
+export async function resolveSemanticPhysicalImplementationTarget(specPath, { raw }) {
+  const workspace = await resolveExecutionWorkspace(specPath);
+  const trustedRoot = await trustedProjectRoot(workspace);
+  if (typeof raw !== "string" || raw.length === 0 || raw.includes("\\")
+    || path.posix.isAbsolute(raw) || path.posix.normalize(raw) !== raw
+    || raw.split("/").some((segment) => segment === "" || segment === "." || segment === "..")) {
+    throw new ExecutionContractError(
+      `semantic physical implementation target must be a normalized repository-relative path: ${String(raw)}`,
+      [String(raw)],
+    );
+  }
+  const resolved = path.resolve(trustedRoot, ...raw.split("/"));
+  if (!pathIsWithin(resolved, trustedRoot)) {
+    throw new ExecutionContractError(`semantic physical implementation target escapes the trusted project root: ${raw}`, [resolved]);
+  }
+  await rejectSymlinkComponents(resolved, trustedRoot);
+  const metadata = await lstatOrNull(resolved);
+  return Object.freeze({
+    resolved,
+    physicalTarget: metadata === null ? resolved : await fs.realpath(resolved),
+  });
+}
+
+async function validatePlanningImplementationPaths(workspace, globalPlan, plans) {
+  const serialRows = canonicalTableRows(
+    globalPlan.sections.get("Serial Slice Order"),
+    "| Slice | Observable delivery | Dependencies | Requirements | Expected areas | Detailed plan |",
+    "|---|---|---|---|---|---|",
+    "Serial Slice Order",
+  );
+  const claims = [];
+  const globalArtifact = path.join(workspace.executionRoot, "plan.md");
+  for (const line of serialRows) {
+    const columns = line.split("|").slice(1, -1).map((column) => column.trim());
+    const slice = columns[0]?.match(/^([0-9]{2,}) - \S.*$/u)?.[1] ?? "unknown";
+    for (const raw of delimitedImplementationPathClaims(columns[4], `plan.md Serial Slice Order ${slice} Expected areas`)) {
+      claims.push({ artifact: globalArtifact, field: `Serial Slice Order ${slice} Expected areas`, raw });
+    }
+  }
+  for (const [slice, plan] of plans) {
+    const artifact = path.join(workspace.executionRoot, "plans", `${slice}.md`);
+    for (const raw of delimitedImplementationPathClaims(plan.sections.get("Likely Areas"), `${slice} plan Likely Areas`)) {
+      claims.push({ artifact, field: "Likely Areas", raw });
+    }
+  }
+  for (const claim of claims) await validateImplementationPathClaim(workspace, claim);
+}
+
+async function validateTaskImplementationPaths(workspace, tasks) {
+  for (const [slice, task] of tasks) {
+    const artifact = path.join(workspace.executionRoot, "tasks", `${slice}.md`);
+    for (const claim of task.implementationPathClaims) {
+      await validateImplementationPathClaim(workspace, { artifact, ...claim });
+    }
+  }
+}
+
+function currentCandidateEvidenceOwners(result) {
+  const owners = new Map();
+  for (const row of result.rows) {
+    const task = result.tasks.get(row.slice);
+    if (task === undefined) continue;
+    const entries = task.base.present
+      ? task.base.entries
+      : task.currentAuxiliaryCheck?.testedState
+        ?? (task.attempts.at(-1)?.status === "NEEDS_FIX" ? task.implementationChecks.at(-1)?.testedState : null)
+        ?? [];
+    for (const entry of entries) owners.set(entry.path, row.slice);
+  }
+  return owners;
+}
+
+function declaredPriorValidationOverlap(section, slice) {
+  if (section === "- none") return new Set();
+  const declared = new Set();
+  const records = (section.startsWith("- Slice ")
+    ? section.split("\n")
+    : section.split(/(?=^### overlap-[0-9]+$)/mu)).map((record) => record.trim()).filter(Boolean);
+  for (const record of records) {
+    const compact = record.match(/^- Slice ([0-9]{2,}) overlap: (.+); (\S[^\n]*)$/u);
+    const priorSlice = compact === null
+      ? record.match(/^- Prior slice: (slice-[0-9]{2,})$/mu)?.[1]
+      : `slice-${compact[1]}`;
+    const rawPaths = compact?.[2] ?? record.match(/^- Paths: (.+)$/mu)?.[1];
+    if (priorSlice === undefined || rawPaths === undefined
+      || (compact === null && (!/^- Affected behavior: \S/mu.test(record) || !/^- Regressions: \S/mu.test(record)))) {
+      throw new ExecutionContractError(`${slice} Prior Validation Overlap has an incomplete record`);
+    }
+    const paths = rawPaths.split(", ").map((raw) => {
+      const claim = raw.startsWith("`") && raw.endsWith("`") ? raw.slice(1, -1) : raw;
+      if (claim.includes("`")) throw new ExecutionContractError(`${slice} Prior Validation Overlap has malformed path claims`);
+      return validateRelativeEvidencePath(claim, `${slice} Prior Validation Overlap path`);
+    });
+    if (new Set(paths).size !== paths.length) {
+      throw new ExecutionContractError(`${slice} Prior Validation Overlap contains duplicate path claim: ${paths.find((value, index) => paths.indexOf(value) !== index)}`);
+    }
+    for (const claim of paths) declared.add(`${priorSlice}\0${claim}`);
+  }
+  if (records.length === 0) throw new ExecutionContractError(`${slice} Prior Validation Overlap must contain records or - none`);
+  return declared;
+}
+
+function validatePriorValidationOverlap(result) {
+  if (!(result.tasks instanceof Map)) return;
+  const priorBases = [];
+  for (const row of result.rows) {
+    const task = result.tasks.get(row.slice);
+    if (task === undefined) continue;
+    if (!task.pristine && task.changedAreas.length !== 0) {
+      const required = priorBases.flatMap(({ slice, paths }) =>
+        task.changedAreas.filter((claim) => paths.has(claim)).map((claim) => `${slice}\0${claim}`));
+      const declared = declaredPriorValidationOverlap(task.sections.get("Prior Validation Overlap"), row.slice);
+      const missing = required.filter((relation) => !declared.has(relation));
+      if (missing.length !== 0) {
+        throw new ExecutionContractError(
+          `${row.slice} Prior Validation Overlap is missing required prior slice/path coverage: ${missing.map((relation) => relation.replace("\0", " -> ")).join(", ")}`,
+        );
+      }
+    }
+    if (row.result === "PASS" && task.base.present) {
+      priorBases.push({ slice: row.slice, paths: new Set(task.base.paths) });
+    }
+  }
+}
+
+async function validateCandidateExecutionRecordPaths(result) {
+  if (!(result.tasks instanceof Map)) return;
+  const logicalWorkspace = logicalWorkspaceFor(result.workspace);
+  const trustedRoot = await trustedProjectRoot(result.workspace);
+  const currentOwners = currentCandidateEvidenceOwners(result);
+  for (const [slice, task] of result.tasks) {
+    const artifact = path.join(result.workspace.executionRoot, "tasks", `${slice}.md`);
+    const logicalArtifact = logicalExecutionPath(result.workspace, artifact);
+    const evidenceOwner = task.base.present ? "Effective Validation Base" : task.currentAuxiliaryCheck?.id ?? null;
+    const entries = task.base.present ? task.base.entries : task.currentAuxiliaryCheck?.testedState ?? [];
+    if (entries.length === 0) continue;
+    for (const entry of entries) {
+      const field = task.base.present ? "Effective Validation Base Files" : `${evidenceOwner} Tested state`;
+      await validateImplementationPathClaim(result.workspace, { artifact, field, raw: entry.path });
+      const target = path.resolve(path.dirname(logicalArtifact), entry.path);
+      const isCurrentOwner = currentOwners.get(entry.path) === slice;
+      if (isCurrentOwner) {
+        const metadata = await lstatOrNull(target);
+        let observed = "absent";
+        if (metadata?.isSymbolicLink()) observed = "symlink";
+        else if (metadata !== null && !metadata.isFile()) observed = "non-file";
+        else if (metadata?.isFile()) observed = `sha256:${createHash("sha256").update(await fs.readFile(target)).digest("hex")}`;
+        const matches = entry.expected === "REMOVED"
+          ? metadata === null
+          : metadata?.isFile() === true && observed === entry.expected;
+        if (!matches) {
+          throw implementationPathDiagnostic({
+            artifact: logicalArtifact,
+            field,
+            raw: entry.path,
+            resolved: target,
+            reason: `file-backed candidate evidence expected ${entry.expected} but observed ${observed}`,
+            trustedRoot,
+          });
+        }
+      }
+    }
+    const owned = new Set(entries.map((entry) => entry.path));
+    const unowned = task.changedClaims.filter((claim) => !owned.has(claim));
+    if (unowned.length !== 0) {
+      throw new ExecutionContractError(
+        `${slice} current file-backed candidate evidence does not own every Changed Areas/Corrections Applied path`,
+        unowned.map((claim) => path.resolve(path.dirname(logicalArtifact), claim)),
+      );
+    }
+    for (const entry of entries) {
+      const resolved = path.resolve(path.dirname(logicalArtifact), entry.path);
+      if (!pathIsWithin(resolved, trustedRoot) || pathIsWithin(resolved, logicalWorkspace.executionRoot)) {
+        throw implementationPathDiagnostic({
+          artifact: logicalArtifact,
+          field: `${evidenceOwner} file-backed path`,
+          raw: entry.path,
+          resolved,
+          reason: "candidate evidence path violates project containment",
+          trustedRoot,
+        });
+      }
+    }
+  }
 }
 
 async function validateFinalOwnership(result) {
   const owners = new Map();
   const trustedRoot = await trustedProjectRoot(result.workspace);
+  const logicalWorkspace = logicalWorkspaceFor(result.workspace);
   for (const row of result.rows) {
     if (row.result !== "PASS") continue;
     const task = result.tasks.get(row.slice);
-    const taskDirectory = path.join(result.workspace.executionRoot, "tasks");
+    const taskDirectory = path.join(logicalWorkspace.executionRoot, "tasks");
     for (const entry of task.base.entries) {
       const target = path.resolve(taskDirectory, entry.path);
       await rejectSymlinkComponents(target, trustedRoot);
@@ -1459,18 +1804,31 @@ async function validateFinalOwnership(result) {
   const findings = [];
   for (const owner of owners.values()) {
     const metadata = await lstatOrNull(owner.target);
+    let observed = "absent";
+    if (metadata?.isSymbolicLink()) observed = "symlink";
+    else if (metadata !== null && !metadata.isFile()) observed = "non-file";
+    else if (metadata?.isFile()) {
+      observed = `sha256:${createHash("sha256").update(await fs.readFile(owner.target)).digest("hex")}`;
+    }
     if (owner.expected === "REMOVED") {
-      if (metadata !== null) findings.push(`${owner.target} (${owner.slice}: expected REMOVED)`);
+      if (metadata !== null) findings.push(`${owner.target} (${owner.slice}: expected REMOVED, current ${observed})`);
       continue;
     }
     if (metadata === null || metadata.isSymbolicLink() || !metadata.isFile()) {
-      findings.push(`${owner.target} (${owner.slice}: expected sha256:${owner.hash}, current absent/non-file)`);
+      findings.push(`${owner.target} (${owner.slice}: expected sha256:${owner.hash}, current ${observed})`);
       continue;
     }
-    const actual = createHash("sha256").update(await fs.readFile(owner.target)).digest("hex");
-    if (actual !== owner.hash) findings.push(`${owner.target} (${owner.slice}: expected sha256:${owner.hash}, current sha256:${actual})`);
+    if (observed !== `sha256:${owner.hash}`) {
+      findings.push(`${owner.target} (${owner.slice}: expected sha256:${owner.hash}, current ${observed})`);
+    }
   }
-  if (findings.length !== 0) throw new ExecutionContractError("final validation ownership does not match the workspace", findings);
+  if (findings.length !== 0) {
+    throw new ExecutionContractError(
+      "final validation ownership does not match the workspace",
+      findings,
+      [recoveryTarget("REPLAN", { owner: "terminal-integrity" })],
+    );
+  }
 }
 
 function markdownStructuralText(text) {
@@ -1574,10 +1932,12 @@ function canonicalTableRows(section, header, separator, label, { allowedOutside 
 }
 
 function requirementsReference(workspace, directory) {
-  return path.relative(directory, workspace.authorityPath).split(path.sep).join("/");
+  const logicalWorkspace = logicalWorkspaceFor(workspace);
+  const logicalDirectory = logicalExecutionPath(workspace, directory);
+  return path.relative(logicalDirectory, logicalWorkspace.authorityPath).split(path.sep).join("/");
 }
 
-async function readPlanArtifacts(workspace) {
+async function readPlanArtifacts(workspace, { validateImplementationPaths = false } = {}) {
   const globalPlanPath = path.join(workspace.executionRoot, "plan.md");
   await requireRealFile(globalPlanPath, "execution plan.md");
   const globalPlanText = await fs.readFile(globalPlanPath, "utf8");
@@ -1620,11 +1980,12 @@ async function readPlanArtifacts(workspace) {
       requirementsSource: requirementsReference(workspace, planDirectory),
     }));
   }
+  if (validateImplementationPaths) await validatePlanningImplementationPaths(workspace, globalPlan, plans);
   return { globalPlan, globalPlanText, sliceOrder, plans };
 }
 
-async function executionArtifacts(workspace) {
-  const { globalPlan, sliceOrder, plans } = await readPlanArtifacts(workspace);
+async function executionArtifacts(workspace, { validateImplementationPaths = false } = {}) {
+  const { globalPlan, sliceOrder, plans } = await readPlanArtifacts(workspace, { validateImplementationPaths });
   const tasksIndexPath = path.join(workspace.executionRoot, "tasks.md");
   await requireRealFile(tasksIndexPath, "execution tasks.md");
   const tasksIndexText = await fs.readFile(tasksIndexPath, "utf8");
@@ -1652,8 +2013,9 @@ async function executionArtifacts(workspace) {
     }
     tasks.set(row.slice, task);
   }
+  if (validateImplementationPaths) await validateTaskImplementationPaths(workspace, tasks);
   const trustedRoot = await trustedProjectRoot(workspace);
-  const taskDirectory = path.join(workspace.executionRoot, "tasks");
+  const taskDirectory = path.join(logicalWorkspaceFor(workspace).executionRoot, "tasks");
   for (const [slice, task] of tasks) {
     for (const claim of task.claims) {
       await rejectSymlinkComponents(path.resolve(taskDirectory, claim), trustedRoot).catch((error) => {
@@ -1804,7 +2166,17 @@ async function executionArtifacts(workspace) {
 }
 
 export async function inspectExecutionState(specPath) {
-  const workspace = await resolveExecutionWorkspace(specPath);
+  return inspectExecutionStateWithContext(specPath, null);
+}
+
+async function inspectExecutionStateWithContext(specPath, logicalWorkspace, {
+  validateTerminalOwnership = true,
+  validateImplementationPaths = false,
+} = {}) {
+  const physicalWorkspace = await resolveExecutionWorkspace(specPath);
+  const workspace = logicalWorkspace === null
+    ? physicalWorkspace
+    : { ...physicalWorkspace, logicalWorkspace };
   const currentFingerprint = await computeRequirementsAuthority(specPath);
   const rootMetadata = await lstatOrNull(workspace.executionRoot);
   if (rootMetadata === null) {
@@ -1821,7 +2193,7 @@ export async function inspectExecutionState(specPath) {
   const hasTasks = await lstatOrNull(path.join(workspace.executionRoot, "tasks.md")) !== null;
   await validateExecutionLayout(specPath, { allowPlanned: !hasTasks });
   if (!hasTasks) {
-    const { globalPlan, plans } = await readPlanArtifacts(workspace);
+    const { globalPlan, plans } = await readPlanArtifacts(workspace, { validateImplementationPaths });
     if (globalPlan.revisionMode === null && globalPlan.revision !== 1) {
       throw new ExecutionContractError("planning-only authority must use Plan revision 1, including replacement by REPLAN");
     }
@@ -1838,7 +2210,7 @@ export async function inspectExecutionState(specPath) {
     const state = stale ? "REQUIREMENTS_CHANGED" : globalPlan.status === "ready" ? "PLANNED_READY" : "PLANNED_DRAFT";
     return withRecoveryTargets({ state, workspace, currentFingerprint, globalPlan, stale });
   }
-  const artifacts = await executionArtifacts(workspace);
+  const artifacts = await executionArtifacts(workspace, { validateImplementationPaths });
   const stale = artifacts.globalPlan.fingerprint !== currentFingerprint;
   const allPristine = artifacts.rows.every((row) => !row.done && artifacts.tasks.get(row.slice).pristine);
   if (artifacts.pendingReplan) {
@@ -1914,11 +2286,13 @@ export async function inspectExecutionState(specPath) {
   else if (allPristine) state = "MATERIALIZED_PRISTINE";
   else if (allTerminal && currentPass) state = "COMPLETE";
   else if (allTerminal) state = "REPLAN_REQUIRED";
-  return withRecoveryTargets({
+  const result = withRecoveryTargets({
     state, workspace, currentFingerprint, stale, activeFindings, activeDivergences, activeDelegationBlockers,
     exhausted, incompleteExecutionChecklists, auxiliaryBlocked, findingsCorrected, implementedAwaitingValidation,
     validationBlocked, ...artifacts,
   });
+  if (validateTerminalOwnership && state === "COMPLETE") await validateFinalOwnership(result);
+  return result;
 }
 
 function recoveryTarget(operation, {
@@ -2071,7 +2445,7 @@ export function deriveRecoveryTargets(result) {
       ];
       break;
     case "REPLAN_REQUIRED": targets = [unscoped("REPLAN", "current-authority")]; break;
-    case "COMPLETE": targets = [unscoped("CLOSE", "complete-execution"), unscoped("REPLAN", "complete-execution")]; break;
+    case "COMPLETE": targets = [unscoped("REPLAN", "complete-execution")]; break;
     default: targets = [];
   }
   for (const target of targets) {
@@ -2146,13 +2520,11 @@ export function deriveNormalHandoff(result, completedOperation = null) {
     else if (completedOperation === "APPLY_FINDINGS" && result.state === "FINDINGS_CORRECTED") operation = "VALIDATE_SLICE";
     else if (completedOperation === "VALIDATE_SLICE" && result.state === "VALIDATION_NEEDS_FIX") operation = "APPLY_FINDINGS";
     else if (completedOperation === "VALIDATE_SLICE" && result.state === "EXECUTION_STARTED") operation = "EXECUTE_SLICE";
-    else if (completedOperation === "VALIDATE_SLICE" && result.state === "COMPLETE") operation = "CLOSE";
   } else if (result.state === "EMPTY") operation = "PLAN";
   else if (result.state === "PLANNED_DRAFT") operation = "REVIEW_PLAN";
   else if (result.state === "PLANNED_READY") operation = "MATERIALIZE_TASKS";
   else if (result.state === "EXECUTION_STARTED") operation = "EXECUTE_SLICE";
   else if (result.state === "IMPLEMENTED_AWAITING_VALIDATION" || result.state === "FINDINGS_CORRECTED") operation = "VALIDATE_SLICE";
-  else if (result.state === "COMPLETE") operation = "CLOSE";
   if (operation === null) return null;
   const target = uniqueNormalTarget(result, operation);
   return target === null ? null : handoffForTarget(target);
@@ -2217,14 +2589,30 @@ function pathIsWithin(candidate, root) {
   return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative));
 }
 
+function logicalWorkspaceFor(workspace) {
+  return workspace.logicalWorkspace ?? workspace;
+}
+
+function logicalExecutionPath(workspace, physicalPath) {
+  const logicalWorkspace = logicalWorkspaceFor(workspace);
+  if (logicalWorkspace === workspace) return physicalPath;
+  const relative = path.relative(workspace.executionRoot, physicalPath);
+  if (relative.startsWith(`..${path.sep}`) || relative === ".." || path.isAbsolute(relative)) {
+    throw new ExecutionContractError(`physical execution path cannot be mapped to the logical workspace: ${physicalPath}`, [physicalPath]);
+  }
+  return path.join(logicalWorkspace.executionRoot, relative);
+}
+
 async function createCandidateShadow(workspace) {
-  const liveContainer = workspace.kind === "lifecycle" ? workspace.specRoot : path.dirname(workspace.authorityPath);
-  const shadowParent = path.dirname(liveContainer);
   const shadowRoot = await fs.realpath(await fs.mkdtemp(path.join(
-    shadowParent,
-    `.${path.basename(liveContainer)}.stnl-execution-candidate-`,
+    os.tmpdir(),
+    ".stnl-execution-candidate-",
   )));
   try {
+    const projectRoot = await trustedProjectRoot(workspace);
+    if (pathIsWithin(shadowRoot, projectRoot)) {
+      throw new ExecutionContractError(`candidate shadow must be outside the logical project: ${shadowRoot}`, [shadowRoot]);
+    }
     if (workspace.kind === "standalone") {
       const authority = path.join(shadowRoot, path.basename(workspace.authorityPath));
       await fs.copyFile(workspace.authorityPath, authority);
@@ -2273,7 +2661,9 @@ export async function validateExecutionCandidate(specPath, candidateExecutionRoo
   const shadow = await createCandidateShadow(workspace);
   try {
     await fs.cp(candidate, shadow.executionRoot, { recursive: true });
-    const result = await inspectExecutionState(shadow.specPath);
+    const result = await inspectExecutionStateWithContext(shadow.specPath, workspace, { validateImplementationPaths: true });
+    await validateCandidateExecutionRecordPaths(result);
+    validatePriorValidationOverlap(result);
     if ((result.incompleteExecutionChecklists?.length ?? 0) !== 0) {
       const inconsistency = result.incompleteExecutionChecklists[0];
       throw new ExecutionContractError(
@@ -2570,7 +2960,7 @@ export async function repairExecutionContract(specPath) {
     let candidateState;
     while (true) {
       try {
-        candidateState = await inspectExecutionState(shadow.specPath);
+        candidateState = await inspectExecutionStateWithContext(shadow.specPath, workspace);
         break;
       } catch (error) {
         if (!(error instanceof ExecutionContractError) || error.contractViolation?.repairability !== "mechanical") throw error;
@@ -2669,7 +3059,10 @@ export async function repairExecutionContract(specPath) {
 
 export async function preflightExecutionOperation(specPath, operation, sliceValue = null) {
   const normalizedOperation = String(operation);
-  const result = await inspectExecutionState(specPath);
+  const result = await inspectExecutionStateWithContext(specPath, null, {
+    validateTerminalOwnership: normalizedOperation !== "REPLAN",
+    validateImplementationPaths: new Set(["MATERIALIZE_TASKS", "EXECUTE_SLICE"]).has(normalizedOperation),
+  });
   if (!OPERATIONS.has(normalizedOperation)) {
     throw new ExecutionContractError(
       `unsupported operation ${normalizedOperation}${recoverySuffix(result.recoveryTargets)}`,
@@ -2742,6 +3135,5 @@ export async function preflightExecutionOperation(specPath, operation, sliceValu
   if (normalizedOperation === "APPLY_FINDINGS" && !result.tasks.get(slice).findings.some((record) => record.severity === "blocking" && record.state === "active")) {
     throw new ExecutionContractError(`${slice} has no active blocking finding`);
   }
-  if (normalizedOperation === "CLOSE") await validateFinalOwnership(result);
   return { ...result, operation: normalizedOperation, slice };
 }

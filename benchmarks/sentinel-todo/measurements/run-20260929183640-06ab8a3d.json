@@ -1,0 +1,307 @@
+{
+  "schemaVersion": 1,
+  "benchmarkId": "sentinel-todo",
+  "benchmarkVersion": 1,
+  "resultDefinition": "full run is PASS when manager status is PASS and all included cases have passing finalizers",
+  "run": {
+    "id": "run-20260929183640-06ab8a3d",
+    "status": "BLOCKED",
+    "mode": "full",
+    "profile": "production-v2",
+    "startedAt": "2026-09-29T18:36:41.284Z",
+    "endedAt": "2026-09-29T19:01:54.111Z"
+  },
+  "provenance": {
+    "baseSha": "4b4054646985c92347c5ffaf27d085c139f0b4e8",
+    "dirty": false,
+    "functionalDiffSha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "sourceFunctionalSha256": "sha256:34c8cc2ff1648f9f268e65ef11487b47fc0f42b695eb585ec88433c60e5924c7",
+    "snapshotSha256": "sha256:f5fff5ef8e333a3423eda9ee32dba4a4bc16f4a7929f2709e24157c046aa18e5",
+    "snapshotCreatedAt": "2026-09-29T18:36:41.270Z"
+  },
+  "comparability": {
+    "schemaVersion": 1,
+    "benchmarkVersion": 1,
+    "profile": "production-v2",
+    "requirementsHashes": {
+      "A": "sha256:e5934bc22267756c3c10b31c46b7a9cd894b78e961b11975b0f14f7085349a24",
+      "B": "sha256:0388a84f8c5a9c45fcd5b1d0b59e7d376979e98717d8e028067701f00a16fc57",
+      "C": "sha256:a896026d591f06776ade1d88fde292c4e5f0d015e5e18374e9cf754ecce4efcb"
+    },
+    "fixtureContentHashes": {
+      "A": "sha256:e0c3233c14356e93accff61b334704a91fb8e4f82a60209768259144d88a10d5",
+      "B": "sha256:107d1057e48506a20da4460ee33febca26280dd35c85f645b0de6b81ffb33e10",
+      "C": "sha256:a9700e1844ce7106809491f924b0fea37d8bf15700afa14c920cc1ee139fdd44"
+    },
+    "seedHash": "sha256:9d93fbfa52b2e20607452f43d0ecb21e74f1872bb7a2da1b94dc2c814e7552e8",
+    "resultSchemaVersion": 2,
+    "resultSchemaHash": "sha256:d19c9eb631797b957f67c85826c619828d092f2eb6e0de83410531dd697ffbd6",
+    "metricDefinitions": "g2-operation-counts-v1;g3-attributable-usage-delta-v1",
+    "qualification": {
+      "harnessContractVersion": 1,
+      "providerVersion": "codex-cli 0.154.0",
+      "capabilitiesHash": "a35d6560c398bc4665b67df364432079a63032c394b03ec85194f552a1e60441",
+      "sandboxProbeStatus": "SANDBOX_PROBE_PASS",
+      "sandboxProbeEvidenceSha256": "39f762e7fbce171c22f435b968d2d7a40a91466ea6fb62833579d3a233a4a8e9"
+    },
+    "resultDefinition": "full-pass-v1"
+  },
+  "cases": [
+    {
+      "id": "A",
+      "status": "BLOCKED",
+      "blocker": "OFFICIAL_RUNNER_RESULT_BLOCKED",
+      "terminalResult": "BLOCKED",
+      "blockingOperation": {
+        "operation": "EXECUTE_SLICE",
+        "slice": "slice-01",
+        "result": "BLOCKED"
+      },
+      "operations": 9,
+      "mainTurns": 9,
+      "runnerTurns": 2,
+      "execution": "RUNNER_RESULT_BLOCKED",
+      "specClosed": false,
+      "finalizer": "FAIL",
+      "finalizerExitCode": 1,
+      "finalTestsPassed": true,
+      "finalTestCommand": "node --test",
+      "finalTestExitCode": 0,
+      "profileMismatches": [],
+      "provider": "openai",
+      "authMode": "chatgpt",
+      "isolation": "restricted",
+      "findingsCycles": 0,
+      "recoveryOperations": 0,
+      "extraRunnerTurns": 0,
+      "repeatedReviewRounds": 0,
+      "durationMs": 1512346,
+      "slices": 2,
+      "operationCounts": {
+        "EXECUTE_SLICE": 2,
+        "VALIDATE_SLICE": 0,
+        "APPLY_FINDINGS": 0,
+        "REPLAN": 0,
+        "SPEC_RESUME": 0,
+        "REVIEW_PLAN": 1,
+        "REVIEW_TASKS": 1
+      },
+      "operationsBySlice": {
+        "slice-01": {
+          "execute": 2,
+          "validate": 0,
+          "applyFindings": 0
+        }
+      },
+      "operationDurations": [
+        {
+          "operation": "SPEC_INIT",
+          "slice": null,
+          "durationMs": 158416
+        },
+        {
+          "operation": "SPEC_READINESS",
+          "slice": null,
+          "durationMs": 104868
+        },
+        {
+          "operation": "SPEC_PROMOTE",
+          "slice": null,
+          "durationMs": 142372
+        },
+        {
+          "operation": "PLAN",
+          "slice": null,
+          "durationMs": 421639
+        },
+        {
+          "operation": "REVIEW_PLAN",
+          "slice": null,
+          "durationMs": 155568
+        },
+        {
+          "operation": "MATERIALIZE_TASKS",
+          "slice": null,
+          "durationMs": 117073
+        },
+        {
+          "operation": "REVIEW_TASKS",
+          "slice": null,
+          "durationMs": 145663
+        },
+        {
+          "operation": "EXECUTE_SLICE",
+          "slice": "slice-01",
+          "durationMs": 151949
+        },
+        {
+          "operation": "EXECUTE_SLICE",
+          "slice": "slice-01",
+          "durationMs": 58786
+        }
+      ],
+      "repeatedAttemptsBySlice": {
+        "slice-01": {
+          "execute": 1,
+          "validate": 0
+        }
+      },
+      "telemetry": {
+        "coverage": {
+          "main": "9/9",
+          "runner": "0/2"
+        },
+        "main": {
+          "turns": 9,
+          "input": 8317811,
+          "output": 65626,
+          "cachedInput": 7772800,
+          "reasoningOutput": 19023,
+          "observedInput": 8317811,
+          "observedOutput": 65626,
+          "peakInputPerTurn": 1995855,
+          "medianInputPerTurn": 667957,
+          "meanInputPerTurn": 924201.2222222222
+        },
+        "runner": "unavailable"
+      }
+    },
+    {
+      "id": "B",
+      "status": "NOT_RUN",
+      "blocker": "unavailable",
+      "terminalResult": "NOT_RUN",
+      "blockingOperation": "unavailable",
+      "operations": 0,
+      "mainTurns": 0,
+      "runnerTurns": 0,
+      "execution": "unavailable",
+      "specClosed": "unavailable",
+      "finalizer": "unavailable",
+      "finalizerExitCode": "unavailable",
+      "finalTestsPassed": "unavailable",
+      "finalTestCommand": "unavailable",
+      "finalTestExitCode": "unavailable",
+      "profileMismatches": "unavailable",
+      "provider": "unavailable",
+      "authMode": "unavailable",
+      "isolation": "unavailable",
+      "findingsCycles": "unavailable",
+      "recoveryOperations": 0,
+      "extraRunnerTurns": 0,
+      "repeatedReviewRounds": 0,
+      "durationMs": "unavailable",
+      "slices": "unavailable",
+      "operationCounts": {
+        "EXECUTE_SLICE": 0,
+        "VALIDATE_SLICE": 0,
+        "APPLY_FINDINGS": 0,
+        "REPLAN": 0,
+        "SPEC_RESUME": 0,
+        "REVIEW_PLAN": 0,
+        "REVIEW_TASKS": 0
+      },
+      "operationsBySlice": {},
+      "operationDurations": [],
+      "repeatedAttemptsBySlice": {},
+      "telemetry": {
+        "coverage": {
+          "main": "0/0",
+          "runner": "0/0"
+        },
+        "main": "unavailable",
+        "runner": "unavailable"
+      }
+    },
+    {
+      "id": "C",
+      "status": "NOT_RUN",
+      "blocker": "unavailable",
+      "terminalResult": "NOT_RUN",
+      "blockingOperation": "unavailable",
+      "operations": 0,
+      "mainTurns": 0,
+      "runnerTurns": 0,
+      "execution": "unavailable",
+      "specClosed": "unavailable",
+      "finalizer": "unavailable",
+      "finalizerExitCode": "unavailable",
+      "finalTestsPassed": "unavailable",
+      "finalTestCommand": "unavailable",
+      "finalTestExitCode": "unavailable",
+      "profileMismatches": "unavailable",
+      "provider": "unavailable",
+      "authMode": "unavailable",
+      "isolation": "unavailable",
+      "findingsCycles": "unavailable",
+      "recoveryOperations": 0,
+      "extraRunnerTurns": 0,
+      "repeatedReviewRounds": 0,
+      "durationMs": "unavailable",
+      "slices": "unavailable",
+      "operationCounts": {
+        "EXECUTE_SLICE": 0,
+        "VALIDATE_SLICE": 0,
+        "APPLY_FINDINGS": 0,
+        "REPLAN": 0,
+        "SPEC_RESUME": 0,
+        "REVIEW_PLAN": 0,
+        "REVIEW_TASKS": 0
+      },
+      "operationsBySlice": {},
+      "operationDurations": [],
+      "repeatedAttemptsBySlice": {},
+      "telemetry": {
+        "coverage": {
+          "main": "0/0",
+          "runner": "0/0"
+        },
+        "main": "unavailable",
+        "runner": "unavailable"
+      }
+    }
+  ],
+  "aggregate": {
+    "operations": 9,
+    "mainTurns": 9,
+    "runnerTurns": 2,
+    "recoveryOperations": 0,
+    "happyPathOperations": 9,
+    "extraRunnerTurns": 0,
+    "repeatedReviewRounds": 0,
+    "repeatedExecuteAttempts": 1,
+    "repeatedValidateAttempts": 0,
+    "wallDurationMs": 1512827,
+    "summedCaseDurationMs": "unavailable",
+    "telemetry": {
+      "coverage": {
+        "main": "9/9",
+        "runner": "0/2"
+      },
+      "main": {
+        "turns": 9,
+        "input": 8317811,
+        "output": 65626,
+        "cachedInput": 7772800,
+        "reasoningOutput": 19023,
+        "observedInput": 8317811,
+        "observedOutput": 65626,
+        "peakInputPerTurn": 1995855,
+        "medianInputPerTurn": 667957,
+        "meanInputPerTurn": 924201.2222222222
+      },
+      "runner": "unavailable",
+      "peakInputPerTurn": 1995855,
+      "medianInputPerTurn": 667957
+    }
+  },
+  "comparisonToBaseline": {
+    "directlyComparable": false,
+    "mismatches": [
+      "incomplete full-run conclusion"
+    ],
+    "profileExperiment": false,
+    "conclusion": "partial-run; no savings conclusion",
+    "deltas": "unavailable"
+  }
+}

@@ -12,17 +12,18 @@ update_policy: Change only when lifecycle semantics change.
 
 # Lifecycle MODEs
 
-Require exactly one explicit `MODE=INIT|RESUME|READINESS|CLOSE`. Reject aliases, case variants, combined modes, and inference. Transient context cannot replace persisted authority, required inputs, or mode boundaries. A material conflict blocks the affected work and names the artifact or ID.
+Require one exact `MODE=INIT|RESUME|READINESS|CLOSE`; reject aliases, variants, combinations, or inference. Transient context cannot replace persisted authority, required inputs, or mode boundaries. Material conflicts block the affected work and name the artifact or ID.
 
 ## Mutable-mode publication
 
 `INIT`, `RESUME`, and `CLOSE` use the same recovery-safe boundary:
 
-1. Resolve authority and snapshot the live lifecycle state and protected external paths.
-2. Build the complete candidate in an isolated, disjoint directory; never incrementally edit live state.
-3. Validate candidate structure and the mode transition against the unchanged source.
-4. Publish only with `node "<SKILL_ROOT>/runtime/publish-spec-lifecycle.mjs"`. Its portable exclusive lock precedes recovery; verify the renamed backup digest before promotion. Conflicts restore exact state; other failures retain or restore valid state. This is recovery safety, not filesystem-wide atomicity.
-5. Revalidate the published state and external snapshot. Report any failure without continuing the lifecycle operation.
+1. Resolve authority; snapshot live state and protected paths.
+2. Build the complete disjoint candidate; never edit live state.
+3. Before INIT validation, run `node "<SKILL_ROOT>/runtime/prepare-init-candidate.mjs" <TARGET> <CANDIDATE>`; owner-only serialization blocks malformed headers. Never after rejection.
+4. Validate candidate structure and mode transition against unchanged source.
+5. Publish only with `node "<SKILL_ROOT>/runtime/publish-spec-lifecycle.mjs"`. Its portable exclusive lock precedes recovery; verify renamed backup digest before promotion. Conflicts restore exact state; failures retain or restore valid state. It is not filesystem-wide atomic.
+6. Revalidate published state and external snapshot; report failures and stop.
 
 The candidate cannot justify its changes. The runtime proves structure, relations, preservation, rendering, and publication; the model owns semantic sufficiency and non-invention.
 
@@ -47,11 +48,11 @@ Preserve H1, IDs/types/titles and unaffected bytes/links/paths; retire in place 
 
 Require `SPEC_PATH`, exactly `READINESS_SCOPE=LOCAL|GLOBAL`, and bounded `READINESS_FOCUS` for `LOCAL`. The mode is read-only: never mutate the workspace or create lifecycle content.
 
-Run `node "<SKILL_ROOT>/runtime/validate-spec-lifecycle.mjs" workspace <SPEC_PATH>` first; stop on failure. On PASS load `readiness-gates.md`: `LOCAL` reads focus/dependencies, `GLOBAL` all authority. Write nothing. After `GLOBAL/READY`, `ready` runs `node "<SKILL_ROOT>/runtime/create-readiness-attestation.mjs" <SPEC_PATH> <EXTERNAL_ATTESTATION> --scope GLOBAL --verdict READY`; `draft` never does and defers creation to the publisher above.
+Run `node "<SKILL_ROOT>/runtime/validate-spec-lifecycle.mjs" workspace <SPEC_PATH>` first; stop on failure. On PASS load `readiness-gates.md`: `LOCAL` reads focus/dependencies, `GLOBAL` all authority. Write nothing. Capture `node "<SKILL_ROOT>/runtime/readiness-snapshot.mjs" <SPEC_PATH>` before and after evaluation and return the exact JSON result described in `SKILL.md`; changed identity is an evaluation error. `LOCAL_CLEAR` is focal only. After `GLOBAL/READY`, `ready` may run `node "<SKILL_ROOT>/runtime/create-readiness-attestation.mjs" <SPEC_PATH> <EXTERNAL_ATTESTATION> --scope GLOBAL --verdict READY` for a legitimate external consumer; `draft` defers status-only promotion attestation creation to the publisher above.
 
 ## CLOSE
 
-Require a valid active `ready` source and strict `GLOBAL/READY` attestation over its current snapshot. Follow `close-policy.md`; the runtime verifies, renders, validates, and publishes. Implementation evidence is never a gate.
+Require a valid active `ready` source. Follow `close-policy.md`; the runtime verifies, renders, validates, and publishes directly. Implementation evidence and terminal readiness attestation are never gates.
 
 ## Outcome contract
 

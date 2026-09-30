@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sentinel.local/schemas/benchmark-result-v2.json",
+  "title": "Sentinel Benchmark Result v2",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["schemaVersion", "benchmarkVersion", "benchmarkId", "caseId", "runMode", "sentinelSha", "productionProfileId", "status", "operations"],
+  "properties": {
+    "schemaVersion": { "const": 2 }, "benchmarkVersion": { "const": 1 }, "benchmarkId": { "const": "sentinel-todo" }, "caseId": { "enum": ["A", "B", "C"] }, "runMode": { "enum": ["focal", "case", "full"] }, "sentinelSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" }, "productionProfileId": { "enum": ["production-v1", "production-v2"] }, "status": { "enum": ["PASS", "FAIL", "BLOCKED", "ABORTED_BUDGET"] }, "operations": { "type": "object", "required": ["maturationCycles"], "properties": { "maturationCycles": { "type": "integer", "minimum": 0 } } }
+  }
+}

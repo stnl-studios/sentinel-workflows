@@ -12,13 +12,34 @@ import {
   workspaceAuthoritySnapshotSha256,
 } from '../lib/readiness.mjs';
 import { validateWorkspace } from '../lib/lifecycle.mjs';
-import { copyFixture, replace, RUNTIME_ROOT, temporary } from './helpers.mjs';
+import { readinessSnapshot, validateReadinessResult } from '../lib/readiness-result.mjs';
+import { copyFixture, replace, RUNTIME_ROOT, snapshot, temporary } from './helpers.mjs';
 
 function create(root, source, name = 'readiness.json') {
   return createReadinessAttestation(source, path.join(root, name), { scope: 'GLOBAL', verdict: 'READY' });
 }
 
 const OPTIONAL_HARDLINK_ERRORS = new Set(['EPERM', 'EACCES', 'ENOTSUP', 'EOPNOTSUPP', 'UNKNOWN', 'EXDEV']);
+
+test('structured readiness result binds verdict, scope, findings, and unchanged workspace snapshot', (t) => {
+  const root = temporary(t);
+  const source = copyFixture(root, 'ready', 'source');
+  const before = snapshot(source);
+  const identity = readinessSnapshot(source);
+  const ready = { version: 1, mode: 'READINESS', scope: 'GLOBAL', verdict: 'READY',
+    workspacePath: identity.workspacePath, snapshotSha256: identity.snapshotSha256, findings: [] };
+  assert.equal(validateReadinessResult(source, ready).verdict, 'READY');
+  assert.deepEqual(snapshot(source), before);
+  assert.throws(() => validateReadinessResult(source, { ...ready, scope: 'LOCAL' }), /scope/u);
+  assert.throws(() => validateReadinessResult(source, { ...ready, findings: [{ id: 'F-001', path: 'feature_spec.md', evidence: 'missing', action: 'DECISION_REQUIRED', question: 'Decide the behavior?' }] }), /READY result/u);
+  const findings = { ...ready, verdict: 'FINDINGS', findings: [
+    { id: 'F-001', path: 'feature_spec.md', evidence: 'Acceptance condition absent in source.', action: 'DECISION_REQUIRED', question: 'Which condition is intended?' },
+  ] };
+  assert.equal(validateReadinessResult(source, findings).findings[0].action, 'DECISION_REQUIRED');
+  assert.throws(() => validateReadinessResult(source, { ...findings, findings: [{ ...findings.findings[0], question: null }] }), /malformed/u);
+  replace(path.join(source, 'feature_spec.md'), 'Provide deterministic', 'Provide durably deterministic');
+  assert.throws(() => validateReadinessResult(source, ready), /snapshot/u);
+});
 
 test('attestation payload is minimal, deterministic, UTF-8, and snapshot-bound', (t) => {
   const root = temporary(t);

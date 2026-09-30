@@ -17,13 +17,47 @@ import {
   repairExecutionContract,
   validateExecutionCandidate,
   workflowSkillForOperation,
-} from "../skills/workflows/stnl-execution-closer/runtime/execution-state.mjs";
+} from "../skills/workflows/stnl-slice-quality-manager/runtime/execution-state.mjs";
+import { preparePlanCandidate } from "../skills/workflows/stnl-execution-planner/runtime/prepare-plan-candidate.mjs";
+import { serializePlanPathClaims } from "../skills/workflows/stnl-execution-planner/runtime/serialize-plan-paths.mjs";
+import { prepareValidationCandidate } from "../skills/workflows/stnl-slice-quality-manager/runtime/prepare-validation-candidate.mjs";
+import { prepareValidationCopy } from "../skills/workflows/stnl-slice-quality-manager/runtime/prepare-validation-copy.mjs";
+import { recoverRejectedValidationCandidate } from "../skills/workflows/stnl-slice-quality-manager/runtime/recover-rejected-validation-candidate.mjs";
+import { decideOutcome, nextHandoff, recoverableRunnerHandoff } from "../benchmarks/sentinel-todo/runtime/benchmark-manager.mjs";
+import { createManagedSliceContext, managedEnvironment } from "../skills/workflows/stnl-slice-quality-manager/runtime/managed-slice-context.mjs";
+import { publishValidationCandidate } from "../skills/workflows/stnl-slice-quality-manager/runtime/publish-validation-candidate.mjs";
+import { resolveExecutionWorkspace as resolveMaterializerExecutionWorkspace } from "../skills/workflows/stnl-task-materializer/runtime/execution-state.mjs";
+import { prepareTaskMaterializationCandidate } from "../skills/workflows/stnl-task-materializer/runtime/prepare-task-candidate.mjs";
+import { publishTaskMaterializationCandidate } from "../skills/workflows/stnl-task-materializer/runtime/publish-task-candidate.mjs";
+import { serializeTaskPathClaims } from "../skills/workflows/stnl-task-materializer/runtime/serialize-task-paths.mjs";
+import {
+  validateManagedChangedAreas,
+  captureRunnerTestedState,
+  serializeRunnerEvidence,
+  serializeRunnerManifest,
+  serializeRunnerRecord,
+  serializeRunnerResponse,
+  serializeExecutionScopeClaims,
+  insertExecutionEvidenceInCandidate,
+  serializeRunnerExecutionBundleFromResponse,
+  serializeRunnerValidationBundle,
+  serializeRunnerValidationBundleFromResponse,
+  persistMalformedRunnerResultInCandidate,
+  assertRunnerVerdictConsistency,
+} from "../skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs";
+import { serializeRunnerValidationBundleFromResponse as serializeQualityManagerValidationBundleFromResponse }
+  from "../skills/workflows/stnl-slice-quality-manager/runtime/serialize-runner-evidence.mjs";
+import { captureRunnerResponse } from "../skills/workflows/stnl-slice-executor/runtime/capture-runner-response.mjs";
+import { startOfficialRunnerBroker } from "../agents/codex/runtime/runner-broker.mjs";
+import { runManagedRunnerBridge } from "../agents/codex/runtime/managed-runner-bridge.mjs";
+import { invokeIndependentRunner } from "../agents/codex/runtime/validation-runner.mjs";
+import { prepareExecutionCopy, publishExecutionCopy } from "../skills/workflows/stnl-slice-executor/runtime/prepare-execution-copy.mjs";
 import { EXECUTION_OPERATION_SKILLS, WORKFLOW_OPERATIONS } from "./lib/skill-registry.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
 const SKILLS = [
   "stnl-execution-planner", "stnl-plan-reviewer", "stnl-task-materializer", "stnl-task-reviewer",
-  "stnl-slice-executor", "stnl-slice-quality-manager", "stnl-execution-closer",
+  "stnl-slice-executor", "stnl-slice-quality-manager",
 ];
 
 async function temporary(t, prefix = "stnl-execution-contract-") {
@@ -31,6 +65,663 @@ async function temporary(t, prefix = "stnl-execution-contract-") {
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   return root;
 }
+
+async function capturedCommandEvidence(t, operation, response, command) {
+  const root = await temporary(t, "stnl-captured-commands-");
+  const name = `001-${operation.toLowerCase()}-slice-01-attempt-1`;
+  const semanticResponseFile = path.join(root, `${name}.response.json`);
+  const receiptFile = path.join(root, `${name}.receipt.json`);
+  const eventsPath = path.join(root, `${name}.events.jsonl`);
+  await fs.writeFile(semanticResponseFile, response);
+  await fs.writeFile(eventsPath, [
+    { operationId: `runner-${name}`, type: "item.started", item: { id: "item_0", type: "command_execution", command, status: "in_progress", exit_code: null } },
+    { operationId: `runner-${name}`, type: "item.completed", item: { id: "item_0", type: "command_execution", command, status: "completed", exit_code: 0 } },
+  ].map((event) => JSON.stringify(event)).join("\n") + "\n");
+  await fs.writeFile(receiptFile, JSON.stringify({
+    status: "RUNNER_RESPONSE_CAPTURED", operation, eventsPath, semanticResponseFile,
+    semanticResponseSha256: createHash("sha256").update(response).digest("hex"),
+    captureFailure: null, error: null, exitCode: 0,
+  }));
+  return { receiptFile, semanticResponseFile };
+}
+
+async function capturedVerificationSequence(t, operation, response, exits) {
+  const root = await temporary(t, "stnl-verdict-sequence-");
+  const name = `001-${operation.toLowerCase()}-slice-01-attempt-1`;
+  const semanticResponseFile = path.join(root, `${name}.response.json`);
+  const receiptFile = path.join(root, `${name}.receipt.json`);
+  const eventsPath = path.join(root, `${name}.events.jsonl`);
+  const commands = exits.map((exit, index) => ({ command: `STNL_VERIFICATION_COMMAND=1 node --test check-${index + 1}.mjs`, exit }));
+  const events = commands.flatMap(({ command, exit }, index) => [
+    { operationId: `runner-${name}`, type: "item.started", item: { id: `item_${index + 1}`, type: "command_execution", command, status: "in_progress", exit_code: null } },
+    { operationId: `runner-${name}`, type: "item.completed", item: { id: `item_${index + 1}`, type: "command_execution", command, status: "completed", exit_code: exit } },
+  ]);
+  await fs.writeFile(semanticResponseFile, response);
+  await fs.writeFile(eventsPath, `${events.map((event) => JSON.stringify(event)).join("\n")}\n`);
+  await fs.writeFile(receiptFile, JSON.stringify({ status: "RUNNER_RESPONSE_CAPTURED", operation,
+    eventsPath, semanticResponseFile, semanticResponseSha256: createHash("sha256").update(response).digest("hex"),
+    captureFailure: null, error: null, exitCode: 0 }));
+  return { semanticResponseFile, receiptFile, commands };
+}
+
+test("success verdicts reconcile every mechanical exit without suppressing legitimate failures", () => {
+  for (const operation of ["EXECUTE_SLICE", "APPLY_FINDINGS", "VALIDATE_SLICE"]) {
+    const success = operation === "VALIDATE_SLICE" ? "PASS" : "TESTS_PASS";
+    assert.doesNotThrow(() => assertRunnerVerdictConsistency(operation, success, [{ exit: 0 }]));
+    for (const exits of [[1, 0, 0, 0], [1, 0], [1, 0, 1]]) {
+      assert.throws(() => assertRunnerVerdictConsistency(operation, success, exits.map((exit) => ({ command: "check", exit }))),
+        (error) => error.code === "RUNNER_VERDICT_EVIDENCE_CONFLICT" && error.failedCommands.length === exits.filter(Boolean).length);
+    }
+    const failure = operation === "VALIDATE_SLICE" ? "NEEDS_FIX" : "TESTS_FAIL";
+    assert.doesNotThrow(() => assertRunnerVerdictConsistency(operation, failure, [{ exit: 1 }]));
+    assert.doesNotThrow(() => assertRunnerVerdictConsistency(operation, "BLOCKED", [{ exit: 1 }]));
+  }
+});
+
+test("legacy probe escaping and structured assertion distinguish actual priority from stray words", () => {
+  const correct = '{"id":2,"title":"B","completed":false,"priority":"medium"}\n';
+  const overEscapedItem8Needle = String.raw`\"priority\":\"medium\"`;
+  assert.equal(correct.includes(overEscapedItem8Needle), false,
+    "the item_8 JS string searches for literal backslashes absent from JSON output");
+  function weakItem11Check(output) { return output.includes("priority") && output.includes("medium"); }
+  function structuredCheck(output) {
+    const records = output.trim().split("\n").map((line) => JSON.parse(line));
+    return records.length === 1 && records[0]?.priority === "medium";
+  }
+  for (const output of [correct,
+    '{"id":2,"title":"priority medium","completed":false}\n',
+    '{"id":2,"title":"medium","completed":false,"priority":"high"}\n',
+    'priority medium\n']) {
+    assert.equal(weakItem11Check(output), true);
+  }
+  assert.equal(structuredCheck(correct), true);
+  assert.equal(structuredCheck('{"id":2,"title":"priority medium","completed":false}\n'), false);
+  assert.equal(structuredCheck('{"id":2,"title":"medium","completed":false,"priority":"high"}\n'), false);
+  assert.throws(() => structuredCheck('priority medium\n'), SyntaxError);
+});
+
+test("captured contradiction publishes blocker, manager consumes bounded recovery, and valid new attempt completes", async (t) => {
+  const fixture = await standaloneWorkspace(t);
+  await renderArtifacts(fixture);
+  await writeValidatedPath(fixture);
+  await editTask(fixture, (value) => {
+    let task = value.replace("- [ ] 1.1", "- [x] 1.1");
+    task = replaceSection(task, "Changed Areas", "- `../../src/example.txt`");
+    task = replaceSection(task, "Implementation Test Evidence", checkRecord("implementation-check", 1, "TESTS_PASS", 1));
+    return replaceSection(task, "Diff Summary", "- Verified behavior is implemented.");
+  });
+  const candidateParent = await temporary(t, "stnl-recovery-candidates-");
+  const response = JSON.stringify({ status: "PASS", head: "0123456789abcdef0123456789abcdef01234567",
+    commands: [{ command: "semantic claim", exit: 0 }], evidence: "independent checks cover AC-001",
+    findingReferences: "none", findingDispositions: "none", blockers: "none",
+    unexpectedWorkspaceEffects: "none", persistenceSummary: "no changes" });
+  async function candidateFor(exits, clearBlocker = false) {
+    const captured = await capturedVerificationSequence(t, "VALIDATE_SLICE", response, exits);
+    const copy = await prepareValidationCopy({ specPath: fixture.requirements, slice: "slice-01", candidateParent });
+    const candidateTask = path.join(copy.candidateExecutionRoot, "tasks", "slice-01.md");
+    if (clearBlocker) await fs.writeFile(candidateTask,
+      replaceSection(await fs.readFile(candidateTask, "utf8"), "Delegation Blocker", "- none"));
+    const prepared = await prepareValidationCandidate({ specPath: fixture.requirements, slice: "1",
+      workspace: fixture.root, candidateExecutionRoot: copy.candidateExecutionRoot, ...captured });
+    return { copy, prepared, captured };
+  }
+  const first = await candidateFor([1, 0, 0, 0]);
+  assert.equal(first.prepared.status, "RUNNER_RESULT_BLOCKED");
+  assert.match(first.prepared.recovery.diagnostic, /RUNNER_VERDICT_EVIDENCE_CONFLICT/u);
+  assert.equal((await validateExecutionCandidate(fixture.requirements, first.copy.candidateExecutionRoot)).state,
+    "RUNNER_RESULT_BLOCKED");
+  assert.equal((await publishValidationCandidate({ specPath: fixture.requirements, slice: "slice-01",
+    candidateExecutionRoot: first.copy.candidateExecutionRoot })).state, "RUNNER_RESULT_BLOCKED");
+  const firstReadback = await inspectExecutionState(fixture.requirements);
+  assert.equal(firstReadback.tasks.get("slice-01").attempts.length, 0);
+  const readback = { lifecycle: { status: "ready" }, execution: firstReadback, executionRaw: firstReadback };
+  const blocked = decideOutcome("VALIDATE_SLICE", readback, true);
+  assert.deepEqual(blocked, { result: "BLOCKED", blocker: "OFFICIAL_RUNNER_RESULT_BLOCKED" });
+  const recovery = recoverableRunnerHandoff({ operation: "VALIDATE_SLICE", slice: "slice-01", outcome: blocked,
+    readback, priorOperations: [], remainingTurns: 2 });
+  assert.deepEqual(nextHandoff("VALIDATE_SLICE", readback), { operation: "VALIDATE_SLICE", slice: "slice-01" });
+  assert.equal(recovery?.authority, firstReadback.currentFingerprint);
+  assert.equal((await preflightExecutionOperation(fixture.requirements, recovery.operation, "1")).state,
+    "RUNNER_RESULT_BLOCKED");
+  assert.equal(recoverableRunnerHandoff({ operation: "VALIDATE_SLICE", slice: "slice-01", outcome: blocked,
+    readback, priorOperations: [], remainingTurns: 1 }), null);
+  assert.equal(recoverableRunnerHandoff({ operation: "VALIDATE_SLICE", slice: "slice-01", outcome: blocked,
+    readback, priorOperations: [{ recovery }], remainingTurns: 20 }), null);
+
+  const secondContradiction = await candidateFor([1, 0], true);
+  assert.equal(secondContradiction.prepared.status, "RUNNER_RESULT_BLOCKED");
+  assert.equal((await validateExecutionCandidate(fixture.requirements, secondContradiction.copy.candidateExecutionRoot)).state,
+    "RUNNER_RESULT_BLOCKED");
+  assert.equal((await publishValidationCandidate({ specPath: fixture.requirements, slice: "slice-01",
+    candidateExecutionRoot: secondContradiction.copy.candidateExecutionRoot })).state, "RUNNER_RESULT_BLOCKED");
+  const repeated = await inspectExecutionState(fixture.requirements);
+  const repeatedReadback = { lifecycle: { status: "ready" }, execution: repeated, executionRaw: repeated };
+  const repeatedOutcome = decideOutcome("VALIDATE_SLICE", repeatedReadback, true);
+  assert.equal(recoverableRunnerHandoff({ operation: "VALIDATE_SLICE", slice: "slice-01",
+    outcome: repeatedOutcome, readback: repeatedReadback,
+    priorOperations: [{ recovery }], remainingTurns: 20 }), null);
+  const second = await candidateFor([0, 0], true);
+  assert.equal(second.prepared.status, "PREPARED");
+  assert.equal(second.prepared.formalStatus, "PASS");
+  assert.equal((await validateExecutionCandidate(fixture.requirements, second.copy.candidateExecutionRoot)).state,
+    "COMPLETE");
+  assert.equal((await publishValidationCandidate({ specPath: fixture.requirements, slice: "slice-01",
+    candidateExecutionRoot: second.copy.candidateExecutionRoot })).state, "COMPLETE");
+  const completed = await inspectExecutionState(fixture.requirements);
+  assert.equal(completed.tasks.get("slice-01").attempts.length, 1);
+  assert.deepEqual(decideOutcome("VALIDATE_SLICE", { lifecycle: { status: "ready" },
+    execution: completed, executionRaw: completed }, true), { result: "PASS", blocker: null });
+  assert.deepEqual(nextHandoff("VALIDATE_SLICE", { executionRaw: completed }), { operation: "SPEC_CLOSE", slice: null });
+  assert.match(await fs.readFile(path.join(first.copy.candidateExecutionRoot, "tasks", "slice-01.md"), "utf8"),
+    /RUNNER_VERDICT_EVIDENCE_CONFLICT/u);
+});
+
+test("late strict PASS command rejection preserves candidate and publishes only bound recovery", async (t) => {
+  const fixture = await standaloneWorkspace(t);
+  await renderArtifacts(fixture);
+  await writeValidatedPath(fixture);
+  await editTask(fixture, (value) => {
+    let task = value.replace("- [ ] 1.1", "- [x] 1.1");
+    task = replaceSection(task, "Changed Areas", "- `../../src/example.txt`");
+    task = replaceSection(task, "Implementation Test Evidence", checkRecord("implementation-check", 1, "TESTS_PASS", 1));
+    return replaceSection(task, "Diff Summary", "- Verified behavior is implemented.");
+  });
+  const candidateParent = await temporary(t, "stnl-late-rejection-");
+  const response = JSON.stringify({ status: "PASS", head: "0123456789abcdef0123456789abcdef01234567",
+    commands: [{ command: "semantic claim", exit: 0 }], evidence: "independent checks cover AC-001",
+    findingReferences: "none", findingDispositions: "none", blockers: "none",
+    unexpectedWorkspaceEffects: "none", persistenceSummary: "no changes" });
+  const initial = await capturedVerificationSequence(t, "VALIDATE_SLICE", response, [0]);
+  const copy = await prepareValidationCopy({ specPath: fixture.requirements, slice: "slice-01", candidateParent });
+  assert.equal((await prepareValidationCandidate({ specPath: fixture.requirements, slice: "1",
+    workspace: fixture.root, candidateExecutionRoot: copy.candidateExecutionRoot, ...initial })).status, "PREPARED");
+  const rejectedTask = path.join(copy.candidateExecutionRoot, "tasks", "slice-01.md");
+  const prepared = await fs.readFile(rejectedTask, "utf8");
+  const rejected = prepared.replaceAll("check-1.mjs` | exit:0", "check-1.mjs` | exit:1");
+  assert.notEqual(rejected, prepared);
+  await fs.writeFile(rejectedTask, rejected);
+  const liveBefore = await fs.readFile(path.join(fixture.execution, "tasks", "slice-01.md"));
+  await assert.rejects(validateExecutionCandidate(fixture.requirements, copy.candidateExecutionRoot),
+    (error) => error.contractViolation?.code === "PASS_COMMAND_EXIT_NONZERO");
+  const conflicting = await capturedVerificationSequence(t, "VALIDATE_SLICE", response, [1]);
+  const recovered = await recoverRejectedValidationCandidate({ specPath: fixture.requirements, slice: "slice-01",
+    workspace: fixture.root, rejectedCandidateRoot: copy.candidateExecutionRoot, candidateParent, ...conflicting });
+  assert.equal(recovered.publishedState, "RUNNER_RESULT_BLOCKED");
+  assert.equal(recovered.mandatoryRecovery.operation, "VALIDATE_SLICE");
+  assert.equal(await fs.readFile(rejectedTask, "utf8"), rejected);
+  assert.notDeepEqual(await fs.readFile(path.join(fixture.execution, "tasks", "slice-01.md")), liveBefore);
+  assert.equal((await inspectExecutionState(fixture.requirements)).tasks.get("slice-01").attempts.length, 0);
+});
+
+test("missing mechanical evidence is a hard failure, not a malformed runner blocker", async (t) => {
+  const fixture = await standaloneWorkspace(t);
+  await renderArtifacts(fixture);
+  await writeValidatedPath(fixture);
+  await editTask(fixture, (value) => {
+    let task = value.replace("- [ ] 1.1", "- [x] 1.1");
+    task = replaceSection(task, "Changed Areas", "- `../../src/example.txt`");
+    return replaceSection(task, "Implementation Test Evidence", checkRecord("implementation-check", 1, "TESTS_PASS", 1));
+  });
+  const parent = await temporary(t, "stnl-missing-evidence-");
+  const copy = await prepareValidationCopy({ specPath: fixture.requirements, slice: "slice-01", candidateParent: parent });
+  const response = JSON.stringify({ status: "PASS", head: "0123456789abcdef0123456789abcdef01234567",
+    commands: [{ command: "semantic claim", exit: 0 }], evidence: "independent checks cover AC-001",
+    findingReferences: "none", findingDispositions: "none", blockers: "none",
+    unexpectedWorkspaceEffects: "none", persistenceSummary: "no changes" });
+  const captured = await capturedVerificationSequence(t, "VALIDATE_SLICE", response, [0]);
+  await fs.rm(captured.receiptFile);
+  const task = path.join(copy.candidateExecutionRoot, "tasks", "slice-01.md");
+  const before = await fs.readFile(task);
+  await assert.rejects(prepareValidationCandidate({ specPath: fixture.requirements, slice: "1",
+    workspace: fixture.root, candidateExecutionRoot: copy.candidateExecutionRoot, ...captured }), /ENOENT/u);
+  assert.deepEqual(await fs.readFile(task), before);
+  assert.equal((await inspectExecutionState(fixture.requirements)).state, "IMPLEMENTED_AWAITING_VALIDATION");
+});
+
+test("execution producer publishes SDK command and exit despite semantic placeholder and false exit", async (t) => {
+  const fixture = await standaloneWorkspace(t);
+  await renderArtifacts(fixture);
+  await writeValidatedPath(fixture);
+  const copy = await prepareExecutionCopy({ specPath: fixture.requirements, slice: "slice-01" });
+  let candidate = await fs.readFile(copy.candidateTaskArtifact, "utf8");
+  candidate = candidate.replace("- [ ] 1.1", "- [x] 1.1");
+  candidate = replaceSection(candidate, "Changed Areas", "- `../../src/example.txt`");
+  candidate = replaceSection(candidate, "Diff Summary", "- Behavior implemented and checked.");
+  await fs.writeFile(copy.candidateTaskArtifact, candidate);
+  const response = JSON.stringify({
+    status: "TESTS_PASS", automaticCheckRound: "1/3", head: "fixture-head",
+    discoverySources: "task", discoveryActions: "inspected tests", verificationTypesConsidered: "unit",
+    nonApplicabilityRationale: "none", noVerificationCommandConfirmation: "ran",
+    commands: [{ command: "<bounded integration assertions>", exit: 9 }],
+    resultOfEachCommandAndExitCode: "passed", selectedChecks: "focused unit",
+    selectionRationale: "direct", coverage: "AC-001", failures: "none", priorRoundFailure: "none",
+    correctionApplied: "none", inSliceRationale: "none", evidenceOrFailureSummary: "passed",
+    affectedFilesOrBehaviors: "example", blockers: "none", unexpectedWorkspaceEffects: "none",
+    persistenceSummary: "none",
+  });
+  const command = "STNL_VERIFICATION_COMMAND=1 node -e `echo quoted`\ncat <<'EOF'\nlong payload\nEOF";
+  const captured = await capturedCommandEvidence(t, "EXECUTE_SLICE", response, command);
+  const bundle = await serializeRunnerExecutionBundleFromResponse({
+    operation: "EXECUTE_SLICE", response, workspace: fixture.root, taskArtifact: copy.candidateTaskArtifact,
+    ...captured,
+  });
+  assert.ok(bundle.includes(`json:${JSON.stringify(command)} | exit:0`));
+  assert.ok(!bundle.includes("<bounded integration assertions>"));
+  assert.ok(!bundle.includes("exit:9"));
+  await insertExecutionEvidenceInCandidate({ taskArtifact: copy.candidateTaskArtifact, operation: "EXECUTE_SLICE", bundle });
+  const strictRoot = path.join(await temporary(t), "execution");
+  await copyDirectory(copy.candidateExecutionRoot, strictRoot);
+  await fs.rm(path.join(strictRoot, ".stnl-execution-copy.json"));
+  assert.equal((await validateExecutionCandidate(fixture.requirements, strictRoot)).state, "IMPLEMENTED_AWAITING_VALIDATION");
+});
+
+test("execution producer inserts exact hashed evidence only into its owned candidate", async (t) => {
+  const fixture = await standaloneWorkspace(t);
+  await renderArtifacts(fixture);
+  const copy = await prepareExecutionCopy({ specPath: fixture.requirements, slice: "slice-01" });
+  const liveTask = path.join(fixture.execution, "tasks", "slice-01.md");
+  const liveBefore = await fs.readFile(liveTask, "utf8");
+  let candidate = await fs.readFile(copy.candidateTaskArtifact, "utf8");
+  candidate = candidate.replace("- [ ] 1.1", "- [x] 1.1");
+  candidate = replaceSection(candidate, "Changed Areas", "- `../../src/example.txt`");
+  candidate = replaceSection(candidate, "Diff Summary", "- The example behavior is implemented and checked.");
+  await fs.writeFile(copy.candidateTaskArtifact, candidate, "utf8");
+  const response = JSON.stringify({
+    status: "TESTS_PASS", automaticCheckRound: "1/3", head: "0123456789abcdef0123456789abcdef01234567",
+    discoverySources: "task and package scripts", discoveryActions: "read-only inspection",
+    verificationTypesConsidered: "unit tests", nonApplicabilityRationale: "none",
+    noVerificationCommandConfirmation: "verification command executed",
+    commands: [{ command: "node --test test/example.test.mjs", exit: 0 }],
+    resultOfEachCommandAndExitCode: "unit tests passed", selectedChecks: "focused unit tests",
+    selectionRationale: "direct scope", coverage: "example behavior", failures: "none",
+    priorRoundFailure: "none", correctionApplied: "none", inSliceRationale: "none",
+    evidenceOrFailureSummary: "focused tests passed", affectedFilesOrBehaviors: "example behavior",
+    blockers: "none", unexpectedWorkspaceEffects: "none", persistenceSummary: "no runner writes",
+  });
+  const bundle = await serializeRunnerExecutionBundleFromResponse({
+    operation: "EXECUTE_SLICE", response, workspace: fixture.root, taskArtifact: copy.candidateTaskArtifact,
+  });
+  assert.match(bundle, /sha256:[0-9a-f]{64}/u);
+  assert.doesNotMatch(bundle, /Correction paths:|Prior-round failure:|Updated scope:/u);
+  assert.equal(await insertExecutionEvidenceInCandidate({
+    taskArtifact: copy.candidateTaskArtifact, operation: "EXECUTE_SLICE", bundle,
+  }), "### implementation-check-01");
+  assert.equal((await fs.readFile(copy.candidateTaskArtifact, "utf8")).includes(bundle), true);
+  assert.equal(await fs.readFile(liveTask, "utf8"), liveBefore);
+  const strictRoot = path.join(await temporary(t, "stnl-inserted-evidence-strict-"), "execution");
+  await copyDirectory(copy.candidateExecutionRoot, strictRoot);
+  await fs.rm(path.join(strictRoot, ".stnl-execution-copy.json"));
+  assert.equal((await validateExecutionCandidate(fixture.requirements, strictRoot)).state,
+    "IMPLEMENTED_AWAITING_VALIDATION");
+  await assert.rejects(insertExecutionEvidenceInCandidate({
+    taskArtifact: copy.candidateTaskArtifact, operation: "EXECUTE_SLICE", bundle,
+  }), /already contains this execution check/u);
+  await assert.rejects(insertExecutionEvidenceInCandidate({
+    taskArtifact: liveTask, operation: "EXECUTE_SLICE", bundle,
+  }), /owned isolated execution candidate/u);
+  const cliCopy = await prepareExecutionCopy({ specPath: fixture.requirements, slice: "slice-01" });
+  await fs.writeFile(cliCopy.candidateTaskArtifact, candidate, "utf8");
+  const responseFile = path.join(await temporary(t, "stnl-insert-response-"), "response.json");
+  await fs.writeFile(responseFile, response, "utf8");
+  const cli = spawnSync(process.execPath, [
+    path.join(ROOT, "skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs"),
+    "--execution-bundle", "--operation", "EXECUTE_SLICE", "--workspace", fixture.root,
+    "--task-artifact", cliCopy.candidateTaskArtifact, "--semantic-response-file", responseFile,
+    "--insert-candidate",
+  ], { encoding: "utf8" });
+  assert.equal(cli.status, 0, cli.stderr);
+  assert.match(cli.stdout, /implementation-check-01 inserted into isolated candidate/u);
+  assert.match(await fs.readFile(cliCopy.candidateTaskArtifact, "utf8"), /sha256:[0-9a-f]{64}/u);
+  assert.equal(await fs.readFile(liveTask, "utf8"), liveBefore);
+});
+
+test("command evidence preserves simple, quoted, backtick, multiline, and heredoc commands", async (t) => {
+  const schema = JSON.parse(await fs.readFile(path.join(ROOT,
+    "skills/workflows/stnl-slice-executor/runtime/runner-execute-response.schema.json"), "utf8"));
+  assert.equal(schema.properties.commands.items.properties.command.pattern, "^[\\s\\S]+$");
+  assert.equal(schema.properties.head.pattern, "^[^\\r\\n`]+$");
+  const commands = [
+    "npm test",
+    `node -e 'console.log("quoted")'`,
+    "node -e `echo legitimate`",
+    "printf 'first\nsecond'\ncat output.txt",
+    "node --input-type=module <<'NODE'\nimport assert from 'node:assert/strict';\nconst value = () => 1 + 1;\nassert.equal(value(), 2);\nNODE",
+  ];
+  for (const command of commands) {
+    const fixture = await standaloneWorkspace(t);
+    await renderArtifacts(fixture);
+    const target = await writeValidatedPath(fixture);
+    const copy = await prepareExecutionCopy({ specPath: fixture.requirements, slice: "slice-01" });
+    const claim = path.relative(path.dirname(copy.candidateTaskArtifact), target).split(path.sep).join("/");
+    let candidate = await fs.readFile(copy.candidateTaskArtifact, "utf8");
+    candidate = candidate.replace("- [ ] 1.1", "- [x] 1.1");
+    candidate = replaceSection(candidate, "Changed Areas", `- \`${claim}\``);
+    candidate = replaceSection(candidate, "Diff Summary", "- Behavior implemented and checked.");
+    await fs.writeFile(copy.candidateTaskArtifact, candidate, "utf8");
+    const response = JSON.stringify({
+      status: "TESTS_PASS", automaticCheckRound: "1/3", head: "fixture-head",
+      discoverySources: "task and package", discoveryActions: "inspected tests",
+      verificationTypesConsidered: "focused test", nonApplicabilityRationale: "none",
+      noVerificationCommandConfirmation: "command executed",
+      commands: [{ command, exit: 0 }], resultOfEachCommandAndExitCode: "passed",
+      selectedChecks: "focused test", selectionRationale: "direct coverage", coverage: "AC-001",
+      failures: "none", priorRoundFailure: "none", correctionApplied: "none", inSliceRationale: "none",
+      evidenceOrFailureSummary: "passed", affectedFilesOrBehaviors: "example behavior",
+      blockers: "none", unexpectedWorkspaceEffects: "none", persistenceSummary: "no changes",
+    });
+    const bundle = await serializeRunnerExecutionBundleFromResponse({
+      operation: "EXECUTE_SLICE", response, workspace: fixture.root, taskArtifact: copy.candidateTaskArtifact,
+    });
+    const carrier = /[`\r\n]/u.test(command) ? `json:${JSON.stringify(command)}` : `\`${command}\``;
+    assert.ok(bundle.includes(`  - ${carrier} | exit:0`));
+    await insertExecutionEvidenceInCandidate({ taskArtifact: copy.candidateTaskArtifact, operation: "EXECUTE_SLICE", bundle });
+    const strictRoot = path.join(await temporary(t, "stnl-command-roundtrip-strict-"), "execution");
+    await copyDirectory(copy.candidateExecutionRoot, strictRoot);
+    await fs.rm(path.join(strictRoot, ".stnl-execution-copy.json"));
+    assert.equal((await validateExecutionCandidate(fixture.requirements, strictRoot)).state,
+      "IMPLEMENTED_AWAITING_VALIDATION");
+    await fs.copyFile(copy.candidateTaskArtifact, path.join(fixture.execution, "tasks/slice-01.md"));
+    const readback = await inspectExecutionState(fixture.requirements);
+    assert.equal(readback.tasks.get("slice-01").implementationChecks[0].commands[0].command, command);
+  }
+});
+
+test("producer rejects empty commands and preserves mechanical status and head rules", async (t) => {
+  const fixture = await standaloneWorkspace(t);
+  await renderArtifacts(fixture);
+  await assert.rejects(serializeRunnerRecord({
+    workspace: fixture.root, taskArtifact: path.join(fixture.execution, "tasks/slice-01.md"),
+    targets: [await writeValidatedPath(fixture)], commands: [{ command: "", exit: 0 }],
+  }), /non-empty command/u);
+  const taskArtifact = path.join(fixture.execution, "tasks/slice-01.md");
+  await fs.writeFile(taskArtifact, replaceSection(await fs.readFile(taskArtifact, "utf8"),
+    "Changed Areas", "- `../../src/example.txt`"), "utf8");
+  const base = {
+    status: "TESTS_PASS", automaticCheckRound: "1/3", head: "fixture-head",
+    discoverySources: "task", discoveryActions: "inspection", verificationTypesConsidered: "unit",
+    nonApplicabilityRationale: "none", noVerificationCommandConfirmation: "ran",
+    commands: [{ command: "npm test", exit: 0 }], resultOfEachCommandAndExitCode: "pass",
+    selectedChecks: "unit", selectionRationale: "direct", coverage: "AC-001", failures: "none",
+    priorRoundFailure: "none", correctionApplied: "none", inSliceRationale: "none",
+    evidenceOrFailureSummary: "pass", affectedFilesOrBehaviors: "example", blockers: "none",
+    unexpectedWorkspaceEffects: "none", persistenceSummary: "none",
+  };
+  for (const invalid of [{ status: "FAKE" }, { automaticCheckRound: "4/3" }, { head: "bad`head" }]) {
+    await assert.rejects(serializeRunnerExecutionBundleFromResponse({ operation: "EXECUTE_SLICE",
+      response: JSON.stringify({ ...base, ...invalid }), workspace: fixture.root, taskArtifact }),
+    /Status|Automatic check round|head|single-line scalar/u);
+  }
+});
+
+test("captured malformed output creates canonical recovery and rejects wrong authority", async (t) => {
+  const fixture = await standaloneWorkspace(t);
+  await renderArtifacts(fixture);
+  await writeValidatedPath(fixture);
+  const copy = await prepareExecutionCopy({ specPath: fixture.requirements, slice: "slice-01" });
+  let preparedTask = await fs.readFile(copy.candidateTaskArtifact, "utf8");
+  preparedTask = preparedTask.replace("- [ ] 1.1", "- [x] 1.1");
+  preparedTask = replaceSection(preparedTask, "Changed Areas", "- `../../src/example.txt`");
+  preparedTask = replaceSection(preparedTask, "Diff Summary", "- Implementation work completed before runner rejection.");
+  await fs.writeFile(copy.candidateTaskArtifact, preparedTask, "utf8");
+  const root = await temporary(t, "stnl-captured-malformed-");
+  const responseFile = path.join(root, "response.json");
+  const receiptFile = path.join(root, "receipt.json");
+  const response = JSON.stringify({ status: "TESTS_PASS", commands: [{ command: "", exit: 0 }] });
+  await fs.writeFile(responseFile, response, "utf8");
+  const receipt = {
+    status: "RUNNER_RESPONSE_CAPTURED", operation: "EXECUTE_SLICE", semanticResponseFile: responseFile,
+    semanticResponseSha256: createHash("sha256").update(response).digest("hex"),
+    captureFailure: null, error: null,
+  };
+  await fs.writeFile(receiptFile, JSON.stringify(receipt), "utf8");
+  const cli = spawnSync(process.execPath, [
+    path.join(ROOT, "skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs"),
+    "--execution-bundle", "--operation", "EXECUTE_SLICE", "--workspace", fixture.root,
+    "--task-artifact", copy.candidateTaskArtifact, "--semantic-response-file", responseFile,
+    "--receipt-file", receiptFile, "--insert-candidate",
+  ], { encoding: "utf8" });
+  assert.equal(cli.status, 0, cli.stderr);
+  assert.equal(JSON.parse(cli.stdout).state, "RUNNER_RESULT_BLOCKED");
+  const candidate = await fs.readFile(copy.candidateTaskArtifact, "utf8");
+  assert.match(candidate, /## Delegation Blocker\n\n- Operation: EXECUTE_SLICE\n- Kind: malformed-output/u);
+  const strictRoot = path.join(await temporary(t, "stnl-malformed-strict-"), "execution");
+  await copyDirectory(copy.candidateExecutionRoot, strictRoot);
+  await fs.rm(path.join(strictRoot, ".stnl-execution-copy.json"));
+  const official = await validateExecutionCandidate(fixture.requirements, strictRoot);
+  assert.equal(official.state, "RUNNER_RESULT_BLOCKED");
+  assert.equal(official.mandatoryRecovery.operation, "EXECUTE_SLICE");
+  const blocker = candidate.match(/## Delegation Blocker\n\n([\s\S]*?)\n## Implementation Test Evidence/u)[1].trim();
+  const wrong = replaceSection(replaceSection(candidate, "Delegation Blocker", "- none"), "Scope Expansion", blocker);
+  await fs.writeFile(path.join(strictRoot, "tasks/slice-01.md"), wrong, "utf8");
+  await assert.rejects(validateExecutionCandidate(fixture.requirements, strictRoot),
+    /runner recovery in Scope Expansion instead of Delegation Blocker/u);
+  await fs.writeFile(copy.candidateTaskArtifact, candidate, "utf8");
+  await fs.writeFile(receiptFile, JSON.stringify({ ...receipt, status: "RUNNER_NOT_STARTED" }), "utf8");
+  await assert.rejects(persistMalformedRunnerResultInCandidate({
+    taskArtifact: copy.candidateTaskArtifact, operation: "EXECUTE_SLICE", receiptFile, semanticResponseFile: responseFile,
+    diagnostic: "invalid command",
+  }), /matching captured runner response/u);
+  assert.equal(await fs.readFile(copy.candidateTaskArtifact, "utf8"), candidate);
+});
+
+test("captured producer rejection resumes APPLY and VALIDATE through their own operations", async (t) => {
+  for (const operation of ["APPLY_FINDINGS", "VALIDATE_SLICE"]) {
+    const fixture = await standaloneWorkspace(t);
+    await renderArtifacts(fixture);
+    await writeValidatedPath(fixture);
+    await editTask(fixture, (value) => {
+      let task = value.replace("- [ ] 1.1", "- [x] 1.1");
+      task = replaceSection(task, "Changed Areas", "- `../../src/example.txt`");
+      task = replaceSection(task, "Implementation Test Evidence", checkRecord("implementation-check", 1, "TESTS_PASS", 1));
+      if (operation === "APPLY_FINDINGS") {
+        task = replaceSection(task, "Validation Attempts", NEEDS_FIX_ATTEMPT);
+        task = replaceSection(task, "Validation Findings", ACTIVE_FINDING);
+      }
+      return task;
+    });
+    const root = await temporary(t, "stnl-operation-recovery-");
+    const responseFile = path.join(root, "response.json");
+    const receiptFile = path.join(root, "receipt.json");
+    const response = "{malformed json";
+    await fs.writeFile(responseFile, response, "utf8");
+    await fs.writeFile(receiptFile, JSON.stringify({
+      status: "RUNNER_RESPONSE_CAPTURED", operation, semanticResponseFile: responseFile,
+      semanticResponseSha256: createHash("sha256").update(response).digest("hex"),
+      captureFailure: null, error: null,
+    }), "utf8");
+    let candidateRoot;
+    if (operation === "APPLY_FINDINGS") {
+      const copy = await prepareExecutionCopy({ specPath: fixture.requirements, slice: "slice-01" });
+      candidateRoot = path.join(root, "execution");
+      const cli = spawnSync(process.execPath, [
+        path.join(ROOT, "skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs"),
+        "--execution-bundle", "--operation", operation, "--workspace", fixture.root,
+        "--task-artifact", copy.candidateTaskArtifact, "--semantic-response-file", responseFile,
+        "--receipt-file", receiptFile, "--insert-candidate",
+      ], { encoding: "utf8" });
+      assert.equal(cli.status, 0, cli.stderr);
+      assert.equal(JSON.parse(cli.stdout).state, "RUNNER_RESULT_BLOCKED");
+      await copyDirectory(copy.candidateExecutionRoot, candidateRoot);
+      await fs.rm(path.join(candidateRoot, ".stnl-execution-copy.json"));
+    } else {
+      candidateRoot = path.join(root, "execution");
+      await copyDirectory(fixture.execution, candidateRoot);
+      const prepared = await prepareValidationCandidate({
+        specPath: fixture.requirements, slice: "1", workspace: fixture.root,
+        candidateExecutionRoot: candidateRoot, semanticResponseFile: responseFile, receiptFile,
+      });
+      assert.equal(prepared.status, "RUNNER_RESULT_BLOCKED");
+    }
+    const strict = await validateExecutionCandidate(fixture.requirements, candidateRoot);
+    assert.equal(strict.state, "RUNNER_RESULT_BLOCKED");
+    assert.equal(strict.mandatoryRecovery.operation, operation);
+  }
+});
+
+test("APPLY and VALIDATE share lossless command and explanatory carriers", async (t) => {
+  const fixture = await standaloneWorkspace(t);
+  await renderArtifacts(fixture);
+  await writeValidatedPath(fixture);
+  const taskArtifact = path.join(fixture.execution, "tasks/slice-01.md");
+  await fs.writeFile(taskArtifact, replaceSection(await fs.readFile(taskArtifact, "utf8"),
+    "Changed Areas", "- `../../src/example.txt`"), "utf8");
+  const command = "node --input-type=module <<'NODE'\nconsole.log(`result`);\nNODE";
+  const explanation = "line one\nline `two`";
+  const execute = {
+    status: "TESTS_PASS", automaticCheckRound: "1/3", head: "fixture-head",
+    discoverySources: explanation, discoveryActions: "inspection", verificationTypesConsidered: "unit",
+    nonApplicabilityRationale: "none", noVerificationCommandConfirmation: "ran",
+    commands: [{ command, exit: 0 }], resultOfEachCommandAndExitCode: "pass",
+    selectedChecks: "unit", selectionRationale: "direct", coverage: "AC-001", failures: "none",
+    evidenceOrFailureSummary: explanation, affectedFilesOrBehaviors: "example", blockers: "none",
+    unexpectedWorkspaceEffects: "none", persistenceSummary: "none",
+  };
+  const apply = {
+    ...execute, findingsCycle: "attempt-01", findingsVerified: "none", correctionsCovered: explanation,
+    regressionsSelected: explanation, unsupportedActiveFindings: "none",
+  };
+  const applyBundle = await serializeRunnerExecutionBundleFromResponse({ operation: "APPLY_FINDINGS",
+    response: JSON.stringify(apply), workspace: fixture.root, taskArtifact });
+  assert.ok(applyBundle.includes(`json:${JSON.stringify(command)} | exit:0`));
+  assert.ok(applyBundle.includes(`json:${JSON.stringify(explanation)}`));
+  const validation = {
+    status: "PASS", head: "fixture-head", commands: [{ command, exit: 0 }], evidence: explanation,
+    findingReferences: "none", findingDispositions: "none", blockers: "none",
+    unexpectedWorkspaceEffects: explanation, persistenceSummary: "none",
+  };
+  const validationBundle = await serializeRunnerValidationBundleFromResponse({ operation: "VALIDATE_SLICE",
+    response: JSON.stringify(validation), workspace: fixture.root, taskArtifact,
+    specPath: fixture.requirements, slice: "1" });
+  assert.equal(validationBundle.split(`json:${JSON.stringify(command)} | exit:0`).length - 1, 3);
+  assert.ok(validationBundle.includes(`Evidence: json:${JSON.stringify(explanation)}`));
+});
+
+test("APPLY round two derives required correction fields from existing authority", async (t) => {
+  const fixture = await standaloneWorkspace(t);
+  await renderArtifacts(fixture);
+  await writeValidatedPath(fixture);
+  await editTask(fixture, (value) => {
+    let task = value.replace("- [ ] 1.1", "- [x] 1.1");
+    task = replaceSection(task, "Changed Areas", "- `../../src/example.txt`");
+    task = replaceSection(task, "Corrections Applied", "- `../../src/example.txt`");
+    task = replaceSection(task, "Implementation Test Evidence", checkRecord("implementation-check", 1, "TESTS_PASS", 1));
+    task = replaceSection(task, "Validation Attempts", NEEDS_FIX_ATTEMPT);
+    task = replaceSection(task, "Validation Findings", ACTIVE_FINDING);
+    return replaceSection(task, "Findings Test Evidence",
+      checkRecord("findings-check", 1, "TESTS_FAIL", 1, { cycle: "attempt-01" }));
+  });
+  const payload = {
+    status: "TESTS_PASS", automaticCheckRound: "2/3", findingsCycle: "attempt-01", head: "fixture-head",
+    discoverySources: "task", discoveryActions: "inspection", verificationTypesConsidered: "unit",
+    nonApplicabilityRationale: "none", noVerificationCommandConfirmation: "ran",
+    commands: [{ command: "npm test", exit: 0 }], resultOfEachCommandAndExitCode: "pass",
+    selectedChecks: "unit", selectionRationale: "same finding correction", coverage: "AC-001",
+    findingsVerified: "finding-01", correctionsCovered: "corrected observable mismatch",
+    regressionsSelected: "unit", unsupportedActiveFindings: "none", failures: "none",
+    evidenceOrFailureSummary: "pass", affectedFilesOrBehaviors: "example", blockers: "none",
+    unexpectedWorkspaceEffects: "none", persistenceSummary: "none",
+  };
+  const bundle = await serializeRunnerExecutionBundleFromResponse({ operation: "APPLY_FINDINGS",
+    response: JSON.stringify(payload), workspace: fixture.root,
+    taskArtifact: path.join(fixture.execution, "tasks/slice-01.md") });
+  assert.match(bundle, /- Prior-round failure: observable mismatch/u);
+  assert.match(bundle, /- Correction applied: corrected observable mismatch/u);
+  assert.match(bundle, /- In-slice rationale: same finding correction/u);
+});
+
+test("deterministic runner response capture preserves the final object and rejects wrappers", async (t) => {
+  const root = await temporary(t, "stnl-runner-response-capture-");
+  const structured = path.join(root, "runner.jsonl");
+  const output = path.join(root, "semantic-response.json");
+  const semantic = {
+    status: "TESTS_PASS",
+    commands: [{ command: "node --test test/example.test.mjs", exit: 0 }],
+  };
+  const structuredOutput = [
+    { type: "thread.started" },
+    { type: "item.completed", item: { type: "command_execution", exit_code: 0 } },
+    { type: "item.completed", item: { type: "agent_message", text: JSON.stringify(semantic) } },
+    { type: "turn.completed" },
+  ].map((event) => JSON.stringify(event)).join("\n");
+  await fs.writeFile(structured, `${structuredOutput}\n`, "utf8");
+
+  const captured = await captureRunnerResponse({ structuredOutputFile: structured, outputFile: output });
+  assert.equal(captured.status, "PASS");
+  assert.equal(await fs.readFile(output, "utf8"), JSON.stringify(semantic));
+
+  const wrappedStructured = path.join(root, "wrapped.jsonl");
+  const wrappedOutput = path.join(root, "wrapped-response.json");
+  await fs.writeFile(wrappedStructured, `${JSON.stringify({
+    type: "item.completed",
+    item: { type: "agent_message", text: JSON.stringify(JSON.stringify(semantic)) },
+  })}\n`, "utf8");
+  await assert.rejects(
+    captureRunnerResponse({ structuredOutputFile: wrappedStructured, outputFile: wrappedOutput }),
+    /must be one JSON object, not a JSON string/u,
+  );
+  await assert.rejects(fs.lstat(wrappedOutput));
+
+  const proseStructured = path.join(root, "prose.jsonl");
+  await fs.writeFile(proseStructured, `${JSON.stringify({
+    type: "item.completed",
+    item: { type: "agent_message", text: "runner summary" },
+  })}\n`, "utf8");
+  await assert.rejects(
+    captureRunnerResponse({ structuredOutputFile: proseStructured, outputFile: path.join(root, "prose-response.json") }),
+    /final runner message is not valid JSON/u,
+  );
+});
+
+test("runner response schema closes every semantic operation shape", async () => {
+  const schemaPath = path.join(
+    ROOT,
+    "skills/workflows/stnl-slice-executor/runtime/runner-semantic-response.schema.json",
+  );
+  const schema = JSON.parse(await fs.readFile(schemaPath, "utf8"));
+  assert.equal(schema.oneOf.length, 3);
+  for (const branch of schema.oneOf) {
+    assert.equal(branch.type, "object");
+    assert.equal(branch.additionalProperties, false);
+    const optional = branch.title === "VALIDATE_SLICE" ? [] : ["filelessReason"];
+    assert.deepEqual(Object.keys(branch.properties).sort(), [...branch.required, ...optional].sort());
+    assert.deepEqual(Object.keys(branch.properties.commands), ["$ref"]);
+  }
+  const commandSchema = schema.$defs.commands.items;
+  assert.equal(commandSchema.additionalProperties, false);
+  assert.deepEqual(Object.keys(commandSchema.properties).sort(), ["command", "exit"]);
+  assert.deepEqual([...commandSchema.required].sort(), ["command", "exit"]);
+});
+
+test("provider response schemas use one closed object root per operation", async () => {
+  const runtime = path.join(ROOT, "skills/workflows/stnl-slice-executor/runtime");
+  const schemas = [
+    ["EXECUTE_SLICE", "runner-execute-response.schema.json"],
+    ["APPLY_FINDINGS", "runner-apply-findings-response.schema.json"],
+    ["VALIDATE_SLICE", "runner-validate-response.schema.json"],
+  ];
+  const logical = JSON.parse(await fs.readFile(path.join(runtime, "runner-semantic-response.schema.json"), "utf8"));
+  for (const [operation, filename] of schemas) {
+    const schema = JSON.parse(await fs.readFile(path.join(runtime, filename), "utf8"));
+    const branch = logical.oneOf.find((candidate) => candidate.title === operation);
+    assert.ok(branch);
+    assert.equal(schema.type, "object");
+    assert.equal(schema.additionalProperties, false);
+    assert.deepEqual(Object.keys(schema.properties).sort(), Object.keys(branch.properties).sort());
+    assert.deepEqual([...schema.required].sort(), [...branch.required].sort());
+    if (operation === "APPLY_FINDINGS") {
+      for (const roundTwoOnlyField of ["priorRoundFailure", "correctionApplied", "inSliceRationale"]) {
+        assert.equal(Object.hasOwn(schema.properties, roundTwoOnlyField), false);
+        assert.equal(Object.hasOwn(branch.properties, roundTwoOnlyField), false);
+        assert.equal(branch.required.includes(roundTwoOnlyField), false);
+      }
+    }
+    const commandSchema = schema.properties.commands;
+    assert.equal(commandSchema.type, "array");
+    assert.equal(commandSchema.items.additionalProperties, false);
+    assert.deepEqual(Object.keys(commandSchema.items.properties).sort(), ["command", "exit"]);
+    assert.deepEqual([...commandSchema.items.required].sort(), ["command", "exit"]);
+  }
+});
 
 test("SPEC_PATH rejects directory and file traversal through symlink ancestors", async (t) => {
   const root = await temporary(t);
@@ -43,6 +734,1199 @@ test("SPEC_PATH rejects directory and file traversal through symlink ancestors",
   await fs.symlink(real, alias, "dir");
   await assert.rejects(inspectExecutionState(alias), /symlink component/u);
   await assert.rejects(inspectExecutionState(path.join(alias, "requirements.md")), /symlink component/u);
+});
+
+test("deterministic plan serializer rebases detailed claims from global physical targets before validation", async (t) => {
+  const fixture = await nestedLifecycleWorkspace(t, { materialized: false, planStatus: "ready" });
+  const physicalTarget = path.join(fixture.root, "src", "serializer-target.mjs");
+  await fs.mkdir(path.dirname(physicalTarget), { recursive: true });
+  await fs.writeFile(physicalTarget, "export const target = true;\n", "utf8");
+  const globalClaim = path.relative(fixture.execution, physicalTarget).split(path.sep).join("/");
+  const detailedClaim = path.relative(path.join(fixture.execution, "plans"), physicalTarget).split(path.sep).join("/");
+  await setImplementationAreas(fixture, { global: globalClaim, detail: globalClaim });
+
+  const candidateRoot = path.join(await temporary(t, "stnl-plan-serializer-candidate-"), "execution");
+  const liveDetailBytes = await fs.readFile(path.join(fixture.execution, "plans", "slice-01.md"));
+  await fs.cp(fixture.execution, candidateRoot, { recursive: true });
+  await assert.rejects(
+    validateExecutionCandidate(fixture.requirements, candidateRoot),
+    /invalid artifact-relative implementation path|possible path-basis error/u,
+  );
+  await assert.rejects(
+    serializePlanPathClaims({
+      specPath: fixture.execution,
+      candidateExecutionRoot: candidateRoot,
+    }),
+    /workspace feature_spec\.md must be a single-link real file/u,
+    "passing executionRoot as SPEC_PATH makes the official resolver seek execution/feature_spec.md",
+  );
+
+  const first = await serializePlanPathClaims({ specPath: fixture.requirements, candidateExecutionRoot: candidateRoot });
+  assert.equal(first.status, "PASS");
+  assert.equal(first.serializedClaims, 1);
+  assert.equal(first.candidateValidation.state, "PLANNED_READY");
+  assert.equal(first.candidateValidation.currentFingerprint, await computeRequirementsAuthority(fixture.requirements));
+  assert.deepEqual(first.changedPaths, [path.join(candidateRoot, "plans", "slice-01.md")]);
+  const serialized = await fs.readFile(path.join(candidateRoot, "plans", "slice-01.md"), "utf8");
+  assert.equal(serialized.includes(`\`${detailedClaim}\``), true);
+  assert.equal(
+    await fs.realpath(path.resolve(path.dirname(path.join(fixture.execution, "plans", "slice-01.md")), detailedClaim)),
+    await fs.realpath(physicalTarget),
+  );
+  await assert.doesNotReject(validateExecutionCandidate(fixture.requirements, candidateRoot));
+
+  const canonicalBytes = await fs.readFile(path.join(candidateRoot, "plans", "slice-01.md"));
+  const second = await serializePlanPathClaims({ specPath: fixture.requirements, candidateExecutionRoot: candidateRoot });
+  assert.deepEqual(second.changedPaths, []);
+  assert.deepEqual(await fs.readFile(path.join(candidateRoot, "plans", "slice-01.md")), canonicalBytes);
+
+  const invalidCandidateRoot = path.join(await temporary(t, "stnl-plan-serializer-invalid-state-"), "execution");
+  await fs.cp(candidateRoot, invalidCandidateRoot, { recursive: true });
+  const invalidDetailPath = path.join(invalidCandidateRoot, "plans", "slice-01.md");
+  const invalidDetailBefore = await fs.readFile(invalidDetailPath, "utf8");
+  await fs.writeFile(invalidDetailPath, invalidDetailBefore
+    .replace("status: ready", "status: draft")
+    .replace("Review state: approved", "Review state: pending"), "utf8");
+  const invalidDetailSnapshot = await fs.readFile(invalidDetailPath);
+  await assert.rejects(
+    serializePlanPathClaims({ specPath: fixture.requirements, candidateExecutionRoot: invalidCandidateRoot }),
+    /ready global plan retains a draft detailed plan/u,
+  );
+  assert.deepEqual(await fs.readFile(invalidDetailPath), invalidDetailSnapshot);
+  assert.deepEqual(await fs.readFile(path.join(fixture.execution, "plans", "slice-01.md")), liveDetailBytes);
+
+  const ambiguousRoot = path.join(await temporary(t, "stnl-plan-serializer-ambiguous-"), "execution");
+  await fs.cp(candidateRoot, ambiguousRoot, { recursive: true });
+  const ambiguousPath = path.join(ambiguousRoot, "plans", "slice-01.md");
+  const ambiguousBefore = await fs.readFile(ambiguousPath);
+  await fs.writeFile(ambiguousPath, ambiguousBefore.toString("utf8").replace(
+    `\`${detailedClaim}\` — example implementation`,
+    `\`${detailedClaim}\`; \`another-target.mjs\` — example implementation`,
+  ), "utf8");
+  const ambiguousSnapshot = await fs.readFile(ambiguousPath);
+  assert.notDeepEqual(ambiguousSnapshot, ambiguousBefore);
+  assert.match(ambiguousSnapshot.toString("utf8"), /another-target\.mjs/u);
+  await assert.rejects(
+    serializePlanPathClaims({ specPath: fixture.requirements, candidateExecutionRoot: ambiguousRoot }),
+    /contains more path claims than its global slice row|has 2 path claims but its global slice row has 1/u,
+  );
+  assert.deepEqual(await fs.readFile(ambiguousPath), ambiguousSnapshot);
+
+  const malformedRoot = path.join(await temporary(t, "stnl-plan-serializer-malformed-"), "execution");
+  await fs.cp(candidateRoot, malformedRoot, { recursive: true });
+  const malformedPlan = path.join(malformedRoot, "plan.md");
+  const malformedBefore = await fs.readFile(malformedPlan);
+  await fs.writeFile(malformedPlan, malformedBefore.toString("utf8").replace(
+    globalClaim,
+    "../../src/serializer-target.mjs",
+  ), "utf8");
+  const malformedSnapshot = await fs.readFile(malformedPlan);
+  await assert.rejects(
+    serializePlanPathClaims({ specPath: fixture.requirements, candidateExecutionRoot: malformedRoot }),
+    /possible path-basis error/u,
+  );
+  assert.deepEqual(await fs.readFile(malformedPlan), malformedSnapshot);
+});
+
+test("deterministic plan candidate preparation serializes template headers before strict validation", async (t) => {
+  const fixture = await nestedLifecycleWorkspace(t, { materialized: false, planStatus: "draft" });
+  const physicalTarget = path.join(fixture.root, "src", "example.txt");
+  await fs.mkdir(path.dirname(physicalTarget), { recursive: true });
+  await fs.writeFile(physicalTarget, "export const target = true;\n", "utf8");
+  const candidateRoot = path.join(await temporary(t, "stnl-plan-header-candidate-"), "execution");
+  await fs.cp(fixture.execution, candidateRoot, { recursive: true });
+
+  const planPath = path.join(candidateRoot, "plan.md");
+  const detailPath = path.join(candidateRoot, "plans", "slice-01.md");
+  const planBefore = await fs.readFile(planPath, "utf8");
+  const detailBefore = await fs.readFile(detailPath, "utf8");
+  const planHeader = planBefore.match(/^# File Purpose Header\n\n```yaml\n[\s\S]*?^```\n\n/mu)?.[0];
+  const detailHeader = detailBefore.match(/^# File Purpose Header\n\n```yaml\n[\s\S]*?^```\n\n/mu)?.[0];
+  assert.ok(planHeader);
+  assert.ok(detailHeader);
+  await fs.writeFile(planPath, planBefore.slice(planHeader.length), "utf8");
+  await fs.writeFile(detailPath, detailBefore.slice(detailHeader.length), "utf8");
+  await assert.rejects(
+    validateExecutionCandidate(fixture.requirements, candidateRoot),
+    /File Purpose Header/u,
+  );
+
+  const prepared = await preparePlanCandidate({ candidateExecutionRoot: candidateRoot });
+  assert.equal(prepared.status, "PASS");
+  assert.deepEqual([...prepared.changedPaths].sort(), [planPath, detailPath].sort());
+  assert.equal((await fs.readFile(planPath, "utf8")).endsWith(planBefore.slice(planHeader.length)), true);
+  assert.equal((await fs.readFile(detailPath, "utf8")).endsWith(detailBefore.slice(detailHeader.length)), true);
+  const state = await validateExecutionCandidate(fixture.requirements, candidateRoot);
+  assert.equal(state.state, "PLANNED_DRAFT");
+  const canonicalPlan = await fs.readFile(planPath, "utf8");
+  const canonicalDetail = await fs.readFile(detailPath, "utf8");
+  assert.deepEqual((await preparePlanCandidate({ candidateExecutionRoot: candidateRoot })).changedPaths, []);
+  assert.deepEqual(await fs.readFile(planPath, "utf8"), canonicalPlan);
+  assert.deepEqual(await fs.readFile(detailPath, "utf8"), canonicalDetail);
+
+  const conflictingRoot = await copyDirectory(
+    candidateRoot,
+    path.join(await temporary(t, "stnl-plan-header-conflict-"), "execution"),
+  );
+  const conflictingPlanPath = path.join(conflictingRoot, "plan.md");
+  const conflictingPlanBefore = await fs.readFile(conflictingPlanPath, "utf8");
+  const canonicalUpdatePolicy = planHeader.match(/^update_policy: .+$/mu)?.[0];
+  assert.ok(canonicalUpdatePolicy);
+  const modelUpdatePolicy = canonicalUpdatePolicy.replace("REVIEW_PLAN corrects ", "REVIEW_PLAN corrects only ");
+  assert.notEqual(modelUpdatePolicy, canonicalUpdatePolicy);
+  const conflictingPlan = conflictingPlanBefore.replace(canonicalUpdatePolicy, modelUpdatePolicy);
+  await fs.writeFile(conflictingPlanPath, conflictingPlan, "utf8");
+  const conflictingHeader = conflictingPlan.match(/^# File Purpose Header\n\n```yaml\n[\s\S]*?^```\n\n/mu)?.[0];
+  assert.ok(conflictingHeader);
+  const conflictingBody = conflictingPlan.slice(conflictingHeader.length);
+
+  const normalized = await preparePlanCandidate({ candidateExecutionRoot: conflictingRoot });
+  assert.equal(normalized.status, "PASS");
+  assert.deepEqual(normalized.changedPaths, [conflictingPlanPath]);
+  const normalizedPlan = await fs.readFile(conflictingPlanPath, "utf8");
+  assert.equal(normalizedPlan, canonicalPlan);
+  assert.equal(normalizedPlan.slice(planHeader.length), conflictingBody);
+  assert.equal((await validateExecutionCandidate(fixture.requirements, conflictingRoot)).state, "PLANNED_DRAFT");
+  assert.deepEqual((await preparePlanCandidate({ candidateExecutionRoot: conflictingRoot })).changedPaths, []);
+
+  const readyRoot = path.join(await temporary(t, "stnl-plan-header-ready-"), "execution");
+  await fs.cp(candidateRoot, readyRoot, { recursive: true });
+  for (const relativePath of ["plan.md", "plans/slice-01.md"]) {
+    const file = path.join(readyRoot, relativePath);
+    const content = await fs.readFile(file, "utf8");
+    await fs.writeFile(file, content.replace("status: draft\n", "status: ready\n"), "utf8");
+  }
+  const readyPrepared = await preparePlanCandidate({ candidateExecutionRoot: readyRoot });
+  assert.equal(readyPrepared.status, "PASS");
+  assert.deepEqual(readyPrepared.changedPaths, []);
+  assert.match(await fs.readFile(path.join(readyRoot, "plan.md"), "utf8"), /^status: ready$/mu);
+  assert.match(await fs.readFile(path.join(readyRoot, "plans", "slice-01.md"), "utf8"), /^status: ready$/mu);
+
+  const malformedRoot = path.join(await temporary(t, "stnl-plan-header-malformed-"), "execution");
+  await fs.cp(conflictingRoot, malformedRoot, { recursive: true });
+  const malformedPath = path.join(malformedRoot, "plan.md");
+  const malformedBefore = await fs.readFile(malformedPath, "utf8");
+  await fs.writeFile(malformedPath, malformedBefore.replace("status: draft\n", "status: draft\nstatus: ready\n"), "utf8");
+  const malformedSnapshot = await fs.readFile(malformedPath, "utf8");
+  await assert.rejects(
+    validateExecutionCandidate(fixture.requirements, malformedRoot),
+    /File Purpose Header/u,
+  );
+  await assert.rejects(
+    preparePlanCandidate({ candidateExecutionRoot: malformedRoot }),
+    /malformed or conflicting File Purpose Header/u,
+  );
+  assert.deepEqual(await fs.readFile(malformedPath, "utf8"), malformedSnapshot);
+});
+
+test("deterministic plan serializer canonicalizes repository-relative semantic targets before strict validation", async (t) => {
+  const fixture = await nestedLifecycleWorkspace(t, { materialized: false, planStatus: "ready" });
+  const physicalTarget = path.join(fixture.root, "src", "semantic-target.mjs");
+  await fs.mkdir(path.dirname(physicalTarget), { recursive: true });
+  await fs.writeFile(physicalTarget, "export const target = true;\n", "utf8");
+
+  const candidateRoot = path.join(await temporary(t, "stnl-plan-semantic-candidate-"), "execution");
+  await fs.cp(fixture.execution, candidateRoot, { recursive: true });
+  const candidateFixture = { ...fixture, execution: candidateRoot };
+  await fs.rm(fixture.execution, { recursive: true });
+  await setImplementationAreas(candidateFixture, {
+    global: "src/semantic-target.mjs",
+    detail: "src/semantic-target.mjs",
+  });
+
+  await assert.rejects(
+    validateExecutionCandidate(fixture.requirements, candidateRoot),
+    /artifact-relative implementation path/u,
+  );
+  const serialized = await serializePlanPathClaims({
+    specPath: fixture.requirements,
+    candidateExecutionRoot: candidateRoot,
+  });
+  assert.equal(serialized.status, "PASS");
+  assert.equal(serialized.candidateValidation.state, "PLANNED_READY");
+  assert.deepEqual(serialized.changedPaths.slice().sort(), [
+    path.join(candidateRoot, "plan.md"),
+    path.join(candidateRoot, "plans/slice-01.md"),
+  ].sort());
+  const global = await fs.readFile(path.join(candidateRoot, "plan.md"), "utf8");
+  const detail = await fs.readFile(path.join(candidateRoot, "plans/slice-01.md"), "utf8");
+  const globalClaim = path.relative(fixture.execution, physicalTarget).split(path.sep).join("/");
+  const detailClaim = path.relative(path.join(fixture.execution, "plans"), physicalTarget).split(path.sep).join("/");
+  assert.equal(global.includes(`\`${globalClaim}\``), true);
+  assert.equal(detail.includes(`\`${detailClaim}\``), true);
+  assert.equal(serialized.candidateValidation.currentFingerprint, await computeRequirementsAuthority(fixture.requirements));
+
+  const escapedDelimiterRoot = path.join(await temporary(t, "stnl-plan-semantic-escaped-"), "execution");
+  await fs.cp(candidateRoot, escapedDelimiterRoot, { recursive: true });
+  const escapedPlanPath = path.join(escapedDelimiterRoot, "plan.md");
+  const escapedBefore = await fs.readFile(escapedPlanPath, "utf8");
+  const escapedCarrier = ["`", "src/semantic-target.mjs", "\\", "`"].join("");
+  await fs.writeFile(
+    escapedPlanPath,
+    escapedBefore.replace(`\`${globalClaim}\``, escapedCarrier),
+    "utf8",
+  );
+  await assert.rejects(
+    validateExecutionCandidate(fixture.requirements, escapedDelimiterRoot),
+    /artifact-relative implementation path/u,
+  );
+  const escapedSerialized = await serializePlanPathClaims({ specPath: fixture.requirements, candidateExecutionRoot: escapedDelimiterRoot });
+  assert.equal(escapedSerialized.candidateValidation.state, "PLANNED_READY");
+  const escapedCanonicalPlan = await fs.readFile(escapedPlanPath, "utf8");
+  assert.equal(escapedCanonicalPlan.includes(`\`${globalClaim}\``), true);
+  assert.equal(
+    (await validateExecutionCandidate(fixture.requirements, escapedDelimiterRoot)).state,
+    "PLANNED_READY",
+  );
+
+  const malformedRoot = path.join(await temporary(t, "stnl-plan-semantic-malformed-"), "execution");
+  await fs.cp(candidateRoot, malformedRoot, { recursive: true });
+  const malformedPlan = path.join(malformedRoot, "plan.md");
+  const malformedBefore = await fs.readFile(malformedPlan);
+  await fs.writeFile(
+    malformedPlan,
+    malformedBefore.toString("utf8").replace(globalClaim, "src/../semantic-target.mjs"),
+    "utf8",
+  );
+  const malformedSnapshot = await fs.readFile(malformedPlan);
+  await assert.rejects(
+    serializePlanPathClaims({ specPath: fixture.requirements, candidateExecutionRoot: malformedRoot }),
+    /semantic physical implementation target must be a normalized repository-relative path/u,
+  );
+  assert.deepEqual(await fs.readFile(malformedPlan), malformedSnapshot);
+});
+
+test("deterministic task serializer rebases approved plan targets before validation", async (t) => {
+  const fixture = await nestedLifecycleWorkspace(t);
+  const physicalTarget = path.join(fixture.root, "src", "example.txt");
+  const globalClaim = path.relative(fixture.execution, physicalTarget).split(path.sep).join("/");
+  const detailClaim = path.relative(path.join(fixture.execution, "plans"), physicalTarget).split(path.sep).join("/");
+  const taskClaim = path.relative(path.join(fixture.execution, "tasks"), physicalTarget).split(path.sep).join("/");
+  await setImplementationAreas(fixture, { global: globalClaim, detail: detailClaim, task: globalClaim });
+
+  const candidateRoot = path.join(await temporary(t, "stnl-task-serializer-candidate-"), "execution");
+  await fs.cp(fixture.execution, candidateRoot, { recursive: true });
+  await assert.rejects(
+    validateExecutionCandidate(fixture.requirements, candidateRoot),
+    /possible path-basis error|resolves inside the lifecycle SPEC workspace/u,
+  );
+
+  const first = await serializeTaskPathClaims({ specPath: fixture.requirements, candidateExecutionRoot: candidateRoot });
+  assert.equal(first.status, "PASS");
+  assert.equal(first.serializedClaims, 1);
+  assert.deepEqual(first.changedPaths, [path.join(candidateRoot, "tasks", "slice-01.md")]);
+  const serialized = await fs.readFile(path.join(candidateRoot, "tasks", "slice-01.md"), "utf8");
+  assert.equal(serialized.includes(`\`${taskClaim}\``), true);
+  assert.match(serialized, /example implementation/u);
+  assert.equal(
+    await fs.realpath(path.resolve(path.dirname(path.join(fixture.execution, "tasks", "slice-01.md")), taskClaim)),
+    await fs.realpath(physicalTarget),
+  );
+  assert.equal((await validateExecutionCandidate(fixture.requirements, candidateRoot)).state, "MATERIALIZED_PRISTINE");
+
+  const canonicalBytes = await fs.readFile(path.join(candidateRoot, "tasks", "slice-01.md"));
+  const second = await serializeTaskPathClaims({ specPath: fixture.requirements, candidateExecutionRoot: candidateRoot });
+  assert.deepEqual(second.changedPaths, []);
+  assert.deepEqual(await fs.readFile(path.join(candidateRoot, "tasks", "slice-01.md")), canonicalBytes);
+
+  const ambiguousRoot = path.join(await temporary(t, "stnl-task-serializer-ambiguous-"), "execution");
+  await fs.cp(candidateRoot, ambiguousRoot, { recursive: true });
+  const ambiguousPath = path.join(ambiguousRoot, "tasks", "slice-01.md");
+  const ambiguousBefore = await fs.readFile(ambiguousPath);
+  await fs.writeFile(ambiguousPath, ambiguousBefore.toString("utf8").replace(
+    /(\| expected areas: )`[^`\n]+`/u,
+    `$1\`${taskClaim}\`; \`another-target.mjs\``,
+  ), "utf8");
+  const ambiguousSnapshot = await fs.readFile(ambiguousPath);
+  assert.notDeepEqual(ambiguousSnapshot, ambiguousBefore);
+  assert.match(ambiguousSnapshot.toString("utf8"), /another-target\.mjs/u);
+  await assert.rejects(
+    serializeTaskPathClaims({ specPath: fixture.requirements, candidateExecutionRoot: ambiguousRoot }),
+    /has 2 path claims but its approved plan has 1/u,
+  );
+  assert.deepEqual(await fs.readFile(ambiguousPath), ambiguousSnapshot);
+
+  const malformed = await nestedLifecycleWorkspace(t);
+  const malformedTarget = path.join(malformed.root, "src", "example.txt");
+  const malformedGlobal = path.relative(malformed.execution, malformedTarget).split(path.sep).join("/");
+  const malformedDetail = path.relative(path.join(malformed.execution, "plans"), malformedTarget).split(path.sep).join("/");
+  await setImplementationAreas(malformed, {
+    global: malformedGlobal,
+    detail: malformedDetail.replace(/^\.\.\//u, ""),
+    task: malformedGlobal,
+  });
+  const malformedRoot = path.join(await temporary(t, "stnl-task-serializer-malformed-"), "execution");
+  await fs.cp(malformed.execution, malformedRoot, { recursive: true });
+  const malformedTask = path.join(malformedRoot, "tasks", "slice-01.md");
+  const malformedBefore = await fs.readFile(malformedTask);
+  await assert.rejects(
+    serializeTaskPathClaims({ specPath: malformed.requirements, candidateExecutionRoot: malformedRoot }),
+    /possible path-basis error/u,
+  );
+  assert.deepEqual(await fs.readFile(malformedTask), malformedBefore);
+});
+
+test("deterministic runner evidence serializer emits physical task-relative SHA-256 tuples", async (t) => {
+  const fixture = await nestedLifecycleWorkspace(t);
+  const workspace = fixture.root;
+  const taskArtifact = path.join(fixture.execution, "tasks/slice-01.md");
+  const physicalTarget = path.join(workspace, "src/example.txt");
+  const claim = path.relative(path.dirname(taskArtifact), physicalTarget).split(path.sep).join("/");
+  const expected = `  - \`${claim}\` | sha256:${VALIDATED_HASH}`;
+
+  const serialized = await serializeRunnerEvidence({
+    workspace,
+    taskArtifact,
+    targets: [physicalTarget],
+  });
+  assert.equal(serialized, expected);
+  assert.equal(
+    await fs.realpath(path.resolve(path.dirname(taskArtifact), claim)),
+    await fs.realpath(physicalTarget),
+  );
+  assert.equal(
+    await serializeRunnerEvidence({ workspace, taskArtifact, targets: [physicalTarget] }),
+    serialized,
+  );
+  const record = await serializeRunnerRecord({
+    workspace,
+    taskArtifact,
+    targets: [physicalTarget],
+    commands: [
+      { command: "node --test test/example.test.mjs", exit: 0 },
+      { command: "git diff --check", exit: 1 },
+    ],
+  });
+  assert.equal(
+    record,
+    `- Tested state:\n${expected}\n- Commands:\n  - \`node --test test/example.test.mjs\` | exit:0\n  - \`git diff --check\` | exit:1`,
+  );
+  assert.equal(record.includes("`- Tested state:`"), false);
+  const manifest = await serializeRunnerManifest({
+    workspace,
+    taskArtifact,
+    targets: [physicalTarget],
+    commands: [{ command: "node --test test/example.test.mjs", exit: 0 }],
+  });
+  assert.equal(
+    manifest,
+    `- Files:\n${expected}\n- Authoritative commands:\n  - \`node --test test/example.test.mjs\` | exit:0`,
+  );
+  const manifestCli = spawnSync(process.execPath, [
+    path.join(ROOT, "skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs"),
+    "--manifest",
+    "--workspace", workspace,
+    "--spec-path", fixture.requirements,
+    "--slice", "1",
+    "--target", physicalTarget,
+    "--command", "node --test test/example.test.mjs",
+    "--exit", "0",
+  ], { encoding: "utf8" });
+  assert.equal(manifestCli.status, 0, manifestCli.stderr);
+  assert.equal(manifestCli.stdout.trimEnd(), manifest);
+  await assert.rejects(
+    serializeRunnerManifest({ workspace, taskArtifact, targets: [physicalTarget], commands: [] }),
+    /at least one authoritative command/u,
+  );
+  const cli = spawnSync(process.execPath, [
+    path.join(ROOT, "skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs"),
+    "--record",
+    "--workspace", workspace,
+    "--task-artifact", taskArtifact,
+    "--target", physicalTarget,
+    "--command", "node --test test/example.test.mjs",
+    "--exit", "0",
+  ], { encoding: "utf8" });
+  assert.equal(cli.status, 0, cli.stderr);
+  assert.equal(cli.stdout.trimEnd(), record.slice(0, record.indexOf("\n- Commands:")) + "\n- Commands:\n  - `node --test test/example.test.mjs` | exit:0");
+  const help = spawnSync(process.execPath, [
+    path.join(ROOT, "skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs"),
+    "--help",
+  ], { encoding: "utf8" });
+  assert.equal(help.status, 0, help.stderr);
+  assert.match(help.stdout, /--response --operation/u);
+  assert.match(help.stdout, /--value "semantic value"/u);
+  assert.match(help.stdout, /--manifest --workspace/u);
+  const tokenizedCommands = spawnSync(process.execPath, [
+    path.join(ROOT, "skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs"),
+    "--record",
+    "--workspace", workspace,
+    "--task-artifact", taskArtifact,
+    "--target", physicalTarget,
+    "--command", "node", "--test", "test/example.test.mjs", "--exit", "0",
+    "--command", "git", "diff", "--check", "--exit", "1",
+  ], { encoding: "utf8" });
+  assert.equal(tokenizedCommands.status, 0, tokenizedCommands.stderr);
+  assert.equal(tokenizedCommands.stdout.trimEnd(), record);
+  const derivedRecord = await serializeRunnerRecord({
+    workspace,
+    taskArtifact,
+    targets: [physicalTarget],
+    commands: [{ command: "node --test test/example.test.mjs", exit: 0 }],
+  });
+  const derivedCli = spawnSync(process.execPath, [
+    path.join(ROOT, "skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs"),
+    "--record",
+    "--workspace", workspace,
+    "--spec-path", fixture.requirements,
+    "--slice", "1",
+    "--target", physicalTarget,
+    "--command", "node --test test/example.test.mjs",
+    "--exit", "0",
+  ], { encoding: "utf8" });
+  assert.equal(derivedCli.status, 0, derivedCli.stderr);
+  assert.equal(derivedCli.stdout.trimEnd(), derivedRecord);
+  const ambiguousInputs = spawnSync(process.execPath, [
+    path.join(ROOT, "skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs"),
+    "--record",
+    "--workspace", workspace,
+    "--task-artifact", taskArtifact,
+    "--spec-path", fixture.requirements,
+    "--slice", "1",
+    "--target", physicalTarget,
+    "--command", "node --test test/example.test.mjs",
+    "--exit", "0",
+  ], { encoding: "utf8" });
+  assert.equal(ambiguousInputs.status, 1);
+  assert.match(ambiguousInputs.stderr, /use --task-artifact or --spec-path with --slice, not both/u);
+  const responseFields = {
+    Operation: "EXECUTE_SLICE",
+    Status: "TESTS_PASS",
+    "Automatic check round": "1/3",
+    HEAD: "none",
+    "Tested scope": "malformed semantic scope",
+    "Discovery sources": "task and package scripts",
+    "Discovery actions": "read-only inspection",
+    "Verification types considered": "unit tests",
+    "Non-applicability rationale": "none",
+    "No verification-command confirmation": "not applicable",
+    "Result of each command and exit code": "all passed",
+    "Selected checks": "node --test test/example.test.mjs",
+    "Selection rationale": "directly covers the changed behavior",
+    Coverage: "changed behavior",
+    Failures: "none",
+    "Evidence or failure summary": "focused tests passed",
+    "Affected files or behaviors": "example behavior",
+    Blockers: "none",
+    "Unexpected workspace effects": "none",
+    "Persistence summary": "record persisted",
+  };
+  const response = await serializeRunnerResponse({
+    operation: "EXECUTE_SLICE",
+    fields: responseFields,
+    workspace,
+    taskArtifact,
+    targets: [physicalTarget],
+    commands: [{ command: "node --test test/example.test.mjs", exit: 0 }],
+  });
+  assert.equal(response.startsWith("Operation: EXECUTE_SLICE\nStatus: TESTS_PASS\nAutomatic check round: 1/3"), true);
+  assert.equal(response.includes(`Tested scope: ${claim}`), true);
+  assert.equal(response.includes("malformed semantic scope"), false);
+  assert.match(response, /^Tested state:\n  - `[^`]+` \| sha256:[0-9a-f]{64}$/mu);
+  assert.match(response, /^Commands:\n  - `node --test test\/example\.test\.mjs` \| exit:0$/mu);
+  assert.equal(response.includes("Operação:"), false);
+  const responseFromSemanticValues = await serializeRunnerResponse({
+    operation: "EXECUTE_SLICE",
+    values: Object.entries(responseFields)
+      .filter(([label]) => label !== "Operation")
+      .map(([, value]) => value),
+    workspace,
+    taskArtifact,
+    targets: [physicalTarget],
+    commands: [{ command: "node --test test/example.test.mjs", exit: 0 }],
+  });
+  assert.equal(responseFromSemanticValues, response);
+  const validationValues = [
+    "initial",
+    "PASS",
+    "slice-01: src/example.txt",
+    "fixture-head",
+    "focused validation passed",
+    "none",
+    "none",
+    "none",
+    "none",
+    "attempt persisted",
+  ];
+  const validationBundle = await serializeRunnerValidationBundle({
+    operation: "VALIDATE_SLICE",
+    values: validationValues,
+    workspace,
+    taskArtifact,
+    targets: [physicalTarget],
+    commands: [{ command: "node --test test/example.test.mjs", exit: 0 }],
+  });
+  assert.match(validationBundle, /- Runner response:\nOperation: VALIDATE_SLICE\nType: initial\nStatus: PASS/u);
+  assert.match(validationBundle, /- Tested record:\n- Tested state:\n  - `[^`]+` \| sha256:[0-9a-f]{64}/u);
+  assert.match(validationBundle, /- Formal manifest:\n- Files:\n  - `[^`]+` \| sha256:[0-9a-f]{64}/u);
+  assert.match(validationBundle, /- Authoritative commands:\n  - `node --test test\/example\.test\.mjs` \| exit:0/u);
+  await fs.writeFile(
+    taskArtifact,
+    (await fs.readFile(taskArtifact, "utf8")).replace("## Changed Areas\n\n- pending", `## Changed Areas\n\n- \`${claim}\``),
+    "utf8",
+  );
+  const semanticValidationResponse = JSON.stringify({
+    status: "PASS",
+    head: "fixture-head",
+    commands: [{ command: "node --test test/example.test.mjs", exit: 0 }],
+    evidence: "focused `npm test` validation passed",
+    findingReferences: "none",
+    findingDispositions: "none",
+    blockers: "none",
+    unexpectedWorkspaceEffects: "none",
+    persistenceSummary: "semantic result returned",
+  });
+  const semanticResponseRoot = await temporary(t, "stnl-validation-semantic-response-");
+  const semanticResponseFile = path.join(semanticResponseRoot, "response.txt");
+  await fs.writeFile(semanticResponseFile, `${semanticValidationResponse}\n`, "utf8");
+  const officialValidationPreflight = `node "${path.join(ROOT, "skills/workflows/stnl-slice-quality-manager/runtime/validate-execution-state.mjs")}" "${fixture.requirements}" VALIDATE_SLICE 1`;
+  const derivedValidationBundle = await serializeRunnerValidationBundleFromResponse({
+    operation: "VALIDATE_SLICE",
+    response: semanticValidationResponse,
+    workspace,
+    taskArtifact,
+    specPath: fixture.requirements,
+    slice: "1",
+  });
+  assert.match(derivedValidationBundle, /- Runner response:\nOperation: VALIDATE_SLICE\nType: initial\nStatus: PASS/u);
+  assert.match(derivedValidationBundle, /\nEvidence: json:"focused `npm test` validation passed"\n/u);
+  assert.equal(derivedValidationBundle.includes(`  - \`${claim}\` | sha256:`), true);
+  assert.match(derivedValidationBundle, /- Tested record:[\s\S]+sha256:[0-9a-f]{64}/u);
+  assert.equal(
+    derivedValidationBundle.split(`  - \`${officialValidationPreflight}\` | exit:0`).length - 1,
+    3,
+    "producer must persist the canonical official preflight in every generated section",
+  );
+  assert.equal(
+    derivedValidationBundle.includes(
+      `- Authoritative commands:\n  - \`${officialValidationPreflight}\` | exit:0\n  - \`node --test test/example.test.mjs\` | exit:0`,
+    ),
+    true,
+  );
+  await assert.rejects(serializeRunnerValidationBundleFromResponse({
+    operation: "VALIDATE_SLICE",
+    response: JSON.stringify({ ...JSON.parse(semanticValidationResponse), head: "`fixture-head`" }),
+    workspace,
+    taskArtifact,
+    specPath: fixture.requirements,
+    slice: "1",
+  }), /head.*backticks|head.*scalar|canonical HEAD/u);
+  const quotedCommand = "node `--test` test/example.test.mjs";
+  const quotedBundle = await serializeRunnerValidationBundleFromResponse({
+    operation: "VALIDATE_SLICE",
+    response: JSON.stringify({
+      ...JSON.parse(semanticValidationResponse),
+      commands: [{ command: quotedCommand, exit: 0 }],
+    }),
+    workspace,
+    taskArtifact,
+    specPath: fixture.requirements,
+    slice: "1",
+  });
+  assert.ok(quotedBundle.includes(`json:${JSON.stringify(quotedCommand)} | exit:0`));
+  const taskBeforeOverlap = await fs.readFile(taskArtifact, "utf8");
+  const overlapTask = replaceSection(
+    taskBeforeOverlap,
+    "Prior Validation Overlap",
+    `### overlap-01\n\n- Prior slice: slice-01\n- Paths: \`${claim}\`\n- Affected behavior: Preserve the previously validated behavior.\n- Regressions: Re-run the focused regression.`,
+  );
+  await fs.writeFile(taskArtifact, overlapTask, "utf8");
+  try {
+    const overlapBundle = await serializeRunnerValidationBundleFromResponse({
+      operation: "VALIDATE_SLICE",
+      response: semanticValidationResponse,
+      workspace,
+      taskArtifact,
+      specPath: fixture.requirements,
+      slice: "1",
+    });
+    assert.equal(overlapBundle.includes(`  - \`${claim}\` | sha256:`), true);
+    assert.equal(await fs.readFile(taskArtifact, "utf8"), overlapTask);
+
+    const semanticOverlapTask = overlapTask.replace(
+      `- Prior slice: slice-01\n- Paths: \`${claim}\`\n- Affected behavior: Preserve the previously validated behavior.\n- Regressions: Re-run the focused regression.`,
+      `- Slice 01 overlap: \`${claim}\`; Preserve the previously validated behavior and re-run the focused regression.`,
+    );
+    await fs.writeFile(taskArtifact, semanticOverlapTask, "utf8");
+    const semanticOverlapBundle = await serializeRunnerValidationBundleFromResponse({
+      operation: "VALIDATE_SLICE",
+      response: semanticValidationResponse,
+      workspace,
+      taskArtifact,
+      specPath: fixture.requirements,
+      slice: "1",
+    });
+    assert.equal(semanticOverlapBundle.includes(`  - \`${claim}\` | sha256:`), true);
+    assert.equal(await fs.readFile(taskArtifact, "utf8"), semanticOverlapTask);
+    await fs.writeFile(taskArtifact, overlapTask, "utf8");
+
+    await fs.writeFile(
+      taskArtifact,
+      overlapTask.replace(`- Paths: \`${claim}\``, `- Paths: \`${claim}\`, ${claim}`),
+      "utf8",
+    );
+    await assert.rejects(
+      serializeRunnerValidationBundleFromResponse({
+        operation: "VALIDATE_SLICE",
+        response: semanticValidationResponse,
+        workspace,
+        taskArtifact,
+        specPath: fixture.requirements,
+        slice: "1",
+      }),
+      /Prior Validation Overlap Paths must be comma-separated raw paths or balanced Markdown path claims/u,
+    );
+  } finally {
+    await fs.writeFile(taskArtifact, taskBeforeOverlap, "utf8");
+  }
+  const emptyFindingSynonymResponse = JSON.stringify({
+    ...JSON.parse(semanticValidationResponse),
+    findingDispositions: "unchanged",
+  });
+  const emptyFindingBundle = await serializeRunnerValidationBundleFromResponse({
+    operation: "VALIDATE_SLICE",
+    response: emptyFindingSynonymResponse,
+    workspace,
+    taskArtifact,
+    specPath: fixture.requirements,
+    slice: "1",
+  });
+  assert.match(emptyFindingBundle, /Finding references: none\nFinding dispositions: none/u);
+  assert.equal(emptyFindingBundle.includes("unchanged"), false);
+  const markdownScalarResponse = JSON.stringify({
+    ...JSON.parse(semanticValidationResponse),
+    blockers: "Runner returned `PASS` with `format`.",
+  });
+  const markdownScalarBundle = await serializeRunnerValidationBundleFromResponse({
+    operation: "VALIDATE_SLICE",
+    response: markdownScalarResponse,
+    workspace,
+    taskArtifact,
+    specPath: fixture.requirements,
+    slice: "1",
+  });
+  assert.match(markdownScalarBundle, /\nBlockers: json:"Runner returned `PASS` with `format`\."\n/u);
+  const markdownRoundTrip = await serializeRunnerValidationBundleFromResponse({
+    operation: "VALIDATE_SLICE",
+    response: JSON.stringify({
+      ...JSON.parse(semanticValidationResponse),
+      blockers: "Runner returned `PASS.",
+    }),
+    workspace,
+    taskArtifact,
+    specPath: fixture.requirements,
+    slice: "1",
+  });
+  assert.match(markdownRoundTrip, /\nBlockers: json:"Runner returned `PASS\."\n/u);
+  await assert.rejects(
+    serializeRunnerValidationBundleFromResponse({
+      operation: "VALIDATE_SLICE",
+      response: JSON.stringify({
+        ...JSON.parse(semanticValidationResponse),
+        head: "sha256:`not-a-hash`",
+      }),
+      workspace,
+      taskArtifact,
+      specPath: fixture.requirements,
+      slice: "1",
+    }),
+    /without backticks/u,
+  );
+  const derivedValidationCli = spawnSync(process.execPath, [
+    path.join(ROOT, "skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs"),
+    "--validation-bundle", "--operation", "VALIDATE_SLICE",
+    "--workspace", workspace,
+    "--spec-path", fixture.requirements,
+    "--slice", "1",
+    "--semantic-response-file", semanticResponseFile,
+  ], { encoding: "utf8" });
+  assert.equal(derivedValidationCli.status, 0, derivedValidationCli.stderr);
+  assert.equal(derivedValidationCli.stdout.trimEnd(), derivedValidationBundle);
+  await assert.rejects(
+    serializeRunnerValidationBundleFromResponse({
+      operation: "VALIDATE_SLICE",
+      response: JSON.stringify({
+        ...JSON.parse(semanticValidationResponse),
+        commands: [{ command: "validate-execution-state.mjs SPEC_PATH VALIDATE_SLICE 1", exit: 0 }],
+      }),
+      workspace,
+      taskArtifact,
+      specPath: fixture.requirements,
+      slice: "1",
+    }),
+    /launcher-owned official preflight/u,
+  );
+  const semanticExecutionPayload = {
+    status: "TESTS_PASS",
+    automaticCheckRound: "1/3",
+    head: "fixture-head",
+    discoverySources: "task and package scripts",
+    discoveryActions: "read-only inspection",
+    verificationTypesConsidered: "unit tests",
+    nonApplicabilityRationale: "none",
+    noVerificationCommandConfirmation: "not applicable",
+    commands: [{ command: "node --test test/example.test.mjs", exit: 0 }],
+    resultOfEachCommandAndExitCode: "all passed",
+    selectedChecks: "node --test test/example.test.mjs",
+    selectionRationale: "directly covers the changed behavior",
+    coverage: "changed behavior",
+    failures: "none",
+    priorRoundFailure: "none",
+    correctionApplied: "none",
+    inSliceRationale: "none",
+    evidenceOrFailureSummary: "focused tests passed",
+    affectedFilesOrBehaviors: "example behavior",
+    blockers: "none",
+    unexpectedWorkspaceEffects: "none",
+    persistenceSummary: "record persisted",
+  };
+  const semanticExecutionResponse = JSON.stringify(semanticExecutionPayload);
+  const executionBundle = await serializeRunnerExecutionBundleFromResponse({
+    operation: "EXECUTE_SLICE",
+    response: JSON.stringify({ ...semanticExecutionPayload, nonApplicabilityRationale: "C-like rationale with `literal` syntax" }),
+    workspace,
+    taskArtifact,
+  });
+  assert.match(executionBundle, /^### implementation-check-01\n- Automatic check round: 1\/3\n- Status: TESTS_PASS/mu);
+  assert.match(executionBundle, new RegExp(`Tested scope: ${claim.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")}`));
+  assert.match(executionBundle, /Tested state:\n  - `[^`]+` \| sha256:[0-9a-f]{64}/u);
+  assert.match(executionBundle, /- Commands:\n  - `node --test test\/example\.test\.mjs` \| exit:0/u);
+  assert.match(executionBundle, /- Non-applicability rationale: json:"C-like rationale with `literal` syntax"/u);
+  const {
+    priorRoundFailure, correctionApplied, inSliceRationale, ...applyFields
+  } = semanticExecutionPayload;
+  const applyBundle = await serializeRunnerExecutionBundleFromResponse({
+    operation: "APPLY_FINDINGS",
+    response: JSON.stringify({
+      ...applyFields,
+      findingsCycle: "attempt-01",
+      findingsVerified: "none",
+      correctionsCovered: "none",
+      regressionsSelected: "C-like regression with `literal` syntax",
+      unsupportedActiveFindings: "none",
+      nonApplicabilityRationale: "C-like rationale with `literal` syntax",
+    }),
+    workspace,
+    taskArtifact,
+  });
+  assert.match(applyBundle, /- Non-applicability rationale: json:"C-like rationale with `literal` syntax"/u);
+  const canonicalCandidate = path.join(await temporary(t, "stnl-execution-check-candidate-"), "execution");
+  await fs.cp(fixture.execution, canonicalCandidate, { recursive: true });
+  const canonicalCandidateTask = path.join(canonicalCandidate, "tasks/slice-01.md");
+  let canonicalCandidateText = await fs.readFile(canonicalCandidateTask, "utf8");
+  canonicalCandidateText = canonicalCandidateText.replace("- [ ] 1.1", "- [x] 1.1");
+  canonicalCandidateText = replaceSection(canonicalCandidateText, "Implementation Test Evidence", executionBundle);
+  await fs.writeFile(canonicalCandidateTask, canonicalCandidateText, "utf8");
+  assert.equal(
+    (await validateExecutionCandidate(fixture.requirements, canonicalCandidate)).state,
+    "IMPLEMENTED_AWAITING_VALIDATION",
+  );
+  const malformedCheckCandidate = path.join(await temporary(t, "stnl-execution-check-malformed-"), "execution");
+  await fs.cp(canonicalCandidate, malformedCheckCandidate, { recursive: true });
+  const malformedCheckTask = path.join(malformedCheckCandidate, "tasks/slice-01.md");
+  await fs.writeFile(
+    malformedCheckTask,
+    (await fs.readFile(malformedCheckTask, "utf8")).replace(
+      "- Failures: none",
+      "- Evidence or failure summary: unexpected response-only label\n- Failures: none",
+    ),
+    "utf8",
+  );
+  await assert.rejects(
+    validateExecutionCandidate(fixture.requirements, malformedCheckCandidate),
+    /unknown field 'Evidence or failure summary'/u,
+  );
+  const canonicalTaskBytes = await fs.readFile(taskArtifact, "utf8");
+  const aliasedTaskBytes = canonicalTaskBytes.replace(
+    `## Changed Areas\n\n- \`${claim}\``,
+    "## Changed Areas\n\n- `src/example.txt`",
+  );
+  await fs.writeFile(taskArtifact, aliasedTaskBytes, "utf8");
+  const scopeSerialization = await serializeExecutionScopeClaims({ workspace, taskArtifact });
+  assert.equal(scopeSerialization.status, "PASS");
+  assert.equal(scopeSerialization.serializedClaims, 1);
+  assert.ok((await fs.readFile(taskArtifact, "utf8")).includes(`## Changed Areas\n\n- \`${claim}\``));
+  await fs.writeFile(taskArtifact, aliasedTaskBytes, "utf8");
+  await fs.mkdir(path.join(fixture.execution, "tasks", "src"), { recursive: true });
+  await fs.writeFile(path.join(fixture.execution, "tasks", "src/example.txt"), "ambiguous\n", "utf8");
+  await assert.rejects(
+    serializeRunnerExecutionBundleFromResponse({
+      operation: "EXECUTE_SLICE",
+      response: semanticExecutionResponse,
+      workspace,
+      taskArtifact,
+    }),
+    /ambiguous across task and workspace bases/u,
+  );
+  await fs.rm(path.join(fixture.execution, "tasks", "src"), { recursive: true, force: true });
+  await fs.writeFile(taskArtifact, canonicalTaskBytes, "utf8");
+  const semanticBlockedExecutionResponse = JSON.stringify({
+    ...semanticExecutionPayload,
+    status: "BLOCKED",
+    commands: [],
+  });
+  const blockedExecutionBundle = await serializeRunnerExecutionBundleFromResponse({
+    operation: "EXECUTE_SLICE",
+    response: semanticBlockedExecutionResponse,
+    workspace,
+    taskArtifact,
+  });
+  assert.match(blockedExecutionBundle, /^### implementation-check-01\n- Automatic check round: 1\/3\n- Status: BLOCKED/mu);
+  assert.match(blockedExecutionBundle, /- Commands: none/u);
+  await assert.rejects(
+    serializeRunnerExecutionBundleFromResponse({
+      operation: "EXECUTE_SLICE",
+      response: `Operation: EXECUTE_SLICE\n${semanticExecutionResponse}`,
+      workspace,
+      taskArtifact,
+    }),
+    /canonical JSON object/u,
+  );
+  await assert.rejects(
+    serializeRunnerExecutionBundleFromResponse({
+      operation: "EXECUTE_SLICE",
+      response: JSON.stringify({ ...semanticExecutionPayload, translatedStatus: "TESTS_PASS" }),
+      workspace,
+      taskArtifact,
+    }),
+    /unknown semantic execution payload field/u,
+  );
+  await assert.rejects(
+    serializeRunnerExecutionBundleFromResponse({
+      operation: "EXECUTE_SLICE",
+      response: JSON.stringify({ ...semanticExecutionPayload, commands: [{ command: "node --test", exit: "0" }] }),
+      workspace,
+      taskArtifact,
+    }),
+    /exit must be an integer/u,
+  );
+  const multiCommandRecordCli = spawnSync(process.execPath, [
+    path.join(ROOT, "skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs"),
+    "--record",
+    "--workspace", workspace,
+    "--task-artifact", taskArtifact,
+    "--target", physicalTarget,
+    "--command", "node --test test/example.test.mjs", "--exit", "0",
+    "--command", "node --test test/todo-store.test.mjs", "--exit", "0",
+  ], { encoding: "utf8" });
+  assert.equal(multiCommandRecordCli.status, 0, multiCommandRecordCli.stderr);
+  assert.match(multiCommandRecordCli.stdout, /- `node --test test\/example\.test\.mjs` \| exit:0\n  - `node --test test\/todo-store\.test\.mjs` \| exit:0/u);
+  await assert.rejects(
+    serializeRunnerValidationBundleFromResponse({
+      operation: "VALIDATE_SLICE",
+      response: JSON.stringify({
+        ...JSON.parse(semanticValidationResponse),
+        verifiedScope: "localized scope",
+      }),
+      workspace,
+      taskArtifact,
+    }),
+    /unknown semantic validation payload field: verifiedScope/u,
+  );
+  await assert.rejects(
+    serializeRunnerValidationBundleFromResponse({
+      operation: "VALIDATE_SLICE",
+      response: `Type: initial\n${semanticValidationResponse}`,
+      workspace,
+      taskArtifact,
+      specPath: fixture.requirements,
+      slice: "1",
+    }),
+    /single raw JSON object/u,
+  );
+  await assert.rejects(
+    serializeRunnerValidationBundleFromResponse({
+      operation: "VALIDATE_SLICE",
+      response: [
+        "Status: PASS",
+        "Escopo verificado: localized scope",
+        "HEAD: fixture-head",
+        "Commands:",
+        "  - `node --test test/example.test.mjs` | exit:0",
+        "Evidence: focused validation passed",
+        "Finding references: none",
+        "Finding dispositions: none",
+        "Blockers: none",
+        "Unexpected workspace effects: none",
+        "Persistence summary: semantic result returned",
+      ].join("\n"),
+      workspace,
+      taskArtifact,
+      specPath: fixture.requirements,
+      slice: "1",
+    }),
+    /single raw JSON object/u,
+  );
+  await assert.rejects(
+    serializeRunnerValidationBundle({
+      operation: "EXECUTE_SLICE",
+      values: validationValues,
+      workspace,
+      taskArtifact,
+      targets: [physicalTarget],
+      commands: [{ command: "node --test test/example.test.mjs", exit: 0 }],
+    }),
+    /validation bundle operation must be VALIDATE_SLICE/u,
+  );
+  await assert.rejects(
+    serializeRunnerValidationBundle({
+      operation: "VALIDATE_SLICE",
+      values: validationValues.slice(0, -1),
+      workspace,
+      taskArtifact,
+      targets: [physicalTarget],
+      commands: [{ command: "node --test test/example.test.mjs", exit: 0 }],
+    }),
+    /exactly 10 values/u,
+  );
+  await assert.rejects(
+    serializeRunnerValidationBundle({
+      operation: "VALIDATE_SLICE",
+      values: validationValues,
+      workspace,
+      taskArtifact,
+      targets: [physicalTarget, physicalTarget],
+      commands: [{ command: "node --test test/example.test.mjs", exit: 0 }],
+    }),
+    /duplicate (?:task-relative claim|physical target)/u,
+  );
+  const validationBundleCliArgs = [
+    path.join(ROOT, "skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs"),
+    "--validation-bundle", "--operation", "VALIDATE_SLICE",
+    "--workspace", workspace,
+    "--task-artifact", taskArtifact,
+  ];
+  for (const value of validationValues) validationBundleCliArgs.push("--value", value);
+  validationBundleCliArgs.push("--target", physicalTarget, "--command", "node", "--test", "test/example.test.mjs", "--exit", "0");
+  const validationBundleCli = spawnSync(process.execPath, validationBundleCliArgs, { encoding: "utf8" });
+  assert.equal(validationBundleCli.status, 0, validationBundleCli.stderr);
+  assert.equal(validationBundleCli.stdout.trimEnd(), validationBundle);
+  const responseCliArgs = [
+    path.join(ROOT, "skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs"),
+    "--response", "--operation", "EXECUTE_SLICE",
+    "--workspace", workspace,
+    "--task-artifact", taskArtifact,
+  ];
+  for (const [label, value] of Object.entries(responseFields)) {
+    if (label !== "Operation") responseCliArgs.push("--value", value);
+  }
+  responseCliArgs.push("--target", physicalTarget, "--command", "node", "--test", "test/example.test.mjs", "--exit", "0");
+  const responseCli = spawnSync(process.execPath, responseCliArgs, { encoding: "utf8" });
+  assert.equal(responseCli.status, 0, responseCli.stderr);
+  assert.equal(responseCli.stdout.trimEnd(), response);
+  const translatedLabelCli = spawnSync(process.execPath, [
+    path.join(ROOT, "skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs"),
+    "--response", "--operation", "EXECUTE_SLICE",
+    "--workspace", workspace,
+    "--task-artifact", taskArtifact,
+    "--field", "Tipo de validação=1/3",
+  ], { encoding: "utf8" });
+  assert.equal(translatedLabelCli.status, 1);
+  assert.match(translatedLabelCli.stderr, /unknown option --field/u);
+  await assert.rejects(
+    serializeRunnerResponse({ operation: "EXECUTE_SLICE", fields: { ...responseFields, Operation: "Operação" }, workspace, taskArtifact, targets: [physicalTarget], commands: [{ command: "node --test", exit: 0 }] }),
+    /response Operation must be EXECUTE_SLICE/u,
+  );
+  const backtickRecord = await serializeRunnerRecord({
+    workspace, taskArtifact, targets: [physicalTarget], commands: [{ command: "node `bad`", exit: 0 }],
+  });
+  assert.ok(backtickRecord.includes(`json:${JSON.stringify("node `bad`")} | exit:0`));
+  await assert.rejects(
+    serializeRunnerRecord({ workspace, taskArtifact, targets: [physicalTarget], commands: [] }),
+    /at least one executed command/u,
+  );
+  await assert.rejects(
+    serializeRunnerEvidence({ workspace, taskArtifact, targets: [physicalTarget, physicalTarget] }),
+    /duplicate (?:task-relative claim|physical target)/u,
+  );
+  await assert.rejects(
+    serializeRunnerEvidence({ workspace, taskArtifact, targets: [path.join(workspace, "src/missing.txt")] }),
+    /not available/u,
+  );
+
+  const candidateRoot = path.join(await temporary(t, "stnl-runner-evidence-invalid-"), "execution");
+  await fs.cp(fixture.execution, candidateRoot, { recursive: true });
+  const candidateTask = path.join(candidateRoot, "tasks/slice-01.md");
+  let invalidTask = await fs.readFile(candidateTask, "utf8");
+  invalidTask = invalidTask.replace("- [ ] 1.1", "- [x] 1.1");
+  invalidTask = replaceSection(invalidTask, "Changed Areas", "- `../../src/example.txt`");
+  invalidTask = replaceSection(
+    invalidTask,
+    "Implementation Test Evidence",
+    checkRecord("implementation-check", 1, "TESTS_PASS", 1).replace(
+      `sha256:${VALIDATED_HASH}`,
+      `sha256:${"a".repeat(63)}`,
+    ),
+  );
+  await fs.writeFile(candidateTask, invalidTask, "utf8");
+  await assert.rejects(
+    validateExecutionCandidate(fixture.requirements, candidateRoot),
+    /malformed Tested state|unexpected nested or continuation content under Tested state/u,
+  );
+});
+
+test("execution producer blocks omitted Changed Areas without inferring scope from the worktree", async (t) => {
+  const fixture = await nestedLifecycleWorkspace(t);
+  const taskArtifact = path.join(fixture.execution, "tasks/slice-01.md");
+  const before = await fs.readFile(taskArtifact, "utf8");
+  assert.match(before, /## Changed Areas\n\n- pending\n/u);
+  await assert.rejects(
+    serializeExecutionScopeClaims({ workspace: fixture.root, taskArtifact }),
+    /Changed Areas cannot remain pending after execution work/u,
+  );
+  assert.equal(await fs.readFile(taskArtifact, "utf8"), before);
+
+  const executorSkill = await fs.readFile(path.join(ROOT, "skills/workflows/stnl-slice-executor/SKILL.md"), "utf8");
+  assert.match(executorSkill, /`Changed Areas` MUST NOT remain the pristine `- pending` sentinel/u);
+});
+
+test("execution evidence is produced on a same-depth candidate and published as one task replacement", async (t) => {
+  const fixture = await nestedLifecycleWorkspace(t);
+  const liveTask = path.join(fixture.execution, "tasks/slice-01.md");
+  const liveBefore = await fs.readFile(liveTask, "utf8");
+  const prepared = await prepareExecutionCopy({ specPath: fixture.requirements, slice: "slice-01" });
+  t.after(() => fs.rm(prepared.candidateRoot, { recursive: true, force: true }));
+  assert.equal(path.dirname(prepared.candidateRoot), path.dirname(fixture.requirements));
+  assert.equal(path.relative(prepared.candidateTaskArtifact, path.join(fixture.root, "src/example.txt")),
+    path.relative(liveTask, path.join(fixture.root, "src/example.txt")));
+  const target = path.join(fixture.root, "src/example.txt");
+  const claim = path.relative(path.dirname(liveTask), target).split(path.sep).join("/");
+  let candidateText = await fs.readFile(prepared.candidateTaskArtifact, "utf8");
+  candidateText = candidateText.replace("- [ ] 1.1", "- [x] 1.1");
+  candidateText = replaceSection(candidateText, "Changed Areas", `- \`${claim}\``);
+  await fs.writeFile(prepared.candidateTaskArtifact, candidateText, "utf8");
+  const response = JSON.stringify({
+    status: "TESTS_PASS", automaticCheckRound: "1/3", head: "fixture-head",
+    discoverySources: "task and package scripts", discoveryActions: "read-only inspection",
+    verificationTypesConsidered: "unit tests", nonApplicabilityRationale: "none",
+    noVerificationCommandConfirmation: "not applicable",
+    commands: [{ command: "node --test test/example.test.mjs", exit: 0 }],
+    resultOfEachCommandAndExitCode: "all passed", selectedChecks: "node --test test/example.test.mjs",
+    selectionRationale: "direct coverage", coverage: "changed behavior", failures: "none",
+    priorRoundFailure: "none", correctionApplied: "none", inSliceRationale: "none",
+    evidenceOrFailureSummary: "focused tests passed", affectedFilesOrBehaviors: "example behavior",
+    blockers: "none", unexpectedWorkspaceEffects: "none", persistenceSummary: "record persisted",
+  });
+  const record = await serializeRunnerExecutionBundleFromResponse({
+    operation: "EXECUTE_SLICE", response, workspace: fixture.root,
+    taskArtifact: prepared.candidateTaskArtifact,
+  });
+  candidateText = await fs.readFile(prepared.candidateTaskArtifact, "utf8");
+  await fs.writeFile(prepared.candidateTaskArtifact,
+    replaceSection(candidateText, "Implementation Test Evidence", record), "utf8");
+  assert.equal(await fs.readFile(liveTask, "utf8"), liveBefore);
+  assert.equal((await validateExecutionCandidate(fixture.requirements, prepared.candidateExecutionRoot)).state,
+    "IMPLEMENTED_AWAITING_VALIDATION");
+  const published = await publishExecutionCopy({ specPath: fixture.requirements,
+    slice: "slice-01", candidateRoot: prepared.candidateRoot });
+  assert.equal(published.state, "IMPLEMENTED_AWAITING_VALIDATION");
+  assert.match(await fs.readFile(liveTask, "utf8"), /### implementation-check-01/u);
+  await assert.rejects(fs.stat(prepared.candidateRoot), { code: "ENOENT" });
+});
+
+test("materializer candidate preparation copies the complete execution tree into an isolated root", async (t) => {
+  const fixture = await nestedLifecycleWorkspace(t);
+  const prepared = await prepareTaskMaterializationCandidate({ specPath: fixture.requirements });
+  assert.equal(prepared.status, "PASS");
+  assert.notEqual(prepared.candidateExecutionRoot, await fs.realpath(fixture.execution));
+  assert.equal(
+    path.relative(await fs.realpath(fixture.execution), prepared.candidateExecutionRoot).startsWith(`..${path.sep}`),
+    true,
+  );
+  for (const relative of ["plan.md", "plans/slice-01.md", "tasks.md", "tasks/slice-01.md"]) {
+    assert.deepEqual(
+      await fs.readFile(path.join(prepared.candidateExecutionRoot, relative)),
+      await fs.readFile(path.join(fixture.execution, relative)),
+    );
+  }
+  assert.equal(prepared.copiedEntries > 0, true);
+  const alias = path.join(path.dirname(fixture.requirements), "requirements-alias");
+  await fs.symlink(fixture.requirements, alias, "dir");
+  await assert.rejects(
+    prepareTaskMaterializationCandidate({ specPath: alias }),
+    /symlink component/u,
+  );
+});
+
+test("candidate helper CLIs execute from a frozen skill path containing spaces", async (t) => {
+  const fixture = await nestedLifecycleWorkspace(t, { materialized: false, planStatus: "ready" });
+  const root = await temporary(t, "stnl-helper-path-space-");
+  const bundle = path.join(root, "frozen skill bundle");
+  await fs.mkdir(bundle);
+  for (const skill of ["stnl-execution-planner", "stnl-task-materializer"]) {
+    await fs.cp(path.join(ROOT, "skills/workflows", skill), path.join(bundle, skill), { recursive: true });
+  }
+  const environment = { ...process.env, TMPDIR: root };
+  const preparer = path.join(bundle, "stnl-task-materializer/runtime/prepare-task-candidate.mjs");
+  const prepared = spawnSync(process.execPath, [preparer, "--prepare", "--spec-path", fixture.requirements], {
+    encoding: "utf8", env: environment,
+  });
+  assert.equal(prepared.status, 0, prepared.stderr);
+  const result = JSON.parse(prepared.stdout);
+  assert.equal(result.status, "PASS");
+  assert.equal(path.dirname(result.candidateExecutionRoot), root);
+  assert.equal((await fs.lstat(path.join(result.candidateExecutionRoot, "plan.md"))).isFile(), true);
+  for (const helper of [
+    "stnl-execution-planner/runtime/prepare-plan-candidate.mjs",
+    "stnl-execution-planner/runtime/serialize-plan-paths.mjs",
+    "stnl-task-materializer/runtime/serialize-task-paths.mjs",
+  ]) {
+    const invoked = spawnSync(process.execPath, [path.join(bundle, helper)], { encoding: "utf8", env: environment });
+    assert.notEqual(invoked.status, 0, `${helper} silently skipped its CLI guard`);
+    assert.match(invoked.stderr, /usage:/u);
+  }
+});
+
+test("materializer candidate publication revalidates and never publishes hard-linked execution files", async (t) => {
+  const fixture = await nestedLifecycleWorkspace(t);
+  const prepared = await prepareTaskMaterializationCandidate({ specPath: fixture.requirements });
+  const candidateState = await validateExecutionCandidate(fixture.requirements, prepared.candidateExecutionRoot);
+  assert.equal(candidateState.state, "MATERIALIZED_PRISTINE");
+  const published = await publishTaskMaterializationCandidate({
+    specPath: fixture.requirements,
+    candidateExecutionRoot: prepared.candidateExecutionRoot,
+  });
+  assert.equal(published.status, "PASS");
+  assert.equal((await inspectExecutionState(fixture.requirements)).state, "MATERIALIZED_PRISTINE");
+  const liveTasks = path.join(fixture.execution, "tasks.md");
+  const candidateTasks = path.join(prepared.candidateExecutionRoot, "tasks.md");
+  const liveMetadata = await fs.lstat(liveTasks);
+  const candidateMetadata = await fs.lstat(candidateTasks);
+  assert.equal(liveMetadata.isFile(), true);
+  assert.equal(candidateMetadata.isFile(), true);
+  assert.equal(liveMetadata.nlink, 1);
+  assert.equal(candidateMetadata.nlink, 1);
+  assert.notEqual(liveMetadata.ino, candidateMetadata.ino);
+  assert.deepEqual(await fs.readFile(liveTasks), await fs.readFile(candidateTasks));
+});
+
+test("materializer publication serializes task paths before strict candidate validation", async (t) => {
+  const fixture = await nestedLifecycleWorkspace(t);
+  const prepared = await prepareTaskMaterializationCandidate({ specPath: fixture.requirements });
+  const target = path.join(fixture.root, "src/example.txt");
+  const taskPath = path.join(prepared.candidateExecutionRoot, "tasks/slice-01.md");
+  const liveTaskPath = path.join(fixture.execution, "tasks/slice-01.md");
+  const canonicalTaskClaim = path.relative(path.dirname(liveTaskPath), target).split(path.sep).join("/");
+  const malformedClaim = canonicalTaskClaim.replace(/^\.\.\//u, "");
+  assert.notEqual(canonicalTaskClaim, malformedClaim);
+  const before = await fs.readFile(taskPath, "utf8");
+  const malformed = before.replace(`\`${canonicalTaskClaim}\``, `\`${malformedClaim}\``);
+  assert.notEqual(malformed, before);
+  await fs.writeFile(taskPath, malformed, "utf8");
+  await assert.rejects(
+    validateExecutionCandidate(fixture.requirements, prepared.candidateExecutionRoot),
+    /possible path-basis error|artifact-relative implementation path/u,
+  );
+
+  const published = await publishTaskMaterializationCandidate({
+    specPath: fixture.requirements,
+    candidateExecutionRoot: prepared.candidateExecutionRoot,
+  });
+  assert.equal(published.status, "PASS");
+  assert.equal(published.serializedTaskPaths, 1);
+  const liveTask = await fs.readFile(path.join(fixture.execution, "tasks/slice-01.md"), "utf8");
+  assert.equal(liveTask.includes(`\`${canonicalTaskClaim}\``), true);
+  assert.equal(liveTask.includes(`\`${malformedClaim}\``), false);
 });
 
 async function copyDirectory(source, destination) {
@@ -87,6 +1971,14 @@ async function standaloneWorkspace(t, { count = 1 } = {}) {
   return { root, requirements, execution, count };
 }
 
+async function rebasePlanClaimToTask({ specPath, planArtifact, planClaim, slice = "01" }) {
+  const { executionRoot } = await resolveMaterializerExecutionWorkspace(specPath);
+  const physicalTarget = path.resolve(path.dirname(planArtifact), planClaim);
+  const taskPath = path.join(executionRoot, "tasks", `slice-${slice}.md`);
+  const taskClaim = path.relative(path.dirname(taskPath), physicalTarget).split(path.sep).join("/");
+  return { executionRoot, physicalTarget, taskPath, taskClaim };
+}
+
 function headerReady(text) {
   return text.replace("status: draft", "status: ready").replaceAll("Review state: pending", "Review state: approved");
 }
@@ -106,6 +1998,11 @@ async function renderTasks(fixture, { revision = 1, fingerprint = null } = {}) {
   const requirementsMetadata = await fs.stat(fixture.requirements);
   const authorityPath = requirementsMetadata.isDirectory() ? path.join(fixture.requirements, "feature_spec.md") : fixture.requirements;
   const detailSource = path.relative(path.join(fixture.execution, "plans"), authorityPath).split(path.sep).join("/");
+  const implementationRoot = fixture.root ?? (requirementsMetadata.isDirectory() ? fixture.requirements : path.dirname(fixture.requirements));
+  const taskImplementationPath = path.relative(
+    path.join(fixture.execution, "tasks"),
+    path.join(implementationRoot, "src/example.txt"),
+  ).split(path.sep).join("/");
   await fs.mkdir(path.join(fixture.execution, "tasks"), { recursive: true });
   const tasksTemplate = await fs.readFile(path.join(ROOT, "skills/workflows/stnl-task-materializer/templates/tasks.template.md"), "utf8");
   const tasks = replaceAll(tasksTemplate, [
@@ -116,7 +2013,8 @@ async function renderTasks(fixture, { revision = 1, fingerprint = null } = {}) {
   const task = replaceAll(taskTemplate, [
     ["<Name>", "Delivery"], ["`<relative path>`", `\`${detailSource}\``],
     ["sha256:<64hex>", `sha256:${authority}`], ["<positive integer>", String(revision)],
-    ["<task>", "Implement behavior"], ["<result>", "observable result"], ["<areas>", "src/example.txt"],
+    ["<task>", "Implement behavior"], ["<result>", "observable result"],
+    ["`<artifact-relative path>`; <optional conceptual area>", `\`${taskImplementationPath}\`; example implementation`],
     ["<test, command, suite, or observable check>", "node --test"],
   ]);
   await fs.writeFile(path.join(fixture.execution, "tasks/slice-01.md"), task);
@@ -128,13 +2026,18 @@ async function renderArtifacts(fixture, { materialized = true, planStatus = "rea
   const authorityPath = requirementsMetadata.isDirectory() ? path.join(fixture.requirements, "feature_spec.md") : fixture.requirements;
   const globalSource = path.relative(fixture.execution, authorityPath).split(path.sep).join("/");
   const detailSource = path.relative(path.join(fixture.execution, "plans"), authorityPath).split(path.sep).join("/");
+  const implementationRoot = fixture.root ?? (requirementsMetadata.isDirectory() ? fixture.requirements : path.dirname(fixture.requirements));
+  const implementationTarget = path.join(implementationRoot, "src/example.txt");
+  const globalImplementationPath = path.relative(fixture.execution, implementationTarget).split(path.sep).join("/");
+  const detailImplementationPath = path.relative(path.join(fixture.execution, "plans"), implementationTarget).split(path.sep).join("/");
   await fs.mkdir(path.join(fixture.execution, "plans"), { recursive: true });
   const planTemplate = await fs.readFile(path.join(ROOT, "skills/workflows/stnl-execution-planner/templates/plan.template.md"), "utf8");
   let global = omitInitialRecoveryFields(replaceAll(planTemplate, [
     ["`<relative path>`", `\`${globalSource}\``], ["sha256:<64hex>", `sha256:${authority}`],
     ["<positive integer>", String(revision)], ["<compact objective>", "Deliver observable behavior"],
     ["<compact strategy>", "Implement and validate serially"], ["01 - <name>", "01 - Delivery"],
-    ["<result>", "observable result"], ["<areas>", "src/example.txt"],
+    ["<result>", "observable result"],
+    ["Model-selected physical target (repository-relative before serialization): `<repository-relative physical target>`; <optional conceptual area> (plain-text description)", `\`${globalImplementationPath}\`; example implementation (plain-text description)`],
   ]));
   if (planStatus === "ready") global = headerReady(global);
   await fs.writeFile(path.join(fixture.execution, "plan.md"), global);
@@ -144,7 +2047,8 @@ async function renderArtifacts(fixture, { materialized = true, planStatus = "rea
     ["sha256:<64hex>", `sha256:${authority}`], ["<positive integer>", String(revision)],
     ["<One coherent delivery and how it is observed.>", "Deliver observable behavior."],
     ["<included work>", "Implement the approved behavior."], ["<excluded work and boundary with later slices>", "No unrelated work."],
-    ["<path, contract, subsystem, or test area>", "src/example.txt"], ["<earlier slice or none>", "none"],
+    ["`<artifact-relative path>` — <optional contract, subsystem, test area, or explanation>", `\`${detailImplementationPath}\` — example implementation`],
+    ["<earlier slice or none>", "none"],
     ["<risk and mitigation>", "Low risk; focused validation."], ["<bounded approach>", "One bounded change."],
     ["<test, command, suite, or observable check>", "node --test"], ["<objective result and preserved boundary>", "Behavior is observable and bounded."],
   ]);
@@ -152,7 +2056,47 @@ async function renderArtifacts(fixture, { materialized = true, planStatus = "rea
   await fs.writeFile(path.join(fixture.execution, "plans/slice-01.md"), slicePlan);
   if (!materialized) return { authority };
   await renderTasks(fixture, { revision, fingerprint: authority });
+  await fs.mkdir(path.dirname(implementationTarget), { recursive: true });
+  await fs.writeFile(implementationTarget, VALIDATED_CONTENT, "utf8");
   return { authority };
+}
+
+async function setImplementationAreas(fixture, { global, detail, task } = {}) {
+  if (global !== undefined) {
+    await editPlan(fixture, (value) => value.replace(
+      /`[^`\n]+`; example implementation/u,
+      `\`${global}\`; example implementation`,
+    ));
+  }
+  if (detail !== undefined) {
+    await editSlicePlan(fixture, "slice-01", (value) => value.replace(
+      /`[^`\n]+` — example implementation/u,
+      `\`${detail}\` — example implementation`,
+    ));
+  }
+  if (task !== undefined) {
+    await editTask(fixture, (value) => value.replace(
+      /(\| expected areas: )`[^`\n]+`; example implementation( \| requirement:)/u,
+      `$1\`${task}\`; example implementation$2`,
+    ));
+  }
+}
+
+async function nestedLifecycleWorkspace(t, { materialized = true, planStatus = "ready" } = {}) {
+  const root = await temporary(t, "stnl-path-semantics-");
+  const repository = path.join(root, "repository with space ü");
+  await fs.mkdir(path.join(repository, ".git"), { recursive: true });
+  const requirements = await copyDirectory(
+    path.join(ROOT, "skills/workflows/stnl-spec-lifecycle-manager/examples/validator-fixtures/ready"),
+    path.join(repository, "specs", "área segura", "feature Ω"),
+  );
+  const fixture = { root: repository, repository, requirements, execution: path.join(requirements, "execution") };
+  await fs.mkdir(path.join(repository, "scripts"), { recursive: true });
+  await fs.writeFile(path.join(repository, "scripts/validate.sh"), "#!/bin/sh\n", "utf8");
+  await fs.mkdir(path.join(repository, "skills/workflows"), { recursive: true });
+  await fs.writeFile(path.join(repository, "skills/workflows/example.mjs"), "export {};\n", "utf8");
+  await renderArtifacts(fixture, { materialized, planStatus });
+  return fixture;
 }
 
 async function editTask(fixture, transform) {
@@ -208,8 +2152,8 @@ async function appendRecoveryPlan(fixture, oldHash, newHash, { ready = false, su
     let result = reviseAuthority(value, oldHash, newHash, 1, 2).replace("status: ready", `status: ${ready ? "ready" : "draft"}`).replace("- Review state: approved", `- Review state: ${ready ? "approved" : "pending"}`);
     result = result.replace("- Objective: Deliver observable behavior", `- Revision mode: append-only-extension\n- Replan reason: requirements or integration authority changed\n- Supersedes open slices: ${supersedes}\n- Objective: Deliver observable behavior`);
     return result.replace(
-      "| 01 - Delivery | observable result | - | AC-001 | src/example.txt | plans/slice-01.md |",
-      "| 01 - Delivery | observable result | - | AC-001 | src/example.txt | plans/slice-01.md |\n| 02 - Recovery | reconciled result | 01 | AC-001 | src/example.txt | plans/slice-02.md |",
+      "| 01 - Delivery | observable result | - | AC-001 | `../src/example.txt`; example implementation (plain-text description) | plans/slice-01.md |",
+      "| 01 - Delivery | observable result | - | AC-001 | `../src/example.txt`; example implementation (plain-text description) | plans/slice-01.md |\n| 02 - Recovery | reconciled result | 01 | AC-001 | `../src/example.txt`; example implementation (plain-text description) | plans/slice-02.md |",
     );
   });
   // Historical plan/task authority remains immutable.
@@ -241,7 +2185,8 @@ async function commitAppendRecovery(fixture, oldHash, newHash, { resolveDivergen
     ["Slice 01", "Slice 02"], ["- Slice: 01", "- Slice: 02"], ["<Name>", "Recovery"],
     ["plans/slice-01.md", "plans/slice-02.md"], ["`<relative path>`", "`../../requirements.md`"],
     ["sha256:<64hex>", `sha256:${newHash}`], ["<positive integer>", "2"],
-    ["<task>", "Reconcile behavior"], ["<result>", "reconciled result"], ["<areas>", "src/example.txt"],
+    ["<task>", "Reconcile behavior"], ["<result>", "reconciled result"],
+    ["`<artifact-relative path>`; <optional conceptual area>", "`../../src/example.txt`; example implementation"],
     ["<test, command, suite, or observable check>", "node --test"],
   ]);
   await fs.writeFile(path.join(fixture.execution, "tasks/slice-02.md"), appended, "utf8");
@@ -249,8 +2194,8 @@ async function commitAppendRecovery(fixture, oldHash, newHash, { resolveDivergen
 
 async function addSecondPristineSlice(fixture) {
   await editPlan(fixture, (value) => value.replace(
-    "| 01 - Delivery | observable result | - | AC-001 | src/example.txt | plans/slice-01.md |",
-    "| 01 - Delivery | observable result | - | AC-001 | src/example.txt | plans/slice-01.md |\n| 02 - Later | later result | 01 | AC-001 | src/later.txt | plans/slice-02.md |",
+    "| 01 - Delivery | observable result | - | AC-001 | `../src/example.txt`; example implementation (plain-text description) | plans/slice-01.md |",
+    "| 01 - Delivery | observable result | - | AC-001 | `../src/example.txt`; example implementation (plain-text description) | plans/slice-01.md |\n| 02 - Later | later result | 01 | AC-001 | `../src/later.txt`; later implementation (plain-text description) | plans/slice-02.md |",
   ));
   const plan = (await fs.readFile(path.join(fixture.execution, "plans/slice-01.md"), "utf8"))
     .replaceAll("Slice 01", "Slice 02").replaceAll("- Slice: 01", "- Slice: 02").replaceAll("Delivery", "Later");
@@ -272,8 +2217,8 @@ async function stageThirdRecovery(fixture, authority, { ready = false } = {}) {
     .replace("Review state: approved", `Review state: ${ready ? "approved" : "pending"}`)
     .replace("- Supersedes open slices: slice-01 -> slice-02", "- Supersedes open slices: slice-02 -> slice-03")
     .replace(
-      "| 02 - Recovery | reconciled result | 01 | AC-001 | src/example.txt | plans/slice-02.md |",
-      "| 02 - Recovery | reconciled result | 01 | AC-001 | src/example.txt | plans/slice-02.md |\n| 03 - Recovery | reconciled result | 02 | AC-001 | src/example.txt | plans/slice-03.md |",
+      "| 02 - Recovery | reconciled result | 01 | AC-001 | `../src/example.txt`; example implementation (plain-text description) | plans/slice-02.md |",
+      "| 02 - Recovery | reconciled result | 01 | AC-001 | `../src/example.txt`; example implementation (plain-text description) | plans/slice-02.md |\n| 03 - Recovery | reconciled result | 02 | AC-001 | `../src/example.txt`; example implementation (plain-text description) | plans/slice-03.md |",
     ));
   let plan = await fs.readFile(path.join(fixture.execution, "plans/slice-02.md"), "utf8");
   plan = plan.replaceAll("Slice 02", "Slice 03").replaceAll("- Slice: 02", "- Slice: 03")
@@ -296,7 +2241,8 @@ async function commitThirdRecovery(fixture, authority) {
     ["Slice 01", "Slice 03"], ["- Slice: 01", "- Slice: 03"], ["<Name>", "Recovery"],
     ["plans/slice-01.md", "plans/slice-03.md"], ["`<relative path>`", "`../../requirements.md`"],
     ["sha256:<64hex>", `sha256:${authority}`], ["<positive integer>", "3"],
-    ["<task>", "Reconcile behavior again"], ["<result>", "reconciled result"], ["<areas>", "src/example.txt"],
+    ["<task>", "Reconcile behavior again"], ["<result>", "reconciled result"],
+    ["`<artifact-relative path>`; <optional conceptual area>", "`../../src/example.txt`; example implementation"],
     ["<test, command, suite, or observable check>", "node --test"], ["1.1", "3.1"],
   ]);
   await fs.writeFile(path.join(fixture.execution, "tasks/slice-03.md"), third, "utf8");
@@ -372,7 +2318,7 @@ function checkRecord(prefix, number, status, round, { cycle = null } = {}) {
 - HEAD: fixture
 - Tested scope: ../../src/example.txt
 - Tested state:
-  - \`../../src/example.txt\` | sha256:${"b".repeat(64)}
+  - \`../../src/example.txt\` | sha256:${VALIDATED_HASH}
 - Discovery sources: approved task and repository tests
 - Discovery actions: inspected applicable test commands
 - Verification types considered: focused automated test
@@ -496,6 +2442,56 @@ test("all execution skills bundle byte-identical self-contained state runtimes",
   }
 });
 
+test("executor and quality-manager bundle one byte-identical managed slice context", async () => {
+  const copies = await Promise.all(["stnl-slice-executor", "stnl-slice-quality-manager"].map((skill) =>
+    fs.readFile(path.join(ROOT, "skills", "workflows", skill, "runtime", "managed-slice-context.mjs"))));
+  assert.deepEqual(copies[0], copies[1]);
+});
+
+test("distributed validation evidence serializers remain byte-identical across isolated skills", async () => {
+  const executor = await fs.readFile(path.join(ROOT, "skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs"));
+  const qualityManager = await fs.readFile(path.join(ROOT, "skills/workflows/stnl-slice-quality-manager/runtime/serialize-runner-evidence.mjs"));
+  assert.deepEqual(qualityManager, executor);
+});
+
+test("validation overlap paths may repeat across records but not within one record", async (t) => {
+  const fixture = await standaloneWorkspace(t);
+  await renderArtifacts(fixture);
+  const taskArtifact = path.join(fixture.execution, "tasks/slice-01.md");
+  const claims = ["../../src/example.txt", "../../src/second.txt", "../../src/third.txt"];
+  await Promise.all(claims.slice(1).map((claim) => writeValidatedPath(fixture, claim)));
+  const originalTask = replaceSection(await fs.readFile(taskArtifact, "utf8"),
+    "Changed Areas", `- \`${claims[0]}\``);
+  const overlap = (slice, paths) => `- Slice ${slice} overlap: ${paths.map((claim) => `\`${claim}\``).join(", ")}; preserve prior behavior.`;
+  const response = JSON.stringify({
+    status: "PASS", head: "fixture-head", commands: [{ command: "node --test", exit: 0 }],
+    evidence: "Focused validation passed.", findingReferences: "none", findingDispositions: "none",
+    blockers: "none", unexpectedWorkspaceEffects: "none", persistenceSummary: "No runner writes.",
+  });
+  const options = { operation: "VALIDATE_SLICE", response, workspace: fixture.root,
+    taskArtifact, specPath: fixture.requirements, slice: "1" };
+  const assertDeduplicated = async (task) => {
+    await fs.writeFile(taskArtifact, task, "utf8");
+    const executorBundle = await serializeRunnerValidationBundleFromResponse(options);
+    const managerBundle = await serializeQualityManagerValidationBundleFromResponse(options);
+    assert.equal(managerBundle, executorBundle, "mirrored producers must emit the same evidence");
+    const testedRecord = executorBundle.match(/- Tested record:\n- Tested state:\n([\s\S]*?)\n- Commands:/u)?.[1];
+    assert.ok(testedRecord, "producer must emit a physical tested record");
+    const emitted = [...testedRecord.matchAll(/^  - `([^`]+)` \| sha256:[0-9a-f]{64}$/gmu)].map((match) => match[1]);
+    assert.deepEqual(emitted, claims, "each physical target must appear exactly once");
+  };
+  await assertDeduplicated(replaceSection(originalTask, "Prior Validation Overlap",
+    `${overlap("01", claims)}\n${overlap("02", claims)}`));
+  await assertDeduplicated(replaceSection(originalTask, "Prior Validation Overlap",
+    `### overlap-01\n\n- Prior slice: slice-01\n- Paths: ${claims.join(", ")}\n\n### overlap-02\n\n- Prior slice: slice-02\n- Paths: ${claims.join(", ")}`));
+  await fs.writeFile(taskArtifact, replaceSection(originalTask, "Prior Validation Overlap",
+    overlap("01", [claims[0], claims[0]])), "utf8");
+  await assert.rejects(serializeRunnerValidationBundleFromResponse(options),
+    /Prior Validation Overlap contains duplicate path claim/u);
+  await assert.rejects(serializeQualityManagerValidationBundleFromResponse(options),
+    /Prior Validation Overlap contains duplicate path claim/u);
+});
+
 test("an isolated copied skill runs the stable self-contained preflight CLI", async (t) => {
   const root = await temporary(t);
   const copied = path.join(root, "copied-skill");
@@ -541,13 +2537,37 @@ test("an isolated copied skill runs the stable self-contained preflight CLI", as
 test("every touched model-authored execution writer requires candidate validation and strict readback", async () => {
   for (const skill of SKILLS) {
     const source = await fs.readFile(path.join(ROOT, `skills/workflows/${skill}/SKILL.md`), "utf8");
-    if (skill !== "stnl-execution-closer") {
+    if (["stnl-execution-planner", "stnl-plan-reviewer"].includes(skill)) {
+      assert.match(source, /serialize-plan-paths\.mjs[\s\S]{0,500}official `validateExecutionCandidate` authority/u, skill);
+      assert.doesNotMatch(source, /validate-execution-state\.mjs" <SPEC_PATH> --candidate <CANDIDATE_EXECUTION_ROOT>/u, skill);
+    } else {
       assert.match(source, /validate-execution-state\.mjs" <SPEC_PATH> --candidate <CANDIDATE_EXECUTION_ROOT>/u, skill);
       assert.match(source, /contract\/model(?:-| )(?:enforced|enforcement|owned)/u, skill);
-      assert.match(source, /strict(?:ly)? read(?:back| back)/u, skill);
     }
+    assert.match(source, /strict(?:ly)? read(?:back| back)/u, skill);
     assert.match(source, /Findings IDs[\s\S]{0,180}Check discovery sources[\s\S]{0,80}Check discovery actions[\s\S]{0,240}--repair-known-contract/u, skill);
   }
+});
+
+test("executor producer instructions require complete computed Tested state digests", async () => {
+  const skill = await fs.readFile(path.join(ROOT, "skills/workflows/stnl-slice-executor/SKILL.md"), "utf8");
+  assert.match(skill, /file-backed[\s\S]{0,260}digest[\s\S]{0,260}64[- ]hex/u);
+  assert.match(skill, /Never hand-type, truncate/u);
+  assert.match(skill, /managed environment supplies[\s\S]{0,180}\$STNL_RUNNER_EVIDENCE_SERIALIZER/u);
+  assert.match(skill, /do not search for, replace, or derive another serializer path/u);
+  assert.match(skill, /If the variable is absent, stop with a blocker/u);
+  assert.doesNotMatch(skill, /\$RUNNER_EVIDENCE_SERIALIZER\b/u);
+});
+
+test("the last VALIDATE_SLICE owns bounded global semantic review before terminal PASS", async () => {
+  const source = await fs.readFile(
+    path.join(ROOT, "skills/workflows/stnl-slice-quality-manager/SKILL.md"),
+    "utf8",
+  );
+  assert.match(source, /last open effective slice[\s\S]{0,700}global plan and serial order[\s\S]{0,500}Effective Validation Bases/iu);
+  assert.match(source, /global requirements coverage[\s\S]{0,180}current authority[\s\S]{0,180}cross-slice consistency[\s\S]{0,220}integration or stabilization/iu);
+  assert.match(source, /Missing authority, strategy, or unmaterialized integration work[\s\S]{0,180}`BLOCKED`[\s\S]{0,160}`REPLAN`/iu);
+  assert.doesNotMatch(source, /GLOBAL_VALIDATE|FINALIZE_EXECUTION|stnl-execution-closer|OPERATION=CLOSE/u);
 });
 
 test("actual templates render a machine-unambiguous MATERIALIZED_PRISTINE task", async (t) => {
@@ -954,7 +2974,7 @@ test("strict readback failure rolls back only the repair-owned publication", asy
   t.after(() => watcher.close());
 
   const outcome = await spawnResult(process.execPath, [
-    path.join(ROOT, "skills/workflows/stnl-execution-closer/runtime/validate-execution-state.mjs"),
+    path.join(ROOT, "skills/workflows/stnl-slice-quality-manager/runtime/validate-execution-state.mjs"),
     fixture.requirements,
     "--repair-known-contract",
   ], { cwd: fixture.root });
@@ -1190,7 +3210,7 @@ test("preflight is read-only and exact safe contract repair is an explicit deter
   await prepareFindingsCorrection(fixture, "Findings IDs");
   const taskPath = path.join(fixture.execution, "tasks/slice-01.md");
   const before = await fs.readFile(taskPath);
-  for (const [operation, slice] of [["VALIDATE_SLICE", "1"], ["CLOSE", null], ["DELETE", null]]) {
+  for (const [operation, slice] of [["VALIDATE_SLICE", "1"], ["REPLAN", null], ["DELETE", null]]) {
     await assert.rejects(preflightExecutionOperation(fixture.requirements, operation, slice), (error) => {
       assert.equal(error.contractViolation.repairability, "mechanical");
       return true;
@@ -1198,7 +3218,7 @@ test("preflight is read-only and exact safe contract repair is an explicit deter
     assert.deepEqual(await fs.readFile(taskPath), before, `${operation} preflight mutated live execution`);
   }
   const repair = spawnSync(process.execPath, [
-    path.join(ROOT, "skills/workflows/stnl-execution-closer/runtime/validate-execution-state.mjs"),
+    path.join(ROOT, "skills/workflows/stnl-slice-quality-manager/runtime/validate-execution-state.mjs"),
     fixture.requirements,
     "--repair-known-contract",
   ], { encoding: "utf8", cwd: fixture.root });
@@ -1296,27 +3316,438 @@ test("successful model-owned candidate publication has strict success and live r
 
   // Publication remains model-owned; this test performs the authorized selected-task copy only after candidate PASS.
   await fs.copyFile(candidateTask, liveTask);
-  const readback = await inspectExecutionState(fixture.requirements);
+  const published = await inspectExecutionState(fixture.requirements);
+  assert.equal(published.state, "IMPLEMENTED_AWAITING_VALIDATION");
+  assert.equal(published.tasks.get("slice-01").implementationChecks.at(-1).status, "TESTS_PASS");
+
+  const liveArtifacts = [
+    path.join(fixture.execution, "plan.md"),
+    path.join(fixture.execution, "plans/slice-01.md"),
+    path.join(fixture.execution, "tasks.md"),
+    liveTask,
+  ];
+  const beforeReadback = await Promise.all(liveArtifacts.map((file) => fs.readFile(file)));
+  const readbackResult = spawnSync(process.execPath, [
+    path.join(ROOT, "skills/workflows/stnl-slice-executor/runtime/validate-execution-state.mjs"),
+    fixture.requirements,
+    "--handoff-after",
+    "EXECUTE_SLICE",
+  ], { encoding: "utf8" });
+  assert.equal(readbackResult.status, 0, readbackResult.stderr);
+  const readback = JSON.parse(readbackResult.stdout);
   assert.equal(readback.state, "IMPLEMENTED_AWAITING_VALIDATION");
-  assert.equal(readback.tasks.get("slice-01").implementationChecks.at(-1).status, "TESTS_PASS");
+  assert.equal(readback.normal_handoff.invocation, "OPERATION=VALIDATE_SLICE");
+  assert.equal(readback.normal_handoff.slice, "slice-01");
+  assert.equal(readback.legal_operations.some(({ operation }) => operation === "VALIDATE_SLICE"), true);
+  assert.equal(readback.legal_operations.some(({ operation }) => operation === "EXECUTE_SLICE"), false);
+  assert.equal(readback.mandatory_recovery, null);
+  assert.equal(readback.required_recovery_handoff, null);
+  assert.deepEqual(await Promise.all(liveArtifacts.map((file) => fs.readFile(file))), beforeReadback, "handoff readback mutated live execution artifacts");
+
+  await assert.rejects(
+    preflightExecutionOperation(fixture.requirements, "EXECUTE_SLICE", "1"),
+    /not legal/u,
+    "published implementation unexpectedly permitted a second EXECUTE_SLICE",
+  );
 });
 
-test("auxiliary runner output contract round-trips through model-owned persistence and derived state", async (t) => {
+test("candidate shadows use external OS temp, preserve standalone logical paths, and clean owned storage", async (t) => {
+  const fixture = await standaloneWorkspace(t);
+  await renderArtifacts(fixture);
+  await passFirstSlice(fixture);
+  const candidate = await copyDirectory(fixture.execution, path.join(fixture.root, "valid-candidate"));
+  const liveTask = path.join(fixture.execution, "tasks/slice-01.md");
+  const liveSource = path.join(fixture.root, "src/example.txt");
+  const liveTaskBefore = await fs.readFile(liveTask);
+  const liveSourceBefore = await fs.readFile(liveSource);
+  const controlledTemp = await temporary(t, "stnl-candidate-storage-");
+  const originalTmpdir = process.env.TMPDIR;
+  process.env.TMPDIR = controlledTemp;
+  t.after(() => {
+    if (originalTmpdir === undefined) delete process.env.TMPDIR;
+    else process.env.TMPDIR = originalTmpdir;
+  });
+
+  assert.equal((await validateExecutionCandidate(fixture.requirements, candidate)).state, "COMPLETE");
+  assert.deepEqual(await fs.readdir(controlledTemp), [], "successful candidate left owned temp storage");
+
+  const invalidCandidate = await copyDirectory(fixture.execution, path.join(fixture.root, "invalid-candidate"));
+  await fs.writeFile(path.join(invalidCandidate, "scratch.md"), "reject\n", "utf8");
+  let rejection;
+  await assert.rejects(validateExecutionCandidate(fixture.requirements, invalidCandidate), (error) => {
+    rejection = error;
+    return error instanceof ExecutionContractError && error.findings.some((finding) => finding.endsWith(`${path.sep}scratch.md`));
+  });
+  const physicalFinding = rejection.findings.find((finding) => finding.endsWith(`${path.sep}scratch.md`));
+  const relativeFinding = path.relative(controlledTemp, physicalFinding);
+  assert.ok(relativeFinding !== "" && !relativeFinding.startsWith(`..${path.sep}`) && !path.isAbsolute(relativeFinding));
+  const shadowName = relativeFinding.split(path.sep)[0];
+  assert.match(shadowName, /^\.stnl-execution-candidate-/u);
+  await assert.rejects(fs.stat(path.join(controlledTemp, shadowName)), { code: "ENOENT" });
+  assert.deepEqual(await fs.readdir(controlledTemp), [], "rejected candidate left owned temp storage");
+
+  const formerLocalPrefix = `.${path.basename(fixture.root)}.stnl-execution-candidate-`;
+  assert.deepEqual(
+    (await fs.readdir(path.dirname(fixture.root))).filter((name) => name.startsWith(formerLocalPrefix)),
+    [],
+    "candidate shadow appeared beside the standalone workspace",
+  );
+  assert.deepEqual(await fs.readFile(liveTask), liveTaskBefore, "candidate validation changed the live task");
+  assert.deepEqual(await fs.readFile(liveSource), liveSourceBefore, "candidate validation changed the live source");
+
+  const nestedCandidate = path.join(fixture.execution, "candidate-inside-live-execution");
+  await fs.mkdir(nestedCandidate);
+  await assert.rejects(validateExecutionCandidate(fixture.requirements, nestedCandidate), /must be isolated from live execution artifacts/u);
+  await fs.rm(nestedCandidate, { recursive: true });
+  await assert.rejects(validateExecutionCandidate(fixture.requirements, fixture.root), /must be isolated from live execution artifacts/u);
+});
+
+test("artifact-relative planning paths reject lifecycle-local candidates before publication", async (t) => {
+  const initial = await nestedLifecycleWorkspace(t, { materialized: false, planStatus: "draft" });
+  const candidate = await copyDirectory(initial.execution, path.join(path.dirname(initial.repository), "initial plan candidate"));
+  const candidateFixture = { ...initial, execution: candidate };
+  const requirementsBefore = await fs.readFile(path.join(initial.requirements, "feature_spec.md"));
+  await setImplementationAreas(initial, { global: "scripts/validate.sh" });
+  assert.equal((await preflightExecutionOperation(initial.requirements, "REVIEW_PLAN")).state, "PLANNED_DRAFT");
+  await fs.rm(initial.execution, { recursive: true });
+  await setImplementationAreas(candidateFixture, { global: "scripts/validate.sh" });
+  await assert.rejects(validateExecutionCandidate(initial.requirements, candidate), (error) => {
+    assert.ok(error instanceof ExecutionContractError);
+    assert.match(error.message, /artifact="specs\/área segura\/feature Ω\/execution\/plan\.md"/u);
+    assert.match(error.message, /field="Serial Slice Order 01 Expected areas"/u);
+    assert.match(error.message, /raw="scripts\/validate\.sh"/u);
+    assert.match(error.message, /resolves inside the execution root/u);
+    assert.match(error.message, /trusted-root=/u);
+    return true;
+  });
+  await assert.rejects(fs.stat(initial.execution), { code: "ENOENT" });
+  assert.deepEqual(await fs.readFile(path.join(initial.requirements, "feature_spec.md")), requirementsBefore);
+
+  const reviewed = await nestedLifecycleWorkspace(t, { materialized: false, planStatus: "ready" });
+  const reviewedCandidate = await copyDirectory(reviewed.execution, path.join(path.dirname(reviewed.repository), "reviewed plan candidate"));
+  const reviewedFixture = { ...reviewed, execution: reviewedCandidate };
+  const liveBefore = await Promise.all([
+    fs.readFile(path.join(reviewed.execution, "plan.md")),
+    fs.readFile(path.join(reviewed.execution, "plans/slice-01.md")),
+  ]);
+  await setImplementationAreas(reviewedFixture, { detail: "../../skills/workflows/example.mjs" });
+  await assert.rejects(validateExecutionCandidate(reviewed.requirements, reviewedCandidate), (error) => {
+    assert.match(error.message, /field="Likely Areas"/u);
+    assert.match(error.message, /resolves inside the lifecycle SPEC workspace/u);
+    assert.match(error.message, /existing-project-target=/u);
+    return true;
+  });
+  const correctExisting = path.relative(
+    path.join(reviewed.requirements, "execution/plans"),
+    path.join(reviewed.repository, "scripts/validate.sh"),
+  ).split(path.sep).join("/");
+  await setImplementationAreas(reviewedFixture, { detail: correctExisting });
+  assert.equal((await validateExecutionCandidate(reviewed.requirements, reviewedCandidate)).state, "PLANNED_READY");
+  assert.deepEqual(await Promise.all([
+    fs.readFile(path.join(reviewed.execution, "plan.md")),
+    fs.readFile(path.join(reviewed.execution, "plans/slice-01.md")),
+  ]), liveBefore);
+});
+
+test("planning path carriers distinguish concrete paths from conceptual descriptions", async (t) => {
+  const fixture = await nestedLifecycleWorkspace(t, { materialized: false, planStatus: "ready" });
+  const implementationTarget = path.join(fixture.repository, "scripts/validate.sh");
+  const globalClaim = path.relative(fixture.execution, implementationTarget).split(path.sep).join("/");
+  const detailClaim = path.relative(path.join(fixture.execution, "plans"), implementationTarget).split(path.sep).join("/");
+
+  await setImplementationAreas(fixture, { global: globalClaim, detail: detailClaim });
+  await editPlan(fixture, (value) => value.replace("example implementation", "list command behavior"));
+  await editSlicePlan(fixture, "slice-01", (value) => value.replace("example implementation", "list command behavior"));
+  const candidate = await copyDirectory(fixture.execution, path.join(path.dirname(fixture.repository), "path carrier candidate"));
+  const candidateFixture = { ...fixture, execution: candidate };
+  await fs.rm(fixture.execution, { recursive: true });
+
+  assert.equal(path.resolve(fixture.execution, globalClaim), implementationTarget, "P04 global claim resolves to the physical target");
+  assert.equal(path.resolve(fixture.execution, "plans", detailClaim), implementationTarget, "P01/P05 detailed claim resolves to the physical target");
+  assert.equal((await validateExecutionCandidate(fixture.requirements, candidate)).state, "PLANNED_READY", "P01/P02/P04/P05 valid path claims and plain-text concepts pass");
+
+  await editSlicePlan(candidateFixture, "slice-01", (value) => value.replace(
+    /`[^`\n]+` — list command behavior/u,
+    "`list` — list command behavior",
+  ));
+  await assert.rejects(validateExecutionCandidate(fixture.requirements, candidate), (error) => {
+    assert.ok(error instanceof ExecutionContractError);
+    assert.match(error.message, /field="Likely Areas"/u);
+    assert.match(error.message, /raw="list"/u);
+    assert.match(error.message, /resolves inside the execution root/u);
+    return true;
+  }, "P03 conceptual code span remains a rejected path claim");
+});
+
+test("planning claims use the containing artifact basis", async (t) => {
+  const fixture = await nestedLifecycleWorkspace(t, { materialized: false, planStatus: "ready" });
+  const implementationTarget = path.join(fixture.repository, "src", "cli.mjs");
+  await fs.mkdir(path.dirname(implementationTarget), { recursive: true });
+  await fs.writeFile(implementationTarget, "#!/usr/bin/env node\n", "utf8");
+
+  const candidate = await copyDirectory(fixture.execution, path.join(path.dirname(fixture.repository), "pilot-11-plan-candidate"));
+  const candidateFixture = { ...fixture, execution: candidate };
+  await fs.rm(fixture.execution, { recursive: true });
+
+  const plannerSkill = await fs.readFile(path.join(ROOT, "skills/workflows/stnl-execution-planner/SKILL.md"), "utf8");
+  const globalTemplate = await fs.readFile(path.join(ROOT, "skills/workflows/stnl-execution-planner/templates/plan.template.md"), "utf8");
+  const detailedTemplate = await fs.readFile(path.join(ROOT, "skills/workflows/stnl-execution-planner/templates/slice-plan.template.md"), "utf8");
+  assert.match(plannerSkill, /These carriers are implementation-only/u);
+  assert.match(plannerSkill, /nearest ancestor of the normalized requirements source that contains a real `\.git` marker/u);
+  assert.match(plannerSkill, /`SPEC_PATH` is not necessarily the project root/u);
+  assert.match(plannerSkill, /raw global `Expected areas` selections are semantic repository-relative inputs, not yet persisted artifact-relative claims/u);
+  assert.match(plannerSkill, /never apply this artifact-relative readback to the raw semantic input before serialization/u);
+  assert.match(globalTemplate, /Model-selected physical target \(repository-relative before serialization\)/u);
+  assert.match(detailedTemplate, /Implementation filesystem path \(outside generated execution artifacts\)/u);
+
+  const globalClaim = path.relative(fixture.execution, implementationTarget).split(path.sep).join("/");
+  const detailDirectory = path.join(fixture.requirements, "execution", "plans");
+  const detailClaim = path.relative(detailDirectory, implementationTarget).split(path.sep).join("/");
+  const wrongResolved = path.join(fixture.repository, "specs", "src", "cli.mjs");
+  const wrongDetailClaim = path.relative(detailDirectory, wrongResolved).split(path.sep).join("/");
+
+  await setImplementationAreas(candidateFixture, { global: "execution/plan.md", detail: wrongDetailClaim });
+  const invalidGlobalBefore = await fs.readFile(path.join(candidate, "plan.md"));
+  await assert.rejects(validateExecutionCandidate(fixture.requirements, candidate), (error) => {
+    assert.ok(error instanceof ExecutionContractError);
+    assert.match(error.message, /field="Serial Slice Order 01 Expected areas"/u);
+    assert.match(error.message, /raw="execution\/plan\.md"/u);
+    assert.match(error.message, /resolves inside the execution root/u);
+    return true;
+  });
+  assert.deepEqual(await fs.readFile(path.join(candidate, "plan.md")), invalidGlobalBefore);
+
+  await setImplementationAreas(candidateFixture, { global: globalClaim });
+  const invalidDetailBefore = await fs.readFile(path.join(candidate, "plans/slice-01.md"));
+  await assert.rejects(validateExecutionCandidate(fixture.requirements, candidate), (error) => {
+    assert.ok(error instanceof ExecutionContractError);
+    assert.match(error.message, /field="Likely Areas"/u);
+    assert.ok(error.message.includes(`raw=${JSON.stringify(wrongDetailClaim)}`));
+    assert.ok(error.message.includes(`resolved=${JSON.stringify(wrongResolved)}`));
+    assert.match(error.message, /possible path-basis error: artifact-relative target is absent while the same project-root target exists/u);
+    assert.ok(error.message.includes(`existing-project-target=${JSON.stringify(implementationTarget)}`));
+    return true;
+  });
+  assert.deepEqual(await fs.readFile(path.join(candidate, "plans/slice-01.md")), invalidDetailBefore);
+
+  await setImplementationAreas(candidateFixture, { detail: detailClaim });
+  assert.equal((await validateExecutionCandidate(fixture.requirements, candidate)).state, "PLANNED_READY");
+});
+
+test("materialization and task-review gates preserve valid future artifact-relative paths", async (t) => {
+  const materializerSkill = await fs.readFile(path.join(ROOT, "skills/workflows/stnl-task-materializer/SKILL.md"), "utf8");
+  assert.match(materializerSkill, /resolveExecutionWorkspace\(SPEC_PATH\)/u);
+  assert.match(materializerSkill, /taskPath = path\.join\(executionRoot, "tasks", "slice-NN\.md"\)/u);
+  assert.doesNotMatch(materializerSkill, /path\.join\(SPEC_PATH, "execution"/u);
+  assert.doesNotMatch(materializerSkill, /benchmark-case-a|todo-service\.mjs/u);
+  assert.match(materializerSkill, /runtime\/prepare-task-candidate\.mjs/u);
+
+  const planOnly = await nestedLifecycleWorkspace(t, { materialized: false, planStatus: "ready" });
+  await setImplementationAreas(planOnly, { global: "scripts/validate.sh" });
+  const invalidPlanBefore = await fs.readFile(path.join(planOnly.execution, "plan.md"));
+  await assert.rejects(
+    preflightExecutionOperation(planOnly.requirements, "MATERIALIZE_TASKS"),
+    /resolves inside the execution root/u,
+  );
+  assert.deepEqual(await fs.readFile(path.join(planOnly.execution, "plan.md")), invalidPlanBefore);
+
+  const fixture = await nestedLifecycleWorkspace(t);
+  const candidate = await copyDirectory(fixture.execution, path.join(path.dirname(fixture.repository), "task review candidate"));
+  const candidateFixture = { ...fixture, execution: candidate };
+  const liveBefore = await Promise.all([
+    fs.readFile(path.join(fixture.execution, "plan.md")),
+    fs.readFile(path.join(fixture.execution, "plans/slice-01.md")),
+    fs.readFile(path.join(fixture.execution, "tasks.md")),
+    fs.readFile(path.join(fixture.execution, "tasks/slice-01.md")),
+  ]);
+  const futureTarget = path.join(fixture.repository, "skills/workflows/stnl-user-story-refiner/runtime/refine.mjs");
+  const shortFuture = "../../skills/workflows/stnl-user-story-refiner/runtime/refine.mjs";
+  await setImplementationAreas(candidateFixture, { task: shortFuture });
+  await assert.rejects(validateExecutionCandidate(fixture.requirements, candidate), (error) => {
+    assert.match(error.message, /field="Checklist 1\.1 expected areas"/u);
+    assert.match(error.message, /resolves inside the lifecycle SPEC workspace/u);
+    return true;
+  });
+  const taskFuture = path.relative(path.join(fixture.execution, "tasks"), futureTarget).split(path.sep).join("/");
+  await setImplementationAreas(candidateFixture, { task: taskFuture });
+  assert.equal((await validateExecutionCandidate(fixture.requirements, candidate)).state, "MATERIALIZED_PRISTINE");
+  await assert.rejects(fs.stat(futureTarget), { code: "ENOENT" });
+  assert.deepEqual(await Promise.all([
+    fs.readFile(path.join(fixture.execution, "plan.md")),
+    fs.readFile(path.join(fixture.execution, "plans/slice-01.md")),
+    fs.readFile(path.join(fixture.execution, "tasks.md")),
+    fs.readFile(path.join(fixture.execution, "tasks/slice-01.md")),
+  ]), liveBefore);
+
+  await setImplementationAreas(fixture, { task: shortFuture });
+  const invalidTaskBefore = await fs.readFile(path.join(fixture.execution, "tasks/slice-01.md"));
+  assert.equal((await preflightExecutionOperation(fixture.requirements, "REVIEW_TASKS")).state, "MATERIALIZED_PRISTINE");
+  await assert.rejects(
+    preflightExecutionOperation(fixture.requirements, "EXECUTE_SLICE", "1"),
+    /resolves inside the lifecycle SPEC workspace/u,
+  );
+  assert.deepEqual(await fs.readFile(path.join(fixture.execution, "tasks/slice-01.md")), invalidTaskBefore);
+});
+
+test("materializer rebases PLAN claims from the official execution workspace for every SPEC_PATH form", async (t) => {
+  const lifecycle = await nestedLifecycleWorkspace(t);
+  const lifecycleFeature = path.join(lifecycle.requirements, "feature_spec.md");
+  const physicalTarget = path.join(lifecycle.repository, "src/example.txt");
+  const planArtifact = path.join(lifecycle.execution, "plan.md");
+  const planClaim = path.relative(path.dirname(planArtifact), physicalTarget).split(path.sep).join("/");
+
+  const directoryRebase = await rebasePlanClaimToTask({
+    specPath: lifecycle.requirements,
+    planArtifact,
+    planClaim,
+  });
+  assert.equal(directoryRebase.executionRoot, lifecycle.execution, "R1 lifecycle directory executionRoot");
+  assert.equal(directoryRebase.taskPath, path.join(lifecycle.execution, "tasks/slice-01.md"), "R1 lifecycle directory taskPath");
+  assert.equal(path.resolve(path.dirname(directoryRebase.taskPath), directoryRebase.taskClaim), physicalTarget, "R1 task claim resolves to the PLAN physical target");
+  assert.notEqual(directoryRebase.taskClaim, planClaim, "R4 PLAN and TASK claims use different artifact bases");
+  assert.equal(path.resolve(path.dirname(planArtifact), planClaim), physicalTarget, "R4 PLAN claim resolves to the physical target");
+
+  const directoryCandidate = await copyDirectory(lifecycle.execution, path.join(path.dirname(lifecycle.repository), "directory-form-candidate"));
+  await setImplementationAreas({ ...lifecycle, execution: directoryCandidate }, {
+    global: planClaim,
+    task: directoryRebase.taskClaim,
+  });
+  assert.equal((await validateExecutionCandidate(lifecycle.requirements, directoryCandidate)).state, "MATERIALIZED_PRISTINE", "R1 lifecycle directory candidate");
+
+  const directRebase = await rebasePlanClaimToTask({
+    specPath: lifecycleFeature,
+    planArtifact,
+    planClaim,
+  });
+  assert.equal(directRebase.executionRoot, lifecycle.execution, "R2 direct feature_spec.md executionRoot");
+  assert.equal(directRebase.taskPath, directoryRebase.taskPath, "R2 direct feature_spec.md taskPath matches directory form");
+  assert.equal(path.resolve(path.dirname(directRebase.taskPath), directRebase.taskClaim), physicalTarget, "R2 direct feature_spec.md claim resolves to the physical target");
+  const directCandidate = await copyDirectory(lifecycle.execution, path.join(path.dirname(lifecycle.repository), "direct-form-candidate"));
+  await setImplementationAreas({ ...lifecycle, execution: directCandidate }, { task: directRebase.taskClaim });
+  assert.equal((await validateExecutionCandidate(lifecycleFeature, directCandidate)).state, "MATERIALIZED_PRISTINE", "R2 direct feature_spec.md candidate");
+
+  const copiedPlanCandidate = await copyDirectory(lifecycle.execution, path.join(path.dirname(lifecycle.repository), "copied-plan-basis-candidate"));
+  await setImplementationAreas({ ...lifecycle, execution: copiedPlanCandidate }, { task: planClaim });
+  await assert.rejects(validateExecutionCandidate(lifecycleFeature, copiedPlanCandidate), /artifact-relative implementation path/u, "R5 copied PLAN basis remains invalid for TASK validation");
+
+  const legacyDirectTaskPath = path.join(lifecycleFeature, "execution", "tasks", "slice-01.md");
+  const legacyDirectClaim = path.relative(path.dirname(legacyDirectTaskPath), physicalTarget).split(path.sep).join("/");
+  assert.notEqual(legacyDirectClaim, directRebase.taskClaim, "R2 old SPEC_PATH/execution basis differs for direct feature_spec.md");
+  const legacyDirectCandidate = await copyDirectory(lifecycle.execution, path.join(path.dirname(lifecycle.repository), "legacy-direct-candidate"));
+  await setImplementationAreas({ ...lifecycle, execution: legacyDirectCandidate }, { task: legacyDirectClaim });
+  await assert.rejects(validateExecutionCandidate(lifecycleFeature, legacyDirectCandidate), /artifact-relative implementation path/u, "R2 old direct-file basis is rejected");
+
+  const standaloneRoot = await temporary(t, "stnl-materializer-standalone-");
+  const standaloneRepository = path.join(standaloneRoot, "repository");
+  await fs.mkdir(path.join(standaloneRepository, ".git"), { recursive: true });
+  const standaloneRequirements = path.join(standaloneRepository, "requirements/feature-x.md");
+  await fs.mkdir(path.dirname(standaloneRequirements), { recursive: true });
+  await fs.writeFile(standaloneRequirements, "# Requirements\n\n- AC-001: observable behavior\n", "utf8");
+  const standalone = {
+    root: standaloneRepository,
+    repository: standaloneRepository,
+    requirements: standaloneRequirements,
+    execution: path.join(path.dirname(standaloneRequirements), "feature-x-execution"),
+  };
+  await renderArtifacts(standalone);
+  const standaloneTarget = path.join(standaloneRepository, "src/example.txt");
+  const standalonePlan = path.join(standalone.execution, "plan.md");
+  const standalonePlanClaim = path.relative(path.dirname(standalonePlan), standaloneTarget).split(path.sep).join("/");
+  const standaloneRebase = await rebasePlanClaimToTask({
+    specPath: standaloneRequirements,
+    planArtifact: standalonePlan,
+    planClaim: standalonePlanClaim,
+  });
+  assert.equal(standaloneRebase.executionRoot, standalone.execution, "R3 standalone requirements executionRoot");
+  assert.equal(standaloneRebase.taskPath, path.join(standalone.execution, "tasks/slice-01.md"), "R3 standalone requirements taskPath");
+  assert.equal(path.resolve(path.dirname(standaloneRebase.taskPath), standaloneRebase.taskClaim), standaloneTarget, "R3 standalone claim resolves to the physical target");
+  const standaloneCandidate = await copyDirectory(standalone.execution, path.join(standaloneRoot, "standalone-form-candidate"));
+  await setImplementationAreas({ ...standalone, execution: standaloneCandidate }, { task: standaloneRebase.taskClaim });
+  assert.equal((await validateExecutionCandidate(standaloneRequirements, standaloneCandidate)).state, "MATERIALIZED_PRISTINE", "R3 standalone requirements candidate");
+
+  const legacyStandaloneTaskPath = path.join(standaloneRequirements, "execution", "tasks", "slice-01.md");
+  const legacyStandaloneClaim = path.relative(path.dirname(legacyStandaloneTaskPath), standaloneTarget).split(path.sep).join("/");
+  assert.notEqual(legacyStandaloneClaim, standaloneRebase.taskClaim, "R3 old SPEC_PATH/execution basis differs for standalone requirements");
+  const legacyStandaloneCandidate = await copyDirectory(standalone.execution, path.join(standaloneRoot, "legacy-standalone-candidate"));
+  await setImplementationAreas({ ...standalone, execution: legacyStandaloneCandidate }, { task: legacyStandaloneClaim });
+  await assert.rejects(validateExecutionCandidate(standaloneRequirements, legacyStandaloneCandidate), /artifact-relative implementation path/u, "R3 old standalone-file basis is rejected");
+});
+
+test("standalone path basis, Unicode, future targets, and symlink safety stay deterministic", async (t) => {
+  const root = await temporary(t, "stnl-standalone-paths-");
+  const repository = path.join(root, "repository with space ü");
+  await fs.mkdir(path.join(repository, ".git"), { recursive: true });
+  const requirements = path.join(repository, "docs/nested/requirements.md");
+  await fs.mkdir(path.dirname(requirements), { recursive: true });
+  await fs.writeFile(requirements, "# Requirements\n\n- AC-001: observable behavior\n", "utf8");
+  const fixture = {
+    root: repository,
+    repository,
+    requirements,
+    execution: path.join(path.dirname(requirements), "requirements-execution"),
+  };
+  await fs.mkdir(path.join(repository, "scripts"), { recursive: true });
+  const existingTarget = path.join(repository, "scripts/validate.sh");
+  await fs.writeFile(existingTarget, "#!/bin/sh\n", "utf8");
+  await fs.mkdir(path.join(repository, "skills/workflows"), { recursive: true });
+  await renderArtifacts(fixture);
+  const candidate = await copyDirectory(fixture.execution, path.join(root, "standalone candidate"));
+  const candidateFixture = { ...fixture, execution: candidate };
+  const areasFor = (target) => ({
+    global: path.relative(fixture.execution, target).split(path.sep).join("/"),
+    detail: path.relative(path.join(fixture.execution, "plans"), target).split(path.sep).join("/"),
+    task: path.relative(path.join(fixture.execution, "tasks"), target).split(path.sep).join("/"),
+  });
+
+  await setImplementationAreas(candidateFixture, areasFor(existingTarget));
+  assert.equal((await validateExecutionCandidate(requirements, candidate)).state, "MATERIALIZED_PRISTINE");
+
+  const shortDetail = areasFor(existingTarget).detail.replace(/^\.\.\//u, "");
+  await setImplementationAreas(candidateFixture, { detail: shortDetail });
+  await assert.rejects(validateExecutionCandidate(requirements, candidate), (error) => {
+    assert.match(error.message, /possible path-basis error/u);
+    assert.match(error.message, /existing-project-target=/u);
+    return true;
+  });
+
+  const unicodeLocal = path.join(path.dirname(requirements), "área local/arquivo Ω.txt");
+  await fs.mkdir(path.dirname(unicodeLocal), { recursive: true });
+  await fs.writeFile(unicodeLocal, "local\n", "utf8");
+  await setImplementationAreas(candidateFixture, areasFor(unicodeLocal));
+  assert.equal((await validateExecutionCandidate(requirements, candidate)).state, "MATERIALIZED_PRISTINE");
+
+  const futureTarget = path.join(repository, "skills/workflows/stnl-user-story-refiner/novo Ω.mjs");
+  await setImplementationAreas(candidateFixture, areasFor(futureTarget));
+  assert.equal((await validateExecutionCandidate(requirements, candidate)).state, "MATERIALIZED_PRISTINE");
+  await assert.rejects(fs.stat(futureTarget), { code: "ENOENT" });
+
+  const outside = path.join(root, "outside");
+  await fs.mkdir(outside);
+  await fs.symlink(outside, path.join(repository, "linked"), "dir");
+  const symlinkFuture = path.join(repository, "linked/future.txt");
+  await setImplementationAreas(candidateFixture, areasFor(symlinkFuture));
+  await assert.rejects(validateExecutionCandidate(requirements, candidate), /traverses a symlink/u);
+
+  await setImplementationAreas(candidateFixture, { global: "/absolute/path.txt" });
+  await assert.rejects(validateExecutionCandidate(requirements, candidate), /not a normalized relative path/u);
+  await setImplementationAreas(candidateFixture, { global: "../../../../../../escaped.txt" });
+  await assert.rejects(validateExecutionCandidate(requirements, candidate), /escapes its trusted workspace/u);
+});
+
+test("semantic auxiliary runner output is serialized by the deterministic execution producer before persistence", async (t) => {
   const contracts = await Promise.all([
-    fs.readFile(path.join(ROOT, "templates/subagents/claude-code/.claude/agents/stnl-validation-runner.md"), "utf8"),
-    fs.readFile(path.join(ROOT, "templates/subagents/codex/.codex/agents/stnl_validation_runner.toml"), "utf8"),
+    fs.readFile(path.join(ROOT, "agents/claude-code/.claude/agents/stnl-validation-runner.md"), "utf8"),
+    fs.readFile(path.join(ROOT, "agents/codex/.codex/agents/stnl_validation_runner.toml"), "utf8"),
   ]);
   const persisted = checkRecord("implementation-check", 1, "TESTS_PASS", 1);
   for (const [runnerField, recordField] of [
-    ["Automatic check round:", "- Automatic check round: 1/3"],
-    ["Status:", "- Status: TESTS_PASS"],
-    ["Escopo verificado:", "- Tested scope: ../../src/example.txt"],
-    ["Estado testado:", "- Tested state:"],
-    ["Discovery sources:", "- Discovery sources:"],
-    ["Discovery actions:", "- Discovery actions:"],
-    ["Verification types considered:", "- Verification types considered:"],
-    ["Comandos executados:", "- Commands:"],
-    ["Testes selecionados:", "- Selected checks:"],
+    ['"automaticCheckRound":', "- Automatic check round: 1/3"],
+    ['"status":', "- Status: TESTS_PASS"],
+    ['"discoverySources":', "- Discovery sources:"],
+    ['"discoveryActions":', "- Discovery actions:"],
+    ['"verificationTypesConsidered":', "- Verification types considered:"],
+    ['"commands":', "- Commands:"],
+    ['"selectedChecks":', "- Selected checks:"],
   ]) {
     for (const contract of contracts) assert.ok(contract.includes(runnerField), runnerField);
     assert.ok(persisted.includes(recordField), recordField);
@@ -1325,12 +3756,8 @@ test("auxiliary runner output contract round-trips through model-owned persisten
   assert.match(persisted, /^- Tested state:\n  - `[^`]+` \| sha256:[0-9a-f]{64}$/mu);
   assert.match(persisted, /^- Commands:\n  - `[^`]+` \| exit:0$/mu);
   assert.doesNotMatch(persisted, /^- Fileless reason:/mu);
-  for (const contract of contracts) {
-    assert.match(contract, /Fileless reason: required only when Estado testado is exactly none; omit for file-backed state/u);
-    assert.match(contract, /Fileless reason: required only when Manifesto final da slice is exactly none; omit for file-backed manifest/u);
-  }
   const filelessPersisted = persisted.replace(
-    `- Tested state:\n  - \`../../src/example.txt\` | sha256:${"b".repeat(64)}`,
+    `- Tested state:\n  - \`../../src/example.txt\` | sha256:${VALIDATED_HASH}`,
     "- Tested state: none\n- Fileless reason: no repository file participates in the observable state",
   );
   assert.match(filelessPersisted, /^- Tested state: none\n- Fileless reason: \S.*$/mu);
@@ -1359,9 +3786,472 @@ test("auxiliary runner output contract round-trips through model-owned persisten
   assert.deepEqual(parsed.tasks.get("slice-01").implementationChecks[0].commands, [{ command: "node --test", exit: 0 }]);
 });
 
+test("validation candidate preparation writes canonical attempt and PASS base before strict validation", async (t) => {
+  const fixture = await standaloneWorkspace(t);
+  await renderArtifacts(fixture);
+  const physicalTarget = path.join(fixture.root, "src", "validation target Ω.mjs");
+  await fs.mkdir(path.dirname(physicalTarget), { recursive: true });
+  await fs.writeFile(physicalTarget, VALIDATED_CONTENT, "utf8");
+
+  const liveTask = path.join(fixture.execution, "tasks", "slice-01.md");
+  const globalClaim = path.relative(fixture.execution, physicalTarget).split(path.sep).join("/");
+  const detailClaim = path.relative(path.join(fixture.execution, "plans"), physicalTarget).split(path.sep).join("/");
+  const taskClaim = path.relative(path.dirname(liveTask), physicalTarget).split(path.sep).join("/");
+  await setImplementationAreas(fixture, { global: globalClaim, detail: detailClaim, task: taskClaim });
+  await editTask(fixture, (value) => {
+    let result = value.replace("- [ ] 1.1", "- [x] 1.1");
+    result = replaceSection(result, "Changed Areas", `- \`${taskClaim}\``);
+    result = replaceSection(result, "Prior Validation Overlap",
+      `- Slice 01 overlap: \`${taskClaim}\`; preserve prior behavior.\n- Slice 02 overlap: \`${taskClaim}\`; preserve prior behavior.`);
+    result = replaceSection(result, "Implementation Test Evidence", replaceAll(
+      checkRecord("implementation-check", 1, "TESTS_PASS", 1),
+      [["../../src/example.txt", taskClaim]],
+    ));
+    return replaceSection(result, "Diff Summary", "- Implemented the approved observable behavior.");
+  });
+  assert.equal((await preflightExecutionOperation(fixture.requirements, "VALIDATE_SLICE", "1")).state, "IMPLEMENTED_AWAITING_VALIDATION");
+
+  const responseRoot = await temporary(t, "stnl-validation-canonical-response-");
+  const semanticResponseFile = path.join(responseRoot, "response.json");
+  const fullHead = "0123456789abcdef0123456789abcdef01234567";
+  const semanticResponse = JSON.stringify({
+    status: "PASS",
+    head: fullHead,
+    commands: [{ command: "node --test test/cli.test.mjs", exit: 0 }],
+    evidence: "focused `npm test` validation passed",
+    findingReferences: "none",
+    findingDispositions: "none",
+    blockers: "none",
+    unexpectedWorkspaceEffects: "none",
+    persistenceSummary: "formal result returned",
+  });
+  await fs.writeFile(semanticResponseFile, semanticResponse, "utf8");
+
+  const candidateParent = await temporary(t, "stnl-validation-candidate-root-");
+  const candidateRoot = path.join(candidateParent, "execution");
+  await copyDirectory(fixture.execution, candidateRoot);
+  const prepared = await prepareValidationCandidate({
+    specPath: fixture.requirements,
+    slice: "1",
+    workspace: fixture.root,
+    candidateExecutionRoot: candidateRoot,
+    semanticResponseFile,
+  });
+  assert.equal(prepared.status, "PREPARED");
+  assert.equal(prepared.formalStatus, "PASS");
+  assert.equal(prepared.attemptId, "attempt-01");
+  assert.match(await fs.readFile(path.join(candidateRoot, "tasks/slice-01.md"), "utf8"),
+    /Evidence: json:"focused `npm test` validation passed"/u);
+  assert.equal((await validateExecutionCandidate(fixture.requirements, candidateRoot)).state, "COMPLETE");
+
+  const preflight = await preflightExecutionOperation(fixture.requirements, "VALIDATE_SLICE", "1");
+  const managedSnapshot = path.join(fixture.root, "managed-snapshot");
+  const managedAdapter = path.join(managedSnapshot, "agents/codex/runtime/validation-runner.mjs");
+  const managedBridge = path.join(managedSnapshot, "agents/codex/runtime/managed-runner-bridge.mjs");
+  const managedHelper = path.join(managedSnapshot, "agents/codex/runtime/managed-slice-preflight.mjs");
+  const managedSerializer = path.join(managedSnapshot,
+    "skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs");
+  await fs.mkdir(path.dirname(managedAdapter), { recursive: true });
+  await fs.mkdir(path.dirname(managedSerializer), { recursive: true });
+  await Promise.all([managedAdapter, managedBridge, managedHelper, managedSerializer]
+    .map((file) => fs.writeFile(file, "// managed helper\n")));
+  await fs.chmod(managedAdapter, 0o755);
+  const managed = await createManagedSliceContext({ workspace: fixture.root,
+    snapshot: managedSnapshot, adapterPath: managedAdapter, bridgePath: managedBridge,
+    preflightPath: managedHelper, officialPreflight: {
+    exitCode: 0, operation: "VALIDATE_SLICE", slice: "slice-01", inputSlice: "1",
+    specPath: fixture.requirements, state: preflight.state,
+    authority: `sha256:${preflight.currentFingerprint}`,
+    legalOperations: preflight.legalOperations, mandatoryRecovery: preflight.mandatoryRecovery,
+  } });
+  const managedEnv = managedEnvironment({ PATH: process.env.PATH }, managed);
+  const validator = path.join(ROOT, "skills/workflows/stnl-slice-quality-manager/runtime/validate-execution-state.mjs");
+  const manualPreflight = spawnSync(process.execPath, [validator, fixture.requirements, "VALIDATE_SLICE", "1"],
+    { encoding: "utf8", cwd: fixture.root, env: { PATH: process.env.PATH } });
+  assert.equal(manualPreflight.status, 0, manualPreflight.stderr);
+  const managedValidator = path.join(ROOT, "agents/codex/runtime/managed-slice-preflight.mjs");
+  const managedPreflight = spawnSync(process.execPath, [managedValidator],
+    { encoding: "utf8", cwd: fixture.root, env: managedEnv });
+  assert.equal(managedPreflight.status, 0, managedPreflight.stderr);
+  assert.match(managedPreflight.stdout, /managed preflight state=IMPLEMENTED_AWAITING_VALIDATION/u);
+  const staleContext = managedEnvironment({ PATH: process.env.PATH },
+    { ...managed, authority: `sha256:${"b".repeat(64)}` });
+  const stalePreflight = spawnSync(process.execPath, [managedValidator],
+    { encoding: "utf8", cwd: fixture.root, env: staleContext });
+  assert.equal(stalePreflight.status, 1);
+  assert.match(stalePreflight.stderr, /identity is stale/u);
+  const copyCli = spawnSync(process.execPath, [
+    path.join(ROOT, "skills/workflows/stnl-slice-quality-manager/runtime/prepare-validation-copy.mjs"),
+    "--spec-path", fixture.requirements, "--slice", "slice-01", "--candidate-parent", candidateParent,
+  ], { encoding: "utf8", cwd: fixture.root, env: managedEnv });
+  assert.equal(copyCli.status, 0, copyCli.stderr);
+  const managedCopy = JSON.parse(copyCli.stdout);
+  assert.equal(managedCopy.executionRoot, fixture.execution);
+  const prepareCli = [
+    path.join(ROOT, "skills/workflows/stnl-slice-quality-manager/runtime/prepare-validation-candidate.mjs"),
+    "--prepare", "--spec-path", fixture.requirements, "--slice", "slice-01",
+    "--workspace", fixture.root, "--candidate-execution-root", managedCopy.candidateExecutionRoot,
+    "--semantic-response-file", semanticResponseFile,
+  ];
+  const disagreement = spawnSync(process.execPath, prepareCli.map((value) => value === fixture.requirements
+    ? path.join(candidateParent, "wrong-spec") : value), { encoding: "utf8", cwd: fixture.root, env: managedEnv });
+  assert.equal(disagreement.status, 1);
+  assert.match(disagreement.stderr, /explicit SPEC_PATH disagrees with managed context/u);
+  const managedPreparation = spawnSync(process.execPath, prepareCli,
+    { encoding: "utf8", cwd: fixture.root, env: managedEnv });
+  assert.equal(managedPreparation.status, 1);
+  assert.match(managedPreparation.stderr, /managed runner receipt is required; use the configured bridge/u);
+
+  const candidateTask = path.join(candidateRoot, "tasks", "slice-01.md");
+  const candidateText = await fs.readFile(candidateTask, "utf8");
+  const baseStart = candidateText.indexOf("## Effective Validation Base\n\n");
+  const baseEnd = candidateText.indexOf("\n## ", baseStart + 1);
+  const base = candidateText.slice(baseStart, baseEnd < 0 ? candidateText.length : baseEnd);
+  assert.ok(base.includes(`- HEAD: ${fullHead}`));
+  assert.ok(base.includes(`- Origin attempt: ${prepared.attemptId}`));
+  assert.ok(candidateText.includes(`- HEAD: ${fullHead}`));
+  assert.ok(candidateText.includes(`- \`${taskClaim}\` | sha256:${VALIDATED_HASH}`));
+  assert.equal(await fs.realpath(path.resolve(path.dirname(liveTask), taskClaim)), await fs.realpath(physicalTarget));
+
+  const truncatedHead = `${fullHead.slice(0, 30)}deadbeef`;
+  const tamperedText = candidateText.replace(
+    `## Effective Validation Base\n\n- Origin attempt: ${prepared.attemptId}\n- Attempt type: initial\n- HEAD: ${fullHead}`,
+    `## Effective Validation Base\n\n- Origin attempt: ${prepared.attemptId}\n- Attempt type: initial\n- HEAD: ${truncatedHead}`,
+  );
+  assert.notEqual(tamperedText, candidateText, "the causal mismatch fixture must alter only the base HEAD");
+  await fs.writeFile(candidateTask, tamperedText, "utf8");
+  await assert.rejects(
+    validateExecutionCandidate(fixture.requirements, candidateRoot),
+    /Effective Validation Base HEAD disagrees with its origin attempt/u,
+  );
+  await assert.rejects(
+    prepareValidationCandidate({
+      specPath: fixture.requirements,
+      slice: "1",
+      workspace: fixture.root,
+      candidateExecutionRoot: candidateRoot,
+      semanticResponseFile,
+    }),
+    /candidate Validation Attempts must remain byte-identical to live authority/u,
+  );
+  assert.equal(await fs.readFile(candidateTask, "utf8"), tamperedText, "preparation must not repair a rejected candidate");
+
+  const malformedCandidateRoot = path.join(candidateParent, "malformed-execution");
+  await copyDirectory(fixture.execution, malformedCandidateRoot);
+  const malformedTask = path.join(malformedCandidateRoot, "tasks", "slice-01.md");
+  const malformedBefore = await fs.readFile(malformedTask, "utf8");
+  const malformedResponseFile = path.join(responseRoot, "malformed.json");
+  await fs.writeFile(malformedResponseFile, JSON.stringify({
+    status: "PASS",
+    head: "",
+    commands: [{ command: "node --test test/cli.test.mjs", exit: 0 }],
+    evidence: "focused validation passed",
+    findingReferences: "none",
+    findingDispositions: "none",
+    blockers: "none",
+    unexpectedWorkspaceEffects: "none",
+    persistenceSummary: "formal result returned",
+  }), "utf8");
+  await assert.rejects(
+    prepareValidationCandidate({
+      specPath: fixture.requirements,
+      slice: "1",
+      workspace: fixture.root,
+      candidateExecutionRoot: malformedCandidateRoot,
+      semanticResponseFile: malformedResponseFile,
+    }),
+    /head must be a complete single-line scalar/u,
+  );
+  assert.equal(await fs.readFile(malformedTask, "utf8"), malformedBefore, "malformed semantic input must not create a candidate record");
+});
+
+test("managed bridge and broker bind simulated provider evidence through strict publication", async (t) => {
+  const fixture = await standaloneWorkspace(t);
+  await renderArtifacts(fixture);
+  await writeValidatedPath(fixture);
+  await editTask(fixture, (value) => {
+    let task = value.replace("- [ ] 1.1", "- [x] 1.1");
+    task = replaceSection(task, "Changed Areas", "- `../../src/example.txt`");
+    task = replaceSection(task, "Implementation Test Evidence", checkRecord("implementation-check", 1, "TESTS_PASS", 1));
+    return replaceSection(task, "Diff Summary", "- Verified behavior is implemented.");
+  });
+  const preflight = await preflightExecutionOperation(fixture.requirements, "VALIDATE_SLICE", "1");
+  const officialPreflight = { exitCode: 0, operation: "VALIDATE_SLICE", slice: "slice-01", inputSlice: "1",
+    specPath: fixture.requirements, state: preflight.state, authority: `sha256:${preflight.currentFingerprint}`,
+    legalOperations: preflight.legalOperations, mandatoryRecovery: preflight.mandatoryRecovery };
+  const context = await createManagedSliceContext({ officialPreflight, workspace: fixture.root, snapshot: ROOT,
+    adapterPath: path.join(ROOT, "agents/codex/runtime/validation-runner.mjs"),
+    bridgePath: path.join(ROOT, "agents/codex/runtime/managed-runner-bridge.mjs"),
+    preflightPath: path.join(ROOT, "agents/codex/runtime/managed-slice-preflight.mjs") });
+  const tmpdir = await temporary(t, "stnl-managed-provider-");
+  const environment = managedEnvironment({ PATH: process.env.PATH, TMPDIR: tmpdir }, context);
+  const semantic = JSON.stringify({ status: "PASS", head: "0123456789abcdef0123456789abcdef01234567",
+    commands: [{ command: "semantic claim", exit: 0 }], evidence: "simulated independent provider result",
+    findingReferences: "none", findingDispositions: "none", blockers: "none",
+    unexpectedWorkspaceEffects: "none", persistenceSummary: "no runner writes" });
+  const check = "STNL_VERIFICATION_COMMAND=1 node --test test/cli.test.mjs";
+  const broker = await startOfficialRunnerBroker({ workspace: fixture.root, tmpdir,
+    operation: "VALIDATE_SLICE", sequence: 1, slice: "slice-01", officialPreflight,
+    invoke: (request) => invokeIndependentRunner({ ...request, snapshot: ROOT, env: environment,
+      runTurn: async ({ eventsPath, operationId }) => {
+        const events = [
+          { operationId, type: "thread.started", thread_id: "simulated-provider-thread" },
+          { operationId, type: "turn.started" },
+          { operationId, type: "item.started", item: { id: "item_0", type: "command_execution", command: check } },
+          { operationId, type: "item.completed", item: { id: "item_0", type: "command_execution", command: check, status: "completed", exit_code: 0 } },
+          { operationId, type: "item.completed", item: { id: "item_1", type: "agent_message", text: semantic } },
+          { operationId, type: "turn.completed", usage: { input_tokens: 5, output_tokens: 5 } },
+        ];
+        await fs.writeFile(eventsPath, `${events.map(JSON.stringify).join("\n")}\n`);
+        return { completed: true, turnStarted: true, threadId: "simulated-provider-thread",
+          requestedModel: "gpt-5.6-luna", requestedEffort: "medium", reportedModel: null,
+          error: null, usage: { input_tokens: 5, output_tokens: 5 } };
+      } }) });
+  try {
+    const receipt = await runManagedRunnerBridge({ environment, cwd: fixture.root, payload: "Review changed scope and checks." });
+    assert.equal(receipt.status, "RUNNER_RESPONSE_CAPTURED");
+    assert.equal(broker.requestsHandled, 1);
+    assert.equal(broker.capturedReceipts, 1);
+    const copy = await prepareValidationCopy({ specPath: fixture.requirements, slice: "slice-01", candidateParent: tmpdir });
+    const cli = path.join(ROOT, "skills/workflows/stnl-slice-quality-manager/runtime/prepare-validation-candidate.mjs");
+    const args = [cli, "--prepare", "--spec-path", fixture.requirements, "--slice", "slice-01",
+      "--workspace", fixture.root, "--candidate-execution-root", copy.candidateExecutionRoot,
+      "--semantic-response-file", receipt.semanticResponseFile];
+    const missing = spawnSync(process.execPath, args, { cwd: fixture.root, env: environment, encoding: "utf8" });
+    assert.equal(missing.status, 1);
+    assert.match(missing.stderr, /managed runner receipt is required/u);
+    const wrong = path.join(tmpdir, "wrong.receipt.json");
+    await fs.writeFile(wrong, JSON.stringify({ ...receipt, operation: "EXECUTE_SLICE" }));
+    const mismatch = spawnSync(process.execPath, [...args, "--receipt-file", wrong],
+      { cwd: fixture.root, env: environment, encoding: "utf8" });
+    assert.equal(mismatch.status, 1);
+    assert.match(mismatch.stderr, /receipt does not match the active managed runner invocation/u);
+    const capturedBytes = await fs.readFile(receipt.semanticResponseFile);
+    await fs.writeFile(receipt.semanticResponseFile, `${capturedBytes.toString("utf8")} `);
+    const staleResponse = spawnSync(process.execPath, [...args, "--receipt-file",
+      path.join(tmpdir, "001-validate_slice-slice-01-attempt-1.receipt.json")],
+    { cwd: fixture.root, env: environment, encoding: "utf8" });
+    assert.equal(staleResponse.status, 1);
+    assert.match(staleResponse.stderr, /receipt response hash disagrees/u);
+    await fs.writeFile(receipt.semanticResponseFile, capturedBytes);
+    const prepared = spawnSync(process.execPath, [...args, "--receipt-file",
+      path.join(tmpdir, "001-validate_slice-slice-01-attempt-1.receipt.json")],
+    { cwd: fixture.root, env: environment, encoding: "utf8" });
+    assert.equal(prepared.status, 0, prepared.stderr);
+    assert.equal(JSON.parse(prepared.stdout).formalStatus, "PASS", prepared.stdout);
+    assert.equal((await validateExecutionCandidate(fixture.requirements, copy.candidateExecutionRoot)).state, "COMPLETE");
+    assert.equal((await publishValidationCandidate({ specPath: fixture.requirements, slice: "slice-01",
+      candidateExecutionRoot: copy.candidateExecutionRoot })).state, "COMPLETE");
+    const readback = await inspectExecutionState(fixture.requirements);
+    assert.equal(readback.state, "COMPLETE");
+    assert.deepEqual(nextHandoff("VALIDATE_SLICE", { executionRaw: readback }), { operation: "SPEC_CLOSE", slice: null });
+  } finally { await broker.close(); }
+});
+
+test("copied Case C subagent response without receipt cannot replay as official validation", async (t) => {
+  const original = path.join(ROOT, "benchmark-temp/run-20260929125208-f85c2e3a/case-c");
+  if (!await fs.access(path.join(original, "10-validate_slice.json")).then(() => true, () => false)) {
+    t.skip("historical local replay artifact is absent"); return;
+  }
+  const evidence = JSON.parse(await fs.readFile(path.join(original, "10-validate_slice.json"), "utf8"));
+  const copyRoot = await temporary(t, "stnl-case-c-replay-");
+  const workspace = path.join(copyRoot, "workspace");
+  const specPath = path.join(workspace, "specs/benchmark-case-c");
+  const tmpdir = path.join(copyRoot, "tmp");
+  const candidate = path.join(tmpdir, "validation-slice-02-copy");
+  const response = path.join(tmpdir, "validation-slice-02.response.json");
+  await fs.mkdir(path.dirname(specPath), { recursive: true });
+  await fs.mkdir(tmpdir);
+  await fs.cp(path.join(original, "workspace/specs/benchmark-case-c"), specPath, { recursive: true });
+  await fs.cp(path.join(original, "tmp/validation-slice-02-0MT9ZT"), candidate, { recursive: true });
+  await fs.copyFile(path.join(original, "tmp/validation-slice-02.response.json"), response);
+  const before = await fs.readFile(path.join(candidate, "tasks/slice-02.md"));
+  const historical = evidence.officialPreflight;
+  const context = await createManagedSliceContext({ workspace, snapshot: ROOT,
+    adapterPath: path.join(ROOT, "agents/codex/runtime/validation-runner.mjs"),
+    bridgePath: path.join(ROOT, "agents/codex/runtime/managed-runner-bridge.mjs"),
+    preflightPath: path.join(ROOT, "agents/codex/runtime/managed-slice-preflight.mjs"),
+    officialPreflight: { ...historical, specPath } });
+  const environment = managedEnvironment({ PATH: process.env.PATH, TMPDIR: tmpdir }, context);
+  const result = spawnSync(process.execPath, [
+    path.join(ROOT, "skills/workflows/stnl-slice-quality-manager/runtime/prepare-validation-candidate.mjs"),
+    "--prepare", "--spec-path", specPath, "--slice", "slice-02", "--workspace", workspace,
+    "--candidate-execution-root", candidate, "--semantic-response-file", response,
+  ], { cwd: workspace, env: environment, encoding: "utf8" });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /managed runner receipt is required; use the configured bridge/u);
+  assert.deepEqual(await fs.readFile(path.join(candidate, "tasks/slice-02.md")), before);
+  assert.equal(evidence.runner.requestsHandled, 0);
+});
+
+test("validation publisher accepts its own complete candidate after the materializer rejects it", async (t) => {
+  const fixture = await standaloneWorkspace(t);
+  await renderArtifacts(fixture);
+  const physicalTarget = path.join(fixture.root, "src", "validation target.mjs");
+  await fs.mkdir(path.dirname(physicalTarget), { recursive: true });
+  await fs.writeFile(physicalTarget, VALIDATED_CONTENT, "utf8");
+
+  const liveTask = path.join(fixture.execution, "tasks", "slice-01.md");
+  const globalClaim = path.relative(fixture.execution, physicalTarget).split(path.sep).join("/");
+  const detailClaim = path.relative(path.join(fixture.execution, "plans"), physicalTarget).split(path.sep).join("/");
+  const taskClaim = path.relative(path.dirname(liveTask), physicalTarget).split(path.sep).join("/");
+  await setImplementationAreas(fixture, { global: globalClaim, detail: detailClaim, task: taskClaim });
+  await editTask(fixture, (value) => {
+    let result = value.replace("- [ ] 1.1", "- [x] 1.1");
+    result = replaceSection(result, "Changed Areas", "- \`" + taskClaim + "\`");
+    result = replaceSection(result, "Implementation Test Evidence", replaceAll(
+      checkRecord("implementation-check", 1, "TESTS_PASS", 1),
+      [["../../src/example.txt", taskClaim]],
+    ));
+    return replaceSection(result, "Diff Summary", "- Implemented the approved observable behavior.");
+  });
+
+  const responseRoot = await temporary(t, "stnl-validation-publish-response-");
+  const semanticResponseFile = path.join(responseRoot, "response.json");
+  await fs.writeFile(semanticResponseFile, JSON.stringify({
+    status: "PASS",
+    head: "0123456789abcdef0123456789abcdef01234567",
+    commands: [{ command: "node --test test/cli.test.mjs", exit: 0 }],
+    evidence: "focused validation passed",
+    findingReferences: "none",
+    findingDispositions: "none",
+    blockers: "none",
+    unexpectedWorkspaceEffects: "none",
+    persistenceSummary: "formal result returned",
+  }), "utf8");
+
+  const candidateParent = await temporary(t, "stnl-validation-publish-candidate-");
+  const candidateRoot = path.join(candidateParent, "execution");
+  await copyDirectory(fixture.execution, candidateRoot);
+  const prepared = await prepareValidationCandidate({
+    specPath: fixture.requirements,
+    slice: "1",
+    workspace: fixture.root,
+    candidateExecutionRoot: candidateRoot,
+    semanticResponseFile,
+  });
+  assert.equal(prepared.formalStatus, "PASS");
+  assert.equal((await validateExecutionCandidate(fixture.requirements, candidateRoot)).state, "COMPLETE");
+
+  const liveTaskBefore = await fs.readFile(liveTask);
+  const liveIndexPath = path.join(fixture.execution, "tasks.md");
+  const liveIndexBefore = await fs.readFile(liveIndexPath);
+  await assert.rejects(
+    publishTaskMaterializationCandidate({
+      specPath: fixture.requirements,
+      candidateExecutionRoot: candidateRoot,
+    }),
+    /slice-01 historical task changed during materialization/u,
+  );
+  assert.deepEqual(await fs.readFile(liveTask), liveTaskBefore);
+  assert.deepEqual(await fs.readFile(liveIndexPath), liveIndexBefore);
+  assert.equal((await inspectExecutionState(fixture.requirements)).state, "IMPLEMENTED_AWAITING_VALIDATION");
+
+  const preparedCandidateBeforePublish = await fs.readFile(path.join(candidateRoot, "tasks", "slice-01.md"));
+  const controllerResult = await publishValidationCandidate({
+    specPath: fixture.requirements,
+    slice: "slice-01",
+    candidateExecutionRoot: candidateRoot,
+  });
+  assert.equal(controllerResult.status, "PASS");
+  assert.equal(controllerResult.state, "COMPLETE");
+  assert.deepEqual(await fs.readFile(path.join(candidateRoot, "tasks", "slice-01.md")), preparedCandidateBeforePublish,
+    "strict publisher must publish the already prepared candidate without rewriting it");
+  assert.equal((await inspectExecutionState(fixture.requirements)).state, "COMPLETE");
+  assert.deepEqual(
+    await fs.readFile(path.join(fixture.execution, "tasks", "slice-01.md")),
+    await fs.readFile(path.join(candidateRoot, "tasks", "slice-01.md")),
+  );
+  assert.deepEqual(
+    await fs.readFile(path.join(fixture.execution, "tasks.md")),
+    await fs.readFile(path.join(candidateRoot, "tasks.md")),
+  );
+});
+
+test("validation candidate preparation preserves a new semantic NEEDS_FIX finding for strict ownership validation", async (t) => {
+  const fixture = await standaloneWorkspace(t);
+  await renderArtifacts(fixture);
+  const liveTask = path.join(fixture.execution, "tasks", "slice-01.md");
+  await editTask(fixture, (value) => {
+    let result = value.replace("- [ ] 1.1", "- [x] 1.1");
+    result = replaceSection(result, "Changed Areas", "- `../../src/example.txt`");
+    result = replaceSection(result, "Implementation Test Evidence", checkRecord("implementation-check", 1, "TESTS_PASS", 1));
+    return replaceSection(result, "Diff Summary", "- Implementation is complete but the independent validation found a blocking mismatch.");
+  });
+  const responseRoot = await temporary(t, "stnl-validation-needs-fix-response-");
+  const semanticResponseFile = path.join(responseRoot, "response.json");
+  await fs.writeFile(semanticResponseFile, JSON.stringify({
+    status: "NEEDS_FIX",
+    head: "0123456789abcdef0123456789abcdef01234567",
+    commands: [{ command: "node --test test/cli.test.mjs", exit: 0 }],
+    evidence: "validation reproduced a behavior mismatch",
+    findingReferences: "finding-01",
+    findingDispositions: "finding-01=active",
+    blockers: "none",
+    unexpectedWorkspaceEffects: "none",
+    persistenceSummary: "finding requires correction",
+  }), "utf8");
+  const candidateParent = await temporary(t, "stnl-validation-needs-fix-candidate-");
+  const candidateRoot = path.join(candidateParent, "execution");
+  await copyDirectory(fixture.execution, candidateRoot);
+  const candidateTask = path.join(candidateRoot, "tasks", "slice-01.md");
+  await fs.writeFile(candidateTask, replaceSection(await fs.readFile(candidateTask, "utf8"), "Validation Findings", ACTIVE_FINDING), "utf8");
+
+  assert.equal(await fs.readFile(liveTask, "utf8").then((value) => value.includes("### attempt-01")), false);
+  const prepared = await prepareValidationCandidate({
+    specPath: fixture.requirements,
+    slice: "slice-01",
+    workspace: fixture.root,
+    candidateExecutionRoot: candidateRoot,
+    semanticResponseFile,
+  });
+  assert.equal(prepared.formalStatus, "NEEDS_FIX");
+  const published = await publishValidationCandidate({
+    specPath: fixture.requirements,
+    slice: "slice-01",
+    candidateExecutionRoot: candidateRoot,
+  });
+  assert.equal(published.status, "PASS");
+  assert.equal(published.state, "VALIDATION_NEEDS_FIX");
+  const taskText = await fs.readFile(candidateTask, "utf8");
+  assert.ok(taskText.includes("- Finding references: finding-01"));
+  assert.ok(taskText.includes("- Finding dispositions: finding-01=active"));
+  assert.match(taskText, /## Effective Validation Base\n\n- none/u);
+  assert.match(taskText, /## Final Result\n\n- pending/u);
+  assert.equal((await fs.readFile(path.join(candidateRoot, "tasks.md"), "utf8")).includes("| [ ] | 01 - Delivery | observable result | - | tasks/slice-01.md | pending | pending |"), true);
+  const readback = await inspectExecutionState(fixture.requirements);
+  assert.equal(readback.state, "VALIDATION_NEEDS_FIX");
+  assert.equal(deriveNormalHandoff(readback, "VALIDATE_SLICE")?.operation, "APPLY_FINDINGS");
+  assert.equal((await fs.readFile(path.join(fixture.execution, "tasks.md"), "utf8"))
+    .includes("| [ ] | 01 - Delivery | observable result | - | tasks/slice-01.md | pending | pending |"), true);
+});
+
+test("validation publisher persists a strictly validated runner delegation blocker", async (t) => {
+  const fixture = await standaloneWorkspace(t);
+  await renderArtifacts(fixture);
+  await editTask(fixture, (value) => {
+    let result = value.replace("- [ ] 1.1", "- [x] 1.1");
+    result = replaceSection(result, "Changed Areas", "- `../../src/example.txt`");
+    return replaceSection(result, "Implementation Test Evidence", checkRecord("implementation-check", 1, "TESTS_PASS", 1));
+  });
+  const candidateParent = await temporary(t, "stnl-validation-blocker-candidate-");
+  const candidateRoot = path.join(candidateParent, "execution");
+  await copyDirectory(fixture.execution, candidateRoot);
+  const candidateTask = path.join(candidateRoot, "tasks", "slice-01.md");
+  await fs.writeFile(candidateTask, replaceSection(await fs.readFile(candidateTask, "utf8"),
+    "Delegation Blocker", delegationBlocker("VALIDATE_SLICE", "malformed-output")), "utf8");
+  assert.equal((await validateExecutionCandidate(fixture.requirements, candidateRoot)).state, "RUNNER_RESULT_BLOCKED");
+  const published = await publishValidationCandidate({
+    specPath: fixture.requirements, slice: "slice-01", candidateExecutionRoot: candidateRoot,
+  });
+  assert.equal(published.status, "PASS");
+  assert.equal(published.state, "RUNNER_RESULT_BLOCKED");
+  assert.equal((await inspectExecutionState(fixture.requirements)).state, "RUNNER_RESULT_BLOCKED");
+});
+
 test("formal validation output round-trips through NEEDS_FIX, correction, PASS, base, final, and handoff", async (t) => {
-  const runnerContract = await fs.readFile(path.join(ROOT, "templates/subagents/claude-code/.claude/agents/stnl-validation-runner.md"), "utf8");
-  for (const fieldName of ["Tipo de validação:", "Status: PASS | NEEDS_FIX | BLOCKED", "Manifesto final da slice:", "Evidências:", "Findings:"]) {
+  const runnerContract = await fs.readFile(path.join(ROOT, "agents/claude-code/.claude/agents/stnl-validation-runner.md"), "utf8");
+  for (const fieldName of ["return one raw JSON object with exactly the lowerCamelCase semantic keys", '"status": "PASS | NEEDS_FIX | BLOCKED"', '"head": "<semantic value>"', '"commands": [{"command": "<full command>", "exit": 0}]', '"findingReferences": "<semantic value>"', '"findingDispositions": "<semantic value>"']) {
     assert.ok(runnerContract.includes(fieldName), fieldName);
   }
   const fixture = await standaloneWorkspace(t);
@@ -1405,7 +4295,23 @@ test("formal validation output round-trips through NEEDS_FIX, correction, PASS, 
   assert.equal(complete.tasks.get("slice-01").base.present, true);
   assert.equal(complete.tasks.get("slice-01").base.paths[0], "../../src/example.txt");
   assert.equal(complete.tasks.get("slice-01").final.result, "PASS");
-  assert.equal(deriveNormalHandoff(complete, "VALIDATE_SLICE").operation, "CLOSE");
+  assert.equal(deriveNormalHandoff(complete, "VALIDATE_SLICE"), null);
+  assert.deepEqual(complete.legalOperations, [{ operation: "REPLAN", slice: null }]);
+});
+
+test("an intermediate PASS hands off to the next serial execution frontier", async (t) => {
+  const fixture = await standaloneWorkspace(t);
+  await renderArtifacts(fixture);
+  await addSecondPristineSlice(fixture);
+  await passFirstSlice(fixture);
+  const state = await inspectExecutionState(fixture.requirements);
+  assert.equal(state.state, "EXECUTION_STARTED");
+  assert.deepEqual(deriveNormalHandoff(state, "VALIDATE_SLICE"), {
+    workflowSkill: "stnl-slice-executor",
+    operation: "EXECUTE_SLICE",
+    invocation: "OPERATION=EXECUTE_SLICE",
+    slice: "slice-02",
+  });
 });
 
 test("real planner and materializer templates round-trip through review and materialization handoffs", async (t) => {
@@ -1428,7 +4334,7 @@ test("real planner and materializer templates round-trip through review and mate
 
 test("distributed execution schemas and runtime agree on corrected semantic boundaries", async (t) => {
   const schemaPaths = [
-    "stnl-execution-closer", "stnl-slice-executor", "stnl-slice-quality-manager", "stnl-task-materializer",
+    "stnl-slice-executor", "stnl-slice-quality-manager", "stnl-task-materializer",
   ].map((skill) => path.join(ROOT, `skills/workflows/${skill}/references/execution-record-schema.md`));
   const schemas = await Promise.all(schemaPaths.map((schemaPath) => fs.readFile(schemaPath, "utf8")));
   for (const schema of schemas.slice(1)) assert.equal(schema, schemas[0]);
@@ -1459,6 +4365,169 @@ test("distributed execution schemas and runtime agree on corrected semantic boun
   assert.equal((await inspectExecutionState(accepted.requirements)).state, "IMPLEMENTED_AWAITING_VALIDATION");
   await editTask(accepted, (value) => value.replace("- Tested scope: ../../src/example.txt", "- Tested scope:\n  - ../../src/example.txt"));
   await assert.rejects(inspectExecutionState(accepted.requirements), /Tested scope|unexpected nested/u);
+});
+
+test("execution producer serializes automatic correction fields and excludes findings-only labels", async (t) => {
+  const fixture = await nestedLifecycleWorkspace(t);
+  const taskArtifact = path.join(fixture.execution, "tasks/slice-01.md");
+  const physicalTarget = path.join(fixture.root, "src/example.txt");
+  const claim = path.relative(path.dirname(taskArtifact), physicalTarget).split(path.sep).join("/");
+  await editTask(fixture, (value) => replaceSection(
+    replaceSection(value, "Changed Areas", `- \`${claim}\``),
+    "Corrections Applied",
+    "- none",
+  ));
+  await editTask(fixture, (value) => replaceSection(
+    value,
+    "Implementation Test Evidence",
+    checkRecord("implementation-check", 1, "TESTS_FAIL", 1),
+  ));
+  await fs.writeFile(physicalTarget, "corrected behavior\n", "utf8");
+
+  const roundTwoPayload = {
+    status: "TESTS_PASS",
+    automaticCheckRound: "2/3",
+    head: "fixture-head",
+    discoverySources: "task and package scripts",
+    discoveryActions: "read-only inspection",
+    verificationTypesConsidered: "unit tests",
+    nonApplicabilityRationale: "none",
+    noVerificationCommandConfirmation: "not applicable",
+    commands: [{ command: "node --test test/example.test.mjs", exit: 0 }],
+    resultOfEachCommandAndExitCode: "all passed after the bounded correction",
+    selectedChecks: "node --test test/example.test.mjs",
+    selectionRationale: "directly covers the changed behavior",
+    coverage: "changed behavior",
+    failures: "none",
+    priorRoundFailure: "round one implementation evidence was rejected by the strict schema",
+    correctionApplied: "updated the implementation evidence serialization fields",
+    inSliceRationale: "the correction remains within the approved slice",
+    evidenceOrFailureSummary: "focused tests passed after correction",
+    affectedFilesOrBehaviors: "example behavior",
+    blockers: "none",
+    unexpectedWorkspaceEffects: "none",
+    persistenceSummary: "record persisted",
+  };
+  await assert.rejects(
+    serializeRunnerExecutionBundleFromResponse({
+      operation: "EXECUTE_SLICE",
+      response: JSON.stringify({ ...roundTwoPayload, correctionsCovered: claim }),
+      workspace: fixture.root,
+      taskArtifact,
+    }),
+    /unknown semantic execution payload field: correctionsCovered/u,
+  );
+
+  const bundle = await serializeRunnerExecutionBundleFromResponse({
+    operation: "EXECUTE_SLICE",
+    response: JSON.stringify(roundTwoPayload),
+    workspace: fixture.root,
+    taskArtifact,
+  });
+  assert.match(bundle, /Automatic check round: 2\/3/u);
+  assert.match(bundle, /Prior-round failure: round one implementation evidence was rejected by the strict schema/u);
+  assert.match(bundle, /Correction applied: updated the implementation evidence serialization fields/u);
+  const escapedClaim = claim.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  assert.match(bundle, new RegExp(`Correction paths: ${escapedClaim}`));
+  assert.match(bundle, new RegExp(`Updated scope: ${escapedClaim}`));
+  assert.match(bundle, /In-slice rationale: the correction remains within the approved slice/u);
+  assert.doesNotMatch(bundle, /Corrections covered:/u);
+
+  const missingPriorFailure = await nestedLifecycleWorkspace(t);
+  const missingTask = path.join(missingPriorFailure.execution, "tasks/slice-01.md");
+  await editTask(missingPriorFailure, (value) => replaceSection(value, "Changed Areas", `- \`${path.relative(path.dirname(missingTask), path.join(missingPriorFailure.root, "src/example.txt")).split(path.sep).join("/")}\``));
+  await assert.rejects(
+    serializeRunnerExecutionBundleFromResponse({
+      operation: "EXECUTE_SLICE",
+      response: JSON.stringify(roundTwoPayload),
+      workspace: missingPriorFailure.root,
+      taskArtifact: missingTask,
+    }),
+    /requires prior implementation-check-1\/3 evidence/u,
+  );
+
+  const wrongCorrection = await nestedLifecycleWorkspace(t);
+  const wrongTask = path.join(wrongCorrection.execution, "tasks/slice-01.md");
+  const wrongClaim = path.relative(path.dirname(wrongTask), path.join(wrongCorrection.root, "src/example.txt")).split(path.sep).join("/");
+  await fs.writeFile(path.join(wrongCorrection.root, "src/other.txt"), "unrelated\n", "utf8");
+  await editTask(wrongCorrection, (value) => {
+    let result = replaceSection(value, "Changed Areas", `- \`${wrongClaim}\``);
+    result = replaceSection(result, "Corrections Applied", `- \`../../src/other.txt\``);
+    return replaceSection(result, "Implementation Test Evidence", checkRecord("implementation-check", 1, "TESTS_FAIL", 1));
+  });
+  await fs.writeFile(path.join(wrongCorrection.root, "src/example.txt"), "corrected behavior\n", "utf8");
+  await assert.rejects(
+    serializeRunnerExecutionBundleFromResponse({
+      operation: "EXECUTE_SLICE",
+      response: JSON.stringify(roundTwoPayload),
+      workspace: wrongCorrection.root,
+      taskArtifact: wrongTask,
+    }),
+    /Corrections Applied/u,
+  );
+});
+
+test("round-two correction is inserted into an owned candidate and passes strict validation", async (t) => {
+  const fixture = await standaloneWorkspace(t);
+  await renderArtifacts(fixture);
+  const liveTask = path.join(fixture.execution, "tasks/slice-01.md");
+  const target = path.join(fixture.root, "src/example.txt");
+  const claim = path.relative(path.dirname(liveTask), target).split(path.sep).join("/");
+  await editTask(fixture, (value) => {
+    let result = value.replace("- [ ] 1.1", "- [x] 1.1");
+    result = replaceSection(result, "Changed Areas", `- \`${claim}\``);
+    result = replaceSection(result, "Implementation Test Evidence", checkRecord("implementation-check", 1, "TESTS_FAIL", 1));
+    return replaceSection(result, "Diff Summary", "- Example behavior implemented; first check failed.");
+  });
+  const prepared = await prepareExecutionCopy({ specPath: fixture.requirements, slice: "slice-01" });
+  t.after(() => fs.rm(prepared.candidateRoot, { recursive: true, force: true }));
+  const liveBefore = await fs.readFile(liveTask);
+  await fs.writeFile(target, "corrected behavior\n", "utf8");
+  const response = {
+    status: "TESTS_PASS", automaticCheckRound: "2/3", head: "0123456789abcdef0123456789abcdef01234567",
+    discoverySources: "task and package scripts", discoveryActions: "read-only inspection",
+    verificationTypesConsidered: "unit tests", nonApplicabilityRationale: "none",
+    noVerificationCommandConfirmation: "verification command executed",
+    commands: [{ command: "node --test test/example.test.mjs", exit: 0 }],
+    resultOfEachCommandAndExitCode: "focused check passed", selectedChecks: "focused unit test",
+    selectionRationale: "direct scope", coverage: "corrected example behavior", failures: "none",
+    priorRoundFailure: "first focused check failed", correctionApplied: "corrected example behavior",
+    inSliceRationale: "same approved target", evidenceOrFailureSummary: "focused check passed",
+    affectedFilesOrBehaviors: "example behavior", blockers: "none", unexpectedWorkspaceEffects: "none",
+    persistenceSummary: "no runner writes",
+  };
+  const responseFile = path.join(await temporary(t, "stnl-round-two-response-"), "response.json");
+  await fs.writeFile(responseFile, JSON.stringify(response), "utf8");
+  const inserted = spawnSync(process.execPath, [
+    path.join(ROOT, "skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs"),
+    "--execution-bundle", "--operation", "EXECUTE_SLICE", "--workspace", fixture.root,
+    "--task-artifact", prepared.candidateTaskArtifact, "--semantic-response-file", responseFile,
+    "--insert-candidate",
+  ], { encoding: "utf8" });
+  assert.equal(inserted.status, 0, inserted.stderr);
+  const candidate = await fs.readFile(prepared.candidateTaskArtifact, "utf8");
+  assert.ok(candidate.includes(`## Corrections Applied\n\n- \`${claim}\``));
+  assert.ok(candidate.includes(`- Correction paths: ${claim}`));
+  const strictRoot = path.join(await temporary(t, "stnl-round-two-strict-"), "execution");
+  await copyDirectory(prepared.candidateExecutionRoot, strictRoot);
+  await fs.rm(path.join(strictRoot, ".stnl-execution-copy.json"));
+  assert.equal((await validateExecutionCandidate(fixture.requirements, strictRoot)).state,
+    "IMPLEMENTED_AWAITING_VALIDATION");
+  assert.deepEqual(await fs.readFile(liveTask), liveBefore);
+
+  const missingEvidence = await prepareExecutionCopy({ specPath: fixture.requirements, slice: "slice-01" });
+  t.after(() => fs.rm(missingEvidence.candidateRoot, { recursive: true, force: true }));
+  const missingResponse = path.join(await temporary(t, "stnl-missing-correction-"), "response.json");
+  await fs.writeFile(missingResponse, JSON.stringify({ ...response, correctionApplied: "none" }), "utf8");
+  const rejected = spawnSync(process.execPath, [
+    path.join(ROOT, "skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs"),
+    "--execution-bundle", "--operation", "EXECUTE_SLICE", "--workspace", fixture.root,
+    "--task-artifact", missingEvidence.candidateTaskArtifact, "--semantic-response-file", missingResponse,
+    "--insert-candidate",
+  ], { encoding: "utf8" });
+  assert.equal(rejected.status, 1);
+  assert.match(rejected.stderr, /correctionApplied is required/u);
+  assert.deepEqual(await fs.readFile(liveTask), liveBefore);
 });
 
 test("duplicate or unknown task sections cannot hide operational records", async (t) => {
@@ -1694,6 +4763,7 @@ test("requirements authority detects unchanged and stale planning at every reque
         return publishPassResult(result);
       });
       await editTasksIndex(fixture, (value) => value.replace("| [ ] | 01 - Delivery | observable result | - | tasks/slice-01.md | pending | pending |", "| [x] | 01 - Delivery | observable result | - | tasks/slice-01.md | PASS | PASS |"));
+      await writeValidatedPath(fixture);
       assert.equal((await inspectExecutionState(fixture.requirements)).state, "COMPLETE");
     }
     await fs.appendFile(fixture.requirements, "- AC-002: changed authority\n");
@@ -1738,7 +4808,7 @@ test("finding resolution is historical while only active blocking findings block
   });
   await editTasksIndex(fixture, (value) => value.replace("| [ ] | 01 - Delivery | observable result | - | tasks/slice-01.md | pending | pending |", "| [x] | 01 - Delivery | observable result | - | tasks/slice-01.md | PASS | PASS |"));
   await writeValidatedPath(fixture);
-  assert.equal((await preflightExecutionOperation(fixture.requirements, "CLOSE")).state, "COMPLETE");
+  assert.equal((await inspectExecutionState(fixture.requirements)).state, "COMPLETE");
 });
 
 test("partial finding correction may revalidate NEEDS_FIX before eventual PASS dispositions", async (t) => {
@@ -1762,6 +4832,7 @@ test("partial finding correction may revalidate NEEDS_FIX before eventual PASS d
     return publishPassResult(result);
   });
   await editTasksIndex(fixture, (value) => value.replace("| [ ] | 01 - Delivery | observable result | - | tasks/slice-01.md | pending | pending |", "| [x] | 01 - Delivery | observable result | - | tasks/slice-01.md | PASS | PASS |"));
+  await writeValidatedPath(fixture);
   assert.equal((await inspectExecutionState(fixture.requirements)).state, "COMPLETE");
 });
 
@@ -1917,6 +4988,32 @@ test("automatic check rounds reject skipped, duplicate, non-initial, and post-te
   }
 });
 
+test("EXECUTE_SLICE preflight permits the next automatic round only after an in-scope correction is persisted", async (t) => {
+  const uncorrected = await standaloneWorkspace(t);
+  await renderArtifacts(uncorrected);
+  await editTask(uncorrected, (value) => {
+    let result = value.replace("- [ ] 1.1", "- [x] 1.1");
+    result = replaceSection(result, "Changed Areas", "- `../../src/example.txt`");
+    return replaceSection(result, "Implementation Test Evidence", checkRecord("implementation-check", 1, "TESTS_FAIL", 1));
+  });
+  await assert.rejects(
+    preflightExecutionOperation(uncorrected.requirements, "EXECUTE_SLICE", "1"),
+    /unterminated implementation automatic correction cycle/u,
+  );
+
+  const corrected = await standaloneWorkspace(t);
+  await renderArtifacts(corrected);
+  await editTask(corrected, (value) => {
+    let result = value.replace("- [ ] 1.1", "- [x] 1.1");
+    result = replaceSection(result, "Changed Areas", "- `../../src/example.txt`");
+    result = replaceSection(result, "Corrections Applied", "- `../../src/example.txt`");
+    return replaceSection(result, "Implementation Test Evidence", checkRecord("implementation-check", 1, "TESTS_FAIL", 1));
+  });
+  const preflight = await preflightExecutionOperation(corrected.requirements, "EXECUTE_SLICE", "1");
+  assert.equal(preflight.state, "EXECUTION_STARTED");
+  assert.deepEqual(preflight.legalOperations, [{ operation: "REPLAN", slice: null }, { operation: "EXECUTE_SLICE", slice: "slice-01" }]);
+});
+
 test("only the first open serial slice may own operational phase", async (t) => {
   const fixture = await standaloneWorkspace(t);
   await renderArtifacts(fixture);
@@ -2040,7 +5137,7 @@ test("incomplete execution finalization is rejected for candidates and live hist
   const acceptedMetadata = JSON.parse(acceptedCli.stdout.split("\n")
     .find((line) => line.startsWith("MANDATORY_RECOVERY: ")).slice("MANDATORY_RECOVERY: ".length));
   assert.deepEqual(acceptedMetadata, inconsistent.mandatoryRecovery);
-  for (const [operation, slice] of [["EXECUTE_SLICE", "2"], ["VALIDATE_SLICE", "1"], ["REPLAN", null], ["CLOSE", null]]) {
+  for (const [operation, slice] of [["EXECUTE_SLICE", "2"], ["VALIDATE_SLICE", "1"], ["REPLAN", null]]) {
     const rejected = await rejectedWithRecovery(
       preflightExecutionOperation(fixture.requirements, operation, slice),
       /legal next operation is EXECUTE_SLICE for slice-01/u,
@@ -2179,6 +5276,22 @@ test("incomplete checklist recovery overrides only validation-bound implementati
     sameOperationResumeRequired: true,
   });
   assert.equal((await preflightExecutionOperation(delegatedValidation.requirements, "VALIDATE_SLICE", "1")).state, "RUNNER_INITIALIZATION_BLOCKED");
+});
+
+test("file-backed Tested state rejects a truncated SHA-256 digest", async (t) => {
+  const fixture = await standaloneWorkspace(t);
+  await renderArtifacts(fixture);
+  await editTask(fixture, (value) => {
+    let result = value.replace("- [ ] 1.1", "- [x] 1.1");
+    result = replaceSection(result, "Changed Areas", "- `../../src/example.txt`");
+    const malformed = checkRecord("implementation-check", 1, "TESTS_PASS", 1)
+      .replace(`sha256:${VALIDATED_HASH}`, `sha256:${VALIDATED_HASH.slice(1)}`);
+    return replaceSection(result, "Implementation Test Evidence", malformed);
+  });
+  await assert.rejects(
+    inspectExecutionState(fixture.requirements),
+    /implementation-check-01 has (?:malformed Tested state|unexpected nested or continuation content under Tested state)/u,
+  );
 });
 
 test("terminal auxiliary outcomes and scoped blocker resumes have exact phases", async (t) => {
@@ -2431,7 +5544,7 @@ test("a later missing integration slice has an executable append-only REPLAN pat
   assert.equal((await preflightExecutionOperation(fixture.requirements, "REVIEW_PLAN")).state, "PENDING_REPLAN_DRAFT");
 });
 
-test("superseded historical paths become closable only through a later current-authority PASS", async (t) => {
+test("superseded historical paths become terminal only through a later current-authority PASS", async (t) => {
   const fixture = await standaloneWorkspace(t);
   const { authority: oldHash } = await renderArtifacts(fixture);
   await editTask(fixture, (value) => replaceSection(value, "Changed Areas", "- `../../src/example.txt`"));
@@ -2450,11 +5563,9 @@ test("superseded historical paths become closable only through a later current-a
   await editTasksIndex(fixture, (value) => value.replace("| [ ] | 02 - Recovery | reconciled result | 01 | tasks/slice-02.md | pending | pending |", "| [x] | 02 - Recovery | reconciled result | 01 | tasks/slice-02.md | PASS | PASS |"));
   await writeValidatedPath(fixture);
   const complete = await inspectExecutionState(fixture.requirements);
-  assert.deepEqual(new Set(complete.legalOperations.map(({ operation }) => operation)), new Set(["CLOSE", "REPLAN"]));
-  assert.equal(complete.normalHandoff.invocation, "OPERATION=CLOSE");
-  assert.equal(complete.normalHandoff.invocation.startsWith("MODE="), false);
-  assert.equal((await preflightExecutionOperation(fixture.requirements, "CLOSE")).state, "COMPLETE");
-  assert.equal((await preflightExecutionOperation(fixture.requirements, "REPLAN")).state, "COMPLETE", "CLOSE recovery must permit a corrective replan from COMPLETE");
+  assert.deepEqual(complete.legalOperations, [{ operation: "REPLAN", slice: null }]);
+  assert.equal(complete.normalHandoff, null);
+  assert.equal((await preflightExecutionOperation(fixture.requirements, "REPLAN")).state, "COMPLETE", "terminal recovery must permit a corrective replan from COMPLETE");
 });
 
 test("repeated append-only REPLAN preserves older supersession revisions and commits exact current mappings", async (t) => {
@@ -2599,7 +5710,7 @@ test("Effective Validation Base commands and evidence are exact provenance of th
 test("fileless PASS uses an explicit none manifest with objective reason and evidence", async (t) => {
   const filelessAttempt = attemptRecord(1, "PASS", { evidence: "validated observable behavior" });
   const filelessCheck = checkRecord("implementation-check", 1, "TESTS_PASS", 1)
-    .replace(`- Tested state:\n  - \`../../src/example.txt\` | sha256:${"b".repeat(64)}`, "- Tested state: none\n- Fileless reason: no repository file participates in the observable configuration state");
+    .replace(`- Tested state:\n  - \`../../src/example.txt\` | sha256:${VALIDATED_HASH}`, "- Tested state: none\n- Fileless reason: no repository file participates in the observable configuration state");
   const filelessBase = `- Origin attempt: attempt-01
 - Attempt type: initial
 - HEAD: fixture
@@ -2630,7 +5741,6 @@ test("fileless PASS uses an explicit none manifest with objective reason and evi
     "| [x] | 01 - Delivery | observable result | - | tasks/slice-01.md | PASS | PASS |",
   ));
   assert.equal((await inspectExecutionState(valid.requirements)).state, "COMPLETE");
-  assert.equal((await preflightExecutionOperation(valid.requirements, "CLOSE")).state, "COMPLETE");
 
   for (const [name, baseMutation, error, attemptMutation = (attempt) => attempt] of [
     ["missing reason", (base) => base.replace(/^- Fileless reason:.*\n/mu, ""), /Fileless reason/u],
@@ -2664,7 +5774,7 @@ test("fileless PASS uses an explicit none manifest with objective reason and evi
 
 test("fileless APPLY_FINDINGS needs objective evidence but no fabricated path", async (t) => {
   const fileless = (record) => record.replace(
-    `- Tested state:\n  - \`../../src/example.txt\` | sha256:${"b".repeat(64)}`,
+    `- Tested state:\n  - \`../../src/example.txt\` | sha256:${VALIDATED_HASH}`,
     "- Tested state: none\n- Fileless reason: the correction changes observable authority without filesystem ownership",
   ).replace("- Corrections covered: ../../src/example.txt", "- Corrections covered: objective authority-only correction");
 
@@ -2702,7 +5812,7 @@ test("fileless APPLY_FINDINGS needs objective evidence but no fabricated path", 
 
 test("only the current state-driving auxiliary check controls fileless Changed Areas", async (t) => {
   const fileless = (record) => record.replace(
-    `- Tested state:\n  - \`../../src/example.txt\` | sha256:${"b".repeat(64)}`,
+    `- Tested state:\n  - \`../../src/example.txt\` | sha256:${VALIDATED_HASH}`,
     "- Tested state: none\n- Fileless reason: no repository file participates in current tested state",
   );
 
@@ -2760,8 +5870,8 @@ test("canonical execution tables and checklists reject every unexpected structur
   const malformedPlan = await standaloneWorkspace(t);
   await renderArtifacts(malformedPlan);
   await editPlan(malformedPlan, (value) => value.replace(
-    "| 01 - Delivery | observable result | - | AC-001 | src/example.txt | plans/slice-01.md |",
-    "| 01 - Delivery | observable result | - | AC-001 | src/example.txt | plans/slice-01.md |\n| malformed serial row |",
+    "| 01 - Delivery | observable result | - | AC-001 | `../src/example.txt`; example implementation (plain-text description) | plans/slice-01.md |",
+    "| 01 - Delivery | observable result | - | AC-001 | `../src/example.txt`; example implementation (plain-text description) | plans/slice-01.md |\n| malformed serial row |",
   ));
   await assert.rejects(inspectExecutionState(malformedPlan.requirements), /Serial Slice Order.*malformed row/u);
 
@@ -2776,8 +5886,8 @@ test("canonical execution tables and checklists reject every unexpected structur
   const nonPipePlan = await standaloneWorkspace(t);
   await renderArtifacts(nonPipePlan);
   await editPlan(nonPipePlan, (value) => value.replace(
-    "| 01 - Delivery | observable result | - | AC-001 | src/example.txt | plans/slice-01.md |",
-    "| 01 - Delivery | observable result | - | AC-001 | src/example.txt | plans/slice-01.md |\nmalformed serial row without pipes",
+    "| 01 - Delivery | observable result | - | AC-001 | `../src/example.txt`; example implementation (plain-text description) | plans/slice-01.md |",
+    "| 01 - Delivery | observable result | - | AC-001 | `../src/example.txt`; example implementation (plain-text description) | plans/slice-01.md |\nmalformed serial row without pipes",
   ));
   await assert.rejects(inspectExecutionState(nonPipePlan.requirements), /Serial Slice Order.*unexpected structural row/u);
 
@@ -2792,8 +5902,8 @@ test("canonical execution tables and checklists reject every unexpected structur
   const malformedChecklist = await standaloneWorkspace(t);
   await renderArtifacts(malformedChecklist);
   await editTask(malformedChecklist, (value) => value.replace(
-    "- [ ] 1.1 Implement behavior | observable result: observable result | expected areas: src/example.txt | requirement: AC-001",
-    "- [ ] 1.1 Implement behavior | observable result: observable result | expected areas: src/example.txt | requirement: AC-001\n- [ ] malformed checklist row",
+    "- [ ] 1.1 Implement behavior | observable result: observable result | expected areas: `../../src/example.txt`; example implementation | requirement: AC-001",
+    "- [ ] 1.1 Implement behavior | observable result: observable result | expected areas: `../../src/example.txt`; example implementation | requirement: AC-001\n- [ ] malformed checklist row",
   ));
   await assert.rejects(inspectExecutionState(malformedChecklist.requirements), /malformed Checklist row/u);
 });
@@ -2820,12 +5930,12 @@ test("scalar summaries stay inline while Tested state and Commands stay structur
     [(record) => record.replace("- Tested scope: ../../src/example.txt", "- Tested scope: ../../src/example.txt\n  1. second value"), /unexpected nested/u],
     [(record) => record.replace("- Tested scope: ../../src/example.txt", "- Tested scope:\n  - ../../src/example.txt"), /Tested scope|unexpected nested/u],
     [(record) => record.replace(
-      `  - \`../../src/example.txt\` | sha256:${"b".repeat(64)}`,
-      `  - \`../../src/example.txt\` | sha256:${"b".repeat(64)}\n  - \`../../src/example.txt\` | sha256:${"b".repeat(64)}`,
+      `  - \`../../src/example.txt\` | sha256:${VALIDATED_HASH}`,
+      `  - \`../../src/example.txt\` | sha256:${VALIDATED_HASH}\n  - \`../../src/example.txt\` | sha256:${VALIDATED_HASH}`,
     ), /duplicate Tested state paths/u],
     [(record) => record.replace(
-      `  - \`../../src/example.txt\` | sha256:${"b".repeat(64)}`,
-      `  - \`../../src/z.txt\` | sha256:${"b".repeat(64)}\n  - \`../../src/a.txt\` | sha256:${"b".repeat(64)}`,
+      `  - \`../../src/example.txt\` | sha256:${VALIDATED_HASH}`,
+      `  - \`../../src/z.txt\` | sha256:${VALIDATED_HASH}\n  - \`../../src/a.txt\` | sha256:${VALIDATED_HASH}`,
     ), /Tested state paths are not lexicographically ordered/u],
     [(record) => record.replace("`../../src/example.txt`", "`../../../outside.txt`"), /unsafe Tested state path/u],
     [(record) => record
@@ -2849,7 +5959,7 @@ test("scalar summaries stay inline while Tested state and Commands stay structur
     let result = value.replace("- [ ] 1.1", "- [x] 1.1");
     result = replaceSection(result, "Changed Areas", "- none");
     const fileless = checkRecord("implementation-check", 1, "TESTS_PASS", 1)
-      .replace(`- Tested state:\n  - \`../../src/example.txt\` | sha256:${"b".repeat(64)}`, "- Tested state: none\n- Fileless reason:   ");
+      .replace(`- Tested state:\n  - \`../../src/example.txt\` | sha256:${VALIDATED_HASH}`, "- Tested state: none\n- Fileless reason:   ");
     return replaceSection(result, "Implementation Test Evidence", fileless);
   });
   await assert.rejects(inspectExecutionState(whitespaceReason.requirements), /Fileless reason/u);
@@ -3205,7 +6315,223 @@ test("non-canonical execution residue blocks preflight while arbitrary external 
   await assert.rejects(preflightExecutionOperation(escaped.requirements, "VALIDATE_SLICE", "1"), /unsafe validation-owned path/u);
 });
 
-test("CLOSE verifies real final-owner hashes, removals, and changed-path ownership", async (t) => {
+test("Effective Validation Base ownership reproducer covers path basis, hash, drift, and strict readback", async (t) => {
+  const fixture = await standaloneWorkspace(t);
+  await renderArtifacts(fixture);
+  const target = await writeValidatedPath(fixture);
+  const liveTask = path.join(fixture.execution, "tasks/slice-01.md");
+  const liveIndex = path.join(fixture.execution, "tasks.md");
+  const liveBefore = await Promise.all([fs.readFile(liveTask), fs.readFile(liveIndex)]);
+
+  const terminalCandidate = async (name, { baseRelative = "../../src/example.txt", hash = VALIDATED_HASH } = {}) => {
+    const candidate = await copyDirectory(fixture.execution, path.join(fixture.root, name));
+    const candidateTask = path.join(candidate, "tasks/slice-01.md");
+    let task = await fs.readFile(candidateTask, "utf8");
+    task = task.replace("- [ ] 1.1", "- [x] 1.1");
+    task = replaceSection(task, "Changed Areas", "- `../../src/example.txt`");
+    task = replaceSection(task, "Validation Attempts", PASS_ATTEMPT);
+    task = replaceSection(task, "Effective Validation Base", passBase({ relative: baseRelative, hash }));
+    await fs.writeFile(candidateTask, publishPassResult(task), "utf8");
+    await fs.writeFile(path.join(candidate, "tasks.md"), (await fs.readFile(path.join(candidate, "tasks.md"), "utf8")).replace(
+      "| [ ] | 01 - Delivery | observable result | - | tasks/slice-01.md | pending | pending |",
+      "| [x] | 01 - Delivery | observable result | - | tasks/slice-01.md | PASS | PASS |",
+    ), "utf8");
+    return candidate;
+  };
+
+  const correct = await terminalCandidate("candidate-correct");
+  assert.equal((await validateExecutionCandidate(fixture.requirements, correct)).state, "COMPLETE", "R1 correct candidate");
+  assert.deepEqual(await Promise.all([fs.readFile(liveTask), fs.readFile(liveIndex)]), liveBefore, "candidate validation published implicitly");
+
+  const wrongBasis = await terminalCandidate("candidate-wrong-basis", { baseRelative: "src/example.txt" });
+  await assert.rejects(validateExecutionCandidate(fixture.requirements, wrongBasis), (error) => {
+    assert.ok(error instanceof ExecutionContractError);
+    assert.match(error.message, /final validation ownership does not match|changed\/corrected path with no validation owner/u);
+    return true;
+  });
+  assert.deepEqual(await Promise.all([fs.readFile(liveTask), fs.readFile(liveIndex)]), liveBefore, "wrong-basis candidate published implicitly");
+
+  const wrongHash = await terminalCandidate("candidate-wrong-hash", { hash: "0".repeat(64) });
+  await assert.rejects(validateExecutionCandidate(fixture.requirements, wrongHash), (error) => {
+    assert.ok(error instanceof ExecutionContractError);
+    assert.match(error.message, /final validation ownership does not match/u);
+    assert.equal(error.findings.some((item) => item.includes("expected sha256:") && item.includes("current sha256:")), true);
+    return true;
+  });
+
+  await fs.copyFile(path.join(correct, "tasks/slice-01.md"), liveTask);
+  await fs.copyFile(path.join(correct, "tasks.md"), liveIndex);
+  assert.equal((await inspectExecutionState(fixture.requirements)).state, "COMPLETE", "R5 strict readback without drift");
+
+  await fs.writeFile(target, "post-PASS drift\n", "utf8");
+  await assert.rejects(inspectExecutionState(fixture.requirements), (error) => {
+    assert.ok(error instanceof ExecutionContractError);
+    assert.match(error.message, /final validation ownership does not match/u);
+    assert.equal(error.recoveryTargets.some(({ operation, owner }) => operation === "REPLAN" && owner === "terminal-integrity"), true);
+    return true;
+  });
+});
+
+test("candidate validation permits declared later-slice ownership of a historical overlap", async (t) => {
+  const fixture = await standaloneWorkspace(t);
+  await renderArtifacts(fixture);
+  await addSecondPristineSlice(fixture);
+  await passFirstSlice(fixture);
+
+  const currentContent = "later validated behavior\n";
+  const currentHash = createHash("sha256").update(currentContent).digest("hex");
+  await writeValidatedPath(fixture, "../../src/example.txt", currentContent);
+
+  const candidate = await copyDirectory(fixture.execution, path.join(fixture.root, "historical-overlap-candidate"));
+  const candidateTask = path.join(candidate, "tasks/slice-02.md");
+  let task = await fs.readFile(candidateTask, "utf8");
+  task = task.replace("- [ ] 2.1", "- [x] 2.1");
+  task = replaceSection(task, "Changed Areas", "- `../../src/example.txt`");
+  task = replaceSection(
+    task,
+    "Prior Validation Overlap",
+    "### overlap-01\n\n- Prior slice: slice-01\n- Paths: ../../src/example.txt\n- Affected behavior: Preserve the previously validated CLI behavior.\n- Regressions: Re-run the focused CLI regression against the changed test file.",
+  );
+  task = replaceSection(
+    task,
+    "Implementation Test Evidence",
+    checkRecord("implementation-check", 1, "TESTS_PASS", 1).replaceAll(`sha256:${VALIDATED_HASH}`, `sha256:${currentHash}`),
+  );
+  await fs.writeFile(candidateTask, task, "utf8");
+
+  const liveTask = await fs.readFile(path.join(fixture.execution, "tasks/slice-02.md"));
+  assert.equal((await validateExecutionCandidate(fixture.requirements, candidate)).state, "IMPLEMENTED_AWAITING_VALIDATION");
+  assert.deepEqual(await fs.readFile(path.join(fixture.execution, "tasks/slice-02.md")), liveTask);
+
+  const needsFix = await copyDirectory(candidate, path.join(fixture.root, "historical-overlap-needs-fix"));
+  const needsFixTask = path.join(needsFix, "tasks/slice-02.md");
+  let needsFixText = await fs.readFile(needsFixTask, "utf8");
+  needsFixText = replaceSection(needsFixText, "Validation Attempts", NEEDS_FIX_ATTEMPT);
+  needsFixText = replaceSection(needsFixText, "Validation Findings", ACTIVE_FINDING);
+  await fs.writeFile(needsFixTask, needsFixText, "utf8");
+  assert.equal((await validateExecutionCandidate(fixture.requirements, needsFix)).state, "VALIDATION_NEEDS_FIX");
+  assert.deepEqual(await fs.readFile(path.join(fixture.execution, "tasks/slice-02.md")), liveTask);
+
+  const invalidCurrent = await copyDirectory(candidate, path.join(fixture.root, "historical-overlap-invalid-current"));
+  const invalidTaskPath = path.join(invalidCurrent, "tasks/slice-02.md");
+  await fs.writeFile(
+    invalidTaskPath,
+    (await fs.readFile(invalidTaskPath, "utf8")).replaceAll(`sha256:${currentHash}`, `sha256:${"0".repeat(64)}`),
+    "utf8",
+  );
+  await assert.rejects(validateExecutionCandidate(fixture.requirements, invalidCurrent), (error) => {
+    assert.ok(error instanceof ExecutionContractError);
+    assert.match(error.message, /file-backed candidate evidence expected/u);
+    assert.equal(error.findings.some((item) => item.includes("slice-02") || item.includes("tasks/slice-02.md")), true);
+    return true;
+  });
+});
+
+async function priorOverlapFixture(t, { samePath = false } = {}) {
+  const fixture = await nestedLifecycleWorkspace(t);
+  const claim = (name) => path.relative(path.join(fixture.execution, "tasks"), path.join(fixture.root, "src", name)).split(path.sep).join("/");
+  const a = claim("example.txt");
+  const b = samePath ? a : claim("later.txt");
+  const firstPlanRow = (await fs.readFile(path.join(fixture.execution, "plan.md"), "utf8"))
+    .split("\n").find((line) => line.startsWith("| 01 - Delivery |"));
+  const secondPlanRow = firstPlanRow.replace("01 - Delivery", "02 - Later").replace("| - | AC-001 |", "| 01 | AC-001 |")
+    .replace("example.txt", "later.txt").replace("plans/slice-01.md", "plans/slice-02.md");
+  const thirdPlanRow = secondPlanRow.replace("02 - Later", "03 - Final").replace("| 01 | AC-001 |", "| 02 | AC-001 |")
+    .replace("later.txt", "example.txt").replace("plans/slice-02.md", "plans/slice-03.md");
+  await editPlan(fixture, (value) => value.replace(firstPlanRow, `${firstPlanRow}\n${secondPlanRow}\n${thirdPlanRow}`));
+  const firstTaskRow = (await fs.readFile(path.join(fixture.execution, "tasks.md"), "utf8"))
+    .split("\n").find((line) => line.startsWith("| [ ] | 01 - Delivery |"));
+  const secondTaskRow = firstTaskRow.replace("01 - Delivery", "02 - Later").replace("| - | tasks/", "| 01 | tasks/")
+    .replace("slice-01.md", "slice-02.md");
+  const thirdTaskRow = secondTaskRow.replace("02 - Later", "03 - Final").replace("| 01 | tasks/", "| 02 | tasks/")
+    .replace("slice-02.md", "slice-03.md");
+  await editTasksIndex(fixture, (value) => value.replace(firstTaskRow, `${firstTaskRow}\n${secondTaskRow}\n${thirdTaskRow}`));
+  const firstPlan = await fs.readFile(path.join(fixture.execution, "plans/slice-01.md"), "utf8");
+  await fs.writeFile(path.join(fixture.execution, "plans/slice-02.md"), firstPlan.replaceAll("Slice 01", "Slice 02")
+    .replaceAll("- Slice: 01", "- Slice: 02").replaceAll("Delivery", "Later"), "utf8");
+  await fs.writeFile(path.join(fixture.execution, "plans/slice-03.md"), firstPlan.replaceAll("Slice 01", "Slice 03")
+    .replaceAll("- Slice: 01", "- Slice: 03").replaceAll("Delivery", "Final"), "utf8");
+  const firstTaskPath = path.join(fixture.execution, "tasks/slice-01.md");
+  const firstTask = await fs.readFile(firstTaskPath, "utf8");
+  const secondPristine = firstTask.replaceAll("Slice 01", "Slice 02").replaceAll("- Slice: 01", "- Slice: 02")
+    .replaceAll("plans/slice-01.md", "plans/slice-02.md").replaceAll("Delivery", "Later").replace("1.1", "2.1");
+  const thirdPristine = firstTask.replaceAll("Slice 01", "Slice 03").replaceAll("- Slice: 01", "- Slice: 03")
+    .replaceAll("plans/slice-01.md", "plans/slice-03.md").replaceAll("Delivery", "Final").replace("1.1", "3.1");
+  await fs.writeFile(path.join(fixture.execution, "tasks/slice-02.md"), secondPristine, "utf8");
+  await fs.writeFile(path.join(fixture.execution, "tasks/slice-03.md"), thirdPristine, "utf8");
+  let first = firstTask.replace("- [ ] 1.1", "- [x] 1.1");
+  first = replaceSection(first, "Changed Areas", `- \`${a}\``);
+  first = replaceSection(first, "Validation Attempts", PASS_ATTEMPT);
+  first = replaceSection(first, "Effective Validation Base", PASS_BASE.replaceAll("../../src/example.txt", a));
+  await fs.writeFile(firstTaskPath, publishPassResult(first), "utf8");
+  await writeValidatedPath(fixture, a);
+  await editTasksIndex(fixture, (value) => value.replace(firstTaskRow, firstTaskRow.replace("[ ]", "[x]").replace("| pending | pending |", "| PASS | PASS |")));
+  const secondTaskPath = path.join(fixture.execution, "tasks/slice-02.md");
+  let second = secondPristine.replace("- [ ] 2.1", "- [x] 2.1");
+  second = replaceSection(second, "Changed Areas", `- \`${b}\``);
+  if (samePath) {
+    second = replaceSection(second, "Prior Validation Overlap",
+      `- Slice 01 overlap: \`${b}\`; preserve the first validated behavior with focused regressions.`);
+  }
+  second = replaceSection(second, "Validation Attempts", PASS_ATTEMPT);
+  second = replaceSection(second, "Effective Validation Base", PASS_BASE.replaceAll("../../src/example.txt", b));
+  await fs.writeFile(secondTaskPath, publishPassResult(second), "utf8");
+  await writeValidatedPath(fixture, b);
+  await editTasksIndex(fixture, (value) => value.replace(secondTaskRow, secondTaskRow.replace("[ ]", "[x]").replace("| pending | pending |", "| PASS | PASS |")));
+  return { fixture, a, b, claim };
+}
+
+async function overlapCandidate(fixture, changed, overlap) {
+  const copy = await prepareExecutionCopy({ specPath: fixture.requirements, slice: "slice-03" });
+  let task = await fs.readFile(copy.candidateTaskArtifact, "utf8");
+  task = task.replace("- [ ] 3.1", "- [x] 3.1");
+  task = replaceSection(task, "Changed Areas", changed.map((claim) => `- \`${claim}\``).join("\n"));
+  task = replaceSection(task, "Prior Validation Overlap", overlap);
+  const testedState = changed.map((claim) => `  - \`${claim}\` | sha256:${VALIDATED_HASH}`).join("\n");
+  task = replaceSection(task, "Implementation Test Evidence", checkRecord("implementation-check", 1, "TESTS_PASS", 1)
+    .replace(`  - \`../../src/example.txt\` | sha256:${VALIDATED_HASH}`, testedState));
+  await fs.writeFile(copy.candidateTaskArtifact, task, "utf8");
+  return copy;
+}
+
+test("prior validation overlap is required before execution publication and preserves valid multi-slice claims", async (t) => {
+  const { fixture, a, b, claim } = await priorOverlapFixture(t);
+  const liveTask = path.join(fixture.execution, "tasks/slice-03.md");
+  const liveBefore = await fs.readFile(liveTask);
+  const relation = (slice, claim) => `- Slice ${slice} overlap: \`${claim}\`; preserve earlier behavior with focused regressions.`;
+
+  const missing = await overlapCandidate(fixture, [a], "- none");
+  await assert.rejects(validateExecutionCandidate(fixture.requirements, missing.candidateExecutionRoot),
+    (error) => error.message.includes(`slice-01 -> ${a}`));
+  await assert.rejects(publishExecutionCopy({ specPath: fixture.requirements, slice: "slice-03", candidateRoot: missing.candidateRoot }),
+    /Prior Validation Overlap is missing required prior slice\/path coverage/u);
+  assert.deepEqual(await fs.readFile(liveTask), liveBefore, "R7 failed publication must preserve live task bytes");
+
+  const partial = await overlapCandidate(fixture, [a, b], relation("01", a));
+  await assert.rejects(validateExecutionCandidate(fixture.requirements, partial.candidateExecutionRoot),
+    (error) => error.message.includes(`slice-02 -> ${b}`));
+
+  const complete = await overlapCandidate(fixture, [a, b], `${relation("01", a)}\n${relation("02", b)}`);
+  assert.equal((await validateExecutionCandidate(fixture.requirements, complete.candidateExecutionRoot)).state, "IMPLEMENTED_AWAITING_VALIDATION");
+
+  const duplicate = await overlapCandidate(fixture, [a], relation("01", a).replace(`\`${a}\``, `\`${a}\`, \`${a}\``));
+  await assert.rejects(validateExecutionCandidate(fixture.requirements, duplicate.candidateExecutionRoot), /Prior Validation Overlap contains duplicate path claim/u);
+
+  const disjoint = await overlapCandidate(fixture, [b], "- none");
+  await assert.rejects(validateExecutionCandidate(fixture.requirements, disjoint.candidateExecutionRoot),
+    (error) => error.message.includes(`slice-02 -> ${b}`));
+  await writeValidatedPath(fixture, claim("third.txt"));
+  const legitimateNone = await overlapCandidate(fixture, [claim("third.txt")], "- none");
+  assert.equal((await validateExecutionCandidate(fixture.requirements, legitimateNone.candidateExecutionRoot)).state, "IMPLEMENTED_AWAITING_VALIDATION");
+  assert.deepEqual(await fs.readFile(liveTask), liveBefore);
+
+  const shared = await priorOverlapFixture(t, { samePath: true });
+  const sharedCandidate = await overlapCandidate(shared.fixture, [shared.a], `${relation("01", shared.a)}\n${relation("02", shared.a)}`);
+  assert.equal((await validateExecutionCandidate(shared.fixture.requirements, sharedCandidate.candidateExecutionRoot)).state,
+    "IMPLEMENTED_AWAITING_VALIDATION");
+});
+
+test("terminal inspection detects hash drift and REMOVED reappearance without rewriting PASS history", async (t) => {
   const matching = await standaloneWorkspace(t);
   await renderArtifacts(matching);
   await editTask(matching, (value) => {
@@ -3217,9 +6543,25 @@ test("CLOSE verifies real final-owner hashes, removals, and changed-path ownersh
   });
   await editTasksIndex(matching, (value) => value.replace("| [ ] | 01 - Delivery | observable result | - | tasks/slice-01.md | pending | pending |", "| [x] | 01 - Delivery | observable result | - | tasks/slice-01.md | PASS | PASS |"));
   const target = await writeValidatedPath(matching);
-  assert.equal((await preflightExecutionOperation(matching.requirements, "CLOSE")).state, "COMPLETE");
+  const complete = await inspectExecutionState(matching.requirements);
+  assert.equal(complete.state, "COMPLETE");
+  assert.equal(complete.normalHandoff, null);
+  assert.deepEqual(complete.legalOperations, [{ operation: "REPLAN", slice: null }]);
+  const taskPath = path.join(matching.execution, "tasks/slice-01.md");
+  const historyBeforeDrift = await fs.readFile(taskPath);
   await fs.writeFile(target, "drifted behavior\n");
-  await assert.rejects(preflightExecutionOperation(matching.requirements, "CLOSE"), /final validation ownership does not match/u);
+  await assert.rejects(inspectExecutionState(matching.requirements), (error) => {
+    assert.ok(error instanceof ExecutionContractError);
+    assert.match(error.message, /final validation ownership does not match/u);
+    assert.equal(error.findings.some((item) => item.includes(target)
+      && item.includes("slice-01") && item.includes("expected sha256:") && item.includes("current sha256:")), true);
+    assert.deepEqual(error.recoveryTargets.map(({ operation, slice, owner }) => ({ operation, slice, owner })), [
+      { operation: "REPLAN", slice: null, owner: "terminal-integrity" },
+    ]);
+    return true;
+  });
+  assert.deepEqual(await fs.readFile(taskPath), historyBeforeDrift, "terminal drift inspection rewrote PASS history");
+  assert.equal((await preflightExecutionOperation(matching.requirements, "REPLAN")).state, "COMPLETE");
 
   const removed = await standaloneWorkspace(t);
   await renderArtifacts(removed);
@@ -3231,9 +6573,11 @@ test("CLOSE verifies real final-owner hashes, removals, and changed-path ownersh
     return publishPassResult(result);
   });
   await editTasksIndex(removed, (value) => value.replace("| [ ] | 01 - Delivery | observable result | - | tasks/slice-01.md | pending | pending |", "| [x] | 01 - Delivery | observable result | - | tasks/slice-01.md | PASS | PASS |"));
-  assert.equal((await preflightExecutionOperation(removed.requirements, "CLOSE")).state, "COMPLETE");
+  assert.equal((await inspectExecutionState(removed.requirements)).state, "COMPLETE");
   await writeValidatedPath(removed, "../../src/removed.txt");
-  await assert.rejects(preflightExecutionOperation(removed.requirements, "CLOSE"), (error) => error instanceof ExecutionContractError && error.findings.some((item) => item.includes("expected REMOVED")));
+  await assert.rejects(inspectExecutionState(removed.requirements), (error) => error instanceof ExecutionContractError
+    && error.findings.some((item) => item.includes("slice-01") && item.includes("expected REMOVED, current sha256:"))
+    && error.recoveryTargets.some((target_) => target_.operation === "REPLAN"));
 
   const unowned = await standaloneWorkspace(t);
   await renderArtifacts(unowned);
@@ -3247,13 +6591,45 @@ test("CLOSE verifies real final-owner hashes, removals, and changed-path ownersh
   await assert.rejects(inspectExecutionState(unowned.requirements), /changed\/corrected path with no validation owner/u);
 });
 
-test("lifecycle CLOSE trusts repository-owned paths outside a nested SPEC and rejects repository escape", async (t) => {
+test("terminal candidates reject invalid final ownership and preserve live execution bytes", async (t) => {
+  const fixture = await standaloneWorkspace(t);
+  await renderArtifacts(fixture);
+  const liveTask = path.join(fixture.execution, "tasks/slice-01.md");
+  const liveIndex = path.join(fixture.execution, "tasks.md");
+  const liveBefore = await Promise.all([fs.readFile(liveTask), fs.readFile(liveIndex)]);
+  const candidate = await copyDirectory(fixture.execution, path.join(fixture.root, "terminal-candidate"));
+  const candidateTask = path.join(candidate, "tasks/slice-01.md");
+  let task = await fs.readFile(candidateTask, "utf8");
+  task = task.replace("- [ ] 1.1", "- [x] 1.1");
+  task = replaceSection(task, "Changed Areas", "- `../../src/example.txt`");
+  task = replaceSection(task, "Validation Attempts", PASS_ATTEMPT);
+  task = replaceSection(task, "Effective Validation Base", PASS_BASE);
+  await fs.writeFile(candidateTask, publishPassResult(task), "utf8");
+  const candidateIndex = path.join(candidate, "tasks.md");
+  await fs.writeFile(candidateIndex, (await fs.readFile(candidateIndex, "utf8")).replace(
+    "| [ ] | 01 - Delivery | observable result | - | tasks/slice-01.md | pending | pending |",
+    "| [x] | 01 - Delivery | observable result | - | tasks/slice-01.md | PASS | PASS |",
+  ), "utf8");
+  await writeValidatedPath(fixture, "../../src/example.txt", "candidate hash mismatch\n");
+
+  await assert.rejects(validateExecutionCandidate(fixture.requirements, candidate), (error) => {
+    assert.ok(error instanceof ExecutionContractError);
+    assert.match(error.message, /final validation ownership does not match/u);
+    assert.equal(error.findings.some((item) => item.includes("slice-01")
+      && item.includes("expected sha256:") && item.includes("current sha256:")), true);
+    return true;
+  });
+  assert.deepEqual(await Promise.all([fs.readFile(liveTask), fs.readFile(liveIndex)]), liveBefore);
+  assert.equal((await inspectExecutionState(fixture.requirements)).state, "MATERIALIZED_PRISTINE");
+});
+
+test("terminal integrity trusts repository-owned paths outside a nested SPEC and rejects repository escape", async (t) => {
   const root = await temporary(t);
-  const repository = path.join(root, "repository");
+  const repository = path.join(root, "repository with space ü");
   await fs.mkdir(path.join(repository, ".git"), { recursive: true });
   const workspace = await copyDirectory(
     path.join(ROOT, "skills/workflows/stnl-spec-lifecycle-manager/examples/validator-fixtures/ready"),
-    path.join(repository, "specs/feature"),
+    path.join(repository, "specs", "área segura", "feature Ω"),
   );
   const fixture = { root: repository, requirements: workspace, execution: path.join(workspace, "execution") };
   await renderArtifacts(fixture);
@@ -3270,9 +6646,15 @@ test("lifecycle CLOSE trusts repository-owned paths outside a nested SPEC and re
     return publishPassResult(result);
   });
   await editTasksIndex(fixture, (value) => value.replace("| [ ] | 01 - Delivery | observable result | - | tasks/slice-01.md | pending | pending |", "| [x] | 01 - Delivery | observable result | - | tasks/slice-01.md | PASS | PASS |"));
-  assert.equal((await preflightExecutionOperation(workspace, "CLOSE")).state, "COMPLETE");
-  const candidate = await copyDirectory(fixture.execution, path.join(root, "nested-lifecycle-candidate"));
+  assert.equal((await inspectExecutionState(workspace)).state, "COMPLETE");
+  const candidate = await copyDirectory(fixture.execution, path.join(root, "nested lifecycle candidate"));
   assert.equal((await validateExecutionCandidate(workspace, candidate)).state, "COMPLETE");
+  const formerLocalPrefix = `.${path.basename(workspace)}.stnl-execution-candidate-`;
+  assert.deepEqual(
+    (await fs.readdir(path.dirname(workspace))).filter((name) => name.startsWith(formerLocalPrefix)),
+    [],
+    "candidate shadow appeared beside the nested lifecycle SPEC",
+  );
 
   const escapedPath = path.join(root, "escaped.txt");
   const escapedRelative = path.relative(taskDirectory, escapedPath).split(path.sep).join("/");
@@ -3282,5 +6664,158 @@ test("lifecycle CLOSE trusts repository-owned paths outside a nested SPEC and re
     result = replaceSection(result, "Effective Validation Base", passBase({ relative: escapedRelative }));
     return result;
   });
-  await assert.rejects(preflightExecutionOperation(workspace, "CLOSE"), /unsafe validation-owned path/u);
+  await assert.rejects(inspectExecutionState(workspace), /unsafe validation-owned path/u);
+});
+
+// A pristine live task must stay pristine until evidence is published from its
+// isolated candidate. Requiring its Changed Areas here deadlocks first execution.
+// This fixture is generated from the versioned templates; no benchmark-temp input.
+test("managed first execution tests candidate scope while the live task remains pristine", async (t) => {
+  const fixture = await nestedLifecycleWorkspace(t);
+  const workspace = fixture.root;
+  const taskArtifact = path.join(fixture.execution, "tasks/slice-01.md");
+  const target = path.join(workspace, "src/example.txt");
+  const related = path.join(workspace, "test/related.txt");
+  await fs.mkdir(path.dirname(related), { recursive: true });
+  await fs.writeFile(related, "related verification input\n");
+  const claims = [target, related].map((file) => path.relative(path.dirname(taskArtifact), file).split(path.sep).join("/"));
+  const liveBefore = await fs.readFile(taskArtifact, "utf8");
+  assert.match(liveBefore, /## Changed Areas\n\n- pending\n/u);
+  const preflight = await preflightExecutionOperation(fixture.requirements, "EXECUTE_SLICE", "1");
+  assert.equal(preflight.state, "MATERIALIZED_PRISTINE");
+  const officialPreflight = { exitCode: 0, operation: "EXECUTE_SLICE", slice: "slice-01", inputSlice: "1",
+    specPath: fixture.requirements, state: preflight.state, authority: `sha256:${preflight.currentFingerprint}`,
+    legalOperations: preflight.legalOperations, mandatoryRecovery: preflight.mandatoryRecovery };
+  const context = await createManagedSliceContext({ officialPreflight, workspace, snapshot: ROOT,
+    adapterPath: path.join(ROOT, "agents/codex/runtime/validation-runner.mjs"),
+    bridgePath: path.join(ROOT, "agents/codex/runtime/managed-runner-bridge.mjs"),
+    preflightPath: path.join(ROOT, "agents/codex/runtime/managed-slice-preflight.mjs") });
+  const tmpdir = await temporary(t, "stnl-pristine-runner-");
+  const environment = managedEnvironment({ ...process.env, TMPDIR: tmpdir }, context);
+  const copy = await prepareExecutionCopy({ specPath: fixture.requirements, slice: "slice-01" });
+  let candidate = liveBefore.replace("- [ ] 1.1", "- [x] 1.1");
+  candidate = replaceSection(candidate, "Changed Areas", claims.map((claim) => `- \`${claim}\``).join("\n"));
+  candidate = replaceSection(candidate, "Diff Summary", "- Implemented behavior and its related verification.");
+  await fs.writeFile(copy.candidateTaskArtifact, candidate);
+  assert.equal((await validateExecutionCandidate(fixture.requirements, copy.candidateExecutionRoot)).state, "EXECUTION_STARTED");
+  let turns = 0;
+  const broker = await startOfficialRunnerBroker({ workspace, tmpdir, operation: "EXECUTE_SLICE", sequence: 1,
+    slice: "slice-01", officialPreflight, pollIntervalMs: 5,
+    invoke: (request) => invokeIndependentRunner({ ...request, snapshot: ROOT, env: environment,
+      runTurn: async ({ eventsPath, operationId, prompt }) => {
+        turns += 1;
+        assert.match(prompt, /RUNNER_DISPATCH_MODE=NORMAL/u);
+        assert.equal(await fs.readFile(taskArtifact, "utf8"), liveBefore);
+        // The model boundary is stubbed; the local check really runs on these bytes.
+        const check = `import fs from 'node:fs'; import assert from 'node:assert/strict'; assert.equal(fs.readFileSync('src/example.txt', 'utf8'), ${JSON.stringify(VALIDATED_CONTENT)}); assert.equal(fs.readFileSync('test/related.txt', 'utf8'), 'related verification input\\n');`;
+        const result = spawnSync(process.execPath, ["--input-type=module", "-e", check], {
+          cwd: workspace, env: { ...process.env, STNL_VERIFICATION_COMMAND: "1" }, encoding: "utf8" });
+        assert.equal(result.status, 0, result.stderr);
+        const command = `STNL_VERIFICATION_COMMAND=1 ${process.execPath} --input-type=module -e ${JSON.stringify(check)}`;
+        const response = {
+          status: "TESTS_PASS", automaticCheckRound: "1/3", head: "1".repeat(40),
+          discoverySources: "task and versioned fixture", discoveryActions: "read fixture inputs",
+          verificationTypesConsidered: "focused verification", nonApplicabilityRationale: "none",
+          noVerificationCommandConfirmation: "applicable check executed", commands: [{ command, exit: result.status }],
+          resultOfEachCommandAndExitCode: "local check passed", selectedChecks: "fixture byte assertions",
+          selectionRationale: "direct scope coverage", coverage: "AC-001", failures: "none",
+          priorRoundFailure: "none", correctionApplied: "none", inSliceRationale: "none",
+          evidenceOrFailureSummary: "real local check passed", affectedFilesOrBehaviors: "example and related verification",
+          blockers: "none", unexpectedWorkspaceEffects: "none", persistenceSummary: "no runner edits",
+        };
+        const events = [
+          { operationId, type: "thread.started", thread_id: "offline-pristine-runner" },
+          { operationId, type: "turn.started" },
+          { operationId, type: "item.started", item: { id: "item_0", type: "command_execution", command } },
+          { operationId, type: "item.completed", item: { id: "item_0", type: "command_execution", command,
+            status: "completed", exit_code: result.status, aggregated_output: result.stdout } },
+          { operationId, type: "item.completed", item: { id: "item_1", type: "agent_message", text: JSON.stringify(response) } },
+          { operationId, type: "turn.completed", usage: { input_tokens: 0, output_tokens: 0 } },
+        ];
+        await fs.writeFile(eventsPath, `${events.map((event) => JSON.stringify(event)).join("\n")}\n`);
+        return { completed: true, turnStarted: true, threadId: "offline-pristine-runner", requestedModel: "gpt-5.6-luna",
+          requestedEffort: "medium", reportedModel: null, error: null, usage: { input_tokens: 0, output_tokens: 0 } };
+      } }) });
+  try {
+    const payload = { automaticCheckRound: "1/3", changedAreas: claims,
+      relevantEvidence: "candidate holds prospective changed scope", requestedChecks: "check the two fixture inputs" };
+    await assert.rejects(runManagedRunnerBridge({ environment, cwd: workspace,
+      payload: JSON.stringify({ ...payload, changedScope: claims, changedAreas: undefined }) }), /changedScope/u);
+    assert.equal(turns, 0);
+    assert.equal(broker.requestsHandled, 0);
+    const receipt = await runManagedRunnerBridge({ environment, cwd: workspace, payload: JSON.stringify(payload) });
+    assert.equal(turns, 1);
+    assert.equal(broker.requestsHandled, 1);
+    assert.equal(receipt.status, "RUNNER_RESPONSE_CAPTURED");
+    assert.deepEqual(receipt.testedState.entries.map((entry) => entry.path), claims);
+    for (const [index, file] of [target, related].entries()) {
+      assert.equal(receipt.testedState.entries[index].value, `sha256:${createHash("sha256").update(await fs.readFile(file)).digest("hex")}`);
+    }
+    assert.equal(await fs.readFile(taskArtifact, "utf8"), liveBefore);
+    const receiptFile = path.join(tmpdir, "001-execute_slice-slice-01-attempt-1.receipt.json");
+    const producer = path.join(ROOT, "skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs");
+    const produce = (artifact) => spawnSync(process.execPath, [producer, "--execution-bundle", "--operation", "EXECUTE_SLICE",
+      "--workspace", workspace, "--task-artifact", artifact, "--semantic-response-file", receipt.semanticResponseFile,
+      "--receipt-file", receiptFile, "--insert-candidate"], { env: environment, encoding: "utf8" });
+    // Prospective dispatch does not authorize publishing a different target set.
+    const incomplete = await prepareExecutionCopy({ specPath: fixture.requirements, slice: "slice-01" });
+    await fs.writeFile(incomplete.candidateTaskArtifact, replaceSection(candidate, "Changed Areas", `- \`${claims[0]}\``));
+    const rejected = produce(incomplete.candidateTaskArtifact);
+    assert.equal(rejected.status, 1);
+    assert.match(rejected.stderr, /captured Tested state does not match candidate target scope/u);
+    const blockedPublish = spawnSync(process.execPath, [
+      path.join(ROOT, "skills/workflows/stnl-slice-executor/runtime/prepare-execution-copy.mjs"),
+      "--publish", "--spec-path", fixture.requirements, "--slice", "slice-01", "--candidate-root", incomplete.candidateRoot,
+    ], { env: environment, encoding: "utf8" });
+    assert.equal(blockedPublish.status, 1);
+    assert.match(blockedPublish.stderr, /EXECUTION_STARTED without publishable runner evidence/u);
+    assert.equal(await fs.readFile(taskArtifact, "utf8"), liveBefore);
+    const produced = produce(copy.candidateTaskArtifact);
+    assert.equal(produced.status, 0, produced.stderr);
+    assert.equal((await validateExecutionCandidate(fixture.requirements, copy.candidateExecutionRoot)).state,
+      "IMPLEMENTED_AWAITING_VALIDATION");
+    assert.equal(await fs.readFile(taskArtifact, "utf8"), liveBefore);
+    const published = spawnSync(process.execPath, [
+      path.join(ROOT, "skills/workflows/stnl-slice-executor/runtime/prepare-execution-copy.mjs"),
+      "--publish", "--spec-path", fixture.requirements, "--slice", "slice-01", "--candidate-root", copy.candidateRoot,
+    ], { env: environment, encoding: "utf8" });
+    assert.equal(published.status, 0, published.stderr);
+    assert.equal(JSON.parse(published.stdout).state, "IMPLEMENTED_AWAITING_VALIDATION");
+    const readback = await inspectExecutionState(fixture.requirements);
+    assert.equal(readback.state, "IMPLEMENTED_AWAITING_VALIDATION");
+    assert.equal(readback.normalHandoff.operation, "VALIDATE_SLICE");
+  } finally { await broker.close(); }
+});
+
+test("managed prospective scope is canonical without equating it to a prior published attempt", async (t) => {
+  const fixture = await nestedLifecycleWorkspace(t);
+  const taskArtifact = path.join(fixture.execution, "tasks/slice-01.md");
+  const target = path.join(fixture.root, "src/example.txt");
+  const extra = path.join(fixture.root, "src/next.txt");
+  await fs.writeFile(extra, "next attempt\n");
+  const claim = path.relative(path.dirname(taskArtifact), target).split(path.sep).join("/");
+  const extraClaim = path.relative(path.dirname(taskArtifact), extra).split(path.sep).join("/");
+  const options = { workspace: fixture.root, taskArtifact };
+  const before = await fs.readFile(taskArtifact, "utf8");
+  assert.deepEqual(await validateManagedChangedAreas({ ...options, changedAreas: [extraClaim, claim, claim] }), [claim, extraClaim]);
+  await editTask(fixture, (text) => replaceSection(text, "Changed Areas", `- \`${claim}\``));
+  const publishedBefore = await fs.readFile(taskArtifact, "utf8");
+  assert.deepEqual(await validateManagedChangedAreas({ ...options, changedAreas: [claim, extraClaim] }), [claim, extraClaim]);
+  assert.equal(await fs.readFile(taskArtifact, "utf8"), publishedBefore);
+  const outside = path.join(await temporary(t, "stnl-outside-scope-"), "outside.txt");
+  await fs.writeFile(outside, "must not be selected\n");
+  const link = path.join(fixture.root, "src/link.txt");
+  await fs.symlink(outside, link);
+  const relative = (file) => path.relative(path.dirname(taskArtifact), file).split(path.sep).join("/");
+  for (const invalid of [[target], ["src/example.txt"], [relative(outside)], [relative(link)],
+    [claim.replace("example.txt", "missing.txt")], [{ path: claim }]]) {
+    await assert.rejects(validateManagedChangedAreas({ ...options, changedAreas: invalid }));
+  }
+  assert.equal(await fs.readFile(taskArtifact, "utf8"), publishedBefore);
+  // Deletion of an explicitly planned file is still captured as a canonical removal.
+  await fs.rm(target);
+  assert.deepEqual(await validateManagedChangedAreas({ ...options, changedAreas: [claim] }), [claim]);
+  const captured = await captureRunnerTestedState({ ...options, changedAreas: [claim] });
+  assert.deepEqual(captured.entries, [{ path: claim, value: "REMOVED" }]);
+  await fs.writeFile(taskArtifact, before);
 });

@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sentinel.local/schemas/stnl-runner-validate-response-v1.json",
+  "title": "Sentinel VALIDATE_SLICE semantic response v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "status", "head", "commands", "evidence", "findingReferences", "findingDispositions",
+    "blockers", "unexpectedWorkspaceEffects", "persistenceSummary"
+  ],
+  "properties": {
+    "status": { "enum": ["PASS", "NEEDS_FIX", "BLOCKED"] },
+    "head": { "type": "string", "pattern": "^[^\\r\\n`]+$" },
+    "commands": {
+      "description": "Non-authoritative semantic check claims; exact command and exit come from marked SDK command_execution events.",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["command", "exit"],
+        "properties": {
+          "command": { "type": "string", "pattern": "^[\\s\\S]+$" },
+          "exit": { "type": "integer", "minimum": -9007199254740991, "maximum": 9007199254740991 }
+        }
+      }
+    },
+    "evidence": { "type": "string", "pattern": "^[\\s\\S]+$" },
+    "findingReferences": { "type": "string", "pattern": "^[^\\r\\n`]+$" },
+    "findingDispositions": { "type": "string", "pattern": "^[^\\r\\n`]+$" },
+    "blockers": { "type": "string", "pattern": "^[\\s\\S]+$" },
+    "unexpectedWorkspaceEffects": { "type": "string", "pattern": "^[\\s\\S]+$" },
+    "persistenceSummary": { "type": "string", "pattern": "^[\\s\\S]+$" }
+  }
+}

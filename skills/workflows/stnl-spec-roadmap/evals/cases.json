@@ -5,7 +5,7 @@
   {"id":"overlap-classification","expectation":"Multi-candidate coverage classifies shared context or ambiguous ownership.","automated":true},
   {"id":"dependency-cycle","expectation":"Missing, obsolete, self, and cyclic dependencies block before writes.","automated":true},
   {"id":"canonical-materialization","expectation":"Only a lifecycle-valid canonical SPEC workspace is materialized.","automated":true},
-  {"id":"execution-approval-boundary","expectation":"Mechanical COMPLETE remains UNKNOWN without a current structured EXECUTION_APPROVED verdict.","automated":true},
+  {"id":"execution-approval-boundary","expectation":"Mechanical COMPLETE remains UNKNOWN without durable structured semantic delivery evidence.","automated":true},
   {"id":"browser-state-boundary","expectation":"Local progress never changes roadmap or Sentinel dependency projection.","automated":false},
   {"id":"stable-reconcile","expectation":"RECONCILE preserves IDs, tombstones, title, SPEC path, and requires materialized impact.","automated":true},
   {"id":"stale-reconcile","expectation":"A changed model or authority snapshot blocks pair publication.","automated":true},

@@ -34,7 +34,7 @@ export function projectExecutionDependency(executionState) {
   if (executionState === "COMPLETE") {
     return {
       verdict: "UNKNOWN",
-      detail: "Execution is mechanically COMPLETE, but only a current stnl-execution-closer EXECUTION_APPROVED verdict can satisfy dependencies.",
+      detail: "Execution is mechanically COMPLETE, but no durable structured semantic delivery attestation is available to satisfy dependencies.",
     };
   }
   return {

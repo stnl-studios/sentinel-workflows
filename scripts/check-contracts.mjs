@@ -43,7 +43,6 @@ function realFiles(root) {
         entry.name === ".DS_Store" ||
         entry.name.startsWith("._") ||
         entry.name === "__MACOSX" ||
-        entry.name === "targets" ||
         entry.name === "node_modules"
       ) continue;
       const child = path.join(current, entry.name);
@@ -146,87 +145,76 @@ function checkFilePurposeHeader(file, owner) {
 
 const checkSchemas = {
   EXECUTE_SLICE: [
-    "Operação: EXECUTE_SLICE",
-    "Status: TESTS_PASS | TESTS_FAIL | TESTS_NOT_APPLICABLE | BLOCKED",
-    "Automatic check round:",
-    "HEAD:",
-    "Escopo verificado:",
-    "Estado testado:",
-    "Fileless reason: required only when Estado testado is exactly none; omit for file-backed state",
-    "Discovery sources:",
-    "Discovery actions:",
-    "Verification types considered:",
-    "Non-applicability rationale:",
-    "No verification-command confirmation:",
-    "Comandos executados:",
-    "Resultado de cada comando e exit code:",
-    "Testes selecionados:",
-    "Justificativa da seleção:",
-    "Cobertura:",
-    "Falhas:",
-    "Correções cobertas:",
-    "Evidências ou resumo da falha:",
-    "Arquivos ou comportamentos afetados:",
-    "Bloqueios:",
-    "Efeitos inesperados no workspace:",
-    "Resumo para persistência:",
+    "{",
+    '  "status": "TESTS_PASS | TESTS_FAIL | TESTS_NOT_APPLICABLE | BLOCKED",',
+    '  "automaticCheckRound": "1/3 | 2/3 | 3/3",',
+    '  "head": "<semantic value>",',
+    '  "discoverySources": "<semantic value>",',
+    '  "discoveryActions": "<semantic value>",',
+    '  "verificationTypesConsidered": "<semantic value>",',
+    '  "nonApplicabilityRationale": "<semantic value>",',
+    '  "noVerificationCommandConfirmation": "<semantic value>",',
+    '  "commands": [{"command": "<full command>", "exit": 0}],',
+    '  "resultOfEachCommandAndExitCode": "<semantic value>",',
+    '  "selectedChecks": "<semantic value>",',
+    '  "selectionRationale": "<semantic value>",',
+    '  "coverage": "<semantic value>",',
+    '  "failures": "<semantic value>",',
+    '  "priorRoundFailure": "<semantic value>",',
+    '  "correctionApplied": "<semantic value>",',
+    '  "inSliceRationale": "<semantic value>",',
+    '  "evidenceOrFailureSummary": "<semantic value>",',
+    '  "affectedFilesOrBehaviors": "<semantic value>",',
+    '  "blockers": "<semantic value>",',
+    '  "unexpectedWorkspaceEffects": "<semantic value>",',
+    '  "persistenceSummary": "<semantic value>"',
+    "}",
   ],
   APPLY_FINDINGS: [
-    "Operação: APPLY_FINDINGS",
-    "Status: TESTS_PASS | TESTS_FAIL | TESTS_NOT_APPLICABLE | BLOCKED",
-    "Automatic check round:",
-    "Ciclo de findings:",
-    "HEAD:",
-    "Escopo verificado:",
-    "Estado testado:",
-    "Fileless reason: required only when Estado testado is exactly none; omit for file-backed state",
-    "Discovery sources:",
-    "Discovery actions:",
-    "Verification types considered:",
-    "Non-applicability rationale:",
-    "No verification-command confirmation:",
-    "Comandos executados:",
-    "Resultado de cada comando e exit code:",
-    "Testes selecionados:",
-    "Justificativa da seleção:",
-    "Cobertura:",
-    "Findings verificados:",
-    "Correções cobertas:",
-    "Regressões selecionadas:",
-    "Findings ainda não sustentados pelos testes:",
-    "Falhas:",
-    "Evidências ou resumo da falha:",
-    "Arquivos ou comportamentos afetados:",
-    "Bloqueios:",
-    "Efeitos inesperados no workspace:",
-    "Resumo para persistência:",
+    "{",
+    '  "status": "TESTS_PASS | TESTS_FAIL | TESTS_NOT_APPLICABLE | BLOCKED",',
+    '  "automaticCheckRound": "1/3 | 2/3 | 3/3",',
+    '  "findingsCycle": "<semantic value>",',
+    '  "head": "<semantic value>",',
+    '  "discoverySources": "<semantic value>",',
+    '  "discoveryActions": "<semantic value>",',
+    '  "verificationTypesConsidered": "<semantic value>",',
+    '  "nonApplicabilityRationale": "<semantic value>",',
+    '  "noVerificationCommandConfirmation": "<semantic value>",',
+    '  "commands": [{"command": "<full command>", "exit": 0}],',
+    '  "resultOfEachCommandAndExitCode": "<semantic value>",',
+    '  "selectedChecks": "<semantic value>",',
+    '  "selectionRationale": "<semantic value>",',
+    '  "coverage": "<semantic value>",',
+    '  "findingsVerified": "<semantic value>",',
+    '  "correctionsCovered": "<semantic value>",',
+    '  "regressionsSelected": "<semantic value>",',
+    '  "unsupportedActiveFindings": "<semantic value>",',
+    '  "failures": "<semantic value>",',
+    '  "evidenceOrFailureSummary": "<semantic value>",',
+    '  "affectedFilesOrBehaviors": "<semantic value>",',
+    '  "blockers": "<semantic value>",',
+    '  "unexpectedWorkspaceEffects": "<semantic value>",',
+    '  "persistenceSummary": "<semantic value>"',
+    "}",
   ],
   VALIDATE_SLICE: [
-    "Operação: VALIDATE_SLICE",
-    "Tipo de validação: initial | revalidation",
-    "Status: PASS | NEEDS_FIX | BLOCKED",
-    "Escopo verificado:",
-    "HEAD:",
-    "Evidências anteriores avaliadas:",
-    "Atualidade e suficiência das evidências:",
-    "Manifesto final da slice:",
-    "Fileless reason: required only when Manifesto final da slice is exactly none; omit for file-backed manifest",
-    "Comandos executados:",
-    "Resultado de cada comando e exit code:",
-    "Testes selecionados ou repetidos:",
-    "Justificativa da seleção ou repetição:",
-    "Evidências:",
-    "Findings:",
-    "Bloqueios:",
-    "Overlap com bases anteriores:",
-    "Regressões justificadas executadas:",
-    "Efeitos inesperados no workspace:",
-    "Resumo para persistência:",
+    "{",
+    '  "status": "PASS | NEEDS_FIX | BLOCKED",',
+    '  "head": "<semantic value>",',
+    '  "commands": [{"command": "<full command>", "exit": 0}],',
+    '  "evidence": "<semantic value>",',
+    '  "findingReferences": "<semantic value>",',
+    '  "findingDispositions": "<semantic value>",',
+    '  "blockers": "<semantic value>",',
+    '  "unexpectedWorkspaceEffects": "<semantic value>",',
+    '  "persistenceSummary": "<semantic value>"',
+    "}",
   ],
 };
 
 function extractSchema(contract, operation) {
-  const match = new RegExp(`## Schema ${operation}\\n\\n\\x60\\x60\\x60text\\n([\\s\\S]*?)\\x60\\x60\\x60`, "u").exec(contract);
+  const match = new RegExp(`## Schema ${operation}\\n\\n\\x60\\x60\\x60(?:text|json)\\n([\\s\\S]*?)\\x60\\x60\\x60`, "u").exec(contract);
   if (!match) reject("R007_OUTPUT_SCHEMA", `runner output schema is missing: ${operation}`);
   return match[1].split("\n").filter(Boolean);
 }
@@ -244,9 +232,8 @@ function checkRunner(root) {
   const expectedCodex = {
     name: "stnl_validation_runner",
     description: "Runner barato e isolado para checks de implementação, checks de findings e validação formal independente de uma slice.",
-    model: "gpt-5.4-mini",
+    model: "gpt-5.6-luna",
     model_reasoning_effort: "medium",
-    sandbox_mode: "workspace-write",
     developer_instructions: codex.developer_instructions,
     agents: { max_depth: 1 },
   };
@@ -257,7 +244,7 @@ function checkRunner(root) {
     name: "stnl-validation-runner",
     description: expectedCodex.description,
     tools: "Read, Glob, Grep, Bash",
-    model: "haiku",
+    model: "claude-sonnet-5",
     effort: "medium",
   };
   if (!keysEqual(claude.metadata, expectedClaude) || Object.entries(expectedClaude).some(([key, value]) => claude.metadata[key] !== value)) {
@@ -280,7 +267,7 @@ function checkRunner(root) {
     requirePattern(contract, new RegExp(`^# ${heading}$`, "mu"), "R004_OPERATION_SCOPE", `missing runner section: ${heading}`);
   }
   forbidPattern(contract, /^# (?:CLOSE|REPLAN|FINALIZE_SLICE|PARALLELIZE_SLICES|RUN_TESTS)$/mu, "R004_OPERATION_SCOPE", "runner contains a forbidden operation");
-  requirePattern(contract, /1\/3[\s\S]{0,80}2\/3[\s\S]{0,80}3\/3/u, "R004_OPERATION_SCOPE", "runner lacks the exact three-round input set");
+  requirePattern(contract, /`EXECUTE_SLICE` (?:and|e) `APPLY_FINDINGS`[\s\S]{0,180}rodada automática atual como `1\/3`, `2\/3` ou `3\/3`/u, "R004_OPERATION_SCOPE", "runner lacks the exact three-round input set");
   forbidPattern(contract, /(?:1\/4|2\/4|3\/4|4\/4)/u, "R004_OPERATION_SCOPE", "runner permits a fourth automatic round");
   requirePattern(contract, /conclusões do contexto principal como não verificadas/iu, "R014_INDEPENDENCE", "runner does not independently verify main-context claims");
   requirePattern(contract, /Leia somente o escopo necessário/iu, "R014_INDEPENDENCE", "runner read scope is not bounded");
@@ -288,6 +275,12 @@ function checkRunner(root) {
 
   const execute = /# EXECUTE_SLICE\n([\s\S]*?)# APPLY_FINDINGS\n/u.exec(contract)?.[1] ?? "";
   const findings = /# APPLY_FINDINGS\n([\s\S]*?)# VALIDATE_SLICE\n/u.exec(contract)?.[1] ?? "";
+  requirePattern(contract, /# Canonical response gate\n\n?Field shape is strict at the JSON boundary:[\s\S]{0,1200}payload is one raw JSON object/u, "R026_OUTPUT_GATE", "runner lacks a byte-for-byte canonical semantic response gate");
+  forbidPattern(contract, /^Retorne somente `PASS`, `NEEDS_FIX` ou `BLOCKED`\.[\s\S]{0,500}Em `Findings:`/mu, "R026_OUTPUT_GATE", "validation contract reintroduces a narrative output shape alongside the JSON gate");
+  forbidPattern(contract, /(?:^|\n)Em `Findings:`, forneça uma disposição/iu, "R026_OUTPUT_GATE", "validation findings are not constrained to the semantic JSON field");
+  requirePattern(contract, /`commands`[^\n]{0,180}(?:somente|only)[^\n]{0,120}`?command`?[^\n]{0,80}`?exit`?/iu, "R027_TUPLE_GRAMMAR", "runner does not state the exact semantic command tuple grammar");
+  requirePattern(contract, /The machine-key schema is fixed[\s\S]{0,500}EXECUTE_SLICE[\s\S]{0,500}APPLY_FINDINGS[\s\S]{0,500}VALIDATE_SLICE/u, "R028_FIELD_SEQUENCE", "runner does not require the literal semantic field sequence at the final response gate");
+  requirePattern(contract, /Field shape is strict at the JSON boundary:[\s\S]{0,500}every semantic property except `commands` is one scalar string[\s\S]{0,300}`commands` is an array of objects with exactly `command` and integer `exit`[\s\S]{0,300}payload is one raw JSON object/u, "R029_FIELD_SHAPE", "runner does not require scalar semantic fields outside Commands");
   for (const [operation, section] of [["EXECUTE_SLICE", execute], ["APPLY_FINDINGS", findings]]) {
     forbidPattern(section, /(?:crie|create|emita|emit|marque|mark).{0,80}(?:Validation Attempt|Effective Validation Base|PASS formal|conclusão `\[x\]`)/iu, "R015_CHECK_AUTHORITY", `${operation} claims formal authority`);
   }
@@ -307,24 +300,20 @@ function checkRunner(root) {
   requirePattern(contract, /NEEDS_FIX[\s\S]{0,700}(?:finding estruturado|structured finding)/iu, "R006_VERDICTS", "NEEDS_FIX lacks structured findings");
   requirePattern(contract, /NEEDS_FIX[^\n]{0,300}pode criar novos findings estruturados/iu, "R006_VERDICTS", "NEEDS_FIX cannot persist structured findings");
   requirePattern(contract, /`TESTS_PASS` exige[^\n]{0,160}exit code zero/iu, "R006_VERDICTS", "TESTS_PASS lacks zero-exit authority");
-  requirePattern(contract, /Em `TESTS_PASS`[^\n]{0,260}`Escopo verificado`[^\n]{0,160}`Verification types considered`[^\n]{0,160}`Testes selecionados`[^\n]{0,160}`Cobertura`[^\n]{0,120}(?:nunca podem ser exact `none`|must not be exact `none`)/iu, "R006_VERDICTS", "TESTS_PASS permits none in an objective summary field");
+  requirePattern(contract, /Em `TESTS_PASS`[^\n]{0,260}`Tested scope`[^\n]{0,160}`Verification types considered`[^\n]{0,160}`Selected checks`[^\n]{0,160}`Coverage`[^\n]{0,120}(?:nunca podem ser exact `none`|must not be exact `none`)/iu, "R006_VERDICTS", "TESTS_PASS permits none in an objective summary field");
   requirePattern(contract, /`TESTS_FAIL` exige[^\n]{0,160}(?:comandos que falharam|commands that failed)/iu, "R006_VERDICTS", "TESTS_FAIL lacks command-failure evidence");
   requirePattern(contract, /`BLOCKED` exige[^\n]{0,180}(?:impossibilidade objetiva|objective impossibility)/iu, "R006_VERDICTS", "BLOCKED lacks an objective cause");
   forbidPattern(contract, /(?:NEEDS_FIX|BLOCKED)[\s\S]{0,160}(?:(?<!não )proponha|create|(?<!não )crie) Effective Validation Base/iu, "R006_VERDICTS", "non-PASS verdict creates an effective base");
-  requirePattern(contract, /caminhos relativos únicos[\s\S]{0,180}SHA-256[\s\S]{0,100}`REMOVED`/iu, "R008_MANIFEST", "final manifest path/hash/removal semantics are incomplete");
-  requirePattern(contract, /Estado testado[\s\S]{0,180}Manifesto final da slice[\s\S]{0,220}relativo ao diretório do artefato detalhado `tasks\/slice-NN\.md`/iu, "R008_MANIFEST", "tested-state and manifest path base is ambiguous");
   requirePattern(contract, /fontes consultadas em `Discovery sources`[\s\S]{0,160}`Discovery actions`/iu, "R007_OUTPUT_SCHEMA", "discovery sources and actions are not distinct");
-  requirePattern(contract, /rodadas posteriores file-backed[^\n]{0,180}caminhos de correção[^\n]{0,180}task-relative normalizados[^\n]{0,160}comma-space/iu, "R007_OUTPUT_SCHEMA", "file-backed correction-path persistence grammar is missing");
-  requirePattern(contract, /correção fileless[^\n]{0,80}`Correction paths`[^\n]{0,40}exact `none`/iu, "R007_OUTPUT_SCHEMA", "fileless correction paths cannot be exact none");
-  requirePattern(contract, /`Findings verificados`[^\n]{0,100}subconjunto canônico[^\n]{0,100}`Finding IDs`/iu, "R007_OUTPUT_SCHEMA", "verified findings are not constrained to the target subset");
-  requirePattern(contract, /`Findings ainda não sustentados pelos testes`[^\n]{0,140}exatamente os findings ativos[^\n]{0,180}(?:nunca se sobrepõem|never overlap)/iu, "R007_OUTPUT_SCHEMA", "unsupported active findings are not the exact disjoint remainder");
-  requirePattern(contract, /não retorne `PASS` com manifesto vazio, incompleto, duplicado, malformado ou inconsistente/iu, "R008_MANIFEST", "manifest rejection cases are incomplete");
-  requirePattern(contract, /fileless[\s\S]{0,300}`Fileless reason`[\s\S]{0,300}(?:não invente|never invent).{0,80}(?:path|caminho|hash)/iu, "R008_MANIFEST", "fileless manifest contract is incomplete");
+  requirePattern(contract, /`Findings verified`[^\n]{0,100}subconjunto canônico[^\n]{0,100}`Finding IDs`/iu, "R007_OUTPUT_SCHEMA", "verified findings are not constrained to the target subset");
+  requirePattern(contract, /`Unsupported active findings`[^\n]{0,140}exatamente os findings ativos[^\n]{0,180}(?:nunca se sobrepõem|never overlap)/iu, "R007_OUTPUT_SCHEMA", "unsupported active findings are not the exact disjoint remainder");
   requirePattern(contract, /overlap[\s\S]{0,500}regressões[\s\S]{0,300}(?:NEEDS_FIX|BLOCKED)/iu, "R010_OVERLAP", "overlap and regression obligations are incomplete");
   requirePattern(contract, /Para cada overlap[^\n]{0,100}valide o comportamento atual e regressões/iu, "R010_OVERLAP", "overlap behavior/regression validation is missing");
   requirePattern(contract, /primeira tentativa[^\n]{0,40}`initial`[^\n]{0,80}`revalidation`/iu, "R009_VALIDATION_ATTEMPT", "attempt type progression is missing");
-  requirePattern(contract, /PASS[^\n]{0,240}manifesto final completo/iu, "R009_VALIDATION_ATTEMPT", "PASS does not require a complete final manifest");
-  requirePattern(contract, /Findings:[^\n]{0,180}(?:disposição para cada finding|disposition for every finding)/iu, "R009_VALIDATION_ATTEMPT", "formal validation lacks per-finding disposition");
+  requirePattern(contract, /campo semântico `findingDispositions`[^\n]{0,180}disposição para cada finding/iu, "R009_VALIDATION_ATTEMPT", "formal validation lacks per-finding disposition");
+  requirePattern(contract, /`findingReferences` é exatamente `none`[^\n]{0,180}IDs canônicos `finding-01`, `finding-02`/u, "R009_VALIDATION_ATTEMPT", "validation finding references lack canonical IDs");
+  requirePattern(contract, /`findingDispositions` é exatamente `none`[^\n]{0,200}`=active`, `=resolved` ou `=superseded`/u, "R009_VALIDATION_ATTEMPT", "validation finding dispositions lack canonical grammar");
+  requirePattern(contract, /`findingReferences`: `finding-01` e `findingDispositions`: `finding-01=active`/u, "R009_VALIDATION_ATTEMPT", "new NEEDS_FIX finding lacks canonical response example");
   requirePattern(contract, /novo finding nasce `active`[^\n]{0,180}tentativa formal estritamente posterior/iu, "R009_VALIDATION_ATTEMPT", "new findings can be disposed at their origin attempt");
   requirePattern(contract, /PASS[^\n]{0,260}nenhuma disposição bloqueante ativa/iu, "R009_VALIDATION_ATTEMPT", "PASS may leave a blocking finding active");
   requirePattern(contract, /Checks nunca emitem[^\n]{0,160}(?:Validation Attempt|Effective Validation Base)/iu, "R015_CHECK_AUTHORITY", "check/formal authority separation is incomplete");
@@ -335,7 +324,7 @@ function checkRunner(root) {
   for (const launcher of ["slice-execute-codex.md", "slice-execute-claude.md", "slice-apply-findings-codex.md", "slice-apply-findings-claude.md", "slice-validate-codex.md", "slice-validate-claude.md"]) {
     if (!readme.includes(launcher)) reject("R012_README", `runner README omits launcher: ${launcher}`);
   }
-  forbidPattern(readme, /(?:CLOSE).{0,100}(?:(?<!não )usa|(?<!não )invoca).{0,80}(?:runner|test)/iu, "R012_README", "README makes CLOSE invoke validation");
+  forbidPattern(readme, /stnl-execution-closer|OPERATION=CLOSE|EXECUTION_(?:APPROVED|BLOCKED)/u, "R012_README", "README retains the removed execution closer contract");
   requirePattern(readme, /não existe fallback/iu, "R012_README", "README fallback boundary is missing");
   requirePattern(readme, /não existe passo manual adicional de testes/iu, "R012_README", "README manual-test-step boundary is missing");
   requirePattern(readme, /no mínimo uma vez e no máximo três vezes/iu, "R012_README", "README bounded automatic-round policy is missing");
@@ -344,6 +333,8 @@ function checkRunner(root) {
   requirePattern(readme, /não criam `implementation-check-NN`, `findings-check-NN` ou `attempt-NN`/iu, "R012_README", "README transport/evidence separation is missing");
   requirePattern(readme, /retoma diretamente na delegação[\s\S]{0,240}não reinicia identificadores/iu, "R012_README", "README initialization-resume semantics are missing");
   requirePattern(readme, /terceira falha entra em `IMPLEMENTATION_RETRY_EXHAUSTED` ou `FINDINGS_RETRY_EXHAUSTED`[\s\S]{0,180}`VALIDATE_SLICE` é a única próxima operação/iu, "R012_README", "README third-failure recovery is missing");
+  requirePattern(readme, /última slice aberta[\s\S]{0,320}cobertura global[\s\S]{0,180}cross-slice[\s\S]{0,180}`BLOCKED`[\s\S]{0,80}`REPLAN`/iu, "R017_TERMINAL_VALIDATION", "README terminal semantic validation is missing");
+  requirePattern(readme, /`COMPLETE`[\s\S]{0,260}runtime[\s\S]{0,260}ownership final[\s\S]{0,180}drift[\s\S]{0,180}`REPLAN`/iu, "R018_TERMINAL_INTEGRITY", "README terminal deterministic inspection is missing");
   requirePattern(readme, /fontes em `Discovery sources`, métodos em `Discovery actions`/iu, "R007_OUTPUT_SCHEMA", "README discovery labels are not canonical");
   forbidPattern(readme, /`Check discovery (?:sources|actions)`/iu, "R007_OUTPUT_SCHEMA", "README authorizes historical discovery labels");
 }
@@ -355,7 +346,7 @@ function checkScout(root) {
   const claude = parseFrontmatter(claudeFile, "S007_SYNTAX");
   const description = "Read-only exception scout for one explicitly authorized lifecycle evidence gap; never auto-select or delegate.";
   const expectedCodex = {
-    name: "stnl_spec_context_scout", description, model: "gpt-5.4-mini", model_reasoning_effort: "medium",
+    name: "stnl_spec_context_scout", description, model: "gpt-5.6-luna", model_reasoning_effort: "medium",
     sandbox_mode: "read-only", approval_policy: "never", web_search: "disabled",
     developer_instructions: codex.developer_instructions, agents: { max_depth: 1 },
   };
@@ -377,61 +368,62 @@ function checkSubagents(root) {
     "README.md",
     "codex/.codex/agents/stnl_validation_runner.toml",
     "codex/.codex/agents/stnl_spec_context_scout.toml",
+    "codex/package.json",
+    "codex/package-lock.json",
+    "codex/runtime/isolated-home.mjs",
+    "codex/runtime/managed-runner-bridge.mjs",
+    "codex/runtime/managed-slice-preflight.mjs",
+    "codex/runtime/runner-broker.mjs",
+    "codex/runtime/sdk-transport.mjs",
+    "codex/runtime/usage-accounting.mjs",
+    "codex/runtime/validation-runner.mjs",
     "claude-code/.claude/agents/stnl-validation-runner.md",
     "claude-code/.claude/agents/stnl-spec-context-scout.md",
   ]);
-  const actual = new Set(realFiles(root).map((file) => path.relative(root, file).split(path.sep).join("/")));
+  const actual = new Set(realFiles(root)
+    .map((file) => path.relative(root, file).split(path.sep).join("/")));
   if (actual.size !== expected.size || [...actual].some((file) => !expected.has(file))) reject("S002_REGISTRY", `subagent registry mismatch; actual=${JSON.stringify([...actual].sort())}`);
   checkRunner(root);
   checkScout(root);
 }
 
 const launcherSpecs = {
-  "spec-init": ["stnl-spec-lifecycle-manager", "MODE", "INIT", [["SPEC_PATH", "{{SPEC_PATH}}"], ["REQUIREMENTS_SOURCE", "{{REQUIREMENTS_SOURCE}}"]]],
-  "spec-resume": ["stnl-spec-lifecycle-manager", "MODE", "RESUME", [["SPEC_PATH", "{{SPEC_PATH}}"], ["NEW_INFORMATION", "{{NEW_INFORMATION}}"]]],
-  "spec-readiness": ["stnl-spec-lifecycle-manager", "MODE", "READINESS", [["SPEC_PATH", "{{SPEC_PATH}}"], ["READINESS_SCOPE", "{{READINESS_SCOPE}}"], ["READINESS_FOCUS", "{{READINESS_FOCUS}}"]]],
-  "spec-close": ["stnl-spec-lifecycle-manager", "MODE", "CLOSE", [["SPEC_PATH", "{{SPEC_PATH}}"]]],
-  "spec-test-runbook": ["stnl-spec-test-runbook", "OPERATION", "GENERATE_RUNBOOK", [["SPEC_PATH", "{{SPEC_PATH}}"], ["RUNBOOK_SCOPE", "{{RUNBOOK_SCOPE}}"], ["RUNBOOK_SELECTION", "{{RUNBOOK_SELECTION}}"], ["RUNBOOK_OPTIONS", "{{RUNBOOK_OPTIONS}}"]]],
-  "spec-roadmap-init": ["stnl-spec-roadmap", "OPERATION", "INIT", [["PROJECT_ROOT", "{{PROJECT_ROOT}}"], ["ROADMAP_PATH", "{{ROADMAP_PATH}}"], ["ROADMAP_SOURCE", "{{ROADMAP_SOURCE}}"]]],
-  "spec-roadmap-reconcile": ["stnl-spec-roadmap", "OPERATION", "RECONCILE", [["PROJECT_ROOT", "{{PROJECT_ROOT}}"], ["ROADMAP_PATH", "{{ROADMAP_PATH}}"], ["NEW_INFORMATION", "{{NEW_INFORMATION}}"]]],
-  "execution-plan": ["stnl-execution-planner", "OPERATION", "PLAN", [["SPEC_PATH", "{{SPEC_PATH}}"]]],
-  "execution-replan": ["stnl-execution-planner", "OPERATION", "REPLAN", [["SPEC_PATH", "{{SPEC_PATH}}"], ["REPLAN_REASON", "{{REPLAN_REASON}}"]]],
-  "execution-plan-review": ["stnl-plan-reviewer", "OPERATION", "REVIEW_PLAN", [["SPEC_PATH", "{{SPEC_PATH}}"]]],
-  "execution-tasks": ["stnl-task-materializer", "OPERATION", "MATERIALIZE_TASKS", [["SPEC_PATH", "{{SPEC_PATH}}"]]],
-  "execution-tasks-review": ["stnl-task-reviewer", "OPERATION", "REVIEW_TASKS", [["SPEC_PATH", "{{SPEC_PATH}}"]]],
-  "execution-close": ["stnl-execution-closer", "OPERATION", "CLOSE", [["SPEC_PATH", "{{SPEC_PATH}}"]]],
-  "slice-execute-codex": ["stnl-slice-executor", "OPERATION", "EXECUTE_SLICE", [["SPEC_PATH", "{{SPEC_PATH}}"], ["SLICE", "{{SLICE}}"]]],
-  "slice-execute-claude": ["stnl-slice-executor", "OPERATION", "EXECUTE_SLICE", [["SPEC_PATH", "{{SPEC_PATH}}"], ["SLICE", "{{SLICE}}"]]],
-  "slice-apply-findings-codex": ["stnl-slice-executor", "OPERATION", "APPLY_FINDINGS", [["SPEC_PATH", "{{SPEC_PATH}}"], ["SLICE", "{{SLICE}}"]]],
-  "slice-apply-findings-claude": ["stnl-slice-executor", "OPERATION", "APPLY_FINDINGS", [["SPEC_PATH", "{{SPEC_PATH}}"], ["SLICE", "{{SLICE}}"]]],
-  "slice-validate-codex": ["stnl-slice-quality-manager", "OPERATION", "VALIDATE_SLICE", [["SPEC_PATH", "{{SPEC_PATH}}"], ["SLICE", "{{SLICE}}"]]],
-  "slice-validate-claude": ["stnl-slice-quality-manager", "OPERATION", "VALIDATE_SLICE", [["SPEC_PATH", "{{SPEC_PATH}}"], ["SLICE", "{{SLICE}}"]]],
+  "spec-init": ["stnl-spec-lifecycle-manager", "MODE", "INIT", ["SPEC_PATH", "REQUIREMENTS_SOURCE"]],
+  "spec-resume": ["stnl-spec-lifecycle-manager", "MODE", "RESUME", ["SPEC_PATH", "NEW_INFORMATION"]],
+  "spec-readiness": ["stnl-spec-lifecycle-manager", "MODE", "READINESS", ["SPEC_PATH", "READINESS_SCOPE=GLOBAL"]],
+  "spec-readiness-local": ["stnl-spec-lifecycle-manager", "MODE", "READINESS", ["SPEC_PATH", "READINESS_SCOPE=LOCAL", "READINESS_FOCUS"]],
+  "spec-close": ["stnl-spec-lifecycle-manager", "MODE", "CLOSE", ["SPEC_PATH"]],
+  "spec-test-runbook": ["stnl-spec-test-runbook", "OPERATION", "GENERATE_RUNBOOK", ["SPEC_PATH", "RUNBOOK_SCOPE", "RUNBOOK_SELECTION", "RUNBOOK_OPTIONS"]],
+  "spec-roadmap-init": ["stnl-spec-roadmap", "OPERATION", "INIT", ["PROJECT_ROOT", "ROADMAP_PATH", "ROADMAP_SOURCE"]],
+  "spec-roadmap-reconcile": ["stnl-spec-roadmap", "OPERATION", "RECONCILE", ["PROJECT_ROOT", "ROADMAP_PATH", "NEW_INFORMATION"]],
+  "execution-plan": ["stnl-execution-planner", "OPERATION", "PLAN", ["SPEC_PATH"]],
+  "execution-replan": ["stnl-execution-planner", "OPERATION", "REPLAN", ["SPEC_PATH", "REPLAN_REASON"]],
+  "execution-plan-review": ["stnl-plan-reviewer", "OPERATION", "REVIEW_PLAN", ["SPEC_PATH"]],
+  "execution-tasks": ["stnl-task-materializer", "OPERATION", "MATERIALIZE_TASKS", ["SPEC_PATH"]],
+  "execution-tasks-review": ["stnl-task-reviewer", "OPERATION", "REVIEW_TASKS", ["SPEC_PATH"]],
+  "slice-execute-codex": ["stnl-slice-executor", "OPERATION", "EXECUTE_SLICE", ["SPEC_PATH", "SLICE"]],
+  "slice-execute-claude": ["stnl-slice-executor", "OPERATION", "EXECUTE_SLICE", ["SPEC_PATH", "SLICE"]],
+  "slice-apply-findings-codex": ["stnl-slice-executor", "OPERATION", "APPLY_FINDINGS", ["SPEC_PATH", "SLICE"]],
+  "slice-apply-findings-claude": ["stnl-slice-executor", "OPERATION", "APPLY_FINDINGS", ["SPEC_PATH", "SLICE"]],
+  "slice-validate-codex": ["stnl-slice-quality-manager", "OPERATION", "VALIDATE_SLICE", ["SPEC_PATH", "SLICE"]],
+  "slice-validate-claude": ["stnl-slice-quality-manager", "OPERATION", "VALIDATE_SLICE", ["SPEC_PATH", "SLICE"]],
 };
-
-const runnerLaunchers = new Set(Object.keys(launcherSpecs).filter((name) => name.startsWith("slice-")));
-const sharedExecution = new Set(["execution-plan", "execution-replan", "execution-plan-review", "execution-tasks", "execution-tasks-review", "execution-close", "spec-roadmap-init", "spec-roadmap-reconcile"]);
 
 function parseLauncher(file, spec) {
   const text = read(file, "L001_REGISTRY");
-  const lines = text.split(/\r?\n/u);
-  const context = lines.lastIndexOf("Contexto adicional (opcional):");
-  if (context < 0 || lines.slice(context + 1).some((line) => line !== "")) reject("L009_CONTEXT_FORMAT", `${file}: optional context must be the final heading`);
-  const body = lines.slice(0, context);
-  while (body.at(-1) === "") body.pop();
-  if (body[0] !== `Use \`${spec[0]}\`.`) reject("L002_SKILL", `${file}: wrong skill`);
-  if (body[1] !== `${spec[1]}=${spec[2]}`) reject("L003_OPERATION", `${file}: wrong operation`);
-  const assignments = [];
-  let index = 2;
-  while (/^[A-Z_]+=/u.test(body[index] ?? "")) {
-    const split = body[index].indexOf("=");
-    assignments.push([body[index].slice(0, split), body[index].slice(split + 1)]);
-    index += 1;
+  const expected = [
+    `Use ` + "`" + `${spec[0]}` + "`" + `.`,
+    `${spec[1]}=${spec[2]}`,
+    ...spec[3].map((name) => name.includes('=') ? name : `${name}={{${name}}}`),
+    "",
+    "Contexto adicional (opcional):",
+    "",
+  ].join("\n");
+  if (text !== expected) reject("L004_INPUTS", `${file}: launcher must contain only the registered skill, operation, parameters, and optional context`);
+  if (/__[^_\s]+__|BENCHMARK_SEQUENCE|MANAGED_WORKSPACE|CANDIDATE_EXECUTION_ROOT|runtime\/|broker|serializer|publisher/iu.test(text)) {
+    reject("L010_MECHANICS", `${file}: internal mechanics leaked into a human launcher`);
   }
-  if (JSON.stringify(assignments) !== JSON.stringify(spec[3])) reject("L004_INPUTS", `${file}: expected ${JSON.stringify(spec[3])}, got ${JSON.stringify(assignments)}`);
-  const placeholders = [...text.matchAll(/\{\{([^{}]+)\}\}/gu)].map((match) => match[1]).sort();
-  const expected = spec[3].map(([key]) => key).sort();
-  if (JSON.stringify(placeholders) !== JSON.stringify(expected)) reject("L004_INPUTS", `${file}: placeholder set changed`);
-  return { text, instructions: body.slice(index).join("\n") };
+  return text;
 }
 
 function checkLaunchers(root) {
@@ -439,116 +431,18 @@ function checkLaunchers(root) {
     .filter((entry) => entry.isFile() && entry.name.endsWith(".md") && entry.name !== ".DS_Store" && !entry.name.startsWith("._"))
     .map((entry) => [entry.name.slice(0, -3), path.join(root, entry.name)]));
   if (!keysEqual(actual, launcherSpecs)) reject("L001_REGISTRY", `launcher registry mismatch; actual=${JSON.stringify(Object.keys(actual).sort())}`);
-  for (const [name, spec] of Object.entries(launcherSpecs)) {
-    const { text, instructions } = parseLauncher(actual[name], spec);
-    forbidPattern(text, /(?:FINALIZE_SLICE|PARALLELIZE_SLICES|RUN_TESTS|RETRY_TESTS|FIX_TESTS|EXECUTE_SLICES|MODE=PLANNING|^SLICES=|paraleliz)/imu, "L005_REMOVED_CONTRACT", `${name}: removed operation remains`);
-    if (sharedExecution.has(name)) {
-      forbidPattern(text, /(?:stnl[_-]validation[_-]runner|@agent-|\bCodex\b|\bClaude\b|fork_turns|\bspawn\b|\bdeleg)/iu, "L006_SHARED_ISOLATION", `${name}: shared launcher contains platform invocation syntax`);
-    }
-    if (name === "execution-close") forbidPattern(instructions, /(?:runner|spawn|deleg|testes?|builds?|linters?|typechecks?|compila|retry|correç)/iu, "L006_SHARED_ISOLATION", "execution CLOSE invokes validation or repair");
-    if (name === "execution-replan") {
-      requirePattern(text, /OPERATION=REPLAN/u, "L003_OPERATION", "REPLAN launcher operation is missing");
-      requirePattern(text, /REPLAN_REASON=\{\{REPLAN_REASON\}\}/u, "L004_INPUTS", "REPLAN_REASON is missing");
-      requirePattern(instructions, /planning-only atomic replacement[\s\S]{0,120}revision 1[\s\S]{0,160}materialized-pristine replacement[\s\S]{0,160}append-only extension/iu, "L019_RECOVERY_TARGET", "REPLAN launcher does not distinguish all three mutation classes");
-    }
-    if (name === "spec-readiness") {
-      requirePattern(instructions, /(?:only|somente).{0,40}`LOCAL`.{0,30}`GLOBAL`|`LOCAL`.{0,30}`GLOBAL`.{0,80}(?:case-sensitive|sem aliases)/iu, "L015_READINESS_SCOPE", "READINESS exact scope set is missing");
-      requirePattern(instructions, /READINESS_FOCUS.{0,100}(?:obrigat|required)/iu, "L015_READINESS_SCOPE", "LOCAL focus requirement is missing");
-      forbidPattern(instructions, /`(?:local|global|localized|repository)`/u, "L015_READINESS_SCOPE", "READINESS scope alias is present");
-    }
-    if (name === "spec-test-runbook") {
-      for (const key of ["audience", "test_types", "environment", "depth", "data_preparation", "evidence", "presentation", "helpers", "locale"]) {
-        requirePattern(instructions, new RegExp(`\\b${key}\\b`, "u"), "L020_RUNBOOK_OPTIONS", `runbook launcher omits canonical option ${key}`);
-      }
-      requirePattern(instructions, /locale.{0,80}`en-US`.{0,30}`pt-BR`|`en-US`.{0,30}`pt-BR`.{0,80}locale/iu, "L020_RUNBOOK_OPTIONS", "runbook launcher omits the exact locale set");
-      requirePattern(instructions, /locale="en-US"/u, "L020_RUNBOOK_OPTIONS", "runbook launcher omits the en-US default");
-      requirePattern(instructions, /não (?:é |será )?detectado automaticamente|sem detecção automática|never (?:automatically )?detected/iu, "L020_RUNBOOK_OPTIONS", "runbook launcher permits automatic locale detection");
-      requirePattern(instructions, /pt_BR.{0,60}pt-br.{0,60}es-ES.{0,60}auto.{0,60}system/u, "L020_RUNBOOK_OPTIONS", "runbook launcher omits representative invalid locales");
-      requirePattern(instructions, /Chaves desconhecidas.{0,100}tipos incorretos.{0,100}enums inválidos.{0,100}arrays inválidos/iu, "L020_RUNBOOK_OPTIONS", "runbook launcher omits deterministic rejection rules");
-      requirePattern(instructions, /Exemplo em inglês[\s\S]{0,500}"en-US"/u, "L020_RUNBOOK_OPTIONS", "runbook launcher omits the en-US example");
-      requirePattern(instructions, /Exemplo em português do Brasil[\s\S]{0,800}"pt-BR"/u, "L020_RUNBOOK_OPTIONS", "runbook launcher omits the pt-BR example");
-    }
-    if (name.startsWith("spec-roadmap-")) {
-      requirePattern(instructions, /roadmap\.json/u, "L021_ROADMAP_BOUNDARY", `${name}: roadmap authority is missing`);
-      requirePattern(instructions, /browser.{0,120}(?:não é|never).{0,80}(?:Sentinel|authority|autoridade)/iu, "L021_ROADMAP_BOUNDARY", `${name}: browser-state boundary is missing`);
-      requirePattern(instructions, /não (?:crie|altere|invoque).{0,100}SPEC|do not (?:create|change|invoke).{0,100}SPEC/iu, "L021_ROADMAP_BOUNDARY", `${name}: SPEC mutation boundary is missing`);
-    }
-    if (!runnerLaunchers.has(name)) continue;
-    requirePattern(
-      instructions,
-      /concrete recovery operation and slice[^\n]{0,100}shared deterministic preflight[^\n]{0,80}authority[^\n]{0,120}derive neither from the current request[^\n]{0,100}report both exactly/iu,
-      "L019_RECOVERY_TARGET",
-      `${name}: state-derived concrete recovery target is missing`,
-    );
-    const isCodex = name.endsWith("-codex");
-    if (isCodex) {
-      if ((text.match(/stnl_validation_runner/gu) ?? []).length !== 1 || text.includes("@agent-") || /\bClaude\b/u.test(text)) reject("L007_PLATFORM_IDENTITY", `${name}: invalid Codex identity`);
-      requirePattern(instructions, /(?:faça|make|must).{0,40}spawn|spawn.{0,50}(?:obrigat|must)/iu, "L007_PLATFORM_IDENTITY", `${name}: mandatory Codex spawn is missing`);
-      requirePattern(instructions, /fork_turns="none"/u, "L016_TRANSPORT", `${name}: Codex must start without inherited turns`);
-      forbidPattern(instructions, /fork_turns="(?:all|[1-9][0-9]*)"/u, "L016_TRANSPORT", `${name}: full/history fork is forbidden`);
-    } else {
-      if ((text.match(/^@agent-stnl-validation-runner$/gmu) ?? []).length !== 1 || text.includes("stnl_validation_runner") || /\bCodex\b/u.test(text)) reject("L007_PLATFORM_IDENTITY", `${name}: invalid Claude identity`);
-      requirePattern(instructions, /deleg.{0,40}(?:obrigat|must)|(?:obrigat|must).{0,40}deleg/iu, "L007_PLATFORM_IDENTITY", `${name}: mandatory Claude delegation is missing`);
-    }
-    requirePattern(instructions, /(?:sem histórico|não envie histórico|without inherited|no conversation history)/iu, "L012_CHECK_DELEGATION", `${name}: conversation history boundary is missing`);
-    forbidPattern(instructions, /(?:(?<!não )envie|(?<!do not )forward|(?<!do not )include).{0,30}(?:histórico da conversa|conversation history)/iu, "L012_CHECK_DELEGATION", `${name}: forwards conversation history`);
-    requirePattern(instructions, /(?:no máximo uma nova tentativa|at most one (?:new )?(?:transport )?retry|retry.{0,40}once)/iu, "L012_CHECK_DELEGATION", `${name}: transport retry must be bounded to one`);
-    requirePattern(instructions, /Runner Initialization Blocker/u, "L012_CHECK_DELEGATION", `${name}: missing singleton initialization blocker`);
-    forbidPattern(instructions, /(?:(?<!não )faça|(?<!do not )use|(?<!do not )perform).{0,30}fallback|fallback.{0,30}(?:permit|allowed)/iu, "L008_VALIDATION_FLOW", `${name}: fallback is enabled`);
-    requirePattern(instructions, /não (?:passe|envie|encaminhe)[^\n]{0,60}logs completos|do not (?:send|forward)[^\n]{0,60}full logs/iu, "L012_CHECK_DELEGATION", `${name}: minimum-payload boundary omits the full-log prohibition`);
-    requirePattern(instructions, /tentativas[^\n]{0,80}não consomem rodada|transport[^\n]{0,80}(?:does not|do not) consume[^\n]{0,30}round/iu, "L016_TRANSPORT", `${name}: transport failures can consume a semantic round`);
-    requirePattern(instructions, /saída malformada[^\n]{0,100}não recebe retry de transporte|malformed[^\n]{0,100}no transport retry/iu, "L016_TRANSPORT", `${name}: malformed output is confused with transport initialization`);
-    requirePattern(instructions, /retome diretamente (?:no spawn|na delegação)|resume directly (?:at|with) (?:spawn|delegation)/iu, "L016_TRANSPORT", `${name}: initialization-blocker resume path is missing`);
-    forbidPattern(instructions, /(?<!não )(?:faça|crie|execute|use)[^\n]{0,40}(?:fallback|retry manual)|(?:fallback|manual retry)[^\n]{0,40}(?:permitid|allowed)/iu, "L008_VALIDATION_FLOW", `${name}: fallback or manual retry is enabled`);
-    if (spec[2] === "VALIDATE_SLICE") {
-      requirePattern(instructions, /PASS\s*\|\s*NEEDS_FIX\s*\|\s*BLOCKED/u, "L008_VALIDATION_FLOW", `${name}: formal status set changed`);
-      requirePattern(instructions, /Effective Validation Base[\s\S]{0,100}(?:finaliza|complete)/iu, "L008_VALIDATION_FLOW", `${name}: PASS does not atomically finalize`);
-      requirePattern(instructions, /(?:Exija|Require)[^\n]{0,40}(?:revisão|review) independente[^\n]{0,100}TESTS_NOT_APPLICABLE/iu, "L008_VALIDATION_FLOW", `${name}: non-applicability is not independently reviewed`);
-      forbidPattern(instructions, /(?<!não )(?:promova|converta|trate)[^\n]{0,80}TESTS_NOT_APPLICABLE[^\n]{0,80}(?:PASS|aprova)/iu, "L013_CHECK_AUTHORITY", `${name}: non-applicability is promoted to PASS`);
-      requirePattern(instructions, /não (?:repete|executa)[^\n]{0,80}testes|does not (?:repeat|run)[^\n]{0,80}tests/iu, "L013_CHECK_AUTHORITY", `${name}: main context may repeat formal checks`);
-      requirePattern(instructions, /não criam? nem consomem? `attempt-NN`|does not (?:create|consume)[^\n]{0,30}attempt/iu, "L016_TRANSPORT", `${name}: transport failure may allocate a formal attempt`);
-      requirePattern(instructions, /não mudam? `initial` para `revalidation`|does not change[^\n]{0,30}initial[^\n]{0,30}revalidation/iu, "L016_TRANSPORT", `${name}: transport failure may change validation type`);
-    } else {
-      requirePattern(instructions, /TESTS_PASS[\s\S]{0,80}TESTS_FAIL[\s\S]{0,80}TESTS_NOT_APPLICABLE[\s\S]{0,80}BLOCKED/u, "L014_AUTOMATIC_RECHECK", `${name}: auxiliary status set changed`);
-      requirePattern(instructions, /(?:no mínimo uma vez|at least once)[\s\S]{0,80}(?:no máximo três vezes|at most three times)/iu, "L014_AUTOMATIC_RECHECK", `${name}: one-to-three runner budget is missing`);
-      requirePattern(instructions, /1\/3[\s\S]{0,40}2\/3[\s\S]{0,40}3\/3/u, "L014_AUTOMATIC_RECHECK", `${name}: exact round set is missing`);
-      forbidPattern(instructions, /(?<!nunca )faça uma quarta chamada|(?<!never )make a fourth call|(?<!nem )(?<!não )use loop ilimitado|(?<!never )use an unbounded loop/iu, "L014_AUTOMATIC_RECHECK", `${name}: retry cycle is unbounded`);
-      forbidPattern(instructions, /(?:zero a três|zero to three|runner invocation is optional|Pode invocar o runner|(?<!Não )Pule o runner)/iu, "L014_AUTOMATIC_RECHECK", `${name}: runner invocation became optional`);
-      forbidPattern(instructions, /(?<!não )(?:Emita `PASS` formal|Crie Validation Attempt|Crie Effective Validation Base|Marque a conclusão `\[x\]`)/iu, "L013_CHECK_AUTHORITY", `${name}: auxiliary check claims formal authority`);
-      requirePattern(instructions, /Não execute no contexto principal[^\n]{0,120}(?:testes|builds|linters|typechecks|compila)|Do not run[^\n]{0,120}(?:tests|builds|linters|typechecks)[^\n]{0,40}main context/iu, "L013_CHECK_AUTHORITY", `${name}: main-context verification prohibition is missing`);
-      requirePattern(instructions, /TESTS_NOT_APPLICABLE[^\n]{0,240}(?:descoberta objetiva|objective discovery)[\s\S]{0,220}(?:nenhum comando de verificação|no verification command)/iu, "L013_CHECK_AUTHORITY", `${name}: non-applicability evidence is incomplete`);
-      forbidPattern(instructions, /(?<!não )(?:promova|trate|converta)[^\n]{0,80}TESTS_NOT_APPLICABLE[^\n]{0,80}(?:PASS|aprova)/iu, "L013_CHECK_AUTHORITY", `${name}: non-applicability is promoted to PASS`);
-      requirePattern(instructions, /não criam `(?:implementation|findings)-check-NN`|does not create[^\n]{0,40}(?:implementation|findings)-check/iu, "L016_TRANSPORT", `${name}: transport failure may allocate check evidence`);
-      requirePattern(instructions, /não autorizam correção|does not authorize correction/iu, "L016_TRANSPORT", `${name}: transport failure may authorize correction`);
-      requirePattern(instructions, /não (?:reimplemente|reaplique findings)|do not (?:reimplement|reapply findings)/iu, "L016_TRANSPORT", `${name}: resume may repeat implementation or findings correction`);
-      requirePattern(instructions, /terceira falha[\s\S]{0,220}VALIDATE_SLICE|third failure[\s\S]{0,220}VALIDATE_SLICE/iu, "L014_AUTOMATIC_RECHECK", `${name}: third failure lacks a formal-validation continuation`);
-      requirePattern(instructions, /não (?:inicie|invoque) `VALIDATE_SLICE`|do not (?:start|invoke) `VALIDATE_SLICE`/iu, "L013_CHECK_AUTHORITY", `${name}: automatic formal-validation prohibition is missing`);
-      requirePattern(instructions, /TESTS_FAIL`? nas rodadas 1 ou 2|TESTS_FAIL`? in rounds 1 or 2/iu, "L014_AUTOMATIC_RECHECK", `${name}: correction is not limited to the first two failures`);
-      if (spec[2] === "APPLY_FINDINGS") {
-        requirePattern(instructions, /terceira falha[^\n]{0,120}(?:preserve os findings ativos|preserve active findings)|preserve os findings ativos[^\n]{0,120}terceira falha/iu, "L014_AUTOMATIC_RECHECK", `${name}: third findings failure does not preserve active findings`);
-        requirePattern(instructions, /não resolve findings por si só|does not resolve findings by itself/iu, "L013_CHECK_AUTHORITY", `${name}: auxiliary non-applicability may resolve findings`);
-      }
-    }
-  }
-
+  for (const [name, spec] of Object.entries(launcherSpecs)) parseLauncher(actual[name], spec);
   for (const operation of ["execute", "apply-findings", "validate"]) {
-    const signatures = ["codex", "claude"].map((platform) => {
-      const { instructions } = parseLauncher(actual[`slice-${operation}-${platform}`], launcherSpecs[`slice-${operation}-${platform}`]);
-      return {
-        statuses: operation === "validate" ? /PASS\s*\|\s*NEEDS_FIX\s*\|\s*BLOCKED/u.test(instructions) : /TESTS_PASS[\s\S]*TESTS_FAIL[\s\S]*TESTS_NOT_APPLICABLE[\s\S]*BLOCKED/u.test(instructions),
-        retry: /no máximo uma nova tentativa/iu.test(instructions),
-        singleton: /Runner Initialization Blocker/u.test(instructions),
-        history: /sem histórico|não envie histórico/iu.test(instructions),
-        fallback: /Não faça fallback/iu.test(instructions),
-        nonApplicable: /TESTS_NOT_APPLICABLE/iu.test(instructions),
-        thirdFailure: /terceira falha/iu.test(instructions),
-      };
-    });
-    if (JSON.stringify(signatures[0]) !== JSON.stringify(signatures[1])) reject("L018_PLATFORM_EQUIVALENCE", `${operation}: Codex and Claude semantic contracts diverge`);
+    const codex = read(actual[`slice-${operation}-codex`]);
+    const claude = read(actual[`slice-${operation}-claude`]);
+    if (codex !== claude) reject("L018_PLATFORM_EQUIVALENCE", `${operation}: human launchers diverge across platforms`);
   }
 }
 
 function checkRepository(root) {
+  for (const relative of ["targets", "agents/base"]) {
+    if (fs.existsSync(path.join(root, relative))) reject("C019_REMOVED_ROOTS", `removed repository root was recreated: ${relative}`);
+  }
   checkPortability(root);
   const skillsRoot = path.join(root, "skills");
   for (const relative of [
@@ -610,10 +504,14 @@ function checkRepository(root) {
   const vendor = /\bCodex\b|\bClaude(?: Code)?\b|@agent-|stnl[_-]validation[_-]runner|fork_turns|\bgpt-[0-9]|\bhaiku\b|\bsonnet\b/iu;
   for (const [file, text] of genericTexts) if (vendor.test(text)) reject("C004_VENDOR_NEUTRALITY", `${file}: generic execution skill contains vendor invocation syntax`);
   const allExecutionText = genericTexts.map(([, text]) => text).join("\n");
-  for (const token of ["stnl-spec-execution-manager", "FINALIZE_SLICE", "PARALLELIZE_SLICES", "EXECUTE_SLICES", "RUN_TESTS", "RETRY_TESTS", "FIX_TESTS", "TEST_SLICE", "TEST_FINDINGS", "VALIDATE_IMPLEMENTATION"]) {
+  for (const token of ["stnl-spec-execution-manager", "stnl-execution-closer", "OPERATION=CLOSE", "EXECUTION_APPROVED", "EXECUTION_BLOCKED", "FINALIZE_SLICE", "PARALLELIZE_SLICES", "EXECUTE_SLICES", "RUN_TESTS", "RETRY_TESTS", "FIX_TESTS", "TEST_SLICE", "TEST_FINDINGS", "VALIDATE_IMPLEMENTATION"]) {
     if (allExecutionText.includes(token)) reject("C009_REMOVED_TOKENS", `removed execution token remains: ${token}`);
   }
   const plannerContract = ["SKILL.md", "templates/plan.template.md", "templates/slice-plan.template.md"].map((relative) => read(path.join(workflowRoot, "stnl-execution-planner", relative))).join("\n");
+  const globalPlanTemplate = read(path.join(workflowRoot, "stnl-execution-planner/templates/plan.template.md"));
+  const detailedPlanTemplate = read(path.join(workflowRoot, "stnl-execution-planner/templates/slice-plan.template.md"));
+  if (!globalPlanTemplate.includes("Model-selected physical target (repository-relative before serialization): `<repository-relative physical target>`; <optional conceptual area> (plain-text description)")) reject("C005_PATH_CARRIERS", "global Expected areas template must separate its semantic physical target from plain-text description");
+  if (!detailedPlanTemplate.includes("Implementation filesystem path (outside generated execution artifacts): `<artifact-relative path>` — <optional contract, subsystem, test area, or explanation> (plain-text description)")) reject("C005_PATH_CARRIERS", "detailed Likely Areas template must separate its implementation path from plain-text description");
   const taskContract = ["SKILL.md", "templates/tasks.template.md", "templates/slice-tasks.template.md"].map((relative) => read(path.join(workflowRoot, "stnl-task-materializer", relative))).join("\n");
   for (const [label, contract] of [["planning", plannerContract], ["tasks", taskContract]]) {
     if (!contract.includes("Requirements authority: sha256:<64hex>")) reject("C005_AUTHORITY_FIELDS", `${label} contract lacks exact Requirements authority field`);
@@ -651,7 +549,7 @@ function checkRepository(root) {
 }
 
 function checkPortability(root) {
-  for (const relative of ["scripts/validate-targets.sh", "scripts/smoke-structure.sh", "scripts/test-launcher-contract.sh", "scripts/test-validation-runner-contract.sh"]) {
+  for (const relative of ["scripts/validate.sh", "scripts/smoke-structure.sh", "scripts/test-launcher-contract.sh", "scripts/test-validation-runner-contract.sh"]) {
     const text = read(path.join(root, relative));
     if (/(?:^|[\s"'])python(?:3)?(?:[\s"']|$)|check-contracts\.py|test-serial-workflow\.py/imu.test(text)) reject("C007_PORTABILITY", `required validation path retains Python: ${relative}`);
   }
@@ -684,7 +582,7 @@ function checkLifecycleStatic(root) {
   for (const [marker, label] of [
     ["never remove, renumber, reuse, fill gaps", "immutable IDs"], ["retired_reason", "tombstone reason"],
     ["runtime/create-readiness-attestation.mjs", "attestation creator"], ["--readiness-attestation", "attestation binding"],
-    ["CLOSE <TARGET> <CANDIDATE> --readiness-attestation <ATTESTATION>", "publisher binding"], ["renamed backup digest before promotion", "post-rename verification"],
+    ["CLOSE <TARGET> <CANDIDATE>", "direct CLOSE publisher binding"], ["renamed backup digest before promotion", "post-rename verification"],
   ]) if (!lifecycleText.includes(marker)) reject("C015_LIFECYCLE_AUTHORITY", `lifecycle contracts lack ${label}`);
   const readme = read(path.join(lifecycle, "README.md"));
   if (!read(path.join(root, ".gitignore")).includes(".*.lifecycle.lock") || !readme.includes(".*.lifecycle.lock")) reject("C015_LIFECYCLE_AUTHORITY", "persistent publisher lock contract is missing");

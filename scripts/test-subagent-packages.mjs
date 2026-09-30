@@ -18,7 +18,7 @@ import test from "node:test";
 
 const SCRIPT_ROOT = path.dirname(fileURLToPath(import.meta.url));
 const REPOSITORY_ROOT = path.resolve(SCRIPT_ROOT, "..");
-const DISTRIBUTION_ROOT = path.join(REPOSITORY_ROOT, "templates", "subagents");
+const DISTRIBUTION_ROOT = path.join(REPOSITORY_ROOT, "agents");
 const LEGACY_DIRECTORY = ["context", "scout"].join("-");
 
 const RUNNER_DESCRIPTION =
@@ -36,6 +36,15 @@ const PLATFORMS = {
     files: [
       ".codex/agents/stnl_spec_context_scout.toml",
       ".codex/agents/stnl_validation_runner.toml",
+      "package.json",
+      "package-lock.json",
+      "runtime/isolated-home.mjs",
+      "runtime/managed-runner-bridge.mjs",
+      "runtime/managed-slice-preflight.mjs",
+      "runtime/runner-broker.mjs",
+      "runtime/sdk-transport.mjs",
+      "runtime/usage-accounting.mjs",
+      "runtime/validation-runner.mjs",
     ],
   },
   "claude-code": {
@@ -94,7 +103,7 @@ async function listFiles(root) {
     entries.sort((left, right) => left.name.localeCompare(right.name, "en"));
     for (const entry of entries) {
       const relativePath = path.join(relativeDirectory, entry.name);
-      if (isPackagingMetadata(relativePath)) {
+      if (isPackagingMetadata(relativePath) || entry.name === "node_modules") {
         continue;
       }
       const absolutePath = path.join(directory, entry.name);
@@ -202,7 +211,7 @@ function assertRunnerContract(contract, label) {
     "Não crie subagentes nem delegue.",
     "Checks nunca emitem `PASS` formal",
     "Não corrija automaticamente código quando um check falhar.",
-    "Não retorne `PASS` com manifesto vazio, incompleto, duplicado, malformado ou inconsistente",
+    "Serialização, persistência e validação determinística pertencem ao runtime/producer.",
   ]) assert.ok(contract.includes(boundary), `${label} lacks harmful-action boundary: ${boundary}`);
   assert.doesNotMatch(contract, /(?:você pode|é permitido|you may)[^\n]{0,80}(?:editar|implementar|aplicar correções|criar subagentes|delegar)/iu, `${label} enables a harmful action`);
 }
@@ -224,15 +233,14 @@ async function validateCodexPackage(root) {
   assert.deepEqual(runner.metadata, {
     name: "stnl_validation_runner",
     description: RUNNER_DESCRIPTION,
-    model: "gpt-5.4-mini",
+    model: "gpt-5.6-luna",
     model_reasoning_effort: "medium",
-    sandbox_mode: "workspace-write",
     agents: { max_depth: 1 },
   });
   assert.deepEqual(scout.metadata, {
     name: "stnl_spec_context_scout",
     description: SCOUT_DESCRIPTION,
-    model: "gpt-5.4-mini",
+    model: "gpt-5.6-luna",
     model_reasoning_effort: "medium",
     sandbox_mode: "read-only",
     approval_policy: "never",
@@ -262,7 +270,7 @@ async function validateClaudePackage(root) {
     name: "stnl-validation-runner",
     description: RUNNER_DESCRIPTION,
     tools: "Read, Glob, Grep, Bash",
-    model: "haiku",
+    model: "claude-sonnet-5",
     effort: "medium",
   });
   assert.deepEqual(scout.metadata, {
@@ -307,7 +315,8 @@ async function validateDistribution(root) {
     ...PLATFORMS.codex.files.map((file) => `codex/${file}`),
     ...PLATFORMS["claude-code"].files.map((file) => `claude-code/${file}`),
   ];
-  assertExactFiles(await listFiles(root), expectedFiles, "subagent distribution");
+  const distributionFiles = await listFiles(root);
+  assertExactFiles(distributionFiles, expectedFiles, "subagent distribution");
   await validateReadme(root);
   const codex = await validateCodexPackage(path.join(root, "codex"));
   const claude = await validateClaudePackage(path.join(root, "claude-code"));
@@ -327,7 +336,7 @@ async function withTemporaryDirectory(prefix, operation) {
 async function withDistributionFixture(operation) {
   return withTemporaryDirectory("stnl subagents distribution ", async (temporaryRoot) => {
     const fixture = path.join(temporaryRoot, "distribution with spaces");
-    await cp(DISTRIBUTION_ROOT, fixture, { recursive: true });
+    await cp(DISTRIBUTION_ROOT, fixture, { recursive: true, filter: (source) => path.basename(source) !== "node_modules" });
     return operation(fixture);
   });
 }
@@ -337,6 +346,7 @@ async function withPlatformFixture(platform, operation) {
     const fixture = path.join(temporaryRoot, "consumer project with spaces");
     await cp(path.join(DISTRIBUTION_ROOT, PLATFORMS[platform].directory), fixture, {
       recursive: true,
+      filter: (source) => path.basename(source) !== "node_modules",
     });
     return operation(fixture);
   });
@@ -433,6 +443,13 @@ test("rejects recreation of the removed intermediate directory", async () => {
   );
 });
 
+test("rejects an unexpected sibling in the agents registry", async () => {
+  await expectRejectedDistribution(async (fixture) => {
+    await mkdir(path.join(fixture, "base"), { recursive: true });
+    await writeFile(path.join(fixture, "base", "coder.md"), "legacy\n", "utf8");
+  });
+});
+
 test("rejects documentation pointing to the removed package layout", async () => {
   await expectRejectedDistribution(async (fixture) => {
     const readme = path.join(fixture, "README.md");
@@ -487,8 +504,8 @@ test("rejects an altered Codex model", async () => {
   await expectRejectedDistribution((fixture) =>
     replaceOnce(
       path.join(fixture, "codex", ".codex", "agents", "stnl_validation_runner.toml"),
-      'model = "gpt-5.4-mini"',
-      'model = "gpt-5.4"',
+      'model = "gpt-5.6-luna"',
+      'model = "gpt-5.6-sol"',
     ),
   );
 });

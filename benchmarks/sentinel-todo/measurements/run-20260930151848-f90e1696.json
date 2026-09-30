@@ -1,0 +1,507 @@
+{
+  "schemaVersion": 1,
+  "benchmarkId": "sentinel-todo",
+  "benchmarkVersion": 1,
+  "resultDefinition": "full run is PASS when manager status is PASS and all included cases have passing finalizers",
+  "run": {
+    "id": "run-20260930151848-f90e1696",
+    "status": "BLOCKED",
+    "mode": "full",
+    "profile": "production-v2",
+    "startedAt": "2026-09-30T15:18:49.388Z",
+    "endedAt": "2026-09-30T17:14:11.515Z"
+  },
+  "provenance": {
+    "baseSha": "b0a01bad5a790f342685c01f8e700b509b1aa225",
+    "dirty": false,
+    "functionalDiffSha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "sourceFunctionalSha256": "sha256:b8d8888da21f3c3befd5608783d4497167ac412062fcb17aedf1a87a48506d27",
+    "snapshotSha256": "sha256:a0001c1a68856476ebad73ee45e5bda83554d2ecf1440369d98698f4119d1a45",
+    "snapshotCreatedAt": "2026-09-30T15:18:49.373Z"
+  },
+  "comparability": {
+    "schemaVersion": 1,
+    "benchmarkVersion": 1,
+    "profile": "production-v2",
+    "requirementsHashes": {
+      "A": "sha256:e5934bc22267756c3c10b31c46b7a9cd894b78e961b11975b0f14f7085349a24",
+      "B": "sha256:0388a84f8c5a9c45fcd5b1d0b59e7d376979e98717d8e028067701f00a16fc57",
+      "C": "sha256:a896026d591f06776ade1d88fde292c4e5f0d015e5e18374e9cf754ecce4efcb"
+    },
+    "fixtureContentHashes": {
+      "A": "sha256:e0c3233c14356e93accff61b334704a91fb8e4f82a60209768259144d88a10d5",
+      "B": "sha256:107d1057e48506a20da4460ee33febca26280dd35c85f645b0de6b81ffb33e10",
+      "C": "sha256:a9700e1844ce7106809491f924b0fea37d8bf15700afa14c920cc1ee139fdd44"
+    },
+    "seedHash": "sha256:9d93fbfa52b2e20607452f43d0ecb21e74f1872bb7a2da1b94dc2c814e7552e8",
+    "resultSchemaVersion": 2,
+    "resultSchemaHash": "sha256:d19c9eb631797b957f67c85826c619828d092f2eb6e0de83410531dd697ffbd6",
+    "metricDefinitions": "g2-operation-counts-v1;g3-attributable-usage-delta-v1",
+    "qualification": {
+      "harnessContractVersion": 1,
+      "providerVersion": "codex-cli 0.154.0",
+      "capabilitiesHash": "a35d6560c398bc4665b67df364432079a63032c394b03ec85194f552a1e60441",
+      "sandboxProbeStatus": "SANDBOX_PROBE_PASS",
+      "sandboxProbeEvidenceSha256": "39f762e7fbce171c22f435b968d2d7a40a91466ea6fb62833579d3a233a4a8e9"
+    },
+    "resultDefinition": "full-pass-v1"
+  },
+  "cases": [
+    {
+      "id": "A",
+      "status": "PASS",
+      "blocker": "unavailable",
+      "terminalResult": "PASS",
+      "blockingOperation": "unavailable",
+      "operations": 10,
+      "mainTurns": 10,
+      "runnerTurns": 4,
+      "execution": "COMPLETE",
+      "specClosed": true,
+      "finalizer": "PASS",
+      "finalizerExitCode": 0,
+      "finalTestsPassed": true,
+      "finalTestCommand": "node --test",
+      "finalTestExitCode": 0,
+      "profileMismatches": [],
+      "provider": "openai",
+      "authMode": "chatgpt",
+      "isolation": "restricted",
+      "findingsCycles": 0,
+      "recoveryOperations": 0,
+      "extraRunnerTurns": 0,
+      "repeatedReviewRounds": 0,
+      "durationMs": 2208506,
+      "slices": 2,
+      "operationCounts": {
+        "EXECUTE_SLICE": 2,
+        "VALIDATE_SLICE": 2,
+        "APPLY_FINDINGS": 0,
+        "REPLAN": 0,
+        "SPEC_RESUME": 0,
+        "REVIEW_PLAN": 1,
+        "REVIEW_TASKS": 1
+      },
+      "operationsBySlice": {
+        "slice-01": {
+          "execute": 1,
+          "validate": 1,
+          "applyFindings": 0
+        },
+        "slice-02": {
+          "execute": 1,
+          "validate": 1,
+          "applyFindings": 0
+        }
+      },
+      "operationDurations": [
+        {
+          "operation": "SPEC_INIT",
+          "slice": null,
+          "durationMs": 412530
+        },
+        {
+          "operation": "PLAN",
+          "slice": null,
+          "durationMs": 346000
+        },
+        {
+          "operation": "REVIEW_PLAN",
+          "slice": null,
+          "durationMs": 119409
+        },
+        {
+          "operation": "MATERIALIZE_TASKS",
+          "slice": null,
+          "durationMs": 193320
+        },
+        {
+          "operation": "REVIEW_TASKS",
+          "slice": null,
+          "durationMs": 57357
+        },
+        {
+          "operation": "EXECUTE_SLICE",
+          "slice": "slice-01",
+          "durationMs": 317217
+        },
+        {
+          "operation": "VALIDATE_SLICE",
+          "slice": "slice-01",
+          "durationMs": 179674
+        },
+        {
+          "operation": "EXECUTE_SLICE",
+          "slice": "slice-02",
+          "durationMs": 195008
+        },
+        {
+          "operation": "VALIDATE_SLICE",
+          "slice": "slice-02",
+          "durationMs": 143509
+        },
+        {
+          "operation": "SPEC_CLOSE",
+          "slice": null,
+          "durationMs": 231511
+        }
+      ],
+      "repeatedAttemptsBySlice": {
+        "slice-01": {
+          "execute": 0,
+          "validate": 0
+        },
+        "slice-02": {
+          "execute": 0,
+          "validate": 0
+        }
+      },
+      "telemetry": {
+        "coverage": {
+          "main": "10/10",
+          "runner": "4/4"
+        },
+        "main": {
+          "turns": 10,
+          "input": 13993166,
+          "output": 74250,
+          "cachedInput": 13356544,
+          "reasoningOutput": 21098,
+          "observedInput": 13993166,
+          "observedOutput": 74250,
+          "peakInputPerTurn": 4015332,
+          "medianInputPerTurn": 1043661.5,
+          "meanInputPerTurn": 1399316.6
+        },
+        "runner": {
+          "turns": 4,
+          "input": 448752,
+          "output": 6554,
+          "cachedInput": 357376,
+          "reasoningOutput": 2060,
+          "observedInput": 448752,
+          "observedOutput": 6554,
+          "peakInputPerTurn": 117603,
+          "medianInputPerTurn": 112814,
+          "meanInputPerTurn": 112188
+        }
+      }
+    },
+    {
+      "id": "B",
+      "status": "PASS",
+      "blocker": "unavailable",
+      "terminalResult": "PASS",
+      "blockingOperation": "unavailable",
+      "operations": 16,
+      "mainTurns": 16,
+      "runnerTurns": 11,
+      "execution": "COMPLETE",
+      "specClosed": true,
+      "finalizer": "PASS",
+      "finalizerExitCode": 0,
+      "finalTestsPassed": true,
+      "finalTestCommand": "node --test",
+      "finalTestExitCode": 0,
+      "profileMismatches": [],
+      "provider": "openai",
+      "authMode": "chatgpt",
+      "isolation": "restricted",
+      "findingsCycles": 1,
+      "recoveryOperations": 1,
+      "extraRunnerTurns": 3,
+      "repeatedReviewRounds": 0,
+      "durationMs": 4712665,
+      "slices": 3,
+      "operationCounts": {
+        "EXECUTE_SLICE": 3,
+        "VALIDATE_SLICE": 4,
+        "APPLY_FINDINGS": 1,
+        "REPLAN": 0,
+        "SPEC_RESUME": 0,
+        "REVIEW_PLAN": 1,
+        "REVIEW_TASKS": 1
+      },
+      "operationsBySlice": {
+        "slice-01": {
+          "execute": 1,
+          "validate": 1,
+          "applyFindings": 0
+        },
+        "slice-02": {
+          "execute": 1,
+          "validate": 2,
+          "applyFindings": 1
+        },
+        "slice-03": {
+          "execute": 1,
+          "validate": 1,
+          "applyFindings": 0
+        }
+      },
+      "operationDurations": [
+        {
+          "operation": "SPEC_INIT",
+          "slice": null,
+          "durationMs": 112429
+        },
+        {
+          "operation": "SPEC_READINESS",
+          "slice": null,
+          "durationMs": 82491
+        },
+        {
+          "operation": "SPEC_PROMOTE",
+          "slice": null,
+          "durationMs": 59613
+        },
+        {
+          "operation": "PLAN",
+          "slice": null,
+          "durationMs": 311035
+        },
+        {
+          "operation": "REVIEW_PLAN",
+          "slice": null,
+          "durationMs": 306096
+        },
+        {
+          "operation": "MATERIALIZE_TASKS",
+          "slice": null,
+          "durationMs": 113088
+        },
+        {
+          "operation": "REVIEW_TASKS",
+          "slice": null,
+          "durationMs": 72435
+        },
+        {
+          "operation": "EXECUTE_SLICE",
+          "slice": "slice-01",
+          "durationMs": 424916
+        },
+        {
+          "operation": "VALIDATE_SLICE",
+          "slice": "slice-01",
+          "durationMs": 193779
+        },
+        {
+          "operation": "EXECUTE_SLICE",
+          "slice": "slice-02",
+          "durationMs": 1379151
+        },
+        {
+          "operation": "VALIDATE_SLICE",
+          "slice": "slice-02",
+          "durationMs": 417445
+        },
+        {
+          "operation": "APPLY_FINDINGS",
+          "slice": "slice-02",
+          "durationMs": 335442
+        },
+        {
+          "operation": "VALIDATE_SLICE",
+          "slice": "slice-02",
+          "durationMs": 195777
+        },
+        {
+          "operation": "EXECUTE_SLICE",
+          "slice": "slice-03",
+          "durationMs": 445175
+        },
+        {
+          "operation": "VALIDATE_SLICE",
+          "slice": "slice-03",
+          "durationMs": 178003
+        },
+        {
+          "operation": "SPEC_CLOSE",
+          "slice": null,
+          "durationMs": 71047
+        }
+      ],
+      "repeatedAttemptsBySlice": {
+        "slice-01": {
+          "execute": 0,
+          "validate": 0
+        },
+        "slice-02": {
+          "execute": 0,
+          "validate": 1
+        },
+        "slice-03": {
+          "execute": 0,
+          "validate": 0
+        }
+      },
+      "telemetry": {
+        "coverage": {
+          "main": "16/16",
+          "runner": "11/11"
+        },
+        "main": {
+          "turns": 16,
+          "input": 33735320,
+          "output": 130418,
+          "cachedInput": 32793856,
+          "reasoningOutput": 39486,
+          "observedInput": 33735320,
+          "observedOutput": 130418,
+          "peakInputPerTurn": 7166948,
+          "medianInputPerTurn": 943427,
+          "meanInputPerTurn": 2108457.5
+        },
+        "runner": {
+          "turns": 11,
+          "input": 1433908,
+          "output": 22066,
+          "cachedInput": 1137152,
+          "reasoningOutput": 5685,
+          "observedInput": 1433908,
+          "observedOutput": 22066,
+          "peakInputPerTurn": 216726,
+          "medianInputPerTurn": 122994,
+          "meanInputPerTurn": 130355.27272727272
+        }
+      }
+    },
+    {
+      "id": "C",
+      "status": "BLOCKED",
+      "blocker": "SDK_TURN_FAILED",
+      "terminalResult": "BLOCKED",
+      "blockingOperation": {
+        "operation": "MATERIALIZE_TASKS",
+        "slice": "unavailable",
+        "result": "BLOCKED"
+      },
+      "operations": 4,
+      "mainTurns": 4,
+      "runnerTurns": 0,
+      "execution": "PLANNED_READY",
+      "specClosed": false,
+      "finalizer": "FAIL",
+      "finalizerExitCode": 1,
+      "finalTestsPassed": true,
+      "finalTestCommand": "node --test",
+      "finalTestExitCode": 0,
+      "profileMismatches": [],
+      "provider": "openai",
+      "authMode": "chatgpt",
+      "isolation": "restricted",
+      "findingsCycles": 0,
+      "recoveryOperations": 0,
+      "extraRunnerTurns": 0,
+      "repeatedReviewRounds": 0,
+      "durationMs": 2525037,
+      "slices": 4,
+      "operationCounts": {
+        "EXECUTE_SLICE": 0,
+        "VALIDATE_SLICE": 0,
+        "APPLY_FINDINGS": 0,
+        "REPLAN": 0,
+        "SPEC_RESUME": 0,
+        "REVIEW_PLAN": 1,
+        "REVIEW_TASKS": 0
+      },
+      "operationsBySlice": {},
+      "operationDurations": [
+        {
+          "operation": "SPEC_INIT",
+          "slice": null,
+          "durationMs": 572760
+        },
+        {
+          "operation": "PLAN",
+          "slice": null,
+          "durationMs": 705523
+        },
+        {
+          "operation": "REVIEW_PLAN",
+          "slice": null,
+          "durationMs": 335910
+        },
+        {
+          "operation": "MATERIALIZE_TASKS",
+          "slice": null,
+          "durationMs": 900054
+        }
+      ],
+      "repeatedAttemptsBySlice": {},
+      "telemetry": {
+        "coverage": {
+          "main": "3/4",
+          "runner": "0/0"
+        },
+        "main": {
+          "turns": 3,
+          "input": "unavailable",
+          "output": "unavailable",
+          "cachedInput": "unavailable",
+          "reasoningOutput": "unavailable",
+          "observedInput": 2089131,
+          "observedOutput": 41214,
+          "peakInputPerTurn": 848849,
+          "medianInputPerTurn": 795152,
+          "meanInputPerTurn": "unavailable"
+        },
+        "runner": "unavailable"
+      }
+    }
+  ],
+  "aggregate": {
+    "operations": 30,
+    "mainTurns": 30,
+    "runnerTurns": 15,
+    "recoveryOperations": 1,
+    "happyPathOperations": 29,
+    "extraRunnerTurns": 3,
+    "repeatedReviewRounds": 0,
+    "repeatedExecuteAttempts": 0,
+    "repeatedValidateAttempts": 1,
+    "wallDurationMs": 6922127,
+    "summedCaseDurationMs": 9446208,
+    "telemetry": {
+      "coverage": {
+        "main": "29/30",
+        "runner": "15/15"
+      },
+      "main": {
+        "turns": 29,
+        "input": "unavailable",
+        "output": "unavailable",
+        "cachedInput": "unavailable",
+        "reasoningOutput": "unavailable",
+        "observedInput": 49817617,
+        "observedOutput": 245882,
+        "peakInputPerTurn": 7166948,
+        "medianInputPerTurn": 869353,
+        "meanInputPerTurn": "unavailable"
+      },
+      "runner": {
+        "turns": 15,
+        "input": 1882660,
+        "output": 28620,
+        "cachedInput": 1494528,
+        "reasoningOutput": 7745,
+        "observedInput": 1882660,
+        "observedOutput": 28620,
+        "peakInputPerTurn": 216726,
+        "medianInputPerTurn": 113217,
+        "meanInputPerTurn": 125510.66666666667
+      },
+      "peakInputPerTurn": 7166948,
+      "medianInputPerTurn": 394123.5
+    }
+  },
+  "comparisonToBaseline": {
+    "directlyComparable": false,
+    "mismatches": [
+      "incomplete full-run conclusion"
+    ],
+    "profileExperiment": false,
+    "conclusion": "partial-run; no savings conclusion",
+    "deltas": "unavailable"
+  }
+}

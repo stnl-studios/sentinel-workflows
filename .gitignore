@@ -8,6 +8,7 @@
 
 # Node
 /node_modules
+/agents/codex/node_modules/
 npm-debug.log
 yarn-error.log
 
@@ -45,6 +46,7 @@ testem.log
 /tmp/*
 /.playwright-cli/*
 /output/*
+/benchmark-temp/
 
 
 # System files
@@ -53,3 +55,4 @@ testem.log
 __MACOSX/
 Thumbs.db
 /diff.txt
+*.zip
