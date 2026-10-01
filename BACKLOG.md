@@ -9,7 +9,7 @@ O checkpoint integrado pós-P0 na `main` é
 | --- | --- |
 | BL-01 | P0 concluída — atendido |
 | BL-02 | P0 concluída — atendido |
-| BL-03 | P1 — não iniciado |
+| BL-03 | P1-A — installer global de skills de workflow e agents nativos Codex/Claude + README; benchmarks fora da distribuição |
 | BL-04 | P1 — não iniciado |
 | BL-05 | P1 — não iniciado |
 | BL-06 | Futuro — não iniciado |
