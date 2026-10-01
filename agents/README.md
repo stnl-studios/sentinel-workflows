@@ -10,7 +10,9 @@ A instalação global parte deste checkout. Na raiz do repositório, execute:
 npm run sentinel:install
 ```
 
-Por padrão, o comando instala os agents nativos Codex e Claude Code nas pastas globais `~/.codex/agents` e `~/.claude/agents`, junto com as skills de workflow correspondentes. `npm run sentinel:install -- --preview` mostra o conjunto e os conflitos antes de escrever. Para instalar apenas uma plataforma, use `--target codex` ou `--target claude`. Qualquer conflito bloqueia a aplicação completa; arquivos diferentes nunca são sobrescritos.
+Por padrão, o comando instala os agents nativos Codex e Claude Code nas pastas globais `~/.codex/agents` e `~/.claude/agents`, junto com as skills de workflow correspondentes. `npm run sentinel:install -- --preview` lista criações, substituições e remoções sem escrever. Para instalar apenas uma plataforma, use `--target codex` ou `--target claude`.
+
+Na reinstalação, agents Sentinel modificados são substituídos e agents obsoletos com o padrão de nome daquela plataforma são removidos. A limpeza alcança somente os arquivos Sentinel diretamente em cada pasta global `agents`; agents alheios permanecem preservados. O planejamento completo acontece antes da primeira alteração.
 
 ## `stnl-validation-runner`
 

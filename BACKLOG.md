@@ -24,9 +24,11 @@ P1-A e P1-B têm foco sequencial, mas não há dependência técnica obrigatóri
 
 **Resultado esperado:** uma pessoa entende o propósito, instala com segurança e percorre o fluxo documentado.
 
-O comando padrão, executado na raiz do checkout local, é `npm run sentinel:install`. Ele instala ambas as plataformas: skills de workflow e seus recursos internos necessários, mais os agents nativos em `~/.codex/skills`, `~/.codex/agents`, `~/.claude/skills` e `~/.claude/agents`. `npm run sentinel:install -- --preview` mostra o conjunto sem escrever; `--target codex` ou `--target claude` limita a plataforma. A instalação preserva os bytes dos arquivos das skills.
+O comando padrão, executado na raiz do checkout local, é `npm run sentinel:install`. Ele instala ambas as plataformas: skills de workflow e seus recursos internos necessários, mais os agents nativos em `~/.codex/skills`, `~/.codex/agents`, `~/.claude/skills` e `~/.claude/agents`. `npm run sentinel:install -- --preview` lista criações, substituições e remoções sem escrever; `--target codex` ou `--target claude` limita a plataforma.
 
-Antes de escrever, o installer enumera todos os destinos selecionados e compara seus arquivos: `CREATE` para ausente, `NO-OP` para idêntico e `CONFLICT` para diferente ou incompatível. Qualquer conflito bloqueia toda a aplicação selecionada. Não sobrescrever, forçar, mesclar configuração, alterar projetos consumidores ou instalar dependências automaticamente.
+Decisão aprovada mais recente: a instalação normal é uma reinstalação limpa do conteúdo Sentinel selecionado. Skills registradas são substituídas como componentes inteiros se divergirem da fonte, removendo arquivos extras; agents Sentinel divergentes são substituídos. Componentes idênticos permanecem `NO-OP`. Skills obsoletas com prefixo canônico `stnl-` e agents obsoletos que correspondem aos padrões nativos da plataforma são removidos. O inventário completo, incluindo leitura das fontes, acontece antes de qualquer remoção ou escrita. Entradas ambíguas no namespace gerenciado bloqueiam o planejamento sem alterações.
+
+A fronteira de exclusão se limita a pastas imediatas de skills e agents em `~/.codex` e `~/.claude`; skills de domínio fora do pacote de workflow e agents fora dos padrões nativos Sentinel permanecem preservados. Não alterar projetos consumidores nem instalar dependências automaticamente. Falhas durante aplicação reportam os caminhos aplicados/incompletos, sem mecanismo de transação ou rollback.
 
 Distribuir somente o workflow e agents nativos. Benchmark, manager, seeds, medições, baselines, cache, `node_modules`, SDK e runtimes de benchmark ficam fora da instalação. Não reescrever trechos de skills durante a cópia: a distribuição mantém o conteúdo canônico integral e exclui apenas arquivos de benchmark ou desenvolvimento que não são recursos da skill.
 
@@ -34,7 +36,7 @@ O README deve cobrir propósito e limites, pré-requisitos, prévia e aplicaçã
 
 `Autoridade pronta → stnl-execution-planner / PLAN → stnl-plan-reviewer / REVIEW_PLAN → stnl-task-materializer / MATERIALIZE_TASKS → stnl-task-reviewer / REVIEW_TASKS (normal em pristine) → stnl-slice-executor / EXECUTE_SLICE → stnl-slice-quality-manager / VALIDATE_SLICE`.
 
-O aceite exige composição necessária e destino global preservado, conflito sem sobrescrita, repetição idêntica sem mudança de bytes e demonstração de descoberta, invocação e runner no Codex e no Claude. A documentação deve refletir essa prova e seus limites. Cliente indisponível fica `NOT_VERIFIED`; prova em um cliente só não sustenta `PASS` completo, e um recorte parcial exige decisão explícita. O diff fica limitado ao installer, README, testes focados e dependências internas comprovadamente indispensáveis.
+O aceite exige composição necessária, destino global preservado fora do namespace Sentinel, reinstalação limpa, repetição idêntica sem mudança de bytes, prévia sem escrita e demonstração de descoberta, invocação e runner no Codex e no Claude. A documentação deve refletir essa prova e seus limites. Cliente indisponível fica `NOT_VERIFIED`; prova em um cliente só não sustenta `PASS` completo, e um recorte parcial exige decisão explícita. O diff fica limitado ao installer, READMEs, testes focados e dependências internas comprovadamente indispensáveis.
 
 Fora do escopo: package manager genérico, publicação npm, auto-update, uninstall genérico, cloud, redesign de lifecycle, infraestrutura de plataforma e conteúdo de benchmark. A prova atual do installer e testes isolados não substituem a demonstração nos dois clientes.
 

@@ -18,7 +18,7 @@ npm run sentinel:install
 
 Ele copia skills de workflow para `~/.codex/skills` e `~/.claude/skills`, e os agents nativos para `~/.codex/agents` e `~/.claude/agents`. A cópia preserva os bytes dos arquivos distribuídos. Recursos internos necessários às skills acompanham cada skill; arquivos de avaliação, manutenção, testes internos, benchmarks, SDK e runtime de benchmark ficam fora do pacote.
 
-Use a prévia para ver o conjunto completo antes de escrever:
+Use a prévia para listar criações, substituições e remoções antes de escrever:
 
 ```sh
 npm run sentinel:install -- --preview
@@ -31,9 +31,11 @@ npm run sentinel:install -- --target codex
 npm run sentinel:install -- --target claude
 ```
 
-Antes de qualquer escrita, o instalador compara todos os destinos selecionados. Arquivo ausente é `CREATE`, arquivo idêntico é `NO-OP`, e arquivo diferente ou destino incompatível é `CONFLICT`. Um conflito em qualquer destino bloqueia a aplicação inteira. Arquivos existentes não são sobrescritos; arquivos globais alheios permanecem preservados. Repetir a instalação após uma aplicação bem-sucedida não altera os arquivos idênticos.
+Antes de qualquer alteração, o instalador inventaria os destinos selecionados e as fontes completas. Skills registradas são componentes gerenciados: arquivos modificados ou extras dentro delas são substituídos pela cópia canônica; componentes idênticos são `NO-OP`. Agents Sentinel existentes também são substituídos quando diferem. Skills obsoletas com prefixo `stnl-` e agents obsoletos no padrão de nomes da plataforma são removidos. A prévia lista cada criação, substituição e remoção sem escrever.
 
-O instalador não altera projetos consumidores, não instala dependências e não oferece atualização ou desinstalação automática. Se uma falha de I/O acontecer durante a cópia, ele relata os caminhos aplicados e incompletos para recuperação manual.
+O escopo de limpeza fica restrito às pastas imediatas das skills e agents globais. Skills fora do namespace de workflow gerenciado (incluindo as skills de domínio do repositório) e agents fora dos padrões nativos Sentinel permanecem preservados. Uma entrada ambígua no namespace Sentinel interrompe o planejamento antes de qualquer alteração. Uma falha de I/O durante a aplicação informa o componente e os caminhos incompletos; não há rollback automático.
+
+O instalador não altera projetos consumidores nem instala dependências. A reinstalação padrão atualiza o payload Sentinel e limpa skills Sentinel obsoletas nos destinos selecionados.
 
 ## Primeiro uso
 
@@ -66,4 +68,4 @@ Execute a suíte focada com:
 node --test scripts/test-sentinel-install.mjs
 ```
 
-Ela usa HOME temporário para conferir prévia, criação, repetição sem alterações, conflitos entre plataformas, preservação de arquivos globais e isolamento do destino selecionado.
+Ela usa HOME temporário para conferir instalação limpa, repetição idêntica, substituição de mudanças locais dentro de componentes Sentinel, limpeza obsoleta, preservação de conteúdo alheio, prévia e isolamento do destino selecionado.
