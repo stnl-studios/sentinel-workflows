@@ -60,6 +60,26 @@ test("skills distinguish native runner evidence from managed receipts", async ()
   assert.match(runner, /delegação nativa sem recibo[^\n]*exit numérico observado/u);
 });
 
+test("native generic spawn loads the complete installed runner contract in an independent context", async () => {
+  const executor = await fs.readFile(path.join(repository, "skills/workflows/stnl-slice-executor/SKILL.md"), "utf8");
+  const quality = await fs.readFile(path.join(repository, "skills/workflows/stnl-slice-quality-manager/SKILL.md"), "utf8");
+  const guide = await fs.readFile(path.join(canonical, "README.md"), "utf8");
+  const contract = await fs.readFile(path.join(canonical, "codex/.codex/agents/stnl_validation_runner.toml"), "utf8");
+  assert.match(contract, /name = "stnl_validation_runner"[\s\S]*developer_instructions = """\nCONTRATO_CANONICO=stnl-validation-runner\/v11/u);
+  for (const skill of [executor, quality]) {
+    assert.match(skill, /fork_turns:"none"[^\n]*complete installed runner contract/u);
+    assert.match(skill, /\.codex\/agents\/stnl_validation_runner\.toml` `developer_instructions`/u);
+    assert.match(skill, /not a selected registered runner type/u);
+    assert.match(skill, /task-level instruction loading; it does not confer developer-level priority or the enforcement guarantee of a registered agent/u);
+    assert.match(skill, /instruct it to follow the contract's no-write rule/u);
+    assert.match(skill, /without that contract is not the runner/u);
+    assert.match(skill, /In managed mode use only[^\n]*STNL_MANAGED_RUNNER_BRIDGE/u);
+  }
+  assert.match(guide, /agente independente com contrato carregado, não uma seleção do tipo registrado/u);
+  assert.match(guide, /instruções de tarefa, sem prioridade de developer nem a mesma garantia de aplicação do agente registrado/u);
+  assert.match(guide, /Instrua o agente genérico a não editar código nem artefatos de execução/u);
+});
+
 test("mechanical authority, candidate and serializer details stay outside runner contract", async () => {
   const contract = await fs.readFile(path.join(canonical, "claude-code/.claude/agents/stnl-validation-runner.md"), "utf8");
   assert.doesNotMatch(contract, /RUNNER_EVIDENCE_SERIALIZER|candidateTaskArtifact|path\.relative\(|sha256:/u);
