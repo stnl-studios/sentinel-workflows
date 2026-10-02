@@ -326,12 +326,15 @@ test("execution producer inserts exact hashed evidence only into its owned candi
   candidate = replaceSection(candidate, "Changed Areas", "- `../../src/example.txt`");
   candidate = replaceSection(candidate, "Diff Summary", "- The example behavior is implemented and checked.");
   await fs.writeFile(copy.candidateTaskArtifact, candidate, "utf8");
+  const nativeCommand = "STNL_VERIFICATION_COMMAND=1 node -e 'if (1 + 1 !== 2) process.exit(1)'";
+  const observed = spawnSync("sh", ["-c", nativeCommand], { encoding: "utf8", cwd: fixture.root });
+  assert.equal(observed.status, 0, observed.stderr);
   const response = JSON.stringify({
     status: "TESTS_PASS", automaticCheckRound: "1/3", head: "0123456789abcdef0123456789abcdef01234567",
     discoverySources: "task and package scripts", discoveryActions: "read-only inspection",
     verificationTypesConsidered: "unit tests", nonApplicabilityRationale: "none",
     noVerificationCommandConfirmation: "verification command executed",
-    commands: [{ command: "node --test test/example.test.mjs", exit: 0 }],
+    commands: [{ command: nativeCommand, exit: observed.status }],
     resultOfEachCommandAndExitCode: "unit tests passed", selectedChecks: "focused unit tests",
     selectionRationale: "direct scope", coverage: "example behavior", failures: "none",
     priorRoundFailure: "none", correctionApplied: "none", inSliceRationale: "none",
@@ -342,6 +345,14 @@ test("execution producer inserts exact hashed evidence only into its owned candi
     operation: "EXECUTE_SLICE", response, workspace: fixture.root, taskArtifact: copy.candidateTaskArtifact,
   });
   assert.match(bundle, /sha256:[0-9a-f]{64}/u);
+  assert.match(bundle, /STNL_VERIFICATION_COMMAND=1 node -e/u);
+  const failingCommand = "STNL_VERIFICATION_COMMAND=1 node -e 'process.exit(7)'";
+  const failed = spawnSync("sh", ["-c", failingCommand], { encoding: "utf8", cwd: fixture.root });
+  assert.equal(failed.status, 7);
+  await assert.rejects(serializeRunnerExecutionBundleFromResponse({
+    operation: "EXECUTE_SLICE", workspace: fixture.root, taskArtifact: copy.candidateTaskArtifact,
+    response: JSON.stringify({ ...JSON.parse(response), commands: [{ command: failingCommand, exit: failed.status }] }),
+  }), /TESTS_PASS contradicts 1 marked verification command/u);
   assert.doesNotMatch(bundle, /Correction paths:|Prior-round failure:|Updated scope:/u);
   assert.equal(await insertExecutionEvidenceInCandidate({
     taskArtifact: copy.candidateTaskArtifact, operation: "EXECUTE_SLICE", bundle,
@@ -368,7 +379,8 @@ test("execution producer inserts exact hashed evidence only into its owned candi
     "--execution-bundle", "--operation", "EXECUTE_SLICE", "--workspace", fixture.root,
     "--task-artifact", cliCopy.candidateTaskArtifact, "--semantic-response-file", responseFile,
     "--insert-candidate",
-  ], { encoding: "utf8" });
+  ], { encoding: "utf8", env: Object.fromEntries(Object.entries(process.env)
+    .filter(([key]) => !["STNL_MANAGED_CONTEXT", "STNL_RUNNER_EVIDENCE_SERIALIZER", "STNL_RUNNER_ADAPTER"].includes(key))) });
   assert.equal(cli.status, 0, cli.stderr);
   assert.match(cli.stdout, /implementation-check-01 inserted into isolated candidate/u);
   assert.match(await fs.readFile(cliCopy.candidateTaskArtifact, "utf8"), /sha256:[0-9a-f]{64}/u);
@@ -3814,10 +3826,13 @@ test("validation candidate preparation writes canonical attempt and PASS base be
   const responseRoot = await temporary(t, "stnl-validation-canonical-response-");
   const semanticResponseFile = path.join(responseRoot, "response.json");
   const fullHead = "0123456789abcdef0123456789abcdef01234567";
+  const nativeCommand = "STNL_VERIFICATION_COMMAND=1 node -e 'if (2 * 3 !== 6) process.exit(1)'";
+  const nativeObserved = spawnSync("sh", ["-c", nativeCommand], { encoding: "utf8", cwd: fixture.root });
+  assert.equal(nativeObserved.status, 0, nativeObserved.stderr);
   const semanticResponse = JSON.stringify({
     status: "PASS",
     head: fullHead,
-    commands: [{ command: "node --test test/cli.test.mjs", exit: 0 }],
+    commands: [{ command: nativeCommand, exit: nativeObserved.status }],
     evidence: "focused `npm test` validation passed",
     findingReferences: "none",
     findingDispositions: "none",
@@ -3842,6 +3857,8 @@ test("validation candidate preparation writes canonical attempt and PASS base be
   assert.equal(prepared.attemptId, "attempt-01");
   assert.match(await fs.readFile(path.join(candidateRoot, "tasks/slice-01.md"), "utf8"),
     /Evidence: json:"focused `npm test` validation passed"/u);
+  assert.match(await fs.readFile(path.join(candidateRoot, "tasks/slice-01.md"), "utf8"),
+    /STNL_VERIFICATION_COMMAND=1 node -e/u);
   assert.equal((await validateExecutionCandidate(fixture.requirements, candidateRoot)).state, "COMPLETE");
 
   const preflight = await preflightExecutionOperation(fixture.requirements, "VALIDATE_SLICE", "1");

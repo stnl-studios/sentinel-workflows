@@ -49,6 +49,17 @@ test("Codex and Claude bodies remain byte-identical and schemas are exact", asyn
   }
 });
 
+test("skills distinguish native runner evidence from managed receipts", async () => {
+  const executor = await fs.readFile(path.join(repository, "skills/workflows/stnl-slice-executor/SKILL.md"), "utf8");
+  const quality = await fs.readFile(path.join(repository, "skills/workflows/stnl-slice-quality-manager/SKILL.md"), "utf8");
+  const runner = await fs.readFile(path.join(canonical, "codex/.codex/agents/stnl_validation_runner.toml"), "utf8");
+  assert.match(executor, /native invocation[^\n]*--semantic-response-file[^\n]*--insert-candidate[^\n]*no `--receipt-file`/u);
+  assert.match(executor, /managed launches[^\n]*\$STNL_RUNNER_EVIDENCE_SERIALIZER[^\n]*if it is absent, block/u);
+  assert.match(quality, /omit it in native mode/u);
+  assert.match(quality, /native rejection lacks that receipt-bound recovery/u);
+  assert.match(runner, /delegação nativa sem recibo[^\n]*exit numérico observado/u);
+});
+
 test("mechanical authority, candidate and serializer details stay outside runner contract", async () => {
   const contract = await fs.readFile(path.join(canonical, "claude-code/.claude/agents/stnl-validation-runner.md"), "utf8");
   assert.doesNotMatch(contract, /RUNNER_EVIDENCE_SERIALIZER|candidateTaskArtifact|path\.relative\(|sha256:/u);
