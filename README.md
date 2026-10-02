@@ -1,71 +1,96 @@
 # Sentinel Workflows
 
-Skills de workflow e agents nativos para usar o fluxo Sentinel no Codex ou no Claude Code. O repositório também contém benchmarks; eles são uma área separada e seus arquivos não fazem parte da instalação global.
+## Da intenção à implementação validada
 
-## Requisitos
+Skills de workflow e agents nativos para quem desenvolve software com **Codex** ou **Claude Code**. Sentinel organiza decisões, planejamento e evidências em etapas explícitas para que você possa acompanhar o trabalho e escolher o próximo passo.
+
+<p align="center">
+  <img src="docs/workflow.svg" alt="Fluxo Sentinel: SPEC, plano, revisão, tasks, revisão, execução e validação. O runner apoia a execução com checks; correções voltam à execução antes de uma nova validação." width="100%">
+</p>
+
+O desenho é uma visão geral. Cada operação termina e retorna o controle: o estado registrado indica o próximo handoff; o fluxo completo não roda automaticamente.
+
+## Como o fluxo se organiza
+
+1. **SPEC** — registre objetivo, escopo, critérios de aceitação e decisões em aberto com `stnl-spec-lifecycle-manager`.
+2. **Plano** — decomponha o trabalho em slices com `stnl-execution-planner`.
+3. **Revisão do plano** — verifique e ajuste a estratégia com `stnl-plan-reviewer` antes de criar tasks.
+4. **Tasks** — materialize o trabalho aprovado com `stnl-task-materializer`.
+5. **Revisão das tasks (opcional)** — confira o conjunto inicial com `stnl-task-reviewer`.
+6. **Execução** — implemente uma slice com `stnl-slice-executor`. O agent `stnl-validation-runner` pode executar checks auxiliares e devolver evidências; esses checks não aprovam a slice.
+7. **Validação formal** — chame `stnl-slice-quality-manager` separadamente para uma revisão independente. `NEEDS_FIX` pode levar a uma operação explícita de correção (`APPLY_FINDINGS`) e, depois, a outra validação.
+
+O runner também pode participar da chamada formal de validação. Sua função e o resultado são diferentes em cada etapa: checks auxiliares apoiam implementação e correções; somente a validação formal emite `PASS`, `NEEDS_FIX` ou `BLOCKED`.
+
+### Exemplo ilustrativo: adicionar histórico de compras
+
+Imagine um pedido para permitir que clientes consultem compras anteriores. Os artefatos exatos dependem do produto e do repositório; este exemplo mostra o papel de cada etapa, sem presumir uma implementação ou resultado.
+
+| Etapa | Exemplo do que pode ficar definido |
+| --- | --- |
+| SPEC | Quem consulta o histórico, quais compras aparecem, critérios de aceitação e questões como paginação ou retenção. |
+| Plano | Slices ordenadas para persistência, consulta e apresentação, conforme a arquitetura existente. |
+| Revisão do plano | Escopo, dependências e ordem conferidos antes de materializar trabalho. |
+| Tasks | Passos concretos ligados aos critérios de aceitação e à slice aprovada. |
+| Revisão das tasks | Cobertura, limites e consistência com o plano conferidos. |
+| Execução | Uma slice é implementada; checks aplicáveis podem ser delegados ao runner e registrados como evidência auxiliar. |
+| Validação formal | A slice é revisada de forma independente. Se houver `NEEDS_FIX`, findings podem ser corrigidos numa chamada explícita e a validação é repetida. |
+
+## Comece aqui
+
+### Requisitos
 
 - Node.js 18 ou mais recente.
 - Este repositório clonado localmente.
-- Codex CLI e/ou Claude Code instalados e autenticados no cliente que você pretende usar.
+- Codex CLI e/ou Claude Code instalados e autenticados no cliente escolhido.
 
-## Instalação global
+### Instale as skills e os agents
 
-Na raiz deste repositório, o comando padrão instala as duas plataformas:
+Na raiz deste checkout, a instalação padrão prepara os componentes Sentinel para Codex e Claude Code:
 
 ```sh
 npm run sentinel:install
 ```
 
-Ele copia skills de workflow para `~/.codex/skills` e `~/.claude/skills`, e os agents nativos para `~/.codex/agents` e `~/.claude/agents`. A cópia preserva os bytes dos arquivos distribuídos. Recursos internos necessários às skills acompanham cada skill; arquivos de avaliação, manutenção, testes internos, benchmarks, SDK e runtime de benchmark ficam fora do pacote.
-
-Use a prévia para listar criações, substituições e remoções antes de escrever:
+Para ver criações, substituições e remoções sem escrever:
 
 ```sh
 npm run sentinel:install -- --preview
 ```
 
-Para instalar uma plataforma somente:
+Para selecionar um único cliente, acrescente `--target codex` ou `--target claude`:
 
 ```sh
 npm run sentinel:install -- --target codex
-npm run sentinel:install -- --target claude
 ```
 
-Antes de qualquer alteração, o instalador inventaria os destinos selecionados e as fontes completas. Skills registradas são componentes gerenciados: arquivos modificados ou extras dentro delas são substituídos pela cópia canônica; componentes idênticos são `NO-OP`. Agents Sentinel existentes também são substituídos quando diferem. Skills obsoletas com prefixo `stnl-` e agents obsoletos no padrão de nomes da plataforma são removidos. A prévia lista cada criação, substituição e remoção sem escrever.
+Abra um chat novo no cliente escolhido para descobrir as skills e os agents globais. Comece por `stnl-spec-lifecycle-manager`, fornecendo o caminho da SPEC e a fonte dos requisitos. Os [prompts por operação](templates/prompts/) mostram os nomes das operações e os campos a preencher; use um por vez. Operações de execução e validação também precisam do `SLICE` correspondente.
 
-O escopo de limpeza fica restrito às pastas imediatas das skills e agents globais. Skills fora do namespace de workflow gerenciado (incluindo as skills de domínio do repositório) e agents fora dos padrões nativos Sentinel permanecem preservados. Uma entrada ambígua no namespace Sentinel interrompe o planejamento antes de qualquer alteração. Uma falha de I/O durante a aplicação informa o componente e os caminhos incompletos; não há rollback automático.
+### O que a instalação altera
 
-O instalador não altera projetos consumidores nem instala dependências. A reinstalação padrão atualiza o payload Sentinel e limpa skills Sentinel obsoletas nos destinos selecionados.
+O instalador administra somente as pastas globais Sentinel selecionadas: `~/.codex/skills`, `~/.codex/agents`, `~/.claude/skills` e `~/.claude/agents`. Uma reinstalação substitui arquivos extras ou modificados **dentro de skills Sentinel gerenciadas** e agents Sentinel existentes; entradas Sentinel obsoletas no namespace gerenciado podem ser removidas. Use `--preview` para revisar essas ações antes de aplicá-las. Skills e agents sem relação com Sentinel, projetos consumidores e arquivos fora dessas áreas permanecem preservados.
 
-## Primeiro uso
+O instalador não instala dependências nem modifica o projeto em que você usa Sentinel. Uma falha de I/O durante a aplicação informa os caminhos incompletos; não há rollback automático.
 
-Abra um novo chat no cliente escolhido para que ele descubra as skills e os agents globais. Os prompts de operação ficam em `templates/prompts/`; forneça `SPEC_PATH` e, quando a operação exigir, uma `SLICE` explícita. Use somente uma operação de cada vez.
+## O que este repositório contém
 
-O caminho normal é:
+- `skills/workflows/` — skills de SPEC, planejamento, revisão, execução, validação e operações auxiliares.
+- `skills/domains/` — orientação por domínio; fica fora do instalador de workflow.
+- `agents/codex/` e `agents/claude-code/` — agents nativos distribuídos para cada cliente.
+- `templates/prompts/` — entradas curtas por operação; veja também o [guia dos agents](agents/README.md).
+- `scripts/sentinel-install.mjs` — prévia, comparação e instalação global.
+- `benchmarks/` — avaliação e desenvolvimento do repositório; não faz parte do pacote instalado.
 
-1. `stnl-spec-lifecycle-manager` prepara ou atualiza a autoridade da SPEC.
-2. `stnl-execution-planner` cria o plano; `stnl-plan-reviewer` revisa e aprova.
-3. `stnl-task-materializer` materializa tasks; `stnl-task-reviewer` revisa o conjunto inicial.
-4. `stnl-slice-executor` executa uma slice e delega checks ao agent `stnl-validation-runner`.
-5. `stnl-slice-quality-manager` faz a validação formal independente. `NEEDS_FIX` permite a operação explícita `APPLY_FINDINGS`, seguida de nova validação.
+## Limites atuais
 
-O runner executa checks auxiliares e não decide o PASS formal. O estado persistido determina os próximos handoffs; cada operação retorna e para.
+- Cada operação retorna ao usuário e requer um novo handoff; Sentinel não conduz o fluxo inteiro em segundo plano.
+- A delegação do runner depende de o cliente seguir as instruções da skill. A aderência completa ao fluxo com runner ainda não foi certificada em ambos os clientes.
+- Checks auxiliares não substituem a validação formal, revisão humana ou julgamento do mantenedor. Um resultado de implementação, por si só, não significa `PASS`.
 
-## Mapa do repositório
+## Verificação focada do instalador
 
-- `skills/workflows/`: skills de lifecycle, planejamento, revisão, tasks, execução, validação, roadmap e runbook.
-- `skills/domains/`: orientações especializadas de domínio; não fazem parte deste instalador de workflow.
-- `agents/codex/.codex/agents/` e `agents/claude-code/.claude/agents/`: agents nativos de cada cliente.
-- `templates/prompts/`: entradas manuais curtas por operação e plataforma.
-- `scripts/sentinel-install.mjs`: prévia, comparação e instalação global.
-- `benchmarks/`: avaliação interna separada, fora da instalação global.
-
-## Verificação do instalador
-
-Execute a suíte focada com:
+Para executar os testes automatizados específicos do instalador:
 
 ```sh
 node --test scripts/test-sentinel-install.mjs
 ```
-
-Ela usa HOME temporário para conferir instalação limpa, repetição idêntica, substituição de mudanças locais dentro de componentes Sentinel, limpeza obsoleta, preservação de conteúdo alheio, prévia e isolamento do destino selecionado.
