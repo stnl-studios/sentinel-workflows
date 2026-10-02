@@ -15,6 +15,17 @@ async function isolatedHome(t) {
   return home;
 }
 
+async function captureLogs(action) {
+  const originalLog = console.log;
+  const lines = [];
+  console.log = (...values) => lines.push(values.join(" "));
+  try {
+    return { result: await action(), output: lines.join("\n") };
+  } finally {
+    console.log = originalLog;
+  }
+}
+
 async function install(home, targets = ["codex", "claude"]) {
   const plan = await buildInstallPlan({ repositoryRoot: REPOSITORY_ROOT, home, targets });
   const result = await applyInstallPlan(plan);
@@ -137,15 +148,23 @@ test("preview inventory does not write and lists changes before apply", async (t
   assert.deepEqual(await fs.readFile(stale), before);
   assert.deepEqual(await fs.readdir(home), [".claude"]);
   assert.deepEqual(await fs.readdir(path.join(home, ".claude/skills")), ["stnl-removed-skill"]);
-  const originalLog = console.log;
-  console.log = () => {};
-  try {
-    assert.equal(await main(["--target", "claude", "--preview"], { repositoryRoot: REPOSITORY_ROOT, home }), 0);
-  } finally {
-    console.log = originalLog;
-  }
+  const preview = await captureLogs(() => main(["--target", "claude", "--preview"], { repositoryRoot: REPOSITORY_ROOT, home }));
+  assert.equal(preview.result, 0);
+  assert.ok(preview.output.includes(path.dirname(stale)));
+  assert.match(preview.output, /REMOVE\s+/u);
+  assert.match(preview.output, /Preview only/u);
   assert.deepEqual(await fs.readFile(stale), before);
   assert.deepEqual(await fs.readdir(path.join(home, ".claude/skills")), ["stnl-removed-skill"]);
+});
+
+test("normal install prints a concise target summary without per-path details", async (t) => {
+  const home = await isolatedHome(t);
+  const applied = await captureLogs(() => main([], { repositoryRoot: REPOSITORY_ROOT, home }));
+  assert.equal(applied.result, 0);
+  assert.match(applied.output, /Targets: codex, claude/u);
+  assert.match(applied.output, /Changes: CREATE \d+, NO-OP 0, REPLACE 0, REMOVE 0/u);
+  assert.match(applied.output, /Installation complete: applied \d+ component change\(s\)\./u);
+  assert.equal(applied.output.includes(path.join(home, ".codex", "skills", WORKFLOW_SKILLS[0])), false);
 });
 
 test("target selection leaves the other platform untouched", async (t) => {

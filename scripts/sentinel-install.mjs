@@ -276,19 +276,21 @@ export async function applyInstallPlan(plan) {
   return { applied, blocked: false, incomplete: [] };
 }
 
-function printPlan(plan, apply) {
+function printPlan(plan, preview) {
   const counts = summarize(plan);
-  console.log(`Source: ${plan.repositoryRoot}`);
-  console.log(`Targets: ${plan.platforms.map(({ target, destinationRoot }) => `${target} (${destinationRoot})`).join(", ")}`);
-  console.log(`Components: ${plan.operations.length} — CREATE ${counts.CREATE}, NO-OP ${counts["NO-OP"]}, REPLACE ${counts.REPLACE}, REMOVE ${counts.REMOVE}`);
-  for (const operation of plan.operations) {
-    const status = operation.kind === "remove" ? "REMOVE" : operation.status;
-    console.log(`${status.padEnd(8)} ${operation.destination}`);
-  }
-  if (!apply) {
+  if (preview) {
+    console.log(`Source: ${plan.repositoryRoot}`);
+    console.log(`Targets: ${plan.platforms.map(({ target, destinationRoot }) => `${target} (${destinationRoot})`).join(", ")}`);
+    console.log(`Components: ${plan.operations.length} — CREATE ${counts.CREATE}, NO-OP ${counts["NO-OP"]}, REPLACE ${counts.REPLACE}, REMOVE ${counts.REMOVE}`);
+    for (const operation of plan.operations) {
+      const status = operation.kind === "remove" ? "REMOVE" : operation.status;
+      console.log(`${status.padEnd(8)} ${operation.destination}`);
+    }
     console.log("Preview only. Run without --preview to apply listed replacements and removals.");
     return 0;
   }
+  console.log(`Targets: ${plan.platforms.map(({ target }) => target).join(", ")}`);
+  console.log(`Changes: CREATE ${counts.CREATE}, NO-OP ${counts["NO-OP"]}, REPLACE ${counts.REPLACE}, REMOVE ${counts.REMOVE}`);
   return null;
 }
 
@@ -304,7 +306,7 @@ export async function main(argv, { repositoryRoot = REPOSITORY_ROOT, home = os.h
   try {
     // Build the full selected-target inventory before applying any removal or write.
     const plan = await buildInstallPlan({ repositoryRoot, home, targets: options.targets });
-    const printed = printPlan(plan, !options.preview);
+    const printed = printPlan(plan, options.preview);
     if (printed !== null) return printed;
     const result = await applyInstallPlan(plan);
     if (result.blocked) {
@@ -313,7 +315,9 @@ export async function main(argv, { repositoryRoot = REPOSITORY_ROOT, home = os.h
       if (result.error) console.error(result.error.message);
       return 1;
     }
-    console.log(`Applied ${result.applied.length} component change(s).`);
+    console.log(result.applied.length === 0
+      ? "Installation complete: no changes needed."
+      : `Installation complete: applied ${result.applied.length} component change(s).`);
     return 0;
   } catch (error) {
     console.error(`Installation could not be planned: ${error.message}`);
