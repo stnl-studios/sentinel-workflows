@@ -6444,6 +6444,68 @@ test("candidate validation permits declared later-slice ownership of a historica
   });
 });
 
+test("a new NEEDS_FIX attempt retains the latest findings check as current overlap owner", async (t) => {
+  const fixture = await standaloneWorkspace(t);
+  await renderArtifacts(fixture);
+  await addSecondPristineSlice(fixture);
+  await passFirstSlice(fixture);
+  const laterPath = "../../src/later.txt";
+  const overlapPath = "../../src/example.txt";
+  await writeValidatedPath(fixture, laterPath);
+  const planPath = path.join(fixture.execution, "plans/slice-02.md");
+  await fs.writeFile(planPath, (await fs.readFile(planPath, "utf8")).replaceAll(overlapPath, laterPath));
+
+  const implemented = await copyDirectory(fixture.execution, path.join(fixture.root, "later-implemented"));
+  const implementedTask = path.join(implemented, "tasks/slice-02.md");
+  let text = (await fs.readFile(implementedTask, "utf8")).replaceAll(overlapPath, laterPath);
+  text = text.replace("- [ ] 2.1", "- [x] 2.1");
+  text = replaceSection(text, "Changed Areas", `- \`${laterPath}\``);
+  text = replaceSection(text, "Implementation Test Evidence",
+    checkRecord("implementation-check", 1, "TESTS_PASS", 1).replaceAll(overlapPath, laterPath));
+  await fs.writeFile(implementedTask, text);
+  assert.equal((await validateExecutionCandidate(fixture.requirements, implemented)).state, "IMPLEMENTED_AWAITING_VALIDATION");
+
+  const firstAttempt = await copyDirectory(implemented, path.join(fixture.root, "later-needs-fix"));
+  const firstTask = path.join(firstAttempt, "tasks/slice-02.md");
+  text = await fs.readFile(firstTask, "utf8");
+  text = replaceSection(text, "Validation Attempts", NEEDS_FIX_ATTEMPT.replaceAll(overlapPath, laterPath));
+  text = replaceSection(text, "Validation Findings", ACTIVE_FINDING);
+  await fs.writeFile(firstTask, text);
+  assert.equal((await validateExecutionCandidate(fixture.requirements, firstAttempt)).state, "VALIDATION_NEEDS_FIX");
+
+  const correctedContent = "later slice owns the prior overlap\n";
+  const correctedHash = createHash("sha256").update(correctedContent).digest("hex");
+  await writeValidatedPath(fixture, overlapPath, correctedContent);
+  const corrected = await copyDirectory(firstAttempt, path.join(fixture.root, "later-corrected"));
+  const correctedTask = path.join(corrected, "tasks/slice-02.md");
+  text = await fs.readFile(correctedTask, "utf8");
+  text = replaceSection(text, "Changed Areas", `- \`${overlapPath}\`\n- \`${laterPath}\``);
+  text = replaceSection(text, "Corrections Applied", `- \`${overlapPath}\``);
+  text = replaceSection(text, "Prior Validation Overlap",
+    `- Slice 01 overlap: \`${overlapPath}\`; preserve previously validated behavior and rerun its focused regression.`);
+  const findingsCheck = checkRecord("findings-check", 1, "TESTS_PASS", 1, { cycle: "attempt-01" })
+    .replace(`- Tested scope: ${overlapPath}`, `- Tested scope: ${overlapPath}, ${laterPath}`)
+    .replace(`  - \`${overlapPath}\` | sha256:${VALIDATED_HASH}`,
+      `  - \`${overlapPath}\` | sha256:${correctedHash}\n  - \`${laterPath}\` | sha256:${VALIDATED_HASH}`);
+  text = replaceSection(text, "Findings Test Evidence", findingsCheck);
+  await fs.writeFile(correctedTask, text);
+  assert.equal((await validateExecutionCandidate(fixture.requirements, corrected)).state, "FINDINGS_CORRECTED");
+
+  const revalidation = await copyDirectory(corrected, path.join(fixture.root, "later-revalidation"));
+  const revalidationTask = path.join(revalidation, "tasks/slice-02.md");
+  text = await fs.readFile(revalidationTask, "utf8");
+  const secondAttempt = attemptRecord(2, "NEEDS_FIX", {
+    references: "finding-01, finding-02", dispositions: "finding-01=resolved, finding-02=active",
+  }).replace(`- Verified scope: ${overlapPath}`, `- Verified scope: ${overlapPath}, ${laterPath}`);
+  text = replaceSection(text, "Validation Attempts", `${NEEDS_FIX_ATTEMPT.replaceAll(overlapPath, laterPath)}\n\n${secondAttempt}`);
+  text = replaceSection(text, "Validation Findings", `${ACTIVE_FINDING.replace("- State: active", "- State: resolved")}\n- Resolution: attempt-02 confirmed the correction.\n\n${ACTIVE_FINDING_02.replace("- Origin: attempt-01", "- Origin: attempt-02")}`);
+  await fs.writeFile(revalidationTask, text);
+  assert.equal((await validateExecutionCandidate(fixture.requirements, revalidation)).state, "VALIDATION_NEEDS_FIX");
+  await writeValidatedPath(fixture, overlapPath, "tampered after the findings check\n");
+  await assert.rejects(validateExecutionCandidate(fixture.requirements, revalidation),
+    /findings-check-01 Tested state.*file-backed candidate evidence expected/u);
+});
+
 async function priorOverlapFixture(t, { samePath = false } = {}) {
   const fixture = await nestedLifecycleWorkspace(t);
   const claim = (name) => path.relative(path.join(fixture.execution, "tasks"), path.join(fixture.root, "src", name)).split(path.sep).join("/");
