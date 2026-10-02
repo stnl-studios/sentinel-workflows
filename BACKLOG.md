@@ -10,7 +10,7 @@ Ler o backlog não inicia um item, não cria issue e não aprova automaticamente
 | --- | --- | --- |
 | BL-01 | P0 concluída — atendido | Manutenção pragmática; não reabrir automaticamente. |
 | BL-02 | P0 concluída — atendido | Clareza e eficiência do workflow; evolução de tasks não desfaz esse aceite. |
-| BL-03 | P1-A — em andamento | Installer global de skills de workflow e agents nativos Codex/Claude, mais README de onboarding. Provas nativas dos dois clientes pendentes. |
+| BL-03 | P1-A — implementação do recorte concluída; integração via PR pendente | Installer global de skills de workflow e agents nativos Codex/Claude, mais README de onboarding. A certificação nativa nos dois clientes não foi concluída. |
 | BL-08 (ID documental proposto) | P1-B — proposta independente | Melhorar tasks operacionais, materialização e review, sem migrar schema ou história. Não é issue criada nem trabalho iniciado. |
 | BL-04 | Adiado / sob demanda | Roadmap, principalmente melhoria de layout; objetivo original preservado. |
 | BL-05 | Adiado / sob demanda | Refinar user stories e produzir tasks para boards; diferente das tasks internas de execução. |
@@ -21,6 +21,8 @@ Ler o backlog não inicia um item, não cria issue e não aprova automaticamente
 P1-A e P1-B têm foco sequencial, mas não há dependência técnica obrigatória entre eles. Roadmap, runbook e refinamento de user stories continuam adiados ou sob demanda.
 
 ## P1-A — Installer global e README
+
+O recorte solicitado de implementação do installer e do README está concluído neste branch; a integração na `main` depende da revisão da PR. Isso não representa `PASS` do aceite original completo: a prova contratual de descoberta, invocação e runner nativos em Codex e Claude continua sem certificação. A limitação observada na captura/serialização dessa evidência fica para discussão em P1-B; não foi corrigida nem validada neste recorte.
 
 **Resultado esperado:** uma pessoa entende o propósito, instala com segurança e percorre o fluxo documentado.
 
