@@ -4,12 +4,15 @@ Cada pacote de plataforma contém todos os subagentes Sentinel distribuíveis: o
 
 ## Instalação
 
-A cópia parte da pasta `agents/` deste repositório. Escolha uma plataforma e copie somente o conteúdo da pasta correspondente para a raiz do projeto:
+A instalação global parte deste checkout. Na raiz do repositório, execute:
 
-- Codex: copie somente o conteúdo de `codex/`. Os arquivos resultantes devem ser `.codex/agents/stnl_validation_runner.toml` e `.codex/agents/stnl_spec_context_scout.toml`.
-- Claude Code: copie somente o conteúdo de `claude-code/`. Os arquivos resultantes devem ser `.claude/agents/stnl-validation-runner.md` e `.claude/agents/stnl-spec-context-scout.md`.
+```sh
+npm run sentinel:install
+```
 
-Uma única cópia instala os dois subagentes da plataforma escolhida. Nunca copie os adaptadores das duas plataformas para o mesmo projeto e não altere configurações globais do usuário.
+Por padrão, o comando instala os agents nativos Codex e Claude Code nas pastas globais `~/.codex/agents` e `~/.claude/agents`, junto com as skills de workflow correspondentes. `npm run sentinel:install -- --preview` lista criações, substituições e remoções sem escrever. Para instalar apenas uma plataforma, use `--target codex` ou `--target claude`.
+
+Na reinstalação, agents Sentinel modificados são substituídos e agents obsoletos com o padrão de nome daquela plataforma são removidos. A limpeza alcança somente os arquivos Sentinel diretamente em cada pasta global `agents`; agents alheios permanecem preservados. O planejamento completo acontece antes da primeira alteração.
 
 ## `stnl-validation-runner`
 

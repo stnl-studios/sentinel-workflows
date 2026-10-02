@@ -1,0 +1,131 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 430" role="img" aria-labelledby="title desc">
+  <title id="title">Fluxo Sentinel Workflows</title>
+  <desc id="desc">Da SPEC ao plano, revisões, tasks, execução e validação formal. O runner apoia execução com checks auxiliares e a validação com revisão independente. NEEDS_FIX retorna a correção explicitamente à execução antes de validar de novo.</desc>
+  <style>
+    .canvas { fill: #f6f8fa; stroke: #d0d7de; }
+    .card { fill: #ffffff; stroke: #d0d7de; }
+    .detail { fill: #ffffff; stroke: #c9d1d9; }
+    .ink { fill: #1f2328; }
+    .muted { fill: #59636e; }
+    .line { stroke: #6e7781; }
+    .accent { fill: #0969da; }
+    .accent-stroke { stroke: #0969da; }
+    .green { fill: #1a7f37; }
+    .green-stroke { stroke: #1a7f37; }
+    .amber { fill: #9a6700; }
+    .amber-stroke { stroke: #9a6700; }
+    .soft-blue { fill: #ddf4ff; }
+    .soft-green { fill: #dafbe1; }
+    .soft-amber { fill: #fff8c5; }
+    .number { fill: #ffffff; }
+    text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    @media (prefers-color-scheme: dark) {
+      .canvas { fill: #0d1117; stroke: #30363d; }
+      .card, .detail { fill: #161b22; stroke: #30363d; }
+      .ink { fill: #e6edf3; }
+      .muted { fill: #9da7b3; }
+      .line { stroke: #768390; }
+      .accent { fill: #58a6ff; }
+      .accent-stroke { stroke: #58a6ff; }
+      .green { fill: #3fb950; }
+      .green-stroke { stroke: #3fb950; }
+      .amber { fill: #d29922; }
+      .amber-stroke { stroke: #d29922; }
+      .soft-blue { fill: #102a3a; }
+      .soft-green { fill: #102b1b; }
+      .soft-amber { fill: #2b2510; }
+      .number { fill: #0d1117; }
+    }
+  </style>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#6e7781" class="line-fill" />
+    </marker>
+    <marker id="back-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#9a6700" class="back-fill" />
+    </marker>
+  </defs>
+  <style>
+    @media (prefers-color-scheme: dark) {
+      .line-fill { fill: #768390; }
+      .back-fill { fill: #d29922; }
+    }
+  </style>
+  <rect class="canvas" x="1" y="1" width="1198" height="428" rx="18" />
+  <text class="muted" x="32" y="39" font-size="13" font-weight="700" letter-spacing="1.2">UM HANDOFF DE CADA VEZ</text>
+
+  <!-- The main path: each operation returns before the next handoff. -->
+  <g fill="none" stroke-width="2" marker-end="url(#arrow)">
+    <path class="line" d="M164 125 H180" />
+    <path class="line" d="M324 125 H340" />
+    <path class="line" d="M484 125 H500" />
+    <path class="line" d="M644 125 H660" />
+    <path class="line" d="M804 125 H820" />
+    <path class="line" d="M964 125 H980" />
+  </g>
+
+  <g>
+    <rect class="card" x="24" y="70" width="140" height="110" rx="13" />
+    <circle class="soft-blue" cx="48" cy="96" r="13" />
+    <text class="accent" x="48" y="101" text-anchor="middle" font-size="12" font-weight="700">1</text>
+    <text class="ink" x="42" y="132" font-size="18" font-weight="700">SPEC</text>
+    <text class="muted" x="42" y="156" font-size="13">Intenção e critérios</text>
+
+    <rect class="card" x="184" y="70" width="140" height="110" rx="13" />
+    <circle class="soft-blue" cx="208" cy="96" r="13" />
+    <text class="accent" x="208" y="101" text-anchor="middle" font-size="12" font-weight="700">2</text>
+    <text class="ink" x="202" y="132" font-size="18" font-weight="700">Plano</text>
+    <text class="muted" x="202" y="156" font-size="13">Slices e ordem</text>
+
+    <rect class="card" x="344" y="70" width="140" height="110" rx="13" />
+    <circle class="soft-amber" cx="368" cy="96" r="13" />
+    <text class="amber" x="368" y="101" text-anchor="middle" font-size="12" font-weight="700">3</text>
+    <text class="ink" x="362" y="132" font-size="18" font-weight="700">Revisão</text>
+    <text class="muted" x="362" y="156" font-size="13">Plano aprovado</text>
+
+    <rect class="card" x="504" y="70" width="140" height="110" rx="13" />
+    <circle class="soft-blue" cx="528" cy="96" r="13" />
+    <text class="accent" x="528" y="101" text-anchor="middle" font-size="12" font-weight="700">4</text>
+    <text class="ink" x="522" y="132" font-size="18" font-weight="700">Tasks</text>
+    <text class="muted" x="522" y="156" font-size="13">Trabalho delimitado</text>
+
+    <rect class="card" x="664" y="70" width="140" height="110" rx="13" />
+    <circle class="soft-amber" cx="688" cy="96" r="13" />
+    <text class="amber" x="688" y="101" text-anchor="middle" font-size="12" font-weight="700">5</text>
+    <text class="ink" x="682" y="132" font-size="18" font-weight="700">Revisão</text>
+    <text class="muted" x="682" y="153" font-size="12">Opcional</text>
+    <text class="muted" x="682" y="169" font-size="12">Tasks conferidas</text>
+
+    <rect class="card" x="824" y="70" width="140" height="110" rx="13" />
+    <circle class="soft-green" cx="848" cy="96" r="13" />
+    <text class="green" x="848" y="101" text-anchor="middle" font-size="12" font-weight="700">6</text>
+    <text class="ink" x="842" y="132" font-size="18" font-weight="700">Execução</text>
+    <text class="muted" x="842" y="156" font-size="13">Uma slice por vez</text>
+
+    <rect class="card" x="984" y="70" width="180" height="110" rx="13" />
+    <circle class="soft-blue" cx="1008" cy="96" r="13" />
+    <text class="accent" x="1008" y="101" text-anchor="middle" font-size="12" font-weight="700">7</text>
+    <text class="ink" x="1002" y="132" font-size="18" font-weight="700">Validação formal</text>
+    <text class="muted" x="1002" y="153" font-size="12">PASS · NEEDS_FIX</text>
+    <text class="muted" x="1002" y="169" font-size="12">BLOCKED</text>
+  </g>
+
+  <!-- Runner roles are shown separately so auxiliary checks are not confused with formal validation. -->
+  <path class="green-stroke" d="M894 181 V218" fill="none" stroke-width="2" stroke-dasharray="5 5" />
+  <path class="accent-stroke" d="M1074 181 V218" fill="none" stroke-width="2" stroke-dasharray="5 5" />
+
+  <rect class="detail" x="780" y="218" width="192" height="82" rx="12" />
+  <text class="green" x="798" y="244" font-size="13" font-weight="700">RUNNER · EXECUÇÃO</text>
+  <text class="muted" x="798" y="266" font-size="13">Checks auxiliares e evidências</text>
+  <text class="muted" x="798" y="285" font-size="13">sem decidir o PASS formal</text>
+
+  <rect class="detail" x="984" y="218" width="180" height="82" rx="12" />
+  <text class="accent" x="1002" y="244" font-size="13" font-weight="700">RUNNER · VALIDAÇÃO</text>
+  <text class="muted" x="1002" y="266" font-size="13">Revisão independente</text>
+  <text class="muted" x="1002" y="285" font-size="13">para o veredicto formal</text>
+
+  <!-- A requested correction is a new explicit handoff back to execution. -->
+  <path class="amber-stroke" d="M1164 148 H1180 V390 H760 V202 H824 V181" fill="none" stroke-width="2" marker-end="url(#back-arrow)" />
+  <rect class="soft-amber" x="814" y="333" width="340" height="34" rx="17" />
+  <text class="amber" x="984" y="355" text-anchor="middle" font-size="12" font-weight="700">NEEDS_FIX → APPLY_FINDINGS → validar de novo</text>
+</svg>
