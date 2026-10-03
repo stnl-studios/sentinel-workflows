@@ -1384,12 +1384,8 @@ function parseTask(text, label, expectedSlice, references = {}) {
   let currentAuxiliaryCheck = null;
   if (!base.present) {
     if (latestAttempt === undefined) currentAuxiliaryCheck = implementationChecks.at(-1) ?? null;
-    else if (latestAttempt.status === "NEEDS_FIX") {
-      currentAuxiliaryCheck = findingsChecks.filter((check) => check.findingsCycle === latestAttempt.id).at(-1) ?? null;
-    } else if (latestAttempt.status === "BLOCKED") {
-      currentAuxiliaryCheck = latestNeedsFix === undefined
-        ? implementationChecks.at(-1) ?? null
-        : findingsChecks.filter((check) => check.findingsCycle === latestNeedsFix.id).at(-1) ?? null;
+    else if (latestAttempt.status === "NEEDS_FIX" || latestAttempt.status === "BLOCKED") {
+      currentAuxiliaryCheck = findingsChecks.at(-1) ?? implementationChecks.at(-1) ?? null;
     }
   }
   if (base.present) {
@@ -1663,11 +1659,7 @@ function currentCandidateEvidenceOwners(result) {
   for (const row of result.rows) {
     const task = result.tasks.get(row.slice);
     if (task === undefined) continue;
-    const entries = task.base.present
-      ? task.base.entries
-      : task.currentAuxiliaryCheck?.testedState
-        ?? (task.attempts.at(-1)?.status === "NEEDS_FIX" ? task.implementationChecks.at(-1)?.testedState : null)
-        ?? [];
+    const entries = task.base.present ? task.base.entries : task.currentAuxiliaryCheck?.testedState ?? [];
     for (const entry of entries) owners.set(entry.path, row.slice);
   }
   return owners;

@@ -326,12 +326,15 @@ test("execution producer inserts exact hashed evidence only into its owned candi
   candidate = replaceSection(candidate, "Changed Areas", "- `../../src/example.txt`");
   candidate = replaceSection(candidate, "Diff Summary", "- The example behavior is implemented and checked.");
   await fs.writeFile(copy.candidateTaskArtifact, candidate, "utf8");
+  const nativeCommand = "STNL_VERIFICATION_COMMAND=1 node -e 'if (1 + 1 !== 2) process.exit(1)'";
+  const observed = spawnSync("sh", ["-c", nativeCommand], { encoding: "utf8", cwd: fixture.root });
+  assert.equal(observed.status, 0, observed.stderr);
   const response = JSON.stringify({
     status: "TESTS_PASS", automaticCheckRound: "1/3", head: "0123456789abcdef0123456789abcdef01234567",
     discoverySources: "task and package scripts", discoveryActions: "read-only inspection",
     verificationTypesConsidered: "unit tests", nonApplicabilityRationale: "none",
     noVerificationCommandConfirmation: "verification command executed",
-    commands: [{ command: "node --test test/example.test.mjs", exit: 0 }],
+    commands: [{ command: nativeCommand, exit: observed.status }],
     resultOfEachCommandAndExitCode: "unit tests passed", selectedChecks: "focused unit tests",
     selectionRationale: "direct scope", coverage: "example behavior", failures: "none",
     priorRoundFailure: "none", correctionApplied: "none", inSliceRationale: "none",
@@ -342,6 +345,14 @@ test("execution producer inserts exact hashed evidence only into its owned candi
     operation: "EXECUTE_SLICE", response, workspace: fixture.root, taskArtifact: copy.candidateTaskArtifact,
   });
   assert.match(bundle, /sha256:[0-9a-f]{64}/u);
+  assert.match(bundle, /STNL_VERIFICATION_COMMAND=1 node -e/u);
+  const failingCommand = "STNL_VERIFICATION_COMMAND=1 node -e 'process.exit(7)'";
+  const failed = spawnSync("sh", ["-c", failingCommand], { encoding: "utf8", cwd: fixture.root });
+  assert.equal(failed.status, 7);
+  await assert.rejects(serializeRunnerExecutionBundleFromResponse({
+    operation: "EXECUTE_SLICE", workspace: fixture.root, taskArtifact: copy.candidateTaskArtifact,
+    response: JSON.stringify({ ...JSON.parse(response), commands: [{ command: failingCommand, exit: failed.status }] }),
+  }), /TESTS_PASS contradicts 1 marked verification command/u);
   assert.doesNotMatch(bundle, /Correction paths:|Prior-round failure:|Updated scope:/u);
   assert.equal(await insertExecutionEvidenceInCandidate({
     taskArtifact: copy.candidateTaskArtifact, operation: "EXECUTE_SLICE", bundle,
@@ -368,7 +379,8 @@ test("execution producer inserts exact hashed evidence only into its owned candi
     "--execution-bundle", "--operation", "EXECUTE_SLICE", "--workspace", fixture.root,
     "--task-artifact", cliCopy.candidateTaskArtifact, "--semantic-response-file", responseFile,
     "--insert-candidate",
-  ], { encoding: "utf8" });
+  ], { encoding: "utf8", env: Object.fromEntries(Object.entries(process.env)
+    .filter(([key]) => !["STNL_MANAGED_CONTEXT", "STNL_RUNNER_EVIDENCE_SERIALIZER", "STNL_RUNNER_ADAPTER"].includes(key))) });
   assert.equal(cli.status, 0, cli.stderr);
   assert.match(cli.stdout, /implementation-check-01 inserted into isolated candidate/u);
   assert.match(await fs.readFile(cliCopy.candidateTaskArtifact, "utf8"), /sha256:[0-9a-f]{64}/u);
@@ -3814,10 +3826,13 @@ test("validation candidate preparation writes canonical attempt and PASS base be
   const responseRoot = await temporary(t, "stnl-validation-canonical-response-");
   const semanticResponseFile = path.join(responseRoot, "response.json");
   const fullHead = "0123456789abcdef0123456789abcdef01234567";
+  const nativeCommand = "STNL_VERIFICATION_COMMAND=1 node -e 'if (2 * 3 !== 6) process.exit(1)'";
+  const nativeObserved = spawnSync("sh", ["-c", nativeCommand], { encoding: "utf8", cwd: fixture.root });
+  assert.equal(nativeObserved.status, 0, nativeObserved.stderr);
   const semanticResponse = JSON.stringify({
     status: "PASS",
     head: fullHead,
-    commands: [{ command: "node --test test/cli.test.mjs", exit: 0 }],
+    commands: [{ command: nativeCommand, exit: nativeObserved.status }],
     evidence: "focused `npm test` validation passed",
     findingReferences: "none",
     findingDispositions: "none",
@@ -3842,6 +3857,8 @@ test("validation candidate preparation writes canonical attempt and PASS base be
   assert.equal(prepared.attemptId, "attempt-01");
   assert.match(await fs.readFile(path.join(candidateRoot, "tasks/slice-01.md"), "utf8"),
     /Evidence: json:"focused `npm test` validation passed"/u);
+  assert.match(await fs.readFile(path.join(candidateRoot, "tasks/slice-01.md"), "utf8"),
+    /STNL_VERIFICATION_COMMAND=1 node -e/u);
   assert.equal((await validateExecutionCandidate(fixture.requirements, candidateRoot)).state, "COMPLETE");
 
   const preflight = await preflightExecutionOperation(fixture.requirements, "VALIDATE_SLICE", "1");
@@ -6425,6 +6442,68 @@ test("candidate validation permits declared later-slice ownership of a historica
     assert.equal(error.findings.some((item) => item.includes("slice-02") || item.includes("tasks/slice-02.md")), true);
     return true;
   });
+});
+
+test("a new NEEDS_FIX attempt retains the latest findings check as current overlap owner", async (t) => {
+  const fixture = await standaloneWorkspace(t);
+  await renderArtifacts(fixture);
+  await addSecondPristineSlice(fixture);
+  await passFirstSlice(fixture);
+  const laterPath = "../../src/later.txt";
+  const overlapPath = "../../src/example.txt";
+  await writeValidatedPath(fixture, laterPath);
+  const planPath = path.join(fixture.execution, "plans/slice-02.md");
+  await fs.writeFile(planPath, (await fs.readFile(planPath, "utf8")).replaceAll(overlapPath, laterPath));
+
+  const implemented = await copyDirectory(fixture.execution, path.join(fixture.root, "later-implemented"));
+  const implementedTask = path.join(implemented, "tasks/slice-02.md");
+  let text = (await fs.readFile(implementedTask, "utf8")).replaceAll(overlapPath, laterPath);
+  text = text.replace("- [ ] 2.1", "- [x] 2.1");
+  text = replaceSection(text, "Changed Areas", `- \`${laterPath}\``);
+  text = replaceSection(text, "Implementation Test Evidence",
+    checkRecord("implementation-check", 1, "TESTS_PASS", 1).replaceAll(overlapPath, laterPath));
+  await fs.writeFile(implementedTask, text);
+  assert.equal((await validateExecutionCandidate(fixture.requirements, implemented)).state, "IMPLEMENTED_AWAITING_VALIDATION");
+
+  const firstAttempt = await copyDirectory(implemented, path.join(fixture.root, "later-needs-fix"));
+  const firstTask = path.join(firstAttempt, "tasks/slice-02.md");
+  text = await fs.readFile(firstTask, "utf8");
+  text = replaceSection(text, "Validation Attempts", NEEDS_FIX_ATTEMPT.replaceAll(overlapPath, laterPath));
+  text = replaceSection(text, "Validation Findings", ACTIVE_FINDING);
+  await fs.writeFile(firstTask, text);
+  assert.equal((await validateExecutionCandidate(fixture.requirements, firstAttempt)).state, "VALIDATION_NEEDS_FIX");
+
+  const correctedContent = "later slice owns the prior overlap\n";
+  const correctedHash = createHash("sha256").update(correctedContent).digest("hex");
+  await writeValidatedPath(fixture, overlapPath, correctedContent);
+  const corrected = await copyDirectory(firstAttempt, path.join(fixture.root, "later-corrected"));
+  const correctedTask = path.join(corrected, "tasks/slice-02.md");
+  text = await fs.readFile(correctedTask, "utf8");
+  text = replaceSection(text, "Changed Areas", `- \`${overlapPath}\`\n- \`${laterPath}\``);
+  text = replaceSection(text, "Corrections Applied", `- \`${overlapPath}\``);
+  text = replaceSection(text, "Prior Validation Overlap",
+    `- Slice 01 overlap: \`${overlapPath}\`; preserve previously validated behavior and rerun its focused regression.`);
+  const findingsCheck = checkRecord("findings-check", 1, "TESTS_PASS", 1, { cycle: "attempt-01" })
+    .replace(`- Tested scope: ${overlapPath}`, `- Tested scope: ${overlapPath}, ${laterPath}`)
+    .replace(`  - \`${overlapPath}\` | sha256:${VALIDATED_HASH}`,
+      `  - \`${overlapPath}\` | sha256:${correctedHash}\n  - \`${laterPath}\` | sha256:${VALIDATED_HASH}`);
+  text = replaceSection(text, "Findings Test Evidence", findingsCheck);
+  await fs.writeFile(correctedTask, text);
+  assert.equal((await validateExecutionCandidate(fixture.requirements, corrected)).state, "FINDINGS_CORRECTED");
+
+  const revalidation = await copyDirectory(corrected, path.join(fixture.root, "later-revalidation"));
+  const revalidationTask = path.join(revalidation, "tasks/slice-02.md");
+  text = await fs.readFile(revalidationTask, "utf8");
+  const secondAttempt = attemptRecord(2, "NEEDS_FIX", {
+    references: "finding-01, finding-02", dispositions: "finding-01=resolved, finding-02=active",
+  }).replace(`- Verified scope: ${overlapPath}`, `- Verified scope: ${overlapPath}, ${laterPath}`);
+  text = replaceSection(text, "Validation Attempts", `${NEEDS_FIX_ATTEMPT.replaceAll(overlapPath, laterPath)}\n\n${secondAttempt}`);
+  text = replaceSection(text, "Validation Findings", `${ACTIVE_FINDING.replace("- State: active", "- State: resolved")}\n- Resolution: attempt-02 confirmed the correction.\n\n${ACTIVE_FINDING_02.replace("- Origin: attempt-01", "- Origin: attempt-02")}`);
+  await fs.writeFile(revalidationTask, text);
+  assert.equal((await validateExecutionCandidate(fixture.requirements, revalidation)).state, "VALIDATION_NEEDS_FIX");
+  await writeValidatedPath(fixture, overlapPath, "tampered after the findings check\n");
+  await assert.rejects(validateExecutionCandidate(fixture.requirements, revalidation),
+    /findings-check-01 Tested state.*file-backed candidate evidence expected/u);
 });
 
 async function priorOverlapFixture(t, { samePath = false } = {}) {
