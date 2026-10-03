@@ -122,7 +122,7 @@ export async function createSnapshot(runRoot) {
   const sourceDependencies = path.join(REPOSITORY_ROOT, dependencyRoot);
   const sdkVersion = JSON.parse(await fs.readFile(path.join(sourceDependencies, '@openai/codex-sdk/package.json'), 'utf8')).version;
   const cliVersion = JSON.parse(await fs.readFile(path.join(sourceDependencies, '@openai/codex/package.json'), 'utf8')).version;
-  if (sdkVersion !== '0.154.0' || cliVersion !== '0.154.0') throw new Error('local Codex SDK/CLI version differs from the pinned adapter');
+  if (sdkVersion !== '0.160.0' || cliVersion !== '0.160.0') throw new Error('local Codex SDK/CLI version differs from the pinned adapter');
   const dependencies = (await listFiles(sourceDependencies, '', { dependencies: true }))
     .map((relative) => path.join(dependencyRoot, relative));
   await copyFiles(REPOSITORY_ROOT, snapshot, dependencies);
