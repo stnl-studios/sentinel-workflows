@@ -1,47 +1,145 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 
-import { prepareIsolatedHome, removeIsolatedHome, suspendIsolatedHome, verifyIsolatedHome } from '../agents/codex/runtime/isolated-home.mjs';
+import { prepareIsolatedHome, removeIsolatedHome, resumeIsolatedHome, suspendIsolatedHome,
+  verifyIsolatedHome } from '../agents/codex/runtime/isolated-home.mjs';
+import { codexClientConfig, runCodexTurn } from '../agents/codex/runtime/sdk-transport.mjs';
 
-const PRIVATE_PARENT = path.join(os.homedir(), 'Library', 'Application Support');
-test('isolated home accepts CLI skill state while retaining auth, config, suspension, and cleanup guards', async (t) => {
-  await fs.mkdir(PRIVATE_PARENT, { recursive: true });
-  const runId = `test-${randomUUID().replaceAll('-', '')}`;
-  const caseId = 'A';
-  const snapshot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'sentinel-isolated-snapshot-')));
-  const workspace = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'sentinel-isolated-workspace-')));
-  const candidates = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'sentinel-isolated-candidates-')));
-  const tmpdir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'sentinel-isolated-tmp-')));
-  const authPath = path.join(tmpdir, 'source-auth.json');
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const CLI = path.join(ROOT, 'agents/codex/node_modules/@openai/codex/bin/codex.js');
+const OPERATION_SKILLS = {
+  SPEC_INIT: 'stnl-spec-lifecycle-manager', SPEC_READINESS: 'stnl-spec-lifecycle-manager',
+  SPEC_RESUME: 'stnl-spec-lifecycle-manager', SPEC_PROMOTE: 'stnl-spec-lifecycle-manager',
+  SPEC_CLOSE: 'stnl-spec-lifecycle-manager', PLAN: 'stnl-execution-planner', REPLAN: 'stnl-execution-planner',
+  REVIEW_PLAN: 'stnl-plan-reviewer', MATERIALIZE_TASKS: 'stnl-task-materializer',
+  REVIEW_TASKS: 'stnl-task-reviewer', EXECUTE_SLICE: 'stnl-slice-executor',
+  APPLY_FINDINGS: 'stnl-slice-executor', VALIDATE_SLICE: 'stnl-slice-quality-manager',
+};
+
+async function fixture(t) {
+  await fs.mkdir(path.join(os.homedir(), 'Library', 'Application Support'), { recursive: true });
+  await fs.mkdir(path.join(ROOT, 'benchmark-temp'), { recursive: true });
+  const root = await fs.realpath(await fs.mkdtemp(path.join(ROOT, 'benchmark-temp/isolated-home-test-')));
+  const input = { runId: 'test-' + randomUUID().replaceAll('-', ''), caseId: 'A',
+    snapshot: path.join(root, 'snapshot'), workspace: path.join(root, 'workspace'),
+    candidates: path.join(root, 'candidates'), tmpdir: path.join(root, 'tmp') };
+  for (const directory of [input.snapshot, input.workspace, input.candidates, input.tmpdir]) await fs.mkdir(directory);
+  const authPath = path.join(root, 'source-auth.json');
   await fs.writeFile(authPath, '{"auth_mode":"chatgpt"}', { mode: 0o600 });
-  await fs.mkdir(path.join(snapshot, 'skills', 'workflows', 'stnl-example'), { recursive: true });
-  await fs.writeFile(path.join(snapshot, 'skills', 'workflows', 'stnl-example', 'SKILL.md'), 'snapshot skill');
-  await fs.mkdir(path.join(snapshot, 'agents', 'codex', 'runtime'), { recursive: true });
-  const identity = { runId, caseId };
-  let home;
+  for (const name of new Set(Object.values(OPERATION_SKILLS))) {
+    const directory = path.join(input.snapshot, 'skills', 'workflows', name);
+    await fs.mkdir(directory, { recursive: true });
+    await fs.writeFile(path.join(directory, 'SKILL.md'), '---\nname: ' + name
+      + '\ndescription: Offline ' + name + ' fixture.\n---\nSnapshot instructions.\n');
+  }
+  await fs.mkdir(path.join(input.snapshot, 'agents', 'codex', 'runtime'), { recursive: true });
+  const home = await prepareIsolatedHome(input, { authPath });
   t.after(async () => {
-    await fs.rm(snapshot, { recursive: true, force: true });
-    await fs.rm(workspace, { recursive: true, force: true });
-    await fs.rm(candidates, { recursive: true, force: true });
-    await fs.rm(tmpdir, { recursive: true, force: true });
-    if (home) await removeIsolatedHome(home, identity).catch(() => {});
+    await removeIsolatedHome(home, input);
+    await fs.rm(root, { recursive: true, force: true });
   });
-  home = await prepareIsolatedHome({ ...identity, snapshot, workspace, candidates, tmpdir }, { authPath });
-  const config = await fs.readFile(path.join(home.privateHome, 'config.toml'), 'utf8');
-  const permissions = config.slice(config.indexOf('[permissions.sentinel-case.filesystem]'), config.indexOf('[projects.'));
-  assert.match(permissions, /"\." = "write"/u);
-  assert.match(permissions, /\/skills" = "read"/u);
-  assert.match(config, /approval_policy = "never"/u);
-  assert.match(config, /agents\]\nenabled = false/u);
-  assert.equal((await fs.stat(path.join(home.privateHome, 'auth.json'))).mode & 0o777, 0o600);
+  return { root, input, authPath, home };
+}
 
-  await fs.mkdir(path.join(home.privateHome, 'skills', '.system', 'cache'), { recursive: true });
-  await fs.writeFile(path.join(home.privateHome, 'skills', '.system', 'cache', 'state.json'), '{"lastUsed":1}');
-  await fs.writeFile(path.join(home.privateHome, 'skills', 'stnl-example', 'SKILL.md'), 'CLI-updated skill');
+function filesystemRules(config) {
+  const table = config.split('[permissions.sentinel-case.filesystem]\n')[1]
+    .split('[permissions.sentinel-case.filesystem.":workspace_roots"]')[0];
+  return new Map(table.trim().split('\n').map((line) => {
+    const [, key, mode] = /^(".*") = "(read|write|deny)"$/u.exec(line);
+    return [JSON.parse(key), mode];
+  }));
+}
+
+function inside(file, parent) {
+  const relative = path.relative(parent, file);
+  return relative === '' || (!relative.startsWith('..' + path.sep) && relative !== '..' && !path.isAbsolute(relative));
+}
+
+function promptCatalog(home, overrides, workspace) {
+  const result = spawnSync(process.execPath, [CLI, ...overrides.flatMap((value) => ['-c', value]),
+    'debug', 'prompt-input', 'offline'], {
+    env: home.env, cwd: workspace, encoding: 'utf8', timeout: 30_000, maxBuffer: 8 * 1024 * 1024,
+  });
+  assert.equal(result.status, 0, result.stderr);
+  return JSON.parse(result.stdout).flatMap((message) => message.content ?? []).map((content) => content.text ?? '')
+    .filter((text) => text.includes('<skills_instructions>')).join('\n');
+}
+
+test('fresh author and review threads receive native readable snapshot-provenance skills through the real SDK', async (t) => {
+  const { root, input, home } = await fixture(t);
+  const config = await fs.readFile(path.join(home.privateHome, 'config.toml'), 'utf8');
+  const policy = filesystemRules(config);
+  assert.equal(policy.get(':root'), 'deny');
+  assert.equal(policy.get(home.env.CODEX_HOME), 'deny');
+  assert.equal(policy.has(path.join(home.privateHome, 'skills')), false);
+  assert.equal(policy.get(input.snapshot), 'read');
+  assert.equal(policy.get(input.candidates), 'write');
+  assert.equal(policy.get(input.tmpdir), 'write');
+  assert.match(config, /\[permissions.sentinel-case.filesystem.":workspace_roots"\]\n"\." = "write"/u);
+  assert.equal((await fs.stat(path.join(home.privateHome, 'auth.json'))).mode & 0o777, 0o600);
+  assert.equal(await fs.lstat(path.join(home.privateHome, 'skills')).catch(() => null), null);
+  for (const file of ['auth.json', 'config.toml']) {
+    assert.ok(![...policy].some(([grant, mode]) => !grant.startsWith(':') && mode !== 'deny'
+      && inside(path.join(home.privateHome, file), grant)));
+  }
+  const main = await codexClientConfig({ env: home.env });
+  assert.equal(main.skills.bundled.enabled, false);
+  for (const skill of main.skills.config) {
+    assert.equal(skill.enabled, true);
+    assert.equal(policy.get(path.dirname(path.dirname(skill.path))), 'read');
+    assert.equal(inside(skill.path, home.privateHome), false);
+    assert.ok(![...policy].some(([denied, mode]) => mode === 'deny' && !denied.startsWith(':') && inside(skill.path, denied)));
+    const snapshotPath = path.join(input.snapshot, 'skills', 'workflows', path.basename(path.dirname(skill.path)), 'SKILL.md');
+    assert.deepEqual(await fs.readFile(skill.path), await fs.readFile(snapshotPath));
+    assert.equal((await fs.stat(skill.path)).mode & 0o222, 0);
+  }
+  assert.equal(home.skillsSha256, home.snapshotSkillsSha256);
+
+  const fakeCli = path.join(root, 'fake-codex.mjs');
+  const capture = path.join(root, 'calls.jsonl');
+  await fs.writeFile(fakeCli, '#!' + process.execPath + "\nimport fs from 'node:fs';\n"
+    + "fs.appendFileSync(process.env.STNL_FAKE_CLI_CAPTURE, JSON.stringify(process.argv.slice(2))+'\\n');\n"
+    + "console.log(JSON.stringify({type:'thread.started',thread_id:'thread-offline'}));\n"
+    + "console.log(JSON.stringify({type:'turn.completed',usage:{input_tokens:1,output_tokens:1}}));\n");
+  await fs.chmod(fakeCli, 0o755);
+  const env = { ...home.env, STNL_FAKE_CLI_CAPTURE: capture };
+  const turnInput = { env, cwd: input.workspace, prompt: 'offline', model: 'gpt-6-luna', effort: 'medium', codexPathOverride: fakeCli };
+  for (const operation of Object.keys(OPERATION_SKILLS)) {
+    const turn = await runCodexTurn({ ...turnInput, operationId: operation, eventsPath: path.join(root, operation + '.jsonl') });
+    assert.equal(turn.completed, true, turn.error);
+  }
+  const runner = await runCodexTurn({ ...turnInput,
+    developerInstructions: 'Independent offline runner contract.', isolateSkills: true,
+    operationId: 'runner', eventsPath: path.join(root, 'runner.jsonl') });
+  assert.equal(runner.completed, true, runner.error);
+  const resumed = await runCodexTurn({ ...turnInput,
+    threadId: 'thread-offline', operationId: 'resumed', eventsPath: path.join(root, 'resumed.jsonl') });
+  assert.equal(resumed.completed, true, resumed.error);
+  const calls = (await fs.readFile(capture, 'utf8')).trim().split('\n').map(JSON.parse);
+  const overrides = (args) => args.filter((_value, index) => args[index - 1] === '--config');
+  for (const [index, [operation, name]] of Object.entries(OPERATION_SKILLS).entries()) {
+    assert.equal(calls[index].includes('resume'), false, operation + ' must represent a fresh thread');
+    const values = overrides(calls[index]);
+    assert.deepEqual(values, overrides(calls[0]));
+    assert.ok(values.some((value) => value.startsWith('skills.config=') && value.includes(name + '/SKILL.md') && /enabled\s*=\s*true/u.test(value)));
+  }
+  assert.ok(calls.at(-1).includes('resume'));
+  assert.deepEqual(overrides(calls.at(-1)), overrides(calls[0]));
+  const catalog = promptCatalog(home, overrides(calls[0]), input.workspace);
+  for (const name of new Set(Object.values(OPERATION_SKILLS))) assert.ok(catalog.includes(name + '/SKILL.md'));
+  assert.ok(catalog.includes(path.join(home.env.HOME, '.agents', 'skills')));
+  assert.equal(catalog.includes(home.privateHome), false);
+  assert.equal(promptCatalog(home, overrides(calls.at(-2)), input.workspace), '');
+});
+
+test('suspend/resume preserves native skill provenance and rejects tampered snapshot or operational copy', async (t) => {
+  const { input, authPath, home } = await fixture(t);
   const runCommand = (_command, args) => args[0] === 'login'
     ? { status: 0, stdout: 'Logged in using ChatGPT\n', stderr: '' }
     : { status: 0, stdout: JSON.stringify({ checks: {
@@ -52,13 +150,27 @@ test('isolated home accepts CLI skill state while retaining auth, config, suspen
   assert.deepEqual(await verifyIsolatedHome(home, { runCommand }), {
     authMode: 'chatgpt', provider: 'openai', filesystemSandbox: 'restricted',
   });
-
-  const suspended = await suspendIsolatedHome(home, identity, {
+  const before = await codexClientConfig({ env: home.env });
+  const suspended = await suspendIsolatedHome(home, input, {
     runCommand: () => ({ status: 1, stdout: '', stderr: 'Not logged in' }),
   });
   assert.equal(await fs.lstat(path.join(home.privateHome, 'auth.json')).catch(() => null), null);
-  assert.equal(await fs.readFile(path.join(home.privateHome, 'skills', '.system', 'cache', 'state.json'), 'utf8'), '{"lastUsed":1}');
-  await removeIsolatedHome(suspended, identity);
-  home = null;
-  assert.equal(await fs.lstat(suspended.privateHome).catch(() => null), null);
+  const copy = path.join(home.shellHome, '.agents', 'skills', 'stnl-plan-reviewer', 'SKILL.md');
+  const source = path.join(input.snapshot, 'skills', 'workflows', 'stnl-plan-reviewer', 'SKILL.md');
+  const bytes = await fs.readFile(source);
+  for (const file of [source, copy]) {
+    await fs.chmod(file, 0o600);
+    await fs.writeFile(file, 'tampered');
+    await assert.rejects(resumeIsolatedHome({ ...input, suspended }, { authPath }), /changed/u);
+    assert.equal(await fs.lstat(path.join(home.privateHome, 'auth.json')).catch(() => null), null);
+    await fs.writeFile(file, bytes);
+    await fs.chmod(file, 0o444);
+  }
+  const resumed = await resumeIsolatedHome({ ...input, suspended }, { authPath });
+  assert.deepEqual(resumed.env, home.env);
+  assert.deepEqual(await codexClientConfig({ env: resumed.env }), before);
+  assert.equal(resumed.snapshotSkillsSha256, home.snapshotSkillsSha256);
+  assert.equal((await fs.stat(path.join(home.privateHome, 'auth.json'))).mode & 0o777, 0o600);
+  await fs.appendFile(path.join(home.privateHome, 'config.toml'), '\n# tampered\n');
+  await assert.rejects(verifyIsolatedHome(resumed, { runCommand }), /config changed/u);
 });

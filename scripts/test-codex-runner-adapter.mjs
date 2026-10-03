@@ -190,18 +190,21 @@ test('runner instructions and skill isolation use per-instance public SDK config
   await fs.mkdir(path.join(ROOT, 'benchmark-temp'), { recursive: true });
   const home = await fs.mkdtemp(path.join(ROOT, 'benchmark-temp/runner-config-'));
   t.after(() => fs.rm(home, { recursive: true, force: true }));
-  const skills = path.join(home, 'skills');
+  const shellHome = path.join(home, 'shell-home');
+  const skills = path.join(shellHome, '.agents', 'skills');
   await fs.mkdir(path.join(skills, 'stnl-slice-executor'), { recursive: true });
   await fs.mkdir(path.join(skills, 'stnl-slice-quality-manager'));
   const configuration = await readRunnerConfiguration(ROOT);
-  const runner = await codexClientConfig({ env: { CODEX_HOME: home },
+  const runner = await codexClientConfig({ env: { CODEX_HOME: home, HOME: shellHome },
     developerInstructions: configuration.developerInstructions, isolateSkills: true });
   assert.equal(runner.developer_instructions, configuration.developerInstructions);
   assert.deepEqual(runner.skills.config, [
-    { path: path.join(skills, 'stnl-slice-executor'), enabled: false },
-    { path: path.join(skills, 'stnl-slice-quality-manager'), enabled: false },
+    { path: path.join(skills, 'stnl-slice-executor', 'SKILL.md'), enabled: false },
+    { path: path.join(skills, 'stnl-slice-quality-manager', 'SKILL.md'), enabled: false },
   ]);
-  const noDelegation = { agents: { enabled: false }, features: { multi_agent: false, multi_agent_v2: false } };
+  assert.equal(runner.skills.bundled.enabled, false);
+  const noDelegation = { agents: { enabled: false }, features: { multi_agent: false, multi_agent_v2: false },
+    skills: { bundled: { enabled: false } } };
   assert.deepEqual(await codexClientConfig({ env: { CODEX_HOME: home } }), noDelegation);
   assert.equal(runner.agents.enabled, false);
   assert.equal(runner.features.multi_agent_v2, false);

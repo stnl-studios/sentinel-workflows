@@ -6,17 +6,23 @@ const ALLOWED_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh']);
 const ALLOWED_MODELS = new Set(['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-6-luna', 'gpt-6.1-sol', 'gpt-6-astra']);
 
 export async function codexClientConfig({ env, developerInstructions = null, isolateSkills = false }) {
-  const config = { agents: { enabled: false }, features: { multi_agent: false, multi_agent_v2: false } };
-  if (developerInstructions === null && !isolateSkills) return config;
-  if (typeof developerInstructions !== 'string' || developerInstructions.trim() === '') {
+  const config = { agents: { enabled: false }, features: { multi_agent: false, multi_agent_v2: false },
+    skills: { bundled: { enabled: false } } };
+  if ((developerInstructions !== null || isolateSkills)
+    && (typeof developerInstructions !== 'string' || developerInstructions.trim() === '')) {
     throw new Error('runner developer instructions are missing');
   }
-  config.developer_instructions = developerInstructions;
-  if (isolateSkills) {
-    const skillsRoot = path.join(env.CODEX_HOME, 'skills');
+  if (developerInstructions !== null) config.developer_instructions = developerInstructions;
+  if (env.HOME) {
+    const skillsRoot = path.join(env.HOME, '.agents', 'skills');
     const entries = await fs.readdir(skillsRoot, { withFileTypes: true });
-    config.skills = { config: entries.filter((entry) => entry.isDirectory())
-      .map((entry) => ({ path: path.join(skillsRoot, entry.name), enabled: false })) };
+    // skills.config controls already discovered skills; it does not add roots.
+    // Native discovery uses HOME/.agents/skills, outside the denied CODEX_HOME.
+    config.skills.config = entries.filter((entry) => entry.isDirectory() && entry.name.startsWith('stnl-'))
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .map((entry) => ({ path: path.join(skillsRoot, entry.name, 'SKILL.md'), enabled: !isolateSkills }));
+  } else if (isolateSkills) {
+    throw new Error('runner skill home is missing');
   }
   return config;
 }
