@@ -64,6 +64,20 @@ function inside(candidate, parent) {
   return relative === "" || (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
 }
 
+async function rejectWorkspaceSymlinkComponents(candidate, workspaceRoot) {
+  if (!inside(candidate, workspaceRoot)) fail(`validation-owned path escapes its trusted workspace: ${candidate}`);
+  let current = workspaceRoot;
+  for (const component of path.relative(workspaceRoot, candidate).split(path.sep).filter(Boolean)) {
+    current = path.join(current, component);
+    const metadata = await fs.lstat(current).catch((error) => {
+      if (error?.code === "ENOENT" || error?.code === "ENOTDIR") return null;
+      throw error;
+    });
+    if (metadata === null) return;
+    if (metadata.isSymbolicLink()) fail(`validation-owned path traverses a symlink: ${current}`);
+  }
+}
+
 function normalizedRelative(value, label) {
   if (typeof value !== "string" || value.length === 0 || value.includes("\\") || path.posix.isAbsolute(value)) {
     fail(`${label} must be a normalized relative path`);
@@ -73,7 +87,8 @@ function normalizedRelative(value, label) {
   return value;
 }
 
-async function regularFile(file, label) {
+async function regularFile(file, label, workspaceRoot = null) {
+  if (workspaceRoot !== null) await rejectWorkspaceSymlinkComponents(file, workspaceRoot);
   const metadata = await fs.lstat(file).catch((error) => fail(`${label} is not available: ${error.message}`));
   if (!metadata.isFile() || metadata.isSymbolicLink()) fail(`${label} must be a regular non-symlink file`);
   return fs.realpath(file);
@@ -115,7 +130,8 @@ async function canonicalEvidenceEntries({ workspace, taskArtifact, targets = [],
 
   const workspaceRoot = await canonicalWorkspacePath(workspace);
   if (!path.isAbsolute(taskArtifact)) fail("taskArtifact must be absolute");
-  const canonicalTask = await regularFile(taskArtifact, "taskArtifact");
+  if (!inside(taskArtifact, workspaceRoot)) fail("taskArtifact must belong to workspace");
+  const canonicalTask = await regularFile(taskArtifact, "taskArtifact", workspaceRoot);
   if (!inside(canonicalTask, workspaceRoot)) fail("taskArtifact must belong to workspace");
 
   const entries = [];
@@ -123,7 +139,8 @@ async function canonicalEvidenceEntries({ workspace, taskArtifact, targets = [],
   const physical = new Set();
   for (const target of targets) {
     if (typeof target !== "string" || !path.isAbsolute(target)) fail("file-backed targets must be absolute");
-    const canonicalTarget = await regularFile(target, "file-backed target");
+    if (!inside(target, workspaceRoot)) fail("file-backed target must belong to workspace");
+    const canonicalTarget = await regularFile(target, "file-backed target", workspaceRoot);
     if (!inside(canonicalTarget, workspaceRoot)) fail("file-backed target must belong to workspace");
     const claim = claimFor(canonicalTask, canonicalTarget);
     if (claims.has(claim)) fail(`duplicate task-relative claim: ${claim}`);
@@ -149,7 +166,8 @@ async function canonicalEvidenceEntries({ workspace, taskArtifact, targets = [],
 // subset later, but it must never read the workspace to reconstruct this round.
 export async function captureRunnerTestedState({ workspace, taskArtifact, changedAreas = null }) {
   const workspaceRoot = await canonicalWorkspacePath(workspace);
-  const sourceTaskPath = await regularFile(taskArtifact, "source taskArtifact");
+  if (!inside(taskArtifact, workspaceRoot)) fail("source taskArtifact must belong to workspace");
+  const sourceTaskPath = await regularFile(taskArtifact, "source taskArtifact", workspaceRoot);
   if (!inside(sourceTaskPath, workspaceRoot)) fail("source taskArtifact must belong to workspace");
   const taskText = await fs.readFile(sourceTaskPath, "utf8");
   const claims = changedAreas === null
@@ -165,9 +183,11 @@ export async function captureRunnerTestedState({ workspace, taskArtifact, change
     const claim = normalizedRelative(raw, "runner changed area");
     const taskCandidate = path.resolve(path.dirname(sourceTaskPath), claim);
     const workspaceCandidate = path.resolve(workspaceRoot, claim);
-    const taskPhysical = await existingPhysicalCandidate(taskCandidate, "runner task-relative target");
+    const taskPhysical = inside(taskCandidate, workspaceRoot)
+      ? await existingPhysicalCandidate(taskCandidate, "runner task-relative target", workspaceRoot) : null;
     const workspacePhysical = taskCandidate === workspaceCandidate ? taskPhysical
-      : await existingPhysicalCandidate(workspaceCandidate, "runner workspace-relative target");
+      : inside(workspaceCandidate, workspaceRoot)
+        ? await existingPhysicalCandidate(workspaceCandidate, "runner workspace-relative target", workspaceRoot) : null;
     if (taskPhysical !== null && workspacePhysical !== null && taskPhysical !== workspacePhysical) {
       fail(`runner changed area is ambiguous: ${claim}`);
     }
@@ -198,7 +218,8 @@ export async function captureRunnerTestedState({ workspace, taskArtifact, change
 export async function validateManagedChangedAreas({ workspace, taskArtifact, changedAreas }) {
   if (!Array.isArray(changedAreas)) fail("managed changedAreas must be an array");
   const workspaceRoot = await canonicalWorkspacePath(workspace);
-  const sourceTaskPath = await regularFile(taskArtifact, "source taskArtifact");
+  if (!inside(taskArtifact, workspaceRoot)) fail("source taskArtifact must belong to workspace");
+  const sourceTaskPath = await regularFile(taskArtifact, "source taskArtifact", workspaceRoot);
   if (!inside(sourceTaskPath, workspaceRoot)) fail("source taskArtifact must belong to workspace");
   const taskText = await fs.readFile(sourceTaskPath, "utf8");
   const approvedTargets = await canonicalApprovedTargets({ workspaceRoot, taskArtifact: sourceTaskPath, taskText });
@@ -756,7 +777,8 @@ function checklistExpectedClaims(text) {
   return claims;
 }
 
-async function existingPhysicalCandidate(candidate, label) {
+async function existingPhysicalCandidate(candidate, label, workspaceRoot) {
+  await rejectWorkspaceSymlinkComponents(candidate, workspaceRoot);
   const metadata = await fs.lstat(candidate).catch((error) => {
     if (error?.code === "ENOENT") return null;
     fail(`${label} is not available: ${error.message}`);
@@ -770,7 +792,8 @@ async function canonicalApprovedTargets({ workspaceRoot, taskArtifact, taskText 
   const targets = new Map();
   for (const raw of checklistExpectedClaims(taskText)) {
     const candidate = path.resolve(path.dirname(taskArtifact), raw);
-    const physical = await existingPhysicalCandidate(candidate, `Checklist expected area ${raw}`) ?? candidate;
+    if (!inside(candidate, workspaceRoot)) fail(`Checklist expected area escapes workspace: ${raw}`);
+    const physical = await existingPhysicalCandidate(candidate, `Checklist expected area ${raw}`, workspaceRoot) ?? candidate;
     if (physical === candidate && !inside(await fs.realpath(path.dirname(candidate)), workspaceRoot)) {
       fail(`Checklist expected area escapes workspace: ${raw}`);
     }
@@ -784,10 +807,12 @@ async function canonicalizeScopeClaim({ workspaceRoot, taskArtifact, approvedTar
   const claim = normalizedRelative(raw, `${heading} path`);
   const taskBasis = path.resolve(path.dirname(taskArtifact), claim);
   const workspaceBasis = path.resolve(workspaceRoot, claim);
-  const taskPhysical = await existingPhysicalCandidate(taskBasis, `${heading} task-relative claim ${claim}`);
+  const taskPhysical = inside(taskBasis, workspaceRoot)
+    ? await existingPhysicalCandidate(taskBasis, `${heading} task-relative claim ${claim}`, workspaceRoot) : null;
   const workspacePhysical = taskBasis === workspaceBasis
     ? taskPhysical
-    : await existingPhysicalCandidate(workspaceBasis, `${heading} workspace-relative claim ${claim}`);
+    : inside(workspaceBasis, workspaceRoot)
+      ? await existingPhysicalCandidate(workspaceBasis, `${heading} workspace-relative claim ${claim}`, workspaceRoot) : null;
   if (taskPhysical !== null && workspacePhysical !== null && taskPhysical !== workspacePhysical) {
     fail(`${heading} claim is ambiguous across task and workspace bases: ${claim}`);
   }
@@ -824,7 +849,7 @@ async function canonicalizeScopeSection({ workspaceRoot, taskArtifact, taskText,
 
 export async function serializeExecutionScopeClaims({ workspace, taskArtifact }) {
   const workspaceRoot = await canonicalWorkspacePath(workspace);
-  const canonicalTask = await regularFile(taskArtifact, "taskArtifact");
+  const canonicalTask = await regularFile(taskArtifact, "taskArtifact", workspaceRoot);
   if (!inside(canonicalTask, workspaceRoot)) fail("taskArtifact must belong to workspace");
   const before = await fs.readFile(canonicalTask, "utf8");
   const approvedTargets = await canonicalApprovedTargets({ workspaceRoot, taskArtifact: canonicalTask, taskText: before });
@@ -931,7 +956,8 @@ async function deriveValidationTargetsFromTask({ workspace, taskArtifact }) {
   const targets = [];
   for (const claim of uniqueClaims) {
     const physical = path.resolve(path.dirname(taskArtifact), claim);
-    const canonical = await regularFile(physical, `task claim ${claim}`);
+    if (!inside(physical, workspaceRoot)) fail(`task claim resolves outside workspace: ${claim}`);
+    const canonical = await regularFile(physical, `task claim ${claim}`, workspaceRoot);
     if (!inside(canonical, workspaceRoot)) fail(`task claim resolves outside workspace: ${claim}`);
     targets.push(canonical);
   }
@@ -956,7 +982,8 @@ async function deriveExecutionTargetsFromTask({ workspace, taskArtifact }) {
   const removed = [];
   for (const claim of uniqueClaims) {
     const physical = path.resolve(path.dirname(taskArtifact), claim);
-    const canonical = await existingPhysicalCandidate(physical, `task claim ${claim}`);
+    if (!inside(physical, workspaceRoot)) fail(`task claim resolves outside workspace: ${claim}`);
+    const canonical = await existingPhysicalCandidate(physical, `task claim ${claim}`, workspaceRoot);
     if (canonical === null) {
       if (!inside(physical, workspaceRoot) || !inside(await fs.realpath(path.dirname(physical)), workspaceRoot)) {
         fail(`task claim resolves outside workspace: ${claim}`);
@@ -992,10 +1019,10 @@ function priorImplementationFailure(taskText, expectedRound) {
 
 async function populateExecutionCorrectionClaims({ workspace, taskArtifact, operation, round }) {
   if (operation !== "EXECUTE_SLICE" || round === 1) return;
-  const canonicalTask = await regularFile(taskArtifact, "taskArtifact");
+  const workspaceRoot = await canonicalWorkspacePath(workspace);
+  const canonicalTask = await regularFile(taskArtifact, "taskArtifact", workspaceRoot);
   const before = await fs.readFile(canonicalTask, "utf8");
   const priorState = priorImplementationFailure(before, round - 1);
-  const workspaceRoot = await canonicalWorkspacePath(workspace);
   const approvedTargets = await canonicalApprovedTargets({ workspaceRoot, taskArtifact: canonicalTask, taskText: before });
   const changed = await canonicalizeScopeSection({
     workspaceRoot,
@@ -1006,7 +1033,7 @@ async function populateExecutionCorrectionClaims({ workspace, taskArtifact, oper
   });
   const corrections = [];
   for (const claim of changed.claims) {
-    const physical = await existingPhysicalCandidate(path.resolve(path.dirname(canonicalTask), claim), `Changed Areas target ${claim}`);
+    const physical = await existingPhysicalCandidate(path.resolve(path.dirname(canonicalTask), claim), `Changed Areas target ${claim}`, workspaceRoot);
     const digest = physical === null ? "REMOVED"
       : `sha256:${createHash("sha256").update(await fs.readFile(physical)).digest("hex")}`;
     if (priorState.get(claim) !== digest) corrections.push(claim);

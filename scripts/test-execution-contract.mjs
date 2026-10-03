@@ -3,6 +3,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { watch, writeFileSync } from "node:fs";
 import * as fs from "node:fs/promises";
+import fsPromises from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -2565,9 +2566,8 @@ test("executor producer instructions require complete computed Tested state dige
   const skill = await fs.readFile(path.join(ROOT, "skills/workflows/stnl-slice-executor/SKILL.md"), "utf8");
   assert.match(skill, /file-backed[\s\S]{0,260}digest[\s\S]{0,260}64[- ]hex/u);
   assert.match(skill, /Never hand-type, truncate/u);
-  assert.match(skill, /managed environment supplies[\s\S]{0,180}\$STNL_RUNNER_EVIDENCE_SERIALIZER/u);
-  assert.match(skill, /do not search for, replace, or derive another serializer path/u);
-  assert.match(skill, /If the variable is absent, stop with a blocker/u);
+  assert.match(skill, /For managed launches, use exactly the snapshot-owned serializer in `\$STNL_RUNNER_EVIDENCE_SERIALIZER`; if it is absent, block/u);
+  assert.match(skill, /Do not search a private home, source checkout, or benchmark snapshot for another serializer/u);
   assert.doesNotMatch(skill, /\$RUNNER_EVIDENCE_SERIALIZER\b/u);
 });
 
@@ -6897,4 +6897,62 @@ test("managed prospective scope is canonical without equating it to a prior publ
   const captured = await captureRunnerTestedState({ ...options, changedAreas: [claim] });
   assert.deepEqual(captured.entries, [{ path: claim, value: "REMOVED" }]);
   await fs.writeFile(taskArtifact, before);
+});
+
+test("managed scope ignores an out-of-workspace alternative to a valid task-relative path", async (t) => {
+  const outer = await temporary(t, "stnl-runner-scope-");
+  const workspace = path.join(outer, "a/b/c/d");
+  const taskArtifact = path.join(workspace, "specs/benchmark-case-c/execution/tasks/slice-03.md");
+  const claim = "../../../../README.md";
+  await fs.mkdir(path.dirname(taskArtifact), { recursive: true });
+  await fs.writeFile(path.join(workspace, "README.md"), "case documentation\n");
+  await fs.writeFile(path.join(outer, "README.md"), "unrelated documentation\n");
+  await fs.writeFile(taskArtifact, `## Checklist\n\n- [ ] Document CLI | expected areas: \`${claim}\` | requirement: AC-001\n`);
+
+  assert.deepEqual(await validateManagedChangedAreas({ workspace, taskArtifact, changedAreas: [claim] }), [claim]);
+  const captured = await captureRunnerTestedState({ workspace, taskArtifact, changedAreas: [claim] });
+  const expected = createHash("sha256").update("case documentation\n").digest("hex");
+  assert.deepEqual(captured.entries, [{ path: claim, value: `sha256:${expected}` }]);
+
+  await assert.rejects(validateManagedChangedAreas({ workspace, taskArtifact,
+    changedAreas: ["../../../../../escape.txt"] }), /outside workspace|escapes workspace|approved target/u);
+  await assert.rejects(captureRunnerTestedState({ workspace, taskArtifact,
+    changedAreas: ["../../../../../escape.txt"] }), /outside workspace|escapes workspace/u);
+
+  await fs.writeFile(path.join(path.dirname(taskArtifact), "README.md"), "task documentation\n");
+  await fs.writeFile(taskArtifact, "## Checklist\n\n- [ ] Document CLI | expected areas: `README.md` | requirement: AC-001\n");
+  await assert.rejects(validateManagedChangedAreas({ workspace, taskArtifact,
+    changedAreas: ["README.md"] }), /ambiguous/u);
+  await assert.rejects(captureRunnerTestedState({ workspace, taskArtifact,
+    changedAreas: ["README.md"] }), /ambiguous/u);
+});
+
+test("managed scope rejects an intermediate symlink before probing its external target", async (t) => {
+  const outer = await temporary(t, "stnl-runner-link-");
+  const workspace = path.join(outer, "workspace");
+  const external = path.join(outer, "external");
+  const taskArtifact = path.join(workspace, "specs/benchmark-case-c/execution/tasks/slice-03.md");
+  const claim = "../../../../linked/README.md";
+  await fs.mkdir(path.dirname(taskArtifact), { recursive: true });
+  await fs.mkdir(external);
+  await fs.writeFile(path.join(external, "README.md"), "outside\n");
+  await fs.symlink(external, path.join(workspace, "linked"));
+  await fs.writeFile(taskArtifact, `## Checklist\n\n- [ ] Document CLI | expected areas: \`${claim}\` | requirement: AC-001\n`);
+
+  const forbidden = new Set([path.join(workspace, "linked/README.md"), path.join(external, "README.md")]);
+  const originalLstat = fsPromises.lstat.bind(fsPromises);
+  const probes = [];
+  t.mock.method(fsPromises, "lstat", async (file, ...args) => {
+    const resolved = path.resolve(file);
+    probes.push(resolved);
+    if (forbidden.has(resolved)) throw new Error("external target was probed");
+    return originalLstat(file, ...args);
+  });
+  const rejectsAtLink = (error) => error.message === `validation-owned path traverses a symlink: ${path.join(workspace, "linked")}`;
+  await assert.rejects(validateManagedChangedAreas({ workspace, taskArtifact,
+    changedAreas: [claim] }), rejectsAtLink);
+  await assert.rejects(captureRunnerTestedState({ workspace, taskArtifact,
+    changedAreas: [claim] }), rejectsAtLink);
+  assert.ok(probes.includes(path.join(workspace, "linked")));
+  assert.ok(probes.every((file) => !forbidden.has(file)));
 });
