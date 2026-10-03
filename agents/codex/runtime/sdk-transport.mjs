@@ -3,7 +3,7 @@ import path from 'node:path';
 import { Codex } from '@openai/codex-sdk';
 
 const ALLOWED_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh']);
-const ALLOWED_MODELS = new Set(['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna']);
+const ALLOWED_MODELS = new Set(['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-6-luna', 'gpt-6-sol', 'gpt-6-astra']);
 
 export async function codexClientConfig({ env, developerInstructions = null, isolateSkills = false }) {
   const config = { agents: { enabled: false }, features: { multi_agent: false, multi_agent_v2: false } };

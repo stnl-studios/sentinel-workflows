@@ -231,7 +231,7 @@ export function assertManagedSliceLauncher(prompt, context, numericSlice) {
 function dispatch(configuration, caseId, operation) {
   const phase = PHASE[operation];
   const target = configuration.productionProfile.cases[caseId][phase];
-  if (!target) fail(`missing production-v2 dispatch for ${caseId}/${operation}`);
+  if (!target) fail(`missing production-v3 dispatch for ${caseId}/${operation}`);
   return { phase, label: target.model, model: target.model.toLowerCase(), effort: target.effort };
 }
 function compactExecution(execution) {
@@ -354,7 +354,7 @@ function argsForJournal({ journal, operation, route, outcome, slice, readback, r
   }
   if (Number.isSafeInteger(turn.usage?.input_tokens)) args.push('--input-tokens', String(turn.usage.input_tokens));
   if (Number.isSafeInteger(turn.usage?.output_tokens)) args.push('--output-tokens', String(turn.usage.output_tokens));
-  if (runnerCount > 0) args.push('--child-role', 'stnl_validation_runner', '--child-model', 'GPT-5.6-Luna', '--child-effort', 'medium');
+  if (runnerCount > 0) args.push('--child-role', 'stnl_validation_runner', '--child-model', 'GPT-6-Luna', '--child-effort', 'medium');
   return args;
 }
 function specInput(slice) { return slice === null ? null : BigInt(slice.slice('slice-'.length)).toString(10); }
@@ -764,14 +764,14 @@ async function run(options) {
     const previous = options.resumeId ? await readJson(path.join(runRoot, 'run.json')) : null;
     const mode = options.maxOperations !== null ? 'focal' : options.full ? 'full' : 'case';
     if (previous && (previous.status !== 'FOCAL_STOP' || previous.cases.length !== 1
-      || previous.mode !== 'focal' || previous.profile !== 'production-v2')) {
+      || previous.mode !== 'focal' || previous.profile !== 'production-v3')) {
       fail('only a stopped, single-case focal run can be resumed');
     }
     const caseId = previous?.cases[0] ?? options.caseId;
     const runInfo = previous
       ? { ...previous, status: 'ACTIVE', mode: options.maxOperations !== null ? 'focal' : 'case', resumedAt: new Date().toISOString() }
       : { runId: id, status: 'ACTIVE', mode, cases: options.full ? ['A', 'B', 'C'] : [caseId],
-        snapshot: snapshotMetadata, startedAt: new Date().toISOString(), profile: 'production-v2' };
+        snapshot: snapshotMetadata, startedAt: new Date().toISOString(), profile: 'production-v3' };
     await atomicJson(path.join(runRoot, 'run.json'), runInfo);
     announce({ runId: id, status: 'ACTIVE', mode, artifacts: runRoot, sourceFunctionalSha256: snapshotMetadata.sourceFunctionalSha256,
       ...await budgetSnapshot(runRoot) });

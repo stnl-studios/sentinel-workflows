@@ -100,7 +100,7 @@ export async function readRunnerConfiguration(snapshot) {
   const model = /^model = "([^"]+)"$/mu.exec(value)?.[1];
   const effort = /^model_reasoning_effort = "([^"]+)"$/mu.exec(value)?.[1];
   if (!block || /^name = "([^"]+)"$/mu.exec(value)?.[1] !== RUNNER_NAME
-    || model !== 'gpt-5.6-luna' || effort !== 'medium'
+    || model !== 'gpt-6-luna' || effort !== 'medium'
     || /^sandbox_mode\s*=/mu.test(value)) fail('independent runner configuration is invalid');
   return { model, effort, developerInstructions: block[1] };
 }

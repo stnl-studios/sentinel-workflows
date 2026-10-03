@@ -46,7 +46,7 @@ test('independent runner receives mechanical context and semantic payload withou
   const prompt = 'automaticCheckRound=1/3\nExact main-context semantic payload.';
   const request = composeRunnerRequest({ officialPreflight, operation: 'EXECUTE_SLICE',
     slice: 'slice-01', workspace, ...runnerArtifacts(workspace), prompt });
-  assert.equal(configuration.model, 'gpt-5.6-luna');
+  assert.equal(configuration.model, 'gpt-6-luna');
   assert.equal(configuration.effort, 'medium');
   assert.equal((request.match(/RUNNER_EVIDENCE_SERIALIZER=/gu) ?? []).length, 0);
   assert.ok(!request.includes(serializer));

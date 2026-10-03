@@ -232,7 +232,7 @@ function checkRunner(root) {
   const expectedCodex = {
     name: "stnl_validation_runner",
     description: "Runner barato e isolado para checks de implementação, checks de findings e validação formal independente de uma slice.",
-    model: "gpt-5.6-luna",
+    model: "gpt-6-luna",
     model_reasoning_effort: "medium",
     developer_instructions: codex.developer_instructions,
     agents: { max_depth: 1 },
@@ -346,7 +346,7 @@ function checkScout(root) {
   const claude = parseFrontmatter(claudeFile, "S007_SYNTAX");
   const description = "Read-only exception scout for one explicitly authorized lifecycle evidence gap; never auto-select or delegate.";
   const expectedCodex = {
-    name: "stnl_spec_context_scout", description, model: "gpt-5.6-luna", model_reasoning_effort: "medium",
+    name: "stnl_spec_context_scout", description, model: "gpt-6-luna", model_reasoning_effort: "medium",
     sandbox_mode: "read-only", approval_policy: "never", web_search: "disabled",
     developer_instructions: codex.developer_instructions, agents: { max_depth: 1 },
   };

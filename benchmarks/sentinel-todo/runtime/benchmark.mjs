@@ -23,9 +23,9 @@ const EXECUTION_VALIDATOR = path.join(
   REPOSITORY_ROOT,
   'skills', 'workflows', 'stnl-execution-planner', 'runtime', 'validate-execution-state.mjs',
 );
-const MODELS = new Set(['GPT-5.6-Sol', 'GPT-5.6-Terra', 'GPT-5.6-Luna']);
+const MODELS = new Set(['GPT-5.6-Sol', 'GPT-5.6-Terra', 'GPT-5.6-Luna', 'GPT-6-Luna', 'GPT-6-Sol', 'GPT-6-Astra']);
 const EFFORTS = new Set(['low', 'medium', 'high', 'xhigh']);
-const PROFILE_IDS = new Set(['production-v1', 'production-v2']);
+const PROFILE_IDS = new Set(['production-v1', 'production-v2', 'production-v3']);
 const RUN_MODES = new Set(['focal', 'case', 'full']);
 const OPERATIONS = new Set([
   'SPEC_INIT', 'SPEC_READINESS', 'SPEC_RESUME', 'SPEC_PROMOTE', 'PLAN', 'REVIEW_PLAN', 'MATERIALIZE_TASKS',
@@ -139,7 +139,7 @@ function assertManifest(configuration) {
   if (configuration.benchmarkId !== 'sentinel-todo' || configuration.benchmarkVersion !== 1) {
     throw new CliError('manifest benchmark identity is invalid');
   }
-  if (configuration.seedPath !== 'seed' || configuration.productionProfile?.id !== 'production-v2') {
+  if (configuration.seedPath !== 'seed' || configuration.productionProfile?.id !== 'production-v3') {
     throw new CliError('manifest seed or profile identity is invalid');
   }
   const qualification = configuration.productionPilot?.qualification;
@@ -758,7 +758,8 @@ function modelMetrics(events, expectedProfile) {
     actualEffortsByPhase,
     childDispatches,
     profileMismatches,
-    solEscalations: events.filter((event) => event.escalation === true && event.model === 'GPT-5.6-Sol').length,
+    solEscalations: events.filter((event) => event.escalation === true
+      && (event.model === 'GPT-5.6-Sol' || event.model === 'GPT-6-Sol')).length,
   };
 }
 
