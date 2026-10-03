@@ -23,7 +23,7 @@ const EXECUTION_VALIDATOR = path.join(
   REPOSITORY_ROOT,
   'skills', 'workflows', 'stnl-execution-planner', 'runtime', 'validate-execution-state.mjs',
 );
-const MODELS = new Set(['GPT-5.6-Sol', 'GPT-5.6-Terra', 'GPT-5.6-Luna', 'GPT-6-Luna', 'GPT-6-Sol', 'GPT-6-Astra']);
+const MODELS = new Set(['GPT-5.6-Sol', 'GPT-5.6-Terra', 'GPT-5.6-Luna', 'GPT-6-Luna', 'GPT-6.1-Sol', 'GPT-6-Astra']);
 const EFFORTS = new Set(['low', 'medium', 'high', 'xhigh']);
 const PROFILE_IDS = new Set(['production-v1', 'production-v2', 'production-v3']);
 const RUN_MODES = new Set(['focal', 'case', 'full']);
@@ -759,7 +759,7 @@ function modelMetrics(events, expectedProfile) {
     childDispatches,
     profileMismatches,
     solEscalations: events.filter((event) => event.escalation === true
-      && (event.model === 'GPT-5.6-Sol' || event.model === 'GPT-6-Sol')).length,
+      && (event.model === 'GPT-5.6-Sol' || event.model === 'GPT-6.1-Sol')).length,
   };
 }
 

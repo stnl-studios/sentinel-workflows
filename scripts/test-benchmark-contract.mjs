@@ -219,7 +219,7 @@ async function writeSyntheticArtifacts(workspace, caseId = 'A', { closed = true,
 
 async function completeJournal(file, {
   mismatch = false,
-  specModel = 'GPT-6-Sol',
+  specModel = 'GPT-6.1-Sol',
   specCloseModel = specModel,
   includeInitialReadiness = true,
   includeTerminalReadiness = true,
@@ -236,7 +236,7 @@ async function completeJournal(file, {
     const readinessExtra = initialReadinessState === null ? [] : ['--resulting-state', initialReadinessState];
     requireSuccess(event(file, 'SPEC_READINESS', 'REVIEW_VALIDATE', 'GPT-6-Luna', 'high', 'PASS', readinessExtra), 'SPEC_READINESS');
   }
-  requireSuccess(event(file, 'PLAN', 'PLAN', mismatch ? 'GPT-6-Sol' : 'GPT-6-Luna', mismatch ? 'xhigh' : 'high'), 'PLAN');
+  requireSuccess(event(file, 'PLAN', 'PLAN', mismatch ? 'GPT-6.1-Sol' : 'GPT-6-Luna', mismatch ? 'xhigh' : 'high'), 'PLAN');
   requireSuccess(event(file, 'REVIEW_PLAN', 'REVIEW_VALIDATE', 'GPT-6-Luna', 'high'), 'REVIEW_PLAN');
   requireSuccess(event(file, 'MATERIALIZE_TASKS', 'TASKS', 'GPT-6-Luna', 'high'), 'MATERIALIZE_TASKS');
   requireSuccess(event(file, 'REVIEW_TASKS', 'REVIEW_VALIDATE', 'GPT-6-Luna', 'high'), 'REVIEW_TASKS');
@@ -279,7 +279,7 @@ test('B01 — manifest has bounded cases, profiles, paths, and schemas', async (
     await fs.access(path.join(BENCHMARK, item.sourcePath));
     assert.deepEqual(Object.keys(configuration.productionProfile.cases[item.id]), PHASES);
     for (const dispatch of Object.values(configuration.productionProfile.cases[item.id])) {
-      assert.match(dispatch.model, /^GPT-6-(?:Sol|Astra|Luna)$/u);
+      assert.match(dispatch.model, /^GPT-6(?:\.1-Sol|-(?:Astra|Luna))$/u);
       assert.ok(['low', 'medium', 'high', 'xhigh'].includes(dispatch.effort));
     }
     for (const budget of Object.values(item.budgets)) assert.ok(Number.isInteger(budget) && budget > 0 && budget <= 100);
@@ -303,26 +303,26 @@ test('B09 — production profile v3 is current and dispatch enforcement is deter
   }
   const journalSchema = await readJson(path.join(BENCHMARK, 'schemas/journal-v2.schema.json'));
   assert.deepEqual(journalSchema.$defs.event.properties.model.enum,
-    ['GPT-5.6-Sol', 'GPT-5.6-Terra', 'GPT-5.6-Luna', 'GPT-6-Luna', 'GPT-6-Sol', 'GPT-6-Astra']);
+    ['GPT-5.6-Sol', 'GPT-5.6-Terra', 'GPT-5.6-Luna', 'GPT-6-Luna', 'GPT-6.1-Sol', 'GPT-6-Astra']);
   assert.deepEqual(configuration.productionProfile.cases.A, {
-    SPEC: { model: 'GPT-6-Sol', effort: 'medium' },
+    SPEC: { model: 'GPT-6.1-Sol', effort: 'medium' },
     PLAN: { model: 'GPT-6-Luna', effort: 'high' },
     TASKS: { model: 'GPT-6-Luna', effort: 'high' },
     EXECUTE: { model: 'GPT-6-Luna', effort: 'high' },
     REVIEW_VALIDATE: { model: 'GPT-6-Luna', effort: 'high' },
   });
   assert.deepEqual(configuration.productionProfile.cases.B, {
-    SPEC: { model: 'GPT-6-Sol', effort: 'high' },
-    PLAN: { model: 'GPT-6-Sol', effort: 'medium' },
-    TASKS: { model: 'GPT-6-Sol', effort: 'medium' },
+    SPEC: { model: 'GPT-6.1-Sol', effort: 'high' },
+    PLAN: { model: 'GPT-6.1-Sol', effort: 'medium' },
+    TASKS: { model: 'GPT-6.1-Sol', effort: 'medium' },
     EXECUTE: { model: 'GPT-6-Luna', effort: 'high' },
-    REVIEW_VALIDATE: { model: 'GPT-6-Sol', effort: 'medium' },
+    REVIEW_VALIDATE: { model: 'GPT-6.1-Sol', effort: 'medium' },
   });
   assert.deepEqual(configuration.productionProfile.cases.C, {
     SPEC: { model: 'GPT-6-Astra', effort: 'high' },
-    PLAN: { model: 'GPT-6-Sol', effort: 'high' },
-    TASKS: { model: 'GPT-6-Sol', effort: 'high' },
-    EXECUTE: { model: 'GPT-6-Sol', effort: 'high' },
+    PLAN: { model: 'GPT-6.1-Sol', effort: 'high' },
+    TASKS: { model: 'GPT-6.1-Sol', effort: 'high' },
+    EXECUTE: { model: 'GPT-6.1-Sol', effort: 'high' },
     REVIEW_VALIDATE: { model: 'GPT-6-Astra', effort: 'high' },
   });
   assert.deepEqual(configuration.cases.map(({ id, budgets }) => ({ id, budgets })), [
@@ -361,8 +361,8 @@ test('B09 — production profile v3 is current and dispatch enforcement is deter
   requireSuccess(finalize(terraJournal, terraOutput), 'finalize Terra/high mismatch fixture');
   const terraResult = await readJson(terraOutput);
   assert.deepEqual(terraResult.modelUse.profileMismatches.map((entry) => [entry.phase, entry.expectedModel, entry.actualModel]), [
-    ['SPEC', 'GPT-6-Sol', 'GPT-5.6-Terra'],
-    ['SPEC', 'GPT-6-Sol', 'GPT-5.6-Sol'],
+    ['SPEC', 'GPT-6.1-Sol', 'GPT-5.6-Terra'],
+    ['SPEC', 'GPT-6.1-Sol', 'GPT-5.6-Sol'],
   ]);
 });
 
@@ -549,7 +549,7 @@ test('B06 — finalize collects raw facts and enforces official terminal semanti
   assert.equal(result.operations.executeCalls, 1);
   assert.equal(result.operations.validateCalls, 1);
   assert.deepEqual(result.modelUse.profileMismatches.map((entry) => entry.operation), ['PLAN']);
-  assert.deepEqual(result.modelUse.actualModelsByPhase.SPEC, ['GPT-6-Sol']);
+  assert.deepEqual(result.modelUse.actualModelsByPhase.SPEC, ['GPT-6.1-Sol']);
   assert.deepEqual(result.modelUse.actualModelsByPhase.REVIEW_VALIDATE, ['GPT-6-Luna']);
   assert.equal(result.finalExecutionState, 'COMPLETE');
   assert.equal(result.specClosed, true);

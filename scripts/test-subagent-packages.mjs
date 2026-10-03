@@ -505,7 +505,7 @@ test("rejects an altered Codex model", async () => {
     replaceOnce(
       path.join(fixture, "codex", ".codex", "agents", "stnl_validation_runner.toml"),
       'model = "gpt-6-luna"',
-      'model = "gpt-6-sol"',
+      'model = "gpt-6.1-sol"',
     ),
   );
 });

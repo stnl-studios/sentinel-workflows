@@ -22,24 +22,24 @@
     "id": "production-v3",
     "cases": {
       "A": {
-        "SPEC": { "model": "GPT-6-Sol", "effort": "medium" },
+        "SPEC": { "model": "GPT-6.1-Sol", "effort": "medium" },
         "PLAN": { "model": "GPT-6-Luna", "effort": "high" },
         "TASKS": { "model": "GPT-6-Luna", "effort": "high" },
         "EXECUTE": { "model": "GPT-6-Luna", "effort": "high" },
         "REVIEW_VALIDATE": { "model": "GPT-6-Luna", "effort": "high" }
       },
       "B": {
-        "SPEC": { "model": "GPT-6-Sol", "effort": "high" },
-        "PLAN": { "model": "GPT-6-Sol", "effort": "medium" },
-        "TASKS": { "model": "GPT-6-Sol", "effort": "medium" },
+        "SPEC": { "model": "GPT-6.1-Sol", "effort": "high" },
+        "PLAN": { "model": "GPT-6.1-Sol", "effort": "medium" },
+        "TASKS": { "model": "GPT-6.1-Sol", "effort": "medium" },
         "EXECUTE": { "model": "GPT-6-Luna", "effort": "high" },
-        "REVIEW_VALIDATE": { "model": "GPT-6-Sol", "effort": "medium" }
+        "REVIEW_VALIDATE": { "model": "GPT-6.1-Sol", "effort": "medium" }
       },
       "C": {
         "SPEC": { "model": "GPT-6-Astra", "effort": "high" },
-        "PLAN": { "model": "GPT-6-Sol", "effort": "high" },
-        "TASKS": { "model": "GPT-6-Sol", "effort": "high" },
-        "EXECUTE": { "model": "GPT-6-Sol", "effort": "high" },
+        "PLAN": { "model": "GPT-6.1-Sol", "effort": "high" },
+        "TASKS": { "model": "GPT-6.1-Sol", "effort": "high" },
+        "EXECUTE": { "model": "GPT-6.1-Sol", "effort": "high" },
         "REVIEW_VALIDATE": { "model": "GPT-6-Astra", "effort": "high" }
       }
     }
