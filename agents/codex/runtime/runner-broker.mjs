@@ -135,6 +135,7 @@ export async function startOfficialRunnerBroker({
   const seen = new Set();
   const errors = [];
   let capturedReceipts = 0;
+  let validationResultSettled = false;
   const run = async () => {
     while (!stopping) {
       const names = (await fs.readdir(directory)).filter((name) => /^request-[0-9a-f-]{36}\.json$/u.test(name)).sort();
@@ -158,6 +159,11 @@ export async function startOfficialRunnerBroker({
             && (!isRecord(request.managedPayload) || JSON.stringify(request.managedPayload) !== request.prompt)) {
             fail('BROKER_MANAGED_PAYLOAD_INVALID');
           }
+          // Once dispatch is attempted, an exception or missing final result
+          // does not prove the provider never started. Only an explicit
+          // initialization-blocked receipt permits another validation request.
+          if (operation === 'VALIDATE_SLICE' && validationResultSettled) fail('BROKER_RESULT_ALREADY_CAPTURED');
+          if (operation === 'VALIDATE_SLICE') validationResultSettled = true;
           result = await invoke({
             ...identity,
             specPath: officialPreflight.specPath,
@@ -173,6 +179,9 @@ export async function startOfficialRunnerBroker({
           }
           const { exitCode, ...receipt } = result;
           if (result.status === 'RUNNER_RESPONSE_CAPTURED' && exitCode === 0) capturedReceipts += 1;
+          if (operation === 'VALIDATE_SLICE' && result.status === 'RUNNER_INITIALIZATION_BLOCKED') {
+            validationResultSettled = false;
+          }
           result = { receipt, exitCode };
         } catch (error) {
           errors.push(typeof error?.code === 'string' ? error.code : 'BROKER_DISPATCH_FAILED');

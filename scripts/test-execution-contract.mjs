@@ -3982,7 +3982,7 @@ test("validation candidate preparation writes canonical attempt and PASS base be
   assert.equal(await fs.readFile(malformedTask, "utf8"), malformedBefore, "malformed semantic input must not create a candidate record");
 });
 
-test("managed bridge and broker bind simulated provider evidence through strict publication", async (t) => {
+test("managed bridge and broker bind one format repair through strict publication", async (t) => {
   const fixture = await standaloneWorkspace(t);
   await renderArtifacts(fixture);
   await writeValidatedPath(fixture);
@@ -4007,19 +4007,25 @@ test("managed bridge and broker bind simulated provider evidence through strict 
     findingReferences: "none", findingDispositions: "none", blockers: "none",
     unexpectedWorkspaceEffects: "none", persistenceSummary: "no runner writes" });
   const check = "STNL_VERIFICATION_COMMAND=1 node --test test/cli.test.mjs";
+  let runnerTurns = 0;
   const broker = await startOfficialRunnerBroker({ workspace: fixture.root, tmpdir,
     operation: "VALIDATE_SLICE", sequence: 1, slice: "slice-01", officialPreflight,
     invoke: (request) => invokeIndependentRunner({ ...request, snapshot: ROOT, env: environment,
-      runTurn: async ({ eventsPath, operationId }) => {
+      runTurn: async ({ eventsPath, operationId, threadId }) => {
+        runnerTurns += 1;
+        assert.equal(threadId, runnerTurns === 1 ? undefined : "simulated-provider-thread");
         const events = [
-          { operationId, type: "thread.started", thread_id: "simulated-provider-thread" },
+          ...(runnerTurns === 1 ? [{ operationId, type: "thread.started", thread_id: "simulated-provider-thread" }] : []),
           { operationId, type: "turn.started" },
-          { operationId, type: "item.started", item: { id: "item_0", type: "command_execution", command: check } },
-          { operationId, type: "item.completed", item: { id: "item_0", type: "command_execution", command: check, status: "completed", exit_code: 0 } },
-          { operationId, type: "item.completed", item: { id: "item_1", type: "agent_message", text: semantic } },
+          ...(runnerTurns === 1 ? [
+            { operationId, type: "item.started", item: { id: "item_0", type: "command_execution", command: check } },
+            { operationId, type: "item.completed", item: { id: "item_0", type: "command_execution", command: check, status: "completed", exit_code: 0 } },
+          ] : []),
+          { operationId, type: "item.completed", item: { id: "item_1", type: "agent_message",
+            text: runnerTurns === 1 ? semantic.slice(0, -1) : semantic } },
           { operationId, type: "turn.completed", usage: { input_tokens: 5, output_tokens: 5 } },
         ];
-        await fs.writeFile(eventsPath, `${events.map(JSON.stringify).join("\n")}\n`);
+        await fs.appendFile(eventsPath, `${events.map(JSON.stringify).join("\n")}\n`);
         return { completed: true, turnStarted: true, threadId: "simulated-provider-thread",
           requestedModel: "gpt-5.6-luna", requestedEffort: "medium", reportedModel: null,
           error: null, usage: { input_tokens: 5, output_tokens: 5 } };
@@ -4027,8 +4033,14 @@ test("managed bridge and broker bind simulated provider evidence through strict 
   try {
     const receipt = await runManagedRunnerBridge({ environment, cwd: fixture.root, payload: "Review changed scope and checks." });
     assert.equal(receipt.status, "RUNNER_RESPONSE_CAPTURED");
+    assert.equal(receipt.formatRepair.accepted, true);
+    assert.equal(runnerTurns, 2);
     assert.equal(broker.requestsHandled, 1);
     assert.equal(broker.capturedReceipts, 1);
+    await assert.rejects(runManagedRunnerBridge({ environment, cwd: fixture.root,
+      payload: "Try another validation after format repair." }),
+    (error) => error.code === "BROKER_RESULT_ALREADY_CAPTURED");
+    assert.equal(runnerTurns, 2, "format repair must not release the broker's validation lock");
     const copy = await prepareValidationCopy({ specPath: fixture.requirements, slice: "slice-01", candidateParent: tmpdir });
     const cli = path.join(ROOT, "skills/workflows/stnl-slice-quality-manager/runtime/prepare-validation-candidate.mjs");
     const args = [cli, "--prepare", "--spec-path", fixture.requirements, "--slice", "slice-01",
@@ -4063,6 +4075,165 @@ test("managed bridge and broker bind simulated provider evidence through strict 
     assert.equal(readback.state, "COMPLETE");
     assert.deepEqual(nextHandoff("VALIDATE_SLICE", { executionRaw: readback }), { operation: "SPEC_CLOSE", slice: null });
   } finally { await broker.close(); }
+});
+
+test("runner adapter fails closed on uncertain SDK returns and captures a valid final response", async (t) => {
+  const fixture = await standaloneWorkspace(t);
+  await renderArtifacts(fixture);
+  const officialPreflight = { exitCode: 0, operation: "VALIDATE_SLICE", slice: "slice-01",
+    specPath: fixture.requirements, legalOperations: [{ operation: "VALIDATE_SLICE", slice: "slice-01" }],
+    mandatoryRecovery: null };
+  const baseTurn = { requestedModel: "gpt-6-luna", requestedEffort: "medium", reportedModel: null,
+    usage: null, error: null, processError: null, errorEvent: null };
+  const scenarios = [
+    { name: "process error after thread start", turn: { completed: false, turnStarted: true,
+      threadId: "started-thread", processError: "process exited" }, status: "RUNNER_RESULT_BLOCKED" },
+    { name: "timeout without a thread event", turn: { completed: false, turnStarted: false,
+      threadId: null, processError: "AbortError: timed out" }, status: "RUNNER_RESULT_BLOCKED" },
+    { name: "completed with malformed final JSON", turn: { completed: true, turnStarted: true,
+      threadId: "started-thread" }, message: "{", status: "RUNNER_RESULT_BLOCKED" },
+    { name: "completed with valid final JSON", turn: { completed: true, turnStarted: true,
+      threadId: "started-thread" }, message: JSON.stringify({ status: "PASS" }),
+      status: "RUNNER_RESPONSE_CAPTURED" },
+    { name: "accounting failure after dispatch", turn: { completed: true, turnStarted: true,
+      threadId: "started-thread" }, message: JSON.stringify({ status: "PASS" }),
+      accountingFailure: true, status: "RUNNER_RESULT_BLOCKED" },
+    { name: "SDK invocation throws without no-start proof", throws: true, status: "RUNNER_RESULT_BLOCKED" },
+  ];
+  for (const [index, scenario] of scenarios.entries()) {
+    const tmpdir = await temporary(t, "stnl-runner-return-");
+    const receipt = await invokeIndependentRunner({ snapshot: ROOT, workspace: fixture.root,
+      tmpdir, env: {}, operation: "VALIDATE_SLICE", sequence: index + 1, slice: "slice-01",
+      officialPreflight, prompt: "Review the current slice.",
+      onTurn: scenario.accountingFailure ? () => { throw new Error("accounting failed"); } : () => {},
+      runTurn: async ({ eventsPath }) => {
+        if (scenario.throws) throw new Error("SDK invocation failed after dispatch");
+        if (scenario.message !== undefined) {
+          await fs.writeFile(eventsPath, `${JSON.stringify({ type: "item.completed",
+            item: { type: "agent_message", text: scenario.message } })}\n`);
+        }
+        return { ...baseTurn, ...scenario.turn };
+      } });
+    assert.equal(receipt.status, scenario.status, scenario.name);
+    assert.equal(receipt.exitCode, scenario.status === "RUNNER_RESPONSE_CAPTURED" ? 0 : 1, scenario.name);
+    if (scenario.name === "completed with malformed final JSON") {
+      assert.match(receipt.captureFailure, /not valid JSON/u);
+    }
+    if (scenario.throws) assert.match(receipt.processError, /SDK invocation failed/u);
+    if (scenario.accountingFailure) assert.match(receipt.processError, /accounting failed/u);
+  }
+});
+
+test("one same-thread format repair preserves the completed validation verdict and evidence", async (t) => {
+  const fixture = await standaloneWorkspace(t);
+  await renderArtifacts(fixture);
+  const valid = JSON.stringify({ status: "BLOCKED", head: "0123456789abcdef0123456789abcdef01234567",
+    commands: [{ command: "node --test", exit: 0 }], evidence: "original evidence",
+    findingReferences: "none", findingDispositions: "none", blockers: "missing prerequisite",
+    unexpectedWorkspaceEffects: "none", persistenceSummary: "no writes" });
+  const malformed = valid.slice(0, -1);
+  const scenarios = [
+    { name: "format fixed", first: malformed, second: valid, expected: "RUNNER_RESPONSE_CAPTURED", turns: 2 },
+    { name: "fence fixed", first: `\`\`\`json\n${valid}\n\`\`\``, second: valid,
+      expected: "RUNNER_RESPONSE_CAPTURED", turns: 2 },
+    { name: "trailing comma fixed", first: valid.slice(0, -1) + ',}', second: valid,
+      expected: "RUNNER_RESPONSE_CAPTURED", turns: 2 },
+    { name: "second malformed", first: malformed, second: malformed, expected: "RUNNER_RESULT_BLOCKED", turns: 2 },
+    { name: "verdict changed", first: malformed, second: valid.replace('"BLOCKED"', '"PASS"'),
+      expected: "RUNNER_RESULT_BLOCKED", turns: 2 },
+    { name: "evidence changed", first: malformed, second: valid.replace('original evidence', 'new evidence'),
+      expected: "RUNNER_RESULT_BLOCKED", turns: 2 },
+    { name: "valid BLOCKED", first: valid, expected: "RUNNER_RESPONSE_CAPTURED", turns: 1 },
+    { name: "valid NEEDS_FIX", first: valid.replace('"BLOCKED"', '"NEEDS_FIX"'),
+      expected: "RUNNER_RESPONSE_CAPTURED", turns: 1 },
+    { name: "pending", first: malformed, pending: true, expected: "RUNNER_RESULT_BLOCKED", turns: 1 },
+    { name: "uncertain timeout", first: malformed, incomplete: true, expected: "RUNNER_RESULT_BLOCKED", turns: 1 },
+    { name: "completed with process error", first: malformed, processError: true,
+      expected: "RUNNER_RESULT_BLOCKED", turns: 1 },
+    { name: "unprovable original", first: valid.slice(0, -2), expected: "RUNNER_RESULT_BLOCKED", turns: 1 },
+    { name: "schema failure", first: malformed.replace('"commands":[', '"checks":['),
+      expected: "RUNNER_RESULT_BLOCKED", turns: 1 },
+    { name: "completion event absent", first: malformed, noCompletion: true,
+      expected: "RUNNER_RESULT_BLOCKED", turns: 1 },
+    { name: "next turn pending in events", first: malformed, pendingEvent: true,
+      expected: "RUNNER_RESULT_BLOCKED", turns: 1 },
+    { name: "repair changed thread", first: malformed, second: valid, changedThread: true,
+      expected: "RUNNER_RESULT_BLOCKED", turns: 2 },
+    { name: "repair timed out", first: malformed, second: valid, repairTimeout: true,
+      expected: "RUNNER_RESULT_BLOCKED", turns: 2 },
+    { name: "repair threw", first: malformed, second: valid, repairThrows: true,
+      expected: "RUNNER_RESULT_BLOCKED", turns: 2 },
+    { name: "repair used a tool", first: malformed, second: valid, toolUse: true,
+      expected: "RUNNER_RESULT_BLOCKED", turns: 2 },
+    { name: "EXECUTE does not repair", operation: "EXECUTE_SLICE", first: malformed,
+      expected: "RUNNER_RESULT_BLOCKED", turns: 1 },
+  ];
+  for (const [index, scenario] of scenarios.entries()) {
+    const tmpdir = await temporary(t, "stnl-format-repair-");
+    const operation = scenario.operation ?? "VALIDATE_SLICE";
+    const preflight = { exitCode: 0, operation, slice: "slice-01", specPath: fixture.requirements,
+      legalOperations: [{ operation, slice: "slice-01" }], mandatoryRecovery: null };
+    let calls = 0;
+    let reservations = 0;
+    const receipt = await invokeIndependentRunner({ snapshot: ROOT, workspace: fixture.root,
+      tmpdir, env: {}, operation, sequence: index + 20, slice: "slice-01", officialPreflight: preflight,
+      prompt: operation === "EXECUTE_SLICE" ? "automaticCheckRound=1/3" : "Review the current slice.",
+      onBeforeTurn: async () => { reservations += 1; },
+      runTurn: async ({ eventsPath, operationId, threadId, prompt }) => {
+        calls += 1;
+        if (calls > 2) throw new Error("format repair exceeded one attempt");
+        if (calls === 2) {
+          assert.equal(threadId, "format-thread", scenario.name);
+          assert.match(prompt, /Do not inspect files, run checks,/u);
+          assert.ok(prompt.endsWith(scenario.first), scenario.name);
+          if (scenario.repairThrows) throw new Error("repair transport exception");
+        } else assert.equal(threadId, undefined, scenario.name);
+        if (scenario.incomplete) return { completed: false, turnStarted: true,
+          threadId: "format-thread", processError: "AbortError: timed out", error: "timed out" };
+        if (scenario.pending || (calls === 2 && scenario.repairTimeout)) {
+          return { completed: false, turnStarted: true, threadId: "format-thread", error: null };
+        }
+        const message = calls === 1 ? scenario.first : scenario.second;
+        const events = [
+          ...(calls === 1 ? [{ operationId, type: "thread.started", thread_id: "format-thread" }] : []),
+          { operationId, type: "turn.started" },
+          ...(calls === 2 && scenario.toolUse ? [{ operationId, type: "item.completed",
+            item: { type: "command_execution", command: "node --test", exit_code: 0 } }] : []),
+          { operationId, type: "item.completed", item: { type: "agent_message", text: message } },
+          ...(!scenario.noCompletion ? [{ operationId, type: "turn.completed",
+            usage: { input_tokens: 1, output_tokens: 1 } }] : []),
+          ...(scenario.pendingEvent ? [{ operationId, type: "turn.started" }] : []),
+        ];
+        await fs.appendFile(eventsPath, `${events.map(JSON.stringify).join("\n")}\n`);
+        return { completed: true, turnStarted: true,
+          threadId: calls === 2 && scenario.changedThread ? "other-thread" : "format-thread",
+          requestedModel: "gpt-6-luna", requestedEffort: "medium", reportedModel: null,
+          error: null, processError: scenario.processError ? "process exited" : null,
+          usage: { input_tokens: 1, output_tokens: 1 } };
+      } });
+    assert.equal(receipt.status, scenario.expected, scenario.name);
+    assert.equal(calls, scenario.turns, scenario.name);
+    assert.equal(reservations, scenario.turns, scenario.name);
+    if (scenario.name === "format fixed") {
+      assert.equal(receipt.semanticResponseStatus, "BLOCKED");
+      assert.equal(await fs.readFile(receipt.semanticResponseFile, "utf8"), valid);
+      assert.equal(receipt.formatRepair.accepted, true);
+      assert.equal(await fs.readFile(receipt.formatRepair.originalResponseFile, "utf8"), malformed);
+      assert.equal(await fs.readFile(receipt.formatRepair.repairedResponseFile, "utf8"), valid);
+      assert.equal(receipt.formatRepair.originalSha256, createHash("sha256").update(malformed).digest("hex"));
+      assert.equal(receipt.formatRepair.threadId, "format-thread");
+      assert.ok(receipt.formatRepair.eventOffset > 0);
+      assert.equal(receipt.formatRepair.repairTurn.completed, true);
+    }
+    if (scenario.expected === "RUNNER_RESULT_BLOCKED" && scenario.turns === 2) {
+      assert.equal(receipt.formatRepair.accepted, false, scenario.name);
+      assert.ok(receipt.formatRepair.rejection, scenario.name);
+    }
+    if (["valid BLOCKED", "valid NEEDS_FIX"].includes(scenario.name) || scenario.incomplete
+      || scenario.pending || scenario.processError || operation === "EXECUTE_SLICE") {
+      assert.equal(receipt.formatRepair, null, scenario.name);
+    }
+  }
 });
 
 test("copied Case C subagent response without receipt cannot replay as official validation", async (t) => {

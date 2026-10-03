@@ -278,3 +278,190 @@ test('official runner initialization failure is returned once without retry or f
     await broker.close();
   }
 });
+
+test('pending validation keeps its first BLOCKED receipt and does not dispatch a queued divergent retry', async (t) => {
+  const { workspace, specPath, tmpdir } = await fixture(t);
+  const payload = {
+    workspace, tmpdir, operation: 'VALIDATE_SLICE', sequence: 7, slice: 'slice-01',
+    prompt: 'Validate the current slice.',
+  };
+  let signalStarted;
+  const started = new Promise((resolve) => { signalStarted = resolve; });
+  let release;
+  const pending = new Promise((resolve) => { release = resolve; });
+  let calls = 0;
+  const broker = await startOfficialRunnerBroker({
+    ...payload,
+    officialPreflight: officialPreflight({ operation: payload.operation, slice: payload.slice, specPath }),
+    invoke: async (request) => {
+      calls += 1;
+      signalStarted();
+      await pending;
+      return { ...runnerReceipt(request), semanticResponseStatus: calls === 1 ? 'BLOCKED' : 'PASS' };
+    },
+  });
+  try {
+    const first = submitOfficialRunnerRequest(payload);
+    await started;
+    const second = submitOfficialRunnerRequest({ ...payload, prompt: 'Retry while the first runner is pending.' });
+    const duplicateRejected = assert.rejects(second,
+      (error) => error.code === 'BROKER_RESULT_ALREADY_CAPTURED');
+    // Both requests are present while the first invocation is unresolved.
+    let queuedRequests = 0;
+    for (let i = 0; i < 40; i += 1) {
+      queuedRequests = (await fs.readdir(broker.directory)).filter((name) => name.startsWith('request-')).length;
+      if (queuedRequests === 2) break;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.equal(queuedRequests, 2);
+    assert.equal(calls, 1);
+    release();
+    const result = await first;
+    assert.equal(result.status, 'RUNNER_RESPONSE_CAPTURED');
+    assert.equal(result.semanticResponseStatus, 'BLOCKED');
+    assert.equal(result.exitCode, 0);
+    await duplicateRejected;
+    await assert.rejects(() => submitOfficialRunnerRequest(payload),
+      (error) => error.code === 'BROKER_RESULT_ALREADY_CAPTURED');
+    assert.equal(calls, 1);
+    assert.equal(broker.capturedReceipts, 1);
+  } finally {
+    release();
+    await broker.close();
+  }
+});
+
+test('a started validation with malformed final output blocks a queued retry', async (t) => {
+  const { workspace, specPath, tmpdir } = await fixture(t);
+  const payload = {
+    workspace, tmpdir, operation: 'VALIDATE_SLICE', sequence: 9, slice: 'slice-01',
+    prompt: 'Validate the current slice.',
+  };
+  let signalStarted;
+  const started = new Promise((resolve) => { signalStarted = resolve; });
+  let release;
+  const pending = new Promise((resolve) => { release = resolve; });
+  let calls = 0;
+  const broker = await startOfficialRunnerBroker({
+    ...payload,
+    officialPreflight: officialPreflight({ operation: payload.operation, slice: payload.slice, specPath }),
+    invoke: async (request) => {
+      calls += 1;
+      signalStarted();
+      await pending;
+      if (calls > 1) return { ...runnerReceipt(request), semanticResponseStatus: 'PASS' };
+      return { ...runnerReceipt({ ...request, status: 'RUNNER_RESULT_BLOCKED' }),
+        threadId: 'started-runner', semanticResponseFile: null, captureFailure: 'invalid final JSON' };
+    },
+  });
+  try {
+    const first = submitOfficialRunnerRequest(payload);
+    await started;
+    const retry = submitOfficialRunnerRequest({ ...payload, prompt: 'Queued retry.' });
+    const retryRejected = assert.rejects(retry,
+      (error) => error.code === 'BROKER_RESULT_ALREADY_CAPTURED');
+    let queuedRequests = 0;
+    for (let i = 0; i < 40; i += 1) {
+      queuedRequests = (await fs.readdir(broker.directory)).filter((name) => name.startsWith('request-')).length;
+      if (queuedRequests === 2) break;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.equal(queuedRequests, 2);
+    assert.equal(calls, 1);
+    release();
+    const result = await first;
+    assert.equal(result.status, 'RUNNER_RESULT_BLOCKED');
+    assert.equal(result.exitCode, 1);
+    assert.equal(result.captureFailure, 'invalid final JSON');
+    await retryRejected;
+    await assert.rejects(() => submitOfficialRunnerRequest(payload),
+      (error) => error.code === 'BROKER_RESULT_ALREADY_CAPTURED');
+    assert.equal(calls, 1);
+    assert.equal(broker.capturedReceipts, 0);
+  } finally {
+    release();
+    await broker.close();
+  }
+});
+
+test('validation initialization without a started runner permits a later request', async (t) => {
+  const { workspace, specPath, tmpdir } = await fixture(t);
+  const payload = {
+    workspace, tmpdir, operation: 'VALIDATE_SLICE', sequence: 10, slice: 'slice-01',
+    prompt: 'Validate the current slice.',
+  };
+  let calls = 0;
+  const broker = await startOfficialRunnerBroker({
+    ...payload,
+    officialPreflight: officialPreflight({ operation: payload.operation, slice: payload.slice, specPath }),
+    invoke: async (request) => {
+      calls += 1;
+      return runnerReceipt({ ...request,
+        status: calls === 1 ? 'RUNNER_INITIALIZATION_BLOCKED' : 'RUNNER_RESPONSE_CAPTURED' });
+    },
+  });
+  try {
+    const first = await submitOfficialRunnerRequest(payload);
+    assert.equal(first.status, 'RUNNER_INITIALIZATION_BLOCKED');
+    const second = await submitOfficialRunnerRequest(payload);
+    assert.equal(second.status, 'RUNNER_RESPONSE_CAPTURED');
+    assert.equal(calls, 2);
+  } finally {
+    await broker.close();
+  }
+});
+
+test('an invocation exception has uncertain provider state and blocks a later validation request', async (t) => {
+  const { workspace, specPath, tmpdir } = await fixture(t);
+  const payload = {
+    workspace, tmpdir, operation: 'VALIDATE_SLICE', sequence: 8, slice: 'slice-01',
+    prompt: 'Validate the current slice.',
+  };
+  let calls = 0;
+  const broker = await startOfficialRunnerBroker({
+    ...payload,
+    officialPreflight: officialPreflight({ operation: payload.operation, slice: payload.slice, specPath }),
+    invoke: async (request) => {
+      calls += 1;
+      if (calls === 1) throw Object.assign(new Error('transport failed'), { code: 'RUNNER_TRANSPORT_FAILED' });
+      return runnerReceipt(request);
+    },
+  });
+  try {
+    await assert.rejects(() => submitOfficialRunnerRequest(payload),
+      (error) => error.code === 'RUNNER_TRANSPORT_FAILED');
+    assert.equal(broker.capturedReceipts, 0);
+    await assert.rejects(() => submitOfficialRunnerRequest(payload),
+      (error) => error.code === 'BROKER_RESULT_ALREADY_CAPTURED');
+    assert.equal(calls, 1);
+    assert.equal(broker.capturedReceipts, 0);
+  } finally {
+    await broker.close();
+  }
+});
+
+test('execute slice still permits distinct automatic check rounds in one operation', async (t) => {
+  const { workspace, specPath, tmpdir } = await fixture(t);
+  const payload = {
+    workspace, tmpdir, operation: 'EXECUTE_SLICE', sequence: 6, slice: 'slice-01',
+  };
+  let calls = 0;
+  const broker = await startOfficialRunnerBroker({
+    ...payload,
+    officialPreflight: officialPreflight({ operation: payload.operation, slice: payload.slice, specPath }),
+    invoke: async (request) => {
+      calls += 1;
+      return runnerReceipt(request);
+    },
+  });
+  try {
+    for (const round of ['1/3', '2/3']) {
+      const result = await submitOfficialRunnerRequest({ ...payload, prompt: `automaticCheckRound=${round}` });
+      assert.equal(result.status, 'RUNNER_RESPONSE_CAPTURED');
+    }
+    assert.equal(calls, 2);
+    assert.equal(broker.capturedReceipts, 2);
+  } finally {
+    await broker.close();
+  }
+});

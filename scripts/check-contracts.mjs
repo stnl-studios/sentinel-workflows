@@ -316,6 +316,11 @@ function checkRunner(root) {
   requirePattern(contract, /`findingReferences`: `finding-01` e `findingDispositions`: `finding-01=active`/u, "R009_VALIDATION_ATTEMPT", "new NEEDS_FIX finding lacks canonical response example");
   requirePattern(contract, /novo finding nasce `active`[^\n]{0,180}tentativa formal estritamente posterior/iu, "R009_VALIDATION_ATTEMPT", "new findings can be disposed at their origin attempt");
   requirePattern(contract, /PASS[^\n]{0,260}nenhuma disposição bloqueante ativa/iu, "R009_VALIDATION_ATTEMPT", "PASS may leave a blocking finding active");
+  requirePattern(contract, /A ausência ou o valor pending desses campos finais desta tentativa não é causa de BLOCKED/u, "R009_VALIDATION_ATTEMPT", "runner requires fields produced only after its verdict");
+  requirePattern(contract, /Para cada critério de aceitação aplicável[^\n]{0,220}evidência direta de check ou inspeção suficiente/u, "R009_VALIDATION_ATTEMPT", "runner does not require evidence for each acceptance criterion");
+  requirePattern(contract, /Nunca retorne PASS enquanto algum critério aplicável estiver sem evidência suficiente/u, "R009_VALIDATION_ATTEMPT", "runner permits PASS with an unverified acceptance criterion");
+  requirePattern(contract, /uma única correção apenas da sintaxe JSON[^\n]*mesmo objeto semântico[^\n]*evidência idênticos/u, "R009_VALIDATION_ATTEMPT", "format repair can change runner evidence or verdict");
+  requirePattern(contract, /Não use esse caminho para resposta semântica válida, timeout, processError ou conclusão incerta/u, "R009_VALIDATION_ATTEMPT", "format repair permits an uncertain or already valid result");
   requirePattern(contract, /Checks nunca emitem[^\n]{0,160}(?:Validation Attempt|Effective Validation Base)/iu, "R015_CHECK_AUTHORITY", "check/formal authority separation is incomplete");
   requirePattern(contract, /Responda somente de forma compacta[^\n]{0,120}sem logs completos/iu, "R011_COMPACT_OUTPUT", "runner compact-output boundary is missing");
   requirePattern(contract, /nunca o reverta automaticamente/iu, "R005_READ_ONLY", "runner may automatically revert workspace effects");

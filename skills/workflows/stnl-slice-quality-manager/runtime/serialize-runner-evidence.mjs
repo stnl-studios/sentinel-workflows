@@ -643,7 +643,7 @@ const VALIDATION_SEMANTIC_KEYS = Object.freeze([
   "blockers", "unexpectedWorkspaceEffects", "persistenceSummary",
 ]);
 
-function parseSemanticValidationPayload(text) {
+export function parseSemanticValidationPayload(text) {
   if (typeof text !== "string" || text.length === 0) fail("semantic validation response must be a non-empty JSON object");
   let payload;
   try {

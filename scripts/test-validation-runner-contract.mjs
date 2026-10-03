@@ -110,3 +110,40 @@ test("validation findings require canonical IDs and dispositions", async (t) => 
   await replaceBoth(root, "IDs canônicos `finding-01`, `finding-02`", "IDs livres `F-001`, `F-002`");
   expectCategory(check(root), "R009_VALIDATION_ATTEMPT");
 });
+
+test("runner verdict precedes final manifest fields", async (t) => {
+  const root = await fixture(t);
+  await replaceBoth(root,
+    "A ausência ou o valor pending desses campos finais desta tentativa não é causa de BLOCKED.",
+    "Exija todos os campos finais antes de decidir.");
+  expectCategory(check(root), "R009_VALIDATION_ATTEMPT");
+});
+
+test("runner must check each acceptance criterion before PASS", async (t) => {
+  const root = await fixture(t);
+  await replaceBoth(root,
+    "Nunca retorne PASS enquanto algum critério aplicável estiver sem evidência suficiente",
+    "Retorne PASS quando o teste focado passar");
+  expectCategory(check(root), "R009_VALIDATION_ATTEMPT");
+});
+
+test("format repair contract forbids a changed verdict and uncertain-turn retry", async (t) => {
+  const root = await fixture(t);
+  await replaceBoth(root,
+    "Não use esse caminho para resposta semântica válida, timeout, processError ou conclusão incerta.",
+    "Use o reparo também após timeout.");
+  expectCategory(check(root), "R009_VALIDATION_ATTEMPT");
+});
+
+test("quality manager treats a yielded session as pending and preserves the first receipt", async () => {
+  const quality = await fs.readFile(path.join(repository, "skills/workflows/stnl-slice-quality-manager/SKILL.md"), "utf8");
+  assert.match(quality, /yielded a session ID[^\n]*pending, not an initialization or transport failure/u);
+  assert.match(quality, /Do not start a second runner while the first is pending/u);
+  assert.match(quality, /preserve the first valid receipt even if a later response differs/u);
+  assert.match(quality, /SDK return with `processError`, timeout, or no `threadId`[^\n]*does not prove that no provider work began/u);
+  assert.match(quality, /A thrown error after invoking `runTurn` or the broker's invoke callback is likewise uncertain/u);
+  assert.match(quality, /Their pending state before that verdict is not a blocker/u);
+  assert.match(quality, /every applicable acceptance criterion against concrete current implementation and check evidence/u);
+  assert.match(quality, /at most one format-only correction in the same runner thread/u);
+  assert.match(quality, /if the local equivalence check cannot prove unchanged content, stop with the malformed-result blocker/u);
+});

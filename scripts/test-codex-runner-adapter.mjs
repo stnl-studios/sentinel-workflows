@@ -13,6 +13,7 @@ import { assertRunnerRoundPayload, composeRunnerRequest, main as runnerMain,
 import { captureRunnerResponse } from '../skills/workflows/stnl-slice-executor/runtime/capture-runner-response.mjs';
 import { codexClientConfig, runCodexTurn } from '../agents/codex/runtime/sdk-transport.mjs';
 import { configText } from '../agents/codex/runtime/isolated-home.mjs';
+import { formatRepairSource, sameFormatOnlyContent } from '../agents/codex/runtime/format-repair.mjs';
 import { createUsageNormalizer, ZERO_USAGE } from '../agents/codex/runtime/usage-accounting.mjs';
 import { frozenFileMode } from '../benchmarks/sentinel-todo/runtime/benchmark-snapshot.mjs';
 
@@ -74,7 +75,7 @@ test('independent runner receives mechanical context and semantic payload withou
 
 test('Sentinel dispatch omits remote canonical output schema independently of replay fixtures', async () => {
   const source = await fs.readFile(RUNNER_ADAPTER, 'utf8');
-  const invocation = /const turn = await runTurn\(\{([\s\S]*?)\n  \}\);/u.exec(source)?.[1];
+  const invocation = /turn = await runTurn\(\{([\s\S]*?)\n    \}\);/u.exec(source)?.[1];
   assert.ok(invocation, 'runner dispatch call must remain visible');
   assert.doesNotMatch(invocation, /outputSchema/u);
 });
@@ -125,6 +126,29 @@ test('invalid local semantic JSON is rejected after capture without provider sch
     type: 'agent_message', text: '{"status":' } })}\n`);
   await assert.rejects(captureRunnerResponse({ structuredOutputFile: eventsPath,
     outputFile: path.join(root, 'response.json') }), /not valid JSON/u);
+});
+
+test('format repair accepts bounded syntax fixes and preserves tokens in their original positions', () => {
+  const valid = '{"status":"BLOCKED","head":"0123456789abcdef0123456789abcdef01234567","commands":[{"command":"node --test","exit":0}],"evidence":"same evidence","findingReferences":"none","findingDispositions":"none","blockers":"missing prerequisite","unexpectedWorkspaceEffects":"none","persistenceSummary":"none"}';
+  const source = formatRepairSource(valid.slice(0, -1));
+  assert.ok(source);
+  assert.equal(sameFormatOnlyContent(source, valid), true);
+  assert.equal(sameFormatOnlyContent(source, valid.replace('"BLOCKED"', '"PASS"')), false);
+  assert.equal(sameFormatOnlyContent(source, valid.replace('same evidence', 'new evidence')), false);
+  assert.equal(sameFormatOnlyContent(source, valid.replace('"commands":[', '"commands":{"extra":[')), false);
+  assert.equal(formatRepairSource('{"status":"BLOCKED","evidence":"unfinished'), null);
+  assert.ok(formatRepairSource(`\`\`\`json\n${valid}\n\`\`\``));
+  assert.equal(sameFormatOnlyContent(formatRepairSource(valid.slice(0, -1) + ',}'), valid), true);
+  assert.equal(sameFormatOnlyContent(formatRepairSource(valid.replace('"exit":0}', '"exit":0,}')), valid), true);
+  assert.equal(sameFormatOnlyContent(formatRepairSource('{"a":[1],"b":2}'), '{"a":1,"b":[2]}'), false);
+  assert.equal(formatRepairSource(valid.replace('"head":', '"head"')), null);
+  assert.equal(formatRepairSource(`Here is the result: ${valid}`), null);
+  assert.equal(formatRepairSource(valid.slice(0, -2)), null);
+  assert.equal(formatRepairSource(valid.replace('"exit":0', '"exit":1 2')), null);
+  assert.equal(formatRepairSource(' '.repeat(65537)), null);
+  assert.equal(sameFormatOnlyContent(source, valid.replace('"exit":0', '"exit":1')), false);
+  assert.equal(sameFormatOnlyContent(source, valid.replace('node --test', 'npm test')), false);
+  assert.equal(sameFormatOnlyContent(source, `\`\`\`json\n${valid}\n\`\`\``), false);
 });
 
 test('local APPLY_FINDINGS schema scoping remains available for canonical cycle checks', async () => {

@@ -6,9 +6,11 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { captureRunnerResponse } from '../../../skills/workflows/stnl-slice-executor/runtime/capture-runner-response.mjs';
-import { captureRunnerTestedState, validateManagedChangedAreas } from '../../../skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs';
+import { captureRunnerTestedState, parseSemanticValidationPayload,
+  validateManagedChangedAreas } from '../../../skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs';
 import { runCodexTurn } from './sdk-transport.mjs';
 import { submitOfficialRunnerRequest } from './runner-broker.mjs';
+import { formatRepairSource, sameFormatOnlyContent } from './format-repair.mjs';
 import { readManagedSliceContext } from '../../../skills/workflows/stnl-slice-quality-manager/runtime/managed-slice-context.mjs';
 import { resolveExecutionWorkspace } from '../../../skills/workflows/stnl-slice-quality-manager/runtime/execution-state.mjs';
 import { assertManagedSliceFreshness } from './managed-slice-preflight.mjs';
@@ -17,6 +19,44 @@ const OPERATIONS = new Set(['EXECUTE_SLICE', 'APPLY_FINDINGS', 'VALIDATE_SLICE']
 const RUNNER_NAME = 'stnl_validation_runner';
 
 function fail(message) { throw new Error(message); }
+
+async function finalAgentMessage(eventsPath, operationId, { offset = 0, formatOnly = false } = {}) {
+  const bytes = await fs.readFile(eventsPath);
+  if (offset > bytes.length) fail('runner event stream shrank during format repair');
+  const lines = bytes.subarray(offset).toString('utf8').split('\n').filter(Boolean);
+  let finalMessage = null;
+  let messages = 0;
+  let started = 0;
+  let completed = 0;
+  let lastMessageIndex = -1;
+  let lastCompletionIndex = -1;
+  let observedThreadId = null;
+  for (const [index, line] of lines.entries()) {
+    const event = JSON.parse(line);
+    if (event.operationId !== operationId) fail('runner event identity changed during format repair');
+    if (event.type === 'thread.started') {
+      if (observedThreadId !== null && observedThreadId !== event.thread_id) fail('runner thread identity changed');
+      observedThreadId = event.thread_id;
+    }
+    if (event.type === 'turn.started') started += 1;
+    if (event.type === 'turn.completed') { completed += 1; lastCompletionIndex = index; }
+    if (event.type === 'item.completed' && event.item?.type === 'agent_message') {
+      finalMessage = event.item.text;
+      messages += 1;
+      lastMessageIndex = index;
+    }
+    if (event.type === 'error' || event.type === 'turn.failed') fail('runner event stream reports an error');
+    if (formatOnly && event.item && !['agent_message', 'reasoning'].includes(event.item.type)) {
+      fail('format repair performed work or reported an error');
+    }
+  }
+  if (typeof finalMessage !== 'string' || completed !== 1 || started !== 1
+    || lastCompletionIndex < lastMessageIndex || lastCompletionIndex !== lines.length - 1
+    || (formatOnly && messages !== 1)) {
+    fail('format repair lacks one completed final agent message');
+  }
+  return { message: finalMessage, threadId: observedThreadId, bytes: bytes.length };
+}
 
 export async function describeSemanticResponseFile(file) {
   const bytes = await fs.readFile(file);
@@ -192,18 +232,33 @@ export async function invokeIndependentRunner({
   const eventsPath = path.join(tmpdir, `${operationName}.events.jsonl`);
   const responsePath = path.join(tmpdir, `${operationName}.response.json`);
   await onBeforeTurn({ role: 'runner', operation, sequence, slice, attempt });
-  const turn = await runTurn({
-    env, cwd: workspace, prompt: request, model: configuration.model,
-    effort: configuration.effort, operationId: `runner-${operationName}`,
-    eventsPath, timeoutMs: 1_800_000,
-    developerInstructions: configuration.developerInstructions, isolateSkills: true,
-  });
-  await onTurn({ role: 'runner', operation, sequence, slice, attempt, turn, eventsPath });
+  let turn;
+  try {
+    turn = await runTurn({
+      env, cwd: workspace, prompt: request, model: configuration.model,
+      effort: configuration.effort, operationId: `runner-${operationName}`,
+      eventsPath, timeoutMs: 1_800_000,
+      developerInstructions: configuration.developerInstructions, isolateSkills: true,
+    });
+  } catch (error) {
+    // Once runTurn was invoked, a thrown SDK error does not prove that the
+    // provider never started. Preserve it as an uncertain started result.
+    turn = { completed: false, turnStarted: null, threadId: null,
+      requestedModel: configuration.model, requestedEffort: configuration.effort,
+      reportedModel: null, error: String(error), processError: String(error), usage: null };
+  }
+  try {
+    await onTurn({ role: 'runner', operation, sequence, slice, attempt, turn, eventsPath });
+  } catch (error) {
+    // Accounting failed after dispatch; the provider state is still uncertain.
+    turn = { ...turn, completed: false, error: String(error), processError: String(error) };
+  }
   let captureFailure = null;
   let semanticResponseFile = null;
   let semanticReceipt = { semanticResponseStatus: null, semanticResponseSha256: null };
   let testedState = null;
-  if (turn.completed) {
+  let formatRepair = null;
+  if (turn.completed === true && turn.error == null && turn.processError == null && turn.errorEvent == null) {
     try {
       await captureRunnerResponse({ structuredOutputFile: eventsPath, outputFile: responsePath });
       semanticReceipt = await describeSemanticResponseFile(responsePath);
@@ -214,14 +269,82 @@ export async function invokeIndependentRunner({
       semanticResponseFile = responsePath;
     } catch (error) { captureFailure = error.message; }
   }
-  const status = semanticResponseFile !== null ? 'RUNNER_RESPONSE_CAPTURED'
-    : turn.threadId ? 'RUNNER_RESULT_BLOCKED' : 'RUNNER_INITIALIZATION_BLOCKED';
+  if (operation === 'VALIDATE_SLICE' && turn.completed === true && turn.error == null
+    && turn.processError == null && turn.errorEvent == null && typeof turn.threadId === 'string'
+    && turn.threadId.trim() !== ''
+    && captureFailure === 'final runner message is not valid JSON') {
+    formatRepair = { attempted: false, accepted: false, originalCaptureFailure: captureFailure };
+    try {
+      const original = await finalAgentMessage(eventsPath, `runner-${operationName}`);
+      if (original.threadId !== turn.threadId) fail('original runner thread identity disagrees');
+      const originalPath = path.join(tmpdir, `${operationName}.original-response.txt`);
+      await fs.writeFile(originalPath, original.message, { flag: 'wx' });
+      formatRepair.originalResponseFile = originalPath;
+      formatRepair.originalSha256 = crypto.createHash('sha256').update(original.message).digest('hex');
+      const source = formatRepairSource(original.message);
+      if (source === null) fail('cannot verify original content: only fences, trailing commas or one missing final object brace are supported');
+      // A schema/value failure is semantic, not formatting. Check the bounded
+      // reference before requesting any additional provider turn.
+      parseSemanticValidationPayload(source.canonicalText);
+      await onBeforeTurn({ role: 'runner', operation, sequence, slice, attempt, formatRepair: true });
+      formatRepair.attempted = true;
+      formatRepair.threadId = turn.threadId;
+      formatRepair.eventOffset = original.bytes;
+      formatRepair.operationId = `runner-${operationName}`;
+      const repairPrompt = [
+        'Correct only the JSON formatting of your completed final response below. Keep every key, scalar value,',
+        'command, exit, verdict, and evidence byte-for-byte unchanged. Do not inspect files, run checks,',
+        'revalidate, or add findings. Return exactly one raw JSON object and nothing else.',
+        'Original final response:', original.message,
+      ].join('\n');
+      let repairedTurn;
+      try {
+        repairedTurn = await runTurn({ env, cwd: workspace, prompt: repairPrompt,
+          model: configuration.model, effort: configuration.effort, threadId: turn.threadId,
+          operationId: `runner-${operationName}`, eventsPath, timeoutMs: 1_800_000,
+          developerInstructions: configuration.developerInstructions, isolateSkills: true });
+      } catch (error) {
+        repairedTurn = { completed: false, turnStarted: null, threadId: null,
+          error: String(error), processError: String(error), usage: null };
+      }
+      formatRepair.repairUsage = repairedTurn.usage ?? null;
+      formatRepair.repairTurn = repairedTurn;
+      await onTurn({ role: 'runner', operation, sequence, slice, attempt,
+        formatRepair: true, turn: repairedTurn, eventsPath });
+      if (repairedTurn.completed !== true || repairedTurn.threadId !== turn.threadId
+        || repairedTurn.error != null || repairedTurn.processError != null || repairedTurn.errorEvent != null) {
+        fail('format repair did not complete on the original runner thread');
+      }
+      const repaired = await finalAgentMessage(eventsPath, `runner-${operationName}`,
+        { offset: original.bytes, formatOnly: true });
+      if (repaired.threadId !== null && repaired.threadId !== turn.threadId) {
+        fail('format repair changed runner thread identity');
+      }
+      const repairedPath = path.join(tmpdir, `${operationName}.format-repair-response.txt`);
+      await fs.writeFile(repairedPath, repaired.message, { flag: 'wx' });
+      formatRepair.repairedResponseFile = repairedPath;
+      formatRepair.repairedSha256 = crypto.createHash('sha256').update(repaired.message).digest('hex');
+      if (!sameFormatOnlyContent(source, repaired.message)) fail('format repair changed semantic tokens or structure');
+      parseSemanticValidationPayload(repaired.message);
+      await captureRunnerResponse({ structuredOutputFile: eventsPath, outputFile: responsePath });
+      semanticReceipt = await describeSemanticResponseFile(responsePath);
+      semanticResponseFile = responsePath;
+      captureFailure = null;
+      formatRepair.accepted = true;
+    } catch (error) {
+      formatRepair.rejection = String(error);
+    }
+  }
+  // The SDK reports processError and threadId but provides no proof that an
+  // incomplete turn never reached the provider. Even a missing threadId is
+  // uncertain; do not release a technical retry after runTurn was invoked.
+  const status = semanticResponseFile !== null ? 'RUNNER_RESPONSE_CAPTURED' : 'RUNNER_RESULT_BLOCKED';
   const receipt = {
     status, operation, sequence, slice, attempt, runnerAgent: RUNNER_NAME,
     requestedModel: turn.requestedModel, requestedEffort: turn.requestedEffort,
     reportedModel: turn.reportedModel, threadId: turn.threadId,
     eventsPath, semanticResponseFile, ...semanticReceipt, captureFailure,
-    testedState,
+    testedState, formatRepair,
     providerError: turn.errorEvent ?? null, error: turn.error,
     processError: turn.processError ?? null, usage: turn.usage,
     exitCode: semanticResponseFile === null ? 1 : 0,
