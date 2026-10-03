@@ -319,7 +319,11 @@ function checkRunner(root) {
   requirePattern(contract, /A ausência ou o valor pending desses campos finais desta tentativa não é causa de BLOCKED/u, "R009_VALIDATION_ATTEMPT", "runner requires fields produced only after its verdict");
   requirePattern(contract, /Para cada critério de aceitação aplicável[^\n]{0,220}evidência direta de check ou inspeção suficiente/u, "R009_VALIDATION_ATTEMPT", "runner does not require evidence for each acceptance criterion");
   requirePattern(contract, /Nunca retorne PASS enquanto algum critério aplicável estiver sem evidência suficiente/u, "R009_VALIDATION_ATTEMPT", "runner permits PASS with an unverified acceptance criterion");
-  requirePattern(contract, /uma única correção apenas da sintaxe JSON[^\n]*mesmo objeto semântico[^\n]*evidência idênticos/u, "R009_VALIDATION_ATTEMPT", "format repair can change runner evidence or verdict");
+  requirePattern(contract, /uma única correção apenas de formato JSON[^\n]*mesmo objeto semântico[^\n]*evidência idênticos/u, "R009_VALIDATION_ATTEMPT", "format repair can change runner evidence or verdict");
+  requirePattern(contract, /única equivalência de tipo permitida é array vazio[^\n]*findingReferences[^\n]*findingDispositions/u, "R009_VALIDATION_ATTEMPT", "format repair permits unbounded schema conversion");
+  requirePattern(contract, /check marcado com exit não zero impede[^\n]*mesmo se uma execução posterior passar/u, "R009_VALIDATION_ATTEMPT", "runner may omit earlier failed verification");
+  requirePattern(contract, /script temporário[^\n]*fora do workspace[^\n]*múltiplas camadas de quoting/u, "R009_VALIDATION_ATTEMPT", "runner lacks bounded ad hoc check guidance");
+  requirePattern(contract, /Não confunda ausência de teste prévio com impossibilidade de verificar/u, "R009_VALIDATION_ATTEMPT", "runner may block instead of verifying an accessible coverage gap");
   requirePattern(contract, /Não use esse caminho para resposta semântica válida, timeout, processError ou conclusão incerta/u, "R009_VALIDATION_ATTEMPT", "format repair permits an uncertain or already valid result");
   requirePattern(contract, /Checks nunca emitem[^\n]{0,160}(?:Validation Attempt|Effective Validation Base)/iu, "R015_CHECK_AUTHORITY", "check/formal authority separation is incomplete");
   requirePattern(contract, /Responda somente de forma compacta[^\n]{0,120}sem logs completos/iu, "R011_COMPACT_OUTPUT", "runner compact-output boundary is missing");

@@ -254,26 +254,30 @@ export async function invokeIndependentRunner({
     turn = { ...turn, completed: false, error: String(error), processError: String(error) };
   }
   let captureFailure = null;
+  let captureFailureCode = null;
   let semanticResponseFile = null;
   let semanticReceipt = { semanticResponseStatus: null, semanticResponseSha256: null };
   let testedState = null;
   let formatRepair = null;
   if (turn.completed === true && turn.error == null && turn.processError == null && turn.errorEvent == null) {
     try {
-      await captureRunnerResponse({ structuredOutputFile: eventsPath, outputFile: responsePath });
+      await captureRunnerResponse({ structuredOutputFile: eventsPath, outputFile: responsePath,
+        validateResponse: operation === 'VALIDATE_SLICE' ? parseSemanticValidationPayload : null });
       semanticReceipt = await describeSemanticResponseFile(responsePath);
       if (operation === 'EXECUTE_SLICE' || operation === 'APPLY_FINDINGS') {
         testedState = await captureRunnerTestedState({ workspace, taskArtifact: taskPath,
           changedAreas: managed === null ? null : managedPayload.changedAreas });
       }
       semanticResponseFile = responsePath;
-    } catch (error) { captureFailure = error.message; }
+    } catch (error) { captureFailure = error.message; captureFailureCode = error.code ?? null; }
   }
   if (operation === 'VALIDATE_SLICE' && turn.completed === true && turn.error == null
     && turn.processError == null && turn.errorEvent == null && typeof turn.threadId === 'string'
     && turn.threadId.trim() !== ''
-    && captureFailure === 'final runner message is not valid JSON') {
-    formatRepair = { attempted: false, accepted: false, originalCaptureFailure: captureFailure };
+    && (captureFailure === 'final runner message is not valid JSON'
+      || captureFailureCode === 'RUNNER_RESPONSE_SCHEMA_INVALID')) {
+    formatRepair = { attempted: false, accepted: false, originalCaptureFailure: captureFailure,
+      originalCaptureFailureCode: captureFailureCode };
     try {
       const original = await finalAgentMessage(eventsPath, `runner-${operationName}`);
       if (original.threadId !== turn.threadId) fail('original runner thread identity disagrees');
@@ -282,10 +286,11 @@ export async function invokeIndependentRunner({
       formatRepair.originalResponseFile = originalPath;
       formatRepair.originalSha256 = crypto.createHash('sha256').update(original.message).digest('hex');
       const source = formatRepairSource(original.message);
-      if (source === null) fail('cannot verify original content: only fences, trailing commas or one missing final object brace are supported');
-      // A schema/value failure is semantic, not formatting. Check the bounded
-      // reference before requesting any additional provider turn.
+      if (source === null) fail('cannot verify original content within the bounded format-repair rules');
+      // Apart from explicitly empty finding sets, a schema/value failure is
+      // semantic. Validate the bounded reference before another provider turn.
       parseSemanticValidationPayload(source.canonicalText);
+      formatRepair.emptyFindingFields = source.emptyFindingFields;
       await onBeforeTurn({ role: 'runner', operation, sequence, slice, attempt, formatRepair: true });
       formatRepair.attempted = true;
       formatRepair.threadId = turn.threadId;
@@ -295,6 +300,10 @@ export async function invokeIndependentRunner({
         'Correct only the JSON formatting of your completed final response below. Keep every key, scalar value,',
         'command, exit, verdict, and evidence byte-for-byte unchanged. Do not inspect files, run checks,',
         'revalidate, or add findings. Return exactly one raw JSON object and nothing else.',
+        ...(source.emptyFindingFields.length === 0 ? [] : [
+          `The only permitted value representation change is empty [] to the string "none" for: ${source.emptyFindingFields.join(', ')}.`,
+          'Those fields contain no entries. Do not infer, remove, resolve, or add any finding.',
+        ]),
         'Original final response:', original.message,
       ].join('\n');
       let repairedTurn;
@@ -326,10 +335,12 @@ export async function invokeIndependentRunner({
       formatRepair.repairedSha256 = crypto.createHash('sha256').update(repaired.message).digest('hex');
       if (!sameFormatOnlyContent(source, repaired.message)) fail('format repair changed semantic tokens or structure');
       parseSemanticValidationPayload(repaired.message);
-      await captureRunnerResponse({ structuredOutputFile: eventsPath, outputFile: responsePath });
+      await captureRunnerResponse({ structuredOutputFile: eventsPath, outputFile: responsePath,
+        validateResponse: parseSemanticValidationPayload });
       semanticReceipt = await describeSemanticResponseFile(responsePath);
       semanticResponseFile = responsePath;
       captureFailure = null;
+      captureFailureCode = null;
       formatRepair.accepted = true;
     } catch (error) {
       formatRepair.rejection = String(error);
@@ -343,7 +354,7 @@ export async function invokeIndependentRunner({
     status, operation, sequence, slice, attempt, runnerAgent: RUNNER_NAME,
     requestedModel: turn.requestedModel, requestedEffort: turn.requestedEffort,
     reportedModel: turn.reportedModel, threadId: turn.threadId,
-    eventsPath, semanticResponseFile, ...semanticReceipt, captureFailure,
+    eventsPath, semanticResponseFile, ...semanticReceipt, captureFailure, captureFailureCode,
     testedState, formatRepair,
     providerError: turn.errorEvent ?? null, error: turn.error,
     processError: turn.processError ?? null, usage: turn.usage,

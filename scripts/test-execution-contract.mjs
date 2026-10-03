@@ -52,6 +52,8 @@ import { captureRunnerResponse } from "../skills/workflows/stnl-slice-executor/r
 import { startOfficialRunnerBroker } from "../agents/codex/runtime/runner-broker.mjs";
 import { runManagedRunnerBridge } from "../agents/codex/runtime/managed-runner-bridge.mjs";
 import { invokeIndependentRunner } from "../agents/codex/runtime/validation-runner.mjs";
+import { emptyFindingArrays, validationResponse as sanitizedValidationResponse,
+  failedCheckHistory } from "./fixtures/validation-response-regressions.mjs";
 import { prepareExecutionCopy, publishExecutionCopy } from "../skills/workflows/stnl-slice-executor/runtime/prepare-execution-copy.mjs";
 import { EXECUTION_OPERATION_SKILLS, WORKFLOW_OPERATIONS } from "./lib/skill-registry.mjs";
 
@@ -86,13 +88,13 @@ async function capturedCommandEvidence(t, operation, response, command) {
   return { receiptFile, semanticResponseFile };
 }
 
-async function capturedVerificationSequence(t, operation, response, exits) {
+async function capturedVerificationSequence(t, operation, response, exits, literalCommands = null) {
   const root = await temporary(t, "stnl-verdict-sequence-");
   const name = `001-${operation.toLowerCase()}-slice-01-attempt-1`;
   const semanticResponseFile = path.join(root, `${name}.response.json`);
   const receiptFile = path.join(root, `${name}.receipt.json`);
   const eventsPath = path.join(root, `${name}.events.jsonl`);
-  const commands = exits.map((exit, index) => ({ command: `STNL_VERIFICATION_COMMAND=1 node --test check-${index + 1}.mjs`, exit }));
+  const commands = literalCommands ?? exits.map((exit, index) => ({ command: `STNL_VERIFICATION_COMMAND=1 node --test check-${index + 1}.mjs`, exit }));
   const events = commands.flatMap(({ command, exit }, index) => [
     { operationId: `runner-${name}`, type: "item.started", item: { id: `item_${index + 1}`, type: "command_execution", command, status: "in_progress", exit_code: null } },
     { operationId: `runner-${name}`, type: "item.completed", item: { id: `item_${index + 1}`, type: "command_execution", command, status: "completed", exit_code: exit } },
@@ -116,6 +118,43 @@ test("success verdicts reconcile every mechanical exit without suppressing legit
     const failure = operation === "VALIDATE_SLICE" ? "NEEDS_FIX" : "TESTS_FAIL";
     assert.doesNotThrow(() => assertRunnerVerdictConsistency(operation, failure, [{ exit: 1 }]));
     assert.doesNotThrow(() => assertRunnerVerdictConsistency(operation, "BLOCKED", [{ exit: 1 }]));
+  }
+});
+
+test("real failed-check history rejects omitted failures and persists a legitimate BLOCKED verdict", async (t) => {
+  for (const status of ["PASS", "BLOCKED"]) {
+    const fixture = await standaloneWorkspace(t);
+    await renderArtifacts(fixture);
+    await writeValidatedPath(fixture);
+    await editTask(fixture, (value) => {
+      let task = value.replace("- [ ] 1.1", "- [x] 1.1");
+      task = replaceSection(task, "Changed Areas", "- `../../src/example.txt`");
+      task = replaceSection(task, "Implementation Test Evidence", checkRecord("implementation-check", 1, "TESTS_PASS", 1));
+      return replaceSection(task, "Diff Summary", "- Verified behavior is implemented.");
+    });
+    const claimed = sanitizedValidationResponse(status);
+    // Like operation 008, the claim lists only the successful checks. The SDK
+    // transcript must still own all four literal commands and their exits.
+    claimed.commands = failedCheckHistory.filter(({ exit }) => exit === 0);
+    claimed.evidence = "Coverage inspected; ad hoc check fixture and usage assertion failed before correction.";
+    if (status === "BLOCKED") claimed.blockers = "Invalid check fixture and usage assertion require reliable verification.";
+    const captured = await capturedVerificationSequence(t, "VALIDATE_SLICE", JSON.stringify(claimed), [], failedCheckHistory);
+    const before = await fs.readFile(path.join(path.dirname(captured.receiptFile), "001-validate_slice-slice-01-attempt-1.events.jsonl"));
+    const copy = await prepareValidationCopy({ specPath: fixture.requirements, slice: "slice-01",
+      candidateParent: await temporary(t, "stnl-real-check-history-") });
+    const result = await prepareValidationCandidate({ specPath: fixture.requirements, slice: "1",
+      workspace: fixture.root, candidateExecutionRoot: copy.candidateExecutionRoot, ...captured });
+    const task = await fs.readFile(path.join(copy.candidateExecutionRoot, "tasks/slice-01.md"), "utf8");
+    if (status === "PASS") {
+      assert.equal(result.status, "RUNNER_RESULT_BLOCKED");
+      assert.match(result.recovery.diagnostic, /contradicts 2 marked verification/u);
+      assert.match(task, /## Validation Attempts\n\n- none/u);
+    } else {
+      assert.equal(result.formalStatus, "BLOCKED");
+      for (const { command, exit } of failedCheckHistory) assert.ok(task.includes("`" + command + "` | exit:" + exit));
+      assert.match(task, /### attempt-01/u);
+    }
+    assert.deepEqual(await fs.readFile(path.join(path.dirname(captured.receiptFile), "001-validate_slice-slice-01-attempt-1.events.jsonl")), before);
   }
 });
 
@@ -4022,7 +4061,8 @@ test("managed bridge and broker bind one format repair through strict publicatio
             { operationId, type: "item.completed", item: { id: "item_0", type: "command_execution", command: check, status: "completed", exit_code: 0 } },
           ] : []),
           { operationId, type: "item.completed", item: { id: "item_1", type: "agent_message",
-            text: runnerTurns === 1 ? semantic.slice(0, -1) : semantic } },
+            text: runnerTurns === 1 ? JSON.stringify({ ...JSON.parse(semantic),
+              findingReferences: [], findingDispositions: [] }) : semantic } },
           { operationId, type: "turn.completed", usage: { input_tokens: 5, output_tokens: 5 } },
         ];
         await fs.appendFile(eventsPath, `${events.map(JSON.stringify).join("\n")}\n`);
@@ -4093,7 +4133,7 @@ test("runner adapter fails closed on uncertain SDK returns and captures a valid 
     { name: "completed with malformed final JSON", turn: { completed: true, turnStarted: true,
       threadId: "started-thread" }, message: "{", status: "RUNNER_RESULT_BLOCKED" },
     { name: "completed with valid final JSON", turn: { completed: true, turnStarted: true,
-      threadId: "started-thread" }, message: JSON.stringify({ status: "PASS" }),
+      threadId: "started-thread" }, message: JSON.stringify(sanitizedValidationResponse("PASS")),
       status: "RUNNER_RESPONSE_CAPTURED" },
     { name: "accounting failure after dispatch", turn: { completed: true, turnStarted: true,
       threadId: "started-thread" }, message: JSON.stringify({ status: "PASS" }),
@@ -4134,6 +4174,19 @@ test("one same-thread format repair preserves the completed validation verdict a
   const malformed = valid.slice(0, -1);
   const scenarios = [
     { name: "format fixed", first: malformed, second: valid, expected: "RUNNER_RESPONSE_CAPTURED", turns: 2 },
+    { name: "real empty finding arrays", first: emptyFindingArrays, second: JSON.stringify(sanitizedValidationResponse()),
+      expected: "RUNNER_RESPONSE_CAPTURED", turns: 2 },
+    { name: "combined fence and arrays", first: `\`\`\`json\n${emptyFindingArrays}\n\`\`\``,
+      second: JSON.stringify(sanitizedValidationResponse()), expected: "RUNNER_RESPONSE_CAPTURED", turns: 2 },
+    { name: "schema repair changed verdict", first: emptyFindingArrays,
+      second: JSON.stringify(sanitizedValidationResponse("PASS")), expected: "RUNNER_RESULT_BLOCKED", turns: 2 },
+    { name: "schema repair changed evidence", first: emptyFindingArrays,
+      second: JSON.stringify(sanitizedValidationResponse()).replace('need direct evidence', 'have sufficient evidence'),
+      expected: "RUNNER_RESULT_BLOCKED", turns: 2 },
+    { name: "schema repair second invalid", first: emptyFindingArrays, second: emptyFindingArrays,
+      expected: "RUNNER_RESULT_BLOCKED", turns: 2 },
+    { name: "nonempty finding array", first: JSON.stringify({ ...sanitizedValidationResponse(), findingReferences: ["finding-01"] }),
+      expected: "RUNNER_RESULT_BLOCKED", turns: 1 },
     { name: "fence fixed", first: `\`\`\`json\n${valid}\n\`\`\``, second: valid,
       expected: "RUNNER_RESPONSE_CAPTURED", turns: 2 },
     { name: "trailing comma fixed", first: valid.slice(0, -1) + ',}', second: valid,
@@ -4224,6 +4277,20 @@ test("one same-thread format repair preserves the completed validation verdict a
       assert.equal(receipt.formatRepair.threadId, "format-thread");
       assert.ok(receipt.formatRepair.eventOffset > 0);
       assert.equal(receipt.formatRepair.repairTurn.completed, true);
+    }
+    if (["real empty finding arrays", "combined fence and arrays"].includes(scenario.name)) {
+      assert.equal(receipt.semanticResponseStatus, "BLOCKED");
+      assert.equal(receipt.captureFailureCode, null);
+      assert.deepEqual(receipt.formatRepair.emptyFindingFields, ["findingReferences", "findingDispositions"]);
+      assert.equal(receipt.formatRepair.originalSha256, createHash("sha256").update(scenario.first).digest("hex"));
+      assert.equal(receipt.semanticResponseSha256, createHash("sha256").update(scenario.second).digest("hex"));
+      if (scenario.name === "real empty finding arrays") {
+        assert.equal(receipt.formatRepair.originalCaptureFailureCode, "RUNNER_RESPONSE_SCHEMA_INVALID");
+      }
+      assert.equal(await fs.readFile(receipt.formatRepair.originalResponseFile, "utf8"), scenario.first);
+      assert.equal(await fs.readFile(receipt.semanticResponseFile, "utf8"), scenario.second);
+      assert.deepEqual(JSON.parse(scenario.second).commands, JSON.parse(emptyFindingArrays).commands);
+      assert.equal(JSON.parse(scenario.second).evidence, JSON.parse(emptyFindingArrays).evidence);
     }
     if (scenario.expected === "RUNNER_RESULT_BLOCKED" && scenario.turns === 2) {
       assert.equal(receipt.formatRepair.accepted, false, scenario.name);

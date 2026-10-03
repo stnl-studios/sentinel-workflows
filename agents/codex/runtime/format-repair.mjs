@@ -1,4 +1,5 @@
 const MAX_RESPONSE_BYTES = 64 * 1024;
+const EMPTY_FINDING_FIELDS = ['findingReferences', 'findingDispositions'];
 
 function unframe(text) {
   const trimmed = text.trim();
@@ -63,7 +64,20 @@ export function formatRepairSource(text) {
   // Whitespace removal must not merge adjacent malformed scalar tokens (for
   // example, an ambiguous `1 2` into `12`). Such input has no safe reference.
   if (JSON.stringify(lex(canonicalText)) !== JSON.stringify(tokens)) return null;
-  return { canonicalText, tokens };
+  // These two fields describe sets; an empty array contains exactly the same
+  // entries as their canonical `none` spelling. No nonempty array, other field,
+  // missing value or semantic judgment is inferred. Preserve all other tokens.
+  const emptyFindingFields = EMPTY_FINDING_FIELDS.filter((field) =>
+    Array.isArray(payload[field]) && payload[field].length === 0);
+  for (let index = 0; index < tokens.length - 3; index += 1) {
+    if (tokens[index].kind === 'scalar' && emptyFindingFields.includes(JSON.parse(tokens[index].value))
+      && tokens[index + 1].value === ':' && tokens[index + 2].value === '['
+      && tokens[index + 3].value === ']') {
+      tokens.splice(index + 2, 2, { kind: 'scalar', value: '"none"' });
+    }
+  }
+  canonicalText = tokens.map((token) => token.value).join('');
+  return { canonicalText, tokens, emptyFindingFields };
 }
 
 export function sameFormatOnlyContent(source, repaired) {

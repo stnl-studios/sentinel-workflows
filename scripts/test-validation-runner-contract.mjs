@@ -135,6 +135,24 @@ test("format repair contract forbids a changed verdict and uncertain-turn retry"
   expectCategory(check(root), "R009_VALIDATION_ATTEMPT");
 });
 
+test("runner contract forbids hiding a failed check after a corrected check passes", async (t) => {
+  const root = await fixture(t);
+  await replaceBoth(root, "Um check marcado com exit não zero impede", "Ignore o check anterior para permitir");
+  expectCategory(check(root), "R009_VALIDATION_ATTEMPT");
+});
+
+test("runner verifies an accessible missing variant instead of treating missing prior tests as impossibility", async (t) => {
+  const root = await fixture(t);
+  await replaceBoth(root, "Não confunda ausência de teste prévio com impossibilidade de verificar.", "Bloqueie se faltar teste prévio.");
+  expectCategory(check(root), "R009_VALIDATION_ATTEMPT");
+});
+
+test("runner schema repair cannot expand beyond the two empty finding sets", async (t) => {
+  const root = await fixture(t);
+  await replaceBoth(root, "A única equivalência de tipo permitida é array vazio", "Converta livremente qualquer array");
+  expectCategory(check(root), "R009_VALIDATION_ATTEMPT");
+});
+
 test("quality manager treats a yielded session as pending and preserves the first receipt", async () => {
   const quality = await fs.readFile(path.join(repository, "skills/workflows/stnl-slice-quality-manager/SKILL.md"), "utf8");
   assert.match(quality, /yielded a session ID[^\n]*pending, not an initialization or transport failure/u);

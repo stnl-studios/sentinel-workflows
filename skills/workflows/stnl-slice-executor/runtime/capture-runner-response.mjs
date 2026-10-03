@@ -66,10 +66,17 @@ function parseStructuredOutput(text) {
   return response;
 }
 
-export async function captureRunnerResponse({ structuredOutputFile, outputFile }) {
+export async function captureRunnerResponse({ structuredOutputFile, outputFile, validateResponse = null }) {
   const source = await requireRegularFile(structuredOutputFile, "structured output file");
   const destination = await requireAbsentOutput(outputFile);
   const response = parseStructuredOutput(await fs.readFile(source, "utf8"));
+  if (validateResponse !== null) {
+    try { validateResponse(response); }
+    catch (cause) {
+      throw Object.assign(new Error(`runner response schema is invalid: ${cause.message}`, { cause }),
+        { code: "RUNNER_RESPONSE_SCHEMA_INVALID" });
+    }
+  }
   const temporary = path.join(
     path.dirname(destination),
     `.${path.basename(destination)}.${process.pid}.${crypto.randomUUID()}.tmp`,

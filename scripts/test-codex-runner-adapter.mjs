@@ -14,6 +14,8 @@ import { captureRunnerResponse } from '../skills/workflows/stnl-slice-executor/r
 import { codexClientConfig, runCodexTurn } from '../agents/codex/runtime/sdk-transport.mjs';
 import { configText } from '../agents/codex/runtime/isolated-home.mjs';
 import { formatRepairSource, sameFormatOnlyContent } from '../agents/codex/runtime/format-repair.mjs';
+import { emptyFindingArrays, validationResponse, newlineCheck, usageCheck, correctedCheck } from './fixtures/validation-response-regressions.mjs';
+import { parseSemanticValidationPayload } from '../skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs';
 import { createUsageNormalizer, ZERO_USAGE } from '../agents/codex/runtime/usage-accounting.mjs';
 import { frozenFileMode } from '../benchmarks/sentinel-todo/runtime/benchmark-snapshot.mjs';
 
@@ -149,6 +151,45 @@ test('format repair accepts bounded syntax fixes and preserves tokens in their o
   assert.equal(sameFormatOnlyContent(source, valid.replace('"exit":0', '"exit":1')), false);
   assert.equal(sameFormatOnlyContent(source, valid.replace('node --test', 'npm test')), false);
   assert.equal(sameFormatOnlyContent(source, `\`\`\`json\n${valid}\n\`\`\``), false);
+});
+
+test('schema preflight rejects the real empty-array shape before creating a deliverable', async (t) => {
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'stnl-schema-preflight-')));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const events = path.join(root, 'events.jsonl');
+  const output = path.join(root, 'response.json');
+  const stream = JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: emptyFindingArrays } }) + '\n';
+  await fs.writeFile(events, stream);
+  await assert.rejects(captureRunnerResponse({ structuredOutputFile: events, outputFile: output,
+    validateResponse: parseSemanticValidationPayload }), (error) => error.code === 'RUNNER_RESPONSE_SCHEMA_INVALID');
+  await assert.rejects(fs.access(output), { code: 'ENOENT' });
+  assert.equal(await fs.readFile(events, 'utf8'), stream);
+  const source = formatRepairSource(emptyFindingArrays);
+  assert.deepEqual(source.emptyFindingFields, ['findingReferences', 'findingDispositions']);
+  assert.deepEqual(parseSemanticValidationPayload(source.canonicalText), validationResponse());
+  assert.equal(sameFormatOnlyContent(source, JSON.stringify(validationResponse())), true);
+  assert.equal(sameFormatOnlyContent(source, JSON.stringify(validationResponse('PASS'))), false);
+  assert.equal(sameFormatOnlyContent(source, source.canonicalText.replace('absent storage', 'existing storage')), false);
+  for (const override of [{ findingReferences: ['finding-01'] }, { evidence: [] }, { findingReferences: null }]) {
+    const unsupported = formatRepairSource(JSON.stringify({ ...validationResponse(), ...override }));
+    assert.throws(() => parseSemanticValidationPayload(unsupported.canonicalText));
+  }
+});
+
+test('sanitized ad hoc check fixtures reproduce both real failures and their corrected check', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'stnl-check-fixture-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  for (const [name, code, exit, error] of [
+    ['newline', newlineCheck, 1, /1 !== 0/u],
+    ['usage', usageCheck, 1, /did not match the regular expression/u],
+    ['corrected', correctedCheck, 0, /^$/u],
+  ]) {
+    const script = path.join(root, name + '.mjs');
+    await fs.writeFile(script, code);
+    const result = spawnSync(process.execPath, [script], { encoding: 'utf8' });
+    assert.equal(result.status, exit, result.stderr);
+    assert.match(result.stderr, error);
+  }
 });
 
 test('local APPLY_FINDINGS schema scoping remains available for canonical cycle checks', async () => {
