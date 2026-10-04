@@ -2419,6 +2419,20 @@ test("candidate helper CLIs execute from a frozen skill path containing spaces",
   for (const skill of ["stnl-execution-planner", "stnl-task-materializer"]) {
     await fs.cp(path.join(ROOT, "skills/workflows", skill), path.join(bundle, skill), { recursive: true });
   }
+  const materializerRoot = path.join(bundle, "stnl-task-materializer");
+  const contract = await fs.readFile(path.join(materializerRoot, "SKILL.md"), "utf8");
+  assert.match(contract, /Resolve bundled `references\/` and `templates\/` from `<SKILL_ROOT>`, the directory containing this SKILL.md, independently of SPEC_PATH, the execution root, candidate root or command cwd/u);
+  const resources = new Set([...contract.matchAll(/`<SKILL_ROOT>\/((?:references|templates)\/[^`]+)`/gu)].map((match) => match[1]));
+  assert.deepEqual([...resources].sort(), ["references/execution-record-schema.md", "templates/slice-tasks.template.md", "templates/tasks.template.md"]);
+  assert.doesNotMatch(contract, /`references\/execution-record-schema\.md`|including[^\n]*`references\/`/u);
+  for (const resource of resources) {
+    const bytes = await fs.readFile(path.join(materializerRoot, resource));
+    assert.deepEqual(bytes, await fs.readFile(path.join(ROOT, "skills/workflows/stnl-task-materializer", resource)));
+    await assert.rejects(fs.stat(path.join(fixture.execution, resource)), { code: "ENOENT" });
+  }
+  const livePlan = await fs.readFile(path.join(fixture.execution, "plan.md"));
+  const liveDetail = await fs.readFile(path.join(fixture.execution, "plans/slice-01.md"));
+  assert.equal((await inspectExecutionState(fixture.requirements)).state, "PLANNED_READY");
   const environment = { ...process.env, TMPDIR: root };
   const preparer = path.join(bundle, "stnl-task-materializer/runtime/prepare-task-candidate.mjs");
   const prepared = spawnSync(process.execPath, [preparer, "--prepare", "--spec-path", fixture.requirements], {
@@ -2429,6 +2443,22 @@ test("candidate helper CLIs execute from a frozen skill path containing spaces",
   assert.equal(result.status, "PASS");
   assert.equal(path.dirname(result.candidateExecutionRoot), root);
   assert.equal((await fs.lstat(path.join(result.candidateExecutionRoot, "plan.md"))).isFile(), true);
+  await renderTasks(fixture, {
+    templateRoot: path.join(materializerRoot, "templates"), outputExecutionRoot: result.candidateExecutionRoot,
+  });
+  await assert.rejects(fs.stat(path.join(fixture.execution, "tasks.md")), { code: "ENOENT" });
+  const published = spawnSync(process.execPath, [path.join(materializerRoot, "runtime/publish-task-candidate.mjs"),
+    "--publish", "--spec-path", fixture.requirements, "--candidate-execution-root", result.candidateExecutionRoot], {
+    cwd: fixture.root, encoding: "utf8", env: environment,
+  });
+  assert.equal(published.status, 0, published.stderr);
+  assert.equal(JSON.parse(published.stdout).status, "PASS");
+  const materialized = await inspectExecutionState(fixture.requirements);
+  assert.equal(materialized.state, "MATERIALIZED_PRISTINE");
+  assert.equal(deriveNormalHandoff(materialized, "MATERIALIZE_TASKS").operation, "REVIEW_TASKS");
+  assert.deepEqual(await fs.readFile(path.join(fixture.execution, "plan.md")), livePlan);
+  assert.deepEqual(await fs.readFile(path.join(fixture.execution, "plans/slice-01.md")), liveDetail);
+  await assert.rejects(fs.stat(path.join(fixture.execution, "references")), { code: "ENOENT" });
   for (const helper of [
     "stnl-execution-planner/runtime/prepare-plan-candidate.mjs",
     "stnl-execution-planner/runtime/serialize-plan-paths.mjs",
@@ -2556,7 +2586,9 @@ function setPlanReviewState(text, ready) {
     .replace(/^- Review state: (?:pending|approved)$/gmu, `- Review state: ${ready ? "approved" : "pending"}`);
 }
 
-async function renderTasks(fixture, { revision = 1, fingerprint = null } = {}) {
+async function renderTasks(fixture, { revision = 1, fingerprint = null,
+  templateRoot = path.join(ROOT, "skills/workflows/stnl-task-materializer/templates"),
+  outputExecutionRoot = fixture.execution } = {}) {
   const authority = fingerprint ?? await computeRequirementsAuthority(fixture.requirements);
   const requirementsMetadata = await fs.stat(fixture.requirements);
   const authorityPath = requirementsMetadata.isDirectory() ? path.join(fixture.requirements, "feature_spec.md") : fixture.requirements;
@@ -2566,13 +2598,13 @@ async function renderTasks(fixture, { revision = 1, fingerprint = null } = {}) {
     path.join(fixture.execution, "tasks"),
     path.join(implementationRoot, "src/example.txt"),
   ).split(path.sep).join("/");
-  await fs.mkdir(path.join(fixture.execution, "tasks"), { recursive: true });
-  const tasksTemplate = await fs.readFile(path.join(ROOT, "skills/workflows/stnl-task-materializer/templates/tasks.template.md"), "utf8");
+  await fs.mkdir(path.join(outputExecutionRoot, "tasks"), { recursive: true });
+  const tasksTemplate = await fs.readFile(path.join(templateRoot, "tasks.template.md"), "utf8");
   const tasks = replaceAll(tasksTemplate, [
     ["01 - <name>", "01 - Delivery"], ["<observable delivery>", "observable result"],
   ]);
-  await fs.writeFile(path.join(fixture.execution, "tasks.md"), tasks);
-  const taskTemplate = await fs.readFile(path.join(ROOT, "skills/workflows/stnl-task-materializer/templates/slice-tasks.template.md"), "utf8");
+  await fs.writeFile(path.join(outputExecutionRoot, "tasks.md"), tasks);
+  const taskTemplate = await fs.readFile(path.join(templateRoot, "slice-tasks.template.md"), "utf8");
   const task = replaceAll(taskTemplate, [
     ["<Name>", "Delivery"], ["`<relative path>`", `\`${detailSource}\``],
     ["sha256:<64hex>", `sha256:${authority}`], ["<positive integer>", String(revision)],
@@ -2580,7 +2612,7 @@ async function renderTasks(fixture, { revision = 1, fingerprint = null } = {}) {
     ["`<artifact-relative path>`; <optional conceptual area>", `\`${taskImplementationPath}\`; example implementation`],
     ["<test, command, suite, or observable check>", "node --test"],
   ]);
-  await fs.writeFile(path.join(fixture.execution, "tasks/slice-01.md"), task);
+  await fs.writeFile(path.join(outputExecutionRoot, "tasks/slice-01.md"), task);
 }
 
 async function renderArtifacts(fixture, { materialized = true, planStatus = "ready", revision = 1, fingerprint = null } = {}) {
