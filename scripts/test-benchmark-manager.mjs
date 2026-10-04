@@ -298,6 +298,41 @@ test('clean refuses a symlink in an owned run and leaves evidence intact', async
   assert.equal((await fs.lstat(path.join(root, 'summary.json'))).isFile(), true);
 });
 
+test('clean accepts recorded zero-turn failure before private home creation', async (t) => {
+  const { id, root } = await ownedRun(t);
+  const dir = path.join(root, 'case-a');
+  await fs.mkdir(dir);
+  await fs.writeFile(path.join(dir, 'case-state.json'), JSON.stringify({ caseId: 'A', status: 'BLOCKED',
+    privateHomeNotCreated: true, operations: [], mainTurns: 0, runnerTurns: 0, finalizer: null }));
+  await fs.writeFile(path.join(dir, 'journal.json'), JSON.stringify({ events: [] }));
+  const result = invoke('clean', '--run', id);
+  assert.equal(result.status, 0, result.stderr);
+  await assert.rejects(fs.lstat(root), { code: 'ENOENT' });
+});
+
+test('startup persists an uncreated home only for a recorded allocation failure', async (t) => {
+  const { id, root } = await ownedRun(t);
+  const configuration = JSON.parse(await fs.readFile(path.join(ROOT, 'benchmarks/sentinel-todo/benchmark.json'), 'utf8'));
+  const head = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: ROOT, encoding: 'utf8' }).stdout.trim();
+  const error = Object.assign(new Error('fixture allocation failure'), { code: 'EPERM', privateHomeNotCreated: true });
+  const product = { ZERO_USAGE: {}, createUsageNormalizer: () => ({ observe: () => ({}) }),
+    prepareIsolatedHome: async () => { throw error; } };
+  const result = await manager.runCase({ runRoot: root, caseId: 'A', configuration, snapshotMetadata: { baseSha: head },
+    maxOperations: null, mode: 'case', product, signal: new AbortController().signal });
+  assert.equal(result.status, 'BLOCKED');
+  const state = JSON.parse(await fs.readFile(path.join(root, 'case-a/case-state.json'), 'utf8'));
+  const journal = JSON.parse(await fs.readFile(path.join(root, 'case-a/journal.json'), 'utf8'));
+  assert.equal(state.terminal.blocker, 'DRIVER_FAILURE');
+  assert.equal(manager.privateHomeNeverCreated(state, journal), true);
+  for (const change of [{ privateHomeNotCreated: undefined }, { mainTurns: 1 }, { runnerTurns: 1 },
+    { operations: [{}] }, { finalizer: {} }, { isolationHomePath: '/fixture/home' }, { suspendedHome: {} },
+    { privateHomeCleanupError: 'failed' }, { status: 'ACTIVE' }]) {
+    assert.equal(manager.privateHomeNeverCreated({ ...state, ...change }, journal), false);
+  }
+  assert.equal(manager.privateHomeNeverCreated(state, { events: [{}] }), false);
+  assert.equal(manager.privateHomeNeverCreated(state, null), false);
+});
+
 test('fresh per-run budget starts at zero and safely admits concurrent B/C turns within its bound', async (t) => {
   const tempRoot = await fs.mkdtemp(path.join(process.env.TMPDIR ?? '/tmp', 'sentinel-budget-'));
   t.after(async () => fs.rm(tempRoot, { recursive: true, force: true }));

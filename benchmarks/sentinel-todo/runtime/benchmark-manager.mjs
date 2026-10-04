@@ -414,6 +414,14 @@ function argsForJournal({ journal, operation, route, outcome, slice, readback, r
 }
 function specInput(slice) { return slice === null ? null : BigInt(slice.slice('slice-'.length)).toString(10); }
 
+export function privateHomeNeverCreated(state, journal) {
+  return state?.privateHomeNotCreated === true && state.status === 'BLOCKED'
+    && !state.isolationHomePath && !state.suspendedHome && !state.privateHomeCleanupError
+    && state.finalizer === null && state.mainTurns === 0 && state.runnerTurns === 0
+    && Array.isArray(state.operations) && state.operations.length === 0
+    && Array.isArray(journal?.events) && journal.events.length === 0;
+}
+
 export async function runCase({ runRoot, caseId, configuration, snapshotMetadata, maxOperations, mode, product, signal, resume = false }) {
   const turnLimit = configuration.turnBudget?.maxTurnsPerRun;
   if (!Number.isSafeInteger(turnLimit) || turnLimit < 1) fail('benchmark turnBudget.maxTurnsPerRun must be a positive integer');
@@ -753,6 +761,10 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
       if (target === null && operation !== 'SPEC_CLOSE') { terminal = { result: 'BLOCKED', blocker: 'NO_OFFICIAL_HANDOFF' }; break; }
     }
   } catch (error) {
+    if (!resume && home === null && error.privateHomeNotCreated === true
+      && caseState.operations.length === 0 && caseState.mainTurns === 0 && caseState.runnerTurns === 0) {
+      caseState.privateHomeNotCreated = true;
+    }
     terminal = error.code === 'PAUSED_BUDGET_OR_QUOTA'
       ? { result: 'PAUSED_BUDGET_OR_QUOTA', blocker: 'PAUSED_BUDGET_OR_QUOTA', diagnostic: error.message }
       : { result: 'BLOCKED', blocker: PROVIDER_CONFIGURATION_ERRORS.has(error.code) ? error.code : 'DRIVER_FAILURE',
@@ -938,7 +950,10 @@ async function clean(id) {
       const state = await readJson(path.join(root, name, 'case-state.json')).catch(() => null);
       if (!state || state.status === 'ACTIVE') fail('run contains an active or unclean case');
       if (state.privateHomeSuspended === true && state.suspendedHome) suspended.push(state);
-      else if (state.privateHomeRemoved !== true) fail('run contains an active or unclean case');
+      else if (state.privateHomeRemoved !== true
+        && !privateHomeNeverCreated(state, await readJson(path.join(root, name, 'journal.json')).catch(() => null))) {
+        fail('run contains an active or unclean case');
+      }
     }
   }
   if (suspended.length > 0) {

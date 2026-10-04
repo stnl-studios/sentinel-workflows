@@ -119,7 +119,14 @@ export async function prepareIsolatedHome({ runId, caseId, snapshot, workspace, 
   }
   const authMetadata = await fs.lstat(authPath);
   if (!authMetadata.isFile() || authMetadata.isSymbolicLink()) throw new Error('official ChatGPT cache is unavailable or unsafe');
-  const privateHome = await fs.mkdtemp(path.join(PRIVATE_PARENT, `sentinel-benchmark-${runId}-${caseId.toLowerCase()}-`));
+  let privateHome;
+  try {
+    privateHome = await fs.mkdtemp(path.join(PRIVATE_PARENT, `sentinel-benchmark-${runId}-${caseId.toLowerCase()}-`));
+  } catch (error) {
+    // This fact is recorded only when creation itself failed, never after a partial setup.
+    error.privateHomeNotCreated = true;
+    throw error;
+  }
   await fs.chmod(privateHome, 0o700);
   const shellHome = path.join(tmpdir, 'shell-home');
   const marker = { owner: OWNER, runId, caseId, nonce: randomUUID(), shellHome };

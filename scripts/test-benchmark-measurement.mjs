@@ -7,6 +7,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { compareMeasurements, exportMeasurement, publishMeasurement, validateMeasurementReport } from '../benchmarks/sentinel-todo/runtime/benchmark-measurement.mjs';
 import { currentFunctionalIdentity } from '../benchmarks/sentinel-todo/runtime/benchmark-snapshot.mjs';
+import { runFunctionalBenchmark } from '../benchmarks/sentinel-todo/runtime/benchmark-campaign.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const cli = path.join(root, 'benchmarks/sentinel-todo/runtime/benchmark-measurement.mjs');
@@ -207,6 +208,108 @@ try {
   await fs.rename(interruptedSummary, summaryFile);
   await fs.writeFile(runFile, originalRun);
   await fs.writeFile(stateFile, originalState);
+  for (const [mode, status] of [['case', 'PASS'], ['focal', 'FOCAL_STOP']]) {
+    await fs.writeFile(runFile, JSON.stringify({ ...JSON.parse(originalRun), mode, status }));
+    await fs.writeFile(summaryFile, JSON.stringify({ ...JSON.parse(originalSummary), mode, status,
+      cases: { A: { ...JSON.parse(originalSummary).cases.A, status } } }));
+    await fs.writeFile(stateFile, JSON.stringify({ ...JSON.parse(originalState), status }));
+    const scoped = await exportMeasurement(runId);
+    assert.equal(scoped.run.mode, mode); assert.equal(scoped.run.status, status);
+    assert.equal(scoped.cases.length, 1);
+    assert.equal(compareMeasurements(scoped, scoped).directlyComparable, false, 'partial scope cannot certify a full-run comparison');
+    const saved = await publishMeasurement(scoped, { root: path.join(temp, `scoped-${mode}`), updateLatest: false });
+    assert.equal(JSON.parse(await fs.readFile(saved.historyPath, 'utf8')).run.mode, mode);
+  }
+  await fs.writeFile(runFile, originalRun);
+  await fs.writeFile(summaryFile, originalSummary);
+  await fs.writeFile(stateFile, originalState);
+  const journalFile = path.join(runRoot, 'case-a/journal.json');
+  const originalJournal = await fs.readFile(journalFile);
+  const originalRaw = await fs.readFile(rawPath);
+  // The manager keeps the first focal finalizer and records the resumed one separately.
+  const resumedRawPath = path.join(runRoot, 'case-a/raw-resume-10.json');
+  const resumedState = { ...JSON.parse(originalState), mainTurns: 10, privateHomeRemoved: true,
+    finalizerHistory: [{ exitCode: 1, rawPath }], finalizer: { exitCode: 0, rawPath: resumedRawPath },
+    operations: Array.from({ length: 10 }, () => ({ evidencePath: '01-spec_init.json' })) };
+  const resumedJournal = { ...JSON.parse(originalJournal), caseId: 'A', runMode: 'focal',
+    events: Array.from({ length: 10 }, () => ({ operation: 'SPEC_INIT', slice: null, childDispatches: [] })) };
+  const resumedRaw = { ...JSON.parse(originalRaw), caseId: 'A', runMode: 'focal', status: 'PASS',
+    finalExecutionState: 'COMPLETE', specClosed: true, operations: { total: 10, findingsCycles: 0 } };
+  await fs.writeFile(rawPath, JSON.stringify({ ...resumedRaw, status: 'FAIL', finalExecutionState: 'INIT',
+    specClosed: false, operations: { total: 4, findingsCycles: 0 } }));
+  const focalRawBytes = await fs.readFile(rawPath);
+  await fs.writeFile(resumedRawPath, JSON.stringify(resumedRaw));
+  const resumedRawBytes = await fs.readFile(resumedRawPath);
+  await fs.writeFile(stateFile, JSON.stringify(resumedState));
+  await fs.writeFile(journalFile, JSON.stringify(resumedJournal));
+  await fs.writeFile(runFile, JSON.stringify({ ...JSON.parse(originalRun), mode: 'case' }));
+  await fs.writeFile(summaryFile, JSON.stringify({ ...JSON.parse(originalSummary), mode: 'case',
+    cases: { A: { caseId: 'A', status: 'PASS', operations: 10, mainTurns: 10, runnerTurns: 0, rawPath: resumedRawPath } } }));
+  const resumed = await exportMeasurement(runId);
+  assert.equal(resumed.cases[0].operations, 10);
+  assert.equal(resumed.cases[0].execution, 'COMPLETE'); assert.equal(resumed.cases[0].specClosed, true);
+  assert.equal(resumed.cases[0].finalizer, 'PASS');
+  const resumedSaved = await publishMeasurement(resumed, { root: path.join(temp, 'resumed'), updateLatest: false });
+  assert.equal(JSON.parse(await fs.readFile(resumedSaved.historyPath, 'utf8')).cases[0].operations, 10);
+  assert.deepEqual(await fs.readFile(rawPath), focalRawBytes, 'first focal raw remains historical evidence');
+  assert.deepEqual(await fs.readFile(resumedRawPath), resumedRawBytes, 'current raw remains immutable');
+  const outsideRawPath = path.join(temp, 'raw-resume-10.json');
+  await fs.writeFile(outsideRawPath, resumedRawBytes);
+  for (const variant of ['outside', 'traversal', 'wrong-name', 'missing', 'missing-pointer', 'symlink',
+    'wrong-case', 'wrong-journal-case', 'wrong-mode', 'wrong-count']) {
+    const invalid = structuredClone(resumedState);
+    if (variant === 'outside') invalid.finalizer.rawPath = outsideRawPath;
+    if (variant === 'traversal') invalid.finalizer.rawPath = `${runRoot}/case-a/../case-a/raw-resume-10.json`;
+    if (variant === 'wrong-name') invalid.finalizer.rawPath = path.join(runRoot, 'case-a/raw-resume-4.json');
+    if (variant === 'missing-pointer') delete invalid.finalizer.rawPath;
+    if (variant === 'missing') await fs.rm(resumedRawPath);
+    if (variant === 'symlink') { await fs.rm(resumedRawPath); await fs.symlink(outsideRawPath, resumedRawPath); }
+    if (variant === 'wrong-case') await fs.writeFile(resumedRawPath, JSON.stringify({ ...resumedRaw, caseId: 'B' }));
+    if (variant === 'wrong-journal-case') await fs.writeFile(journalFile, JSON.stringify({ ...resumedJournal, caseId: 'B' }));
+    if (variant === 'wrong-mode') await fs.writeFile(resumedRawPath, JSON.stringify({ ...resumedRaw, runMode: 'full' }));
+    if (variant === 'wrong-count') await fs.writeFile(resumedRawPath, JSON.stringify({ ...resumedRaw, operations: { total: 9 } }));
+    await fs.writeFile(stateFile, JSON.stringify(invalid));
+    await assert.rejects(exportMeasurement(runId), /finalizer|summary differs/, variant);
+    if (variant === 'outside') {
+      const campaignRoot = path.join(temp, 'functional-export-denial');
+      const scratchRun = path.join(campaignRoot, 'benchmark-temp', runId);
+      await fs.mkdir(path.join(scratchRun, 'case-a'), { recursive: true });
+      for (const name of ['.sentinel-benchmark-owned', 'run.json', 'summary.json', 'case-a/case-state.json'])
+        await fs.copyFile(path.join(runRoot, name), path.join(scratchRun, name));
+      const before = await fs.readFile(path.join(scratchRun, 'case-a/case-state.json'));
+      let cleaned = false; let dispatched = false;
+      await assert.rejects(runFunctionalBenchmark({ root: campaignRoot, hooks: {
+        verify: async () => ({ code: 0 }), processes: () => [], exportMeasurement,
+        cleanRun: async () => { cleaned = true; throw new Error('unexpected cleanup'); },
+        runFull: async () => { dispatched = true; throw new Error('unexpected dispatch'); },
+      } }), { code: 'BLOCKED_CLEANUP' });
+      assert.equal(cleaned, false); assert.equal(dispatched, false);
+      assert.deepEqual(await fs.readFile(path.join(scratchRun, 'case-a/case-state.json')), before);
+      assert.equal(await fs.stat(path.join(campaignRoot, 'benchmark-temp/.campaign-active.json')).then(() => true, () => false), false);
+    }
+    await fs.rm(resumedRawPath, { force: true }); await fs.writeFile(resumedRawPath, resumedRawBytes);
+    await fs.writeFile(journalFile, JSON.stringify(resumedJournal));
+  }
+  assert.deepEqual(await fs.readFile(rawPath), focalRawBytes);
+  await fs.rm(resumedRawPath); await fs.writeFile(rawPath, originalRaw);
+  await fs.writeFile(stateFile, originalState); await fs.writeFile(journalFile, originalJournal);
+  await fs.writeFile(runFile, JSON.stringify({ ...JSON.parse(originalRun), mode: 'case', status: 'BLOCKED' }));
+  await fs.writeFile(summaryFile, JSON.stringify({ ...JSON.parse(originalSummary), mode: 'case', status: 'BLOCKED',
+    cases: { A: { status: 'BLOCKED', operations: 0, mainTurns: 0, runnerTurns: 0 } } }));
+  await fs.writeFile(stateFile, JSON.stringify({ ...JSON.parse(originalState), status: 'BLOCKED',
+    terminal: { result: 'BLOCKED', blocker: 'DRIVER_FAILURE' }, operations: [], mainTurns: 0, runnerTurns: 0,
+    finalizer: null, privateHomeNotCreated: true }));
+  await fs.writeFile(journalFile, JSON.stringify({ status: 'ACTIVE', events: [] }));
+  await fs.rm(rawPath);
+  const zeroTurn = await exportMeasurement(runId);
+  assert.equal(zeroTurn.cases[0].operations, 0); assert.equal(zeroTurn.cases[0].mainTurns, 0);
+  assert.equal(zeroTurn.cases[0].finalizer, UNAVAILABLE);
+  assert.equal(zeroTurn.cases[0].blocker, 'DRIVER_FAILURE');
+  const zeroSaved = await publishMeasurement(zeroTurn, { root: path.join(temp, 'zero-turn'), updateLatest: false });
+  assert.equal(JSON.parse(await fs.readFile(zeroSaved.historyPath, 'utf8')).run.status, 'BLOCKED');
+  await fs.writeFile(runFile, originalRun); await fs.writeFile(summaryFile, originalSummary);
+  await fs.writeFile(stateFile, originalState); await fs.writeFile(journalFile, originalJournal);
+  await fs.writeFile(rawPath, originalRaw);
   await fs.writeFile(rawPath, JSON.stringify({ status: 'PASS', finalExecutionState: 'COMPLETE', specClosed: true, finalTestsPassed: true,
     decomposition: { slices: 0 }, operations: { findingsCycles: 0 } }));
   const noOverwrite = spawnSync(process.execPath, [cli, 'export', '--run', runId, '--output', first], { cwd: root, encoding: 'utf8' });

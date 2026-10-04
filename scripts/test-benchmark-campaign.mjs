@@ -257,10 +257,16 @@ async function functionalFixture(t, options = {}) {
       await fs.mkdir(runRoot, { recursive: true });
       await fs.writeFile(path.join(runRoot, '.sentinel-benchmark-owned'), 'sentinel-todo-run-v2\n');
       const status = options.status ?? 'PASS';
-      await fs.writeFile(path.join(runRoot, 'run.json'), JSON.stringify({ runId: id, status, mode: 'full' }));
-      await fs.writeFile(path.join(runRoot, 'summary.json'), JSON.stringify({ runId: id, status,
+      await fs.writeFile(path.join(runRoot, 'run.json'), JSON.stringify({ runId: id, status, mode: 'full', cases: ['A', 'B', 'C'] }));
+      await fs.writeFile(path.join(runRoot, 'summary.json'), JSON.stringify({ runId: id, status, mode: 'full',
         cases: { A: { status: status === 'PASS' ? 'PASS' : 'BLOCKED' },
           B: { status: status === 'PASS' ? 'PASS' : 'NOT_RUN' }, C: { status: status === 'PASS' ? 'PASS' : 'NOT_RUN' } } }));
+      for (const caseId of status === 'PASS' ? ['A', 'B', 'C'] : ['A']) {
+        const caseRoot = path.join(runRoot, `case-${caseId.toLowerCase()}`);
+        await fs.mkdir(caseRoot);
+        await fs.writeFile(path.join(caseRoot, 'case-state.json'), JSON.stringify({ caseId,
+          status: status === 'PASS' ? 'PASS' : 'BLOCKED', privateHomeRemoved: true }));
+      }
       if (options.cancelRun) process.emit('SIGINT');
       return { code: status === 'PASS' ? 0 : 1 };
     },
@@ -303,6 +309,93 @@ test('functional mode handles absent scratch and archives a terminal run before 
   assert.equal(await fs.stat(path.join(f.scratch, 'run-functional-2')).then(() => true, () => false), true);
   assert.equal((await fs.readdir(f.scratch)).some((name) => name.startsWith('run-')), true);
   assert.equal((await fs.readdir(f.scratch)).includes('.campaign-state.json'), false);
+});
+
+for (const [name, mode, caseId, status, uncreated] of [
+  ['individual A PASS', 'case', 'A', 'PASS', false],
+  ['individual B PASS', 'case', 'B', 'PASS', false],
+  ['terminal focal', 'focal', 'A', 'FOCAL_STOP', false],
+  ['zero-turn startup failure', 'full', 'A', 'BLOCKED', true],
+]) test(`functional cleanup accepts ${name} and publishes before removal`, async (t) => {
+  const f = await functionalFixture(t);
+  const id = `run-old-${caseId.toLowerCase()}-${mode}`;
+  const dir = path.join(f.scratch, id);
+  const caseRoot = path.join(dir, `case-${caseId.toLowerCase()}`);
+  await fs.mkdir(caseRoot, { recursive: true });
+  await fs.writeFile(path.join(dir, '.sentinel-benchmark-owned'), 'sentinel-todo-run-v2\n');
+  await fs.writeFile(path.join(dir, 'run.json'), JSON.stringify({ runId: id, status, mode, cases: [caseId] }));
+  await fs.writeFile(path.join(dir, 'summary.json'), JSON.stringify({ runId: id, status, mode, cases: { [caseId]: { status } } }));
+  await fs.writeFile(path.join(caseRoot, 'case-state.json'), JSON.stringify({ caseId, status, operations: [], mainTurns: 0,
+    runnerTurns: 0, finalizer: null, ...(uncreated ? { privateHomeNotCreated: true }
+      : mode === 'focal' ? { privateHomeSuspended: true, suspendedHome: { privateHome: '/fixture/suspended-owned-home' } }
+        : { privateHomeRemoved: true }) }));
+  await fs.writeFile(path.join(caseRoot, 'journal.json'), JSON.stringify({ events: [] }));
+  const normalExport = f.hooks.exportMeasurement;
+  f.hooks.exportMeasurement = async (runId) => {
+    if (runId !== id) return normalExport(runId);
+    f.calls.push(`export-${id}`);
+    const report = structuredClone(f.baseline);
+    report.run = { ...report.run, id, mode, status };
+    report.cases = report.cases.filter((row) => row.id === caseId).map((row) => ({ ...row, status }));
+    return report;
+  };
+  await runFunctionalBenchmark({ root: f.root, hooks: f.hooks });
+  assert.equal(f.runs, 1);
+  assert.ok(f.calls.indexOf(`publish-${id}`) < f.calls.indexOf(`clean-${id}`));
+  assert.equal(await fs.stat(dir).then(() => true, () => false), false);
+  const report = JSON.parse(await fs.readFile(path.join(f.measurements, `${id}.json`), 'utf8'));
+  assert.equal(report.run.mode, mode);
+  assert.equal(report.run.status, status);
+  assert.equal(f.saved.get(id).updateLatest, false);
+  if (mode !== 'full') assert.equal(report.comparisonToBaseline.directlyComparable, false);
+});
+
+test('functional cleanup rejects activity, identity ambiguity and unsafe home evidence before dispatch', async (t) => {
+  for (const variant of ['process', 'active-marker', 'ownership', 'run-id', 'summary-mode', 'case-id', 'active-case',
+    'missing-case', 'missing-creation-record', 'partial-home', 'nonzero-turn', 'nonempty-journal',
+    'publish-failure', 'clean-failure', 'activity-after-publication']) {
+    await t.test(variant, async (child) => {
+      const f = await functionalFixture(child, { publishFailure: variant === 'publish-failure' });
+      const id = 'run-old-full-negative'; const dir = path.join(f.scratch, id); const caseRoot = path.join(dir, 'case-a');
+      await fs.mkdir(caseRoot, { recursive: true });
+      const run = { runId: id, mode: 'full', status: 'BLOCKED', cases: ['A'] };
+      const summary = { runId: id, mode: 'full', status: 'BLOCKED', cases: { A: { status: 'BLOCKED' } } };
+      const state = { caseId: 'A', status: 'BLOCKED', privateHomeNotCreated: true,
+        mainTurns: 0, runnerTurns: 0, operations: [], finalizer: null };
+      if (variant === 'process') f.hooks.processes = () => ['fixture benchmark-manager'];
+      if (variant === 'active-marker') await fs.writeFile(path.join(f.scratch, '.active-run.json'), '{}');
+      if (variant === 'run-id') run.runId = 'run-wrong-identity';
+      if (variant === 'summary-mode') summary.mode = 'case';
+      if (variant === 'case-id') state.caseId = 'B';
+      if (variant === 'active-case') state.status = 'ACTIVE';
+      if (variant === 'missing-creation-record') delete state.privateHomeNotCreated;
+      if (variant === 'partial-home') state.isolationHomePath = '/fixture/unresolved-home';
+      if (variant === 'nonzero-turn') state.mainTurns = 1;
+      if (variant === 'clean-failure') f.hooks.cleanRun = async () => ({ code: 1, stderr: 'fixture cleanup failure' });
+      if (variant === 'activity-after-publication') {
+        let active = false;
+        f.hooks.processes = () => active ? ['fixture benchmark-manager'] : [];
+        const publish = f.hooks.publishMeasurement;
+        f.hooks.publishMeasurement = async (...args) => {
+          const result = await publish(...args); active = true; return result;
+        };
+      }
+      await fs.writeFile(path.join(dir, '.sentinel-benchmark-owned'), variant === 'ownership' ? 'unowned\n' : 'sentinel-todo-run-v2\n');
+      await fs.writeFile(path.join(dir, 'run.json'), JSON.stringify(run));
+      await fs.writeFile(path.join(dir, 'summary.json'), JSON.stringify(summary));
+      await fs.writeFile(path.join(caseRoot, 'case-state.json'), JSON.stringify(state));
+      await fs.writeFile(path.join(caseRoot, 'journal.json'), JSON.stringify({ events: variant === 'nonempty-journal' ? [{}] : [] }));
+      if (variant === 'missing-case') run.cases.push('B');
+      await fs.writeFile(path.join(dir, 'run.json'), JSON.stringify(run));
+      const before = await fs.readFile(path.join(caseRoot, 'case-state.json'));
+      await assert.rejects(runFunctionalBenchmark({ root: f.root, hooks: f.hooks }), (error) =>
+        ['BLOCKED_ACTIVE', 'BLOCKED_CLEANUP'].includes(error.code));
+      assert.equal(f.runs, 0);
+      assert.deepEqual(await fs.readFile(path.join(caseRoot, 'case-state.json')), before);
+      assert.equal((await fs.stat(dir)).isDirectory(), true);
+      assert.equal(await fs.stat(path.join(f.scratch, '.campaign-active.json')).then(() => true, () => false), false);
+    });
+  }
 });
 
 test('functional mode preserves and removes a terminal old campaign after publishing its compact report', async (t) => {

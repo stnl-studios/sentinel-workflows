@@ -22,6 +22,30 @@ const OPERATION_SKILLS = {
   APPLY_FINDINGS: 'stnl-slice-executor', VALIDATE_SLICE: 'stnl-slice-quality-manager',
 };
 
+test('home creation failure is recorded only before mkdtemp returns a directory', async (t) => {
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'sentinel-uncreated-home-')));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const input = { runId: 'run-uncreated-test', caseId: 'A' };
+  for (const name of ['snapshot', 'workspace', 'candidates', 'tmpdir']) {
+    input[name] = path.join(root, name); await fs.mkdir(input[name]);
+  }
+  const authPath = path.join(root, 'fixture-auth.json');
+  await fs.writeFile(authPath, '{}');
+  const failure = Object.assign(new Error('fixture denied allocation'), { code: 'EPERM' });
+  t.mock.method(fs, 'mkdtemp', async () => { throw failure; });
+  await assert.rejects(prepareIsolatedHome(input, { authPath }), (error) =>
+    error === failure && error.code === 'EPERM' && error.privateHomeNotCreated === true);
+  t.mock.restoreAll();
+  const allocated = path.join(root, 'allocated'); await fs.mkdir(allocated);
+  t.mock.method(fs, 'mkdtemp', async () => allocated);
+  const laterFailure = Object.assign(new Error('fixture denied setup after allocation'), { code: 'EPERM' });
+  t.mock.method(fs, 'chmod', async () => { throw laterFailure; });
+  await assert.rejects(prepareIsolatedHome(input, { authPath }), (error) =>
+    error === laterFailure && error.privateHomeNotCreated === undefined);
+  t.mock.restoreAll();
+  assert.equal((await fs.stat(allocated)).isDirectory(), true, 'partial creation stays visible and ambiguous');
+});
+
 async function fixture(t) {
   await fs.mkdir(path.join(os.homedir(), 'Library', 'Application Support'), { recursive: true });
   await fs.mkdir(path.join(ROOT, 'benchmark-temp'), { recursive: true });
