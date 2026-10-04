@@ -8,6 +8,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { runDoctor, runProbeDoctor } from './benchmark-environment.mjs';
+import { checkProductAcceptance, PRODUCT_CONTRACT } from './product-acceptance.mjs';
 
 const RUNTIME_ROOT = path.dirname(fileURLToPath(import.meta.url));
 const BENCHMARK_ROOT = path.resolve(RUNTIME_ROOT, '..');
@@ -550,7 +551,7 @@ async function journalInit(options) {
   process.stdout.write(`${JSON.stringify({ journal: output, status: journal.status })}\n`);
 }
 
-function budgetViolation(events, budgets) {
+export function budgetViolation(events, budgets) {
   const count = (operation) => events.filter((event) => event.operation === operation).length;
   const checks = [
     ['maxReviewPlanEvents', count('REVIEW_PLAN')],
@@ -821,8 +822,10 @@ function validateResult(value) {
     'finalTests', 'finalTestsPassed', 'modelUse', 'operations', 'productionProfileId', 'runMode',
     'schemaVersion', 'sentinelSha', 'specClosed', 'status', 'workspace',
   ];
+  // Historical measurements predate fixed product checks; absence is not product evidence.
+  if (Object.hasOwn(value, 'productAcceptance')) topKeys.push('productAcceptance');
   if (value === null || typeof value !== 'object' || Array.isArray(value)
-    || JSON.stringify(Object.keys(value).sort()) !== JSON.stringify(topKeys)) throw new CliError('result has unknown or missing fields');
+    || JSON.stringify(Object.keys(value).sort()) !== JSON.stringify(topKeys.sort())) throw new CliError('result has unknown or missing fields');
   if (!['A', 'B', 'C'].includes(value.caseId) || !RUN_MODES.has(value.runMode)
     || !['PASS', 'FAIL', 'BLOCKED', 'ABORTED_BUDGET'].includes(value.status)
     || !/^[0-9a-f]{40}$/u.test(value.sentinelSha) || !PROFILE_IDS.has(value.productionProfileId)
@@ -901,6 +904,19 @@ function validateResult(value) {
   if (JSON.stringify(Object.keys(value.finalTests).sort()) !== JSON.stringify(['command', 'exitCode', 'passed'])
     || value.finalTests.command !== 'node --test' || !Number.isInteger(value.finalTests.exitCode)
     || typeof value.finalTests.passed !== 'boolean') throw new CliError('result finalTests is invalid');
+  const acceptance = value.productAcceptance;
+  if (acceptance !== undefined && acceptance !== null) {
+    if (typeof acceptance !== 'object' || Array.isArray(acceptance)
+      || JSON.stringify(Object.keys(acceptance).sort()) !== JSON.stringify([
+        'caseId', 'checks', 'commands', 'contract', 'diagnostic', 'errorCode', 'failedCheck', 'passed',
+      ]) || acceptance.contract !== PRODUCT_CONTRACT || acceptance.caseId !== value.caseId
+      || !['A', 'B'].includes(acceptance.caseId) || typeof acceptance.passed !== 'boolean'
+      || !Array.isArray(acceptance.checks) || acceptance.checks.some((check) => typeof check !== 'string')
+      || !Number.isInteger(acceptance.commands) || acceptance.commands < 0
+      || ['diagnostic', 'errorCode', 'failedCheck'].some((key) => acceptance[key] !== null && typeof acceptance[key] !== 'string')
+      || (acceptance.passed ? acceptance.failedCheck !== null || acceptance.diagnostic !== null || acceptance.errorCode !== null
+        : acceptance.failedCheck === null || acceptance.diagnostic === null)) throw new CliError('result productAcceptance is invalid');
+  }
 }
 
 async function finalize(options) {
@@ -983,6 +999,9 @@ async function finalize(options) {
   const tests = run(process.execPath, ['--test'], realWorkspace);
   const finalTestsPassed = tests.exitCode === 0;
   const needsClosure = journal.runMode === 'case' || journal.runMode === 'full';
+  const needsProductAcceptance = needsClosure && ['A', 'B'].includes(item.id);
+  const productAcceptance = needsProductAcceptance
+    ? await checkProductAcceptance(realWorkspace, item.id) : null;
   const executionValidation = needsClosure
     ? run(process.execPath, [EXECUTION_VALIDATOR, realSpec], REPOSITORY_ROOT)
     : null;
@@ -1000,7 +1019,8 @@ async function finalize(options) {
   const terminalEvidence = terminalSequence
     && finalExecutionState === 'COMPLETE'
     && artifacts.structurallyTerminal;
-  const commonPass = requirementsHashMatches && sentinelShaMatchesCheckout && finalTestsPassed;
+  const commonPass = requirementsHashMatches && sentinelShaMatchesCheckout && finalTestsPassed
+    && (!needsProductAcceptance || productAcceptance.passed);
   const passed = commonPass && (needsClosure ? terminalEvidence && specClosed : !effectiveBlocked);
 
   let status;
@@ -1022,6 +1042,7 @@ async function finalize(options) {
     finalExecutionState,
     specClosed,
     finalTestsPassed,
+    productAcceptance,
     decomposition: { slices: artifacts.slices, tasks: artifacts.tasks, tasksPerSlice: artifacts.tasksPerSlice },
     operations: operationMetrics(journal.events, journal.schemaVersion),
     modelUse: modelMetrics(journal.events, configuration.productionProfile.cases[item.id]),
@@ -1106,6 +1127,7 @@ function compareMarkdown(before, after) {
     `| Final execution state | ${display(before.finalExecutionState)} | ${display(after.finalExecutionState)} |`,
     `| SPEC closed | ${display(before.specClosed)} | ${display(after.specClosed)} |`,
     `| Final tests passed | ${display(before.finalTestsPassed)} | ${display(after.finalTestsPassed)} |`,
+    `| Product acceptance passed | ${display(before.productAcceptance?.passed)} | ${display(after.productAcceptance?.passed)} |`,
     '',
   );
   return lines.join('\n');

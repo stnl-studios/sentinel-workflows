@@ -8,10 +8,95 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { admitOperation, assertManagedSliceLauncher, budgetSnapshot, decideOutcome, guardOperationProvenance, unmanagedCollaborationEvents,
   providerConfigurationError,
   initializeTurnBudget, nextHandoff, recoverableRunnerHandoff, settleTurn, startReservedTurn } from '../benchmarks/sentinel-todo/runtime/benchmark-manager.mjs';
+import * as manager from '../benchmarks/sentinel-todo/runtime/benchmark-manager.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const RUNS = path.join(ROOT, 'benchmark-temp');
 const MANAGER = path.join(ROOT, 'benchmarks/sentinel-todo/runtime/benchmark-manager.mjs');
+const RECOVERY_BUDGETS = JSON.parse(await fs.readFile(path.join(ROOT,
+  'benchmarks/sentinel-todo/benchmark.json'), 'utf8')).cases.find((item) => item.id === 'A').budgets;
+
+function officialRecoveryInput() {
+  const execution = { state: 'DIVERGENCE_BLOCKED', currentFingerprint: 'authority',
+    recoveryTargets: [{ operation: 'REPLAN', slice: null, owner: 'active-divergence', record: 'divergence-01' }],
+    legalOperations: [{ operation: 'REPLAN', slice: null }] };
+  return { operation: 'EXECUTE_SLICE', slice: 'slice-01',
+    outcome: decideOutcome('EXECUTE_SLICE', { execution }, true),
+    readback: { execution, executionRaw: execution }, priorOperations: [],
+    remainingTurns: 1, budgets: RECOVERY_BUDGETS };
+}
+
+test('official recovery requires one explicit legal target and keeps existing budgets and history', () => {
+  assert.equal(typeof manager.recoverableOfficialHandoff, 'function');
+  const input = officialRecoveryInput();
+  const before = JSON.stringify(input);
+  const recovery = manager.recoverableOfficialHandoff(input);
+  assert.deepEqual(recovery, { operation: 'REPLAN', slice: null, state: 'DIVERGENCE_BLOCKED',
+    authority: 'authority', target: input.readback.executionRaw.recoveryTargets[0] });
+  for (const override of [
+    { remainingTurns: 0 }, { remainingTurns: null }, { transportFailed: true },
+    { outcome: { result: 'PASS', blocker: null } },
+    ...['SDK_TURN_FAILED', 'SANDBOX_COMMAND_DENIED', 'JOURNAL_REJECTED',
+      'UNMANAGED_COLLABORATION', 'invalid_json_schema'].map((blocker) => ({ outcome: { result: 'BLOCKED', blocker } })),
+    { priorOperations: [{ operation: 'REPLAN', outcome: { result: 'PASS' } }] },
+    { priorOperations: Array.from({ length: RECOVERY_BUDGETS.maxWorkflowEvents }, () => ({ operation: 'PLAN' })) },
+  ]) assert.equal(manager.recoverableOfficialHandoff({ ...input, ...override }), null);
+  for (const change of [
+    { recoveryTargets: [] }, { legalOperations: [] }, { currentFingerprint: null },
+    { recoveryTargets: [{ operation: null, slice: 'slice-01', owner: 'lifecycle', authorityMode: 'RESUME' }] },
+    { recoveryTargets: [...input.readback.executionRaw.recoveryTargets,
+      { operation: 'VALIDATE_SLICE', slice: 'slice-01' }] },
+    { state: 'COMPLETE' }, { error: 'permission denied' },
+    { state: 'VALIDATION_BLOCKED', recoveryTargets: [
+      { operation: 'VALIDATE_SLICE', slice: 'slice-01', owner: 'validation-attempt' },
+      { operation: 'REPLAN', slice: null, owner: 'execution-history' }] },
+    { state: 'AUXILIARY_BLOCKED', recoveryTargets: [
+      { operation: 'EXECUTE_SLICE', slice: 'slice-01', owner: 'auxiliary-check', sameOperationResumeRequired: true }],
+      legalOperations: [{ operation: 'EXECUTE_SLICE', slice: 'slice-01' }] },
+  ]) {
+    const execution = { ...input.readback.executionRaw, ...change };
+    assert.equal(manager.recoverableOfficialHandoff({ ...input,
+      outcome: decideOutcome(input.operation, { execution }, true),
+      readback: { execution, executionRaw: execution } }), null);
+  }
+  assert.equal(JSON.stringify(input), before, 'recovery selection cannot rewrite the failed operation or authority');
+});
+
+test('official recovery rereads authority and preflights without extra calls for normal or ineligible outcomes', async () => {
+  assert.equal(typeof manager.prepareOfficialRecovery, 'function');
+  const input = officialRecoveryInput();
+  const calls = [];
+  let execution = input.readback.executionRaw;
+  let preflightResult = execution;
+  const product = {
+    validateWorkspace: () => ({ status: 'ready', closed: false }),
+    inspectExecutionState: async () => { calls.push('readback'); return execution; },
+    preflightExecutionOperation: async (spec, operation, slice) => {
+      calls.push({ spec, operation, slice }); return preflightResult;
+    },
+  };
+  for (const override of [{ outcome: { result: 'PASS', blocker: null } },
+    { remainingTurns: 0 }, { transportFailed: true }]) {
+    assert.equal(await manager.prepareOfficialRecovery({ ...input, ...override, product, specPath: ROOT }), null);
+  }
+  assert.deepEqual(calls, [], 'no extra readback or preflight is needed without recovery');
+  assert.deepEqual(await manager.prepareOfficialRecovery({ ...input, product, specPath: ROOT }),
+    manager.recoverableOfficialHandoff(input));
+  assert.deepEqual(calls.splice(0), ['readback', { spec: ROOT, operation: 'REPLAN', slice: null }]);
+  for (const change of [ { currentFingerprint: 'changed-authority' }, { legalOperations: [] },
+    { recoveryTargets: [{ ...execution.recoveryTargets[0], record: 'divergence-02' }] },
+    { recoveryTargets: [...execution.recoveryTargets, { operation: 'VALIDATE_SLICE', slice: 'slice-01' }] } ]) {
+    execution = { ...input.readback.executionRaw, ...change };
+    assert.equal(await manager.prepareOfficialRecovery({ ...input, product, specPath: ROOT }), null);
+    assert.deepEqual(calls.splice(0), ['readback'], 'stale recovery must stop before preflight');
+  }
+  execution = input.readback.executionRaw;
+  preflightResult = { ...execution, currentFingerprint: 'changed-during-preflight' };
+  assert.equal(await manager.prepareOfficialRecovery({ ...input, product, specPath: ROOT }), null);
+  calls.splice(0);
+  product.preflightExecutionOperation = async () => { throw Object.assign(new Error('access denied'), { code: 'EACCES' }); };
+  await assert.rejects(manager.prepareOfficialRecovery({ ...input, product, specPath: ROOT }), { code: 'EACCES' });
+});
 
 test('unmanaged collaboration and absent official receipt cannot yield a valid operation sample', () => {
   const pass = { result: 'PASS', blocker: null };
@@ -106,6 +191,28 @@ test('manager dispatches only the legal, bounded runner-result recovery', () => 
   assert.equal(recoverableRunnerHandoff({ ...input, outcome: { result: 'BLOCKED', blocker: 'OFFICIAL_REQUIREMENTS_CHANGED' } }), null);
   assert.equal(recoverableRunnerHandoff({ ...input, outcome: { result: 'BLOCKED', blocker: 'invalid_json_schema' } }), null);
   assert.equal(recoverableRunnerHandoff(input)?.operation, 'VALIDATE_SLICE');
+  execution.recoveryTargets = [{ ...execution.mandatoryRecovery }];
+  const officialInput = { ...input, budgets: RECOVERY_BUDGETS };
+  assert.deepEqual(manager.recoverableOfficialHandoff(officialInput), {
+    operation: 'VALIDATE_SLICE', slice: 'slice-02', state: execution.state,
+    authority: execution.currentFingerprint, target: execution.recoveryTargets[0],
+  });
+  assert.equal(manager.recoverableOfficialHandoff({ ...officialInput, transportFailed: true }), null);
+  assert.equal(manager.recoverableOfficialHandoff({ ...officialInput, remainingTurns: 1 }), null);
+  assert.equal(manager.recoverableOfficialHandoff({ ...officialInput,
+    priorOperations: [{ recovery: { operation: 'VALIDATE_SLICE', slice: 'slice-02' } }] }), null);
+  for (const operation of ['EXECUTE_SLICE', 'APPLY_FINDINGS']) {
+    const resumed = { ...execution, activeDelegationBlockers: [{ operation, slice: 'slice-02', kind: 'malformed-output' }],
+      mandatoryRecovery: { ...execution.mandatoryRecovery, operation },
+      recoveryTargets: [{ ...execution.recoveryTargets[0], operation }], legalOperations: [{ operation, slice: 'slice-02' }] };
+    const limit = RECOVERY_BUDGETS[operation === 'EXECUTE_SLICE'
+      ? 'maxExecuteSliceAttemptsPerSlice' : 'maxApplyFindingsPerSlice'];
+    const scopedInput = { ...officialInput, operation, readback: { execution: resumed, executionRaw: resumed } };
+    assert.ok(manager.recoverableOfficialHandoff({ ...scopedInput,
+      priorOperations: Array.from({ length: limit - 1 }, () => ({ operation, slice: 'slice-02' })) }));
+    assert.equal(manager.recoverableOfficialHandoff({ ...scopedInput,
+      priorOperations: Array.from({ length: limit }, () => ({ operation, slice: 'slice-02' })) }), null);
+  }
 });
 
 test('deterministic provider schema rejection is preserved as a terminal cause', async () => {
@@ -233,7 +340,8 @@ test('manager status creates an absent benchmark-temp in an isolated checkout fi
   t.after(async () => fs.rm(fixture, { recursive: true, force: true }));
   const runtime = path.join(fixture, 'benchmarks/sentinel-todo/runtime');
   await fs.mkdir(runtime, { recursive: true });
-  for (const name of ['benchmark-manager.mjs', 'benchmark-snapshot.mjs', 'benchmark-ui.mjs']) {
+  for (const name of ['benchmark-manager.mjs', 'benchmark-snapshot.mjs', 'benchmark-ui.mjs',
+    'benchmark.mjs', 'benchmark-environment.mjs', 'product-acceptance.mjs']) {
     await fs.copyFile(path.join(ROOT, 'benchmarks/sentinel-todo/runtime', name), path.join(runtime, name));
   }
   const isolatedRuns = path.join(fixture, 'benchmark-temp');

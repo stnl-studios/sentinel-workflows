@@ -8,6 +8,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { assertSnapshotIntegrity, createSnapshot } from './benchmark-snapshot.mjs';
 import { createReporter } from './benchmark-ui.mjs';
+import { budgetViolation } from './benchmark.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const RUNS = path.join(ROOT, 'benchmark-temp');
@@ -257,6 +258,7 @@ function compactExecution(execution) {
   if (execution.error) return { error: execution.error };
   return { state: execution.state, currentFingerprint: execution.currentFingerprint ?? null,
     legalOperations: execution.legalOperations ?? [], normalHandoff: execution.normalHandoff ?? null,
+    recoveryTargets: execution.recoveryTargets ?? [],
     requiredRecoveryHandoff: execution.requiredRecoveryHandoff ?? null,
     mandatoryRecovery: execution.mandatoryRecovery ?? null,
     rows: execution.rows?.map((row) => ({ slice: row.slice, done: row.done, result: row.result })) ?? [] };
@@ -343,6 +345,40 @@ export function recoverableRunnerHandoff({ operation, slice, outcome, readback, 
     || priorOperations.some((entry) => entry.recovery?.operation === operation && entry.recovery.slice === slice)) return null;
   return { operation, slice, authority: execution.currentFingerprint, state: execution.state };
 }
+
+export function recoverableOfficialHandoff(input) {
+  const { outcome, readback, priorOperations, remainingTurns, budgets, transportFailed = false } = input;
+  const execution = readback.executionRaw;
+  if (outcome.result !== 'BLOCKED' || transportFailed || execution?.error || readback.lifecycle?.error
+    || !BLOCKED_STATES.has(execution?.state) || outcome.blocker !== `OFFICIAL_${execution.state}`
+    || typeof execution.currentFingerprint !== 'string' || execution.currentFingerprint.trim() === ''
+    || execution.recoveryTargets?.length !== 1 || !Number.isSafeInteger(remainingTurns)) return null;
+  const target = execution.recoveryTargets[0];
+  const slice = target.slice ?? null;
+  if (!Object.hasOwn(PHASE, target.operation) || target.operation.startsWith('SPEC_')
+    || !execution.legalOperations?.some((legal) => legal.operation === target.operation && legal.slice === slice)
+    || remainingTurns < (RUNNER_OPERATIONS.has(target.operation) ? 2 : 1)
+    || budgetViolation([...priorOperations, { operation: target.operation, slice }], budgets) !== null) return null;
+  for (const handoff of [execution.mandatoryRecovery, execution.requiredRecoveryHandoff]) {
+    if (handoff && (handoff.operation !== target.operation || (handoff.slice ?? null) !== slice)) return null;
+  }
+  // Mandatory same-operation recovery remains limited to the existing malformed-output repair.
+  // Auxiliary/environment and runner initialization failures require external correction.
+  if (target.sameOperationResumeRequired && recoverableRunnerHandoff(input) === null) return null;
+  return { operation: target.operation, slice, authority: execution.currentFingerprint,
+    state: execution.state, target };
+}
+
+export async function prepareOfficialRecovery({ product, specPath, ...input }) {
+  const recovery = recoverableOfficialHandoff(input);
+  if (recovery === null) return null;
+  const fresh = await officialReadback(product, specPath);
+  if (JSON.stringify(recoverableOfficialHandoff({ ...input, readback: fresh })) !== JSON.stringify(recovery)) return null;
+  const preflight = await product.preflightExecutionOperation(specPath, recovery.operation, specInput(recovery.slice));
+  if (JSON.stringify(recoverableOfficialHandoff({ ...input,
+    readback: { lifecycle: fresh.lifecycle, executionRaw: preflight } })) !== JSON.stringify(recovery)) return null;
+  return recovery;
+}
 async function loadProduct(snapshot) {
   const execution = await import(pathToFileURL(path.join(snapshot, 'skills/workflows/stnl-execution-planner/runtime/execution-state.mjs')).href);
   const lifecycle = await import(pathToFileURL(path.join(snapshot, 'skills/workflows/stnl-spec-lifecycle-manager/runtime/lib/lifecycle.mjs')).href);
@@ -378,7 +414,7 @@ function argsForJournal({ journal, operation, route, outcome, slice, readback, r
 }
 function specInput(slice) { return slice === null ? null : BigInt(slice.slice('slice-'.length)).toString(10); }
 
-async function runCase({ runRoot, caseId, configuration, snapshotMetadata, maxOperations, mode, product, signal, resume = false }) {
+export async function runCase({ runRoot, caseId, configuration, snapshotMetadata, maxOperations, mode, product, signal, resume = false }) {
   const turnLimit = configuration.turnBudget?.maxTurnsPerRun;
   if (!Number.isSafeInteger(turnLimit) || turnLimit < 1) fail('benchmark turnBudget.maxTurnsPerRun must be a positive integer');
   const caseRoot = path.join(runRoot, caseName(caseId));
@@ -461,6 +497,11 @@ async function runCase({ runRoot, caseId, configuration, snapshotMetadata, maxOp
       const { operation, slice } = target;
       const currentRecovery = pendingRecovery;
       pendingRecovery = null;
+      const violation = budgetViolation([...caseState.operations, { operation, slice }], caseConfiguration.budgets);
+      if (violation !== null) {
+        terminal = { result: 'BLOCKED', blocker: 'BUDGET_EXCEEDED', diagnostic: violation.budget };
+        break;
+      }
       caseState.pendingTarget = target;
       await atomicJson(path.join(caseRoot, 'case-state.json'), caseState);
       const route = dispatch(configuration, caseId, operation);
@@ -480,6 +521,12 @@ async function runCase({ runRoot, caseId, configuration, snapshotMetadata, maxOp
       let managedSliceContext = null;
       if (!operation.startsWith('SPEC_')) {
         const preflight = await product.preflightExecutionOperation(specPath, operation, specInput(slice));
+        if (currentRecovery !== null && (preflight.state !== currentRecovery.state
+          || preflight.currentFingerprint !== currentRecovery.authority
+          || preflight.recoveryTargets?.length !== 1
+          || JSON.stringify(preflight.recoveryTargets[0]) !== JSON.stringify(currentRecovery.target))) {
+          fail('official recovery authority changed before dispatch');
+        }
         if (RUNNER_OPERATIONS.has(operation)) {
           officialPreflight = { exitCode: 0, operation, slice, inputSlice: specInput(slice),
             specPath, state: preflight.state, authority: `sha256:${preflight.currentFingerprint}`,
@@ -532,6 +579,7 @@ async function runCase({ runRoot, caseId, configuration, snapshotMetadata, maxOp
       const turnEnv = managedSliceContext === null ? home.env
         : product.managedEnvironment(home.env, managedSliceContext);
       let providerConfigError = null;
+      let runnerTransportFailed = false;
       try {
         if (officialPreflight !== null) {
           broker = await product.startOfficialRunnerBroker({ workspace, tmpdir, operation, sequence, slice,
@@ -549,6 +597,8 @@ async function runCase({ runRoot, caseId, configuration, snapshotMetadata, maxOp
             },
             onTurn: async ({ turn: runnerTurn, eventsPath: runnerEventsPath }) => {
               runnerEventPaths.push(runnerEventsPath);
+              runnerTransportFailed ||= runnerTurn.completed !== true || runnerTurn.error != null
+                || runnerTurn.processError != null || runnerTurn.errorEvent != null;
               providerConfigError ??= providerConfigurationError([], runnerTurn.providerError ?? runnerTurn.errorEvent ?? null);
               await settleTurn(runRoot, currentRunnerNumber, runnerTurn, turnLimit);
               if (runnerTurn.turnStarted !== false) caseState.runnerTurns += 1;
@@ -669,7 +719,8 @@ async function runCase({ runRoot, caseId, configuration, snapshotMetadata, maxOp
         readinessResult, readinessDiagnostic,
         providerConfigurationError: providerConfigError,
         runner: { requestsHandled: broker?.requestsHandled ?? 0, capturedReceipts: broker?.capturedReceipts ?? 0,
-          errors: broker?.errors ?? [], turns: runnerCount, usageObservations: runnerUsageObservations,
+          errors: broker?.errors ?? [], transportFailed: runnerTransportFailed,
+          turns: runnerCount, usageObservations: runnerUsageObservations,
           unmanagedCollaboration: collaborationEvents },
         normalizedUsage,
         journal: { exitCode: journalResult.exitCode, diagnostic: journalResult.stderr || journalResult.stdout }, outcome,
@@ -685,17 +736,15 @@ async function runCase({ runRoot, caseId, configuration, snapshotMetadata, maxOp
         ...await budgetSnapshot(runRoot), artifacts: caseRoot });
       terminal = outcome;
       if (outcome.result === 'BLOCKED') {
-        const recovery = recoverableRunnerHandoff({ operation, slice, outcome, readback,
-          priorOperations: caseState.operations, remainingTurns: (await budgetSnapshot(runRoot)).turnBudget.remaining });
+        const recovery = await prepareOfficialRecovery({ product, specPath, operation, slice, outcome, readback,
+          priorOperations: caseState.operations, budgets: caseConfiguration.budgets,
+          remainingTurns: (await budgetSnapshot(runRoot)).turnBudget.remaining,
+          transportFailed: turn.completed !== true || turn.error != null || turn.processError != null
+            || turn.errorEvent != null || runnerTransportFailed || (broker?.errors.length ?? 0) > 0 });
         if (recovery !== null) {
-          const fresh = await officialReadback(product, specPath);
-          if (fresh.execution?.state === recovery.state
-            && fresh.execution?.currentFingerprint === recovery.authority) {
-            await product.preflightExecutionOperation(specPath, recovery.operation, specInput(recovery.slice));
-            pendingRecovery = recovery;
-            target = nextHandoff(operation, { ...fresh, product });
-            if (target?.operation === recovery.operation && target.slice === recovery.slice) continue;
-          }
+          pendingRecovery = recovery;
+          target = { operation: recovery.operation, slice: recovery.slice };
+          continue;
         }
       }
       if (['BLOCKED', 'FAIL', 'PAUSED_BUDGET_OR_QUOTA'].includes(outcome.result)) break;

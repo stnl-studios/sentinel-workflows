@@ -17,6 +17,7 @@
     "finalExecutionState": { "type": ["string", "null"] },
     "specClosed": { "type": "boolean" },
     "finalTestsPassed": { "type": "boolean" },
+    "productAcceptance": { "$ref": "#/$defs/productAcceptance" },
     "decomposition": {
       "type": "object",
       "additionalProperties": false,
@@ -129,6 +130,21 @@
     }
   },
   "$defs": {
+    "productAcceptance": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["contract", "caseId", "passed", "checks", "commands", "failedCheck", "diagnostic", "errorCode"],
+      "properties": {
+        "contract": { "const": "sentinel-todo-product-v1" },
+        "caseId": { "enum": ["A", "B"] },
+        "passed": { "type": "boolean" },
+        "checks": { "type": "array", "items": { "type": "string" } },
+        "commands": { "type": "integer", "minimum": 0 },
+        "failedCheck": { "type": ["string", "null"] },
+        "diagnostic": { "type": ["string", "null"] },
+        "errorCode": { "type": ["string", "null"] }
+      }
+    },
     "model": { "enum": ["GPT-5.6-Sol", "GPT-5.6-Terra", "GPT-5.6-Luna"] },
     "effort": { "enum": ["low", "medium", "high", "xhigh"] },
     "phase": { "enum": ["SPEC", "PLAN", "TASKS", "EXECUTE", "REVIEW_VALIDATE"] },

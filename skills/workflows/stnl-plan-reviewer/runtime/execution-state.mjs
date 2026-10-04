@@ -252,7 +252,11 @@ function sections(body) {
 function requireCanonicalSections(parsed, expected, label) {
   const actual = [...parsed.keys()];
   if (actual.length !== expected.length || actual.some((name, index) => name !== expected[index])) {
-    throw new ExecutionContractError(`${label} has non-canonical sections`);
+    const missing = expected.filter((name) => !parsed.has(name));
+    const unexpected = actual.filter((name) => !expected.includes(name));
+    throw new ExecutionContractError(
+      `${label} has non-canonical sections; missing=${JSON.stringify(missing)}; unexpected=${JSON.stringify(unexpected)}; expected=${JSON.stringify(expected)}; actual=${JSON.stringify(actual)}`,
+    );
   }
 }
 
@@ -2646,7 +2650,7 @@ async function assertCandidateTreeSafe(directory) {
   }
 }
 
-export async function validateExecutionCandidate(specPath, candidateExecutionRoot) {
+export async function validateExecutionCandidate(specPath, candidateExecutionRoot, serializedTasks = []) {
   const workspace = await resolveExecutionWorkspace(specPath);
   const candidate = path.resolve(String(candidateExecutionRoot));
   await assertNoSymlinkComponents(candidate, "candidate execution root");
@@ -2661,6 +2665,11 @@ export async function validateExecutionCandidate(specPath, candidateExecutionRoo
   const shadow = await createCandidateShadow(workspace);
   try {
     await fs.cp(candidate, shadow.executionRoot, { recursive: true });
+    for (const { slice, text } of serializedTasks) {
+      if (!SLICE_FILE.test(`${slice}.md`) || typeof text !== "string") throw new ExecutionContractError("invalid prospective task serialization");
+      await requireRealFile(path.join(candidate, "tasks", `${slice}.md`), "prospective task source");
+      await fs.writeFile(path.join(shadow.executionRoot, "tasks", `${slice}.md`), text, "utf8");
+    }
     const result = await inspectExecutionStateWithContext(shadow.specPath, workspace, { validateImplementationPaths: true });
     await validateCandidateExecutionRecordPaths(result);
     validatePriorValidationOverlap(result);

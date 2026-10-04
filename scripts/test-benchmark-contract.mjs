@@ -35,7 +35,9 @@ const VALIDATED_CONTENT = 'validated behavior\n';
 const VALIDATED_HASH = createHash('sha256').update(VALIDATED_CONTENT).digest('hex');
 
 function run(command, args, cwd = ROOT) {
-  return spawnSync(command, args, { cwd, encoding: 'utf8', shell: false, timeout: 60_000 });
+  const env = { ...process.env };
+  delete env.NODE_TEST_CONTEXT; // Nested Node tests must discover and execute the candidate suite.
+  return spawnSync(command, args, { cwd, env, encoding: 'utf8', shell: false, timeout: 60_000 });
 }
 
 function cli(args) {
@@ -340,6 +342,7 @@ test('B09 — production profile v3 is current and dispatch enforcement is deter
   const root = await temporaryRoot(t, 'sentinel production profile v2');
   const workspace = path.join(root, 'workspace');
   requireSuccess(cli(['prepare', '--case', 'A', '--output', workspace]), 'prepare profile fixture');
+  await fs.copyFile(path.join(ROOT, 'scripts/fixtures/filtered-cli.mjs'), path.join(workspace, 'src/cli.mjs'));
   const { spec } = await writeSyntheticArtifacts(workspace);
   const finalize = (journal, output) => cli([
     'finalize', '--workspace', workspace, '--case', 'A', '--spec', spec,
@@ -401,6 +404,7 @@ test('B12 — v2 finalization requires immediate close and reports maturation cy
   const root = await temporaryRoot(t, 'sentinel-benchmark-v2-finalize');
   const workspace = path.join(root, 'workspace');
   requireSuccess(cli(['prepare', '--case', 'A', '--output', workspace]), 'prepare v2 workspace');
+  await fs.copyFile(path.join(ROOT, 'scripts/fixtures/filtered-cli.mjs'), path.join(workspace, 'src/cli.mjs'));
   const { spec } = await writeSyntheticArtifacts(workspace);
   const journal = path.join(root, 'v2.json');
   await initV2Journal(journal, 'A');
@@ -536,6 +540,15 @@ test('B06 — finalize collects raw facts and enforces official terminal semanti
   await initJournal(journal);
   await completeJournal(journal, { mismatch: true });
   const output = path.join(root, 'result.json');
+  const seedOutput = path.join(root, 'seed-false-green.json');
+  assert.equal(finalize(journal, seedOutput).status, 1, 'green candidate tests cannot certify missing list filters');
+  const seedResult = await readJson(seedOutput);
+  assert.equal(seedResult.finalTestsPassed, true);
+  assert.equal(seedResult.finalExecutionState, 'COMPLETE');
+  assert.equal(seedResult.specClosed, true);
+  assert.equal(seedResult.productAcceptance.passed, false);
+  assert.equal(seedResult.status, 'FAIL');
+  await fs.copyFile(path.join(ROOT, 'scripts/fixtures/filtered-cli.mjs'), path.join(workspace, 'src/cli.mjs'));
   requireSuccess(finalize(journal, output), 'finalize');
   const result = await readJson(output);
   assert.equal(result.status, 'PASS');
@@ -554,6 +567,7 @@ test('B06 — finalize collects raw facts and enforces official terminal semanti
   assert.equal(result.finalExecutionState, 'COMPLETE');
   assert.equal(result.specClosed, true);
   assert.equal(result.finalTestsPassed, true);
+  assert.equal(result.productAcceptance.passed, true);
   assert.equal(result.contextCost.actualTokenTelemetryAvailable, false);
   assert.equal(result.contextCost.inputTokens, null);
   assert.ok(result.contextCost.planBytes > 0 && result.contextCost.tasksWords > 0);
@@ -614,6 +628,8 @@ test('B06 — finalize collects raw facts and enforces official terminal semanti
   const missingReadinessOutput = path.join(root, 'missing-readiness-result.json');
   assert.equal(finalize(missingReadiness, missingReadinessOutput).status, 1);
   assert.equal((await readJson(missingReadinessOutput)).status, 'FAIL');
+  assert.equal((await readJson(missingReadinessOutput)).productAcceptance.passed, true,
+    'correct product cannot replace Sentinel terminal gates');
 
   const missingTerminalReadiness = path.join(root, 'missing-terminal-readiness.json');
   await initJournal(missingTerminalReadiness);
@@ -730,6 +746,75 @@ test('B06 — finalize collects raw facts and enforces official terminal semanti
   assert.equal((await readJson(readyOutput)).specClosed, false);
 });
 
+test('B13 — independent A/B product evidence complements internal tests and Sentinel gates', async (t) => {
+  const root = await temporaryRoot(t, 'sentinel independent product acceptance');
+  const workspace = path.join(root, 'workspace');
+  requireSuccess(cli(['prepare', '--case', 'B', '--output', workspace]), 'prepare B acceptance workspace');
+  const { spec } = await writeSyntheticArtifacts(workspace, 'B');
+  const journal = path.join(root, 'full.json');
+  await initJournal(journal, 'B', 'full');
+  await completeJournal(journal);
+  const finalize = (selectedJournal, name) => cli(['finalize', '--workspace', workspace, '--case', 'B',
+    '--spec', spec, '--journal', selectedJournal, '--output', path.join(root, `${name}.json`)]);
+
+  // Replacing editable candidate assertions with green tests must not certify missing priority.
+  await fs.rm(path.join(workspace, 'test'), { recursive: true });
+  await fs.mkdir(path.join(workspace, 'test'));
+  await fs.writeFile(path.join(workspace, 'test/green.test.mjs'), "import test from 'node:test'; test('green', () => {});\n");
+  assert.equal(finalize(journal, 'seed').status, 1);
+  const seed = await readJson(path.join(root, 'seed.json'));
+  assert.equal(seed.finalTestsPassed, true);
+  assert.equal(seed.finalExecutionState, 'COMPLETE');
+  assert.equal(seed.specClosed, true);
+  assert.equal(seed.productAcceptance.passed, false);
+  assert.equal(seed.productAcceptance.caseId, 'B');
+  assert.equal(seed.status, 'FAIL');
+
+  const focal = path.join(root, 'focal.json');
+  await initJournal(focal, 'B', 'focal');
+  await completeJournal(focal);
+  requireSuccess(finalize(focal, 'focal-result'), 'partial focal run');
+  assert.equal((await readJson(path.join(root, 'focal-result.json'))).productAcceptance, null);
+
+  await fs.rm(path.join(workspace, 'test'), { recursive: true });
+  await fs.cp(path.join(SEED, 'test'), path.join(workspace, 'test'), { recursive: true });
+  await fs.copyFile(path.join(ROOT, 'scripts/fixtures/prioritized-cli.mjs'), path.join(workspace, 'src/cli.mjs'));
+  requireSuccess(finalize(journal, 'correct'), 'correct B with Sentinel gates and internal tests');
+  const correct = await readJson(path.join(root, 'correct.json'));
+  assert.equal(correct.status, 'PASS');
+  assert.equal(correct.finalTestsPassed, true);
+  assert.equal(correct.productAcceptance.passed, true);
+  const compared = requireSuccess(cli(['compare', '--before', path.join(root, 'seed.json'),
+    '--after', path.join(root, 'correct.json')]), 'compare independent product facts');
+  assert.match(compared.stdout, /\| Product acceptance passed \| false \| true \|/u);
+
+  await fs.writeFile(path.join(workspace, 'test/failing.test.mjs'), "import test from 'node:test'; test('failure', () => { throw new Error('fixture failure'); });\n");
+  assert.equal(finalize(journal, 'internal-failure').status, 1);
+  const failed = await readJson(path.join(root, 'internal-failure.json'));
+  assert.equal(failed.productAcceptance.passed, true);
+  assert.equal(failed.finalTestsPassed, false);
+  assert.equal(failed.status, 'FAIL');
+  await fs.rm(path.join(workspace, 'test/failing.test.mjs'));
+
+  const unclosed = path.join(root, 'missing-close.json');
+  await initJournal(unclosed, 'B', 'full');
+  await completeJournal(unclosed);
+  const missingClose = await readJson(unclosed);
+  assert.equal(missingClose.events.pop().operation, 'SPEC_CLOSE');
+  await fs.writeFile(unclosed, `${JSON.stringify(missingClose, null, 2)}\n`);
+  assert.equal(finalize(unclosed, 'sentinel-failure').status, 1);
+  const gated = await readJson(path.join(root, 'sentinel-failure.json'));
+  assert.equal(gated.finalTestsPassed, true);
+  assert.equal(gated.productAcceptance.passed, true);
+  assert.equal(gated.status, 'FAIL');
+
+  const schema1 = await readJson(path.join(BENCHMARK, 'schemas/result.schema.json'));
+  const schema2 = await readJson(path.join(BENCHMARK, 'schemas/result-v2.schema.json'));
+  assert.equal(schema1.properties.productAcceptance.$ref, '#/$defs/productAcceptance');
+  assert.equal(schema2.properties.productAcceptance.$ref, 'result.schema.json#/$defs/productAcceptance');
+  assert.ok(!schema1.required.includes('productAcceptance'), 'historical measurements stay readable without inventing product evidence');
+});
+
 function syntheticResult(caseId, offset, telemetry) {
   const expectedProfile = Object.fromEntries(PHASES.map((phase) => [phase, { model: 'GPT-5.6-Terra', effort: 'high' }]));
   const actualModelsByPhase = Object.fromEntries(PHASES.map((phase) => [phase, [offset === 0 ? 'GPT-5.6-Terra' : 'GPT-5.6-Luna']]));
@@ -797,6 +882,7 @@ test('B07 — compare reports deltas and dispatch changes without fabricated tel
   assert.match(compared.stdout, /GPT-5\.6-Luna \/ xhigh/u);
   assert.doesNotMatch(compared.stdout, /inputTokens|outputTokens/iu);
   assert.doesNotMatch(compared.stdout, /score|winner/iu);
+  assert.match(compared.stdout, /\| Product acceptance passed \| unavailable \| unavailable \|/u);
   const mismatchPath = path.join(root, 'other-case.json');
   await fs.writeFile(mismatchPath, `${JSON.stringify(syntheticResult('B', 1, true), null, 2)}\n`, 'utf8');
   assert.equal(cli(['compare', '--before', beforePath, '--after', mismatchPath]).status, 1);

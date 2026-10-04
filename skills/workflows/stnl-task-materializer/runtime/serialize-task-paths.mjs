@@ -8,6 +8,7 @@ import {
   inspectExecutionState,
   resolveExecutionWorkspace,
   resolvePhysicalImplementationTarget,
+  validateExecutionCandidate,
 } from "./execution-state.mjs";
 
 function pathIsWithin(candidate, root) {
@@ -113,6 +114,28 @@ function rewriteChecklistClaims(text, rows, claims, label) {
   return `${text.slice(0, section.bodyStart)}${rewritten.join("\n")}${text.slice(section.end)}`;
 }
 
+function authorizedHistoricalSupersession(liveState, slice, liveBytes, candidateText) {
+  const task = liveState.tasks.get(slice);
+  const mapping = liveState.globalPlan.supersessionMappings.find((entry) => entry.source === slice);
+  if (liveState.state !== "PENDING_REPLAN_READY" || liveState.globalPlan.revisionMode !== "append-only-extension"
+    || task.final.result !== "pending" || mapping === undefined) return false;
+  const final = sectionBounds(candidateText, "Final Result", slice);
+  if (final.value.trim() !== `- SUPERSEDED\n- Superseded by: ${mapping.target}\n- Plan revision: ${liveState.globalPlan.revision}`) return false;
+  const liveText = liveBytes.toString("utf8");
+  let restored = `${candidateText.slice(0, final.bodyStart)}${sectionBounds(liveText, "Final Result", slice).value}${candidateText.slice(final.end)}`;
+  const divergences = sectionBounds(restored, "Divergences", slice);
+  const restoredDivergences = divergences.value.split(/(?=^### divergence-[0-9]{2,}\n)/mu).map((block) => {
+    const id = block.match(/^### (divergence-[0-9]{2,})\n/u)?.[1];
+    if (!task.divergences.some((record) => record.id === id && record.state === "active")) return block;
+    return block.replace(/^- State: (?:resolved|superseded)$/mu, "- State: active")
+      .replace(/^- (?:Resolution|Superseded by): [^\n]+\n?/gmu, "");
+  }).join("");
+  restored = `${restored.slice(0, divergences.bodyStart)}${restoredDivergences}${restored.slice(divergences.end)}`;
+  // Inverting only disposition fields must reproduce every original historical byte.
+  // The existing candidate validator checks the committed mapping and record owners.
+  return Buffer.from(restored, "utf8").equals(liveBytes);
+}
+
 export async function serializeTaskPathClaims({ specPath, candidateExecutionRoot }) {
   const workspace = await resolveExecutionWorkspace(specPath);
   const candidate = path.resolve(String(candidateExecutionRoot));
@@ -128,12 +151,20 @@ export async function serializeTaskPathClaims({ specPath, candidateExecutionRoot
   const planText = await fs.readFile(planPath, "utf8").catch(() => blocked(`live execution is missing ${planPath}`));
   const slices = serialSlices(planText);
   const liveState = await inspectExecutionState(specPath);
+  const appendRecovery = liveState.state === "PENDING_REPLAN_READY"
+    && liveState.globalPlan.revisionMode === "append-only-extension";
+  if (appendRecovery && !(await fs.readFile(path.join(candidate, "plan.md"))).equals(Buffer.from(planText))) {
+    blocked("candidate changed the approved recovery plan");
+  }
   const updates = [];
   let serializedClaims = 0;
 
   for (const slice of slices) {
     const livePlanArtifact = path.join(workspace.executionRoot, "plans", `${slice}.md`);
     const approvedPlan = await fs.readFile(livePlanArtifact, "utf8").catch(() => blocked(`live execution is missing ${livePlanArtifact}`));
+    if (appendRecovery && !(await fs.readFile(path.join(candidate, "plans", `${slice}.md`))).equals(Buffer.from(approvedPlan))) {
+      blocked(`${slice} candidate changed its approved recovery plan`);
+    }
     const approvedClaims = codeSpans(sectionBounds(approvedPlan, "Likely Areas", `${slice} plan`).value);
     const taskPath = path.join(candidate, "tasks", `${slice}.md`);
     const taskText = await fs.readFile(taskPath, "utf8").catch(() => blocked(`candidate is missing ${taskPath}`));
@@ -146,7 +177,11 @@ export async function serializeTaskPathClaims({ specPath, candidateExecutionRoot
     if (historicalTask) {
       const liveTask = await fs.readFile(liveTaskPath);
       const candidateTask = await fs.readFile(taskPath);
-      if (!candidateTask.equals(liveTask)) blocked(`${slice} historical task changed during materialization`);
+      if (!candidateTask.equals(liveTask)) {
+        if (!authorizedHistoricalSupersession(liveState, slice, liveTask, taskText)) {
+          blocked(`${slice} historical task changed during materialization`);
+        }
+      }
       continue;
     }
 
@@ -166,6 +201,13 @@ export async function serializeTaskPathClaims({ specPath, candidateExecutionRoot
     serializedClaims += canonicalClaims.length;
   }
 
+  if (appendRecovery) {
+    // Validate the prospective claims in the validator's existing isolated shadow.
+    // Rejection must leave the supplied candidate's bytes and links untouched.
+    await validateExecutionCandidate(specPath, candidate, updates.map((update) => ({
+      slice: path.basename(update.path, ".md"), text: update.after,
+    })));
+  }
   for (const update of updates) {
     if (update.before === update.after) continue;
     const temporary = `${update.path}.stnl-task-paths-${process.pid}.tmp`;
