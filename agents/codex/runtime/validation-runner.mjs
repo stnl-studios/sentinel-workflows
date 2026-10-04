@@ -357,17 +357,18 @@ export async function invokeIndependentRunner({
   // incomplete turn never reached the provider. Even a missing threadId is
   // uncertain; do not release a technical retry after runTurn was invoked.
   const status = semanticResponseFile !== null ? 'RUNNER_RESPONSE_CAPTURED' : 'RUNNER_RESULT_BLOCKED';
+  const receiptFile = path.join(tmpdir, `${operationName}.receipt.json`);
   const receipt = {
     status, operation, sequence, slice, attempt, runnerAgent: RUNNER_NAME,
     requestedModel: turn.requestedModel, requestedEffort: turn.requestedEffort,
     reportedModel: turn.reportedModel, threadId: turn.threadId,
-    eventsPath, semanticResponseFile, ...semanticReceipt, captureFailure, captureFailureCode,
+    receiptFile, eventsPath, semanticResponseFile, ...semanticReceipt, captureFailure, captureFailureCode,
     testedState, formatRepair,
     providerError: turn.errorEvent ?? null, error: turn.error,
     processError: turn.processError ?? null, usage: turn.usage,
     exitCode: semanticResponseFile === null ? 1 : 0,
   };
-  await fs.writeFile(path.join(tmpdir, `${operationName}.receipt.json`), `${JSON.stringify(receipt, null, 2)}\n`, { flag: 'wx' });
+  await fs.writeFile(receiptFile, `${JSON.stringify(receipt, null, 2)}\n`, { flag: 'wx' });
   return receipt;
 }
 
