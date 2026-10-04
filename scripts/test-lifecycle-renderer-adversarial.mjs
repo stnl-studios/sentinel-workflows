@@ -449,7 +449,7 @@ for (const timing of ['before', 'after']) {
     try {
       assert.throws(
         () => buildClosedCandidate(source, candidate, { readinessAttestation: receipt }),
-        /became stale/u,
+        /CLOSE source changed during rendering; rebuild from the current active source/u,
       );
     } finally {
       fs.renameSync = originalRename;

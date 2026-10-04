@@ -47,15 +47,6 @@ async function fixture(t) {
   return { root, input, authPath, home };
 }
 
-function filesystemRules(config) {
-  const table = config.split('[permissions.sentinel-case.filesystem]\n')[1]
-    .split('[permissions.sentinel-case.filesystem.":workspace_roots"]')[0];
-  return new Map(table.trim().split('\n').map((line) => {
-    const [, key, mode] = /^(".*") = "(read|write|deny)"$/u.exec(line);
-    return [JSON.parse(key), mode];
-  }));
-}
-
 function inside(file, parent) {
   const relative = path.relative(parent, file);
   return relative === '' || (!relative.startsWith('..' + path.sep) && relative !== '..' && !path.isAbsolute(relative));
@@ -71,30 +62,19 @@ function promptCatalog(home, overrides, workspace) {
     .filter((text) => text.includes('<skills_instructions>')).join('\n');
 }
 
-test('fresh author and review threads receive native readable snapshot-provenance skills through the real SDK', async (t) => {
+test('fresh author and review threads receive snapshot-provenance skills with Full Access through the real SDK', async (t) => {
   const { root, input, home } = await fixture(t);
   const config = await fs.readFile(path.join(home.privateHome, 'config.toml'), 'utf8');
-  const policy = filesystemRules(config);
-  assert.equal(policy.get(':root'), 'deny');
-  assert.equal(policy.get(home.env.CODEX_HOME), 'deny');
-  assert.equal(policy.has(path.join(home.privateHome, 'skills')), false);
-  assert.equal(policy.get(input.snapshot), 'read');
-  assert.equal(policy.get(input.candidates), 'write');
-  assert.equal(policy.get(input.tmpdir), 'write');
-  assert.match(config, /\[permissions.sentinel-case.filesystem.":workspace_roots"\]\n"\." = "write"/u);
+  assert.match(config, /^sandbox_mode = "danger-full-access"$/mu);
+  assert.match(config, /^approval_policy = "never"$/mu);
+  assert.doesNotMatch(config, /default_permissions|\[permissions\./u);
   assert.equal((await fs.stat(path.join(home.privateHome, 'auth.json'))).mode & 0o777, 0o600);
   assert.equal(await fs.lstat(path.join(home.privateHome, 'skills')).catch(() => null), null);
-  for (const file of ['auth.json', 'config.toml']) {
-    assert.ok(![...policy].some(([grant, mode]) => !grant.startsWith(':') && mode !== 'deny'
-      && inside(path.join(home.privateHome, file), grant)));
-  }
   const main = await codexClientConfig({ env: home.env });
   assert.equal(main.skills.bundled.enabled, false);
   for (const skill of main.skills.config) {
     assert.equal(skill.enabled, true);
-    assert.equal(policy.get(path.dirname(path.dirname(skill.path))), 'read');
     assert.equal(inside(skill.path, home.privateHome), false);
-    assert.ok(![...policy].some(([denied, mode]) => mode === 'deny' && !denied.startsWith(':') && inside(skill.path, denied)));
     const snapshotPath = path.join(input.snapshot, 'skills', 'workflows', path.basename(path.dirname(skill.path)), 'SKILL.md');
     assert.deepEqual(await fs.readFile(skill.path), await fs.readFile(snapshotPath));
     assert.equal((await fs.stat(skill.path)).mode & 0o222, 0);
@@ -124,6 +104,7 @@ test('fresh author and review threads receive native readable snapshot-provenanc
   const calls = (await fs.readFile(capture, 'utf8')).trim().split('\n').map(JSON.parse);
   const overrides = (args) => args.filter((_value, index) => args[index - 1] === '--config');
   for (const [index, [operation, name]] of Object.entries(OPERATION_SKILLS).entries()) {
+    assert.equal(calls[index][calls[index].indexOf('--sandbox') + 1], 'danger-full-access');
     assert.equal(calls[index].includes('resume'), false, operation + ' must represent a fresh thread');
     const values = overrides(calls[index]);
     assert.deepEqual(values, overrides(calls[0]));
@@ -145,10 +126,11 @@ test('suspend/resume preserves native skill provenance and rejects tampered snap
     : { status: 0, stdout: JSON.stringify({ checks: {
       'auth.credentials': { details: { 'stored auth mode': 'chatgpt', 'stored API key': 'false' } },
       'config.load': { details: { 'model provider': 'openai' } },
-      'sandbox.helpers': { details: { 'filesystem sandbox': 'restricted' } },
+      'sandbox.helpers': { details: { 'filesystem sandbox': 'unrestricted', 'network sandbox': 'enabled',
+        'approval policy': 'Never', 'denied-read rules': '0', 'denied-read glob rules': '0' } },
     } }), stderr: '' };
   assert.deepEqual(await verifyIsolatedHome(home, { runCommand }), {
-    authMode: 'chatgpt', provider: 'openai', filesystemSandbox: 'restricted',
+    authMode: 'chatgpt', provider: 'openai', filesystemSandbox: 'unrestricted', sandboxMode: 'danger-full-access',
   });
   const before = await codexClientConfig({ env: home.env });
   const suspended = await suspendIsolatedHome(home, input, {

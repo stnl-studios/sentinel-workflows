@@ -9,9 +9,34 @@ const BROKER_RECEIPTS = new Set([
 ]);
 const REQUEST_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 const POLL_INTERVAL_MS = 25;
+const ERROR_CODES = new Set([
+  'BROKER_DISPATCH_FAILED', 'BROKER_REQUEST_ID_INVALID', 'BROKER_FILE_UNSAFE', 'BROKER_FILE_NOT_CANONICAL',
+  'BROKER_JSON_INVALID', 'BROKER_REQUEST_REJECTED', 'BROKER_MANAGED_PAYLOAD_INVALID',
+  'BROKER_RESULT_ALREADY_CAPTURED', 'BROKER_RESULT_INVALID', 'RUNNER_TRANSPORT_FAILED',
+  'MANAGED_CONTEXT_INVALID', 'MANAGED_CONTEXT_STALE', 'PAUSED_BUDGET_OR_QUOTA',
+  'ENOENT', 'EACCES', 'EPERM', 'EMFILE',
+]);
+// These composeRunnerRequest diagnostics contain no interpolated payload or path data.
+const ADAPTER_DIAGNOSTICS = new Set([
+  'runner adapter context path is invalid',
+  'runner prompt contains a competing serializer authority',
+  'runner payload contains competing mechanical identity',
+]);
+const UNKNOWN_DISPATCH_MESSAGE = 'Runner dispatch failed; original exception details are not exposed.';
+const SETTLED_VALIDATION_MESSAGE = 'Prior validation dispatch is settled or uncertain; this code alone does not establish a usable captured result.';
 
-function fail(code) {
-  const error = new Error(code);
+function safeBrokerFailure(code, message) {
+  const errorCode = ERROR_CODES.has(code) ? code : 'BROKER_DISPATCH_FAILED';
+  let errorMessage = errorCode;
+  if (errorCode === 'BROKER_RESULT_ALREADY_CAPTURED') errorMessage = SETTLED_VALIDATION_MESSAGE;
+  else if (errorCode === 'BROKER_DISPATCH_FAILED') {
+    errorMessage = ADAPTER_DIAGNOSTICS.has(message) ? message : UNKNOWN_DISPATCH_MESSAGE;
+  } else if (!errorCode.startsWith('BROKER_')) errorMessage = UNKNOWN_DISPATCH_MESSAGE;
+  return { errorCode, errorMessage, exitCode: 1 };
+}
+
+function fail(code, message = code) {
+  const error = new Error(message);
   error.code = code;
   throw error;
 }
@@ -162,7 +187,9 @@ export async function startOfficialRunnerBroker({
           // Once dispatch is attempted, an exception or missing final result
           // does not prove the provider never started. Only an explicit
           // initialization-blocked receipt permits another validation request.
-          if (operation === 'VALIDATE_SLICE' && validationResultSettled) fail('BROKER_RESULT_ALREADY_CAPTURED');
+          if (operation === 'VALIDATE_SLICE' && validationResultSettled) {
+            fail('BROKER_RESULT_ALREADY_CAPTURED', SETTLED_VALIDATION_MESSAGE);
+          }
           if (operation === 'VALIDATE_SLICE') validationResultSettled = true;
           result = await invoke({
             ...identity,
@@ -184,8 +211,8 @@ export async function startOfficialRunnerBroker({
           }
           result = { receipt, exitCode };
         } catch (error) {
-          errors.push(typeof error?.code === 'string' ? error.code : 'BROKER_DISPATCH_FAILED');
-          result = { errorCode: typeof error?.code === 'string' ? error.code : 'BROKER_DISPATCH_FAILED', exitCode: 1 };
+          result = safeBrokerFailure(error?.code, error?.message);
+          errors.push(result.errorCode);
         }
         await writeAtomic(path.join(directory, `response-${requestId}.json`), { requestId, result });
       }
@@ -246,7 +273,11 @@ export async function submitOfficialRunnerRequest({
         if (!isRecord(response) || response.requestId !== requestId || !isRecord(response.result)) {
           fail('BROKER_RESPONSE_INVALID');
         }
-        if (response.result.errorCode !== undefined) fail(response.result.errorCode);
+        if (response.result.errorCode !== undefined) {
+          const { errorCode, errorMessage } = safeBrokerFailure(response.result.errorCode, response.result.errorMessage);
+          fail(errorCode, typeof errorMessage === 'string' && errorMessage !== errorCode
+            ? `${errorCode}: ${errorMessage}` : errorCode);
+        }
         const { receipt, exitCode } = response.result;
         if (!isRecord(receipt) || receipt.operation !== operation || receipt.sequence !== sequence
           || receipt.slice !== slice || !BROKER_RECEIPTS.has(receipt.status)

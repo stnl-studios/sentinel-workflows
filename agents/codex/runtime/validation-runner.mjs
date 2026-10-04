@@ -160,8 +160,15 @@ export function composeRunnerRequest({ officialPreflight, operation, slice,
   if (/RUNNER_EVIDENCE_SERIALIZER\s*=|serialize-runner-evidence\.mjs/u.test(prompt)) {
     fail('runner prompt contains a competing serializer authority');
   }
+  let payload = null;
+  try { payload = JSON.parse(prompt); } catch { /* Preserve the conservative guard for unstructured payloads. */ }
+  // Only the object's top level can compete with the current mechanical envelope.
+  // Nested overlap.slice describes historical work; retain the original payload bytes.
+  const competingIdentity = payload !== null && typeof payload === 'object' && !Array.isArray(payload)
+    ? Object.keys(payload).some((key) => /^(?:operation|specPath|workspace|slice|executionRoot|planPath|slicePlanPath|taskPath|adapterPath|snapshotPath)$/u.test(key))
+    : /"(?:operation|specPath|workspace|slice|executionRoot|planPath|slicePlanPath|taskPath|adapterPath|snapshotPath)"\s*:/u.test(prompt);
   if (/^(?:SPEC_PATH|MANAGED_WORKSPACE|OPERATION|SLICE|EXECUTION_ROOT|PLAN_PATH|SLICE_PLAN_PATH|TASK_PATH|RUNNER_BRIDGE|STNL_RUNNER_ADAPTER)=/gmu.test(prompt)
-    || /"(?:operation|specPath|workspace|slice|executionRoot|planPath|slicePlanPath|taskPath|adapterPath|snapshotPath)"\s*:/u.test(prompt)) {
+    || competingIdentity) {
     fail('runner payload contains competing mechanical identity');
   }
   return [

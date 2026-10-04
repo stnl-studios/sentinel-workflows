@@ -1413,16 +1413,14 @@ test("CLOSE renderer is deterministic and read-only", (t) => {
   assert.doesNotMatch(first.toString("utf8"), /## Canonical Artifact Index/u);
 });
 
-test("CLOSE builder validates attestation, preserves external state, and leaves source untouched", (t) => {
+test("CLOSE builder needs no attestation, preserves external state, and leaves source untouched", (t) => {
   const base = temporaryDirectory(t, "stnl-node-build-close-");
   const source = path.join(base, "fonte com espaços");
   const candidate = path.join(base, "candidato fechado com espaços");
   writeFullWorkspace(source, "ready");
   write(path.join(source, "execution", "evidência.txt"), "evidência externa íntegra\n");
   const sourceBefore = workspaceSnapshot(source);
-  const attestation = path.join(base, "readiness global.json");
-  createReadinessAttestation(source, attestation, { scope: "GLOBAL", verdict: "READY" });
-  const built = buildClosedCandidate(source, candidate, { readinessAttestation: attestation });
+  const built = buildClosedCandidate(source, candidate);
   assert.equal(built, realpathSync(candidate));
   const closed = validateWorkspace(candidate);
   assert.equal(closed.status, "closed");
@@ -1439,18 +1437,24 @@ test("CLOSE builder CLI success and failure exit contracts", (t) => {
   const attestation = path.join(base, "attestation.json");
   createReadinessAttestation(source, attestation, { scope: "GLOBAL", verdict: "READY" });
   const candidate = path.join(base, "closed");
-  let result = runCli(
-    "build-closed-spec.mjs",
-    [source, candidate, "--readiness-attestation", attestation],
-    { cwd: base },
-  );
+  let result = runCli("build-closed-spec.mjs", [source, candidate], { cwd: base });
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /PASS: deterministic CLOSE candidate built at /u);
   assert.equal(validateWorkspace(candidate).status, "closed");
 
-  result = runCli("build-closed-spec.mjs", [source, path.join(base, "missing-attestation")]);
+  const draft = path.join(base, "draft");
+  const rejectedCandidate = path.join(base, "rejected-draft");
+  writeFullWorkspace(draft, "draft");
+  const draftBefore = workspaceSnapshot(draft);
+  result = runCli("build-closed-spec.mjs", [draft, rejectedCandidate]);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /ready/u);
+  assert.equal(existsSync(rejectedCandidate), false);
+  assert.deepEqual(workspaceSnapshot(draft), draftBefore);
+
+  result = runCli("build-closed-spec.mjs", [source]);
   assert.equal(result.status, 2);
-  assert.match(result.stderr, /required: --readiness-attestation/u);
+  assert.match(result.stderr, /expected source and candidate/u);
 
   result = runCli(
     "build-closed-spec.mjs",
@@ -1465,7 +1469,7 @@ test("CLOSE builder CLI success and failure exit contracts", (t) => {
   assert.match(result.stderr, /^FAIL: candidate must not exist/mu);
 });
 
-test("CLOSE is blocked by a stale attestation and publishes no candidate", (t) => {
+test("CLOSE renders current ready authority even when a legacy attestation is stale", (t) => {
   const base = temporaryDirectory(t, "stnl-node-build-close-stale-");
   const source = path.join(base, "source");
   const candidate = path.join(base, "candidate");
@@ -1477,15 +1481,17 @@ test("CLOSE is blocked by a stale attestation and publishes no candidate", (t) =
     "envelope público",
     "envelope público estável",
   );
-  assert.throws(
-    () => buildClosedCandidate(source, candidate, { readinessAttestation: attestation }),
-    (error) => error instanceof ValidationError && error.message.includes("is stale"),
-  );
-  assert.equal(existsSync(candidate), false);
+  assert.throws(() => validateReadinessAttestation(source, attestation), /is stale/u);
+  const sourceBefore = workspaceSnapshot(source);
+  buildClosedCandidate(source, candidate, { readinessAttestation: attestation });
+  assert.equal(validateWorkspace(candidate).status, "closed");
+  validateCloseTransition(source, candidate);
+  assert.match(readFileSync(path.join(candidate, "feature_spec.md"), "utf8"), /envelope público estável/u);
+  assert.deepEqual(workspaceSnapshot(source), sourceBefore);
   assert.deepEqual(
     readdirSync(base).filter((name) => name.includes("close-stage")),
     [],
-    "failed CLOSE left a stage behind",
+    "successful CLOSE left a stage behind",
   );
 });
 

@@ -57,7 +57,7 @@ This benchmark is measurement and regression tooling for the stabilized Sentinel
 workflow on a small Todo CLI. It is not requirements, lifecycle, or execution
 authority.
 `seed/` contains the starting application. `cases/` contains three independent
-requirements sources. `benchmark.json` fixes the case paths, production-v2
+requirements sources. `benchmark.json` fixes the case paths, production-v3
 model profile, budgets, result schemas, and qualification evidence.
 `qualification/` holds the byte-preserved sandbox probe referenced and hashed by
 the manifest. Its P0 status and next step describe the probe date, not the
@@ -102,9 +102,13 @@ node benchmarks/sentinel-todo/runtime/benchmark-measurement.mjs compare --before
 
 `run --full` requires A to pass before starting B and C concurrently. The
 manager derives each next operation from official execution readback, takes
-model and effort from `production-v2`, fills the versioned human launcher for
+model and effort from the manifest's current `production-v3`, fills the versioned human launcher for
 that operation, and sends those exact bytes through the pinned official Codex
-SDK. Reviewer operations use independent threads. A focal run can be resumed
+SDK. Every invocation of a launcher template starts a new thread, including
+authors, reviewers, repeated operations, and the next operation after a focal
+resume. Persisted state and the selected template supply the handoff; prior
+conversation history is never attached. Recorded thread IDs remain diagnostic
+data, not inputs for resuming the next template. A focal run can be resumed
 only if its frozen functional source, last official state, and fingerprint
 still match. After execution reaches `COMPLETE`, the manager proceeds directly
 to `SPEC_CLOSE`. It does not retry a blocked operation by guessing a handoff.
@@ -121,10 +125,22 @@ that run directory. B and C share that run budget safely while executing
 concurrently. Resume uses the same ledger; the summary records consumed main
 and runner turns. The historical top-level `.turn-ledger.json` is ignored.
 
-The isolated Codex home for each case uses a private ChatGPT login cache copy,
-the frozen skill bundle, and a restricted filesystem profile. The main Codex
-home, repository source, sibling cases, and credentials are outside the agent
-write/read scope. At a focal stop, the private home retains only session state
+The separate Codex home for each case uses a private ChatGPT login cache copy
+and the frozen skill bundle. Benchmark agents now use Full Access:
+`sandbox_mode = "danger-full-access"`, with SDK `sandboxMode: "danger-full-access"`
+and `approvalPolicy: "never"` for both author and independent runner threads.
+The case config contains no named filesystem profile or read/write-root rules.
+Verification requires an effective unrestricted filesystem, enabled network,
+no denied-read rules, and approval policy `Never`; a constrained report blocks
+the run. This does not override host or organization requirements.
+
+The snapshot, disposable workspace, and copied skills separate development
+files from the global installation; they do not provide a host security sandbox.
+Agents can technically reach the main Codex home, repository source, sibling
+cases, credentials, and other host files, and can use the network. Workflow
+instructions retain their authorized artifact scope and the runner's read-only
+role. Hash/provenance checks, validators, publishers, and authorship rules verify
+integrity; they do not prevent arbitrary host access. At a focal stop, the private home retains only session state
 and its auth cache copy is deleted; resume restores the cache after validating
 the frozen state. The private home is removed after a completed case. The
 configured `stnl_validation_runner` is a separate Luna/medium SDK thread;
@@ -132,15 +148,33 @@ the product skill invokes its adapter through the case broker. The main
 context, runner, official validators, and publishers keep their existing
 ownership boundaries.
 
+The local `main` reference at `73e37420aa093463a2dfb14964bf959c54f194b2`
+used the restricted `sentinel-case` profile, SDK 0.154.0, and approval policy
+`never`, without an explicit SDK sandbox mode. Retained full PASS measurements
+from 2026-09-30 also record restricted execution. Their raw snapshots are no
+longer available; they do not prove historical Full Access. Current Full Access
+results therefore have a different permission context from those measurements.
+
+Development runs test the frozen SOURCE and its isolated skill copies without
+installing them globally. Preserve that separation from the installed version
+used by projects. Only the runner's one bounded format-only repair may continue
+its current thread within the same invocation; a later template or independent
+runner invocation starts fresh. Both repair turns retain their events and usage
+and consume the existing turn budget.
+
 ## Production profile
+
+The current manifest defines `production-v3`; the historical baseline above
+retains its original `production-v2` identity. Requested dispatch is not proof
+of the provider's reported model.
 
 | Phase | A | B | C |
 | --- | --- | --- | --- |
-| SPEC | Sol / high | Terra / high | Sol / high |
-| PLAN | Terra / high | Terra / high | Sol / high |
-| TASKS | Terra / high | Terra / high | Terra / high |
-| EXECUTE / APPLY_FINDINGS | Luna / high | Luna / xhigh | Luna / xhigh |
-| REVIEW / VALIDATE | Luna / high | Luna / xhigh | Luna / xhigh |
+| SPEC | GPT-6.1-Sol / medium | GPT-6.1-Sol / high | GPT-6-Astra / high |
+| PLAN | GPT-6-Luna / high | GPT-6.1-Sol / medium | GPT-6.1-Sol / high |
+| TASKS | GPT-6-Luna / high | GPT-6.1-Sol / medium | GPT-6.1-Sol / high |
+| EXECUTE / APPLY_FINDINGS | GPT-6-Luna / high | GPT-6-Luna / high | GPT-6.1-Sol / high |
+| REVIEW / VALIDATE | GPT-6-Luna / high | GPT-6.1-Sol / medium | GPT-6-Astra / high |
 
 `SPEC_INIT` and `SPEC_CLOSE` use SPEC. `SPEC_READINESS` uses REVIEW / VALIDATE.
 Requested dispatches, provider usage when available, independent runner
@@ -221,6 +255,13 @@ those totals and are never added again. Missing or partial telemetry is
 `unavailable` with coverage; it is not zero and is not inferred from text size.
 Input per turn is a context-pressure proxy, not a measurement of context-window
 occupancy or billing.
+
+Each fresh thread's usage is attributed from its own zero baseline; a bounded
+same-thread format repair contributes only the additional cumulative usage.
+Repeated observations are not counted twice, and missing usage stays
+unavailable. Changing template thread reuse to fresh chats is an experimental
+context change: record the frozen source identity and do not infer token/cost
+savings or direct parity with historical reused-thread runs from offline tests.
 
 ### Direct comparison and campaign
 

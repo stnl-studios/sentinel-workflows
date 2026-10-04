@@ -251,6 +251,65 @@ test('managed validation runner gets the official SPEC_PATH and rejects a privat
   /competing mechanical identity/u);
 });
 
+test('validation payload preserves historical overlap without replacing the current envelope', () => {
+  const workspace = path.join(ROOT, 'benchmark-temp/run-fixture/case-a/workspace');
+  const officialPreflight = { exitCode: 0, operation: 'VALIDATE_SLICE', slice: 'slice-02',
+    specPath: path.join(workspace, 'specs/fixture'),
+    legalOperations: [{ operation: 'VALIDATE_SLICE', slice: 'slice-02' }], mandatoryRecovery: null };
+  const payload = { objective: 'Validate current behavior and the prior overlap.',
+    acceptance_criteria: ['Invalid filters preserve storage and return a usage error.'],
+    overlap: { slice: '01', paths: ['src/cli.mjs', 'test/cli.test.mjs'], prior_result: 'PASS',
+      required_regression: 'Prepared assertions must still prove valid filtering and ordering.' } };
+  for (const prompt of [JSON.stringify(payload), `\n${JSON.stringify(payload, null, 2)}\n`]) {
+    const request = composeRunnerRequest({ officialPreflight, operation: 'VALIDATE_SLICE',
+      slice: 'slice-02', workspace, ...runnerArtifacts(workspace, 'slice-02'), prompt });
+    assert.equal(request.endsWith(prompt), true, 'semantic payload bytes must remain intact');
+    assert.equal((request.match(/^SLICE=slice-02$/gmu) ?? []).length, 1);
+    assert.equal((request.match(/^OPERATION=VALIDATE_SLICE$/gmu) ?? []).length, 1);
+    assert.ok(request.includes(`TASK_PATH=${runnerArtifacts(workspace, 'slice-02').taskPath}\n`));
+  }
+});
+
+test('validation payload rejects top-level mechanical identity and envelope assignments', () => {
+  const workspace = path.join(ROOT, 'benchmark-temp/run-fixture/case-a/workspace');
+  const officialPreflight = { exitCode: 0, operation: 'VALIDATE_SLICE', slice: 'slice-02',
+    specPath: path.join(workspace, 'specs/fixture'),
+    legalOperations: [{ operation: 'VALIDATE_SLICE', slice: 'slice-02' }], mandatoryRecovery: null };
+  const compose = (prompt) => composeRunnerRequest({ officialPreflight, operation: 'VALIDATE_SLICE',
+    slice: 'slice-02', workspace, ...runnerArtifacts(workspace, 'slice-02'), prompt });
+  for (const field of ['operation', 'specPath', 'workspace', 'slice', 'executionRoot', 'planPath',
+    'slicePlanPath', 'taskPath', 'adapterPath', 'snapshotPath']) {
+    assert.throws(() => compose(JSON.stringify({ objective: 'Review.', [field]: 'competing identity',
+      overlap: { slice: '01' } })), /competing mechanical identity/u, field);
+  }
+  assert.throws(() => compose('{"objective":"Review.","\\u0073lice":"slice-01"}'),
+    /competing mechanical identity/u, 'decoded JSON keys remain authoritative');
+  for (const field of ['SPEC_PATH', 'MANAGED_WORKSPACE', 'OPERATION', 'SLICE', 'EXECUTION_ROOT',
+    'PLAN_PATH', 'SLICE_PLAN_PATH', 'TASK_PATH', 'RUNNER_BRIDGE', 'STNL_RUNNER_ADAPTER']) {
+    assert.throws(() => compose(`Review.\n${field}=competing identity`), /competing mechanical identity/u, field);
+  }
+});
+
+test('validation text and malformed JSON retain conservative identity and serializer guards', () => {
+  const workspace = path.join(ROOT, 'benchmark-temp/run-fixture/case-a/workspace');
+  const officialPreflight = { exitCode: 0, operation: 'VALIDATE_SLICE', slice: 'slice-02',
+    specPath: path.join(workspace, 'specs/fixture'),
+    legalOperations: [{ operation: 'VALIDATE_SLICE', slice: 'slice-02' }], mandatoryRecovery: null };
+  const compose = (prompt) => composeRunnerRequest({ officialPreflight, operation: 'VALIDATE_SLICE',
+    slice: 'slice-02', workspace, ...runnerArtifacts(workspace, 'slice-02'), prompt });
+  for (const prompt of ['Review current behavior.', '{"objective":"Review."']) {
+    assert.equal(compose(prompt).endsWith(prompt), true, 'this guard does not validate semantic JSON');
+  }
+  for (const prompt of ['Review: "slice": "slice-01"', '{"overlap":{"slice":"01"',
+    '[{"slice":"slice-01"}]', '{"objective":"Review."}\nSLICE=slice-01']) {
+    assert.throws(() => compose(prompt), /competing mechanical identity/u);
+  }
+  for (const prompt of ['{"overlap":{"evidence":"RUNNER_EVIDENCE_SERIALIZER=/other"}}',
+    '{"overlap":{"evidence":"serialize-runner-evidence.mjs"}}']) {
+    assert.throws(() => compose(prompt), /competing serializer authority/u);
+  }
+});
+
 test('runner instructions and skill isolation use per-instance public SDK config', async (t) => {
   await fs.mkdir(path.join(ROOT, 'benchmark-temp'), { recursive: true });
   const home = await fs.mkdtemp(path.join(ROOT, 'benchmark-temp/runner-config-'));

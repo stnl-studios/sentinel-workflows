@@ -1014,7 +1014,12 @@ function priorImplementationFailure(taskText, expectedRound) {
   for (const match of record.matchAll(/^  - `([^`\n]+)` \| (sha256:[0-9a-f]{64}|REMOVED)$/gmu)) {
     testedState.set(match[1], match[2]);
   }
-  return testedState;
+  const correctionClaims = records.flatMap((entry) => {
+    const value = entry.match(/^- Correction paths: (.+)$/mu)?.[1];
+    return value === undefined || value === "none" ? []
+      : value.split(", ").map((claim) => normalizedRelative(claim, "historical Correction paths"));
+  });
+  return { testedState, correctionClaims };
 }
 
 async function populateExecutionCorrectionClaims({ workspace, taskArtifact, operation, round }) {
@@ -1022,7 +1027,7 @@ async function populateExecutionCorrectionClaims({ workspace, taskArtifact, oper
   const workspaceRoot = await canonicalWorkspacePath(workspace);
   const canonicalTask = await regularFile(taskArtifact, "taskArtifact", workspaceRoot);
   const before = await fs.readFile(canonicalTask, "utf8");
-  const priorState = priorImplementationFailure(before, round - 1);
+  const prior = priorImplementationFailure(before, round - 1);
   const approvedTargets = await canonicalApprovedTargets({ workspaceRoot, taskArtifact: canonicalTask, taskText: before });
   const changed = await canonicalizeScopeSection({
     workspaceRoot,
@@ -1036,8 +1041,10 @@ async function populateExecutionCorrectionClaims({ workspace, taskArtifact, oper
     const physical = await existingPhysicalCandidate(path.resolve(path.dirname(canonicalTask), claim), `Changed Areas target ${claim}`, workspaceRoot);
     const digest = physical === null ? "REMOVED"
       : `sha256:${createHash("sha256").update(await fs.readFile(physical)).digest("hex")}`;
-    if (priorState.get(claim) !== digest) corrections.push(claim);
+    if (prior.testedState.get(claim) !== digest) corrections.push(claim);
   }
+  const cumulative = [...new Set([...prior.correctionClaims, ...corrections])]
+    .sort((left, right) => left.localeCompare(right, "en"));
   const existing = sectionBody(before, "Corrections Applied");
   if (existing !== "- none") {
     const declared = await canonicalizeScopeSection({
@@ -1047,12 +1054,13 @@ async function populateExecutionCorrectionClaims({ workspace, taskArtifact, oper
       approvedTargets,
       heading: "Corrections Applied",
     });
-    if (JSON.stringify(declared.claims) !== JSON.stringify(corrections)) {
+    if (JSON.stringify(declared.claims) !== JSON.stringify(cumulative)) {
       fail("Corrections Applied does not match mechanically derived correction paths");
     }
-    return;
+    return corrections;
   }
-  const correctionBody = corrections.length === 0 ? "- none" : corrections.map((claim) => `- \`${claim}\``).join("\n");
+  if (prior.correctionClaims.length !== 0) fail("Corrections Applied omits historical correction paths");
+  const correctionBody = cumulative.length === 0 ? "- none" : cumulative.map((claim) => `- \`${claim}\``).join("\n");
   const after = replaceSectionBody(before, "Corrections Applied", correctionBody);
   if (after !== before) {
     const temporary = `${canonicalTask}.stnl-correction-paths-${process.pid}.tmp`;
@@ -1064,6 +1072,7 @@ async function populateExecutionCorrectionClaims({ workspace, taskArtifact, oper
       await fs.rm(temporary, { force: true });
     }
   }
+  return corrections;
 }
 
 function nextExecutionCheckId(taskText, prefix) {
@@ -1238,7 +1247,7 @@ export async function serializeRunnerExecutionBundleFromResponse({
     fail("runner completed no marked verification command");
   }
   assertRunnerVerdictConsistency(operation, payload.status, mechanicalCommands);
-  await populateExecutionCorrectionClaims({
+  const correctionPaths = await populateExecutionCorrectionClaims({
     workspace,
     taskArtifact,
     operation,
@@ -1270,7 +1279,7 @@ export async function serializeRunnerExecutionBundleFromResponse({
       }
     }
   }
-  parsed.correctionPaths = parseCanonicalPathSection(taskText, "Corrections Applied").join(", ") || "none";
+  parsed.correctionPaths = (correctionPaths ?? parseCanonicalPathSection(taskText, "Corrections Applied")).join(", ") || "none";
   const filelessReason = parsed.filelessReason ?? null;
   if (targets.length + removed.length === 0 && filelessReason === null) fail("fileless semantic execution response must include Fileless reason");
   if (targets.length + removed.length !== 0 && filelessReason !== null) fail("file-backed semantic execution response cannot include Fileless reason");

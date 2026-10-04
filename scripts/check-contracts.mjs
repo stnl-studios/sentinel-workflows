@@ -303,6 +303,8 @@ function checkRunner(root) {
   requirePattern(contract, /Em `TESTS_PASS`[^\n]{0,260}`Tested scope`[^\n]{0,160}`Verification types considered`[^\n]{0,160}`Selected checks`[^\n]{0,160}`Coverage`[^\n]{0,120}(?:nunca podem ser exact `none`|must not be exact `none`)/iu, "R006_VERDICTS", "TESTS_PASS permits none in an objective summary field");
   requirePattern(contract, /`TESTS_FAIL` exige[^\n]{0,160}(?:comandos que falharam|commands that failed)/iu, "R006_VERDICTS", "TESTS_FAIL lacks command-failure evidence");
   requirePattern(contract, /`BLOCKED` exige[^\n]{0,180}(?:impossibilidade objetiva|objective impossibility)/iu, "R006_VERDICTS", "BLOCKED lacks an objective cause");
+  requirePattern(contract, /Em `EXECUTE_SLICE` e `APPLY_FINDINGS`,[^\n]*teste, fixture ou asserção preparado pelo executor[^\n]*correção possível dentro do escopo aprovado e dos direitos existentes, retorne `TESTS_FAIL`/u, "R006_VERDICTS", "prepared in-scope check defects must remain bounded execution failures");
+  requirePattern(contract, /Em `VALIDATE_SLICE`,[^\n]*script, fixture, quoting ou asserção[^\n]*continua exigindo `BLOCKED`[^\n]*Negação de sandbox ou permissão[^\n]*insumo realmente indisponível[^\n]*exige `BLOCKED` em qualquer operação/u, "R006_VERDICTS", "formal check defects and objective environmental blockers must remain BLOCKED");
   forbidPattern(contract, /(?:NEEDS_FIX|BLOCKED)[\s\S]{0,160}(?:(?<!não )proponha|create|(?<!não )crie) Effective Validation Base/iu, "R006_VERDICTS", "non-PASS verdict creates an effective base");
   requirePattern(contract, /fontes consultadas em `Discovery sources`[\s\S]{0,160}`Discovery actions`/iu, "R007_OUTPUT_SCHEMA", "discovery sources and actions are not distinct");
   requirePattern(contract, /`Findings verified`[^\n]{0,100}subconjunto canônico[^\n]{0,100}`Finding IDs`/iu, "R007_OUTPUT_SCHEMA", "verified findings are not constrained to the target subset");
@@ -322,7 +324,9 @@ function checkRunner(root) {
   requirePattern(contract, /uma única correção apenas de formato JSON[^\n]*mesmo objeto semântico[^\n]*evidência idênticos/u, "R009_VALIDATION_ATTEMPT", "format repair can change runner evidence or verdict");
   requirePattern(contract, /única equivalência de tipo permitida é array vazio[^\n]*findingReferences[^\n]*findingDispositions/u, "R009_VALIDATION_ATTEMPT", "format repair permits unbounded schema conversion");
   requirePattern(contract, /check marcado com exit não zero impede[^\n]*mesmo se uma execução posterior passar/u, "R009_VALIDATION_ATTEMPT", "runner may omit earlier failed verification");
-  requirePattern(contract, /script temporário[^\n]*fora do workspace[^\n]*múltiplas camadas de quoting/u, "R009_VALIDATION_ATTEMPT", "runner lacks bounded ad hoc check guidance");
+  requirePattern(contract, /runner não cria nem edita scripts ou testes[^\n]*lacuna de cobertura/u, "R009_VALIDATION_ATTEMPT", "runner may prepare checks beyond its authority");
+  requirePattern(contract, /Não use heredoc, here-string[^\n]*múltiplas camadas de quoting/u, "R009_VALIDATION_ATTEMPT", "runner depends on implicit shell temporary files");
+  requirePattern(contract, /Não tente novamente por outro path, ferramenta, TMPDIR\/TMPPREFIX ou modo de permissão/u, "R009_VALIDATION_ATTEMPT", "runner may bypass a denied command");
   requirePattern(contract, /Não confunda ausência de teste prévio com impossibilidade de verificar/u, "R009_VALIDATION_ATTEMPT", "runner may block instead of verifying an accessible coverage gap");
   requirePattern(contract, /Não use esse caminho para resposta semântica válida, timeout, processError ou conclusão incerta/u, "R009_VALIDATION_ATTEMPT", "format repair permits an uncertain or already valid result");
   requirePattern(contract, /Checks nunca emitem[^\n]{0,160}(?:Validation Attempt|Effective Validation Base)/iu, "R015_CHECK_AUTHORITY", "check/formal authority separation is incomplete");

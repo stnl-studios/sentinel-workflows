@@ -141,6 +141,36 @@ test("runner contract forbids hiding a failed check after a corrected check pass
   expectCategory(check(root), "R009_VALIDATION_ATTEMPT");
 });
 
+test("prepared check defects use bounded execution failures while formal and environmental blockers stay blocked", async () => {
+  for (const relative of ["codex/.codex/agents/stnl_validation_runner.toml", "claude-code/.claude/agents/stnl-validation-runner.md"]) {
+    const contract = await fs.readFile(path.join(canonical, relative), "utf8");
+    assert.match(contract, /Em `EXECUTE_SLICE` e `APPLY_FINDINGS`,[^\n]*teste, fixture ou asserção preparado pelo executor[^\n]*correção possível dentro do escopo aprovado[^\n]*retorne `TESTS_FAIL`/u);
+    assert.match(contract, /Não é necessário demonstrar defeito da implementação[^\n]*diagnóstico[^\n]*evidência/u);
+    assert.match(contract, /O runner permanece read-only[^\n]*contexto principal[^\n]*três rodadas/u);
+    assert.match(contract, /Em `VALIDATE_SLICE`,[^\n]*script, fixture, quoting ou asserção[^\n]*`BLOCKED`/u);
+    assert.match(contract, /Negação de sandbox ou permissão[^\n]*insumo realmente indisponível[^\n]*`BLOCKED`/u);
+    assert.doesNotMatch(contract, /Se a falha é do próprio script, fixture, quoting ou asserção do check, retorne `BLOCKED`/u);
+  }
+  const executor = await fs.readFile(path.join(repository, "skills/workflows/stnl-slice-executor/SKILL.md"), "utf8");
+  assert.match(executor, /executor-prepared test, fixture or assertion[^\n]*`TESTS_FAIL`[^\n]*approved slice/u);
+  assert.match(executor, /Sandbox or permission denial[^\n]*genuinely unavailable[^\n]*`BLOCKED`/u);
+  assert.match(executor, /Build fixtures from the existing input and persistence contracts[^\n]*do not expand those contracts/u);
+  assert.match(executor, /Additional automatic rounds occur only after `TESTS_FAIL` in round one or two and an authorized correction/u);
+  assert.match(executor, /Never make a fourth automatic invocation/u);
+});
+
+test("contract gate rejects losing prepared-check taxonomy or environmental and formal boundaries", async (t) => {
+  for (const [before, after] of [
+    ["correção possível dentro do escopo aprovado e dos direitos existentes, retorne `TESTS_FAIL`", "correção possível dentro do escopo aprovado e dos direitos existentes, retorne `BLOCKED`"],
+    ["Negação de sandbox ou permissão, ferramenta, dependência ou insumo realmente indisponível", "Qualquer fixture inválida"],
+    ["Em `VALIDATE_SLICE`, defeito do próprio script, fixture, quoting ou asserção do check continua exigindo `BLOCKED`", "Em `VALIDATE_SLICE`, defeito do próprio script, fixture, quoting ou asserção do check permite PASS"],
+  ]) {
+    const root = await fixture(t);
+    await replaceBoth(root, before, after);
+    expectCategory(check(root), "R006_VERDICTS");
+  }
+});
+
 test("runner verifies an accessible missing variant instead of treating missing prior tests as impossibility", async (t) => {
   const root = await fixture(t);
   await replaceBoth(root, "Não confunda ausência de teste prévio com impossibilidade de verificar.", "Bloqueie se faltar teste prévio.");
@@ -151,6 +181,31 @@ test("runner schema repair cannot expand beyond the two empty finding sets", asy
   const root = await fixture(t);
   await replaceBoth(root, "A única equivalência de tipo permitida é array vazio", "Converta livremente qualquer array");
   expectCategory(check(root), "R009_VALIDATION_ATTEMPT");
+});
+
+test("runner cannot create scripts to fill missing coverage or retry a denied command", async (t) => {
+  const root = await fixture(t);
+  await replaceBoth(root, "runner não cria nem edita scripts ou testes", "runner cria scripts novos");
+  expectCategory(check(root), "R009_VALIDATION_ATTEMPT");
+  const second = await fixture(t);
+  await replaceBoth(second, "Não tente novamente por outro path, ferramenta, TMPDIR/TMPPREFIX ou modo de permissão",
+    "Tente outro path após a negação");
+  expectCategory(check(second), "R009_VALIDATION_ATTEMPT");
+});
+
+test("execution prepares coverage while plan review and validation stop on denied writes", async () => {
+  const executor = await fs.readFile(path.join(repository, "skills/workflows/stnl-slice-executor/SKILL.md"), "utf8");
+  const plan = await fs.readFile(path.join(repository, "skills/workflows/stnl-plan-reviewer/SKILL.md"), "utf8");
+  const quality = await fs.readFile(path.join(repository, "skills/workflows/stnl-slice-quality-manager/SKILL.md"), "utf8");
+  assert.match(executor, /Prepare reusable tests in the authorized implementation[^\n]*before delegation/u);
+  assert.match(executor, /Include those tests in the final Changed Areas/u);
+  assert.match(plan, /preparation belongs to that slice's authorized implementation scope/u);
+  assert.match(plan, /Do not postpone evidence required for the current slice to a later test slice/u);
+  for (const skill of [executor, plan, quality]) {
+    assert.match(skill, /even (?:when|after|if)[^\n]*exit[^\n]*zero/u);
+    assert.match(skill, /do not retry via another path, tool, temp setting or permission mode/iu);
+  }
+  assert.match(quality, /Missing runnable coverage is BLOCKED, never PASS from an old suite/u);
 });
 
 test("quality manager treats a yielded session as pending and preserves the first receipt", async () => {

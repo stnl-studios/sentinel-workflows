@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -10,8 +11,10 @@ import {
   startOfficialRunnerBroker,
   submitOfficialRunnerRequest,
 } from '../agents/codex/runtime/runner-broker.mjs';
+import { composeRunnerRequest } from '../agents/codex/runtime/validation-runner.mjs';
 
 const REPOSITORY = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const SYNTHETIC_SECRET = 'synthetic-sensitive-marker-for-dispatch-test';
 
 async function fixture(t) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'sentinel-runner-broker-'));
@@ -54,6 +57,14 @@ function runnerReceipt({ operation, sequence, slice, status = 'RUNNER_RESPONSE_C
     status,
     exitCode: status === 'RUNNER_RESPONSE_CAPTURED' ? 0 : 1,
   };
+}
+
+function rejectCompetingIdentity(request) {
+  const executionRoot = path.join(request.specPath, 'execution');
+  return composeRunnerRequest({ ...request, executionRoot,
+    planPath: path.join(executionRoot, 'plan.md'),
+    slicePlanPath: path.join(executionRoot, 'plans', `${request.slice}.md`),
+    taskPath: path.join(executionRoot, 'tasks', `${request.slice}.md`) });
 }
 
 test('official runner broker serializes the configured runner flat receipt without changing its identity', async (t) => {
@@ -423,18 +434,188 @@ test('an invocation exception has uncertain provider state and blocks a later va
     officialPreflight: officialPreflight({ operation: payload.operation, slice: payload.slice, specPath }),
     invoke: async (request) => {
       calls += 1;
-      if (calls === 1) throw Object.assign(new Error('transport failed'), { code: 'RUNNER_TRANSPORT_FAILED' });
+      if (calls === 1) throw Object.assign(new Error(`transport failed: ${SYNTHETIC_SECRET}`), { code: 'RUNNER_TRANSPORT_FAILED' });
       return runnerReceipt(request);
     },
   });
   try {
     await assert.rejects(() => submitOfficialRunnerRequest(payload),
-      (error) => error.code === 'RUNNER_TRANSPORT_FAILED');
+      (error) => error.code === 'RUNNER_TRANSPORT_FAILED'
+        && !JSON.stringify({ message: error.message, stack: error.stack, code: error.code }).includes(SYNTHETIC_SECRET));
     assert.equal(broker.capturedReceipts, 0);
     await assert.rejects(() => submitOfficialRunnerRequest(payload),
       (error) => error.code === 'BROKER_RESULT_ALREADY_CAPTURED');
     assert.equal(calls, 1);
     assert.equal(broker.capturedReceipts, 0);
+    assert.equal(broker.requestsHandled, 2);
+    assert.deepEqual(broker.errors, ['RUNNER_TRANSPORT_FAILED', 'BROKER_RESULT_ALREADY_CAPTURED']);
+  } finally {
+    await broker.close();
+  }
+});
+
+test('controlled adapter identity rejection remains explainable without implying a captured result', async (t) => {
+  const { workspace, specPath, tmpdir } = await fixture(t);
+  const payload = { workspace, tmpdir, operation: 'VALIDATE_SLICE', sequence: 9, slice: 'slice-02',
+    prompt: JSON.stringify({ objective: 'Review current behavior.', slice: 'slice-01', overlap: { slice: '01' } }) };
+  const diagnostic = 'runner payload contains competing mechanical identity';
+  let calls = 0;
+  const broker = await startOfficialRunnerBroker({ ...payload,
+    officialPreflight: officialPreflight({ operation: payload.operation, slice: payload.slice, specPath }),
+    invoke: async (request) => { calls += 1; return rejectCompetingIdentity(request); } });
+  try {
+    await assert.rejects(() => submitOfficialRunnerRequest(payload),
+      (error) => error.code === 'BROKER_DISPATCH_FAILED' && error.message.includes(diagnostic));
+    await assert.rejects(() => submitOfficialRunnerRequest(payload),
+      (error) => error.code === 'BROKER_RESULT_ALREADY_CAPTURED'
+        && /does not establish a usable captured result/u.test(error.message));
+    assert.equal(calls, 1, 'uncertain invocation must not be repeated');
+    assert.equal(broker.requestsHandled, 2);
+    assert.equal(broker.capturedReceipts, 0);
+    assert.deepEqual(broker.errors, ['BROKER_DISPATCH_FAILED', 'BROKER_RESULT_ALREADY_CAPTURED']);
+  } finally {
+    await broker.close();
+  }
+});
+
+test('runner CLI exposes only controlled diagnostics or a safe generic failure without a fabricated receipt', async (t) => {
+  for (const scenario of [
+    { payload: { objective: 'Review.', slice: 'slice-01', overlap: { slice: '01' } },
+      invoke: rejectCompetingIdentity, message: 'runner payload contains competing mechanical identity' },
+    { payload: { objective: 'Review.', overlap: { slice: '01' } },
+      invoke: () => { throw Object.assign(new Error(`provider detail ${SYNTHETIC_SECRET}`), { code: 'BROKER_DISPATCH_FAILED' }); },
+      message: 'Runner dispatch failed; original exception details are not exposed.' },
+  ]) {
+    const { workspace, specPath, tmpdir } = await fixture(t);
+    let calls = 0;
+    const broker = await startOfficialRunnerBroker({ workspace, tmpdir, operation: 'VALIDATE_SLICE',
+      sequence: 9, slice: 'slice-02',
+      officialPreflight: officialPreflight({ operation: 'VALIDATE_SLICE', slice: 'slice-02', specPath }),
+      invoke: async (request) => { calls += 1; return scenario.invoke(request); } });
+    try {
+      const child = spawn(process.execPath, [path.join(REPOSITORY, 'agents/codex/runtime/validation-runner.mjs'),
+        '--operation', 'VALIDATE_SLICE', '--slice', 'slice-02'],
+      { cwd: workspace, env: { PATH: process.env.PATH, TMPDIR: tmpdir } });
+      let stdout = '';
+      let stderr = '';
+      child.stdout.on('data', (chunk) => { stdout += chunk; });
+      child.stderr.on('data', (chunk) => { stderr += chunk; });
+      const closed = new Promise((resolve, reject) => {
+        child.once('error', reject);
+        child.once('close', (code, signal) => resolve({ code, signal }));
+      });
+      child.stdin.end(JSON.stringify(scenario.payload));
+      assert.deepEqual(await closed, { code: 1, signal: null });
+      assert.equal(stdout, '', 'failed dispatch cannot emit SENTINEL_RUNNER_RECEIPT');
+      assert.equal(stderr, `BLOCKED: BROKER_DISPATCH_FAILED: ${scenario.message}\n`);
+      assert.equal((stdout + stderr + JSON.stringify(broker.errors)).includes(SYNTHETIC_SECRET), false);
+      assert.equal(broker.requestsHandled, 1);
+      assert.equal(broker.capturedReceipts, 0);
+      assert.deepEqual(broker.errors, ['BROKER_DISPATCH_FAILED']);
+      assert.equal(calls, 1);
+    } finally {
+      await broker.close();
+    }
+  }
+});
+
+test('unknown dispatch exception cannot expose arbitrary message, stack, or code through the client', async (t) => {
+  const { workspace, specPath, tmpdir } = await fixture(t);
+  const payload = { workspace, tmpdir, operation: 'VALIDATE_SLICE', sequence: 9, slice: 'slice-02',
+    prompt: 'Review current behavior.' };
+  const broker = await startOfficialRunnerBroker({ ...payload,
+    officialPreflight: officialPreflight({ operation: payload.operation, slice: payload.slice, specPath }),
+    invoke: async () => {
+      throw Object.assign(new Error(`unknown provider detail ${SYNTHETIC_SECRET}`),
+        { code: SYNTHETIC_SECRET, stack: `private stack ${SYNTHETIC_SECRET}` });
+    } });
+  try {
+    await assert.rejects(() => submitOfficialRunnerRequest(payload), (error) => {
+      assert.equal(error.code, 'BROKER_DISPATCH_FAILED');
+      assert.equal(error.message, 'BROKER_DISPATCH_FAILED: Runner dispatch failed; original exception details are not exposed.');
+      assert.equal(JSON.stringify({ message: error.message, stack: error.stack, code: error.code }).includes(SYNTHETIC_SECRET), false);
+      return true;
+    });
+    assert.deepEqual(broker.errors, ['BROKER_DISPATCH_FAILED']);
+    assert.equal(broker.requestsHandled, 1);
+    assert.equal(broker.capturedReceipts, 0);
+  } finally {
+    await broker.close();
+  }
+});
+
+test('unknown dispatch diagnostics are safe in broker response files and persisted error codes', async (t) => {
+  const { workspace, specPath, tmpdir } = await fixture(t);
+  const identity = { workspace, tmpdir, operation: 'VALIDATE_SLICE', sequence: 9, slice: 'slice-02' };
+  const broker = await startOfficialRunnerBroker({ ...identity,
+    officialPreflight: officialPreflight({ ...identity, specPath }),
+    invoke: async () => { throw new Error(`runner payload contains competing mechanical identity: ${SYNTHETIC_SECRET}`); } });
+  try {
+    const requestId = randomUUID();
+    await fs.writeFile(path.join(broker.directory, `request-${requestId}.json`),
+      JSON.stringify({ ...identity, requestId, prompt: 'Review current behavior.', managedPayload: null }));
+    const responseFile = path.join(broker.directory, `response-${requestId}.json`);
+    for (let i = 0; i < 40; i += 1) {
+      if (await fs.access(responseFile).then(() => true, () => false)) break;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    const bytes = await fs.readFile(responseFile, 'utf8');
+    assert.equal(bytes.includes(SYNTHETIC_SECRET), false);
+    assert.deepEqual(JSON.parse(bytes).result, { errorCode: 'BROKER_DISPATCH_FAILED',
+      errorMessage: 'Runner dispatch failed; original exception details are not exposed.', exitCode: 1 });
+    assert.deepEqual(broker.errors, ['BROKER_DISPATCH_FAILED']);
+    assert.equal(broker.requestsHandled, 1);
+    assert.equal(broker.capturedReceipts, 0);
+  } finally {
+    await broker.close();
+  }
+});
+
+test('known context, budget, and filesystem codes survive without arbitrary callback details', async (t) => {
+  for (const code of ['MANAGED_CONTEXT_INVALID', 'MANAGED_CONTEXT_STALE', 'PAUSED_BUDGET_OR_QUOTA', 'ENOENT']) {
+    const { workspace, specPath, tmpdir } = await fixture(t);
+    const payload = { workspace, tmpdir, operation: 'VALIDATE_SLICE', sequence: 9, slice: 'slice-02',
+      prompt: 'Review current behavior.' };
+    const broker = await startOfficialRunnerBroker({ ...payload,
+      officialPreflight: officialPreflight({ ...payload, specPath }),
+      invoke: async () => { throw Object.assign(new Error(`private callback detail ${SYNTHETIC_SECRET}`), { code }); } });
+    try {
+      await assert.rejects(() => submitOfficialRunnerRequest(payload), (error) => {
+        assert.equal(error.code, code);
+        assert.equal(error.message, `${code}: Runner dispatch failed; original exception details are not exposed.`);
+        assert.equal(JSON.stringify({ message: error.message, stack: error.stack, code: error.code }).includes(SYNTHETIC_SECRET), false);
+        return true;
+      });
+      assert.deepEqual(broker.errors, [code]);
+      assert.equal(broker.requestsHandled, 1);
+      assert.equal(broker.capturedReceipts, 0);
+    } finally {
+      await broker.close();
+    }
+  }
+});
+
+test('pre-dispatch rejection remains recorded after a valid PASS capture', async (t) => {
+  const { workspace, specPath, tmpdir } = await fixture(t);
+  const payload = { workspace, tmpdir, operation: 'VALIDATE_SLICE', sequence: 9, slice: 'slice-02',
+    prompt: JSON.stringify({ objective: 'Review current behavior.', overlap: { slice: '01' } }) };
+  let calls = 0;
+  const broker = await startOfficialRunnerBroker({ ...payload,
+    officialPreflight: officialPreflight({ operation: payload.operation, slice: payload.slice, specPath }),
+    invoke: async (request) => {
+      calls += 1;
+      return { ...runnerReceipt(request), semanticResponseStatus: 'PASS' };
+    } });
+  try {
+    await assert.rejects(() => submitOfficialRunnerRequest({ ...payload, managedPayload: { objective: 'Mismatch.' } }),
+      (error) => error.code === 'BROKER_MANAGED_PAYLOAD_INVALID');
+    assert.equal(calls, 0, 'the rejected request never reaches invoke');
+    const result = await submitOfficialRunnerRequest({ ...payload, managedPayload: JSON.parse(payload.prompt) });
+    assert.equal(result.semanticResponseStatus, 'PASS');
+    assert.equal(calls, 1);
+    assert.equal(broker.requestsHandled, 2);
+    assert.equal(broker.capturedReceipts, 1);
+    assert.deepEqual(broker.errors, ['BROKER_MANAGED_PAYLOAD_INVALID'], 'PASS does not erase earlier incidents');
   } finally {
     await broker.close();
   }

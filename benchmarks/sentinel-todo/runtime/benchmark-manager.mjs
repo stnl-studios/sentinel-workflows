@@ -219,6 +219,17 @@ export function renderLauncher(template, values) {
   return rendered;
 }
 
+export function renderManagedLauncher(template, values, discoveryInstructions) {
+  if (typeof discoveryInstructions !== 'string' || discoveryInstructions.trim() === '') fail('managed discovery context is missing');
+  return `${renderLauncher(template, values)}\n${discoveryInstructions}\n`;
+}
+
+export function runTemplateTurn(product, input) {
+  // Each launcher invocation is a new chat. Runner-local format repair uses
+  // its own transport call and may continue only that runner's current thread.
+  return product.runCodexTurn({ ...input, threadId: null });
+}
+
 export function assertManagedSliceLauncher(prompt, context, numericSlice) {
   const declarations = [...prompt.matchAll(/^([A-Z_]+)=(.*)$/gmu)];
   const expected = { SPEC_PATH: context.specPath, OPERATION: context.operation, SLICE: numericSlice };
@@ -283,10 +294,11 @@ export function decideOutcome(operation, readback, completed, readinessResult = 
   }
   if (operation === 'VALIDATE_SLICE' && execution?.state === 'VALIDATION_NEEDS_FIX') return { result: 'NEEDS_FIX', blocker: null };
   const accepted = {
-    PLAN: ['PLANNED_DRAFT'], REVIEW_PLAN: ['PLANNED_READY'],
-    MATERIALIZE_TASKS: ['MATERIALIZED_PRISTINE'], REVIEW_TASKS: ['MATERIALIZED_PRISTINE'],
+    PLAN: ['PLANNED_DRAFT'], REVIEW_PLAN: ['PLANNED_READY', 'PENDING_REPLAN_READY'],
+    MATERIALIZE_TASKS: ['MATERIALIZED_PRISTINE', 'EXECUTION_STARTED', 'IMPLEMENTED_AWAITING_VALIDATION', 'FINDINGS_CORRECTED'],
+    REVIEW_TASKS: ['MATERIALIZED_PRISTINE'],
     EXECUTE_SLICE: ['IMPLEMENTED_AWAITING_VALIDATION'], APPLY_FINDINGS: ['FINDINGS_CORRECTED'],
-    VALIDATE_SLICE: ['EXECUTION_STARTED', 'COMPLETE'], REPLAN: ['PENDING_REPLAN_DRAFT'],
+    VALIDATE_SLICE: ['EXECUTION_STARTED', 'COMPLETE'], REPLAN: ['PLANNED_DRAFT', 'PENDING_REPLAN_DRAFT'],
   };
   if (accepted[operation]?.includes(execution?.state)) return { result: 'PASS', blocker: null };
   if (['EXECUTE_SLICE', 'APPLY_FINDINGS'].includes(operation)
@@ -487,7 +499,9 @@ async function runCase({ runRoot, caseId, configuration, snapshotMetadata, maxOp
         NEW_INFORMATION: newInformation,
         REPLAN_REASON: 'official execution readback requires replanning',
         SLICE: slice === null ? '' : specInput(slice) };
-      const prompt = renderLauncher(template, values);
+      const workflowSkill = operation.startsWith('SPEC_') ? 'stnl-spec-lifecycle-manager' : product.workflowSkillForOperation(operation);
+      const prompt = renderManagedLauncher(template, values,
+        product.managedDiscoveryInstructions({ env: home.env, cwd: workspace, workflowSkill }));
       if (managedSliceContext !== null) {
         assertManagedSliceLauncher(prompt, managedSliceContext, specInput(slice));
       }
@@ -547,7 +561,7 @@ async function runCase({ runRoot, caseId, configuration, snapshotMetadata, maxOp
         throw error;
       }
       const contextRole = ['REVIEW_PLAN', 'REVIEW_TASKS', 'VALIDATE_SLICE'].includes(operation) ? `review-${operation.toLowerCase()}` : 'author';
-      const threadId = caseState.threads[contextRole] ?? null;
+      const threadId = null;
       announce({ kind: 'start', status: 'STARTED', runId: path.basename(runRoot), caseId,
         operation, slice, model: route.label, effort: route.effort,
         mainTurns: caseState.mainTurns + 1, runnerTurns: caseState.runnerTurns,
@@ -563,7 +577,7 @@ async function runCase({ runRoot, caseId, configuration, snapshotMetadata, maxOp
         const outputSchema = operation === 'SPEC_READINESS'
           ? await readJson(path.join(runRoot, 'snapshot', 'skills/workflows/stnl-spec-lifecycle-manager/runtime/readiness-result.schema.json'))
           : undefined;
-        turn = await product.runCodexTurn({ env: turnEnv, cwd: workspace, prompt,
+        turn = await runTemplateTurn(product, { env: turnEnv, cwd: workspace, prompt,
           model: route.model, effort: route.effort, threadId, operationId, eventsPath,
           outputSchema, timeoutMs: RUNNER_OPERATIONS.has(operation) ? 1_800_000 : 900_000, signal,
           onEvent: (event) => {
@@ -587,6 +601,7 @@ async function runCase({ runRoot, caseId, configuration, snapshotMetadata, maxOp
         await releaseReservation(runRoot, runnerReservation, turnLimit);
       }
       if (turn.turnStarted !== false) caseState.mainTurns += 1;
+      // Keep the last observed IDs for diagnostics, never for template resume.
       caseState.threads[contextRole] = turn.threadId;
       const mainUsageObservation = mainUsage.observe({ threadId: turn.threadId,
         segment: path.basename(runRoot), usage: turn.usage, eventId: operationId,

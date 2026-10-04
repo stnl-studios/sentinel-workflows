@@ -13,7 +13,7 @@ function tomlString(value) {
   return JSON.stringify(value);
 }
 
-function childEnvironment({ privateHome, shellHome, tmpdir, snapshot }) {
+export function isolatedEnvironment({ privateHome, shellHome, tmpdir, snapshot, workspace, candidates }) {
   return {
     PATH: `${NODE_RUNTIME}:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin`,
     CODEX_HOME: privateHome,
@@ -21,6 +21,8 @@ function childEnvironment({ privateHome, shellHome, tmpdir, snapshot }) {
     TMPDIR: tmpdir,
     STNL_CODEX_ADAPTER: path.join(snapshot, 'agents', 'codex', 'runtime'),
     STNL_RUNNER_ADAPTER: path.join(snapshot, 'agents', 'codex', 'runtime', 'validation-runner.mjs'),
+    STNL_DISCOVERY_PATHS: JSON.stringify({ workspace, snapshot, candidates, tmpdir,
+      skillsRoot: path.join(shellHome, '.agents', 'skills') }),
     LANG: 'C.UTF-8',
     TERM: 'xterm-256color',
     USER: os.userInfo().username,
@@ -28,10 +30,9 @@ function childEnvironment({ privateHome, shellHome, tmpdir, snapshot }) {
   };
 }
 
-export function configText({ privateHome, snapshot, workspace, candidates, tmpdir }) {
-  const nodeVersion = path.dirname(NODE_RUNTIME);
+export function configText({ workspace }) {
   return `model_provider = "openai"
-default_permissions = "sentinel-case"
+sandbox_mode = "danger-full-access"
 approval_policy = "never"
 web_search = "disabled"
 
@@ -51,26 +52,6 @@ computer_use = false
 in_app_browser = false
 image_generation = false
 code_mode = false
-
-[permissions.sentinel-case]
-extends = ":workspace"
-
-[permissions.sentinel-case.filesystem]
-":root" = "deny"
-":minimal" = "read"
-":slash_tmp" = "deny"
-${tomlString(path.join(os.homedir(), '.codex'))} = "deny"
-${tomlString(privateHome)} = "deny"
-${tomlString('/private/var/tmp')} = "deny"
-${tomlString('/System/Library/OpenSSL')} = "read"
-${tomlString(nodeVersion)} = "read"
-${tomlString(snapshot)} = "read"
-${tomlString(candidates)} = "write"
-${tomlString(tmpdir)} = "write"
-${tomlString(path.join(tmpdir, 'shell-home', '.agents', 'skills'))} = "read"
-
-[permissions.sentinel-case.filesystem.":workspace_roots"]
-"." = "write"
 
 [projects.${tomlString(workspace)}]
 trust_level = "trusted"
@@ -154,7 +135,7 @@ export async function prepareIsolatedHome({ runId, caseId, snapshot, workspace, 
   await fs.writeFile(path.join(privateHome, 'config.toml'), config, { mode: 0o600 });
   const configSha256 = `sha256:${createHash('sha256').update(config).digest('hex')}`;
   return { privateHome, shellHome, snapshotSkillsSha256, skillsSha256: snapshotSkillsSha256, configSha256,
-    env: childEnvironment({ privateHome, shellHome, tmpdir, snapshot }) };
+    env: isolatedEnvironment({ privateHome, shellHome, tmpdir, snapshot, workspace, candidates }) };
 }
 
 export async function verifyIsolatedHome(home, { runCommand = spawnSync } = {}) {
@@ -162,8 +143,13 @@ export async function verifyIsolatedHome(home, { runCommand = spawnSync } = {}) 
   if (`sha256:${createHash('sha256').update(config).digest('hex')}` !== home.configSha256) {
     throw new Error('isolated Codex config changed');
   }
-  const environment = childEnvironment({ privateHome: home.privateHome, shellHome: home.shellHome, tmpdir: home.env.TMPDIR,
-    snapshot: path.resolve(home.env.STNL_CODEX_ADAPTER, '../../..') });
+  const discovery = JSON.parse(home.env.STNL_DISCOVERY_PATHS);
+  const environment = isolatedEnvironment({ privateHome: home.privateHome, shellHome: home.shellHome,
+    tmpdir: home.env.TMPDIR, snapshot: path.resolve(home.env.STNL_CODEX_ADAPTER, '../../..'),
+    workspace: discovery.workspace, candidates: discovery.candidates });
+  if (environment.STNL_DISCOVERY_PATHS !== home.env.STNL_DISCOVERY_PATHS) {
+    throw new Error('isolated discovery paths changed');
+  }
   if (await hashTree(path.join(environment.STNL_CODEX_ADAPTER, '../../../skills/workflows'), { workflowBundle: true })
       !== home.snapshotSkillsSha256
     || await hashTree(path.join(home.shellHome, '.agents', 'skills')) !== home.snapshotSkillsSha256) {
@@ -174,15 +160,21 @@ export async function verifyIsolatedHome(home, { runCommand = spawnSync } = {}) 
     throw new Error('isolated Codex login is not ChatGPT');
   }
   const doctor = runCommand('codex', ['doctor', '--json'], { env: environment, encoding: 'utf8', timeout: 30_000 });
+  if (doctor.status !== 0 || doctor.signal) {
+    throw new Error(`isolated Codex doctor failed (exit: ${doctor.status ?? 'null'}, signal: ${doctor.signal ?? 'none'})`,
+      { cause: doctor.error });
+  }
   const report = JSON.parse(doctor.stdout);
   const auth = report.checks?.['auth.credentials']?.details;
   const provider = report.checks?.['config.load']?.details?.['model provider'];
   const sandbox = report.checks?.['sandbox.helpers']?.details;
   if (auth?.['stored auth mode'] !== 'chatgpt' || auth?.['stored API key'] !== 'false'
-    || provider !== 'openai' || sandbox?.['filesystem sandbox'] !== 'restricted') {
+    || provider !== 'openai' || sandbox?.['filesystem sandbox'] !== 'unrestricted'
+    || sandbox?.['network sandbox'] !== 'enabled' || sandbox?.['approval policy'] !== 'Never'
+    || sandbox?.['denied-read rules'] !== '0' || sandbox?.['denied-read glob rules'] !== '0') {
     throw new Error('isolated Codex auth/provider/sandbox report does not match policy');
   }
-  return { authMode: 'chatgpt', provider: 'openai', filesystemSandbox: 'restricted' };
+  return { authMode: 'chatgpt', provider: 'openai', filesystemSandbox: 'unrestricted', sandboxMode: 'danger-full-access' };
 }
 
 async function assertOwnedHome(home, { runId, caseId }) {
@@ -242,7 +234,8 @@ export async function resumeIsolatedHome({ runId, caseId, snapshot, workspace, c
   await fs.chmod(authPath, 0o600);
   return { ...suspended, snapshotSkillsSha256: suspended.snapshotSkillsSha256 ?? suspended.skillsSha256,
     skillsSha256: suspended.snapshotSkillsSha256 ?? suspended.skillsSha256, privateHome: canonical,
-    env: childEnvironment({ privateHome: canonical, shellHome: suspended.shellHome, tmpdir, snapshot }) };
+    env: isolatedEnvironment({ privateHome: canonical, shellHome: suspended.shellHome,
+      tmpdir, snapshot, workspace, candidates }) };
 }
 
 export async function removeIsolatedHome(home, identity) {

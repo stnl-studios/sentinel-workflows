@@ -998,9 +998,6 @@ function parseChecks(section, prefix, context = {}) {
       }
       const correctionPaths = field(record.body, "Correction paths");
       if (correctionPaths === "none") {
-        if (record.testedState.length !== 0) {
-          throw new ExecutionContractError(`${record.id} file-backed Correction paths cannot be none`);
-        }
         record.correctionPaths = [];
       } else {
         record.correctionPaths = parseInlinePathSet(correctionPaths, `${record.id} Correction paths`);
@@ -1023,6 +1020,13 @@ function parseChecks(section, prefix, context = {}) {
       if (record.round !== 1) throw new ExecutionContractError(`${record.id} must restart at round 1/3 after ${previous.id} BLOCKED`);
     } else {
       throw new ExecutionContractError(`${record.id} appears after terminal automatic-check record ${previous.id}`);
+    }
+    if (record.round > 1 && record.correctionPaths.length === 0 && record.testedState.length !== 0) {
+      const priorState = new Map(previous?.testedState.map((entry) => [entry.path, entry.expected]) ?? []);
+      if (prefix !== "implementation-check" || priorState.size !== record.testedState.length
+        || record.testedState.some((entry) => priorState.get(entry.path) !== entry.expected)) {
+        throw new ExecutionContractError(`${record.id} file-backed Correction paths cannot be none unless Tested state is unchanged from the prior round`);
+      }
     }
     previous = record;
   }
@@ -1370,8 +1374,12 @@ function parseTask(text, label, expectedSlice, references = {}) {
   if (final.result === "PASS" && attempts.at(-1)?.status !== "PASS") throw new ExecutionContractError(`${label} PASS does not originate from its latest formal attempt`);
   if (final.result === "PASS") {
     const diffSummary = normalizeText(taskSections.get("Diff Summary"));
-    if (!/^- \S.*$/u.test(diffSummary) || /^(?:- )?(?:none|pending|n\/a|not_available)$/iu.test(diffSummary)) {
-      throw new ExecutionContractError(`${label} terminal PASS requires a non-placeholder Diff Summary`);
+    for (const line of diffSummary.split("\n")) {
+      const bullet = line.match(/^- (\S.*)$/u);
+      if (bullet === null) {
+        throw new ExecutionContractError(`${label} terminal PASS requires a non-placeholder Diff Summary`);
+      }
+      requireNonPlaceholder(bullet[1], `${label} Diff Summary`);
     }
   }
   if (attempts.at(-1)?.status === "PASS" && (final.result !== "PASS" || !base.present)) throw new ExecutionContractError(`${label} latest PASS attempt was not published atomically`);
