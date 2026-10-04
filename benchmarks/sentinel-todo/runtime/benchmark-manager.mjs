@@ -219,9 +219,16 @@ export function renderLauncher(template, values) {
   return rendered;
 }
 
-export function renderManagedLauncher(template, values, discoveryInstructions) {
+export function renderManagedLauncher(template, values, discoveryInstructions, managedSliceContext = null) {
   if (typeof discoveryInstructions !== 'string' || discoveryInstructions.trim() === '') fail('managed discovery context is missing');
-  return `${renderLauncher(template, values)}\n${discoveryInstructions}\n`;
+  const invocation = managedSliceContext === null ? '' : [
+    'This invocation uses the managed slice runner. The manager supplies STNL_MANAGED_CONTEXT and STNL_RUNNER_ADAPTER.',
+    'Run node "$STNL_MANAGED_PREFLIGHT" before artifact reads or mutation; it takes no path or slice arguments.',
+    'Delegate independent checks through node "$STNL_MANAGED_RUNNER_BRIDGE" with the invoked skill\'s existing semantic payload on stdin; it takes no path or operation arguments.',
+    'This mode is selected by the manager context, not by native agent-tool availability or an environment inventory.',
+    '',
+  ].join('\n');
+  return `${invocation}${renderLauncher(template, values)}\n${discoveryInstructions}\n`;
 }
 
 export function runTemplateTurn(product, input) {
@@ -501,7 +508,7 @@ async function runCase({ runRoot, caseId, configuration, snapshotMetadata, maxOp
         SLICE: slice === null ? '' : specInput(slice) };
       const workflowSkill = operation.startsWith('SPEC_') ? 'stnl-spec-lifecycle-manager' : product.workflowSkillForOperation(operation);
       const prompt = renderManagedLauncher(template, values,
-        product.managedDiscoveryInstructions({ env: home.env, cwd: workspace, workflowSkill }));
+        product.managedDiscoveryInstructions({ env: home.env, cwd: workspace, workflowSkill }), managedSliceContext);
       if (managedSliceContext !== null) {
         assertManagedSliceLauncher(prompt, managedSliceContext, specInput(slice));
       }

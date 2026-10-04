@@ -8,9 +8,10 @@ import test from 'node:test';
 import { codexClientConfig, managedDiscoveryInstructions, runCodexTurn } from '../agents/codex/runtime/sdk-transport.mjs';
 import { configText, isolatedEnvironment, verifyIsolatedHome } from '../agents/codex/runtime/isolated-home.mjs';
 import { invokeIndependentRunner } from '../agents/codex/runtime/validation-runner.mjs';
-import { decideOutcome, renderLauncher, renderManagedLauncher, runTemplateTurn } from '../benchmarks/sentinel-todo/runtime/benchmark-manager.mjs';
+import { assertManagedSliceLauncher, decideOutcome, renderLauncher, renderManagedLauncher, runTemplateTurn } from '../benchmarks/sentinel-todo/runtime/benchmark-manager.mjs';
 import { createUsageNormalizer, ZERO_USAGE } from '../agents/codex/runtime/usage-accounting.mjs';
 import { workflowSkillForOperation } from '../skills/workflows/stnl-execution-planner/runtime/execution-state.mjs';
+import { createManagedSliceContext, managedEnvironment } from '../skills/workflows/stnl-slice-quality-manager/runtime/managed-slice-context.mjs';
 
 const ROOT = path.resolve(import.meta.dirname, '..');
 const DENIAL = "zsh:1: can't create temp file for here document: operation not permitted\n";
@@ -84,6 +85,20 @@ test('manager and runner share explicit local discovery roots and the workspace 
   assert.ok(inventory.stdout.includes('./test/cli.test.mjs'));
   assert.ok(!inventory.stdout.includes('outside-workspace-sentinel'));
 
+  // The recorded filter observes PATH but excludes configured STNL_* keys.
+  // Supply only synthetic values, never the inherited environment inventory.
+  const filteredEnv = { PATH: process.env.PATH, STNL_MANAGED_CONTEXT: 'offline',
+    STNL_MANAGED_PREFLIGHT: 'offline', STNL_MANAGED_RUNNER_BRIDGE: 'offline', STNL_RUNNER_ADAPTER: 'offline' };
+  const misleading = spawnSync('zsh', ['-f', '-c', "env | rg '^(STNL|CODEX|CLAUDE|PATH)='"],
+    { env: filteredEnv, encoding: 'utf8' });
+  assert.equal(misleading.status, 0, misleading.stderr);
+  assert.deepEqual(misleading.stdout.trim().split('\n').map((line) => line.split('=')[0]), ['PATH']);
+  const visible = spawnSync('rg', ['^STNL_'], { encoding: 'utf8',
+    input: Object.entries(filteredEnv).map(([name, value]) => `${name}=${value}`).join('\n') });
+  assert.equal(visible.status, 0, visible.stderr);
+  assert.deepEqual(visible.stdout.trim().split('\n').map((line) => line.split('=')[0]),
+    Object.keys(filteredEnv).filter((name) => name.startsWith('STNL_')));
+
   for (const [operation, template] of [
     ['SPEC_INIT', 'spec-init.md'], ['SPEC_READINESS', 'spec-readiness.md'], ['SPEC_RESUME', 'spec-resume.md'],
     ['SPEC_PROMOTE', 'spec-resume.md'], ['SPEC_CLOSE', 'spec-close.md'],
@@ -106,6 +121,8 @@ test('manager and runner share explicit local discovery roots and the workspace 
     assert.match(scopedDiscovery, /never SPEC_PATH, the execution root, candidate root or command cwd/u);
     assert.ok(!renderLauncher(text, values).includes('Project working directory and implementation root:'));
     const prompt = renderManagedLauncher(text, values, scopedDiscovery);
+    assert.equal(prompt, `${renderLauncher(text, values)}\n${scopedDiscovery}\n`, 'no context preserves the existing launcher');
+    assert.equal(renderManagedLauncher(text, values, scopedDiscovery, null), prompt);
     assert.ok(prompt.endsWith(scopedDiscovery + '\n'));
     if (!operation.startsWith('SPEC_')) assert.match(prompt, new RegExp(`OPERATION=${operation}`, 'u'));
     const config = await codexClientConfig({ env, cwd: workspace });
@@ -132,7 +149,9 @@ test('manager and runner share explicit local discovery roots and the workspace 
   const capture = path.join(root, 'sdk-dispatch.jsonl');
   await fs.writeFile(cli, '#!' + process.execPath + '\nimport fs from "node:fs";\n'
     + 'const index=fs.existsSync(process.env.STNL_FAKE_CAPTURE)?fs.readFileSync(process.env.STNL_FAKE_CAPTURE,"utf8").trim().split("\\n").length:0;\n'
-    + 'fs.appendFileSync(process.env.STNL_FAKE_CAPTURE, JSON.stringify({args:process.argv.slice(2),prompt:fs.readFileSync(0,"utf8")})+"\\n");\n'
+    + 'const context=process.env.STNL_MANAGED_CONTEXT?JSON.parse(process.env.STNL_MANAGED_CONTEXT):null;\n'
+    + 'const managed={operation:process.env.STNL_MANAGED_OPERATION,slice:process.env.STNL_MANAGED_SLICE,keys:["STNL_MANAGED_CONTEXT","STNL_MANAGED_PREFLIGHT","STNL_MANAGED_RUNNER_BRIDGE","STNL_RUNNER_ADAPTER"].filter(key=>Boolean(process.env[key])),identityMatches:context===null?null:process.env.STNL_MANAGED_PREFLIGHT===context.identity.preflight.path&&process.env.STNL_MANAGED_RUNNER_BRIDGE===context.identity.bridge.path&&process.env.STNL_RUNNER_ADAPTER===context.identity.adapter.path&&process.env.STNL_MANAGED_OPERATION===context.operation&&process.env.STNL_MANAGED_SLICE===context.slice};\n'
+    + 'fs.appendFileSync(process.env.STNL_FAKE_CAPTURE, JSON.stringify({args:process.argv.slice(2),prompt:fs.readFileSync(0,"utf8"),managed})+"\\n");\n'
     + 'console.log(JSON.stringify({type:"thread.started",thread_id:"offline-template-"+index}));\n'
     + 'console.log(JSON.stringify({type:"turn.completed",usage:{input_tokens:100+index,output_tokens:10+index,cached_input_tokens:20+index,reasoning_output_tokens:1+index}}));\n');
   await fs.chmod(cli, 0o755);
@@ -190,15 +209,63 @@ test('manager and runner share explicit local discovery roots and the workspace 
     assert.equal(dispatched.isolateSkills, true);
     assert.ok(config.skills.config.every((skill) => skill.enabled === false));
   }
+  const adapterPath = path.join(snapshot, 'agents/codex/runtime/validation-runner.mjs');
+  const bridgePath = path.join(snapshot, 'agents/codex/runtime/managed-runner-bridge.mjs');
+  const preflightPath = path.join(snapshot, 'agents/codex/runtime/managed-slice-preflight.mjs');
+  await fs.mkdir(path.dirname(adapterPath), { recursive: true });
+  for (const file of [adapterPath, bridgePath, preflightPath]) {
+    await fs.copyFile(path.join(ROOT, 'agents/codex/runtime', path.basename(file)), file);
+  }
+  for (const [operation, slice, state] of [
+    ['EXECUTE_SLICE', 'slice-01', 'MATERIALIZED_PRISTINE'],
+    ['VALIDATE_SLICE', 'slice-01', 'IMPLEMENTED_AWAITING_VALIDATION'],
+    ['EXECUTE_SLICE', 'slice-02', 'EXECUTION_STARTED'],
+    ['VALIDATE_SLICE', 'slice-02', 'IMPLEMENTED_AWAITING_VALIDATION'],
+    ['APPLY_FINDINGS', 'slice-02', 'VALIDATION_NEEDS_FIX'],
+  ]) {
+    const context = await createManagedSliceContext({ workspace, snapshot, adapterPath, bridgePath, preflightPath,
+      officialPreflight: { exitCode: 0, operation, slice, specPath, state, authority: `sha256:${'a'.repeat(64)}`,
+        legalOperations: [{ operation, slice }], mandatoryRecovery: null } });
+    const template = { EXECUTE_SLICE: 'slice-execute-codex.md', APPLY_FINDINGS: 'slice-apply-findings-codex.md',
+      VALIDATE_SLICE: 'slice-validate-codex.md' }[operation];
+    const text = await fs.readFile(path.join(ROOT, 'templates/prompts', template), 'utf8');
+    const numericSlice = String(Number(slice.slice('slice-'.length)));
+    const prompt = renderManagedLauncher(text, { SPEC_PATH: specPath, SLICE: numericSlice },
+      managedDiscoveryInstructions({ env, cwd: workspace, workflowSkill: workflowSkillForOperation(operation) }), context);
+    assert.match(prompt, /^This invocation uses the managed slice runner\./u);
+    assert.ok(prompt.includes('node "$STNL_MANAGED_PREFLIGHT"'));
+    assert.ok(prompt.includes('node "$STNL_MANAGED_RUNNER_BRIDGE"'));
+    assert.ok(prompt.includes('STNL_MANAGED_CONTEXT'));
+    assert.ok(prompt.includes('STNL_RUNNER_ADAPTER'));
+    assert.ok(prompt.indexOf('STNL_MANAGED_CONTEXT') < prompt.indexOf('Use `'), 'managed mode precedes the optional template context');
+    assertManagedSliceLauncher(prompt, context, numericSlice);
+    const author = await runTemplateTurn({ runCodexTurn }, { env: managedEnvironment(offlineEnv, context),
+      cwd: workspace, prompt, model: 'gpt-6-luna', effort: 'medium', threadId: priorThreadId,
+      operationId: `offline-${operation}-${slice}`, eventsPath: path.join(root, `${operation}-${slice}.events.jsonl`),
+      codexPathOverride: cli });
+    assert.equal(author.completed, true, author.error);
+    priorThreadId = author.threadId;
+    authorPrompts.push(prompt);
+  }
   const calls = (await fs.readFile(capture, 'utf8')).trim().split('\n').map(JSON.parse);
-  assert.equal(calls.length, 8);
-  assert.deepEqual(calls.slice(0, 6).map((call) => call.prompt), authorPrompts);
+  assert.equal(calls.length, 13);
+  assert.deepEqual(calls.slice(0, 6).map((call) => call.prompt), authorPrompts.slice(0, 6));
   for (const [index, operation] of ['PLAN', 'REVIEW_PLAN', 'PLAN', 'REVIEW_PLAN', 'MATERIALIZE_TASKS', 'REVIEW_TASKS'].entries()) {
     const base = path.join(skillsRoot, workflowSkillForOperation(operation));
     assert.ok(calls[index].prompt.includes(`Invoked skill resource base: ${JSON.stringify(base)}.`));
     for (const family of ['runtime', 'templates', 'references']) assert.ok(calls[index].prompt.includes(JSON.stringify(path.join(base, family))));
   }
-  for (const call of calls.slice(6)) assert.ok(!call.prompt.includes('Invoked skill resource base:'), 'independent runner must not inherit the author skill');
+  for (const call of calls.slice(6, 8)) assert.ok(!call.prompt.includes('Invoked skill resource base:'), 'independent runner must not inherit the author skill');
+  assert.deepEqual(calls.slice(8).map((call) => call.prompt), authorPrompts.slice(6));
+  assert.deepEqual(calls.slice(8).map((call) => [call.managed.operation, call.managed.slice]), [
+    ['EXECUTE_SLICE', 'slice-01'], ['VALIDATE_SLICE', 'slice-01'], ['EXECUTE_SLICE', 'slice-02'],
+    ['VALIDATE_SLICE', 'slice-02'], ['APPLY_FINDINGS', 'slice-02'],
+  ]);
+  for (const call of calls.slice(8)) {
+    assert.deepEqual(call.managed.keys,
+      ['STNL_MANAGED_CONTEXT', 'STNL_MANAGED_PREFLIGHT', 'STNL_MANAGED_RUNNER_BRIDGE', 'STNL_RUNNER_ADAPTER']);
+    assert.equal(call.managed.identityMatches, true, 'SDK receives the helpers and operation bound to the actual context');
+  }
   for (const call of calls) {
     assert.equal(call.args[call.args.indexOf('--sandbox') + 1], 'danger-full-access');
     assert.ok(call.args.includes('approval_policy="never"'));
@@ -220,6 +287,8 @@ test('manager and runner share explicit local discovery roots and the workspace 
   assert.doesNotMatch(managerSource, /const threadId = caseState\.threads/u);
   assert.match(managerSource, /operation\.startsWith\('SPEC_'\) \? 'stnl-spec-lifecycle-manager' : product\.workflowSkillForOperation\(operation\)/u);
   assert.match(managerSource, /managedDiscoveryInstructions\(\{ env: home\.env, cwd: workspace, workflowSkill \}\)/u);
+  assert.match(managerSource, /managedDiscoveryInstructions\(\{ env: home\.env, cwd: workspace, workflowSkill \}\), managedSliceContext\)/u,
+    'the common operation loop must supply the actual context to the tested launcher');
   assert.throws(() => managedDiscoveryInstructions({ env, cwd: workspace, workflowSkill: '../stnl-task-materializer' }), /workflow skill/u);
   assert.throws(() => managedDiscoveryInstructions({ env, cwd: path.dirname(workspace) }), /working directory/u);
   assert.throws(() => managedDiscoveryInstructions({ env: { ...env, TMPDIR: '/tmp' }, cwd: workspace }), /configured environment/u);
