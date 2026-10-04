@@ -683,6 +683,16 @@ test("APPLY round two derives required correction fields from existing authority
   assert.match(bundle, /- In-slice rationale: same finding correction/u);
 });
 
+test("executor contract keeps intermediate failures private before correction and terminal publication", async () => {
+  const skill = await fs.readFile(path.join(ROOT, "skills/workflows/stnl-slice-executor/SKILL.md"), "utf8");
+  assert.match(skill, /Persist every valid result append-only in the isolated candidate via the serializer before deciding what follows/u);
+  assert.match(skill, /After `TESTS_FAIL` in round one or two, this private append is the required persistence before correction; do not run the publication validator or publisher yet/u);
+  assert.match(skill, /For both `EXECUTE_SLICE` and `APPLY_FINDINGS`, keep intermediate `TESTS_FAIL` records private while applying the authorized correction and obtaining the next runner result within the existing three-call budget/u);
+  assert.match(skill, /Only when the bounded cycle ends in `TESTS_PASS`, `TESTS_NOT_APPLICABLE`, round `3\/3 TESTS_FAIL`, or a canonical blocking outcome, execute/u);
+  assert.match(skill, /Never mutate or republish a rejected candidate/u);
+  assert.match(skill, /Never make a fourth automatic invocation/u);
+});
+
 test("prepared fixture failure uses existing execution correction and preserves both rounds", async (t) => {
   // The semantic verdict is supplied by a fake runner. This proves persistence,
   // paths and budgets after TESTS_FAIL, not an LLM's ability to classify a defect.
@@ -714,23 +724,39 @@ test("prepared fixture failure uses existing execution correction and preserves 
       + 'assert.equal(typeof fixture.enabled, "boolean", "prepared fixture enabled must be boolean");\n';
     await fs.writeFile(targets[2], checkSource);
     const before = await fs.readFile(liveTask);
-    const copy = await prepareExecutionCopy({ specPath: fixture.requirements, slice: "slice-01" });
+    const runtime = path.join(ROOT, "skills/workflows/stnl-slice-executor/runtime");
+    const calls = [];
+    function cli(label, helper, args) {
+      calls.push(label);
+      return spawnSync(process.execPath, [path.join(runtime, helper), ...args], {
+        cwd: fixture.root, encoding: "utf8", timeout: 10_000,
+      });
+    }
+    const prepareArgs = ["--prepare", "--spec-path", fixture.requirements, "--slice", "slice-01"];
+    const prepared = cli("prepare", "prepare-execution-copy.mjs", prepareArgs);
+    assert.equal(prepared.status, 0, prepared.stderr);
+    const copy = JSON.parse(prepared.stdout);
     t.after(() => fs.rm(copy.candidateRoot, { recursive: true, force: true }));
     await fs.writeFile(copy.candidateTaskArtifact, replaceSection(
       (await fs.readFile(copy.candidateTaskArtifact, "utf8")).replace("- [ ] 1.1", "- [x] 1.1"),
       "Changed Areas", claims.map((claim) => `- \`${claim}\``).join("\n")));
     const bundles = [];
     const receipts = [];
+    let rejected;
+    let rejectedBytes;
+    let rejectedMarker;
     for (const round of [1, 2]) {
       if (round === 2) {
         // Author-owned correction changes only the authorized fixture, keeping
         // the check, assertions, implementation and approved contracts intact.
         await fs.writeFile(targets[1], JSON.stringify({ enabled: true }));
-        if (operation === "APPLY_FINDINGS") await fs.writeFile(copy.candidateTaskArtifact,
+        calls.push("authorized correction");
+        await fs.writeFile(copy.candidateTaskArtifact,
           replaceSection(await fs.readFile(copy.candidateTaskArtifact, "utf8"), "Corrections Applied", `- \`${claims[1]}\``));
       }
       const checkedBytes = await Promise.all(targets.map((target) => fs.readFile(target)));
       const check = spawnSync(process.execPath, [targets[2]], { cwd: fixture.root, encoding: "utf8" });
+      calls.push(`fake runner ${round}`);
       assert.equal(check.status, round === 1 ? 1 : 0, check.stderr);
       if (round === 1) assert.match(check.stderr, /prepared fixture enabled must be boolean/u);
       assert.deepEqual(await Promise.all(targets.map((target) => fs.readFile(target))), checkedBytes, "runner check is read-only");
@@ -756,18 +782,47 @@ test("prepared fixture failure uses existing execution correction and preserves 
       const captured = await capturedVerificationSequence(t, operation, JSON.stringify(payload), [],
         [{ command: "STNL_VERIFICATION_COMMAND=1 node test/prepared-check.mjs", exit: check.status }]);
       receipts.push(await fs.readFile(captured.receiptFile));
-      const bundle = await serializeRunnerExecutionBundleFromResponse({ operation, response: JSON.stringify(payload),
-        workspace: fixture.root, taskArtifact: copy.candidateTaskArtifact, ...captured });
-      await insertExecutionEvidenceInCandidate({ taskArtifact: copy.candidateTaskArtifact, operation, bundle });
+      const serialized = cli(`serialize ${round}`, "serialize-runner-evidence.mjs", [
+        "--execution-bundle", "--operation", operation, "--workspace", fixture.root,
+        "--task-artifact", copy.candidateTaskArtifact, "--semantic-response-file", captured.semanticResponseFile,
+        "--receipt-file", captured.receiptFile, "--insert-candidate",
+      ]);
+      assert.equal(serialized.status, 0, serialized.stderr);
+      const identifier = serialized.stdout.match(/^(### (?:implementation|findings)-check-[0-9]+) inserted into isolated candidate\n$/u)?.[1];
+      assert.ok(identifier, serialized.stdout);
+      const candidateText = await fs.readFile(copy.candidateTaskArtifact, "utf8");
+      const start = candidateText.indexOf(`${identifier}\n`);
+      const bundle = candidateText.slice(start, candidateText.indexOf("\n## ", start)).trimEnd();
       bundles.push(bundle);
-      const strict = path.join(await temporary(t, "stnl-fixture-correction-"), "execution");
-      await copyDirectory(copy.candidateExecutionRoot, strict);
-      await fs.rm(path.join(strict, ".stnl-execution-copy.json"), { force: true });
       if (round === 1) {
-        await assert.rejects(validateExecutionCandidate(fixture.requirements, strict), /unterminated .* automatic correction cycle/u);
+        // Reject a separate owned proposal; never validate/reject the working
+        // candidate between rounds or mutate this rejected proposal afterward.
+        const negative = cli("negative prepare", "prepare-execution-copy.mjs", prepareArgs);
+        assert.equal(negative.status, 0, negative.stderr);
+        rejected = JSON.parse(negative.stdout);
+        t.after(() => fs.rm(rejected.candidateRoot, { recursive: true, force: true }));
+        await fs.writeFile(rejected.candidateTaskArtifact, candidateText);
+        rejectedBytes = await fs.readFile(rejected.candidateTaskArtifact);
+        rejectedMarker = await fs.readFile(path.join(rejected.candidateRoot, ".stnl-execution-copy.json"));
+        const invalid = cli("negative validate", "validate-execution-state.mjs", [
+          fixture.requirements, "--candidate", rejected.candidateExecutionRoot,
+        ]);
+        assert.equal(invalid.status, 1, invalid.stderr);
+        assert.match(invalid.stderr, /unterminated .* automatic correction cycle/u);
+        const premature = cli("negative publish", "prepare-execution-copy.mjs", [
+          "--publish", "--spec-path", fixture.requirements, "--slice", "slice-01",
+          "--candidate-root", rejected.candidateRoot,
+        ]);
+        assert.equal(premature.status, 1, premature.stderr);
+        assert.match(premature.stderr, /unterminated .* automatic correction cycle/u);
+        assert.deepEqual(await fs.readFile(rejected.candidateTaskArtifact), rejectedBytes);
+        assert.equal(await fs.readFile(copy.candidateTaskArtifact, "utf8"), candidateText);
       } else {
-        const state = await validateExecutionCandidate(fixture.requirements, strict);
-        assert.equal(state.state, operation === "EXECUTE_SLICE" ? "IMPLEMENTED_AWAITING_VALIDATION" : "FINDINGS_CORRECTED");
+        const valid = cli("terminal validate", "validate-execution-state.mjs", [
+          fixture.requirements, "--candidate", copy.candidateExecutionRoot,
+        ]);
+        assert.equal(valid.status, 0, valid.stderr);
+        assert.match(valid.stdout, new RegExp(`state=${operation === "EXECUTE_SLICE" ? "IMPLEMENTED_AWAITING_VALIDATION" : "FINDINGS_CORRECTED"}`));
       }
       await assert.rejects(serializeRunnerExecutionBundleFromResponse({ operation,
         response: JSON.stringify({ ...payload, automaticCheckRound: "4/3" }), workspace: fixture.root,
@@ -784,7 +839,10 @@ test("prepared fixture failure uses existing execution correction and preserves 
       operation === "EXECUTE_SLICE" ? 2 : 3);
     assert.equal(await fs.readFile(targets[2], "utf8"), checkSource);
     assert.equal(await fs.readFile(targets[0], "utf8"), VALIDATED_CONTENT);
-    await publishExecutionCopy({ specPath: fixture.requirements, slice: "slice-01", candidateRoot: copy.candidateRoot });
+    const publication = cli("terminal publish", "prepare-execution-copy.mjs", [
+      "--publish", "--spec-path", fixture.requirements, "--slice", "slice-01", "--candidate-root", copy.candidateRoot,
+    ]);
+    assert.equal(publication.status, 0, publication.stderr);
     const published = await fs.readFile(liveTask, "utf8");
     for (const bundle of bundles) assert.ok(published.includes(bundle));
     if (operation === "APPLY_FINDINGS") {
@@ -792,6 +850,13 @@ test("prepared fixture failure uses existing execution correction and preserves 
       assert.ok(published.includes(ACTIVE_FINDING), "only formal revalidation can resolve a finding");
     }
     assert.match(published, /## Final Result\n\n- pending/u);
+    assert.deepEqual(await fs.readFile(rejected.candidateTaskArtifact), rejectedBytes, "rejected proposal stays untouched after terminal publication");
+    assert.deepEqual(await fs.readFile(path.join(rejected.candidateRoot, ".stnl-execution-copy.json")), rejectedMarker);
+    const readback = cli("handoff", "validate-execution-state.mjs", [fixture.requirements, "--handoff-after", operation]);
+    assert.equal(readback.status, 0, readback.stderr);
+    assert.equal(JSON.parse(readback.stdout).normal_handoff.operation, "VALIDATE_SLICE");
+    assert.deepEqual(calls, ["prepare", "fake runner 1", "serialize 1", "negative prepare", "negative validate",
+      "negative publish", "authorized correction", "fake runner 2", "serialize 2", "terminal validate", "terminal publish", "handoff"]);
   }
 });
 
