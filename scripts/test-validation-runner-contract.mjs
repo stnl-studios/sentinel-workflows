@@ -55,7 +55,7 @@ test("skills distinguish native runner evidence from managed receipts", async ()
   const runner = await fs.readFile(path.join(canonical, "codex/.codex/agents/stnl_validation_runner.toml"), "utf8");
   assert.match(executor, /native invocation[^\n]*--semantic-response-file[^\n]*--insert-candidate[^\n]*no `--receipt-file`/u);
   assert.match(executor, /managed launches[^\n]*\$STNL_RUNNER_EVIDENCE_SERIALIZER[^\n]*if it is absent, block/u);
-  assert.match(quality, /omit it in native mode/u);
+  assert.match(quality, /Omit `--receipt-file` in native mode/u);
   assert.match(quality, /native rejection lacks that receipt-bound recovery/u);
   assert.match(runner, /delegação nativa sem recibo[^\n]*exit numérico observado/u);
 });
@@ -196,11 +196,13 @@ test("runner cannot create scripts to fill missing coverage or retry a denied co
 test("execution prepares coverage while plan review and validation stop on denied writes", async () => {
   const executor = await fs.readFile(path.join(repository, "skills/workflows/stnl-slice-executor/SKILL.md"), "utf8");
   const plan = await fs.readFile(path.join(repository, "skills/workflows/stnl-plan-reviewer/SKILL.md"), "utf8");
+  const coverage = await fs.readFile(path.join(repository, "skills/workflows/stnl-execution-planner/templates/slice-plan.template.md"), "utf8");
   const quality = await fs.readFile(path.join(repository, "skills/workflows/stnl-slice-quality-manager/SKILL.md"), "utf8");
   assert.match(executor, /Prepare reusable tests in the authorized implementation[^\n]*before delegation/u);
   assert.match(executor, /Include those tests in the final Changed Areas/u);
-  assert.match(plan, /preparation belongs to that slice's authorized implementation scope/u);
-  assert.match(plan, /Do not postpone evidence required for the current slice to a later test slice/u);
+  assert.match(plan, /<PLANNER_SKILL_ROOT>\/templates\/slice-plan\.template\.md`, section `Requirements`/u);
+  assert.match(coverage, /preparation must belong to this slice's authorized implementation and test paths/u);
+  assert.match(coverage, /cannot supply missing evidence for an AC assigned here/u);
   for (const skill of [executor, plan, quality]) {
     assert.match(skill, /even (?:when|after|if)[^\n]*exit[^\n]*zero/u);
     assert.match(skill, /do not retry via another path, tool, temp setting or permission mode/iu);

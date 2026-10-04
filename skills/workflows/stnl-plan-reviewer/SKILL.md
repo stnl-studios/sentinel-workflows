@@ -40,7 +40,7 @@ The candidate global plan `Expected areas` code spans are the reviewed semantic 
 
 Check full requirement coverage, missing owners, overlap, slice sizing, strict serial order, dependencies, public contracts, persistence, migrations, authentication and authorization, external integrations, shared state, breaking changes, architectural risk, expected tests, implicit work, accidental scope, and consistency between global and detailed plans.
 
-For each slice requiring executable evidence, verify that runnable check artifacts already exist or that their preparation belongs to that slice's authorized implementation scope, including concrete test paths. Do not postpone evidence required for the current slice to a later test slice or require the independent runner to create ad hoc scripts. A later integration slice may broaden coverage but cannot supply missing evidence for an earlier slice's own acceptance criteria.
+Apply the coverage contract in `<PLANNER_SKILL_ROOT>/templates/slice-plan.template.md`, section `Requirements`, to the complete serial strategy and each slice's scope, paths, expected tests and completion criterion. Correct contradictions before approval; structural candidate PASS does not establish semantic coverage.
 
 Open code only to verify a concrete concern. For an initial or pristine replacement draft, split, combine, reorder, or revise slices as needed. For append-only recovery, never renumber, reorder, rewrite, or remove historical slices; revise only the pending extension and append monotonically numbered slices. Verify its `REPLAN_REASON`, supersession mapping, current requirements fingerprint, increasing plan revision, and a current-revision reconciliation/corrective slice after authority change. Add an integration or stabilization slice when technically required. If a correction needs a requirements decision, return lifecycle `RESUME` instead of masking it.
 
@@ -49,6 +49,7 @@ When review succeeds, set the mutable global plan and every detailed plan in the
 ## Minimum Reads
 
 - normalized requirements source and referenced requirement records;
+- `<PLANNER_SKILL_ROOT>/templates/slice-plan.template.md`, section `Requirements`, for the shared coverage contract;
 - `plan.md` and every detailed plan;
 - code only for a named risk or hidden dependency.
 

@@ -1139,19 +1139,39 @@ test("deterministic plan serializer rebases detailed claims from global physical
   assert.deepEqual(await fs.readFile(malformedPlan), malformedSnapshot);
 });
 
+test("planning coverage has one reference for full AC delivery and bounded requirement contributions", async () => {
+  const planner = await fs.readFile(path.join(ROOT, "skills/workflows/stnl-execution-planner/SKILL.md"), "utf8");
+  const reviewer = await fs.readFile(path.join(ROOT, "skills/workflows/stnl-plan-reviewer/SKILL.md"), "utf8");
+  const global = await fs.readFile(path.join(ROOT, "skills/workflows/stnl-execution-planner/templates/plan.template.md"), "utf8");
+  const detail = await fs.readFile(path.join(ROOT, "skills/workflows/stnl-execution-planner/templates/slice-plan.template.md"), "utf8");
+  for (const consumer of [planner, reviewer, global]) assert.match(consumer, /slice-plan\.template\.md[\s\S]{0,100}Requirements/u);
+  assert.match(detail, /Assigning an AC to this slice commits it to the complete criterion/u);
+  assert.match(detail, /existing requirement ID[\s\S]{0,160}bounded partial result/u);
+  assert.match(detail, /every AC must have a complete delivery/u);
+  assert.match(detail, /preparation[\s\S]{0,160}authorized implementation and test paths/u);
+  assert.match(detail, /partial contribution still requires checks for its own observable result/u);
+  assert.match(detail, /Do not invent requirement IDs/u);
+  assert.doesNotMatch(reviewer, /For each slice requiring executable evidence/u, "replace the former separate coverage rule rather than stacking it");
+});
+
 test("plan candidate gate enforces current-slice check path declarations, not semantic AC readiness", async (t) => {
   const fixture = await nestedLifecycleWorkspace(t, { materialized: false, planStatus: "draft" });
+  await fs.appendFile(path.join(fixture.requirements, "feature_spec.md"),
+    "\n## Planning coverage regression\n\n- REQ-FILTER: Select records by completion state.\n"
+    + "- AC-FILTER: CLI list --completed and --pending return matching JSON lines, exit zero, empty stderr and unchanged storage bytes.\n");
+  await renderArtifacts(fixture, { materialized: false, planStatus: "draft" });
   const livePaths = ["plan.md", "plans/slice-01.md"];
   const liveBytes = await Promise.all(livePaths.map((relative) => fs.readFile(path.join(fixture.execution, relative))));
   const source = "src/cli.mjs";
   const check = "test/list.test.mjs";
+  const checkFixtures = "test/fixtures";
   const detailClaim = (target) => path.relative(path.join(fixture.execution, "plans"), path.join(fixture.root, target)).split(path.sep).join("/");
 
   async function proposal(name, { declareCurrentCheck = false, globalCurrentCheck = false } = {}) {
     const candidate = path.join(await temporary(t, `stnl-evidence-plan-${name}-`), "execution");
     await fs.cp(fixture.execution, candidate, { recursive: true });
     const later = globalCurrentCheck ? "test/integration.test.mjs" : check;
-    const areas = globalCurrentCheck ? `\`${source}\`, \`${check}\`` : `\`${source}\``;
+    const areas = globalCurrentCheck ? `\`${source}\`, \`${check}\`, \`${checkFixtures}\`` : `\`${source}\``;
     const global = replaceSection(liveBytes[0].toString("utf8"), "Serial Slice Order",
       "| Slice | Observable delivery | Dependencies | Requirements | Expected areas | Detailed plan |\n"
       + "|---|---|---|---|---|---|\n"
@@ -1160,7 +1180,8 @@ test("plan candidate gate enforces current-slice check path declarations, not se
     await fs.writeFile(path.join(candidate, "plan.md"), global);
     let first = replaceSection(liveBytes[1].toString("utf8"), "Likely Areas",
       `- \`${detailClaim(source)}\` — CLI implementation`
-      + (declareCurrentCheck ? `\n- \`${detailClaim(check)}\` — prepare runnable filter checks in this slice` : ""));
+      + (declareCurrentCheck ? `\n- \`${detailClaim(check)}\` — prepare runnable filter checks in this slice` : "")
+      + (globalCurrentCheck ? `\n- \`${detailClaim(checkFixtures)}\` — prepare filter fixtures in this slice` : ""));
     first = replaceSection(first, "Expected Tests", `- node --test ${check}; prove every CLI filter acceptance criterion`);
     first = replaceSection(first, "Included Scope", "- Implement CLI filters and prepare their runnable checks before independent validation.");
     await fs.writeFile(path.join(candidate, "plans/slice-01.md"), first);
@@ -1193,14 +1214,178 @@ test("plan candidate gate enforces current-slice check path declarations, not se
   const accepted = await serializePlanPathClaims({ specPath: fixture.requirements, candidateExecutionRoot: coherent });
   assert.equal(accepted.status, "PASS");
   assert.equal(accepted.candidateValidation.state, "PLANNED_DRAFT");
-  assert.equal(accepted.serializedClaims, 3);
+  assert.equal(accepted.serializedClaims, 4);
   const validated = await validateExecutionCandidate(fixture.requirements, coherent);
   assert.equal(validated.state, "PLANNED_DRAFT");
   const firstPlan = await fs.readFile(path.join(coherent, "plans/slice-01.md"), "utf8");
   assert.ok(firstPlan.includes(`\`${detailClaim(check)}\` — prepare runnable filter checks in this slice`));
   assert.equal(path.resolve(fixture.execution, "plans", detailClaim(check)), path.join(fixture.root, check));
+
+  // Model review owns this distinction. Reproduce the service/CLI split and
+  // show that changing its declared coverage does not change structural PASS.
+  const partial = await proposal("bounded-contribution", { declareCurrentCheck: true, globalCurrentCheck: true });
+  const service = "src/todo-service.mjs", serviceCheck = "test/todo-service.test.mjs";
+  await fs.writeFile(path.join(partial, "plan.md"), replaceSection(liveBytes[0].toString("utf8"), "Serial Slice Order",
+    "| Slice | Observable delivery | Dependencies | Requirements | Expected areas | Detailed plan |\n"
+    + "|---|---|---|---|---|---|\n"
+    + `| 01 - Service selection | In-memory selection | - | REQ-FILTER | \`${service}\`, \`${serviceCheck}\` | plans/slice-01.md |\n`
+    + `| 02 - CLI delivery | Complete filtered list acceptance | 01 | AC-FILTER | \`${source}\`, \`${check}\`, \`${checkFixtures}\` | plans/slice-02.md |`));
+  let servicePlan = replaceSection(firstPlan, "Requirements", "- REQ-FILTER — bounded partial contribution: in-memory selection; complete AC-FILTER belongs to slice-02.");
+  servicePlan = replaceSection(servicePlan, "Objective and Observable Result", "Select matching records in memory and preserve their order.");
+  servicePlan = replaceSection(servicePlan, "Included Scope", "- Service selection and its prepared unit checks.");
+  servicePlan = replaceSection(servicePlan, "Out of Scope and Boundaries", "- CLI flags, JSON output, exit codes, stderr and storage immutability belong to slice-02.");
+  servicePlan = replaceSection(servicePlan, "Likely Areas", `- \`${detailClaim(service)}\` — service selection\n- \`${detailClaim(serviceCheck)}\` — prepare service unit checks`);
+  servicePlan = replaceSection(servicePlan, "Expected Tests", `- node --test ${serviceCheck}; verify matching records and order in memory.`);
+  servicePlan = replaceSection(servicePlan, "Completion Criterion", "- Matching records and order are verified; complete CLI acceptance remains assigned to slice-02.");
+  await fs.writeFile(path.join(partial, "plans/slice-01.md"), servicePlan);
+  let cliPlan = firstPlan.replace("# Slice 01 - Delivery", "# Slice 02 - CLI delivery").replace("- Slice: 01", "- Slice: 02");
+  cliPlan = replaceSection(cliPlan, "Requirements", "- AC-FILTER — complete delivery of both filters, JSON output, exit codes, stderr and unchanged storage bytes.");
+  cliPlan = replaceSection(cliPlan, "Dependencies", "- slice-01");
+  cliPlan = replaceSection(cliPlan, "Expected Tests", `- node ${check} ${source} test/fixtures; exercise all filter conditions and storage bytes.`);
+  await fs.writeFile(path.join(partial, "plans/slice-02.md"), cliPlan);
+  assert.equal((await serializePlanPathClaims({ specPath: fixture.requirements, candidateExecutionRoot: partial })).candidateValidation.state, "PLANNED_DRAFT");
+
+  const misassigned = path.join(await temporary(t, "stnl-partial-as-complete-"), "execution");
+  await fs.cp(partial, misassigned, { recursive: true });
+  const globalPartial = await fs.readFile(path.join(partial, "plan.md"), "utf8");
+  await fs.writeFile(path.join(misassigned, "plan.md"), globalPartial.replace("| REQ-FILTER |", "| AC-FILTER |"));
+  await fs.writeFile(path.join(misassigned, "plans/slice-01.md"), replaceSection(servicePlan, "Requirements", "- AC-FILTER"));
+  assert.equal((await validateExecutionCandidate(fixture.requirements, misassigned)).state, "PLANNED_DRAFT",
+    "a semantically inconsistent full AC assignment is structurally valid; only independent model review can reject it");
+  assert.equal((await preflightExecutionOperation(fixture.requirements, "REVIEW_PLAN")).state, "PLANNED_DRAFT");
+
+  // Reuse the prepared acceptance check on actual local CLI implementations.
+  // No model verdict is injected or interpreted as semantic plan approval.
+  await fs.cp(path.join(ROOT, "benchmarks/sentinel-todo/seed/src"), path.join(fixture.root, "src"), { recursive: true });
+  await fs.mkdir(path.join(fixture.root, "test/fixtures"), { recursive: true });
+  await fs.copyFile(path.join(ROOT, "scripts/fixtures/prepared-list-check.mjs"), path.join(fixture.root, check));
+  for (const [name, todos] of [["mixed", [{ id: 2, title: "done", completed: true }, { id: 1, title: "pending", completed: false }]],
+    ["empty", []], ["pending", [{ id: 1, title: "pending", completed: false }]]]) {
+    await fs.writeFile(path.join(fixture.root, "test/fixtures", `${name}.json`), JSON.stringify({ todos }, null, 3) + "\n");
+  }
+  const fixturesBefore = await treeBytes(path.join(fixture.root, "test/fixtures"));
+  const checkPrepared = () => spawnSync(process.execPath, [path.join(fixture.root, check), path.join(fixture.root, source),
+    path.join(fixture.root, "test/fixtures")], { encoding: "utf8" });
+  const incompleteDelivery = checkPrepared();
+  assert.equal(incompleteDelivery.status, 1);
+  assert.match(incompleteDelivery.stderr, /AssertionError/u);
+  assert.deepEqual(await treeBytes(path.join(fixture.root, "test/fixtures")), fixturesBefore);
+  await fs.copyFile(path.join(ROOT, "scripts/fixtures/filtered-cli.mjs"), path.join(fixture.root, source));
+  const completeDelivery = checkPrepared();
+  assert.equal(completeDelivery.status, 0, completeDelivery.stderr);
+  assert.match(completeDelivery.stdout, /40 list\/filter\/invalid-flag cases/u);
+  assert.deepEqual(await treeBytes(path.join(fixture.root, "test/fixtures")), fixturesBefore);
   assert.deepEqual(await Promise.all(livePaths.map((relative) => fs.readFile(path.join(fixture.execution, relative)))), liveBytes);
   await assert.rejects(fs.stat(path.join(coherent, "tasks.md")), { code: "ENOENT" });
+
+  // Continue the requirement-only service slice through the official CLIs.
+  // Approved planning and runner verdicts are fixture inputs, not LLM proof.
+  const cli = (skill, helper, args) => {
+    const result = spawnSync(process.execPath, [path.join(ROOT, "skills/workflows", skill, "runtime", helper), ...args],
+      { cwd: fixture.root, encoding: "utf8", timeout: 10_000 });
+    assert.equal(result.status, 0, `${helper}: ${result.stderr}`);
+    return result.stdout;
+  };
+  await fs.copyFile(path.join(ROOT, "benchmarks/sentinel-todo/seed/src/cli.mjs"), path.join(fixture.root, source));
+  const cliBefore = await fs.readFile(path.join(fixture.root, source));
+  await fs.cp(partial, fixture.execution, { recursive: true });
+  for (const relative of ["plan.md", "plans/slice-01.md", "plans/slice-02.md"]) {
+    const file = path.join(fixture.execution, relative);
+    await fs.writeFile(file, headerReady(await fs.readFile(file, "utf8")));
+  }
+  const approvedPlans = await Promise.all(livePaths.concat("plans/slice-02.md").map((p) => fs.readFile(path.join(fixture.execution, p))));
+  const planner = "stnl-execution-planner", materializer = "stnl-task-materializer";
+  const executor = "stnl-slice-executor", quality = "stnl-slice-quality-manager";
+  assert.match(cli(planner, "validate-execution-state.mjs", [fixture.requirements, "MATERIALIZE_TASKS"]), /PLANNED_READY/u);
+  const taskCopy = JSON.parse(cli(materializer, "prepare-task-candidate.mjs", ["--prepare", "--spec-path", fixture.requirements]));
+  const authority = await computeRequirementsAuthority(fixture.requirements);
+  await renderTasks(fixture, { fingerprint: authority, outputExecutionRoot: taskCopy.candidateExecutionRoot });
+  const taskDirectory = path.join(fixture.execution, "tasks");
+  const serviceClaims = [service, serviceCheck].map((p) => path.relative(taskDirectory, path.join(fixture.root, p)).split(path.sep).join("/"));
+  const cliClaims = [source, check, checkFixtures].map((p) => path.relative(taskDirectory, path.join(fixture.root, p)).split(path.sep).join("/"));
+  const checkCommand = `STNL_VERIFICATION_COMMAND=1 node --test ${serviceCheck}`;
+  const pristine = await fs.readFile(path.join(taskCopy.candidateExecutionRoot, "tasks/slice-01.md"), "utf8");
+  let serviceTask = replaceSection(pristine.replace("Tasks - Delivery", "Tasks - Service selection"), "Checklist",
+    `- [ ] 1.1 Implement and check in-memory selection | observable result: matching records preserve order | expected areas: ${serviceClaims.map((p) => `\`${p}\``).join(", ")} | requirement: REQ-FILTER`);
+  serviceTask = replaceSection(serviceTask, "Expected Tests", `- ${checkCommand}; verify only the bounded REQ-FILTER contribution.`);
+  await fs.writeFile(path.join(taskCopy.candidateExecutionRoot, "tasks/slice-01.md"), serviceTask);
+  let cliTask = pristine.replaceAll("Slice 01", "Slice 02").replace("- Slice: 01", "- Slice: 02")
+    .replace("plans/slice-01.md", "plans/slice-02.md").replace("Tasks - Delivery", "Tasks - CLI delivery");
+  cliTask = replaceSection(cliTask, "Checklist",
+    `- [ ] 2.1 Deliver complete filtered CLI acceptance | observable result: AC-FILTER complete | expected areas: ${cliClaims.map((p) => `\`${p}\``).join(", ")} | requirement: AC-FILTER`);
+  cliTask = replaceSection(cliTask, "Expected Tests", `- node ${check} ${source} test/fixtures`);
+  await fs.writeFile(path.join(taskCopy.candidateExecutionRoot, "tasks/slice-02.md"), cliTask);
+  const indexFile = path.join(taskCopy.candidateExecutionRoot, "tasks.md");
+  await fs.writeFile(indexFile, (await fs.readFile(indexFile, "utf8")).replace(
+    "| [ ] | 01 - Delivery | observable result | - | tasks/slice-01.md | pending | pending |",
+    "| [ ] | 01 - Service selection | In-memory selection | - | tasks/slice-01.md | pending | pending |\n"
+    + "| [ ] | 02 - CLI delivery | Complete filtered list acceptance | 01 | tasks/slice-02.md | pending | pending |"));
+  assert.equal(JSON.parse(cli(materializer, "publish-task-candidate.mjs", ["--publish", "--spec-path", fixture.requirements,
+    "--candidate-execution-root", taskCopy.candidateExecutionRoot])).state, "MATERIALIZED_PRISTINE");
+  const laterTask = path.join(taskDirectory, "slice-02.md"), laterBefore = await fs.readFile(laterTask);
+  assert.match(await fs.readFile(path.join(taskDirectory, "slice-01.md"), "utf8"), /requirement: REQ-FILTER/u);
+  assert.doesNotMatch(await fs.readFile(path.join(taskDirectory, "slice-01.md"), "utf8"), /requirement: AC-/u);
+  assert.match(cli(executor, "validate-execution-state.mjs", [fixture.requirements, "EXECUTE_SLICE", "1"]), /MATERIALIZED_PRISTINE/u);
+
+  // Implementation and its prepared unit check stay within service slice paths.
+  const serviceFile = path.join(fixture.root, service);
+  await fs.writeFile(serviceFile, (await fs.readFile(serviceFile, "utf8")).replace("async list() {\n    return this.store.read();\n  }",
+    "async list(completed) {\n    const todos = await this.store.read();\n    return completed === undefined ? todos : todos.filter((todo) => todo.completed === completed);\n  }"));
+  await fs.writeFile(path.join(fixture.root, serviceCheck), 'import assert from "node:assert/strict";\nimport { TodoService } from "../src/todo-service.mjs";\n'
+    + 'const rows = [{ id: 1, title: "pending one", completed: false }, { id: 2, title: "done two", completed: true }, { id: 3, title: "pending three", completed: false }, { id: 4, title: "done four", completed: true }];\n'
+    + 'const service = new TodoService({ read: async () => rows, write: async () => { throw new Error("selection must not write"); } });\n'
+    + 'for (const [filter, ids] of [[true, [2, 4]], [false, [1, 3]], [undefined, [1, 2, 3, 4]]]) {\n'
+    + '  assert.deepEqual(await service.list(filter), rows.filter((todo) => ids.includes(todo.id)));\n}\n');
+  const executeCopy = JSON.parse(cli(executor, "prepare-execution-copy.mjs", ["--prepare", "--spec-path", fixture.requirements, "--slice", "slice-01"]));
+  await fs.writeFile(executeCopy.candidateTaskArtifact, replaceSection(replaceSection(serviceTask.replace("- [ ] 1.1", "- [x] 1.1"), "Changed Areas",
+    serviceClaims.map((p) => `- \`${p}\``).join("\n")), "Diff Summary", "- Implemented in-memory completion selection and prepared its unit check; CLI acceptance remains in slice-02."));
+  const runCheck = () => spawnSync(process.execPath, ["--test", serviceCheck], { cwd: fixture.root, encoding: "utf8" });
+  const implemented = runCheck();
+  assert.equal(implemented.status, 0, implemented.stderr);
+  const implementationResponse = {
+    status: "TESTS_PASS", automaticCheckRound: "1/3", head: "fixture-head", discoverySources: "prepared service unit check",
+    discoveryActions: "read approved service scope", verificationTypesConsidered: "unit", nonApplicabilityRationale: "none",
+    noVerificationCommandConfirmation: "check executed", commands: [{ command: checkCommand, exit: implemented.status }],
+    resultOfEachCommandAndExitCode: "service unit check passed", selectedChecks: serviceCheck, selectionRationale: "bounded requirement contribution",
+    coverage: "REQ-FILTER selection and order only; full AC-FILTER belongs to slice-02", failures: "none", priorRoundFailure: "none",
+    correctionApplied: "none", inSliceRationale: "none", evidenceOrFailureSummary: "in-memory selection verified",
+    affectedFilesOrBehaviors: "service selection and prepared unit check", blockers: "none", unexpectedWorkspaceEffects: "none", persistenceSummary: "no runner writes",
+  };
+  const executionReceipt = await capturedVerificationSequence(t, "EXECUTE_SLICE", JSON.stringify(implementationResponse), [], implementationResponse.commands);
+  cli(executor, "serialize-runner-evidence.mjs", ["--execution-bundle", "--operation", "EXECUTE_SLICE", "--workspace", fixture.root,
+    "--task-artifact", executeCopy.candidateTaskArtifact, "--semantic-response-file", executionReceipt.semanticResponseFile,
+    "--receipt-file", executionReceipt.receiptFile, "--insert-candidate"]);
+  assert.equal(JSON.parse(cli(executor, "prepare-execution-copy.mjs", ["--publish", "--spec-path", fixture.requirements,
+    "--slice", "slice-01", "--candidate-root", executeCopy.candidateRoot])).state, "IMPLEMENTED_AWAITING_VALIDATION");
+  const implementationRecord = (await fs.readFile(path.join(taskDirectory, "slice-01.md"), "utf8"))
+    .match(/## Implementation Test Evidence\n([\s\S]*?)\n## Findings Test Evidence/u)[1];
+  assert.match(cli(quality, "validate-execution-state.mjs", [fixture.requirements, "VALIDATE_SLICE", "1"]), /IMPLEMENTED_AWAITING_VALIDATION/u);
+  const validationCopy = JSON.parse(cli(quality, "prepare-validation-copy.mjs", ["--spec-path", fixture.requirements,
+    "--slice", "slice-01", "--candidate-parent", await temporary(t, "stnl-partial-validation-")]));
+  const verified = runCheck();
+  assert.equal(verified.status, 0, verified.stderr);
+  const validationReceipt = await capturedVerificationSequence(t, "VALIDATE_SLICE", JSON.stringify({ status: "PASS", head: "fixture-head",
+    commands: [{ command: checkCommand, exit: verified.status }], evidence: "REQ-FILTER bounded selection and order verified; AC-FILTER remains pending in slice-02",
+    findingReferences: "none", findingDispositions: "none", blockers: "none", unexpectedWorkspaceEffects: "none", persistenceSummary: "no runner writes" }), [],
+    [{ command: checkCommand, exit: verified.status }]);
+  cli(quality, "prepare-validation-candidate.mjs", ["--prepare", "--spec-path", fixture.requirements, "--slice", "slice-01", "--workspace", fixture.root,
+    "--candidate-execution-root", validationCopy.candidateExecutionRoot, "--semantic-response-file", validationReceipt.semanticResponseFile,
+    "--receipt-file", validationReceipt.receiptFile]);
+  assert.equal(JSON.parse(cli(quality, "publish-validation-candidate.mjs", ["--publish", "--spec-path", fixture.requirements,
+    "--slice", "slice-01", "--candidate-execution-root", validationCopy.candidateExecutionRoot])).state, "EXECUTION_STARTED");
+  const handoff = JSON.parse(cli(quality, "validate-execution-state.mjs", [fixture.requirements, "--handoff-after", "VALIDATE_SLICE"]));
+  assert.equal(handoff.normal_handoff.operation, "EXECUTE_SLICE");
+  assert.equal(handoff.normal_handoff.slice, "slice-02");
+  const validatedPartial = await fs.readFile(path.join(taskDirectory, "slice-01.md"), "utf8");
+  assert.equal(validatedPartial.match(/## Implementation Test Evidence\n([\s\S]*?)\n## Findings Test Evidence/u)[1], implementationRecord);
+  assert.match(validatedPartial, /### implementation-check-01[\s\S]*### attempt-01/u);
+  assert.match(validatedPartial, /## Effective Validation Base\n\n- Origin attempt: attempt-01/u);
+  assert.match(validatedPartial, /## Final Result\n\n- PASS/u);
+  assert.deepEqual(await fs.readFile(laterTask), laterBefore);
+  assert.match(await fs.readFile(path.join(fixture.execution, "tasks.md"), "utf8"), /\| \[ \] \| 02 - CLI delivery[^\n]*\| pending \| pending \|/u);
+  assert.deepEqual(await Promise.all(livePaths.concat("plans/slice-02.md").map((p) => fs.readFile(path.join(fixture.execution, p)))), approvedPlans);
+  assert.deepEqual(await fs.readFile(path.join(fixture.root, source)), cliBefore);
+  assert.equal(checkPrepared().status, 1, "full CLI acceptance remains unimplemented despite the partial slice PASS");
 });
 
 function helperRoots(skillRoot, text) {

@@ -27,6 +27,10 @@ update_policy: PLAN or REPLAN creates as draft; REVIEW_PLAN corrects only the mu
 
 ## Requirements
 
+Assigning an AC to this slice commits it to the complete criterion and every observable condition in its authority. Runnable evidence must already exist, or its preparation must belong to this slice's authorized implementation and test paths before independent validation. A later integration slice may broaden coverage but cannot supply missing evidence for an AC assigned here; the independent runner uses prepared checks rather than creating ad hoc scripts.
+
+For a partial contribution, reference the existing requirement ID, describe the bounded partial result, and identify the later dependency-ready slice delivering the complete AC. Each partial contribution still requires checks for its own observable result. Across the serial plan, every AC must have a complete delivery. Use IDs exactly as declared in the authority. Do not invent requirement IDs or claim complete acceptance for a partial contribution.
+
 - AC-001
 
 ## Included Scope
