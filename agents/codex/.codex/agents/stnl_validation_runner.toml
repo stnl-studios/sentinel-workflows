@@ -128,6 +128,8 @@ Realize validação formal independente do estado final completo da slice. For V
 }
 ```
 
+O exemplo acima é file-backed. Se o payload autoritativo trouxer `changedAreas: []`, acrescente ao mesmo objeto `"filelessReason":"<razão objetiva da ausência de alterações em arquivos>"`, inclusive para `BLOCKED` e `TESTS_NOT_APPLICABLE`. A razão é obrigatória na resposta, mesmo quando já consta no pedido; para `changedAreas` não vazio, omita essa propriedade. Não use o reparo de formato para inventar uma razão ausente.
+
 ## Schema APPLY_FINDINGS
 
 ```json
@@ -158,6 +160,8 @@ Realize validação formal independente do estado final completo da slice. For V
   "persistenceSummary": "<semantic value>"
 }
 ```
+
+O exemplo acima é file-backed. Se o payload autoritativo trouxer `changedAreas: []`, acrescente ao mesmo objeto `"filelessReason":"<razão objetiva da ausência de alterações em arquivos>"`, inclusive para `BLOCKED` e `TESTS_NOT_APPLICABLE`. A razão é obrigatória na resposta, mesmo quando já consta no pedido; para `changedAreas` não vazio, omita essa propriedade. Não use o reparo de formato para inventar uma razão ausente.
 
 ## Schema VALIDATE_SLICE
 

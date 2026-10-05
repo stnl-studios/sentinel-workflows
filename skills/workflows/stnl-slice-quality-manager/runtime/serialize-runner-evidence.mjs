@@ -477,7 +477,7 @@ export async function serializeRunnerRecord({ workspace, taskArtifact, targets =
   const serializedCommands = serializeCommands(commands);
   if (serializedCommands.length === 0 && !allowEmptyCommands) fail("at least one executed command is required");
   const commandBlock = serializedCommands.length === 0 ? "- Commands: none" : `- Commands:\n${serializedCommands}`;
-  return `- Tested state:\n${testedState}\n${commandBlock}`;
+  return `${hasFileBackedState ? `- Tested state:\n${testedState}` : testedState}\n${commandBlock}`;
 }
 
 export async function serializeRunnerManifest({ workspace, taskArtifact, targets = [], removed = [], commands = [], filelessReason = null }) {
@@ -938,7 +938,7 @@ function parseOverlapPathSection(text) {
   return paths;
 }
 
-async function deriveValidationTargetsFromTask({ workspace, taskArtifact }) {
+async function deriveValidationTargetsFromTask({ workspace, taskArtifact, filelessReason = null }) {
   const taskText = await fs.readFile(taskArtifact, "utf8");
   const claims = [
     ...parseCanonicalPathSection(taskText, "Changed Areas"),
@@ -951,7 +951,7 @@ async function deriveValidationTargetsFromTask({ workspace, taskArtifact }) {
     seen.add(claim);
     uniqueClaims.push(claim);
   }
-  if (uniqueClaims.length === 0) fail("validation producer cannot derive a file-backed target set from the task artifact");
+  if (uniqueClaims.length === 0 && filelessReason === null) fail("validation producer cannot derive a file-backed target set from the task artifact");
   const workspaceRoot = await canonicalWorkspacePath(workspace);
   const targets = [];
   for (const claim of uniqueClaims) {
@@ -1281,10 +1281,18 @@ export async function serializeRunnerExecutionBundleFromResponse({
   }
   parsed.correctionPaths = (correctionPaths ?? parseCanonicalPathSection(taskText, "Corrections Applied")).join(", ") || "none";
   const filelessReason = parsed.filelessReason ?? null;
-  if (targets.length + removed.length === 0 && filelessReason === null) fail("fileless semantic execution response must include Fileless reason");
-  if (targets.length + removed.length !== 0 && filelessReason !== null) fail("file-backed semantic execution response cannot include Fileless reason");
+  // Only the response/scope incompatibility is recoverable. All receipt,
+  // filesystem, captured-state and authority checks above remain mechanical.
+  const scopeMismatch = targets.length + removed.length === 0 && (filelessReason === null || filelessReason.trim() === "")
+    ? "fileless semantic execution response must include Fileless reason"
+    : targets.length + removed.length !== 0 && filelessReason !== null
+      ? "file-backed semantic execution response cannot include Fileless reason" : null;
+  if (scopeMismatch !== null) {
+    throw new RunnerSemanticResultError(operation,
+      Object.assign(new Error(scopeMismatch), { code: "RUNNER_EXECUTION_SCOPE_INVALID" }));
+  }
   const testedScope = targets.length + removed.length === 0
-    ? "none"
+    ? serializeMarkdownScalar("filelessReason", filelessReason, true)
     : capturedEntries === null
       ? await canonicalTestedScope({ workspace, taskArtifact, targets, removed })
       : capturedEntries.map((entry) => entry.path).join(", ");
@@ -1370,7 +1378,7 @@ export async function insertExecutionEvidenceInCandidate({ taskArtifact, operati
 }
 
 export async function persistMalformedRunnerResultInCandidate({
-  taskArtifact, operation, receiptFile, semanticResponseFile, diagnostic,
+  taskArtifact, operation, receiptFile, semanticResponseFile, diagnostic, error = null,
 }) {
   if (!new Set(["EXECUTE_SLICE", "APPLY_FINDINGS", "VALIDATE_SLICE"]).has(operation)) fail("invalid runner recovery operation");
   const task = await regularFile(taskArtifact, "candidate taskArtifact");
@@ -1394,6 +1402,30 @@ export async function persistMalformedRunnerResultInCandidate({
   const slice = path.basename(task, ".md");
   if (!/^slice-[0-9]{2,}$/u.test(slice)) fail("malformed-output recovery requires a canonical slice task");
   let taskText = await fs.readFile(task, "utf8");
+  if (error instanceof RunnerSemanticResultError && error.cause?.code === "RUNNER_EXECUTION_SCOPE_INVALID"
+    && sectionBody(taskText, "Changed Areas") === "- none") {
+    // An unproved fileless claim cannot be published as Changed Areas: none.
+    // Restore only the pre-run scope/checklist, and only with unchanged live
+    // identity and no newly persisted evidence. Never fill the missing reason
+    // or discard an earlier private check; strict validation still owns it.
+    const markerPath = await regularFile(path.join(candidateRoot, ".stnl-execution-copy.json"), "candidate marker");
+    const marker = JSON.parse(await fs.readFile(markerPath, "utf8"));
+    if (marker.slice !== slice || typeof marker.executionRoot !== "string" || !path.isAbsolute(marker.executionRoot)) {
+      fail("malformed-output scope recovery candidate identity mismatch");
+    }
+    const livePath = await regularFile(path.join(marker.executionRoot, "tasks", `${slice}.md`), "live taskArtifact");
+    const liveBytes = await fs.readFile(livePath);
+    const source = marker.source?.find((entry) => entry.path === `tasks/${slice}.md`);
+    if (source?.hash !== createHash("sha256").update(liveBytes).digest("hex")) {
+      fail("live task changed since candidate preparation");
+    }
+    const liveText = liveBytes.toString("utf8");
+    if (["Implementation Test Evidence", "Findings Test Evidence", "Validation Attempts", "Effective Validation Base"]
+      .every((heading) => sectionBody(taskText, heading) === sectionBody(liveText, heading))) {
+      taskText = replaceSectionBody(taskText, "Changed Areas", sectionBody(liveText, "Changed Areas"));
+      taskText = replaceSectionBody(taskText, "Checklist", sectionBody(liveText, "Checklist"));
+    }
+  }
   const section = sectionBody(taskText, "Delegation Blocker");
   if (section !== "- none" && !section.includes(`- Operation: ${operation}\n`)) {
     fail("existing Delegation Blocker belongs to another operation");
@@ -1446,8 +1478,24 @@ export async function prepareRunnerValidationPersistenceFromResponse({
   if (!new Set(["initial", "revalidation"]).has(derivedType)) {
     fail("validation producer Type must be initial or revalidation");
   }
-  const targets = await deriveValidationTargetsFromTask({ workspace, taskArtifact });
-  const verifiedScope = await canonicalTestedScope({ workspace, taskArtifact, targets });
+  // VALIDATE has no semantic filelessReason field. Reuse only the current
+  // validated live evidence owner, never a candidate claim or runner prose.
+  let authoritativeFilelessReason = null;
+  if (selected.sections.get("Changed Areas") === "- none") {
+    if (await regularFile(taskArtifact, "taskArtifact") !== await deriveTaskArtifact({ specPath, slice: String(slice) })) {
+      fail("fileless validation task must match the selected live authority");
+    }
+    const owner = selected.base.present && selected.base.fileless
+      ? selected.sections.get("Effective Validation Base")
+      : selected.currentAuxiliaryCheck?.testedState.length === 0 ? selected.currentAuxiliaryCheck.body : null;
+    const reasons = [...String(owner ?? "").matchAll(/^- Fileless reason: (.+)$/gmu)];
+    if (reasons.length !== 1) fail("fileless validation requires one reason from current validated execution evidence");
+    authoritativeFilelessReason = decodeMarkdownScalar("Fileless reason", reasons[0][1], true);
+  }
+  const targets = await deriveValidationTargetsFromTask({ workspace, taskArtifact, filelessReason: authoritativeFilelessReason });
+  const filelessReason = targets.length === 0 ? authoritativeFilelessReason : null;
+  const verifiedScope = targets.length === 0 ? "fileless task state"
+    : await canonicalTestedScope({ workspace, taskArtifact, targets });
   const commands = await canonicalValidationCommands({
     commands: mechanicalCommands,
     specPath,
@@ -1474,9 +1522,9 @@ export async function prepareRunnerValidationPersistenceFromResponse({
     parsed.persistenceSummary,
   ];
   const [responseBlock, testedRecord, formalManifest] = await Promise.all([
-    serializeRunnerResponse({ operation, values, workspace, taskArtifact, targets, commands }),
-    serializeRunnerRecord({ workspace, taskArtifact, targets, commands }),
-    serializeRunnerManifest({ workspace, taskArtifact, targets, commands }),
+    serializeRunnerResponse({ operation, values, workspace, taskArtifact, targets, commands, filelessReason }),
+    serializeRunnerRecord({ workspace, taskArtifact, targets, commands, filelessReason }),
+    serializeRunnerManifest({ workspace, taskArtifact, targets, commands, filelessReason }),
   ]);
   const bundle = `- Runner response:\n${responseBlock}\n- Tested record:\n${testedRecord}\n- Formal manifest:\n${formalManifest}`;
   const attemptNumber = selected.attempts.length + 1;
@@ -1684,7 +1732,7 @@ if (import.meta.url === pathToFileURL(path.resolve(process.argv[1] ?? "")).href)
         const recovery = await persistMalformedRunnerResultInCandidate({
           taskArtifact: values.taskArtifact, operation: values.operation,
           receiptFile: values.receiptFile, semanticResponseFile: values.semanticResponseFile,
-          diagnostic,
+          diagnostic, error,
         });
         process.stdout.write(`${JSON.stringify(recovery)}\n`);
       }

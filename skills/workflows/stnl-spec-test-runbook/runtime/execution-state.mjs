@@ -1446,7 +1446,12 @@ function parseTask(text, label, expectedSlice, references = {}) {
       if (!validationReady) throw new ExecutionContractError(`${label} has a stale VALIDATE_SLICE Delegation Blocker outside a validation phase`);
     }
   }
-  if (workStarted && taskSections.get("Changed Areas") === "- pending") {
+  const pendingDelegationScope = delegationBlocker?.state === "active"
+    && delegationBlocker.operation === "EXECUTE_SLICE" && delegationBlocker.kind === "malformed-output"
+    && delegationBlocker.afterRecord === "none" && implementationChecks.length === 0
+    && findingsChecks.length === 0 && attempts.length === 0 && corrections.length === 0
+    && !checklistComplete && !base.present;
+  if (workStarted && taskSections.get("Changed Areas") === "- pending" && !pendingDelegationScope) {
     throw new ExecutionContractError(`${label} Changed Areas cannot remain pending after work`);
   }
   const currentFindingsCheck = latestNeedsFix === undefined ? null

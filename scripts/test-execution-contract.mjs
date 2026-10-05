@@ -51,6 +51,8 @@ import {
   serializeRunnerValidationBundleFromResponse,
   persistMalformedRunnerResultInCandidate,
   assertRunnerVerdictConsistency,
+  RunnerSemanticResultError,
+  recoverableRunnerResultDiagnostic,
 } from "../skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs";
 import { serializeRunnerValidationBundleFromResponse as serializeQualityManagerValidationBundleFromResponse }
   from "../skills/workflows/stnl-slice-quality-manager/runtime/serialize-runner-evidence.mjs";
@@ -4866,6 +4868,358 @@ test("validation candidate preparation writes canonical attempt and PASS base be
   );
   assert.equal(await fs.readFile(malformedTask, "utf8"), malformedBefore, "malformed semantic input must not create a candidate record");
 });
+
+function scopeRegressionPayload(filelessReason = undefined) {
+  return { status: "TESTS_PASS", automaticCheckRound: "1/3", head: "fixture-head",
+    discoverySources: "approved task and prepared checks", discoveryActions: "read-only inspection",
+    verificationTypesConsidered: "prepared acceptance checks", nonApplicabilityRationale: "none",
+    noVerificationCommandConfirmation: "not applicable",
+    commands: [{ command: "semantic claim", exit: 0 }], resultOfEachCommandAndExitCode: "passed",
+    selectedChecks: "prepared acceptance checks", selectionRationale: "approved acceptance behavior",
+    coverage: "observable behavior", failures: "none", priorRoundFailure: "none",
+    correctionApplied: "none", inSliceRationale: "none", evidenceOrFailureSummary: "checks passed",
+    affectedFilesOrBehaviors: "observable behavior", blockers: "none",
+    unexpectedWorkspaceEffects: "none", persistenceSummary: "no runner writes",
+    ...(filelessReason === undefined ? {} : { filelessReason }) };
+}
+
+test("execution scope mismatches are narrowly recoverable semantic errors", async (t) => {
+  const fixture = await nestedLifecycleWorkspace(t);
+  const copy = await prepareExecutionCopy({ specPath: fixture.requirements, slice: "slice-01" });
+  const fileless = replaceSection(await fs.readFile(copy.candidateTaskArtifact, "utf8"), "Changed Areas", "- none");
+  await fs.writeFile(copy.candidateTaskArtifact, fileless);
+  const options = { operation: "EXECUTE_SLICE", workspace: fixture.root, taskArtifact: copy.candidateTaskArtifact };
+  await assert.rejects(serializeRunnerExecutionBundleFromResponse({ ...options,
+    response: JSON.stringify(scopeRegressionPayload()) }), (error) => {
+    assert.ok(error instanceof RunnerSemanticResultError);
+    assert.match(recoverableRunnerResultDiagnostic(error), /fileless semantic execution response must include Fileless reason/u);
+    return true;
+  });
+  await assert.rejects(serializeRunnerExecutionBundleFromResponse({ ...options,
+    response: JSON.stringify(scopeRegressionPayload("   ")) }), RunnerSemanticResultError);
+  const valid = JSON.stringify(scopeRegressionPayload("Acceptance-only work changes no repository file."));
+  const filelessBundle = await serializeRunnerExecutionBundleFromResponse({ ...options, response: valid });
+  assert.match(filelessBundle, /- Tested state: none\n- Fileless reason: Acceptance-only work changes no repository file\./u);
+  assert.equal((filelessBundle.match(/^- Tested state:/gmu) ?? []).length, 1);
+  assert.match(filelessBundle, /- Tested scope: Acceptance-only work changes no repository file\./u);
+  assert.equal(await fs.readFile(copy.candidateTaskArtifact, "utf8"), fileless, "native rejection never publishes or invents a receipt");
+  const target = path.join(fixture.root, "src/example.txt");
+  const claim = path.relative(path.dirname(copy.candidateTaskArtifact), target).split(path.sep).join("/");
+  await writeValidatedPath(fixture, claim);
+  await fs.writeFile(copy.candidateTaskArtifact, replaceSection(fileless, "Changed Areas", `- \`${claim}\``));
+  const fileBackedBundle = await serializeRunnerExecutionBundleFromResponse({ ...options, response: JSON.stringify(scopeRegressionPayload()) });
+  assert.doesNotMatch(fileBackedBundle, /Fileless reason/u);
+  await assert.rejects(serializeRunnerExecutionBundleFromResponse({ ...options, response: valid }), (error) => {
+    assert.ok(error instanceof RunnerSemanticResultError);
+    assert.match(recoverableRunnerResultDiagnostic(error), /file-backed semantic execution response cannot include Fileless reason/u);
+    return true;
+  });
+  await fs.rm(target);
+  await fs.mkdir(target);
+  await assert.rejects(serializeRunnerExecutionBundleFromResponse({ ...options, response: valid }), (error) => {
+    assert.equal(recoverableRunnerResultDiagnostic(error), null, "filesystem failures are not semantic recovery");
+    return true;
+  });
+});
+
+test("managed fileless omission publishes one blocker then resumes the same operation with valid evidence", async (t) => {
+  const fixture = await nestedLifecycleWorkspace(t);
+  const taskPath = path.join(fixture.execution, "tasks/slice-01.md");
+  const originalTask = await fs.readFile(taskPath, "utf8");
+  const originalIndex = await fs.readFile(path.join(fixture.execution, "tasks.md"));
+  const cli = path.join(ROOT, "skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs");
+  const scopeReason = "Acceptance-only work changes no repository file.";
+  const budgets = JSON.parse(await fs.readFile(path.join(ROOT, "benchmarks/sentinel-todo/benchmark.json"), "utf8")).cases.find((item) => item.id === "A").budgets;
+  let totalRunnerTurns = 0;
+  let firstBlocker = null;
+  let firstRecovery = null;
+  const immutableCaptures = [];
+  for (const [index, reason] of [undefined, undefined, scopeReason].entries()) {
+    const preflight = await preflightExecutionOperation(fixture.requirements, "EXECUTE_SLICE", "1");
+    const officialPreflight = { exitCode: 0, operation: "EXECUTE_SLICE", slice: "slice-01", inputSlice: "1",
+      specPath: fixture.requirements, state: preflight.state, authority: `sha256:${preflight.currentFingerprint}`,
+      legalOperations: preflight.legalOperations, mandatoryRecovery: preflight.mandatoryRecovery };
+    const context = await createManagedSliceContext({ officialPreflight, workspace: fixture.root, snapshot: ROOT,
+      adapterPath: path.join(ROOT, "agents/codex/runtime/validation-runner.mjs"),
+      bridgePath: path.join(ROOT, "agents/codex/runtime/managed-runner-bridge.mjs"),
+      preflightPath: path.join(ROOT, "agents/codex/runtime/managed-slice-preflight.mjs") });
+    const tmpdir = await temporary(t, "stnl-scope-provider-");
+    const environment = managedEnvironment({ PATH: process.env.PATH, TMPDIR: tmpdir }, context);
+    const broker = await startOfficialRunnerBroker({ workspace: fixture.root, tmpdir,
+      operation: "EXECUTE_SLICE", sequence: index + 1, slice: "slice-01", officialPreflight,
+      invoke: (request) => invokeIndependentRunner({ ...request, snapshot: ROOT, env: environment,
+        runTurn: async ({ eventsPath, operationId, threadId }) => {
+          totalRunnerTurns += 1;
+          assert.equal(threadId, undefined, "omitted evidence does not authorize a format repair or inherited history");
+          const events = [{ operationId, type: "thread.started", thread_id: `scope-thread-${index}` },
+            { operationId, type: "turn.started" },
+            { operationId, type: "item.started", item: { id: "item_0", type: "command_execution", command: "STNL_VERIFICATION_COMMAND=1 node --test test/prepared.test.mjs" } },
+            { operationId, type: "item.completed", item: { id: "item_0", type: "command_execution", command: "STNL_VERIFICATION_COMMAND=1 node --test test/prepared.test.mjs", status: "completed", exit_code: 0 } },
+            { operationId, type: "item.completed", item: { id: "item_1", type: "agent_message", text: JSON.stringify(scopeRegressionPayload(reason)) } },
+            { operationId, type: "turn.completed" }];
+          await fs.writeFile(eventsPath, events.map(JSON.stringify).join("\n") + "\n");
+          return { completed: true, turnStarted: true, threadId: `scope-thread-${index}`,
+            requestedModel: "gpt-6-luna", requestedEffort: "medium", error: null, usage: null };
+        } }) });
+    try {
+      const receipt = await runManagedRunnerBridge({ environment, cwd: fixture.root,
+        payload: JSON.stringify({ automaticCheckRound: "1/3", changedAreas: [], filelessReason: scopeReason }) });
+      assert.equal(receipt.status, "RUNNER_RESPONSE_CAPTURED");
+      assert.equal(receipt.formatRepair, null);
+      assert.equal(broker.requestsHandled, 1);
+      const capturedBefore = await treeBytes(tmpdir);
+      immutableCaptures.push({ tmpdir, bytes: capturedBefore.filter(([file]) => !file.startsWith("stnl-runner-broker")) });
+      const copy = await prepareExecutionCopy({ specPath: fixture.requirements, slice: "slice-01" });
+      const candidateBefore = await fs.readFile(copy.candidateTaskArtifact, "utf8");
+      let proposed = replaceSection(candidateBefore.replace("- [ ] 1.1", "- [x] 1.1"), "Changed Areas", "- none");
+      proposed = replaceSection(proposed, "Diff Summary", "- Prepared acceptance behavior was checked without file changes.");
+      await fs.writeFile(copy.candidateTaskArtifact, proposed);
+      const args = [cli, "--execution-bundle", "--operation", "EXECUTE_SLICE", "--workspace", fixture.root,
+        "--task-artifact", copy.candidateTaskArtifact, "--semantic-response-file", receipt.semanticResponseFile,
+        "--receipt-file", receipt.receiptFile, "--insert-candidate"];
+      if (index === 0) {
+        const wrong = path.join(tmpdir, "wrong.receipt.json");
+        await fs.writeFile(wrong, JSON.stringify({ ...receipt, slice: "slice-02" }));
+        const mismatch = spawnSync(process.execPath, args.map((arg) => arg === receipt.receiptFile ? wrong : arg),
+          { cwd: fixture.root, env: environment, encoding: "utf8" });
+        assert.equal(mismatch.status, 1);
+        assert.match(mismatch.stderr, /receipt does not match the active managed runner invocation/u);
+        assert.equal(await fs.readFile(copy.candidateTaskArtifact, "utf8"), proposed);
+        await fs.rm(wrong);
+        const rawResponse = await fs.readFile(receipt.semanticResponseFile);
+        await fs.appendFile(receipt.semanticResponseFile, " ");
+        const hashMismatch = spawnSync(process.execPath, args, { cwd: fixture.root, env: environment, encoding: "utf8" });
+        assert.equal(hashMismatch.status, 1);
+        assert.match(hashMismatch.stderr, /receipt response hash disagrees/u);
+        assert.equal(await fs.readFile(copy.candidateTaskArtifact, "utf8"), proposed);
+        await fs.writeFile(receipt.semanticResponseFile, rawResponse);
+        const liveBefore = await fs.readFile(taskPath);
+        await fs.appendFile(taskPath, "\nchanged after preparation\n");
+        const staleSource = spawnSync(process.execPath, args, { cwd: fixture.root, env: environment, encoding: "utf8" });
+        assert.equal(staleSource.status, 1);
+        assert.match(staleSource.stderr, /live task changed since candidate preparation/u);
+        assert.equal(await fs.readFile(copy.candidateTaskArtifact, "utf8"), proposed);
+        await fs.writeFile(taskPath, liveBefore);
+      }
+      const result = spawnSync(process.execPath, args, { cwd: fixture.root, env: environment, encoding: "utf8" });
+      assert.equal(result.status, 0, result.stderr);
+      assert.deepEqual(await treeBytes(tmpdir), capturedBefore, "raw response, events and receipt stay byte-identical");
+      const candidate = await fs.readFile(copy.candidateTaskArtifact, "utf8");
+      if (reason === undefined) {
+        assert.equal(JSON.parse(result.stdout).state, "RUNNER_RESULT_BLOCKED");
+        assert.match(candidate, /## Changed Areas\n\n- pending/u);
+        assert.match(candidate, /- \[ \] 1\.1/u);
+        assert.doesNotMatch(candidate, /^### implementation-check-/mu);
+        assert.match(candidate, /## Final Result\n\n- pending/u);
+        assert.equal((candidate.match(/^- Kind: malformed-output$/gmu) ?? []).length, 1);
+        if (firstBlocker !== null) assert.match(candidate, /- After record: none/u);
+        firstBlocker = candidate;
+        if (index === 0) {
+          for (const invalid of [candidate.replace("- Kind: malformed-output", "- Kind: initialization"),
+            candidate.replace("- [ ] 1.1", "- [x] 1.1"), replaceSection(candidate, "Delegation Blocker", "- none")]) {
+            await fs.writeFile(copy.candidateTaskArtifact, invalid);
+            await assert.rejects(validateExecutionCandidate(fixture.requirements, copy.candidateExecutionRoot), /Changed Areas cannot remain pending after work/u);
+          }
+          await fs.writeFile(copy.candidateTaskArtifact, candidate);
+        }
+      } else {
+        assert.match(result.stdout, /implementation-check-01 inserted/u);
+        assert.match(candidate, /- State: resolved/u);
+        assert.match(candidate, /- Fileless reason: Acceptance-only work changes no repository file\./u);
+      }
+      assert.equal((await validateExecutionCandidate(fixture.requirements, copy.candidateExecutionRoot)).state,
+        reason === undefined ? "RUNNER_RESULT_BLOCKED" : "IMPLEMENTED_AWAITING_VALIDATION");
+      await publishExecutionCopy({ specPath: fixture.requirements, slice: "slice-01", candidateRoot: copy.candidateRoot });
+      const state = await inspectExecutionState(fixture.requirements);
+      assert.equal(state.state, reason === undefined ? "RUNNER_RESULT_BLOCKED" : "IMPLEMENTED_AWAITING_VALIDATION");
+      if (reason === undefined) {
+        assert.equal(state.mandatoryRecovery.operation, "EXECUTE_SLICE");
+        assert.equal(state.mandatoryRecovery.slice, "slice-01");
+        assert.equal(state.mandatoryRecovery.sameOperationResumeRequired, true);
+        await assert.rejects(preflightExecutionOperation(fixture.requirements, "VALIDATE_SLICE", "1"));
+        await assert.rejects(preflightExecutionOperation(fixture.requirements, "APPLY_FINDINGS", "1"));
+        const readback = { execution: state, executionRaw: state, product: { deriveNormalHandoff } };
+        const outcome = decideOutcome("EXECUTE_SLICE", readback, true);
+        assert.equal(outcome.blocker, "OFFICIAL_RUNNER_RESULT_BLOCKED");
+        const recovery = recoverableRunnerHandoff({ operation: "EXECUTE_SLICE", slice: "slice-01", outcome,
+          readback, priorOperations: firstRecovery === null ? [] : [{ recovery: firstRecovery }], remainingTurns: 20 });
+        if (index === 0) { assert.equal(recovery.operation, "EXECUTE_SLICE"); firstRecovery = recovery; }
+        else assert.equal(recovery, null, "a second malformed result stays blocked; no second automatic recovery");
+        assert.equal(recoverableRunnerHandoff({ operation: "EXECUTE_SLICE", slice: "slice-01", outcome,
+          readback, priorOperations: [], remainingTurns: 1 }), null, "existing turn budget still gates recovery");
+      }
+      assert.deepEqual(await fs.readFile(path.join(fixture.execution, "tasks.md")), originalIndex);
+      assert.equal(sectionBodyForScopeTest(await fs.readFile(taskPath, "utf8"), "Validation Attempts"), sectionBodyForScopeTest(originalTask, "Validation Attempts"));
+    } finally { await broker.close(); }
+  }
+  assert.equal(totalRunnerTurns, 3, "third operation is an explicit manual resume, not a second automatic recovery");
+  for (const capture of immutableCaptures) assert.deepEqual((await treeBytes(capture.tmpdir)).filter(([file]) => !file.startsWith("stnl-runner-broker")), capture.bytes);
+  // Existing campaign accounting, rather than a new contextual-repair counter, owns limits.
+  assert.equal(budgetViolation(Array.from({ length: budgets.maxExecuteSliceAttemptsPerSlice + 1 }, () => ({ operation: "EXECUTE_SLICE", slice: "slice-01" })), budgets).budget, "maxExecuteSliceAttemptsPerSlice");
+
+  const implementedTask = await fs.readFile(taskPath, "utf8");
+  const preflight = await preflightExecutionOperation(fixture.requirements, "VALIDATE_SLICE", "1");
+  const officialPreflight = { exitCode: 0, operation: "VALIDATE_SLICE", slice: "slice-01", inputSlice: "1",
+    specPath: fixture.requirements, state: preflight.state, authority: `sha256:${preflight.currentFingerprint}`,
+    legalOperations: preflight.legalOperations, mandatoryRecovery: preflight.mandatoryRecovery };
+  const context = await createManagedSliceContext({ officialPreflight, workspace: fixture.root, snapshot: ROOT,
+    adapterPath: path.join(ROOT, "agents/codex/runtime/validation-runner.mjs"),
+    bridgePath: path.join(ROOT, "agents/codex/runtime/managed-runner-bridge.mjs"),
+    preflightPath: path.join(ROOT, "agents/codex/runtime/managed-slice-preflight.mjs") });
+  const tmpdir = await temporary(t, "stnl-scope-formal-provider-");
+  const environment = managedEnvironment({ PATH: process.env.PATH, TMPDIR: tmpdir }, context);
+  const semantic = { ...sanitizedValidationResponse("PASS"), evidence: "Independent prepared acceptance checks verify the approved fileless behavior." };
+  let formalCalls = 0;
+  const broker = await startOfficialRunnerBroker({ workspace: fixture.root, tmpdir,
+    operation: "VALIDATE_SLICE", sequence: 4, slice: "slice-01", officialPreflight,
+    invoke: (request) => invokeIndependentRunner({ ...request, snapshot: ROOT, env: environment,
+      runTurn: async ({ eventsPath, operationId }) => {
+        formalCalls += 1;
+        const command = "STNL_VERIFICATION_COMMAND=1 node --test test/prepared.test.mjs";
+        const events = [{ operationId, type: "thread.started", thread_id: "formal-fileless-thread" },
+          { operationId, type: "turn.started" },
+          { operationId, type: "item.started", item: { id: "item_0", type: "command_execution", command } },
+          { operationId, type: "item.completed", item: { id: "item_0", type: "command_execution", command, status: "completed", exit_code: 0 } },
+          { operationId, type: "item.completed", item: { id: "item_1", type: "agent_message", text: JSON.stringify(semantic) } },
+          { operationId, type: "turn.completed" }];
+        await fs.writeFile(eventsPath, events.map(JSON.stringify).join("\n") + "\n");
+        return { completed: true, turnStarted: true, threadId: "formal-fileless-thread",
+          requestedModel: "gpt-6-luna", requestedEffort: "medium", error: null, usage: null };
+      } }) });
+  try {
+    const receipt = await runManagedRunnerBridge({ environment, cwd: fixture.root, payload: "Validate all approved fileless acceptance behavior." });
+    assert.equal(receipt.status, "RUNNER_RESPONSE_CAPTURED");
+    assert.equal(formalCalls, 1);
+    assert.equal(JSON.parse(await fs.readFile(receipt.semanticResponseFile, "utf8")).filelessReason, undefined,
+      "VALIDATE retains its exact schema; reason belongs to existing execution authority");
+    const capturedBefore = await treeBytes(tmpdir);
+    const copy = await prepareValidationCopy({ specPath: fixture.requirements, slice: "slice-01", candidateParent: tmpdir });
+    const args = [path.join(ROOT, "skills/workflows/stnl-slice-quality-manager/runtime/prepare-validation-candidate.mjs"),
+      "--prepare", "--spec-path", fixture.requirements, "--slice", "slice-01", "--workspace", fixture.root,
+      "--candidate-execution-root", copy.candidateExecutionRoot, "--semantic-response-file", receipt.semanticResponseFile,
+      "--receipt-file", receipt.receiptFile];
+    const candidateBefore = await treeBytes(copy.candidateExecutionRoot);
+    const wrong = path.join(tmpdir, "wrong-formal.receipt.json");
+    await fs.writeFile(wrong, JSON.stringify({ ...receipt, operation: "EXECUTE_SLICE" }));
+    const mismatch = spawnSync(process.execPath, args.map((arg) => arg === receipt.receiptFile ? wrong : arg),
+      { cwd: fixture.root, env: environment, encoding: "utf8" });
+    assert.equal(mismatch.status, 1);
+    assert.match(mismatch.stderr, /receipt does not match the active managed runner invocation/u);
+    assert.deepEqual(await treeBytes(copy.candidateExecutionRoot), candidateBefore);
+    await fs.rm(wrong);
+    for (const invalidAuthority of [
+      implementedTask.replace(/^- Fileless reason:.*\n/mu, ""),
+      implementedTask.replace(/(- Requirements authority: sha256:)[0-9a-f]{64}/u, "$1" + "0".repeat(64)),
+    ]) {
+      await fs.writeFile(taskPath, invalidAuthority);
+      const rejected = spawnSync(process.execPath, args, { cwd: fixture.root, env: environment, encoding: "utf8" });
+      assert.equal(rejected.status, 1, "invalid current reason or stale authority cannot produce formal evidence");
+      assert.deepEqual(await treeBytes(copy.candidateExecutionRoot), candidateBefore);
+      await fs.writeFile(taskPath, implementedTask);
+    }
+    const prepared = spawnSync(process.execPath, args, { cwd: fixture.root, env: environment, encoding: "utf8" });
+    assert.equal(prepared.status, 0, prepared.stderr);
+    assert.equal(JSON.parse(prepared.stdout).formalStatus, "PASS");
+    assert.equal(await fs.readFile(taskPath, "utf8"), implementedTask, "formal preparation keeps live authority unchanged");
+    const candidateTask = await fs.readFile(path.join(copy.candidateExecutionRoot, "tasks/slice-01.md"), "utf8");
+    assert.match(sectionBodyForScopeTest(candidateTask, "Effective Validation Base"), /- Files: none\n- Fileless reason: Acceptance-only work changes no repository file\./u);
+    assert.equal(sectionBodyForScopeTest(candidateTask, "Implementation Test Evidence"), sectionBodyForScopeTest(implementedTask, "Implementation Test Evidence"));
+    assert.equal((await validateExecutionCandidate(fixture.requirements, copy.candidateExecutionRoot)).state, "COMPLETE");
+    const forged = await prepareValidationCopy({ specPath: fixture.requirements, slice: "slice-01", candidateParent: tmpdir });
+    const forgedTaskPath = path.join(forged.candidateExecutionRoot, "tasks/slice-01.md");
+    await fs.writeFile(forgedTaskPath, implementedTask.replace(`- Fileless reason: ${scopeReason}`, "- Fileless reason: Candidate prose cannot redefine the authoritative fileless reason."));
+    const forgedPreparation = spawnSync(process.execPath, args.map((arg) => arg === copy.candidateExecutionRoot ? forged.candidateExecutionRoot : arg),
+      { cwd: fixture.root, env: environment, encoding: "utf8" });
+    assert.equal(forgedPreparation.status, 0, forgedPreparation.stderr);
+    const forgedText = await fs.readFile(forgedTaskPath, "utf8");
+    assert.match(sectionBodyForScopeTest(forgedText, "Effective Validation Base"), /- Fileless reason: Acceptance-only work changes no repository file\./u,
+      "the producer reads the validated live owner rather than candidate prose");
+    await assert.rejects(publishValidationCandidate({ specPath: fixture.requirements, slice: "slice-01", candidateExecutionRoot: forged.candidateExecutionRoot }),
+      /candidate changed non-validation task section Implementation Test Evidence/u);
+    assert.equal(await fs.readFile(taskPath, "utf8"), implementedTask, "forged candidate cannot publish or mutate live authority");
+    const published = await publishValidationCandidate({ specPath: fixture.requirements, slice: "slice-01", candidateExecutionRoot: copy.candidateExecutionRoot });
+    assert.equal(published.state, "COMPLETE");
+    const final = await inspectExecutionState(fixture.requirements);
+    assert.equal(final.state, "COMPLETE");
+    assert.equal(final.tasks.get("slice-01").attempts.length, 1);
+    assert.equal(final.tasks.get("slice-01").attempts[0].status, "PASS");
+    assert.equal(final.tasks.get("slice-01").base.fileless, true);
+    assert.equal(final.tasks.get("slice-01").final.result, "PASS");
+    assert.match(await fs.readFile(path.join(fixture.execution, "tasks.md"), "utf8"), /\| \[x\] \| 01 - Delivery.*\| PASS \| PASS \|/u);
+    for (const [file, mode, bytes] of capturedBefore)
+      if (!file.startsWith("stnl-runner-broker")) assert.deepEqual(await fs.readFile(path.join(tmpdir, file)), bytes);
+    assert.equal(formalCalls, 1, "publication never calls the runner again");
+  } finally { await broker.close(); }
+});
+
+test("fileless APPLY scope rejection preserves prior checks and formal findings history", async (t) => {
+  const fixture = await nestedLifecycleWorkspace(t);
+  const target = path.join(fixture.root, "src/example.txt");
+  const claim = path.relative(path.join(fixture.execution, "tasks"), target).split(path.sep).join("/");
+  await writeValidatedPath(fixture, claim);
+  await editTask(fixture, (value) => {
+    let task = replaceSection(value.replace("- [ ] 1.1", "- [x] 1.1"), "Changed Areas", `- \`${claim}\``);
+    task = replaceSection(task, "Implementation Test Evidence", checkRecord("implementation-check", 1, "TESTS_PASS", 1).replaceAll("../../src/example.txt", claim));
+    task = replaceSection(task, "Validation Attempts", NEEDS_FIX_ATTEMPT.replaceAll("../../src/example.txt", claim));
+    return replaceSection(task, "Validation Findings", ACTIVE_FINDING);
+  });
+  await preflightExecutionOperation(fixture.requirements, "APPLY_FINDINGS", "1");
+  const before = await fs.readFile(path.join(fixture.execution, "tasks/slice-01.md"), "utf8");
+  const copy = await prepareExecutionCopy({ specPath: fixture.requirements, slice: "slice-01" });
+  await fs.writeFile(copy.candidateTaskArtifact, replaceSection(before, "Changed Areas", "- none"));
+  const { priorRoundFailure, correctionApplied, inSliceRationale, ...common } = scopeRegressionPayload();
+  const response = JSON.stringify({ ...common, findingsCycle: "attempt-01", findingsVerified: "none",
+    correctionsCovered: "fileless correction", regressionsSelected: "approved prepared checks", unsupportedActiveFindings: "finding-01" });
+  const captured = await capturedCommandEvidence(t, "APPLY_FINDINGS", response, "STNL_VERIFICATION_COMMAND=1 node --test test/prepared.test.mjs");
+  const cli = spawnSync(process.execPath, [path.join(ROOT, "skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs"),
+    "--execution-bundle", "--operation", "APPLY_FINDINGS", "--workspace", fixture.root,
+    "--task-artifact", copy.candidateTaskArtifact, "--semantic-response-file", captured.semanticResponseFile,
+    "--receipt-file", captured.receiptFile, "--insert-candidate"], { encoding: "utf8" });
+  assert.equal(cli.status, 0, cli.stderr);
+  assert.equal(JSON.parse(cli.stdout).state, "RUNNER_RESULT_BLOCKED");
+  await publishExecutionCopy({ specPath: fixture.requirements, slice: "slice-01", candidateRoot: copy.candidateRoot });
+  const state = await inspectExecutionState(fixture.requirements);
+  assert.equal(state.state, "RUNNER_RESULT_BLOCKED");
+  assert.equal(state.mandatoryRecovery.operation, "APPLY_FINDINGS");
+  const after = await fs.readFile(path.join(fixture.execution, "tasks/slice-01.md"), "utf8");
+  for (const heading of ["Implementation Test Evidence", "Validation Attempts", "Validation Findings", "Effective Validation Base", "Final Result"])
+    assert.equal(sectionBodyForScopeTest(after, heading), sectionBodyForScopeTest(before, heading));
+  assert.equal(state.tasks.get("slice-01").findingsChecks.length, 0);
+});
+
+test("scope blocker retains an earlier private fileless failure and its check identifier", async (t) => {
+  const fixture = await nestedLifecycleWorkspace(t);
+  const copy = await prepareExecutionCopy({ specPath: fixture.requirements, slice: "slice-01" });
+  const prior = checkRecord("implementation-check", 1, "TESTS_FAIL", 1).replace(
+    `- Tested state:\n  - \`../../src/example.txt\` | sha256:${VALIDATED_HASH}`,
+    "- Tested state: none\n- Fileless reason: Acceptance-only checks change no repository file.");
+  let candidate = replaceSection(await fs.readFile(copy.candidateTaskArtifact, "utf8"), "Changed Areas", "- none");
+  candidate = replaceSection(candidate, "Implementation Test Evidence", prior);
+  await fs.writeFile(copy.candidateTaskArtifact, candidate);
+  const response = JSON.stringify({ ...scopeRegressionPayload(), automaticCheckRound: "2/3",
+    priorRoundFailure: "Prior prepared check failed.", correctionApplied: "Corrected the in-slice fileless check input.",
+    inSliceRationale: "Same approved acceptance behavior; no file changes." });
+  const captured = await capturedCommandEvidence(t, "EXECUTE_SLICE", response, "STNL_VERIFICATION_COMMAND=1 node --test test/prepared.test.mjs");
+  const result = spawnSync(process.execPath, [path.join(ROOT, "skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs"),
+    "--execution-bundle", "--operation", "EXECUTE_SLICE", "--workspace", fixture.root,
+    "--task-artifact", copy.candidateTaskArtifact, "--semantic-response-file", captured.semanticResponseFile,
+    "--receipt-file", captured.receiptFile, "--insert-candidate"], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(JSON.parse(result.stdout).state, "RUNNER_RESULT_BLOCKED");
+  const after = await fs.readFile(copy.candidateTaskArtifact, "utf8");
+  assert.equal(sectionBodyForScopeTest(after, "Implementation Test Evidence"), sectionBodyForScopeTest(candidate, "Implementation Test Evidence"));
+  assert.match(after, /- After record: implementation-check-01/u);
+  assert.doesNotMatch(after, /^### implementation-check-02/mu);
+  assert.equal((await validateExecutionCandidate(fixture.requirements, copy.candidateExecutionRoot)).state, "RUNNER_RESULT_BLOCKED");
+  await publishExecutionCopy({ specPath: fixture.requirements, slice: "slice-01", candidateRoot: copy.candidateRoot });
+  assert.equal((await inspectExecutionState(fixture.requirements)).tasks.get("slice-01").implementationChecks.length, 1);
+});
+
+function sectionBodyForScopeTest(text, heading) {
+  const start = text.indexOf(`## ${heading}\n\n`);
+  const end = text.indexOf("\n## ", start + 1);
+  return text.slice(start, end < 0 ? undefined : end);
+}
 
 test("managed bridge and broker bind one format repair through strict publication", async (t) => {
   const fixture = await standaloneWorkspace(t);
