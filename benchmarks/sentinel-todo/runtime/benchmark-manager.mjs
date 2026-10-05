@@ -9,6 +9,8 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { assertSnapshotIntegrity, createSnapshot } from './benchmark-snapshot.mjs';
 import { createReporter } from './benchmark-ui.mjs';
 import { budgetViolation } from './benchmark.mjs';
+import { captureValidationInputs, captureReassessmentEvidence, prepareValidationReassessment,
+  assertReassessmentUnchanged } from './validation-reassessment.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const RUNS = path.join(ROOT, 'benchmark-temp');
@@ -390,8 +392,10 @@ async function loadProduct(snapshot) {
   const runner = await import(pathToFileURL(path.join(snapshot, 'agents/codex/runtime/validation-runner.mjs')).href);
   const managedContext = await import(pathToFileURL(path.join(snapshot, 'skills/workflows/stnl-slice-quality-manager/runtime/managed-slice-context.mjs')).href);
   const broker = await import(pathToFileURL(path.join(snapshot, 'agents/codex/runtime/runner-broker.mjs')).href);
+  const evidence = await import(pathToFileURL(path.join(snapshot, 'skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs')).href);
+  const commandEvents = await import(pathToFileURL(path.join(snapshot, 'skills/workflows/stnl-slice-executor/runtime/runner-command-events.mjs')).href);
   return { ...execution, validateWorkspace: lifecycle.validateWorkspace, ...readiness, ...sdk, ...usage,
-    ...home, ...runner, ...broker, ...managedContext };
+    ...home, ...runner, ...broker, ...managedContext, ...evidence, ...commandEvents };
 }
 function argsForJournal({ journal, operation, route, outcome, slice, readback, readinessResult, turn, durationMs, runnerCount }) {
   const args = ['journal-event', '--journal', journal, '--operation', operation, '--phase', route.phase,
@@ -462,6 +466,7 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
   }
   let target = { operation: 'SPEC_INIT', slice: null };
   let pendingRecovery = null;
+  let pendingReassessment = null;
   let pendingReadinessResult = null;
   if (resume) {
     if (caseState.status !== 'FOCAL_STOP' || caseState.terminal?.result !== 'FOCAL_STOP'
@@ -506,6 +511,8 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
       const { operation, slice } = target;
       const currentRecovery = pendingRecovery;
       pendingRecovery = null;
+      const currentReassessment = pendingReassessment;
+      pendingReassessment = null;
       const violation = budgetViolation([...caseState.operations, { operation, slice }], caseConfiguration.budgets);
       if (violation !== null) {
         terminal = { result: 'BLOCKED', blocker: 'BUDGET_EXCEEDED', diagnostic: violation.budget };
@@ -536,6 +543,8 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
           || JSON.stringify(preflight.recoveryTargets[0]) !== JSON.stringify(currentRecovery.target))) {
           fail('official recovery authority changed before dispatch');
         }
+        if (currentReassessment !== null) await assertReassessmentUnchanged({ product, specPath,
+          decision: currentReassessment, execution: preflight });
         if (RUNNER_OPERATIONS.has(operation)) {
           officialPreflight = { exitCode: 0, operation, slice, inputSlice: specInput(slice),
             specPath, state: preflight.state, authority: `sha256:${preflight.currentFingerprint}`,
@@ -547,6 +556,9 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
             preflightPath: path.join(runRoot, 'snapshot', 'agents/codex/runtime/managed-slice-preflight.mjs') });
         }
       }
+      const validationInputs = operation === 'VALIDATE_SLICE'
+        ? await captureValidationInputs({ product, workspace,
+          taskArtifact: path.join((await product.resolveExecutionWorkspace(specPath)).executionRoot, 'tasks', `${slice}.md`) }) : null;
       const templatePath = path.join(runRoot, 'snapshot', 'templates', 'prompts', TEMPLATE[operation]);
       const template = await fs.readFile(templatePath, 'utf8');
       const newInformation = operation === 'SPEC_PROMOTE'
@@ -564,7 +576,8 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
         SLICE: slice === null ? '' : specInput(slice) };
       const workflowSkill = operation.startsWith('SPEC_') ? 'stnl-spec-lifecycle-manager' : product.workflowSkillForOperation(operation);
       const prompt = renderManagedLauncher(template, values,
-        product.managedDiscoveryInstructions({ env: home.env, cwd: workspace, workflowSkill }), managedSliceContext);
+        product.managedDiscoveryInstructions({ env: home.env, cwd: workspace, workflowSkill }), managedSliceContext)
+        + (currentReassessment === null ? '' : '\nOwner-authorized one-time independent re-evaluation of this same stage. Preserve the original BLOCKED diagnostic. Evaluate current authority and evidence under the normal runner contract, with no preferred verdict. Use existing prepared checks; do not change source/tests or authority.\n');
       if (managedSliceContext !== null) {
         assertManagedSliceLauncher(prompt, managedSliceContext, specInput(slice));
       }
@@ -597,6 +610,7 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
             ...request, snapshot: path.join(runRoot, 'snapshot'), workspace, tmpdir, env: turnEnv,
             signal: runnerSignal,
             onBeforeTurn: async () => {
+              if (currentReassessment !== null) await assertReassessmentUnchanged({ product, specPath, decision: currentReassessment });
               const reservation = runnerReservation ?? await reserveExtraRunner({ runRoot, runId: path.basename(runRoot), caseId, operation, limit: turnLimit });
               runnerReservation = null;
               currentRunnerNumber = await startReservedTurn(runRoot, reservation, turnLimit);
@@ -637,6 +651,7 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
         ...await budgetSnapshot(runRoot), artifacts: caseRoot });
       let turn;
       let mainException = null;
+      let reassessmentProof = null;
       let lastProgressMs = 0;
       const heartbeat = setInterval(() => announce({ kind: 'progress', status: 'RUNNING',
         runId: path.basename(runRoot), caseId, operation, slice,
@@ -662,6 +677,11 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
           },
         });
         await settleTurn(runRoot, mainTurnNumber, turn, turnLimit);
+        if (operation === 'VALIDATE_SLICE' && turn.completed === true && turn.error == null
+          && turn.processError == null && turn.errorEvent == null) {
+          reassessmentProof = await captureReassessmentEvidence({ product, context: managedSliceContext,
+            environment: turnEnv, directory: broker.directory, sequence, inputs: validationInputs });
+        }
       } catch (error) {
         // An exception supplies no proof that dispatch never started. Keep the
         // consumed turn and continue through the normal evidence/journal path.
@@ -756,18 +776,19 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
           unmanagedCollaboration: collaborationEvents },
         normalizedUsage,
         journal: { exitCode: journalResult.exitCode, diagnostic: journalResult.stderr || journalResult.stdout }, outcome,
-        recovery: currentRecovery };
+        recovery: currentRecovery, validationReassessment: currentReassessment,
+        reassessmentProof };
       const evidencePath = path.join(caseRoot, `${String(sequence).padStart(2, '0')}-${operation.toLowerCase()}.json`);
       await atomicJson(evidencePath, evidence);
       caseState.operations.push({ operation, slice, outcome, evidencePath, threadId: turn.threadId,
-        recovery: currentRecovery });
+        recovery: currentRecovery, validationReassessment: currentReassessment });
       await atomicJson(path.join(caseRoot, 'case-state.json'), caseState);
       announce({ runId: path.basename(runRoot), caseId, operation, slice, state: readback.execution?.state ?? readback.lifecycle?.status,
         result: outcome.result, durationMs: evidence.durationMs, model: route.label, effort: route.effort,
         mainTurns: caseState.mainTurns, runnerTurns: caseState.runnerTurns,
         ...await budgetSnapshot(runRoot), artifacts: caseRoot });
       terminal = outcome;
-      if (outcome.result === 'BLOCKED') {
+      if (outcome.result === 'BLOCKED' && currentReassessment === null) {
         const recovery = await prepareOfficialRecovery({ product, specPath, operation, slice, outcome, readback,
           priorOperations: caseState.operations, budgets: caseConfiguration.budgets,
           remainingTurns: (await budgetSnapshot(runRoot)).turnBudget.remaining,
@@ -777,6 +798,33 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
           pendingRecovery = recovery;
           target = { operation: recovery.operation, slice: recovery.slice };
           continue;
+        }
+        // Authorized owner policy selects legal VALIDATE among the product's
+        // alternatives. It does not change generic unique-target recovery.
+        try {
+          const decision = await prepareValidationReassessment({ product, specPath, caseRoot,
+            runId: path.basename(runRoot), caseId, workspace, originalEvidencePath: evidencePath,
+            readback: () => officialReadback(product, specPath), input: {
+              operation, slice, outcome, execution: readback.executionRaw, proof: reassessmentProof,
+              caseActive: caseState.status === 'ACTIVE' && (await readJson(path.join(runRoot, 'run.json'))).status === 'ACTIVE',
+              alreadyUsed: caseState.validationReassessments?.[slice] != null
+                || await exists(path.join(caseRoot, `validation-reassessment-${slice}.json`)),
+              remainingTurns: (await budgetSnapshot(runRoot)).turnBudget.remaining,
+              budgetExceeded: budgetViolation([...caseState.operations, { operation, slice }], caseConfiguration.budgets) !== null
+                || (finalSequence !== null && sequence >= finalSequence),
+              transportFailed: turn.completed !== true || turn.error != null || turn.processError != null
+                || turn.errorEvent != null || runnerTransportFailed || (broker?.errors.length ?? 0) > 0,
+            } });
+          if (decision !== null) {
+            caseState.validationReassessments ??= {};
+            caseState.validationReassessments[slice] = decision;
+            await atomicJson(path.join(caseRoot, 'case-state.json'), caseState);
+            pendingReassessment = decision;
+            target = { operation: decision.operation, slice: decision.slice };
+            continue;
+          }
+        } catch (error) {
+          terminal = { ...outcome, diagnostic: `Authorized reassessment stopped: ${error.code ?? error.name}: ${error.message}` };
         }
       }
       if (['BLOCKED', 'FAIL', 'PAUSED_BUDGET_OR_QUOTA'].includes(outcome.result)) break;
@@ -867,7 +915,7 @@ async function run(options) {
     }
     const snapshotMetadata = options.resumeId
       ? (await readJson(path.join(runRoot, 'run.json'))).snapshot
-      : await createSnapshot(runRoot, { executionMode: offline?.mode });
+      : await createSnapshot(runRoot, { executionMode: offline?.mode, dependencySource: offline?.dependencySource });
     if (options.resumeId) await assertSnapshotIntegrity(runRoot);
     const product = await loadProduct(path.join(runRoot, 'snapshot'));
     const previous = options.resumeId ? await readJson(path.join(runRoot, 'run.json')) : null;

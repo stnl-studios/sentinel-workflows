@@ -106,8 +106,24 @@ export async function currentFunctionalIdentity() {
   return { sha256: await hashFiles(REPOSITORY_ROOT, files), fileCount: files.length };
 }
 
-export async function createSnapshot(runRoot, { executionMode } = {}) {
+export async function copySnapshotDependencies(snapshot, { executionMode, dependencySource } = {}) {
+  if (dependencySource !== undefined && executionMode !== 'OFFLINE_TEST_ONLY') {
+    throw new Error('external dependency source is restricted to OFFLINE_TEST_ONLY');
+  }
+  const source = dependencySource ?? path.join(REPOSITORY_ROOT, 'agents/codex/node_modules');
+  if (!path.isAbsolute(source) || await fs.realpath(source) !== source
+    || !(await fs.lstat(source)).isDirectory()) throw new Error('dependency source must be a canonical directory');
+  const files = await listFiles(source, '', { dependencies: true });
+  const sdkVersion = JSON.parse(await fs.readFile(path.join(source, '@openai/codex-sdk/package.json'), 'utf8')).version;
+  const cliVersion = JSON.parse(await fs.readFile(path.join(source, '@openai/codex/package.json'), 'utf8')).version;
+  if (sdkVersion !== '0.160.0' || cliVersion !== '0.160.0') throw new Error('local Codex SDK/CLI version differs from the pinned adapter');
+  await copyFiles(source, path.join(snapshot, 'agents/codex/node_modules'), files);
+  return { sdkVersion, cliVersion };
+}
+
+export async function createSnapshot(runRoot, { executionMode, dependencySource } = {}) {
   if (executionMode !== undefined && executionMode !== 'OFFLINE_TEST_ONLY') throw new Error('invalid snapshot execution provenance');
+  if (dependencySource !== undefined && executionMode !== 'OFFLINE_TEST_ONLY') throw new Error('external dependency source is restricted to OFFLINE_TEST_ONLY');
   const run = await assertOwnedRun(runRoot);
   const snapshot = path.join(run, 'snapshot');
   await fs.mkdir(snapshot);
@@ -119,14 +135,7 @@ export async function createSnapshot(runRoot, { executionMode } = {}) {
   const files = await sourceFiles();
   await copyFiles(REPOSITORY_ROOT, snapshot, files);
 
-  const dependencyRoot = path.join('agents', 'codex', 'node_modules');
-  const sourceDependencies = path.join(REPOSITORY_ROOT, dependencyRoot);
-  const sdkVersion = JSON.parse(await fs.readFile(path.join(sourceDependencies, '@openai/codex-sdk/package.json'), 'utf8')).version;
-  const cliVersion = JSON.parse(await fs.readFile(path.join(sourceDependencies, '@openai/codex/package.json'), 'utf8')).version;
-  if (sdkVersion !== '0.160.0' || cliVersion !== '0.160.0') throw new Error('local Codex SDK/CLI version differs from the pinned adapter');
-  const dependencies = (await listFiles(sourceDependencies, '', { dependencies: true }))
-    .map((relative) => path.join(dependencyRoot, relative));
-  await copyFiles(REPOSITORY_ROOT, snapshot, dependencies);
+  const { sdkVersion, cliVersion } = await copySnapshotDependencies(snapshot, { executionMode, dependencySource });
   const snapshotFiles = await freeze(snapshot);
   const metadata = {
     ...(executionMode === 'OFFLINE_TEST_ONLY' ? { executionMode } : {}),

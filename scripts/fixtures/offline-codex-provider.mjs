@@ -75,7 +75,9 @@ const taskFile = path.join(specPath, 'execution/tasks/slice-01.md');
 const matrixClaim = path.relative(path.dirname(taskFile), path.join(workspace, 'test/offline-case.json')).split(path.sep).join('/');
 const digest = async (file) => createHash('sha256').update(await fs.readFile(file)).digest('hex');
 const finish = (response) => { emit({ type: 'item.completed', item: { id: 'message_' + sequence++, type: 'agent_message', text: typeof response === 'string' ? response : JSON.stringify(response) } }); emit({ type: 'turn.completed', usage: {} }); };
-const coverageScenario = ['coverage-findings', 'finalizer-fail-apply-publication'].includes(context.scenario);
+const reassessmentScenario = context.scenario.startsWith('reassessment-');
+const coverageScenario = ['coverage-findings', 'finalizer-fail-apply-publication',
+  'reassessment-needs-fix', 'reassessment-after-fix-blocked'].includes(context.scenario);
 try {
   if (!independent && operation === 'SPEC_INIT' && ['B', 'C'].includes(caseId) && !coverageScenario) {
     // Both siblings must reach the provider before either injected failure or
@@ -105,7 +107,18 @@ try {
     }
     const payload = JSON.parse(prompt.slice(prompt.lastIndexOf('\n\n') + 2));
     const round = payload.automaticCheckRound ?? '1/3';
-    const coverageReview = coverageScenario && operation !== 'EXECUTE_SLICE';
+    const priorAttempts = reassessmentScenario && operation === 'VALIDATE_SLICE'
+      ? ((await fs.readFile(taskFile, 'utf8')).match(/^### attempt-/gmu) ?? []).length : null;
+    if (operation === 'VALIDATE_SLICE' && (context.scenario === 'reassessment-transport'
+      || (context.scenario === 'reassessment-second-transport' && priorAttempts === 1))) {
+      emit({ type: 'turn.failed', error: { message: 'TEST-ONLY uncertain provider completion' } }); process.exit(0);
+    }
+    if (operation === 'VALIDATE_SLICE' && context.scenario === 'reassessment-access') {
+      // Real nonzero command event, explicitly injected access exception. A
+      // later green verification must not admit the reassessment policy.
+      run('-e', ["throw Object.assign(new Error('TEST-ONLY access denied'), { code: 'EACCES' })"]);
+    }
+    const coverageReview = coverageScenario && operation !== 'EXECUTE_SLICE' && priorAttempts !== 0;
     const observed = run('--test', [], true, coverageReview ? { STNL_OFFLINE_REQUIRE_PRIORITY_COVERAGE: '1' } : {});
     const head = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: workspace, encoding: 'utf8' });
     if (head.status !== 0) throw new Error('HEAD unavailable');
@@ -113,13 +126,21 @@ try {
     const passed = observed.status === 0;
     const evidence = `${caseId} prepared case variants and original seed tests; ${observed.stdout}`;
     if (operation === 'VALIDATE_SLICE') {
+      if (context.scenario === 'reassessment-pending-command') emit({ type: 'item.started', item: {
+        id: 'item_' + sequence++, type: 'command_execution', command: 'node TEST-ONLY-pending-inspection.mjs', status: 'in_progress', exit_code: null } });
+      if (context.scenario === 'reassessment-malformed'
+        || (context.scenario === 'reassessment-second-malformed' && priorAttempts === 1)) { finish({ status: 'BLOCKED' }); process.exit(0); }
       const matrix = JSON.parse(await fs.readFile(path.join(workspace, 'test/offline-case.json')));
       const coverageOmitted = coverageReview && !matrix.priorities.includes('high');
       const previousFinding = (await fs.readFile(taskFile, 'utf8')).includes('### finding-01');
-      finish({ status: passed ? 'PASS' : coverageOmitted ? 'NEEDS_FIX' : 'BLOCKED', head: head.stdout.trim(), commands, evidence,
+      const injectedBlock = reassessmentScenario && (priorAttempts === 0 || context.scenario === 'reassessment-blocked'
+        || (context.scenario === 'reassessment-after-fix-blocked' && priorAttempts >= 2));
+      finish({ status: injectedBlock ? 'BLOCKED' : passed ? 'PASS' : coverageOmitted ? 'NEEDS_FIX' : 'BLOCKED', head: head.stdout.trim(), commands, evidence,
         findingReferences: coverageOmitted || previousFinding ? 'finding-01' : 'none',
-        findingDispositions: coverageOmitted ? 'finding-01=active' : previousFinding && passed ? 'finding-01=resolved' : 'none',
-        blockers: passed || coverageOmitted ? 'none' : 'Prepared check failed; no correction judgment simulated.', unexpectedWorkspaceEffects: 'none', persistenceSummary: 'No runner writes to the workspace.' });
+        findingDispositions: (coverageOmitted || (injectedBlock && previousFinding)) ? 'finding-01=active'
+          : previousFinding && passed ? 'finding-01=resolved' : 'none',
+        blockers: injectedBlock ? 'TEST-ONLY captured review requests further assessment; original diagnostic must remain.'
+          : passed || coverageOmitted ? 'none' : 'Prepared check failed; no correction judgment simulated.', unexpectedWorkspaceEffects: 'none', persistenceSummary: 'No runner writes to the workspace.' });
     } else {
       const { inspectExecutionState } = await importHelper('stnl-slice-executor', 'execution-state.mjs');
       const state = operation === 'APPLY_FINDINGS' ? await inspectExecutionState(specPath) : null;
@@ -223,7 +244,7 @@ fs.writeFile = async (file, ...args) => { if (!fired && ${JSON.stringify(context
     if (prepared.status) throw new Error(prepared.stderr);
     if (operation === 'EXECUTE_SLICE') {
       const cli = { A: 'filtered-cli.mjs', B: 'prioritized-cli.mjs', C: 'archived-cli.mjs' }[caseId];
-      if (context.scenario === 'finalizer-fail-execute-source-edit') {
+      if (context.scenario === 'finalizer-fail-execute-source-edit' || reassessmentScenario) {
         // Author the implementation on its already-writable approved seed
         // path. copyFile would inherit the frozen reference's 0444 mode.
         // This fresh fixture never changes permissions or resumes a denial.
@@ -266,8 +287,17 @@ fs.writeFile = async (file, ...args) => { if (!fired && ${JSON.stringify(context
       if (context.scenario === 'interrupt') { setInterval(() => {}, 1000); await new Promise(() => {}); }
       finish('Injected main completion while owned runner is still pending.'); process.exit(0);
     }
+    if (operation === 'VALIDATE_SLICE' && context.scenario === 'reassessment-broker') {
+      const activeFile = path.join(process.env.TMPDIR, 'stnl-runner-broker/active.json');
+      const active = JSON.parse(await fs.readFile(activeFile));
+      await fs.writeFile(activeFile, JSON.stringify({ ...active, slice: 'slice-99' }));
+    }
+    if (operation === 'VALIDATE_SLICE' && context.scenario === 'reassessment-before-runner-source'
+      && (await fs.readFile(taskFile, 'utf8')).includes('### attempt-01')) {
+      await fs.appendFile(path.join(workspace, 'src/cli.mjs'), '\n// TEST-ONLY change before runner admission\n');
+    }
     const delegated = run(process.env.STNL_MANAGED_RUNNER_BRIDGE, ['--payload-file', process.env.STNL_MANAGED_RUNNER_PAYLOAD]);
-    if (delegated.status) throw new Error(delegated.stderr);
+    if (delegated.status && context.scenario !== 'reassessment-second-malformed') throw new Error(delegated.stderr);
     const faultOperation = context.scenario.startsWith('finalizer-fail-execute-') ? 'EXECUTE_SLICE'
       : context.scenario === 'finalizer-fail-apply-publication' ? 'APPLY_FINDINGS' : 'VALIDATE_SLICE';
     if ((context.scenario === 'finalize-summary-rejection' || context.scenario.startsWith('finalizer-fail-')) && operation === faultOperation) {
@@ -469,6 +499,23 @@ fs.open = async (file, flags, ...args) => {
     }
     const finalized = run(process.env.STNL_MANAGED_FINALIZER, ['--finalize']);
     if (finalized.status) throw new Error(finalized.stderr);
+    if (reassessmentScenario && operation === 'VALIDATE_SLICE') {
+      const result = JSON.parse(finalized.stdout);
+      if (result.state === 'VALIDATION_BLOCKED') {
+        if (context.scenario === 'reassessment-source-change') await fs.appendFile(path.join(workspace, 'src/cli.mjs'), '\n// TEST-ONLY source change after publication\n');
+        if (context.scenario === 'reassessment-tests-change') await fs.appendFile(path.join(workspace, 'test/offline-case.json'), '\n');
+        if (context.scenario === 'reassessment-seed-tests-change') await fs.appendFile(path.join(workspace, 'test/cli.test.mjs'), '\n// TEST-ONLY seed check changed\n');
+        if (context.scenario === 'reassessment-tests-added') await fs.writeFile(path.join(workspace, 'test/unapproved.test.mjs'), '// TEST-ONLY unclaimed check added\n');
+        if (context.scenario === 'reassessment-decision-duplicate') await fs.writeFile(path.join(path.dirname(workspace), 'validation-reassessment-slice-01.json'), '');
+        if (context.scenario === 'reassessment-authority-change') await fs.appendFile(path.join(specPath, 'shared/requirements.md'), '\nTEST-ONLY changed requirement authority.\n');
+        if (context.scenario === 'reassessment-capture-change') {
+          const receipt = JSON.parse(delegated.stdout.slice('SENTINEL_RUNNER_RECEIPT '.length).trim());
+          await fs.appendFile(receipt.semanticResponseFile, '\n');
+        }
+        if (context.scenario === 'reassessment-provenance') emit({ type: 'item.completed', item: {
+          id: 'item_' + sequence++, type: 'collab_tool_call', tool: 'spawn_agent', receiver_thread_ids: ['TEST-ONLY-unmanaged-context'], status: 'completed' } });
+      }
+    }
     if (operation === 'APPLY_FINDINGS') await fs.writeFile(path.join(context.root, '.offline-after-apply-task.md'), await fs.readFile(taskFile));
     if (JSON.parse(finalized.stdout).state === 'PRIVATE_TESTS_FAIL' && context.scenario === 'private-retry' && caseId === 'A') {
       const binding = JSON.parse(prepared.stdout);

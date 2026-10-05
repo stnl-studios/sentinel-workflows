@@ -6839,6 +6839,7 @@ test("reviewed planning made stale before tasks replans without historical recov
     let activeBroker;
     const product = {
       inspectExecutionState, preflightExecutionOperation, deriveNormalHandoff, workflowSkillForOperation,
+      resolveExecutionWorkspace: resolveMaterializerExecutionWorkspace, captureRunnerTestedState,
       validateWorkspace: validateLifecycleWorkspace, createManagedSliceContext, managedEnvironment,
       createUsageNormalizer, ZERO_USAGE,
       prepareIsolatedHome: async () => {

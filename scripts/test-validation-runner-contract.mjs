@@ -13,7 +13,8 @@ async function fixture(t) {
   const temporary = await fs.mkdtemp(path.join(os.tmpdir(), "stnl-runner-"));
   t.after(() => fs.rm(temporary, { recursive: true, force: true }));
   const root = path.join(temporary, "subagents");
-  await fs.cp(canonical, root, { recursive: true });
+  // The contract checker reads distributed sources, not SDK dependencies.
+  await fs.cp(canonical, root, { recursive: true, filter: file => !file.split(path.sep).includes('node_modules') });
   return root;
 }
 
@@ -54,6 +55,85 @@ test("formal coverage findings require a demonstrated authorized test-delivery d
   const sdk = await fs.readFile(path.join(repository, "agents/codex/runtime/sdk-transport.mjs"), "utf8");
   assert.match(sdk, /For VALIDATE_SLICE only[^\n]*executor-prepared tests already required by current authority and authorized in this slice[\s\S]{0,80}NEEDS_FIX/u);
   assert.doesNotMatch(sdk, /Missing runnable coverage is BLOCKED;/u);
+});
+
+test("coverage review compares authority, effective input, assertion and producer in every instruction source", async () => {
+  for (const relative of ['codex/.codex/agents/stnl_validation_runner.toml', 'claude-code/.claude/agents/stnl-validation-runner.md']) {
+    const contract = await fs.readFile(path.join(canonical, relative), 'utf8');
+    assert.match(contract, /Antes de alegar ausência de cobertura[^\n]*requisito\/variante[^\n]*entrada efetivamente gravada[^\n]*asserção esperada[^\n]*caminho produtor/u);
+    assert.match(contract, /produtor pertinente no escopo[^\n]*transformações e chamadas/u);
+    assert.match(contract, /Aponte paths e trechos ou valores observados[^\n]*separe requisito exigido de melhoria opcional/u);
+    assert.match(contract, /julgamento semântico; o runtime não prova a validade de um finding/u);
+  }
+  for (const file of ['agents/codex/runtime/sdk-transport.mjs', 'skills/workflows/stnl-slice-quality-manager/SKILL.md']) {
+    const instruction = await fs.readFile(path.join(repository, file), 'utf8');
+    assert.match(instruction, /Before claiming coverage is absent[^\n]*current requirement\/variant[^\n]*input actually persisted[^\n]*expected assertion[^\n]*producer path/u);
+    assert.match(instruction, /cite paths and observed values or excerpts/iu);
+    assert.match(instruction, /Distinguish required coverage from optional improvements/u);
+    assert.match(instruction, /semantic judgment/u);
+  }
+});
+
+test("distribution gate rejects loss of coverage comparison without judging model findings", async (t) => {
+  for (const [before, after] of [
+    ['a entrada efetivamente gravada ou fornecida ao check', 'apenas a aparência da fixture'],
+    ['a asserção esperada e o caminho produtor da entrada e do resultado', 'apenas o nome do teste'],
+    ['considere suas transformações e chamadas', 'ignore transformações e chamadas'],
+    ['Aponte paths e trechos ou valores observados', 'Aponte somente suspeitas'],
+    ['separe requisito exigido de melhoria opcional', 'trate melhorias opcionais como requisitos'],
+  ]) {
+    const root = await fixture(t);
+    await replaceBoth(root, before, after);
+    expectCategory(check(root), 'R006_VERDICTS');
+  }
+});
+
+test("offline coverage examples expose effective inputs and assertion limits, not LLM judgment", async (t) => {
+  // Synthetic criterion: object round trip preserves Unicode, false and nested
+  // null. Property order/JSON whitespace are not required. No verdict classifier
+  // or model is invoked; all checks are prepared before executing any command.
+  const required = { label: 'Ž', enabled: false, meta: { empty: null } };
+  for (const kind of ['indirect-present', 'missing-required-variant', 'defective-assertion', 'optional-format']) {
+    await t.test(kind, async child => {
+      const root = await fs.mkdtemp(path.join(os.tmpdir(), 'stnl-coverage-example-'));
+      child.after(() => fs.rm(root, { recursive: true, force: true }));
+      await fs.writeFile(path.join(root, 'input-producer.mjs'), `export function input() {
+        const seed = { label: 'Ž', enabled: true };
+        return { ...seed, enabled: false, meta: ${kind === 'missing-required-variant' ? '{}' : '{ empty: null }'} };
+      }\n`);
+      await fs.writeFile(path.join(root, 'result-producer.mjs'), `export function roundTrip(value) {
+        const output = JSON.parse(JSON.stringify(value));
+        ${kind === 'defective-assertion' ? 'delete output.meta.empty;' : ''}
+        return ${kind === 'optional-format' ? 'Object.fromEntries(Object.entries(output).reverse())' : 'output'};
+      }\n`);
+      await fs.writeFile(path.join(root, 'prepare.mjs'), `import fs from 'node:fs/promises';
+        import { input } from './input-producer.mjs';
+        await fs.writeFile('input.json', JSON.stringify(input()));\n`);
+      const preamble = `import assert from 'node:assert/strict'; import fs from 'node:fs/promises';
+        import { roundTrip } from './result-producer.mjs';
+        const input = JSON.parse(await fs.readFile('input.json', 'utf8')); const output = roundTrip(input);\n`;
+      await fs.writeFile(path.join(root, 'prepared-check.mjs'), preamble + (kind === 'defective-assertion'
+        ? "assert.equal(output.label, 'Ž');\n" : 'assert.deepEqual(output, input);\n'));
+      await fs.writeFile(path.join(root, 'required-check.mjs'), preamble + `assert.deepEqual(input, ${JSON.stringify(required)});
+        assert.deepEqual(output, ${JSON.stringify(required)});\n`);
+      const run = file => spawnSync(process.execPath, [file], { cwd: root, encoding: 'utf8' });
+      assert.equal(run('prepare.mjs').status, 0);
+      const recordedBytes = await fs.readFile(path.join(root, 'input.json'));
+      const recorded = JSON.parse(recordedBytes);
+      assert.equal(run('prepared-check.mjs').status, 0, 'a green prepared check alone does not decide coverage');
+      const observed = run('required-check.mjs');
+      assert.equal(observed.status, ['missing-required-variant', 'defective-assertion'].includes(kind) ? 1 : 0, observed.stderr);
+      if (kind === 'missing-required-variant') assert.equal(Object.hasOwn(recorded.meta, 'empty'), false);
+      else assert.deepEqual(recorded, required, 'inspect the effective input, including producer transformations');
+      if (kind === 'defective-assertion') assert.match(observed.stderr, /deepEqual|deep-equal/u);
+      if (kind === 'optional-format') {
+        const { roundTrip } = await import(new URL('file://' + path.join(root, 'result-producer.mjs')));
+        assert.notEqual(JSON.stringify(roundTrip(recorded)), JSON.stringify(required));
+        assert.deepEqual(roundTrip(recorded), required, 'an unrequired serialization preference does not violate this criterion');
+      }
+      assert.deepEqual(await fs.readFile(path.join(root, 'input.json')), recordedBytes, 'checks preserve their input');
+    });
+  }
 });
 
 test("Codex and Claude bodies remain byte-identical and schemas are exact", async () => {

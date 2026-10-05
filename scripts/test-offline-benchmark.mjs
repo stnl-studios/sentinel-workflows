@@ -3,36 +3,17 @@ import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import test from 'node:test';
-import { OFFLINE_AUTH, OFFLINE_MARKER, OFFLINE_PROVIDER } from '../agents/codex/runtime/offline-provider-context.mjs';
+import test, { after } from 'node:test';
+import { OFFLINE_AUTH } from '../agents/codex/runtime/offline-provider-context.mjs';
+import { createOfflineCheckout, finishOfflineFixture } from './fixtures/offline-checkout.mjs';
 import { compareMeasurements } from '../benchmarks/sentinel-todo/runtime/benchmark-measurement.mjs';
 
 const ROOT = path.resolve(import.meta.dirname, '..');
 const hash = (bytes) => `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
 let happyFixture;
-async function checkout(scenario) {
-  const root = await fs.realpath(await fs.mkdtemp('/tmp/stnl-offline-checkout-'));
-  const clone = spawnSync('git', ['clone', '--no-hardlinks', '--local', ROOT, root], { encoding: 'utf8', timeout: 30_000 });
-  assert.equal(clone.status, 0, clone.stderr);
-  // Copy candidate sources before freeze, including untracked source additions.
-  for (const name of ['agents', 'skills', 'scripts', 'templates', 'benchmarks']) await fs.cp(path.join(ROOT, name), path.join(root, name), {
-    recursive: true, filter: (file) => !file.includes('/measurements/') && !file.endsWith('/measurements') && !file.includes('/.DS_Store'),
-  });
-  await fs.writeFile(path.join(root, '.offline-owned'), OFFLINE_MARKER);
-  const home = path.join(root, '.offline-home');
-  await fs.mkdir(path.join(home, '.codex'), { recursive: true });
-  await fs.mkdir(path.join(home, 'Library/Application Support'), { recursive: true });
-  await fs.mkdir(path.join(home, '.claude'), { recursive: true });
-  await fs.writeFile(path.join(home, '.codex/auth.json'), OFFLINE_AUTH);
-  await fs.writeFile(path.join(home, '.codex/config.toml'), '# fictitious GLOBAL sentinel\n');
-  await fs.writeFile(path.join(home, '.claude/settings.json'), '{"fictitious":"unchanged"}\n');
-  await fs.writeFile(path.join(root, '.offline-context.json'), JSON.stringify({ mode: 'OFFLINE_TEST_ONLY', root, home, scenario,
-    providerSha256: hash(await fs.readFile(path.join(root, OFFLINE_PROVIDER))) }));
-  const env = { ...process.env, HOME: home, STNL_OFFLINE_PROVIDER_CONTEXT: path.join(root, '.offline-context.json'),
-    GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', NO_COLOR: '1', npm_config_update_notifier: 'false', npm_config_audit: 'false', npm_config_fund: 'false' };
-  delete env.OPENAI_API_KEY; delete env.CODEX_API_KEY;
-  return { root, home, env };
-}
+const checkout = (scenario, t, options) => createOfflineCheckout(t, ROOT, scenario, options);
+// The happy fixture also belongs to T28/T29; release it after suite consumers.
+after(async () => { if (happyFixture) await finishOfflineFixture(happyFixture); });
 async function npm(fixture, onStart = () => {}) {
   const command = ['run', 'benchmark'];
   const child = spawn('npm', command, { cwd: fixture.root, env: fixture.env, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -47,8 +28,8 @@ async function npm(fixture, onStart = () => {}) {
   return { code, stdout, stderr };
 }
 
-test('T26/T24/T31/T32: literal npm benchmark uses real FULL runtime and fictitious GLOBAL only', { timeout: 150_000 }, async () => {
-  const fixture = await checkout('full');
+test('T26/T24/T31/T32: literal npm benchmark uses real FULL runtime and fictitious GLOBAL only', { timeout: 150_000 }, async (t) => {
+  const fixture = await checkout('full', t, { shared: true });
   happyFixture = fixture;
   console.log(`TEST-ONLY evidence: ${fixture.root}`);
   const sentinels = ['.codex/auth.json', '.codex/config.toml', '.claude/settings.json'];
@@ -83,7 +64,7 @@ async function ready(file, timeout = 10_000) {
 }
 
 test('finalizer: validation rejection preserves input and fresh proposal recovers the same receipt', { timeout: 90_000 }, async (t) => {
-  const fixture = await checkout('finalize-summary-rejection');
+  const fixture = await checkout('finalize-summary-rejection', t);
   console.log(`TEST-ONLY finalizer rejection evidence: ${fixture.root}`);
   const result = spawnSync(process.execPath, ['benchmarks/sentinel-todo/runtime/benchmark-manager.mjs', 'run', '--case', 'A'],
     { cwd: fixture.root, env: fixture.env, encoding: 'utf8', timeout: 75_000, maxBuffer: 4 * 1024 * 1024 });
@@ -147,8 +128,8 @@ test('finalizer: validation rejection preserves input and fresh proposal recover
 });
 
 for (const boundary of ['prepare-index', 'publication-install', 'readback', 'finalization-write', 'contraproofs']) {
-  test(`finalizer: ${boundary} failure allows bounded same-receipt completion`, { timeout: 90_000 }, async () => {
-    const fixture = await checkout('finalizer-fail-' + boundary);
+  test(`finalizer: ${boundary} failure allows bounded same-receipt completion`, { timeout: 90_000 }, async (t) => {
+    const fixture = await checkout('finalizer-fail-' + boundary, t);
     console.log(`TEST-ONLY adjacent finalizer evidence: ${boundary} ${fixture.root}`);
     const result = spawnSync(process.execPath, ['benchmarks/sentinel-todo/runtime/benchmark-manager.mjs', 'run', '--case', 'A'],
       { cwd: fixture.root, env: fixture.env, encoding: 'utf8', timeout: 75_000, maxBuffer: 4 * 1024 * 1024 });
@@ -191,8 +172,8 @@ for (const boundary of ['prepare-index', 'publication-install', 'readback', 'fin
 }
 
 for (const [operation, boundary] of [['execute', 'publication'], ['apply', 'publication'], ['execute', 'cleanup'], ['execute', 'source-edit']]) {
-  test(`finalizer: ${operation} ${boundary} failure never appends duplicate same-receipt evidence`, { timeout: 90_000 }, async () => {
-    const fixture = await checkout(`finalizer-fail-${operation}-${boundary}`);
+  test(`finalizer: ${operation} ${boundary} failure never appends duplicate same-receipt evidence`, { timeout: 90_000 }, async (t) => {
+    const fixture = await checkout(`finalizer-fail-${operation}-${boundary}`, t);
     console.log(`TEST-ONLY adjacent ${operation} evidence: ${fixture.root}`);
     const caseId = operation === 'apply' ? 'B' : 'A';
     const result = spawnSync(process.execPath, ['benchmarks/sentinel-todo/runtime/benchmark-manager.mjs', 'run', '--case', caseId],
@@ -237,8 +218,8 @@ for (const [operation, boundary] of [['execute', 'publication'], ['apply', 'publ
 }
 
 for (const boundary of ['owner', 'binding']) {
-  test(`finalizer: allocation failure before ${boundary} retains evidence and prepares safely`, { timeout: 90_000 }, async () => {
-    const fixture = await checkout('allocation-fail-' + boundary);
+  test(`finalizer: allocation failure before ${boundary} retains evidence and prepares safely`, { timeout: 90_000 }, async (t) => {
+    const fixture = await checkout('allocation-fail-' + boundary, t);
     console.log(`TEST-ONLY allocation ${boundary} evidence: ${fixture.root}`);
     const result = spawnSync(process.execPath, ['benchmarks/sentinel-todo/runtime/benchmark-manager.mjs', 'run', '--case', 'A'],
       { cwd: fixture.root, env: fixture.env, encoding: 'utf8', timeout: 75_000, maxBuffer: 4 * 1024 * 1024 });
@@ -262,8 +243,8 @@ for (const boundary of ['owner', 'binding']) {
   });
 }
 
-test('finalizer: private failing round remains once before authorized round two passes', { timeout: 90_000 }, async () => {
-  const fixture = await checkout('private-retry');
+test('finalizer: private failing round remains once before authorized round two passes', { timeout: 90_000 }, async (t) => {
+  const fixture = await checkout('private-retry', t);
   console.log(`TEST-ONLY private round evidence: ${fixture.root}`);
   const result = spawnSync(process.execPath, ['benchmarks/sentinel-todo/runtime/benchmark-manager.mjs', 'run', '--case', 'A'],
     { cwd: fixture.root, env: fixture.env, encoding: 'utf8', timeout: 75_000, maxBuffer: 4 * 1024 * 1024 });
@@ -278,8 +259,8 @@ test('finalizer: private failing round remains once before authorized round two 
   assert.equal((task.match(/### attempt-/gu) ?? []).length, 1);
 });
 
-test('T15: APPLY finalizer preserves a legitimate coverage finding through correction, revalidation and budget', { timeout: 90_000 }, async () => {
-  const fixture = await checkout('coverage-findings');
+test('T15: APPLY finalizer preserves a legitimate coverage finding through correction, revalidation and budget', { timeout: 90_000 }, async (t) => {
+  const fixture = await checkout('coverage-findings', t);
   console.log(`TEST-ONLY APPLY evidence: ${fixture.root}`);
   const result = spawnSync(process.execPath, ['benchmarks/sentinel-todo/runtime/benchmark-manager.mjs', 'run', '--case', 'B'],
     { cwd: fixture.root, env: fixture.env, encoding: 'utf8', timeout: 75_000, maxBuffer: 4 * 1024 * 1024 });
@@ -346,8 +327,8 @@ test('T15: APPLY finalizer preserves a legitimate coverage finding through corre
   assert.equal((await read('case-b/raw.json')).status, 'PASS');
 });
 
-for (const first of [false, true]) test(`P2: real main SDK exception ${first ? 'before first event' : 'after prior operation'} keeps ledger, journal, case state and summary consumption consistent`, { timeout: 90_000 }, async () => {
-  const fixture = await checkout(first ? 'main-first-exception' : 'main-exception');
+for (const first of [false, true]) test(`P2: real main SDK exception ${first ? 'before first event' : 'after prior operation'} keeps ledger, journal, case state and summary consumption consistent`, { timeout: 90_000 }, async (t) => {
+  const fixture = await checkout(first ? 'main-first-exception' : 'main-exception', t);
   console.log(`TEST-ONLY main exception evidence: ${fixture.root}`);
   const result = spawnSync(process.execPath, ['benchmarks/sentinel-todo/runtime/benchmark-manager.mjs', 'run', '--case', 'A'],
     { cwd: fixture.root, env: fixture.env, encoding: 'utf8', timeout: 75_000, maxBuffer: 4 * 1024 * 1024 });
@@ -379,8 +360,8 @@ for (const first of [false, true]) test(`P2: real main SDK exception ${first ? '
   assert.ok(calls.every((call) => call.externalCalls === 0));
 });
 for (const signal of [null, 'SIGINT', 'SIGTERM']) {
-  test(`T05: literal npm settles owned pending runner after ${signal ?? 'main completion'}`, { timeout: 150_000 }, async () => {
-    const fixture = await checkout(signal ? 'interrupt' : 'pending-main'); console.log(`TEST-ONLY evidence: ${fixture.root}`);
+  test(`T05: literal npm settles owned pending runner after ${signal ?? 'main completion'}`, { timeout: 150_000 }, async (t) => {
+    const fixture = await checkout(signal ? 'interrupt' : 'pending-main', t); console.log(`TEST-ONLY evidence: ${fixture.root}`);
     const result = await npm(fixture, async () => {
       if (signal === null) return;
       await ready(path.join(fixture.root, '.offline-runner-ready'));
@@ -406,8 +387,8 @@ for (const signal of [null, 'SIGINT', 'SIGTERM']) {
 }
 
 for (const blockedCase of ['A', 'B', 'C']) {
-  test(`T23/T27: literal npm provider failure in ${blockedCase} preserves sibling outcomes and started consumption`, { timeout: 150_000 }, async () => {
-    const fixture = await checkout(`block-${blockedCase.toLowerCase()}`);
+  test(`T23/T27: literal npm provider failure in ${blockedCase} preserves sibling outcomes and started consumption`, { timeout: 150_000 }, async (t) => {
+    const fixture = await checkout(`block-${blockedCase.toLowerCase()}`, t);
     console.log(`TEST-ONLY evidence: ${fixture.root}`);
     const result = await npm(fixture);
     assert.equal(result.code, 1, result.stdout + result.stderr);
@@ -434,8 +415,8 @@ for (const blockedCase of ['A', 'B', 'C']) {
   });
 }
 
-test('T06: literal npm main completing without a runner request blocks with zero runner cost', { timeout: 150_000 }, async () => {
-  const fixture = await checkout('zero-runner'); console.log(`TEST-ONLY evidence: ${fixture.root}`);
+test('T06: literal npm main completing without a runner request blocks with zero runner cost', { timeout: 150_000 }, async (t) => {
+  const fixture = await checkout('zero-runner', t); console.log(`TEST-ONLY evidence: ${fixture.root}`);
   const result = await npm(fixture); assert.equal(result.code, 1, result.stdout + result.stderr);
   const report = JSON.parse(await fs.readFile(path.join(fixture.root, 'benchmarks/sentinel-todo/measurements/latest.json')));
   const state = JSON.parse(await fs.readFile(path.join(fixture.root, 'benchmark-temp', report.run.id, 'case-a/case-state.json')));
@@ -446,8 +427,8 @@ test('T06: literal npm main completing without a runner request blocks with zero
   assert.equal(operation.runner.requestsHandled, 0);
 });
 
-test('T13: literal npm retains a real failing check privately before corrected round 2 passes', { timeout: 150_000 }, async () => {
-  const fixture = await checkout('private-retry'); console.log(`TEST-ONLY evidence: ${fixture.root}`);
+test('T13: literal npm retains a real failing check privately before corrected round 2 passes', { timeout: 150_000 }, async (t) => {
+  const fixture = await checkout('private-retry', t); console.log(`TEST-ONLY evidence: ${fixture.root}`);
   const result = await npm(fixture); assert.equal(result.code, 0, result.stdout + result.stderr);
   const report = JSON.parse(await fs.readFile(path.join(fixture.root, 'benchmarks/sentinel-todo/measurements/latest.json')));
   const root = path.join(fixture.root, 'benchmark-temp', report.run.id, 'case-a');
@@ -459,7 +440,7 @@ test('T13: literal npm retains a real failing check privately before corrected r
   assert.equal(report.cases.find((c) => c.id === 'A').runnerTurns, 3);
 });
 
-test('T28/T29: literal npm refuses history collision, unowned scratch and failed verify before dispatch/cleanup', { timeout: 150_000 }, async () => {
+test('T28/T29: literal npm refuses history collision, unowned scratch and failed verify before dispatch/cleanup', { timeout: 150_000 }, async (t) => {
   assert.ok(happyFixture, 'happy-path evidence is required');
   const fixture = happyFixture;
   const latest = JSON.parse(await fs.readFile(path.join(fixture.root, 'benchmarks/sentinel-todo/measurements/latest.json')));
@@ -503,8 +484,8 @@ test('T28/T29: literal npm refuses history collision, unowned scratch and failed
   assert.deepEqual(await fs.readFile(history), historyBytes, 'the original report survives cleanup byte-identically');
 });
 
-test('T23: manager cancellation settles both barrier-held sibling provider processes', { timeout: 150_000 }, async () => {
-  const fixture = await checkout('interrupt-siblings'); console.log(`TEST-ONLY evidence: ${fixture.root}`);
+test('T23: manager cancellation settles both barrier-held sibling provider processes', { timeout: 150_000 }, async (t) => {
+  const fixture = await checkout('interrupt-siblings', t); console.log(`TEST-ONLY evidence: ${fixture.root}`);
   const result = await npm(fixture, async () => {
     await Promise.all(['B', 'C'].map((id) => ready(path.join(fixture.root, `.offline-sibling-ready-${id}`), 30_000)));
     const calls = (await fs.readFile(path.join(fixture.root, '.offline-calls.jsonl'), 'utf8')).trim().split('\n').map(JSON.parse);
@@ -523,8 +504,8 @@ test('T23: manager cancellation settles both barrier-held sibling provider proce
   assert.equal(ledger.reservations.length, 0);
 });
 
-test('T30: real manager resumes FOCAL_STOP with original snapshot and refuses terminal reopen', { timeout: 150_000 }, async () => {
-  const fixture = await checkout('full'); console.log(`TEST-ONLY evidence: ${fixture.root}`);
+test('T30: real manager resumes FOCAL_STOP with original snapshot and refuses terminal reopen', { timeout: 150_000 }, async (t) => {
+  const fixture = await checkout('full', t); console.log(`TEST-ONLY evidence: ${fixture.root}`);
   const manager = path.join(fixture.root, 'benchmarks/sentinel-todo/runtime/benchmark-manager.mjs');
   const call = (args) => spawnSync(process.execPath, [manager, ...args], { cwd: fixture.root, env: fixture.env, encoding: 'utf8', timeout: 60_000 });
   const stopped = call(['run', '--case', 'A', '--max-operations', '2']); assert.equal(stopped.status, 0, stopped.stdout + stopped.stderr);
