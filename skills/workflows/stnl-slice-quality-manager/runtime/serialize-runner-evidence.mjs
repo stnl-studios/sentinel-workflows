@@ -1245,7 +1245,7 @@ function executionResponseFields(operation, parsed, testedScope) {
 }
 
 export async function serializeRunnerExecutionBundleFromResponse({
-  operation, response, workspace, taskArtifact, receiptFile, semanticResponseFile, verificationEventIds,
+  operation, response, workspace, taskArtifact, receiptFile, semanticResponseFile, verificationEventIds, resolveManagedFindingsCycle,
 }) {
   if (!new Set(["EXECUTE_SLICE", "APPLY_FINDINGS"]).has(operation)) {
     fail("execution bundle operation must be EXECUTE_SLICE or APPLY_FINDINGS");
@@ -1271,6 +1271,13 @@ export async function serializeRunnerExecutionBundleFromResponse({
     ...MACHINE_EXECUTION_FIELDS[operation].map(([key, label]) => [label, payload[key]]),
     ["filelessReason", payload.filelessReason],
   ]);
+  if (resolveManagedFindingsCycle !== undefined) {
+    const managedFindingsCycle = await resolveManagedFindingsCycle(payload);
+    if (operation !== "APPLY_FINDINGS" || receiptFile === undefined || !/^attempt-[0-9]{2,}$/.test(managedFindingsCycle)) {
+      fail("managed Findings cycle requires a captured APPLY receipt and canonical attempt");
+    }
+    parsed["Findings cycle"] = managedFindingsCycle;
+  }
   parsed.Commands = mechanicalCommands;
   const { targets, removed } = await deriveExecutionTargetsFromTask({ workspace, taskArtifact });
   const capturedEntries = await capturedExecutionEntries({ receiptFile, operation, workspace, taskArtifact, targets, removed });
@@ -1322,7 +1329,7 @@ export async function serializeRunnerExecutionBundleFromResponse({
   });
 }
 
-export async function insertExecutionEvidenceInCandidate({ taskArtifact, operation, bundle }) {
+export async function insertExecutionEvidenceInCandidate({ taskArtifact, operation, bundle, validateProspectiveTask }) {
   if (!new Set(["EXECUTE_SLICE", "APPLY_FINDINGS"]).has(operation)
     || typeof bundle !== "string" || !/^### (?:implementation|findings)-check-[0-9]{2,}\n/u.test(bundle)) {
     fail("candidate insertion requires one canonical execution check");
@@ -1379,6 +1386,7 @@ export async function insertExecutionEvidenceInCandidate({ taskArtifact, operati
     updated = replaceSectionBody(updated, "Delegation Blocker",
       `${blocker.replace("- State: active", "- State: resolved")}\n- Resolution: ${identifier.slice(4)} returned a valid runner result`);
   }
+  if (validateProspectiveTask !== undefined) await validateProspectiveTask({ slice, text: updated });
   const temporary = `${canonicalTask}.${process.pid}.${randomUUID()}.tmp`;
   try {
     const mode = (await fs.stat(canonicalTask)).mode & 0o777;

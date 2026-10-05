@@ -77,9 +77,10 @@ const digest = async (file) => createHash('sha256').update(await fs.readFile(fil
 const finish = (response) => { emit({ type: 'item.completed', item: { id: 'message_' + sequence++, type: 'agent_message', text: typeof response === 'string' ? response : JSON.stringify(response) } }); emit({ type: 'turn.completed', usage: {} }); };
 const reassessmentScenario = context.scenario.startsWith('reassessment-');
 const applyScopeScenario = context.scenario === 'apply-scope-repair';
-const targets = applyScopeScenario ? [...defaultTargets, 'src/todo-service.mjs', 'src/validation.mjs', 'test/todo-service.test.mjs'] : defaultTargets;
+const findingsCycleScenario = context.scenario === 'apply-findings-cycle';
+const targets = (applyScopeScenario || findingsCycleScenario) ? [...defaultTargets, 'src/todo-service.mjs', 'src/validation.mjs', 'test/todo-service.test.mjs'] : defaultTargets;
 const coverageScenario = ['coverage-findings', 'finalizer-fail-apply-publication',
-  'reassessment-needs-fix', 'reassessment-after-fix-blocked', 'apply-scope-repair'].includes(context.scenario);
+  'reassessment-needs-fix', 'reassessment-after-fix-blocked', 'apply-scope-repair', 'apply-findings-cycle'].includes(context.scenario);
 try {
   if (!independent && operation === 'SPEC_INIT' && ['B', 'C'].includes(caseId) && !coverageScenario) {
     // Both siblings must reach the provider before either injected failure or
@@ -153,8 +154,9 @@ try {
       failures: passed ? 'none' : observed.stdout, evidenceOrFailureSummary: evidence,
       affectedFilesOrBehaviors: targets.join(', '), blockers: 'none', unexpectedWorkspaceEffects: 'none', persistenceSummary: 'No runner edits.' };
       if (operation === 'APPLY_FINDINGS') Object.assign(response, {
-        findingsCycle: state.tasks.get('slice-01').attempts.filter((attempt) => attempt.status === 'NEEDS_FIX').at(-1).id,
-        findingsVerified: 'finding-01', correctionsCovered: 'Prepared matrix includes high.', regressionsSelected: 'Complete prepared priority checks and original seed tests.', unsupportedActiveFindings: 'none',
+        findingsCycle: findingsCycleScenario ? (round === '1/3' ? 'slice-01; finding-01 ativo' : 'finding-01')
+          : state.tasks.get('slice-01').attempts.filter((attempt) => attempt.status === 'NEEDS_FIX').at(-1).id,
+        findingsVerified: passed ? 'finding-01' : 'none', correctionsCovered: 'Prepared matrix includes high.', regressionsSelected: 'Complete prepared priority checks and original seed tests.', unsupportedActiveFindings: passed ? 'none' : 'finding-01',
       });
       else Object.assign(response, { priorRoundFailure: round === '1/3' ? 'none' : 'Prepared completed/pending variants failed in the previous round.',
         correctionApplied: round === '1/3' ? 'none' : 'Corrected the approved CLI filter implementation.',
@@ -246,7 +248,7 @@ fs.writeFile = async (file, ...args) => { if (!fired && ${JSON.stringify(context
     if (prepared.status) throw new Error(prepared.stderr);
     if (operation === 'EXECUTE_SLICE') {
       const cli = { A: 'filtered-cli.mjs', B: 'prioritized-cli.mjs', C: 'archived-cli.mjs' }[caseId];
-      if (context.scenario === 'finalizer-fail-execute-source-edit' || reassessmentScenario || applyScopeScenario) {
+      if (context.scenario === 'finalizer-fail-execute-source-edit' || reassessmentScenario || applyScopeScenario || findingsCycleScenario) {
         // Author the implementation on its already-writable approved seed
         // path. copyFile would inherit the frozen reference's 0444 mode.
         // This fresh fixture never changes permissions or resumes a denial.
@@ -270,7 +272,7 @@ fs.writeFile = async (file, ...args) => { if (!fired && ${JSON.stringify(context
       await fs.writeFile(path.join(context.root, '.offline-apply-before-task.md'), await fs.readFile(taskFile));
       await fs.writeFile(path.join(context.root, '.offline-apply-source-before.sha256'), await digest(path.join(workspace, 'src/cli.mjs')));
       const matrix = JSON.parse(await fs.readFile(path.join(workspace, 'test/offline-case.json')));
-      await fs.writeFile(path.join(workspace, 'test/offline-case.json'), JSON.stringify({ ...matrix, priorities: ['low', 'medium', 'high'] }));
+      await fs.writeFile(path.join(workspace, 'test/offline-case.json'), JSON.stringify({ ...matrix, priorities: ['low', 'medium', 'high'], ...(findingsCycleScenario ? { completeTarget: 1 } : {}) }));
       await fs.writeFile(binding.candidateTaskArtifact, section(await fs.readFile(binding.candidateTaskArtifact, 'utf8'), 'Corrections Applied', '- `' + matrixClaim + '`'));
       const claims = targets.map((target) => path.relative(path.dirname(taskFile), path.join(workspace, target)).split(path.sep).join('/'));
       await fs.writeFile(process.env.STNL_MANAGED_RUNNER_PAYLOAD, JSON.stringify({ automaticCheckRound: '1/3', changedAreas: applyScopeScenario ? [matrixClaim] : claims, activeFindings: ['finding-01'], corrections: ['Added required high variant to the authorized prepared matrix.'], relevantEvidence: 'Prepared coverage assertion and CLI regressions are ready.' }));
@@ -300,6 +302,41 @@ fs.writeFile = async (file, ...args) => { if (!fired && ${JSON.stringify(context
     }
     const delegated = run(process.env.STNL_MANAGED_RUNNER_BRIDGE, ['--payload-file', process.env.STNL_MANAGED_RUNNER_PAYLOAD]);
     if (delegated.status && context.scenario !== 'reassessment-second-malformed') throw new Error(delegated.stderr);
+    if (findingsCycleScenario && operation === 'APPLY_FINDINGS') {
+      const firstReceipt = JSON.parse(delegated.stdout.slice('SENTINEL_RUNNER_RECEIPT '.length).trim());
+      const immutableFiles = [firstReceipt.receiptFile, firstReceipt.semanticResponseFile, firstReceipt.eventsPath,
+        firstReceipt.receiptFile.replace(/\.receipt\.json$/u, '.started.json')];
+      const before = Object.fromEntries(await Promise.all(immutableFiles.map(async file => [file, await digest(file)])));
+      const probes = run(path.join(snapshot, 'scripts/fixtures/findings-cycle-probes.mjs'));
+      if (probes.status !== 0) throw new Error(probes.stderr);
+      const first = run(process.env.STNL_MANAGED_FINALIZER, ['--finalize']);
+      if (first.status !== 0) throw new Error(first.stderr);
+      const historyProbes = run(path.join(snapshot, 'scripts/fixtures/findings-cycle-probes.mjs'), ['--private-history']);
+      if (historyProbes.status !== 0) throw new Error(historyProbes.stderr);
+      const binding = JSON.parse(prepared.stdout);
+      const privateTask = await fs.readFile(binding.candidateTaskArtifact, 'utf8');
+      await fs.writeFile(path.join(context.root, '.offline-findings-private-task.md'), privateTask);
+      const matrixFile = path.join(workspace, 'test/offline-case.json');
+      const matrix = JSON.parse(await fs.readFile(matrixFile));
+      await fs.writeFile(matrixFile, JSON.stringify({ ...matrix, completeTarget: 2 }));
+      const firstPayload = JSON.parse(await fs.readFile(process.env.STNL_MANAGED_RUNNER_PAYLOAD));
+      await fs.writeFile(process.env.STNL_MANAGED_RUNNER_PAYLOAD, JSON.stringify({ ...firstPayload,
+        automaticCheckRound: '2/3', corrections: ['Corrected complete target from ID 1 to ID 2 in the authorized prepared check.'] }));
+      const second = run(process.env.STNL_MANAGED_RUNNER_BRIDGE, ['--payload-file', process.env.STNL_MANAGED_RUNNER_PAYLOAD]);
+      if (second.status !== 0) throw new Error(second.stderr);
+      const secondReceipt = JSON.parse(second.stdout.slice('SENTINEL_RUNNER_RECEIPT '.length).trim());
+      immutableFiles.push(secondReceipt.receiptFile, secondReceipt.semanticResponseFile, secondReceipt.eventsPath,
+        secondReceipt.receiptFile.replace(/\.receipt\.json$/u, '.started.json'));
+      for (const file of immutableFiles) if (!(file in before)) before[file] = await digest(file);
+      const finalized = run(process.env.STNL_MANAGED_FINALIZER, ['--finalize']);
+      const after = Object.fromEntries(await Promise.all(immutableFiles.map(async file => [file, await digest(file)])));
+      await fs.writeFile(path.join(context.root, '.offline-findings-cycle-observed.json'), JSON.stringify({
+        firstReceipt, secondReceipt, before, after, firstFinalize: first.status,
+        secondFinalize: finalized.status, diagnostic: finalized.stderr, privateTask,
+        publishedTask: await fs.readFile(taskFile, 'utf8') }, null, 2));
+      if (finalized.status !== 0) throw new Error(finalized.stderr);
+      finish('Two actual APPLY checks persisted and published through the managed finalizer.'); process.exit(0);
+    }
     const faultOperation = context.scenario.startsWith('finalizer-fail-execute-') ? 'EXECUTE_SLICE'
       : context.scenario === 'finalizer-fail-apply-publication' ? 'APPLY_FINDINGS' : 'VALIDATE_SLICE';
     if ((context.scenario === 'finalize-summary-rejection' || context.scenario.startsWith('finalizer-fail-')) && operation === faultOperation) {

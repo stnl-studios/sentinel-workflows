@@ -47,6 +47,11 @@ test(`prepared Case ${caseId}: requirements, negative variants and byte preserva
     if (caseId === 'B') {
       assert.ok((await invoke(['list'])).every((t) => t.priority === 'medium'));
       assert.equal((await invoke(['complete', '2']))[0].priority, 'medium');
+      if (matrix.completeTarget !== undefined) {
+        const expected = mixed.find(todo => todo.id === 2);
+        const completed = (await invoke(['complete', String(matrix.completeTarget)]))[0];
+        assert.equal(completed.id, expected.id, 'prepared complete must select the expected target ID 2');
+      }
       for (const priority of matrix.priorities ?? ['low', 'medium', 'high']) assert.equal((await invoke(['add', '--priority', priority, 'café']))[0].priority, priority);
       await invoke(['add', '--priority', 'urgent', 'title'], 1);
       await invoke(['add', '--priority'], 2);
