@@ -7,6 +7,7 @@ import fsPromises from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { pathToFileURL } from "node:url";
 
 import {
   deriveNormalHandoff,
@@ -61,6 +62,8 @@ import { emptyFindingArrays, validationResponse as sanitizedValidationResponse,
   failedCheckHistory } from "./fixtures/validation-response-regressions.mjs";
 import { prepareExecutionCopy, publishExecutionCopy } from "../skills/workflows/stnl-slice-executor/runtime/prepare-execution-copy.mjs";
 import { EXECUTION_OPERATION_SKILLS, WORKFLOW_OPERATIONS } from "./lib/skill-registry.mjs";
+import { guardOperationProvenance, recoverableOfficialHandoff } from "../benchmarks/sentinel-todo/runtime/benchmark-manager.mjs";
+import { budgetViolation } from "../benchmarks/sentinel-todo/runtime/benchmark.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
 const SKILLS = [
@@ -5419,6 +5422,108 @@ test("validation candidate preparation preserves a new semantic NEEDS_FIX findin
   assert.equal(deriveNormalHandoff(readback, "VALIDATE_SLICE")?.operation, "APPLY_FINDINGS");
   assert.equal((await fs.readFile(path.join(fixture.execution, "tasks.md"), "utf8"))
     .includes("| [ ] | 01 - Delivery | observable result | - | tasks/slice-01.md | pending | pending |"), true);
+});
+
+test("authorized prepared-test coverage finding follows correction and revalidation without rewriting history or budgets", async (t) => {
+  const fixture = await nestedLifecycleWorkspace(t);
+  await fs.appendFile(path.join(fixture.requirements, "feature_spec.md"), "\nAC-001 fixture variant: add --priority without a value returns usage/2, preserves existing storage bytes and does not create absent storage; prepare both variants here.\n");
+  await renderArtifacts(fixture);
+  const testPath = path.join(fixture.root, "test/cli.test.mjs");
+  const claim = path.relative(path.join(fixture.execution, "tasks"), testPath).split(path.sep).join("/");
+  await setImplementationAreas(fixture, { global: path.relative(fixture.execution, testPath).split(path.sep).join("/"), detail: claim, task: claim });
+  const reference = await temporary(t, "stnl-coverage-cli-reference-");
+  await fs.copyFile(path.join(ROOT, "scripts/fixtures/prioritized-cli.mjs"), path.join(reference, "cli.mjs"));
+  await fs.copyFile(path.join(ROOT, "benchmarks/sentinel-todo/seed/src/validation.mjs"), path.join(reference, "validation.mjs"));
+  const oldVariants = [{ existing: true, args: ["add", "--priority", "high"] }, { existing: false, args: ["add", "--priority"] }];
+  const missingVariant = { existing: true, args: ["add", "--priority"] };
+  assert.equal(oldVariants.some((v) => JSON.stringify(v) === JSON.stringify(missingVariant)), false);
+  const preparedTests = (variants) => `import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import test from 'node:test';
+import { runCli } from ${JSON.stringify(pathToFileURL(path.join(reference, "cli.mjs")).href)};
+for (const variant of ${JSON.stringify(variants)}) test(JSON.stringify(variant), async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'stnl-prepared-priority-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const file = path.join(root, 'todos.json');
+  const bytes = '{"todos":[{"id":5,"title":"old","completed":false}]}\\n';
+  if (variant.existing) await fs.writeFile(file, bytes);
+  let stdout = ''; let stderr = '';
+  const exit = await runCli(['--store', file, ...variant.args], { stdout: { write: (s) => stdout += s }, stderr: { write: (s) => stderr += s } });
+  assert.equal(exit, 2); assert.equal(stdout, ''); assert.match(stderr, /^usage:/);
+  if (variant.existing) assert.equal(await fs.readFile(file, 'utf8'), bytes);
+  else await assert.rejects(fs.stat(file), { code: 'ENOENT' });
+});\n`;
+  const target = await writeValidatedPath(fixture, claim, preparedTests(oldVariants));
+  const childEnvironment = { ...process.env }; delete childEnvironment.NODE_TEST_CONTEXT;
+  const runChecks = (count) => {
+    const check = spawnSync(process.execPath, ["--test", target], { cwd: fixture.root, env: childEnvironment, encoding: "utf8" });
+    assert.equal(check.status, 0, check.stderr + check.stdout);
+    assert.match(check.stdout, new RegExp(`# pass ${count}\\b`, "u"));
+  };
+  runChecks(2); // A passing prepared suite still objectively omits one required variant.
+  const evidenceFor = async (record) => record.replaceAll("../../src/example.txt", claim)
+    .replaceAll(VALIDATED_HASH, createHash("sha256").update(await fs.readFile(target)).digest("hex"));
+  const initialEvidence = await evidenceFor(checkRecord("implementation-check", 1, "TESTS_PASS", 1));
+  await editTask(fixture, (text) => replaceSection(replaceSection(replaceSection(text.replace("- [ ] 1.1", "- [x] 1.1"),
+    "Changed Areas", `- \`${claim}\``), "Implementation Test Evidence", initialEvidence), "Diff Summary", "- Prepared invalid-argument checks preserve storage; formal review checks required variant coverage."));
+  const response = { ...sanitizedValidationResponse("NEEDS_FIX"), findingReferences: "finding-01", findingDispositions: "finding-01=active",
+    evidence: "AC-001: existing-storage add --priority missing-value variant is omitted from the executor-prepared matrix in approved test/cli.test.mjs; absent storage is covered. No functional CLI defect is claimed.", blockers: "none" };
+  const captured = await capturedCommandEvidence(t, "VALIDATE_SLICE", JSON.stringify(response), "STNL_VERIFICATION_COMMAND=1 node --test test/cli.test.mjs");
+  const copy = await prepareValidationCopy({ specPath: fixture.requirements, slice: "slice-01", candidateParent: await temporary(t) });
+  const finding = ACTIVE_FINDING.replace("Observable behavior is wrong.", "Required existing-storage missing-priority test variant is omitted.")
+    .replace("Focused validation reproduced the mismatch.", response.evidence).replace("AC-001 is not satisfied.", "Required byte-preservation evidence is incomplete.")
+    .replace("Produce the required behavior.", `Add the missing variant and byte-preservation assertions only in ${claim}.`);
+  const candidateTask = path.join(copy.candidateExecutionRoot, "tasks/slice-01.md");
+  await fs.writeFile(candidateTask, replaceSection(await fs.readFile(candidateTask, "utf8"), "Validation Findings", finding));
+  assert.equal((await prepareValidationCandidate({ specPath: fixture.requirements, slice: "1", workspace: fixture.root,
+    candidateExecutionRoot: copy.candidateExecutionRoot, ...captured })).formalStatus, "NEEDS_FIX");
+  await publishValidationCandidate({ specPath: fixture.requirements, slice: "1", candidateExecutionRoot: copy.candidateExecutionRoot });
+  const readback = (state) => ({ execution: state, executionRaw: state, product: { deriveNormalHandoff } });
+  const needsFix = await inspectExecutionState(fixture.requirements);
+  const outcome = guardOperationProvenance(decideOutcome("VALIDATE_SLICE", readback(needsFix), true), "VALIDATE_SLICE", [], 1);
+  assert.deepEqual(outcome, { result: "NEEDS_FIX", blocker: null });
+  assert.deepEqual(nextHandoff("VALIDATE_SLICE", readback(needsFix)), { operation: "APPLY_FINDINGS", slice: "slice-01" });
+  assert.equal(recoverableOfficialHandoff({ outcome, readback: readback(needsFix) }), null, "normal findings do not start a blocked-recovery loop");
+  await assert.rejects(preflightExecutionOperation(fixture.requirements, "VALIDATE_SLICE", "1"));
+  const liveTask = path.join(fixture.execution, "tasks/slice-01.md");
+  const priorTask = await fs.readFile(liveTask, "utf8");
+  const priorAttempt = priorTask.match(/### attempt-01\n[\s\S]*?(?=\n## |$)/u)[0].trim();
+  await fs.writeFile(target, preparedTests([...oldVariants, missingVariant]));
+  runChecks(3);
+  const correctionEvidence = await evidenceFor(checkRecord("findings-check", 1, "TESTS_PASS", 1, { cycle: "attempt-01" }));
+  const unauthorized = await prepareExecutionCopy({ specPath: fixture.requirements, slice: "slice-01" });
+  const unauthorizedTask = await fs.readFile(unauthorized.candidateTaskArtifact, "utf8");
+  await fs.writeFile(unauthorized.candidateTaskArtifact, replaceSection(replaceSection(unauthorizedTask,
+    "Corrections Applied", `- \`${claim.replace("cli.test.mjs", "unplanned.test.mjs")}\``), "Findings Test Evidence", correctionEvidence));
+  await assert.rejects(publishExecutionCopy({ specPath: fixture.requirements, slice: "slice-01", candidateRoot: unauthorized.candidateRoot }));
+  assert.equal(await fs.readFile(liveTask, "utf8"), priorTask, "rejected correction cannot mutate live authority or finding history");
+  const corrected = await prepareExecutionCopy({ specPath: fixture.requirements, slice: "slice-01" });
+  const correctionTask = await fs.readFile(corrected.candidateTaskArtifact, "utf8");
+  await fs.writeFile(corrected.candidateTaskArtifact, replaceSection(replaceSection(correctionTask, "Corrections Applied", `- \`${claim}\``), "Findings Test Evidence", correctionEvidence));
+  await publishExecutionCopy({ specPath: fixture.requirements, slice: "slice-01", candidateRoot: corrected.candidateRoot });
+  const findingsCorrected = await preflightExecutionOperation(fixture.requirements, "VALIDATE_SLICE", "1");
+  assert.deepEqual(nextHandoff("APPLY_FINDINGS", readback(findingsCorrected)), { operation: "VALIDATE_SLICE", slice: "slice-01" });
+  assert.deepEqual(findingsCorrected.activeFindings, ["slice-01:finding-01"], "auxiliary PASS cannot resolve the finding");
+  const pass = { ...response, status: "PASS", findingDispositions: "finding-01=resolved", evidence: "Prepared checks now execute both required storage variants and confirm exact bytes/no creation." };
+  const passCaptured = await capturedCommandEvidence(t, "VALIDATE_SLICE", JSON.stringify(pass), "STNL_VERIFICATION_COMMAND=1 node --test test/cli.test.mjs");
+  const passCopy = await prepareValidationCopy({ specPath: fixture.requirements, slice: "slice-01", candidateParent: await temporary(t) });
+  const passTask = path.join(passCopy.candidateExecutionRoot, "tasks/slice-01.md");
+  await fs.writeFile(passTask, replaceSection(await fs.readFile(passTask, "utf8"), "Validation Findings", `${finding.replace("- State: active", "- State: resolved")}\n- Resolution: attempt-02 verified the missing variant.`));
+  await prepareValidationCandidate({ specPath: fixture.requirements, slice: "1", workspace: fixture.root, candidateExecutionRoot: passCopy.candidateExecutionRoot, ...passCaptured });
+  await publishValidationCandidate({ specPath: fixture.requirements, slice: "1", candidateExecutionRoot: passCopy.candidateExecutionRoot });
+  const terminal = await inspectExecutionState(fixture.requirements);
+  assert.equal(terminal.state, "COMPLETE");
+  assert.deepEqual(nextHandoff("VALIDATE_SLICE", readback(terminal)), { operation: "SPEC_CLOSE", slice: null });
+  const finalTask = await fs.readFile(liveTask, "utf8");
+  assert.ok(finalTask.includes(priorAttempt)); assert.ok(finalTask.includes(initialEvidence));
+  assert.match(finalTask, /### attempt-02[\s\S]*Type: revalidation/u);
+  await assert.rejects(preflightExecutionOperation(fixture.requirements, "APPLY_FINDINGS", "1"));
+  const budgets = JSON.parse(await fs.readFile(path.join(ROOT, "benchmarks/sentinel-todo/benchmark.json"), "utf8")).cases.find((c) => c.id === "B").budgets;
+  const events = ["VALIDATE_SLICE", "APPLY_FINDINGS", "VALIDATE_SLICE"].map((operation) => ({ operation, slice: "slice-01" }));
+  assert.equal(budgetViolation(events, budgets), null);
+  assert.equal(budgetViolation(Array.from({ length: budgets.maxApplyFindingsPerSlice + 1 }, () => events[1]), budgets).budget, "maxApplyFindingsPerSlice");
 });
 
 test("validation publisher persists a strictly validated runner delegation blocker", async (t) => {

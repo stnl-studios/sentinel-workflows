@@ -12,7 +12,11 @@ const MANAGED_COMMAND_INSTRUCTIONS = [
   'For authorized artifact edits, use permitted file editing within the selected scope before validation.',
   'If any command reports a sandbox or permission denial, stop and preserve the whole diagnostic even if',
   'its final exit is zero. Do not retry via another path, tool, TMPDIR/TMPPREFIX setting, or permission mode.',
-  'Missing runnable coverage is BLOCKED; a passing old suite does not prove the new acceptance criteria.',
+  'Missing evidence alone is BLOCKED; a passing old suite does not prove the new acceptance criteria.',
+  'For VALIDATE_SLICE only, a demonstrated defect or omitted required variant in executor-prepared tests already required by current authority and authorized in this slice',
+  'is NEEDS_FIX with a specific coverage finding, direct evidence, authorized path and expected in-scope correction.',
+  'Only the executor corrects through APPLY_FINDINGS then VALIDATE_SLICE within existing budgets; no runner writes or extra calls.',
+  'Access, transport, environment and insufficient authority remain BLOCKED; never PASS before sufficient evidence.',
 ].join('\n');
 
 function hasShellTemporaryRedirection(command, kind) {
