@@ -98,6 +98,8 @@ A `PRIVATE_TESTS_FAIL` result preserves the failed record in the same isolated c
 
 ## Allowed Effects
 
+In managed mode the finalizer prepares and strictly validates an owned working copy before publishing. Its persisted preparation is bound to the canonical receipt, sealed request, candidate owner, authority and complete input/live/evidence hashes. Repeating `--finalize` after an I/O failure reuses the validated preparation without appending another check or attempt. After publication it may seal only the finalization record when the complete live image and evidence still agree; it never republishes over a foreign change. Semantic rejection retains both the input and rejected working copy. Only after a recorded rejection or interrupted preparation, use `--prepare` with fresh official preflight to obtain a new candidate for authorized semantic edits; preserve the old copies and reuse the settled receipt while its tested state and authority remain valid. This recovery allocates no runner invocation or automatic round. A failure before candidate binding retains the allocated copy; a matching immutable owner can finish that binding, while an unbound copy without an owner remains diagnostic evidence.
+
 - modify implementation and tests inside the selected scope;
 - after implementation or correction, invoke the configured independent runner at least once and no more than three times in the selected manual operation;
 - update only execution-owned sections of `tasks/slice-NN.md`, including the appropriate append-only test-evidence section.

@@ -4683,6 +4683,54 @@ test("terminal Diff Summary rejects placeholders and malformed bullet lines with
   }
 });
 
+test("validation preparation rolls back only owned task bytes when index installation fails", async (t) => {
+  for (const foreign of [false, true]) {
+    const fixture = await standaloneWorkspace(t);
+    await renderArtifacts(fixture);
+    await writeValidatedPath(fixture);
+    await editTask(fixture, value => {
+      let task = value.replace('- [ ] 1.1', '- [x] 1.1');
+      task = replaceSection(task, 'Changed Areas', '- `../../src/example.txt`');
+      task = replaceSection(task, 'Implementation Test Evidence', checkRecord('implementation-check', 1, 'TESTS_PASS', 1));
+      return replaceSection(task, 'Diff Summary', '- Approved implementation and checks are complete.');
+    });
+    const captured = await capturedVerificationSequence(t, 'VALIDATE_SLICE', JSON.stringify(sanitizedValidationResponse('PASS')), [0]);
+    const copy = await prepareValidationCopy({ specPath: fixture.requirements, slice: 'slice-01', candidateParent: await temporary(t, 'stnl-install-fault-') });
+    const task = path.join(copy.candidateExecutionRoot, 'tasks/slice-01.md'), index = path.join(copy.candidateExecutionRoot, 'tasks.md');
+    const before = await treeBytes(copy.candidateExecutionRoot), liveBefore = await treeBytes(fixture.execution);
+    const evidenceBefore = await Promise.all([captured.receiptFile, captured.semanticResponseFile].map(file => fs.readFile(file)));
+    const rename = fsPromises.rename;
+    let fired = false, foreignBytes;
+    fsPromises.rename = async (from, to) => {
+      if (!fired && to === index) {
+        fired = true;
+        if (foreign) {
+          foreignBytes = replaceSection(await fs.readFile(task, 'utf8'), 'Validation Attempts', '- foreign concurrent evidence');
+          await fs.writeFile(task, foreignBytes);
+        }
+        throw Object.assign(new Error('TEST-ONLY index install EIO'), { code: 'EIO' });
+      }
+      return rename(from, to);
+    };
+    try {
+      await assert.rejects(prepareValidationCandidate({ specPath: fixture.requirements, slice: '1', workspace: fixture.root,
+        candidateExecutionRoot: copy.candidateExecutionRoot, ...captured }), foreign ? /changed during rollback and was preserved/u : /index install EIO/u);
+    } finally { fsPromises.rename = rename; }
+    assert.equal(fired, true);
+    assert.deepEqual(await treeBytes(fixture.execution), liveBefore);
+    assert.deepEqual(await Promise.all([captured.receiptFile, captured.semanticResponseFile].map(file => fs.readFile(file))), evidenceBefore);
+    if (foreign) {
+      assert.equal(await fs.readFile(task, 'utf8'), foreignBytes);
+      await assert.rejects(prepareValidationCandidate({ specPath: fixture.requirements, slice: '1', workspace: fixture.root,
+        candidateExecutionRoot: copy.candidateExecutionRoot, ...captured }), /Validation Attempts must remain byte-identical/u);
+    } else {
+      assert.deepEqual(await treeBytes(copy.candidateExecutionRoot), before);
+      assert.equal((await prepareValidationCandidate({ specPath: fixture.requirements, slice: '1', workspace: fixture.root,
+        candidateExecutionRoot: copy.candidateExecutionRoot, ...captured })).attemptId, 'attempt-01');
+    }
+  }
+});
+
 test("validation candidate preparation writes canonical attempt and PASS base before strict validation", async (t) => {
   const fixture = await standaloneWorkspace(t);
   await renderArtifacts(fixture);

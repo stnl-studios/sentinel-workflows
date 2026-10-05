@@ -75,8 +75,9 @@ const taskFile = path.join(specPath, 'execution/tasks/slice-01.md');
 const matrixClaim = path.relative(path.dirname(taskFile), path.join(workspace, 'test/offline-case.json')).split(path.sep).join('/');
 const digest = async (file) => createHash('sha256').update(await fs.readFile(file)).digest('hex');
 const finish = (response) => { emit({ type: 'item.completed', item: { id: 'message_' + sequence++, type: 'agent_message', text: typeof response === 'string' ? response : JSON.stringify(response) } }); emit({ type: 'turn.completed', usage: {} }); };
+const coverageScenario = ['coverage-findings', 'finalizer-fail-apply-publication'].includes(context.scenario);
 try {
-  if (!independent && operation === 'SPEC_INIT' && ['B', 'C'].includes(caseId) && context.scenario !== 'coverage-findings') {
+  if (!independent && operation === 'SPEC_INIT' && ['B', 'C'].includes(caseId) && !coverageScenario) {
     // Both siblings must reach the provider before either injected failure or
     // normal completion proceeds. Files are an owned test barrier, not workflow state.
     const runId = path.basename(path.resolve(workspace, '../..'));
@@ -104,7 +105,7 @@ try {
     }
     const payload = JSON.parse(prompt.slice(prompt.lastIndexOf('\n\n') + 2));
     const round = payload.automaticCheckRound ?? '1/3';
-    const coverageReview = context.scenario === 'coverage-findings' && operation !== 'EXECUTE_SLICE';
+    const coverageReview = coverageScenario && operation !== 'EXECUTE_SLICE';
     const observed = run('--test', [], true, coverageReview ? { STNL_OFFLINE_REQUIRE_PRIORITY_COVERAGE: '1' } : {});
     const head = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: workspace, encoding: 'utf8' });
     if (head.status !== 0) throw new Error('HEAD unavailable');
@@ -193,21 +194,52 @@ try {
     finish('Materialized task and authorized prepared check scope agree.');
   } else if (['EXECUTE_SLICE', 'VALIDATE_SLICE', 'APPLY_FINDINGS'].includes(operation)) {
     if (context.scenario === 'zero-runner' && operation === 'EXECUTE_SLICE') { finish('No request: injected main omission.'); process.exit(0); }
-    const prepared = run(process.env.STNL_MANAGED_FINALIZER, ['--prepare']);
+    let prepared;
+    if (context.scenario.startsWith('allocation-fail-') && operation === 'EXECUTE_SLICE') {
+      const directory = path.join(process.env.TMPDIR, 'stnl-runner-broker');
+      const active = JSON.parse(await fs.readFile(path.join(directory, 'active.json')));
+      const stem = String(active.sequence).padStart(3, '0');
+      const ownerFile = path.join(directory, stem + '.candidate-owner.json'), bindingFile = path.join(directory, stem + '.candidate.json');
+      const sourceBefore = await digest(taskFile), parent = path.dirname(specPath), beforeRoots = await fs.readdir(parent);
+      const injection = path.join(context.root, '.offline-allocation-injection.mjs');
+      await fs.writeFile(injection, `import fs from 'node:fs/promises';
+const original = { rename: fs.rename.bind(fs), writeFile: fs.writeFile.bind(fs) };
+let fired = false;
+const fail = () => { fired = true; throw Object.assign(new Error('TEST-ONLY allocation fault before binding'), { code: 'EIO' }); };
+fs.rename = async (from, to) => { if (!fired && ${JSON.stringify(context.scenario)} === 'allocation-fail-binding' && to === ${JSON.stringify(bindingFile)}) fail(); return original.rename(from, to); };
+fs.writeFile = async (file, ...args) => { if (!fired && ${JSON.stringify(context.scenario)} === 'allocation-fail-owner' && file === ${JSON.stringify(ownerFile)}) fail(); return original.writeFile(file, ...args); };
+`);
+      const first = run('--import', [injection, process.env.STNL_MANAGED_FINALIZER, '--prepare']);
+      const allocated = (await fs.readdir(parent)).filter(name => name.startsWith('.stnl-execution-copy-') && !beforeRoots.includes(name));
+      const allocatedHashes = Object.fromEntries(await Promise.all(allocated.map(async name => [name, await digest(path.join(parent, name, 'execution/tasks/slice-01.md'))])));
+      const ownerBefore = await fs.readFile(ownerFile, 'utf8').catch(error => { if (error.code === 'ENOENT') return null; throw error; });
+      prepared = run(process.env.STNL_MANAGED_FINALIZER, ['--prepare']);
+      const binding = JSON.parse(prepared.stdout);
+      await fs.writeFile(path.join(context.root, '.offline-allocation-failure.json'), JSON.stringify({ scenario: context.scenario,
+        first: { exit: first.status, diagnostic: first.stderr }, second: { exit: prepared.status, diagnostic: prepared.stderr },
+        allocated, allocatedHashes, allocatedHashesAfter: Object.fromEntries(await Promise.all(allocated.map(async name => [name, await digest(path.join(parent, name, 'execution/tasks/slice-01.md'))]))),
+        ownerBefore, ownerAfter: await fs.readFile(ownerFile, 'utf8'), binding, liveUnchanged: sourceBefore === await digest(taskFile) }));
+    } else prepared = run(process.env.STNL_MANAGED_FINALIZER, ['--prepare']);
     if (prepared.status) throw new Error(prepared.stderr);
     if (operation === 'EXECUTE_SLICE') {
       const cli = { A: 'filtered-cli.mjs', B: 'prioritized-cli.mjs', C: 'archived-cli.mjs' }[caseId];
-      if (context.scenario !== 'private-retry' || caseId !== 'A') await fs.copyFile(path.join(snapshot, 'scripts/fixtures', cli), path.join(workspace, 'src/cli.mjs'));
+      if (context.scenario === 'finalizer-fail-execute-source-edit') {
+        // Author the implementation on its already-writable approved seed
+        // path. copyFile would inherit the frozen reference's 0444 mode.
+        // This fresh fixture never changes permissions or resumes a denial.
+        await fs.writeFile(path.join(workspace, 'src/cli.mjs'), await fs.readFile(path.join(snapshot, 'scripts/fixtures', cli)));
+      } else if (context.scenario !== 'private-retry' || caseId !== 'A') await fs.copyFile(path.join(snapshot, 'scripts/fixtures', cli), path.join(workspace, 'src/cli.mjs'));
       await fs.mkdir(path.join(workspace, 'test'), { recursive: true });
       await fs.copyFile(path.join(snapshot, 'scripts/fixtures/prepared-offline-case.test.mjs'), path.join(workspace, 'test/offline-case.test.mjs'));
       await fs.writeFile(path.join(workspace, 'test/offline-case.json'), JSON.stringify({ caseId,
-        ...(context.scenario === 'coverage-findings' ? { priorities: ['low', 'medium'] } : {}) }));
+        ...(coverageScenario ? { priorities: ['low', 'medium'] } : {}) }));
       const binding = JSON.parse(prepared.stdout);
       let text = await fs.readFile(binding.candidateTaskArtifact, 'utf8');
       text = text.replace('- [ ] 1.1', '- [x] 1.1');
       const claims = targets.map((target) => path.relative(path.join(specPath, 'execution/tasks'), path.join(workspace, target)).split(path.sep).join('/'));
       text = section(text, 'Changed Areas', claims.map((value) => '- `' + value + '`').join('\n'));
-      text = section(text, 'Diff Summary', '- Implemented the selected case and prepared required variants in the authorized slice.');
+      text = section(text, 'Diff Summary', context.scenario === 'finalize-summary-rejection'
+        ? '- pending' : '- Implemented the selected case and prepared required variants in the authorized slice.');
       await fs.writeFile(binding.candidateTaskArtifact, text);
       await fs.writeFile(process.env.STNL_MANAGED_RUNNER_PAYLOAD, JSON.stringify({ automaticCheckRound: '1/3', changedAreas: claims, relevantEvidence: 'Authorized complete case checks prepared before independent delegation.' }));
     } else if (operation === 'APPLY_FINDINGS') {
@@ -236,7 +268,190 @@ try {
     }
     const delegated = run(process.env.STNL_MANAGED_RUNNER_BRIDGE, ['--payload-file', process.env.STNL_MANAGED_RUNNER_PAYLOAD]);
     if (delegated.status) throw new Error(delegated.stderr);
-    if (context.scenario === 'coverage-findings' && operation === 'VALIDATE_SLICE') {
+    const faultOperation = context.scenario.startsWith('finalizer-fail-execute-') ? 'EXECUTE_SLICE'
+      : context.scenario === 'finalizer-fail-apply-publication' ? 'APPLY_FINDINGS' : 'VALIDATE_SLICE';
+    if ((context.scenario === 'finalize-summary-rejection' || context.scenario.startsWith('finalizer-fail-')) && operation === faultOperation) {
+      let binding = JSON.parse(prepared.stdout);
+      const receipt = JSON.parse(delegated.stdout.slice('SENTINEL_RUNNER_RECEIPT '.length).trim());
+      const evidenceRoot = path.join(context.root, '.offline-finalizer-rejection');
+      await fs.mkdir(evidenceRoot);
+      const files = [receipt.receiptFile, receipt.semanticResponseFile, receipt.eventsPath,
+        receipt.receiptFile.replace(/\.receipt\.json$/u, '.started.json')];
+      const active = JSON.parse(await fs.readFile(path.join(process.env.TMPDIR, 'stnl-runner-broker/active.json')));
+      const finalizedFile = path.join(process.env.TMPDIR, 'stnl-runner-broker', String(active.sequence).padStart(3, '0') + '.finalization.json');
+      const evidenceHashes = async () => Object.fromEntries(await Promise.all(files.map(async (file) => [file, await digest(file)])));
+      const treeHashes = async (root, relative = '', hashes = {}) => {
+        for (const entry of await fs.readdir(path.join(root, relative), { withFileTypes: true })) {
+          const key = path.join(relative, entry.name);
+          if (entry.isDirectory()) await treeHashes(root, key, hashes);
+          else if (entry.isFile()) hashes[key] = await digest(path.join(root, key));
+          else throw new Error('unexpected evidence tree entry');
+        }
+        return hashes;
+      };
+      const snapshot = async (label) => {
+        const root = path.join(evidenceRoot, label);
+        await fs.mkdir(root);
+        await fs.cp(binding.candidateExecutionRoot, path.join(root, 'candidate'), { recursive: true });
+        await fs.cp(path.join(specPath, 'execution'), path.join(root, 'live'), { recursive: true });
+        return { candidateTaskSha256: await digest(binding.candidateTaskArtifact),
+          candidateIndexSha256: await digest(path.join(binding.candidateExecutionRoot, 'tasks.md')),
+          liveTaskSha256: await digest(taskFile), liveIndexSha256: await digest(path.join(specPath, 'execution/tasks.md')),
+          candidateTreeSha256: await treeHashes(binding.candidateExecutionRoot), liveTreeSha256: await treeHashes(path.join(specPath, 'execution')),
+          evidenceSha256: await evidenceHashes() };
+      };
+      const before = await snapshot('00-before-finalize');
+      let first;
+      if (context.scenario.startsWith('finalizer-fail-')) {
+        const injection = path.join(evidenceRoot, 'inject-owned-failure.mjs');
+        await fs.writeFile(injection, `// TEST-ONLY scoped filesystem fault; no runtime or verdict substitution.
+import fs from 'node:fs/promises';
+import path from 'node:path';
+const scope = ${JSON.stringify({ scenario: context.scenario, candidateIndex: path.join(binding.candidateExecutionRoot, 'tasks.md'), liveRoot: path.join(specPath, 'execution'), liveTask: taskFile, finalizationFile: finalizedFile, firedFile: path.join(evidenceRoot, 'injection-fired.json') })};
+const original = { rename: fs.rename.bind(fs), readFile: fs.readFile.bind(fs), rm: fs.rm.bind(fs), writeFile: fs.writeFile.bind(fs) };
+let fired = false, published = false;
+const fail = async (boundary) => { fired = true; await original.writeFile(scope.firedFile, JSON.stringify({ boundary, code: 'EIO', testOnly: true })); throw Object.assign(new Error('TEST-ONLY owned filesystem fault: ' + boundary), { code: 'EIO' }); };
+fs.rename = async (from, to) => {
+  if (!fired && ['finalizer-fail-execute-publication', 'finalizer-fail-apply-publication', 'finalizer-fail-execute-source-edit'].includes(scope.scenario) && to === scope.liveTask && from.startsWith(scope.liveTask + '.stnl-publish-')) await fail('execution publisher task install before live mutation');
+  if (!fired && scope.scenario === 'finalizer-fail-prepare-index' && path.basename(to) === 'tasks.md' && path.dirname(to) !== path.dirname(scope.candidateIndex) && path.basename(path.dirname(to)).startsWith('validation-slice-01-')) await fail('prepare index rename after task rename');
+  if (!fired && scope.scenario === 'finalizer-fail-publication-install' && to === scope.liveRoot && path.basename(from).startsWith('.stnl-validation-publication-')) await fail('publication install after live moved to backup');
+  if (!fired && ['finalizer-fail-finalization-write', 'finalizer-fail-contraproofs'].includes(scope.scenario) && to === scope.finalizationFile) await fail('finalization metadata rename after publication');
+  const result = await original.rename(from, to);
+  if (to === scope.liveTask && from.startsWith(scope.liveTask + '.stnl-publish-')) published = true;
+  return result;
+};
+fs.rm = async (file, options) => {
+  if (!fired && published && scope.scenario === 'finalizer-fail-execute-cleanup' && path.basename(file).startsWith('.stnl-execution-copy-')) await fail('execution candidate cleanup after live installation');
+  const committedBackup = path.dirname(file) === path.dirname(scope.liveRoot) && path.basename(file).startsWith('.stnl-validation-backup-')
+    && await original.readFile(path.join(file, 'tasks/slice-01.md')).then(() => true, () => false);
+  const result = await original.rm(file, options);
+  if (committedBackup) published = true;
+  return result;
+};
+fs.readFile = async (file, options) => {
+  if (!fired && published && scope.scenario === 'finalizer-fail-readback' && file === scope.liveTask) await fail('outer finalizer readback after publisher success');
+  return original.readFile(file, options);
+};
+`);
+        first = run('--import', [injection, process.env.STNL_MANAGED_FINALIZER, '--finalize']);
+      } else first = run(process.env.STNL_MANAGED_FINALIZER, ['--finalize']);
+      const afterFirst = await snapshot('01-after-rejected-finalize');
+      const brokerDirectory = path.join(process.env.TMPDIR, 'stnl-runner-broker');
+      const fullBinding = JSON.parse(await fs.readFile(path.join(brokerDirectory, String(active.sequence).padStart(3, '0') + '.candidate.json')));
+      const preparationPath = path.join(brokerDirectory, String(active.sequence).padStart(3, '0') + '.preparation-' + fullBinding.nonce + '-attempt-' + receipt.attempt + '.json');
+      const checkpointAfterFirst = JSON.parse(await fs.readFile(preparationPath));
+      const stagePresent = await fs.access(checkpointAfterFirst.stage.candidateExecutionRoot).then(() => true, () => false);
+      if (stagePresent) await fs.cp(checkpointAfterFirst.stage.candidateExecutionRoot, path.join(evidenceRoot, '01-prepared-stage'), { recursive: true });
+      const rejectedInput = { ...binding };
+      let reprepare;
+      const probes = [];
+      if (context.scenario === 'finalize-summary-rejection') {
+        for (const [name, file] of [['rejected-input-edit', binding.candidateTaskArtifact], ['rejected-stage-edit', checkpointAfterFirst.stage.candidateTaskArtifact]]) {
+          const original = await fs.readFile(file), altered = Buffer.concat([original, Buffer.from('\n<!-- TEST-ONLY foreign edit -->\n')]);
+          await fs.writeFile(file, altered);
+          const blocked = run(process.env.STNL_MANAGED_FINALIZER, ['--prepare']);
+          probes.push({ name, exit: blocked.status, diagnostic: blocked.stderr, foreignPreserved: (await fs.readFile(file)).equals(altered) });
+          await fs.writeFile(file, original);
+        }
+        reprepare = run(process.env.STNL_MANAGED_FINALIZER, ['--prepare']);
+        if (reprepare.status) throw new Error(reprepare.stderr);
+        binding = JSON.parse(reprepare.stdout);
+        await fs.writeFile(binding.candidateTaskArtifact, section(await fs.readFile(binding.candidateTaskArtifact, 'utf8'),
+          'Diff Summary', '- Implemented the selected case with prepared acceptance evidence.'));
+      }
+      if (context.scenario === 'finalizer-fail-contraproofs') {
+        // Deliberate, reversible tampering in this TEST-ONLY owned checkout.
+        // Each blocked call must preserve the foreign bytes before restoration.
+        const probe = async (name, file, change) => {
+          const original = await fs.readFile(file), altered = Buffer.from(change(original.toString('utf8')));
+          await fs.writeFile(file, altered);
+          const liveBefore = await treeHashes(path.join(specPath, 'execution'));
+          const result = run(process.env.STNL_MANAGED_FINALIZER, ['--finalize']);
+          probes.push({ name, exit: result.status, diagnostic: result.stderr,
+            foreignPreserved: (await fs.readFile(file)).equals(altered),
+            livePreserved: JSON.stringify(liveBefore) === JSON.stringify(await treeHashes(path.join(specPath, 'execution'))),
+            finalizationExists: await fs.access(finalizedFile).then(() => true, () => false) });
+          await fs.writeFile(file, original);
+        };
+        for (const [name, file] of [['input-edit', binding.candidateTaskArtifact],
+          ['stage-edit', checkpointAfterFirst.stage.candidateTaskArtifact], ['live-source-edit', taskFile],
+          ['authority-edit', path.join(specPath, 'shared/requirements.md')], ['evidence-hash-edit', receipt.eventsPath]]) {
+          await probe(name, file, text => text + '\n<!-- TEST-ONLY foreign write -->\n');
+        }
+        await probe('checkpoint-hash-edit', preparationPath, text => {
+          const value = JSON.parse(text); value.liveAfter.find(entry => entry.path === 'tasks/slice-01.md').hash = '0'.repeat(64); return JSON.stringify(value);
+        });
+        await probe('checkpoint-receipt-edit', preparationPath, text => {
+          const value = JSON.parse(text); value.association.evidenceSha256[receipt.eventsPath] = '0'.repeat(64); return JSON.stringify(value);
+        });
+        await probe('outside-stage-path', preparationPath, text => {
+          const value = JSON.parse(text); value.stage.candidateExecutionRoot = '/outside/fictitious'; value.stage.candidateTaskArtifact = '/outside/fictitious/tasks/slice-01.md'; return JSON.stringify(value);
+        });
+        const lockFile = path.join(brokerDirectory, 'finalization.lock');
+        const acquired = path.join(evidenceRoot, 'lock-acquired'), released = path.join(evidenceRoot, 'lock-released');
+        const injection = path.join(evidenceRoot, 'hold-owned-finalization-lock.mjs');
+        await fs.writeFile(injection, `import fs from 'node:fs/promises';
+const open = fs.open.bind(fs);
+fs.open = async (file, flags, ...args) => {
+  const handle = await open(file, flags, ...args);
+  if (file === ${JSON.stringify(lockFile)} && flags === 'wx') {
+    await fs.writeFile(${JSON.stringify(acquired)}, 'acquired');
+    const deadline = Date.now() + 5000;
+    while (!await fs.access(${JSON.stringify(released)}).then(() => true, () => false)) {
+      if (Date.now() >= deadline) throw new Error('TEST-ONLY lock barrier timed out');
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+  }
+  return handle;
+};
+`);
+        const child = spawn(process.execPath, ['--import', injection, process.env.STNL_MANAGED_FINALIZER, '--finalize'], { cwd: workspace, env: process.env });
+        let stdout = '', stderr = '';
+        child.stdout.on('data', bytes => { stdout += bytes; }); child.stderr.on('data', bytes => { stderr += bytes; });
+        const settled = new Promise((resolve, reject) => { child.once('error', reject); child.once('close', exit => resolve({ exit, stdout, stderr })); });
+        const deadline = Date.now() + 5000;
+        while (!await fs.access(acquired).then(() => true, () => false)) {
+          if (Date.now() >= deadline) throw new Error('TEST-ONLY finalizer lock was not acquired');
+          await new Promise(resolve => setTimeout(resolve, 10));
+        }
+        const liveBefore = await treeHashes(path.join(specPath, 'execution'));
+        const loser = run(process.env.STNL_MANAGED_FINALIZER, ['--finalize']);
+        probes.push({ name: 'concurrent-finalization', exit: loser.status, diagnostic: loser.stderr,
+          livePreserved: JSON.stringify(liveBefore) === JSON.stringify(await treeHashes(path.join(specPath, 'execution'))) });
+        await fs.writeFile(released, 'released');
+        probes.push({ name: 'lock-owner-completion', ...await settled });
+      }
+      if (context.scenario === 'finalizer-fail-execute-source-edit') {
+        // A fresh EXEC fixture owns this source path; no denied VALIDATE
+        // context is resumed and no permissions are changed for this probe.
+        const file = path.join(workspace, 'src/cli.mjs'), original = await fs.readFile(file);
+        const altered = Buffer.concat([original, Buffer.from('\n// TEST-ONLY foreign source edit\n')]);
+        await fs.writeFile(file, altered);
+        const liveBefore = await treeHashes(path.join(specPath, 'execution'));
+        const blocked = run(process.env.STNL_MANAGED_FINALIZER, ['--finalize']);
+        probes.push({ name: 'tested-source-edit', exit: blocked.status, diagnostic: blocked.stderr,
+          foreignPreserved: (await fs.readFile(file)).equals(altered),
+          livePreserved: JSON.stringify(liveBefore) === JSON.stringify(await treeHashes(path.join(specPath, 'execution'))),
+          finalizationExists: await fs.access(finalizedFile).then(() => true, () => false) });
+        await fs.writeFile(file, original);
+      }
+      const afterSummary = await snapshot('02-after-summary-only-correction');
+      const second = run(process.env.STNL_MANAGED_FINALIZER, ['--finalize']);
+      const afterSecond = await snapshot('03-after-second-finalize');
+      reprepare ??= run(process.env.STNL_MANAGED_FINALIZER, ['--prepare']);
+      const duplicate = run(process.env.STNL_MANAGED_FINALIZER, ['--finalize']);
+      const rejectedInputAfter = await treeHashes(rejectedInput.candidateExecutionRoot);
+      const retainedStageAfter = stagePresent && context.scenario === 'finalize-summary-rejection' ? await treeHashes(checkpointAfterFirst.stage.candidateExecutionRoot) : null;
+      await fs.writeFile(path.join(evidenceRoot, 'observed.json'), JSON.stringify({ binding, receipt, before, afterFirst, afterSummary, afterSecond,
+        checkpointAfterFirst, rejectedInput, rejectedInputAfter, retainedStageAfter, probes,
+        first: { exit: first.status, diagnostic: first.stderr, command: first.command },
+        second: { exit: second.status, diagnostic: second.stderr, command: second.command },
+        reprepare: { exit: reprepare.status, diagnostic: reprepare.stderr, command: reprepare.command },
+        duplicate: { exit: duplicate.status, diagnostic: duplicate.stderr, command: duplicate.command, result: duplicate.stdout },
+        finalizationExists: await fs.access(finalizedFile).then(() => true, () => false) }, null, 2));
+      throw new Error('TEST-ONLY reproduction preserved: ' + second.stderr);
+    }
+    if (coverageScenario && operation === 'VALIDATE_SLICE') {
       const receipt = JSON.parse(delegated.stdout.slice('SENTINEL_RUNNER_RECEIPT '.length).trim());
       const response = JSON.parse(await fs.readFile(receipt.semanticResponseFile));
       const binding = JSON.parse(prepared.stdout);

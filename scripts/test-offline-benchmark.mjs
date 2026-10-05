@@ -82,6 +82,202 @@ async function ready(file, timeout = 10_000) {
   }
 }
 
+test('finalizer: validation rejection preserves input and fresh proposal recovers the same receipt', { timeout: 90_000 }, async (t) => {
+  const fixture = await checkout('finalize-summary-rejection');
+  console.log(`TEST-ONLY finalizer rejection evidence: ${fixture.root}`);
+  const result = spawnSync(process.execPath, ['benchmarks/sentinel-todo/runtime/benchmark-manager.mjs', 'run', '--case', 'A'],
+    { cwd: fixture.root, env: fixture.env, encoding: 'utf8', timeout: 75_000, maxBuffer: 4 * 1024 * 1024 });
+  await fs.writeFile(path.join(fixture.root, '.offline-finalizer-manager.log'), result.stdout + '\n' + result.stderr);
+  assert.equal(result.status, 1);
+  const evidenceRoot = path.join(fixture.root, '.offline-finalizer-rejection');
+  const proof = JSON.parse(await fs.readFile(path.join(evidenceRoot, 'observed.json')));
+  assert.equal(proof.receipt.semanticResponseStatus, 'PASS');
+  assert.equal(proof.first.exit, 1); assert.match(proof.first.diagnostic, /Diff Summary/u);
+  assert.equal(proof.second.exit, 0, proof.second.diagnostic);
+  assert.equal(proof.reprepare.exit, 0, proof.reprepare.diagnostic);
+  assert.equal(proof.finalizationExists, true);
+  assert.equal(proof.duplicate.exit, 0, proof.duplicate.diagnostic);
+  assert.notEqual(proof.binding.candidateExecutionRoot, proof.rejectedInput.candidateExecutionRoot);
+  assert.deepEqual(proof.rejectedInputAfter, proof.before.candidateTreeSha256);
+  assert.equal(proof.checkpointAfterFirst.status, 'REJECTED');
+  assert.deepEqual(proof.probes.map(probe => probe.name), ['rejected-input-edit', 'rejected-stage-edit']);
+  for (const probe of proof.probes) {
+    assert.equal(probe.exit, 1, probe.diagnostic);
+    assert.equal(probe.foreignPreserved, true);
+  }
+  const read = (stage, tree, file) => fs.readFile(path.join(evidenceRoot, stage, tree, file), 'utf8');
+  const section = (text, title) => new RegExp(`## ${title}\\n\\n([\\s\\S]*?)(?=\\n## |$)`, 'u').exec(text)[1].trim();
+  const firstTask = await read('01-after-rejected-finalize', 'candidate', 'tasks/slice-01.md');
+  assert.equal(section(firstTask, 'Diff Summary'), '- pending');
+  assert.equal(section(firstTask, 'Validation Attempts'), '- none');
+  assert.equal(section(firstTask, 'Effective Validation Base'), '- none');
+  assert.equal(section(firstTask, 'Final Result'), '- pending');
+  const rejectedStage = await fs.readFile(path.join(evidenceRoot, '01-prepared-stage/tasks/slice-01.md'), 'utf8');
+  assert.match(section(rejectedStage, 'Validation Attempts'), /attempt-01[\s\S]*Status: PASS/u);
+  assert.equal(proof.retainedStageAfter['tasks/slice-01.md'], hash(Buffer.from(rejectedStage)).slice('sha256:'.length));
+  const afterSummary = await read('02-after-summary-only-correction', 'candidate', 'tasks/slice-01.md');
+  assert.equal(section(firstTask, 'Diff Summary'), '- pending');
+  assert.equal(firstTask.replace(section(firstTask, 'Diff Summary'), section(afterSummary, 'Diff Summary')), afterSummary,
+    'the sole fixture correction changes Diff Summary, never mechanical fields');
+  assert.equal(proof.afterFirst.candidateIndexSha256, proof.afterSummary.candidateIndexSha256);
+  assert.equal(proof.afterSummary.candidateTaskSha256, proof.afterSecond.candidateTaskSha256);
+  for (const observed of [proof.afterFirst, proof.afterSummary]) {
+    assert.equal(observed.liveTaskSha256, proof.before.liveTaskSha256);
+    assert.equal(observed.liveIndexSha256, proof.before.liveIndexSha256);
+    assert.deepEqual(observed.liveTreeSha256, proof.before.liveTreeSha256);
+    assert.deepEqual(observed.evidenceSha256, proof.before.evidenceSha256);
+  }
+  assert.deepEqual(proof.afterSecond.evidenceSha256, proof.before.evidenceSha256);
+  const liveFinal = await read('03-after-second-finalize', 'live', 'tasks/slice-01.md');
+  assert.equal((liveFinal.match(/### attempt-/gu) ?? []).length, 1);
+  assert.equal(section(liveFinal, 'Final Result'), '- PASS');
+  const calls = (await fs.readFile(path.join(fixture.root, '.offline-calls.jsonl'), 'utf8')).trim().split('\n').map(JSON.parse);
+  assert.ok(calls.every((call) => call.caseId === 'A' && call.externalCalls === 0));
+  assert.deepEqual(calls.filter((call) => call.independent).map((call) => call.operation), ['EXECUTE_SLICE', 'VALIDATE_SLICE']);
+  const caseRoot = path.resolve(path.dirname(proof.receipt.receiptFile), '..');
+  const state = JSON.parse(await fs.readFile(path.join(caseRoot, 'case-state.json')));
+  assert.equal(state.mainTurns, 7); assert.equal(state.runnerTurns, 2);
+  await t.test('failed strict validation leaves the semantic input candidate byte-identical', () => {
+    assert.equal(proof.afterFirst.candidateTaskSha256, proof.before.candidateTaskSha256);
+    assert.equal(proof.afterFirst.candidateIndexSha256, proof.before.candidateIndexSha256);
+  });
+  await t.test('fresh summary proposal finalizes the same PASS receipt without another runner', () => {
+    assert.equal(proof.second.exit, 0, proof.second.diagnostic);
+  });
+});
+
+for (const boundary of ['prepare-index', 'publication-install', 'readback', 'finalization-write', 'contraproofs']) {
+  test(`finalizer: ${boundary} failure allows bounded same-receipt completion`, { timeout: 90_000 }, async () => {
+    const fixture = await checkout('finalizer-fail-' + boundary);
+    console.log(`TEST-ONLY adjacent finalizer evidence: ${boundary} ${fixture.root}`);
+    const result = spawnSync(process.execPath, ['benchmarks/sentinel-todo/runtime/benchmark-manager.mjs', 'run', '--case', 'A'],
+      { cwd: fixture.root, env: fixture.env, encoding: 'utf8', timeout: 75_000, maxBuffer: 4 * 1024 * 1024 });
+    await fs.writeFile(path.join(fixture.root, '.offline-finalizer-manager.log'), result.stdout + '\n' + result.stderr);
+    assert.equal(result.status, 1);
+    const root = path.join(fixture.root, '.offline-finalizer-rejection');
+    const proof = JSON.parse(await fs.readFile(path.join(root, 'observed.json')));
+    const injection = JSON.parse(await fs.readFile(path.join(root, 'injection-fired.json')));
+    assert.equal(injection.code, 'EIO'); assert.equal(injection.testOnly, true);
+    assert.equal(proof.receipt.semanticResponseStatus, 'PASS');
+    assert.equal(proof.first.exit, 1); assert.match(proof.first.diagnostic, /TEST-ONLY owned filesystem fault/u);
+    assert.equal(proof.finalizationExists, true);
+    assert.equal(proof.duplicate.exit, 0, proof.duplicate.diagnostic);
+    if (boundary === 'contraproofs') {
+      assert.equal(proof.probes.length, 10);
+      for (const probe of proof.probes.slice(0, -1)) {
+        assert.equal(probe.exit, 1, probe.name + ': ' + probe.diagnostic);
+        assert.equal(probe.livePreserved, true, probe.name);
+        if (probe.name !== 'concurrent-finalization') {
+          assert.equal(probe.foreignPreserved, true, probe.name);
+          assert.equal(probe.finalizationExists, false, probe.name);
+        }
+      }
+      assert.match(proof.probes.at(-2).diagnostic, /EEXIST/u);
+      assert.equal(proof.probes.at(-1).exit, 0, proof.probes.at(-1).stderr);
+    }
+    for (const phase of [proof.afterFirst, proof.afterSummary, proof.afterSecond]) assert.deepEqual(phase.evidenceSha256, proof.before.evidenceSha256);
+    assert.deepEqual(proof.afterFirst.candidateTreeSha256, proof.afterSummary.candidateTreeSha256);
+    const liveAfter = await fs.readFile(path.join(root, '01-after-rejected-finalize/live/tasks/slice-01.md'), 'utf8');
+    if (['prepare-index', 'publication-install'].includes(boundary)) {
+      assert.deepEqual(proof.afterFirst.liveTreeSha256, proof.before.liveTreeSha256, 'uncommitted publication rolls back live exactly');
+    } else {
+      assert.match(liveAfter, /## Final Result\n\n- PASS/u, 'publisher committed before outer finalizer failed');
+    }
+    const calls = (await fs.readFile(path.join(fixture.root, '.offline-calls.jsonl'), 'utf8')).trim().split('\n').map(JSON.parse);
+    assert.ok(calls.every((call) => call.caseId === 'A' && call.externalCalls === 0));
+    assert.deepEqual(calls.filter((call) => call.independent).map((call) => call.operation), ['EXECUTE_SLICE', 'VALIDATE_SLICE']);
+    assert.equal(proof.second.exit, 0, proof.second.diagnostic);
+  });
+}
+
+for (const [operation, boundary] of [['execute', 'publication'], ['apply', 'publication'], ['execute', 'cleanup'], ['execute', 'source-edit']]) {
+  test(`finalizer: ${operation} ${boundary} failure never appends duplicate same-receipt evidence`, { timeout: 90_000 }, async () => {
+    const fixture = await checkout(`finalizer-fail-${operation}-${boundary}`);
+    console.log(`TEST-ONLY adjacent ${operation} evidence: ${fixture.root}`);
+    const caseId = operation === 'apply' ? 'B' : 'A';
+    const result = spawnSync(process.execPath, ['benchmarks/sentinel-todo/runtime/benchmark-manager.mjs', 'run', '--case', caseId],
+      { cwd: fixture.root, env: fixture.env, encoding: 'utf8', timeout: 75_000, maxBuffer: 4 * 1024 * 1024 });
+    await fs.writeFile(path.join(fixture.root, '.offline-finalizer-manager.log'), result.stdout + '\n' + result.stderr);
+    assert.equal(result.status, 1);
+    const root = path.join(fixture.root, '.offline-finalizer-rejection');
+    const proof = JSON.parse(await fs.readFile(path.join(root, 'observed.json')));
+    const injection = JSON.parse(await fs.readFile(path.join(root, 'injection-fired.json')));
+    assert.equal(injection.code, 'EIO'); assert.equal(injection.testOnly, true);
+    assert.equal(proof.receipt.semanticResponseStatus, 'TESTS_PASS');
+    assert.equal(proof.first.exit, 1); assert.match(proof.first.diagnostic, /TEST-ONLY owned filesystem fault/u);
+    assert.equal(proof.finalizationExists, true);
+    assert.equal(proof.duplicate.exit, 0, proof.duplicate.diagnostic);
+    for (const phase of [proof.afterFirst, proof.afterSummary]) {
+      assert.deepEqual(phase.evidenceSha256, proof.before.evidenceSha256);
+      if (boundary !== 'cleanup') assert.deepEqual(phase.liveTreeSha256, proof.before.liveTreeSha256);
+    }
+    assert.deepEqual(proof.afterFirst.candidateTreeSha256, proof.afterSummary.candidateTreeSha256);
+    const artifact = phase => fs.readFile(path.join(root, phase, 'candidate/tasks/slice-01.md'), 'utf8');
+    const prefix = operation === 'apply' ? 'findings' : 'implementation';
+    const preparedStage = await fs.readFile(path.join(root, '01-prepared-stage/tasks/slice-01.md'), 'utf8');
+    assert.match(preparedStage, new RegExp(`### ${prefix}-check-01`, 'u'));
+    assert.doesNotMatch(await artifact('03-after-second-finalize'), new RegExp(`### ${prefix}-check-02`, 'u'));
+    const liveFinal = await fs.readFile(path.join(root, '03-after-second-finalize/live/tasks/slice-01.md'), 'utf8');
+    assert.equal((liveFinal.match(new RegExp(`### ${prefix}-check-`, 'gu')) ?? []).length, 1);
+    assert.deepEqual(proof.afterSecond.evidenceSha256, proof.before.evidenceSha256);
+    if (boundary === 'source-edit') {
+      assert.equal(proof.probes.length, 1);
+      assert.equal(proof.probes[0].exit, 1);
+      assert.match(proof.probes[0].diagnostic, /tested source changed/u);
+      assert.equal(proof.probes[0].foreignPreserved, true);
+      assert.equal(proof.probes[0].livePreserved, true);
+      assert.equal(proof.probes[0].finalizationExists, false);
+    }
+    const calls = (await fs.readFile(path.join(fixture.root, '.offline-calls.jsonl'), 'utf8')).trim().split('\n').map(JSON.parse);
+    assert.ok(calls.every(call => call.caseId === caseId && call.externalCalls === 0));
+    assert.deepEqual(calls.filter(call => call.independent).map(call => call.operation), operation === 'apply'
+      ? ['EXECUTE_SLICE', 'VALIDATE_SLICE', 'APPLY_FINDINGS'] : ['EXECUTE_SLICE']);
+    assert.equal(proof.second.exit, 0, proof.second.diagnostic);
+  });
+}
+
+for (const boundary of ['owner', 'binding']) {
+  test(`finalizer: allocation failure before ${boundary} retains evidence and prepares safely`, { timeout: 90_000 }, async () => {
+    const fixture = await checkout('allocation-fail-' + boundary);
+    console.log(`TEST-ONLY allocation ${boundary} evidence: ${fixture.root}`);
+    const result = spawnSync(process.execPath, ['benchmarks/sentinel-todo/runtime/benchmark-manager.mjs', 'run', '--case', 'A'],
+      { cwd: fixture.root, env: fixture.env, encoding: 'utf8', timeout: 75_000, maxBuffer: 4 * 1024 * 1024 });
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    const proof = JSON.parse(await fs.readFile(path.join(fixture.root, '.offline-allocation-failure.json')));
+    assert.equal(proof.first.exit, 1); assert.match(proof.first.diagnostic, /TEST-ONLY allocation fault/u);
+    assert.equal(proof.second.exit, 0, proof.second.diagnostic);
+    assert.equal(proof.liveUnchanged, true);
+    assert.equal(proof.allocated.length, 1);
+    assert.deepEqual(proof.allocatedHashesAfter, proof.allocatedHashes);
+    if (boundary === 'binding') {
+      assert.equal(proof.ownerBefore, proof.ownerAfter);
+      assert.equal(JSON.parse(proof.ownerBefore).candidateExecutionRoot, proof.binding.candidateExecutionRoot);
+    } else {
+      assert.equal(proof.ownerBefore, null);
+      assert.notEqual(path.basename(path.dirname(proof.binding.candidateExecutionRoot)), proof.allocated[0]);
+    }
+    const calls = (await fs.readFile(path.join(fixture.root, '.offline-calls.jsonl'), 'utf8')).trim().split('\n').map(JSON.parse);
+    assert.ok(calls.every(call => call.caseId === 'A' && call.externalCalls === 0));
+    assert.deepEqual(calls.filter(call => call.independent).map(call => call.operation), ['EXECUTE_SLICE', 'VALIDATE_SLICE']);
+  });
+}
+
+test('finalizer: private failing round remains once before authorized round two passes', { timeout: 90_000 }, async () => {
+  const fixture = await checkout('private-retry');
+  console.log(`TEST-ONLY private round evidence: ${fixture.root}`);
+  const result = spawnSync(process.execPath, ['benchmarks/sentinel-todo/runtime/benchmark-manager.mjs', 'run', '--case', 'A'],
+    { cwd: fixture.root, env: fixture.env, encoding: 'utf8', timeout: 75_000, maxBuffer: 4 * 1024 * 1024 });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const calls = (await fs.readFile(path.join(fixture.root, '.offline-calls.jsonl'), 'utf8')).trim().split('\n').map(JSON.parse);
+  assert.ok(calls.every(call => call.caseId === 'A' && call.externalCalls === 0));
+  assert.deepEqual(calls.filter(call => call.independent).map(call => call.operation), ['EXECUTE_SLICE', 'EXECUTE_SLICE', 'VALIDATE_SLICE']);
+  const run = (await fs.readdir(path.join(fixture.root, 'benchmark-temp'))).find(name => name.startsWith('run-'));
+  const task = await fs.readFile(path.join(fixture.root, 'benchmark-temp', run, 'case-a/workspace/specs/benchmark-case-a/execution/tasks/slice-01.md'), 'utf8');
+  assert.equal((task.match(/### implementation-check-/gu) ?? []).length, 2);
+  assert.ok(task.indexOf('Status: TESTS_FAIL') < task.indexOf('Status: TESTS_PASS'));
+  assert.equal((task.match(/### attempt-/gu) ?? []).length, 1);
+});
+
 test('T15: APPLY finalizer preserves a legitimate coverage finding through correction, revalidation and budget', { timeout: 90_000 }, async () => {
   const fixture = await checkout('coverage-findings');
   console.log(`TEST-ONLY APPLY evidence: ${fixture.root}`);

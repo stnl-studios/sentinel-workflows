@@ -11,7 +11,7 @@ import { prepareValidationCopy } from '../../../skills/workflows/stnl-slice-qual
 import { prepareValidationCandidate } from '../../../skills/workflows/stnl-slice-quality-manager/runtime/prepare-validation-candidate.mjs';
 import { publishValidationCandidate } from '../../../skills/workflows/stnl-slice-quality-manager/runtime/publish-validation-candidate.mjs';
 import { serializeRunnerExecutionBundleFromResponse, insertExecutionEvidenceInCandidate,
-  recoverableRunnerResultDiagnostic, persistMalformedRunnerResultInCandidate }
+  recoverableRunnerResultDiagnostic, persistMalformedRunnerResultInCandidate, captureRunnerTestedState }
   from '../../../skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs';
 import { inspectExecutionState, validateExecutionCandidate, resolveExecutionWorkspace, deriveNormalHandoff, computeRequirementsAuthority }
   from '../../../skills/workflows/stnl-slice-executor/runtime/execution-state.mjs';
@@ -30,6 +30,25 @@ async function write(file, value) {
 }
 async function optional(file) {
   try { return await read(file); } catch (error) { if (error.code === 'ENOENT') return null; throw error; }
+}
+const same = (left, right) => JSON.stringify(left) === JSON.stringify(right);
+async function tree(root) {
+  if (await fs.realpath(root) !== root || !(await fs.lstat(root)).isDirectory()) throw new Error('managed candidate root is unsafe');
+  const entries = [];
+  async function walk(relative) {
+    for (const name of (await fs.readdir(path.join(root, relative))).sort()) {
+      const key = path.join(relative, name), file = path.join(root, key), metadata = await fs.lstat(file);
+      if (metadata.isDirectory() && !metadata.isSymbolicLink()) {
+        entries.push({ path: key, type: 'directory' }); await walk(key);
+      } else entries.push({ path: key, type: 'file', mode: metadata.mode & 0o777, hash: hash(await regular(file)) });
+    }
+  }
+  await walk(''); return entries;
+}
+async function replaceTask(file, bytes) {
+  const temporary = `${file}.${randomUUID()}.tmp`;
+  try { await fs.writeFile(temporary, bytes, { flag: 'wx', mode: (await fs.stat(file)).mode & 0o777 }); await fs.rename(temporary, file); }
+  finally { await fs.rm(temporary, { force: true }); }
 }
 
 export async function finalizeManagedSlice(mode) {
@@ -57,23 +76,69 @@ export async function finalizeManagedSlice(mode) {
   const official = await resolveExecutionWorkspace(context.specPath);
   const taskRelative = path.join('tasks', `${context.slice}.md`);
   const liveTask = path.join(official.executionRoot, taskRelative);
+  const createCopy = () => context.operation === 'VALIDATE_SLICE'
+    ? prepareValidationCopy({ specPath: context.specPath, slice: context.slice, candidateParent: tmpdir })
+    : prepareExecutionCopy({ specPath: context.specPath, slice: context.slice });
+  const preparationFile = (binding, attempt) => metadataFile(`preparation-${binding.nonce}-attempt-${attempt}`);
+  const ownerFile = (binding) => binding.ownerFile ?? metadataFile('candidate-owner');
+  const checkBinding = async (binding) => {
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(binding.nonce ?? '')
+      || ![metadataFile('candidate-owner'), metadataFile(`candidate-owner-${binding.nonce}`)].includes(ownerFile(binding))
+      || !same(binding, await read(ownerFile(binding)))
+      || Object.entries(owner).some(([key, value]) => binding[key] !== value)) throw new Error('managed candidate binding disagrees');
+    await checkCopy(binding);
+  };
+  const checkCopy = async (copy) => {
+    const candidateRoot = copy.candidateExecutionRoot;
+    const root = context.operation === 'VALIDATE_SLICE' ? candidateRoot : copy.candidateRoot;
+    const expectedParent = context.operation === 'VALIDATE_SLICE' ? tmpdir : path.dirname(official.specRoot ?? official.executionRoot);
+    if (typeof root !== 'string' || path.dirname(root) !== expectedParent || (context.operation === 'VALIDATE_SLICE'
+      ? !path.basename(root).startsWith(`validation-${context.slice}-`)
+      : !path.basename(root).startsWith('.stnl-execution-copy-') || candidateRoot !== (official.specRoot === null ? root : path.join(root, 'execution')))
+      || copy.candidateTaskArtifact !== path.join(candidateRoot, taskRelative)) throw new Error('managed candidate path/source identity disagrees');
+  };
   if (mode === '--prepare') {
     await assertManagedSliceFreshness(environment);
-    if (await optional(bindingFile) !== null) throw new Error('managed candidate already prepared; retain its canonical identity');
-    const copy = context.operation === 'VALIDATE_SLICE'
-      ? await prepareValidationCopy({ specPath: context.specPath, slice: context.slice, candidateParent: tmpdir })
-      : await prepareExecutionCopy({ specPath: context.specPath, slice: context.slice });
-    const binding = { ...owner, nonce: randomUUID(), ...copy,
+    const previous = await optional(bindingFile);
+    if (previous !== null) {
+      await checkBinding(previous);
+      const latest = await read(metadataFile('latest'));
+      const rejected = await optional(preparationFile(previous, latest.receipt?.attempt));
+      if (!rejected || !['REJECTED', 'PREPARING'].includes(rejected.status)) throw new Error('managed candidate already prepared; retain its canonical identity');
+      await checkCopy(rejected.stage);
+      if (rejected.association?.bindingSha256 !== hash(JSON.stringify(previous))
+        || rejected.association.receiptFile !== latest.receipt.receiptFile) throw new Error('managed rejected preparation identity disagrees');
+      if (rejected.status === 'PREPARING') {
+        rejected.status = 'REJECTED'; rejected.failure = 'interrupted preparation retained';
+        rejected.stageTree = await tree(rejected.stage.candidateExecutionRoot);
+        await write(preparationFile(previous, latest.receipt.attempt), rejected);
+      }
+      if (!same(rejected.inputTree, await tree(previous.candidateExecutionRoot))
+        || !same(rejected.liveBefore, await tree(official.executionRoot))
+        || !same(rejected.stageTree, await tree(rejected.stage.candidateExecutionRoot))) throw new Error('managed rejected candidate changed; preserve evidence and stop');
+    } else {
+      // The immutable owner survives failure between allocation and binding.
+      const allocated = await optional(metadataFile('candidate-owner'));
+      if (allocated !== null) {
+        await checkBinding(allocated);
+        if (!same(allocated.sourceTree, await tree(official.executionRoot))
+          || !same(allocated.sourceTree, await tree(allocated.candidateExecutionRoot))) throw new Error('managed unbound allocation changed');
+        await write(bindingFile, allocated);
+        return { status: 'PREPARED', candidateExecutionRoot: allocated.candidateExecutionRoot, candidateTaskArtifact: allocated.candidateTaskArtifact };
+      }
+    }
+    const copy = await createCopy(), nonce = randomUUID();
+    const binding = { ...owner, nonce, ...copy,
+      ownerFile: previous === null ? metadataFile('candidate-owner') : metadataFile(`candidate-owner-${nonce}`),
       candidateTaskArtifact: path.join(copy.candidateExecutionRoot, taskRelative),
-      sourceTaskSha256: hash(await regular(liveTask)) };
-    await fs.writeFile(metadataFile('candidate-owner'), JSON.stringify(binding) + '\n', { flag: 'wx', mode: 0o600 });
+      sourceTaskSha256: hash(await regular(liveTask)), sourceTree: await tree(official.executionRoot) };
+    await fs.writeFile(ownerFile(binding), JSON.stringify(binding) + '\n', { flag: 'wx', mode: 0o600 });
     await write(bindingFile, binding);
     return { status: 'PREPARED', candidateExecutionRoot: binding.candidateExecutionRoot,
       candidateTaskArtifact: binding.candidateTaskArtifact };
   }
   const binding = await read(bindingFile);
-  if (JSON.stringify(binding) !== JSON.stringify(await read(metadataFile('candidate-owner')))
-    || Object.entries(owner).some(([key, value]) => binding[key] !== value)) throw new Error('managed candidate binding disagrees');
+  await checkBinding(binding);
   const latest = await read(metadataFile('latest'));
   if (latest.operation !== owner.operation || latest.slice !== owner.slice || latest.sequence !== owner.sequence
     || latest.authority !== owner.authority || latest.workspace !== owner.workspace || latest.tmpdir !== tmpdir) throw new Error('managed receipt association disagrees');
@@ -90,61 +155,133 @@ export async function finalizeManagedSlice(mode) {
     || typeof sealed.prompt !== 'string' || hash(sealed.prompt) !== latest.payloadSha256) throw new Error('managed sealed payload association disagrees');
   const diskReceipt = await read(receipt.receiptFile);
   if (JSON.stringify(diskReceipt) !== JSON.stringify(receipt)) throw new Error('managed receipt changed after broker settlement');
+  const selected = (await inspectExecutionState(context.specPath)).tasks.get(context.slice);
+  const expectedEntries = context.operation === 'VALIDATE_SLICE'
+    ? selected.currentAuxiliaryCheck?.testedState ?? selected.base.entries : receipt.testedState?.entries;
+  const testedState = expectedEntries == null ? null : await captureRunnerTestedState({ workspace: context.workspace,
+    taskArtifact: liveTask, changedAreas: expectedEntries.map(entry => entry.path) });
+  if (testedState !== null && !same(testedState.entries, expectedEntries.map(entry => ({ path: entry.path, value: entry.value ?? entry.expected })))) throw new Error('managed receipt tested source changed');
   const prior = await optional(finalizedFile);
   if (prior?.receiptFile === receipt.receiptFile) {
     const task = prior.state === 'PRIVATE_TESTS_FAIL' ? binding.candidateTaskArtifact : liveTask;
     if (JSON.stringify(Object.keys(prior.evidenceSha256 ?? {}).sort()) !== JSON.stringify([...evidenceFiles].sort())) throw new Error('managed finalized evidence paths disagree');
-    if (`sha256:${await computeRequirementsAuthority(context.specPath)}` !== owner.authority
+    if (Object.entries(owner).some(([key, value]) => prior[key] !== value)
+      || (await inspectExecutionState(context.specPath)).state !== (prior.state === 'PRIVATE_TESTS_FAIL' ? context.state : prior.state)
+      || `sha256:${await computeRequirementsAuthority(context.specPath)}` !== owner.authority
       || hash(await regular(task)) !== prior.taskSha256 || hash(await regular(path.join(official.executionRoot, 'tasks.md'))) !== prior.indexSha256
+      || !same(prior.liveTree, await tree(official.executionRoot))
+      || !same(prior.candidateTree, await tree(binding.candidateExecutionRoot))
+      || !same(prior.testedState, testedState)
       || await Promise.all(Object.entries(prior.evidenceSha256).map(async ([file, expectedHash]) =>
         hash(await regular(file)) === expectedHash)).then((matches) => matches.some((matchesHash) => !matchesHash))) throw new Error('managed finalization readback conflict');
     return prior;
   }
-  await assertManagedSliceFreshness(environment);
-  await assertManagedRunnerReceipt({ operation: owner.operation, slice: owner.slice, workspace: owner.workspace,
-    receiptFile: receipt.receiptFile, semanticResponseFile: receipt.semanticResponseFile, allowRejected: true, environment });
-  const candidateRoot = await fs.realpath(binding.candidateExecutionRoot);
-  const expectedParent = context.operation === 'VALIDATE_SLICE' ? tmpdir
-    : path.dirname(official.specRoot ?? official.executionRoot);
-  const root = context.operation === 'VALIDATE_SLICE' ? candidateRoot : await fs.realpath(binding.candidateRoot);
-  if (path.dirname(root) !== expectedParent || (context.operation === 'VALIDATE_SLICE'
-    ? !path.basename(root).startsWith(`validation-${context.slice}-`)
-    : !path.basename(root).startsWith('.stnl-execution-copy-')
-      || candidateRoot !== (official.specRoot === null ? root : path.join(root, 'execution')))
-    || binding.candidateTaskArtifact !== path.join(candidateRoot, taskRelative)
-    || binding.sourceTaskSha256 !== hash(await regular(liveTask))) throw new Error('managed candidate path/source identity disagrees');
-  let privateFailure = false;
-  if (context.operation === 'VALIDATE_SLICE') {
-    await prepareValidationCandidate({ specPath: context.specPath, slice: context.slice, workspace: context.workspace,
-      candidateExecutionRoot: candidateRoot, semanticResponseFile: receipt.semanticResponseFile, receiptFile: receipt.receiptFile });
-  } else {
+  const evidenceSha256 = Object.fromEntries(await Promise.all(evidenceFiles.map(async (file) => [file, hash(await regular(file))])));
+  const association = { ...owner, bindingSha256: hash(JSON.stringify(binding)), receiptFile: receipt.receiptFile,
+    requestId: latest.requestId, payloadSha256: latest.payloadSha256, evidenceSha256 };
+  const preparedFile = preparationFile(binding, receipt.attempt);
+  let prepared = await optional(preparedFile);
+  const inputTree = await tree(binding.candidateExecutionRoot);
+  const liveTree = await tree(official.executionRoot);
+  if (`sha256:${await computeRequirementsAuthority(context.specPath)}` !== owner.authority) throw new Error('managed preparation authority is stale');
+  if (prepared !== null) {
+    if (!same(prepared.association, association)) throw new Error('managed preparation receipt/hash identity disagrees');
+    if (!same(prepared.testedState, testedState)) throw new Error('managed preparation tested source changed');
+    if (!same(prepared.liveBefore, binding.sourceTree)) throw new Error('managed preparation source identity disagrees');
+    if (prepared.status === 'PREPARED') {
+      const expectedPrivate = receipt.semanticResponseStatus === 'TESTS_FAIL'
+        && JSON.parse(await regular(receipt.semanticResponseFile)).automaticCheckRound !== '3/3';
+      if (prepared.privateFailure !== expectedPrivate
+        || !same(prepared.liveAfter, expectedPrivate ? prepared.liveBefore : prepared.stageTree)) throw new Error('managed preparation outcome/image disagrees');
+    }
+    await checkCopy(prepared.stage);
+    if (!same(prepared.inputTree, inputTree) && !(prepared.privateFailure && same(prepared.stageTree, inputTree))) throw new Error('managed preparation input candidate changed');
+    if (!same(prepared.liveBefore, liveTree) && !(prepared.status === 'PREPARED' && same(prepared.liveAfter, liveTree))) throw new Error('managed preparation live source changed');
+    const stageExists = await fs.lstat(prepared.stage.candidateExecutionRoot).then(() => true, error => { if (error.code === 'ENOENT') return false; throw error; });
+    if (stageExists && !same(prepared.stageTree, await tree(prepared.stage.candidateExecutionRoot))) throw new Error('managed prepared candidate changed');
+    for (const rejected of prepared.rejectedStages ?? []) {
+      await checkCopy(rejected.stage);
+      if (!same(rejected.tree, await tree(rejected.stage.candidateExecutionRoot))) throw new Error('managed rejected stage changed');
+    }
+    if (!stageExists && !(prepared.status === 'PREPARED' && !prepared.privateFailure && same(prepared.liveAfter, liveTree))) throw new Error('managed prepared candidate is missing');
+    if (prepared.status !== 'PREPARED' && !(prepared.status === 'REJECTED' && prepared.failureCode === 'EIO'
+      && !prepared.failure.includes('preserved'))) throw new Error('managed preparation rejected; retain candidate and use --prepare for a fresh proposal');
+  }
+  if (prepared?.status !== 'PREPARED') {
+    await assertManagedSliceFreshness(environment);
+    await assertManagedRunnerReceipt({ operation: owner.operation, slice: owner.slice, workspace: owner.workspace,
+      receiptFile: receipt.receiptFile, semanticResponseFile: receipt.semanticResponseFile, allowRejected: true, environment });
+    if (!same(binding.sourceTree, liveTree) || binding.sourceTaskSha256 !== hash(await regular(liveTask))) throw new Error('managed candidate path/source identity disagrees');
+    const stage = { ...await createCopy() };
+    stage.candidateTaskArtifact = path.join(stage.candidateExecutionRoot, taskRelative);
+    await checkCopy(stage);
+    await fs.cp(binding.candidateExecutionRoot, stage.candidateExecutionRoot, { recursive: true });
+    if (!same(inputTree, await tree(stage.candidateExecutionRoot)) || !same(inputTree, await tree(binding.candidateExecutionRoot))) throw new Error('managed candidate changed while staging');
+    const rejectedStages = [...(prepared?.rejectedStages ?? []), ...(prepared ? [{ stage: prepared.stage, tree: prepared.stageTree, reason: prepared.failure }] : [])];
+    prepared = { association, testedState, status: 'PREPARING', stage, inputTree, liveBefore: liveTree,
+      stageTree: inputTree, rejectedStages };
+    await write(preparedFile, prepared);
     try {
-      const response = (await regular(receipt.semanticResponseFile)).toString('utf8');
-      const bundle = await serializeRunnerExecutionBundleFromResponse({ operation: context.operation,
-        response, workspace: context.workspace, taskArtifact: binding.candidateTaskArtifact,
-        receiptFile: receipt.receiptFile, semanticResponseFile: receipt.semanticResponseFile });
-      await insertExecutionEvidenceInCandidate({ taskArtifact: binding.candidateTaskArtifact, operation: context.operation, bundle });
-      const parsed = JSON.parse(response);
-      privateFailure = parsed.status === 'TESTS_FAIL' && parsed.automaticCheckRound !== '3/3';
+      let privateFailure = false;
+      if (context.operation === 'VALIDATE_SLICE') {
+        await prepareValidationCandidate({ specPath: context.specPath, slice: context.slice, workspace: context.workspace,
+          candidateExecutionRoot: stage.candidateExecutionRoot, semanticResponseFile: receipt.semanticResponseFile, receiptFile: receipt.receiptFile });
+      } else {
+        try {
+          const response = (await regular(receipt.semanticResponseFile)).toString('utf8');
+          const bundle = await serializeRunnerExecutionBundleFromResponse({ operation: context.operation,
+            response, workspace: context.workspace, taskArtifact: stage.candidateTaskArtifact,
+            receiptFile: receipt.receiptFile, semanticResponseFile: receipt.semanticResponseFile });
+          await insertExecutionEvidenceInCandidate({ taskArtifact: stage.candidateTaskArtifact, operation: context.operation, bundle });
+          const parsed = JSON.parse(response);
+          privateFailure = parsed.status === 'TESTS_FAIL' && parsed.automaticCheckRound !== '3/3';
+        } catch (error) {
+          const diagnostic = recoverableRunnerResultDiagnostic(error);
+          if (diagnostic === null) throw error;
+          await persistMalformedRunnerResultInCandidate({ taskArtifact: stage.candidateTaskArtifact,
+            operation: context.operation, workspace: context.workspace, receiptFile: receipt.receiptFile,
+            semanticResponseFile: receipt.semanticResponseFile, diagnostic, error });
+        }
+      }
+      // Preserve intermediate failure privately; terminal validation stays at
+      // the existing boundary. No receipt is serialized twice on publication retry.
+      const validated = privateFailure ? null : await validateExecutionCandidate(context.specPath, stage.candidateExecutionRoot);
+      prepared = { ...prepared, status: 'PREPARED', privateFailure, state: privateFailure ? 'PRIVATE_TESTS_FAIL' : validated.state,
+        stageTree: await tree(stage.candidateExecutionRoot) };
+      prepared.liveAfter = privateFailure ? liveTree : prepared.stageTree;
+      await write(preparedFile, prepared);
     } catch (error) {
-      const diagnostic = recoverableRunnerResultDiagnostic(error);
-      if (diagnostic === null) throw error;
-      await persistMalformedRunnerResultInCandidate({ taskArtifact: binding.candidateTaskArtifact,
-        operation: context.operation, workspace: context.workspace, receiptFile: receipt.receiptFile,
-        semanticResponseFile: receipt.semanticResponseFile, diagnostic, error });
+      await write(preparedFile, { ...prepared, status: 'REJECTED', stageTree: await tree(stage.candidateExecutionRoot),
+        failure: error.message, failureCode: error.code ?? null });
+      throw error;
     }
   }
-  // Intermediate failure is retained privately before correction. Publication
-  // validation belongs to the existing terminal boundary, not to round 1/2.
-  const validated = privateFailure ? null : await validateExecutionCandidate(context.specPath, candidateRoot);
-  if (!privateFailure) {
-    if (context.operation === 'VALIDATE_SLICE') await publishValidationCandidate({ specPath: context.specPath, slice: context.slice, candidateExecutionRoot: candidateRoot });
-    else await publishExecutionCopy({ specPath: context.specPath, slice: context.slice, candidateRoot: root });
+  const privateFailure = prepared.privateFailure;
+  if (privateFailure) {
+    await assertManagedSliceFreshness(environment);
+    const currentInput = await tree(binding.candidateExecutionRoot);
+    if (!same(prepared.stageTree, currentInput)) {
+      if (!same(prepared.inputTree, currentInput)) throw new Error('managed private candidate changed');
+      await replaceTask(binding.candidateTaskArtifact, await regular(prepared.stage.candidateTaskArtifact));
+    }
+  } else if (!same(prepared.liveAfter, await tree(official.executionRoot))) {
+    await assertManagedSliceFreshness(environment);
+    if (!same(prepared.liveBefore, await tree(official.executionRoot))
+      || !same(prepared.inputTree, await tree(binding.candidateExecutionRoot))) throw new Error('managed publication source conflict');
+    if (context.operation === 'VALIDATE_SLICE') await publishValidationCandidate({ specPath: context.specPath, slice: context.slice, candidateExecutionRoot: prepared.stage.candidateExecutionRoot });
+    else await publishExecutionCopy({ specPath: context.specPath, slice: context.slice, candidateRoot: prepared.stage.candidateRoot });
   }
   const readback = await inspectExecutionState(context.specPath);
-  if (!privateFailure && readback.state !== validated.state) throw new Error('managed publication/readback conflict');
+  if ((!privateFailure && readback.state !== prepared.state) || !same(prepared.liveAfter, await tree(official.executionRoot))) throw new Error('managed publication/readback conflict');
+  if (!same(privateFailure ? prepared.stageTree : prepared.inputTree, await tree(binding.candidateExecutionRoot))
+    || `sha256:${await computeRequirementsAuthority(context.specPath)}` !== owner.authority
+    || (testedState !== null && !same(testedState, await captureRunnerTestedState({ workspace: context.workspace,
+      taskArtifact: liveTask, changedAreas: testedState.entries.map(entry => entry.path) })))
+    || !same(evidenceSha256, Object.fromEntries(await Promise.all(evidenceFiles.map(async (file) => [file, hash(await regular(file))]))))) throw new Error('managed finalization input/evidence conflict');
   const result = { ...owner, receiptFile: receipt.receiptFile, state: privateFailure ? 'PRIVATE_TESTS_FAIL' : readback.state,
-    evidenceSha256: Object.fromEntries(await Promise.all(evidenceFiles.map(async (file) => [file, hash(await regular(file))]))),
+    evidenceSha256,
+    liveTree: await tree(official.executionRoot), candidateTree: await tree(binding.candidateExecutionRoot),
+    testedState,
     taskSha256: hash(await regular(privateFailure ? binding.candidateTaskArtifact : liveTask)),
     indexSha256: hash(await regular(path.join(official.executionRoot, 'tasks.md'))),
     mandatoryRecovery: readback.mandatoryRecovery ?? null, handoff: deriveNormalHandoff(readback),
