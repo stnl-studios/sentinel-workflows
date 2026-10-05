@@ -16,6 +16,10 @@ const MANAGED_COMMAND_INSTRUCTIONS = [
   'For VALIDATE_SLICE only, a demonstrated defect or omitted required variant in executor-prepared tests already required by current authority and authorized in this slice',
   'is NEEDS_FIX with a specific coverage finding, direct evidence, authorized path and expected in-scope correction.',
   'Only the executor corrects through APPLY_FINDINGS then VALIDATE_SLICE within existing budgets; no runner writes or extra calls.',
+  'Every finding must demonstrate a violated current requirement or required variant on an authorized path in this slice.',
+  'A preference for a stronger assertion or an unrequired exact output string is not a coverage defect.',
+  'VALIDATE_SLICE commands must be nonempty and report actually executed verification commands and exits, including NEEDS_FIX/BLOCKED.',
+  'Discovery and inspection are not verification commands; never fabricate a command or exit to satisfy the schema.',
   'Access, transport, environment and insufficient authority remain BLOCKED; never PASS before sufficient evidence.',
 ].join('\n');
 

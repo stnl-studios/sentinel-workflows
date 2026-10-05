@@ -58,10 +58,11 @@ function parseStructuredOutput(text) {
   try {
     semantic = JSON.parse(response);
   } catch {
-    fail("final runner message is not valid JSON");
+    throw Object.assign(new Error("final runner message is not valid JSON"), { code: "RUNNER_RESPONSE_SCHEMA_INVALID" });
   }
   if (semantic === null || typeof semantic !== "object" || Array.isArray(semantic)) {
-    fail("final runner message must be one JSON object, not a JSON string or array");
+    throw Object.assign(new Error("final runner message must be one JSON object, not a JSON string or array"),
+      { code: "RUNNER_RESPONSE_SCHEMA_INVALID" });
   }
   return response;
 }

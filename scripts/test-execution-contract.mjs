@@ -31,7 +31,7 @@ import { validateWorkspace as validateLifecycleWorkspace } from "../skills/workf
 import { renderClosedFeature } from "../skills/workflows/stnl-spec-lifecycle-manager/runtime/lib/closed-spec.mjs";
 import { runCodexTurn } from "../agents/codex/runtime/sdk-transport.mjs";
 import { createUsageNormalizer, ZERO_USAGE } from "../agents/codex/runtime/usage-accounting.mjs";
-import { createManagedSliceContext, managedEnvironment } from "../skills/workflows/stnl-slice-quality-manager/runtime/managed-slice-context.mjs";
+import { assertManagedRunnerReceipt, createManagedSliceContext, managedEnvironment } from "../skills/workflows/stnl-slice-quality-manager/runtime/managed-slice-context.mjs";
 import { publishValidationCandidate } from "../skills/workflows/stnl-slice-quality-manager/runtime/publish-validation-candidate.mjs";
 import { resolveExecutionWorkspace as resolveMaterializerExecutionWorkspace } from "../skills/workflows/stnl-task-materializer/runtime/execution-state.mjs";
 import { prepareTaskMaterializationCandidate } from "../skills/workflows/stnl-task-materializer/runtime/prepare-task-candidate.mjs";
@@ -5221,6 +5221,220 @@ function sectionBodyForScopeTest(text, heading) {
   return text.slice(start, end < 0 ? undefined : end);
 }
 
+test("completed rejected receipts publish only a blocker and use the existing bounded same-operation recovery", async (t) => {
+  for (const scenario of [
+    { operation: "EXECUTE_SLICE", rejection: "json" },
+    { operation: "EXECUTE_SLICE", rejection: "json", fileless: true },
+    { operation: "APPLY_FINDINGS", rejection: "json" },
+    { operation: "VALIDATE_SLICE", rejection: "json" },
+    { operation: "VALIDATE_SLICE", rejection: "schema" },
+    { operation: "EXECUTE_SLICE", rejection: "producer" },
+    { operation: "APPLY_FINDINGS", rejection: "producer" },
+  ]) await t.test(`${scenario.operation} ${scenario.rejection}${scenario.fileless ? " fileless" : ""}`, async (t) => {
+    const fixture = await nestedLifecycleWorkspace(t);
+    const taskPath = path.join(fixture.execution, "tasks/slice-01.md");
+    const target = path.join(fixture.root, "src/example.txt");
+    const claim = path.relative(path.dirname(taskPath), target).split(path.sep).join("/");
+    await writeValidatedPath(fixture, claim);
+    if (scenario.operation !== "EXECUTE_SLICE") await editTask(fixture, (value) => {
+      let task = replaceSection(value.replace("- [ ] 1.1", "- [x] 1.1"), "Changed Areas", `- \`${claim}\``);
+      task = replaceSection(task, "Implementation Test Evidence", checkRecord("implementation-check", 1, "TESTS_PASS", 1).replaceAll("../../src/example.txt", claim));
+      if (scenario.operation === "APPLY_FINDINGS") {
+        task = replaceSection(task, "Validation Attempts", NEEDS_FIX_ATTEMPT.replaceAll("../../src/example.txt", claim));
+        task = replaceSection(task, "Validation Findings", ACTIVE_FINDING);
+      }
+      return task;
+    });
+    const original = await fs.readFile(taskPath, "utf8");
+    const indexBefore = await fs.readFile(path.join(fixture.execution, "tasks.md"));
+    const captures = [];
+    let runnerTurns = 0;
+    let recovery = null;
+    let sequence = 0;
+    async function dispatch(operation, rejected, exerciseGuards = false) {
+      const preflight = await preflightExecutionOperation(fixture.requirements, operation, "1");
+      const officialPreflight = { exitCode: 0, operation, slice: "slice-01", inputSlice: "1",
+        specPath: fixture.requirements, state: preflight.state, authority: `sha256:${preflight.currentFingerprint}`,
+        legalOperations: preflight.legalOperations, mandatoryRecovery: preflight.mandatoryRecovery };
+      const context = await createManagedSliceContext({ officialPreflight, workspace: fixture.root, snapshot: ROOT,
+        adapterPath: path.join(ROOT, "agents/codex/runtime/validation-runner.mjs"),
+        bridgePath: path.join(ROOT, "agents/codex/runtime/managed-runner-bridge.mjs"),
+        preflightPath: path.join(ROOT, "agents/codex/runtime/managed-slice-preflight.mjs") });
+      const tmpdir = await temporary(t, "stnl-rejected-receipt-");
+      const environment = managedEnvironment({ PATH: process.env.PATH, TMPDIR: tmpdir }, context);
+      const filelessReason = "Acceptance-only work changes no repository file.";
+      let semantic = scopeRegressionPayload(scenario.fileless ? filelessReason : undefined);
+      if (operation === "APPLY_FINDINGS") {
+        const { priorRoundFailure, correctionApplied, inSliceRationale, ...common } = semantic;
+        semantic = { ...common, findingsCycle: "attempt-01", findingsVerified: "finding-01",
+          correctionsCovered: "approved correction", regressionsSelected: "prepared checks", unsupportedActiveFindings: "none" };
+      } else if (operation === "VALIDATE_SLICE") semantic = { ...sanitizedValidationResponse("PASS"),
+        evidence: "Offline SDK fixture models prepared acceptance checks; no real provider is used.",
+        ...(scenario.operation === "APPLY_FINDINGS" ? { findingReferences: "finding-01", findingDispositions: "finding-01=resolved" } : {}) };
+      if (rejected && scenario.rejection === "schema") semantic = { ...semantic, status: "NEEDS_FIX", commands: [] };
+      if (rejected && scenario.rejection === "producer") semantic = { ...semantic, discoverySources: [] };
+      const final = rejected && scenario.rejection === "json" ? "{ invalid final response" : JSON.stringify(semantic);
+      const broker = await startOfficialRunnerBroker({ workspace: fixture.root, tmpdir,
+        operation, sequence: ++sequence, slice: "slice-01", officialPreflight,
+        invoke: (request) => invokeIndependentRunner({ ...request, snapshot: ROOT, env: environment,
+          runTurn: async ({ eventsPath, operationId, threadId }) => {
+            runnerTurns += 1;
+            assert.equal(threadId, undefined, "schema rejection grants no format or transport retry");
+            const command = "STNL_VERIFICATION_COMMAND=1 node --test test/prepared.test.mjs";
+            const events = [{ operationId, type: "thread.started", thread_id: `rejected-thread-${sequence}` },
+              { operationId, type: "turn.started" },
+              // The schema regression reproduces a discovery-only final response.
+              ...(!(rejected && scenario.rejection === "schema") ? [
+                { operationId, type: "item.started", item: { id: "item_0", type: "command_execution", command } },
+                { operationId, type: "item.completed", item: { id: "item_0", type: "command_execution", command, status: "completed", exit_code: 0 } },
+              ] : []),
+              { operationId, type: "item.completed", item: { id: "item_1", type: "agent_message", text: final } },
+              { operationId, type: "turn.completed" }];
+            await fs.writeFile(eventsPath, events.map(JSON.stringify).join("\n") + "\n");
+            return { completed: true, turnStarted: true, threadId: `rejected-thread-${sequence}`,
+              requestedModel: "gpt-6-luna", requestedEffort: "medium", error: null, usage: null };
+          } }) });
+      try {
+        const receipt = await runManagedRunnerBridge({ environment, cwd: fixture.root,
+          payload: operation === "VALIDATE_SLICE" ? "Review prepared checks against the approved requirements."
+            : JSON.stringify({ automaticCheckRound: "1/3", changedAreas: scenario.fileless ? [] : [claim],
+              ...(scenario.fileless ? { filelessReason } : {}) }) });
+        assert.equal(receipt.status, rejected && scenario.rejection !== "producer" ? "RUNNER_RESULT_BLOCKED" : "RUNNER_RESPONSE_CAPTURED");
+        assert.equal(await fs.readFile(receipt.semanticResponseFile, "utf8"), final);
+        assert.equal(receipt.semanticResponseSha256, createHash("sha256").update(final).digest("hex"));
+        assert.equal(receipt.authority, officialPreflight.authority);
+        if (operation === "VALIDATE_SLICE") {
+          await assert.rejects(runManagedRunnerBridge({ environment, cwd: fixture.root, payload: "repeat" }),
+            (error) => error.code === "BROKER_RESULT_ALREADY_CAPTURED");
+        }
+        const capturedBefore = await treeBytes(tmpdir);
+        captures.push({ tmpdir, bytes: capturedBefore.filter(([file]) => !file.startsWith("stnl-runner-broker")) });
+        const copy = operation === "VALIDATE_SLICE"
+          ? await prepareValidationCopy({ specPath: fixture.requirements, slice: "slice-01", candidateParent: tmpdir })
+          : await prepareExecutionCopy({ specPath: fixture.requirements, slice: "slice-01" });
+        const candidateTask = path.join(copy.candidateExecutionRoot, "tasks/slice-01.md");
+        if (operation !== "VALIDATE_SLICE") {
+          let task = replaceSection((await fs.readFile(candidateTask, "utf8")).replace("- [ ] 1.1", "- [x] 1.1"), "Changed Areas", scenario.fileless ? "- none" : `- \`${claim}\``);
+          if (operation === "APPLY_FINDINGS") task = replaceSection(task, "Corrections Applied", `- \`${claim}\``);
+          await fs.writeFile(candidateTask, task);
+        } else if (!rejected && scenario.operation === "APPLY_FINDINGS") {
+          await fs.writeFile(candidateTask, replaceSection(await fs.readFile(candidateTask, "utf8"), "Validation Findings",
+            `${ACTIVE_FINDING.replace("- State: active", "- State: resolved")}\n- Resolution: attempt-02 verified the correction.`));
+        }
+        if (!rejected && operation === "VALIDATE_SLICE") await fs.writeFile(candidateTask,
+          replaceSection(await fs.readFile(candidateTask, "utf8"), "Diff Summary", "- Offline prepared checks verified the approved acceptance behavior."));
+        const args = operation === "VALIDATE_SLICE"
+          ? [path.join(ROOT, "skills/workflows/stnl-slice-quality-manager/runtime/prepare-validation-candidate.mjs"),
+            "--prepare", "--spec-path", fixture.requirements, "--slice", "slice-01", "--workspace", fixture.root,
+            "--candidate-execution-root", copy.candidateExecutionRoot]
+          : [path.join(ROOT, "skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs"),
+            "--execution-bundle", "--operation", operation, "--workspace", fixture.root,
+            "--task-artifact", candidateTask, "--insert-candidate"];
+        args.push("--receipt-file", receipt.receiptFile, "--semantic-response-file", receipt.semanticResponseFile);
+        const before = await treeBytes(copy.candidateExecutionRoot);
+        const runProducer = (env = environment, argv = args) => spawnSync(process.execPath, argv,
+          { cwd: fixture.root, env, encoding: "utf8" });
+        if (exerciseGuards) {
+          if (receipt.status === "RUNNER_RESULT_BLOCKED") {
+            await assert.rejects(assertManagedRunnerReceipt({ operation, slice: "slice-01", workspace: fixture.root,
+              receiptFile: receipt.receiptFile, semanticResponseFile: receipt.semanticResponseFile, environment }),
+            /receipt does not match the active managed runner invocation/u, "ordinary evidence consumers cannot accept a rejected receipt");
+            assert.equal(runProducer({ PATH: process.env.PATH }).status, 1, "a rejected diagnostic cannot manufacture native recovery");
+            assert.deepEqual(await treeBytes(copy.candidateExecutionRoot), before);
+          }
+          const receiptBytes = await fs.readFile(receipt.receiptFile);
+          for (const mutation of [
+            { operation: operation === "VALIDATE_SLICE" ? "EXECUTE_SLICE" : "VALIDATE_SLICE" },
+            { slice: "slice-02" }, { sequence: sequence + 1 }, { attempt: 2 }, { threadId: "other" },
+            { authority: "sha256:" + "0".repeat(64) }, { semanticResponseSha256: "0".repeat(64) },
+            { semanticResponseFile: path.join(tmpdir, "copied.response.json") },
+            { receiptFile: path.join(tmpdir, "copied.receipt.json") },
+            ...(receipt.status === "RUNNER_RESULT_BLOCKED" ? [{ status: "RUNNER_RESPONSE_CAPTURED", exitCode: 0,
+              captureFailure: null, captureFailureCode: null }] : []),
+            { processError: "uncertain timeout" }, { providerError: { message: "provider failure" } },
+          ]) {
+            await fs.writeFile(receipt.receiptFile, JSON.stringify({ ...receipt, ...mutation }));
+            const result = runProducer();
+            assert.equal(result.status, 1, JSON.stringify(mutation));
+            assert.deepEqual(await treeBytes(copy.candidateExecutionRoot), before);
+          }
+          await fs.writeFile(receipt.receiptFile, receiptBytes);
+          const responseBytes = await fs.readFile(receipt.semanticResponseFile);
+          await fs.appendFile(receipt.semanticResponseFile, " ");
+          assert.equal(runProducer().status, 1);
+          assert.deepEqual(await treeBytes(copy.candidateExecutionRoot), before);
+          await fs.writeFile(receipt.semanticResponseFile, responseBytes);
+          const eventsBytes = await fs.readFile(receipt.eventsPath);
+          for (const changed of [
+            eventsBytes.toString().replace(final.replaceAll("\\", "\\\\").replaceAll('"', '\\"'), "different final bytes"),
+            eventsBytes + JSON.stringify({ operationId: `runner-${path.basename(receipt.eventsPath, ".events.jsonl")}`, type: "turn.started" }) + "\n",
+          ]) {
+            await fs.writeFile(receipt.eventsPath, changed);
+            assert.equal(runProducer().status, 1, "event bytes and conclusive final completion are required");
+            assert.deepEqual(await treeBytes(copy.candidateExecutionRoot), before);
+          }
+          await fs.writeFile(receipt.eventsPath, eventsBytes);
+          const startedPath = receipt.eventsPath.replace(".events.jsonl", ".started.json");
+          const startedBytes = await fs.readFile(startedPath);
+          await fs.writeFile(startedPath, JSON.stringify({ ...JSON.parse(startedBytes), authority: "sha256:" + "0".repeat(64) }));
+          assert.equal(runProducer().status, 1);
+          await fs.writeFile(startedPath, startedBytes);
+          const copiedReceipt = path.join(tmpdir, "copied.receipt.json");
+          await fs.writeFile(copiedReceipt, receiptBytes);
+          assert.equal(runProducer(environment, args.map((arg) => arg === receipt.receiptFile ? copiedReceipt : arg)).status, 1);
+          await fs.rm(copiedReceipt);
+          const requirementsFile = path.join(fixture.requirements, "shared/requirements.md");
+          const requirementsBefore = await fs.readFile(requirementsFile);
+          await fs.appendFile(requirementsFile, "\nChanged authority after dispatch.\n");
+          assert.equal(runProducer().status, 1);
+          assert.deepEqual(await treeBytes(copy.candidateExecutionRoot), before);
+          await fs.writeFile(requirementsFile, requirementsBefore);
+        }
+        const produced = runProducer();
+        assert.equal(produced.status, 0, produced.stderr);
+        const candidate = await fs.readFile(candidateTask, "utf8");
+        if (rejected) {
+          assert.match(produced.stdout, /RUNNER_RESULT_BLOCKED/u);
+          for (const heading of ["Implementation Test Evidence", "Findings Test Evidence", "Validation Attempts", "Effective Validation Base", "Final Result"]) {
+            assert.equal(sectionBodyForScopeTest(candidate, heading), sectionBodyForScopeTest(original, heading), heading);
+          }
+          assert.equal((candidate.match(/^- Kind: malformed-output$/gmu) ?? []).length, 1);
+          assert.match(candidate, new RegExp(`- Operation: ${operation}`));
+        }
+        await validateExecutionCandidate(fixture.requirements, copy.candidateExecutionRoot);
+        if (operation === "VALIDATE_SLICE") await publishValidationCandidate({ specPath: fixture.requirements, slice: "slice-01", candidateExecutionRoot: copy.candidateExecutionRoot });
+        else await publishExecutionCopy({ specPath: fixture.requirements, slice: "slice-01", candidateRoot: copy.candidateRoot });
+        const state = await inspectExecutionState(fixture.requirements);
+        if (rejected) {
+          assert.equal(state.state, "RUNNER_RESULT_BLOCKED");
+          assert.deepEqual(await fs.readFile(path.join(fixture.execution, "tasks.md")), indexBefore);
+          assert.equal(state.mandatoryRecovery.operation, operation);
+          assert.equal(state.mandatoryRecovery.slice, "slice-01");
+          const readback = { execution: state, executionRaw: state, product: { deriveNormalHandoff } };
+          const outcome = decideOutcome(operation, readback, true);
+          const next = recoverableRunnerHandoff({ operation, slice: "slice-01", outcome, readback,
+            priorOperations: recovery === null ? [] : [{ recovery }], remainingTurns: 20 });
+          if (recovery === null) { assert.equal(next.operation, operation); recovery = next; }
+          else assert.equal(next, null, "second rejection does not authorize another automatic recovery");
+        }
+        return state;
+      } finally { await broker.close(); }
+    }
+    await dispatch(scenario.operation, true, true);
+    // Exercise the exhausted automatic-recovery edge separately. The following
+    // valid response is an explicit manual resume, not a new automatic retry.
+    if (scenario.rejection === "schema") await dispatch(scenario.operation, true);
+    await dispatch(scenario.operation, false);
+    if (scenario.operation !== "VALIDATE_SLICE") await dispatch("VALIDATE_SLICE", false);
+    const final = await inspectExecutionState(fixture.requirements);
+    assert.equal(final.state, "COMPLETE");
+    assert.equal(final.tasks.get("slice-01").attempts.length, scenario.operation === "APPLY_FINDINGS" ? 2 : 1);
+    assert.equal(runnerTurns, (scenario.operation === "VALIDATE_SLICE" ? 2 : 3) + (scenario.rejection === "schema" ? 1 : 0));
+    for (const capture of captures) for (const [file, , bytes] of capture.bytes)
+      if (bytes !== null) assert.deepEqual(await fs.readFile(path.join(capture.tmpdir, file)), bytes, `immutable ${file}`);
+  });
+});
+
 test("managed bridge and broker bind one format repair through strict publication", async (t) => {
   const fixture = await standaloneWorkspace(t);
   await renderArtifacts(fixture);
@@ -5491,6 +5705,19 @@ test("one same-thread format repair preserves the completed validation verdict a
     assert.equal(receipt.status, scenario.expected, scenario.name);
     assert.equal(calls, scenario.turns, scenario.name);
     assert.equal(reservations, scenario.turns, scenario.name);
+    if (scenario.expected === "RUNNER_RESULT_BLOCKED") {
+      const diagnosticAllowed = !scenario.pending && !scenario.incomplete && !scenario.processError
+        && !scenario.noCompletion && !scenario.pendingEvent && !scenario.changedThread
+        && !scenario.repairTimeout && !scenario.repairThrows && !scenario.toolUse;
+      if (diagnosticAllowed) {
+        const rejected = scenario.turns === 2 ? scenario.second : scenario.first;
+        assert.ok(receipt.semanticResponseFile, `${scenario.name}: completed rejection retains a bound diagnostic`);
+        assert.equal(await fs.readFile(receipt.semanticResponseFile, "utf8"), rejected);
+        assert.equal(receipt.semanticResponseSha256, createHash("sha256").update(rejected).digest("hex"));
+        assert.equal(receipt.semanticResponseStatus, null, "diagnostic is never an accepted verdict");
+        assert.equal(receipt.exitCode, 1);
+      } else assert.equal(receipt.semanticResponseFile, null, `${scenario.name}: uncertain/unsafe completion cannot authorize recovery`);
+    }
     if (scenario.name === "format fixed") {
       assert.equal(receipt.semanticResponseStatus, "BLOCKED");
       assert.equal(await fs.readFile(receipt.semanticResponseFile, "utf8"), valid);

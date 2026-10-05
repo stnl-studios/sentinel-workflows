@@ -30,6 +30,7 @@ async function finalAgentMessage(eventsPath, operationId, { offset = 0, formatOn
   let completed = 0;
   let lastMessageIndex = -1;
   let lastCompletionIndex = -1;
+  let startIndex = -1;
   let observedThreadId = null;
   for (const [index, line] of lines.entries()) {
     const event = JSON.parse(line);
@@ -38,7 +39,7 @@ async function finalAgentMessage(eventsPath, operationId, { offset = 0, formatOn
       if (observedThreadId !== null && observedThreadId !== event.thread_id) fail('runner thread identity changed');
       observedThreadId = event.thread_id;
     }
-    if (event.type === 'turn.started') started += 1;
+    if (event.type === 'turn.started') { started += 1; startIndex = index; }
     if (event.type === 'turn.completed') { completed += 1; lastCompletionIndex = index; }
     if (event.type === 'item.completed' && event.item?.type === 'agent_message') {
       finalMessage = event.item.text;
@@ -46,12 +47,13 @@ async function finalAgentMessage(eventsPath, operationId, { offset = 0, formatOn
       lastMessageIndex = index;
     }
     if (event.type === 'error' || event.type === 'turn.failed') fail('runner event stream reports an error');
+    if (event.item?.type === 'collab_tool_call') fail('runner collaboration is not official evidence');
     if (formatOnly && event.item && !['agent_message', 'reasoning'].includes(event.item.type)) {
       fail('format repair performed work or reported an error');
     }
   }
   if (typeof finalMessage !== 'string' || completed !== 1 || started !== 1
-    || lastCompletionIndex < lastMessageIndex || lastCompletionIndex !== lines.length - 1
+    || lastMessageIndex <= startIndex || lastCompletionIndex < lastMessageIndex || lastCompletionIndex !== lines.length - 1
     || (formatOnly && messages !== 1)) {
     fail('format repair lacks one completed final agent message');
   }
@@ -62,9 +64,10 @@ export async function describeSemanticResponseFile(file) {
   const bytes = await fs.readFile(file);
   let response;
   try { response = JSON.parse(bytes.toString('utf8')); }
-  catch { fail('captured semantic runner response is invalid JSON'); }
+  catch { throw Object.assign(new Error('captured semantic runner response is invalid JSON'), { code: 'RUNNER_RESPONSE_SCHEMA_INVALID' }); }
   if (response === null || typeof response !== 'object' || Array.isArray(response)
-    || typeof response.status !== 'string') fail('captured semantic runner response has no status');
+    || typeof response.status !== 'string') throw Object.assign(new Error('captured semantic runner response has no status'),
+      { code: 'RUNNER_RESPONSE_SCHEMA_INVALID' });
   return {
     semanticResponseStatus: response.status,
     semanticResponseSha256: crypto.createHash('sha256').update(bytes).digest('hex'),
@@ -218,7 +221,7 @@ export async function invokeIndependentRunner({
     operationName = `${baseName}-attempt-${attempt}`;
     try {
       await fs.writeFile(path.join(tmpdir, `${operationName}.started.json`),
-        `${JSON.stringify({ operation, sequence, slice, attempt })}\n`, { flag: 'wx' });
+        `${JSON.stringify({ operation, sequence, slice, attempt, authority: officialPreflight.authority ?? null })}\n`, { flag: 'wx' });
       break;
     } catch (error) { if (error.code !== 'EEXIST') throw error; }
   }
@@ -353,20 +356,52 @@ export async function invokeIndependentRunner({
       formatRepair.rejection = String(error);
     }
   }
+  const accepted = semanticResponseFile !== null;
+  if (!accepted && captureFailureCode === 'RUNNER_RESPONSE_SCHEMA_INVALID'
+    && turn.completed === true && turn.error == null && turn.processError == null && turn.errorEvent == null) {
+    // This is a receipt-bound diagnostic, never a semantic result. A failed
+    // repair must itself conclude cleanly before its final bytes can be used.
+    try {
+      const repair = formatRepair?.attempted === true ? formatRepair.repairTurn : null;
+      if (formatRepair?.attempted === true && (repair?.completed !== true || repair.threadId !== turn.threadId
+        || repair.error != null || repair.processError != null || repair.errorEvent != null)) {
+        fail('rejected response lacks a concluded repair on the original thread');
+      }
+      const final = await finalAgentMessage(eventsPath, `runner-${operationName}`, repair === null ? {}
+        : { offset: formatRepair.eventOffset, formatOnly: true });
+      if (typeof turn.threadId !== 'string' || turn.threadId.trim() === ''
+        || (repair === null ? final.threadId !== turn.threadId : final.threadId !== null && final.threadId !== turn.threadId)) {
+        fail('rejected response thread identity disagrees');
+      }
+      const existing = await fs.readFile(responsePath).catch((error) => {
+        if (error.code === 'ENOENT') return null;
+        throw error;
+      });
+      if (existing !== null && !existing.equals(Buffer.from(final.message))) fail('rejected response bytes disagree');
+      if (existing === null) await fs.writeFile(responsePath, final.message, { flag: 'wx' });
+      semanticResponseFile = responsePath;
+      semanticReceipt = { semanticResponseStatus: null,
+        semanticResponseSha256: crypto.createHash('sha256').update(final.message).digest('hex') };
+    } catch (error) {
+      // Preserve the original rejection and the additional mechanical cause;
+      // no diagnostic authorization is issued for uncertain event evidence.
+      captureFailure = `${captureFailure}; diagnostic capture blocked: ${error.message}`;
+    }
+  }
   // The SDK reports processError and threadId but provides no proof that an
   // incomplete turn never reached the provider. Even a missing threadId is
   // uncertain; do not release a technical retry after runTurn was invoked.
-  const status = semanticResponseFile !== null ? 'RUNNER_RESPONSE_CAPTURED' : 'RUNNER_RESULT_BLOCKED';
+  const status = accepted ? 'RUNNER_RESPONSE_CAPTURED' : 'RUNNER_RESULT_BLOCKED';
   const receiptFile = path.join(tmpdir, `${operationName}.receipt.json`);
   const receipt = {
-    status, operation, sequence, slice, attempt, runnerAgent: RUNNER_NAME,
+    status, operation, sequence, slice, attempt, authority: officialPreflight.authority ?? null, runnerAgent: RUNNER_NAME,
     requestedModel: turn.requestedModel, requestedEffort: turn.requestedEffort,
     reportedModel: turn.reportedModel, threadId: turn.threadId,
     receiptFile, eventsPath, semanticResponseFile, ...semanticReceipt, captureFailure, captureFailureCode,
     testedState, formatRepair,
     providerError: turn.errorEvent ?? null, error: turn.error,
     processError: turn.processError ?? null, usage: turn.usage,
-    exitCode: semanticResponseFile === null ? 1 : 0,
+    exitCode: accepted ? 0 : 1,
   };
   await fs.writeFile(receiptFile, `${JSON.stringify(receipt, null, 2)}\n`, { flag: 'wx' });
   return receipt;

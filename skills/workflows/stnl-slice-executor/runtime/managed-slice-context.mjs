@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { computeRequirementsAuthority, preflightExecutionOperation } from './execution-state.mjs';
 
 const CONTEXT_ENV = 'STNL_MANAGED_CONTEXT';
 const SPEC_ENV = 'STNL_MANAGED_SPEC_PATH';
@@ -198,9 +199,10 @@ export function assertManagedAgreement({
   return context;
 }
 
-// A managed operation can consume only the adapter's captured response for the
-// active broker invocation. Manual launches have neither context nor broker.
-export async function assertManagedRunnerReceipt({ operation, slice, workspace, receiptFile, semanticResponseFile, environment = process.env }) {
+// Identity and conclusion are required even when semantic acceptance failed.
+// Rejected diagnostics are opt-in for blocker preparation only; the default
+// still accepts only captured results. Manual launches have neither context nor broker.
+export async function assertManagedRunnerReceipt({ operation, slice, workspace, receiptFile, semanticResponseFile, allowRejected = false, environment = process.env }) {
   const context = assertManagedAgreement({ operation, slice, workspace, environment });
   const activeFile = typeof environment.TMPDIR === 'string'
     ? path.join(environment.TMPDIR, 'stnl-runner-broker', 'active.json') : null;
@@ -223,32 +225,94 @@ export async function assertManagedRunnerReceipt({ operation, slice, workspace, 
   const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
   const stem = `${String(active.sequence).padStart(3, '0')}-${operation.toLowerCase()}-${context.slice}-attempt-${receipt.attempt}`;
   const eventsPath = path.join(tmpdir, `${stem}.events.jsonl`);
-  if (receipt.status !== 'RUNNER_RESPONSE_CAPTURED' || receipt.runnerAgent !== 'stnl_validation_runner'
+  const rejected = allowRejected && receipt.status === 'RUNNER_RESULT_BLOCKED'
+    && receipt.exitCode === 1 && receipt.semanticResponseStatus === null
+    && receipt.testedState === null && receipt.formatRepair?.accepted !== true
+    && receipt.captureFailureCode === 'RUNNER_RESPONSE_SCHEMA_INVALID'
+    && typeof receipt.captureFailure === 'string' && receipt.captureFailure.trim() !== '';
+  const accepted = receipt.status === 'RUNNER_RESPONSE_CAPTURED' && receipt.exitCode === 0
+    && receipt.captureFailure === null && receipt.captureFailureCode == null
+    && typeof receipt.semanticResponseStatus === 'string' && receipt.semanticResponseStatus.trim() !== ''
+    && (receipt.formatRepair?.attempted !== true || receipt.formatRepair.accepted === true);
+  if ((!accepted && !rejected) || receipt.runnerAgent !== 'stnl_validation_runner'
     || receipt.operation !== operation || receipt.slice !== context.slice || receipt.sequence !== active.sequence
+    || receipt.authority !== context.authority
     || !Number.isSafeInteger(receipt.attempt) || receipt.attempt < 1 || receipt.attempt > 3
     || receiptPath !== path.join(tmpdir, `${stem}.receipt.json`)
     || responsePath !== path.join(tmpdir, `${stem}.response.json`)
-    || receipt.semanticResponseFile !== responsePath || receipt.eventsPath !== eventsPath
-    || receipt.exitCode !== 0 || receipt.captureFailure !== null || receipt.error !== null) {
+    || receipt.receiptFile !== receiptPath || receipt.semanticResponseFile !== responsePath || receipt.eventsPath !== eventsPath
+    || receipt.error != null || receipt.processError != null || receipt.providerError != null
+    || typeof receipt.threadId !== 'string' || receipt.threadId.trim() === '') {
     fail('receipt does not match the active managed runner invocation');
   }
-  const started = JSON.parse(await fs.readFile(path.join(tmpdir, `${stem}.started.json`), 'utf8'));
+  const startedPath = path.join(tmpdir, `${stem}.started.json`);
+  for (const file of [receiptPath, responsePath, eventsPath, startedPath]) {
+    const metadata = await fs.lstat(file);
+    if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.nlink !== 1) fail('runner evidence must be regular non-symlink files');
+  }
+  const started = JSON.parse(await fs.readFile(startedPath, 'utf8'));
   if (started.operation !== operation || started.sequence !== active.sequence
-    || started.slice !== context.slice || started.attempt !== receipt.attempt) fail('runner start identity disagrees');
+    || started.slice !== context.slice || started.attempt !== receipt.attempt
+    || started.authority !== context.authority) fail('runner start identity disagrees');
   const bytes = await fs.readFile(responsePath);
   if (receipt.semanticResponseSha256 !== createHash('sha256').update(bytes).digest('hex')) fail('receipt response hash disagrees');
-  let finalMessage = null; let completed = false; let threadId = null;
+  if (accepted && JSON.parse(bytes.toString('utf8')).status !== receipt.semanticResponseStatus) fail('receipt semantic status disagrees');
+  let finalMessage = null; let completed = 0; let threadId = null; let pending = false; let lastType = null;
+  let eventOffset = 0;
+  const repaired = receipt.formatRepair?.attempted === true;
+  const repairTurn = receipt.formatRepair?.repairTurn;
+  if (repaired && (operation !== 'VALIDATE_SLICE' || repairTurn?.completed !== true
+    || repairTurn.threadId !== receipt.threadId || repairTurn.error != null
+    || repairTurn.processError != null || repairTurn.errorEvent != null
+    || receipt.formatRepair.threadId !== receipt.threadId
+    || receipt.formatRepair.operationId !== `runner-${stem}`
+    || !Number.isSafeInteger(receipt.formatRepair.eventOffset) || receipt.formatRepair.eventOffset < 1)) {
+    fail('receipt format repair lacks a concluded original-thread turn');
+  }
+  let repairBoundary = !repaired;
   for (const line of (await fs.readFile(eventsPath, 'utf8')).split('\n')) {
     if (!line) continue;
     const event = JSON.parse(line);
+    if (repaired && eventOffset === receipt.formatRepair.eventOffset) {
+      if (pending || completed !== 1 || lastType !== 'turn.completed') fail('format repair boundary disagrees');
+      repairBoundary = true;
+    }
     if (event.operationId !== `runner-${stem}`) fail('runner SDK event identity disagrees');
     if (event.item?.type === 'collab_tool_call') fail('unmanaged runner collaboration is not official evidence');
-    if (event.type === 'thread.started') threadId = event.thread_id;
-    if (event.type === 'turn.completed') completed = true;
-    if (event.type === 'item.completed' && event.item?.type === 'agent_message') finalMessage = event.item.text;
+    if (event.type === 'error' || event.type === 'turn.failed') fail('runner event stream reports an error');
+    if (repaired && repairBoundary && event.item && !['agent_message', 'reasoning'].includes(event.item.type)) fail('format repair performed work');
+    if (event.type === 'thread.started') {
+      if (threadId !== null && threadId !== event.thread_id) fail('runner thread identity disagrees');
+      threadId = event.thread_id;
+    }
+    if (event.type === 'turn.started') {
+      if (pending) fail('runner SDK turn did not conclude');
+      pending = true; finalMessage = null;
+    }
+    if (event.type === 'turn.completed') {
+      if (!pending || typeof finalMessage !== 'string') fail('runner SDK turn lacks a final message');
+      pending = false; completed += 1;
+    }
+    if (event.type === 'item.completed' && event.item?.type === 'agent_message') {
+      if (!pending) fail('runner final message is outside a started turn');
+      finalMessage = event.item.text;
+    }
+    lastType = event.type;
+    eventOffset += Buffer.byteLength(line + '\n');
   }
-  if (!completed || threadId !== receipt.threadId || finalMessage !== bytes.toString('utf8')) {
+  if (pending || completed !== (repaired ? 2 : 1) || !repairBoundary || lastType !== 'turn.completed'
+    || threadId !== receipt.threadId || finalMessage !== bytes.toString('utf8')) {
     fail('receipt is not backed by the completed SDK turn and exact response');
+  }
+  if (`sha256:${await computeRequirementsAuthority(context.specPath)}` !== context.authority) fail('runner receipt authority is stale');
+  if (rejected) {
+    // A diagnostic can publish only the existing blocker while the original
+    // operation and slice still have current official authority.
+    await assertManagedRuntimeIdentity(context, environment);
+    const current = await preflightExecutionOperation(context.specPath, operation, BigInt(context.slice.slice(6)).toString(10));
+    if (`sha256:${current.currentFingerprint}` !== context.authority || current.state !== context.state
+      || JSON.stringify(current.legalOperations) !== JSON.stringify(context.legalOperations)
+      || JSON.stringify(current.mandatoryRecovery ?? null) !== JSON.stringify(context.mandatoryRecovery ?? null)) fail('rejected response authority is stale');
   }
   return context;
 }

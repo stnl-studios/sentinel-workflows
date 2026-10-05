@@ -36,6 +36,19 @@ function parseCapturedResult(operation, parse, response) {
   catch (error) { throw new RunnerSemanticResultError(operation, error); }
 }
 
+async function requireAcceptedRunnerResult(options) {
+  const context = await assertManagedRunnerReceipt({ ...options, allowRejected: true });
+  if (options.receiptFile === undefined) return;
+  const receipt = JSON.parse(await fs.readFile(options.receiptFile, "utf8"));
+  if (receipt.status === "RUNNER_RESULT_BLOCKED") {
+    if (context === null) fail("rejected runner diagnostics require a matching active managed invocation");
+    // Identity and conclusion passed; semantic rejection can produce only a
+    // Delegation Blocker, never commands, a check, an attempt, or PASS.
+    throw new RunnerSemanticResultError(options.operation,
+      Object.assign(new Error(receipt.captureFailure), { code: receipt.captureFailureCode }));
+  }
+}
+
 export function recoverableRunnerResultDiagnostic(error) {
   if (!(error instanceof RunnerVerdictEvidenceError || error instanceof RunnerSemanticResultError)) return null;
   const failed = error instanceof RunnerVerdictEvidenceError
@@ -1237,7 +1250,7 @@ export async function serializeRunnerExecutionBundleFromResponse({
   if (!new Set(["EXECUTE_SLICE", "APPLY_FINDINGS"]).has(operation)) {
     fail("execution bundle operation must be EXECUTE_SLICE or APPLY_FINDINGS");
   }
-  await assertManagedRunnerReceipt({ operation, slice: path.basename(taskArtifact, '.md'), workspace, receiptFile, semanticResponseFile });
+  await requireAcceptedRunnerResult({ operation, slice: path.basename(taskArtifact, '.md'), workspace, receiptFile, semanticResponseFile });
   const payload = parseCapturedResult(operation, parseSemanticExecutionPayload, response);
   const mechanicalCommands = receiptFile === undefined ? payload.commands
     : await resolveRunnerCommandEvents({
@@ -1378,17 +1391,20 @@ export async function insertExecutionEvidenceInCandidate({ taskArtifact, operati
 }
 
 export async function persistMalformedRunnerResultInCandidate({
-  taskArtifact, operation, receiptFile, semanticResponseFile, diagnostic, error = null,
+  taskArtifact, operation, receiptFile, semanticResponseFile, diagnostic, error = null, workspace,
 }) {
   if (!new Set(["EXECUTE_SLICE", "APPLY_FINDINGS", "VALIDATE_SLICE"]).has(operation)) fail("invalid runner recovery operation");
   const task = await regularFile(taskArtifact, "candidate taskArtifact");
   const receiptPath = await regularFile(receiptFile, "runner receipt");
   const responsePath = await regularFile(semanticResponseFile, "semantic response");
+  const context = await assertManagedRunnerReceipt({ operation, slice: path.basename(task, ".md"), workspace,
+    receiptFile, semanticResponseFile, allowRejected: true });
   const receipt = JSON.parse(await fs.readFile(receiptPath, "utf8"));
   const responseHash = createHash("sha256").update(await fs.readFile(responsePath)).digest("hex");
-  if (receipt.status !== "RUNNER_RESPONSE_CAPTURED" || receipt.operation !== operation
+  const rejected = context !== null && receipt.status === "RUNNER_RESULT_BLOCKED";
+  if ((!rejected && receipt.status !== "RUNNER_RESPONSE_CAPTURED") || receipt.operation !== operation
     || receipt.semanticResponseFile !== responsePath || receipt.semanticResponseSha256 !== responseHash
-    || receipt.captureFailure !== null || receipt.error !== null) {
+    || (!rejected && receipt.captureFailure !== null) || receipt.error != null) {
     fail("malformed-output recovery requires a matching captured runner response and receipt");
   }
   const executionRoot = path.dirname(path.dirname(task));
@@ -1402,7 +1418,8 @@ export async function persistMalformedRunnerResultInCandidate({
   const slice = path.basename(task, ".md");
   if (!/^slice-[0-9]{2,}$/u.test(slice)) fail("malformed-output recovery requires a canonical slice task");
   let taskText = await fs.readFile(task, "utf8");
-  if (error instanceof RunnerSemanticResultError && error.cause?.code === "RUNNER_EXECUTION_SCOPE_INVALID"
+  if ((rejected || error instanceof RunnerSemanticResultError && error.cause?.code === "RUNNER_EXECUTION_SCOPE_INVALID")
+    && operation !== "VALIDATE_SLICE"
     && sectionBody(taskText, "Changed Areas") === "- none") {
     // An unproved fileless claim cannot be published as Changed Areas: none.
     // Restore only the pre-run scope/checklist, and only with unchanged live
@@ -1443,8 +1460,8 @@ export async function persistMalformedRunnerResultInCandidate({
     "- State: active",
     `- After record: ${afterRecord}`,
     "- Causes:",
-    `  - Producer rejected captured response sha256:${responseHash}: ${cause}`,
-    `  - Captured response: ${responsePath}; receipt: ${receiptPath}`,
+    `  - Producer rejected ${rejected ? "diagnostic" : "captured"} response sha256:${responseHash}: ${cause}`,
+    `  - ${rejected ? "Rejected diagnostic" : "Captured response"}: ${responsePath}; receipt: ${receiptPath}`,
     `- Required action: Resume ${operation} ${slice} with a valid captured runner response.`,
   ].join("\n");
   taskText = replaceSectionBody(taskText, "Delegation Blocker", blocker);
@@ -1461,7 +1478,7 @@ export async function prepareRunnerValidationPersistenceFromResponse({
   receiptFile, semanticResponseFile, verificationEventIds,
 }) {
   if (operation !== "VALIDATE_SLICE") fail("semantic validation producer operation must be VALIDATE_SLICE");
-  await assertManagedRunnerReceipt({ operation, slice, workspace, receiptFile, semanticResponseFile });
+  await requireAcceptedRunnerResult({ operation, slice, workspace, receiptFile, semanticResponseFile });
   const parsed = parseCapturedResult(operation, parseSemanticValidationPayload, response);
   const mechanicalCommands = receiptFile === undefined ? parsed.commands
     : await resolveRunnerCommandEvents({
@@ -1732,7 +1749,7 @@ if (import.meta.url === pathToFileURL(path.resolve(process.argv[1] ?? "")).href)
         const recovery = await persistMalformedRunnerResultInCandidate({
           taskArtifact: values.taskArtifact, operation: values.operation,
           receiptFile: values.receiptFile, semanticResponseFile: values.semanticResponseFile,
-          diagnostic, error,
+          diagnostic, error, workspace: values.workspace,
         });
         process.stdout.write(`${JSON.stringify(recovery)}\n`);
       }

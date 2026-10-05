@@ -66,6 +66,19 @@ test("Codex and Claude bodies remain byte-identical and schemas are exact", asyn
   }
 });
 
+test("formal commands and requirement-bound findings cannot be weakened in the distributed contract", async (t) => {
+  for (const [oldValue, newValue, category] of [
+    ["Todo finding exige violação demonstrada de requisito ou variante da autoridade atual", "Todo finding pode ser uma preferência", "R006_VERDICTS"],
+    ["Preferência por uma asserção mais forte ou por um formato não exigido não é defeito de cobertura", "Uma asserção preferida exige finding", "R006_VERDICTS"],
+    ["Em VALIDATE_SLICE, `commands` é sempre um array não vazio", "Em VALIDATE_SLICE, `commands` pode estar vazio", "R009_VALIDATION_ATTEMPT"],
+    ["nunca invente um comando, um exit ou um check", "invente um comando para completar o schema", "R009_VALIDATION_ATTEMPT"],
+  ]) {
+    const root = await fixture(t);
+    await replaceBoth(root, oldValue, newValue);
+    expectCategory(check(root), category);
+  }
+});
+
 test("skills distinguish native runner evidence from managed receipts", async () => {
   const executor = await fs.readFile(path.join(repository, "skills/workflows/stnl-slice-executor/SKILL.md"), "utf8");
   const quality = await fs.readFile(path.join(repository, "skills/workflows/stnl-slice-quality-manager/SKILL.md"), "utf8");

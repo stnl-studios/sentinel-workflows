@@ -87,7 +87,7 @@ async function writeCandidateFiles(entries) {
 
 export async function prepareValidationCandidate({ specPath, slice: sliceValue, workspace, candidateExecutionRoot, semanticResponseFile, receiptFile, verificationEventIds }) {
   assertManagedAgreement({ specPath, workspace, slice: sliceValue });
-  await assertManagedRunnerReceipt({ operation: "VALIDATE_SLICE", slice: sliceValue, workspace, receiptFile, semanticResponseFile });
+  await assertManagedRunnerReceipt({ operation: "VALIDATE_SLICE", slice: sliceValue, workspace, receiptFile, semanticResponseFile, allowRejected: true });
   if (typeof specPath !== "string" || !path.isAbsolute(specPath)) fail("SPEC_PATH must be absolute");
   if (typeof semanticResponseFile !== "string" || !path.isAbsolute(semanticResponseFile)) {
     fail("semantic response file must be absolute");
@@ -126,7 +126,7 @@ export async function prepareValidationCandidate({ specPath, slice: sliceValue, 
   ]);
   const selected = preflight.tasks.get(slice);
   if (selected === undefined) fail(`official preflight did not resolve ${slice}`);
-  const mechanicalSections = ["Validation Attempts", "Effective Validation Base", "Final Result"];
+  const mechanicalSections = ["Validation Attempts", "Effective Validation Base", "Final Result", "Delegation Blocker"];
   for (const heading of mechanicalSections) {
     if (sectionRange(candidateTaskBefore, heading, "candidate task").body
       !== sectionRange(liveTaskBefore, heading, "live task").body) {
@@ -155,7 +155,7 @@ export async function prepareValidationCandidate({ specPath, slice: sliceValue, 
     if (receiptFile === undefined || diagnostic === null) throw error;
     const recovery = await persistMalformedRunnerResultInCandidate({
       taskArtifact: candidateTaskFile, operation: "VALIDATE_SLICE",
-      receiptFile, semanticResponseFile: responseFile, diagnostic,
+      receiptFile, semanticResponseFile: responseFile, diagnostic, workspace: workspaceRoot, error,
     });
     return Object.freeze({ status: "RUNNER_RESULT_BLOCKED", recovery });
   }
@@ -169,6 +169,12 @@ export async function prepareValidationCandidate({ specPath, slice: sliceValue, 
     ? prepared.attemptRecord
     : `${priorAttempts}\n\n${prepared.attemptRecord}`;
   let candidateTaskAfter = replaceSection(candidateTaskBefore, "Validation Attempts", nextAttempts, "candidate task");
+  const blocker = sectionRange(candidateTaskBefore, "Delegation Blocker", "candidate task").body;
+  if (blocker !== "- none" && blocker.includes("- State: active\n")) {
+    if (!blocker.includes("- Operation: VALIDATE_SLICE\n")) fail("active Delegation Blocker belongs to another operation");
+    candidateTaskAfter = replaceSection(candidateTaskAfter, "Delegation Blocker",
+      `${blocker.replace("- State: active", "- State: resolved")}\n- Resolution: ${prepared.attemptId} returned a valid runner result`, "candidate task");
+  }
   let candidateIndexAfter = candidateIndexBefore;
   if (prepared.status === "PASS") {
     if (prepared.effectiveValidationBase === null) fail("canonical PASS producer omitted the Effective Validation Base");
