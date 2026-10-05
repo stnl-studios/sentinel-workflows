@@ -213,12 +213,10 @@ test("captured contradiction publishes blocker, manager consumes bounded recover
     commands: [{ command: "semantic claim", exit: 0 }], evidence: "independent checks cover AC-001",
     findingReferences: "none", findingDispositions: "none", blockers: "none",
     unexpectedWorkspaceEffects: "none", persistenceSummary: "no changes" });
-  async function candidateFor(exits, clearBlocker = false) {
+  async function candidateFor(exits) {
     const captured = await capturedVerificationSequence(t, "VALIDATE_SLICE", response, exits);
     const copy = await prepareValidationCopy({ specPath: fixture.requirements, slice: "slice-01", candidateParent });
     const candidateTask = path.join(copy.candidateExecutionRoot, "tasks", "slice-01.md");
-    if (clearBlocker) await fs.writeFile(candidateTask,
-      replaceSection(await fs.readFile(candidateTask, "utf8"), "Delegation Blocker", "- none"));
     const prepared = await prepareValidationCandidate({ specPath: fixture.requirements, slice: "1",
       workspace: fixture.root, candidateExecutionRoot: copy.candidateExecutionRoot, ...captured });
     return { copy, prepared, captured };
@@ -252,7 +250,7 @@ test("captured contradiction publishes blocker, manager consumes bounded recover
   assert.equal(recoverableRunnerHandoff({ operation: "VALIDATE_SLICE", slice: "slice-01", outcome: blocked,
     readback, priorOperations: [{ recovery }], remainingTurns: 20 }), null);
 
-  const secondContradiction = await candidateFor([1, 0], true);
+  const secondContradiction = await candidateFor([1, 0]);
   assert.equal(secondContradiction.prepared.status, "RUNNER_RESULT_BLOCKED");
   assert.equal((await validateExecutionCandidate(fixture.requirements, secondContradiction.copy.candidateExecutionRoot)).state,
     "RUNNER_RESULT_BLOCKED");
@@ -264,7 +262,7 @@ test("captured contradiction publishes blocker, manager consumes bounded recover
   assert.equal(recoverableRunnerHandoff({ operation: "VALIDATE_SLICE", slice: "slice-01",
     outcome: repeatedOutcome, readback: repeatedReadback,
     priorOperations: [{ recovery }], remainingTurns: 20 }), null);
-  const second = await candidateFor([0, 0], true);
+  const second = await candidateFor([0, 0]);
   assert.equal(second.prepared.status, "PREPARED");
   assert.equal(second.prepared.formalStatus, "PASS");
   assert.equal((await validateExecutionCandidate(fixture.requirements, second.copy.candidateExecutionRoot)).state,
@@ -5433,6 +5431,115 @@ test("completed rejected receipts publish only a blocker and use the existing bo
     for (const capture of captures) for (const [file, , bytes] of capture.bytes)
       if (bytes !== null) assert.deepEqual(await fs.readFile(path.join(capture.tmpdir, file)), bytes, `immutable ${file}`);
   });
+});
+
+test("T01/T02/T10/T12/T14: finite managed CLI and finalizer own rejected recovery through completion", { timeout: 15000 }, async (t) => {
+  const fixture = await nestedLifecycleWorkspace(t);
+  const finalizer = path.join(ROOT, "agents/codex/runtime/managed-slice-finalize.mjs");
+  const bridge = path.join(ROOT, "agents/codex/runtime/managed-runner-bridge.mjs");
+  const task = path.join(fixture.execution, "tasks/slice-01.md");
+  const reason = "Acceptance-only work changes no repository file.";
+  let turns = 0;
+  for (const [index, operation] of ["EXECUTE_SLICE", "EXECUTE_SLICE", "VALIDATE_SLICE"].entries()) {
+    const current = await preflightExecutionOperation(fixture.requirements, operation, "1");
+    const preflight = { exitCode: 0, operation, slice: "slice-01", inputSlice: "1", specPath: fixture.requirements,
+      state: current.state, authority: `sha256:${current.currentFingerprint}`, legalOperations: current.legalOperations, mandatoryRecovery: current.mandatoryRecovery };
+    const context = await createManagedSliceContext({ officialPreflight: preflight, workspace: fixture.root, snapshot: ROOT,
+      adapterPath: path.join(ROOT, "agents/codex/runtime/validation-runner.mjs"), bridgePath: bridge,
+      preflightPath: path.join(ROOT, "agents/codex/runtime/managed-slice-preflight.mjs") });
+    const tmpdir = await temporary(t, "stnl-finite-transport-");
+    const environment = managedEnvironment({ PATH: process.env.PATH, TMPDIR: tmpdir }, context);
+    const broker = await startOfficialRunnerBroker({ workspace: fixture.root, tmpdir, operation, slice: "slice-01",
+      sequence: index + 1, officialPreflight: preflight,
+      invoke: (request, { signal }) => invokeIndependentRunner({ ...request, snapshot: ROOT, env: environment, signal,
+        runTurn: async ({ eventsPath, operationId }) => {
+          turns += 1;
+          const command = "STNL_VERIFICATION_COMMAND=1 node --test test/prepared.test.mjs";
+          const response = index === 0 ? "{ invalid completed JSON"
+            : JSON.stringify(operation === "EXECUTE_SLICE" ? scopeRegressionPayload(reason)
+              : { ...sanitizedValidationResponse("PASS"), evidence: "Offline fixture models independent prepared checks." });
+          const events = [{ operationId, type: "thread.started", thread_id: `finite-${index}` }, { operationId, type: "turn.started" },
+            { operationId, type: "item.started", item: { id: "item_0", type: "command_execution", command } },
+            { operationId, type: "item.completed", item: { id: "item_0", type: "command_execution", command, status: "completed", exit_code: 0 } },
+            { operationId, type: "item.completed", item: { id: "item_1", type: "agent_message", text: response } }, { operationId, type: "turn.completed" }];
+          await fs.writeFile(eventsPath, events.map(JSON.stringify).join("\n") + "\n");
+          return { completed: true, turnStarted: true, threadId: `finite-${index}`, error: null, processError: null };
+        } }) });
+    environment.STNL_MANAGED_RUNNER_PAYLOAD = broker.payloadFile;
+    environment.STNL_MANAGED_FINALIZER = finalizer;
+    const call = (args) => spawnSync(process.execPath, [finalizer, ...args], { cwd: fixture.root, env: environment, encoding: "utf8", timeout: 3000 });
+    const bridgeCall = (file = broker.payloadFile) => spawnSync(process.execPath, [bridge, "--payload-file", file],
+      { cwd: fixture.root, env: environment, encoding: "utf8", timeout: 3000 });
+    try {
+      const prepared = call(["--prepare"]); assert.equal(prepared.status, 0, prepared.stderr);
+      const copy = JSON.parse(prepared.stdout);
+      assert.equal(call(["--prepare"]).status, 1, "a second prepare cannot switch candidate identity");
+      let candidate = await fs.readFile(copy.candidateTaskArtifact, "utf8");
+      if (operation === "EXECUTE_SLICE") candidate = replaceSection(candidate.replace("- [ ] 1.1", "- [x] 1.1"), "Changed Areas", "- none");
+      candidate = replaceSection(candidate, "Diff Summary", "- Offline prepared acceptance behavior is represented in the selected candidate.");
+      await fs.writeFile(copy.candidateTaskArtifact, candidate);
+      if (index === 0) {
+        assert.equal(bridgeCall().status, 1, "missing payload is finite");
+        for (const bytes of ["", "{ invalid JSON", "x".repeat(256 * 1024 + 1)]) {
+          await fs.writeFile(broker.payloadFile, bytes);
+          assert.equal(bridgeCall().status, 1);
+          assert.equal(broker.requestsHandled, 0);
+        }
+        const other = path.join(tmpdir, "other.json"); await fs.writeFile(other, "{}");
+        await fs.rm(broker.payloadFile); await fs.symlink(other, broker.payloadFile);
+        assert.equal(bridgeCall().status, 1);
+        await fs.rm(broker.payloadFile); await fs.link(other, broker.payloadFile);
+        assert.equal(bridgeCall().status, 1);
+        await fs.rm(broker.payloadFile); await fs.rm(other);
+        assert.equal(bridgeCall(task).status, 1, "an arbitrary existing file is not the owned payload");
+      }
+      await fs.writeFile(broker.payloadFile, JSON.stringify(operation === "EXECUTE_SLICE"
+        ? { automaticCheckRound: "1/3", changedAreas: [], filelessReason: reason, relevantEvidence: "Olá \"quotes\" $() `data`\nline" }
+        : { relevantEvidence: "Independently verify approved acceptance criteria." }));
+      const child = spawn(process.execPath, [bridge, "--payload-file", broker.payloadFile], { cwd: fixture.root, env: environment, stdio: ["pipe", "pipe", "pipe"] });
+      let stdout = "", stderr = "";
+      child.stdout.on("data", (bytes) => { stdout += bytes; }); child.stderr.on("data", (bytes) => { stderr += bytes; });
+      const code = await new Promise((resolve, reject) => { child.once("error", reject); child.once("close", resolve); });
+      assert.equal(code, index === 0 ? 1 : 0, stderr);
+      assert.match(stdout, /SENTINEL_RUNNER_RECEIPT/u);
+      assert.equal(broker.requestsHandled, 1);
+      // The CLI completed despite its stdin remaining open; dispatch used finite bytes.
+      const liveBefore = await fs.readFile(task);
+      const latestFile = path.join(broker.directory, `${String(index + 1).padStart(3, "0")}.latest.json`);
+      const latestBefore = await fs.readFile(latestFile);
+      const latest = JSON.parse(latestBefore);
+      for (const mismatch of [{ slice: "slice-02" }, { operation: "APPLY_FINDINGS" }, { authority: "sha256:" + "f".repeat(64) },
+        { payloadSha256: "f".repeat(64) }, { receipt: { ...latest.receipt, threadId: "another-thread" } }]) {
+        await fs.writeFile(latestFile, JSON.stringify({ ...latest, ...mismatch }));
+        assert.equal(call(["--finalize"]).status, 1);
+        assert.deepEqual(await fs.readFile(task), liveBefore);
+      }
+      await fs.writeFile(latestFile, latestBefore);
+      const finalized = call(["--finalize"]); assert.equal(finalized.status, 0, finalized.stderr);
+      const result = JSON.parse(finalized.stdout);
+      assert.equal(result.state, ["RUNNER_RESULT_BLOCKED", "IMPLEMENTED_AWAITING_VALIDATION", "COMPLETE"][index]);
+      const after = await fs.readFile(task);
+      const duplicate = call(["--finalize"]); assert.equal(duplicate.status, 0, duplicate.stderr);
+      assert.deepEqual(JSON.parse(duplicate.stdout), result);
+      assert.deepEqual(await fs.readFile(task), after, "duplicate finalization never appends a check/attempt");
+      await fs.writeFile(task, Buffer.concat([after, Buffer.from("\n<!-- foreign write -->\n")]));
+      const conflict = await fs.readFile(task);
+      assert.equal(call(["--finalize"]).status, 1, "idempotence cannot cover a conflicting live readback");
+      assert.deepEqual(await fs.readFile(task), conflict);
+      await fs.writeFile(task, after);
+      const recorded = path.join(broker.directory, `${String(index + 1).padStart(3, "0")}.finalization.json`);
+      const recordedBytes = await fs.readFile(recorded);
+      await fs.writeFile(recorded, JSON.stringify({ ...JSON.parse(recordedBytes), evidenceSha256: { "/outside/fictitious-GLOBAL": "0".repeat(64) } }));
+      assert.equal(call(["--finalize"]).status, 1, "recorded evidence never authorizes arbitrary read paths");
+      assert.deepEqual(await fs.readFile(task), after);
+      await fs.writeFile(recorded, recordedBytes);
+      assert.equal(call(["--finalize", "--receipt-file", "/outside"]).status, 1, "receipt paths are not caller-selected");
+    } finally { await broker.close(); }
+  }
+  assert.equal(turns, 3);
+  const state = await inspectExecutionState(fixture.requirements);
+  assert.equal(state.state, "COMPLETE");
+  assert.equal(state.tasks.get("slice-01").attempts.length, 1, "rejected diagnostics are not formal attempts");
 });
 
 test("managed bridge and broker bind one format repair through strict publication", async (t) => {

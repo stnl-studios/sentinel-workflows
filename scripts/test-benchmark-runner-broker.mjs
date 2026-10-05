@@ -55,6 +55,7 @@ function runnerReceipt({ operation, sequence, slice, status = 'RUNNER_RESPONSE_C
     attempt: 1,
     runnerAgent: 'stnl_validation_runner',
     status,
+    ...(status === 'RUNNER_INITIALIZATION_BLOCKED' ? { turnStarted: false, threadId: null, dispatchStarted: false } : {}),
     exitCode: status === 'RUNNER_RESPONSE_CAPTURED' ? 0 : 1,
   };
 }
@@ -621,7 +622,7 @@ test('pre-dispatch rejection remains recorded after a valid PASS capture', async
   }
 });
 
-test('execute slice still permits distinct automatic check rounds in one operation', async (t) => {
+test('execute slice permits the next round only after a captured failure is finalized privately', async (t) => {
   const { workspace, specPath, tmpdir } = await fixture(t);
   const payload = {
     workspace, tmpdir, operation: 'EXECUTE_SLICE', sequence: 6, slice: 'slice-01',
@@ -632,14 +633,18 @@ test('execute slice still permits distinct automatic check rounds in one operati
     officialPreflight: officialPreflight({ operation: payload.operation, slice: payload.slice, specPath }),
     invoke: async (request) => {
       calls += 1;
-      return runnerReceipt(request);
+      return { ...runnerReceipt(request), semanticResponseStatus: calls === 1 ? 'TESTS_FAIL' : 'TESTS_PASS', receiptFile: path.join(tmpdir, `receipt-${calls}.json`) };
     },
   });
   try {
-    for (const round of ['1/3', '2/3']) {
-      const result = await submitOfficialRunnerRequest({ ...payload, prompt: `automaticCheckRound=${round}` });
-      assert.equal(result.status, 'RUNNER_RESPONSE_CAPTURED');
-    }
+    const first = await submitOfficialRunnerRequest({ ...payload, prompt: 'automaticCheckRound=1/3' });
+    assert.equal(first.status, 'RUNNER_RESPONSE_CAPTURED');
+    await assert.rejects(submitOfficialRunnerRequest({ ...payload, prompt: 'automaticCheckRound=2/3' }), { code: 'BROKER_RESULT_ALREADY_CAPTURED' });
+    assert.equal(calls, 1);
+    await fs.writeFile(path.join(broker.directory, `${String(payload.sequence).padStart(3, '0')}.finalization.json`), JSON.stringify({ operation: payload.operation,
+      slice: payload.slice, receiptFile: first.receiptFile, state: 'PRIVATE_TESTS_FAIL' }));
+    const second = await submitOfficialRunnerRequest({ ...payload, prompt: 'automaticCheckRound=2/3' });
+    assert.equal(second.status, 'RUNNER_RESPONSE_CAPTURED');
     assert.equal(calls, 2);
     assert.equal(broker.capturedReceipts, 2);
   } finally {

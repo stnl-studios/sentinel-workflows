@@ -106,7 +106,8 @@ export async function currentFunctionalIdentity() {
   return { sha256: await hashFiles(REPOSITORY_ROOT, files), fileCount: files.length };
 }
 
-export async function createSnapshot(runRoot) {
+export async function createSnapshot(runRoot, { executionMode } = {}) {
+  if (executionMode !== undefined && executionMode !== 'OFFLINE_TEST_ONLY') throw new Error('invalid snapshot execution provenance');
   const run = await assertOwnedRun(runRoot);
   const snapshot = path.join(run, 'snapshot');
   await fs.mkdir(snapshot);
@@ -128,6 +129,7 @@ export async function createSnapshot(runRoot) {
   await copyFiles(REPOSITORY_ROOT, snapshot, dependencies);
   const snapshotFiles = await freeze(snapshot);
   const metadata = {
+    ...(executionMode === 'OFFLINE_TEST_ONLY' ? { executionMode } : {}),
     protocol: 'sentinel-sdk-context-v1',
     baseSha,
     dirty: gitStatus !== '',

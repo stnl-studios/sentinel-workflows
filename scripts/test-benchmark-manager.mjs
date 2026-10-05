@@ -385,3 +385,20 @@ test('manager status creates an absent benchmark-temp in an isolated checkout fi
   assert.equal(await manager.main(['status', '--json']), 0);
   assert.equal((await fs.stat(isolatedRuns)).isDirectory(), true);
 });
+
+test('T21/T22: B/C competing for the last admission and contradictory no-start settlement conserve budget', async (t) => {
+  const root = await fs.mkdtemp(path.join(process.env.TMPDIR ?? '/tmp', 'sentinel-last-admission-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  await initializeTurnBudget(root, 2);
+  const results = await Promise.allSettled(['B', 'C'].map((caseId) => admitOperation({ runRoot: root,
+    runId: 'run-last-admission', caseId, operation: 'EXECUTE_SLICE', runnerRequired: true, limit: 2 })));
+  assert.equal(results.filter((r) => r.status === 'fulfilled').length, 1);
+  assert.equal(results.find((r) => r.status === 'rejected').reason.code, 'PAUSED_BUDGET_OR_QUOTA');
+  const admission = results.find((r) => r.status === 'fulfilled').value;
+  const main = await startReservedTurn(root, admission.main, 2), runner = await startReservedTurn(root, admission.runner, 2);
+  await manager.settleTurn(root, runner, { completed: false, turnStarted: false, threadId: 'proof-of-start' }, 2);
+  await manager.settleTurn(root, main, { completed: false, turnStarted: null, threadId: null }, 2);
+  assert.deepEqual((await budgetSnapshot(root)).turnBudget, { limit: 2, consumed: 2, remaining: 0, mainTurns: 1, runnerTurns: 1 });
+  await assert.rejects(manager.settleTurn(root, runner, { turnStarted: false }, 2), /settlement is invalid/u);
+  assert.equal((await budgetSnapshot(root)).turnBudget.consumed, 2);
+});

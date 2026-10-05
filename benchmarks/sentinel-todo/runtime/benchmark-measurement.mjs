@@ -214,6 +214,7 @@ async function measurement(runId) {
       : `${run.mode} run records only the selected case; it is not a full-run conclusion`,
     run: { id: runId, status: run.status, mode: run.mode, profile: run.profile ?? UNAVAILABLE, startedAt: run.startedAt, endedAt: run.endedAt ?? UNAVAILABLE },
     provenance: { baseSha: snapshot?.baseSha ?? UNAVAILABLE, dirty: snapshot?.dirty ?? UNAVAILABLE, functionalDiffSha256: snapshot?.functionalDiffSha256 ?? UNAVAILABLE,
+      ...(snapshot?.executionMode === 'OFFLINE_TEST_ONLY' ? { executionMode: 'OFFLINE_TEST_ONLY' } : {}),
       sourceFunctionalSha256: snapshot?.sourceFunctionalSha256 ?? UNAVAILABLE, snapshotSha256: snapshot?.snapshotSha256 ?? UNAVAILABLE, snapshotCreatedAt: snapshot?.createdAt ?? UNAVAILABLE },
     comparability: { schemaVersion: 1, benchmarkVersion: config?.benchmarkVersion ?? UNAVAILABLE, profile: run.profile ?? UNAVAILABLE,
       requirementsHashes: Object.fromEntries(run.cases.map((id) => [id, caseById[id]?.requirementsHash ?? UNAVAILABLE])),
@@ -331,6 +332,9 @@ function fullCoverage(value) {
 
 export function compareMeasurements(before, after, allowProfileMismatch = false) {
   validateMeasurementReport(before); validateMeasurementReport(after);
+  if ([before, after].some((report) => report.provenance?.executionMode === 'OFFLINE_TEST_ONLY')) return {
+    directlyComparable: false, profileExperiment: false, mismatches: ['OFFLINE_TEST_ONLY provider evidence'],
+    conclusion: 'TEST-ONLY; ineligible for real proof or baseline', deltas: UNAVAILABLE };
   const compatibility = comparable(before, after, allowProfileMismatch);
   if (!compatibility.directlyComparable && !compatibility.profileExperiment) return { ...compatibility, deltas: UNAVAILABLE };
   const complete = (r) => r.run.mode === 'full' && r.run.status === 'PASS' && r.cases.every((c) => c.status === 'PASS' && c.finalizer === 'PASS'

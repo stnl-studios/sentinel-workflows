@@ -193,6 +193,7 @@ export function composeRunnerRequest({ officialPreflight, operation, slice,
 export async function invokeIndependentRunner({
   snapshot, workspace, tmpdir, env, operation, sequence, slice, officialPreflight, prompt, managedPayload = null,
   onBeforeTurn = () => {}, onTurn = () => {}, runTurn = runCodexTurn,
+  signal = null,
 }) {
   const managed = readManagedSliceContext(env);
   if (managed !== null) {
@@ -248,7 +249,7 @@ export async function invokeIndependentRunner({
       env, cwd: workspace, prompt: request, model: configuration.model,
       effort: configuration.effort, operationId: `runner-${operationName}`,
       eventsPath, timeoutMs: 1_800_000,
-      developerInstructions: configuration.developerInstructions, isolateSkills: true,
+      developerInstructions: configuration.developerInstructions, isolateSkills: true, signal,
     });
   } catch (error) {
     // Once runTurn was invoked, a thrown SDK error does not prove that the
@@ -321,7 +322,7 @@ export async function invokeIndependentRunner({
         repairedTurn = await runTurn({ env, cwd: workspace, prompt: repairPrompt,
           model: configuration.model, effort: configuration.effort, threadId: turn.threadId,
           operationId: `runner-${operationName}`, eventsPath, timeoutMs: 1_800_000,
-          developerInstructions: configuration.developerInstructions, isolateSkills: true });
+          developerInstructions: configuration.developerInstructions, isolateSkills: true, signal });
       } catch (error) {
         repairedTurn = { completed: false, turnStarted: null, threadId: null,
           error: String(error), processError: String(error), usage: null };

@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
@@ -13,6 +13,7 @@ const ERROR_CODES = new Set([
   'BROKER_DISPATCH_FAILED', 'BROKER_REQUEST_ID_INVALID', 'BROKER_FILE_UNSAFE', 'BROKER_FILE_NOT_CANONICAL',
   'BROKER_JSON_INVALID', 'BROKER_REQUEST_REJECTED', 'BROKER_MANAGED_PAYLOAD_INVALID',
   'BROKER_RESULT_ALREADY_CAPTURED', 'BROKER_RESULT_INVALID', 'RUNNER_TRANSPORT_FAILED',
+  'BROKER_CLOSING', 'BROKER_ROUND_INVALID', 'BROKER_CANCEL_PENDING',
   'MANAGED_CONTEXT_INVALID', 'MANAGED_CONTEXT_STALE', 'PAUSED_BUDGET_OR_QUOTA',
   'ENOENT', 'EACCES', 'EPERM', 'EMFILE',
 ]);
@@ -150,8 +151,9 @@ export async function startOfficialRunnerBroker({
     fail('BROKER_DIRECTORY_UNSAFE');
   }
   const activeFile = path.join(directory, 'active.json');
+  const payloadFile = path.join(tmpdir, `${String(sequence).padStart(3, '0')}-${operation.toLowerCase()}-${slice}.payload.json`);
   try {
-    await fs.writeFile(activeFile, `${JSON.stringify({ ...identity, officialPreflight })}\n`, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
+    await fs.writeFile(activeFile, `${JSON.stringify({ ...identity, officialPreflight, protocol: 3, payloadFile })}\n`, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
   } catch {
     fail('BROKER_ALREADY_ACTIVE');
   }
@@ -160,7 +162,14 @@ export async function startOfficialRunnerBroker({
   const seen = new Set();
   const errors = [];
   let capturedReceipts = 0;
-  let validationResultSettled = false;
+  let dispatchSettled = false;
+  let initializationRetries = 0;
+  let lastResult = null;
+  let lastRound = 0;
+  let pending = false;
+  let cancelledPending = false;
+  const cancellation = new AbortController();
+  const summaryFile = path.join(directory, `${String(sequence).padStart(3, '0')}.supervisor.json`);
   const run = async () => {
     while (!stopping) {
       const names = (await fs.readdir(directory)).filter((name) => /^request-[0-9a-f-]{36}\.json$/u.test(name)).sort();
@@ -174,6 +183,7 @@ export async function startOfficialRunnerBroker({
         try {
           if (!REQUEST_ID.test(requestId)) fail('BROKER_REQUEST_ID_INVALID');
           const request = await readJsonFile(requestFile);
+          if (stopping) fail('BROKER_CLOSING');
           const keys = isRecord(request) ? Object.keys(request).sort() : [];
           if (keys.join(',') !== 'managedPayload,operation,prompt,requestId,sequence,slice,tmpdir,workspace'
             || request.requestId !== requestId || !matchesIdentity(request, identity)
@@ -187,17 +197,32 @@ export async function startOfficialRunnerBroker({
           // Once dispatch is attempted, an exception or missing final result
           // does not prove the provider never started. Only an explicit
           // initialization-blocked receipt permits another validation request.
-          if (operation === 'VALIDATE_SLICE' && validationResultSettled) {
+          const round = operation === 'VALIDATE_SLICE' ? 1
+            : Number(request.managedPayload?.automaticCheckRound?.slice(0, 1)
+              ?? /^automaticCheckRound=([123])\/3$/u.exec(request.prompt)?.[1] ?? 1);
+          if (!Number.isSafeInteger(round) || round < 1 || round > 3
+            || (!dispatchSettled && round !== (lastRound || 1))) fail('BROKER_ROUND_INVALID');
+          if (dispatchSettled) {
+            // Only a successfully captured TESTS_FAIL finalized as private
+            // evidence permits the next automatic check round. An exception,
+            // rejected result, PASS or uncertain start never grants a retry.
+            const finalized = await readJsonFile(path.join(directory, `${String(sequence).padStart(3, '0')}.finalization.json`)).catch(() => null);
+            if (operation === 'VALIDATE_SLICE' || lastResult?.semanticResponseStatus !== 'TESTS_FAIL'
+              || finalized?.receiptFile !== lastResult.receiptFile || finalized?.state !== 'PRIVATE_TESTS_FAIL'
+              || finalized?.operation !== operation || finalized?.slice !== slice || round !== lastRound + 1 || round > 3) {
             fail('BROKER_RESULT_ALREADY_CAPTURED', SETTLED_VALIDATION_MESSAGE);
+            }
           }
-          if (operation === 'VALIDATE_SLICE') validationResultSettled = true;
+          dispatchSettled = true; lastRound = round; pending = true;
+          await writeAtomic(path.join(directory, `sealed-${requestId}.json`), request);
+          await writeAtomic(summaryFile, { ...identity, pending: true, requestId, startedAt: new Date().toISOString() });
           result = await invoke({
             ...identity,
             specPath: officialPreflight.specPath,
             officialPreflight,
             prompt: request.prompt,
             managedPayload: request.managedPayload,
-          });
+          }, { signal: cancellation.signal });
           if (!isRecord(result)
             || result.sequence !== sequence || result.operation !== operation
             || result.slice !== slice || !BROKER_RECEIPTS.has(result.status)
@@ -206,30 +231,52 @@ export async function startOfficialRunnerBroker({
           }
           const { exitCode, ...receipt } = result;
           if (result.status === 'RUNNER_RESPONSE_CAPTURED' && exitCode === 0) capturedReceipts += 1;
-          if (operation === 'VALIDATE_SLICE' && result.status === 'RUNNER_INITIALIZATION_BLOCKED') {
-            validationResultSettled = false;
+          if (result.status === 'RUNNER_INITIALIZATION_BLOCKED') {
+            if (result.turnStarted !== false || result.threadId != null || result.dispatchStarted !== false) fail('BROKER_RESULT_INVALID');
+            if (initializationRetries++ < 1) dispatchSettled = false;
           }
+          lastResult = result;
+          await writeAtomic(path.join(directory, `${String(sequence).padStart(3, '0')}.latest.json`), { ...identity, authority: officialPreflight.authority,
+            requestId, payloadSha256: createHash('sha256').update(request.prompt).digest('hex'), receipt: result });
           result = { receipt, exitCode };
         } catch (error) {
           result = safeBrokerFailure(error?.code, error?.message);
           errors.push(result.errorCode);
         }
+        pending = false;
         await writeAtomic(path.join(directory, `response-${requestId}.json`), { requestId, result });
+        await writeAtomic(summaryFile, { ...identity, pending: false, requestId, endedAt: new Date().toISOString(),
+          requestsHandled: seen.size, capturedReceipts, errors, cancelledPending });
       }
       if (!stopping) await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
     }
   };
   const loop = run();
+  // Retain loop failure for close() without an unhandled rejection terminating
+  // the manager before it can abort owned work and record its blocker.
+  loop.catch(() => {});
 
   return {
     directory,
     errors,
+    payloadFile,
+    get pending() { return pending; },
+    get cancelledPending() { return cancelledPending; },
     get requestsHandled() { return seen.size; },
     get capturedReceipts() { return capturedReceipts; },
     async close() {
       stopping = true;
-      await fs.unlink(activeFile).catch(() => {});
-      await loop;
+      cancelledPending = pending;
+      cancellation.abort();
+      let timer;
+      try {
+        await Promise.race([loop, new Promise((_, reject) => {
+          timer = setTimeout(() => reject(Object.assign(new Error('owned runner cancellation is still pending'), { code: 'BROKER_CANCEL_PENDING' })), 10000);
+        })]);
+        await writeAtomic(summaryFile, { ...identity, pending: false, requestsHandled: seen.size,
+          capturedReceipts, errors, cancelledPending, closedAt: new Date().toISOString() });
+        await fs.unlink(activeFile);
+      } finally { clearTimeout(timer); }
     },
   };
 }

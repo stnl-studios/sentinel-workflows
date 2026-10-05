@@ -192,7 +192,7 @@ export async function settleTurn(runRoot, number, turn, limit) {
     if (!entry || entry.state !== 'dispatched') fail('turn ledger settlement is invalid');
     entry.endedAt = new Date().toISOString();
     entry.threadId = turn?.threadId ?? null;
-    if (turn?.turnStarted === false) {
+    if (turn?.turnStarted === false && turn?.threadId == null) {
       entry.state = 'not_dispatched';
       ledger.total -= 1;
     } else entry.state = turn?.completed ? 'completed' : 'failed';
@@ -225,7 +225,8 @@ export function renderManagedLauncher(template, values, discoveryInstructions, m
   const invocation = managedSliceContext === null ? '' : [
     'This invocation uses the managed slice runner. The manager supplies STNL_MANAGED_CONTEXT and STNL_RUNNER_ADAPTER.',
     'Run node "$STNL_MANAGED_PREFLIGHT" before artifact reads or mutation; it takes no path or slice arguments.',
-    'Delegate independent checks through node "$STNL_MANAGED_RUNNER_BRIDGE" with the invoked skill\'s existing semantic payload on stdin; it takes no path or operation arguments.',
+    'Write the invoked skill\'s semantic payload as one JSON object to "$STNL_MANAGED_RUNNER_PAYLOAD". Delegate only through node "$STNL_MANAGED_RUNNER_BRIDGE" --payload-file "$STNL_MANAGED_RUNNER_PAYLOAD"; do not use stdin, pipes or heredocs.',
+    'Prepare the candidate once with node "$STNL_MANAGED_FINALIZER" --prepare. Edit only its authorized semantic/artifact sections. After the receipt returns, run node "$STNL_MANAGED_FINALIZER" --finalize. This composes the existing producer, validator, publisher and readback; never transcribe receipts, IDs, hashes or paths.',
     'This mode is selected by the manager context, not by native agent-tool availability or an environment inventory.',
     '',
   ].join('\n');
@@ -401,7 +402,7 @@ function argsForJournal({ journal, operation, route, outcome, slice, readback, r
   const state = operation === 'SPEC_READINESS' ? readinessResult?.verdict === 'READY' ? 'GLOBAL_READY'
     : readinessResult?.verdict === 'FINDINGS' ? 'GLOBAL_FINDINGS' : null
     : operation === 'SPEC_CLOSE' ? null
-      : operation.startsWith('SPEC_') ? `SPEC_${readback.lifecycle?.status?.toUpperCase()}` : readback.execution?.state;
+      : operation.startsWith('SPEC_') ? (readback.lifecycle?.status ? `SPEC_${readback.lifecycle.status.toUpperCase()}` : null) : readback.execution?.state;
   if (state) args.push('--resulting-state', state);
   if (operation === 'SPEC_READINESS' && readinessResult) {
     args.push('--readiness-scope', readinessResult.scope,
@@ -592,8 +593,9 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
         if (officialPreflight !== null) {
           broker = await product.startOfficialRunnerBroker({ workspace, tmpdir, operation, sequence, slice,
           officialPreflight,
-          invoke: (request) => product.invokeIndependentRunner({
+          invoke: (request, { signal: runnerSignal } = {}) => product.invokeIndependentRunner({
             ...request, snapshot: path.join(runRoot, 'snapshot'), workspace, tmpdir, env: turnEnv,
+            signal: runnerSignal,
             onBeforeTurn: async () => {
               const reservation = runnerReservation ?? await reserveExtraRunner({ runRoot, runId: path.basename(runRoot), caseId, operation, limit: turnLimit });
               runnerReservation = null;
@@ -617,6 +619,8 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
             },
           }),
           });
+          turnEnv.STNL_MANAGED_RUNNER_PAYLOAD = broker.payloadFile;
+          turnEnv.STNL_MANAGED_FINALIZER = path.join(runRoot, 'snapshot/agents/codex/runtime/managed-slice-finalize.mjs');
         }
         mainTurnNumber = await startReservedTurn(runRoot, admission.main, turnLimit);
       } catch (error) {
@@ -632,6 +636,7 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
         mainTurns: caseState.mainTurns + 1, runnerTurns: caseState.runnerTurns,
         ...await budgetSnapshot(runRoot), artifacts: caseRoot });
       let turn;
+      let mainException = null;
       let lastProgressMs = 0;
       const heartbeat = setInterval(() => announce({ kind: 'progress', status: 'RUNNING',
         runId: path.basename(runRoot), caseId, operation, slice,
@@ -658,8 +663,16 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
         });
         await settleTurn(runRoot, mainTurnNumber, turn, turnLimit);
       } catch (error) {
-        await settleTurn(runRoot, mainTurnNumber, { turnStarted: false, threadId: null }, turnLimit);
-        throw error;
+        // An exception supplies no proof that dispatch never started. Keep the
+        // consumed turn and continue through the normal evidence/journal path.
+        mainException = error;
+        turn = { completed: false, turnStarted: null, threadId: null, error: String(error.message ?? error),
+          processError: String(error), response: null, usage: null, toolCalls: null,
+          requestedModel: route.model, requestedEffort: route.effort, reportedModel: null };
+        await settleTurn(runRoot, mainTurnNumber, turn, turnLimit);
+        // Setup may throw before the transport opens its event log. An empty
+        // log preserves that observation without inventing provider events.
+        await (await fs.open(eventsPath, 'a')).close();
       } finally {
         clearInterval(heartbeat);
         if (broker !== null) await broker.close();
@@ -695,10 +708,21 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
           readinessResult = product.validateReadinessResult(specPath, JSON.parse(turn.response), { scope: 'GLOBAL' });
         } catch (error) { readinessDiagnostic = error.message; }
       }
-      const outcome = providerConfigError
+      const outcome = mainException
+        ? { result: 'BLOCKED', blocker: PROVIDER_CONFIGURATION_ERRORS.has(mainException.code) ? mainException.code : 'DRIVER_FAILURE',
+          diagnostic: String(mainException.message ?? mainException) }
+        : providerConfigError
         ? { result: 'BLOCKED', blocker: providerConfigError.code, diagnostic: providerConfigError.message }
         : guardOperationProvenance(decideOutcome(operation, readback, turn.completed, readinessResult),
           operation, collaborationEvents, broker?.capturedReceipts ?? 0);
+      if (turn.completed && RUNNER_OPERATIONS.has(operation) && broker?.requestsHandled === 0) {
+        outcome.result = 'BLOCKED'; outcome.blocker = 'OFFICIAL_RUNNER_RECEIPT_MISSING';
+        outcome.diagnostic = 'No managed runner request was received; no independent runner turn was dispatched.';
+      }
+      if (broker?.cancelledPending) {
+        outcome.result = 'BLOCKED'; outcome.blocker = 'SDK_TURN_FAILED';
+        outcome.diagnostic = 'Main context ended with an owned runner pending; cancellation was requested and settlement awaited.';
+      }
       if (broker?.errors.includes('PAUSED_BUDGET_OR_QUOTA')) {
         outcome.result = 'PAUSED_BUDGET_OR_QUOTA'; outcome.blocker = 'PAUSED_BUDGET_OR_QUOTA';
       }
@@ -817,6 +841,8 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
 }
 
 async function run(options) {
+  const offline = process.env.STNL_OFFLINE_PROVIDER_CONTEXT === undefined ? null
+    : await (await import('../../../agents/codex/runtime/offline-provider-context.mjs')).offlineProviderContext();
   const id = options.resumeId ?? `run-${new Date().toISOString().replace(/[-:.TZ]/gu, '').slice(0, 14)}-${randomUUID().slice(0, 8)}`;
   if (options.resumeId) await assertRun(id);
   await acquire(id);
@@ -841,7 +867,7 @@ async function run(options) {
     }
     const snapshotMetadata = options.resumeId
       ? (await readJson(path.join(runRoot, 'run.json'))).snapshot
-      : await createSnapshot(runRoot);
+      : await createSnapshot(runRoot, { executionMode: offline?.mode });
     if (options.resumeId) await assertSnapshotIntegrity(runRoot);
     const product = await loadProduct(path.join(runRoot, 'snapshot'));
     const previous = options.resumeId ? await readJson(path.join(runRoot, 'run.json')) : null;

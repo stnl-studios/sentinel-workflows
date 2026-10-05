@@ -242,6 +242,7 @@ async function promote(root, campaignId, files, signal) {
 }
 
 export async function runCampaign({ root = ROOT, hooks = {}, campaignId = null } = {}) {
+  if (process.env.STNL_OFFLINE_PROVIDER_CONTEXT !== undefined) throw blocked('BLOCKED_BASE', 'TEST-ONLY provider cannot enter a formal campaign');
   const api = { ...adapters(root), ...hooks };
   const scratch = path.join(root, 'benchmark-temp');
   const signal = new AbortController();

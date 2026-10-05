@@ -3,6 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { offlineProviderContext } from './offline-provider-context.mjs';
 
 const PRIVATE_PARENT = path.join(os.homedir(), 'Library', 'Application Support');
 const MAIN_AUTH = path.join(os.homedir(), '.codex', 'auth.json');
@@ -13,7 +14,7 @@ function tomlString(value) {
   return JSON.stringify(value);
 }
 
-export function isolatedEnvironment({ privateHome, shellHome, tmpdir, snapshot, workspace, candidates }) {
+export function isolatedEnvironment({ privateHome, shellHome, tmpdir, snapshot, workspace, candidates, offline = null }) {
   return {
     PATH: `${NODE_RUNTIME}:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin`,
     CODEX_HOME: privateHome,
@@ -27,6 +28,7 @@ export function isolatedEnvironment({ privateHome, shellHome, tmpdir, snapshot, 
     TERM: 'xterm-256color',
     USER: os.userInfo().username,
     LOGNAME: os.userInfo().username,
+    ...(offline === null ? {} : { STNL_OFFLINE_PROVIDER_CONTEXT: offline.file }),
   };
 }
 
@@ -109,6 +111,8 @@ async function hashTree(root, { workflowBundle = false } = {}) {
 }
 
 export async function prepareIsolatedHome({ runId, caseId, snapshot, workspace, candidates, tmpdir }, { authPath = MAIN_AUTH } = {}) {
+  const offline = await offlineProviderContext(process.env, snapshot);
+  if (offline && authPath !== path.join(offline.home, '.codex/auth.json')) throw new Error('offline bootstrap requires fictitious auth');
   if (!/^[a-z0-9][a-z0-9-]{7,}$/u.test(runId) || !/^[ABC]$/u.test(caseId)) {
     throw new Error('invalid isolated home identity');
   }
@@ -142,7 +146,7 @@ export async function prepareIsolatedHome({ runId, caseId, snapshot, workspace, 
   await fs.writeFile(path.join(privateHome, 'config.toml'), config, { mode: 0o600 });
   const configSha256 = `sha256:${createHash('sha256').update(config).digest('hex')}`;
   return { privateHome, shellHome, snapshotSkillsSha256, skillsSha256: snapshotSkillsSha256, configSha256,
-    env: isolatedEnvironment({ privateHome, shellHome, tmpdir, snapshot, workspace, candidates }) };
+    env: isolatedEnvironment({ privateHome, shellHome, tmpdir, snapshot, workspace, candidates, offline }) };
 }
 
 export async function verifyIsolatedHome(home, { runCommand = spawnSync } = {}) {
@@ -151,9 +155,10 @@ export async function verifyIsolatedHome(home, { runCommand = spawnSync } = {}) 
     throw new Error('isolated Codex config changed');
   }
   const discovery = JSON.parse(home.env.STNL_DISCOVERY_PATHS);
+  const offline = await offlineProviderContext(home.env, path.resolve(home.env.STNL_CODEX_ADAPTER, '../../..'));
   const environment = isolatedEnvironment({ privateHome: home.privateHome, shellHome: home.shellHome,
     tmpdir: home.env.TMPDIR, snapshot: path.resolve(home.env.STNL_CODEX_ADAPTER, '../../..'),
-    workspace: discovery.workspace, candidates: discovery.candidates });
+    workspace: discovery.workspace, candidates: discovery.candidates, offline });
   if (environment.STNL_DISCOVERY_PATHS !== home.env.STNL_DISCOVERY_PATHS) {
     throw new Error('isolated discovery paths changed');
   }
@@ -162,11 +167,12 @@ export async function verifyIsolatedHome(home, { runCommand = spawnSync } = {}) 
     || await hashTree(path.join(home.shellHome, '.agents', 'skills')) !== home.snapshotSkillsSha256) {
     throw new Error('isolated skills do not match snapshot provenance');
   }
-  const login = runCommand('codex', ['login', 'status'], { env: environment, encoding: 'utf8', timeout: 30_000 });
+  const executable = offline?.provider ?? 'codex';
+  const login = runCommand(executable, ['login', 'status'], { env: environment, encoding: 'utf8', timeout: 30_000 });
   if (login.status !== 0 || `${login.stdout}${login.stderr}`.trim() !== 'Logged in using ChatGPT') {
     throw new Error('isolated Codex login is not ChatGPT');
   }
-  const doctor = runCommand('codex', ['doctor', '--json'], { env: environment, encoding: 'utf8', timeout: 30_000 });
+  const doctor = runCommand(executable, ['doctor', '--json'], { env: environment, encoding: 'utf8', timeout: 30_000 });
   if (doctor.status !== 0 || doctor.signal) {
     throw new Error(`isolated Codex doctor failed (exit: ${doctor.status ?? 'null'}, signal: ${doctor.signal ?? 'none'})`,
       { cause: doctor.error });
@@ -207,7 +213,8 @@ export async function suspendIsolatedHome(home, identity, { runCommand = spawnSy
   const metadata = await fs.lstat(auth);
   if (!metadata.isFile() || metadata.isSymbolicLink()) throw new Error('isolated auth cache is unsafe');
   await fs.unlink(auth);
-  const login = runCommand('codex', ['login', 'status'], { env: home.env, encoding: 'utf8', timeout: 30_000 });
+  const offline = await offlineProviderContext(home.env, path.resolve(home.env.STNL_CODEX_ADAPTER, '../../..'));
+  const login = runCommand(offline?.provider ?? 'codex', ['login', 'status'], { env: home.env, encoding: 'utf8', timeout: 30_000 });
   if (login.status === 0 && `${login.stdout}${login.stderr}`.includes('Logged in using ChatGPT')) {
     throw new Error('suspended isolated home still has ChatGPT authentication');
   }
@@ -217,6 +224,8 @@ export async function suspendIsolatedHome(home, identity, { runCommand = spawnSy
 }
 
 export async function resumeIsolatedHome({ runId, caseId, snapshot, workspace, candidates, tmpdir, suspended }, { authPath: sourceAuth = MAIN_AUTH } = {}) {
+  const offline = await offlineProviderContext(process.env, snapshot);
+  if (offline && sourceAuth !== path.join(offline.home, '.codex/auth.json')) throw new Error('offline bootstrap requires fictitious auth');
   if (!suspended || typeof suspended.configSha256 !== 'string'
     || typeof (suspended.snapshotSkillsSha256 ?? suspended.skillsSha256) !== 'string') {
     throw new Error('suspended isolated home metadata is invalid');
@@ -242,7 +251,7 @@ export async function resumeIsolatedHome({ runId, caseId, snapshot, workspace, c
   return { ...suspended, snapshotSkillsSha256: suspended.snapshotSkillsSha256 ?? suspended.skillsSha256,
     skillsSha256: suspended.snapshotSkillsSha256 ?? suspended.skillsSha256, privateHome: canonical,
     env: isolatedEnvironment({ privateHome: canonical, shellHome: suspended.shellHome,
-      tmpdir, snapshot, workspace, candidates }) };
+      tmpdir, snapshot, workspace, candidates, offline }) };
 }
 
 export async function removeIsolatedHome(home, identity) {

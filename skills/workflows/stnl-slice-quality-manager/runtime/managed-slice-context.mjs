@@ -112,7 +112,7 @@ export async function createManagedSliceContext({
   if (typeof officialPreflight.state !== 'string' || officialPreflight.state === '') fail('preflight state is incomplete');
 
   return Object.freeze({
-    version: 2,
+    version: 3,
     operation,
     slice,
     specPath: canonicalSpec,
@@ -132,7 +132,7 @@ export async function createManagedSliceContext({
 }
 
 export function managedEnvironment(environment, context) {
-  if (context?.version !== 2 || !OPERATIONS.has(context.operation)) fail('context is invalid');
+  if (context?.version !== 3 || !OPERATIONS.has(context.operation)) fail('context is invalid');
   if (environment[ADAPTER_ENV] !== undefined && environment[ADAPTER_ENV] !== context.identity.adapter.path) {
     fail('configured adapter disagrees with managed context');
   }
@@ -157,7 +157,7 @@ export function readManagedSliceContext(environment = process.env) {
   if (typeof raw !== 'string' || raw.trim() === '') fail('context is absent or invalid');
   let context;
   try { context = JSON.parse(raw); } catch { fail('context JSON is invalid'); }
-  if (context?.version !== 2 || !OPERATIONS.has(context.operation)) fail('context identity is invalid');
+  if (context?.version !== 3 || !OPERATIONS.has(context.operation)) fail('context identity is invalid');
   canonical(context.specPath, 'context SPEC_PATH');
   canonical(context.workspace, 'context workspace');
   validSlice(context.slice);

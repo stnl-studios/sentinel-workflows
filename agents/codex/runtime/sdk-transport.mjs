@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { Codex } from '@openai/codex-sdk';
+import { offlineProviderContext } from './offline-provider-context.mjs';
 
 const ALLOWED_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh']);
 const ALLOWED_MODELS = new Set(['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-6-luna', 'gpt-6.1-sol', 'gpt-6-astra']);
@@ -139,7 +140,10 @@ export async function runCodexTurn({
   }
   // The manager admits and counts independent runner turns through its adapter.
   // Prevent SDK turns from starting untracked collaboration subagents.
-  const codex = new Codex({ env, config: await codexClientConfig({ env, cwd, developerInstructions, isolateSkills }), codexPathOverride });
+  const offline = await offlineProviderContext(env, env.STNL_CODEX_ADAPTER ? path.resolve(env.STNL_CODEX_ADAPTER, '../../..') : null);
+  if (offline && codexPathOverride !== undefined && codexPathOverride !== offline.provider) throw new Error('offline provider override disagrees');
+  const codex = new Codex({ env, config: await codexClientConfig({ env, cwd, developerInstructions, isolateSkills }),
+    codexPathOverride: offline?.provider ?? codexPathOverride });
   const options = {
     model,
     modelReasoningEffort: effort,
@@ -211,7 +215,9 @@ export async function runCodexTurn({
     endedAt: new Date().toISOString(),
     durationMs: Date.now() - startedMs,
     completed: completed && !commandDenied,
-    turnStarted,
+    // A stream with no start event does not prove that dispatch never reached
+    // the provider. Refund/retry requires explicit pre-dispatch proof.
+    turnStarted: turnStarted ? true : null,
     error,
     errorEvent,
     processError,
