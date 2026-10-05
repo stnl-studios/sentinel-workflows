@@ -5,7 +5,7 @@ import { pathToFileURL } from 'node:url';
 const replace = (text, values) => values.reduce((result, [from, to]) => result.replaceAll(from, to), text);
 const claim = (artifact, target) => path.relative(path.dirname(artifact), target).split(path.sep).join('/');
 export const targets = ['src/cli.mjs', 'test/offline-case.test.mjs', 'test/offline-case.json'];
-export async function renderOfflineArtifacts({ snapshot, workspace, specPath, tasks = false, candidateExecutionRoot }) {
+export async function renderOfflineArtifacts({ snapshot, workspace, specPath, tasks = false, candidateExecutionRoot, targetPaths = targets }) {
   const runtime = (owner, name) => pathToFileURL(path.join(snapshot, 'skills/workflows', owner, 'runtime', name)).href;
   const { computeRequirementsAuthority } = await import(runtime('stnl-execution-planner', 'execution-state.mjs'));
   const authority = await computeRequirementsAuthority(specPath);
@@ -13,7 +13,7 @@ export async function renderOfflineArtifacts({ snapshot, workspace, specPath, ta
   const source = path.join(specPath, 'feature_spec.md');
   const template = (owner, file) => fs.readFile(path.join(snapshot, 'skills/workflows', owner, 'templates', file), 'utf8');
   const identity = (artifact) => [['`<relative path>`', '`' + claim(artifact, source) + '`'], ['sha256:<64hex>', 'sha256:' + authority], ['<positive integer>', '1']];
-  const claims = (artifact, join = '; ') => targets.map((target) => '`' + claim(artifact, path.join(workspace, target)) + '`').join(join);
+  const claims = (artifact, join = '; ') => targetPaths.map((target) => '`' + claim(artifact, path.join(workspace, target)) + '`').join(join);
   const check = 'STNL_VERIFICATION_COMMAND=1 node --test';
   if (!tasks) {
     await fs.mkdir(path.join(candidateExecutionRoot, 'plans'), { recursive: true });

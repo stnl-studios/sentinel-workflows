@@ -14,6 +14,7 @@ import { formatRepairSource, sameFormatOnlyContent } from './format-repair.mjs';
 import { readManagedSliceContext } from '../../../skills/workflows/stnl-slice-quality-manager/runtime/managed-slice-context.mjs';
 import { resolveExecutionWorkspace } from '../../../skills/workflows/stnl-slice-quality-manager/runtime/execution-state.mjs';
 import { assertManagedSliceFreshness } from './managed-slice-preflight.mjs';
+import { prepareManagedApplyScope, assertManagedApplyScopeFresh } from './managed-apply-scope.mjs';
 
 const OPERATIONS = new Set(['EXECUTE_SLICE', 'APPLY_FINDINGS', 'VALIDATE_SLICE']);
 const RUNNER_NAME = 'stnl_validation_runner';
@@ -214,6 +215,8 @@ export async function invokeIndependentRunner({
     || path.isAbsolute(relativeSpec) || relativeSpec === ''
     || typeof prompt !== 'string' || prompt.trim() === '') fail('independent runner request is invalid');
   runnerDispatchMode(officialPreflight, operation, slice);
+  if (managed?.operation === 'APPLY_FINDINGS') await assertManagedApplyScopeFresh({ context: managed,
+    active: { protocol: 3, operation, sequence, slice, workspace, tmpdir, officialPreflight }, tmpdir, prompt, environment: env });
   const configuration = await readRunnerConfiguration(snapshot);
   const baseName = `${String(sequence).padStart(3, '0')}-${operation.toLowerCase()}-${slice}`;
   let operationName;
@@ -426,6 +429,8 @@ export async function submitRunnerPayload({
     const taskArtifact = path.join(execution.executionRoot, 'tasks', `${slice}.md`);
     managedPayload.changedAreas = await validateManagedChangedAreas({ workspace, taskArtifact,
       changedAreas: managedPayload.changedAreas });
+    if (operation === 'APPLY_FINDINGS') Object.assign(managedPayload, await prepareManagedApplyScope({
+      context: managed, active, tmpdir, payload: managedPayload, originalPrompt: prompt, environment }));
     if (managedPayload.changedAreas.length === 0 && typeof managedPayload.filelessReason !== 'string') {
       fail('managed fileless payload requires filelessReason');
     }

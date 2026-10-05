@@ -7,7 +7,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { offlineProviderContext } from '../../agents/codex/runtime/offline-provider-context.mjs';
-import { renderOfflineArtifacts, targets } from './offline-workflow-artifacts.mjs';
+import { renderOfflineArtifacts, targets as defaultTargets } from './offline-workflow-artifacts.mjs';
 
 const snapshot = path.resolve(process.env.STNL_CODEX_ADAPTER, '../../..');
 const context = await offlineProviderContext(process.env, snapshot);
@@ -76,8 +76,10 @@ const matrixClaim = path.relative(path.dirname(taskFile), path.join(workspace, '
 const digest = async (file) => createHash('sha256').update(await fs.readFile(file)).digest('hex');
 const finish = (response) => { emit({ type: 'item.completed', item: { id: 'message_' + sequence++, type: 'agent_message', text: typeof response === 'string' ? response : JSON.stringify(response) } }); emit({ type: 'turn.completed', usage: {} }); };
 const reassessmentScenario = context.scenario.startsWith('reassessment-');
+const applyScopeScenario = context.scenario === 'apply-scope-repair';
+const targets = applyScopeScenario ? [...defaultTargets, 'src/todo-service.mjs', 'src/validation.mjs', 'test/todo-service.test.mjs'] : defaultTargets;
 const coverageScenario = ['coverage-findings', 'finalizer-fail-apply-publication',
-  'reassessment-needs-fix', 'reassessment-after-fix-blocked'].includes(context.scenario);
+  'reassessment-needs-fix', 'reassessment-after-fix-blocked', 'apply-scope-repair'].includes(context.scenario);
 try {
   if (!independent && operation === 'SPEC_INIT' && ['B', 'C'].includes(caseId) && !coverageScenario) {
     // Both siblings must reach the provider before either injected failure or
@@ -193,7 +195,7 @@ try {
     finish('Documentary artifacts published by the lifecycle producer.');
   } else if (operation === 'PLAN') {
     const candidateExecutionRoot = path.join(roots.candidates, 'offline-plan');
-    await renderOfflineArtifacts({ snapshot, workspace, specPath, candidateExecutionRoot });
+    await renderOfflineArtifacts({ snapshot, workspace, specPath, candidateExecutionRoot, targetPaths: targets });
     await fs.cp(candidateExecutionRoot, path.join(specPath, 'execution'), { recursive: true });
     finish('Draft plan with implementation and prepared checks in the same slice.');
   } else if (operation === 'REVIEW_PLAN') {
@@ -207,7 +209,7 @@ try {
   } else if (operation === 'MATERIALIZE_TASKS') {
     const { prepareTaskMaterializationCandidate } = await importHelper('stnl-task-materializer', 'prepare-task-candidate.mjs');
     const candidate = await prepareTaskMaterializationCandidate({ specPath });
-    await renderOfflineArtifacts({ snapshot, workspace, specPath, tasks: true, candidateExecutionRoot: candidate.candidateExecutionRoot });
+    await renderOfflineArtifacts({ snapshot, workspace, specPath, tasks: true, candidateExecutionRoot: candidate.candidateExecutionRoot, targetPaths: targets });
     helper('stnl-task-materializer', 'publish-task-candidate.mjs', ['--publish', '--spec-path', specPath, '--candidate-execution-root', candidate.candidateExecutionRoot]);
     finish('Tasks materialized through the authorized publisher.');
   } else if (operation === 'REVIEW_TASKS') {
@@ -244,7 +246,7 @@ fs.writeFile = async (file, ...args) => { if (!fired && ${JSON.stringify(context
     if (prepared.status) throw new Error(prepared.stderr);
     if (operation === 'EXECUTE_SLICE') {
       const cli = { A: 'filtered-cli.mjs', B: 'prioritized-cli.mjs', C: 'archived-cli.mjs' }[caseId];
-      if (context.scenario === 'finalizer-fail-execute-source-edit' || reassessmentScenario) {
+      if (context.scenario === 'finalizer-fail-execute-source-edit' || reassessmentScenario || applyScopeScenario) {
         // Author the implementation on its already-writable approved seed
         // path. copyFile would inherit the frozen reference's 0444 mode.
         // This fresh fixture never changes permissions or resumes a denial.
@@ -271,7 +273,7 @@ fs.writeFile = async (file, ...args) => { if (!fired && ${JSON.stringify(context
       await fs.writeFile(path.join(workspace, 'test/offline-case.json'), JSON.stringify({ ...matrix, priorities: ['low', 'medium', 'high'] }));
       await fs.writeFile(binding.candidateTaskArtifact, section(await fs.readFile(binding.candidateTaskArtifact, 'utf8'), 'Corrections Applied', '- `' + matrixClaim + '`'));
       const claims = targets.map((target) => path.relative(path.dirname(taskFile), path.join(workspace, target)).split(path.sep).join('/'));
-      await fs.writeFile(process.env.STNL_MANAGED_RUNNER_PAYLOAD, JSON.stringify({ automaticCheckRound: '1/3', changedAreas: claims, activeFindings: ['finding-01'], corrections: ['Added required high variant to the authorized prepared matrix.'], relevantEvidence: 'Prepared coverage assertion and CLI regressions are ready.' }));
+      await fs.writeFile(process.env.STNL_MANAGED_RUNNER_PAYLOAD, JSON.stringify({ automaticCheckRound: '1/3', changedAreas: applyScopeScenario ? [matrixClaim] : claims, activeFindings: ['finding-01'], corrections: ['Added required high variant to the authorized prepared matrix.'], relevantEvidence: 'Prepared coverage assertion and CLI regressions are ready.' }));
     } else await fs.writeFile(process.env.STNL_MANAGED_RUNNER_PAYLOAD, JSON.stringify({ requestedChecks: 'node --test', relevantEvidence: 'Check every required variant and unchanged compatibility.' }));
     if (['pending-main', 'interrupt'].includes(context.scenario)) {
       const output = await fs.open(path.join(context.root, '.offline-pending-bridge.log'), 'w');
@@ -496,6 +498,14 @@ fs.open = async (file, flags, ...args) => {
         text = section(text, 'Validation Findings', priorFinding + '\n- Resolution: ' + nextAttempt + ' verified the required high variant and complete prepared coverage.');
       }
       await fs.writeFile(binding.candidateTaskArtifact, text);
+    }
+    if (applyScopeScenario && operation === 'APPLY_FINDINGS') {
+      const active = JSON.parse(await fs.readFile(path.join(process.env.TMPDIR, 'stnl-runner-broker/active.json')));
+      const repairFile = path.join(process.env.TMPDIR, 'stnl-runner-broker', `${String(active.sequence).padStart(3, '0')}.scope-repair.json`);
+      if (await fs.access(repairFile).then(() => true, () => false)) {
+        const probes = run(path.join(snapshot, 'scripts/fixtures/apply-scope-probes.mjs'));
+        if (probes.status !== 0) throw new Error(probes.stderr);
+      }
     }
     const finalized = run(process.env.STNL_MANAGED_FINALIZER, ['--finalize']);
     if (finalized.status) throw new Error(finalized.stderr);

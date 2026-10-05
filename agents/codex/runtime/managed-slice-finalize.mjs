@@ -51,6 +51,39 @@ async function replaceTask(file, bytes) {
   finally { await fs.rm(temporary, { force: true }); }
 }
 
+// Read-only identity/ownership guard shared by the pre-dispatch APPLY handoff.
+export async function inspectManagedApplyCandidate({ context, active, tmpdir }) {
+  if (context.operation !== 'APPLY_FINDINGS' || active.protocol !== 3
+    || active.operation !== context.operation || active.slice !== context.slice
+    || active.workspace !== context.workspace || active.tmpdir !== tmpdir
+    || active.officialPreflight.specPath !== context.specPath
+    || active.officialPreflight.authority !== context.authority
+    || !Number.isSafeInteger(active.sequence) || active.sequence < 1) throw new Error('managed candidate active identity disagrees');
+  const directory = path.join(tmpdir, 'stnl-runner-broker');
+  const stem = String(active.sequence).padStart(3, '0');
+  const binding = await read(path.join(directory, `${stem}.candidate.json`));
+  const ownerFile = binding.ownerFile;
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(binding.nonce ?? '')
+    || ![`${stem}.candidate-owner.json`, `${stem}.candidate-owner-${binding.nonce}.json`].some(name => path.join(directory, name) === ownerFile)
+    || !same(binding, await read(ownerFile))
+    || ['protocol', 'operation', 'sequence', 'slice', 'workspace'].some(key => binding[key] !== active[key])
+    || binding.authority !== context.authority || binding.specPath !== context.specPath) throw new Error('managed candidate binding disagrees');
+  const official = await resolveExecutionWorkspace(context.specPath);
+  const root = binding.candidateRoot;
+  if (path.dirname(root) !== path.dirname(official.specRoot ?? official.executionRoot)
+    || !path.basename(root).startsWith('.stnl-execution-copy-') || await fs.realpath(root) !== root
+    || binding.candidateExecutionRoot !== (official.specRoot === null ? root : path.join(root, 'execution'))
+    || binding.candidateTaskArtifact !== path.join(binding.candidateExecutionRoot, 'tasks', `${context.slice}.md`)) throw new Error('managed candidate path/source identity disagrees');
+  const marker = await read(path.join(root, '.stnl-execution-copy.json'));
+  const liveTask = path.join(official.executionRoot, 'tasks', `${context.slice}.md`);
+  if (marker.specPath !== context.specPath || marker.slice !== context.slice || marker.executionRoot !== official.executionRoot
+    || !same(binding.sourceTree, await tree(official.executionRoot))
+    || binding.sourceTaskSha256 !== hash(await regular(liveTask))) throw new Error('managed candidate source changed');
+  return { binding, official, liveTask };
+}
+
+export { tree as captureManagedTree, regular as readManagedRegular };
+
 export async function finalizeManagedSlice(mode) {
   const environment = process.env;
   if (!['--prepare', '--finalize'].includes(mode)) throw new Error('usage: managed-slice-finalize.mjs --prepare|--finalize');
