@@ -10,8 +10,8 @@ Ler o backlog não inicia um item, não cria issue e não aprova automaticamente
 | --- | --- | --- |
 | BL-01 | P0 concluída — atendido | Manutenção pragmática; não reabrir automaticamente. |
 | BL-02 | P0 concluída — atendido | Clareza e eficiência do workflow; evolução de tasks não desfaz esse aceite. |
-| BL-03 | P1-A — implementação do recorte concluída; integração via PR pendente | Installer global de skills de workflow e agents nativos Codex/Claude, mais README de onboarding. A certificação nativa nos dois clientes não foi concluída. |
-| BL-08 (ID documental proposto) | P1-B — proposta independente | Melhorar tasks operacionais, materialização e review, sem migrar schema ou história. Não é issue criada nem trabalho iniciado. |
+| BL-03 | P1-A — CONCLUÍDA no recorte acordado; integrada pela PR #2 | Installer global de skills de workflow e agents nativos Codex/Claude, mais README de onboarding. Limites de certificação permanecem separados abaixo. |
+| BL-08 (ID documental proposto) | P1-B — EM PLANEJAMENTO PELO USUÁRIO | Contexto e escopo ainda serão trazidos pelo usuário; propostas abaixo não constituem plano decidido nem implementação autorizada. Não é issue criada. |
 | BL-04 | Adiado / sob demanda | Roadmap, principalmente melhoria de layout; objetivo original preservado. |
 | BL-05 | Adiado / sob demanda | Refinar user stories e produzir tasks para boards; diferente das tasks internas de execução. |
 | Sem ID novo | Runbook sob demanda | Melhorar apenas quando selecionado; validação formal do workflow continua obrigatória. |
@@ -20,9 +20,17 @@ Ler o backlog não inicia um item, não cria issue e não aprova automaticamente
 
 P1-A e P1-B têm foco sequencial, mas não há dependência técnica obrigatória entre eles. Roadmap, runbook e refinamento de user stories continuam adiados ou sob demanda.
 
+## Situação integrada em 2026-10-06
+
+P1-A foi encerrada no recorte acordado de Installer + README e integrada na `main` pela PR #2 (`df16a54`). As correções de orientação do runner nativo e preservação de evidência entre slices foram integradas pela PR #3 (`73e3742`). A recuperação oficial, o aceite A/B e os demais ajustes da PR #4 estão integrados na `main` em `b4517fb`.
+
+O FULL funcional `run-20261006173440-90810075` concluiu A+B+C com `PASS`, integridade, SPECs fechadas, estado `COMPLETE` e testes finais com exit 0. O código medido foi `ddce03b`, com SOURCE limpa; `a646ec8` registra os resultados posteriores, incorporados pela PR #4. Os oracles independentes passaram A (38 comandos) e B (41 comandos); C registra oracle `null`. Ver [relatório canônico](benchmarks/sentinel-todo/measurements/run-20261006173440-90810075.json) e [notas do FULL e seus limites](benchmarks/sentinel-todo/measurements/run-20261006173440-90810075-notes.md). Esse resultado pertence à revisão medida, sem transferir o PASS para alterações posteriores.
+
+Os checkpoints datados abaixo preservam diagnósticos, restrições e resultados observados na época. Nos recortes incorporados pela PR #4, expressões como “revisão pendente”, “sem commit” ou “próxima A” descrevem aquele checkpoint histórico; não representam o estado integrado atual nem autorização para outra execução. Limitações ainda válidas ficam explicitadas em “Limites de evidência e propostas futuras” e nos respectivos registros.
+
 ## P1-A — Installer global e README
 
-O recorte solicitado de implementação do installer e do README está concluído neste branch; a integração na `main` depende da revisão da PR. Isso não representa `PASS` do aceite original completo: a prova contratual de descoberta, invocação e runner nativos em Codex e Claude continua sem certificação. A limitação observada na captura/serialização dessa evidência fica para discussão em P1-B; não foi corrigida nem validada neste recorte.
+**CONCLUÍDA no recorte acordado de Installer + README**, integrado na `main` pela PR #2 (`df16a54`). Não há integração pendente desta fase. A conclusão desse recorte não inicia P1-B nem amplia a certificação demonstrada.
 
 **Resultado esperado:** uma pessoa entende o propósito, instala com segurança e percorre o fluxo documentado.
 
@@ -38,11 +46,25 @@ O README deve cobrir propósito e limites, pré-requisitos, prévia e aplicaçã
 
 `Autoridade pronta → stnl-execution-planner / PLAN → stnl-plan-reviewer / REVIEW_PLAN → stnl-task-materializer / MATERIALIZE_TASKS → stnl-task-reviewer / REVIEW_TASKS (normal em pristine) → stnl-slice-executor / EXECUTE_SLICE → stnl-slice-quality-manager / VALIDATE_SLICE`.
 
-O aceite exige composição necessária, destino global preservado fora do namespace Sentinel, reinstalação limpa, repetição idêntica sem mudança de bytes, prévia sem escrita e demonstração de descoberta, invocação e runner no Codex e no Claude. A documentação deve refletir essa prova e seus limites. Cliente indisponível fica `NOT_VERIFIED`; prova em um cliente só não sustenta `PASS` completo, e um recorte parcial exige decisão explícita. O diff fica limitado ao installer, READMEs, testes focados e dependências internas comprovadamente indispensáveis.
+O recorte acordado cobre composição necessária, destino global preservado fora do namespace Sentinel, reinstalação limpa, repetição idêntica sem mudança de bytes e prévia sem escrita. O diff de P1-A ficou limitado ao installer, READMEs, testes focados e dependências internas comprovadamente indispensáveis.
 
-Fora do escopo: package manager genérico, publicação npm, auto-update, uninstall genérico, cloud, redesign de lifecycle, infraestrutura de plataforma e conteúdo de benchmark. A prova atual do installer e testes isolados não substituem a demonstração nos dois clientes.
+Fora do escopo: package manager genérico, publicação npm, auto-update, uninstall genérico, cloud, redesign de lifecycle, infraestrutura de plataforma e conteúdo de benchmark.
+
+## Limites de evidência e propostas futuras
+
+O aceite original ampliado também previa demonstração de descoberta, invocação e runner nativos em Codex e Claude. A certificação completa nos dois clientes não está demonstrada; o FULL gerenciado e as correções da PR #3 não substituem essa prova. Cliente indisponível permanece `NOT_VERIFIED`, e prova em um cliente só não sustenta certificação dos dois. Essa limitação histórica não reabre P1-A concluída no recorte acordado, nem define automaticamente o escopo de P1-B.
+
+Oracle independente de produto para C continua ausente e é trabalho futuro. Avaliar uma campanha configurável de três FULL, usando `campaign.fullRuns`, também permanece proposta futura, sem execução autorizada por este registro. Um FULL funcional não estabelece uma distribuição estatística nem certifica melhora de custo/tokens; a comparação formal com a baseline production-v2 continua `BLOCKED_BASELINE` por incompatibilidade de contrato/perfil. Não substituir ou reinterpretar a baseline histórica.
+
+## Correção pristine-replacement — branch local
+
+O fix pontual `af2aeb5` está commitado na branch local `fix/pristine-replacement-materialization`, ainda sem push ou merge na `main`. A revisão independente aprovou o diff, sem bloqueantes; três reproduções pelo produtor real tiveram RED antes e GREEN depois, e 43 testes focados passaram, incluindo negativas, preservação de bytes e append-only. A reinstalação autorizada foi somente Codex: um componente substituído, dez `NO-OP`, nenhuma remoção; preview posterior com 11 `NO-OP`. O único conteúdo global alterado foi `stnl-task-materializer/runtime/serialize-task-paths.mjs`, idêntico ao fonte pelo SHA-256 `872d9da1b4ac52c1d623eec000e63f6f0b49b10675cbc47ce2f6fba16e454dbf`.
+
+Não há declaração de suíte completa verde para esse fix: base `b4517fb` com 172 PASS/18 FAIL/1 SKIP, versão final com 191 PASS/18 FAIL/1 SKIP, mesmos nomes e diagnósticos de falha preexistentes conferidos na revisão independente. O check estático geral mantém `C004_VENDOR_NEUTRALITY` preexistente. Esses resultados de checks são distintos do FULL funcional `PASS` medido em `ddce03b`; o fix não recebeu nova rodada benchmark. Publicação/merge do fix local depende de autorização própria; Claude e Listou não foram alterados neste recorte. Evidências e comandos de revisão permanecem fora do repo, em `/tmp/sentinel-pristine-replacement-review.md` e `/tmp/sentinel-pristine-replacement-comparison.json`.
 
 ## P1-B — Tasks operacionais
+
+**EM PLANEJAMENTO PELO USUÁRIO**, que está preparando o contexto com ChatGPT e o trará antes de definir o trabalho. Não há implementação autorizada. O escopo e o aceite abaixo são propostas anteriores para discussão, não um plano consolidado.
 
 **Resultado esperado:** ações úteis e verificáveis com menos narrativa repetida, preservando a cadeia e os contratos existentes.
 
@@ -53,6 +75,8 @@ Preservar requisitos, estratégia aprovada, cabeçalhos, sentinelas, fingerprint
 O aceite exige ações ligadas ao aceite, sem novos requisitos, referências de teste localizáveis e consumidores válidos; uma slice real mantém review, execução e validação independente. Não inventar cotas de linhas, tasks ou slices nem percentuais de tokens.
 
 ## Workflow e decisões a preservar
+
+Os registros de implementação e gates nesta seção são checkpoints históricos anteriores à integração da PR #4; a situação atual está consolidada acima. Seus resultados e incidentes permanecem registrados sem reclassificação.
 
 Plano aprovado pelo usuário em 2026-10-04 (`Sentinel: aprovado`), SOURCE `83b58e8`, execução por checkpoints:
 

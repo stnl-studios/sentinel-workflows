@@ -153,7 +153,11 @@ export async function serializeTaskPathClaims({ specPath, candidateExecutionRoot
   const liveState = await inspectExecutionState(specPath);
   const appendRecovery = liveState.state === "PENDING_REPLAN_READY"
     && liveState.globalPlan.revisionMode === "append-only-extension";
-  if (appendRecovery && !(await fs.readFile(path.join(candidate, "plan.md"))).equals(Buffer.from(planText))) {
+  const pristineReplacement = liveState.state === "PENDING_REPLAN_READY"
+    && liveState.globalPlan.revisionMode === "pristine-replacement"
+    && [...liveState.tasks.values()].every((task) => task.pristine);
+  const approvedRecovery = appendRecovery || pristineReplacement;
+  if (approvedRecovery && !(await fs.readFile(path.join(candidate, "plan.md"))).equals(Buffer.from(planText))) {
     blocked("candidate changed the approved recovery plan");
   }
   const updates = [];
@@ -162,7 +166,7 @@ export async function serializeTaskPathClaims({ specPath, candidateExecutionRoot
   for (const slice of slices) {
     const livePlanArtifact = path.join(workspace.executionRoot, "plans", `${slice}.md`);
     const approvedPlan = await fs.readFile(livePlanArtifact, "utf8").catch(() => blocked(`live execution is missing ${livePlanArtifact}`));
-    if (appendRecovery && !(await fs.readFile(path.join(candidate, "plans", `${slice}.md`))).equals(Buffer.from(approvedPlan))) {
+    if (approvedRecovery && !(await fs.readFile(path.join(candidate, "plans", `${slice}.md`))).equals(Buffer.from(approvedPlan))) {
       blocked(`${slice} candidate changed its approved recovery plan`);
     }
     const approvedClaims = codeSpans(sectionBounds(approvedPlan, "Likely Areas", `${slice} plan`).value);
@@ -173,7 +177,7 @@ export async function serializeTaskPathClaims({ specPath, candidateExecutionRoot
 
     const liveTaskPath = path.join(workspace.executionRoot, "tasks", `${slice}.md`);
     const liveTaskMetadata = await fs.lstat(liveTaskPath).catch(() => null);
-    const historicalTask = liveTaskMetadata !== null && liveState.state !== "MATERIALIZED_PRISTINE";
+    const historicalTask = liveTaskMetadata !== null && liveState.state !== "MATERIALIZED_PRISTINE" && !pristineReplacement;
     if (historicalTask) {
       const liveTask = await fs.readFile(liveTaskPath);
       const candidateTask = await fs.readFile(taskPath);
@@ -201,12 +205,16 @@ export async function serializeTaskPathClaims({ specPath, candidateExecutionRoot
     serializedClaims += canonicalClaims.length;
   }
 
-  if (appendRecovery) {
+  if (approvedRecovery) {
     // Validate the prospective claims in the validator's existing isolated shadow.
     // Rejection must leave the supplied candidate's bytes and links untouched.
-    await validateExecutionCandidate(specPath, candidate, updates.map((update) => ({
+    const prospective = await validateExecutionCandidate(specPath, candidate, updates.map((update) => ({
       slice: path.basename(update.path, ".md"), text: update.after,
     })));
+    // A pristine replacement changes planning authority, never execution evidence.
+    if (pristineReplacement && prospective.state !== "MATERIALIZED_PRISTINE") {
+      blocked("pristine replacement must materialize the approved revision with pristine tasks");
+    }
   }
   for (const update of updates) {
     if (update.before === update.after) continue;
