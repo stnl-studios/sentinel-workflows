@@ -4676,15 +4676,21 @@ test("terminal Diff Summary rejects placeholders and malformed bullet lines with
     candidateExecutionRoot: copy.candidateExecutionRoot, ...captured });
   const task = path.join(copy.candidateExecutionRoot, "tasks/slice-01.md");
   const valid = await fs.readFile(task, "utf8");
-  for (const summary of ["", "-", "- ", "none", "- none", "- pending", "- n/a", "- not_available",
-    "- NONE", "- <summary>", "- Implemented behavior.\n- pending", "- Implemented behavior.\n- <remaining work>",
-    "Implemented behavior.", "- Implemented behavior.\nArbitrary prose", "- Implemented behavior.\n  - Nested bullet",
-    "- Implemented behavior.\n\n- Added checks.", "- Implemented behavior.\n1. Added checks."]) {
+  const placeholders = ["- none", "- pending", "- n/a", "- not_available", "- NONE", "- <summary>",
+    "- Implemented behavior.\n- pending", "- Implemented behavior.\n- <remaining work>"];
+  const malformed = ["", "-", "- ", "none", "Implemented behavior.", "- Implemented behavior.\nArbitrary prose",
+    "- Implemented behavior.\n  - Nested bullet", "- Implemented behavior.\n\n- Added checks.",
+    "- Implemented behavior.\n1. Added checks."];
+  const cases = [
+    ...placeholders.map(summary => [summary, /Diff Summary must be objective non-placeholder content/u]),
+    ...malformed.map(summary => [summary, /Diff Summary must contain only flat '- ' bullet lines/u]),
+  ];
+  for (const [summary, diagnostic] of cases) {
     await fs.writeFile(task, replaceSection(valid, "Diff Summary", summary));
     const rejected = await fs.readFile(task);
-    await assert.rejects(validateExecutionCandidate(fixture.requirements, copy.candidateExecutionRoot), /Diff Summary/u);
+    await assert.rejects(validateExecutionCandidate(fixture.requirements, copy.candidateExecutionRoot), diagnostic);
     await assert.rejects(publishValidationCandidate({ specPath: fixture.requirements, slice: "slice-01",
-      candidateExecutionRoot: copy.candidateExecutionRoot }), /Diff Summary/u);
+      candidateExecutionRoot: copy.candidateExecutionRoot }), diagnostic);
     assert.deepEqual(await fs.readFile(task), rejected, "rejection preserves candidate evidence");
     assert.deepEqual(await Promise.all([liveTask, liveIndex].map((file) => fs.readFile(file))), before);
   }

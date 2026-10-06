@@ -83,6 +83,7 @@ const executeScopeScenario = ['execute-scope-subset', 'execute-scope-correction'
 const executeRoundScenario = context.scenario === 'execute-round-divergence';
 const targets = (applyScopeScenario || findingsCycleScenario || executeScopeScenario) ? [...defaultTargets, 'src/todo-service.mjs', 'src/validation.mjs', 'test/todo-service.test.mjs'] : defaultTargets;
 const coverageScenario = ['coverage-findings', 'finalizer-fail-apply-publication',
+  'finalize-revalidation-rejection',
   'reassessment-needs-fix', 'reassessment-after-fix-blocked', 'apply-scope-repair', 'apply-findings-cycle', 'apply-replay-private', 'apply-replay-published'].includes(context.scenario);
 try {
   if (!independent && operation === 'SPEC_INIT' && ['B', 'C'].includes(caseId) && !coverageScenario && !executeScopeScenario && !executeRoundScenario) {
@@ -593,6 +594,14 @@ fs.open = async (file, flags, ...args) => {
         duplicate: { exit: duplicate.status, diagnostic: duplicate.stderr, command: duplicate.command, result: duplicate.stdout },
         finalizationExists: await fs.access(finalizedFile).then(() => true, () => false) }, null, 2));
       throw new Error('TEST-ONLY reproduction preserved: ' + second.stderr);
+    }
+    if (context.scenario === 'finalize-revalidation-rejection' && operation === 'VALIDATE_SLICE') {
+      const receipt = JSON.parse(delegated.stdout.slice('SENTINEL_RUNNER_RECEIPT '.length).trim());
+      if (receipt.semanticResponseStatus === 'PASS') {
+        const recovered = run(path.join(snapshot, 'scripts/fixtures/validation-summary-probes.mjs'));
+        if (recovered.status) throw new Error(recovered.stderr);
+        finish('Fresh semantic proposals finalized the same settled revalidation receipt.'); process.exit(0);
+      }
     }
     if (coverageScenario && operation === 'VALIDATE_SLICE') {
       const receipt = JSON.parse(delegated.stdout.slice('SENTINEL_RUNNER_RECEIPT '.length).trim());

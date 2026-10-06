@@ -1386,7 +1386,7 @@ function parseTask(text, label, expectedSlice, references = {}) {
     for (const line of diffSummary.split("\n")) {
       const bullet = line.match(/^- (\S.*)$/u);
       if (bullet === null) {
-        throw new ExecutionContractError(`${label} terminal PASS requires a non-placeholder Diff Summary`);
+        throw new ExecutionContractError(`${label} terminal PASS Diff Summary must contain only flat '- ' bullet lines; paragraphs, nested lists and empty lines are invalid`);
       }
       requireNonPlaceholder(bullet[1], `${label} Diff Summary`);
     }

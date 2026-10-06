@@ -127,6 +127,51 @@ test('finalizer: validation rejection preserves input and fresh proposal recover
   });
 });
 
+test('finalizer: NEEDS_FIX and APPLY recover a PASS receipt after disposition and summary-format rejection', { timeout: 90_000 }, async (t) => {
+  const fixture = await checkout('finalize-revalidation-rejection', t);
+  const result = spawnSync(process.execPath, ['benchmarks/sentinel-todo/runtime/benchmark-manager.mjs', 'run', '--case', 'B'],
+    { cwd: fixture.root, env: fixture.env, encoding: 'utf8', timeout: 75_000, maxBuffer: 4 * 1024 * 1024 });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const proof = JSON.parse(await fs.readFile(path.join(fixture.root, '.offline-revalidation-summary.json')));
+  assert.equal(proof.receipt.semanticResponseStatus, 'PASS');
+  assert.deepEqual(proof.rejected.map(entry => entry.name), ['disposition', 'summary-format']);
+  assert.match(proof.rejected[0].result.diagnostic, /attempt-02 disposition contradicts finding-01 deterministic timeline/u);
+  assert.match(proof.rejected[1].result.diagnostic, /Diff Summary must contain only flat '- ' bullet lines/u);
+  assert.doesNotMatch(proof.rejected[1].result.diagnostic, /placeholder/u);
+  const body = (text, heading) => new RegExp(`## ${heading}\\n\\n([\\s\\S]*?)(?=\\n## |$)`, 'u').exec(text)[1].trim();
+  assert.equal(new Set([...proof.rejected.map(entry => entry.binding.candidateExecutionRoot),
+    proof.binding.candidateExecutionRoot]).size, 3, 'each correction uses a fresh candidate');
+  assert.equal(proof.corrected
+    .replace(body(proof.corrected, 'Validation Findings'), body(proof.fresh, 'Validation Findings'))
+    .replace(body(proof.corrected, 'Diff Summary'), body(proof.fresh, 'Diff Summary')), proof.fresh,
+  'only the two authorized semantic sections change before finalization');
+  for (const heading of ['Validation Attempts', 'Effective Validation Base', 'Final Result', 'Delegation Blocker']) {
+    assert.equal(body(proof.corrected, heading), body(proof.fresh, heading), 'semantic correction preserves mechanical ' + heading);
+  }
+  assert.equal(body(proof.publishedTask, 'Diff Summary'), body(proof.corrected, 'Diff Summary'));
+  assert.equal(body(proof.publishedTask, 'Final Result'), '- PASS');
+  assert.match(body(proof.publishedTask, 'Validation Findings'), /State: resolved[\s\S]*Resolution: attempt-02/u);
+  assert.match(body(proof.publishedTask, 'Effective Validation Base'), /Origin attempt: attempt-02/u);
+  assert.equal((proof.publishedTask.match(/^### attempt-/gmu) ?? []).length, 2);
+  assert.deepEqual(proof.before.inputs, proof.after.inputs, 'requirements authority and source/test hashes and modes stay unchanged');
+  assert.deepEqual(proof.before.evidence, proof.after.evidence, 'receipt, exact response, events and sealed request stay unchanged');
+  assert.equal(proof.finalization.receiptFile, proof.receipt.receiptFile);
+  assert.equal(proof.finalization.published, true);
+  assert.equal(proof.final.exit, 0); assert.equal(proof.duplicate.exit, 0);
+  assert.equal(proof.final.output, proof.duplicate.output, 'same-receipt duplicate finalization is idempotent');
+  assert.equal(proof.finalState, 'COMPLETE');
+  const calls = (await fs.readFile(path.join(fixture.root, '.offline-calls.jsonl'), 'utf8')).trim().split('\n').map(JSON.parse);
+  assert.ok(calls.every(call => call.externalCalls === 0 && call.caseId === 'B'));
+  assert.deepEqual(calls.filter(call => call.independent).map(call => call.operation),
+    ['EXECUTE_SLICE', 'VALIDATE_SLICE', 'APPLY_FINDINGS', 'VALIDATE_SLICE']);
+  const runRoot = path.resolve(path.dirname(proof.receipt.receiptFile), '../..');
+  const state = JSON.parse(await fs.readFile(path.join(runRoot, 'case-b/case-state.json')));
+  assert.equal(state.status, 'PASS'); assert.equal(state.runnerTurns, 4);
+  assert.deepEqual(state.operations.filter(entry => ['VALIDATE_SLICE', 'APPLY_FINDINGS'].includes(entry.operation))
+    .map(entry => [entry.operation, entry.outcome.result]),
+  [['VALIDATE_SLICE', 'NEEDS_FIX'], ['APPLY_FINDINGS', 'PASS'], ['VALIDATE_SLICE', 'PASS']]);
+});
+
 for (const boundary of ['prepare-index', 'publication-install', 'readback', 'finalization-write', 'contraproofs']) {
   test(`finalizer: ${boundary} failure allows bounded same-receipt completion`, { timeout: 90_000 }, async (t) => {
     const fixture = await checkout('finalizer-fail-' + boundary, t);

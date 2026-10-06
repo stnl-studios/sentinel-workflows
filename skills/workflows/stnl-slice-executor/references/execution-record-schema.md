@@ -5,7 +5,7 @@ purpose: Define operational task-record schemas that must never appear in a fres
 status: not_applicable
 read_when: EXECUTE_SLICE, APPLY_FINDINGS, VALIDATE_SLICE, REPLAN materialization, or terminal runtime inspection interprets operational records.
 do_not_read_when: Only a pristine task is being rendered or reviewed.
-contains: Check evidence, findings, divergences, attempts, supersession, effective validation base, and lifecycle transitions.
+contains: Check evidence, findings, divergences, attempts, diff summary, supersession, effective validation base, and lifecycle transitions.
 owner: stnl-task-materializer
 update_policy: Change only when persisted execution-record identity or lifecycle semantics change.
 ```
@@ -124,6 +124,14 @@ At most one current base exists and it originates from the current `PASS` attemp
 ```
 
 A valid fileless PASS uses the same record with exact `- Files: none`, followed immediately by `- Fileless reason: <objective non-placeholder reason>`. It keeps authoritative commands and the owning attempt's exact evidence summary. A file-backed base forbids `Fileless reason`; a fileless base forbids path/hash tuples and requires `Changed Areas` to be exact `- none`.
+
+## Diff Summary and terminal preparation ownership
+
+For terminal PASS, `Diff Summary` contains one or more objective flat Markdown bullets, each exactly `- <nonempty content>`. Plain paragraphs, numbered or nested lists, empty bullet items and blank lines between bullets are invalid formatting. Each item separately rejects exact case-insensitive `none`, `pending`, `n/a`, `not_available` and unencoded template placeholders. Paths and inline code may occur in objective prose; this summary does not grant path authority or replace the validation manifest. The parser checks format and placeholder content, not the truth of the model-written summary.
+
+In VALIDATE_SLICE, the quality manager authors the candidate's semantic finding records/dispositions and Diff Summary before deterministic preparation. A resolved finding needs an objective Resolution naming the owning later formal attempt; a runner disposition does not update the record by itself. The producer writes Validation Attempts, Effective Validation Base, Final Result, Delegation Blocker resolution and the selected global row from the settled result. Those mechanical fields must remain unchanged from live until preparation. Existing checklist, changed/corrected paths, overlap, execution checks, divergence authority and history are preserved.
+
+Sentinels are state-specific: an open slice has `Final Result: pending`; absent attempts and base remain `- none` before preparation. An empty finding set, no blockers or no corrections may also legitimately use `none`. A fileless PASS requires the existing explicit reason and evidence rules. Do not clear sentinels globally, infer a verdict from the summary or invent missing content. Rejecting a composed candidate preserves live state and the semantic input; a fresh authorized semantic proposal may reuse the settled receipt under the existing authority/tested-state guards without another runner.
 
 ## Superseded slice terminal record
 
