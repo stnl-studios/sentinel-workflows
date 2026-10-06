@@ -7010,8 +7010,180 @@ test("pristine REVIEW_TASKS replan dead end has draft, review, and atomic materi
   assert.deepEqual(nextHandoff("REVIEW_PLAN", reviewedReadback), { operation: "MATERIALIZE_TASKS", slice: null });
   assert.deepEqual(decideOutcome("REVIEW_PLAN", reviewedReadback, false),
     { result: "BLOCKED", blocker: "SDK_TURN_FAILED" });
-  await editTask(fixture, (value) => reviseAuthority(value, oldHash, newHash, 1, 2));
-  assert.equal((await inspectExecutionState(fixture.requirements)).state, "MATERIALIZED_PRISTINE");
+  const prepared = await prepareTaskMaterializationCandidate({ specPath: fixture.requirements });
+  t.after(() => fs.rm(prepared.candidateExecutionRoot, { recursive: true, force: true }));
+  const staged = { ...fixture, execution: prepared.candidateExecutionRoot };
+  await editTask(staged, (value) => reviseAuthority(value, oldHash, newHash, 1, 2));
+  const liveBefore = await treeBytes(fixture.execution);
+  assert.equal((await serializeTaskPathClaims({ specPath: fixture.requirements,
+    candidateExecutionRoot: prepared.candidateExecutionRoot })).status, "PASS");
+  assert.equal((await validateExecutionCandidate(fixture.requirements, prepared.candidateExecutionRoot)).state, "MATERIALIZED_PRISTINE");
+  assert.deepEqual(await treeBytes(fixture.execution), liveBefore);
+  const published = await publishTaskMaterializationCandidate({ specPath: fixture.requirements,
+    candidateExecutionRoot: prepared.candidateExecutionRoot });
+  assert.equal(published.state, "MATERIALIZED_PRISTINE");
+  const readback = await inspectExecutionState(fixture.requirements);
+  assert.equal(readback.tasks.get("slice-01").revision, 2);
+  assert.equal(readback.tasks.get("slice-01").fingerprint, newHash);
+  assert.equal(deriveNormalHandoff(readback, "MATERIALIZE_TASKS").operation, "REVIEW_TASKS");
+});
+
+async function pristinePathReplacement(t) {
+  const fixture = await standaloneWorkspace(t);
+  const { authority } = await renderArtifacts(fixture);
+  const oldChecklist = Array.from({ length: 9 }, (_, index) =>
+    `- [ ] 1.${index + 1} Implement behavior ${index + 1} | observable result: observable result ${index + 1} | expected areas: \`${index === 8 ? "../../tests/qa" : "../../src/example.txt"}\` | requirement: AC-001`).join("\n");
+  await editTask(fixture, (value) => replaceSection(value, "Checklist", oldChecklist));
+  await stagePristineReplacement(fixture, authority, authority, { ready: true });
+  const approvedClaims = [...Array(8).fill("../../src/example.txt"),
+    "../../tests/qa/example.md", "../../tests/qa/example.html", "../../tests/qa/example.tsx"];
+  await editSlicePlan(fixture, "slice-01", (value) => replaceSection(value, "Likely Areas",
+    approvedClaims.map((claim) => `- \`${claim}\``).join("\n")));
+  assert.equal((await preflightExecutionOperation(fixture.requirements, "MATERIALIZE_TASKS")).state, "PENDING_REPLAN_READY");
+  const prepared = await prepareTaskMaterializationCandidate({ specPath: fixture.requirements });
+  t.after(() => fs.rm(prepared.candidateExecutionRoot, { recursive: true, force: true }));
+  const staged = { ...fixture, execution: prepared.candidateExecutionRoot };
+  await editTask(staged, (value) => reviseAuthority(value, authority, authority, 1, 2)
+    .replace("`../../tests/qa`", "`../tests/qa/example.md`; `../tests/qa/example.html`; `../tests/qa/example.tsx`"));
+  return { fixture, prepared, staged, authority, oldChecklist, approvedClaims };
+}
+
+test("pristine replacement publishes nine preserved items with exact QA files through the real producer", async (t) => {
+  const { fixture, prepared, authority, oldChecklist, approvedClaims } = await pristinePathReplacement(t);
+  const liveBefore = await treeBytes(fixture.execution);
+  const serialized = await serializeTaskPathClaims({ specPath: fixture.requirements,
+    candidateExecutionRoot: prepared.candidateExecutionRoot });
+  assert.equal(serialized.serializedClaims, 11);
+  assert.deepEqual(serialized.changedPaths, [path.join(prepared.candidateExecutionRoot, "tasks/slice-01.md")]);
+  assert.equal((await validateExecutionCandidate(fixture.requirements, prepared.candidateExecutionRoot)).state, "MATERIALIZED_PRISTINE");
+  assert.deepEqual(await treeBytes(fixture.execution), liveBefore);
+  const candidateBefore = await treeBytes(prepared.candidateExecutionRoot);
+  const published = await publishTaskMaterializationCandidate({ specPath: fixture.requirements,
+    candidateExecutionRoot: prepared.candidateExecutionRoot });
+  assert.equal(published.status, "PASS");
+  assert.equal(published.serializedTaskPaths, 11);
+  assert.deepEqual(await treeBytes(fixture.execution), candidateBefore);
+  const readback = await inspectExecutionState(fixture.requirements);
+  const task = readback.tasks.get("slice-01");
+  assert.equal(readback.state, "MATERIALIZED_PRISTINE");
+  assert.equal(task.pristine, true);
+  assert.equal(task.revision, 2);
+  assert.equal(task.fingerprint, authority);
+  const checklist = task.sections.get("Checklist");
+  assert.deepEqual([...checklist.matchAll(/^- \[ \] (1\.[0-9]+) /gmu)].map((match) => match[1]),
+    Array.from({ length: 9 }, (_, index) => `1.${index + 1}`));
+  const stripAreas = (text) => text.replace(/\| expected areas: .*? \| requirement:/gu, "| requirement:");
+  assert.equal(stripAreas(checklist), stripAreas(oldChecklist));
+  assert.deepEqual(task.implementationPathClaims.map((claim) => claim.raw), approvedClaims);
+  const handoff = spawnSync(process.execPath, [path.join(ROOT,
+    "skills/workflows/stnl-task-materializer/runtime/validate-execution-state.mjs"), fixture.requirements,
+    "--handoff-after", "MATERIALIZE_TASKS"], { encoding: "utf8" });
+  assert.equal(handoff.status, 0, handoff.stderr);
+  assert.equal(JSON.parse(handoff.stdout).normal_handoff.operation, "REVIEW_TASKS");
+});
+
+test("pristine replacement CLI publisher invokes serialization before validation and readback", async (t) => {
+  const { fixture, prepared, approvedClaims } = await pristinePathReplacement(t);
+  const result = spawnSync(process.execPath, [path.join(ROOT,
+    "skills/workflows/stnl-task-materializer/runtime/publish-task-candidate.mjs"), "--publish",
+    "--spec-path", fixture.requirements, "--candidate-execution-root", prepared.candidateExecutionRoot], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(JSON.parse(result.stdout).state, "MATERIALIZED_PRISTINE");
+  assert.equal(JSON.parse(result.stdout).serializedTaskPaths, 11);
+  const readback = await inspectExecutionState(fixture.requirements);
+  assert.equal(readback.tasks.get("slice-01").revision, 2);
+  assert.deepEqual(readback.tasks.get("slice-01").implementationPathClaims.map((claim) => claim.raw), approvedClaims);
+});
+
+test("pristine replacement rejects unauthorized candidates before changing candidate or live bytes", async (t) => {
+  const forbidden = [
+    ["changed approved global plan", "plan.md", (text) => text.replace("Deliver observable behavior", "Different approved objective"), /changed the approved recovery plan/u],
+    ["changed approved detailed plan", "plans/slice-01.md", (text) => text.replace("Deliver observable behavior.", "Different approved scope."), /changed its approved recovery plan/u],
+    ["old task revision", "tasks/slice-01.md", (text) => text.replace("Plan revision: 2", "Plan revision: 1"), /must materialize the approved revision with pristine tasks/u],
+    ["wrong task authority", "tasks/slice-01.md", (text) => text.replace(/sha256:[a-f0-9]{64}/u, `sha256:${"f".repeat(64)}`), /pending REPLAN must increment Plan revision by exactly one/u],
+    ["started checklist", "tasks/slice-01.md", (text) => replaceSection(text.replace("- [ ] 1.1", "- [x] 1.1"),
+      "Changed Areas", "- `../../src/example.txt`"), /must materialize the approved revision with pristine tasks/u],
+    ["operational scope", "tasks/slice-01.md", (text) => replaceSection(text, "Changed Areas", "- `../../src/example.txt`"), /must materialize the approved revision with pristine tasks/u],
+    ["execution evidence", "tasks/slice-01.md", (text) => replaceSection(
+      replaceSection(text.replaceAll("- [ ]", "- [x]"), "Changed Areas", "- `../../src/example.txt`"),
+      "Implementation Test Evidence", checkRecord("implementation-check", 1, "TESTS_PASS", 1)), /must materialize|implementation-check/u],
+    ["wrong claim count", "tasks/slice-01.md", (text) => text.replace("; `../tests/qa/example.tsx`", ""), /10 path claims.*11/u],
+    ["supersession", "tasks/slice-01.md", (text) => replaceSection(text, "Final Result", "- SUPERSEDED\n- Superseded by: slice-02\n- Plan revision: 2"), /SUPERSEDED|disagree/u],
+  ];
+  for (const [name, relative, mutate, diagnostic] of forbidden) {
+    await t.test(name, async (child) => {
+      const { fixture, prepared } = await pristinePathReplacement(child);
+      const target = path.join(prepared.candidateExecutionRoot, relative);
+      const before = await fs.readFile(target, "utf8");
+      const after = mutate(before);
+      assert.notEqual(after, before);
+      await fs.writeFile(target, after);
+      const liveBefore = await treeBytes(fixture.execution);
+      const candidateBefore = await treeBytes(prepared.candidateExecutionRoot);
+      for (const producer of [serializeTaskPathClaims, publishTaskMaterializationCandidate]) {
+        await assert.rejects(producer({ specPath: fixture.requirements,
+          candidateExecutionRoot: prepared.candidateExecutionRoot }), diagnostic);
+        assert.deepEqual(await treeBytes(fixture.execution), liveBefore);
+        assert.deepEqual(await treeBytes(prepared.candidateExecutionRoot), candidateBefore);
+      }
+    });
+  }
+});
+
+test("pristine replacement keeps live approval, authority, execution and path guards", async (t) => {
+  const variants = [
+    ["unapproved replacement", async ({ fixture }) => {
+      await editPlan(fixture, (text) => setPlanReviewState(text, false));
+      await editSlicePlan(fixture, "slice-01", (text) => setPlanReviewState(text, false));
+    }, /historical task changed/u],
+    ["requirements changed after approval", async ({ fixture }) => {
+      await fs.appendFile(fixture.requirements, "- AC-002: changed after review\n");
+    }, /historical task changed/u],
+    ["live operational evidence", async ({ fixture }) => {
+      await editTask(fixture, (text) => replaceSection(text, "Changed Areas", "- `../../src/example.txt`"));
+    }, /retains operational task evidence/u],
+    ["unsafe approved path", async ({ fixture, staged }) => {
+      for (const target of [fixture, staged]) await editSlicePlan(target, "slice-01", (text) =>
+        text.replace("../../tests/qa/example.tsx", "../../../../outside.tsx"));
+    }, /escapes|outside/u],
+    ["multiply-linked candidate task", async ({ fixture, prepared }) => {
+      await fs.link(path.join(prepared.candidateExecutionRoot, "tasks/slice-01.md"), path.join(fixture.root, "linked-task.md"));
+    }, /single-link real file/u],
+    ["symlink candidate task", async ({ fixture, prepared }) => {
+      const taskPath = path.join(prepared.candidateExecutionRoot, "tasks/slice-01.md");
+      const external = path.join(fixture.root, "symlink-task.md");
+      await fs.rename(taskPath, external);
+      await fs.symlink(external, taskPath);
+    }, /contains a symlink/u],
+  ];
+  for (const [name, mutate, diagnostic] of variants) {
+    await t.test(name, async (child) => {
+      const context = await pristinePathReplacement(child);
+      await mutate(context);
+      const { fixture, prepared } = context;
+      const liveBefore = await treeBytes(fixture.execution);
+      const candidateBefore = await treeBytes(prepared.candidateExecutionRoot);
+      await assert.rejects(publishTaskMaterializationCandidate({ specPath: fixture.requirements,
+        candidateExecutionRoot: prepared.candidateExecutionRoot }), diagnostic);
+      assert.deepEqual(await treeBytes(fixture.execution), liveBefore);
+      assert.deepEqual(await treeBytes(prepared.candidateExecutionRoot), candidateBefore);
+    });
+  }
+
+  const fixture = await standaloneWorkspace(t);
+  await renderArtifacts(fixture);
+  await editTask(fixture, (text) => replaceSection(text.replace("- [ ] 1.1", "- [x] 1.1"),
+    "Changed Areas", "- `../../src/example.txt`"));
+  assert.equal((await inspectExecutionState(fixture.requirements)).state, "EXECUTION_STARTED");
+  const prepared = await prepareTaskMaterializationCandidate({ specPath: fixture.requirements });
+  t.after(() => fs.rm(prepared.candidateExecutionRoot, { recursive: true, force: true }));
+  await editTask({ ...fixture, execution: prepared.candidateExecutionRoot }, (text) => text.replace("- [x] 1.1", "- [ ] 1.1"));
+  const liveBefore = await treeBytes(fixture.execution);
+  const candidateBefore = await treeBytes(prepared.candidateExecutionRoot);
+  await assert.rejects(publishTaskMaterializationCandidate({ specPath: fixture.requirements,
+    candidateExecutionRoot: prepared.candidateExecutionRoot }), /historical task changed/u);
+  assert.deepEqual(await treeBytes(fixture.execution), liveBefore);
+  assert.deepEqual(await treeBytes(prepared.candidateExecutionRoot), candidateBefore);
 });
 
 test("pending REPLAN requires canonical fields, one revision increment, and valid supersession mappings", async (t) => {
