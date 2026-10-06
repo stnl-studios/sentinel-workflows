@@ -11,7 +11,8 @@ import { createReporter } from './benchmark-ui.mjs';
 import { budgetViolation } from './benchmark.mjs';
 import { captureValidationInputs, captureReassessmentEvidence, prepareValidationReassessment,
   assertReassessmentUnchanged } from './validation-reassessment.mjs';
-import { CAPACITY_RETRY_DELAY_MS, captureCapacityInputs, capacityTraceIsSafe, modelAtCapacity, operationBudgetHistory,
+import { CAPACITY_RETRY_DELAY_MS, captureCapacityInputs, captureCapacitySkillRead, capacityTraceDecision,
+  capacityAttemptEvidence, transportDiagnosticEvidence, modelAtCapacity, operationBudgetHistory,
   runCapacityLimitedTurn } from './capacity-retry.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
@@ -429,7 +430,8 @@ export function privateHomeNeverCreated(state, journal) {
     && Array.isArray(journal?.events) && journal.events.length === 0;
 }
 
-export async function runCase({ runRoot, caseId, configuration, snapshotMetadata, maxOperations, mode, product, signal, resume = false }) {
+export async function runCase({ runRoot, caseId, configuration, snapshotMetadata, maxOperations, mode, product, signal,
+  resume = false, capacityWait = undefined }) {
   const turnLimit = configuration.turnBudget?.maxTurnsPerRun;
   if (!Number.isSafeInteger(turnLimit) || turnLimit < 1) fail('benchmark turnBudget.maxTurnsPerRun must be a positive integer');
   const caseRoot = path.join(runRoot, caseName(caseId));
@@ -663,6 +665,9 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
       let mainTurnSettled = false;
       let effectiveOperationId = operationId;
       const capacityInputs = await captureCapacityInputs(workspace, candidates);
+      const capacitySkillRead = managedSliceContext === null || turnEnv.HOME !== home.shellHome
+        || Object.hasOwn(turnEnv, 'ZDOTDIR') ? null : await captureCapacitySkillRead({
+        snapshot: path.join(runRoot, 'snapshot'), shellHome: home.shellHome, workflowSkill });
       let lastProgressMs = 0;
       const heartbeat = setInterval(() => announce({ kind: 'progress', status: 'RUNNING',
         runId: path.basename(runRoot), caseId, operation, slice,
@@ -673,7 +678,7 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
         const outputSchema = operation === 'SPEC_READINESS'
           ? await readJson(path.join(runRoot, 'snapshot', 'skills/workflows/stnl-spec-lifecycle-manager/runtime/readiness-result.schema.json'))
           : undefined;
-        capacityResult = await runCapacityLimitedTurn({ signal, attempts: capacityResult.attempts,
+        capacityResult = await runCapacityLimitedTurn({ signal, attempts: capacityResult.attempts, wait: capacityWait,
           runTurn: async attempt => {
             effectiveOperationId = attempt === 1 ? operationId : `${operationId}-capacity-retry-1`;
             return runTemplateTurn(product, { env: turnEnv, cwd: workspace, prompt,
@@ -705,15 +710,22 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
             return record;
           },
           persistAttempt: record => atomicJson(path.join(caseRoot,
-            `${String(sequence).padStart(2, '0')}-${operation.toLowerCase()}.capacity-attempt-${record.attempt}.json`), record),
+            `${String(sequence).padStart(2, '0')}-${operation.toLowerCase()}.capacity-attempt-${record.attempt}.json`), capacityAttemptEvidence(record)),
           authorizeRetry: async (attemptTurn, attempt) => {
             if (signal.aborted) return { allowed: false, reason: 'CANCELLED' };
             const events = (await fs.readFile(eventsPath, 'utf8')).split('\n').filter(Boolean).map(JSON.parse);
-            if (!capacityTraceIsSafe(attemptTurn, events, effectiveOperationId,
+            const traceDecision = capacityTraceDecision(attemptTurn, events, effectiveOperationId,
               managedSliceContext !== null && turnEnv.STNL_MANAGED_PREFLIGHT
-                === path.join(runRoot, 'snapshot/agents/codex/runtime/managed-slice-preflight.mjs'))
-              || (broker !== null && (broker.requestsHandled !== 0 || broker.capturedReceipts !== 0
-                || broker.cancelledPending || broker.errors.length > 0))) return { allowed: false, reason: 'EFFECTS_OR_AMBIGUITY' };
+                === path.join(runRoot, 'snapshot/agents/codex/runtime/managed-slice-preflight.mjs'), capacitySkillRead);
+            if (!traceDecision.allowed) return traceDecision;
+            if (broker !== null && (broker.pending || broker.requestsHandled !== 0 || broker.capturedReceipts !== 0
+              || broker.cancelledPending || broker.errors.length > 0)) return { allowed: false, reason: 'EFFECTS_OR_AMBIGUITY' };
+            if (traceDecision.skillRead) {
+              const freshSkillRead = await captureCapacitySkillRead({ snapshot: path.join(runRoot, 'snapshot'),
+                shellHome: home.shellHome, workflowSkill });
+              if (freshSkillRead === null || JSON.stringify(freshSkillRead) !== JSON.stringify(capacitySkillRead))
+                return { allowed: false, reason: 'SKILL_READ_AUTHORITY_UNPROVEN' };
+            }
             const freshInputs = await captureCapacityInputs(workspace, candidates);
             if (capacityInputs.rejected || freshInputs.rejected || freshInputs.sha256 !== capacityInputs.sha256)
               return { allowed: false, reason: 'INPUTS_CHANGED_OR_UNPROVEN' };
@@ -813,7 +825,10 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
         ? { result: 'BLOCKED', blocker: providerConfigError.code, diagnostic: providerConfigError.message }
         : guardOperationProvenance(decideOutcome(operation, readback, turn.completed, readinessResult),
           operation, collaborationEvents, broker?.capturedReceipts ?? 0);
-      if (modelAtCapacity(turn) && !mainException && !providerConfigError) outcome.blocker = 'SDK_MODEL_AT_CAPACITY';
+      if (modelAtCapacity(turn) && !mainException && !providerConfigError) {
+        outcome.blocker = 'SDK_MODEL_AT_CAPACITY';
+        if (capacityResult.stopReason) outcome.diagnostic = `Capacity retry stopped: ${capacityResult.stopReason}`;
+      }
       if (turn.completed && RUNNER_OPERATIONS.has(operation) && broker?.requestsHandled === 0) {
         outcome.result = 'BLOCKED'; outcome.blocker = 'OFFICIAL_RUNNER_RECEIPT_MISSING';
         outcome.diagnostic = 'No managed runner request was received; no independent runner turn was dispatched.';
@@ -843,6 +858,7 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
           inheritedAuthorHistory: contextRole === 'author' && threadId !== null },
         dispatch: route, startedAt, endedAt: new Date().toISOString(), durationMs: Date.now() - startedMs,
         turn: { completed: turn.completed, error: turn.error, requestedModel: turn.requestedModel,
+          ...transportDiagnosticEvidence(turn),
           reportedModel: turn.reportedModel, requestedEffort: turn.requestedEffort, usage: turn.usage,
           toolCalls: turn.toolCalls, eventsPath, response: turn.response,
           turnStarted: turn.turnStarted, usageObservation: mainUsageObservation },
@@ -859,7 +875,7 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
         reassessmentProof,
         ...((capacityResult.attempts.some(attempt => modelAtCapacity(attempt.turn)) || capacityResult.attempts.length > 1)
           ? { capacityRetry: { maxRetries: 1, delayMs: CAPACITY_RETRY_DELAY_MS, stopReason: capacityResult.stopReason,
-            attempts: capacityResult.attempts } } : {}) };
+            attempts: capacityResult.attempts.map(capacityAttemptEvidence) } } : {}) };
       const evidencePath = path.join(caseRoot, `${String(sequence).padStart(2, '0')}-${operation.toLowerCase()}.json`);
       await atomicJson(evidencePath, evidence);
       caseState.operations.push({ operation, slice, outcome, evidencePath, threadId: turn.threadId,

@@ -115,10 +115,18 @@ to `SPEC_CLOSE`. It does not retry a blocked operation by guessing a handoff.
 
 An exact provider capacity rejection can receive one retry after 15 seconds,
 before terminalization, with the same model, effort and launcher. This requires
-a complete SDK trace with no tools, or only the successful owned managed
-preflight, unchanged workspace/candidate bytes and modes, current authority and
-an idle broker. Other commands, pending effects, uncertain transport, generic
-errors or insufficient budget block the retry. Each dispatched attempt retains
+a complete SDK trace with no tools, or the successful owned managed preflight
+and at most one literal `/bin/cat` read of the invoked frozen skill. That read
+must match the installed snapshot file, output, identity and read-only modes;
+the managed HOME must have no user zsh startup files. Workspace/candidate bytes
+and modes, snapshot, skill copy and current authority must remain unchanged,
+with an idle broker. A pinned SDK exit `1` after the complete capacity stream is
+eligible only with empty stderr or the exact capacity diagnostic; other process
+errors remain ineligible. Unqualified `cat`, other commands, pending effects,
+uncertain transport, generic errors or insufficient budget block the retry.
+Manager evidence preserves the provider event and process classification, hashes
+the original process diagnostic instead of copying stderr, and records the
+canonical reason for an ineligible retry. Each dispatched attempt retains
 its diagnostic, thread and usage observation, consumes a turn and counts toward
 operation budgets. Unknown usage remains unavailable. Terminal FULL runs are
 never reopened by this policy.

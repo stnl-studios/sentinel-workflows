@@ -66,6 +66,8 @@ export function managedDiscoveryInstructions({ env, cwd = null, workflowSkill = 
     throw new Error('managed discovery workflow skill is not a bundle name');
   }
   const skillBase = workflowSkill === null ? null : path.join(roots.skillsRoot, workflowSkill);
+  const skillReadCommand = skillBase === null ? null
+    : `/bin/cat "${path.join(skillBase, 'SKILL.md').replace(/["\\$`]/gu, '\\$&')}"`;
   return [
     'Managed workflow discovery context; the benchmark uses Full Access, without a host filesystem security boundary.',
     'These paths define the working copies and workflow scope; Full Access does not expand operation/slice artifact authority.',
@@ -73,7 +75,11 @@ export function managedDiscoveryInstructions({ env, cwd = null, workflowSkill = 
     `Frozen runtime/reference root (preserve unchanged): ${JSON.stringify(roots.snapshot)}.`,
     `Copied skill root (preserve unchanged): ${JSON.stringify(roots.skillsRoot)}; resolve references from their declaring SKILL.md.`,
     ...(skillBase === null ? [] : [
-      `Invoked workflow skill: ${workflowSkill}; read ${JSON.stringify(path.join(skillBase, 'SKILL.md'))}.`,
+      `Invoked workflow skill: ${workflowSkill}. For managed slice operations, run node "$STNL_MANAGED_PREFLIGHT" first.`,
+      'Then execute exactly the standalone skill-read command below, including its double quotes and literal path. Do not add commands, redirections or variable substitutions, or change its binary or quoting:',
+      '```sh',
+      skillReadCommand,
+      '```',
       `Invoked skill resource base: ${JSON.stringify(skillBase)}.`,
       `Its bundle-relative runtime/ resolves under ${JSON.stringify(path.join(skillBase, 'runtime'))};`,
       `templates/ under ${JSON.stringify(path.join(skillBase, 'templates'))}; references/ under ${JSON.stringify(path.join(skillBase, 'references'))}.`,
@@ -170,6 +176,7 @@ export async function runCodexTurn({
   let error = null;
   let errorEvent = null;
   let processError = null;
+  let processFailure = null;
   let toolCalls = 0;
   let commandDenied = false;
   const file = await fs.open(eventsPath, 'a');
@@ -203,6 +210,18 @@ export async function runCodexTurn({
     }
   } catch (caught) {
     processError = String(caught);
+    // Pinned SDK 0.160 reports its child's nonzero exit after yielding the
+    // complete JSONL stream. Retain that narrow fact separately from stderr;
+    // cancellation, signals and parse/transport failures grant no exit proof.
+    const exit = caught instanceof Error && !abort.signal.aborted
+      ? /^Codex Exec exited with code ([1-9][0-9]{0,2}): ([\s\S]*)$/u.exec(caught.message) : null;
+    if (exit && Number(exit[1]) <= 255) {
+      const capacityMessage = 'Selected model is at capacity. Please try a different model.';
+      const stderr = exit[2].trim();
+      processFailure = { kind: 'sdk_exit', exitCode: Number(exit[1]),
+        stderrClass: stderr === '' ? 'empty' : [capacityMessage, `ERROR: ${capacityMessage}`].includes(stderr)
+          ? 'capacity_only' : 'unproven' };
+    }
     error ??= processError;
   } finally {
     clearTimeout(timer);
@@ -224,6 +243,7 @@ export async function runCodexTurn({
     error,
     errorEvent,
     processError,
+    processFailure,
     response,
     usage,
     toolCalls,

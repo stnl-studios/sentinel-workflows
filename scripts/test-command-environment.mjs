@@ -33,6 +33,27 @@ test('managed author and runner share workflow limits without claiming a host sa
   assert.equal(managedDiscoveryInstructions({ env: {} }), '', 'ordinary SDK contexts do not acquire managed inspection guidance');
 });
 
+test('exact skill-read recipe safely quotes the literal installed path', async t => {
+  const root = await fixture(t);
+  const workspace = path.join(root, 'workspace'), snapshot = path.join(root, 'snapshot');
+  const candidates = path.join(root, 'candidates'), tmpdir = path.join(root, 'tmp');
+  const shellHome = path.join(tmpdir, 'shell home ' + ["'", '"', '$()', '`literal`', '\\'].join(' '));
+  const skill = path.join(shellHome, '.agents/skills/stnl-slice-executor/SKILL.md');
+  const original = path.join(snapshot, 'skills/workflows/stnl-slice-executor/SKILL.md');
+  for (const directory of [workspace, candidates, path.dirname(skill), path.dirname(original)])
+    await fs.mkdir(directory, { recursive: true });
+  const bytes = 'Frozen skill with a literal quoted path.\n';
+  await fs.writeFile(original, bytes, { mode: 0o444 }); await fs.writeFile(skill, bytes, { mode: 0o444 });
+  const env = isolatedEnvironment({ privateHome: root, shellHome, tmpdir, snapshot, workspace, candidates });
+  const discovery = managedDiscoveryInstructions({ env, cwd: workspace, workflowSkill: 'stnl-slice-executor' });
+  const recipes = [...discovery.matchAll(/^```sh\n(\/bin\/cat [^\n]+)\n```$/gmu)];
+  assert.equal(recipes.length, 1);
+  const read = spawnSync('/bin/zsh', ['-lc', recipes[0][1]], { env, encoding: 'utf8' });
+  assert.equal(read.status, 0, read.stderr); assert.equal(read.stderr, '');
+  assert.equal(read.stdout, bytes);
+  assert.equal((await fs.stat(skill)).mode & 0o777, 0o444);
+});
+
 test('manager and runner share explicit local discovery roots and the workspace cwd before dispatch', async (t) => {
   const root = await fixture(t);
   const workspace = path.join(root, 'workspace with space ü');
@@ -283,7 +304,7 @@ test('manager and runner share explicit local discovery roots and the workspace 
     assert.ok(!config.includes('Local Git marker:'));
   }
   const managerSource = await fs.readFile(path.join(ROOT, 'benchmarks/sentinel-todo/runtime/benchmark-manager.mjs'), 'utf8');
-  assert.match(managerSource, /turn = await runTemplateTurn\(product, \{/u, 'the operation loop must use the tested SDK boundary');
+  assert.match(managerSource, /return runTemplateTurn\(product, \{/u, 'each capacity attempt must use the tested SDK boundary');
   assert.doesNotMatch(managerSource, /const threadId = caseState\.threads/u);
   assert.match(managerSource, /operation\.startsWith\('SPEC_'\) \? 'stnl-spec-lifecycle-manager' : product\.workflowSkillForOperation\(operation\)/u);
   assert.match(managerSource, /managedDiscoveryInstructions\(\{ env: home\.env, cwd: workspace, workflowSkill \}\)/u);
