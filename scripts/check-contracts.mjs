@@ -174,7 +174,6 @@ const checkSchemas = {
     "{",
     '  "status": "TESTS_PASS | TESTS_FAIL | TESTS_NOT_APPLICABLE | BLOCKED",',
     '  "automaticCheckRound": "1/3 | 2/3 | 3/3",',
-    '  "findingsCycle": "<semantic value>",',
     '  "head": "<semantic value>",',
     '  "discoverySources": "<semantic value>",',
     '  "discoveryActions": "<semantic value>",',
@@ -280,7 +279,11 @@ function checkRunner(root) {
   forbidPattern(contract, /(?:^|\n)Em `Findings:`, forneça uma disposição/iu, "R026_OUTPUT_GATE", "validation findings are not constrained to the semantic JSON field");
   requirePattern(contract, /`commands`[^\n]{0,180}(?:somente|only)[^\n]{0,120}`?command`?[^\n]{0,80}`?exit`?/iu, "R027_TUPLE_GRAMMAR", "runner does not state the exact semantic command tuple grammar");
   requirePattern(contract, /The machine-key schema is fixed[\s\S]{0,500}EXECUTE_SLICE[\s\S]{0,500}APPLY_FINDINGS[\s\S]{0,500}VALIDATE_SLICE/u, "R028_FIELD_SEQUENCE", "runner does not require the literal semantic field sequence at the final response gate");
-  requirePattern(contract, /Field shape is strict at the JSON boundary:[\s\S]{0,500}every semantic property except `commands` is one scalar string[\s\S]{0,300}`commands` is an array of objects with exactly `command` and integer `exit`[\s\S]{0,300}payload is one raw JSON object/u, "R029_FIELD_SHAPE", "runner does not require scalar semantic fields outside Commands");
+  requirePattern(contract, /Field shape is strict at the JSON boundary:[\s\S]{0,500}every judgment property except `commands` is one scalar string[\s\S]{0,300}`commands` is an array of objects with exactly `command` and integer `exit`[\s\S]{0,300}payload is one raw JSON object/u, "R029_FIELD_SHAPE", "runner does not require scalar semantic fields outside Commands");
+  requirePattern(contract, /managed ownership and active IDs come only from `FINDINGS_OWNERSHIP`/u, "R029_FIELD_SHAPE", "managed findings ownership must be sealed, not inferred from legacy text");
+  requirePattern(contract, /`automaticCheckRound` is optional diagnostic data in managed mode: history uses the round admitted and sealed by the broker/u, "R029_FIELD_SHAPE", "managed round ownership must come from the broker");
+  requirePattern(contract, /Native mode without a broker requires explicit `automaticCheckRound` equal to `1\/3`, `2\/3`, or `3\/3`/u, "R029_FIELD_SHAPE", "native round requirement is missing");
+  requirePattern(contract, /optional legacy `findingsCycle` never defines ownership in either mode/u, "R029_FIELD_SHAPE", "legacy cycle cannot grant ownership");
   for (const [operation, section] of [["EXECUTE_SLICE", execute], ["APPLY_FINDINGS", findings]]) {
     forbidPattern(section, /(?:crie|create|emita|emit|marque|mark).{0,80}(?:Validation Attempt|Effective Validation Base|PASS formal|conclusão `\[x\]`)/iu, "R015_CHECK_AUTHORITY", `${operation} claims formal authority`);
   }

@@ -1,42 +1,67 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { bindManagedFindingsCycle } from '../agents/codex/runtime/managed-findings-cycle.mjs';
+import { bindManagedFindingsCycle, deriveManagedFindingsOwnership, assertManagedFindingsOwnership, findingsOwnershipFingerprint } from '../agents/codex/runtime/managed-findings-cycle.mjs';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
+import { parseSemanticExecutionPayload } from '../skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs';
 import { createOfflineCheckout } from './fixtures/offline-checkout.mjs';
 const ROOT = path.resolve(import.meta.dirname, '..');
-for (const [slice, finding] of [['slice-02', 'finding-07'], ['slice-11', 'finding-23']]) {
-  test(`managed findings binding uses current ${slice}/${finding} identity for exactly two type confusions`, () => {
-    const liveText = `## Validation Attempts\n\n### attempt-03\n- Status: NEEDS_FIX\n\n## Validation Findings\n\n### ${finding}\n- Origin: attempt-01\n- State: active\n`;
+for (const slice of ['slice-02', 'slice-11']) {
+  test(`sealed ownership derives diverse active IDs and the current cycle in ${slice}`, () => {
+    const liveText = '## Validation Attempts\n\n### attempt-03\n- Status: NEEDS_FIX\n\n## Validation Findings\n\n### finding-07\n- Origin: attempt-01\n- State: active\n\n### finding-23\n- Origin: attempt-02\n- State: active\n';
     const context = { operation: 'APPLY_FINDINGS', slice, workspace: '/TEST-ONLY/workspace', authority: 'sha256:' + 'a'.repeat(64) };
-    const binding = { ...context, sequence: 8, sourceTaskSha256: createHash('sha256').update(liveText).digest('hex') };
-    const selected = { attempts: [{ id: 'attempt-03', status: 'NEEDS_FIX' }], findings: [{ id: finding, state: 'active', origin: 'attempt-01' }] };
-    const sealed = { ...context, sequence: 8, managedPayload: { automaticCheckRound: '1/3', activeFindings: [finding] } };
-    const receipt = { sequence: 8, slice, authority: context.authority };
-    const input = { context, binding, selected, sealed, receipt, candidateText: liveText, liveText };
-    const response = findingsCycle => ({ automaticCheckRound: '1/3', findingsCycle });
-    for (const literal of [`${slice}; ${finding} ativo`, finding]) {
-      const bound = bindManagedFindingsCycle({ ...input, response: response(literal) });
+    const binding = { ...context, sequence: 8, nonce: 'owned-test-nonce', candidateTaskArtifact: '/TEST-ONLY/candidate/' + slice + '.md', sourceTaskSha256: createHash('sha256').update(liveText).digest('hex') };
+    const selected = { attempts: [{ id: 'attempt-03', status: 'NEEDS_FIX' }], findings: [
+      { id: 'finding-23', state: 'active', origin: 'attempt-02' }, { id: 'finding-07', state: 'active', origin: 'attempt-01' }] };
+    const request = { ...context, sequence: 8, managedPayload: { automaticCheckRound: '1/3', activeFindings: ['finding-99: context description only'] } };
+    const input = { context, binding, selected, request, fingerprint: 'a'.repeat(64), candidateText: liveText, liveText,
+      candidateTreeSha256: 'b'.repeat(64), sourceTestsSha256: 'c'.repeat(64), testedStateSha256: 'd'.repeat(64) };
+    const ownership = deriveManagedFindingsOwnership(input);
+    assert.deepEqual(ownership.activeFindings, ['finding-07', 'finding-23']);
+    assert.equal(ownership.canonicalCycle, 'attempt-03');
+    const receipt = { sequence: 8, slice, authority: context.authority, automaticCheckRound: '1/3', findingsOwnershipSha256: findingsOwnershipFingerprint(ownership) };
+    const sealed = { ...request, findingsOwnership: ownership };
+    for (const value of [undefined, null, 'attempt-99', 'slice-02 finding-01', 7, false, ['guess'], { nested: [null, true] }]) {
+      const response = { automaticCheckRound: '1/3', ...(value === undefined ? {} : { findingsCycle: value }) };
+      const before = JSON.stringify(response);
+      const bound = bindManagedFindingsCycle({ ...input, sealed, receipt, response });
       assert.equal(bound.canonicalCycle, 'attempt-03');
-      assert.equal(bound.reportedCycle, literal);
-      assert.equal(bound.normalized, true);
+      assert.equal(JSON.stringify(response), before);
+      assert.deepEqual(bound.activeFindings, ownership.activeFindings);
     }
-    assert.equal(bindManagedFindingsCycle({ ...input, response: response('attempt-03') }).normalized, false);
-    for (const literal of ['attempt-01', 'attempt-99', 'unknown', 'finding-99',
-      `slice-99; ${finding} ativo`, `${slice}; finding-99 ativo`, `${slice}; ${finding} active`,
-      `${slice}; ${finding} ativo `, `${finding}, finding-99`]) {
-      assert.throws(() => bindManagedFindingsCycle({ ...input, response: response(literal) }), { code: 'MANAGED_FINDINGS_BINDING_INVALID' });
+    for (const field of ['canonicalCycle', 'slice', 'sequence', 'authority', 'fingerprint', 'automaticCheckRound',
+      'candidateNonce', 'candidateTaskArtifact', 'sourceTaskSha256', 'candidateInputSha256', 'candidateTreeSha256', 'sourceTestsSha256', 'testedStateSha256', 'activeFindings']) {
+      const invalid = { ...ownership, [field]: 'conflicting value' };
+      assert.throws(() => bindManagedFindingsCycle({ ...input, sealed: { ...sealed, findingsOwnership: invalid }, receipt, response: { automaticCheckRound: '1/3' } }));
+      assert.throws(() => assertManagedFindingsOwnership(ownership, invalid));
     }
-    const multiple = { ...input, selected: { ...selected, findings: [...selected.findings, { id: 'finding-99', state: 'active' }] },
-      sealed: { ...sealed, managedPayload: { ...sealed.managedPayload, activeFindings: [finding, 'finding-99'] } } };
-    for (const literal of [`${slice}; ${finding} ativo`, finding]) {
-      assert.throws(() => bindManagedFindingsCycle({ ...multiple, response: response(literal) }), { code: 'MANAGED_FINDINGS_BINDING_INVALID' });
-    }
+    assert.throws(() => bindManagedFindingsCycle({ ...input, sealed, receipt: { ...receipt, findingsOwnershipSha256: 'changed' }, response: { automaticCheckRound: '1/3' } }));
+    assert.throws(() => bindManagedFindingsCycle({ ...input, sealed, receipt: { ...receipt, automaticCheckRound: '2/3' }, response: {} }));
+    assert.throws(() => deriveManagedFindingsOwnership({ ...input, candidateText: liveText.replace('- State: active', '- State: resolved') }));
   });
 }
-test('real malformed findings cycles survive two captured rounds only with a canonical managed binding', { timeout: 90_000 }, async t => {
+test('legacy findingsCycle is optional arbitrary JSON; all judgment fields retain strict parsing', async () => {
+  const schema = JSON.parse(await fs.readFile(path.join(ROOT, 'skills/workflows/stnl-slice-executor/runtime/runner-apply-findings-response.schema.json')));
+  assert.ok(!schema.required.includes('findingsCycle'));
+  assert.equal(schema.properties.findingsCycle.type, undefined);
+  const response = Object.fromEntries(schema.required.map(key => [key, 'checked']));
+  Object.assign(response, { status: 'TESTS_PASS', automaticCheckRound: '1/3', commands: [{ command: 'node --test', exit: 0 }] });
+  for (const value of [undefined, null, 'attempt-99', 4, true, [], { body: '\n`arbitrary legacy data`' }]) {
+    const text = JSON.stringify({ ...response, ...(value === undefined ? {} : { findingsCycle: value }) });
+    const parsed = parseSemanticExecutionPayload(text, 'APPLY_FINDINGS');
+    assert.equal(JSON.stringify(parsed), text);
+    assert.equal(parsed.findingsVerified, response.findingsVerified);
+    assert.equal(parsed.unsupportedActiveFindings, response.unsupportedActiveFindings);
+  }
+  assert.throws(() => parseSemanticExecutionPayload('{broken JSON', 'APPLY_FINDINGS'));
+  const missing = { ...response }; delete missing.findingsVerified;
+  for (const malformed of [missing, { ...response, findingsVerified: [] }, { ...response, commands: [{ command: 'node --test', exit: '0' }] }, { ...response, unknown: 1 }]) {
+    assert.throws(() => parseSemanticExecutionPayload(JSON.stringify(malformed), 'APPLY_FINDINGS'));
+  }
+});
+test('sealed findings ownership survives absent and arbitrary legacy data across two real captured rounds', { timeout: 90_000 }, async t => {
   const fixture = await createOfflineCheckout(t, ROOT, 'apply-findings-cycle');
   console.log(`TEST-ONLY findings cycle fixture: ${fixture.root}`);
   const run = spawnSync(process.execPath, ['benchmarks/sentinel-todo/runtime/benchmark-manager.mjs', 'run', '--case', 'B'], {
@@ -51,7 +76,7 @@ test('real malformed findings cycles survive two captured rounds only with a can
   assert.equal(observed.secondFinalize, 0, observed.diagnostic);
   assert.equal(run.status, 0, run.stderr);
   const probes = JSON.parse(await fs.readFile(path.join(fixture.root, '.offline-findings-cycle-probes.json')));
-  assert.equal(probes.blocked.length, 14);
+  assert.equal(probes.blocked.length, 13);
   assert.equal(probes.invalidAppends, 0);
   assert.equal(probes.extraProviderStarts, 0);
   assert.deepEqual(Object.values(JSON.parse(await fs.readFile(path.join(fixture.root, '.offline-findings-private-history-probes.json')))), [true, true, true]);
@@ -73,16 +98,26 @@ test('real malformed findings cycles survive two captured rounds only with a can
   const audits = await Promise.all((await fs.readdir(directory)).filter(name => name.startsWith(stem + '.preparation-')).sort()
     .map(async name => JSON.parse(await fs.readFile(path.join(directory, name)))));
   assert.equal(audits.length, 2);
-  assert.deepEqual(audits.map(audit => audit.findingsCycleBinding.reportedCycle), ['slice-01; finding-01 ativo', 'finding-01']);
+  const sealed = await Promise.all((await fs.readdir(directory)).filter(name => name.startsWith('sealed-'))
+    .map(async name => JSON.parse(await fs.readFile(path.join(directory, name)))));
+  const applySeals = sealed.filter(record => record.operation === 'APPLY_FINDINGS');
+  assert.equal(applySeals.length, 2);
+  assert.ok(applySeals.every(record => record.managedPayload.activeFindings[0].includes(': Assert')
+    && record.findingsOwnership.activeFindings.join() === 'finding-01' && record.findingsOwnership.canonicalCycle === 'attempt-01'));
+  assert.deepEqual(applySeals.map(record => record.findingsOwnership.automaticCheckRound).sort(), ['1/3', '2/3']);
+  assert.ok(audits.every(audit => !('reportedCycle' in audit.findingsCycleBinding)));
   assert.ok(audits.every(audit => audit.status === 'PREPARED' && audit.findingsCycleBinding.canonicalCycle === 'attempt-01'
-    && audit.findingsCycleBinding.normalized && /^[0-9a-f]{64}$/.test(audit.findingsCycleBinding.findingsEvidenceSha256)
+    && audit.findingsCycleBinding.method === 'sealed-state-ownership' && /^[0-9a-f]{64}$/.test(audit.findingsCycleBinding.findingsEvidenceSha256)
     && audit.findingsCycleBinding.activeFindings.join() === 'finding-01'));
   assert.equal(JSON.parse(await fs.readFile(path.join(directory, stem + '.finalization.json'))).state, 'FINDINGS_CORRECTED');
   for (const receipt of [observed.firstReceipt, observed.secondReceipt]) {
     assert.equal(receipt.testedState.entries.length, 6);
+    assert.match(receipt.findingsOwnershipSha256, /^[0-9a-f]{64}$/);
     const raw = JSON.parse(await fs.readFile(receipt.semanticResponseFile));
-    assert.equal(raw.findingsCycle, receipt.attempt === 1 ? 'slice-01; finding-01 ativo' : 'finding-01');
-    assert.equal(raw.automaticCheckRound, receipt.attempt === 1 ? '1/3' : '2/3');
+    if (receipt.attempt === 1) assert.ok(!('findingsCycle' in raw));
+    else assert.deepEqual(raw.findingsCycle, { slice: 'slice-02', text: 'attempt-99', values: [null, 7, true] });
+    assert.deepEqual(raw.automaticCheckRound, receipt.attempt === 1 ? { legacy: '3/3' } : null);
+    assert.equal(receipt.automaticCheckRound, receipt.attempt === 1 ? '1/3' : '2/3');
     assert.ok(raw.commands.some(command => receipt.attempt === 1 ? command.exit !== 0 : command.exit === 0));
   }
   assert.equal((await fs.readdir(path.join(caseRoot, 'tmp'))).filter(name => name.startsWith(stem + '-apply_findings-') && name.endsWith('.started.json')).length, 2);

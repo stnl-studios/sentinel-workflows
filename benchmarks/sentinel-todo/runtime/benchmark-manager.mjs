@@ -606,6 +606,10 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
         if (officialPreflight !== null) {
           broker = await product.startOfficialRunnerBroker({ workspace, tmpdir, operation, sequence, slice,
           officialPreflight,
+          prepareSealedMetadata: async request => {
+            const findingsOwnership = await product.prepareManagedFindingsRequest({ request, environment: turnEnv });
+            return findingsOwnership === null ? null : { findingsOwnership };
+          },
           invoke: (request, { signal: runnerSignal } = {}) => product.invokeIndependentRunner({
             ...request, snapshot: path.join(runRoot, 'snapshot'), workspace, tmpdir, env: turnEnv,
             signal: runnerSignal,

@@ -350,7 +350,6 @@ const MACHINE_EXECUTION_FIELDS = Object.freeze({
   APPLY_FINDINGS: Object.freeze([
     ["status", "Status"],
     ["automaticCheckRound", "Automatic check round"],
-    ["findingsCycle", "Findings cycle"],
     ["head", "HEAD"],
     ["discoverySources", "Discovery sources"],
     ["discoveryActions", "Discovery actions"],
@@ -601,7 +600,7 @@ function parseSemanticExecutionResponse(text, operation) {
   return values;
 }
 
-function parseSemanticExecutionPayload(text, operation) {
+export function parseSemanticExecutionPayload(text, operation, { automaticCheckRound } = {}) {
   const fields = MACHINE_EXECUTION_FIELDS[operation];
   if (fields === undefined) fail(`unsupported semantic execution operation: ${operation}`);
   let payload;
@@ -616,10 +615,16 @@ function parseSemanticExecutionPayload(text, operation) {
   if (!["TESTS_PASS", "TESTS_FAIL", "TESTS_NOT_APPLICABLE", "BLOCKED"].includes(payload.status)) {
     fail("semantic execution payload Status is invalid");
   }
+  // The managed caller supplies the broker-admitted round. The raw echo stays
+  // unchanged in its captured artifact and has no bookkeeping authority.
+  if (automaticCheckRound !== undefined) {
+    if (!["1/3", "2/3", "3/3"].includes(automaticCheckRound)) fail("admitted automatic check round is invalid");
+    payload = { ...payload, automaticCheckRound };
+  }
   if (!["1/3", "2/3", "3/3"].includes(payload.automaticCheckRound)) {
     fail("semantic execution payload Automatic check round is invalid");
   }
-  const allowed = new Set([...fields.map(([key]) => key), "filelessReason"]);
+  const allowed = new Set([...fields.map(([key]) => key), "filelessReason", ...(operation === "APPLY_FINDINGS" ? ["findingsCycle"] : [])]);
   for (const key of Object.keys(payload)) {
     if (!allowed.has(key)) fail(`unknown semantic execution payload field: ${key}`);
   }
@@ -1245,13 +1250,14 @@ function executionResponseFields(operation, parsed, testedScope) {
 }
 
 export async function serializeRunnerExecutionBundleFromResponse({
-  operation, response, workspace, taskArtifact, receiptFile, semanticResponseFile, verificationEventIds, resolveManagedFindingsCycle,
+  operation, response, workspace, taskArtifact, receiptFile, semanticResponseFile, verificationEventIds, resolveManagedFindingsCycle, automaticCheckRound,
 }) {
   if (!new Set(["EXECUTE_SLICE", "APPLY_FINDINGS"]).has(operation)) {
     fail("execution bundle operation must be EXECUTE_SLICE or APPLY_FINDINGS");
   }
   await requireAcceptedRunnerResult({ operation, slice: path.basename(taskArtifact, '.md'), workspace, receiptFile, semanticResponseFile });
-  const payload = parseCapturedResult(operation, parseSemanticExecutionPayload, response);
+  if (automaticCheckRound !== undefined && receiptFile === undefined) fail("managed round ownership requires a captured receipt");
+  const payload = parseCapturedResult(operation, (text, op) => parseSemanticExecutionPayload(text, op, { automaticCheckRound }), response);
   const mechanicalCommands = receiptFile === undefined ? payload.commands
     : await resolveRunnerCommandEvents({
       receiptFile, semanticResponseFile, operation, eventIds: verificationEventIds ?? null,
@@ -1277,6 +1283,15 @@ export async function serializeRunnerExecutionBundleFromResponse({
       fail("managed Findings cycle requires a captured APPLY receipt and canonical attempt");
     }
     parsed["Findings cycle"] = managedFindingsCycle;
+  }
+  if (operation === "APPLY_FINDINGS" && resolveManagedFindingsCycle === undefined) {
+    if (receiptFile !== undefined) fail("managed APPLY requires sealed findings ownership");
+    const attempts = sectionBody(await fs.readFile(taskArtifact, "utf8"), "Validation Attempts")
+      .split(/(?=^### attempt-[0-9]{2,}$)/mu).filter(record => record.startsWith("### attempt-"));
+    const current = attempts.at(-1);
+    const cycle = current?.match(/^### (attempt-[0-9]{2,})$/mu)?.[1];
+    if (cycle === undefined || current.match(/^- Status: (.+)$/mu)?.[1] !== "NEEDS_FIX") fail("native APPLY has no current NEEDS_FIX cycle");
+    parsed["Findings cycle"] = cycle;
   }
   parsed.Commands = mechanicalCommands;
   const { targets, removed } = await deriveExecutionTargetsFromTask({ workspace, taskArtifact });

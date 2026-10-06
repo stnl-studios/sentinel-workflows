@@ -131,10 +131,11 @@ export async function startOfficialRunnerBroker({
   slice,
   officialPreflight,
   invoke,
+  prepareSealedMetadata = async () => null,
   pollIntervalMs = POLL_INTERVAL_MS,
 }) {
   const identity = { workspace, tmpdir, operation, sequence, slice };
-  if (!validIdentity(identity) || !validOfficialPreflight(officialPreflight, identity) || typeof invoke !== 'function'
+  if (!validIdentity(identity) || !validOfficialPreflight(officialPreflight, identity) || typeof invoke !== 'function' || typeof prepareSealedMetadata !== 'function'
     || !Number.isSafeInteger(pollIntervalMs) || pollIntervalMs < 1 || pollIntervalMs > 1000) {
     fail('BROKER_CONFIGURATION_INVALID');
   }
@@ -213,8 +214,11 @@ export async function startOfficialRunnerBroker({
             fail('BROKER_RESULT_ALREADY_CAPTURED', SETTLED_VALIDATION_MESSAGE);
             }
           }
+          const metadata = await prepareSealedMetadata(request);
+          if (metadata !== null && (!isRecord(metadata) || Object.keys(metadata).join(',') !== 'findingsOwnership')) fail('BROKER_REQUEST_REJECTED');
+          const sealedRequest = { ...request, ...metadata, ...(operation === 'VALIDATE_SLICE' ? {} : { automaticCheckRound: `${round}/3` }) };
           dispatchSettled = true; lastRound = round; pending = true;
-          await writeAtomic(path.join(directory, `sealed-${requestId}.json`), request);
+          await writeAtomic(path.join(directory, `sealed-${requestId}.json`), sealedRequest);
           await writeAtomic(summaryFile, { ...identity, pending: true, requestId, startedAt: new Date().toISOString() });
           result = await invoke({
             ...identity,
@@ -222,6 +226,8 @@ export async function startOfficialRunnerBroker({
             officialPreflight,
             prompt: request.prompt,
             managedPayload: request.managedPayload,
+            findingsOwnership: sealedRequest.findingsOwnership ?? null,
+            automaticCheckRound: sealedRequest.automaticCheckRound ?? null,
           }, { signal: cancellation.signal });
           if (!isRecord(result)
             || result.sequence !== sequence || result.operation !== operation

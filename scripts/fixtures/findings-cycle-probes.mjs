@@ -7,7 +7,7 @@ import { readManagedSliceContext } from '../../skills/workflows/stnl-slice-execu
 import { inspectExecutionState, validateExecutionCandidate } from '../../skills/workflows/stnl-slice-executor/runtime/execution-state.mjs';
 import { serializeRunnerExecutionBundleFromResponse, insertExecutionEvidenceInCandidate } from '../../skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs';
 import { finalizeManagedSlice } from '../../agents/codex/runtime/managed-slice-finalize.mjs';
-import { bindManagedFindingsCycle } from '../../agents/codex/runtime/managed-findings-cycle.mjs';
+import { bindManagedFindingsCycle, prepareManagedFindingsRequest, assertManagedFindingsOwnership, findingsOwnershipFingerprint } from '../../agents/codex/runtime/managed-findings-cycle.mjs';
 import { initializeTurnBudget, reserveExtraRunner } from '../../benchmarks/sentinel-todo/runtime/benchmark-manager.mjs';
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const read = async file => JSON.parse(await fs.readFile(file));
@@ -19,11 +19,12 @@ const sealed = await read(path.join(directory, 'sealed-' + latest.requestId + '.
 const receipt = latest.receipt, raw = await fs.readFile(receipt.semanticResponseFile, 'utf8'), response = JSON.parse(raw);
 const candidateText = await fs.readFile(binding.candidateTaskArtifact, 'utf8'), liveText = await fs.readFile(binding.liveTaskArtifact, 'utf8');
 const selected = (await inspectExecutionState(context.specPath)).tasks.get(context.slice);
-const input = { context, binding, selected, sealed, receipt, response, candidateText, liveText };
+const input = { context, binding, selected, sealed, receipt, response, candidateText, liveText, fingerprint: sealed.findingsOwnership.fingerprint };
 if (process.argv[2] === '--private-history') {
   const prior = await read(path.join(directory, stem + '.finalization.json'));
-  const next = { ...input, prior, response: { ...response, automaticCheckRound: '2/3', findingsCycle: 'finding-01' },
-    sealed: { ...sealed, managedPayload: { ...sealed.managedPayload, automaticCheckRound: '2/3' } } };
+  const nextOwnership = await prepareManagedFindingsRequest({ request: { ...sealed, managedPayload: { ...sealed.managedPayload, automaticCheckRound: '2/3' } } });
+  const next = { ...input, prior, receipt: { ...receipt, automaticCheckRound: '2/3', findingsOwnershipSha256: findingsOwnershipFingerprint(nextOwnership) }, response: { ...response, automaticCheckRound: '2/3', findingsCycle: 'finding-01' },
+    sealed: { ...sealed, findingsOwnership: nextOwnership, managedPayload: { ...sealed.managedPayload, automaticCheckRound: '2/3' } } };
   assert.equal(bindManagedFindingsCycle(next).canonicalCycle, 'attempt-01');
   assert.throws(() => bindManagedFindingsCycle({ ...next, candidateText: candidateText.replace('- Findings verified: none', '- Findings verified: finding-01') }),
     { code: 'MANAGED_FINDINGS_BINDING_INVALID' });
@@ -37,18 +38,14 @@ if (process.argv[2] === '--private-history') {
 const bound = bindManagedFindingsCycle(input);
 const blocked = [];
 for (const [name, override] of [
-  ['otherCanonicalCycle', { response: { ...response, findingsCycle: 'attempt-99' } }],
-  ['unobservedLiteral', { response: { ...response, findingsCycle: 'guess' } }],
-  ['sealedRoundMismatch', { response: { ...response, automaticCheckRound: '2/3' } }],
-  ['changedCanonicalCycle', { selected: { ...selected, attempts: [...selected.attempts, { id: 'attempt-02', status: 'NEEDS_FIX' }] }, response: { ...response, findingsCycle: 'attempt-01' } }],
-  ['findingOutsideActiveSet', { sealed: { ...sealed, managedPayload: { ...sealed.managedPayload, activeFindings: ['finding-99'] } } }],
+  ['otherSealedCycle', { sealed: { ...sealed, findingsOwnership: { ...sealed.findingsOwnership, canonicalCycle: 'attempt-99' } } }],
+  ['sealedRoundMismatch', { receipt: { ...receipt, automaticCheckRound: '2/3' } }],
+  ['changedFingerprint', { sealed: { ...sealed, findingsOwnership: { ...sealed.findingsOwnership, fingerprint: 'changed' } } }],
+  ['findingOutsideActiveSet', { sealed: { ...sealed, findingsOwnership: { ...sealed.findingsOwnership, activeFindings: ['finding-99'] } } }],
   ['changedCandidateHistory', { candidateText: candidateText.replace('### attempt-01', '### attempt-99') }],
 ]) {
   assert.throws(() => bindManagedFindingsCycle({ ...input, ...override }), { code: 'MANAGED_FINDINGS_BINDING_INVALID' }); blocked.push(name);
 }
-assert.equal(bindManagedFindingsCycle({ ...input, selected: { ...selected, attempts: [...selected.attempts,
-  { id: 'attempt-02', status: 'NEEDS_FIX' }] }, response: { ...response, findingsCycle: 'attempt-02' } }).canonicalCycle, 'attempt-02',
-  'current NEEDS_FIX owns the cycle even when the active finding has an older origin');
 const originalContext = process.env.STNL_MANAGED_CONTEXT;
 try {
   process.env.STNL_MANAGED_CONTEXT = JSON.stringify({ ...context, authority: 'sha256:' + 'b'.repeat(64) });
@@ -57,12 +54,12 @@ try {
 for (const target of ['src/cli.mjs', 'test/offline-case.json']) {
   const file = path.join(context.workspace, target), bytes = await fs.readFile(file);
   try { await fs.writeFile(file, Buffer.concat([bytes, Buffer.from('\n')]));
-    await assert.rejects(finalizeManagedSlice('--finalize'), /tested source changed/); blocked.push(target);
+    await assert.rejects(finalizeManagedSlice('--finalize'), /tested source changed|source\/tests changed/); blocked.push(target);
   } finally { await fs.writeFile(file, bytes); }
 }
 const bundle = await serializeRunnerExecutionBundleFromResponse({ operation: context.operation, response: raw,
   workspace: context.workspace, taskArtifact: binding.candidateTaskArtifact, receiptFile: receipt.receiptFile,
-  semanticResponseFile: receipt.semanticResponseFile, resolveManagedFindingsCycle: () => bound.canonicalCycle });
+  semanticResponseFile: receipt.semanticResponseFile, automaticCheckRound: sealed.automaticCheckRound, resolveManagedFindingsCycle: () => bound.canonicalCycle });
 const before = await fs.readFile(binding.candidateTaskArtifact);
 for (const [name, malformed] of [
   ['conflictingFindings', bundle.replace('- Findings verified: none', '- Findings verified: finding-01')],

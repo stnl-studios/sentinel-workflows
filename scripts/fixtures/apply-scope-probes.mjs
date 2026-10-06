@@ -25,7 +25,7 @@ const receiptBefore = await fs.readFile(receiptFile);
 let sdkCalls = 0, budgetChecks = 0;
 const invoke = overrides => invokeIndependentRunner({
   ...active, snapshot: context.identity.snapshot.path, env: process.env,
-  officialPreflight: active.officialPreflight, prompt: sealed.prompt, managedPayload: sealed.managedPayload,
+  officialPreflight: active.officialPreflight, prompt: sealed.prompt, managedPayload: sealed.managedPayload, findingsOwnership: sealed.findingsOwnership, automaticCheckRound: sealed.automaticCheckRound,
   runTurn: async () => { sdkCalls += 1; throw new Error('TEST-ONLY unexpected provider dispatch'); },
   ...overrides,
 });

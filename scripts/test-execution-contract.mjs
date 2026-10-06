@@ -695,6 +695,13 @@ test("APPLY round two derives required correction fields from existing authority
     evidenceOrFailureSummary: "pass", affectedFilesOrBehaviors: "example", blockers: "none",
     unexpectedWorkspaceEffects: "none", persistenceSummary: "none",
   };
+  const withoutNativeRound = { ...payload }; delete withoutNativeRound.automaticCheckRound;
+  await assert.rejects(serializeRunnerExecutionBundleFromResponse({ operation: "APPLY_FINDINGS",
+    response: JSON.stringify(withoutNativeRound), workspace: fixture.root, automaticCheckRound: '2/3',
+    taskArtifact: path.join(fixture.execution, "tasks/slice-01.md") }), /managed round ownership requires a captured receipt/u);
+  await assert.rejects(serializeRunnerExecutionBundleFromResponse({ operation: "APPLY_FINDINGS",
+    response: JSON.stringify(withoutNativeRound), workspace: fixture.root,
+    taskArtifact: path.join(fixture.execution, "tasks/slice-01.md") }), /Automatic check round is invalid/u);
   const bundle = await serializeRunnerExecutionBundleFromResponse({ operation: "APPLY_FINDINGS",
     response: JSON.stringify(payload), workspace: fixture.root,
     taskArtifact: path.join(fixture.execution, "tasks/slice-01.md") });
@@ -1005,7 +1012,7 @@ test("runner response schema closes every semantic operation shape", async () =>
   for (const branch of schema.oneOf) {
     assert.equal(branch.type, "object");
     assert.equal(branch.additionalProperties, false);
-    const optional = branch.title === "VALIDATE_SLICE" ? [] : ["filelessReason"];
+    const optional = branch.title === "VALIDATE_SLICE" ? [] : ["filelessReason", "automaticCheckRound", ...(branch.title === "APPLY_FINDINGS" ? ["findingsCycle"] : [])];
     assert.deepEqual(Object.keys(branch.properties).sort(), [...branch.required, ...optional].sort());
     assert.deepEqual(Object.keys(branch.properties.commands), ["$ref"]);
   }
@@ -6455,6 +6462,11 @@ test("execution producer serializes automatic correction fields and excludes fin
     /unknown semantic execution payload field: correctionsCovered/u,
   );
 
+  const withoutNativeRound = { ...roundTwoPayload }; delete withoutNativeRound.automaticCheckRound;
+  await assert.rejects(serializeRunnerExecutionBundleFromResponse({ operation: "EXECUTE_SLICE",
+    response: JSON.stringify(withoutNativeRound), workspace: fixture.root, taskArtifact, automaticCheckRound: '2/3' }), /managed round ownership requires a captured receipt/u);
+  await assert.rejects(serializeRunnerExecutionBundleFromResponse({ operation: "EXECUTE_SLICE",
+    response: JSON.stringify(withoutNativeRound), workspace: fixture.root, taskArtifact }), /Automatic check round is invalid/u);
   const bundle = await serializeRunnerExecutionBundleFromResponse({
     operation: "EXECUTE_SLICE",
     response: JSON.stringify(roundTwoPayload),

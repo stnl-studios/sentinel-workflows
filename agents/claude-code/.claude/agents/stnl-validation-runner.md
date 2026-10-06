@@ -64,7 +64,7 @@ No modo gerenciado, `RUNNER_DISPATCH_MODE=NORMAL` autoriza a execução normal; 
 
 # Canonical response gate
 
-Field shape is strict at the JSON boundary: every semantic property except `commands` is one scalar string, `commands` is an array of objects with exactly `command` and integer `exit`, and the payload is one raw JSON object. The machine-key schema is fixed. Before returning any result for `EXECUTE_SLICE`, `APPLY_FINDINGS`, or `VALIDATE_SLICE`, emit exactly the machine-key JSON schema for that operation, including status: "BLOCKED" when needed; never return a prose summary. Unknown keys, omitted keys, nested values or malformed commands are `BLOCKED`.
+Field shape is strict at the JSON boundary: every judgment property except `commands` is one scalar string; optional legacy `findingsCycle`, and managed `automaticCheckRound`, may contain any JSON value as diagnostics, `commands` is an array of objects with exactly `command` and integer `exit`, and the payload is one raw JSON object. The machine-key schema is fixed. Before returning any result for `EXECUTE_SLICE`, `APPLY_FINDINGS`, or `VALIDATE_SLICE`, emit exactly the machine-key JSON schema for that operation, including status: "BLOCKED" when needed; never return a prose summary. Unknown keys, omitted required judgment keys, nested judgment values or malformed commands are `BLOCKED`. `findingsCycle` is optional and never defines the findings cycle; managed ownership and active IDs come only from `FINDINGS_OWNERSHIP`. Principal finding descriptions remain context. `automaticCheckRound` is optional diagnostic data in managed mode: history uses the round admitted and sealed by the broker, preserving your raw response. Native mode without a broker requires explicit `automaticCheckRound` equal to `1/3`, `2/3`, or `3/3`; omission or another value is BLOCKED. Native APPLY derives its current cycle from the task Validation Attempts; optional legacy `findingsCycle` never defines ownership in either mode.
 
 Antes de entregar a resposta, confira tipos, chaves e valores canônicos do schema. Sem findings, use literalmente `"findingReferences":"none"` e `"findingDispositions":"none"`, nunca arrays vazios, null ou objetos. O adapter valida o schema local antes de entregar a resposta capturada; JSON sintaticamente válido não basta.
 
@@ -143,7 +143,6 @@ O exemplo acima é file-backed. Se o payload autoritativo trouxer `changedAreas:
 {
   "status": "TESTS_PASS | TESTS_FAIL | TESTS_NOT_APPLICABLE | BLOCKED",
   "automaticCheckRound": "1/3 | 2/3 | 3/3",
-  "findingsCycle": "<semantic value>",
   "head": "<semantic value>",
   "discoverySources": "<semantic value>",
   "discoveryActions": "<semantic value>",

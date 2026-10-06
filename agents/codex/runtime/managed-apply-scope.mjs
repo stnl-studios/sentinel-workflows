@@ -29,11 +29,12 @@ async function inputs(context, active, tmpdir) {
   const candidate = await captureRunnerTestedState({ workspace: context.workspace, taskArtifact: binding.candidateTaskArtifact });
   const claims = await validateManagedChangedAreas({ workspace: context.workspace, taskArtifact: liveTask,
     changedAreas: candidate.entries.map(entry => entry.path) });
-  const liveScope = await captureRunnerTestedState({ workspace: context.workspace, taskArtifact: liveTask });
+  const liveScope = context.operation === 'EXECUTE_SLICE' ? { entries: [] }
+    : await captureRunnerTestedState({ workspace: context.workspace, taskArtifact: liveTask });
   const text = (await readManagedRegular(binding.candidateTaskArtifact)).toString('utf8');
   const correctionBody = /(?:^|\n)## Corrections Applied\n([\s\S]*?)(?=\n## |$)/u.exec(text)?.[1]?.trim();
-  if (correctionBody === undefined) fail('bound APPLY candidate lacks Corrections Applied');
-  const correctionAreas = correctionBody === '- none' ? [] : correctionBody.split('\n').filter(Boolean).map(line => {
+  if (correctionBody === undefined && context.operation === 'APPLY_FINDINGS') fail('bound APPLY candidate lacks Corrections Applied');
+  const correctionAreas = context.operation !== 'APPLY_FINDINGS' || correctionBody === '- none' ? [] : correctionBody.split('\n').filter(Boolean).map(line => {
     const claim = /^- `([^`\n]+)`$/u.exec(line)?.[1];
     if (!claim || !claims.includes(claim)) fail('bound APPLY correction path disagrees with canonical scope');
     return claim;
@@ -116,4 +117,14 @@ export async function assertManagedApplyScopeFresh({ context, active, tmpdir, pr
     || record.originalPromptSha256 !== hash(record.originalPrompt)) fail('APPLY scope repair identity disagrees');
   await verifyFreshness(environment);
   if (!same((await inputs(context, active, tmpdir)).proof, record.proof)) fail('APPLY scope repair authority, candidate or source/tests changed');
+}
+
+// EXECUTE must describe exactly the prepared candidate's authorized scope. A
+// subset is refused before dispatch; approval of other paths grants no expansion.
+export async function assertManagedExecuteScope({ context, active, tmpdir, payload }) {
+  if (context?.operation !== 'EXECUTE_SLICE') return;
+  const captured = await inputs(context, active, tmpdir);
+  if (!same(payload.changedAreas, captured.claims)) {
+    throw Object.assign(new Error('EXECUTE payload scope differs from the prepared authorized candidate'), { code: 'MANAGED_EXECUTE_SCOPE_BLOCKED' });
+  }
 }

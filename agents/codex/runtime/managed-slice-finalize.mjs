@@ -6,7 +6,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { readManagedSliceContext, assertManagedRunnerReceipt, assertManagedRuntimeIdentity }
   from '../../../skills/workflows/stnl-slice-executor/runtime/managed-slice-context.mjs';
 import { assertManagedSliceFreshness } from './managed-slice-preflight.mjs';
-import { bindManagedFindingsCycle, findingsEvidenceFingerprint } from './managed-findings-cycle.mjs';
+import { bindManagedFindingsCycle, findingsEvidenceFingerprint, prepareManagedFindingsRequest, assertManagedFindingsOwnership, findingsOwnershipFingerprint, captureManagedSourceTestsHash } from './managed-findings-cycle.mjs';
 import { prepareExecutionCopy, publishExecutionCopy } from '../../../skills/workflows/stnl-slice-executor/runtime/prepare-execution-copy.mjs';
 import { prepareValidationCopy } from '../../../skills/workflows/stnl-slice-quality-manager/runtime/prepare-validation-copy.mjs';
 import { prepareValidationCandidate } from '../../../skills/workflows/stnl-slice-quality-manager/runtime/prepare-validation-candidate.mjs';
@@ -52,9 +52,9 @@ async function replaceTask(file, bytes) {
   finally { await fs.rm(temporary, { force: true }); }
 }
 
-// Read-only identity/ownership guard shared by the pre-dispatch APPLY handoff.
+// Read-only identity/ownership guard shared by the pre-dispatch execution handoff.
 export async function inspectManagedApplyCandidate({ context, active, tmpdir }) {
-  if (context.operation !== 'APPLY_FINDINGS' || active.protocol !== 3
+  if (!['EXECUTE_SLICE', 'APPLY_FINDINGS'].includes(context.operation) || active.protocol !== 3
     || active.operation !== context.operation || active.slice !== context.slice
     || active.workspace !== context.workspace || active.tmpdir !== tmpdir
     || active.officialPreflight.specPath !== context.specPath
@@ -187,6 +187,11 @@ export async function finalizeManagedSlice(mode) {
   if (sealed.requestId !== latest.requestId || sealed.operation !== owner.operation || sealed.slice !== owner.slice
     || sealed.sequence !== owner.sequence || sealed.workspace !== owner.workspace || sealed.tmpdir !== tmpdir
     || typeof sealed.prompt !== 'string' || hash(sealed.prompt) !== latest.payloadSha256) throw new Error('managed sealed payload association disagrees');
+  const admittedRound = context.operation === 'VALIDATE_SLICE' ? null : sealed.automaticCheckRound;
+  if (admittedRound !== null && (!['1/3', '2/3', '3/3'].includes(admittedRound)
+    || admittedRound !== sealed.managedPayload?.automaticCheckRound || admittedRound !== receipt.automaticCheckRound)) {
+    throw new Error('managed admitted round binding disagrees');
+  }
   const diskReceipt = await read(receipt.receiptFile);
   if (JSON.stringify(diskReceipt) !== JSON.stringify(receipt)) throw new Error('managed receipt changed after broker settlement');
   const executionState = await inspectExecutionState(context.specPath);
@@ -213,7 +218,7 @@ export async function finalizeManagedSlice(mode) {
   }
   const evidenceSha256 = Object.fromEntries(await Promise.all(evidenceFiles.map(async (file) => [file, hash(await regular(file))])));
   const association = { ...owner, bindingSha256: hash(JSON.stringify(binding)), receiptFile: receipt.receiptFile,
-    requestId: latest.requestId, payloadSha256: latest.payloadSha256, evidenceSha256 };
+    requestId: latest.requestId, payloadSha256: latest.payloadSha256, sealedRequestSha256: hash(await regular(path.join(directory, `sealed-${latest.requestId}.json`))), evidenceSha256 };
   const preparedFile = preparationFile(binding, receipt.attempt);
   let prepared = await optional(preparedFile);
   const inputTree = await tree(binding.candidateExecutionRoot);
@@ -224,8 +229,20 @@ export async function finalizeManagedSlice(mode) {
     if (!same(prepared.testedState, testedState)) throw new Error('managed preparation tested source changed');
     if (!same(prepared.liveBefore, binding.sourceTree)) throw new Error('managed preparation source identity disagrees');
     if (prepared.status === 'PREPARED') {
+      // PREPARED owns its verified pre/post images. Recomputing from the old
+      // preflight would reject a legitimate replay after installation succeeded.
+      if (context.operation === 'APPLY_FINDINGS') {
+        const ownership = sealed.findingsOwnership;
+        if (ownership === null || typeof ownership !== 'object' || Array.isArray(ownership)
+          || receipt.findingsOwnershipSha256 !== findingsOwnershipFingerprint(ownership)) throw new Error('managed prepared findings ownership seal disagrees');
+        assertManagedFindingsOwnership(ownership, Object.fromEntries(Object.keys(ownership).map(key => [key, prepared.findingsCycleBinding?.[key]])));
+        if (ownership.candidateTreeSha256 !== hash(JSON.stringify(prepared.inputTree))
+          || ownership.candidateInputSha256 !== prepared.inputTree.find(entry => entry.path === taskRelative)?.hash
+          || ownership.testedStateSha256 !== hash(JSON.stringify(testedState.entries))
+          || ownership.sourceTestsSha256 !== await captureManagedSourceTestsHash(context.workspace)) throw new Error('managed prepared findings input/source hashes changed');
+      }
       const expectedPrivate = receipt.semanticResponseStatus === 'TESTS_FAIL'
-        && JSON.parse(await regular(receipt.semanticResponseFile)).automaticCheckRound !== '3/3';
+        && admittedRound !== '3/3';
       if (prepared.privateFailure !== expectedPrivate
         || !same(prepared.liveAfter, expectedPrivate ? prepared.liveBefore : prepared.stageTree)) throw new Error('managed preparation outcome/image disagrees');
     }
@@ -243,6 +260,9 @@ export async function finalizeManagedSlice(mode) {
       && !prepared.failure.includes('preserved'))) throw new Error('managed preparation rejected; retain candidate and use --prepare for a fresh proposal');
   }
   if (prepared?.status !== 'PREPARED') {
+  if (context.operation === 'APPLY_FINDINGS') {
+    assertManagedFindingsOwnership(await prepareManagedFindingsRequest({ request: sealed, environment }), sealed.findingsOwnership);
+  }
     await assertManagedSliceFreshness(environment);
     await assertManagedRunnerReceipt({ operation: owner.operation, slice: owner.slice, workspace: owner.workspace,
       receiptFile: receipt.receiptFile, semanticResponseFile: receipt.semanticResponseFile, allowRejected: true, environment });
@@ -268,7 +288,7 @@ export async function finalizeManagedSlice(mode) {
           let findingsCycleBinding = null;
           const bundle = await serializeRunnerExecutionBundleFromResponse({ operation: context.operation,
             response, workspace: context.workspace, taskArtifact: stage.candidateTaskArtifact,
-            receiptFile: receipt.receiptFile, semanticResponseFile: receipt.semanticResponseFile,
+            receiptFile: receipt.receiptFile, semanticResponseFile: receipt.semanticResponseFile, automaticCheckRound: admittedRound,
             resolveManagedFindingsCycle: context.operation !== 'APPLY_FINDINGS' ? undefined : async payload => {
               if (prior?.state === 'PRIVATE_TESTS_FAIL') {
                 for (const [file, expectedHash] of Object.entries(prior.evidenceSha256)) {
@@ -277,23 +297,26 @@ export async function finalizeManagedSlice(mode) {
               }
               findingsCycleBinding = bindManagedFindingsCycle({ context, binding, selected, sealed, receipt,
                 response: payload, fingerprint: executionState.currentFingerprint, prior,
-                candidateText: (await regular(stage.candidateTaskArtifact)).toString('utf8'),
+                candidateText: (await regular(binding.candidateTaskArtifact)).toString('utf8'),
                 liveText: (await regular(liveTask)).toString('utf8') });
               prepared = { ...prepared, findingsCycleBinding };
               await write(preparedFile, prepared);
               return findingsCycleBinding.canonicalCycle;
             } });
           await insertExecutionEvidenceInCandidate({ taskArtifact: stage.candidateTaskArtifact, operation: context.operation, bundle,
-            validateProspectiveTask: findingsCycleBinding === null ? undefined : async task => {
-              prospective = await validateExecutionCandidate(context.specPath, stage.candidateExecutionRoot, [task]);
+            validateProspectiveTask: async task => {
+              prospective = await validateExecutionCandidate(context.specPath, stage.candidateExecutionRoot, [task], {
+                privateAutomaticCheck: receipt.semanticResponseStatus === 'TESTS_FAIL' && admittedRound !== '3/3'
+                  ? { operation: context.operation, slice: context.slice, round: Number(admittedRound.slice(0, 1)) } : null,
+              });
               await assertManagedSliceFreshness(environment);
               const current = await captureRunnerTestedState({ workspace: context.workspace, taskArtifact: liveTask,
                 changedAreas: testedState.entries.map(entry => entry.path) });
-              if (!same(current, testedState)) throw new Error('managed prospective findings tested source changed');
-              findingsCycleBinding.findingsEvidenceSha256 = findingsEvidenceFingerprint(task.text);
+              if (!same(current, testedState)) throw new Error('managed prospective execution tested source changed');
+              if (findingsCycleBinding !== null) findingsCycleBinding.findingsEvidenceSha256 = findingsEvidenceFingerprint(task.text);
             } });
           const parsed = JSON.parse(response);
-          privateFailure = parsed.status === 'TESTS_FAIL' && parsed.automaticCheckRound !== '3/3';
+          privateFailure = parsed.status === 'TESTS_FAIL' && admittedRound !== '3/3';
         } catch (error) {
           const diagnostic = recoverableRunnerResultDiagnostic(error);
           if (diagnostic === null) throw error;
@@ -302,7 +325,7 @@ export async function finalizeManagedSlice(mode) {
             semanticResponseFile: receipt.semanticResponseFile, diagnostic, error });
         }
       }
-      // APPLY records already passed prospective validation before their append.
+      // Execution records passed prospective validation before their append.
       // Intermediate failures stay private; publication retries reuse the receipt.
       const validated = privateFailure ? null : prospective ?? await validateExecutionCandidate(context.specPath, stage.candidateExecutionRoot);
       prepared = { ...prepared, status: 'PREPARED', privateFailure, state: privateFailure ? 'PRIVATE_TESTS_FAIL' : validated.state,

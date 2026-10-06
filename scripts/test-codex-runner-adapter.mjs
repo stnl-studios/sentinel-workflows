@@ -8,7 +8,7 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import { assertRunnerRoundPayload, composeRunnerRequest, main as runnerMain,
-  describeSemanticResponseFile, readRunnerConfiguration, scopeApplyFindingsSchema,
+  describeSemanticResponseFile, readRunnerConfiguration,
   submitRunnerPayload } from '../agents/codex/runtime/validation-runner.mjs';
 import { captureRunnerResponse } from '../skills/workflows/stnl-slice-executor/runtime/capture-runner-response.mjs';
 import { codexClientConfig, runCodexTurn } from '../agents/codex/runtime/sdk-transport.mjs';
@@ -192,19 +192,12 @@ test('sanitized ad hoc check fixtures reproduce both real failures and their cor
   }
 });
 
-test('local APPLY_FINDINGS schema scoping remains available for canonical cycle checks', async () => {
+test('APPLY_FINDINGS schema leaves legacy cycle data optional and without authority', async () => {
   const schema = JSON.parse(await fs.readFile(path.join(ROOT,
     'skills/workflows/stnl-slice-executor/runtime/runner-apply-findings-response.schema.json'), 'utf8'));
-  const state = { tasks: new Map([['slice-01', { attempts: [
-    { id: 'attempt-01', status: 'NEEDS_FIX' }, { id: 'attempt-02', status: 'NEEDS_FIX' },
-  ] }]]) };
-  assert.deepEqual(scopeApplyFindingsSchema(schema, state, 'slice-01').properties.findingsCycle,
-    { type: 'string', enum: ['attempt-02'] });
-  assert.deepEqual(schema.properties.findingsCycle, { type: 'string', pattern: '^[^\\r\\n`]+$' });
-  assert.throws(() => scopeApplyFindingsSchema(schema, state, 'slice-02'), /no canonical active findings cycle/u);
-  assert.throws(() => scopeApplyFindingsSchema(schema, { tasks: new Map([['slice-01', {
-    attempts: [{ id: 'finding-01', status: 'NEEDS_FIX' }],
-  }]]) }, 'slice-01'), /no canonical active findings cycle/u);
+  assert.ok(!schema.required.includes('findingsCycle'));
+  assert.equal(schema.properties.findingsCycle.type, undefined);
+  assert.match(schema.properties.findingsCycle.description, /diagnostic only/);
 });
 
 test('SDK keeps provider schema event when the CLI later exits with stderr', async (t) => {

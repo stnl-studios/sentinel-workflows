@@ -1,11 +1,12 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://sentinel.local/schemas/stnl-runner-execute-response-v1.json",
+  "$comment": "Managed transport schema: the broker supplies round ownership. Native producers additionally require an explicit canonical automaticCheckRound.",
   "title": "Sentinel EXECUTE_SLICE semantic response v1",
   "type": "object",
   "additionalProperties": false,
   "required": [
-    "status", "automaticCheckRound", "head", "discoverySources", "discoveryActions",
+    "status", "head", "discoverySources", "discoveryActions",
     "verificationTypesConsidered", "nonApplicabilityRationale", "noVerificationCommandConfirmation",
     "commands", "resultOfEachCommandAndExitCode", "selectedChecks", "selectionRationale", "coverage",
     "failures", "priorRoundFailure", "correctionApplied", "inSliceRationale", "evidenceOrFailureSummary",
@@ -13,7 +14,7 @@
   ],
   "properties": {
     "status": { "enum": ["TESTS_PASS", "TESTS_FAIL", "TESTS_NOT_APPLICABLE", "BLOCKED"] },
-    "automaticCheckRound": { "enum": ["1/3", "2/3", "3/3"] },
+    "automaticCheckRound": { "description": "Optional managed diagnostic. Native producers require an explicit canonical 1/3, 2/3, or 3/3 round." },
     "head": { "type": "string", "pattern": "^[^\\r\\n`]+$" },
     "discoverySources": { "type": "string", "pattern": "^[\\s\\S]+$" },
     "discoveryActions": { "type": "string", "pattern": "^[\\s\\S]+$" },

@@ -1366,7 +1366,12 @@ function parseTask(text, label, expectedSlice, references = {}) {
     const expectedOperation = name === "implementation" ? "EXECUTE_SLICE" : "APPLY_FINDINGS";
     const pausedByDelegation = delegationBlocker?.state === "active" && delegationBlocker.operation === expectedOperation
       && delegationBlocker.afterRecord === latest?.id;
-    if (latest?.status === "TESTS_FAIL" && latest.round < 3 && !activeBlockingDivergence
+    // Only a prospective private append may leave its admitted failing round
+    // open. Publication and official state inspection retain the terminal rule.
+    const privateAppend = references.privateAutomaticCheck?.slice === expectedSlice
+      && references.privateAutomaticCheck.operation === expectedOperation
+      && references.privateAutomaticCheck.round === latest?.round && latest?.status === "TESTS_FAIL";
+    if (latest?.status === "TESTS_FAIL" && latest.round < 3 && !privateAppend && !activeBlockingDivergence
       && !pausedByDelegation && !correctionCycleHasPersistedScope) {
       throw new ExecutionContractError(`${label} has an unterminated ${name} automatic correction cycle without a blocking divergence`);
     }
@@ -1993,7 +1998,7 @@ async function readPlanArtifacts(workspace, { validateImplementationPaths = fals
   return { globalPlan, globalPlanText, sliceOrder, plans };
 }
 
-async function executionArtifacts(workspace, { validateImplementationPaths = false } = {}) {
+async function executionArtifacts(workspace, { validateImplementationPaths = false, privateAutomaticCheck = null } = {}) {
   const { globalPlan, sliceOrder, plans } = await readPlanArtifacts(workspace, { validateImplementationPaths });
   const tasksIndexPath = path.join(workspace.executionRoot, "tasks.md");
   await requireRealFile(tasksIndexPath, "execution tasks.md");
@@ -2006,7 +2011,7 @@ async function executionArtifacts(workspace, { validateImplementationPaths = fal
     const taskPath = path.join(taskDirectory, `${row.slice}.md`);
     await requireRealFile(taskPath, `${row.slice} detailed task`);
     const task = parseTask(await fs.readFile(taskPath, "utf8"), taskPath, row.slice, {
-      requirementsSource: requirementsReference(workspace, taskDirectory),
+      requirementsSource: requirementsReference(workspace, taskDirectory), privateAutomaticCheck,
     });
     const plan = plans.get(row.slice);
     if (plan !== undefined && (task.fingerprint !== plan.fingerprint || task.revision !== plan.revision)) pairMismatches.push(row.slice);
@@ -2181,6 +2186,7 @@ export async function inspectExecutionState(specPath) {
 async function inspectExecutionStateWithContext(specPath, logicalWorkspace, {
   validateTerminalOwnership = true,
   validateImplementationPaths = false,
+  privateAutomaticCheck = null,
 } = {}) {
   const physicalWorkspace = await resolveExecutionWorkspace(specPath);
   const workspace = logicalWorkspace === null
@@ -2219,7 +2225,7 @@ async function inspectExecutionStateWithContext(specPath, logicalWorkspace, {
     const state = stale ? "REQUIREMENTS_CHANGED" : globalPlan.status === "ready" ? "PLANNED_READY" : "PLANNED_DRAFT";
     return withRecoveryTargets({ state, workspace, currentFingerprint, globalPlan, stale });
   }
-  const artifacts = await executionArtifacts(workspace, { validateImplementationPaths });
+  const artifacts = await executionArtifacts(workspace, { validateImplementationPaths, privateAutomaticCheck });
   const stale = artifacts.globalPlan.fingerprint !== currentFingerprint;
   const allPristine = artifacts.rows.every((row) => !row.done && artifacts.tasks.get(row.slice).pristine);
   if (artifacts.pendingReplan) {
@@ -2655,7 +2661,10 @@ async function assertCandidateTreeSafe(directory) {
   }
 }
 
-export async function validateExecutionCandidate(specPath, candidateExecutionRoot, serializedTasks = []) {
+export async function validateExecutionCandidate(specPath, candidateExecutionRoot, serializedTasks = [], { privateAutomaticCheck = null } = {}) {
+  if (privateAutomaticCheck !== null && (!['EXECUTE_SLICE', 'APPLY_FINDINGS'].includes(privateAutomaticCheck.operation)
+    || ![1, 2].includes(privateAutomaticCheck.round) || serializedTasks.length !== 1
+    || serializedTasks[0].slice !== privateAutomaticCheck.slice)) throw new ExecutionContractError("invalid prospective private automatic check");
   const workspace = await resolveExecutionWorkspace(specPath);
   const candidate = path.resolve(String(candidateExecutionRoot));
   await assertNoSymlinkComponents(candidate, "candidate execution root");
@@ -2675,7 +2684,7 @@ export async function validateExecutionCandidate(specPath, candidateExecutionRoo
       await requireRealFile(path.join(candidate, "tasks", `${slice}.md`), "prospective task source");
       await fs.writeFile(path.join(shadow.executionRoot, "tasks", `${slice}.md`), text, "utf8");
     }
-    const result = await inspectExecutionStateWithContext(shadow.specPath, workspace, { validateImplementationPaths: true });
+    const result = await inspectExecutionStateWithContext(shadow.specPath, workspace, { validateImplementationPaths: true, privateAutomaticCheck });
     await validateCandidateExecutionRecordPaths(result);
     validatePriorValidationOverlap(result);
     if ((result.incompleteExecutionChecklists?.length ?? 0) !== 0) {
