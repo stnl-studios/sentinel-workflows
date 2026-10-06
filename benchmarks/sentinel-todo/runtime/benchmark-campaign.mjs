@@ -386,6 +386,8 @@ export async function runFunctionalBenchmark({ root = ROOT, hooks = {} } = {}) {
   const checkCancel = () => { if (signal.signal.aborted) throw blocked('CANCELLED', 'benchmark interrupted'); };
   async function preserveReport(report, updateLatest = false) {
     if (report?.run?.id === undefined) throw new Error('report has no run identity');
+    if (!['full', 'case', 'focal'].includes(report.run.mode)) throw new Error('report has no supported run mode');
+    if (report.run.mode !== 'full') return true;
     // The publisher validates byte-identical history collisions and refreshes
     // latest when requested, so an existing ID cannot silently hide new data.
     await api.publishMeasurement(report, { root: reportRoot, updateLatest });
@@ -477,7 +479,8 @@ export async function runFunctionalBenchmark({ root = ROOT, hooks = {} } = {}) {
       const item = path.join(scratch, entry.name);
       if (entry.name.startsWith('run-')) {
         const run = await readJson(path.join(item, 'run.json'));
-        const saved = await preserve(run.runId ?? entry.name);
+        const saved = run.mode === 'full' ? await preserve(run.runId ?? entry.name) : true;
+        if (run.mode !== 'full') say(`SKIP MEASUREMENT ${run.runId}: ${run.mode}`);
         if (!saved) throw blocked('BLOCKED_CLEANUP', `report preservation failed for ${entry.name}; scratch retained`);
         if (await exists(path.join(scratch, '.active-run.json')) || (await api.processes()).length)
           throw blocked('BLOCKED_ACTIVE', 'benchmark became active during report preservation');
@@ -537,6 +540,7 @@ export async function runFunctionalBenchmark({ root = ROOT, hooks = {} } = {}) {
     try {
       const report = await api.exportMeasurement(runId);
       if (report?.run?.id !== runId) throw new Error(`exported report identity mismatch for ${runId}`);
+      if (report.run.mode !== 'full') throw new Error('current benchmark report must be full');
       await preserveReport(report, true);
     } catch (error) {
       console.error(`report for ${runId} was not published; raw evidence retained: ${error.message}`);

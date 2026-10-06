@@ -79,6 +79,7 @@ function observationsFrom(evidence) {
   const all = [];
   if (evidence.turn?.usageObservation) all.push(evidence.turn.usageObservation);
   if (evidence.usageObservation) all.push(evidence.usageObservation);
+  all.push(...(evidence.capacityRetry?.attempts ?? []).slice(0, -1).map(attempt => attempt.usageObservation).filter(Boolean));
   all.push(...(evidence.runner?.usageObservations ?? []));
   return all;
 }
@@ -357,6 +358,9 @@ export function compareMeasurements(before, after, allowProfileMismatch = false)
 }
 
 export async function exportMeasurement(runId) {
+  if (!/^[a-z0-9][a-z0-9-]{7,}$/u.test(runId)) throw new Error('invalid run id');
+  const run = await json(path.join(ROOT, 'benchmark-temp', runId, 'run.json'));
+  if (run.mode !== 'full') throw new Error('measurements can only be exported for full runs');
   const report = validateMeasurementReport(await measurement(runId));
   for (const row of report.cases) for (const key of ['main', 'runner']) {
     if (row.telemetry[key] !== UNAVAILABLE) delete row.telemetry[key].inputByTurn;
@@ -425,6 +429,7 @@ function randomSuffix() { return createHash('sha256').update(`${Date.now()}-${Ma
 
 export async function publishMeasurement(report, { root = path.join(ROOT, 'benchmarks/sentinel-todo/measurements'), updateLatest = true } = {}) {
   report = validateMeasurementReport(report);
+  if (report.run.mode !== 'full') throw new Error('measurements can only be published for full runs');
   if (!/^[a-z0-9][a-z0-9-]{7,}$/u.test(report.run.id)) throw new Error('invalid run id');
   const baselinePath = path.resolve(root, '../baselines/baseline-v1.json');
   let comparison = { directlyComparable: false, mismatches: ['baseline-v1 unavailable'], conclusion: 'baseline-v1 unavailable', deltas: UNAVAILABLE };

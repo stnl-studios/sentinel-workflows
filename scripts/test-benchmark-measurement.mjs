@@ -106,6 +106,29 @@ try {
   assert.equal(report.aggregate.operations, 1);
   assert.equal(report.cases[0].telemetry.main.input, 100);
   assert.equal(report.cases[0].telemetry.runner, UNAVAILABLE);
+  // Capacity retries are transport attempts, not duplicated workflow events;
+  // their usage must still contribute to complete turn coverage.
+  const retryFiles = ['case-a/01-spec_init.json', 'case-a/case-state.json', 'summary.json'];
+  const retryOriginals = await Promise.all(retryFiles.map(file => fs.readFile(path.join(runRoot, file))));
+  const retryEvidence = JSON.parse(retryOriginals[0]);
+  retryEvidence.capacityRetry = { attempts: [
+    { usageObservation: { ...retryEvidence.turn.usageObservation, eventId: 'capacity-main', delta: { input: 20, output: 2, cachedInput: 0, reasoningOutput: 0 } } },
+    { usageObservation: retryEvidence.turn.usageObservation },
+  ] };
+  await fs.writeFile(path.join(runRoot, retryFiles[0]), JSON.stringify(retryEvidence));
+  await fs.writeFile(path.join(runRoot, retryFiles[1]), JSON.stringify({ ...JSON.parse(retryOriginals[1]), mainTurns: 2 }));
+  const retrySummary = JSON.parse(retryOriginals[2]); retrySummary.cases.A.mainTurns = 2;
+  await fs.writeFile(path.join(runRoot, retryFiles[2]), JSON.stringify(retrySummary));
+  const retryReport = await exportMeasurement(runId);
+  assert.equal(retryReport.cases[0].telemetry.coverage.main, '2/2');
+  assert.equal(retryReport.cases[0].telemetry.main.input, 120);
+  assert.equal(retryReport.aggregate.operations, 1);
+  retryEvidence.capacityRetry.attempts[0].usageObservation = { status: 'unavailable', source: 'main', eventId: 'capacity-main' };
+  await fs.writeFile(path.join(runRoot, retryFiles[0]), JSON.stringify(retryEvidence));
+  const unknownCapacity = await exportMeasurement(runId);
+  assert.equal(unknownCapacity.cases[0].telemetry.coverage.main, '1/2');
+  assert.equal(unknownCapacity.cases[0].telemetry.main.input, UNAVAILABLE);
+  await Promise.all(retryFiles.map((file, index) => fs.writeFile(path.join(runRoot, file), retryOriginals[index])));
   assert.equal(report.provenance.baseSha, 'fixture-base');
   assert.equal(report.cases[0].provider, UNAVAILABLE);
   assert.equal(report.cases[0].operationDurations[0].durationMs, UNAVAILABLE);
@@ -213,12 +236,16 @@ try {
     await fs.writeFile(summaryFile, JSON.stringify({ ...JSON.parse(originalSummary), mode, status,
       cases: { A: { ...JSON.parse(originalSummary).cases.A, status } } }));
     await fs.writeFile(stateFile, JSON.stringify({ ...JSON.parse(originalState), status }));
-    const scoped = await exportMeasurement(runId);
-    assert.equal(scoped.run.mode, mode); assert.equal(scoped.run.status, status);
-    assert.equal(scoped.cases.length, 1);
+    await assert.rejects(exportMeasurement(runId), /only be exported for full runs/);
+    const scoped = structuredClone(report); scoped.run.mode = mode; scoped.run.status = status;
     assert.equal(compareMeasurements(scoped, scoped).directlyComparable, false, 'partial scope cannot certify a full-run comparison');
-    const saved = await publishMeasurement(scoped, { root: path.join(temp, `scoped-${mode}`), updateLatest: false });
-    assert.equal(JSON.parse(await fs.readFile(saved.historyPath, 'utf8')).run.mode, mode);
+    const destination = path.join(temp, `scoped-${mode}`);
+    await assert.rejects(publishMeasurement(scoped, { root: destination, updateLatest: false }), /only be published for full runs/);
+    await assert.rejects(fs.lstat(destination), { code: 'ENOENT' });
+    const deniedOutput = path.join(temp, `denied-${mode}.json`);
+    const denied = spawnSync(process.execPath, [cli, 'export', '--run', runId, '--output', deniedOutput], { cwd: root, encoding: 'utf8' });
+    assert.notEqual(denied.status, 0); assert.match(denied.stderr, /only be exported for full runs/);
+    await assert.rejects(fs.lstat(deniedOutput), { code: 'ENOENT' });
   }
   await fs.writeFile(runFile, originalRun);
   await fs.writeFile(summaryFile, originalSummary);
@@ -226,7 +253,8 @@ try {
   const journalFile = path.join(runRoot, 'case-a/journal.json');
   const originalJournal = await fs.readFile(journalFile);
   const originalRaw = await fs.readFile(rawPath);
-  // The manager keeps the first focal finalizer and records the resumed one separately.
+  // Full-mode fixture exercises retained/current finalizer pointer validation;
+  // case/focal publication is rejected above, independently of finalizer history.
   const resumedRawPath = path.join(runRoot, 'case-a/raw-resume-10.json');
   const resumedState = { ...JSON.parse(originalState), mainTurns: 10, privateHomeRemoved: true,
     finalizerHistory: [{ exitCode: 1, rawPath }], finalizer: { exitCode: 0, rawPath: resumedRawPath },
@@ -242,8 +270,8 @@ try {
   const resumedRawBytes = await fs.readFile(resumedRawPath);
   await fs.writeFile(stateFile, JSON.stringify(resumedState));
   await fs.writeFile(journalFile, JSON.stringify(resumedJournal));
-  await fs.writeFile(runFile, JSON.stringify({ ...JSON.parse(originalRun), mode: 'case' }));
-  await fs.writeFile(summaryFile, JSON.stringify({ ...JSON.parse(originalSummary), mode: 'case',
+  await fs.writeFile(runFile, originalRun);
+  await fs.writeFile(summaryFile, JSON.stringify({ ...JSON.parse(originalSummary),
     cases: { A: { caseId: 'A', status: 'PASS', operations: 10, mainTurns: 10, runnerTurns: 0, rawPath: resumedRawPath } } }));
   const resumed = await exportMeasurement(runId);
   assert.equal(resumed.cases[0].operations, 10);
@@ -293,8 +321,8 @@ try {
   assert.deepEqual(await fs.readFile(rawPath), focalRawBytes);
   await fs.rm(resumedRawPath); await fs.writeFile(rawPath, originalRaw);
   await fs.writeFile(stateFile, originalState); await fs.writeFile(journalFile, originalJournal);
-  await fs.writeFile(runFile, JSON.stringify({ ...JSON.parse(originalRun), mode: 'case', status: 'BLOCKED' }));
-  await fs.writeFile(summaryFile, JSON.stringify({ ...JSON.parse(originalSummary), mode: 'case', status: 'BLOCKED',
+  await fs.writeFile(runFile, JSON.stringify({ ...JSON.parse(originalRun), status: 'BLOCKED' }));
+  await fs.writeFile(summaryFile, JSON.stringify({ ...JSON.parse(originalSummary), status: 'BLOCKED',
     cases: { A: { status: 'BLOCKED', operations: 0, mainTurns: 0, runnerTurns: 0 } } }));
   await fs.writeFile(stateFile, JSON.stringify({ ...JSON.parse(originalState), status: 'BLOCKED',
     terminal: { result: 'BLOCKED', blocker: 'DRIVER_FAILURE' }, operations: [], mainTurns: 0, runnerTurns: 0,

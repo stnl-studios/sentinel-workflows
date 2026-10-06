@@ -376,7 +376,7 @@ test('manager status creates an absent benchmark-temp in an isolated checkout fi
   const runtime = path.join(fixture, 'benchmarks/sentinel-todo/runtime');
   await fs.mkdir(runtime, { recursive: true });
   for (const name of ['benchmark-manager.mjs', 'benchmark-snapshot.mjs', 'benchmark-ui.mjs',
-    'benchmark.mjs', 'benchmark-environment.mjs', 'product-acceptance.mjs', 'validation-reassessment.mjs']) {
+    'benchmark.mjs', 'benchmark-environment.mjs', 'product-acceptance.mjs', 'validation-reassessment.mjs', 'capacity-retry.mjs']) {
     await fs.copyFile(path.join(ROOT, 'benchmarks/sentinel-todo/runtime', name), path.join(runtime, name));
   }
   const isolatedRuns = path.join(fixture, 'benchmark-temp');

@@ -316,7 +316,7 @@ for (const [name, mode, caseId, status, uncreated] of [
   ['individual B PASS', 'case', 'B', 'PASS', false],
   ['terminal focal', 'focal', 'A', 'FOCAL_STOP', false],
   ['zero-turn startup failure', 'full', 'A', 'BLOCKED', true],
-]) test(`functional cleanup accepts ${name} and publishes before removal`, async (t) => {
+]) test(`functional cleanup accepts ${name} and only publishes full measurements`, async (t) => {
   const f = await functionalFixture(t);
   const id = `run-old-${caseId.toLowerCase()}-${mode}`;
   const dir = path.join(f.scratch, id);
@@ -341,13 +341,19 @@ for (const [name, mode, caseId, status, uncreated] of [
   };
   await runFunctionalBenchmark({ root: f.root, hooks: f.hooks });
   assert.equal(f.runs, 1);
-  assert.ok(f.calls.indexOf(`publish-${id}`) < f.calls.indexOf(`clean-${id}`));
   assert.equal(await fs.stat(dir).then(() => true, () => false), false);
+  if (mode !== 'full') {
+    assert.ok(f.calls.includes(`clean-${id}`));
+    assert.ok(!f.calls.includes(`export-${id}`));
+    assert.ok(!f.calls.includes(`publish-${id}`));
+    await assert.rejects(fs.lstat(path.join(f.measurements, `${id}.json`)), { code: 'ENOENT' });
+    return;
+  }
+  assert.ok(f.calls.indexOf(`publish-${id}`) < f.calls.indexOf(`clean-${id}`));
   const report = JSON.parse(await fs.readFile(path.join(f.measurements, `${id}.json`), 'utf8'));
   assert.equal(report.run.mode, mode);
   assert.equal(report.run.status, status);
   assert.equal(f.saved.get(id).updateLatest, false);
-  if (mode !== 'full') assert.equal(report.comparisonToBaseline.directlyComparable, false);
 });
 
 test('functional cleanup rejects activity, identity ambiguity and unsafe home evidence before dispatch', async (t) => {
@@ -411,6 +417,30 @@ test('functional mode preserves and removes a terminal old campaign after publis
   assert.ok(f.calls.includes('publish-run-old-12345678'));
   assert.equal(JSON.parse(await fs.readFile(path.join(f.measurements, 'run-old-12345678.json'), 'utf8')).run.id, 'run-old-12345678');
   assert.equal(await fs.stat(campaignRoot).then(() => true, () => false), false);
+});
+
+for (const mode of ['case', 'focal']) test(`old campaign ${mode} reports are not recreated as durable measurements`, async t => {
+  const f = await functionalFixture(t);
+  const campaignRoot = path.join(f.scratch, 'campaign-old-partial');
+  await fs.mkdir(campaignRoot, { recursive: true });
+  await fs.writeFile(path.join(campaignRoot, '.sentinel-campaign-owned'), 'sentinel-todo-campaign-v1\n');
+  await fs.writeFile(path.join(campaignRoot, 'state.json'), JSON.stringify({ status: 'BLOCKED' }));
+  const oldReport = structuredClone(f.baseline);
+  oldReport.run.id = `run-old-partial-${mode}`; oldReport.run.mode = mode;
+  await fs.writeFile(path.join(campaignRoot, 'run-01.json'), JSON.stringify(oldReport));
+  await runFunctionalBenchmark({ root: f.root, hooks: f.hooks });
+  assert.ok(!f.calls.includes(`publish-${oldReport.run.id}`));
+  await assert.rejects(fs.lstat(path.join(f.measurements, `${oldReport.run.id}.json`)), { code: 'ENOENT' });
+  await assert.rejects(fs.lstat(campaignRoot), { code: 'ENOENT' });
+});
+
+test('current functional result cannot silently succeed with a case report', async t => {
+  const f = await functionalFixture(t);
+  const exported = f.hooks.exportMeasurement;
+  f.hooks.exportMeasurement = async id => ({ ...await exported(id), run: { ...f.baseline.run, id, mode: 'case' } });
+  await assert.rejects(runFunctionalBenchmark({ root: f.root, hooks: f.hooks }), /current benchmark report must be full/);
+  assert.ok(!f.calls.includes('publish-run-functional-1'));
+  assert.equal((await fs.stat(path.join(f.scratch, 'run-functional-1'))).isDirectory(), true);
 });
 
 test('functional mode refuses active and unsafe scratch without deleting it', async (t) => {

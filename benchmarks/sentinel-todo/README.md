@@ -113,12 +113,25 @@ only if its frozen functional source, last official state, and fingerprint
 still match. After execution reaches `COMPLETE`, the manager proceeds directly
 to `SPEC_CLOSE`. It does not retry a blocked operation by guessing a handoff.
 
+An exact provider capacity rejection can receive one retry after 15 seconds,
+before terminalization, with the same model, effort and launcher. This requires
+a complete SDK trace with no tools, or only the successful owned managed
+preflight, unchanged workspace/candidate bytes and modes, current authority and
+an idle broker. Other commands, pending effects, uncertain transport, generic
+errors or insufficient budget block the retry. Each dispatched attempt retains
+its diagnostic, thread and usage observation, consumes a turn and counts toward
+operation budgets. Unknown usage remains unavailable. Terminal FULL runs are
+never reopened by this policy.
+
 While retained, each run is visible under `benchmark-temp/<run-id>/`: frozen source
 snapshot and hashes, case workspaces, candidates, sent prompts, event JSONL,
 operation evidence, journal, finalizer raw, and summaries. A blocked or
 cancelled run is retained. `status` and `inspect` are read only and use no model.
 `clean` requires one explicit owned, inactive, completed run ID. Promote an
-important run's canonical measurement before removing its raw directory.
+important full run's canonical measurement before removing its raw directory.
+Measurement export and publication accept only terminal `full` runs, including
+failed full-suite attempts for diagnosis. `case` and `focal` remain scratch
+evidence; the launcher's existing safe cleanup skips their measurement export.
 The versioned `benchmark.json` sets `turnBudget.maxTurnsPerRun` to 100. Every
 new run starts with zero consumed turns and keeps its reservation ledger inside
 that run directory. B and C share that run budget safely while executing

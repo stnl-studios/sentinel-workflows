@@ -11,6 +11,8 @@ import { createReporter } from './benchmark-ui.mjs';
 import { budgetViolation } from './benchmark.mjs';
 import { captureValidationInputs, captureReassessmentEvidence, prepareValidationReassessment,
   assertReassessmentUnchanged } from './validation-reassessment.mjs';
+import { CAPACITY_RETRY_DELAY_MS, captureCapacityInputs, capacityTraceIsSafe, modelAtCapacity, operationBudgetHistory,
+  runCapacityLimitedTurn } from './capacity-retry.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const RUNS = path.join(ROOT, 'benchmark-temp');
@@ -513,7 +515,7 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
       pendingRecovery = null;
       const currentReassessment = pendingReassessment;
       pendingReassessment = null;
-      const violation = budgetViolation([...caseState.operations, { operation, slice }], caseConfiguration.budgets);
+      const violation = budgetViolation([...operationBudgetHistory(caseState.operations), { operation, slice }], caseConfiguration.budgets);
       if (violation !== null) {
         terminal = { result: 'BLOCKED', blocker: 'BUDGET_EXCEEDED', diagnostic: violation.budget };
         break;
@@ -656,6 +658,11 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
       let turn;
       let mainException = null;
       let reassessmentProof = null;
+      let capacityResult = { attempts: [], stopReason: null };
+      let mainUsageObservation;
+      let mainTurnSettled = false;
+      let effectiveOperationId = operationId;
+      const capacityInputs = await captureCapacityInputs(workspace, candidates);
       let lastProgressMs = 0;
       const heartbeat = setInterval(() => announce({ kind: 'progress', status: 'RUNNING',
         runId: path.basename(runRoot), caseId, operation, slice,
@@ -666,21 +673,78 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
         const outputSchema = operation === 'SPEC_READINESS'
           ? await readJson(path.join(runRoot, 'snapshot', 'skills/workflows/stnl-spec-lifecycle-manager/runtime/readiness-result.schema.json'))
           : undefined;
-        turn = await runTemplateTurn(product, { env: turnEnv, cwd: workspace, prompt,
-          model: route.model, effort: route.effort, threadId, operationId, eventsPath,
-          outputSchema, timeoutMs: RUNNER_OPERATIONS.has(operation) ? 1_800_000 : 900_000, signal,
-          onEvent: (event) => {
-            if (event.type !== 'item.started' && event.type !== 'item.completed') return;
-            const itemType = event.item?.type;
-            if (!['command_execution', 'file_change', 'collab_tool_call', 'mcp_tool_call'].includes(itemType)) return;
-            if (Date.now() - lastProgressMs < 30_000) return;
-            lastProgressMs = Date.now();
-            announce({ kind: 'progress', status: 'RUNNING', runId: path.basename(runRoot), caseId,
-              operation, slice, stage: itemType, durationMs: Date.now() - startedMs,
-              model: route.label, effort: route.effort, artifacts: caseRoot });
+        capacityResult = await runCapacityLimitedTurn({ signal, attempts: capacityResult.attempts,
+          runTurn: async attempt => {
+            effectiveOperationId = attempt === 1 ? operationId : `${operationId}-capacity-retry-1`;
+            return runTemplateTurn(product, { env: turnEnv, cwd: workspace, prompt,
+              model: route.model, effort: route.effort, threadId, operationId: effectiveOperationId, eventsPath,
+              outputSchema, timeoutMs: RUNNER_OPERATIONS.has(operation) ? 1_800_000 : 900_000, signal,
+              onEvent: (event) => {
+                if (event.type !== 'item.started' && event.type !== 'item.completed') return;
+                const itemType = event.item?.type;
+                if (!['command_execution', 'file_change', 'collab_tool_call', 'mcp_tool_call'].includes(itemType)) return;
+                if (Date.now() - lastProgressMs < 30_000) return;
+                lastProgressMs = Date.now();
+                announce({ kind: 'progress', status: 'RUNNING', runId: path.basename(runRoot), caseId,
+                  operation, slice, stage: itemType, durationMs: Date.now() - startedMs,
+                  model: route.label, effort: route.effort, artifacts: caseRoot });
+              },
+            });
+          },
+          onAttempt: async (attemptTurn, attempt, record) => {
+            Object.assign(record, { operationId: effectiveOperationId, ledgerTurn: mainTurnNumber,
+              requestedModel: route.model, requestedEffort: route.effort });
+            await settleTurn(runRoot, mainTurnNumber, attemptTurn, turnLimit);
+            mainTurnSettled = true;
+            if (attemptTurn.turnStarted !== false) caseState.mainTurns += 1;
+            mainUsageObservation = mainUsage.observe({ threadId: attemptTurn.threadId,
+              segment: path.basename(runRoot), usage: attemptTurn.usage, eventId: effectiveOperationId,
+              parentThreadId: threadId });
+            record.usageObservation = mainUsageObservation;
+            await atomicJson(path.join(caseRoot, 'case-state.json'), caseState);
+            return record;
+          },
+          persistAttempt: record => atomicJson(path.join(caseRoot,
+            `${String(sequence).padStart(2, '0')}-${operation.toLowerCase()}.capacity-attempt-${record.attempt}.json`), record),
+          authorizeRetry: async (attemptTurn, attempt) => {
+            if (signal.aborted) return { allowed: false, reason: 'CANCELLED' };
+            const events = (await fs.readFile(eventsPath, 'utf8')).split('\n').filter(Boolean).map(JSON.parse);
+            if (!capacityTraceIsSafe(attemptTurn, events, effectiveOperationId,
+              managedSliceContext !== null && turnEnv.STNL_MANAGED_PREFLIGHT
+                === path.join(runRoot, 'snapshot/agents/codex/runtime/managed-slice-preflight.mjs'))
+              || (broker !== null && (broker.requestsHandled !== 0 || broker.capturedReceipts !== 0
+                || broker.cancelledPending || broker.errors.length > 0))) return { allowed: false, reason: 'EFFECTS_OR_AMBIGUITY' };
+            const freshInputs = await captureCapacityInputs(workspace, candidates);
+            if (capacityInputs.rejected || freshInputs.rejected || freshInputs.sha256 !== capacityInputs.sha256)
+              return { allowed: false, reason: 'INPUTS_CHANGED_OR_UNPROVEN' };
+            try {
+              await assertSnapshotIntegrity(runRoot);
+              if (!operation.startsWith('SPEC_')) {
+                const fresh = await product.preflightExecutionOperation(specPath, operation, specInput(slice));
+                if (managedSliceContext !== null && (fresh.state !== officialPreflight.state
+                  || `sha256:${fresh.currentFingerprint}` !== officialPreflight.authority
+                  || JSON.stringify(fresh.legalOperations) !== JSON.stringify(officialPreflight.legalOperations)
+                  || JSON.stringify(fresh.mandatoryRecovery ?? null) !== JSON.stringify(officialPreflight.mandatoryRecovery ?? null)))
+                  return { allowed: false, reason: 'AUTHORITY_CHANGED' };
+              }
+            } catch (error) { return { allowed: false, reason: 'AUTHORITY_UNPROVEN', diagnostic: error.message }; }
+            const history = [...operationBudgetHistory(caseState.operations),
+              ...Array.from({ length: attempt + 1 }, () => ({ operation, slice }))];
+            if (budgetViolation(history, caseConfiguration.budgets) !== null)
+              return { allowed: false, reason: 'OPERATION_BUDGET' };
+            if ((await budgetSnapshot(runRoot)).turnBudget.remaining < 1) return { allowed: false, reason: 'TURN_BUDGET' };
+            return { allowed: true, reason: 'NO_EFFECTS_PROVEN', inputsSha256: freshInputs.sha256 };
+          },
+          onWait: () => announce({ kind: 'progress', status: 'RUNNING', runId: path.basename(runRoot), caseId,
+            operation, slice, stage: 'model capacity: one retry after 15 seconds', model: route.label, effort: route.effort }),
+          beforeRetry: async () => {
+            const retry = await admitOperation({ runRoot, runId: path.basename(runRoot), caseId,
+              operation, runnerRequired: false, limit: turnLimit });
+            try { mainTurnNumber = await startReservedTurn(runRoot, retry.main, turnLimit); mainTurnSettled = false; }
+            catch (error) { await releaseReservation(runRoot, retry.main, turnLimit); throw error; }
           },
         });
-        await settleTurn(runRoot, mainTurnNumber, turn, turnLimit);
+        turn = capacityResult.turn;
         if (operation === 'VALIDATE_SLICE' && turn.completed === true && turn.error == null
           && turn.processError == null && turn.errorEvent == null) {
           reassessmentProof = await captureReassessmentEvidence({ product, context: managedSliceContext,
@@ -690,10 +754,23 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
         // An exception supplies no proof that dispatch never started. Keep the
         // consumed turn and continue through the normal evidence/journal path.
         mainException = error;
+        capacityResult.stopReason = 'EXCEPTION';
         turn = { completed: false, turnStarted: null, threadId: null, error: String(error.message ?? error),
           processError: String(error), response: null, usage: null, toolCalls: null,
           requestedModel: route.model, requestedEffort: route.effort, reportedModel: null };
-        await settleTurn(runRoot, mainTurnNumber, turn, turnLimit);
+        if (!mainTurnSettled) {
+          await settleTurn(runRoot, mainTurnNumber, turn, turnLimit);
+          if (turn.turnStarted !== false) caseState.mainTurns += 1;
+          mainUsageObservation = mainUsage.observe({ threadId: turn.threadId, segment: path.basename(runRoot),
+            usage: turn.usage, eventId: effectiveOperationId, parentThreadId: threadId });
+          if (capacityResult.attempts.length > 0) capacityResult.attempts.at(-1).usageObservation = mainUsageObservation;
+        }
+        const interruptedAttempt = capacityResult.attempts.at(-1);
+        if (interruptedAttempt) {
+          interruptedAttempt.turn ??= turn;
+          Object.assign(interruptedAttempt, { operationId: effectiveOperationId, ledgerTurn: mainTurnNumber,
+            requestedModel: route.model, requestedEffort: route.effort, exception: String(error) });
+        }
         // Setup may throw before the transport opens its event log. An empty
         // log preserves that observation without inventing provider events.
         await (await fs.open(eventsPath, 'a')).close();
@@ -702,15 +779,12 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
         if (broker !== null) await broker.close();
         await releaseReservation(runRoot, runnerReservation, turnLimit);
       }
-      if (turn.turnStarted !== false) caseState.mainTurns += 1;
       // Keep the last observed IDs for diagnostics, never for template resume.
       caseState.threads[contextRole] = turn.threadId;
-      const mainUsageObservation = mainUsage.observe({ threadId: turn.threadId,
-        segment: path.basename(runRoot), usage: turn.usage, eventId: operationId,
-        parentThreadId: threadId });
-      const collaborationEvents = await unmanagedCollaborationEvents(eventsPath, operationId, runnerEventPaths);
+      const collaborationEvents = await unmanagedCollaborationEvents(eventsPath, effectiveOperationId, runnerEventPaths);
       providerConfigError ??= providerConfigurationError([], turn.providerError ?? turn.errorEvent ?? null);
-      const allUsage = [mainUsageObservation, ...runnerUsageObservations,
+      const allUsage = [...(capacityResult.attempts.length > 0
+        ? capacityResult.attempts.map(attempt => attempt.usageObservation) : [mainUsageObservation]), ...runnerUsageObservations,
         ...collaborationEvents.map((event) => ({ status: 'unavailable', delta: null,
           reason: 'unmanaged collaboration usage unknown', source: 'unmanaged_collaboration', event }))];
       const usageComplete = allUsage.every((observation) => ['attributable', 'duplicate'].includes(observation.status));
@@ -739,6 +813,7 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
         ? { result: 'BLOCKED', blocker: providerConfigError.code, diagnostic: providerConfigError.message }
         : guardOperationProvenance(decideOutcome(operation, readback, turn.completed, readinessResult),
           operation, collaborationEvents, broker?.capturedReceipts ?? 0);
+      if (modelAtCapacity(turn) && !mainException && !providerConfigError) outcome.blocker = 'SDK_MODEL_AT_CAPACITY';
       if (turn.completed && RUNNER_OPERATIONS.has(operation) && broker?.requestsHandled === 0) {
         outcome.result = 'BLOCKED'; outcome.blocker = 'OFFICIAL_RUNNER_RECEIPT_MISSING';
         outcome.diagnostic = 'No managed runner request was received; no independent runner turn was dispatched.';
@@ -781,11 +856,15 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
         normalizedUsage,
         journal: { exitCode: journalResult.exitCode, diagnostic: journalResult.stderr || journalResult.stdout }, outcome,
         recovery: currentRecovery, validationReassessment: currentReassessment,
-        reassessmentProof };
+        reassessmentProof,
+        ...((capacityResult.attempts.some(attempt => modelAtCapacity(attempt.turn)) || capacityResult.attempts.length > 1)
+          ? { capacityRetry: { maxRetries: 1, delayMs: CAPACITY_RETRY_DELAY_MS, stopReason: capacityResult.stopReason,
+            attempts: capacityResult.attempts } } : {}) };
       const evidencePath = path.join(caseRoot, `${String(sequence).padStart(2, '0')}-${operation.toLowerCase()}.json`);
       await atomicJson(evidencePath, evidence);
       caseState.operations.push({ operation, slice, outcome, evidencePath, threadId: turn.threadId,
-        recovery: currentRecovery, validationReassessment: currentReassessment });
+        recovery: currentRecovery, validationReassessment: currentReassessment,
+        ...(capacityResult?.attempts.length > 1 ? { dispatchAttempts: capacityResult.attempts.length } : {}) });
       await atomicJson(path.join(caseRoot, 'case-state.json'), caseState);
       announce({ runId: path.basename(runRoot), caseId, operation, slice, state: readback.execution?.state ?? readback.lifecycle?.status,
         result: outcome.result, durationMs: evidence.durationMs, model: route.label, effort: route.effort,
@@ -794,7 +873,7 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
       terminal = outcome;
       if (outcome.result === 'BLOCKED' && currentReassessment === null) {
         const recovery = await prepareOfficialRecovery({ product, specPath, operation, slice, outcome, readback,
-          priorOperations: caseState.operations, budgets: caseConfiguration.budgets,
+          priorOperations: operationBudgetHistory(caseState.operations), budgets: caseConfiguration.budgets,
           remainingTurns: (await budgetSnapshot(runRoot)).turnBudget.remaining,
           transportFailed: turn.completed !== true || turn.error != null || turn.processError != null
             || turn.errorEvent != null || runnerTransportFailed || (broker?.errors.length ?? 0) > 0 });
@@ -814,7 +893,7 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
               alreadyUsed: caseState.validationReassessments?.[slice] != null
                 || await exists(path.join(caseRoot, `validation-reassessment-${slice}.json`)),
               remainingTurns: (await budgetSnapshot(runRoot)).turnBudget.remaining,
-              budgetExceeded: budgetViolation([...caseState.operations, { operation, slice }], caseConfiguration.budgets) !== null
+              budgetExceeded: budgetViolation([...operationBudgetHistory(caseState.operations), { operation, slice }], caseConfiguration.budgets) !== null
                 || (finalSequence !== null && sequence >= finalSequence),
               transportFailed: turn.completed !== true || turn.error != null || turn.processError != null
                 || turn.errorEvent != null || runnerTransportFailed || (broker?.errors.length ?? 0) > 0,
