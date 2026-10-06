@@ -1,39 +1,39 @@
 # Sentinel todo benchmark measurement
 
-- Run: run-20260930183513-d0009216
-- Status: PASS; mode: full; profile: production-v2
-- Time: 2026-09-30T18:35:13.703Z → 2026-09-30T20:14:19.687Z
-- HEAD: 02c1a931488f00962c640380fced16fb66ec967c; dirty: true; functional diff: sha256:ec3e1899b34f3b3e31eee23465c83b494aa4124cad38d4715ac5ae48c5cb2eb1
-- Source identity: sha256:caecab11fa18f8c806f0cb66b811a85875348be644ca412d5ee8d497e0ef8729; snapshot: sha256:8ef0ee865c6e071c00188b20c8225d01a1d84eb5c90c5940f64d53eca3e8a277
-- Snapshot created: 2026-09-30T18:35:13.690Z
+- Run: run-20261006173440-90810075
+- Status: PASS; mode: full; profile: production-v3
+- Time: 2026-10-06T17:34:41.126Z → 2026-10-06T18:44:58.744Z
+- HEAD: ddce03bd20be8999a2c5571152ebb4766f4a9f32; dirty: false; functional diff: sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+- Source identity: sha256:8ce247fb58a09d20fc7de551939851db4ff60c23ba606cf2b3cedbfe2d89c1b1; snapshot: sha256:809d326464f3af6bcff45be8f62b8957891d45f295b288c8e613f80bafecc274
+- Snapshot created: 2026-10-06T17:34:41.111Z
 
 | Case | State | Blocker | Finalizer | Final tests | Spec closed | Official state | Operations | Main / runner turns | Duration ms | Slices |
 |---|---|---|---|---|---|---|---:|---:|---:|---|
-| A | PASS | unavailable | PASS (exit 0) | true | true | COMPLETE | 13 | 13 / 7 | 2668463 | 2 |
-| B | PASS | unavailable | PASS (exit 0) | true | true | COMPLETE | 15 | 15 / 9 | 3101070 | 3 |
-| C | PASS | unavailable | PASS (exit 0) | true | true | COMPLETE | 14 | 14 / 9 | 3276091 | 3 |
+| A | PASS | unavailable | PASS (exit 0) | true | true | COMPLETE | 12 | 12 / 6 | 2220219 | 3 |
+| B | PASS | unavailable | PASS (exit 0) | true | true | COMPLETE | 10 | 10 / 5 | 1549247 | 1 |
+| C | PASS | unavailable | PASS (exit 0) | true | true | COMPLETE | 12 | 12 / 7 | 1996122 | 3 |
 
 ## Measured totals
 
-- Operations: 42; recovery operations: 5; happy path operations: 37
-- Main turns: 42; runner turns: 25; extra runner turns: 1
-- Repeated reviews: 0; repeated execute/validate: 0 / 3
-- Duration total / summed cases (ms): 5945984 / 9045624
-- Telemetry coverage main / runner: 42/42 / 25/25
-- main tokens (input/output/cached input/reasoning output): 71091730 / 345349 / 68598144 / 105684
-- main observed input/output tokens: 71091730 / 345349
-- runner tokens (input/output/cached input/reasoning output): 3337367 / 46596 / 2627072 / 14363
-- runner observed input/output tokens: 3337367 / 46596
+- Operations: 34; recovery operations: 1; happy path operations: 33
+- Main turns: 34; runner turns: 18; extra runner turns: 2
+- Repeated reviews: 0; repeated execute/validate: 0 / 1
+- Duration total / summed cases (ms): 4217618 / 5765588
+- Telemetry coverage main / runner: 34/34 / 18/18
+- main tokens (input/output/cached input/reasoning output): 16598946 / 198888 / 15059328 / 45504
+- main observed input/output tokens: 16598946 / 198888
+- runner tokens (input/output/cached input/reasoning output): 2356180 / 25508 / 1854464 / 1539
+- runner observed input/output tokens: 2356180 / 25508
 - Cached input and reasoning output are subcategories, not additional tokens. Input per turn is a context-pressure proxy, not measured window occupancy or billing.
 
 ## Comparison
 
-- Reason: compatible reports
-- Deltas versus baseline-v1: {"g2":{"operations":6,"recoveryOperations":5,"extraRunnerTurns":0,"repeatedReviewRounds":0,"repeatedExecuteAttempts":0,"repeatedValidateAttempts":3},"g3":{"mainInputTokens":28213785,"mainOutputTokens":79574,"runnerInputTokens":1227030,"runnerOutputTokens":11223,"peakInputPerTurn":3539085,"medianInputPerTurn":-100224}}
-- Historical JSON: [run-20260930183513-d0009216.json](run-20260930183513-d0009216.json)
+- Reason: resultSchemaHash, qualification, profile
+- Deltas versus baseline-v1: unavailable
+- Historical JSON: [run-20261006173440-90810075.json](run-20261006173440-90810075.json)
 
 ## Case evidence
 
-- A: PASS; blocker unavailable; terminal PASS; blocking operation "unavailable"; finalizer PASS; final tests true (node --test, exit 0); operations {"EXECUTE_SLICE":2,"VALIDATE_SLICE":3,"APPLY_FINDINGS":2,"REPLAN":0,"SPEC_RESUME":0,"REVIEW_PLAN":1,"REVIEW_TASKS":1}; slices {"slice-01":{"execute":1,"validate":1,"applyFindings":0},"slice-02":{"execute":1,"validate":2,"applyFindings":2}}; telemetry coverage main 13/13, runner 7/7.
-- B: PASS; blocker unavailable; terminal PASS; blocking operation "unavailable"; finalizer PASS; final tests true (node --test, exit 0); operations {"EXECUTE_SLICE":3,"VALIDATE_SLICE":4,"APPLY_FINDINGS":2,"REPLAN":0,"SPEC_RESUME":0,"REVIEW_PLAN":1,"REVIEW_TASKS":1}; slices {"slice-01":{"execute":1,"validate":1,"applyFindings":0},"slice-02":{"execute":1,"validate":1,"applyFindings":0},"slice-03":{"execute":1,"validate":2,"applyFindings":2}}; telemetry coverage main 15/15, runner 9/9.
-- C: PASS; blocker unavailable; terminal PASS; blocking operation "unavailable"; finalizer PASS; final tests true (node --test, exit 0); operations {"EXECUTE_SLICE":3,"VALIDATE_SLICE":4,"APPLY_FINDINGS":1,"REPLAN":0,"SPEC_RESUME":0,"REVIEW_PLAN":1,"REVIEW_TASKS":1}; slices {"slice-01":{"execute":1,"validate":2,"applyFindings":1},"slice-02":{"execute":1,"validate":1,"applyFindings":0},"slice-03":{"execute":1,"validate":1,"applyFindings":0}}; telemetry coverage main 14/14, runner 9/9.
+- A: PASS; blocker unavailable; terminal PASS; blocking operation "unavailable"; finalizer PASS; final tests true (node --test, exit 0); operations {"EXECUTE_SLICE":3,"VALIDATE_SLICE":3,"APPLY_FINDINGS":0,"REPLAN":0,"SPEC_RESUME":0,"REVIEW_PLAN":1,"REVIEW_TASKS":1}; slices {"slice-01":{"execute":1,"validate":1,"applyFindings":0},"slice-02":{"execute":1,"validate":1,"applyFindings":0},"slice-03":{"execute":1,"validate":1,"applyFindings":0}}; telemetry coverage main 12/12, runner 6/6.
+- B: PASS; blocker unavailable; terminal PASS; blocking operation "unavailable"; finalizer PASS; final tests true (node --test, exit 0); operations {"EXECUTE_SLICE":1,"VALIDATE_SLICE":2,"APPLY_FINDINGS":1,"REPLAN":0,"SPEC_RESUME":0,"REVIEW_PLAN":1,"REVIEW_TASKS":1}; slices {"slice-01":{"execute":1,"validate":2,"applyFindings":1}}; telemetry coverage main 10/10, runner 5/5.
+- C: PASS; blocker unavailable; terminal PASS; blocking operation "unavailable"; finalizer PASS; final tests true (node --test, exit 0); operations {"EXECUTE_SLICE":3,"VALIDATE_SLICE":3,"APPLY_FINDINGS":0,"REPLAN":0,"SPEC_RESUME":0,"REVIEW_PLAN":1,"REVIEW_TASKS":1}; slices {"slice-01":{"execute":1,"validate":1,"applyFindings":0},"slice-02":{"execute":1,"validate":1,"applyFindings":0},"slice-03":{"execute":1,"validate":1,"applyFindings":0}}; telemetry coverage main 12/12, runner 7/7.
