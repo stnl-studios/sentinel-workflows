@@ -72,22 +72,43 @@ function selectedRow(text, slice, label) {
 
 async function writeCandidateFiles(entries) {
   const staged = [];
+  const installed = [];
   try {
     for (const entry of entries) {
       const temporary = `${entry.file}.stnl-validation-candidate-${process.pid}-${staged.length}.tmp`;
-      await fs.writeFile(temporary, entry.after, { encoding: "utf8", flag: "wx" });
-      staged.push({ ...entry, temporary });
+      const mode = (await fs.stat(entry.file)).mode & 0o777;
+      await fs.writeFile(temporary, entry.after, { encoding: "utf8", flag: "wx", mode });
+      staged.push({ ...entry, temporary, mode });
     }
-    for (const entry of staged) await fs.rename(entry.temporary, entry.file);
+    for (const entry of staged) {
+      if (await fs.readFile(entry.file, 'utf8') !== entry.before) fail('candidate changed before deterministic installation');
+      await fs.rename(entry.temporary, entry.file);
+      installed.push(entry);
+    }
   } catch (error) {
-    await Promise.all(staged.map((entry) => fs.rm(entry.temporary, { force: true }).catch(() => {})));
+    try { for (const entry of installed.reverse()) {
+      if (await fs.readFile(entry.file, 'utf8').catch(() => null) !== entry.after
+        || ((await fs.stat(entry.file).catch(() => null))?.mode & 0o777) !== entry.mode) {
+        error.message += '; candidate changed during rollback and was preserved';
+        continue;
+      }
+      await fs.writeFile(entry.temporary, entry.before, { flag: 'wx', mode: entry.mode });
+      // Never replace a foreign write observed while staging the rollback.
+      if (await fs.readFile(entry.file, 'utf8') !== entry.after) {
+        error.message += '; candidate changed during rollback and was preserved';
+        continue;
+      }
+      await fs.rename(entry.temporary, entry.file);
+    } } finally {
+      await Promise.all(staged.map((entry) => fs.rm(entry.temporary, { force: true }).catch(() => {})));
+    }
     throw error;
   }
 }
 
 export async function prepareValidationCandidate({ specPath, slice: sliceValue, workspace, candidateExecutionRoot, semanticResponseFile, receiptFile, verificationEventIds }) {
   assertManagedAgreement({ specPath, workspace, slice: sliceValue });
-  await assertManagedRunnerReceipt({ operation: "VALIDATE_SLICE", slice: sliceValue, workspace, receiptFile, semanticResponseFile });
+  await assertManagedRunnerReceipt({ operation: "VALIDATE_SLICE", slice: sliceValue, workspace, receiptFile, semanticResponseFile, allowRejected: true });
   if (typeof specPath !== "string" || !path.isAbsolute(specPath)) fail("SPEC_PATH must be absolute");
   if (typeof semanticResponseFile !== "string" || !path.isAbsolute(semanticResponseFile)) {
     fail("semantic response file must be absolute");
@@ -126,7 +147,7 @@ export async function prepareValidationCandidate({ specPath, slice: sliceValue, 
   ]);
   const selected = preflight.tasks.get(slice);
   if (selected === undefined) fail(`official preflight did not resolve ${slice}`);
-  const mechanicalSections = ["Validation Attempts", "Effective Validation Base", "Final Result"];
+  const mechanicalSections = ["Validation Attempts", "Effective Validation Base", "Final Result", "Delegation Blocker"];
   for (const heading of mechanicalSections) {
     if (sectionRange(candidateTaskBefore, heading, "candidate task").body
       !== sectionRange(liveTaskBefore, heading, "live task").body) {
@@ -155,7 +176,7 @@ export async function prepareValidationCandidate({ specPath, slice: sliceValue, 
     if (receiptFile === undefined || diagnostic === null) throw error;
     const recovery = await persistMalformedRunnerResultInCandidate({
       taskArtifact: candidateTaskFile, operation: "VALIDATE_SLICE",
-      receiptFile, semanticResponseFile: responseFile, diagnostic,
+      receiptFile, semanticResponseFile: responseFile, diagnostic, workspace: workspaceRoot, error,
     });
     return Object.freeze({ status: "RUNNER_RESULT_BLOCKED", recovery });
   }
@@ -169,6 +190,12 @@ export async function prepareValidationCandidate({ specPath, slice: sliceValue, 
     ? prepared.attemptRecord
     : `${priorAttempts}\n\n${prepared.attemptRecord}`;
   let candidateTaskAfter = replaceSection(candidateTaskBefore, "Validation Attempts", nextAttempts, "candidate task");
+  const blocker = sectionRange(candidateTaskBefore, "Delegation Blocker", "candidate task").body;
+  if (blocker !== "- none" && blocker.includes("- State: active\n")) {
+    if (!blocker.includes("- Operation: VALIDATE_SLICE\n")) fail("active Delegation Blocker belongs to another operation");
+    candidateTaskAfter = replaceSection(candidateTaskAfter, "Delegation Blocker",
+      `${blocker.replace("- State: active", "- State: resolved")}\n- Resolution: ${prepared.attemptId} returned a valid runner result`, "candidate task");
+  }
   let candidateIndexAfter = candidateIndexBefore;
   if (prepared.status === "PASS") {
     if (prepared.effectiveValidationBase === null) fail("canonical PASS producer omitted the Effective Validation Base");
@@ -189,8 +216,8 @@ export async function prepareValidationCandidate({ specPath, slice: sliceValue, 
     || await fs.readFile(candidateIndexFile, "utf8") !== candidateIndexBefore) {
     fail("candidate changed concurrently during deterministic preparation");
   }
-  const changed = [{ file: candidateTaskFile, after: candidateTaskAfter }];
-  if (candidateIndexAfter !== candidateIndexBefore) changed.push({ file: candidateIndexFile, after: candidateIndexAfter });
+  const changed = [{ file: candidateTaskFile, before: candidateTaskBefore, after: candidateTaskAfter }];
+  if (candidateIndexAfter !== candidateIndexBefore) changed.push({ file: candidateIndexFile, before: candidateIndexBefore, after: candidateIndexAfter });
   await writeCandidateFiles(changed);
   return Object.freeze({
     status: "PREPARED",

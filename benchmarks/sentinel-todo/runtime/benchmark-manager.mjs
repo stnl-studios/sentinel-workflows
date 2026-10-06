@@ -8,6 +8,12 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { assertSnapshotIntegrity, createSnapshot } from './benchmark-snapshot.mjs';
 import { createReporter } from './benchmark-ui.mjs';
+import { budgetViolation } from './benchmark.mjs';
+import { captureValidationInputs, captureReassessmentEvidence, prepareValidationReassessment,
+  assertReassessmentUnchanged } from './validation-reassessment.mjs';
+import { CAPACITY_RETRY_DELAY_MS, captureCapacityInputs, captureCapacitySkillRead, capacityTraceDecision,
+  capacityAttemptEvidence, transportDiagnosticEvidence, modelAtCapacity, operationBudgetHistory,
+  runCapacityLimitedTurn } from './capacity-retry.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const RUNS = path.join(ROOT, 'benchmark-temp');
@@ -191,7 +197,7 @@ export async function settleTurn(runRoot, number, turn, limit) {
     if (!entry || entry.state !== 'dispatched') fail('turn ledger settlement is invalid');
     entry.endedAt = new Date().toISOString();
     entry.threadId = turn?.threadId ?? null;
-    if (turn?.turnStarted === false) {
+    if (turn?.turnStarted === false && turn?.threadId == null) {
       entry.state = 'not_dispatched';
       ledger.total -= 1;
     } else entry.state = turn?.completed ? 'completed' : 'failed';
@@ -219,6 +225,25 @@ export function renderLauncher(template, values) {
   return rendered;
 }
 
+export function renderManagedLauncher(template, values, discoveryInstructions, managedSliceContext = null) {
+  if (typeof discoveryInstructions !== 'string' || discoveryInstructions.trim() === '') fail('managed discovery context is missing');
+  const invocation = managedSliceContext === null ? '' : [
+    'This invocation uses the managed slice runner. The manager supplies STNL_MANAGED_CONTEXT and STNL_RUNNER_ADAPTER.',
+    'Run node "$STNL_MANAGED_PREFLIGHT" before artifact reads or mutation; it takes no path or slice arguments.',
+    'Write the invoked skill\'s semantic payload as one JSON object to "$STNL_MANAGED_RUNNER_PAYLOAD". Delegate only through node "$STNL_MANAGED_RUNNER_BRIDGE" --payload-file "$STNL_MANAGED_RUNNER_PAYLOAD"; do not use stdin, pipes or heredocs.',
+    'Prepare the candidate once with node "$STNL_MANAGED_FINALIZER" --prepare. Edit only its authorized semantic/artifact sections. After the receipt returns, run node "$STNL_MANAGED_FINALIZER" --finalize. This composes the existing producer, validator, publisher and readback; never transcribe receipts, IDs, hashes or paths.',
+    'This mode is selected by the manager context, not by native agent-tool availability or an environment inventory.',
+    '',
+  ].join('\n');
+  return `${invocation}${renderLauncher(template, values)}\n${discoveryInstructions}\n`;
+}
+
+export function runTemplateTurn(product, input) {
+  // Each launcher invocation is a new chat. Runner-local format repair uses
+  // its own transport call and may continue only that runner's current thread.
+  return product.runCodexTurn({ ...input, threadId: null });
+}
+
 export function assertManagedSliceLauncher(prompt, context, numericSlice) {
   const declarations = [...prompt.matchAll(/^([A-Z_]+)=(.*)$/gmu)];
   const expected = { SPEC_PATH: context.specPath, OPERATION: context.operation, SLICE: numericSlice };
@@ -231,7 +256,7 @@ export function assertManagedSliceLauncher(prompt, context, numericSlice) {
 function dispatch(configuration, caseId, operation) {
   const phase = PHASE[operation];
   const target = configuration.productionProfile.cases[caseId][phase];
-  if (!target) fail(`missing production-v2 dispatch for ${caseId}/${operation}`);
+  if (!target) fail(`missing production-v3 dispatch for ${caseId}/${operation}`);
   return { phase, label: target.model, model: target.model.toLowerCase(), effort: target.effort };
 }
 function compactExecution(execution) {
@@ -239,6 +264,7 @@ function compactExecution(execution) {
   if (execution.error) return { error: execution.error };
   return { state: execution.state, currentFingerprint: execution.currentFingerprint ?? null,
     legalOperations: execution.legalOperations ?? [], normalHandoff: execution.normalHandoff ?? null,
+    recoveryTargets: execution.recoveryTargets ?? [],
     requiredRecoveryHandoff: execution.requiredRecoveryHandoff ?? null,
     mandatoryRecovery: execution.mandatoryRecovery ?? null,
     rows: execution.rows?.map((row) => ({ slice: row.slice, done: row.done, result: row.result })) ?? [] };
@@ -283,10 +309,11 @@ export function decideOutcome(operation, readback, completed, readinessResult = 
   }
   if (operation === 'VALIDATE_SLICE' && execution?.state === 'VALIDATION_NEEDS_FIX') return { result: 'NEEDS_FIX', blocker: null };
   const accepted = {
-    PLAN: ['PLANNED_DRAFT'], REVIEW_PLAN: ['PLANNED_READY'],
-    MATERIALIZE_TASKS: ['MATERIALIZED_PRISTINE'], REVIEW_TASKS: ['MATERIALIZED_PRISTINE'],
+    PLAN: ['PLANNED_DRAFT'], REVIEW_PLAN: ['PLANNED_READY', 'PENDING_REPLAN_READY'],
+    MATERIALIZE_TASKS: ['MATERIALIZED_PRISTINE', 'EXECUTION_STARTED', 'IMPLEMENTED_AWAITING_VALIDATION', 'FINDINGS_CORRECTED'],
+    REVIEW_TASKS: ['MATERIALIZED_PRISTINE'],
     EXECUTE_SLICE: ['IMPLEMENTED_AWAITING_VALIDATION'], APPLY_FINDINGS: ['FINDINGS_CORRECTED'],
-    VALIDATE_SLICE: ['EXECUTION_STARTED', 'COMPLETE'], REPLAN: ['PENDING_REPLAN_DRAFT'],
+    VALIDATE_SLICE: ['EXECUTION_STARTED', 'COMPLETE'], REPLAN: ['PLANNED_DRAFT', 'PENDING_REPLAN_DRAFT'],
   };
   if (accepted[operation]?.includes(execution?.state)) return { result: 'PASS', blocker: null };
   if (['EXECUTE_SLICE', 'APPLY_FINDINGS'].includes(operation)
@@ -324,6 +351,40 @@ export function recoverableRunnerHandoff({ operation, slice, outcome, readback, 
     || priorOperations.some((entry) => entry.recovery?.operation === operation && entry.recovery.slice === slice)) return null;
   return { operation, slice, authority: execution.currentFingerprint, state: execution.state };
 }
+
+export function recoverableOfficialHandoff(input) {
+  const { outcome, readback, priorOperations, remainingTurns, budgets, transportFailed = false } = input;
+  const execution = readback.executionRaw;
+  if (outcome.result !== 'BLOCKED' || transportFailed || execution?.error || readback.lifecycle?.error
+    || !BLOCKED_STATES.has(execution?.state) || outcome.blocker !== `OFFICIAL_${execution.state}`
+    || typeof execution.currentFingerprint !== 'string' || execution.currentFingerprint.trim() === ''
+    || execution.recoveryTargets?.length !== 1 || !Number.isSafeInteger(remainingTurns)) return null;
+  const target = execution.recoveryTargets[0];
+  const slice = target.slice ?? null;
+  if (!Object.hasOwn(PHASE, target.operation) || target.operation.startsWith('SPEC_')
+    || !execution.legalOperations?.some((legal) => legal.operation === target.operation && legal.slice === slice)
+    || remainingTurns < (RUNNER_OPERATIONS.has(target.operation) ? 2 : 1)
+    || budgetViolation([...priorOperations, { operation: target.operation, slice }], budgets) !== null) return null;
+  for (const handoff of [execution.mandatoryRecovery, execution.requiredRecoveryHandoff]) {
+    if (handoff && (handoff.operation !== target.operation || (handoff.slice ?? null) !== slice)) return null;
+  }
+  // Mandatory same-operation recovery remains limited to the existing malformed-output repair.
+  // Auxiliary/environment and runner initialization failures require external correction.
+  if (target.sameOperationResumeRequired && recoverableRunnerHandoff(input) === null) return null;
+  return { operation: target.operation, slice, authority: execution.currentFingerprint,
+    state: execution.state, target };
+}
+
+export async function prepareOfficialRecovery({ product, specPath, ...input }) {
+  const recovery = recoverableOfficialHandoff(input);
+  if (recovery === null) return null;
+  const fresh = await officialReadback(product, specPath);
+  if (JSON.stringify(recoverableOfficialHandoff({ ...input, readback: fresh })) !== JSON.stringify(recovery)) return null;
+  const preflight = await product.preflightExecutionOperation(specPath, recovery.operation, specInput(recovery.slice));
+  if (JSON.stringify(recoverableOfficialHandoff({ ...input,
+    readback: { lifecycle: fresh.lifecycle, executionRaw: preflight } })) !== JSON.stringify(recovery)) return null;
+  return recovery;
+}
 async function loadProduct(snapshot) {
   const execution = await import(pathToFileURL(path.join(snapshot, 'skills/workflows/stnl-execution-planner/runtime/execution-state.mjs')).href);
   const lifecycle = await import(pathToFileURL(path.join(snapshot, 'skills/workflows/stnl-spec-lifecycle-manager/runtime/lib/lifecycle.mjs')).href);
@@ -334,8 +395,10 @@ async function loadProduct(snapshot) {
   const runner = await import(pathToFileURL(path.join(snapshot, 'agents/codex/runtime/validation-runner.mjs')).href);
   const managedContext = await import(pathToFileURL(path.join(snapshot, 'skills/workflows/stnl-slice-quality-manager/runtime/managed-slice-context.mjs')).href);
   const broker = await import(pathToFileURL(path.join(snapshot, 'agents/codex/runtime/runner-broker.mjs')).href);
+  const evidence = await import(pathToFileURL(path.join(snapshot, 'skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs')).href);
+  const commandEvents = await import(pathToFileURL(path.join(snapshot, 'skills/workflows/stnl-slice-executor/runtime/runner-command-events.mjs')).href);
   return { ...execution, validateWorkspace: lifecycle.validateWorkspace, ...readiness, ...sdk, ...usage,
-    ...home, ...runner, ...broker, ...managedContext };
+    ...home, ...runner, ...broker, ...managedContext, ...evidence, ...commandEvents };
 }
 function argsForJournal({ journal, operation, route, outcome, slice, readback, readinessResult, turn, durationMs, runnerCount }) {
   const args = ['journal-event', '--journal', journal, '--operation', operation, '--phase', route.phase,
@@ -346,7 +409,7 @@ function argsForJournal({ journal, operation, route, outcome, slice, readback, r
   const state = operation === 'SPEC_READINESS' ? readinessResult?.verdict === 'READY' ? 'GLOBAL_READY'
     : readinessResult?.verdict === 'FINDINGS' ? 'GLOBAL_FINDINGS' : null
     : operation === 'SPEC_CLOSE' ? null
-      : operation.startsWith('SPEC_') ? `SPEC_${readback.lifecycle?.status?.toUpperCase()}` : readback.execution?.state;
+      : operation.startsWith('SPEC_') ? (readback.lifecycle?.status ? `SPEC_${readback.lifecycle.status.toUpperCase()}` : null) : readback.execution?.state;
   if (state) args.push('--resulting-state', state);
   if (operation === 'SPEC_READINESS' && readinessResult) {
     args.push('--readiness-scope', readinessResult.scope,
@@ -354,12 +417,21 @@ function argsForJournal({ journal, operation, route, outcome, slice, readback, r
   }
   if (Number.isSafeInteger(turn.usage?.input_tokens)) args.push('--input-tokens', String(turn.usage.input_tokens));
   if (Number.isSafeInteger(turn.usage?.output_tokens)) args.push('--output-tokens', String(turn.usage.output_tokens));
-  if (runnerCount > 0) args.push('--child-role', 'stnl_validation_runner', '--child-model', 'GPT-5.6-Luna', '--child-effort', 'medium');
+  if (runnerCount > 0) args.push('--child-role', 'stnl_validation_runner', '--child-model', 'GPT-6-Luna', '--child-effort', 'medium');
   return args;
 }
 function specInput(slice) { return slice === null ? null : BigInt(slice.slice('slice-'.length)).toString(10); }
 
-async function runCase({ runRoot, caseId, configuration, snapshotMetadata, maxOperations, mode, product, signal, resume = false }) {
+export function privateHomeNeverCreated(state, journal) {
+  return state?.privateHomeNotCreated === true && state.status === 'BLOCKED'
+    && !state.isolationHomePath && !state.suspendedHome && !state.privateHomeCleanupError
+    && state.finalizer === null && state.mainTurns === 0 && state.runnerTurns === 0
+    && Array.isArray(state.operations) && state.operations.length === 0
+    && Array.isArray(journal?.events) && journal.events.length === 0;
+}
+
+export async function runCase({ runRoot, caseId, configuration, snapshotMetadata, maxOperations, mode, product, signal,
+  resume = false, capacityWait = undefined }) {
   const turnLimit = configuration.turnBudget?.maxTurnsPerRun;
   if (!Number.isSafeInteger(turnLimit) || turnLimit < 1) fail('benchmark turnBudget.maxTurnsPerRun must be a positive integer');
   const caseRoot = path.join(runRoot, caseName(caseId));
@@ -398,6 +470,7 @@ async function runCase({ runRoot, caseId, configuration, snapshotMetadata, maxOp
   }
   let target = { operation: 'SPEC_INIT', slice: null };
   let pendingRecovery = null;
+  let pendingReassessment = null;
   let pendingReadinessResult = null;
   if (resume) {
     if (caseState.status !== 'FOCAL_STOP' || caseState.terminal?.result !== 'FOCAL_STOP'
@@ -442,6 +515,13 @@ async function runCase({ runRoot, caseId, configuration, snapshotMetadata, maxOp
       const { operation, slice } = target;
       const currentRecovery = pendingRecovery;
       pendingRecovery = null;
+      const currentReassessment = pendingReassessment;
+      pendingReassessment = null;
+      const violation = budgetViolation([...operationBudgetHistory(caseState.operations), { operation, slice }], caseConfiguration.budgets);
+      if (violation !== null) {
+        terminal = { result: 'BLOCKED', blocker: 'BUDGET_EXCEEDED', diagnostic: violation.budget };
+        break;
+      }
       caseState.pendingTarget = target;
       await atomicJson(path.join(caseRoot, 'case-state.json'), caseState);
       const route = dispatch(configuration, caseId, operation);
@@ -461,6 +541,14 @@ async function runCase({ runRoot, caseId, configuration, snapshotMetadata, maxOp
       let managedSliceContext = null;
       if (!operation.startsWith('SPEC_')) {
         const preflight = await product.preflightExecutionOperation(specPath, operation, specInput(slice));
+        if (currentRecovery !== null && (preflight.state !== currentRecovery.state
+          || preflight.currentFingerprint !== currentRecovery.authority
+          || preflight.recoveryTargets?.length !== 1
+          || JSON.stringify(preflight.recoveryTargets[0]) !== JSON.stringify(currentRecovery.target))) {
+          fail('official recovery authority changed before dispatch');
+        }
+        if (currentReassessment !== null) await assertReassessmentUnchanged({ product, specPath,
+          decision: currentReassessment, execution: preflight });
         if (RUNNER_OPERATIONS.has(operation)) {
           officialPreflight = { exitCode: 0, operation, slice, inputSlice: specInput(slice),
             specPath, state: preflight.state, authority: `sha256:${preflight.currentFingerprint}`,
@@ -472,6 +560,9 @@ async function runCase({ runRoot, caseId, configuration, snapshotMetadata, maxOp
             preflightPath: path.join(runRoot, 'snapshot', 'agents/codex/runtime/managed-slice-preflight.mjs') });
         }
       }
+      const validationInputs = operation === 'VALIDATE_SLICE'
+        ? await captureValidationInputs({ product, workspace,
+          taskArtifact: path.join((await product.resolveExecutionWorkspace(specPath)).executionRoot, 'tasks', `${slice}.md`) }) : null;
       const templatePath = path.join(runRoot, 'snapshot', 'templates', 'prompts', TEMPLATE[operation]);
       const template = await fs.readFile(templatePath, 'utf8');
       const newInformation = operation === 'SPEC_PROMOTE'
@@ -487,7 +578,10 @@ async function runCase({ runRoot, caseId, configuration, snapshotMetadata, maxOp
         NEW_INFORMATION: newInformation,
         REPLAN_REASON: 'official execution readback requires replanning',
         SLICE: slice === null ? '' : specInput(slice) };
-      const prompt = renderLauncher(template, values);
+      const workflowSkill = operation.startsWith('SPEC_') ? 'stnl-spec-lifecycle-manager' : product.workflowSkillForOperation(operation);
+      const prompt = renderManagedLauncher(template, values,
+        product.managedDiscoveryInstructions({ env: home.env, cwd: workspace, workflowSkill }), managedSliceContext)
+        + (currentReassessment === null ? '' : '\nOwner-authorized one-time independent re-evaluation of this same stage. Preserve the original BLOCKED diagnostic. Evaluate current authority and evidence under the normal runner contract, with no preferred verdict. Use existing prepared checks; do not change source/tests or authority.\n');
       if (managedSliceContext !== null) {
         assertManagedSliceLauncher(prompt, managedSliceContext, specInput(slice));
       }
@@ -511,13 +605,20 @@ async function runCase({ runRoot, caseId, configuration, snapshotMetadata, maxOp
       const turnEnv = managedSliceContext === null ? home.env
         : product.managedEnvironment(home.env, managedSliceContext);
       let providerConfigError = null;
+      let runnerTransportFailed = false;
       try {
         if (officialPreflight !== null) {
           broker = await product.startOfficialRunnerBroker({ workspace, tmpdir, operation, sequence, slice,
           officialPreflight,
-          invoke: (request) => product.invokeIndependentRunner({
+          prepareSealedMetadata: async request => {
+            const findingsOwnership = await product.prepareManagedFindingsRequest({ request, environment: turnEnv });
+            return findingsOwnership === null ? null : { findingsOwnership };
+          },
+          invoke: (request, { signal: runnerSignal } = {}) => product.invokeIndependentRunner({
             ...request, snapshot: path.join(runRoot, 'snapshot'), workspace, tmpdir, env: turnEnv,
+            signal: runnerSignal,
             onBeforeTurn: async () => {
+              if (currentReassessment !== null) await assertReassessmentUnchanged({ product, specPath, decision: currentReassessment });
               const reservation = runnerReservation ?? await reserveExtraRunner({ runRoot, runId: path.basename(runRoot), caseId, operation, limit: turnLimit });
               runnerReservation = null;
               currentRunnerNumber = await startReservedTurn(runRoot, reservation, turnLimit);
@@ -528,6 +629,8 @@ async function runCase({ runRoot, caseId, configuration, snapshotMetadata, maxOp
             },
             onTurn: async ({ turn: runnerTurn, eventsPath: runnerEventsPath }) => {
               runnerEventPaths.push(runnerEventsPath);
+              runnerTransportFailed ||= runnerTurn.completed !== true || runnerTurn.error != null
+                || runnerTurn.processError != null || runnerTurn.errorEvent != null;
               providerConfigError ??= providerConfigurationError([], runnerTurn.providerError ?? runnerTurn.errorEvent ?? null);
               await settleTurn(runRoot, currentRunnerNumber, runnerTurn, turnLimit);
               if (runnerTurn.turnStarted !== false) caseState.runnerTurns += 1;
@@ -538,6 +641,8 @@ async function runCase({ runRoot, caseId, configuration, snapshotMetadata, maxOp
             },
           }),
           });
+          turnEnv.STNL_MANAGED_RUNNER_PAYLOAD = broker.payloadFile;
+          turnEnv.STNL_MANAGED_FINALIZER = path.join(runRoot, 'snapshot/agents/codex/runtime/managed-slice-finalize.mjs');
         }
         mainTurnNumber = await startReservedTurn(runRoot, admission.main, turnLimit);
       } catch (error) {
@@ -547,12 +652,22 @@ async function runCase({ runRoot, caseId, configuration, snapshotMetadata, maxOp
         throw error;
       }
       const contextRole = ['REVIEW_PLAN', 'REVIEW_TASKS', 'VALIDATE_SLICE'].includes(operation) ? `review-${operation.toLowerCase()}` : 'author';
-      const threadId = caseState.threads[contextRole] ?? null;
+      const threadId = null;
       announce({ kind: 'start', status: 'STARTED', runId: path.basename(runRoot), caseId,
         operation, slice, model: route.label, effort: route.effort,
         mainTurns: caseState.mainTurns + 1, runnerTurns: caseState.runnerTurns,
         ...await budgetSnapshot(runRoot), artifacts: caseRoot });
       let turn;
+      let mainException = null;
+      let reassessmentProof = null;
+      let capacityResult = { attempts: [], stopReason: null };
+      let mainUsageObservation;
+      let mainTurnSettled = false;
+      let effectiveOperationId = operationId;
+      const capacityInputs = await captureCapacityInputs(workspace, candidates);
+      const capacitySkillRead = managedSliceContext === null || turnEnv.HOME !== home.shellHome
+        || Object.hasOwn(turnEnv, 'ZDOTDIR') ? null : await captureCapacitySkillRead({
+        snapshot: path.join(runRoot, 'snapshot'), shellHome: home.shellHome, workflowSkill });
       let lastProgressMs = 0;
       const heartbeat = setInterval(() => announce({ kind: 'progress', status: 'RUNNING',
         runId: path.basename(runRoot), caseId, operation, slice,
@@ -563,37 +678,125 @@ async function runCase({ runRoot, caseId, configuration, snapshotMetadata, maxOp
         const outputSchema = operation === 'SPEC_READINESS'
           ? await readJson(path.join(runRoot, 'snapshot', 'skills/workflows/stnl-spec-lifecycle-manager/runtime/readiness-result.schema.json'))
           : undefined;
-        turn = await product.runCodexTurn({ env: turnEnv, cwd: workspace, prompt,
-          model: route.model, effort: route.effort, threadId, operationId, eventsPath,
-          outputSchema, timeoutMs: RUNNER_OPERATIONS.has(operation) ? 1_800_000 : 900_000, signal,
-          onEvent: (event) => {
-            if (event.type !== 'item.started' && event.type !== 'item.completed') return;
-            const itemType = event.item?.type;
-            if (!['command_execution', 'file_change', 'collab_tool_call', 'mcp_tool_call'].includes(itemType)) return;
-            if (Date.now() - lastProgressMs < 30_000) return;
-            lastProgressMs = Date.now();
-            announce({ kind: 'progress', status: 'RUNNING', runId: path.basename(runRoot), caseId,
-              operation, slice, stage: itemType, durationMs: Date.now() - startedMs,
-              model: route.label, effort: route.effort, artifacts: caseRoot });
+        capacityResult = await runCapacityLimitedTurn({ signal, attempts: capacityResult.attempts, wait: capacityWait,
+          runTurn: async attempt => {
+            effectiveOperationId = attempt === 1 ? operationId : `${operationId}-capacity-retry-1`;
+            return runTemplateTurn(product, { env: turnEnv, cwd: workspace, prompt,
+              model: route.model, effort: route.effort, threadId, operationId: effectiveOperationId, eventsPath,
+              outputSchema, timeoutMs: RUNNER_OPERATIONS.has(operation) ? 1_800_000 : 900_000, signal,
+              onEvent: (event) => {
+                if (event.type !== 'item.started' && event.type !== 'item.completed') return;
+                const itemType = event.item?.type;
+                if (!['command_execution', 'file_change', 'collab_tool_call', 'mcp_tool_call'].includes(itemType)) return;
+                if (Date.now() - lastProgressMs < 30_000) return;
+                lastProgressMs = Date.now();
+                announce({ kind: 'progress', status: 'RUNNING', runId: path.basename(runRoot), caseId,
+                  operation, slice, stage: itemType, durationMs: Date.now() - startedMs,
+                  model: route.label, effort: route.effort, artifacts: caseRoot });
+              },
+            });
+          },
+          onAttempt: async (attemptTurn, attempt, record) => {
+            Object.assign(record, { operationId: effectiveOperationId, ledgerTurn: mainTurnNumber,
+              requestedModel: route.model, requestedEffort: route.effort });
+            await settleTurn(runRoot, mainTurnNumber, attemptTurn, turnLimit);
+            mainTurnSettled = true;
+            if (attemptTurn.turnStarted !== false) caseState.mainTurns += 1;
+            mainUsageObservation = mainUsage.observe({ threadId: attemptTurn.threadId,
+              segment: path.basename(runRoot), usage: attemptTurn.usage, eventId: effectiveOperationId,
+              parentThreadId: threadId });
+            record.usageObservation = mainUsageObservation;
+            await atomicJson(path.join(caseRoot, 'case-state.json'), caseState);
+            return record;
+          },
+          persistAttempt: record => atomicJson(path.join(caseRoot,
+            `${String(sequence).padStart(2, '0')}-${operation.toLowerCase()}.capacity-attempt-${record.attempt}.json`), capacityAttemptEvidence(record)),
+          authorizeRetry: async (attemptTurn, attempt) => {
+            if (signal.aborted) return { allowed: false, reason: 'CANCELLED' };
+            const events = (await fs.readFile(eventsPath, 'utf8')).split('\n').filter(Boolean).map(JSON.parse);
+            const traceDecision = capacityTraceDecision(attemptTurn, events, effectiveOperationId,
+              managedSliceContext !== null && turnEnv.STNL_MANAGED_PREFLIGHT
+                === path.join(runRoot, 'snapshot/agents/codex/runtime/managed-slice-preflight.mjs'), capacitySkillRead);
+            if (!traceDecision.allowed) return traceDecision;
+            if (broker !== null && (broker.pending || broker.requestsHandled !== 0 || broker.capturedReceipts !== 0
+              || broker.cancelledPending || broker.errors.length > 0)) return { allowed: false, reason: 'EFFECTS_OR_AMBIGUITY' };
+            if (traceDecision.skillRead) {
+              const freshSkillRead = await captureCapacitySkillRead({ snapshot: path.join(runRoot, 'snapshot'),
+                shellHome: home.shellHome, workflowSkill });
+              if (freshSkillRead === null || JSON.stringify(freshSkillRead) !== JSON.stringify(capacitySkillRead))
+                return { allowed: false, reason: 'SKILL_READ_AUTHORITY_UNPROVEN' };
+            }
+            const freshInputs = await captureCapacityInputs(workspace, candidates);
+            if (capacityInputs.rejected || freshInputs.rejected || freshInputs.sha256 !== capacityInputs.sha256)
+              return { allowed: false, reason: 'INPUTS_CHANGED_OR_UNPROVEN' };
+            try {
+              await assertSnapshotIntegrity(runRoot);
+              if (!operation.startsWith('SPEC_')) {
+                const fresh = await product.preflightExecutionOperation(specPath, operation, specInput(slice));
+                if (managedSliceContext !== null && (fresh.state !== officialPreflight.state
+                  || `sha256:${fresh.currentFingerprint}` !== officialPreflight.authority
+                  || JSON.stringify(fresh.legalOperations) !== JSON.stringify(officialPreflight.legalOperations)
+                  || JSON.stringify(fresh.mandatoryRecovery ?? null) !== JSON.stringify(officialPreflight.mandatoryRecovery ?? null)))
+                  return { allowed: false, reason: 'AUTHORITY_CHANGED' };
+              }
+            } catch (error) { return { allowed: false, reason: 'AUTHORITY_UNPROVEN', diagnostic: error.message }; }
+            const history = [...operationBudgetHistory(caseState.operations),
+              ...Array.from({ length: attempt + 1 }, () => ({ operation, slice }))];
+            if (budgetViolation(history, caseConfiguration.budgets) !== null)
+              return { allowed: false, reason: 'OPERATION_BUDGET' };
+            if ((await budgetSnapshot(runRoot)).turnBudget.remaining < 1) return { allowed: false, reason: 'TURN_BUDGET' };
+            return { allowed: true, reason: 'NO_EFFECTS_PROVEN', inputsSha256: freshInputs.sha256 };
+          },
+          onWait: () => announce({ kind: 'progress', status: 'RUNNING', runId: path.basename(runRoot), caseId,
+            operation, slice, stage: 'model capacity: one retry after 15 seconds', model: route.label, effort: route.effort }),
+          beforeRetry: async () => {
+            const retry = await admitOperation({ runRoot, runId: path.basename(runRoot), caseId,
+              operation, runnerRequired: false, limit: turnLimit });
+            try { mainTurnNumber = await startReservedTurn(runRoot, retry.main, turnLimit); mainTurnSettled = false; }
+            catch (error) { await releaseReservation(runRoot, retry.main, turnLimit); throw error; }
           },
         });
-        await settleTurn(runRoot, mainTurnNumber, turn, turnLimit);
+        turn = capacityResult.turn;
+        if (operation === 'VALIDATE_SLICE' && turn.completed === true && turn.error == null
+          && turn.processError == null && turn.errorEvent == null) {
+          reassessmentProof = await captureReassessmentEvidence({ product, context: managedSliceContext,
+            environment: turnEnv, directory: broker.directory, sequence, inputs: validationInputs });
+        }
       } catch (error) {
-        await settleTurn(runRoot, mainTurnNumber, { turnStarted: false, threadId: null }, turnLimit);
-        throw error;
+        // An exception supplies no proof that dispatch never started. Keep the
+        // consumed turn and continue through the normal evidence/journal path.
+        mainException = error;
+        capacityResult.stopReason = 'EXCEPTION';
+        turn = { completed: false, turnStarted: null, threadId: null, error: String(error.message ?? error),
+          processError: String(error), response: null, usage: null, toolCalls: null,
+          requestedModel: route.model, requestedEffort: route.effort, reportedModel: null };
+        if (!mainTurnSettled) {
+          await settleTurn(runRoot, mainTurnNumber, turn, turnLimit);
+          if (turn.turnStarted !== false) caseState.mainTurns += 1;
+          mainUsageObservation = mainUsage.observe({ threadId: turn.threadId, segment: path.basename(runRoot),
+            usage: turn.usage, eventId: effectiveOperationId, parentThreadId: threadId });
+          if (capacityResult.attempts.length > 0) capacityResult.attempts.at(-1).usageObservation = mainUsageObservation;
+        }
+        const interruptedAttempt = capacityResult.attempts.at(-1);
+        if (interruptedAttempt) {
+          interruptedAttempt.turn ??= turn;
+          Object.assign(interruptedAttempt, { operationId: effectiveOperationId, ledgerTurn: mainTurnNumber,
+            requestedModel: route.model, requestedEffort: route.effort, exception: String(error) });
+        }
+        // Setup may throw before the transport opens its event log. An empty
+        // log preserves that observation without inventing provider events.
+        await (await fs.open(eventsPath, 'a')).close();
       } finally {
         clearInterval(heartbeat);
         if (broker !== null) await broker.close();
         await releaseReservation(runRoot, runnerReservation, turnLimit);
       }
-      if (turn.turnStarted !== false) caseState.mainTurns += 1;
+      // Keep the last observed IDs for diagnostics, never for template resume.
       caseState.threads[contextRole] = turn.threadId;
-      const mainUsageObservation = mainUsage.observe({ threadId: turn.threadId,
-        segment: path.basename(runRoot), usage: turn.usage, eventId: operationId,
-        parentThreadId: threadId });
-      const collaborationEvents = await unmanagedCollaborationEvents(eventsPath, operationId, runnerEventPaths);
+      const collaborationEvents = await unmanagedCollaborationEvents(eventsPath, effectiveOperationId, runnerEventPaths);
       providerConfigError ??= providerConfigurationError([], turn.providerError ?? turn.errorEvent ?? null);
-      const allUsage = [mainUsageObservation, ...runnerUsageObservations,
+      const allUsage = [...(capacityResult.attempts.length > 0
+        ? capacityResult.attempts.map(attempt => attempt.usageObservation) : [mainUsageObservation]), ...runnerUsageObservations,
         ...collaborationEvents.map((event) => ({ status: 'unavailable', delta: null,
           reason: 'unmanaged collaboration usage unknown', source: 'unmanaged_collaboration', event }))];
       const usageComplete = allUsage.every((observation) => ['attributable', 'duplicate'].includes(observation.status));
@@ -615,10 +818,25 @@ async function runCase({ runRoot, caseId, configuration, snapshotMetadata, maxOp
           readinessResult = product.validateReadinessResult(specPath, JSON.parse(turn.response), { scope: 'GLOBAL' });
         } catch (error) { readinessDiagnostic = error.message; }
       }
-      const outcome = providerConfigError
+      const outcome = mainException
+        ? { result: 'BLOCKED', blocker: PROVIDER_CONFIGURATION_ERRORS.has(mainException.code) ? mainException.code : 'DRIVER_FAILURE',
+          diagnostic: String(mainException.message ?? mainException) }
+        : providerConfigError
         ? { result: 'BLOCKED', blocker: providerConfigError.code, diagnostic: providerConfigError.message }
         : guardOperationProvenance(decideOutcome(operation, readback, turn.completed, readinessResult),
           operation, collaborationEvents, broker?.capturedReceipts ?? 0);
+      if (modelAtCapacity(turn) && !mainException && !providerConfigError) {
+        outcome.blocker = 'SDK_MODEL_AT_CAPACITY';
+        if (capacityResult.stopReason) outcome.diagnostic = `Capacity retry stopped: ${capacityResult.stopReason}`;
+      }
+      if (turn.completed && RUNNER_OPERATIONS.has(operation) && broker?.requestsHandled === 0) {
+        outcome.result = 'BLOCKED'; outcome.blocker = 'OFFICIAL_RUNNER_RECEIPT_MISSING';
+        outcome.diagnostic = 'No managed runner request was received; no independent runner turn was dispatched.';
+      }
+      if (broker?.cancelledPending) {
+        outcome.result = 'BLOCKED'; outcome.blocker = 'SDK_TURN_FAILED';
+        outcome.diagnostic = 'Main context ended with an owned runner pending; cancellation was requested and settlement awaited.';
+      }
       if (broker?.errors.includes('PAUSED_BUDGET_OR_QUOTA')) {
         outcome.result = 'PAUSED_BUDGET_OR_QUOTA'; outcome.blocker = 'PAUSED_BUDGET_OR_QUOTA';
       }
@@ -640,6 +858,7 @@ async function runCase({ runRoot, caseId, configuration, snapshotMetadata, maxOp
           inheritedAuthorHistory: contextRole === 'author' && threadId !== null },
         dispatch: route, startedAt, endedAt: new Date().toISOString(), durationMs: Date.now() - startedMs,
         turn: { completed: turn.completed, error: turn.error, requestedModel: turn.requestedModel,
+          ...transportDiagnosticEvidence(turn),
           reportedModel: turn.reportedModel, requestedEffort: turn.requestedEffort, usage: turn.usage,
           toolCalls: turn.toolCalls, eventsPath, response: turn.response,
           turnStarted: turn.turnStarted, usageObservation: mainUsageObservation },
@@ -647,33 +866,64 @@ async function runCase({ runRoot, caseId, configuration, snapshotMetadata, maxOp
         readinessResult, readinessDiagnostic,
         providerConfigurationError: providerConfigError,
         runner: { requestsHandled: broker?.requestsHandled ?? 0, capturedReceipts: broker?.capturedReceipts ?? 0,
-          errors: broker?.errors ?? [], turns: runnerCount, usageObservations: runnerUsageObservations,
+          errors: broker?.errors ?? [], transportFailed: runnerTransportFailed,
+          turns: runnerCount, usageObservations: runnerUsageObservations,
           unmanagedCollaboration: collaborationEvents },
         normalizedUsage,
         journal: { exitCode: journalResult.exitCode, diagnostic: journalResult.stderr || journalResult.stdout }, outcome,
-        recovery: currentRecovery };
+        recovery: currentRecovery, validationReassessment: currentReassessment,
+        reassessmentProof,
+        ...((capacityResult.attempts.some(attempt => modelAtCapacity(attempt.turn)) || capacityResult.attempts.length > 1)
+          ? { capacityRetry: { maxRetries: 1, delayMs: CAPACITY_RETRY_DELAY_MS, stopReason: capacityResult.stopReason,
+            attempts: capacityResult.attempts.map(capacityAttemptEvidence) } } : {}) };
       const evidencePath = path.join(caseRoot, `${String(sequence).padStart(2, '0')}-${operation.toLowerCase()}.json`);
       await atomicJson(evidencePath, evidence);
       caseState.operations.push({ operation, slice, outcome, evidencePath, threadId: turn.threadId,
-        recovery: currentRecovery });
+        recovery: currentRecovery, validationReassessment: currentReassessment,
+        ...(capacityResult?.attempts.length > 1 ? { dispatchAttempts: capacityResult.attempts.length } : {}) });
       await atomicJson(path.join(caseRoot, 'case-state.json'), caseState);
       announce({ runId: path.basename(runRoot), caseId, operation, slice, state: readback.execution?.state ?? readback.lifecycle?.status,
         result: outcome.result, durationMs: evidence.durationMs, model: route.label, effort: route.effort,
         mainTurns: caseState.mainTurns, runnerTurns: caseState.runnerTurns,
         ...await budgetSnapshot(runRoot), artifacts: caseRoot });
       terminal = outcome;
-      if (outcome.result === 'BLOCKED') {
-        const recovery = recoverableRunnerHandoff({ operation, slice, outcome, readback,
-          priorOperations: caseState.operations, remainingTurns: (await budgetSnapshot(runRoot)).turnBudget.remaining });
+      if (outcome.result === 'BLOCKED' && currentReassessment === null) {
+        const recovery = await prepareOfficialRecovery({ product, specPath, operation, slice, outcome, readback,
+          priorOperations: operationBudgetHistory(caseState.operations), budgets: caseConfiguration.budgets,
+          remainingTurns: (await budgetSnapshot(runRoot)).turnBudget.remaining,
+          transportFailed: turn.completed !== true || turn.error != null || turn.processError != null
+            || turn.errorEvent != null || runnerTransportFailed || (broker?.errors.length ?? 0) > 0 });
         if (recovery !== null) {
-          const fresh = await officialReadback(product, specPath);
-          if (fresh.execution?.state === recovery.state
-            && fresh.execution?.currentFingerprint === recovery.authority) {
-            await product.preflightExecutionOperation(specPath, recovery.operation, specInput(recovery.slice));
-            pendingRecovery = recovery;
-            target = nextHandoff(operation, { ...fresh, product });
-            if (target?.operation === recovery.operation && target.slice === recovery.slice) continue;
+          pendingRecovery = recovery;
+          target = { operation: recovery.operation, slice: recovery.slice };
+          continue;
+        }
+        // Authorized owner policy selects legal VALIDATE among the product's
+        // alternatives. It does not change generic unique-target recovery.
+        try {
+          const decision = await prepareValidationReassessment({ product, specPath, caseRoot,
+            runId: path.basename(runRoot), caseId, workspace, originalEvidencePath: evidencePath,
+            readback: () => officialReadback(product, specPath), input: {
+              operation, slice, outcome, execution: readback.executionRaw, proof: reassessmentProof,
+              caseActive: caseState.status === 'ACTIVE' && (await readJson(path.join(runRoot, 'run.json'))).status === 'ACTIVE',
+              alreadyUsed: caseState.validationReassessments?.[slice] != null
+                || await exists(path.join(caseRoot, `validation-reassessment-${slice}.json`)),
+              remainingTurns: (await budgetSnapshot(runRoot)).turnBudget.remaining,
+              budgetExceeded: budgetViolation([...operationBudgetHistory(caseState.operations), { operation, slice }], caseConfiguration.budgets) !== null
+                || (finalSequence !== null && sequence >= finalSequence),
+              transportFailed: turn.completed !== true || turn.error != null || turn.processError != null
+                || turn.errorEvent != null || runnerTransportFailed || (broker?.errors.length ?? 0) > 0,
+            } });
+          if (decision !== null) {
+            caseState.validationReassessments ??= {};
+            caseState.validationReassessments[slice] = decision;
+            await atomicJson(path.join(caseRoot, 'case-state.json'), caseState);
+            pendingReassessment = decision;
+            target = { operation: decision.operation, slice: decision.slice };
+            continue;
           }
+        } catch (error) {
+          terminal = { ...outcome, diagnostic: `Authorized reassessment stopped: ${error.code ?? error.name}: ${error.message}` };
         }
       }
       if (['BLOCKED', 'FAIL', 'PAUSED_BUDGET_OR_QUOTA'].includes(outcome.result)) break;
@@ -682,6 +932,10 @@ async function runCase({ runRoot, caseId, configuration, snapshotMetadata, maxOp
       if (target === null && operation !== 'SPEC_CLOSE') { terminal = { result: 'BLOCKED', blocker: 'NO_OFFICIAL_HANDOFF' }; break; }
     }
   } catch (error) {
+    if (!resume && home === null && error.privateHomeNotCreated === true
+      && caseState.operations.length === 0 && caseState.mainTurns === 0 && caseState.runnerTurns === 0) {
+      caseState.privateHomeNotCreated = true;
+    }
     terminal = error.code === 'PAUSED_BUDGET_OR_QUOTA'
       ? { result: 'PAUSED_BUDGET_OR_QUOTA', blocker: 'PAUSED_BUDGET_OR_QUOTA', diagnostic: error.message }
       : { result: 'BLOCKED', blocker: PROVIDER_CONFIGURATION_ERRORS.has(error.code) ? error.code : 'DRIVER_FAILURE',
@@ -734,6 +988,8 @@ async function runCase({ runRoot, caseId, configuration, snapshotMetadata, maxOp
 }
 
 async function run(options) {
+  const offline = process.env.STNL_OFFLINE_PROVIDER_CONTEXT === undefined ? null
+    : await (await import('../../../agents/codex/runtime/offline-provider-context.mjs')).offlineProviderContext();
   const id = options.resumeId ?? `run-${new Date().toISOString().replace(/[-:.TZ]/gu, '').slice(0, 14)}-${randomUUID().slice(0, 8)}`;
   if (options.resumeId) await assertRun(id);
   await acquire(id);
@@ -758,20 +1014,20 @@ async function run(options) {
     }
     const snapshotMetadata = options.resumeId
       ? (await readJson(path.join(runRoot, 'run.json'))).snapshot
-      : await createSnapshot(runRoot);
+      : await createSnapshot(runRoot, { executionMode: offline?.mode, dependencySource: offline?.dependencySource });
     if (options.resumeId) await assertSnapshotIntegrity(runRoot);
     const product = await loadProduct(path.join(runRoot, 'snapshot'));
     const previous = options.resumeId ? await readJson(path.join(runRoot, 'run.json')) : null;
     const mode = options.maxOperations !== null ? 'focal' : options.full ? 'full' : 'case';
     if (previous && (previous.status !== 'FOCAL_STOP' || previous.cases.length !== 1
-      || previous.mode !== 'focal' || previous.profile !== 'production-v2')) {
+      || previous.mode !== 'focal' || previous.profile !== 'production-v3')) {
       fail('only a stopped, single-case focal run can be resumed');
     }
     const caseId = previous?.cases[0] ?? options.caseId;
     const runInfo = previous
       ? { ...previous, status: 'ACTIVE', mode: options.maxOperations !== null ? 'focal' : 'case', resumedAt: new Date().toISOString() }
       : { runId: id, status: 'ACTIVE', mode, cases: options.full ? ['A', 'B', 'C'] : [caseId],
-        snapshot: snapshotMetadata, startedAt: new Date().toISOString(), profile: 'production-v2' };
+        snapshot: snapshotMetadata, startedAt: new Date().toISOString(), profile: 'production-v3' };
     await atomicJson(path.join(runRoot, 'run.json'), runInfo);
     announce({ runId: id, status: 'ACTIVE', mode, artifacts: runRoot, sourceFunctionalSha256: snapshotMetadata.sourceFunctionalSha256,
       ...await budgetSnapshot(runRoot) });
@@ -867,7 +1123,10 @@ async function clean(id) {
       const state = await readJson(path.join(root, name, 'case-state.json')).catch(() => null);
       if (!state || state.status === 'ACTIVE') fail('run contains an active or unclean case');
       if (state.privateHomeSuspended === true && state.suspendedHome) suspended.push(state);
-      else if (state.privateHomeRemoved !== true) fail('run contains an active or unclean case');
+      else if (state.privateHomeRemoved !== true
+        && !privateHomeNeverCreated(state, await readJson(path.join(root, name, 'journal.json')).catch(() => null))) {
+        fail('run contains an active or unclean case');
+      }
     }
   }
   if (suspended.length > 0) {

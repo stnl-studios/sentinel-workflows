@@ -50,12 +50,36 @@ async function optionalJson(file) {
   try { return await json(file); } catch (error) { if (error.code === 'ENOENT') return null; throw error; }
 }
 
+async function currentFinalizerRaw(dir, state, journal, id) {
+  const recorded = state?.finalizer?.rawPath;
+  const resumed = (state?.finalizerHistory?.length ?? 0) > 0;
+  if (recorded === undefined && !resumed) return optionalJson(path.join(dir, 'raw.json'));
+  if (recorded === null && state.finalizer.exitCode !== 0) return null;
+  const names = resumed ? [] : [path.join(dir, 'raw.json')];
+  if (Array.isArray(state?.operations)) names.push(path.join(dir, `raw-resume-${state.operations.length}.json`));
+  if (typeof recorded !== 'string' || !path.isAbsolute(recorded) || !names.includes(recorded))
+    throw new Error(`case ${id} finalizer path is missing or invalid`);
+  const [caseStat, rawStat, realDir, realRaw] = await Promise.all([
+    fs.lstat(dir), fs.lstat(recorded), fs.realpath(dir), fs.realpath(recorded),
+  ]).catch((error) => { throw new Error(`case ${id} finalizer file is unavailable: ${error.code ?? error.message}`); });
+  if (!caseStat.isDirectory() || caseStat.isSymbolicLink() || !rawStat.isFile() || rawStat.isSymbolicLink()
+    || realRaw !== path.join(realDir, path.basename(recorded)))
+    throw new Error(`case ${id} finalizer file is outside its authorized case`);
+  const raw = await json(recorded);
+  if (state.caseId !== id || journal?.caseId !== id || raw.caseId !== id
+    || !['full', 'case', 'focal'].includes(raw.runMode) || raw.runMode !== journal.runMode
+    || !Number.isInteger(raw.operations?.total))
+    throw new Error(`case ${id} finalizer identity or operation count is invalid`);
+  return raw;
+}
+
 function numeric(v) { return Number.isFinite(v) ? v : null; }
 
 function observationsFrom(evidence) {
   const all = [];
   if (evidence.turn?.usageObservation) all.push(evidence.turn.usageObservation);
   if (evidence.usageObservation) all.push(evidence.usageObservation);
+  all.push(...(evidence.capacityRetry?.attempts ?? []).slice(0, -1).map(attempt => attempt.usageObservation).filter(Boolean));
   all.push(...(evidence.runner?.usageObservations ?? []));
   return all;
 }
@@ -64,8 +88,11 @@ async function measurement(runId) {
   if (!/^[a-z0-9][a-z0-9-]{7,}$/u.test(runId)) throw new Error('invalid run id');
   const runRoot = path.join(ROOT, 'benchmark-temp', runId);
   const run = await json(path.join(runRoot, 'run.json'));
-  if (run.runId !== runId || run.mode !== 'full' || !['PASS', 'FAIL', 'ABORTED', 'BLOCKED', 'CANCELLED', 'PAUSED_BUDGET_OR_QUOTA'].includes(run.status)) {
-    throw new Error('run must be a terminal full run with matching identity');
+  if (run.runId !== runId || !['full', 'case', 'focal'].includes(run.mode)
+    || !['PASS', 'FAIL', 'ABORTED', 'BLOCKED', 'CANCELLED', 'PAUSED_BUDGET_OR_QUOTA', 'FOCAL_STOP'].includes(run.status)
+    || !Array.isArray(run.cases) || run.cases.length === 0 || new Set(run.cases).size !== run.cases.length
+    || run.cases.some((id) => !['A', 'B', 'C'].includes(id)) || (run.mode !== 'full' && run.cases.length !== 1)) {
+    throw new Error('run must be terminal with a supported mode and matching identity');
   }
   const snapshotExists = await fs.stat(path.join(runRoot, 'snapshot.json')).then(() => true, () => false);
   let snapshot = null; let config = null;
@@ -82,10 +109,11 @@ async function measurement(runId) {
   const caseIds = run.cases ?? [];
   for (const id of caseIds) {
     const dir = path.join(runRoot, `case-${id.toLowerCase()}`);
-    const [raw, state, journal] = await Promise.all([
-      optionalJson(path.join(dir, 'raw.json')), optionalJson(path.join(dir, 'case-state.json')),
+    const [state, journal] = await Promise.all([
+      optionalJson(path.join(dir, 'case-state.json')),
       optionalJson(path.join(dir, 'journal.json')),
     ]);
+    const raw = await currentFinalizerRaw(dir, state, journal, id);
     const result = summary.cases?.[id] ?? {};
     if (!raw && !state && !journal) {
       if (result.status !== 'NOT_RUN') {
@@ -183,9 +211,11 @@ async function measurement(runId) {
   const resultSchemaHash = config ? `sha256:${createHash('sha256').update(await fs.readFile(path.join(runRoot, 'snapshot/benchmarks/sentinel-todo', config.schemas.result))).digest('hex')}` : UNAVAILABLE;
   return {
     schemaVersion: 1, benchmarkId: config?.benchmarkId ?? 'sentinel-todo', benchmarkVersion: config?.benchmarkVersion ?? UNAVAILABLE,
-    resultDefinition: 'full run is PASS when manager status is PASS and all included cases have passing finalizers',
+    resultDefinition: run.mode === 'full' ? 'full run is PASS when manager status is PASS and all included cases have passing finalizers'
+      : `${run.mode} run records only the selected case; it is not a full-run conclusion`,
     run: { id: runId, status: run.status, mode: run.mode, profile: run.profile ?? UNAVAILABLE, startedAt: run.startedAt, endedAt: run.endedAt ?? UNAVAILABLE },
     provenance: { baseSha: snapshot?.baseSha ?? UNAVAILABLE, dirty: snapshot?.dirty ?? UNAVAILABLE, functionalDiffSha256: snapshot?.functionalDiffSha256 ?? UNAVAILABLE,
+      ...(snapshot?.executionMode === 'OFFLINE_TEST_ONLY' ? { executionMode: 'OFFLINE_TEST_ONLY' } : {}),
       sourceFunctionalSha256: snapshot?.sourceFunctionalSha256 ?? UNAVAILABLE, snapshotSha256: snapshot?.snapshotSha256 ?? UNAVAILABLE, snapshotCreatedAt: snapshot?.createdAt ?? UNAVAILABLE },
     comparability: { schemaVersion: 1, benchmarkVersion: config?.benchmarkVersion ?? UNAVAILABLE, profile: run.profile ?? UNAVAILABLE,
       requirementsHashes: Object.fromEntries(run.cases.map((id) => [id, caseById[id]?.requirementsHash ?? UNAVAILABLE])),
@@ -197,7 +227,7 @@ async function measurement(runId) {
         providerVersion: config?.productionPilot?.qualification?.providerVersion ?? UNAVAILABLE,
         capabilitiesHash: config?.productionPilot?.qualification?.capabilitiesHash ?? UNAVAILABLE,
         sandboxProbeStatus: config?.productionPilot?.qualification?.sandboxProbeStatus ?? UNAVAILABLE,
-        sandboxProbeEvidenceSha256: config?.productionPilot?.qualification?.sandboxProbeEvidenceSha256 ?? UNAVAILABLE }, resultDefinition: 'full-pass-v1' },
+        sandboxProbeEvidenceSha256: config?.productionPilot?.qualification?.sandboxProbeEvidenceSha256 ?? UNAVAILABLE }, resultDefinition: `${run.mode}-pass-v1` },
     cases,
     aggregate: { operations: sumKnown(cases.map((c) => c.operations)), mainTurns: sumKnown(cases.map((c) => c.mainTurns)),
       runnerTurns: sumKnown(cases.map((c) => c.runnerTurns)), recoveryOperations: sumKnown(cases.map((c) => c.recoveryOperations)),
@@ -264,15 +294,17 @@ function comparable(a, b, allowProfileMismatch = false) {
 export function validateMeasurementReport(report) {
   const fail = (message) => { throw new Error(`invalid measurement report: ${message}`); };
   if (!report || report.schemaVersion !== 1 || report.benchmarkId !== 'sentinel-todo' || (report.benchmarkVersion !== UNAVAILABLE && !Number.isInteger(report.benchmarkVersion))) fail('identity/schema');
-  if (!report.run?.id || !['PASS', 'FAIL', 'ABORTED', 'BLOCKED', 'CANCELLED', 'PAUSED_BUDGET_OR_QUOTA'].includes(report.run.status) || report.run.mode !== 'full') fail('run identity');
+  if (!report.run?.id || !['PASS', 'FAIL', 'ABORTED', 'BLOCKED', 'CANCELLED', 'PAUSED_BUDGET_OR_QUOTA', 'FOCAL_STOP'].includes(report.run.status)
+    || !['full', 'case', 'focal'].includes(report.run.mode)) fail('run identity');
   if (!report.provenance?.sourceFunctionalSha256 || !report.provenance?.snapshotSha256) fail('source/snapshot identity');
   const c = report.comparability;
   for (const key of ['schemaVersion', 'benchmarkVersion', 'profile', 'requirementsHashes', 'fixtureContentHashes', 'seedHash', 'resultSchemaVersion', 'resultSchemaHash', 'metricDefinitions', 'qualification', 'resultDefinition']) {
     if (c?.[key] === undefined || c[key] === null || c[key] === '') fail(`comparability.${key}`);
   }
   if (!Array.isArray(report.cases) || !report.cases.length) fail('cases');
+  if (report.run.mode !== 'full' && report.cases.length !== 1) fail('selected case scope');
   for (const row of report.cases) {
-    if (!row.id || !['PASS', 'FAIL', 'ABORTED', 'BLOCKED', 'CANCELLED', 'PAUSED_BUDGET_OR_QUOTA', 'NOT_RUN'].includes(row.status)
+    if (!row.id || !['PASS', 'FAIL', 'ABORTED', 'BLOCKED', 'CANCELLED', 'PAUSED_BUDGET_OR_QUOTA', 'FOCAL_STOP', 'NOT_RUN'].includes(row.status)
       || (row.operations !== UNAVAILABLE && !Number.isInteger(row.operations))) fail('case identity/metrics');
     for (const key of ['main', 'runner']) {
       const group = row.telemetry?.[key];
@@ -301,9 +333,12 @@ function fullCoverage(value) {
 
 export function compareMeasurements(before, after, allowProfileMismatch = false) {
   validateMeasurementReport(before); validateMeasurementReport(after);
+  if ([before, after].some((report) => report.provenance?.executionMode === 'OFFLINE_TEST_ONLY')) return {
+    directlyComparable: false, profileExperiment: false, mismatches: ['OFFLINE_TEST_ONLY provider evidence'],
+    conclusion: 'TEST-ONLY; ineligible for real proof or baseline', deltas: UNAVAILABLE };
   const compatibility = comparable(before, after, allowProfileMismatch);
   if (!compatibility.directlyComparable && !compatibility.profileExperiment) return { ...compatibility, deltas: UNAVAILABLE };
-  const complete = (r) => r.run.status === 'PASS' && r.cases.every((c) => c.status === 'PASS' && c.finalizer === 'PASS'
+  const complete = (r) => r.run.mode === 'full' && r.run.status === 'PASS' && r.cases.every((c) => c.status === 'PASS' && c.finalizer === 'PASS'
     && c.finalTestsPassed === true && c.specClosed === true && c.execution === 'COMPLETE');
   if (!complete(before) || !complete(after)) return { ...compatibility, directlyComparable: false,
     mismatches: [...compatibility.mismatches, 'incomplete full-run conclusion'], conclusion: 'partial-run; no savings conclusion', deltas: UNAVAILABLE };
@@ -323,6 +358,9 @@ export function compareMeasurements(before, after, allowProfileMismatch = false)
 }
 
 export async function exportMeasurement(runId) {
+  if (!/^[a-z0-9][a-z0-9-]{7,}$/u.test(runId)) throw new Error('invalid run id');
+  const run = await json(path.join(ROOT, 'benchmark-temp', runId, 'run.json'));
+  if (run.mode !== 'full') throw new Error('measurements can only be exported for full runs');
   const report = validateMeasurementReport(await measurement(runId));
   for (const row of report.cases) for (const key of ['main', 'runner']) {
     if (row.telemetry[key] !== UNAVAILABLE) delete row.telemetry[key].inputByTurn;
@@ -391,6 +429,7 @@ function randomSuffix() { return createHash('sha256').update(`${Date.now()}-${Ma
 
 export async function publishMeasurement(report, { root = path.join(ROOT, 'benchmarks/sentinel-todo/measurements'), updateLatest = true } = {}) {
   report = validateMeasurementReport(report);
+  if (report.run.mode !== 'full') throw new Error('measurements can only be published for full runs');
   if (!/^[a-z0-9][a-z0-9-]{7,}$/u.test(report.run.id)) throw new Error('invalid run id');
   const baselinePath = path.resolve(root, '../baselines/baseline-v1.json');
   let comparison = { directlyComparable: false, mismatches: ['baseline-v1 unavailable'], conclusion: 'baseline-v1 unavailable', deltas: UNAVAILABLE };

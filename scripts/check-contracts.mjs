@@ -174,7 +174,6 @@ const checkSchemas = {
     "{",
     '  "status": "TESTS_PASS | TESTS_FAIL | TESTS_NOT_APPLICABLE | BLOCKED",',
     '  "automaticCheckRound": "1/3 | 2/3 | 3/3",',
-    '  "findingsCycle": "<semantic value>",',
     '  "head": "<semantic value>",',
     '  "discoverySources": "<semantic value>",',
     '  "discoveryActions": "<semantic value>",',
@@ -232,7 +231,7 @@ function checkRunner(root) {
   const expectedCodex = {
     name: "stnl_validation_runner",
     description: "Runner barato e isolado para checks de implementação, checks de findings e validação formal independente de uma slice.",
-    model: "gpt-5.6-luna",
+    model: "gpt-6-luna",
     model_reasoning_effort: "medium",
     developer_instructions: codex.developer_instructions,
     agents: { max_depth: 1 },
@@ -280,7 +279,11 @@ function checkRunner(root) {
   forbidPattern(contract, /(?:^|\n)Em `Findings:`, forneça uma disposição/iu, "R026_OUTPUT_GATE", "validation findings are not constrained to the semantic JSON field");
   requirePattern(contract, /`commands`[^\n]{0,180}(?:somente|only)[^\n]{0,120}`?command`?[^\n]{0,80}`?exit`?/iu, "R027_TUPLE_GRAMMAR", "runner does not state the exact semantic command tuple grammar");
   requirePattern(contract, /The machine-key schema is fixed[\s\S]{0,500}EXECUTE_SLICE[\s\S]{0,500}APPLY_FINDINGS[\s\S]{0,500}VALIDATE_SLICE/u, "R028_FIELD_SEQUENCE", "runner does not require the literal semantic field sequence at the final response gate");
-  requirePattern(contract, /Field shape is strict at the JSON boundary:[\s\S]{0,500}every semantic property except `commands` is one scalar string[\s\S]{0,300}`commands` is an array of objects with exactly `command` and integer `exit`[\s\S]{0,300}payload is one raw JSON object/u, "R029_FIELD_SHAPE", "runner does not require scalar semantic fields outside Commands");
+  requirePattern(contract, /Field shape is strict at the JSON boundary:[\s\S]{0,500}every judgment property except `commands` is one scalar string[\s\S]{0,300}`commands` is an array of objects with exactly `command` and integer `exit`[\s\S]{0,300}payload is one raw JSON object/u, "R029_FIELD_SHAPE", "runner does not require scalar semantic fields outside Commands");
+  requirePattern(contract, /managed ownership and active IDs come only from `FINDINGS_OWNERSHIP`/u, "R029_FIELD_SHAPE", "managed findings ownership must be sealed, not inferred from legacy text");
+  requirePattern(contract, /`automaticCheckRound` is optional diagnostic data in managed mode: history uses the round admitted and sealed by the broker/u, "R029_FIELD_SHAPE", "managed round ownership must come from the broker");
+  requirePattern(contract, /Native mode without a broker requires explicit `automaticCheckRound` equal to `1\/3`, `2\/3`, or `3\/3`/u, "R029_FIELD_SHAPE", "native round requirement is missing");
+  requirePattern(contract, /optional legacy `findingsCycle` never defines ownership in either mode/u, "R029_FIELD_SHAPE", "legacy cycle cannot grant ownership");
   for (const [operation, section] of [["EXECUTE_SLICE", execute], ["APPLY_FINDINGS", findings]]) {
     forbidPattern(section, /(?:crie|create|emita|emit|marque|mark).{0,80}(?:Validation Attempt|Effective Validation Base|PASS formal|conclusão `\[x\]`)/iu, "R015_CHECK_AUTHORITY", `${operation} claims formal authority`);
   }
@@ -303,6 +306,20 @@ function checkRunner(root) {
   requirePattern(contract, /Em `TESTS_PASS`[^\n]{0,260}`Tested scope`[^\n]{0,160}`Verification types considered`[^\n]{0,160}`Selected checks`[^\n]{0,160}`Coverage`[^\n]{0,120}(?:nunca podem ser exact `none`|must not be exact `none`)/iu, "R006_VERDICTS", "TESTS_PASS permits none in an objective summary field");
   requirePattern(contract, /`TESTS_FAIL` exige[^\n]{0,160}(?:comandos que falharam|commands that failed)/iu, "R006_VERDICTS", "TESTS_FAIL lacks command-failure evidence");
   requirePattern(contract, /`BLOCKED` exige[^\n]{0,180}(?:impossibilidade objetiva|objective impossibility)/iu, "R006_VERDICTS", "BLOCKED lacks an objective cause");
+  requirePattern(contract, /Em `EXECUTE_SLICE` e `APPLY_FINDINGS`,[^\n]*teste, fixture ou asserção preparado pelo executor[^\n]*correção possível dentro do escopo aprovado e dos direitos existentes, retorne `TESTS_FAIL`/u, "R006_VERDICTS", "prepared in-scope check defects must remain bounded execution failures");
+  requirePattern(contract, /Em `VALIDATE_SLICE`, defeito comprovado da entrega de testes já exigida pela autoridade atual[^\n]*preparada pelo executor nos paths aprovados da própria slice[^\n]*exige `NEEDS_FIX`[^\n]*finding de cobertura[^\n]*correção cabe no escopo aprovado e nos direitos existentes/u, "R006_VERDICTS", "formal test-delivery findings must remain demonstrated, required and authorized in the same slice");
+  requirePattern(contract, /O finding identifica critério\/variante, contrato violado, evidência direta do defeito ou da omissão, path autorizado e correção mínima esperada/u, "R006_VERDICTS", "coverage finding lacks direct evidence, authority or a bounded correction");
+  requirePattern(contract, /Todo finding exige violação demonstrada de requisito ou variante da autoridade atual[^\n]*path aprovado na própria slice/u, "R006_VERDICTS", "findings must demonstrate a violated current requirement on an authorized slice path");
+  // Distribution contract only: this verifies instructions, not a finding's truth.
+  requirePattern(contract, /Antes de alegar ausência de cobertura, compare o requisito\/variante da autoridade atual, a entrada efetivamente gravada ou fornecida ao check, a asserção esperada e o caminho produtor da entrada e do resultado/u, "R006_VERDICTS", "coverage review must compare requirement, effective input, assertion and producer");
+  requirePattern(contract, /Inspecione as fixtures, asserções e o produtor pertinente no escopo[^\n]*considere suas transformações e chamadas[^\n]*forma literal da fixture ou pelo nome do teste/u, "R006_VERDICTS", "coverage cannot be inferred from fixture syntax or test naming");
+  requirePattern(contract, /Aponte paths e trechos ou valores observados[^\n]*separe requisito exigido de melhoria opcional/u, "R006_VERDICTS", "coverage claims need concrete evidence and must distinguish optional improvements");
+  requirePattern(contract, /Preferência por uma asserção mais forte ou por um formato não exigido não é defeito de cobertura/u, "R006_VERDICTS", "preference is not a requirement violation");
+  requirePattern(contract, /Em VALIDATE_SLICE, `commands` é sempre um array não vazio de comandos de verificação realmente executados com seus exits[^\n]*NEEDS_FIX ou BLOCKED/u, "R009_VALIDATION_ATTEMPT", "formal commands must be nonempty actual verification results for every verdict");
+  requirePattern(contract, /Discovery e inspeção não preenchem esse campo[^\n]*nunca invente um comando, um exit ou um check/u, "R009_VALIDATION_ATTEMPT", "formal commands cannot be discovery or fabricated evidence");
+  requirePattern(contract, /ausência de prova, por si só, não identifica defeito corrigível/u, "R006_VERDICTS", "missing proof alone cannot authorize correction");
+  requirePattern(contract, /Somente o executor corrige via `APPLY_FINDINGS`, seguido de `VALIDATE_SLICE`, nos budgets existentes/u, "R006_VERDICTS", "coverage correction bypasses the existing executor, validation or cost boundary");
+  requirePattern(contract, /Fora dessa exceção, defeito do próprio script, fixture, quoting ou asserção[^\n]*continua exigindo `BLOCKED`[^\n]*Negação de sandbox ou permissão[^\n]*insumo realmente indisponível[^\n]*transporte, autoridade insuficiente[^\n]*exige `BLOCKED` em qualquer operação/u, "R006_VERDICTS", "unclassified check defects and objective environmental or authority blockers must remain BLOCKED");
   forbidPattern(contract, /(?:NEEDS_FIX|BLOCKED)[\s\S]{0,160}(?:(?<!não )proponha|create|(?<!não )crie) Effective Validation Base/iu, "R006_VERDICTS", "non-PASS verdict creates an effective base");
   requirePattern(contract, /fontes consultadas em `Discovery sources`[\s\S]{0,160}`Discovery actions`/iu, "R007_OUTPUT_SCHEMA", "discovery sources and actions are not distinct");
   requirePattern(contract, /`Findings verified`[^\n]{0,100}subconjunto canônico[^\n]{0,100}`Finding IDs`/iu, "R007_OUTPUT_SCHEMA", "verified findings are not constrained to the target subset");
@@ -316,6 +333,17 @@ function checkRunner(root) {
   requirePattern(contract, /`findingReferences`: `finding-01` e `findingDispositions`: `finding-01=active`/u, "R009_VALIDATION_ATTEMPT", "new NEEDS_FIX finding lacks canonical response example");
   requirePattern(contract, /novo finding nasce `active`[^\n]{0,180}tentativa formal estritamente posterior/iu, "R009_VALIDATION_ATTEMPT", "new findings can be disposed at their origin attempt");
   requirePattern(contract, /PASS[^\n]{0,260}nenhuma disposição bloqueante ativa/iu, "R009_VALIDATION_ATTEMPT", "PASS may leave a blocking finding active");
+  requirePattern(contract, /A ausência ou o valor pending desses campos finais desta tentativa não é causa de BLOCKED/u, "R009_VALIDATION_ATTEMPT", "runner requires fields produced only after its verdict");
+  requirePattern(contract, /Para cada critério de aceitação aplicável[^\n]{0,220}evidência direta de check ou inspeção suficiente/u, "R009_VALIDATION_ATTEMPT", "runner does not require evidence for each acceptance criterion");
+  requirePattern(contract, /Nunca retorne PASS enquanto algum critério aplicável estiver sem evidência suficiente/u, "R009_VALIDATION_ATTEMPT", "runner permits PASS with an unverified acceptance criterion");
+  requirePattern(contract, /uma única correção apenas de formato JSON[^\n]*mesmo objeto semântico[^\n]*evidência idênticos/u, "R009_VALIDATION_ATTEMPT", "format repair can change runner evidence or verdict");
+  requirePattern(contract, /única equivalência de tipo permitida é array vazio[^\n]*findingReferences[^\n]*findingDispositions/u, "R009_VALIDATION_ATTEMPT", "format repair permits unbounded schema conversion");
+  requirePattern(contract, /check marcado com exit não zero impede[^\n]*mesmo se uma execução posterior passar/u, "R009_VALIDATION_ATTEMPT", "runner may omit earlier failed verification");
+  requirePattern(contract, /runner não cria nem edita scripts ou testes[^\n]*lacuna de cobertura/u, "R009_VALIDATION_ATTEMPT", "runner may prepare checks beyond its authority");
+  requirePattern(contract, /Não use heredoc, here-string[^\n]*múltiplas camadas de quoting/u, "R009_VALIDATION_ATTEMPT", "runner depends on implicit shell temporary files");
+  requirePattern(contract, /Não tente novamente por outro path, ferramenta, TMPDIR\/TMPPREFIX ou modo de permissão/u, "R009_VALIDATION_ATTEMPT", "runner may bypass a denied command");
+  requirePattern(contract, /Não confunda ausência de teste prévio com impossibilidade de verificar/u, "R009_VALIDATION_ATTEMPT", "runner may block instead of verifying an accessible coverage gap");
+  requirePattern(contract, /Não use esse caminho para resposta semântica válida, timeout, processError ou conclusão incerta/u, "R009_VALIDATION_ATTEMPT", "format repair permits an uncertain or already valid result");
   requirePattern(contract, /Checks nunca emitem[^\n]{0,160}(?:Validation Attempt|Effective Validation Base)/iu, "R015_CHECK_AUTHORITY", "check/formal authority separation is incomplete");
   requirePattern(contract, /Responda somente de forma compacta[^\n]{0,120}sem logs completos/iu, "R011_COMPACT_OUTPUT", "runner compact-output boundary is missing");
   requirePattern(contract, /nunca o reverta automaticamente/iu, "R005_READ_ONLY", "runner may automatically revert workspace effects");
@@ -346,7 +374,7 @@ function checkScout(root) {
   const claude = parseFrontmatter(claudeFile, "S007_SYNTAX");
   const description = "Read-only exception scout for one explicitly authorized lifecycle evidence gap; never auto-select or delegate.";
   const expectedCodex = {
-    name: "stnl_spec_context_scout", description, model: "gpt-5.6-luna", model_reasoning_effort: "medium",
+    name: "stnl_spec_context_scout", description, model: "gpt-6-luna", model_reasoning_effort: "medium",
     sandbox_mode: "read-only", approval_policy: "never", web_search: "disabled",
     developer_instructions: codex.developer_instructions, agents: { max_depth: 1 },
   };

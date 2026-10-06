@@ -36,6 +36,19 @@ function parseCapturedResult(operation, parse, response) {
   catch (error) { throw new RunnerSemanticResultError(operation, error); }
 }
 
+async function requireAcceptedRunnerResult(options) {
+  const context = await assertManagedRunnerReceipt({ ...options, allowRejected: true });
+  if (options.receiptFile === undefined) return;
+  const receipt = JSON.parse(await fs.readFile(options.receiptFile, "utf8"));
+  if (receipt.status === "RUNNER_RESULT_BLOCKED") {
+    if (context === null) fail("rejected runner diagnostics require a matching active managed invocation");
+    // Identity and conclusion passed; semantic rejection can produce only a
+    // Delegation Blocker, never commands, a check, an attempt, or PASS.
+    throw new RunnerSemanticResultError(options.operation,
+      Object.assign(new Error(receipt.captureFailure), { code: receipt.captureFailureCode }));
+  }
+}
+
 export function recoverableRunnerResultDiagnostic(error) {
   if (!(error instanceof RunnerVerdictEvidenceError || error instanceof RunnerSemanticResultError)) return null;
   const failed = error instanceof RunnerVerdictEvidenceError
@@ -64,6 +77,20 @@ function inside(candidate, parent) {
   return relative === "" || (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
 }
 
+async function rejectWorkspaceSymlinkComponents(candidate, workspaceRoot) {
+  if (!inside(candidate, workspaceRoot)) fail(`validation-owned path escapes its trusted workspace: ${candidate}`);
+  let current = workspaceRoot;
+  for (const component of path.relative(workspaceRoot, candidate).split(path.sep).filter(Boolean)) {
+    current = path.join(current, component);
+    const metadata = await fs.lstat(current).catch((error) => {
+      if (error?.code === "ENOENT" || error?.code === "ENOTDIR") return null;
+      throw error;
+    });
+    if (metadata === null) return;
+    if (metadata.isSymbolicLink()) fail(`validation-owned path traverses a symlink: ${current}`);
+  }
+}
+
 function normalizedRelative(value, label) {
   if (typeof value !== "string" || value.length === 0 || value.includes("\\") || path.posix.isAbsolute(value)) {
     fail(`${label} must be a normalized relative path`);
@@ -73,7 +100,8 @@ function normalizedRelative(value, label) {
   return value;
 }
 
-async function regularFile(file, label) {
+async function regularFile(file, label, workspaceRoot = null) {
+  if (workspaceRoot !== null) await rejectWorkspaceSymlinkComponents(file, workspaceRoot);
   const metadata = await fs.lstat(file).catch((error) => fail(`${label} is not available: ${error.message}`));
   if (!metadata.isFile() || metadata.isSymbolicLink()) fail(`${label} must be a regular non-symlink file`);
   return fs.realpath(file);
@@ -115,7 +143,8 @@ async function canonicalEvidenceEntries({ workspace, taskArtifact, targets = [],
 
   const workspaceRoot = await canonicalWorkspacePath(workspace);
   if (!path.isAbsolute(taskArtifact)) fail("taskArtifact must be absolute");
-  const canonicalTask = await regularFile(taskArtifact, "taskArtifact");
+  if (!inside(taskArtifact, workspaceRoot)) fail("taskArtifact must belong to workspace");
+  const canonicalTask = await regularFile(taskArtifact, "taskArtifact", workspaceRoot);
   if (!inside(canonicalTask, workspaceRoot)) fail("taskArtifact must belong to workspace");
 
   const entries = [];
@@ -123,7 +152,8 @@ async function canonicalEvidenceEntries({ workspace, taskArtifact, targets = [],
   const physical = new Set();
   for (const target of targets) {
     if (typeof target !== "string" || !path.isAbsolute(target)) fail("file-backed targets must be absolute");
-    const canonicalTarget = await regularFile(target, "file-backed target");
+    if (!inside(target, workspaceRoot)) fail("file-backed target must belong to workspace");
+    const canonicalTarget = await regularFile(target, "file-backed target", workspaceRoot);
     if (!inside(canonicalTarget, workspaceRoot)) fail("file-backed target must belong to workspace");
     const claim = claimFor(canonicalTask, canonicalTarget);
     if (claims.has(claim)) fail(`duplicate task-relative claim: ${claim}`);
@@ -149,7 +179,8 @@ async function canonicalEvidenceEntries({ workspace, taskArtifact, targets = [],
 // subset later, but it must never read the workspace to reconstruct this round.
 export async function captureRunnerTestedState({ workspace, taskArtifact, changedAreas = null }) {
   const workspaceRoot = await canonicalWorkspacePath(workspace);
-  const sourceTaskPath = await regularFile(taskArtifact, "source taskArtifact");
+  if (!inside(taskArtifact, workspaceRoot)) fail("source taskArtifact must belong to workspace");
+  const sourceTaskPath = await regularFile(taskArtifact, "source taskArtifact", workspaceRoot);
   if (!inside(sourceTaskPath, workspaceRoot)) fail("source taskArtifact must belong to workspace");
   const taskText = await fs.readFile(sourceTaskPath, "utf8");
   const claims = changedAreas === null
@@ -165,9 +196,11 @@ export async function captureRunnerTestedState({ workspace, taskArtifact, change
     const claim = normalizedRelative(raw, "runner changed area");
     const taskCandidate = path.resolve(path.dirname(sourceTaskPath), claim);
     const workspaceCandidate = path.resolve(workspaceRoot, claim);
-    const taskPhysical = await existingPhysicalCandidate(taskCandidate, "runner task-relative target");
+    const taskPhysical = inside(taskCandidate, workspaceRoot)
+      ? await existingPhysicalCandidate(taskCandidate, "runner task-relative target", workspaceRoot) : null;
     const workspacePhysical = taskCandidate === workspaceCandidate ? taskPhysical
-      : await existingPhysicalCandidate(workspaceCandidate, "runner workspace-relative target");
+      : inside(workspaceCandidate, workspaceRoot)
+        ? await existingPhysicalCandidate(workspaceCandidate, "runner workspace-relative target", workspaceRoot) : null;
     if (taskPhysical !== null && workspacePhysical !== null && taskPhysical !== workspacePhysical) {
       fail(`runner changed area is ambiguous: ${claim}`);
     }
@@ -198,7 +231,8 @@ export async function captureRunnerTestedState({ workspace, taskArtifact, change
 export async function validateManagedChangedAreas({ workspace, taskArtifact, changedAreas }) {
   if (!Array.isArray(changedAreas)) fail("managed changedAreas must be an array");
   const workspaceRoot = await canonicalWorkspacePath(workspace);
-  const sourceTaskPath = await regularFile(taskArtifact, "source taskArtifact");
+  if (!inside(taskArtifact, workspaceRoot)) fail("source taskArtifact must belong to workspace");
+  const sourceTaskPath = await regularFile(taskArtifact, "source taskArtifact", workspaceRoot);
   if (!inside(sourceTaskPath, workspaceRoot)) fail("source taskArtifact must belong to workspace");
   const taskText = await fs.readFile(sourceTaskPath, "utf8");
   const approvedTargets = await canonicalApprovedTargets({ workspaceRoot, taskArtifact: sourceTaskPath, taskText });
@@ -316,7 +350,6 @@ const MACHINE_EXECUTION_FIELDS = Object.freeze({
   APPLY_FINDINGS: Object.freeze([
     ["status", "Status"],
     ["automaticCheckRound", "Automatic check round"],
-    ["findingsCycle", "Findings cycle"],
     ["head", "HEAD"],
     ["discoverySources", "Discovery sources"],
     ["discoveryActions", "Discovery actions"],
@@ -456,7 +489,7 @@ export async function serializeRunnerRecord({ workspace, taskArtifact, targets =
   const serializedCommands = serializeCommands(commands);
   if (serializedCommands.length === 0 && !allowEmptyCommands) fail("at least one executed command is required");
   const commandBlock = serializedCommands.length === 0 ? "- Commands: none" : `- Commands:\n${serializedCommands}`;
-  return `- Tested state:\n${testedState}\n${commandBlock}`;
+  return `${hasFileBackedState ? `- Tested state:\n${testedState}` : testedState}\n${commandBlock}`;
 }
 
 export async function serializeRunnerManifest({ workspace, taskArtifact, targets = [], removed = [], commands = [], filelessReason = null }) {
@@ -567,7 +600,7 @@ function parseSemanticExecutionResponse(text, operation) {
   return values;
 }
 
-function parseSemanticExecutionPayload(text, operation) {
+export function parseSemanticExecutionPayload(text, operation, { automaticCheckRound } = {}) {
   const fields = MACHINE_EXECUTION_FIELDS[operation];
   if (fields === undefined) fail(`unsupported semantic execution operation: ${operation}`);
   let payload;
@@ -582,10 +615,16 @@ function parseSemanticExecutionPayload(text, operation) {
   if (!["TESTS_PASS", "TESTS_FAIL", "TESTS_NOT_APPLICABLE", "BLOCKED"].includes(payload.status)) {
     fail("semantic execution payload Status is invalid");
   }
+  // The managed caller supplies the broker-admitted round. The raw echo stays
+  // unchanged in its captured artifact and has no bookkeeping authority.
+  if (automaticCheckRound !== undefined) {
+    if (!["1/3", "2/3", "3/3"].includes(automaticCheckRound)) fail("admitted automatic check round is invalid");
+    payload = { ...payload, automaticCheckRound };
+  }
   if (!["1/3", "2/3", "3/3"].includes(payload.automaticCheckRound)) {
     fail("semantic execution payload Automatic check round is invalid");
   }
-  const allowed = new Set([...fields.map(([key]) => key), "filelessReason"]);
+  const allowed = new Set([...fields.map(([key]) => key), "filelessReason", ...(operation === "APPLY_FINDINGS" ? ["findingsCycle"] : [])]);
   for (const key of Object.keys(payload)) {
     if (!allowed.has(key)) fail(`unknown semantic execution payload field: ${key}`);
   }
@@ -622,7 +661,7 @@ const VALIDATION_SEMANTIC_KEYS = Object.freeze([
   "blockers", "unexpectedWorkspaceEffects", "persistenceSummary",
 ]);
 
-function parseSemanticValidationPayload(text) {
+export function parseSemanticValidationPayload(text) {
   if (typeof text !== "string" || text.length === 0) fail("semantic validation response must be a non-empty JSON object");
   let payload;
   try {
@@ -756,7 +795,8 @@ function checklistExpectedClaims(text) {
   return claims;
 }
 
-async function existingPhysicalCandidate(candidate, label) {
+async function existingPhysicalCandidate(candidate, label, workspaceRoot) {
+  await rejectWorkspaceSymlinkComponents(candidate, workspaceRoot);
   const metadata = await fs.lstat(candidate).catch((error) => {
     if (error?.code === "ENOENT") return null;
     fail(`${label} is not available: ${error.message}`);
@@ -770,7 +810,8 @@ async function canonicalApprovedTargets({ workspaceRoot, taskArtifact, taskText 
   const targets = new Map();
   for (const raw of checklistExpectedClaims(taskText)) {
     const candidate = path.resolve(path.dirname(taskArtifact), raw);
-    const physical = await existingPhysicalCandidate(candidate, `Checklist expected area ${raw}`) ?? candidate;
+    if (!inside(candidate, workspaceRoot)) fail(`Checklist expected area escapes workspace: ${raw}`);
+    const physical = await existingPhysicalCandidate(candidate, `Checklist expected area ${raw}`, workspaceRoot) ?? candidate;
     if (physical === candidate && !inside(await fs.realpath(path.dirname(candidate)), workspaceRoot)) {
       fail(`Checklist expected area escapes workspace: ${raw}`);
     }
@@ -784,10 +825,12 @@ async function canonicalizeScopeClaim({ workspaceRoot, taskArtifact, approvedTar
   const claim = normalizedRelative(raw, `${heading} path`);
   const taskBasis = path.resolve(path.dirname(taskArtifact), claim);
   const workspaceBasis = path.resolve(workspaceRoot, claim);
-  const taskPhysical = await existingPhysicalCandidate(taskBasis, `${heading} task-relative claim ${claim}`);
+  const taskPhysical = inside(taskBasis, workspaceRoot)
+    ? await existingPhysicalCandidate(taskBasis, `${heading} task-relative claim ${claim}`, workspaceRoot) : null;
   const workspacePhysical = taskBasis === workspaceBasis
     ? taskPhysical
-    : await existingPhysicalCandidate(workspaceBasis, `${heading} workspace-relative claim ${claim}`);
+    : inside(workspaceBasis, workspaceRoot)
+      ? await existingPhysicalCandidate(workspaceBasis, `${heading} workspace-relative claim ${claim}`, workspaceRoot) : null;
   if (taskPhysical !== null && workspacePhysical !== null && taskPhysical !== workspacePhysical) {
     fail(`${heading} claim is ambiguous across task and workspace bases: ${claim}`);
   }
@@ -824,7 +867,7 @@ async function canonicalizeScopeSection({ workspaceRoot, taskArtifact, taskText,
 
 export async function serializeExecutionScopeClaims({ workspace, taskArtifact }) {
   const workspaceRoot = await canonicalWorkspacePath(workspace);
-  const canonicalTask = await regularFile(taskArtifact, "taskArtifact");
+  const canonicalTask = await regularFile(taskArtifact, "taskArtifact", workspaceRoot);
   if (!inside(canonicalTask, workspaceRoot)) fail("taskArtifact must belong to workspace");
   const before = await fs.readFile(canonicalTask, "utf8");
   const approvedTargets = await canonicalApprovedTargets({ workspaceRoot, taskArtifact: canonicalTask, taskText: before });
@@ -913,7 +956,7 @@ function parseOverlapPathSection(text) {
   return paths;
 }
 
-async function deriveValidationTargetsFromTask({ workspace, taskArtifact }) {
+async function deriveValidationTargetsFromTask({ workspace, taskArtifact, filelessReason = null }) {
   const taskText = await fs.readFile(taskArtifact, "utf8");
   const claims = [
     ...parseCanonicalPathSection(taskText, "Changed Areas"),
@@ -926,12 +969,13 @@ async function deriveValidationTargetsFromTask({ workspace, taskArtifact }) {
     seen.add(claim);
     uniqueClaims.push(claim);
   }
-  if (uniqueClaims.length === 0) fail("validation producer cannot derive a file-backed target set from the task artifact");
+  if (uniqueClaims.length === 0 && filelessReason === null) fail("validation producer cannot derive a file-backed target set from the task artifact");
   const workspaceRoot = await canonicalWorkspacePath(workspace);
   const targets = [];
   for (const claim of uniqueClaims) {
     const physical = path.resolve(path.dirname(taskArtifact), claim);
-    const canonical = await regularFile(physical, `task claim ${claim}`);
+    if (!inside(physical, workspaceRoot)) fail(`task claim resolves outside workspace: ${claim}`);
+    const canonical = await regularFile(physical, `task claim ${claim}`, workspaceRoot);
     if (!inside(canonical, workspaceRoot)) fail(`task claim resolves outside workspace: ${claim}`);
     targets.push(canonical);
   }
@@ -956,7 +1000,8 @@ async function deriveExecutionTargetsFromTask({ workspace, taskArtifact }) {
   const removed = [];
   for (const claim of uniqueClaims) {
     const physical = path.resolve(path.dirname(taskArtifact), claim);
-    const canonical = await existingPhysicalCandidate(physical, `task claim ${claim}`);
+    if (!inside(physical, workspaceRoot)) fail(`task claim resolves outside workspace: ${claim}`);
+    const canonical = await existingPhysicalCandidate(physical, `task claim ${claim}`, workspaceRoot);
     if (canonical === null) {
       if (!inside(physical, workspaceRoot) || !inside(await fs.realpath(path.dirname(physical)), workspaceRoot)) {
         fail(`task claim resolves outside workspace: ${claim}`);
@@ -987,15 +1032,20 @@ function priorImplementationFailure(taskText, expectedRound) {
   for (const match of record.matchAll(/^  - `([^`\n]+)` \| (sha256:[0-9a-f]{64}|REMOVED)$/gmu)) {
     testedState.set(match[1], match[2]);
   }
-  return testedState;
+  const correctionClaims = records.flatMap((entry) => {
+    const value = entry.match(/^- Correction paths: (.+)$/mu)?.[1];
+    return value === undefined || value === "none" ? []
+      : value.split(", ").map((claim) => normalizedRelative(claim, "historical Correction paths"));
+  });
+  return { testedState, correctionClaims };
 }
 
 async function populateExecutionCorrectionClaims({ workspace, taskArtifact, operation, round }) {
   if (operation !== "EXECUTE_SLICE" || round === 1) return;
-  const canonicalTask = await regularFile(taskArtifact, "taskArtifact");
-  const before = await fs.readFile(canonicalTask, "utf8");
-  const priorState = priorImplementationFailure(before, round - 1);
   const workspaceRoot = await canonicalWorkspacePath(workspace);
+  const canonicalTask = await regularFile(taskArtifact, "taskArtifact", workspaceRoot);
+  const before = await fs.readFile(canonicalTask, "utf8");
+  const prior = priorImplementationFailure(before, round - 1);
   const approvedTargets = await canonicalApprovedTargets({ workspaceRoot, taskArtifact: canonicalTask, taskText: before });
   const changed = await canonicalizeScopeSection({
     workspaceRoot,
@@ -1006,11 +1056,13 @@ async function populateExecutionCorrectionClaims({ workspace, taskArtifact, oper
   });
   const corrections = [];
   for (const claim of changed.claims) {
-    const physical = await existingPhysicalCandidate(path.resolve(path.dirname(canonicalTask), claim), `Changed Areas target ${claim}`);
+    const physical = await existingPhysicalCandidate(path.resolve(path.dirname(canonicalTask), claim), `Changed Areas target ${claim}`, workspaceRoot);
     const digest = physical === null ? "REMOVED"
       : `sha256:${createHash("sha256").update(await fs.readFile(physical)).digest("hex")}`;
-    if (priorState.get(claim) !== digest) corrections.push(claim);
+    if (prior.testedState.get(claim) !== digest) corrections.push(claim);
   }
+  const cumulative = [...new Set([...prior.correctionClaims, ...corrections])]
+    .sort((left, right) => left.localeCompare(right, "en"));
   const existing = sectionBody(before, "Corrections Applied");
   if (existing !== "- none") {
     const declared = await canonicalizeScopeSection({
@@ -1020,12 +1072,13 @@ async function populateExecutionCorrectionClaims({ workspace, taskArtifact, oper
       approvedTargets,
       heading: "Corrections Applied",
     });
-    if (JSON.stringify(declared.claims) !== JSON.stringify(corrections)) {
+    if (JSON.stringify(declared.claims) !== JSON.stringify(cumulative)) {
       fail("Corrections Applied does not match mechanically derived correction paths");
     }
-    return;
+    return corrections;
   }
-  const correctionBody = corrections.length === 0 ? "- none" : corrections.map((claim) => `- \`${claim}\``).join("\n");
+  if (prior.correctionClaims.length !== 0) fail("Corrections Applied omits historical correction paths");
+  const correctionBody = cumulative.length === 0 ? "- none" : cumulative.map((claim) => `- \`${claim}\``).join("\n");
   const after = replaceSectionBody(before, "Corrections Applied", correctionBody);
   if (after !== before) {
     const temporary = `${canonicalTask}.stnl-correction-paths-${process.pid}.tmp`;
@@ -1037,6 +1090,7 @@ async function populateExecutionCorrectionClaims({ workspace, taskArtifact, oper
       await fs.rm(temporary, { force: true });
     }
   }
+  return corrections;
 }
 
 function nextExecutionCheckId(taskText, prefix) {
@@ -1196,13 +1250,14 @@ function executionResponseFields(operation, parsed, testedScope) {
 }
 
 export async function serializeRunnerExecutionBundleFromResponse({
-  operation, response, workspace, taskArtifact, receiptFile, semanticResponseFile, verificationEventIds,
+  operation, response, workspace, taskArtifact, receiptFile, semanticResponseFile, verificationEventIds, resolveManagedFindingsCycle, automaticCheckRound,
 }) {
   if (!new Set(["EXECUTE_SLICE", "APPLY_FINDINGS"]).has(operation)) {
     fail("execution bundle operation must be EXECUTE_SLICE or APPLY_FINDINGS");
   }
-  await assertManagedRunnerReceipt({ operation, slice: path.basename(taskArtifact, '.md'), workspace, receiptFile, semanticResponseFile });
-  const payload = parseCapturedResult(operation, parseSemanticExecutionPayload, response);
+  await requireAcceptedRunnerResult({ operation, slice: path.basename(taskArtifact, '.md'), workspace, receiptFile, semanticResponseFile });
+  if (automaticCheckRound !== undefined && receiptFile === undefined) fail("managed round ownership requires a captured receipt");
+  const payload = parseCapturedResult(operation, (text, op) => parseSemanticExecutionPayload(text, op, { automaticCheckRound }), response);
   const mechanicalCommands = receiptFile === undefined ? payload.commands
     : await resolveRunnerCommandEvents({
       receiptFile, semanticResponseFile, operation, eventIds: verificationEventIds ?? null,
@@ -1211,7 +1266,7 @@ export async function serializeRunnerExecutionBundleFromResponse({
     fail("runner completed no marked verification command");
   }
   assertRunnerVerdictConsistency(operation, payload.status, mechanicalCommands);
-  await populateExecutionCorrectionClaims({
+  const correctionPaths = await populateExecutionCorrectionClaims({
     workspace,
     taskArtifact,
     operation,
@@ -1222,6 +1277,22 @@ export async function serializeRunnerExecutionBundleFromResponse({
     ...MACHINE_EXECUTION_FIELDS[operation].map(([key, label]) => [label, payload[key]]),
     ["filelessReason", payload.filelessReason],
   ]);
+  if (resolveManagedFindingsCycle !== undefined) {
+    const managedFindingsCycle = await resolveManagedFindingsCycle(payload);
+    if (operation !== "APPLY_FINDINGS" || receiptFile === undefined || !/^attempt-[0-9]{2,}$/.test(managedFindingsCycle)) {
+      fail("managed Findings cycle requires a captured APPLY receipt and canonical attempt");
+    }
+    parsed["Findings cycle"] = managedFindingsCycle;
+  }
+  if (operation === "APPLY_FINDINGS" && resolveManagedFindingsCycle === undefined) {
+    if (receiptFile !== undefined) fail("managed APPLY requires sealed findings ownership");
+    const attempts = sectionBody(await fs.readFile(taskArtifact, "utf8"), "Validation Attempts")
+      .split(/(?=^### attempt-[0-9]{2,}$)/mu).filter(record => record.startsWith("### attempt-"));
+    const current = attempts.at(-1);
+    const cycle = current?.match(/^### (attempt-[0-9]{2,})$/mu)?.[1];
+    if (cycle === undefined || current.match(/^- Status: (.+)$/mu)?.[1] !== "NEEDS_FIX") fail("native APPLY has no current NEEDS_FIX cycle");
+    parsed["Findings cycle"] = cycle;
+  }
   parsed.Commands = mechanicalCommands;
   const { targets, removed } = await deriveExecutionTargetsFromTask({ workspace, taskArtifact });
   const capturedEntries = await capturedExecutionEntries({ receiptFile, operation, workspace, taskArtifact, targets, removed });
@@ -1243,12 +1314,20 @@ export async function serializeRunnerExecutionBundleFromResponse({
       }
     }
   }
-  parsed.correctionPaths = parseCanonicalPathSection(taskText, "Corrections Applied").join(", ") || "none";
+  parsed.correctionPaths = (correctionPaths ?? parseCanonicalPathSection(taskText, "Corrections Applied")).join(", ") || "none";
   const filelessReason = parsed.filelessReason ?? null;
-  if (targets.length + removed.length === 0 && filelessReason === null) fail("fileless semantic execution response must include Fileless reason");
-  if (targets.length + removed.length !== 0 && filelessReason !== null) fail("file-backed semantic execution response cannot include Fileless reason");
+  // Only the response/scope incompatibility is recoverable. All receipt,
+  // filesystem, captured-state and authority checks above remain mechanical.
+  const scopeMismatch = targets.length + removed.length === 0 && (filelessReason === null || filelessReason.trim() === "")
+    ? "fileless semantic execution response must include Fileless reason"
+    : targets.length + removed.length !== 0 && filelessReason !== null
+      ? "file-backed semantic execution response cannot include Fileless reason" : null;
+  if (scopeMismatch !== null) {
+    throw new RunnerSemanticResultError(operation,
+      Object.assign(new Error(scopeMismatch), { code: "RUNNER_EXECUTION_SCOPE_INVALID" }));
+  }
   const testedScope = targets.length + removed.length === 0
-    ? "none"
+    ? serializeMarkdownScalar("filelessReason", filelessReason, true)
     : capturedEntries === null
       ? await canonicalTestedScope({ workspace, taskArtifact, targets, removed })
       : capturedEntries.map((entry) => entry.path).join(", ");
@@ -1265,7 +1344,7 @@ export async function serializeRunnerExecutionBundleFromResponse({
   });
 }
 
-export async function insertExecutionEvidenceInCandidate({ taskArtifact, operation, bundle }) {
+export async function insertExecutionEvidenceInCandidate({ taskArtifact, operation, bundle, validateProspectiveTask }) {
   if (!new Set(["EXECUTE_SLICE", "APPLY_FINDINGS"]).has(operation)
     || typeof bundle !== "string" || !/^### (?:implementation|findings)-check-[0-9]{2,}\n/u.test(bundle)) {
     fail("candidate insertion requires one canonical execution check");
@@ -1322,6 +1401,7 @@ export async function insertExecutionEvidenceInCandidate({ taskArtifact, operati
     updated = replaceSectionBody(updated, "Delegation Blocker",
       `${blocker.replace("- State: active", "- State: resolved")}\n- Resolution: ${identifier.slice(4)} returned a valid runner result`);
   }
+  if (validateProspectiveTask !== undefined) await validateProspectiveTask({ slice, text: updated });
   const temporary = `${canonicalTask}.${process.pid}.${randomUUID()}.tmp`;
   try {
     const mode = (await fs.stat(canonicalTask)).mode & 0o777;
@@ -1334,17 +1414,20 @@ export async function insertExecutionEvidenceInCandidate({ taskArtifact, operati
 }
 
 export async function persistMalformedRunnerResultInCandidate({
-  taskArtifact, operation, receiptFile, semanticResponseFile, diagnostic,
+  taskArtifact, operation, receiptFile, semanticResponseFile, diagnostic, error = null, workspace,
 }) {
   if (!new Set(["EXECUTE_SLICE", "APPLY_FINDINGS", "VALIDATE_SLICE"]).has(operation)) fail("invalid runner recovery operation");
   const task = await regularFile(taskArtifact, "candidate taskArtifact");
   const receiptPath = await regularFile(receiptFile, "runner receipt");
   const responsePath = await regularFile(semanticResponseFile, "semantic response");
+  const context = await assertManagedRunnerReceipt({ operation, slice: path.basename(task, ".md"), workspace,
+    receiptFile, semanticResponseFile, allowRejected: true });
   const receipt = JSON.parse(await fs.readFile(receiptPath, "utf8"));
   const responseHash = createHash("sha256").update(await fs.readFile(responsePath)).digest("hex");
-  if (receipt.status !== "RUNNER_RESPONSE_CAPTURED" || receipt.operation !== operation
+  const rejected = context !== null && receipt.status === "RUNNER_RESULT_BLOCKED";
+  if ((!rejected && receipt.status !== "RUNNER_RESPONSE_CAPTURED") || receipt.operation !== operation
     || receipt.semanticResponseFile !== responsePath || receipt.semanticResponseSha256 !== responseHash
-    || receipt.captureFailure !== null || receipt.error !== null) {
+    || (!rejected && receipt.captureFailure !== null) || receipt.error != null) {
     fail("malformed-output recovery requires a matching captured runner response and receipt");
   }
   const executionRoot = path.dirname(path.dirname(task));
@@ -1358,6 +1441,31 @@ export async function persistMalformedRunnerResultInCandidate({
   const slice = path.basename(task, ".md");
   if (!/^slice-[0-9]{2,}$/u.test(slice)) fail("malformed-output recovery requires a canonical slice task");
   let taskText = await fs.readFile(task, "utf8");
+  if ((rejected || error instanceof RunnerSemanticResultError && error.cause?.code === "RUNNER_EXECUTION_SCOPE_INVALID")
+    && operation !== "VALIDATE_SLICE"
+    && sectionBody(taskText, "Changed Areas") === "- none") {
+    // An unproved fileless claim cannot be published as Changed Areas: none.
+    // Restore only the pre-run scope/checklist, and only with unchanged live
+    // identity and no newly persisted evidence. Never fill the missing reason
+    // or discard an earlier private check; strict validation still owns it.
+    const markerPath = await regularFile(path.join(candidateRoot, ".stnl-execution-copy.json"), "candidate marker");
+    const marker = JSON.parse(await fs.readFile(markerPath, "utf8"));
+    if (marker.slice !== slice || typeof marker.executionRoot !== "string" || !path.isAbsolute(marker.executionRoot)) {
+      fail("malformed-output scope recovery candidate identity mismatch");
+    }
+    const livePath = await regularFile(path.join(marker.executionRoot, "tasks", `${slice}.md`), "live taskArtifact");
+    const liveBytes = await fs.readFile(livePath);
+    const source = marker.source?.find((entry) => entry.path === `tasks/${slice}.md`);
+    if (source?.hash !== createHash("sha256").update(liveBytes).digest("hex")) {
+      fail("live task changed since candidate preparation");
+    }
+    const liveText = liveBytes.toString("utf8");
+    if (["Implementation Test Evidence", "Findings Test Evidence", "Validation Attempts", "Effective Validation Base"]
+      .every((heading) => sectionBody(taskText, heading) === sectionBody(liveText, heading))) {
+      taskText = replaceSectionBody(taskText, "Changed Areas", sectionBody(liveText, "Changed Areas"));
+      taskText = replaceSectionBody(taskText, "Checklist", sectionBody(liveText, "Checklist"));
+    }
+  }
   const section = sectionBody(taskText, "Delegation Blocker");
   if (section !== "- none" && !section.includes(`- Operation: ${operation}\n`)) {
     fail("existing Delegation Blocker belongs to another operation");
@@ -1375,8 +1483,8 @@ export async function persistMalformedRunnerResultInCandidate({
     "- State: active",
     `- After record: ${afterRecord}`,
     "- Causes:",
-    `  - Producer rejected captured response sha256:${responseHash}: ${cause}`,
-    `  - Captured response: ${responsePath}; receipt: ${receiptPath}`,
+    `  - Producer rejected ${rejected ? "diagnostic" : "captured"} response sha256:${responseHash}: ${cause}`,
+    `  - ${rejected ? "Rejected diagnostic" : "Captured response"}: ${responsePath}; receipt: ${receiptPath}`,
     `- Required action: Resume ${operation} ${slice} with a valid captured runner response.`,
   ].join("\n");
   taskText = replaceSectionBody(taskText, "Delegation Blocker", blocker);
@@ -1393,7 +1501,7 @@ export async function prepareRunnerValidationPersistenceFromResponse({
   receiptFile, semanticResponseFile, verificationEventIds,
 }) {
   if (operation !== "VALIDATE_SLICE") fail("semantic validation producer operation must be VALIDATE_SLICE");
-  await assertManagedRunnerReceipt({ operation, slice, workspace, receiptFile, semanticResponseFile });
+  await requireAcceptedRunnerResult({ operation, slice, workspace, receiptFile, semanticResponseFile });
   const parsed = parseCapturedResult(operation, parseSemanticValidationPayload, response);
   const mechanicalCommands = receiptFile === undefined ? parsed.commands
     : await resolveRunnerCommandEvents({
@@ -1410,8 +1518,24 @@ export async function prepareRunnerValidationPersistenceFromResponse({
   if (!new Set(["initial", "revalidation"]).has(derivedType)) {
     fail("validation producer Type must be initial or revalidation");
   }
-  const targets = await deriveValidationTargetsFromTask({ workspace, taskArtifact });
-  const verifiedScope = await canonicalTestedScope({ workspace, taskArtifact, targets });
+  // VALIDATE has no semantic filelessReason field. Reuse only the current
+  // validated live evidence owner, never a candidate claim or runner prose.
+  let authoritativeFilelessReason = null;
+  if (selected.sections.get("Changed Areas") === "- none") {
+    if (await regularFile(taskArtifact, "taskArtifact") !== await deriveTaskArtifact({ specPath, slice: String(slice) })) {
+      fail("fileless validation task must match the selected live authority");
+    }
+    const owner = selected.base.present && selected.base.fileless
+      ? selected.sections.get("Effective Validation Base")
+      : selected.currentAuxiliaryCheck?.testedState.length === 0 ? selected.currentAuxiliaryCheck.body : null;
+    const reasons = [...String(owner ?? "").matchAll(/^- Fileless reason: (.+)$/gmu)];
+    if (reasons.length !== 1) fail("fileless validation requires one reason from current validated execution evidence");
+    authoritativeFilelessReason = decodeMarkdownScalar("Fileless reason", reasons[0][1], true);
+  }
+  const targets = await deriveValidationTargetsFromTask({ workspace, taskArtifact, filelessReason: authoritativeFilelessReason });
+  const filelessReason = targets.length === 0 ? authoritativeFilelessReason : null;
+  const verifiedScope = targets.length === 0 ? "fileless task state"
+    : await canonicalTestedScope({ workspace, taskArtifact, targets });
   const commands = await canonicalValidationCommands({
     commands: mechanicalCommands,
     specPath,
@@ -1438,9 +1562,9 @@ export async function prepareRunnerValidationPersistenceFromResponse({
     parsed.persistenceSummary,
   ];
   const [responseBlock, testedRecord, formalManifest] = await Promise.all([
-    serializeRunnerResponse({ operation, values, workspace, taskArtifact, targets, commands }),
-    serializeRunnerRecord({ workspace, taskArtifact, targets, commands }),
-    serializeRunnerManifest({ workspace, taskArtifact, targets, commands }),
+    serializeRunnerResponse({ operation, values, workspace, taskArtifact, targets, commands, filelessReason }),
+    serializeRunnerRecord({ workspace, taskArtifact, targets, commands, filelessReason }),
+    serializeRunnerManifest({ workspace, taskArtifact, targets, commands, filelessReason }),
   ]);
   const bundle = `- Runner response:\n${responseBlock}\n- Tested record:\n${testedRecord}\n- Formal manifest:\n${formalManifest}`;
   const attemptNumber = selected.attempts.length + 1;
@@ -1648,7 +1772,7 @@ if (import.meta.url === pathToFileURL(path.resolve(process.argv[1] ?? "")).href)
         const recovery = await persistMalformedRunnerResultInCandidate({
           taskArtifact: values.taskArtifact, operation: values.operation,
           receiptFile: values.receiptFile, semanticResponseFile: values.semanticResponseFile,
-          diagnostic,
+          diagnostic, error, workspace: values.workspace,
         });
         process.stdout.write(`${JSON.stringify(recovery)}\n`);
       }

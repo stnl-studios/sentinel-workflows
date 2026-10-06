@@ -7,6 +7,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { compareMeasurements, validateMeasurementReport, exportMeasurement, publishMeasurement } from './benchmark-measurement.mjs';
 import { currentFunctionalIdentity } from './benchmark-snapshot.mjs';
+import { privateHomeNeverCreated } from './benchmark-manager.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const RUNTIME = path.join('benchmarks', 'sentinel-todo', 'runtime');
@@ -241,6 +242,7 @@ async function promote(root, campaignId, files, signal) {
 }
 
 export async function runCampaign({ root = ROOT, hooks = {}, campaignId = null } = {}) {
+  if (process.env.STNL_OFFLINE_PROVIDER_CONTEXT !== undefined) throw blocked('BLOCKED_BASE', 'TEST-ONLY provider cannot enter a formal campaign');
   const api = { ...adapters(root), ...hooks };
   const scratch = path.join(root, 'benchmark-temp');
   const signal = new AbortController();
@@ -384,6 +386,8 @@ export async function runFunctionalBenchmark({ root = ROOT, hooks = {} } = {}) {
   const checkCancel = () => { if (signal.signal.aborted) throw blocked('CANCELLED', 'benchmark interrupted'); };
   async function preserveReport(report, updateLatest = false) {
     if (report?.run?.id === undefined) throw new Error('report has no run identity');
+    if (!['full', 'case', 'focal'].includes(report.run.mode)) throw new Error('report has no supported run mode');
+    if (report.run.mode !== 'full') return true;
     // The publisher validates byte-identical history collisions and refreshes
     // latest when requested, so an existing ID cannot silently hide new data.
     await api.publishMeasurement(report, { root: reportRoot, updateLatest });
@@ -427,15 +431,27 @@ export async function runFunctionalBenchmark({ root = ROOT, hooks = {} } = {}) {
           throw blocked('BLOCKED_CLEANUP', `unowned scratch directory: ${item}`);
         const run = await readJson(path.join(item, 'run.json')).catch(() => null);
         const summary = await readJson(path.join(item, 'summary.json')).catch(() => null);
-        if (!run || run.runId !== entry.name || run.mode !== 'full' || !TERMINAL.has(run.status)
-          || !summary || summary.runId !== run.runId || summary.status !== run.status || !TERMINAL.has(summary.status))
+        if (!run || run.runId !== entry.name || !['full', 'case', 'focal'].includes(run.mode) || !TERMINAL.has(run.status)
+          || !Array.isArray(run.cases) || run.cases.length === 0 || new Set(run.cases).size !== run.cases.length
+          || run.cases.some((id) => !['A', 'B', 'C'].includes(id)) || (run.mode !== 'full' && run.cases.length !== 1)
+          || !summary || summary.runId !== run.runId || summary.mode !== run.mode
+          || summary.status !== run.status || !TERMINAL.has(summary.status))
           throw blocked('BLOCKED_CLEANUP', `active or ambiguous scratch state: ${item}`);
+        for (const caseId of run.cases) {
+          const result = summary.cases?.[caseId];
+          if (!result || !TERMINAL.has(result.status)
+            || (result.status !== 'NOT_RUN' && !await exists(path.join(item, `case-${caseId.toLowerCase()}`)))) {
+            throw blocked('BLOCKED_CLEANUP', `missing or ambiguous case identity: ${item}/${caseId}`);
+          }
+        }
         for (const child of await fs.readdir(item, { withFileTypes: true })) {
           if (!child.isDirectory() || !/^case-[a-c]$/u.test(child.name)) continue;
           const caseRoot = path.join(item, child.name);
           const state = await readJson(path.join(caseRoot, 'case-state.json')).catch(() => null);
-          if (!state || !TERMINAL.has(state.status)
-            || (state.privateHomeSuspended !== true && state.privateHomeRemoved !== true))
+          if (!state || state.caseId !== child.name.slice(5).toUpperCase() || !run.cases.includes(state.caseId)
+            || !TERMINAL.has(state.status) || summary.cases?.[state.caseId]?.status !== state.status
+            || (state.privateHomeRemoved !== true && !(state.privateHomeSuspended === true && state.suspendedHome)
+              && !privateHomeNeverCreated(state, await readJson(path.join(caseRoot, 'journal.json')).catch(() => null))))
             throw blocked('BLOCKED_CLEANUP', `active or ambiguous case state: ${caseRoot}`);
         }
       } else if (entry.name.startsWith('campaign-')) {
@@ -463,11 +479,13 @@ export async function runFunctionalBenchmark({ root = ROOT, hooks = {} } = {}) {
       const item = path.join(scratch, entry.name);
       if (entry.name.startsWith('run-')) {
         const run = await readJson(path.join(item, 'run.json'));
-        const saved = await preserve(run.runId ?? entry.name);
-        if (saved) {
-          const cleaned = await api.cleanRun(run.runId ?? entry.name);
-          if (cleaned.code !== 0) console.error(`manager cleanup retained ${entry.name}: ${cleaned.stderr || cleaned.code}`);
-        }
+        const saved = run.mode === 'full' ? await preserve(run.runId ?? entry.name) : true;
+        if (run.mode !== 'full') say(`SKIP MEASUREMENT ${run.runId}: ${run.mode}`);
+        if (!saved) throw blocked('BLOCKED_CLEANUP', `report preservation failed for ${entry.name}; scratch retained`);
+        if (await exists(path.join(scratch, '.active-run.json')) || (await api.processes()).length)
+          throw blocked('BLOCKED_ACTIVE', 'benchmark became active during report preservation');
+        const cleaned = await api.cleanRun(run.runId);
+        if (cleaned.code !== 0) throw blocked('BLOCKED_CLEANUP', `manager cleanup retained ${entry.name}: ${cleaned.stderr || cleaned.code}`);
       } else if (entry.name.startsWith('campaign-')) {
         let safeToRemove = true;
         for (const child of await fs.readdir(item, { withFileTypes: true })) {
@@ -489,8 +507,13 @@ export async function runFunctionalBenchmark({ root = ROOT, hooks = {} } = {}) {
               } else await fs.copyFile(summaryFile, archivedSummary, fs.constants.COPYFILE_EXCL);
             } catch (error) { safeToRemove = false; console.error(`campaign summary retained in scratch: ${error.message}`); }
           }
-          if (safeToRemove) await fs.rm(item, { recursive: true });
+          if (safeToRemove) {
+            if (await exists(path.join(scratch, '.active-run.json')) || (await api.processes()).length)
+              throw blocked('BLOCKED_ACTIVE', 'benchmark became active during campaign preservation');
+            await fs.rm(item, { recursive: true });
+          }
         }
+        if (!safeToRemove) throw blocked('BLOCKED_CLEANUP', `campaign preservation failed for ${entry.name}; scratch retained`);
       }
     }
     for (const name of await fs.readdir(scratch)) {
@@ -517,6 +540,7 @@ export async function runFunctionalBenchmark({ root = ROOT, hooks = {} } = {}) {
     try {
       const report = await api.exportMeasurement(runId);
       if (report?.run?.id !== runId) throw new Error(`exported report identity mismatch for ${runId}`);
+      if (report.run.mode !== 'full') throw new Error('current benchmark report must be full');
       await preserveReport(report, true);
     } catch (error) {
       console.error(`report for ${runId} was not published; raw evidence retained: ${error.message}`);

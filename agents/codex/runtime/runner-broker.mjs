@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
@@ -9,9 +9,35 @@ const BROKER_RECEIPTS = new Set([
 ]);
 const REQUEST_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 const POLL_INTERVAL_MS = 25;
+const ERROR_CODES = new Set([
+  'BROKER_DISPATCH_FAILED', 'BROKER_REQUEST_ID_INVALID', 'BROKER_FILE_UNSAFE', 'BROKER_FILE_NOT_CANONICAL',
+  'BROKER_JSON_INVALID', 'BROKER_REQUEST_REJECTED', 'BROKER_MANAGED_PAYLOAD_INVALID',
+  'BROKER_RESULT_ALREADY_CAPTURED', 'BROKER_RESULT_INVALID', 'RUNNER_TRANSPORT_FAILED',
+  'BROKER_CLOSING', 'BROKER_ROUND_INVALID', 'BROKER_CANCEL_PENDING',
+  'MANAGED_CONTEXT_INVALID', 'MANAGED_CONTEXT_STALE', 'PAUSED_BUDGET_OR_QUOTA',
+  'ENOENT', 'EACCES', 'EPERM', 'EMFILE',
+]);
+// These composeRunnerRequest diagnostics contain no interpolated payload or path data.
+const ADAPTER_DIAGNOSTICS = new Set([
+  'runner adapter context path is invalid',
+  'runner prompt contains a competing serializer authority',
+  'runner payload contains competing mechanical identity',
+]);
+const UNKNOWN_DISPATCH_MESSAGE = 'Runner dispatch failed; original exception details are not exposed.';
+const SETTLED_VALIDATION_MESSAGE = 'Prior validation dispatch is settled or uncertain; this code alone does not establish a usable captured result.';
 
-function fail(code) {
-  const error = new Error(code);
+function safeBrokerFailure(code, message) {
+  const errorCode = ERROR_CODES.has(code) ? code : 'BROKER_DISPATCH_FAILED';
+  let errorMessage = errorCode;
+  if (errorCode === 'BROKER_RESULT_ALREADY_CAPTURED') errorMessage = SETTLED_VALIDATION_MESSAGE;
+  else if (errorCode === 'BROKER_DISPATCH_FAILED') {
+    errorMessage = ADAPTER_DIAGNOSTICS.has(message) ? message : UNKNOWN_DISPATCH_MESSAGE;
+  } else if (!errorCode.startsWith('BROKER_')) errorMessage = UNKNOWN_DISPATCH_MESSAGE;
+  return { errorCode, errorMessage, exitCode: 1 };
+}
+
+function fail(code, message = code) {
+  const error = new Error(message);
   error.code = code;
   throw error;
 }
@@ -105,10 +131,11 @@ export async function startOfficialRunnerBroker({
   slice,
   officialPreflight,
   invoke,
+  prepareSealedMetadata = async () => null,
   pollIntervalMs = POLL_INTERVAL_MS,
 }) {
   const identity = { workspace, tmpdir, operation, sequence, slice };
-  if (!validIdentity(identity) || !validOfficialPreflight(officialPreflight, identity) || typeof invoke !== 'function'
+  if (!validIdentity(identity) || !validOfficialPreflight(officialPreflight, identity) || typeof invoke !== 'function' || typeof prepareSealedMetadata !== 'function'
     || !Number.isSafeInteger(pollIntervalMs) || pollIntervalMs < 1 || pollIntervalMs > 1000) {
     fail('BROKER_CONFIGURATION_INVALID');
   }
@@ -125,8 +152,9 @@ export async function startOfficialRunnerBroker({
     fail('BROKER_DIRECTORY_UNSAFE');
   }
   const activeFile = path.join(directory, 'active.json');
+  const payloadFile = path.join(tmpdir, `${String(sequence).padStart(3, '0')}-${operation.toLowerCase()}-${slice}.payload.json`);
   try {
-    await fs.writeFile(activeFile, `${JSON.stringify({ ...identity, officialPreflight })}\n`, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
+    await fs.writeFile(activeFile, `${JSON.stringify({ ...identity, officialPreflight, protocol: 3, payloadFile })}\n`, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
   } catch {
     fail('BROKER_ALREADY_ACTIVE');
   }
@@ -135,6 +163,14 @@ export async function startOfficialRunnerBroker({
   const seen = new Set();
   const errors = [];
   let capturedReceipts = 0;
+  let dispatchSettled = false;
+  let initializationRetries = 0;
+  let lastResult = null;
+  let lastRound = 0;
+  let pending = false;
+  let cancelledPending = false;
+  const cancellation = new AbortController();
+  const summaryFile = path.join(directory, `${String(sequence).padStart(3, '0')}.supervisor.json`);
   const run = async () => {
     while (!stopping) {
       const names = (await fs.readdir(directory)).filter((name) => /^request-[0-9a-f-]{36}\.json$/u.test(name)).sort();
@@ -148,6 +184,7 @@ export async function startOfficialRunnerBroker({
         try {
           if (!REQUEST_ID.test(requestId)) fail('BROKER_REQUEST_ID_INVALID');
           const request = await readJsonFile(requestFile);
+          if (stopping) fail('BROKER_CLOSING');
           const keys = isRecord(request) ? Object.keys(request).sort() : [];
           if (keys.join(',') !== 'managedPayload,operation,prompt,requestId,sequence,slice,tmpdir,workspace'
             || request.requestId !== requestId || !matchesIdentity(request, identity)
@@ -158,13 +195,40 @@ export async function startOfficialRunnerBroker({
             && (!isRecord(request.managedPayload) || JSON.stringify(request.managedPayload) !== request.prompt)) {
             fail('BROKER_MANAGED_PAYLOAD_INVALID');
           }
+          // Once dispatch is attempted, an exception or missing final result
+          // does not prove the provider never started. Only an explicit
+          // initialization-blocked receipt permits another validation request.
+          const round = operation === 'VALIDATE_SLICE' ? 1
+            : Number(request.managedPayload?.automaticCheckRound?.slice(0, 1)
+              ?? /^automaticCheckRound=([123])\/3$/u.exec(request.prompt)?.[1] ?? 1);
+          if (!Number.isSafeInteger(round) || round < 1 || round > 3
+            || (!dispatchSettled && round !== (lastRound || 1))) fail('BROKER_ROUND_INVALID');
+          if (dispatchSettled) {
+            // Only a successfully captured TESTS_FAIL finalized as private
+            // evidence permits the next automatic check round. An exception,
+            // rejected result, PASS or uncertain start never grants a retry.
+            const finalized = await readJsonFile(path.join(directory, `${String(sequence).padStart(3, '0')}.finalization.json`)).catch(() => null);
+            if (operation === 'VALIDATE_SLICE' || lastResult?.semanticResponseStatus !== 'TESTS_FAIL'
+              || finalized?.receiptFile !== lastResult.receiptFile || finalized?.state !== 'PRIVATE_TESTS_FAIL'
+              || finalized?.operation !== operation || finalized?.slice !== slice || round !== lastRound + 1 || round > 3) {
+            fail('BROKER_RESULT_ALREADY_CAPTURED', SETTLED_VALIDATION_MESSAGE);
+            }
+          }
+          const metadata = await prepareSealedMetadata(request);
+          if (metadata !== null && (!isRecord(metadata) || Object.keys(metadata).join(',') !== 'findingsOwnership')) fail('BROKER_REQUEST_REJECTED');
+          const sealedRequest = { ...request, ...metadata, ...(operation === 'VALIDATE_SLICE' ? {} : { automaticCheckRound: `${round}/3` }) };
+          dispatchSettled = true; lastRound = round; pending = true;
+          await writeAtomic(path.join(directory, `sealed-${requestId}.json`), sealedRequest);
+          await writeAtomic(summaryFile, { ...identity, pending: true, requestId, startedAt: new Date().toISOString() });
           result = await invoke({
             ...identity,
             specPath: officialPreflight.specPath,
             officialPreflight,
             prompt: request.prompt,
             managedPayload: request.managedPayload,
-          });
+            findingsOwnership: sealedRequest.findingsOwnership ?? null,
+            automaticCheckRound: sealedRequest.automaticCheckRound ?? null,
+          }, { signal: cancellation.signal });
           if (!isRecord(result)
             || result.sequence !== sequence || result.operation !== operation
             || result.slice !== slice || !BROKER_RECEIPTS.has(result.status)
@@ -173,27 +237,52 @@ export async function startOfficialRunnerBroker({
           }
           const { exitCode, ...receipt } = result;
           if (result.status === 'RUNNER_RESPONSE_CAPTURED' && exitCode === 0) capturedReceipts += 1;
+          if (result.status === 'RUNNER_INITIALIZATION_BLOCKED') {
+            if (result.turnStarted !== false || result.threadId != null || result.dispatchStarted !== false) fail('BROKER_RESULT_INVALID');
+            if (initializationRetries++ < 1) dispatchSettled = false;
+          }
+          lastResult = result;
+          await writeAtomic(path.join(directory, `${String(sequence).padStart(3, '0')}.latest.json`), { ...identity, authority: officialPreflight.authority,
+            requestId, payloadSha256: createHash('sha256').update(request.prompt).digest('hex'), receipt: result });
           result = { receipt, exitCode };
         } catch (error) {
-          errors.push(typeof error?.code === 'string' ? error.code : 'BROKER_DISPATCH_FAILED');
-          result = { errorCode: typeof error?.code === 'string' ? error.code : 'BROKER_DISPATCH_FAILED', exitCode: 1 };
+          result = safeBrokerFailure(error?.code, error?.message);
+          errors.push(result.errorCode);
         }
+        pending = false;
         await writeAtomic(path.join(directory, `response-${requestId}.json`), { requestId, result });
+        await writeAtomic(summaryFile, { ...identity, pending: false, requestId, endedAt: new Date().toISOString(),
+          requestsHandled: seen.size, capturedReceipts, errors, cancelledPending });
       }
       if (!stopping) await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
     }
   };
   const loop = run();
+  // Retain loop failure for close() without an unhandled rejection terminating
+  // the manager before it can abort owned work and record its blocker.
+  loop.catch(() => {});
 
   return {
     directory,
     errors,
+    payloadFile,
+    get pending() { return pending; },
+    get cancelledPending() { return cancelledPending; },
     get requestsHandled() { return seen.size; },
     get capturedReceipts() { return capturedReceipts; },
     async close() {
       stopping = true;
-      await fs.unlink(activeFile).catch(() => {});
-      await loop;
+      cancelledPending = pending;
+      cancellation.abort();
+      let timer;
+      try {
+        await Promise.race([loop, new Promise((_, reject) => {
+          timer = setTimeout(() => reject(Object.assign(new Error('owned runner cancellation is still pending'), { code: 'BROKER_CANCEL_PENDING' })), 10000);
+        })]);
+        await writeAtomic(summaryFile, { ...identity, pending: false, requestsHandled: seen.size,
+          capturedReceipts, errors, cancelledPending, closedAt: new Date().toISOString() });
+        await fs.unlink(activeFile);
+      } finally { clearTimeout(timer); }
     },
   };
 }
@@ -237,7 +326,11 @@ export async function submitOfficialRunnerRequest({
         if (!isRecord(response) || response.requestId !== requestId || !isRecord(response.result)) {
           fail('BROKER_RESPONSE_INVALID');
         }
-        if (response.result.errorCode !== undefined) fail(response.result.errorCode);
+        if (response.result.errorCode !== undefined) {
+          const { errorCode, errorMessage } = safeBrokerFailure(response.result.errorCode, response.result.errorMessage);
+          fail(errorCode, typeof errorMessage === 'string' && errorMessage !== errorCode
+            ? `${errorCode}: ${errorMessage}` : errorCode);
+        }
         const { receipt, exitCode } = response.result;
         if (!isRecord(receipt) || receipt.operation !== operation || receipt.sequence !== sequence
           || receipt.slice !== slice || !BROKER_RECEIPTS.has(receipt.status)

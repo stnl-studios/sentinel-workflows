@@ -252,7 +252,11 @@ function sections(body) {
 function requireCanonicalSections(parsed, expected, label) {
   const actual = [...parsed.keys()];
   if (actual.length !== expected.length || actual.some((name, index) => name !== expected[index])) {
-    throw new ExecutionContractError(`${label} has non-canonical sections`);
+    const missing = expected.filter((name) => !parsed.has(name));
+    const unexpected = actual.filter((name) => !expected.includes(name));
+    throw new ExecutionContractError(
+      `${label} has non-canonical sections; missing=${JSON.stringify(missing)}; unexpected=${JSON.stringify(unexpected)}; expected=${JSON.stringify(expected)}; actual=${JSON.stringify(actual)}`,
+    );
   }
 }
 
@@ -998,9 +1002,6 @@ function parseChecks(section, prefix, context = {}) {
       }
       const correctionPaths = field(record.body, "Correction paths");
       if (correctionPaths === "none") {
-        if (record.testedState.length !== 0) {
-          throw new ExecutionContractError(`${record.id} file-backed Correction paths cannot be none`);
-        }
         record.correctionPaths = [];
       } else {
         record.correctionPaths = parseInlinePathSet(correctionPaths, `${record.id} Correction paths`);
@@ -1023,6 +1024,13 @@ function parseChecks(section, prefix, context = {}) {
       if (record.round !== 1) throw new ExecutionContractError(`${record.id} must restart at round 1/3 after ${previous.id} BLOCKED`);
     } else {
       throw new ExecutionContractError(`${record.id} appears after terminal automatic-check record ${previous.id}`);
+    }
+    if (record.round > 1 && record.correctionPaths.length === 0 && record.testedState.length !== 0) {
+      const priorState = new Map(previous?.testedState.map((entry) => [entry.path, entry.expected]) ?? []);
+      if (prefix !== "implementation-check" || priorState.size !== record.testedState.length
+        || record.testedState.some((entry) => priorState.get(entry.path) !== entry.expected)) {
+        throw new ExecutionContractError(`${record.id} file-backed Correction paths cannot be none unless Tested state is unchanged from the prior round`);
+      }
     }
     previous = record;
   }
@@ -1358,7 +1366,12 @@ function parseTask(text, label, expectedSlice, references = {}) {
     const expectedOperation = name === "implementation" ? "EXECUTE_SLICE" : "APPLY_FINDINGS";
     const pausedByDelegation = delegationBlocker?.state === "active" && delegationBlocker.operation === expectedOperation
       && delegationBlocker.afterRecord === latest?.id;
-    if (latest?.status === "TESTS_FAIL" && latest.round < 3 && !activeBlockingDivergence
+    // Only a prospective private append may leave its admitted failing round
+    // open. Publication and official state inspection retain the terminal rule.
+    const privateAppend = references.privateAutomaticCheck?.slice === expectedSlice
+      && references.privateAutomaticCheck.operation === expectedOperation
+      && references.privateAutomaticCheck.round === latest?.round && latest?.status === "TESTS_FAIL";
+    if (latest?.status === "TESTS_FAIL" && latest.round < 3 && !privateAppend && !activeBlockingDivergence
       && !pausedByDelegation && !correctionCycleHasPersistedScope) {
       throw new ExecutionContractError(`${label} has an unterminated ${name} automatic correction cycle without a blocking divergence`);
     }
@@ -1370,8 +1383,12 @@ function parseTask(text, label, expectedSlice, references = {}) {
   if (final.result === "PASS" && attempts.at(-1)?.status !== "PASS") throw new ExecutionContractError(`${label} PASS does not originate from its latest formal attempt`);
   if (final.result === "PASS") {
     const diffSummary = normalizeText(taskSections.get("Diff Summary"));
-    if (!/^- \S.*$/u.test(diffSummary) || /^(?:- )?(?:none|pending|n\/a|not_available)$/iu.test(diffSummary)) {
-      throw new ExecutionContractError(`${label} terminal PASS requires a non-placeholder Diff Summary`);
+    for (const line of diffSummary.split("\n")) {
+      const bullet = line.match(/^- (\S.*)$/u);
+      if (bullet === null) {
+        throw new ExecutionContractError(`${label} terminal PASS Diff Summary must contain only flat '- ' bullet lines; paragraphs, nested lists and empty lines are invalid`);
+      }
+      requireNonPlaceholder(bullet[1], `${label} Diff Summary`);
     }
   }
   if (attempts.at(-1)?.status === "PASS" && (final.result !== "PASS" || !base.present)) throw new ExecutionContractError(`${label} latest PASS attempt was not published atomically`);
@@ -1434,7 +1451,12 @@ function parseTask(text, label, expectedSlice, references = {}) {
       if (!validationReady) throw new ExecutionContractError(`${label} has a stale VALIDATE_SLICE Delegation Blocker outside a validation phase`);
     }
   }
-  if (workStarted && taskSections.get("Changed Areas") === "- pending") {
+  const pendingDelegationScope = delegationBlocker?.state === "active"
+    && delegationBlocker.operation === "EXECUTE_SLICE" && delegationBlocker.kind === "malformed-output"
+    && delegationBlocker.afterRecord === "none" && implementationChecks.length === 0
+    && findingsChecks.length === 0 && attempts.length === 0 && corrections.length === 0
+    && !checklistComplete && !base.present;
+  if (workStarted && taskSections.get("Changed Areas") === "- pending" && !pendingDelegationScope) {
     throw new ExecutionContractError(`${label} Changed Areas cannot remain pending after work`);
   }
   const currentFindingsCheck = latestNeedsFix === undefined ? null
@@ -1976,7 +1998,7 @@ async function readPlanArtifacts(workspace, { validateImplementationPaths = fals
   return { globalPlan, globalPlanText, sliceOrder, plans };
 }
 
-async function executionArtifacts(workspace, { validateImplementationPaths = false } = {}) {
+async function executionArtifacts(workspace, { validateImplementationPaths = false, privateAutomaticCheck = null } = {}) {
   const { globalPlan, sliceOrder, plans } = await readPlanArtifacts(workspace, { validateImplementationPaths });
   const tasksIndexPath = path.join(workspace.executionRoot, "tasks.md");
   await requireRealFile(tasksIndexPath, "execution tasks.md");
@@ -1989,7 +2011,7 @@ async function executionArtifacts(workspace, { validateImplementationPaths = fal
     const taskPath = path.join(taskDirectory, `${row.slice}.md`);
     await requireRealFile(taskPath, `${row.slice} detailed task`);
     const task = parseTask(await fs.readFile(taskPath, "utf8"), taskPath, row.slice, {
-      requirementsSource: requirementsReference(workspace, taskDirectory),
+      requirementsSource: requirementsReference(workspace, taskDirectory), privateAutomaticCheck,
     });
     const plan = plans.get(row.slice);
     if (plan !== undefined && (task.fingerprint !== plan.fingerprint || task.revision !== plan.revision)) pairMismatches.push(row.slice);
@@ -2164,6 +2186,7 @@ export async function inspectExecutionState(specPath) {
 async function inspectExecutionStateWithContext(specPath, logicalWorkspace, {
   validateTerminalOwnership = true,
   validateImplementationPaths = false,
+  privateAutomaticCheck = null,
 } = {}) {
   const physicalWorkspace = await resolveExecutionWorkspace(specPath);
   const workspace = logicalWorkspace === null
@@ -2202,7 +2225,7 @@ async function inspectExecutionStateWithContext(specPath, logicalWorkspace, {
     const state = stale ? "REQUIREMENTS_CHANGED" : globalPlan.status === "ready" ? "PLANNED_READY" : "PLANNED_DRAFT";
     return withRecoveryTargets({ state, workspace, currentFingerprint, globalPlan, stale });
   }
-  const artifacts = await executionArtifacts(workspace, { validateImplementationPaths });
+  const artifacts = await executionArtifacts(workspace, { validateImplementationPaths, privateAutomaticCheck });
   const stale = artifacts.globalPlan.fingerprint !== currentFingerprint;
   const allPristine = artifacts.rows.every((row) => !row.done && artifacts.tasks.get(row.slice).pristine);
   if (artifacts.pendingReplan) {
@@ -2638,7 +2661,10 @@ async function assertCandidateTreeSafe(directory) {
   }
 }
 
-export async function validateExecutionCandidate(specPath, candidateExecutionRoot) {
+export async function validateExecutionCandidate(specPath, candidateExecutionRoot, serializedTasks = [], { privateAutomaticCheck = null } = {}) {
+  if (privateAutomaticCheck !== null && (!['EXECUTE_SLICE', 'APPLY_FINDINGS'].includes(privateAutomaticCheck.operation)
+    || ![1, 2].includes(privateAutomaticCheck.round) || serializedTasks.length !== 1
+    || serializedTasks[0].slice !== privateAutomaticCheck.slice)) throw new ExecutionContractError("invalid prospective private automatic check");
   const workspace = await resolveExecutionWorkspace(specPath);
   const candidate = path.resolve(String(candidateExecutionRoot));
   await assertNoSymlinkComponents(candidate, "candidate execution root");
@@ -2653,7 +2679,12 @@ export async function validateExecutionCandidate(specPath, candidateExecutionRoo
   const shadow = await createCandidateShadow(workspace);
   try {
     await fs.cp(candidate, shadow.executionRoot, { recursive: true });
-    const result = await inspectExecutionStateWithContext(shadow.specPath, workspace, { validateImplementationPaths: true });
+    for (const { slice, text } of serializedTasks) {
+      if (!SLICE_FILE.test(`${slice}.md`) || typeof text !== "string") throw new ExecutionContractError("invalid prospective task serialization");
+      await requireRealFile(path.join(candidate, "tasks", `${slice}.md`), "prospective task source");
+      await fs.writeFile(path.join(shadow.executionRoot, "tasks", `${slice}.md`), text, "utf8");
+    }
+    const result = await inspectExecutionStateWithContext(shadow.specPath, workspace, { validateImplementationPaths: true, privateAutomaticCheck });
     await validateCandidateExecutionRecordPaths(result);
     validatePriorValidationOverlap(result);
     if ((result.incompleteExecutionChecklists?.length ?? 0) !== 0) {

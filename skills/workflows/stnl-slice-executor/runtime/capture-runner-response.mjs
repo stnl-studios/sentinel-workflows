@@ -58,18 +58,26 @@ function parseStructuredOutput(text) {
   try {
     semantic = JSON.parse(response);
   } catch {
-    fail("final runner message is not valid JSON");
+    throw Object.assign(new Error("final runner message is not valid JSON"), { code: "RUNNER_RESPONSE_SCHEMA_INVALID" });
   }
   if (semantic === null || typeof semantic !== "object" || Array.isArray(semantic)) {
-    fail("final runner message must be one JSON object, not a JSON string or array");
+    throw Object.assign(new Error("final runner message must be one JSON object, not a JSON string or array"),
+      { code: "RUNNER_RESPONSE_SCHEMA_INVALID" });
   }
   return response;
 }
 
-export async function captureRunnerResponse({ structuredOutputFile, outputFile }) {
+export async function captureRunnerResponse({ structuredOutputFile, outputFile, validateResponse = null }) {
   const source = await requireRegularFile(structuredOutputFile, "structured output file");
   const destination = await requireAbsentOutput(outputFile);
   const response = parseStructuredOutput(await fs.readFile(source, "utf8"));
+  if (validateResponse !== null) {
+    try { validateResponse(response); }
+    catch (cause) {
+      throw Object.assign(new Error(`runner response schema is invalid: ${cause.message}`, { cause }),
+        { code: "RUNNER_RESPONSE_SCHEMA_INVALID" });
+    }
+  }
   const temporary = path.join(
     path.dirname(destination),
     `.${path.basename(destination)}.${process.pid}.${crypto.randomUUID()}.tmp`,

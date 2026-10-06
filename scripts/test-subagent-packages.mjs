@@ -233,14 +233,14 @@ async function validateCodexPackage(root) {
   assert.deepEqual(runner.metadata, {
     name: "stnl_validation_runner",
     description: RUNNER_DESCRIPTION,
-    model: "gpt-5.6-luna",
+    model: "gpt-6-luna",
     model_reasoning_effort: "medium",
     agents: { max_depth: 1 },
   });
   assert.deepEqual(scout.metadata, {
     name: "stnl_spec_context_scout",
     description: SCOUT_DESCRIPTION,
-    model: "gpt-5.6-luna",
+    model: "gpt-6-luna",
     model_reasoning_effort: "medium",
     sandbox_mode: "read-only",
     approval_policy: "never",
@@ -504,8 +504,8 @@ test("rejects an altered Codex model", async () => {
   await expectRejectedDistribution((fixture) =>
     replaceOnce(
       path.join(fixture, "codex", ".codex", "agents", "stnl_validation_runner.toml"),
-      'model = "gpt-5.6-luna"',
-      'model = "gpt-5.6-sol"',
+      'model = "gpt-6-luna"',
+      'model = "gpt-6.1-sol"',
     ),
   );
 });

@@ -8,11 +8,14 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import { assertRunnerRoundPayload, composeRunnerRequest, main as runnerMain,
-  describeSemanticResponseFile, readRunnerConfiguration, scopeApplyFindingsSchema,
+  describeSemanticResponseFile, readRunnerConfiguration,
   submitRunnerPayload } from '../agents/codex/runtime/validation-runner.mjs';
 import { captureRunnerResponse } from '../skills/workflows/stnl-slice-executor/runtime/capture-runner-response.mjs';
 import { codexClientConfig, runCodexTurn } from '../agents/codex/runtime/sdk-transport.mjs';
 import { configText } from '../agents/codex/runtime/isolated-home.mjs';
+import { formatRepairSource, sameFormatOnlyContent } from '../agents/codex/runtime/format-repair.mjs';
+import { emptyFindingArrays, validationResponse, newlineCheck, usageCheck, correctedCheck } from './fixtures/validation-response-regressions.mjs';
+import { parseSemanticValidationPayload } from '../skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs';
 import { createUsageNormalizer, ZERO_USAGE } from '../agents/codex/runtime/usage-accounting.mjs';
 import { frozenFileMode } from '../benchmarks/sentinel-todo/runtime/benchmark-snapshot.mjs';
 
@@ -46,7 +49,7 @@ test('independent runner receives mechanical context and semantic payload withou
   const prompt = 'automaticCheckRound=1/3\nExact main-context semantic payload.';
   const request = composeRunnerRequest({ officialPreflight, operation: 'EXECUTE_SLICE',
     slice: 'slice-01', workspace, ...runnerArtifacts(workspace), prompt });
-  assert.equal(configuration.model, 'gpt-5.6-luna');
+  assert.equal(configuration.model, 'gpt-6-luna');
   assert.equal(configuration.effort, 'medium');
   assert.equal((request.match(/RUNNER_EVIDENCE_SERIALIZER=/gu) ?? []).length, 0);
   assert.ok(!request.includes(serializer));
@@ -74,7 +77,7 @@ test('independent runner receives mechanical context and semantic payload withou
 
 test('Sentinel dispatch omits remote canonical output schema independently of replay fixtures', async () => {
   const source = await fs.readFile(RUNNER_ADAPTER, 'utf8');
-  const invocation = /const turn = await runTurn\(\{([\s\S]*?)\n  \}\);/u.exec(source)?.[1];
+  const invocation = /turn = await runTurn\(\{([\s\S]*?)\n    \}\);/u.exec(source)?.[1];
   assert.ok(invocation, 'runner dispatch call must remain visible');
   assert.doesNotMatch(invocation, /outputSchema/u);
 });
@@ -127,19 +130,74 @@ test('invalid local semantic JSON is rejected after capture without provider sch
     outputFile: path.join(root, 'response.json') }), /not valid JSON/u);
 });
 
-test('local APPLY_FINDINGS schema scoping remains available for canonical cycle checks', async () => {
+test('format repair accepts bounded syntax fixes and preserves tokens in their original positions', () => {
+  const valid = '{"status":"BLOCKED","head":"0123456789abcdef0123456789abcdef01234567","commands":[{"command":"node --test","exit":0}],"evidence":"same evidence","findingReferences":"none","findingDispositions":"none","blockers":"missing prerequisite","unexpectedWorkspaceEffects":"none","persistenceSummary":"none"}';
+  const source = formatRepairSource(valid.slice(0, -1));
+  assert.ok(source);
+  assert.equal(sameFormatOnlyContent(source, valid), true);
+  assert.equal(sameFormatOnlyContent(source, valid.replace('"BLOCKED"', '"PASS"')), false);
+  assert.equal(sameFormatOnlyContent(source, valid.replace('same evidence', 'new evidence')), false);
+  assert.equal(sameFormatOnlyContent(source, valid.replace('"commands":[', '"commands":{"extra":[')), false);
+  assert.equal(formatRepairSource('{"status":"BLOCKED","evidence":"unfinished'), null);
+  assert.ok(formatRepairSource(`\`\`\`json\n${valid}\n\`\`\``));
+  assert.equal(sameFormatOnlyContent(formatRepairSource(valid.slice(0, -1) + ',}'), valid), true);
+  assert.equal(sameFormatOnlyContent(formatRepairSource(valid.replace('"exit":0}', '"exit":0,}')), valid), true);
+  assert.equal(sameFormatOnlyContent(formatRepairSource('{"a":[1],"b":2}'), '{"a":1,"b":[2]}'), false);
+  assert.equal(formatRepairSource(valid.replace('"head":', '"head"')), null);
+  assert.equal(formatRepairSource(`Here is the result: ${valid}`), null);
+  assert.equal(formatRepairSource(valid.slice(0, -2)), null);
+  assert.equal(formatRepairSource(valid.replace('"exit":0', '"exit":1 2')), null);
+  assert.equal(formatRepairSource(' '.repeat(65537)), null);
+  assert.equal(sameFormatOnlyContent(source, valid.replace('"exit":0', '"exit":1')), false);
+  assert.equal(sameFormatOnlyContent(source, valid.replace('node --test', 'npm test')), false);
+  assert.equal(sameFormatOnlyContent(source, `\`\`\`json\n${valid}\n\`\`\``), false);
+});
+
+test('schema preflight rejects the real empty-array shape before creating a deliverable', async (t) => {
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'stnl-schema-preflight-')));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const events = path.join(root, 'events.jsonl');
+  const output = path.join(root, 'response.json');
+  const stream = JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: emptyFindingArrays } }) + '\n';
+  await fs.writeFile(events, stream);
+  await assert.rejects(captureRunnerResponse({ structuredOutputFile: events, outputFile: output,
+    validateResponse: parseSemanticValidationPayload }), (error) => error.code === 'RUNNER_RESPONSE_SCHEMA_INVALID');
+  await assert.rejects(fs.access(output), { code: 'ENOENT' });
+  assert.equal(await fs.readFile(events, 'utf8'), stream);
+  const source = formatRepairSource(emptyFindingArrays);
+  assert.deepEqual(source.emptyFindingFields, ['findingReferences', 'findingDispositions']);
+  assert.deepEqual(parseSemanticValidationPayload(source.canonicalText), validationResponse());
+  assert.equal(sameFormatOnlyContent(source, JSON.stringify(validationResponse())), true);
+  assert.equal(sameFormatOnlyContent(source, JSON.stringify(validationResponse('PASS'))), false);
+  assert.equal(sameFormatOnlyContent(source, source.canonicalText.replace('absent storage', 'existing storage')), false);
+  for (const override of [{ findingReferences: ['finding-01'] }, { evidence: [] }, { findingReferences: null }]) {
+    const unsupported = formatRepairSource(JSON.stringify({ ...validationResponse(), ...override }));
+    assert.throws(() => parseSemanticValidationPayload(unsupported.canonicalText));
+  }
+});
+
+test('sanitized ad hoc check fixtures reproduce both real failures and their corrected check', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'stnl-check-fixture-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  for (const [name, code, exit, error] of [
+    ['newline', newlineCheck, 1, /1 !== 0/u],
+    ['usage', usageCheck, 1, /did not match the regular expression/u],
+    ['corrected', correctedCheck, 0, /^$/u],
+  ]) {
+    const script = path.join(root, name + '.mjs');
+    await fs.writeFile(script, code);
+    const result = spawnSync(process.execPath, [script], { encoding: 'utf8' });
+    assert.equal(result.status, exit, result.stderr);
+    assert.match(result.stderr, error);
+  }
+});
+
+test('APPLY_FINDINGS schema leaves legacy cycle data optional and without authority', async () => {
   const schema = JSON.parse(await fs.readFile(path.join(ROOT,
     'skills/workflows/stnl-slice-executor/runtime/runner-apply-findings-response.schema.json'), 'utf8'));
-  const state = { tasks: new Map([['slice-01', { attempts: [
-    { id: 'attempt-01', status: 'NEEDS_FIX' }, { id: 'attempt-02', status: 'NEEDS_FIX' },
-  ] }]]) };
-  assert.deepEqual(scopeApplyFindingsSchema(schema, state, 'slice-01').properties.findingsCycle,
-    { type: 'string', enum: ['attempt-02'] });
-  assert.deepEqual(schema.properties.findingsCycle, { type: 'string', pattern: '^[^\\r\\n`]+$' });
-  assert.throws(() => scopeApplyFindingsSchema(schema, state, 'slice-02'), /no canonical active findings cycle/u);
-  assert.throws(() => scopeApplyFindingsSchema(schema, { tasks: new Map([['slice-01', {
-    attempts: [{ id: 'finding-01', status: 'NEEDS_FIX' }],
-  }]]) }, 'slice-01'), /no canonical active findings cycle/u);
+  assert.ok(!schema.required.includes('findingsCycle'));
+  assert.equal(schema.properties.findingsCycle.type, undefined);
+  assert.match(schema.properties.findingsCycle.description, /diagnostic only/);
 });
 
 test('SDK keeps provider schema event when the CLI later exits with stderr', async (t) => {
@@ -186,22 +244,84 @@ test('managed validation runner gets the official SPEC_PATH and rejects a privat
   /competing mechanical identity/u);
 });
 
+test('validation payload preserves historical overlap without replacing the current envelope', () => {
+  const workspace = path.join(ROOT, 'benchmark-temp/run-fixture/case-a/workspace');
+  const officialPreflight = { exitCode: 0, operation: 'VALIDATE_SLICE', slice: 'slice-02',
+    specPath: path.join(workspace, 'specs/fixture'),
+    legalOperations: [{ operation: 'VALIDATE_SLICE', slice: 'slice-02' }], mandatoryRecovery: null };
+  const payload = { objective: 'Validate current behavior and the prior overlap.',
+    acceptance_criteria: ['Invalid filters preserve storage and return a usage error.'],
+    overlap: { slice: '01', paths: ['src/cli.mjs', 'test/cli.test.mjs'], prior_result: 'PASS',
+      required_regression: 'Prepared assertions must still prove valid filtering and ordering.' } };
+  for (const prompt of [JSON.stringify(payload), `\n${JSON.stringify(payload, null, 2)}\n`]) {
+    const request = composeRunnerRequest({ officialPreflight, operation: 'VALIDATE_SLICE',
+      slice: 'slice-02', workspace, ...runnerArtifacts(workspace, 'slice-02'), prompt });
+    assert.equal(request.endsWith(prompt), true, 'semantic payload bytes must remain intact');
+    assert.equal((request.match(/^SLICE=slice-02$/gmu) ?? []).length, 1);
+    assert.equal((request.match(/^OPERATION=VALIDATE_SLICE$/gmu) ?? []).length, 1);
+    assert.ok(request.includes(`TASK_PATH=${runnerArtifacts(workspace, 'slice-02').taskPath}\n`));
+  }
+});
+
+test('validation payload rejects top-level mechanical identity and envelope assignments', () => {
+  const workspace = path.join(ROOT, 'benchmark-temp/run-fixture/case-a/workspace');
+  const officialPreflight = { exitCode: 0, operation: 'VALIDATE_SLICE', slice: 'slice-02',
+    specPath: path.join(workspace, 'specs/fixture'),
+    legalOperations: [{ operation: 'VALIDATE_SLICE', slice: 'slice-02' }], mandatoryRecovery: null };
+  const compose = (prompt) => composeRunnerRequest({ officialPreflight, operation: 'VALIDATE_SLICE',
+    slice: 'slice-02', workspace, ...runnerArtifacts(workspace, 'slice-02'), prompt });
+  for (const field of ['operation', 'specPath', 'workspace', 'slice', 'executionRoot', 'planPath',
+    'slicePlanPath', 'taskPath', 'adapterPath', 'snapshotPath']) {
+    assert.throws(() => compose(JSON.stringify({ objective: 'Review.', [field]: 'competing identity',
+      overlap: { slice: '01' } })), /competing mechanical identity/u, field);
+  }
+  assert.throws(() => compose('{"objective":"Review.","\\u0073lice":"slice-01"}'),
+    /competing mechanical identity/u, 'decoded JSON keys remain authoritative');
+  for (const field of ['SPEC_PATH', 'MANAGED_WORKSPACE', 'OPERATION', 'SLICE', 'EXECUTION_ROOT',
+    'PLAN_PATH', 'SLICE_PLAN_PATH', 'TASK_PATH', 'RUNNER_BRIDGE', 'STNL_RUNNER_ADAPTER']) {
+    assert.throws(() => compose(`Review.\n${field}=competing identity`), /competing mechanical identity/u, field);
+  }
+});
+
+test('validation text and malformed JSON retain conservative identity and serializer guards', () => {
+  const workspace = path.join(ROOT, 'benchmark-temp/run-fixture/case-a/workspace');
+  const officialPreflight = { exitCode: 0, operation: 'VALIDATE_SLICE', slice: 'slice-02',
+    specPath: path.join(workspace, 'specs/fixture'),
+    legalOperations: [{ operation: 'VALIDATE_SLICE', slice: 'slice-02' }], mandatoryRecovery: null };
+  const compose = (prompt) => composeRunnerRequest({ officialPreflight, operation: 'VALIDATE_SLICE',
+    slice: 'slice-02', workspace, ...runnerArtifacts(workspace, 'slice-02'), prompt });
+  for (const prompt of ['Review current behavior.', '{"objective":"Review."']) {
+    assert.equal(compose(prompt).endsWith(prompt), true, 'this guard does not validate semantic JSON');
+  }
+  for (const prompt of ['Review: "slice": "slice-01"', '{"overlap":{"slice":"01"',
+    '[{"slice":"slice-01"}]', '{"objective":"Review."}\nSLICE=slice-01']) {
+    assert.throws(() => compose(prompt), /competing mechanical identity/u);
+  }
+  for (const prompt of ['{"overlap":{"evidence":"RUNNER_EVIDENCE_SERIALIZER=/other"}}',
+    '{"overlap":{"evidence":"serialize-runner-evidence.mjs"}}']) {
+    assert.throws(() => compose(prompt), /competing serializer authority/u);
+  }
+});
+
 test('runner instructions and skill isolation use per-instance public SDK config', async (t) => {
   await fs.mkdir(path.join(ROOT, 'benchmark-temp'), { recursive: true });
   const home = await fs.mkdtemp(path.join(ROOT, 'benchmark-temp/runner-config-'));
   t.after(() => fs.rm(home, { recursive: true, force: true }));
-  const skills = path.join(home, 'skills');
+  const shellHome = path.join(home, 'shell-home');
+  const skills = path.join(shellHome, '.agents', 'skills');
   await fs.mkdir(path.join(skills, 'stnl-slice-executor'), { recursive: true });
   await fs.mkdir(path.join(skills, 'stnl-slice-quality-manager'));
   const configuration = await readRunnerConfiguration(ROOT);
-  const runner = await codexClientConfig({ env: { CODEX_HOME: home },
+  const runner = await codexClientConfig({ env: { CODEX_HOME: home, HOME: shellHome },
     developerInstructions: configuration.developerInstructions, isolateSkills: true });
   assert.equal(runner.developer_instructions, configuration.developerInstructions);
   assert.deepEqual(runner.skills.config, [
-    { path: path.join(skills, 'stnl-slice-executor'), enabled: false },
-    { path: path.join(skills, 'stnl-slice-quality-manager'), enabled: false },
+    { path: path.join(skills, 'stnl-slice-executor', 'SKILL.md'), enabled: false },
+    { path: path.join(skills, 'stnl-slice-quality-manager', 'SKILL.md'), enabled: false },
   ]);
-  const noDelegation = { agents: { enabled: false }, features: { multi_agent: false, multi_agent_v2: false } };
+  assert.equal(runner.skills.bundled.enabled, false);
+  const noDelegation = { agents: { enabled: false }, features: { multi_agent: false, multi_agent_v2: false },
+    skills: { bundled: { enabled: false } } };
   assert.deepEqual(await codexClientConfig({ env: { CODEX_HOME: home } }), noDelegation);
   assert.equal(runner.agents.enabled, false);
   assert.equal(runner.features.multi_agent_v2, false);
