@@ -1371,8 +1371,10 @@ function parseTask(text, label, expectedSlice, references = {}) {
     const privateAppend = references.privateAutomaticCheck?.slice === expectedSlice
       && references.privateAutomaticCheck.operation === expectedOperation
       && references.privateAutomaticCheck.round === latest?.round && latest?.status === "TESTS_FAIL";
-    if (latest?.status === "TESTS_FAIL" && latest.round < 3 && !privateAppend && !activeBlockingDivergence
-      && !pausedByDelegation && !correctionCycleHasPersistedScope) {
+    // Terminal history may retain its interrupted cycle. executionArtifacts
+    // still requires the matching global row and committed later replacement.
+    if (latest?.status === "TESTS_FAIL" && latest.round < 3 && final.result !== "SUPERSEDED"
+      && !privateAppend && !activeBlockingDivergence && !pausedByDelegation && !correctionCycleHasPersistedScope) {
       throw new ExecutionContractError(`${label} has an unterminated ${name} automatic correction cycle without a blocking divergence`);
     }
   }
@@ -2147,7 +2149,8 @@ async function executionArtifacts(workspace, { validateImplementationPaths = fal
     const replacement = tasks.get(row.slice).final.supersededBy;
     const replacementIndex = sliceOrder.indexOf(replacement);
     if (!tasks.has(replacement) || replacementIndex <= sliceOrder.indexOf(row.slice)) throw new ExecutionContractError(`${row.slice} has an invalid later replacement slice`);
-    if (tasks.get(row.slice).final.planRevision !== tasks.get(replacement).revision
+    if (tasks.get(row.slice).final.planRevision <= tasks.get(row.slice).revision
+      || tasks.get(row.slice).final.planRevision !== tasks.get(replacement).revision
       || tasks.get(row.slice).final.planRevision > globalPlan.revision) {
       throw new ExecutionContractError(`${row.slice} SUPERSEDED Final Result does not name its replacement's committing Plan revision`);
     }
@@ -2157,9 +2160,6 @@ async function executionArtifacts(workspace, { validateImplementationPaths = fal
   }
   for (const row of rows) {
     const task = tasks.get(row.slice);
-    if (row.result === "SUPERSEDED" && task.divergences.some((record) => record.severity === "blocking" && record.state === "active")) {
-      throw new ExecutionContractError(`${row.slice} SUPERSEDED history retains an undisposed blocking divergence`);
-    }
     for (const divergence of task.divergences.filter((record) => record.severity === "blocking" && record.state === "resolved")) {
       const owner = tasks.get(divergence.resolutionSlice);
       if (row.result !== "SUPERSEDED" || task.final.supersededBy !== divergence.resolutionSlice || owner === undefined

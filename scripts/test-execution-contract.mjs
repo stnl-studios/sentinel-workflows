@@ -8107,6 +8107,91 @@ test("append-only requirements recovery preserves history and requires later PAS
   await assert.rejects(inspectExecutionState(fixture.requirements), /committed supersessions do not exactly match|invalid later replacement slice/u);
 });
 
+test("approved supersession preserves interrupted automatic checks with a committed recovery owner", async (t) => {
+  for (const disposition of ["resolved", "active"]) {
+    for (const round of [1, 2]) {
+      await t.test(`${disposition} divergence after round ${round}/3`, async (child) => {
+        const fixture = await standaloneWorkspace(child);
+        const { authority } = await renderArtifacts(fixture);
+        const evidence = Array.from({ length: round }, (_, index) =>
+          checkRecord("implementation-check", index + 1, "TESTS_FAIL", index + 1)
+            .replace("- Correction paths: ../../src/example.txt", "- Correction paths: none")).join("\n\n");
+        await editTask(fixture, (text) => replaceSection(replaceSection(replaceSection(text,
+          "Changed Areas", "- `../../src/example.txt`"), "Implementation Test Evidence", evidence),
+        "Divergences", ACTIVE_DIVERGENCE));
+        assert.equal((await inspectExecutionState(fixture.requirements)).state, "DIVERGENCE_BLOCKED");
+        await appendRecoveryPlan(fixture, authority, authority, { ready: true });
+        const liveBefore = await treeBytes(fixture.execution);
+        const candidate = await prepareTaskMaterializationCandidate({ specPath: fixture.requirements });
+        child.after(() => fs.rm(candidate.candidateExecutionRoot, { recursive: true, force: true }));
+        await commitAppendRecovery({ ...fixture, execution: candidate.candidateExecutionRoot }, authority, authority,
+          { resolveDivergence: disposition === "resolved" });
+        const candidateBefore = await treeBytes(candidate.candidateExecutionRoot);
+        assert.equal((await serializeTaskPathClaims({ specPath: fixture.requirements,
+          candidateExecutionRoot: candidate.candidateExecutionRoot })).status, "PASS");
+        assert.deepEqual(await treeBytes(fixture.execution), liveBefore);
+        assert.deepEqual(await treeBytes(candidate.candidateExecutionRoot), candidateBefore);
+        const invalid = [
+          ["missing mapping", "plan.md", (text) => text.replace("slice-01 -> slice-02", "none")],
+          ["missing terminal row", "tasks.md", (text) => text.replace("SUPERSEDED | SUPERSEDED", "pending | pending")],
+          ["missing owner", "tasks/slice-01.md", (text) => text.replace("Superseded by: slice-02", "Superseded by: slice-99")],
+          ["wrong committing revision", "tasks/slice-01.md", (text) => text.replace("- Plan revision: 2", "- Plan revision: 3")],
+          ["wrong owner authority", "tasks/slice-02.md", (text) => text.replace(`sha256:${authority}`, `sha256:${"f".repeat(64)}`)],
+          ["rewritten failed evidence", "tasks/slice-01.md", (text) => text.replace("- Failures: observable mismatch", "- Failures: different failure")],
+        ];
+        for (const [name, relative, mutate] of invalid) {
+          const badRoot = await temporary(child, "stnl-interrupted-recovery-");
+          await copyDirectory(candidate.candidateExecutionRoot, badRoot);
+          const target = path.join(badRoot, relative);
+          const before = await fs.readFile(target, "utf8");
+          const changed = mutate(before);
+          assert.notEqual(changed, before, name);
+          await fs.writeFile(target, changed);
+          const badBefore = await treeBytes(badRoot);
+          await assert.rejects(serializeTaskPathClaims({ specPath: fixture.requirements, candidateExecutionRoot: badRoot }), name);
+          assert.deepEqual(await treeBytes(badRoot), badBefore);
+          assert.deepEqual(await treeBytes(fixture.execution), liveBefore);
+        }
+        assert.equal((await publishTaskMaterializationCandidate({ specPath: fixture.requirements,
+          candidateExecutionRoot: candidate.candidateExecutionRoot })).status, "PASS");
+        const recovered = await inspectExecutionState(fixture.requirements);
+        assert.equal(recovered.state, "EXECUTION_STARTED");
+        assert.equal(recovered.tasks.get("slice-01").divergences[0].state, disposition);
+        assert.equal(recovered.tasks.get("slice-01").sections.get("Implementation Test Evidence"), evidence);
+        const handoff = deriveNormalHandoff(recovered);
+        assert.equal(handoff.operation, "EXECUTE_SLICE");
+        assert.equal(handoff.slice, "slice-02");
+      });
+    }
+  }
+});
+
+test("non-superseded interrupted checks still require an active blocking divergence", async (t) => {
+  for (const round of [1, 2]) {
+    const fixture = await standaloneWorkspace(t);
+    await renderArtifacts(fixture);
+    const evidence = Array.from({ length: round }, (_, index) =>
+      checkRecord("implementation-check", index + 1, "TESTS_FAIL", index + 1)
+        .replace("- Correction paths: ../../src/example.txt", "- Correction paths: none")).join("\n\n");
+    await editTask(fixture, (text) => replaceSection(text, "Implementation Test Evidence", evidence));
+    await assert.rejects(inspectExecutionState(fixture.requirements), /unterminated implementation automatic correction cycle/u);
+  }
+});
+
+test("interrupted checks cannot forge supersession in the original plan revision", async (t) => {
+  const fixture = await standaloneWorkspace(t);
+  await renderArtifacts(fixture);
+  await addSecondPristineSlice(fixture);
+  await editTask(fixture, (text) => replaceSection(replaceSection(replaceSection(text,
+    "Changed Areas", "- `../../src/example.txt`"),
+    "Implementation Test Evidence", checkRecord("implementation-check", 1, "TESTS_FAIL", 1)),
+  "Final Result", "- SUPERSEDED\n- Superseded by: slice-02\n- Plan revision: 1"));
+  await editTasksIndex(fixture, (text) => text.replace(
+    "| [ ] | 01 - Delivery | observable result | - | tasks/slice-01.md | pending | pending |",
+    "| [x] | 01 - Delivery | observable result | - | tasks/slice-01.md | SUPERSEDED | SUPERSEDED |"));
+  await assert.rejects(inspectExecutionState(fixture.requirements), /SUPERSEDED.*committing Plan revision/u);
+});
+
 test("approved supersession preserves advisory divergence while disposing only the active blocking record", async (t) => {
   const fixture = await standaloneWorkspace(t);
   const { authority } = await renderArtifacts(fixture);
