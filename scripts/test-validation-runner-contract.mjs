@@ -146,6 +146,22 @@ test("Codex and Claude bodies remain byte-identical and schemas are exact", asyn
   }
 });
 
+test("native VALIDATE_SLICE schema omits the check-run round marker", async () => {
+  const codex = await fs.readFile(path.join(canonical, "codex/.codex/agents/stnl_validation_runner.toml"), "utf8");
+  const claude = await fs.readFile(path.join(canonical, "claude-code/.claude/agents/stnl-validation-runner.md"), "utf8");
+  for (const contract of [codex, claude]) {
+    const schemaText = contract.match(/## Schema VALIDATE_SLICE\s+```json\n([\s\S]*?)\n```/u)?.[1];
+    assert.ok(schemaText, "VALIDATE_SLICE schema is present");
+    const schema = JSON.parse(schemaText);
+    assert.deepEqual(Object.keys(schema), [
+      "status", "head", "commands", "evidence", "findingReferences", "findingDispositions",
+      "blockers", "unexpectedWorkspaceEffects", "persistenceSummary",
+    ]);
+    assert.doesNotMatch(schemaText, /automaticCheckRound/u);
+    assert.match(contract, /only for `EXECUTE_SLICE` and `APPLY_FINDINGS`; omit this field from `VALIDATE_SLICE`, whose exact schema excludes it\./u);
+  }
+});
+
 test("formal commands and requirement-bound findings cannot be weakened in the distributed contract", async (t) => {
   for (const [oldValue, newValue, category] of [
     ["Todo finding exige violação demonstrada de requisito ou variante da autoridade atual", "Todo finding pode ser uma preferência", "R006_VERDICTS"],
