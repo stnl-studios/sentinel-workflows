@@ -7,6 +7,7 @@ This self-contained package maintains independent documentary feature SPECs thro
 Copy only this directory. At use time, derive `<SKILL_ROOT>` from the directory containing the loaded `SKILL.md`; neither the current process directory nor a platform-specific skill location is authoritative. The operational entrypoints are:
 
 - `runtime/validate-spec-lifecycle.mjs`
+- `runtime/create-resume-manifest.mjs` (RESUME-only manifest scaffold)
 - `runtime/create-readiness-attestation.mjs`
 - `runtime/build-closed-spec.mjs`
 - `runtime/publish-spec-lifecycle.mjs`

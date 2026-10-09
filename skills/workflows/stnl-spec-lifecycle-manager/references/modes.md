@@ -30,7 +30,7 @@ The candidate cannot justify its changes. The runtime proves structure, relation
 Commands:
 
 - INIT: `node "<SKILL_ROOT>/runtime/publish-spec-lifecycle.mjs" INIT <TARGET> <CANDIDATE>`; CLOSE: `close-policy.md`.
-- RESUME: `node "<SKILL_ROOT>/runtime/publish-spec-lifecycle.mjs" RESUME <TARGET> <CANDIDATE> --manifest <MANIFEST>`
+- RESUME: create the manifest with `node "<SKILL_ROOT>/runtime/create-resume-manifest.mjs" <TARGET>`; publish with `node "<SKILL_ROOT>/runtime/publish-spec-lifecycle.mjs" RESUME <TARGET> <CANDIDATE> --manifest <MANIFEST>`.
 
 ## INIT
 
