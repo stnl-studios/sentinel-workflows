@@ -31,7 +31,7 @@ Use contiguous monotonic IDs. Existing IDs never disappear or change meaning dur
 
 ## Sources and needs
 
-A source is `{"id":"SRC-001","kind":"user_stories","label":"Checkout stories","state":"active","path":"docs/stories.md","needs":[{"id":"US-001","title":"Pay by card"}]}`. `kind` is `user_stories|text|documentation|adr|contract|rules|spec|other`. `path` is optional; when present, the runtime reads a single-link file and owns the mutable observation field `snapshot_sha256`. A source path cannot be the roadmap directory or anything below it. Retired sources require `retired_reason`, retain their identity and needs, and retain matching retired coverage.
+A source is `{"id":"SRC-001","kind":"user_stories","label":"Checkout stories","state":"active","path":"docs/stories.md","needs":[{"id":"US-001","title":"Pay by card"}]}`. `kind` is `user_stories|text|documentation|adr|contract|rules|spec|other`. `path` is optional. For an active file source, the runtime requires a present, single-link file and computes its `snapshot_sha256`. A retired file source requires and preserves its historical `snapshot_sha256`; it is a terminal tombstone, so the file may be absent and is not re-read. Its ID, kind, label, path, hash, and needs cannot be rewritten. A source path cannot be the roadmap directory or anything below it. Retired sources require `retired_reason`, retain their identity and needs, and retain matching retired coverage.
 
 Need IDs are explicit source identifiers and must be globally unique. Every need has exactly one coverage record.
 

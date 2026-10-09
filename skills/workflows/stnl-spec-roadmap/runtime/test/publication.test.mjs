@@ -151,6 +151,42 @@ test("source changes are visible at inspection and refreshed by reconciliation",
   assert.deepEqual((await inspectRoadmap("RECONCILE", root)).changed_sources, []);
 });
 
+test("retired file sources retain historical hashes without requiring the file", async (t) => {
+  const root = await project(t);
+  const sourcePath = path.join(root, "docs/checkout-stories.md");
+  const historicalHash = sha256(await fs.readFile(sourcePath));
+  const raw = await representativeRaw();
+  raw.sources[0].state = "retired";
+  raw.sources[0].retired_reason = "The decisions were consolidated in the closed SPEC.";
+  raw.sources[0].snapshot_sha256 = historicalHash;
+  for (const item of raw.coverage) {
+    item.state = "retired";
+    item.retired_reason = raw.sources[0].retired_reason;
+  }
+  await fs.rm(sourcePath);
+
+  const initialized = await generate(t, root, "INIT", { raw });
+  assert.equal(initialized.status, "INITIALIZED");
+  const persisted = JSON.parse(await fs.readFile(path.join(root, "docs/roadmap/roadmap.json"), "utf8"));
+  assert.equal(persisted.sources[0].snapshot_sha256, historicalHash);
+
+  const inspection = await inspectRoadmap("RECONCILE", root);
+  assert.deepEqual(inspection.changed_sources, []);
+  const reconciled = await generate(t, root, "RECONCILE", {
+    raw,
+    expectedFingerprint: inspection.expected_fingerprint,
+    expectedAuthorityFingerprint: inspection.authority_fingerprint,
+  });
+  assert.equal(reconciled.status, "RECONCILED");
+  const after = JSON.parse(await fs.readFile(path.join(root, "docs/roadmap/roadmap.json"), "utf8"));
+  assert.equal(after.sources[0].snapshot_sha256, historicalHash);
+
+  const activeRoot = await project(t);
+  await generate(t, activeRoot);
+  await fs.rm(path.join(activeRoot, "docs/checkout-stories.md"));
+  await assert.rejects(() => inspectRoadmap("RECONCILE", activeRoot), /single-link real file/u);
+});
+
 test("candidate JSON, source, and controlled output reject duplicate keys, hard links, and symlinks", async (t) => {
   const duplicateRoot = await project(t);
   const duplicateCandidate = await candidateFile(t, await representativeRaw());

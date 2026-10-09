@@ -54,7 +54,7 @@ export async function inspectRoadmap(operation, projectRoot, roadmapPath) {
   const authorityBefore = await snapshotAuthorityInputs(model, context.projectRoot);
   const projections = await projectRoadmap(model, context.projectRoot);
   const changedSources = [];
-  for (const source of model.sources.filter((item) => item.path !== undefined)) {
+  for (const source of model.sources.filter((item) => item.path !== undefined && item.state === "active")) {
     const current = await hydrateSourceFingerprints({ ...model, sources: [source] }, context.projectRoot);
     if (current.sources[0].snapshot_sha256 !== source.snapshot_sha256) changedSources.push(source.id);
   }

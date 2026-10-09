@@ -166,7 +166,7 @@ async function snapshotEntry(filePath, relative, state) {
 
 export async function snapshotAuthorityInputs(model, projectRoot) {
   const state = { files: 0, bytes: 0, entries: [] };
-  for (const source of model.sources.filter((item) => item.path !== undefined)) {
+  for (const source of model.sources.filter((item) => item.path !== undefined && item.state === "active")) {
     const resolved = await resolveInsideProject(projectRoot, source.path, `${source.id}.path`);
     await snapshotEntry(resolved.absolute, `source:${source.id}:${source.path}`, state);
   }

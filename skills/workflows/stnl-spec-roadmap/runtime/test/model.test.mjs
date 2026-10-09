@@ -125,6 +125,10 @@ test("RECONCILE cannot reopen terminal source, candidate, coverage, or gap tombs
   const retiredRaw = await representativeRaw();
   retiredRaw.sources[0].state = "retired";
   retiredRaw.sources[0].retired_reason = "The source was superseded.";
+  retiredRaw.sources[0].snapshot_sha256 = "a".repeat(64);
+  const retiredWithoutSnapshot = clone(retiredRaw);
+  delete retiredWithoutSnapshot.sources[0].snapshot_sha256;
+  assert.throws(() => validateRoadmap(retiredWithoutSnapshot), /retired file source requires snapshot_sha256/u);
   for (const item of retiredRaw.coverage) {
     item.state = "retired";
     item.retired_reason = "The source was superseded.";
@@ -132,6 +136,12 @@ test("RECONCILE cannot reopen terminal source, candidate, coverage, or gap tombs
   const retired = validateRoadmap(retiredRaw);
   const active = validateRoadmap(await representativeRaw());
   assert.throws(() => validateReconcile(retired, active), /terminal retired source tombstone/u);
+  const alteredRetiredSource = clone(retiredRaw);
+  alteredRetiredSource.sources[0].snapshot_sha256 = "b".repeat(64);
+  assert.throws(
+    () => validateReconcile(retired, validateRoadmap(alteredRetiredSource)),
+    /terminal retired source tombstone/u,
+  );
   const alteredRetiredCoverage = clone(retiredRaw);
   alteredRetiredCoverage.coverage[0].rationale = "A rewritten tombstone rationale.";
   assert.throws(

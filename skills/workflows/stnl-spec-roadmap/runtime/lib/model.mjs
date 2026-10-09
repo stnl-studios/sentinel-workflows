@@ -132,6 +132,9 @@ function source(value, label) {
     throw new ValidationError(`${label}.snapshot_sha256 must contain 64 lowercase hexadecimal characters`);
   }
   if (snapshot !== undefined && path === undefined) throw new ValidationError(`${label}.snapshot_sha256 requires path`);
+  if (state === "retired" && path !== undefined && snapshot === undefined) {
+    throw new ValidationError(`${label} retired file source requires snapshot_sha256`);
+  }
   const retiredReason = text(item.retired_reason, `${label}.retired_reason`, { maximum: 2_000, optional: true });
   if ((state === "retired") !== (retiredReason !== undefined)) {
     throw new ValidationError(`${label} must provide retired_reason exactly when state=retired`);
@@ -398,9 +401,7 @@ function immutableSourceIdentity(item) {
 }
 
 function terminalSourceContent(item) {
-  const copy = { ...item };
-  delete copy.snapshot_sha256;
-  return canonicalJson(copy);
+  return canonicalJson(item);
 }
 
 function immutableNeedIdentity(sourceId, item) {
@@ -501,6 +502,10 @@ export async function hydrateSourceFingerprints(model, projectRoot) {
       const copy = { ...item };
       delete copy.snapshot_sha256;
       sources.push(copy);
+      continue;
+    }
+    if (item.state === "retired") {
+      sources.push(item);
       continue;
     }
     const resolved = await resolveInsideProject(projectRoot, item.path, `${item.id}.path`);
