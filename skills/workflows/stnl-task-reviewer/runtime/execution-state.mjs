@@ -602,7 +602,17 @@ export function approvedDetailedPlanIncludedScope(text, slice) {
 
 function hasUnencodedTemplatePlaceholder(value) {
   const withoutEncodedValues = String(value).replace(/json:"(?:\\.|[^"\\])*"/gu, 'json:""');
-  return /<[^>\n]+>/u.test(withoutEncodedValues);
+  return withoutEncodedValues.split("\n").some((line) => {
+    const command = line.match(/^  - `([^`\r\n]+)` \| exit:-?[0-9]+$/u)?.[1];
+    if (command === undefined) return /<[^>\n]+>/u.test(line);
+    return [...command.matchAll(/<[^>\n]+>/gu)].some((match) => {
+      const between = match[0].slice(1, -1);
+      const after = command.slice(match.index + match[0].length);
+      // A spaced input redirect followed by an output redirect is not a template.
+      const outputRedirect = /\s$/u.test(between) || /\s[0-9]+$/u.test(between);
+      return !(/^\s+\S/u.test(between) && outputRedirect && /^(?:&[0-9]+|\s*\S)/u.test(after));
+    });
+  });
 }
 
 function operationRecords(section, prefix, { statusValues = null } = {}) {

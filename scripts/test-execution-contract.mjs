@@ -449,7 +449,7 @@ test("execution producer inserts exact hashed evidence only into its owned candi
   assert.equal(await fs.readFile(liveTask, "utf8"), liveBefore);
 });
 
-test("command evidence preserves simple, quoted, backtick, multiline, and heredoc commands", async (t) => {
+test("command evidence preserves simple, quoted, redirected, backtick, multiline, and heredoc commands", async (t) => {
   const schema = JSON.parse(await fs.readFile(path.join(ROOT,
     "skills/workflows/stnl-slice-executor/runtime/runner-execute-response.schema.json"), "utf8"));
   assert.equal(schema.properties.commands.items.properties.command.pattern, "^[\\s\\S]+$");
@@ -457,6 +457,9 @@ test("command evidence preserves simple, quoted, backtick, multiline, and heredo
   const commands = [
     "npm test",
     `node -e 'console.log("quoted")'`,
+    "cat < input.txt 2>&1 | tee output.log",
+    "cat < input.txt > output.log",
+    "cat < input.txt 2> errors.log",
     "node -e `echo legitimate`",
     "printf 'first\nsecond'\ncat output.txt",
     "node --input-type=module <<'NODE'\nimport assert from 'node:assert/strict';\nconst value = () => 1 + 1;\nassert.equal(value(), 2);\nNODE",
@@ -497,6 +500,46 @@ test("command evidence preserves simple, quoted, backtick, multiline, and heredo
     await fs.copyFile(copy.candidateTaskArtifact, path.join(fixture.execution, "tasks/slice-01.md"));
     const readback = await inspectExecutionState(fixture.requirements);
     assert.equal(readback.tasks.get("slice-01").implementationChecks[0].commands[0].command, command);
+  }
+});
+
+test("literal redirects do not conceal placeholders in commands or evidence fields", async (t) => {
+  for (const [command, failures, coverage] of [
+    ["node <placeholder>", "none", "AC-001"],
+    ["node <task-relative path> 2>&1", "none", "AC-001"],
+    ["cat < input.txt 2>&1 && node <placeholder>", "none", "AC-001"],
+    ["cat < input.txt 2>&1 | tee output.log", "<missing evidence>", "AC-001"],
+    ["cat < input.txt > output.log", "none", "<unproven scope>"],
+  ]) {
+    const fixture = await standaloneWorkspace(t);
+    await renderArtifacts(fixture);
+    const target = await writeValidatedPath(fixture);
+    const copy = await prepareExecutionCopy({ specPath: fixture.requirements, slice: "slice-01" });
+    const claim = path.relative(path.dirname(copy.candidateTaskArtifact), target).split(path.sep).join("/");
+    let candidate = await fs.readFile(copy.candidateTaskArtifact, "utf8");
+    candidate = candidate.replace("- [ ] 1.1", "- [x] 1.1");
+    candidate = replaceSection(candidate, "Changed Areas", `- \`${claim}\``);
+    candidate = replaceSection(candidate, "Diff Summary", "- Behavior implemented and checked.");
+    await fs.writeFile(copy.candidateTaskArtifact, candidate, "utf8");
+    const response = JSON.stringify({
+      status: "TESTS_PASS", automaticCheckRound: "1/3", head: "fixture-head",
+      discoverySources: "task and package", discoveryActions: "inspected tests",
+      verificationTypesConsidered: "focused test", nonApplicabilityRationale: "none",
+      noVerificationCommandConfirmation: "command executed",
+      commands: [{ command, exit: 0 }], resultOfEachCommandAndExitCode: "passed",
+      selectedChecks: "focused test", selectionRationale: "direct coverage", coverage,
+      failures, priorRoundFailure: "none", correctionApplied: "none", inSliceRationale: "none",
+      evidenceOrFailureSummary: "passed", affectedFilesOrBehaviors: "example behavior",
+      blockers: "none", unexpectedWorkspaceEffects: "none", persistenceSummary: "no changes",
+    });
+    const bundle = await serializeRunnerExecutionBundleFromResponse({
+      operation: "EXECUTE_SLICE", response, workspace: fixture.root, taskArtifact: copy.candidateTaskArtifact,
+    });
+    await insertExecutionEvidenceInCandidate({ taskArtifact: copy.candidateTaskArtifact, operation: "EXECUTE_SLICE", bundle });
+    const strictRoot = path.join(await temporary(t, "stnl-command-placeholder-strict-"), "execution");
+    await copyDirectory(copy.candidateExecutionRoot, strictRoot);
+    await fs.rm(path.join(strictRoot, ".stnl-execution-copy.json"));
+    await assert.rejects(validateExecutionCandidate(fixture.requirements, strictRoot), /template placeholder content/u);
   }
 });
 
