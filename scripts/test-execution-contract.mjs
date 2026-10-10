@@ -9474,6 +9474,115 @@ test("prior validation overlap is required before execution publication and pres
     "IMPLEMENTED_AWAITING_VALIDATION");
 });
 
+test("terminal PASS inherits only tested superseded paths from its recovery lineage", async (t) => {
+  async function recoveryFixture(owner, historicalStatus = "TESTS_PASS") {
+    const fixture = await standaloneWorkspace(owner);
+    const { authority } = await renderArtifacts(fixture);
+    const inherited = "../../src/example.txt";
+    const current = "../../src/replacement.txt";
+    const unrelated = "../../src/unrelated.txt";
+    await writeValidatedPath(fixture, inherited);
+    await writeValidatedPath(fixture, current);
+    await writeValidatedPath(fixture, unrelated);
+    await editTask(fixture, (value) => replaceSection(replaceSection(replaceSection(value,
+      "Changed Areas", `- \`${inherited}\``), "Implementation Test Evidence",
+    checkRecord("implementation-check", 1, historicalStatus, 1)), "Divergences", ACTIVE_DIVERGENCE));
+    await appendRecoveryPlan(fixture, authority, authority, { ready: true });
+    await commitAppendRecovery(fixture, authority, authority, { resolveDivergence: true });
+    await editPlan(fixture, (value) => value.replace(
+      "02 - Recovery | reconciled result | 01 | AC-001 | `../src/example.txt`",
+      "02 - Recovery | reconciled result | 01 | AC-001 | `../src/replacement.txt`"));
+    await editSlicePlan(fixture, "slice-02", (value) => value.replaceAll("../../src/example.txt", current));
+    const taskPath = path.join(fixture.execution, "tasks/slice-02.md");
+    let task = await fs.readFile(taskPath, "utf8");
+    task = task.replace("- [ ] 1.1", "- [x] 1.1").replaceAll(inherited, current);
+    task = replaceSection(task, "Changed Areas", `- \`${current}\``);
+    task = replaceSection(task, "Implementation Test Evidence", checkRecord("implementation-check", 1, "TESTS_PASS", 1)
+      .replaceAll(inherited, current));
+    task = replaceSection(task, "Diff Summary", "- Replacement behavior and inherited source were verified.");
+    await fs.writeFile(taskPath, task, "utf8");
+    return { fixture, inherited, current, unrelated };
+  }
+
+  const { fixture, inherited, current, unrelated } = await recoveryFixture(t);
+  const liveTask = path.join(fixture.execution, "tasks/slice-02.md");
+  const liveBefore = await fs.readFile(liveTask);
+  const parent = await temporary(t, "stnl-terminal-inheritance-");
+  const copy = await prepareValidationCopy({ specPath: fixture.requirements, slice: "slice-02", candidateParent: parent });
+  const responseFile = path.join(parent, "validation-response.json");
+  await fs.writeFile(responseFile, JSON.stringify(sanitizedValidationResponse("PASS")));
+  const prepared = await prepareValidationCandidate({ specPath: fixture.requirements, slice: "2",
+    workspace: fixture.root, candidateExecutionRoot: copy.candidateExecutionRoot, semanticResponseFile: responseFile });
+  assert.equal(prepared.formalStatus, "PASS");
+  const candidateTask = await fs.readFile(path.join(copy.candidateExecutionRoot, "tasks/slice-02.md"), "utf8");
+  const base = sectionBodyForScopeTest(candidateTask, "Effective Validation Base");
+  assert.ok(base.includes("- `" + inherited + "` | sha256:" + VALIDATED_HASH));
+  assert.ok(base.includes("- `" + current + "` | sha256:" + VALIDATED_HASH));
+  assert.equal(base.includes(unrelated), false, "a file outside superseded lineage is not inherited");
+  assert.equal((await validateExecutionCandidate(fixture.requirements, copy.candidateExecutionRoot)).state, "COMPLETE");
+  assert.deepEqual(await fs.readFile(liveTask), liveBefore, "preparing and validating a candidate must not publish it");
+
+  const forgedRoot = await copyDirectory(copy.candidateExecutionRoot, path.join(parent, "forged"));
+  const forgedTaskPath = path.join(forgedRoot, "tasks/slice-02.md");
+  const forgedTask = await fs.readFile(forgedTaskPath, "utf8");
+  await fs.writeFile(forgedTaskPath, forgedTask.replace(
+    "- `" + inherited + "` | sha256:" + VALIDATED_HASH,
+    "- `" + inherited + "` | sha256:" + "0".repeat(64)));
+  await assert.rejects(validateExecutionCandidate(fixture.requirements, forgedRoot),
+    /final validation ownership does not match|expected sha256/u);
+
+  await writeValidatedPath(fixture, inherited, "drifted source\n");
+  await assert.rejects(serializeRunnerValidationBundleFromResponse({ operation: "VALIDATE_SLICE",
+    response: JSON.stringify(sanitizedValidationResponse("PASS")), workspace: fixture.root,
+    taskArtifact: liveTask, specPath: fixture.requirements, slice: "2" }),
+  /superseded path drifted from tested file evidence/u);
+  await assert.rejects(validateExecutionCandidate(fixture.requirements, copy.candidateExecutionRoot),
+    /final validation ownership does not match|expected sha256/u);
+
+  for (const [changeAfter, expectedError] of [
+    [1, /superseded path capture differs from tested file evidence/u],
+    [4, /superseded path drifted after validation capture/u],
+  ]) {
+    const raced = await recoveryFixture(t);
+    const racedTask = path.join(raced.fixture.execution, "tasks/slice-02.md");
+    const racedPath = path.resolve(path.dirname(racedTask), raced.inherited);
+    const originalReadFile = fsPromises.readFile.bind(fsPromises);
+    let inheritedReads = 0;
+    const readMock = t.mock.method(fsPromises, "readFile", async (file, ...args) => {
+      const contents = await originalReadFile(file, ...args);
+      if (path.resolve(file) === racedPath && ++inheritedReads === changeAfter) {
+        await fs.writeFile(racedPath, "changed between validation reads\n");
+      }
+      return contents;
+    });
+    try {
+      await assert.rejects(serializeRunnerValidationBundleFromResponse({ operation: "VALIDATE_SLICE",
+        response: JSON.stringify(sanitizedValidationResponse("PASS")), workspace: raced.fixture.root,
+        taskArtifact: racedTask, specPath: raced.fixture.requirements, slice: "2" }), expectedError);
+    } finally {
+      readMock.mock.restore();
+    }
+    assert.ok(inheritedReads > changeAfter, "the race must span the hash check and a later read");
+  }
+
+  const untested = await recoveryFixture(t, "TESTS_NOT_APPLICABLE");
+  await assert.rejects(serializeRunnerValidationBundleFromResponse({ operation: "VALIDATE_SLICE",
+    response: JSON.stringify(sanitizedValidationResponse("PASS")), workspace: untested.fixture.root,
+    taskArtifact: path.join(untested.fixture.execution, "tasks/slice-02.md"),
+    specPath: untested.fixture.requirements, slice: "2" }),
+  /superseded path lacks tested file evidence/u);
+
+  const wrongLineage = await recoveryFixture(t);
+  const historicalTaskPath = path.join(wrongLineage.fixture.execution, "tasks/slice-01.md");
+  await fs.writeFile(historicalTaskPath, (await fs.readFile(historicalTaskPath, "utf8"))
+    .replace("- Superseded by: slice-02", "- Superseded by: slice-99"));
+  await assert.rejects(serializeRunnerValidationBundleFromResponse({ operation: "VALIDATE_SLICE",
+    response: JSON.stringify(sanitizedValidationResponse("PASS")), workspace: wrongLineage.fixture.root,
+    taskArtifact: path.join(wrongLineage.fixture.execution, "tasks/slice-02.md"),
+    specPath: wrongLineage.fixture.requirements, slice: "2" }),
+  /not a committed supersession mapping|invalid later replacement slice/u);
+});
+
 test("terminal inspection detects hash drift and REMOVED reappearance without rewriting PASS history", async (t) => {
   const matching = await standaloneWorkspace(t);
   await renderArtifacts(matching);

@@ -986,12 +986,46 @@ function parseOverlapPathSection(text) {
   return paths;
 }
 
-async function deriveValidationTargetsFromTask({ workspace, taskArtifact, filelessReason = null }) {
+function inheritedSupersededClaims(state, selectedSlice, declared) {
+  if (state.rows.at(-1)?.slice !== selectedSlice) return new Map();
+  const unowned = new Set(state.supersededUnowned);
+  const inherited = new Map();
+  for (const row of state.rows.filter((entry) => entry.result === "SUPERSEDED")) {
+    const origin = state.tasks.get(row.slice);
+    for (const claim of origin.claims) {
+      if (!unowned.has(`${row.slice}:${claim}`) || declared.has(claim)) continue;
+      let successor = row.slice;
+      const visited = new Set();
+      while (successor !== selectedSlice) {
+        if (visited.has(successor)) fail(`superseded path has cyclic recovery lineage: ${claim}`);
+        visited.add(successor);
+        const task = state.tasks.get(successor);
+        if (task?.final.result !== "SUPERSEDED") fail(`superseded path is outside selected recovery lineage: ${claim}`);
+        successor = task.final.supersededBy;
+      }
+      inherited.set(claim, origin);
+    }
+  }
+  const expected = new Map();
+  for (const [claim, origin] of inherited) {
+    const check = origin.currentAuxiliaryCheck;
+    const proof = check?.testedState.find((entry) => entry.path === claim);
+    if (!check?.commands.some((entry) => entry.exit === 0) || !/^sha256:[0-9a-f]{64}$/u.test(proof?.expected ?? "")) {
+      fail(`superseded path lacks tested file evidence: ${claim}`);
+    }
+    expected.set(claim, proof.expected);
+  }
+  return expected;
+}
+
+async function deriveValidationTargetsFromTask({ workspace, taskArtifact, filelessReason = null, state = null, selectedSlice = null }) {
   const taskText = await fs.readFile(taskArtifact, "utf8");
   const claims = [
     ...parseCanonicalPathSection(taskText, "Changed Areas"),
     ...parseOverlapPathSection(taskText),
   ];
+  const inherited = state === null ? new Map() : inheritedSupersededClaims(state, selectedSlice, new Set(claims));
+  claims.push(...inherited.keys());
   const uniqueClaims = [];
   const seen = new Set();
   for (const claim of claims) {
@@ -1001,15 +1035,24 @@ async function deriveValidationTargetsFromTask({ workspace, taskArtifact, filele
   }
   if (uniqueClaims.length === 0 && filelessReason === null) fail("validation producer cannot derive a file-backed target set from the task artifact");
   const workspaceRoot = await canonicalWorkspacePath(workspace);
+  if (inherited.size !== 0 && await regularFile(taskArtifact, "taskArtifact", workspaceRoot)
+    !== await regularFile(path.join(state.workspace.executionRoot, "tasks", `${selectedSlice}.md`), "live taskArtifact", workspaceRoot)) {
+    fail("inherited superseded paths require the selected live task authority");
+  }
   const targets = [];
   for (const claim of uniqueClaims) {
     const physical = path.resolve(path.dirname(taskArtifact), claim);
     if (!inside(physical, workspaceRoot)) fail(`task claim resolves outside workspace: ${claim}`);
     const canonical = await regularFile(physical, `task claim ${claim}`, workspaceRoot);
     if (!inside(canonical, workspaceRoot)) fail(`task claim resolves outside workspace: ${claim}`);
+    const historical = inherited.get(claim);
+    if (historical !== undefined && `sha256:${createHash("sha256").update(await fs.readFile(canonical)).digest("hex")}` !== historical) {
+      fail(`superseded path drifted from tested file evidence: ${claim}`);
+    }
+    if (historical !== undefined) inherited.set(claim, { expected: historical, target: canonical });
     targets.push(canonical);
   }
-  return targets;
+  return { targets, inherited };
 }
 
 async function deriveExecutionTargetsFromTask({ workspace, taskArtifact }) {
@@ -1591,7 +1634,10 @@ export async function prepareRunnerValidationPersistenceFromResponse({
     if (reasons.length !== 1) fail("fileless validation requires one reason from current validated execution evidence");
     authoritativeFilelessReason = decodeMarkdownScalar("Fileless reason", reasons[0][1], true);
   }
-  const targets = await deriveValidationTargetsFromTask({ workspace, taskArtifact, filelessReason: authoritativeFilelessReason });
+  const { targets, inherited } = await deriveValidationTargetsFromTask({
+    workspace, taskArtifact, filelessReason: authoritativeFilelessReason,
+    state: parsed.status === "PASS" ? state : null, selectedSlice: canonicalSliceLabel(String(slice)),
+  });
   const filelessReason = targets.length === 0 ? authoritativeFilelessReason : null;
   const verifiedScope = targets.length === 0 ? "fileless task state"
     : await canonicalTestedScope({ workspace, taskArtifact, targets });
@@ -1625,6 +1671,21 @@ export async function prepareRunnerValidationPersistenceFromResponse({
     serializeRunnerRecord({ workspace, taskArtifact, targets, commands, filelessReason }),
     serializeRunnerManifest({ workspace, taskArtifact, targets, commands, filelessReason }),
   ]);
+  if (inherited.size !== 0) {
+    const recordLines = new Set(testedRecord.split("\n"));
+    const manifestLines = new Set(formalManifest.split("\n"));
+    const workspaceRoot = await canonicalWorkspacePath(workspace);
+    for (const [claim, { expected, target }] of inherited) {
+      const entry = `  - \`${claim}\` | ${expected}`;
+      if (!recordLines.has(entry) || !manifestLines.has(entry)) {
+        fail(`superseded path capture differs from tested file evidence: ${claim}`);
+      }
+      if (await regularFile(target, `superseded path ${claim}`, workspaceRoot) !== target
+        || `sha256:${createHash("sha256").update(await fs.readFile(target)).digest("hex")}` !== expected) {
+        fail(`superseded path drifted after validation capture: ${claim}`);
+      }
+    }
+  }
   const bundle = `- Runner response:\n${responseBlock}\n- Tested record:\n${testedRecord}\n- Formal manifest:\n${formalManifest}`;
   const attemptNumber = selected.attempts.length + 1;
   const attemptId = `attempt-${String(attemptNumber).padStart(2, "0")}`;
