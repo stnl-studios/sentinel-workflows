@@ -1685,6 +1685,12 @@ function currentCandidateEvidenceOwners(result) {
     if (task === undefined) continue;
     const entries = task.base.present ? task.base.entries : task.currentAuxiliaryCheck?.testedState ?? [];
     for (const entry of entries) owners.set(entry.path, row.slice);
+    if (task.delegationBlocker?.state === "active" && task.delegationBlocker.kind === "malformed-output"
+      && task.delegationBlocker.operation === "EXECUTE_SLICE" && !task.base.present) {
+      // The rejected response cannot own current code. Its declared changed
+      // scope is pending the next valid runner check, including prior overlaps.
+      for (const claim of task.changedClaims) owners.set(claim, row.slice);
+    }
   }
   return owners;
 }
@@ -1752,13 +1758,21 @@ async function validateCandidateExecutionRecordPaths(result) {
     const logicalArtifact = logicalExecutionPath(result.workspace, artifact);
     const evidenceOwner = task.base.present ? "Effective Validation Base" : task.currentAuxiliaryCheck?.id ?? null;
     const entries = task.base.present ? task.base.entries : task.currentAuxiliaryCheck?.testedState ?? [];
+    const pendingMalformedExecution = task.delegationBlocker?.state === "active"
+      && task.delegationBlocker.kind === "malformed-output"
+      && task.delegationBlocker.operation === "EXECUTE_SLICE" && !task.base.present;
+    if (pendingMalformedExecution) {
+      for (const claim of task.changedClaims) {
+        await validateImplementationPathClaim(result.workspace, { artifact, field: "Changed Areas pending malformed-output recovery", raw: claim });
+      }
+    }
     if (entries.length === 0) continue;
     for (const entry of entries) {
       const field = task.base.present ? "Effective Validation Base Files" : `${evidenceOwner} Tested state`;
       await validateImplementationPathClaim(result.workspace, { artifact, field, raw: entry.path });
       const target = path.resolve(path.dirname(logicalArtifact), entry.path);
       const isCurrentOwner = currentOwners.get(entry.path) === slice;
-      if (isCurrentOwner) {
+      if (isCurrentOwner && !(pendingMalformedExecution && task.changedClaims.includes(entry.path))) {
         const metadata = await lstatOrNull(target);
         let observed = "absent";
         if (metadata?.isSymbolicLink()) observed = "symlink";
@@ -1781,7 +1795,7 @@ async function validateCandidateExecutionRecordPaths(result) {
     }
     const owned = new Set(entries.map((entry) => entry.path));
     const unowned = task.changedClaims.filter((claim) => !owned.has(claim));
-    if (unowned.length !== 0) {
+    if (unowned.length !== 0 && !pendingMalformedExecution) {
       throw new ExecutionContractError(
         `${slice} current file-backed candidate evidence does not own every Changed Areas/Corrections Applied path`,
         unowned.map((claim) => path.resolve(path.dirname(logicalArtifact), claim)),

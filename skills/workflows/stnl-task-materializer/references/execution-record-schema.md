@@ -80,6 +80,8 @@ Fresh materialization persists only `- none` under `## Delegation Blocker`. A de
 
 `After record` is the latest valid record for the named operation when the blocker was persisted. Only the same operation on the same slice may resume directly at delegation. A later valid operation record atomically changes the singleton to `State: resolved` and adds `- Resolution: <objective result naming that later record>`. `Resolution` is forbidden while active and mandatory while resolved. A resolved singleton remains historical. It is invalid to keep the blocker active after a later valid record or to mark it resolved without one.
 
+For native `EXECUTE_SLICE`, a deterministic semantic/verdict rejection may persist `Kind: malformed-output` from the unchanged runner response file. Record its SHA-256 and state that no managed receipt exists; this is a diagnostic, not a valid check or proof of the current code. While that blocker is active, candidate validation treats declared `Changed Areas` as pending runner scope. It still validates their path containment and required prior-PASS overlap declarations, but does not require the last valid check's hashes to cover changes made before the rejected response. The next valid runner check must establish current tested state before execution can complete. Managed recovery continues to require its matching captured receipt.
+
 ## Auxiliary check evidence
 
 Each record uses the next section-global identifier, `implementation-check-NN` or `findings-check-NN`, and includes:

@@ -13,8 +13,8 @@ function fail(message) {
 }
 
 export class RunnerVerdictEvidenceError extends Error {
-  constructor(operation, status, failedCommands) {
-    super(`${operation} ${status} contradicts ${failedCommands.length} marked verification command(s) with non-zero exit`);
+  constructor(operation, status, failedCommands, message = null) {
+    super(message ?? `${operation} ${status} contradicts ${failedCommands.length} marked verification command(s) with non-zero exit`);
     this.name = "RunnerVerdictEvidenceError";
     this.code = "RUNNER_VERDICT_EVIDENCE_CONFLICT";
     this.operation = operation;
@@ -1417,17 +1417,29 @@ export async function persistMalformedRunnerResultInCandidate({
   taskArtifact, operation, receiptFile, semanticResponseFile, diagnostic, error = null, workspace,
 }) {
   if (!new Set(["EXECUTE_SLICE", "APPLY_FINDINGS", "VALIDATE_SLICE"]).has(operation)) fail("invalid runner recovery operation");
+  const expectedDiagnostic = recoverableRunnerResultDiagnostic(error);
+  if (expectedDiagnostic === null || expectedDiagnostic !== diagnostic) {
+    fail("malformed-output recovery requires the original deterministic producer rejection");
+  }
   const task = await regularFile(taskArtifact, "candidate taskArtifact");
-  const receiptPath = await regularFile(receiptFile, "runner receipt");
+  if (receiptFile === undefined && operation === "VALIDATE_SLICE") {
+    fail("native malformed-output recovery is limited to candidate execution checks");
+  }
+  if (typeof semanticResponseFile !== "string" || !path.isAbsolute(semanticResponseFile)) {
+    fail("malformed-output recovery requires an absolute semantic response path");
+  }
+  const receiptPath = receiptFile === undefined ? null : await regularFile(receiptFile, "runner receipt");
   const responsePath = await regularFile(semanticResponseFile, "semantic response");
-  const context = await assertManagedRunnerReceipt({ operation, slice: path.basename(task, ".md"), workspace,
-    receiptFile, semanticResponseFile, allowRejected: true });
-  const receipt = JSON.parse(await fs.readFile(receiptPath, "utf8"));
+  const context = receiptPath === null ? null : await assertManagedRunnerReceipt({
+    operation, slice: path.basename(task, ".md"), workspace,
+    receiptFile, semanticResponseFile, allowRejected: true,
+  });
+  const receipt = receiptPath === null ? null : JSON.parse(await fs.readFile(receiptPath, "utf8"));
   const responseHash = createHash("sha256").update(await fs.readFile(responsePath)).digest("hex");
-  const rejected = context !== null && receipt.status === "RUNNER_RESULT_BLOCKED";
-  if ((!rejected && receipt.status !== "RUNNER_RESPONSE_CAPTURED") || receipt.operation !== operation
+  const rejected = context !== null && receipt?.status === "RUNNER_RESULT_BLOCKED";
+  if (receipt !== null && ((!rejected && receipt.status !== "RUNNER_RESPONSE_CAPTURED") || receipt.operation !== operation
     || receipt.semanticResponseFile !== responsePath || receipt.semanticResponseSha256 !== responseHash
-    || (!rejected && receipt.captureFailure !== null) || receipt.error != null) {
+    || (!rejected && receipt.captureFailure !== null) || receipt.error != null)) {
     fail("malformed-output recovery requires a matching captured runner response and receipt");
   }
   const executionRoot = path.dirname(path.dirname(task));
@@ -1439,7 +1451,24 @@ export async function persistMalformedRunnerResultInCandidate({
     if (operation !== "VALIDATE_SLICE") fail("malformed-output recovery requires an owned execution candidate");
   }
   const slice = path.basename(task, ".md");
-  if (!/^slice-[0-9]{2,}$/u.test(slice)) fail("malformed-output recovery requires a canonical slice task");
+  if (operation !== "VALIDATE_SLICE") {
+    const markerFile = await regularFile(path.join(candidateRoot, ".stnl-execution-copy.json"), "candidate marker");
+    const marker = JSON.parse(await fs.readFile(markerFile, "utf8"));
+    const expectedTask = path.join(candidateRoot, executionRoot === candidateRoot ? "" : "execution", "tasks", `${slice}.md`);
+    const allowedParents = typeof marker.specPath === "string"
+      ? [path.dirname(marker.specPath), ...(path.basename(marker.specPath) === "feature_spec.md"
+        ? [path.dirname(path.dirname(marker.specPath))] : [])]
+      : [];
+    if (!/^slice-[0-9]{2,}$/u.test(slice) || marker.slice !== slice || task !== expectedTask
+      || typeof marker.specPath !== "string" || !path.isAbsolute(marker.specPath)
+      || !allowedParents.includes(path.dirname(candidateRoot))
+      || typeof marker.executionRoot !== "string" || !path.isAbsolute(marker.executionRoot)
+      || inside(candidateRoot, marker.executionRoot)) {
+      fail("malformed-output recovery candidate identity mismatch");
+    }
+  } else if (!/^slice-[0-9]{2,}$/u.test(slice)) {
+    fail("malformed-output recovery requires a canonical slice task");
+  }
   let taskText = await fs.readFile(task, "utf8");
   if ((rejected || error instanceof RunnerSemanticResultError && error.cause?.code === "RUNNER_EXECUTION_SCOPE_INVALID")
     && operation !== "VALIDATE_SLICE"
@@ -1483,8 +1512,8 @@ export async function persistMalformedRunnerResultInCandidate({
     "- State: active",
     `- After record: ${afterRecord}`,
     "- Causes:",
-    `  - Producer rejected ${rejected ? "diagnostic" : "captured"} response sha256:${responseHash}: ${cause}`,
-    `  - ${rejected ? "Rejected diagnostic" : "Captured response"}: ${responsePath}; receipt: ${receiptPath}`,
+    `  - Producer rejected ${receipt === null ? "native runner-reported" : rejected ? "diagnostic" : "captured"} response sha256:${responseHash}: ${cause}`,
+    `  - ${receipt === null ? "Native response" : rejected ? "Rejected diagnostic" : "Captured response"}: ${responsePath}${receiptPath === null ? "; no managed receipt" : `; receipt: ${receiptPath}`}`,
     `- Required action: Resume ${operation} ${slice} with a valid captured runner response.`,
   ].join("\n");
   taskText = replaceSectionBody(taskText, "Delegation Blocker", blocker);
@@ -1768,7 +1797,7 @@ if (import.meta.url === pathToFileURL(path.resolve(process.argv[1] ?? "")).href)
         } else process.stdout.write(`${bundle}\n`);
       } catch (error) {
         const diagnostic = recoverableRunnerResultDiagnostic(error);
-        if (!values.insertCandidate || values.receiptFile === undefined || diagnostic === null) throw error;
+        if (!values.insertCandidate || diagnostic === null) throw error;
         const recovery = await persistMalformedRunnerResultInCandidate({
           taskArtifact: values.taskArtifact, operation: values.operation,
           receiptFile: values.receiptFile, semanticResponseFile: values.semanticResponseFile,

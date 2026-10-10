@@ -571,11 +571,73 @@ test("captured malformed output creates canonical recovery and rejects wrong aut
     /runner recovery in Scope Expansion instead of Delegation Blocker/u);
   await fs.writeFile(copy.candidateTaskArtifact, candidate, "utf8");
   await fs.writeFile(receiptFile, JSON.stringify({ ...receipt, status: "RUNNER_NOT_STARTED" }), "utf8");
+  const rejection = new RunnerSemanticResultError("EXECUTE_SLICE", new Error("invalid command"));
   await assert.rejects(persistMalformedRunnerResultInCandidate({
     taskArtifact: copy.candidateTaskArtifact, operation: "EXECUTE_SLICE", receiptFile, semanticResponseFile: responseFile,
-    diagnostic: "invalid command",
+    diagnostic: recoverableRunnerResultDiagnostic(rejection), error: rejection,
   }), /matching captured runner response/u);
   assert.equal(await fs.readFile(copy.candidateTaskArtifact, "utf8"), candidate);
+});
+
+test("native malformed response preserves pending changed scope without allocating a check", async (t) => {
+  const fixture = await nestedLifecycleWorkspace(t);
+  const sourceClaim = path.relative(path.join(fixture.execution, "tasks"), path.join(fixture.root, "src/example.txt")).split(path.sep).join("/");
+  const lateClaim = path.relative(path.join(fixture.execution, "tasks"), path.join(fixture.root, "src/late.txt")).split(path.sep).join("/");
+  await writeValidatedPath(fixture, sourceClaim);
+  const copy = await prepareExecutionCopy({ specPath: fixture.requirements, slice: "slice-01" });
+  let task = await fs.readFile(copy.candidateTaskArtifact, "utf8");
+  task = task.replace("- [ ] 1.1", "- [x] 1.1");
+  task = replaceSection(task, "Changed Areas", `- \`${sourceClaim}\`\n- \`${lateClaim}\``);
+  task = replaceSection(task, "Implementation Test Evidence", checkRecord("implementation-check", 1, "BLOCKED", 1)
+    .replaceAll("../../src/example.txt", sourceClaim));
+  task = replaceSection(task, "Diff Summary", "- Pending native runner recovery after in-slice changes.");
+  await fs.writeFile(copy.candidateTaskArtifact, task, "utf8");
+  await writeValidatedPath(fixture, sourceClaim, "changed after the last valid check\n");
+  await writeValidatedPath(fixture, lateClaim, "new pending scope\n");
+  const responseFile = path.join(await temporary(t, "stnl-native-malformed-"), "response.json");
+  const response = "{malformed json";
+  await fs.writeFile(responseFile, response, "utf8");
+  const cli = spawnSync(process.execPath, [
+    path.join(ROOT, "skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs"),
+    "--execution-bundle", "--operation", "EXECUTE_SLICE", "--workspace", fixture.root,
+    "--task-artifact", copy.candidateTaskArtifact, "--semantic-response-file", responseFile,
+    "--insert-candidate",
+  ], { encoding: "utf8" });
+  assert.equal(cli.status, 0, cli.stderr);
+  assert.equal(JSON.parse(cli.stdout).state, "RUNNER_RESULT_BLOCKED");
+  const candidate = await fs.readFile(copy.candidateTaskArtifact, "utf8");
+  assert.match(candidate, /Producer rejected native runner-reported response sha256:[0-9a-f]{64}/u);
+  assert.match(candidate, /Native response: .*; no managed receipt/u);
+  assert.doesNotMatch(candidate, /^### implementation-check-02$/mu);
+  assert.equal((await validateExecutionCandidate(fixture.requirements, copy.candidateExecutionRoot)).state,
+    "RUNNER_RESULT_BLOCKED");
+  await publishExecutionCopy({ specPath: fixture.requirements, slice: "slice-01", candidateRoot: copy.candidateRoot });
+  const state = await inspectExecutionState(fixture.requirements);
+  assert.equal(state.state, "RUNNER_RESULT_BLOCKED");
+  assert.equal(state.mandatoryRecovery.operation, "EXECUTE_SLICE");
+  assert.equal(state.tasks.get("slice-01").implementationChecks.length, 1);
+});
+
+test("native malformed recovery rejects a missing producer error and a mismatched candidate marker", async (t) => {
+  const fixture = await nestedLifecycleWorkspace(t);
+  const copy = await prepareExecutionCopy({ specPath: fixture.requirements, slice: "slice-01" });
+  const responseFile = path.join(await temporary(t, "stnl-native-guard-"), "response.json");
+  await fs.writeFile(responseFile, "{malformed json", "utf8");
+  const before = await fs.readFile(copy.candidateTaskArtifact);
+  await assert.rejects(persistMalformedRunnerResultInCandidate({
+    taskArtifact: copy.candidateTaskArtifact, operation: "EXECUTE_SLICE",
+    semanticResponseFile: responseFile, diagnostic: null, error: null, workspace: fixture.root,
+  }), /original deterministic producer rejection/u);
+  const markerFile = path.join(copy.candidateRoot, ".stnl-execution-copy.json");
+  const marker = JSON.parse(await fs.readFile(markerFile, "utf8"));
+  await fs.writeFile(markerFile, JSON.stringify({ ...marker, slice: "slice-99" }), "utf8");
+  const rejection = new RunnerSemanticResultError("EXECUTE_SLICE", new Error("invalid payload"));
+  await assert.rejects(persistMalformedRunnerResultInCandidate({
+    taskArtifact: copy.candidateTaskArtifact, operation: "EXECUTE_SLICE",
+    semanticResponseFile: responseFile, diagnostic: recoverableRunnerResultDiagnostic(rejection),
+    error: rejection, workspace: fixture.root,
+  }), /candidate identity mismatch/u);
+  assert.deepEqual(await fs.readFile(copy.candidateTaskArtifact), before);
 });
 
 test("captured producer rejection resumes APPLY and VALIDATE through their own operations", async (t) => {
@@ -6664,8 +6726,12 @@ test("round-two correction is inserted into an owned candidate and passes strict
     "--task-artifact", missingEvidence.candidateTaskArtifact, "--semantic-response-file", missingResponse,
     "--insert-candidate",
   ], { encoding: "utf8" });
-  assert.equal(rejected.status, 1);
-  assert.match(rejected.stderr, /correctionApplied is required/u);
+  assert.equal(rejected.status, 0, rejected.stderr);
+  assert.equal(JSON.parse(rejected.stdout).state, "RUNNER_RESULT_BLOCKED");
+  const blockedCandidate = await fs.readFile(missingEvidence.candidateTaskArtifact, "utf8");
+  assert.match(blockedCandidate, /- Kind: malformed-output/u);
+  assert.match(blockedCandidate, /correctionApplied is required/u);
+  assert.doesNotMatch(blockedCandidate, /^### implementation-check-02$/mu);
   assert.deepEqual(await fs.readFile(liveTask), liveBefore);
 });
 
