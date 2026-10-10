@@ -589,6 +589,17 @@ function parsePlan(text, label, expectedSlice = null, references = {}) {
   return { ...state, body, sections: parsedSections, status: header.get("status"), reviewState, revisionMode, replanReason, supersessionMappings };
 }
 
+export function approvedDetailedPlanIncludedScope(text, slice) {
+  if (typeof slice !== "string" || !/^slice-[0-9]{2,}$/u.test(slice)) {
+    throw new ExecutionContractError("approved detailed plan requires a canonical slice identity");
+  }
+  const plan = parsePlan(text, `plans/${slice}.md`, slice);
+  if (plan.status !== "ready" || plan.reviewState !== "approved") {
+    throw new ExecutionContractError("directory expected area requires an approved detailed plan");
+  }
+  return plan.sections.get("Included Scope");
+}
+
 function hasUnencodedTemplatePlaceholder(value) {
   const withoutEncodedValues = String(value).replace(/json:"(?:\\.|[^"\\])*"/gu, 'json:""');
   return /<[^>\n]+>/u.test(withoutEncodedValues);
@@ -1693,6 +1704,23 @@ function currentCandidateEvidenceOwners(result) {
     }
   }
   return owners;
+}
+
+// A reviewed plan may narrow a directory-shaped expected area to an explicit
+// file list. This selects prospective runner scope, never current ownership.
+export function closedPlanFileTargets(includedScope) {
+  const files = new Set();
+  for (const line of String(includedScope).split("\n")) {
+    const group = line.match(/^  - `([^`]+)`: (.+)\.$/u);
+    if (group === null) continue;
+    const names = group[2].split(", ");
+    if (names.some((name) => !/^`[^`]+`$/u.test(name))) continue;
+    const parts = [group[1], ...names.map((name) => name.slice(1, -1))];
+    if (parts.some((part) => part.startsWith("/") || part.includes("\\")
+      || part.split("/").some((component) => component === "" || component === "." || component === ".."))) continue;
+    for (const name of parts.slice(1)) files.add(path.posix.join(parts[0], name));
+  }
+  return [...files];
 }
 
 function declaredPriorValidationOverlap(section, slice) {

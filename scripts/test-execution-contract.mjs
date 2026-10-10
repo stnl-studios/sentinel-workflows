@@ -9202,6 +9202,69 @@ test("candidate validation permits declared later-slice ownership of a historica
   });
 });
 
+test("directory scope selects files but current checks alone take ownership from a prior PASS", async (t) => {
+  const fixture = await standaloneWorkspace(t);
+  await renderArtifacts(fixture);
+  await addSecondPristineSlice(fixture);
+  await passFirstSlice(fixture);
+  const taskPath = path.join(fixture.execution, "tasks/slice-02.md");
+  await fs.writeFile(taskPath, (await fs.readFile(taskPath, "utf8"))
+    .replace("`../../src/example.txt`; example implementation", "`../../src`; example implementation"));
+  const planPath = path.join(fixture.execution, "plans/slice-02.md");
+  const originalPlan = await fs.readFile(planPath, "utf8");
+  const included = "- Implement the approved behavior.\n  - `src`: `example.txt`.";
+  const approvedPlan = replaceSection(originalPlan, "Included Scope", included);
+  await fs.writeFile(planPath, approvedPlan);
+  const currentContent = "pending formatting\n";
+  const currentHash = createHash("sha256").update(currentContent).digest("hex");
+  await writeValidatedPath(fixture, "../../src/example.txt", currentContent);
+  await writeValidatedPath(fixture, "../../src/unlisted.txt", "unrelated drift\n");
+  const candidate = await copyDirectory(fixture.execution, path.join(fixture.root, "pending-directory-candidate"));
+  await assert.rejects(validateExecutionCandidate(fixture.requirements, candidate),
+    /file-backed candidate evidence expected/u, "an approved list does not supersede PASS bytes");
+  assert.deepEqual(await validateManagedChangedAreas({ workspace: fixture.root, taskArtifact: taskPath,
+    changedAreas: ["../../src/example.txt"] }), ["../../src/example.txt"]);
+  await assert.rejects(validateManagedChangedAreas({ workspace: fixture.root, taskArtifact: taskPath,
+    changedAreas: ["../../src/unlisted.txt"] }), /approved (?:physical )?target/u);
+
+  const spoofedDraft = replaceSection(approvedPlan.replace("status: ready", "status: draft")
+    .replace("- Review state: approved", "- Review state: pending"), "Included Scope",
+  `${included}\nstatus: ready\n- Review state: approved`);
+  await fs.writeFile(planPath, spoofedDraft);
+  await assert.rejects(validateManagedChangedAreas({ workspace: fixture.root, taskArtifact: taskPath,
+    changedAreas: ["../../src/example.txt"] }), /approved detailed plan/u,
+  "free text cannot spoof the canonical header and References");
+  await fs.writeFile(planPath, replaceSection(originalPlan, "Included Scope", "- Implement the approved behavior."));
+  await assert.rejects(validateManagedChangedAreas({ workspace: fixture.root, taskArtifact: taskPath,
+    changedAreas: ["../../src/example.txt"] }), /closed file list/u);
+  await fs.writeFile(planPath, approvedPlan);
+
+  const candidateTask = path.join(candidate, "tasks/slice-02.md");
+  await fs.writeFile(candidateTask, replaceSection(await fs.readFile(candidateTask, "utf8"),
+    "Changed Areas", "- `../../src/example.txt`"));
+  assert.equal((await serializeExecutionScopeClaims({ workspace: fixture.root, taskArtifact: candidateTask })).status, "PASS");
+  await assert.rejects(validateExecutionCandidate(fixture.requirements, candidate),
+    /file-backed candidate evidence expected/u, "declared scope without a current check is not validated ownership");
+
+  let checked = await fs.readFile(candidateTask, "utf8");
+  checked = checked.replace("- [ ] 2.1", "- [x] 2.1");
+  checked = replaceSection(checked, "Prior Validation Overlap",
+    "### overlap-01\n\n- Prior slice: slice-01\n- Paths: ../../src/example.txt\n- Affected behavior: Preserve the earlier validated behavior.\n- Regressions: Re-run its focused regression.");
+  checked = replaceSection(checked, "Implementation Test Evidence",
+    checkRecord("implementation-check", 1, "TESTS_PASS", 1)
+      .replaceAll(`sha256:${VALIDATED_HASH}`, `sha256:${currentHash}`));
+  await fs.writeFile(candidateTask, checked);
+  assert.equal((await validateExecutionCandidate(fixture.requirements, candidate)).state,
+    "IMPLEMENTED_AWAITING_VALIDATION");
+  await fs.writeFile(candidateTask, checked.replaceAll(`sha256:${currentHash}`, `sha256:${"0".repeat(64)}`));
+  await assert.rejects(validateExecutionCandidate(fixture.requirements, candidate),
+    /file-backed candidate evidence expected/u, "a forged current hash is not ownership");
+  await fs.writeFile(candidateTask, checked);
+  await fs.writeFile(candidateTask, replaceSection(await fs.readFile(candidateTask, "utf8"),
+    "Changed Areas", "- `../../src/unlisted.txt`"));
+  await assert.rejects(serializeExecutionScopeClaims({ workspace: fixture.root, taskArtifact: candidateTask }), /approved (?:physical )?target/u);
+});
+
 test("a new NEEDS_FIX attempt retains the latest findings check as current overlap owner", async (t) => {
   const fixture = await standaloneWorkspace(t);
   await renderArtifacts(fixture);

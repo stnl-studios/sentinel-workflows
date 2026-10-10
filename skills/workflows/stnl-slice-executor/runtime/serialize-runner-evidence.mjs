@@ -4,7 +4,8 @@ import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { inspectExecutionState, resolveExecutionWorkspace } from "./execution-state.mjs";
+import { approvedDetailedPlanIncludedScope, closedPlanFileTargets, inspectExecutionState,
+  resolveExecutionWorkspace } from "./execution-state.mjs";
 import { resolveRunnerCommandEvents } from "./runner-command-events.mjs";
 import { assertManagedRunnerReceipt } from "./managed-slice-context.mjs";
 
@@ -808,9 +809,19 @@ async function existingPhysicalCandidate(candidate, label, workspaceRoot) {
 
 async function canonicalApprovedTargets({ workspaceRoot, taskArtifact, taskText }) {
   const targets = new Map();
+  const directories = [];
   for (const raw of checklistExpectedClaims(taskText)) {
     const candidate = path.resolve(path.dirname(taskArtifact), raw);
     if (!inside(candidate, workspaceRoot)) fail(`Checklist expected area escapes workspace: ${raw}`);
+    await rejectWorkspaceSymlinkComponents(candidate, workspaceRoot);
+    const metadata = await fs.lstat(candidate).catch((error) => {
+      if (error?.code === "ENOENT") return null;
+      throw error;
+    });
+    if (metadata?.isDirectory()) {
+      directories.push(candidate);
+      continue;
+    }
     const physical = await existingPhysicalCandidate(candidate, `Checklist expected area ${raw}`, workspaceRoot) ?? candidate;
     if (physical === candidate && !inside(await fs.realpath(path.dirname(candidate)), workspaceRoot)) {
       fail(`Checklist expected area escapes workspace: ${raw}`);
@@ -818,7 +829,25 @@ async function canonicalApprovedTargets({ workspaceRoot, taskArtifact, taskText 
     if (!inside(physical, workspaceRoot)) fail(`Checklist expected area escapes workspace: ${raw}`);
     targets.set(physical, raw);
   }
-  return targets;
+  if (directories.length !== 0) {
+    const planPath = path.resolve(path.dirname(taskArtifact), "../plans", path.basename(taskArtifact));
+    const canonicalPlan = await regularFile(planPath, "approved detailed plan", workspaceRoot);
+    const planText = await fs.readFile(canonicalPlan, "utf8");
+    const included = approvedDetailedPlanIncludedScope(planText, path.basename(taskArtifact, ".md"));
+    for (const relative of closedPlanFileTargets(included)) {
+      const candidate = path.resolve(workspaceRoot, relative);
+      if (!directories.some((directory) => inside(candidate, directory))) continue;
+      const physical = await existingPhysicalCandidate(candidate, `approved file ${relative}`, workspaceRoot) ?? candidate;
+      if (physical === candidate && !inside(await fs.realpath(path.dirname(candidate)), workspaceRoot)) {
+        fail(`approved file escapes workspace: ${relative}`);
+      }
+      targets.set(physical, relative);
+    }
+    if (directories.some((directory) => ![...targets.keys()].some((target) => inside(target, directory)))) {
+      fail("directory expected area has no closed file list in the approved detailed plan");
+    }
+  }
+  return { targets, directories };
 }
 
 async function canonicalizeScopeClaim({ workspaceRoot, taskArtifact, approvedTargets, raw, heading }) {
@@ -836,14 +865,15 @@ async function canonicalizeScopeClaim({ workspaceRoot, taskArtifact, approvedTar
   }
   const physical = taskPhysical ?? workspacePhysical;
   if (physical === null) {
-    const missing = approvedTargets.has(taskBasis) ? taskBasis
-      : approvedTargets.has(workspaceBasis) ? workspaceBasis : null;
+    const missing = approvedTargets.targets.has(taskBasis) ? taskBasis
+      : approvedTargets.targets.has(workspaceBasis) ? workspaceBasis : null;
     if (missing === null) fail(`${heading} claim does not resolve to an approved target: ${claim}`);
     if (!inside(await fs.realpath(path.dirname(missing)), workspaceRoot)) fail(`${heading} claim escapes workspace: ${claim}`);
     return claimFor(taskArtifact, missing);
   }
   if (!inside(physical, workspaceRoot)) fail(`${heading} claim escapes workspace: ${claim}`);
-  if (taskPhysical === null && !approvedTargets.has(physical)) {
+  if ((taskPhysical === null || approvedTargets.directories.length !== 0)
+    && !approvedTargets.targets.has(physical)) {
     fail(`${heading} workspace-relative claim is not an approved physical target: ${claim}`);
   }
   return path.relative(path.dirname(taskArtifact), physical).split(path.sep).join("/");
