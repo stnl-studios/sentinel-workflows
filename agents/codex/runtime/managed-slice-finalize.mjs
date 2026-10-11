@@ -46,6 +46,9 @@ async function tree(root) {
   }
   await walk(''); return entries;
 }
+const imageWithoutActivation = entries => entries.filter(entry => entry.path !== 'activation.json');
+const sameOperationalImage = (left, right) => same(imageWithoutActivation(left), imageWithoutActivation(right));
+
 async function replaceTask(file, bytes) {
   const temporary = `${file}.${randomUUID()}.tmp`;
   try { await fs.writeFile(temporary, bytes, { flag: 'wx', mode: (await fs.stat(file)).mode & 0o777 }); await fs.rename(temporary, file); }
@@ -75,7 +78,7 @@ export async function inspectManagedApplyCandidate({ context, active, tmpdir }) 
     || !path.basename(root).startsWith('.stnl-execution-copy-') || await fs.realpath(root) !== root
     || binding.candidateExecutionRoot !== (official.specRoot === null ? root : path.join(root, 'execution'))
     || binding.candidateTaskArtifact !== path.join(binding.candidateExecutionRoot, 'tasks', `${context.slice}.md`)) throw new Error('managed candidate path/source identity disagrees');
-  const marker = await read(path.join(root, '.stnl-execution-copy.json'));
+  const marker = await read(`${root}.copy.json`);
   const liveTask = path.join(official.executionRoot, 'tasks', `${context.slice}.md`);
   if (marker.specPath !== context.specPath || marker.slice !== context.slice || marker.executionRoot !== official.executionRoot
     || !same(binding.sourceTree, await tree(official.executionRoot))
@@ -105,14 +108,14 @@ export async function finalizeManagedSlice(mode) {
   const metadataFile = (name) => path.join(directory, `${String(active.sequence).padStart(3, '0')}.${name}.json`);
   const bindingFile = metadataFile('candidate');
   const finalizedFile = metadataFile('finalization');
-  const owner = { protocol: 3, operation: context.operation, slice: context.slice, sequence: active.sequence,
+  const owner = { operationAttemptId: context.owner.operationAttemptId, originActivationId: context.owner.originActivationId, deliveryId: context.owner.deliveryId, preparationRevision: context.owner.preparationRevision, normativeSha256: context.owner.normativeSha256, protocol: 3, operation: context.operation, slice: context.slice, sequence: active.sequence,
     authority: context.authority, specPath: context.specPath, workspace: context.workspace };
   const official = await resolveExecutionWorkspace(context.specPath);
   const taskRelative = path.join('tasks', `${context.slice}.md`);
   const liveTask = path.join(official.executionRoot, taskRelative);
   const createCopy = () => context.operation === 'VALIDATE_SLICE'
-    ? prepareValidationCopy({ specPath: context.specPath, slice: context.slice, candidateParent: tmpdir })
-    : prepareExecutionCopy({ specPath: context.specPath, slice: context.slice });
+    ? prepareValidationCopy({ specPath: context.specPath, slice: context.slice, candidateParent: tmpdir, owner: context.owner })
+    : prepareExecutionCopy({ specPath: context.specPath, slice: context.slice, owner: context.owner });
   const preparationFile = (binding, attempt) => metadataFile(`preparation-${binding.nonce}-attempt-${attempt}`);
   const ownerFile = (binding) => binding.ownerFile ?? metadataFile('candidate-owner');
   const checkBinding = async (binding) => {
@@ -346,15 +349,15 @@ export async function finalizeManagedSlice(mode) {
       if (!same(prepared.inputTree, currentInput)) throw new Error('managed private candidate changed');
       await replaceTask(binding.candidateTaskArtifact, await regular(prepared.stage.candidateTaskArtifact));
     }
-  } else if (!same(prepared.liveAfter, await tree(official.executionRoot))) {
+  } else if (!sameOperationalImage(prepared.liveAfter, await tree(official.executionRoot))) {
     await assertManagedSliceFreshness(environment);
     if (!same(prepared.liveBefore, await tree(official.executionRoot))
       || !same(prepared.inputTree, await tree(binding.candidateExecutionRoot))) throw new Error('managed publication source conflict');
-    if (context.operation === 'VALIDATE_SLICE') await publishValidationCandidate({ specPath: context.specPath, slice: context.slice, candidateExecutionRoot: prepared.stage.candidateExecutionRoot });
-    else await publishExecutionCopy({ specPath: context.specPath, slice: context.slice, candidateRoot: prepared.stage.candidateRoot });
+    if (context.operation === 'VALIDATE_SLICE') await publishValidationCandidate({ specPath: context.specPath, slice: context.slice, candidateExecutionRoot: prepared.stage.candidateExecutionRoot, owner: context.owner, terminal: prepared.state !== "RUNNER_INITIALIZATION_BLOCKED" && prepared.state !== "RUNNER_RESULT_BLOCKED" });
+    else await publishExecutionCopy({ specPath: context.specPath, slice: context.slice, candidateRoot: prepared.stage.candidateRoot, owner: context.owner, terminal: prepared.state !== "RUNNER_INITIALIZATION_BLOCKED" && prepared.state !== "RUNNER_RESULT_BLOCKED" });
   }
   const readback = await inspectExecutionState(context.specPath);
-  if ((!privateFailure && readback.state !== prepared.state) || !same(prepared.liveAfter, await tree(official.executionRoot))) throw new Error('managed publication/readback conflict');
+  if ((!privateFailure && readback.state !== prepared.state) || !sameOperationalImage(prepared.liveAfter, await tree(official.executionRoot))) throw new Error('managed publication/readback conflict');
   if (!same(privateFailure ? prepared.stageTree : prepared.inputTree, await tree(binding.candidateExecutionRoot))
     || `sha256:${await computeRequirementsAuthority(context.specPath)}` !== owner.authority
     || (testedState !== null && !same(testedState, await captureRunnerTestedState({ workspace: context.workspace,

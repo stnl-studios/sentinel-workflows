@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+import { parsePreparationTableRow } from "./execution-preparation.mjs";
+import { readOperationOwner } from "./execution-publication.mjs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -62,7 +64,7 @@ function selectedRow(text, slice, label) {
   const lines = text.split("\n");
   for (const [index, line] of lines.entries()) {
     if (!line.startsWith("|")) continue;
-    const columns = line.split("|").slice(1, -1).map((column) => column.trim());
+    const columns = parsePreparationTableRow(line, 7, label);
     if (columns.length !== 7) fail(`${label} has a malformed canonical tasks.md row`);
     if (columns[1].startsWith(`${slice.slice("slice-".length)} - `)) matches.push({ index, line, columns });
   }
@@ -107,14 +109,14 @@ async function writeCandidateFiles(entries) {
 }
 
 export async function prepareValidationCandidate({ specPath, slice: sliceValue, workspace, candidateExecutionRoot, semanticResponseFile, receiptFile, verificationEventIds }) {
-  assertManagedAgreement({ specPath, workspace, slice: sliceValue });
+  const managed = assertManagedAgreement({ specPath, workspace, slice: sliceValue });
   await assertManagedRunnerReceipt({ operation: "VALIDATE_SLICE", slice: sliceValue, workspace, receiptFile, semanticResponseFile, allowRejected: true });
   if (typeof specPath !== "string" || !path.isAbsolute(specPath)) fail("SPEC_PATH must be absolute");
   if (typeof semanticResponseFile !== "string" || !path.isAbsolute(semanticResponseFile)) {
     fail("semantic response file must be absolute");
   }
   const slice = canonicalSlice(sliceValue);
-  const preflight = await preflightExecutionOperation(specPath, "VALIDATE_SLICE", BigInt(slice.slice(6)).toString(10));
+  const preflight = await preflightExecutionOperation(specPath, "VALIDATE_SLICE", BigInt(slice.slice(6)).toString(10), { owner: managed?.owner ?? await readOperationOwner(specPath) });
   const officialWorkspace = await resolveExecutionWorkspace(specPath);
   const workspaceRoot = await realDirectory(workspace, "managed workspace");
   const liveExecutionRoot = await fs.realpath(officialWorkspace.executionRoot);

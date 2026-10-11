@@ -53,8 +53,8 @@
       "required": ["index", "operation", "phase", "model", "effort", "result", "childDispatches"],
       "properties": {
         "index": { "type": "integer", "minimum": 1 },
-        "operation": { "enum": ["SPEC_INIT", "SPEC_READINESS", "PLAN", "REVIEW_PLAN", "MATERIALIZE_TASKS", "REVIEW_TASKS", "EXECUTE_SLICE", "VALIDATE_SLICE", "APPLY_FINDINGS", "REPLAN", "SPEC_CLOSE"] },
-        "phase": { "enum": ["SPEC", "PLAN", "TASKS", "EXECUTE", "REVIEW_VALIDATE"] },
+        "operation": { "enum": ["SPEC_INIT", "SPEC_READINESS", "PLAN", "REVIEW_PLAN", "EXECUTE_SLICE", "VALIDATE_SLICE", "APPLY_FINDINGS", "REPLAN", "SPEC_CLOSE"] },
+        "phase": { "enum": ["SPEC", "PLAN", "EXECUTE", "REVIEW_VALIDATE"] },
         "model": { "enum": ["GPT-5.6-Sol", "GPT-5.6-Terra", "GPT-5.6-Luna"] },
         "effort": { "enum": ["low", "medium", "high", "xhigh"] },
         "result": { "enum": ["PASS", "FAIL", "BLOCKED", "NEEDS_FIX", "REJECTED", "COMPLETE"] },

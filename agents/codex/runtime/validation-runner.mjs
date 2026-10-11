@@ -158,8 +158,8 @@ export function composeRunnerRequest({ officialPreflight, operation, slice,
   // Only the object's top level can compete with the current mechanical envelope.
   // Nested overlap.slice describes historical work; retain the original payload bytes.
   const competingIdentity = payload !== null && typeof payload === 'object' && !Array.isArray(payload)
-    ? Object.keys(payload).some((key) => /^(?:operation|specPath|workspace|slice|executionRoot|planPath|slicePlanPath|taskPath|adapterPath|snapshotPath)$/u.test(key))
-    : /"(?:operation|specPath|workspace|slice|executionRoot|planPath|slicePlanPath|taskPath|adapterPath|snapshotPath)"\s*:/u.test(prompt);
+    ? Object.keys(payload).some((key) => /^(?:operation|specPath|workspace|slice|executionRoot|planPath|slicePlanPath|taskPath|adapterPath|snapshotPath|preparationRevision|normativeSha256|deliveryId|operationAttemptId|ownershipToken|originActivationId|expectedActivationId|owner)$/u.test(key))
+    : /"(?:operation|specPath|workspace|slice|executionRoot|planPath|slicePlanPath|taskPath|adapterPath|snapshotPath|preparationRevision|normativeSha256|deliveryId|operationAttemptId|ownershipToken|originActivationId|expectedActivationId|owner)"\s*:/u.test(prompt);
   if (/^(?:SPEC_PATH|MANAGED_WORKSPACE|OPERATION|SLICE|EXECUTION_ROOT|PLAN_PATH|SLICE_PLAN_PATH|TASK_PATH|RUNNER_BRIDGE|STNL_RUNNER_ADAPTER)=/gmu.test(prompt)
     || competingIdentity) {
     fail('runner payload contains competing mechanical identity');
@@ -224,7 +224,7 @@ export async function invokeIndependentRunner({
     operationName = `${baseName}-attempt-${attempt}`;
     try {
       await fs.writeFile(path.join(tmpdir, `${operationName}.started.json`),
-        `${JSON.stringify({ operation, sequence, slice, attempt, authority: officialPreflight.authority ?? null })}\n`, { flag: 'wx' });
+        `${JSON.stringify({ operation, sequence, slice, attempt, authority: officialPreflight.authority ?? null, owner: managed?.owner ?? officialPreflight.owner })}\n`, { flag: 'wx' });
       break;
     } catch (error) { if (error.code !== 'EEXIST') throw error; }
   }
@@ -397,7 +397,7 @@ export async function invokeIndependentRunner({
   const status = accepted ? 'RUNNER_RESPONSE_CAPTURED' : 'RUNNER_RESULT_BLOCKED';
   const receiptFile = path.join(tmpdir, `${operationName}.receipt.json`);
   const receipt = {
-    status, operation, sequence, slice, attempt, authority: officialPreflight.authority ?? null, runnerAgent: RUNNER_NAME,
+    status, operation, sequence, slice, attempt, authority: officialPreflight.authority ?? null, owner: managed?.owner ?? officialPreflight.owner, runnerAgent: RUNNER_NAME,
     requestedModel: turn.requestedModel, requestedEffort: turn.requestedEffort,
     reportedModel: turn.reportedModel, threadId: turn.threadId,
     receiptFile, eventsPath, semanticResponseFile, ...semanticReceipt, captureFailure, captureFailureCode,

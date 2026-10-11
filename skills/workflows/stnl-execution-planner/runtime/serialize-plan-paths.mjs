@@ -2,6 +2,7 @@
 
 import * as fs from "node:fs/promises";
 import path from "node:path";
+import { assertPreparationCandidate } from "./prepare-plan-candidate.mjs";
 import { pathToFileURL } from "node:url";
 
 import {
@@ -50,7 +51,7 @@ function codeSpans(value) {
 function serialPlanTargets(text) {
   const section = sectionBounds(text, "Serial Slice Order", "plan.md");
   const lines = section.value.split("\n");
-  const header = "| Slice | Observable delivery | Dependencies | Requirements | Expected areas | Detailed plan |";
+  const header = "| Slice | Observable delivery | Dependencies | Requirements | Authorized areas | Detailed plan |";
   const separator = "|---|---|---|---|---|---|";
   const headerIndex = lines.indexOf(header);
   if (headerIndex < 0 || lines[headerIndex + 1] !== separator) blocked("plan.md has no canonical Serial Slice Order table");
@@ -68,7 +69,7 @@ function serialPlanTargets(text) {
 }
 
 function rewriteDetailedClaims(text, claims, label) {
-  const section = sectionBounds(text, "Likely Areas", label);
+  const section = sectionBounds(text, "Authorized Areas", label);
   let index = 0;
   const value = section.value.replace(/`([^`\n]+)`/gu, () => {
     if (index >= claims.length) blocked(`${label} contains more path claims than its global slice row`);
@@ -88,7 +89,7 @@ function rewriteGlobalClaims(text, rows, canonicalClaimsBySlice, label) {
     if (claims === undefined) blocked(`${label} has no serialized claims for ${row.slice}`);
     const parts = lines[row.lineIndex].split("|");
     const cell = parts[5];
-    if (cell === undefined) blocked(`${label} has no Expected areas cell for ${row.slice}`);
+    if (cell === undefined) blocked(`${label} has no Authorized areas cell for ${row.slice}`);
     let index = 0;
     parts[5] = cell.replace(/`([^`\n]+)`/gu, () => {
       if (index >= claims.length) blocked(`${label} contains more path claims than ${row.slice}`);
@@ -118,6 +119,7 @@ async function selectedPhysicalTarget(specPath, artifact, field, raw) {
 }
 
 export async function serializePlanPathClaims({ specPath, candidateExecutionRoot }) {
+  await assertPreparationCandidate(candidateExecutionRoot, specPath);
   const workspace = await resolveExecutionWorkspace(specPath);
   const candidate = path.resolve(String(candidateExecutionRoot));
   const candidateMetadata = await fs.lstat(candidate).catch(() => null);
@@ -140,7 +142,7 @@ export async function serializePlanPathClaims({ specPath, candidateExecutionRoot
     const detailPath = path.join(candidate, "plans", `${row.slice}.md`);
     const detailText = await fs.readFile(detailPath, "utf8").catch(() => blocked(`candidate is missing ${detailPath}`));
     if (row.claims.length === 0) {
-      if (codeSpans(sectionBounds(detailText, "Likely Areas", `${row.slice} plan`).value).length !== 0) {
+      if (codeSpans(sectionBounds(detailText, "Authorized Areas", `${row.slice} plan`).value).length !== 0) {
         blocked(`${row.slice} plan has detailed path claims without global target selections`);
       }
       canonicalClaimsBySlice.set(row.slice, []);
@@ -150,19 +152,19 @@ export async function serializePlanPathClaims({ specPath, candidateExecutionRoot
     const targets = await Promise.all(row.claims.map((raw) => selectedPhysicalTarget(
       specPath,
       liveGlobalArtifact,
-      `plan.md Serial Slice Order ${row.slice} Expected areas`,
+      `plan.md Serial Slice Order ${row.slice} Authorized areas`,
       raw,
     )));
     const globalClaims = targets.map((target) => canonicalClaim(
       liveGlobalArtifact,
       target.physicalTarget,
-      `plan.md Serial Slice Order ${row.slice} Expected areas`,
+      `plan.md Serial Slice Order ${row.slice} Authorized areas`,
     ));
     canonicalClaimsBySlice.set(row.slice, globalClaims);
     const canonicalClaims = targets.map((target) => {
-      return canonicalClaim(liveDetailArtifact, target.physicalTarget, `${row.slice} plan Likely Areas`);
+      return canonicalClaim(liveDetailArtifact, target.physicalTarget, `${row.slice} plan Authorized Areas`);
     });
-    const serialized = rewriteDetailedClaims(detailText, canonicalClaims, `${row.slice} plan Likely Areas`);
+    const serialized = rewriteDetailedClaims(detailText, canonicalClaims, `${row.slice} plan Authorized Areas`);
     updates.push({ path: detailPath, before: detailText, after: serialized });
     serializedClaims += canonicalClaims.length;
   }
@@ -176,6 +178,8 @@ export async function serializePlanPathClaims({ specPath, candidateExecutionRoot
     await fs.writeFile(temporary, update.after, { encoding: "utf8", flag: "wx" });
     await fs.rename(temporary, update.path);
   }
+  const { serializeTaskPathClaims } = await import('./serialize-task-paths.mjs');
+  await serializeTaskPathClaims({ specPath, candidateExecutionRoot: candidate });
   const candidateValidation = await validateExecutionCandidate(specPath, candidate);
   return Object.freeze({
     status: "PASS",

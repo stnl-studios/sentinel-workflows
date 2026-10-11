@@ -5,10 +5,11 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-import { resolveExecutionWorkspace, validateExecutionCandidate } from './execution-state.mjs';
+import { resolveExecutionWorkspace, validateExecutionCandidate, readExecutionActivation, preparationAuthorityAt } from './execution-state.mjs';
+import { assertOperationalTaskHistory, parsePreparationArtifact } from './execution-preparation.mjs';
 import { assertManagedAgreement } from './managed-slice-context.mjs';
 
-const markerName = '.stnl-execution-copy.json';
+import { withExecutionPublicationLock, publishExecutionUpdate, captureExecutionTree, assertExecutionAttempt, readOperationOwner } from './execution-publication.mjs';
 
 function inside(candidate, root) {
   const relative = path.relative(root, candidate);
@@ -48,8 +49,12 @@ async function context(specPath, slice) {
   return { resolved, executionRoot, specRoot, parent, taskRelative, task };
 }
 
-export async function prepareExecutionCopy({ specPath, slice }) {
+async function prepareExecutionCopyLocked({ specPath, slice, owner }) {
   const details = await context(specPath, slice);
+  const admitted = await readExecutionActivation(specPath);
+  assertExecutionAttempt(admitted.activation, owner);
+  if (!["EXECUTE_SLICE", "APPLY_FINDINGS"].includes(owner.operation) || owner.slice !== slice) throw new Error("execution copy requires the selected implementation owner");
+  const tree = await captureExecutionTree(details.executionRoot);
   const source = await manifest(details.executionRoot);
   const candidateRoot = await fs.mkdtemp(path.join(details.parent, '.stnl-execution-copy-'));
   const candidateExecutionRoot = details.specRoot === null ? candidateRoot : path.join(candidateRoot, 'execution');
@@ -63,9 +68,9 @@ export async function prepareExecutionCopy({ specPath, slice }) {
     if (JSON.stringify(await manifest(candidateExecutionRoot)) !== JSON.stringify(source)) {
       throw new Error('candidate copy differs from live execution tree');
     }
-    await fs.writeFile(path.join(candidateRoot, markerName), JSON.stringify({
+    await fs.writeFile(`${candidateRoot}.copy.json`, JSON.stringify({
       specPath: await fs.realpath(specPath), slice, executionRoot: details.executionRoot,
-      source,
+      source, tree, owner, expectedActivationId: admitted.activation.activationId,
     }), { flag: 'wx' });
     return Object.freeze({ candidateRoot, candidateExecutionRoot,
       candidateTaskArtifact: path.join(candidateExecutionRoot, details.taskRelative),
@@ -76,14 +81,14 @@ export async function prepareExecutionCopy({ specPath, slice }) {
   }
 }
 
-export async function publishExecutionCopy({ specPath, slice, candidateRoot }) {
+export async function publishExecutionCopy({ specPath, slice, candidateRoot, owner = null, terminal = true, checkpoint = null }) {
   const details = await context(specPath, slice);
   const root = await fs.realpath(candidateRoot);
   if (path.dirname(root) !== details.parent || !path.basename(root).startsWith('.stnl-execution-copy-')
     || inside(root, details.executionRoot) || (details.specRoot !== null && inside(root, details.specRoot))) {
     throw new Error('candidate root is not an owned same-depth sibling');
   }
-  const marker = JSON.parse(await fs.readFile(path.join(root, markerName), 'utf8'));
+  const marker = JSON.parse(await fs.readFile(`${root}.copy.json`, 'utf8'));
   if (marker.specPath !== await fs.realpath(specPath) || marker.slice !== slice || marker.executionRoot !== details.executionRoot) {
     throw new Error('candidate identity differs from the selected live execution');
   }
@@ -95,10 +100,32 @@ export async function publishExecutionCopy({ specPath, slice, candidateRoot }) {
   const before = new Map(marker.source.map((entry) => [entry.path, entry]));
   const after = new Map(candidate.map((entry) => [entry.path, entry]));
   const changed = [...new Set([...before.keys(), ...after.keys()])].filter((key) => JSON.stringify(before.get(key)) !== JSON.stringify(after.get(key)));
-  if (changed.length !== 1 || changed[0] !== details.taskRelative) {
-    throw new Error(`candidate must change only the selected task artifact; changed: ${changed.join(', ') || 'none'}`);
-  }
+  const selectedPlan = path.join('plans', `${slice}.md`);
+  const assertScope = async proposedRoot => {
+    const proposed = await manifest(proposedRoot); const proposedMap = new Map(proposed.map(entry => [entry.path, entry]));
+    const changes = [...new Set([...before.keys(), ...proposedMap.keys()])].filter(key => JSON.stringify(before.get(key)) !== JSON.stringify(proposedMap.get(key)));
+    if (changes.some(relative => ![details.taskRelative, selectedPlan].includes(relative)) || !changes.includes(details.taskRelative)) throw new Error('execution candidate changes artifacts outside selected operational delivery');
+    if (changes.includes(selectedPlan)) {
+      const old = parsePreparationArtifact(await fs.readFile(path.join(details.executionRoot, selectedPlan), 'utf8'), selectedPlan);
+      const next = parsePreparationArtifact(await fs.readFile(path.join(proposedRoot, selectedPlan), 'utf8'), selectedPlan);
+      delete old.sections['Expected Files']; delete next.sections['Expected Files'];
+      if (JSON.stringify(old) !== JSON.stringify(next)) throw new Error('execution changed protected detailed Plan');
+    }
+    assertOperationalTaskHistory(await fs.readFile(details.task, 'utf8'), await fs.readFile(path.join(proposedRoot, details.taskRelative), 'utf8'), marker.owner, marker.owner.operation);
+  };
+  await assertScope(candidateExecutionRoot);
   const validation = await validateExecutionCandidate(specPath, candidateExecutionRoot);
+  if (!['EXECUTE_SLICE', 'APPLY_FINDINGS'].includes(marker.owner.operation)) throw new Error('execution publisher requires implementation ownership');
+  if (['RUNNER_INITIALIZATION_BLOCKED', 'RUNNER_RESULT_BLOCKED'].includes(validation.state)) terminal = false;
+  if (terminal) {
+    const text = await fs.readFile(path.join(candidateExecutionRoot, details.taskRelative), 'utf8');
+    const heading = marker.owner.operation === 'EXECUTE_SLICE' ? 'Implementation Test Evidence' : 'Findings Test Evidence';
+    const body = parsePreparationArtifact(text, details.taskRelative).sections[heading];
+    const latest = body.split(/(?=^### )/mu).filter(value => value.trim()).at(-1) ?? '';
+    const status = latest.match(/^- Status: (TESTS_FAIL|TESTS_PASS|TESTS_NOT_APPLICABLE|BLOCKED)$/mu)?.[1];
+    const round = latest.match(/^- Automatic check round: ([123])\/3$/mu)?.[1];
+    if (!status || (status === 'TESTS_FAIL' && round !== '3')) throw new Error('terminal publication requires the bounded operation result; checklist-only update must keep ownership');
+  }
   if (validation.status === 'BLOCKED') throw new Error(`candidate validation blocked: ${validation.reason ?? 'unknown'}`);
   const managed = assertManagedAgreement({ specPath, slice });
   if (managed?.operation === 'EXECUTE_SLICE' && validation.state === 'EXECUTION_STARTED') {
@@ -114,16 +141,26 @@ export async function publishExecutionCopy({ specPath, slice, candidateRoot }) {
       throw new Error(`EXECUTE_SLICE candidate remains EXECUTION_STARTED without publishable runner evidence (${status ?? 'missing status'}); refusing publication`);
     }
   }
-  const candidateTask = path.join(candidateExecutionRoot, details.taskRelative);
-  const temporary = `${details.task}.stnl-publish-${process.pid}.tmp`;
-  try {
-    await fs.copyFile(candidateTask, temporary, fs.constants.COPYFILE_EXCL);
-    await fs.rename(temporary, details.task);
-  } finally {
-    await fs.rm(temporary, { force: true });
-  }
-  await fs.rm(root, { recursive: true, force: true });
-  return Object.freeze({ status: 'PASS', liveTaskArtifact: details.task, state: validation.state });
+  if (owner && JSON.stringify(owner) !== JSON.stringify(marker.owner)) throw new Error('copy owner differs');
+  const publication = await publishExecutionUpdate({ workspace: details.resolved, candidateExecutionRoot,
+    expectedTree: marker.tree, expectedActivationId: marker.expectedActivationId, owner: marker.owner, terminal, checkpoint,
+    readActivated: () => readExecutionActivation(specPath),
+    validateCandidate: async root => { await validateExecutionCandidate(specPath, root); return preparationAuthorityAt(root); },
+    authorizeDiff: async staged => {
+      await assertScope(staged);
+      if (JSON.stringify(await manifest(details.executionRoot)) !== JSON.stringify(marker.source)) throw new Error('live source changed under lock');
+    } });
+  // Confirmed publication is independent of temporary candidate cleanup.
+  try { await fs.rm(root, { recursive: true, force: true }); }
+  catch (error) { return { status: 'PASS', state: validation.state, ...publication, cleanup: 'pending', cleanupDiagnostics: [error.message] }; }
+  return { status: 'PASS', state: validation.state, liveTaskArtifact: details.task, ...publication };
+}
+
+export async function prepareExecutionCopy({ specPath, slice, owner = null }) {
+  const workspace = await resolveExecutionWorkspace(specPath);
+  const managed = assertManagedAgreement({ specPath, slice });
+  const admittedOwner = owner ?? managed?.owner ?? await readOperationOwner(specPath);
+  return withExecutionPublicationLock(workspace, () => prepareExecutionCopyLocked({ specPath, slice, owner: admittedOwner }));
 }
 
 async function main(argv) {

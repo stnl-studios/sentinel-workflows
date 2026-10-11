@@ -132,7 +132,7 @@ async function measurement(runId) {
         finalizer: UNAVAILABLE, finalizerExitCode: UNAVAILABLE, finalTestsPassed: UNAVAILABLE, finalTestCommand: UNAVAILABLE, finalTestExitCode: UNAVAILABLE, profileMismatches: UNAVAILABLE,
         provider: UNAVAILABLE, authMode: UNAVAILABLE, isolation: UNAVAILABLE, findingsCycles: UNAVAILABLE, recoveryOperations: 0,
         extraRunnerTurns: 0, repeatedReviewRounds: 0, durationMs: UNAVAILABLE, slices: UNAVAILABLE,
-        operationCounts: Object.fromEntries(['EXECUTE_SLICE', 'VALIDATE_SLICE', 'APPLY_FINDINGS', 'REPLAN', 'SPEC_RESUME', 'REVIEW_PLAN', 'REVIEW_TASKS'].map((key) => [key, 0])),
+        operationCounts: Object.fromEntries(['EXECUTE_SLICE', 'VALIDATE_SLICE', 'APPLY_FINDINGS', 'REPLAN', 'SPEC_RESUME', 'PLAN', 'REVIEW_PLAN', 'MATERIALIZE_TASKS', 'REVIEW_TASKS'].map((key) => [key, 0])),
         operationsBySlice: {}, operationDurations: [], repeatedAttemptsBySlice: {},
         telemetry: { coverage: { main: '0/0', runner: '0/0' }, main: UNAVAILABLE, runner: UNAVAILABLE } });
       continue;
@@ -146,7 +146,7 @@ async function measurement(runId) {
       || (summaryCase.mainTurns !== undefined && summaryCase.mainTurns !== state.mainTurns) || (summaryCase.runnerTurns !== undefined && summaryCase.runnerTurns !== state.runnerTurns)) {
       throw new Error(`case ${id} summary differs from raw state or operation journal`);
     }
-    const counts = Object.fromEntries(['EXECUTE_SLICE', 'VALIDATE_SLICE', 'APPLY_FINDINGS', 'REPLAN', 'SPEC_RESUME', 'REVIEW_PLAN', 'REVIEW_TASKS'].map((k) => [k, events.filter((e) => e.operation === k).length]));
+    const counts = Object.fromEntries(['EXECUTE_SLICE', 'VALIDATE_SLICE', 'APPLY_FINDINGS', 'REPLAN', 'SPEC_RESUME', 'PLAN', 'REVIEW_PLAN', 'MATERIALIZE_TASKS', 'REVIEW_TASKS'].map((k) => [k, events.filter((e) => e.operation === k).length]));
     const runnerBearingOperations = events.filter((e) => (e.childDispatches ?? []).some((d) => d.role === 'stnl_validation_runner')).length;
     const bySlice = {};
     for (const e of events) if (e.slice) {
@@ -197,6 +197,10 @@ async function measurement(runId) {
       isolation: state.isolation?.filesystemSandbox ?? UNAVAILABLE,
       findingsCycles: raw?.operations?.findingsCycles ?? UNAVAILABLE, recoveryOperations: counts.APPLY_FINDINGS + counts.REPLAN + counts.SPEC_RESUME,
       extraRunnerTurns: numeric(state.runnerTurns) === null ? UNAVAILABLE : Math.max(0, state.runnerTurns - runnerBearingOperations),
+      jointPreparationRounds: counts.PLAN + counts.REPLAN,
+      jointReviewRounds: counts.REVIEW_PLAN,
+      historicalTaskPreparationRounds: counts.MATERIALIZE_TASKS,
+      historicalTaskReviewRounds: counts.REVIEW_TASKS,
       repeatedReviewRounds: Math.max(0, counts.REVIEW_PLAN - 1) + Math.max(0, counts.REVIEW_TASKS - 1),
       durationMs: state.startedAt && state.endedAt ? Date.parse(state.endedAt) - Date.parse(state.startedAt) : UNAVAILABLE,
       slices: raw?.decomposition?.slices ?? UNAVAILABLE, operationCounts: counts, operationsBySlice: bySlice,

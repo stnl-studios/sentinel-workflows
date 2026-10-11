@@ -57,7 +57,10 @@ for (const scenario of ['execute-scope-subset', 'execute-scope-correction', 'exe
     const candidate = await fs.readFile(binding.candidateTaskArtifact, 'utf8');
     assert.equal(candidate.match(/## Changed Areas\n\n([\s\S]*?)(?=\n## )/u)[1].trim().split('\n').length, 6);
     assert.equal((await fs.readdir(path.join(caseRoot, 'tmp'))).filter(name => name.includes('-execute_slice-') && name.endsWith('.started.json')).length, 0);
-
+    const activeFile = path.join(caseRoot, 'tmp/stnl-runner-broker/active.json');
+    const active = JSON.parse(await fs.readFile(activeFile));
+    fixture.expectedPendingNoDispatch = { activeFile, sequence: record.sequence,
+      operationAttemptId: active.officialPreflight.owner.operationAttemptId };
   } else if (scenario === 'execute-scope-correction') {
     const observed = JSON.parse(await fs.readFile(path.join(fixture.root, '.offline-execute-scope-correction.json')));
     assert.equal(observed.firstExit, 1);

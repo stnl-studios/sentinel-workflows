@@ -6,7 +6,7 @@ status: not_applicable
 read_when: EXECUTE_SLICE, APPLY_FINDINGS, VALIDATE_SLICE, REPLAN materialization, or terminal runtime inspection interprets operational records.
 do_not_read_when: Only a pristine task is being rendered or reviewed.
 contains: Check evidence, findings, divergences, attempts, diff summary, supersession, effective validation base, and lifecycle transitions.
-owner: stnl-task-materializer
+owner: stnl-execution-planner
 update_policy: Change only when persisted execution-record identity or lifecycle semantics change.
 ```
 
@@ -58,7 +58,7 @@ An active record omits both disposition fields. A resolved record adds only `- R
 
 Every finding created by a `NEEDS_FIX` attempt is born `active`. Every valid later formal `VALIDATE_SLICE` attempt owns deterministic per-finding dispositions. A later `NEEDS_FIX` attempt may resolve fully corrected prior findings, supersede a finding with a new same-kind finding whose origin is strictly later, leave still-failing findings active, and append new active findings. A current `PASS` must atomically resolve or supersede every remaining active blocking finding before completion. Each resolution names a formal attempt strictly later than the origin. `APPLY_FINDINGS`, partial correction, and auxiliary checks never resolve or supersede findings.
 
-Only the atomic `MATERIALIZE_TASKS` commit of an approved `REPLAN` may change applicable active divergences to `resolved` or `superseded`. A resolved blocking divergence uses exactly `- Resolution: plan revision <positive integer> committed recovery slice-NN`; that revision and slice must be the committed supersession owner. Supersession points to a new divergence of the same kind. Lifecycle `RESUME` may correct documentary authority but never mutates execution records; `REPLAN` reconciles that corrected authority and owns the execution transition.
+Only the atomic `PLAN/REPLAN` commit of an approved `REPLAN` may change applicable active divergences to `resolved` or `superseded`. A resolved blocking divergence uses exactly `- Resolution: plan revision <positive integer> committed recovery slice-NN`; that revision and slice must be the committed supersession owner. Supersession points to a new divergence of the same kind. Lifecycle `RESUME` may correct documentary authority but never mutates execution records; `REPLAN` reconciles that corrected authority and owns the execution transition.
 
 Only records with `Severity: blocking` and `State: active` block execution, formal validation, completion, or execution close. Resolved and superseded records remain auditable history.
 
@@ -137,7 +137,7 @@ Sentinels are state-specific: an open slice has `Final Result: pending`; absent 
 
 ## Superseded slice terminal record
 
-Only append-only approved-replan materialization writes this terminal result for an open slice:
+Only the joint append-only approved-replan publication writes this terminal result for an open slice:
 
 ```markdown
 ## Final Result
@@ -148,3 +148,8 @@ Only append-only approved-replan materialization writes this terminal result for
 ```
 
 The matching global row is `[x]` with Validation and Result `SUPERSEDED`. This preserves history and satisfies serial progress without claiming a validation `PASS`. A historical `PASS` is never changed to `SUPERSEDED`.
+
+
+### Preparation and operation binding
+
+Every newly serialized implementation check, findings check and formal validation attempt carries `Delivery ID`, `Preparation revision`, `Normative sha256`, `Operation attempt ID` and `Origin activation ID`. Producers derive these from the admitted owner. The semantic runner response does not transcribe them. The publisher requires exact agreement with that owner and preserves prior records byte-for-byte. Preparation revision equals the existing normative Plan revision; origin activation is stable while the current publication CAS token advances. Confirmed terminal publication preserves `lastAttempt` and clears only its matching active ownership; uncertain results retain admission/runner references. These links bind evidence; they do not prove independent judgment or enlarge protected responsibilities.

@@ -22,7 +22,7 @@ O Codex preserva `gpt-5.6-luna` com effort `medium`; o Claude Code preserva `cla
 
 ### Fluxo manual e delegações automáticas
 
-As operações manuais são `PLAN`, `REPLAN` quando uma recuperação explícita exige nova estratégia, `REVIEW_PLAN`, `MATERIALIZE_TASKS`, `REVIEW_TASKS` opcional, `EXECUTE_SLICE`, `VALIDATE_SLICE` e `APPLY_FINDINGS` quando necessário. `REPLAN` exige `REPLAN_REASON`, retorna `REPLAN_DRAFT` e nunca substitui `REVIEW_PLAN` ou `MATERIALIZE_TASKS`. Não existe passo manual adicional de testes.
+As operações manuais são `PLAN`, `REPLAN` quando uma recuperação explícita exige nova estratégia, `REVIEW_PLAN`, `EXECUTE_SLICE`, `VALIDATE_SLICE` e `APPLY_FINDINGS` quando necessário. `REPLAN` exige `REPLAN_REASON`, retorna `REPLAN_DRAFT` e nunca substitui `REVIEW_PLAN`. Não existe passo manual adicional de testes.
 
 O runner aceita exatamente três operações internas, sempre acionadas automaticamente pelo launcher da operação manual:
 
@@ -47,7 +47,7 @@ As três operações que usam o runner possuem launcher específico por platafor
 - Codex: `slice-execute-codex.md`, `slice-apply-findings-codex.md` e `slice-validate-codex.md`.
 - Claude Code: `slice-execute-claude.md`, `slice-apply-findings-claude.md` e `slice-validate-claude.md`.
 
-Copie somente os três launchers da plataforma usada. `execution-plan.md`, `execution-replan.md`, `execution-plan-review.md`, `execution-tasks.md` e `execution-tasks-review.md` continuam compartilhados.
+Copie somente os três launchers da plataforma usada. `execution-plan.md`, `execution-replan.md`, `execution-plan-review.md`  continuam compartilhados.
 
 No Codex, use o agente instalado `stnl_validation_runner` em sessão independente com `fork_turns="none"` quando a API puder selecionar seu tipo. Se a API nativa oferecer somente spawn genérico, crie um agente independente com `fork_turns="none"` e exija que ele carregue antes de qualquer leitura do escopo ou check o `developer_instructions` completo de `~/.codex/agents/stnl_validation_runner.toml`. No Claude Code, prefira `@agent-stnl-validation-runner`; para um spawn genérico independente, carregue o corpo completo de `~/.claude/agents/stnl-validation-runner.md`. Essa alternativa é um agente independente com contrato carregado, não uma seleção do tipo registrado. Ler `developer_instructions` de um arquivo fornece instruções de tarefa, sem prioridade de developer nem a mesma garantia de aplicação do agente registrado. Instrua o agente genérico a não editar código nem artefatos de execução; sem independência ou contrato íntegro, bloqueie. O contexto principal não executa checks.
 

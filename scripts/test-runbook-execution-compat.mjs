@@ -6,7 +6,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { inspectWorkspace } from "../skills/workflows/stnl-spec-test-runbook/runtime/lib/core.mjs";
-import { computeRequirementsAuthority, inspectExecutionState } from "../skills/workflows/stnl-task-materializer/runtime/execution-state.mjs";
+import { computeRequirementsAuthority, inspectExecutionState } from "../skills/workflows/stnl-execution-planner/runtime/execution-state.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const REPRESENTATIVE = path.join(ROOT, "skills/workflows/stnl-spec-test-runbook/runtime/test/fixtures/representative");

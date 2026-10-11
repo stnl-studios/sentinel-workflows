@@ -1,13 +1,16 @@
 #!/usr/bin/env node
+import { assertExecutionAttempt, assertOwnedOperationalCandidate, readOwnedFile, executionLockIdentity, withExecutionPublicationLock } from './execution-publication.mjs';
 
 import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { approvedDetailedPlanIncludedScope, closedPlanFileTargets, inspectExecutionState,
-  resolveExecutionWorkspace } from "./execution-state.mjs";
+import { inspectExecutionState,
+  resolveExecutionWorkspace, readExecutionActivation } from "./execution-state.mjs";
 import { resolveRunnerCommandEvents } from "./runner-command-events.mjs";
 import { assertManagedRunnerReceipt } from "./managed-slice-context.mjs";
+
+import { preparationAreaClaims, parseStrictJson } from './execution-preparation.mjs';
 
 function fail(message) {
   throw new Error(message);
@@ -41,6 +44,7 @@ async function requireAcceptedRunnerResult(options) {
   const context = await assertManagedRunnerReceipt({ ...options, allowRejected: true });
   if (options.receiptFile === undefined) return;
   const receipt = JSON.parse(await fs.readFile(options.receiptFile, "utf8"));
+  if (options.response !== undefined && options.response !== await fs.readFile(options.semanticResponseFile, "utf8")) fail("semantic response differs from captured runner bytes");
   if (receipt.status === "RUNNER_RESULT_BLOCKED") {
     if (context === null) fail("rejected runner diagnostics require a matching active managed invocation");
     // Identity and conclusion passed; semantic rejection can produce only a
@@ -48,6 +52,7 @@ async function requireAcceptedRunnerResult(options) {
     throw new RunnerSemanticResultError(options.operation,
       Object.assign(new Error(receipt.captureFailure), { code: receipt.captureFailureCode }));
   }
+  return receipt;
 }
 
 export function recoverableRunnerResultDiagnostic(error) {
@@ -138,6 +143,60 @@ function claimFor(taskArtifact, physicalTarget) {
   return normalizedRelative(claim, "task-relative claim");
 }
 
+async function proveRemoval({ workspaceRoot, taskArtifact, claim, expected = null }) {
+  const target = path.resolve(path.dirname(taskArtifact), claim);
+  await rejectWorkspaceSymlinkComponents(target, workspaceRoot);
+  if (!inside(target, workspaceRoot) || await fs.lstat(target).catch(error => { if (error.code === 'ENOENT') return null; throw error; })) fail('removal requires a currently absent contained file');
+  let previous = await capturedBeforeRemoval({ workspaceRoot, taskArtifact, claim, expected });
+  if (previous === null) {
+    const executionRoot = path.dirname(path.dirname(taskArtifact));
+    let marker = null;
+    for (const file of [`${executionRoot}.copy.json`, `${path.dirname(executionRoot)}.copy.json`, `${executionRoot}.publication.json`]) {
+      try { marker = parseStrictJson((await readOwnedFile(file)).bytes.toString('utf8')); break; }
+      catch (error) { if (error.code !== 'ENOENT') throw error; }
+    }
+    const local = (await readOwnedFile(taskArtifact)).bytes.toString('utf8');
+    const reference = local.match(/^- Requirements source: `([^`]+)`$/mu)?.[1];
+    if (!marker && !reference) fail('removal proof requires canonical requirements authority');
+    const specPath = marker?.specPath ?? path.resolve(path.dirname(taskArtifact), reference);
+    const official = await resolveExecutionWorkspace(specPath);
+    if (marker) await assertPrivateTask(taskArtifact);
+    else if (taskArtifact !== path.join(official.executionRoot, 'tasks', path.basename(taskArtifact))) fail('removal proof must come from official history');
+    await readExecutionActivation(specPath);
+    const historical = (await readOwnedFile(path.join(official.executionRoot, 'tasks', path.basename(taskArtifact)))).bytes.toString('utf8');
+    const escaped = claim.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+    for (const heading of ['Implementation Test Evidence', 'Findings Test Evidence']) {
+      const section = sectionBody(historical, heading);
+      for (const state of section.matchAll(/^- Tested state:\n((?:  - [^\n]+\n?)+)/gmu)) {
+        previous = [...state[1].matchAll(new RegExp('^  - `' + escaped + '` \\| (sha256:[a-f0-9]{64})$', 'gmu'))].at(-1)?.[1] ?? previous;
+      }
+      // A first removal has no earlier published SHA. Its terminal record is
+      // the authority anchor for the retained actual before capture, so later
+      // formal consumers can still verify it after ownership has closed.
+      for (const record of section.split(/(?=^### (?:implementation|findings)-check-[0-9]+$)/mu)) {
+        if (!record.includes(`  - \`${claim}\` | REMOVED`)) continue;
+        const operationAttemptId = record.match(/^- Operation attempt ID: ([a-f0-9-]+)$/mu)?.[1];
+        if (!/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/u.test(operationAttemptId ?? '')) continue;
+        const { lockPath } = await executionLockIdentity(official);
+        const directory = `${lockPath}.before-${operationAttemptId}`;
+        const files = await fs.readdir(directory).catch(error => { if (error.code === 'ENOENT') return []; throw error; });
+        for (const name of files.filter(name => name.startsWith(removalCapturePrefix(claim) + '-'))) {
+          const capture = parseStrictJson((await readOwnedFile(path.join(directory, name))).bytes.toString('utf8'));
+          const fields = [['deliveryId','Delivery ID'],['preparationRevision','Preparation revision'],['normativeSha256','Normative sha256'],['operationAttemptId','Operation attempt ID'],['originActivationId','Origin activation ID']];
+          if (capture.taskArtifact !== path.join(official.executionRoot, 'tasks', path.basename(taskArtifact))
+            || capture.workspace !== workspaceRoot || capture.path !== claim
+            || !/^sha256:[a-f0-9]{64}$/u.test(capture.previousSha256)
+            || name !== `${removalCapturePrefix(claim)}-${capture.previousSha256.slice(7)}.json`
+            || fields.some(([key,label]) => !record.includes(`- ${label}: ${capture.owner?.[key]}\n`))) fail('published removal before capture binding differs');
+          if (expected === null || expected === capture.previousSha256) previous = capture.previousSha256;
+        }
+      }
+    }
+  }
+  if (previous === null || (expected !== null && expected !== previous)) fail('absent future file is not proved removal');
+  return previous;
+}
+
 async function canonicalEvidenceEntries({ workspace, taskArtifact, targets = [], removed = [] }) {
   if (!Array.isArray(targets) || !Array.isArray(removed)) fail("targets and removed must be arrays");
   if (targets.length === 0 && removed.length === 0) fail("at least one semantic evidence target is required");
@@ -170,6 +229,7 @@ async function canonicalEvidenceEntries({ workspace, taskArtifact, targets = [],
     const resolved = path.resolve(path.dirname(canonicalTask), claim);
     if (!inside(resolved, workspaceRoot)) fail(`removed claim escapes workspace: ${claim}`);
     if (claims.has(claim)) fail(`duplicate task-relative claim: ${claim}`);
+    await proveRemoval({workspaceRoot,taskArtifact:canonicalTask,claim});
     claims.add(claim);
     entries.push({ claim, value: "REMOVED" });
   }
@@ -178,7 +238,7 @@ async function canonicalEvidenceEntries({ workspace, taskArtifact, targets = [],
 
 // Capture before control returns to the author. The producer may select a
 // subset later, but it must never read the workspace to reconstruct this round.
-export async function captureRunnerTestedState({ workspace, taskArtifact, changedAreas = null }) {
+export async function captureRunnerTestedState({ workspace, taskArtifact, changedAreas = null, removedProofs = [] }) {
   const workspaceRoot = await canonicalWorkspacePath(workspace);
   if (!inside(taskArtifact, workspaceRoot)) fail("source taskArtifact must belong to workspace");
   const sourceTaskPath = await regularFile(taskArtifact, "source taskArtifact", workspaceRoot);
@@ -190,38 +250,94 @@ export async function captureRunnerTestedState({ workspace, taskArtifact, change
   if (!Array.isArray(claims) || claims.some((claim) => typeof claim !== "string")) {
     fail("runner changedAreas must be a path array");
   }
-  let expected;
-  const targets = [];
-  const removed = [];
+  const approvedTargets = await canonicalApprovedTargets({ workspaceRoot, taskArtifact: sourceTaskPath, taskText });
+  const targets = []; const removed = [];
   for (const raw of [...new Set(claims)]) {
-    const claim = normalizedRelative(raw, "runner changed area");
-    const taskCandidate = path.resolve(path.dirname(sourceTaskPath), claim);
-    const workspaceCandidate = path.resolve(workspaceRoot, claim);
-    const taskPhysical = inside(taskCandidate, workspaceRoot)
-      ? await existingPhysicalCandidate(taskCandidate, "runner task-relative target", workspaceRoot) : null;
-    const workspacePhysical = taskCandidate === workspaceCandidate ? taskPhysical
-      : inside(workspaceCandidate, workspaceRoot)
-        ? await existingPhysicalCandidate(workspaceCandidate, "runner workspace-relative target", workspaceRoot) : null;
-    if (taskPhysical !== null && workspacePhysical !== null && taskPhysical !== workspacePhysical) {
-      fail(`runner changed area is ambiguous: ${claim}`);
+    const claim = await canonicalizeScopeClaim({ workspaceRoot, taskArtifact: sourceTaskPath, approvedTargets, raw, heading: 'runner changed area' });
+    const physical = await existingPhysicalCandidate(path.resolve(path.dirname(sourceTaskPath), claim), 'runner task-relative target', workspaceRoot);
+    if (physical) targets.push(physical);
+    else {
+      const proof = removedProofs.find(entry => entry.path === claim);
+      await proveRemoval({workspaceRoot,taskArtifact:sourceTaskPath,claim,expected:proof?.previousSha256 ?? null});
+      removed.push(claim);
     }
-    const physical = taskPhysical ?? workspacePhysical;
-    if (physical !== null) {
-      if (!inside(physical, workspaceRoot)) fail(`runner changed area escapes workspace: ${claim}`);
-      targets.push(physical);
-      continue;
-    }
-    expected ??= new Set(checklistExpectedClaims(taskText));
-    const missing = expected.has(claim) ? taskCandidate : workspaceCandidate;
-    if (!inside(missing, workspaceRoot)) fail(`runner removed area escapes workspace: ${claim}`);
-    const parent = await fs.realpath(path.dirname(missing));
-    if (!inside(parent, workspaceRoot)) fail(`runner removed area escapes workspace: ${claim}`);
-    removed.push(claimFor(sourceTaskPath, missing));
   }
   const entries = claims.length === 0 ? [] : await canonicalEvidenceEntries({
     workspace: workspaceRoot, taskArtifact: sourceTaskPath, targets, removed,
   });
+  await retainBeforeRemoval({ workspaceRoot, taskArtifact: sourceTaskPath, entries });
   return { workspace: workspaceRoot, sourceTaskPath, entries: entries.map(({ claim, value }) => ({ path: claim, value })) };
+}
+
+async function removalCaptureAuthority(taskArtifact) {
+  const executionRoot = path.dirname(path.dirname(taskArtifact));
+  let specPath;
+  for (const file of [`${executionRoot}.copy.json`, `${path.dirname(executionRoot)}.copy.json`, `${executionRoot}.publication.json`]) {
+    try {
+      const marker = parseStrictJson((await readOwnedFile(file)).bytes.toString('utf8'));
+      await assertPrivateTask(taskArtifact); specPath = marker.specPath; break;
+    } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  }
+  if (!specPath) {
+    const text = (await readOwnedFile(taskArtifact)).bytes.toString('utf8');
+    const reference = text.match(/^- Requirements source: `([^`]+)`$/mu)?.[1];
+    if (!reference) fail('capture requires canonical requirements authority');
+    specPath = path.resolve(path.dirname(taskArtifact), reference);
+  }
+  const workspace = await resolveExecutionWorkspace(specPath);
+  const officialTask = path.join(workspace.executionRoot, 'tasks', path.basename(taskArtifact));
+  if (executionRoot === workspace.executionRoot && taskArtifact !== officialTask) fail('capture task identity differs');
+  const owner = (await readExecutionActivation(specPath)).activation.activeAttempt;
+  const { lockPath } = await executionLockIdentity(workspace);
+  const directory = owner ? `${lockPath}.before-${owner.operationAttemptId}` : null;
+  return { workspace, specPath, officialTask, owner, directory };
+}
+
+const removalCapturePrefix = claim => createHash('sha256').update(claim).digest('hex');
+
+async function retainBeforeRemoval({ workspaceRoot, taskArtifact, entries }) {
+  const authority = await removalCaptureAuthority(taskArtifact);
+  if (!authority.owner) return; // Historical read-only capture remains useful.
+  await withExecutionPublicationLock(authority.workspace, async () => {
+    assertExecutionAttempt((await readExecutionActivation(authority.specPath)).activation, authority.owner);
+    await fs.mkdir(authority.directory, { mode: 0o700 }).catch(error => { if (error.code !== 'EEXIST') throw error; });
+    const metadata = await fs.lstat(authority.directory);
+    if (!metadata.isDirectory() || metadata.isSymbolicLink()) fail('unsafe before-removal capture directory');
+    for (const entry of entries.filter(entry => entry.value.startsWith('sha256:'))) {
+      const target = path.resolve(path.dirname(taskArtifact), entry.claim);
+      const observed = await readOwnedFile(await regularFile(target, 'before-removal file', workspaceRoot));
+      if (`sha256:${createHash('sha256').update(observed.bytes).digest('hex')}` !== entry.value) fail('file changed during before-removal capture');
+      const { runner: _runner, ...captureOwner } = authority.owner;
+      const record = { owner: captureOwner, taskArtifact: authority.officialTask, workspace: workspaceRoot, path: entry.claim, previousSha256: entry.value };
+      const file = path.join(authority.directory, `${removalCapturePrefix(entry.claim)}-${entry.value.slice(7)}.json`);
+      const bytes = JSON.stringify(record, null, 2) + '\n';
+      try { await fs.writeFile(file, bytes, { flag: 'wx', mode: 0o600 }); }
+      catch (error) {
+        if (error.code !== 'EEXIST' || (await readOwnedFile(file)).bytes.toString('utf8') !== bytes) throw error;
+      }
+    }
+  });
+}
+
+async function capturedBeforeRemoval({ workspaceRoot, taskArtifact, claim, expected }) {
+  const authority = await removalCaptureAuthority(taskArtifact);
+  if (!authority.owner || authority.owner.slice !== path.basename(taskArtifact, '.md')) return null;
+  const files = await fs.readdir(authority.directory).catch(error => { if (error.code === 'ENOENT') return []; throw error; });
+  for (const name of files.filter(name => name.startsWith(removalCapturePrefix(claim) + '-')).sort()) {
+    const record = parseStrictJson((await readOwnedFile(path.join(authority.directory, name))).bytes.toString('utf8'));
+    assertExecutionAttempt((await readExecutionActivation(authority.specPath)).activation, record.owner);
+    if (record.taskArtifact !== authority.officialTask || record.workspace !== workspaceRoot || record.path !== claim
+      || !/^sha256:[a-f0-9]{64}$/u.test(record.previousSha256)
+      || name !== `${removalCapturePrefix(claim)}-${record.previousSha256.slice(7)}.json`) fail('before-removal capture binding differs');
+    if (expected === null || expected === record.previousSha256) return record.previousSha256;
+  }
+  return null;
+}
+
+export async function resolveCapturedRunnerCommands(options, nativeCommands) {
+  const receipt = options.receiptFile ? JSON.parse((await readOwnedFile(options.receiptFile)).bytes.toString('utf8')) : null;
+  if (receipt?.transport === 'native') return nativeCommands;
+  return resolveRunnerCommandEvents(options);
 }
 
 // Validate prospective scope before allocating a runner turn. Execution edits
@@ -476,7 +592,28 @@ export async function serializeRunnerEvidence({ workspace, taskArtifact, targets
   return entries.map(({ claim, value }) => `  - \`${claim}\` | ${value}`).join("\n");
 }
 
-export async function serializeRunnerRecord({ workspace, taskArtifact, targets = [], removed = [], capturedEntries = null, commands = [], filelessReason = null, allowEmptyCommands = false }) {
+async function evidenceBinding(taskArtifact, evidenceOwner = null) {
+  let specPath;
+  const executionRoot = path.dirname(path.dirname(taskArtifact));
+  for (const root of [executionRoot, path.dirname(executionRoot)]) {
+    const marker = await fs.readFile(`${root}.copy.json`, 'utf8').then(parseStrictJson).catch(error => { if (error.code === 'ENOENT') return null; throw error; });
+    if (marker) { specPath = marker.specPath; break; }
+  }
+  if (!specPath) {
+    const text = await fs.readFile(taskArtifact, 'utf8');
+    const source = text.match(/^- Requirements source: `([^`]+)`$/mu)?.[1];
+    if (!source) fail('evidence requires an existing requirements reference');
+    specPath = path.resolve(path.dirname(taskArtifact), source);
+  }
+  const activated = await readExecutionActivation(specPath);
+  const owner = activated.activation.activeAttempt;
+  if (!owner || owner.slice !== path.basename(taskArtifact, '.md')) fail('evidence requires an admitted operation owner');
+  if (evidenceOwner) { assertExecutionAttempt(activated.activation, evidenceOwner); }
+  const origin = evidenceOwner ?? owner;
+  return `- Delivery ID: ${origin.deliveryId}\n- Preparation revision: ${origin.preparationRevision}\n- Normative sha256: ${origin.normativeSha256}\n- Operation attempt ID: ${origin.operationAttemptId}\n- Origin activation ID: ${origin.originActivationId}`;
+}
+
+export async function serializeRunnerRecord({ workspace, taskArtifact, targets = [], removed = [], capturedEntries = null, evidenceOwner = null, commands = [], filelessReason = null, allowEmptyCommands = false }) {
   const hasFileBackedState = capturedEntries !== null ? capturedEntries.length !== 0 : targets.length !== 0 || removed.length !== 0;
   let testedState;
   if (hasFileBackedState) {
@@ -490,7 +627,8 @@ export async function serializeRunnerRecord({ workspace, taskArtifact, targets =
   const serializedCommands = serializeCommands(commands);
   if (serializedCommands.length === 0 && !allowEmptyCommands) fail("at least one executed command is required");
   const commandBlock = serializedCommands.length === 0 ? "- Commands: none" : `- Commands:\n${serializedCommands}`;
-  return `${hasFileBackedState ? `- Tested state:\n${testedState}` : testedState}\n${commandBlock}`;
+  const binding = await evidenceBinding(taskArtifact, evidenceOwner);
+  return `${binding}\n${hasFileBackedState ? `- Tested state:\n${testedState}` : testedState}\n${commandBlock}`;
 }
 
 export async function serializeRunnerManifest({ workspace, taskArtifact, targets = [], removed = [], commands = [], filelessReason = null }) {
@@ -808,75 +946,30 @@ async function existingPhysicalCandidate(candidate, label, workspaceRoot) {
 }
 
 async function canonicalApprovedTargets({ workspaceRoot, taskArtifact, taskText }) {
-  const targets = new Map();
-  const directories = [];
-  for (const raw of checklistExpectedClaims(taskText)) {
-    const candidate = path.resolve(path.dirname(taskArtifact), raw);
-    if (!inside(candidate, workspaceRoot)) fail(`Checklist expected area escapes workspace: ${raw}`);
+  const areas = preparationAreaClaims(sectionBody(taskText, 'Authorized Areas'));
+  const targets = new Map(); const directories = [];
+  for (const area of areas) {
+    const candidate = path.resolve(path.dirname(taskArtifact), area.path);
     await rejectWorkspaceSymlinkComponents(candidate, workspaceRoot);
-    const metadata = await fs.lstat(candidate).catch((error) => {
-      if (error?.code === "ENOENT") return null;
-      throw error;
-    });
-    if (metadata?.isDirectory()) {
-      directories.push(candidate);
-      continue;
-    }
-    const physical = await existingPhysicalCandidate(candidate, `Checklist expected area ${raw}`, workspaceRoot) ?? candidate;
-    if (physical === candidate && !inside(await fs.realpath(path.dirname(candidate)), workspaceRoot)) {
-      fail(`Checklist expected area escapes workspace: ${raw}`);
-    }
-    if (!inside(physical, workspaceRoot)) fail(`Checklist expected area escapes workspace: ${raw}`);
-    targets.set(physical, raw);
-  }
-  if (directories.length !== 0) {
-    const planPath = path.resolve(path.dirname(taskArtifact), "../plans", path.basename(taskArtifact));
-    const canonicalPlan = await regularFile(planPath, "approved detailed plan", workspaceRoot);
-    const planText = await fs.readFile(canonicalPlan, "utf8");
-    const included = approvedDetailedPlanIncludedScope(planText, path.basename(taskArtifact, ".md"));
-    for (const relative of closedPlanFileTargets(included)) {
-      const candidate = path.resolve(workspaceRoot, relative);
-      if (!directories.some((directory) => inside(candidate, directory))) continue;
-      const physical = await existingPhysicalCandidate(candidate, `approved file ${relative}`, workspaceRoot) ?? candidate;
-      if (physical === candidate && !inside(await fs.realpath(path.dirname(candidate)), workspaceRoot)) {
-        fail(`approved file escapes workspace: ${relative}`);
-      }
-      targets.set(physical, relative);
-    }
-    if (directories.some((directory) => ![...targets.keys()].some((target) => inside(target, directory)))) {
-      fail("directory expected area has no closed file list in the approved detailed plan");
-    }
+    if (area.kind === 'directory') directories.push(candidate);
+    else targets.set(candidate, area.path);
   }
   return { targets, directories };
 }
 
 async function canonicalizeScopeClaim({ workspaceRoot, taskArtifact, approvedTargets, raw, heading }) {
   const claim = normalizedRelative(raw, `${heading} path`);
-  const taskBasis = path.resolve(path.dirname(taskArtifact), claim);
-  const workspaceBasis = path.resolve(workspaceRoot, claim);
-  const taskPhysical = inside(taskBasis, workspaceRoot)
-    ? await existingPhysicalCandidate(taskBasis, `${heading} task-relative claim ${claim}`, workspaceRoot) : null;
-  const workspacePhysical = taskBasis === workspaceBasis
-    ? taskPhysical
-    : inside(workspaceBasis, workspaceRoot)
-      ? await existingPhysicalCandidate(workspaceBasis, `${heading} workspace-relative claim ${claim}`, workspaceRoot) : null;
-  if (taskPhysical !== null && workspacePhysical !== null && taskPhysical !== workspacePhysical) {
-    fail(`${heading} claim is ambiguous across task and workspace bases: ${claim}`);
-  }
-  const physical = taskPhysical ?? workspacePhysical;
-  if (physical === null) {
-    const missing = approvedTargets.targets.has(taskBasis) ? taskBasis
-      : approvedTargets.targets.has(workspaceBasis) ? workspaceBasis : null;
-    if (missing === null) fail(`${heading} claim does not resolve to an approved target: ${claim}`);
-    if (!inside(await fs.realpath(path.dirname(missing)), workspaceRoot)) fail(`${heading} claim escapes workspace: ${claim}`);
-    return claimFor(taskArtifact, missing);
-  }
-  if (!inside(physical, workspaceRoot)) fail(`${heading} claim escapes workspace: ${claim}`);
-  if ((taskPhysical === null || approvedTargets.directories.length !== 0)
-    && !approvedTargets.targets.has(physical)) {
-    fail(`${heading} workspace-relative claim is not an approved physical target: ${claim}`);
-  }
-  return path.relative(path.dirname(taskArtifact), physical).split(path.sep).join("/");
+  const physical = path.resolve(path.dirname(taskArtifact), claim);
+  await rejectWorkspaceSymlinkComponents(physical, workspaceRoot);
+  if (!approvedTargets.targets.has(physical) && !approvedTargets.directories.some(directory => inside(physical, directory))) fail(`${heading} is outside authorized areas: ${claim}`);
+  const metadata = await fs.lstat(physical).catch(error => { if (error.code === 'ENOENT') return null; throw error; });
+  if (metadata && (!metadata.isFile() || metadata.isSymbolicLink() || metadata.nlink !== 1)) fail(`${heading} must identify a real single-link file or explicitly proved removal`);
+  return claim;
+}
+
+async function assertPrivateTask(taskArtifact) {
+  return (await assertOwnedOperationalCandidate({ candidateExecutionRoot: path.dirname(path.dirname(taskArtifact)),
+    slice: path.basename(taskArtifact, '.md'), resolveWorkspace: resolveExecutionWorkspace, readActivated: readExecutionActivation })).marker;
 }
 
 async function canonicalizeScopeSection({ workspaceRoot, taskArtifact, taskText, approvedTargets, heading, allowPending = false }) {
@@ -899,6 +992,7 @@ export async function serializeExecutionScopeClaims({ workspace, taskArtifact })
   const workspaceRoot = await canonicalWorkspacePath(workspace);
   const canonicalTask = await regularFile(taskArtifact, "taskArtifact", workspaceRoot);
   if (!inside(canonicalTask, workspaceRoot)) fail("taskArtifact must belong to workspace");
+  await assertPrivateTask(canonicalTask);
   const before = await fs.readFile(canonicalTask, "utf8");
   const approvedTargets = await canonicalApprovedTargets({ workspaceRoot, taskArtifact: canonicalTask, taskText: before });
   const sections = [
@@ -1039,11 +1133,16 @@ async function deriveValidationTargetsFromTask({ workspace, taskArtifact, filele
     !== await regularFile(path.join(state.workspace.executionRoot, "tasks", `${selectedSlice}.md`), "live taskArtifact", workspaceRoot)) {
     fail("inherited superseded paths require the selected live task authority");
   }
-  const targets = [];
+  const targets = []; const removed = [];
   for (const claim of uniqueClaims) {
     const physical = path.resolve(path.dirname(taskArtifact), claim);
     if (!inside(physical, workspaceRoot)) fail(`task claim resolves outside workspace: ${claim}`);
-    const canonical = await regularFile(physical, `task claim ${claim}`, workspaceRoot);
+    const canonical = await existingPhysicalCandidate(physical, `task claim ${claim}`, workspaceRoot);
+    if (canonical === null) {
+      await proveRemoval({ workspaceRoot, taskArtifact, claim });
+      if (inherited.has(claim)) fail('superseded removal requires its original evidence authority');
+      removed.push(claim); continue;
+    }
     if (!inside(canonical, workspaceRoot)) fail(`task claim resolves outside workspace: ${claim}`);
     const historical = inherited.get(claim);
     if (historical !== undefined && `sha256:${createHash("sha256").update(await fs.readFile(canonical)).digest("hex")}` !== historical) {
@@ -1052,7 +1151,7 @@ async function deriveValidationTargetsFromTask({ workspace, taskArtifact, filele
     if (historical !== undefined) inherited.set(claim, { expected: historical, target: canonical });
     targets.push(canonical);
   }
-  return { targets, inherited };
+  return { targets, removed, inherited };
 }
 
 async function deriveExecutionTargetsFromTask({ workspace, taskArtifact }) {
@@ -1079,6 +1178,7 @@ async function deriveExecutionTargetsFromTask({ workspace, taskArtifact }) {
       if (!inside(physical, workspaceRoot) || !inside(await fs.realpath(path.dirname(physical)), workspaceRoot)) {
         fail(`task claim resolves outside workspace: ${claim}`);
       }
+      await proveRemoval({workspaceRoot,taskArtifact,claim});
       removed.push(claim);
     } else {
       if (!inside(canonical, workspaceRoot)) fail(`task claim resolves outside workspace: ${claim}`);
@@ -1117,6 +1217,7 @@ async function populateExecutionCorrectionClaims({ workspace, taskArtifact, oper
   if (operation !== "EXECUTE_SLICE" || round === 1) return;
   const workspaceRoot = await canonicalWorkspacePath(workspace);
   const canonicalTask = await regularFile(taskArtifact, "taskArtifact", workspaceRoot);
+  await assertPrivateTask(canonicalTask);
   const before = await fs.readFile(canonicalTask, "utf8");
   const prior = priorImplementationFailure(before, round - 1);
   const approvedTargets = await canonicalApprovedTargets({ workspaceRoot, taskArtifact: canonicalTask, taskText: before });
@@ -1200,7 +1301,7 @@ function canonicalFindingDispositions(value, label) {
 }
 
 async function serializeCanonicalExecutionCheck({
-  operation, parsed, workspace, taskArtifact, taskText, targets, removed, capturedEntries, testedScope,
+  operation, parsed, workspace, taskArtifact, taskText, targets, removed, capturedEntries, testedScope, evidenceOwner,
 }) {
   const scalar = (label, value) => serializeMarkdownScalar(label, value, EXPLANATORY_EXECUTION_FIELDS.has(label));
   const prefix = operation === "EXECUTE_SLICE" ? "implementation-check" : "findings-check";
@@ -1211,6 +1312,7 @@ async function serializeCanonicalExecutionCheck({
     targets,
     removed,
     capturedEntries,
+    evidenceOwner,
     commands: parsed.Commands,
     filelessReason: parsed.filelessReason ?? null,
     allowEmptyCommands: new Set(["BLOCKED", "TESTS_NOT_APPLICABLE"]).has(parsed.Status),
@@ -1270,20 +1372,21 @@ async function capturedExecutionEntries({ receiptFile, operation, workspace, tas
   }
   const slice = path.basename(taskArtifact, ".md");
   const stem = `${String(receipt.sequence).padStart(3, "0")}-${operation.toLowerCase()}-${slice}-attempt-${receipt.attempt}`;
-  if (receipt.operation !== operation || receipt.slice !== slice
+  if (receipt.transport !== "native" && (receipt.operation !== operation || receipt.slice !== slice
     || !Number.isSafeInteger(receipt.sequence) || receipt.sequence < 1
     || !Number.isSafeInteger(receipt.attempt) || receipt.attempt < 1
     || path.basename(receiptFile) !== `${stem}.receipt.json`
     || path.basename(receipt.eventsPath ?? "") !== `${stem}.events.jsonl`
-    || path.basename(receipt.semanticResponseFile ?? "") !== `${stem}.response.json`) {
+    || path.basename(receipt.semanticResponseFile ?? "") !== `${stem}.response.json`)) {
     fail("captured Tested state attempt identity mismatch");
   }
   const workspaceRoot = await canonicalWorkspacePath(workspace);
   const candidateTask = await regularFile(taskArtifact, "taskArtifact");
   const candidateRoot = path.dirname(path.dirname(path.dirname(candidateTask)));
-  const markerFile = path.join(candidateRoot, ".stnl-execution-copy.json");
+  const markerFile = `${candidateRoot}.copy.json`;
   const marker = await fs.readFile(markerFile, "utf8").then(JSON.parse).catch(() => null);
-  const sourceTaskPath = marker === null ? candidateTask : path.join(marker.executionRoot, "tasks", `${slice}.md`);
+  const sourceTaskPath = receipt.transport === "native" ? (await removalCaptureAuthority(taskArtifact)).officialTask
+    : marker === null ? candidateTask : path.join(marker.executionRoot, "tasks", `${slice}.md`);
   if (marker !== null && marker.slice !== slice) fail("captured Tested state source slice mismatch");
   if (receipt.testedState.workspace !== workspaceRoot
     || receipt.testedState.sourceTaskPath !== sourceTaskPath) {
@@ -1328,13 +1431,14 @@ export async function serializeRunnerExecutionBundleFromResponse({
   if (!new Set(["EXECUTE_SLICE", "APPLY_FINDINGS"]).has(operation)) {
     fail("execution bundle operation must be EXECUTE_SLICE or APPLY_FINDINGS");
   }
-  await requireAcceptedRunnerResult({ operation, slice: path.basename(taskArtifact, '.md'), workspace, receiptFile, semanticResponseFile });
+  const capturedReceipt = await requireAcceptedRunnerResult({ operation, slice: path.basename(taskArtifact, '.md'), workspace, receiptFile, semanticResponseFile, response });
   if (automaticCheckRound !== undefined && receiptFile === undefined) fail("managed round ownership requires a captured receipt");
   const payload = parseCapturedResult(operation, (text, op) => parseSemanticExecutionPayload(text, op, { automaticCheckRound }), response);
+  if (capturedReceipt.transport === 'native' && payload.automaticCheckRound !== `${capturedReceipt.attempt}/3`) fail('native semantic round differs from reserved invocation');
   const mechanicalCommands = receiptFile === undefined ? payload.commands
-    : await resolveRunnerCommandEvents({
+    : await resolveCapturedRunnerCommands({
       receiptFile, semanticResponseFile, operation, eventIds: verificationEventIds ?? null,
-    });
+    }, payload.commands);
   if (mechanicalCommands.length === 0 && !new Set(["BLOCKED", "TESTS_NOT_APPLICABLE"]).has(payload.status)) {
     fail("runner completed no marked verification command");
   }
@@ -1358,7 +1462,7 @@ export async function serializeRunnerExecutionBundleFromResponse({
     parsed["Findings cycle"] = managedFindingsCycle;
   }
   if (operation === "APPLY_FINDINGS" && resolveManagedFindingsCycle === undefined) {
-    if (receiptFile !== undefined) fail("managed APPLY requires sealed findings ownership");
+    if (receiptFile !== undefined && capturedReceipt.transport !== "native") fail("managed APPLY requires sealed findings ownership");
     const attempts = sectionBody(await fs.readFile(taskArtifact, "utf8"), "Validation Attempts")
       .split(/(?=^### attempt-[0-9]{2,}$)/mu).filter(record => record.startsWith("### attempt-"));
     const current = attempts.at(-1);
@@ -1414,6 +1518,7 @@ export async function serializeRunnerExecutionBundleFromResponse({
     capturedEntries,
     taskText,
     testedScope,
+    evidenceOwner: capturedReceipt.owner,
   });
 }
 
@@ -1423,18 +1528,19 @@ export async function insertExecutionEvidenceInCandidate({ taskArtifact, operati
     fail("candidate insertion requires one canonical execution check");
   }
   const canonicalTask = await regularFile(taskArtifact, "candidate taskArtifact");
+  await assertPrivateTask(canonicalTask);
   const executionRoot = path.dirname(path.dirname(canonicalTask));
   const roots = [executionRoot, path.dirname(executionRoot)];
   let candidateRoot = null;
   for (const root of roots) {
     if (!path.basename(root).startsWith(".stnl-execution-copy-")) continue;
-    if (await fs.access(path.join(root, ".stnl-execution-copy.json")).then(() => true).catch(() => false)) {
+    if (await fs.access(`${root}.copy.json`).then(() => true).catch(() => false)) {
       candidateRoot = root;
       break;
     }
   }
   if (candidateRoot === null) fail("evidence insertion requires an owned isolated execution candidate");
-  const markerFile = path.join(candidateRoot, ".stnl-execution-copy.json");
+  const markerFile = `${candidateRoot}.copy.json`;
   await regularFile(markerFile, "candidate marker");
   const marker = JSON.parse(await fs.readFile(markerFile, "utf8"));
   const slice = path.basename(canonicalTask, ".md");
@@ -1495,6 +1601,7 @@ export async function persistMalformedRunnerResultInCandidate({
     fail("malformed-output recovery requires the original deterministic producer rejection");
   }
   const task = await regularFile(taskArtifact, "candidate taskArtifact");
+  await assertPrivateTask(task);
   if (receiptFile === undefined && operation === "VALIDATE_SLICE") {
     fail("native malformed-output recovery is limited to candidate execution checks");
   }
@@ -1519,13 +1626,13 @@ export async function persistMalformedRunnerResultInCandidate({
   const candidateRoot = path.basename(executionRoot).startsWith(".stnl-execution-copy-")
     ? executionRoot : path.dirname(executionRoot);
   if (!path.basename(candidateRoot).startsWith(".stnl-execution-copy-")
-    || !await fs.access(path.join(candidateRoot, ".stnl-execution-copy.json")).then(() => true).catch(() => false)) {
+    || !await fs.access(`${candidateRoot}.copy.json`).then(() => true).catch(() => false)) {
     // VALIDATE_SLICE uses its separately verified candidate boundary.
     if (operation !== "VALIDATE_SLICE") fail("malformed-output recovery requires an owned execution candidate");
   }
   const slice = path.basename(task, ".md");
   if (operation !== "VALIDATE_SLICE") {
-    const markerFile = await regularFile(path.join(candidateRoot, ".stnl-execution-copy.json"), "candidate marker");
+    const markerFile = await regularFile(`${candidateRoot}.copy.json`, "candidate marker");
     const marker = JSON.parse(await fs.readFile(markerFile, "utf8"));
     const expectedTask = path.join(candidateRoot, executionRoot === candidateRoot ? "" : "execution", "tasks", `${slice}.md`);
     const allowedParents = typeof marker.specPath === "string"
@@ -1550,7 +1657,7 @@ export async function persistMalformedRunnerResultInCandidate({
     // Restore only the pre-run scope/checklist, and only with unchanged live
     // identity and no newly persisted evidence. Never fill the missing reason
     // or discard an earlier private check; strict validation still owns it.
-    const markerPath = await regularFile(path.join(candidateRoot, ".stnl-execution-copy.json"), "candidate marker");
+    const markerPath = await regularFile(`${candidateRoot}.copy.json`, "candidate marker");
     const marker = JSON.parse(await fs.readFile(markerPath, "utf8"));
     if (marker.slice !== slice || typeof marker.executionRoot !== "string" || !path.isAbsolute(marker.executionRoot)) {
       fail("malformed-output scope recovery candidate identity mismatch");
@@ -1603,12 +1710,12 @@ export async function prepareRunnerValidationPersistenceFromResponse({
   receiptFile, semanticResponseFile, verificationEventIds,
 }) {
   if (operation !== "VALIDATE_SLICE") fail("semantic validation producer operation must be VALIDATE_SLICE");
-  await requireAcceptedRunnerResult({ operation, slice, workspace, receiptFile, semanticResponseFile });
+  const capturedReceipt = await requireAcceptedRunnerResult({ operation, slice, workspace, receiptFile, semanticResponseFile, response });
   const parsed = parseCapturedResult(operation, parseSemanticValidationPayload, response);
   const mechanicalCommands = receiptFile === undefined ? parsed.commands
-    : await resolveRunnerCommandEvents({
+    : await resolveCapturedRunnerCommands({
       receiptFile, semanticResponseFile, operation, eventIds: verificationEventIds ?? null,
-    });
+    }, parsed.commands);
   if (mechanicalCommands.length === 0 && parsed.status !== "BLOCKED") {
     fail("runner completed no marked verification command");
   }
@@ -1634,13 +1741,13 @@ export async function prepareRunnerValidationPersistenceFromResponse({
     if (reasons.length !== 1) fail("fileless validation requires one reason from current validated execution evidence");
     authoritativeFilelessReason = decodeMarkdownScalar("Fileless reason", reasons[0][1], true);
   }
-  const { targets, inherited } = await deriveValidationTargetsFromTask({
+  const { targets, removed, inherited } = await deriveValidationTargetsFromTask({
     workspace, taskArtifact, filelessReason: authoritativeFilelessReason,
     state: parsed.status === "PASS" ? state : null, selectedSlice: canonicalSliceLabel(String(slice)),
   });
-  const filelessReason = targets.length === 0 ? authoritativeFilelessReason : null;
-  const verifiedScope = targets.length === 0 ? "fileless task state"
-    : await canonicalTestedScope({ workspace, taskArtifact, targets });
+  const filelessReason = targets.length + removed.length === 0 ? authoritativeFilelessReason : null;
+  const verifiedScope = targets.length + removed.length === 0 ? "fileless task state"
+    : await canonicalTestedScope({ workspace, taskArtifact, targets, removed });
   const commands = await canonicalValidationCommands({
     commands: mechanicalCommands,
     specPath,
@@ -1667,9 +1774,9 @@ export async function prepareRunnerValidationPersistenceFromResponse({
     parsed.persistenceSummary,
   ];
   const [responseBlock, testedRecord, formalManifest] = await Promise.all([
-    serializeRunnerResponse({ operation, values, workspace, taskArtifact, targets, commands, filelessReason }),
-    serializeRunnerRecord({ workspace, taskArtifact, targets, commands, filelessReason }),
-    serializeRunnerManifest({ workspace, taskArtifact, targets, commands, filelessReason }),
+    serializeRunnerResponse({ operation, values, workspace, taskArtifact, targets, removed, commands, filelessReason }),
+    serializeRunnerRecord({ workspace, taskArtifact, targets, removed, commands, filelessReason, evidenceOwner: capturedReceipt.owner }),
+    serializeRunnerManifest({ workspace, taskArtifact, targets, removed, commands, filelessReason }),
   ]);
   if (inherited.size !== 0) {
     const recordLines = new Set(testedRecord.split("\n"));
@@ -1693,6 +1800,7 @@ export async function prepareRunnerValidationPersistenceFromResponse({
   const attemptRecord = [
     `### ${attemptId}`,
     "",
+    await evidenceBinding(taskArtifact, capturedReceipt.owner),
     `- Type: ${derivedType}`,
     `- Status: ${parsed.status}`,
     `- HEAD: ${parsed.head}`,

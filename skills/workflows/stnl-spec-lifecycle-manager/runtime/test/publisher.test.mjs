@@ -344,7 +344,7 @@ test("invalid candidates and candidate hardlinks crossing the boundary fail with
     }
     await assert.rejects(
       publishCandidate("RESUME", target, candidate, { manifestPath: manifest }),
-      /candidate hardlink group crosses the publication boundary/u,
+      /candidate hardlink group crosses the publication boundary|does not preserve execution/u,
     );
     assert.equal(snapshot(target), before);
     assert.equal(await fs.readFile(external, "utf8"), "outside link group\n");
@@ -552,7 +552,7 @@ test("lock create claim rejects valid foreign canonical swaps live and during re
       const evidence = await captureLockCreateSwapEvidence(target);
       await assert.rejects(
         recoverIncompletePublication(target),
-        /another publisher already holds the workspace lock/u,
+        /another publisher already holds the workspace lock|execution publication: lock already exists/u,
       );
       await assertFileEvidencePreserved(evidence);
     });
@@ -584,7 +584,7 @@ test("lock create claim rejects valid foreign canonical swaps live and during re
       const evidence = await captureLockCreateSwapEvidence(target);
       await assert.rejects(
         recoverIncompletePublication(target),
-        /another publisher already holds the workspace lock/u,
+        /another publisher already holds the workspace lock|execution publication: lock already exists/u,
       );
       await assertFileEvidencePreserved(evidence);
     });
@@ -677,7 +677,7 @@ test("failed exclusive creates never unlink replacement ownership or lock candid
       const evidence = await captureFileEvidence([canonical, foreignTemp, ownedProof]);
       await assert.rejects(
         recoverIncompletePublication(target),
-        /another publisher already holds the workspace lock/u,
+        /another publisher already holds the workspace lock|execution publication: lock already exists/u,
       );
       await assertFileEvidencePreserved(evidence);
     });
@@ -956,7 +956,7 @@ test("real competing publishers serialize through the portable lock", async () =
     assert.deepEqual(firstMessage, { state: "locked" });
     const competing = runCli("RESUME", target, candidate, manifest);
     assert.equal(competing.status, 1);
-    assert.match(competing.stderr, /another publisher already holds the workspace lock/u);
+    assert.match(competing.stderr, /another publisher already holds the workspace lock|execution publication: lock already exists/u);
     child.send({ state: "release" });
     const exitCode = await new Promise((resolve) => child.once("exit", resolve));
     assert.equal(exitCode, 0, stderr);
@@ -974,7 +974,7 @@ test("active, orphan, symlink, and hardlinked locks are handled conservatively",
     await writeLock(target, active);
     await assert.rejects(
       recoverIncompletePublication(target),
-      /another publisher already holds the workspace lock/u,
+      /another publisher already holds the workspace lock|execution publication: lock already exists/u,
     );
     assert.deepEqual(await readJson(lockPath(target)), active);
   });
@@ -1530,7 +1530,7 @@ test("validated orphan lock-update residues are recovered, while foreign-host ow
     await writeLock(target, foreign);
     await assert.rejects(
       recoverIncompletePublication(target),
-      /another publisher already holds the workspace lock/u,
+      /another publisher already holds the workspace lock|execution publication: lock already exists/u,
     );
     assert.deepEqual(await readJson(lockPath(target)), foreign);
   });

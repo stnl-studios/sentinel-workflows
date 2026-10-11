@@ -41,9 +41,21 @@ For a partial contribution, reference the existing requirement ID, describe the 
 
 - <excluded work and boundary with later slices>
 
-## Likely Areas
+## Authorized Areas
 
-- Implementation filesystem path (outside generated execution artifacts): `<artifact-relative path>` — <optional contract, subsystem, test area, or explanation> (plain-text description)
+- directory: `<artifact-relative authorized subtree or exact file>`
+
+## Expected Files
+
+- `<artifact-relative predicted file>`
+
+## Existing Inputs
+
+- none
+
+## Protected Responsibilities
+
+- <auth, persistence and public-contract boundaries requiring semantic review>
 
 ## Dependencies
 

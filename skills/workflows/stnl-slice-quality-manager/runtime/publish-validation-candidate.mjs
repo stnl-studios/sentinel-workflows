@@ -5,12 +5,15 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 import {
-  inspectExecutionState,
+  inspectExecutionState, readExecutionActivation, preparationAuthorityAt,
   preflightExecutionOperation,
   resolveExecutionWorkspace,
   validateExecutionCandidate,
 } from "./execution-state.mjs";
+import { assertOperationalTaskHistory, parsePreparationTableRow } from "./execution-preparation.mjs";
 import { assertManagedAgreement } from "./managed-slice-context.mjs";
+
+import { publishExecutionUpdate, captureExecutionTree } from "./execution-publication.mjs";
 
 const VALIDATION_OWNED_SECTIONS = new Set([
   "Validation Attempts",
@@ -150,7 +153,7 @@ function assertValidationTaskScope(liveText, candidateText, slice, candidateStat
 }
 
 function rowColumns(line, slice, label) {
-  const columns = line.split("|").slice(1, -1).map((column) => column.trim());
+  const columns = parsePreparationTableRow(line, 7, label);
   if (columns.length !== 7 || columns[4] !== "tasks/" + slice + ".md") {
     fail(label + " has a malformed selected tasks.md row");
   }
@@ -164,7 +167,7 @@ function assertTasksIndexScope(liveText, candidateText, slice) {
   const selected = [];
   for (const [index, line] of liveLines.entries()) {
     if (!line.startsWith("|")) continue;
-    const columns = line.split("|").slice(1, -1).map((column) => column.trim());
+    const columns = parsePreparationTableRow(line, 7, "live tasks index");
     if (columns.length === 7 && columns[4] === "tasks/" + slice + ".md") selected.push(index);
   }
   if (selected.length !== 1) fail("live tasks.md must contain exactly one selected row for " + slice);
@@ -207,8 +210,10 @@ function assertPublicationScope(liveSnapshot, candidateSnapshot, slice, liveRoot
   if (liveRoot === candidateRoot) fail("candidate and live execution roots must be distinct");
 }
 
-export async function publishValidationCandidate({ specPath, slice: sliceValue, candidateExecutionRoot }) {
-  assertManagedAgreement({ specPath, slice: sliceValue });
+export async function publishValidationCandidate({ specPath, slice: sliceValue, candidateExecutionRoot, owner = null, expectedActivationId = null, expectedTree = null, terminal = true }) {
+  const managed = assertManagedAgreement({ specPath, slice: sliceValue });
+  owner ??= managed?.owner;
+  if (!owner) owner = JSON.parse(await fs.readFile(`${candidateExecutionRoot}.publication.json`, 'utf8')).owner;
   if (typeof specPath !== "string" || !path.isAbsolute(specPath) || path.resolve(specPath) !== specPath) {
     fail("SPEC_PATH must be absolute and canonical");
   }
@@ -217,7 +222,7 @@ export async function publishValidationCandidate({ specPath, slice: sliceValue, 
   const sliceNumber = BigInt(rawSlice.startsWith("slice-") ? rawSlice.slice(6) : rawSlice);
   if (sliceNumber < 1n) fail("slice must be positive");
   const slice = "slice-" + sliceNumber.toString(10).padStart(2, "0");
-  const preflight = await preflightExecutionOperation(specPath, "VALIDATE_SLICE", sliceNumber.toString(10));
+  const preflight = await preflightExecutionOperation(specPath, "VALIDATE_SLICE", sliceNumber.toString(10), { owner });
   const workspace = await resolveExecutionWorkspace(specPath);
   const liveRoot = await canonicalDirectory(workspace.executionRoot, "live execution root");
   const candidateRoot = await canonicalDirectory(candidateExecutionRoot, "candidate execution root");
@@ -229,71 +234,28 @@ export async function publishValidationCandidate({ specPath, slice: sliceValue, 
   const liveBefore = await treeSnapshot(liveRoot);
   const candidateBefore = await treeSnapshot(candidateRoot);
   const candidateState = await validateExecutionCandidate(specPath, candidateRoot);
+  if (owner.operation !== "VALIDATE_SLICE") fail("formal publication requires validation ownership");
+  if (["RUNNER_INITIALIZATION_BLOCKED", "RUNNER_RESULT_BLOCKED"].includes(candidateState.state)) terminal = false;
   const candidateAfterValidation = await treeSnapshot(candidateRoot);
   if (!snapshotsMatch(candidateBefore, candidateAfterValidation)) {
     fail("candidate changed while strict validation was running");
   }
   assertPublicationScope(liveBefore, candidateBefore, slice, liveRoot, candidateRoot, candidateState.state);
 
-  const parent = path.dirname(liveRoot);
-  const stagedRoot = await fs.mkdtemp(path.join(parent, ".stnl-validation-publication-"));
-  let stagedSnapshot = null;
-  let backupRoot = null;
-  let liveMoved = false;
-  let candidateInstalled = false;
-  try {
-    await copyRegularTree(candidateRoot, stagedRoot);
-    stagedSnapshot = await treeSnapshot(stagedRoot);
-    if (!snapshotsMatch(candidateBefore, stagedSnapshot)) {
-      fail("staged validation candidate differs from the strictly validated candidate");
-    }
-    const liveRecheck = await treeSnapshot(liveRoot);
-    if (!snapshotsMatch(liveBefore, liveRecheck)) {
-      fail("live execution artifacts changed concurrently before validation publication");
-    }
-
-    backupRoot = await unusedSibling(parent, ".stnl-validation-backup-");
-    await fs.rename(liveRoot, backupRoot);
-    liveMoved = true;
-    await fs.rename(stagedRoot, liveRoot);
-    candidateInstalled = true;
-
-    const readback = await inspectExecutionState(specPath);
-    if (readback.state !== candidateState.state || readback.currentFingerprint !== candidateState.currentFingerprint) {
-      fail("published validation state differs from its strictly validated candidate");
-    }
-    const publishedSnapshot = await treeSnapshot(liveRoot);
-    if (!snapshotsMatch(stagedSnapshot, publishedSnapshot)) {
-      fail("published validation artifacts changed during official readback");
-    }
-    await fs.rm(backupRoot, { recursive: true, force: false });
-    backupRoot = null;
-    liveMoved = false;
-    return Object.freeze({
-      status: "PASS",
-      state: readback.state,
-      currentFingerprint: readback.currentFingerprint,
-      publishedExecutionRoot: liveRoot,
-      selectedSlice: slice,
-    });
-  } catch (error) {
-    if (liveMoved && backupRoot !== null) {
-      if (candidateInstalled) {
-        const current = await treeSnapshot(liveRoot).catch(() => null);
-        if (current === null || !snapshotsMatch(stagedSnapshot, current)) {
-          error.message = error.message + "; published tree changed during rollback and was preserved";
-          throw error;
-        }
-        await fs.rm(liveRoot, { recursive: true, force: false });
-      }
-      await fs.rename(backupRoot, liveRoot);
-      backupRoot = null;
-      liveMoved = false;
-    }
-    throw error;
-  } finally {
-    await fs.rm(stagedRoot, { recursive: true, force: true }).catch(() => {});
-  }
+  const proposal = JSON.parse(await fs.readFile(`${candidateRoot}.publication.json`, 'utf8'));
+  if (proposal.specPath !== specPath || proposal.slice !== slice || proposal.owner?.operationAttemptId !== owner?.operationAttemptId) fail('validation proposal binding differs');
+  if (expectedActivationId !== null && expectedActivationId !== proposal.expectedActivationId) fail('validation CAS token differs');
+  if (expectedTree !== null && JSON.stringify(expectedTree) !== JSON.stringify(proposal.tree)) fail('validation source tree differs');
+  const publication = await publishExecutionUpdate({ workspace, candidateExecutionRoot: candidateRoot,
+    expectedTree: proposal.tree, expectedActivationId: proposal.expectedActivationId, owner, terminal,
+    readActivated: () => readExecutionActivation(specPath),
+    validateCandidate: async root => { await validateExecutionCandidate(specPath, root); return preparationAuthorityAt(root); },
+    authorizeDiff: async staged => {
+      const live = await treeSnapshot(liveRoot); const proposed = await treeSnapshot(staged);
+      assertPublicationScope(live, proposed, slice, liveRoot, candidateRoot, candidateState.state);
+      assertOperationalTaskHistory(live.get(`tasks/${slice}.md`).bytes.toString("utf8"), proposed.get(`tasks/${slice}.md`).bytes.toString("utf8"), owner, "VALIDATE_SLICE");
+    } });
+  return { status: 'PASS', state: candidateState.state, selectedSlice: slice, publishedExecutionRoot: liveRoot, ...publication };
 }
 
 export async function main(arguments_) {

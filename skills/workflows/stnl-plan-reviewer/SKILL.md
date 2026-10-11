@@ -1,68 +1,44 @@
 ---
 name: stnl-plan-reviewer
-description: Independently review and directly correct an initial plan or pending recovery revision before task commitment.
+description: Independently review the complete final Plan and Tasks, including initial checklist and proof capability, and activate only that examined content.
 ---
 
 # stnl-plan-reviewer
 
 ## Purpose
 
-Run only `REVIEW_PLAN`. Perform an independent critical review of the initial plan or one pending `REPLAN` revision, correct only the mutable draft set, approve a coherent result, and stop.
+Run only REVIEW_PLAN in an independent context. Read current requirements, the global Plan/Tasks and every detailed Plan/Task, initial checklist and decisive technical premises. Review the complete content that will be activated; a hash binds content but does not prove independence, semantic completeness or acceptance.
 
 ## Inputs
 
-- `SPEC_PATH`: required. A directory must contain `feature_spec.md` and uses its `execution/` child; that file path resolves identically; another requirements file uses sibling `<stem>-execution/`. Block every other form.
-- Optional additional context may identify a concrete concern but cannot change requirements.
+SPEC_PATH is required; optional concrete concerns cannot change requirements.
 
 ## Authority
 
-Requirements and their current computed fingerprint remain authoritative. This skill may change only the mutable draft global plan and detailed plans. Historical revisions and slice plans carrying an earlier revision are immutable. It cannot create tasks, edit code, resolve documentary ambiguity, or commit supersession.
-
-`<SKILL_ROOT>` is the directory of this loaded `SKILL.md`, never the shell working directory. The shared planning producers belong to `stnl-execution-planner`, not this reviewer. Set `<PLANNER_SKILL_ROOT> = path.resolve(SKILL_ROOT, "../stnl-execution-planner")` within the same installed or frozen workflow bundle; resolve that exact named sibling without searching other installations. Execute the recipes below rather than reading runtime implementation to infer a command. Missing owner files block; never substitute this reviewer's runtime directory.
-
-Execution preflight is read-only. Only when it reports a mechanical violation for the exact `Findings IDs` alias or the exact historical `Check discovery sources` / `Check discovery actions` pair may this skill explicitly run `node "<SKILL_ROOT>/runtime/validate-execution-state.mjs" <SPEC_PATH> --repair-known-contract` once and repeat the original preflight; every other contract violation blocks.
+Before content reads run `node "<SKILL_ROOT>/runtime/validate-execution-state.mjs" <SPEC_PATH> REVIEW_PLAN`. `<PLANNER_SKILL_ROOT>` is the named sibling stnl-execution-planner in this same installed bundle. Never search other installations. Create a complete isolated candidate with its `runtime/prepare-task-candidate.mjs --spec-path <SPEC_PATH> --operation REVIEW_PLAN`. Candidate rejection preserves it and all live bytes. Correct only editorial, referential or unequivocal defects. A material strategy, decomposition or proof change returns to the author; do not approve a substantially different solution you created yourself.
 
 ## REVIEW_PLAN
 
-Before content reads, execute `node "<SKILL_ROOT>/runtime/validate-execution-state.mjs" <SPEC_PATH> REVIEW_PLAN`. Run only when there is a draft initial or planning-only replacement plan, or a pending materialized `REPLAN` revision/extension. It may be repeated while that draft remains mutable. A planning-only replacement is revision `1`, has no historical recovery fields, and follows the same review gate as an initial plan. Existing task artifacts do not by themselves block review: in pristine replacement mode, review the full replacement set; after operational evidence, review only the append-only revision and new slices while preserving all historical plan/task artifacts byte-for-byte.
+Check each exact requirement ID and observable condition, complete/partial contributions and integral owners, serial dependencies, result coherence, authorization/exclusions, auth/persistence/public contracts, hidden work, initial checklist associations and proof capability. A structurally valid test that observes a different property is insufficient. Read code only to settle named decisive premises. A missing product decision returns lifecycle RESUME; stale authority or material strategy gaps require REPLAN.
 
-Apply review corrections only to an isolated complete execution candidate. The deterministic `<PLANNER_SKILL_ROOT>/runtime/serialize-plan-paths.mjs` boundary canonicalizes plan paths and invokes the existing official `validateExecutionCandidate` authority with the same `<SPEC_PATH>` and candidate root before it can report PASS. Do not separately assemble the validator command. Candidate rejection preserves live bytes and the rejected candidate. If the diagnostic identifies a correctable semantic or serialization defect and official preflight still authorizes REVIEW_PLAN on unchanged live authority, create a new complete candidate from live, apply the diagnosed correction, and validate that new proposal. Never alter or re-present the rejected candidate. After strict candidate PASS, publish only authorized planning paths and use the final handoff command as strict readback.
+Set the final candidate metadata to ready and mutable Plan Review state to approved. Preserve immutable historical content. Run the sibling planner's prepare-plan-candidate.mjs and serialize-plan-paths.mjs recipes from its skill. The single canonicalizer rejects unknown carriers, duplicate fields, hidden headings and ambiguous content. All normative objective/strategy/obligation/proof/dependency/area/responsibility changes require new authorship/review. Operational steps and predicted files do not expand authority.
 
-Use permitted file editing for authorized candidate changes before validation, not heredocs, here-strings or multiline programs embedded in nested shell quoting. A writable candidate directory does not authorize the shell's implicit temporary files. On any sandbox or permission denial, stop and preserve the complete command diagnostic, even if a later command in that invocation exits zero; do not approve unchanged output as proof that the intended corrections ran. Do not retry via another path, tool, temp setting or permission mode. A new handoff and the required authority are necessary before proceeding.
+Save the compact independent judgment to a temporary JSON file outside SPEC with exactly: operation=REVIEW_PLAN, status=approved, examined=[requirements, plans, tasks, initial checklist, proof capability], summary=<concrete premises checked and conclusion>. This is a semantic decision, not a cryptographic signature. Pass that file to `node "<PLANNER_SKILL_ROOT>/runtime/publish-task-candidate.mjs" --spec-path <SPEC_PATH> --candidate-execution-root <CANDIDATE_EXECUTION_ROOT> --review-decision-file <REVIEW_DECISION_FILE>`.
 
-Before path serialization and candidate validation, execute `node "<PLANNER_SKILL_ROOT>/runtime/prepare-plan-candidate.mjs" --candidate-execution-root <CANDIDATE_EXECUTION_ROOT>` against the isolated candidate execution root. It reads the canonical plan and slice-plan templates and prepends the exact header when no marker exists. For a present header, it requires one complete block with exactly the template field set and one valid `status: draft|ready`; it canonicalizes fixed metadata values and field order from the template while preserving that status. Missing, duplicate, or unknown fields; missing or invalid status; and malformed, misplaced, or duplicate markers block before candidate validation. This is prevalidation mechanical serialization for each new candidate and never edits live execution artifacts.
-
-For global `Expected areas` and detailed `Likely Areas`, treat only Markdown code spans as concrete filesystem claims. In the mutable candidate before serialization, global code spans are repository-root-relative semantic physical targets; the producer writes the final artifact-relative claims into the global and detailed artifacts. After serialization, verify every persisted claim against its containing artifact and keep conceptual labels outside code spans. Malformed or ambiguous semantic input blocks that candidate before publication; retain it unchanged and use a new complete candidate for any legal correction.
-
-After `<PLANNER_SKILL_ROOT>/runtime/serialize-plan-paths.mjs` has serialized the candidate, recompute every reviewed plan claim from its declaring artifact with `path.relative(path.dirname(artifact), physicalTarget)`, normalize `/`, compare by `realpath` with the physical target, and return `BLOCKED` without publication if any claim differs; never approve a plan claim that resolves to another path. The raw global `Expected areas` selections are semantic repository-relative inputs, not yet persisted artifact-relative claims, so never apply this artifact-relative readback to the raw semantic input before serialization.
-
-The candidate global plan `Expected areas` code spans are the reviewed semantic physical-target selections. Execute `node "<PLANNER_SKILL_ROOT>/runtime/serialize-plan-paths.mjs" --spec-path <SPEC_PATH> --candidate-execution-root <CANDIDATE_EXECUTION_ROOT>` against the exact requirements authority and isolated candidate execution root. It resolves each selected repository-relative target once, writes canonical global and detailed-plan claims, then invokes the official candidate validator with those same inputs. A non-zero serialization or candidate-validation result blocks publication of that candidate. Preserve its exact diagnostic and bytes. A diagnosed, correctable defect may be addressed in a new complete candidate under unchanged official authority; never guess a target, alter the rejected candidate, or edit live artifacts.
-
-Check full requirement coverage, missing owners, overlap, slice sizing, strict serial order, dependencies, public contracts, persistence, migrations, authentication and authorization, external integrations, shared state, breaking changes, architectural risk, expected tests, implicit work, accidental scope, and consistency between global and detailed plans.
-
-Apply the coverage contract in `<PLANNER_SKILL_ROOT>/templates/slice-plan.template.md`, section `Requirements`, to the complete serial strategy and each slice's scope, paths, expected tests and completion criterion. Correct contradictions before approval; structural candidate PASS does not establish semantic coverage.
-
-Open code only to verify a concrete concern. For an initial or pristine replacement draft, split, combine, reorder, or revise slices as needed. For append-only recovery, never renumber, reorder, rewrite, or remove historical slices; revise only the pending extension and append monotonically numbered slices. Verify its `REPLAN_REASON`, supersession mapping, current requirements fingerprint, increasing plan revision, and a current-revision reconciliation/corrective slice after authority change. Add an integration or stabilization slice when technically required. If a correction needs a requirements decision, return lifecycle `RESUME` instead of masking it.
-
-When review succeeds, set the mutable global plan and every detailed plan in the initial/replacement set or pending extension to File Purpose Header status `ready` and review state `approved`. Never change a historical detailed plan. Ensure the current revision, extension, and immutable history agree.
-
-## Minimum Reads
-
-- normalized requirements source and referenced requirement records;
-- `<PLANNER_SKILL_ROOT>/templates/slice-plan.template.md`, section `Requirements`, for the shared coverage contract;
-- `plan.md` and every detailed plan;
-- code only for a named risk or hidden dependency.
-
-## Allowed Effects
-
-- for an initial, planning-only replacement, or wholly pristine materialized replacement, modify, create, remove, or reorder only the candidate planning set needed to leave one coherent approved result;
-- for append-only recovery, modify only the pending revision and appended plans while preserving historical planning bytes;
-- report exact corrections made.
-
-## Blocks
-
-Block with a lifecycle `RESUME` handoff when approval depends on a missing or conflicting product decision. Return `NEEDS_REPLAN` without writes when no valid initial or pending recovery draft exists, the fingerprint is stale, revision or supersession data is invalid, or history changed. Do not invent answers, create tasks, commit supersession, or alter historical planning artifacts.
+The producer captures approved-preparation.json from the exact final bytes, validates Plan and Tasks together, locks outside the official trees, rechecks requirements/base, installs the artifacts, writes activation.json last and verifies readback. No task materializer or optional task review follows. Only confirmed activation releases execution. Cleanup/release failure after confirmation is pending cleanup, never rollback or another implementation/delegation. Uncertain publication preserves copies and ownership for diagnosis.
 
 ## Output
 
-After successful publication, execute `node "<SKILL_ROOT>/runtime/validate-execution-state.mjs" <SPEC_PATH> --handoff-after REVIEW_PLAN`. Report approval status, concise corrections, the runtime's normal handoff, and all legal operations in the resulting state. A successful initial review normally hands off to `stnl-task-materializer / OPERATION=MATERIALIZE_TASKS` while repeat `REVIEW_PLAN` and `REPLAN` remain legal where preflight permits them. Stop after `REVIEW_PLAN`.
+Read back with `node "<SKILL_ROOT>/runtime/validate-execution-state.mjs" <SPEC_PATH> --handoff-after REVIEW_PLAN`. Report the decision, exact corrections, snapshot/publication status and runtime legal handoff to EXECUTE_SLICE. Preparation approval is not PASS. Stop.
+
+## Minimum Reads
+
+Current requirements, every final Plan and Task, initial checklist, proof capability and decisive technical premises.
+
+## Allowed Effects
+
+Limited unequivocal corrections in an isolated complete candidate; semantic review decision and common publication of the examined bytes.
+
+## Blocks
+
+Missing product decision, stale authority/base, materially different strategy/proof, incompatible legacy, invalid history or active/uncertain attempt.

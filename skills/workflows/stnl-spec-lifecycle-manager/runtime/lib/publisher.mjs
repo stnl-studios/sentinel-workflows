@@ -1,3 +1,4 @@
+import { withExecutionPublicationLock, assertLifecycleExecutionUnowned } from './execution-publication.mjs';
 import { constants as FS_CONSTANTS } from "node:fs";
 import * as fs from "node:fs/promises";
 import { createHash, randomBytes } from "node:crypto";
@@ -3720,7 +3721,7 @@ async function recoverLocked(target, lease) {
   return transaction;
 }
 
-export async function recoverIncompletePublication(target) {
+async function recoverIncompletePublicationLocked(target) {
   const targetPath = await normalizeTarget(target);
   validateTestOnlyHookConfiguration();
   return withWorkspaceLock(
@@ -3805,7 +3806,7 @@ function validateMaybePromise(value) {
   return Promise.resolve(value);
 }
 
-export async function publishCandidate(mode, target, candidate, {
+async function publishCandidateLocked(mode, target, candidate, {
   manifestPath = null,
   readinessAttestation = null,
   beforePublish = null,
@@ -4228,4 +4229,36 @@ export async function publishCandidate(mode, target, candidate, {
 
 export function isFilesystemError(error) {
   return error !== null && typeof error === "object" && typeof error.code === "string";
+}
+
+async function withCommonExecutionLock(target, action) {
+  const intended = expandUser(target);
+  const parent = await fs.realpath(path.dirname(intended));
+  const specRoot = path.join(parent, path.basename(intended));
+  const executionRoot = path.join(specRoot, 'execution');
+  return withExecutionPublicationLock({ specRoot, executionRoot }, async () => {
+    await assertLifecycleExecutionUnowned(executionRoot);
+    return action({ specRoot, executionRoot });
+  });
+}
+export async function recoverIncompletePublication(target) {
+  return withCommonExecutionLock(target, () => recoverIncompletePublicationLocked(target));
+}
+async function lifecycleExecutionSnapshot(specRoot) {
+  const root = path.join(specRoot, 'execution');
+  const meta = await fs.lstat(root).catch(error => { if (error.code === 'ENOENT') return null; throw error; });
+  if (meta === null) return null;
+  // Lifecycle preserves opaque legacy entries with its existing topology-aware snapshot.
+  // Executable preparation retains the stricter consumer grammar and single-link guards.
+  return workspaceSnapshot(specRoot).filter(record => record[1] === 'execution' || record[1].startsWith('execution/'));
+}
+export async function publishCandidate(mode, target, candidate, options = {}) {
+  return withCommonExecutionLock(target, async ({ specRoot }) => {
+    const source = await lifecycleExecutionSnapshot(specRoot);
+    const proposed = await lifecycleExecutionSnapshot(candidate);
+    if (JSON.stringify(source) !== JSON.stringify(proposed)) {
+      fail('lifecycle candidate does not preserve execution captured under common lock; refresh stale candidate', candidate);
+    }
+    return publishCandidateLocked(mode, target, candidate, options);
+  });
 }

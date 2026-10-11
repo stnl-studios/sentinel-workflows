@@ -1,18 +1,21 @@
 #!/usr/bin/env node
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { preflightExecutionOperation } from '../../../skills/workflows/stnl-slice-quality-manager/runtime/execution-state.mjs';
+import { preflightExecutionOperation, readExecutionActivation } from '../../../skills/workflows/stnl-slice-quality-manager/runtime/execution-state.mjs';
 import { readManagedSliceContext, assertManagedRuntimeIdentity } from '../../../skills/workflows/stnl-slice-quality-manager/runtime/managed-slice-context.mjs';
+
+import { assertExecutionAttempt } from '../../../skills/workflows/stnl-slice-quality-manager/runtime/execution-publication.mjs';
 
 export async function assertManagedSliceFreshness(environment = process.env) {
   const context = readManagedSliceContext(environment); if (context === null) throw new Error('managed slice context is absent');
   await assertManagedRuntimeIdentity(context, environment);
   const numericSlice = BigInt(context.slice.slice('slice-'.length)).toString(10);
-  const current = await preflightExecutionOperation(context.specPath, context.operation, numericSlice);
-  if (current.operation !== context.operation || current.slice !== context.slice || current.state !== context.state
-    || `sha256:${current.currentFingerprint}` !== context.authority
-    || JSON.stringify(current.legalOperations) !== JSON.stringify(context.legalOperations)
-    || JSON.stringify(current.mandatoryRecovery ?? null) !== JSON.stringify(context.mandatoryRecovery ?? null)) {
+  const current = await preflightExecutionOperation(context.specPath, context.operation, numericSlice, { owner: context.owner });
+  const activated = await readExecutionActivation(context.specPath);
+  assertExecutionAttempt(activated.activation, context.owner);
+  // Operational publication by this owner can advance CAS/state. It does not create a new runner attempt.
+  if (current.operation !== context.operation || current.slice !== context.slice
+    || `sha256:${current.currentFingerprint}` !== context.authority) {
     const error = new Error('managed slice preflight identity is stale');
     error.code = 'MANAGED_CONTEXT_STALE';
     throw error;

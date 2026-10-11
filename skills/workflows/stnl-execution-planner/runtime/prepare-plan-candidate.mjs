@@ -4,6 +4,10 @@ import * as fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+import { assignDeliveryIdentities, parseStrictJson, parsePreparationArtifact } from './execution-preparation.mjs';
+import { resolveExecutionWorkspace, computeRequirementsAuthority } from './execution-state.mjs';
+import { captureExecutionTree, assertOwnedPreparationCandidate } from './execution-publication.mjs';
+
 const RUNTIME_ROOT = path.dirname(fileURLToPath(import.meta.url));
 const SKILL_ROOT = path.dirname(RUNTIME_ROOT);
 const PLAN_TEMPLATE = path.join(SKILL_ROOT, "templates", "plan.template.md");
@@ -88,8 +92,39 @@ async function writeAtomically(file, text) {
   }
 }
 
+export async function assertPreparationCandidate(candidateExecutionRoot, specPath = null) {
+  return assertOwnedPreparationCandidate({ candidateExecutionRoot, specPath, resolveWorkspace: resolveExecutionWorkspace });
+}
+
+async function prepareReviewedSupersessions(candidate, marker) {
+  if (marker.operation !== 'REVIEW_PLAN') return;
+  const global = parsePreparationArtifact(await fs.readFile(path.join(candidate, 'plan.md'), 'utf8'), 'plan.md');
+  if (global.fields['Revision mode'] !== 'append-only-extension') return;
+  const mappings = global.fields['Supersedes open slices'];
+  if (mappings === 'none') return;
+  let index = await fs.readFile(path.join(candidate, 'tasks.md'), 'utf8');
+  for (const mapping of mappings.split(', ')) {
+    const pair = /^(slice-[0-9]{2,}) -> (slice-[0-9]{2,})$/u.exec(mapping);
+    if (!pair) blocked('malformed declared supersession');
+    const [, source, target] = pair;
+    const taskFile = path.join(candidate, 'tasks', source + '.md');
+    const text = await fs.readFile(taskFile, 'utf8');
+    const task = parsePreparationArtifact(text, `tasks/${source}.md`);
+    if (task.sections['Final Result'] === '- PASS') blocked('review cannot supersede historical PASS');
+    const result = `- SUPERSEDED\n- Superseded by: ${target}\n- Plan revision: ${global.fields['Plan revision']}`;
+    const revised = text.replace(/(^## Final Result\n\n)[\s\S]*$/mu, `$1${result}\n`);
+    if (revised !== text) await fs.writeFile(taskFile, revised, 'utf8');
+    const rows = index.split('\n');
+    const position = rows.findIndex(row => row.startsWith('| [') && row.split('|')[5]?.trim() === `tasks/${source}.md`);
+    if (position < 0) blocked('supersession lacks historical progress row');
+    const cells = rows[position].split('|'); cells[1] = ' [x] '; cells[6] = ' SUPERSEDED '; cells[7] = ' SUPERSEDED ';
+    rows[position] = cells.join('|'); index = rows.join('\n');
+  }
+  await fs.writeFile(path.join(candidate, 'tasks.md'), index, 'utf8');
+}
+
 export async function preparePlanCandidate({ candidateExecutionRoot }) {
-  const candidate = path.resolve(String(candidateExecutionRoot));
+  const { root: candidate, marker, workspace } = await assertPreparationCandidate(candidateExecutionRoot);
   const candidateMetadata = await fs.lstat(candidate).catch(() => null);
   if (candidateMetadata === null || candidateMetadata.isSymbolicLink() || !candidateMetadata.isDirectory()) {
     blocked(`candidate execution root is not a real directory: ${candidate}`);
@@ -124,10 +159,44 @@ export async function preparePlanCandidate({ candidateExecutionRoot }) {
     }
   }
 
+  artifacts.push({ path: path.join(candidate, 'tasks.md'),
+    header: canonicalHeader(await readRegularFile(path.join(SKILL_ROOT, 'templates/tasks.template.md'), 'tasks template'), 'tasks'), label: 'candidate tasks.md' });
+  const taskHeader = canonicalHeader(await readRegularFile(path.join(SKILL_ROOT, 'templates/slice-tasks.template.md'), 'task template'), 'task');
+  for (const entry of await fs.readdir(path.join(candidate, 'tasks'))) {
+    if (!/^slice-\d+\.md$/u.test(entry)) blocked('noncanonical task artifact');
+    artifacts.push({ path: path.join(candidate, 'tasks', entry), header: taskHeader, label: entry });
+  }
   const preparedArtifacts = [];
   for (const artifact of artifacts) {
     const before = await readRegularFile(artifact.path, artifact.label);
-    const after = prepareHeader(before, artifact.header, artifact.label);
+    let after = prepareHeader(before, artifact.header, artifact.label);
+    const relative = path.relative(candidate, artifact.path).split(path.sep).join('/');
+    const slice = /^(?:plans|tasks)\/(slice-[0-9]{2,})\.md$/u.exec(relative)?.[1];
+    if (!slice || !marker.historicalSlices.includes(slice)) {
+      const set = (name, value) => {
+        const line = `- ${name}: ${value}`;
+        const pattern = new RegExp(`^- ${name}: .+$`, 'mu');
+        if (pattern.test(after)) after = after.replace(pattern, line);
+        else after = after.replace(/(^## (?:Global Context|References)\n\n)/mu, `$1${line}\n`);
+      };
+      if (relative !== 'tasks.md') {
+        set('Requirements source', '`' + path.relative(path.dirname(path.join(workspace.executionRoot, relative)), workspace.authorityPath).split(path.sep).join('/') + '`');
+        set('Requirements authority', `sha256:${await computeRequirementsAuthority(marker.specPath)}`);
+        set('Plan revision', String(marker.preparationRevision));
+      }
+      if (slice) {
+        set('Slice', slice.slice(6));
+        if (relative.startsWith('plans/')) set('Global plan', '`../plan.md`');
+        else { set('Plan', '`../plans/' + slice + '.md`'); set('Global tasks', '`../tasks.md`'); }
+      }
+      if (marker.operation !== 'REVIEW_PLAN') {
+        after = after.replace('status: ready', 'status: draft').replace('- Review state: approved', '- Review state: pending');
+        if (relative === 'plan.md' && marker.revisionMode) {
+          set('Revision mode', marker.revisionMode);
+          if (!after.includes('- Supersedes open slices:')) set('Supersedes open slices', 'none');
+        }
+      }
+    }
     preparedArtifacts.push({ path: artifact.path, before, after });
   }
 
@@ -137,6 +206,9 @@ export async function preparePlanCandidate({ candidateExecutionRoot }) {
     await writeAtomically(artifact.path, artifact.after);
     changedPaths.push(artifact.path);
   }
+  await assignDeliveryIdentities(candidate, marker);
+  await prepareReviewedSupersessions(candidate, marker);
+  await fs.writeFile(`${candidate}.owner.json`, JSON.stringify(marker) + '\n', { mode: 0o600 });
   return Object.freeze({
     status: "PASS",
     changedPaths: Object.freeze(changedPaths),

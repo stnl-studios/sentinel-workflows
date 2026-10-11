@@ -40,7 +40,10 @@ export async function readManagedPayloadFile(file, environment = process.env) {
     || active.protocol !== 3 || path.dirname(file) !== tmpdir || active.workspace !== context.workspace
     || active.operation !== context.operation || active.slice !== context.slice
     || active.officialPreflight.specPath !== context.specPath || !Number.isSafeInteger(active.sequence) || active.sequence < 1
-    || active.officialPreflight.authority !== context.authority || await fs.realpath(file) !== file) {
+    || active.officialPreflight.authority !== context.authority
+    || !context.owner || !active.officialPreflight.owner
+    || ['operationAttemptId','ownershipToken','deliveryId','slice','operation','originActivationId','preparationRevision','normativeSha256'].some(key => active.officialPreflight.owner[key] !== context.owner[key])
+    || await fs.realpath(file) !== file) {
     throw new Error('managed payload-file identity disagrees');
   }
   const handle = await fs.open(file, constants.O_RDONLY | constants.O_NOFOLLOW);

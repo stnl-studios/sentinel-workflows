@@ -5,8 +5,10 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-import { resolveExecutionWorkspace } from './execution-state.mjs';
+import { resolveExecutionWorkspace, readExecutionActivation } from './execution-state.mjs';
 import { assertManagedAgreement } from './managed-slice-context.mjs';
+
+import { withExecutionPublicationLock, captureExecutionTree, assertExecutionAttempt, readOperationOwner } from './execution-publication.mjs';
 
 function inside(candidate, parent) {
   const relative = path.relative(parent, candidate);
@@ -31,7 +33,7 @@ async function manifest(root) {
   return result;
 }
 
-export async function prepareValidationCopy({ specPath, slice, candidateParent }) {
+async function prepareValidationCopyLocked({ specPath, slice, candidateParent, owner }) {
   assertManagedAgreement({ specPath, slice });
   if (typeof specPath !== 'string' || !path.isAbsolute(specPath)
     || !/^slice-[0-9]{2,}$/u.test(slice) || typeof candidateParent !== 'string'
@@ -44,6 +46,10 @@ export async function prepareValidationCopy({ specPath, slice, candidateParent }
     || (resolved.specRoot && (inside(candidateParent, resolved.specRoot) || inside(resolved.specRoot, candidateParent)))) {
     throw new Error('validation candidate parent overlaps official artifacts');
   }
+  const admitted = await readExecutionActivation(specPath);
+  assertExecutionAttempt(admitted.activation, owner);
+  if (owner.operation !== "VALIDATE_SLICE" || owner.slice !== slice) throw new Error("validation copy requires the selected formal validation owner");
+  const tree = await captureExecutionTree(source);
   const original = await manifest(source);
   const candidate = await fs.mkdtemp(path.join(candidateParent, `validation-${slice}-`));
   try {
@@ -52,8 +58,17 @@ export async function prepareValidationCopy({ specPath, slice, candidateParent }
     if (JSON.stringify(await manifest(candidate)) !== JSON.stringify(original)) {
       throw new Error('validation candidate differs from the official execution tree');
     }
-    return { candidateExecutionRoot: candidate, executionRoot: source, entries: original.length };
+    await fs.writeFile(`${candidate}.publication.json`, JSON.stringify({ specPath, slice, owner, executionRoot: source,
+      expectedActivationId: admitted.activation.activationId, tree }) + '\n', { flag: 'wx', mode: 0o600 });
+    return { expectedActivationId: admitted.activation.activationId, owner, candidateExecutionRoot: candidate, executionRoot: source, entries: original.length };
   } catch (error) { await fs.rm(candidate, { recursive: true, force: true }); throw error; }
+}
+
+export async function prepareValidationCopy({ specPath, slice, candidateParent, owner = null }) {
+  const workspace = await resolveExecutionWorkspace(specPath);
+  const managed = assertManagedAgreement({ specPath, slice });
+  const admittedOwner = owner ?? managed?.owner ?? await readOperationOwner(specPath);
+  return withExecutionPublicationLock(workspace, () => prepareValidationCopyLocked({ specPath, slice, candidateParent, owner: admittedOwner }));
 }
 
 export async function main(argv) {

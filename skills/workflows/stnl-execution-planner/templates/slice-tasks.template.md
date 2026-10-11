@@ -2,12 +2,12 @@
 
 ```yaml
 purpose: Template for one pristine slice checklist and its empty execution and validation record.
-status: ready
+status: draft
 read_when: Materializing or classifying a pristine slice task.
 do_not_read_when: Operational record schemas are needed after execution starts.
 contains: References, checklist, expected tests, exact pristine sentinels, and pending final result.
-owner: stnl-task-materializer
-update_policy: MATERIALIZE_TASKS creates; later operations replace only their authorized sentinels using the execution-record schema.
+owner: stnl-execution-planner
+update_policy: PLAN/REPLAN creates; later operations replace only their authorized sentinels using the execution-record schema.
 ```
 
 # Slice 01 Tasks - <Name>
@@ -21,13 +21,41 @@ update_policy: MATERIALIZE_TASKS creates; later operations replace only their au
 - Plan revision: <positive integer>
 - Global tasks: `../tasks.md`
 
+## Result
+
+<Local observable delivery and its practical outcome.>
+
+## Acceptance Obligations
+
+- obligation-01 | requirement: AC-001 | contribution: complete | full owner: slice-01 | condition: <observable condition> | proof: <required evidence>
+
+## Authorized Areas
+
+- directory: `<artifact-relative authorized subtree or exact file>`
+
+## Expected Files
+
+- `<artifact-relative predicted file>`
+
+## Existing Inputs
+
+- none
+
+## Protected Responsibilities
+
+- <protected semantic responsibility and exclusion>
+
 ## Checklist
 
-- [ ] 1.1 <task> | observable result: <result> | expected areas: `<artifact-relative path>`; <optional conceptual area> | requirement: AC-001
+- [ ] 1.1 <technical action> | obligations: obligation-01
 
 ## Expected Tests
 
 - <test, command, suite, or observable check>
+
+## Operational Changes
+
+- none
 
 ## Changed Areas
 

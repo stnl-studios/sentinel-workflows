@@ -25,6 +25,8 @@ plan.md
 plans/slice-NN.md
 tasks.md
 tasks/slice-NN.md
+approved-preparation.json
+activation.json
 ```
 
 Before classifying a lifecycle workspace as `EMPTY`, inspection checks the exact official `98545e4` root-level execution signature (`plan.md`, `plans/plan-NN.md`, `tasks.md`, and `tasks/tasks-NN.md` with their historical owners, primary H1s, tables, and paired filenames). A match is explicit blocked legacy, never empty and never migrated. Current malformed or hybrid siblings are not inferred as historical.
@@ -69,3 +71,7 @@ In `tasks.md`, machine authority is the File Purpose Header, owner/status, prima
 `REPLAN` has three deterministic mutation classes. With planning but no tasks, atomically replace the exact planning authority, remove obsolete detailed plans, remain at revision `1`, omit historical recovery fields, and return through review plus initial materialization. With wholly pristine materialized tasks, use the existing increasing `pristine-replacement` revision and atomic plan/task replacement. After any operational evidence/history, use only an increasing `append-only-extension` and preserve history. A pending materialized `REPLAN` persists a non-placeholder reason, increments the highest materialized plan revision by exactly one, and declares `Supersedes open slices` as `none` or unique canonical `slice-NN -> slice-NN` mappings. A pristine replacement declares `none`. An append-only extension maps only open historical sources to newly appended later targets, and an authority-changing extension maps every stale open slice. Before materialization, every effective nonterminal slice after the first open serial frontier remains exactly pristine.
 
 `COMPLETE` is a terminal refinement of `EXECUTION_STARTED`. A partial or malformed artifact set is not coerced to a valid state and blocks mutation. Only an operation authorized to create artifacts may create a missing execution root. Block collisions with the source, a non-directory, unrelated content, or an unrecognized layout.
+
+Plan and Tasks are authored together. Joint independent review captures the final snapshot and activates the set. Consumers read activation A, all artifacts, then activation B and reject mixtures. The lock sits in the stable canonical parent outside SPEC/execution; lifecycle always acquires it before observing execution existence, then takes its lifecycle lock. Legacy preparation is preserved and blocked. Operational changes preserve normative authority and immutable review snapshot.
+
+Global Authorized areas use `directory: ` or `file: ` plus one backticked artifact-relative path per item, separated by `; `. Every typed item must correspond to the detailed Plan area using the same physical target and kind.

@@ -4,22 +4,24 @@ import { createHash, randomUUID } from "node:crypto";
 import { constants as FS_CONSTANTS } from "node:fs";
 import * as fs from "node:fs/promises";
 import os from "node:os";
+import { projectPreparationAuthority, readPreparationArtifacts, parsePreparationArtifact, preparationChecklist,
+  preparationPathClaims, validateApprovedPreparation, validateOperationalChanges, parseStrictJson } from './execution-preparation.mjs';
+import { readActivatedExecution, beginExecutionOperation, withExecutionPublicationLock,
+  publishExecutionUpdate, captureExecutionTree, readOwnedFile, assertExecutionAttempt } from './execution-publication.mjs';
 import path from "node:path";
 
-const ROOT_FILES = new Set(["plan.md", "tasks.md"]);
+const ROOT_FILES = new Set(["plan.md", "tasks.md", "approved-preparation.json", "activation.json"]);
 const ROOT_DIRECTORIES = new Set(["plans", "tasks"]);
 const SLICE_FILE = /^slice-[0-9]{2,}\.md$/u;
 const SLICE_OPERATIONS = new Set(["EXECUTE_SLICE", "APPLY_FINDINGS", "VALIDATE_SLICE"]);
 const OPERATIONS = new Set([
-  "PLAN", "REVIEW_PLAN", "MATERIALIZE_TASKS", "REVIEW_TASKS", "REPLAN",
+  "PLAN", "REVIEW_PLAN", "REPLAN",
   "EXECUTE_SLICE", "APPLY_FINDINGS", "VALIDATE_SLICE",
 ]);
 export const EXECUTION_WORKFLOW_SKILLS = Object.freeze({
   PLAN: "stnl-execution-planner",
   REPLAN: "stnl-execution-planner",
   REVIEW_PLAN: "stnl-plan-reviewer",
-  MATERIALIZE_TASKS: "stnl-task-materializer",
-  REVIEW_TASKS: "stnl-task-reviewer",
   EXECUTE_SLICE: "stnl-slice-executor",
   APPLY_FINDINGS: "stnl-slice-executor",
   VALIDATE_SLICE: "stnl-slice-quality-manager",
@@ -27,8 +29,6 @@ export const EXECUTION_WORKFLOW_SKILLS = Object.freeze({
 const OPERATION_STATES = new Map([
   ["PLAN", new Set(["EMPTY"])],
   ["REVIEW_PLAN", new Set(["PLANNED_DRAFT", "PLANNED_READY", "PENDING_REPLAN_DRAFT", "PENDING_REPLAN_READY"])],
-  ["MATERIALIZE_TASKS", new Set(["PLANNED_READY", "PENDING_REPLAN_READY"])],
-  ["REVIEW_TASKS", new Set(["MATERIALIZED_PRISTINE"])],
   ["REPLAN", new Set(["PLANNED_DRAFT", "PLANNED_READY", "MATERIALIZED_PRISTINE", "EXECUTION_STARTED", "REQUIREMENTS_CHANGED", "DIVERGENCE_BLOCKED", "VALIDATION_BLOCKED", "IMPLEMENTED_AWAITING_VALIDATION", "FINDINGS_CORRECTED", "REPLAN_REQUIRED", "COMPLETE"])],
   ["EXECUTE_SLICE", new Set(["MATERIALIZED_PRISTINE", "EXECUTION_STARTED", "AUXILIARY_BLOCKED", "RUNNER_INITIALIZATION_BLOCKED", "RUNNER_RESULT_BLOCKED"])],
   ["APPLY_FINDINGS", new Set(["VALIDATION_NEEDS_FIX", "AUXILIARY_BLOCKED", "RUNNER_INITIALIZATION_BLOCKED", "RUNNER_RESULT_BLOCKED"])],
@@ -54,10 +54,10 @@ const PRISTINE = new Map([
 const GLOBAL_PLAN_SECTIONS = ["Global Context", "Serial Slice Order", "Global Risks and Integration"];
 const SLICE_PLAN_SECTIONS = [
   "References", "Objective and Observable Result", "Requirements", "Included Scope", "Out of Scope and Boundaries",
-  "Likely Areas", "Dependencies", "Risks and Strategy", "Expected Tests", "Completion Criterion",
+  "Authorized Areas", "Expected Files", "Existing Inputs", "Protected Responsibilities", "Dependencies", "Risks and Strategy", "Expected Tests", "Completion Criterion",
 ];
 const TASK_SECTIONS = [
-  "References", "Checklist", "Expected Tests", "Changed Areas", "Scope Expansion", "Prior Validation Overlap",
+  "References", "Result", "Acceptance Obligations", "Authorized Areas", "Expected Files", "Existing Inputs", "Protected Responsibilities", "Checklist", "Expected Tests", "Operational Changes", "Changed Areas", "Scope Expansion", "Prior Validation Overlap",
   "Divergences", "Delegation Blocker", "Implementation Test Evidence", "Findings Test Evidence", "Validation Attempts",
   "Validation Findings", "Corrections Applied", "Effective Validation Base", "Diff Summary", "Final Result",
 ];
@@ -497,7 +497,7 @@ function isOfficialE45e41dSplitPlan(header, body, expectedSlice) {
     try {
       const rows = canonicalTableRows(
         order,
-        "| Slice | Observable delivery | Dependencies | Requirements | Expected areas | Detailed plan |",
+        "| Slice | Observable delivery | Dependencies | Requirements | Authorized areas | Detailed plan |",
         "|---|---|---|---|---|---|",
         "historical e45e41d Serial Slice Order",
       );
@@ -530,6 +530,7 @@ function isOfficialE45e41dSplitPlan(header, body, expectedSlice) {
 }
 
 function parsePlan(text, label, expectedSlice = null, references = {}) {
+  parsePreparationArtifact(text, expectedSlice === null ? "plan.md" : `plans/${expectedSlice}.md`);
   const { header, body } = parsePurpose(text, label);
   if (isOfficial98545e4Plan(header, body)) {
     throwLegacyExecutionContract(label, "structurally-incompatible", "official-phase-index-generation");
@@ -831,7 +832,9 @@ function validateNestedScoping(record, { allowTestedState = false } = {}) {
   }
 }
 
+const PREPARATION_RECORD_FIELDS = ['Delivery ID', 'Preparation revision', 'Normative sha256', 'Operation attempt ID', 'Origin activation ID'];
 function validateRecordFields(record, allowedFields) {
+  for (const name of PREPARATION_RECORD_FIELDS) allowedFields.add(name);
   const names = [...record.body.matchAll(/^- ([^:\n]+):/gmu)].map((match) => match[1]);
   const unexpected = names.find((name) => !allowedFields.has(name));
   if (unexpected !== undefined) throw new ExecutionContractError(`${record.id} has unknown field '${unexpected}'`);
@@ -1310,8 +1313,8 @@ function delimitedImplementationPathClaims(value, label) {
 
 function parseTask(text, label, expectedSlice, references = {}) {
   const { header, body } = parsePurpose(text, label);
-  if (header.get("status") !== "ready") throw new ExecutionContractError(`${label} must have status ready`);
-  if (header.get("owner") !== "stnl-task-materializer") throw new ExecutionContractError(`${label} has the wrong File Purpose Header owner`);
+  if (!["draft", "ready"].includes(header.get("status"))) throw new ExecutionContractError(`${label} must have draft or ready status`);
+  if (header.get("owner") !== "stnl-execution-planner") throw new ExecutionContractError(`${label} has the wrong File Purpose Header owner`);
   const h1 = body.match(/^# ([^\n]+)\n\n/u)?.[1];
   if (!new RegExp(`^Slice ${expectedSlice.slice(6)} Tasks - \\S.*$`, "u").test(h1 ?? "")) {
     throw new ExecutionContractError(`${label} has a non-canonical primary heading`);
@@ -1340,6 +1343,13 @@ function parseTask(text, label, expectedSlice, references = {}) {
     declaredFindingIds,
   });
   const attempts = parseAttempts(taskSections.get("Validation Attempts"));
+  for (const record of [...implementationChecks, ...findingsChecks, ...attempts]) {
+    if (field(record.body, 'Delivery ID') !== field(taskSections.get('References'), 'Delivery ID')
+      || field(record.body, 'Preparation revision') !== String(state.revision)
+      || !/^sha256:[a-f0-9]{64}$/u.test(field(record.body, 'Normative sha256'))
+      || !/^[a-f0-9-]{36}$/u.test(field(record.body, 'Operation attempt ID'))
+      || !/^[a-f0-9-]{36}$/u.test(field(record.body, 'Origin activation ID'))) throw new ExecutionContractError('evidence does not belong to delivery/preparation/attempt');
+  }
   const findings = blockerRecords(taskSections.get("Validation Findings"), "finding");
   const divergences = blockerRecords(taskSections.get("Divergences"), "divergence");
   validateFindingLifecycle(findings, attempts, findingsChecks);
@@ -1360,19 +1370,9 @@ function parseTask(text, label, expectedSlice, references = {}) {
   if (corrections.some((claim) => !changedAreas.includes(claim))) throw new ExecutionContractError(`${label} correction path is absent from Changed Areas`);
   const changedClaims = [...new Set([...changedAreas, ...corrections])];
   const checklist = taskSections.get("Checklist") ?? "";
-  const checklistRows = checklist.split("\n").filter((line) => line.length !== 0).map((line) => {
-    const match = line.match(/^- \[([ x])\] ([0-9]+\.[0-9]+) \S.* \| observable result: \S.* \| expected areas: \S.* \| requirement: \S.*$/u);
-    if (match === null) throw new ExecutionContractError(`${label} has malformed Checklist row: ${line}`);
-    const expectedAreas = line.match(/\| expected areas: (\S.*?) \| requirement: /u)?.[1];
-    if (expectedAreas === undefined) throw new ExecutionContractError(`${label} has malformed Checklist expected areas: ${line}`);
-    return {
-      done: match[1] === "x",
-      id: match[2],
-      implementationPathClaims: delimitedImplementationPathClaims(expectedAreas, `${label} Checklist ${match[2]} expected areas`),
-    };
-  });
-  if (checklistRows.length === 0) throw new ExecutionContractError(`${label} has no canonical checklist rows`);
-  if (new Set(checklistRows.map((row) => row.id)).size !== checklistRows.length) throw new ExecutionContractError(`${label} has duplicate Checklist rows`);
+  const authorityTask = parsePreparationArtifact(text, `tasks/${expectedSlice}.md`);
+  const declaredObligations = authorityTask.sections['Acceptance Obligations'].split('\n').map(line => ({ id: line.split(' | ')[0].slice(2) }));
+  const checklistRows = preparationChecklist(checklist, declaredObligations, label);
   const checklistComplete = checklistRows.every((row) => row.done);
   const workStarted = checklistRows.some((row) => row.done) || implementationChecks.length !== 0
     || findingsChecks.length !== 0 || attempts.length !== 0 || corrections.length !== 0
@@ -1500,9 +1500,8 @@ function parseTask(text, label, expectedSlice, references = {}) {
     base, final, implementationChecks, findingsChecks, delegationBlocker, retryExhausted, checklistComplete,
     changedAreas, corrections, changedClaims, currentAuxiliaryCheck,
     claims: [...new Set([...changedClaims, ...base.paths])],
-    implementationPathClaims: checklistRows.flatMap((row) => row.implementationPathClaims.map((raw) => ({
-      field: `Checklist ${row.id} expected areas`, raw,
-    }))),
+    implementationPathClaims: ['Authorized Areas', 'Expected Files', 'Existing Inputs'].flatMap(carrier =>
+      preparationPathClaims(authorityTask.sections[carrier], `${label} ${carrier}`).map(raw => ({ field: carrier, raw }))),
   };
 }
 
@@ -1668,7 +1667,7 @@ export async function resolveSemanticPhysicalImplementationTarget(specPath, { ra
 async function validatePlanningImplementationPaths(workspace, globalPlan, plans) {
   const serialRows = canonicalTableRows(
     globalPlan.sections.get("Serial Slice Order"),
-    "| Slice | Observable delivery | Dependencies | Requirements | Expected areas | Detailed plan |",
+    "| Slice | Observable delivery | Dependencies | Requirements | Authorized areas | Detailed plan |",
     "|---|---|---|---|---|---|",
     "Serial Slice Order",
   );
@@ -1683,7 +1682,7 @@ async function validatePlanningImplementationPaths(workspace, globalPlan, plans)
   }
   for (const [slice, plan] of plans) {
     const artifact = path.join(workspace.executionRoot, "plans", `${slice}.md`);
-    for (const raw of delimitedImplementationPathClaims(plan.sections.get("Likely Areas"), `${slice} plan Likely Areas`)) {
+    for (const raw of delimitedImplementationPathClaims(plan.sections.get("Authorized Areas"), `${slice} plan Likely Areas`)) {
       claims.push({ artifact, field: "Likely Areas", raw });
     }
   }
@@ -1694,7 +1693,19 @@ async function validateTaskImplementationPaths(workspace, tasks) {
   for (const [slice, task] of tasks) {
     const artifact = path.join(workspace.executionRoot, "tasks", `${slice}.md`);
     for (const claim of task.implementationPathClaims) {
-      await validateImplementationPathClaim(workspace, { artifact, ...claim });
+      const target = await resolveImplementationPathClaim(workspace, { artifact, ...claim });
+      if (claim.field === 'Existing Inputs') {
+        const sourceTask = path.join(logicalWorkspaceFor(workspace).executionRoot, 'tasks', `${slice}.md`);
+        const relative = path.relative(path.dirname(sourceTask), target.physicalTarget).split(path.sep).join('/');
+        const evidence = task.base.present ? task.base.entries : task.currentAuxiliaryCheck?.testedState ?? [];
+        const removed = evidence.some(entry => entry.path === relative && entry.expected === 'REMOVED');
+        if (removed) {
+          // Input existence is required at preparation/admission. A later
+          // owned Tested state may prove its removal; its absence is then the
+          // observed effect rather than a stale preparation declaration.
+          if (await lstatOrNull(target.physicalTarget) !== null) throw new ExecutionContractError('removed existing input is present');
+        } else await requireRealFile(target.physicalTarget, 'existing input');
+      }
     }
   }
 }
@@ -1941,7 +1952,7 @@ function markdownStructuralText(text) {
 
 function parseGlobalRows(text) {
   const { header, body } = parsePurpose(text, "tasks.md");
-  if (header.get("owner") !== "stnl-task-materializer" || header.get("status") !== "ready") {
+  if (header.get("owner") !== "stnl-execution-planner" || !["draft", "ready"].includes(header.get("status"))) {
     throw new ExecutionContractError("tasks.md has an invalid File Purpose Header owner or status");
   }
   const structuralBody = markdownStructuralText(body);
@@ -2015,7 +2026,7 @@ async function readPlanArtifacts(workspace, { validateImplementationPaths = fals
   const serialOrder = globalPlan.sections.get("Serial Slice Order");
   const serialRows = canonicalTableRows(
     serialOrder,
-    "| Slice | Observable delivery | Dependencies | Requirements | Expected areas | Detailed plan |",
+    "| Slice | Observable delivery | Dependencies | Requirements | Authorized areas | Detailed plan |",
     "|---|---|---|---|---|---|",
     "Serial Slice Order",
   );
@@ -2102,8 +2113,8 @@ async function executionArtifacts(workspace, { validateImplementationPaths = fal
   const currentPairMismatch = rows.some((row) => !row.done && (
     tasks.get(row.slice).fingerprint !== globalPlan.fingerprint || tasks.get(row.slice).revision !== globalPlan.revision
   ));
-  const pendingReplan = globalPlan.revisionMode !== null && (mappingMismatch || pairMismatches.length !== 0 || currentPairMismatch);
-  if (!pendingReplan && (globalPlan.status !== "ready" || [...plans.values()].some((plan) => plan.status !== "ready"))) {
+  const pendingReplan = globalPlan.revisionMode !== null && globalPlan.status === "draft";
+  if (!pendingReplan && globalPlan.status !== "draft" && (globalPlan.status !== "ready" || [...plans.values()].some((plan) => plan.status !== "ready"))) {
     throw new ExecutionContractError("materialized planning artifacts must all be ready and approved");
   }
   if (globalPlan.revisionMode === null && (rows.length !== sliceOrder.length || rows.some((row, index) => row.slice !== sliceOrder[index]))) {
@@ -2111,49 +2122,22 @@ async function executionArtifacts(workspace, { validateImplementationPaths = fal
   }
   if (globalPlan.revisionMode === null && pairMismatches.length !== 0) throw new ExecutionContractError(`${pairMismatches.join(", ")} plan/task authority does not agree`);
   if (pendingReplan) {
-    const historicalRevision = Math.max(...tasks.values().map((task) => task.revision));
-    if (globalPlan.revision !== historicalRevision + 1) throw new ExecutionContractError("pending REPLAN must increment Plan revision by exactly one");
-    if (globalPlan.revisionMode === "pristine-replacement" && [...tasks.values()].some((task) => !task.pristine)) {
-      throw new ExecutionContractError("pristine replacement retains operational task evidence");
-    }
-    if (globalPlan.revisionMode === "pristine-replacement" && globalPlan.supersessionMappings.length !== 0) {
-      throw new ExecutionContractError("pristine replacement cannot supersede execution history");
-    }
-    if (globalPlan.revisionMode === "pristine-replacement" && [...plans.values()].some((plan) => (
-      plan.fingerprint !== globalPlan.fingerprint || plan.revision !== globalPlan.revision || plan.status !== globalPlan.status
-    ))) {
-      throw new ExecutionContractError("pristine replacement candidate plans do not all match the proposed authority and revision");
-    }
-    if (globalPlan.revisionMode === "append-only-extension") {
-      if (pairMismatches.length !== 0) throw new ExecutionContractError("append-only extension changed historical plan/task authority");
-      if (rows.some((row) => !plans.has(row.slice))) throw new ExecutionContractError("append-only extension removed a historical plan");
-      const lastHistorical = Math.max(...rows.map((row) => Number(row.slice.slice("slice-".length))));
-      const appended = sliceOrder.filter((slice) => !tasks.has(slice));
-      if (appended.length === 0 || appended.some((slice) => Number(slice.slice("slice-".length)) <= lastHistorical)) {
-        throw new ExecutionContractError("append-only extension lacks monotonically appended plan slices");
+    if (mappingMismatch || pairMismatches.length !== 0) throw new ExecutionContractError('joint REPLAN must include complete paired Tasks and Plans');
+    if (globalPlan.revisionMode === 'pristine-replacement') {
+      if (globalPlan.revision < 2 || [...tasks.values()].some(task => !task.pristine || task.revision !== globalPlan.revision)
+        || globalPlan.supersessionMappings.length !== 0) throw new ExecutionContractError('pristine joint replacement has invalid revision or retained execution history');
+    } else {
+      const historical = rows.filter(row => tasks.get(row.slice).revision < globalPlan.revision);
+      const appended = rows.filter(row => tasks.get(row.slice).revision === globalPlan.revision);
+      if (!historical.length || !appended.length || Math.max(...historical.map(row => tasks.get(row.slice).revision)) + 1 !== globalPlan.revision
+        || appended.some(row => Number(row.slice.slice(6)) <= Math.max(...historical.map(old => Number(old.slice.slice(6)))) || !tasks.get(row.slice).pristine)
+        || historical.some(row => plans.get(row.slice).status !== 'ready')
+        || appended.some(row => plans.get(row.slice).status !== 'draft')) throw new ExecutionContractError('joint append-only draft lacks preserved history and new pristine deliveries');
+      const mapped = new Set(globalPlan.supersessionMappings.map(({source}) => source));
+      for (const {source, target} of globalPlan.supersessionMappings) {
+        if (!historical.some(row => row.slice === source && !row.done) || !appended.some(row => row.slice === target)) throw new ExecutionContractError('invalid joint supersession mapping');
       }
-      if (rows.some((row) => plans.get(row.slice)?.status !== "ready")
-        || appended.some((slice) => plans.get(slice).status !== globalPlan.status)) {
-        throw new ExecutionContractError("append-only candidate and historical plan review states disagree");
-      }
-      for (const { source, target } of globalPlan.supersessionMappings) {
-        const sourceRow = rows.find((row) => row.slice === source);
-        if (sourceRow === undefined || sourceRow.done) throw new ExecutionContractError(`supersession source ${source} is not an open historical slice`);
-        if (!appended.includes(target) || sliceOrder.indexOf(target) <= sliceOrder.indexOf(source)) {
-          throw new ExecutionContractError(`supersession target ${target} is not a newly appended later slice`);
-        }
-      }
-      const staleOpen = rows.filter((row) => !row.done && (
-        tasks.get(row.slice).fingerprint !== globalPlan.fingerprint || tasks.get(row.slice).revision !== globalPlan.revision
-      )).map((row) => row.slice);
-      const mappedSources = new Set(globalPlan.supersessionMappings.map(({ source }) => source));
-      if (staleOpen.some((slice) => !mappedSources.has(slice))) throw new ExecutionContractError("REPLAN does not supersede every prior-revision open slice");
-    }
-    for (const slice of sliceOrder) {
-      const plan = plans.get(slice);
-      if (!tasks.has(slice) && (plan.fingerprint !== globalPlan.fingerprint || plan.revision !== globalPlan.revision)) {
-        throw new ExecutionContractError(`${slice} pending plan is stale relative to the proposed revision`);
-      }
+      if (historical.some(row => !row.done && !mapped.has(row.slice))) throw new ExecutionContractError('joint REPLAN must preserve and map every prior open delivery');
     }
   }
   if (globalPlan.revisionMode !== null && !pendingReplan) {
@@ -2235,7 +2219,47 @@ export async function inspectExecutionState(specPath) {
   return inspectExecutionStateWithContext(specPath, null);
 }
 
-async function inspectExecutionStateWithContext(specPath, logicalWorkspace, {
+export async function preparationAuthorityAt(root) {
+  return projectPreparationAuthority(await readPreparationArtifacts(root));
+}
+
+export async function readExecutionActivation(specPath, { requireCurrent = true } = {}) {
+  const workspace = await resolveExecutionWorkspace(specPath);
+  const requirementsAuthority = requireCurrent ? `sha256:${await computeRequirementsAuthority(specPath)}`
+    : (await preparationAuthorityAt(workspace.executionRoot)).requirementsAuthority;
+  const activated = await readActivatedExecution({ executionRoot: workspace.executionRoot, requirementsAuthority,
+    projectAuthority: preparationAuthorityAt, validateSnapshot: validateApprovedPreparation, parseJson: parseStrictJson });
+  await validateOperationalChanges(workspace.executionRoot, activated.snapshot);
+  return activated;
+}
+
+async function inspectExecutionStateWithContext(specPath, logicalWorkspace, options = {}) {
+  if (logicalWorkspace !== null) return inspectExecutionStateUnchecked(specPath, logicalWorkspace, options);
+  const workspace = await resolveExecutionWorkspace(specPath);
+  const marker = await lstatOrNull(path.join(workspace.executionRoot, 'activation.json'));
+  const active = marker === null ? null : await readExecutionActivation(specPath, { requireCurrent: false });
+  const result = await inspectExecutionStateUnchecked(specPath, null, options);
+  if (result.state === 'EMPTY') return result;
+  if (active === null && result.globalPlan?.status !== 'draft') {
+    throw new ExecutionContractError('incompatible legacy or unactivated ready preparation preserved; joint REVIEW_PLAN activation required');
+  }
+  if (active !== null) {
+    const after = await readExecutionActivation(specPath, { requireCurrent: false });
+    if (JSON.stringify(active.activation) !== JSON.stringify(after.activation)) throw new ExecutionContractError('activation changed during state inspection; mixed read blocked');
+    return { ...result, activation: after.activation, preparation: after.authority };
+  }
+  return result;
+}
+
+export async function beginPreparedExecutionOperation(specPath, operation, sliceValue, expectedActivationId) {
+  const workspace = await resolveExecutionWorkspace(specPath);
+  const slice = `slice-${BigInt(sliceValue).toString(10).padStart(2, '0')}`;
+  return beginExecutionOperation({ workspace, operation, slice, expectedActivationId,
+    readActivated: () => readExecutionActivation(specPath),
+    preflight: () => preflightExecutionOperation(specPath, operation, sliceValue) });
+}
+
+async function inspectExecutionStateUnchecked(specPath, logicalWorkspace, {
   validateTerminalOwnership = true,
   validateImplementationPaths = false,
   privateAutomaticCheck = null,
@@ -2277,7 +2301,9 @@ async function inspectExecutionStateWithContext(specPath, logicalWorkspace, {
     const state = stale ? "REQUIREMENTS_CHANGED" : globalPlan.status === "ready" ? "PLANNED_READY" : "PLANNED_DRAFT";
     return withRecoveryTargets({ state, workspace, currentFingerprint, globalPlan, stale });
   }
+  const preparation = await preparationAuthorityAt(workspace.executionRoot);
   const artifacts = await executionArtifacts(workspace, { validateImplementationPaths, privateAutomaticCheck });
+  if (artifacts.globalPlan.status === 'draft') return withRecoveryTargets({ state: artifacts.pendingReplan ? 'PENDING_REPLAN_DRAFT' : 'PLANNED_DRAFT', workspace, currentFingerprint, ...artifacts, preparation });
   const stale = artifacts.globalPlan.fingerprint !== currentFingerprint;
   const allPristine = artifacts.rows.every((row) => !row.done && artifacts.tasks.get(row.slice).pristine);
   if (artifacts.pendingReplan) {
@@ -2416,12 +2442,11 @@ export function deriveRecoveryTargets(result) {
         ? [unscoped("PLAN", "empty-workspace")] : [];
       break;
     case "PLANNED_DRAFT": targets = [unscoped("REVIEW_PLAN", "planning-authority"), unscoped("REPLAN", "planning-authority")]; break;
-    case "PLANNED_READY": targets = [unscoped("MATERIALIZE_TASKS", "planning-authority"), unscoped("REPLAN", "planning-authority")]; break;
+    case "PLANNED_READY": targets = [unscoped("REVIEW_PLAN", "planning-authority"), unscoped("REPLAN", "planning-authority")]; break;
     case "PENDING_REPLAN_DRAFT": targets = [unscoped("REVIEW_PLAN", "pending-replan")]; break;
-    case "PENDING_REPLAN_READY": targets = [unscoped("MATERIALIZE_TASKS", "pending-replan")]; break;
+    case "PENDING_REPLAN_READY": targets = [unscoped("REVIEW_PLAN", "pending-replan")]; break;
     case "MATERIALIZED_PRISTINE":
       targets = [
-        unscoped("REVIEW_TASKS", "materialized-pristine"),
         scoped("EXECUTE_SLICE", currentFrontier(result), { owner: "serial-frontier" }),
         unscoped("REPLAN", "materialized-pristine"),
       ];
@@ -2576,20 +2601,14 @@ export function deriveNormalHandoff(result, completedOperation = null) {
     workflowSkillForOperation(completedOperation);
     if (new Set(["PLAN", "REPLAN"]).has(completedOperation)
       && new Set(["PLANNED_DRAFT", "PENDING_REPLAN_DRAFT"]).has(result.state)) operation = "REVIEW_PLAN";
-    else if (completedOperation === "REVIEW_PLAN"
-      && new Set(["PLANNED_READY", "PENDING_REPLAN_READY"]).has(result.state)) operation = "MATERIALIZE_TASKS";
-    else if (completedOperation === "MATERIALIZE_TASKS" && result.state === "MATERIALIZED_PRISTINE") operation = "REVIEW_TASKS";
-    else if (completedOperation === "MATERIALIZE_TASKS" && result.state === "EXECUTION_STARTED") operation = "EXECUTE_SLICE";
-    else if (completedOperation === "MATERIALIZE_TASKS"
-      && new Set(["IMPLEMENTED_AWAITING_VALIDATION", "FINDINGS_CORRECTED"]).has(result.state)) operation = "VALIDATE_SLICE";
-    else if (completedOperation === "REVIEW_TASKS" && result.state === "MATERIALIZED_PRISTINE") operation = "EXECUTE_SLICE";
+    else if (completedOperation === "REVIEW_PLAN" && result.state === "MATERIALIZED_PRISTINE") operation = "EXECUTE_SLICE";
     else if (completedOperation === "EXECUTE_SLICE" && result.state === "IMPLEMENTED_AWAITING_VALIDATION") operation = "VALIDATE_SLICE";
     else if (completedOperation === "APPLY_FINDINGS" && result.state === "FINDINGS_CORRECTED") operation = "VALIDATE_SLICE";
     else if (completedOperation === "VALIDATE_SLICE" && result.state === "VALIDATION_NEEDS_FIX") operation = "APPLY_FINDINGS";
     else if (completedOperation === "VALIDATE_SLICE" && result.state === "EXECUTION_STARTED") operation = "EXECUTE_SLICE";
   } else if (result.state === "EMPTY") operation = "PLAN";
   else if (result.state === "PLANNED_DRAFT") operation = "REVIEW_PLAN";
-  else if (result.state === "PLANNED_READY") operation = "MATERIALIZE_TASKS";
+  else if (result.state === "MATERIALIZED_PRISTINE") operation = "EXECUTE_SLICE";
   else if (result.state === "EXECUTION_STARTED") operation = "EXECUTE_SLICE";
   else if (result.state === "IMPLEMENTED_AWAITING_VALIDATION" || result.state === "FINDINGS_CORRECTED") operation = "VALIDATE_SLICE";
   if (operation === null) return null;
@@ -2760,198 +2779,6 @@ export async function validateExecutionCandidate(specPath, candidateExecutionRoo
   }
 }
 
-async function lstatRepairPath(filePath) {
-  try {
-    return await fs.lstat(filePath, { bigint: true });
-  } catch (error) {
-    if (error?.code === "ENOENT" || error?.code === "ENOTDIR") return null;
-    throw error;
-  }
-}
-
-function sameRepairIdentity(left, right) {
-  return left !== null && right !== null && left.dev === right.dev && left.ino === right.ino;
-}
-
-async function captureRepairFile(filePath, label) {
-  const before = await lstatRepairPath(filePath);
-  if (before === null || before.isSymbolicLink() || !before.isFile() || before.nlink !== 1n) {
-    throw new ExecutionContractError(`${label} must remain a single-link real file: ${filePath}`, [filePath]);
-  }
-  const handle = await fs.open(filePath, FS_CONSTANTS.O_RDONLY | (FS_CONSTANTS.O_NOFOLLOW ?? 0));
-  try {
-    const openedBefore = await handle.stat({ bigint: true });
-    if (!sameRepairIdentity(before, openedBefore) || !openedBefore.isFile() || openedBefore.nlink !== 1n) {
-      throw new ExecutionContractError(`${label} identity changed while opening: ${filePath}`, [filePath]);
-    }
-    const bytes = await handle.readFile();
-    const openedAfter = await handle.stat({ bigint: true });
-    const after = await lstatRepairPath(filePath);
-    if (!sameRepairIdentity(openedBefore, openedAfter) || !sameRepairIdentity(openedAfter, after)
-      || openedBefore.size !== openedAfter.size || openedBefore.mtimeNs !== openedAfter.mtimeNs
-      || openedBefore.ctimeNs !== openedAfter.ctimeNs || openedAfter.nlink !== 1n) {
-      throw new ExecutionContractError(`${label} changed while being read: ${filePath}`, [filePath]);
-    }
-    return Object.freeze({ filePath, bytes, metadata: openedAfter });
-  } finally {
-    await handle.close();
-  }
-}
-
-function repairSnapshotsMatch(left, right) {
-  return sameRepairIdentity(left.metadata, right.metadata) && left.bytes.equals(right.bytes);
-}
-
-async function createRepairOwnedFile(filePath, bytes, mode, label) {
-  let handle;
-  try {
-    handle = await fs.open(filePath, "wx", mode);
-    await handle.writeFile(bytes);
-    await handle.sync();
-    const metadata = await handle.stat({ bigint: true });
-    if (!metadata.isFile() || metadata.nlink !== 1n) {
-      throw new ExecutionContractError(`${label} is not a single-link real file: ${filePath}`, [filePath]);
-    }
-    await handle.close();
-    handle = null;
-    const snapshot = await captureRepairFile(filePath, label);
-    if (!sameRepairIdentity(snapshot.metadata, metadata) || !snapshot.bytes.equals(bytes)) {
-      throw new ExecutionContractError(`${label} ownership changed during creation; foreign path preserved: ${filePath}`, [filePath]);
-    }
-    return snapshot;
-  } catch (error) {
-    await handle?.close();
-    throw error;
-  }
-}
-
-async function removeRepairOwnedPath(snapshot, label) {
-  const current = await lstatRepairPath(snapshot.filePath);
-  if (current === null) return;
-  if (!sameRepairIdentity(current, snapshot.metadata)) {
-    throw new ExecutionContractError(`${label} ownership changed; foreign path preserved: ${snapshot.filePath}`, [snapshot.filePath]);
-  }
-  await fs.unlink(snapshot.filePath);
-}
-
-async function linkRepairOwnedFile(source, target, label) {
-  try {
-    await fs.link(source.filePath, target);
-  } catch (error) {
-    if (error?.code === "EEXIST") return false;
-    throw error;
-  }
-  const installed = await lstatRepairPath(target);
-  if (!sameRepairIdentity(installed, source.metadata)) {
-    throw new ExecutionContractError(`${label} identity changed during no-replace publication: ${target}`, [target]);
-  }
-  return true;
-}
-
-function repairLockPath(workspace) {
-  return `${workspace.executionRoot}.stnl-contract-repair.lock`;
-}
-
-async function acquireContractRepairLock(workspace) {
-  const filePath = repairLockPath(workspace);
-  const owner = randomUUID();
-  const bytes = Buffer.from(`${JSON.stringify({ version: 1, owner, pid: process.pid })}\n`, "utf8");
-  let snapshot;
-  try {
-    snapshot = await createRepairOwnedFile(filePath, bytes, 0o600, "contract repair lock");
-  } catch (error) {
-    if (error?.code === "EEXIST") {
-      throw new ExecutionContractError(`another contract repair owns the lock: ${filePath}`, [filePath]);
-    }
-    throw error;
-  }
-  return Object.freeze({ ...snapshot, owner });
-}
-
-async function releaseContractRepairLock(lock) {
-  const current = await captureRepairFile(lock.filePath, "contract repair lock");
-  if (!repairSnapshotsMatch(lock, current)) {
-    throw new ExecutionContractError(`contract repair lock ownership changed; foreign lock preserved: ${lock.filePath}`, [lock.filePath]);
-  }
-  const retiredPath = `${lock.filePath}.retired-${lock.owner}`;
-  await fs.rename(lock.filePath, retiredPath);
-  const retired = await captureRepairFile(retiredPath, "retired contract repair lock");
-  if (!sameRepairIdentity(retired.metadata, lock.metadata) || !retired.bytes.equals(lock.bytes)) {
-    if (await lstatRepairPath(lock.filePath) === null) await fs.link(retiredPath, lock.filePath);
-    throw new ExecutionContractError(`contract repair lock changed during release; foreign lock preserved: ${retiredPath}`, [retiredPath]);
-  }
-  await removeRepairOwnedPath(retired, "retired contract repair lock");
-}
-
-async function assertContractRepairLock(lock) {
-  const current = await captureRepairFile(lock.filePath, "contract repair lock");
-  if (!repairSnapshotsMatch(lock, current)) {
-    throw new ExecutionContractError(`contract repair lock ownership changed; foreign lock preserved: ${lock.filePath}`, [lock.filePath]);
-  }
-}
-
-async function withContractRepairLock(workspace, action) {
-  const lock = await acquireContractRepairLock(workspace);
-  let result;
-  let actionError = null;
-  try {
-    result = await action(lock);
-  } catch (error) {
-    actionError = error;
-  }
-  let releaseError = null;
-  try {
-    await releaseContractRepairLock(lock);
-  } catch (error) {
-    releaseError = error;
-  }
-  if (actionError !== null && releaseError !== null) {
-    const combined = new ExecutionContractError(
-      `contract repair failed: ${actionError.message}; lock release also failed: ${releaseError.message}`,
-      [...new Set([...(actionError.findings ?? []), ...(releaseError.findings ?? [])])],
-    );
-    combined.cause = new AggregateError([actionError, releaseError], "repair action and lock release both failed");
-    throw combined;
-  }
-  if (actionError !== null) throw actionError;
-  if (releaseError !== null) throw releaseError;
-  return result;
-}
-
-async function restoreClaimedRepairSource(backup, artifact) {
-  const live = await lstatRepairPath(artifact);
-  if (live === null) {
-    const restored = await linkRepairOwnedFile(backup, artifact, "contract repair rollback");
-    if (!restored) return false;
-  }
-  await removeRepairOwnedPath(backup, "contract repair source backup");
-  return live === null;
-}
-
-async function rollbackRepairPublication({ artifact, published, backup }) {
-  let live;
-  try {
-    live = await captureRepairFile(artifact, "published contract repair candidate");
-  } catch {
-    live = null;
-  }
-  if (live === null || !repairSnapshotsMatch(live, published)) {
-    await removeRepairOwnedPath(backup, "contract repair source backup");
-    return false;
-  }
-  const retiredPath = `${artifact}.stnl-contract-repair-rollback-${process.pid}-${randomUUID()}`;
-  await fs.rename(artifact, retiredPath);
-  const retired = await captureRepairFile(retiredPath, "retired contract repair candidate");
-  if (!repairSnapshotsMatch(retired, published)) {
-    if (await lstatRepairPath(artifact) === null) await fs.link(retiredPath, artifact);
-    throw new ExecutionContractError(`published repair ownership changed during rollback; foreign bytes preserved: ${retiredPath}`, [retiredPath]);
-  }
-  const restored = await linkRepairOwnedFile(backup, artifact, "contract repair rollback");
-  if (restored) await removeRepairOwnedPath(backup, "contract repair source backup");
-  await removeRepairOwnedPath(retired, "retired contract repair candidate");
-  return restored;
-}
-
 function repairBlockedError(violation) {
   const found = violation.foundField === null ? "missing field" : `'${violation.foundField}'`;
   const expected = violation.expectedField ?? "known canonical field";
@@ -3007,136 +2834,157 @@ function applyMechanicalRepair(text, violation) {
   });
 }
 
-export async function repairExecutionContract(specPath) {
-  let initialViolation;
-  try {
-    const state = await inspectExecutionState(specPath);
-    return Object.freeze({ status: "UNCHANGED", repairs: Object.freeze([]), state: state.state });
-  } catch (error) {
-    if (!(error instanceof ExecutionContractError)) throw error;
-    if (error.contractViolation?.repairability !== "mechanical") throw error;
-    initialViolation = error.contractViolation;
+// Repair is a restoration of one approved Task, never admission of dirty live bytes.
+// Capture identity/metadata too: matching hashes alone do not authorize replacing
+// a file changed or replaced by another writer while the candidate was checked.
+const repairEqual = (left, right) => JSON.stringify(left) === JSON.stringify(right);
+function repairMetadata(metadata, root = false) {
+  return { dev: String(metadata.dev), ino: String(metadata.ino), mode: metadata.mode,
+    uid: metadata.uid, gid: metadata.gid, nlink: metadata.nlink,
+    ...(!root ? { size: metadata.size, mtimeMs: metadata.mtimeMs, ctimeMs: metadata.ctimeMs } : {}) };
+}
+async function captureRepairTree(root) {
+  const tree = await captureExecutionTree(root);
+  if (tree === null) throw new ExecutionContractError('repair source tree is absent');
+  const metadata = [];
+  for (const relative of ['', ...tree.files.map(entry => entry.path)]) {
+    metadata.push({ path: relative, ...repairMetadata(await fs.lstat(path.join(root, relative)), relative === '') });
   }
-
-  const workspace = await resolveExecutionWorkspace(specPath);
-  const artifact = path.resolve(String(initialViolation.artifact));
-  const taskRoot = path.join(workspace.executionRoot, "tasks");
-  if (!pathIsWithin(artifact, taskRoot) || path.dirname(artifact) !== taskRoot || !SLICE_FILE.test(path.basename(artifact))) {
-    throw repairBlockedError(Object.freeze({ ...initialViolation, repairability: "blocked", reason: "artifact-outside-task-root" }));
-  }
-  const initialSource = await captureRepairFile(artifact, "contract repair artifact");
-  const original = initialSource.bytes;
-  const relativeArtifact = path.relative(workspace.executionRoot, artifact);
-  const shadow = await createCandidateShadow(workspace);
-  try {
-    await fs.cp(workspace.executionRoot, shadow.executionRoot, { recursive: true });
-    await assertCandidateTreeSafe(shadow.executionRoot);
-    const repairs = [];
-    let candidateState;
-    while (true) {
-      try {
-        candidateState = await inspectExecutionStateWithContext(shadow.specPath, workspace);
-        break;
-      } catch (error) {
-        if (!(error instanceof ExecutionContractError) || error.contractViolation?.repairability !== "mechanical") throw error;
-        const violation = error.contractViolation;
-        const shadowArtifact = path.resolve(String(violation.artifact));
-        const shadowTaskRoot = path.join(shadow.executionRoot, "tasks");
-        const shadowRelative = path.relative(shadow.executionRoot, shadowArtifact);
-        if (!pathIsWithin(shadowArtifact, shadowTaskRoot) || path.dirname(shadowArtifact) !== shadowTaskRoot || !SLICE_FILE.test(path.basename(shadowArtifact))) {
-          throw repairBlockedError(Object.freeze({ ...violation, repairability: "blocked", reason: "artifact-outside-task-root" }));
-        }
-        if (shadowRelative !== relativeArtifact) {
-          throw repairBlockedError(Object.freeze({ ...violation, repairability: "blocked", reason: "multi-artifact-repair-is-not-atomic" }));
-        }
-        const before = await fs.readFile(shadowArtifact, "utf8");
-        const applied = applyMechanicalRepair(before, violation);
-        await fs.writeFile(shadowArtifact, applied.text, "utf8");
-        repairs.push(applied.repair);
-        if (repairs.length > 100) {
-          throw repairBlockedError(Object.freeze({ ...violation, repairability: "blocked", reason: "repair-count-exceeds-bounded-limit" }));
-        }
-      }
+  const after = await captureExecutionTree(root);
+  if (!repairEqual(after, tree)) throw new ExecutionContractError('repair source changed during capture');
+  for (const entry of metadata) {
+    const { path: relative, ...before } = entry;
+    if (!repairEqual(before, repairMetadata(await fs.lstat(path.join(root, relative)), relative === ''))) {
+      throw new ExecutionContractError('repair source metadata changed during capture');
     }
-    const candidateBytes = await fs.readFile(path.join(shadow.executionRoot, relativeArtifact));
-    return await withContractRepairLock(workspace, async (lock) => {
-      const currentSource = await captureRepairFile(artifact, "contract repair source");
-      if (!repairSnapshotsMatch(currentSource, initialSource)) {
-        throw new ExecutionContractError(`contract repair source changed during candidate validation: ${artifact}`, [artifact]);
-      }
-
-      const stagePath = `${artifact}.stnl-contract-repair-stage-${process.pid}-${randomUUID()}`;
-      const backupPath = path.join(
-        path.dirname(workspace.executionRoot),
-        `.${path.basename(workspace.executionRoot)}.stnl-contract-repair-backup-${process.pid}-${randomUUID()}`,
-      );
-      let stage = null;
-      let backup = null;
-      let published = null;
-      try {
-        stage = await createRepairOwnedFile(stagePath, candidateBytes, Number(currentSource.metadata.mode), "contract repair candidate stage");
-        await assertContractRepairLock(lock);
-        await fs.rename(artifact, backupPath);
-        backup = await captureRepairFile(backupPath, "contract repair source backup");
-        if (!sameRepairIdentity(backup.metadata, initialSource.metadata) || !backup.bytes.equals(original)) {
-          await restoreClaimedRepairSource(backup, artifact);
-          backup = null;
-          throw new ExecutionContractError(`contract repair concurrent source changed before publication; publication aborted: ${artifact}`, [artifact]);
-        }
-
-        if (!await linkRepairOwnedFile(stage, artifact, "contract repair candidate publication")) {
-          await restoreClaimedRepairSource(backup, artifact);
-          backup = null;
-          throw new ExecutionContractError(`contract repair concurrent source occupied the publication path; publication aborted: ${artifact}`, [artifact]);
-        }
-        const stageMetadata = stage.metadata;
-        await removeRepairOwnedPath(stage, "contract repair candidate stage");
-        stage = null;
-        published = await captureRepairFile(artifact, "published contract repair candidate");
-        if (!sameRepairIdentity(published.metadata, stageMetadata)
-          || !published.bytes.equals(candidateBytes)) {
-          throw new ExecutionContractError(`contract repair candidate changed during publication: ${artifact}`, [artifact]);
-        }
-
-        const state = await inspectExecutionState(specPath);
-        const readback = await captureRepairFile(artifact, "strict contract repair readback");
-        if (!repairSnapshotsMatch(readback, published) || !readback.bytes.equals(candidateBytes)) {
-          throw new ExecutionContractError(`contract repair strict readback lost publication ownership: ${artifact}`, [artifact]);
-        }
-        const retainedSource = await captureRepairFile(backupPath, "contract repair source backup");
-        if (!sameRepairIdentity(retainedSource.metadata, backup.metadata) || !retainedSource.bytes.equals(original)) {
-          backup = retainedSource;
-          throw new ExecutionContractError(`contract repair source changed through an open writer during readback: ${artifact}`, [artifact]);
-        }
-        await removeRepairOwnedPath(backup, "contract repair source backup");
-        backup = null;
-        return Object.freeze({
-          status: "REPAIRED",
-          repairs: Object.freeze(repairs),
-          state: state.state ?? candidateState.state,
-        });
-      } catch (error) {
-        if (published !== null && backup !== null) {
-          await rollbackRepairPublication({ artifact, published, backup });
-          backup = null;
-        } else if (backup !== null) {
-          await restoreClaimedRepairSource(backup, artifact);
-          backup = null;
-        }
-        if (stage !== null) await removeRepairOwnedPath(stage, "contract repair candidate stage");
-        throw error;
-      }
-    });
-  } finally {
-    await fs.rm(shadow.shadowRoot, { recursive: true, force: true });
   }
+  return { tree, metadata };
+}
+async function captureRepairRequirements(workspace) {
+  const before = repairMetadata(await fs.lstat(workspace.authorityPath));
+  const authority = await readOwnedFile(workspace.authorityPath);
+  const after = repairMetadata(await fs.lstat(workspace.authorityPath));
+  if (!repairEqual(before, after) || before.dev !== authority.identity.dev || before.ino !== authority.identity.ino) {
+    throw new ExecutionContractError('repair requirements changed during capture');
+  }
+  const shared = workspace.kind === 'lifecycle' ? path.join(workspace.specRoot, 'shared') : null;
+  return { authority: { metadata: after, sha256: `sha256:${createHash('sha256').update(authority.bytes).digest('hex')}` },
+    shared: shared && await lstatOrNull(shared) ? await captureRepairTree(shared) : null };
 }
 
-export async function preflightExecutionOperation(specPath, operation, sliceValue = null) {
+export async function repairExecutionContract(specPath, { checkpoint = null } = {}) {
+  try { const result = await inspectExecutionState(specPath); return { status: 'UNCHANGED', repairs: [], state: result.state }; }
+  catch (error) {
+    const damagedManifest = error.code === 'EXECUTION_PUBLICATION_BLOCKED'
+      && error.message === 'execution publication: activation manifest does not cover current artifacts';
+    if (!damagedManifest && (!(error instanceof ExecutionContractError) || error.contractViolation?.repairability !== 'mechanical')) throw error;
+  }
+  const workspace = await resolveExecutionWorkspace(specPath);
+  const requirements = await captureRepairRequirements(workspace);
+  const source = await captureRepairTree(workspace.executionRoot);
+  const markerPath = path.join(workspace.executionRoot, 'activation.json');
+  const marker = await readOwnedFile(markerPath);
+  const activation = parseStrictJson(marker.bytes.toString('utf8'));
+  if (activation.activeAttempt) throw new ExecutionContractError('active/uncertain attempt blocks mechanical repair');
+  const requirementsAuthority = `sha256:${await computeRequirementsAuthority(specPath)}`;
+  const assertRequirements = async () => {
+    if (!repairEqual(await captureRepairRequirements(workspace), requirements)) throw new ExecutionContractError('repair requirements/base changed');
+  };
+  const assertSource = async root => {
+    await assertRequirements();
+    if (!repairEqual(await captureRepairTree(root), source)) throw new ExecutionContractError('repair damaged source/base changed');
+    const current = await readOwnedFile(path.join(root, 'activation.json'));
+    if (!repairEqual(current.identity, marker.identity) || !current.bytes.equals(marker.bytes)) throw new ExecutionContractError('repair expected manifest changed');
+  };
+  await assertSource(workspace.executionRoot);
+  const shadow = await createCandidateShadow(workspace);
+  const repairs = [];
+  let repairedArtifact = null;
+  let finalState;
+  let publication;
+  try {
+    await fs.cp(workspace.executionRoot, shadow.executionRoot, { recursive: true });
+    await assertSource(workspace.executionRoot);
+    for (;;) {
+      try { await inspectExecutionStateWithContext(shadow.specPath, workspace); break; }
+      catch (error) {
+        if (!(error instanceof ExecutionContractError) || error.contractViolation?.repairability !== 'mechanical') throw error;
+        const violation = error.contractViolation;
+        const relative = path.relative(shadow.executionRoot, violation.artifact);
+        if (!/^tasks\/slice-[0-9]{2,}\.md$/u.test(relative) || (repairedArtifact !== null && relative !== repairedArtifact)) {
+          throw new ExecutionContractError('repair must affect one declared task');
+        }
+        repairedArtifact = relative;
+        const applied = applyMechanicalRepair(await fs.readFile(violation.artifact, 'utf8'), violation);
+        await fs.writeFile(violation.artifact, applied.text, 'utf8'); repairs.push(applied.repair);
+        if (repairs.length > 100) throw new ExecutionContractError('repair exceeds bounded limit');
+      }
+    }
+    if (repairs.length === 0) throw new ExecutionContractError('manifest damage has no recognized lossless Task alias');
+    const restored = await captureExecutionTree(shadow.executionRoot);
+    const changed = restored.files.filter(entry => !repairEqual(entry, source.tree.files.find(prior => prior.path === entry.path)));
+    if (restored.files.length !== source.tree.files.length || changed.length !== 1 || changed[0].path !== repairedArtifact
+      || changed[0].sha256 !== activation.artifacts?.find(entry => entry.path === repairedArtifact)?.sha256) {
+      throw new ExecutionContractError('repair is not byte-identical to the approved Task manifest');
+    }
+    const readRestored = async root => {
+      const result = await readActivatedExecution({ executionRoot: root, requirementsAuthority,
+        projectAuthority: preparationAuthorityAt, validateSnapshot: validateApprovedPreparation, parseJson: parseStrictJson });
+      await validateOperationalChanges(root, result.snapshot);
+      if (!repairEqual(result.activation, activation)) throw new ExecutionContractError('repair expected activation differs');
+      return result;
+    };
+    // The ordinary strict resolver proves every artifact, snapshot and authority
+    // in the restored image. It has no dirty-image option or manifest exception.
+    await readRestored(shadow.executionRoot);
+    await validateExecutionCandidate(specPath, shadow.executionRoot);
+    const assertRestored = async root => {
+      if (!repairEqual((await captureExecutionTree(root)).files, restored.files)) throw new ExecutionContractError('repair restored candidate changed');
+      await readRestored(root);
+    };
+    publication = await publishExecutionUpdate({ workspace, candidateExecutionRoot: shadow.executionRoot,
+      expectedTree: source.tree, expectedActivationId: activation.activationId,
+      readActivated: async () => {
+        const current = await readOwnedFile(markerPath);
+        if (repairEqual(current.identity, marker.identity) && current.bytes.equals(marker.bytes)) {
+          await assertSource(workspace.executionRoot);
+          await assertRestored(shadow.executionRoot);
+          return readRestored(shadow.executionRoot);
+        }
+        await assertRequirements();
+        const admitted = await readExecutionActivation(specPath);
+        const files = entries => entries.filter(entry => entry.path !== 'activation.json');
+        if (!repairEqual(files(admitted.tree.files), files(restored.files))) throw new ExecutionContractError('repair readback image changed');
+        finalState = (await inspectExecutionState(specPath)).state;
+        await assertRequirements();
+        return admitted;
+      },
+      authorizeDiff: async root => { await assertSource(workspace.executionRoot); await assertRestored(root); },
+      validateCandidate: async root => { await validateExecutionCandidate(specPath, root); return (await readRestored(root)).authority; },
+      checkpoint: async (phase, allocation) => {
+        if (checkpoint) await checkpoint(phase, allocation);
+        if (phase === 'before-backup') { await assertSource(workspace.executionRoot); await assertRestored(allocation.stage); }
+        // Recheck the exact moved image before installing and before activation.
+        // A concurrent open writer makes compensation uncertain: retain its bytes.
+        if (phase === 'after-backup' || phase === 'before-activation') await assertSource(allocation.backup);
+      },
+    });
+  } catch (error) {
+    error.repairCandidate = shadow.executionRoot;
+    error.message += `; retained repair candidate ${shadow.executionRoot}`;
+    throw error;
+  }
+  // Confirmed publication is never rolled back because transient cleanup failed.
+  try { await fs.rm(shadow.shadowRoot, { recursive: true, force: true }); }
+  catch (error) { publication = { ...publication, cleanup: 'pending', cleanupDiagnostics: [...(publication.cleanupDiagnostics ?? []), error.message], retainedCandidate: shadow.executionRoot }; }
+  return { status: 'REPAIRED', repairs, state: finalState, ...publication };
+}
+
+export async function preflightExecutionOperation(specPath, operation, sliceValue = null, { owner = null } = {}) {
   const normalizedOperation = String(operation);
   const result = await inspectExecutionStateWithContext(specPath, null, {
     validateTerminalOwnership: normalizedOperation !== "REPLAN",
-    validateImplementationPaths: new Set(["MATERIALIZE_TASKS", "EXECUTE_SLICE"]).has(normalizedOperation),
+    validateImplementationPaths: new Set(["PLAN", "REVIEW_PLAN", "EXECUTE_SLICE"]).has(normalizedOperation),
   });
   if (!OPERATIONS.has(normalizedOperation)) {
     throw new ExecutionContractError(
@@ -3152,6 +3000,10 @@ export async function preflightExecutionOperation(specPath, operation, sliceValu
       [],
       result.recoveryTargets,
     );
+  }
+  if (result.activation?.activeAttempt) {
+    if (!owner || !SLICE_OPERATIONS.has(normalizedOperation)) throw new ExecutionContractError('active or uncertain operation blocks conflicting admission');
+    assertExecutionAttempt(result.activation, owner);
   }
   const needsSlice = SLICE_OPERATIONS.has(normalizedOperation);
   const hasSlice = sliceValue !== null && sliceValue !== undefined;
@@ -3184,14 +3036,15 @@ export async function preflightExecutionOperation(specPath, operation, sliceValu
   const allowed = OPERATION_STATES.get(normalizedOperation);
   const exactMandatoryRecovery = mandatoryRecovery !== undefined
     && mandatoryRecovery.operation === normalizedOperation && mandatoryRecovery.slice === slice;
-  if (!allowed.has(result.state) && !exactMandatoryRecovery) throw recoveryError(normalizedOperation, result);
-  if (!result.legalOperations.some((target) => target.operation === normalizedOperation && target.slice === slice)) {
+  if (!result.activation?.activeAttempt && !allowed.has(result.state) && !exactMandatoryRecovery) throw recoveryError(normalizedOperation, result);
+  if (!result.activation?.activeAttempt && !result.legalOperations.some((target) => target.operation === normalizedOperation && target.slice === slice)) {
     throw recoveryError(normalizedOperation, result);
   }
   const operationTargets = result.recoveryTargets.filter((target) => target.operation === normalizedOperation);
-  if (operationTargets.length !== 0 && !operationTargets.some((target) => target.slice === slice)) {
+  if (!result.activation?.activeAttempt && operationTargets.length !== 0 && !operationTargets.some((target) => target.slice === slice)) {
     throw recoveryError(normalizedOperation, result);
   }
+  if (result.activation?.activeAttempt && (owner.operation !== normalizedOperation || owner.slice !== slice)) throw new ExecutionContractError('owner request differs from admitted operation');
   if (slice !== null && !result.tasks?.has(slice)) throw new ExecutionContractError(`${slice} is absent from the execution artifacts`);
   if (slice !== null) {
     const selectedRow = result.rows.find((row) => row.slice === slice);

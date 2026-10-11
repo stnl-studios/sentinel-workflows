@@ -1,9 +1,12 @@
 #!/usr/bin/env node
 
 import path from "node:path";
+import fs from "node:fs/promises";
+import os from "node:os";
+import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import {
-  deriveNormalHandoff,
+  deriveNormalHandoff, beginPreparedExecutionOperation,
   ExecutionContractError,
   inspectExecutionState,
   preflightExecutionOperation,
@@ -11,7 +14,17 @@ import {
   validateExecutionCandidate,
 } from "./execution-state.mjs";
 
+import { readOperationOwner, parseStrictJson } from "./execution-publication.mjs";
+
 export async function main(arguments_) {
+  if (arguments_.length === 4 && arguments_[1] === '--begin') {
+    const [specPath, , operation, slice] = arguments_;
+    const current = await preflightExecutionOperation(specPath, operation, slice);
+    const admitted = await beginPreparedExecutionOperation(specPath, operation, slice, current.activation.activationId);
+    const ownerFile = path.join(await fs.realpath(os.tmpdir()), `stnl-operation-owner-${randomUUID()}.json`);
+    await fs.writeFile(ownerFile, JSON.stringify({ specPath: await fs.realpath(specPath), ...admitted }) + '\n', { flag: 'wx', mode: 0o600 });
+    process.stdout.write(JSON.stringify({ ...admitted, ownerFile }) + '\n'); return 0;
+  }
   const candidateMode = arguments_.length === 3 && arguments_[1] === "--candidate";
   const handoffMode = arguments_.length === 3 && arguments_[1] === "--handoff-after";
   const repairMode = arguments_.length === 2 && arguments_[1] === "--repair-known-contract";
@@ -47,9 +60,16 @@ export async function main(arguments_) {
     if (repairMode) {
       const result = await repairExecutionContract(arguments_[0]);
       process.stdout.write(`PASS: contract repair status=${result.status} repairs=${result.repairs.length} state=${result.state}\n`);
+      if (result.publication) process.stdout.write(`REPAIR_PUBLICATION: ${JSON.stringify({
+        publication: result.publication, cleanup: result.cleanup, expectedActivationId: result.expectedActivationId,
+        retainedBackup: result.retainedBackup, allocation: result.allocation,
+        cleanupDiagnostics: result.cleanupDiagnostics ?? [], retainedCandidate: result.retainedCandidate ?? null,
+      })}\n`);
       return 0;
     }
-    const result = await preflightExecutionOperation(arguments_[0], arguments_[1], arguments_[2] ?? null);
+    const managed = process.env.STNL_MANAGED_CONTEXT ? parseStrictJson(process.env.STNL_MANAGED_CONTEXT) : null;
+    const owner = managed?.owner ?? (process.env.STNL_OPERATION_OWNER_FILE ? await readOperationOwner(arguments_[0]) : null);
+    const result = await preflightExecutionOperation(arguments_[0], arguments_[1], arguments_[2] ?? null, { owner });
     process.stdout.write(`PASS: ${result.operation} preflight state=${result.state}${result.slice === null ? "" : ` slice=${result.slice}`} authority=sha256:${result.currentFingerprint}\n`);
     if (result.mandatoryRecovery !== null) {
       process.stdout.write(`MANDATORY_RECOVERY: ${JSON.stringify(result.mandatoryRecovery)}\n`);

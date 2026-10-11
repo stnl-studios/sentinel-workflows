@@ -1,7 +1,10 @@
 import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { computeRequirementsAuthority, preflightExecutionOperation } from './execution-state.mjs';
+import { computeRequirementsAuthority, preflightExecutionOperation, readExecutionActivation, beginPreparedExecutionOperation } from './execution-state.mjs';
+
+import { assertExecutionAttempt } from './execution-publication.mjs';
+import { verifyNativeRunnerReceipt } from './capture-runner-response.mjs';
 
 const CONTEXT_ENV = 'STNL_MANAGED_CONTEXT';
 const SPEC_ENV = 'STNL_MANAGED_SPEC_PATH';
@@ -111,8 +114,11 @@ export async function createManagedSliceContext({
   }
   if (typeof officialPreflight.state !== 'string' || officialPreflight.state === '') fail('preflight state is incomplete');
 
+  const admitted = await beginPreparedExecutionOperation(canonicalSpec, operation, BigInt(slice.slice(6)).toString(10), officialPreflight.activationId);
   return Object.freeze({
-    version: 3,
+    version: 4,
+    owner: admitted.owner,
+    expectedActivationId: admitted.expectedActivationId,
     operation,
     slice,
     specPath: canonicalSpec,
@@ -132,7 +138,7 @@ export async function createManagedSliceContext({
 }
 
 export function managedEnvironment(environment, context) {
-  if (context?.version !== 3 || !OPERATIONS.has(context.operation)) fail('context is invalid');
+  if (context?.version !== 4 || !OPERATIONS.has(context.operation)) fail('context is invalid');
   if (environment[ADAPTER_ENV] !== undefined && environment[ADAPTER_ENV] !== context.identity.adapter.path) {
     fail('configured adapter disagrees with managed context');
   }
@@ -157,11 +163,12 @@ export function readManagedSliceContext(environment = process.env) {
   if (typeof raw !== 'string' || raw.trim() === '') fail('context is absent or invalid');
   let context;
   try { context = JSON.parse(raw); } catch { fail('context JSON is invalid'); }
-  if (context?.version !== 3 || !OPERATIONS.has(context.operation)) fail('context identity is invalid');
+  if (context?.version !== 4 || !OPERATIONS.has(context.operation)) fail('context identity is invalid');
   canonical(context.specPath, 'context SPEC_PATH');
   canonical(context.workspace, 'context workspace');
   validSlice(context.slice);
   validAuthority(context.authority);
+  if (!context.owner || context.owner.operation !== context.operation || context.owner.slice !== context.slice) fail('admitted operation ownership missing');
   if (!Array.isArray(context.legalOperations) || typeof context.state !== 'string' || context.state === '') {
     fail('context preflight is incomplete');
   }
@@ -210,7 +217,10 @@ export async function assertManagedRunnerReceipt({ operation, slice, workspace, 
     if (error.code === 'ENOENT') return null;
     throw error;
   });
-  if (context === null && active === null) return null;
+  if (context === null && active === null) {
+    await verifyNativeRunnerReceipt({ operation, slice, workspace, receiptFile, semanticResponseFile });
+    return null;
+  }
   if (receiptFile === undefined) fail('managed runner receipt is required; use the configured bridge and supply the receipt returned by the adapter');
   if (context === null || active === null) fail('managed context and active broker invocation are required');
   if (active.operation !== context.operation || active.slice !== context.slice
@@ -237,6 +247,7 @@ export async function assertManagedRunnerReceipt({ operation, slice, workspace, 
   if ((!accepted && !rejected) || receipt.runnerAgent !== 'stnl_validation_runner'
     || receipt.operation !== operation || receipt.slice !== context.slice || receipt.sequence !== active.sequence
     || receipt.authority !== context.authority
+    || JSON.stringify(receipt.owner) !== JSON.stringify(context.owner)
     || !Number.isSafeInteger(receipt.attempt) || receipt.attempt < 1 || receipt.attempt > 3
     || receiptPath !== path.join(tmpdir, `${stem}.receipt.json`)
     || responsePath !== path.join(tmpdir, `${stem}.response.json`)
@@ -251,6 +262,7 @@ export async function assertManagedRunnerReceipt({ operation, slice, workspace, 
     if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.nlink !== 1) fail('runner evidence must be regular non-symlink files');
   }
   const started = JSON.parse(await fs.readFile(startedPath, 'utf8'));
+  if (JSON.stringify(started.owner) !== JSON.stringify(context.owner)) fail('runner origin/owner binding differs');
   if (started.operation !== operation || started.sequence !== active.sequence
     || started.slice !== context.slice || started.attempt !== receipt.attempt
     || started.authority !== context.authority) fail('runner start identity disagrees');
@@ -304,12 +316,13 @@ export async function assertManagedRunnerReceipt({ operation, slice, workspace, 
     || threadId !== receipt.threadId || finalMessage !== bytes.toString('utf8')) {
     fail('receipt is not backed by the completed SDK turn and exact response');
   }
+  assertExecutionAttempt((await readExecutionActivation(context.specPath)).activation, context.owner);
   if (`sha256:${await computeRequirementsAuthority(context.specPath)}` !== context.authority) fail('runner receipt authority is stale');
   if (rejected) {
     // A diagnostic can publish only the existing blocker while the original
     // operation and slice still have current official authority.
     await assertManagedRuntimeIdentity(context, environment);
-    const current = await preflightExecutionOperation(context.specPath, operation, BigInt(context.slice.slice(6)).toString(10));
+    const current = await preflightExecutionOperation(context.specPath, operation, BigInt(context.slice.slice(6)).toString(10), { owner: context.owner });
     if (`sha256:${current.currentFingerprint}` !== context.authority || current.state !== context.state
       || JSON.stringify(current.legalOperations) !== JSON.stringify(context.legalOperations)
       || JSON.stringify(current.mandatoryRecovery ?? null) !== JSON.stringify(context.mandatoryRecovery ?? null)) fail('rejected response authority is stale');

@@ -15,6 +15,8 @@ OPERACOES_SUPORTADAS=EXECUTE_SLICE|APPLY_FINDINGS|VALIDATE_SLICE
 
 A solicitação informa operação suportada, payload semântico com escopo, evidências e contexto; `EXECUTE_SLICE` e `APPLY_FINDINGS` informam a rodada automática atual como `1/3`, `2/3` ou `3/3`. Ausência, ambiguidade, lote ou paralelização retorna `BLOCKED`. No modo gerenciado, o runtime fornece identidade e campos mecânicos fora do payload. Na delegação nativa sem adapter ou broker, o contexto principal informa a identidade canônica do preflight e os paths concretos necessários. Não invente nenhuma identidade.
 
+Consuma o conjunto Plan + Tasks ativado e seu snapshot de revisão; previsão de arquivo não é permissão nem prova de existência. O envelope/preflight mecânico fornece preparationRevision, normativeSha256, deliveryId, operationAttemptId, ownershipToken e originActivationId a partir da admissão oficial antes do dispatch. Confira que operação, entrega e owner correspondem; não crie ou transcreva esses vínculos no JSON semântico. O token CAS atual pode avançar por publicação operacional do mesmo owner sem obsoletar esta rodada. Resposta antiga, owner diferente ou estado testado alterado bloqueia persistência; pending/uncertain não permite uma segunda chamada. Limites de autenticação, persistência e contratos públicos exigem julgamento semântico além do containment de paths.
+
 # Independência e limites
 
 Trate conclusões do contexto principal como não verificadas. Leia somente o escopo necessário e confira diretamente planos, tasks, requisitos referenciados, diff, código, testes, evidências e dependências aplicáveis. Não confie apenas em checkboxes ou em resultados anteriores.

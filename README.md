@@ -5,7 +5,7 @@
 Skills de workflow e agents nativos para quem desenvolve software com **Codex** ou **Claude Code**. Sentinel organiza decisões, planejamento e evidências em etapas explícitas para que você possa acompanhar o trabalho e escolher o próximo passo.
 
 <p align="center">
-  <img src="docs/workflow.svg" alt="Fluxo Sentinel: SPEC, plano, revisão, tasks, revisão, execução e validação. O runner apoia a execução com checks; correções voltam à execução antes de uma nova validação." width="100%">
+  <img src="docs/workflow.svg" alt="Fluxo Sentinel: SPEC, Plan + Tasks, revisão conjunta, execução e validação. O runner apoia a execução com checks; correções voltam à execução antes de uma nova validação." width="100%">
 </p>
 
 O desenho é uma visão geral. Cada operação termina e retorna o controle: o estado registrado indica o próximo handoff; o fluxo completo não roda automaticamente.
@@ -13,12 +13,10 @@ O desenho é uma visão geral. Cada operação termina e retorna o controle: o e
 ## Como o fluxo se organiza
 
 1. **SPEC** — registre objetivo, escopo, critérios de aceitação e decisões em aberto com `stnl-spec-lifecycle-manager`.
-2. **Plano** — decomponha o trabalho em slices com `stnl-execution-planner`.
-3. **Revisão do plano** — verifique e ajuste a estratégia com `stnl-plan-reviewer` antes de criar tasks.
-4. **Tasks** — materialize o trabalho aprovado com `stnl-task-materializer`.
-5. **Revisão das tasks (opcional)** — confira o conjunto inicial com `stnl-task-reviewer`.
-6. **Execução** — implemente uma slice com `stnl-slice-executor`. O agent `stnl-validation-runner` pode executar checks auxiliares e devolver evidências; esses checks não aprovam a slice.
-7. **Validação formal** — chame `stnl-slice-quality-manager` separadamente para uma revisão independente. `NEEDS_FIX` pode levar a uma operação explícita de correção (`APPLY_FINDINGS`) e, depois, a outra validação.
+2. **Plan + Tasks** — produza a estratégia serial e a bancada operacional juntos com `stnl-execution-planner`.
+3. **Revisão conjunta** — um contexto independente revisa Plan, Tasks, checklist inicial e capacidade das provas; `stnl-plan-reviewer` ativa o conteúdo final examinado.
+4. **Execução** — implemente uma slice ativada com `stnl-slice-executor`, dentro das áreas e responsabilidades aprovadas. Ajustes técnicos de checklist e arquivos previstos recebem delta operacional.
+5. **Validação formal** — chame `stnl-slice-quality-manager` separadamente. Somente PASS formal atual conclui uma slice. NEEDS_FIX pode levar a APPLY_FINDINGS e nova validação.
 
 O runner também pode participar da chamada formal de validação. Sua função e o resultado são diferentes em cada etapa: checks auxiliares apoiam implementação e correções; somente a validação formal emite `PASS`, `NEEDS_FIX` ou `BLOCKED`.
 
@@ -30,9 +28,8 @@ Imagine um pedido para permitir que clientes consultem compras anteriores. Os ar
 | --- | --- |
 | SPEC | Quem consulta o histórico, quais compras aparecem, critérios de aceitação e questões como paginação ou retenção. |
 | Plano | Slices ordenadas para persistência, consulta e apresentação, conforme a arquitetura existente. |
-| Revisão do plano | Escopo, dependências e ordem conferidos antes de materializar trabalho. |
+| Revisão do plano | Escopo, dependências e ordem conferidos e checklist inicial antes da ativação. |
 | Tasks | Passos concretos ligados aos critérios de aceitação e à slice aprovada. |
-| Revisão das tasks | Cobertura, limites e consistência com o plano conferidos. |
 | Execução | Uma slice é implementada; checks aplicáveis podem ser delegados ao runner e registrados como evidência auxiliar. |
 | Validação formal | A slice é revisada de forma independente. Se houver `NEEDS_FIX`, findings podem ser corrigidos numa chamada explícita e a validação é repetida. |
 

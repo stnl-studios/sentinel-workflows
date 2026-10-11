@@ -1,92 +1,50 @@
 ---
 name: stnl-execution-planner
-description: Create or explicitly replan a compact serial execution strategy from a fingerprinted requirements authority.
+description: Author a complete serial Plan and operational Tasks together from current requirements, or explicitly REPLAN that same delivery.
 ---
 
 # stnl-execution-planner
 
 ## Purpose
 
-Run exactly one operation: `PLAN` or `REPLAN`. Convert an authoritative requirements source into a strictly serial delivery strategy without creating tasks, implementing, testing authoritatively, or approving the result.
+Run exactly one operation, PLAN or REPLAN. One author produces plan.md, every plans/slice-NN.md, tasks.md and every tasks/slice-NN.md together. Do not implement or approve your preparation. Use the local templates and references/workspace.md. Requirements authority: sha256:<64hex> and Plan revision: <positive integer> bind the existing canonical requirements fingerprint and normative revision. Runtime delivery IDs do not establish acceptance.
 
 ## Inputs
 
-- `SPEC_PATH`: required. Normalize it with `references/workspace.md`.
-- `REPLAN_REASON`: required only for `REPLAN`. It is the compact persisted or returned diagnostic, or explicit user-authorized reason, that requires a planning change. It cannot replace requirements authority.
-- Optional additional context may narrow this operation but cannot change requirements, scope, dependencies, or authority.
+SPEC_PATH is required. REPLAN_REASON is required for REPLAN.
 
 ## Authority
 
-The normalized requirements source remains authoritative and unchanged. Compute its canonical `stnl-requirements-authority-v1` SHA-256 fingerprint before planning and persist exactly `- Requirements authority: sha256:<64hex>` and `- Plan revision: <positive integer>`. This skill may create or revise only `plan.md` and `plans/slice-NN.md` below the derived execution root. Before tasks exist, `REPLAN` replaces only the unmaterialized planning authority. After tasks exist, it may stage the precise task-history transitions later committed atomically by `MATERIALIZE_TASKS`; it never mutates tasks itself. Persist every path relative to the artifact containing it.
-
-Render the complete model-authored planning set in an isolated operating-system temporary candidate. The deterministic `runtime/serialize-plan-paths.mjs` boundary canonicalizes the plan paths and then invokes the existing official `validateExecutionCandidate` authority with the same `<SPEC_PATH>` and `<CANDIDATE_EXECUTION_ROOT>` before it can report PASS. Do not separately assemble the validator command. Candidate rejection preserves all live bytes and the rejected candidate. If the diagnostic identifies a correctable semantic or serialization defect and official preflight still authorizes PLAN on unchanged live authority, create a new complete candidate from live, apply the diagnosed correction, and validate that new proposal. Never alter or re-present the rejected candidate. Publish only the authorized planning paths after strict candidate validation succeeds, then perform the operation-specific strict readback below.
-
-Treat templates as UTF-8 source content, not artifact metadata. Frozen templates may have mode `0444`; create new owner-writable candidate artifacts from their content instead of seeding them with `cp`, `fs.copyFile`, or `fs.cp`, which can carry that read-only mode. After creating the isolated candidate's parent directories, this content-only bootstrap creates one previously absent artifact without changing any existing file or template permissions:
-
-```sh
-node --input-type=module -e 'import fs from "node:fs"; fs.writeFileSync(process.argv[2], fs.readFileSync(process.argv[1], "utf8"), { encoding: "utf8", flag: "wx", mode: 0o600 });' "<TEMPLATE_PATH>" "<NEW_CANDIDATE_ARTIFACT>"
-```
-
-Complete all model-authored fields before preparation and serialization. The creation recipe does not establish semantic sufficiency. Preserve references and existing artifacts on collision or denial; do not change permissions or retry a denied write through another tool or path. The preparer canonicalizes headers of already rendered files; it is not an artifact-creation or permission-repair helper.
-
-Before path serialization and candidate validation, execute `node "<SKILL_ROOT>/runtime/prepare-plan-candidate.mjs" --candidate-execution-root <CANDIDATE_EXECUTION_ROOT>` against the isolated candidate execution root. It reads the canonical plan and slice-plan templates and prepends the exact header when no marker exists. For a present header, it requires one complete block with exactly the template field set and one valid `status: draft|ready`; it canonicalizes fixed metadata values and field order from the template while preserving that status. Missing, duplicate, or unknown fields; missing or invalid status; and malformed, misplaced, or duplicate markers block before candidate validation. This is prevalidation mechanical serialization for each new candidate and never edits live execution artifacts.
-
-Execution preflight is read-only. Only when it reports a mechanical violation for the exact `Findings IDs` alias or the exact historical `Check discovery sources` / `Check discovery actions` pair may this skill explicitly run `node "<SKILL_ROOT>/runtime/validate-execution-state.mjs" <SPEC_PATH> --repair-known-contract` once and repeat the original preflight; every other contract violation blocks.
+Normalize SPEC_PATH with runtime/validate-execution-state.mjs. Before content reads run `node "<SKILL_ROOT>/runtime/validate-execution-state.mjs" <SPEC_PATH> <OPERATION>`. REPLAN requires REPLAN_REASON. An active or uncertain attempt blocks replacement. Legacy incompatible preparations are diagnosed and preserved; no migration or dual executable format is permitted.
 
 ## PLAN
 
-Before content reads or writes, execute `node "<SKILL_ROOT>/runtime/validate-execution-state.mjs" <SPEC_PATH> PLAN`. Ignore `__MACOSX`, `.DS_Store`, and `._*` when deciding whether a directory is empty. Structural inspection may report lifecycle `draft|blocked + EMPTY`, but PLAN is legal only for lifecycle `ready + EMPTY` or standalone `EMPTY`. An exact official historical lifecycle-root execution signature blocks as legacy before EMPTY classification. If any recognized planning or execution artifact exists, return `BLOCKED`, list it, preserve every byte, and name the operation compatible with the observed state. Unrelated execution-root content is also a collision and blocks. Reset is not a PLAN behavior.
+Prepare an isolated candidate using `node "<SKILL_ROOT>/runtime/prepare-task-candidate.mjs" --spec-path <SPEC_PATH> --operation <OPERATION>`. Keep its ownership marker. Render both Plan and Tasks from UTF-8 template content as new writable files; do not copy frozen template modes. Fill semantic fields before serialization. Preserve rejected candidates and live bytes; corrections require another complete candidate against unchanged live authority.
 
-Read `references/workspace.md`, the requirements needed for coverage, shallow project structure, and only code or tests directly needed to understand impact. Define observable, testable slices in strict serial order using the coverage contract in `templates/slice-plan.template.md`, section `Requirements`. Record explicit dependencies, requirement coverage, included and excluded scope, boundaries, risks, likely areas, expected tests, and integration needs. Avoid microtasks and broad slices.
+Plan carries objective, strategy, exact requirement IDs, serial dependencies, observable results, scope, exclusions and protected responsibilities. Tasks carry a useful Result, Acceptance Obligations with stable local IDs, an initial Checklist associated with those obligations, Expected Tests and the existing evidence/findings/attempt sections. Each obligation names the real requirement, complete or partial contribution, integral verification owner, observable condition and proof required. Never invent a requirement ID or claim full acceptance for partial work. Every condition has an integral owner and proof capable of observing it. A later integration slice cannot silently supply missing evidence for an earlier full acceptance.
 
-In global `Expected areas` and detailed `Likely Areas`, every Markdown code span is reserved exclusively for one concrete implementation filesystem path and is interpreted deterministically as a path claim. The model's global `Expected areas` code spans are semantic physical-target selections expressed relative to the repository root containing the real `.git` marker; they are not yet persisted artifact-relative claims. The deterministic producer resolves them and writes the canonical artifact-relative claim into the global plan and detailed plans before candidate validation. These carriers are implementation-only: never put `execution/plan.md`, `plans/...`, `tasks/...`, another generated execution artifact, a command, a symbol, or a conceptual label in a code span; keep those concepts in plain text or omit them. Every persisted path is relative to the artifact containing it. Candidate validation rejects non-canonical, escaping, symlinked, execution-root, or accidental lifecycle-SPEC-local implementation targets; malformed or ambiguous semantic input blocks before publication, and a rejected candidate is retained unchanged; a corrected proposal uses a new candidate.
-If the model escapes a closing Markdown fence with one trailing backslash immediately before that fence, `runtime/serialize-plan-paths.mjs` removes only that delimiter escape before semantic target resolution. Interior backslashes remain invalid semantic path input and are rejected.
+Authorized Areas explicitly label `directory:` or `file:`. They define the permissible effects, not an exhaustive list of filenames. Expected Files are operational predictions and may be future files. Existing Inputs must be present regular files when required. Changed/tested files are real files or explicitly proved removals; directories cannot stand in for hashes. Before serialization, global Authorized areas code spans select repository-relative targets. Persist artifact-relative paths only, with one physical basis, containment and symlink guards. Auth, persistence and public-contract responsibilities are normative; path membership alone does not authorize their alteration.
 
-Resolve every implementation claim from the containing artifact to the nearest ancestor of the normalized requirements source that contains a real `.git` marker. `SPEC_PATH` is not necessarily the project root: when the SPEC is nested under `specs/...`, include every `..` component required to reach the repository implementation target. Never derive the claim from CWD, a temporary candidate/session root, or the parent of `SPEC_PATH` by assumption.
+Run `node "<SKILL_ROOT>/runtime/prepare-plan-candidate.mjs" --candidate-execution-root <CANDIDATE_EXECUTION_ROOT>` then `node "<SKILL_ROOT>/runtime/serialize-plan-paths.mjs" --spec-path <SPEC_PATH> --candidate-execution-root <CANDIDATE_EXECUTION_ROOT>`. These shared producers prepare both sets, bind delivery IDs and validate the complete candidate. No MATERIALIZE_TASKS or REVIEW_TASKS operation exists. The absorbed producers are mechanical resources, not another cognitive phase.
 
-After `runtime/serialize-plan-paths.mjs` has serialized the candidate, recompute every plan claim from its declaring artifact with `path.relative(path.dirname(artifact), physicalTarget)`, normalize `/`, compare by `realpath` with the physical target, and return `BLOCKED` without publication if any claim differs; never publish a plan claim that resolves to another path. The raw global `Expected areas` selections are semantic repository-relative inputs, not yet persisted artifact-relative claims, so never apply this artifact-relative readback to the raw semantic input before serialization.
-
-The global plan `Expected areas` code spans are the model's semantic physical-target selections. Execute `node "<SKILL_ROOT>/runtime/serialize-plan-paths.mjs" --spec-path <SPEC_PATH> --candidate-execution-root <CANDIDATE_EXECUTION_ROOT>` against the exact requirements authority and isolated candidate execution root. It resolves each selected repository-relative target once, writes both canonical artifact-relative claims, and then invokes the official candidate validator with those same inputs. A non-zero serializer or candidate-validation result blocks publication of that candidate. Preserve its exact diagnostic and bytes. A diagnosed, correctable defect may be addressed in a new complete candidate under unchanged official authority; never guess a target, alter the rejected candidate, or edit live artifacts.
-
-Do not invent a filesystem path to fill either carrier. When only a conceptual area is known, keep it as plain text where the contract permits; when a concrete claim is required but no physical target is supported by observed structure, block planning instead of fabricating a path.
-
-If several slices require real integration verification, add a final explicit integration or stabilization slice. Do not defer that verification to closing.
-
-Create `plan.md` and every foreseeable `plans/slice-NN.md` using the templates. Set each File Purpose Header status to `draft`; this means planning exists but independent review has not approved it.
-
-## REPLAN
-
-Require explicit `REPLAN_REASON`. Before content reads or writes, execute `node "<SKILL_ROOT>/runtime/validate-execution-state.mjs" <SPEC_PATH> REPLAN`. Derive the exact one of three mutation classes solely from deterministic execution state: planning exists with tasks absent, tasks exist and are wholly pristine, or operational evidence/history exists. Never accept a caller-selected reset or extension mode. Recompute the current requirements fingerprint before any proposal. If a product decision or documentary change is still required, return a lifecycle `RESUME` handoff without drafting.
-
-When planning artifacts exist but neither `tasks.md` nor `tasks/` exists, they are mutable unmaterialized authority, not historical execution state. Build one complete replacement planning set in isolation and atomically replace exactly `plan.md` plus the detailed plans named by its Serial Slice Order. Remove obsolete canonical detailed plans in the same publication so no competing planning authority survives. Keep Plan revision `1`; omit `Revision mode`, `Replan reason`, and `Supersedes open slices` because those fields describe recovery from materialized history. Publish the replacement as draft/pending review, return to `PLANNED_DRAFT`, and require the normal `REVIEW_PLAN` then initial `MATERIALIZE_TASKS` flow. Do not create an append-only recovery revision merely because planning files existed.
-
-When the complete task set is `MATERIALIZED_PRISTINE`, build one full replacement plan set in isolation. Preserve the source and every unrelated byte while rendering. Use the existing increasing revision with `Revision mode: pristine-replacement`; the later materialization commit may atomically replace only the canonical plans and pristine task set, returning execution to draft planning. This is the only state in which materialized task artifacts may be replaced or removed.
-
-After any operational evidence exists, history is immutable. Preserve every existing detailed plan, detailed task, Validation Attempt, finding, divergence, Effective Validation Base, final result, and prior requirements fingerprint byte-for-byte. Increment the global plan revision and append monotonically numbered corrective, replacement, reconciliation, or integration slices only. A replacement proposal identifies each open prior slice it supersedes. A prior `PASS` remains `PASS`; an open superseded slice is terminalized only when approved extension tasks are committed by `MATERIALIZE_TASKS`.
-
-New slices carry the current requirements fingerprint and revision. Historical slices retain their original values. After requirements authority changed during execution, supersede every non-terminal slice carrying the older fingerprint and replace it under the current revision. Include at least one current-revision reconciliation or corrective slice covering affected requirements and final paths, including relevant historical PASS effects; never treat prior validation under an older fingerprint as current authority.
-
-Render the pending replacement or extension with `draft` status and pending review. Return `REPLAN_DRAFT` and require `REVIEW_PLAN`; never approve or materialize it here.
-
-## Minimum Reads
-
-- `references/workspace.md`;
-- normalized requirements source and directly referenced requirement records;
-- `templates/plan.template.md` and `templates/slice-plan.template.md` when writing artifacts;
-- existing plans, task index, and only the task sections needed to classify pristine replacement versus append-only history for `REPLAN`;
-- shallow structure and directly relevant implementation areas only.
-
-## Allowed Effects
-
-- create the derived execution root when safe;
-- create `plan.md` and the complete `plans/slice-NN.md` set once, only from `EMPTY`;
-- on explicit `REPLAN`, atomically replace planning-only authority, draft a materialized-pristine replacement, or stage an append-only recovery extension as determined by state;
-- report coverage and concrete uncertainty.
-
-## Blocks
-
-Block without writes when inputs or execution state are invalid, `PLAN` sees a non-empty root, the requirements fingerprint cannot be computed, requirements are insufficient for deterministic planning, or a product decision is required. Return ambiguity to the requirements owner; do not invent an answer. `REPLAN` must never reset after operational evidence or modify historical artifacts.
+Publish the complete draft with `node "<SKILL_ROOT>/runtime/publish-task-candidate.mjs" --spec-path <SPEC_PATH> --candidate-execution-root <CANDIDATE_EXECUTION_ROOT>`. It captures/rechecks the base under the common external lock and preserves prior snapshots and evidence. Drafts have no executable activation. Do not write live artifacts outside the publisher. REPLAN preserves historical plans, Task records and prior PASS; wholly pristine replacement or append-only recovery uses the existing revision/supersession rules. Do not broaden U2 recovery policy.
 
 ## Output
 
-After successful publication, execute `node "<SKILL_ROOT>/runtime/validate-execution-state.mjs" <SPEC_PATH> --handoff-after <OPERATION>`. Report operation, status (`REPLAN_DRAFT` for successful `REPLAN`), current requirements fingerprint, plan revision, created or proposed paths, supersession mappings, slice order, coverage, material risks, the runtime's normal handoff, and every legal operation in the resulting state. A successful `PLAN` normally hands off to `stnl-plan-reviewer / OPERATION=REVIEW_PLAN`; legal `REPLAN` remains separate. Stop.
+Use `node "<SKILL_ROOT>/runtime/validate-execution-state.mjs" <SPEC_PATH> --handoff-after <OPERATION>` for readback. Report the runtime's handoff, current authority, changed artifact paths and concrete blocks. PLAN/REPLAN hands off to independent REVIEW_PLAN of the joint set. Stop; no implementation, formal validation or self-approval.
+
+## REPLAN
+
+Use the same combined producer for an explicit recovery revision. Preserve operational history and referenced snapshots. Never replace an active/uncertain attempt.
+
+## Minimum Reads
+
+Current requirements and exact declared IDs, relevant prior history, all four templates, and code only for decisive decomposition premises.
+
+## Allowed Effects
+
+Complete isolated Plan+Tasks candidate and its common publication; runtime metadata only through producers.
+
+## Blocks
+
+Missing decision, stale requirements/base, incompatible legacy, ambiguous carriers, lost history, ownership conflict or unsafe path.

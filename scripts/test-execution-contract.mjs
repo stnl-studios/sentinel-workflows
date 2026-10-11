@@ -33,10 +33,10 @@ import { runCodexTurn } from "../agents/codex/runtime/sdk-transport.mjs";
 import { createUsageNormalizer, ZERO_USAGE } from "../agents/codex/runtime/usage-accounting.mjs";
 import { assertManagedRunnerReceipt, createManagedSliceContext, managedEnvironment } from "../skills/workflows/stnl-slice-quality-manager/runtime/managed-slice-context.mjs";
 import { publishValidationCandidate } from "../skills/workflows/stnl-slice-quality-manager/runtime/publish-validation-candidate.mjs";
-import { resolveExecutionWorkspace as resolveMaterializerExecutionWorkspace } from "../skills/workflows/stnl-task-materializer/runtime/execution-state.mjs";
-import { prepareTaskMaterializationCandidate } from "../skills/workflows/stnl-task-materializer/runtime/prepare-task-candidate.mjs";
-import { publishTaskMaterializationCandidate } from "../skills/workflows/stnl-task-materializer/runtime/publish-task-candidate.mjs";
-import { serializeTaskPathClaims } from "../skills/workflows/stnl-task-materializer/runtime/serialize-task-paths.mjs";
+import { resolveExecutionWorkspace as resolveMaterializerExecutionWorkspace } from "../skills/workflows/stnl-execution-planner/runtime/execution-state.mjs";
+import { preparePreparationCandidate } from "../skills/workflows/stnl-execution-planner/runtime/prepare-task-candidate.mjs";
+import { publishPreparationCandidate } from "../skills/workflows/stnl-execution-planner/runtime/publish-task-candidate.mjs";
+import { serializeTaskPathClaims } from "../skills/workflows/stnl-execution-planner/runtime/serialize-task-paths.mjs";
 import {
   validateManagedChangedAreas,
   captureRunnerTestedState,
@@ -2711,7 +2711,7 @@ test("execution evidence is produced on a same-depth candidate and published as 
 
 test("materializer candidate preparation copies the complete execution tree into an isolated root", async (t) => {
   const fixture = await nestedLifecycleWorkspace(t);
-  const prepared = await prepareTaskMaterializationCandidate({ specPath: fixture.requirements });
+  const prepared = await preparePreparationCandidate({ specPath: fixture.requirements });
   assert.equal(prepared.status, "PASS");
   assert.notEqual(prepared.candidateExecutionRoot, await fs.realpath(fixture.execution));
   assert.equal(
@@ -2728,7 +2728,7 @@ test("materializer candidate preparation copies the complete execution tree into
   const alias = path.join(path.dirname(fixture.requirements), "requirements-alias");
   await fs.symlink(fixture.requirements, alias, "dir");
   await assert.rejects(
-    prepareTaskMaterializationCandidate({ specPath: alias }),
+    preparePreparationCandidate({ specPath: alias }),
     /symlink component/u,
   );
 });
@@ -2756,7 +2756,7 @@ test("candidate helper CLIs execute from a frozen skill path containing spaces",
   const liveDetail = await fs.readFile(path.join(fixture.execution, "plans/slice-01.md"));
   assert.equal((await inspectExecutionState(fixture.requirements)).state, "PLANNED_READY");
   const environment = { ...process.env, TMPDIR: root };
-  const preparer = path.join(bundle, "stnl-task-materializer/runtime/prepare-task-candidate.mjs");
+  const preparer = path.join(bundle, "stnl-execution-planner/runtime/prepare-task-candidate.mjs");
   const prepared = spawnSync(process.execPath, [preparer, "--prepare", "--spec-path", fixture.requirements], {
     encoding: "utf8", env: environment,
   });
@@ -2784,7 +2784,7 @@ test("candidate helper CLIs execute from a frozen skill path containing spaces",
   for (const helper of [
     "stnl-execution-planner/runtime/prepare-plan-candidate.mjs",
     "stnl-execution-planner/runtime/serialize-plan-paths.mjs",
-    "stnl-task-materializer/runtime/serialize-task-paths.mjs",
+    "stnl-execution-planner/runtime/serialize-task-paths.mjs",
   ]) {
     const invoked = spawnSync(process.execPath, [path.join(bundle, helper)], { encoding: "utf8", env: environment });
     assert.notEqual(invoked.status, 0, `${helper} silently skipped its CLI guard`);
@@ -2794,10 +2794,10 @@ test("candidate helper CLIs execute from a frozen skill path containing spaces",
 
 test("materializer candidate publication revalidates and never publishes hard-linked execution files", async (t) => {
   const fixture = await nestedLifecycleWorkspace(t);
-  const prepared = await prepareTaskMaterializationCandidate({ specPath: fixture.requirements });
+  const prepared = await preparePreparationCandidate({ specPath: fixture.requirements });
   const candidateState = await validateExecutionCandidate(fixture.requirements, prepared.candidateExecutionRoot);
   assert.equal(candidateState.state, "MATERIALIZED_PRISTINE");
-  const published = await publishTaskMaterializationCandidate({
+  const published = await publishPreparationCandidate({
     specPath: fixture.requirements,
     candidateExecutionRoot: prepared.candidateExecutionRoot,
   });
@@ -2817,7 +2817,7 @@ test("materializer candidate publication revalidates and never publishes hard-li
 
 test("materializer publication serializes task paths before strict candidate validation", async (t) => {
   const fixture = await nestedLifecycleWorkspace(t);
-  const prepared = await prepareTaskMaterializationCandidate({ specPath: fixture.requirements });
+  const prepared = await preparePreparationCandidate({ specPath: fixture.requirements });
   const target = path.join(fixture.root, "src/example.txt");
   const taskPath = path.join(prepared.candidateExecutionRoot, "tasks/slice-01.md");
   const liveTaskPath = path.join(fixture.execution, "tasks/slice-01.md");
@@ -2833,7 +2833,7 @@ test("materializer publication serializes task paths before strict candidate val
     /possible path-basis error|artifact-relative implementation path/u,
   );
 
-  const published = await publishTaskMaterializationCandidate({
+  const published = await publishPreparationCandidate({
     specPath: fixture.requirements,
     candidateExecutionRoot: prepared.candidateExecutionRoot,
   });
@@ -6189,7 +6189,7 @@ test("validation publisher accepts its own complete candidate after the material
   const liveIndexPath = path.join(fixture.execution, "tasks.md");
   const liveIndexBefore = await fs.readFile(liveIndexPath);
   await assert.rejects(
-    publishTaskMaterializationCandidate({
+    publishPreparationCandidate({
       specPath: fixture.requirements,
       candidateExecutionRoot: candidateRoot,
     }),
@@ -6826,7 +6826,7 @@ test("duplicate or unknown task sections cannot hide operational records", async
       assert.equal(error.message, message);
       return true;
     });
-    const result = spawnSync(process.execPath, [path.join(ROOT, "skills/workflows/stnl-task-materializer/runtime/validate-execution-state.mjs"), fixture.requirements], { encoding: "utf8" });
+    const result = spawnSync(process.execPath, [path.join(ROOT, "skills/workflows/stnl-execution-planner/runtime/validate-execution-state.mjs"), fixture.requirements], { encoding: "utf8" });
     assert.equal(result.status, 1);
     assert.equal(result.stderr, `BLOCKED: ${message}\n`);
     assert.deepEqual(await treeBytes(fixture.execution), before, "diagnostic rejection must not modify any execution artifact");
@@ -7000,10 +7000,10 @@ test("reviewed planning made stale before tasks replans without historical recov
           await editSlicePlan(flow, "slice-01", (text) => setPlanReviewState(text, true));
           if (++reviews === 1) await fs.appendFile(path.join(specPath, "shared/requirements.md"), "\nDocumentary authority changed in this fixture.\n");
         } else if (operation === "MATERIALIZE_TASKS") {
-          const staged = await prepareTaskMaterializationCandidate({ specPath });
+          const staged = await preparePreparationCandidate({ specPath });
           try {
             await renderTasks(flow, { outputExecutionRoot: staged.candidateExecutionRoot });
-            await publishTaskMaterializationCandidate({ specPath, candidateExecutionRoot: staged.candidateExecutionRoot });
+            await publishPreparationCandidate({ specPath, candidateExecutionRoot: staged.candidateExecutionRoot });
           } finally { await fs.rm(staged.candidateExecutionRoot, { recursive: true, force: true }); }
         } else if (operation === "EXECUTE_SLICE" || operation === "VALIDATE_SLICE") {
           await activeBroker.invoke({ prompt: "bounded fake independent check" });
@@ -7119,7 +7119,7 @@ test("pristine REVIEW_TASKS replan dead end has draft, review, and atomic materi
   assert.deepEqual(nextHandoff("REVIEW_PLAN", reviewedReadback), { operation: "MATERIALIZE_TASKS", slice: null });
   assert.deepEqual(decideOutcome("REVIEW_PLAN", reviewedReadback, false),
     { result: "BLOCKED", blocker: "SDK_TURN_FAILED" });
-  const prepared = await prepareTaskMaterializationCandidate({ specPath: fixture.requirements });
+  const prepared = await preparePreparationCandidate({ specPath: fixture.requirements });
   t.after(() => fs.rm(prepared.candidateExecutionRoot, { recursive: true, force: true }));
   const staged = { ...fixture, execution: prepared.candidateExecutionRoot };
   await editTask(staged, (value) => reviseAuthority(value, oldHash, newHash, 1, 2));
@@ -7128,7 +7128,7 @@ test("pristine REVIEW_TASKS replan dead end has draft, review, and atomic materi
     candidateExecutionRoot: prepared.candidateExecutionRoot })).status, "PASS");
   assert.equal((await validateExecutionCandidate(fixture.requirements, prepared.candidateExecutionRoot)).state, "MATERIALIZED_PRISTINE");
   assert.deepEqual(await treeBytes(fixture.execution), liveBefore);
-  const published = await publishTaskMaterializationCandidate({ specPath: fixture.requirements,
+  const published = await publishPreparationCandidate({ specPath: fixture.requirements,
     candidateExecutionRoot: prepared.candidateExecutionRoot });
   assert.equal(published.state, "MATERIALIZED_PRISTINE");
   const readback = await inspectExecutionState(fixture.requirements);
@@ -7149,7 +7149,7 @@ async function pristinePathReplacement(t) {
   await editSlicePlan(fixture, "slice-01", (value) => replaceSection(value, "Likely Areas",
     approvedClaims.map((claim) => `- \`${claim}\``).join("\n")));
   assert.equal((await preflightExecutionOperation(fixture.requirements, "MATERIALIZE_TASKS")).state, "PENDING_REPLAN_READY");
-  const prepared = await prepareTaskMaterializationCandidate({ specPath: fixture.requirements });
+  const prepared = await preparePreparationCandidate({ specPath: fixture.requirements });
   t.after(() => fs.rm(prepared.candidateExecutionRoot, { recursive: true, force: true }));
   const staged = { ...fixture, execution: prepared.candidateExecutionRoot };
   await editTask(staged, (value) => reviseAuthority(value, authority, authority, 1, 2)
@@ -7167,7 +7167,7 @@ test("pristine replacement publishes nine preserved items with exact QA files th
   assert.equal((await validateExecutionCandidate(fixture.requirements, prepared.candidateExecutionRoot)).state, "MATERIALIZED_PRISTINE");
   assert.deepEqual(await treeBytes(fixture.execution), liveBefore);
   const candidateBefore = await treeBytes(prepared.candidateExecutionRoot);
-  const published = await publishTaskMaterializationCandidate({ specPath: fixture.requirements,
+  const published = await publishPreparationCandidate({ specPath: fixture.requirements,
     candidateExecutionRoot: prepared.candidateExecutionRoot });
   assert.equal(published.status, "PASS");
   assert.equal(published.serializedTaskPaths, 11);
@@ -7185,7 +7185,7 @@ test("pristine replacement publishes nine preserved items with exact QA files th
   assert.equal(stripAreas(checklist), stripAreas(oldChecklist));
   assert.deepEqual(task.implementationPathClaims.map((claim) => claim.raw), approvedClaims);
   const handoff = spawnSync(process.execPath, [path.join(ROOT,
-    "skills/workflows/stnl-task-materializer/runtime/validate-execution-state.mjs"), fixture.requirements,
+    "skills/workflows/stnl-execution-planner/runtime/validate-execution-state.mjs"), fixture.requirements,
     "--handoff-after", "MATERIALIZE_TASKS"], { encoding: "utf8" });
   assert.equal(handoff.status, 0, handoff.stderr);
   assert.equal(JSON.parse(handoff.stdout).normal_handoff.operation, "REVIEW_TASKS");
@@ -7194,7 +7194,7 @@ test("pristine replacement publishes nine preserved items with exact QA files th
 test("pristine replacement CLI publisher invokes serialization before validation and readback", async (t) => {
   const { fixture, prepared, approvedClaims } = await pristinePathReplacement(t);
   const result = spawnSync(process.execPath, [path.join(ROOT,
-    "skills/workflows/stnl-task-materializer/runtime/publish-task-candidate.mjs"), "--publish",
+    "skills/workflows/stnl-execution-planner/runtime/publish-task-candidate.mjs"), "--publish",
     "--spec-path", fixture.requirements, "--candidate-execution-root", prepared.candidateExecutionRoot], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(JSON.parse(result.stdout).state, "MATERIALIZED_PRISTINE");
@@ -7229,7 +7229,7 @@ test("pristine replacement rejects unauthorized candidates before changing candi
       await fs.writeFile(target, after);
       const liveBefore = await treeBytes(fixture.execution);
       const candidateBefore = await treeBytes(prepared.candidateExecutionRoot);
-      for (const producer of [serializeTaskPathClaims, publishTaskMaterializationCandidate]) {
+      for (const producer of [serializeTaskPathClaims, publishPreparationCandidate]) {
         await assert.rejects(producer({ specPath: fixture.requirements,
           candidateExecutionRoot: prepared.candidateExecutionRoot }), diagnostic);
         assert.deepEqual(await treeBytes(fixture.execution), liveBefore);
@@ -7272,7 +7272,7 @@ test("pristine replacement keeps live approval, authority, execution and path gu
       const { fixture, prepared } = context;
       const liveBefore = await treeBytes(fixture.execution);
       const candidateBefore = await treeBytes(prepared.candidateExecutionRoot);
-      await assert.rejects(publishTaskMaterializationCandidate({ specPath: fixture.requirements,
+      await assert.rejects(publishPreparationCandidate({ specPath: fixture.requirements,
         candidateExecutionRoot: prepared.candidateExecutionRoot }), diagnostic);
       assert.deepEqual(await treeBytes(fixture.execution), liveBefore);
       assert.deepEqual(await treeBytes(prepared.candidateExecutionRoot), candidateBefore);
@@ -7284,12 +7284,12 @@ test("pristine replacement keeps live approval, authority, execution and path gu
   await editTask(fixture, (text) => replaceSection(text.replace("- [ ] 1.1", "- [x] 1.1"),
     "Changed Areas", "- `../../src/example.txt`"));
   assert.equal((await inspectExecutionState(fixture.requirements)).state, "EXECUTION_STARTED");
-  const prepared = await prepareTaskMaterializationCandidate({ specPath: fixture.requirements });
+  const prepared = await preparePreparationCandidate({ specPath: fixture.requirements });
   t.after(() => fs.rm(prepared.candidateExecutionRoot, { recursive: true, force: true }));
   await editTask({ ...fixture, execution: prepared.candidateExecutionRoot }, (text) => text.replace("- [x] 1.1", "- [ ] 1.1"));
   const liveBefore = await treeBytes(fixture.execution);
   const candidateBefore = await treeBytes(prepared.candidateExecutionRoot);
-  await assert.rejects(publishTaskMaterializationCandidate({ specPath: fixture.requirements,
+  await assert.rejects(publishPreparationCandidate({ specPath: fixture.requirements,
     candidateExecutionRoot: prepared.candidateExecutionRoot }), /historical task changed/u);
   assert.deepEqual(await treeBytes(fixture.execution), liveBefore);
   assert.deepEqual(await treeBytes(prepared.candidateExecutionRoot), candidateBefore);
@@ -8121,7 +8121,7 @@ test("append-only requirements recovery preserves history and requires later PAS
   assert.deepEqual(decideOutcome("REVIEW_PLAN", reviewedReadback, true), { result: "PASS", blocker: null });
   assert.deepEqual(nextHandoff("REVIEW_PLAN", reviewedReadback), { operation: "MATERIALIZE_TASKS", slice: null });
   const liveBeforeMaterialization = await treeBytes(fixture.execution);
-  const candidate = await prepareTaskMaterializationCandidate({ specPath: fixture.requirements });
+  const candidate = await preparePreparationCandidate({ specPath: fixture.requirements });
   t.after(async () => fs.rm(candidate.candidateExecutionRoot, { recursive: true, force: true }));
   await commitAppendRecovery({ ...fixture, execution: candidate.candidateExecutionRoot }, oldHash, newHash,
     { resolveDivergence: true });
@@ -8158,7 +8158,7 @@ test("append-only requirements recovery preserves history and requires later PAS
         await fs.writeFile(newTask, (await fs.readFile(newTask, "utf8")).replace("../../src/example.txt", "../src/example.txt"));
       }
       const badBefore = await treeBytes(badRoot);
-      await assert.rejects(publishTaskMaterializationCandidate({ specPath: fixture.requirements, candidateExecutionRoot: badRoot }));
+      await assert.rejects(publishPreparationCandidate({ specPath: fixture.requirements, candidateExecutionRoot: badRoot }));
       assert.deepEqual(await treeBytes(fixture.execution), liveBeforeMaterialization);
       assert.deepEqual(await treeBytes(badRoot), badBefore);
     });
@@ -8169,7 +8169,7 @@ test("append-only requirements recovery preserves history and requires later PAS
   await fs.writeFile(path.join(fixture.execution, "plans/slice-02.md"), setPlanReviewState(approvedDetail.toString(), false));
   assert.equal((await inspectExecutionState(fixture.requirements)).state, "PENDING_REPLAN_DRAFT");
   const unapprovedBefore = await treeBytes(fixture.execution);
-  await assert.rejects(publishTaskMaterializationCandidate({ specPath: fixture.requirements,
+  await assert.rejects(publishPreparationCandidate({ specPath: fixture.requirements,
     candidateExecutionRoot: candidate.candidateExecutionRoot }), /historical task changed during materialization/u);
   assert.deepEqual(await treeBytes(fixture.execution), unapprovedBefore);
   assert.deepEqual(await treeBytes(candidate.candidateExecutionRoot), candidateBeforeMaterialization);
@@ -8185,7 +8185,7 @@ test("append-only requirements recovery preserves history and requires later PAS
   assert.deepEqual(await treeBytes(fixture.execution), liveBeforeMaterialization);
   assert.deepEqual(await treeBytes(candidate.candidateExecutionRoot), candidateBeforeMaterialization);
   assert.equal((await inspectExecutionState(fixture.requirements)).state, "PENDING_REPLAN_READY");
-  const published = await publishTaskMaterializationCandidate({ specPath: fixture.requirements,
+  const published = await publishPreparationCandidate({ specPath: fixture.requirements,
     candidateExecutionRoot: candidate.candidateExecutionRoot });
   assert.equal(published.status, "PASS");
   assert.deepEqual(await treeBytes(fixture.execution), candidateBeforeMaterialization);
@@ -8197,7 +8197,7 @@ test("append-only requirements recovery preserves history and requires later PAS
   assert.deepEqual(decideOutcome("MATERIALIZE_TASKS", materializedReadback, true), { result: "PASS", blocker: null });
   assert.deepEqual(nextHandoff("MATERIALIZE_TASKS", materializedReadback), { operation: "EXECUTE_SLICE", slice: "slice-02" });
   const handoff = spawnSync(process.execPath, [path.join(ROOT,
-    "skills/workflows/stnl-task-materializer/runtime/validate-execution-state.mjs"), fixture.requirements,
+    "skills/workflows/stnl-execution-planner/runtime/validate-execution-state.mjs"), fixture.requirements,
     "--handoff-after", "MATERIALIZE_TASKS"], { encoding: "utf8", cwd: fixture.root });
   assert.equal(handoff.status, 0, handoff.stderr);
   assert.equal(JSON.parse(handoff.stdout).normal_handoff.operation, "EXECUTE_SLICE");
@@ -8231,7 +8231,7 @@ test("approved supersession preserves interrupted automatic checks with a commit
         assert.equal((await inspectExecutionState(fixture.requirements)).state, "DIVERGENCE_BLOCKED");
         await appendRecoveryPlan(fixture, authority, authority, { ready: true });
         const liveBefore = await treeBytes(fixture.execution);
-        const candidate = await prepareTaskMaterializationCandidate({ specPath: fixture.requirements });
+        const candidate = await preparePreparationCandidate({ specPath: fixture.requirements });
         child.after(() => fs.rm(candidate.candidateExecutionRoot, { recursive: true, force: true }));
         await commitAppendRecovery({ ...fixture, execution: candidate.candidateExecutionRoot }, authority, authority,
           { resolveDivergence: disposition === "resolved" });
@@ -8261,7 +8261,7 @@ test("approved supersession preserves interrupted automatic checks with a commit
           assert.deepEqual(await treeBytes(badRoot), badBefore);
           assert.deepEqual(await treeBytes(fixture.execution), liveBefore);
         }
-        assert.equal((await publishTaskMaterializationCandidate({ specPath: fixture.requirements,
+        assert.equal((await publishPreparationCandidate({ specPath: fixture.requirements,
           candidateExecutionRoot: candidate.candidateExecutionRoot })).status, "PASS");
         const recovered = await inspectExecutionState(fixture.requirements);
         assert.equal(recovered.state, "EXECUTION_STARTED");
@@ -8308,13 +8308,13 @@ test("approved supersession preserves advisory divergence while disposing only t
   await editTask(fixture, (text) => replaceSection(replaceSection(text, "Changed Areas", "- `../../src/example.txt`"),
     "Divergences", `${ACTIVE_DIVERGENCE}\n\n${advisory}`));
   await appendRecoveryPlan(fixture, authority, authority, { ready: true });
-  const candidate = await prepareTaskMaterializationCandidate({ specPath: fixture.requirements });
+  const candidate = await preparePreparationCandidate({ specPath: fixture.requirements });
   t.after(async () => fs.rm(candidate.candidateExecutionRoot, { recursive: true, force: true }));
   const staged = { ...fixture, execution: candidate.candidateExecutionRoot };
   await commitAppendRecovery(staged, authority, authority);
   await editTask(staged, (text) => replaceSection(text, "Divergences",
     `${ACTIVE_DIVERGENCE.replace("State: active", "State: superseded")}\n- Superseded by: divergence-02\n\n${advisory}`));
-  const published = await publishTaskMaterializationCandidate({ specPath: fixture.requirements,
+  const published = await publishPreparationCandidate({ specPath: fixture.requirements,
     candidateExecutionRoot: candidate.candidateExecutionRoot });
   assert.equal(published.status, "PASS");
   const result = await inspectExecutionState(fixture.requirements);
@@ -8342,14 +8342,14 @@ test("a later missing integration slice has an executable append-only REPLAN pat
   await editPlan(fixture, (text) => setPlanReviewState(text, true));
   await editSlicePlan(fixture, "slice-02", (text) => setPlanReviewState(text, true));
   assert.equal((await preflightExecutionOperation(fixture.requirements, "MATERIALIZE_TASKS")).state, "PENDING_REPLAN_READY");
-  const candidate = await prepareTaskMaterializationCandidate({ specPath: fixture.requirements });
+  const candidate = await preparePreparationCandidate({ specPath: fixture.requirements });
   t.after(async () => fs.rm(candidate.candidateExecutionRoot, { recursive: true, force: true }));
   const taskPath = path.join(candidate.candidateExecutionRoot, "tasks/slice-01.md");
   const passedTask = await fs.readFile(taskPath, "utf8");
   await fs.writeFile(taskPath, replaceSection(passedTask, "Final Result", "- SUPERSEDED\n- Superseded by: slice-02\n- Plan revision: 2"));
   const liveBefore = await treeBytes(fixture.execution);
   const candidateBefore = await treeBytes(candidate.candidateExecutionRoot);
-  await assert.rejects(publishTaskMaterializationCandidate({ specPath: fixture.requirements,
+  await assert.rejects(publishPreparationCandidate({ specPath: fixture.requirements,
     candidateExecutionRoot: candidate.candidateExecutionRoot }), /historical task changed during materialization/u);
   assert.deepEqual(await treeBytes(fixture.execution), liveBefore);
   assert.deepEqual(await treeBytes(candidate.candidateExecutionRoot), candidateBefore);
@@ -8393,10 +8393,10 @@ test("repeated append-only REPLAN preserves older supersession revisions and com
   await editSlicePlan(fixture, "slice-03", (value) => value.replace("status: draft", "status: ready").replace("Review state: pending", "Review state: approved"));
   assert.equal((await preflightExecutionOperation(fixture.requirements, "MATERIALIZE_TASKS")).state, "PENDING_REPLAN_READY");
   const olderHistory = await fs.readFile(path.join(fixture.execution, "tasks/slice-01.md"));
-  const candidate = await prepareTaskMaterializationCandidate({ specPath: fixture.requirements });
+  const candidate = await preparePreparationCandidate({ specPath: fixture.requirements });
   t.after(async () => fs.rm(candidate.candidateExecutionRoot, { recursive: true, force: true }));
   await commitThirdRecovery({ ...fixture, execution: candidate.candidateExecutionRoot }, authority);
-  assert.equal((await publishTaskMaterializationCandidate({ specPath: fixture.requirements,
+  assert.equal((await publishPreparationCandidate({ specPath: fixture.requirements,
     candidateExecutionRoot: candidate.candidateExecutionRoot })).status, "PASS");
   assert.deepEqual(await fs.readFile(path.join(fixture.execution, "tasks/slice-01.md")), olderHistory);
   const committed = await inspectExecutionState(fixture.requirements);

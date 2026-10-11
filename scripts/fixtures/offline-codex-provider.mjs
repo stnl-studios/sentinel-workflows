@@ -49,7 +49,9 @@ function run(file, args = [], verification = false, checkEnvironment = {}) {
   const command = `${verification ? 'STNL_VERIFICATION_COMMAND=1 ' : ''}${Object.entries(checkEnvironment).map(([key, value]) => key + '=' + quoted(value) + ' ').join('')}node ${[file, ...args].map(quoted).join(' ')}`;
   const id = 'item_' + sequence++;
   emit({ type: 'item.started', item: { id, type: 'command_execution', command, status: 'in_progress', aggregated_output: '', exit_code: null } });
-  const result = spawnSync(process.execPath, [file, ...args], { cwd: workspace, env: { ...process.env, ...(verification ? { STNL_VERIFICATION_COMMAND: '1' } : {}), ...checkEnvironment }, encoding: 'utf8', timeout: 30_000, maxBuffer: 4 * 1024 * 1024 });
+  const commandEnvironment = { ...process.env, ...(verification ? { STNL_VERIFICATION_COMMAND: '1' } : {}), ...checkEnvironment };
+  delete commandEnvironment.NODE_TEST_CONTEXT;
+  const result = spawnSync(process.execPath, [file, ...args], { cwd: workspace, env: commandEnvironment, encoding: 'utf8', timeout: 30_000, maxBuffer: 4 * 1024 * 1024 });
   emit({ type: 'item.completed', item: { id, type: 'command_execution', command, status: 'completed', aggregated_output: (result.stdout ?? '') + (result.stderr ?? ''), exit_code: result.status } });
   if (result.error || result.signal) throw new Error(result.error?.message ?? result.signal);
   return { ...result, command };
@@ -205,28 +207,24 @@ try {
       await fs.writeFile(context.file, JSON.stringify({ ...current, providerSha256: 'sha256:' + '0'.repeat(64) }));
     }
     finish('Documentary artifacts published by the lifecycle producer.');
-  } else if (operation === 'PLAN') {
-    const candidateExecutionRoot = path.join(roots.candidates, 'offline-plan');
-    await renderOfflineArtifacts({ snapshot, workspace, specPath, candidateExecutionRoot, targetPaths: targets });
-    await fs.cp(candidateExecutionRoot, path.join(specPath, 'execution'), { recursive: true });
-    finish('Draft plan with implementation and prepared checks in the same slice.');
-  } else if (operation === 'REVIEW_PLAN') {
-    helper('stnl-plan-reviewer', 'validate-execution-state.mjs', [specPath, operation]);
-    for (const name of ['plan.md', 'plans/slice-01.md']) {
-      const file = path.join(specPath, 'execution', name);
-      const text = await fs.readFile(file, 'utf8');
-      await fs.writeFile(file, text.replace('status: draft', 'status: ready').replaceAll('Review state: pending', 'Review state: approved'));
+  } else if (operation === 'PLAN' || operation === 'REVIEW_PLAN') {
+    const { preparePreparationCandidate } = await importHelper('stnl-execution-planner', 'prepare-task-candidate.mjs');
+    const { publishPreparationCandidate } = await importHelper('stnl-execution-planner', 'publish-task-candidate.mjs');
+    const { candidateExecutionRoot } = await preparePreparationCandidate({ specPath, operation });
+    if (operation === 'PLAN') {
+      await renderOfflineArtifacts({ snapshot, workspace, specPath, candidateExecutionRoot, targetPaths: targets });
+      await publishPreparationCandidate({ specPath, candidateExecutionRoot });
+      finish('Joint draft Plan and Tasks with prepared checks in the same delivery.');
+    } else {
+      const { readPreparationArtifacts } = await importHelper('stnl-execution-planner', 'execution-preparation.mjs');
+      for (const [name, text] of await readPreparationArtifacts(candidateExecutionRoot)) {
+        await fs.writeFile(path.join(candidateExecutionRoot, name), text.replace('status: draft', 'status: ready').replaceAll('Review state: pending', 'Review state: approved'));
+      }
+      await publishPreparationCandidate({ specPath, candidateExecutionRoot, reviewDecision: {
+        operation: 'REVIEW_PLAN', status: 'approved', examined: ['requirements', 'plans', 'tasks', 'initial checklist', 'proof capability'],
+        summary: 'TEST-ONLY simulated joint review: unchanged AC-001 mapped to complete CLI delivery, seed boundaries preserved and prepared matrix can observe positive and negative conditions. No independent model certification.' } });
+      finish('Final joint Plan and Tasks reviewed and snapshot activated by the publisher.');
     }
-    finish('Prepared check paths belong to this complete delivery.');
-  } else if (operation === 'MATERIALIZE_TASKS') {
-    const { prepareTaskMaterializationCandidate } = await importHelper('stnl-task-materializer', 'prepare-task-candidate.mjs');
-    const candidate = await prepareTaskMaterializationCandidate({ specPath });
-    await renderOfflineArtifacts({ snapshot, workspace, specPath, tasks: true, candidateExecutionRoot: candidate.candidateExecutionRoot, targetPaths: targets });
-    helper('stnl-task-materializer', 'publish-task-candidate.mjs', ['--publish', '--spec-path', specPath, '--candidate-execution-root', candidate.candidateExecutionRoot]);
-    finish('Tasks materialized through the authorized publisher.');
-  } else if (operation === 'REVIEW_TASKS') {
-    helper('stnl-task-reviewer', 'validate-execution-state.mjs', [specPath, 'REVIEW_TASKS']);
-    finish('Materialized task and authorized prepared check scope agree.');
   } else if (['EXECUTE_SLICE', 'VALIDATE_SLICE', 'APPLY_FINDINGS'].includes(operation)) {
     if (context.scenario === 'zero-runner' && operation === 'EXECUTE_SLICE') { finish('No request: injected main omission.'); process.exit(0); }
     let prepared;

@@ -605,7 +605,7 @@ async function journalEvent(options) {
   assertJournal(journal, configuration);
   if (journal.status !== 'ACTIVE') throw new CliError('journal is terminal after budget abort', BUDGET_EXIT);
   const operation = options['--operation'];
-  if (!OPERATIONS.has(operation)) throw new CliError('unsupported operation', 2);
+  if (['MATERIALIZE_TASKS', 'REVIEW_TASKS'].includes(operation) || !OPERATIONS.has(operation)) throw new CliError('unsupported operation', 2);
   if (options['--phase'] !== OPERATION_PHASE.get(operation)) throw new CliError(`phase must be ${OPERATION_PHASE.get(operation)} for ${operation}`, 2);
   if (!MODELS.has(options['--model'])) throw new CliError('unsupported model', 2);
   if (!EFFORTS.has(options['--effort'])) throw new CliError('unsupported effort', 2);

@@ -48,8 +48,6 @@ node scripts/check-contracts.mjs subagents --root agents
 execution_skills=(
   skills/workflows/stnl-execution-planner
   skills/workflows/stnl-plan-reviewer
-  skills/workflows/stnl-task-materializer
-  skills/workflows/stnl-task-reviewer
   skills/workflows/stnl-slice-executor
   skills/workflows/stnl-slice-quality-manager
 )

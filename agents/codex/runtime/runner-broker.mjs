@@ -1,3 +1,5 @@
+import { bindExecutionBroker } from '../../../skills/workflows/stnl-slice-executor/runtime/execution-publication.mjs';
+import { resolveExecutionWorkspace, readExecutionActivation } from '../../../skills/workflows/stnl-slice-executor/runtime/execution-state.mjs';
 import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -145,6 +147,7 @@ export async function startOfficialRunnerBroker({
     assertCanonicalWorkspaceEntry(officialPreflight.specPath, workspace, 'BROKER_SPEC_PATH'),
   ]);
 
+  if (!officialPreflight.owner) fail('BROKER_OPERATION_OWNER_REQUIRED');
   const directory = path.join(tmpdir, BROKER_DIRECTORY);
   await fs.mkdir(directory, { recursive: true, mode: 0o700 });
   const directoryMetadata = await fs.lstat(directory);
@@ -159,6 +162,9 @@ export async function startOfficialRunnerBroker({
     fail('BROKER_ALREADY_ACTIVE');
   }
 
+  await bindExecutionBroker({ workspace: await resolveExecutionWorkspace(officialPreflight.specPath), owner: officialPreflight.owner,
+    runner: { dispatchId: `${officialPreflight.owner.operationAttemptId}:${sequence}`, receiptFile: activeFile, threadId: null, status: 'pending' },
+    readActivated: () => readExecutionActivation(officialPreflight.specPath) });
   let stopping = false;
   const seen = new Set();
   const errors = [];
@@ -281,7 +287,9 @@ export async function startOfficialRunnerBroker({
         })]);
         await writeAtomic(summaryFile, { ...identity, pending: false, requestsHandled: seen.size,
           capturedReceipts, errors, cancelledPending, closedAt: new Date().toISOString() });
-        await fs.unlink(activeFile);
+        const execution = await readExecutionActivation(officialPreflight.specPath);
+        // A terminal confirmed publisher clears the owner. Uncertain work keeps broker references intact.
+        if (execution.activation.activeAttempt === null) await fs.unlink(activeFile);
       } finally { clearTimeout(timer); }
     },
   };

@@ -55,6 +55,7 @@ export async function createOfflineCheckout(t, repository, scenario, { shared = 
   const env = { ...process.env, HOME: home, STNL_OFFLINE_PROVIDER_CONTEXT: path.join(root, '.offline-context.json'),
     GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', NO_COLOR: '1',
     npm_config_update_notifier: 'false', npm_config_audit: 'false', npm_config_fund: 'false' };
+  delete env.NODE_TEST_CONTEXT;
   delete env.OPENAI_API_KEY; delete env.CODEX_API_KEY;
   Object.assign(fixture, { home, env });
   return fixture;
@@ -72,6 +73,7 @@ export async function finishOfflineFixture(fixture, { remove = true } = {}) {
   }
   await assertOwnership();
   const root = owner.root;
+  const retainedBrokers = [];
   if (await optional(path.join(root, 'benchmark-temp/.active-run.json')) !== null) throw new Error('OFFLINE_FIXTURE_RETAINED: active or interrupted manager');
   const runNames = await fs.readdir(path.join(root, 'benchmark-temp')).catch(error => {
     if (error.code === 'ENOENT') return []; throw error;
@@ -87,7 +89,25 @@ export async function finishOfflineFixture(fixture, { remove = true } = {}) {
       const state = await optional(path.join(runRoot, entry.name, 'case-state.json'));
       if (!state || !['PASS', 'BLOCKED', 'CANCELLED'].includes(state.status)
         || state.privateHomeSuspended || state.privateHomeCleanupError) throw new Error('OFFLINE_FIXTURE_RETAINED: case is not settled');
-      if (await optional(path.join(runRoot, entry.name, 'tmp/stnl-runner-broker/active.json')) !== null) throw new Error('OFFLINE_FIXTURE_RETAINED: broker still active');
+      const activeFile = path.join(runRoot, entry.name, 'tmp/stnl-runner-broker/active.json');
+      const active = await optional(activeFile);
+      if (active !== null) {
+        // A narrowly asserted negative case can retain operation ownership even
+        // after every fixture process concluded. Archive and preserve it; never
+        // treat a pending marker as permission to remove the owned checkout.
+        const expected = fixture.expectedPendingNoDispatch;
+        if (!expected || state.status !== 'BLOCKED' || activeFile !== expected.activeFile
+          || active.operation !== 'EXECUTE_SLICE' || active.sequence !== expected.sequence
+          || active.officialPreflight?.owner?.operationAttemptId !== expected.operationAttemptId) {
+          throw new Error('OFFLINE_FIXTURE_RETAINED: broker still active');
+        }
+        const tmpdir = path.dirname(path.dirname(activeFile));
+        if ((await fs.readdir(tmpdir)).some(name => name.endsWith('.started.json'))) throw new Error('OFFLINE_FIXTURE_RETAINED: unexpected runner dispatch');
+        const { readExecutionActivation } = await import(path.join(root, 'skills/workflows/stnl-slice-executor/runtime/execution-state.mjs'));
+        const attempt = (await readExecutionActivation(active.officialPreflight.specPath)).activation.activeAttempt;
+        if (attempt?.operationAttemptId !== expected.operationAttemptId || attempt.runner?.status !== 'pending') throw new Error('OFFLINE_FIXTURE_RETAINED: retained ownership differs');
+        retainedBrokers.push(activeFile); remove = false;
+      }
     }
   }
   const calls = await fs.readFile(path.join(root, '.offline-calls.jsonl'), 'utf8').catch(error => {
@@ -100,9 +120,11 @@ export async function finishOfflineFixture(fixture, { remove = true } = {}) {
     pids.add(Number(await fs.readFile(path.join(root, name), 'utf8')));
   }
   if ([...pids].some(alive)) throw new Error('OFFLINE_FIXTURE_RETAINED: recorded fixture process is still alive');
+  if (retainedBrokers.length && calls.split('\n').filter(Boolean).map(JSON.parse).some(call => call.independent || call.externalCalls !== 0)) throw new Error('OFFLINE_FIXTURE_RETAINED: no-dispatch proof differs');
 
   const archive = await fs.realpath(await fs.mkdtemp('/tmp/stnl-offline-evidence-'));
-  const manifest = { originalRoot: root, ownerId: owner.id, dependenciesOmitted: true, files: [] };
+  const manifest = { originalRoot: root, ownerId: owner.id, dependenciesOmitted: true,
+    retainedBrokers, processesSettled: [...pids].sort((a,b) => a-b), files: [] };
   async function copy(relative) {
     if (['node_modules', '.git', '.offline-home'].includes(path.basename(relative))) return;
     const source = path.join(root, relative), target = path.join(archive, relative);
@@ -128,6 +150,7 @@ export async function finishOfflineFixture(fixture, { remove = true } = {}) {
   }
   await fs.writeFile(path.join(archive, 'evidence-manifest.json'), JSON.stringify(manifest, null, 2) + '\n', { flag: 'wx' });
   console.log(`TEST-ONLY archived fixture evidence: ${archive}`);
+  if (retainedBrokers.length) console.log(`TEST-ONLY preserved pending operation without runner dispatch: ${root}`);
   if (remove) {
     await assertOwnership();
     // Thaw only directories of this closed owned fixture, never the shared SDK.

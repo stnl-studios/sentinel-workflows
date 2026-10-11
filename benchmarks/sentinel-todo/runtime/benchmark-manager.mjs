@@ -25,14 +25,12 @@ const PHASE = {
   SPEC_INIT: 'SPEC', SPEC_READINESS: 'REVIEW_VALIDATE', SPEC_RESUME: 'SPEC',
   SPEC_PROMOTE: 'SPEC', SPEC_CLOSE: 'SPEC',
   PLAN: 'PLAN', REPLAN: 'PLAN', REVIEW_PLAN: 'REVIEW_VALIDATE',
-  MATERIALIZE_TASKS: 'TASKS', REVIEW_TASKS: 'REVIEW_VALIDATE',
   EXECUTE_SLICE: 'EXECUTE', APPLY_FINDINGS: 'EXECUTE', VALIDATE_SLICE: 'REVIEW_VALIDATE',
 };
 const TEMPLATE = {
   SPEC_INIT: 'spec-init.md', SPEC_READINESS: 'spec-readiness.md',
   SPEC_RESUME: 'spec-resume.md', SPEC_PROMOTE: 'spec-resume.md', SPEC_CLOSE: 'spec-close.md',
   PLAN: 'execution-plan.md', REPLAN: 'execution-replan.md', REVIEW_PLAN: 'execution-plan-review.md',
-  MATERIALIZE_TASKS: 'execution-tasks.md', REVIEW_TASKS: 'execution-tasks-review.md',
   EXECUTE_SLICE: 'slice-execute-codex.md', APPLY_FINDINGS: 'slice-apply-findings-codex.md',
   VALIDATE_SLICE: 'slice-validate-codex.md',
 };
@@ -309,9 +307,7 @@ export function decideOutcome(operation, readback, completed, readinessResult = 
   }
   if (operation === 'VALIDATE_SLICE' && execution?.state === 'VALIDATION_NEEDS_FIX') return { result: 'NEEDS_FIX', blocker: null };
   const accepted = {
-    PLAN: ['PLANNED_DRAFT'], REVIEW_PLAN: ['PLANNED_READY', 'PENDING_REPLAN_READY'],
-    MATERIALIZE_TASKS: ['MATERIALIZED_PRISTINE', 'EXECUTION_STARTED', 'IMPLEMENTED_AWAITING_VALIDATION', 'FINDINGS_CORRECTED'],
-    REVIEW_TASKS: ['MATERIALIZED_PRISTINE'],
+    PLAN: ['PLANNED_DRAFT'], REVIEW_PLAN: ['MATERIALIZED_PRISTINE', 'EXECUTION_STARTED', 'IMPLEMENTED_AWAITING_VALIDATION', 'FINDINGS_CORRECTED'],
     EXECUTE_SLICE: ['IMPLEMENTED_AWAITING_VALIDATION'], APPLY_FINDINGS: ['FINDINGS_CORRECTED'],
     VALIDATE_SLICE: ['EXECUTION_STARTED', 'COMPLETE'], REPLAN: ['PLANNED_DRAFT', 'PENDING_REPLAN_DRAFT'],
   };
@@ -552,12 +548,14 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
         if (RUNNER_OPERATIONS.has(operation)) {
           officialPreflight = { exitCode: 0, operation, slice, inputSlice: specInput(slice),
             specPath, state: preflight.state, authority: `sha256:${preflight.currentFingerprint}`,
-            legalOperations: preflight.legalOperations, mandatoryRecovery: preflight.mandatoryRecovery };
+            legalOperations: preflight.legalOperations, mandatoryRecovery: preflight.mandatoryRecovery, activationId: preflight.activation.activationId };
           managedSliceContext = await product.createManagedSliceContext({ officialPreflight, workspace,
             snapshot: path.join(runRoot, 'snapshot'),
             adapterPath: home?.env?.STNL_RUNNER_ADAPTER ?? path.join(runRoot, 'snapshot', 'agents/codex/runtime/validation-runner.mjs'),
             bridgePath: path.join(runRoot, 'snapshot', 'agents/codex/runtime/managed-runner-bridge.mjs'),
             preflightPath: path.join(runRoot, 'snapshot', 'agents/codex/runtime/managed-slice-preflight.mjs') });
+          officialPreflight.owner = managedSliceContext.owner;
+          officialPreflight.expectedActivationId = managedSliceContext.expectedActivationId;
         }
       }
       const validationInputs = operation === 'VALIDATE_SLICE'
@@ -651,7 +649,7 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
         await releaseReservation(runRoot, runnerReservation, turnLimit);
         throw error;
       }
-      const contextRole = ['REVIEW_PLAN', 'REVIEW_TASKS', 'VALIDATE_SLICE'].includes(operation) ? `review-${operation.toLowerCase()}` : 'author';
+      const contextRole = ['REVIEW_PLAN', 'VALIDATE_SLICE'].includes(operation) ? `review-${operation.toLowerCase()}` : 'author';
       const threadId = null;
       announce({ kind: 'start', status: 'STARTED', runId: path.basename(runRoot), caseId,
         operation, slice, model: route.label, effort: route.effort,
@@ -732,7 +730,7 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
             try {
               await assertSnapshotIntegrity(runRoot);
               if (!operation.startsWith('SPEC_')) {
-                const fresh = await product.preflightExecutionOperation(specPath, operation, specInput(slice));
+                const fresh = await product.preflightExecutionOperation(specPath, operation, specInput(slice), { owner: managedSliceContext?.owner });
                 if (managedSliceContext !== null && (fresh.state !== officialPreflight.state
                   || `sha256:${fresh.currentFingerprint}` !== officialPreflight.authority
                   || JSON.stringify(fresh.legalOperations) !== JSON.stringify(officialPreflight.legalOperations)

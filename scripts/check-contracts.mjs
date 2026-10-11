@@ -138,7 +138,7 @@ function checkFilePurposeHeader(file, owner) {
   if (JSON.stringify(fields) !== JSON.stringify(expected)) reject("C008_FILE_HEADERS", `noncanonical File Purpose Header fields: ${file}`);
   const values = Object.fromEntries(lines.map((line) => [line.slice(0, line.indexOf(":")), line.slice(line.indexOf(":") + 1).trim()]));
   if (!["draft", "ready", "blocked", "done", "closed", "not_applicable"].includes(values.status)) reject("C008_FILE_HEADERS", `invalid File Purpose Header status: ${file}`);
-  const expectedOwner = path.basename(file) === "execution-record-schema.md" ? "stnl-task-materializer" : owner;
+  const expectedOwner = path.basename(file) === "execution-record-schema.md" ? "stnl-execution-planner" : owner;
   if (values.owner !== expectedOwner) reject("C008_FILE_HEADERS", `wrong File Purpose Header owner: ${file}`);
   if ((text.match(/```yaml/gu) ?? []).length !== 1) reject("C008_FILE_HEADERS", `extra YAML block in execution resource: ${file}`);
 }
@@ -427,8 +427,6 @@ const launcherSpecs = {
   "execution-plan": ["stnl-execution-planner", "OPERATION", "PLAN", ["SPEC_PATH"]],
   "execution-replan": ["stnl-execution-planner", "OPERATION", "REPLAN", ["SPEC_PATH", "REPLAN_REASON"]],
   "execution-plan-review": ["stnl-plan-reviewer", "OPERATION", "REVIEW_PLAN", ["SPEC_PATH"]],
-  "execution-tasks": ["stnl-task-materializer", "OPERATION", "MATERIALIZE_TASKS", ["SPEC_PATH"]],
-  "execution-tasks-review": ["stnl-task-reviewer", "OPERATION", "REVIEW_TASKS", ["SPEC_PATH"]],
   "slice-execute-codex": ["stnl-slice-executor", "OPERATION", "EXECUTE_SLICE", ["SPEC_PATH", "SLICE"]],
   "slice-execute-claude": ["stnl-slice-executor", "OPERATION", "EXECUTE_SLICE", ["SPEC_PATH", "SLICE"]],
   "slice-apply-findings-codex": ["stnl-slice-executor", "OPERATION", "APPLY_FINDINGS", ["SPEC_PATH", "SLICE"]],
@@ -538,9 +536,9 @@ function checkRepository(root) {
   const plannerContract = ["SKILL.md", "templates/plan.template.md", "templates/slice-plan.template.md"].map((relative) => read(path.join(workflowRoot, "stnl-execution-planner", relative))).join("\n");
   const globalPlanTemplate = read(path.join(workflowRoot, "stnl-execution-planner/templates/plan.template.md"));
   const detailedPlanTemplate = read(path.join(workflowRoot, "stnl-execution-planner/templates/slice-plan.template.md"));
-  if (!globalPlanTemplate.includes("Model-selected physical target (repository-relative before serialization): `<repository-relative physical target>`; <optional conceptual area> (plain-text description)")) reject("C005_PATH_CARRIERS", "global Expected areas template must separate its semantic physical target from plain-text description");
-  if (!detailedPlanTemplate.includes("Implementation filesystem path (outside generated execution artifacts): `<artifact-relative path>` — <optional contract, subsystem, test area, or explanation> (plain-text description)")) reject("C005_PATH_CARRIERS", "detailed Likely Areas template must separate its implementation path from plain-text description");
-  const taskContract = ["SKILL.md", "templates/tasks.template.md", "templates/slice-tasks.template.md"].map((relative) => read(path.join(workflowRoot, "stnl-task-materializer", relative))).join("\n");
+  if (!globalPlanTemplate.includes("directory: `<repository-relative physical target>`")) reject("C005_PATH_CARRIERS", "global Expected areas template must separate its semantic physical target from plain-text description");
+  if (!detailedPlanTemplate.includes("## Authorized Areas\n\n- directory: `<artifact-relative authorized subtree or exact file>`")) reject("C005_PATH_CARRIERS", "detailed Likely Areas template must separate its implementation path from plain-text description");
+  const taskContract = ["SKILL.md", "templates/tasks.template.md", "templates/slice-tasks.template.md"].map((relative) => read(path.join(workflowRoot, "stnl-execution-planner", relative))).join("\n");
   for (const [label, contract] of [["planning", plannerContract], ["tasks", taskContract]]) {
     if (!contract.includes("Requirements authority: sha256:<64hex>")) reject("C005_AUTHORITY_FIELDS", `${label} contract lacks exact Requirements authority field`);
     if (!contract.includes("Plan revision: <positive integer>")) reject("C005_AUTHORITY_FIELDS", `${label} contract lacks exact Plan revision field`);
