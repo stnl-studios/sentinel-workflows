@@ -27,7 +27,7 @@ export const RUNBOOK_OPTION_DEFAULTS = Object.freeze({
 const RUNBOOK_OPTION_KEYS = new Set(Object.keys(RUNBOOK_OPTION_DEFAULTS));
 const SLICE_FILE = /^slice-[0-9]{2,}\.md$/u;
 const TASK_LABEL = /^[0-9]+\.[0-9]+$/u;
-const EXECUTION_ROOT_FILES = new Set(["plan.md", "tasks.md", "approved-preparation.json", "activation.json"]);
+const EXECUTION_ROOT_FILES = new Set(["plan.md", "tasks.md", "approved-preparation.json", "activation.json", "continuity.json"]);
 const EXECUTION_ROOT_DIRECTORIES = new Set(["plans", "tasks"]);
 const SECRET_PATH_NAMES = new Set([
   ".env", ".npmrc", ".pypirc", "credentials", "credentials.json", "id_rsa", "id_ed25519",

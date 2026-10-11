@@ -5,7 +5,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 import {
-  inspectExecutionState, readExecutionActivation, preparationAuthorityAt,
+  inspectExecutionState, readExecutionActivation, preparationAuthorityAt, retainOperationalWork,
   preflightExecutionOperation,
   resolveExecutionWorkspace,
   validateExecutionCandidate,
@@ -13,7 +13,7 @@ import {
 import { assertOperationalTaskHistory, parsePreparationTableRow } from "./execution-preparation.mjs";
 import { assertManagedAgreement } from "./managed-slice-context.mjs";
 
-import { publishExecutionUpdate, captureExecutionTree } from "./execution-publication.mjs";
+import { publishExecutionUpdate, captureExecutionTree, acknowledgePublishedCandidate } from "./execution-publication.mjs";
 
 const VALIDATION_OWNED_SECTIONS = new Set([
   "Validation Attempts",
@@ -246,15 +246,19 @@ export async function publishValidationCandidate({ specPath, slice: sliceValue, 
   if (proposal.specPath !== specPath || proposal.slice !== slice || proposal.owner?.operationAttemptId !== owner?.operationAttemptId) fail('validation proposal binding differs');
   if (expectedActivationId !== null && expectedActivationId !== proposal.expectedActivationId) fail('validation CAS token differs');
   if (expectedTree !== null && JSON.stringify(expectedTree) !== JSON.stringify(proposal.tree)) fail('validation source tree differs');
+  const disposableTree=await captureExecutionTree(candidateRoot);
   const publication = await publishExecutionUpdate({ workspace, candidateExecutionRoot: candidateRoot,
     expectedTree: proposal.tree, expectedActivationId: proposal.expectedActivationId, owner, terminal,
     readActivated: () => readExecutionActivation(specPath),
+    prepareRetention: details => retainOperationalWork({specPath,...details,owner}),
     validateCandidate: async root => { await validateExecutionCandidate(specPath, root); return preparationAuthorityAt(root); },
     authorizeDiff: async staged => {
       const live = await treeSnapshot(liveRoot); const proposed = await treeSnapshot(staged);
       assertPublicationScope(live, proposed, slice, liveRoot, candidateRoot, candidateState.state);
       assertOperationalTaskHistory(live.get(`tasks/${slice}.md`).bytes.toString("utf8"), proposed.get(`tasks/${slice}.md`).bytes.toString("utf8"), owner, "VALIDATE_SLICE");
     } });
+  try {await acknowledgePublishedCandidate({workspace,marker:`${candidateRoot}.publication.json`,candidateTree:disposableTree,publication,readActivated:()=>readExecutionActivation(specPath)});}
+  catch(error) {publication.candidateCleanupDiagnostic=error.message;}
   return { status: 'PASS', state: candidateState.state, selectedSlice: slice, publishedExecutionRoot: liveRoot, ...publication };
 }
 

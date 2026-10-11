@@ -3,7 +3,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { resolveExecutionWorkspace, preflightExecutionOperation, validateExecutionCandidate,
-  readExecutionActivation, preparationAuthorityAt, computeRequirementsAuthority } from './execution-state.mjs';
+  readExecutionActivation, preparationAuthorityAt, computeRequirementsAuthority, prepareDeliveryRetention } from './execution-state.mjs';
 import { publishExecutionUpdate } from './execution-publication.mjs';
 import { captureApprovedPreparation, parseStrictJson, readPreparationArtifacts, sha256, validateApprovedPreparation, parsePreparationArtifact } from './execution-preparation.mjs';
 import { preparePlanCandidate } from './prepare-plan-candidate.mjs';
@@ -20,7 +20,8 @@ async function assertHistoricalPreparation(specPath, staged, operation) {
   const original = await readPreparationArtifacts(live.workspace.executionRoot);
   const proposed = await readPreparationArtifacts(staged);
   const global = parsePreparationArtifact(proposed.get('plan.md'), 'plan.md');
-  if (operation === 'REPLAN' && (global.fields['Revision mode'] !== 'append-only-extension'
+  const same=global.fields['Revision mode']==='same-delivery-revision';
+  if (operation === 'REPLAN' && (!['append-only-extension','same-delivery-revision'].includes(global.fields['Revision mode'])
     || Number(global.fields['Plan revision']) !== live.globalPlan.revision + 1)) throw new Error('historical REPLAN requires next append-only revision');
   const mapped = new Set((global.fields['Supersedes open slices'] ?? 'none').split(', ').map(mapping => mapping.split(' -> ')[0]));
   for (const [name, bytes] of original) {
@@ -28,6 +29,14 @@ async function assertHistoricalPreparation(specPath, staged, operation) {
     const next = proposed.get(name);
     if (!next) throw new Error(`historical artifact was removed: ${name}`);
     const slice = path.basename(name, '.md');
+    if (same && (operation==='REPLAN' || Number(parsePreparationArtifact(next,name).fields['Plan revision'])===live.globalPlan.revision)) {
+      const old=parsePreparationArtifact(bytes,name);const revised=parsePreparationArtifact(next,name);
+      if (old.fields['Delivery ID']!==revised.fields['Delivery ID']) throw new Error('same-delivery revision changes runtime identity');
+      if (name.startsWith('tasks/')) for (const heading of ['Implementation Test Evidence','Findings Test Evidence','Validation Attempts','Validation Findings','Divergences','Delegation Blocker']) {
+        if (old.sections[heading]!==revised.sections[heading]) throw new Error('revision rewrites operational history before retention');
+      }
+      continue;
+    }
     if (operation === 'REVIEW_PLAN' && live.tasks.get(slice)?.pristine && live.tasks.get(slice)?.revision === live.globalPlan.revision) continue;
     if (name.startsWith('plans/') || operation === 'REPLAN') {
       if (bytes !== next) throw new Error(`historical artifact changed: ${name}`);
@@ -49,7 +58,10 @@ async function assertHistoricalPreparation(specPath, staged, operation) {
   const newRows = proposed.get('tasks.md').split('\n').filter(line => /^\| \[[ x]\] /u.test(line));
   for (const [index, row] of oldRows.entries()) {
     const slice = /tasks\/(slice-[0-9]{2,})\.md/u.exec(row)?.[1];
-    if (operation === 'REPLAN' || !mapped.has(slice)) {
+    if (same) {
+      const old=row.split('|');const next=newRows[index]?.split('|');
+      if (!next || old.slice(2,6).join('|')!==next.slice(2,6).join('|')) throw new Error('same revision changes historical progress identity');
+    } else if (operation === 'REPLAN' || !mapped.has(slice)) {
       if (row !== newRows[index]) throw new Error('historical progress row changed');
     } else {
       const old = row.split('|'); const next = newRows[index]?.split('|');
@@ -73,6 +85,7 @@ export async function publishPreparationCandidate({ specPath, candidateExecution
   } else if (reviewDecision !== null) throw new Error('author cannot approve its own preparation');
   return publishExecutionUpdate({ workspace, candidateExecutionRoot, expectedTree: marker.source,
     expectedActivationId: marker.expectedActivationId, draft: !reviewed, checkpoint,
+    prepareRetention: details => prepareDeliveryRetention({specPath,...details,revise:marker.operation === 'REPLAN'}),
     readActivated: () => readExecutionActivation(specPath, { requireCurrent: marker.operation !== "REPLAN" }),
     authorizeDiff: async staged => {
       await assertHistoricalPreparation(specPath, staged, marker.operation);

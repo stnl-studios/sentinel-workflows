@@ -12,11 +12,29 @@ import {
   preflightExecutionOperation,
   repairExecutionContract,
   validateExecutionCandidate,
+  inspectDeliveryContinuity, resumeOwnedExecutionOperation, readExecutionActivation, resolveExecutionWorkspace,
 } from "./execution-state.mjs";
 
-import { readOperationOwner, parseStrictJson } from "./execution-publication.mjs";
+import { readOperationOwner, parseStrictJson, cleanupOwnedExecutionAllocation } from "./execution-publication.mjs";
 
 export async function main(arguments_) {
+  if (arguments_.length>=3 && arguments_[1]==='--inspect-continuity') {
+    const options={};
+    for(let i=3;i<arguments_.length;i+=2) {
+      const key=arguments_[i]==='--revision'?'revision':arguments_[i]==='--attempt'?'attempt':null;
+      if(!key || arguments_[i+1]===undefined || Object.hasOwn(options,key)) throw new ExecutionContractError('inspect accepts only one explicit revision and/or attempt');
+      options[key]=key==='revision' && /^[1-9][0-9]*$/u.test(arguments_[i+1]) ? Number(arguments_[i+1]) : arguments_[i+1];
+    }
+    process.stdout.write(JSON.stringify(await inspectDeliveryContinuity(arguments_[0],arguments_[2],options))+'\n');return 0;
+  }
+  if (arguments_.length===4 && arguments_[1]==='--resume-owned-operation') {
+    const owner=process.env.STNL_MANAGED_CONTEXT ? parseStrictJson(process.env.STNL_MANAGED_CONTEXT).owner : await readOperationOwner(arguments_[0]);
+    process.stdout.write(JSON.stringify(await resumeOwnedExecutionOperation(arguments_[0],arguments_[2],arguments_[3],owner))+'\n');return 0;
+  }
+  if (arguments_.length===3 && arguments_[1]==='--cleanup-owned-allocation') {
+    const workspace=await resolveExecutionWorkspace(arguments_[0]);
+    process.stdout.write(JSON.stringify(await cleanupOwnedExecutionAllocation({workspace,marker:arguments_[2],readActivated:()=>readExecutionActivation(arguments_[0])}))+'\n');return 0;
+  }
   if (arguments_.length === 4 && arguments_[1] === '--begin') {
     const [specPath, , operation, slice] = arguments_;
     const current = await preflightExecutionOperation(specPath, operation, slice);

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -8,7 +8,7 @@ import { pathToFileURL } from 'node:url';
 import { resolveExecutionWorkspace, readExecutionActivation } from './execution-state.mjs';
 import { assertManagedAgreement } from './managed-slice-context.mjs';
 
-import { withExecutionPublicationLock, captureExecutionTree, assertExecutionAttempt, readOperationOwner } from './execution-publication.mjs';
+import { withExecutionPublicationLock, captureExecutionTree, assertExecutionAttempt, readOperationOwner, registerOwnedAllocation } from './execution-publication.mjs';
 
 function inside(candidate, parent) {
   const relative = path.relative(parent, candidate);
@@ -59,9 +59,10 @@ async function prepareValidationCopyLocked({ specPath, slice, candidateParent, o
       throw new Error('validation candidate differs from the official execution tree');
     }
     await fs.writeFile(`${candidate}.publication.json`, JSON.stringify({ specPath, slice, owner, executionRoot: source,
-      expectedActivationId: admitted.activation.activationId, tree }) + '\n', { flag: 'wx', mode: 0o600 });
+      expectedActivationId: admitted.activation.activationId, tree, producer:'validation-copy',allocationId:randomUUID(),retentionRoot:candidate,candidate }) + '\n', { flag: 'wx', mode: 0o600 });
+    await registerOwnedAllocation(owner.workCapture,`${candidate}.publication.json`);
     return { expectedActivationId: admitted.activation.activationId, owner, candidateExecutionRoot: candidate, executionRoot: source, entries: original.length };
-  } catch (error) { await fs.rm(candidate, { recursive: true, force: true }); throw error; }
+  } catch (error) {error.retainedCandidate=candidate;error.message+=`; partial owned candidate retained: ${candidate}`;throw error; }
 }
 
 export async function prepareValidationCopy({ specPath, slice, candidateParent, owner = null }) {

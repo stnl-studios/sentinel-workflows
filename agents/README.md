@@ -69,7 +69,7 @@ Somente `VALIDATE_SLICE` cria uma Validation Attempt e decide o estado de findin
 
 Os dois adaptadores implementam o mesmo contrato. O runner pode ler o escopo necessário e executar comandos, mas não edita código, testes, requisitos, planos ou tasks; não implementa, não corrige, não persiste, não finaliza, não cria subagentes e não faz commit. Artefatos transitórios normais de build ou teste são permitidos e efeitos inesperados no workspace são reportados.
 
-Um `PASS` que faria a execução chegar a `COMPLETE` só pode ser publicado depois que o runtime validar deterministicamente terminalidade, authority fingerprint/revision, Effective Validation Bases, ownership final por path, hashes, remoções, reaparecimentos, paths sem owner e trusted-root safety. A inspeção read-only de uma execução já `COMPLETE` repete esse gate e diagnostica drift posterior sem alterar o PASS histórico; a recuperação é `REPLAN` com novo trabalho corretivo, nunca revalidar uma slice concluída. `COMPLETE` saudável não possui handoff normal de execução. `MODE=CLOSE` do lifecycle retorna `SPEC_CLOSED`, é independente e não afirma durable delivery approval.
+Um `PASS` que faria a execução chegar a `COMPLETE` só pode ser publicado depois que o runtime validar deterministicamente terminalidade, authority fingerprint/revision, Effective Validation Bases, ownership final por path, hashes, remoções, reaparecimentos, paths sem owner e trusted-root safety. A inspeção read-only de uma execução já `COMPLETE` repete esse gate e diagnostica drift posterior sem alterar o PASS histórico; mudança conhecida que afeta a prova expõe revalidação da mesma entrega. A admissão explícita de VALIDATE sela o PASS/Base/Task anterior e reabre somente o delta operacional autorizado; mudança normativa material exige antes REPLAN/review mantendo UUID/slot quando o resultado é o mesmo. Origem incerta bloqueia e preserva material. `COMPLETE` saudável não possui handoff normal de execução. `MODE=CLOSE` do lifecycle retorna `SPEC_CLOSED`, é independente e não afirma durable delivery approval.
 
 ## `stnl-spec-context-scout`
 
@@ -92,3 +92,11 @@ A resposta é textual, descartável e não persistida. Ela contém somente ânco
 ### Fallback
 
 Se o adapter não estiver instalado ou disponível, a operação não falha somente por isso. O agente principal continua com busca determinística e leitura limitada, não amplia automaticamente a exploração e relata a ausência apenas quando ela for material para a confiança ou para a lacuna restante.
+
+## Continuidade e recuperação da entrega
+
+`execution/continuity.json` é um índice fechado desta execução: baseline e refs seladas de Task/snapshot nas cápsulas dos publishers existentes. A Task mostra um resumo curto; inspeção recalcula validade sem escrever. Os checks e attempts continuam sequenciais por deliveryId através das revisões, mesmo após compactar o ciclo corrente. PASS histórico e validade corrente são conceitos distintos.
+
+O CLI existente aceita `SPEC_PATH --inspect-continuity SLICE [--revision N] [--attempt attempt-NN]`, `SPEC_PATH --resume-owned-operation OPERATION SLICE` e `SPEC_PATH --cleanup-owned-allocation ALLOCATION_MARKER`. Resume consulta o mesmo owner/session/receipt e preserva trabalho sem registro, sem begin ou dispatch. Cleanup usa o lock comum/CAS, confirma a imagem e remove somente candidata própria comprovadamente redundante; candidato alterado, código único, receipt, histórico e backup permanecem retidos. Confirmação de publicação e cleanup pendente são resultados separados; nunca repetir implementação/validação por uma falha de cleanup.
+
+Captura passiva mantém bytes reais de produto/inputs e ausência de arquivos removidos. Autoridade e alocações operacionais são reconhecidas pelos resolvers e vínculos dos produtores. Uma área ancestral que contém SPEC/execution continua observando produto legítimo, inclusive arquivos ignorados pelo Git ou com nomes/prefixos semelhantes a temporários. Esses bytes não são evidência testada.

@@ -17,13 +17,21 @@ export async function offlineProviderContext(environment = process.env, snapshot
   if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.nlink !== 1) invalid();
   const context = JSON.parse(await fs.readFile(file, 'utf8'));
   const { root, home, providerSha256 } = context;
+  const allocationParent=context.allocationParent ?? await fs.realpath('/tmp');
+  if(typeof allocationParent!=='string' || !path.isAbsolute(allocationParent) || await fs.realpath(allocationParent)!==allocationParent) invalid();
   if (context.mode !== 'OFFLINE_TEST_ONLY' || typeof root !== 'string'
-    || path.dirname(root) !== await fs.realpath('/tmp')
+    || path.dirname(root) !== allocationParent
     || !path.basename(root).startsWith('stnl-offline-checkout-')
     || await fs.realpath(root) !== root || file !== path.join(root, '.offline-context.json')
     || home !== path.join(root, '.offline-home') || await fs.realpath(home) !== home
     || await fs.readFile(path.join(root, '.offline-owned'), 'utf8') !== OFFLINE_MARKER
     || !/^sha256:[a-f0-9]{64}$/u.test(providerSha256 ?? '')) invalid();
+  if(context.allocationParent!==undefined) {
+    const ownerFile=path.join(root,'.offline-fixture-owner.json');const ownerMeta=await fs.lstat(ownerFile);
+    if(!ownerMeta.isFile()||ownerMeta.isSymbolicLink()||ownerMeta.nlink!==1) invalid();
+    const owner=JSON.parse(await fs.readFile(ownerFile,'utf8'));
+    if(owner.root!==root || owner.inode!==(await fs.lstat(root)).ino || !/^[a-f0-9-]{36}$/u.test(owner.id) || !Number.isSafeInteger(owner.pid)) invalid();
+  }
   const auth = path.join(home, '.codex/auth.json');
   const authMetadata = await fs.lstat(auth);
   if (!authMetadata.isFile() || authMetadata.isSymbolicLink() || authMetadata.nlink !== 1

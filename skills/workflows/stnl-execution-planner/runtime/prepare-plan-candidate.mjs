@@ -4,7 +4,7 @@ import * as fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { assignDeliveryIdentities, parseStrictJson, parsePreparationArtifact } from './execution-preparation.mjs';
+import { assignDeliveryIdentities, parseStrictJson, parsePreparationArtifact, preparationDeliveryContinuity } from './execution-preparation.mjs';
 import { resolveExecutionWorkspace, computeRequirementsAuthority } from './execution-state.mjs';
 import { captureExecutionTree, assertOwnedPreparationCandidate } from './execution-publication.mjs';
 
@@ -167,12 +167,20 @@ export async function preparePlanCandidate({ candidateExecutionRoot }) {
     artifacts.push({ path: path.join(candidate, 'tasks', entry), header: taskHeader, label: entry });
   }
   const preparedArtifacts = [];
+  const sameRevisions=new Set();
+  if (marker.revisionMode==='same-delivery-revision') {
+    const text=await fs.readFile(path.join(candidate,'plan.md'),'utf8');
+    const body=text.match(/## Delivery Continuity\n\n([\s\S]*?)(?=\n## )/u)?.[1].trim();
+    const order=[...text.matchAll(/^\| ([0-9]{2,}) - .+\| plans\/(slice-[0-9]{2,})\.md \|$/gmu)].map(m=>({slice:m[2]}));
+    for (const row of preparationDeliveryContinuity(body,order)) if (row.verification!=='unchanged') sameRevisions.add(row.slice);
+    if (!sameRevisions.size) blocked('same-delivery revision needs explicit affected verification');
+  }
   for (const artifact of artifacts) {
     const before = await readRegularFile(artifact.path, artifact.label);
     let after = prepareHeader(before, artifact.header, artifact.label);
     const relative = path.relative(candidate, artifact.path).split(path.sep).join('/');
     const slice = /^(?:plans|tasks)\/(slice-[0-9]{2,})\.md$/u.exec(relative)?.[1];
-    if (!slice || !marker.historicalSlices.includes(slice)) {
+    if (!slice || !marker.historicalSlices.includes(slice) || sameRevisions.has(slice)) {
       const set = (name, value) => {
         const line = `- ${name}: ${value}`;
         const pattern = new RegExp(`^- ${name}: .+$`, 'mu');

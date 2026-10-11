@@ -58,33 +58,115 @@ const formalResponse = (command, status = 'PASS') => ({ status, head:'offline-wo
   findingDispositions:'none', blockers:status === 'BLOCKED' ? 'Required review premise unavailable.' : 'none',
   unexpectedWorkspaceEffects:'none', persistenceSummary:'Preserve concluded offline result.' });
 
-export async function implementOffline(f, admitted, { forceFail = false } = {}) {
+export async function implementOffline(f, admitted, { forceFail = false, slice = 'slice-01', directory = 'src', priorOverlap = '- none', additionalClaims = [], regressionFiles = [], beforeChecks = null } = {}) {
   const native = await startOfflineNative(f, admitted.owner);
-  const copy = await prepareExecutionCopy({ specPath: f.specPath, slice: 'slice-01', owner: admitted.owner });
+  const copy = await prepareExecutionCopy({ specPath: f.specPath, slice, owner: admitted.owner });
   // New actual file was intentionally absent from Expected Files.
-  await fs.writeFile(path.join(f.root, 'src/unpredicted.mjs'), 'export const greeting = '+JSON.stringify(forceFail ? 'wrong' : 'hello')+';\n');
-  await fs.writeFile(path.join(f.root, 'src/greeting.test.mjs'), 'import test from "node:test"; import assert from "node:assert/strict"; import {greeting} from "./unpredicted.mjs"; test("AC-001 greeting",()=>assert.equal(greeting,"hello"));\n');
-  const command = 'node --test src/greeting.test.mjs';
-  const observed = spawnSync(process.execPath, ['--test', 'src/greeting.test.mjs'], { cwd: f.root, env: commandEnvironment, encoding: 'utf8' });
+  await fs.writeFile(path.join(f.root, `${directory}/unpredicted.mjs`), 'export const greeting = '+JSON.stringify(forceFail ? 'wrong' : 'hello')+';\n');
+  await fs.writeFile(path.join(f.root, `${directory}/greeting.test.mjs`), 'import test from "node:test"; import assert from "node:assert/strict"; import {greeting} from "./unpredicted.mjs"; test("AC-001 greeting",()=>assert.equal(greeting,"hello"));\n');
+  if(beforeChecks) await beforeChecks();
+  const checkedFiles=[`${directory}/greeting.test.mjs`,...regressionFiles];
+  const command = `node --test ${checkedFiles.join(' ')}`;
+  const observed = spawnSync(process.execPath, ['--test', ...checkedFiles], { cwd: f.root, env: commandEnvironment, encoding: 'utf8' });
   assert.equal(observed.status, forceFail ? 1 : 0, observed.stderr);
-  assert.match(observed.stdout,/^# tests 1$/mu);
-  const claims = ['../../src/greeting.test.mjs', '../../src/unpredicted.mjs'];
+  assert.match(observed.stdout,new RegExp(`^# tests ${checkedFiles.length}$`,'mu'));
+  const claims = [`${directory}/greeting.test.mjs`, `${directory}/unpredicted.mjs`].map(p=>path.relative(path.join(f.workspace.executionRoot,'tasks'),path.join(f.root,p)).split(path.sep).join('/')).concat(additionalClaims).sort();
   let task = await fs.readFile(copy.candidateTaskArtifact, 'utf8');
-  task = task.replace('- [ ] 1.1', '- [x] 1.1');
+  task = task.replace(`- [ ] ${BigInt(slice.slice(6))}.1`, `- [x] ${BigInt(slice.slice(6))}.1`);
   task = setSection(task, 'Changed Areas', claims.map(claim => `- \`${claim}\``).join('\n'));
+  task = setSection(task,'Prior Validation Overlap',priorOverlap);
   task = setSection(task, 'Diff Summary', '- Implemented observable greeting and prepared assertion.');
   await fs.writeFile(copy.candidateTaskArtifact, task);
   const response = { status: 'TESTS_PASS', automaticCheckRound: '1/3', head: 'offline-working-tree', discoverySources: 'task Expected Tests and source test', discoveryActions: 'read declared prepared test', verificationTypesConsidered: 'behavior assertion', nonApplicabilityRationale: 'none', noVerificationCommandConfirmation: 'none', commands: [{ command, exit: observed.status }], resultOfEachCommandAndExitCode: 'Greeting assertion exit 0', selectedChecks: 'node test greeting', selectionRationale: 'Observe AC-001 value', coverage: 'Greeting export equals hello', failures: 'none', priorRoundFailure: 'none', correctionApplied: 'none', inSliceRationale: 'none', evidenceOrFailureSummary: 'Observed greeting equals hello', affectedFilesOrBehaviors: 'Greeting module and prepared test', blockers: 'none', unexpectedWorkspaceEffects: 'none', persistenceSummary: 'Compact auxiliary evidence' };
   if (forceFail) Object.assign(response,{status:'TESTS_FAIL',failures:'Actual greeting assertion failed; expected hello and observed wrong.',evidenceOrFailureSummary:observed.stdout});
-  const capture = await captureRunnerTestedState({ workspace: f.root, taskArtifact: path.join(f.workspace.executionRoot, 'tasks/slice-01.md'), changedAreas: claims });
-  assert.equal(capture.entries.length, 2);
+  const capture = await captureRunnerTestedState({ workspace: f.root, taskArtifact: path.join(f.workspace.executionRoot, `tasks/${slice}.md`), changedAreas: claims });
+  assert.equal(capture.entries.length,claims.length);
   const captured = await captureOfflineNative(native, response, claims);
   const bundle = await serializeRunnerExecutionBundleFromResponse({ operation: 'EXECUTE_SLICE', response: JSON.stringify(response), workspace: f.root, taskArtifact: copy.candidateTaskArtifact, ...captured });
   await insertExecutionEvidenceInCandidate({ taskArtifact: copy.candidateTaskArtifact, operation: 'EXECUTE_SLICE', bundle,
-    validateProspectiveTask: task => validateExecutionCandidate(f.specPath, copy.candidateExecutionRoot, [task], forceFail ? {privateAutomaticCheck:{operation:'EXECUTE_SLICE',slice:'slice-01',round:1}} : {}) });
+    validateProspectiveTask: task => validateExecutionCandidate(f.specPath, copy.candidateExecutionRoot, [task], forceFail ? {privateAutomaticCheck:{operation:'EXECUTE_SLICE',slice,round:1}} : {}) });
   return { copy, capture, command, native, captured, response };
 }
 
+export async function runFirstRemoval({afterFormal=null}={}) {
+  const f=await fixture();const previous=process.env.STNL_OPERATION_OWNER_FILE;
+  try {
+    const {computeRequirementsAuthority}=await import('../skills/workflows/stnl-slice-executor/runtime/execution-state.mjs');
+    await fs.writeFile(path.join(f.root,'src/obsolete.mjs'),'export const obsolete=true;\n');
+    const old='sha256:'+await computeRequirementsAuthority(f.specPath);
+    await fs.writeFile(f.specPath,'# Requirements\n\nAC-001: Remove src/obsolete.mjs. Verify file absence with node --test. Preserve authentication and persistence.\n');
+    const authority='sha256:'+await computeRequirementsAuthority(f.specPath);
+    for(const name of ['plan.md','tasks.md','plans/slice-01.md','tasks/slice-01.md']) {
+      let text=(await fs.readFile(path.join(f.candidate,name),'utf8')).replaceAll(old,authority).replaceAll('Greeting','Removal').replaceAll('greeting','obsolete module removal').replaceAll('Export observed by a prepared node test.','Obsolete module absent, observed by prepared absence assertion.');
+      if(name.startsWith('plans/')||name.startsWith('tasks/')) {
+        text=setSection(text,'Expected Files','- `src/obsolete.mjs`\n- `src/removal.test.mjs`');
+        text=setSection(text,'Existing Inputs','- `src/obsolete.mjs`');
+        text=setSection(text,'Expected Tests','- node --test src/removal.test.mjs');
+      }
+      if(name.startsWith('plans/')) {
+        text=setSection(text,'Objective and Observable Result','Remove the obsolete module and observe file absence.');
+        text=setSection(text,'Included Scope','Remove src/obsolete.mjs and add its absence assertion.');
+        text=setSection(text,'Completion Criterion','AC-001 obsolete module absent and prepared test succeeds.');
+      }
+      if(name.startsWith('tasks/')) {
+        text=setSection(text,'Result','Obsolete module absent, observed by prepared absence assertion.');
+        text=setSection(text,'Acceptance Obligations','- obligation-01 | requirement: AC-001 | contribution: complete | full owner: slice-01 | condition: src/obsolete.mjs absent | proof: node --test src/removal.test.mjs asserts file absence');
+        text=setSection(text,'Checklist','- [ ] 1.1 Remove inspected obsolete module and implement absence assertion | obligations: obligation-01');
+      }
+      await fs.writeFile(path.join(f.candidate,name),text);
+    }
+    const approved=await approveFixture(f);
+    const admitted=await beginPreparedExecutionOperation(f.specPath,'EXECUTE_SLICE','1',approved.activation.activationId);
+    const native=await startOfflineNative(f,admitted.owner);
+    const copy=await prepareExecutionCopy({specPath:f.specPath,slice:'slice-01',owner:admitted.owner});
+    const task=path.join(f.workspace.executionRoot,'tasks/slice-01.md');
+    assert.match(await fs.readFile(task,'utf8'),/## Implementation Test Evidence\n\n- none/);
+    const before=await captureRunnerTestedState({workspace:f.root,taskArtifact:task,changedAreas:['../../src/obsolete.mjs']});
+    await fs.unlink(path.join(f.root,'src/obsolete.mjs'));
+    await fs.writeFile(path.join(f.root,'src/removal.test.mjs'),'import test from "node:test";import assert from "node:assert/strict";import fs from "node:fs";test("AC-001 absence",()=>assert.equal(fs.existsSync("src/obsolete.mjs"),false));\n');
+    const observed=spawnSync(process.execPath,['--test','src/removal.test.mjs'],{cwd:f.root,env:commandEnvironment,encoding:'utf8'});assert.equal(observed.status,0,observed.stderr);assert.match(observed.stdout,/^# tests 1$/mu);
+    const claims=['../../src/obsolete.mjs','../../src/removal.test.mjs'];
+    await assert.rejects(captureRunnerTestedState({workspace:f.root,taskArtifact:task,changedAreas:claims,removedProofs:[{path:before.entries[0].path,previousSha256:'sha256:'+'0'.repeat(64)}]}),/not proved removal/);
+    const after=await captureRunnerTestedState({workspace:f.root,taskArtifact:task,changedAreas:claims,removedProofs:[{path:before.entries[0].path,previousSha256:before.entries[0].value}]});
+    assert.equal(after.entries.find(entry=>entry.path.endsWith('/obsolete.mjs')).value,'REMOVED');
+    await assert.rejects(captureRunnerTestedState({workspace:f.root,taskArtifact:task,changedAreas:['../../src/future.mjs']}),/not proved removal/);
+    let text=await fs.readFile(copy.candidateTaskArtifact,'utf8');
+    text=setSection(text.replace('- [ ] 1.1','- [x] 1.1'),'Changed Areas',claims.map(claim=>'- `'+claim+'`').join('\n'));
+    text=setSection(text,'Diff Summary','- Removed actual inspected obsolete module and prepared passing absence assertion.');await fs.writeFile(copy.candidateTaskArtifact,text);
+    // Reuse the fully shaped semantic execution fixture; only its semantic
+    // values/command are replaced, while no historical check is synthesized.
+    const schema=JSON.parse(await fs.readFile(new URL('../skills/workflows/stnl-slice-executor/runtime/runner-semantic-response.schema.json',import.meta.url)));
+    const response=Object.fromEntries(schema.oneOf.find(branch=>branch.title==='EXECUTE_SLICE').required.map(key=>[key,'Real obsolete module removal with passing absence assertion']));
+    Object.assign(response,{status:'TESTS_PASS',automaticCheckRound:'1/3',head:'offline-working-tree',commands:[{command:'node --test src/removal.test.mjs',exit:observed.status}],failures:'none',priorRoundFailure:'none',correctionApplied:'none',inSliceRationale:'none',blockers:'none',unexpectedWorkspaceEffects:'none'});
+    const captured=await captureOfflineNative(native,response,claims);
+    const bundle=await serializeRunnerExecutionBundleFromResponse({operation:'EXECUTE_SLICE',response:JSON.stringify(response),workspace:f.root,taskArtifact:copy.candidateTaskArtifact,...captured});
+    assert.match(bundle,/`\.\.\/\.\.\/src\/obsolete\.mjs` \| REMOVED/);
+    await insertExecutionEvidenceInCandidate({taskArtifact:copy.candidateTaskArtifact,operation:'EXECUTE_SLICE',bundle,validateProspectiveTask:t=>validateExecutionCandidate(f.specPath,copy.candidateExecutionRoot,[t])});
+    await publishExecutionCopy({specPath:f.specPath,slice:'slice-01',candidateRoot:copy.candidateRoot});
+    assert.equal((await readExecutionActivation(f.specPath)).activation.activeAttempt,null);
+    assert.equal((await inspectExecutionState(f.specPath)).state,'IMPLEMENTED_AWAITING_VALIDATION');
+    const completed=await readExecutionActivation(f.specPath);
+    const validation=await beginPreparedExecutionOperation(f.specPath,'VALIDATE_SLICE','1',completed.activation.activationId);
+    process.env.STNL_OPERATION_OWNER_FILE=await ownerEnvironment(f,validation.owner);
+    const formal=await startOfflineNative(f,validation.owner);
+    const testedAgain=spawnSync(process.execPath,['--test','src/removal.test.mjs'],{cwd:f.root,env:commandEnvironment,encoding:'utf8'});
+    assert.equal(testedAgain.status,0,testedAgain.stderr);assert.match(testedAgain.stdout,/^# tests 1$/mu);
+    const formalPayload=formalResponse('node --test src/removal.test.mjs');
+    formalPayload.evidence='Actual absence assertion observed after terminal implementation; independent semantic review is simulated.';
+    const formalCapture=await captureOfflineNative(formal,formalPayload);
+    const parent=path.join(f.root,'removal-formal');await fs.mkdir(parent);
+    const formalCopy=await prepareValidationCopy({specPath:f.specPath,slice:'slice-01',candidateParent:parent,owner:validation.owner});
+    await prepareValidationCandidate({specPath:f.specPath,slice:'slice-01',workspace:f.root,candidateExecutionRoot:formalCopy.candidateExecutionRoot,...formalCapture});
+    await publishValidationCandidate({specPath:f.specPath,slice:'slice-01',candidateExecutionRoot:formalCopy.candidateExecutionRoot,owner:validation.owner});
+    assert.equal((await inspectExecutionState(f.specPath)).state,'COMPLETE');
+    assert.equal((await readExecutionActivation(f.specPath)).activation.activeAttempt,null);
+    if(afterFormal) await afterFormal({f,before,after,formalCopy,formalCapture});
+    await preserveFocalProof(f,'first-removal',{before,after,commandExit:observed.status,formalCommandExit:testedAgain.status,implementationCapture:captured,formalCapture,state:'COMPLETE'});
+
+  } finally {if(previous===undefined)delete process.env.STNL_OPERATION_OWNER_FILE;else process.env.STNL_OPERATION_OWNER_FILE=previous;if(process.env.STNL_OFFLINE_KEEP_FIXTURES!=='1')await fs.rm(f.root,{recursive:true,force:true});}
+}
+
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
 test('same owner operational delta -> evidence -> confirmed terminal -> next begin and formal PASS', async () => {
   const f = await fixture(); const previousOwnerFile = process.env.STNL_OPERATION_OWNER_FILE;
   try {
@@ -120,7 +202,10 @@ test('same owner operational delta -> evidence -> confirmed terminal -> next beg
     assert.equal((await readExecutionActivation(f.specPath)).activation.activeAttempt, null);
     await assert.rejects(beginPreparedExecutionOperation(f.specPath, 'EXECUTE_SLICE', '1', after.activation.activationId));
     await fs.writeFile(path.join(f.root, 'src/unpredicted.mjs'), 'export const greeting="changed";\n');
-    await assert.rejects(inspectExecutionState(f.specPath), /ownership|workspace/);
+    const drifted=await inspectExecutionState(f.specPath);
+    assert.equal(drifted.state,'IMPLEMENTED_AWAITING_VALIDATION');
+    assert.equal(drifted.tasks.get('slice-01').validation.validity,'revalidation-required');
+    assert.equal(drifted.tasks.get('slice-01').attempts.at(-1).status,'PASS');
   } finally {
     if (previousOwnerFile === undefined) delete process.env.STNL_OPERATION_OWNER_FILE; else process.env.STNL_OPERATION_OWNER_FILE = previousOwnerFile;
     await fs.rm(f.root, { recursive: true, force: true });
@@ -336,7 +421,7 @@ test('joint historical REPLAN preserves evidence and snapshot backups, then revi
       text = text.replace(/^- Delivery ID: .*\n/mu,'').replace('- Slice: 01','- Slice: 02').replace('Slice 01','Slice 02').replace('Plan revision: 1','Plan revision: 2').replace('status: ready','status: draft').replace('Review state: approved','Review state: pending');
       if (type==='tasks') {
         const pristine = await fs.readFile(path.join(f.candidate,'tasks/slice-01.md'),'utf8');
-        text = pristine.replace(/^- Delivery ID: .*\n/mu,'').replace('- Slice: 01','- Slice: 02').replace('Slice 01','Slice 02').replace('../plans/slice-01.md','../plans/slice-02.md').replace('full owner: slice-01','full owner: slice-02').replace('Plan revision: 1','Plan revision: 2');
+        text = pristine.replace(/^- Delivery ID: .*\n/mu,'').replace('- Slice: 01','- Slice: 02').replace('Slice 01','Slice 02').replace('../plans/slice-01.md','../plans/slice-02.md').replace('full owner: slice-01','full owner: slice-02').replace('Plan revision: 1','Plan revision: 2').replace(/- History source: .+/, '- History source: runtime');
       }
       await fs.writeFile(path.join(root,type,'slice-02.md'),text);
     }
@@ -344,6 +429,7 @@ test('joint historical REPLAN preserves evidence and snapshot backups, then revi
     global = global.replace('- Review state: pending', '- Review state: pending\n- Replan reason: Recovery delivery for the same acceptance after implementation.\n- Revision mode: append-only-extension\n- Supersedes open slices: slice-01 -> slice-02');
     const globalRow = global.split('\n').find(line=>line.startsWith('| 01 -'));
     global = global.replace(globalRow, globalRow + '\n' + globalRow.replace('01 - Greeting','02 - Recovery').replace('plans/slice-01.md','plans/slice-02.md').replace('| - | AC-001','| 01 | AC-001'));
+    global=setSection(global,'Delivery Continuity',old.get('plan.md').match(/## Delivery Continuity\n\n([\s\S]*?)(?=\n## )/u)[1].trim().split('\n').slice(0,2).join('\n')+`\n| slice-01 | ${admitted.owner.deliveryId} | same | 1 | Retain same prior result | unchanged |`+'\n| slice-02 | none | new | none | Reviewed independent recovery delivery | all |');
     await fs.writeFile(path.join(root,'plan.md'),global);
     let index = old.get('tasks.md'); const indexRow=index.split('\n').find(line=>line.startsWith('| [ ] 01') || line.includes('| 01 - Greeting |'));
     index=index.replace(indexRow,indexRow+'\n'+indexRow.replace('01 - Greeting','02 - Recovery').replace('tasks/slice-01.md','tasks/slice-02.md').replace('| - | tasks/','| 01 | tasks/'));
@@ -351,7 +437,9 @@ test('joint historical REPLAN preserves evidence and snapshot backups, then revi
     const draft = await publishPreparationCandidate({specPath:f.specPath,candidateExecutionRoot:root});
     assert.equal((await inspectExecutionState(f.specPath)).state,'PENDING_REPLAN_DRAFT');
     await assert.rejects(readExecutionActivation(f.specPath), /activation unavailable/);
-    assert.equal(await fs.readFile(path.join(f.workspace.executionRoot,'tasks/slice-01.md'),'utf8'),old.get('tasks/slice-01.md'));
+    const history=JSON.parse(await fs.readFile(path.join(f.workspace.executionRoot,'continuity.json'),'utf8')).deliveries[0].history;
+    assert.equal(await fs.readFile(path.resolve(f.workspace.executionRoot,history.at(-1).taskRef.path),'utf8'),old.get('tasks/slice-01.md'));
+    assert.equal((await inspectExecutionState(f.specPath)).tasks.get('slice-01').implementationChecks.at(-1).id,'implementation-check-01');
     assert.deepEqual(await fs.readFile(path.join(draft.retainedBackup,'approved-preparation.json')),priorSnapshot);
     const review=await preparePreparationCandidate({specPath:f.specPath,operation:'REVIEW_PLAN'});
     for (const [name,text] of await readPreparationArtifacts(review.candidateExecutionRoot)) await fs.writeFile(path.join(review.candidateExecutionRoot,name),text.replace('status: draft','status: ready').replace('Review state: pending','Review state: approved'));
@@ -360,7 +448,8 @@ test('joint historical REPLAN preserves evidence and snapshot backups, then revi
     const next=await beginPreparedExecutionOperation(f.specPath,'EXECUTE_SLICE','2',current.expectedActivationId);
     assert.equal(next.owner.slice,'slice-02');
     const now=await fs.readFile(path.join(f.workspace.executionRoot,'tasks/slice-01.md'),'utf8');
-    assert.ok(now.includes(old.get('tasks/slice-01.md').split('## Implementation Test Evidence\n\n')[1].split('## Findings Test Evidence')[0]));
+    assert.equal((await inspectExecutionState(f.specPath)).tasks.get('slice-01').sections.get('Implementation Test Evidence'),old.get('tasks/slice-01.md').split('## Implementation Test Evidence\n\n')[1].split('## Findings Test Evidence')[0].trim());
+    assert.notEqual(next.owner.deliveryId,admitted.owner.deliveryId);
   } finally { await fs.rm(f.root,{recursive:true,force:true}); }
 });
 
@@ -557,82 +646,7 @@ test('table suffix cannot acquire authority or pass formal publication, approved
   } finally {if(previous===undefined)delete process.env.STNL_OPERATION_OWNER_FILE;else process.env.STNL_OPERATION_OWNER_FILE=previous;await fs.rm(f.root,{recursive:true,force:true});}
 });
 
-test('first authorized removal uses real owned before capture and absence test, never fabricated history', async () => {
-  const f=await fixture();const previous=process.env.STNL_OPERATION_OWNER_FILE;
-  try {
-    const {computeRequirementsAuthority}=await import('../skills/workflows/stnl-slice-executor/runtime/execution-state.mjs');
-    await fs.writeFile(path.join(f.root,'src/obsolete.mjs'),'export const obsolete=true;\n');
-    const old='sha256:'+await computeRequirementsAuthority(f.specPath);
-    await fs.writeFile(f.specPath,'# Requirements\n\nAC-001: Remove src/obsolete.mjs. Verify file absence with node --test. Preserve authentication and persistence.\n');
-    const authority='sha256:'+await computeRequirementsAuthority(f.specPath);
-    for(const name of ['plan.md','tasks.md','plans/slice-01.md','tasks/slice-01.md']) {
-      let text=(await fs.readFile(path.join(f.candidate,name),'utf8')).replaceAll(old,authority).replaceAll('Greeting','Removal').replaceAll('greeting','obsolete module removal').replaceAll('Export observed by a prepared node test.','Obsolete module absent, observed by prepared absence assertion.');
-      if(name.startsWith('plans/')||name.startsWith('tasks/')) {
-        text=setSection(text,'Expected Files','- `src/obsolete.mjs`\n- `src/removal.test.mjs`');
-        text=setSection(text,'Existing Inputs','- `src/obsolete.mjs`');
-        text=setSection(text,'Expected Tests','- node --test src/removal.test.mjs');
-      }
-      if(name.startsWith('plans/')) {
-        text=setSection(text,'Objective and Observable Result','Remove the obsolete module and observe file absence.');
-        text=setSection(text,'Included Scope','Remove src/obsolete.mjs and add its absence assertion.');
-        text=setSection(text,'Completion Criterion','AC-001 obsolete module absent and prepared test succeeds.');
-      }
-      if(name.startsWith('tasks/')) {
-        text=setSection(text,'Result','Obsolete module absent, observed by prepared absence assertion.');
-        text=setSection(text,'Acceptance Obligations','- obligation-01 | requirement: AC-001 | contribution: complete | full owner: slice-01 | condition: src/obsolete.mjs absent | proof: node --test src/removal.test.mjs asserts file absence');
-        text=setSection(text,'Checklist','- [ ] 1.1 Remove inspected obsolete module and implement absence assertion | obligations: obligation-01');
-      }
-      await fs.writeFile(path.join(f.candidate,name),text);
-    }
-    const approved=await approveFixture(f);
-    const admitted=await beginPreparedExecutionOperation(f.specPath,'EXECUTE_SLICE','1',approved.activation.activationId);
-    const native=await startOfflineNative(f,admitted.owner);
-    const copy=await prepareExecutionCopy({specPath:f.specPath,slice:'slice-01',owner:admitted.owner});
-    const task=path.join(f.workspace.executionRoot,'tasks/slice-01.md');
-    assert.match(await fs.readFile(task,'utf8'),/## Implementation Test Evidence\n\n- none/);
-    const before=await captureRunnerTestedState({workspace:f.root,taskArtifact:task,changedAreas:['../../src/obsolete.mjs']});
-    await fs.unlink(path.join(f.root,'src/obsolete.mjs'));
-    await fs.writeFile(path.join(f.root,'src/removal.test.mjs'),'import test from "node:test";import assert from "node:assert/strict";import fs from "node:fs";test("AC-001 absence",()=>assert.equal(fs.existsSync("src/obsolete.mjs"),false));\n');
-    const observed=spawnSync(process.execPath,['--test','src/removal.test.mjs'],{cwd:f.root,env:commandEnvironment,encoding:'utf8'});assert.equal(observed.status,0,observed.stderr);assert.match(observed.stdout,/^# tests 1$/mu);
-    const claims=['../../src/obsolete.mjs','../../src/removal.test.mjs'];
-    await assert.rejects(captureRunnerTestedState({workspace:f.root,taskArtifact:task,changedAreas:claims,removedProofs:[{path:before.entries[0].path,previousSha256:'sha256:'+'0'.repeat(64)}]}),/not proved removal/);
-    const after=await captureRunnerTestedState({workspace:f.root,taskArtifact:task,changedAreas:claims,removedProofs:[{path:before.entries[0].path,previousSha256:before.entries[0].value}]});
-    assert.equal(after.entries.find(entry=>entry.path.endsWith('/obsolete.mjs')).value,'REMOVED');
-    await assert.rejects(captureRunnerTestedState({workspace:f.root,taskArtifact:task,changedAreas:['../../src/future.mjs']}),/not proved removal/);
-    let text=await fs.readFile(copy.candidateTaskArtifact,'utf8');
-    text=setSection(text.replace('- [ ] 1.1','- [x] 1.1'),'Changed Areas',claims.map(claim=>'- `'+claim+'`').join('\n'));
-    text=setSection(text,'Diff Summary','- Removed actual inspected obsolete module and prepared passing absence assertion.');await fs.writeFile(copy.candidateTaskArtifact,text);
-    // Reuse the fully shaped semantic execution fixture; only its semantic
-    // values/command are replaced, while no historical check is synthesized.
-    const schema=JSON.parse(await fs.readFile(new URL('../skills/workflows/stnl-slice-executor/runtime/runner-semantic-response.schema.json',import.meta.url)));
-    const response=Object.fromEntries(schema.oneOf.find(branch=>branch.title==='EXECUTE_SLICE').required.map(key=>[key,'Real obsolete module removal with passing absence assertion']));
-    Object.assign(response,{status:'TESTS_PASS',automaticCheckRound:'1/3',head:'offline-working-tree',commands:[{command:'node --test src/removal.test.mjs',exit:observed.status}],failures:'none',priorRoundFailure:'none',correctionApplied:'none',inSliceRationale:'none',blockers:'none',unexpectedWorkspaceEffects:'none'});
-    const captured=await captureOfflineNative(native,response,claims);
-    const bundle=await serializeRunnerExecutionBundleFromResponse({operation:'EXECUTE_SLICE',response:JSON.stringify(response),workspace:f.root,taskArtifact:copy.candidateTaskArtifact,...captured});
-    assert.match(bundle,/`\.\.\/\.\.\/src\/obsolete\.mjs` \| REMOVED/);
-    await insertExecutionEvidenceInCandidate({taskArtifact:copy.candidateTaskArtifact,operation:'EXECUTE_SLICE',bundle,validateProspectiveTask:t=>validateExecutionCandidate(f.specPath,copy.candidateExecutionRoot,[t])});
-    await publishExecutionCopy({specPath:f.specPath,slice:'slice-01',candidateRoot:copy.candidateRoot});
-    assert.equal((await readExecutionActivation(f.specPath)).activation.activeAttempt,null);
-    assert.equal((await inspectExecutionState(f.specPath)).state,'IMPLEMENTED_AWAITING_VALIDATION');
-    const completed=await readExecutionActivation(f.specPath);
-    const validation=await beginPreparedExecutionOperation(f.specPath,'VALIDATE_SLICE','1',completed.activation.activationId);
-    process.env.STNL_OPERATION_OWNER_FILE=await ownerEnvironment(f,validation.owner);
-    const formal=await startOfflineNative(f,validation.owner);
-    const testedAgain=spawnSync(process.execPath,['--test','src/removal.test.mjs'],{cwd:f.root,env:commandEnvironment,encoding:'utf8'});
-    assert.equal(testedAgain.status,0,testedAgain.stderr);assert.match(testedAgain.stdout,/^# tests 1$/mu);
-    const formalPayload=formalResponse('node --test src/removal.test.mjs');
-    formalPayload.evidence='Actual absence assertion observed after terminal implementation; independent semantic review is simulated.';
-    const formalCapture=await captureOfflineNative(formal,formalPayload);
-    const parent=path.join(f.root,'removal-formal');await fs.mkdir(parent);
-    const formalCopy=await prepareValidationCopy({specPath:f.specPath,slice:'slice-01',candidateParent:parent,owner:validation.owner});
-    await prepareValidationCandidate({specPath:f.specPath,slice:'slice-01',workspace:f.root,candidateExecutionRoot:formalCopy.candidateExecutionRoot,...formalCapture});
-    await publishValidationCandidate({specPath:f.specPath,slice:'slice-01',candidateExecutionRoot:formalCopy.candidateExecutionRoot,owner:validation.owner});
-    assert.equal((await inspectExecutionState(f.specPath)).state,'COMPLETE');
-    assert.equal((await readExecutionActivation(f.specPath)).activation.activeAttempt,null);
-    await preserveFocalProof(f,'first-removal',{before,after,commandExit:observed.status,formalCommandExit:testedAgain.status,implementationCapture:captured,formalCapture,state:'COMPLETE'});
-
-  } finally {if(previous===undefined)delete process.env.STNL_OPERATION_OWNER_FILE;else process.env.STNL_OPERATION_OWNER_FILE=previous;await fs.rm(f.root,{recursive:true,force:true});}
-});
+test('first authorized removal uses real owned before capture and absence test, never fabricated history', async () => {await runFirstRemoval();});
 
 test('rejected formal candidate recovery uses the same concluded managed receipt, preserves candidate and owner, with real failed command', async () => {
   const f=await fixture();const environment={...process.env};let broker,tmpdir,calls=0;
@@ -682,7 +696,7 @@ test('rejected formal candidate recovery uses the same concluded managed receipt
     const labels=['Delivery ID','Preparation revision','Normative sha256','Operation attempt ID','Origin activation ID'];
     const attempt=['### attempt-01','',...binding.map((key,i)=>'- '+labels[i]+': '+context.owner[key]),'- Type: initial','- Status: PASS','- HEAD: offline-working-tree','- Verified scope: ../../src/greeting.test.mjs, ../../src/unpredicted.mjs','- Commands:','  - `'+command+'` | exit:7','- Evidence: Real failed verification event contradicts claimed PASS.','- Finding references: none','- Finding dispositions: none','- Blockers: none','- Unexpected workspace effects: none','- Persistence summary: Preserve rejected proposal.'].join('\n');
     await fs.writeFile(rejectedTask,setSection(await fs.readFile(rejectedTask,'utf8'),'Validation Attempts',attempt));
-    await assert.rejects(validateExecutionCandidate(f.specPath,rejected.candidateExecutionRoot),error=>error.contractViolation?.code==='PASS_COMMAND_EXIT_NONZERO');
+    await assert.rejects(validateExecutionCandidate(f.specPath,rejected.candidateExecutionRoot),error=>{if(error.contractViolation?.code!=='PASS_COMMAND_EXIT_NONZERO')console.error(error.stack);return error.contractViolation?.code==='PASS_COMMAND_EXIT_NONZERO';});
     const before=await fs.readFile(rejectedTask);const snapshot=(await readExecutionActivation(f.specPath)).activation.approvedSnapshotSha256;
     const {recoverRejectedValidationCandidate}=await import('../skills/workflows/stnl-slice-quality-manager/runtime/recover-rejected-validation-candidate.mjs');
     const recoveryArgs={specPath:f.specPath,slice:'slice-01',workspace:f.root,rejectedCandidateRoot:rejected.candidateExecutionRoot,candidateParent:parent,semanticResponseFile:receipt.semanticResponseFile,receiptFile:receipt.receiptFile};
@@ -867,3 +881,5 @@ test('native retry admission requires the finalized same-owner failed private ch
     assert.equal((await readExecutionActivation(f.specPath)).activation.activeAttempt.operationAttemptId,admitted.owner.operationAttemptId);
   } finally {await fs.rm(f.root,{recursive:true,force:true});}
 });
+
+}

@@ -4,7 +4,7 @@ import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { assertExecutionAttempt, assertOwnedOperationalCandidate, bindExecutionBroker, readOwnedFile, withExecutionPublicationLock, executionLockIdentity, parseStrictJson } from './execution-publication.mjs';
+import { assertExecutionAttempt, assertOwnedOperationalCandidate, bindExecutionBroker, readOwnedFile, withExecutionPublicationLock, executionLockIdentity, parseStrictJson, registerRunnerAllocation, persistAllocation } from './execution-publication.mjs';
 import { preflightExecutionOperation, readExecutionActivation, resolveExecutionWorkspace, validateExecutionCandidate } from './execution-state.mjs';
 
 const nativeJson = async file => parseStrictJson((await readOwnedFile(file)).bytes.toString('utf8'));
@@ -63,6 +63,7 @@ export async function startNativeRunnerCapture({ specPath, owner, workspace, cap
   const within = (a, b) => a === b || a.startsWith(b + path.sep);
   if (within(parent, official.executionRoot) || (official.specRoot && within(parent, official.specRoot))) fail('native capture must be outside SPEC/execution');
   const root = await fs.mkdtemp(path.join(parent, '.stnl-native-runner-'));
+  await registerRunnerAllocation({workspace:official,owner,root,producer:'native-runner'});
   const origin = { transport: 'native', specPath: await fs.realpath(specPath), workspace: await fs.realpath(workspace),
     owner, dispatchId: crypto.randomUUID(), attempt: 1 };
   await nativeWrite(path.join(root, 'owner.json'), origin);
@@ -86,6 +87,8 @@ export async function bindNativeRunnerIdentity({ originFile, agentId }) {
     // terminal ownership closes. Never adopt a previously concluded agent.
     const claimFile = `${lockPath}.native-agent-${nativeHash(agentId)}.json`;
     await nativeWrite(claimFile, { agentId, originFile, owner: origin.owner });
+    const marker=`${root}.publication.json`;const allocation=await nativeJson(marker);
+    await persistAllocation(marker,{...allocation,controlFiles:[...(allocation.controlFiles ?? []),claimFile]});
     await nativeWrite(file, { agentId, originFile });
     return { originFile, agentId };
   });

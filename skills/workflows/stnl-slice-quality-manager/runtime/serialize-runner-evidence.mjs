@@ -6,7 +6,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { inspectExecutionState,
-  resolveExecutionWorkspace, readExecutionActivation } from "./execution-state.mjs";
+  resolveExecutionWorkspace, readExecutionActivation, readDeliveryContinuity, readDeliveryHistory } from "./execution-state.mjs";
 import { resolveRunnerCommandEvents } from "./runner-command-events.mjs";
 import { assertManagedRunnerReceipt } from "./managed-slice-context.mjs";
 
@@ -1305,7 +1305,11 @@ async function serializeCanonicalExecutionCheck({
 }) {
   const scalar = (label, value) => serializeMarkdownScalar(label, value, EXPLANATORY_EXECUTION_FIELDS.has(label));
   const prefix = operation === "EXECUTE_SLICE" ? "implementation-check" : "findings-check";
-  const checkId = nextExecutionCheckId(taskText, prefix);
+  const selected=await assertOwnedOperationalCandidate({candidateExecutionRoot:path.dirname(path.dirname(taskArtifact)),slice:path.basename(taskArtifact,'.md'),resolveWorkspace:resolveExecutionWorkspace,readActivated:readExecutionActivation});
+  const index=await readDeliveryContinuity(selected.workspace);
+  const delivery=index.deliveries.find(d=>d.slice===selected.marker.slice);
+  const logical=await readDeliveryHistory(selected.workspace,delivery,taskText);
+  const checkId = nextExecutionCheckId(logical.text, prefix);
   const testedRecord = await serializeRunnerRecord({
     workspace,
     taskArtifact,

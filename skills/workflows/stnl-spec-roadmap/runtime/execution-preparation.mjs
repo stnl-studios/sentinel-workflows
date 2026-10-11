@@ -5,7 +5,7 @@ import path from 'node:path';
 export const sha256 = bytes => `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
 const HASH = /^sha256:[a-f0-9]{64}$/u;
 const UUID = /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/u;
-const PLAN = ['Global Context', 'Serial Slice Order', 'Global Risks and Integration'];
+const PLAN = ['Global Context', 'Serial Slice Order', 'Delivery Continuity', 'Global Risks and Integration'];
 const DETAIL = ['References', 'Objective and Observable Result', 'Requirements', 'Included Scope',
   'Out of Scope and Boundaries', 'Authorized Areas', 'Expected Files', 'Existing Inputs', 'Protected Responsibilities',
   'Dependencies', 'Risks and Strategy', 'Expected Tests', 'Completion Criterion'];
@@ -13,7 +13,7 @@ const RECORDS = ['Changed Areas', 'Scope Expansion', 'Prior Validation Overlap',
   'Implementation Test Evidence', 'Findings Test Evidence', 'Validation Attempts', 'Validation Findings',
   'Corrections Applied', 'Effective Validation Base', 'Diff Summary', 'Final Result'];
 const TASK = ['References', 'Result', 'Acceptance Obligations', 'Authorized Areas', 'Expected Files', 'Existing Inputs',
-  'Protected Responsibilities', 'Checklist', 'Expected Tests', 'Operational Changes', ...RECORDS];
+  'Protected Responsibilities', 'Checklist', 'Expected Tests', 'Continuity', 'Operational Changes', ...RECORDS];
 const reject = message => { throw new Error(`preparation contract: ${message}`); };
 const normalized = value => value.replaceAll('\r\n', '\n').trim();
 
@@ -75,6 +75,13 @@ export function parsePreparationArtifact(text, artifact) {
   if (required.some(key => !Object.hasOwn(fields, key))) reject(`${artifact} has a missing reference field`);
   if (Object.keys(fields).some(key => !allowed.includes(key))) reject(`${artifact} has an unknown reference field`);
   if (kind !== 'plan' && !UUID.test(fields['Delivery ID'] ?? '')) reject(`${artifact} requires runtime delivery identity`);
+  if (kind==='task') {
+    const continuity=inlineFields(sections.Continuity,artifact+' Continuity');
+    keys(continuity,['Current validation','Historical PASS','History source','Current action'],artifact+' Continuity');
+    if(!['unvalidated','current','historical','revalidation-required','uncertain'].includes(continuity['Current validation'])
+      || !/^(?:none|attempt-[0-9]{2,})$/u.test(continuity['Historical PASS'])
+      || continuity['History source']!==`../continuity.json#${fields['Delivery ID']}`) reject('noncanonical continuity summary');
+  }
   return { kind, heading: heading[1], metadata, fields, sections };
 }
 
@@ -154,6 +161,7 @@ export function projectPreparationAuthority(artifacts) {
   if (indexNorm.length !== order.length) reject('Tasks index omits a delivery');
   const deliveries = [];
   const projection = { format: 'stnl-preparation-projection-v2', global: { ...global.fields }, risks: global.sections['Global Risks and Integration'], order, tasksIndex: indexNorm, deliveries: [] };
+  projection.continuity = preparationDeliveryContinuity(global.sections['Delivery Continuity'], order);
   delete projection.global['Review state'];
   const completeOwners = new Map();
   for (const row of order) {
@@ -170,7 +178,7 @@ export function projectPreparationAuthority(artifacts) {
     if (JSON.stringify(globalAreas) !== JSON.stringify(detailAreas.map(area => ({ kind: area.kind, path: path.posix.normalize(path.posix.join('plans', area.path)) })))) reject(`${row.slice} authorization differs between global and detailed Plan`);
     const declared = obligations(task.sections['Acceptance Obligations'], row.slice);
     preparationChecklist(task.sections.Checklist, declared, row.slice);
-    const operative = ['Expected Files', 'Checklist', 'Operational Changes', ...RECORDS];
+    const operative = ['Expected Files', 'Checklist', 'Continuity', 'Operational Changes', ...RECORDS];
     const norm = Object.fromEntries(Object.entries(task.sections).filter(([name]) => !operative.includes(name)));
     const detailNorm = { ...detail.sections }; delete detailNorm['Expected Files'];
     detailNorm.References = { ...detail.fields }; delete detailNorm.References['Review state'];
@@ -268,14 +276,55 @@ export async function assignDeliveryIdentities(candidateExecutionRoot, marker) {
     const plan = await fs.readFile(planFile, 'utf8'); const task = await fs.readFile(taskFile, 'utf8');
     const existing = plan.match(/^- Delivery ID: (.+)$/mu)?.[1]; const taskId = task.match(/^- Delivery ID: (.+)$/mu)?.[1];
     if (existing && (!UUID.test(existing) || (taskId && taskId !== existing))) reject('conflicting delivery identity');
-    const id = marker.historicalSlices.includes(path.basename(file, '.md')) ? existing : marker.deliveryIds[file] ?? randomUUID();
+    const predecessor = marker.predecessorDeliveries?.find(d => `${d.slice}.md` === file);
+    const id = predecessor?.deliveryId ?? marker.deliveryIds[file] ?? randomUUID();
+    if (existing && existing !== id) reject('model-supplied delivery identity differs from runtime predecessor');
     marker.deliveryIds[file] = id;
     for (const [target, text] of [[planFile, plan], [taskFile, task]]) {
       const revised = text.match(/^- Delivery ID: /mu) ? text.replace(/^- Delivery ID: .+$/mu, `- Delivery ID: ${id}`)
         : text.replace(/(## References\n\n)/u, `$1- Delivery ID: ${id}\n`);
       if (revised !== text) await fs.writeFile(target, revised, 'utf8');
+      if (target === taskFile && revised.includes('- History source: runtime')) await fs.writeFile(target, revised.replace('- History source: runtime', `- History source: ../continuity.json#${id}`));
     }
   }
+  const globalFile = path.join(candidateExecutionRoot, 'plan.md');
+  const globalText = await fs.readFile(globalFile,'utf8');
+  const order = [...globalText.matchAll(/^\| ([0-9]{2,}) - .+\| plans\/(slice-[0-9]{2,})\.md \|$/gmu)].map(m => m[2]);
+  const header = '| Slice | Prior delivery ID | Relation | Prior preparation revision | Reason | Affected verification |\n|---|---|---|---|---|---|';
+  const supplied = globalText.match(/## Delivery Continuity\n\n([\s\S]*?)(?=\n## )/u)?.[1].trim();
+  const rows = supplied === '- runtime' ? order.map(slice => {
+    const prior = marker.predecessorDeliveries?.find(d => d.slice === slice);
+    return `| ${slice} | ${prior?.deliveryId ?? 'none'} | ${prior ? 'same' : 'new'} | ${prior?.revision ?? 'none'} | ${prior ? 'Same approved result retained' : 'Initial independent delivery'} | ${prior ? 'unchanged' : 'all'} |`;
+  }) : supplied?.split('\n').slice(2);
+  if (!rows) reject('Delivery Continuity requires explicit decision map');
+  const decisions = preparationDeliveryContinuity(`${header}\n${rows.join('\n')}`, order.map(slice => ({slice})));
+  for (const decision of decisions) {
+    const prior = marker.predecessorDeliveries?.find(d => d.slice === decision.slice);
+    if(marker.operation==='REVIEW_PLAN' && marker.reviewContinuity) {
+      const expected=marker.reviewContinuity.find(d=>d.slice===decision.slice);
+      if(!expected || ['relation','priorDeliveryId','priorRevision'].some(k=>expected[k]!==decision[k])) reject('review changes predecessor delivery classification');
+    }
+    if (marker.operation !== 'REVIEW_PLAN' && ((prior && (decision.relation !== 'same' || decision.priorDeliveryId !== prior.deliveryId || decision.priorRevision !== prior.revision))
+      || (!prior && (decision.relation !== 'new' || decision.priorDeliveryId !== null || decision.priorRevision !== null)))) reject('continuity map differs from runtime predecessor');
+  }
+  if (marker.predecessorDeliveries?.some(prior => !order.includes(prior.slice)) && marker.revisionMode !== 'pristine-replacement') reject('revision drops an existing delivery');
+  await fs.writeFile(globalFile,globalText.replace(/(## Delivery Continuity\n\n)[\s\S]*?(?=\n## )/u,`$1${header}\n${rows.join('\n')}\n`));
+}
+
+export function preparationDeliveryContinuity(body, order) {
+  const lines = body.split('\n');
+  if (lines[0] !== '| Slice | Prior delivery ID | Relation | Prior preparation revision | Reason | Affected verification |'
+    || lines[1] !== '|---|---|---|---|---|---|') reject('noncanonical Delivery Continuity');
+  const rows = lines.slice(2).map((line,index) => {
+    const [slice,id,relation,revision,reason,verification] = parsePreparationTableRow(line,6,'Delivery Continuity');
+    if (slice !== order[index]?.slice || !['same','new'].includes(relation) || (id !== 'none' && !UUID.test(id))
+      || (revision !== 'none' && !/^[1-9][0-9]*$/u.test(revision))) reject('invalid continuity decision');
+    if((relation==='same' && (id==='none'||revision==='none')) || (relation==='new' && (id!=='none'||revision!=='none'))) reject('continuity relation has invalid predecessor');
+    populated(reason,'continuity reason'); populated(verification,'affected verification');
+    return {slice,priorDeliveryId:id === 'none' ? null : id,relation,priorRevision:revision === 'none' ? null : Number(revision),reason,verification};
+  });
+  if (rows.length !== order.length) reject('continuity map is not total');
+  return rows;
 }
 
 function operationalImage(artifacts, slice) {

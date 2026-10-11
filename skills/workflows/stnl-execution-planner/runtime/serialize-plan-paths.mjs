@@ -119,7 +119,7 @@ async function selectedPhysicalTarget(specPath, artifact, field, raw) {
 }
 
 export async function serializePlanPathClaims({ specPath, candidateExecutionRoot }) {
-  await assertPreparationCandidate(candidateExecutionRoot, specPath);
+  const {marker}=await assertPreparationCandidate(candidateExecutionRoot, specPath);
   const workspace = await resolveExecutionWorkspace(specPath);
   const candidate = path.resolve(String(candidateExecutionRoot));
   const candidateMetadata = await fs.lstat(candidate).catch(() => null);
@@ -180,12 +180,14 @@ export async function serializePlanPathClaims({ specPath, candidateExecutionRoot
   }
   const { serializeTaskPathClaims } = await import('./serialize-task-paths.mjs');
   await serializeTaskPathClaims({ specPath, candidateExecutionRoot: candidate });
-  const candidateValidation = await validateExecutionCandidate(specPath, candidate);
+  // A REPLAN author has not yet sealed/extended the delivery index. The common
+  // publisher validates the complete staged image after its trusted retention delta.
+  const candidateValidation = marker.revisionMode ? null : await validateExecutionCandidate(specPath, candidate);
   return Object.freeze({
     status: "PASS",
     changedPaths: Object.freeze(updates.filter((update) => update.before !== update.after).map((update) => update.path)),
     serializedClaims,
-    candidateValidation: Object.freeze({
+    candidateValidation: candidateValidation === null ? null : Object.freeze({
       state: candidateValidation.state,
       currentFingerprint: candidateValidation.currentFingerprint,
     }),

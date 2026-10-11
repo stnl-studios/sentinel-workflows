@@ -125,7 +125,7 @@ async function officialManifest(root) {
   if (!tree) fail('official execution tree is absent');
   if (tree.files.some(entry => entry.type === 'directory' && !['plans', 'tasks'].includes(entry.path))) fail('unknown official directory');
   return tree.files.filter(entry => entry.type === 'file' && entry.path !== 'activation.json').map(({ path: relative, sha256 }) => {
-    if (!/^(?:plan|tasks)\.md$|^approved-preparation\.json$|^(?:plans|tasks)\/slice-[0-9]{2,}\.md$/u.test(relative)) fail(`unknown official artifact: ${relative}`);
+    if (!/^(?:plan|tasks)\.md$|^(?:approved-preparation|continuity)\.json$|^(?:plans|tasks)\/slice-[0-9]{2,}\.md$/u.test(relative)) fail(`unknown official artifact: ${relative}`);
     return { path: relative, sha256 };
   });
 }
@@ -138,7 +138,7 @@ function validateActivation(activation) {
   const uuid = value => /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/u.test(value);
   if (!uuid(activation.activationId) || !Number.isSafeInteger(activation.preparationRevision) || activation.preparationRevision < 1
     || (activation.sequence === 1 ? activation.previousActivationId !== null : !uuid(activation.previousActivationId))) fail('invalid activation identity/revision');
-  const fields = ['operationAttemptId', 'ownershipToken', 'deliveryId', 'slice', 'operation', 'preparationRevision', 'normativeSha256', 'originActivationId', 'runner'];
+  const fields = ['operationAttemptId', 'ownershipToken', 'deliveryId', 'slice', 'operation', 'preparationRevision', 'normativeSha256', 'originActivationId', 'runner', 'workCapture'];
   for (const [name, attempt] of [['activeAttempt', activation.activeAttempt], ['lastAttempt', activation.lastAttempt]]) {
     if (attempt === null) continue;
     const expected = name === 'lastAttempt' ? [...fields, 'terminalActivationId'] : fields;
@@ -151,6 +151,8 @@ function validateActivation(activation) {
       if (!attempt.runner || Object.keys(attempt.runner).sort().join('\0') !== ['dispatchId', 'receiptFile', 'threadId', 'status'].sort().join('\0')
         || !['pending', 'uncertain', 'captured'].includes(attempt.runner.status)) fail('malformed runner binding');
     }
+    if (!attempt.workCapture || Object.keys(attempt.workCapture).sort().join('\0') !== 'path\0sha256'
+      || !path.isAbsolute(attempt.workCapture.path) || !/^sha256:[a-f0-9]{64}$/u.test(attempt.workCapture.sha256)) fail('malformed work capture binding');
   }
   for (const value of [activation.requirementsAuthority, activation.normativeSha256, activation.approvedSnapshotSha256]) if (!/^sha256:[a-f0-9]{64}$/u.test(value)) fail('invalid activation digest');
 }
@@ -189,7 +191,8 @@ export async function readActivatedExecution({ executionRoot, requirementsAuthor
 
 export function assertExecutionAttempt(activation, owner) {
   const attempt = activation.activeAttempt;
-  if (!owner || !attempt || ['operationAttemptId', 'ownershipToken', 'deliveryId', 'slice', 'operation', 'originActivationId', 'preparationRevision', 'normativeSha256'].some(key => attempt[key] !== owner[key])) fail('active attempt/owner/preparation differs');
+  if (!owner || !attempt || ['operationAttemptId', 'ownershipToken', 'deliveryId', 'slice', 'operation', 'originActivationId', 'preparationRevision', 'normativeSha256'].some(key => attempt[key] !== owner[key])
+    || !equal(attempt.workCapture,owner.workCapture)) fail('active attempt/owner/preparation differs');
   return attempt;
 }
 
@@ -231,7 +234,7 @@ async function replaceActivation(root, activation) {
   await fs.rename(temporary, file);
 }
 
-export async function beginExecutionOperation({ workspace, expectedActivationId, operation, slice, readActivated, preflight }) {
+export async function beginExecutionOperation({ workspace, expectedActivationId, operation, slice, readActivated, preflight, captureWork }) {
   return withExecutionPublicationLock(workspace, async lease => {
     const current = await readActivated();
     if (current.activation.activationId !== expectedActivationId) fail('begin activation CAS conflict');
@@ -241,7 +244,9 @@ export async function beginExecutionOperation({ workspace, expectedActivationId,
     if (!delivery || !['EXECUTE_SLICE', 'APPLY_FINDINGS', 'VALIDATE_SLICE'].includes(operation)) fail('operation/delivery is not admitted');
     const owner = { operationAttemptId: randomUUID(), ownershipToken: randomUUID(), deliveryId: delivery.deliveryId, slice, operation,
       preparationRevision: current.activation.preparationRevision, normativeSha256: current.activation.normativeSha256,
-      originActivationId: current.activation.activationId, runner: null };
+      originActivationId: current.activation.activationId, runner: null, workCapture: null };
+    if (typeof captureWork !== 'function') fail('trusted pre-effect work capture required');
+    owner.workCapture = await captureWork(owner, current);
     const activation = { ...current.activation, activationId: randomUUID(), sequence: current.activation.sequence + 1,
       previousActivationId: current.activation.activationId, activeAttempt: owner };
     await assertExecutionPublicationLock(lease);
@@ -263,7 +268,8 @@ async function copyTree(source, target) {
 
 // The wrapper supplies fixed operation-specific validation and diff scope, never model-selected callbacks.
 export async function publishExecutionUpdate({ workspace, candidateExecutionRoot, expectedTree, expectedActivationId,
-  owner = null, terminal = false, draft = false, readActivated, validateCandidate, authorizeDiff, checkpoint = null }) {
+  owner = null, terminal = false, draft = false, readActivated, validateCandidate, authorizeDiff, checkpoint = null,
+  prepareRetention = null }) {
   const location = await executionLockIdentity(workspace);
   await ancestry(candidateExecutionRoot);
   const candidate = await fs.realpath(candidateExecutionRoot);
@@ -271,10 +277,14 @@ export async function publishExecutionUpdate({ workspace, candidateExecutionRoot
   const candidateTree = await captureExecutionTree(candidate);
   const allocationId = randomUUID();
   const stage = path.join(location.parent, `.stnl-execution-stage-${allocationId}`);
-  const backup = path.join(location.parent, `.stnl-execution-backup-${allocationId}`);
+  const retentionRoot = path.join(location.parent, `.stnl-execution-backup-${allocationId}`);
+  const backup = path.join(retentionRoot, 'previous');
   const marker = path.join(location.parent, `.stnl-execution-publication-${allocationId}.json`);
-  await writeNew(marker, Buffer.from(JSON.stringify({ format: 'stnl-execution-publication-owner-v1', allocationId, executionRoot: workspace.executionRoot,
-    candidate, stage, backup, expectedActivationId, expectedTree, owner }) + '\n'));
+  const allocation = { format: 'stnl-execution-publication-owner-v1', allocationId, executionRoot: workspace.executionRoot,
+    candidate, stage, backup, retentionRoot, expectedActivationId, expectedTree, owner };
+  await writeNew(marker, Buffer.from(JSON.stringify(allocation) + '\n'));
+  await fs.mkdir(retentionRoot, { mode: 0o700 });
+  if (owner?.workCapture) await registerOwnedAllocation(owner.workCapture, marker);
   await copyTree(candidate, stage);
   if (!equal((await captureExecutionTree(stage)).files, candidateTree.files) || !equal(await captureExecutionTree(candidate), candidateTree)) fail(`candidate changed while staging; retained allocation: ${marker}`);
   let confirmed = false; let markerWritten = false;
@@ -289,6 +299,15 @@ export async function publishExecutionUpdate({ workspace, candidateExecutionRoot
     if (owner) assertExecutionAttempt(previous, owner);
     else if (previous?.activeAttempt) fail('active/uncertain owner blocks replacement');
     await authorizeDiff(stage, before);
+    let recheckRetention=null;
+    if (prepareRetention) {
+      recheckRetention=await prepareRetention({ stage, backup, marker, allocation, retentionRoot });
+      // Only this trusted wrapper may produce the continuity delta, before the final manifest.
+      const retainedTree = await captureExecutionTree(stage);
+      const mutable = new Set(['continuity.json', 'tasks.md', ...(!owner ? ['approved-preparation.json'] : []), ...candidateTree.files.filter(entry => /^tasks\/slice-[0-9]{2,}\.md$/u.test(entry.path)).map(entry => entry.path)]);
+      if (!equal(retainedTree.files.filter(entry => !mutable.has(entry.path)), candidateTree.files.filter(entry => !mutable.has(entry.path)))) fail('retention changed an untyped artifact');
+      candidateTree.files = retainedTree.files;
+    }
     const authority = await validateCandidate(stage);
     if (!equal((await captureExecutionTree(stage)).files, candidateTree.files)) fail('staged candidate changed during validation');
     if (owner && digest((await readOwnedFile(path.join(stage, 'approved-preparation.json'))).bytes) !== previous.approvedSnapshotSha256) fail('operational update changed protected review snapshot');
@@ -297,6 +316,9 @@ export async function publishExecutionUpdate({ workspace, candidateExecutionRoot
     let moved = false; let installed = false;
     try {
       if (checkpoint) await checkpoint('before-backup', { stage, backup, marker });
+      if (recheckRetention) await recheckRetention();
+      if (!equal(await captureExecutionTree(workspace.executionRoot),before)) fail('publication base changed immediately before swap');
+      await assertExecutionPublicationLock(lease);
       if (before) { await fs.rename(workspace.executionRoot, backup); moved = true; }
       if (checkpoint) await checkpoint('after-backup', { stage, backup, marker });
       if (await stat(workspace.executionRoot)) fail('official target unexpectedly occupied');
@@ -314,6 +336,8 @@ export async function publishExecutionUpdate({ workspace, candidateExecutionRoot
           lastAttempt: previous?.lastAttempt ?? null };
         if (checkpoint) await checkpoint('before-activation', { stage, backup, marker });
         // Any error after entering this call may have installed the marker. Never compensate blindly.
+        allocation.expectedInstalledActivation=activation;
+        await persistAllocation(marker,allocation);
         markerWritten = true;
         await replaceActivation(workspace.executionRoot, activation);
         if (checkpoint) await checkpoint('after-activation', { stage, backup, marker });
@@ -326,6 +350,8 @@ export async function publishExecutionUpdate({ workspace, candidateExecutionRoot
           activation = { ...activation, previousActivationId: activation.activationId, activationId: terminalId,
             sequence: activation.sequence + 1, activeAttempt: null,
             lastAttempt: { ...previous.activeAttempt, terminalActivationId: terminalId } };
+          allocation.expectedInstalledActivation=activation;
+          await persistAllocation(marker,allocation);
           await replaceActivation(workspace.executionRoot, activation);
           try {
             if (checkpoint) await checkpoint('after-terminal-activation', { stage, backup, marker });
@@ -356,8 +382,20 @@ export async function publishExecutionUpdate({ workspace, candidateExecutionRoot
         await validateCandidate(workspace.executionRoot);
       }
       confirmed = true;
+      allocation.confirmation = { activationId: activation?.activationId ?? null,
+        artifactManifestSha256: digest(JSON.stringify(activation?.artifacts ?? await officialManifest(workspace.executionRoot))),
+        terminalOperationAttemptId: terminal ? owner.operationAttemptId : null };
+      allocation.cleanup = { status: 'complete', paths: [], diagnostics: [] };
+      try {if(checkpoint) await checkpoint('before-confirmation-persistence',{stage,backup,marker});await persistAllocation(marker, allocation);} catch(error) {
+        return {publication:'confirmed',cleanup:'pending',cleanupDiagnostics:[`confirmation persistence pending: ${error.message}`],allocation:marker,
+          retainedBackup:moved ? backup : null,activation,expectedActivationId:activation?.activationId ?? null};
+      }
       if (checkpoint) {
-        try { await checkpoint('cleanup', { stage, backup, marker }); } catch (error) { return { publication: 'confirmed', cleanup: 'pending', cleanupDiagnostics: [error.message], retainedBackup: moved ? backup : null, allocation: marker, activation, expectedActivationId: activation?.activationId ?? null }; }
+        try { await checkpoint('cleanup', { stage, backup, marker }); } catch (error) {
+          allocation.cleanup = { status: 'pending', paths: [stage], diagnostics: [error.message] };
+          try {await persistAllocation(marker, allocation);} catch(persistenceError) {allocation.cleanup.diagnostics.push(`cleanup persistence pending: ${persistenceError.message}`);}
+          return { publication: 'confirmed', cleanup: 'pending', cleanupDiagnostics: [error.message], retainedBackup: moved ? backup : null, allocation: marker, activation, expectedActivationId: activation?.activationId ?? null };
+        }
       }
       // Retain previous approved snapshots/evidence with their ownership marker until U2 retention policy.
       return { publication: 'confirmed', cleanup: 'complete', retainedBackup: moved ? backup : null, allocation: marker,
@@ -379,6 +417,11 @@ export async function publishExecutionUpdate({ workspace, candidateExecutionRoot
       error.allocation = marker; throw error;
     }
   });
+  if (result.publication === 'confirmed' && result.cleanup === 'pending') {
+    allocation.cleanup = { status: 'pending', paths: result.retainedLock ? [result.retainedLock] : allocation.cleanup.paths,
+      diagnostics: result.cleanupDiagnostics ?? [] };
+    try {await persistAllocation(marker, allocation);} catch(error) {result.cleanupDiagnostics=[...(result.cleanupDiagnostics ?? []),`cleanup acknowledgment pending: ${error.message}`];}
+  }
   return result;
 }
 
@@ -390,6 +433,190 @@ export async function assertLifecycleExecutionUnowned(executionRoot) {
   let activation; try { activation = parseStrictJson(bytes.toString('utf8')); } catch { fail('lifecycle found malformed activation'); }
   validateActivation(activation);
   if (activation.activeAttempt !== null) fail('active or uncertain execution prevents lifecycle replacement');
+}
+
+function closed(object, fields, label) {
+  if (!object || Array.isArray(object) || Object.keys(object).sort().join('\0') !== [...fields].sort().join('\0')) fail(`${label} has unknown or missing fields`);
+}
+export const retentionSha256 = retention => digest(JSON.stringify(retention));
+export async function persistAllocation(marker, allocation) {
+  const previous = await readOwnedFile(marker);
+  const temporary = `${marker}.${randomUUID()}.tmp`;
+  await writeNew(temporary, Buffer.from(JSON.stringify(allocation, null, 2) + '\n'));
+  const current = await readOwnedFile(marker);
+  if (!current.bytes.equals(previous.bytes) || !equal(current.identity, previous.identity)) fail('allocation changed before update');
+  await fs.rename(temporary, marker);
+}
+
+// Direct producer references only. No discovery by names, age or directory scans.
+export async function readRetainedAllocation(marker, executionRoot, expected = null) {
+  const record = parseStrictJson((await readOwnedFile(marker)).bytes.toString('utf8'));
+  const retention = record.retention;
+  closed(retention, ['allocationId', 'executionRoot', 'producer', 'owner', 'retainedPaths'], 'retention');
+  if (record.allocationId !== retention.allocationId || record.executionRoot !== executionRoot || retention.executionRoot !== executionRoot
+    || !/^[a-f0-9-]{36}$/u.test(retention.allocationId) || typeof retention.producer !== 'string'
+    || !Array.isArray(retention.retainedPaths) || !path.isAbsolute(record.retentionRoot)
+    || inside(record.retentionRoot, executionRoot) || inside(executionRoot, record.retentionRoot)) fail('retention identity/containment differs');
+  if (expected && (expected.allocationId !== retention.allocationId || expected.sha256 !== retentionSha256(retention))) fail('sealed retention descriptor differs');
+  let previous = '';
+  for (const entry of retention.retainedPaths) {
+    closed(entry, ['path', 'sha256'], 'retained path');
+    if (!path.isAbsolute(entry.path) || !inside(entry.path, record.retentionRoot) || entry.path.localeCompare(previous, 'en') <= 0
+      || digest((await readOwnedFile(entry.path)).bytes) !== entry.sha256) fail('retained bytes/order differ');
+    previous = entry.path;
+  }
+  return record;
+}
+
+export async function registerOwnedAllocation(workCapture, marker) {
+  const file = `${workCapture.path}.owner.json`;
+  const record = parseStrictJson((await readOwnedFile(file)).bytes.toString('utf8'));
+  const allocation = parseStrictJson((await readOwnedFile(marker)).bytes.toString('utf8'));
+  if (record.executionRoot !== allocation.executionRoot || !allocation.owner
+    || ['operationAttemptId','ownershipToken','deliveryId','slice','operation','originActivationId'].some(k => record.retention.owner?.[k] !== allocation.owner[k])) fail('allocation registration belongs to another owner');
+  const known = record.knownAllocations ?? [];
+  if (!known.includes(marker)) await persistAllocation(file, { ...record, knownAllocations: [...known, marker] });
+}
+
+export async function registerRunnerAllocation({workspace,owner,root,producer}) {
+  await ancestry(root);
+  let marker=`${root}.publication.json`;
+  if(await stat(marker)) {
+    const existing=parseStrictJson((await readOwnedFile(marker)).bytes.toString('utf8'));
+    if(existing.format!=='stnl-runner-allocation-v1' || existing.executionRoot!==workspace.executionRoot || existing.candidate!==root || existing.retentionRoot!==root || existing.producer!==producer) fail('runner allocation root has foreign ownership');
+    if(existing.owner.operationAttemptId===owner.operationAttemptId && existing.owner.ownershipToken===owner.ownershipToken) return marker;
+    // Managed tmpdir is reused across legal operations; keep the original root
+    // marker and register each owner explicitly, without overwriting old receipts.
+    marker=`${root}.publication-${owner.operationAttemptId}.json`;
+  }
+  const allocation={format:'stnl-runner-allocation-v1',allocationId:randomUUID(),executionRoot:workspace.executionRoot,
+    candidate:root,retentionRoot:root,owner,producer,controlFiles:[]};
+  await writeNew(marker,Buffer.from(JSON.stringify(allocation)+'\n'));
+  await registerOwnedAllocation(owner.workCapture,marker);
+  return marker;
+}
+
+export async function classifyOwnedAllocation({ workspace, marker=null, activation, readActivated=null }) {
+  if(marker===null) {
+    if(typeof readActivated!=='function') fail('official classification requires verified image readback');
+    const current=await readActivated();return {classification:'official',executionRoot:workspace.executionRoot,activationId:current.activation.activationId};
+  }
+  const record = parseStrictJson((await readOwnedFile(marker)).bytes.toString('utf8'));
+  if (record.executionRoot !== workspace.executionRoot) fail('allocation belongs to another execution');
+  if (!/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/u.test(record.allocationId) || !path.isAbsolute(record.retentionRoot)
+    || !['stnl-execution-publication-owner-v1','stnl-runner-allocation-v1','stnl-preparation-allocation-v1'].includes(record.format)
+      && !['execution-copy','validation-copy'].includes(record.producer)) fail('allocation identity/producer is not positively established');
+  await ancestry(record.retentionRoot);
+  if (record.retention) {
+    await readRetainedAllocation(marker, workspace.executionRoot);
+    if(!['preparation-publication','operational-publication','operation-admission','pass-reopening'].includes(record.retention.producer)
+      || !equal(record.retention.owner,record.owner)) fail('retention producer/owner differs');
+  }
+  if(record.format==='stnl-runner-allocation-v1' && !['native-runner','managed-runner'].includes(record.producer)) fail('unknown runner allocation producer');
+  if(['execution-copy','validation-copy','native-runner','managed-runner'].includes(record.producer)
+    && (!record.owner || !record.owner.workCapture || !record.owner.ownershipToken || !record.owner.operationAttemptId)) fail('allocation owner is absent');
+  for(const root of [record.candidate,record.stage,record.backup,record.retentionRoot].filter(Boolean)) {await ancestry(root);if(inside(root,workspace.executionRoot)||inside(workspace.executionRoot,root)) fail('allocation overlaps official execution');}
+  const active = activation?.activeAttempt;
+  if (active && record.owner && ['operationAttemptId','ownershipToken','deliveryId','slice','operation','originActivationId'].every(k=>record.owner[k]===active[k])) return { classification: 'active', record };
+  if(record.producer==='preparation' && !active && !record.confirmation
+    && record.expectedActivationId===(activation?.activationId ?? null)
+    && equal(record.source,await captureExecutionTree(workspace.executionRoot))) return {classification:'active',record};
+  if (!record.confirmation) return { classification: 'diagnostic', record };
+  if (record.confirmation.activationId !== activation?.activationId) return { classification: 'diagnostic', record };
+  if(['execution-copy','validation-copy'].includes(record.producer) && record.confirmation) {
+    if(!record.confirmedCandidateTree || !record.publicationAllocation) return {classification:'diagnostic',record};
+    const image=await captureExecutionTree(record.candidate);
+    if(image!==null && !equal(image,record.confirmedCandidateTree)) return {classification:'diagnostic',record};
+    const published=await readRetainedAllocation(record.publicationAllocation,workspace.executionRoot);
+    if(!equal(published.expectedInstalledActivation,activation)) return {classification:'diagnostic',record};
+  }
+  const soleCopy = (record.retention?.retainedPaths.length ?? 0) > 0 || (record.backup && await stat(record.backup));
+  return { classification: soleCopy ? 'diagnostic' : 'disposable', record };
+}
+
+// Only the two trusted candidate publishers call this after their common image
+// readback. A candidate remains retained until explicit own-only cleanup.
+export async function acknowledgePublishedCandidate({workspace,marker,candidateTree,publication,readActivated}) {
+  if(publication.publication!=='confirmed' || publication.activation?.activeAttempt) return;
+  return withExecutionPublicationLock(workspace,async()=>{
+    const current=await readActivated();
+    if(!equal(current.activation,publication.activation)) fail('candidate acknowledgment image advanced');
+    const record=parseStrictJson((await readOwnedFile(marker)).bytes.toString('utf8'));
+    if(!['execution-copy','validation-copy'].includes(record.producer) || record.executionRoot!==workspace.executionRoot
+      || !equal(await captureExecutionTree(record.candidate),candidateTree)
+      || ['operationAttemptId','ownershipToken','deliveryId','slice','operation','originActivationId'].some(k=>record.owner?.[k]!==current.activation.lastAttempt?.[k])) fail('candidate acknowledgment ownership/content differs');
+    const prefix=record.producer==='execution-copy' && workspace.specRoot ? 'execution/' : '';
+    if(candidateTree.files.some(e=>e.type==='directory' ? ![prefix.slice(0,-1),prefix+'plans',prefix+'tasks'].includes(e.path)
+      : !/^(?:plan|tasks)\.md$|^(?:approved-preparation|continuity|activation)\.json$|^(?:plans|tasks)\/slice-[0-9]{2,}\.md$/u.test(e.path.slice(prefix.length)))) fail('candidate contains material outside its producer artifacts');
+    const publicationRecord=await readRetainedAllocation(publication.allocation,workspace.executionRoot);
+    if(!equal(publicationRecord.expectedInstalledActivation,current.activation) || !publicationRecord.confirmation) fail('candidate lacks confirmed producer image');
+    record.publicationAllocation=publication.allocation;
+    record.confirmedCandidateTree=candidateTree;
+    record.confirmation=publicationRecord.confirmation;
+    record.cleanup={status:'pending',paths:[record.candidate],diagnostics:['Redundant confirmed candidate retained for explicit inspection/cleanup']};
+    await persistAllocation(marker,record);
+  });
+}
+
+export async function cleanupOwnedExecutionAllocation({ workspace, marker, readActivated, checkpoint = null }) {
+  async function acknowledge(record, result) {
+    try {
+      if(checkpoint) await checkpoint('before-cleanup-acknowledgment', {marker});
+      await persistAllocation(marker, record);
+      return result;
+    } catch(error) {
+      return {...result,publication:'confirmed',cleanup:'pending',cleanupDiagnostics:[`cleanup acknowledgment pending: ${error.message}`]};
+    }
+  }
+  return withExecutionPublicationLock(workspace, async lease => {
+    const current = await readActivated();
+    const original=(await readOwnedFile(marker)).bytes;
+    const { classification, record } = await classifyOwnedAllocation({ workspace, marker, activation: current.activation });
+    if(!record.confirmation && record.expectedInstalledActivation) {
+      validateActivation(record.expectedInstalledActivation);
+      if(!equal(record.expectedInstalledActivation,current.activation) || current.activation.activeAttempt) fail('unacknowledged image differs or still has an owner');
+      record.confirmation={activationId:current.activation.activationId,artifactManifestSha256:digest(JSON.stringify(current.activation.artifacts)),terminalOperationAttemptId:record.owner?.operationAttemptId ?? null};
+      record.cleanup={status:'pending',paths:[record.stage],diagnostics:['Recovered confirmation from exact verified installed image']};
+    }
+    if (current.activation.activeAttempt || !record.confirmation || record.confirmation.activationId !== current.activation.activationId
+      || record.confirmation.artifactManifestSha256 !== digest(JSON.stringify(current.activation.artifacts))) fail('cleanup needs matching confirmed, inactive image');
+    closed(record.cleanup, ['status', 'paths', 'diagnostics'], 'cleanup');
+    if (!['complete', 'pending'].includes(record.cleanup.status) || !Array.isArray(record.cleanup.paths) || !Array.isArray(record.cleanup.diagnostics)) fail('malformed cleanup');
+    if(['execution-copy','validation-copy'].includes(record.producer)) {
+      if(classification!=='disposable' || !record.publicationAllocation || !record.confirmedCandidateTree
+        || record.cleanup.paths.some(p=>p!==record.candidate)) fail('candidate is not demonstrably disposable');
+      const published=await readRetainedAllocation(record.publicationAllocation,workspace.executionRoot);
+      if(!equal(published.expectedInstalledActivation,current.activation) || !equal(published.confirmation,record.confirmation)) fail('candidate publication binding differs');
+      // Explicit refs are the only retention authority; never discover by names.
+      const index=parseStrictJson((await readOwnedFile(path.join(workspace.executionRoot,'continuity.json'))).bytes.toString('utf8'));
+      const references=index.deliveries.flatMap(d=>[...(d.baseline ? [d.baseline.allocationRef.path,d.baseline.manifestRef.path]:[]),...d.history.flatMap(h=>[h.allocationRef.path,h.taskRef.path,h.snapshotRef.path])]);
+      if(references.some(p=>inside(path.resolve(workspace.executionRoot,p),record.candidate))
+        || [current.activation.lastAttempt?.workCapture?.path,current.activation.lastAttempt?.runner?.receiptFile].filter(Boolean).some(p=>inside(p,record.candidate))) fail('candidate still holds required retained material');
+      const observed=await captureExecutionTree(record.candidate);
+      if(observed!==null && !equal(observed,record.confirmedCandidateTree)) fail('candidate changed; retain foreign/unknown material');
+      await assertExecutionPublicationLock(lease);
+      if(!equal((await readActivated()).activation,current.activation) || !(await readOwnedFile(marker)).bytes.equals(original)
+        || !equal(await captureExecutionTree(record.candidate),observed)) fail('candidate cleanup recheck changed');
+      try {if(observed) await fs.rm(record.candidate,{recursive:true});}
+      catch(error) {record.cleanup.diagnostics=[error.message];return acknowledge(record,{publication:'confirmed',cleanup:'pending',cleanupDiagnostics:[error.message],allocation:marker,expectedActivationId:current.activation.activationId});}
+      record.cleanup={status:'complete',paths:[],diagnostics:[]};
+      return acknowledge(record,{publication:'confirmed',cleanup:'complete',classification,allocation:marker,expectedActivationId:current.activation.activationId});
+    }
+    // Retained backup/history/code is never removed. The retired stage is the only
+    // provably redundant publication root; candidate cleanup requires its own producer.
+    if (record.cleanup.paths.some(file => file !== record.stage)) fail('cleanup path is foreign or still needed');
+    if(typeof record.stage!=='string' || !path.isAbsolute(record.stage)) fail('cleanup needs the publication producer stage');
+    const tree = await captureExecutionTree(record.stage);
+    if (tree !== null) fail('nonempty/unconfirmed stage retained for diagnosis');
+    await assertExecutionPublicationLock(lease);
+    const recheck = await readActivated();
+    if (!equal(recheck.activation, current.activation)) fail('cleanup activation changed');
+    const before = (await readOwnedFile(marker)).bytes;
+    if (!before.equals(original)) fail('cleanup allocation changed');
+    record.cleanup = { status: 'complete', paths: [], diagnostics: [] };
+    return acknowledge(record,{ publication: 'confirmed', cleanup: 'complete', classification, allocation: marker,
+      expectedActivationId: current.activation.activationId });
+  });
 }
 
 // JSON.parse alone silently accepts duplicate keys. Walk the JSON grammar first.

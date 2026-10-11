@@ -27,6 +27,10 @@ update_policy: PLAN creates revision 1; REPLAN drafts a replacement or extension
 |---|---|---|---|---|---|
 | 01 - <name> | <result> | - | AC-001 | directory: `<repository-relative physical target>` | plans/slice-01.md |
 
+## Delivery Continuity
+
+- runtime
+
 ## Global Risks and Integration
 
 - <risk, boundary, or explicit final integration slice>

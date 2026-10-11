@@ -67,6 +67,8 @@ import { EXECUTION_OPERATION_SKILLS, WORKFLOW_OPERATIONS } from "./lib/skill-reg
 import { guardOperationProvenance, recoverableOfficialHandoff } from "../benchmarks/sentinel-todo/runtime/benchmark-manager.mjs";
 import { budgetViolation } from "../benchmarks/sentinel-todo/runtime/benchmark.mjs";
 
+import {runOwnedContract} from "./fixtures/p1b-owned-regressions.mjs";
+
 const ROOT = path.resolve(import.meta.dirname, "..");
 const SKILLS = [
   "stnl-execution-planner", "stnl-plan-reviewer", "stnl-task-materializer", "stnl-task-reviewer",
@@ -3371,42 +3373,9 @@ test("distributed validation evidence serializers remain byte-identical across i
   assert.deepEqual(qualityManager, executor);
 });
 
-test("validation overlap paths may repeat across records but not within one record", async (t) => {
-  const fixture = await standaloneWorkspace(t);
-  await renderArtifacts(fixture);
-  const taskArtifact = path.join(fixture.execution, "tasks/slice-01.md");
-  const claims = ["../../src/example.txt", "../../src/second.txt", "../../src/third.txt"];
-  await Promise.all(claims.slice(1).map((claim) => writeValidatedPath(fixture, claim)));
-  const originalTask = replaceSection(await fs.readFile(taskArtifact, "utf8"),
-    "Changed Areas", `- \`${claims[0]}\``);
-  const overlap = (slice, paths) => `- Slice ${slice} overlap: ${paths.map((claim) => `\`${claim}\``).join(", ")}; preserve prior behavior.`;
-  const response = JSON.stringify({
-    status: "PASS", head: "fixture-head", commands: [{ command: "node --test", exit: 0 }],
-    evidence: "Focused validation passed.", findingReferences: "none", findingDispositions: "none",
-    blockers: "none", unexpectedWorkspaceEffects: "none", persistenceSummary: "No runner writes.",
-  });
-  const options = { operation: "VALIDATE_SLICE", response, workspace: fixture.root,
-    taskArtifact, specPath: fixture.requirements, slice: "1" };
-  const assertDeduplicated = async (task) => {
-    await fs.writeFile(taskArtifact, task, "utf8");
-    const executorBundle = await serializeRunnerValidationBundleFromResponse(options);
-    const managerBundle = await serializeQualityManagerValidationBundleFromResponse(options);
-    assert.equal(managerBundle, executorBundle, "mirrored producers must emit the same evidence");
-    const testedRecord = executorBundle.match(/- Tested record:\n- Tested state:\n([\s\S]*?)\n- Commands:/u)?.[1];
-    assert.ok(testedRecord, "producer must emit a physical tested record");
-    const emitted = [...testedRecord.matchAll(/^  - `([^`]+)` \| sha256:[0-9a-f]{64}$/gmu)].map((match) => match[1]);
-    assert.deepEqual(emitted, claims, "each physical target must appear exactly once");
-  };
-  await assertDeduplicated(replaceSection(originalTask, "Prior Validation Overlap",
-    `${overlap("01", claims)}\n${overlap("02", claims)}`));
-  await assertDeduplicated(replaceSection(originalTask, "Prior Validation Overlap",
-    `### overlap-01\n\n- Prior slice: slice-01\n- Paths: ${claims.join(", ")}\n\n### overlap-02\n\n- Prior slice: slice-02\n- Paths: ${claims.join(", ")}`));
-  await fs.writeFile(taskArtifact, replaceSection(originalTask, "Prior Validation Overlap",
-    overlap("01", [claims[0], claims[0]])), "utf8");
-  await assert.rejects(serializeRunnerValidationBundleFromResponse(options),
-    /Prior Validation Overlap contains duplicate path claim/u);
-  await assert.rejects(serializeQualityManagerValidationBundleFromResponse(options),
-    /Prior Validation Overlap contains duplicate path claim/u);
+// Uses current joint preparation, activation, native capture and strict publication.
+test("validation overlap paths may repeat across records but not within one record", async () => {
+  await runOwnedContract("overlap-sets");
 });
 
 test("an isolated copied skill runs the stable self-contained preflight CLI", async (t) => {
@@ -9133,61 +9102,9 @@ test("non-canonical execution residue blocks preflight while arbitrary external 
   await assert.rejects(preflightExecutionOperation(escaped.requirements, "VALIDATE_SLICE", "1"), /unsafe validation-owned path/u);
 });
 
-test("Effective Validation Base ownership reproducer covers path basis, hash, drift, and strict readback", async (t) => {
-  const fixture = await standaloneWorkspace(t);
-  await renderArtifacts(fixture);
-  const target = await writeValidatedPath(fixture);
-  const liveTask = path.join(fixture.execution, "tasks/slice-01.md");
-  const liveIndex = path.join(fixture.execution, "tasks.md");
-  const liveBefore = await Promise.all([fs.readFile(liveTask), fs.readFile(liveIndex)]);
-
-  const terminalCandidate = async (name, { baseRelative = "../../src/example.txt", hash = VALIDATED_HASH } = {}) => {
-    const candidate = await copyDirectory(fixture.execution, path.join(fixture.root, name));
-    const candidateTask = path.join(candidate, "tasks/slice-01.md");
-    let task = await fs.readFile(candidateTask, "utf8");
-    task = task.replace("- [ ] 1.1", "- [x] 1.1");
-    task = replaceSection(task, "Changed Areas", "- `../../src/example.txt`");
-    task = replaceSection(task, "Validation Attempts", PASS_ATTEMPT);
-    task = replaceSection(task, "Effective Validation Base", passBase({ relative: baseRelative, hash }));
-    await fs.writeFile(candidateTask, publishPassResult(task), "utf8");
-    await fs.writeFile(path.join(candidate, "tasks.md"), (await fs.readFile(path.join(candidate, "tasks.md"), "utf8")).replace(
-      "| [ ] | 01 - Delivery | observable result | - | tasks/slice-01.md | pending | pending |",
-      "| [x] | 01 - Delivery | observable result | - | tasks/slice-01.md | PASS | PASS |",
-    ), "utf8");
-    return candidate;
-  };
-
-  const correct = await terminalCandidate("candidate-correct");
-  assert.equal((await validateExecutionCandidate(fixture.requirements, correct)).state, "COMPLETE", "R1 correct candidate");
-  assert.deepEqual(await Promise.all([fs.readFile(liveTask), fs.readFile(liveIndex)]), liveBefore, "candidate validation published implicitly");
-
-  const wrongBasis = await terminalCandidate("candidate-wrong-basis", { baseRelative: "src/example.txt" });
-  await assert.rejects(validateExecutionCandidate(fixture.requirements, wrongBasis), (error) => {
-    assert.ok(error instanceof ExecutionContractError);
-    assert.match(error.message, /final validation ownership does not match|changed\/corrected path with no validation owner/u);
-    return true;
-  });
-  assert.deepEqual(await Promise.all([fs.readFile(liveTask), fs.readFile(liveIndex)]), liveBefore, "wrong-basis candidate published implicitly");
-
-  const wrongHash = await terminalCandidate("candidate-wrong-hash", { hash: "0".repeat(64) });
-  await assert.rejects(validateExecutionCandidate(fixture.requirements, wrongHash), (error) => {
-    assert.ok(error instanceof ExecutionContractError);
-    assert.match(error.message, /final validation ownership does not match/u);
-    assert.equal(error.findings.some((item) => item.includes("expected sha256:") && item.includes("current sha256:")), true);
-    return true;
-  });
-
-  await fs.copyFile(path.join(correct, "tasks/slice-01.md"), liveTask);
-  await fs.copyFile(path.join(correct, "tasks.md"), liveIndex);
-  assert.equal((await inspectExecutionState(fixture.requirements)).state, "COMPLETE", "R5 strict readback without drift");
-
-  await fs.writeFile(target, "post-PASS drift\n", "utf8");
-  await assert.rejects(inspectExecutionState(fixture.requirements), (error) => {
-    assert.ok(error instanceof ExecutionContractError);
-    assert.match(error.message, /final validation ownership does not match/u);
-    assert.equal(error.recoveryTargets.some(({ operation, owner }) => operation === "REPLAN" && owner === "terminal-integrity"), true);
-    return true;
-  });
+// Uses current joint preparation, activation, native capture and strict publication.
+test("Effective Validation Base ownership reproducer covers path basis, hash, drift, and strict readback", async () => {
+  await runOwnedContract("base-provenance");
 });
 
 test("candidate validation permits declared later-slice ownership of a historical overlap", async (t) => {
@@ -9245,129 +9162,14 @@ test("candidate validation permits declared later-slice ownership of a historica
   });
 });
 
-test("directory scope selects files but current checks alone take ownership from a prior PASS", async (t) => {
-  const fixture = await standaloneWorkspace(t);
-  await renderArtifacts(fixture);
-  await addSecondPristineSlice(fixture);
-  await passFirstSlice(fixture);
-  const taskPath = path.join(fixture.execution, "tasks/slice-02.md");
-  await fs.writeFile(taskPath, (await fs.readFile(taskPath, "utf8"))
-    .replace("`../../src/example.txt`; example implementation", "`../../src`; example implementation"));
-  const planPath = path.join(fixture.execution, "plans/slice-02.md");
-  const originalPlan = await fs.readFile(planPath, "utf8");
-  const included = "- Implement the approved behavior.\n  - `src`: `example.txt`.";
-  const approvedPlan = replaceSection(originalPlan, "Included Scope", included);
-  await fs.writeFile(planPath, approvedPlan);
-  const currentContent = "pending formatting\n";
-  const currentHash = createHash("sha256").update(currentContent).digest("hex");
-  await writeValidatedPath(fixture, "../../src/example.txt", currentContent);
-  await writeValidatedPath(fixture, "../../src/unlisted.txt", "unrelated drift\n");
-  const candidate = await copyDirectory(fixture.execution, path.join(fixture.root, "pending-directory-candidate"));
-  await assert.rejects(validateExecutionCandidate(fixture.requirements, candidate),
-    /file-backed candidate evidence expected/u, "an approved list does not supersede PASS bytes");
-  assert.deepEqual(await validateManagedChangedAreas({ workspace: fixture.root, taskArtifact: taskPath,
-    changedAreas: ["../../src/example.txt"] }), ["../../src/example.txt"]);
-  await assert.rejects(validateManagedChangedAreas({ workspace: fixture.root, taskArtifact: taskPath,
-    changedAreas: ["../../src/unlisted.txt"] }), /approved (?:physical )?target/u);
-
-  const spoofedDraft = replaceSection(approvedPlan.replace("status: ready", "status: draft")
-    .replace("- Review state: approved", "- Review state: pending"), "Included Scope",
-  `${included}\nstatus: ready\n- Review state: approved`);
-  await fs.writeFile(planPath, spoofedDraft);
-  await assert.rejects(validateManagedChangedAreas({ workspace: fixture.root, taskArtifact: taskPath,
-    changedAreas: ["../../src/example.txt"] }), /approved detailed plan/u,
-  "free text cannot spoof the canonical header and References");
-  await fs.writeFile(planPath, replaceSection(originalPlan, "Included Scope", "- Implement the approved behavior."));
-  await assert.rejects(validateManagedChangedAreas({ workspace: fixture.root, taskArtifact: taskPath,
-    changedAreas: ["../../src/example.txt"] }), /closed file list/u);
-  await fs.writeFile(planPath, approvedPlan);
-
-  const candidateTask = path.join(candidate, "tasks/slice-02.md");
-  await fs.writeFile(candidateTask, replaceSection(await fs.readFile(candidateTask, "utf8"),
-    "Changed Areas", "- `../../src/example.txt`"));
-  assert.equal((await serializeExecutionScopeClaims({ workspace: fixture.root, taskArtifact: candidateTask })).status, "PASS");
-  await assert.rejects(validateExecutionCandidate(fixture.requirements, candidate),
-    /file-backed candidate evidence expected/u, "declared scope without a current check is not validated ownership");
-
-  let checked = await fs.readFile(candidateTask, "utf8");
-  checked = checked.replace("- [ ] 2.1", "- [x] 2.1");
-  checked = replaceSection(checked, "Prior Validation Overlap",
-    "### overlap-01\n\n- Prior slice: slice-01\n- Paths: ../../src/example.txt\n- Affected behavior: Preserve the earlier validated behavior.\n- Regressions: Re-run its focused regression.");
-  checked = replaceSection(checked, "Implementation Test Evidence",
-    checkRecord("implementation-check", 1, "TESTS_PASS", 1)
-      .replaceAll(`sha256:${VALIDATED_HASH}`, `sha256:${currentHash}`));
-  await fs.writeFile(candidateTask, checked);
-  assert.equal((await validateExecutionCandidate(fixture.requirements, candidate)).state,
-    "IMPLEMENTED_AWAITING_VALIDATION");
-  await fs.writeFile(candidateTask, checked.replaceAll(`sha256:${currentHash}`, `sha256:${"0".repeat(64)}`));
-  await assert.rejects(validateExecutionCandidate(fixture.requirements, candidate),
-    /file-backed candidate evidence expected/u, "a forged current hash is not ownership");
-  await fs.writeFile(candidateTask, checked);
-  await fs.writeFile(candidateTask, replaceSection(await fs.readFile(candidateTask, "utf8"),
-    "Changed Areas", "- `../../src/unlisted.txt`"));
-  await assert.rejects(serializeExecutionScopeClaims({ workspace: fixture.root, taskArtifact: candidateTask }), /approved (?:physical )?target/u);
+// Uses current joint preparation, activation, native capture and strict publication.
+test("directory scope selects files but current checks alone take ownership from a prior PASS", async () => {
+  await runOwnedContract("directory-owner");
 });
 
-test("a new NEEDS_FIX attempt retains the latest findings check as current overlap owner", async (t) => {
-  const fixture = await standaloneWorkspace(t);
-  await renderArtifacts(fixture);
-  await addSecondPristineSlice(fixture);
-  await passFirstSlice(fixture);
-  const laterPath = "../../src/later.txt";
-  const overlapPath = "../../src/example.txt";
-  await writeValidatedPath(fixture, laterPath);
-  const planPath = path.join(fixture.execution, "plans/slice-02.md");
-  await fs.writeFile(planPath, (await fs.readFile(planPath, "utf8")).replaceAll(overlapPath, laterPath));
-
-  const implemented = await copyDirectory(fixture.execution, path.join(fixture.root, "later-implemented"));
-  const implementedTask = path.join(implemented, "tasks/slice-02.md");
-  let text = (await fs.readFile(implementedTask, "utf8")).replaceAll(overlapPath, laterPath);
-  text = text.replace("- [ ] 2.1", "- [x] 2.1");
-  text = replaceSection(text, "Changed Areas", `- \`${laterPath}\``);
-  text = replaceSection(text, "Implementation Test Evidence",
-    checkRecord("implementation-check", 1, "TESTS_PASS", 1).replaceAll(overlapPath, laterPath));
-  await fs.writeFile(implementedTask, text);
-  assert.equal((await validateExecutionCandidate(fixture.requirements, implemented)).state, "IMPLEMENTED_AWAITING_VALIDATION");
-
-  const firstAttempt = await copyDirectory(implemented, path.join(fixture.root, "later-needs-fix"));
-  const firstTask = path.join(firstAttempt, "tasks/slice-02.md");
-  text = await fs.readFile(firstTask, "utf8");
-  text = replaceSection(text, "Validation Attempts", NEEDS_FIX_ATTEMPT.replaceAll(overlapPath, laterPath));
-  text = replaceSection(text, "Validation Findings", ACTIVE_FINDING);
-  await fs.writeFile(firstTask, text);
-  assert.equal((await validateExecutionCandidate(fixture.requirements, firstAttempt)).state, "VALIDATION_NEEDS_FIX");
-
-  const correctedContent = "later slice owns the prior overlap\n";
-  const correctedHash = createHash("sha256").update(correctedContent).digest("hex");
-  await writeValidatedPath(fixture, overlapPath, correctedContent);
-  const corrected = await copyDirectory(firstAttempt, path.join(fixture.root, "later-corrected"));
-  const correctedTask = path.join(corrected, "tasks/slice-02.md");
-  text = await fs.readFile(correctedTask, "utf8");
-  text = replaceSection(text, "Changed Areas", `- \`${overlapPath}\`\n- \`${laterPath}\``);
-  text = replaceSection(text, "Corrections Applied", `- \`${overlapPath}\``);
-  text = replaceSection(text, "Prior Validation Overlap",
-    `- Slice 01 overlap: \`${overlapPath}\`; preserve previously validated behavior and rerun its focused regression.`);
-  const findingsCheck = checkRecord("findings-check", 1, "TESTS_PASS", 1, { cycle: "attempt-01" })
-    .replace(`- Tested scope: ${overlapPath}`, `- Tested scope: ${overlapPath}, ${laterPath}`)
-    .replace(`  - \`${overlapPath}\` | sha256:${VALIDATED_HASH}`,
-      `  - \`${overlapPath}\` | sha256:${correctedHash}\n  - \`${laterPath}\` | sha256:${VALIDATED_HASH}`);
-  text = replaceSection(text, "Findings Test Evidence", findingsCheck);
-  await fs.writeFile(correctedTask, text);
-  assert.equal((await validateExecutionCandidate(fixture.requirements, corrected)).state, "FINDINGS_CORRECTED");
-
-  const revalidation = await copyDirectory(corrected, path.join(fixture.root, "later-revalidation"));
-  const revalidationTask = path.join(revalidation, "tasks/slice-02.md");
-  text = await fs.readFile(revalidationTask, "utf8");
-  const secondAttempt = attemptRecord(2, "NEEDS_FIX", {
-    references: "finding-01, finding-02", dispositions: "finding-01=resolved, finding-02=active",
-  }).replace(`- Verified scope: ${overlapPath}`, `- Verified scope: ${overlapPath}, ${laterPath}`);
-  text = replaceSection(text, "Validation Attempts", `${NEEDS_FIX_ATTEMPT.replaceAll(overlapPath, laterPath)}\n\n${secondAttempt}`);
-  text = replaceSection(text, "Validation Findings", `${ACTIVE_FINDING.replace("- State: active", "- State: resolved")}\n- Resolution: attempt-02 confirmed the correction.\n\n${ACTIVE_FINDING_02.replace("- Origin: attempt-01", "- Origin: attempt-02")}`);
-  await fs.writeFile(revalidationTask, text);
-  assert.equal((await validateExecutionCandidate(fixture.requirements, revalidation)).state, "VALIDATION_NEEDS_FIX");
-  await writeValidatedPath(fixture, overlapPath, "tampered after the findings check\n");
-  await assert.rejects(validateExecutionCandidate(fixture.requirements, revalidation),
-    /findings-check-01 Tested state.*file-backed candidate evidence expected/u);
+// Uses current joint preparation, activation, native capture and strict publication.
+test("a new NEEDS_FIX attempt retains the latest findings check as current overlap owner", async () => {
+  await runOwnedContract("findings-overlap");
 });
 
 async function priorOverlapFixture(t, { samePath = false } = {}) {
@@ -9437,41 +9239,9 @@ async function overlapCandidate(fixture, changed, overlap) {
   return copy;
 }
 
-test("prior validation overlap is required before execution publication and preserves valid multi-slice claims", async (t) => {
-  const { fixture, a, b, claim } = await priorOverlapFixture(t);
-  const liveTask = path.join(fixture.execution, "tasks/slice-03.md");
-  const liveBefore = await fs.readFile(liveTask);
-  const relation = (slice, claim) => `- Slice ${slice} overlap: \`${claim}\`; preserve earlier behavior with focused regressions.`;
-
-  const missing = await overlapCandidate(fixture, [a], "- none");
-  await assert.rejects(validateExecutionCandidate(fixture.requirements, missing.candidateExecutionRoot),
-    (error) => error.message.includes(`slice-01 -> ${a}`));
-  await assert.rejects(publishExecutionCopy({ specPath: fixture.requirements, slice: "slice-03", candidateRoot: missing.candidateRoot }),
-    /Prior Validation Overlap is missing required prior slice\/path coverage/u);
-  assert.deepEqual(await fs.readFile(liveTask), liveBefore, "R7 failed publication must preserve live task bytes");
-
-  const partial = await overlapCandidate(fixture, [a, b], relation("01", a));
-  await assert.rejects(validateExecutionCandidate(fixture.requirements, partial.candidateExecutionRoot),
-    (error) => error.message.includes(`slice-02 -> ${b}`));
-
-  const complete = await overlapCandidate(fixture, [a, b], `${relation("01", a)}\n${relation("02", b)}`);
-  assert.equal((await validateExecutionCandidate(fixture.requirements, complete.candidateExecutionRoot)).state, "IMPLEMENTED_AWAITING_VALIDATION");
-
-  const duplicate = await overlapCandidate(fixture, [a], relation("01", a).replace(`\`${a}\``, `\`${a}\`, \`${a}\``));
-  await assert.rejects(validateExecutionCandidate(fixture.requirements, duplicate.candidateExecutionRoot), /Prior Validation Overlap contains duplicate path claim/u);
-
-  const disjoint = await overlapCandidate(fixture, [b], "- none");
-  await assert.rejects(validateExecutionCandidate(fixture.requirements, disjoint.candidateExecutionRoot),
-    (error) => error.message.includes(`slice-02 -> ${b}`));
-  await writeValidatedPath(fixture, claim("third.txt"));
-  const legitimateNone = await overlapCandidate(fixture, [claim("third.txt")], "- none");
-  assert.equal((await validateExecutionCandidate(fixture.requirements, legitimateNone.candidateExecutionRoot)).state, "IMPLEMENTED_AWAITING_VALIDATION");
-  assert.deepEqual(await fs.readFile(liveTask), liveBefore);
-
-  const shared = await priorOverlapFixture(t, { samePath: true });
-  const sharedCandidate = await overlapCandidate(shared.fixture, [shared.a], `${relation("01", shared.a)}\n${relation("02", shared.a)}`);
-  assert.equal((await validateExecutionCandidate(shared.fixture.requirements, sharedCandidate.candidateExecutionRoot)).state,
-    "IMPLEMENTED_AWAITING_VALIDATION");
+// Uses current joint preparation, activation, native capture and strict publication.
+test("prior validation overlap is required before execution publication and preserves valid multi-slice claims", async () => {
+  await runOwnedContract("required-overlap");
 });
 
 test("terminal PASS inherits only tested superseded paths from its recovery lineage", async (t) => {
@@ -9583,140 +9353,19 @@ test("terminal PASS inherits only tested superseded paths from its recovery line
   /not a committed supersession mapping|invalid later replacement slice/u);
 });
 
-test("terminal inspection detects hash drift and REMOVED reappearance without rewriting PASS history", async (t) => {
-  const matching = await standaloneWorkspace(t);
-  await renderArtifacts(matching);
-  await editTask(matching, (value) => {
-    let result = value.replace("- [ ] 1.1", "- [x] 1.1");
-    result = replaceSection(result, "Changed Areas", "- `../../src/example.txt`");
-    result = replaceSection(result, "Validation Attempts", PASS_ATTEMPT);
-    result = replaceSection(result, "Effective Validation Base", PASS_BASE);
-    return publishPassResult(result);
-  });
-  await editTasksIndex(matching, (value) => value.replace("| [ ] | 01 - Delivery | observable result | - | tasks/slice-01.md | pending | pending |", "| [x] | 01 - Delivery | observable result | - | tasks/slice-01.md | PASS | PASS |"));
-  const target = await writeValidatedPath(matching);
-  const complete = await inspectExecutionState(matching.requirements);
-  assert.equal(complete.state, "COMPLETE");
-  assert.equal(complete.normalHandoff, null);
-  assert.deepEqual(complete.legalOperations, [{ operation: "REPLAN", slice: null }]);
-  const taskPath = path.join(matching.execution, "tasks/slice-01.md");
-  const historyBeforeDrift = await fs.readFile(taskPath);
-  await fs.writeFile(target, "drifted behavior\n");
-  await assert.rejects(inspectExecutionState(matching.requirements), (error) => {
-    assert.ok(error instanceof ExecutionContractError);
-    assert.match(error.message, /final validation ownership does not match/u);
-    assert.equal(error.findings.some((item) => item.includes(target)
-      && item.includes("slice-01") && item.includes("expected sha256:") && item.includes("current sha256:")), true);
-    assert.deepEqual(error.recoveryTargets.map(({ operation, slice, owner }) => ({ operation, slice, owner })), [
-      { operation: "REPLAN", slice: null, owner: "terminal-integrity" },
-    ]);
-    return true;
-  });
-  assert.deepEqual(await fs.readFile(taskPath), historyBeforeDrift, "terminal drift inspection rewrote PASS history");
-  assert.equal((await preflightExecutionOperation(matching.requirements, "REPLAN")).state, "COMPLETE");
-
-  const removed = await standaloneWorkspace(t);
-  await renderArtifacts(removed);
-  await editTask(removed, (value) => {
-    let result = value.replace("- [ ] 1.1", "- [x] 1.1");
-    result = replaceSection(result, "Changed Areas", "- `../../src/removed.txt`");
-    result = replaceSection(result, "Validation Attempts", PASS_ATTEMPT);
-    result = replaceSection(result, "Effective Validation Base", passBase({ relative: "../../src/removed.txt", removed: true }));
-    return publishPassResult(result);
-  });
-  await editTasksIndex(removed, (value) => value.replace("| [ ] | 01 - Delivery | observable result | - | tasks/slice-01.md | pending | pending |", "| [x] | 01 - Delivery | observable result | - | tasks/slice-01.md | PASS | PASS |"));
-  assert.equal((await inspectExecutionState(removed.requirements)).state, "COMPLETE");
-  await writeValidatedPath(removed, "../../src/removed.txt");
-  await assert.rejects(inspectExecutionState(removed.requirements), (error) => error instanceof ExecutionContractError
-    && error.findings.some((item) => item.includes("slice-01") && item.includes("expected REMOVED, current sha256:"))
-    && error.recoveryTargets.some((target_) => target_.operation === "REPLAN"));
-
-  const unowned = await standaloneWorkspace(t);
-  await renderArtifacts(unowned);
-  await editTask(unowned, (value) => {
-    let result = value.replace("- [ ] 1.1", "- [x] 1.1");
-    result = replaceSection(result, "Changed Areas", "- `../../src/example.txt`\n- `../../src/unowned.txt`");
-    result = replaceSection(result, "Validation Attempts", PASS_ATTEMPT);
-    result = replaceSection(result, "Effective Validation Base", PASS_BASE);
-    return publishPassResult(result);
-  });
-  await assert.rejects(inspectExecutionState(unowned.requirements), /changed\/corrected path with no validation owner/u);
+// Uses current joint preparation, activation, native capture and strict publication.
+test("terminal inspection detects hash drift and REMOVED reappearance without rewriting PASS history", async () => {
+  await runOwnedContract("terminal-drift");
 });
 
-test("terminal candidates reject invalid final ownership and preserve live execution bytes", async (t) => {
-  const fixture = await standaloneWorkspace(t);
-  await renderArtifacts(fixture);
-  const liveTask = path.join(fixture.execution, "tasks/slice-01.md");
-  const liveIndex = path.join(fixture.execution, "tasks.md");
-  const liveBefore = await Promise.all([fs.readFile(liveTask), fs.readFile(liveIndex)]);
-  const candidate = await copyDirectory(fixture.execution, path.join(fixture.root, "terminal-candidate"));
-  const candidateTask = path.join(candidate, "tasks/slice-01.md");
-  let task = await fs.readFile(candidateTask, "utf8");
-  task = task.replace("- [ ] 1.1", "- [x] 1.1");
-  task = replaceSection(task, "Changed Areas", "- `../../src/example.txt`");
-  task = replaceSection(task, "Validation Attempts", PASS_ATTEMPT);
-  task = replaceSection(task, "Effective Validation Base", PASS_BASE);
-  await fs.writeFile(candidateTask, publishPassResult(task), "utf8");
-  const candidateIndex = path.join(candidate, "tasks.md");
-  await fs.writeFile(candidateIndex, (await fs.readFile(candidateIndex, "utf8")).replace(
-    "| [ ] | 01 - Delivery | observable result | - | tasks/slice-01.md | pending | pending |",
-    "| [x] | 01 - Delivery | observable result | - | tasks/slice-01.md | PASS | PASS |",
-  ), "utf8");
-  await writeValidatedPath(fixture, "../../src/example.txt", "candidate hash mismatch\n");
-
-  await assert.rejects(validateExecutionCandidate(fixture.requirements, candidate), (error) => {
-    assert.ok(error instanceof ExecutionContractError);
-    assert.match(error.message, /final validation ownership does not match/u);
-    assert.equal(error.findings.some((item) => item.includes("slice-01")
-      && item.includes("expected sha256:") && item.includes("current sha256:")), true);
-    return true;
-  });
-  assert.deepEqual(await Promise.all([fs.readFile(liveTask), fs.readFile(liveIndex)]), liveBefore);
-  assert.equal((await inspectExecutionState(fixture.requirements)).state, "MATERIALIZED_PRISTINE");
+// Uses current joint preparation, activation, native capture and strict publication.
+test("terminal candidates reject invalid final ownership and preserve live execution bytes", async () => {
+  await runOwnedContract("terminal-candidate");
 });
 
-test("terminal integrity trusts repository-owned paths outside a nested SPEC and rejects repository escape", async (t) => {
-  const root = await temporary(t);
-  const repository = path.join(root, "repository with space ü");
-  await fs.mkdir(path.join(repository, ".git"), { recursive: true });
-  const workspace = await copyDirectory(
-    path.join(ROOT, "skills/workflows/stnl-spec-lifecycle-manager/examples/validator-fixtures/ready"),
-    path.join(repository, "specs", "área segura", "feature Ω"),
-  );
-  const fixture = { root: repository, requirements: workspace, execution: path.join(workspace, "execution") };
-  await renderArtifacts(fixture);
-  const taskDirectory = path.join(fixture.execution, "tasks");
-  const ownedPath = path.join(repository, "src/example.txt");
-  const ownedRelative = path.relative(taskDirectory, ownedPath).split(path.sep).join("/");
-  await fs.mkdir(path.dirname(ownedPath), { recursive: true });
-  await fs.writeFile(ownedPath, VALIDATED_CONTENT);
-  await editTask(fixture, (value) => {
-    let result = value.replace("- [ ] 1.1", "- [x] 1.1");
-    result = replaceSection(result, "Changed Areas", `- \`${ownedRelative}\``);
-    result = replaceSection(result, "Validation Attempts", PASS_ATTEMPT);
-    result = replaceSection(result, "Effective Validation Base", passBase({ relative: ownedRelative }));
-    return publishPassResult(result);
-  });
-  await editTasksIndex(fixture, (value) => value.replace("| [ ] | 01 - Delivery | observable result | - | tasks/slice-01.md | pending | pending |", "| [x] | 01 - Delivery | observable result | - | tasks/slice-01.md | PASS | PASS |"));
-  assert.equal((await inspectExecutionState(workspace)).state, "COMPLETE");
-  const candidate = await copyDirectory(fixture.execution, path.join(root, "nested lifecycle candidate"));
-  assert.equal((await validateExecutionCandidate(workspace, candidate)).state, "COMPLETE");
-  const formerLocalPrefix = `.${path.basename(workspace)}.stnl-execution-candidate-`;
-  assert.deepEqual(
-    (await fs.readdir(path.dirname(workspace))).filter((name) => name.startsWith(formerLocalPrefix)),
-    [],
-    "candidate shadow appeared beside the nested lifecycle SPEC",
-  );
-
-  const escapedPath = path.join(root, "escaped.txt");
-  const escapedRelative = path.relative(taskDirectory, escapedPath).split(path.sep).join("/");
-  await fs.writeFile(escapedPath, VALIDATED_CONTENT);
-  await editTask(fixture, (value) => {
-    let result = replaceSection(value, "Changed Areas", `- \`${escapedRelative}\``);
-    result = replaceSection(result, "Effective Validation Base", passBase({ relative: escapedRelative }));
-    return result;
-  });
-  await assert.rejects(inspectExecutionState(workspace), /unsafe validation-owned path/u);
+// Uses current joint preparation, activation, native capture and strict publication.
+test("terminal integrity trusts repository-owned paths outside a nested SPEC and rejects repository escape", async () => {
+  await runOwnedContract("nested-root");
 });
 
 // A pristine live task must stay pristine until evidence is published from its

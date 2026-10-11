@@ -14,7 +14,7 @@ import { publishValidationCandidate } from '../../../skills/workflows/stnl-slice
 import { serializeRunnerExecutionBundleFromResponse, insertExecutionEvidenceInCandidate,
   recoverableRunnerResultDiagnostic, persistMalformedRunnerResultInCandidate, captureRunnerTestedState }
   from '../../../skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs';
-import { inspectExecutionState, validateExecutionCandidate, resolveExecutionWorkspace, deriveNormalHandoff, computeRequirementsAuthority }
+import { inspectExecutionState, validateExecutionCandidate, resolveExecutionWorkspace, deriveNormalHandoff, computeRequirementsAuthority, readDeliveryContinuity, projectOperationalContinuityTask }
   from '../../../skills/workflows/stnl-slice-executor/runtime/execution-state.mjs';
 
 const hash = (bytes) => createHash('sha256').update(bytes).digest('hex');
@@ -48,6 +48,15 @@ async function tree(root) {
 }
 const imageWithoutActivation = entries => entries.filter(entry => entry.path !== 'activation.json');
 const sameOperationalImage = (left, right) => same(imageWithoutActivation(left), imageWithoutActivation(right));
+
+async function projectedPublicationTree(context,stage,entries) {
+  const workspace=await resolveExecutionWorkspace(context.specPath);
+  const continuity=await readDeliveryContinuity(workspace);
+  const delivery=continuity.deliveries.find(d=>d.slice===context.slice);
+  const task=`tasks/${context.slice}.md`;
+  const projected=projectOperationalContinuityTask((await regular(path.join(stage.candidateExecutionRoot,task))).toString('utf8'),delivery);
+  return entries.map(e=>e.path===task ? {...e,hash:hash(Buffer.from(projected))}:e);
+}
 
 async function replaceTask(file, bytes) {
   const temporary = `${file}.${randomUUID()}.tmp`;
@@ -209,7 +218,7 @@ export async function finalizeManagedSlice(mode) {
     const task = prior.state === 'PRIVATE_TESTS_FAIL' ? binding.candidateTaskArtifact : liveTask;
     if (JSON.stringify(Object.keys(prior.evidenceSha256 ?? {}).sort()) !== JSON.stringify([...evidenceFiles].sort())) throw new Error('managed finalized evidence paths disagree');
     if (Object.entries(owner).some(([key, value]) => prior[key] !== value)
-      || (await inspectExecutionState(context.specPath)).state !== (prior.state === 'PRIVATE_TESTS_FAIL' ? context.state : prior.state)
+      || (await inspectExecutionState(context.specPath)).state !== (prior.state === 'PRIVATE_TESTS_FAIL' ? prior.sourceState : prior.state)
       || `sha256:${await computeRequirementsAuthority(context.specPath)}` !== owner.authority
       || hash(await regular(task)) !== prior.taskSha256 || hash(await regular(path.join(official.executionRoot, 'tasks.md'))) !== prior.indexSha256
       || !same(prior.liveTree, await tree(official.executionRoot))
@@ -247,7 +256,7 @@ export async function finalizeManagedSlice(mode) {
       const expectedPrivate = receipt.semanticResponseStatus === 'TESTS_FAIL'
         && admittedRound !== '3/3';
       if (prepared.privateFailure !== expectedPrivate
-        || !same(prepared.liveAfter, expectedPrivate ? prepared.liveBefore : prepared.stageTree)) throw new Error('managed preparation outcome/image disagrees');
+        || !same(prepared.liveAfter, expectedPrivate ? prepared.liveBefore : await projectedPublicationTree(context,prepared.stage,prepared.stageTree))) throw new Error('managed preparation outcome/image disagrees');
     }
     await checkCopy(prepared.stage);
     if (!same(prepared.inputTree, inputTree) && !(prepared.privateFailure && same(prepared.stageTree, inputTree))) throw new Error('managed preparation input candidate changed');
@@ -333,7 +342,7 @@ export async function finalizeManagedSlice(mode) {
       const validated = privateFailure ? null : prospective ?? await validateExecutionCandidate(context.specPath, stage.candidateExecutionRoot);
       prepared = { ...prepared, status: 'PREPARED', privateFailure, state: privateFailure ? 'PRIVATE_TESTS_FAIL' : validated.state,
         stageTree: await tree(stage.candidateExecutionRoot) };
-      prepared.liveAfter = privateFailure ? liveTree : prepared.stageTree;
+      prepared.liveAfter = privateFailure ? liveTree : await projectedPublicationTree(context,prepared.stage,prepared.stageTree);
       await write(preparedFile, prepared);
     } catch (error) {
       await write(preparedFile, { ...prepared, status: 'REJECTED', stageTree: await tree(stage.candidateExecutionRoot),
@@ -363,7 +372,7 @@ export async function finalizeManagedSlice(mode) {
     || (testedState !== null && !same(testedState, await captureRunnerTestedState({ workspace: context.workspace,
       taskArtifact: liveTask, changedAreas: testedState.entries.map(entry => entry.path) })))
     || !same(evidenceSha256, Object.fromEntries(await Promise.all(evidenceFiles.map(async (file) => [file, hash(await regular(file))]))))) throw new Error('managed finalization input/evidence conflict');
-  const result = { ...owner, receiptFile: receipt.receiptFile, state: privateFailure ? 'PRIVATE_TESTS_FAIL' : readback.state,
+  const result = { ...owner, sourceState:executionState.state, receiptFile: receipt.receiptFile, state: privateFailure ? 'PRIVATE_TESTS_FAIL' : readback.state,
     evidenceSha256,
     ...(prepared.findingsCycleBinding === undefined ? {} : { findingsCycleBinding: prepared.findingsCycleBinding }),
     liveTree: await tree(official.executionRoot), candidateTree: await tree(binding.candidateExecutionRoot),

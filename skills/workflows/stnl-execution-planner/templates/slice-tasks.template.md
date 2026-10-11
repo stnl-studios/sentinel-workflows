@@ -53,6 +53,13 @@ update_policy: PLAN/REPLAN creates; later operations replace only their authoriz
 
 - <test, command, suite, or observable check>
 
+## Continuity
+
+- Current validation: unvalidated
+- Historical PASS: none
+- History source: runtime
+- Current action: implement approved delivery
+
 ## Operational Changes
 
 - none

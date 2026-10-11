@@ -7,10 +7,11 @@ import os from "node:os";
 import { projectPreparationAuthority, readPreparationArtifacts, parsePreparationArtifact, preparationChecklist,
   preparationPathClaims, validateApprovedPreparation, validateOperationalChanges, parseStrictJson } from './execution-preparation.mjs';
 import { readActivatedExecution, beginExecutionOperation, withExecutionPublicationLock,
-  publishExecutionUpdate, captureExecutionTree, readOwnedFile, assertExecutionAttempt } from './execution-publication.mjs';
+  publishExecutionUpdate, captureExecutionTree, readOwnedFile, assertExecutionAttempt, readRetainedAllocation,
+  retentionSha256, persistAllocation, executionLockIdentity, classifyOwnedAllocation } from './execution-publication.mjs';
 import path from "node:path";
 
-const ROOT_FILES = new Set(["plan.md", "tasks.md", "approved-preparation.json", "activation.json"]);
+const ROOT_FILES = new Set(["plan.md", "tasks.md", "approved-preparation.json", "activation.json", "continuity.json"]);
 const ROOT_DIRECTORIES = new Set(["plans", "tasks"]);
 const SLICE_FILE = /^slice-[0-9]{2,}\.md$/u;
 const SLICE_OPERATIONS = new Set(["EXECUTE_SLICE", "APPLY_FINDINGS", "VALIDATE_SLICE"]);
@@ -51,13 +52,13 @@ const PRISTINE = new Map([
   ["Diff Summary", "- pending"],
   ["Final Result", "- pending"],
 ]);
-const GLOBAL_PLAN_SECTIONS = ["Global Context", "Serial Slice Order", "Global Risks and Integration"];
+const GLOBAL_PLAN_SECTIONS = ["Global Context", "Serial Slice Order", "Delivery Continuity", "Global Risks and Integration"];
 const SLICE_PLAN_SECTIONS = [
   "References", "Objective and Observable Result", "Requirements", "Included Scope", "Out of Scope and Boundaries",
   "Authorized Areas", "Expected Files", "Existing Inputs", "Protected Responsibilities", "Dependencies", "Risks and Strategy", "Expected Tests", "Completion Criterion",
 ];
 const TASK_SECTIONS = [
-  "References", "Result", "Acceptance Obligations", "Authorized Areas", "Expected Files", "Existing Inputs", "Protected Responsibilities", "Checklist", "Expected Tests", "Operational Changes", "Changed Areas", "Scope Expansion", "Prior Validation Overlap",
+  "References", "Result", "Acceptance Obligations", "Authorized Areas", "Expected Files", "Existing Inputs", "Protected Responsibilities", "Checklist", "Expected Tests", "Continuity", "Operational Changes", "Changed Areas", "Scope Expansion", "Prior Validation Overlap",
   "Divergences", "Delegation Blocker", "Implementation Test Evidence", "Findings Test Evidence", "Validation Attempts",
   "Validation Findings", "Corrections Applied", "Effective Validation Base", "Diff Summary", "Final Result",
 ];
@@ -129,6 +130,29 @@ export async function resolveExecutionWorkspace(specPath) {
     throw new ExecutionContractError(`SPEC_PATH must exist and must not be a symlink: ${requested}`);
   }
   const physical = await fs.realpath(requested);
+  let selected = (await fs.lstat(physical)).isDirectory() ? physical : path.dirname(physical);
+  for (let depth=0;depth<3;depth+=1) {
+    const markers=[`${selected}.copy.json`,`${selected}.publication.json`,`${selected}.owner.json`];
+    const generated=/^\.stnl-execution-(?:stage|backup)-([a-f0-9-]{36})$/u.exec(path.basename(selected));
+    if (generated) markers.push(path.join(path.dirname(selected),`.stnl-execution-publication-${generated[1]}.json`));
+    for (const marker of markers) if (await lstatOrNull(marker)) {
+      const record=parseStrictJson((await readOwnedFile(marker)).bytes.toString('utf8'));
+      const recognized=['stnl-execution-publication-owner-v1','stnl-runner-allocation-v1','stnl-preparation-allocation-v1'].includes(record.format) || ['execution-copy','validation-copy'].includes(record.producer);
+      if(!recognized || !/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/u.test(record.allocationId ?? '') || !record.executionRoot) continue;
+      await classifyOwnedAllocation({workspace:{executionRoot:record.executionRoot},marker});
+      const roots=[record.candidate,record.stage,record.backup,record.retentionRoot].filter(Boolean);
+      if (record.executionRoot && roots.some(root=>pathIsWithin(physical,root)) && !pathIsWithin(physical,record.executionRoot)) {
+        throw new ExecutionContractError('owned operational candidate/stage/backup cannot be selected as official SPEC_PATH',[physical]);
+      }
+    }
+    selected=path.dirname(selected);
+  }
+  return resolvePhysicalExecutionWorkspace(physical);
+}
+
+// Private kernel shadows are validated against a separately resolved logical SPEC.
+// The public resolver still refuses every positively owned operational allocation.
+async function resolvePhysicalExecutionWorkspace(physical) {
   const metadata = await lstatOrNull(physical);
   if (metadata.isDirectory()) {
     const authorityPath = path.join(physical, "feature_spec.md");
@@ -165,7 +189,9 @@ async function inspectSliceDirectory(directory, findings, { required }) {
 }
 
 export async function findNonCanonicalExecutionPaths(specPath, { allowAbsent = false, allowPlanned = false } = {}) {
-  const { specRoot, executionRoot } = await resolveExecutionWorkspace(specPath);
+  return findNonCanonicalPathsForWorkspace(await resolveExecutionWorkspace(specPath),{allowAbsent,allowPlanned});
+}
+async function findNonCanonicalPathsForWorkspace({specRoot,executionRoot},{allowAbsent=false,allowPlanned=false}={}) {
   const findings = [];
   // Lifecycle owns only feature_spec.md/shared. Other SPEC-root siblings are user-owned and preserved.
   if (specRoot !== null) {
@@ -201,7 +227,7 @@ export async function findNonCanonicalExecutionPaths(specPath, { allowAbsent = f
     // replacement. Exact plan/task mapping is therefore a content/state rule,
     // not a raw layout rule.
     const planText = await fs.readFile(plan, "utf8").catch(() => "");
-    const pendingReplan = /^- Revision mode: (?:pristine-replacement|append-only-extension)$/gmu.test(planText);
+    const pendingReplan = /^- Revision mode: (?:pristine-replacement|append-only-extension|same-delivery-revision)$/gmu.test(planText);
     if (!pendingReplan) {
       const allNames = new Set([...planNames, ...taskNames]);
       for (const name of allNames) {
@@ -347,6 +373,10 @@ async function lifecycleStatusForExecution(workspace) {
 
 export async function computeRequirementsAuthority(specPath) {
   const workspace = await resolveExecutionWorkspace(specPath);
+  return requirementsAuthorityForWorkspace(workspace);
+}
+
+async function requirementsAuthorityForWorkspace(workspace) {
   const payload = workspace.kind === "standalone"
     ? await fs.readFile(workspace.authorityPath)
     : stableEncode(await lifecycleProjection(workspace));
@@ -561,7 +591,7 @@ function parsePlan(text, label, expectedSlice = null, references = {}) {
     if (declared !== expectedSlice.slice("slice-".length)) throw new ExecutionContractError(`${label} declares slice ${declared}, expected ${expectedSlice}`);
   }
   const revisionMode = field(body, "Revision mode", { required: false });
-  if (revisionMode !== null && !new Set(["pristine-replacement", "append-only-extension"]).has(revisionMode)) {
+  if (revisionMode !== null && !new Set(["pristine-replacement", "append-only-extension", "same-delivery-revision"]).has(revisionMode)) {
     throw new ExecutionContractError(`${label} has invalid Revision mode`);
   }
   const replanReason = field(body, "Replan reason", { required: false });
@@ -1034,10 +1064,13 @@ function parseChecks(section, prefix, context = {}) {
   }
   let previous = null;
   for (const record of records) {
-    const changedCycle = prefix === "findings-check" && previous !== null && record.findingsCycle !== previous.findingsCycle;
+    const revisedImplementation = prefix === "implementation-check" && previous !== null
+      && context.evidenceOrigins?.has(previous.id) && !context.evidenceOrigins.has(record.id)
+      && field(previous.body, 'Operation attempt ID') !== field(record.body, 'Operation attempt ID');
+    const changedCycle = revisedImplementation || (prefix === "findings-check" && previous !== null && record.findingsCycle !== previous.findingsCycle);
     if (previous === null || changedCycle) {
       if (record.round !== 1) throw new ExecutionContractError(`${record.id} must start its automatic check cycle at round 1/3`);
-      if (changedCycle) {
+      if (changedCycle && !revisedImplementation) {
         const priorCycle = Number(previous.findingsCycle.slice("attempt-".length));
         const currentCycle = Number(record.findingsCycle.slice("attempt-".length));
         if (currentCycle <= priorCycle) throw new ExecutionContractError(`${record.id} Findings cycle must move forward`);
@@ -1140,12 +1173,9 @@ function finalState(section) {
   return { result: "SUPERSEDED", supersededBy: superseded[1], planRevision: Number(superseded[2]) };
 }
 
-function parseAttempts(section) {
+function parseAttempts(section, reopenedPasses = new Set()) {
   const attempts = operationRecords(section, "attempt", { statusValues: new Set(["PASS", "NEEDS_FIX", "BLOCKED"]) });
-  const firstPassIndex = attempts.findIndex((attempt) => attempt.status === "PASS");
-  if (firstPassIndex >= 0 && firstPassIndex !== attempts.length - 1) {
-    throw new ExecutionContractError(`${attempts[firstPassIndex].id} PASS is terminal; no later formal attempt is permitted`);
-  }
+  for (const attempt of attempts.slice(0,-1)) if (attempt.status === "PASS" && !reopenedPasses.has(attempt.id)) throw new ExecutionContractError(`${attempt.id} PASS is terminal without a sealed reopening`);
   if (attempts.length > 0 && field(attempts[0].body, "Type") !== "initial") throw new ExecutionContractError("attempt-01 must be initial");
   for (const attempt of attempts.slice(1)) if (field(attempt.body, "Type") !== "revalidation") throw new ExecutionContractError(`${attempt.id} must be revalidation`);
   for (const attempt of attempts) {
@@ -1323,6 +1353,14 @@ function parseTask(text, label, expectedSlice, references = {}) {
   requireCanonicalSections(taskSections, TASK_SECTIONS, label);
   if (!taskSections.has("References")) throw new ExecutionContractError(`${label} is missing References`);
   const state = authorityFields(taskSections.get("References"), label);
+  const continuityFields = [...taskSections.get('Continuity').matchAll(/^- ([^:\n]+): ([^\n]+)$/gmu)];
+  if (continuityFields.length !== 4 || continuityFields.map(m=>m[0]).join('\n') !== taskSections.get('Continuity')
+    || continuityFields.map(m=>m[1]).join('|') !== 'Current validation|Historical PASS|History source|Current action'
+    || !['unvalidated','current','historical','revalidation-required','uncertain'].includes(continuityFields[0][2])
+    || !/^(?:none|attempt-[0-9]{2,})$/u.test(continuityFields[1][2])
+    || continuityFields[2][2] !== `../continuity.json#${field(taskSections.get('References'),'Delivery ID')}`) {
+    throw new ExecutionContractError(`${label} has noncanonical Continuity`);
+  }
   if (references.requirementsSource !== undefined) referenceValue(taskSections.get("References"), "Requirements source", references.requirementsSource, label);
   referenceValue(taskSections.get("References"), "Plan", `../plans/${expectedSlice}.md`, label);
   referenceValue(taskSections.get("References"), "Global tasks", "../tasks.md", label);
@@ -1335,6 +1373,7 @@ function parseTask(text, label, expectedSlice, references = {}) {
   const implementationChecks = parseChecks(taskSections.get("Implementation Test Evidence"), "implementation-check", {
     artifact: label,
     section: "Implementation Test Evidence",
+    evidenceOrigins: references.evidenceOrigins,
     declaredFindingIds,
   });
   const findingsChecks = parseChecks(taskSections.get("Findings Test Evidence"), "findings-check", {
@@ -1342,10 +1381,12 @@ function parseTask(text, label, expectedSlice, references = {}) {
     section: "Findings Test Evidence",
     declaredFindingIds,
   });
-  const attempts = parseAttempts(taskSections.get("Validation Attempts"));
+  const attempts = parseAttempts(taskSections.get("Validation Attempts"),references.reopenedPasses);
   for (const record of [...implementationChecks, ...findingsChecks, ...attempts]) {
+    const historical = references.evidenceOrigins?.get(record.id);
     if (field(record.body, 'Delivery ID') !== field(taskSections.get('References'), 'Delivery ID')
-      || field(record.body, 'Preparation revision') !== String(state.revision)
+      || field(record.body, 'Preparation revision') !== String(historical?.revision ?? references.currentPreparationRevision ?? state.revision)
+      || (historical && field(record.body,'Normative sha256') !== historical.normativeSha256)
       || !/^sha256:[a-f0-9]{64}$/u.test(field(record.body, 'Normative sha256'))
       || !/^[a-f0-9-]{36}$/u.test(field(record.body, 'Operation attempt ID'))
       || !/^[a-f0-9-]{36}$/u.test(field(record.body, 'Origin activation ID'))) throw new ExecutionContractError('evidence does not belong to delivery/preparation/attempt');
@@ -1377,7 +1418,7 @@ function parseTask(text, label, expectedSlice, references = {}) {
   const workStarted = checklistRows.some((row) => row.done) || implementationChecks.length !== 0
     || findingsChecks.length !== 0 || attempts.length !== 0 || corrections.length !== 0
     || delegationBlocker !== null || normalizeText(taskSections.get("Diff Summary")) !== "- pending";
-  if (attempts.length !== 0 && !checklistComplete) throw new ExecutionContractError(`${label} has Validation Attempts before the mandatory checklist is complete`);
+  if (attempts.some(a=>!references.evidenceOrigins?.has(a.id)) && !checklistComplete) throw new ExecutionContractError(`${label} has Validation Attempts before the mandatory checklist is complete`);
   const pristine = [...PRISTINE].every(([name, sentinel]) => taskSections.get(name) === sentinel)
     && !/^- \[x\]/gmu.test(taskSections.get("Checklist") ?? "");
   const activeBlockers = [...findings, ...divergences].filter((record) => record.severity === "blocking" && record.state === "active");
@@ -1414,7 +1455,7 @@ function parseTask(text, label, expectedSlice, references = {}) {
       requireNonPlaceholder(bullet[1], `${label} Diff Summary`);
     }
   }
-  if (attempts.at(-1)?.status === "PASS" && (final.result !== "PASS" || !base.present)) throw new ExecutionContractError(`${label} latest PASS attempt was not published atomically`);
+  if (attempts.at(-1)?.status === "PASS" && (final.result !== "PASS" || !base.present) && !references.reopenedPasses?.has(attempts.at(-1).id)) throw new ExecutionContractError(`${label} latest PASS attempt was not published atomically`);
   if (final.result === "SUPERSEDED" && base.present) throw new ExecutionContractError(`${label} SUPERSEDED must not retain an Effective Validation Base`);
   if (final.result === "PASS" && changedClaims.some((claim) => !base.paths.includes(claim))) {
     throw new ExecutionContractError(`${label} has a changed/corrected path with no validation owner`);
@@ -2070,14 +2111,22 @@ async function executionArtifacts(workspace, { validateImplementationPaths = fal
   const tasksIndexText = await fs.readFile(tasksIndexPath, "utf8");
   const rows = parseGlobalRows(tasksIndexText);
   const tasks = new Map();
+  const continuity = workspace.logicalWorkspace && globalPlan.status === 'draft' && !await lstatOrNull(path.join(workspace.executionRoot,'continuity.json'))
+    ? {format:'stnl-delivery-continuity-v1',deliveries:(await preparationAuthorityAt(workspace.executionRoot)).deliveries.map(d=>({...d,baseline:null,history:[],reopen:null}))}
+    : await readDeliveryContinuity(workspace);
   const pairMismatches = [];
   for (const row of rows) {
     const taskDirectory = path.join(workspace.executionRoot, "tasks");
     const taskPath = path.join(taskDirectory, `${row.slice}.md`);
     await requireRealFile(taskPath, `${row.slice} detailed task`);
-    const task = parseTask(await fs.readFile(taskPath, "utf8"), taskPath, row.slice, {
+    const delivery = continuity.deliveries.find(d=>d.slice===row.slice);
+    const history = await readDeliveryHistory(workspace,delivery,await fs.readFile(taskPath,'utf8'));
+    const task = parseTask(history.text, taskPath, row.slice, {
       requirementsSource: requirementsReference(workspace, taskDirectory), privateAutomaticCheck,
+      evidenceOrigins:history.evidenceOrigins,reopenedPasses:history.reopenedPasses,currentPreparationRevision:globalPlan.revision,
     });
+    task.continuity=delivery;task.history=history.history;task.deliveryId=delivery.deliveryId;
+    if (delivery.history.length) task.pristine=false;
     const plan = plans.get(row.slice);
     if (plan !== undefined && (task.fingerprint !== plan.fingerprint || task.revision !== plan.revision)) pairMismatches.push(row.slice);
     if (row.done && row.result === "PASS") {
@@ -2126,6 +2175,8 @@ async function executionArtifacts(workspace, { validateImplementationPaths = fal
     if (globalPlan.revisionMode === 'pristine-replacement') {
       if (globalPlan.revision < 2 || [...tasks.values()].some(task => !task.pristine || task.revision !== globalPlan.revision)
         || globalPlan.supersessionMappings.length !== 0) throw new ExecutionContractError('pristine joint replacement has invalid revision or retained execution history');
+    } else if (globalPlan.revisionMode === 'same-delivery-revision') {
+      if (globalPlan.revision < 2 || globalPlan.supersessionMappings.length) throw new ExecutionContractError('invalid same-delivery revision');
     } else {
       const historical = rows.filter(row => tasks.get(row.slice).revision < globalPlan.revision);
       const appended = rows.filter(row => tasks.get(row.slice).revision === globalPlan.revision);
@@ -2212,7 +2263,7 @@ async function executionArtifacts(workspace, { validateImplementationPaths = fal
       }
     }
   }
-  return { globalPlan, plans, tasks, rows, sliceOrder, pendingReplan, supersededUnowned };
+  return { globalPlan, plans, tasks, rows, sliceOrder, pendingReplan, supersededUnowned, continuity };
 }
 
 export async function inspectExecutionState(specPath) {
@@ -2223,6 +2274,499 @@ export async function preparationAuthorityAt(root) {
   return projectPreparationAuthority(await readPreparationArtifacts(root));
 }
 
+const continuationHash = bytes => `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+function continuationKeys(value, expected, label) {
+  if (!value || Array.isArray(value) || Object.keys(value).sort().join('\0') !== [...expected].sort().join('\0')) throw new ExecutionContractError(`${label} has unknown or missing fields`);
+}
+function continuationPath(base, relative) {
+  if (typeof relative !== 'string' || path.posix.isAbsolute(relative) || relative.includes('\\') || path.posix.normalize(relative) !== relative) throw new ExecutionContractError('noncanonical continuity reference');
+  return path.resolve(base, relative);
+}
+const relativeContinuation = (base, file) => path.relative(base, file).split(path.sep).join('/');
+
+export async function readDeliveryContinuity(workspace, authority = null) {
+  const logical = logicalWorkspaceFor(workspace);
+  const file = path.join(workspace.executionRoot, 'continuity.json');
+  const index = parseStrictJson((await readOwnedFile(file)).bytes.toString('utf8'));
+  continuationKeys(index, ['format', 'deliveries'], 'continuity');
+  if (index.format !== 'stnl-delivery-continuity-v1' || !Array.isArray(index.deliveries)) throw new ExecutionContractError('incompatible continuity');
+  const preparation = authority ?? await preparationAuthorityAt(workspace.executionRoot);
+  if (JSON.stringify(index.deliveries.map(({slice, deliveryId}) => ({slice, deliveryId}))) !== JSON.stringify(preparation.deliveries)) throw new ExecutionContractError('continuity delivery order/identities differ');
+  for (const delivery of index.deliveries) {
+    continuationKeys(delivery, ['slice', 'deliveryId', 'baseline', 'history', 'reopen'], 'delivery continuity');
+    if (!Array.isArray(delivery.history)) throw new ExecutionContractError('continuity history is not a list');
+    if (delivery.baseline !== null) {
+      continuationKeys(delivery.baseline, ['allocationRef', 'manifestRef'], 'baseline');
+      await readContinuityReference(logical, delivery.baseline.allocationRef, delivery.baseline.manifestRef);
+    }
+    if (delivery.reopen !== null) {
+      continuationKeys(delivery.reopen, ['previousPass', 'reason', 'affectedPaths', 'sourceActivationId'], 'reopen');
+      if (!/^attempt-[0-9]{2,}$/u.test(delivery.reopen.previousPass) || typeof delivery.reopen.reason !== 'string' || !delivery.reopen.reason.trim()
+        || !/^[a-f0-9-]{36}$/u.test(delivery.reopen.sourceActivationId) || !Array.isArray(delivery.reopen.affectedPaths)
+        || JSON.stringify(delivery.reopen.affectedPaths) !== JSON.stringify([...new Set(delivery.reopen.affectedPaths)].sort())) throw new ExecutionContractError('invalid reopening');
+      for (const p of delivery.reopen.affectedPaths) continuationPath(await trustedProjectRoot(workspace), p);
+    }
+    for (const record of delivery.history) {
+      continuationKeys(record, ['preparationRevision', 'requirementsAuthority', 'normativeSha256', 'allocationRef', 'taskRef', 'snapshotRef'], 'history');
+      continuationKeys(record.taskRef, ['path', 'sha256', 'logicalTaskPath'], 'historical task reference');
+      if (record.taskRef.logicalTaskPath !== `tasks/${delivery.slice}.md`) throw new ExecutionContractError('historical task anchor differs');
+      await readContinuityReference(logical, record.allocationRef, record.taskRef, true);
+      const bytes = await readContinuityReference(logical, record.allocationRef, record.snapshotRef);
+      const snapshot = parseStrictJson(bytes.toString('utf8')); validateApprovedPreparation(snapshot);
+      if (['preparationRevision', 'requirementsAuthority', 'normativeSha256'].some(k => record[k] !== snapshot[k])
+        || !snapshot.deliveries.some(d => d.slice === delivery.slice && d.deliveryId === delivery.deliveryId)) throw new ExecutionContractError('history preparation/identity differs');
+    }
+  }
+  return index;
+}
+
+async function readContinuityReference(workspace, allocationRef, fileRef, task = false) {
+  continuationKeys(allocationRef, ['path', 'allocationId', 'sha256'], 'allocation reference');
+  if (!task) continuationKeys(fileRef, ['path', 'sha256'], 'file reference');
+  const marker = continuationPath(workspace.executionRoot, allocationRef.path);
+  const allocation = await readRetainedAllocation(marker, workspace.executionRoot, allocationRef);
+  const file = continuationPath(workspace.executionRoot, fileRef.path);
+  if (!allocation.retention.retainedPaths.some(entry => entry.path === file && entry.sha256 === fileRef.sha256)) throw new ExecutionContractError('reference is not retained by the selected allocation');
+  const bytes = (await readOwnedFile(file)).bytes;
+  if (continuationHash(bytes) !== fileRef.sha256) throw new ExecutionContractError('continuity reference bytes differ');
+  return bytes;
+}
+
+export async function readDeliveryHistory(workspace, delivery, currentText) {
+  const logical=logicalWorkspaceFor(workspace);
+  const evidenceOrigins=new Map();const reopenedPasses=new Set();const cumulative=new Map();
+  const archived=[];
+  for (const h of delivery.history) archived.push({text:(await readContinuityReference(logical,h.allocationRef,h.taskRef,true)).toString('utf8'),history:h});
+  let text=currentText;
+  const append=['Implementation Test Evidence','Findings Test Evidence','Validation Attempts'];
+  const declarations=['Validation Findings','Divergences'];
+  for (const source of [...archived,{text:currentText,history:null}]) {
+    const parsed=parsePreparationArtifact(source.text,`tasks/${delivery.slice}.md`);
+    const priorPass=field(parsed.sections.Continuity,'Historical PASS');
+    if (source.history && priorPass!=='none') reopenedPasses.add(priorPass);
+    for (const heading of [...append,...declarations]) {
+      const records=parsed.sections[heading]==='- none' ? [] : parsed.sections[heading].split(/(?=^### )/mu).filter(r=>r.trim());
+      const selected=cumulative.get(heading) ?? new Map();
+      for (const record of records) {
+        const id=/^### ([a-z-]+-[0-9]{2,})\n/u.exec(record)?.[1];
+        if (!id) throw new ExecutionContractError('historical record is malformed');
+        if (selected.has(id)) {
+          if (append.includes(heading)) throw new ExecutionContractError('current/archived evidence duplicates a sealed identifier');
+          const immutable=r=>r.split('\n').filter(line=>!/^-(?: State|Resolution|Superseded by|Resolution slice|Resolution revision):/u.test(line)).join('\n').trim();
+          if (immutable(selected.get(id))!==immutable(record)) throw new ExecutionContractError('historical finding origin/description rewritten');
+        }
+        selected.set(id,record.trim());
+        if (source.history && append.includes(heading)) evidenceOrigins.set(id,{revision:Number(parsed.fields['Plan revision']),normativeSha256:source.history.normativeSha256});
+      }
+      cumulative.set(heading,selected);
+    }
+  }
+  if (delivery.reopen) reopenedPasses.add(delivery.reopen.previousPass);
+  for (const [heading,records] of cumulative) text=replaceContinuationSection(text,heading,[...records.values()].join('\n\n') || '- none');
+  for (const pass of reopenedPasses) {
+    const record=cumulative.get('Validation Attempts')?.get(pass);
+    if (!record?.includes('- Status: PASS\n') || !evidenceOrigins.has(pass)) throw new ExecutionContractError('reopening lacks retained historical PASS');
+  }
+  return {text,evidenceOrigins,reopenedPasses,history:archived};
+}
+
+async function knownContinuationControls(workspace, continuity, owner = null, extra = []) {
+  const logical = logicalWorkspaceFor(workspace);
+  const roots = [logical.executionRoot]; const files = [logical.authorityPath];
+  const lock = await executionLockIdentity(logical);
+  if (await lstatOrNull(lock.lockPath)) {
+    let lease; try {lease = parseStrictJson((await readOwnedFile(lock.lockPath)).bytes.toString('utf8'));} catch {throw new ExecutionContractError('lock already exists with unrecognized ownership; preserve foreign lock');}
+    if (lease.format !== 'stnl-execution-lock-v1' || lease.executionRoot !== logical.executionRoot) throw new ExecutionContractError('foreign common lock during capture');
+    files.push(lock.lockPath);
+  }
+  if (logical.kind === 'lifecycle') {
+    await lifecycleProjection(logical);
+    const shared = path.join(logical.specRoot, 'shared');
+    if (await lstatOrNull(shared)) for (const name of await fs.readdir(shared)) if (!isIgnoredMetadata(name)) files.push(path.join(shared, name));
+  }
+  const selected = new Set(extra);
+  for (const d of continuity?.deliveries ?? []) {
+    if (d.baseline) selected.add(continuationPath(logical.executionRoot, d.baseline.allocationRef.path));
+    for (const h of d.history) selected.add(continuationPath(logical.executionRoot, h.allocationRef.path));
+  }
+  if (owner?.workCapture) selected.add(`${owner.workCapture.path}.owner.json`);
+  const fingerprints = [];const allocations=[];
+  // Only exact references registered by a producer are followed. Unknown markers
+  // encountered inside an approved product area remain product files.
+  for (const marker of selected) {
+    const captured = await readOwnedFile(marker); const record = parseStrictJson(captured.bytes.toString('utf8'));
+    if (record.executionRoot !== logical.executionRoot || !record.allocationId || !record.retentionRoot) throw new ExecutionContractError('unbound operational allocation');
+    await classifyOwnedAllocation({workspace:logical,marker});
+    const controls = [record.retentionRoot, record.candidate, record.stage, record.backup].filter(Boolean);
+    for (const control of controls) {
+      await assertNoSymlinkComponents(control, 'operational allocation');
+      if (!path.isAbsolute(control) || pathIsWithin(control, logical.executionRoot) || pathIsWithin(logical.executionRoot, control)) throw new ExecutionContractError('operational allocation overlaps authority');
+      roots.push(control);
+    }
+    files.push(marker);
+    for (const file of record.controlFiles ?? []) {
+      const controlled=parseStrictJson((await readOwnedFile(file)).bytes.toString('utf8'));
+      if (!record.owner || ['operationAttemptId','ownershipToken','originActivationId'].some(k=>controlled.owner?.[k]!==record.owner[k])) throw new ExecutionContractError('unbound operational control file');
+      files.push(file);
+    }
+    allocations.push({marker,record});
+    if (record.owner?.workCapture && marker !== `${record.owner.workCapture.path}.owner.json`) selected.add(`${record.owner.workCapture.path}.owner.json`);
+    fingerprints.push([marker, captured.identity, continuationHash(captured.bytes)]);
+    for (const linked of record.knownAllocations ?? []) {
+      if (typeof linked !== 'string' || !path.isAbsolute(linked)) throw new ExecutionContractError('invalid producer allocation reference');
+      selected.add(linked);
+    }
+  }
+  return { roots, files, fingerprints, allocations };
+}
+
+export async function captureContinuationWorkState({ workspace, authority, delivery, allocation, marker,
+  owner = null, continuity = null, knownAllocations = [], sourceActivationId = null, label = 'work', observeOnly = false }) {
+  const logical = logicalWorkspaceFor(workspace); const workspaceRoot = await trustedProjectRoot(workspace);
+  const artifact = path.join(workspace.executionRoot, 'tasks', `${delivery.slice}.md`);
+  const normative = authority.normativeProjection.deliveries.find(d => d.slice === delivery.slice);
+  if (!normative || normative.deliveryId !== delivery.deliveryId) throw new ExecutionContractError('capture delivery differs');
+  const controls = await knownContinuationControls(workspace, continuity, owner, [...knownAllocations, marker].filter(Boolean));
+  const control = file => controls.files.includes(file) || controls.roots.some(root => pathIsWithin(file, root));
+  const claims = [];
+  for (const carrier of ['Authorized Areas', 'Existing Inputs', 'Expected Files']) {
+    const body = normative.task[carrier] ?? (carrier === 'Expected Files' ? '- none' : null);
+    if (body === null) throw new ExecutionContractError('capture inputs unavailable');
+    for (const raw of preparationPathClaims(body, carrier)) {
+      const target = (await resolveImplementationPathClaim(workspace, {artifact, field:carrier, raw})).resolved;
+      if (control(target)) throw new ExecutionContractError(`product/input conflicts with control role: ${target}`);
+      claims.push(target);
+    }
+  }
+  // Expected files are operational forecasts: take their current authoritative
+  // carrier, not the normative projection which intentionally omits it.
+  const texts = await readPreparationArtifacts(workspace.executionRoot);
+  const task = parsePreparationArtifact(texts.get(`tasks/${delivery.slice}.md`), `tasks/${delivery.slice}.md`);
+  for (const raw of preparationPathClaims(task.sections['Expected Files'], 'Expected Files')) {
+    const target = (await resolveImplementationPathClaim(workspace, {artifact, field:'Expected Files', raw})).resolved;
+    if (control(target)) throw new ExecutionContractError(`expected product conflicts with control: ${target}`);
+    claims.push(target);
+  }
+  let prior=null;
+  if (owner?.workCapture && owner.slice===delivery.slice) prior=await readContinuationWorkCapture(workspace,owner.workCapture,delivery,owner);
+  else {
+    const baseline=continuity?.deliveries.find(d=>d.slice===delivery.slice)?.baseline;
+    if (baseline) prior=await readContinuationWorkCapture(workspace,{path:continuationPath(logical.executionRoot,baseline.manifestRef.path),sha256:baseline.manifestRef.sha256},delivery);
+  }
+  const priorFiles=(prior?.entries ?? []).filter(e=>['file','absent'].includes(e.kind)).map(e=>continuationPath(workspaceRoot,e.path))
+    .filter(file=>claims.some(claim=>pathIsWithin(file,claim)) && !control(file));
+  async function inventory(store) {
+    const entries = new Map(); let total = 0;
+    async function walk(file) {
+      if (control(file) || entries.has(file)) return;
+      await rejectSymlinkComponents(file, workspaceRoot);
+      if (entries.size >= 10000) throw new ExecutionContractError('work capture exceeds bounded file inventory');
+      const metadata = await lstatOrNull(file);
+      const relative = relativeContinuation(workspaceRoot, file);
+      if (!metadata) { entries.set(file, {path:relative, kind:'absent', sha256:null, storedPath:null}); return; }
+      if (metadata.isDirectory()) {
+        entries.set(file, {path:relative, kind:'directory', sha256:null, storedPath:null});
+        for (const name of (await fs.readdir(file)).sort()) await walk(path.join(file, name));
+      } else {
+        const bytes = (await readOwnedFile(file)).bytes;
+        total += bytes.length;
+        if (total > 128 * 1024 * 1024) throw new ExecutionContractError('work capture exceeds bounded byte inventory');
+        const hash = continuationHash(bytes);
+        const storedPath = observeOnly ? null : path.join(allocation.retentionRoot, `${label}-bytes-${createHash('sha256').update(relative).digest('hex')}`);
+        if (store) await fs.writeFile(storedPath, bytes, {flag:'wx', mode:0o600});
+        entries.set(file, {path:relative, kind:'file', sha256:hash, storedPath});
+      }
+    }
+    for (const file of claims) await walk(file);
+    for (const file of priorFiles) await walk(file);
+    return [...entries.values()].sort((a,b) => a.path.localeCompare(b.path,'en'));
+  }
+  const beforeAuthority = await computeRequirementsAuthority(logical.authorityPath);
+  const beforeTree = await captureExecutionTree(logical.executionRoot);
+  const entries = await inventory(!observeOnly); const after = await inventory(false);
+  if (JSON.stringify(entries) !== JSON.stringify(after) || beforeAuthority !== await computeRequirementsAuthority(logical.authorityPath)
+    || JSON.stringify(beforeTree) !== JSON.stringify(await captureExecutionTree(logical.executionRoot))) throw new ExecutionContractError('work/authority changed during capture; retained bytes require diagnosis');
+  for (const [file, identity, hash] of controls.fingerprints) {
+    const current = await readOwnedFile(file);
+    if (JSON.stringify(identity) !== JSON.stringify(current.identity) || hash !== continuationHash(current.bytes)) throw new ExecutionContractError('control identity/role changed during capture');
+  }
+  const manifest = {format:'stnl-work-continuation-v1', logicalExecutionRoot:logical.executionRoot,
+    logicalWorkspaceRoot:workspaceRoot, slice:delivery.slice, deliveryId:delivery.deliveryId,
+    operationAttemptId:owner?.operationAttemptId ?? null, sourceActivationId,
+    preparationRevision:authority.preparationRevision, requirementsAuthority:authority.requirementsAuthority,
+    normativeSha256:authority.normativeSha256, entries};
+  if (observeOnly) return {manifest};
+  const file = path.join(allocation.retentionRoot, `${label}-manifest.json`);
+  const bytes = Buffer.from(JSON.stringify(manifest,null,2)+'\n'); await fs.writeFile(file,bytes,{flag:'wx',mode:0o600});
+  return {path:file, sha256:continuationHash(bytes), manifest};
+}
+
+export async function readContinuationWorkCapture(workspace, reference, delivery, owner = null) {
+  continuationKeys(reference, ['path','sha256'], 'work capture');
+  const bytes = (await readOwnedFile(reference.path)).bytes;
+  if (continuationHash(bytes) !== reference.sha256) throw new ExecutionContractError('work capture hash differs');
+  const manifest = parseStrictJson(bytes.toString('utf8'));
+  continuationKeys(manifest,['format','logicalExecutionRoot','logicalWorkspaceRoot','slice','deliveryId','operationAttemptId','sourceActivationId','preparationRevision','requirementsAuthority','normativeSha256','entries'],'work manifest');
+  const logical = logicalWorkspaceFor(workspace);
+  if (manifest.format !== 'stnl-work-continuation-v1' || manifest.logicalExecutionRoot !== logical.executionRoot
+    || manifest.logicalWorkspaceRoot !== await trustedProjectRoot(workspace) || manifest.slice !== delivery.slice || manifest.deliveryId !== delivery.deliveryId
+    || manifest.operationAttemptId !== (owner?.operationAttemptId ?? null) || !Array.isArray(manifest.entries)) throw new ExecutionContractError('work capture envelope differs');
+  let previous = '';
+  for (const entry of manifest.entries) {
+    continuationKeys(entry,['path','kind','sha256','storedPath'],'work entry');
+    continuationPath(manifest.logicalWorkspaceRoot, entry.path);
+    if (entry.path.localeCompare(previous,'en') <= 0 || !['file','directory','absent'].includes(entry.kind)) throw new ExecutionContractError('work entry order/kind differs');
+    if (entry.kind === 'file') {
+      if (!path.isAbsolute(entry.storedPath) || !pathIsWithin(entry.storedPath,path.dirname(reference.path))
+        || continuationHash((await readOwnedFile(entry.storedPath)).bytes) !== entry.sha256) throw new ExecutionContractError('retained work bytes differ');
+    } else if (entry.sha256 !== null || entry.storedPath !== null) throw new ExecutionContractError('nonfile work entry carries bytes');
+    previous = entry.path;
+  }
+  return manifest;
+}
+
+const continuitySummary = (delivery, validity, action) => `- Current validation: ${validity}\n- Historical PASS: ${delivery.reopen?.previousPass ?? 'none'}\n- History source: ../continuity.json#${delivery.deliveryId}\n- Current action: ${action}`;
+function replaceContinuationSection(text, heading, body) {
+  return text.replace(new RegExp(`(^## ${heading}\\n\\n)[\\s\\S]*?(?=^## |$(?![\\s\\S]))`,'mu'),`$1${body}\n\n`);
+}
+export async function prepareDeliveryRetention({ specPath, stage, marker, allocation, retentionRoot, revise = false }) {
+  const workspace = await resolveExecutionWorkspace(specPath);
+  const authority = await preparationAuthorityAt(stage);
+  const old = await lstatOrNull(path.join(workspace.executionRoot,'continuity.json'))
+    ? await readDeliveryContinuity(workspace) : {format:'stnl-delivery-continuity-v1',deliveries:[]};
+  const index = {format:'stnl-delivery-continuity-v1',deliveries:authority.deliveries.map(d => {
+    const prior = old.deliveries.find(p => p.slice === d.slice && p.deliveryId === d.deliveryId);
+    return prior ? structuredClone(prior) : {...d,baseline:null,history:[],reopen:null};
+  })};
+  allocation.retention = {allocationId:allocation.allocationId, executionRoot:workspace.executionRoot,
+    producer:'preparation-publication',owner:null,retainedPaths:[]};
+  await persistAllocation(marker,allocation);
+  for (const d of old.deliveries) if (d.baseline) {
+    const linkedMarker=continuationPath(workspace.executionRoot,d.baseline.allocationRef.path);
+    const producer=parseStrictJson((await readOwnedFile(linkedMarker)).bytes.toString('utf8'));
+    if (!(producer.knownAllocations ?? []).includes(marker)) await persistAllocation(linkedMarker,{...producer,knownAllocations:[...(producer.knownAllocations ?? []),marker]});
+  }
+  const references = [];
+  async function retain(name, bytes) {
+    const file = path.join(retentionRoot,name); await fs.writeFile(file,bytes,{flag:'wx',mode:0o600});
+    return {path:relativeContinuation(workspace.executionRoot,file),sha256:continuationHash(bytes)};
+  }
+  for (const delivery of index.deliveries) {
+    const taskPath = `tasks/${delivery.slice}.md`;
+    const task = parsePreparationArtifact(await fs.readFile(path.join(stage,taskPath),'utf8'),taskPath);
+    const previousFile = path.join(workspace.executionRoot,taskPath);
+    if (revise && await lstatOrNull(previousFile)) {
+      const previousBytes = (await readOwnedFile(previousFile)).bytes;
+      const previous = parsePreparationArtifact(previousBytes.toString('utf8'),taskPath);
+      if (previous.fields['Delivery ID'] !== delivery.deliveryId) throw new ExecutionContractError('revision changes logical delivery identity');
+      const previousSnapshot=await lstatOrNull(path.join(workspace.executionRoot,'approved-preparation.json'))
+        ? parseStrictJson((await readOwnedFile(path.join(workspace.executionRoot,'approved-preparation.json'))).bytes.toString('utf8')) : null;
+      const affected=previous.fields['Plan revision'] !== task.fields['Plan revision'];
+      const hasRecords=['Implementation Test Evidence','Findings Test Evidence','Validation Attempts'].some(h=>previous.sections[h]!=='- none');
+      if (affected || (hasRecords && previousSnapshot?.normativeSha256!==authority.normativeSha256)) {
+        const snapshotBytes = (await readOwnedFile(path.join(workspace.executionRoot,'approved-preparation.json'))).bytes;
+        const snapshot = parseStrictJson(snapshotBytes.toString('utf8')); validateApprovedPreparation(snapshot);
+        const taskRef = {...await retain(`${delivery.slice}-task.md`,previousBytes),logicalTaskPath:taskPath};
+        const snapshotRef = await retain(`${delivery.slice}-snapshot.json`,snapshotBytes);
+        references.push({delivery,record:{preparationRevision:snapshot.preparationRevision,requirementsAuthority:snapshot.requirementsAuthority,
+          normativeSha256:snapshot.normativeSha256,allocationRef:null,taskRef,snapshotRef}});
+        // Open blockers remain visible. Compaction is allowed only at a closed boundary.
+        const priorDelivery=old.deliveries.find(d=>d.slice===delivery.slice);
+        const logicalHistory=await readDeliveryHistory(workspace,priorDelivery,previousBytes.toString('utf8'));
+        const parsed = parseTask(logicalHistory.text,previousFile,delivery.slice,{...logicalHistory,currentPreparationRevision:snapshot.preparationRevision});
+        if (affected && (parsed.activeBlockers.length || parsed.delegationBlocker?.state === 'active')) throw new ExecutionContractError('open findings/blocker cannot be compacted');
+        let text = await fs.readFile(path.join(stage,taskPath),'utf8');
+        for (const heading of ['Implementation Test Evidence','Findings Test Evidence','Validation Attempts',...(affected ? ['Operational Changes','Effective Validation Base'] : [])]) text = replaceContinuationSection(text,heading,'- none');
+        if (affected) text = replaceContinuationSection(text,'Final Result','- pending');
+        const pass = parsed.attempts.filter(a => a.status === 'PASS').at(-1);
+        if (pass && affected) delivery.reopen = {previousPass:pass.id,reason:'Approved preparation revised the same delivery',affectedPaths:[],sourceActivationId:allocation.expectedActivationId};
+        text = replaceContinuationSection(text,'Continuity',continuitySummary({...delivery,reopen:delivery.reopen ?? (pass ? {previousPass:pass.id} : null)},pass ? affected ? 'revalidation-required' : 'current' : 'unvalidated',affected ? 'validate revised delivery' : 'retain demonstrated current PASS'));
+        await fs.writeFile(path.join(stage,taskPath),text);
+        let global = await fs.readFile(path.join(stage,'tasks.md'),'utf8');
+        if (affected) global = global.split('\n').map(row => row.includes(`| ${taskPath} |`) ? row.replace('| [x] |','| [ ] |').replace('| PASS | PASS |','| pending | pending |') : row).join('\n');
+        await fs.writeFile(path.join(stage,'tasks.md'),global);
+      }
+    }
+    if (delivery.baseline === null) {
+      const capture = await captureContinuationWorkState({workspace:{...workspace,executionRoot:stage,logicalWorkspace:workspace},authority,delivery,
+        allocation,marker,continuity:old,label:`${delivery.slice}-baseline`,sourceActivationId:allocation.expectedActivationId});
+      delivery.baseline = {allocationRef:null,manifestRef:{path:relativeContinuation(workspace.executionRoot,capture.path),sha256:capture.sha256}};
+      references.push({delivery,baseline:true});
+    }
+  }
+  allocation.retention.retainedPaths = await retainedContinuationFiles(retentionRoot);
+  await persistAllocation(marker,allocation);
+  const allocationRef = {path:relativeContinuation(workspace.executionRoot,marker),allocationId:allocation.allocationId,sha256:retentionSha256(allocation.retention)};
+  for (const r of references) {
+    if (r.baseline) r.delivery.baseline.allocationRef = allocationRef;
+    else {r.record.allocationRef=allocationRef;r.delivery.history.push(r.record);}
+  }
+  await fs.writeFile(path.join(stage,'continuity.json'),JSON.stringify(index,null,2)+'\n');
+  const snapshotFile=path.join(stage,'approved-preparation.json');
+  if (await lstatOrNull(snapshotFile)) {
+    const snapshot=parseStrictJson((await readOwnedFile(snapshotFile)).bytes.toString('utf8'));
+    const artifacts=await readPreparationArtifacts(stage);const next=projectPreparationAuthority(artifacts);
+    if (next.normativeSha256!==snapshot.normativeSha256) throw new ExecutionContractError('retention changed reviewed normative authority');
+    snapshot.reviewedArtifacts=[...artifacts].map(([path,utf8])=>({path,sha256:continuationHash(Buffer.from(utf8)),utf8}));
+    validateApprovedPreparation(snapshot);await fs.writeFile(snapshotFile,JSON.stringify(snapshot,null,2)+'\n');
+  }
+}
+
+async function retainedContinuationFiles(root) {
+  const files = [];
+  for (const name of (await fs.readdir(root)).sort()) {
+    const file = path.join(root,name); const bytes = (await readOwnedFile(file)).bytes;
+    files.push({path:file,sha256:continuationHash(bytes)});
+  }
+  return files.sort((a,b) => a.path.localeCompare(b.path,'en'));
+}
+
+export function projectOperationalContinuityTask(taskText,delivery) {
+  const parsed=parsePreparationArtifact(taskText,`tasks/${delivery.slice}.md`);
+  const pass=parsed.sections['Final Result']==='- PASS';
+  const historical=[...parsed.sections['Validation Attempts'].matchAll(/^### (attempt-[0-9]{2,})\n[\s\S]*?- Status: PASS$/gmu)].at(-1)?.[1];
+  const summary=continuitySummary({...delivery,reopen:delivery.reopen ?? (historical ? {previousPass:historical} : null)},pass?'current':delivery.reopen?'revalidation-required':'unvalidated',pass?'delivery validated':'continue admitted operation');
+  return replaceContinuationSection(taskText,'Continuity',summary);
+}
+
+export async function retainOperationalWork({specPath,stage,marker,allocation,retentionRoot,owner}) {
+  const workspace=await resolveExecutionWorkspace(specPath);
+  const authority=await preparationAuthorityAt(stage);
+  const continuity=await readDeliveryContinuity(workspace);
+  const delivery=continuity.deliveries.find(d=>d.slice===owner.slice);
+  allocation.retention={allocationId:allocation.allocationId,executionRoot:workspace.executionRoot,producer:'operational-publication',owner,retainedPaths:[]};
+  await persistAllocation(marker,allocation);
+  const captured=await captureContinuationWorkState({workspace:{...workspace,executionRoot:stage,logicalWorkspace:workspace},authority,delivery,allocation,marker,owner,continuity,
+    label:'preserved-product',sourceActivationId:owner.originActivationId});
+  allocation.retention.retainedPaths=await retainedContinuationFiles(retentionRoot);await persistAllocation(marker,allocation);
+  const taskFile=path.join(stage,`tasks/${owner.slice}.md`);
+  const taskText=await fs.readFile(taskFile,'utf8');
+  await fs.writeFile(taskFile,projectOperationalContinuityTask(taskText,delivery));
+  return async()=>{
+    const observed=await captureContinuationWorkState({workspace:{...workspace,executionRoot:stage,logicalWorkspace:workspace},authority,delivery,owner,continuity,observeOnly:true});
+    if (workChanges(captured.manifest,observed.manifest).length) throw new ExecutionContractError('product changed after retention capture; preserve candidate/code');
+  };
+}
+
+async function captureOwnerContinuationWork(workspace, owner, current) {
+  const location = await executionLockIdentity(workspace); const allocationId=randomUUID();
+  const retentionRoot=path.join(location.parent,`.stnl-execution-backup-${allocationId}`);
+  const marker=path.join(location.parent,`.stnl-execution-publication-${allocationId}.json`);
+  const allocation={format:'stnl-execution-publication-owner-v1',allocationId,executionRoot:workspace.executionRoot,retentionRoot,
+    candidate:null,stage:null,backup:null,owner,knownAllocations:[],retention:{allocationId,executionRoot:workspace.executionRoot,producer:'operation-admission',owner,retainedPaths:[]}};
+  await fs.writeFile(marker,JSON.stringify(allocation)+'\n',{flag:'wx',mode:0o600});await fs.mkdir(retentionRoot,{mode:0o700});
+  const continuity=await readDeliveryContinuity(workspace,current.authority);
+  for (const d of continuity.deliveries) if (d.baseline) {
+    const producerMarker=continuationPath(workspace.executionRoot,d.baseline.allocationRef.path);
+    const producer=parseStrictJson((await readOwnedFile(producerMarker)).bytes.toString('utf8'));
+    await persistAllocation(producerMarker,{...producer,knownAllocations:[...new Set([...(producer.knownAllocations ?? []),marker])]});
+  }
+  const inherited=current.activation.lastAttempt;
+  const delivery=current.authority.deliveries.find(d=>d.slice===owner.slice);
+  const capture=await captureContinuationWorkState({workspace,authority:current.authority,delivery,allocation,marker,owner:inherited,
+    continuity,label:'owner',sourceActivationId:owner.originActivationId});
+  // Capture belongs to the newly admitted operation, even when controls were
+  // selected through the previous owner's direct allocation references.
+  capture.manifest.operationAttemptId=owner.operationAttemptId;
+  const bytes=Buffer.from(JSON.stringify(capture.manifest,null,2)+'\n');await fs.writeFile(capture.path,bytes);
+  const reference={path:capture.path,sha256:continuationHash(bytes)};
+  allocation.owner={...owner,workCapture:reference};allocation.retention.owner=allocation.owner;
+  allocation.retention.retainedPaths=await retainedContinuationFiles(retentionRoot);
+  await persistAllocation(marker,allocation);
+  await fs.writeFile(`${capture.path}.owner.json`,JSON.stringify(allocation)+'\n',{flag:'wx',mode:0o600});
+  return reference;
+}
+
+const workImage = manifest => manifest.entries.map(({path,kind,sha256})=>({path,kind,sha256}));
+function workChanges(before,after) {
+  const a=new Map(workImage(before).map(e=>[e.path,e]));const b=new Map(workImage(after).map(e=>[e.path,e]));
+  return [...new Set([...a.keys(),...b.keys()])].filter(p=>JSON.stringify(a.get(p))!==JSON.stringify(b.get(p))).sort();
+}
+function localPreparationImage(projection,slice) {
+  const delivery=structuredClone(projection.deliveries.find(d=>d.slice===slice));
+  if (!delivery) throw new ExecutionContractError('historical delivery projection missing');
+  for (const carrier of [delivery.plan.References,delivery.task.References]) delete carrier['Plan revision'];
+  return {delivery,order:projection.order.find(d=>d.slice===slice),risks:projection.risks,
+    objective:projection.global.Objective,strategy:projection.global.Strategy,requirements:projection.global['Requirements authority']};
+}
+
+export async function deriveDeliveryValidity({workspace,authority,continuity,delivery,task,owner=null}) {
+  const latestPass=task.attempts.filter(a=>a.status==='PASS').at(-1);
+  const observed=(await captureContinuationWorkState({workspace,authority,delivery,continuity,owner,observeOnly:true})).manifest;
+  if (!delivery.baseline) throw new ExecutionContractError('baseline absent; pristine is unprovable');
+  const baselineRef={path:continuationPath(logicalWorkspaceFor(workspace).executionRoot,delivery.baseline.manifestRef.path),sha256:delivery.baseline.manifestRef.sha256};
+  const baseline=await readContinuationWorkCapture(workspace,baselineRef,delivery);
+  const controls=await knownContinuationControls(workspace,continuity,owner);
+  const registered=new Set([...task.implementationChecks,...task.findingsChecks,...task.attempts].map(r=>field(r.body,'Operation attempt ID')));
+  if (owner) registered.add(owner.operationAttemptId);
+  if (controls.allocations.some(a=>a.record.retention?.producer==='operation-admission' && a.record.owner?.slice===delivery.slice
+    && !registered.has(a.record.owner.operationAttemptId))) return {validity:'uncertain',affectedPaths:[],historicalPass:latestPass?.id ?? null,reason:'Unsettled pre-effect owner allocation requires producer diagnosis',observed};
+  if (!latestPass) return {validity:'unvalidated',affectedPaths:workChanges(baseline,observed),historicalPass:null,observed};
+  if (task.final.result!=='PASS') return {validity:'revalidation-required',affectedPaths:delivery.reopen?.affectedPaths ?? [],historicalPass:latestPass.id,observed};
+  const operationId=field(latestPass.body,'Operation attempt ID');
+  const source=controls.allocations.find(a=>a.record.retention?.owner?.operationAttemptId===operationId)?.record.retention.owner;
+  if (!source?.workCapture) return {validity:'uncertain',affectedPaths:[],historicalPass:latestPass.id,reason:'PASS origin work capture unavailable',observed};
+  const captured=await readContinuationWorkCapture(workspace,source.workCapture,delivery,source);
+  const affectedPaths=workChanges(captured,observed);
+  const originSnapshot=task.history.map(h=>h.history).find(h=>h.normativeSha256===field(latestPass.body,'Normative sha256'));
+  let projection=authority.normativeProjection;
+  if (originSnapshot) projection=validateApprovedPreparation(parseStrictJson((await readContinuityReference(logicalWorkspaceFor(workspace),originSnapshot.allocationRef,originSnapshot.snapshotRef)).toString('utf8'))).normativeProjection;
+  else if (source.normativeSha256!==authority.normativeSha256) return {validity:'uncertain',affectedPaths,historicalPass:latestPass.id,reason:'origin preparation unavailable',observed};
+  const equivalent=JSON.stringify(localPreparationImage(projection,delivery.slice))===JSON.stringify(localPreparationImage(authority.normativeProjection,delivery.slice));
+  return {validity:affectedPaths.length || !equivalent ? 'revalidation-required' : 'current',affectedPaths,historicalPass:latestPass.id,
+    reason:affectedPaths.length ? 'Product or verification inputs changed since formal PASS' : !equivalent ? 'Approved preparation affects the formal proof' : null,observed};
+}
+
+export async function inspectDeliveryContinuity(specPath,sliceValue,{revision=null,attempt=null}={}) {
+  const slice=`slice-${BigInt(sliceValue).toString().padStart(2,'0')}`;
+  const state=await inspectExecutionState(specPath);const task=state.tasks?.get(slice);
+  if (!task) throw new ExecutionContractError('delivery is absent');
+  if(revision!==null && (!Number.isSafeInteger(revision)||revision<1)) throw new ExecutionContractError('history revision must be a positive integer');
+  if(attempt!==null && !/^attempt-[0-9]{2,}$/u.test(attempt)) throw new ExecutionContractError('history attempt must be an exact attempt-NN identifier');
+  const selected=attempt===null ? null : task.attempts.find(a=>a.id===attempt && (revision===null || Number(field(a.body,'Preparation revision'))===revision));
+  if(attempt!==null && !selected) throw new ExecutionContractError('selected historical attempt/revision is absent');
+  const selectedHistory=revision===null ? task.continuity.history : task.continuity.history.filter(h=>h.preparationRevision===revision);
+  if(revision!==null && !selectedHistory.length && state.preparation.preparationRevision!==revision) throw new ExecutionContractError('selected historical revision is absent');
+  const workspace=await resolveExecutionWorkspace(specPath);
+  const allocations=(await knownContinuationControls(workspace,state.continuity,state.activation?.activeAttempt ?? state.activation?.lastAttempt)).allocations;
+  const publications=allocations.filter(a=>a.record.confirmation || a.record.cleanup).map(a=>({allocation:a.marker,confirmation:a.record.confirmation ?? null,cleanup:a.record.cleanup ?? null}));
+  const ids=records=>records.at(-1)?.id ?? null;
+  return {slice,deliveryId:task.deliveryId,preparationRevision:task.revision,state:state.state,
+    currentValidation:task.validation?.validity ?? 'unvalidated',historicalPass:task.validation?.historicalPass ?? null,
+    latestImplementationCheck:ids(task.implementationChecks),latestFindingsCheck:ids(task.findingsChecks),latestAttempt:ids(task.attempts),
+    selection:revision!==null || attempt!==null ? {revision,attempt:selected ? {id:selected.id,status:selected.status,body:selected.body}:null,history:selectedHistory}:null,
+    publications,
+    history:task.continuity.history.map(h=>({preparationRevision:h.preparationRevision,taskRef:h.taskRef,snapshotRef:h.snapshotRef})),
+    reason:task.validation?.reason ?? state.continuityDiagnostics ?? null,affectedPaths:task.validation?.affectedPaths ?? [],
+    recoveryTargets:state.recoveryTargets,owner:state.activation?.activeAttempt?.operationAttemptId ?? null};
+}
+
+export async function resumeOwnedExecutionOperation(specPath,operation,sliceValue,owner) {
+  const workspace=await resolveExecutionWorkspace(specPath);
+  return withExecutionPublicationLock(workspace,async()=>{
+    const current=await readExecutionActivation(specPath);const active=assertExecutionAttempt(current.activation,owner);
+    if (operation!==active.operation || `slice-${BigInt(sliceValue).toString().padStart(2,'0')}`!==active.slice) throw new ExecutionContractError('resume selects another operation/delivery');
+    const captured=await readContinuationWorkCapture(workspace,active.workCapture,active,active);
+    const continuity=await readDeliveryContinuity(workspace,current.authority);
+    const observed=(await captureContinuationWorkState({workspace,authority:current.authority,delivery:active,continuity,owner:active,observeOnly:true})).manifest;
+    const changed=workChanges(captured,observed);
+    let preserved=null;
+    if (changed.length) {
+      const marker=`${active.workCapture.path}.owner.json`;const allocation=await readRetainedAllocation(marker,workspace.executionRoot);
+      const label=`resume-${randomUUID()}`;
+      const capture=await captureContinuationWorkState({workspace,authority:current.authority,delivery:active,continuity,owner:active,allocation,marker,label,sourceActivationId:current.activation.activationId});
+      preserved={path:capture.path,sha256:capture.sha256};
+      const retained=await retainedContinuationFiles(allocation.retentionRoot);
+      // The owner marker itself is a control file, not retained work.
+      allocation.retention.retainedPaths=retained.filter(e=>e.path!==marker);
+      await persistAllocation(marker,allocation);
+    }
+    if (active.runner) await readOwnedFile(active.runner.receiptFile);
+    return {owner:active,expectedActivationId:current.activation.activationId,runner:active.runner,
+      nextAction:active.runner ? 'inspect-existing-runner-and-persist-its-result' : 'continue-owned-work',changedPaths:changed,preservedWork:preserved};
+  });
+}
+
 export async function readExecutionActivation(specPath, { requireCurrent = true } = {}) {
   const workspace = await resolveExecutionWorkspace(specPath);
   const requirementsAuthority = requireCurrent ? `sha256:${await computeRequirementsAuthority(specPath)}`
@@ -2230,6 +2774,12 @@ export async function readExecutionActivation(specPath, { requireCurrent = true 
   const activated = await readActivatedExecution({ executionRoot: workspace.executionRoot, requirementsAuthority,
     projectAuthority: preparationAuthorityAt, validateSnapshot: validateApprovedPreparation, parseJson: parseStrictJson });
   await validateOperationalChanges(workspace.executionRoot, activated.snapshot);
+  await readDeliveryContinuity(workspace,activated.authority);
+  for (const owner of [activated.activation.activeAttempt,activated.activation.lastAttempt].filter(Boolean)) {
+    await readContinuationWorkCapture(workspace,owner.workCapture,owner,owner);
+    const allocation=await readRetainedAllocation(`${owner.workCapture.path}.owner.json`,workspace.executionRoot);
+    if (allocation.retention.owner.operationAttemptId!==owner.operationAttemptId) throw new ExecutionContractError('work capture ownership differs');
+  }
   return activated;
 }
 
@@ -2254,9 +2804,64 @@ async function inspectExecutionStateWithContext(specPath, logicalWorkspace, opti
 export async function beginPreparedExecutionOperation(specPath, operation, sliceValue, expectedActivationId) {
   const workspace = await resolveExecutionWorkspace(specPath);
   const slice = `slice-${BigInt(sliceValue).toString(10).padStart(2, '0')}`;
+  if (operation==='VALIDATE_SLICE') {
+    const inspected=await preflightExecutionOperation(specPath,operation,sliceValue);
+    if (inspected.activation.activationId!==expectedActivationId) throw new ExecutionContractError('begin activation CAS conflict');
+    if (inspected.tasks.get(slice).final.result==='PASS') {
+      const reopened=await reopenDeliveryForValidation(specPath,slice,inspected);
+      expectedActivationId=reopened.expectedActivationId;
+    }
+  }
   return beginExecutionOperation({ workspace, operation, slice, expectedActivationId,
     readActivated: () => readExecutionActivation(specPath),
-    preflight: () => preflightExecutionOperation(specPath, operation, sliceValue) });
+    preflight: () => preflightExecutionOperation(specPath, operation, sliceValue),
+    captureWork: (owner,current) => captureOwnerContinuationWork(workspace,owner,current) });
+}
+
+async function reopenDeliveryForValidation(specPath,slice,inspected) {
+  const workspace=inspected.workspace;
+  const task=inspected.tasks.get(slice);
+  if (task.validation?.validity!=='revalidation-required' || inspected.activation.activeAttempt) throw new ExecutionContractError('runtime reopening is not justified');
+  const candidate=await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(),'stnl-revalidation-')));
+  await fs.cp(workspace.executionRoot,candidate,{recursive:true});
+  const tree=await captureExecutionTree(workspace.executionRoot);
+  return publishExecutionUpdate({workspace,candidateExecutionRoot:candidate,expectedTree:tree,
+    expectedActivationId:inspected.activation.activationId,readActivated:()=>readExecutionActivation(specPath),
+    authorizeDiff:async root=>{if (JSON.stringify((await captureExecutionTree(root)).files)!==JSON.stringify(tree.files)) throw new ExecutionContractError('reopening source changed');},
+    prepareRetention:async ({stage,marker,allocation,retentionRoot})=>{
+      allocation.retention={allocationId:allocation.allocationId,executionRoot:workspace.executionRoot,producer:'pass-reopening',owner:null,retainedPaths:[]};
+      await persistAllocation(marker,allocation);
+      const index=await readDeliveryContinuity(workspace);
+      const delivery=index.deliveries.find(d=>d.slice===slice);
+      for (const d of index.deliveries) if (d.baseline) {
+        const baselineMarker=continuationPath(workspace.executionRoot,d.baseline.allocationRef.path);
+        const prior=parseStrictJson((await readOwnedFile(baselineMarker)).bytes.toString('utf8'));
+        await persistAllocation(baselineMarker,{...prior,knownAllocations:[...new Set([...(prior.knownAllocations ?? []),marker])]});
+      }
+      const oldTask=(await readOwnedFile(path.join(workspace.executionRoot,`tasks/${slice}.md`))).bytes;
+      const snapshot=(await readOwnedFile(path.join(workspace.executionRoot,'approved-preparation.json'))).bytes;
+      const taskFile=path.join(retentionRoot,`${slice}-task.md`);const snapshotFile=path.join(retentionRoot,`${slice}-snapshot.json`);
+      await fs.writeFile(taskFile,oldTask,{flag:'wx',mode:0o600});await fs.writeFile(snapshotFile,snapshot,{flag:'wx',mode:0o600});
+      await captureContinuationWorkState({workspace,authority:inspected.preparation,delivery,allocation,marker,continuity:index,
+        owner:inspected.activation.lastAttempt,label:`${slice}-preserved-work`,sourceActivationId:inspected.activation.activationId});
+      allocation.retention.retainedPaths=await retainedContinuationFiles(retentionRoot);await persistAllocation(marker,allocation);
+      delivery.history.push({preparationRevision:inspected.preparation.preparationRevision,requirementsAuthority:inspected.preparation.requirementsAuthority,
+        normativeSha256:inspected.preparation.normativeSha256,
+        allocationRef:{path:relativeContinuation(workspace.executionRoot,marker),allocationId:allocation.allocationId,sha256:retentionSha256(allocation.retention)},
+        taskRef:{path:relativeContinuation(workspace.executionRoot,taskFile),sha256:continuationHash(oldTask),logicalTaskPath:`tasks/${slice}.md`},
+        snapshotRef:{path:relativeContinuation(workspace.executionRoot,snapshotFile),sha256:continuationHash(snapshot)}});
+      delivery.reopen={previousPass:task.validation.historicalPass,reason:task.validation.reason,affectedPaths:task.validation.affectedPaths,
+        sourceActivationId:inspected.activation.activationId};
+      let text=oldTask.toString('utf8');
+      for (const heading of ['Implementation Test Evidence','Findings Test Evidence','Validation Attempts','Effective Validation Base']) text=replaceContinuationSection(text,heading,'- none');
+      text=replaceContinuationSection(text,'Final Result','- pending');
+      text=replaceContinuationSection(text,'Continuity',continuitySummary(delivery,'revalidation-required','validate same delivery'));
+      await fs.writeFile(path.join(stage,`tasks/${slice}.md`),text);
+      const indexText=await fs.readFile(path.join(stage,'tasks.md'),'utf8');
+      await fs.writeFile(path.join(stage,'tasks.md'),indexText.split('\n').map(row=>row.includes(`| tasks/${slice}.md |`)
+        ? row.replace('| [x] |','| [ ] |').replace('| PASS | PASS |','| pending | pending |') : row).join('\n'));
+      await fs.writeFile(path.join(stage,'continuity.json'),JSON.stringify(index,null,2)+'\n');
+    },validateCandidate:async root=>{await validateExecutionCandidate(specPath,root);return preparationAuthorityAt(root);}});
 }
 
 async function inspectExecutionStateUnchecked(specPath, logicalWorkspace, {
@@ -2264,11 +2869,12 @@ async function inspectExecutionStateUnchecked(specPath, logicalWorkspace, {
   validateImplementationPaths = false,
   privateAutomaticCheck = null,
 } = {}) {
-  const physicalWorkspace = await resolveExecutionWorkspace(specPath);
+  const physicalWorkspace = logicalWorkspace === null ? await resolveExecutionWorkspace(specPath)
+    : await resolvePhysicalExecutionWorkspace(await fs.realpath(specPath));
   const workspace = logicalWorkspace === null
     ? physicalWorkspace
     : { ...physicalWorkspace, logicalWorkspace };
-  const currentFingerprint = await computeRequirementsAuthority(specPath);
+  const currentFingerprint = await requirementsAuthorityForWorkspace(physicalWorkspace);
   const rootMetadata = await lstatOrNull(workspace.executionRoot);
   if (rootMetadata === null) {
     await rejectOfficialLifecycleRootExecution(workspace);
@@ -2282,7 +2888,8 @@ async function inspectExecutionStateUnchecked(specPath, logicalWorkspace, {
     return withRecoveryTargets({ state: "EMPTY", workspace, currentFingerprint, lifecycleStatus });
   }
   const hasTasks = await lstatOrNull(path.join(workspace.executionRoot, "tasks.md")) !== null;
-  await validateExecutionLayout(specPath, { allowPlanned: !hasTasks });
+  const layoutFindings=await findNonCanonicalPathsForWorkspace(physicalWorkspace,{allowPlanned:!hasTasks});
+  if(layoutFindings.length) throw new ExecutionContractError(`execution layout contains non-canonical paths: ${layoutFindings.join(', ')}`,layoutFindings);
   if (!hasTasks) {
     const { globalPlan, plans } = await readPlanArtifacts(workspace, { validateImplementationPaths });
     if (globalPlan.revisionMode === null && globalPlan.revision !== 1) {
@@ -2305,6 +2912,32 @@ async function inspectExecutionStateUnchecked(specPath, logicalWorkspace, {
   const artifacts = await executionArtifacts(workspace, { validateImplementationPaths, privateAutomaticCheck });
   if (artifacts.globalPlan.status === 'draft') return withRecoveryTargets({ state: artifacts.pendingReplan ? 'PENDING_REPLAN_DRAFT' : 'PLANNED_DRAFT', workspace, currentFingerprint, ...artifacts, preparation });
   const stale = artifacts.globalPlan.fingerprint !== currentFingerprint;
+  const logical=logicalWorkspaceFor(workspace);
+  const activeFile=path.join(logical.executionRoot,'activation.json');
+  const image=await lstatOrNull(activeFile) ? parseStrictJson((await readOwnedFile(activeFile)).bytes.toString('utf8')) : null;
+  const revalidating=[];const uncertain=[];const unregisteredWork=[];
+  for (const delivery of artifacts.continuity.deliveries) {
+    const task=artifacts.tasks.get(delivery.slice);
+    const validity=await deriveDeliveryValidity({workspace,authority:preparation,continuity:artifacts.continuity,delivery,task,owner:image?.activeAttempt ?? image?.lastAttempt});
+    task.validation=validity;
+    if (image?.activeAttempt?.slice===delivery.slice || task.sections.get('Operational Changes')!=='- none') task.pristine=false;
+    if (task.pristine && validity.affectedPaths.length) {
+      const known=new Map();
+      for (const [otherSlice,other] of artifacts.tasks) if (otherSlice!==delivery.slice) for (const entry of [...other.base.entries,...(other.currentAuxiliaryCheck?.testedState ?? [])]) {
+        known.set(relativeContinuation(await trustedProjectRoot(workspace),path.resolve(logical.executionRoot,'tasks',entry.path)),entry.expected);
+      }
+      const unexplained=validity.affectedPaths.filter(p=>{
+        const observed=validity.observed.entries.find(e=>e.path===p);
+        return known.get(p)!==(observed?.kind==='file' ? observed.sha256 : 'REMOVED');
+      });
+      if (unexplained.length) {task.pristine=false;unregisteredWork.push({slice:delivery.slice,paths:unexplained,owner:image?.activeAttempt?.operationAttemptId ?? null});}
+    }
+    if (validity.validity==='uncertain') uncertain.push(delivery.slice);
+    if (validity.validity==='revalidation-required') {
+      revalidating.push(delivery.slice);
+      const row=artifacts.rows.find(r=>r.slice===delivery.slice);row.done=false;row.validation='pending';row.result='pending';
+    }
+  }
   const allPristine = artifacts.rows.every((row) => !row.done && artifacts.tasks.get(row.slice).pristine);
   if (artifacts.pendingReplan) {
     const pendingStale = artifacts.globalPlan.fingerprint !== currentFingerprint;
@@ -2357,7 +2990,8 @@ async function inspectExecutionStateUnchecked(specPath, logicalWorkspace, {
   });
   const implementedAwaitingValidation = effectiveSlices.filter((slice) => {
     const task = artifacts.tasks.get(slice);
-    return task.attempts.length === 0 && new Set(["TESTS_PASS", "TESTS_NOT_APPLICABLE"]).has(task.implementationChecks.at(-1)?.status);
+    return (task.attempts.length === 0 && new Set(["TESTS_PASS", "TESTS_NOT_APPLICABLE"]).has(task.implementationChecks.at(-1)?.status))
+      || (revalidating.includes(slice) && task.checklistComplete && !task.activeBlockers.length);
   });
   const allTerminal = artifacts.rows.every((row) => row.done && new Set(["PASS", "SUPERSEDED"]).has(row.result));
   if (allTerminal && artifacts.supersededUnowned.length !== 0) {
@@ -2382,8 +3016,10 @@ async function inspectExecutionStateUnchecked(specPath, logicalWorkspace, {
   const result = withRecoveryTargets({
     state, workspace, currentFingerprint, stale, activeFindings, activeDivergences, activeDelegationBlockers,
     exhausted, incompleteExecutionChecklists, auxiliaryBlocked, findingsCorrected, implementedAwaitingValidation,
-    validationBlocked, ...artifacts,
+    validationBlocked, revalidating, uncertain, unregisteredWork, ...artifacts,
   });
+  if (uncertain.length || (unregisteredWork.length && !image?.activeAttempt)) return {...result,state:'VALIDATION_BLOCKED',legalOperations:[],normalHandoff:null,
+    continuityDiagnostics:uncertain.length ? 'PASS origin is uncertain; retain and inspect referenced material' : 'Work without a proven owner; preserve product and decide recovery'};
   if (validateTerminalOwnership && state === "COMPLETE") await validateFinalOwnership(result);
   return result;
 }
@@ -2756,6 +3392,9 @@ export async function validateExecutionCandidate(specPath, candidateExecutionRoo
       await fs.writeFile(path.join(shadow.executionRoot, "tasks", `${slice}.md`), text, "utf8");
     }
     const result = await inspectExecutionStateWithContext(shadow.specPath, workspace, { validateImplementationPaths: true, privateAutomaticCheck });
+    const active=(await lstatOrNull(path.join(workspace.executionRoot,'activation.json'))) ? parseStrictJson((await readOwnedFile(path.join(workspace.executionRoot,'activation.json'))).bytes.toString('utf8')).activeAttempt : null;
+    for (const task of result.tasks?.values() ?? []) if (task.final.result==='PASS' && active && field(task.attempts.at(-1).body,'Operation attempt ID')===active.operationAttemptId
+      && task.validation?.validity!=='current') throw new ExecutionContractError('new formal PASS does not bind the current product/verification state');
     await validateCandidateExecutionRecordPaths(result);
     validatePriorValidationOverlap(result);
     if ((result.incompleteExecutionChecklists?.length ?? 0) !== 0) {
@@ -3049,7 +3688,8 @@ export async function preflightExecutionOperation(specPath, operation, sliceValu
   if (slice !== null) {
     const selectedRow = result.rows.find((row) => row.slice === slice);
     const selectedTask = result.tasks.get(slice);
-    if (selectedRow.done || selectedTask.final.result !== "pending") throw new ExecutionContractError(`${slice} is terminal and immutable`);
+    const revalidation=normalizedOperation==='VALIDATE_SLICE' && selectedTask.validation?.validity==='revalidation-required';
+    if ((selectedRow.done || selectedTask.final.result !== "pending") && !revalidation) throw new ExecutionContractError(`${slice} is terminal and immutable`);
     const selectedIndex = result.rows.indexOf(selectedRow);
     if (result.rows.slice(0, selectedIndex).some((row) => !row.done)) throw new ExecutionContractError(`${slice} has an incomplete serial dependency`);
     if (normalizedOperation === "EXECUTE_SLICE") {

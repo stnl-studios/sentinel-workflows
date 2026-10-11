@@ -1,15 +1,15 @@
 #!/usr/bin/env node
 
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-import { resolveExecutionWorkspace, validateExecutionCandidate, readExecutionActivation, preparationAuthorityAt } from './execution-state.mjs';
+import { resolveExecutionWorkspace, validateExecutionCandidate, readExecutionActivation, preparationAuthorityAt, retainOperationalWork } from './execution-state.mjs';
 import { assertOperationalTaskHistory, parsePreparationArtifact } from './execution-preparation.mjs';
 import { assertManagedAgreement } from './managed-slice-context.mjs';
 
-import { withExecutionPublicationLock, publishExecutionUpdate, captureExecutionTree, assertExecutionAttempt, readOperationOwner } from './execution-publication.mjs';
+import { withExecutionPublicationLock, publishExecutionUpdate, captureExecutionTree, assertExecutionAttempt, readOperationOwner, registerOwnedAllocation, acknowledgePublishedCandidate } from './execution-publication.mjs';
 
 function inside(candidate, root) {
   const relative = path.relative(root, candidate);
@@ -70,13 +70,14 @@ async function prepareExecutionCopyLocked({ specPath, slice, owner }) {
     }
     await fs.writeFile(`${candidateRoot}.copy.json`, JSON.stringify({
       specPath: await fs.realpath(specPath), slice, executionRoot: details.executionRoot,
-      source, tree, owner, expectedActivationId: admitted.activation.activationId,
+      source, tree, owner, producer:'execution-copy',allocationId:randomUUID(),retentionRoot:candidateRoot,candidate:candidateRoot, expectedActivationId: admitted.activation.activationId,
     }), { flag: 'wx' });
+    await registerOwnedAllocation(owner.workCapture,`${candidateRoot}.copy.json`);
     return Object.freeze({ candidateRoot, candidateExecutionRoot,
       candidateTaskArtifact: path.join(candidateExecutionRoot, details.taskRelative),
       liveTaskArtifact: details.task, entries: source.length });
   } catch (error) {
-    await fs.rm(candidateRoot, { recursive: true, force: true });
+    error.retainedCandidate=candidateRoot;error.message+=`; partial owned candidate retained: ${candidateRoot}`;
     throw error;
   }
 }
@@ -142,18 +143,22 @@ export async function publishExecutionCopy({ specPath, slice, candidateRoot, own
     }
   }
   if (owner && JSON.stringify(owner) !== JSON.stringify(marker.owner)) throw new Error('copy owner differs');
+  const disposableTree=await captureExecutionTree(root);
   const publication = await publishExecutionUpdate({ workspace: details.resolved, candidateExecutionRoot,
     expectedTree: marker.tree, expectedActivationId: marker.expectedActivationId, owner: marker.owner, terminal, checkpoint,
     readActivated: () => readExecutionActivation(specPath),
+    prepareRetention: details => retainOperationalWork({specPath,...details,owner:marker.owner}),
     validateCandidate: async root => { await validateExecutionCandidate(specPath, root); return preparationAuthorityAt(root); },
     authorizeDiff: async staged => {
       await assertScope(staged);
       if (JSON.stringify(await manifest(details.executionRoot)) !== JSON.stringify(marker.source)) throw new Error('live source changed under lock');
     } });
+  try {await acknowledgePublishedCandidate({workspace:details.resolved,marker:`${root}.copy.json`,candidateTree:disposableTree,publication,readActivated:()=>readExecutionActivation(specPath)});}
+  catch(error) {publication.candidateCleanupDiagnostic=error.message;}
   // Confirmed publication is independent of temporary candidate cleanup.
-  try { await fs.rm(root, { recursive: true, force: true }); }
-  catch (error) { return { status: 'PASS', state: validation.state, ...publication, cleanup: 'pending', cleanupDiagnostics: [error.message] }; }
-  return { status: 'PASS', state: validation.state, liveTaskArtifact: details.task, ...publication };
+  // Keep the selected candidate until its producer proves that no receipt,
+  // history or uncertain result depends on it. Publication is already confirmed.
+  return { status: 'PASS', state: validation.state, liveTaskArtifact: details.task, retainedCandidate:root, ...publication };
 }
 
 export async function prepareExecutionCopy({ specPath, slice, owner = null }) {

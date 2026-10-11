@@ -1,4 +1,4 @@
-import { bindExecutionBroker } from '../../../skills/workflows/stnl-slice-executor/runtime/execution-publication.mjs';
+import { bindExecutionBroker, registerRunnerAllocation } from '../../../skills/workflows/stnl-slice-executor/runtime/execution-publication.mjs';
 import { resolveExecutionWorkspace, readExecutionActivation } from '../../../skills/workflows/stnl-slice-executor/runtime/execution-state.mjs';
 import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
@@ -162,6 +162,7 @@ export async function startOfficialRunnerBroker({
     fail('BROKER_ALREADY_ACTIVE');
   }
 
+  await registerRunnerAllocation({workspace:await resolveExecutionWorkspace(officialPreflight.specPath),owner:officialPreflight.owner,root:tmpdir,producer:'managed-runner'});
   await bindExecutionBroker({ workspace: await resolveExecutionWorkspace(officialPreflight.specPath), owner: officialPreflight.owner,
     runner: { dispatchId: `${officialPreflight.owner.operationAttemptId}:${sequence}`, receiptFile: activeFile, threadId: null, status: 'pending' },
     readActivated: () => readExecutionActivation(officialPreflight.specPath) });

@@ -3,6 +3,7 @@ import { spawnSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import os from 'node:os';
 import { OFFLINE_AUTH, OFFLINE_MARKER, OFFLINE_PROVIDER } from '../../agents/codex/runtime/offline-provider-context.mjs';
 
 const owned = new WeakMap();
@@ -19,7 +20,7 @@ export const offlineSourceFilter = file => !file.split(path.sep).some(part => ['
 
 // Only allocations made in this process are eligible; no adoption or backlog scan.
 export async function allocateOfflineFixture(repository = null) {
-  const root = await fs.realpath(await fs.mkdtemp('/tmp/stnl-offline-checkout-'));
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(),'stnl-offline-checkout-')));
   const fixture = { root };
   const owner = { root, id: randomUUID(), pid: process.pid, inode: (await fs.lstat(root)).ino };
   if (repository !== null) {
@@ -49,7 +50,7 @@ export async function createOfflineCheckout(t, repository, scenario, { shared = 
   await fs.writeFile(path.join(home, '.codex/auth.json'), OFFLINE_AUTH);
   await fs.writeFile(path.join(home, '.codex/config.toml'), config);
   await fs.writeFile(path.join(home, '.claude/settings.json'), '{"fictitious":"unchanged"}\n');
-  await fs.writeFile(path.join(root, '.offline-context.json'), JSON.stringify({ mode: 'OFFLINE_TEST_ONLY', root, home, scenario,
+  await fs.writeFile(path.join(root, '.offline-context.json'), JSON.stringify({ mode: 'OFFLINE_TEST_ONLY', root, home, scenario,allocationParent:await fs.realpath(os.tmpdir()),
     dependencySource: await fs.realpath(path.join(repository, 'agents/codex/node_modules')),
     providerSha256: 'sha256:' + hash(await fs.readFile(path.join(root, OFFLINE_PROVIDER))) }));
   const env = { ...process.env, HOME: home, STNL_OFFLINE_PROVIDER_CONTEXT: path.join(root, '.offline-context.json'),
@@ -73,6 +74,7 @@ export async function finishOfflineFixture(fixture, { remove = true } = {}) {
   }
   await assertOwnership();
   const root = owner.root;
+  if(process.env.STNL_OFFLINE_KEEP_FIXTURES==='1') remove=false;
   const retainedBrokers = [];
   if (await optional(path.join(root, 'benchmark-temp/.active-run.json')) !== null) throw new Error('OFFLINE_FIXTURE_RETAINED: active or interrupted manager');
   const runNames = await fs.readdir(path.join(root, 'benchmark-temp')).catch(error => {
@@ -122,7 +124,7 @@ export async function finishOfflineFixture(fixture, { remove = true } = {}) {
   if ([...pids].some(alive)) throw new Error('OFFLINE_FIXTURE_RETAINED: recorded fixture process is still alive');
   if (retainedBrokers.length && calls.split('\n').filter(Boolean).map(JSON.parse).some(call => call.independent || call.externalCalls !== 0)) throw new Error('OFFLINE_FIXTURE_RETAINED: no-dispatch proof differs');
 
-  const archive = await fs.realpath(await fs.mkdtemp('/tmp/stnl-offline-evidence-'));
+  const archive = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(),'stnl-offline-evidence-')));
   const manifest = { originalRoot: root, ownerId: owner.id, dependenciesOmitted: true,
     retainedBrokers, processesSettled: [...pids].sort((a,b) => a-b), files: [] };
   async function copy(relative) {

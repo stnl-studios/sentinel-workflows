@@ -27,7 +27,7 @@ Authorized Areas explicitly label `directory:` or `file:`. They define the permi
 
 Run `node "<SKILL_ROOT>/runtime/prepare-plan-candidate.mjs" --candidate-execution-root <CANDIDATE_EXECUTION_ROOT>` then `node "<SKILL_ROOT>/runtime/serialize-plan-paths.mjs" --spec-path <SPEC_PATH> --candidate-execution-root <CANDIDATE_EXECUTION_ROOT>`. These shared producers prepare both sets, bind delivery IDs and validate the complete candidate. No MATERIALIZE_TASKS or REVIEW_TASKS operation exists. The absorbed producers are mechanical resources, not another cognitive phase.
 
-Publish the complete draft with `node "<SKILL_ROOT>/runtime/publish-task-candidate.mjs" --spec-path <SPEC_PATH> --candidate-execution-root <CANDIDATE_EXECUTION_ROOT>`. It captures/rechecks the base under the common external lock and preserves prior snapshots and evidence. Drafts have no executable activation. Do not write live artifacts outside the publisher. REPLAN preserves historical plans, Task records and prior PASS; wholly pristine replacement or append-only recovery uses the existing revision/supersession rules. Do not broaden U2 recovery policy.
+Publish the complete draft with `node "<SKILL_ROOT>/runtime/publish-task-candidate.mjs" --spec-path <SPEC_PATH> --candidate-execution-root <CANDIDATE_EXECUTION_ROOT>`. It captures/rechecks the base under the common external lock and preserves prior snapshots and evidence. Drafts have no executable activation. Do not write live artifacts outside the publisher. REPLAN preserves historical facts and snapshots. Same-result correction uses `--revision-mode same-delivery-revision`, retains the runtime UUID/slot, and fills the total normative Delivery Continuity table with predecessor UUID/revision, same/new decision, reason and affected verification. An independent result appends a new slot/UUID; never relabel an existing slot. Pristine replacement and append-only supersession retain their existing guards. Runtime seals historical Task/snapshot bytes before compacting the current evidence cycle; historical PASS remains immutable.
 
 ## Output
 
@@ -43,7 +43,7 @@ Current requirements and exact declared IDs, relevant prior history, all four te
 
 ## Allowed Effects
 
-Complete isolated Plan+Tasks candidate and its common publication; runtime metadata only through producers.
+Complete isolated Plan+Tasks candidate and its common publication; Continuity/baseline/history/capture metadata only through producers. An empty Task alone never proves pristine: inspect known owners, operations and actual captured product first.
 
 ## Blocks
 
