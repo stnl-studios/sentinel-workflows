@@ -17,10 +17,11 @@ export async function preparePreparationCandidate({ specPath, operation, revisio
     const candidateExecutionRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'stnl-preparation-')));
     if (source) {
       await fs.cp(workspace.executionRoot, candidateExecutionRoot, { recursive: true });
-      if (JSON.stringify((await captureExecutionTree(candidateExecutionRoot)).files) !== JSON.stringify(source.files)) throw new Error('source changed during copy');
     }
+    const candidateTree=await captureExecutionTree(candidateExecutionRoot);
+    if (source && JSON.stringify(candidateTree.files) !== JSON.stringify(source.files)) throw new Error('source changed during copy');
     // The owned marker lives outside the candidate execution tree. It is never authority by itself.
-    await fs.writeFile(`${candidateExecutionRoot}.owner.json`, JSON.stringify({ format:'stnl-preparation-allocation-v1',producer:'preparation',allocationId:randomUUID(),candidate:candidateExecutionRoot,retentionRoot:candidateExecutionRoot, operation, specPath: await fs.realpath(specPath),
+    await fs.writeFile(`${candidateExecutionRoot}.owner.json`, JSON.stringify({ format:'stnl-preparation-allocation-v1',producer:'preparation',allocationId:randomUUID(),candidate:candidateExecutionRoot,retentionRoot:candidateExecutionRoot,candidateIdentity:candidateTree.identity, operation, specPath: await fs.realpath(specPath),
       executionRoot: workspace.executionRoot, source, expectedActivationId: preflight.activation?.activationId ?? null,
       preparationRevision: operation === 'REPLAN' ? (preflight.globalPlan?.revision ?? 0) + 1 : preflight.globalPlan?.revision ?? 1,
       revisionMode: operation === 'REPLAN' && preflight.tasks ? (revisionMode ?? ([...preflight.tasks.values()].every(task => task.pristine) ? 'pristine-replacement' : 'append-only-extension')) : null,

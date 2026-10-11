@@ -2422,12 +2422,15 @@ async function knownContinuationControls(workspace, continuity, owner = null, ex
 }
 
 function explicitVerificationFiles(body) {
-  // Literal file references only. No shell expansion, script resolution,
-  // imports, globbing, executable discovery or walking outside the workspace.
+  // A qualified path or a code/quoted file literal is an explicit reference.
+  // Unmarked prose tokens (including runtime/version names) are not paths.
+  // This does not interpret shell, imports, scripts or indirect dependencies.
   const quoted=[...String(body).matchAll(/`([^`\n]+)`|"([^"\n]+)"|'([^'\n]+)'/gu)].map(m=>m[1]??m[2]??m[3]);
-  const words=String(body).split(/[\s`"'()[\]{},;:]+/u);
+  const split=value=>String(value).split(/[\s`"'()[\]{},;:]+/u);
+  const words=split(body).filter(value=>value.includes('/'));
+  const codeWords=quoted.flatMap(split);
   const file=/^(?:\.{1,2}\/|\/)?(?:[\p{L}\p{N}_. -]+\/)*[\p{L}\p{N}_ .-]*\.[\p{L}\p{N}_-]+$/u;
-  return [...new Set([...quoted,...words].filter(value=>file.test(value) && !value.includes(' --')))];
+  return [...new Set([...quoted,...words,...codeWords].filter(value=>file.test(value) && !value.includes(' --')))];
 }
 
 export async function captureContinuationWorkState({ workspace, authority, delivery, allocation, marker,
@@ -2463,6 +2466,9 @@ export async function captureContinuationWorkState({ workspace, authority, deliv
   const proofBodies=[normative.plan['Expected Tests'],normative.task['Expected Tests'],...normative.obligations.map(o=>o.proof)];
   for(const body of proofBodies) for(const raw of explicitVerificationFiles(body)) {
     const physical=path.resolve(workspaceRoot,raw);
+    // An unqualified quoted name needs a concrete file witness; code/prose
+    // such as a runtime name cannot create a fictitious Existing Inputs claim.
+    if(!raw.includes('/') && !(await lstatOrNull(physical))?.isFile()) continue;
     const claim=relativeContinuation(path.dirname(logicalExecutionPath(workspace,artifact)),physical);
     const target=(await resolveImplementationPathClaim(workspace,{artifact,field:'verification input',raw:claim})).resolved;
     if(control(target) || !claims.some(root=>pathIsWithin(target,root))) throw new ExecutionContractError(`verification input ${raw} requires a matching Existing Inputs declaration outside the captured product domain`);

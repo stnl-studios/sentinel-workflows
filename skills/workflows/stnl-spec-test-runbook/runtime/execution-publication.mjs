@@ -200,6 +200,8 @@ export async function assertOwnedPreparationCandidate({ candidateExecutionRoot, 
   await ancestry(candidateExecutionRoot);
   const root = await fs.realpath(candidateExecutionRoot);
   const marker = parseStrictJson((await readOwnedFile(`${root}.owner.json`)).bytes.toString('utf8'));
+  if(marker.format!=='stnl-preparation-allocation-v1' || !hasOwnedAllocationEnvelope(marker,`${root}.owner.json`)) fail('preparation allocation envelope differs');
+  await assertPreparationAllocationRoot(marker);
   if (!['PLAN', 'REPLAN', 'REVIEW_PLAN'].includes(marker.operation)
     || (specPath && marker.specPath !== await fs.realpath(specPath))) fail('candidate preparation identity differs');
   const workspace = await resolveWorkspace(marker.specPath);
@@ -498,6 +500,27 @@ export async function registerRunnerAllocation({workspace,owner,root,producer}) 
 
 // A nearby filename/format/UUID is not a producer binding. These are the exact
 // envelopes emitted by the existing producers, including a pending publisher.
+const hasPhysicalIdentity=value=>value && Object.keys(value).sort().join(',')==='dev,ino'
+  && ['dev','ino'].every(key=>typeof value[key]==='string' && /^[0-9]+$/u.test(value[key]));
+function hasCapturedSource(source) {
+  if(source===null) return true;
+  if(!source || Object.keys(source).sort().join(',')!=='files,identity' || !hasPhysicalIdentity(source.identity) || !Array.isArray(source.files)) return false;
+  const seen=new Set();
+  return source.files.every(entry=>{
+    if(!entry || typeof entry.path!=='string' || !entry.path || path.isAbsolute(entry.path)
+      || entry.path.split('/').some(part=>!part || ['.','..'].includes(part)) || seen.has(entry.path)) return false;
+    seen.add(entry.path);
+    if(entry.type==='directory') return Object.keys(entry).sort().join(',')==='path,type';
+    return entry.type==='file' && Object.keys(entry).sort().join(',')==='mode,path,sha256,type'
+      && /^sha256:[a-f0-9]{64}$/u.test(entry.sha256 ?? '') && Number.isSafeInteger(entry.mode) && entry.mode>=0 && entry.mode<=0o777;
+  });
+}
+async function assertPreparationAllocationRoot(record) {
+  await ancestry(record.candidate);
+  const metadata=await stat(record.candidate);
+  if(!metadata?.isDirectory() || metadata.isSymbolicLink() || await fs.realpath(record.candidate)!==record.candidate
+    || !equal(identity(metadata),record.candidateIdentity)) fail('preparation physical allocation identity differs');
+}
 export function hasOwnedAllocationEnvelope(record, marker) {
   const uuid=value=>typeof value==='string' && /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/u.test(value);
   if(!record || !uuid(record.allocationId) || !path.isAbsolute(record.executionRoot ?? '') || !path.isAbsolute(record.retentionRoot ?? '')) return false;
@@ -526,7 +549,10 @@ export function hasOwnedAllocationEnvelope(record, marker) {
   if(record.retentionRoot!==record.candidate) return false;
   if(record.format==='stnl-preparation-allocation-v1') return record.producer==='preparation' && marker===`${record.candidate}.owner.json`
     && ['PLAN','REPLAN','REVIEW_PLAN'].includes(record.operation) && path.isAbsolute(record.specPath ?? '')
-    && Object.hasOwn(record,'source') && Object.hasOwn(record,'expectedActivationId');
+    && hasPhysicalIdentity(record.candidateIdentity) && hasCapturedSource(record.source)
+    && Number.isSafeInteger(record.preparationRevision) && record.preparationRevision>0
+    && (record.expectedActivationId===null || uuid(record.expectedActivationId))
+    && (record.source?.files.some(entry=>entry.path==='activation.json') ?? false)===(record.expectedActivationId!==null);
   if(!owned) return false;
   if(record.format==='stnl-runner-allocation-v1') return ['native-runner','managed-runner'].includes(record.producer)
     && [ `${record.candidate}.publication.json`,`${record.candidate}.publication-${owner.operationAttemptId}.json` ].includes(marker)
@@ -543,6 +569,7 @@ export async function classifyOwnedAllocation({ workspace, marker=null, activati
   }
   const record = parseStrictJson((await readOwnedFile(marker)).bytes.toString('utf8'));
   if(!hasOwnedAllocationEnvelope(record,marker)) fail('unproven allocation: producer envelope is absent or inconsistent');
+  if(record.format==='stnl-preparation-allocation-v1') await assertPreparationAllocationRoot(record);
   if (record.executionRoot !== workspace.executionRoot) fail('allocation belongs to another execution');
   if (!/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/u.test(record.allocationId) || !path.isAbsolute(record.retentionRoot)
     || !['stnl-execution-publication-owner-v1','stnl-runner-allocation-v1','stnl-preparation-allocation-v1'].includes(record.format)
