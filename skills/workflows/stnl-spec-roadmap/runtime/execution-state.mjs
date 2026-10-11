@@ -8,7 +8,7 @@ import { projectPreparationAuthority, readPreparationArtifacts, parsePreparation
   preparationPathClaims, validateApprovedPreparation, validateOperationalChanges, parseStrictJson } from './execution-preparation.mjs';
 import { readActivatedExecution, beginExecutionOperation, withExecutionPublicationLock,
   publishExecutionUpdate, captureExecutionTree, readOwnedFile, assertExecutionAttempt, readRetainedAllocation,
-  retentionSha256, persistAllocation, executionLockIdentity, classifyOwnedAllocation } from './execution-publication.mjs';
+  retentionSha256, persistAllocation, executionLockIdentity, classifyOwnedAllocation, hasOwnedAllocationEnvelope } from './execution-publication.mjs';
 import path from "node:path";
 
 const ROOT_FILES = new Set(["plan.md", "tasks.md", "approved-preparation.json", "activation.json", "continuity.json"]);
@@ -136,10 +136,11 @@ export async function resolveExecutionWorkspace(specPath) {
     const generated=/^\.stnl-execution-(?:stage|backup)-([a-f0-9-]{36})$/u.exec(path.basename(selected));
     if (generated) markers.push(path.join(path.dirname(selected),`.stnl-execution-publication-${generated[1]}.json`));
     for (const marker of markers) if (await lstatOrNull(marker)) {
-      const record=parseStrictJson((await readOwnedFile(marker)).bytes.toString('utf8'));
-      const recognized=['stnl-execution-publication-owner-v1','stnl-runner-allocation-v1','stnl-preparation-allocation-v1'].includes(record.format) || ['execution-copy','validation-copy'].includes(record.producer);
-      if(!recognized || !/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/u.test(record.allocationId ?? '') || !record.executionRoot) continue;
-      await classifyOwnedAllocation({workspace:{executionRoot:record.executionRoot},marker});
+      let record;try {record=parseStrictJson((await readOwnedFile(marker)).bytes.toString('utf8'));}catch {continue;}
+      if(!hasOwnedAllocationEnvelope(record,marker)) continue;
+      // Nearby markers are untrusted hints. A failed producer/retention binding
+      // grants no ownership; registered control references remain strict below.
+      try {await classifyOwnedAllocation({workspace:{executionRoot:record.executionRoot},marker});}catch {continue;}
       const roots=[record.candidate,record.stage,record.backup,record.retentionRoot].filter(Boolean);
       if (record.executionRoot && roots.some(root=>pathIsWithin(physical,root)) && !pathIsWithin(physical,record.executionRoot)) {
         throw new ExecutionContractError('owned operational candidate/stage/backup cannot be selected as official SPEC_PATH',[physical]);
@@ -2420,6 +2421,15 @@ async function knownContinuationControls(workspace, continuity, owner = null, ex
   return { roots, files, fingerprints, allocations };
 }
 
+function explicitVerificationFiles(body) {
+  // Literal file references only. No shell expansion, script resolution,
+  // imports, globbing, executable discovery or walking outside the workspace.
+  const quoted=[...String(body).matchAll(/`([^`\n]+)`|"([^"\n]+)"|'([^'\n]+)'/gu)].map(m=>m[1]??m[2]??m[3]);
+  const words=String(body).split(/[\s`"'()[\]{},;:]+/u);
+  const file=/^(?:\.{1,2}\/|\/)?(?:[\p{L}\p{N}_. -]+\/)*[\p{L}\p{N}_ .-]*\.[\p{L}\p{N}_-]+$/u;
+  return [...new Set([...quoted,...words].filter(value=>file.test(value) && !value.includes(' --')))];
+}
+
 export async function captureContinuationWorkState({ workspace, authority, delivery, allocation, marker,
   owner = null, continuity = null, knownAllocations = [], sourceActivationId = null, label = 'work', observeOnly = false }) {
   const logical = logicalWorkspaceFor(workspace); const workspaceRoot = await trustedProjectRoot(workspace);
@@ -2446,6 +2456,16 @@ export async function captureContinuationWorkState({ workspace, authority, deliv
     const target = (await resolveImplementationPathClaim(workspace, {artifact, field:'Expected Files', raw})).resolved;
     if (control(target)) throw new ExecutionContractError(`expected product conflicts with control: ${target}`);
     claims.push(target);
+  }
+  // Expected Tests remains semantic prose, not a shell language. Literal named
+  // verification files use the command workspace basis; outside the captured
+  // product domain they must be linked by the existing typed input carrier.
+  const proofBodies=[normative.plan['Expected Tests'],normative.task['Expected Tests'],...normative.obligations.map(o=>o.proof)];
+  for(const body of proofBodies) for(const raw of explicitVerificationFiles(body)) {
+    const physical=path.resolve(workspaceRoot,raw);
+    const claim=relativeContinuation(path.dirname(logicalExecutionPath(workspace,artifact)),physical);
+    const target=(await resolveImplementationPathClaim(workspace,{artifact,field:'verification input',raw:claim})).resolved;
+    if(control(target) || !claims.some(root=>pathIsWithin(target,root))) throw new ExecutionContractError(`verification input ${raw} requires a matching Existing Inputs declaration outside the captured product domain`);
   }
   let prior=null;
   if (owner?.workCapture && owner.slice===delivery.slice) prior=await readContinuationWorkCapture(workspace,owner.workCapture,delivery,owner);
@@ -2624,7 +2644,8 @@ async function retainedContinuationFiles(root) {
 export function projectOperationalContinuityTask(taskText,delivery) {
   const parsed=parsePreparationArtifact(taskText,`tasks/${delivery.slice}.md`);
   const pass=parsed.sections['Final Result']==='- PASS';
-  const historical=[...parsed.sections['Validation Attempts'].matchAll(/^### (attempt-[0-9]{2,})\n[\s\S]*?- Status: PASS$/gmu)].at(-1)?.[1];
+  const attempts=parsed.sections['Validation Attempts']==='- none' ? [] : parsed.sections['Validation Attempts'].split(/(?=^### attempt-)/mu).filter(record=>record.trim());
+  const historical=attempts.filter(record=>field(record,'Status')==='PASS').at(-1)?.match(/^### (attempt-[0-9]{2,})\n/u)?.[1];
   const summary=continuitySummary({...delivery,reopen:delivery.reopen ?? (historical ? {previousPass:historical} : null)},pass?'current':delivery.reopen?'revalidation-required':'unvalidated',pass?'delivery validated':'continue admitted operation');
   return replaceContinuationSection(taskText,'Continuity',summary);
 }

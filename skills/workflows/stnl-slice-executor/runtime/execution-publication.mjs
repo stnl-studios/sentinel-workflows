@@ -496,12 +496,53 @@ export async function registerRunnerAllocation({workspace,owner,root,producer}) 
   return marker;
 }
 
+// A nearby filename/format/UUID is not a producer binding. These are the exact
+// envelopes emitted by the existing producers, including a pending publisher.
+export function hasOwnedAllocationEnvelope(record, marker) {
+  const uuid=value=>typeof value==='string' && /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/u.test(value);
+  if(!record || !uuid(record.allocationId) || !path.isAbsolute(record.executionRoot ?? '') || !path.isAbsolute(record.retentionRoot ?? '')) return false;
+  const owner=record.owner;
+  const owned=owner && ['operationAttemptId','ownershipToken','deliveryId','originActivationId'].every(k=>uuid(owner[k]))
+    && /^slice-[0-9]{2,}$/u.test(owner.slice) && ['EXECUTE_SLICE','APPLY_FINDINGS','VALIDATE_SLICE'].includes(owner.operation)
+    && Number.isSafeInteger(owner.preparationRevision) && /^sha256:[a-f0-9]{64}$/u.test(owner.normativeSha256 ?? '')
+    && path.isAbsolute(owner.workCapture?.path ?? '') && /^sha256:[a-f0-9]{64}$/u.test(owner.workCapture?.sha256 ?? '');
+  if(record.format==='stnl-execution-publication-owner-v1') {
+    const parent=path.dirname(record.retentionRoot);
+    const capsule=record.retentionRoot===path.join(parent,`.stnl-execution-backup-${record.allocationId}`);
+    if(!capsule) return false;
+    const publisher=marker===path.join(parent,`.stnl-execution-publication-${record.allocationId}.json`);
+    const admission=owned && marker===`${owner.workCapture.path}.owner.json` && inside(owner.workCapture.path,record.retentionRoot);
+    if(!publisher && !admission) return false;
+    const publicationOrigin=publisher && Object.hasOwn(record,'expectedActivationId') && Object.hasOwn(record,'expectedTree')
+      && path.isAbsolute(record.candidate ?? '') && record.stage===path.join(parent,`.stnl-execution-stage-${record.allocationId}`)
+      && record.backup===path.join(record.retentionRoot,'previous');
+    if(record.retention) return ['preparation-publication','operational-publication','operation-admission','pass-reopening'].includes(record.retention.producer)
+      && Object.hasOwn(record,'owner') && equal(record.retention.owner,owner)
+      && (record.retention.producer==='operation-admission' ? !!owner : publicationOrigin);
+    return publisher && owned && uuid(record.expectedActivationId) && record.expectedTree?.files
+      && path.isAbsolute(record.candidate ?? '') && record.stage===path.join(parent,`.stnl-execution-stage-${record.allocationId}`)
+      && record.backup===path.join(record.retentionRoot,'previous');
+  }
+  if(record.retentionRoot!==record.candidate) return false;
+  if(record.format==='stnl-preparation-allocation-v1') return record.producer==='preparation' && marker===`${record.candidate}.owner.json`
+    && ['PLAN','REPLAN','REVIEW_PLAN'].includes(record.operation) && path.isAbsolute(record.specPath ?? '')
+    && Object.hasOwn(record,'source') && Object.hasOwn(record,'expectedActivationId');
+  if(!owned) return false;
+  if(record.format==='stnl-runner-allocation-v1') return ['native-runner','managed-runner'].includes(record.producer)
+    && [ `${record.candidate}.publication.json`,`${record.candidate}.publication-${owner.operationAttemptId}.json` ].includes(marker)
+    && Array.isArray(record.controlFiles);
+  return ['execution-copy','validation-copy'].includes(record.producer) && record.slice===owner.slice && uuid(record.expectedActivationId)
+    && path.isAbsolute(record.specPath ?? '') && record.tree?.files
+    && marker===`${record.candidate}.${record.producer==='execution-copy'?'copy':'publication'}.json`;
+}
+
 export async function classifyOwnedAllocation({ workspace, marker=null, activation, readActivated=null }) {
   if(marker===null) {
     if(typeof readActivated!=='function') fail('official classification requires verified image readback');
     const current=await readActivated();return {classification:'official',executionRoot:workspace.executionRoot,activationId:current.activation.activationId};
   }
   const record = parseStrictJson((await readOwnedFile(marker)).bytes.toString('utf8'));
+  if(!hasOwnedAllocationEnvelope(record,marker)) fail('unproven allocation: producer envelope is absent or inconsistent');
   if (record.executionRoot !== workspace.executionRoot) fail('allocation belongs to another execution');
   if (!/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/u.test(record.allocationId) || !path.isAbsolute(record.retentionRoot)
     || !['stnl-execution-publication-owner-v1','stnl-runner-allocation-v1','stnl-preparation-allocation-v1'].includes(record.format)
@@ -515,6 +556,11 @@ export async function classifyOwnedAllocation({ workspace, marker=null, activati
   if(record.format==='stnl-runner-allocation-v1' && !['native-runner','managed-runner'].includes(record.producer)) fail('unknown runner allocation producer');
   if(['execution-copy','validation-copy','native-runner','managed-runner'].includes(record.producer)
     && (!record.owner || !record.owner.workCapture || !record.owner.ownershipToken || !record.owner.operationAttemptId)) fail('allocation owner is absent');
+  if(['execution-copy','validation-copy','native-runner','managed-runner'].includes(record.producer)) {
+    const admission=await readRetainedAllocation(`${record.owner.workCapture.path}.owner.json`,workspace.executionRoot);
+    if(!(admission.knownAllocations ?? []).includes(marker)
+      || ['operationAttemptId','ownershipToken','deliveryId','slice','operation','originActivationId'].some(k=>admission.retention.owner?.[k]!==record.owner[k])) fail('allocation producer registration is absent or belongs to another owner');
+  }
   for(const root of [record.candidate,record.stage,record.backup,record.retentionRoot].filter(Boolean)) {await ancestry(root);if(inside(root,workspace.executionRoot)||inside(workspace.executionRoot,root)) fail('allocation overlaps official execution');}
   const active = activation?.activeAttempt;
   if (active && record.owner && ['operationAttemptId','ownershipToken','deliveryId','slice','operation','originActivationId'].every(k=>record.owner[k]===active[k])) return { classification: 'active', record };
