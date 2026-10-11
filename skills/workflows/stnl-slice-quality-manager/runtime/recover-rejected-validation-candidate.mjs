@@ -10,8 +10,7 @@ import { ExecutionContractError, inspectExecutionState, preflightExecutionOperat
 import { prepareValidationCopy } from "./prepare-validation-copy.mjs";
 import { publishValidationCandidate } from "./publish-validation-candidate.mjs";
 import { persistMalformedRunnerResultInCandidate, recoverableRunnerResultDiagnostic,
-  RunnerVerdictEvidenceError } from "./serialize-runner-evidence.mjs";
-import { resolveRunnerCommandEvents } from "./runner-command-events.mjs";
+  RunnerVerdictEvidenceError, resolveCapturedRunnerCommands } from "./serialize-runner-evidence.mjs";
 import { assertManagedAgreement, assertManagedRunnerReceipt } from "./managed-slice-context.mjs";
 
 function fail(message) { throw new Error(`validation rejection recovery blocked: ${message}`); }
@@ -39,12 +38,12 @@ export async function recoverRejectedValidationCandidate({ specPath, slice, work
   const response = JSON.parse(await fs.readFile(semanticResponseFile, "utf8"));
   if (response?.status !== "PASS") fail("captured response is not PASS");
   if (!await assertManagedRunnerReceipt({ receiptFile, semanticResponseFile, workspace, slice: canonicalSlice, operation: 'VALIDATE_SLICE' })) {
-    fail('rejected validation recovery requires the matching managed invocation and observed command events');
+    fail('rejected validation recovery requires the matching managed invocation and observed reviewed recipe');
   }
-  const commands = await resolveRunnerCommandEvents({ receiptFile, semanticResponseFile,
+  const commands = await resolveCapturedRunnerCommands({ receiptFile, semanticResponseFile,
     operation: "VALIDATE_SLICE" });
   const failed = commands.filter(({ exit }) => exit !== 0);
-  if (failed.length === 0) fail("bound mechanical events do not confirm the rejected command conflict");
+  if (failed.length === 0) fail("bound recipe observations do not confirm the rejected command conflict");
   const rejectedTask = path.join(rejectedCandidateRoot, "tasks", `${canonicalSlice}.md`);
   const before = await fs.readFile(rejectedTask);
   const copy = await prepareValidationCopy({ specPath, slice: canonicalSlice, candidateParent, owner });

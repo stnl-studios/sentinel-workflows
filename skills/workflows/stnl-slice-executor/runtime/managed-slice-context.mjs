@@ -1,10 +1,12 @@
 import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { computeRequirementsAuthority, preflightExecutionOperation, readExecutionActivation, beginPreparedExecutionOperation } from './execution-state.mjs';
+import { computeRequirementsAuthority, preflightExecutionOperation, readExecutionActivation, beginPreparedExecutionOperation, readRunnerVerification } from './execution-state.mjs';
 
 import { assertExecutionAttempt } from './execution-publication.mjs';
 import { verifyNativeRunnerReceipt } from './capture-runner-response.mjs';
+
+import { assertRunnerVerification } from './runner-verification.mjs';
 
 const CONTEXT_ENV = 'STNL_MANAGED_CONTEXT';
 const SPEC_ENV = 'STNL_MANAGED_SPEC_PATH';
@@ -316,6 +318,9 @@ export async function assertManagedRunnerReceipt({ operation, slice, workspace, 
     || threadId !== receipt.threadId || finalMessage !== bytes.toString('utf8')) {
     fail('receipt is not backed by the completed SDK turn and exact response');
   }
+  const verification = JSON.parse((await fs.readFile(path.join(tmpdir, `${stem}.verification.json`), 'utf8')));
+  if (JSON.stringify(verification) !== JSON.stringify(receipt.verification)) fail('managed verification producer observation differs');
+  assertRunnerVerification(receipt.verification, await readRunnerVerification(context.specPath, context.slice));
   assertExecutionAttempt((await readExecutionActivation(context.specPath)).activation, context.owner);
   if (`sha256:${await computeRequirementsAuthority(context.specPath)}` !== context.authority) fail('runner receipt authority is stale');
   if (rejected) {

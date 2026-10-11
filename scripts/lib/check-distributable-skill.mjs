@@ -33,6 +33,12 @@ const DYNAMIC_CODE_IDENTIFIER_PATTERN = new RegExp(
 );
 const DYNAMIC_CODE_MODULES = new Set(["vm", "node:vm"]);
 
+// Explicit execution capability of the reviewed-recipe producer only. Other
+// operational kernels, including lifecycle, remain unable to spawn commands.
+export const EXECUTION_DISTRIBUTION_POLICY = Object.freeze({
+  externalCommandRuntimes: ['runtime/runner-verification.mjs'],
+});
+
 export const LIFECYCLE_DISTRIBUTION_POLICY = Object.freeze({
   allowedRuntimeExtensions: [".mjs", ".json"],
   requiredEntrypoints: [
@@ -521,7 +527,8 @@ export async function checkDistributableSkill(skillRoot, policy = {}) {
     if (
       relativePath.startsWith("runtime/") &&
       !relativePath.startsWith("runtime/test/") &&
-      specifiers.includes("node:child_process")
+      specifiers.includes("node:child_process") &&
+      !(policy.externalCommandRuntimes ?? []).includes(relativePath)
     ) {
       findings.push(`operational runtime must not execute external commands: ${relativePath}`);
     }

@@ -4,10 +4,10 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
-import { startNativeRunnerCapture, bindNativeRunnerIdentity, captureNativeRunnerResult } from '../skills/workflows/stnl-slice-executor/runtime/capture-runner-response.mjs';
+import { startNativeRunnerCapture, bindNativeRunnerIdentity, captureNativeRunnerResult, runNativeRunnerVerification } from '../skills/workflows/stnl-slice-executor/runtime/capture-runner-response.mjs';
 import { spawnSync, fork, spawn } from 'node:child_process';
 import { pathToFileURL, fileURLToPath } from 'node:url';
-import { fixture, approveFixture } from './test-p1b-preparation.mjs';
+import { fixture, approveFixture, verificationBody } from './test-p1b-preparation.mjs';
 import { readExecutionActivation, beginPreparedExecutionOperation, inspectExecutionState, validateExecutionCandidate } from '../skills/workflows/stnl-slice-executor/runtime/execution-state.mjs';
 import { prepareExecutionCopy, publishExecutionCopy } from '../skills/workflows/stnl-slice-executor/runtime/prepare-execution-copy.mjs';
 import { updateOperationalChecklist, parseStrictJson } from '../skills/workflows/stnl-execution-planner/runtime/execution-preparation.mjs';
@@ -30,6 +30,8 @@ const ownerEnvironment = async (f, owner) => {
   return ownerFile;
 };
 
+import {verificationCommand} from '../skills/workflows/stnl-slice-executor/runtime/runner-verification.mjs';
+
 // Native tool identities/results are simulated here; the product origin and
 // capture boundaries are real and no agent/model or external call is made.
 async function startOfflineNative(f, owner) {
@@ -39,6 +41,7 @@ async function startOfflineNative(f, owner) {
   return { ...origin, agentId };
 }
 async function captureOfflineNative(started, response, changedAreas = null) {
+  await runNativeRunnerVerification({originFile:started.originFile});
   return captureNativeRunnerResult({ originFile:started.originFile,
     result:{agentId:started.agentId,status:'completed',finalResponse:JSON.stringify(response)}, changedAreas });
 }
@@ -66,7 +69,7 @@ export async function implementOffline(f, admitted, { forceFail = false, slice =
   await fs.writeFile(path.join(f.root, `${directory}/greeting.test.mjs`), 'import test from "node:test"; import assert from "node:assert/strict"; import {greeting} from "./unpredicted.mjs"; test("AC-001 greeting",()=>assert.equal(greeting,"hello"));\n');
   if(beforeChecks) await beforeChecks();
   const checkedFiles=[`${directory}/greeting.test.mjs`,...regressionFiles];
-  const command = `node --test ${checkedFiles.join(' ')}`;
+  const command = verificationCommand(native.verification.checks[0]);
   const observed = spawnSync(process.execPath, ['--test', ...checkedFiles], { cwd: f.root, env: commandEnvironment, encoding: 'utf8' });
   assert.equal(observed.status, forceFail ? 1 : 0, observed.stderr);
   assert.match(observed.stdout,new RegExp(`^# tests ${checkedFiles.length}$`,'mu'));
@@ -102,6 +105,7 @@ export async function runFirstRemoval({afterFormal=null}={}) {
         text=setSection(text,'Expected Files','- `src/obsolete.mjs`\n- `src/removal.test.mjs`');
         text=setSection(text,'Existing Inputs','- `src/obsolete.mjs`');
         text=setSection(text,'Expected Tests','- node --test src/removal.test.mjs');
+        text=setSection(text,'Verification Recipe',verificationBody({file:'src/removal.test.mjs'}));
       }
       if(name.startsWith('plans/')) {
         text=setSection(text,'Objective and Observable Result','Remove the obsolete module and observe file absence.');
@@ -584,6 +588,7 @@ test('native provenance rejects replay, wrong agent and duplicate dispatch; fres
     let invocations=1;
     const response=formalResponse(implementation.command,'BLOCKED');
     const result={agentId:invocation.agentId,status:'completed',finalResponse:JSON.stringify(response)};
+    await runNativeRunnerVerification({originFile:invocation.originFile});
     const captured=await captureNativeRunnerResult({originFile:invocation.originFile,result});
     assert.deepEqual(await captureNativeRunnerResult({originFile:invocation.originFile,result}),captured);
     assert.equal(invocations,1);
@@ -671,15 +676,15 @@ test('rejected formal candidate recovery uses the same concluded managed receipt
     Object.assign(officialPreflight,{owner:context.owner,expectedActivationId:context.expectedActivationId});
     const {startOfficialRunnerBroker,submitOfficialRunnerRequest}=await import('../agents/codex/runtime/runner-broker.mjs');
     const {invokeIndependentRunner}=await import('../agents/codex/runtime/validation-runner.mjs');
-    const command='STNL_VERIFICATION_COMMAND=1 node -e "process.exit(7)"';
+    const command='node --test src/greeting.test.mjs';
+    // A real failure of the reviewed recipe, with no undeclared ad-hoc proof.
+    process.env.NODE_OPTIONS='--stnl-intentionally-invalid-option';
     const response=formalResponse('semantic command claim');
     broker=await startOfficialRunnerBroker({workspace:f.root,tmpdir,operation:'VALIDATE_SLICE',sequence:1,slice:'slice-01',officialPreflight,pollIntervalMs:1,
       invoke:request=>invokeIndependentRunner({...request,snapshot:ROOT,env,runTurn:async args=>{
-        calls+=1; const result=spawnSync(process.execPath,['-e','process.exit(7)'],{cwd:f.root,encoding:'utf8'});assert.equal(result.status,7);
+        calls+=1; const result=spawnSync(process.execPath,['--test','src/greeting.test.mjs'],{cwd:f.root,encoding:'utf8'});assert.equal(result.status,9);
         const threadId='offline-sdk-'+randomUUID();
         const events=[{type:'thread.started',thread_id:threadId},{type:'turn.started'},
-          {type:'item.started',item:{id:'item_0',type:'command_execution',command,status:'in_progress',exit_code:null}},
-          {type:'item.completed',item:{id:'item_0',type:'command_execution',command,status:'failed',exit_code:result.status}},
           {type:'item.completed',item:{id:'final',type:'agent_message',text:JSON.stringify(response)}},{type:'turn.completed'}];
         await fs.writeFile(args.eventsPath,events.map(event=>JSON.stringify({...event,operationId:args.operationId})).join('\n')+'\n',{flag:'wx'});
         return {completed:true,turnStarted:true,threadId,error:null,processError:null,errorEvent:null,requestedModel:args.model,requestedEffort:args.effort,reportedModel:args.model,usage:null};
@@ -694,7 +699,7 @@ test('rejected formal candidate recovery uses the same concluded managed receipt
     // only its bounded structured cause and the original concluded SDK event.
     const binding=['deliveryId','preparationRevision','normativeSha256','operationAttemptId','originActivationId'];
     const labels=['Delivery ID','Preparation revision','Normative sha256','Operation attempt ID','Origin activation ID'];
-    const attempt=['### attempt-01','',...binding.map((key,i)=>'- '+labels[i]+': '+context.owner[key]),'- Type: initial','- Status: PASS','- HEAD: offline-working-tree','- Verified scope: ../../src/greeting.test.mjs, ../../src/unpredicted.mjs','- Commands:','  - `'+command+'` | exit:7','- Evidence: Real failed verification event contradicts claimed PASS.','- Finding references: none','- Finding dispositions: none','- Blockers: none','- Unexpected workspace effects: none','- Persistence summary: Preserve rejected proposal.'].join('\n');
+    const attempt=['### attempt-01','',...binding.map((key,i)=>'- '+labels[i]+': '+context.owner[key]),'- Type: initial','- Status: PASS','- HEAD: offline-working-tree','- Verified scope: ../../src/greeting.test.mjs, ../../src/unpredicted.mjs','- Commands:','  - `'+command+'` | exit:9','- Evidence: Real failed verification event contradicts claimed PASS.','- Finding references: none','- Finding dispositions: none','- Blockers: none','- Unexpected workspace effects: none','- Persistence summary: Preserve rejected proposal.'].join('\n');
     await fs.writeFile(rejectedTask,setSection(await fs.readFile(rejectedTask,'utf8'),'Validation Attempts',attempt));
     await assert.rejects(validateExecutionCandidate(f.specPath,rejected.candidateExecutionRoot),error=>{if(error.contractViolation?.code!=='PASS_COMMAND_EXIT_NONZERO')console.error(error.stack);return error.contractViolation?.code==='PASS_COMMAND_EXIT_NONZERO';});
     const before=await fs.readFile(rejectedTask);const snapshot=(await readExecutionActivation(f.specPath)).activation.approvedSnapshotSha256;

@@ -8,12 +8,12 @@ const UUID = /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/u;
 const PLAN = ['Global Context', 'Serial Slice Order', 'Delivery Continuity', 'Global Risks and Integration'];
 const DETAIL = ['References', 'Objective and Observable Result', 'Requirements', 'Included Scope',
   'Out of Scope and Boundaries', 'Authorized Areas', 'Expected Files', 'Existing Inputs', 'Protected Responsibilities',
-  'Dependencies', 'Risks and Strategy', 'Expected Tests', 'Completion Criterion'];
+  'Dependencies', 'Risks and Strategy', 'Expected Tests', 'Verification Recipe', 'Completion Criterion'];
 const RECORDS = ['Changed Areas', 'Scope Expansion', 'Prior Validation Overlap', 'Divergences', 'Delegation Blocker',
   'Implementation Test Evidence', 'Findings Test Evidence', 'Validation Attempts', 'Validation Findings',
   'Corrections Applied', 'Effective Validation Base', 'Diff Summary', 'Final Result'];
 const TASK = ['References', 'Result', 'Acceptance Obligations', 'Authorized Areas', 'Expected Files', 'Existing Inputs',
-  'Protected Responsibilities', 'Checklist', 'Expected Tests', 'Continuity', 'Operational Changes', ...RECORDS];
+  'Protected Responsibilities', 'Checklist', 'Expected Tests', 'Verification Recipe', 'Continuity', 'Operational Changes', ...RECORDS];
 const reject = message => { throw new Error(`preparation contract: ${message}`); };
 const normalized = value => value.replaceAll('\r\n', '\n').trim();
 
@@ -38,7 +38,7 @@ function inlineFields(body, label) {
   return result;
 }
 
-export function parsePreparationArtifact(text, artifact) {
+export function parsePreparationArtifact(text, artifact, {historical = false} = {}) {
   if (typeof text !== 'string' || text.includes('\0')) reject(`${artifact} is not UTF-8 text`);
   const source = text.replaceAll('\r\n', '\n');
   const header = /^# File Purpose Header\n\n```yaml\n([\s\S]*?)```\n\n/u.exec(source);
@@ -63,7 +63,8 @@ export function parsePreparationArtifact(text, artifact) {
     if (/^#{1,2} /mu.test(value)) reject(`${artifact} has a concealed heading`);
   }
   const kind = artifact === 'plan.md' ? 'plan' : artifact.startsWith('plans/') ? 'detail' : 'task';
-  const expected = kind === 'plan' ? PLAN : kind === 'detail' ? DETAIL : TASK;
+  let expected = kind === 'plan' ? PLAN : kind === 'detail' ? DETAIL : TASK;
+  if (historical && !Object.hasOwn(sections, 'Verification Recipe')) expected = expected.filter(name => name !== 'Verification Recipe');
   if (Object.keys(sections).join('\0') !== expected.join('\0')) reject(`${artifact} has unknown, missing or unordered sections (legacy preparation preserved)`);
   const fields = inlineFields(sections[kind === 'plan' ? 'Global Context' : 'References'], artifact);
   if (!HASH.test(fields['Requirements authority']) || !/^[1-9][0-9]*$/u.test(fields['Plan revision'] ?? '')) reject(`${artifact} has invalid authority/revision`);
@@ -92,6 +93,40 @@ export function preparationPathClaims(body, label) {
     || path.posix.normalize(claim) !== claim || claim === '.') || new Set(claims).size !== claims.length) reject(`${label} requires distinct artifact-relative paths`);
   return claims;
 }
+
+// Explicit reviewed references only: prose and filesystem homonyms never select inputs.
+export function parseVerificationRecipe(body) {
+  if (typeof body !== 'string' || !body.startsWith('- Recipe: ') || body.includes('\n')) reject('Verification Recipe requires one JSON carrier');
+  const recipe = parseStrictJson(body.slice('- Recipe: '.length));
+  keys(recipe, ['format', 'base', 'cwd', 'checks', 'dependencyReview'], 'Verification Recipe');
+  if (recipe.format !== 'stnl-verification-recipe-v1' || recipe.base !== 'workspace'
+    || typeof recipe.cwd !== 'string' || path.posix.isAbsolute(recipe.cwd) || recipe.cwd.includes('\\')
+    || path.posix.normalize(recipe.cwd) !== recipe.cwd || recipe.cwd.split('/').includes('..')) reject('invalid verification execution base');
+  populated(recipe.dependencyReview, 'verification indirect dependency review');
+  if (!Array.isArray(recipe.checks) || recipe.checks.length === 0 || recipe.checks.length > 32) reject('verification requires bounded nonempty checks');
+  const ids = new Set();
+  const reference = ref => {
+    keys(ref, ['kind', 'path'], 'verification file reference');
+    if (!['product', 'input'].includes(ref.kind)) reject('verification reference kind must be product/input');
+    preparationPathClaims('- `' + ref.path + '`', 'verification file reference');
+  };
+  const argument = arg => {
+    if (Object.hasOwn(arg ?? {}, 'literal')) {
+      keys(arg, ['literal'], 'verification literal');
+      if (typeof arg.literal !== 'string' || /[\r\n\0]/u.test(arg.literal)) reject('invalid verification literal');
+    } else { keys(arg, ['file'], 'verification argument'); reference(arg.file); }
+  };
+  for (const check of recipe.checks) {
+    keys(check, ['id', 'executable', 'args', 'inputs'], 'verification check');
+    if (!/^verification-[0-9]{2,}$/u.test(check.id) || ids.has(check.id)) reject('verification check identity differs');
+    ids.add(check.id); argument(check.executable);
+    if (check.executable.literal === '' || !Array.isArray(check.args) || !Array.isArray(check.inputs)) reject('invalid verification command');
+    check.args.forEach(argument); check.inputs.forEach(reference);
+  }
+  return recipe;
+}
+export const verificationReferences = recipe => recipe.checks.flatMap(check =>
+  [check.executable, ...check.args].filter(arg => arg.file).map(arg => arg.file).concat(check.inputs));
 
 function obligations(body, label) {
   const rows = body.split('\n').map(line => {
@@ -125,10 +160,10 @@ export function parsePreparationTableRow(line, count, label) {
   return columns;
 }
 
-export function projectPreparationAuthority(artifacts) {
+export function projectPreparationAuthority(artifacts, {historical = false} = {}) {
   const entries = artifacts instanceof Map ? [...artifacts] : Object.entries(artifacts);
   const texts = new Map(entries);
-  const parsed = new Map(entries.filter(([name]) => name !== 'tasks.md').map(([name, text]) => [name, parsePreparationArtifact(text, name)]));
+  const parsed = new Map(entries.filter(([name]) => name !== 'tasks.md').map(([name, text]) => [name, parsePreparationArtifact(text, name, {historical})]));
   const global = parsed.get('plan.md');
   if (!global || !texts.has('tasks.md')) reject('Plan and Tasks must be produced together');
   const table = global.sections['Serial Slice Order'].split('\n');
@@ -177,6 +212,10 @@ export function projectPreparationAuthority(artifacts) {
     const detailAreas = preparationAreaClaims(detail.sections['Authorized Areas']);
     if (JSON.stringify(globalAreas) !== JSON.stringify(detailAreas.map(area => ({ kind: area.kind, path: path.posix.normalize(path.posix.join('plans', area.path)) })))) reject(`${row.slice} authorization differs between global and detailed Plan`);
     const declared = obligations(task.sections['Acceptance Obligations'], row.slice);
+    if (!historical || detail.sections['Verification Recipe'] || task.sections['Verification Recipe']) {
+      const recipe = parseVerificationRecipe(detail.sections['Verification Recipe']);
+      if (JSON.stringify(recipe) !== JSON.stringify(parseVerificationRecipe(task.sections['Verification Recipe']))) reject(`${row.slice} Verification Recipe differs between Plan and Task`);
+    }
     preparationChecklist(task.sections.Checklist, declared, row.slice);
     const operative = ['Expected Files', 'Checklist', 'Continuity', 'Operational Changes', ...RECORDS];
     const norm = Object.fromEntries(Object.entries(task.sections).filter(([name]) => !operative.includes(name)));
@@ -227,7 +266,7 @@ export async function readPreparationArtifacts(root) {
   return new Map([...result].sort(([left], [right]) => left.localeCompare(right, 'en')));
 }
 
-export function validateApprovedPreparation(snapshot) {
+export function validateApprovedPreparation(snapshot, {historical = false} = {}) {
   keys(snapshot, ['format', 'preparationRevision', 'requirementsAuthority', 'normativeSha256', 'reviewDecision', 'deliveries', 'normativeProjection', 'reviewedArtifacts'], 'snapshot');
   if (snapshot.format !== 'stnl-preparation-v2') reject('legacy snapshot is incompatible');
   keys(snapshot.reviewDecision, ['operation', 'status', 'examined', 'summary'], 'review decision');
@@ -241,7 +280,7 @@ export function validateApprovedPreparation(snapshot) {
     if (typeof record.utf8 !== 'string' || sha256(Buffer.from(record.utf8)) !== record.sha256 || artifacts.has(record.path)) reject('reviewed bytes differ or duplicate');
     artifacts.set(record.path, record.utf8);
   }
-  const authority = projectPreparationAuthority(artifacts);
+  const authority = projectPreparationAuthority(artifacts, {historical});
   for (const name of ['preparationRevision', 'requirementsAuthority', 'normativeSha256', 'normativeProjection', 'deliveries']) {
     if (JSON.stringify(snapshot[name]) !== JSON.stringify(authority[name])) reject(`snapshot ${name} differs from final review`);
   }

@@ -205,6 +205,8 @@ export async function assertOwnedPreparationCandidate({ candidateExecutionRoot, 
   if (!['PLAN', 'REPLAN', 'REVIEW_PLAN'].includes(marker.operation)
     || (specPath && marker.specPath !== await fs.realpath(specPath))) fail('candidate preparation identity differs');
   const workspace = await resolveWorkspace(marker.specPath);
+  await assertRegisteredPreparationAllocation(workspace, marker);
+  if (!equal(marker.source, await captureExecutionTree(workspace.executionRoot))) fail('preparation source/CAS is stale');
   if (marker.executionRoot !== workspace.executionRoot || inside(root, workspace.executionRoot)
     || inside(workspace.executionRoot, root) || (workspace.specRoot && inside(root, workspace.specRoot))) fail('preparation requires an isolated owned candidate');
   await captureExecutionTree(root);
@@ -521,6 +523,73 @@ async function assertPreparationAllocationRoot(record) {
   if(!metadata?.isDirectory() || metadata.isSymbolicLink() || await fs.realpath(record.candidate)!==record.candidate
     || !equal(identity(metadata),record.candidateIdentity)) fail('preparation physical allocation identity differs');
 }
+
+// Immutable creation associations, separate from freely edited candidate bytes.
+// The path comes only from the independently resolved official workspace/U1 lock.
+export async function preparationRegistryPath(workspace) {
+  const location = await executionLockIdentity(workspace);
+  return location.lockPath.replace(/\.lock$/u, '.preparations.json');
+}
+const preparationBinding = record => Object.fromEntries(['allocationId', 'executionRoot', 'specPath', 'candidate',
+  'candidateIdentity', 'operation', 'source', 'expectedActivationId', 'preparationRevision'].map(key => [key, record[key]]));
+function validatePreparationRegistry(record, workspace) {
+  closed(record, ['format', 'executionRoot', 'allocations'], 'preparation registry');
+  if (record.format !== 'stnl-preparation-registry-v1' || record.executionRoot !== workspace.executionRoot
+    || !Array.isArray(record.allocations)) fail('preparation registry execution differs');
+  const ids = new Set(), roots = new Set();
+  for (const binding of record.allocations) {
+    closed(binding, ['allocationId', 'executionRoot', 'specPath', 'candidate', 'candidateIdentity', 'operation',
+      'source', 'expectedActivationId', 'preparationRevision'], 'preparation association');
+    const envelope = { ...binding, format: 'stnl-preparation-allocation-v1', producer: 'preparation', retentionRoot: binding.candidate };
+    if (binding.executionRoot !== workspace.executionRoot || !hasOwnedAllocationEnvelope(envelope, `${binding.candidate}.owner.json`)
+      || ids.has(binding.allocationId) || roots.has(binding.candidate)) fail('invalid/duplicate preparation association');
+    ids.add(binding.allocationId); roots.add(binding.candidate);
+  }
+  return record;
+}
+export async function assertRegisteredPreparationAllocation(workspace, record) {
+  if (record.executionRoot !== workspace.executionRoot) fail('preparation belongs to another official execution');
+  const file = await preparationRegistryPath(workspace);
+  let captured;
+  try { captured = await readOwnedFile(file); } catch (error) { fail(`preparation registry unavailable: ${error.message}`); }
+  const registry = validatePreparationRegistry(parseStrictJson(captured.bytes.toString('utf8')), workspace);
+  const binding = registry.allocations.find(entry => entry.allocationId === record.allocationId);
+  if (!binding || !equal(binding, preparationBinding(record))) fail('preparation allocation producer association absent or differs');
+  await assertPreparationAllocationRoot(record);
+  const after = await readOwnedFile(file);
+  if (!captured.bytes.equals(after.bytes) || !equal(captured.identity, after.identity)) fail('preparation registry changed during verification');
+  return binding;
+}
+// Creates its own destination. There is no API to adopt/register an existing root.
+export async function allocatePreparationCandidate({ workspace, lease, captureParent, metadata }) {
+  await assertExecutionPublicationLock(lease);
+  if (lease.executionRoot !== workspace.executionRoot) fail('preparation lease differs');
+  const source = await captureExecutionTree(workspace.executionRoot);
+  const root = await fs.realpath(await fs.mkdtemp(path.join(captureParent, 'stnl-preparation-')));
+  if (source) await fs.cp(workspace.executionRoot, root, { recursive: true });
+  const tree = await captureExecutionTree(root);
+  if (source && !equal(tree.files, source.files)) fail('preparation source changed during copy');
+  const record = { ...metadata, format: 'stnl-preparation-allocation-v1', producer: 'preparation', allocationId: randomUUID(),
+    candidate: root, retentionRoot: root, candidateIdentity: tree.identity, executionRoot: workspace.executionRoot, source };
+  if (!hasOwnedAllocationEnvelope(record, `${root}.owner.json`)) fail('invalid preparation producer metadata');
+  await writeNew(`${root}.owner.json`, Buffer.from(JSON.stringify(record) + '\n'));
+  const file = await preparationRegistryPath(workspace);
+  const existing = await stat(file);
+  const registry = existing ? validatePreparationRegistry(parseStrictJson((await readOwnedFile(file)).bytes.toString('utf8')), workspace)
+    : { format: 'stnl-preparation-registry-v1', executionRoot: workspace.executionRoot, allocations: [] };
+  registry.allocations.push(preparationBinding(record));
+  validatePreparationRegistry(registry, workspace);
+  await assertExecutionPublicationLock(lease);
+  if (!equal(source, await captureExecutionTree(workspace.executionRoot))) fail('preparation source/CAS changed before registration');
+  if (existing) await persistAllocation(file, registry);
+  else await writeNew(file, Buffer.from(JSON.stringify(registry, null, 2) + '\n'));
+  const directory = await fs.open(path.dirname(file), constants.O_RDONLY);
+  try { await directory.sync(); } finally { await directory.close(); }
+  await assertExecutionPublicationLock(lease);
+  await assertRegisteredPreparationAllocation(workspace, record);
+  for (const name of ['activation.json', 'approved-preparation.json']) await fs.rm(path.join(root, name), { force: true });
+  return root;
+}
 export function hasOwnedAllocationEnvelope(record, marker) {
   const uuid=value=>typeof value==='string' && /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/u.test(value);
   if(!record || !uuid(record.allocationId) || !path.isAbsolute(record.executionRoot ?? '') || !path.isAbsolute(record.retentionRoot ?? '')) return false;
@@ -569,7 +638,7 @@ export async function classifyOwnedAllocation({ workspace, marker=null, activati
   }
   const record = parseStrictJson((await readOwnedFile(marker)).bytes.toString('utf8'));
   if(!hasOwnedAllocationEnvelope(record,marker)) fail('unproven allocation: producer envelope is absent or inconsistent');
-  if(record.format==='stnl-preparation-allocation-v1') await assertPreparationAllocationRoot(record);
+  if(record.format==='stnl-preparation-allocation-v1') await assertRegisteredPreparationAllocation(workspace,record);
   if (record.executionRoot !== workspace.executionRoot) fail('allocation belongs to another execution');
   if (!/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/u.test(record.allocationId) || !path.isAbsolute(record.retentionRoot)
     || !['stnl-execution-publication-owner-v1','stnl-runner-allocation-v1','stnl-preparation-allocation-v1'].includes(record.format)

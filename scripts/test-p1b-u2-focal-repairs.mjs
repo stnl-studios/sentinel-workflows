@@ -5,7 +5,7 @@ import os from 'node:os';
 import test from 'node:test';
 import {randomUUID} from 'node:crypto';
 import {spawnSync} from 'node:child_process';
-import {fixture,approveFixture} from './test-p1b-preparation.mjs';
+import {fixture,approveFixture,verificationBody} from './test-p1b-preparation.mjs';
 import {implementedFixture,formal,native,capture,setSection,evidence} from './test-p1b-continuity.mjs';
 import {implementOffline} from './test-p1b-publication.mjs';
 import {resolveExecutionWorkspace,readExecutionActivation,beginPreparedExecutionOperation,inspectDeliveryContinuity,inspectExecutionState,validateExecutionCandidate} from '../skills/workflows/stnl-slice-executor/runtime/execution-state.mjs';
@@ -58,6 +58,7 @@ async function proofFixture({declared=false,withConfig=false}={}) {
   for(const name of ['plans/slice-01.md','tasks/slice-01.md']) {
     const p=path.join(f.candidate,name);let text=await fs.readFile(p,'utf8');
     text=setSection(text,'Expected Tests','- node --test checks/greeting.test.mjs'+(withConfig?' (configuration `checks/greeting.config.json`)':''));
+    text=setSection(text,'Verification Recipe',verificationBody({file:'checks/greeting.test.mjs',kind:'input',inputs:withConfig ? ['checks/greeting.config.json'] : []}));
     if(declared)text=setSection(text,'Existing Inputs','- `checks/greeting.test.mjs`'+(declared==='all'?'\n- `checks/greeting.config.json`':''));
     await fs.writeFile(p,text);
   }

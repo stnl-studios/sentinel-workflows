@@ -5,7 +5,9 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { assertExecutionAttempt, assertOwnedOperationalCandidate, bindExecutionBroker, readOwnedFile, withExecutionPublicationLock, executionLockIdentity, parseStrictJson, registerRunnerAllocation, persistAllocation } from './execution-publication.mjs';
-import { preflightExecutionOperation, readExecutionActivation, resolveExecutionWorkspace, validateExecutionCandidate } from './execution-state.mjs';
+import { preflightExecutionOperation, readExecutionActivation, resolveExecutionWorkspace, validateExecutionCandidate, readRunnerVerification, observeRunnerVerificationState } from './execution-state.mjs';
+
+import { executeRunnerVerification, assertRunnerVerification } from './runner-verification.mjs';
 
 const nativeJson = async file => parseStrictJson((await readOwnedFile(file)).bytes.toString('utf8'));
 const nativeHash = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
@@ -55,7 +57,7 @@ export async function startNativeRunnerCapture({ specPath, owner, workspace, cap
       const origin = { ...await nativeJson(path.join(root, 'round-1.origin.json')), attempt: origins.length + 1 };
       const originFile = path.join(root, `round-${origin.attempt}.origin.json`);
       await nativeWrite(originFile, origin);
-      return { originFile, owner, attempt: origin.attempt };
+      return { originFile, owner, attempt: origin.attempt, verification:origin.verification };
     });
   }
   const parent = await fs.realpath(captureParent);
@@ -65,13 +67,13 @@ export async function startNativeRunnerCapture({ specPath, owner, workspace, cap
   const root = await fs.mkdtemp(path.join(parent, '.stnl-native-runner-'));
   await registerRunnerAllocation({workspace:official,owner,root,producer:'native-runner'});
   const origin = { transport: 'native', specPath: await fs.realpath(specPath), workspace: await fs.realpath(workspace),
-    owner, dispatchId: crypto.randomUUID(), attempt: 1 };
+    owner, verification:await readRunnerVerification(specPath, owner.slice), dispatchId: crypto.randomUUID(), attempt: 1 };
   await nativeWrite(path.join(root, 'owner.json'), origin);
   const originFile = path.join(root, 'round-1.origin.json');
   await nativeWrite(originFile, origin);
   await bindExecutionBroker({ workspace: official, owner, runner: { dispatchId: origin.dispatchId,
     receiptFile: path.join(root, 'owner.json'), threadId: null, status: 'pending' }, readActivated: () => readExecutionActivation(specPath) });
-  return { originFile, owner, attempt: 1 };
+  return { originFile, owner, attempt: 1, verification:origin.verification };
 }
 
 // agentId must come from the actual native spawn result, before waiting for its
@@ -96,12 +98,29 @@ export async function bindNativeRunnerIdentity({ originFile, agentId }) {
 
 // Consume the concluded result of the previously bound native agent. There is
 // deliberately no API that stamps an arbitrary raw response file with an owner.
+export async function runNativeRunnerVerification({ originFile }) {
+  const { origin, root } = await nativeOrigin(originFile);
+  await nativeJson(path.join(root, `round-${origin.attempt}.agent.json`));
+  if (JSON.stringify(await readRunnerVerification(origin.specPath,origin.owner.slice)) !== JSON.stringify(origin.verification)) fail('native runner recipe changed since dispatch');
+  return executeRunnerVerification({verification:origin.verification,outputFile:path.join(root,`round-${origin.attempt}.verification.json`),
+    observeState:()=>observeRunnerVerificationState(origin.specPath,origin.owner.slice)});
+}
+
 export async function captureNativeRunnerResult({ originFile, result, changedAreas = null }) {
   const { origin, root, workspace } = await nativeOrigin(originFile);
-  let testedState = null;
-  if (origin.owner.operation !== 'VALIDATE_SLICE' && !await fs.lstat(path.join(root, `round-${origin.attempt}.receipt.json`)).catch(error => { if (error.code === 'ENOENT') return null; throw error; })) {
-    const { captureRunnerTestedState } = await import('./serialize-runner-evidence.mjs');
-    testedState = await captureRunnerTestedState({ workspace: origin.workspace, taskArtifact: path.join(workspace.executionRoot, 'tasks', `${origin.owner.slice}.md`), changedAreas });
+  const boundAgent = await nativeJson(path.join(root, `round-${origin.attempt}.agent.json`));
+  if (result?.agentId !== boundAgent.agentId || result.status !== 'completed' || typeof result.finalResponse !== 'string') fail('native result is not from the bound concluded agent');
+  let verification = null, testedState = null;
+  if (!await fs.lstat(path.join(root, `round-${origin.attempt}.receipt.json`)).catch(error => { if (error.code === 'ENOENT') return null; throw error; })) {
+    const currentVerification = await readRunnerVerification(origin.specPath, origin.owner.slice);
+    if (JSON.stringify(currentVerification) !== JSON.stringify(origin.verification)) fail('native runner recipe changed since dispatch');
+    if (!await fs.lstat(path.join(root, `round-${origin.attempt}.verification.json`)).catch(error => { if(error.code==='ENOENT')return null; throw error; })) fail('native runner did not execute the reviewed recipe through verify-native');
+    verification = await executeRunnerVerification({verification:origin.verification, outputFile:path.join(root, `round-${origin.attempt}.verification.json`), observeState:()=>observeRunnerVerificationState(origin.specPath,origin.owner.slice)});
+    if (JSON.stringify(await readRunnerVerification(origin.specPath, origin.owner.slice)) !== JSON.stringify(origin.verification)) fail('native runner recipe changed during checks');
+    if (origin.owner.operation !== 'VALIDATE_SLICE') {
+      const { captureRunnerTestedState } = await import('./serialize-runner-evidence.mjs');
+      testedState = await captureRunnerTestedState({workspace:origin.workspace, taskArtifact:path.join(workspace.executionRoot,'tasks',`${origin.owner.slice}.md`), changedAreas});
+    }
   }
   return withExecutionPublicationLock(workspace, async () => {
     await nativeOrigin(originFile);
@@ -124,7 +143,7 @@ export async function captureNativeRunnerResult({ originFile, result, changedAre
     const receipt = { transport: 'native', originFile, owner: origin.owner, operation: origin.owner.operation,
       slice: origin.owner.slice, workspace: origin.workspace, attempt: origin.attempt, threadId: agent.agentId,
       receiptFile, semanticResponseFile, semanticResponseSha256: nativeHash(result.finalResponse),
-      semanticResponseStatus: payload.status, status: 'RUNNER_RESPONSE_CAPTURED', captureFailure: null, error: null, testedState };
+      semanticResponseStatus: payload.status, status: 'RUNNER_RESPONSE_CAPTURED', captureFailure: null, error: null, testedState, verification };
     await nativeWrite(receiptFile, receipt);
     return { receiptFile, semanticResponseFile };
   });
@@ -153,6 +172,10 @@ export async function verifyNativeRunnerReceipt({ receiptFile, semanticResponseF
     || result.finalResponse !== bytes.toString('utf8') || receipt.semanticResponseSha256 !== nativeHash(bytes)
     || receipt.semanticResponseStatus !== JSON.parse(bytes.toString('utf8')).status
     || receipt.status !== 'RUNNER_RESPONSE_CAPTURED' || receipt.error !== null) fail('native receipt/result/origin binding differs');
+  const observed = await nativeJson(path.join(root, `round-${origin.attempt}.verification.json`));
+  if (JSON.stringify(observed) !== JSON.stringify(receipt.verification)) fail('native verification receipt differs from producer observation');
+  assertRunnerVerification(receipt.verification, origin.verification);
+  if (JSON.stringify(await readRunnerVerification(origin.specPath, canonicalSlice)) !== JSON.stringify(origin.verification)) fail('native receipt recipe is stale');
   return receipt;
 }
 
@@ -262,10 +285,10 @@ function parseArgs(argv) {
 }
 
 export async function main(argv) {
-  if (['start-native', 'bind-native', 'capture-native'].includes(argv[0])) {
+  if (['start-native', 'bind-native', 'verify-native', 'capture-native'].includes(argv[0])) {
     const mode = argv[0], values = {};
     const keys = mode === 'start-native' ? ['--spec-path', '--owner-file', '--workspace', '--capture-parent', '--candidate-task-artifact']
-      : mode === 'bind-native' ? ['--origin-file', '--agent-id'] : ['--origin-file', '--tool-result-file', '--changed-areas-file'];
+      : mode === 'bind-native' ? ['--origin-file', '--agent-id'] : mode === 'verify-native' ? ['--origin-file'] : ['--origin-file', '--tool-result-file', '--changed-areas-file'];
     for (let index = 1; index < argv.length; index += 2) {
       const key = argv[index];
       if (!keys.includes(key) || Object.hasOwn(values, key) || !argv[index + 1]) fail('invalid native capture arguments');
@@ -278,6 +301,8 @@ export async function main(argv) {
       result = await startNativeRunnerCapture({ specPath: record.specPath, owner: record.owner, workspace: values['--workspace'], captureParent: values['--capture-parent'], candidateTaskArtifact: values['--candidate-task-artifact'] });
     } else if (mode === 'bind-native') {
       result = await bindNativeRunnerIdentity({ originFile: values['--origin-file'], agentId: values['--agent-id'] });
+    } else if (mode === 'verify-native') {
+      result = await runNativeRunnerVerification({ originFile: values['--origin-file'] });
     } else {
       result = await captureNativeRunnerResult({ originFile: values['--origin-file'], result: await nativeJson(values['--tool-result-file']),
         changedAreas: values['--changed-areas-file'] ? await nativeJson(values['--changed-areas-file']) : null });

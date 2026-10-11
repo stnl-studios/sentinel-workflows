@@ -4,7 +4,7 @@ import path from 'node:path';
 import { assertPreparationCandidate } from './prepare-plan-candidate.mjs';
 import { pathToFileURL } from 'node:url';
 import { resolveExecutionWorkspace, resolvePhysicalImplementationTarget, resolveSemanticPhysicalImplementationTarget } from './execution-state.mjs';
-import { preparationPathClaims, preparationAreaClaims } from './execution-preparation.mjs';
+import { preparationPathClaims, preparationAreaClaims, parseVerificationRecipe, verificationReferences } from './execution-preparation.mjs';
 
 function body(text, heading) {
   const match = new RegExp(`^## ${heading}\\n\\n([\\s\\S]*?)(?=^## |$(?![\\s\\S]))`, 'mu').exec(text);
@@ -32,6 +32,16 @@ export async function serializeTaskPathClaims({ specPath, candidateExecutionRoot
       const value = canonical.join('\n') || '- none';
       plan = plan.replace(source, value); task = task.replace(body(task, carrier), value); serializedClaims += claims.length;
     }
+    const recipeBody = body(plan, 'Verification Recipe');
+    const recipe = parseVerificationRecipe(recipeBody);
+    for (const ref of verificationReferences(recipe)) {
+      const raw = ref.path;
+      const target = raw.startsWith('.') ? await resolvePhysicalImplementationTarget(specPath, {artifact:path.join(workspace.executionRoot, 'plans', file), field:'verification input', raw})
+        : await resolveSemanticPhysicalImplementationTarget(specPath, {raw});
+      ref.path = path.relative(path.join(workspace.executionRoot, 'tasks'), target.physicalTarget).split(path.sep).join('/');
+    }
+    const recipeCarrier = '- Recipe: ' + JSON.stringify(recipe);
+    plan = plan.replace(recipeBody, recipeCarrier); task = task.replace(body(task, 'Verification Recipe'), recipeCarrier);
     for (const [target, text] of [[planPath, plan], [taskPath, task]]) {
       if (await fs.readFile(target, 'utf8') !== text) { await fs.writeFile(target, text); changedPaths.push(target); }
     }

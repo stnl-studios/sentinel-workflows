@@ -334,10 +334,18 @@ async function capturedBeforeRemoval({ workspaceRoot, taskArtifact, claim, expec
   return null;
 }
 
+import { assertRunnerVerification } from './runner-verification.mjs';
+
 export async function resolveCapturedRunnerCommands(options, nativeCommands) {
   const receipt = options.receiptFile ? JSON.parse((await readOwnedFile(options.receiptFile)).bytes.toString('utf8')) : null;
-  if (receipt?.transport === 'native') return nativeCommands;
-  return resolveRunnerCommandEvents(options);
+  if (!receipt?.verification) fail('official runner receipt has no reviewed verification recipe');
+  const commands = assertRunnerVerification(receipt.verification, receipt.verification.verification);
+  if (receipt.transport === 'native' && JSON.stringify(nativeCommands) !== JSON.stringify(commands)) fail('native response commands differ from reviewed recipe observation');
+  if (receipt.transport !== 'native') {
+    const events = await resolveRunnerCommandEvents(options);
+    if (events.length) fail('additional SDK verification commands require an explicitly reviewed recipe; preserve the observed events');
+  }
+  return commands;
 }
 
 // Validate prospective scope before allocating a runner turn. Execution edits

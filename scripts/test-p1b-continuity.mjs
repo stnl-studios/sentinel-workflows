@@ -7,9 +7,9 @@ import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {fixture,approveFixture,reviewDecision} from './test-p1b-preparation.mjs';
 import {implementOffline} from './test-p1b-publication.mjs';
-import {inspectExecutionState,readExecutionActivation,beginPreparedExecutionOperation,readDeliveryContinuity,inspectDeliveryContinuity,resolveExecutionWorkspace,validateExecutionCandidate} from '../skills/workflows/stnl-slice-executor/runtime/execution-state.mjs';
+import {inspectExecutionState,readExecutionActivation,readRunnerVerification,beginPreparedExecutionOperation,readDeliveryContinuity,inspectDeliveryContinuity,resolveExecutionWorkspace,validateExecutionCandidate} from '../skills/workflows/stnl-slice-executor/runtime/execution-state.mjs';
 import {prepareExecutionCopy,publishExecutionCopy} from '../skills/workflows/stnl-slice-executor/runtime/prepare-execution-copy.mjs';
-import {startNativeRunnerCapture,bindNativeRunnerIdentity,captureNativeRunnerResult} from '../skills/workflows/stnl-slice-executor/runtime/capture-runner-response.mjs';
+import {startNativeRunnerCapture,bindNativeRunnerIdentity,captureNativeRunnerResult,runNativeRunnerVerification} from '../skills/workflows/stnl-slice-executor/runtime/capture-runner-response.mjs';
 import {serializeRunnerExecutionBundleFromResponse,insertExecutionEvidenceInCandidate} from '../skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs';
 import {prepareValidationCopy} from '../skills/workflows/stnl-slice-quality-manager/runtime/prepare-validation-copy.mjs';
 import {prepareValidationCandidate} from '../skills/workflows/stnl-slice-quality-manager/runtime/prepare-validation-candidate.mjs';
@@ -17,6 +17,8 @@ import {publishValidationCandidate} from '../skills/workflows/stnl-slice-quality
 import {preparePreparationCandidate} from '../skills/workflows/stnl-execution-planner/runtime/prepare-task-candidate.mjs';
 import {publishPreparationCandidate} from '../skills/workflows/stnl-execution-planner/runtime/publish-task-candidate.mjs';
 import {readPreparationArtifacts,updateOperationalChecklist} from '../skills/workflows/stnl-execution-planner/runtime/execution-preparation.mjs';
+
+import {verificationCommand} from '../skills/workflows/stnl-slice-executor/runtime/runner-verification.mjs';
 
 export const setSection=(text,heading,body)=>text.replace(new RegExp(`(^## ${heading}\\n\\n)[\\s\\S]*?(?=^## |$(?![\\s\\S]))`,'mu'),`$1${body}\n\n`);
 const commandEnvironment={...process.env};delete commandEnvironment.NODE_TEST_CONTEXT;
@@ -30,11 +32,12 @@ export async function native(f,owner) {
   const agentId=`u2-offline-${randomUUID()}`;f.invocations=(f.invocations ?? 0)+1;
   await bindNativeRunnerIdentity({...start,agentId});return {...start,agentId};
 }
-export const capture=(start,response,changedAreas=null)=>captureNativeRunnerResult({originFile:start.originFile,
-  result:{agentId:start.agentId,status:'completed',finalResponse:JSON.stringify(response)},changedAreas});
+export const capture=async(start,response,changedAreas=null)=>{await runNativeRunnerVerification({originFile:start.originFile});return captureNativeRunnerResult({originFile:start.originFile,
+  result:{agentId:start.agentId,status:'completed',finalResponse:JSON.stringify(response)},changedAreas});};
 export async function evidence(f,label,details={}) {
   const output=path.join(f.root,`u2-${label}-proof.json`);
   await fs.writeFile(output,JSON.stringify({externalCalls:0,fixture:f.root,specPath:f.specPath,invocations:f.invocations ?? null,...details},null,2)+'\n');
+  if(process.env.STNL_U2_EVIDENCE_PARENT) await fs.copyFile(output,path.join(process.env.STNL_U2_EVIDENCE_PARENT,`${label}-${path.basename(f.root)}.json`));
   console.log(`U2 preserved ${label}: ${output}`);
 }
 export async function implementedFixture() {
@@ -54,7 +57,7 @@ export async function formal(f,{reuse=null,publish=true,slice='slice-01',directo
     const start=reuse?.start ?? await native(f,admitted.owner);
     const copy=await prepareValidationCopy({specPath:f.specPath,slice,candidateParent:parent,owner:admitted.owner});
     if(editCandidate) await editCandidate(copy);
-    const response=reuse?.response ?? {status:'PASS',head:'u2-offline-working-tree',commands:[{command:`node --test ${directory}/greeting.test.mjs`,exit:0}],
+    const response=reuse?.response ?? {status:'PASS',head:'u2-offline-working-tree',commands:(await readRunnerVerification(f.specPath,slice)).checks.map(check=>({command:verificationCommand(check),exit:0})),
       evidence:await observedGreeting(f,directory,testCount),findingReferences:'none',findingDispositions:'none',blockers:'none',unexpectedWorkspaceEffects:'none',persistenceSummary:'Preserve the concluded result and its receipt'};
     if(responseOverride) Object.assign(response,responseOverride);
     const captured=reuse?.captured ?? await capture(start,response);
@@ -63,7 +66,7 @@ export async function formal(f,{reuse=null,publish=true,slice='slice-01',directo
     return {admitted,start,response,captured,prepared,copy,publication};
   } finally {if(previous===undefined)delete process.env.STNL_OPERATION_OWNER_FILE;else process.env.STNL_OPERATION_OWNER_FILE=previous;}
 }
-export async function revise(f,{proof='node --test src/greeting.test.mjs (also assert exact export contract)',revision=null,slice='slice-01',exerciseNegatives=false,globalStrategy=null}={}) {
+export async function revise(f,{proof='node --test src/greeting.test.mjs (also assert exact export contract)',revision=null,slice='slice-01',exerciseNegatives=false,globalStrategy=null,recipe=null}={}) {
   const before=await inspectExecutionState(f.specPath);const r=revision ?? before.globalPlan.revision+1;
   const p=await preparePreparationCandidate({specPath:f.specPath,operation:'REPLAN',revisionMode:'same-delivery-revision'});
   const id=before.preparation.deliveries.find(d=>d.slice===slice).deliveryId;
@@ -76,7 +79,7 @@ export async function revise(f,{proof='node --test src/greeting.test.mjs (also a
   if (!plan.includes('- Replan reason:')) plan=plan.replace('- Strategy:', '- Replan reason: The same greeting result needs stronger proof\n- Strategy:');
   await fs.writeFile(path.join(p.candidateExecutionRoot,'plan.md'),plan);
   for (const name of [`plans/${slice}.md`,`tasks/${slice}.md`]) {
-    const file=path.join(p.candidateExecutionRoot,name);await fs.writeFile(file,setSection(await fs.readFile(file,'utf8'),'Expected Tests',`- ${proof}`));
+    const file=path.join(p.candidateExecutionRoot,name);let text=setSection(await fs.readFile(file,'utf8'),'Expected Tests',`- ${proof}`);if(recipe)text=setSection(text,'Verification Recipe',recipe);await fs.writeFile(file,text);
   }
   if(exerciseNegatives) {
     const live=await fs.readFile(path.join(f.workspace.executionRoot,'activation.json'));const injected=randomUUID();const originals=[];

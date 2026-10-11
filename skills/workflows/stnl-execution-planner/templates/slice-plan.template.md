@@ -70,6 +70,10 @@ For a partial contribution, reference the existing requirement ID, describe the 
 
 - <test, command, suite, or observable check>
 
+## Verification Recipe
+
+- Recipe: {"format":"stnl-verification-recipe-v1","base":"workspace","cwd":".","checks":[{"id":"verification-01","executable":{"literal":"node"},"args":[{"literal":"--test"},{"file":{"kind":"product","path":"<verification file>"}}],"inputs":[]}],"dependencyReview":"<reviewed indirect dependencies>"}
+
 ## Completion Criterion
 
 - <objective result and preserved boundary>

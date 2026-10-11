@@ -5,10 +5,10 @@ import { constants as FS_CONSTANTS } from "node:fs";
 import * as fs from "node:fs/promises";
 import os from "node:os";
 import { projectPreparationAuthority, readPreparationArtifacts, parsePreparationArtifact, preparationChecklist,
-  preparationPathClaims, validateApprovedPreparation, validateOperationalChanges, parseStrictJson } from './execution-preparation.mjs';
+  preparationPathClaims, parseVerificationRecipe, verificationReferences, validateApprovedPreparation, validateOperationalChanges, parseStrictJson } from './execution-preparation.mjs';
 import { readActivatedExecution, beginExecutionOperation, withExecutionPublicationLock,
   publishExecutionUpdate, captureExecutionTree, readOwnedFile, assertExecutionAttempt, readRetainedAllocation,
-  retentionSha256, persistAllocation, executionLockIdentity, classifyOwnedAllocation, hasOwnedAllocationEnvelope } from './execution-publication.mjs';
+  retentionSha256, persistAllocation, executionLockIdentity, preparationRegistryPath, classifyOwnedAllocation, hasOwnedAllocationEnvelope } from './execution-publication.mjs';
 import path from "node:path";
 
 const ROOT_FILES = new Set(["plan.md", "tasks.md", "approved-preparation.json", "activation.json", "continuity.json"]);
@@ -55,10 +55,10 @@ const PRISTINE = new Map([
 const GLOBAL_PLAN_SECTIONS = ["Global Context", "Serial Slice Order", "Delivery Continuity", "Global Risks and Integration"];
 const SLICE_PLAN_SECTIONS = [
   "References", "Objective and Observable Result", "Requirements", "Included Scope", "Out of Scope and Boundaries",
-  "Authorized Areas", "Expected Files", "Existing Inputs", "Protected Responsibilities", "Dependencies", "Risks and Strategy", "Expected Tests", "Completion Criterion",
+  "Authorized Areas", "Expected Files", "Existing Inputs", "Protected Responsibilities", "Dependencies", "Risks and Strategy", "Expected Tests", "Verification Recipe", "Completion Criterion",
 ];
 const TASK_SECTIONS = [
-  "References", "Result", "Acceptance Obligations", "Authorized Areas", "Expected Files", "Existing Inputs", "Protected Responsibilities", "Checklist", "Expected Tests", "Continuity", "Operational Changes", "Changed Areas", "Scope Expansion", "Prior Validation Overlap",
+  "References", "Result", "Acceptance Obligations", "Authorized Areas", "Expected Files", "Existing Inputs", "Protected Responsibilities", "Checklist", "Expected Tests", "Verification Recipe", "Continuity", "Operational Changes", "Changed Areas", "Scope Expansion", "Prior Validation Overlap",
   "Divergences", "Delegation Blocker", "Implementation Test Evidence", "Findings Test Evidence", "Validation Attempts",
   "Validation Findings", "Corrections Applied", "Effective Validation Base", "Diff Summary", "Final Result",
 ];
@@ -140,7 +140,11 @@ export async function resolveExecutionWorkspace(specPath) {
       if(!hasOwnedAllocationEnvelope(record,marker)) continue;
       // Nearby markers are untrusted hints. A failed producer/retention binding
       // grants no ownership; registered control references remain strict below.
-      try {await classifyOwnedAllocation({workspace:{executionRoot:record.executionRoot},marker});}catch {continue;}
+      try {
+        const official = record.format==='stnl-preparation-allocation-v1'
+          ? await resolvePhysicalExecutionWorkspace(await fs.realpath(record.specPath)) : {executionRoot:record.executionRoot};
+        await classifyOwnedAllocation({workspace:official,marker});
+      }catch {continue;}
       const roots=[record.candidate,record.stage,record.backup,record.retentionRoot].filter(Boolean);
       if (record.executionRoot && roots.some(root=>pathIsWithin(physical,root)) && !pathIsWithin(physical,record.executionRoot)) {
         throw new ExecutionContractError('owned operational candidate/stage/backup cannot be selected as official SPEC_PATH',[physical]);
@@ -2313,7 +2317,7 @@ export async function readDeliveryContinuity(workspace, authority = null) {
       if (record.taskRef.logicalTaskPath !== `tasks/${delivery.slice}.md`) throw new ExecutionContractError('historical task anchor differs');
       await readContinuityReference(logical, record.allocationRef, record.taskRef, true);
       const bytes = await readContinuityReference(logical, record.allocationRef, record.snapshotRef);
-      const snapshot = parseStrictJson(bytes.toString('utf8')); validateApprovedPreparation(snapshot);
+      const snapshot = parseStrictJson(bytes.toString('utf8')); validateApprovedPreparation(snapshot,{historical:true});
       if (['preparationRevision', 'requirementsAuthority', 'normativeSha256'].some(k => record[k] !== snapshot[k])
         || !snapshot.deliveries.some(d => d.slice === delivery.slice && d.deliveryId === delivery.deliveryId)) throw new ExecutionContractError('history preparation/identity differs');
     }
@@ -2342,7 +2346,7 @@ export async function readDeliveryHistory(workspace, delivery, currentText) {
   const append=['Implementation Test Evidence','Findings Test Evidence','Validation Attempts'];
   const declarations=['Validation Findings','Divergences'];
   for (const source of [...archived,{text:currentText,history:null}]) {
-    const parsed=parsePreparationArtifact(source.text,`tasks/${delivery.slice}.md`);
+    const parsed=parsePreparationArtifact(source.text,`tasks/${delivery.slice}.md`,{historical:source.history!==null});
     const priorPass=field(parsed.sections.Continuity,'Historical PASS');
     if (source.history && priorPass!=='none') reopenedPasses.add(priorPass);
     for (const heading of [...append,...declarations]) {
@@ -2379,6 +2383,12 @@ async function knownContinuationControls(workspace, continuity, owner = null, ex
     let lease; try {lease = parseStrictJson((await readOwnedFile(lock.lockPath)).bytes.toString('utf8'));} catch {throw new ExecutionContractError('lock already exists with unrecognized ownership; preserve foreign lock');}
     if (lease.format !== 'stnl-execution-lock-v1' || lease.executionRoot !== logical.executionRoot) throw new ExecutionContractError('foreign common lock during capture');
     files.push(lock.lockPath);
+  }
+  const registryFile = await preparationRegistryPath(logical);
+  if (await lstatOrNull(registryFile)) {
+    const registry = parseStrictJson((await readOwnedFile(registryFile)).bytes.toString('utf8'));
+    if (registry.format !== 'stnl-preparation-registry-v1' || registry.executionRoot !== logical.executionRoot) throw new ExecutionContractError('foreign preparation registry during capture');
+    files.push(registryFile);
   }
   if (logical.kind === 'lifecycle') {
     await lifecycleProjection(logical);
@@ -2421,16 +2431,44 @@ async function knownContinuationControls(workspace, continuity, owner = null, ex
   return { roots, files, fingerprints, allocations };
 }
 
-function explicitVerificationFiles(body) {
-  // A qualified path or a code/quoted file literal is an explicit reference.
-  // Unmarked prose tokens (including runtime/version names) are not paths.
-  // This does not interpret shell, imports, scripts or indirect dependencies.
-  const quoted=[...String(body).matchAll(/`([^`\n]+)`|"([^"\n]+)"|'([^'\n]+)'/gu)].map(m=>m[1]??m[2]??m[3]);
-  const split=value=>String(value).split(/[\s`"'()[\]{},;:]+/u);
-  const words=split(body).filter(value=>value.includes('/'));
-  const codeWords=quoted.flatMap(split);
-  const file=/^(?:\.{1,2}\/|\/)?(?:[\p{L}\p{N}_. -]+\/)*[\p{L}\p{N}_ .-]*\.[\p{L}\p{N}_-]+$/u;
-  return [...new Set([...quoted,...words,...codeWords].filter(value=>file.test(value) && !value.includes(' --')))];
+export async function resolveDeliveryVerification({ workspace, authority, delivery }) {
+  const logical = logicalWorkspaceFor(workspace), root = await trustedProjectRoot(workspace);
+  const artifact = path.join(workspace.executionRoot, 'tasks', `${delivery.slice}.md`);
+  const normative = authority.normativeProjection.deliveries.find(d => d.slice === delivery.slice);
+  if (!normative || normative.deliveryId !== delivery.deliveryId) throw new ExecutionContractError('verification delivery differs');
+  const recipe = parseVerificationRecipe(normative.task['Verification Recipe']);
+  const cwd = path.resolve(root, recipe.cwd);
+  await rejectSymlinkComponents(cwd, root);
+  if (!(await lstatOrNull(cwd))?.isDirectory()) throw new ExecutionContractError('verification cwd must be an existing directory');
+  const areas = [], inputs = [];
+  for (const [carrier, targets] of [['Authorized Areas', areas], ['Existing Inputs', inputs]]) {
+    for (const raw of preparationPathClaims(normative.task[carrier], carrier)) targets.push((await resolveImplementationPathClaim(workspace, {artifact, field:carrier, raw})).resolved);
+  }
+  const resolved = new Map();
+  for (const ref of verificationReferences(recipe)) {
+    const target = (await resolveImplementationPathClaim(workspace, {artifact, field:'verification input', raw:ref.path})).resolved;
+    if (!(ref.kind === 'input' ? inputs.includes(target) : areas.some(area => pathIsWithin(target, area)))) throw new ExecutionContractError(`verification input ${ref.path} requires a matching ${ref.kind === 'input' ? 'Existing Inputs declaration' : 'Authorized Areas declaration'}`);
+    const meta = await lstatOrNull(target);
+    if (meta && (!meta.isFile() || meta.isSymbolicLink() || meta.nlink !== 1) || ref.kind === 'input' && !meta) throw new ExecutionContractError('verification reference must be a regular file (existing input must exist)');
+    resolved.set(ref.path, target);
+  }
+  const argument = arg => arg.file ? path.relative(cwd, resolved.get(arg.file.path)).split(path.sep).join('/') : arg.literal;
+  // Every direct file arg is constructed from its reviewed reference, never a second free argv.
+  const checks = recipe.checks.map(check => ({id:check.id, cwd, executable:check.executable.file ? './' + argument(check.executable) : argument(check.executable), args:check.args.map(argument)}));
+  return {format:'stnl-resolved-verification-v1', recipeSha256:continuationHash(JSON.stringify(recipe)), checks};
+}
+export async function readRunnerVerification(specPath, slice) {
+  const current = await readExecutionActivation(specPath);
+  const delivery = current.authority.deliveries.find(d => d.slice === slice);
+  return resolveDeliveryVerification({workspace:await resolveExecutionWorkspace(specPath), authority:current.authority, delivery});
+}
+
+export async function observeRunnerVerificationState(specPath, slice) {
+  const current = await readExecutionActivation(specPath), workspace = await resolveExecutionWorkspace(specPath);
+  const delivery = current.authority.deliveries.find(d => d.slice === slice);
+  const continuity = await readDeliveryContinuity(workspace,current.authority);
+  return workImage((await captureContinuationWorkState({workspace,authority:current.authority,delivery,
+    owner:current.activation.activeAttempt,continuity,observeOnly:true})).manifest);
 }
 
 export async function captureContinuationWorkState({ workspace, authority, delivery, allocation, marker,
@@ -2460,18 +2498,10 @@ export async function captureContinuationWorkState({ workspace, authority, deliv
     if (control(target)) throw new ExecutionContractError(`expected product conflicts with control: ${target}`);
     claims.push(target);
   }
-  // Expected Tests remains semantic prose, not a shell language. Literal named
-  // verification files use the command workspace basis; outside the captured
-  // product domain they must be linked by the existing typed input carrier.
-  const proofBodies=[normative.plan['Expected Tests'],normative.task['Expected Tests'],...normative.obligations.map(o=>o.proof)];
-  for(const body of proofBodies) for(const raw of explicitVerificationFiles(body)) {
-    const physical=path.resolve(workspaceRoot,raw);
-    // An unqualified quoted name needs a concrete file witness; code/prose
-    // such as a runtime name cannot create a fictitious Existing Inputs claim.
-    if(!raw.includes('/') && !(await lstatOrNull(physical))?.isFile()) continue;
-    const claim=relativeContinuation(path.dirname(logicalExecutionPath(workspace,artifact)),physical);
-    const target=(await resolveImplementationPathClaim(workspace,{artifact,field:'verification input',raw:claim})).resolved;
-    if(control(target) || !claims.some(root=>pathIsWithin(target,root))) throw new ExecutionContractError(`verification input ${raw} requires a matching Existing Inputs declaration outside the captured product domain`);
+  await resolveDeliveryVerification({workspace, authority, delivery});
+  for (const ref of verificationReferences(parseVerificationRecipe(normative.task['Verification Recipe']))) {
+    const target=(await resolveImplementationPathClaim(workspace,{artifact,field:'verification input',raw:ref.path})).resolved;
+    if(control(target) || !claims.some(root=>pathIsWithin(target,root))) throw new ExecutionContractError(`verification input ${ref.path} conflicts with control/captured domain`);
   }
   let prior=null;
   if (owner?.workCapture && owner.slice===delivery.slice) prior=await readContinuationWorkCapture(workspace,owner.workCapture,delivery,owner);
@@ -2737,7 +2767,7 @@ export async function deriveDeliveryValidity({workspace,authority,continuity,del
   const affectedPaths=workChanges(captured,observed);
   const originSnapshot=task.history.map(h=>h.history).find(h=>h.normativeSha256===field(latestPass.body,'Normative sha256'));
   let projection=authority.normativeProjection;
-  if (originSnapshot) projection=validateApprovedPreparation(parseStrictJson((await readContinuityReference(logicalWorkspaceFor(workspace),originSnapshot.allocationRef,originSnapshot.snapshotRef)).toString('utf8'))).normativeProjection;
+  if (originSnapshot) projection=validateApprovedPreparation(parseStrictJson((await readContinuityReference(logicalWorkspaceFor(workspace),originSnapshot.allocationRef,originSnapshot.snapshotRef)).toString('utf8')),{historical:true}).normativeProjection;
   else if (source.normativeSha256!==authority.normativeSha256) return {validity:'uncertain',affectedPaths,historicalPass:latestPass.id,reason:'origin preparation unavailable',observed};
   const equivalent=JSON.stringify(localPreparationImage(projection,delivery.slice))===JSON.stringify(localPreparationImage(authority.normativeProjection,delivery.slice));
   return {validity:affectedPaths.length || !equivalent ? 'revalidation-required' : 'current',affectedPaths,historicalPass:latestPass.id,

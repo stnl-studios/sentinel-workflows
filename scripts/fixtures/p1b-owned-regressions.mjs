@@ -3,7 +3,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import {spawnSync} from 'node:child_process';
 import {randomUUID} from 'node:crypto';
-import {fixture,approveFixture} from '../test-p1b-preparation.mjs';
+import {fixture,approveFixture,verificationBody} from '../test-p1b-preparation.mjs';
 import {implementOffline,runFirstRemoval} from '../test-p1b-publication.mjs';
 import {implementedFixture,formal,native,capture,setSection,evidence} from '../test-p1b-continuity.mjs';
 import {ancestorFixture} from '../test-p1b-candidate-lifecycle.mjs';
@@ -35,6 +35,7 @@ async function overlapFixture(count=2) {
     for(const [folder,base] of [['plans',basePlan],['tasks',baseTask]]) {
       let text=base.replaceAll('Slice 01',`Slice ${n}`).replaceAll('- Slice: 01',`- Slice: ${n}`).replaceAll('slice-01',`slice-${n}`).replaceAll('AC-001',`AC-00${i+1}`).replaceAll('src/',dir+'/').replaceAll('`src`','`'+dir+'`').replaceAll('1.1',`${i+1}.1`);
       text=setSection(text,'Authorized Areas',areas.map(a=>'- '+a).join('\n'));
+      text=setSection(text,'Verification Recipe',verificationBody({files:[dir+'/greeting.test.mjs',...dirs.slice(0,i).map(d=>d+'/greeting.test.mjs')]}));
       await fs.writeFile(path.join(f.candidate,folder,`slice-${n}.md`),text);
     }
   }

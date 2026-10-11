@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import {randomUUID} from 'node:crypto';
-import {fixture,approveFixture} from './test-p1b-preparation.mjs';
+import {fixture,approveFixture,verificationBody} from './test-p1b-preparation.mjs';
 import {setSection,evidence} from './test-p1b-continuity.mjs';
 import {resolveExecutionWorkspace,readExecutionActivation,preflightExecutionOperation} from '../skills/workflows/stnl-slice-executor/runtime/execution-state.mjs';
 import {classifyOwnedAllocation,captureExecutionTree,assertOwnedPreparationCandidate} from '../skills/workflows/stnl-slice-executor/runtime/execution-publication.mjs';
@@ -80,12 +80,12 @@ test('U2-V-F2-R2 runtime and version prose is not an undeclared proof file',asyn
   await approveFixture(prose);
   assert.equal((await preflightExecutionOperation(prose.specPath,'EXECUTE_SLICE','1')).state,'MATERIALIZED_PRISTINE');
   assert.equal(await fs.readFile(path.join(prose.root,'Node.js'),'utf8'),'unrelated preexisting product bytes\n');
-  // A real basename explicitly named in code is still a proof file, including
-  // a basename inside an entire command span; no shell execution is inferred.
+  // Explicit typed references replace the obsolete lexical admission assertions.
+  // Neither code spans nor prose select a file; its reviewed recipe does.
   for(const body of ['- node --test `.outside.test.mjs`','- `node --test .outside.test.mjs`']) {
     const outside=await fixture();await fs.writeFile(path.join(outside.root,'.outside.test.mjs'),'import test from "node:test";test("existing external proof",()=>{});\n');
     for(const name of ['plans/slice-01.md','tasks/slice-01.md']) {
-      const file=path.join(outside.candidate,name);await fs.writeFile(file,setSection(await fs.readFile(file,'utf8'),'Expected Tests',body));
+      const file=path.join(outside.candidate,name);await fs.writeFile(file,setSection(setSection(await fs.readFile(file,'utf8'),'Expected Tests',body),'Verification Recipe',verificationBody({file:'../../.outside.test.mjs',kind:'input'})));
     }
     await assert.rejects(approveFixture(outside),/verification input.*Existing Inputs/);
     assert.equal(await captureExecutionTree(outside.workspace.executionRoot),null);

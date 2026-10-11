@@ -53,6 +53,10 @@ update_policy: PLAN/REPLAN creates; later operations replace only their authoriz
 
 - <test, command, suite, or observable check>
 
+## Verification Recipe
+
+- Recipe: {"format":"stnl-verification-recipe-v1","base":"workspace","cwd":".","checks":[{"id":"verification-01","executable":{"literal":"node"},"args":[{"literal":"--test"},{"file":{"kind":"product","path":"<verification file>"}}],"inputs":[]}],"dependencyReview":"<reviewed indirect dependencies>"}
+
 ## Continuity
 
 - Current validation: unvalidated

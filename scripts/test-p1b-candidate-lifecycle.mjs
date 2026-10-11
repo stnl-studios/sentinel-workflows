@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {spawn,spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
-import {fixture,approveFixture,reviewDecision} from './test-p1b-preparation.mjs';
+import {fixture,approveFixture,reviewDecision,verificationBody} from './test-p1b-preparation.mjs';
 import {implementedFixture,formal,native,evidence,setSection} from './test-p1b-continuity.mjs';
 import {resolveExecutionWorkspace,inspectExecutionState,readExecutionActivation,beginPreparedExecutionOperation,resumeOwnedExecutionOperation,readDeliveryContinuity,readContinuationWorkCapture} from '../skills/workflows/stnl-slice-executor/runtime/execution-state.mjs';
 import {classifyOwnedAllocation,cleanupOwnedExecutionAllocation,captureExecutionTree,parseStrictJson} from '../skills/workflows/stnl-slice-executor/runtime/execution-publication.mjs';
@@ -32,7 +32,7 @@ export async function ancestorFixture() {
   for(const file of ['plan.md','plans/slice-01.md','tasks/slice-01.md']) {
     const target=path.join(prepared.candidateExecutionRoot,file);let text=await fs.readFile(target,'utf8');
     if(file==='plan.md') text=text.replace(/file: `[^`]+`/u,'directory: `specs`');
-    else text=setSection(text,'Authorized Areas','- directory: `specs`');
+    else {text=setSection(text,'Authorized Areas','- directory: `specs`');text=setSection(text,'Verification Recipe',verificationBody({file:'specs/greeting.test.mjs'}));}
     await fs.writeFile(target,text);
   }
   const f={root:rootPath,specPath,workspace,candidate:prepared.candidateExecutionRoot};
