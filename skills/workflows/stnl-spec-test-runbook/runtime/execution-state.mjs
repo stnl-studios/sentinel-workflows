@@ -131,7 +131,9 @@ export async function resolveExecutionWorkspace(specPath) {
   }
   const physical = await fs.realpath(requested);
   let selected = (await fs.lstat(physical)).isDirectory() ? physical : path.dirname(physical);
-  for (let depth=0;depth<3;depth+=1) {
+  // Allocation ownership applies to every descendant. Visit only the selected
+  // physical ancestry, including its filesystem root, without a depth cutoff.
+  while (true) {
     const markers=[`${selected}.copy.json`,`${selected}.publication.json`,`${selected}.owner.json`];
     const generated=/^\.stnl-execution-(?:stage|backup)-([a-f0-9-]{36})$/u.exec(path.basename(selected));
     if (generated) markers.push(path.join(path.dirname(selected),`.stnl-execution-publication-${generated[1]}.json`));
@@ -150,7 +152,9 @@ export async function resolveExecutionWorkspace(specPath) {
         throw new ExecutionContractError('owned operational candidate/stage/backup cannot be selected as official SPEC_PATH',[physical]);
       }
     }
-    selected=path.dirname(selected);
+    const parent=path.dirname(selected);
+    if(parent===selected) break;
+    selected=parent;
   }
   return resolvePhysicalExecutionWorkspace(physical);
 }
