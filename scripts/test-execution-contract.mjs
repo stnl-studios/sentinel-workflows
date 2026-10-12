@@ -447,6 +447,7 @@ test("execution producer inserts exact hashed evidence only into its owned candi
   assert.equal(await fs.readFile(liveTask, "utf8"), liveBefore);
 });
 
+
 test("command evidence preserves simple, quoted, redirected, backtick, multiline, and heredoc commands", async (t) => {
   const schema = JSON.parse(await fs.readFile(path.join(ROOT,
     "skills/workflows/stnl-slice-executor/runtime/runner-execute-response.schema.json"), "utf8"));
@@ -2714,29 +2715,6 @@ test("execution evidence is produced on a same-depth candidate and published as 
   await assert.rejects(fs.stat(prepared.candidateRoot), { code: "ENOENT" });
 });
 
-test("materializer candidate preparation copies the complete execution tree into an isolated root", async (t) => {
-  const fixture = await nestedLifecycleWorkspace(t);
-  const prepared = await preparePreparationCandidate({ specPath: fixture.requirements });
-  assert.equal(prepared.status, "PASS");
-  assert.notEqual(prepared.candidateExecutionRoot, await fs.realpath(fixture.execution));
-  assert.equal(
-    path.relative(await fs.realpath(fixture.execution), prepared.candidateExecutionRoot).startsWith(`..${path.sep}`),
-    true,
-  );
-  for (const relative of ["plan.md", "plans/slice-01.md", "tasks.md", "tasks/slice-01.md"]) {
-    assert.deepEqual(
-      await fs.readFile(path.join(prepared.candidateExecutionRoot, relative)),
-      await fs.readFile(path.join(fixture.execution, relative)),
-    );
-  }
-  assert.equal(prepared.copiedEntries > 0, true);
-  const alias = path.join(path.dirname(fixture.requirements), "requirements-alias");
-  await fs.symlink(fixture.requirements, alias, "dir");
-  await assert.rejects(
-    preparePreparationCandidate({ specPath: alias }),
-    /symlink component/u,
-  );
-});
 
 test("candidate helper CLIs execute from a frozen skill path containing spaces", async (t) => {
   const fixture = await nestedLifecycleWorkspace(t, { materialized: false, planStatus: "ready" });
@@ -2797,57 +2775,7 @@ test("candidate helper CLIs execute from a frozen skill path containing spaces",
   }
 });
 
-test("materializer candidate publication revalidates and never publishes hard-linked execution files", async (t) => {
-  const fixture = await nestedLifecycleWorkspace(t);
-  const prepared = await preparePreparationCandidate({ specPath: fixture.requirements });
-  const candidateState = await validateExecutionCandidate(fixture.requirements, prepared.candidateExecutionRoot);
-  assert.equal(candidateState.state, "MATERIALIZED_PRISTINE");
-  const published = await publishPreparationCandidate({
-    specPath: fixture.requirements,
-    candidateExecutionRoot: prepared.candidateExecutionRoot,
-  });
-  assert.equal(published.status, "PASS");
-  assert.equal((await inspectExecutionState(fixture.requirements)).state, "MATERIALIZED_PRISTINE");
-  const liveTasks = path.join(fixture.execution, "tasks.md");
-  const candidateTasks = path.join(prepared.candidateExecutionRoot, "tasks.md");
-  const liveMetadata = await fs.lstat(liveTasks);
-  const candidateMetadata = await fs.lstat(candidateTasks);
-  assert.equal(liveMetadata.isFile(), true);
-  assert.equal(candidateMetadata.isFile(), true);
-  assert.equal(liveMetadata.nlink, 1);
-  assert.equal(candidateMetadata.nlink, 1);
-  assert.notEqual(liveMetadata.ino, candidateMetadata.ino);
-  assert.deepEqual(await fs.readFile(liveTasks), await fs.readFile(candidateTasks));
-});
 
-test("materializer publication serializes task paths before strict candidate validation", async (t) => {
-  const fixture = await nestedLifecycleWorkspace(t);
-  const prepared = await preparePreparationCandidate({ specPath: fixture.requirements });
-  const target = path.join(fixture.root, "src/example.txt");
-  const taskPath = path.join(prepared.candidateExecutionRoot, "tasks/slice-01.md");
-  const liveTaskPath = path.join(fixture.execution, "tasks/slice-01.md");
-  const canonicalTaskClaim = path.relative(path.dirname(liveTaskPath), target).split(path.sep).join("/");
-  const malformedClaim = canonicalTaskClaim.replace(/^\.\.\//u, "");
-  assert.notEqual(canonicalTaskClaim, malformedClaim);
-  const before = await fs.readFile(taskPath, "utf8");
-  const malformed = before.replace(`\`${canonicalTaskClaim}\``, `\`${malformedClaim}\``);
-  assert.notEqual(malformed, before);
-  await fs.writeFile(taskPath, malformed, "utf8");
-  await assert.rejects(
-    validateExecutionCandidate(fixture.requirements, prepared.candidateExecutionRoot),
-    /possible path-basis error|artifact-relative implementation path/u,
-  );
-
-  const published = await publishPreparationCandidate({
-    specPath: fixture.requirements,
-    candidateExecutionRoot: prepared.candidateExecutionRoot,
-  });
-  assert.equal(published.status, "PASS");
-  assert.equal(published.serializedTaskPaths, 1);
-  const liveTask = await fs.readFile(path.join(fixture.execution, "tasks/slice-01.md"), "utf8");
-  assert.equal(liveTask.includes(`\`${canonicalTaskClaim}\``), true);
-  assert.equal(liveTask.includes(`\`${malformedClaim}\``), false);
-});
 
 async function copyDirectory(source, destination) {
   await fs.cp(source, destination, { recursive: true });
@@ -2885,19 +2813,16 @@ function replaceAll(text, values) {
 
 async function standaloneWorkspace(t, { count = 1 } = {}) {
   const root = await temporary(t);
+  // TMPDIR can be the repository's ignored tmp. Give each synthetic project
+  // its own boundary so the resolver never adopts the host repository's .git.
+  await fs.mkdir(path.join(root, '.git'));
   const requirements = path.join(root, "requirements.md");
   await fs.writeFile(requirements, "# Requirements\n\n- AC-001: observable behavior\n", "utf8");
   const execution = path.join(root, "requirements-execution");
   return { root, requirements, execution, count, test: t };
 }
 
-async function rebasePlanClaimToTask({ specPath, planArtifact, planClaim, slice = "01" }) {
-  const { executionRoot } = await resolveMaterializerExecutionWorkspace(specPath);
-  const physicalTarget = path.resolve(path.dirname(planArtifact), planClaim);
-  const taskPath = path.join(executionRoot, "tasks", `slice-${slice}.md`);
-  const taskClaim = path.relative(path.dirname(taskPath), physicalTarget).split(path.sep).join("/");
-  return { executionRoot, physicalTarget, taskPath, taskClaim };
-}
+
 
 function headerReady(text) {
   return text.replace("status: draft", "status: ready").replaceAll("Review state: pending", "Review state: approved");
@@ -4247,52 +4172,6 @@ test("candidate shadows use external OS temp, preserve standalone logical paths,
   await assert.rejects(validateExecutionCandidate(fixture.requirements, fixture.root), /must be isolated from live execution artifacts/u);
 });
 
-test("artifact-relative planning paths reject lifecycle-local candidates before publication", async (t) => {
-  const initial = await nestedLifecycleWorkspace(t, { materialized: false, planStatus: "draft" });
-  const candidate = await copyDirectory(initial.execution, path.join(path.dirname(initial.repository), "initial plan candidate"));
-  const candidateFixture = { ...initial, execution: candidate };
-  const requirementsBefore = await fs.readFile(path.join(initial.requirements, "feature_spec.md"));
-  await setImplementationAreas(initial, { global: "scripts/validate.sh" });
-  assert.equal((await preflightExecutionOperation(initial.requirements, "REVIEW_PLAN")).state, "PLANNED_DRAFT");
-  await fs.rm(initial.execution, { recursive: true });
-  await setImplementationAreas(candidateFixture, { global: "scripts/validate.sh" });
-  await assert.rejects(validateExecutionCandidate(initial.requirements, candidate), (error) => {
-    assert.ok(error instanceof ExecutionContractError);
-    assert.match(error.message, /artifact="specs\/área segura\/feature Ω\/execution\/plan\.md"/u);
-    assert.match(error.message, /field="Serial Slice Order 01 Expected areas"/u);
-    assert.match(error.message, /raw="scripts\/validate\.sh"/u);
-    assert.match(error.message, /resolves inside the execution root/u);
-    assert.match(error.message, /trusted-root=/u);
-    return true;
-  });
-  await assert.rejects(fs.stat(initial.execution), { code: "ENOENT" });
-  assert.deepEqual(await fs.readFile(path.join(initial.requirements, "feature_spec.md")), requirementsBefore);
-
-  const reviewed = await nestedLifecycleWorkspace(t, { materialized: false, planStatus: "ready" });
-  const reviewedCandidate = await copyDirectory(reviewed.execution, path.join(path.dirname(reviewed.repository), "reviewed plan candidate"));
-  const reviewedFixture = { ...reviewed, execution: reviewedCandidate };
-  const liveBefore = await Promise.all([
-    fs.readFile(path.join(reviewed.execution, "plan.md")),
-    fs.readFile(path.join(reviewed.execution, "plans/slice-01.md")),
-  ]);
-  await setImplementationAreas(reviewedFixture, { detail: "../../skills/workflows/example.mjs" });
-  await assert.rejects(validateExecutionCandidate(reviewed.requirements, reviewedCandidate), (error) => {
-    assert.match(error.message, /field="Likely Areas"/u);
-    assert.match(error.message, /resolves inside the lifecycle SPEC workspace/u);
-    assert.match(error.message, /existing-project-target=/u);
-    return true;
-  });
-  const correctExisting = path.relative(
-    path.join(reviewed.requirements, "execution/plans"),
-    path.join(reviewed.repository, "scripts/validate.sh"),
-  ).split(path.sep).join("/");
-  await setImplementationAreas(reviewedFixture, { detail: correctExisting });
-  assert.equal((await validateExecutionCandidate(reviewed.requirements, reviewedCandidate)).state, "PLANNED_READY");
-  assert.deepEqual(await Promise.all([
-    fs.readFile(path.join(reviewed.execution, "plan.md")),
-    fs.readFile(path.join(reviewed.execution, "plans/slice-01.md")),
-  ]), liveBefore);
-});
 
 test("planning path carriers distinguish concrete paths from conceptual descriptions", async (t) => {
   const fixture = await nestedLifecycleWorkspace(t, { materialized: false, planStatus: "ready" });
@@ -4379,205 +4258,8 @@ test("planning claims use the containing artifact basis", async (t) => {
   assert.equal((await validateExecutionCandidate(fixture.requirements, candidate)).state, "PLANNED_READY");
 });
 
-test("materialization and task-review gates preserve valid future artifact-relative paths", async (t) => {
-  const materializerSkill = await fs.readFile(path.join(ROOT, "skills/workflows/stnl-task-materializer/SKILL.md"), "utf8");
-  assert.match(materializerSkill, /resolveExecutionWorkspace\(SPEC_PATH\)/u);
-  assert.match(materializerSkill, /taskPath = path\.join\(executionRoot, "tasks", "slice-NN\.md"\)/u);
-  assert.doesNotMatch(materializerSkill, /path\.join\(SPEC_PATH, "execution"/u);
-  assert.doesNotMatch(materializerSkill, /benchmark-case-a|todo-service\.mjs/u);
-  assert.match(materializerSkill, /runtime\/prepare-task-candidate\.mjs/u);
 
-  const planOnly = await nestedLifecycleWorkspace(t, { materialized: false, planStatus: "ready" });
-  await setImplementationAreas(planOnly, { global: "scripts/validate.sh" });
-  const invalidPlanBefore = await fs.readFile(path.join(planOnly.execution, "plan.md"));
-  await assert.rejects(
-    preflightExecutionOperation(planOnly.requirements, "MATERIALIZE_TASKS"),
-    /resolves inside the execution root/u,
-  );
-  assert.deepEqual(await fs.readFile(path.join(planOnly.execution, "plan.md")), invalidPlanBefore);
 
-  const fixture = await nestedLifecycleWorkspace(t);
-  const candidate = await copyDirectory(fixture.execution, path.join(path.dirname(fixture.repository), "task review candidate"));
-  const candidateFixture = { ...fixture, execution: candidate };
-  const liveBefore = await Promise.all([
-    fs.readFile(path.join(fixture.execution, "plan.md")),
-    fs.readFile(path.join(fixture.execution, "plans/slice-01.md")),
-    fs.readFile(path.join(fixture.execution, "tasks.md")),
-    fs.readFile(path.join(fixture.execution, "tasks/slice-01.md")),
-  ]);
-  const futureTarget = path.join(fixture.repository, "skills/workflows/stnl-user-story-refiner/runtime/refine.mjs");
-  const shortFuture = "../../skills/workflows/stnl-user-story-refiner/runtime/refine.mjs";
-  await setImplementationAreas(candidateFixture, { task: shortFuture });
-  await assert.rejects(validateExecutionCandidate(fixture.requirements, candidate), (error) => {
-    assert.match(error.message, /field="Checklist 1\.1 expected areas"/u);
-    assert.match(error.message, /resolves inside the lifecycle SPEC workspace/u);
-    return true;
-  });
-  const taskFuture = path.relative(path.join(fixture.execution, "tasks"), futureTarget).split(path.sep).join("/");
-  await setImplementationAreas(candidateFixture, { task: taskFuture });
-  assert.equal((await validateExecutionCandidate(fixture.requirements, candidate)).state, "MATERIALIZED_PRISTINE");
-  await assert.rejects(fs.stat(futureTarget), { code: "ENOENT" });
-  assert.deepEqual(await Promise.all([
-    fs.readFile(path.join(fixture.execution, "plan.md")),
-    fs.readFile(path.join(fixture.execution, "plans/slice-01.md")),
-    fs.readFile(path.join(fixture.execution, "tasks.md")),
-    fs.readFile(path.join(fixture.execution, "tasks/slice-01.md")),
-  ]), liveBefore);
-
-  await setImplementationAreas(fixture, { task: shortFuture });
-  const invalidTaskBefore = await fs.readFile(path.join(fixture.execution, "tasks/slice-01.md"));
-  assert.equal((await preflightExecutionOperation(fixture.requirements, "REVIEW_TASKS")).state, "MATERIALIZED_PRISTINE");
-  await assert.rejects(
-    preflightExecutionOperation(fixture.requirements, "EXECUTE_SLICE", "1"),
-    /resolves inside the lifecycle SPEC workspace/u,
-  );
-  assert.deepEqual(await fs.readFile(path.join(fixture.execution, "tasks/slice-01.md")), invalidTaskBefore);
-});
-
-test("materializer rebases PLAN claims from the official execution workspace for every SPEC_PATH form", async (t) => {
-  const lifecycle = await nestedLifecycleWorkspace(t);
-  const lifecycleFeature = path.join(lifecycle.requirements, "feature_spec.md");
-  const physicalTarget = path.join(lifecycle.repository, "src/example.txt");
-  const planArtifact = path.join(lifecycle.execution, "plan.md");
-  const planClaim = path.relative(path.dirname(planArtifact), physicalTarget).split(path.sep).join("/");
-
-  const directoryRebase = await rebasePlanClaimToTask({
-    specPath: lifecycle.requirements,
-    planArtifact,
-    planClaim,
-  });
-  assert.equal(directoryRebase.executionRoot, lifecycle.execution, "R1 lifecycle directory executionRoot");
-  assert.equal(directoryRebase.taskPath, path.join(lifecycle.execution, "tasks/slice-01.md"), "R1 lifecycle directory taskPath");
-  assert.equal(path.resolve(path.dirname(directoryRebase.taskPath), directoryRebase.taskClaim), physicalTarget, "R1 task claim resolves to the PLAN physical target");
-  assert.notEqual(directoryRebase.taskClaim, planClaim, "R4 PLAN and TASK claims use different artifact bases");
-  assert.equal(path.resolve(path.dirname(planArtifact), planClaim), physicalTarget, "R4 PLAN claim resolves to the physical target");
-
-  const directoryCandidate = await copyDirectory(lifecycle.execution, path.join(path.dirname(lifecycle.repository), "directory-form-candidate"));
-  await setImplementationAreas({ ...lifecycle, execution: directoryCandidate }, {
-    global: planClaim,
-    task: directoryRebase.taskClaim,
-  });
-  assert.equal((await validateExecutionCandidate(lifecycle.requirements, directoryCandidate)).state, "MATERIALIZED_PRISTINE", "R1 lifecycle directory candidate");
-
-  const directRebase = await rebasePlanClaimToTask({
-    specPath: lifecycleFeature,
-    planArtifact,
-    planClaim,
-  });
-  assert.equal(directRebase.executionRoot, lifecycle.execution, "R2 direct feature_spec.md executionRoot");
-  assert.equal(directRebase.taskPath, directoryRebase.taskPath, "R2 direct feature_spec.md taskPath matches directory form");
-  assert.equal(path.resolve(path.dirname(directRebase.taskPath), directRebase.taskClaim), physicalTarget, "R2 direct feature_spec.md claim resolves to the physical target");
-  const directCandidate = await copyDirectory(lifecycle.execution, path.join(path.dirname(lifecycle.repository), "direct-form-candidate"));
-  await setImplementationAreas({ ...lifecycle, execution: directCandidate }, { task: directRebase.taskClaim });
-  assert.equal((await validateExecutionCandidate(lifecycleFeature, directCandidate)).state, "MATERIALIZED_PRISTINE", "R2 direct feature_spec.md candidate");
-
-  const copiedPlanCandidate = await copyDirectory(lifecycle.execution, path.join(path.dirname(lifecycle.repository), "copied-plan-basis-candidate"));
-  await setImplementationAreas({ ...lifecycle, execution: copiedPlanCandidate }, { task: planClaim });
-  await assert.rejects(validateExecutionCandidate(lifecycleFeature, copiedPlanCandidate), /artifact-relative implementation path/u, "R5 copied PLAN basis remains invalid for TASK validation");
-
-  const legacyDirectTaskPath = path.join(lifecycleFeature, "execution", "tasks", "slice-01.md");
-  const legacyDirectClaim = path.relative(path.dirname(legacyDirectTaskPath), physicalTarget).split(path.sep).join("/");
-  assert.notEqual(legacyDirectClaim, directRebase.taskClaim, "R2 old SPEC_PATH/execution basis differs for direct feature_spec.md");
-  const legacyDirectCandidate = await copyDirectory(lifecycle.execution, path.join(path.dirname(lifecycle.repository), "legacy-direct-candidate"));
-  await setImplementationAreas({ ...lifecycle, execution: legacyDirectCandidate }, { task: legacyDirectClaim });
-  await assert.rejects(validateExecutionCandidate(lifecycleFeature, legacyDirectCandidate), /artifact-relative implementation path/u, "R2 old direct-file basis is rejected");
-
-  const standaloneRoot = await temporary(t, "stnl-materializer-standalone-");
-  const standaloneRepository = path.join(standaloneRoot, "repository");
-  await fs.mkdir(path.join(standaloneRepository, ".git"), { recursive: true });
-  const standaloneRequirements = path.join(standaloneRepository, "requirements/feature-x.md");
-  await fs.mkdir(path.dirname(standaloneRequirements), { recursive: true });
-  await fs.writeFile(standaloneRequirements, "# Requirements\n\n- AC-001: observable behavior\n", "utf8");
-  const standalone = {
-    root: standaloneRepository,
-    repository: standaloneRepository,
-    requirements: standaloneRequirements,
-    execution: path.join(path.dirname(standaloneRequirements), "feature-x-execution"),
-  };
-  await renderArtifacts(standalone);
-  const standaloneTarget = path.join(standaloneRepository, "src/example.txt");
-  const standalonePlan = path.join(standalone.execution, "plan.md");
-  const standalonePlanClaim = path.relative(path.dirname(standalonePlan), standaloneTarget).split(path.sep).join("/");
-  const standaloneRebase = await rebasePlanClaimToTask({
-    specPath: standaloneRequirements,
-    planArtifact: standalonePlan,
-    planClaim: standalonePlanClaim,
-  });
-  assert.equal(standaloneRebase.executionRoot, standalone.execution, "R3 standalone requirements executionRoot");
-  assert.equal(standaloneRebase.taskPath, path.join(standalone.execution, "tasks/slice-01.md"), "R3 standalone requirements taskPath");
-  assert.equal(path.resolve(path.dirname(standaloneRebase.taskPath), standaloneRebase.taskClaim), standaloneTarget, "R3 standalone claim resolves to the physical target");
-  const standaloneCandidate = await copyDirectory(standalone.execution, path.join(standaloneRoot, "standalone-form-candidate"));
-  await setImplementationAreas({ ...standalone, execution: standaloneCandidate }, { task: standaloneRebase.taskClaim });
-  assert.equal((await validateExecutionCandidate(standaloneRequirements, standaloneCandidate)).state, "MATERIALIZED_PRISTINE", "R3 standalone requirements candidate");
-
-  const legacyStandaloneTaskPath = path.join(standaloneRequirements, "execution", "tasks", "slice-01.md");
-  const legacyStandaloneClaim = path.relative(path.dirname(legacyStandaloneTaskPath), standaloneTarget).split(path.sep).join("/");
-  assert.notEqual(legacyStandaloneClaim, standaloneRebase.taskClaim, "R3 old SPEC_PATH/execution basis differs for standalone requirements");
-  const legacyStandaloneCandidate = await copyDirectory(standalone.execution, path.join(standaloneRoot, "legacy-standalone-candidate"));
-  await setImplementationAreas({ ...standalone, execution: legacyStandaloneCandidate }, { task: legacyStandaloneClaim });
-  await assert.rejects(validateExecutionCandidate(standaloneRequirements, legacyStandaloneCandidate), /artifact-relative implementation path/u, "R3 old standalone-file basis is rejected");
-});
-
-test("standalone path basis, Unicode, future targets, and symlink safety stay deterministic", async (t) => {
-  const root = await temporary(t, "stnl-standalone-paths-");
-  const repository = path.join(root, "repository with space ü");
-  await fs.mkdir(path.join(repository, ".git"), { recursive: true });
-  const requirements = path.join(repository, "docs/nested/requirements.md");
-  await fs.mkdir(path.dirname(requirements), { recursive: true });
-  await fs.writeFile(requirements, "# Requirements\n\n- AC-001: observable behavior\n", "utf8");
-  const fixture = {
-    root: repository,
-    repository,
-    requirements,
-    execution: path.join(path.dirname(requirements), "requirements-execution"),
-  };
-  await fs.mkdir(path.join(repository, "scripts"), { recursive: true });
-  const existingTarget = path.join(repository, "scripts/validate.sh");
-  await fs.writeFile(existingTarget, "#!/bin/sh\n", "utf8");
-  await fs.mkdir(path.join(repository, "skills/workflows"), { recursive: true });
-  await renderArtifacts(fixture);
-  const candidate = await copyDirectory(fixture.execution, path.join(root, "standalone candidate"));
-  const candidateFixture = { ...fixture, execution: candidate };
-  const areasFor = (target) => ({
-    global: path.relative(fixture.execution, target).split(path.sep).join("/"),
-    detail: path.relative(path.join(fixture.execution, "plans"), target).split(path.sep).join("/"),
-    task: path.relative(path.join(fixture.execution, "tasks"), target).split(path.sep).join("/"),
-  });
-
-  await setImplementationAreas(candidateFixture, areasFor(existingTarget));
-  assert.equal((await validateExecutionCandidate(requirements, candidate)).state, "MATERIALIZED_PRISTINE");
-
-  const shortDetail = areasFor(existingTarget).detail.replace(/^\.\.\//u, "");
-  await setImplementationAreas(candidateFixture, { detail: shortDetail });
-  await assert.rejects(validateExecutionCandidate(requirements, candidate), (error) => {
-    assert.match(error.message, /possible path-basis error/u);
-    assert.match(error.message, /existing-project-target=/u);
-    return true;
-  });
-
-  const unicodeLocal = path.join(path.dirname(requirements), "área local/arquivo Ω.txt");
-  await fs.mkdir(path.dirname(unicodeLocal), { recursive: true });
-  await fs.writeFile(unicodeLocal, "local\n", "utf8");
-  await setImplementationAreas(candidateFixture, areasFor(unicodeLocal));
-  assert.equal((await validateExecutionCandidate(requirements, candidate)).state, "MATERIALIZED_PRISTINE");
-
-  const futureTarget = path.join(repository, "skills/workflows/stnl-user-story-refiner/novo Ω.mjs");
-  await setImplementationAreas(candidateFixture, areasFor(futureTarget));
-  assert.equal((await validateExecutionCandidate(requirements, candidate)).state, "MATERIALIZED_PRISTINE");
-  await assert.rejects(fs.stat(futureTarget), { code: "ENOENT" });
-
-  const outside = path.join(root, "outside");
-  await fs.mkdir(outside);
-  await fs.symlink(outside, path.join(repository, "linked"), "dir");
-  const symlinkFuture = path.join(repository, "linked/future.txt");
-  await setImplementationAreas(candidateFixture, areasFor(symlinkFuture));
-  await assert.rejects(validateExecutionCandidate(requirements, candidate), /traverses a symlink/u);
-
-  await setImplementationAreas(candidateFixture, { global: "/absolute/path.txt" });
-  await assert.rejects(validateExecutionCandidate(requirements, candidate), /not a normalized relative path/u);
-  await setImplementationAreas(candidateFixture, { global: "../../../../../../escaped.txt" });
-  await assert.rejects(validateExecutionCandidate(requirements, candidate), /escapes its trusted workspace/u);
-});
 
 test("semantic auxiliary runner output is serialized by the deterministic execution producer before persistence", async (t) => {
   const contracts = await Promise.all([
@@ -6891,18 +6573,6 @@ test("planning-only replacement rejects historical REPLAN fields and obsolete co
   assert.equal((await inspectExecutionState(obsolete.requirements)).state, "PLANNED_DRAFT");
 });
 
-test("controlled execution artifacts reject hardlinks without mutating external bytes", async (t) => {
-  const fixture = await standaloneWorkspace(t);
-  await renderArtifacts(fixture);
-  const taskPath = path.join(fixture.execution, "tasks/slice-01.md");
-  const external = path.join(fixture.root, "user-owned.md");
-  const bytes = await fs.readFile(taskPath);
-  await fs.writeFile(external, bytes);
-  await fs.rm(taskPath);
-  await fs.link(external, taskPath);
-  await assert.rejects(inspectExecutionState(fixture.requirements), /single-link real file/u);
-  assert.deepEqual(await fs.readFile(external), bytes);
-});
 
 test("fake operational headings and non-sequential records never classify as pristine", async (t) => {
   const fixture = await standaloneWorkspace(t);
@@ -6911,60 +6581,8 @@ test("fake operational headings and non-sequential records never classify as pri
   await assert.rejects(inspectExecutionState(fixture.requirements), /placeholder/u);
 });
 
-async function pristinePathReplacement(t) {
-  const fixture = await standaloneWorkspace(t);
-  const { authority } = await renderArtifacts(fixture);
-  const oldChecklist = Array.from({ length: 9 }, (_, index) =>
-    `- [ ] 1.${index + 1} Implement behavior ${index + 1} | observable result: observable result ${index + 1} | expected areas: \`${index === 8 ? "../../tests/qa" : "../../src/example.txt"}\` | requirement: AC-001`).join("\n");
-  await editTask(fixture, (value) => replaceSection(value, "Checklist", oldChecklist));
-  await stagePristineReplacement(fixture, authority, authority, { ready: true });
-  const approvedClaims = [...Array(8).fill("../../src/example.txt"),
-    "../../tests/qa/example.md", "../../tests/qa/example.html", "../../tests/qa/example.tsx"];
-  await editSlicePlan(fixture, "slice-01", (value) => replaceSection(value, "Likely Areas",
-    approvedClaims.map((claim) => `- \`${claim}\``).join("\n")));
-  assert.equal((await preflightExecutionOperation(fixture.requirements, "MATERIALIZE_TASKS")).state, "PENDING_REPLAN_READY");
-  const prepared = await preparePreparationCandidate({ specPath: fixture.requirements });
-  t.after(() => fs.rm(prepared.candidateExecutionRoot, { recursive: true, force: true }));
-  const staged = { ...fixture, execution: prepared.candidateExecutionRoot };
-  await editTask(staged, (value) => reviseAuthority(value, authority, authority, 1, 2)
-    .replace("`../../tests/qa`", "`../tests/qa/example.md`; `../tests/qa/example.html`; `../tests/qa/example.tsx`"));
-  return { fixture, prepared, staged, authority, oldChecklist, approvedClaims };
-}
 
-test("pristine replacement rejects unauthorized candidates before changing candidate or live bytes", async (t) => {
-  const forbidden = [
-    ["changed approved global plan", "plan.md", (text) => text.replace("Deliver observable behavior", "Different approved objective"), /changed the approved recovery plan/u],
-    ["changed approved detailed plan", "plans/slice-01.md", (text) => text.replace("Deliver observable behavior.", "Different approved scope."), /changed its approved recovery plan/u],
-    ["old task revision", "tasks/slice-01.md", (text) => text.replace("Plan revision: 2", "Plan revision: 1"), /must materialize the approved revision with pristine tasks/u],
-    ["wrong task authority", "tasks/slice-01.md", (text) => text.replace(/sha256:[a-f0-9]{64}/u, `sha256:${"f".repeat(64)}`), /pending REPLAN must increment Plan revision by exactly one/u],
-    ["started checklist", "tasks/slice-01.md", (text) => replaceSection(text.replace("- [ ] 1.1", "- [x] 1.1"),
-      "Changed Areas", "- `../../src/example.txt`"), /must materialize the approved revision with pristine tasks/u],
-    ["operational scope", "tasks/slice-01.md", (text) => replaceSection(text, "Changed Areas", "- `../../src/example.txt`"), /must materialize the approved revision with pristine tasks/u],
-    ["execution evidence", "tasks/slice-01.md", (text) => replaceSection(
-      replaceSection(text.replaceAll("- [ ]", "- [x]"), "Changed Areas", "- `../../src/example.txt`"),
-      "Implementation Test Evidence", checkRecord("implementation-check", 1, "TESTS_PASS", 1)), /must materialize|implementation-check/u],
-    ["wrong claim count", "tasks/slice-01.md", (text) => text.replace("; `../tests/qa/example.tsx`", ""), /10 path claims.*11/u],
-    ["supersession", "tasks/slice-01.md", (text) => replaceSection(text, "Final Result", "- SUPERSEDED\n- Superseded by: slice-02\n- Plan revision: 2"), /SUPERSEDED|disagree/u],
-  ];
-  for (const [name, relative, mutate, diagnostic] of forbidden) {
-    await t.test(name, async (child) => {
-      const { fixture, prepared } = await pristinePathReplacement(child);
-      const target = path.join(prepared.candidateExecutionRoot, relative);
-      const before = await fs.readFile(target, "utf8");
-      const after = mutate(before);
-      assert.notEqual(after, before);
-      await fs.writeFile(target, after);
-      const liveBefore = await treeBytes(fixture.execution);
-      const candidateBefore = await treeBytes(prepared.candidateExecutionRoot);
-      for (const producer of [serializeTaskPathClaims, publishPreparationCandidate]) {
-        await assert.rejects(producer({ specPath: fixture.requirements,
-          candidateExecutionRoot: prepared.candidateExecutionRoot }), diagnostic);
-        assert.deepEqual(await treeBytes(fixture.execution), liveBefore);
-        assert.deepEqual(await treeBytes(prepared.candidateExecutionRoot), candidateBefore);
-      }
-    });
-  }
-});
+
 
 test("pending REPLAN requires canonical fields, one revision increment, and valid supersession mappings", async (t) => {
   async function pending({ authorityChange = false } = {}) {
