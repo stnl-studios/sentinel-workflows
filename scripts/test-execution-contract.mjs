@@ -15,6 +15,8 @@ import {
   computeRequirementsAuthority,
   inspectExecutionState,
   preflightExecutionOperation,
+  preflightRunnerResultRecovery,
+  beginRunnerResultRecovery,
   repairExecutionContract,
   validateExecutionCandidate,
   readRunnerVerification,
@@ -76,7 +78,7 @@ import { verificationCommand, assertRunnerVerification } from "../skills/workflo
 import { createOfflineCheckout } from "./fixtures/offline-checkout.mjs";
 import { beginExample, implementExample, validateExample, correctExample, retryExample, retryFindingsExample, exampleHistoryRecipe, captureExample, withExampleOwner } from "./fixtures/execution-contract-producers.mjs";
 
-import { capture as captureNativeExample } from "./test-p1b-continuity.mjs";
+import { capture as captureNativeExample, native as nativeExample } from "./test-p1b-continuity.mjs";
 import { withManagedExample } from "./fixtures/managed-execution-example.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
@@ -200,84 +202,73 @@ test("legacy probe escaping and structured assertion distinguish actual priority
   assert.throws(() => structuredCheck('priority medium\n'), SyntaxError);
 });
 
-test("captured contradiction publishes blocker, manager consumes bounded recovery, and valid new attempt completes", async (t) => {
-  const fixture = await standaloneWorkspace(t);
-  await renderArtifacts(fixture);
-  await writeValidatedPath(fixture);
-  await editTask(fixture, (value) => {
-    let task = value.replace("- [ ] 1.1", "- [x] 1.1");
-    task = replaceSection(task, "Changed Areas", "- `../../src/example.txt`");
-    task = replaceSection(task, "Implementation Test Evidence", checkRecord("implementation-check", 1, "TESTS_PASS", 1));
-    return replaceSection(task, "Diff Summary", "- Verified behavior is implemented.");
+async function formalEnvironmentResult(f, { admission = null, passes = false } = {}) {
+  admission ??= await beginExample(f, 'VALIDATE_SLICE');
+  return withExampleOwner(admission, async () => {
+    f.setReady(passes);
+    const start = await nativeExample({ specPath: f.requirements, root: f.root }, admission.owner);
+    const parent = path.join(f.root, 'observed-formal-candidates'); await fs.mkdir(parent, { recursive: true });
+    const copy = await prepareValidationCopy({ specPath: f.requirements, slice: 'slice-01', candidateParent: parent, owner: admission.owner });
+    const response = { ...sanitizedValidationResponse('PASS'),
+      commands: start.verification.checks.map(check => ({ command: verificationCommand(check), exit: passes ? 0 : 1 })),
+      evidence: 'Offline semantic PASS claim; the real environment assertion determines the mechanical verdict.' };
+    const captured = await captureNativeExample(start, response);
+    const prepared = await prepareValidationCandidate({ specPath: f.requirements, slice: 'slice-01', workspace: f.root,
+      candidateExecutionRoot: copy.candidateExecutionRoot, ...captured });
+    return { admission, start, copy, captured, response, prepared };
   });
-  const candidateParent = await temporary(t, "stnl-recovery-candidates-");
-  const response = JSON.stringify({ status: "PASS", head: "0123456789abcdef0123456789abcdef01234567",
-    commands: [{ command: "semantic claim", exit: 0 }], evidence: "independent checks cover AC-001",
-    findingReferences: "none", findingDispositions: "none", blockers: "none",
-    unexpectedWorkspaceEffects: "none", persistenceSummary: "no changes" });
-  async function candidateFor(exits) {
-    const captured = await capturedVerificationSequence(t, fixture, "VALIDATE_SLICE", response, exits);
-    const copy = await prepareValidationCopy({ specPath: fixture.requirements, slice: "slice-01", candidateParent });
-    const candidateTask = path.join(copy.candidateExecutionRoot, "tasks", "slice-01.md");
-    const prepared = await prepareValidationCandidate({ specPath: fixture.requirements, slice: "1",
-      workspace: fixture.root, candidateExecutionRoot: copy.candidateExecutionRoot, ...captured });
-    return { copy, prepared, captured };
-  }
-  const first = await candidateFor([1, 0, 0, 0]);
-  assert.equal(first.prepared.status, "RUNNER_RESULT_BLOCKED");
-  assert.match(first.prepared.recovery.diagnostic, /RUNNER_VERDICT_EVIDENCE_CONFLICT/u);
-  assert.equal((await validateExecutionCandidate(fixture.requirements, first.copy.candidateExecutionRoot)).state,
-    "RUNNER_RESULT_BLOCKED");
-  assert.equal((await publishValidationCandidate({ specPath: fixture.requirements, slice: "slice-01",
-    candidateExecutionRoot: first.copy.candidateExecutionRoot })).state, "RUNNER_RESULT_BLOCKED");
-  const firstReadback = await inspectExecutionState(fixture.requirements);
-  assert.equal(firstReadback.tasks.get("slice-01").attempts.length, 0);
-  const readback = { lifecycle: { status: "ready" }, execution: firstReadback, executionRaw: firstReadback };
-  const blocked = decideOutcome("VALIDATE_SLICE", readback, true);
-  assert.deepEqual(blocked, { result: "BLOCKED", blocker: "OFFICIAL_RUNNER_RESULT_BLOCKED" });
-  const recovery = recoverableRunnerHandoff({ operation: "VALIDATE_SLICE", slice: "slice-01", outcome: blocked,
-    readback, priorOperations: [], remainingTurns: 2 });
-  const budgets = JSON.parse(await fs.readFile(path.join(ROOT, "benchmarks/sentinel-todo/benchmark.json"), "utf8"))
-    .cases.find((item) => item.id === "A").budgets;
-  const officialRecovery = await prepareOfficialRecovery({ operation: "VALIDATE_SLICE", slice: "slice-01",
-    outcome: blocked, readback, priorOperations: [], remainingTurns: 2, budgets, specPath: fixture.requirements,
-    product: { validateWorkspace: () => ({ status: "ready" }), inspectExecutionState, preflightExecutionOperation } });
-  assert.deepEqual(officialRecovery, { ...recovery, target: firstReadback.recoveryTargets[0] });
-  assert.deepEqual(nextHandoff("VALIDATE_SLICE", readback), { operation: "VALIDATE_SLICE", slice: "slice-01" });
-  assert.equal(recovery?.authority, firstReadback.currentFingerprint);
-  assert.equal((await preflightExecutionOperation(fixture.requirements, recovery.operation, "1")).state,
-    "RUNNER_RESULT_BLOCKED");
-  assert.equal(recoverableRunnerHandoff({ operation: "VALIDATE_SLICE", slice: "slice-01", outcome: blocked,
-    readback, priorOperations: [], remainingTurns: 1 }), null);
-  assert.equal(recoverableRunnerHandoff({ operation: "VALIDATE_SLICE", slice: "slice-01", outcome: blocked,
-    readback, priorOperations: [{ recovery }], remainingTurns: 20 }), null);
+}
 
-  const secondContradiction = await candidateFor([1, 0]);
-  assert.equal(secondContradiction.prepared.status, "RUNNER_RESULT_BLOCKED");
-  assert.equal((await validateExecutionCandidate(fixture.requirements, secondContradiction.copy.candidateExecutionRoot)).state,
-    "RUNNER_RESULT_BLOCKED");
-  assert.equal((await publishValidationCandidate({ specPath: fixture.requirements, slice: "slice-01",
-    candidateExecutionRoot: secondContradiction.copy.candidateExecutionRoot })).state, "RUNNER_RESULT_BLOCKED");
-  const repeated = await inspectExecutionState(fixture.requirements);
-  const repeatedReadback = { lifecycle: { status: "ready" }, execution: repeated, executionRaw: repeated };
-  const repeatedOutcome = decideOutcome("VALIDATE_SLICE", repeatedReadback, true);
-  assert.equal(recoverableRunnerHandoff({ operation: "VALIDATE_SLICE", slice: "slice-01",
-    outcome: repeatedOutcome, readback: repeatedReadback,
-    priorOperations: [{ recovery }], remainingTurns: 20 }), null);
-  const second = await candidateFor([0, 0]);
-  assert.equal(second.prepared.status, "PREPARED");
-  assert.equal(second.prepared.formalStatus, "PASS");
-  assert.equal((await validateExecutionCandidate(fixture.requirements, second.copy.candidateExecutionRoot)).state,
-    "COMPLETE");
-  assert.equal((await publishValidationCandidate({ specPath: fixture.requirements, slice: "slice-01",
-    candidateExecutionRoot: second.copy.candidateExecutionRoot })).state, "COMPLETE");
-  const completed = await inspectExecutionState(fixture.requirements);
-  assert.equal(completed.tasks.get("slice-01").attempts.length, 1);
-  assert.deepEqual(decideOutcome("VALIDATE_SLICE", { lifecycle: { status: "ready" },
-    execution: completed, executionRaw: completed }, true), { result: "PASS", blocker: null });
-  assert.deepEqual(nextHandoff("VALIDATE_SLICE", { executionRaw: completed }), { operation: "SPEC_CLOSE", slice: null });
-  assert.match(await fs.readFile(path.join(first.copy.candidateExecutionRoot, "tasks", "slice-01.md"), "utf8"),
-    /RUNNER_VERDICT_EVIDENCE_CONFLICT/u);
+test("captured contradiction publishes blocker, manager consumes bounded recovery, and valid new attempt completes", async t => {
+  for (const secondPasses of [true, false]) {
+    const f = await filelessRecoveryFixture(t);
+    await implementExample(f, { filelessReason: f.filelessReason });
+    const first = await formalEnvironmentResult(f);
+    assert.equal(first.prepared.status, 'RUNNER_RESULT_BLOCKED');
+    assert.match(first.prepared.recovery.diagnostic, /RUNNER_VERDICT_EVIDENCE_CONFLICT/);
+    assert.equal((await validateExecutionCandidate(f.requirements, first.copy.candidateExecutionRoot)).state, 'RUNNER_RESULT_BLOCKED');
+    await publishValidationCandidate({ specPath: f.requirements, slice: 'slice-01', candidateExecutionRoot: first.copy.candidateExecutionRoot, owner: first.admission.owner });
+    const blockedState = await inspectExecutionState(f.requirements);
+    assert.equal(blockedState.tasks.get('slice-01').attempts.length, 0);
+    const firstCandidate = await treeBytes(first.copy.candidateExecutionRoot);
+    const receipts = await Promise.all([first.captured.receiptFile, first.captured.semanticResponseFile].map(async file => [file, await fs.readFile(file)]));
+    const readback = { lifecycle: { status: 'ready' }, execution: blockedState, executionRaw: blockedState };
+    const outcome = decideOutcome('VALIDATE_SLICE', readback, true);
+    assert.deepEqual(outcome, { result: 'BLOCKED', blocker: 'OFFICIAL_RUNNER_RESULT_BLOCKED' });
+    const input = { operation: 'VALIDATE_SLICE', slice: 'slice-01', outcome, readback, priorOperations: [], remainingTurns: 2 };
+    const recovery = recoverableRunnerHandoff(input);
+    assert.equal(recovery.authority, blockedState.currentFingerprint);
+    assert.equal(recoverableRunnerHandoff({ ...input, remainingTurns: 1 }), null);
+    assert.equal(recoverableRunnerHandoff({ ...input, priorOperations: [{ recovery }], remainingTurns: 20 }), null);
+    const budgets = JSON.parse(await fs.readFile(path.join(ROOT, 'benchmarks/sentinel-todo/benchmark.json'))).cases.find(item => item.id === 'A').budgets;
+    const official = await prepareOfficialRecovery({ ...input, budgets, specPath: f.requirements,
+      product: { validateWorkspace: () => ({ status: 'ready' }), inspectExecutionState, preflightExecutionOperation, preflightRunnerResultRecovery } });
+    assert.equal(official.operation, 'VALIDATE_SLICE'); assert.equal(official.slice, 'slice-01');
+    assert.deepEqual(official.target, blockedState.recoveryTargets[0]);
+    assert.equal(official.admission.rejectedOperationAttemptId, first.admission.owner.operationAttemptId);
+    assert.deepEqual(nextHandoff('VALIDATE_SLICE', readback), { operation: 'VALIDATE_SLICE', slice: 'slice-01' });
+    const next = await beginRunnerResultRecovery(f.requirements, 'VALIDATE_SLICE', '1', official.admission);
+    const ownerFile = path.join(f.root, 'successor-owner.json');
+    await fs.writeFile(ownerFile, JSON.stringify({ specPath: f.requirements, owner: next.owner }));
+    assert.notEqual(next.owner.operationAttemptId, first.admission.owner.operationAttemptId);
+    const second = await formalEnvironmentResult(f, { admission: { ...next, ownerFile }, passes: secondPasses });
+    assert.equal(second.prepared.status, secondPasses ? 'PREPARED' : 'RUNNER_RESULT_BLOCKED');
+    await publishValidationCandidate({ specPath: f.requirements, slice: 'slice-01', candidateExecutionRoot: second.copy.candidateExecutionRoot, owner: next.owner });
+    const final = await inspectExecutionState(f.requirements);
+    if (secondPasses) {
+      assert.equal(final.state, 'COMPLETE'); assert.equal(final.tasks.get('slice-01').attempts.length, 1);
+      assert.deepEqual(decideOutcome('VALIDATE_SLICE', { lifecycle: { status: 'ready' }, execution: final, executionRaw: final }, true), { result: 'PASS', blocker: null });
+      assert.deepEqual(nextHandoff('VALIDATE_SLICE', { executionRaw: final }), { operation: 'SPEC_CLOSE', slice: null });
+    } else {
+      assert.equal(final.state, 'RUNNER_RESULT_BLOCKED'); assert.equal(final.tasks.get('slice-01').attempts.length, 0);
+      assert.equal(recoverableRunnerHandoff({ ...input, readback: { executionRaw: final }, priorOperations: [{ recovery }], remainingTurns: 20 }), null);
+      await assert.rejects(preflightRunnerResultRecovery(f.requirements, 'VALIDATE_SLICE', '1', {
+        expectedActivationId: final.activation.activationId, rejectedOperationAttemptId: next.owner.operationAttemptId,
+        rejection: final.activeDelegationBlockers[0].recoveryProof }), /already consumed/);
+    }
+    assert.deepEqual(await treeBytes(first.copy.candidateExecutionRoot), firstCandidate);
+    for (const [file, bytes] of receipts) assert.deepEqual(await fs.readFile(file), bytes);
+  }
 });
 
 test("late strict PASS command rejection preserves candidate and publishes only bound recovery", async (t) => {
@@ -536,41 +527,37 @@ test("captured malformed output creates canonical recovery and rejects wrong aut
 
 test("native malformed response preserves pending changed scope without allocating a check", async (t) => {
   const fixture = await nestedLifecycleWorkspace(t);
-  const sourceClaim = path.relative(path.join(fixture.execution, "tasks"), path.join(fixture.root, "src/example.txt")).split(path.sep).join("/");
-  const lateClaim = path.relative(path.join(fixture.execution, "tasks"), path.join(fixture.root, "src/late.txt")).split(path.sep).join("/");
-  await writeValidatedPath(fixture, sourceClaim);
-  const copy = await prepareExecutionCopy({ specPath: fixture.requirements, slice: "slice-01" });
-  let task = await fs.readFile(copy.candidateTaskArtifact, "utf8");
-  task = task.replace("- [ ] 1.1", "- [x] 1.1");
-  task = replaceSection(task, "Changed Areas", `- \`${sourceClaim}\`\n- \`${lateClaim}\``);
-  task = replaceSection(task, "Implementation Test Evidence", checkRecord("implementation-check", 1, "BLOCKED", 1)
-    .replaceAll("../../src/example.txt", sourceClaim));
-  task = replaceSection(task, "Diff Summary", "- Pending native runner recovery after in-slice changes.");
-  await fs.writeFile(copy.candidateTaskArtifact, task, "utf8");
-  await writeValidatedPath(fixture, sourceClaim, "changed after the last valid check\n");
-  await writeValidatedPath(fixture, lateClaim, "new pending scope\n");
-  const responseFile = path.join(await temporary(t, "stnl-native-malformed-"), "response.json");
-  const response = "{malformed json";
-  await fs.writeFile(responseFile, response, "utf8");
-  const cli = spawnSync(process.execPath, [
-    path.join(ROOT, "skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs"),
-    "--execution-bundle", "--operation", "EXECUTE_SLICE", "--workspace", fixture.root,
-    "--task-artifact", copy.candidateTaskArtifact, "--semantic-response-file", responseFile,
-    "--insert-candidate",
-  ], { encoding: "utf8" });
-  assert.equal(cli.status, 0, cli.stderr);
-  assert.equal(JSON.parse(cli.stdout).state, "RUNNER_RESULT_BLOCKED");
-  const candidate = await fs.readFile(copy.candidateTaskArtifact, "utf8");
-  assert.match(candidate, /Producer rejected native runner-reported response sha256:[0-9a-f]{64}/u);
-  assert.match(candidate, /Native response: .*; no managed receipt/u);
+  const first = await implementExample(fixture, { failFirst: true, publish: false });
+  const task = first.copy.candidateTaskArtifact;
+  const firstReceipt = await fs.readFile(first.captured.receiptFile);
+  const sourceClaim = path.relative(path.dirname(task), path.join(fixture.root, 'src/example.txt')).split(path.sep).join('/');
+  const lateClaim = path.relative(path.dirname(task), path.join(fixture.root, 'src/late.txt')).split(path.sep).join('/');
+  const start = await startNativeRunnerCapture({ specPath: fixture.requirements, owner: first.admission.owner,
+    workspace: fixture.root, captureParent: fixture.root, candidateTaskArtifact: task });
+  const agentId = 'offline-pending-scope-' + randomUUID(); await bindNativeRunnerIdentity({ ...start, agentId });
+  await fs.writeFile(path.join(fixture.root, 'src/example.txt'), 'changed after the last valid check\n');
+  await fs.writeFile(path.join(fixture.root, 'src/late.txt'), 'new pending scope\n');
+  const claims = [sourceClaim, lateClaim].sort();
+  const scope = claims.map(p => '- `' + p + '`').join('\n');
+  await fs.writeFile(task, replaceSection(await fs.readFile(task, 'utf8'), 'Changed Areas', scope));
+  const captured = await captureNativeExample({ ...start, agentId }, { status: 'TESTS_PASS', commands: 'malformed' }, claims);
+  const receipt = await fs.readFile(captured.receiptFile), response = await fs.readFile(captured.semanticResponseFile);
+  await withExampleOwner(first.admission, async () => {
+    const cli = spawnSync(process.execPath, [path.join(ROOT, 'skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs'),
+      '--execution-bundle', '--operation', 'EXECUTE_SLICE', '--workspace', fixture.root, '--task-artifact', task,
+      '--semantic-response-file', captured.semanticResponseFile, '--receipt-file', captured.receiptFile, '--insert-candidate'], { encoding: 'utf8' });
+    assert.equal(cli.status, 0, cli.stderr); assert.equal(JSON.parse(cli.stdout).state, 'RUNNER_RESULT_BLOCKED');
+  });
+  const candidate = await fs.readFile(task, 'utf8');
+  assert.ok(candidate.includes(first.bundle)); assert.ok(candidate.includes(scope));
   assert.doesNotMatch(candidate, /^### implementation-check-02$/mu);
-  assert.equal((await validateExecutionCandidate(fixture.requirements, copy.candidateExecutionRoot)).state,
-    "RUNNER_RESULT_BLOCKED");
-  await publishExecutionCopy({ specPath: fixture.requirements, slice: "slice-01", candidateRoot: copy.candidateRoot });
+  assert.equal((await validateExecutionCandidate(fixture.requirements, first.copy.candidateExecutionRoot)).state, 'RUNNER_RESULT_BLOCKED');
+  await publishExecutionCopy({ specPath: fixture.requirements, slice: 'slice-01', candidateRoot: first.copy.candidateRoot });
   const state = await inspectExecutionState(fixture.requirements);
-  assert.equal(state.state, "RUNNER_RESULT_BLOCKED");
-  assert.equal(state.mandatoryRecovery.operation, "EXECUTE_SLICE");
-  assert.equal(state.tasks.get("slice-01").implementationChecks.length, 1);
+  assert.equal(state.state, 'RUNNER_RESULT_BLOCKED'); assert.equal(state.mandatoryRecovery.operation, 'EXECUTE_SLICE');
+  assert.equal(state.tasks.get('slice-01').implementationChecks.length, 1);
+  assert.ok((await fs.readFile(path.join(fixture.execution, 'tasks/slice-01.md'), 'utf8')).includes(scope));
+  for (const [file, bytes] of [[first.captured.receiptFile, firstReceipt], [captured.receiptFile, receipt], [captured.semanticResponseFile, response]]) assert.deepEqual(await fs.readFile(file), bytes);
 });
 
 test("native malformed recovery rejects a missing producer error and a mismatched candidate marker", async (t) => {
@@ -2617,7 +2604,7 @@ async function replacePlanningOnly(fixture, oldHash, newHash, { ready = false } 
   return prepared;
 }
 
-async function appendRecoveryPlan(fixture, oldHash, newHash, { ready = false, supersedes = 'slice-01 -> slice-02' } = {}) {
+async function appendRecoveryPlan(fixture, oldHash, newHash, { ready = false, supersedes = 'slice-01 -> slice-02', newContribution = 'complete' } = {}) {
   const before = await inspectExecutionState(fixture.requirements);
   const prepared = await preparePreparationCandidate({ specPath: fixture.requirements, operation: 'REPLAN', revisionMode: 'append-only-extension' });
   fixture.test?.after(() => fs.rm(prepared.candidateExecutionRoot, { recursive: true, force: true }));
@@ -2643,7 +2630,9 @@ async function appendRecoveryPlan(fixture, oldHash, newHash, { ready = false, su
   const task = setPlanReviewState(reviseAuthority(await fs.readFile(path.join(fixture.preparation.author, 'tasks/slice-01.md'), 'utf8'), oldHash, newHash, 1, revision), false)
     .replace(/^- Delivery ID:.*\n/mu, '').replaceAll('Slice 01', 'Slice ' + slice.slice(6)).replaceAll('- Slice: 01', '- Slice: ' + slice.slice(6))
     .replaceAll('slice-01', slice).replaceAll('1.1', number + '.1').replace(/^- History source:.*$/mu, '- History source: runtime');
-  await fs.writeFile(path.join(root, 'tasks', slice + '.md'), task);
+  const contribution = newContribution === 'partial'
+    ? task.replace('contribution: complete | full owner: ' + slice, 'contribution: partial | full owner: slice-01') : task;
+  await fs.writeFile(path.join(root, 'tasks', slice + '.md'), contribution);
   await publishPreparationCandidate({ specPath: fixture.requirements, candidateExecutionRoot: root });
   assert.equal((await inspectExecutionState(fixture.requirements)).state, 'PENDING_REPLAN_DRAFT');
   if (ready) await reviewJointFixture(fixture);
@@ -4303,67 +4292,81 @@ test("managed fileless omission publishes one blocker then resumes the same oper
   } finally { await broker.close(); }
 });
 
-test("fileless APPLY scope rejection preserves prior checks and formal findings history", async (t) => {
-  const fixture = await nestedLifecycleWorkspace(t);
-  const target = path.join(fixture.root, "src/example.txt");
-  const claim = path.relative(path.join(fixture.execution, "tasks"), target).split(path.sep).join("/");
-  await writeValidatedPath(fixture, claim);
-  await editTask(fixture, (value) => {
-    let task = replaceSection(value.replace("- [ ] 1.1", "- [x] 1.1"), "Changed Areas", `- \`${claim}\``);
-    task = replaceSection(task, "Implementation Test Evidence", checkRecord("implementation-check", 1, "TESTS_PASS", 1).replaceAll("../../src/example.txt", claim));
-    task = replaceSection(task, "Validation Attempts", NEEDS_FIX_ATTEMPT.replaceAll("../../src/example.txt", claim));
-    return replaceSection(task, "Validation Findings", ACTIVE_FINDING);
+async function filelessRecoveryFixture(t) {
+  const fixture = await standaloneWorkspace(t);
+  const key = 'STNL_FILELESS_RECOVERY_READY', previous = process.env[key];
+  t.after(() => { if (previous === undefined) delete process.env[key]; else process.env[key] = previous; });
+  process.env[key] = '1';
+  await fs.mkdir(path.join(fixture.root, 'src'));
+  await fs.writeFile(path.join(fixture.root, 'src/observation.mjs'), "import assert from 'node:assert/strict';assert.equal(process.env.STNL_FILELESS_RECOVERY_READY,'1');\n");
+  fixture.verificationRecipe = '- Recipe: ' + JSON.stringify({ format: 'stnl-verification-recipe-v1', base: 'workspace', cwd: '.',
+    checks: [{ id: 'verification-01', executable: { literal: 'node' }, args: [{ file: { kind: 'product', path: 'src/observation.mjs' } }], inputs: [] }],
+    dependencyReview: 'The existing assertion reads the process configuration and makes no repository changes.' });
+  await renderArtifacts(fixture);
+  fixture.filelessReason = 'Only the process configuration changes; repository bytes remain unchanged.';
+  fixture.setReady = value => { process.env[key] = value ? '1' : '0'; };
+  return fixture;
+}
+
+async function insertCapturedScopeBlocker(fixture, admission, copy, captured, operation) {
+  return withExampleOwner(admission, async () => {
+    const result = spawnSync(process.execPath, [path.join(ROOT, 'skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs'),
+      '--execution-bundle', '--operation', operation, '--workspace', fixture.root, '--task-artifact', copy.candidateTaskArtifact,
+      '--semantic-response-file', captured.semanticResponseFile, '--receipt-file', captured.receiptFile, '--insert-candidate'], { encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr); assert.equal(JSON.parse(result.stdout).state, 'RUNNER_RESULT_BLOCKED');
+    assert.equal((await validateExecutionCandidate(fixture.requirements, copy.candidateExecutionRoot)).state, 'RUNNER_RESULT_BLOCKED');
+    await publishExecutionCopy({ specPath: fixture.requirements, slice: 'slice-01', candidateRoot: copy.candidateRoot });
   });
-  await preflightExecutionOperation(fixture.requirements, "APPLY_FINDINGS", "1");
-  const before = await fs.readFile(path.join(fixture.execution, "tasks/slice-01.md"), "utf8");
-  const copy = await prepareExecutionCopy({ specPath: fixture.requirements, slice: "slice-01" });
-  await fs.writeFile(copy.candidateTaskArtifact, replaceSection(before, "Changed Areas", "- none"));
-  const { priorRoundFailure, correctionApplied, inSliceRationale, ...common } = scopeRegressionPayload();
-  const response = JSON.stringify({ ...common, findingsCycle: "attempt-01", findingsVerified: "none",
-    correctionsCovered: "fileless correction", regressionsSelected: "approved prepared checks", unsupportedActiveFindings: "finding-01" });
-  const captured = await capturedCommandEvidence(t, fixture, "APPLY_FINDINGS", response, "STNL_VERIFICATION_COMMAND=1 node --test test/prepared.test.mjs");
-  const cli = spawnSync(process.execPath, [path.join(ROOT, "skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs"),
-    "--execution-bundle", "--operation", "APPLY_FINDINGS", "--workspace", fixture.root,
-    "--task-artifact", copy.candidateTaskArtifact, "--semantic-response-file", captured.semanticResponseFile,
-    "--receipt-file", captured.receiptFile, "--insert-candidate"], { encoding: "utf8" });
-  assert.equal(cli.status, 0, cli.stderr);
-  assert.equal(JSON.parse(cli.stdout).state, "RUNNER_RESULT_BLOCKED");
-  await publishExecutionCopy({ specPath: fixture.requirements, slice: "slice-01", candidateRoot: copy.candidateRoot });
+}
+
+test("fileless APPLY scope rejection preserves prior checks and formal findings history", async (t) => {
+  const fixture = await filelessRecoveryFixture(t);
+  fixture.exampleImplementation = await implementExample(fixture, { filelessReason: fixture.filelessReason });
+  const formal = await validateExample(fixture, { status: 'NEEDS_FIX', findings: ACTIVE_FINDING });
+  const before = await fs.readFile(path.join(fixture.execution, 'tasks/slice-01.md'), 'utf8');
+  const admission = await beginExample(fixture, 'APPLY_FINDINGS');
+  const start = await nativeExample({ specPath: fixture.requirements, root: fixture.root }, admission.owner);
+  const copy = await prepareExecutionCopy({ specPath: fixture.requirements, slice: 'slice-01', owner: admission.owner });
+  t.after(() => fs.rm(copy.candidateRoot, { recursive: true, force: true }));
+  await fs.writeFile(copy.candidateTaskArtifact, replaceSection(await fs.readFile(copy.candidateTaskArtifact, 'utf8'), 'Corrections Applied', '- none'));
+  const payload = { ...fixture.exampleImplementation.response, findingsCycle: 'attempt-01', findingsVerified: 'finding-01',
+    correctionsCovered: 'Rechecked the observed process configuration without repository changes', regressionsSelected: 'Same prepared process assertion', unsupportedActiveFindings: 'none' };
+  for (const key of ['priorRoundFailure', 'correctionApplied', 'inSliceRationale', 'filelessReason']) delete payload[key];
+  const captured = await captureNativeExample(start, payload, []);
+  const immutable = await Promise.all([fixture.exampleImplementation.captured.receiptFile, formal.captured.receiptFile, captured.receiptFile].map(async file => [file, await fs.readFile(file)]));
+  await insertCapturedScopeBlocker(fixture, admission, copy, captured, 'APPLY_FINDINGS');
   const state = await inspectExecutionState(fixture.requirements);
-  assert.equal(state.state, "RUNNER_RESULT_BLOCKED");
-  assert.equal(state.mandatoryRecovery.operation, "APPLY_FINDINGS");
-  const after = await fs.readFile(path.join(fixture.execution, "tasks/slice-01.md"), "utf8");
-  for (const heading of ["Implementation Test Evidence", "Validation Attempts", "Validation Findings", "Effective Validation Base", "Final Result"])
+  assert.equal(state.state, 'RUNNER_RESULT_BLOCKED'); assert.equal(state.mandatoryRecovery.operation, 'APPLY_FINDINGS');
+  const after = await fs.readFile(path.join(fixture.execution, 'tasks/slice-01.md'), 'utf8');
+  for (const heading of ['Implementation Test Evidence', 'Validation Attempts', 'Validation Findings', 'Effective Validation Base', 'Final Result'])
     assert.equal(sectionBodyForScopeTest(after, heading), sectionBodyForScopeTest(before, heading));
-  assert.equal(state.tasks.get("slice-01").findingsChecks.length, 0);
+  assert.equal(state.tasks.get('slice-01').findingsChecks.length, 0);
+  assert.match(after, /Fileless reason|filelessReason/u);
+  for (const [file, bytes] of immutable) assert.deepEqual(await fs.readFile(file), bytes);
 });
 
 test("scope blocker retains an earlier private fileless failure and its check identifier", async (t) => {
-  const fixture = await nestedLifecycleWorkspace(t);
-  const copy = await prepareExecutionCopy({ specPath: fixture.requirements, slice: "slice-01" });
-  const prior = checkRecord("implementation-check", 1, "TESTS_FAIL", 1).replace(
-    `- Tested state:\n  - \`../../src/example.txt\` | sha256:${VALIDATED_HASH}`,
-    "- Tested state: none\n- Fileless reason: Acceptance-only checks change no repository file.");
-  let candidate = replaceSection(await fs.readFile(copy.candidateTaskArtifact, "utf8"), "Changed Areas", "- none");
-  candidate = replaceSection(candidate, "Implementation Test Evidence", prior);
-  await fs.writeFile(copy.candidateTaskArtifact, candidate);
-  const response = JSON.stringify({ ...scopeRegressionPayload(), automaticCheckRound: "2/3",
-    priorRoundFailure: "Prior prepared check failed.", correctionApplied: "Corrected the in-slice fileless check input.",
-    inSliceRationale: "Same approved acceptance behavior; no file changes." });
-  const captured = await capturedCommandEvidence(t, fixture, "EXECUTE_SLICE", response, "STNL_VERIFICATION_COMMAND=1 node --test test/prepared.test.mjs");
-  const result = spawnSync(process.execPath, [path.join(ROOT, "skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs"),
-    "--execution-bundle", "--operation", "EXECUTE_SLICE", "--workspace", fixture.root,
-    "--task-artifact", copy.candidateTaskArtifact, "--semantic-response-file", captured.semanticResponseFile,
-    "--receipt-file", captured.receiptFile, "--insert-candidate"], { encoding: "utf8" });
-  assert.equal(result.status, 0, result.stderr);
-  assert.equal(JSON.parse(result.stdout).state, "RUNNER_RESULT_BLOCKED");
-  const after = await fs.readFile(copy.candidateTaskArtifact, "utf8");
-  assert.equal(sectionBodyForScopeTest(after, "Implementation Test Evidence"), sectionBodyForScopeTest(candidate, "Implementation Test Evidence"));
-  assert.match(after, /- After record: implementation-check-01/u);
-  assert.doesNotMatch(after, /^### implementation-check-02/mu);
-  assert.equal((await validateExecutionCandidate(fixture.requirements, copy.candidateExecutionRoot)).state, "RUNNER_RESULT_BLOCKED");
-  await publishExecutionCopy({ specPath: fixture.requirements, slice: "slice-01", candidateRoot: copy.candidateRoot });
-  assert.equal((await inspectExecutionState(fixture.requirements)).tasks.get("slice-01").implementationChecks.length, 1);
+  const fixture = await filelessRecoveryFixture(t); fixture.setReady(false);
+  const first = await implementExample(fixture, { filelessReason: fixture.filelessReason, failFirst: true, publish: false });
+  const copy = first.copy, task = copy.candidateTaskArtifact;
+  const before = await fs.readFile(task, 'utf8'), firstReceipt = await fs.readFile(first.captured.receiptFile);
+  const start = await startNativeRunnerCapture({ specPath: fixture.requirements, owner: first.admission.owner, workspace: fixture.root,
+    captureParent: fixture.root, candidateTaskArtifact: task });
+  const agentId = 'offline-fileless-' + randomUUID(); await bindNativeRunnerIdentity({ ...start, agentId });
+  fixture.setReady(true);
+  const payload = { ...first.response, status: 'TESTS_PASS', automaticCheckRound: '2/3',
+    priorRoundFailure: first.response.failures, correctionApplied: 'Corrected the process configuration', inSliceRationale: 'Same observation without repository changes',
+    commands: start.verification.checks.map(check => ({ command: verificationCommand(check), exit: 0 })), failures: 'none',
+    resultOfEachCommandAndExitCode: 'The process assertion now passes', evidenceOrFailureSummary: 'Observed ready process configuration' };
+  delete payload.filelessReason;
+  const captured = await captureNativeExample({ ...start, agentId }, payload, []), receipt = await fs.readFile(captured.receiptFile);
+  await insertCapturedScopeBlocker(fixture, first.admission, copy, captured, 'EXECUTE_SLICE');
+  const after = await fs.readFile(task, 'utf8');
+  assert.equal(sectionBodyForScopeTest(after, 'Implementation Test Evidence'), sectionBodyForScopeTest(before, 'Implementation Test Evidence'));
+  assert.match(after, /- After record: implementation-check-01/u); assert.doesNotMatch(after, /^### implementation-check-02/mu);
+  const state = await inspectExecutionState(fixture.requirements);
+  assert.equal(state.state, 'RUNNER_RESULT_BLOCKED'); assert.equal(state.tasks.get('slice-01').implementationChecks.length, 1);
+  assert.deepEqual(await fs.readFile(first.captured.receiptFile), firstReceipt); assert.deepEqual(await fs.readFile(captured.receiptFile), receipt);
 });
 
 function sectionBodyForScopeTest(text, heading) {
@@ -5632,57 +5635,37 @@ test("planning-only replacement rejects historical REPLAN fields and obsolete co
 });
 
 
-test("pending REPLAN requires canonical fields, one revision increment, and valid supersession mappings", async (t) => {
-  async function pending({ authorityChange = false } = {}) {
-    const fixture = await standaloneWorkspace(t);
-    const { authority: oldHash } = await renderArtifacts(fixture);
-    if (authorityChange) await fs.appendFile(fixture.requirements, "- AC-002: revised authority\n");
-    const newHash = await computeRequirementsAuthority(fixture.requirements);
-    await appendRecoveryPlan(fixture, oldHash, newHash);
-    return fixture;
+test("pending REPLAN requires canonical fields, one revision increment, and valid supersession mappings", async t => {
+  // Current joint append mappings/reasons/continuity are covered by the named
+  // publication guards; mixed review states by preparation's joint review guard.
+  // These two controls retain the initial-authority edges of the old contract.
+  for (const kind of ['invalid-initial-revision', 'extension-without-history']) {
+    const f = await standaloneWorkspace(t);
+    await renderArtifacts(f, { planStatus: kind === 'invalid-initial-revision' ? 'draft' : 'ready' });
+    const consume = () => inspectExecutionState(f.requirements);
+    const expected = kind === 'invalid-initial-revision' ? 'PLANNED_DRAFT' : 'MATERIALIZED_PRISTINE';
+    assert.equal((await consume()).state, expected);
+    const artifacts = ['plan.md', 'plans/slice-01.md', 'tasks/slice-01.md'];
+    const originals = new Map(await Promise.all(artifacts.map(async file => [file, await fs.readFile(path.join(f.execution, file), 'utf8')])));
+    if (kind === 'invalid-initial-revision') {
+      for (const [file, original] of originals) {
+        const mutant = original.replace('Plan revision: 1', 'Plan revision: 4');
+        assert.notEqual(mutant, original); await fs.writeFile(path.join(f.execution, file), mutant);
+      }
+    } else {
+      const original = originals.get('plan.md');
+      const mutant = original.replace('- Objective: Deliver observable behavior',
+        '- Revision mode: append-only-extension\n- Replan reason: Cannot manufacture predecessor history\n- Supersedes open slices: none\n- Objective: Deliver observable behavior');
+      assert.notEqual(mutant, original); await fs.writeFile(path.join(f.execution, 'plan.md'), mutant);
+    }
+    const rejected = await treeBytes(f.execution);
+    await assert.rejects(consume(), kind === 'invalid-initial-revision'
+      ? /initial materialized plan must use Plan revision 1/
+      : /execution publication: current normativeSha256 differs from approved preparation/);
+    assert.deepEqual(await treeBytes(f.execution), rejected, 'rejection never repairs or rewrites authority');
+    for (const [file, original] of originals) await fs.writeFile(path.join(f.execution, file), original);
+    assert.equal((await consume()).state, expected, 'same consumer accepts the restored producer output');
   }
-
-  const missingReason = await pending();
-  await editPlan(missingReason, (value) => value.replace(/^- Replan reason:.*\n/mu, ""));
-  await assert.rejects(inspectExecutionState(missingReason.requirements), /Replan reason/u);
-
-  const placeholderReason = await pending();
-  await editPlan(placeholderReason, (value) => value.replace("- Replan reason: requirements or integration authority changed", "- Replan reason: pending"));
-  await assert.rejects(inspectExecutionState(placeholderReason.requirements), /Replan reason must be objective/u);
-
-  const nonIncrementing = await pending();
-  await editPlan(nonIncrementing, (value) => value.replace("Plan revision: 2", "Plan revision: 1"));
-  await editSlicePlan(nonIncrementing, "slice-02", (value) => value.replace("Plan revision: 2", "Plan revision: 1"));
-  await assert.rejects(preflightExecutionOperation(nonIncrementing.requirements, "MATERIALIZE_TASKS"), /increment Plan revision by exactly one/u);
-
-  const invalidTarget = await pending();
-  await editPlan(invalidTarget, (value) => value.replace("slice-01 -> slice-02", "slice-01 -> slice-03"));
-  await assert.rejects(inspectExecutionState(invalidTarget.requirements), /target slice-03 is not a newly appended later slice/u);
-
-  const missingStaleMapping = await pending({ authorityChange: true });
-  await editPlan(missingStaleMapping, (value) => value.replace("- Supersedes open slices: slice-01 -> slice-02", "- Supersedes open slices: none"));
-  await assert.rejects(inspectExecutionState(missingStaleMapping.requirements), /does not supersede every prior-revision open slice/u);
-
-  const missingSameAuthorityMapping = await pending();
-  await editPlan(missingSameAuthorityMapping, (value) => value.replace("- Supersedes open slices: slice-01 -> slice-02", "- Supersedes open slices: none"));
-  await assert.rejects(preflightExecutionOperation(missingSameAuthorityMapping.requirements, "MATERIALIZE_TASKS"), /does not supersede every prior-revision open slice/u);
-
-  const fakeCommitted = await standaloneWorkspace(t);
-  await renderArtifacts(fakeCommitted);
-  await editPlan(fakeCommitted, (value) => value.replace("- Objective: Deliver observable behavior", "- Revision mode: append-only-extension\n- Replan reason: fake metadata\n- Supersedes open slices: none\n- Objective: Deliver observable behavior"));
-  await assert.rejects(inspectExecutionState(fakeCommitted.requirements), /lacks historical and current-revision tasks/u);
-
-  const invalidInitial = await standaloneWorkspace(t);
-  await renderArtifacts(invalidInitial, { materialized: false });
-  await editPlan(invalidInitial, (value) => value.replace("Plan revision: 1", "Plan revision: 4"));
-  await assert.rejects(inspectExecutionState(invalidInitial.requirements), /planning-only authority must use Plan revision 1/u);
-
-  const mixedReplacement = await standaloneWorkspace(t);
-  const { authority: mixedAuthority } = await renderArtifacts(mixedReplacement);
-  await addSecondPristineSlice(mixedReplacement);
-  await stagePristineReplacement(mixedReplacement, mixedAuthority, mixedAuthority, { ready: true });
-  await editSlicePlan(mixedReplacement, "slice-02", (value) => value.replace("status: ready", "status: ready"));
-  await assert.rejects(preflightExecutionOperation(mixedReplacement.requirements, "MATERIALIZE_TASKS"), /candidate plans do not all match/u);
 });
 
 
@@ -5722,31 +5705,7 @@ test("stale delegation blockers cannot reopen terminal auxiliary phases", async 
 });
 
 
-test("EXECUTE_SLICE preflight permits the next automatic round only after an in-scope correction is persisted", async (t) => {
-  const uncorrected = await standaloneWorkspace(t);
-  await renderArtifacts(uncorrected);
-  await editTask(uncorrected, (value) => {
-    let result = value.replace("- [ ] 1.1", "- [x] 1.1");
-    result = replaceSection(result, "Changed Areas", "- `../../src/example.txt`");
-    return replaceSection(result, "Implementation Test Evidence", checkRecord("implementation-check", 1, "TESTS_FAIL", 1));
-  });
-  await assert.rejects(
-    preflightExecutionOperation(uncorrected.requirements, "EXECUTE_SLICE", "1"),
-    /unterminated implementation automatic correction cycle/u,
-  );
 
-  const corrected = await standaloneWorkspace(t);
-  await renderArtifacts(corrected);
-  await editTask(corrected, (value) => {
-    let result = value.replace("- [ ] 1.1", "- [x] 1.1");
-    result = replaceSection(result, "Changed Areas", "- `../../src/example.txt`");
-    result = replaceSection(result, "Corrections Applied", "- `../../src/example.txt`");
-    return replaceSection(result, "Implementation Test Evidence", checkRecord("implementation-check", 1, "TESTS_FAIL", 1));
-  });
-  const preflight = await preflightExecutionOperation(corrected.requirements, "EXECUTE_SLICE", "1");
-  assert.equal(preflight.state, "EXECUTION_STARTED");
-  assert.deepEqual(preflight.legalOperations, [{ operation: "REPLAN", slice: null }, { operation: "EXECUTE_SLICE", slice: "slice-01" }]);
-});
 
 test("only the first open serial slice may own operational phase", async (t) => {
   const fixture = await standaloneWorkspace(t);
@@ -6193,27 +6152,47 @@ test("an executor delegation blocker remains narrowly resumable when later valid
   await assert.rejects(preflightExecutionOperation(fixture.requirements, "EXECUTE_SLICE", "1"), /not legal/u);
 });
 
-test("auxiliary BLOCKED resumes only its originating operation and later records clear it", async (t) => {
-  const fixture = await standaloneWorkspace(t);
-  await renderArtifacts(fixture);
-  await editTask(fixture, (value) => {
-    let result = replaceSection(value, "Changed Areas", "- `../../src/example.txt`");
-    return replaceSection(result, "Implementation Test Evidence", checkRecord("implementation-check", 1, "BLOCKED", 1));
-  });
-  const blocked = await inspectExecutionState(fixture.requirements);
-  assert.equal(blocked.state, "AUXILIARY_BLOCKED");
-  assertRecoveryTarget(blocked, {
-    operation: "EXECUTE_SLICE",
-    slice: "slice-01",
-    owner: "auxiliary-check",
-    record: "implementation-check-01",
-    round: 1,
-    sameOperationResumeRequired: true,
-  });
-  assert.equal((await preflightExecutionOperation(fixture.requirements, "EXECUTE_SLICE", "1")).state, "AUXILIARY_BLOCKED");
-  await assert.rejects(preflightExecutionOperation(fixture.requirements, "APPLY_FINDINGS", "1"), /legal next operation is EXECUTE_SLICE for slice-01/u);
-  await editTask(fixture, (value) => replaceSection(value, "Implementation Test Evidence", `${checkRecord("implementation-check", 1, "BLOCKED", 1)}\n\n${checkRecord("implementation-check", 2, "TESTS_PASS", 1)}`));
-  assert.equal((await inspectExecutionState(fixture.requirements)).state, "IMPLEMENTED_AWAITING_VALIDATION");
+test("auxiliary BLOCKED resumes only its originating operation and later records clear it", async t => {
+  const f = await standaloneWorkspace(t); await renderArtifacts(f);
+  const admission = await beginExample(f, 'EXECUTE_SLICE');
+  const start = await nativeExample({ specPath: f.requirements, root: f.root }, admission.owner);
+  const copy = await prepareExecutionCopy({ specPath: f.requirements, slice: 'slice-01', owner: admission.owner });
+  t.after(() => fs.rm(copy.candidateRoot, { recursive: true, force: true }));
+  const original = await fs.readFile(copy.candidateTaskArtifact, 'utf8');
+  await fs.writeFile(copy.candidateTaskArtifact, replaceSection(original, 'Changed Areas', '- `../../src/example.txt`'));
+  const response = { ...scopeRegressionPayload(), status: 'BLOCKED',
+    commands: start.verification.checks.map(check => ({ command: verificationCommand(check), exit: 0 })),
+    resultOfEachCommandAndExitCode: 'The real prepared assertion passes; semantic approval remains unavailable',
+    blockers: 'Controlled offline semantic prerequisite is unavailable',
+    evidenceOrFailureSummary: 'Retain the concluded BLOCKED outcome pending human resolution' };
+  const captured = await captureNativeExample(start, response, ['../../src/example.txt']);
+  const receipt = await fs.readFile(captured.receiptFile), semantic = await fs.readFile(captured.semanticResponseFile);
+  const live = await treeBytes(f.execution);
+  const bundle = await serializeRunnerExecutionBundleFromResponse({ operation: 'EXECUTE_SLICE', response: JSON.stringify(response),
+    workspace: f.root, taskArtifact: copy.candidateTaskArtifact, ...captured });
+  await insertExecutionEvidenceInCandidate({ taskArtifact: copy.candidateTaskArtifact, operation: 'EXECUTE_SLICE', bundle,
+    validateProspectiveTask: task => validateExecutionCandidate(f.requirements, copy.candidateExecutionRoot, [task]) });
+  assert.equal((await validateExecutionCandidate(f.requirements, copy.candidateExecutionRoot)).state, 'AUXILIARY_BLOCKED');
+  assert.deepEqual(await treeBytes(f.execution), live);
+  await publishExecutionCopy({ specPath: f.requirements, slice: 'slice-01', candidateRoot: copy.candidateRoot });
+  const blocked = await inspectExecutionState(f.requirements);
+  assert.equal(blocked.state, 'AUXILIARY_BLOCKED');
+  assertRecoveryTarget(blocked, { operation: 'EXECUTE_SLICE', slice: 'slice-01', owner: 'auxiliary-check',
+    record: 'implementation-check-01', round: 1, sameOperationResumeRequired: true });
+  assert.equal((await preflightExecutionOperation(f.requirements, 'EXECUTE_SLICE', '1')).state, 'AUXILIARY_BLOCKED');
+  await assert.rejects(preflightExecutionOperation(f.requirements, 'APPLY_FINDINGS', '1'), /legal next operation is EXECUTE_SLICE for slice-01/);
+  assert.equal(recoverableRunnerHandoff({ operation: 'EXECUTE_SLICE', slice: 'slice-01',
+    outcome: { result: 'BLOCKED', blocker: 'OFFICIAL_AUXILIARY_BLOCKED' },
+    readback: { executionRaw: blocked }, priorOperations: [], remainingTurns: 10 }), null);
+  await implementExample(f);
+  const resumed = await inspectExecutionState(f.requirements);
+  assert.equal(resumed.state, 'IMPLEMENTED_AWAITING_VALIDATION');
+  assert.deepEqual(resumed.tasks.get('slice-01').implementationChecks.map(check => [check.id, check.status, check.round]),
+    [['implementation-check-01', 'BLOCKED', 1], ['implementation-check-02', 'TESTS_PASS', 1]]);
+  assert.equal(resumed.tasks.get('slice-01').implementationChecks[0].body, blocked.tasks.get('slice-01').implementationChecks[0].body);
+  assert.equal(resumed.mandatoryRecovery, null);
+  assert.deepEqual(await fs.readFile(captured.receiptFile), receipt);
+  assert.deepEqual(await fs.readFile(captured.semanticResponseFile), semantic);
 });
 
 test("append-only requirements recovery preserves history and requires later PASS ownership", async (t) => {
@@ -6784,63 +6763,46 @@ test("canonical interrupted automatic checks preserve origins through blocking p
   }
 });
 
-test("approved supersession preserves interrupted automatic checks with a committed recovery owner", async (t) => {
-  for (const disposition of ["resolved", "active"]) {
-    for (const round of [1, 2]) {
-      await t.test(`${disposition} divergence after round ${round}/3`, async (child) => {
-        const fixture = await standaloneWorkspace(child);
-        const { authority } = await renderArtifacts(fixture);
-        const evidence = Array.from({ length: round }, (_, index) =>
-          checkRecord("implementation-check", index + 1, "TESTS_FAIL", index + 1)
-            .replace("- Correction paths: ../../src/example.txt", "- Correction paths: none")).join("\n\n");
-        await editTask(fixture, (text) => replaceSection(replaceSection(replaceSection(text,
-          "Changed Areas", "- `../../src/example.txt`"), "Implementation Test Evidence", evidence),
-        "Divergences", ACTIVE_DIVERGENCE));
-        assert.equal((await inspectExecutionState(fixture.requirements)).state, "DIVERGENCE_BLOCKED");
-        await appendRecoveryPlan(fixture, authority, authority, { ready: true });
-        const liveBefore = await treeBytes(fixture.execution);
-        const candidate = await preparePreparationCandidate({ specPath: fixture.requirements });
-        child.after(() => fs.rm(candidate.candidateExecutionRoot, { recursive: true, force: true }));
-        await commitAppendRecovery({ ...fixture, execution: candidate.candidateExecutionRoot }, authority, authority,
-          { resolveDivergence: disposition === "resolved" });
-        const candidateBefore = await treeBytes(candidate.candidateExecutionRoot);
-        assert.equal((await serializeTaskPathClaims({ specPath: fixture.requirements,
-          candidateExecutionRoot: candidate.candidateExecutionRoot })).status, "PASS");
-        assert.deepEqual(await treeBytes(fixture.execution), liveBefore);
-        assert.deepEqual(await treeBytes(candidate.candidateExecutionRoot), candidateBefore);
-        const invalid = [
-          ["missing mapping", "plan.md", (text) => text.replace("slice-01 -> slice-02", "none")],
-          ["missing terminal row", "tasks.md", (text) => text.replace("SUPERSEDED | SUPERSEDED", "pending | pending")],
-          ["missing owner", "tasks/slice-01.md", (text) => text.replace("Superseded by: slice-02", "Superseded by: slice-99")],
-          ["wrong committing revision", "tasks/slice-01.md", (text) => text.replace("- Plan revision: 2", "- Plan revision: 3")],
-          ["wrong owner authority", "tasks/slice-02.md", (text) => text.replace(`sha256:${authority}`, `sha256:${"f".repeat(64)}`)],
-          ["rewritten failed evidence", "tasks/slice-01.md", (text) => text.replace("- Failures: observable mismatch", "- Failures: different failure")],
-        ];
-        for (const [name, relative, mutate] of invalid) {
-          const badRoot = await temporary(child, "stnl-interrupted-recovery-");
-          await copyDirectory(candidate.candidateExecutionRoot, badRoot);
-          const target = path.join(badRoot, relative);
-          const before = await fs.readFile(target, "utf8");
-          const changed = mutate(before);
-          assert.notEqual(changed, before, name);
-          await fs.writeFile(target, changed);
-          const badBefore = await treeBytes(badRoot);
-          await assert.rejects(serializeTaskPathClaims({ specPath: fixture.requirements, candidateExecutionRoot: badRoot }), name);
-          assert.deepEqual(await treeBytes(badRoot), badBefore);
-          assert.deepEqual(await treeBytes(fixture.execution), liveBefore);
-        }
-        assert.equal((await publishPreparationCandidate({ specPath: fixture.requirements,
-          candidateExecutionRoot: candidate.candidateExecutionRoot })).status, "PASS");
-        const recovered = await inspectExecutionState(fixture.requirements);
-        assert.equal(recovered.state, "EXECUTION_STARTED");
-        assert.equal(recovered.tasks.get("slice-01").divergences[0].state, disposition);
-        assert.equal(recovered.tasks.get("slice-01").sections.get("Implementation Test Evidence"), evidence);
-        const handoff = deriveNormalHandoff(recovered);
-        assert.equal(handoff.operation, "EXECUTE_SLICE");
-        assert.equal(handoff.slice, "slice-02");
-      });
+test("approved supersession preserves interrupted automatic checks with a committed recovery owner", async t => {
+  // Both interrupted rounds and active/resolved dispositions use the unchanged
+  // canonical interrupted-check producer tests. These are the remaining owner
+  // and terminal-index guards on the same genuine reviewed recovery candidate.
+  const f = await standaloneWorkspace(t); const { authority } = await renderArtifacts(f);
+  const failed = await implementExample(f, { failFirst: true, publish: false });
+  await fs.writeFile(failed.copy.candidateTaskArtifact,
+    replaceSection(await fs.readFile(failed.copy.candidateTaskArtifact, 'utf8'), 'Divergences', ACTIVE_DIVERGENCE));
+  await publishExecutionCopy({ specPath: f.requirements, slice: 'slice-01', candidateRoot: failed.copy.candidateRoot });
+  assert.equal((await inspectExecutionState(f.requirements)).state, 'DIVERGENCE_BLOCKED');
+  const receipt = await fs.readFile(failed.captured.receiptFile);
+  await appendRecoveryPlan(f, authority, authority);
+  await reviewJointFixture(f, { editCandidate: async root => {
+    await preparePlanCandidate({ candidateExecutionRoot: root });
+    await serializePlanPathClaims({ specPath: f.requirements, candidateExecutionRoot: root });
+    await captureApprovedPreparation({ candidateExecutionRoot: root, reviewDecision });
+    const consume = () => validateExecutionCandidate(f.requirements, root);
+    assert.equal((await consume()).state, 'EXECUTION_STARTED');
+    const live = await treeBytes(f.execution);
+    for (const [name, relative, mutate, diagnostic] of [
+      ['missing terminal index', 'tasks.md', text => text.replace('SUPERSEDED | SUPERSEDED', 'pending | pending'), /global and detailed state disagree/],
+      ['missing recovery owner', 'tasks/slice-01.md', text => text.replace('Superseded by: slice-02', 'Superseded by: slice-99'), /not a committed supersession mapping/],
+      ['wrong committing revision', 'tasks/slice-01.md', text => text.replace('- Plan revision: 2', '- Plan revision: 3'), /committing Plan revision|committed supersessions do not exactly match/],
+    ]) {
+      const file = path.join(root, relative), original = await fs.readFile(file, 'utf8');
+      const mutant = mutate(original); assert.notEqual(mutant, original, name);
+      await fs.writeFile(file, mutant); const rejected = await treeBytes(root);
+      await assert.rejects(consume(), diagnostic, name);
+      assert.deepEqual(await treeBytes(root), rejected, name + ': candidate retained');
+      assert.deepEqual(await treeBytes(f.execution), live, name + ': live retained');
+      await fs.writeFile(file, original); assert.equal((await consume()).state, 'EXECUTION_STARTED');
     }
-  }
+    await fs.rm(path.join(root, 'approved-preparation.json'), { force: true });
+  } });
+  const resumed = await inspectExecutionState(f.requirements), historical = resumed.tasks.get('slice-01');
+  assert.equal(historical.final.result, 'SUPERSEDED'); assert.equal(historical.final.supersededBy, 'slice-02');
+  assert.equal(historical.final.planRevision, 2); assert.equal(historical.divergences[0].state, 'active');
+  assert.ok(historical.sections.get('Implementation Test Evidence').includes(failed.bundle));
+  assert.deepEqual(await fs.readFile(failed.captured.receiptFile), receipt);
+  assert.equal(resumed.normalHandoff.operation, 'EXECUTE_SLICE'); assert.equal(resumed.normalHandoff.slice, 'slice-02');
 });
 
 
@@ -6858,59 +6820,61 @@ test("interrupted checks cannot forge supersession in the original plan revision
   await assert.rejects(inspectExecutionState(fixture.requirements), /SUPERSEDED.*committing Plan revision/u);
 });
 
-test("a later missing integration slice has an executable append-only REPLAN path", async (t) => {
-  const fixture = await standaloneWorkspace(t);
-  const { authority } = await renderArtifacts(fixture);
-  await editTask(fixture, (value) => {
-    let result = value.replace("- [ ] 1.1", "- [x] 1.1");
-    result = replaceSection(result, "Changed Areas", "- `../../src/example.txt`");
-    result = replaceSection(result, "Validation Attempts", PASS_ATTEMPT);
-    result = replaceSection(result, "Effective Validation Base", PASS_BASE);
-    return publishPassResult(result);
-  });
-  await editTasksIndex(fixture, (value) => value.replace("| [ ] | 01 - Delivery | observable result | - | tasks/slice-01.md | pending | pending |", "| [x] | 01 - Delivery | observable result | - | tasks/slice-01.md | PASS | PASS |"));
-  assert.equal((await preflightExecutionOperation(fixture.requirements, "REPLAN")).state, "COMPLETE");
-  await appendRecoveryPlan(fixture, authority, authority, { supersedes: "none" });
-  assert.equal((await preflightExecutionOperation(fixture.requirements, "REVIEW_PLAN")).state, "PENDING_REPLAN_DRAFT");
-  await writeValidatedPath(fixture);
-  await editPlan(fixture, (text) => setPlanReviewState(text, true));
-  await editSlicePlan(fixture, "slice-02", (text) => setPlanReviewState(text, true));
-  assert.equal((await preflightExecutionOperation(fixture.requirements, "MATERIALIZE_TASKS")).state, "PENDING_REPLAN_READY");
-  const candidate = await preparePreparationCandidate({ specPath: fixture.requirements });
-  t.after(async () => fs.rm(candidate.candidateExecutionRoot, { recursive: true, force: true }));
-  const taskPath = path.join(candidate.candidateExecutionRoot, "tasks/slice-01.md");
-  const passedTask = await fs.readFile(taskPath, "utf8");
-  await fs.writeFile(taskPath, replaceSection(passedTask, "Final Result", "- SUPERSEDED\n- Superseded by: slice-02\n- Plan revision: 2"));
-  const liveBefore = await treeBytes(fixture.execution);
-  const candidateBefore = await treeBytes(candidate.candidateExecutionRoot);
-  await assert.rejects(publishPreparationCandidate({ specPath: fixture.requirements,
-    candidateExecutionRoot: candidate.candidateExecutionRoot }), /historical task changed during materialization/u);
-  assert.deepEqual(await treeBytes(fixture.execution), liveBefore);
-  assert.deepEqual(await treeBytes(candidate.candidateExecutionRoot), candidateBefore);
+test("a later missing integration slice has an executable append-only REPLAN path", async t => {
+  const f = await standaloneWorkspace(t); const { authority } = await renderArtifacts(f);
+  await implementExample(f); const formal = await validateExample(f);
+  const passed = (await inspectExecutionState(f.requirements)).tasks.get('slice-01');
+  const receipt = await fs.readFile(formal.captured.receiptFile);
+  assert.equal((await preflightExecutionOperation(f.requirements, 'REPLAN')).state, 'COMPLETE');
+  // The new integration contribution does not take the completed AC's integral
+  // ownership away from slice-01 or pretend that its earlier proof was missing.
+  await appendRecoveryPlan(f, authority, authority, { supersedes: 'none', newContribution: 'partial' });
+  assert.equal((await preflightExecutionOperation(f.requirements, 'REVIEW_PLAN')).state, 'PENDING_REPLAN_DRAFT');
+  await reviewJointFixture(f, { editCandidate: async root => {
+    const file = path.join(root, 'tasks/slice-01.md'), original = await fs.readFile(file, 'utf8');
+    const mutant = replaceSection(original, 'Final Result', '- SUPERSEDED\n- Superseded by: slice-02\n- Plan revision: 2');
+    assert.notEqual(mutant, original); await fs.writeFile(file, mutant);
+    const live = await treeBytes(f.execution), rejected = await readPreparationArtifacts(root);
+    await assert.rejects(publishPreparationCandidate({ specPath: f.requirements, candidateExecutionRoot: root, reviewDecision }),
+      /SUPERSEDED must not retain an Effective Validation Base/);
+    assert.deepEqual(await treeBytes(f.execution), live);
+    assert.deepEqual(await readPreparationArtifacts(root), rejected);
+    await fs.writeFile(file, original); await fs.rm(path.join(root, 'approved-preparation.json'), { force: true });
+  } });
+  const resumed = await inspectExecutionState(f.requirements), historical = resumed.tasks.get('slice-01');
+  assert.equal(historical.final.result, 'PASS'); assert.equal(historical.attempts[0].body, passed.attempts[0].body);
+  assert.equal(historical.sections.get('Effective Validation Base'), passed.sections.get('Effective Validation Base'));
+  assert.equal(historical.base.present, true);
+  assert.equal(resumed.normalHandoff.operation, 'EXECUTE_SLICE'); assert.equal(resumed.normalHandoff.slice, 'slice-02');
+  assert.equal((await preflightExecutionOperation(f.requirements, 'EXECUTE_SLICE', '2')).state, 'EXECUTION_STARTED');
+  assert.deepEqual(await fs.readFile(formal.captured.receiptFile), receipt);
 });
 
 test("superseded historical paths become terminal only through a later current-authority PASS", async (t) => {
-  const fixture = await standaloneWorkspace(t);
-  const { authority: oldHash } = await renderArtifacts(fixture);
-  await editTask(fixture, (value) => replaceSection(value, "Changed Areas", "- `../../src/example.txt`"));
-  await fs.appendFile(fixture.requirements, "- AC-002: corrective integration\n");
+  const fixture = await standaloneWorkspace(t); const { authority: oldHash } = await renderArtifacts(fixture);
+  const first = await implementExample(fixture);
+  const firstReceipt = await fs.readFile(first.captured.receiptFile);
+  await fs.appendFile(fixture.requirements, '- AC-002: corrective integration\n');
   const newHash = await computeRequirementsAuthority(fixture.requirements);
   await appendRecoveryPlan(fixture, oldHash, newHash, { ready: true });
-  await commitAppendRecovery(fixture, oldHash, newHash);
-  const second = path.join(fixture.execution, "tasks/slice-02.md");
-  let task = await fs.readFile(second, "utf8");
-  task = task.replace("- [ ] 1.1", "- [x] 1.1");
-  task = replaceSection(task, "Changed Areas", "- `../../src/example.txt`");
-  task = replaceSection(task, "Validation Attempts", PASS_ATTEMPT);
-  task = replaceSection(task, "Effective Validation Base", PASS_BASE);
-  task = publishPassResult(task);
-  await fs.writeFile(second, task);
-  await editTasksIndex(fixture, (value) => value.replace("| [ ] | 02 - Recovery | reconciled result | 01 | tasks/slice-02.md | pending | pending |", "| [x] | 02 - Recovery | reconciled result | 01 | tasks/slice-02.md | PASS | PASS |"));
-  await writeValidatedPath(fixture);
+  const recovery = await inspectExecutionState(fixture.requirements);
+  assert.equal(recovery.tasks.get('slice-01').final.result, 'SUPERSEDED');
+  assert.equal(recovery.normalHandoff.slice, 'slice-02'); assert.notEqual(recovery.state, 'COMPLETE');
+  await implementExample(fixture, { slice: 'slice-02' });
+  const beforePass = await inspectExecutionState(fixture.requirements);
+  assert.equal(beforePass.state, 'IMPLEMENTED_AWAITING_VALIDATION');
+  assert.equal(beforePass.tasks.get('slice-02').attempts.length, 0);
+  const formal = await validateExample(fixture, { slice: 'slice-02' });
   const complete = await inspectExecutionState(fixture.requirements);
-  assert.deepEqual(complete.legalOperations, [{ operation: "REPLAN", slice: null }]);
+  assert.equal(complete.state, 'COMPLETE');
+  assert.deepEqual(complete.legalOperations, [{ operation: 'REPLAN', slice: null }]);
   assert.equal(complete.normalHandoff, null);
-  assert.equal((await preflightExecutionOperation(fixture.requirements, "REPLAN")).state, "COMPLETE", "terminal recovery must permit a corrective replan from COMPLETE");
+  assert.equal((await preflightExecutionOperation(fixture.requirements, 'REPLAN')).state, 'COMPLETE');
+  assert.equal(complete.tasks.get('slice-01').final.supersededBy, 'slice-02');
+  assert.ok(complete.tasks.get('slice-01').sections.get('Implementation Test Evidence').includes(first.bundle));
+  assert.equal(complete.tasks.get('slice-02').attempts.at(-1).status, 'PASS');
+  assert.deepEqual(await fs.readFile(first.captured.receiptFile), firstReceipt);
+  assert.equal(JSON.parse(await fs.readFile(formal.captured.receiptFile)).operation, 'VALIDATE_SLICE');
 });
 
 test("attempt/check numbering, unresolved blockers at PASS, and structural gates reject deterministically", async t => {
@@ -7131,60 +7095,7 @@ test("Effective Validation Base ownership reproducer covers path basis, hash, dr
   await runOwnedContract("base-provenance");
 });
 
-test("candidate validation permits declared later-slice ownership of a historical overlap", async (t) => {
-  const fixture = await standaloneWorkspace(t);
-  await renderArtifacts(fixture);
-  await addSecondPristineSlice(fixture);
-  await passFirstSlice(fixture);
 
-  const currentContent = "later validated behavior\n";
-  const currentHash = createHash("sha256").update(currentContent).digest("hex");
-  await writeValidatedPath(fixture, "../../src/example.txt", currentContent);
-
-  const candidate = await copyDirectory(fixture.execution, path.join(fixture.root, "historical-overlap-candidate"));
-  const candidateTask = path.join(candidate, "tasks/slice-02.md");
-  let task = await fs.readFile(candidateTask, "utf8");
-  task = task.replace("- [ ] 2.1", "- [x] 2.1");
-  task = replaceSection(task, "Changed Areas", "- `../../src/example.txt`");
-  task = replaceSection(
-    task,
-    "Prior Validation Overlap",
-    "### overlap-01\n\n- Prior slice: slice-01\n- Paths: ../../src/example.txt\n- Affected behavior: Preserve the previously validated CLI behavior.\n- Regressions: Re-run the focused CLI regression against the changed test file.",
-  );
-  task = replaceSection(
-    task,
-    "Implementation Test Evidence",
-    checkRecord("implementation-check", 1, "TESTS_PASS", 1).replaceAll(`sha256:${VALIDATED_HASH}`, `sha256:${currentHash}`),
-  );
-  await fs.writeFile(candidateTask, task, "utf8");
-
-  const liveTask = await fs.readFile(path.join(fixture.execution, "tasks/slice-02.md"));
-  assert.equal((await validateExecutionCandidate(fixture.requirements, candidate)).state, "IMPLEMENTED_AWAITING_VALIDATION");
-  assert.deepEqual(await fs.readFile(path.join(fixture.execution, "tasks/slice-02.md")), liveTask);
-
-  const needsFix = await copyDirectory(candidate, path.join(fixture.root, "historical-overlap-needs-fix"));
-  const needsFixTask = path.join(needsFix, "tasks/slice-02.md");
-  let needsFixText = await fs.readFile(needsFixTask, "utf8");
-  needsFixText = replaceSection(needsFixText, "Validation Attempts", NEEDS_FIX_ATTEMPT);
-  needsFixText = replaceSection(needsFixText, "Validation Findings", ACTIVE_FINDING);
-  await fs.writeFile(needsFixTask, needsFixText, "utf8");
-  assert.equal((await validateExecutionCandidate(fixture.requirements, needsFix)).state, "VALIDATION_NEEDS_FIX");
-  assert.deepEqual(await fs.readFile(path.join(fixture.execution, "tasks/slice-02.md")), liveTask);
-
-  const invalidCurrent = await copyDirectory(candidate, path.join(fixture.root, "historical-overlap-invalid-current"));
-  const invalidTaskPath = path.join(invalidCurrent, "tasks/slice-02.md");
-  await fs.writeFile(
-    invalidTaskPath,
-    (await fs.readFile(invalidTaskPath, "utf8")).replaceAll(`sha256:${currentHash}`, `sha256:${"0".repeat(64)}`),
-    "utf8",
-  );
-  await assert.rejects(validateExecutionCandidate(fixture.requirements, invalidCurrent), (error) => {
-    assert.ok(error instanceof ExecutionContractError);
-    assert.match(error.message, /file-backed candidate evidence expected/u);
-    assert.equal(error.findings.some((item) => item.includes("slice-02") || item.includes("tasks/slice-02.md")), true);
-    return true;
-  });
-});
 
 // Uses current joint preparation, activation, native capture and strict publication.
 test("directory scope selects files but current checks alone take ownership from a prior PASS", async () => {
