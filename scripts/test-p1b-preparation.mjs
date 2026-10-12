@@ -18,8 +18,8 @@ const replace = (text, values) => values.reduce((result, [a, b]) => result.repla
 export const verificationBody = ({file='src/greeting.test.mjs', kind='product', inputs=[], files=null, cwd='.'}={}) => '- Recipe: ' + JSON.stringify({format:'stnl-verification-recipe-v1',base:'workspace',cwd,
   checks:[{id:'verification-01',executable:{literal:'node'},args:[{literal:'--test'},...(files ?? [file]).map(path=>({file:{kind,path}}))],inputs:inputs.map(path=>({kind:'input',path}))}],
   dependencyReview:'Reviewed direct proof references and indirect imports/configuration; all dependencies explicitly contained in approved product areas or Existing Inputs.'});
-export async function fixture() {
-  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'stnl-p1b-test-')));
+export async function fixture({ parent = os.tmpdir() } = {}) {
+  const root = await fs.realpath(await fs.mkdtemp(path.join(parent, 'stnl-p1b-test-')));
   await fs.mkdir(path.join(root, '.git'));
   await fs.mkdir(path.join(root, 'src'));
   const specPath = path.join(root, 'requirements.md');

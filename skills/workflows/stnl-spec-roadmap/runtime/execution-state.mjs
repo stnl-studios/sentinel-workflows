@@ -2135,7 +2135,13 @@ async function executionArtifacts(workspace, { validateImplementationPaths = fal
       evidenceOrigins:history.evidenceOrigins,reopenedPasses:history.reopenedPasses,currentPreparationRevision:globalPlan.revision,
     });
     task.continuity=delivery;task.history=history.history;task.deliveryId=delivery.deliveryId;
-    if (delivery.history.length) task.pristine=false;
+    // A retained preparation snapshot is not itself executed work. Preserve
+    // non-pristine status when any archived task actually contains work/evidence.
+    if (history.history.some(({text}) => {
+      const archived = parsePreparationArtifact(text, `tasks/${row.slice}.md`, {historical:true}).sections;
+      return [...PRISTINE].some(([name,sentinel]) => archived[name] !== sentinel)
+        || /^- \[x\]/mu.test(archived.Checklist) || archived['Operational Changes'] !== '- none';
+    })) task.pristine=false;
     const plan = plans.get(row.slice);
     if (plan !== undefined && (task.fingerprint !== plan.fingerprint || task.revision !== plan.revision)) pairMismatches.push(row.slice);
     if (row.done && row.result === "PASS") {
@@ -2623,7 +2629,11 @@ export async function prepareDeliveryRetention({ specPath, stage, marker, alloca
         ? parseStrictJson((await readOwnedFile(path.join(workspace.executionRoot,'approved-preparation.json'))).bytes.toString('utf8')) : null;
       const affected=previous.fields['Plan revision'] !== task.fields['Plan revision'];
       const hasRecords=['Implementation Test Evidence','Findings Test Evidence','Validation Attempts'].some(h=>previous.sections[h]!=='- none');
-      if (affected || (hasRecords && previousSnapshot?.normativeSha256!==authority.normativeSha256)) {
+      if (previousSnapshot === null) {
+        const draft = parseTask(previousBytes.toString('utf8'),previousFile,delivery.slice,{currentPreparationRevision:Number(previous.fields['Plan revision'])});
+        if (!draft.pristine || draft.sections.get('Operational Changes') !== '- none') throw new ExecutionContractError('unreviewed draft has executed records without approved preparation');
+      }
+      if (previousSnapshot !== null && (affected || (hasRecords && previousSnapshot.normativeSha256!==authority.normativeSha256))) {
         const snapshotBytes = (await readOwnedFile(path.join(workspace.executionRoot,'approved-preparation.json'))).bytes;
         const snapshot = parseStrictJson(snapshotBytes.toString('utf8')); validateApprovedPreparation(snapshot);
         const taskRef = {...await retain(`${delivery.slice}-task.md`,previousBytes),logicalTaskPath:taskPath};

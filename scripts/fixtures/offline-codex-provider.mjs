@@ -213,11 +213,11 @@ try {
       await fs.writeFile(context.file, JSON.stringify({ ...current, providerSha256: 'sha256:' + '0'.repeat(64) }));
     }
     finish('Documentary artifacts published by the lifecycle producer.');
-  } else if (operation === 'PLAN' || operation === 'REVIEW_PLAN') {
+  } else if (['PLAN', 'REPLAN', 'REVIEW_PLAN'].includes(operation)) {
     const { preparePreparationCandidate } = await importHelper('stnl-execution-planner', 'prepare-task-candidate.mjs');
     const { publishPreparationCandidate } = await importHelper('stnl-execution-planner', 'publish-task-candidate.mjs');
     const { candidateExecutionRoot } = await preparePreparationCandidate({ specPath, operation });
-    if (operation === 'PLAN') {
+    if (operation !== 'REVIEW_PLAN') {
       await renderOfflineArtifacts({ snapshot, workspace, specPath, candidateExecutionRoot, targetPaths: targets });
       await publishPreparationCandidate({ specPath, candidateExecutionRoot });
       finish('Joint draft Plan and Tasks with prepared checks in the same delivery.');
@@ -229,6 +229,13 @@ try {
       await publishPreparationCandidate({ specPath, candidateExecutionRoot, reviewDecision: {
         operation: 'REVIEW_PLAN', status: 'approved', examined: ['requirements', 'plans', 'tasks', 'initial checklist', 'proof capability'],
         summary: 'TEST-ONLY simulated joint review: unchanged AC-001 mapped to complete CLI delivery, seed boundaries preserved and prepared matrix can observe positive and negative conditions. No independent model certification.' } });
+      if (context.scenario === 'stale-joint-review') {
+        const barrier = path.join(context.root, '.offline-stale-joint-review');
+        if (!await fs.stat(barrier).catch(error => { if (error.code === 'ENOENT') return null; throw error; })) {
+          await fs.writeFile(barrier, 'first joint review completed; authority changed once\n', { flag: 'wx' });
+          await fs.appendFile(path.join(specPath, 'shared/requirements.md'), '\nDocumentary context changed after the first joint review; every R-001/AC-001 behavior remains unchanged.\n');
+        }
+      }
       finish('Final joint Plan and Tasks reviewed and snapshot activated by the publisher.');
     }
   } else if (['EXECUTE_SLICE', 'VALIDATE_SLICE', 'APPLY_FINDINGS'].includes(operation)) {

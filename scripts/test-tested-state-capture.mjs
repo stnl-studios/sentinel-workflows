@@ -1,190 +1,219 @@
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { fixture, approveFixture } from './test-p1b-preparation.mjs';
+import { implementOffline, runFirstRemoval } from './test-p1b-publication.mjs';
+import { implementedFixture, formal, revise, setSection, native, capture } from './test-p1b-continuity.mjs';
+import { beginPreparedExecutionOperation, readExecutionActivation, validateExecutionCandidate } from '../skills/workflows/stnl-slice-executor/runtime/execution-state.mjs';
+import { prepareExecutionCopy } from '../skills/workflows/stnl-slice-executor/runtime/prepare-execution-copy.mjs';
+import { preparePreparationCandidate } from '../skills/workflows/stnl-execution-planner/runtime/prepare-task-candidate.mjs';
+import { publishPreparationCandidate } from '../skills/workflows/stnl-execution-planner/runtime/publish-task-candidate.mjs';
+import { startNativeRunnerCapture, bindNativeRunnerIdentity } from '../skills/workflows/stnl-slice-executor/runtime/capture-runner-response.mjs';
+import { captureRunnerTestedState, serializeRunnerExecutionBundleFromResponse, insertExecutionEvidenceInCandidate } from '../skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs';
 
-import {
-  captureRunnerTestedState,
-  serializeRunnerExecutionBundleFromResponse,
-} from '../skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs';
+const CLI = '../../src/unpredicted.mjs';
+const TEST = '../../src/greeting.test.mjs';
+const hash = bytes => createHash('sha256').update(bytes).digest('hex');
+const corrected = 'export const greeting = "hello";\n';
 
-const ROOT = path.resolve(import.meta.dirname, '..');
-const HISTORICAL = path.join(ROOT, 'benchmark-temp/run-20260928220422-63762e6f/case-b');
-const A = 'ca4c3b7735150519702004b1f112ae325dd3b44e2cced440b761fc0dcf116269';
-const B = 'e9b6c71cce44d6d8dd33b182696982b7d3eacf9cd9d340e5e96351805dfdedeb';
-const CLI = '../../../../src/cli.mjs';
-const TEST = '../../../../test/cli.test.mjs';
-const hash = (bytes) => createHash('sha256').update(bytes).digest('hex');
-
-function section(text, heading, body) {
-  const marker = `## ${heading}\n\n`;
-  const start = text.indexOf(marker);
-  assert.ok(start >= 0, heading);
-  const from = start + marker.length;
-  const next = text.indexOf('\n## ', from);
-  assert.ok(next >= 0, heading);
-  return `${text.slice(0, from)}${body}\n${text.slice(next + 1)}`;
+// These are controlled semantic decisions. The joint producer, activation,
+// native origin, actual reviewed Node check, receipt and serializer are real.
+async function failedFixture(t) {
+  const f = await fixture();
+  t.after(() => fs.rm(f.root, { recursive: true, force: true }));
+  const approved = await approveFixture(f);
+  const admitted = await beginPreparedExecutionOperation(f.specPath, 'EXECUTE_SLICE', '1', approved.activation.activationId);
+  const implementation = await implementOffline(f, admitted, { forceFail: true });
+  assert.equal(implementation.response.status, 'TESTS_FAIL');
+  assert.equal(implementation.response.commands[0].exit, 1);
+  return { ...f, admitted, implementation, taskArtifact: implementation.copy.candidateTaskArtifact,
+    cli: path.join(f.root, 'src/unpredicted.mjs'), cliTest: path.join(f.root, 'src/greeting.test.mjs') };
 }
 
-async function fixture(t) {
-  const workspace = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'stnl-tested-state-')));
-  t.after(() => fs.rm(workspace, { recursive: true, force: true }));
-  const taskArtifact = path.join(workspace, 'specs/benchmark-case-b/execution/tasks/slice-02.md');
-  const cli = path.join(workspace, 'src/cli.mjs');
-  const cliTest = path.join(workspace, 'test/cli.test.mjs');
-  await Promise.all([fs.mkdir(path.dirname(taskArtifact), { recursive: true }), fs.mkdir(path.dirname(cli)), fs.mkdir(path.dirname(cliTest))]);
-  const events = (await fs.readFile(path.join(HISTORICAL, 'events.jsonl'), 'utf8')).trim().split('\n').map(JSON.parse);
-  const before = events.find((event) => event.operationId === 'B-08-EXECUTE_SLICE'
-    && event.type === 'item.completed' && event.item?.command?.includes("sed -n '1,180p' src/cli.mjs"))?.item.aggregated_output;
-  assert.equal(hash(before), A);
-  const after = await fs.readFile(path.join(HISTORICAL, 'workspace/src/cli.mjs'));
-  assert.equal(hash(after), B);
-  await fs.writeFile(cli, before);
-  await fs.copyFile(path.join(HISTORICAL, 'workspace/test/cli.test.mjs'), cliTest);
-  let task = await fs.readFile(path.join(HISTORICAL, 'workspace/specs/benchmark-case-b/execution/tasks/slice-02.md'), 'utf8');
-  for (const heading of ['Delegation Blocker', 'Implementation Test Evidence', 'Findings Test Evidence', 'Corrections Applied']) {
-    task = section(task, heading, '- none');
-  }
-  await fs.writeFile(taskArtifact, task);
-  const prior = task.match(/## Implementation Test Evidence\n\n([\s\S]*?)\n## /u)?.[1];
-  assert.equal(prior, '- none');
-  return { workspace, taskArtifact, cli, cliTest, before, after };
+async function produce(f, operation, evidence) {
+  return serializeRunnerExecutionBundleFromResponse({ operation, response: evidence.response,
+    workspace: f.root, taskArtifact: f.taskArtifact, ...evidence.captured });
+}
+async function nextRound(f, operation, prior, mutate = []) {
+  const start = await startNativeRunnerCapture({ specPath: f.specPath, owner: f.admitted.owner,
+    workspace: f.root, captureParent: f.root, candidateTaskArtifact: f.taskArtifact });
+  const agentId = `offline-tested-state-${randomUUID()}`;
+  await bindNativeRunnerIdentity({ ...start, agentId });
+  if (mutate.includes('cli')) await fs.writeFile(f.cli, corrected);
+  if (mutate.includes('test')) await fs.appendFile(f.cliTest, '// bounded test correction\n');
+  const passing = mutate.includes('cli');
+  const response = { ...prior, automaticCheckRound: '2/3', status: passing ? 'TESTS_PASS' : 'TESTS_FAIL',
+    commands: prior.commands.map(item => ({ ...item, exit: passing ? 0 : 1 })),
+    failures: passing ? 'none' : 'Greeting still differs from the required hello value.',
+    priorRoundFailure: 'Actual prepared greeting assertion exited 1.',
+    correctionApplied: mutate.length ? 'Corrected the declared greeting/test files.' : 'No source correction was made; the real failure remains.',
+    inSliceRationale: 'All checks and corrections stay in the approved greeting area.',
+    correctionsCovered: 'Corrected the declared greeting/test files.', selectionRationale: 'Exercise the prepared greeting assertion.' };
+  if (operation === 'EXECUTE_SLICE') delete response.correctionsCovered;
+  else for (const key of ['priorRoundFailure', 'correctionApplied', 'inSliceRationale']) delete response[key];
+  const captured = await capture({ ...start, agentId }, response, [CLI, TEST]);
+  const bundle = await produce(f, operation, { response: JSON.stringify(response), captured });
+  return { response, captured, bundle };
 }
 
-async function captured(t, fixtureValue, operation, attempt, payload, snapshot) {
-  const root = path.join(fixtureValue.workspace, 'receipts');
-  await fs.mkdir(root, { recursive: true });
-  const stem = `008-${operation.toLowerCase()}-slice-02-attempt-${attempt}`;
-  const semanticResponseFile = path.join(root, `${stem}.response.json`);
-  const eventsPath = path.join(root, `${stem}.events.jsonl`);
-  const receiptFile = path.join(root, `${stem}.receipt.json`);
-  const response = JSON.stringify(payload);
-  const events = payload.commands.flatMap(({ command, exit }, index) => [
-    { operationId: `runner-${stem}`, type: 'item.started', item: { id: `item_${index}`, type: 'command_execution', command, status: 'in_progress', exit_code: null } },
-    { operationId: `runner-${stem}`, type: 'item.completed', item: { id: `item_${index}`, type: 'command_execution', command, status: 'completed', exit_code: exit } },
-  ]);
-  const receipt = {
-    status: 'RUNNER_RESPONSE_CAPTURED', operation, sequence: 8, slice: 'slice-02', attempt,
-    eventsPath, semanticResponseFile, semanticResponseSha256: hash(response),
-    captureFailure: null, error: null, exitCode: 0, testedState: snapshot,
-  };
-  await fs.writeFile(semanticResponseFile, response);
-  await fs.writeFile(eventsPath, `${events.map(JSON.stringify).join('\n')}\n`);
-  await fs.writeFile(receiptFile, JSON.stringify(receipt));
-  return { receiptFile, semanticResponseFile, response, receipt };
+async function proof(t, details) {
+  t.diagnostic(JSON.stringify({ externalCalls: 0, ...details }));
 }
 
-async function produce(fixtureValue, operation, evidence) {
-  return serializeRunnerExecutionBundleFromResponse({
-    operation, response: evidence.response, workspace: fixtureValue.workspace,
-    taskArtifact: fixtureValue.taskArtifact, receiptFile: evidence.receiptFile,
-    semanticResponseFile: evidence.semanticResponseFile,
-  });
-}
-
-async function historicalPayload(attempt) {
-  const name = `008-execute_slice-slice-02-attempt-${attempt}.response.json`;
-  const payload = JSON.parse(await fs.readFile(path.join(HISTORICAL, 'tmp', name), 'utf8'));
-  payload.commands = payload.commands.map(({ command, exit }) => ({ command, exit }));
-  return payload;
-}
-
-test('historical A survives mutation to B and round 2 derives only src/cli.mjs', async (t) => {
-  const f = await fixture(t);
-  const persisted = await fs.readFile(path.join(HISTORICAL, 'workspace/specs/benchmark-case-b/execution/tasks/slice-02.md'), 'utf8');
-  assert.match(persisted, new RegExp(`### implementation-check-01[\\s\\S]*?${CLI.replaceAll('.', '\\.')}\x60 \\| sha256:${B}`, 'u'));
-  const first = await captureRunnerTestedState({ workspace: f.workspace, taskArtifact: f.taskArtifact, changedAreas: [CLI, TEST] });
-  assert.equal(first.entries.find((entry) => entry.path === CLI)?.value, `sha256:${A}`);
-  await fs.writeFile(f.cli, f.after);
-  assert.equal(hash(await fs.readFile(f.cli)), B);
-  const one = await captured(t, f, 'EXECUTE_SLICE', 1, await historicalPayload(1), first);
-  const round1 = await produce(f, 'EXECUTE_SLICE', one);
-  assert.match(round1, new RegExp(`\x60${CLI.replaceAll('.', '\\.')}\x60 \\| sha256:${A}`, 'u'));
-  assert.doesNotMatch(round1, new RegExp(`\x60${CLI.replaceAll('.', '\\.')}\x60 \\| sha256:${B}`, 'u'));
-  await fs.writeFile(f.taskArtifact, section(await fs.readFile(f.taskArtifact, 'utf8'), 'Implementation Test Evidence', round1));
-  const second = await captureRunnerTestedState({ workspace: f.workspace, taskArtifact: f.taskArtifact, changedAreas: [CLI, TEST] });
-  const two = await captured(t, f, 'EXECUTE_SLICE', 2, await historicalPayload(2), second);
-  const round2 = await produce(f, 'EXECUTE_SLICE', two);
-  assert.match(round2, /### implementation-check-02\n- Automatic check round: 2\/3\n- Status: TESTS_PASS/u);
-  assert.match(await fs.readFile(f.taskArtifact, 'utf8'), /## Corrections Applied\n\n- `\.\.\/\.\.\/\.\.\/\.\.\/src\/cli\.mjs`/u);
-  assert.match(round2, /- Correction paths: \.\.\/\.\.\/\.\.\/\.\.\/src\/cli\.mjs/u);
-  assert.equal(Object.hasOwn(JSON.parse(two.response), 'correctionPaths'), false);
+test('historical A survives mutation to B and round 2 derives only its changed module', async t => {
+  const f = await failedFixture(t);
+  const a = hash(await fs.readFile(f.cli)), b = hash(corrected);
+  assert.notEqual(a, b);
+  const originalReceipt = await fs.readFile(f.implementation.captured.receiptFile);
+  assert.equal(f.implementation.capture.entries.find(e => e.path === CLI).value, `sha256:${a}`);
+  const two = await nextRound(f, 'EXECUTE_SLICE', f.implementation.response, ['cli']);
+  // Re-consuming the concluded first receipt cannot rewrite A from current B.
+  const one = await produce(f, 'EXECUTE_SLICE', { response: JSON.stringify(f.implementation.response), captured: f.implementation.captured });
+  assert.ok(one.includes('`' + CLI + '` | sha256:' + a));
+  assert.ok(!one.includes('`' + CLI + '` | sha256:' + b));
+  assert.match(two.bundle, /### implementation-check-02\n- Automatic check round: 2\/3\n- Status: TESTS_PASS/u);
+  assert.ok(two.bundle.includes('- Correction paths: ' + CLI));
+  assert.equal(two.bundle.includes('- Correction paths: ' + CLI + ', ' + TEST), false);
+  assert.match(await fs.readFile(f.taskArtifact, 'utf8'), /## Corrections Applied\n\n- `\.\.\/\.\.\/src\/unpredicted\.mjs`/u);
+  assert.equal(Object.hasOwn(two.response, 'correctionPaths'), false);
+  assert.deepEqual(await fs.readFile(f.implementation.captured.receiptFile), originalReceipt);
+  await proof(t, { a, b, firstExit: 1, secondExit: 0, correctionPaths: [CLI], firstReceiptUnchanged: true });
 });
 
-test('no mutation and multiple targets derive the exact corrections set', async (t) => {
+test('no mutation and multiple targets derive the exact corrections set', async t => {
   for (const mutate of [[], ['cli'], ['cli', 'test']]) {
-    const f = await fixture(t);
-    const first = await captureRunnerTestedState({ workspace: f.workspace, taskArtifact: f.taskArtifact, changedAreas: [CLI, TEST] });
-    const one = await captured(t, f, 'EXECUTE_SLICE', 1, await historicalPayload(1), first);
-    const round1 = await produce(f, 'EXECUTE_SLICE', one);
-    await fs.writeFile(f.taskArtifact, section(await fs.readFile(f.taskArtifact, 'utf8'), 'Implementation Test Evidence', round1));
-    if (mutate.includes('cli')) await fs.writeFile(f.cli, f.after);
-    if (mutate.includes('test')) await fs.appendFile(f.cliTest, '\n// corrected test\n');
-    const second = await captureRunnerTestedState({ workspace: f.workspace, taskArtifact: f.taskArtifact, changedAreas: [CLI, TEST] });
-    const two = await captured(t, f, 'EXECUTE_SLICE', 2, await historicalPayload(2), second);
-    const round2 = await produce(f, 'EXECUTE_SLICE', two);
-    const expected = mutate.length === 0 ? 'none' : mutate.map((name) => name === 'cli' ? CLI : TEST).join(', ');
-    assert.match(round2, new RegExp(`- Correction paths: ${expected.replaceAll('.', '\\.').replaceAll('/', '\\/')}`, 'u'));
+    const f = await failedFixture(t);
+    const two = await nextRound(f, 'EXECUTE_SLICE', f.implementation.response, mutate);
+    const expected = mutate.length ? mutate.map(name => name === 'cli' ? CLI : TEST).sort().join(', ') : 'none';
+    assert.equal(two.bundle.match(/^- Correction paths: (.+)$/mu)?.[1], expected);
+    assert.equal(two.response.commands[0].exit, mutate.includes('cli') ? 0 : 1);
+    await proof(t, { mutate, correctionPaths: expected, realExit: two.response.commands[0].exit });
   }
 });
 
-test('removed target is captured as REMOVED and later bytes cannot rewrite it', async (t) => {
-  const f = await fixture(t);
-  await fs.rm(f.cli);
-  const snapshot = await captureRunnerTestedState({ workspace: f.workspace, taskArtifact: f.taskArtifact, changedAreas: [CLI, TEST] });
-  assert.deepEqual(snapshot.entries.find((entry) => entry.path === CLI), { path: CLI, value: 'REMOVED' });
-  await fs.writeFile(f.cli, f.after);
-  assert.equal(snapshot.entries.find((entry) => entry.path === CLI).value, 'REMOVED');
-  const one = await captured(t, f, 'EXECUTE_SLICE', 1, await historicalPayload(1), snapshot);
-  assert.match(await produce(f, 'EXECUTE_SLICE', one), /`\.\.\/\.\.\/\.\.\/\.\.\/src\/cli\.mjs` \| REMOVED/u);
+test('removed target is captured as REMOVED and later bytes cannot rewrite it', async t => {
+  await runFirstRemoval({ afterFormal: async ({ f, after }) => {
+    const claim = '../../src/obsolete.mjs';
+    assert.deepEqual(after.entries.find(e => e.path === claim), { path: claim, value: 'REMOVED' });
+    const task = path.join(f.workspace.executionRoot, 'tasks/slice-01.md');
+    const before = await fs.readFile(task);
+    assert.match(before.toString(), /`\.\.\/\.\.\/src\/obsolete\.mjs` \| REMOVED/u);
+    await fs.writeFile(path.join(f.root, 'src/obsolete.mjs'), 'export const obsolete = "reappeared";\n');
+    assert.equal(after.entries.find(e => e.path === claim).value, 'REMOVED');
+    assert.deepEqual(await fs.readFile(task), before);
+    await proof(t, { captured: after.entries, actualRemovalAndFormalCheckPassed: true, officialHistoryUnchangedAfterReappearance: true });
+  } });
 });
 
-test('receipt, operation, slice, workspace and source mismatch reject captured state', async (t) => {
-  const f = await fixture(t);
-  const snapshot = await captureRunnerTestedState({ workspace: f.workspace, taskArtifact: f.taskArtifact, changedAreas: [CLI, TEST] });
-  const evidence = await captured(t, f, 'EXECUTE_SLICE', 1, await historicalPayload(1), snapshot);
-  for (const altered of [
-    { semanticResponseSha256: '0'.repeat(64) },
-    { operation: 'APPLY_FINDINGS' },
-    { slice: 'slice-03' },
-    { attempt: 2 },
-    { testedState: { ...snapshot, workspace: os.tmpdir() } },
-    { testedState: { ...snapshot, sourceTaskPath: path.join(f.workspace, 'other.md') } },
-  ]) {
-    await fs.writeFile(evidence.receiptFile, JSON.stringify({ ...evidence.receipt, ...altered }));
-    await assert.rejects(produce(f, 'EXECUTE_SLICE', evidence));
+test('receipt, operation, slice, workspace and source mismatch reject captured state', async t => {
+  const f = await failedFixture(t);
+  const captured = f.implementation.captured;
+  const original = await fs.readFile(captured.receiptFile);
+  const receipt = JSON.parse(original);
+  const evidence = { response: JSON.stringify(f.implementation.response), captured };
+  const candidateText = setSection(await fs.readFile(f.taskArtifact, 'utf8'), 'Implementation Test Evidence', '- none');
+  await fs.writeFile(f.taskArtifact, candidateText);
+  // Every mutant starts from a real accepted receipt in the same consumer.
+  const mutants = [
+    [{ semanticResponseSha256: '0'.repeat(64) }, /native receipt\/result\/origin binding differs/u],
+    [{ operation: 'APPLY_FINDINGS' }, /native receipt\/result\/origin binding differs/u],
+    [{ slice: 'slice-03' }, /native receipt\/result\/origin binding differs/u],
+    [{ attempt: 2 }, /native receipt\/result\/origin binding differs/u],
+    [{ testedState: { ...receipt.testedState, workspace: os.tmpdir() } }, /captured Tested state workspace\/source mismatch/u],
+    [{ testedState: { ...receipt.testedState, sourceTaskPath: path.join(f.root, 'other.md') } }, /captured Tested state workspace\/source mismatch/u],
+  ];
+  for (const [altered, category] of mutants) {
+    await fs.writeFile(captured.receiptFile, original);
+    const control = await produce(f, 'EXECUTE_SLICE', evidence);
+    assert.match(control, /### implementation-check-01/u);
+    await validateExecutionCandidate(f.specPath, f.implementation.copy.candidateExecutionRoot,
+      [{ slice: 'slice-01', text: setSection(candidateText, 'Implementation Test Evidence', control) }],
+      { privateAutomaticCheck: { operation: 'EXECUTE_SLICE', slice: 'slice-01', round: 1 } });
+    await fs.writeFile(captured.receiptFile, JSON.stringify({ ...receipt, ...altered }));
+    await assert.rejects(produce(f, 'EXECUTE_SLICE', evidence), category);
+    await proof(t, { mutant: Object.keys(altered)[0], expectedCategory: category.source, positiveControlReached: true });
   }
+  await fs.writeFile(captured.receiptFile, original);
 });
 
-test('APPLY_FINDINGS uses the same historical snapshot boundary', async (t) => {
-  const f = await fixture(t);
-  const execute = await historicalPayload(1);
-  const apply = (round) => ({
-    status: round === 1 ? 'TESTS_FAIL' : 'TESTS_PASS', automaticCheckRound: `${round}/3`, findingsCycle: 'attempt-01',
-    head: execute.head, discoverySources: execute.discoverySources, discoveryActions: execute.discoveryActions,
-    verificationTypesConsidered: execute.verificationTypesConsidered,
-    nonApplicabilityRationale: execute.nonApplicabilityRationale,
-    noVerificationCommandConfirmation: execute.noVerificationCommandConfirmation,
-    commands: execute.commands.map(({ command }) => ({ command, exit: round === 1 ? 1 : 0 })),
-    resultOfEachCommandAndExitCode: 'checked', selectedChecks: 'focused', selectionRationale: 'direct',
-    coverage: 'finding', findingsVerified: 'none', correctionsCovered: 'corrected CLI error',
-    regressionsSelected: 'focused', unsupportedActiveFindings: 'none',
-    failures: round === 1 ? 'CLI error text' : 'none', evidenceOrFailureSummary: 'checked',
-    affectedFilesOrBehaviors: 'CLI', blockers: 'none', unexpectedWorkspaceEffects: 'none', persistenceSummary: 'none',
-  });
-  const first = await captureRunnerTestedState({ workspace: f.workspace, taskArtifact: f.taskArtifact, changedAreas: [CLI, TEST] });
-  await fs.writeFile(f.cli, f.after);
-  const one = await captured(t, f, 'APPLY_FINDINGS', 1, apply(1), first);
-  const round1 = await produce(f, 'APPLY_FINDINGS', one);
-  assert.match(round1, new RegExp(`\x60${CLI.replaceAll('.', '\\.')}\x60 \\| sha256:${A}`, 'u'));
-  let task = section(await fs.readFile(f.taskArtifact, 'utf8'), 'Findings Test Evidence', round1);
-  task = section(task, 'Corrections Applied', `- \`${CLI}\``);
-  await fs.writeFile(f.taskArtifact, task);
-  const second = await captureRunnerTestedState({ workspace: f.workspace, taskArtifact: f.taskArtifact, changedAreas: [CLI, TEST] });
-  const two = await captured(t, f, 'APPLY_FINDINGS', 2, apply(2), second);
-  const round2 = await produce(f, 'APPLY_FINDINGS', two);
-  assert.match(round2, /### findings-check-02\n- Automatic check round: 2\/3\n- Status: TESTS_PASS/u);
-  assert.match(round2, /- Correction paths: \.\.\/\.\.\/\.\.\/\.\.\/src\/cli\.mjs/u);
+test('retained pristine preparations do not invent executed work and real archived checks remain non-pristine', async t => {
+  const pristine = await fixture();
+  t.after(() => fs.rm(pristine.root, { recursive: true, force: true }));
+  await approveFixture(pristine);
+  const { inspectExecutionState } = await import('../skills/workflows/stnl-slice-executor/runtime/execution-state.mjs');
+  for (let round = 0; round < 2; round++) {
+    await revise(pristine);
+    const state = await inspectExecutionState(pristine.specPath);
+    assert.equal(state.state, 'MATERIALIZED_PRISTINE');
+    assert.equal(state.tasks.get('slice-01').pristine, true);
+    assert.equal(state.tasks.get('slice-01').continuity.history.length, round + 1);
+    assert.equal(state.tasks.get('slice-01').implementationChecks.length, 0);
+    assert.equal(state.tasks.get('slice-01').attempts.length, 0);
+  }
+  const worked = await implementedFixture();
+  t.after(() => fs.rm(worked.root, { recursive: true, force: true }));
+  await formal(worked);
+  const receiptBefore = await fs.readFile(worked.implementation.captured.receiptFile);
+  await revise(worked);
+  const state = await inspectExecutionState(worked.specPath);
+  assert.equal(state.tasks.get('slice-01').pristine, false);
+  assert.equal(state.tasks.get('slice-01').implementationChecks.length, 1);
+  assert.equal(state.tasks.get('slice-01').attempts[0].status, 'PASS');
+  assert.deepEqual(await fs.readFile(worked.implementation.captured.receiptFile), receiptBefore);
+  await proof(t, { pristineRetainedRevisions: 2, pristineChecks: 0, workedPristine: false,
+    retainedImplementationChecks: 1, retainedFormalPass: true, originalReceiptUnchanged: true });
+});
+
+test('an unreviewed joint draft can be replaced without inventing an approved snapshot or activation', async t => {
+  const f = await fixture();
+  t.after(() => fs.rm(f.root, { recursive: true, force: true }));
+  const { inspectExecutionState, preflightExecutionOperation } = await import('../skills/workflows/stnl-slice-executor/runtime/execution-state.mjs');
+  await publishPreparationCandidate({ specPath: f.specPath, candidateExecutionRoot: f.candidate });
+  await assert.rejects(preflightExecutionOperation(f.specPath, 'EXECUTE_SLICE', '1'), /not legal/u);
+  const replacement = await preparePreparationCandidate({ specPath: f.specPath, operation: 'REPLAN' });
+  const global = path.join(replacement.candidateExecutionRoot, 'plan.md');
+  await fs.writeFile(global, setSection((await fs.readFile(global, 'utf8')).replace('- Strategy:', '- Replan reason: Clarify the same pristine draft before independent review\n- Strategy:'), 'Delivery Continuity', '- runtime'));
+  await publishPreparationCandidate({ specPath: f.specPath, candidateExecutionRoot: replacement.candidateExecutionRoot });
+  const state = await inspectExecutionState(f.specPath);
+  assert.equal(state.state, 'PENDING_REPLAN_DRAFT');
+  assert.equal(state.globalPlan.revision, 2);
+  assert.equal(state.tasks.get('slice-01').pristine, true);
+  assert.equal(state.tasks.get('slice-01').continuity.history.length, 0);
+  for (const file of ['approved-preparation.json', 'activation.json']) await assert.rejects(fs.stat(path.join(f.workspace.executionRoot, file)), { code: 'ENOENT' });
+  await assert.rejects(preflightExecutionOperation(f.specPath, 'EXECUTE_SLICE', '1'), /not legal/u);
+  await proof(t, { replacedDraftRevision: 2, approvedSnapshot: false, activation: false, executionDenied: true });
+});
+
+test('APPLY_FINDINGS uses the same historical snapshot boundary', async t => {
+  const f = await implementedFixture();
+  t.after(() => fs.rm(f.root, { recursive: true, force: true }));
+  const finding = '### finding-01\n\n- Severity: blocking\n- State: active\n- Origin: attempt-01\n- Problem: Strengthen the prepared greeting proof.\n- Evidence: Controlled semantic fixture requires a correction.\n- Impact: Acceptance proof is incomplete.\n- Related authority: AC-001\n- Expected correction: Correct greeting inside the approved area.';
+  await formal(f, { responseOverride: { status: 'NEEDS_FIX', findingReferences: 'finding-01', findingDispositions: 'finding-01=active' },
+    editCandidate: async copy => { const file = path.join(copy.candidateExecutionRoot, 'tasks/slice-01.md'); await fs.writeFile(file, setSection(await fs.readFile(file, 'utf8'), 'Validation Findings', finding)); } });
+  const current = await readExecutionActivation(f.specPath);
+  f.admitted = await beginPreparedExecutionOperation(f.specPath, 'APPLY_FINDINGS', '1', current.activation.activationId);
+  const start = await native(f, f.admitted.owner);
+  const copy = await prepareExecutionCopy({ specPath: f.specPath, slice: 'slice-01', owner: f.admitted.owner });
+  f.taskArtifact = copy.candidateTaskArtifact; f.cli = path.join(f.root, 'src/unpredicted.mjs'); f.cliTest = path.join(f.root, 'src/greeting.test.mjs');
+  await fs.writeFile(f.cli, 'export const greeting = "wrong";\n');
+  const a = hash(await fs.readFile(f.cli));
+  await fs.writeFile(f.taskArtifact, setSection(await fs.readFile(f.taskArtifact, 'utf8'), 'Corrections Applied', '- `' + CLI + '`'));
+  const response = { ...f.implementation.response, status: 'TESTS_FAIL', findingsCycle: 'attempt-01',
+    commands: f.implementation.response.commands.map(item => ({ ...item, exit: 1 })),
+    failures: 'Actual greeting assertion exited 1.', findingsVerified: 'finding-01', correctionsCovered: 'Correct the greeting module.',
+    regressionsSelected: 'Prepared greeting value assertion.', unsupportedActiveFindings: 'none' };
+  for (const key of ['priorRoundFailure', 'correctionApplied', 'inSliceRationale']) delete response[key];
+  const captured = await capture(start, response, [CLI, TEST]);
+  const first = await produce(f, 'APPLY_FINDINGS', { response: JSON.stringify(response), captured });
+  await insertExecutionEvidenceInCandidate({ taskArtifact: f.taskArtifact, operation: 'APPLY_FINDINGS', bundle: first,
+    validateProspectiveTask: task => validateExecutionCandidate(f.specPath, copy.candidateExecutionRoot, [task], { privateAutomaticCheck: { operation: 'APPLY_FINDINGS', slice: 'slice-01', round: 1 } }) });
+  const two = await nextRound(f, 'APPLY_FINDINGS', response, ['cli']);
+  const historical = await produce(f, 'APPLY_FINDINGS', { response: JSON.stringify(response), captured });
+  assert.ok(historical.includes('`' + CLI + '` | sha256:' + a));
+  assert.match(two.bundle, /### findings-check-02\n- Automatic check round: 2\/3\n- Status: TESTS_PASS/u);
+  assert.equal(two.bundle.match(/^- Correction paths: (.+)$/mu)?.[1], CLI);
+  await proof(t, { firstExit: 1, secondExit: 0, a, b: hash(await fs.readFile(f.cli)), correctionPaths: [CLI] });
 });

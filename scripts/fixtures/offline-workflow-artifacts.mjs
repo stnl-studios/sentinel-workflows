@@ -10,9 +10,10 @@ export async function renderOfflineArtifacts({ snapshot, workspace, specPath, ca
   const runtime = name => pathToFileURL(path.join(snapshot, 'skills/workflows/stnl-execution-planner/runtime', name)).href;
   const { computeRequirementsAuthority, resolveExecutionWorkspace } = await import(runtime('execution-state.mjs'));
   const authority = await computeRequirementsAuthority(specPath);
+  const marker = JSON.parse(await fs.readFile(candidateExecutionRoot + '.owner.json'));
   const { executionRoot, authorityPath } = await resolveExecutionWorkspace(specPath);
   const template = file => fs.readFile(path.join(snapshot, 'skills/workflows/stnl-execution-planner/templates', file), 'utf8');
-  const identity = file => [['`<relative path>`', '`' + path.relative(path.dirname(path.join(executionRoot, file)), authorityPath).split(path.sep).join('/') + '`'], ['sha256:<64hex>', 'sha256:' + authority], ['<positive integer>', '1']];
+  const identity = file => [['`<relative path>`', '`' + path.relative(path.dirname(path.join(executionRoot, file)), authorityPath).split(path.sep).join('/') + '`'], ['sha256:<64hex>', 'sha256:' + authority], ['<positive integer>', String(marker.preparationRevision)]];
   const areas = targetPaths.map(target => 'file: `' + target + '`');
   const expected = targetPaths.map(target => '- `' + target + '`').join('\n');
   const check = 'node --test test/offline-case.test.mjs';
@@ -25,6 +26,10 @@ export async function renderOfflineArtifacts({ snapshot, workspace, specPath, ca
   ];
   for (const dir of ['plans', 'tasks']) await fs.mkdir(path.join(candidateExecutionRoot, dir), { recursive: true });
   for (const [name, file, values] of rendering) await fs.writeFile(path.join(candidateExecutionRoot, file), replace(await template(name), [...identity(file), ...common, ...values]));
+  if (marker.operation === 'REPLAN') {
+    const global = path.join(candidateExecutionRoot, 'plan.md');
+    await fs.writeFile(global, (await fs.readFile(global, 'utf8')).replace('\n\n## Serial Slice Order', '\n- Replan reason: Documentary requirements changed after joint review; preserve the same complete delivery and prepared checks.\n\n## Serial Slice Order'));
+  }
   const { preparePlanCandidate } = await import(runtime('prepare-plan-candidate.mjs'));
   const { serializePlanPathClaims } = await import(runtime('serialize-plan-paths.mjs'));
   await preparePlanCandidate({ candidateExecutionRoot });
