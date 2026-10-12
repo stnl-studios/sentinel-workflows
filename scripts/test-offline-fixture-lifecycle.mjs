@@ -6,6 +6,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { allocateOfflineFixture, finishOfflineFixture, offlineSourceFilter } from './fixtures/offline-checkout.mjs';
 import { copySnapshotDependencies } from '../benchmarks/sentinel-todo/runtime/benchmark-snapshot.mjs';
+import { assertOfflineSdk, describeOfflineSdk } from '../agents/codex/runtime/offline-provider-context.mjs';
 
 test('source copy excludes every node_modules subtree and measurements', () => {
   assert.equal(offlineSourceFilter('/project/agents/codex/node_modules'), false);
@@ -14,28 +15,29 @@ test('source copy excludes every node_modules subtree and measurements', () => {
   assert.equal(offlineSourceFilter('/project/agents/codex/runtime/sdk-transport.mjs'), true);
 });
 
-test('tiny dependency source is copied only into the owned snapshot; production overrides are refused', async t => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'stnl-tiny-dependencies-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
-  await fs.mkdir(path.join(root, 'source'));
-  const source = await fs.realpath(path.join(root, 'source')), snapshot = path.join(root, 'snapshot');
-  for (const name of ['codex-sdk', 'codex']) {
-    await fs.mkdir(path.join(source, '@openai', name), { recursive: true });
-    await fs.writeFile(path.join(source, '@openai', name, 'package.json'), '{"version":"0.160.0"}\n');
-  }
-  const bytes = Buffer.from('tiny dependency bytes\n');
-  const file = path.join(source, '@openai/codex/tiny.bin');
-  await fs.writeFile(file, bytes);
-  const mode = (await fs.stat(file)).mode;
+test('offline snapshot uses the pinned real SDK read-only with identity and no dependency copy', async t => {
+  const fixture = await allocateOfflineFixture();
+  t.after(() => finishOfflineFixture(fixture));
+  const source = await fs.realpath(path.resolve(import.meta.dirname, '../agents/codex/node_modules'));
+  const snapshot = path.join(fixture.root, 'benchmark-temp/run-tiny/snapshot');
+  const sdk = await describeOfflineSdk(source, fixture.root);
+  const before = await Promise.all(sdk.files.map(file => fs.stat(path.join(source, file.path))));
   await assert.rejects(copySnapshotDependencies(snapshot, { dependencySource: source }), /restricted to OFFLINE_TEST_ONLY/u);
-  assert.deepEqual(await copySnapshotDependencies(snapshot, { dependencySource: source, executionMode: 'OFFLINE_TEST_ONLY' }),
-    { sdkVersion: '0.160.0', cliVersion: '0.160.0' });
-  const target = path.join(snapshot, 'agents/codex/node_modules/@openai/codex/tiny.bin');
-  assert.deepEqual(await fs.readFile(target), bytes);
-  assert.equal((await fs.stat(target)).nlink, 1);
-  await fs.chmod(target, 0o400);
-  assert.equal((await fs.stat(file)).mode, mode, 'freezing the copy cannot change the shared source');
-  assert.deepEqual(await fs.readFile(file), bytes);
+  await assert.rejects(copySnapshotDependencies(snapshot, { offlineSdk: sdk }), /restricted to OFFLINE_TEST_ONLY/u);
+  assert.deepEqual(await copySnapshotDependencies(snapshot, { offlineSdk: sdk, executionMode: 'OFFLINE_TEST_ONLY' }),
+    { sdkVersion: '0.160.0', cliVersion: '0.160.0', externalSdk: sdk });
+  await assert.rejects(fs.lstat(snapshot), { code: 'ENOENT' });
+  for (const mutate of [value => { value.sdkVersion = '0.0.0'; },
+    value => { value.files[0].sha256 = 'sha256:' + '0'.repeat(64); },
+    value => { value.entrypoint = path.join(source, 'other.js'); }]) {
+    const altered = structuredClone(sdk); mutate(altered);
+    await assert.rejects(assertOfflineSdk(altered, fixture.root), /integrity changed/u);
+  }
+  await assert.rejects(assertOfflineSdk({ ...sdk, fixtureRoot: '/wrong-fixture' }, fixture.root), /binding/u);
+  await assert.rejects(describeOfflineSdk(path.join(fixture.root, 'missing'), fixture.root), { code: 'ENOENT' });
+  assert.deepEqual(await describeOfflineSdk(source, fixture.root), sdk);
+  const after = await Promise.all(sdk.files.map(file => fs.stat(path.join(source, file.path))));
+  assert.deepEqual(after.map(stat => [stat.ino, stat.mode, stat.mtimeMs]), before.map(stat => [stat.ino, stat.mode, stat.mtimeMs]));
 });
 
 test('closed owned fixture preserves hashed evidence and drops dependencies and checkout after use', async t => {

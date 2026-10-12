@@ -1012,7 +1012,7 @@ async function run(options) {
     }
     const snapshotMetadata = options.resumeId
       ? (await readJson(path.join(runRoot, 'run.json'))).snapshot
-      : await createSnapshot(runRoot, { executionMode: offline?.mode, dependencySource: offline?.dependencySource });
+      : await createSnapshot(runRoot, { executionMode: offline?.mode, offlineSdk: offline?.sdk });
     if (options.resumeId) await assertSnapshotIntegrity(runRoot);
     const product = await loadProduct(path.join(runRoot, 'snapshot'));
     const previous = options.resumeId ? await readJson(path.join(runRoot, 'run.json')) : null;

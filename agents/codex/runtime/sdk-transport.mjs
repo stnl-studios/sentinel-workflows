@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { Codex } from '@openai/codex-sdk';
-import { offlineProviderContext } from './offline-provider-context.mjs';
+import { pathToFileURL } from 'node:url';
+import { assertOfflineSdk, offlineProviderContext } from './offline-provider-context.mjs';
 
 const ALLOWED_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh']);
 const ALLOWED_MODELS = new Set(['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-6-luna', 'gpt-6.1-sol', 'gpt-6-astra']);
@@ -151,6 +151,7 @@ export async function runCodexTurn({
   // Prevent SDK turns from starting untracked collaboration subagents.
   const offline = await offlineProviderContext(env, env.STNL_CODEX_ADAPTER ? path.resolve(env.STNL_CODEX_ADAPTER, '../../..') : null);
   if (offline && codexPathOverride !== undefined && codexPathOverride !== offline.provider) throw new Error('offline provider override disagrees');
+  const { Codex } = await import(offline ? pathToFileURL(offline.sdk.entrypoint).href : '@openai/codex-sdk');
   const codex = new Codex({ env, config: await codexClientConfig({ env, cwd, developerInstructions, isolateSkills }),
     codexPathOverride: offline?.provider ?? codexPathOverride });
   const options = {
@@ -228,6 +229,7 @@ export async function runCodexTurn({
     signal?.removeEventListener('abort', onAbort);
     await file.close();
   }
+  if (offline) await assertOfflineSdk(offline.sdk, offline.root);
   return {
     requestedModel: model,
     requestedEffort: effort,

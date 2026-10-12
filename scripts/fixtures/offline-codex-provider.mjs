@@ -128,10 +128,15 @@ try {
       run('-e', ["throw Object.assign(new Error('TEST-ONLY access denied'), { code: 'EACCES' })"]);
     }
     const coverageReview = coverageScenario && operation !== 'EXECUTE_SLICE' && priorAttempts !== 0;
-    const observed = run('--test', [], true, coverageReview ? { STNL_OFFLINE_REQUIRE_PRIORITY_COVERAGE: '1' } : {});
+    const reviewed = JSON.parse(/^REVIEWED_VERIFICATION=(.+)$/mu.exec(prompt)?.[1] ?? 'null');
+    if (reviewed?.status !== 'completed' || !Array.isArray(reviewed.checks) || reviewed.checks.length === 0) {
+      throw new Error('TEST-ONLY runner requires the actual completed reviewed recipe observation');
+    }
+    const observed = { status: reviewed.checks.find(check => check.exit !== 0)?.exit ?? 0,
+      stdout: reviewed.checks.map(check => check.stdout + check.stderr).join('\n') };
     const head = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: workspace, encoding: 'utf8' });
     if (head.status !== 0) throw new Error('HEAD unavailable');
-    const commands = [{ command: observed.command, exit: observed.status }];
+    const commands = reviewed.checks.map(({ command, exit }) => ({ command, exit }));
     const passed = observed.status === 0;
     const evidence = `${caseId} prepared case variants and original seed tests; ${observed.stdout}`;
     if (operation === 'VALIDATE_SLICE') {
@@ -144,7 +149,8 @@ try {
       const previousFinding = (await fs.readFile(taskFile, 'utf8')).includes('### finding-01');
       const injectedBlock = reassessmentScenario && (priorAttempts === 0 || context.scenario === 'reassessment-blocked'
         || (context.scenario === 'reassessment-after-fix-blocked' && priorAttempts >= 2));
-      finish({ status: injectedBlock ? 'BLOCKED' : passed ? 'PASS' : coverageOmitted ? 'NEEDS_FIX' : 'BLOCKED', head: head.stdout.trim(), commands, evidence,
+      finish({ status: injectedBlock ? 'BLOCKED' : coverageOmitted ? 'NEEDS_FIX' : passed ? 'PASS' : 'BLOCKED', head: head.stdout.trim(), commands,
+        evidence: coverageOmitted ? evidence + '\nIndependent TEST-ONLY semantic review: matrix declares only low/medium but unchanged Case B requires high too; passing selected checks do not prove missing coverage.' : evidence,
         findingReferences: coverageOmitted || previousFinding ? 'finding-01' : 'none',
         findingDispositions: (coverageOmitted || (injectedBlock && previousFinding)) ? 'finding-01=active'
           : previousFinding && passed ? 'finding-01=resolved' : 'none',

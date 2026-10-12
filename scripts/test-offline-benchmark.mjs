@@ -39,6 +39,14 @@ test('T26/T24/T31/T32: literal npm benchmark uses real FULL runtime and fictitio
   const report = JSON.parse(await fs.readFile(path.join(fixture.root, 'benchmarks/sentinel-todo/measurements/latest.json')));
   assert.equal(report.run.mode, 'full'); assert.equal(report.run.status, 'PASS');
   assert.equal(report.provenance.executionMode, 'OFFLINE_TEST_ONLY');
+  const runRoot = path.join(fixture.root, 'benchmark-temp', report.run.id);
+  const snapshot = JSON.parse(await fs.readFile(path.join(runRoot, 'snapshot.json')));
+  assert.equal(snapshot.externalSdk.mode, 'shared-readonly');
+  assert.equal(snapshot.externalSdk.package, '@openai/codex-sdk');
+  assert.equal(snapshot.externalSdk.sdkVersion, '0.160.0');
+  assert.equal(snapshot.externalSdk.fixtureRoot, fixture.root);
+  await assert.rejects(fs.lstat(path.join(runRoot, 'snapshot/agents/codex/node_modules')), { code: 'ENOENT' });
+  await assert.rejects(fs.lstat(path.join(fixture.root, 'agents/codex/node_modules')), { code: 'ENOENT' });
   assert.deepEqual(report.cases.map((c) => [c.id, c.status, c.execution, c.specClosed, c.finalTestsPassed]),
     ['A', 'B', 'C'].map((id) => [id, 'PASS', 'COMPLETE', true, true]));
   assert.equal(compareMeasurements(report, report).directlyComparable, false);
@@ -51,6 +59,19 @@ test('T26/T24/T31/T32: literal npm benchmark uses real FULL runtime and fictitio
   for (let index = 0; index < sentinels.length; index++) assert.deepEqual(await fs.readFile(path.join(fixture.home, sentinels[index])), before[index]);
   const globalEntries = await fs.readdir(path.join(fixture.home, 'Library/Application Support'));
   assert.deepEqual(globalEntries, [], 'private homes were removed by the owned runtime');
+});
+
+test('I1: divergent shared SDK descriptor blocks literal npm entry before provider dispatch', { timeout: 30_000 }, async t => {
+  const fixture = await checkout('full', t);
+  const file = path.join(fixture.root, '.offline-context.json');
+  const context = JSON.parse(await fs.readFile(file));
+  context.sdk.files[2].sha256 = 'sha256:' + '0'.repeat(64);
+  await fs.writeFile(file, JSON.stringify(context));
+  const result = await npm(fixture);
+  assert.equal(result.code, 1, result.stdout + result.stderr);
+  assert.match(result.stdout + result.stderr, /offline shared SDK integrity changed/u);
+  await assert.rejects(fs.lstat(path.join(fixture.root, '.offline-calls.jsonl')), { code: 'ENOENT' });
+  await assert.rejects(fs.lstat(path.join(fixture.root, 'benchmark-temp/.active-run.json')), { code: 'ENOENT' });
 });
 
 async function ready(file, timeout = 10_000) {
@@ -321,22 +342,23 @@ test('T15: APPLY finalizer preserves a legitimate coverage finding through corre
   const read = async (file) => JSON.parse(await fs.readFile(path.join(runRoot, file)));
   const state = await read('case-b/case-state.json'), summary = await read('summary.json'), ledger = await read('.turn-ledger.json');
   assert.equal(state.status, 'PASS'); assert.equal(summary.status, 'PASS');
-  assert.equal(state.mainTurns, 10); assert.equal(state.runnerTurns, 4);
-  assert.equal(ledger.total, 14); assert.equal(summary.turnBudget.consumed, 14);
+  assert.equal(state.mainTurns, 8); assert.equal(state.runnerTurns, 4);
+  assert.equal(ledger.total, 12); assert.equal(summary.turnBudget.consumed, 12);
   assert.deepEqual(ledger.reservations, []);
-  assert.deepEqual(ledger.turns.map((turn) => turn.number), Array.from({ length: 14 }, (_, index) => index + 1));
+  assert.deepEqual(ledger.turns.map((turn) => turn.number), Array.from({ length: 12 }, (_, index) => index + 1));
   assert.ok(ledger.turns.every((turn) => turn.state === 'completed' && turn.caseId === 'B'));
   assert.equal(ledger.turns.filter((turn) => turn.operation === 'APPLY_FINDINGS' && turn.role === 'main').length, 1);
   const journal = await read('case-b/journal.json');
   assert.deepEqual(journal.events.map((event) => [event.operation, event.result]), [
-    ['SPEC_INIT', 'PASS'], ['PLAN', 'PASS'], ['REVIEW_PLAN', 'PASS'], ['MATERIALIZE_TASKS', 'PASS'], ['REVIEW_TASKS', 'PASS'],
+    ['SPEC_INIT', 'PASS'], ['PLAN', 'PASS'], ['REVIEW_PLAN', 'PASS'],
     ['EXECUTE_SLICE', 'PASS'], ['VALIDATE_SLICE', 'NEEDS_FIX'], ['APPLY_FINDINGS', 'PASS'], ['VALIDATE_SLICE', 'PASS'], ['SPEC_CLOSE', 'PASS'],
   ]);
   const section = (text, title) => new RegExp(`## ${title}\\n\\n([\\s\\S]*?)(?=\\n## |$)`, 'u').exec(text)[1].trim();
   const before = await fs.readFile(path.join(fixture.root, '.offline-apply-before-task.md'), 'utf8');
   const task = await fs.readFile(path.join(state.specPath, 'execution/tasks/slice-01.md'), 'utf8');
   const initial = section(before, 'Validation Attempts');
-  assert.match(initial, /### attempt-01[\s\S]*Status: NEEDS_FIX[\s\S]*exit:1/u);
+  assert.match(initial, /### attempt-01[\s\S]*Status: NEEDS_FIX[\s\S]*exit:0/u);
+  assert.deepEqual(JSON.parse(await fs.readFile(path.join(runRoot, 'case-b/tmp/005-validate_slice-slice-01-attempt-1.response.json'))).status, 'NEEDS_FIX');
   assert.ok(section(task, 'Validation Attempts').startsWith(initial + '\n\n### attempt-02'), 'initial attempt is retained byte for byte');
   assert.equal(section(task, 'Implementation Test Evidence'), section(before, 'Implementation Test Evidence'));
   assert.match(section(task, 'Validation Attempts'), /### attempt-02[\s\S]*Type: revalidation[\s\S]*Status: PASS/u);
@@ -351,7 +373,7 @@ test('T15: APPLY finalizer preserves a legitimate coverage finding through corre
   const beforeTestHash = section(before, 'Implementation Test Evidence').match(/`[^`]*offline-case.test.mjs` \| sha256:([0-9a-f]{64})/u)[1];
   assert.equal(hash(await fs.readFile(path.join(state.workspace, 'test/offline-case.test.mjs'))).slice(7), beforeTestHash);
   assert.deepEqual(JSON.parse(await fs.readFile(path.join(state.workspace, 'test/offline-case.json'))).priorities, ['low', 'medium', 'high']);
-  const bindings = await Promise.all([6, 7, 8, 9].map((sequence) => read(`case-b/tmp/stnl-runner-broker/${String(sequence).padStart(3, '0')}.finalization.json`)));
+  const bindings = await Promise.all([4, 5, 6, 7].map((sequence) => read(`case-b/tmp/stnl-runner-broker/${String(sequence).padStart(3, '0')}.finalization.json`)));
   assert.deepEqual(bindings.map((binding) => binding.state), ['IMPLEMENTED_AWAITING_VALIDATION', 'VALIDATION_NEEDS_FIX', 'FINDINGS_CORRECTED', 'COMPLETE']);
   const afterApply = await fs.readFile(path.join(fixture.root, '.offline-after-apply-task.md'), 'utf8');
   assert.match(section(afterApply, 'Validation Findings'), /State: active/u);
@@ -362,10 +384,12 @@ test('T15: APPLY finalizer preserves a legitimate coverage finding through corre
     for (const [file, expected] of Object.entries(binding.evidenceSha256)) assert.equal(hash(await fs.readFile(file)).slice(7), expected);
     const receipt = JSON.parse(await fs.readFile(binding.receiptFile));
     assert.equal(receipt.formatRepair, null); assert.equal(receipt.sequence, binding.sequence);
-    const events = (await fs.readFile(receipt.eventsPath, 'utf8')).trim().split('\n').map(JSON.parse);
-    const actual = events.filter((event) => event.type === 'item.completed' && event.item?.type === 'command_execution').at(-1).item;
-    assert.equal(actual.exit_code, binding.sequence === 7 ? 1 : 0);
-    assert.match(actual.command, /^STNL_VERIFICATION_COMMAND=1 /u);
+    assert.equal(receipt.verification.status, 'completed');
+    const actual = receipt.verification.checks[0];
+    assert.equal(actual.exit, 0, 'the coverage omission is independently found despite green prepared checks');
+    assert.match(actual.command, /^node --test /u);
+    const response = JSON.parse(await fs.readFile(receipt.semanticResponseFile));
+    assert.deepEqual(response.commands, receipt.verification.checks.map(({ command, exit }) => ({ command, exit })));
   }
   assert.equal((await fs.readFile(path.join(state.workspace, 'requirements.md'))).equals(await fs.readFile(path.join(fixture.root, 'benchmarks/sentinel-todo/cases/case-b-medium.md'))), true);
   assert.match(await fs.readFile(path.join(state.specPath, 'feature_spec.md'), 'utf8'), /status: closed/u);
@@ -419,15 +443,18 @@ for (const signal of [null, 'SIGINT', 'SIGTERM']) {
     const report = JSON.parse(await fs.readFile(path.join(fixture.root, 'benchmarks/sentinel-todo/measurements/latest.json')));
     assert.notEqual(report.run.status, 'PASS');
     const caseRoot = path.join(fixture.root, 'benchmark-temp', report.run.id, 'case-a');
-    const supervisor = JSON.parse(await fs.readFile(path.join(caseRoot, 'tmp/stnl-runner-broker/006.supervisor.json')));
+    const supervisor = JSON.parse(await fs.readFile(path.join(caseRoot, 'tmp/stnl-runner-broker/004.supervisor.json')));
     assert.equal(supervisor.pending, false); assert.equal(supervisor.cancelledPending, true);
-    const evidence = JSON.parse(await fs.readFile(path.join(caseRoot, '06-execute_slice.json')));
+    const evidence = JSON.parse(await fs.readFile(path.join(caseRoot, '04-execute_slice.json')));
     assert.match(evidence.outcome.diagnostic, /owned runner pending/u);
     assert.equal(report.cases.find((c) => c.id === 'A').runnerTurns, 1);
     const ledger = JSON.parse(await fs.readFile(path.join(fixture.root, 'benchmark-temp', report.run.id, '.turn-ledger.json')));
     assert.equal(ledger.reservations.length, 0);
     const pid = Number(await fs.readFile(path.join(fixture.root, '.offline-runner-ready')));
     assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' });
+    fixture.expectedCancelledRunner = { activeFile: path.join(caseRoot, 'tmp/stnl-runner-broker/active.json'),
+      sequence: evidence.sequence, operationAttemptId: evidence.officialPreflight.owner.operationAttemptId,
+      supervisorFile: path.join(caseRoot, 'tmp/stnl-runner-broker/004.supervisor.json'), pid };
   });
 }
 
@@ -470,6 +497,8 @@ test('T06: literal npm main completing without a runner request blocks with zero
   const operation = JSON.parse(await fs.readFile(state.operations.at(-1).evidencePath));
   assert.match(operation.outcome.diagnostic, /No managed runner request/u);
   assert.equal(operation.runner.requestsHandled, 0);
+  fixture.expectedPendingNoDispatch = { activeFile: path.join(path.dirname(operation.turn.eventsPath), 'tmp/stnl-runner-broker/active.json'),
+    sequence: operation.sequence, operationAttemptId: operation.officialPreflight.owner.operationAttemptId };
 });
 
 test('T13: literal npm retains a real failing check privately before corrected round 2 passes', { timeout: 150_000 }, async (t) => {
@@ -480,7 +509,7 @@ test('T13: literal npm retains a real failing check privately before corrected r
   const task = await fs.readFile(path.join(root, 'workspace/specs/benchmark-case-a/execution/tasks/slice-01.md'), 'utf8');
   assert.ok(task.indexOf('Status: TESTS_FAIL') < task.indexOf('Status: TESTS_PASS'));
   assert.equal((task.match(/### implementation-check-/gu) ?? []).length, 2);
-  const supervisor = JSON.parse(await fs.readFile(path.join(root, 'tmp/stnl-runner-broker/006.supervisor.json')));
+  const supervisor = JSON.parse(await fs.readFile(path.join(root, 'tmp/stnl-runner-broker/004.supervisor.json')));
   assert.equal(supervisor.requestsHandled, 2);
   assert.equal(report.cases.find((c) => c.id === 'A').runnerTurns, 3);
 });

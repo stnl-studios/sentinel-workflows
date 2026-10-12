@@ -6,6 +6,53 @@ export const OFFLINE_MARKER = 'sentinel-offline-provider-test-only-v1\n';
 export const OFFLINE_AUTH = '{"offline_test_only":true}\n';
 export const OFFLINE_PROVIDER = 'scripts/fixtures/offline-codex-provider.mjs';
 
+const digest = bytes => `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+
+// The pinned SDK is bundled into one ESM entrypoint with only Node imports.
+// Its CLI package is identified as an input; the offline override never loads
+// the native binary. No shared path is copied, chmodded or cleaned here.
+export async function describeOfflineSdk(dependencyRoot, fixtureRoot) {
+  if (typeof dependencyRoot !== 'string' || !path.isAbsolute(dependencyRoot)
+    || await fs.realpath(dependencyRoot) !== dependencyRoot
+    || !(await fs.lstat(dependencyRoot)).isDirectory()
+    || typeof fixtureRoot !== 'string' || await fs.realpath(fixtureRoot) !== fixtureRoot) {
+    throw new Error('offline shared SDK roots are not canonical');
+  }
+  const files = [];
+  async function inspect(relative) {
+    const file = path.join(dependencyRoot, relative);
+    const stat = await fs.lstat(file);
+    if (!stat.isFile() || stat.isSymbolicLink() || await fs.realpath(file) !== file) {
+      throw new Error(`offline shared SDK input is not a physical file: ${relative}`);
+    }
+    const bytes = await fs.readFile(file);
+    files.push({ path: relative, device: stat.dev, inode: stat.ino, bytes: bytes.length, sha256: digest(bytes) });
+    return bytes;
+  }
+  const sdk = JSON.parse(await inspect('@openai/codex-sdk/package.json'));
+  const cli = JSON.parse(await inspect('@openai/codex/package.json'));
+  if (sdk.name !== '@openai/codex-sdk' || cli.name !== '@openai/codex'
+    || sdk.version !== '0.160.0' || cli.version !== '0.160.0'
+    || sdk.type !== 'module' || sdk.exports?.['.']?.import !== './dist/index.js'
+    || sdk.dependencies?.['@openai/codex'] !== cli.version || cli.bin?.codex !== 'bin/codex.js') {
+    throw new Error('offline shared SDK/CLI identity differs from the pinned adapter');
+  }
+  await inspect('@openai/codex-sdk/dist/index.js');
+  await inspect('@openai/codex/bin/codex.js');
+  return { mode: 'shared-readonly', fixtureRoot, dependencyRoot,
+    package: sdk.name, sdkVersion: sdk.version, cliPackage: cli.name, cliVersion: cli.version,
+    entrypoint: path.join(dependencyRoot, '@openai/codex-sdk/dist/index.js'), files };
+}
+
+export async function assertOfflineSdk(descriptor, fixtureRoot) {
+  if (!descriptor || descriptor.fixtureRoot !== fixtureRoot || descriptor.mode !== 'shared-readonly') {
+    throw new Error('offline shared SDK fixture binding is invalid');
+  }
+  const current = await describeOfflineSdk(descriptor.dependencyRoot, fixtureRoot);
+  if (JSON.stringify(current) !== JSON.stringify(descriptor)) throw new Error('offline shared SDK integrity changed');
+  return descriptor;
+}
+
 // This is a test seam, never an alternate production authentication route.
 // Read only explicitly named files in the owned disposable checkout.
 export async function offlineProviderContext(environment = process.env, snapshot = null) {
@@ -46,5 +93,11 @@ export async function offlineProviderContext(environment = process.env, snapshot
   if (!providerMetadata.isFile() || providerMetadata.isSymbolicLink() || providerMetadata.nlink !== 1
     || await fs.realpath(provider) !== provider
     || `sha256:${createHash('sha256').update(await fs.readFile(provider)).digest('hex')}` !== providerSha256) invalid();
+  await assertOfflineSdk(context.sdk, root);
+  if (snapshot !== null) {
+    const snapshotMetadata = JSON.parse(await fs.readFile(path.join(path.dirname(snapshot), 'snapshot.json'), 'utf8'));
+    if (snapshotMetadata.executionMode !== 'OFFLINE_TEST_ONLY'
+      || JSON.stringify(snapshotMetadata.externalSdk) !== JSON.stringify(context.sdk)) invalid();
+  }
   return { ...context, file, provider };
 }
