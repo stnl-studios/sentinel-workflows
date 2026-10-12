@@ -3,6 +3,8 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { readOwnedFile, parseStrictJson, assertExecutionAttempt } from './execution-publication.mjs';
 
+import { deriveCanonicalRunnerRejection, recoverableRunnerResultDiagnostic } from './runner-result-contract.mjs';
+
 const hash = bytes => `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const fail = message => { throw new Error(`runner recovery: ${message}`); };
@@ -10,10 +12,35 @@ const read = async file => parseStrictJson((await readOwnedFile(file)).bytes.toS
 export const recoverySection = (text, heading) => text.split(`## ${heading}\n\n`)[1]?.split('\n## ')[0].trim();
 const headings = ['Implementation Test Evidence', 'Findings Test Evidence', 'Validation Attempts'];
 
-// Called only after the canonical producer has verified the concluded receipt
-// and caught its deterministic semantic rejection. No caller-authored verdict.
+async function canonicalRejection(receiptFile, expectedReceipt = null) {
+  const receipt = await read(receiptFile);
+  if (expectedReceipt && !same(receipt, expectedReceipt)) fail('rejection receipt differs from captured bytes');
+  if (receipt.receiptFile !== receiptFile || receipt.owner?.operation !== receipt.operation
+    || !['RUNNER_RESPONSE_CAPTURED', 'RUNNER_RESULT_BLOCKED'].includes(receipt.status)) fail('rejection receipt binding differs');
+  const response = (await readOwnedFile(receipt.semanticResponseFile)).bytes;
+  if (hash(response) !== `sha256:${receipt.semanticResponseSha256}`) fail('rejected response differs from receipt');
+  const diagnostic = recoverableRunnerResultDiagnostic(deriveCanonicalRunnerRejection({ receipt, response: response.toString('utf8') }));
+  if (diagnostic === null) fail('captured response has no canonical recoverable rejection');
+  return { receipt, diagnostic };
+}
+
+async function assertCanonicalRejectionProof(proof) {
+  // Legacy proof prose remains immutable, including the former candidate-gate
+  // wording. Its authority comes only from re-deriving an actual rejection.
+  const { receipt } = await canonicalRejection(proof.receiptFile);
+  assertExecutionAttempt({ activeAttempt: proof.owner }, receipt.owner);
+  if (proof.semanticResponseFile !== receipt.semanticResponseFile
+    || [proof.receiptFile, proof.semanticResponseFile].some(file => !proof.evidence.some(entry => entry.path === file))) {
+    fail('rejection proof differs from canonical captured rejection');
+  }
+}
+
+// The producer verifies identity/conclusion first. This boundary independently
+// derives the reason too, so even direct API calls cannot fabricate rejection.
 export async function persistRunnerRejection({ receipt, context, taskText, blocker, diagnostic }) {
   if (!receipt?.owner || !receipt.receiptFile) fail('rejection lacks an owned receipt');
+  const canonical = await canonicalRejection(receipt.receiptFile, receipt);
+  if (diagnostic !== canonical.diagnostic) fail('rejection diagnostic differs from captured rejection');
   const native = receipt.transport === 'native';
   const root = path.dirname(receipt.receiptFile);
   const files = native ? ['owner.json', `round-${receipt.attempt}.origin.json`, `round-${receipt.attempt}.agent.json`,
@@ -45,6 +72,7 @@ export async function readBoundRunnerRejection(reference, owner) {
   if (proof.format !== 'stnl-runner-rejection-v1' || proof.receiptFile + '.rejection.json' !== reference.path) fail('invalid rejection proof');
   assertExecutionAttempt({ activeAttempt: owner }, proof.owner);
   for (const entry of proof.evidence) if (hash((await readOwnedFile(entry.path)).bytes) !== entry.sha256) fail('rejected evidence changed');
+  await assertCanonicalRejectionProof(proof);
   return proof;
 }
 
@@ -66,6 +94,7 @@ export async function readRunnerRecovery(owner) {
   assertExecutionAttempt({ activeAttempt: recovery.predecessor }, proof.owner);
   if (proof.owner.operationAttemptId !== recovery.predecessor.operationAttemptId
     || recovery.round !== proof.round || recovery.consumedInvocations !== proof.consumedInvocations) fail('successor counters differ');
+  await assertCanonicalRejectionProof(proof);
   return proof;
 }
 
@@ -85,6 +114,7 @@ export async function verifyPublishedRunnerRejection({ current, state, recovery 
   if (!Number.isSafeInteger(proof.consumedInvocations) || proof.consumedInvocations < 1 || proof.consumedInvocations >= 3
     || !Number.isSafeInteger(proof.round) || proof.round < 1 || proof.round > 3) fail('runner invocation budget exhausted');
   for (const entry of proof.evidence) if (hash((await readOwnedFile(entry.path)).bytes) !== entry.sha256) fail('rejected evidence changed');
+  await assertCanonicalRejectionProof(proof);
   const text = (await readOwnedFile(path.join(state.workspace.executionRoot, 'tasks', `${active.slice}.md`))).bytes.toString('utf8');
   if (recoverySection(text, 'Delegation Blocker') !== `${proof.blocker}\n- Recovery proof: ${recovery.rejection.path} ${recovery.rejection.sha256}`
     || headings.some(heading => recoverySection(text, heading) !== proof.privateChecks[heading])) fail('published blocker/private checks differ');

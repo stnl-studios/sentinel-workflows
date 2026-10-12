@@ -178,7 +178,7 @@ export async function prepareValidationCandidate({ specPath, slice: sliceValue, 
     if (receiptFile === undefined || diagnostic === null) throw error;
     const recovery = await persistMalformedRunnerResultInCandidate({
       taskArtifact: candidateTaskFile, operation: "VALIDATE_SLICE",
-      receiptFile, semanticResponseFile: responseFile, diagnostic, workspace: workspaceRoot, error,
+      receiptFile, semanticResponseFile: responseFile, workspace: workspaceRoot,
     });
     return Object.freeze({ status: "RUNNER_RESULT_BLOCKED", recovery });
   }

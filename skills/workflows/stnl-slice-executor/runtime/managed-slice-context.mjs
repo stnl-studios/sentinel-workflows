@@ -79,6 +79,7 @@ function expectedRuntimePaths(snapshot) {
     bridge: path.join(snapshot, 'agents/codex/runtime/managed-runner-bridge.mjs'),
     preflight: path.join(snapshot, 'agents/codex/runtime/managed-slice-preflight.mjs'),
     evidenceSerializer: path.join(snapshot, 'skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs'),
+    runnerResultContract: path.join(snapshot, 'skills/workflows/stnl-slice-executor/runtime/runner-result-contract.mjs'),
   };
 }
 
@@ -138,6 +139,7 @@ export async function createManagedSliceContext({
       bridge: await fileIdentity(bridgePath, 'bridge'),
       preflight: await fileIdentity(preflightPath, 'preflight'),
       evidenceSerializer: await fileIdentity(expected.evidenceSerializer, 'runner evidence serializer'),
+      runnerResultContract: await fileIdentity(expected.runnerResultContract, 'runner result contract'),
     },
   });
 }
@@ -352,6 +354,7 @@ export async function assertManagedRuntimeIdentity(context, environment = proces
     bridge: await fileIdentity(context.identity.bridge.path, 'bridge'),
     preflight: await fileIdentity(context.identity.preflight.path, 'preflight'),
     evidenceSerializer: await fileIdentity(context.identity.evidenceSerializer.path, 'runner evidence serializer'),
+    runnerResultContract: await fileIdentity(context.identity.runnerResultContract?.path, 'runner result contract'),
   };
   for (const key of Object.keys(actual)) {
     if (JSON.stringify(actual[key]) !== JSON.stringify(context.identity[key])) fail(`${key} identity changed`);
@@ -359,7 +362,8 @@ export async function assertManagedRuntimeIdentity(context, environment = proces
   const expected = expectedRuntimePaths(context.identity.snapshot.path);
   if (context.identity.adapter.path !== expected.adapter || context.identity.bridge.path !== expected.bridge
     || context.identity.preflight.path !== expected.preflight
-    || context.identity.evidenceSerializer.path !== expected.evidenceSerializer) fail('managed runtimes are not snapshot-owned');
+    || context.identity.evidenceSerializer.path !== expected.evidenceSerializer
+    || context.identity.runnerResultContract.path !== expected.runnerResultContract) fail('managed runtimes are not snapshot-owned');
   return true;
 }
 

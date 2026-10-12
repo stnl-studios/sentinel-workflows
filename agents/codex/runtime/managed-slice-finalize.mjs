@@ -345,7 +345,7 @@ export async function finalizeManagedSlice(mode) {
           if (diagnostic === null) throw error;
           await persistMalformedRunnerResultInCandidate({ taskArtifact: stage.candidateTaskArtifact,
             operation: context.operation, workspace: context.workspace, receiptFile: receipt.receiptFile,
-            semanticResponseFile: receipt.semanticResponseFile, diagnostic, error });
+            semanticResponseFile: receipt.semanticResponseFile });
         }
       }
       // Execution records passed prospective validation before their append.

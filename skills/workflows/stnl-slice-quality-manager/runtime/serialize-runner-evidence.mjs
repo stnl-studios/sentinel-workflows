@@ -2,6 +2,14 @@
 import { assertExecutionAttempt, assertOwnedOperationalCandidate, readOwnedFile, executionLockIdentity, withExecutionPublicationLock } from './execution-publication.mjs';
 
 import { persistRunnerRejection } from './runner-result-recovery.mjs';
+import { RunnerVerdictEvidenceError, RunnerSemanticResultError, parseCapturedResult,
+  recoverableRunnerResultDiagnostic, assertRunnerVerdictConsistency, serializeCommand,
+  executionFields, isExplanatoryExecutionField, validateScalarField,
+  serializeMarkdownScalar, decodeMarkdownScalar, parseSemanticExecutionPayload, parseSemanticValidationPayload,
+  assertExecutionResultScope, deriveCanonicalRunnerRejection } from './runner-result-contract.mjs';
+export { RunnerVerdictEvidenceError, RunnerSemanticResultError, recoverableRunnerResultDiagnostic,
+  assertRunnerVerdictConsistency, parseSemanticExecutionPayload, parseSemanticValidationPayload } from './runner-result-contract.mjs';
+
 
 import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
@@ -18,30 +26,6 @@ function fail(message) {
   throw new Error(message);
 }
 
-export class RunnerVerdictEvidenceError extends Error {
-  constructor(operation, status, failedCommands, message = null) {
-    super(message ?? `${operation} ${status} contradicts ${failedCommands.length} marked verification command(s) with non-zero exit`);
-    this.name = "RunnerVerdictEvidenceError";
-    this.code = "RUNNER_VERDICT_EVIDENCE_CONFLICT";
-    this.operation = operation;
-    this.status = status;
-    this.failedCommands = failedCommands;
-  }
-}
-
-export class RunnerSemanticResultError extends Error {
-  constructor(operation, cause) {
-    super(`${operation} captured semantic result is invalid: ${cause.message}`, { cause });
-    this.name = "RunnerSemanticResultError";
-    this.code = "RUNNER_SEMANTIC_RESULT_INVALID";
-  }
-}
-
-function parseCapturedResult(operation, parse, response) {
-  try { return parse(response, operation); }
-  catch (error) { throw new RunnerSemanticResultError(operation, error); }
-}
-
 async function requireAcceptedRunnerResult(options) {
   const context = await assertManagedRunnerReceipt({ ...options, allowRejected: true });
   if (options.receiptFile === undefined) return;
@@ -51,24 +35,12 @@ async function requireAcceptedRunnerResult(options) {
     if (context === null) fail("rejected runner diagnostics require a matching active managed invocation");
     // Identity and conclusion passed; semantic rejection can produce only a
     // Delegation Blocker, never commands, a check, an attempt, or PASS.
-    throw new RunnerSemanticResultError(options.operation,
-      Object.assign(new Error(receipt.captureFailure), { code: receipt.captureFailureCode }));
+    const rejection = deriveCanonicalRunnerRejection({ receipt,
+      response: await fs.readFile(options.semanticResponseFile, "utf8") });
+    if (rejection === null) fail("diagnostic receipt contains no canonical recoverable rejection");
+    throw rejection;
   }
   return receipt;
-}
-
-export function recoverableRunnerResultDiagnostic(error) {
-  if (!(error instanceof RunnerVerdictEvidenceError || error instanceof RunnerSemanticResultError)) return null;
-  const failed = error instanceof RunnerVerdictEvidenceError
-    ? `; failed verification commands: ${JSON.stringify(error.failedCommands)}` : "";
-  return `${error.code}: ${error.message}${failed}`;
-}
-
-export function assertRunnerVerdictConsistency(operation, status, commands) {
-  const success = operation === "VALIDATE_SLICE" ? status === "PASS" : status === "TESTS_PASS";
-  if (!success) return;
-  const failed = commands.filter(({ exit }) => exit !== 0);
-  if (failed.length !== 0) throw new RunnerVerdictEvidenceError(operation, status, failed);
 }
 
 const CLI_HELP = `Usage:
@@ -379,11 +351,6 @@ async function canonicalTestedScope({ workspace, taskArtifact, targets = [], rem
   return entries.map(({ claim }) => claim).join(", ");
 }
 
-function serializeCommand(command, label) {
-  if (typeof command !== "string" || command.length === 0) fail(`${label} must be a non-empty command`);
-  return /[`\r\n]/u.test(command) ? `json:${JSON.stringify(command)}` : `\`${command}\``;
-}
-
 function decodeCommand(value, label) {
   if (value.startsWith("json:")) {
     let command;
@@ -449,111 +416,6 @@ const SEMANTIC_EXECUTION_FIELDS = Object.freeze({
   ],
 });
 
-const MACHINE_EXECUTION_FIELDS = Object.freeze({
-  EXECUTE_SLICE: Object.freeze([
-    ["status", "Status"],
-    ["automaticCheckRound", "Automatic check round"],
-    ["head", "HEAD"],
-    ["discoverySources", "Discovery sources"],
-    ["discoveryActions", "Discovery actions"],
-    ["verificationTypesConsidered", "Verification types considered"],
-    ["nonApplicabilityRationale", "Non-applicability rationale"],
-    ["noVerificationCommandConfirmation", "No verification-command confirmation"],
-    ["commands", "Commands"],
-    ["resultOfEachCommandAndExitCode", "Result of each command and exit code"],
-    ["selectedChecks", "Selected checks"],
-    ["selectionRationale", "Selection rationale"],
-    ["coverage", "Coverage"],
-    ["failures", "Failures"],
-    ["priorRoundFailure", "Prior-round failure"],
-    ["correctionApplied", "Correction applied"],
-    ["inSliceRationale", "In-slice rationale"],
-    ["evidenceOrFailureSummary", "Evidence or failure summary"],
-    ["affectedFilesOrBehaviors", "Affected files or behaviors"],
-    ["blockers", "Blockers"],
-    ["unexpectedWorkspaceEffects", "Unexpected workspace effects"],
-    ["persistenceSummary", "Persistence summary"],
-  ]),
-  APPLY_FINDINGS: Object.freeze([
-    ["status", "Status"],
-    ["automaticCheckRound", "Automatic check round"],
-    ["head", "HEAD"],
-    ["discoverySources", "Discovery sources"],
-    ["discoveryActions", "Discovery actions"],
-    ["verificationTypesConsidered", "Verification types considered"],
-    ["nonApplicabilityRationale", "Non-applicability rationale"],
-    ["noVerificationCommandConfirmation", "No verification-command confirmation"],
-    ["commands", "Commands"],
-    ["resultOfEachCommandAndExitCode", "Result of each command and exit code"],
-    ["selectedChecks", "Selected checks"],
-    ["selectionRationale", "Selection rationale"],
-    ["coverage", "Coverage"],
-    ["findingsVerified", "Findings verified"],
-    ["correctionsCovered", "Corrections covered"],
-    ["regressionsSelected", "Regressions selected"],
-    ["unsupportedActiveFindings", "Unsupported active findings"],
-    ["failures", "Failures"],
-    ["evidenceOrFailureSummary", "Evidence or failure summary"],
-    ["affectedFilesOrBehaviors", "Affected files or behaviors"],
-    ["blockers", "Blockers"],
-    ["unexpectedWorkspaceEffects", "Unexpected workspace effects"],
-    ["persistenceSummary", "Persistence summary"],
-  ]),
-});
-
-function validateScalarField(name, value) {
-  if (typeof value !== "string" || value.length === 0 || value.includes("\n") || value.includes("\r") || value.includes("`")) {
-    fail(`${name} must be a complete single-line scalar without backticks`);
-  }
-  return value;
-}
-
-const EXPLANATORY_EXECUTION_FIELDS = new Set([
-  "Discovery sources", "Discovery actions", "Verification types considered", "Non-applicability rationale",
-  "No verification-command confirmation", "Result of each command and exit code", "Selected checks",
-  "Selection rationale", "Coverage", "Failures", "Prior-round failure", "Correction applied",
-  "In-slice rationale", "Evidence", "Evidence or failure summary", "Affected files or behaviors", "Blockers",
-  "Unexpected workspace effects", "Persistence summary", "Regressions selected", "Corrections covered", "Fileless reason",
-]);
-
-const EXPLANATORY_VALIDATION_FIELDS = new Set([
-  "evidence", "blockers", "unexpectedWorkspaceEffects", "persistenceSummary",
-]);
-
-function serializeMarkdownScalar(name, value, explanatory = false) {
-  if (typeof value !== "string" || value.length === 0) fail(`${name} must be a non-empty scalar`);
-  if (!explanatory) return validateScalarField(name, value);
-  return /[`\r\n]/u.test(value) || value.startsWith("json:") ? `json:${JSON.stringify(value)}` : value;
-}
-
-function decodeMarkdownScalar(name, value, explanatory = false) {
-  if (!explanatory) return validateScalarField(name, value);
-  if (!value.startsWith("json:")) {
-    serializeMarkdownScalar(name, value, true);
-    return value;
-  }
-  const encoded = value.slice("json:".length);
-  let decoded;
-  try {
-    decoded = JSON.parse(encoded);
-  } catch {
-    fail(`${name} must use a canonical json-quoted scalar`);
-  }
-  if (typeof decoded !== "string" || decoded.length === 0
-    || serializeMarkdownScalar(name, decoded, true) !== value) {
-    fail(`${name} must use a canonical json-quoted scalar`);
-  }
-  return decoded;
-}
-
-function canonicalSemanticValidationScalar(name, value) {
-  if (EXPLANATORY_VALIDATION_FIELDS.has(name)) {
-    serializeMarkdownScalar(name, value, true);
-    return value;
-  }
-  return validateScalarField(name, value);
-}
-
 function responseFieldNames(operation, fields) {
   const base = RESPONSE_FIELDS[operation];
   if (base === undefined) return undefined;
@@ -578,10 +440,10 @@ function serializeResponseFields(operation, fields) {
   if (unknown.length !== 0) fail(`unknown response field: ${unknown[0]}`);
   for (const name of expected) {
     if (!Object.hasOwn(fields, name)) fail(`missing response field: ${name}`);
-    serializeMarkdownScalar(name, fields[name], EXPLANATORY_EXECUTION_FIELDS.has(name));
+    serializeMarkdownScalar(name, fields[name], isExplanatoryExecutionField(name));
   }
   if (fields.Operation !== operation) fail(`response Operation must be ${operation}`);
-  return expected.map((name) => `${name}: ${serializeMarkdownScalar(name, fields[name], EXPLANATORY_EXECUTION_FIELDS.has(name))}`);
+  return expected.map((name) => `${name}: ${serializeMarkdownScalar(name, fields[name], isExplanatoryExecutionField(name))}`);
 }
 
 function responseFieldsFromValues(operation, values) {
@@ -735,7 +597,7 @@ function parseSemanticExecutionResponse(text, operation) {
     const prefix = `${field}: `;
     if (!lines[cursor]?.startsWith(prefix)) fail(`semantic execution response must contain ${field} in canonical order`);
     const value = lines[cursor].slice(prefix.length);
-    values[field] = decodeMarkdownScalar(field, value, EXPLANATORY_EXECUTION_FIELDS.has(field));
+    values[field] = decodeMarkdownScalar(field, value, isExplanatoryExecutionField(field));
     cursor += 1;
     if (field === "HEAD" && lines[cursor]?.startsWith("Fileless reason: ")) {
       values.filelessReason = decodeMarkdownScalar("Fileless reason", lines[cursor].slice("Fileless reason: ".length), true);
@@ -747,105 +609,6 @@ function parseSemanticExecutionResponse(text, operation) {
     fail("non-blocked semantic execution response requires executed commands");
   }
   return values;
-}
-
-export function parseSemanticExecutionPayload(text, operation, { automaticCheckRound } = {}) {
-  const fields = MACHINE_EXECUTION_FIELDS[operation];
-  if (fields === undefined) fail(`unsupported semantic execution operation: ${operation}`);
-  let payload;
-  try {
-    payload = JSON.parse(text);
-  } catch {
-    fail("semantic execution payload must be one canonical JSON object");
-  }
-  if (payload === null || typeof payload !== "object" || Array.isArray(payload)) {
-    fail("semantic execution payload must be one canonical JSON object");
-  }
-  if (!["TESTS_PASS", "TESTS_FAIL", "TESTS_NOT_APPLICABLE", "BLOCKED"].includes(payload.status)) {
-    fail("semantic execution payload Status is invalid");
-  }
-  // The managed caller supplies the broker-admitted round. The raw echo stays
-  // unchanged in its captured artifact and has no bookkeeping authority.
-  if (automaticCheckRound !== undefined) {
-    if (!["1/3", "2/3", "3/3"].includes(automaticCheckRound)) fail("admitted automatic check round is invalid");
-    payload = { ...payload, automaticCheckRound };
-  }
-  if (!["1/3", "2/3", "3/3"].includes(payload.automaticCheckRound)) {
-    fail("semantic execution payload Automatic check round is invalid");
-  }
-  const allowed = new Set([...fields.map(([key]) => key), "filelessReason", ...(operation === "APPLY_FINDINGS" ? ["findingsCycle"] : [])]);
-  for (const key of Object.keys(payload)) {
-    if (!allowed.has(key)) fail(`unknown semantic execution payload field: ${key}`);
-  }
-  for (const [key] of fields) {
-    if (!Object.hasOwn(payload, key)) fail(`missing semantic execution payload field: ${key}`);
-    if (key === "commands") continue;
-    serializeMarkdownScalar(key, payload[key], EXPLANATORY_EXECUTION_FIELDS.has(MACHINE_EXECUTION_FIELDS[operation].find(([candidate]) => candidate === key)?.[1]));
-  }
-  if (!Array.isArray(payload.commands)) fail("semantic execution payload commands must be an array");
-  for (const [index, command] of payload.commands.entries()) {
-    if (command === null || typeof command !== "object" || Array.isArray(command)
-      || JSON.stringify(Object.keys(command).sort()) !== JSON.stringify(["command", "exit"])) {
-      fail(`semantic execution payload command ${index + 1} must contain only command and exit`);
-    }
-    serializeCommand(command.command, `semantic execution payload command ${index + 1}`);
-    if (!Number.isSafeInteger(command.exit)) fail(`semantic execution payload command ${index + 1} exit must be an integer`);
-  }
-  if (payload.commands.length === 0 && !new Set(["BLOCKED", "TESTS_NOT_APPLICABLE"]).has(payload.status)) {
-    fail("non-blocked semantic execution payload requires executed commands");
-  }
-  if (operation === "EXECUTE_SLICE" && payload.automaticCheckRound !== "1/3") {
-    for (const key of ["priorRoundFailure", "correctionApplied", "inSliceRationale"]) {
-      if (/^(?:none|pending|n\/a)$/iu.test(payload[key])) {
-        fail(`${key} is required for automatic check rounds after 1/3`);
-      }
-    }
-  }
-  if (Object.hasOwn(payload, "filelessReason")) serializeMarkdownScalar("filelessReason", payload.filelessReason, true);
-  return payload;
-}
-
-const VALIDATION_SEMANTIC_KEYS = Object.freeze([
-  "status", "head", "commands", "evidence", "findingReferences", "findingDispositions",
-  "blockers", "unexpectedWorkspaceEffects", "persistenceSummary",
-]);
-
-export function parseSemanticValidationPayload(text) {
-  if (typeof text !== "string" || text.length === 0) fail("semantic validation response must be a non-empty JSON object");
-  let payload;
-  try {
-    payload = JSON.parse(text);
-  } catch {
-    fail("semantic validation response must be a single raw JSON object");
-  }
-  if (payload === null || typeof payload !== "object" || Array.isArray(payload)) {
-    fail("semantic validation response must be a single raw JSON object");
-  }
-  const keys = Object.keys(payload);
-  if (JSON.stringify(keys) !== JSON.stringify(VALIDATION_SEMANTIC_KEYS)) {
-    const unknown = keys.find((key) => !VALIDATION_SEMANTIC_KEYS.includes(key));
-    if (unknown !== undefined) fail(`unknown semantic validation payload field: ${unknown}`);
-    fail("semantic validation payload keys are missing or not in canonical order");
-  }
-  if (!["PASS", "NEEDS_FIX", "BLOCKED"].includes(payload.status)) {
-    fail("semantic validation payload status is invalid");
-  }
-  for (const key of VALIDATION_SEMANTIC_KEYS) {
-    if (key === "commands") continue;
-    payload[key] = canonicalSemanticValidationScalar(key, payload[key]);
-  }
-  if (!Array.isArray(payload.commands) || payload.commands.length === 0) {
-    fail("semantic validation payload commands must be a non-empty array");
-  }
-  for (const [index, command] of payload.commands.entries()) {
-    if (command === null || typeof command !== "object" || Array.isArray(command)
-      || JSON.stringify(Object.keys(command).sort()) !== JSON.stringify(["command", "exit"])) {
-      fail(`semantic validation payload command ${index + 1} must contain only command and exit`);
-    }
-    serializeCommand(command.command, `semantic validation payload command ${index + 1}`);
-    if (!Number.isSafeInteger(command.exit)) fail(`semantic validation payload command ${index + 1} exit must be an integer`);
-  }
-  return payload;
 }
 
 async function canonicalValidationFindingFields({ state, slice, status, findingReferences, findingDispositions }) {
@@ -1316,7 +1079,7 @@ function canonicalFindingDispositions(value, label) {
 async function serializeCanonicalExecutionCheck({
   operation, parsed, workspace, taskArtifact, taskText, targets, removed, capturedEntries, testedScope, evidenceOwner,
 }) {
-  const scalar = (label, value) => serializeMarkdownScalar(label, value, EXPLANATORY_EXECUTION_FIELDS.has(label));
+  const scalar = (label, value) => serializeMarkdownScalar(label, value, isExplanatoryExecutionField(label));
   const prefix = operation === "EXECUTE_SLICE" ? "implementation-check" : "findings-check";
   const selected=await assertOwnedOperationalCandidate({candidateExecutionRoot:path.dirname(path.dirname(taskArtifact)),slice:path.basename(taskArtifact,'.md'),resolveWorkspace:resolveExecutionWorkspace,readActivated:readExecutionActivation});
   const index=await readDeliveryContinuity(selected.workspace);
@@ -1466,7 +1229,7 @@ export async function serializeRunnerExecutionBundleFromResponse({
   });
   await serializeExecutionScopeClaims({ workspace, taskArtifact });
   const parsed = Object.fromEntries([
-    ...MACHINE_EXECUTION_FIELDS[operation].map(([key, label]) => [label, payload[key]]),
+    ...executionFields(operation).map(([key, label]) => [label, payload[key]]),
     ["filelessReason", payload.filelessReason],
   ]);
   if (resolveManagedFindingsCycle !== undefined) {
@@ -1510,14 +1273,7 @@ export async function serializeRunnerExecutionBundleFromResponse({
   const filelessReason = parsed.filelessReason ?? null;
   // Only the response/scope incompatibility is recoverable. All receipt,
   // filesystem, captured-state and authority checks above remain mechanical.
-  const scopeMismatch = targets.length + removed.length === 0 && (filelessReason === null || filelessReason.trim() === "")
-    ? "fileless semantic execution response must include Fileless reason"
-    : targets.length + removed.length !== 0 && filelessReason !== null
-      ? "file-backed semantic execution response cannot include Fileless reason" : null;
-  if (scopeMismatch !== null) {
-    throw new RunnerSemanticResultError(operation,
-      Object.assign(new Error(scopeMismatch), { code: "RUNNER_EXECUTION_SCOPE_INVALID" }));
-  }
+  assertExecutionResultScope(operation, payload, targets.length + removed.length);
   const testedScope = targets.length + removed.length === 0
     ? serializeMarkdownScalar("filelessReason", filelessReason, true)
     : capturedEntries === null
@@ -1608,13 +1364,9 @@ export async function insertExecutionEvidenceInCandidate({ taskArtifact, operati
 }
 
 export async function persistMalformedRunnerResultInCandidate({
-  taskArtifact, operation, receiptFile, semanticResponseFile, diagnostic, error = null, workspace,
+  taskArtifact, operation, receiptFile, semanticResponseFile, workspace,
 }) {
   if (!new Set(["EXECUTE_SLICE", "APPLY_FINDINGS", "VALIDATE_SLICE"]).has(operation)) fail("invalid runner recovery operation");
-  const expectedDiagnostic = recoverableRunnerResultDiagnostic(error);
-  if (expectedDiagnostic === null || expectedDiagnostic !== diagnostic) {
-    fail("malformed-output recovery requires the original deterministic producer rejection");
-  }
   const task = await regularFile(taskArtifact, "candidate taskArtifact");
   await assertPrivateTask(task);
   if (receiptFile === undefined && operation === "VALIDATE_SLICE") {
@@ -1637,6 +1389,11 @@ export async function persistMalformedRunnerResultInCandidate({
     || (!rejected && receipt.captureFailure !== null) || receipt.error != null)) {
     fail("malformed-output recovery requires a matching captured runner response and receipt");
   }
+  // Recompute before any candidate/proof write. Public Error classes and caller
+  // diagnostics are descriptive only and cannot authorize a rejected result.
+  const canonicalError = deriveCanonicalRunnerRejection({ receipt, response: await fs.readFile(responsePath, "utf8") });
+  const diagnostic = recoverableRunnerResultDiagnostic(canonicalError);
+  if (diagnostic === null) fail("captured response has no canonical recoverable rejection");
   const executionRoot = path.dirname(path.dirname(task));
   const candidateRoot = path.basename(executionRoot).startsWith(".stnl-execution-copy-")
     ? executionRoot : path.dirname(executionRoot);
@@ -1665,7 +1422,7 @@ export async function persistMalformedRunnerResultInCandidate({
     fail("malformed-output recovery requires a canonical slice task");
   }
   let taskText = await fs.readFile(task, "utf8");
-  if ((rejected || error instanceof RunnerSemanticResultError && error.cause?.code === "RUNNER_EXECUTION_SCOPE_INVALID")
+  if ((rejected || canonicalError instanceof RunnerSemanticResultError && canonicalError.cause?.code === "RUNNER_EXECUTION_SCOPE_INVALID")
     && operation !== "VALIDATE_SLICE"
     && sectionBody(taskText, "Changed Areas") === "- none") {
     // An unproved fileless claim cannot be published as Changed Areas: none.
@@ -2016,7 +1773,7 @@ if (import.meta.url === pathToFileURL(path.resolve(process.argv[1] ?? "")).href)
         const recovery = await persistMalformedRunnerResultInCandidate({
           taskArtifact: values.taskArtifact, operation: values.operation,
           receiptFile: values.receiptFile, semanticResponseFile: values.semanticResponseFile,
-          diagnostic, error, workspace: values.workspace,
+          workspace: values.workspace,
         });
         process.stdout.write(`${JSON.stringify(recovery)}\n`);
       }

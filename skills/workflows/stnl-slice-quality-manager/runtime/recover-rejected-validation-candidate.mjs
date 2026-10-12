@@ -9,8 +9,7 @@ import { ExecutionContractError, inspectExecutionState, preflightExecutionOperat
   validateExecutionCandidate, resolveExecutionWorkspace, readExecutionActivation } from "./execution-state.mjs";
 import { prepareValidationCopy } from "./prepare-validation-copy.mjs";
 import { publishValidationCandidate } from "./publish-validation-candidate.mjs";
-import { persistMalformedRunnerResultInCandidate, recoverableRunnerResultDiagnostic,
-  RunnerVerdictEvidenceError, resolveCapturedRunnerCommands } from "./serialize-runner-evidence.mjs";
+import { persistMalformedRunnerResultInCandidate, resolveCapturedRunnerCommands } from "./serialize-runner-evidence.mjs";
 import { assertManagedAgreement, assertManagedRunnerReceipt } from "./managed-slice-context.mjs";
 
 function fail(message) { throw new Error(`validation rejection recovery blocked: ${message}`); }
@@ -48,10 +47,8 @@ export async function recoverRejectedValidationCandidate({ specPath, slice, work
   const before = await fs.readFile(rejectedTask);
   const copy = await prepareValidationCopy({ specPath, slice: canonicalSlice, candidateParent, owner });
   const candidateTask = path.join(copy.candidateExecutionRoot, "tasks", `${canonicalSlice}.md`);
-  const producerError = new RunnerVerdictEvidenceError("VALIDATE_SLICE", "PASS", failed, rejection.message);
-  const diagnostic = recoverableRunnerResultDiagnostic(producerError);
   const recovery = await persistMalformedRunnerResultInCandidate({ taskArtifact: candidateTask,
-    operation: "VALIDATE_SLICE", receiptFile, semanticResponseFile, diagnostic, error: producerError, workspace });
+    operation: "VALIDATE_SLICE", receiptFile, semanticResponseFile, workspace });
   const candidate = await validateExecutionCandidate(specPath, copy.candidateExecutionRoot);
   if (candidate.state !== "RUNNER_RESULT_BLOCKED") fail("recovery candidate did not produce the canonical blocker");
   const published = await publishValidationCandidate({ specPath, slice: canonicalSlice,
