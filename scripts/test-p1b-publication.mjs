@@ -7,8 +7,9 @@ import { randomUUID } from 'node:crypto';
 import { startNativeRunnerCapture, bindNativeRunnerIdentity, captureNativeRunnerResult, runNativeRunnerVerification } from '../skills/workflows/stnl-slice-executor/runtime/capture-runner-response.mjs';
 import { spawnSync, fork, spawn } from 'node:child_process';
 import { pathToFileURL, fileURLToPath } from 'node:url';
-import { fixture, approveFixture, verificationBody } from './test-p1b-preparation.mjs';
-import { readExecutionActivation, beginPreparedExecutionOperation, inspectExecutionState, validateExecutionCandidate } from '../skills/workflows/stnl-slice-executor/runtime/execution-state.mjs';
+import { fixture, approveFixture, verificationBody, retainPreparation, prepareFixtureCandidate, publishFixtureCandidate,
+  reviewFixtureCandidate, normalizePreparation, editPreparation, setPreparationSection } from './test-p1b-preparation.mjs';
+import { readExecutionActivation, beginPreparedExecutionOperation, preflightExecutionOperation, inspectExecutionState, validateExecutionCandidate } from '../skills/workflows/stnl-slice-executor/runtime/execution-state.mjs';
 import { prepareExecutionCopy, publishExecutionCopy } from '../skills/workflows/stnl-slice-executor/runtime/prepare-execution-copy.mjs';
 import { updateOperationalChecklist, parseStrictJson } from '../skills/workflows/stnl-execution-planner/runtime/execution-preparation.mjs';
 import { captureRunnerTestedState, serializeRunnerExecutionBundleFromResponse, insertExecutionEvidenceInCandidate } from '../skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs';
@@ -19,6 +20,60 @@ import { prepareValidationCandidate } from '../skills/workflows/stnl-slice-quali
 import { publishValidationCandidate } from '../skills/workflows/stnl-slice-quality-manager/runtime/publish-validation-candidate.mjs';
 import { preparationAuthorityAt } from '../skills/workflows/stnl-slice-executor/runtime/execution-state.mjs';
 import { parsePreparationTableRow } from '../skills/workflows/stnl-execution-planner/runtime/execution-preparation.mjs';
+import { readPreparationArtifacts } from '../skills/workflows/stnl-execution-planner/runtime/execution-preparation.mjs';
+import { publishPreparationCandidate } from '../skills/workflows/stnl-execution-planner/runtime/publish-task-candidate.mjs';
+
+// The predecessor comes from official publications. Only the new paired
+// delivery is authored; identities, history retention and supersession are
+// still produced by the runtime.
+async function appendFixtureCandidate(f, { source = 'slice-01', target = 'slice-02', supersedes = true } = {}) {
+  const old = await readPreparationArtifacts(f.workspace.executionRoot);
+  const candidate = await prepareFixtureCandidate(f, 'REPLAN', { revisionMode: 'append-only-extension' });
+  const number = target.slice(6), sourceNumber = source.slice(6);
+  for (const type of ['plans', 'tasks']) {
+    let text = type === 'plans' ? old.get(`plans/${source}.md`) : await fs.readFile(path.join(f.candidate, 'tasks/slice-01.md'), 'utf8');
+    text = text.replace(/^- Delivery ID: .*\n/mu, '').replace(/- Slice: [0-9]+/u, '- Slice: ' + number)
+      .replace(/Slice [0-9]+/u, 'Slice ' + number).replace(/full owner: slice-[0-9]+/gu, 'full owner: ' + target)
+      .replace(/\.\.\/plans\/slice-[0-9]+\.md/u, '../plans/' + target + '.md')
+      .replace(/^- \[ \] [0-9]+\./gmu, '- [ ] ' + BigInt(number).toString() + '.')
+      .replace(/- History source: .+/u, '- History source: runtime');
+    await fs.writeFile(path.join(candidate, type, target + '.md'), text);
+  }
+  let global = old.get('plan.md');
+  const setField = (text, field, value) => text.includes('- ' + field + ':')
+    ? text.replace(new RegExp(`^- ${field}: .+$`, 'mu'), '- ' + field + ': ' + value)
+    : text.replace('- Review state: approved', '- Review state: approved\n- ' + field + ': ' + value);
+  global = setField(global, 'Replan reason', 'Add a reviewed recovery delivery without rewriting predecessor records.');
+  global = setField(global, 'Revision mode', 'append-only-extension');
+  global = setField(global, 'Supersedes open slices', supersedes ? `${source} -> ${target}` : 'none');
+  const priorRow = global.split('\n').find(line => line.startsWith(`| ${sourceNumber} -`));
+  const cells = parsePreparationTableRow(priorRow, 6, 'fixture serial predecessor');
+  cells[0] = number + ' - Recovery'; cells[2] = sourceNumber; cells[5] = `plans/${target}.md`;
+  global = global.replace(priorRow, priorRow + '\n| ' + cells.join(' | ') + ' |');
+  global = setPreparationSection(global, 'Delivery Continuity', '- runtime');
+  await fs.writeFile(path.join(candidate, 'plan.md'), global);
+  const index = old.get('tasks.md'), row = index.split('\n').find(line => line.includes(`| tasks/${source}.md |`));
+  const taskCells = parsePreparationTableRow(row, 7, 'fixture task predecessor');
+  taskCells[0] = '[ ]'; taskCells[1] = number + ' - Recovery'; taskCells[3] = sourceNumber;
+  taskCells[4] = `tasks/${target}.md`; taskCells[5] = 'pending'; taskCells[6] = 'pending';
+  await fs.writeFile(path.join(candidate, 'tasks.md'), index.replace(row, row + '\n| ' + taskCells.join(' | ') + ' |'));
+  await normalizePreparation(f, candidate);
+  return candidate;
+}
+
+async function unpublishedImplementationFixture(t) {
+  const f = await fixture({ test: t });
+  const approved = await approveFixture(f);
+  const admission = await beginPreparedExecutionOperation(f.specPath, 'EXECUTE_SLICE', '1', approved.activation.activationId);
+  const implementation = await implementOffline(f, admission);
+  retainPreparation(f, implementation.copy.candidateRoot);
+  return { f, implementation, admission };
+}
+async function implementedAppendFixture(t) {
+  const { f, implementation } = await unpublishedImplementationFixture(t);
+  await publishExecutionCopy({ specPath: f.specPath, slice: 'slice-01', candidateRoot: implementation.copy.candidateRoot });
+  return { f, implementation, candidate: await appendFixtureCandidate(f) };
+}
 
 const commandEnvironment = { ...process.env };
 delete commandEnvironment.NODE_TEST_CONTEXT;
@@ -550,6 +605,144 @@ test('first PLAN and real lifecycle writer serialize while execution is absent, 
     assert.equal(lifecycleEffects,0);
     assert.equal((await readExecutionActivation(target)).activation.activeAttempt.operationAttemptId,active.owner.operationAttemptId);
   } finally { if(child?.exitCode===null) {child.kill('SIGTERM'); await new Promise(resolve=>child.once('exit',resolve));} await fs.rm(root,{recursive:true,force:true}); }
+});
+
+test('joint approved execution candidate rejects changes to protected authority with its valid owner intact', async (t) => {
+  for (const [name, artifact, mutate, diagnostic] of [
+    ['approved global objective', 'plan.md', text => text.replace('Deliver a deterministic greeting.', 'Approve a different objective.'), /outside selected operational delivery/],
+    ['approved detailed scope', 'plans/slice-01.md', text => text.replace('Create the greeting and its prepared check.', 'Change authentication instead.'), /execution changed protected detailed Plan/],
+    ['approved task responsibility', 'tasks/slice-01.md', text => text.replace('No authentication or persistence changes.', 'Authentication writes authorized.'), /operational update changed preparation authority/],
+    ['approved task revision', 'tasks/slice-01.md', text => text.replace('Plan revision: 1', 'Plan revision: 2'), /authority pair differs/],
+    ['approved task authority', 'tasks/slice-01.md', text => text.replace(/sha256:[a-f0-9]{64}/u, 'sha256:' + 'f'.repeat(64)), /authority pair differs/],
+  ]) await t.test(name, async child => {
+    const positive = await unpublishedImplementationFixture(child);
+    assert.equal((await publishExecutionCopy({ specPath: positive.f.specPath, slice: 'slice-01', candidateRoot: positive.implementation.copy.candidateRoot })).state, 'IMPLEMENTED_AWAITING_VALIDATION', 'positive in the same publisher with real observed check and receipt');
+    const { f, implementation, admission } = await unpublishedImplementationFixture(child), copy = implementation.copy;
+    const consume = () => publishExecutionCopy({ specPath: f.specPath, slice: 'slice-01', candidateRoot: copy.candidateRoot });
+    await editPreparation(copy.candidateExecutionRoot, artifact, mutate);
+    const live = await captureExecutionTree(f.workspace.executionRoot), candidate = await captureExecutionTree(copy.candidateExecutionRoot);
+    const receipt = await fs.readFile(implementation.captured.receiptFile);
+    await assert.rejects(consume(), diagnostic);
+    assert.deepEqual(await captureExecutionTree(f.workspace.executionRoot), live);
+    assert.deepEqual(await captureExecutionTree(copy.candidateExecutionRoot), candidate);
+    assert.deepEqual(await fs.readFile(implementation.captured.receiptFile), receipt);
+    assert.equal((await readExecutionActivation(f.specPath)).activation.activeAttempt.operationAttemptId, admission.owner.operationAttemptId);
+  });
+});
+
+test('joint preparation publisher cannot turn officially implemented history into a pristine replacement', async (t) => {
+  const positive = await implementedAppendFixture(t);
+  await publishFixtureCandidate(positive.f, positive.candidate);
+  assert.equal((await inspectExecutionState(positive.f.specPath)).state, 'PENDING_REPLAN_DRAFT');
+  const { f, implementation } = await implementedAppendFixture(t);
+  const candidate = await prepareFixtureCandidate(f, 'REPLAN', { revisionMode: 'pristine-replacement' });
+  await editPreparation(candidate, 'plan.md', text => text.replace('- Review state: approved', '- Review state: approved\n- Replan reason: Attempt to erase actually implemented delivery history.'));
+  await editPreparation(candidate, 'plan.md', text => setPreparationSection(text, 'Delivery Continuity', '- runtime'));
+  await normalizePreparation(f, candidate);
+  const live = await captureExecutionTree(f.workspace.executionRoot), image = await captureExecutionTree(candidate);
+  const receipt = await fs.readFile(implementation.captured.receiptFile);
+  await assert.rejects(publishPreparationCandidate({ specPath: f.specPath, candidateExecutionRoot: candidate }), /historical REPLAN requires next append-only revision/);
+  assert.deepEqual(await captureExecutionTree(f.workspace.executionRoot), live);
+  assert.deepEqual(await captureExecutionTree(candidate), image);
+  assert.deepEqual(await fs.readFile(implementation.captured.receiptFile), receipt);
+});
+
+test('joint append draft validator reaches mapping, revision, owner and continuity guards with preserved bytes', async (t) => {
+  const cases = [
+    ['missing replan reason', 'plan.md', text => text.replace(/^- Replan reason: .*\n/mu, ''), /Replan reason/],
+    ['placeholder replan reason', 'plan.md', text => text.replace(/^- Replan reason: .+$/mu, '- Replan reason: pending'), /Replan reason must be objective/],
+    ['revision skips predecessor', 'plan.md', text => text.replace('Plan revision: 2', 'Plan revision: 3'), /joint append-only draft lacks preserved history/],
+    ['nonlater supersession target', 'plan.md', text => text.replace('slice-01 -> slice-02', 'slice-01 -> slice-01'), /invalid joint supersession mapping/],
+    ['missing open delivery mapping', 'plan.md', text => text.replace('slice-01 -> slice-02', 'none'), /map every prior open delivery/],
+    ['unknown mapping source', 'plan.md', text => text.replace('slice-01 -> slice-02', 'slice-99 -> slice-02'), /invalid joint supersession mapping/],
+    ['wrong integral owner', 'tasks/slice-02.md', text => text.replace('full owner: slice-02', 'full owner: slice-01'), /claims another full owner/],
+    ['wrong replacement authority', 'tasks/slice-02.md', text => text.replace(/sha256:[a-f0-9]{64}/u, 'sha256:' + 'f'.repeat(64)), /authority pair differs/],
+    ['task index dependency differs', 'tasks.md', text => text.replace('| 01 | tasks/slice-02.md', '| - | tasks/slice-02.md'), /Tasks index differs from Plan delivery\/dependency\/order/],
+  ];
+  for (const [name, artifact, mutate, diagnostic] of cases) await t.test(name, async child => {
+    const { f, candidate, implementation } = await implementedAppendFixture(child);
+    await publishFixtureCandidate(f, candidate);
+    const review = await prepareFixtureCandidate(f, 'REVIEW_PLAN');
+    const consume = () => validateExecutionCandidate(f.specPath, review);
+    assert.equal((await consume()).state, 'PENDING_REPLAN_DRAFT', 'valid draft in the same candidate validator');
+    await editPreparation(review, artifact, mutate);
+    if (name === 'revision skips predecessor') for (const file of ['plans/slice-02.md', 'tasks/slice-02.md']) await editPreparation(review, file, text => text.replace('Plan revision: 2', 'Plan revision: 3'));
+    const live = await captureExecutionTree(f.workspace.executionRoot), image = await captureExecutionTree(review);
+    const receipt = await fs.readFile(implementation.captured.receiptFile);
+    await assert.rejects(consume(), diagnostic);
+    assert.deepEqual(await captureExecutionTree(f.workspace.executionRoot), live);
+    assert.deepEqual(await captureExecutionTree(review), image);
+    assert.deepEqual(await fs.readFile(implementation.captured.receiptFile), receipt);
+  });
+});
+
+test('joint append publisher rejects historical rewrites after an equivalent official positive publication', async (t) => {
+  for (const [name, artifact, mutate, diagnostic] of [
+    ['changed historical checklist', 'tasks/slice-01.md', text => text.replace('Implement greeting and prepared test', 'Replace historical action'), /historical artifact changed: tasks\/slice-01.md/],
+    ['changed historical path', 'tasks/slice-01.md', text => text.replaceAll('../../src/unpredicted.mjs', '../../src/other.mjs'), /historical artifact changed: tasks\/slice-01.md/],
+    ['changed historical check evidence', 'tasks/slice-01.md', text => text.replace('- Coverage: Greeting export equals hello', '- Coverage: Different historical coverage'), /historical artifact changed: tasks\/slice-01.md/],
+    ['changed historical detailed plan', 'plans/slice-01.md', text => text.replace('Export observed by node --test.', 'Different historical scope.'), /historical artifact changed: plans\/slice-01.md/],
+    ['removed historical task', 'tasks/slice-01.md', null, /ENOENT/],
+  ]) await t.test(name, async child => {
+    const positive = await implementedAppendFixture(child);
+    const old = await readPreparationArtifacts(positive.f.workspace.executionRoot);
+    const positiveReceipt = await fs.readFile(positive.implementation.captured.receiptFile);
+    await publishFixtureCandidate(positive.f, positive.candidate);
+    assert.equal((await inspectExecutionState(positive.f.specPath)).state, 'PENDING_REPLAN_DRAFT');
+    assert.equal(await fs.readFile(path.join(positive.f.workspace.executionRoot, 'plans/slice-01.md'), 'utf8'), old.get('plans/slice-01.md'));
+    const retained = parseStrictJson(await fs.readFile(path.join(positive.f.workspace.executionRoot, 'continuity.json'), 'utf8')).deliveries[0].history.at(-1);
+    assert.equal(await fs.readFile(path.resolve(positive.f.workspace.executionRoot, retained.taskRef.path), 'utf8'), old.get('tasks/slice-01.md'), 'archived predecessor is byte-exact, including its old derived continuity summary');
+    const taskNow = (await inspectExecutionState(positive.f.specPath)).tasks.get('slice-01');
+    assert.equal(taskNow.sections.get('Implementation Test Evidence'), old.get('tasks/slice-01.md').split('## Implementation Test Evidence\n\n')[1].split('## Findings Test Evidence')[0].trim(), 'the current consumer expands the retained check without rewriting its bytes');
+    assert.deepEqual(await fs.readFile(positive.implementation.captured.receiptFile), positiveReceipt);
+    const { f, candidate, implementation } = await implementedAppendFixture(child);
+    if (mutate) await editPreparation(candidate, artifact, mutate);
+    else await fs.unlink(path.join(candidate, artifact));
+    const live = await captureExecutionTree(f.workspace.executionRoot), image = await captureExecutionTree(candidate);
+    const receipt = await fs.readFile(implementation.captured.receiptFile);
+    await assert.rejects(publishPreparationCandidate({ specPath: f.specPath, candidateExecutionRoot: candidate }), diagnostic);
+    assert.deepEqual(await captureExecutionTree(f.workspace.executionRoot), live);
+    assert.deepEqual(await captureExecutionTree(candidate), image);
+    assert.deepEqual(await fs.readFile(implementation.captured.receiptFile), receipt);
+  });
+});
+
+test('joint repeated append preserves prior committing revisions, receipts and exact current supersession mappings', async (t) => {
+  const { f, implementation: first, candidate } = await implementedAppendFixture(t);
+  const firstReceipt = await fs.readFile(first.captured.receiptFile);
+  await publishFixtureCandidate(f, candidate);
+  const reviewed = await reviewFixtureCandidate(f, await prepareFixtureCandidate(f, 'REVIEW_PLAN'));
+  const secondOwner = await beginPreparedExecutionOperation(f.specPath, 'EXECUTE_SLICE', '2', reviewed.expectedActivationId);
+  const second = await implementOffline(f, secondOwner, { slice: 'slice-02' });
+  retainPreparation(f, second.copy.candidateRoot);
+  await publishExecutionCopy({ specPath: f.specPath, slice: 'slice-02', candidateRoot: second.copy.candidateRoot });
+  const secondReceipt = await fs.readFile(second.captured.receiptFile);
+  const older = (await inspectExecutionState(f.specPath)).tasks.get('slice-01');
+  assert.equal(older.final.planRevision, 2);
+  const oldSnapshot = await fs.readFile(path.join(f.workspace.executionRoot, 'approved-preparation.json'));
+  const third = await appendFixtureCandidate(f, { source: 'slice-02', target: 'slice-03' });
+  const draft = await publishFixtureCandidate(f, third);
+  assert.deepEqual(await fs.readFile(path.join(draft.retainedBackup, 'approved-preparation.json')), oldSnapshot);
+  const approved = await reviewFixtureCandidate(f, await prepareFixtureCandidate(f, 'REVIEW_PLAN'));
+  const current = await inspectExecutionState(f.specPath);
+  assert.equal(current.tasks.get('slice-01').final.planRevision, 2);
+  assert.equal(current.tasks.get('slice-02').final.planRevision, 3);
+  assert.equal(current.tasks.get('slice-01').sections.get('Implementation Test Evidence'), older.sections.get('Implementation Test Evidence'));
+  assert.equal(current.normalHandoff.operation, 'EXECUTE_SLICE');
+  assert.equal(current.normalHandoff.slice, 'slice-03');
+  assert.equal((await preflightExecutionOperation(f.specPath, 'EXECUTE_SLICE', '3')).state, current.state);
+  const owner = await beginPreparedExecutionOperation(f.specPath, 'EXECUTE_SLICE', '3', approved.expectedActivationId);
+  const copy = await prepareExecutionCopy({ specPath: f.specPath, slice: 'slice-03', owner: owner.owner });
+  retainPreparation(f, copy.candidateRoot);
+  const consume = () => validateExecutionCandidate(f.specPath, copy.candidateExecutionRoot);
+  assert.equal((await consume()).state, (await inspectExecutionState(f.specPath)).state, 'positive committed mapping in the same candidate validator');
+  await editPreparation(copy.candidateExecutionRoot, 'plan.md', text => text.replace('slice-02 -> slice-03', 'none'));
+  const live = await captureExecutionTree(f.workspace.executionRoot), image = await captureExecutionTree(copy.candidateExecutionRoot);
+  await assert.rejects(consume(), /current-revision committed supersessions do not exactly match the global mappings/);
+  assert.deepEqual(await captureExecutionTree(f.workspace.executionRoot), live);
+  assert.deepEqual(await captureExecutionTree(copy.candidateExecutionRoot), image);
+  assert.deepEqual(await fs.readFile(first.captured.receiptFile), firstReceipt);
+  assert.deepEqual(await fs.readFile(second.captured.receiptFile), secondReceipt);
 });
 
 test('joint historical REPLAN preserves evidence and snapshot backups, then reviewed supersession admits only the appended delivery', async () => {

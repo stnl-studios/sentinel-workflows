@@ -10,6 +10,12 @@ import { publishPreparationCandidate } from '../skills/workflows/stnl-execution-
 import { computeRequirementsAuthority, resolveExecutionWorkspace, readExecutionActivation, preflightExecutionOperation,
   beginPreparedExecutionOperation } from '../skills/workflows/stnl-execution-planner/runtime/execution-state.mjs';
 import { projectPreparationAuthority, readPreparationArtifacts, parseStrictJson } from '../skills/workflows/stnl-execution-planner/runtime/execution-preparation.mjs';
+import { preparePlanCandidate } from '../skills/workflows/stnl-execution-planner/runtime/prepare-plan-candidate.mjs';
+import { serializePlanPathClaims } from '../skills/workflows/stnl-execution-planner/runtime/serialize-plan-paths.mjs';
+import { captureExecutionTree } from '../skills/workflows/stnl-execution-planner/runtime/execution-publication.mjs';
+import { validateExecutionCandidate, inspectExecutionState } from '../skills/workflows/stnl-execution-planner/runtime/execution-state.mjs';
+import { deriveNormalHandoff } from '../skills/workflows/stnl-execution-planner/runtime/execution-state.mjs';
+import { decideOutcome, nextHandoff } from '../benchmarks/sentinel-todo/runtime/benchmark-manager.mjs';
 
 export const reviewDecision = { operation: 'REVIEW_PLAN', status: 'approved', examined: ['requirements', 'plans', 'tasks', 'initial checklist', 'proof capability'],
   summary: 'Offline review fixture: AC-001 requires an observable export; serial ownership, protected responsibilities and node --test export behavior checked. This simulated decision does not certify independent model judgment.' };
@@ -18,7 +24,7 @@ const replace = (text, values) => values.reduce((result, [a, b]) => result.repla
 export const verificationBody = ({file='src/greeting.test.mjs', kind='product', inputs=[], files=null, cwd='.'}={}) => '- Recipe: ' + JSON.stringify({format:'stnl-verification-recipe-v1',base:'workspace',cwd,
   checks:[{id:'verification-01',executable:{literal:'node'},args:[{literal:'--test'},...(files ?? [file]).map(path=>({file:{kind,path}}))],inputs:inputs.map(path=>({kind:'input',path}))}],
   dependencyReview:'Reviewed direct proof references and indirect imports/configuration; all dependencies explicitly contained in approved product areas or Existing Inputs.'});
-export async function fixture({ parent = os.tmpdir() } = {}) {
+export async function fixture({ parent = os.tmpdir(), test = null } = {}) {
   const root = await fs.realpath(await fs.mkdtemp(path.join(parent, 'stnl-p1b-test-')));
   await fs.mkdir(path.join(root, '.git'));
   await fs.mkdir(path.join(root, 'src'));
@@ -39,18 +45,210 @@ export async function fixture({ parent = os.tmpdir() } = {}) {
     ['slice-tasks.template.md', 'tasks/slice-01.md', [['<Name>', 'Greeting'], ['<Local observable delivery and its practical outcome.>', 'Export observed by node --test.'], ['<observable condition>', 'Greeting equals hello'], ['<required evidence>', 'node --test src/greeting.test.mjs observes export value'], ['`<artifact-relative authorized subtree or exact file>`', '`src`'], ['`<artifact-relative predicted file>`', '`src/greeting.mjs`'], ['<protected semantic responsibility and exclusion>', 'No authentication or persistence changes.'], ['<technical action>', 'Implement greeting and prepared test'], ['<test, command, suite, or observable check>', 'node --test src/greeting.test.mjs'], ['<verification file>', 'src/greeting.test.mjs'], ['<reviewed indirect dependencies>', 'The prepared test imports src/unpredicted.mjs inside the authorized product area; no external indirect inputs.']]],
   ];
   for (const [template, file, values] of rendering) await fs.writeFile(path.join(candidate, file), replace(await fs.readFile(path.join(templateRoot, template), 'utf8'), [...identity(file), ...values]));
-  return { root, specPath, workspace, candidate };
+  const f = { root, specPath, workspace, candidate, test };
+  if (test) {
+    test.after(() => fs.rm(root, { recursive: true, force: true }));
+    retainPreparation(f, candidate);
+  }
+  return f;
+}
+export function retainPreparation(f, root) {
+  if (f.test && root) f.test.after(async () => {
+    await fs.rm(root, { recursive: true, force: true });
+    await fs.rm(root + '.owner.json', { force: true });
+  });
+  return root;
+}
+export async function prepareFixtureCandidate(f, operation, options = {}) {
+  const prepared = await preparePreparationCandidate({ specPath: f.specPath, operation, ...options });
+  retainPreparation(f, prepared.candidateExecutionRoot);
+  return prepared.candidateExecutionRoot;
+}
+export async function publishFixtureCandidate(f, candidateExecutionRoot, options = {}) {
+  const published = await publishPreparationCandidate({ specPath: f.specPath, candidateExecutionRoot, ...options });
+  retainPreparation(f, published.retainedBackup);
+  return published;
+}
+export const setPreparationSection = (text, heading, body) => {
+  const pattern = new RegExp(`(^## ${heading}\\n\\n)[\\s\\S]*?(?=^## |$(?![\\s\\S]))`, 'mu');
+  assert.match(text, pattern, `section ${heading} exists`);
+  return text.replace(pattern, (_, prefix) => `${prefix}${body}\n\n`);
+};
+export async function editPreparation(root, name, mutate) {
+  const file = path.join(root, name), before = await fs.readFile(file, 'utf8'), after = mutate(before);
+  assert.notEqual(after, before, `${name}: stimulus-applied`);
+  await fs.writeFile(file, after);
+}
+export async function normalizePreparation(f, root) {
+  await preparePlanCandidate({ candidateExecutionRoot: root });
+  await serializePlanPathClaims({ specPath: f.specPath, candidateExecutionRoot: root });
+}
+export async function projectPreparationAuthorityFrom(root) {
+  return projectPreparationAuthority(await readPreparationArtifacts(root));
 }
 export async function approveFixture(f) {
-  await publishPreparationCandidate({ specPath: f.specPath, candidateExecutionRoot: f.candidate });
-  const review = await preparePreparationCandidate({ specPath: f.specPath, operation: 'REVIEW_PLAN' });
-  const artifacts = await readPreparationArtifacts(review.candidateExecutionRoot);
-  for (const [name, text] of artifacts) await fs.writeFile(path.join(review.candidateExecutionRoot, name), text.replace('status: draft', 'status: ready').replace('- Review state: pending', '- Review state: approved'));
-  await publishPreparationCandidate({ specPath: f.specPath, candidateExecutionRoot: review.candidateExecutionRoot, reviewDecision });
+  await publishFixtureCandidate(f, f.candidate);
+  const review = await prepareFixtureCandidate(f, 'REVIEW_PLAN');
+  await reviewFixtureCandidate(f, review);
   return readExecutionActivation(f.specPath);
+}
+export async function reviewFixtureCandidate(f, root) {
+  for (const [name, text] of await readPreparationArtifacts(root)) await fs.writeFile(path.join(root, name), text.replace('status: draft', 'status: ready').replace('- Review state: pending', '- Review state: approved'));
+  return publishFixtureCandidate(f, root, { reviewDecision });
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
+test('joint pristine replacement preserves nine obligation steps and exact Unicode QA forecasts through CLI review', async (t) => {
+  const f = await fixture({ test: t });
+  const qa = ['tests/qa/ação.md', 'tests/qa/report.html', 'tests/qa/example.tsx'];
+  await fs.mkdir(path.join(f.root, 'tests/qa'), { recursive: true });
+  const checklist = Array.from({ length: 9 }, (_, i) => `- [ ] 1.${i + 1} Implement observable greeting condition ${i + 1} | obligations: obligation-01`).join('\n');
+  const areas = ['directory: `src`', ...qa.map(file => 'file: `' + file + '`')];
+  await editPreparation(f.candidate, 'plan.md', text => text.replace('directory: `src`', areas.join('; ')));
+  for (const name of ['plans/slice-01.md', 'tasks/slice-01.md']) {
+    await editPreparation(f.candidate, name, text => setPreparationSection(setPreparationSection(text, 'Authorized Areas', areas.map(area => '- ' + area).join('\n')), 'Expected Files', ['src/greeting.mjs', ...qa].map(file => '- `' + file + '`').join('\n')));
+  }
+  await editPreparation(f.candidate, 'tasks/slice-01.md', text => setPreparationSection(text, 'Checklist', checklist));
+  await approveFixture(f);
+  assert.equal((await preflightExecutionOperation(f.specPath, 'EXECUTE_SLICE', '1')).state, 'MATERIALIZED_PRISTINE', 'positive current authority in the same admission consumer');
+  const priorSnapshot = await fs.readFile(path.join(f.workspace.executionRoot, 'approved-preparation.json'));
+  const oldAuthority = await computeRequirementsAuthority(f.specPath);
+  await fs.appendFile(f.specPath, '\nDocumentary clarification of the unchanged AC-001 delivery before joint REPLAN.\n');
+  const newAuthority = await computeRequirementsAuthority(f.specPath);
+  assert.notEqual(newAuthority, oldAuthority, 'requirements stimulus-applied');
+  assert.equal((await inspectExecutionState(f.specPath)).state, 'REQUIREMENTS_CHANGED');
+  const staleImage = await captureExecutionTree(f.workspace.executionRoot);
+  await assert.rejects(preflightExecutionOperation(f.specPath, 'EXECUTE_SLICE', '1'), /not legal/);
+  assert.deepEqual(await captureExecutionTree(f.workspace.executionRoot), staleImage);
+  const candidate = await prepareFixtureCandidate(f, 'REPLAN');
+  await editPreparation(candidate, 'plan.md', text => text.replace('- Review state: approved', '- Review state: approved\n- Replan reason: Refine the joint preparation while retaining all nine actions and exact QA forecasts.'));
+  await editPreparation(candidate, 'plan.md', text => setPreparationSection(text, 'Delivery Continuity', '- runtime'));
+  const draft = await publishFixtureCandidate(f, candidate);
+  const pending = await inspectExecutionState(f.specPath);
+  assert.equal(pending.state, 'PENDING_REPLAN_DRAFT');
+  const draftReadback = { execution: pending, executionRaw: pending, product: { deriveNormalHandoff } };
+  assert.deepEqual(decideOutcome('REPLAN', draftReadback, true), { result: 'PASS', blocker: null });
+  assert.deepEqual(nextHandoff('REPLAN', draftReadback), { operation: 'REVIEW_PLAN', slice: null });
+  assert.deepEqual(decideOutcome('REPLAN', draftReadback, false), { result: 'BLOCKED', blocker: 'SDK_TURN_FAILED' });
+  assert.deepEqual(await fs.readFile(path.join(draft.retainedBackup, 'approved-preparation.json')), priorSnapshot);
+  const draftImage = await captureExecutionTree(f.workspace.executionRoot);
+  await assert.rejects(preflightExecutionOperation(f.specPath, 'EXECUTE_SLICE', '1'), /not legal/);
+  assert.deepEqual(await captureExecutionTree(f.workspace.executionRoot), draftImage);
+  const review = await prepareFixtureCandidate(f, 'REVIEW_PLAN');
+  for (const [name, text] of await readPreparationArtifacts(review)) await fs.writeFile(path.join(review, name), text.replace('status: draft', 'status: ready').replace('Review state: pending', 'Review state: approved'));
+  for (const name of ['plans/slice-01.md', 'tasks/slice-01.md']) await editPreparation(review, name, text => setPreparationSection(text, 'Expected Files', ['src/greeting.mjs', ...qa].map(file => '- `' + file + '`').join('\n')));
+  assert.match(await fs.readFile(path.join(review, 'tasks/slice-01.md'), 'utf8'), /- `tests\/qa\/ação.md`/u, 'CLI receives actual noncanonical artifact-relative forecast spelling');
+  const decision = path.join(f.root, 'review-decision.json');
+  await fs.writeFile(decision, JSON.stringify(reviewDecision));
+  const published = spawnSync(process.execPath, [fileURLToPath(new URL('../skills/workflows/stnl-execution-planner/runtime/publish-task-candidate.mjs', import.meta.url)), '--spec-path', f.specPath, '--candidate-execution-root', review, '--review-decision-file', decision], { encoding: 'utf8' });
+  assert.equal(published.status, 0, published.stderr);
+  retainPreparation(f, JSON.parse(published.stdout).retainedBackup);
+  const current = await inspectExecutionState(f.specPath), task = current.tasks.get('slice-01');
+  assert.equal(current.state, 'MATERIALIZED_PRISTINE');
+  assert.equal(task.pristine, true);
+  assert.equal(task.revision, 2);
+  assert.equal(task.fingerprint, newAuthority);
+  assert.equal(task.sections.get('Checklist'), checklist);
+  assert.equal(task.sections.get('Expected Files'), ['src/greeting.mjs', ...qa].map(file => '- `../../' + file + '`').join('\n'));
+  assert.equal(task.sections.get('Authorized Areas'), areas.map(area => '- ' + area.replace('`', '`../../')).join('\n'));
+  assert.deepEqual(current.normalHandoff, { workflowSkill: 'stnl-slice-executor', operation: 'EXECUTE_SLICE', invocation: 'OPERATION=EXECUTE_SLICE', slice: 'slice-01' });
+  assert.equal((await preflightExecutionOperation(f.specPath, 'EXECUTE_SLICE', '1')).state, 'MATERIALIZED_PRISTINE');
+  const reviewedReadback = { execution: current, executionRaw: current, product: { deriveNormalHandoff } };
+  assert.deepEqual(decideOutcome('REVIEW_PLAN', reviewedReadback, true), { result: 'PASS', blocker: null });
+  assert.deepEqual(nextHandoff('REVIEW_PLAN', reviewedReadback), { operation: 'EXECUTE_SLICE', slice: 'slice-01' });
+  assert.deepEqual(decideOutcome('REVIEW_PLAN', reviewedReadback, false), { result: 'BLOCKED', blocker: 'SDK_TURN_FAILED' });
+  for (const retired of ['MATERIALIZE_TASKS', 'REVIEW_TASKS']) await assert.rejects(preflightExecutionOperation(f.specPath, retired), /unsupported operation/);
+});
+
+test('joint candidate structural guards reach checklist, obligation, owner and paired authority without live drift', async (t) => {
+  const cases = [
+    ['unknown checklist obligation', 'tasks/slice-01.md', text => text.replace('| obligations: obligation-01', '| obligations: obligation-99'), /unknown or duplicate obligation association/],
+    ['duplicate checklist obligation', 'tasks/slice-01.md', text => text.replace('| obligations: obligation-01', '| obligations: obligation-01, obligation-01'), /unknown or duplicate obligation association/],
+    ['duplicate checklist step', 'tasks/slice-01.md', text => setPreparationSection(text, 'Checklist', '- [ ] 1.1 First action | obligations: obligation-01\n- [ ] 1.1 Second action | obligations: obligation-01'), /loses an obligation or duplicates a step/],
+    ['uncovered declared obligation', 'tasks/slice-01.md', text => text.replace('## Acceptance Obligations\n\n', '## Acceptance Obligations\n\n- obligation-02 | requirement: AC-001 | contribution: complete | full owner: slice-01 | condition: Greeting remains deterministic | proof: Repeat greeting assertion\n'), /loses an obligation or duplicates a step/],
+    ['wrong integral owner', 'tasks/slice-01.md', text => text.replace('full owner: slice-01', 'full owner: slice-99'), /claims another full owner/],
+    ['unmapped requirement', 'tasks/slice-01.md', text => text.replace('requirement: AC-001', 'requirement: AC-999'), /obligation is not mapped by its Plan/],
+    ['task revision mismatch', 'tasks/slice-01.md', text => text.replace('Plan revision: 1', 'Plan revision: 2'), /authority pair differs/],
+    ['task authority mismatch', 'tasks/slice-01.md', text => text.replace(/sha256:[a-f0-9]{64}/u, 'sha256:' + 'f'.repeat(64)), /authority pair differs/],
+    ['preparation purpose owner', 'tasks/slice-01.md', text => text.replace('owner: stnl-execution-planner', 'owner: unrelated-owner'), /incompatible owner\/status/],
+  ];
+  for (const [name, artifact, mutate, diagnostic] of cases) await t.test(name, async child => {
+    const f = await fixture({ test: child });
+    await normalizePreparation(f, f.candidate);
+    const consume = () => projectPreparationAuthorityFrom(f.candidate);
+    assert.equal((await consume()).preparationRevision, 1, 'positive in the same structural consumer');
+    await editPreparation(f.candidate, artifact, mutate);
+    const before = await captureExecutionTree(f.candidate);
+    await assert.rejects(consume(), diagnostic);
+    assert.deepEqual(await captureExecutionTree(f.candidate), before);
+    assert.equal(await fs.stat(f.workspace.executionRoot).catch(() => null), null);
+  });
+});
+
+test('joint draft parser rejects inconsistent started checklist, malformed evidence and forged supersession', async (t) => {
+  for (const [name, mutate, diagnostic] of [
+    ['started checklist without actual scope', text => text.replace('- [ ] 1.1', '- [x] 1.1'), /Changed Areas cannot remain pending after work/],
+    ['malformed execution evidence', text => setPreparationSection(text, 'Implementation Test Evidence', '### implementation-check-01\n\n- Status: TESTS_PASS'), /expected exactly one 'Automatic check round' field/],
+    ['forged supersession', text => setPreparationSection(text, 'Final Result', '- SUPERSEDED\n- Superseded by: slice-02\n- Plan revision: 1'), /SUPERSEDED|disagree|supersed/],
+  ]) await t.test(name, async child => {
+    const f = await fixture({ test: child });
+    await normalizePreparation(f, f.candidate);
+    assert.equal((await validateExecutionCandidate(f.specPath, f.candidate)).state, 'PLANNED_DRAFT');
+    await editPreparation(f.candidate, 'tasks/slice-01.md', mutate);
+    const before = await captureExecutionTree(f.candidate);
+    await assert.rejects(validateExecutionCandidate(f.specPath, f.candidate), diagnostic);
+    assert.deepEqual(await captureExecutionTree(f.candidate), before);
+    assert.equal(await fs.stat(f.workspace.executionRoot).catch(() => null), null);
+  });
+});
+
+test('joint path serializers reject escape, symlink and mismatched claim count before any write', async (t) => {
+  for (const [name, setup, artifact, mutate, diagnostic] of [
+    ['repository escape', async () => {}, 'plan.md', text => text.replace('`../src`', '`../../../outside`'), /escapes|outside/],
+    ['symlink path component', async f => fs.symlink(f.root, path.join(f.root, 'src/link')), 'plan.md', text => text.replace('`../src`', '`../src/link/target`'), /symlink/],
+    ['mismatched global detailed count', async () => {}, 'plans/slice-01.md', text => setPreparationSection(text, 'Authorized Areas', '- directory: `../../src`\n- file: `../../src/other.mjs`'), /more path claims/],
+    ['Plan Task recipe mismatch', async () => {}, 'tasks/slice-01.md', text => text.replace('"literal":"--test"', '"literal":"--check"'), /Verification Recipe differs between Plan and Task/],
+  ]) await t.test(name, async child => {
+    const f = await fixture({ test: child });
+    await normalizePreparation(f, f.candidate);
+    const consume = () => serializePlanPathClaims({ specPath: f.specPath, candidateExecutionRoot: f.candidate });
+    assert.equal((await consume()).status, 'PASS', 'positive in the same path consumer');
+    await setup(f);
+    await editPreparation(f.candidate, artifact, mutate);
+    const before = await captureExecutionTree(f.candidate);
+    await assert.rejects(consume(), diagnostic);
+    assert.deepEqual(await captureExecutionTree(f.candidate), before);
+    assert.equal(await fs.stat(f.workspace.executionRoot).catch(() => null), null);
+  });
+});
+
+test('joint preparation reader and publisher reject symlink and hardlink artifacts with target bytes preserved', async (t) => {
+  for (const kind of ['symlink', 'hardlink']) await t.test(kind, async child => {
+    const positive = await fixture({ test: child });
+    await normalizePreparation(positive, positive.candidate);
+    await publishFixtureCandidate(positive, positive.candidate);
+    assert.equal((await inspectExecutionState(positive.specPath)).state, 'PLANNED_DRAFT', 'positive real preparation publisher with the same regular-file setup');
+    const f = await fixture({ test: child });
+    await normalizePreparation(f, f.candidate);
+    const artifacts = await readPreparationArtifacts(f.candidate);
+    assert.equal(artifacts.size, 4);
+    const task = path.join(f.candidate, 'tasks/slice-01.md'), external = path.join(f.root, 'linked-task.md');
+    const bytes = await fs.readFile(task);
+    if (kind === 'symlink') { await fs.rename(task, external); await fs.symlink(external, task); }
+    else await fs.link(task, external);
+    const linkBefore = await fs.lstat(task);
+    await assert.rejects(readPreparationArtifacts(f.candidate), /unsafe preparation artifact/);
+    await assert.rejects(publishPreparationCandidate({ specPath: f.specPath, candidateExecutionRoot: f.candidate }), kind === 'symlink' ? /symlink|not a real regular file/ : /regular and single-link/);
+    const linkAfter = await fs.lstat(task);
+    assert.equal(linkAfter.ino, linkBefore.ino);
+    assert.equal(linkAfter.nlink, linkBefore.nlink);
+    assert.equal(linkAfter.isSymbolicLink(), kind === 'symlink');
+    for (const [name, text] of artifacts) assert.equal(await fs.readFile(path.join(f.candidate, name), 'utf8'), text);
+    assert.deepEqual(await fs.readFile(external), bytes);
+    assert.equal(await fs.stat(f.workspace.executionRoot).catch(() => null), null);
+  });
+});
+
 test('joint author -> draft -> review final snapshot -> resolver -> begin returns post-admission CAS', async () => {
   const f = await fixture();
   try {
