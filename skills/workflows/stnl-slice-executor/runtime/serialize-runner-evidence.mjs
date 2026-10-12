@@ -1370,7 +1370,7 @@ async function serializeCanonicalExecutionCheck({
       `- Findings cycle: ${parsed["Findings cycle"]}`,
       `- Finding IDs: ${findingIds.length === 0 ? "none" : findingIds.join(", ")}`,
       `- Findings verified: ${parsed["Findings verified"]}`,
-      `- Corrections covered: ${correctionClaims.join(", ") || "none"}`,
+      `- Corrections covered: ${targets.length + removed.length === 0 ? scalar("Corrections covered", parsed["Corrections covered"]) : correctionClaims.join(", ") || "none"}`,
       `- Regressions: ${scalar("Regressions selected", parsed["Regressions selected"])}`,
       `- Unsupported active findings: ${parsed["Unsupported active findings"]}`,
     );

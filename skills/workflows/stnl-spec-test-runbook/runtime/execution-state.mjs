@@ -2367,7 +2367,7 @@ export async function readDeliveryHistory(workspace, delivery, currentText) {
         if (!id) throw new ExecutionContractError('historical record is malformed');
         if (selected.has(id)) {
           if (append.includes(heading)) throw new ExecutionContractError('current/archived evidence duplicates a sealed identifier');
-          const immutable=r=>r.split('\n').filter(line=>!/^-(?: State|Resolution|Superseded by|Resolution slice|Resolution revision):/u.test(line)).join('\n').trim();
+          const immutable=r=>r.split('\n').filter(line=>!/^- (?:State|Resolution|Superseded by|Resolution slice|Resolution revision):/u.test(line)).join('\n').trim();
           if (immutable(selected.get(id))!==immutable(record)) throw new ExecutionContractError('historical finding origin/description rewritten');
         }
         selected.set(id,record.trim());

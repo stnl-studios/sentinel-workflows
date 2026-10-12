@@ -9,10 +9,20 @@ import { captureApprovedPreparation, parseStrictJson, readPreparationArtifacts, 
 import { preparePlanCandidate } from './prepare-plan-candidate.mjs';
 import { serializePlanPathClaims } from './serialize-plan-paths.mjs';
 
-function assertAppendOnlyRecords(before, after, label) {
+function assertReviewedDivergences(before, after, label) {
   if (before === after) return;
   if (before === '- none' && after.startsWith('### ')) return;
-  if (!after.startsWith(before + '\n')) throw new Error(`${label} rewrote historical evidence`);
+  const records = text => text.split(/(?=^### )/mu).filter(record => record.trim()).map(record => record.trim());
+  const previous = records(before), proposed = records(after);
+  // Only disposition of an active blocking record belongs to the approved
+  // mapped recovery. Identity, description and advisory/history bytes remain
+  // protected. The state validator checks its exact committing owner/revision.
+  const immutable = record => record.split('\n').filter(line => !/^- (?:State|Resolution|Superseded by):/u.test(line)).join('\n');
+  for (const [index, record] of previous.entries()) {
+    const next = proposed[index];
+    const disposable = /^- Severity: blocking$/mu.test(record) && /^- State: active$/mu.test(record);
+    if (!next || (disposable ? immutable(record) !== immutable(next) : record !== next)) throw new Error(`${label} rewrote historical evidence`);
+  }
 }
 async function assertHistoricalPreparation(specPath, staged, operation) {
   const live = await preflightExecutionOperation(specPath, operation);
@@ -48,7 +58,7 @@ async function assertHistoricalPreparation(specPath, staged, operation) {
     if (JSON.stringify(old.fields) !== JSON.stringify(changed.fields)) throw new Error(`historical task identity changed: ${name}`);
     for (const heading of Object.keys(old.sections)) {
       if (mapped.has(path.basename(name, '.md')) && ['Final Result', 'Divergences'].includes(heading)) {
-        if (heading === 'Divergences') assertAppendOnlyRecords(old.sections[heading], changed.sections[heading], name + ':' + heading);
+        if (heading === 'Divergences') assertReviewedDivergences(old.sections[heading], changed.sections[heading], name + ':' + heading);
         continue; // The state validator checks the exact committed supersession and preserves prior PASS.
       }
       if (old.sections[heading] !== changed.sections[heading]) throw new Error(`historical task section changed: ${name}:${heading}`);

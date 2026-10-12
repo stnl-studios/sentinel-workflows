@@ -18,6 +18,7 @@ import {
   repairExecutionContract,
   validateExecutionCandidate,
   readRunnerVerification,
+  readExecutionActivation,
   workflowSkillForOperation,
 } from "../skills/workflows/stnl-slice-quality-manager/runtime/execution-state.mjs";
 import { preparePlanCandidate } from "../skills/workflows/stnl-execution-planner/runtime/prepare-plan-candidate.mjs";
@@ -68,11 +69,11 @@ import { budgetViolation } from "../benchmarks/sentinel-todo/runtime/benchmark.m
 
 import { runRepairDispute } from "./test-p1b-publication.mjs";
 import {runOwnedContract} from "./fixtures/p1b-owned-regressions.mjs";
-import { readPreparationArtifacts } from "../skills/workflows/stnl-execution-planner/runtime/execution-preparation.mjs";
+import { readPreparationArtifacts, captureApprovedPreparation } from "../skills/workflows/stnl-execution-planner/runtime/execution-preparation.mjs";
 import { reviewDecision, fixture as preparationFixture, approveFixture } from "./test-p1b-preparation.mjs";
 import { verificationCommand } from "../skills/workflows/stnl-slice-executor/runtime/runner-verification.mjs";
 import { createOfflineCheckout } from "./fixtures/offline-checkout.mjs";
-import { implementExample, validateExample, correctExample, retryExample, exampleHistoryRecipe, captureExample, withExampleOwner } from "./fixtures/execution-contract-producers.mjs";
+import { implementExample, validateExample, correctExample, retryExample, retryFindingsExample, exampleHistoryRecipe, captureExample, withExampleOwner } from "./fixtures/execution-contract-producers.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
 const SKILLS = [
@@ -2961,6 +2962,10 @@ async function renderArtifacts(fixture, { materialized = true, planStatus = "rea
   const operation = await fs.stat(fixture.execution).then(() => "REPLAN").catch(error => { if (error.code === "ENOENT") return "PLAN"; throw error; });
   const prepared = await preparePreparationCandidate({ specPath: fixture.requirements, operation });
   const output = prepared.candidateExecutionRoot;
+  fixture.test?.after(async () => {
+    await fs.rm(output, { recursive: true, force: true });
+    await fs.rm(output + '.owner.json', { force: true });
+  });
   await fs.mkdir(path.join(output, "plans"), { recursive: true });
   const planTemplate = await fs.readFile(path.join(ROOT, "skills/workflows/stnl-execution-planner/templates/plan.template.md"), "utf8");
   const global = replaceAll(planTemplate, [
@@ -2998,6 +3003,10 @@ async function renderArtifacts(fixture, { materialized = true, planStatus = "rea
   await publishPreparationCandidate({ specPath: fixture.requirements, candidateExecutionRoot: output });
   if (planStatus === "ready") {
     const review = await preparePreparationCandidate({ specPath: fixture.requirements, operation: "REVIEW_PLAN" });
+    fixture.test?.after(async () => {
+      await fs.rm(review.candidateExecutionRoot, { recursive: true, force: true });
+      await fs.rm(review.candidateExecutionRoot + '.owner.json', { force: true });
+    });
     for (const file of ["plan.md", "plans/slice-01.md", "tasks.md", "tasks/slice-01.md"]) {
       const target = path.join(review.candidateExecutionRoot, file);
       await fs.writeFile(target, headerReady(await fs.readFile(target, "utf8")));
@@ -7051,56 +7060,6 @@ test("lifecycle shared-only changes stale planning and deterministic lifecycle C
   assert.notEqual(await computeRequirementsAuthority(ready), activeHash, "shared-only authority mutation was ignored");
 });
 
-test("finding resolution is historical while only active blocking findings block", async (t) => {
-  const fixture = await standaloneWorkspace(t);
-  await renderArtifacts(fixture);
-  await editTask(fixture, (value) => {
-    let result = value.replace("- [ ] 1.1", "- [x] 1.1");
-    result = replaceSection(result, "Changed Areas", "- `../../src/example.txt`");
-    result = replaceSection(result, "Validation Attempts", NEEDS_FIX_ATTEMPT);
-    return replaceSection(result, "Validation Findings", ACTIVE_FINDING);
-  });
-  assert.equal((await inspectExecutionState(fixture.requirements)).state, "VALIDATION_NEEDS_FIX");
-  assert.equal((await preflightExecutionOperation(fixture.requirements, "APPLY_FINDINGS", "1")).state, "VALIDATION_NEEDS_FIX");
-  await editTask(fixture, (value) => {
-    let result = replaceSection(value, "Validation Findings", `${ACTIVE_FINDING.replace("- State: active", "- State: resolved")}\n- Resolution: attempt-02 confirmed the correction.`);
-    result = result.replace("- [ ] 1.1", "- [x] 1.1");
-    result = replaceSection(result, "Changed Areas", "- `../../src/example.txt`");
-    result = replaceSection(result, "Corrections Applied", "- `../../src/example.txt`");
-    result = replaceSection(result, "Validation Attempts", `${NEEDS_FIX_ATTEMPT}\n\n${attemptRecord(2, "PASS", { references: "finding-01", dispositions: "finding-01=resolved" })}`);
-    result = replaceSection(result, "Effective Validation Base", passBase({ attempt: 2 }));
-    return publishPassResult(result);
-  });
-  await editTasksIndex(fixture, (value) => value.replace("| [ ] | 01 - Delivery | observable result | - | tasks/slice-01.md | pending | pending |", "| [x] | 01 - Delivery | observable result | - | tasks/slice-01.md | PASS | PASS |"));
-  await writeValidatedPath(fixture);
-  assert.equal((await inspectExecutionState(fixture.requirements)).state, "COMPLETE");
-});
-
-test("partial finding correction may revalidate NEEDS_FIX before eventual PASS dispositions", async (t) => {
-  const fixture = await standaloneWorkspace(t);
-  await renderArtifacts(fixture);
-  const secondFinding = ACTIVE_FINDING.replaceAll("finding-01", "finding-02").replace("Origin: attempt-01", "Origin: attempt-02").replace("Observable behavior is wrong.", "Regression behavior is wrong.");
-  await editTask(fixture, (value) => {
-    let result = value.replace("- [ ] 1.1", "- [x] 1.1");
-    result = replaceSection(result, "Changed Areas", "- `../../src/example.txt`");
-    result = replaceSection(result, "Corrections Applied", "- `../../src/example.txt`");
-    result = replaceSection(result, "Validation Attempts", `${NEEDS_FIX_ATTEMPT}\n\n${attemptRecord(2, "NEEDS_FIX", { references: "finding-01, finding-02", dispositions: "finding-01=resolved, finding-02=active" })}`);
-    return replaceSection(result, "Validation Findings", `${ACTIVE_FINDING.replace("- State: active", "- State: resolved")}\n- Resolution: attempt-02 confirmed correction.\n\n${secondFinding}`);
-  });
-  assert.equal((await inspectExecutionState(fixture.requirements)).state, "VALIDATION_NEEDS_FIX");
-  await editTask(fixture, (value) => {
-    let result = replaceSection(value, "Validation Attempts", `${NEEDS_FIX_ATTEMPT}\n\n${attemptRecord(2, "NEEDS_FIX", { references: "finding-01, finding-02", dispositions: "finding-01=resolved, finding-02=active" })}\n\n${attemptRecord(3, "PASS", { references: "finding-01, finding-02", dispositions: "finding-01=resolved, finding-02=resolved" })}`);
-    result = replaceSection(result, "Validation Findings", `${ACTIVE_FINDING.replace("- State: active", "- State: resolved")}\n- Resolution: attempt-02 confirmed correction.\n\n${secondFinding.replace("- State: active", "- State: resolved")}\n- Resolution: attempt-03 confirmed correction.`);
-    result = replaceSection(result, "Changed Areas", "- `../../src/example.txt`");
-    result = replaceSection(result, "Corrections Applied", "- `../../src/example.txt`");
-    result = replaceSection(result, "Effective Validation Base", passBase({ attempt: 3 }));
-    return publishPassResult(result);
-  });
-  await editTasksIndex(fixture, (value) => value.replace("| [ ] | 01 - Delivery | observable result | - | tasks/slice-01.md | pending | pending |", "| [x] | 01 - Delivery | observable result | - | tasks/slice-01.md | PASS | PASS |"));
-  await writeValidatedPath(fixture);
-  assert.equal((await inspectExecutionState(fixture.requirements)).state, "COMPLETE");
-});
-
 test("active divergence blocks, resolved divergence remains auditable, and wrong lifecycle fields reject", async (t) => {
   const fixture = await standaloneWorkspace(t);
   await renderArtifacts(fixture);
@@ -7146,93 +7105,6 @@ test("stale delegation blockers cannot reopen terminal auxiliary phases", async 
       });
       await assert.rejects(inspectExecutionState(fixture.requirements), /stale .* Delegation Blocker/u);
     }
-  }
-});
-
-test("third TESTS_FAIL has only formal validation continuation for implementation and findings", async (t) => {
-  for (const kind of ["Implementation", "Findings"]) {
-    const fixture = await standaloneWorkspace(t);
-    await renderArtifacts(fixture);
-    const prefix = kind === "Implementation" ? "implementation-check" : "findings-check";
-    if (kind === "Findings") await editTask(fixture, (value) => replaceSection(value, "Validation Findings", ACTIVE_FINDING));
-    await editTask(fixture, (value) => {
-      let result = value.replace("- [ ] 1.1", "- [x] 1.1");
-      result = replaceSection(result, "Changed Areas", "- `../../src/example.txt`");
-      result = replaceSection(result, "Corrections Applied", "- `../../src/example.txt`");
-      result = replaceSection(result, `${kind} Test Evidence`, [1, 2, 3].map((round) => checkRecord(prefix, round, "TESTS_FAIL", round, { cycle: "attempt-01" })).join("\n\n"));
-      if (kind === "Findings") {
-        result = replaceSection(result, "Validation Attempts", NEEDS_FIX_ATTEMPT);
-      }
-      return result;
-    });
-    const state = await inspectExecutionState(fixture.requirements);
-    assert.equal(state.state, kind === "Implementation" ? "IMPLEMENTATION_RETRY_EXHAUSTED" : "FINDINGS_RETRY_EXHAUSTED");
-    assertRecoveryTarget(state, {
-      operation: "VALIDATE_SLICE",
-      slice: "slice-01",
-      owner: "retry-exhaustion",
-      record: `${prefix}-03`,
-      round: 3,
-      retryState: state.state,
-    });
-    assert.equal(state.normalHandoff, null);
-    assert.deepEqual(state.requiredRecoveryHandoff, {
-      workflowSkill: "stnl-slice-quality-manager",
-      operation: "VALIDATE_SLICE",
-      invocation: "OPERATION=VALIDATE_SLICE",
-      slice: "slice-01",
-    });
-    const handoff = spawnSync(process.execPath, [
-      path.join(ROOT, "skills/workflows/stnl-slice-executor/runtime/validate-execution-state.mjs"),
-      fixture.requirements,
-      "--handoff-after",
-      kind === "Implementation" ? "EXECUTE_SLICE" : "APPLY_FINDINGS",
-    ], { encoding: "utf8", cwd: fixture.root });
-    assert.equal(handoff.status, 0, handoff.stderr);
-    const transition = JSON.parse(handoff.stdout);
-    assert.equal(transition.normal_handoff, null);
-    assert.deepEqual(transition.required_recovery_handoff, {
-      workflowSkill: "stnl-slice-quality-manager",
-      operation: "VALIDATE_SLICE",
-      invocation: "OPERATION=VALIDATE_SLICE",
-      slice: "slice-01",
-    });
-    await assert.rejects(preflightExecutionOperation(fixture.requirements, kind === "Implementation" ? "EXECUTE_SLICE" : "APPLY_FINDINGS", "1"), /not legal/u);
-    if (kind === "Implementation") {
-      const invalidSlice = await rejectedWithRecovery(
-        preflightExecutionOperation(fixture.requirements, "VALIDATE_SLICE", "01"),
-        /SLICE must be one unsigned decimal number without prefix; legal next operation is VALIDATE_SLICE for slice-01/u,
-      );
-      assertRecoveryTarget(invalidSlice, { operation: "VALIDATE_SLICE", slice: "slice-01" });
-    }
-    assert.equal((await preflightExecutionOperation(fixture.requirements, "VALIDATE_SLICE", "1")).state, state.state);
-
-    const blocked = await standaloneWorkspace(t);
-    await renderArtifacts(blocked);
-    await editTask(blocked, (value) => {
-      let result = value.replace("- [ ] 1.1", "- [x] 1.1");
-      result = replaceSection(result, `${kind} Test Evidence`, [1, 2, 3].map((round) => checkRecord(prefix, round, "TESTS_FAIL", round, { cycle: "attempt-01" })).join("\n\n"));
-      if (kind === "Findings") {
-        result = replaceSection(result, "Validation Attempts", NEEDS_FIX_ATTEMPT);
-        result = replaceSection(result, "Validation Findings", ACTIVE_FINDING);
-      }
-      return replaceSection(result, "Delegation Blocker", delegationBlocker(kind === "Implementation" ? "EXECUTE_SLICE" : "APPLY_FINDINGS", "initialization", { after: `${prefix}-03` }));
-    });
-    await assert.rejects(inspectExecutionState(blocked.requirements), /cannot resume .* after third-failure exhaustion/u);
-
-    const diverged = await standaloneWorkspace(t);
-    await renderArtifacts(diverged);
-    await editTask(diverged, (value) => {
-      let result = value.replace("- [ ] 1.1", "- [x] 1.1");
-      result = replaceSection(result, `${kind} Test Evidence`, [1, 2, 3].map((round) => checkRecord(prefix, round, "TESTS_FAIL", round, { cycle: "attempt-01" })).join("\n\n"));
-      result = replaceSection(result, "Divergences", ACTIVE_DIVERGENCE);
-      if (kind === "Findings") {
-        result = replaceSection(result, "Validation Attempts", NEEDS_FIX_ATTEMPT);
-        result = replaceSection(result, "Validation Findings", ACTIVE_FINDING);
-      }
-      return result;
-    });
-    await assert.rejects(inspectExecutionState(diverged.requirements), /cannot combine third-failure exhaustion/u);
   }
 });
 
@@ -7541,22 +7413,6 @@ test("incomplete checklist recovery overrides only validation-bound implementati
     sameOperationResumeRequired: true,
   });
   assert.equal((await preflightExecutionOperation(delegatedValidation.requirements, "VALIDATE_SLICE", "1")).state, "RUNNER_INITIALIZATION_BLOCKED");
-});
-
-test("file-backed Tested state rejects a truncated SHA-256 digest", async (t) => {
-  const fixture = await standaloneWorkspace(t);
-  await renderArtifacts(fixture);
-  await editTask(fixture, (value) => {
-    let result = value.replace("- [ ] 1.1", "- [x] 1.1");
-    result = replaceSection(result, "Changed Areas", "- `../../src/example.txt`");
-    const malformed = checkRecord("implementation-check", 1, "TESTS_PASS", 1)
-      .replace(`sha256:${VALIDATED_HASH}`, `sha256:${VALIDATED_HASH.slice(1)}`);
-    return replaceSection(result, "Implementation Test Evidence", malformed);
-  });
-  await assert.rejects(
-    inspectExecutionState(fixture.requirements),
-    /implementation-check-01 has (?:malformed Tested state|unexpected nested or continuation content under Tested state)/u,
-  );
 });
 
 test("terminal auxiliary outcomes and scoped blocker resumes have exact phases", async (t) => {
@@ -7878,6 +7734,351 @@ test("append-only requirements recovery preserves history and requires later PAS
   await assert.rejects(inspectExecutionState(fixture.requirements), /committed supersessions do not exactly match|invalid later replacement slice/u);
 });
 
+// Every structural mutation is consumed as a prospective task on a real owned
+// candidate. The positive uses the same validator; live activation is separate.
+async function rejectTaskMutations(fixture, copy, cases) {
+  const task = await fs.readFile(copy.candidateTaskArtifact, 'utf8');
+  const live = await treeBytes(fixture.execution), candidate = await treeBytes(copy.candidateExecutionRoot);
+  const positive = await validateExecutionCandidate(fixture.requirements, copy.candidateExecutionRoot);
+  const failures = [];
+  for (const [name, mutate, diagnostic] of cases) {
+    const text = mutate(task); assert.notEqual(text, task, name + ': stimulus applied');
+    try {
+      await assert.rejects(validateExecutionCandidate(fixture.requirements, copy.candidateExecutionRoot,
+        [{ slice: 'slice-01', text }]), diagnostic, name);
+    } catch (error) { failures.push({ name, diagnostic: error.actual?.message ?? error.message }); }
+    assert.deepEqual(await treeBytes(fixture.execution), live, name + ': live preserved');
+    assert.deepEqual(await treeBytes(copy.candidateExecutionRoot), candidate, name + ': candidate preserved');
+  }
+  assert.deepEqual(failures, [], 'all prospective task guards must reach their intended boundary');
+  return positive;
+}
+
+test('canonical owned auxiliary and formal candidates enforce record structure and exact PASS provenance', async t => {
+  const fixture = await standaloneWorkspace(t); await renderArtifacts(fixture);
+  const impl = await implementExample(fixture, { publish: false });
+  const field = (text, name, value) => text.replace(new RegExp(`^- ${name}:.*$`, 'mu'), `- ${name}: ${value}`);
+  const check = (text, mutate) => replaceSection(text, 'Implementation Test Evidence', mutate(impl.bundle));
+  const cases = [
+    ['incomplete checklist', text => text.replace('- [x] 1.1', '- [ ] 1.1'), /mandatory checklist is incomplete/],
+    ['pending changed scope', text => replaceSection(text, 'Changed Areas', '- pending'), /Changed Areas cannot remain pending after work/],
+    ['truncated tested hash', text => check(text, record => record.replace(`sha256:${VALIDATED_HASH}`, 'sha256:1234abcd')), /unexpected nested.*Tested state/],
+    ['duplicate section', text => text.replace('## Validation Findings', '## Validation Findings\n\n- none\n\n## Validation Findings'), /duplicates Validation Findings/],
+    ['missing section', text => text.replace(/## Diff Summary\n[\s\S]*?(?=## Final Result)/u, ''), /unknown, missing or unordered sections/],
+    ['unknown section', text => text.replace('## Final Result', '## Unknown Operational State\n\n- none\n\n## Final Result'), /unknown, missing or unordered sections/],
+    ['reordered sections', text => text.replace('## Expected Tests', '## __swap__').replace('## Changed Areas', '## Expected Tests').replace('## __swap__', '## Changed Areas'), /section order|sections/],
+    ['duplicate Tested scope', text => check(text, record => record.replace('- Tested scope:', '- Tested scope: shadow\n- Tested scope:')), /exactly one 'Tested scope'/],
+    ['empty Tested scope', text => check(text, record => field(record, 'Tested scope', '  ')), /Tested scope/],
+    ['file-backed empty reason', text => check(text, record => record + '\n- Fileless reason:'), /Fileless reason/],
+    ['duplicate tested path', text => check(text, record => record.replace(`  - \`../../src/example.txt\` | sha256:${VALIDATED_HASH}`, `  - \`../../src/example.txt\` | sha256:${VALIDATED_HASH}\n  - \`../../src/example.txt\` | sha256:${VALIDATED_HASH}`)), /duplicate Tested state paths/],
+    ['unordered tested paths', text => check(text, record => record.replace(`  - \`../../src/example.txt\` | sha256:${VALIDATED_HASH}`, `  - \`../../src/z.txt\` | sha256:${VALIDATED_HASH}\n  - \`../../src/a.txt\` | sha256:${VALIDATED_HASH}`)), /Tested state paths are not lexicographically ordered/],
+    ['unsafe tested path', text => check(text, record => record.replace('`../../src/example.txt`', '`../../../outside.txt`')), /unsafe Tested state path/],
+    ['commands cannot move to selected checks', text => check(text, record => record.replace(/- Commands:\n  - [^\n]+/u, '- Commands:').replace(/- Selected checks: [^\n]+/u, '- Selected checks: focused check\n  - `node --test` | exit:0')), /Commands|unexpected nested/],
+    ['purpose owner', text => text.replace('owner: stnl-execution-planner', 'owner: unrelated-owner'), /incompatible owner/],
+    ['requirements reference', text => text.replace('- Requirements source: `../../requirements.md`', '- Requirements source: `../../user-owned.md`'), /non-canonical Requirements source/],
+    ['plan reference', text => text.replace('- Plan: `../plans/slice-01.md`', '- Plan: `../plans/slice-99.md`'), /non-canonical Plan/],
+    ['tasks reference', text => text.replace('- Global tasks: `../tasks.md`', '- Global tasks: `../other.md`'), /non-canonical Global tasks/],
+    ['check numbering', text => check(text, record => record.replace('### implementation-check-01', '### implementation-check-02')), /contiguous from 01/],
+  ];
+  for (const name of ['Tested scope', 'Verification types considered', 'Selected checks', 'Coverage']) cases.push([name + ' needs objective content', text => check(text, record => field(record, name, 'none')), new RegExp(name)]);
+  for (const value of ['  additional scope', '    - nested scalar value', '\t- nested scalar value', '  * second value', '  + second value', '  1. second value']) cases.push(['scalar continuation ' + JSON.stringify(value), text => check(text, record => record.replace(/^- Tested scope:.*$/mu, match => match + '\n' + value)), /unexpected nested|continuation/]);
+  for (const body of ['- `../../src/example.txt`\n  - `../../src/hidden.txt`', '- `../../src/example.txt`\n- arbitrary prose', '- `../../src/z.txt`\n- `../../src/a.txt`', '- `../../src/example.txt`\n- `../../src/example.txt`']) cases.push(['canonical scope ' + body, text => replaceSection(text, 'Changed Areas', body), /canonical task-relative path claims|not lexicographically ordered|duplicate path claims/]);
+  assert.equal((await rejectTaskMutations(fixture, impl.copy, cases)).state, 'IMPLEMENTED_AWAITING_VALIDATION');
+  await publishExecutionCopy({ specPath: fixture.requirements, slice: 'slice-01', candidateRoot: impl.copy.candidateRoot });
+  const formal = await validateExample(fixture, { publish: false });
+  const copy = { ...formal.copy, candidateTaskArtifact: path.join(formal.copy.candidateExecutionRoot, 'tasks/slice-01.md') };
+  const base = (text, transform) => {
+    const body = text.split('## Effective Validation Base\n\n')[1].split('\n## ')[0].trim();
+    return replaceSection(text, 'Effective Validation Base', transform(body));
+  };
+  const formalCases = [
+    ['base attempt type', text => base(text, body => field(body, 'Attempt type', 'revalidation')), /Attempt type disagrees/],
+    ['base HEAD', text => base(text, body => field(body, 'HEAD', 'unrelated')), /HEAD disagrees/],
+    ['base manifest tuple', text => base(text, body => body.replace('`../../src/example.txt`', 'malformed')), /malformed Files manifest/],
+    ['base placeholder evidence', text => base(text, body => field(body, 'Evidence summary', 'pending')), /Evidence summary/],
+    ['base different command', text => base(text, body => body.replace('node --test src/example.test.mjs', 'node --test src/other.test.mjs')), /authoritative commands disagree with its origin attempt/],
+    ['base different evidence', text => base(text, body => field(body, 'Evidence summary', 'Different objective evidence.')), /Evidence summary disagrees with its origin attempt/],
+    ['base duplicate command authority', text => base(text, body => body + '\n- Authoritative commands:\n  - `conflicting command` | exit:0'), /exactly one Authoritative commands|unexpected content after Evidence summary/],
+    ['incomplete atomic PASS', text => replaceSection(text, 'Final Result', '- pending'), /latest PASS attempt was not published atomically/],
+    ['attempt numbering', text => text.replace('### attempt-01', '### attempt-02'), /contiguous from 01/],
+  ];
+  for (const result of ['- PASS\n- pending', '- PASS\n- PASS', '- pending\n- PASS', '- PASS\n- SUPERSEDED', '- PASS\n- terminal: PASS']) formalCases.push(['terminal conflict ' + result, text => replaceSection(text, 'Final Result', result), /Final Result is malformed/]);
+  for (const summary of ['- pending', 'paragraph summary', '- fact\n  - nested fact', '- fact\n\n- another fact', '- ']) formalCases.push(['invalid Diff Summary ' + summary, text => replaceSection(text, 'Diff Summary', summary), /Diff Summary/]);
+  assert.equal((await rejectTaskMutations(fixture, copy, formalCases)).state, 'COMPLETE');
+  await publishValidationCandidate({ specPath: fixture.requirements, slice: 'slice-01', candidateExecutionRoot: copy.candidateExecutionRoot, owner: formal.admission.owner });
+  assert.equal((await inspectExecutionState(fixture.requirements)).state, 'COMPLETE');
+});
+
+test('canonical fileless implementation, findings correction and PASS retain explicit reason without invented paths', async t => {
+  const fixture = await standaloneWorkspace(t);
+  const previousEnvironment = process.env.STNL_QA_FILELESS_READY;
+  t.after(() => { if (previousEnvironment === undefined) delete process.env.STNL_QA_FILELESS_READY; else process.env.STNL_QA_FILELESS_READY = previousEnvironment; });
+  process.env.STNL_QA_FILELESS_READY = '1';
+  await fs.mkdir(path.join(fixture.root, 'src'));
+  await fs.writeFile(path.join(fixture.root, 'src/observation.mjs'), "import assert from 'node:assert/strict';assert.equal(process.env.STNL_QA_FILELESS_READY,'1','the observed process configuration is ready');\n");
+  fixture.verificationRecipe = '- Recipe: ' + JSON.stringify({ format: 'stnl-verification-recipe-v1', base: 'workspace', cwd: '.', checks: [{ id: 'verification-01', executable: { literal: 'node' }, args: [{ file: { kind: 'product', path: 'src/observation.mjs' } }], inputs: [] }], dependencyReview: 'The prepared assertion observes STNL_QA_FILELESS_READY inherited by the process, without changing repository files.' });
+  await renderArtifacts(fixture);
+  const reason = 'The correction sets the observed process configuration; no repository file is changed.';
+  const initial = await standaloneWorkspace(t); initial.verificationRecipe = fixture.verificationRecipe;
+  await fs.mkdir(path.join(initial.root, 'src'));
+  await fs.copyFile(path.join(fixture.root, 'src/observation.mjs'), path.join(initial.root, 'src/observation.mjs'));
+  await renderArtifacts(initial);
+  await implementExample(initial, { filelessReason: reason });
+  await validateExample(initial);
+  const initialPass = await inspectExecutionState(initial.requirements);
+  assert.equal(initialPass.state, 'COMPLETE');
+  assert.equal(initialPass.tasks.get('slice-01').attempts[0].id, 'attempt-01');
+  assert.equal(initialPass.tasks.get('slice-01').base.fileless, true);
+  const direct = await standaloneWorkspace(t); direct.verificationRecipe = fixture.verificationRecipe;
+  await fs.mkdir(path.join(direct.root, 'src'));
+  await fs.copyFile(path.join(fixture.root, 'src/observation.mjs'), path.join(direct.root, 'src/observation.mjs'));
+  await renderArtifacts(direct);
+  direct.exampleImplementation = await implementExample(direct, { filelessReason: reason });
+  await validateExample(direct, { status: 'NEEDS_FIX', findings: ACTIVE_FINDING });
+  const directCorrection = await correctExample(direct, { filelessReason: reason });
+  assert.match(directCorrection.bundle, /- Automatic check round: 1\/3/);
+  assert.equal((await preflightExecutionOperation(direct.requirements, 'VALIDATE_SLICE', '1')).state, 'FINDINGS_CORRECTED');
+  fixture.exampleImplementation = await implementExample(fixture, { filelessReason: reason, publish: false });
+  const first = fixture.exampleImplementation;
+  await rejectTaskMutations(fixture, first.copy, [
+    ['fileless needs reason', text => text.replace(/^- Fileless reason:.*\n/mu, ''), /Fileless reason/],
+    ['fileless rejects placeholder', text => text.replace(/^- Fileless reason:.*$/mu, '- Fileless reason: pending'), /Fileless reason/],
+    ['fileless rejects blank', text => text.replace(/^- Fileless reason:.*$/mu, '- Fileless reason:   '), /Fileless reason/],
+    ['current check drives changed scope', text => replaceSection(text, 'Changed Areas', '- `../../src/example.txt`'), /current fileless.*Changed Areas: none/],
+  ]);
+  await publishExecutionCopy({ specPath: fixture.requirements, slice: 'slice-01', candidateRoot: first.copy.candidateRoot });
+  await validateExample(fixture, { status: 'NEEDS_FIX', findings: ACTIVE_FINDING });
+  const prior = (await inspectExecutionState(fixture.requirements)).tasks.get('slice-01');
+  process.env.STNL_QA_FILELESS_READY = '0';
+  const failed = await correctExample(fixture, { filelessReason: reason, fail: true, publish: false });
+  process.env.STNL_QA_FILELESS_READY = '1';
+  const correction = await retryFindingsExample(fixture, failed);
+  assert.match(correction.bundle, /- Tested state: none\n- Fileless reason:/);
+  assert.equal((await inspectExecutionState(fixture.requirements)).state, 'FINDINGS_CORRECTED');
+  const resolved = ACTIVE_FINDING.replace('State: active', 'State: resolved') + '\n- Resolution: attempt-02 confirms the corrected observation.';
+  const formal = await validateExample(fixture, { findings: resolved, dispositions: 'finding-01=resolved', publish: false });
+  const copy = { ...formal.copy, candidateTaskArtifact: path.join(formal.copy.candidateExecutionRoot, 'tasks/slice-01.md') };
+  await rejectTaskMutations(fixture, copy, [
+    ['fileless PASS needs reason', text => text.replace(/(## Effective Validation Base[\s\S]*?)- Fileless reason:[^\n]*\n/u, '$1'), /Fileless reason/],
+    ['fileless PASS rejects placeholder reason', text => text.replace(/(## Effective Validation Base[\s\S]*?)- Fileless reason:[^\n]*/u, '$1- Fileless reason: pending'), /Fileless reason/],
+    ['fileless PASS rejects whitespace reason', text => text.replace(/(## Effective Validation Base[\s\S]*?)- Fileless reason:[^\n]*/u, '$1- Fileless reason:   '), /Fileless reason/],
+    ['fileless PASS needs evidence', text => text.replace(/(## Effective Validation Base[\s\S]*?)- Evidence summary:[^\n]*/u, '$1- Evidence summary: pending'), /Evidence summary/],
+    ['fileless attempt and base need evidence', text => text.replace(/(## Validation Attempts[\s\S]*?)- Evidence:[^\n]*/u, '$1- Evidence:   ').replace(/(## Effective Validation Base[\s\S]*?)- Evidence summary:[^\n]*/u, '$1- Evidence summary:   '), /Evidence/],
+    ['fileless PASS rejects whitespace evidence', text => text.replace(/(## Effective Validation Base[\s\S]*?)- Evidence summary:[^\n]*/u, '$1- Evidence summary:   '), /Evidence summary/],
+  ]);
+  await publishValidationCandidate({ specPath: fixture.requirements, slice: 'slice-01', candidateExecutionRoot: copy.candidateExecutionRoot, owner: formal.admission.owner });
+  const complete = await inspectExecutionState(fixture.requirements), task = complete.tasks.get('slice-01');
+  assert.equal(complete.state, 'COMPLETE'); assert.equal(task.base.fileless, true);
+  assert.equal(task.sections.get('Changed Areas'), '- none'); assert.equal(task.sections.get('Corrections Applied'), '- none');
+  assert.equal(task.implementationChecks[0].body, prior.implementationChecks[0].body);
+  assert.equal(task.attempts[0].body, prior.attempts[0].body);
+  assert.deepEqual(task.attempts.map(a => [a.id, a.status]), [['attempt-01', 'NEEDS_FIX'], ['attempt-02', 'PASS']]);
+});
+
+test('canonical findings sets and dispositions reconcile declared active authority without rewriting origin', async t => {
+  const fixture = await standaloneWorkspace(t); await renderArtifacts(fixture);
+  fixture.exampleImplementation = await implementExample(fixture);
+  await validateExample(fixture, { status: 'NEEDS_FIX', findings: ACTIVE_FINDING + '\n\n' + ACTIVE_FINDING_02 });
+  const correction = await correctExample(fixture, { content: VALIDATED_CONTENT, verified: 'finding-01', unsupported: 'finding-02', publish: false });
+  const cases = [
+    ['duplicate findings IDs', text => text.replace('- Finding IDs: finding-01, finding-02', '- Finding IDs: finding-01, finding-01'), /duplicate Finding IDs/],
+    ['unordered findings IDs', text => text.replace('- Finding IDs: finding-01, finding-02', '- Finding IDs: finding-02, finding-01'), /Finding IDs are not lexicographically ordered/],
+    ['unknown findings ID', text => text.replace('- Finding IDs: finding-01, finding-02', '- Finding IDs: finding-01, finding-99'), /undeclared Finding ID finding-99/],
+    ['malformed findings IDs', text => text.replace('- Finding IDs: finding-01, finding-02', '- Finding IDs: finding-01,finding-02'), /malformed Finding IDs/],
+    ['verified must be subset', text => text.replace('- Finding IDs: finding-01, finding-02', '- Finding IDs: finding-01').replace('- Findings verified: finding-01', '- Findings verified: finding-02'), /Findings verified.*subset/],
+    ['unsupported must match current active set', text => text.replace('- Unsupported active findings: finding-02', '- Unsupported active findings: none'), /Unsupported active findings/],
+    ['correction must have paths', text => replaceSection(text, 'Corrections Applied', '- none'), /Findings Test Evidence requires Corrections Applied/],
+    ['same-attempt resolution', text => text.replace('- State: active\n- Origin: attempt-01', '- State: resolved\n- Resolution: attempt-01 claims immediate resolution\n- Origin: attempt-01'), /strictly later|later formal attempt/],
+    ['same-origin supersession', text => text.replace('- State: active\n- Origin: attempt-01', '- State: superseded\n- Superseded by: finding-02\n- Origin: attempt-01'), /origin must be strictly later/],
+    ['backward supersession', text => text.replace('### finding-02\n\n- Severity: blocking\n- State: active', '### finding-02\n\n- Severity: blocking\n- State: superseded\n- Superseded by: finding-01'), /invalid Superseded by/],
+  ];
+  assert.equal((await rejectTaskMutations(fixture, correction.copy, cases)).state, 'FINDINGS_CORRECTED');
+  const subsetTask = await fs.readFile(correction.copy.candidateTaskArtifact, 'utf8');
+  const unchangedLive = await treeBytes(fixture.execution), unchangedCandidate = await treeBytes(correction.copy.candidateExecutionRoot);
+  for (const [verified, unsupported] of [['finding-01, finding-02', 'none'], ['none', 'finding-01, finding-02']]) {
+    const text = subsetTask.replace('- Findings verified: finding-01', '- Findings verified: ' + verified).replace('- Unsupported active findings: finding-02', '- Unsupported active findings: ' + unsupported);
+    assert.notEqual(text, subsetTask);
+    assert.equal((await validateExecutionCandidate(fixture.requirements, correction.copy.candidateExecutionRoot, [{ slice: 'slice-01', text }])).state, 'FINDINGS_CORRECTED');
+    assert.deepEqual(await treeBytes(fixture.execution), unchangedLive);
+    assert.deepEqual(await treeBytes(correction.copy.candidateExecutionRoot), unchangedCandidate);
+  }
+  await publishExecutionCopy({ specPath: fixture.requirements, slice: 'slice-01', candidateRoot: correction.copy.candidateRoot });
+  assert.equal((await inspectExecutionState(fixture.requirements)).state, 'FINDINGS_CORRECTED');
+});
+
+test('canonical partial correction revalidates NEEDS_FIX then PASS with immutable finding origins and attempts', async t => {
+  const fixture = await standaloneWorkspace(t); await renderArtifacts(fixture);
+  fixture.exampleImplementation = await implementExample(fixture);
+  await validateExample(fixture, { status: 'NEEDS_FIX', findings: ACTIVE_FINDING });
+  const initial = (await inspectExecutionState(fixture.requirements)).tasks.get('slice-01').attempts[0].body;
+  await correctExample(fixture, { content: VALIDATED_CONTENT });
+  const firstResolved = ACTIVE_FINDING.replace('State: active', 'State: resolved') + '\n- Resolution: attempt-02 confirms the first correction.';
+  const second = ACTIVE_FINDING_02.replace('Origin: attempt-01', 'Origin: attempt-02');
+  await validateExample(fixture, { status: 'NEEDS_FIX', findings: firstResolved + '\n\n' + second, dispositions: 'finding-01=resolved, finding-02=active' });
+  const partial = (await inspectExecutionState(fixture.requirements)).tasks.get('slice-01');
+  assert.deepEqual(partial.findings.map(f => [f.id, f.state]), [['finding-01', 'resolved'], ['finding-02', 'active']]);
+  assert.equal((await preflightExecutionOperation(fixture.requirements, 'APPLY_FINDINGS', '1')).state, 'VALIDATION_NEEDS_FIX');
+  await correctExample(fixture, { verified: 'finding-02', content: VALIDATED_CONTENT });
+  const secondResolved = second.replace('State: active', 'State: resolved') + '\n- Resolution: attempt-03 confirms the second correction.';
+  await validateExample(fixture, { findings: firstResolved + '\n\n' + secondResolved, dispositions: 'finding-01=resolved, finding-02=resolved' });
+  const complete = await inspectExecutionState(fixture.requirements), task = complete.tasks.get('slice-01');
+  assert.equal(complete.state, 'COMPLETE'); assert.equal(task.attempts[0].body, initial);
+  assert.equal(task.attempts[1].body, partial.attempts[1].body);
+  assert.deepEqual(task.attempts.map(a => [a.id, a.status]), [['attempt-01', 'NEEDS_FIX'], ['attempt-02', 'NEEDS_FIX'], ['attempt-03', 'PASS']]);
+  assert.deepEqual(task.findings.map(f => [f.id, f.origin, f.state]), [['finding-01', 'attempt-01', 'resolved'], ['finding-02', 'attempt-02', 'resolved']]);
+  assert.deepEqual(task.findingsChecks.map(c => [c.id, c.findingsCycle]), [['findings-check-01', 'attempt-01'], ['findings-check-02', 'attempt-02']]);
+});
+
+function assertExhaustedHandoff(fixture, state, operation, prefix) {
+  assertRecoveryTarget(state, { operation: 'VALIDATE_SLICE', slice: 'slice-01', owner: 'retry-exhaustion', record: `${prefix}-03`, round: 3, retryState: state.state });
+  assert.equal(state.normalHandoff, null);
+  assert.deepEqual(state.requiredRecoveryHandoff, { workflowSkill: 'stnl-slice-quality-manager', operation: 'VALIDATE_SLICE', invocation: 'OPERATION=VALIDATE_SLICE', slice: 'slice-01' });
+  const result = spawnSync(process.execPath, [path.join(ROOT, 'skills/workflows/stnl-slice-executor/runtime/validate-execution-state.mjs'), fixture.requirements, '--handoff-after', operation], { encoding: 'utf8', cwd: fixture.root });
+  assert.equal(result.status, 0, result.stderr);
+  const handoff = JSON.parse(result.stdout);
+  assert.equal(handoff.normal_handoff, null); assert.deepEqual(handoff.required_recovery_handoff, state.requiredRecoveryHandoff);
+}
+
+test('canonical third failed automatic round preserves cumulative paths and permits only formal continuation', async t => {
+  const fixture = await standaloneWorkspace(t); await renderArtifacts(fixture);
+  const first = await implementExample(fixture, { failFirst: true, publish: false });
+  const second = await retryExample(fixture, first, 'second incorrect example\n', { status: 'TESTS_FAIL', publish: false });
+  const third = await retryExample(fixture, second, undefined, { status: 'TESTS_FAIL', publish: false });
+  const copy = first.copy;
+  assert.equal((await rejectTaskMutations(fixture, copy, [
+    ['implementation cannot resume exhausted operation', text => replaceSection(text, 'Delegation Blocker', delegationBlocker('EXECUTE_SLICE', 'initialization', { after: 'implementation-check-03' })), /cannot resume.*third-failure exhaustion/],
+    ['exhaustion cannot carry active divergence', text => replaceSection(text, 'Divergences', ACTIVE_DIVERGENCE), /third-failure exhaustion.*active blocking divergence/],
+    ['round four is rejected', text => text.replace('Automatic check round: 3/3', 'Automatic check round: 4/3'), /Automatic check round/],
+    ['skipped check identifier', text => text.replace('### implementation-check-03', '### implementation-check-04'), /identifiers must be contiguous/],
+    ['duplicate round', text => text.replace('Automatic check round: 3/3', 'Automatic check round: 2/3'), /round|sequential/],
+  ])).state, 'IMPLEMENTATION_RETRY_EXHAUSTED');
+  const privateText = await fs.readFile(copy.candidateTaskArtifact, 'utf8');
+  for (const check of [first, second, third]) assert.ok(privateText.includes(check.bundle));
+  assert.match(third.bundle, /- Correction paths: none/);
+  assert.match(privateText, /## Corrections Applied\n\n- `..\/..\/src\/example.txt`/);
+  assert.match(second.bundle, /- Correction paths: ..\/..\/src\/example.txt/);
+  await publishExecutionCopy({ specPath: fixture.requirements, slice: 'slice-01', candidateRoot: copy.candidateRoot });
+  const state = await inspectExecutionState(fixture.requirements);
+  assert.equal(state.state, 'IMPLEMENTATION_RETRY_EXHAUSTED');
+  assertExhaustedHandoff(fixture, state, 'EXECUTE_SLICE', 'implementation-check');
+  const invalidSlice = await rejectedWithRecovery(preflightExecutionOperation(fixture.requirements, 'VALIDATE_SLICE', '01'), /SLICE must be one unsigned decimal/);
+  assertRecoveryTarget(invalidSlice, { operation: 'VALIDATE_SLICE', slice: 'slice-01' });
+  assert.deepEqual(state.legalOperations.filter(op => op.slice), [{ operation: 'VALIDATE_SLICE', slice: 'slice-01' }]);
+  await assert.rejects(preflightExecutionOperation(fixture.requirements, 'EXECUTE_SLICE', '1'), /not legal|not allowed|requires|exhausted/);
+  assert.equal((await preflightExecutionOperation(fixture.requirements, 'VALIDATE_SLICE', '1')).state, 'IMPLEMENTATION_RETRY_EXHAUSTED');
+});
+
+test('canonical findings exhaustion retains active authority and all three observed failures', async t => {
+  const fixture = await standaloneWorkspace(t); await renderArtifacts(fixture);
+  fixture.exampleImplementation = await implementExample(fixture);
+  await validateExample(fixture, { status: 'NEEDS_FIX', findings: ACTIVE_FINDING });
+  const initial = (await inspectExecutionState(fixture.requirements)).tasks.get('slice-01');
+  const first = await correctExample(fixture, { content: 'first incorrect correction\n', fail: true, publish: false });
+  const second = await retryFindingsExample(fixture, first, { content: 'second incorrect correction\n', fail: true, publish: false });
+  const third = await retryFindingsExample(fixture, second, { fail: true, publish: false });
+  assert.equal((await rejectTaskMutations(fixture, first.copy, [
+    ['findings exhausted divergence conflict', text => replaceSection(text, 'Divergences', ACTIVE_DIVERGENCE.replace('Origin: EXECUTE_SLICE', 'Origin: APPLY_FINDINGS')), /third-failure exhaustion.*active blocking divergence/],
+    ['findings cannot resume exhausted operation', text => replaceSection(text, 'Delegation Blocker', delegationBlocker('APPLY_FINDINGS', 'initialization', { after: 'findings-check-03' })), /cannot resume.*third-failure exhaustion/],
+  ])).state, 'FINDINGS_RETRY_EXHAUSTED');
+  const text = await fs.readFile(first.copy.candidateTaskArtifact, 'utf8');
+  for (const check of [first, second, third]) assert.ok(text.includes(check.bundle));
+  await publishExecutionCopy({ specPath: fixture.requirements, slice: 'slice-01', candidateRoot: first.copy.candidateRoot });
+  const state = await inspectExecutionState(fixture.requirements), task = state.tasks.get('slice-01');
+  assert.equal(state.state, 'FINDINGS_RETRY_EXHAUSTED');
+  assert.equal((await preflightExecutionOperation(fixture.requirements, 'VALIDATE_SLICE', '1')).state, 'FINDINGS_RETRY_EXHAUSTED');
+  assertExhaustedHandoff(fixture, state, 'APPLY_FINDINGS', 'findings-check');
+  assert.deepEqual(state.legalOperations.filter(op => op.slice), [{ operation: 'VALIDATE_SLICE', slice: 'slice-01' }]);
+  assert.equal(task.findings[0].body, initial.findings[0].body);
+  assert.equal(task.attempts[0].body, initial.attempts[0].body);
+  assert.equal(task.implementationChecks[0].body, initial.implementationChecks[0].body);
+  assert.deepEqual(task.findingsChecks.map(check => [check.id, check.round, check.status]), [[ 'findings-check-01', 1, 'TESTS_FAIL' ], [ 'findings-check-02', 2, 'TESTS_FAIL' ], [ 'findings-check-03', 3, 'TESTS_FAIL' ]]);
+  await assert.rejects(preflightExecutionOperation(fixture.requirements, 'APPLY_FINDINGS', '1'), /not legal|not allowed|requires|exhausted/);
+});
+
+test("canonical interrupted automatic checks preserve origins through blocking publication and approved recovery", async (t) => {
+  for (const round of [1, 2]) for (const disposition of ['active', 'resolved', 'superseded']) {
+    await t.test(`${disposition} divergence after round ${round}/3`, async child => {
+      const fixture = await standaloneWorkspace(child);
+      const { authority } = await renderArtifacts(fixture);
+      const first = await implementExample(fixture, { failFirst: true, publish: false });
+      const last = round === 1 ? first : await retryExample(fixture, first, 'still incorrect example bytes\n', { status: 'TESTS_FAIL', publish: false });
+      const copy = first.copy, task = copy.candidateTaskArtifact;
+      const unterminated = await fs.readFile(task, 'utf8'), liveBeforeBlock = await treeBytes(fixture.execution);
+      // No divergence and advisory alone must not release the active owner.
+      for (const body of ['- none', ACTIVE_DIVERGENCE.replace('Severity: blocking', 'Severity: advisory')]) {
+        await fs.writeFile(task, replaceSection(unterminated, 'Divergences', body));
+        const candidateBefore = await treeBytes(copy.candidateExecutionRoot);
+        await assert.rejects(publishExecutionCopy({ specPath: fixture.requirements, slice: 'slice-01', candidateRoot: copy.candidateRoot }), round === 1 ? /unterminated implementation automatic correction cycle/ : /terminal publication requires the bounded operation result/);
+        assert.deepEqual(await treeBytes(fixture.execution), liveBeforeBlock);
+        assert.deepEqual(await treeBytes(copy.candidateExecutionRoot), candidateBefore);
+        assert.equal((await readExecutionActivation(fixture.requirements)).activation.activeAttempt.operationAttemptId, first.admission.owner.operationAttemptId);
+      }
+      await fs.writeFile(task, unterminated);
+      const advisory = ACTIVE_DIVERGENCE.replace('divergence-01', 'divergence-02').replace('Severity: blocking', 'Severity: advisory');
+      await fs.writeFile(task, replaceSection(await fs.readFile(task, 'utf8'), 'Divergences', ACTIVE_DIVERGENCE + '\n\n' + advisory));
+      const receipts = await Promise.all([first, ...(round === 2 ? [last] : [])].map(async check => [check.captured.receiptFile, await fs.readFile(check.captured.receiptFile)]));
+      const positive = await rejectTaskMutations(fixture, copy, [
+        ['active resolution is illegal', text => text.replace('## Divergences\n', '## Divergences\n').replace('State: active\n- Origin: EXECUTE_SLICE', 'State: active\n- Resolution: invalid\n- Origin: EXECUTE_SLICE'), /active state cannot contain resolution fields/],
+        ['uncommitted resolution owner', text => text.replace('State: active\n- Origin: EXECUTE_SLICE', 'State: resolved\n- Resolution: plan revision 2 committed recovery slice-02\n- Origin: EXECUTE_SLICE').replace('Severity: advisory', 'Severity: blocking'), /resolution has no committed supersession owner/],
+        ['unknown authority operation', text => text.replace('Required authority operation: REPLAN', 'Required authority operation: DELETE_MANUALLY'), /invalid Required authority operation/],
+        ['duplicate disposition', text => text.replace('State: active\n- Origin: EXECUTE_SLICE', 'State: active\n- State: resolved\n- Origin: EXECUTE_SLICE'), /exactly one.*State/],
+        ['invalid divergence successor', text => text.replace('State: active\n- Origin: EXECUTE_SLICE', 'State: superseded\n- Superseded by: divergence-99\n- Origin: EXECUTE_SLICE'), /invalid Superseded by/],
+      ]);
+      assert.equal(positive.state, 'DIVERGENCE_BLOCKED');
+      const published = await publishExecutionCopy({ specPath: fixture.requirements, slice: 'slice-01', candidateRoot: copy.candidateRoot });
+      assert.equal(published.state, 'DIVERGENCE_BLOCKED');
+      const before = await inspectExecutionState(fixture.requirements);
+      assert.equal((await readExecutionActivation(fixture.requirements)).activation.activeAttempt, null);
+      assert.equal((await preflightExecutionOperation(fixture.requirements, 'REPLAN')).state, 'DIVERGENCE_BLOCKED');
+      const history = before.tasks.get('slice-01').sections.get('Implementation Test Evidence');
+      assert.ok(history.includes(first.bundle)); assert.ok(history.includes(last.bundle));
+      await appendRecoveryPlan(fixture, authority, authority);
+      await reviewJointFixture(fixture, { editCandidate: async root => {
+        if (disposition === 'active') return;
+        const file = path.join(root, 'tasks/slice-01.md');
+        const text = await fs.readFile(file, 'utf8');
+        const record = disposition === 'resolved'
+          ? ACTIVE_DIVERGENCE.replace('State: active', 'State: resolved') + '\n- Resolution: plan revision 2 committed recovery slice-02'
+          : ACTIVE_DIVERGENCE.replace('State: active', 'State: superseded') + '\n- Superseded by: divergence-02';
+        await fs.writeFile(file, replaceSection(text, 'Divergences', record + '\n\n' + advisory));
+        if (round === 1 && disposition === 'resolved') {
+          await preparePlanCandidate({ candidateExecutionRoot: root });
+          await serializePlanPathClaims({ specPath: fixture.requirements, candidateExecutionRoot: root });
+          await captureApprovedPreparation({ candidateExecutionRoot: root, reviewDecision });
+          await validateExecutionCandidate(fixture.requirements, root);
+          await fs.rm(path.join(root, 'approved-preparation.json'), { force: true });
+          const validTask = await fs.readFile(file, 'utf8'), live = await treeBytes(fixture.execution);
+          for (const [label, mutate, diagnostic] of [
+            ['problem', value => value.replace('Approved scope omits', 'Rewritten scope omits'), /historical finding origin\/description rewritten/],
+            ['evidence', value => value.replace('The implementation cannot', 'The revised implementation cannot'), /historical finding origin\/description rewritten/],
+            ['origin', value => value.replace('Origin: EXECUTE_SLICE', 'Origin: APPLY_FINDINGS'), /historical finding origin\/description rewritten/],
+            ['advisory disposition', value => value.replace('Severity: advisory\n- State: active', 'Severity: advisory\n- State: resolved\n- Resolution: plan revision 2 committed recovery slice-02'), /Divergences rewrote historical evidence/],
+          ]) {
+            const invalidTask = mutate(validTask); assert.notEqual(invalidTask, validTask, label);
+            await fs.writeFile(file, invalidTask);
+            // Review snapshot reflects exactly this proposal, so rejection must
+            // be historical authorization, never a stale review hash.
+            const candidate = await readPreparationArtifacts(root);
+            await assert.rejects(publishPreparationCandidate({ specPath: fixture.requirements, candidateExecutionRoot: root, reviewDecision }), diagnostic);
+            assert.deepEqual(await treeBytes(fixture.execution), live);
+            assert.deepEqual(await readPreparationArtifacts(root), candidate);
+            await fs.rm(path.join(root, 'approved-preparation.json'), { force: true });
+          }
+          await fs.writeFile(file, validTask);
+        }
+      } });
+      const recovered = await inspectExecutionState(fixture.requirements), previous = recovered.tasks.get('slice-01');
+      assert.equal(previous.final.result, 'SUPERSEDED'); assert.equal(previous.final.supersededBy, 'slice-02');
+      assert.equal(previous.final.planRevision, 2);
+      assert.equal(previous.divergences[0].state, disposition);
+      assert.equal(previous.divergences[1].body, advisory.slice(advisory.indexOf('- Severity:')));
+      assert.equal(previous.sections.get('Implementation Test Evidence'), history);
+      assert.equal(recovered.normalHandoff.operation, 'EXECUTE_SLICE'); assert.equal(recovered.normalHandoff.slice, 'slice-02');
+      for (const [file, bytes] of receipts) assert.deepEqual(await fs.readFile(file), bytes);
+    });
+  }
+});
+
 test("approved supersession preserves interrupted automatic checks with a committed recovery owner", async (t) => {
   for (const disposition of ["resolved", "active"]) {
     for (const round of [1, 2]) {
@@ -7961,29 +8162,6 @@ test("interrupted checks cannot forge supersession in the original plan revision
     "| [ ] | 01 - Delivery | observable result | - | tasks/slice-01.md | pending | pending |",
     "| [x] | 01 - Delivery | observable result | - | tasks/slice-01.md | SUPERSEDED | SUPERSEDED |"));
   await assert.rejects(inspectExecutionState(fixture.requirements), /SUPERSEDED.*committing Plan revision/u);
-});
-
-test("approved supersession preserves advisory divergence while disposing only the active blocking record", async (t) => {
-  const fixture = await standaloneWorkspace(t);
-  const { authority } = await renderArtifacts(fixture);
-  const advisory = ACTIVE_DIVERGENCE.replace("divergence-01", "divergence-02").replace("Severity: blocking", "Severity: advisory");
-  await editTask(fixture, (text) => replaceSection(replaceSection(text, "Changed Areas", "- `../../src/example.txt`"),
-    "Divergences", `${ACTIVE_DIVERGENCE}\n\n${advisory}`));
-  await appendRecoveryPlan(fixture, authority, authority, { ready: true });
-  const candidate = await preparePreparationCandidate({ specPath: fixture.requirements });
-  t.after(async () => fs.rm(candidate.candidateExecutionRoot, { recursive: true, force: true }));
-  const staged = { ...fixture, execution: candidate.candidateExecutionRoot };
-  await commitAppendRecovery(staged, authority, authority);
-  await editTask(staged, (text) => replaceSection(text, "Divergences",
-    `${ACTIVE_DIVERGENCE.replace("State: active", "State: superseded")}\n- Superseded by: divergence-02\n\n${advisory}`));
-  const published = await publishPreparationCandidate({ specPath: fixture.requirements,
-    candidateExecutionRoot: candidate.candidateExecutionRoot });
-  assert.equal(published.status, "PASS");
-  const result = await inspectExecutionState(fixture.requirements);
-  assert.equal(result.state, "EXECUTION_STARTED");
-  assert.equal(result.tasks.get("slice-01").divergences[0].state, "superseded");
-  assert.equal(result.tasks.get("slice-01").divergences[1].state, "active");
-  assert.equal(result.tasks.get("slice-01").divergences[1].body, advisory.slice(advisory.indexOf("- Severity:")));
 });
 
 test("a later missing integration slice has an executable append-only REPLAN path", async (t) => {
@@ -8129,133 +8307,6 @@ test("attempt/check numbering, unresolved blockers at PASS, and structural gates
   await assert.rejects(inspectExecutionState(unlistedCorrection.requirements), /correction path is absent from Changed Areas/u);
 });
 
-test("Effective Validation Base commands and evidence are exact provenance of the owning PASS attempt", async (t) => {
-  for (const [mutation, expected] of [
-    [(base) => base.replace("`node --test`", "`node --test --test-name-pattern provenance`"), /authoritative commands disagree with its origin attempt/u],
-    [(base) => base.replace("Objective PASS evidence.", "Different claimed PASS evidence."), /Evidence summary disagrees with its origin attempt/u],
-    [(base) => `${base}\n- Authoritative commands:\n  - \`conflicting command\` | exit:0`, /exactly one Authoritative commands|unexpected content after Evidence summary/u],
-  ]) {
-    const fixture = await standaloneWorkspace(t);
-    await renderArtifacts(fixture);
-    await editTask(fixture, (value) => {
-      let result = value.replace("- [ ] 1.1", "- [x] 1.1");
-      result = replaceSection(result, "Changed Areas", "- `../../src/example.txt`");
-      result = replaceSection(result, "Validation Attempts", PASS_ATTEMPT);
-      result = replaceSection(result, "Effective Validation Base", mutation(PASS_BASE));
-      result = replaceSection(result, "Diff Summary", "- Implemented and validated the observable behavior.");
-      return replaceSection(result, "Final Result", "- PASS");
-    });
-    await editTasksIndex(fixture, (value) => value.replace(
-      "| [ ] | 01 - Delivery | observable result | - | tasks/slice-01.md | pending | pending |",
-      "| [x] | 01 - Delivery | observable result | - | tasks/slice-01.md | PASS | PASS |",
-    ));
-    await assert.rejects(inspectExecutionState(fixture.requirements), expected);
-  }
-});
-
-test("fileless PASS uses an explicit none manifest with objective reason and evidence", async (t) => {
-  const filelessAttempt = attemptRecord(1, "PASS", { evidence: "validated observable behavior" });
-  const filelessCheck = checkRecord("implementation-check", 1, "TESTS_PASS", 1)
-    .replace(`- Tested state:\n  - \`../../src/example.txt\` | sha256:${VALIDATED_HASH}`, "- Tested state: none\n- Fileless reason: no repository file participates in the observable configuration state");
-  const filelessBase = `- Origin attempt: attempt-01
-- Attempt type: initial
-- HEAD: fixture
-- Result: PASS
-- Files: none
-- Fileless reason: the slice changes no repository file and validates an externally observable configuration state
-- Authoritative commands:
-  - \`node --test\` | exit:0
-- Evidence summary: validated observable behavior`;
-
-  const valid = await standaloneWorkspace(t);
-  await renderArtifacts(valid);
-  await editTask(valid, (value) => {
-    let result = value.replace("- [ ] 1.1", "- [x] 1.1");
-    result = replaceSection(result, "Changed Areas", "- none");
-    return replaceSection(result, "Implementation Test Evidence", filelessCheck);
-  });
-  assert.equal((await inspectExecutionState(valid.requirements)).state, "IMPLEMENTED_AWAITING_VALIDATION");
-  assert.equal((await preflightExecutionOperation(valid.requirements, "VALIDATE_SLICE", "1")).state, "IMPLEMENTED_AWAITING_VALIDATION");
-  await editTask(valid, (value) => {
-    let result = value;
-    result = replaceSection(result, "Validation Attempts", filelessAttempt);
-    result = replaceSection(result, "Effective Validation Base", filelessBase);
-    return publishPassResult(result);
-  });
-  await editTasksIndex(valid, (value) => value.replace(
-    "| [ ] | 01 - Delivery | observable result | - | tasks/slice-01.md | pending | pending |",
-    "| [x] | 01 - Delivery | observable result | - | tasks/slice-01.md | PASS | PASS |",
-  ));
-  assert.equal((await inspectExecutionState(valid.requirements)).state, "COMPLETE");
-
-  for (const [name, baseMutation, error, attemptMutation = (attempt) => attempt] of [
-    ["missing reason", (base) => base.replace(/^- Fileless reason:.*\n/mu, ""), /Fileless reason/u],
-    ["placeholder reason", (base) => base.replace(/^- Fileless reason:.*$/mu, "- Fileless reason: pending"), /Fileless reason/u],
-    ["whitespace reason", (base) => base.replace(/^- Fileless reason:.*$/mu, "- Fileless reason:   "), /Fileless reason/u],
-    ["placeholder evidence", (base) => base.replace("- Evidence summary: validated observable behavior", "- Evidence summary: pending"), /Evidence summary/u],
-    [
-      "whitespace attempt and base evidence",
-      (base) => base.replace("- Evidence summary: validated observable behavior", "- Evidence summary:   "),
-      /Evidence|Evidence summary/u,
-      (attempt) => attempt.replace("- Evidence: validated observable behavior", "- Evidence:   "),
-    ],
-  ]) {
-    const invalid = await standaloneWorkspace(t);
-    await renderArtifacts(invalid);
-    await editTask(invalid, (value) => {
-      let result = value.replace("- [ ] 1.1", "- [x] 1.1");
-      result = replaceSection(result, "Changed Areas", "- none");
-      result = replaceSection(result, "Implementation Test Evidence", filelessCheck);
-      result = replaceSection(result, "Validation Attempts", attemptMutation(filelessAttempt));
-      result = replaceSection(result, "Effective Validation Base", baseMutation(filelessBase));
-      return publishPassResult(result);
-    });
-    await editTasksIndex(invalid, (value) => value.replace(
-      "| [ ] | 01 - Delivery | observable result | - | tasks/slice-01.md | pending | pending |",
-      "| [x] | 01 - Delivery | observable result | - | tasks/slice-01.md | PASS | PASS |",
-    ));
-    await assert.rejects(inspectExecutionState(invalid.requirements), error, name);
-  }
-});
-
-test("fileless APPLY_FINDINGS needs objective evidence but no fabricated path", async (t) => {
-  const fileless = (record) => record.replace(
-    `- Tested state:\n  - \`../../src/example.txt\` | sha256:${VALIDATED_HASH}`,
-    "- Tested state: none\n- Fileless reason: the correction changes observable authority without filesystem ownership",
-  ).replace("- Corrections covered: ../../src/example.txt", "- Corrections covered: objective authority-only correction");
-
-  const fixture = await standaloneWorkspace(t);
-  await renderArtifacts(fixture);
-  await editTask(fixture, (value) => {
-    let result = value.replace("- [ ] 1.1", "- [x] 1.1");
-    result = replaceSection(result, "Changed Areas", "- none");
-    result = replaceSection(result, "Corrections Applied", "- none");
-    result = replaceSection(result, "Validation Attempts", NEEDS_FIX_ATTEMPT);
-    result = replaceSection(result, "Validation Findings", ACTIVE_FINDING);
-    return replaceSection(result, "Findings Test Evidence", fileless(
-      checkRecord("findings-check", 1, "TESTS_PASS", 1, { cycle: "attempt-01" }),
-    ));
-  });
-  assert.equal((await inspectExecutionState(fixture.requirements)).state, "FINDINGS_CORRECTED");
-  assert.equal((await preflightExecutionOperation(fixture.requirements, "VALIDATE_SLICE", "1")).state, "FINDINGS_CORRECTED");
-
-  const retried = await standaloneWorkspace(t);
-  await renderArtifacts(retried);
-  await editTask(retried, (value) => {
-    let result = value.replace("- [ ] 1.1", "- [x] 1.1");
-    result = replaceSection(result, "Changed Areas", "- none");
-    result = replaceSection(result, "Corrections Applied", "- none");
-    result = replaceSection(result, "Validation Attempts", NEEDS_FIX_ATTEMPT);
-    result = replaceSection(result, "Validation Findings", ACTIVE_FINDING);
-    const first = fileless(checkRecord("findings-check", 1, "TESTS_FAIL", 1, { cycle: "attempt-01" }));
-    const second = fileless(checkRecord("findings-check", 2, "TESTS_PASS", 2, { cycle: "attempt-01" }))
-      .replace("- Correction paths: ../../src/example.txt", "- Correction paths: none")
-      .replace("- Correction applied: bounded objective correction", "- Correction applied: corrected authority-only behavior with no filesystem ownership");
-    return replaceSection(result, "Findings Test Evidence", `${first}\n\n${second}`);
-  });
-  assert.equal((await inspectExecutionState(retried.requirements)).state, "FINDINGS_CORRECTED");
-});
-
 test("only the current state-driving auxiliary check controls fileless Changed Areas", async (t) => {
   const fileless = (record) => record.replace(
     `- Tested state:\n  - \`../../src/example.txt\` | sha256:${VALIDATED_HASH}`,
@@ -8284,32 +8335,6 @@ test("only the current state-driving auxiliary check controls fileless Changed A
     return replaceSection(result, "Implementation Test Evidence", `${historical}\n\n${current}`);
   });
   assert.equal((await inspectExecutionState(mixedHistory.requirements)).state, "IMPLEMENTED_AWAITING_VALIDATION");
-});
-
-test("Final Result accepts one exact terminal authority and rejects masked conflicts", async (t) => {
-  for (const invalid of [
-    "- PASS\n- pending",
-    "- PASS\n- PASS",
-    "- pending\n- PASS",
-    "- PASS\n- SUPERSEDED",
-    "- PASS\n- terminal: PASS",
-  ]) {
-    const fixture = await standaloneWorkspace(t);
-    await renderArtifacts(fixture);
-    await editTask(fixture, (value) => {
-      let result = value.replace("- [ ] 1.1", "- [x] 1.1");
-      result = replaceSection(result, "Changed Areas", "- `../../src/example.txt`");
-      result = replaceSection(result, "Validation Attempts", PASS_ATTEMPT);
-      result = replaceSection(result, "Effective Validation Base", PASS_BASE);
-      result = replaceSection(result, "Diff Summary", "- Implemented and validated the observable behavior.");
-      return replaceSection(result, "Final Result", invalid);
-    });
-    await editTasksIndex(fixture, (value) => value.replace(
-      "| [ ] | 01 - Delivery | observable result | - | tasks/slice-01.md | pending | pending |",
-      "| [x] | 01 - Delivery | observable result | - | tasks/slice-01.md | PASS | PASS |",
-    ));
-    await assert.rejects(inspectExecutionState(fixture.requirements), /Final Result is malformed/u);
-  }
 });
 
 test("canonical execution tables and checklists reject every unexpected structural row", async (t) => {
@@ -8422,136 +8447,6 @@ test("scalar summaries stay inline while Tested state and Commands stay structur
     return replaceSection(result, "Validation Findings", ACTIVE_FINDING);
   });
   await assert.rejects(inspectExecutionState(attemptNested.requirements), /unexpected nested/u);
-});
-
-test("Finding IDs are canonical ordered sets tied to declared findings and their cycle", async (t) => {
-  const prepare = async (value) => {
-    const fixture = await standaloneWorkspace(t);
-    await renderArtifacts(fixture);
-    await editTask(fixture, (task) => {
-      let result = task.replace("- [ ] 1.1", "- [x] 1.1");
-      result = replaceSection(result, "Changed Areas", "- `../../src/example.txt`");
-      result = replaceSection(result, "Corrections Applied", "- `../../src/example.txt`");
-      result = replaceSection(result, "Validation Attempts", attemptRecord(1, "NEEDS_FIX", {
-        references: "finding-01, finding-02",
-        dispositions: "finding-01=active, finding-02=active",
-      }));
-      result = replaceSection(result, "Validation Findings", `${ACTIVE_FINDING}\n\n${ACTIVE_FINDING_02}`);
-      const check = checkRecord("findings-check", 1, "TESTS_PASS", 1, { cycle: "attempt-01" })
-        .replace("- Finding IDs: finding-01", `- Finding IDs: ${value}`)
-        .replace("- Findings verified: finding-01", `- Findings verified: ${value}`);
-      return replaceSection(result, "Findings Test Evidence", check);
-    });
-    return fixture;
-  };
-
-  const valid = await prepare("finding-01, finding-02");
-  assert.equal((await inspectExecutionState(valid.requirements)).state, "FINDINGS_CORRECTED");
-  for (const [value, expected] of [
-    ["finding-01, finding-01", /duplicate Finding IDs/u],
-    ["finding-02, finding-01", /Finding IDs are not lexicographically ordered/u],
-    ["finding-01, finding-99", /undeclared Finding ID finding-99/u],
-    ["finding-01,finding-02", /malformed Finding IDs/u],
-  ]) {
-    const fixture = await prepare(value);
-    await assert.rejects(inspectExecutionState(fixture.requirements), expected);
-  }
-});
-
-test("Findings verified may be a canonical subset while unsupported reconciles active authority", async (t) => {
-  const fixture = await standaloneWorkspace(t);
-  await renderArtifacts(fixture);
-  await editTask(fixture, (value) => {
-    let result = value.replace("- [ ] 1.1", "- [x] 1.1");
-    result = replaceSection(result, "Changed Areas", "- `../../src/example.txt`");
-    result = replaceSection(result, "Corrections Applied", "- `../../src/example.txt`");
-    result = replaceSection(result, "Validation Attempts", NEEDS_FIX_ATTEMPT);
-    result = replaceSection(result, "Validation Findings", ACTIVE_FINDING);
-    const partial = checkRecord("findings-check", 1, "TESTS_PASS", 1, { cycle: "attempt-01" })
-      .replace("- Findings verified: finding-01", "- Findings verified: none")
-      .replace("- Unsupported active findings: none", "- Unsupported active findings: finding-01");
-    return replaceSection(result, "Findings Test Evidence", partial);
-  });
-  assert.equal((await inspectExecutionState(fixture.requirements)).state, "FINDINGS_CORRECTED");
-
-  const invalid = await standaloneWorkspace(t);
-  await renderArtifacts(invalid);
-  await editTask(invalid, (value) => {
-    let result = value.replace("- [ ] 1.1", "- [x] 1.1");
-    result = replaceSection(result, "Changed Areas", "- `../../src/example.txt`");
-    result = replaceSection(result, "Corrections Applied", "- `../../src/example.txt`");
-    result = replaceSection(result, "Validation Attempts", attemptRecord(1, "NEEDS_FIX", {
-      references: "finding-01, finding-02",
-      dispositions: "finding-01=active, finding-02=active",
-    }));
-    result = replaceSection(result, "Validation Findings", `${ACTIVE_FINDING}\n\n${ACTIVE_FINDING_02}`);
-    const check = checkRecord("findings-check", 1, "TESTS_PASS", 1, { cycle: "attempt-01" })
-      .replace("- Findings verified: finding-01", "- Findings verified: finding-02")
-      .replace("- Unsupported active findings: none", "- Unsupported active findings: finding-01");
-    return replaceSection(result, "Findings Test Evidence", check);
-  });
-  await assert.rejects(inspectExecutionState(invalid.requirements), /Findings verified.*subset/u);
-});
-
-test("TESTS_PASS rejects none only in the four objective summary fields", async (t) => {
-  for (const fieldName of ["Tested scope", "Verification types considered", "Selected checks", "Coverage"]) {
-    const fixture = await standaloneWorkspace(t);
-    await renderArtifacts(fixture);
-    await editTask(fixture, (value) => {
-      let result = value.replace("- [ ] 1.1", "- [x] 1.1");
-      result = replaceSection(result, "Changed Areas", "- `../../src/example.txt`");
-      const check = checkRecord("implementation-check", 1, "TESTS_PASS", 1)
-        .replace(new RegExp(`^- ${fieldName}:.*$`, "mu"), `- ${fieldName}: none`);
-      return replaceSection(result, "Implementation Test Evidence", check);
-    });
-    await assert.rejects(inspectExecutionState(fixture.requirements), new RegExp(fieldName, "u"));
-  }
-
-  const canonical = await standaloneWorkspace(t);
-  await renderArtifacts(canonical);
-  await editTask(canonical, (value) => {
-    let result = value.replace("- [ ] 1.1", "- [x] 1.1");
-    result = replaceSection(result, "Changed Areas", "- `../../src/example.txt`");
-    return replaceSection(result, "Implementation Test Evidence", checkRecord("implementation-check", 1, "TESTS_PASS", 1));
-  });
-  assert.equal((await inspectExecutionState(canonical.requirements)).state, "IMPLEMENTED_AWAITING_VALIDATION");
-});
-
-test("a finding is active at origin and terminalizes only under later authority", async (t) => {
-  const resolvedAtOrigin = await standaloneWorkspace(t);
-  await renderArtifacts(resolvedAtOrigin);
-  await editTask(resolvedAtOrigin, (value) => {
-    let result = value.replace("- [ ] 1.1", "- [x] 1.1");
-    result = replaceSection(result, "Changed Areas", "- `../../src/example.txt`");
-    result = replaceSection(result, "Corrections Applied", "- `../../src/example.txt`");
-    result = replaceSection(result, "Validation Attempts", `${attemptRecord(1, "NEEDS_FIX", {
-      references: "finding-01", dispositions: "finding-01=resolved",
-    })}\n\n${attemptRecord(2, "PASS", {
-      references: "finding-01", dispositions: "finding-01=resolved",
-    })}`);
-    result = replaceSection(result, "Validation Findings", `${ACTIVE_FINDING.replace("- State: active", "- State: resolved")}\n- Resolution: attempt-01 claimed immediate resolution.`);
-    result = replaceSection(result, "Effective Validation Base", passBase({ attempt: 2 }));
-    return publishPassResult(result);
-  });
-  await editTasksIndex(resolvedAtOrigin, (value) => value.replace(
-    "| [ ] | 01 - Delivery | observable result | - | tasks/slice-01.md | pending | pending |",
-    "| [x] | 01 - Delivery | observable result | - | tasks/slice-01.md | PASS | PASS |",
-  ));
-  await assert.rejects(inspectExecutionState(resolvedAtOrigin.requirements), /strictly later|later formal attempt/u);
-
-  const supersededAtOrigin = await standaloneWorkspace(t);
-  await renderArtifacts(supersededAtOrigin);
-  const superseded = `${ACTIVE_FINDING.replace("- State: active", "- State: superseded")}\n- Superseded by: finding-02`;
-  await editTask(supersededAtOrigin, (value) => {
-    let result = value.replace("- [ ] 1.1", "- [x] 1.1");
-    result = replaceSection(result, "Changed Areas", "- `../../src/example.txt`");
-    result = replaceSection(result, "Validation Attempts", attemptRecord(1, "NEEDS_FIX", {
-      references: "finding-01, finding-02",
-      dispositions: "finding-01=superseded, finding-02=active",
-    }));
-    return replaceSection(result, "Validation Findings", `${superseded}\n\n${ACTIVE_FINDING_02}`);
-  });
-  await assert.rejects(inspectExecutionState(supersededAtOrigin.requirements), /origin must be strictly later/u);
 });
 
 test("the first formal PASS is terminal for its slice", async (t) => {

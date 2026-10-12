@@ -121,11 +121,17 @@ export async function publishExecutionCopy({ specPath, slice, candidateRoot, own
   if (terminal) {
     const text = await fs.readFile(path.join(candidateExecutionRoot, details.taskRelative), 'utf8');
     const heading = marker.owner.operation === 'EXECUTE_SLICE' ? 'Implementation Test Evidence' : 'Findings Test Evidence';
-    const body = parsePreparationArtifact(text, details.taskRelative).sections[heading];
+    const sections = parsePreparationArtifact(text, details.taskRelative).sections;
+    const body = sections[heading];
     const latest = body.split(/(?=^### )/mu).filter(value => value.trim()).at(-1) ?? '';
     const status = latest.match(/^- Status: (TESTS_FAIL|TESTS_PASS|TESTS_NOT_APPLICABLE|BLOCKED)$/mu)?.[1];
     const round = latest.match(/^- Automatic check round: ([123])\/3$/mu)?.[1];
-    if (!status || (status === 'TESTS_FAIL' && round !== '3')) throw new Error('terminal publication requires the bounded operation result; checklist-only update must keep ownership');
+    // A validated active blocking divergence ends this operation and hands
+    // authority to REPLAN/RESUME, including interruptions before round 3.
+    // Advisory records and a checklist-only update cannot release the owner.
+    const interrupted = validation.state === 'DIVERGENCE_BLOCKED'
+      && sections.Divergences.split(/(?=^### )/mu).some(record => /^- Severity: blocking$/mu.test(record) && /^- State: active$/mu.test(record));
+    if (!interrupted && (!status || (status === 'TESTS_FAIL' && round !== '3'))) throw new Error('terminal publication requires the bounded operation result; checklist-only update must keep ownership');
   }
   if (validation.status === 'BLOCKED') throw new Error(`candidate validation blocked: ${validation.reason ?? 'unknown'}`);
   const managed = assertManagedAgreement({ specPath, slice });
