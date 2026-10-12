@@ -22,7 +22,7 @@ Require one exact `MODE=INIT|RESUME|READINESS|CLOSE`; reject aliases, variants, 
 2. Build the complete disjoint candidate; never edit live state.
 3. Before INIT validation, run `node "<SKILL_ROOT>/runtime/prepare-init-candidate.mjs" <TARGET> <CANDIDATE>`; owner-only serialization blocks malformed headers. Never after rejection.
 4. Validate candidate structure and mode transition against unchanged source.
-5. Publish only with `node "<SKILL_ROOT>/runtime/publish-spec-lifecycle.mjs"`. Its portable exclusive lock precedes recovery; verify renamed backup digest before promotion. Conflicts restore exact state; failures retain or restore valid state. It is not filesystem-wide atomic.
+5. Publish only with `node "<SKILL_ROOT>/runtime/publish-spec-lifecycle.mjs"`. Acquire common before lifecycle; bound dead-owner recovery follows `../README.md`. Recheck backup digest before promotion. Conflicts restore exact state; failures retain or restore valid state. Renames are not filesystem-wide atomic.
 6. Revalidate published state and external snapshot; report failures and stop.
 
 The candidate cannot justify its changes. The runtime proves structure, relations, preservation, rendering, and publication; the model owns semantic sufficiency and non-invention.

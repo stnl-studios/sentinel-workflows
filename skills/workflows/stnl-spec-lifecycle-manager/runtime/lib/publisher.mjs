@@ -1,4 +1,8 @@
-import { withExecutionPublicationLock, assertLifecycleExecutionUnowned } from './execution-publication.mjs';
+import {
+  withExecutionPublicationLock, withLifecycleRecoveryPublicationLock,
+  lifecycleCommonLeaseBinding, validateLifecycleCommonLeaseBinding,
+  captureLifecycleRecoveryControl, assertLifecycleExecutionUnowned,
+} from './execution-publication.mjs';
 import { constants as FS_CONSTANTS } from "node:fs";
 import * as fs from "node:fs/promises";
 import { createHash, randomBytes } from "node:crypto";
@@ -1347,7 +1351,7 @@ async function journalRoleRecords(target) {
   return records;
 }
 
-async function settleJournalState(target) {
+async function settleJournalState(target, { validateOnly = false } = {}) {
   const journal = journalPath(target);
   const canonicalMetadata = await lstatOrNull(journal, { bigint: true });
   const roles = await journalRoleRecords(target);
@@ -1382,6 +1386,7 @@ async function settleJournalState(target) {
               !journalTransitionCompatible(previous[0].transaction, claim.transaction)) {
             fail("transaction journal atomic update residues do not match", path.dirname(target));
           }
+          if (validateOnly) return claim.transaction;
           await removeOwnedJournalResidue(
             previous[0].filePath,
             { identity: previous[0].identity, bytes: previous[0].record.bytes },
@@ -1399,6 +1404,10 @@ async function settleJournalState(target) {
       } else {
         fail("transaction journal atomic claim has an invalid residue role", claim.filePath);
       }
+      if (validateOnly) {
+        await validateLinkedJournalClaim(target, claim.filePath, claim.identity, claim.record.bytes);
+        return claim.transaction;
+      }
       await settleLinkedJournalClaim(
         target,
         claim.filePath,
@@ -1407,7 +1416,7 @@ async function settleJournalState(target) {
       );
       return;
     }
-    if (roles.length === 0) return;
+    if (roles.length === 0) return validateOnly ? parseJournal(target, (await readStableJournalRecord(journal)).payload) : undefined;
     if (next.length === 1 && previous.length === 0 && create.length === 0 && cleanup.length === 0) {
       const canonical = await readStableJournalRecord(journal);
       if (!journalPriorRecordMatches(next[0], canonical)) {
@@ -1417,6 +1426,7 @@ async function settleJournalState(target) {
       if (!journalTransitionCompatible(canonicalTransaction, next[0].transaction)) {
         fail("transaction journal candidate does not advance the canonical journal", next[0].filePath);
       }
+      if (validateOnly) return canonicalTransaction;
       await removeOwnedJournalResidue(
         next[0].filePath,
         { identity: next[0].identity, bytes: next[0].record.bytes },
@@ -1426,7 +1436,7 @@ async function settleJournalState(target) {
     }
     fail("transaction journal canonical path appeared in an interrupted atomic operation", journal);
   }
-  if (roles.length === 0) return;
+  if (roles.length === 0) return null;
   let selected;
   if (create.length === 1 && next.length === 0 && previous.length === 0 && cleanup.length === 0 &&
       create[0].transaction.phase === PHASE_PREPARED) {
@@ -1440,6 +1450,7 @@ async function settleJournalState(target) {
   } else {
     fail("transaction journal recovery residues do not describe one recoverable atomic operation", path.dirname(target));
   }
+  if (validateOnly) return selected.transaction;
   try {
     await fs.link(selected.filePath, journal);
   } catch (error) {
@@ -1884,7 +1895,7 @@ async function claimOwnershipNext(target, transactionId, next, previous) {
   return settleLinkedOwnershipClaim(target, transactionId, next);
 }
 
-async function settleOwnershipClaim(target, transactionId) {
+async function settleOwnershipClaim(target, transactionId, { validateOnly = false } = {}) {
   const filePath = ownershipPath(target, transactionId);
   const metadata = await lstatOrNull(filePath, { bigint: true });
   const roles = await ownershipRoleRecords(target, transactionId);
@@ -1910,15 +1921,17 @@ async function settleOwnershipClaim(target, transactionId) {
           if (!ownershipPriorMatches(claim, previous[0])) {
             fail("transaction ownership update residues do not match", filePath);
           }
+          if (validateOnly) return claim.record.ownership;
           await removeOwnedOwnershipRole(previous[0], "previous transaction ownership");
         }
       } else {
         fail("transaction ownership atomic claim has an invalid role", claim.filePath);
       }
+      if (validateOnly) return (await validateLinkedOwnershipClaim(target, transactionId, claim)).ownership;
       await settleLinkedOwnershipClaim(target, transactionId, claim);
       return;
     }
-    if (roles.length === 0) return;
+    if (roles.length === 0) return validateOnly ? (await readOwnershipRecord(target, transactionId)).ownership : undefined;
     if (next.length === 1 && create.length === 0 && previous.length === 0) {
       const canonical = await readOwnershipRecord(target, transactionId);
       const prior = {
@@ -1927,6 +1940,7 @@ async function settleOwnershipClaim(target, transactionId) {
       if (!ownershipPriorMatches(next[0], prior)) {
         fail("transaction ownership canonical identity or payload changed before atomic update", filePath);
       }
+      if (validateOnly) return next[0].record.ownership;
       const previousPath = ownershipRolePath(
         target,
         transactionId,
@@ -1947,8 +1961,9 @@ async function settleOwnershipClaim(target, transactionId) {
     }
     fail("transaction ownership canonical path appeared in an interrupted atomic operation", filePath);
   }
-  if (roles.length === 0) return;
+  if (roles.length === 0) return null;
   if (create.length === 1 && next.length === 0 && previous.length === 0) {
+    if (validateOnly) return create[0].record.ownership;
     try {
       await fs.link(create[0].filePath, filePath);
     } catch (error) {
@@ -1961,6 +1976,7 @@ async function settleOwnershipClaim(target, transactionId) {
   }
   if (create.length === 0 && next.length === 1 && previous.length === 1 &&
       ownershipPriorMatches(next[0], previous[0])) {
+    if (validateOnly) return next[0].record.ownership;
     await claimOwnershipNext(target, transactionId, next[0], previous[0]);
     return;
   }
@@ -2304,7 +2320,7 @@ async function readJournal(target) {
 
 function lockPayload(record) {
   return {
-    version: 1,
+    version: record.commonLease === undefined ? 1 : 2,
     state: record.state,
     owner_id: record.ownerId,
     operation_id: record.operationId,
@@ -2312,6 +2328,7 @@ function lockPayload(record) {
     pid: record.pid,
     hostname: record.hostname,
     started_at: record.startedAt,
+    ...(record.commonLease === undefined ? {} : { common_lease: sortedJsonValue(record.commonLease) }),
   };
 }
 
@@ -2326,8 +2343,9 @@ function parseLockPayload(filePath, payload) {
   exactKeys(payload, [
     "version", "state", "owner_id", "operation_id", "transaction_id",
     "pid", "hostname", "started_at",
+    ...(payload.version === 2 ? ["common_lease"] : []),
   ], "workspace publication lock", filePath);
-  if (payload.version !== 1) fail(`unsupported workspace publication lock version ${JSON.stringify(payload.version)}`, filePath);
+  if (![1, 2].includes(payload.version)) fail(`unsupported workspace publication lock version ${JSON.stringify(payload.version)}`, filePath);
   if (!new Set(["active", "released"]).has(payload.state)) fail("workspace publication lock has an invalid state", filePath);
   for (const field of ["owner_id", "operation_id"]) {
     if (typeof payload[field] !== "string" || !TRANSACTION_ID_PATTERN.test(payload[field])) {
@@ -2345,6 +2363,12 @@ function parseLockPayload(filePath, payload) {
   if (typeof payload.started_at !== "string" || Number.isNaN(Date.parse(payload.started_at))) {
     fail("workspace publication lock has an invalid acquisition timestamp", filePath);
   }
+  if (payload.version === 2) {
+    validateLifecycleCommonLeaseBinding(payload.common_lease);
+    if (payload.common_lease.pid !== payload.pid || payload.common_lease.hostname !== payload.hostname) {
+      fail("workspace publication lock common lease owner differs", filePath);
+    }
+  }
   return {
     state: payload.state,
     ownerId: payload.owner_id,
@@ -2353,6 +2377,7 @@ function parseLockPayload(filePath, payload) {
     pid: payload.pid,
     hostname: payload.hostname,
     startedAt: payload.started_at,
+    ...(payload.version === 2 ? { commonLease: payload.common_lease } : {}),
   };
 }
 
@@ -2510,6 +2535,7 @@ function lockTransitionCompatible(previous, next) {
     previous.ownerId === next.ownerId && previous.operationId === next.operationId &&
     previous.pid === next.pid && previous.hostname === next.hostname &&
     previous.startedAt === next.startedAt &&
+    compactAsciiJson(sortedJsonValue(previous.commonLease ?? null)) === compactAsciiJson(sortedJsonValue(next.commonLease ?? null)) &&
     (previous.state !== next.state || previous.transactionId !== next.transactionId);
 }
 
@@ -2623,6 +2649,7 @@ async function testOnlySwapLockCreateCanonical(target, expected, window) {
     transactionId: null,
     pid: process.pid,
     hostname: os.hostname(),
+    commonLease: undefined,
   };
   await renameWithRetry(filePath, preserved);
   const handle = await fs.open(filePath, "wx", 0o600);
@@ -2677,7 +2704,7 @@ async function settleLinkedLockCreate(target, tempPath, expected = null, mutatio
   return installed;
 }
 
-async function settleLinkedLockClaim(target) {
+async function settleLinkedLockClaim(target, { validateOnly = false } = {}) {
   const filePath = lockPath(target);
   const lockMetadata = await lstatOrNull(filePath, { bigint: true });
   const updateRoles = await lockUpdateRoleRecords(target);
@@ -2686,6 +2713,7 @@ async function settleLinkedLockClaim(target) {
   if (lockMetadata === null) {
     if (updateRoles.length === 0) return;
     if (next.length === 1 && previous.length === 1 && lockPriorMatches(next[0], previous[0])) {
+      if (validateOnly) return next[0].observed.record;
       await claimLockNext(target, next[0], previous[0]);
       return;
     }
@@ -2719,14 +2747,17 @@ async function settleLinkedLockClaim(target) {
         if (!lockPriorMatches(claim, previous[0])) {
           fail("workspace publication lock update residues do not match", filePath);
         }
+        if (validateOnly) return claim.observed.record;
         await removeOwnedLockRole(previous[0], "previous workspace publication lock");
       }
+      if (validateOnly) return claim.observed.record;
       await settleLinkedLockUpdate(target, claim);
       return;
     }
     if (parsed?.role !== "create" || updateRoles.length !== 0) {
       fail("workspace publication lock has an invalid atomic claim residue", filePath);
     }
+    if (validateOnly) return (await validateLinkedLockCreate(target, matches[0])).canonical.record;
     await settleLinkedLockCreate(
       target,
       matches[0],
@@ -2735,13 +2766,14 @@ async function settleLinkedLockClaim(target) {
     );
     return;
   }
-  if (updateRoles.length === 0) return;
+  if (updateRoles.length === 0) return validateOnly ? (await readLockRecord(filePath)).record : undefined;
   if (next.length === 1 && previous.length === 0) {
     const canonical = await readLockRecord(filePath);
     const prior = { observed: canonical };
     if (!lockPriorMatches(next[0], prior)) {
       fail("workspace publication lock canonical identity or payload changed before atomic update", filePath);
     }
+    if (validateOnly) return next[0].observed.record;
     const previousPath = lockUpdateRolePath(
       target,
       canonical.record,
@@ -2984,7 +3016,7 @@ async function cleanupValidatedLockResidues(target, currentOwnerId) {
   }
 }
 
-async function acquireWorkspaceLock(target) {
+async function acquireWorkspaceLock(target, commonLease) {
   const operationId = randomIdentity();
   const record = {
     state: "active",
@@ -2994,6 +3026,7 @@ async function acquireWorkspaceLock(target) {
     pid: process.pid,
     hostname: os.hostname(),
     startedAt: new Date().toISOString(),
+    commonLease,
   };
   for (let attempt = 0; attempt < 64; attempt += 1) {
     await settleLinkedLockClaim(target);
@@ -3058,8 +3091,8 @@ async function acquireWorkspaceLock(target) {
   fail("could not acquire the workspace publication lock", lockPath(target));
 }
 
-async function withWorkspaceLock(target, action) {
-  const lease = await acquireWorkspaceLock(target);
+async function withWorkspaceLock(target, action, commonLease) {
+  const lease = await acquireWorkspaceLock(target, commonLease);
   let result;
   let actionError = null;
   try {
@@ -3698,6 +3731,7 @@ async function recoverUpdate(target, transaction, stage, backup, ownership) {
 
 async function recoverLocked(target, lease) {
   const transaction = await readJournal(target);
+  await recoveryExecutionGuard(target, transaction);
   if (transaction !== null) await lease.setTransactionId(transaction.transactionId);
   let ownership = null;
   if (transaction !== null) {
@@ -3721,12 +3755,13 @@ async function recoverLocked(target, lease) {
   return transaction;
 }
 
-async function recoverIncompletePublicationLocked(target) {
+async function recoverIncompletePublicationLocked(target, commonLease) {
   const targetPath = await normalizeTarget(target);
   validateTestOnlyHookConfiguration();
   return withWorkspaceLock(
     targetPath,
     async (lease) => (await recoverLocked(targetPath, lease)) !== null,
+    commonLease,
   );
 }
 
@@ -3815,7 +3850,7 @@ async function publishCandidateLocked(mode, target, candidate, {
   afterCandidateValidated = null,
   beforeCommittedCleanup = null,
   beforeAttestationCleanup = null,
-} = {}) {
+} = {}, commonLease) {
   if (!MUTABLE_MODES.has(mode)) {
     throw new ValidationError("publisher accepts only explicit INIT, RESUME, or CLOSE");
   }
@@ -4224,25 +4259,109 @@ async function publishCandidateLocked(mode, target, candidate, {
       }
       if (terminalCleanupError !== null) throw terminalCleanupError;
     }
-  });
+  }, commonLease);
 }
 
 export function isFilesystemError(error) {
   return error !== null && typeof error === "object" && typeof error.code === "string";
 }
 
-async function withCommonExecutionLock(target, action) {
+async function recoveryExecutionGuard(target, transaction = null) {
+  const roots = [target];
+  if (transaction !== null) {
+    const { stage, backup } = await transactionPaths(target, transaction);
+    roots.push(stage, backup);
+  }
+  for (const root of roots.filter(Boolean)) await assertLifecycleExecutionUnowned(path.join(root, 'execution'));
+}
+
+async function lifecycleCommonRecoveryProof(target) {
+  // Validate the existing atomic roles without settling any lifecycle control
+  // before acquiring common ownership. The same validators own settlement later.
+  const names = (await fs.readdir(path.dirname(target))).sort(compareCodePoints);
+  const recoveryPaths = currentNames => [...new Set([lockPath(target), journalPath(target),
+    ...currentNames.filter(name => name.startsWith(lockTempPrefix(target)) || name.startsWith(journalTempPrefix(target))
+      || name.startsWith(ownershipPrefix(target)) || name.startsWith(ownershipTempPrefix(target)))
+      .map(name => path.join(path.dirname(target), name))])];
+  const paths = recoveryPaths(names);
+  if (paths.length > 128) fail('lifecycle recovery controls exceed the bounded limit', target);
+  const controls = [], absent = [];
+  for (const file of paths) {
+    if (await lexists(file)) controls.push(await captureLifecycleRecoveryControl(file));
+    else absent.push(file);
+  }
+  let record = await settleLinkedLockClaim(target, { validateOnly: true });
+  if (record === undefined && !(await lexists(lockPath(target)))) {
+    const claims = names.filter(name => name.startsWith(lockTempPrefix(target)));
+    if (claims.length !== 1) fail('common lease recovery has no unambiguous durable lifecycle claim; execution publication: lock already exists', lockPath(target));
+    const parsed = parseLockTempName(target, claims[0]);
+    const claimPath = path.join(path.dirname(target), claims[0]);
+    let observed;
+    try { observed = await readLockRecord(claimPath); }
+    catch { await cleanupMalformedLockTemp(target, claimPath, parsed); }
+    if (parsed?.role !== 'create' || observed === null || parsed.ownerId !== observed.record.ownerId
+      || parsed.operationId !== observed.record.operationId || parsed.pid !== observed.record.pid
+      || parsed.hostDigest !== lockHostDigest(observed.record.hostname)) fail('publisher lock temp residue payload does not match its claim identity', lockPath(target));
+    record = observed.record;
+  }
+  if (record.state !== 'active' || record.commonLease === undefined || !ownerIsProvablyDead(record)) {
+    fail('common lease recovery requires an intact lifecycle binding and a proven-dead local owner; execution publication: lock already exists', lockPath(target));
+  }
+  const transaction = await settleJournalState(target, { validateOnly: true });
+  if (transaction !== null && record.transactionId !== transaction.transactionId) {
+    fail('workspace publication lock transaction identity does not match the recovery journal', lockPath(target));
+  }
+  if (record.transactionId !== null) {
+    const ownership = await settleOwnershipClaim(target, record.transactionId, { validateOnly: true });
+    if (transaction !== null) validateOwnershipAgainstTransaction(target, ownership, transaction);
+  }
+  await recoveryExecutionGuard(target, transaction ?? (record.transactionId === null ? null : {
+    stageName: `${stagePrefix(target)}${record.transactionId}`, backupName: `${backupPrefix(target)}${record.transactionId}`,
+  }));
+  if (compactAsciiJson(paths) !== compactAsciiJson(recoveryPaths((await fs.readdir(path.dirname(target))).sort(compareCodePoints)))) {
+    fail('lifecycle recovery control paths changed during validation', target);
+  }
+  if (record.transactionId !== null && !paths.includes(ownershipPath(target, record.transactionId))) {
+    absent.push(ownershipPath(target, record.transactionId));
+  }
+  for (const expected of controls) {
+    if (compactAsciiJson(await captureLifecycleRecoveryControl(expected.file)) !== compactAsciiJson(expected)) fail('lifecycle recovery control changed during validation', expected.file);
+  }
+  for (const file of absent) if (await lexists(file)) fail('absent lifecycle recovery control appeared during validation', file);
+  return { format: 'stnl-lifecycle-common-recovery-v1', binding: record.commonLease,
+    controls, absent };
+}
+
+async function withCommonExecutionLock(target, action, { recovery = false } = {}) {
   const intended = expandUser(target);
   const parent = await fs.realpath(path.dirname(intended));
   const specRoot = path.join(parent, path.basename(intended));
   const executionRoot = path.join(specRoot, 'execution');
-  return withExecutionPublicationLock({ specRoot, executionRoot }, async () => {
+  const workspace = { specRoot, executionRoot };
+  const run = async lease => {
     await assertLifecycleExecutionUnowned(executionRoot);
-    return action({ specRoot, executionRoot });
-  });
+    if (recovery) {
+      const transaction = await settleJournalState(specRoot, { validateOnly: true });
+      await recoveryExecutionGuard(specRoot, transaction);
+    }
+    const commonLease = await lifecycleCommonLeaseBinding(lease);
+    return action({ specRoot, executionRoot, commonLease });
+  };
+  try { return await withExecutionPublicationLock(workspace, run); }
+  catch (error) {
+    if (!error.existingExecutionLock) throw error;
+    if (recovery) {
+      const proof = await lifecycleCommonRecoveryProof(specRoot);
+      return withLifecycleRecoveryPublicationLock(workspace, proof, run);
+    }
+    // Only the lifecycle recovery entry can transfer the stale common lease.
+    // Complete the existing transaction before considering this new candidate.
+    await recoverIncompletePublication(specRoot);
+    return withExecutionPublicationLock(workspace, run);
+  }
 }
 export async function recoverIncompletePublication(target) {
-  return withCommonExecutionLock(target, () => recoverIncompletePublicationLocked(target));
+  return withCommonExecutionLock(target, ({ commonLease }) => recoverIncompletePublicationLocked(target, commonLease), { recovery: true });
 }
 async function lifecycleExecutionSnapshot(specRoot) {
   const root = path.join(specRoot, 'execution');
@@ -4253,12 +4372,12 @@ async function lifecycleExecutionSnapshot(specRoot) {
   return workspaceSnapshot(specRoot).filter(record => record[1] === 'execution' || record[1].startsWith('execution/'));
 }
 export async function publishCandidate(mode, target, candidate, options = {}) {
-  return withCommonExecutionLock(target, async ({ specRoot }) => {
+  return withCommonExecutionLock(target, async ({ specRoot, commonLease }) => {
     const source = await lifecycleExecutionSnapshot(specRoot);
     const proposed = await lifecycleExecutionSnapshot(candidate);
     if (JSON.stringify(source) !== JSON.stringify(proposed)) {
       fail('lifecycle candidate does not preserve execution captured under common lock; refresh stale candidate', candidate);
     }
-    return publishCandidateLocked(mode, target, candidate, options);
+    return publishCandidateLocked(mode, target, candidate, options, commonLease);
   });
 }

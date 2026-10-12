@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {spawn,spawnSync} from 'node:child_process';
-import {fileURLToPath} from 'node:url';
+import {fileURLToPath,pathToFileURL} from 'node:url';
 import {fixture,approveFixture,reviewDecision,verificationBody} from './test-p1b-preparation.mjs';
 import {implementedFixture,formal,native,evidence,setSection} from './test-p1b-continuity.mjs';
 import {resolveExecutionWorkspace,inspectExecutionState,readExecutionActivation,beginPreparedExecutionOperation,resumeOwnedExecutionOperation,readDeliveryContinuity,readContinuationWorkCapture} from '../skills/workflows/stnl-slice-executor/runtime/execution-state.mjs';
@@ -170,7 +170,9 @@ test('U2-A11 separate publishers in ancestor scope have one CAS winner and prese
 test('U2-A12 isolated copied bundle reads the same continuity while source imports are denied',async()=>{
   const f=await implementedFixture();await formal(f);const info=await inspectExecutionState(f.specPath);
   const bundle=path.join(f.root,'isolated-executor');await fs.cp(path.join(root,'skills/workflows/stnl-slice-executor'),bundle,{recursive:true});
-  const loader=path.join(f.root,'deny-source-loader.mjs');await fs.writeFile(loader,`export async function resolve(s,c,next){const r=await next(s,c);if(r.url.startsWith(${JSON.stringify(new URL('../',import.meta.url).href)}))throw new Error('SOURCE_IMPORT_DENIED');return r;}\n`);
+  const loader=path.join(f.root,'deny-source-loader.mjs');await fs.writeFile(loader,`export async function resolve(s,c,next){const r=await next(s,c);if(r.url.startsWith(${JSON.stringify(new URL('../',import.meta.url).href)})&&!r.url.startsWith(${JSON.stringify(pathToFileURL(bundle+path.sep).href)}))throw new Error('SOURCE_IMPORT_DENIED');return r;}\n`);
+  const denied=spawnSync(process.execPath,['--experimental-loader',loader,'--input-type=module','-e',`import ${JSON.stringify(new URL('../skills/workflows/stnl-slice-executor/runtime/execution-state.mjs',import.meta.url).href)};`],{cwd:bundle,env:environment,encoding:'utf8'});
+  assert.notEqual(denied.status,0);assert.match(denied.stderr,/SOURCE_IMPORT_DENIED/u);
   const cli=path.join(bundle,'runtime/validate-execution-state.mjs');
   const result=spawnSync(process.execPath,['--experimental-loader',loader,cli,f.specPath,'--inspect-continuity','1'],{cwd:bundle,env:environment,encoding:'utf8'});assert.equal(result.status,0,result.stderr);
   const copied=JSON.parse(result.stdout);assert.equal(copied.deliveryId,info.preparation.deliveries[0].deliveryId);assert.equal(copied.currentValidation,'current');

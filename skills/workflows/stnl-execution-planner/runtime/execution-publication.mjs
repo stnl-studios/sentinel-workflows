@@ -3,6 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import os from 'node:os';
 
 const digest = bytes => `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
 const equal = (left, right) => JSON.stringify(left) === JSON.stringify(right);
@@ -20,17 +21,30 @@ async function ancestry(file) {
   }
 }
 
-export async function readOwnedFile(file) {
+async function readFileWithLinks(file, links) {
   await ancestry(file);
   const handle = await fs.open(file, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
     const before = await handle.stat();
-    if (!before.isFile() || before.nlink !== 1) fail(`file must be regular and single-link: ${file}`);
+    if (!before.isFile() || !links.includes(before.nlink)) fail(`file must be regular and single-link: ${file}`);
     const bytes = await handle.readFile(); const after = await handle.stat(); const pathname = await fs.lstat(file);
     if (!equal(identity(before), identity(after)) || !equal(identity(after), identity(pathname))
+      || !links.includes(pathname.nlink) || before.nlink !== after.nlink
       || before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs) fail(`file changed during read: ${file}`);
-    return { file, bytes, identity: identity(after), mode: after.mode & 0o777 };
+    return { file, bytes, identity: identity(after), mode: after.mode & 0o777, links: after.nlink };
   } finally { await handle.close(); }
+}
+export async function readOwnedFile(file) { return readFileWithLinks(file, [1]); }
+export async function captureLifecycleRecoveryControl(file) {
+  const current = await readFileWithLinks(file, [1, 2]);
+  return { file, identity: current.identity, sha256: digest(current.bytes), links: current.links };
+}
+
+async function syncLockParent(parent) {
+  let handle;
+  try { handle = await fs.open(parent, constants.O_RDONLY | (constants.O_DIRECTORY ?? 0)); await handle.sync(); }
+  catch (error) { if (!['EBADF','EINVAL','ENOTSUP','EOPNOTSUPP','EISDIR', ...(process.platform === 'win32' ? ['EPERM','EACCES'] : [])].includes(error.code)) throw error; }
+  finally { await handle?.close(); }
 }
 
 async function writeNew(file, bytes, mode = 0o600) {
@@ -53,15 +67,133 @@ export async function executionLockIdentity({ executionRoot, specRoot = null }) 
   return { executionRoot: canonicalRoot, specRoot: canonicalSpec, parent, parentIdentity: identity(parentMetadata), lockPath: path.join(parent, `.stnl-execution-${key}.lock`) };
 }
 
-export async function acquireExecutionPublicationLock(workspace) {
-  const location = await executionLockIdentity(workspace);
+async function assertNoRecoveryClaim(location) {
+  const prefix = `${path.basename(location.lockPath)}.recovery-`;
+  if ((await fs.readdir(location.parent)).some(name => name.startsWith(prefix))) fail(`common lease recovery is incomplete; preserve and diagnose: ${location.lockPath}`);
+}
+
+async function createExecutionLease(location) {
   const token = randomUUID();
   const bytes = Buffer.from(JSON.stringify({ format: 'stnl-execution-lock-v1', token, executionRoot: location.executionRoot, pid: process.pid }) + '\n');
   let owned;
   try { owned = await writeNew(location.lockPath, bytes); }
-  catch (error) { if (error.code === 'EEXIST') fail(`lock already exists; preserve and diagnose owner: ${location.lockPath}`); throw error; }
+  catch (error) {
+    if (error.code === 'EEXIST') {
+      const blocked = new Error(`execution publication: lock already exists; preserve and diagnose owner: ${location.lockPath}`);
+      throw Object.assign(blocked, { code: 'EXECUTION_PUBLICATION_BLOCKED', existingExecutionLock: true });
+    }
+    throw error;
+  }
   const lease = { ...location, token, owned };
+  await syncLockParent(location.parent);
   await assertExecutionPublicationLock(lease);
+  return lease;
+}
+
+export async function acquireExecutionPublicationLock(workspace) {
+  const location = await executionLockIdentity(workspace);
+  await assertNoRecoveryClaim(location);
+  const lease = await createExecutionLease(location);
+  try { await assertNoRecoveryClaim(location); }
+  catch (error) { await releaseExecutionPublicationLock(lease); throw error; }
+  return lease;
+}
+
+export function validateLifecycleCommonLeaseBinding(binding) {
+  closed(binding, ['format','executionRoot','lockPath','parentIdentity','identity','sha256','token','pid','hostname'], 'lifecycle common lease binding');
+  for (const field of ['parentIdentity','identity']) {
+    closed(binding[field], ['dev','ino'], `common lease ${field}`);
+    if (!Object.values(binding[field]).every(value => typeof value === 'string' && /^\d+$/u.test(value))) fail('common lease has invalid physical identity');
+  }
+  if (binding.format !== 'stnl-lifecycle-common-lease-v1' || typeof binding.executionRoot !== 'string' || !path.isAbsolute(binding.executionRoot)
+    || typeof binding.lockPath !== 'string' || !path.isAbsolute(binding.lockPath)
+    || typeof binding.token !== 'string' || !/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/u.test(binding.token)
+    || typeof binding.sha256 !== 'string' || !/^sha256:[0-9a-f]{64}$/u.test(binding.sha256)
+    || !Number.isSafeInteger(binding.pid) || binding.pid <= 0 || typeof binding.hostname !== 'string' || !binding.hostname || binding.hostname.length > 1024) fail('invalid lifecycle common lease binding');
+  return binding;
+}
+
+// Only the producer's real acquired lease supplies this persisted witness.
+export async function lifecycleCommonLeaseBinding(lease) {
+  await assertExecutionPublicationLock(lease);
+  return validateLifecycleCommonLeaseBinding({ format: 'stnl-lifecycle-common-lease-v1', executionRoot: lease.executionRoot,
+    lockPath: lease.lockPath, parentIdentity: lease.parentIdentity, identity: lease.owned.identity,
+    sha256: digest(lease.owned.bytes), token: lease.token, pid: process.pid, hostname: os.hostname() });
+}
+
+function assertDeadLifecycleOwner(binding) {
+  if (binding.hostname !== os.hostname()) fail('common lease recovery owner belongs to another host');
+  try { process.kill(binding.pid, 0); }
+  catch (error) { if (error.code === 'ESRCH') return; fail('common lease recovery owner liveness is uncertain'); }
+  fail('common lease recovery owner is alive');
+}
+
+function assertBoundCommonFile(current, binding) {
+  const record = parseStrictJson(current.bytes.toString('utf8'));
+  closed(record, ['format','token','executionRoot','pid'], 'recoverable common lease');
+  if (record.format !== 'stnl-execution-lock-v1' || record.token !== binding.token || record.executionRoot !== binding.executionRoot
+    || record.pid !== binding.pid || !equal(current.identity, binding.identity)
+    || digest(current.bytes) !== binding.sha256) fail('common lease differs from lifecycle binding');
+}
+
+async function assertRecoveryControls(proof, location) {
+  closed(proof, ['format','binding','controls','absent'], 'lifecycle recovery proof');
+  if (proof.format !== 'stnl-lifecycle-common-recovery-v1' || !Array.isArray(proof.controls) || !proof.controls.length || proof.controls.length > 128
+    || new Set(proof.controls.map(entry => entry.file)).size !== proof.controls.length || !Array.isArray(proof.absent)) fail('invalid lifecycle recovery controls');
+  for (const control of proof.controls) {
+    closed(control, ['file','identity','sha256','links'], 'lifecycle recovery control');
+    if (!path.isAbsolute(control.file) || path.dirname(control.file) !== location.parent || ![1, 2].includes(control.links)) fail('lifecycle recovery control is outside stable ancestor or has invalid links');
+    if (control.links === 2 && proof.controls.filter(other => equal(other.identity, control.identity)
+      && other.sha256 === control.sha256 && other.links === 2).length !== 2) fail('lifecycle recovery control has an unbound extra link');
+    const current = await readFileWithLinks(control.file, [control.links]);
+    if (!equal(current.identity, control.identity) || digest(current.bytes) !== control.sha256) fail('lifecycle recovery control changed');
+  }
+  for (const file of proof.absent) {
+    if (!path.isAbsolute(file) || path.dirname(file) !== location.parent || await stat(file)) fail('absent lifecycle recovery control appeared');
+  }
+}
+
+// A typed proof from the lifecycle wrapper, never a general takeover predicate.
+// The exclusive hardlink is a retirement role of this lease, not a third lock.
+async function acquireLifecycleRecoveryLease(workspace, proof) {
+  const location = await executionLockIdentity(workspace);
+  const binding = validateLifecycleCommonLeaseBinding(proof.binding);
+  if (binding.executionRoot !== location.executionRoot || binding.lockPath !== location.lockPath
+    || !equal(binding.parentIdentity, location.parentIdentity)) fail('common lease recovery root or ancestor differs');
+  await assertNoRecoveryClaim(location);
+  await assertRecoveryControls(proof, location);
+  assertDeadLifecycleOwner(binding);
+  assertBoundCommonFile(await readOwnedFile(location.lockPath), binding);
+  const claim = `${location.lockPath}.recovery-${binding.token}`;
+  try { await fs.link(location.lockPath, claim); }
+  catch (error) { if (['EEXIST','ENOENT'].includes(error.code)) fail('another recovery already claimed the common lease'); throw error; }
+  await syncLockParent(location.parent);
+  const captured = await readFileWithLinks(claim, [2]);
+  // A delayed recoverer may have linked a replacement. Remove only its own
+  // just-created extra link, never rename/unlink the replacement's canonical path.
+  if (!equal(captured.identity, binding.identity) || digest(captured.bytes) !== binding.sha256) {
+    const canonical = await readFileWithLinks(location.lockPath, [2]);
+    const rechecked = await readFileWithLinks(claim, [2]);
+    if (equal(canonical.identity, captured.identity) && equal(rechecked.identity, captured.identity)
+      && canonical.bytes.equals(captured.bytes) && rechecked.bytes.equals(captured.bytes)) {
+      await fs.unlink(claim); await syncLockParent(location.parent);
+    }
+    fail('common lease changed before exclusive recovery claim');
+  }
+  assertBoundCommonFile(captured, binding);
+  await assertRecoveryControls(proof, location);
+  assertDeadLifecycleOwner(binding);
+  const parent = await fs.lstat(location.parent);
+  if (!equal(identity(parent), binding.parentIdentity) || await fs.realpath(location.parent) !== location.parent) fail('common lease recovery ancestor changed');
+  assertBoundCommonFile(await readFileWithLinks(location.lockPath, [2]), binding);
+  await fs.unlink(location.lockPath);
+  await syncLockParent(location.parent);
+  const lease = await createExecutionLease(location);
+  const retired = await readOwnedFile(claim);
+  assertBoundCommonFile(retired, binding);
+  await assertExecutionPublicationLock(lease);
+  await fs.unlink(claim);
+  await syncLockParent(location.parent);
   return lease;
 }
 
@@ -86,6 +218,15 @@ export async function releaseExecutionPublicationLock(lease) {
 
 export async function withExecutionPublicationLock(workspace, action) {
   const lease = await acquireExecutionPublicationLock(workspace);
+  return withPublicationLease(lease, action);
+}
+
+export async function withLifecycleRecoveryPublicationLock(workspace, proof, action) {
+  const lease = await acquireLifecycleRecoveryLease(workspace, proof);
+  return withPublicationLease(lease, action);
+}
+
+async function withPublicationLease(lease, action) {
   let result; let failure;
   try { result = await action(lease); } catch (error) { failure = error; }
   if (failure?.retainExecutionLock) { failure.message += `; common lock retained for uncertain ownership: ${lease.lockPath}`; throw failure; }

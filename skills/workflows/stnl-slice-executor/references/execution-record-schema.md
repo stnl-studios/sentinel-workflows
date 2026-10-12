@@ -166,6 +166,10 @@ Current PASS reuse needs integral origin/snapshot, equivalent relevant local/glo
 
 Confirmed publication persists `confirmation` (activationId/artifactManifestSha256/terminalOperationAttemptId) separately from `cleanup` (status/paths/diagnostics). Lost acknowledgment is recognized only from the exact verified expected installed image. Explicit cleanup uses the same common lock and CAS, checks positive producer ownership, recorded contents and needed refs, and never removes backup/history/receipt/unique product. Retained candidates are inspectable; unknown or changed material blocks deletion.
 
+
+
+The common lease stays exclusive for normal writers. Lifecycle alone may recover a retained lease through its producer-bound recovery entry: a durable version 2 lifecycle lock witnesses the real common token/bytes/inode/ancestor and local host/PID; only ESRCH proves that owner dead. The neutral kernel checks typed physical control witnesses and exclusively claims retirement of that lease before replacing it. Missing, foreign, active, uncertain or changed bindings and interrupted ambiguous handoffs remain blocked. Recovery preserves common→lifecycle ordering and checks execution ownership in retained roots before commit/rollback. See the lifecycle README for the exact protocol. No age-based unlock or generic takeover is admitted.
+
 ## Explicit verification and preparation creation authority
 
 The mandatory normative Verification Recipe is defined in [verification-recipe.md](verification-recipe.md). Plan/Task identity, projection, review and snapshot include it. Mechanical file args and dependencies are typed references; explanatory prose grants no input domain. The runner receipt binds the producer-owned direct execution observation, including recipe digest, resolved commands/exits and passive work-image hash. Current proof requires this binding and unchanged declared inputs. Extra SDK verification commands require a reviewed recipe; they cannot be silently ignored or adopted as proof. Historical reads explicitly preserve old contracts without granting current validity.

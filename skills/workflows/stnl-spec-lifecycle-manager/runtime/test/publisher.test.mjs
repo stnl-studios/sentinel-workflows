@@ -1651,7 +1651,7 @@ test("action and lock-release failures are both reported and every lease field i
   }
 });
 
-test("pre-journal stage and both atomic lock-claim crash windows recover without manual cleanup", async (t) => {
+test("pre-journal recovery requires a durable common lease binding and preserves ambiguous builds", async (t) => {
   for (const checkpoint of [
     "LOCK_BUILD_ALLOCATED",
     "LOCK_TEMP_WRITTEN",
@@ -1670,15 +1670,22 @@ test("pre-journal stage and both atomic lock-claim crash windows recover without
           },
         });
         assertKilled(result, checkpoint);
+        if (checkpoint === "LOCK_BUILD_ALLOCATED") {
+          const names = await fs.readdir(path.dirname(target));
+          const controls = await captureFileEvidence(names.filter(name => name.startsWith('.'))
+            .map(name => path.join(path.dirname(target), name)));
+          await assert.rejects(recoverIncompletePublication(target), /no unambiguous durable lifecycle claim/u);
+          await assertFileEvidencePreserved(controls);
+          assert.equal(snapshot(target), before);
+          assert.deepEqual(await transactionResidues(target), []);
+          assert.equal(names.some(name => name.includes("lifecycle-lock-build-")), true);
+          return;
+        }
         assert.equal(await recoverIncompletePublication(target), false);
         assert.equal(snapshot(target), before);
         assert.deepEqual(await transactionResidues(target), []);
         const names = await fs.readdir(path.dirname(target));
         assert.equal(names.some((name) => name.includes("lifecycle-lock-tmp-")), false);
-        if (checkpoint === "LOCK_BUILD_ALLOCATED") {
-          assert.equal(names.some((name) => name.includes("lifecycle-lock-build-")), true);
-          assert.equal(await recoverIncompletePublication(target), false);
-        }
       });
     });
   }
