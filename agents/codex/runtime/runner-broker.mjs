@@ -173,7 +173,7 @@ export async function startOfficialRunnerBroker({
   let dispatchSettled = false;
   let initializationRetries = 0;
   let lastResult = null;
-  let lastRound = 0;
+  let lastRound = officialPreflight.owner.recovery?.round ?? 0;
   let pending = false;
   let cancelledPending = false;
   const cancellation = new AbortController();

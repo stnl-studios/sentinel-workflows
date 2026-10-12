@@ -10,6 +10,7 @@ import { readActivatedExecution, beginExecutionOperation, withExecutionPublicati
   publishExecutionUpdate, captureExecutionTree, readOwnedFile, assertExecutionAttempt, readRetainedAllocation,
   retentionSha256, persistAllocation, executionLockIdentity, preparationRegistryPath, classifyOwnedAllocation, hasOwnedAllocationEnvelope } from './execution-publication.mjs';
 import path from "node:path";
+import { readRunnerRecovery, verifyPublishedRunnerRejection, readBoundRunnerRejection } from './runner-result-recovery.mjs';
 
 const ROOT_FILES = new Set(["plan.md", "tasks.md", "approved-preparation.json", "activation.json", "continuity.json"]);
 const ROOT_DIRECTORIES = new Set(["plans", "tasks"]);
@@ -1236,7 +1237,10 @@ function parseDelegationBlocker(section, operationRecordsByName) {
       throw new ExecutionContractError(`Delegation Blocker Resolution must name ${resolvingRecord}`);
     }
   }
-  return { operation, kind, state, afterRecord };
+  const proof = field(section, 'Recovery proof', { required: false });
+  const match = proof === null ? null : /^(.*) (sha256:[a-f0-9]{64})$/u.exec(proof);
+  if (proof !== null && (!match || !path.isAbsolute(match[1]))) throw new ExecutionContractError('invalid runner recovery proof');
+  return { operation, kind, state, afterRecord, ...(match ? {recoveryProof:{path:match[1],sha256:match[2]}} : {}) };
 }
 
 function validateFindingLifecycle(findings, attempts, findingsChecks) {
@@ -1768,7 +1772,8 @@ function currentCandidateEvidenceOwners(result) {
     const entries = task.base.present ? task.base.entries : task.currentAuxiliaryCheck?.testedState ?? [];
     for (const entry of entries) owners.set(entry.path, row.slice);
     if (task.delegationBlocker?.state === "active" && task.delegationBlocker.kind === "malformed-output"
-      && task.delegationBlocker.operation === "EXECUTE_SLICE" && !task.base.present) {
+      && (task.delegationBlocker.operation === "EXECUTE_SLICE"
+        || task.delegationBlocker.operation === "APPLY_FINDINGS" && task.delegationBlocker.recoveryProof) && !task.base.present) {
       // The rejected response cannot own current code. Its declared changed
       // scope is pending the next valid runner check, including prior overlaps.
       for (const claim of task.changedClaims) owners.set(claim, row.slice);
@@ -1859,8 +1864,20 @@ async function validateCandidateExecutionRecordPaths(result) {
     const entries = task.base.present ? task.base.entries : task.currentAuxiliaryCheck?.testedState ?? [];
     const pendingMalformedExecution = task.delegationBlocker?.state === "active"
       && task.delegationBlocker.kind === "malformed-output"
-      && task.delegationBlocker.operation === "EXECUTE_SLICE" && !task.base.present;
+      && (task.delegationBlocker.operation === "EXECUTE_SLICE"
+        || task.delegationBlocker.operation === "APPLY_FINDINGS" && task.delegationBlocker.recoveryProof) && !task.base.present;
     if (pendingMalformedExecution) {
+      if (task.delegationBlocker.operation === 'APPLY_FINDINGS') {
+        const active = (await readExecutionActivation(logicalWorkspace.authorityPath)).activation.activeAttempt;
+        const reference = task.delegationBlocker.recoveryProof;
+        const proofOwner = active?.recovery && JSON.stringify(active.recovery.rejection) === JSON.stringify(reference)
+          ? active.recovery.predecessor : active;
+        const proof = await readBoundRunnerRejection(reference, proofOwner);
+        if (proof.owner.operation !== 'APPLY_FINDINGS' || proof.owner.slice !== slice
+          || Object.entries(proof.privateChecks).some(([heading, body]) => task.sections.get(heading).trim() !== body)) {
+          throw new ExecutionContractError('pending findings rejection changed private history');
+        }
+      }
       for (const claim of task.changedClaims) {
         await validateImplementationPathClaim(result.workspace, { artifact, field: "Changed Areas pending malformed-output recovery", raw: claim });
       }
@@ -2732,7 +2749,7 @@ async function captureOwnerContinuationWork(workspace, owner, current) {
     const producer=parseStrictJson((await readOwnedFile(producerMarker)).bytes.toString('utf8'));
     await persistAllocation(producerMarker,{...producer,knownAllocations:[...new Set([...(producer.knownAllocations ?? []),marker])]});
   }
-  const inherited=current.activation.lastAttempt;
+  const inherited=current.activation.activeAttempt ?? current.activation.lastAttempt;
   const delivery=current.authority.deliveries.find(d=>d.slice===owner.slice);
   const capture=await captureContinuationWorkState({workspace,authority:current.authority,delivery,allocation,marker,owner:inherited,
     continuity,label:'owner',sourceActivationId:owner.originActivationId});
@@ -2770,6 +2787,10 @@ export async function deriveDeliveryValidity({workspace,authority,continuity,del
   const controls=await knownContinuationControls(workspace,continuity,owner);
   const registered=new Set([...task.implementationChecks,...task.findingsChecks,...task.attempts].map(r=>field(r.body,'Operation attempt ID')));
   if (owner) registered.add(owner.operationAttemptId);
+  for (const allocation of controls.allocations) {
+    const successor = allocation.record.retention?.owner;
+    if (successor?.recovery) { await readRunnerRecovery(successor); registered.add(successor.recovery.predecessor.operationAttemptId); }
+  }
   if (controls.allocations.some(a=>a.record.retention?.producer==='operation-admission' && a.record.owner?.slice===delivery.slice
     && !registered.has(a.record.owner.operationAttemptId))) return {validity:'uncertain',affectedPaths:[],historicalPass:latestPass?.id ?? null,reason:'Unsettled pre-effect owner allocation requires producer diagnosis',observed};
   if (!latestPass) return {validity:'unvalidated',affectedPaths:workChanges(baseline,observed),historicalPass:null,observed};
@@ -2848,6 +2869,7 @@ export async function readExecutionActivation(specPath, { requireCurrent = true 
   await readDeliveryContinuity(workspace,activated.authority);
   for (const owner of [activated.activation.activeAttempt,activated.activation.lastAttempt].filter(Boolean)) {
     await readContinuationWorkCapture(workspace,owner.workCapture,owner,owner);
+    await readRunnerRecovery(owner);
     const allocation=await readRetainedAllocation(`${owner.workCapture.path}.owner.json`,workspace.executionRoot);
     if (allocation.retention.owner.operationAttemptId!==owner.operationAttemptId) throw new ExecutionContractError('work capture ownership differs');
   }
@@ -2870,6 +2892,29 @@ async function inspectExecutionStateWithContext(specPath, logicalWorkspace, opti
     return { ...result, activation: after.activation, preparation: after.authority };
   }
   return result;
+}
+
+// Explicit read-only recovery preflight; ordinary admission remains closed.
+export async function preflightRunnerResultRecovery(specPath, operation, sliceValue, recovery) {
+  const current = await readExecutionActivation(specPath);
+  const state = await preflightExecutionOperation(specPath, operation, sliceValue, { owner: current.activation.activeAttempt });
+  await verifyPublishedRunnerRejection({ current, state, recovery });
+  const continuity = await readDeliveryContinuity(state.workspace, current.authority);
+  const controls = await knownContinuationControls(state.workspace, continuity, current.activation.activeAttempt);
+  if (controls.allocations.some(entry => entry.record.owner?.recovery && entry.record.owner.operation === operation
+    && entry.record.owner.slice === current.activation.activeAttempt.slice)) throw new ExecutionContractError('runner recovery already consumed for operation/slice');
+  return state;
+}
+
+export async function beginRunnerResultRecovery(specPath, operation, sliceValue, recovery) {
+  const workspace = await resolveExecutionWorkspace(specPath);
+  const slice = `slice-${BigInt(sliceValue).toString(10).padStart(2, '0')}`;
+  return beginExecutionOperation({ workspace, operation, slice, expectedActivationId: recovery.expectedActivationId,
+    readActivated: () => readExecutionActivation(specPath),
+    recovery: async current => verifyPublishedRunnerRejection({ current,
+      state: await preflightRunnerResultRecovery(specPath, operation, sliceValue, recovery), recovery }),
+    preflight: () => preflightRunnerResultRecovery(specPath, operation, sliceValue, recovery),
+    captureWork: (owner, current) => captureOwnerContinuationWork(workspace, owner, current) });
 }
 
 export async function beginPreparedExecutionOperation(specPath, operation, sliceValue, expectedActivationId) {

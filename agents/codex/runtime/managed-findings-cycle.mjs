@@ -32,7 +32,16 @@ export function deriveManagedFindingsOwnership({ context, binding, selected, req
     if (section(candidateText, name) !== section(liveText, name)) fail('managed findings candidate changed validation authority/history');
   }
   const round = Number(automaticCheckRound.slice(0, 1));
-  if (round > 1) {
+  const inherited = prior === null && context.owner?.recovery?.round === round;
+  if (round > 1 && inherited) {
+    const previous = selected.findingsChecks.at(-1);
+    if (previous?.status !== 'TESTS_FAIL' || previous.round !== round - 1 || previous.findingsCycle !== attempt.id
+      || !previous.body.includes(`- Operation attempt ID: ${context.owner.recovery.predecessor.operationAttemptId}\n`)
+      || findingsEvidenceFingerprint(candidateText) !== findingsEvidenceFingerprint(liveText)) {
+      fail('managed recovery prior published checks changed');
+    }
+  }
+  if (round > 1 && !inherited) {
     const previous = prior?.findingsCycleBinding;
     if (prior?.state !== 'PRIVATE_TESTS_FAIL' || prior.operation !== context.operation
       || prior.slice !== context.slice || prior.sequence !== binding.sequence || prior.authority !== context.authority

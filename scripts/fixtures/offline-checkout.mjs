@@ -96,6 +96,19 @@ export async function finishOfflineFixture(fixture, { remove = true } = {}) {
       const activeFile = path.join(runRoot, entry.name, 'tmp/stnl-runner-broker/active.json');
       const active = await optional(activeFile);
       if (active !== null) {
+        if (fixture.expectedRecoveredRunner) {
+          const expected=fixture.expectedRecoveredRunner;
+          const {readRunnerRecovery}=await import(path.join(root,'skills/workflows/stnl-slice-executor/runtime/runner-result-recovery.mjs'));
+          const proof=await readRunnerRecovery(expected.successor);
+          const supervisor=await optional(expected.supervisorFile);
+          if(state.status!=='PASS' || activeFile!==expected.activeFile || !proof
+            || active.officialPreflight?.owner?.operationAttemptId!==expected.successor.recovery.predecessor.operationAttemptId
+            || proof.receiptFile!==expected.receiptFile || supervisor?.pending!==false || !supervisor.closedAt
+            || supervisor.cancelledPending!==false || hash(await fs.readFile(activeFile))!==expected.activeSha256) {
+            throw new Error('OFFLINE_FIXTURE_RETAINED: recovered runner lineage/conclusion differs');
+          }
+          retainedBrokers.push(activeFile);remove=false;continue;
+        }
         if (fixture.expectedStoppedValidation) {
           // Explicit negative: retain the owner and diagnostic tree even though
           // the broker and every recorded fixture process have stopped.

@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import { assertExecutionAttempt, assertOwnedOperationalCandidate, readOwnedFile, executionLockIdentity, withExecutionPublicationLock } from './execution-publication.mjs';
 
+import { persistRunnerRejection } from './runner-result-recovery.mjs';
+
 import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -1709,7 +1711,8 @@ export async function persistMalformedRunnerResultInCandidate({
     `  - ${receipt === null ? "Native response" : rejected ? "Rejected diagnostic" : "Captured response"}: ${responsePath}${receiptPath === null ? "; no managed receipt" : `; receipt: ${receiptPath}`}`,
     `- Required action: Resume ${operation} ${slice} with a valid captured runner response.`,
   ].join("\n");
-  taskText = replaceSectionBody(taskText, "Delegation Blocker", blocker);
+  const recoveryProof = await persistRunnerRejection({ receipt, context, taskText, blocker, diagnostic: String(diagnostic) });
+  taskText = replaceSectionBody(taskText, "Delegation Blocker", `${blocker}\n- Recovery proof: ${recoveryProof.path} ${recoveryProof.sha256}`);
   const temporary = `${task}.${process.pid}.${randomUUID()}.tmp`;
   try {
     await fs.writeFile(temporary, taskText, { flag: "wx" });

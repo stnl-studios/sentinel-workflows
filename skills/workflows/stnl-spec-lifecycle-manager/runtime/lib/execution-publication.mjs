@@ -282,7 +282,8 @@ function validateActivation(activation) {
   const fields = ['operationAttemptId', 'ownershipToken', 'deliveryId', 'slice', 'operation', 'preparationRevision', 'normativeSha256', 'originActivationId', 'runner', 'workCapture'];
   for (const [name, attempt] of [['activeAttempt', activation.activeAttempt], ['lastAttempt', activation.lastAttempt]]) {
     if (attempt === null) continue;
-    const expected = name === 'lastAttempt' ? [...fields, 'terminalActivationId'] : fields;
+    const ownedFields = [...fields, ...(Object.hasOwn(attempt ?? {}, 'recovery') ? ['recovery'] : [])];
+    const expected = name === 'lastAttempt' ? [...ownedFields, 'terminalActivationId'] : ownedFields;
     if (!attempt || Object.keys(attempt).sort().join('\0') !== expected.sort().join('\0')
       || ['operationAttemptId', 'ownershipToken', 'deliveryId', 'originActivationId'].some(key => !uuid(attempt[key]))
       || !/^slice-[0-9]{2,}$/u.test(attempt.slice) || !['EXECUTE_SLICE', 'APPLY_FINDINGS', 'VALIDATE_SLICE'].includes(attempt.operation)
@@ -333,7 +334,7 @@ export async function readActivatedExecution({ executionRoot, requirementsAuthor
 export function assertExecutionAttempt(activation, owner) {
   const attempt = activation.activeAttempt;
   if (!owner || !attempt || ['operationAttemptId', 'ownershipToken', 'deliveryId', 'slice', 'operation', 'originActivationId', 'preparationRevision', 'normativeSha256'].some(key => attempt[key] !== owner[key])
-    || !equal(attempt.workCapture,owner.workCapture)) fail('active attempt/owner/preparation differs');
+    || !equal(attempt.workCapture,owner.workCapture) || !equal(attempt.recovery ?? null,owner.recovery ?? null)) fail('active attempt/owner/preparation differs');
   return attempt;
 }
 
@@ -379,17 +380,18 @@ async function replaceActivation(root, activation) {
   await fs.rename(temporary, file);
 }
 
-export async function beginExecutionOperation({ workspace, expectedActivationId, operation, slice, readActivated, preflight, captureWork }) {
+export async function beginExecutionOperation({ workspace, expectedActivationId, operation, slice, readActivated, preflight, captureWork, recovery = null }) {
   return withExecutionPublicationLock(workspace, async lease => {
     const current = await readActivated();
     if (current.activation.activationId !== expectedActivationId) fail('begin activation CAS conflict');
-    if (current.activation.activeAttempt) fail('an active or uncertain operation already owns execution');
+    if (current.activation.activeAttempt && !recovery) fail('an active or uncertain operation already owns execution');
+    const succession = recovery ? await recovery(current) : null;
     await preflight();
     const delivery = current.authority.deliveries.find(entry => entry.slice === slice);
     if (!delivery || !['EXECUTE_SLICE', 'APPLY_FINDINGS', 'VALIDATE_SLICE'].includes(operation)) fail('operation/delivery is not admitted');
     const owner = { operationAttemptId: randomUUID(), ownershipToken: randomUUID(), deliveryId: delivery.deliveryId, slice, operation,
       preparationRevision: current.activation.preparationRevision, normativeSha256: current.activation.normativeSha256,
-      originActivationId: current.activation.activationId, runner: null, workCapture: null };
+      originActivationId: current.activation.activationId, runner: null, workCapture: null, ...(succession ? { recovery: succession } : {}) };
     if (typeof captureWork !== 'function') fail('trusted pre-effect work capture required');
     owner.workCapture = await captureWork(owner, current);
     const activation = { ...current.activation, activationId: randomUUID(), sequence: current.activation.sequence + 1,

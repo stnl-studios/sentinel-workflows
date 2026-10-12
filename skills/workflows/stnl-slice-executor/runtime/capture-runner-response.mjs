@@ -36,12 +36,13 @@ export async function startNativeRunnerCapture({ specPath, owner, workspace, cap
   if (current.runner !== null) {
     const root = path.dirname(current.runner.receiptFile);
     return withExecutionPublicationLock(official, async () => {
-      await nativeOrigin(path.join(root, 'round-1.origin.json'));
+      const firstRound = owner.recovery?.round ?? 1;
+      await nativeOrigin(path.join(root, `round-${firstRound}.origin.json`));
       const origins = (await fs.readdir(root)).filter(name => /^round-[1-3]\.origin\.json$/u.test(name));
-      const previous = await nativeJson(path.join(root, `round-${origins.length}.receipt.json`));
+      const previous = await nativeJson(path.join(root, `round-${firstRound + origins.length - 1}.receipt.json`));
       await verifyNativeRunnerReceipt({ receiptFile: previous.receiptFile, semanticResponseFile: previous.semanticResponseFile,
         operation: owner.operation, slice: owner.slice, workspace });
-      if (owner.operation === 'VALIDATE_SLICE' || previous.semanticResponseStatus !== 'TESTS_FAIL' || origins.length >= 3) fail('native runner cannot dispatch another round');
+      if (owner.operation === 'VALIDATE_SLICE' || previous.semanticResponseStatus !== 'TESTS_FAIL' || firstRound + origins.length > 3 || (owner.recovery?.consumedInvocations ?? 0) + origins.length >= 3) fail('native runner cannot dispatch another round');
       if (!candidateTaskArtifact || path.basename(candidateTaskArtifact) !== `${owner.slice}.md`) fail('native next round requires its finalized private check');
       const candidateRoot = path.dirname(path.dirname(candidateTaskArtifact));
       await assertOwnedOperationalCandidate({ candidateExecutionRoot: candidateRoot, slice: owner.slice,
@@ -54,7 +55,7 @@ export async function startNativeRunnerCapture({ specPath, owner, workspace, cap
         || !check.includes(`- Operation attempt ID: ${owner.operationAttemptId}\n`)
         || !check.includes(`- Origin activation ID: ${owner.originActivationId}\n`)) fail('native next round lacks the same finalized failed check');
       await validateExecutionCandidate(specPath, candidateRoot, [{ slice: owner.slice, text }], { privateAutomaticCheck: { operation: owner.operation, slice: owner.slice, round: previous.attempt } });
-      const origin = { ...await nativeJson(path.join(root, 'round-1.origin.json')), attempt: origins.length + 1 };
+      const origin = { ...await nativeJson(path.join(root, `round-${firstRound}.origin.json`)), attempt: firstRound + origins.length };
       const originFile = path.join(root, `round-${origin.attempt}.origin.json`);
       await nativeWrite(originFile, origin);
       return { originFile, owner, attempt: origin.attempt, verification:origin.verification };
@@ -67,13 +68,13 @@ export async function startNativeRunnerCapture({ specPath, owner, workspace, cap
   const root = await fs.mkdtemp(path.join(parent, '.stnl-native-runner-'));
   await registerRunnerAllocation({workspace:official,owner,root,producer:'native-runner'});
   const origin = { transport: 'native', specPath: await fs.realpath(specPath), workspace: await fs.realpath(workspace),
-    owner, verification:await readRunnerVerification(specPath, owner.slice), dispatchId: crypto.randomUUID(), attempt: 1 };
+    owner, verification:await readRunnerVerification(specPath, owner.slice), dispatchId: crypto.randomUUID(), attempt: owner.recovery?.round ?? 1 };
   await nativeWrite(path.join(root, 'owner.json'), origin);
-  const originFile = path.join(root, 'round-1.origin.json');
+  const originFile = path.join(root, `round-${origin.attempt}.origin.json`);
   await nativeWrite(originFile, origin);
   await bindExecutionBroker({ workspace: official, owner, runner: { dispatchId: origin.dispatchId,
     receiptFile: path.join(root, 'owner.json'), threadId: null, status: 'pending' }, readActivated: () => readExecutionActivation(specPath) });
-  return { originFile, owner, attempt: 1, verification:origin.verification };
+  return { originFile, owner, attempt: origin.attempt, verification:origin.verification };
 }
 
 // agentId must come from the actual native spawn result, before waiting for its

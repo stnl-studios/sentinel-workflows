@@ -376,10 +376,17 @@ export async function prepareOfficialRecovery({ product, specPath, ...input }) {
   if (recovery === null) return null;
   const fresh = await officialReadback(product, specPath);
   if (JSON.stringify(recoverableOfficialHandoff({ ...input, readback: fresh })) !== JSON.stringify(recovery)) return null;
-  const preflight = await product.preflightExecutionOperation(specPath, recovery.operation, specInput(recovery.slice));
+  const rejection = fresh.executionRaw?.activeDelegationBlockers?.[0]?.recoveryProof;
+  const admission = recovery.state === 'RUNNER_RESULT_BLOCKED' && rejection ? {
+    expectedActivationId: fresh.executionRaw.activation.activationId,
+    rejectedOperationAttemptId: fresh.executionRaw.activation.activeAttempt?.operationAttemptId, rejection,
+  } : null;
+  const preflight = admission
+    ? await product.preflightRunnerResultRecovery(specPath, recovery.operation, specInput(recovery.slice), admission)
+    : await product.preflightExecutionOperation(specPath, recovery.operation, specInput(recovery.slice));
   if (JSON.stringify(recoverableOfficialHandoff({ ...input,
     readback: { lifecycle: fresh.lifecycle, executionRaw: preflight } })) !== JSON.stringify(recovery)) return null;
-  return recovery;
+  return { ...recovery, ...(admission ? { admission } : {}) };
 }
 async function loadProduct(snapshot) {
   const execution = await import(pathToFileURL(path.join(snapshot, 'skills/workflows/stnl-execution-planner/runtime/execution-state.mjs')).href);
@@ -536,7 +543,9 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
       let officialPreflight = null;
       let managedSliceContext = null;
       if (!operation.startsWith('SPEC_')) {
-        const preflight = await product.preflightExecutionOperation(specPath, operation, specInput(slice));
+        const preflight = currentRecovery?.admission
+          ? await product.preflightRunnerResultRecovery(specPath, operation, specInput(slice), currentRecovery.admission)
+          : await product.preflightExecutionOperation(specPath, operation, specInput(slice));
         if (currentRecovery !== null && (preflight.state !== currentRecovery.state
           || preflight.currentFingerprint !== currentRecovery.authority
           || preflight.recoveryTargets?.length !== 1
@@ -549,7 +558,7 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
           officialPreflight = { exitCode: 0, operation, slice, inputSlice: specInput(slice),
             specPath, state: preflight.state, authority: `sha256:${preflight.currentFingerprint}`,
             legalOperations: preflight.legalOperations, mandatoryRecovery: preflight.mandatoryRecovery, activationId: preflight.activation.activationId };
-          managedSliceContext = await product.createManagedSliceContext({ officialPreflight, workspace,
+          managedSliceContext = await product.createManagedSliceContext({ officialPreflight, workspace, recovery: currentRecovery?.admission ?? null,
             snapshot: path.join(runRoot, 'snapshot'),
             adapterPath: home?.env?.STNL_RUNNER_ADAPTER ?? path.join(runRoot, 'snapshot', 'agents/codex/runtime/validation-runner.mjs'),
             bridgePath: path.join(runRoot, 'snapshot', 'agents/codex/runtime/managed-runner-bridge.mjs'),
@@ -558,6 +567,14 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
           officialPreflight.expectedActivationId = managedSliceContext.expectedActivationId;
         }
       }
+      if (managedSliceContext?.owner.recovery) {
+        caseState.runnerTmpdir = path.join(tmpdir, `recovery-${managedSliceContext.owner.operationAttemptId}`);
+        await fs.mkdir(caseState.runnerTmpdir, { mode: 0o700 });
+        await atomicJson(path.join(caseRoot, 'case-state.json'), caseState);
+      }
+      const runnerTmpdir = caseState.runnerTmpdir ?? tmpdir;
+      const operationEnvironment = { ...home.env, TMPDIR: runnerTmpdir,
+        STNL_DISCOVERY_PATHS: JSON.stringify({ ...JSON.parse(home.env.STNL_DISCOVERY_PATHS), tmpdir: runnerTmpdir }) };
       const validationInputs = operation === 'VALIDATE_SLICE'
         ? await captureValidationInputs({ product, workspace,
           taskArtifact: path.join((await product.resolveExecutionWorkspace(specPath)).executionRoot, 'tasks', `${slice}.md`) }) : null;
@@ -578,7 +595,7 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
         SLICE: slice === null ? '' : specInput(slice) };
       const workflowSkill = operation.startsWith('SPEC_') ? 'stnl-spec-lifecycle-manager' : product.workflowSkillForOperation(operation);
       const prompt = renderManagedLauncher(template, values,
-        product.managedDiscoveryInstructions({ env: home.env, cwd: workspace, workflowSkill }), managedSliceContext)
+        product.managedDiscoveryInstructions({ env: operationEnvironment, cwd: workspace, workflowSkill }), managedSliceContext)
         + (currentReassessment === null ? '' : '\nOwner-authorized one-time independent re-evaluation of this same stage. Preserve the original BLOCKED diagnostic. Evaluate current authority and evidence under the normal runner contract, with no preferred verdict. Use existing prepared checks; do not change source/tests or authority.\n');
       if (managedSliceContext !== null) {
         assertManagedSliceLauncher(prompt, managedSliceContext, specInput(slice));
@@ -601,19 +618,19 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
       let currentRunnerNumber = null;
       let mainTurnNumber;
       const turnEnv = managedSliceContext === null ? home.env
-        : product.managedEnvironment(home.env, managedSliceContext);
+        : product.managedEnvironment(operationEnvironment, managedSliceContext);
       let providerConfigError = null;
       let runnerTransportFailed = false;
       try {
         if (officialPreflight !== null) {
-          broker = await product.startOfficialRunnerBroker({ workspace, tmpdir, operation, sequence, slice,
+          broker = await product.startOfficialRunnerBroker({ workspace, tmpdir: runnerTmpdir, operation, sequence, slice,
           officialPreflight,
           prepareSealedMetadata: async request => {
             const findingsOwnership = await product.prepareManagedFindingsRequest({ request, environment: turnEnv });
             return findingsOwnership === null ? null : { findingsOwnership };
           },
           invoke: (request, { signal: runnerSignal } = {}) => product.invokeIndependentRunner({
-            ...request, snapshot: path.join(runRoot, 'snapshot'), workspace, tmpdir, env: turnEnv,
+            ...request, snapshot: path.join(runRoot, 'snapshot'), workspace, tmpdir: runnerTmpdir, env: turnEnv,
             signal: runnerSignal,
             onBeforeTurn: async () => {
               if (currentReassessment !== null) await assertReassessmentUnchanged({ product, specPath, decision: currentReassessment, owner: managedSliceContext.owner });

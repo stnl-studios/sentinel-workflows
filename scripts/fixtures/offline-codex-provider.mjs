@@ -77,16 +77,18 @@ const taskFile = path.join(specPath, 'execution/tasks/slice-01.md');
 const matrixClaim = path.relative(path.dirname(taskFile), path.join(workspace, 'test/offline-case.json')).split(path.sep).join('/');
 const digest = async (file) => createHash('sha256').update(await fs.readFile(file)).digest('hex');
 const finish = (response) => { emit({ type: 'item.completed', item: { id: 'message_' + sequence++, type: 'agent_message', text: typeof response === 'string' ? response : JSON.stringify(response) } }); emit({ type: 'turn.completed', usage: {} }); };
+const recoveryOperation = { 'runner-recovery-validate':'VALIDATE_SLICE', 'runner-recovery-execute':'EXECUTE_SLICE', 'runner-recovery-apply':'APPLY_FINDINGS' }[context.scenario] ?? null;
+const recoveryOwner = process.env.STNL_MANAGED_CONTEXT ? JSON.parse(process.env.STNL_MANAGED_CONTEXT).owner?.recovery : null;
 const reassessmentScenario = context.scenario.startsWith('reassessment-');
 const applyScopeScenario = context.scenario === 'apply-scope-repair';
 const replayBoundary = { 'apply-replay-private': 'private', 'apply-replay-published': 'published' }[context.scenario] ?? null;
-const findingsCycleScenario = context.scenario === 'apply-findings-cycle' || replayBoundary !== null;
+const findingsCycleScenario = context.scenario === 'apply-findings-cycle' || context.scenario === 'runner-recovery-apply' || replayBoundary !== null;
 const executeScopeScenario = ['execute-scope-subset', 'execute-scope-correction'].includes(context.scenario);
-const executeRoundScenario = context.scenario === 'execute-round-divergence';
+const executeRoundScenario = ['execute-round-divergence','runner-recovery-execute'].includes(context.scenario);
 const targets = (applyScopeScenario || findingsCycleScenario || executeScopeScenario) ? [...defaultTargets, 'src/todo-service.mjs', 'src/validation.mjs', 'test/todo-service.test.mjs'] : defaultTargets;
 const coverageScenario = ['coverage-findings', 'finalizer-fail-apply-publication',
   'finalize-revalidation-rejection',
-  'reassessment-needs-fix', 'reassessment-after-fix-blocked', 'apply-scope-repair', 'apply-findings-cycle', 'apply-replay-private', 'apply-replay-published'].includes(context.scenario);
+  'runner-recovery-apply', 'reassessment-needs-fix', 'reassessment-after-fix-blocked', 'apply-scope-repair', 'apply-findings-cycle', 'apply-replay-private', 'apply-replay-published'].includes(context.scenario);
 try {
   if (!independent && operation === 'SPEC_INIT' && ['B', 'C'].includes(caseId) && !coverageScenario && !executeScopeScenario && !executeRoundScenario) {
     // Both siblings must reach the provider before either injected failure or
@@ -116,6 +118,7 @@ try {
     }
     const payload = JSON.parse(prompt.slice(prompt.lastIndexOf('\n\n') + 2));
     const round = payload.automaticCheckRound ?? '1/3';
+    if (recoveryOperation === operation && operation !== 'VALIDATE_SLICE' && round === '2/3' && !recoveryOwner) { finish({status:'TESTS_PASS'}); process.exit(0); }
     const priorAttempts = reassessmentScenario && operation === 'VALIDATE_SLICE'
       ? ((await fs.readFile(taskFile, 'utf8')).match(/^### attempt-/gmu) ?? []).length : null;
     if (operation === 'VALIDATE_SLICE' && (context.scenario === 'reassessment-transport'
@@ -142,7 +145,8 @@ try {
     if (operation === 'VALIDATE_SLICE') {
       if (context.scenario === 'reassessment-pending-command') emit({ type: 'item.started', item: {
         id: 'item_' + sequence++, type: 'command_execution', command: 'node TEST-ONLY-pending-inspection.mjs', status: 'in_progress', exit_code: null } });
-      if (context.scenario === 'reassessment-malformed'
+      if ((context.scenario === 'runner-recovery-validate' && !(await fs.readFile(taskFile, 'utf8')).includes('- Recovery proof:'))
+        || context.scenario === 'reassessment-malformed'
         || (context.scenario === 'reassessment-second-malformed' && priorAttempts === 1)) { finish({ status: 'BLOCKED' }); process.exit(0); }
       const matrix = JSON.parse(await fs.readFile(path.join(workspace, 'test/offline-case.json')));
       const coverageOmitted = coverageReview && !matrix.priorities.includes('high');
@@ -169,7 +173,7 @@ try {
         findingsCycle: state.tasks.get('slice-01').attempts.filter((attempt) => attempt.status === 'NEEDS_FIX').at(-1).id,
         findingsVerified: passed ? 'finding-01' : 'none', correctionsCovered: 'Prepared matrix includes high.', regressionsSelected: 'Complete prepared priority checks and original seed tests.', unsupportedActiveFindings: passed ? 'none' : 'finding-01',
       });
-      if (executeRoundScenario && operation === 'EXECUTE_SLICE') response.automaticCheckRound = '1/3';
+      if (context.scenario === 'execute-round-divergence' && operation === 'EXECUTE_SLICE') response.automaticCheckRound = '1/3';
       if (findingsCycleScenario && operation === 'APPLY_FINDINGS') {
         response.automaticCheckRound = round === '1/3' ? { legacy: '3/3' } : null;
         if (replayBoundary !== null && round === '1/3') delete response.automaticCheckRound;
@@ -279,7 +283,16 @@ fs.writeFile = async (file, ...args) => { if (!fired && ${JSON.stringify(context
         ownerBefore, ownerAfter: await fs.readFile(ownerFile, 'utf8'), binding, liveUnchanged: sourceBefore === await digest(taskFile) }));
     } else prepared = run(process.env.STNL_MANAGED_FINALIZER, ['--prepare']);
     if (prepared.status) throw new Error(prepared.stderr);
-    if (operation === 'EXECUTE_SLICE') {
+    if (recoveryOwner && operation === recoveryOperation && operation !== 'VALIDATE_SLICE') {
+      const matrixFile=path.join(workspace,'test/offline-case.json');
+      const matrix=JSON.parse(await fs.readFile(matrixFile));
+      await fs.writeFile(matrixFile,JSON.stringify({...matrix,completeTarget:2}));
+      const binding=JSON.parse(prepared.stdout);
+      await fs.writeFile(binding.candidateTaskArtifact,section(await fs.readFile(binding.candidateTaskArtifact,'utf8'),'Corrections Applied','- `'+matrixClaim+'`'));
+      const claims=targets.map(target=>path.relative(path.dirname(taskFile),path.join(workspace,target)).split(path.sep).join('/'));
+      await fs.writeFile(process.env.STNL_MANAGED_RUNNER_PAYLOAD,JSON.stringify({automaticCheckRound:`${recoveryOwner.round}/3`,changedAreas:claims,
+        ...(operation==='APPLY_FINDINGS'?{activeFindings:['finding-01'],corrections:['Corrected the prepared complete target.']}:{}),relevantEvidence:'Preserved published private checks; complete the rejected round with a fresh execution.'}));
+    } else if (operation === 'EXECUTE_SLICE') {
       const cli = { A: 'filtered-cli.mjs', B: 'prioritized-cli.mjs', C: 'archived-cli.mjs' }[caseId];
       if (context.scenario === 'finalizer-fail-execute-source-edit' || reassessmentScenario || applyScopeScenario || findingsCycleScenario || executeScopeScenario || executeRoundScenario) {
         // Author the implementation on its already-writable approved seed
@@ -355,7 +368,26 @@ fs.writeFile = async (file, ...args) => { if (!fired && ${JSON.stringify(context
         secondReceipt: delegated.status === 0 ? JSON.parse(delegated.stdout.slice('SENTINEL_RUNNER_RECEIPT '.length).trim()) : null }));
     }
 
-    if (delegated.status && context.scenario !== 'reassessment-second-malformed') throw new Error(delegated.stderr);
+    if (delegated.status && !['reassessment-second-malformed', 'runner-recovery-validate', 'runner-recovery-execute', 'runner-recovery-apply'].includes(context.scenario)) throw new Error(delegated.stderr);
+    if (recoveryOperation === operation && operation !== 'VALIDATE_SLICE') {
+      if (!recoveryOwner) {
+        const first=run(process.env.STNL_MANAGED_FINALIZER,['--finalize']);
+        if(first.status!==0 || JSON.parse(first.stdout).state!=='PRIVATE_TESTS_FAIL') throw new Error('TEST-ONLY first recovery check was not a private failure: '+first.stderr);
+        const binding=JSON.parse(prepared.stdout);
+        await fs.writeFile(path.join(context.root,'.offline-recovery-private.md'),await fs.readFile(binding.candidateTaskArtifact));
+        const matrixFile=path.join(workspace,'test/offline-case.json'),matrix=JSON.parse(await fs.readFile(matrixFile));
+        await fs.writeFile(matrixFile,JSON.stringify({...matrix,completeTarget:2}));
+        const payload=JSON.parse(await fs.readFile(process.env.STNL_MANAGED_RUNNER_PAYLOAD));
+        await fs.writeFile(process.env.STNL_MANAGED_RUNNER_PAYLOAD,JSON.stringify({...payload,automaticCheckRound:'2/3'}));
+        const rejected=run(process.env.STNL_MANAGED_RUNNER_BRIDGE,['--payload-file',process.env.STNL_MANAGED_RUNNER_PAYLOAD]);
+        if(rejected.status!==0)throw new Error('TEST-ONLY malformed second round failed transport: '+rejected.stderr);
+        const receipt=JSON.parse(rejected.stdout.slice('SENTINEL_RUNNER_RECEIPT '.length).trim());
+        if(await fs.readFile(receipt.semanticResponseFile,'utf8')!==JSON.stringify({status:'TESTS_PASS'}))throw new Error('TEST-ONLY malformed second round stimulus differs');
+      }
+      const finalized=run(process.env.STNL_MANAGED_FINALIZER,['--finalize']);
+      if(finalized.status!==0)throw new Error(finalized.stderr);
+      finish(recoveryOwner?'Successor published a newly observed valid round.':'Published rejected second round with original private check.');process.exit(0);
+    }
     if (executeRoundScenario && operation === 'EXECUTE_SLICE') {
       const binding = JSON.parse(prepared.stdout);
       const receipts = [JSON.parse(delegated.stdout.slice('SENTINEL_RUNNER_RECEIPT '.length).trim())];

@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { computeRequirementsAuthority, preflightExecutionOperation, readExecutionActivation, beginPreparedExecutionOperation, readRunnerVerification } from './execution-state.mjs';
+import { computeRequirementsAuthority, preflightExecutionOperation, readExecutionActivation, beginPreparedExecutionOperation, beginRunnerResultRecovery, readRunnerVerification } from './execution-state.mjs';
 
 import { assertExecutionAttempt } from './execution-publication.mjs';
 import { verifyNativeRunnerReceipt } from './capture-runner-response.mjs';
@@ -89,6 +89,7 @@ export async function createManagedSliceContext({
   adapterPath,
   bridgePath,
   preflightPath,
+  recovery = null,
 }) {
   if (officialPreflight?.exitCode !== 0 || !OPERATIONS.has(officialPreflight?.operation)) {
     fail('official runner preflight is required');
@@ -116,7 +117,9 @@ export async function createManagedSliceContext({
   }
   if (typeof officialPreflight.state !== 'string' || officialPreflight.state === '') fail('preflight state is incomplete');
 
-  const admitted = await beginPreparedExecutionOperation(canonicalSpec, operation, BigInt(slice.slice(6)).toString(10), officialPreflight.activationId);
+  const admitted = recovery
+    ? await beginRunnerResultRecovery(canonicalSpec, operation, BigInt(slice.slice(6)).toString(10), recovery)
+    : await beginPreparedExecutionOperation(canonicalSpec, operation, BigInt(slice.slice(6)).toString(10), officialPreflight.activationId);
   return Object.freeze({
     version: 4,
     owner: admitted.owner,
@@ -257,6 +260,11 @@ export async function assertManagedRunnerReceipt({ operation, slice, workspace, 
     || receipt.error != null || receipt.processError != null || receipt.providerError != null
     || typeof receipt.threadId !== 'string' || receipt.threadId.trim() === '') {
     fail('receipt does not match the active managed runner invocation');
+  }
+  if (context.owner.recovery) {
+    const proof = JSON.parse(await fs.readFile(context.owner.recovery.rejection.path, 'utf8'));
+    const predecessor = JSON.parse(await fs.readFile(proof.receiptFile, 'utf8'));
+    if (receipt.threadId === predecessor.threadId || receipt.receiptFile === predecessor.receiptFile) fail('recovery reused predecessor runner identity');
   }
   const startedPath = path.join(tmpdir, `${stem}.started.json`);
   for (const file of [receiptPath, responsePath, eventsPath, startedPath]) {

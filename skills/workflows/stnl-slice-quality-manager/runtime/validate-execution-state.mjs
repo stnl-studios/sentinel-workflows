@@ -6,7 +6,7 @@ import os from "node:os";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import {
-  deriveNormalHandoff, beginPreparedExecutionOperation,
+  deriveNormalHandoff, beginPreparedExecutionOperation, beginRunnerResultRecovery,
   ExecutionContractError,
   inspectExecutionState,
   preflightExecutionOperation,
@@ -34,6 +34,15 @@ export async function main(arguments_) {
   if (arguments_.length===3 && arguments_[1]==='--cleanup-owned-allocation') {
     const workspace=await resolveExecutionWorkspace(arguments_[0]);
     process.stdout.write(JSON.stringify(await cleanupOwnedExecutionAllocation({workspace,marker:arguments_[2],readActivated:()=>readExecutionActivation(arguments_[0])}))+'\n');return 0;
+  }
+  if (arguments_.length === 6 && arguments_[1] === '--recover-runner-result') {
+    const [specPath, , operation, slice, rejectedOperationAttemptId, expectedActivationId] = arguments_;
+    const state = await inspectExecutionState(specPath);
+    const rejection = state.activeDelegationBlockers?.[0]?.recoveryProof;
+    const admitted = await beginRunnerResultRecovery(specPath, operation, slice, { rejectedOperationAttemptId, expectedActivationId, rejection });
+    const ownerFile = path.join(await fs.realpath(os.tmpdir()), `stnl-operation-owner-${randomUUID()}.json`);
+    await fs.writeFile(ownerFile, JSON.stringify({ specPath: await fs.realpath(specPath), ...admitted }) + '\n', { flag: 'wx', mode: 0o600 });
+    process.stdout.write(JSON.stringify({ ...admitted, ownerFile }) + '\n'); return 0;
   }
   if (arguments_.length === 4 && arguments_[1] === '--begin') {
     const [specPath, , operation, slice] = arguments_;

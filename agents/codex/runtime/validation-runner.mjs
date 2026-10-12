@@ -223,7 +223,7 @@ export async function invokeIndependentRunner({
   const baseName = `${String(sequence).padStart(3, '0')}-${operation.toLowerCase()}-${slice}`;
   let operationName;
   let attempt;
-  for (attempt = 1; attempt <= 3; attempt += 1) {
+  for (attempt = (managed?.owner.recovery?.consumedInvocations ?? officialPreflight.owner?.recovery?.consumedInvocations ?? 0) + 1; attempt <= 3; attempt += 1) {
     operationName = `${baseName}-attempt-${attempt}`;
     try {
       await fs.writeFile(path.join(tmpdir, `${operationName}.started.json`),
