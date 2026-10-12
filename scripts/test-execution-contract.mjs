@@ -644,43 +644,6 @@ test("captured producer rejection resumes APPLY and VALIDATE through their own o
   }
 });
 
-test("APPLY and VALIDATE share lossless command and explanatory carriers", async (t) => {
-  const fixture = await standaloneWorkspace(t);
-  await renderArtifacts(fixture);
-  await writeValidatedPath(fixture);
-  const taskArtifact = path.join(fixture.execution, "tasks/slice-01.md");
-  await fs.writeFile(taskArtifact, replaceSection(await fs.readFile(taskArtifact, "utf8"),
-    "Changed Areas", "- `../../src/example.txt`"), "utf8");
-  const command = "node --input-type=module <<'NODE'\nconsole.log(`result`);\nNODE";
-  const explanation = "line one\nline `two`";
-  const execute = {
-    status: "TESTS_PASS", automaticCheckRound: "1/3", head: "fixture-head",
-    discoverySources: explanation, discoveryActions: "inspection", verificationTypesConsidered: "unit",
-    nonApplicabilityRationale: "none", noVerificationCommandConfirmation: "ran",
-    commands: [{ command, exit: 0 }], resultOfEachCommandAndExitCode: "pass",
-    selectedChecks: "unit", selectionRationale: "direct", coverage: "AC-001", failures: "none",
-    evidenceOrFailureSummary: explanation, affectedFilesOrBehaviors: "example", blockers: "none",
-    unexpectedWorkspaceEffects: "none", persistenceSummary: "none",
-  };
-  const apply = {
-    ...execute, findingsCycle: "attempt-01", findingsVerified: "none", correctionsCovered: explanation,
-    regressionsSelected: explanation, unsupportedActiveFindings: "none",
-  };
-  const applyBundle = await serializeRunnerExecutionBundleFromResponse({ operation: "APPLY_FINDINGS",
-    response: JSON.stringify(apply), workspace: fixture.root, taskArtifact });
-  assert.ok(applyBundle.includes(`json:${JSON.stringify(command)} | exit:0`));
-  assert.ok(applyBundle.includes(`json:${JSON.stringify(explanation)}`));
-  const validation = {
-    status: "PASS", head: "fixture-head", commands: [{ command, exit: 0 }], evidence: explanation,
-    findingReferences: "none", findingDispositions: "none", blockers: "none",
-    unexpectedWorkspaceEffects: explanation, persistenceSummary: "none",
-  };
-  const validationBundle = await serializeRunnerValidationBundleFromResponse({ operation: "VALIDATE_SLICE",
-    response: JSON.stringify(validation), workspace: fixture.root, taskArtifact,
-    specPath: fixture.requirements, slice: "1" });
-  assert.equal(validationBundle.split(`json:${JSON.stringify(command)} | exit:0`).length - 1, 3);
-  assert.ok(validationBundle.includes(`Evidence: json:${JSON.stringify(explanation)}`));
-});
 
 test("APPLY round two derives required correction fields from existing authority", async (t) => {
   const fixture = await standaloneWorkspace(t);
@@ -1070,6 +1033,7 @@ test("SPEC_PATH rejects directory and file traversal through symlink ancestors",
   const real = path.join(root, "real-project");
   const fixture = { root: real, requirements: path.join(real, "requirements.md"), execution: path.join(real, "requirements-execution") };
   await fs.mkdir(real, { recursive: true });
+  await fs.mkdir(path.join(real, ".git"));
   await fs.writeFile(fixture.requirements, "# Requirements\n\n- AC-001: observable behavior\n", "utf8");
   await renderArtifacts(fixture);
   const alias = path.join(root, "alias-project");
@@ -2564,20 +2528,6 @@ test("deterministic runner evidence serializer emits physical task-relative SHA-
   );
 });
 
-test("execution producer blocks omitted Changed Areas without inferring scope from the worktree", async (t) => {
-  const fixture = await nestedLifecycleWorkspace(t);
-  const taskArtifact = path.join(fixture.execution, "tasks/slice-01.md");
-  const before = await fs.readFile(taskArtifact, "utf8");
-  assert.match(before, /## Changed Areas\n\n- pending\n/u);
-  await assert.rejects(
-    serializeExecutionScopeClaims({ workspace: fixture.root, taskArtifact }),
-    /Changed Areas cannot remain pending after execution work/u,
-  );
-  assert.equal(await fs.readFile(taskArtifact, "utf8"), before);
-
-  const executorSkill = await fs.readFile(path.join(ROOT, "skills/workflows/stnl-slice-executor/SKILL.md"), "utf8");
-  assert.match(executorSkill, /`Changed Areas` MUST NOT remain the pristine `- pending` sentinel/u);
-});
 
 test("execution evidence is produced on a same-depth candidate and published as one task replacement", async (t) => {
   const fixture = await nestedLifecycleWorkspace(t);
@@ -2624,64 +2574,6 @@ test("execution evidence is produced on a same-depth candidate and published as 
 });
 
 
-test("candidate helper CLIs execute from a frozen skill path containing spaces", async (t) => {
-  const fixture = await nestedLifecycleWorkspace(t, { materialized: false, planStatus: "ready" });
-  const root = await temporary(t, "stnl-helper-path-space-");
-  const bundle = path.join(root, "frozen skill bundle");
-  await fs.mkdir(bundle);
-  for (const skill of ["stnl-execution-planner", "stnl-task-materializer"]) {
-    await fs.cp(path.join(ROOT, "skills/workflows", skill), path.join(bundle, skill), { recursive: true });
-  }
-  const materializerRoot = path.join(bundle, "stnl-task-materializer");
-  const contract = await fs.readFile(path.join(materializerRoot, "SKILL.md"), "utf8");
-  assert.match(contract, /Resolve bundled `references\/` and `templates\/` from `<SKILL_ROOT>`, the directory containing this SKILL.md, independently of SPEC_PATH, the execution root, candidate root or command cwd/u);
-  const resources = new Set([...contract.matchAll(/`<SKILL_ROOT>\/((?:references|templates)\/[^`]+)`/gu)].map((match) => match[1]));
-  assert.deepEqual([...resources].sort(), ["references/execution-record-schema.md", "templates/slice-tasks.template.md", "templates/tasks.template.md"]);
-  assert.doesNotMatch(contract, /`references\/execution-record-schema\.md`|including[^\n]*`references\/`/u);
-  for (const resource of resources) {
-    const bytes = await fs.readFile(path.join(materializerRoot, resource));
-    assert.deepEqual(bytes, await fs.readFile(path.join(ROOT, "skills/workflows/stnl-task-materializer", resource)));
-    await assert.rejects(fs.stat(path.join(fixture.execution, resource)), { code: "ENOENT" });
-  }
-  const livePlan = await fs.readFile(path.join(fixture.execution, "plan.md"));
-  const liveDetail = await fs.readFile(path.join(fixture.execution, "plans/slice-01.md"));
-  assert.equal((await inspectExecutionState(fixture.requirements)).state, "PLANNED_READY");
-  const environment = { ...process.env, TMPDIR: root };
-  const preparer = path.join(bundle, "stnl-execution-planner/runtime/prepare-task-candidate.mjs");
-  const prepared = spawnSync(process.execPath, [preparer, "--prepare", "--spec-path", fixture.requirements], {
-    encoding: "utf8", env: environment,
-  });
-  assert.equal(prepared.status, 0, prepared.stderr);
-  const result = JSON.parse(prepared.stdout);
-  assert.equal(result.status, "PASS");
-  assert.equal(path.dirname(result.candidateExecutionRoot), root);
-  assert.equal((await fs.lstat(path.join(result.candidateExecutionRoot, "plan.md"))).isFile(), true);
-  await renderTasks(fixture, {
-    templateRoot: path.join(materializerRoot, "templates"), outputExecutionRoot: result.candidateExecutionRoot,
-  });
-  await assert.rejects(fs.stat(path.join(fixture.execution, "tasks.md")), { code: "ENOENT" });
-  const published = spawnSync(process.execPath, [path.join(materializerRoot, "runtime/publish-task-candidate.mjs"),
-    "--publish", "--spec-path", fixture.requirements, "--candidate-execution-root", result.candidateExecutionRoot], {
-    cwd: fixture.root, encoding: "utf8", env: environment,
-  });
-  assert.equal(published.status, 0, published.stderr);
-  assert.equal(JSON.parse(published.stdout).status, "PASS");
-  const materialized = await inspectExecutionState(fixture.requirements);
-  assert.equal(materialized.state, "MATERIALIZED_PRISTINE");
-  assert.equal(deriveNormalHandoff(materialized, "MATERIALIZE_TASKS").operation, "REVIEW_TASKS");
-  assert.deepEqual(await fs.readFile(path.join(fixture.execution, "plan.md")), livePlan);
-  assert.deepEqual(await fs.readFile(path.join(fixture.execution, "plans/slice-01.md")), liveDetail);
-  await assert.rejects(fs.stat(path.join(fixture.execution, "references")), { code: "ENOENT" });
-  for (const helper of [
-    "stnl-execution-planner/runtime/prepare-plan-candidate.mjs",
-    "stnl-execution-planner/runtime/serialize-plan-paths.mjs",
-    "stnl-execution-planner/runtime/serialize-task-paths.mjs",
-  ]) {
-    const invoked = spawnSync(process.execPath, [path.join(bundle, helper)], { encoding: "utf8", env: environment });
-    assert.notEqual(invoked.status, 0, `${helper} silently skipped its CLI guard`);
-    assert.match(invoked.stderr, /usage:/u);
-  }
-});
 
 
 
@@ -3347,14 +3239,17 @@ test("every touched model-authored execution writer requires candidate validatio
   for (const skill of SKILLS) {
     const source = await fs.readFile(path.join(ROOT, `skills/workflows/${skill}/SKILL.md`), "utf8");
     if (["stnl-execution-planner", "stnl-plan-reviewer"].includes(skill)) {
-      assert.match(source, /serialize-plan-paths\.mjs[\s\S]{0,500}official `validateExecutionCandidate` authority/u, skill);
-      assert.doesNotMatch(source, /validate-execution-state\.mjs" <SPEC_PATH> --candidate <CANDIDATE_EXECUTION_ROOT>/u, skill);
+      assert.match(source, /prepare-(?:task|plan)-candidate\.mjs/u, skill);
+      assert.match(source, /serialize-plan-paths\.mjs/u, skill);
+      assert.match(source, /publish-task-candidate\.mjs/u, skill);
+      assert.match(source, skill === 'stnl-execution-planner' ? /validate the complete candidate[\s\S]*--handoff-after/u : /validates Plan and Tasks together[\s\S]*verifies readback/u, skill);
+      assert.match(source, skill === 'stnl-execution-planner' ? /No MATERIALIZE_TASKS or REVIEW_TASKS operation exists/u : /No task materializer or optional task review follows/u, skill);
     } else {
       assert.match(source, /validate-execution-state\.mjs" <SPEC_PATH> --candidate <CANDIDATE_EXECUTION_ROOT>/u, skill);
       assert.match(source, /contract\/model(?:-| )(?:enforced|enforcement|owned)/u, skill);
+      assert.match(source, /strict(?:ly)? read(?:back| back)/u, skill);
+      assert.match(source, /Findings IDs[\s\S]{0,180}Check discovery sources[\s\S]{0,80}Check discovery actions[\s\S]{0,240}--repair-known-contract/u, skill);
     }
-    assert.match(source, /strict(?:ly)? read(?:back| back)/u, skill);
-    assert.match(source, /Findings IDs[\s\S]{0,180}Check discovery sources[\s\S]{0,80}Check discovery actions[\s\S]{0,240}--repair-known-contract/u, skill);
   }
 });
 
@@ -3462,6 +3357,7 @@ test("requirements changes in joint initial draft, REPLAN draft and reviewed pre
     const root = await temporary(t, `stnl-pending-authority-${phase}-`);
     const fixtureRoot = path.join(ROOT, "skills/workflows/stnl-spec-lifecycle-manager/examples/validator-fixtures/ready");
     const workspace = await copyDirectory(fixtureRoot, path.join(root, "spec"));
+    await fs.mkdir(path.join(workspace, ".git"));
     const fixture = { requirements: workspace, execution: path.join(workspace, "execution"), test: t };
     const { authority } = await renderArtifacts(fixture, { planStatus: phase === 'initial-draft' ? 'draft' : 'ready' });
     if (phase !== 'initial-draft') await stagePristineReplacement(fixture, authority, authority, { ready });
@@ -6005,19 +5901,15 @@ test("distributed execution schemas and runtime agree on corrected semantic boun
     /In `TESTS_PASS`, exact `none` is forbidden specifically for `Tested scope`, `Verification types considered`, `Selected checks`, and `Coverage`/u,
     /Candidate validation rejects terminal implementation evidence with an incomplete checklist/u,
     /exactly one mandatory target, `stnl-slice-executor \/ EXECUTE_SLICE \/ <affected slice>`/u,
-    /The first `PASS` attempt is terminal/u,
+    /A PASS seals its validation cycle\. Another attempt requires a runtime-owned reopening/u,
   ]) assert.match(schemas[0], rule);
 
   const accepted = await standaloneWorkspace(t);
   await renderArtifacts(accepted);
-  await editTask(accepted, (value) => {
-    let result = value.replace("- [ ] 1.1", "- [x] 1.1");
-    result = replaceSection(result, "Changed Areas", "- `../../src/example.txt`");
-    return replaceSection(result, "Implementation Test Evidence", checkRecord("implementation-check", 1, "TESTS_PASS", 1));
-  });
-  assert.equal((await inspectExecutionState(accepted.requirements)).state, "IMPLEMENTED_AWAITING_VALIDATION");
-  await editTask(accepted, (value) => value.replace("- Tested scope: ../../src/example.txt", "- Tested scope:\n  - ../../src/example.txt"));
-  await assert.rejects(inspectExecutionState(accepted.requirements), /Tested scope|unexpected nested/u);
+  const implementation = await implementExample(accepted, { publish: false });
+  assert.equal((await rejectTaskMutations(accepted, implementation.copy, [
+    ['nested Tested scope', text => text.replace(/^- Tested scope:.*$/mu, '- Tested scope:\n  - ../../src/example.txt'), /Tested scope|unexpected nested/u],
+  ])).state, 'IMPLEMENTED_AWAITING_VALIDATION');
 });
 
 test("execution producer serializes automatic correction fields and excludes findings-only labels", async (t) => {
@@ -6125,89 +6017,6 @@ test("execution producer serializes automatic correction fields and excludes fin
   );
 });
 
-test("third failed execution round preserves cumulative corrections with an unchanged file-backed delta", async (t) => {
-  const fixture = await standaloneWorkspace(t);
-  await renderArtifacts(fixture);
-  const targets = [path.join(fixture.root, "src/example.txt"), path.join(fixture.root, "src/other.txt"),
-    path.join(fixture.root, "src/stable.txt")];
-  const claims = targets.map((target) => path.relative(path.join(fixture.execution, "tasks"), target).split(path.sep).join("/"));
-  const correctionClaims = claims.slice(0, 2);
-  await setImplementationAreas(fixture, {
-    global: targets.map((target) => path.relative(fixture.execution, target)).join("`, `"),
-    detail: claims.join("`, `"), task: claims.join("`, `"),
-  });
-  const livePaths = [fixture.requirements, path.join(fixture.execution, "plan.md"),
-    path.join(fixture.execution, "plans/slice-01.md"), path.join(fixture.execution, "tasks.md"),
-    path.join(fixture.execution, "tasks/slice-01.md")];
-  const liveBytes = await Promise.all(livePaths.map((file) => fs.readFile(file)));
-  const authority = (await inspectExecutionState(fixture.requirements)).currentFingerprint;
-  const copy = await prepareExecutionCopy({ specPath: fixture.requirements, slice: "slice-01" });
-  t.after(() => fs.rm(copy.candidateRoot, { recursive: true, force: true }));
-  const taskPath = copy.candidateTaskArtifact;
-  await fs.writeFile(taskPath, replaceSection((await fs.readFile(taskPath, "utf8")).replace("- [ ] 1.1", "- [x] 1.1"),
-    "Changed Areas", claims.map((claim) => `- \`${claim}\``).join("\n")));
-  const responseFile = path.join(await temporary(t, "stnl-zero-delta-response-"), "response.json");
-  const bundles = [];
-  for (const round of [1, 2, 3]) {
-    if (round === 1) await fs.writeFile(targets[2], "unchanged implementation\n");
-    if (round < 3) for (const target of targets.slice(0, 2)) await fs.writeFile(target, `implementation round ${round}\n`);
-    const response = JSON.stringify({
-      status: "TESTS_FAIL", automaticCheckRound: `${round}/3`, head: "0123456789abcdef0123456789abcdef01234567",
-      discoverySources: "prepared tests and current task", discoveryActions: "read-only inspection",
-      verificationTypesConsidered: "unit and environment checks", nonApplicabilityRationale: "none",
-      noVerificationCommandConfirmation: "verification command executed",
-      commands: [{ command: "STNL_VERIFICATION_COMMAND=1 node prepared-check.mjs", exit: 1 }],
-      resultOfEachCommandAndExitCode: "check failed", selectedChecks: "prepared check", selectionRationale: "same approved scope",
-      coverage: "approved behavior", failures: `round ${round} check failed`,
-      priorRoundFailure: round === 1 ? "none" : `round ${round - 1} check failed`,
-      correctionApplied: round === 1 ? "none" : round === 2 ? "corrected two implementation paths" : "adjusted verification environment only; code unchanged",
-      inSliceRationale: round === 1 ? "none" : "same approved behavior and prepared check",
-      evidenceOrFailureSummary: "failed command retained", affectedFilesOrBehaviors: "approved behavior",
-      blockers: "none", unexpectedWorkspaceEffects: "none", persistenceSummary: "no runner writes",
-    });
-    await fs.writeFile(responseFile, response);
-    const bundle = await serializeRunnerExecutionBundleFromResponse({ operation: "EXECUTE_SLICE",
-      response: await fs.readFile(responseFile, "utf8"), workspace: fixture.root, taskArtifact: taskPath });
-    assert.equal(await fs.readFile(responseFile, "utf8"), response);
-    await insertExecutionEvidenceInCandidate({ taskArtifact: taskPath, operation: "EXECUTE_SLICE", bundle });
-    if (round === 2) assert.ok(bundle.includes(`- Correction paths: ${correctionClaims.join(", ")}`));
-    if (round === 3) {
-      assert.match(bundle, /^- Correction paths: none$/mu);
-      assert.match(bundle, /^- Tested state:\n  - `/mu);
-      assert.doesNotMatch(bundle, /Fileless reason:/u);
-    }
-    bundles.push(bundle);
-  }
-  const finalTask = await fs.readFile(taskPath, "utf8");
-  for (const bundle of bundles) assert.ok(finalTask.includes(bundle), "every earlier check remains byte-identical");
-  assert.ok(finalTask.includes(`## Corrections Applied\n\n${correctionClaims.map((claim) => `- \`${claim}\``).join("\n")}`));
-  const strictRoot = path.join(await temporary(t, "stnl-zero-delta-strict-"), "execution");
-  await copyDirectory(copy.candidateExecutionRoot, strictRoot);
-  await fs.rm(path.join(strictRoot, ".stnl-execution-copy.json"), { force: true });
-  const validated = await validateExecutionCandidate(fixture.requirements, strictRoot);
-  assert.equal(validated.currentFingerprint, authority);
-  assert.equal(validated.state, "IMPLEMENTATION_RETRY_EXHAUSTED");
-  assert.deepEqual(bundles.map((bundle) => bundle.match(/^- Status: (.+)$/mu)[1]),
-    ["TESTS_FAIL", "TESTS_FAIL", "TESTS_FAIL"]);
-  assert.equal(validated.requiredRecoveryHandoff.operation, "VALIDATE_SLICE");
-  assert.ok(!validated.legalOperations.some(({ operation }) => operation === "EXECUTE_SLICE"));
-  assert.deepEqual(await Promise.all(livePaths.map((file) => fs.readFile(file))), liveBytes);
-  for (const [label, text, diagnostic] of [
-    ["changed-state", finalTask.replace(bundles[2], bundles[2].replace(/sha256:[0-9a-f]{64}/u, `sha256:${"0".repeat(64)}`)),
-      /Correction paths cannot be none.*unchanged/u],
-    ["missing-history", replaceSection(finalTask, "Corrections Applied", "- none"),
-      /Correction paths are absent from Corrections Applied/u],
-    ["false-fileless", finalTask.replace(bundles[2], bundles[2].replace("- Tested state:\n",
-      "- Fileless reason: environment-only correction\n- Tested state:\n")), /Fileless reason.*only/u],
-  ]) {
-    const rejected = path.join(await temporary(t, `stnl-zero-delta-${label}-`), "execution");
-    await copyDirectory(strictRoot, rejected);
-    const rejectedTask = path.join(rejected, "tasks/slice-01.md");
-    await fs.writeFile(rejectedTask, text);
-    await assert.rejects(validateExecutionCandidate(fixture.requirements, rejected), diagnostic);
-    assert.equal(await fs.readFile(rejectedTask, "utf8"), text, "rejection preserves candidate bytes");
-  }
-});
 
 test("round-two correction is inserted into an owned candidate and passes strict validation", async (t) => {
   const fixture = await standaloneWorkspace(t);
@@ -6482,12 +6291,6 @@ test("planning-only replacement rejects historical REPLAN fields and obsolete co
 });
 
 
-test("fake operational headings and non-sequential records never classify as pristine", async (t) => {
-  const fixture = await standaloneWorkspace(t);
-  await renderArtifacts(fixture);
-  await editTask(fixture, (value) => replaceSection(value, "Validation Attempts", "### attempt-01\n\n- Type: initial\n- Status: <PASS>"));
-  await assert.rejects(inspectExecutionState(fixture.requirements), /placeholder/u);
-});
 
 
 
@@ -6634,22 +6437,6 @@ test("stale delegation blockers cannot reopen terminal auxiliary phases", async 
   }
 });
 
-test("automatic check rounds reject skipped, duplicate, non-initial, and post-terminal records", async (t) => {
-  const invalidSequences = [
-    [checkRecord("implementation-check", 1, "TESTS_PASS", 2), /start its automatic check cycle at round 1\/3/u],
-    [checkRecord("implementation-check", 1, "TESTS_FAIL", 1), /unterminated implementation automatic correction cycle/u],
-    [`${checkRecord("implementation-check", 1, "TESTS_FAIL", 1)}\n\n${checkRecord("implementation-check", 2, "TESTS_PASS", 3)}`, /round 2\/3/u],
-    [`${checkRecord("implementation-check", 1, "TESTS_FAIL", 1)}\n\n${checkRecord("implementation-check", 2, "TESTS_PASS", 1)}`, /round 2\/3/u],
-    [`${checkRecord("implementation-check", 1, "TESTS_PASS", 1)}\n\n${checkRecord("implementation-check", 2, "TESTS_PASS", 1)}`, /after terminal automatic-check record/u],
-    [`${checkRecord("implementation-check", 1, "TESTS_FAIL", 1)}\n\n${checkRecord("implementation-check", 2, "TESTS_PASS", 2).replace("- Correction applied: bounded objective correction\n", "")}`, /Correction applied/u],
-  ];
-  for (const [sequence, expected] of invalidSequences) {
-    const fixture = await standaloneWorkspace(t);
-    await renderArtifacts(fixture);
-    await editTask(fixture, (value) => replaceSection(value, "Implementation Test Evidence", sequence));
-    await assert.rejects(inspectExecutionState(fixture.requirements), expected);
-  }
-});
 
 test("EXECUTE_SLICE preflight permits the next automatic round only after an in-scope correction is persisted", async (t) => {
   const uncorrected = await standaloneWorkspace(t);
@@ -7283,6 +7070,18 @@ async function rejectTaskMutations(fixture, copy, cases) {
 test('canonical owned auxiliary and formal candidates enforce record structure and exact PASS provenance', async t => {
   const fixture = await standaloneWorkspace(t); await renderArtifacts(fixture);
   const impl = await implementExample(fixture, { publish: false });
+  const scopeBefore = await fs.readFile(impl.copy.candidateTaskArtifact, 'utf8');
+  const liveTaskBefore = await fs.readFile(path.join(fixture.execution, 'tasks/slice-01.md'));
+  assert.equal((await serializeExecutionScopeClaims({ workspace: fixture.root,
+    taskArtifact: impl.copy.candidateTaskArtifact })).status, 'PASS');
+  const omittedScope = replaceSection(scopeBefore, 'Changed Areas', '- pending');
+  assert.notEqual(omittedScope, scopeBefore);
+  await fs.writeFile(impl.copy.candidateTaskArtifact, omittedScope);
+  await assert.rejects(serializeExecutionScopeClaims({ workspace: fixture.root,
+    taskArtifact: impl.copy.candidateTaskArtifact }), /Changed Areas cannot remain pending after execution work/);
+  assert.equal(await fs.readFile(impl.copy.candidateTaskArtifact, 'utf8'), omittedScope);
+  assert.deepEqual(await fs.readFile(path.join(fixture.execution, 'tasks/slice-01.md')), liveTaskBefore);
+  await fs.writeFile(impl.copy.candidateTaskArtifact, scopeBefore);
   const field = (text, name, value) => text.replace(new RegExp(`^- ${name}:.*$`, 'mu'), `- ${name}: ${value}`);
   const check = (text, mutate) => replaceSection(text, 'Implementation Test Evidence', mutate(impl.bundle));
   const cases = [
@@ -7305,6 +7104,7 @@ test('canonical owned auxiliary and formal candidates enforce record structure a
     ['plan reference', text => text.replace('- Plan: `../plans/slice-01.md`', '- Plan: `../plans/slice-99.md`'), /non-canonical Plan/],
     ['tasks reference', text => text.replace('- Global tasks: `../tasks.md`', '- Global tasks: `../other.md`'), /non-canonical Global tasks/],
     ['check numbering', text => check(text, record => record.replace('### implementation-check-01', '### implementation-check-02')), /contiguous from 01/],
+    ['check after terminal PASS', text => check(text, record => `${record}\n\n${record.replace('### implementation-check-01', '### implementation-check-02')}`), /after terminal automatic-check record/],
   ];
   for (const name of ['Tested scope', 'Verification types considered', 'Selected checks', 'Coverage']) cases.push([name + ' needs objective content', text => check(text, record => field(record, name, 'none')), new RegExp(name)]);
   for (const value of ['  additional scope', '    - nested scalar value', '\t- nested scalar value', '  * second value', '  + second value', '  1. second value']) cases.push(['scalar continuation ' + JSON.stringify(value), text => check(text, record => record.replace(/^- Tested scope:.*$/mu, match => match + '\n' + value)), /unexpected nested|continuation/]);
@@ -7327,7 +7127,19 @@ test('canonical owned auxiliary and formal candidates enforce record structure a
     ['base duplicate command authority', text => base(text, body => body + '\n- Authoritative commands:\n  - `conflicting command` | exit:0'), /exactly one Authoritative commands|unexpected content after Evidence summary/],
     ['incomplete atomic PASS', text => replaceSection(text, 'Final Result', '- pending'), /latest PASS attempt was not published atomically/],
     ['attempt numbering', text => text.replace('### attempt-01', '### attempt-02'), /contiguous from 01/],
+    ['attempt scalar continuation', text => text.replace(/^- Verified scope:.*$/mu, match => match + '\n  additional scope\n  - `hidden command` | exit:0'), /unexpected nested/],
   ];
+  for (const status of ['PASS', 'NEEDS_FIX']) formalCases.push([
+    `attempt after PASS without sealed reopening: ${status}`,
+    text => {
+      const first = text.split('## Validation Attempts\n\n')[1].split('\n## ')[0].trim();
+      const second = first.replace('### attempt-01', '### attempt-02')
+        .replace('- Type: initial', '- Type: revalidation')
+        .replace('- Status: PASS', `- Status: ${status}`);
+      return replaceSection(text, 'Validation Attempts', `${first}\n\n${second}`);
+    },
+    /attempt-01 PASS is terminal without a sealed reopening/,
+  ]);
   for (const result of ['- PASS\n- pending', '- PASS\n- PASS', '- pending\n- PASS', '- PASS\n- SUPERSEDED', '- PASS\n- terminal: PASS']) formalCases.push(['terminal conflict ' + result, text => replaceSection(text, 'Final Result', result), /Final Result is malformed/]);
   for (const summary of ['- pending', 'paragraph summary', '- fact\n  - nested fact', '- fact\n\n- another fact', '- ']) formalCases.push(['invalid Diff Summary ' + summary, text => replaceSection(text, 'Diff Summary', summary), /Diff Summary/]);
   assert.equal((await rejectTaskMutations(fixture, copy, formalCases)).state, 'COMPLETE');
@@ -7469,7 +7281,9 @@ test('canonical third failed automatic round preserves cumulative paths and perm
   const fixture = await standaloneWorkspace(t); await renderArtifacts(fixture);
   const first = await implementExample(fixture, { failFirst: true, publish: false });
   const second = await retryExample(fixture, first, 'second incorrect example\n', { status: 'TESTS_FAIL', publish: false });
+  const unchangedProduct = await fs.readFile(path.join(fixture.root, 'src/example.txt'));
   const third = await retryExample(fixture, second, undefined, { status: 'TESTS_FAIL', publish: false });
+  assert.deepEqual(await fs.readFile(path.join(fixture.root, 'src/example.txt')), unchangedProduct);
   const copy = first.copy;
   assert.equal((await rejectTaskMutations(fixture, copy, [
     ['implementation cannot resume exhausted operation', text => replaceSection(text, 'Delegation Blocker', delegationBlocker('EXECUTE_SLICE', 'initialization', { after: 'implementation-check-03' })), /cannot resume.*third-failure exhaustion/],
@@ -7477,10 +7291,15 @@ test('canonical third failed automatic round preserves cumulative paths and perm
     ['round four is rejected', text => text.replace('Automatic check round: 3/3', 'Automatic check round: 4/3'), /Automatic check round/],
     ['skipped check identifier', text => text.replace('### implementation-check-03', '### implementation-check-04'), /identifiers must be contiguous/],
     ['duplicate round', text => text.replace('Automatic check round: 3/3', 'Automatic check round: 2/3'), /round|sequential/],
+    ['non-initial first round', text => text.replace(first.bundle, second.bundle.replace('### implementation-check-02', '### implementation-check-01')), /start its automatic check cycle at round 1\/3/],
+    ['skipped second round', text => text.replace(second.bundle, second.bundle.replace('Automatic check round: 2/3', 'Automatic check round: 3/3')), /round 2\/3/],
+    ['second round needs correction explanation', text => text.replace(second.bundle, second.bundle.replace(/^- Correction applied:.*\n/mu, '')), /Correction applied/],
   ])).state, 'IMPLEMENTATION_RETRY_EXHAUSTED');
   const privateText = await fs.readFile(copy.candidateTaskArtifact, 'utf8');
   for (const check of [first, second, third]) assert.ok(privateText.includes(check.bundle));
   assert.match(third.bundle, /- Correction paths: none/);
+  assert.match(third.bundle, /- Tested state:\n  - `\.\.\/\.\.\/src\/example\.txt` \| sha256:[a-f0-9]{64}/);
+  assert.doesNotMatch(third.bundle, /Fileless reason:/);
   assert.match(privateText, /## Corrections Applied\n\n- `..\/..\/src\/example.txt`/);
   assert.match(second.bundle, /- Correction paths: ..\/..\/src\/example.txt/);
   await publishExecutionCopy({ specPath: fixture.requirements, slice: 'slice-01', candidateRoot: copy.candidateRoot });
@@ -7905,105 +7724,7 @@ test("canonical execution tables and checklists reject every unexpected structur
   await assert.rejects(inspectExecutionState(malformedChecklist.requirements), /malformed Checklist row/u);
 });
 
-test("scalar summaries stay inline while Tested state and Commands stay structurally scoped", async (t) => {
-  const valid = await standaloneWorkspace(t);
-  await renderArtifacts(valid);
-  await editTask(valid, (value) => {
-    let result = value.replace("- [ ] 1.1", "- [x] 1.1");
-    result = replaceSection(result, "Changed Areas", "- `../../src/example.txt`");
-    return replaceSection(result, "Implementation Test Evidence", checkRecord("implementation-check", 1, "TESTS_PASS", 1));
-  });
-  assert.equal((await inspectExecutionState(valid.requirements)).state, "IMPLEMENTED_AWAITING_VALIDATION");
 
-  const mutations = [
-    [(record) => record.replace("- Tested scope: ../../src/example.txt", "- Tested scope:   "), /Tested scope/u],
-    [(record) => record.replace("- Tested scope: ../../src/example.txt", "- Tested scope: ../../src/example.txt\n- Tested scope:"), /exactly one 'Tested scope' field/u],
-    [(record) => `${record}\n- Fileless reason:`, /Fileless reason/u],
-    [(record) => record.replace("- Tested scope: ../../src/example.txt", "- Tested scope: ../../src/example.txt\n  additional scope"), /unexpected nested or continuation/u],
-    [(record) => record.replace("- Tested scope: ../../src/example.txt", "- Tested scope: ../../src/example.txt\n    - nested scalar value"), /unexpected nested/u],
-    [(record) => record.replace("- Selected checks: node --test", "- Selected checks: node --test\n\t- nested scalar value"), /unexpected nested/u],
-    [(record) => record.replace("- Tested scope: ../../src/example.txt", "- Tested scope: ../../src/example.txt\n  * second value"), /unexpected nested/u],
-    [(record) => record.replace("- Tested scope: ../../src/example.txt", "- Tested scope: ../../src/example.txt\n  + second value"), /unexpected nested/u],
-    [(record) => record.replace("- Tested scope: ../../src/example.txt", "- Tested scope: ../../src/example.txt\n  1. second value"), /unexpected nested/u],
-    [(record) => record.replace("- Tested scope: ../../src/example.txt", "- Tested scope:\n  - ../../src/example.txt"), /Tested scope|unexpected nested/u],
-    [(record) => record.replace(
-      `  - \`../../src/example.txt\` | sha256:${VALIDATED_HASH}`,
-      `  - \`../../src/example.txt\` | sha256:${VALIDATED_HASH}\n  - \`../../src/example.txt\` | sha256:${VALIDATED_HASH}`,
-    ), /duplicate Tested state paths/u],
-    [(record) => record.replace(
-      `  - \`../../src/example.txt\` | sha256:${VALIDATED_HASH}`,
-      `  - \`../../src/z.txt\` | sha256:${VALIDATED_HASH}\n  - \`../../src/a.txt\` | sha256:${VALIDATED_HASH}`,
-    ), /Tested state paths are not lexicographically ordered/u],
-    [(record) => record.replace("`../../src/example.txt`", "`../../../outside.txt`"), /unsafe Tested state path/u],
-    [(record) => record
-      .replace("- Commands:\n  - `node --test` | exit:0", "- Commands:")
-      .replace("- Selected checks: node --test", "- Selected checks: focused check\n  - `node --test` | exit:0"), /Commands|unexpected nested/u],
-  ];
-  for (const [mutate, expected] of mutations) {
-    const fixture = await standaloneWorkspace(t);
-    await renderArtifacts(fixture);
-    await editTask(fixture, (value) => {
-      let result = value.replace("- [ ] 1.1", "- [x] 1.1");
-      result = replaceSection(result, "Changed Areas", "- `../../src/example.txt`");
-      return replaceSection(result, "Implementation Test Evidence", mutate(checkRecord("implementation-check", 1, "TESTS_PASS", 1)));
-    });
-    await assert.rejects(inspectExecutionState(fixture.requirements), expected);
-  }
-
-  const whitespaceReason = await standaloneWorkspace(t);
-  await renderArtifacts(whitespaceReason);
-  await editTask(whitespaceReason, (value) => {
-    let result = value.replace("- [ ] 1.1", "- [x] 1.1");
-    result = replaceSection(result, "Changed Areas", "- none");
-    const fileless = checkRecord("implementation-check", 1, "TESTS_PASS", 1)
-      .replace(`- Tested state:\n  - \`../../src/example.txt\` | sha256:${VALIDATED_HASH}`, "- Tested state: none\n- Fileless reason:   ");
-    return replaceSection(result, "Implementation Test Evidence", fileless);
-  });
-  await assert.rejects(inspectExecutionState(whitespaceReason.requirements), /Fileless reason/u);
-
-  const attemptNested = await standaloneWorkspace(t);
-  await renderArtifacts(attemptNested);
-  await editTask(attemptNested, (value) => {
-    let result = value.replace("- [ ] 1.1", "- [x] 1.1");
-    result = replaceSection(result, "Changed Areas", "- `../../src/example.txt`");
-    result = replaceSection(result, "Validation Attempts", NEEDS_FIX_ATTEMPT.replace(
-      "- Verified scope: ../../src/example.txt",
-      "- Verified scope: ../../src/example.txt\n  additional scope\n  - `hidden command` | exit:0",
-    ));
-    return replaceSection(result, "Validation Findings", ACTIVE_FINDING);
-  });
-  await assert.rejects(inspectExecutionState(attemptNested.requirements), /unexpected nested/u);
-});
-
-test("the first formal PASS is terminal for its slice", async (t) => {
-  const passPass = await standaloneWorkspace(t);
-  await renderArtifacts(passPass);
-  await editTask(passPass, (value) => {
-    let result = value.replace("- [ ] 1.1", "- [x] 1.1");
-    result = replaceSection(result, "Changed Areas", "- `../../src/example.txt`");
-    result = replaceSection(result, "Validation Attempts", `${PASS_ATTEMPT}\n\n${attemptRecord(2, "PASS")}`);
-    result = replaceSection(result, "Effective Validation Base", passBase({ attempt: 2 }));
-    return publishPassResult(result);
-  });
-  await editTasksIndex(passPass, (value) => value.replace(
-    "| [ ] | 01 - Delivery | observable result | - | tasks/slice-01.md | pending | pending |",
-    "| [x] | 01 - Delivery | observable result | - | tasks/slice-01.md | PASS | PASS |",
-  ));
-  await assert.rejects(inspectExecutionState(passPass.requirements), /attempt-01 PASS is terminal/u);
-
-  const passNeedsFix = await standaloneWorkspace(t);
-  await renderArtifacts(passNeedsFix);
-  const laterFinding = ACTIVE_FINDING.replace("Origin: attempt-01", "Origin: attempt-02");
-  await editTask(passNeedsFix, (value) => {
-    let result = value.replace("- [ ] 1.1", "- [x] 1.1");
-    result = replaceSection(result, "Changed Areas", "- `../../src/example.txt`");
-    result = replaceSection(result, "Validation Attempts", `${PASS_ATTEMPT}\n\n${attemptRecord(2, "NEEDS_FIX", {
-      references: "finding-01", dispositions: "finding-01=active",
-    })}`);
-    return replaceSection(result, "Validation Findings", laterFinding);
-  });
-  await assert.rejects(inspectExecutionState(passNeedsFix.requirements), /attempt-01 PASS is terminal/u);
-});
 
 test("work, corrections, findings authority, terminal diff, and blocker resolution reconcile exactly", async (t) => {
   const pendingChanged = await standaloneWorkspace(t);
@@ -8765,11 +8486,17 @@ test('canonical observed complex commands round-trip through EXECUTE, APPLY and 
   ]);
   const receiptBytes = await fs.readFile(implementation.captured.receiptFile);
   await publishExecutionCopy({ specPath: fixture.requirements, slice: 'slice-01', candidateRoot: implementation.copy.candidateRoot });
-  const needsFix = await validateExample(fixture, { status: 'NEEDS_FIX', findings: ACTIVE_FINDING });
-  const correction = await correctExample(fixture, { content: undefined });
+  const explanation = 'line one\nline `two`';
+  const needsFix = await validateExample(fixture, { status: 'NEEDS_FIX', findings: ACTIVE_FINDING, explanation });
+  const correction = await correctExample(fixture, { content: undefined, explanation });
+  assert.ok(correction.bundle.includes(`json:${JSON.stringify(explanation)}`));
+  for (const command of commands) {
+    const carrier = /[`\r\n]/u.test(command) ? `json:${JSON.stringify(command)}` : `\`${command}\``;
+    assert.ok(correction.bundle.includes(`  - ${carrier} | exit:0`), 'APPLY command carrier is lossless');
+  }
   const resolved = ACTIVE_FINDING.replace('State: active', 'State: resolved')
     + '\n- Resolution: attempt-02 confirms the corrected observation.';
-  const pass = await validateExample(fixture, { status: 'PASS', findings: resolved, dispositions: 'finding-01=resolved' });
+  const pass = await validateExample(fixture, { status: 'PASS', findings: resolved, dispositions: 'finding-01=resolved', explanation });
   const state = await inspectExecutionState(fixture.requirements), task = state.tasks.get('slice-01');
   assert.equal(state.state, 'COMPLETE');
   for (const record of [...task.implementationChecks, ...task.findingsChecks]) {
@@ -8778,6 +8505,7 @@ test('canonical observed complex commands round-trip through EXECUTE, APPLY and 
   for (const record of task.attempts) {
     assert.match(record.commands[0].command, /validate-execution-state\.mjs/);
     assert.deepEqual(record.commands.slice(1).map(({ command, exit }) => [command, exit]), commands.map(command => [command, 0]));
+    assert.ok(record.body.includes(`json:${JSON.stringify(explanation)}`), 'formal explanatory carrier is lossless');
   }
   for (const result of [needsFix, correction, pass]) assert.equal(JSON.parse(await fs.readFile(result.captured.receiptFile)).verification.status, 'completed');
   assert.deepEqual(await fs.readFile(implementation.captured.receiptFile), receiptBytes);

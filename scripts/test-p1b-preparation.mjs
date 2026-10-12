@@ -106,6 +106,50 @@ export async function reviewFixtureCandidate(f, root) {
   return publishFixtureCandidate(f, root, { reviewDecision });
 }
 
+test('joint preparation CLI publishes from a frozen skill path containing spaces', async t => {
+  const f = await fixture({ test: t, form: 'nested-standalone' });
+  const bundleParent = await fs.mkdtemp(path.join(os.tmpdir(), 'stnl-frozen-planner-'));
+  t.after(() => fs.rm(bundleParent, { recursive: true, force: true }));
+  const bundle = path.join(bundleParent, 'frozen skill bundle', 'stnl-execution-planner');
+  await fs.mkdir(path.dirname(bundle), { recursive: true });
+  await fs.cp(path.join(templateRoot, '..'), bundle, { recursive: true });
+  for (const resource of ['templates/plan.template.md', 'templates/slice-plan.template.md',
+    'templates/tasks.template.md', 'templates/slice-tasks.template.md', 'references/verification-recipe.md']) {
+    assert.deepEqual(await fs.readFile(path.join(bundle, resource)),
+      await fs.readFile(path.join(templateRoot, '..', resource)));
+    await assert.rejects(fs.stat(path.join(f.workspace.executionRoot, resource)), { code: 'ENOENT' });
+  }
+  const env = { ...process.env }; delete env.NODE_TEST_CONTEXT;
+  const invoke = (module, args) => spawnSync(process.execPath, [path.join(bundle, 'runtime', module), ...args],
+    { cwd: f.root, encoding: 'utf8', env });
+  const prepared = invoke('prepare-task-candidate.mjs', ['--spec-path', f.specPath, '--operation', 'PLAN']);
+  assert.equal(prepared.status, 0, prepared.stderr);
+  const candidate = JSON.parse(prepared.stdout).candidateExecutionRoot;
+  retainPreparation(f, candidate);
+  for (const name of ['plan.md', 'plans/slice-01.md', 'tasks.md', 'tasks/slice-01.md']) {
+    const destination = path.join(candidate, name);
+    await fs.mkdir(path.dirname(destination), { recursive: true });
+    await fs.copyFile(path.join(f.candidate, name), destination);
+  }
+  for (const [module, args] of [
+    ['prepare-plan-candidate.mjs', ['--candidate-execution-root', candidate]],
+    ['serialize-plan-paths.mjs', ['--spec-path', f.specPath, '--candidate-execution-root', candidate]],
+  ]) {
+    const result = invoke(module, args); assert.equal(result.status, 0, result.stderr);
+    assert.equal(JSON.parse(result.stdout).status, 'PASS');
+  }
+  const published = invoke('publish-task-candidate.mjs', ['--spec-path', f.specPath, '--candidate-execution-root', candidate]);
+  assert.equal(published.status, 0, published.stderr);
+  assert.equal(JSON.parse(published.stdout).publication, 'confirmed');
+  assert.equal((await inspectExecutionState(f.specPath)).state, 'PLANNED_DRAFT');
+  for (const module of ['prepare-task-candidate.mjs', 'prepare-plan-candidate.mjs',
+    'serialize-plan-paths.mjs', 'serialize-task-paths.mjs', 'publish-task-candidate.mjs']) {
+    const result = invoke(module, []);
+    assert.notEqual(result.status, 0, module);
+    assert.match(result.stderr, /usage:/u, module);
+  }
+});
+
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
 test('joint pristine replacement preserves nine obligation steps and exact Unicode QA forecasts through CLI review', async (t) => {
   const f = await fixture({ test: t });
@@ -335,6 +379,7 @@ test('joint draft parser rejects inconsistent started checklist, malformed evide
   for (const [name, mutate, diagnostic] of [
     ['started checklist without actual scope', text => text.replace('- [ ] 1.1', '- [x] 1.1'), /Changed Areas cannot remain pending after work/],
     ['malformed execution evidence', text => setPreparationSection(text, 'Implementation Test Evidence', '### implementation-check-01\n\n- Status: TESTS_PASS'), /expected exactly one 'Automatic check round' field/],
+    ['placeholder formal attempt', text => setPreparationSection(text, 'Validation Attempts', '### attempt-01\n\n- Type: initial\n- Status: <PASS>'), /placeholder/],
     ['forged supersession', text => setPreparationSection(text, 'Final Result', '- SUPERSEDED\n- Superseded by: slice-02\n- Plan revision: 1'), /SUPERSEDED|disagree|supersed/],
   ]) await t.test(name, async child => {
     const f = await fixture({ test: child });

@@ -134,7 +134,7 @@ export async function retryExample(f, first, content, { status = 'TESTS_PASS', p
   return { admission: first.admission, copy: first.copy, start, response, captured, bundle };
 }
 
-export async function validateExample(f, { slice = 'slice-01', status = 'PASS', findings = null, publish = true, dispositions = null } = {}) {
+export async function validateExample(f, { slice = 'slice-01', status = 'PASS', findings = null, publish = true, dispositions = null, explanation = null } = {}) {
   const admission = await beginExample(f, 'VALIDATE_SLICE', slice);
   return withExampleOwner(admission, async () => {
     const start = await native(context(f), admission.owner);
@@ -146,9 +146,9 @@ export async function validateExample(f, { slice = 'slice-01', status = 'PASS', 
       await fs.writeFile(file, section(await fs.readFile(file, 'utf8'), 'Validation Findings', findings));
     }
     const response = { status, head: 'offline-example', commands: start.verification.checks.map(check => ({ command: verificationCommand(check), exit: 0 })),
-      evidence: 'Real prepared byte assertion passed; the independent semantic judgment is simulated for this workflow fixture.',
+      evidence: explanation ?? 'Real prepared byte assertion passed; the independent semantic judgment is simulated for this workflow fixture.',
       findingReferences: refs.join(', ') || 'none', findingDispositions: dispositions ?? (refs.map(id => id + '=active').join(', ') || 'none'),
-      blockers: status === 'BLOCKED' ? 'Controlled unavailable semantic prerequisite' : 'none', unexpectedWorkspaceEffects: 'none', persistenceSummary: 'Preserve concluded formal result' };
+      blockers: status === 'BLOCKED' ? 'Controlled unavailable semantic prerequisite' : 'none', unexpectedWorkspaceEffects: explanation ?? 'none', persistenceSummary: 'Preserve concluded formal result' };
     const captured = await capture(start, response);
     const prepared = await prepareValidationCandidate({ specPath: f.requirements, slice, workspace: f.root, candidateExecutionRoot: copy.candidateExecutionRoot, ...captured });
     assert.equal(prepared.formalStatus, status, JSON.stringify(prepared));
@@ -161,7 +161,7 @@ export async function validateExample(f, { slice = 'slice-01', status = 'PASS', 
   });
 }
 
-export async function correctExample(f, { slice = 'slice-01', content, filelessReason = null, verified = 'finding-01', unsupported = 'none', fail = false, publish = true } = {}) {
+export async function correctExample(f, { slice = 'slice-01', content, filelessReason = null, verified = 'finding-01', unsupported = 'none', fail = false, publish = true, explanation = null } = {}) {
   const admission = await beginExample(f, 'APPLY_FINDINGS', slice);
   const start = await native(context(f), admission.owner);
   const copy = await prepareExecutionCopy({ specPath: f.requirements, slice, owner: admission.owner });
@@ -172,12 +172,12 @@ export async function correctExample(f, { slice = 'slice-01', content, filelessR
   text = section(text, 'Corrections Applied', changed.map(p => '- `' + p + '`').join('\n') || '- none'); await fs.writeFile(copy.candidateTaskArtifact, text);
   const cycle = (await inspectExecutionState(f.requirements)).tasks.get(slice).attempts.at(-1).id;
   const response = { ...f.exampleImplementation.response, findingsCycle: cycle, findingsVerified: verified,
-    correctionsCovered: filelessReason === null ? 'Corrected the actual approved example file and reran its unchanged byte assertion' : 'Reconciled the accepted observation without changing repository files and reran the existing assertion', regressionsSelected: 'Prepared exact byte assertion', unsupportedActiveFindings: unsupported };
+    correctionsCovered: explanation ?? (filelessReason === null ? 'Corrected the actual approved example file and reran its unchanged byte assertion' : 'Reconciled the accepted observation without changing repository files and reran the existing assertion'), regressionsSelected: explanation ?? 'Prepared exact byte assertion', unsupportedActiveFindings: unsupported };
   for (const key of ['priorRoundFailure', 'correctionApplied', 'inSliceRationale']) delete response[key];
   response.status = fail ? 'TESTS_FAIL' : 'TESTS_PASS';
   response.failures = fail ? 'The unchanged prepared assertion failed after the attempted correction' : 'none';
   response.resultOfEachCommandAndExitCode = `Prepared assertion exit ${fail ? 1 : 0}`;
-  response.evidenceOrFailureSummary = `Real unchanged assertion observed ${response.status}`;
+  response.evidenceOrFailureSummary = explanation ?? `Real unchanged assertion observed ${response.status}`;
   response.commands = start.verification.checks.map(check => ({ command: verificationCommand(check), exit: fail ? 1 : 0 }));
   if (filelessReason !== null) response.filelessReason = filelessReason;
   const captured = await capture(start, response, changed);
