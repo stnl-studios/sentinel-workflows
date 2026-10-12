@@ -1067,14 +1067,73 @@ test("final-window source mutations are restored exactly and never overwritten b
   }
 });
 
-test("CLOSE requires a fresh attestation and the exact deterministic renderer candidate", async () => {
+test("CLOSE without attestation preserves external state and rejects authority drift before publication", async (t) => {
+  for (const drift of [false, true]) {
+    await t.test(drift ? "authority drift" : "documentary CLOSE", async () => {
+      await withTemporaryDirectory("stnl-publisher-close-documentary-", async (base) => {
+        const { target } = await buildResumeFixture(path.join(base, "seed"));
+        const external = path.join(target, "execution", "external.bin");
+        await fs.mkdir(path.dirname(external), { recursive: true });
+        await fs.writeFile(external, Buffer.from([0, 255, 1]));
+        const candidate = path.join(base, "candidate");
+        buildClosedCandidate(target, candidate);
+        const candidateState = snapshot(candidate);
+        if (drift) {
+          const feature = path.join(target, "feature_spec.md");
+          const before = await fs.readFile(feature, "utf8");
+          const changed = before.replace("Provide deterministic invitation expiration behavior.", "Concurrent authority requires revised invitation expiration behavior.");
+          assert.notEqual(changed, before);
+          await fs.writeFile(feature, changed);
+          validateWorkspace(target);
+        }
+        const sourceState = snapshot(target);
+        if (drift) {
+          await assert.rejects(publishCandidate("CLOSE", target, candidate), /CLOSE lost or changed durable section 'Objective'/u);
+          assert.equal(snapshot(target), sourceState);
+        } else {
+          await publishCandidate("CLOSE", target, candidate);
+          assert.equal(validateWorkspace(target).closed, true);
+          assert.equal(snapshot(target), candidateState);
+          assert.deepEqual(await fs.readFile(external), Buffer.from([0, 255, 1]));
+        }
+        assert.equal(snapshot(candidate), candidateState);
+        assert.deepEqual(await transactionResidues(target), []);
+      });
+    });
+  }
+});
+
+test("CLOSE refuses an invalid explicitly supplied receipt preserving source, candidate and receipt", async () => {
+  await withTemporaryDirectory("stnl-publisher-close-invalid-", async (base) => {
+    const { target } = await buildResumeFixture(path.join(base, "seed"));
+    const receipt = path.join(base, "receipt.json");
+    createReadinessAttestation(target, receipt, { scope: "GLOBAL", verdict: "READY" });
+    const candidate = path.join(base, "candidate");
+    buildClosedCandidate(target, candidate);
+    const payload = JSON.parse(await fs.readFile(receipt, "utf8"));
+    await fs.writeFile(receipt, JSON.stringify({ ...payload, verdict: "BLOCKED" }));
+    const sourceState = snapshot(target);
+    const candidateState = snapshot(candidate);
+    const receiptBytes = await fs.readFile(receipt);
+    const identity = await fs.stat(receipt);
+    await assert.rejects(publishCandidate("CLOSE", target, candidate, { readinessAttestation: receipt }), /verdict READY/u);
+    assert.equal(snapshot(target), sourceState);
+    assert.equal(snapshot(candidate), candidateState);
+    assert.deepEqual(await fs.readFile(receipt), receiptBytes);
+    const after = await fs.stat(receipt);
+    assert.deepEqual([after.dev, after.ino, after.nlink], [identity.dev, identity.ino, identity.nlink]);
+    assert.deepEqual(await transactionResidues(target), []);
+  });
+});
+
+test("CLOSE validates an explicitly supplied attestation and the exact deterministic renderer candidate", async () => {
   await withTemporaryDirectory("stnl-publisher-close-", async (base) => {
     const fixture = await buildResumeFixture(path.join(base, "seed"));
     const target = fixture.target;
     const candidate = path.join(base, "closed candidate");
     const attestation = path.join(base, "readiness attestation.json");
     createReadinessAttestation(target, attestation, { scope: "GLOBAL", verdict: "READY" });
-    buildClosedCandidate(target, candidate, { readinessAttestation: attestation });
+    buildClosedCandidate(target, candidate);
     const expected = snapshot(candidate);
     const result = runCli("CLOSE", target, candidate, null, {
       readinessAttestation: attestation,
@@ -1101,7 +1160,7 @@ test("CLOSE requires a fresh attestation and the exact deterministic renderer ca
     const candidate = path.join(base, "closed candidate");
     const attestation = path.join(base, "readiness.json");
     createReadinessAttestation(target, attestation, { scope: "GLOBAL", verdict: "READY" });
-    buildClosedCandidate(target, candidate, { readinessAttestation: attestation });
+    buildClosedCandidate(target, candidate);
     const feature = path.join(target, "feature_spec.md");
     const text = await fs.readFile(feature, "utf8");
     await fs.writeFile(
@@ -1129,7 +1188,7 @@ test("CLOSE requires a fresh attestation and the exact deterministic renderer ca
     const candidate = path.join(base, "closed candidate");
     const attestation = path.join(base, "readiness.json");
     createReadinessAttestation(target, attestation, { scope: "GLOBAL", verdict: "READY" });
-    buildClosedCandidate(target, candidate, { readinessAttestation: attestation });
+    buildClosedCandidate(target, candidate);
     const feature = path.join(candidate, "feature_spec.md");
     const text = await fs.readFile(feature, "utf8");
     await fs.writeFile(
@@ -1155,7 +1214,7 @@ test("CLOSE requires a fresh attestation and the exact deterministic renderer ca
     const candidate = path.join(base, "closed candidate");
     const attestation = path.join(base, "readiness.json");
     createReadinessAttestation(target, attestation, { scope: "GLOBAL", verdict: "READY" });
-    buildClosedCandidate(target, candidate, { readinessAttestation: attestation });
+    buildClosedCandidate(target, candidate);
     await assert.rejects(
       publishCandidate("CLOSE", target, candidate, {
         readinessAttestation: attestation,
@@ -1180,7 +1239,7 @@ test("CLOSE requires a fresh attestation and the exact deterministic renderer ca
     const candidate = path.join(base, "closed candidate");
     const attestation = path.join(base, "readiness.json");
     createReadinessAttestation(target, attestation, { scope: "GLOBAL", verdict: "READY" });
-    buildClosedCandidate(target, candidate, { readinessAttestation: attestation });
+    buildClosedCandidate(target, candidate);
     process.env[TEST_ONLY_MUTATE_WINDOW_ENV] = "ATTESTATION_QUARANTINE_SWAP";
     process.env[TEST_ONLY_ACK_ENV] = TEST_ONLY_ACK;
     try {
@@ -1217,7 +1276,7 @@ test("CLOSE recovery is independent of the ephemeral attestation after journalin
         const candidate = path.join(base, "closed candidate");
         const attestation = path.join(base, "readiness.json");
         createReadinessAttestation(target, attestation, { scope: "GLOBAL", verdict: "READY" });
-        buildClosedCandidate(target, candidate, { readinessAttestation: attestation });
+        buildClosedCandidate(target, candidate);
         const sourceState = snapshot(target);
         const candidateState = snapshot(candidate);
         const result = runCli("CLOSE", target, candidate, null, {

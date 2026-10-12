@@ -52,9 +52,8 @@ function attestation(root, source, name = 'readiness.json') {
   });
 }
 
-function build(root, source, name = 'candidate', receipt = null) {
-  const readinessAttestation = receipt ?? attestation(root, source);
-  return buildClosedCandidate(source, path.join(root, name), { readinessAttestation });
+function build(root, source, name = 'candidate') {
+  return buildClosedCandidate(source, path.join(root, name));
 }
 
 function replace(file, before, after) {
@@ -160,7 +159,6 @@ test('renderer output is byte-identical across V8 hash seeds and locale environm
   const root = temporary(t);
   const source = fresh(root, 'unicode source');
   mutateObjective(source, 'Preservar expiração determinística — café, ação e 東京.');
-  const receipt = attestation(root, source);
   const sourceBefore = workspaceSnapshot(source);
   const candidates = [path.join(root, 'candidate C'), path.join(root, 'candidate pt BR')];
   const variants = [
@@ -170,7 +168,7 @@ test('renderer output is byte-identical across V8 hash seeds and locale environm
   for (let index = 0; index < candidates.length; index += 1) {
     const result = spawnSync(
       process.execPath,
-      [`--hash-seed=${variants[index].seed}`, RENDERER, source, candidates[index], '--readiness-attestation', receipt],
+      [`--hash-seed=${variants[index].seed}`, RENDERER, source, candidates[index]],
       {
         cwd: root,
         encoding: 'utf8',
@@ -212,9 +210,8 @@ test('hardlink peers hidden in ignored metadata are rejected without residue', (
   fs.writeFileSync(linked, 'metadata peer\n');
   const metadata = path.join(source, '.DS_Store');
   if (!createHardlinkOrSkip(t, linked, metadata)) return;
-  const receipt = attestation(root, source);
   const before = treeSnapshot(source);
-  assert.throws(() => build(root, source, 'candidate', receipt), /crosses the CLOSE preservation boundary/u);
+  assert.throws(() => build(root, source, 'candidate'), /crosses the CLOSE preservation boundary/u);
   assert.deepEqual(treeSnapshot(source), before);
   assert.equal(fs.lstatSync(linked).ino, fs.lstatSync(metadata).ino);
   assert.equal(exists(path.join(root, 'candidate')), false);
@@ -259,7 +256,6 @@ test('an external hardlink copy failure removes only the owned stage', (t) => {
   const second = path.join(execution, 'payload-b.bin');
   fs.writeFileSync(first, 'hardlink failure fixture\n');
   if (!createHardlinkOrSkip(t, first, second)) return;
-  const receipt = attestation(root, source);
   const sourceBefore = treeSnapshot(source);
   const originalLink = fs.linkSync;
   fs.linkSync = function injectedLinkFailure(from, to, ...rest) {
@@ -271,7 +267,7 @@ test('an external hardlink copy failure removes only the owned stage', (t) => {
     return originalLink.call(fs, from, to, ...rest);
   };
   try {
-    assert.throws(() => build(root, source, 'candidate', receipt), /injected link failure/u);
+    assert.throws(() => build(root, source, 'candidate'), /injected link failure/u);
   } finally {
     fs.linkSync = originalLink;
   }
@@ -304,9 +300,8 @@ test('unsupported external Unix-domain socket fails cleanly without candidate or
     throw error;
   }
   t.after(() => new Promise((resolve) => server.close(resolve)));
-  const receipt = attestation(root, source);
   const sourceBefore = treeSnapshot(source);
-  assert.throws(() => build(root, source, 'candidate', receipt), /unsupported external filesystem entry/u);
+  assert.throws(() => build(root, source, 'candidate'), /unsupported external filesystem entry/u);
   assert.deepEqual(treeSnapshot(source), sourceBefore);
   assert.equal(exists(path.join(root, 'candidate')), false);
   assert.deepEqual(stageResidues(root, 'candidate'), []);
@@ -315,17 +310,16 @@ test('unsupported external Unix-domain socket fails cleanly without candidate or
 test('internal and traversal candidate paths are rejected before rendering', (t) => {
   const root = temporary(t);
   const source = fresh(root);
-  const receipt = attestation(root, source);
   const sourceBefore = workspaceSnapshot(source);
   const internal = path.join(source, 'candidate');
   assert.throws(
-    () => buildClosedCandidate(source, internal, { readinessAttestation: receipt }),
+    () => buildClosedCandidate(source, internal),
     /disjoint directories/u,
   );
   assert.equal(exists(internal), false);
   const traversal = `${root}${path.sep}unused${path.sep}..${path.sep}candidate`;
   assert.throws(
-    () => buildClosedCandidate(source, traversal, { readinessAttestation: receipt }),
+    () => buildClosedCandidate(source, traversal),
     /path traversal/u,
   );
   assert.equal(exists(path.join(root, 'candidate')), false);
@@ -335,12 +329,11 @@ test('internal and traversal candidate paths are rejected before rendering', (t)
 test('candidate symlink path is rejected without touching its target', (t) => {
   const root = temporary(t);
   const source = fresh(root);
-  const receipt = attestation(root, source);
   const target = path.join(root, 'missing-target');
   const candidate = path.join(root, 'linked-candidate');
   if (!createSymlinkOrSkip(t, target, candidate, process.platform === 'win32' ? 'junction' : undefined)) return;
   assert.throws(
-    () => buildClosedCandidate(source, candidate, { readinessAttestation: receipt }),
+    () => buildClosedCandidate(source, candidate),
     /symlink components/u,
   );
   assert.equal(exists(target), false);
@@ -351,13 +344,12 @@ test('nested source symlink alias is rejected without source mutation', (t) => {
   const root = temporary(t);
   const externalRoot = path.join(root, 'external-source-root');
   const realSource = fresh(path.join(externalRoot, 'one'), 'source');
-  const receipt = attestation(root, realSource);
   const sourceBefore = workspaceSnapshot(realSource);
   const alias = path.join(root, 'source-alias');
   if (!createSymlinkOrSkip(t, externalRoot, alias, process.platform === 'win32' ? 'junction' : undefined)) return;
   const aliasedSource = path.join(alias, 'one', 'source');
   assert.throws(
-    () => buildClosedCandidate(aliasedSource, path.join(root, 'source-alias-candidate'), { readinessAttestation: receipt }),
+    () => buildClosedCandidate(aliasedSource, path.join(root, 'source-alias-candidate')),
     /symlink components/u,
   );
   assert.equal(exists(path.join(root, 'source-alias-candidate')), false);
@@ -368,7 +360,6 @@ test('nested source symlink alias is rejected without source mutation', (t) => {
 test('nested candidate symlink alias is rejected without external mutation', (t) => {
   const root = temporary(t);
   const source = fresh(root);
-  const receipt = attestation(root, source);
   const externalRoot = path.join(root, 'external-candidate-root');
   const realParent = path.join(externalRoot, 'one', 'two');
   fs.mkdirSync(realParent, { recursive: true });
@@ -379,7 +370,7 @@ test('nested candidate symlink alias is rejected without external mutation', (t)
   if (!createSymlinkOrSkip(t, externalRoot, alias, process.platform === 'win32' ? 'junction' : undefined)) return;
   const candidate = path.join(alias, 'one', 'two', 'candidate');
   assert.throws(
-    () => buildClosedCandidate(source, candidate, { readinessAttestation: receipt }),
+    () => buildClosedCandidate(source, candidate),
     /symlink components/u,
   );
   assert.equal(exists(path.join(realParent, 'candidate')), false);
@@ -390,7 +381,6 @@ test('nested candidate symlink alias is rejected without external mutation', (t)
 test('invalid rendered stage is removed while source remains byte-identical', (t) => {
   const root = temporary(t);
   const source = fresh(root);
-  const receipt = attestation(root, source);
   const sourceBefore = treeSnapshot(source);
   const originalWrite = fs.writeFileSync;
   let injected = false;
@@ -411,7 +401,7 @@ test('invalid rendered stage is removed while source remains byte-identical', (t
   };
   try {
     assert.throws(
-      () => build(root, source, 'candidate', receipt),
+      () => build(root, source, 'candidate'),
       (error) => error instanceof ValidationError,
     );
   } finally {
@@ -448,7 +438,7 @@ for (const timing of ['before', 'after']) {
     };
     try {
       assert.throws(
-        () => buildClosedCandidate(source, candidate, { readinessAttestation: receipt }),
+        () => buildClosedCandidate(source, candidate),
         /CLOSE source changed during rendering; rebuild from the current active source/u,
       );
     } finally {

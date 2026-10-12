@@ -15,6 +15,7 @@ import {
   validateReadinessAttestation,
   workspaceAuthoritySnapshotSha256,
 } from '../skills/workflows/stnl-spec-lifecycle-manager/runtime/lib/readiness.mjs';
+import { publishCandidate } from '../skills/workflows/stnl-spec-lifecycle-manager/runtime/lib/publisher.mjs';
 import { buildClosedCandidate } from '../skills/workflows/stnl-spec-lifecycle-manager/runtime/lib/closed-spec.mjs';
 import {
   ValidationError,
@@ -25,6 +26,7 @@ import {
 const REPOSITORY_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SKILL_ROOT = path.join(REPOSITORY_ROOT, 'skills', 'workflows', 'stnl-spec-lifecycle-manager');
 const FIXTURES = path.join(SKILL_ROOT, 'examples', 'validator-fixtures');
+const PUBLISHER = path.join(SKILL_ROOT, 'runtime', 'publish-spec-lifecycle.mjs');
 const RENDERER = path.join(SKILL_ROOT, 'runtime', 'build-closed-spec.mjs');
 const OPTIONAL_SYMLINK_ERRORS = new Set(['EPERM', 'EACCES', 'ENOTSUP', 'EOPNOTSUPP', 'UNKNOWN']);
 const OPTIONAL_HARDLINK_ERRORS = new Set([...OPTIONAL_SYMLINK_ERRORS, 'EXDEV']);
@@ -46,14 +48,26 @@ function fresh(root, name = 'source') {
 }
 
 function attestation(root, source, name = 'readiness.json') {
-  return createReadinessAttestation(source, path.join(root, name), {
+  const receipt = createReadinessAttestation(source, path.join(root, name), {
     scope: 'GLOBAL',
     verdict: 'READY',
   });
+  assert.doesNotThrow(() => validateReadinessAttestation(source, receipt), 'every receipt negative starts from the real valid consumer control');
+  return receipt;
 }
 
-function build(root, source, receipt, name = 'candidate') {
-  return buildClosedCandidate(source, path.join(root, name), { readinessAttestation: receipt });
+function inspectReceipt(root, source, receipt, name = 'candidate') {
+  const before = workspaceSnapshot(root);
+  const metadata = exists(receipt) ? fs.lstatSync(receipt) : null;
+  try {
+    return validateReadinessAttestation(source, receipt, { candidate: path.join(root, name) });
+  } finally {
+    assert.deepEqual(workspaceSnapshot(root), before, 'validator must preserve source, externals, receipt and topology');
+    if (metadata) {
+      const after = fs.lstatSync(receipt);
+      assert.deepEqual([after.dev, after.ino, after.nlink], [metadata.dev, metadata.ino, metadata.nlink]);
+    }
+  }
 }
 
 function replace(file, before, after) {
@@ -108,10 +122,11 @@ function stageResidues(root, candidateName) {
   return fs.readdirSync(root).filter((name) => name.startsWith(`.${candidateName}.close-stage-`));
 }
 
-test('deep readiness schema mutations are rejected before candidate creation', async (t) => {
+test('deep readiness schema mutations are rejected by the explicit receipt validator without mutation', async (t) => {
   const root = temporary(t);
   const source = fresh(root);
   const valid = attestation(root, source, 'valid.json');
+  assert.doesNotThrow(() => inspectReceipt(root, source, valid));
   const base = JSON.parse(fs.readFileSync(valid, 'utf8'));
   const cases = [
     ['identity unknown field', (value) => { value.workspace_identity.unexpected = 'value'; }, /workspace_identity fields.*unknown=\['unexpected'\]/u],
@@ -130,7 +145,7 @@ test('deep readiness schema mutations are rejected before candidate creation', a
       const receipt = writePayload(root, `schema-${index}.json`, payload);
       const candidateName = `schema-candidate-${index}`;
       assert.throws(
-        () => build(root, source, receipt, candidateName),
+        () => inspectReceipt(root, source, receipt, candidateName),
         (error) => error instanceof ValidationError && diagnostic.test(error.message),
       );
       assert.equal(exists(path.join(root, candidateName)), false);
@@ -145,21 +160,21 @@ test('deep readiness schema mutations are rejected before candidate creation', a
       '"h1":"# Fixture Feature - Feature SPEC","h1":"# Fixture Feature - Feature SPEC"',
     );
     fs.writeFileSync(duplicate, raw, 'utf8');
-    assert.throws(() => build(root, source, duplicate, 'nested-duplicate-candidate'), /duplicate JSON field 'h1'/u);
+    assert.throws(() => inspectReceipt(root, source, duplicate, 'nested-duplicate-candidate'), /duplicate JSON field 'h1'/u);
     assert.equal(exists(path.join(root, 'nested-duplicate-candidate')), false);
   });
 
   await t.test('root array', () => {
     const receipt = path.join(root, 'root-array.json');
     fs.writeFileSync(receipt, '[]\n', 'utf8');
-    assert.throws(() => build(root, source, receipt, 'root-array-candidate'), /root must be a JSON object/u);
+    assert.throws(() => inspectReceipt(root, source, receipt, 'root-array-candidate'), /root must be a JSON object/u);
     assert.equal(exists(path.join(root, 'root-array-candidate')), false);
   });
 
   await t.test('UTF-8 BOM', () => {
     const receipt = path.join(root, 'bom.json');
     fs.writeFileSync(receipt, Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), fs.readFileSync(valid)]));
-    assert.throws(() => build(root, source, receipt, 'bom-candidate'), /malformed/u);
+    assert.throws(() => inspectReceipt(root, source, receipt, 'bom-candidate'), /malformed/u);
     assert.equal(exists(path.join(root, 'bom-candidate')), false);
   });
 });
@@ -206,7 +221,7 @@ test('traversal and workspace-internal attestation paths are rejected without mu
 
   const valid = attestation(root, source, 'valid.json');
   const traversalInput = `${root}${path.sep}unused${path.sep}..${path.sep}${path.basename(valid)}`;
-  assert.throws(() => build(root, source, traversalInput, 'traversal-candidate'), /path traversal/u);
+  assert.throws(() => inspectReceipt(root, source, traversalInput, 'traversal-candidate'), /path traversal/u);
   assert.equal(exists(path.join(root, 'traversal-candidate')), false);
   assert.deepEqual(workspaceSnapshot(source), sourceBefore);
 });
@@ -256,7 +271,7 @@ test('attestation input symlink and nested symlink ancestors are rejected withou
   if (!createSymlinkOrSkip(t, external, alias, process.platform === 'win32' ? 'junction' : undefined)) return;
   const aliasedReceipt = path.join(alias, 'one', 'two', 'existing.json');
   assert.throws(() => validateReadinessAttestation(source, aliasedReceipt), /symlink components/u);
-  assert.throws(() => build(root, source, aliasedReceipt, 'nested-alias-candidate'), /symlink components/u);
+  assert.throws(() => inspectReceipt(root, source, aliasedReceipt, 'nested-alias-candidate'), /symlink components/u);
   assert.throws(
     () => createReadinessAttestation(source, path.join(alias, 'one', 'two', 'created.json'), { scope: 'GLOBAL', verdict: 'READY' }),
     /symlink components/u,
@@ -275,7 +290,7 @@ test('direct attestation input symlink is rejected without candidate creation', 
   const linked = path.join(root, 'linked.json');
   if (!createSymlinkOrSkip(t, valid, linked, process.platform === 'win32' ? 'file' : undefined)) return;
   const before = fs.readFileSync(valid);
-  assert.throws(() => build(root, source, linked, 'linked-candidate'), /symlink components/u);
+  assert.throws(() => inspectReceipt(root, source, linked, 'linked-candidate'), /symlink components/u);
   assert.equal(exists(path.join(root, 'linked-candidate')), false);
   assert.deepEqual(fs.readFileSync(valid), before);
 });
@@ -288,7 +303,7 @@ test('workspace-internal attestation input is rejected without source mutation',
   fs.copyFileSync(valid, internal);
   const sourceBefore = workspaceSnapshot(source);
   const internalBefore = fs.readFileSync(internal);
-  assert.throws(() => build(root, source, internal, 'internal-candidate'), /outside the workspace/u);
+  assert.throws(() => inspectReceipt(root, source, internal, 'internal-candidate'), /outside the workspace/u);
   assert.equal(exists(path.join(root, 'internal-candidate')), false);
   assert.deepEqual(stageResidues(root, 'internal-candidate'), []);
   assert.deepEqual(workspaceSnapshot(source), sourceBefore);
@@ -302,7 +317,7 @@ test('hardlinked attestation is rejected without candidate creation', (t) => {
   const linked = path.join(root, 'hardlinked.json');
   if (!createHardlinkOrSkip(t, valid, linked)) return;
   const bytes = fs.readFileSync(valid);
-  assert.throws(() => build(root, source, linked, 'hardlinked-candidate'), /single-link regular file/u);
+  assert.throws(() => inspectReceipt(root, source, linked, 'hardlinked-candidate'), /single-link regular file/u);
   assert.equal(exists(path.join(root, 'hardlinked-candidate')), false);
   assert.deepEqual(fs.readFileSync(valid), bytes);
   assert.deepEqual(fs.readFileSync(linked), bytes);
@@ -324,24 +339,28 @@ test('hardlinked lifecycle authority blocks attestation before output creation',
   assert.deepEqual(fs.readFileSync(linked), before);
 });
 
-test('directory attestation input fails fast through the CLI without candidate creation', (t) => {
+test('directory attestation input fails fast through the publisher CLI preserving the rendered candidate', (t) => {
   const root = temporary(t);
   const source = fresh(root);
   const directory = path.join(root, 'attestation-directory');
   fs.mkdirSync(directory);
   const candidate = path.join(root, 'directory-candidate');
+  buildClosedCandidate(source, candidate);
+  const sourceBefore = workspaceSnapshot(source);
+  const candidateBefore = workspaceSnapshot(candidate);
   const result = spawnSync(
     process.execPath,
-    [RENDERER, source, candidate, '--readiness-attestation', directory],
+    [PUBLISHER, '--readiness-attestation', directory, 'CLOSE', source, candidate],
     { cwd: root, encoding: 'utf8', timeout: 2_000 },
   );
   assert.equal(result.error, undefined, result.error?.message);
   assert.equal(result.status, 1, result.stderr);
   assert.match(result.stderr, /single-link regular file/u);
-  assert.equal(exists(candidate), false);
+  assert.deepEqual(workspaceSnapshot(source), sourceBefore);
+  assert.deepEqual(workspaceSnapshot(candidate), candidateBefore);
 });
 
-test('Unix-domain socket attestation input fails fast through the CLI without candidate creation', async (t) => {
+test('Unix-domain socket attestation input fails fast through the publisher CLI preserving the rendered candidate', async (t) => {
   if (process.platform === 'win32') {
     t.skip('filesystem Unix-domain sockets are unavailable on Windows');
     return;
@@ -364,15 +383,42 @@ test('Unix-domain socket attestation input fails fast through the CLI without ca
   }
   t.after(() => new Promise((resolve) => server.close(resolve)));
   const candidate = path.join(root, 'socket-candidate');
+  buildClosedCandidate(source, candidate);
+  const sourceBefore = workspaceSnapshot(source);
+  const candidateBefore = workspaceSnapshot(candidate);
   const result = spawnSync(
     process.execPath,
-    [RENDERER, source, candidate, '--readiness-attestation', socket],
+    [PUBLISHER, '--readiness-attestation', socket, 'CLOSE', source, candidate],
     { cwd: root, encoding: 'utf8', timeout: 2_000 },
   );
   assert.equal(result.error, undefined, result.error?.message);
   assert.equal(result.status, 1, result.stderr);
   assert.match(result.stderr, /single-link regular file/u);
-  assert.equal(exists(candidate), false);
+  assert.deepEqual(workspaceSnapshot(source), sourceBefore);
+  assert.deepEqual(workspaceSnapshot(candidate), candidateBefore);
+});
+
+test('FIFO attestation input is rejected before a blocking open by the publisher CLI', (t) => {
+  if (process.platform === 'win32') {
+    t.skip('filesystem FIFOs are unavailable on Windows');
+    return;
+  }
+  const root = temporary(t, 'stnl receipt fifo ');
+  const source = fresh(root);
+  const candidate = buildClosedCandidate(source, path.join(root, 'candidate'));
+  const fifo = path.join(root, 'receipt.fifo');
+  const created = spawnSync('mkfifo', [fifo], { encoding: 'utf8' });
+  assert.equal(created.status, 0, created.stderr);
+  assert.equal(fs.lstatSync(fifo).isFIFO(), true);
+  const before = [workspaceSnapshot(source), workspaceSnapshot(candidate)];
+  const result = spawnSync(process.execPath, [PUBLISHER, '--readiness-attestation', fifo, 'CLOSE', source, candidate], {
+    cwd: root, encoding: 'utf8', timeout: 2_000,
+  });
+  assert.equal(result.error, undefined, result.error?.message);
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stderr, /single-link regular file/u);
+  assert.deepEqual([workspaceSnapshot(source), workspaceSnapshot(candidate)], before);
+  assert.equal(fs.lstatSync(fifo).isFIFO(), true);
 });
 
 test('every valid authority mutation stales the attestation without changing the receipt', async (t) => {
@@ -411,7 +457,7 @@ This authority remains as a documentary tombstone.
         assert.doesNotThrow(() => validateWorkspace(source));
         const candidate = path.join(root, 'candidate');
         assert.throws(
-          () => buildClosedCandidate(source, candidate, { readinessAttestation: receipt }),
+          () => inspectReceipt(root, source, receipt),
           /stale/u,
         );
         assert.equal(exists(candidate), false);
@@ -424,18 +470,29 @@ This authority remains as a documentary tombstone.
   }
 });
 
-test('a fresh attestation after a valid authority change closes successfully', (t) => {
+test('publisher refuses a stale explicit receipt and accepts a fresh receipt after valid authority change', async (t) => {
   const root = temporary(t);
   const source = fresh(root);
   const stale = attestation(root, source, 'stale.json');
   const staleBefore = fs.readFileSync(stale);
   mutateObjectiveForFreshReceipt(source);
-  assert.throws(() => build(root, source, stale, 'stale-candidate'), /stale/u);
+  assert.throws(() => inspectReceipt(root, source, stale, 'stale-candidate'), /stale/u);
   assert.equal(exists(path.join(root, 'stale-candidate')), false);
   assert.deepEqual(fs.readFileSync(stale), staleBefore);
   const freshReceipt = attestation(root, source, 'fresh.json');
-  const candidate = build(root, source, freshReceipt, 'fresh-candidate');
-  assert.match(fs.readFileSync(path.join(candidate, 'feature_spec.md'), 'utf8'), /Reviewed replacement objective/u);
+  const candidate = buildClosedCandidate(source, path.join(root, 'fresh-candidate'));
+  const candidateBefore = workspaceSnapshot(candidate);
+  const sourceBefore = workspaceSnapshot(source);
+  await assert.rejects(() => publishCandidate('CLOSE', source, candidate, { readinessAttestation: stale }), /stale/u);
+  assert.deepEqual(workspaceSnapshot(source), sourceBefore);
+  assert.deepEqual(workspaceSnapshot(candidate), candidateBefore);
+  assert.deepEqual(fs.readFileSync(stale), staleBefore);
+  await publishCandidate('CLOSE', source, candidate, { readinessAttestation: freshReceipt });
+  assert.equal(validateWorkspace(source).closed, true);
+  assert.equal(exists(freshReceipt), false);
+  assert.deepEqual(workspaceSnapshot(candidate), candidateBefore);
+  assert.deepEqual(workspaceSnapshot(source), candidateBefore);
+  assert.match(fs.readFileSync(path.join(source, 'feature_spec.md'), 'utf8'), /Reviewed replacement objective/u);
 });
 
 function mutateObjectiveForFreshReceipt(source) {
@@ -460,7 +517,7 @@ test('external execution data and persistent sibling metadata do not change read
   const [workspace, after] = validateReadinessAttestation(source, receipt);
   assert.equal(after, before);
   assert.equal(after, workspaceAuthoritySnapshotSha256(workspace));
-  const candidate = build(root, source, receipt);
+  const candidate = buildClosedCandidate(source, path.join(root, 'candidate'));
   assert.deepEqual(fs.readFileSync(path.join(candidate, 'execution', 'evidence.bin')), Buffer.from([0, 255, 1]));
   assert.equal(exists(path.join(candidate, '.DS_Store')), false);
   assert.equal(fs.readFileSync(path.join(candidate, 'feature_spec.md'), 'utf8').includes('workspace_snapshot_sha256'), false);
@@ -476,13 +533,13 @@ test('candidate-boundary and mismatched-workspace attestations are rejected with
   );
 
   const other = fresh(root, 'other source');
-  assert.throws(() => build(root, other, receipt, 'other-candidate'), /workspace identity/u);
+  assert.throws(() => inspectReceipt(root, other, receipt, 'other-candidate'), /workspace identity/u);
   assert.equal(exists(path.join(root, 'other-candidate')), false);
 
   const forged = JSON.parse(fs.readFileSync(receipt, 'utf8'));
   forged.workspace_identity.path_sha256 = '0'.repeat(64);
   const forgedReceipt = writePayload(root, 'forged-path.json', forged);
-  assert.throws(() => build(root, source, forgedReceipt, 'forged-candidate'), /workspace identity/u);
+  assert.throws(() => inspectReceipt(root, source, forgedReceipt, 'forged-candidate'), /workspace identity/u);
   assert.equal(exists(path.join(root, 'forged-candidate')), false);
 });
 
@@ -521,7 +578,7 @@ test('case-variant physical aliases cannot hide an internal attestation', (t) =>
   fs.copyFileSync(valid, internal);
   const sourceBefore = workspaceSnapshot(source);
   const internalBefore = fs.readFileSync(internal);
-  assert.throws(() => build(root, source, path.join(aliasSource, 'manual.json'), 'case-candidate'), /outside the workspace/u);
+  assert.throws(() => inspectReceipt(root, source, path.join(aliasSource, 'manual.json'), 'case-candidate'), /outside the workspace/u);
   assert.equal(exists(path.join(root, 'case-candidate')), false);
   assert.deepEqual(workspaceSnapshot(source), sourceBefore);
   assert.deepEqual(fs.readFileSync(internal), internalBefore);
@@ -685,7 +742,7 @@ test('legacy readiness boolean remains a syntax error even beside a valid receip
   const candidate = path.join(root, 'legacy-candidate');
   const result = spawnSync(
     process.execPath,
-    [RENDERER, source, candidate, '--readiness-attestation', receipt, '--global-readiness-confirmed'],
+    [RENDERER, source, candidate, '--global-readiness-confirmed'],
     { cwd: root, encoding: 'utf8' },
   );
   assert.equal(result.status, 2, result.stderr);

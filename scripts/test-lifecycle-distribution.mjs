@@ -570,7 +570,7 @@ test("copying only the skill supports INIT, RESUME, READINESS, CLOSE, and recove
   assertCliPass(
     runNode(
       commands.renderer,
-      [activeTarget, closeCandidate, "--readiness-attestation", attestation],
+      [activeTarget, closeCandidate],
       { cwd: consumer, emptyPath },
     ),
     "isolated deterministic renderer",

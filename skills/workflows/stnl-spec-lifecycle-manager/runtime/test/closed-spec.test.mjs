@@ -5,13 +5,8 @@ import { spawnSync } from 'node:child_process';
 import test from 'node:test';
 
 import { buildClosedCandidate, renderClosedFeature } from '../lib/closed-spec.mjs';
-import { createReadinessAttestation } from '../lib/readiness.mjs';
 import { validateCloseTransition, validateWorkspace } from '../lib/lifecycle.mjs';
 import { copyFixture, FIXTURES, replace, RUNTIME_ROOT, snapshot, temporary } from './helpers.mjs';
-
-function attestation(root, source, name = 'readiness.json') {
-  return createReadinessAttestation(source, path.join(root, name), { scope: 'GLOBAL', verdict: 'READY' });
-}
 
 const OPTIONAL_SYMLINK_ERRORS = new Set(['EPERM', 'EACCES', 'ENOTSUP', 'EOPNOTSUPP', 'UNKNOWN']);
 const OPTIONAL_HARDLINK_ERRORS = new Set([...OPTIONAL_SYMLINK_ERRORS, 'EXDEV']);
@@ -52,8 +47,7 @@ test('closed candidate preserves external regular files and excludes OS metadata
   const first = path.join(execution, 'payload-a.bin');
   fs.writeFileSync(first, Buffer.from([0, 1, 255]));
   fs.writeFileSync(path.join(source, '.DS_Store'), 'ignored');
-  const receipt = attestation(root, source);
-  const candidate = buildClosedCandidate(source, path.join(root, 'closed candidate'), { readinessAttestation: receipt });
+  const candidate = buildClosedCandidate(source, path.join(root, 'closed candidate'));
   assert.equal(validateWorkspace(candidate).closed, true);
   assert.deepEqual(fs.readFileSync(path.join(candidate, 'execution', 'payload-a.bin')), Buffer.from([0, 1, 255]));
   assert.equal(lexists(path.join(candidate, '.DS_Store')), false);
@@ -75,8 +69,7 @@ test('closed candidate preserves external symlinks when symlinks are available',
     }
     throw error;
   }
-  const receipt = attestation(root, source);
-  const candidate = buildClosedCandidate(source, path.join(root, 'closed symlink candidate'), { readinessAttestation: receipt });
+  const candidate = buildClosedCandidate(source, path.join(root, 'closed symlink candidate'));
   assert.equal(fs.readlinkSync(path.join(candidate, 'execution', 'payload-link')), 'payload-a.bin');
   validateCloseTransition(source, candidate);
 });
@@ -100,8 +93,7 @@ test('closed candidate preserves external hardlink topology when hardlinks are a
     }
     throw error;
   }
-  const receipt = attestation(root, source);
-  const candidate = buildClosedCandidate(source, path.join(root, 'closed hardlink candidate'), { readinessAttestation: receipt });
+  const candidate = buildClosedCandidate(source, path.join(root, 'closed hardlink candidate'));
   const linked = [path.join(candidate, 'execution', 'payload-a.bin'), path.join(candidate, 'execution', 'payload-b.bin'), path.join(candidate, 'assets', 'payload-c.bin')];
   assert.equal(new Set(linked.map((file) => `${fs.statSync(file).dev}:${fs.statSync(file).ino}`)).size, 1);
   validateCloseTransition(source, candidate);
@@ -112,12 +104,11 @@ function lexists(file) { try { fs.lstatSync(file); return true; } catch (error) 
 test('CLOSE rendering does not require a readiness receipt', (t) => {
   const root = temporary(t);
   const source = copyFixture(root, 'ready', 'source');
-  const receipt = attestation(root, source);
   const before = snapshot(source);
   replace(path.join(source, 'feature_spec.md'), 'Provide deterministic', 'Provide intentionally deterministic');
   validateWorkspace(source);
   const candidate = path.join(root, 'stale candidate');
-  buildClosedCandidate(source, candidate, { readinessAttestation: receipt });
+  buildClosedCandidate(source, candidate);
   assert.equal(validateWorkspace(candidate).closed, true);
   assert.notDeepEqual(snapshot(source), before);
 });
@@ -137,9 +128,8 @@ test('external hardlink boundary failures leave source and candidate untouched w
     }
     throw error;
   }
-  const freshReceipt = attestation(root, fresh, 'hardlink.json');
   const freshBefore = snapshot(fresh);
-  assert.throws(() => buildClosedCandidate(fresh, path.join(root, 'hardlink candidate'), { readinessAttestation: freshReceipt }), /crosses the CLOSE preservation boundary/u);
+  assert.throws(() => buildClosedCandidate(fresh, path.join(root, 'hardlink candidate')), /crosses the CLOSE preservation boundary/u);
   assert.deepEqual(snapshot(fresh), freshBefore);
   assert.equal(fs.readFileSync(outside, 'utf8'), 'outside');
 });
@@ -147,27 +137,46 @@ test('external hardlink boundary failures leave source and candidate untouched w
 test('renderer CLI works from unrelated cwd and preserves syntax exit code', (t) => {
   const root = temporary(t, 'stnl renderer cli ');
   const source = copyFixture(root, 'ready', 'source with spaces');
-  const receipt = attestation(root, source);
   const cwd = path.join(root, 'outside cwd');
   fs.mkdirSync(cwd);
   const entry = path.join(RUNTIME_ROOT, 'build-closed-spec.mjs');
   const candidate = path.join(root, 'candidate with spaces');
-  const success = spawnSync(process.execPath, [entry, source, candidate, '--readiness-attestation', receipt], { cwd, encoding: 'utf8' });
+  const success = spawnSync(process.execPath, [entry, source, candidate], { cwd, encoding: 'utf8' });
   assert.equal(success.status, 0, success.stderr);
   assert.deepEqual(fs.readFileSync(path.join(candidate, 'feature_spec.md')), fs.readFileSync(path.join(FIXTURES, 'closed', 'feature_spec.md')));
   const direct = spawnSync(process.execPath, [entry, source, path.join(root, 'direct candidate')], { cwd, encoding: 'utf8' });
   assert.equal(direct.status, 0, direct.stderr);
 });
 
-test('renderer CLI accepts equals syntax and help exits successfully', (t) => {
+test('renderer CLI rejects the removed receipt flag before allocation and help exits successfully', (t) => {
   const root = temporary(t, 'stnl renderer grammar ');
   const source = copyFixture(root, 'ready', 'source');
-  const receipt = attestation(root, source);
   const entry = path.join(RUNTIME_ROOT, 'build-closed-spec.mjs');
   const candidate = path.join(root, 'candidate');
-  const equals = spawnSync(process.execPath, [entry, source, candidate, `--readiness-attestation=${receipt}`], { cwd: root, encoding: 'utf8' });
-  assert.equal(equals.status, 0, equals.stderr);
+  const before = snapshot(source);
+  for (const flags of [['--readiness-attestation', 'receipt.json'], ['--readiness-attestation=receipt.json']]) {
+    const result = spawnSync(process.execPath, [entry, source, candidate, ...flags], { cwd: root, encoding: 'utf8' });
+    assert.equal(result.status, 2, result.stderr);
+    assert.match(result.stderr, /unrecognized arguments: --readiness-attestation/u);
+    assert.equal(lexists(candidate), false);
+    assert.deepEqual(fs.readdirSync(root), ['source']);
+    assert.deepEqual(snapshot(source), before);
+  }
   const help = spawnSync(process.execPath, [entry, '-h'], { cwd: root, encoding: 'utf8' });
   assert.equal(help.status, 0, help.stderr);
   assert.match(help.stdout, /^usage:/u);
+});
+
+
+test('renderer API rejects any third argument before allocation', (t) => {
+  const root = temporary(t);
+  const source = copyFixture(root, 'ready', 'source');
+  const candidate = path.join(root, 'candidate');
+  const before = snapshot(source);
+  for (const option of [undefined, null, {}, { readinessAttestation: 'receipt.json' }]) {
+    assert.throws(() => buildClosedCandidate(source, candidate, option), /accepts only source and candidate/u);
+    assert.equal(lexists(candidate), false);
+    assert.deepEqual(fs.readdirSync(root), ['source']);
+    assert.deepEqual(snapshot(source), before);
+  }
 });

@@ -170,6 +170,153 @@ export async function runFirstRemoval({afterFormal=null}={}) {
   } finally {if(previous===undefined)delete process.env.STNL_OPERATION_OWNER_FILE;else process.env.STNL_OPERATION_OWNER_FILE=previous;if(process.env.STNL_OFFLINE_KEEP_FIXTURES!=='1')await fs.rm(f.root,{recursive:true,force:true});}
 }
 
+// Current producer + real common-publisher barriers replace historical fs.watch
+// windows. The independent writer remains alive during publication; IPC only
+// acknowledges a completed mutation, never substitutes a runtime decision.
+export async function runRepairDispute(kind) {
+  assert.ok(['final-source-window', 'critical-section-entry', 'strict-readback', 'foreign-lock'].includes(kind));
+  const f = await fixture();
+  let writer;
+  let settled;
+  let retainedCandidate;
+  const phases = [];
+  let allocation;
+  let fired = false;
+  try {
+    const { repairExecutionContract } = await import('../skills/workflows/stnl-slice-executor/runtime/execution-state.mjs');
+    const approved = await approveFixture(f);
+    const admitted = await beginPreparedExecutionOperation(f.specPath, 'EXECUTE_SLICE', '1', approved.activation.activationId);
+    const implementation = await implementOffline(f, admitted);
+    await publishExecutionCopy({ specPath: f.specPath, slice: 'slice-01', candidateRoot: implementation.copy.candidateRoot });
+    const task = path.join(f.workspace.executionRoot, 'tasks/slice-01.md');
+    const index = path.join(f.workspace.executionRoot, 'tasks.md');
+    const clean = await fs.readFile(task, 'utf8');
+    const corrupt = clean.replace('- Discovery sources:', '- Check discovery sources:').replace('- Discovery actions:', '- Check discovery actions:');
+    assert.notEqual(corrupt, clean);
+    await fs.writeFile(task, corrupt);
+    // Every negative starts from the identical, actually exercised valid repair.
+    const control = await repairExecutionContract(f.specPath);
+    assert.equal(control.status, 'REPAIRED');
+    assert.equal(control.publication, 'confirmed');
+    assert.equal(control.cleanup, 'complete');
+    assert.equal(await fs.readFile(task, 'utf8'), clean);
+    assert.equal((await inspectExecutionState(f.specPath)).state, 'IMPLEMENTED_AWAITING_VALIDATION');
+    const activationBefore = (await readExecutionActivation(f.specPath)).activation;
+    const receiptBefore = await fs.readFile(implementation.captured.receiptFile);
+    await fs.writeFile(task, corrupt);
+    const markerBefore = await fs.readFile(path.join(f.workspace.executionRoot, 'activation.json'));
+    const originalIndex = await fs.readFile(index);
+    const foreign = Buffer.from('CONCURRENT ' + kind + ' WRITER WON\n');
+    const location = await executionLockIdentity(f.workspace);
+    const writerFile = path.join(f.root, 'repair-dispute-writer.mjs');
+    await fs.writeFile(writerFile, `import fs from 'node:fs/promises';
+process.on('message', async message => {
+  try {
+    if(message.action==='stop') { process.disconnect(); return; }
+    if(message.action==='replace-lock') await fs.rename(message.file,message.displaced);
+    await fs.writeFile(message.file,Buffer.from(message.bytes,'base64'),message.action==='replace-lock'?{flag:'wx'}:{});
+    process.send({phase:'mutated',pid:process.pid});
+  } catch(error) { process.send({phase:'error',error:error.message}); }
+});
+process.send({phase:'ready',pid:process.pid});
+`);
+    writer = fork(writerFile, [], { env: commandEnvironment, stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });
+    settled = new Promise(resolve => writer.once('exit', (code, signal) => resolve({ code, signal })));
+    const message = expected => new Promise((resolve, reject) => {
+      const finish = (error, value) => {
+        clearTimeout(timer); writer.off('message', receive); writer.off('error', fail); writer.off('exit', exit);
+        if (error) reject(error); else resolve(value);
+      };
+      const receive = value => value.phase === expected ? finish(null, value) : finish(new Error('unexpected writer message: ' + JSON.stringify(value)));
+      const fail = error => finish(error);
+      const exit = (code, signal) => finish(new Error('writer exited before barrier: ' + code + '/' + signal));
+      const timer = setTimeout(() => finish(new Error('writer IPC barrier timed out')), 5_000);
+      writer.on('message', receive); writer.once('error', fail); writer.once('exit', exit);
+    });
+    const ready = await message('ready');
+    assert.notEqual(ready.pid, process.pid);
+    const point = kind === 'strict-readback' ? 'after-activation' : 'before-backup';
+    let failure;
+    try {
+      await repairExecutionContract(f.specPath, { checkpoint: async (phase, paths) => {
+        phases.push(phase);
+        if (phase !== point) return;
+        assert.equal(fired, false);
+        allocation = paths;
+        const lease = JSON.parse(await fs.readFile(location.lockPath, 'utf8'));
+        assert.equal(lease.executionRoot, f.workspace.executionRoot);
+        assert.equal(lease.pid, process.pid);
+        const mutated = message('mutated');
+        const file = kind === 'critical-section-entry' ? f.specPath : kind === 'strict-readback' ? index : kind === 'foreign-lock' ? location.lockPath : task;
+        const bytes = kind === 'critical-section-entry' ? Buffer.concat([await fs.readFile(f.specPath), foreign]) : kind === 'final-source-window' ? Buffer.concat([Buffer.from(corrupt), foreign]) : foreign;
+        writer.send({ action: kind === 'foreign-lock' ? 'replace-lock' : 'write', file, displaced: location.lockPath + '.displaced-by-test', bytes: bytes.toString('base64') });
+        const observation = await mutated;
+        assert.equal(observation.pid, ready.pid);
+        assert.deepEqual(await fs.readFile(file), bytes);
+        fired = true;
+      } });
+      assert.fail('concurrent repair must reject: ' + kind);
+    } catch (error) {
+      failure = error;
+      retainedCandidate = error.repairCandidate;
+    }
+    assert.equal(fired, true, 'negative must reach and fire its current publisher barrier');
+    assert.ok(retainedCandidate, failure.message);
+    assert.ok((await fs.stat(retainedCandidate)).isDirectory());
+    if (kind === 'strict-readback') {
+      assert.match(failure.message, /preparation contract: tasks\.md contains hidden or unknown carriers; activation outcome uncertain/u);
+      assert.ok(phases.includes('after-activation'));
+      assert.equal(await fs.readFile(task, 'utf8'), clean, 'unconfirmed installed repair is retained');
+      assert.deepEqual(await fs.readFile(index), foreign, 'foreign readback bytes are never compensated over');
+      assert.equal(await fs.readFile(path.join(allocation.backup, 'tasks/slice-01.md'), 'utf8'), corrupt);
+      assert.deepEqual(await fs.readFile(path.join(allocation.backup, 'tasks.md')), originalIndex);
+      assert.notDeepEqual(await fs.readFile(path.join(f.workspace.executionRoot, 'activation.json')), markerBefore);
+      await assert.rejects(readExecutionActivation(f.specPath), /preparation contract: tasks\.md contains hidden or unknown carriers/u);
+    } else {
+      assert.deepEqual(phases, ['before-backup'], 'no swap or activation follows the disputed prepublication recheck');
+      assert.deepEqual(await fs.readFile(path.join(f.workspace.executionRoot, 'activation.json')), markerBefore);
+      assert.deepEqual(await fs.readFile(index), originalIndex);
+      if (kind === 'final-source-window') {
+        assert.match(failure.message, /source\/base changed/u);
+        assert.equal(await fs.readFile(task, 'utf8'), corrupt + foreign.toString('utf8'));
+      } else if (kind === 'critical-section-entry') {
+        assert.match(failure.message, /requirements\/base changed/u);
+        assert.equal(await fs.readFile(task, 'utf8'), corrupt);
+        assert.ok((await fs.readFile(f.specPath)).subarray(-foreign.length).equals(foreign));
+      } else {
+        assert.match(failure.message, /lock ownership.*changed/u);
+        assert.equal(await fs.readFile(task, 'utf8'), corrupt);
+        assert.deepEqual(await fs.readFile(location.lockPath), foreign);
+        const displaced = await fs.stat(location.lockPath + '.displaced-by-test');
+        const replacement = await fs.stat(location.lockPath);
+        assert.notDeepEqual([replacement.dev, replacement.ino], [displaced.dev, displaced.ino]);
+        await assert.rejects(acquireExecutionPublicationLock(f.workspace), /lock already exists/);
+        assert.deepEqual(await fs.readFile(location.lockPath), foreign, 'no takeover of the replaced physical lease');
+      }
+    }
+    assert.deepEqual(await fs.readFile(implementation.captured.receiptFile), receiptBefore, 'repair never repeats or rewrites the concluded runner receipt');
+    assert.equal((await fs.stat(implementation.captured.receiptFile)).isFile(), true);
+    await preserveFocalProof(f, 'repair-dispute-' + kind, {
+      kind, control, phases, fired, writerPid: ready.pid, ownerPid: process.pid,
+      failure: { message: failure.message, code: failure.code, repairCandidate: retainedCandidate },
+      allocation, activationBefore, retainedCandidateTree: await captureExecutionTree(retainedCandidate),
+      officialTree: await captureExecutionTree(f.workspace.executionRoot),
+      receiptPath: implementation.captured.receiptFile, receiptBytes: receiptBefore.toString('base64'),
+      watchCount: 0, payloadBytes: foreign.length,
+    });
+  } finally {
+    if (writer) {
+      if (writer.connected) writer.send({ action: 'stop' });
+      const timer = setTimeout(() => writer.kill('SIGTERM'), 1_000);
+      const result = await settled;
+      clearTimeout(timer);
+      assert.equal(result.code, 0, 'writer must settle normally');
+    }
+    if (retainedCandidate) await fs.rm(path.dirname(retainedCandidate), { recursive: true, force: true });
+    await fs.rm(f.root, { recursive: true, force: true });
+  }
+}
+
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
 test('same owner operational delta -> evidence -> confirmed terminal -> next begin and formal PASS', async () => {
   const f = await fixture(); const previousOwnerFile = process.env.STNL_OPERATION_OWNER_FILE;

@@ -509,8 +509,8 @@ async function requireCandidateSnapshot(filePath, expectedDigest, mode, mismatch
 
 async function captureEphemeralFileIdentity(filePath, label) {
   const before = await fs.lstat(filePath, { bigint: true });
-  if (before.isSymbolicLink()) fail(`${label} must remain a single-link regular file`, filePath);
-  const handle = await fs.open(filePath, FS_CONSTANTS.O_RDONLY | (FS_CONSTANTS.O_NOFOLLOW ?? 0));
+  if (!before.isFile() || before.nlink !== 1n) fail(`${label} must remain a single-link regular file`, filePath);
+  const handle = await fs.open(filePath, FS_CONSTANTS.O_RDONLY | (FS_CONSTANTS.O_NOFOLLOW ?? 0) | (FS_CONSTANTS.O_NONBLOCK ?? 0));
   try {
     const metadata = await handle.stat({ bigint: true });
     if (!metadata.isFile() || metadata.nlink !== 1n || !sameInode(before, metadata)) {

@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { watch, writeFileSync } from "node:fs";
 import * as fs from "node:fs/promises";
 import fsPromises from "node:fs/promises";
 import os from "node:os";
@@ -67,6 +66,7 @@ import { EXECUTION_OPERATION_SKILLS, WORKFLOW_OPERATIONS } from "./lib/skill-reg
 import { guardOperationProvenance, recoverableOfficialHandoff } from "../benchmarks/sentinel-todo/runtime/benchmark-manager.mjs";
 import { budgetViolation } from "../benchmarks/sentinel-todo/runtime/benchmark.mjs";
 
+import { runRepairDispute } from "./test-p1b-publication.mjs";
 import {runOwnedContract} from "./fixtures/p1b-owned-regressions.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
@@ -3768,152 +3768,22 @@ test("one explicit repair pass handles every approved alias in one task artifact
   assert.equal((await inspectExecutionState(multipleRecords.requirements)).state, "IMPLEMENTED_AWAITING_VALIDATION");
 });
 
-test("contract repair never overwrites a writer in the final source-to-publication window", async (t) => {
-  const fixture = await standaloneWorkspace(t);
-  await renderArtifacts(fixture);
-  await prepareFindingsCorrection(fixture, "Findings IDs");
-  const taskPath = path.join(fixture.execution, "tasks/slice-01.md");
-
-  // Keep the source-to-publication window open without changing the artifact grammar.
-  await editTask(fixture, (value) => value.replace(
-    "- Problem: Observable behavior is wrong.",
-    `- Problem: ${"x".repeat(32 * 1024 * 1024)}`,
-  ));
-
-  const concurrentBytes = Buffer.from("CONCURRENT WRITER WON\n", "utf8");
-  let mutationResolve;
-  let mutationReject;
-  const mutation = new Promise((resolve, reject) => {
-    mutationResolve = resolve;
-    mutationReject = reject;
-  });
-  let fired = false;
-  const watcher = watch(path.dirname(taskPath), (_event, filename) => {
-    if (fired || filename === null
-      || !String(filename).startsWith("slice-01.md.stnl-contract-repair-")) return;
-    fired = true;
-    fs.writeFile(taskPath, concurrentBytes).then(mutationResolve, mutationReject);
-  });
-  t.after(() => watcher.close());
-
-  const outcome = await repairExecutionContract(fixture.requirements).then(
-    (result) => ({ result, error: null }),
-    (error) => ({ result: null, error }),
-  );
-  await mutation;
-  assert.equal(fired, true);
-  assert.ok(outcome.error instanceof ExecutionContractError,
-    `repair unexpectedly published: ${JSON.stringify(outcome.result)}`);
-  assert.match(outcome.error.message, /source changed|concurrent source|publication aborted/u);
-  assert.deepEqual(await fs.readFile(taskPath), concurrentBytes);
+test("contract repair never overwrites a writer in the final source-to-publication window", { timeout: 20_000 }, async () => {
+  await runRepairDispute('final-source-window');
 });
 
-test("contract repair rejects a source mutation at critical-section entry", async (t) => {
-  const fixture = await standaloneWorkspace(t);
-  await renderArtifacts(fixture);
-  await prepareFindingsCorrection(fixture, "Findings IDs");
-  const taskPath = path.join(fixture.execution, "tasks/slice-01.md");
-  await editTask(fixture, (value) => value.replace(
-    "- Problem: Observable behavior is wrong.",
-    `- Problem: ${"x".repeat(32 * 1024 * 1024)}`,
-  ));
-
-  const lockPath = `${fixture.execution}.stnl-contract-repair.lock`;
-  const concurrentBytes = Buffer.from("PRE-CRITICAL WRITER WON\n", "utf8");
-  let fired = false;
-  let mutation = null;
-  const watcher = watch(path.dirname(lockPath), (_event, filename) => {
-    if (fired || filename === null || String(filename) !== path.basename(lockPath)) return;
-    fired = true;
-    mutation = fs.writeFile(taskPath, concurrentBytes);
-  });
-  t.after(() => watcher.close());
-
-  const outcome = await repairExecutionContract(fixture.requirements).then(
-    (result) => ({ result, error: null }),
-    (error) => ({ result: null, error }),
-  );
-  assert.equal(fired, true);
-  await mutation;
-  assert.ok(outcome.error instanceof ExecutionContractError,
-    `repair unexpectedly published: ${JSON.stringify(outcome.result)}`);
-  assert.match(outcome.error.message, /source changed|concurrent source|publication aborted/u);
-  assert.deepEqual(await fs.readFile(taskPath), concurrentBytes);
+test("contract repair rejects a source mutation at critical-section entry", { timeout: 20_000 }, async () => {
+  await runRepairDispute('critical-section-entry');
 });
 
-test("strict readback failure rolls back only the repair-owned publication", async (t) => {
-  const fixture = await standaloneWorkspace(t);
-  await renderArtifacts(fixture);
-  await prepareFindingsCorrection(fixture, "Findings IDs");
-  const taskPath = path.join(fixture.execution, "tasks/slice-01.md");
-  const tasksIndexPath = path.join(fixture.execution, "tasks.md");
-  await editTask(fixture, (value) => value.replace(
-    "- Problem: Observable behavior is wrong.",
-    `- Problem: ${"x".repeat(32 * 1024 * 1024)}`,
-  ));
-  const sourceBytes = await fs.readFile(taskPath);
-  const foreignIndexBytes = Buffer.from("CONCURRENT TASK INDEX WON\n", "utf8");
-
-  let fired = false;
-  let mutation = null;
-  const watcher = watch(path.dirname(taskPath), (_event, filename) => {
-    if (fired || filename === null
-      || !String(filename).startsWith("slice-01.md.stnl-contract-repair-stage-")) return;
-    fired = true;
-    writeFileSync(tasksIndexPath, foreignIndexBytes);
-    mutation = Promise.resolve();
-  });
-  t.after(() => watcher.close());
-
-  const outcome = await spawnResult(process.execPath, [
-    path.join(ROOT, "skills/workflows/stnl-slice-quality-manager/runtime/validate-execution-state.mjs"),
-    fixture.requirements,
-    "--repair-known-contract",
-  ], { cwd: fixture.root });
-  assert.equal(fired, true);
-  await mutation;
-  assert.equal(outcome.status, 1, `repair unexpectedly passed strict readback: ${outcome.stdout}`);
-  assert.match(outcome.stderr, /BLOCKED:/u);
-  assert.deepEqual(await fs.readFile(taskPath), sourceBytes, "owned publication was not rolled back");
-  assert.deepEqual(await fs.readFile(tasksIndexPath), foreignIndexBytes, "foreign readback mutation was overwritten");
+test("strict readback failure rolls back only the repair-owned publication", { timeout: 20_000 }, async () => {
+  // With a foreign installed image, current publication retains that image and
+  // the original backup rather than overwriting the foreign bytes to restore.
+  await runRepairDispute('strict-readback');
 });
 
-test("contract repair preserves a foreign replacement of its lock identity", async (t) => {
-  const fixture = await standaloneWorkspace(t);
-  await renderArtifacts(fixture);
-  await prepareFindingsCorrection(fixture, "Findings IDs");
-  const taskPath = path.join(fixture.execution, "tasks/slice-01.md");
-  await editTask(fixture, (value) => value.replace(
-    "- Problem: Observable behavior is wrong.",
-    `- Problem: ${"x".repeat(32 * 1024 * 1024)}`,
-  ));
-  const sourceBytes = await fs.readFile(taskPath);
-  const lockPath = `${fixture.execution}.stnl-contract-repair.lock`;
-  const displacedLockPath = `${lockPath}.displaced-by-test`;
-  const foreignLockBytes = Buffer.from("FOREIGN LOCK OWNER\n", "utf8");
-
-  let fired = false;
-  let mutation = null;
-  const watcher = watch(path.dirname(taskPath), (_event, filename) => {
-    if (fired || filename === null
-      || !String(filename).startsWith("slice-01.md.stnl-contract-repair-stage-")) return;
-    fired = true;
-    mutation = fs.rename(lockPath, displacedLockPath)
-      .then(() => fs.writeFile(lockPath, foreignLockBytes));
-  });
-  t.after(() => watcher.close());
-
-  const outcome = await repairExecutionContract(fixture.requirements).then(
-    (result) => ({ result, error: null }),
-    (error) => ({ result: null, error }),
-  );
-  assert.equal(fired, true);
-  await mutation;
-  assert.ok(outcome.error instanceof ExecutionContractError,
-    `repair ignored lock replacement: ${JSON.stringify(outcome.result)}`);
-  assert.match(outcome.error.message, /lock ownership changed|foreign lock preserved/u);
-  assert.deepEqual(await fs.readFile(taskPath), sourceBytes);
-  assert.deepEqual(await fs.readFile(lockPath), foreignLockBytes);
+test("contract repair preserves a foreign replacement of its lock identity", { timeout: 20_000 }, async () => {
+  await runRepairDispute('foreign-lock');
 });
 
 test("official 98545e4 lifecycle-root execution is explicit legacy and never EMPTY", async (t) => {

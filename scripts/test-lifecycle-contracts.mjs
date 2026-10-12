@@ -1270,7 +1270,7 @@ test("CLI option syntax preserves equals, double-dash, and repeated-last-wins se
   const candidate = path.join(base, "closed");
   result = runCli(
     "build-closed-spec.mjs",
-    ["--readiness-attestation=missing.json", `--readiness-attestation=${attestation}`, "--", before, candidate],
+    ["--", before, candidate],
   );
   assert.equal(result.status, 0, result.stderr);
   assert.equal(validateWorkspace(candidate).status, "closed");
@@ -1458,12 +1458,12 @@ test("CLOSE builder CLI success and failure exit contracts", (t) => {
 
   result = runCli(
     "build-closed-spec.mjs",
-    [source, path.join(base, "duplicate"), "--readiness-attestation", attestation],
+    [source, path.join(base, "duplicate")],
   );
   assert.equal(result.status, 0, result.stderr);
   result = runCli(
     "build-closed-spec.mjs",
-    [source, path.join(base, "duplicate"), "--readiness-attestation", attestation],
+    [source, path.join(base, "duplicate")],
   );
   assert.equal(result.status, 1);
   assert.match(result.stderr, /^FAIL: candidate must not exist/mu);
@@ -1483,7 +1483,7 @@ test("CLOSE renders current ready authority even when a legacy attestation is st
   );
   assert.throws(() => validateReadinessAttestation(source, attestation), /is stale/u);
   const sourceBefore = workspaceSnapshot(source);
-  buildClosedCandidate(source, candidate, { readinessAttestation: attestation });
+  buildClosedCandidate(source, candidate);
   assert.equal(validateWorkspace(candidate).status, "closed");
   validateCloseTransition(source, candidate);
   assert.match(readFileSync(path.join(candidate, "feature_spec.md"), "utf8"), /envelope público estável/u);

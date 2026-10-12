@@ -192,7 +192,8 @@ function requireStableAuthoritySnapshot(source, expected) {
   if (workspaceAuthoritySnapshotSha256(current) !== expected) throw new ValidationError('CLOSE source changed during rendering; rebuild from the current active source');
 }
 
-export function buildClosedCandidate(source, candidate, { readinessAttestation } = {}) {
+export function buildClosedCandidate(source, candidate) {
+  if (arguments.length > 2) throw new ValidationError('CLOSE renderer accepts only source and candidate; readiness attestation belongs to the explicit validator/publisher');
   const requestedSource = expandUser(source);
   const requestedCandidate = expandUser(candidate);
   if (requestedPartsContainTraversal(requestedSource) || requestedPartsContainTraversal(requestedCandidate)) throw new ValidationError('source and candidate must not contain path traversal');
