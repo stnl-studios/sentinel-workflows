@@ -606,53 +606,64 @@ test("captured producer rejection resumes APPLY and VALIDATE through their own o
   for (const operation of ["APPLY_FINDINGS", "VALIDATE_SLICE"]) {
     const fixture = await standaloneWorkspace(t);
     await renderArtifacts(fixture);
-    await writeValidatedPath(fixture);
-    await editTask(fixture, (value) => {
-      let task = value.replace("- [ ] 1.1", "- [x] 1.1");
-      task = replaceSection(task, "Changed Areas", "- `../../src/example.txt`");
-      task = replaceSection(task, "Implementation Test Evidence", checkRecord("implementation-check", 1, "TESTS_PASS", 1));
+    fixture.exampleImplementation = await implementExample(fixture);
+    if (operation === "APPLY_FINDINGS") await validateExample(fixture, { status: "NEEDS_FIX", findings: ACTIVE_FINDING });
+    const admission = await beginExample(fixture, operation);
+    const start = await nativeExample({ specPath: fixture.requirements, root: fixture.root }, admission.owner);
+    const captured = await captureNativeExample(start, { status: "PASS", commands: "malformed" },
+      operation === "APPLY_FINDINGS" ? ["../../src/example.txt"] : null);
+    const receipt = await fs.readFile(captured.receiptFile), response = await fs.readFile(captured.semanticResponseFile);
+    await withExampleOwner(admission, async () => {
+      let candidateRoot;
+      let candidateTaskArtifact;
       if (operation === "APPLY_FINDINGS") {
-        task = replaceSection(task, "Validation Attempts", NEEDS_FIX_ATTEMPT);
-        task = replaceSection(task, "Validation Findings", ACTIVE_FINDING);
+        const copy = await prepareExecutionCopy({ specPath: fixture.requirements, slice: "slice-01", owner: admission.owner });
+        t.after(() => fs.rm(copy.candidateRoot, { recursive: true, force: true }));
+        candidateRoot = copy.candidateExecutionRoot;
+        candidateTaskArtifact = copy.candidateTaskArtifact;
+        const liveBefore = await treeBytes(fixture.execution);
+        const candidateBefore = await treeBytes(candidateRoot);
+        const taskBefore = await fs.readFile(candidateTaskArtifact, "utf8");
+        const cli = spawnSync(process.execPath, [path.join(ROOT, "skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs"),
+          "--execution-bundle", "--operation", operation, "--workspace", fixture.root, "--task-artifact", candidateTaskArtifact,
+          "--semantic-response-file", captured.semanticResponseFile, "--receipt-file", captured.receiptFile, "--insert-candidate"], { encoding: "utf8" });
+        assert.equal(cli.status, 0, cli.stderr);
+        assert.equal(JSON.parse(cli.stdout).state, "RUNNER_RESULT_BLOCKED");
+        const candidateAfter = await treeBytes(candidateRoot);
+        assert.deepEqual(candidateAfter.filter(([file]) => file !== "tasks/slice-01.md"),
+          candidateBefore.filter(([file]) => file !== "tasks/slice-01.md"));
+        const taskAfter = await fs.readFile(candidateTaskArtifact, "utf8");
+        assert.equal(replaceSection(taskAfter, "Delegation Blocker", "- none"), taskBefore);
+        assert.match(taskAfter, /^- Kind: malformed-output$/mu);
+        assert.deepEqual(await treeBytes(fixture.execution), liveBefore);
+      } else {
+        const candidateParent = await temporary(t, "stnl-operation-recovery-");
+        const copy = await prepareValidationCopy({ specPath: fixture.requirements, slice: "slice-01", candidateParent, owner: admission.owner });
+        candidateRoot = copy.candidateExecutionRoot;
+        candidateTaskArtifact = path.join(candidateRoot, "tasks/slice-01.md");
+        const liveBefore = await treeBytes(fixture.execution);
+        const candidateBefore = await treeBytes(candidateRoot);
+        const taskBefore = await fs.readFile(candidateTaskArtifact, "utf8");
+        const prepared = await prepareValidationCandidate({ specPath: fixture.requirements, slice: "1", workspace: fixture.root,
+          candidateExecutionRoot: candidateRoot, ...captured });
+        assert.equal(prepared.status, "RUNNER_RESULT_BLOCKED");
+        const candidateAfter = await treeBytes(candidateRoot);
+        assert.deepEqual(candidateAfter.filter(([file]) => file !== "tasks/slice-01.md"),
+          candidateBefore.filter(([file]) => file !== "tasks/slice-01.md"));
+        const taskAfter = await fs.readFile(candidateTaskArtifact, "utf8");
+        assert.equal(replaceSection(taskAfter, "Delegation Blocker", "- none"), taskBefore);
+        assert.match(taskAfter, /^- Kind: malformed-output$/mu);
+        assert.deepEqual(await treeBytes(fixture.execution), liveBefore);
       }
-      return task;
+      const strict = await validateExecutionCandidate(fixture.requirements, candidateRoot);
+      assert.equal(strict.state, "RUNNER_RESULT_BLOCKED");
+      assert.equal(strict.mandatoryRecovery.operation, operation);
+      const task = await fs.readFile(candidateTaskArtifact, "utf8");
+      assert.equal((task.match(/^### findings-check-/gmu) ?? []).length, 0);
+      assert.equal((task.match(/^### attempt-/gmu) ?? []).length, operation === "APPLY_FINDINGS" ? 1 : 0);
     });
-    const root = await temporary(t, "stnl-operation-recovery-");
-    const responseFile = path.join(root, "response.json");
-    const receiptFile = path.join(root, "receipt.json");
-    const response = "{malformed json";
-    await fs.writeFile(responseFile, response, "utf8");
-    await fs.writeFile(receiptFile, JSON.stringify({
-      status: "RUNNER_RESPONSE_CAPTURED", operation, semanticResponseFile: responseFile,
-      semanticResponseSha256: createHash("sha256").update(response).digest("hex"),
-      captureFailure: null, error: null,
-    }), "utf8");
-    let candidateRoot;
-    if (operation === "APPLY_FINDINGS") {
-      const copy = await prepareExecutionCopy({ specPath: fixture.requirements, slice: "slice-01" });
-      candidateRoot = path.join(root, "execution");
-      const cli = spawnSync(process.execPath, [
-        path.join(ROOT, "skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs"),
-        "--execution-bundle", "--operation", operation, "--workspace", fixture.root,
-        "--task-artifact", copy.candidateTaskArtifact, "--semantic-response-file", responseFile,
-        "--receipt-file", receiptFile, "--insert-candidate",
-      ], { encoding: "utf8" });
-      assert.equal(cli.status, 0, cli.stderr);
-      assert.equal(JSON.parse(cli.stdout).state, "RUNNER_RESULT_BLOCKED");
-      await copyDirectory(copy.candidateExecutionRoot, candidateRoot);
-      await fs.rm(path.join(candidateRoot, ".stnl-execution-copy.json"));
-    } else {
-      candidateRoot = path.join(root, "execution");
-      await copyDirectory(fixture.execution, candidateRoot);
-      const prepared = await prepareValidationCandidate({
-        specPath: fixture.requirements, slice: "1", workspace: fixture.root,
-        candidateExecutionRoot: candidateRoot, semanticResponseFile: responseFile, receiptFile,
-      });
-      assert.equal(prepared.status, "RUNNER_RESULT_BLOCKED");
-    }
-    const strict = await validateExecutionCandidate(fixture.requirements, candidateRoot);
-    assert.equal(strict.state, "RUNNER_RESULT_BLOCKED");
-    assert.equal(strict.mandatoryRecovery.operation, operation);
+    assert.deepEqual(await fs.readFile(captured.receiptFile), receipt);
+    assert.deepEqual(await fs.readFile(captured.semanticResponseFile), response);
   }
 });
 
@@ -6068,50 +6079,73 @@ test("terminal auxiliary outcomes and scoped blocker resumes have exact phases",
   assert.equal((await preflightExecutionOperation(malformed.requirements, "VALIDATE_SLICE", "1")).state, "RUNNER_RESULT_BLOCKED");
 });
 
-test("APPLY_FINDINGS recovery remains bound to persisted slice-02 and exposes auxiliary round ownership", async (t) => {
-  const fixture = await standaloneWorkspace(t);
-  await renderArtifacts(fixture);
-  await addSecondPristineSlice(fixture);
-  await passFirstSlice(fixture);
-  const second = path.join(fixture.execution, "tasks/slice-02.md");
-  let task = await fs.readFile(second, "utf8");
-  task = task.replace("- [ ] 2.1", "- [x] 2.1");
-  task = replaceSection(task, "Changed Areas", "- `../../src/example.txt`");
-  task = replaceSection(task, "Validation Attempts", NEEDS_FIX_ATTEMPT);
-  task = replaceSection(task, "Validation Findings", ACTIVE_FINDING);
-  task = replaceSection(task, "Delegation Blocker", delegationBlocker("APPLY_FINDINGS", "initialization"));
-  await fs.writeFile(second, task, "utf8");
+test("APPLY_FINDINGS recovery remains bound to persisted slice-02 and exposes auxiliary round ownership", async t => {
+  const f = await standaloneWorkspace(t); await renderArtifacts(f);
+  await addSecondPristineSlice(f); await passFirstSlice(f);
+  const secondOwner = await beginExample(f, 'EXECUTE_SLICE', 'slice-02');
+  const secondStart = await nativeExample({ specPath: f.requirements, root: f.root }, secondOwner.owner);
+  const secondCopy = await prepareExecutionCopy({ specPath: f.requirements, slice: 'slice-02', owner: secondOwner.owner });
+  t.after(() => fs.rm(secondCopy.candidateRoot, { recursive: true, force: true }));
+  let secondTask = (await fs.readFile(secondCopy.candidateTaskArtifact, 'utf8')).replace('- [ ] 2.1', '- [x] 2.1');
+  secondTask = replaceSection(secondTask, 'Changed Areas', '- `../../src/example.txt`');
+  secondTask = replaceSection(secondTask, 'Prior Validation Overlap',
+    '### overlap-01\n\n- Prior slice: slice-01\n- Paths: `../../src/example.txt`\n- Affected behavior: Preserve the earlier example bytes.\n- Regressions: The same prepared byte assertion.');
+  await fs.writeFile(secondCopy.candidateTaskArtifact, secondTask);
+  const secondResponse = { ...f.exampleImplementation.response,
+    commands: secondStart.verification.checks.map(check => ({ command: verificationCommand(check), exit: 0 })) };
+  const secondCapture = await captureNativeExample(secondStart, secondResponse, ['../../src/example.txt']);
+  const secondBundle = await serializeRunnerExecutionBundleFromResponse({ operation: 'EXECUTE_SLICE', response: JSON.stringify(secondResponse),
+    workspace: f.root, taskArtifact: secondCopy.candidateTaskArtifact, ...secondCapture });
+  await insertExecutionEvidenceInCandidate({ taskArtifact: secondCopy.candidateTaskArtifact, operation: 'EXECUTE_SLICE', bundle: secondBundle,
+    validateProspectiveTask: task => validateExecutionCandidate(f.requirements, secondCopy.candidateExecutionRoot, [task]) });
+  await publishExecutionCopy({ specPath: f.requirements, slice: 'slice-02', candidateRoot: secondCopy.candidateRoot });
+  const formal = await validateExample(f, { slice: 'slice-02', status: 'NEEDS_FIX',
+    findings: ACTIVE_FINDING.replaceAll('slice-01', 'slice-02') });
+  const before = await inspectExecutionState(f.requirements);
+  const admission = await beginExample(f, 'APPLY_FINDINGS', 'slice-02');
+  const blockedCopy = await prepareExecutionCopy({ specPath: f.requirements, slice: 'slice-02', owner: admission.owner });
+  t.after(() => fs.rm(blockedCopy.candidateRoot, { recursive: true, force: true }));
+  const original = await fs.readFile(blockedCopy.candidateTaskArtifact, 'utf8');
+  await fs.writeFile(blockedCopy.candidateTaskArtifact, replaceSection(original, 'Delegation Blocker',
+    delegationBlocker('APPLY_FINDINGS', 'initialization')));
+  assert.equal((await validateExecutionCandidate(f.requirements, blockedCopy.candidateExecutionRoot)).state, 'RUNNER_INITIALIZATION_BLOCKED');
+  await publishExecutionCopy({ specPath: f.requirements, slice: 'slice-02', candidateRoot: blockedCopy.candidateRoot, owner: admission.owner, terminal: false });
+  const blocked = await inspectExecutionState(f.requirements);
+  assertRecoveryTarget(blocked, { operation: 'APPLY_FINDINGS', slice: 'slice-02',
+    owner: 'delegation-blocker', sameOperationResumeRequired: true });
+  assert.equal((await preflightExecutionOperation(f.requirements, 'APPLY_FINDINGS', '2', { owner: admission.owner })).state, 'RUNNER_INITIALIZATION_BLOCKED');
+  await rejectedWithRecovery(preflightExecutionOperation(f.requirements, 'EXECUTE_SLICE', '2', { owner: admission.owner }),
+    /legal next operation is APPLY_FINDINGS for slice-02/);
+  await assert.rejects(preflightExecutionOperation(f.requirements, 'APPLY_FINDINGS', '1', { owner: admission.owner }), /slice-02/);
 
-  const blocked = await inspectExecutionState(fixture.requirements);
-  assert.equal(blocked.state, "RUNNER_INITIALIZATION_BLOCKED");
-  assertRecoveryTarget(blocked, {
-    operation: "APPLY_FINDINGS",
-    slice: "slice-02",
-    owner: "delegation-blocker",
-    sameOperationResumeRequired: true,
-  });
-  assert.equal((await preflightExecutionOperation(fixture.requirements, "APPLY_FINDINGS", "2")).state, "RUNNER_INITIALIZATION_BLOCKED");
-  await rejectedWithRecovery(
-    preflightExecutionOperation(fixture.requirements, "EXECUTE_SLICE", "2"),
-    /legal next operation is APPLY_FINDINGS for slice-02/u,
-  );
-
-  task = await fs.readFile(second, "utf8");
-  task = replaceSection(task, "Delegation Blocker", "- none");
-  task = replaceSection(task, "Corrections Applied", "- `../../src/example.txt`");
-  task = replaceSection(task, "Findings Test Evidence", checkRecord("findings-check", 1, "BLOCKED", 1, { cycle: "attempt-01" }));
-  await fs.writeFile(second, task, "utf8");
-  const auxiliary = await inspectExecutionState(fixture.requirements);
-  assert.equal(auxiliary.state, "AUXILIARY_BLOCKED");
-  assertRecoveryTarget(auxiliary, {
-    operation: "APPLY_FINDINGS",
-    slice: "slice-02",
-    owner: "auxiliary-check",
-    record: "findings-check-01",
-    round: 1,
-    sameOperationResumeRequired: true,
-  });
+  const start = await nativeExample({ specPath: f.requirements, root: f.root }, admission.owner);
+  const copy = await prepareExecutionCopy({ specPath: f.requirements, slice: 'slice-02', owner: admission.owner });
+  t.after(() => fs.rm(copy.candidateRoot, { recursive: true, force: true }));
+  await fs.writeFile(copy.candidateTaskArtifact, replaceSection(await fs.readFile(copy.candidateTaskArtifact, 'utf8'),
+    'Corrections Applied', '- `../../src/example.txt`'));
+  const response = { ...scopeRegressionPayload(), status: 'BLOCKED', findingsCycle: 'attempt-01', findingsVerified: 'none',
+    correctionsCovered: 'Rechecked the existing example assertion', regressionsSelected: 'Prepared byte assertion',
+    unsupportedActiveFindings: 'finding-01', blockers: 'Controlled semantic prerequisite is unavailable',
+    commands: start.verification.checks.map(check => ({ command: verificationCommand(check), exit: 0 })) };
+  for (const key of ['priorRoundFailure', 'correctionApplied', 'inSliceRationale']) delete response[key];
+  const captured = await captureNativeExample(start, response, ['../../src/example.txt']);
+  const receipt = await fs.readFile(captured.receiptFile), priorReceipt = await fs.readFile(formal.captured.receiptFile);
+  const bundle = await serializeRunnerExecutionBundleFromResponse({ operation: 'APPLY_FINDINGS', response: JSON.stringify(response),
+    workspace: f.root, taskArtifact: copy.candidateTaskArtifact, ...captured });
+  await insertExecutionEvidenceInCandidate({ taskArtifact: copy.candidateTaskArtifact, operation: 'APPLY_FINDINGS', bundle,
+    validateProspectiveTask: task => validateExecutionCandidate(f.requirements, copy.candidateExecutionRoot, [task]) });
+  assert.equal((await validateExecutionCandidate(f.requirements, copy.candidateExecutionRoot)).state, 'AUXILIARY_BLOCKED');
+  await publishExecutionCopy({ specPath: f.requirements, slice: 'slice-02', candidateRoot: copy.candidateRoot, owner: admission.owner });
+  const auxiliary = await inspectExecutionState(f.requirements);
+  assertRecoveryTarget(auxiliary, { operation: 'APPLY_FINDINGS', slice: 'slice-02', owner: 'auxiliary-check',
+    record: 'findings-check-01', round: 1, sameOperationResumeRequired: true });
+  assert.equal(auxiliary.tasks.get('slice-01').attempts[0].body, before.tasks.get('slice-01').attempts[0].body);
+  assert.equal(auxiliary.tasks.get('slice-02').attempts[0].body, before.tasks.get('slice-02').attempts[0].body);
+  assert.equal(auxiliary.tasks.get('slice-02').delegationBlocker.state, 'resolved');
+  assert.deepEqual(await fs.readFile(captured.receiptFile), receipt);
+  assert.deepEqual(await fs.readFile(formal.captured.receiptFile), priorReceipt);
 });
+
 
 test("an executor delegation blocker remains narrowly resumable when later validation history would otherwise deadlock it", async (t) => {
   const fixture = await standaloneWorkspace(t);
