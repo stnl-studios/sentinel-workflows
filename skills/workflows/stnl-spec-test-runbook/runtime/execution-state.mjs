@@ -2981,8 +2981,11 @@ async function inspectExecutionStateUnchecked(specPath, logicalWorkspace, {
   }
   const preparation = await preparationAuthorityAt(workspace.executionRoot);
   const artifacts = await executionArtifacts(workspace, { validateImplementationPaths, privateAutomaticCheck });
-  if (artifacts.globalPlan.status === 'draft') return withRecoveryTargets({ state: artifacts.pendingReplan ? 'PENDING_REPLAN_DRAFT' : 'PLANNED_DRAFT', workspace, currentFingerprint, ...artifacts, preparation });
   const stale = artifacts.globalPlan.fingerprint !== currentFingerprint;
+  if (artifacts.globalPlan.status === 'draft') {
+    const state = stale ? 'REQUIREMENTS_CHANGED' : artifacts.pendingReplan ? 'PENDING_REPLAN_DRAFT' : 'PLANNED_DRAFT';
+    return withRecoveryTargets({ state, workspace, currentFingerprint, stale, ...artifacts, preparation });
+  }
   const logical=logicalWorkspaceFor(workspace);
   const activeFile=path.join(logical.executionRoot,'activation.json');
   const image=await lstatOrNull(activeFile) ? parseStrictJson((await readOwnedFile(activeFile)).bytes.toString('utf8')) : null;
