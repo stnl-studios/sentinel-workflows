@@ -102,22 +102,12 @@ export function preparationPathClaims(body, label) {
 export function parseVerificationRecipe(body) {
   if (typeof body !== 'string' || !body.startsWith('- Recipe: ') || body.includes('\n')) reject('Verification Recipe requires one JSON carrier');
   const recipe = parseStrictJson(body.slice('- Recipe: '.length));
-  const noChecks = Array.isArray(recipe.checks) && recipe.checks.length === 0;
-  keys(recipe, ['format', 'base', 'cwd', 'checks', 'dependencyReview', ...(noChecks ? ['nonApplicability'] : [])], 'Verification Recipe');
+  keys(recipe, ['format', 'base', 'cwd', 'checks', 'dependencyReview'], 'Verification Recipe');
   if (recipe.format !== 'stnl-verification-recipe-v1' || recipe.base !== 'workspace'
     || typeof recipe.cwd !== 'string' || path.posix.isAbsolute(recipe.cwd) || recipe.cwd.includes('\\')
     || path.posix.normalize(recipe.cwd) !== recipe.cwd || recipe.cwd.split('/').includes('..')) reject('invalid verification execution base');
   populated(recipe.dependencyReview, 'verification indirect dependency review');
-  if (!Array.isArray(recipe.checks) || recipe.checks.length > 32) reject('verification requires bounded checks');
-  if (noChecks) {
-    keys(recipe.nonApplicability, ['discovery', 'rationale'], 'non-applicability review');
-    for (const field of ['discovery', 'rationale']) {
-      populated(recipe.nonApplicability[field], `non-applicability ${field}`);
-      if (/^(?:none|n\/a|not applicable|unavailable|blocked)$/iu.test(recipe.nonApplicability[field].trim())) {
-        reject(`non-applicability ${field} requires objective reviewed evidence`);
-      }
-    }
-  }
+  if (!Array.isArray(recipe.checks) || recipe.checks.length === 0 || recipe.checks.length > 32) reject('verification requires bounded nonempty checks');
   const ids = new Set();
   const reference = ref => {
     keys(ref, ['kind', 'path'], 'verification file reference');

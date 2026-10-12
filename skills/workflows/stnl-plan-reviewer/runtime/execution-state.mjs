@@ -1426,20 +1426,6 @@ function parseTask(text, label, expectedSlice, references = {}) {
   const changedClaims = [...new Set([...changedAreas, ...corrections])];
   const checklist = taskSections.get("Checklist") ?? "";
   const authorityTask = parsePreparationArtifact(text, `tasks/${expectedSlice}.md`);
-  const verificationRecipe = parseVerificationRecipe(authorityTask.sections['Verification Recipe']);
-  for (const record of [...implementationChecks, ...findingsChecks]) {
-    if (references.evidenceOrigins?.has(record.id)) continue;
-    if (verificationRecipe.checks.length === 0 && record.status !== 'TESTS_NOT_APPLICABLE') {
-      throw new ExecutionContractError(`${record.id} zero-check recipe cannot become PASS, FAIL or BLOCKED`);
-    }
-    if (record.status === 'TESTS_NOT_APPLICABLE'
-      && (verificationRecipe.checks.length !== 0
-        || field(record.body, 'Discovery sources') !== verificationRecipe.nonApplicability?.discovery
-        || field(record.body, 'Non-applicability rationale') !== verificationRecipe.nonApplicability?.rationale
-        || !/no verification command/iu.test(field(record.body, 'No verification-command confirmation')))) {
-      throw new ExecutionContractError(`${record.id} non-applicability differs from reviewed recipe`);
-    }
-  }
   const declaredObligations = authorityTask.sections['Acceptance Obligations'].split('\n').map(line => ({ id: line.split(' | ')[0].slice(2) }));
   const checklistRows = preparationChecklist(checklist, declaredObligations, label);
   const checklistComplete = checklistRows.every((row) => row.done);
@@ -2497,8 +2483,7 @@ export async function resolveDeliveryVerification({ workspace, authority, delive
   const argument = arg => arg.file ? path.relative(cwd, resolved.get(arg.file.path)).split(path.sep).join('/') : arg.literal;
   // Every direct file arg is constructed from its reviewed reference, never a second free argv.
   const checks = recipe.checks.map(check => ({id:check.id, cwd, executable:check.executable.file ? './' + argument(check.executable) : argument(check.executable), args:check.args.map(argument)}));
-  return {format:'stnl-resolved-verification-v1', recipeSha256:continuationHash(JSON.stringify(recipe)), checks,
-    ...(recipe.nonApplicability ? {nonApplicability:recipe.nonApplicability} : {})};
+  return {format:'stnl-resolved-verification-v1', recipeSha256:continuationHash(JSON.stringify(recipe)), checks};
 }
 export async function readRunnerVerification(specPath, slice) {
   const current = await readExecutionActivation(specPath);

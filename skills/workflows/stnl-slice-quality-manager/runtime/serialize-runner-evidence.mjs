@@ -1220,7 +1220,7 @@ export async function serializeRunnerExecutionBundleFromResponse({
   if (mechanicalCommands.length === 0 && !new Set(["BLOCKED", "TESTS_NOT_APPLICABLE"]).has(payload.status)) {
     fail("runner completed no marked verification command");
   }
-  assertRunnerVerdictConsistency(operation, payload.status, mechanicalCommands, capturedReceipt?.verification ?? null, payload);
+  assertRunnerVerdictConsistency(operation, payload.status, mechanicalCommands);
   const correctionPaths = await populateExecutionCorrectionClaims({
     workspace,
     taskArtifact,
