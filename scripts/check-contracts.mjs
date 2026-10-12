@@ -218,25 +218,25 @@ function extractSchema(contract, operation) {
   return match[1].split("\n").filter(Boolean);
 }
 
-function checkRunner(root) {
+function checkRunner(root, platform = null) {
   if (!fs.statSync(root, { throwIfNoEntry: false })?.isDirectory()) throw new InfrastructureError(`not a directory: ${root}`);
   const codexFile = path.join(root, "codex/.codex/agents/stnl_validation_runner.toml");
   const claudeFile = path.join(root, "claude-code/.claude/agents/stnl-validation-runner.md");
   const readmeFile = path.join(root, "README.md");
-  for (const file of [codexFile, claudeFile, readmeFile]) {
+  for (const file of [readmeFile, ...(platform === 'claude' ? [] : [codexFile]), ...(platform === 'codex' ? [] : [claudeFile])]) {
     if (!fs.statSync(file, { throwIfNoEntry: false })?.isFile()) reject("R002_REGISTRY", `missing runner file: ${file}`);
   }
-  const codex = parseToml(codexFile, "R013_SYNTAX");
-  const claude = parseFrontmatter(claudeFile, "R013_SYNTAX");
+  const codex = platform === 'claude' ? null : parseToml(codexFile, "R013_SYNTAX");
+  const claude = platform === 'codex' ? null : parseFrontmatter(claudeFile, "R013_SYNTAX");
   const expectedCodex = {
     name: "stnl_validation_runner",
     description: "Runner barato e isolado para checks de implementação, checks de findings e validação formal independente de uma slice.",
     model: "gpt-6-luna",
     model_reasoning_effort: "medium",
-    developer_instructions: codex.developer_instructions,
+    developer_instructions: codex?.developer_instructions,
     agents: { max_depth: 1 },
   };
-  if (!keysEqual(codex, expectedCodex) || Object.entries(expectedCodex).some(([key, value]) => key !== "developer_instructions" && key !== "agents" && codex[key] !== value) || codex.agents?.max_depth !== 1) {
+  if (codex && (!keysEqual(codex, expectedCodex) || Object.entries(expectedCodex).some(([key, value]) => key !== "developer_instructions" && key !== "agents" && codex[key] !== value) || codex.agents?.max_depth !== 1)) {
     reject("R001_ADAPTER_METADATA", "Codex runner adapter metadata changed");
   }
   const expectedClaude = {
@@ -246,11 +246,15 @@ function checkRunner(root) {
     model: "claude-sonnet-5",
     effort: "medium",
   };
-  if (!keysEqual(claude.metadata, expectedClaude) || Object.entries(expectedClaude).some(([key, value]) => claude.metadata[key] !== value)) {
+  if (claude && (!keysEqual(claude.metadata, expectedClaude) || Object.entries(expectedClaude).some(([key, value]) => claude.metadata[key] !== value))) {
     reject("R001_ADAPTER_METADATA", "Claude runner adapter metadata changed");
   }
-  const contract = String(codex.developer_instructions ?? "").trim();
-  if (contract !== claude.body) reject("R003_EQUIVALENCE", "runner platform contracts diverge");
+  const contract = platform === 'claude' ? claude.body : String(codex.developer_instructions ?? "").trim();
+  if (platform === null && contract !== claude.body) reject("R003_EQUIVALENCE", "runner platform contracts diverge");
+  checkRunnerContract(contract, readmeFile);
+}
+
+function checkRunnerContract(contract, readmeFile) {
 
   requirePattern(contract, /^CONTRATO_CANONICO=stnl-validation-runner\/v[0-9]+$/mu, "R013_SYNTAX", "canonical runner contract ID is missing");
   const operations = /^OPERACOES_SUPORTADAS=([^\n]+)$/mu.exec(contract)?.[1];
@@ -277,7 +281,7 @@ function checkRunner(root) {
   requirePattern(contract, /# Canonical response gate\n\n?Field shape is strict at the JSON boundary:[\s\S]{0,1200}payload is one raw JSON object/u, "R026_OUTPUT_GATE", "runner lacks a byte-for-byte canonical semantic response gate");
   forbidPattern(contract, /^Retorne somente `PASS`, `NEEDS_FIX` ou `BLOCKED`\.[\s\S]{0,500}Em `Findings:`/mu, "R026_OUTPUT_GATE", "validation contract reintroduces a narrative output shape alongside the JSON gate");
   forbidPattern(contract, /(?:^|\n)Em `Findings:`, forneça uma disposição/iu, "R026_OUTPUT_GATE", "validation findings are not constrained to the semantic JSON field");
-  requirePattern(contract, /`commands`[^\n]{0,180}(?:somente|only)[^\n]{0,120}`?command`?[^\n]{0,80}`?exit`?/iu, "R027_TUPLE_GRAMMAR", "runner does not state the exact semantic command tuple grammar");
+  requirePattern(contract, /`commands` is an array of objects with exactly `command` and integer `exit`/u, "R027_TUPLE_GRAMMAR", "runner does not state the exact semantic command tuple grammar");
   requirePattern(contract, /The machine-key schema is fixed[\s\S]{0,500}EXECUTE_SLICE[\s\S]{0,500}APPLY_FINDINGS[\s\S]{0,500}VALIDATE_SLICE/u, "R028_FIELD_SEQUENCE", "runner does not require the literal semantic field sequence at the final response gate");
   requirePattern(contract, /Field shape is strict at the JSON boundary:[\s\S]{0,500}every judgment property except `commands` is one scalar string[\s\S]{0,300}`commands` is an array of objects with exactly `command` and integer `exit`[\s\S]{0,300}payload is one raw JSON object/u, "R029_FIELD_SHAPE", "runner does not require scalar semantic fields outside Commands");
   requirePattern(contract, /managed ownership and active IDs come only from `FINDINGS_OWNERSHIP`/u, "R029_FIELD_SHAPE", "managed findings ownership must be sealed, not inferred from legacy text");
@@ -362,7 +366,7 @@ function checkRunner(root) {
   requirePattern(readme, /retoma diretamente na delegação[\s\S]{0,240}não reinicia identificadores/iu, "R012_README", "README initialization-resume semantics are missing");
   requirePattern(readme, /terceira falha entra em `IMPLEMENTATION_RETRY_EXHAUSTED` ou `FINDINGS_RETRY_EXHAUSTED`[\s\S]{0,180}`VALIDATE_SLICE` é a única próxima operação/iu, "R012_README", "README third-failure recovery is missing");
   requirePattern(readme, /última slice aberta[\s\S]{0,320}cobertura global[\s\S]{0,180}cross-slice[\s\S]{0,180}`BLOCKED`[\s\S]{0,80}`REPLAN`/iu, "R017_TERMINAL_VALIDATION", "README terminal semantic validation is missing");
-  requirePattern(readme, /`COMPLETE`[\s\S]{0,260}runtime[\s\S]{0,260}ownership final[\s\S]{0,180}drift[\s\S]{0,180}`REPLAN`/iu, "R018_TERMINAL_INTEGRITY", "README terminal deterministic inspection is missing");
+  requirePattern(readme, /`COMPLETE`[\s\S]{0,260}runtime[\s\S]{0,260}ownership final[\s\S]{0,240}inspeção read-only[\s\S]{0,100}drift[\s\S]{0,520}REPLAN/iu, "R018_TERMINAL_INTEGRITY", "README terminal deterministic inspection is missing");
   requirePattern(readme, /fontes em `Discovery sources`, métodos em `Discovery actions`/iu, "R007_OUTPUT_SCHEMA", "README discovery labels are not canonical");
   forbidPattern(readme, /`Check discovery (?:sources|actions)`/iu, "R007_OUTPUT_SCHEMA", "README authorizes historical discovery labels");
 }
@@ -391,7 +395,7 @@ function checkScout(root) {
   if (schema.length !== expected.length || schema.some((line, index) => line !== expected[index])) reject("S005_OUTPUT", "scout schema changed");
 }
 
-function checkSubagents(root) {
+function checkSubagents(root, platform = null) {
   const expected = new Set([
     "README.md",
     "codex/.codex/agents/stnl_validation_runner.toml",
@@ -399,6 +403,11 @@ function checkSubagents(root) {
     "codex/package.json",
     "codex/package-lock.json",
     "codex/runtime/isolated-home.mjs",
+    "codex/runtime/format-repair.mjs",
+    "codex/runtime/managed-apply-scope.mjs",
+    "codex/runtime/managed-findings-cycle.mjs",
+    "codex/runtime/managed-slice-finalize.mjs",
+    "codex/runtime/offline-provider-context.mjs",
     "codex/runtime/managed-runner-bridge.mjs",
     "codex/runtime/managed-slice-preflight.mjs",
     "codex/runtime/runner-broker.mjs",
@@ -411,7 +420,7 @@ function checkSubagents(root) {
   const actual = new Set(realFiles(root)
     .map((file) => path.relative(root, file).split(path.sep).join("/")));
   if (actual.size !== expected.size || [...actual].some((file) => !expected.has(file))) reject("S002_REGISTRY", `subagent registry mismatch; actual=${JSON.stringify([...actual].sort())}`);
-  checkRunner(root);
+  checkRunner(root, platform);
   checkScout(root);
 }
 
@@ -529,6 +538,23 @@ function checkRepository(root) {
   }
   const vendor = /\bCodex\b|\bClaude(?: Code)?\b|@agent-|stnl[_-]validation[_-]runner|fork_turns|\bgpt-[0-9]|\bhaiku\b|\bsonnet\b/iu;
   for (const [file, text] of genericTexts) if (vendor.test(text)) reject("C004_VENDOR_NEUTRALITY", `${file}: generic execution skill contains vendor invocation syntax`);
+  const guides = ['stnl-slice-executor', 'stnl-slice-quality-manager'].map(name => {
+    const base = path.join(workflowRoot, name);
+    const skill = read(path.join(base, 'SKILL.md'));
+    requirePattern(skill, /mandatory \[runner invocation guide\]\(references\/runner-invocation\.md\)[^\n]*installed skill[^\n]*before selecting or spawning/u,
+      'C006_DISTRIBUTION', `${name}: installed runner guide is not a mandatory read`);
+    const guide = read(path.join(base, 'references/runner-invocation.md'), 'C006_DISTRIBUTION');
+    const body = guide.slice(guide.indexOf('# Native runner invocation'));
+    for (const pattern of [/fork_turns:"none"/u, /complete installed runner contract/u,
+      /missing, malformed, or different runner contract blocks/u, /without that contract is not the runner/u,
+      /task-level instruction loading; it does not confer developer-level priority/u, /origin-bound native procedure/u,
+      /start-native, bind-native, verify-native and capture-native/u, /producer receipt and reviewed verification observation/u,
+      /Never replay a pending or uncertain dispatch/u]) {
+      requirePattern(body, pattern, 'C006_DISTRIBUTION', `${name}: runner guide loses a required integration guarantee`);
+    }
+    return body;
+  });
+  if (guides[0] !== guides[1]) reject('C006_DISTRIBUTION', 'installed runner invocation guides diverge');
   const allExecutionText = genericTexts.map(([, text]) => text).join("\n");
   for (const token of ["stnl-spec-execution-manager", "stnl-execution-closer", "OPERATION=CLOSE", "EXECUTION_APPROVED", "EXECUTION_BLOCKED", "FINALIZE_SLICE", "PARALLELIZE_SLICES", "EXECUTE_SLICES", "RUN_TESTS", "RETRY_TESTS", "FIX_TESTS", "TEST_SLICE", "TEST_FINDINGS", "VALIDATE_IMPLEMENTATION"]) {
     if (allExecutionText.includes(token)) reject("C009_REMOVED_TOKENS", `removed execution token remains: ${token}`);
@@ -608,7 +634,7 @@ function checkLifecycleStatic(root) {
   for (const [marker, label] of [
     ["never remove, renumber, reuse, fill gaps", "immutable IDs"], ["retired_reason", "tombstone reason"],
     ["runtime/create-readiness-attestation.mjs", "attestation creator"], ["--readiness-attestation", "attestation binding"],
-    ["CLOSE <TARGET> <CANDIDATE>", "direct CLOSE publisher binding"], ["renamed backup digest before promotion", "post-rename verification"],
+    ["CLOSE <TARGET> <CANDIDATE>", "direct CLOSE publisher binding"], ["Recheck backup digest before promotion", "post-rename verification"],
   ]) if (!lifecycleText.includes(marker)) reject("C015_LIFECYCLE_AUTHORITY", `lifecycle contracts lack ${label}`);
   const readme = read(path.join(lifecycle, "README.md"));
   if (!read(path.join(root, ".gitignore")).includes(".*.lifecycle.lock") || !readme.includes(".*.lifecycle.lock")) reject("C015_LIFECYCLE_AUTHORITY", "persistent publisher lock contract is missing");
@@ -620,26 +646,31 @@ function parseArguments(argv) {
   if (!["launchers", "validation-runner", "subagents", "repository"].includes(scope)) throw new InfrastructureError(`unknown scope: ${scope}`);
   let root;
   let executor;
+  let platform = null;
+  const seen = new Set();
   for (let index = 1; index < argv.length; index += 2) {
     const flag = argv[index];
     const value = argv[index + 1];
     if (!value) throw new InfrastructureError(`missing value for ${flag}`);
+    if (seen.has(flag)) throw new InfrastructureError(`repeated argument: ${flag}`);
+    seen.add(flag);
     if (flag === "--root") root = path.resolve(value);
     else if (flag === "--executor") executor = path.resolve(value);
+    else if (flag === '--platform' && ['validation-runner', 'subagents'].includes(scope) && ['codex', 'claude'].includes(value)) platform = value;
     else throw new InfrastructureError(`unknown argument: ${flag}`);
   }
   if (!root) throw new InfrastructureError("--root is required");
-  return { scope, root, executor };
+  return { scope, root, executor, platform };
 }
 
 export function run(arguments_) {
   try {
-    const { scope, root } = parseArguments(arguments_);
+    const { scope, root, platform } = parseArguments(arguments_);
     if (scope === "launchers") checkLaunchers(root);
-    else if (scope === "validation-runner") checkRunner(root);
-    else if (scope === "subagents") checkSubagents(root);
+    else if (scope === "validation-runner") checkRunner(root, platform);
+    else if (scope === "subagents") checkSubagents(root, platform);
     else checkRepository(root);
-    process.stdout.write(`PASS: semantic ${scope} contract: ${root}\n`);
+    process.stdout.write(`PASS: semantic ${scope}${platform ? ` (${platform} only; aggregate parity not checked)` : ''} contract: ${root}\n`);
     return 0;
   } catch (error) {
     if (error instanceof ContractError) {

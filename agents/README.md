@@ -18,7 +18,7 @@ Na reinstalação, agents Sentinel modificados são substituídos e agents obsol
 
 Este agente copiável, barato e isolado executa checks e validação fora do contexto principal para as skills `stnl-slice-executor` e `stnl-slice-quality-manager`.
 
-O Codex preserva `gpt-5.6-luna` com effort `medium`; o Claude Code preserva `claude-sonnet-5` com effort `medium`.
+O Codex usa `gpt-6-luna` com effort `medium`; o Claude Code preserva `claude-sonnet-5` com effort `medium`. O checker `validation-runner --platform codex` valida o recorte Codex; o gate agregado continua reportando `R003_EQUIVALENCE` até a equalização Claude, sem alegar paridade.
 
 ### Fluxo manual e delegações automáticas
 

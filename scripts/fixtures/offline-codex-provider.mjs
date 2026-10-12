@@ -244,12 +244,24 @@ try {
       await fs.writeFile(injection, `import fs from 'node:fs/promises';
 const original = { rename: fs.rename.bind(fs), writeFile: fs.writeFile.bind(fs) };
 let fired = false;
-const fail = () => { fired = true; throw Object.assign(new Error('TEST-ONLY allocation fault before binding'), { code: 'EIO' }); };
-fs.rename = async (from, to) => { if (!fired && ${JSON.stringify(context.scenario)} === 'allocation-fail-binding' && to === ${JSON.stringify(bindingFile)}) fail(); return original.rename(from, to); };
-fs.writeFile = async (file, ...args) => { if (!fired && ${JSON.stringify(context.scenario)} === 'allocation-fail-owner' && file === ${JSON.stringify(ownerFile)}) fail(); return original.writeFile(file, ...args); };
+const fail = async (phase, file) => { fired = true;
+  await original.writeFile(${JSON.stringify(path.join(context.root, '.offline-allocation-injection-fired.json'))}, JSON.stringify({ phase, file,
+    operationAttemptId: ${JSON.stringify(active.officialPreflight.owner.operationAttemptId)}, code: 'EIO', testOnly: true }));
+  throw Object.assign(new Error('TEST-ONLY allocation fault before binding'), { code: 'EIO' }); };
+fs.rename = async (from, to) => { if (!fired && ${JSON.stringify(context.scenario)} === 'allocation-fail-binding' && to === ${JSON.stringify(bindingFile)}) await fail('binding-install', to); return original.rename(from, to); };
+fs.writeFile = async (file, ...args) => { if (!fired && ${JSON.stringify(context.scenario)} === 'allocation-fail-owner' && file === ${JSON.stringify(ownerFile)}) await fail('owner-write', file); return original.writeFile(file, ...args); };
 `);
       const first = run('--import', [injection, process.env.STNL_MANAGED_FINALIZER, '--prepare']);
-      const allocated = (await fs.readdir(parent)).filter(name => name.startsWith('.stnl-execution-copy-') && !beforeRoots.includes(name));
+      const allocated = (await fs.readdir(parent, { withFileTypes: true }))
+        .filter(entry => entry.isDirectory() && entry.name.startsWith('.stnl-execution-copy-') && !beforeRoots.includes(entry.name))
+        .map(entry => entry.name);
+      for (const name of allocated) {
+        const marker = JSON.parse(await fs.readFile(path.join(parent, name + '.copy.json')));
+        if (marker.specPath !== specPath || marker.candidate !== path.join(parent, name)
+          || marker.owner.operationAttemptId !== active.officialPreflight.owner.operationAttemptId) {
+          throw new Error('TEST-ONLY allocated execution copy ownership differs');
+        }
+      }
       const allocatedHashes = Object.fromEntries(await Promise.all(allocated.map(async name => [name, await digest(path.join(parent, name, 'execution/tasks/slice-01.md'))])));
       const ownerBefore = await fs.readFile(ownerFile, 'utf8').catch(error => { if (error.code === 'ENOENT') return null; throw error; });
       prepared = run(process.env.STNL_MANAGED_FINALIZER, ['--prepare']);
@@ -455,29 +467,58 @@ fs.writeFile = async (file, ...args) => { if (!fired && ${JSON.stringify(context
         await fs.writeFile(injection, `// TEST-ONLY scoped filesystem fault; no runtime or verdict substitution.
 import fs from 'node:fs/promises';
 import path from 'node:path';
-const scope = ${JSON.stringify({ scenario: context.scenario, candidateIndex: path.join(binding.candidateExecutionRoot, 'tasks.md'), liveRoot: path.join(specPath, 'execution'), liveTask: taskFile, finalizationFile: finalizedFile, firedFile: path.join(evidenceRoot, 'injection-fired.json') })};
-const original = { rename: fs.rename.bind(fs), readFile: fs.readFile.bind(fs), rm: fs.rm.bind(fs), writeFile: fs.writeFile.bind(fs) };
-let fired = false, published = false;
-const fail = async (boundary) => { fired = true; await original.writeFile(scope.firedFile, JSON.stringify({ boundary, code: 'EIO', testOnly: true })); throw Object.assign(new Error('TEST-ONLY owned filesystem fault: ' + boundary), { code: 'EIO' }); };
+const scope = ${JSON.stringify({ scenario: context.scenario, liveRoot: path.join(specPath, 'execution'), liveTask: taskFile, finalizationFile: finalizedFile,
+          preparationFile: path.join(process.env.TMPDIR, 'stnl-runner-broker', String(active.sequence).padStart(3, '0') + '.preparation-' + JSON.parse(await fs.readFile(path.join(process.env.TMPDIR, 'stnl-runner-broker', String(active.sequence).padStart(3, '0') + '.candidate.json'))).nonce + '-attempt-' + receipt.attempt + '.json'),
+          operationAttemptId: active.officialPreflight.owner.operationAttemptId,
+          firedFile: path.join(evidenceRoot, 'injection-fired.json') })};
+const original = { rename: fs.rename.bind(fs), readFile: fs.readFile.bind(fs), writeFile: fs.writeFile.bind(fs) };
+let fired = false, acknowledged = false, allocation = null;
+const fail = async (boundary, phase, facts = {}) => { fired = true;
+  await original.writeFile(scope.firedFile, JSON.stringify({ boundary, phase, operationAttemptId: scope.operationAttemptId,
+    allocation, ...facts, code: 'EIO', testOnly: true }));
+  throw Object.assign(new Error('TEST-ONLY owned filesystem fault: ' + boundary), { code: 'EIO' }); };
+const ownedRecord = record => record.executionRoot === scope.liveRoot && record.owner?.operationAttemptId === scope.operationAttemptId;
 fs.rename = async (from, to) => {
-  if (!fired && ['finalizer-fail-execute-publication', 'finalizer-fail-apply-publication', 'finalizer-fail-execute-source-edit'].includes(scope.scenario) && to === scope.liveTask && from.startsWith(scope.liveTask + '.stnl-publish-')) await fail('execution publisher task install before live mutation');
-  if (!fired && scope.scenario === 'finalizer-fail-prepare-index' && path.basename(to) === 'tasks.md' && path.dirname(to) !== path.dirname(scope.candidateIndex) && path.basename(path.dirname(to)).startsWith('validation-slice-01-')) await fail('prepare index rename after task rename');
-  if (!fired && scope.scenario === 'finalizer-fail-publication-install' && to === scope.liveRoot && path.basename(from).startsWith('.stnl-validation-publication-')) await fail('publication install after live moved to backup');
-  if (!fired && ['finalizer-fail-finalization-write', 'finalizer-fail-contraproofs'].includes(scope.scenario) && to === scope.finalizationFile) await fail('finalization metadata rename after publication');
+  if (to === scope.liveRoot && path.basename(from).startsWith('.stnl-execution-stage-')) {
+    const id = path.basename(from).slice('.stnl-execution-stage-'.length);
+    const marker = path.join(path.dirname(from), '.stnl-execution-publication-' + id + '.json');
+    const record = JSON.parse(await original.readFile(marker));
+    const prepared = JSON.parse(await original.readFile(scope.preparationFile));
+    if (!ownedRecord(record) || record.stage !== from || record.candidate !== prepared.stage.candidateExecutionRoot
+      || !await fs.lstat(record.backup).then(stat => stat.isDirectory(), () => false)
+      || await fs.lstat(to).then(() => true, () => false)) throw new Error('TEST-ONLY publisher allocation/backup boundary disagrees');
+    allocation = marker;
+    if (!fired && ['finalizer-fail-execute-publication', 'finalizer-fail-apply-publication',
+      'finalizer-fail-execute-source-edit', 'finalizer-fail-publication-install'].includes(scope.scenario)) {
+      await fail('publisher install after owned backup before live image', 'after-backup/before-install', { stage: from, backup: record.backup });
+    }
+  }
+  if (!fired && scope.scenario === 'finalizer-fail-prepare-index' && path.basename(to) === 'tasks.md') {
+    const prepared = await original.readFile(scope.preparationFile).then(JSON.parse, () => null);
+    if (prepared?.association.operationAttemptId === scope.operationAttemptId && to === path.join(prepared.stage.candidateExecutionRoot, 'tasks.md')) {
+      await fail('prepare index rename after task rename', 'prepare/task-installed/index-pending');
+    }
+  }
+  if (!fired && scope.scenario === 'finalizer-fail-execute-cleanup' && to === allocation) {
+    const record = JSON.parse(await original.readFile(from));
+    if (ownedRecord(record) && record.confirmation && record.expectedInstalledActivation?.activeAttempt === null) {
+      await fail('confirmation persistence after verified terminal image', 'confirmed/cleanup-persistence',
+        { confirmation: record.confirmation, activationId: record.expectedInstalledActivation.activationId });
+    }
+  }
+  if (!fired && ['finalizer-fail-finalization-write', 'finalizer-fail-contraproofs'].includes(scope.scenario)
+    && to === scope.finalizationFile) await fail('finalization metadata rename after publication', 'finalization-write');
   const result = await original.rename(from, to);
-  if (to === scope.liveTask && from.startsWith(scope.liveTask + '.stnl-publish-')) published = true;
-  return result;
-};
-fs.rm = async (file, options) => {
-  if (!fired && published && scope.scenario === 'finalizer-fail-execute-cleanup' && path.basename(file).startsWith('.stnl-execution-copy-')) await fail('execution candidate cleanup after live installation');
-  const committedBackup = path.dirname(file) === path.dirname(scope.liveRoot) && path.basename(file).startsWith('.stnl-validation-backup-')
-    && await original.readFile(path.join(file, 'tasks/slice-01.md')).then(() => true, () => false);
-  const result = await original.rm(file, options);
-  if (committedBackup) published = true;
+  if (String(to).endsWith('.copy.json') || String(to).endsWith('.publication.json')) {
+    const record = await original.readFile(to).then(JSON.parse, () => null);
+    if (record && ownedRecord(record) && record.publicationAllocation && record.confirmation) acknowledged = true;
+  }
   return result;
 };
 fs.readFile = async (file, options) => {
-  if (!fired && published && scope.scenario === 'finalizer-fail-readback' && file === scope.liveTask) await fail('outer finalizer readback after publisher success');
+  if (!fired && acknowledged && scope.scenario === 'finalizer-fail-readback' && file === scope.liveTask) {
+    await fail('outer finalizer readback after acknowledged publisher', 'confirmed/outer-readback');
+  }
   return original.readFile(file, options);
 };
 `);
@@ -584,6 +625,14 @@ fs.open = async (file, flags, ...args) => {
         await fs.writeFile(file, original);
       }
       const afterSummary = await snapshot('02-after-summary-only-correction');
+      let cleanupRecovery = null;
+      if (context.scenario === 'finalizer-fail-execute-cleanup') {
+        const injection = JSON.parse(await fs.readFile(path.join(evidenceRoot, 'injection-fired.json')));
+        const { cleanupOwnedExecutionAllocation } = await importHelper('stnl-slice-executor', 'execution-publication.mjs');
+        const { resolveExecutionWorkspace, readExecutionActivation } = await importHelper('stnl-slice-executor', 'execution-state.mjs');
+        cleanupRecovery = await cleanupOwnedExecutionAllocation({ workspace: await resolveExecutionWorkspace(specPath),
+          marker: injection.allocation, readActivated: () => readExecutionActivation(specPath) });
+      }
       const second = run(process.env.STNL_MANAGED_FINALIZER, ['--finalize']);
       const afterSecond = await snapshot('03-after-second-finalize');
       reprepare ??= run(process.env.STNL_MANAGED_FINALIZER, ['--prepare']);
@@ -592,7 +641,7 @@ fs.open = async (file, flags, ...args) => {
       const retainedStageAfter = stagePresent && context.scenario === 'finalize-summary-rejection' ? await treeHashes(checkpointAfterFirst.stage.candidateExecutionRoot) : null;
       await fs.writeFile(path.join(evidenceRoot, 'observed.json'), JSON.stringify({ binding, receipt, before, afterFirst, afterSummary, afterSecond,
         checkpointAfterFirst, rejectedInput, rejectedInputAfter, retainedStageAfter, probes,
-        first: { exit: first.status, diagnostic: first.stderr, command: first.command },
+        first: { exit: first.status, diagnostic: first.stderr, command: first.command, output: first.stdout }, cleanupRecovery,
         second: { exit: second.status, diagnostic: second.stderr, command: second.command },
         reprepare: { exit: reprepare.status, diagnostic: reprepare.stderr, command: reprepare.command },
         duplicate: { exit: duplicate.status, diagnostic: duplicate.stderr, command: duplicate.command, result: duplicate.stdout },

@@ -15,15 +15,16 @@ async function fixture(t) {
   const root = path.join(temporary, "subagents");
   // The contract checker reads distributed sources, not SDK dependencies.
   await fs.cp(canonical, root, { recursive: true, filter: file => !file.split(path.sep).includes('node_modules') });
+  assert.equal(check(root).status, 0, 'the unmutated Codex control must pass before its negative');
   return root;
 }
 
 function check(root) {
-  return spawnSync(process.execPath, [checker, "validation-runner", "--root", root], { encoding: "utf8" });
+  return spawnSync(process.execPath, [checker, "validation-runner", "--root", root, '--platform', 'codex'], { encoding: "utf8" });
 }
 
-async function replaceBoth(root, oldValue, newValue) {
-  for (const relative of ["codex/.codex/agents/stnl_validation_runner.toml", "claude-code/.claude/agents/stnl-validation-runner.md"]) {
+async function replaceSelected(root, oldValue, newValue) {
+  for (const relative of ["codex/.codex/agents/stnl_validation_runner.toml"]) {
     const file = path.join(root, relative);
     const before = await fs.readFile(file, "utf8");
     assert.ok(before.includes(oldValue), `missing mutation source: ${oldValue}`);
@@ -38,6 +39,26 @@ function expectCategory(result, category) {
 
 test("accepts the canonical independent semantic runner", async (t) => {
   assert.equal(check(await fixture(t)).status, 0);
+});
+
+test('aggregate runner gate preserves real R003 pending Claude equalization', () => {
+  const result = spawnSync(process.execPath, [checker, 'validation-runner', '--root', canonical], { encoding: 'utf8' });
+  expectCategory(result, 'R003_EQUIVALENCE');
+  for (const args of [['--platform', 'unknown'], ['--platform', 'codex', '--platform', 'claude']]) {
+    assert.equal(spawnSync(process.execPath, [checker, 'validation-runner', '--root', canonical, ...args]).status, 2);
+  }
+});
+
+test('scoped checker retains the exact command tuple and current terminal inspection guards', async t => {
+  const tuple = await fixture(t);
+  await replaceSelected(tuple, '`commands` is an array of objects with exactly `command` and integer `exit`', '`commands` permits arbitrary entries');
+  expectCategory(check(tuple), 'R027_TUPLE_GRAMMAR');
+  const terminal = await fixture(t);
+  const readme = path.join(terminal, 'README.md');
+  const text = await fs.readFile(readme, 'utf8');
+  assert.ok(text.includes('A inspeção read-only de uma execução já `COMPLETE`'));
+  await fs.writeFile(readme, text.replace('A inspeção read-only de uma execução já `COMPLETE`', 'Uma execução concluída dispensa inspeção'));
+  expectCategory(check(terminal), 'R018_TERMINAL_INTEGRITY');
 });
 
 test("formal coverage findings require a demonstrated authorized test-delivery defect without weakening PASS", async () => {
@@ -83,7 +104,7 @@ test("distribution gate rejects loss of coverage comparison without judging mode
     ['separe requisito exigido de melhoria opcional', 'trate melhorias opcionais como requisitos'],
   ]) {
     const root = await fixture(t);
-    await replaceBoth(root, before, after);
+    await replaceSelected(root, before, after);
     expectCategory(check(root), 'R006_VERDICTS');
   }
 });
@@ -136,7 +157,7 @@ test("offline coverage examples expose effective inputs and assertion limits, no
   }
 });
 
-test("Codex and Claude bodies remain byte-identical and schemas are exact", async () => {
+test("Codex and Claude schemas are exact; aggregate body divergence remains visible", async () => {
   const toml = await fs.readFile(path.join(canonical, "codex/.codex/agents/stnl_validation_runner.toml"), "utf8");
   const claude = await fs.readFile(path.join(canonical, "claude-code/.claude/agents/stnl-validation-runner.md"), "utf8");
   for (const contract of [toml, claude]) {
@@ -170,20 +191,21 @@ test("formal commands and requirement-bound findings cannot be weakened in the d
     ["nunca invente um comando, um exit ou um check", "invente um comando para completar o schema", "R009_VALIDATION_ATTEMPT"],
   ]) {
     const root = await fixture(t);
-    await replaceBoth(root, oldValue, newValue);
+    await replaceSelected(root, oldValue, newValue);
     expectCategory(check(root), category);
   }
 });
 
-test("skills distinguish native runner evidence from managed receipts", async () => {
+test("native and managed evidence require their producer origin and reviewed observation", async () => {
   const executor = await fs.readFile(path.join(repository, "skills/workflows/stnl-slice-executor/SKILL.md"), "utf8");
   const quality = await fs.readFile(path.join(repository, "skills/workflows/stnl-slice-quality-manager/SKILL.md"), "utf8");
   const runner = await fs.readFile(path.join(canonical, "codex/.codex/agents/stnl_validation_runner.toml"), "utf8");
-  assert.match(executor, /native invocation[^\n]*--semantic-response-file[^\n]*--insert-candidate[^\n]*no `--receipt-file`/u);
-  assert.match(executor, /managed launches[^\n]*\$STNL_RUNNER_EVIDENCE_SERIALIZER[^\n]*if it is absent, block/u);
-  assert.match(quality, /Omit `--receipt-file` in native mode/u);
-  assert.match(quality, /native rejection lacks that receipt-bound recovery/u);
-  assert.match(runner, /delegação nativa sem recibo[^\n]*exit numérico observado/u);
+  for (const skill of [executor, quality]) {
+    for (const operation of ['start-native', 'bind-native', 'capture-native', 'verify-native']) assert.ok(skill.includes(operation));
+    assert.match(skill, /receipt obligatory|receipt mandatory|receipt is mandatory|origin.*receipt|receipt.*origin/iu);
+    assert.match(skill, /saved observation without replay/u);
+  }
+  assert.match(runner, /NATIVE_ORIGIN_FILE[\s\S]*verify-native[\s\S]*Não execute os checks novamente/u);
 });
 
 test("native generic spawn loads the complete installed runner contract in an independent context", async () => {
@@ -192,13 +214,15 @@ test("native generic spawn loads the complete installed runner contract in an in
   const guide = await fs.readFile(path.join(canonical, "README.md"), "utf8");
   const contract = await fs.readFile(path.join(canonical, "codex/.codex/agents/stnl_validation_runner.toml"), "utf8");
   assert.match(contract, /name = "stnl_validation_runner"[\s\S]*developer_instructions = """\nCONTRATO_CANONICO=stnl-validation-runner\/v11/u);
-  for (const skill of [executor, quality]) {
-    assert.match(skill, /fork_turns:"none"[^\n]*complete installed runner contract/u);
-    assert.match(skill, /\.codex\/agents\/stnl_validation_runner\.toml` `developer_instructions`/u);
-    assert.match(skill, /not a selected registered runner type/u);
-    assert.match(skill, /task-level instruction loading; it does not confer developer-level priority or the enforcement guarantee of a registered agent/u);
-    assert.match(skill, /instruct it to follow the contract's no-write rule/u);
-    assert.match(skill, /without that contract is not the runner/u);
+  for (const [owner, skill] of [['stnl-slice-executor', executor], ['stnl-slice-quality-manager', quality]]) {
+    assert.match(skill, /mandatory \[runner invocation guide\]\(references\/runner-invocation.md\)[^\n]*installed skill/u);
+    const invocation = await fs.readFile(path.join(repository, 'skills/workflows', owner, 'references/runner-invocation.md'), 'utf8');
+    assert.match(invocation, /fork_turns:"none"[^\n]*complete installed runner contract/u);
+    assert.match(invocation, /\.codex\/agents\/stnl_validation_runner\.toml` `developer_instructions`/u);
+    assert.match(invocation, /not a selected registered runner type/u);
+    assert.match(invocation, /task-level instruction loading; it does not confer developer-level priority or the enforcement guarantee of a registered agent/u);
+    assert.match(invocation, /instruct it to follow the contract's no-write rule/u);
+    assert.match(invocation, /without that contract is not the runner/u);
     assert.match(skill, /In managed mode use only[^\n]*STNL_MANAGED_RUNNER_BRIDGE/u);
   }
   assert.match(guide, /agente independente com contrato carregado, não uma seleção do tipo registrado/u);
@@ -215,31 +239,31 @@ test("mechanical authority, candidate and serializer details stay outside runner
 
 test("independence and read-only boundaries remain enforced", async (t) => {
   const root = await fixture(t);
-  await replaceBoth(root, "Trate conclusões do contexto principal como não verificadas.", "Aceite conclusões anteriores.");
+  await replaceSelected(root, "Trate conclusões do contexto principal como não verificadas.", "Aceite conclusões anteriores.");
   expectCategory(check(root), "R014_INDEPENDENCE");
 });
 
 test("semantic verdict and discovery requirements remain enforced", async (t) => {
   const root = await fixture(t);
-  await replaceBoth(root, "STATUS_CHECKS=TESTS_PASS|TESTS_FAIL|TESTS_NOT_APPLICABLE|BLOCKED", "STATUS_CHECKS=TESTS_PASS|TESTS_FAIL|BLOCKED");
+  await replaceSelected(root, "STATUS_CHECKS=TESTS_PASS|TESTS_FAIL|TESTS_NOT_APPLICABLE|BLOCKED", "STATUS_CHECKS=TESTS_PASS|TESTS_FAIL|BLOCKED");
   expectCategory(check(root), "R006_VERDICTS");
 });
 
 test("malformed semantic response gate remains rejected", async (t) => {
   const root = await fixture(t);
-  await replaceBoth(root, "# Canonical response gate", "# Response gate");
+  await replaceSelected(root, "# Canonical response gate", "# Response gate");
   expectCategory(check(root), "R026_OUTPUT_GATE");
 });
 
 test("validation findings require canonical IDs and dispositions", async (t) => {
   const root = await fixture(t);
-  await replaceBoth(root, "IDs canônicos `finding-01`, `finding-02`", "IDs livres `F-001`, `F-002`");
+  await replaceSelected(root, "IDs canônicos `finding-01`, `finding-02`", "IDs livres `F-001`, `F-002`");
   expectCategory(check(root), "R009_VALIDATION_ATTEMPT");
 });
 
 test("runner verdict precedes final manifest fields", async (t) => {
   const root = await fixture(t);
-  await replaceBoth(root,
+  await replaceSelected(root,
     "A ausência ou o valor pending desses campos finais desta tentativa não é causa de BLOCKED.",
     "Exija todos os campos finais antes de decidir.");
   expectCategory(check(root), "R009_VALIDATION_ATTEMPT");
@@ -247,7 +271,7 @@ test("runner verdict precedes final manifest fields", async (t) => {
 
 test("runner must check each acceptance criterion before PASS", async (t) => {
   const root = await fixture(t);
-  await replaceBoth(root,
+  await replaceSelected(root,
     "Nunca retorne PASS enquanto algum critério aplicável estiver sem evidência suficiente",
     "Retorne PASS quando o teste focado passar");
   expectCategory(check(root), "R009_VALIDATION_ATTEMPT");
@@ -255,7 +279,7 @@ test("runner must check each acceptance criterion before PASS", async (t) => {
 
 test("format repair contract forbids a changed verdict and uncertain-turn retry", async (t) => {
   const root = await fixture(t);
-  await replaceBoth(root,
+  await replaceSelected(root,
     "Não use esse caminho para resposta semântica válida, timeout, processError ou conclusão incerta.",
     "Use o reparo também após timeout.");
   expectCategory(check(root), "R009_VALIDATION_ATTEMPT");
@@ -263,7 +287,7 @@ test("format repair contract forbids a changed verdict and uncertain-turn retry"
 
 test("runner contract forbids hiding a failed check after a corrected check passes", async (t) => {
   const root = await fixture(t);
-  await replaceBoth(root, "Um check marcado com exit não zero impede", "Ignore o check anterior para permitir");
+  await replaceSelected(root, "Um check marcado com exit não zero impede", "Ignore o check anterior para permitir");
   expectCategory(check(root), "R009_VALIDATION_ATTEMPT");
 });
 
@@ -292,7 +316,7 @@ test("contract gate rejects losing prepared-check taxonomy or environmental and 
     ["Fora dessa exceção, defeito do próprio script, fixture, quoting ou asserção do check continua exigindo `BLOCKED`", "Fora dessa exceção, defeito do próprio script, fixture, quoting ou asserção do check permite PASS"],
   ]) {
     const root = await fixture(t);
-    await replaceBoth(root, before, after);
+    await replaceSelected(root, before, after);
     expectCategory(check(root), "R006_VERDICTS");
   }
 });
@@ -306,29 +330,29 @@ test("contract gate rejects broadening coverage findings beyond demonstrated aut
     ["Somente o executor corrige via `APPLY_FINDINGS`, seguido de `VALIDATE_SLICE`, nos budgets existentes", "O runner corrige diretamente sem budget"],
   ]) {
     const root = await fixture(t);
-    await replaceBoth(root, before, after);
+    await replaceSelected(root, before, after);
     expectCategory(check(root), "R006_VERDICTS");
   }
 });
 
 test("runner verifies an accessible missing variant instead of treating missing prior tests as impossibility", async (t) => {
   const root = await fixture(t);
-  await replaceBoth(root, "Não confunda ausência de teste prévio com impossibilidade de verificar.", "Bloqueie se faltar teste prévio.");
+  await replaceSelected(root, "Não confunda ausência de teste prévio com impossibilidade de verificar.", "Bloqueie se faltar teste prévio.");
   expectCategory(check(root), "R009_VALIDATION_ATTEMPT");
 });
 
 test("runner schema repair cannot expand beyond the two empty finding sets", async (t) => {
   const root = await fixture(t);
-  await replaceBoth(root, "A única equivalência de tipo permitida é array vazio", "Converta livremente qualquer array");
+  await replaceSelected(root, "A única equivalência de tipo permitida é array vazio", "Converta livremente qualquer array");
   expectCategory(check(root), "R009_VALIDATION_ATTEMPT");
 });
 
 test("runner cannot create scripts to fill missing coverage or retry a denied command", async (t) => {
   const root = await fixture(t);
-  await replaceBoth(root, "runner não cria nem edita scripts ou testes", "runner cria scripts novos");
+  await replaceSelected(root, "runner não cria nem edita scripts ou testes", "runner cria scripts novos");
   expectCategory(check(root), "R009_VALIDATION_ATTEMPT");
   const second = await fixture(t);
-  await replaceBoth(second, "Não tente novamente por outro path, ferramenta, TMPDIR/TMPPREFIX ou modo de permissão",
+  await replaceSelected(second, "Não tente novamente por outro path, ferramenta, TMPDIR/TMPPREFIX ou modo de permissão",
     "Tente outro path após a negação");
   expectCategory(check(second), "R009_VALIDATION_ATTEMPT");
 });
@@ -340,7 +364,8 @@ test("execution prepares coverage while plan review and validation stop on denie
   const quality = await fs.readFile(path.join(repository, "skills/workflows/stnl-slice-quality-manager/SKILL.md"), "utf8");
   assert.match(executor, /Prepare reusable tests in the authorized implementation[^\n]*before delegation/u);
   assert.match(executor, /Include those tests in the final Changed Areas/u);
-  assert.match(plan, /<PLANNER_SKILL_ROOT>\/templates\/slice-plan\.template\.md`, section `Requirements`/u);
+  assert.match(plan, /Check each exact requirement ID and observable condition/u);
+  assert.match(plan, /Verification Recipe in both Plan and Task/u);
   assert.match(coverage, /preparation must belong to this slice's authorized implementation and test paths/u);
   assert.match(coverage, /cannot supply missing evidence for an AC assigned here/u);
   for (const skill of [executor, plan, quality]) {

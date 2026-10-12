@@ -14,7 +14,7 @@ import { publishValidationCandidate } from '../../../skills/workflows/stnl-slice
 import { serializeRunnerExecutionBundleFromResponse, insertExecutionEvidenceInCandidate,
   recoverableRunnerResultDiagnostic, persistMalformedRunnerResultInCandidate, captureRunnerTestedState }
   from '../../../skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs';
-import { inspectExecutionState, validateExecutionCandidate, resolveExecutionWorkspace, deriveNormalHandoff, computeRequirementsAuthority, readDeliveryContinuity, projectOperationalContinuityTask }
+import { inspectExecutionState, validateExecutionCandidate, resolveExecutionWorkspace, deriveNormalHandoff, computeRequirementsAuthority, readDeliveryContinuity, projectOperationalContinuityTask, readExecutionActivation }
   from '../../../skills/workflows/stnl-slice-executor/runtime/execution-state.mjs';
 
 const hash = (bytes) => createHash('sha256').update(bytes).digest('hex');
@@ -260,7 +260,16 @@ export async function finalizeManagedSlice(mode) {
     }
     await checkCopy(prepared.stage);
     if (!same(prepared.inputTree, inputTree) && !(prepared.privateFailure && same(prepared.stageTree, inputTree))) throw new Error('managed preparation input candidate changed');
-    if (!same(prepared.liveBefore, liveTree) && !(prepared.status === 'PREPARED' && same(prepared.liveAfter, liveTree))) throw new Error('managed preparation live source changed');
+    if (!same(prepared.liveBefore, liveTree)) {
+      if (prepared.status !== 'PREPARED' || !sameOperationalImage(prepared.liveAfter, liveTree)
+        || prepared.publication?.status !== 'confirmed') throw new Error('managed preparation live source changed');
+      const { activation } = await readExecutionActivation(context.specPath);
+      const publicationOwner = activation.activeAttempt ?? activation.lastAttempt;
+      if (activation.activationId !== prepared.publication.activationId
+        || ['operationAttemptId', 'originActivationId', 'deliveryId'].some(key => publicationOwner?.[key] !== context.owner[key])) {
+        throw new Error('managed confirmed publication activation/owner changed');
+      }
+    }
     const stageExists = await fs.lstat(prepared.stage.candidateExecutionRoot).then(() => true, error => { if (error.code === 'ENOENT') return false; throw error; });
     if (stageExists && !same(prepared.stageTree, await tree(prepared.stage.candidateExecutionRoot))) throw new Error('managed prepared candidate changed');
     for (const rejected of prepared.rejectedStages ?? []) {
@@ -362,8 +371,16 @@ export async function finalizeManagedSlice(mode) {
     await assertManagedSliceFreshness(environment);
     if (!same(prepared.liveBefore, await tree(official.executionRoot))
       || !same(prepared.inputTree, await tree(binding.candidateExecutionRoot))) throw new Error('managed publication source conflict');
-    if (context.operation === 'VALIDATE_SLICE') await publishValidationCandidate({ specPath: context.specPath, slice: context.slice, candidateExecutionRoot: prepared.stage.candidateExecutionRoot, owner: context.owner, terminal: prepared.state !== "RUNNER_INITIALIZATION_BLOCKED" && prepared.state !== "RUNNER_RESULT_BLOCKED" });
-    else await publishExecutionCopy({ specPath: context.specPath, slice: context.slice, candidateRoot: prepared.stage.candidateRoot, owner: context.owner, terminal: prepared.state !== "RUNNER_INITIALIZATION_BLOCKED" && prepared.state !== "RUNNER_RESULT_BLOCKED" });
+    const publication = context.operation === 'VALIDATE_SLICE'
+      ? await publishValidationCandidate({ specPath: context.specPath, slice: context.slice, candidateExecutionRoot: prepared.stage.candidateExecutionRoot, owner: context.owner, terminal: prepared.state !== "RUNNER_INITIALIZATION_BLOCKED" && prepared.state !== "RUNNER_RESULT_BLOCKED" })
+      : await publishExecutionCopy({ specPath: context.specPath, slice: context.slice, candidateRoot: prepared.stage.candidateRoot, owner: context.owner, terminal: prepared.state !== "RUNNER_INITIALIZATION_BLOCKED" && prepared.state !== "RUNNER_RESULT_BLOCKED" });
+    // A confirmed image and a pending cleanup are independent facts. Preserve
+    // the producer result before outer readback/finalization, also on replay.
+    prepared = { ...prepared, publication: { status: publication.publication, activationId: publication.expectedActivationId,
+      cleanup: publication.cleanup, allocation: publication.allocation,
+      diagnostics: [...(publication.cleanupDiagnostics ?? []),
+        ...(publication.candidateCleanupDiagnostic ? [publication.candidateCleanupDiagnostic] : [])] } };
+    await write(preparedFile, prepared);
   }
   const readback = await inspectExecutionState(context.specPath);
   if ((!privateFailure && readback.state !== prepared.state) || !sameOperationalImage(prepared.liveAfter, await tree(official.executionRoot))) throw new Error('managed publication/readback conflict');
@@ -380,7 +397,7 @@ export async function finalizeManagedSlice(mode) {
     taskSha256: hash(await regular(privateFailure ? binding.candidateTaskArtifact : liveTask)),
     indexSha256: hash(await regular(path.join(official.executionRoot, 'tasks.md'))),
     mandatoryRecovery: readback.mandatoryRecovery ?? null, handoff: deriveNormalHandoff(readback),
-    published: !privateFailure };
+    published: !privateFailure, publication: prepared.publication ?? null };
   await write(finalizedFile, result);
   return result;
   } finally { await lock.close(); await fs.unlink(lockFile); }

@@ -46,3 +46,5 @@ Limited unequivocal corrections in an isolated complete candidate; semantic revi
 ## Blocks
 
 Missing product decision, stale authority/base, materially different strategy/proof, incompatible legacy, invalid history or active/uncertain attempt.
+
+A command reporting a sandbox or permission denial blocks review even if its exit is zero. Preserve the diagnostic and do not retry via another path, tool, temp setting or permission mode.

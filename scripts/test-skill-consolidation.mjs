@@ -192,6 +192,24 @@ test("operational sources contain no obsolete taxonomy or flat skill paths", asy
       }
       continue;
     }
-    assert.equal(/skills\/stnl-[A-Za-z0-9-]+(?:\/|$)/u.test(source), false, `${path.relative(ROOT, file)} contains a flat skill path`);
+    // Installed platform skill roots are flat by contract; repository source is not.
+    assert.equal(/(?<!\.(?:agents|codex|claude)\/)skills\/stnl-[A-Za-z0-9-]+(?:\/|$)/u.test(source), false, `${path.relative(ROOT, file)} contains a flat source skill path`);
   }
+});
+
+test('copied consumers require a complete installed invocation guide and neutral generic body', async t => {
+  assert.equal(runRepositoryContract(ROOT).status, 0, runRepositoryContract(ROOT).stderr);
+  for (const [name, mutate, category] of [
+    ['missing guide', async root => fs.rm(path.join(root, 'skills/workflows/stnl-slice-executor/references/runner-invocation.md')), 'C006_DISTRIBUTION'],
+    ['missing independence guarantee', async root => {
+      const file = path.join(root, 'skills/workflows/stnl-slice-executor/references/runner-invocation.md');
+      await fs.writeFile(file, (await fs.readFile(file, 'utf8')).replace('without that contract is not the runner', 'without that contract is permitted'));
+    }, 'C006_DISTRIBUTION'],
+    ['vendor syntax in generic core', async root => fs.appendFile(path.join(root, 'skills/workflows/stnl-slice-executor/SKILL.md'), '\nSelect Codex directly.\n'), 'C004_VENDOR_NEUTRALITY'],
+  ]) await t.test(name, async child => {
+    const root = await contractFixture(child, mutate);
+    const result = runRepositoryContract(root);
+    assert.equal(result.status, 1, result.stdout + result.stderr);
+    assert.ok(result.stderr.includes(`CONTRACT_ERROR[${category}]`), result.stderr);
+  });
 });

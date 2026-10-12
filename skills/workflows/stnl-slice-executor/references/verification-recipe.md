@@ -1,3 +1,15 @@
+# File Purpose Header
+
+```yaml
+purpose: Define the normative verification recipe and its producer-owned observation.
+status: not_applicable
+read_when: Prepare, review, execute or validate a delivery using its explicit verification recipe.
+do_not_read_when: No preparation or verification contract is being interpreted.
+contains: Typed inputs, dependency review, native and managed observations, provenance and durable allocation.
+owner: stnl-slice-executor
+update_policy: Preserve equivalent recipe semantics across distributed consumers.
+```
+
 # Reviewed verification recipe
 
 Each detailed Plan and Task must contain the same `## Verification Recipe` between Expected Tests and the next section. Its single carrier is `- Recipe: <JSON object>`. This carrier is normative: review, projection, snapshot and activation bind it. Expected Tests and obligation proof prose describe intent; filenames, quotes, basenames and filesystem homonyms in prose never select mechanical inputs.

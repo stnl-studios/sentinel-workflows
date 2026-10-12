@@ -138,7 +138,7 @@ test('finalizer: validation rejection preserves input and fresh proposal recover
   assert.deepEqual(calls.filter((call) => call.independent).map((call) => call.operation), ['EXECUTE_SLICE', 'VALIDATE_SLICE']);
   const caseRoot = path.resolve(path.dirname(proof.receipt.receiptFile), '..');
   const state = JSON.parse(await fs.readFile(path.join(caseRoot, 'case-state.json')));
-  assert.equal(state.mainTurns, 7); assert.equal(state.runnerTurns, 2);
+  assert.equal(state.mainTurns, 5); assert.equal(state.runnerTurns, 2);
   await t.test('failed strict validation leaves the semantic input candidate byte-identical', () => {
     assert.equal(proof.afterFirst.candidateTaskSha256, proof.before.candidateTaskSha256);
     assert.equal(proof.afterFirst.candidateIndexSha256, proof.before.candidateIndexSha256);
@@ -205,6 +205,8 @@ for (const boundary of ['prepare-index', 'publication-install', 'readback', 'fin
     const proof = JSON.parse(await fs.readFile(path.join(root, 'observed.json')));
     const injection = JSON.parse(await fs.readFile(path.join(root, 'injection-fired.json')));
     assert.equal(injection.code, 'EIO'); assert.equal(injection.testOnly, true);
+    assert.equal(injection.operationAttemptId, proof.checkpointAfterFirst.association.operationAttemptId);
+    assert.ok(injection.phase, 'real phase must be observed before injection');
     assert.equal(proof.receipt.semanticResponseStatus, 'PASS');
     assert.equal(proof.first.exit, 1); assert.match(proof.first.diagnostic, /TEST-ONLY owned filesystem fault/u);
     assert.equal(proof.finalizationExists, true);
@@ -250,8 +252,25 @@ for (const [operation, boundary] of [['execute', 'publication'], ['apply', 'publ
     const proof = JSON.parse(await fs.readFile(path.join(root, 'observed.json')));
     const injection = JSON.parse(await fs.readFile(path.join(root, 'injection-fired.json')));
     assert.equal(injection.code, 'EIO'); assert.equal(injection.testOnly, true);
+    assert.equal(injection.operationAttemptId, proof.checkpointAfterFirst.association.operationAttemptId);
     assert.equal(proof.receipt.semanticResponseStatus, 'TESTS_PASS');
-    assert.equal(proof.first.exit, 1); assert.match(proof.first.diagnostic, /TEST-ONLY owned filesystem fault/u);
+    if (boundary === 'cleanup') {
+      assert.equal(proof.first.exit, 0, proof.first.diagnostic);
+      const finalized = JSON.parse(proof.first.output);
+      assert.equal(finalized.publication.status, 'confirmed');
+      assert.equal(finalized.publication.cleanup, 'pending');
+      assert.equal(finalized.publication.allocation, injection.allocation);
+      assert.match(finalized.publication.diagnostics.join('\n'), /TEST-ONLY owned filesystem fault/u);
+      assert.equal(proof.cleanupRecovery.publication, 'confirmed');
+      assert.equal(proof.cleanupRecovery.cleanup, 'complete');
+      assert.equal(injection.phase, 'confirmed/cleanup-persistence');
+      assert.deepEqual(proof.afterFirst.liveTreeSha256, proof.afterSecond.liveTreeSha256,
+        'cleanup and duplicate finalization cannot republish or change the confirmed image');
+    } else {
+      assert.equal(proof.first.exit, 1); assert.match(proof.first.diagnostic, /TEST-ONLY owned filesystem fault/u);
+      assert.equal(injection.phase, 'after-backup/before-install');
+      assert.ok(injection.allocation && injection.stage && injection.backup);
+    }
     assert.equal(proof.finalizationExists, true);
     assert.equal(proof.duplicate.exit, 0, proof.duplicate.diagnostic);
     for (const phase of [proof.afterFirst, proof.afterSummary]) {
@@ -291,6 +310,10 @@ for (const boundary of ['owner', 'binding']) {
       { cwd: fixture.root, env: fixture.env, encoding: 'utf8', timeout: 75_000, maxBuffer: 4 * 1024 * 1024 });
     assert.equal(result.status, 0, result.stdout + result.stderr);
     const proof = JSON.parse(await fs.readFile(path.join(fixture.root, '.offline-allocation-failure.json')));
+    const fired = JSON.parse(await fs.readFile(path.join(fixture.root, '.offline-allocation-injection-fired.json')));
+    assert.equal(fired.phase, boundary === 'owner' ? 'owner-write' : 'binding-install');
+    assert.equal(fired.testOnly, true); assert.equal(fired.code, 'EIO');
+    assert.equal(fired.operationAttemptId, JSON.parse(proof.ownerAfter).operationAttemptId);
     assert.equal(proof.first.exit, 1); assert.match(proof.first.diagnostic, /TEST-ONLY allocation fault/u);
     assert.equal(proof.second.exit, 0, proof.second.diagnostic);
     assert.equal(proof.liveUnchanged, true);

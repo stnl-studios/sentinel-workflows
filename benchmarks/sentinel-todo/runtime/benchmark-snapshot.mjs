@@ -3,7 +3,6 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { assertOfflineSdk } from '../../../agents/codex/runtime/offline-provider-context.mjs';
 
 const REPOSITORY_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const RUNS_ROOT = path.join(REPOSITORY_ROOT, 'benchmark-temp');
@@ -112,6 +111,7 @@ export async function copySnapshotDependencies(snapshot, { executionMode, depend
     throw new Error('external dependency source is restricted to OFFLINE_TEST_ONLY');
   }
   if (executionMode === 'OFFLINE_TEST_ONLY') {
+    const { assertOfflineSdk } = await import('../../../agents/codex/runtime/offline-provider-context.mjs');
     if (dependencySource !== undefined) throw new Error('offline dependencies must use a verified shared SDK descriptor');
     const fixtureRoot = path.resolve(snapshot, '../../..');
     await assertOfflineSdk(offlineSdk, fixtureRoot);
@@ -169,7 +169,10 @@ export async function assertSnapshotIntegrity(runRoot, { checkSource = true } = 
   const run = await assertOwnedRun(runRoot);
   const snapshot = path.join(run, 'snapshot');
   const metadata = JSON.parse(await fs.readFile(path.join(run, 'snapshot.json'), 'utf8'));
-  if (metadata.executionMode === 'OFFLINE_TEST_ONLY') await assertOfflineSdk(metadata.externalSdk, path.resolve(run, '../..'));
+  if (metadata.executionMode === 'OFFLINE_TEST_ONLY') {
+    const { assertOfflineSdk } = await import('../../../agents/codex/runtime/offline-provider-context.mjs');
+    await assertOfflineSdk(metadata.externalSdk, path.resolve(run, '../..'));
+  }
   else if (metadata.externalSdk !== undefined) throw new Error('external SDK is restricted to OFFLINE_TEST_ONLY');
   const snapshotFiles = await listFiles(snapshot, '', { dependencies: true });
   const actual = await hashFiles(snapshot, snapshotFiles);

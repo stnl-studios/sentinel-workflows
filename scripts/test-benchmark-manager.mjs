@@ -11,7 +11,6 @@ import { admitOperation, assertManagedSliceLauncher, budgetSnapshot, decideOutco
 import * as manager from '../benchmarks/sentinel-todo/runtime/benchmark-manager.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const RUNS = path.join(ROOT, 'benchmark-temp');
 const MANAGER = path.join(ROOT, 'benchmarks/sentinel-todo/runtime/benchmark-manager.mjs');
 const RECOVERY_BUDGETS = JSON.parse(await fs.readFile(path.join(ROOT,
   'benchmarks/sentinel-todo/benchmark.json'), 'utf8')).cases.find((item) => item.id === 'A').budgets;
@@ -137,13 +136,30 @@ test('managed launcher disagreement stops before SDK and runner dispatch for eve
   }
 });
 
-function invoke(...args) {
-  return spawnSync(process.execPath, [MANAGER, ...args], { cwd: ROOT, encoding: 'utf8' });
+const managerFixtures = new WeakMap();
+async function isolatedManagerFixture(t) {
+  if (managerFixtures.has(t)) return managerFixtures.get(t);
+  const root = await fs.mkdtemp(path.join(process.env.TMPDIR ?? '/tmp', 'sentinel-manager-fixture-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const runtime = path.join(root, 'benchmarks/sentinel-todo/runtime');
+  await fs.mkdir(runtime, { recursive: true });
+  for (const name of ['benchmark-manager.mjs', 'benchmark-snapshot.mjs', 'benchmark-ui.mjs',
+    'benchmark.mjs', 'benchmark-environment.mjs', 'product-acceptance.mjs', 'validation-reassessment.mjs', 'capacity-retry.mjs']) {
+    await fs.copyFile(path.join(ROOT, 'benchmarks/sentinel-todo/runtime', name), path.join(runtime, name));
+  }
+  for (const name of ['seed', 'schemas', 'cases']) await fs.cp(path.join(ROOT, 'benchmarks/sentinel-todo', name),
+    path.join(root, 'benchmarks/sentinel-todo', name), { recursive: true });
+  await fs.copyFile(path.join(ROOT, 'benchmarks/sentinel-todo/benchmark.json'), path.join(root, 'benchmarks/sentinel-todo/benchmark.json'));
+  const fixture = { root, runtime, runs: path.join(root, 'benchmark-temp'), invoke: (...args) =>
+    spawnSync(process.execPath, [path.join(runtime, 'benchmark-manager.mjs'), ...args], { cwd: root, encoding: 'utf8' }) };
+  managerFixtures.set(t, fixture);
+  return fixture;
 }
 
 async function ownedRun(t) {
+  const fixture = await isolatedManagerFixture(t);
   const id = `run-test-${randomUUID()}`;
-  const root = path.join(RUNS, id);
+  const root = path.join(fixture.runs, id);
   await fs.mkdir(root, { recursive: true });
   t.after(async () => { await fs.rm(root, { recursive: true, force: true }); });
   await fs.writeFile(path.join(root, '.sentinel-benchmark-owned'), 'sentinel-todo-run-v2\n');
@@ -151,7 +167,7 @@ async function ownedRun(t) {
   await fs.writeFile(path.join(root, 'run.json'), JSON.stringify({ status: 'PASS', mode: 'case', snapshot: {
     snapshotSha256: 'snapshot', sourceFunctionalSha256: 'source',
   } }));
-  return { id, root };
+  return { id, root, invoke: fixture.invoke };
 }
 
 test('INIT ready advances directly and COMPLETE closes without terminal readiness', () => {
@@ -269,7 +285,7 @@ test('READINESS output schema gives every field a provider-valid type', async ()
 });
 
 test('status and inspect are read only and clean removes only the selected owned run', async (t) => {
-  const { id, root } = await ownedRun(t);
+  const { id, root, invoke } = await ownedRun(t);
   const other = await ownedRun(t);
   const caseRoot = path.join(root, 'case-a');
   await fs.mkdir(caseRoot);
@@ -290,7 +306,7 @@ test('status and inspect are read only and clean removes only the selected owned
 });
 
 test('clean refuses a symlink in an owned run and leaves evidence intact', async (t) => {
-  const { id, root } = await ownedRun(t);
+  const { id, root, invoke } = await ownedRun(t);
   await fs.symlink(path.join(ROOT, 'README.md'), path.join(root, 'escape'));
   const cleaned = invoke('clean', '--run', id);
   assert.equal(cleaned.status, 1);
@@ -299,7 +315,7 @@ test('clean refuses a symlink in an owned run and leaves evidence intact', async
 });
 
 test('clean accepts recorded zero-turn failure before private home creation', async (t) => {
-  const { id, root } = await ownedRun(t);
+  const { id, root, invoke } = await ownedRun(t);
   const dir = path.join(root, 'case-a');
   await fs.mkdir(dir);
   await fs.writeFile(path.join(dir, 'case-state.json'), JSON.stringify({ caseId: 'A', status: 'BLOCKED',
@@ -312,12 +328,14 @@ test('clean accepts recorded zero-turn failure before private home creation', as
 
 test('startup persists an uncreated home only for a recorded allocation failure', async (t) => {
   const { id, root } = await ownedRun(t);
+  const fixture = await isolatedManagerFixture(t);
+  const isolatedManager = await import(pathToFileURL(path.join(fixture.runtime, 'benchmark-manager.mjs')).href);
   const configuration = JSON.parse(await fs.readFile(path.join(ROOT, 'benchmarks/sentinel-todo/benchmark.json'), 'utf8'));
   const head = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: ROOT, encoding: 'utf8' }).stdout.trim();
   const error = Object.assign(new Error('fixture allocation failure'), { code: 'EPERM', privateHomeNotCreated: true });
   const product = { ZERO_USAGE: {}, createUsageNormalizer: () => ({ observe: () => ({}) }),
     prepareIsolatedHome: async () => { throw error; } };
-  const result = await manager.runCase({ runRoot: root, caseId: 'A', configuration, snapshotMetadata: { baseSha: head },
+  const result = await isolatedManager.runCase({ runRoot: root, caseId: 'A', configuration, snapshotMetadata: { baseSha: head },
     maxOperations: null, mode: 'case', product, signal: new AbortController().signal });
   assert.equal(result.status, 'BLOCKED');
   const state = JSON.parse(await fs.readFile(path.join(root, 'case-a/case-state.json'), 'utf8'));
@@ -371,15 +389,7 @@ test('fresh per-run budget starts at zero and safely admits concurrent B/C turns
 });
 
 test('manager status creates an absent benchmark-temp in an isolated checkout fixture', async (t) => {
-  const fixture = await fs.mkdtemp(path.join(process.env.TMPDIR ?? '/tmp', 'sentinel-manager-fixture-'));
-  t.after(async () => fs.rm(fixture, { recursive: true, force: true }));
-  const runtime = path.join(fixture, 'benchmarks/sentinel-todo/runtime');
-  await fs.mkdir(runtime, { recursive: true });
-  for (const name of ['benchmark-manager.mjs', 'benchmark-snapshot.mjs', 'benchmark-ui.mjs',
-    'benchmark.mjs', 'benchmark-environment.mjs', 'product-acceptance.mjs', 'validation-reassessment.mjs', 'capacity-retry.mjs']) {
-    await fs.copyFile(path.join(ROOT, 'benchmarks/sentinel-todo/runtime', name), path.join(runtime, name));
-  }
-  const isolatedRuns = path.join(fixture, 'benchmark-temp');
+  const { runs: isolatedRuns, runtime } = await isolatedManagerFixture(t);
   await assert.rejects(fs.lstat(isolatedRuns), { code: 'ENOENT' });
   const manager = await import(pathToFileURL(path.join(runtime, 'benchmark-manager.mjs')).href);
   assert.equal(await manager.main(['status', '--json']), 0);
