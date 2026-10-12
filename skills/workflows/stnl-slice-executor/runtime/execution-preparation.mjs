@@ -59,7 +59,11 @@ export function parsePreparationArtifact(text, artifact, {historical = false} = 
     if (Object.hasOwn(sections, name)) reject(`${artifact} duplicates ${name}`);
     const value = normalized(remainder.slice(matches[index].index + matches[index][0].length, matches[index + 1]?.index));
     if (!value) reject(`${artifact} ${name} is empty`);
-    sections[name] = RECORDS.includes(name) ? value : populated(value, `${artifact} ${name}`);
+    // The JSON recipe has typed validation here. A raw placeholder scan can
+    // misread shell redirections across quoted argument strings as <...>.
+    sections[name] = RECORDS.includes(name) || name === 'Verification Recipe'
+      ? value : populated(value, `${artifact} ${name}`);
+    if (name === 'Verification Recipe') parseVerificationRecipe(value);
     if (/^#{1,2} /mu.test(value)) reject(`${artifact} has a concealed heading`);
   }
   const kind = artifact === 'plan.md' ? 'plan' : artifact.startsWith('plans/') ? 'detail' : 'task';
@@ -110,18 +114,19 @@ export function parseVerificationRecipe(body) {
     if (!['product', 'input'].includes(ref.kind)) reject('verification reference kind must be product/input');
     preparationPathClaims('- `' + ref.path + '`', 'verification file reference');
   };
-  const argument = arg => {
+  const argument = (arg, executable = false) => {
     if (Object.hasOwn(arg ?? {}, 'literal')) {
       keys(arg, ['literal'], 'verification literal');
-      if (typeof arg.literal !== 'string' || /[\r\n\0]/u.test(arg.literal)) reject('invalid verification literal');
+      if (typeof arg.literal !== 'string' || /\0/u.test(arg.literal)
+        || (executable && /[\r\n]/u.test(arg.literal))) reject('invalid verification literal');
     } else { keys(arg, ['file'], 'verification argument'); reference(arg.file); }
   };
   for (const check of recipe.checks) {
     keys(check, ['id', 'executable', 'args', 'inputs'], 'verification check');
     if (!/^verification-[0-9]{2,}$/u.test(check.id) || ids.has(check.id)) reject('verification check identity differs');
-    ids.add(check.id); argument(check.executable);
+    ids.add(check.id); argument(check.executable, true);
     if (check.executable.literal === '' || !Array.isArray(check.args) || !Array.isArray(check.inputs)) reject('invalid verification command');
-    check.args.forEach(argument); check.inputs.forEach(reference);
+    check.args.forEach(arg => argument(arg)); check.inputs.forEach(reference);
   }
   return recipe;
 }
