@@ -9,6 +9,7 @@ import { startOfficialRunnerBroker } from '../../agents/codex/runtime/runner-bro
 import { runManagedRunnerBridge } from '../../agents/codex/runtime/managed-runner-bridge.mjs';
 import { invokeIndependentRunner } from '../../agents/codex/runtime/validation-runner.mjs';
 import { finalizeManagedSlice } from '../../agents/codex/runtime/managed-slice-finalize.mjs';
+import { prepareManagedFindingsRequest } from '../../agents/codex/runtime/managed-findings-cycle.mjs';
 
 const snapshot = path.resolve(import.meta.dirname, '../..');
 // The provider's semantic response and SDK transcript are explicit offline
@@ -34,10 +35,14 @@ export async function withManagedExample(f, operation, response, action, { sdkCo
   try {
     Object.assign(process.env, environment);
     broker = await startOfficialRunnerBroker({ workspace: f.root, tmpdir, operation, sequence: 1, slice: 'slice-01', officialPreflight, pollIntervalMs: 1,
+      prepareSealedMetadata: async request => {
+        const findingsOwnership = await prepareManagedFindingsRequest({ request, environment });
+        return findingsOwnership === null ? null : { findingsOwnership };
+      },
       invoke: request => invokeIndependentRunner({ ...request, snapshot, env: environment, runTurn: async args => {
         calls += 1;
         const threadId = 'offline-example-' + randomUUID();
-        const final = typeof response === 'function' ? response(args) : response;
+        const final = typeof response === 'function' ? await response(args) : response;
         const events = [{ type: 'thread.started', thread_id: threadId }, { type: 'turn.started' },
           ...(sdkCommand === null ? [] : [{ type: 'item.started', item: { id: 'item_0', type: 'command_execution', command: sdkCommand } }, { type: 'item.completed', item: { id: 'item_0', type: 'command_execution', command: sdkCommand, status: 'completed', exit_code: 0 } }]),
           { type: 'item.completed', item: { id: 'final', type: 'agent_message', text: typeof final === 'string' ? final : JSON.stringify(final) } }, { type: 'turn.completed' }];
@@ -49,7 +54,7 @@ export async function withManagedExample(f, operation, response, action, { sdkCo
     assert.equal(prepared.status, 'PREPARED');
     const binding = JSON.parse(await fs.readFile(path.join(tmpdir, 'stnl-runner-broker/001.candidate.json')));
     f.test?.after(() => fs.rm(binding.candidateRoot, { recursive: true, force: true }));
-    return await action({ context, environment, tmpdir, copy: binding,
+    return await action({ context, environment, tmpdir, broker, copy: binding,
       dispatch: payload => runManagedRunnerBridge({ environment, cwd: f.root, payload: typeof payload === 'string' ? payload : JSON.stringify(payload) }),
       finalize: () => finalizeManagedSlice('--finalize'), calls: () => calls });
   } finally {
