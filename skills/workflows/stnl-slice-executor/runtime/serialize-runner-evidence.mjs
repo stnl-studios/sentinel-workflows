@@ -975,9 +975,12 @@ async function canonicalizeScopeClaim({ workspaceRoot, taskArtifact, approvedTar
   return claim;
 }
 
+async function privateTaskAuthority(taskArtifact) {
+  return assertOwnedOperationalCandidate({ candidateExecutionRoot: path.dirname(path.dirname(taskArtifact)),
+    slice: path.basename(taskArtifact, '.md'), resolveWorkspace: resolveExecutionWorkspace, readActivated: readExecutionActivation });
+}
 async function assertPrivateTask(taskArtifact) {
-  return (await assertOwnedOperationalCandidate({ candidateExecutionRoot: path.dirname(path.dirname(taskArtifact)),
-    slice: path.basename(taskArtifact, '.md'), resolveWorkspace: resolveExecutionWorkspace, readActivated: readExecutionActivation })).marker;
+  return (await privateTaskAuthority(taskArtifact)).marker;
 }
 
 async function canonicalizeScopeSection({ workspaceRoot, taskArtifact, taskText, approvedTargets, heading, allowPending = false }) {
@@ -1394,12 +1397,10 @@ async function capturedExecutionEntries({ receiptFile, operation, workspace, tas
   }
   const workspaceRoot = await canonicalWorkspacePath(workspace);
   const candidateTask = await regularFile(taskArtifact, "taskArtifact");
-  const candidateRoot = path.dirname(path.dirname(path.dirname(candidateTask)));
-  const markerFile = `${candidateRoot}.copy.json`;
-  const marker = await fs.readFile(markerFile, "utf8").then(JSON.parse).catch(() => null);
-  const sourceTaskPath = receipt.transport === "native" ? (await removalCaptureAuthority(taskArtifact)).officialTask
-    : marker === null ? candidateTask : path.join(marker.executionRoot, "tasks", `${slice}.md`);
-  if (marker !== null && marker.slice !== slice) fail("captured Tested state source slice mismatch");
+  // Resolve the official source through the existing owned-copy boundary for
+  // both layouts. Candidate depth and missing-marker fallback cannot select it.
+  const { workspace: official } = await privateTaskAuthority(candidateTask);
+  const sourceTaskPath = path.join(official.executionRoot, "tasks", `${slice}.md`);
   if (receipt.testedState.workspace !== workspaceRoot
     || receipt.testedState.sourceTaskPath !== sourceTaskPath) {
     fail("captured Tested state workspace/source mismatch");
