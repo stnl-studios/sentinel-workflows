@@ -616,7 +616,7 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
             ...request, snapshot: path.join(runRoot, 'snapshot'), workspace, tmpdir, env: turnEnv,
             signal: runnerSignal,
             onBeforeTurn: async () => {
-              if (currentReassessment !== null) await assertReassessmentUnchanged({ product, specPath, decision: currentReassessment });
+              if (currentReassessment !== null) await assertReassessmentUnchanged({ product, specPath, decision: currentReassessment, owner: managedSliceContext.owner });
               const reservation = runnerReservation ?? await reserveExtraRunner({ runRoot, runId: path.basename(runRoot), caseId, operation, limit: turnLimit });
               runnerReservation = null;
               currentRunnerNumber = await startReservedTurn(runRoot, reservation, turnLimit);

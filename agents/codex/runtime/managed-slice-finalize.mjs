@@ -16,6 +16,7 @@ import { serializeRunnerExecutionBundleFromResponse, insertExecutionEvidenceInCa
   from '../../../skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs';
 import { inspectExecutionState, validateExecutionCandidate, resolveExecutionWorkspace, deriveNormalHandoff, computeRequirementsAuthority, readDeliveryContinuity, projectOperationalContinuityTask, readExecutionActivation }
   from '../../../skills/workflows/stnl-slice-executor/runtime/execution-state.mjs';
+import { parsePreparationArtifact } from '../../../skills/workflows/stnl-slice-executor/runtime/execution-preparation.mjs';
 
 const hash = (bytes) => createHash('sha256').update(bytes).digest('hex');
 async function regular(file) {
@@ -300,8 +301,9 @@ export async function finalizeManagedSlice(mode) {
     try {
       let privateFailure = false;
       let prospective = null;
+      let formalPreparation = null;
       if (context.operation === 'VALIDATE_SLICE') {
-        await prepareValidationCandidate({ specPath: context.specPath, slice: context.slice, workspace: context.workspace,
+        formalPreparation = await prepareValidationCandidate({ specPath: context.specPath, slice: context.slice, workspace: context.workspace,
           candidateExecutionRoot: stage.candidateExecutionRoot, semanticResponseFile: receipt.semanticResponseFile, receiptFile: receipt.receiptFile });
       } else {
         try {
@@ -349,6 +351,18 @@ export async function finalizeManagedSlice(mode) {
       // Execution records passed prospective validation before their append.
       // Intermediate failures stay private; publication retries reuse the receipt.
       const validated = privateFailure ? null : prospective ?? await validateExecutionCandidate(context.specPath, stage.candidateExecutionRoot);
+      if (context.operation === 'VALIDATE_SLICE' && validated.state === 'VALIDATION_BLOCKED'
+        && receipt.status === 'RUNNER_RESPONSE_CAPTURED' && receipt.semanticResponseStatus === 'BLOCKED') {
+        // Receipt verification above still has the active owner. Preserve its
+        // exact binding for reassessment after terminal publication ends it.
+        const artifact = parsePreparationArtifact((await regular(stage.candidateTaskArtifact)).toString('utf8'), taskRelative);
+        const record = artifact.sections['Validation Attempts'].split(/(?=^### attempt-)/mu).at(-1).trim();
+        const heading = `### ${formalPreparation.attemptId}\n`;
+        if (formalPreparation.formalStatus !== 'BLOCKED' || !record.startsWith(heading)) throw new Error('managed reassessment attempt disagrees');
+        prepared.reassessmentReceipt = { owner: context.owner, receiptFile: receipt.receiptFile,
+          responseSha256: receipt.semanticResponseSha256, verificationSha256: hash(JSON.stringify(receipt.verification)),
+          attemptId: formalPreparation.attemptId, attemptSha256: hash(record.slice(heading.length).trim()) };
+      }
       prepared = { ...prepared, status: 'PREPARED', privateFailure, state: privateFailure ? 'PRIVATE_TESTS_FAIL' : validated.state,
         stageTree: await tree(stage.candidateExecutionRoot) };
       prepared.liveAfter = privateFailure ? liveTree : await projectedPublicationTree(context,prepared.stage,prepared.stageTree);
@@ -391,6 +405,7 @@ export async function finalizeManagedSlice(mode) {
     || !same(evidenceSha256, Object.fromEntries(await Promise.all(evidenceFiles.map(async (file) => [file, hash(await regular(file))]))))) throw new Error('managed finalization input/evidence conflict');
   const result = { ...owner, sourceState:executionState.state, receiptFile: receipt.receiptFile, state: privateFailure ? 'PRIVATE_TESTS_FAIL' : readback.state,
     evidenceSha256,
+    ...(prepared.reassessmentReceipt === undefined ? {} : { reassessmentReceipt: prepared.reassessmentReceipt }),
     ...(prepared.findingsCycleBinding === undefined ? {} : { findingsCycleBinding: prepared.findingsCycleBinding }),
     liveTree: await tree(official.executionRoot), candidateTree: await tree(binding.candidateExecutionRoot),
     testedState,

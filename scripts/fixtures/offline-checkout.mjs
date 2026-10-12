@@ -96,6 +96,32 @@ export async function finishOfflineFixture(fixture, { remove = true } = {}) {
       const activeFile = path.join(runRoot, entry.name, 'tmp/stnl-runner-broker/active.json');
       const active = await optional(activeFile);
       if (active !== null) {
+        if (fixture.expectedStoppedValidation) {
+          // Explicit negative: retain the owner and diagnostic tree even though
+          // the broker and every recorded fixture process have stopped.
+          const expected = fixture.expectedStoppedValidation;
+          const supervisor = await optional(expected.supervisorFile);
+          if (state.status !== 'BLOCKED' || activeFile !== expected.activeFile
+            || active.operation !== 'VALIDATE_SLICE' || active.sequence !== expected.sequence
+            || active.officialPreflight?.owner?.operationAttemptId !== expected.operationAttemptId
+            || !supervisor || supervisor.pending !== false || !supervisor.closedAt
+            || supervisor.sequence !== expected.sequence || supervisor.capturedReceipts !== (expected.authorityStale ? 1 : 0)
+            || hash(await fs.readFile(expected.supervisorFile)) !== expected.supervisorSha256) {
+            throw new Error('OFFLINE_FIXTURE_RETAINED: rejected validation is not stopped');
+          }
+          const { readExecutionActivation } = await import(path.join(root, 'skills/workflows/stnl-slice-executor/runtime/execution-state.mjs'));
+          const { activation } = await readExecutionActivation(active.officialPreflight.specPath, { requireCurrent: !expected.authorityStale });
+          if (expected.authorityStale) {
+            await assert.rejects(() => readExecutionActivation(active.officialPreflight.specPath), /requirements authority is stale/);
+            if (activation.activeAttempt !== null || activation.lastAttempt?.operationAttemptId !== expected.operationAttemptId) {
+              throw new Error('OFFLINE_FIXTURE_RETAINED: stale validation terminal ownership differs');
+            }
+          } else if (activation.activeAttempt?.operationAttemptId !== expected.operationAttemptId || activation.activeAttempt.runner?.status !== 'pending') {
+            throw new Error('OFFLINE_FIXTURE_RETAINED: rejected validation ownership differs');
+          }
+          retainedBrokers.push(activeFile); remove = false;
+          continue;
+        }
         // A narrowly asserted negative case can retain operation ownership even
         // after every fixture process concluded. Archive and preserve it; never
         // treat a pending marker as permission to remove the owned checkout.

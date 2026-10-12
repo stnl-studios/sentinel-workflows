@@ -702,6 +702,29 @@ fs.open = async (file, flags, ...args) => {
           const receipt = JSON.parse(delegated.stdout.slice('SENTINEL_RUNNER_RECEIPT '.length).trim());
           await fs.appendFile(receipt.semanticResponseFile, '\n');
         }
+        if (context.scenario.startsWith('reassessment-finalized-')) {
+          // Corrupt only this explicit negative's already-produced finalization.
+          // All canonical execution bytes remain available for exact comparison.
+          const finalizationFile = path.join(process.env.TMPDIR, 'stnl-runner-broker', `${String(result.sequence).padStart(3, '0')}.finalization.json`);
+          const before = await fs.readFile(finalizationFile, 'utf8'), changed = JSON.parse(before);
+          const mutant = context.scenario.slice('reassessment-finalized-'.length);
+          if (mutant === 'owner') changed.reassessmentReceipt.owner.operationAttemptId = randomUUID();
+          else if (mutant === 'attempt') changed.reassessmentReceipt.attemptId = 'attempt-99';
+          else if (mutant === 'body') changed.reassessmentReceipt.attemptSha256 = 'f'.repeat(64);
+          else if (mutant === 'verification') changed.reassessmentReceipt.verificationSha256 = 'f'.repeat(64);
+          else if (mutant === 'publication') changed.publication.activationId = randomUUID();
+          else if (mutant === 'missing') delete changed.reassessmentReceipt;
+          else throw new Error('unknown finalized reassessment negative');
+          const after = JSON.stringify(changed) + '\n';
+          if (after === before) throw new Error('reassessment finalization stimulus was not applied');
+          const execution = path.join(specPath, 'execution'), files = [];
+          for (const relative of (await fs.readdir(execution, { recursive: true })).sort()) {
+            const file = path.join(execution, relative);
+            if ((await fs.lstat(file)).isFile()) files.push([relative, createHash('sha256').update(await fs.readFile(file)).digest('hex')]);
+          }
+          await fs.writeFile(path.join(context.root, '.offline-reassessment-negative.json'), JSON.stringify({ mutant, files }));
+          await fs.writeFile(finalizationFile, after);
+        }
         if (context.scenario === 'reassessment-provenance') emit({ type: 'item.completed', item: {
           id: 'item_' + sequence++, type: 'collab_tool_call', tool: 'spawn_agent', receiver_thread_ids: ['TEST-ONLY-unmanaged-context'], status: 'completed' } });
       }

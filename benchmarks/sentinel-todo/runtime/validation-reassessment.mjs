@@ -32,20 +32,32 @@ export async function captureValidationInputs({ product, workspace, taskArtifact
   return { testedState, sourceTestsSha256: hash(JSON.stringify(files)) };
 }
 
-// Called while the original broker context is still active so the existing
-// receipt guard proves identity, exact final bytes, conclusion and authority.
+// The official preparer verified the receipt while its owner was active.
+// After publication, bind that verification to the concluded owner and exact
+// canonical attempt; this proof cannot publish or admit another operation.
 export async function captureReassessmentEvidence({ product, context, environment, directory, sequence, inputs }) {
   const stem = String(sequence).padStart(3, '0');
   try {
     const latest = await read(path.join(directory, stem + '.latest.json'));
     const receipt = latest.receipt;
     if (receipt?.status !== 'RUNNER_RESPONSE_CAPTURED' || receipt.semanticResponseStatus !== 'BLOCKED') return null;
-    await product.assertManagedRunnerReceipt({ operation: OPERATION, slice: context.slice, workspace: context.workspace,
-      receiptFile: receipt.receiptFile, semanticResponseFile: receipt.semanticResponseFile, environment });
     if (!same(receipt, await read(receipt.receiptFile))) throw new Error('settled receipt changed');
     const finalizationFile = path.join(directory, stem + '.finalization.json');
     const finalized = await read(finalizationFile);
-    const commands = await product.resolveRunnerCommandEvents({ receiptFile: receipt.receiptFile,
+    await product.assertManagedRuntimeIdentity(context, environment);
+    const execution = await product.inspectExecutionState(context.specPath);
+    const { activation } = await product.readExecutionActivation(context.specPath);
+    const verified = finalized.reassessmentReceipt;
+    const attempt = execution.tasks?.get(context.slice)?.attempts.at(-1);
+    if (!verified || !same(verified.owner, context.owner)
+      || verified.receiptFile !== receipt.receiptFile || verified.responseSha256 !== receipt.semanticResponseSha256
+      || verified.verificationSha256 !== hash(JSON.stringify(receipt.verification))
+      || verified.attemptId !== attempt?.id || attempt.status !== 'BLOCKED' || verified.attemptSha256 !== hash(attempt.body)
+      || execution.state !== 'VALIDATION_BLOCKED' || activation.activeAttempt !== null
+      || ['operationAttemptId', 'ownershipToken', 'deliveryId', 'slice', 'operation', 'originActivationId', 'preparationRevision', 'normativeSha256'].some(key => activation.lastAttempt?.[key] !== context.owner[key])
+      || finalized.publication?.status !== 'confirmed' || finalized.publication.activationId !== activation.activationId
+      || activation.lastAttempt.terminalActivationId !== activation.activationId) throw new Error('reassessment concluded receipt/owner/attempt differs');
+    const commands = await product.resolveCapturedRunnerCommands({ receiptFile: receipt.receiptFile,
       semanticResponseFile: receipt.semanticResponseFile, operation: OPERATION });
     const events = (await regular(receipt.eventsPath)).toString('utf8').split('\n').filter(Boolean).map(JSON.parse);
     const commandEvents = events.filter(event => event.type === 'item.completed' && event.item?.type === 'command_execution');
@@ -75,7 +87,7 @@ export async function captureReassessmentEvidence({ product, context, environmen
     evidenceSha256[taskArtifact] = finalized.taskSha256;
     evidenceSha256[index] = finalized.indexSha256;
     return { receiptFile: receipt.receiptFile, responseSha256: receipt.semanticResponseSha256,
-      sequence, authority: context.authority, inputs, commands, evidenceSha256 };
+      sequence, authority: context.authority, inputs, commands, evidenceSha256, verifiedAttempt: verified };
   } catch (error) {
     // Ineligible/uncertain evidence never authorizes another provider call.
     return { rejected: true, diagnostic: `${error.code ?? error.name}: ${error.message}` };
@@ -98,13 +110,13 @@ export function eligibleValidationReassessment({ operation, slice, outcome, exec
     && latest.commands.every(command => command.exit === 0) && same(latest.commands.slice(1), proof.commands);
 }
 
-export async function assertReassessmentUnchanged({ product, specPath, decision, execution }) {
+export async function assertReassessmentUnchanged({ product, specPath, decision, execution, owner = null }) {
   if (decision.claimFile) {
     const { claimFile, ...claimed } = decision;
     if (!same(await read(claimFile), claimed)) throw new Error('reassessment decision changed');
   }
   const proof = decision.proof;
-  const current = execution ?? await product.preflightExecutionOperation(specPath, OPERATION, BigInt(decision.slice.slice(6)).toString(10));
+  const current = execution ?? await product.preflightExecutionOperation(specPath, OPERATION, BigInt(decision.slice.slice(6)).toString(10), { owner });
   if (current.state !== 'VALIDATION_BLOCKED' || `sha256:${current.currentFingerprint}` !== proof.authority
     || !current.validationBlocked?.includes(decision.slice)
     || !current.legalOperations?.some(target => target.operation === OPERATION && target.slice === decision.slice)

@@ -5,6 +5,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { captureManagedTree } from '../../agents/codex/runtime/managed-slice-finalize.mjs';
+import { readExecutionActivation } from '../../skills/workflows/stnl-slice-executor/runtime/execution-state.mjs';
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const read = async file => JSON.parse(await fs.readFile(file));
 const context = JSON.parse(process.env.STNL_MANAGED_CONTEXT);
@@ -35,7 +36,19 @@ assert.equal(prepared.privateFailure, boundary === 'private');
 const afterFault = await images();
 assert.deepEqual(afterFault.evidence, before.evidence);
 if (boundary === 'private') { assert.deepEqual(afterFault.live, before.live); assert.deepEqual(afterFault.candidate, prepared.stageTree); }
-else { assert.deepEqual(afterFault.live, prepared.liveAfter); assert.deepEqual(afterFault.candidate, before.candidate); }
+else {
+  // Publication seals a new terminal activation after installing the projected
+  // artifacts. Validate that official image, then require exact replay bytes.
+  assert.deepEqual(afterFault.live.filter(entry => entry.path !== 'activation.json'),
+    prepared.liveAfter.filter(entry => entry.path !== 'activation.json'));
+  const { activation } = await readExecutionActivation(context.specPath);
+  assert.equal(prepared.publication.status, 'confirmed');
+  assert.equal(activation.activationId, prepared.publication.activationId);
+  assert.equal(activation.activeAttempt, null);
+  assert.equal(activation.lastAttempt.operationAttemptId, context.owner.operationAttemptId);
+  assert.equal(activation.lastAttempt.terminalActivationId, activation.activationId);
+  assert.deepEqual(afterFault.candidate, before.candidate);
+}
 const probes = [];
 async function divergent(name, file, modify = bytes => Buffer.concat([bytes, Buffer.from('\n<!-- TEST-ONLY foreign edit -->\n')])) {
   const original = await fs.readFile(file), altered = modify(original);
