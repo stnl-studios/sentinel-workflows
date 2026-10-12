@@ -102,7 +102,8 @@ export async function implementExample(f, { slice = 'slice-01', publish = true, 
   return { admission, copy, start, response, captured, bundle };
 }
 
-export async function retryExample(f, first, content, { status = 'TESTS_PASS', publish = true } = {}) {
+export async function retryExample(f, first, content, { status = 'TESTS_PASS', publish = true, insert = true } = {}) {
+  assert.ok(insert || !publish, 'uninserted evidence cannot be published');
   const round = Number(first.response.automaticCheckRound[0]) + 1;
   assert.ok(round <= 3);
   assert.ok(!publish || status !== 'TESTS_FAIL' || round === 3);
@@ -128,6 +129,7 @@ export async function retryExample(f, first, content, { status = 'TESTS_PASS', p
   delete response.filelessReason;
   const captured = await capture(start, response, [claim(f, slice)]);
   const bundle = await serializeRunnerExecutionBundleFromResponse({ operation: 'EXECUTE_SLICE', response: JSON.stringify(response), workspace: f.root, taskArtifact: taskFile, ...captured });
+  if (!insert) return { admission: first.admission, copy: first.copy, start, response, captured, bundle };
   await insertExecutionEvidenceInCandidate({ taskArtifact: taskFile, operation: 'EXECUTE_SLICE', bundle,
     validateProspectiveTask: text => validateExecutionCandidate(f.requirements, first.copy.candidateExecutionRoot, [text], status === 'TESTS_FAIL' && round < 3 ? { privateAutomaticCheck: { operation: 'EXECUTE_SLICE', slice, round } } : {}) });
   assert.ok((await fs.readFile(taskFile, 'utf8')).includes(first.bundle), 'the real failed round stays byte-identical');
@@ -200,7 +202,8 @@ export async function correctExample(f, { slice = 'slice-01', content, filelessR
   return { admission, copy, start, response, captured, bundle };
 }
 
-export async function retryFindingsExample(f, first, { content, fail = false, publish = true } = {}) {
+export async function retryFindingsExample(f, first, { content, fail = false, publish = true, insert = true } = {}) {
+  assert.ok(insert || !publish, 'uninserted evidence cannot be published');
   const slice = first.admission.owner.slice;
   const round = Number(first.response.automaticCheckRound[0]) + 1;
   assert.equal(first.response.status, 'TESTS_FAIL'); assert.ok(round <= 3);
@@ -217,6 +220,7 @@ export async function retryFindingsExample(f, first, { content, fail = false, pu
     commands: start.verification.checks.map(check => ({ command: verificationCommand(check), exit: fail ? 1 : 0 })) };
   const captured = await capture(start, response, fileless ? [] : [claim(f, slice)]);
   const bundle = await serializeRunnerExecutionBundleFromResponse({ operation: 'APPLY_FINDINGS', response: JSON.stringify(response), workspace: f.root, taskArtifact: first.copy.candidateTaskArtifact, ...captured });
+  if (!insert) return { admission: first.admission, copy: first.copy, start, response, captured, bundle };
   await insertExecutionEvidenceInCandidate({ taskArtifact: first.copy.candidateTaskArtifact, operation: 'APPLY_FINDINGS', bundle,
     validateProspectiveTask: text => validateExecutionCandidate(f.requirements, first.copy.candidateExecutionRoot, [text], fail && round < 3 ? { privateAutomaticCheck: { operation: 'APPLY_FINDINGS', slice, round } } : {}) });
   assert.ok((await fs.readFile(first.copy.candidateTaskArtifact, 'utf8')).includes(first.bundle));

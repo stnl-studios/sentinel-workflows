@@ -9,11 +9,12 @@ import { preparePreparationCandidate } from '../skills/workflows/stnl-execution-
 import { publishPreparationCandidate } from '../skills/workflows/stnl-execution-planner/runtime/publish-task-candidate.mjs';
 import { computeRequirementsAuthority, resolveExecutionWorkspace, readExecutionActivation, preflightExecutionOperation,
   beginPreparedExecutionOperation } from '../skills/workflows/stnl-execution-planner/runtime/execution-state.mjs';
-import { projectPreparationAuthority, readPreparationArtifacts, parseStrictJson } from '../skills/workflows/stnl-execution-planner/runtime/execution-preparation.mjs';
+import { projectPreparationAuthority, readPreparationArtifacts, parseStrictJson, captureApprovedPreparation } from '../skills/workflows/stnl-execution-planner/runtime/execution-preparation.mjs';
 import { preparePlanCandidate } from '../skills/workflows/stnl-execution-planner/runtime/prepare-plan-candidate.mjs';
 import { serializePlanPathClaims } from '../skills/workflows/stnl-execution-planner/runtime/serialize-plan-paths.mjs';
+import { serializeTaskPathClaims } from '../skills/workflows/stnl-execution-planner/runtime/serialize-task-paths.mjs';
 import { captureExecutionTree } from '../skills/workflows/stnl-execution-planner/runtime/execution-publication.mjs';
-import { validateExecutionCandidate, inspectExecutionState } from '../skills/workflows/stnl-execution-planner/runtime/execution-state.mjs';
+import { validateExecutionCandidate, inspectExecutionState, resolvePhysicalImplementationTarget } from '../skills/workflows/stnl-execution-planner/runtime/execution-state.mjs';
 import { deriveNormalHandoff } from '../skills/workflows/stnl-execution-planner/runtime/execution-state.mjs';
 import { decideOutcome, nextHandoff } from '../benchmarks/sentinel-todo/runtime/benchmark-manager.mjs';
 
@@ -301,6 +302,137 @@ test('joint path candidate rejects wrong physical bases and unsafe targets witho
     assert.deepEqual(await captureExecutionTree(f.candidate), bytes);
     assert.deepEqual(await fs.readFile(path.join(f.specPath, 'feature_spec.md')), requirements);
     assert.equal(await fs.stat(f.workspace.executionRoot).catch(() => null), null);
+  });
+});
+
+test('joint path normalization has named consumer controls for semantic aliases, paired scope and approval', async t => {
+  const prepared = async child => {
+    const f = await fixture({ test: child, form: 'lifecycle-directory' });
+    await normalizePreparation(f, f.candidate);
+    return f;
+  };
+  const bases = f => ({
+    global: path.relative(f.workspace.executionRoot, path.join(f.root, 'src')).split(path.sep).join('/'),
+    detail: path.relative(path.join(f.workspace.executionRoot, 'plans'), path.join(f.root, 'src')).split(path.sep).join('/'),
+  });
+  for (const variant of ['repository-relative', 'escaped closing delimiter', 'global artifact basis']) await t.test(variant, async child => {
+    const f = await prepared(child), basis = bases(f);
+    const consume = () => serializePlanPathClaims({ specPath: f.specPath, candidateExecutionRoot: f.candidate });
+    assert.equal((await consume()).candidateValidation.state, 'PLANNED_DRAFT');
+    const canonical = await readPreparationArtifacts(f.candidate);
+    const raw = variant === 'global artifact basis' ? basis.global : variant === 'escaped closing delimiter' ? 'src\\' : 'src';
+    if (raw !== basis.global) await editPreparation(f.candidate, 'plan.md', text => text.replace('`' + basis.global + '`', '`' + raw + '`'));
+    await editPreparation(f.candidate, 'plans/slice-01.md', text => setPreparationSection(text, 'Authorized Areas', '- directory: `' + basis.global + '`'));
+    const rejected = await captureExecutionTree(f.candidate);
+    await assert.rejects(validateExecutionCandidate(f.specPath, f.candidate), variant === 'escaped closing delimiter'
+      ? { message: 'preparation contract: Authorized Areas requires distinct artifact-relative paths' }
+      : { message: 'preparation contract: slice-01 authorization differs between global and detailed Plan' });
+    assert.deepEqual(await captureExecutionTree(f.candidate), rejected);
+    const result = await consume();
+    assert.equal(result.status, 'PASS'); assert.equal(result.serializedClaims, 1);
+    assert.equal(result.candidateValidation.state, 'PLANNED_DRAFT');
+    assert.equal(result.candidateValidation.currentFingerprint, await computeRequirementsAuthority(f.specPath));
+    const expectedChanged = ['plans/slice-01.md', ...(raw === basis.global ? [] : ['plan.md'])].map(name => path.join(f.candidate, name)).sort();
+    assert.deepEqual([...result.changedPaths].sort(), expectedChanged);
+    assert.deepEqual(await readPreparationArtifacts(f.candidate), canonical, 'normalization restores the exact canonical joint artifacts');
+    assert.equal(await fs.realpath(path.resolve(f.workspace.executionRoot, 'plans', basis.detail)), await fs.realpath(path.join(f.root, 'src')));
+    const before = await captureExecutionTree(f.candidate);
+    assert.deepEqual((await consume()).changedPaths, []);
+    assert.deepEqual(await captureExecutionTree(f.candidate), before);
+    assert.equal(await fs.stat(f.workspace.executionRoot).catch(() => null), null);
+  });
+  for (const variant of ['unnormalized repository target', 'extra detailed target', 'concept in a path carrier', 'unsafe detailed basis']) await t.test(variant, async child => {
+    const f = await prepared(child), basis = bases(f);
+    const consume = variant === 'concept in a path carrier'
+      ? () => validateExecutionCandidate(f.specPath, f.candidate)
+      : variant === 'unsafe detailed basis'
+        ? () => serializeTaskPathClaims({ specPath: f.specPath, candidateExecutionRoot: f.candidate })
+        : () => serializePlanPathClaims({ specPath: f.specPath, candidateExecutionRoot: f.candidate });
+    const positive = await consume();
+    assert.equal(positive.status ?? positive.state, variant === 'concept in a path carrier' ? 'PLANNED_DRAFT' : 'PASS');
+    let diagnostic;
+    if (variant === 'unnormalized repository target') {
+      await editPreparation(f.candidate, 'plan.md', text => text.replace('`' + basis.global + '`', '`src/../src`'));
+      diagnostic = /semantic physical implementation target must be a normalized repository-relative path: src\/\.\.\/src/;
+    } else if (variant === 'extra detailed target') {
+      await editPreparation(f.candidate, 'plans/slice-01.md', text => setPreparationSection(text, 'Authorized Areas', '- directory: `' + basis.detail + '`\n- file: `src/another.mjs`'));
+      diagnostic = /slice-01 plan Authorized Areas contains more path claims than its global slice row/;
+    } else if (variant === 'concept in a path carrier') {
+      await editPreparation(f.candidate, 'plans/slice-01.md', text => setPreparationSection(text, 'Authorized Areas', '- directory: `list`'));
+      diagnostic = /slice-01 authorization differs between global and detailed Plan/;
+    } else {
+      await editPreparation(f.candidate, 'plans/slice-01.md', text => setPreparationSection(text, 'Authorized Areas', '- directory: `../src`'));
+      diagnostic = /field="Authorized Areas".*raw="\.\.\/src".*resolves inside the execution root/;
+    }
+    const before = await captureExecutionTree(f.candidate);
+    await assert.rejects(consume(), diagnostic);
+    assert.deepEqual(await captureExecutionTree(f.candidate), before);
+    assert.equal(await fs.stat(f.workspace.executionRoot).catch(() => null), null);
+  });
+  await t.test('wrong SPEC_PATH retains the whole candidate', async child => {
+    const f = await prepared(child);
+    assert.equal((await serializePlanPathClaims({ specPath: f.specPath, candidateExecutionRoot: f.candidate })).status, 'PASS');
+    const before = await captureExecutionTree(f.candidate);
+    await assert.rejects(serializePlanPathClaims({ specPath: f.workspace.executionRoot, candidateExecutionRoot: f.candidate }), { code: 'ENOENT' });
+    assert.deepEqual(await captureExecutionTree(f.candidate), before);
+  });
+  await t.test('physical path diagnostics identify the wrong basis and the existing repository target', async child => {
+    const f = await prepared(child);
+    const target = path.join(f.root, 'src/known.mjs'); await fs.writeFile(target, 'export const known = true;\n');
+    const artifact = path.join(f.workspace.executionRoot, 'plans/slice-01.md');
+    const consume = raw => resolvePhysicalImplementationTarget(f.specPath, { artifact, field: 'Authorized Areas', raw });
+    const correct = path.relative(path.dirname(artifact), target).split(path.sep).join('/');
+    assert.equal((await consume(correct)).physicalTarget, await fs.realpath(target));
+    const wrongResolved = path.join(f.root, 'specs/src/known.mjs');
+    const wrong = path.relative(path.dirname(artifact), wrongResolved).split(path.sep).join('/');
+    const before = await captureExecutionTree(f.candidate), bytes = await fs.readFile(target);
+    await assert.rejects(consume(wrong), error => {
+      for (const detail of ['field="Authorized Areas"', 'raw=' + JSON.stringify(wrong), 'resolved=' + JSON.stringify(wrongResolved),
+        'existing-project-target=' + JSON.stringify(target), 'possible path-basis error: artifact-relative target is absent while the same project-root target exists']) assert.ok(error.message.includes(detail), detail);
+      return true;
+    });
+    assert.deepEqual(await captureExecutionTree(f.candidate), before);
+    assert.deepEqual(await fs.readFile(target), bytes);
+  });
+  await t.test('Task normalization cannot add scope beyond its Plan or interpret prose as a target', async child => {
+    const f = await prepared(child), basis = bases(f);
+    for (const name of ['plan.md', 'plans/slice-01.md']) await editPreparation(f.candidate, name, text => name === 'plan.md'
+      ? setPreparationSection(text, 'Global Risks and Integration', '- The list command is descriptive prose, not a path selection.')
+      : setPreparationSection(text, 'Risks and Strategy', '- The list command is descriptive prose; preserve the prepared assertion.'));
+    const canonical = await readPreparationArtifacts(f.candidate);
+    const consume = () => serializeTaskPathClaims({ specPath: f.specPath, candidateExecutionRoot: f.candidate });
+    assert.equal((await consume()).status, 'PASS');
+    assert.equal((await validateExecutionCandidate(f.specPath, f.candidate)).state, 'PLANNED_DRAFT');
+    for (const area of ['- directory: `' + basis.global + '`', '- directory: `' + basis.detail + '`\n- file: `' + basis.detail + '/another.mjs`']) {
+      await editPreparation(f.candidate, 'tasks/slice-01.md', text => setPreparationSection(text, 'Authorized Areas', area));
+      const rejected = await captureExecutionTree(f.candidate);
+      await assert.rejects(validateExecutionCandidate(f.specPath, f.candidate), { message: 'preparation contract: slice-01 Authorized Areas differs between Plan and Task' });
+      assert.deepEqual(await captureExecutionTree(f.candidate), rejected);
+      const normalized = await consume();
+      assert.equal(normalized.status, 'PASS'); assert.equal(normalized.serializedClaims, 2);
+      assert.deepEqual(normalized.changedPaths, [path.join(f.candidate, 'tasks/slice-01.md')]);
+      assert.deepEqual(await readPreparationArtifacts(f.candidate), canonical);
+      assert.deepEqual((await consume()).changedPaths, []);
+    }
+    await approveFixture(f);
+    assert.equal((await preflightExecutionOperation(f.specPath, 'EXECUTE_SLICE', '1')).state, 'MATERIALIZED_PRISTINE');
+    const installed = await readPreparationArtifacts(f.workspace.executionRoot);
+    assert.ok(installed.get('tasks/slice-01.md').includes('- directory: `' + basis.detail + '`'));
+    assert.ok(!installed.get('tasks/slice-01.md').includes('another.mjs'));
+  });
+  await t.test('joint review rejects a draft detailed Plan while preserving its approved positive snapshot', async child => {
+    const f = await prepared(child);
+    await publishFixtureCandidate(f, f.candidate);
+    const review = await prepareFixtureCandidate(f, 'REVIEW_PLAN');
+    for (const [name, text] of await readPreparationArtifacts(review)) await fs.writeFile(path.join(review, name), text.replace('status: draft', 'status: ready').replace('Review state: pending', 'Review state: approved'));
+    const consume = () => captureApprovedPreparation({ candidateExecutionRoot: review, reviewDecision });
+    assert.equal((await consume()).format, 'stnl-preparation-v2');
+    await editPreparation(review, 'plans/slice-01.md', text => text.replace('status: ready', 'status: draft').replace('Review state: approved', 'Review state: pending'));
+    const before = await captureExecutionTree(review), live = await captureExecutionTree(f.workspace.executionRoot);
+    await assert.rejects(consume(), { message: 'preparation contract: review must approve the final Plan and Tasks before snapshot' });
+    assert.deepEqual(await captureExecutionTree(review), before);
+    assert.deepEqual(await captureExecutionTree(f.workspace.executionRoot), live);
+    assert.equal((await inspectExecutionState(f.specPath)).state, 'PLANNED_DRAFT');
   });
 });
 
