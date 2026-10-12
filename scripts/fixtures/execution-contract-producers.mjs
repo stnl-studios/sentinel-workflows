@@ -74,7 +74,7 @@ export async function implementExample(f, { slice = 'slice-01', publish = true, 
   const copy = await prepareExecutionCopy({ specPath: f.requirements, slice, owner: admission.owner });
   retain(f, copy.candidateRoot);
   const changed = filelessReason === null ? [claim(f, slice)] : [];
-  if (failFirst) await fs.writeFile(path.join(f.root, 'src/example.txt'), 'wrong example bytes\n');
+  if (failFirst && filelessReason === null) await fs.writeFile(path.join(f.root, 'src/example.txt'), 'wrong example bytes\n');
   let task = await fs.readFile(copy.candidateTaskArtifact, 'utf8');
   task = task.replace(`- [ ] ${BigInt(slice.slice(6))}.1`, `- [x] ${BigInt(slice.slice(6))}.1`);
   task = section(task, 'Changed Areas', changed.map(p => '- `' + p + '`').join('\n') || '- none');
@@ -117,10 +117,15 @@ export async function retryExample(f, first, content, { status = 'TESTS_PASS', p
     assert.notDeepEqual(await fs.readFile(path.join(f.root, 'src/example.txt')), previousBytes, 'the correction changes actual authorized bytes');
   }
   const taskFile = first.copy.candidateTaskArtifact;
-  await fs.writeFile(taskFile, section(await fs.readFile(taskFile, 'utf8'), 'Corrections Applied', '- `' + claim(f, slice) + '`'));
+  let correctedTask = await fs.readFile(taskFile, 'utf8');
+  correctedTask = section(correctedTask, 'Changed Areas', '- `' + claim(f, slice) + '`');
+  await fs.writeFile(taskFile, section(correctedTask, 'Corrections Applied', '- `' + claim(f, slice) + '`'));
   const response = { ...first.response, status, automaticCheckRound: `${round}/3`, commands: start.verification.checks.map(check => ({ command: verificationCommand(check), exit: status === 'TESTS_PASS' ? 0 : 1 })),
     resultOfEachCommandAndExitCode: `Unchanged prepared byte assertion exit ${status === 'TESTS_PASS' ? 0 : 1}`, failures: status === 'TESTS_PASS' ? 'none' : `Prepared byte assertion still failed at round ${round}`, priorRoundFailure: first.response.failures,
     correctionApplied: content === undefined ? 'Rechecked the verification environment; cumulative corrected product paths remain unchanged' : 'Attempted a bounded example byte correction', inSliceRationale: 'Same AC-001 result and authorized example file', evidenceOrFailureSummary: `Real unchanged assertion observed ${status}` };
+  // This retry claims the actual example file. A fileless predecessor's reason
+  // belongs only to that historical observation, never the new file-backed one.
+  delete response.filelessReason;
   const captured = await capture(start, response, [claim(f, slice)]);
   const bundle = await serializeRunnerExecutionBundleFromResponse({ operation: 'EXECUTE_SLICE', response: JSON.stringify(response), workspace: f.root, taskArtifact: taskFile, ...captured });
   await insertExecutionEvidenceInCandidate({ taskArtifact: taskFile, operation: 'EXECUTE_SLICE', bundle,
@@ -134,7 +139,8 @@ export async function retryExample(f, first, content, { status = 'TESTS_PASS', p
   return { admission: first.admission, copy: first.copy, start, response, captured, bundle };
 }
 
-export async function validateExample(f, { slice = 'slice-01', status = 'PASS', findings = null, publish = true, dispositions = null, explanation = null } = {}) {
+export async function validateExample(f, { slice = 'slice-01', status = 'PASS', findings = null, publish = true, prepare = true, dispositions = null, explanation = null } = {}) {
+  assert.ok(prepare || !publish, 'an unprepared capture cannot be published');
   const admission = await beginExample(f, 'VALIDATE_SLICE', slice);
   return withExampleOwner(admission, async () => {
     const start = await native(context(f), admission.owner);
@@ -150,6 +156,7 @@ export async function validateExample(f, { slice = 'slice-01', status = 'PASS', 
       findingReferences: refs.join(', ') || 'none', findingDispositions: dispositions ?? (refs.map(id => id + '=active').join(', ') || 'none'),
       blockers: status === 'BLOCKED' ? 'Controlled unavailable semantic prerequisite' : 'none', unexpectedWorkspaceEffects: explanation ?? 'none', persistenceSummary: 'Preserve concluded formal result' };
     const captured = await capture(start, response);
+    if (!prepare) return { admission, copy, start, response, captured };
     const prepared = await prepareValidationCandidate({ specPath: f.requirements, slice, workspace: f.root, candidateExecutionRoot: copy.candidateExecutionRoot, ...captured });
     assert.equal(prepared.formalStatus, status, JSON.stringify(prepared));
     if (publish) {

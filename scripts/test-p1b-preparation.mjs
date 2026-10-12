@@ -393,6 +393,50 @@ test('joint draft parser rejects inconsistent started checklist, malformed evide
   });
 });
 
+test('joint draft grammar rejects hidden tables, residue and cross-reference drift at the current consumer', async t => {
+  const row = text => text.match(/^\| \[ \] \|.*$/mu)[0];
+  const table = text => text.slice(text.indexOf('| Done |')).trim();
+  const cases = [
+    ['global reference', 'plans/slice-01.md', text => text.replace('Global plan: `../plan.md`', 'Global plan: `../other.md`'), /non-canonical Global plan/],
+    ['malformed detailed plan', 'plans/slice-01.md', () => 'utterly malformed\n', /has no purpose header/],
+    ['malformed serial row', 'plan.md', text => text.replace(/(\| plans\/slice-01.md \|)\n/u, '$1\n| malformed serial row |\n'), /Serial Slice Order has an ambiguous table carrier/],
+    ['nonpipe serial residue', 'plan.md', text => text.replace(/(\| plans\/slice-01.md \|)\n/u, '$1\nmalformed serial row without pipes\n'), /Serial Slice Order contains text outside its table carrier/],
+    ['malformed progress row', 'tasks.md', text => text.replace(row(text), row(text) + '\n| unexpected task row |'), /Tasks index has an ambiguous table carrier/],
+    ['malformed checklist', 'tasks/slice-01.md', text => text.replace('- [ ] 1.1', '- [ ] malformed checklist row\n- [ ] 1.1'), /malformed operational step/],
+    ['fenced table', 'tasks.md', text => text.replace(table(text), '```md\n' + table(text) + '\n```'), /tasks.md contains hidden or unknown carriers/],
+    ['commented table', 'tasks.md', text => text.replace(table(text), '<!--\n' + table(text) + '\n-->'), /tasks.md contains hidden or unknown carriers/],
+  ];
+  for (const suffix of ['', ' <!-- editorial marker -->']) cases.push([
+    'row residue' + suffix, 'tasks.md', text => text + '\n' + row(text).slice(2) + suffix + '\n', suffix ? /tasks.md contains hidden or unknown carriers/ : /Tasks index contains text outside its table carrier/,
+  ]);
+  cases.push(['comment-prefixed row residue', 'tasks.md', text => text + '\n<!-- editorial marker --> ' + row(text).slice(2) + '\n', /tasks.md contains hidden or unknown carriers/]);
+  for (const [name, artifact, mutate, diagnostic] of cases) await t.test(name, async child => {
+    const f = await fixture({ test: child });
+    await normalizePreparation(f, f.candidate);
+    assert.equal((await validateExecutionCandidate(f.specPath, f.candidate)).state, 'PLANNED_DRAFT');
+    await editPreparation(f.candidate, artifact, mutate);
+    const before = await captureExecutionTree(f.candidate);
+    await assert.rejects(validateExecutionCandidate(f.specPath, f.candidate), diagnostic);
+    assert.deepEqual(await captureExecutionTree(f.candidate), before);
+    assert.equal(await fs.stat(f.workspace.executionRoot).catch(() => null), null);
+  });
+  const f = await fixture({ test: t });
+  await normalizePreparation(f, f.candidate);
+  const original = await fs.readFile(path.join(f.candidate, 'tasks.md'), 'utf8');
+  for (const prose of ['Editorial notation A | B | C is explanatory prose.',
+    'History remains append-only after execution work starts.']) {
+    const changed = original.replace(/^purpose: .+$/mu, 'purpose: ' + prose);
+    assert.notEqual(changed, original);
+    await fs.writeFile(path.join(f.candidate, 'tasks.md'), changed);
+    assert.equal((await validateExecutionCandidate(f.specPath, f.candidate)).state, 'PLANNED_DRAFT');
+    assert.equal(table(changed), table(original), 'descriptive metadata cannot create progress authority');
+    const bodyProse = original.replace('| Done |', prose + '\n\n| Done |');
+    await fs.writeFile(path.join(f.candidate, 'tasks.md'), bodyProse);
+    await assert.rejects(validateExecutionCandidate(f.specPath, f.candidate), /tasks.md has noncanonical table/);
+    assert.equal(await fs.readFile(path.join(f.candidate, 'tasks.md'), 'utf8'), bodyProse);
+  }
+});
+
 test('joint path serializers reject escape, symlink and mismatched claim count before any write', async (t) => {
   for (const [name, setup, artifact, mutate, diagnostic] of [
     ['repository escape', async () => {}, 'plan.md', text => text.replace('`../src`', '`../../../outside`'), /escapes|outside/],

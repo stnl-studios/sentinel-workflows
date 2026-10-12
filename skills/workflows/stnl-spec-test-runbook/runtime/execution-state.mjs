@@ -527,7 +527,7 @@ function isOfficialE45e41dSplitPlan(header, body, expectedSlice) {
       owner: "stnl-execution-planner",
       update_policy: "PLAN creates as draft; REVIEW_PLAN corrects and changes status to ready.",
     }) || primaryH1 !== "Execution Plan"
-      || exactSectionNames(body).join("\0") !== GLOBAL_PLAN_SECTIONS.join("\0")) return false;
+      || exactSectionNames(body).join("\0") !== ["Global Context", "Serial Slice Order", "Global Risks and Integration"].join("\0")) return false;
     const parsed = sections(body);
     const context = parsed.get("Global Context") ?? "";
     const order = parsed.get("Serial Slice Order") ?? "";
@@ -537,7 +537,7 @@ function isOfficialE45e41dSplitPlan(header, body, expectedSlice) {
     try {
       const rows = canonicalTableRows(
         order,
-        "| Slice | Observable delivery | Dependencies | Requirements | Authorized areas | Detailed plan |",
+        "| Slice | Observable delivery | Dependencies | Requirements | Expected areas | Detailed plan |",
         "|---|---|---|---|---|---|",
         "historical e45e41d Serial Slice Order",
       );
@@ -558,7 +558,8 @@ function isOfficialE45e41dSplitPlan(header, body, expectedSlice) {
     owner: "stnl-execution-planner",
     update_policy: "PLAN creates as draft; REVIEW_PLAN corrects and changes status to ready.",
   }) || !new RegExp(`^Slice ${expectedSlice.slice(6)} - \\S`, "u").test(primaryH1 ?? "")
-    || exactSectionNames(body).join("\0") !== SLICE_PLAN_SECTIONS.join("\0")) return false;
+    || exactSectionNames(body).join("\0") !== ["References", "Objective and Observable Result", "Requirements", "Included Scope", "Out of Scope and Boundaries",
+      "Likely Areas", "Dependencies", "Risks and Strategy", "Expected Tests", "Completion Criterion"].join("\0")) return false;
   const references = sections(body).get("References") ?? "";
   return new RegExp(
     `^- Slice: ${expectedSlice.slice(6)}\\n`
@@ -570,7 +571,6 @@ function isOfficialE45e41dSplitPlan(header, body, expectedSlice) {
 }
 
 function parsePlan(text, label, expectedSlice = null, references = {}) {
-  parsePreparationArtifact(text, expectedSlice === null ? "plan.md" : `plans/${expectedSlice}.md`);
   const { header, body } = parsePurpose(text, label);
   if (isOfficial98545e4Plan(header, body)) {
     throwLegacyExecutionContract(label, "structurally-incompatible", "official-phase-index-generation");
@@ -578,6 +578,7 @@ function parsePlan(text, label, expectedSlice = null, references = {}) {
   if (isOfficialE45e41dSplitPlan(header, body, expectedSlice)) {
     throwLegacyExecutionContract(label, "semantically-incomplete", "known-split-plan-before-authority-fields");
   }
+  parsePreparationArtifact(text, expectedSlice === null ? "plan.md" : `plans/${expectedSlice}.md`);
   if (header.get("owner") !== "stnl-execution-planner") throw new ExecutionContractError(`${label} has the wrong File Purpose Header owner`);
   const h1 = body.match(/^# ([^\n]+)\n\n/u)?.[1];
   if (expectedSlice === null ? h1 !== "Execution Plan" : !new RegExp(`^Slice ${expectedSlice.slice(6)} - \\S.*$`, "u").test(h1 ?? "")) {
@@ -3792,6 +3793,9 @@ export async function preflightExecutionOperation(specPath, operation, sliceValu
     );
   }
   const allowed = OPERATION_STATES.get(normalizedOperation);
+  // An admitted owner permits its private operation to continue, but cannot
+  // keep executing against a requirements authority that changed after begin.
+  if (result.stale && SLICE_OPERATIONS.has(normalizedOperation)) throw recoveryError(normalizedOperation, result);
   const exactMandatoryRecovery = mandatoryRecovery !== undefined
     && mandatoryRecovery.operation === normalizedOperation && mandatoryRecovery.slice === slice;
   if (!result.activation?.activeAttempt && !allowed.has(result.state) && !exactMandatoryRecovery) throw recoveryError(normalizedOperation, result);
