@@ -53,7 +53,7 @@ export async function withManagedExample(f, operation, response, action, { sdkCo
     const prepared = await finalizeManagedSlice('--prepare');
     assert.equal(prepared.status, 'PREPARED');
     const binding = JSON.parse(await fs.readFile(path.join(tmpdir, 'stnl-runner-broker/001.candidate.json')));
-    f.test?.after(() => fs.rm(binding.candidateRoot, { recursive: true, force: true }));
+    f.test?.after(() => fs.rm(binding.candidateExecutionRoot, { recursive: true, force: true }));
     return await action({ context, environment, tmpdir, broker, copy: binding,
       dispatch: payload => runManagedRunnerBridge({ environment, cwd: f.root, payload: typeof payload === 'string' ? payload : JSON.stringify(payload) }),
       finalize: () => finalizeManagedSlice('--finalize'), calls: () => calls });

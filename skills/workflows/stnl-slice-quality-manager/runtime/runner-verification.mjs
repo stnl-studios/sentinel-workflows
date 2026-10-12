@@ -13,7 +13,9 @@ export const verificationCommand = check => [check.executable, ...check.args].ma
 export function assertRunnerVerification(observation, verification) {
   if (!observation || observation.format !== 'stnl-runner-verification-v1' || observation.status !== 'completed'
     || !equal(observation.verification, verification) || !Array.isArray(observation.checks)
-    || observation.checks.length !== verification.checks.length) fail('receipt recipe binding differs or did not conclude');
+    || observation.checks.length !== verification.checks.length
+    || (verification.checks.length === 0 && (!verification.nonApplicability
+      || !/^sha256:[a-f0-9]{64}$/u.test(observation.workStateSha256)))) fail('receipt recipe binding differs or did not conclude');
   for (const [index, check] of observation.checks.entries()) {
     if (!equal(check.request, verification.checks[index]) || check.command !== verificationCommand(check.request)
       || !Number.isSafeInteger(check.exit) || check.stdoutSha256 !== hash(check.stdout)
@@ -25,6 +27,9 @@ export function assertRunnerVerification(observation, verification) {
 // A pending/uncertain saved observation is never rerun. Completed observations
 // are reusable only for the exact recipe, inside the same runner-origin directory.
 export async function executeRunnerVerification({ verification, outputFile, observeState = null }) {
+  if (verification.checks.length === 0 && (!verification.nonApplicability || !observeState)) {
+    fail('zero-command observation requires reviewed non-applicability and a work image');
+  }
   const existing = await fs.lstat(outputFile).catch(error => { if (error.code === 'ENOENT') return null; throw error; });
   if (existing) {
     const observation = parseStrictJson((await readOwnedFile(outputFile)).bytes.toString('utf8'));

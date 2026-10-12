@@ -33,7 +33,21 @@ export function recoverableRunnerResultDiagnostic(error) {
   return `${error.code}: ${error.message}${failed}`;
 }
 
-export function assertRunnerVerdictConsistency(operation, status, commands) {
+export function assertRunnerVerdictConsistency(operation, status, commands, observation = null, payload = null) {
+  if (operation !== 'VALIDATE_SLICE') {
+    const approvedNone = observation?.verification?.nonApplicability;
+    if (status === 'TESTS_NOT_APPLICABLE' || approvedNone) {
+      const objective = value => typeof value === 'string' && value.trim() !== ''
+        && !/^(?:none|n\/a|not applicable|pending)$/iu.test(value.trim());
+      if (status !== 'TESTS_NOT_APPLICABLE' || !approvedNone || commands.length !== 0
+        || payload?.discoverySources !== approvedNone.discovery || !objective(payload?.discoveryActions)
+        || payload?.nonApplicabilityRationale !== approvedNone.rationale
+        || !/no verification command/iu.test(payload?.noVerificationCommandConfirmation ?? '')) {
+        throw new RunnerVerdictEvidenceError(operation, status, commands,
+          'TESTS_NOT_APPLICABLE requires a reviewed zero-check recipe, objective discovery, and a bound zero-command observation');
+      }
+    }
+  }
   const success = operation === "VALIDATE_SLICE" ? status === "PASS" : status === "TESTS_PASS";
   if (!success) return;
   const failed = commands.filter(({ exit }) => exit !== 0);
@@ -303,7 +317,7 @@ export function deriveCanonicalRunnerRejection({ receipt, response }) {
     if (operation !== "VALIDATE_SLICE" && payload.automaticCheckRound !== `${receipt.attempt}/3`) fail("native semantic round differs from reserved invocation");
   }
   try {
-    assertRunnerVerdictConsistency(operation, payload.status, commands);
+    assertRunnerVerdictConsistency(operation, payload.status, commands, receipt.verification, payload);
     if (operation !== "VALIDATE_SLICE") {
       if (!Array.isArray(receipt.testedState?.entries)) fail("captured Tested state is missing");
       assertExecutionResultScope(operation, payload, receipt.testedState.entries.length);

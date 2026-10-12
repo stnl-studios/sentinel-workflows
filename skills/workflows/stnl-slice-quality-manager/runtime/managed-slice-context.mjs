@@ -338,9 +338,14 @@ export async function assertManagedRunnerReceipt({ operation, slice, workspace, 
     // operation and slice still have current official authority.
     await assertManagedRuntimeIdentity(context, environment);
     const current = await preflightExecutionOperation(context.specPath, operation, BigInt(context.slice.slice(6)).toString(10), { owner: context.owner });
-    if (`sha256:${current.currentFingerprint}` !== context.authority || current.state !== context.state
-      || JSON.stringify(current.legalOperations) !== JSON.stringify(context.legalOperations)
-      || JSON.stringify(current.mandatoryRecovery ?? null) !== JSON.stringify(context.mandatoryRecovery ?? null)) fail('rejected response authority is stale');
+    // The context records the pre-admission projection. Admission legitimately
+    // changes state and legal targets; recheck the admitted owner and current
+    // authority through the official preflight instead of comparing phases.
+    if (`sha256:${current.currentFingerprint}` !== context.authority
+      || current.operation !== context.operation || current.slice !== context.slice
+      || current.activation?.activeAttempt?.operationAttemptId !== context.owner.operationAttemptId) {
+      fail('rejected response authority or admitted owner is stale');
+    }
   }
   return context;
 }
