@@ -741,13 +741,21 @@ test("prepared fixture failure uses existing execution correction and preserves 
     text = replaceSection(text, 'Diff Summary', '- Corrected a typed prepared fixture without weakening its assertion.');
     if (operation === 'APPLY_FINDINGS') text = replaceSection(text, 'Corrections Applied', '- `' + fixtureClaim + '`');
     await fs.writeFile(copy.candidateTaskArtifact, text);
-    const receipts = [], bundles = []; let rejectedCopy, rejectedImage;
+    const receipts = [], bundles = [], calls = []; let rejectedCopy, rejectedImage;
+    const cli = (label, helper, args) => {
+      calls.push(label);
+      const env = { ...process.env, STNL_OPERATION_OWNER_FILE: admission.ownerFile };
+      delete env.NODE_TEST_CONTEXT;
+      return spawnSync(process.execPath, [path.join(ROOT, 'skills/workflows/stnl-slice-executor/runtime', helper), ...args],
+        { cwd: f.root, env, encoding: 'utf8' });
+    };
     for (const round of [1, 2]) {
       if (round === 2) {
         start = await startNativeRunnerCapture({ specPath: f.requirements, owner: admission.owner, workspace: f.root,
           captureParent: f.root, candidateTaskArtifact: copy.candidateTaskArtifact });
         start.agentId = 'prepared-correction-' + randomUUID(); await bindNativeRunnerIdentity(start);
         await fs.writeFile(copy.candidateTaskArtifact, replaceSection(await fs.readFile(copy.candidateTaskArtifact, 'utf8'), 'Corrections Applied', '- `' + fixtureClaim + '`'));
+        calls.push('authorized correction');
       }
       await fs.writeFile(fixtureFile, JSON.stringify({ enabled: round === 1 ? 'true' : true }));
       const inputs = await Promise.all([fixtureFile, checkFile].map(file => fs.readFile(file)));
@@ -762,37 +770,60 @@ test("prepared fixture failure uses existing execution correction and preserves 
         for (const key of ['priorRoundFailure', 'correctionApplied', 'inSliceRationale']) delete payload[key];
         Object.assign(payload, { findingsCycle: 'attempt-01', findingsVerified: 'finding-01', correctionsCovered: 'Corrected the authorized prepared fixture type', regressionsSelected: 'Same unchanged prepared assertion', unsupportedActiveFindings: 'none' });
       }
+      calls.push('observed round ' + round);
       const captured = await captureNativeExample(start, payload, claims);
       assert.deepEqual(await Promise.all([fixtureFile, checkFile].map(file => fs.readFile(file))), inputs, 'actual runner verification is read-only');
       receipts.push([captured.receiptFile, await fs.readFile(captured.receiptFile)]);
       const bundle = await serializeRunnerExecutionBundleFromResponse({ operation, response: JSON.stringify(payload), workspace: f.root,
         taskArtifact: copy.candidateTaskArtifact, ...captured }); bundles.push(bundle);
       await withExampleOwner(admission, async () => {
-        const inserted = spawnSync(process.execPath, [path.join(ROOT, 'skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs'),
+        const inserted = cli('serialize ' + round, 'serialize-runner-evidence.mjs', [
           '--execution-bundle', '--operation', operation, '--workspace', f.root, '--task-artifact', copy.candidateTaskArtifact,
-          '--semantic-response-file', captured.semanticResponseFile, '--receipt-file', captured.receiptFile, '--insert-candidate'], { encoding: 'utf8' });
+          '--semantic-response-file', captured.semanticResponseFile, '--receipt-file', captured.receiptFile, '--insert-candidate']);
         assert.equal(inserted.status, 0, inserted.stderr);
         assert.match(inserted.stdout, new RegExp((operation === 'EXECUTE_SLICE' ? 'implementation' : 'findings') + '-check-0' + round + ' inserted into isolated candidate'));
       });
-      assert.ok((await fs.readFile(copy.candidateTaskArtifact, 'utf8')).includes(bundle), 'CLI persisted exactly the API-produced observed bundle');
+      const insertedTask = await fs.readFile(copy.candidateTaskArtifact, 'utf8');
+      assert.equal(insertedTask.split(bundle).length - 1, 1, 'CLI inserted the API bundle exactly once');
+      const section = sectionBodyForScopeTest(insertedTask,
+        operation === 'EXECUTE_SLICE' ? 'Implementation Test Evidence' : 'Findings Test Evidence');
+      assert.equal((section.match(/^### (?:implementation|findings)-check-[0-9]+$/gmu) ?? []).length, round,
+        'CLI inserted no extra or duplicate checks in this cycle');
       await validateExecutionCandidate(f.requirements, copy.candidateExecutionRoot, [{ slice: 'slice-01', text: await fs.readFile(copy.candidateTaskArtifact, 'utf8') }], round === 1
         ? { privateAutomaticCheck: { operation, slice: 'slice-01', round: 1 } } : {});
       if (round === 1) {
-        rejectedCopy = await prepareExecutionCopy({ specPath: f.requirements, slice: 'slice-01', owner: admission.owner });
+        const negativePrepare = cli('negative prepare', 'prepare-execution-copy.mjs',
+          ['--prepare', '--spec-path', f.requirements, '--slice', 'slice-01']);
+        assert.equal(negativePrepare.status, 0, negativePrepare.stderr);
+        rejectedCopy = JSON.parse(negativePrepare.stdout);
         t.after(() => fs.rm(rejectedCopy.candidateRoot, { recursive: true, force: true }));
         await fs.copyFile(copy.candidateTaskArtifact, rejectedCopy.candidateTaskArtifact);
         const live = await treeBytes(f.execution); rejectedImage = await treeBytes(rejectedCopy.candidateExecutionRoot);
         if (operation === 'EXECUTE_SLICE') await assert.rejects(validateExecutionCandidate(f.requirements, rejectedCopy.candidateExecutionRoot), /unterminated.*automatic correction cycle/);
         else assert.equal((await validateExecutionCandidate(f.requirements, rejectedCopy.candidateExecutionRoot)).state, 'VALIDATION_NEEDS_FIX', 'a persisted correction scope is readable, but cannot end its owned failed round');
-        await assert.rejects(publishExecutionCopy({ specPath: f.requirements, slice: 'slice-01', candidateRoot: rejectedCopy.candidateRoot }), operation === 'EXECUTE_SLICE'
-          ? /unterminated.*automatic correction cycle/ : /terminal publication requires the bounded operation result/);
+        const negativeValidate = cli('negative validate', 'validate-execution-state.mjs',
+          [f.requirements, '--candidate', rejectedCopy.candidateExecutionRoot]);
+        assert.equal(negativeValidate.status, operation === 'EXECUTE_SLICE' ? 1 : 0, negativeValidate.stderr);
+        if (operation === 'EXECUTE_SLICE') assert.match(negativeValidate.stderr, /unterminated.*automatic correction cycle/u);
+        else assert.match(negativeValidate.stdout, /state=VALIDATION_NEEDS_FIX/u);
+        const rejectedCli = cli('negative publish', 'prepare-execution-copy.mjs', [
+          '--publish', '--spec-path', f.requirements, '--slice', 'slice-01', '--candidate-root', rejectedCopy.candidateRoot]);
+        assert.equal(rejectedCli.status, 1);
+        assert.match(rejectedCli.stderr, operation === 'EXECUTE_SLICE'
+          ? /unterminated.*automatic correction cycle/u : /terminal publication requires the bounded operation result/u);
         assert.deepEqual(await treeBytes(f.execution), live); assert.deepEqual(await treeBytes(rejectedCopy.candidateExecutionRoot), rejectedImage);
       }
       assert.throws(() => parseSemanticExecutionPayload(JSON.stringify({ ...payload, automaticCheckRound: '4/3' }), operation), /Automatic check round is invalid/);
     }
     const expected = operation === 'EXECUTE_SLICE' ? 'IMPLEMENTED_AWAITING_VALIDATION' : 'FINDINGS_CORRECTED';
     assert.equal((await validateExecutionCandidate(f.requirements, copy.candidateExecutionRoot)).state, expected);
-    await publishExecutionCopy({ specPath: f.requirements, slice: 'slice-01', candidateRoot: copy.candidateRoot });
+    const terminalCli = cli('terminal validate', 'validate-execution-state.mjs',
+      [f.requirements, '--candidate', copy.candidateExecutionRoot]);
+    assert.equal(terminalCli.status, 0, terminalCli.stderr);
+    assert.match(terminalCli.stdout, new RegExp('state=' + expected, 'u'));
+    const publication = cli('terminal publish', 'prepare-execution-copy.mjs', [
+      '--publish', '--spec-path', f.requirements, '--slice', 'slice-01', '--candidate-root', copy.candidateRoot]);
+    assert.equal(publication.status, 0, publication.stderr);
     const state = await inspectExecutionState(f.requirements), task = state.tasks.get('slice-01');
     const checks = operation === 'EXECUTE_SLICE' ? task.implementationChecks : task.findingsChecks;
     assert.deepEqual(checks.map(check => [check.round, check.status]), [[1, 'TESTS_FAIL'], [2, 'TESTS_PASS']]);
@@ -802,6 +833,12 @@ test("prepared fixture failure uses existing execution correction and preserves 
       assert.equal(task.attempts[0].body, prior.attempts[0].body); assert.equal(task.findings[0].body, prior.findings[0].body);
     }
     assert.equal(task.final.result, 'pending'); assert.equal(state.normalHandoff.operation, 'VALIDATE_SLICE');
+    const handoff = cli('handoff', 'validate-execution-state.mjs', [f.requirements, '--handoff-after', operation]);
+    assert.equal(handoff.status, 0, handoff.stderr);
+    assert.equal(JSON.parse(handoff.stdout).normal_handoff.operation, 'VALIDATE_SLICE');
+    assert.deepEqual(calls, ['observed round 1', 'serialize 1', 'negative prepare', 'negative validate',
+      'negative publish', 'authorized correction',
+      'observed round 2', 'serialize 2', 'terminal validate', 'terminal publish', 'handoff']);
     assert.equal(await fs.readFile(checkFile, 'utf8'), checkSource);
     assert.deepEqual(await treeBytes(rejectedCopy.candidateExecutionRoot), rejectedImage);
     for (const [file, bytes] of receipts) assert.deepEqual(await fs.readFile(file), bytes);
