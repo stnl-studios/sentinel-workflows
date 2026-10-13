@@ -58,7 +58,8 @@ import {
 } from "../skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs";
 import { serializeRunnerValidationBundleFromResponse as serializeQualityManagerValidationBundleFromResponse }
   from "../skills/workflows/stnl-slice-quality-manager/runtime/serialize-runner-evidence.mjs";
-import { parseSemanticExecutionPayload, serializeCommand } from "../skills/workflows/stnl-slice-executor/runtime/runner-result-contract.mjs";
+import { deriveCanonicalRunnerRejection, parseSemanticExecutionPayload, serializeCommand } from "../skills/workflows/stnl-slice-executor/runtime/runner-result-contract.mjs";
+import { recoverySection } from "../skills/workflows/stnl-slice-executor/runtime/runner-result-recovery.mjs";
 import { startNativeRunnerCapture, bindNativeRunnerIdentity, captureRunnerResponse } from "../skills/workflows/stnl-slice-executor/runtime/capture-runner-response.mjs";
 import { startOfficialRunnerBroker } from "../agents/codex/runtime/runner-broker.mjs";
 import { runManagedRunnerBridge } from "../agents/codex/runtime/managed-runner-bridge.mjs";
@@ -271,41 +272,125 @@ test("captured contradiction publishes blocker, manager consumes bounded recover
   }
 });
 
-test("late strict PASS command rejection preserves candidate and publishes only bound recovery", async (t) => {
-  const fixture = await standaloneWorkspace(t);
-  await renderArtifacts(fixture);
-  await writeValidatedPath(fixture);
-  await editTask(fixture, (value) => {
-    let task = value.replace("- [ ] 1.1", "- [x] 1.1");
-    task = replaceSection(task, "Changed Areas", "- `../../src/example.txt`");
-    task = replaceSection(task, "Implementation Test Evidence", checkRecord("implementation-check", 1, "TESTS_PASS", 1));
-    return replaceSection(task, "Diff Summary", "- Verified behavior is implemented.");
+test('U3 PASS rejection refuses an unbound late recovery and uses official observed recovery', async t => {
+  const strict = await filelessRecoveryFixture(t);
+  await implementExample(strict, { filelessReason: strict.filelessReason });
+  const verification = await readRunnerVerification(strict.requirements, 'slice-01');
+  const response = { ...sanitizedValidationResponse('PASS'),
+    commands: verification.checks.map(check => ({ command: verificationCommand(check), exit: 0 })) };
+  const strictReceipt = await withManagedExample(strict, 'VALIDATE_SLICE', response, async managed => {
+    const receipt = await managed.dispatch('Validate the approved fileless observation.');
+    assert.equal(receipt.status, 'RUNNER_RESPONSE_CAPTURED');
+    assert.deepEqual(receipt.verification.checks.map(({ exit }) => exit), [0]);
+    const prepared = await prepareValidationCandidate({ specPath: strict.requirements, slice: 'slice-01',
+      workspace: strict.root, candidateExecutionRoot: managed.copy.candidateExecutionRoot,
+      receiptFile: receipt.receiptFile, semanticResponseFile: receipt.semanticResponseFile });
+    assert.equal(prepared.status, 'PREPARED'); assert.equal(prepared.formalStatus, 'PASS');
+    assert.equal((await validateExecutionCandidate(strict.requirements, managed.copy.candidateExecutionRoot)).state, 'COMPLETE');
+    const candidateFile = path.join(managed.copy.candidateExecutionRoot, 'tasks/slice-01.md');
+    const valid = await fs.readFile(candidateFile, 'utf8');
+    const attempt = sectionBodyForScopeTest(valid, 'Validation Attempts');
+    assert.deepEqual([...attempt.matchAll(/^### (attempt-[0-9]{2,})$/gmu)].map(match => match[1]), ['attempt-01']);
+    const commandStart = attempt.indexOf('\n- Commands:\n');
+    const commandEnd = attempt.indexOf('\n- Evidence:', commandStart);
+    assert.ok(commandStart >= 0 && commandEnd > commandStart);
+    const commandLines = attempt.slice(commandStart + '\n- Commands:\n'.length, commandEnd).split('\n');
+    assert.equal(commandLines.length, 2, 'one official preflight and one reviewed recipe check');
+    const observedCommand = verificationCommand(verification.checks[0]);
+    assert.deepEqual(receipt.verification.checks.map(({ command, exit }) => ({ command, exit })),
+      [{ command: observedCommand, exit: 0 }]);
+    const observedLine = `  - ${serializeCommand(observedCommand, 'reviewed verification command')} | exit:0`;
+    assert.equal(commandLines.filter(line => line === observedLine).length, 1);
+    const preflightLine = commandLines.find(line => line !== observedLine);
+    assert.match(preflightLine, /^  - `node [^`]+validate-execution-state\.mjs[^`]+VALIDATE_SLICE[^`]+` \| exit:0$/u);
+    const changedLine = observedLine.replace('| exit:0', '| exit:1');
+    const changedAttempt = attempt.replace(observedLine, changedLine);
+    assert.notEqual(changedAttempt, attempt);
+    assert.ok(changedAttempt.includes(preflightLine));
+    assert.equal(changedAttempt.replace(changedLine, observedLine), attempt);
+    const tampered = valid.replace(attempt, changedAttempt);
+    assert.notEqual(tampered, valid);
+    assert.equal(tampered.replace(changedAttempt, attempt), valid);
+    assert.equal(sectionBodyForScopeTest(tampered, 'Effective Validation Base'),
+      sectionBodyForScopeTest(valid, 'Effective Validation Base'));
+    const live = await treeBytes(strict.execution);
+    const receiptBytes = await fs.readFile(receipt.receiptFile), responseBytes = await fs.readFile(receipt.semanticResponseFile);
+    await fs.writeFile(candidateFile, tampered);
+    const candidate = await treeBytes(managed.copy.candidateExecutionRoot);
+    await assert.rejects(validateExecutionCandidate(strict.requirements, managed.copy.candidateExecutionRoot), error => {
+      assert.equal(error.name, 'ExecutionContractError');
+      assert.deepEqual(error.contractViolation, { code: 'PASS_COMMAND_EXIT_NONZERO', record: 'attempt-01',
+        repairability: 'runner-result-recovery' });
+      return true;
+    });
+    await assert.rejects(recoverRejectedValidationCandidate({ specPath: strict.requirements, slice: 'slice-01',
+      workspace: strict.root, rejectedCandidateRoot: managed.copy.candidateExecutionRoot,
+      candidateParent: managed.tmpdir, receiptFile: receipt.receiptFile,
+      semanticResponseFile: receipt.semanticResponseFile }), error => {
+      assert.equal(error.message,
+        'validation rejection recovery blocked: bound recipe observations do not confirm the rejected command conflict');
+      return true;
+    });
+    assert.deepEqual(await treeBytes(strict.execution), live);
+    assert.deepEqual(await treeBytes(managed.copy.candidateExecutionRoot), candidate);
+    assert.deepEqual(await fs.readFile(receipt.receiptFile), receiptBytes);
+    assert.deepEqual(await fs.readFile(receipt.semanticResponseFile), responseBytes);
+    assert.equal((await inspectExecutionState(strict.requirements)).tasks.get('slice-01').attempts.length, 0);
+    assert.equal(managed.calls(), 1); assert.equal(managed.broker.requestsHandled, 1);
+    return receipt.receiptFile;
   });
-  const candidateParent = await temporary(t, "stnl-late-rejection-");
-  const response = JSON.stringify({ status: "PASS", head: "0123456789abcdef0123456789abcdef01234567",
-    commands: [{ command: "semantic claim", exit: 0 }], evidence: "independent checks cover AC-001",
-    findingReferences: "none", findingDispositions: "none", blockers: "none",
-    unexpectedWorkspaceEffects: "none", persistenceSummary: "no changes" });
-  const initial = await capturedVerificationSequence(t, fixture, "VALIDATE_SLICE", response, [0]);
-  const copy = await prepareValidationCopy({ specPath: fixture.requirements, slice: "slice-01", candidateParent });
-  assert.equal((await prepareValidationCandidate({ specPath: fixture.requirements, slice: "1",
-    workspace: fixture.root, candidateExecutionRoot: copy.candidateExecutionRoot, ...initial })).status, "PREPARED");
-  const rejectedTask = path.join(copy.candidateExecutionRoot, "tasks", "slice-01.md");
-  const prepared = await fs.readFile(rejectedTask, "utf8");
-  const rejected = prepared.replaceAll("check-1.mjs` | exit:0", "check-1.mjs` | exit:1");
-  assert.notEqual(rejected, prepared);
-  await fs.writeFile(rejectedTask, rejected);
-  const liveBefore = await fs.readFile(path.join(fixture.execution, "tasks", "slice-01.md"));
-  await assert.rejects(validateExecutionCandidate(fixture.requirements, copy.candidateExecutionRoot),
-    (error) => error.contractViolation?.code === "PASS_COMMAND_EXIT_NONZERO");
-  const conflicting = await capturedVerificationSequence(t, fixture, "VALIDATE_SLICE", response, [1]);
-  const recovered = await recoverRejectedValidationCandidate({ specPath: fixture.requirements, slice: "slice-01",
-    workspace: fixture.root, rejectedCandidateRoot: copy.candidateExecutionRoot, candidateParent, ...conflicting });
-  assert.equal(recovered.publishedState, "RUNNER_RESULT_BLOCKED");
-  assert.equal(recovered.mandatoryRecovery.operation, "VALIDATE_SLICE");
-  assert.equal(await fs.readFile(rejectedTask, "utf8"), rejected);
-  assert.notDeepEqual(await fs.readFile(path.join(fixture.execution, "tasks", "slice-01.md")), liveBefore);
-  assert.equal((await inspectExecutionState(fixture.requirements)).tasks.get("slice-01").attempts.length, 0);
+  assert.ok(strictReceipt);
+
+  const early = await filelessRecoveryFixture(t);
+  await implementExample(early, { filelessReason: early.filelessReason });
+  const source = await fs.readFile(path.join(early.root, 'src/observation.mjs'));
+  const preparation = await readPreparationArtifacts(early.execution);
+  const preparedRecipe = Object.fromEntries(['plans/slice-01.md', 'tasks/slice-01.md'].map(rel =>
+    [rel, preparation.get(rel).match(/^- Recipe: .+$/mu)[0]]));
+  early.setReady(false);
+  let recovery, failedReceipt;
+  await withManagedExample(early, 'VALIDATE_SLICE', response, async managed => {
+    const receipt = await managed.dispatch('Validate the unchanged reviewed process assertion.');
+    assert.equal(receipt.status, 'RUNNER_RESPONSE_CAPTURED');
+    assert.equal(receipt.semanticResponseStatus, 'PASS');
+    assert.equal(receipt.captureFailure, null); assert.equal(receipt.captureFailureCode, null);
+    const failedCommands = receipt.verification.checks.map(({ command, exit }) => ({ command, exit }));
+    assert.deepEqual(failedCommands, [{ command: verificationCommand(verification.checks[0]), exit: 1 }]);
+    failedReceipt = [receipt.receiptFile, await fs.readFile(receipt.receiptFile)];
+    const outcome = await managed.finalize();
+    assert.equal(outcome.state, 'RUNNER_RESULT_BLOCKED'); assert.equal(outcome.published, true);
+    const state = await inspectExecutionState(early.requirements);
+    assert.equal(state.tasks.get('slice-01').attempts.length, 0);
+    assert.equal(state.activeDelegationBlockers.length, 1);
+    recovery = { expectedActivationId: state.activation.activationId,
+      rejectedOperationAttemptId: state.activation.activeAttempt.operationAttemptId,
+      rejection: state.activeDelegationBlockers[0].recoveryProof };
+    const proof = JSON.parse(await fs.readFile(recovery.rejection.path, 'utf8'));
+    assert.equal(proof.receiptFile, receipt.receiptFile);
+    assert.equal(proof.semanticResponseFile, receipt.semanticResponseFile);
+    assert.equal(proof.diagnostic, `RUNNER_VERDICT_EVIDENCE_CONFLICT: VALIDATE_SLICE PASS contradicts 1 marked verification command(s) with non-zero exit; failed verification commands: ${JSON.stringify(failedCommands)}`);
+    for (const file of [receipt.receiptFile, receipt.semanticResponseFile])
+      assert.ok(proof.evidence.some(entry => entry.path === file), file);
+    assert.equal(managed.calls(), 1); assert.equal(managed.broker.requestsHandled, 1);
+  });
+  assert.equal((await preflightRunnerResultRecovery(early.requirements, 'VALIDATE_SLICE', '1', recovery)).state,
+    'RUNNER_RESULT_BLOCKED');
+  early.setReady(true);
+  await withManagedExample(early, 'VALIDATE_SLICE', response, async managed => {
+    const receipt = await managed.dispatch('Revalidate with the ready process configuration.');
+    assert.deepEqual(receipt.verification.checks.map(({ exit }) => exit), [0]);
+    const outcome = await managed.finalize();
+    assert.equal(outcome.state, 'COMPLETE'); assert.equal(outcome.published, true);
+    assert.equal(managed.calls(), 1); assert.equal(managed.broker.requestsHandled, 1);
+  }, { recovery, sequence: 2 });
+  const final = await inspectExecutionState(early.requirements);
+  assert.equal(final.state, 'COMPLETE');
+  assert.equal(final.tasks.get('slice-01').attempts.length, 1);
+  assert.deepEqual(await fs.readFile(failedReceipt[0]), failedReceipt[1]);
+  assert.deepEqual(await fs.readFile(path.join(early.root, 'src/observation.mjs')), source);
+  const after = await readPreparationArtifacts(early.execution);
+  for (const [rel, carrier] of Object.entries(preparedRecipe))
+    assert.equal(after.get(rel).match(/^- Recipe: .+$/mu)[0], carrier);
 });
 
 test("missing mechanical evidence is a hard failure, not a malformed runner blocker", async (t) => {
@@ -398,6 +483,8 @@ test("execution producer inserts exact hashed evidence only into its owned candi
   const liveBefore = await treeBytes(f.execution);
   const bundle = await serializeRunnerExecutionBundleFromResponse({ operation: 'EXECUTE_SLICE',
     response: JSON.stringify(response), workspace: f.root, taskArtifact: copies[0].candidateTaskArtifact, ...captured });
+  assert.match(bundle, /sha256:[0-9a-f]{64}/u);
+  assert.doesNotMatch(bundle, /Correction paths:|Prior-round failure:|Updated scope:/u);
   assert.equal(await insertExecutionEvidenceInCandidate({ taskArtifact: copies[0].candidateTaskArtifact,
     operation: 'EXECUTE_SLICE', bundle,
     validateProspectiveTask: text => validateExecutionCandidate(f.requirements, copies[0].candidateExecutionRoot, [text]) }),
@@ -411,11 +498,37 @@ test("execution producer inserts exact hashed evidence only into its owned candi
   { cwd: f.root, env: cliEnvironment, encoding: 'utf8' });
   assert.equal(cli.status, 0, cli.stderr);
   assert.deepEqual(await fs.readFile(copies[1].candidateTaskArtifact), await fs.readFile(copies[0].candidateTaskArtifact));
-  assert.equal((await validateExecutionCandidate(f.requirements, copies[0].candidateExecutionRoot)).state, 'IMPLEMENTED_AWAITING_VALIDATION');
-  assert.equal((await validateExecutionCandidate(f.requirements, copies[1].candidateExecutionRoot)).state, 'IMPLEMENTED_AWAITING_VALIDATION');
+  for (const copy of copies) {
+    const checked = await validateExecutionCandidate(f.requirements, copy.candidateExecutionRoot);
+    assert.equal(checked.state, 'IMPLEMENTED_AWAITING_VALIDATION');
+    const candidateText = await fs.readFile(copy.candidateTaskArtifact, 'utf8');
+    assert.deepEqual([...candidateText.matchAll(/^### (implementation-check-[0-9]{2,})$/gmu)].map(match => match[1]),
+      ['implementation-check-01']);
+  }
+  const insertedCandidates = await Promise.all(copies.map(copy => treeBytes(copy.candidateExecutionRoot)));
+  await assert.rejects(insertExecutionEvidenceInCandidate({ taskArtifact: copies[0].candidateTaskArtifact,
+    operation: 'EXECUTE_SLICE', bundle }), error => {
+    assert.equal(error.message, 'candidate already contains this execution check'); return true;
+  });
+  await assert.rejects(insertExecutionEvidenceInCandidate({ taskArtifact: path.join(f.execution, 'tasks/slice-01.md'),
+    operation: 'EXECUTE_SLICE', bundle }), error => {
+    assert.equal(error.code, 'EXECUTION_PUBLICATION_BLOCKED');
+    assert.equal(error.message, 'execution publication: writer requires an owned isolated candidate; live mutation is forbidden');
+    return true;
+  });
+  for (const [index, copy] of copies.entries())
+    assert.deepEqual(await treeBytes(copy.candidateExecutionRoot), insertedCandidates[index]);
+  const strictRoot = path.join(await temporary(t, 'stnl-inserted-evidence-strict-'), 'execution');
+  await copyDirectory(copies[0].candidateExecutionRoot, strictRoot);
+  for (const marker of [`${strictRoot}.copy.json`, `${path.dirname(strictRoot)}.copy.json`])
+    await assert.rejects(fs.stat(marker), { code: 'ENOENT' });
+  assert.equal((await validateExecutionCandidate(f.requirements, strictRoot)).state, 'IMPLEMENTED_AWAITING_VALIDATION');
   assert.deepEqual(await treeBytes(f.execution), liveBefore);
   await publishExecutionCopy({ specPath: f.requirements, slice: 'slice-01', candidateRoot: copies[0].candidateRoot });
-  assert.equal((await inspectExecutionState(f.requirements)).state, 'IMPLEMENTED_AWAITING_VALIDATION');
+  const published = await inspectExecutionState(f.requirements);
+  assert.equal(published.state, 'IMPLEMENTED_AWAITING_VALIDATION');
+  assert.deepEqual(published.tasks.get('slice-01').implementationChecks.map(check => [check.id, check.status]),
+    [['implementation-check-01', 'TESTS_PASS']]);
   assert.deepEqual(await fs.readFile(captured.receiptFile), receiptBytes);
   assert.deepEqual(await fs.readFile(captured.semanticResponseFile), responseBytes);
 
@@ -442,7 +555,14 @@ test("execution producer inserts exact hashed evidence only into its owned candi
   const candidateBefore = await treeBytes(badCopy.candidateExecutionRoot), liveBadBefore = await treeBytes(bad.execution);
   await assert.rejects(serializeRunnerExecutionBundleFromResponse({ operation: 'EXECUTE_SLICE',
     response: JSON.stringify(contradiction), workspace: bad.root, taskArtifact: badCopy.candidateTaskArtifact, ...observed }),
-  /TESTS_PASS contradicts 1 marked verification command/u);
+  error => {
+    assert.equal(error.name, 'RunnerVerdictEvidenceError');
+    assert.equal(error.code, 'RUNNER_VERDICT_EVIDENCE_CONFLICT');
+    assert.equal(error.operation, 'EXECUTE_SLICE'); assert.equal(error.status, 'TESTS_PASS');
+    assert.deepEqual(error.failedCommands, JSON.parse(failedReceipt).verification.checks.map(({ command, exit }) => ({ command, exit })));
+    assert.equal(error.message, 'EXECUTE_SLICE TESTS_PASS contradicts 1 marked verification command(s) with non-zero exit');
+    return true;
+  });
   assert.deepEqual(await treeBytes(badCopy.candidateExecutionRoot), candidateBefore);
   assert.deepEqual(await treeBytes(bad.execution), liveBadBefore);
   assert.deepEqual(await fs.readFile(observed.receiptFile), failedReceipt);
@@ -2379,7 +2499,8 @@ async function renderTasks(fixture, { revision = 1, fingerprint = null,
 // Current joint preparation replaces the removed split materialization helper.
 // Legacy tests requesting materialized:false still receive the complete draft;
 // their old phase expectations must be reconciled individually, never revived.
-async function renderArtifacts(fixture, { materialized = true, planStatus = "ready", revision = 1, fingerprint = null } = {}) {
+async function renderArtifacts(fixture, { materialized = true, planStatus = "ready", revision = 1,
+  fingerprint = null, prepareInputs = null } = {}) {
   const authority = fingerprint ?? await computeRequirementsAuthority(fixture.requirements);
   const requirementsMetadata = await fs.stat(fixture.requirements);
   const authorityPath = requirementsMetadata.isDirectory() ? path.join(fixture.requirements, "feature_spec.md") : fixture.requirements;
@@ -2391,6 +2512,7 @@ async function renderArtifacts(fixture, { materialized = true, planStatus = "rea
   await fs.writeFile(implementationTarget, VALIDATED_CONTENT, "utf8");
   await fs.writeFile(path.join(fixture.root, "src/example.test.mjs"),
     'import test from "node:test";import assert from "node:assert/strict";import fs from "node:fs";test("AC-001 example bytes",()=>assert.equal(fs.readFileSync("src/example.txt","utf8"),'+JSON.stringify(VALIDATED_CONTENT)+'));\n');
+  if (prepareInputs !== null) await prepareInputs(fixture);
   const operation = await fs.stat(fixture.execution).then(() => "REPLAN").catch(error => { if (error.code === "ENOENT") return "PLAN"; throw error; });
   const prepared = await preparePreparationCandidate({ specPath: fixture.requirements, operation });
   const output = prepared.candidateExecutionRoot;
@@ -7906,4 +8028,1450 @@ test('U3 managed rejected result recovers with current admitted identity and exa
       for (const [file, bytes] of captures) assert.deepEqual(await fs.readFile(file), bytes);
     });
   }
+});
+
+// One selected parent, with an independent official workspace, owner, broker and
+// TMPDIR for each child. This is a proposal until its bounded fifth selection.
+test('U3 managed fifth matrix: ten historical lines with isolated official evidence', async t => {
+  const cliOnly = process.env.STNL_U3_MATRIX_ONLY === 'CLI_L2877';
+  assert.ok(process.env.STNL_U3_MATRIX_ONLY === undefined || cliOnly,
+    'STNL_U3_MATRIX_ONLY accepts only CLI_L2877');
+  const reason = 'Acceptance-only work changes no repository file.';
+  const configs = [
+    { name: 'E-json', op: 'EXECUTE_SLICE', kind: 'json', ids: ['L2720', 'L2867'] },
+    { name: 'E-json-fileless', op: 'EXECUTE_SLICE', kind: 'json', fileless: true, ids: ['L2741', 'L2877'] },
+    { name: 'E-omission', op: 'EXECUTE_SLICE', kind: 'omission', fileless: true, ids: ['L2665'] },
+    { name: 'A-json', op: 'APPLY_FINDINGS', kind: 'json', ids: ['L2762', 'L2867'] },
+    { name: 'V-json', op: 'VALIDATE_SLICE', kind: 'json', ids: ['L2783', 'L2867'] },
+    { name: 'V-schema', op: 'VALIDATE_SLICE', kind: 'schema', ids: ['L2804'] },
+    { name: 'E-producer', op: 'EXECUTE_SLICE', kind: 'producer', ids: ['L2825'] },
+    { name: 'A-producer', op: 'APPLY_FINDINGS', kind: 'producer', ids: ['L2846'] },
+  ];
+  const hash = bytes => createHash('sha256').update(bytes).digest('hex');
+  const receiptFiles = receipt => [receipt.receiptFile, receipt.semanticResponseFile, receipt.eventsPath,
+    receipt.receiptFile.replace(/\.receipt\.json$/u, '.started.json'),
+    receipt.receiptFile.replace(/\.receipt\.json$/u, '.verification.json'),
+    ...(receipt.formatRepair?.originalResponseFile ? [receipt.formatRepair.originalResponseFile] : [])];
+  const snapshot = async files => Promise.all(files.map(async file => [file, await fs.readFile(file)]));
+  const unchanged = async saved => { for (const [file, bytes] of saved) assert.deepEqual(await fs.readFile(file), bytes, file); };
+  const raw = value => typeof value === 'string' ? value : JSON.stringify(value);
+  const errorIs = (code, message) => error => { assert.equal(error.code, code); assert.equal(error.message, message); return true; };
+  const contextError = suffix => errorIs('MANAGED_CONTEXT_INVALID', `managed slice context: ${suffix}`);
+
+  async function setup(child, cfg) {
+    const f = await standaloneWorkspace(child); await renderArtifacts(f);
+    if (cfg.op !== 'EXECUTE_SLICE') f.exampleImplementation = await implementExample(f);
+    if (cfg.op === 'APPLY_FINDINGS') await validateExample(f, { status: 'NEEDS_FIX', findings: ACTIVE_FINDING });
+    const original = await inspectExecutionState(f.requirements);
+    const task = original.tasks.get('slice-01');
+    const claim = path.relative(path.join(f.execution, 'tasks'), path.join(f.root, 'src/example.txt')).split(path.sep).join('/');
+    const verification = await readRunnerVerification(f.requirements, 'slice-01');
+    assert.equal(verification.checks.length, 1, 'the prepared acceptance recipe is real and nonempty');
+    let semantic = cfg.op === 'VALIDATE_SLICE' ? sanitizedValidationResponse('PASS')
+      : scopeRegressionPayload(cfg.fileless ? reason : undefined);
+    semantic.commands = verification.checks.map(check => ({ command: verificationCommand(check), exit: 0 }));
+    if (cfg.op === 'APPLY_FINDINGS') {
+      for (const key of ['priorRoundFailure', 'correctionApplied', 'inSliceRationale']) delete semantic[key];
+      Object.assign(semantic, { findingsCycle: task.attempts.at(-1).id, findingsVerified: 'finding-01',
+        correctionsCovered: 'Verified the approved example correction', regressionsSelected: 'Reviewed example byte assertion',
+        unsupportedActiveFindings: 'none' });
+    }
+    const rejected = cfg.kind === 'json' ? '{ invalid final response'
+      : cfg.kind === 'schema' ? { ...semantic, commands: [] }
+        : cfg.kind === 'producer' ? { ...semantic, discoverySources: [] }
+          : (() => { const omitted = { ...semantic }; delete omitted.filelessReason; return omitted; })();
+    const before = { task: await fs.readFile(path.join(f.execution, 'tasks/slice-01.md')),
+      index: await fs.readFile(path.join(f.execution, 'tasks.md')),
+      records: [task.implementationChecks, task.findingsChecks, task.attempts].map(rows => rows.map(row => row.body)) };
+    return { f, cfg, claim, semantic, rejected, before, captures: [] };
+  }
+
+  function expectedRejection(cfg) {
+    if (cfg.kind === 'json') return { status: 'RUNNER_RESULT_BLOCKED', code: 'RUNNER_RESPONSE_SCHEMA_INVALID',
+      cause: 'final runner message is not valid JSON' };
+    if (cfg.kind === 'schema') return { status: 'RUNNER_RESULT_BLOCKED', code: 'RUNNER_RESPONSE_SCHEMA_INVALID',
+      cause: 'runner response schema is invalid: semantic validation payload commands must be a non-empty array' };
+    if (cfg.kind === 'omission') return { status: 'RUNNER_RESPONSE_CAPTURED', code: null,
+      cause: 'fileless semantic execution response must include Fileless reason', inner: 'RUNNER_EXECUTION_SCOPE_INVALID' };
+    return { status: 'RUNNER_RESPONSE_CAPTURED', code: null, cause: 'discoverySources must be a non-empty scalar' };
+  }
+
+  async function run(entry, response, { recovery = null, sequence = 1, integrity = false, replay = false } = {}) {
+    const { f, cfg, claim } = entry, expectation = expectedRejection(cfg);
+    return withManagedExample(f, cfg.op, response, async m => {
+      const taskFile = m.copy.candidateTaskArtifact;
+      if (cfg.op !== 'VALIDATE_SLICE') {
+        let text = (await fs.readFile(taskFile, 'utf8')).replace('- [ ] 1.1', '- [x] 1.1');
+        text = replaceSection(text, 'Changed Areas', cfg.fileless ? '- none' : `- \`${claim}\``);
+        if (cfg.op === 'APPLY_FINDINGS') text = replaceSection(text, 'Corrections Applied', `- \`${claim}\``);
+        text = replaceSection(text, 'Diff Summary', '- The unchanged reviewed assertion verifies the approved example behavior.');
+        await fs.writeFile(taskFile, text);
+      }
+      const payload = cfg.op === 'VALIDATE_SLICE' ? 'Validate the current reviewed example evidence.'
+        : { automaticCheckRound: '1/3', changedAreas: cfg.fileless ? [] : [claim],
+          ...(cfg.fileless ? { filelessReason: reason } : {}) };
+      const receipt = await m.dispatch(payload);
+      const isRejected = recovery === null || response !== entry.semantic;
+      const expected = isRejected ? expectation : null;
+      assert.equal(receipt.status, expected?.status ?? 'RUNNER_RESPONSE_CAPTURED');
+      assert.equal(receipt.exitCode, expected?.status === 'RUNNER_RESULT_BLOCKED' ? 1 : 0);
+      assert.equal(receipt.captureFailureCode, expected?.code ?? null);
+      if (expected?.code) assert.equal(receipt.captureFailure, expected.cause);
+      else assert.equal(receipt.captureFailure, null);
+      assert.equal(receipt.semanticResponseStatus, expected?.code ? null : cfg.op === 'VALIDATE_SLICE' ? 'PASS' : 'TESTS_PASS');
+      if (expected?.code) assert.equal(receipt.testedState, null);
+      else if (cfg.op !== 'VALIDATE_SLICE') {
+        assert.ok(Array.isArray(receipt.testedState?.entries));
+        assert.deepEqual(receipt.testedState.entries.map(({ path: name, value }) => [name, value]),
+          cfg.fileless ? [] : [[claim, `sha256:${hash(await fs.readFile(path.join(f.root, 'src/example.txt')))}`]]);
+      }
+      assert.equal(receipt.authority, m.context.authority);
+      assert.equal(receipt.operation, cfg.op); assert.equal(receipt.slice, 'slice-01');
+      assert.equal(receipt.sequence, sequence); assert.deepEqual(receipt.owner, m.context.owner);
+      assert.equal(receipt.attempt, sequence); assert.equal(m.calls(), 1); assert.equal(m.broker.requestsHandled, 1);
+      assert.equal(receipt.formatRepair?.attempted ?? false, false);
+      assert.equal(receipt.formatRepair?.accepted ?? false, false);
+      if (cfg.kind === 'schema' && isRejected) {
+        assert.equal(typeof receipt.formatRepair?.originalResponseFile, 'string');
+        const original = await fs.readFile(receipt.formatRepair.originalResponseFile);
+        assert.equal(original.toString('utf8'), raw(response));
+        assert.equal(receipt.formatRepair.originalSha256, hash(original));
+      }
+      const bytes = await fs.readFile(receipt.semanticResponseFile);
+      assert.equal(bytes.toString('utf8'), raw(response)); assert.equal(receipt.semanticResponseSha256, hash(bytes));
+      assert.deepEqual(JSON.parse(await fs.readFile(receipt.receiptFile)), receipt);
+      assert.equal(receipt.verification.status, 'completed');
+      assert.deepEqual(receipt.verification.checks.map(({ command, exit }) => [command, exit]),
+        (await readRunnerVerification(f.requirements, 'slice-01')).checks.map(check => [verificationCommand(check), 0]));
+      if (cfg.op !== 'VALIDATE_SLICE') assert.equal(receipt.automaticCheckRound, '1/3');
+      const originalEvidence = await snapshot(receiptFiles(receipt)); entry.captures.push(...originalEvidence);
+      let diagnostic = null;
+      if (isRejected) {
+        const rejection = deriveCanonicalRunnerRejection({ receipt, response: bytes.toString('utf8') });
+        assert.equal(rejection.code, 'RUNNER_SEMANTIC_RESULT_INVALID');
+        assert.equal(rejection.cause.message, expected.cause);
+        if (expected.inner) assert.equal(rejection.cause.code, expected.inner);
+        diagnostic = recoverableRunnerResultDiagnostic(rejection);
+        if (cfg.kind === 'producer' || cfg.kind === 'omission') {
+          await assert.rejects(serializeRunnerExecutionBundleFromResponse({ operation: cfg.op, workspace: f.root,
+            taskArtifact: taskFile, response: bytes.toString('utf8'), receiptFile: receipt.receiptFile,
+            semanticResponseFile: receipt.semanticResponseFile }), error => {
+            assert.equal(error.code, 'RUNNER_SEMANTIC_RESULT_INVALID'); assert.equal(error.cause.message, expected.cause);
+            if (expected.inner) assert.equal(error.cause.code, expected.inner); return true;
+          });
+        }
+        if (integrity) await exerciseManagedReceiptIntegrity(entry, m, receipt);
+        if (replay) {
+          const candidate = await treeBytes(m.copy.candidateExecutionRoot), live = await treeBytes(f.execution);
+          const latestFile = path.join(m.broker.directory, `${String(sequence).padStart(3, '0')}.latest.json`);
+          const latest = await fs.readFile(latestFile);
+          await assert.rejects(m.dispatch(payload), errorIs('BROKER_RESULT_ALREADY_CAPTURED',
+            'BROKER_RESULT_ALREADY_CAPTURED: Prior validation dispatch is settled or uncertain; this code alone does not establish a usable captured result.'));
+          assert.equal(m.calls(), 1); assert.equal(m.broker.requestsHandled, 2);
+          assert.deepEqual(m.broker.errors, ['BROKER_RESULT_ALREADY_CAPTURED']);
+          assert.deepEqual(await fs.readFile(latestFile), latest);
+          await unchanged(originalEvidence); assert.deepEqual(await treeBytes(m.copy.candidateExecutionRoot), candidate);
+          assert.deepEqual(await treeBytes(f.execution), live);
+        }
+      }
+      const inputTree = await treeBytes(m.copy.candidateExecutionRoot);
+      const outcome = await m.finalize();
+      assert.equal(outcome.published, true);
+      assert.equal(outcome.state, isRejected ? 'RUNNER_RESULT_BLOCKED'
+        : cfg.op === 'EXECUTE_SLICE' ? 'IMPLEMENTED_AWAITING_VALIDATION'
+          : cfg.op === 'APPLY_FINDINGS' ? 'FINDINGS_CORRECTED' : 'COMPLETE');
+      assert.deepEqual(await treeBytes(m.copy.candidateExecutionRoot), inputTree);
+      assert.equal(m.calls(), 1);
+      const state = await inspectExecutionState(f.requirements);
+      if (isRejected) {
+        assert.equal(state.activeDelegationBlockers.length, 1);
+        const blocker = state.activeDelegationBlockers[0];
+        assert.equal(blocker.kind, 'malformed-output'); assert.equal(blocker.operation, cfg.op);
+        assert.equal(blocker.slice, 'slice-01'); assert.ok(blocker.recoveryProof);
+        const liveTask = await fs.readFile(path.join(f.execution, 'tasks/slice-01.md'), 'utf8');
+        assert.equal((liveTask.match(/^- Kind: malformed-output$/gmu) ?? []).length, 1);
+        for (const heading of ['Implementation Test Evidence', 'Findings Test Evidence', 'Validation Attempts',
+          'Effective Validation Base', 'Final Result']) assert.equal(recoverySection(liveTask, heading),
+          recoverySection(entry.before.task.toString('utf8'), heading), heading);
+        if (cfg.fileless) for (const heading of ['Checklist', 'Changed Areas'])
+          assert.equal(recoverySection(liveTask, heading), recoverySection(entry.before.task.toString('utf8'), heading));
+        assert.deepEqual(await fs.readFile(path.join(f.execution, 'tasks.md')), entry.before.index);
+        const task = state.tasks.get('slice-01');
+        assert.deepEqual([task.implementationChecks, task.findingsChecks, task.attempts].map(rows => rows.map(row => row.body)), entry.before.records);
+        assert.equal(state.mandatoryRecovery.operation, cfg.op); assert.equal(state.mandatoryRecovery.slice, 'slice-01');
+        assert.equal(state.mandatoryRecovery.sameOperationResumeRequired, true);
+        const conflicting = cfg.op === 'VALIDATE_SLICE' ? 'EXECUTE_SLICE' : 'VALIDATE_SLICE';
+        await assert.rejects(preflightExecutionOperation(f.requirements, conflicting, '1'),
+          /active or uncertain operation blocks conflicting admission/u);
+        await assert.rejects(preflightExecutionOperation(f.requirements, conflicting, '1',
+          { owner: state.activation.activeAttempt }), error => {
+          assert.ok(error instanceof ExecutionContractError);
+          assert.equal(error.message,
+            `${conflicting} is not legal from RUNNER_RESULT_BLOCKED; legal next operation is ${cfg.op} for slice-01`);
+          assert.deepEqual(error.recoveryTargets, state.recoveryTargets); return true;
+        });
+        const proof = JSON.parse(await fs.readFile(blocker.recoveryProof.path));
+        assert.deepEqual(proof.owner, m.context.owner); assert.equal(proof.receiptFile, receipt.receiptFile);
+        assert.equal(proof.semanticResponseFile, receipt.semanticResponseFile);
+        assert.equal(proof.diagnostic, diagnostic);
+        assert.equal(proof.consumedInvocations, sequence);
+        for (const heading of ['Implementation Test Evidence', 'Findings Test Evidence', 'Validation Attempts'])
+          assert.equal(proof.privateChecks[heading], recoverySection(entry.before.task.toString('utf8'), heading));
+        for (const evidence of proof.evidence) assert.equal(evidence.sha256, `sha256:${hash(await fs.readFile(evidence.path))}`);
+        const rejectedRecovery = { expectedActivationId: state.activation.activationId,
+          rejectedOperationAttemptId: state.activation.activeAttempt.operationAttemptId, rejection: blocker.recoveryProof };
+        await assert.rejects(preflightRunnerResultRecovery(f.requirements, cfg.op, '1', rejectedRecovery),
+          sequence === 1 ? /runner recovery: managed runner conclusion uncertain/u
+            : /runner recovery: rejected owner\/activation differs or recovery already consumed/u);
+        return { receipt, owner: m.context.owner, state, recovery: rejectedRecovery, tmpdir: m.tmpdir,
+          brokerDirectory: m.broker.directory, proof, outcome };
+      }
+      return { receipt, owner: m.context.owner, state, tmpdir: m.tmpdir, outcome };
+    }, { recovery, sequence });
+  }
+
+  async function exerciseManagedReceiptIntegrity(entry, m, receipt) {
+    const { f, cfg } = entry;
+    const consume = (environment = m.environment, receiptFile = receipt.receiptFile, allowRejected = true) =>
+      assertManagedRunnerReceipt({ operation: cfg.op, slice: 'slice-01', workspace: f.root, receiptFile,
+        semanticResponseFile: receipt.semanticResponseFile, allowRejected, environment });
+    await consume();
+    const candidate = await treeBytes(m.copy.candidateExecutionRoot), live = await treeBytes(f.execution);
+    const controls = await snapshot([...receiptFiles(receipt),
+      path.join(m.broker.directory, `${String(receipt.sequence).padStart(3, '0')}.latest.json`)]);
+    const otherControls = async changedFile => {
+      for (const [file, bytes] of controls) if (file !== changedFile) assert.deepEqual(await fs.readFile(file), bytes, file);
+    };
+    const mutate = async (file, make, expected) => {
+      const original = await fs.readFile(file), changed = Buffer.from(make(original));
+      assert.notDeepEqual(changed, original, 'one exact mutation must be applied');
+      await fs.writeFile(file, changed);
+      try {
+        await assert.rejects(consume(), expected);
+        assert.deepEqual(await fs.readFile(file), changed, 'consumer must not repair its input');
+        assert.deepEqual(await treeBytes(m.copy.candidateExecutionRoot), candidate);
+        assert.deepEqual(await treeBytes(f.execution), live);
+        await otherControls(file);
+      } finally { await fs.writeFile(file, original); }
+      await consume();
+    };
+    const changeJson = (file, change, expected) => mutate(file,
+      bytes => JSON.stringify(change(JSON.parse(bytes))), expected);
+    const identity = contextError('receipt does not match the active managed runner invocation');
+    const copy = path.join(m.tmpdir, 'copied-rejected-receipt.json');
+    await fs.writeFile(copy, await fs.readFile(receipt.receiptFile), { flag: 'wx' });
+    await assert.rejects(consume(m.environment, copy), identity);
+    assert.deepEqual(await treeBytes(m.copy.candidateExecutionRoot), candidate);
+    await consume();
+    for (const [key, value] of Object.entries({ operation: cfg.op === 'VALIDATE_SLICE' ? 'EXECUTE_SLICE' : 'VALIDATE_SLICE',
+      slice: 'slice-02', sequence: receipt.sequence + 1, attempt: receipt.attempt + 1,
+      authority: 'sha256:' + '0'.repeat(64), receiptFile: copy,
+      semanticResponseFile: path.join(m.tmpdir, 'other.response.json'), processError: 'transport error',
+      providerError: { message: 'provider failure' } })) {
+      await changeJson(receipt.receiptFile, object => ({ ...object, [key]: value }), identity);
+    }
+    await changeJson(receipt.receiptFile, object => ({ ...object,
+      owner: { ...object.owner, operationAttemptId: randomUUID() } }), identity);
+    const wrongOwner = managedEnvironment({ ...m.environment }, { ...m.context,
+      owner: { ...m.context.owner, operationAttemptId: randomUUID() } });
+    await assert.rejects(consume(wrongOwner), identity);
+    await consume();
+    if (receipt.status === 'RUNNER_RESULT_BLOCKED') {
+      await changeJson(receipt.receiptFile, object => ({ ...object, status: 'RUNNER_RESPONSE_CAPTURED',
+        exitCode: 0, captureFailure: null, captureFailureCode: null }), identity);
+      await assert.rejects(consume(m.environment, receipt.receiptFile, false), identity);
+      await consume();
+    }
+    await changeJson(receipt.receiptFile, object => ({ ...object, semanticResponseSha256: '0'.repeat(64) }),
+      contextError('receipt response hash disagrees'));
+    await mutate(receipt.semanticResponseFile, bytes => Buffer.concat([bytes, Buffer.from(' ')]),
+      contextError('receipt response hash disagrees'));
+    await changeJson(receipt.receiptFile, object => ({ ...object, threadId: 'other-thread' }),
+      contextError('receipt is not backed by the completed SDK turn and exact response'));
+    const started = receipt.receiptFile.replace(/\.receipt\.json$/u, '.started.json');
+    await changeJson(started, object => ({ ...object, owner: { ...object.owner, operationAttemptId: randomUUID() } }),
+      contextError('runner origin/owner binding differs'));
+    for (const [key, value] of Object.entries({ authority: 'sha256:' + '0'.repeat(64), operation: 'OTHER',
+      sequence: receipt.sequence + 1, slice: 'slice-02', attempt: receipt.attempt + 1 }))
+      await changeJson(started, object => ({ ...object, [key]: value }), contextError('runner start identity disagrees'));
+    const eventLines = bytes => bytes.toString('utf8').trimEnd().split('\n').map(JSON.parse);
+    await mutate(receipt.eventsPath, bytes => {
+      const events = eventLines(bytes); events[0].operationId = 'runner-other';
+      return events.map(JSON.stringify).join('\n') + '\n';
+    }, contextError('runner SDK event identity disagrees'));
+    await mutate(receipt.eventsPath, bytes => {
+      const events = eventLines(bytes);
+      const final = events.find(event => event.type === 'item.completed' && event.item?.type === 'agent_message');
+      assert.ok(final); final.item.text += ' tampered';
+      return events.map(JSON.stringify).join('\n') + '\n';
+    }, contextError('receipt is not backed by the completed SDK turn and exact response'));
+    await mutate(receipt.eventsPath, bytes => Buffer.concat([bytes,
+      Buffer.from(JSON.stringify({ operationId: eventLines(bytes)[0].operationId, type: 'turn.started' }) + '\n')]),
+    contextError('receipt is not backed by the completed SDK turn and exact response'));
+    const verification = receipt.receiptFile.replace(/\.receipt\.json$/u, '.verification.json');
+    await changeJson(verification, object => ({ ...object, checks: object.checks.map((check, index) =>
+      index === 0 ? { ...check, stdout: check.stdout + ' tampered' } : check) }),
+    contextError('managed verification producer observation differs'));
+    const originalRequirements = await fs.readFile(f.requirements);
+    await fs.appendFile(f.requirements, '\nAC-002: authority changed after capture.\n');
+    try {
+      await assert.rejects(consume(), errorIs('EXECUTION_PUBLICATION_BLOCKED', 'execution publication: requirements authority is stale'));
+      assert.deepEqual(await treeBytes(m.copy.candidateExecutionRoot), candidate);
+      assert.deepEqual(await treeBytes(f.execution), live);
+      await otherControls(f.requirements);
+    } finally { await fs.writeFile(f.requirements, originalRequirements); }
+    await consume();
+    const withoutContext = { ...m.environment };
+    for (const key of ['STNL_MANAGED_CONTEXT', 'STNL_MANAGED_SPEC_PATH', 'STNL_MANAGED_WORKSPACE',
+      'STNL_MANAGED_OPERATION', 'STNL_MANAGED_SLICE', 'STNL_MANAGED_RUNNER_BRIDGE',
+      'STNL_MANAGED_PREFLIGHT', 'STNL_RUNNER_EVIDENCE_SERIALIZER']) delete withoutContext[key];
+    await assert.rejects(consume(withoutContext), contextError('managed context and active broker invocation are required'));
+    await consume();
+  }
+
+  if (!cliOnly) for (const cfg of configs) await t.test(`${cfg.name} ${cfg.ids.join('+')}`, async child => {
+    const entry = await setup(child, cfg);
+    const first = await run(entry, entry.rejected, { integrity: true });
+    const supervisor = JSON.parse(await fs.readFile(path.join(first.brokerDirectory, '001.supervisor.json')));
+    assert.ok(supervisor.closedAt); assert.equal(supervisor.pending, false);
+    assert.equal(supervisor.cancelledPending, false); assert.deepEqual(supervisor.errors, []);
+    assert.equal((await preflightRunnerResultRecovery(entry.f.requirements, cfg.op, '1', first.recovery)).state, 'RUNNER_RESULT_BLOCKED');
+    const second = await run(entry, entry.semantic, { recovery: first.recovery, sequence: 2 });
+    assert.notEqual(second.owner.operationAttemptId, first.owner.operationAttemptId);
+    assert.equal(second.owner.recovery.predecessor.operationAttemptId, first.owner.operationAttemptId);
+    assert.equal(second.owner.recovery.round, 1); assert.equal(second.owner.recovery.consumedInvocations, 1);
+    assert.notEqual(second.receipt.threadId, first.receipt.threadId);
+    assert.notEqual(second.receipt.receiptFile, first.receipt.receiptFile);
+    if (cfg.op === 'EXECUTE_SLICE') await validateExample(entry.f);
+    if (cfg.op === 'APPLY_FINDINGS') await validateExample(entry.f, { findings: ACTIVE_FINDING.replace('- State: active', '- State: resolved')
+      + '\n- Resolution: attempt-02 verified the correction.', dispositions: 'finding-01=resolved' });
+    const completed = await inspectExecutionState(entry.f.requirements), task = completed.tasks.get('slice-01');
+    assert.equal(completed.state, 'COMPLETE');
+    assert.deepEqual([task.implementationChecks.length, task.findingsChecks.length, task.attempts.length],
+      cfg.op === 'EXECUTE_SLICE' ? [1, 0, 1] : cfg.op === 'APPLY_FINDINGS' ? [1, 1, 2] : [1, 0, 1]);
+    assert.equal((cfg.op === 'EXECUTE_SLICE' ? task.implementationChecks : cfg.op === 'APPLY_FINDINGS'
+      ? task.findingsChecks : task.attempts).at(-1).id,
+    cfg.op === 'EXECUTE_SLICE' ? 'implementation-check-01' : cfg.op === 'APPLY_FINDINGS' ? 'findings-check-01' : 'attempt-01');
+    if (cfg.op === 'APPLY_FINDINGS') assert.equal(task.attempts[0].body, entry.before.records[2][0]);
+    if (cfg.op === 'APPLY_FINDINGS') {
+      const binding = second.outcome.findingsCycleBinding;
+      assert.equal(binding.method, 'sealed-state-ownership');
+      assert.equal(binding.canonicalCycle, 'attempt-01');
+      assert.deepEqual(binding.activeFindings, ['finding-01']);
+      assert.equal(binding.receiptFile, second.receipt.receiptFile);
+      assert.equal(binding.responseSha256, second.receipt.semanticResponseSha256);
+      const sealed = JSON.parse(await fs.readFile(path.join(second.tmpdir, 'stnl-runner-broker',
+        `sealed-${binding.requestId}.json`)));
+      for (const key of ['canonicalCycle', 'candidateNonce', 'candidateTaskArtifact', 'sourceTaskSha256',
+        'candidateInputSha256', 'candidateTreeSha256', 'sourceTestsSha256', 'testedStateSha256'])
+        assert.deepEqual(binding[key], sealed.findingsOwnership[key]);
+    }
+    await unchanged(entry.captures);
+  });
+
+  // An invalid second conclusion has one new proof, but authorizes no third
+  // invocation. Each operation has a separate history and broker supervisor.
+  if (!cliOnly) for (const op of ['EXECUTE_SLICE', 'APPLY_FINDINGS', 'VALIDATE_SLICE']) await t.test(`exhaustion ${op} L2867`, async child => {
+    const cfg = configs.find(value => value.op === op && value.kind === 'json' && !value.fileless);
+    const entry = await setup(child, cfg);
+    const first = await run(entry, entry.rejected);
+    const supervisor = JSON.parse(await fs.readFile(path.join(first.brokerDirectory, '001.supervisor.json')));
+    assert.ok(supervisor.closedAt); assert.deepEqual(supervisor.errors, []);
+    const managerReadback = { execution: first.state, executionRaw: first.state, product: { deriveNormalHandoff } };
+    const managerOutcome = decideOutcome(op, managerReadback, true);
+    assert.deepEqual(managerOutcome, { result: 'BLOCKED', blocker: 'OFFICIAL_RUNNER_RESULT_BLOCKED' });
+    const managerTarget = recoverableRunnerHandoff({ operation: op, slice: 'slice-01', outcome: managerOutcome,
+      readback: managerReadback, priorOperations: [], remainingTurns: 20 });
+    assert.equal(managerTarget.operation, op); assert.equal(managerTarget.slice, 'slice-01');
+    assert.equal(recoverableRunnerHandoff({ operation: op, slice: 'slice-01', outcome: managerOutcome,
+      readback: managerReadback, priorOperations: [], remainingTurns: 1 }), null);
+    const second = await run(entry, entry.rejected, { recovery: first.recovery, sequence: 2 });
+    assert.equal(second.state.activeDelegationBlockers.length, 1);
+    assert.equal(second.proof.consumedInvocations, 2);
+    assert.equal(second.proof.receiptFile, second.receipt.receiptFile);
+    assert.notEqual(second.proof.receiptFile, first.proof.receiptFile);
+    assert.deepEqual([second.state.tasks.get('slice-01').implementationChecks,
+      second.state.tasks.get('slice-01').findingsChecks, second.state.tasks.get('slice-01').attempts]
+      .map(rows => rows.map(row => row.body)), entry.before.records);
+    await assert.rejects(preflightRunnerResultRecovery(entry.f.requirements, op, '1', second.recovery),
+      /runner recovery: rejected owner\/activation differs or recovery already consumed/u);
+    const afterReadback = { execution: second.state, executionRaw: second.state, product: { deriveNormalHandoff } };
+    const afterOutcome = decideOutcome(op, afterReadback, true);
+    assert.deepEqual(afterOutcome, managerOutcome);
+    assert.equal(recoverableRunnerHandoff({ operation: op, slice: 'slice-01', outcome: afterOutcome,
+      readback: afterReadback, priorOperations: [{ recovery: managerTarget }], remainingTurns: 20 }), null);
+    const cases = JSON.parse(await fs.readFile(path.join(ROOT, 'benchmarks/sentinel-todo/benchmark.json'), 'utf8')).cases;
+    for (const id of ['A', 'B']) {
+      const budgets = cases.find(c => c.id === id).budgets;
+      const key = op === 'VALIDATE_SLICE' ? 'maxWorkflowEvents'
+        : op === 'EXECUTE_SLICE' ? 'maxExecuteSliceAttemptsPerSlice' : 'maxApplyFindingsPerSlice';
+      const event = { operation: op, slice: 'slice-01' }, limit = budgets[key];
+      assert.equal(budgetViolation(Array(limit).fill(event), budgets), null);
+      assert.deepEqual(budgetViolation(Array(limit + 1).fill(event), budgets), { budget: key, limit, observed: limit + 1 });
+    }
+    await unchanged(entry.captures);
+  });
+
+  // Replay deliberately contaminates its own supervisor. It cannot share a
+  // fixture with the clean successor, and its broker errors are never edited.
+  if (!cliOnly) for (const name of ['E-json', 'A-json', 'V-json', 'V-schema']) await t.test(`replay ${name}`, async child => {
+    const entry = await setup(child, configs.find(value => value.name === name));
+    const first = await run(entry, entry.rejected, { replay: true });
+    const supervisor = JSON.parse(await fs.readFile(path.join(first.brokerDirectory, '001.supervisor.json')));
+    assert.equal(supervisor.pending, false); assert.equal(supervisor.cancelledPending, false);
+    assert.deepEqual(supervisor.errors, ['BROKER_RESULT_ALREADY_CAPTURED']);
+    await assert.rejects(preflightRunnerResultRecovery(entry.f.requirements, entry.cfg.op, '1', first.recovery),
+      /runner recovery: managed runner conclusion uncertain/u);
+    await unchanged(entry.captures);
+  });
+
+  await t.test('CLI L2877: finite payload, sealed association, idempotence and official successor', async child => {
+    const entry = await setup(child, configs.find(value => value.name === 'E-json-fileless'));
+    const { f } = entry;
+    const bridge = path.join(ROOT, 'agents/codex/runtime/managed-runner-bridge.mjs');
+    const finalizer = path.join(ROOT, 'agents/codex/runtime/managed-slice-finalize.mjs');
+    async function cli(script, args, env) {
+      const childProcess = spawn(process.execPath, [script, ...args],
+        { cwd: f.root, env, stdio: ['pipe', 'pipe', 'pipe'] });
+      let stdout = '', stderr = '';
+      childProcess.stdout.setEncoding('utf8'); childProcess.stderr.setEncoding('utf8');
+      childProcess.stdout.on('data', chunk => { stdout += chunk; });
+      childProcess.stderr.on('data', chunk => { stderr += chunk; });
+      let timer;
+      try {
+        const status = await Promise.race([
+          new Promise((resolve, reject) => { childProcess.once('error', reject); childProcess.once('close', resolve); }),
+          new Promise((_, reject) => { timer = setTimeout(() => {
+            childProcess.kill('SIGKILL'); reject(new Error('managed CLI exceeded five-second deadline'));
+          }, 5000); }),
+        ]);
+        return { status, stdout, stderr };
+      } finally { clearTimeout(timer); childProcess.stdin.destroy(); }
+    }
+    const prepareViaCli = async ({ environment }) => {
+      const prepared = await cli(finalizer, ['--prepare'], environment);
+      assert.equal(prepared.status, 0, prepared.stderr);
+      return JSON.parse(prepared.stdout);
+    };
+    const first = await withManagedExample(f, 'EXECUTE_SLICE', entry.rejected, async m => {
+      m.environment.STNL_MANAGED_RUNNER_PAYLOAD = m.broker.payloadFile;
+      const payloadFile = m.broker.payloadFile;
+      const taskFile = m.copy.candidateTaskArtifact;
+      let text = (await fs.readFile(taskFile, 'utf8')).replace('- [ ] 1.1', '- [x] 1.1');
+      text = replaceSection(text, 'Changed Areas', '- none');
+      text = replaceSection(text, 'Diff Summary', '- Reviewed acceptance assertion exercises the approved example without product writes.');
+      await fs.writeFile(taskFile, text);
+      const candidate = await treeBytes(m.copy.candidateExecutionRoot), live = await treeBytes(f.execution);
+      const noArgs = await cli(bridge, [], m.environment);
+      assert.equal(noArgs.status, 1);
+      assert.equal(noArgs.stderr.trim(), 'BLOCKED: usage: managed-runner-bridge.mjs --payload-file "$STNL_MANAGED_RUNNER_PAYLOAD"');
+      const absent = await cli(bridge, ['--payload-file', payloadFile], m.environment);
+      assert.equal(absent.status, 1); assert.match(absent.stderr, /ENOENT/u);
+      for (const [body, message] of [['', 'managed payload-file must be a nonempty regular single-link file of at most 256 KiB'],
+        ['x'.repeat(256 * 1024 + 1), 'managed payload-file must be a nonempty regular single-link file of at most 256 KiB'],
+        ['{ invalid JSON', null], ['[]', 'managed payload-file must contain one JSON object']]) {
+        await fs.writeFile(payloadFile, body);
+        const result = await cli(bridge, ['--payload-file', payloadFile], m.environment);
+        assert.equal(result.status, 1);
+        if (message) assert.equal(result.stderr.trim(), `BLOCKED: ${message}`);
+        await fs.rm(payloadFile);
+        assert.equal(m.calls(), 0); assert.equal(m.broker.requestsHandled, 0);
+        assert.deepEqual(await treeBytes(m.copy.candidateExecutionRoot), candidate);
+        assert.deepEqual(await treeBytes(f.execution), live);
+      }
+      const other = path.join(m.tmpdir, 'other-payload.json'); await fs.writeFile(other, '{}');
+      await fs.symlink(other, payloadFile);
+      assert.equal((await cli(bridge, ['--payload-file', payloadFile], m.environment)).stderr.trim(),
+        'BLOCKED: managed payload-file identity disagrees');
+      await fs.rm(payloadFile); await fs.link(other, payloadFile);
+      assert.equal((await cli(bridge, ['--payload-file', payloadFile], m.environment)).stderr.trim(),
+        'BLOCKED: managed payload-file must be a nonempty regular single-link file of at most 256 KiB');
+      await fs.rm(payloadFile); await fs.rm(other);
+      assert.equal((await cli(bridge, ['--payload-file', taskFile], m.environment)).stderr.trim(),
+        'BLOCKED: managed payload-file identity disagrees');
+      const latestFile = path.join(m.broker.directory, '001.latest.json');
+      const earlyPrepare = await cli(finalizer, ['--prepare'], m.environment);
+      assert.equal(earlyPrepare.status, 1); assert.match(earlyPrepare.stderr, /BLOCKED: ENOENT:/u);
+      assert.ok(earlyPrepare.stderr.includes(latestFile));
+      assert.equal(m.calls(), 0); assert.equal(m.broker.requestsHandled, 0);
+      assert.deepEqual(await treeBytes(m.copy.candidateExecutionRoot), candidate);
+      assert.deepEqual(await treeBytes(f.execution), live);
+      const payload = { automaticCheckRound: '1/3', changedAreas: [], filelessReason: reason,
+        relevantEvidence: 'Olá "quotes" $() `data` — finite bytes' };
+      await fs.writeFile(payloadFile, JSON.stringify(payload));
+      const dispatched = await cli(bridge, ['--payload-file', payloadFile], m.environment);
+      assert.equal(dispatched.status, 1, dispatched.stderr);
+      const line = dispatched.stdout.trim().split('\n').find(value => value.startsWith('SENTINEL_RUNNER_RECEIPT '));
+      assert.ok(line); const receipt = JSON.parse(line.slice('SENTINEL_RUNNER_RECEIPT '.length));
+      assert.deepEqual(JSON.parse(await fs.readFile(receipt.receiptFile)), receipt);
+      assert.equal(receipt.status, 'RUNNER_RESULT_BLOCKED');
+      assert.equal(receipt.captureFailureCode, 'RUNNER_RESPONSE_SCHEMA_INVALID');
+      assert.equal(await fs.readFile(receipt.semanticResponseFile, 'utf8'), entry.rejected);
+      assert.equal(receipt.semanticResponseSha256, hash(Buffer.from(entry.rejected)));
+      assert.equal(m.calls(), 1); assert.equal(m.broker.requestsHandled, 1);
+      await assertManagedRunnerReceipt({ operation: 'EXECUTE_SLICE', slice: 'slice-01', workspace: f.root,
+        receiptFile: receipt.receiptFile, semanticResponseFile: receipt.semanticResponseFile,
+        allowRejected: true, environment: m.environment });
+      entry.captures.push(...await snapshot(receiptFiles(receipt)));
+      const latePrepare = await cli(finalizer, ['--prepare'], m.environment);
+      assert.equal(latePrepare.status, 1);
+      assert.equal(latePrepare.stderr.trim(),
+        'BLOCKED: MANAGED_FINALIZATION_FAILED: managed candidate already prepared; retain its canonical identity');
+      const latestBytes = await fs.readFile(latestFile), latest = JSON.parse(latestBytes);
+      const associationCases = [
+        [{ operation: 'VALIDATE_SLICE' }, 'managed receipt association disagrees'],
+        [{ slice: 'slice-02' }, 'managed receipt association disagrees'],
+        [{ authority: 'sha256:' + '0'.repeat(64) }, 'managed receipt association disagrees'],
+        [{ payloadSha256: '0'.repeat(64) }, 'managed sealed payload association disagrees'],
+        [{ receipt: { ...latest.receipt, threadId: 'other-thread' } }, 'managed receipt changed after broker settlement'],
+      ];
+      for (const [mutation, message] of associationCases) {
+        const changed = Buffer.from(JSON.stringify({ ...latest, ...mutation }));
+        assert.notDeepEqual(changed, latestBytes);
+        await fs.writeFile(latestFile, changed);
+        try {
+          const rejected = await cli(finalizer, ['--finalize'], m.environment);
+          assert.equal(rejected.status, 1); assert.equal(rejected.stderr.trim(), `BLOCKED: MANAGED_FINALIZATION_FAILED: ${message}`);
+          assert.deepEqual(await fs.readFile(latestFile), changed);
+          assert.deepEqual(await treeBytes(m.copy.candidateExecutionRoot), candidate);
+          assert.deepEqual(await treeBytes(f.execution), live);
+        } finally { await fs.writeFile(latestFile, latestBytes); }
+      }
+      const published = await cli(finalizer, ['--finalize'], m.environment);
+      assert.equal(published.status, 0, published.stderr);
+      const outcome = JSON.parse(published.stdout);
+      assert.equal(outcome.state, 'RUNNER_RESULT_BLOCKED'); assert.equal(outcome.published, true);
+      assert.deepEqual(JSON.parse((await cli(finalizer, ['--finalize'], m.environment)).stdout), outcome);
+      const blockedLive = await treeBytes(f.execution), blockedCandidate = await treeBytes(m.copy.candidateExecutionRoot);
+      const task = path.join(f.execution, 'tasks/slice-01.md'), taskBytes = await fs.readFile(task);
+      const foreignSummary = replaceSection(taskBytes.toString('utf8'), 'Diff Summary',
+        '- Foreign live summary after recorded finalization.');
+      assert.notEqual(foreignSummary, taskBytes.toString('utf8'));
+      await fs.writeFile(task, foreignSummary);
+      const conflict = await fs.readFile(task);
+      try {
+        const rejected = await cli(finalizer, ['--finalize'], m.environment);
+        assert.equal(rejected.status, 1);
+        assert.equal(rejected.stderr.trim(),
+          'BLOCKED: EXECUTION_PUBLICATION_BLOCKED: execution publication: activation manifest does not cover current artifacts');
+        assert.deepEqual(await fs.readFile(task), conflict);
+      } finally { await fs.writeFile(task, taskBytes); }
+      const finalizationFile = path.join(m.broker.directory, '001.finalization.json');
+      const finalBytes = await fs.readFile(finalizationFile), finalization = JSON.parse(finalBytes);
+      for (const [mutation, message] of [
+        [{ taskSha256: '0'.repeat(64) }, 'managed finalization readback conflict'],
+        [{ evidenceSha256: { '/outside/fictitious-GLOBAL': '0'.repeat(64) } }, 'managed finalized evidence paths disagree'],
+      ]) {
+        const changed = Buffer.from(JSON.stringify({ ...finalization, ...mutation }));
+        await fs.writeFile(finalizationFile, changed);
+        try {
+          const rejected = await cli(finalizer, ['--finalize'], m.environment);
+          assert.equal(rejected.status, 1); assert.equal(rejected.stderr.trim(), `BLOCKED: MANAGED_FINALIZATION_FAILED: ${message}`);
+          assert.deepEqual(await fs.readFile(finalizationFile), changed);
+          assert.deepEqual(await treeBytes(f.execution), blockedLive);
+          assert.deepEqual(await treeBytes(m.copy.candidateExecutionRoot), blockedCandidate);
+        } finally { await fs.writeFile(finalizationFile, finalBytes); }
+      }
+      const extra = await cli(finalizer, ['--finalize', '--receipt-file', '/outside'], m.environment);
+      assert.equal(extra.status, 1);
+      assert.equal(extra.stderr.trim(), 'BLOCKED: MANAGED_FINALIZATION_FAILED: managed finalizer takes only --prepare or --finalize');
+      assert.deepEqual(JSON.parse((await cli(finalizer, ['--finalize'], m.environment)).stdout), outcome);
+      const state = await inspectExecutionState(f.requirements);
+      const recovery = { expectedActivationId: state.activation.activationId,
+        rejectedOperationAttemptId: state.activation.activeAttempt.operationAttemptId,
+        rejection: state.activeDelegationBlockers[0].recoveryProof };
+      await assert.rejects(preflightRunnerResultRecovery(f.requirements, 'EXECUTE_SLICE', '1', recovery),
+        /runner recovery: managed runner conclusion uncertain/u);
+      return { receipt, recovery };
+    }, { prepareCandidate: prepareViaCli });
+    const supervisor = JSON.parse(await fs.readFile(path.join(path.dirname(first.receipt.receiptFile),
+      'stnl-runner-broker/001.supervisor.json')));
+    assert.ok(supervisor.closedAt); assert.deepEqual(supervisor.errors, []);
+    assert.equal((await preflightRunnerResultRecovery(f.requirements, 'EXECUTE_SLICE', '1', first.recovery)).state, 'RUNNER_RESULT_BLOCKED');
+    async function completeViaCli(operation, response, { recovery = null, sequence = 1 } = {}) {
+      return withManagedExample(f, operation, response, async m => {
+        m.environment.STNL_MANAGED_RUNNER_PAYLOAD = m.broker.payloadFile;
+        if (operation === 'EXECUTE_SLICE') {
+          let candidate = (await fs.readFile(m.copy.candidateTaskArtifact, 'utf8')).replace('- [ ] 1.1', '- [x] 1.1');
+          candidate = replaceSection(candidate, 'Changed Areas', '- none');
+          candidate = replaceSection(candidate, 'Diff Summary',
+            '- The same reviewed acceptance assertion verifies the approved behavior without product writes.');
+          await fs.writeFile(m.copy.candidateTaskArtifact, candidate);
+        }
+        const payload = operation === 'EXECUTE_SLICE'
+          ? { automaticCheckRound: '1/3', changedAreas: [], filelessReason: reason,
+            relevantEvidence: 'The reviewed assertion and fileless rationale remain unchanged.' }
+          : { relevantEvidence: 'Independently validate the current reviewed acceptance evidence.' };
+        await fs.writeFile(m.broker.payloadFile, JSON.stringify(payload), { flag: 'wx' });
+        const dispatched = await cli(bridge, ['--payload-file', m.broker.payloadFile], m.environment);
+        assert.equal(dispatched.status, 0, dispatched.stderr);
+        const lines = dispatched.stdout.trim().split('\n').filter(value => value.startsWith('SENTINEL_RUNNER_RECEIPT '));
+        assert.equal(lines.length, 1);
+        const receipt = JSON.parse(lines[0].slice('SENTINEL_RUNNER_RECEIPT '.length));
+        assert.deepEqual(JSON.parse(await fs.readFile(receipt.receiptFile)), receipt);
+        assert.equal(receipt.status, 'RUNNER_RESPONSE_CAPTURED'); assert.equal(receipt.exitCode, 0);
+        assert.equal(receipt.captureFailure, null); assert.equal(receipt.captureFailureCode, null);
+        assert.equal(receipt.operation, operation); assert.equal(receipt.slice, 'slice-01');
+        assert.equal(receipt.sequence, sequence); assert.equal(receipt.attempt, sequence);
+        assert.equal(receipt.authority, m.context.authority); assert.deepEqual(receipt.owner, m.context.owner);
+        assert.equal(receipt.semanticResponseStatus, operation === 'VALIDATE_SLICE' ? 'PASS' : 'TESTS_PASS');
+        const responseBytes = await fs.readFile(receipt.semanticResponseFile);
+        assert.equal(responseBytes.toString('utf8'), JSON.stringify(response));
+        assert.equal(receipt.semanticResponseSha256, hash(responseBytes));
+        assert.equal(receipt.verification.status, 'completed');
+        assert.deepEqual(receipt.verification.checks.map(({ command, exit }) => [command, exit]),
+          (await readRunnerVerification(f.requirements, 'slice-01')).checks.map(check => [verificationCommand(check), 0]));
+        assert.equal(m.calls(), 1); assert.equal(m.broker.requestsHandled, 1);
+        entry.captures.push(...await snapshot(receiptFiles(receipt)));
+        const inputCandidate = await treeBytes(m.copy.candidateExecutionRoot);
+        const finalized = await cli(finalizer, ['--finalize'], m.environment);
+        assert.equal(finalized.status, 0, finalized.stderr);
+        const outcome = JSON.parse(finalized.stdout);
+        assert.equal(outcome.published, true);
+        assert.equal(outcome.state, operation === 'VALIDATE_SLICE' ? 'COMPLETE' : 'IMPLEMENTED_AWAITING_VALIDATION');
+        assert.deepEqual(await treeBytes(m.copy.candidateExecutionRoot), inputCandidate);
+        const live = await treeBytes(f.execution);
+        const duplicate = await cli(finalizer, ['--finalize'], m.environment);
+        assert.equal(duplicate.status, 0, duplicate.stderr);
+        assert.deepEqual(JSON.parse(duplicate.stdout), outcome);
+        assert.deepEqual(await treeBytes(f.execution), live);
+        assert.equal(m.calls(), 1); assert.equal(m.broker.requestsHandled, 1);
+        return { receipt, owner: m.context.owner, outcome, brokerDirectory: m.broker.directory };
+      }, { recovery, sequence, prepareCandidate: prepareViaCli });
+    }
+    const successor = await completeViaCli('EXECUTE_SLICE', entry.semantic, { recovery: first.recovery, sequence: 2 });
+    assert.equal(successor.owner.recovery.predecessor.operationAttemptId, first.receipt.owner.operationAttemptId);
+    assert.notEqual(successor.owner.operationAttemptId, first.receipt.owner.operationAttemptId);
+    assert.notEqual(successor.receipt.threadId, first.receipt.threadId);
+    assert.notEqual(successor.receipt.receiptFile, first.receipt.receiptFile);
+    const successorSupervisor = JSON.parse(await fs.readFile(path.join(successor.brokerDirectory, '002.supervisor.json')));
+    assert.ok(successorSupervisor.closedAt); assert.deepEqual(successorSupervisor.errors, []);
+    assert.equal((await inspectExecutionState(f.requirements)).state, 'IMPLEMENTED_AWAITING_VALIDATION');
+    const verification = await readRunnerVerification(f.requirements, 'slice-01');
+    const formalResponse = { ...sanitizedValidationResponse('PASS'),
+      commands: verification.checks.map(check => ({ command: verificationCommand(check), exit: 0 })) };
+    const formal = await completeViaCli('VALIDATE_SLICE', formalResponse);
+    const formalSupervisor = JSON.parse(await fs.readFile(path.join(formal.brokerDirectory, '001.supervisor.json')));
+    assert.ok(formalSupervisor.closedAt); assert.deepEqual(formalSupervisor.errors, []);
+    const completed = await inspectExecutionState(f.requirements);
+    assert.equal(completed.state, 'COMPLETE');
+    assert.equal(completed.tasks.get('slice-01').implementationChecks.length, 1);
+    assert.equal(completed.tasks.get('slice-01').attempts.length, 1);
+    assert.notEqual(formal.receipt.receiptFile, successor.receipt.receiptFile);
+    await unchanged(entry.captures);
+  });
+});
+
+test("U3 prepared coverage correction uses owned observations and retains budgets", async t => {
+  const f = await standaloneWorkspace(t);
+  await fs.appendFile(f.requirements, '\nAC-001 variant: add --priority without a value returns usage/2, preserves existing storage bytes and does not create absent storage.\n');
+  const oldVariants = [{ existing: true, args: ['add', '--priority', 'high'] },
+    { existing: false, args: ['add', '--priority'] }];
+  const missingVariant = { existing: true, args: ['add', '--priority'] };
+  assert.equal(oldVariants.some(variant => JSON.stringify(variant) === JSON.stringify(missingVariant)), false);
+  const preparedTests = variants => `import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import test from 'node:test';
+import { runCli } from './cli-reference.mjs';
+for (const variant of ${JSON.stringify(variants)}) test(JSON.stringify(variant), async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'stnl-prepared-priority-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const file = path.join(root, 'todos.json');
+  const bytes = '{"todos":[{"id":5,"title":"old","completed":false}]}\\n';
+  if (variant.existing) await fs.writeFile(file, bytes);
+  let stdout = ''; let stderr = '';
+  const exit = await runCli(['--store', file, ...variant.args], { stdout: { write: s => stdout += s }, stderr: { write: s => stderr += s } });
+  assert.equal(exit, 2); assert.equal(stdout, ''); assert.match(stderr, /^usage:/);
+  if (variant.existing) assert.equal(await fs.readFile(file, 'utf8'), bytes);
+  else await assert.rejects(fs.stat(file), { code: 'ENOENT' });
+});\n`;
+  const artifactRef = (physical, rel = 'tasks/slice-01.md') => path.relative(
+    path.dirname(path.join(f.execution, rel)), path.join(f.root, physical)).split(path.sep).join('/');
+  f.verificationRecipe = '- Recipe: ' + JSON.stringify({ format: 'stnl-verification-recipe-v1', base: 'workspace', cwd: '.',
+    checks: [{ id: 'verification-01', executable: { literal: 'node' }, args: [{ literal: '--test' },
+      { file: { kind: 'product', path: artifactRef('src/example.test.mjs') } }],
+      inputs: [{ kind: 'product', path: artifactRef('src/cli-reference.mjs') },
+        { kind: 'product', path: artifactRef('src/validation.mjs') }] }],
+    dependencyReview: 'The prepared suite imports the two explicitly typed local CLI modules and writes only disposable stores outside the product tree.' });
+  await renderArtifacts(f, { prepareInputs: async fixture => {
+    await fs.copyFile(path.join(ROOT, 'scripts/fixtures/prioritized-cli.mjs'), path.join(fixture.root, 'src/cli-reference.mjs'));
+    await fs.copyFile(path.join(ROOT, 'benchmarks/sentinel-todo/seed/src/validation.mjs'), path.join(fixture.root, 'src/validation.mjs'));
+    await fs.writeFile(path.join(fixture.root, 'src/example.test.mjs'), preparedTests(oldVariants));
+  } });
+  const target = path.join(f.root, 'src/example.test.mjs'), claim = '../../src/example.test.mjs';
+  const preparation = await readPreparationArtifacts(f.execution);
+  const recipeAt = rel => parseVerificationRecipe(preparation.get(rel).match(/^- Recipe: .+$/mu)[0]);
+  const planRecipe = recipeAt('plans/slice-01.md'), taskRecipe = recipeAt('tasks/slice-01.md');
+  assert.deepEqual(taskRecipe, planRecipe);
+  for (const rel of ['plans/slice-01.md', 'tasks/slice-01.md']) {
+    const check = recipeAt(rel).checks[0];
+    const physical = ref => path.resolve(path.dirname(path.join(f.execution, rel)), ref.path);
+    assert.equal(check.args[1].file.kind, 'product');
+    assert.equal(physical(check.args[1].file), target);
+    assert.deepEqual(check.inputs.map(ref => [ref.kind, physical(ref)]),
+      [['product', path.join(f.root, 'src/cli-reference.mjs')], ['product', path.join(f.root, 'src/validation.mjs')]]);
+  }
+  const reviewed = await readRunnerVerification(f.requirements, 'slice-01');
+  assert.equal(reviewed.checks[0].cwd, f.root);
+  assert.equal(verificationCommand(reviewed.checks[0]), 'node --test src/example.test.mjs');
+  const execute = await beginExample(f, 'EXECUTE_SLICE');
+  const executeStart = await nativeExample({ specPath: f.requirements, root: f.root }, execute.owner);
+  const executeCopy = await prepareExecutionCopy({ specPath: f.requirements, slice: 'slice-01', owner: execute.owner });
+  t.after(() => fs.rm(executeCopy.candidateRoot, { recursive: true, force: true }));
+  let implementation = await fs.readFile(executeCopy.candidateTaskArtifact, 'utf8');
+  implementation = replaceSection(implementation.replace('- [ ] 1.1', '- [x] 1.1'), 'Changed Areas', '- `' + claim + '`');
+  implementation = replaceSection(implementation, 'Diff Summary', '- Prepared the approved CLI storage variants for independent coverage review.');
+  await fs.writeFile(executeCopy.candidateTaskArtifact, implementation);
+  const executeResponse = { ...scopeRegressionPayload(),
+    noVerificationCommandConfirmation: 'The reviewed verification command was executed',
+    commands: executeStart.verification.checks.map(check => ({ command: verificationCommand(check), exit: 0 })),
+    coverage: 'Prepared AC-001 CLI variants', resultOfEachCommandAndExitCode: 'Two prepared variants passed' };
+  const executeCapture = await captureNativeExample(executeStart, executeResponse, [claim]);
+  const executeReceipt = JSON.parse(await fs.readFile(executeCapture.receiptFile));
+  assert.deepEqual(executeReceipt.verification.checks.map(({ exit }) => exit), [0]);
+  for (const line of ['# tests 2', '# pass 2', '# fail 0'])
+    assert.ok(executeReceipt.verification.checks[0].stdout.split('\n').some(value => value.trim() === line), line);
+  const executeBundle = await serializeRunnerExecutionBundleFromResponse({ operation: 'EXECUTE_SLICE',
+    response: JSON.stringify(executeResponse), workspace: f.root, taskArtifact: executeCopy.candidateTaskArtifact, ...executeCapture });
+  await insertExecutionEvidenceInCandidate({ taskArtifact: executeCopy.candidateTaskArtifact, operation: 'EXECUTE_SLICE', bundle: executeBundle,
+    validateProspectiveTask: text => validateExecutionCandidate(f.requirements, executeCopy.candidateExecutionRoot, [text]) });
+  await publishExecutionCopy({ specPath: f.requirements, slice: 'slice-01', candidateRoot: executeCopy.candidateRoot });
+  const finding = ACTIVE_FINDING.replace('Observable behavior is wrong.', 'Required existing-storage missing-priority variant is omitted.')
+    .replace('Focused validation reproduced the mismatch.', 'The approved suite has two variants but omits existing-storage byte preservation on missing priority.')
+    .replace('AC-001 is not satisfied.', 'Required byte-preservation evidence is incomplete.')
+    .replace('Produce the required behavior.', 'Add the missing variant only in ' + claim + '.');
+  const formal = await validateExample(f, { status: 'NEEDS_FIX', findings: finding });
+  const needsFix = await inspectExecutionState(f.requirements), prior = needsFix.tasks.get('slice-01');
+  assert.equal(needsFix.state, 'VALIDATION_NEEDS_FIX');
+  assert.equal(deriveNormalHandoff(needsFix, 'VALIDATE_SLICE')?.operation, 'APPLY_FINDINGS');
+  const readback = state => ({ execution: state, executionRaw: state, product: { deriveNormalHandoff } });
+  const outcome = guardOperationProvenance(decideOutcome('VALIDATE_SLICE', readback(needsFix), true),
+    'VALIDATE_SLICE', [], 1);
+  assert.deepEqual(outcome, { result: 'NEEDS_FIX', blocker: null });
+  assert.deepEqual(nextHandoff('VALIDATE_SLICE', readback(needsFix)),
+    { operation: 'APPLY_FINDINGS', slice: 'slice-01' });
+  assert.equal(recoverableOfficialHandoff({ outcome, readback: readback(needsFix) }), null);
+  await assert.rejects(preflightExecutionOperation(f.requirements, 'VALIDATE_SLICE', '1'));
+  const apply = await beginExample(f, 'APPLY_FINDINGS');
+  const applyStart = await nativeExample({ specPath: f.requirements, root: f.root }, apply.owner);
+  const applyCopy = await prepareExecutionCopy({ specPath: f.requirements, slice: 'slice-01', owner: apply.owner });
+  t.after(() => fs.rm(applyCopy.candidateRoot, { recursive: true, force: true }));
+  await fs.writeFile(target, preparedTests([...oldVariants, missingVariant]));
+  const correctedTestHash = createHash('sha256').update(await fs.readFile(target)).digest('hex');
+  await fs.writeFile(applyCopy.candidateTaskArtifact,
+    replaceSection(await fs.readFile(applyCopy.candidateTaskArtifact, 'utf8'), 'Corrections Applied', '- `' + claim + '`'));
+  const applyResponse = { ...scopeRegressionPayload(),
+    noVerificationCommandConfirmation: 'The reviewed verification command was executed',
+    commands: applyStart.verification.checks.map(check => ({ command: verificationCommand(check), exit: 0 })),
+    resultOfEachCommandAndExitCode: 'Three prepared variants passed',
+    findingsCycle: 'attempt-01', findingsVerified: 'finding-01',
+    correctionsCovered: 'Added the existing-storage missing-priority variant and exact byte assertion',
+    regressionsSelected: 'All three approved storage variants', unsupportedActiveFindings: 'none' };
+  for (const key of ['priorRoundFailure', 'correctionApplied', 'inSliceRationale']) delete applyResponse[key];
+  const applyCapture = await captureNativeExample(applyStart, applyResponse, [claim]);
+  const applyReceipt = JSON.parse(await fs.readFile(applyCapture.receiptFile));
+  assert.deepEqual(applyReceipt.verification.checks.map(({ exit }) => exit), [0]);
+  for (const line of ['# tests 3', '# pass 3', '# fail 0'])
+    assert.ok(applyReceipt.verification.checks[0].stdout.split('\n').some(value => value.trim() === line), line);
+  assert.deepEqual(applyReceipt.testedState.entries.map(({ path: entryPath, value }) => [entryPath, value]),
+    [[claim, 'sha256:' + correctedTestHash]]);
+  const applyBundle = await serializeRunnerExecutionBundleFromResponse({ operation: 'APPLY_FINDINGS',
+    response: JSON.stringify(applyResponse), workspace: f.root, taskArtifact: applyCopy.candidateTaskArtifact, ...applyCapture });
+  await insertExecutionEvidenceInCandidate({ taskArtifact: applyCopy.candidateTaskArtifact, operation: 'APPLY_FINDINGS', bundle: applyBundle,
+    validateProspectiveTask: text => validateExecutionCandidate(f.requirements, applyCopy.candidateExecutionRoot, [text]) });
+  const valid = await fs.readFile(applyCopy.candidateTaskArtifact, 'utf8');
+  const live = await treeBytes(f.execution), candidate = await treeBytes(applyCopy.candidateExecutionRoot);
+  const wrong = replaceSection(valid, 'Corrections Applied', '- `../../src/validation.mjs`');
+  assert.notEqual(wrong, valid);
+  await assert.rejects(validateExecutionCandidate(f.requirements, applyCopy.candidateExecutionRoot,
+    [{ slice: 'slice-01', text: wrong }]), /correction path is absent from Changed Areas/u);
+  assert.deepEqual(await treeBytes(f.execution), live); assert.deepEqual(await treeBytes(applyCopy.candidateExecutionRoot), candidate);
+  await publishExecutionCopy({ specPath: f.requirements, slice: 'slice-01', candidateRoot: applyCopy.candidateRoot });
+  const corrected = await inspectExecutionState(f.requirements);
+  assert.equal(corrected.state, 'FINDINGS_CORRECTED');
+  assert.equal(deriveNormalHandoff(corrected, 'APPLY_FINDINGS')?.operation, 'VALIDATE_SLICE');
+  assert.equal(corrected.tasks.get('slice-01').attempts[0].body, prior.attempts[0].body);
+  const priorReceipts = await Promise.all([executeCapture.receiptFile, formal.captured.receiptFile, applyCapture.receiptFile]
+    .map(async file => [file, await fs.readFile(file)]));
+  const resolved = finding.replace('- State: active', '- State: resolved') + '\n- Resolution: attempt-02 verified the missing variant.';
+  await validateExample(f, { findings: resolved, dispositions: 'finding-01=resolved',
+    explanation: 'Three observed prepared variants prove storage bytes and absence; semantic coverage judgment is controlled fixture input.' });
+  const complete = await inspectExecutionState(f.requirements), task = complete.tasks.get('slice-01');
+  assert.equal(complete.state, 'COMPLETE');
+  assert.deepEqual(nextHandoff('VALIDATE_SLICE', readback(complete)), { operation: 'SPEC_CLOSE', slice: null });
+  const type = attempt => {
+    const lines = attempt.body.split('\n').filter(line => line.startsWith('- Type: '));
+    assert.equal(lines.length, 1);
+    return lines[0].slice('- Type: '.length);
+  };
+  assert.deepEqual(task.attempts.map(attempt => [attempt.id, type(attempt), attempt.status]),
+    [['attempt-01', 'initial', 'NEEDS_FIX'], ['attempt-02', 'revalidation', 'PASS']]);
+  for (const [file, bytes] of priorReceipts) assert.deepEqual(await fs.readFile(file), bytes);
+  await assert.rejects(preflightExecutionOperation(f.requirements, 'APPLY_FINDINGS', '1'));
+  const budgets = JSON.parse(await fs.readFile(path.join(ROOT, 'benchmarks/sentinel-todo/benchmark.json'))).cases.find(item => item.id === 'B').budgets;
+  const operations = ['VALIDATE_SLICE', 'APPLY_FINDINGS', 'VALIDATE_SLICE'].map(operation => ({ operation, slice: 'slice-01' }));
+  assert.equal(budgetViolation(operations, budgets), null);
+  assert.equal(budgetViolation(Array.from({ length: budgets.maxApplyFindingsPerSlice },
+    () => operations[1]), budgets), null);
+  assert.deepEqual(budgetViolation(Array.from({ length: budgets.maxApplyFindingsPerSlice + 1 },
+    () => operations[1]), budgets), { budget: 'maxApplyFindingsPerSlice',
+    limit: budgets.maxApplyFindingsPerSlice, observed: budgets.maxApplyFindingsPerSlice + 1 });
+});
+
+
+test("U3 owned managed APPLY receipt retains two reviewed inputs and rejects copied path", async t => {
+  const f = await nestedLifecycleWorkspace(t, { setup: async fixture => {
+    await fs.mkdir(path.join(fixture.root, 'src'), { recursive: true });
+    await fs.writeFile(path.join(fixture.root, 'src/related.txt'), 'related verification input\n');
+    await fs.writeFile(path.join(fixture.root, 'src/receipt-inputs.mjs'),
+      `import fs from 'node:fs';import assert from 'node:assert/strict';assert.equal(fs.readFileSync('src/example.txt','utf8'),${JSON.stringify(VALIDATED_CONTENT)});assert.equal(fs.readFileSync('src/related.txt','utf8'),${JSON.stringify('related verification input\n')});\n`);
+    const ref = name => path.relative(path.join(fixture.execution, 'tasks'), path.join(fixture.root, 'src', name)).split(path.sep).join('/');
+    fixture.verificationRecipe = '- Recipe: ' + JSON.stringify({ format: 'stnl-verification-recipe-v1', base: 'workspace', cwd: '.',
+      checks: [{ id: 'verification-01', executable: { literal: 'node' }, args: [{ file: { kind: 'product', path: ref('receipt-inputs.mjs') } }],
+        inputs: [{ kind: 'product', path: ref('example.txt') }, { kind: 'product', path: ref('related.txt') }] }],
+      dependencyReview: 'The prepared assertion reads the two explicitly typed product files in the approved src directory.' });
+  } });
+  const source = path.join(f.root, 'src/example.txt'), related = path.join(f.root, 'src/related.txt');
+  const taskFile = path.join(f.execution, 'tasks/slice-01.md');
+  const claims = [source, related].map(file => path.relative(path.dirname(taskFile), file).split(path.sep).join('/'));
+  const preparation = await readPreparationArtifacts(f.execution);
+  const recipeAt = rel => parseVerificationRecipe(preparation.get(rel).match(/^- Recipe: .+$/mu)[0]);
+  assert.deepEqual(recipeAt('plans/slice-01.md'), recipeAt('tasks/slice-01.md'));
+  for (const rel of ['plans/slice-01.md', 'tasks/slice-01.md']) {
+    const check = recipeAt(rel).checks[0];
+    const physical = ref => path.resolve(path.dirname(path.join(f.execution, rel)), ref.path);
+    assert.deepEqual(check.inputs.map(ref => [ref.kind, physical(ref)]),
+      [['product', source], ['product', related]]);
+    assert.equal(check.args[0].file.kind, 'product');
+    assert.equal(physical(check.args[0].file), path.join(f.root, 'src/receipt-inputs.mjs'));
+  }
+  const reviewed = await readRunnerVerification(f.requirements, 'slice-01');
+  assert.equal(reviewed.checks[0].cwd, f.root);
+  assert.equal(verificationCommand(reviewed.checks[0]), 'node src/receipt-inputs.mjs');
+  const implementation = await implementExample(f);
+  assert.equal((await inspectExecutionState(f.requirements)).state, 'IMPLEMENTED_AWAITING_VALIDATION');
+  const formal = await validateExample(f, { status: 'NEEDS_FIX', findings: ACTIVE_FINDING });
+  const needFix = await inspectExecutionState(f.requirements);
+  assert.equal(needFix.state, 'VALIDATION_NEEDS_FIX');
+  const cycle = needFix.tasks.get('slice-01').attempts.at(-1).id;
+  const liveTaskBeforeApply = await fs.readFile(taskFile, 'utf8');
+  const earlierReceipt = await fs.readFile(implementation.captured.receiptFile);
+  const formalReceipt = await fs.readFile(formal.captured.receiptFile);
+  const semantic = { ...scopeRegressionPayload(),
+    noVerificationCommandConfirmation: 'The reviewed verification command was executed',
+    commands: reviewed.checks.map(check => ({ command: verificationCommand(check), exit: 0 })),
+    findingsCycle: cycle, findingsVerified: 'finding-01',
+    correctionsCovered: 'The approved example and related input remain within the reviewed src scope',
+    regressionsSelected: 'Prepared two-input assertion', unsupportedActiveFindings: 'none' };
+  for (const key of ['priorRoundFailure', 'correctionApplied', 'inSliceRationale']) delete semantic[key];
+  let applyEvidence = [];
+  await withManagedExample(f, 'APPLY_FINDINGS', semantic, async managed => {
+    const { copy, environment } = managed;
+    let task = await fs.readFile(copy.candidateTaskArtifact, 'utf8');
+    task = replaceSection(task, 'Changed Areas', claims.map(claim => '- `' + claim + '`').join('\n'));
+    task = replaceSection(task, 'Corrections Applied', claims.map(claim => '- `' + claim + '`').join('\n'));
+    task = replaceSection(task, 'Diff Summary', '- Checked the approved correction and related input with the unchanged prepared assertion.');
+    await fs.writeFile(copy.candidateTaskArtifact, task);
+    const payload = { automaticCheckRound: '1/3', changedAreas: claims,
+      relevantEvidence: 'Current candidate contains the approved correction scope', requestedChecks: 'Prepared two-input assertion' };
+    await assert.rejects(managed.dispatch({ ...payload, changedAreas: undefined, changedScope: claims }), /changedScope/u);
+    assert.equal(managed.calls(), 0); assert.equal(managed.broker.requestsHandled, 0);
+    const receipt = await managed.dispatch(payload);
+    assert.equal(receipt.status, 'RUNNER_RESPONSE_CAPTURED');
+    assert.equal(managed.calls(), 1); assert.equal(managed.broker.requestsHandled, 1);
+    assert.deepEqual(receipt.testedState.entries.map(entry => entry.path), claims);
+    for (const [index, file] of [source, related].entries()) assert.equal(receipt.testedState.entries[index].value,
+      'sha256:' + createHash('sha256').update(await fs.readFile(file)).digest('hex'));
+    assert.deepEqual(receipt.verification.checks.map(({ command, exit }) => ({ command, exit })),
+      [{ command: 'node src/receipt-inputs.mjs', exit: 0 }]);
+    const workCapture = JSON.parse(await fs.readFile(managed.context.owner.workCapture.path));
+    for (const rel of ['src/example.txt', 'src/related.txt'])
+      assert.ok(workCapture.entries.some(entry => entry.path === rel), rel);
+    assert.equal(receipt.receiptFile, await fs.realpath(path.join(managed.tmpdir,
+      '001-apply_findings-slice-01-attempt-1.receipt.json')));
+    const captured = [receipt.receiptFile, receipt.semanticResponseFile, receipt.eventsPath,
+      receipt.receiptFile.replace(/\.receipt\.json$/u, '.started.json'),
+      receipt.receiptFile.replace(/\.receipt\.json$/u, '.verification.json')]
+      .map(file => ({ file }));
+    for (const item of captured) item.bytes = await fs.readFile(item.file);
+    assert.deepEqual(JSON.parse(captured[0].bytes), receipt);
+    const live = await treeBytes(f.execution), candidate = await treeBytes(copy.candidateExecutionRoot);
+    const duplicate = path.join(managed.tmpdir, 'copied-receipt.json');
+    await fs.writeFile(duplicate, captured[0].bytes);
+    const producer = path.join(ROOT, 'skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs');
+    const produce = receiptArgument => spawnSync(process.execPath, [producer, '--execution-bundle',
+      '--operation', 'APPLY_FINDINGS', '--workspace', f.root, '--task-artifact', copy.candidateTaskArtifact,
+      '--semantic-response-file', receipt.semanticResponseFile, '--receipt-file', receiptArgument,
+      '--insert-candidate'], { cwd: f.root, env: environment, encoding: 'utf8' });
+    const rejected = produce(duplicate);
+    assert.equal(rejected.status, 1);
+    assert.equal(rejected.stderr.trim(),
+      'BLOCKED: managed slice context: receipt does not match the active managed runner invocation');
+    assert.deepEqual(await treeBytes(f.execution), live);
+    assert.deepEqual(await treeBytes(copy.candidateExecutionRoot), candidate);
+    assert.equal(await fs.readFile(taskFile, 'utf8'), liveTaskBeforeApply);
+    const outcome = await managed.finalize();
+    assert.equal(outcome.state, 'FINDINGS_CORRECTED');
+    assert.equal(outcome.published, true);
+    const binding = outcome.findingsCycleBinding;
+    assert.equal(binding.method, 'sealed-state-ownership');
+    assert.equal(binding.canonicalCycle, cycle);
+    assert.equal(binding.receiptFile, receipt.receiptFile);
+    assert.equal(binding.responseSha256, receipt.semanticResponseSha256);
+    const sealedFile = path.join(managed.broker.directory, `sealed-${binding.requestId}.json`);
+    const sealedBytes = await fs.readFile(sealedFile);
+    const sealed = JSON.parse(sealedBytes);
+    captured.push({ file: sealedFile, bytes: sealedBytes });
+    for (const key of ['canonicalCycle', 'candidateNonce', 'candidateTaskArtifact', 'sourceTaskSha256',
+      'candidateInputSha256', 'candidateTreeSha256', 'sourceTestsSha256', 'testedStateSha256'])
+      assert.deepEqual(binding[key], sealed.findingsOwnership[key]);
+    assert.deepEqual(await treeBytes(copy.candidateExecutionRoot), candidate);
+    const corrected = await inspectExecutionState(f.requirements);
+    assert.equal(corrected.state, 'FINDINGS_CORRECTED');
+    assert.equal(deriveNormalHandoff(corrected, 'APPLY_FINDINGS')?.operation, 'VALIDATE_SLICE');
+    assert.equal(corrected.tasks.get('slice-01').findingsChecks.at(-1).status, 'TESTS_PASS');
+    assert.deepEqual(corrected.tasks.get('slice-01').findingsChecks.at(-1).testedState.map(entry => entry.path), claims);
+    assert.equal(managed.calls(), 1); assert.equal(managed.broker.requestsHandled, 1);
+    for (const { file, bytes } of captured) assert.deepEqual(await fs.readFile(file), bytes);
+    applyEvidence = captured;
+  });
+  const resolved = ACTIVE_FINDING.replace('- State: active', '- State: resolved') + '\n- Resolution: attempt-02 verified the approved correction.';
+  await validateExample(f, { findings: resolved, dispositions: 'finding-01=resolved' });
+  const complete = await inspectExecutionState(f.requirements);
+  assert.equal(complete.state, 'COMPLETE');
+  assert.deepEqual(complete.tasks.get('slice-01').attempts.map(attempt => [attempt.id, attempt.status]),
+    [['attempt-01', 'NEEDS_FIX'], ['attempt-02', 'PASS']]);
+  assert.deepEqual(await fs.readFile(implementation.captured.receiptFile), earlierReceipt);
+  assert.deepEqual(await fs.readFile(formal.captured.receiptFile), formalReceipt);
+  assert.equal(applyEvidence.length, 6);
+  for (const { file, bytes } of applyEvidence) assert.deepEqual(await fs.readFile(file), bytes);
+});
+
+test('U3 work, correction, finding timeline and terminal guards use distinct owned histories', async t => {
+  const exact = (message, whole = false) => error => {
+    assert.equal(error.name, 'ExecutionContractError');
+    if (whole) assert.equal(error.message, message);
+    else assert.ok(error.message.endsWith(message), error.message);
+    return true;
+  };
+  const readFiles = async files => Promise.all([...new Set(files)].map(async file =>
+    ({ file, bytes: await fs.readFile(file) })));
+  const sameFiles = async frozen => {
+    for (const { file, bytes } of frozen) assert.deepEqual(await fs.readFile(file), bytes, file);
+  };
+  const negative = async (s, name, f, copy, base, mutate, expectError, options = {}, frozen = []) => {
+    assert.equal(await fs.readFile(copy.candidateTaskArtifact, 'utf8'), base);
+    const live = await treeBytes(f.execution), candidate = await treeBytes(copy.candidateExecutionRoot);
+    await sameFiles(frozen);
+    let entered = false;
+    await s.test(name, { concurrency: false }, async () => {
+      entered = true;
+      const text = mutate(base); assert.notEqual(text, base);
+      await assert.rejects(validateExecutionCandidate(f.requirements, copy.candidateExecutionRoot,
+        [{ slice: 'slice-01', text }], options), expectError);
+    });
+    assert.deepEqual(await treeBytes(f.execution), live);
+    assert.deepEqual(await treeBytes(copy.candidateExecutionRoot), candidate);
+    await sameFiles(frozen);
+    assert.equal(entered, true, `${name}: negative was filtered out`);
+  };
+  const record = (text, heading, id, mutate) => {
+    const prefix = `## ${heading}\n\n`;
+    const sectionStart = text.indexOf(prefix);
+    assert.ok(sectionStart >= 0 && text.indexOf(prefix, sectionStart + prefix.length) < 0);
+    const section = sectionBodyForScopeTest(text, heading);
+    assert.ok(section.startsWith(prefix));
+    const body = section.slice(prefix.length);
+    const expectedPrefix = new Map([
+      ['Implementation Test Evidence', 'implementation-check'],
+      ['Findings Test Evidence', 'findings-check'],
+      ['Validation Attempts', 'attempt'],
+    ]).get(heading);
+    assert.ok(expectedPrefix && id.startsWith(`${expectedPrefix}-`));
+    const starts = [...body.matchAll(/^### ([^\n]+)$/gmu)]
+      .map(match => ({ id: match[1], index: match.index, end: match.index + match[0].length }));
+    assert.equal(starts[0]?.index, 0, `${heading} begins with its first record`);
+    assert.equal(new Set(starts.map(item => item.id)).size, starts.length,
+      `${heading} has unique record IDs`);
+    assert.ok(starts.every(item => new RegExp(`^${expectedPrefix}-[0-9]{2,}$`, 'u').test(item.id)),
+      `${heading} contains only canonical ${expectedPrefix} headings`);
+    for (const [index, item] of starts.entries()) {
+      const segment = body.slice(item.end, starts[index + 1]?.index ?? body.length);
+      assert.match(segment, /^\n+- [^:\n]+:/u, `${item.id} has a field in its own record`);
+      if (index + 1 < starts.length) assert.match(segment, /\n+$/u, `${item.id} ends before the next heading`);
+    }
+    const selected = starts.filter(item => item.id === id);
+    assert.equal(selected.length, 1, `${id} occurs exactly once`);
+    const contentStart = selected[0].end;
+    const next = starts.find(item => item.index > selected[0].index);
+    const contentEnd = next?.index ?? body.length;
+    const original = body.slice(contentStart, contentEnd);
+    const changed = mutate(original); assert.notEqual(changed, original);
+    const originalLines = original.split('\n'), changedLines = changed.split('\n');
+    assert.equal(changedLines.length, originalLines.length, `${id} retains its line count`);
+    const allowedFields = expectedPrefix === 'implementation-check' ? ['Correction paths']
+      : expectedPrefix === 'findings-check' ? ['Unsupported active findings']
+        : ['Finding references', 'Finding dispositions'];
+    const changedIndexes = originalLines.flatMap((line, index) => line === changedLines[index] ? [] : [index]);
+    assert.ok(changedIndexes.length >= 1 && changedIndexes.length <= 2);
+    for (const index of changedIndexes) {
+      const field = allowedFields.find(name => originalLines[index].startsWith(`- ${name}: `));
+      assert.ok(field, `${id} changes only an expected field`);
+      assert.ok(changedLines[index].startsWith(`- ${field}: `), `${id} preserves its field name`);
+      assert.equal(originalLines.filter(line => line.startsWith(`- ${field}: `)).length, 1,
+        `${id} has exactly one ${field} field`);
+    }
+    const restored = changedLines.slice();
+    for (const index of changedIndexes) restored[index] = originalLines[index];
+    assert.equal(restored.join('\n'), original, `${id} restores every byte`);
+    const updated = body.slice(0, contentStart) + changed + body.slice(contentEnd);
+    assert.equal(updated.slice(0, contentStart), body.slice(0, contentStart));
+    assert.equal(updated.slice(contentStart + changed.length), body.slice(contentEnd));
+    const sectionEnd = sectionStart + section.length;
+    const result = text.slice(0, sectionStart + prefix.length) + updated + text.slice(sectionEnd);
+    const updatedSection = prefix + updated;
+    assert.equal(sectionBodyForScopeTest(result, heading), updatedSection);
+    assert.equal(result.slice(0, sectionStart), text.slice(0, sectionStart));
+    assert.equal(result.slice(sectionStart + updatedSection.length), text.slice(sectionStart + section.length));
+    assert.equal(result.slice(0, sectionStart + prefix.length) + body
+      + result.slice(sectionStart + updatedSection.length), text, `${id} restores the complete Task`);
+    return result;
+  };
+  const expectedScenarios = ['D delimitadores', 'W trabalho', 'DIF diff isolado', 'R retry nativo',
+    'F findings e timeline', 'B blocker e sucessor', 'T terminal'];
+  const reachedScenarios = [];
+  await t.test('D delimitadores', { concurrency: false }, async s => {
+    reachedScenarios.push('D delimitadores');
+    // These small sections test only record boundaries; official candidates below prove the full Task contract.
+    const probe = (body, suffix = '\n## Following Section\n\n- none') =>
+      `## Findings Test Evidence\n\n${body}${suffix}`;
+    const changeProbe = text => record(text, 'Findings Test Evidence', 'findings-check-01',
+      body => body.replace('- Unsupported active findings: finding-01', '- Unsupported active findings: none'));
+    const adjacent = probe('### findings-check-01\n- Unsupported active findings: finding-01\n'
+      + '### findings-check-02\n- Unsupported active findings: finding-02');
+    assert.equal(changeProbe(adjacent), adjacent.replace('finding-01\n', 'none\n'));
+    const spaced = probe('### findings-check-01\n\n\n- Unsupported active findings: finding-01\n\n'
+      + '### findings-check-02\n\n- Unsupported active findings: finding-02');
+    assert.equal(changeProbe(spaced), spaced.replace('finding-01\n\n', 'none\n\n'));
+    const atEof = probe('### findings-check-01\n- Unsupported active findings: finding-01', '');
+    assert.equal(changeProbe(atEof), atEof.replace('finding-01', 'none'));
+    const implementationProbe = '## Implementation Test Evidence\n\n'
+      + '### implementation-check-01\n- Correction paths: none\n'
+      + '### implementation-check-02\n- Correction paths: ../../src/example.txt\n'
+      + '## Following Section\n\n- none';
+    assert.equal(record(implementationProbe, 'Implementation Test Evidence', 'implementation-check-02',
+      body => body.replace('- Correction paths: ../../src/example.txt', '- Correction paths: ../../src/other.txt')),
+      implementationProbe.replace('check-02\n- Correction paths: ../../src/example.txt',
+        'check-02\n- Correction paths: ../../src/other.txt'));
+    const attemptProbe = '## Validation Attempts\n\n'
+      + '### attempt-01\n\n- Finding dispositions: finding-01=active\n\n'
+      + '### attempt-02\n\n- Finding dispositions: finding-01=active';
+    assert.equal(record(attemptProbe, 'Validation Attempts', 'attempt-02',
+      body => body.replace('- Finding dispositions: finding-01=active', '- Finding dispositions: finding-01=resolved')),
+      attemptProbe.replace('attempt-02\n\n- Finding dispositions: finding-01=active',
+        'attempt-02\n\n- Finding dispositions: finding-01=resolved'));
+    assert.throws(() => changeProbe(probe('### findings-check-02\n- Unsupported active findings: finding-01')),
+      /findings-check-01 occurs exactly once/u);
+    assert.throws(() => changeProbe(probe('### findings-check-01\n- Unsupported active findings: finding-01\n'
+      + '### findings-check-01\n- Unsupported active findings: finding-01')), /unique record IDs/u);
+    assert.throws(() => changeProbe(probe('### findings-check-01\n### findings-check-02\n'
+      + '- Unsupported active findings: finding-01')), /has a field in its own record/u);
+    assert.throws(() => changeProbe(probe('### findings-check-01\n### unrelated-01\n'
+      + '- Unsupported active findings: finding-01')), /canonical findings-check headings/u);
+  });
+  await t.test('W trabalho', { concurrency: false }, async s => {
+    reachedScenarios.push('W trabalho');
+    const firstRoot = await standaloneWorkspace(s); await renderArtifacts(firstRoot);
+    const first = await implementExample(firstRoot, { publish: false });
+    assert.equal(first.admission.owner.operation, 'EXECUTE_SLICE');
+    const firstText = await fs.readFile(first.copy.candidateTaskArtifact, 'utf8');
+    assert.equal((await validateExecutionCandidate(firstRoot.requirements, first.copy.candidateExecutionRoot)).state,
+      'IMPLEMENTED_AWAITING_VALIDATION');
+    assert.match(sectionBodyForScopeTest(firstText, 'Changed Areas'), /- `\.\.\/\.\.\/src\/example\.txt`/u);
+    assert.deepEqual([...firstText.matchAll(/^### (implementation-check-[0-9]{2,})$/gmu)].map(match => match[1]),
+      ['implementation-check-01']);
+    assert.deepEqual((await inspectExecutionState(firstRoot.requirements)).tasks.get('slice-01').implementationChecks, []);
+    const firstEvidence = await readFiles([first.captured.receiptFile, first.captured.semanticResponseFile]);
+    assert.equal(JSON.parse(firstEvidence[0].bytes).verification.checks[0].exit, 0);
+    await negative(s, 'G01 work pending scope', firstRoot, first.copy, firstText,
+      text => replaceSection(text, 'Changed Areas', '- pending'),
+      exact(' Changed Areas cannot remain pending after work'), {}, firstEvidence);
+  });
+
+  await t.test('DIF diff isolado', { concurrency: false }, async s => {
+    reachedScenarios.push('DIF diff isolado');
+    const diffRoot = await standaloneWorkspace(s); await renderArtifacts(diffRoot);
+    const diffAdmission = await beginExample(diffRoot, 'EXECUTE_SLICE');
+    const diffCopy = await prepareExecutionCopy({ specPath: diffRoot.requirements, slice: 'slice-01', owner: diffAdmission.owner });
+    s.after(() => fs.rm(diffCopy.candidateRoot, { recursive: true, force: true }));
+    const diffText = await fs.readFile(diffCopy.candidateTaskArtifact, 'utf8');
+    const diffActivation = await readExecutionActivation(diffRoot.requirements);
+    assert.equal(diffActivation.activation.activeAttempt.operationAttemptId, diffAdmission.owner.operationAttemptId);
+    assert.equal(diffActivation.activation.activeAttempt.slice, 'slice-01');
+    assert.equal(sectionBodyForScopeTest(diffText, 'Changed Areas').trimEnd(), '## Changed Areas\n\n- pending');
+    assert.equal(sectionBodyForScopeTest(diffText, 'Diff Summary').trimEnd(), '## Diff Summary\n\n- pending');
+    const diffLive = await inspectExecutionState(diffRoot.requirements);
+    assert.equal(diffLive.state, 'EXECUTION_STARTED');
+    assert.equal(diffLive.tasks.get('slice-01').implementationChecks.length, 0);
+    assert.equal(diffLive.tasks.get('slice-01').attempts.length, 0);
+    assert.equal((await validateExecutionCandidate(diffRoot.requirements, diffCopy.candidateExecutionRoot)).state, 'EXECUTION_STARTED');
+    await negative(s, 'G02 diff starts work with pending scope', diffRoot, diffCopy, diffText,
+      text => replaceSection(text, 'Diff Summary', '- Began the approved implementation.'),
+      exact(' Changed Areas cannot remain pending after work'));
+  });
+
+  await t.test('R retry nativo', { concurrency: false }, async s => {
+    reachedScenarios.push('R retry nativo');
+    const retryRoot = await standaloneWorkspace(s); await renderArtifacts(retryRoot);
+    const failed = await implementExample(retryRoot, { failFirst: true, publish: false });
+    assert.equal(failed.admission.owner.operation, 'EXECUTE_SLICE');
+    const failedText = await fs.readFile(failed.copy.candidateTaskArtifact, 'utf8');
+    const retryEvidence = await readFiles([failed.captured.receiptFile, failed.captured.semanticResponseFile]);
+    assert.equal(JSON.parse(retryEvidence[0].bytes).verification.checks[0].exit, 1);
+    assert.equal(await fs.readFile(path.join(retryRoot.root, 'src/example.txt'), 'utf8'), 'wrong example bytes\n');
+    const privateOptions = { privateAutomaticCheck: { operation: 'EXECUTE_SLICE', slice: 'slice-01', round: 1 } };
+    assert.equal((await validateExecutionCandidate(retryRoot.requirements, failed.copy.candidateExecutionRoot,
+      [{ slice: 'slice-01', text: failedText }], privateOptions)).state, 'EXECUTION_STARTED');
+    await negative(s, 'G03 private failure pending scope', retryRoot, failed.copy, failedText,
+      text => replaceSection(text, 'Changed Areas', '- pending'),
+      exact(' Changed Areas cannot remain pending after work'), privateOptions, retryEvidence);
+    const corrected = await retryExample(retryRoot, failed, VALIDATED_CONTENT, { publish: false });
+    const correctedText = await fs.readFile(corrected.copy.candidateTaskArtifact, 'utf8');
+    assert.equal(corrected.admission.owner.operationAttemptId, failed.admission.owner.operationAttemptId);
+    assert.equal(await fs.readFile(path.join(retryRoot.root, 'src/example.txt'), 'utf8'), VALIDATED_CONTENT);
+    assert.equal((await validateExecutionCandidate(retryRoot.requirements, corrected.copy.candidateExecutionRoot)).state,
+      'IMPLEMENTED_AWAITING_VALIDATION');
+    assert.deepEqual([...correctedText.matchAll(/^### (implementation-check-[0-9]{2,})$/gmu)].map(match => match[1]),
+      ['implementation-check-01', 'implementation-check-02']);
+    assert.ok(correctedText.includes(failed.bundle));
+    assert.ok(correctedText.includes(corrected.bundle));
+    await sameFiles(retryEvidence);
+    retryEvidence.push(...await readFiles([corrected.captured.receiptFile, corrected.captured.semanticResponseFile]));
+    assert.equal(JSON.parse(retryEvidence[2].bytes).verification.checks[0].exit, 0);
+    await negative(s, 'G04 retry correction path outside claims', retryRoot, corrected.copy, correctedText,
+      text => record(text, 'Implementation Test Evidence', 'implementation-check-02',
+        body => body.replace('- Correction paths: ../../src/example.txt', '- Correction paths: ../../src/other.txt')),
+      exact('implementation-check-02 Correction paths are absent from Corrections Applied', true), {}, retryEvidence);
+    await publishExecutionCopy({ specPath: retryRoot.requirements, slice: 'slice-01', candidateRoot: corrected.copy.candidateRoot });
+    const retryPublished = await inspectExecutionState(retryRoot.requirements);
+    assert.equal(retryPublished.state, 'IMPLEMENTED_AWAITING_VALIDATION');
+    assert.deepEqual(retryPublished.tasks.get('slice-01').implementationChecks.map(check => [check.id, check.status]),
+      [['implementation-check-01', 'TESTS_FAIL'], ['implementation-check-02', 'TESTS_PASS']]);
+    await sameFiles(retryEvidence);
+    assert.ok((await fs.readFile(corrected.copy.candidateTaskArtifact, 'utf8')).includes(failed.bundle));
+  });
+
+  await t.test('F findings e timeline', { concurrency: false }, async s => {
+    reachedScenarios.push('F findings e timeline');
+    const findings = await standaloneWorkspace(s); await renderArtifacts(findings);
+    findings.exampleImplementation = await implementExample(findings);
+    const findingsEvidence = await readFiles([findings.exampleImplementation.captured.receiptFile,
+      findings.exampleImplementation.captured.semanticResponseFile]);
+    const both = ACTIVE_FINDING + '\n\n' + ACTIVE_FINDING_02;
+    const initial = await validateExample(findings, { status: 'NEEDS_FIX', findings: both });
+    await sameFiles(findingsEvidence);
+    findingsEvidence.push(...await readFiles([initial.captured.receiptFile, initial.captured.semanticResponseFile]));
+    assert.equal(initial.admission.owner.operation, 'VALIDATE_SLICE');
+    const initialState = await inspectExecutionState(findings.requirements);
+    assert.equal(initialState.state, 'VALIDATION_NEEDS_FIX');
+    assert.deepEqual(initialState.tasks.get('slice-01').findings.map(finding => finding.id),
+      ['finding-01', 'finding-02']);
+    const initialTask = initialState.tasks.get('slice-01').attempts[0].body;
+    assert.deepEqual([...initialTask.matchAll(/^- Finding references: (.+)$/gmu)].map(match => match[1]),
+      ['finding-01, finding-02']);
+    const apply = await correctExample(findings, { content: VALIDATED_CONTENT,
+      verified: 'finding-01', unsupported: 'finding-02', publish: false });
+    assert.equal(apply.admission.owner.operation, 'APPLY_FINDINGS');
+    findingsEvidence.push(...await readFiles([apply.captured.receiptFile, apply.captured.semanticResponseFile]));
+    const applyText = await fs.readFile(apply.copy.candidateTaskArtifact, 'utf8');
+    assert.equal((await validateExecutionCandidate(findings.requirements, apply.copy.candidateExecutionRoot)).state,
+      'FINDINGS_CORRECTED');
+    await negative(s, 'G05 findings require corrections applied', findings, apply.copy, applyText,
+      text => replaceSection(text, 'Corrections Applied', '- none'),
+      exact(' Findings Test Evidence requires Corrections Applied'), {}, findingsEvidence);
+    await negative(s, 'G06 current unsupported findings set', findings, apply.copy, applyText,
+      text => record(text, 'Findings Test Evidence', 'findings-check-01',
+        body => body.replace('- Unsupported active findings: finding-02', '- Unsupported active findings: finding-01')),
+      exact('findings-check-01 Unsupported active findings contradict the canonical active set', true), {}, findingsEvidence);
+    await publishExecutionCopy({ specPath: findings.requirements, slice: 'slice-01', candidateRoot: apply.copy.candidateRoot });
+    assert.equal((await inspectExecutionState(findings.requirements)).state, 'FINDINGS_CORRECTED');
+    const again = await validateExample(findings, { status: 'NEEDS_FIX', findings: both, publish: false });
+    assert.equal(again.admission.owner.operation, 'VALIDATE_SLICE');
+    findingsEvidence.push(...await readFiles([again.captured.receiptFile, again.captured.semanticResponseFile]));
+    const againCopy = { ...again.copy, candidateTaskArtifact: path.join(again.copy.candidateExecutionRoot, 'tasks/slice-01.md') };
+    const againText = await fs.readFile(againCopy.candidateTaskArtifact, 'utf8');
+    assert.equal((await validateExecutionCandidate(findings.requirements, againCopy.candidateExecutionRoot)).state,
+      'VALIDATION_NEEDS_FIX');
+    await negative(s, 'G07 attempt02 undeclared finding', findings, againCopy, againText,
+      text => record(text, 'Validation Attempts', 'attempt-02', body => body
+        .replace('- Finding references: finding-01, finding-02', '- Finding references: finding-01, finding-02, finding-99')
+        .replace('- Finding dispositions: finding-01=active, finding-02=active',
+          '- Finding dispositions: finding-01=active, finding-02=active, finding-99=active')),
+      exact('attempt-02 references undeclared finding-99', true), {}, findingsEvidence);
+    const timelineMutation = text => record(text, 'Validation Attempts', 'attempt-02',
+      body => body.replace('- Finding dispositions: finding-01=active, finding-02=active',
+        '- Finding dispositions: finding-01=resolved, finding-02=active'));
+    await negative(s, 'G08 current attempt02 deterministic timeline', findings, againCopy, againText,
+      timelineMutation, exact('attempt-02 disposition contradicts finding-01 deterministic timeline', true),
+      {}, findingsEvidence);
+    await publishValidationCandidate({ specPath: findings.requirements, slice: 'slice-01',
+      candidateExecutionRoot: again.copy.candidateExecutionRoot, owner: again.admission.owner });
+    assert.deepEqual((await inspectExecutionState(findings.requirements)).tasks.get('slice-01').attempts.map(attempt => attempt.id),
+      ['attempt-01', 'attempt-02']);
+    const secondApply = await correctExample(findings,
+      { content: VALIDATED_CONTENT, verified: 'finding-01', unsupported: 'finding-02' });
+    assert.equal(secondApply.admission.owner.operation, 'APPLY_FINDINGS');
+    assert.deepEqual((await inspectExecutionState(findings.requirements)).tasks.get('slice-01').findingsChecks.map(check => check.id),
+      ['findings-check-01', 'findings-check-02']);
+    findingsEvidence.push(...await readFiles([secondApply.captured.receiptFile, secondApply.captured.semanticResponseFile]));
+    const third = await validateExample(findings, { status: 'NEEDS_FIX', findings: both, publish: false });
+    assert.equal(third.admission.owner.operation, 'VALIDATE_SLICE');
+    findingsEvidence.push(...await readFiles([third.captured.receiptFile, third.captured.semanticResponseFile]));
+    const thirdCopy = { ...third.copy, candidateTaskArtifact: path.join(third.copy.candidateExecutionRoot, 'tasks/slice-01.md') };
+    const thirdText = await fs.readFile(thirdCopy.candidateTaskArtifact, 'utf8');
+    assert.equal((await validateExecutionCandidate(findings.requirements, thirdCopy.candidateExecutionRoot)).state,
+      'VALIDATION_NEEDS_FIX');
+    assert.deepEqual([...thirdText.matchAll(/^### (attempt-[0-9]{2,})$/gmu)].map(match => match[1]),
+      ['attempt-01', 'attempt-02', 'attempt-03']);
+    await negative(s, 'G09 historical attempt02 deterministic timeline', findings, thirdCopy, thirdText,
+      timelineMutation, exact('attempt-02 disposition contradicts finding-01 deterministic timeline', true),
+      {}, findingsEvidence);
+    await negative(s, 'G10 historical findings-check01 unsupported set', findings, thirdCopy, thirdText,
+      text => record(text, 'Findings Test Evidence', 'findings-check-01',
+        body => body.replace('- Unsupported active findings: finding-02', '- Unsupported active findings: none')),
+      exact('findings-check-01 Unsupported active findings contradict the canonical active set', true),
+      {}, findingsEvidence);
+    assert.equal((await inspectExecutionState(findings.requirements)).tasks.get('slice-01').attempts[0].body, initialTask);
+    await sameFiles(findingsEvidence);
+  });
+
+  await t.test('B blocker e sucessor', { concurrency: false }, async s => {
+    reachedScenarios.push('B blocker e sucessor');
+    const blocked = await standaloneWorkspace(s); await renderArtifacts(blocked);
+    const filelessReason = 'Acceptance-only verification changes no repository file.';
+    const sourceFiles = await readFiles([path.join(blocked.root, 'src/example.txt'),
+      path.join(blocked.root, 'src/example.test.mjs')]);
+    const preparedArtifacts = await readPreparationArtifacts(blocked.execution);
+    const planRecipe = parseVerificationRecipe(preparedArtifacts.get('plans/slice-01.md').match(/^- Recipe: .+$/mu)[0]);
+    const taskRecipe = parseVerificationRecipe(preparedArtifacts.get('tasks/slice-01.md').match(/^- Recipe: .+$/mu)[0]);
+    assert.deepEqual(taskRecipe, planRecipe);
+    assert.equal(taskRecipe.checks[0].executable.literal, 'node');
+    assert.deepEqual(taskRecipe.checks[0].args[0], { literal: '--test' });
+    assert.deepEqual(taskRecipe.checks[0].args[1],
+      { file: { kind: 'product', path: '../../src/example.test.mjs' } });
+    assert.deepEqual(taskRecipe.checks[0].inputs, []);
+    assert.match(sectionBodyForScopeTest(preparedArtifacts.get('tasks/slice-01.md'), 'Authorized Areas'),
+      /`\.\.\/\.\.\/src`/u);
+    assert.match(sectionBodyForScopeTest(preparedArtifacts.get('tasks/slice-01.md'), 'Expected Files'),
+      /`\.\.\/\.\.\/src\/example\.txt`/u);
+    const verification = await readRunnerVerification(blocked.requirements, 'slice-01');
+    assert.equal(verification.checks.length, 1);
+    assert.equal(verification.checks[0].cwd, blocked.root);
+    assert.equal(verificationCommand(verification.checks[0]), 'node --test src/example.test.mjs');
+    const claim = path.relative(path.join(blocked.execution, 'tasks'), path.join(blocked.root, 'src/example.txt'))
+      .split(path.sep).join('/');
+    assert.equal(claim, '../../src/example.txt');
+    const prepareFileless = async (copy, summary) => {
+      let task = await fs.readFile(copy.candidateTaskArtifact, 'utf8');
+      assert.equal(task.split('- [ ] 1.1').length - 1, 1);
+      assert.equal(sectionBodyForScopeTest(task, 'Changed Areas').trimEnd(), '## Changed Areas\n\n- pending');
+      task = task.replace('- [ ] 1.1', '- [x] 1.1');
+      task = replaceSection(task, 'Changed Areas', '- none');
+      task = replaceSection(task, 'Diff Summary', summary);
+      await fs.writeFile(copy.candidateTaskArtifact, task);
+      assert.equal(sectionBodyForScopeTest(task, 'Changed Areas').trimEnd(), '## Changed Areas\n\n- none');
+      assert.equal(sectionBodyForScopeTest(task, 'Diff Summary').trimEnd(), `## Diff Summary\n\n${summary}`);
+      assert.equal(task.split('- [x] 1.1').length - 1, 1);
+    };
+    const replaceOnce = (text, from, to) => {
+      assert.equal(text.split(from).length - 1, 1, `${from} occurs once`);
+      const changed = text.replace(from, to);
+      assert.equal(changed.replace(to, from), text, 'single-field mutation restores the complete Task');
+      return changed;
+    };
+    const capturedFiles = receipt => [receipt.receiptFile, receipt.semanticResponseFile, receipt.eventsPath,
+      receipt.receiptFile.replace(/\.receipt\.json$/u, '.started.json'),
+      receipt.receiptFile.replace(/\.receipt\.json$/u, '.verification.json')];
+    let proof, firstReceipt, firstFrozen, firstTmpdir;
+    await withManagedExample(blocked, 'EXECUTE_SLICE', '{ invalid final response', async managed => {
+      firstTmpdir = managed.tmpdir;
+      assert.equal(managed.calls(), 0);
+      assert.equal(managed.copy.candidateRoot, managed.copy.candidateExecutionRoot);
+      assert.equal(managed.copy.candidateTaskArtifact,
+        path.join(managed.copy.candidateExecutionRoot, 'tasks/slice-01.md'));
+      const activation = await readExecutionActivation(blocked.requirements);
+      assert.equal(activation.activation.activeAttempt.operationAttemptId, managed.context.owner.operationAttemptId);
+      assert.equal(activation.activation.activeAttempt.slice, 'slice-01');
+      assert.equal(activation.activation.previousActivationId, managed.context.expectedActivationId);
+      const marker = JSON.parse(await fs.readFile(`${managed.copy.candidateRoot}.copy.json`, 'utf8'));
+      assert.equal(marker.expectedActivationId, activation.activation.activationId);
+      assert.notEqual(managed.context.owner.originActivationId, managed.context.expectedActivationId);
+      await prepareFileless(managed.copy,
+        '- Executed the reviewed acceptance assertion without changing repository files.');
+      firstReceipt = await managed.dispatch({ automaticCheckRound: '1/3', changedAreas: [], filelessReason });
+      assert.equal(managed.calls(), 1);
+      assert.equal(firstReceipt.status, 'RUNNER_RESULT_BLOCKED');
+      assert.equal(firstReceipt.exitCode, 1);
+      assert.deepEqual([firstReceipt.sequence, firstReceipt.attempt, firstReceipt.automaticCheckRound], [1, 1, '1/3']);
+      assert.deepEqual(firstReceipt.owner, managed.context.owner);
+      assert.equal(firstReceipt.semanticResponseStatus, null);
+      assert.equal(firstReceipt.testedState, null);
+      assert.equal(firstReceipt.captureFailureCode, 'RUNNER_RESPONSE_SCHEMA_INVALID');
+      assert.equal(firstReceipt.captureFailure, 'final runner message is not valid JSON');
+      assert.equal(firstReceipt.formatRepair, null);
+      for (const field of ['error', 'processError', 'providerError']) assert.equal(firstReceipt[field], null);
+      assert.equal(path.basename(firstReceipt.receiptFile), '001-execute_slice-slice-01-attempt-1.receipt.json');
+      assert.equal(await fs.readFile(firstReceipt.semanticResponseFile, 'utf8'), '{ invalid final response');
+      assert.deepEqual(firstReceipt.verification.checks.map(({ command, exit }) => ({ command, exit })),
+        [{ command: 'node --test src/example.test.mjs', exit: 0 }]);
+      const events = (await fs.readFile(firstReceipt.eventsPath, 'utf8')).trimEnd().split('\n').map(JSON.parse);
+      assert.equal(events[0].thread_id, firstReceipt.threadId);
+      assert.equal(events.at(-1).type, 'turn.completed');
+      firstFrozen = await readFiles(capturedFiles(firstReceipt));
+      const inputTree = await treeBytes(managed.copy.candidateExecutionRoot);
+      const outcome = await managed.finalize();
+      assert.equal(outcome.published, true);
+      assert.equal(outcome.state, 'RUNNER_RESULT_BLOCKED');
+      assert.deepEqual(await treeBytes(managed.copy.candidateExecutionRoot), inputTree);
+      await sameFiles(firstFrozen);
+      const state = await inspectExecutionState(blocked.requirements);
+      const task = state.tasks.get('slice-01');
+      assert.equal(state.state, 'RUNNER_RESULT_BLOCKED');
+      assert.equal(task.implementationChecks.length, 0);
+      assert.equal(task.attempts.length, 0);
+      assert.equal(state.activeDelegationBlockers.length, 1);
+      assert.equal(state.activeDelegationBlockers[0].operation, 'EXECUTE_SLICE');
+      assert.equal(state.activeDelegationBlockers[0].kind, 'malformed-output');
+      assert.equal(state.activeDelegationBlockers[0].state, 'active');
+      assert.equal(state.activeDelegationBlockers[0].afterRecord, 'none');
+      assert.ok(state.activeDelegationBlockers[0].recoveryProof?.path);
+      const liveTask = await fs.readFile(path.join(blocked.execution, 'tasks/slice-01.md'), 'utf8');
+      assert.equal(sectionBodyForScopeTest(liveTask, 'Changed Areas').trimEnd(), '## Changed Areas\n\n- pending');
+      assert.match(sectionBodyForScopeTest(liveTask, 'Diff Summary'), /reviewed acceptance assertion/u);
+      assert.equal(liveTask.split('- [ ] 1.1').length - 1, 1);
+      assert.equal(state.activation.activeAttempt.operationAttemptId, managed.context.owner.operationAttemptId);
+      proof = { expectedActivationId: state.activation.activationId,
+        rejectedOperationAttemptId: state.activation.activeAttempt.operationAttemptId,
+        rejection: state.activeDelegationBlockers[0].recoveryProof };
+      const copy = await prepareExecutionCopy({ specPath: blocked.requirements,
+        slice: 'slice-01', owner: managed.context.owner });
+      s.after(() => fs.rm(copy.candidateRoot, { recursive: true, force: true }));
+      const base = await fs.readFile(copy.candidateTaskArtifact, 'utf8');
+      assert.equal((await validateExecutionCandidate(blocked.requirements, copy.candidateExecutionRoot)).state,
+        'RUNNER_RESULT_BLOCKED');
+      await negative(s, 'G11 blocker kind loses pending exception', blocked, copy, base,
+        text => replaceOnce(text, '- Kind: malformed-output', '- Kind: initialization'),
+        exact(' Changed Areas cannot remain pending after work'), {}, firstFrozen);
+    });
+    const recovered = await preflightRunnerResultRecovery(blocked.requirements, 'EXECUTE_SLICE', '1', proof);
+    assert.equal(recovered.state, 'RUNNER_RESULT_BLOCKED');
+    const proofJson = JSON.parse(await fs.readFile(proof.rejection.path, 'utf8'));
+    assert.equal(proofJson.format, 'stnl-runner-rejection-v1');
+    assert.equal(proofJson.receiptFile, firstReceipt.receiptFile);
+    assert.equal(proofJson.round, 1);
+    assert.equal(proofJson.consumedInvocations, 1);
+    const supervisorFile = path.join(firstTmpdir, 'stnl-runner-broker/001.supervisor.json');
+    const supervisor = JSON.parse(await fs.readFile(supervisorFile, 'utf8'));
+    assert.ok(supervisor.closedAt);
+    assert.equal(supervisor.pending, false);
+    assert.equal(supervisor.cancelledPending, false);
+    assert.deepEqual(supervisor.errors, []);
+    assert.deepEqual([supervisor.sequence, supervisor.operation, supervisor.slice], [1, 'EXECUTE_SLICE', 'slice-01']);
+    const latest = JSON.parse(await fs.readFile(path.join(firstTmpdir, 'stnl-runner-broker/001.latest.json'), 'utf8'));
+    assert.equal(latest.receipt.receiptFile, firstReceipt.receiptFile);
+    const predecessorFrozen = [...firstFrozen, ...await readFiles([proof.rejection.path, supervisorFile,
+      ...proofJson.evidence.map(entry => entry.path)])];
+    await sameFiles(predecessorFrozen);
+    const good = { ...scopeRegressionPayload(filelessReason),
+      noVerificationCommandConfirmation: 'The reviewed verification command was executed',
+      commands: verification.checks.map(check => ({ command: verificationCommand(check), exit: 0 })) };
+    await withManagedExample(blocked, 'EXECUTE_SLICE', good, async managed => {
+      assert.equal(managed.calls(), 0);
+      assert.equal(managed.context.owner.recovery.predecessor.operationAttemptId, proof.rejectedOperationAttemptId);
+      assert.equal(managed.context.owner.recovery.round, 1);
+      assert.equal(managed.context.owner.recovery.consumedInvocations, 1);
+      assert.notEqual(managed.context.owner.operationAttemptId, proof.rejectedOperationAttemptId);
+      await prepareFileless(managed.copy,
+        '- Resolved the official runner blocker with a fresh reviewed assertion.');
+      const receipt = await managed.dispatch({ automaticCheckRound: '1/3', changedAreas: [], filelessReason });
+      assert.equal(managed.calls(), 1);
+      assert.equal(receipt.status, 'RUNNER_RESPONSE_CAPTURED');
+      assert.equal(receipt.exitCode, 0);
+      assert.deepEqual([receipt.sequence, receipt.attempt, receipt.automaticCheckRound], [2, 2, '1/3']);
+      assert.deepEqual(receipt.owner, managed.context.owner);
+      assert.equal(receipt.semanticResponseStatus, 'TESTS_PASS');
+      assert.equal(receipt.captureFailure, null);
+      assert.equal(receipt.captureFailureCode, null);
+      assert.deepEqual(receipt.testedState.entries, []);
+      assert.equal(receipt.testedState.workspace, blocked.root);
+      assert.equal(receipt.testedState.sourceTaskPath, path.join(blocked.execution, 'tasks/slice-01.md'));
+      assert.equal(path.basename(receipt.receiptFile), '002-execute_slice-slice-01-attempt-2.receipt.json');
+      assert.notEqual(receipt.receiptFile, firstReceipt.receiptFile);
+      assert.notEqual(receipt.threadId, firstReceipt.threadId);
+      assert.deepEqual(receipt.verification.checks.map(({ command, exit }) => ({ command, exit })),
+        [{ command: 'node --test src/example.test.mjs', exit: 0 }]);
+      const successorFrozen = await readFiles(capturedFiles(receipt));
+      await sameFiles(predecessorFrozen);
+      const bundle = await serializeRunnerExecutionBundleFromResponse({ operation: 'EXECUTE_SLICE',
+        response: await fs.readFile(receipt.semanticResponseFile, 'utf8'), workspace: blocked.root,
+        taskArtifact: managed.copy.candidateTaskArtifact, receiptFile: receipt.receiptFile,
+        semanticResponseFile: receipt.semanticResponseFile, automaticCheckRound: receipt.automaticCheckRound });
+      const identifier = await insertExecutionEvidenceInCandidate({ taskArtifact: managed.copy.candidateTaskArtifact,
+        operation: 'EXECUTE_SLICE', bundle,
+        validateProspectiveTask: prospective => validateExecutionCandidate(blocked.requirements,
+          managed.copy.candidateExecutionRoot, [prospective]) });
+      assert.equal(identifier, '### implementation-check-01');
+      const prepared = await fs.readFile(managed.copy.candidateTaskArtifact, 'utf8');
+      assert.equal((await validateExecutionCandidate(blocked.requirements, managed.copy.candidateExecutionRoot)).state,
+        'IMPLEMENTED_AWAITING_VALIDATION');
+      assert.deepEqual([...prepared.matchAll(/^### (implementation-check-[0-9]{2,})$/gmu)].map(match => match[1]),
+        ['implementation-check-01']);
+      assert.equal(prepared.split('- Resolution: implementation-check-01 returned a valid runner result').length - 1, 1);
+      await negative(s, 'G12 successor resolution names exact record', blocked, managed.copy, prepared,
+        text => replaceOnce(text, '- Resolution: implementation-check-01 returned a valid runner result',
+          '- Resolution: attempt-01 returned a valid runner result'),
+        exact('Delegation Blocker Resolution must name implementation-check-01', true),
+        {}, [...predecessorFrozen, ...successorFrozen]);
+      await publishExecutionCopy({ specPath: blocked.requirements, slice: 'slice-01',
+        candidateRoot: managed.copy.candidateRoot });
+      const final = await inspectExecutionState(blocked.requirements);
+      assert.equal(final.state, 'IMPLEMENTED_AWAITING_VALIDATION');
+      assert.equal(final.activation.activeAttempt, null);
+      assert.deepEqual(final.tasks.get('slice-01').implementationChecks.map(check => [check.id, check.status, check.round]),
+        [['implementation-check-01', 'TESTS_PASS', 1]]);
+      assert.equal(final.tasks.get('slice-01').attempts.length, 0);
+      assert.equal(final.tasks.get('slice-01').delegationBlocker.state, 'resolved');
+      assert.equal(sectionBodyForScopeTest(await fs.readFile(path.join(blocked.execution, 'tasks/slice-01.md'), 'utf8'),
+        'Changed Areas').trimEnd(), '## Changed Areas\n\n- none');
+      await sameFiles([...predecessorFrozen, ...successorFrozen, ...sourceFiles]);
+    }, { recovery: proof, sequence: 2 });
+    await sameFiles([...predecessorFrozen, ...sourceFiles]);
+  });
+
+  await t.test('T terminal', { concurrency: false }, async s => {
+    reachedScenarios.push('T terminal');
+    const terminal = await standaloneWorkspace(s); await renderArtifacts(terminal);
+    const terminalImplementation = await implementExample(terminal);
+    const terminalEvidence = await readFiles([terminalImplementation.captured.receiptFile,
+      terminalImplementation.captured.semanticResponseFile]);
+    const passed = await validateExample(terminal, { publish: false });
+    await sameFiles(terminalEvidence);
+    terminalEvidence.push(...await readFiles([passed.captured.receiptFile, passed.captured.semanticResponseFile]));
+    assert.equal(passed.admission.owner.operation, 'VALIDATE_SLICE');
+    assert.deepEqual([JSON.parse(terminalEvidence[0].bytes).verification.checks[0].exit,
+      JSON.parse(terminalEvidence[2].bytes).verification.checks[0].exit], [0, 0]);
+    const terminalCopy = { ...passed.copy, candidateTaskArtifact: path.join(passed.copy.candidateExecutionRoot, 'tasks/slice-01.md') };
+    const terminalText = await fs.readFile(terminalCopy.candidateTaskArtifact, 'utf8');
+    assert.equal((await validateExecutionCandidate(terminal.requirements, terminalCopy.candidateExecutionRoot)).state, 'COMPLETE');
+    assert.match(sectionBodyForScopeTest(terminalText, 'Effective Validation Base'), /- Result: PASS/u);
+    assert.deepEqual([...terminalText.matchAll(/^### (attempt-[0-9]{2,})$/gmu)].map(match => match[1]),
+      ['attempt-01']);
+    assert.equal((await inspectExecutionState(terminal.requirements)).state, 'IMPLEMENTED_AWAITING_VALIDATION');
+    await negative(s, 'G13 terminal diff placeholder', terminal, terminalCopy, terminalText,
+      text => replaceSection(text, 'Diff Summary', '- pending'),
+      exact(' Diff Summary must be objective non-placeholder content'), {}, terminalEvidence);
+  });
+  assert.deepEqual(reachedScenarios, expectedScenarios);
 });

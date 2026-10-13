@@ -15,9 +15,11 @@ const snapshot = path.resolve(import.meta.dirname, '../..');
 // The provider's semantic response and SDK transcript are explicit offline
 // stimuli. Identity, admission, candidate binding, reviewed process execution,
 // capture, receipt and publication are produced by the real managed runtime.
-export async function withManagedExample(f, operation, response, action, { sdkCommand = null, recovery = null, sequence = 1 } = {}) {
+export async function withManagedExample(f, operation, response, action,
+  { sdkCommand = null, recovery = null, sequence = 1, prepareCandidate = null } = {}) {
   const original = { ...process.env };
   assert.equal(sequence, recovery === null ? 1 : 2, 'the bounded successor uses sequence 2 only with official recovery');
+  assert.ok(prepareCandidate === null || typeof prepareCandidate === 'function');
   const state = recovery === null
     ? await preflightExecutionOperation(f.requirements, operation, '1')
     : await preflightRunnerResultRecovery(f.requirements, operation, '1', recovery);
@@ -53,7 +55,8 @@ export async function withManagedExample(f, operation, response, action, { sdkCo
         return { completed: true, turnStarted: true, threadId, error: null, processError: null, errorEvent: null,
           requestedModel: args.model, requestedEffort: args.effort, reportedModel: args.model, usage: null };
       } }) });
-    const prepared = await finalizeManagedSlice('--prepare');
+    const prepared = prepareCandidate === null ? await finalizeManagedSlice('--prepare')
+      : await prepareCandidate({ environment, cwd: f.root });
     assert.equal(prepared.status, 'PREPARED');
     const binding = JSON.parse(await fs.readFile(path.join(tmpdir, `stnl-runner-broker/${String(sequence).padStart(3, '0')}.candidate.json`)));
     f.test?.after(() => fs.rm(binding.candidateExecutionRoot, { recursive: true, force: true }));
