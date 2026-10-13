@@ -3,7 +3,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { preflightExecutionOperation } from '../../skills/workflows/stnl-slice-executor/runtime/execution-state.mjs';
+import { preflightExecutionOperation, preflightRunnerResultRecovery } from '../../skills/workflows/stnl-slice-executor/runtime/execution-state.mjs';
 import { createManagedSliceContext, managedEnvironment } from '../../skills/workflows/stnl-slice-executor/runtime/managed-slice-context.mjs';
 import { startOfficialRunnerBroker } from '../../agents/codex/runtime/runner-broker.mjs';
 import { runManagedRunnerBridge } from '../../agents/codex/runtime/managed-runner-bridge.mjs';
@@ -15,13 +15,16 @@ const snapshot = path.resolve(import.meta.dirname, '../..');
 // The provider's semantic response and SDK transcript are explicit offline
 // stimuli. Identity, admission, candidate binding, reviewed process execution,
 // capture, receipt and publication are produced by the real managed runtime.
-export async function withManagedExample(f, operation, response, action, { sdkCommand = null } = {}) {
+export async function withManagedExample(f, operation, response, action, { sdkCommand = null, recovery = null, sequence = 1 } = {}) {
   const original = { ...process.env };
-  const state = await preflightExecutionOperation(f.requirements, operation, '1');
+  assert.equal(sequence, recovery === null ? 1 : 2, 'the bounded successor uses sequence 2 only with official recovery');
+  const state = recovery === null
+    ? await preflightExecutionOperation(f.requirements, operation, '1')
+    : await preflightRunnerResultRecovery(f.requirements, operation, '1', recovery);
   const officialPreflight = { exitCode: 0, operation, slice: 'slice-01', inputSlice: '1', specPath: f.requirements,
     state: state.state, authority: 'sha256:' + state.currentFingerprint, legalOperations: state.legalOperations,
     mandatoryRecovery: state.mandatoryRecovery, activationId: state.activation.activationId };
-  const context = await createManagedSliceContext({ officialPreflight, workspace: f.root, snapshot,
+  const context = await createManagedSliceContext({ officialPreflight, workspace: f.root, snapshot, recovery,
     adapterPath: path.join(snapshot, 'agents/codex/runtime/validation-runner.mjs'),
     bridgePath: path.join(snapshot, 'agents/codex/runtime/managed-runner-bridge.mjs'),
     preflightPath: path.join(snapshot, 'agents/codex/runtime/managed-slice-preflight.mjs') });
@@ -34,7 +37,7 @@ export async function withManagedExample(f, operation, response, action, { sdkCo
   let broker, calls = 0;
   try {
     Object.assign(process.env, environment);
-    broker = await startOfficialRunnerBroker({ workspace: f.root, tmpdir, operation, sequence: 1, slice: 'slice-01', officialPreflight, pollIntervalMs: 1,
+    broker = await startOfficialRunnerBroker({ workspace: f.root, tmpdir, operation, sequence, slice: 'slice-01', officialPreflight, pollIntervalMs: 1,
       prepareSealedMetadata: async request => {
         const findingsOwnership = await prepareManagedFindingsRequest({ request, environment });
         return findingsOwnership === null ? null : { findingsOwnership };
@@ -52,7 +55,7 @@ export async function withManagedExample(f, operation, response, action, { sdkCo
       } }) });
     const prepared = await finalizeManagedSlice('--prepare');
     assert.equal(prepared.status, 'PREPARED');
-    const binding = JSON.parse(await fs.readFile(path.join(tmpdir, 'stnl-runner-broker/001.candidate.json')));
+    const binding = JSON.parse(await fs.readFile(path.join(tmpdir, `stnl-runner-broker/${String(sequence).padStart(3, '0')}.candidate.json`)));
     f.test?.after(() => fs.rm(binding.candidateExecutionRoot, { recursive: true, force: true }));
     return await action({ context, environment, tmpdir, broker, copy: binding,
       dispatch: payload => runManagedRunnerBridge({ environment, cwd: f.root, payload: typeof payload === 'string' ? payload : JSON.stringify(payload) }),
