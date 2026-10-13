@@ -6273,6 +6273,89 @@ test("append-only requirements recovery preserves history and requires later PAS
   await assert.rejects(inspectExecutionState(fixture.requirements), /committed supersessions do not exactly match|invalid later replacement slice/u);
 });
 
+test("U3 post-append handoff rejects self-supersession and retains later PASS ownership", async t => {
+  const f = await standaloneWorkspace(t); const { authority } = await renderArtifacts(f);
+  const initial = await inspectExecutionState(f.requirements);
+  assert.equal(initial.state, 'MATERIALIZED_PRISTINE');
+  assert.equal(deriveNormalHandoff(initial, 'REVIEW_PLAN')?.slice, 'slice-01');
+
+  const first = await implementExample(f, { publish: false });
+  await fs.writeFile(first.copy.candidateTaskArtifact,
+    replaceSection(await fs.readFile(first.copy.candidateTaskArtifact, 'utf8'), 'Divergences', ACTIVE_DIVERGENCE));
+  await publishExecutionCopy({ specPath: f.requirements, slice: 'slice-01', candidateRoot: first.copy.candidateRoot });
+  const prior = (await inspectExecutionState(f.requirements)).tasks.get('slice-01');
+  const receipt = await fs.readFile(first.captured.receiptFile);
+  const priorTask = await fs.readFile(path.join(f.execution, 'tasks/slice-01.md'));
+
+  await fs.appendFile(f.requirements, '\nThe recovery must retain the original example assertion and its observed history.\n');
+  const changedAuthority = await computeRequirementsAuthority(f.requirements);
+  assert.notEqual(changedAuthority, authority);
+  assert.equal((await preflightExecutionOperation(f.requirements, 'REPLAN')).state, 'REQUIREMENTS_CHANGED');
+  await appendRecoveryPlan(f, authority, changedAuthority);
+  assert.equal((await preflightExecutionOperation(f.requirements, 'REVIEW_PLAN')).state, 'PENDING_REPLAN_DRAFT');
+  await assert.rejects(preflightExecutionOperation(f.requirements, 'EXECUTE_SLICE', '2'), /not legal/u);
+
+  // A separate officially prepared draft is valid before one prospective
+  // mapping edit. Both source and target then name the newly appended slice,
+  // so the first pertinent contract guard must reject self-supersession.
+  const draft = await preparePreparationCandidate({ specPath: f.requirements, operation: 'REVIEW_PLAN' });
+  t.after(() => fs.rm(draft.candidateExecutionRoot, { recursive: true, force: true }));
+  t.after(() => fs.rm(draft.candidateExecutionRoot + '.owner.json', { force: true }));
+  const draftPlan = path.join(draft.candidateExecutionRoot, 'plan.md');
+  const canonicalPlan = await fs.readFile(draftPlan, 'utf8');
+  assert.match(canonicalPlan, /^- Supersedes open slices: slice-01 -> slice-02$/mu);
+  assert.equal((await validateExecutionCandidate(f.requirements, draft.candidateExecutionRoot)).state, 'PENDING_REPLAN_DRAFT');
+  const liveBeforeRejection = await treeBytes(f.execution);
+  const invalidPlan = canonicalPlan.replace('- Supersedes open slices: slice-01 -> slice-02',
+    '- Supersedes open slices: slice-02 -> slice-02');
+  assert.notEqual(invalidPlan, canonicalPlan);
+  await fs.writeFile(draftPlan, invalidPlan);
+  const rejectedCandidate = await treeBytes(draft.candidateExecutionRoot);
+  await assert.rejects(validateExecutionCandidate(f.requirements, draft.candidateExecutionRoot),
+    /invalid joint supersession mapping/u);
+  assert.deepEqual(await treeBytes(f.execution), liveBeforeRejection);
+  assert.deepEqual(await treeBytes(draft.candidateExecutionRoot), rejectedCandidate);
+  assert.deepEqual(await fs.readFile(first.captured.receiptFile), receipt);
+
+  await reviewJointFixture(f);
+  const reviewed = await inspectExecutionState(f.requirements);
+  assert.equal(reviewed.state, 'EXECUTION_STARTED');
+  assert.equal(deriveNormalHandoff(reviewed, 'REVIEW_PLAN')?.slice, 'slice-02');
+  assert.equal(reviewed.mandatoryRecovery, null);
+  assert.deepEqual(reviewed.legalOperations.filter(entry => entry.operation === 'EXECUTE_SLICE')
+    .map(entry => entry.slice), ['slice-02']);
+  assert.equal(reviewed.tasks.get('slice-01').final.result, 'SUPERSEDED');
+  assert.equal(reviewed.tasks.get('slice-01').final.supersededBy, 'slice-02');
+  assert.equal(reviewed.tasks.get('slice-01').implementationChecks[0].body, prior.implementationChecks[0].body);
+  assert.deepEqual(reviewed.tasks.get('slice-01').divergences, prior.divergences);
+  assert.deepEqual(reviewed.activeDivergences, []);
+  const continuity = JSON.parse(await fs.readFile(path.join(f.execution, 'continuity.json')));
+  const retained = continuity.deliveries.find(d => d.deliveryId === prior.deliveryId).history.at(-1);
+  assert.deepEqual(await fs.readFile(path.resolve(f.execution, retained.taskRef.path)), priorTask);
+  const readback = { execution: reviewed, executionRaw: reviewed, product: { deriveNormalHandoff } };
+  assert.deepEqual(decideOutcome('REVIEW_PLAN', readback, true), { result: 'PASS', blocker: null });
+  assert.deepEqual(nextHandoff('REVIEW_PLAN', readback), { operation: 'EXECUTE_SLICE', slice: 'slice-02' });
+  const handoff = spawnSync(process.execPath, [path.join(ROOT,
+    'skills/workflows/stnl-execution-planner/runtime/validate-execution-state.mjs'), f.requirements,
+    '--handoff-after', 'REVIEW_PLAN'], { encoding: 'utf8', cwd: f.root });
+  assert.equal(handoff.status, 0, handoff.stderr);
+  assert.deepEqual(JSON.parse(handoff.stdout).normal_handoff.slice, 'slice-02');
+
+  const implementation = await implementExample(f, { slice: 'slice-02', publish: false });
+  const candidate = implementation.copy;
+  assert.equal((await validateExecutionCandidate(f.requirements, candidate.candidateExecutionRoot)).state,
+    'IMPLEMENTED_AWAITING_VALIDATION');
+  await publishExecutionCopy({ specPath: f.requirements, slice: 'slice-02', candidateRoot: candidate.candidateRoot });
+  assert.notEqual((await inspectExecutionState(f.requirements)).state, 'COMPLETE');
+  await validateExample(f, { slice: 'slice-02' });
+  const complete = await inspectExecutionState(f.requirements);
+  assert.equal(complete.state, 'COMPLETE');
+  assert.equal(complete.tasks.get('slice-02').base.present, true);
+  assert.equal(complete.tasks.get('slice-02').attempts.at(-1).id, 'attempt-01');
+  assert.deepEqual(await fs.readFile(first.captured.receiptFile), receipt);
+  assert.deepEqual(await fs.readFile(path.resolve(f.execution, retained.taskRef.path)), priorTask);
+});
+
 // Every structural mutation is consumed as a prospective task on a real owned
 // candidate. The positive uses the same validator; live activation is separate.
 async function rejectTaskMutations(fixture, copy, cases) {
