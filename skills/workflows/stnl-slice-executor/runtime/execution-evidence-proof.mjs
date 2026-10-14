@@ -274,7 +274,8 @@ function captureShape(value, transport, label, profile) {
   const common = ['transport', 'rawResponse', 'receipt', 'baselineCapture', 'verificationObservation', 'removalProofs'];
   const native = ['origin', 'dispatch', 'agentBinding', 'agentClaim', 'concludedToolResult'];
   const managed = ['managedContext', 'active', 'started', 'events', 'closedSupervisor', 'latest', 'runtimeIdentity'];
-  closed(value, [...common, ...(transport === 'native' ? native : managed), ...(profile === 'current-validation' ? ['validationRequest'] : [])], label);
+  closed(value, [...common, ...(transport === 'native' ? native : managed),
+    ...(profile === 'current-validation' ? ['validationRequest'] : profile === 'current-findings' ? ['applyRequest'] : [])], label);
   if (value.transport !== transport) invalid(`${label}: mixed transports`);
   dense(value.removalProofs, `${label}.removalProofs`);
   if (transport === 'managed') dense(value.runtimeIdentity, `${label}.runtimeIdentity`);
@@ -283,6 +284,7 @@ function captureShape(value, transport, label, profile) {
     bytes(value[key], `${label}.${key}`);
   }
   if (profile === 'current-validation') bytes(value.validationRequest, `${label}.validationRequest`);
+  if (profile === 'current-findings') bytes(value.applyRequest, `${label}.applyRequest`);
   for (const item of value.removalProofs) bytes(item, `${label}.removalProof`);
   if (transport === 'managed') for (const item of value.runtimeIdentity) bytes(item, `${label}.runtimeIdentity`);
 }
@@ -383,7 +385,7 @@ function managedOrigin(cap, receipt, rawText, expectation, round, profile) {
   integer(active.sequence, `round ${round} sequence`, 1);
   if (active.sequence !== started.sequence || active.sequence !== receipt.sequence || receipt.attempt !== round || started.attempt !== round
     || receipt.runnerAgent !== 'stnl_validation_runner'
-    || (profile === 'initial-implementation' && receipt.automaticCheckRound !== `${round}/3`)) mismatch(`round ${round}: managed invocation`);
+    || (profile !== 'current-validation' && receipt.automaticCheckRound !== `${round}/3`)) mismatch(`round ${round}: managed invocation`);
   if (profile === 'current-validation' && Object.hasOwn(receipt, 'automaticCheckRound')) mismatch(`round ${round}: managed automaticCheckRound`);
   const stem = `${String(active.sequence).padStart(3,'0')}-${owner.operation.toLowerCase()}-${owner.slice}-attempt-${round}`;
   const root = absolute(active.tmpdir, `round ${round} managed tmpdir`);
@@ -446,10 +448,12 @@ function sourcesFor(cap, store, profile) {
   if (new Set(base.removalProofs).size !== base.removalProofs.length) invalid('duplicate removal proof bytes');
   if (cap.transport === 'native') return {
     ...base,
-    origin:store.add(capsule(profile === 'current-validation' ? 'stnl-native-validation-origin-bundle-v1' : 'stnl-native-origin-bundle-v1', {
+    origin:store.add(capsule(profile === 'current-validation' ? 'stnl-native-validation-origin-bundle-v1'
+      : profile === 'current-findings' ? 'stnl-native-findings-origin-bundle-v1' : 'stnl-native-origin-bundle-v1', {
       originUtf8:textBytes(cap.origin,'origin').text, dispatchUtf8:textBytes(cap.dispatch,'dispatch').text,
       baselineUtf8:textBytes(cap.baselineCapture,'baseline').text,
       ...(profile === 'current-validation' ? {validationRequestUtf8:textBytes(cap.validationRequest,'validation request').text} : {}),
+      ...(profile === 'current-findings' ? {applyRequestUtf8:textBytes(cap.applyRequest,'apply request').text} : {}),
     })),
     agentBinding:store.add(capsule('stnl-native-agent-bundle-v1', {
       agentUtf8:textBytes(cap.agentBinding,'agent').text, claimUtf8:textBytes(cap.agentClaim,'claim').text,
@@ -458,10 +462,12 @@ function sourcesFor(cap, store, profile) {
   };
   return {
     ...base,
-    started:store.add(capsule(profile === 'current-validation' ? 'stnl-managed-validation-start-bundle-v1' : 'stnl-managed-start-bundle-v1', {
+    started:store.add(capsule(profile === 'current-validation' ? 'stnl-managed-validation-start-bundle-v1'
+      : profile === 'current-findings' ? 'stnl-managed-findings-start-bundle-v1' : 'stnl-managed-start-bundle-v1', {
       contextUtf8:textBytes(cap.managedContext,'managed context').text, activeUtf8:textBytes(cap.active,'active').text,
       startedUtf8:textBytes(cap.started,'started').text, baselineUtf8:textBytes(cap.baselineCapture,'baseline').text,
       ...(profile === 'current-validation' ? {validationRequestUtf8:textBytes(cap.validationRequest,'validation request').text} : {}),
+      ...(profile === 'current-findings' ? {applyRequestUtf8:textBytes(cap.applyRequest,'apply request').text} : {}),
     })),
     events:store.add(cap.events),
     closedSupervisor:store.add(capsule('stnl-managed-close-bundle-v1', {
@@ -474,13 +480,13 @@ function restoreCapsule(objects, id, format, keys, label) {
   const data = objects.get(id);
   if (!data) incomplete(`${label}: missing capsule`);
   const parsed = jsonBytes(data, label).value;
-  const validationCapsule = format.includes('-validation-');
-  if (!validationCapsule) closed(parsed, ['format', ...keys], label);
+  const versionedCapsule = format.includes('-validation-') || format.includes('-findings-');
+  if (!versionedCapsule) closed(parsed, ['format', ...keys], label);
   else plain(parsed,label);
   if (parsed.format !== format) fail(
-    validationCapsule && ['stnl-native-origin-bundle-v1','stnl-managed-start-bundle-v1'].includes(parsed.format)
+    versionedCapsule && ['stnl-native-origin-bundle-v1','stnl-managed-start-bundle-v1'].includes(parsed.format)
       ? 'MIGRATION_REQUIRED' : 'UNSUPPORTED_FORMAT', `${label}: capsule format`);
-  if (validationCapsule) closed(parsed, ['format', ...keys], label);
+  if (versionedCapsule) closed(parsed, ['format', ...keys], label);
   const restored = {};
   for (const key of keys) restored[key] = utf8(str(parsed[key], `${label}.${key}`, false));
   return restored;
@@ -499,18 +505,22 @@ function restoreSources(record, objects, profile) {
     removalProofs:sources.removalProofs.map(id => get(id,'removalProof')),
   };
   if (sources.transport === 'native') {
-    const origin = restoreCapsule(objects,sources.origin,profile === 'current-validation' ? 'stnl-native-validation-origin-bundle-v1' : 'stnl-native-origin-bundle-v1',
-      ['originUtf8','dispatchUtf8','baselineUtf8',...(profile === 'current-validation' ? ['validationRequestUtf8'] : [])],'native origin capsule');
+    const origin = restoreCapsule(objects,sources.origin,profile === 'current-validation' ? 'stnl-native-validation-origin-bundle-v1'
+      : profile === 'current-findings' ? 'stnl-native-findings-origin-bundle-v1' : 'stnl-native-origin-bundle-v1',
+      ['originUtf8','dispatchUtf8','baselineUtf8',...(profile === 'current-validation' ? ['validationRequestUtf8'] : profile === 'current-findings' ? ['applyRequestUtf8'] : [])],'native origin capsule');
     const agent = restoreCapsule(objects,sources.agentBinding,'stnl-native-agent-bundle-v1',['agentUtf8','claimUtf8'],'native agent capsule');
     return {...base, origin:origin.originUtf8,dispatch:origin.dispatchUtf8,baselineCapture:origin.baselineUtf8,
       ...(profile === 'current-validation' ? {validationRequest:origin.validationRequestUtf8} : {}),
+      ...(profile === 'current-findings' ? {applyRequest:origin.applyRequestUtf8} : {}),
       agentBinding:agent.agentUtf8,agentClaim:agent.claimUtf8,concludedToolResult:get(sources.concludedToolResult,'toolResult')};
   }
-  const start = restoreCapsule(objects,sources.started,profile === 'current-validation' ? 'stnl-managed-validation-start-bundle-v1' : 'stnl-managed-start-bundle-v1',
-    ['contextUtf8','activeUtf8','startedUtf8','baselineUtf8',...(profile === 'current-validation' ? ['validationRequestUtf8'] : [])],'managed start capsule');
+  const start = restoreCapsule(objects,sources.started,profile === 'current-validation' ? 'stnl-managed-validation-start-bundle-v1'
+    : profile === 'current-findings' ? 'stnl-managed-findings-start-bundle-v1' : 'stnl-managed-start-bundle-v1',
+    ['contextUtf8','activeUtf8','startedUtf8','baselineUtf8',...(profile === 'current-validation' ? ['validationRequestUtf8'] : profile === 'current-findings' ? ['applyRequestUtf8'] : [])],'managed start capsule');
   const close = restoreCapsule(objects,sources.closedSupervisor,'stnl-managed-close-bundle-v1',['supervisorUtf8','latestUtf8'],'managed close capsule');
   return {...base, managedContext:start.contextUtf8,active:start.activeUtf8,started:start.startedUtf8,baselineCapture:start.baselineUtf8,
     ...(profile === 'current-validation' ? {validationRequest:start.validationRequestUtf8} : {}),
+    ...(profile === 'current-findings' ? {applyRequest:start.applyRequestUtf8} : {}),
     events:get(sources.events,'events'),closedSupervisor:close.supervisorUtf8,latest:close.latestUtf8,
     runtimeIdentity:sources.runtimeIdentity.map(id => get(id,'runtimeIdentity'))};
 }
@@ -518,9 +528,9 @@ function restoreSources(record, objects, profile) {
 // The two closed profiles share source and transport checks, with distinct formal
 // invocation rules. No caller supplies a verifier or bypass flag.
 export function verifyCapturedInvocation(profile, cap, receipt, rawText, expectation, round, resolved) {
-  if (!['initial-implementation', 'current-validation'].includes(profile)) invalid('capture profile');
+  if (!['initial-implementation', 'current-validation', 'current-findings'].includes(profile)) invalid('capture profile');
   plain(cap,`round ${round} capture`);
-  const transport = receipt === undefined && profile === 'initial-implementation' ? resolved : cap.transport;
+  const transport = receipt === undefined && profile !== 'current-validation' ? resolved : cap.transport;
   if (!['native', 'managed'].includes(transport)) fail('UNSUPPORTED_FORMAT', 'capture transport');
   captureShape(cap, transport, `round ${round}`, profile);
   if (receipt === undefined) return;
@@ -579,12 +589,179 @@ export function verifyWorkObservation(profile, value, owner, round, recipeInfo, 
   const commands = observation(value, owner, round, recipeInfo, baselineManifest, context, label);
   return commands;
 }
+function auxiliaryDeltas(before, after, info, round) {
+  const old = new Map(before.entries.map(entry => [entry.path, entry]));
+  const next = new Map(after.entries.map(entry => [entry.path, entry]));
+  for (const name of old.keys()) if (!next.has(name)) stale(`round ${round}: prior domain member omitted ${name}`);
+  const changed = [...new Set([...old.keys(), ...next.keys()])].sort(ordinal)
+    .filter(name => !same(old.get(name) ?? null, next.get(name) ?? null));
+  const leaves = changed.filter(name => old.get(name)?.kind === 'file' || next.get(name)?.kind === 'file');
+  for (const name of changed) {
+    if (info.inputs.some(item => item.path === name) && !areaContains(info.areas, name)) stale(`round ${round}: exclusive input changed ${name}`);
+    const beforeEntry = old.get(name), afterEntry = next.get(name);
+    const structural = beforeEntry?.kind === 'directory' || afterEntry?.kind === 'directory';
+    if (!structural) {
+      if (!areaContains(info.areas, name)) stale(`round ${round}: out-of-area delta ${name}`);
+      continue;
+    }
+    // Parent entries are domain closure, not extra authority. Every changed child
+    // edge must be explained by authorized leaf creation/removal below that edge.
+    const oldChildren = beforeEntry?.kind === 'directory' ? beforeEntry.children : [];
+    const newChildren = afterEntry?.kind === 'directory' ? afterEntry.children : [];
+    const edges = [...new Set([...oldChildren, ...newChildren])]
+      .filter(child => oldChildren.includes(child) !== newChildren.includes(child));
+    const justified = edge => leaves.some(leaf => (leaf === edge || leaf.startsWith(`${edge}/`))
+      && areaContains(info.areas, leaf)
+      && (old.get(leaf)?.kind === 'file') !== (next.get(leaf)?.kind === 'file'));
+    if (edges.some(child => !justified(`${name}/${child}`))
+      || (!edges.length && !areaContains(info.areas, name))
+      || ([beforeEntry, afterEntry].some(entry => entry?.kind === 'file') && !areaContains(info.areas, name)))
+      stale(`round ${round}: unexplained directory delta ${name}`);
+  }
+  return leaves;
+}
+function auxiliaryRemovalProofs(blobs, owner, round, before, after) {
+  dense(blobs, `round ${round} removal proofs`);
+  const old = new Map(before.entries.map(entry => [entry.path, entry]));
+  const next = new Map(after.entries.map(entry => [entry.path, entry]));
+  const required = [...old].filter(([name, entry]) => entry.kind === 'file' && next.get(name)?.kind === 'absent')
+    .map(([name]) => name).sort(ordinal);
+  const seen = new Set();
+  for (const [index, blob] of blobs.entries()) {
+    const proof = jsonBytes(blob, `round ${round} removal proof ${index + 1}`).value;
+    closed(proof, ['format','owner','round','path','sha256','mode','bytesBase64'], `round ${round} removal proof`);
+    if (proof.format !== 'stnl-current-removal-proof-v1') fail('CURRENT_FORMAT_REQUIRED', 'removal proof format');
+    ownerMatches(proof.owner, owner, `round ${round} removal owner`);
+    if (proof.round !== round) mismatch(`round ${round}: removal round`);
+    relative(proof.path, `round ${round} removal path`);
+    const prior = old.get(proof.path);
+    if (proof.round !== round || !prior || prior.kind !== 'file' || next.get(proof.path)?.kind !== 'absent'
+      || prior.sha256 !== proof.sha256 || prior.mode !== proof.mode) incomplete(`round ${round}: removal preimage differs`);
+    if (typeof proof.bytesBase64 !== 'string' || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(proof.bytesBase64)) incomplete(`round ${round}: removal base64`);
+    const product = Buffer.from(proof.bytesBase64, 'base64');
+    if (product.toString('base64') !== proof.bytesBase64 || raw(product) !== prior.sha256) incomplete(`round ${round}: removal bytes differ`);
+    if (seen.has(proof.path)) invalid(`round ${round}: duplicate removal proof`);
+    seen.add(proof.path);
+  }
+  expectEqual([...seen].sort(ordinal), required, 'EVIDENCE_INCOMPLETE', `round ${round}: removal proof set`);
+  return seen;
+}
+export function verifyAuxiliaryWork(profile, input) {
+  if (profile !== 'current-findings') invalid('auxiliary work profile');
+  closed(input, ['context','authority','owner','round','capture','receipt','priorScopePaths','previousScopePaths','previousAfter','witnessedRemovals','status'], 'auxiliary work input');
+  const {context, authority, owner, round, capture, receipt} = input;
+  const info = recipeAndClaims(context, authority.delivery, owner.slice);
+  const claims = [...info.areas, ...info.inputs, ...info.refs];
+  const baselineDocument = jsonBytes(capture.baselineCapture, `round ${round} baseline`).value;
+  const before = baseline(baselineDocument, owner, round, context, claims, `round ${round} baseline`);
+  if (input.previousAfter !== null) expectEqual(before, input.previousAfter, 'EVIDENCE_STALE', `round ${round}: baseline continuity`);
+  for (const [paths, label] of [[input.priorScopePaths, 'prior scope'], [input.previousScopePaths, 'previous scope']]) {
+    dense(paths, label);
+    for (const name of paths) {
+      relative(name, `${label} path`);
+      if (!before.entries.some(entry => entry.path === name)) incomplete(`round ${round}: ${label} member omitted ${name}`);
+    }
+  }
+  dense(input.witnessedRemovals, 'witnessed removals');
+  if (capture.verificationObservation === null) {
+    if (receipt.verification !== null || capture.removalProofs.length) incomplete(`round ${round}: absent observation conflicts with receipt/proofs`);
+    return {info, before, observed:null, commands:null, entries:null, scopePaths:null, correctionPaths:null, removed:[]};
+  }
+  const observed = jsonBytes(capture.verificationObservation, `round ${round} observation`).value;
+  const commands = observation(observed, owner, round, info, before, context, `round ${round} observation`);
+  expectEqual(receipt.verification, observed, 'EVIDENCE_STALE', `round ${round}: receipt observation`);
+  const after = observed.after;
+  const deltas = auxiliaryDeltas(before, after, info, round);
+  const removed = auxiliaryRemovalProofs(capture.removalProofs, owner, round, before, after);
+  const byPath = new Map(after.entries.map(entry => [entry.path, entry]));
+  const witnesses = new Set([...input.witnessedRemovals, ...removed]);
+  const scopePaths = [...new Set([
+    ...input.priorScopePaths, ...input.previousScopePaths,
+    ...after.entries.filter(entry => ['file','absent'].includes(entry.kind) && areaContains(info.areas, entry.path)).map(entry => entry.path),
+    ...info.refs.filter(ref => ref.kind === 'product').map(ref => ref.path),
+    ...witnesses,
+  ])].sort(ordinal);
+  for (const name of scopePaths) {
+    const entry = byPath.get(name);
+    if (!entry || entry.kind === 'directory') stale(`round ${round}: scope lacks leaf ${name}`);
+  }
+  if (receipt.testedState === null) return {info, before, observed, commands, entries:null, scopePaths, correctionPaths:deltas, removed:[...removed]};
+  closed(receipt.testedState, ['workspace','sourceTaskPath','entries'], `round ${round} testedState`);
+  if (receipt.testedState.workspace !== context.productRoot
+    || receipt.testedState.sourceTaskPath !== logicalArtifactPath(context, `tasks/${owner.slice}.md`)) stale(`round ${round}: testedState context`);
+  dense(receipt.testedState.entries, `round ${round} testedState entries`);
+  const selected = new Set(); let previous = null;
+  for (const entry of receipt.testedState.entries) {
+    closed(entry, ['path','value'], `round ${round} tested entry`);
+    relative(entry.path, `round ${round} tested path`);
+    if (previous !== null && ordinal(previous, entry.path) >= 0) invalid(`round ${round}: tested entries order`);
+    previous = entry.path;
+    const absolute = resolveLogicalProductClaim(context, `tasks/${owner.slice}.md`, entry.path);
+    const name = productRelative(context, absolute, `round ${round} tested path`);
+    const state = byPath.get(name);
+    if (!scopePaths.includes(name) || !state || state.kind === 'directory' || selected.has(name)) stale(`round ${round}: tested target outside scope`);
+    if (entry.value !== (state.kind === 'file' ? state.sha256 : 'REMOVED')) stale(`round ${round}: tested value differs`);
+    if (state.kind === 'absent' && !witnesses.has(name)) incomplete(`round ${round}: REMOVED without witness ${name}`);
+    selected.add(name);
+  }
+  for (const name of scopePaths) {
+    const state = byPath.get(name);
+    if (state.kind === 'file' && !selected.has(name)) incomplete(`round ${round}: file output lacks tested tuple ${name}`);
+    if (state.kind === 'absent' && witnesses.has(name) && !selected.has(name)) incomplete(`round ${round}: removed output lacks tested tuple ${name}`);
+    if (state.kind === 'absent' && !witnesses.has(name) && input.status === 'TESTS_PASS') incomplete(`round ${round}: PASS lacks removal witness ${name}`);
+  }
+  for (const name of deltas) if (!scopePaths.includes(name)) stale(`round ${round}: correction omitted ${name}`);
+  return {info, before, observed, commands, entries:receipt.testedState.entries, scopePaths,
+    correctionPaths:deltas, removed:[...removed]};
+}
 export function packCaptureSources(profile, cap, store) {
-  if (!['initial-implementation', 'current-validation'].includes(profile)) invalid('source profile');
+  if (!['initial-implementation', 'current-validation', 'current-findings'].includes(profile)) invalid('source profile');
   return sourcesFor(cap, store, profile);
 }
 export function restoreCaptureSources(profile, record, objects) {
-  if (!['initial-implementation', 'current-validation'].includes(profile)) invalid('source profile');
+  if (!['initial-implementation', 'current-validation', 'current-findings'].includes(profile)) invalid('source profile');
   return restoreSources(record, objects, profile);
+}
+// Only invocation-local bytes enter this link. In particular, managed close and
+// latest are unavailable when the next request is dispatched.
+export function findingsRoundCaptureSha256(cap) {
+  plain(cap, 'findings link capture');
+  if (!['native', 'managed'].includes(cap.transport)) fail('UNSUPPORTED_FORMAT', 'findings link transport');
+  // The link is also available before the aggregate managed close exists. Guard
+  // exactly its invocation-local projection; full capture guards remain mandatory
+  // at incorporation. Never read accessors while projecting.
+  const stable = ['transport','applyRequest','rawResponse','receipt','baselineCapture',
+    'verificationObservation','removalProofs', ...(cap.transport === 'native'
+      ? ['origin','dispatch','agentBinding','agentClaim','concludedToolResult']
+      : ['managedContext','active','started','events','runtimeIdentity'])];
+  if (Object.keys(cap).some(key => !stable.includes(key)
+    && !(cap.transport === 'managed' && ['closedSupervisor','latest'].includes(key)))
+    || stable.some(key => !Object.hasOwn(cap,key))) invalid('findings link capture: fields differ');
+  for (const key of stable) {
+    if (key === 'transport') continue;
+    if (['removalProofs','runtimeIdentity'].includes(key)) {
+      dense(cap[key], `findings link ${key}`);
+      for (const blob of cap[key]) bytes(blob, `findings link ${key}`);
+    } else bytes(cap[key], `findings link ${key}`);
+  }
+  const uniqueHashes = (items, label) => {
+    const hashes = items.map(item => raw(bytes(item, label)));
+    if (new Set(hashes).size !== hashes.length) invalid(`${label}: duplicate bytes`);
+    return hashes.sort(ordinal);
+  };
+  const link = {
+    format:'stnl-current-findings-round-link-v1', transport:cap.transport,
+    applyRequest:raw(cap.applyRequest), rawResponse:raw(cap.rawResponse), receipt:raw(cap.receipt),
+    baselineCapture:raw(cap.baselineCapture), verificationObservation:raw(cap.verificationObservation),
+    removalProofs:uniqueHashes(cap.removalProofs, 'removal proof'),
+    ...(cap.transport === 'native' ? {
+      origin:raw(cap.origin), dispatch:raw(cap.dispatch), agentBinding:raw(cap.agentBinding),
+      agentClaim:raw(cap.agentClaim), concludedToolResult:raw(cap.concludedToolResult),
+    } : {
+      managedContext:raw(cap.managedContext), active:raw(cap.active), started:raw(cap.started),
+      events:raw(cap.events), runtimeIdentity:uniqueHashes(cap.runtimeIdentity, 'runtime identity'),
+    }),
+  };
+  return raw(serialized(link));
 }
 export function closeEvidenceObjects() { return objectStore(); }

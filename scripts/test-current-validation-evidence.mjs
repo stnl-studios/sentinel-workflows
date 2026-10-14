@@ -479,6 +479,8 @@ test('V10 recusa concluída preserva raw sem criar attempt',()=>{
 
 test('V11 guards fechados, versões e counters canônicos',()=>{
   const f=first();const valid=composeCurrentValidationEvidence(f.input);
+  assert.equal(parse(f.cap.validationRequest).format,'stnl-current-validation-request-v1');
+  assert.equal(valid.formalStatus,'PASS');
   for (const [label,edit,expected] of [
     ['negative zero',input=>{input.previous.counters.findings=-0;},'INVALID_CURRENT_IMAGE'],
     ['float',input=>{input.previous.counters.findings=1.5;},'INVALID_CURRENT_IMAGE'],
@@ -502,10 +504,16 @@ test('V11 guards fechados, versões e counters canônicos',()=>{
     ['ID 00',req=>{req.attemptId='attempt-00';},'INVALID_CURRENT_IMAGE'],
     ['ID 001',req=>{req.attemptId='attempt-001';},'INVALID_CURRENT_IMAGE'],
     ['old envelope',req=>{req.format='stnl-current-validation-request-v0';},'MIGRATION_REQUIRED'],
-    ['future envelope',req=>{req.format='stnl-current-validation-request-v2';},'UNSUPPORTED_FORMAT'],
+    ['future envelope',req=>{req.format='stnl-current-validation-request-v3';},'UNSUPPORTED_FORMAT'],
     ['object envelope',req=>{req.format={includes:'stnl-current-validation-request-v0'};},'INVALID_CURRENT_IMAGE'],
   ]) {
     const input=clone(f.input);const req=parse(input.capture.validationRequest);edit(req);input.capture.validationRequest=json(req);
+    if(label==='future envelope') {
+      rebindRequest(input.capture,()=>{});
+      assert.equal(parse(input.capture.rawResponse).requestSha256,digest(input.capture.validationRequest));
+      assert.equal(parse(input.capture.receipt).semanticResponseSha256,digest(input.capture.rawResponse).slice(7));
+      assert.equal(parse(input.capture.concludedToolResult).finalResponse,Buffer.from(input.capture.rawResponse).toString('utf8'));
+    }
     assert.throws(()=>composeCurrentValidationEvidence(input),code(expected),label);
   }
   for (const [label,edit,part] of [
@@ -672,7 +680,8 @@ test('V13 distribuição isolada importa somente siblings e preserva semântica'
   const root=fileURLToPath(new URL('../skills/workflows/',import.meta.url));
   const temporaryRoot=fileURLToPath(new URL('../tmp/',import.meta.url));
   const names=['execution-current.mjs','runner-result-contract.mjs','execution-evidence-proof.mjs',
-    'execution-evidence-current.mjs','validation-evidence-current.mjs'];
+    'execution-evidence-current.mjs','current-evidence-state.mjs','findings-evidence-current.mjs',
+    'validation-evidence-current.mjs'];
   const workdir=process.cwd();const environment=JSON.stringify(process.env);
   const expected=composeCurrentValidationEvidence(first().input);
   for (const family of ['stnl-slice-executor','stnl-slice-quality-manager']) {
@@ -680,9 +689,12 @@ test('V13 distribuição isolada importa somente siblings e preserva semântica'
     try {
       for (const name of names) await copyFile(path.join(root,family,'runtime',name),path.join(directory,name));
       const module=await import(pathToFileURL(path.join(directory,'validation-evidence-current.mjs')).href);
+      const findings=await import(pathToFileURL(path.join(directory,'findings-evidence-current.mjs')).href);
       const proof=await import(pathToFileURL(path.join(directory,'execution-evidence-proof.mjs')).href);
       assert.deepEqual(Object.keys(module).sort(),['composeCurrentValidationEvidence','validateCurrentValidationEvidence']);
-      assert.deepEqual(Object.keys(proof).sort(),['closeEvidenceObjects','packCaptureSources','restoreCaptureSources','verifyCapturedInvocation','verifyWorkObservation']);
+      assert.deepEqual(Object.keys(findings).sort(),['composeCurrentFindingsEvidence','validateCurrentFindingsEvidence']);
+      for (const name of ['closeEvidenceObjects','packCaptureSources','restoreCaptureSources','verifyCapturedInvocation',
+        'verifyWorkObservation','verifyAuxiliaryWork','findingsRoundCaptureSha256']) assert.equal(typeof proof[name],'function');
       const fresh=first();const candidate=module.composeCurrentValidationEvidence(fresh.input);
       assert.deepEqual(candidate.bytes,expected.bytes);
       assert.equal(module.validateCurrentValidationEvidence({context:CONTEXT,authority:AUTHORITY,
@@ -697,6 +709,13 @@ test('V13 distribuição isolada importa somente siblings e preserva semântica'
       assert.equal(module.validateCurrentValidationEvidence({context:CONTEXT,authority:AUTHORITY,
         bundleBytes:sealed(authored),counters:EXPECTED_FIRST_COUNTERS,observedWork:manifest(1)}).validation,'current');
     } finally {await rm(directory,{recursive:true,force:true});}
+    const missing=await mkdtemp(path.join(temporaryRoot,'l24-missing-sibling-'));
+    try {
+      for (const name of names.filter(item=>item!=='current-evidence-state.mjs'))
+        await copyFile(path.join(root,family,'runtime',name),path.join(missing,name));
+      await assert.rejects(()=>import(pathToFileURL(path.join(missing,'validation-evidence-current.mjs')).href),
+        error=>error?.code==='ERR_MODULE_NOT_FOUND');
+    } finally {await rm(missing,{recursive:true,force:true});}
   }
   assert.equal(process.cwd(),workdir);assert.equal(JSON.stringify(process.env),environment);
 });
