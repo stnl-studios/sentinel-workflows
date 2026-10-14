@@ -84,6 +84,18 @@ O instalador não instala dependências nem modifica o projeto em que você usa 
 - A delegação do runner depende de o cliente seguir as instruções da skill. A aderência completa ao fluxo com runner ainda não foi certificada em ambos os clientes.
 - Checks auxiliares não substituem a validação formal, revisão humana ou julgamento do mantenedor. Um resultado de implementação, por si só, não significa `PASS`.
 
+### Leitor observacional da imagem EC-1
+
+O checkout inclui um leitor somente de inspeção em `stnl-slice-executor` e `stnl-slice-quality-manager`:
+
+```sh
+node skills/workflows/stnl-slice-executor/runtime/execution-current-reader.mjs SPEC_PATH
+```
+
+Ele lê a imagem oficial EC-1 e o produto atual, confere a aprovação inicial, os carriers e a evidência retida no bundle, e devolve JSON com a validade por entrega e um handoff descritivo. Exit 0 indica que a inspeção desse perfil foi concluída; exit 1 indica imagem ou estado que o leitor não conseguiu aceitar; exit 2 indica uso inválido. A API `inspectCurrentExecution(specPath)` está nos mesmos dois módulos.
+
+O perfil cobre preparação inicial de revisão 1 e tentativas concluídas, sem owner ativo. Um `PASS` local não fornece julgamento terminal nem autoriza `COMPLETE`, publicação, recuperação, descarte ou `CLOSE`. Os comandos antigos de execução e validação ainda não integram EC-1 e recusam esse formato. Conversão de imagem legada e publicação real ficam para etapas posteriores.
+
 ## Verificação focada do instalador
 
 Para executar os testes automatizados específicos do instalador:

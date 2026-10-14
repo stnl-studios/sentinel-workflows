@@ -131,6 +131,8 @@ export async function resolveExecutionWorkspace(specPath) {
     throw new ExecutionContractError(`SPEC_PATH must exist and must not be a symlink: ${requested}`);
   }
   const physical = await fs.realpath(requested);
+  const workspace = await resolvePhysicalExecutionWorkspace(physical);
+  await refuseCurrentImageForLegacy(workspace.executionRoot);
   let selected = (await fs.lstat(physical)).isDirectory() ? physical : path.dirname(physical);
   // Allocation ownership applies to every descendant. Visit only the selected
   // physical ancestry, including its filesystem root, without a depth cutoff.
@@ -157,7 +159,78 @@ export async function resolveExecutionWorkspace(specPath) {
     if(parent===selected) break;
     selected=parent;
   }
-  return resolvePhysicalExecutionWorkspace(physical);
+  return workspace;
+}
+
+// This is a compatibility fence, not an EC-1 parser.  It deliberately examines
+// only the three official discriminators before the legacy resolver can return
+// a workspace to callers which acquire locks or open retained history.
+async function refuseCurrentImageForLegacy(executionRoot) {
+  const discriminators = [
+    ['activation.json', 'stnl-execution-activation-v2'],
+    ['approved-preparation.json', 'stnl-preparation-v3'],
+    ['continuity.json', 'stnl-delivery-continuity-v2'],
+  ];
+  for (const [name, currentFormat] of discriminators) {
+    const file = path.join(executionRoot, name);
+    if (await lstatOrNull(file) === null) continue;
+    let document;
+    try { document = parseStrictJson((await readOwnedFile(file)).bytes.toString('utf8')); }
+    catch (cause) {
+      const error = new ExecutionContractError(`${name}: discriminator is unreadable or invalid; preserve execution`, [file]);
+      error.code = 'INVALID_CURRENT_IMAGE'; error.cause = cause; throw error;
+    }
+    if (document?.format === currentFormat) {
+      const error = new ExecutionContractError(`${name}: EC-1 operation is not integrated with the legacy execution path`, [file]);
+      error.code = 'UNSUPPORTED_FORMAT'; throw error;
+    }
+  }
+}
+
+// Current inspection resolves the physical official root without importing the
+// reader or consulting the legacy activation, continuation, or history chain.
+export async function resolveCurrentExecutionContext(specPath) {
+  const requested = path.resolve(String(specPath));
+  await assertNoSymlinkComponents(requested, 'SPEC_PATH');
+  const metadata = await lstatOrNull(requested);
+  if (metadata === null || metadata.isSymbolicLink()) {
+    const error = new ExecutionContractError('SPEC_PATH must be an existing real file or directory', [requested]);
+    error.code = 'UNSAFE_PATH'; throw error;
+  }
+  const physical = await fs.realpath(requested);
+  const workspace = await resolvePhysicalExecutionWorkspace(physical);
+  const productRoot = await trustedProjectRoot(workspace);
+  const operationalRoot = path.join(productRoot, 'tmp', 'sentinel');
+  if (pathIsWithin(physical, operationalRoot)) {
+    const error = new ExecutionContractError('known EC-1 operational namespace cannot be selected as official SPEC_PATH', [physical, operationalRoot]);
+    error.code = 'TEMP_ROOT_UNPROVEN'; throw error;
+  }
+  let selected = metadata.isDirectory() ? physical : path.dirname(physical);
+  while (true) {
+    const parent = path.dirname(selected);
+    const siblingNames = new Set(await fs.readdir(parent));
+    const markers = [`${selected}.copy.json`, `${selected}.publication.json`, `${selected}.owner.json`];
+    const generated = /^\.stnl-execution-(?:stage|backup)-([a-f0-9-]{36})$/u.exec(path.basename(selected));
+    if (generated) markers.push(path.join(parent, `.stnl-execution-publication-${generated[1]}.json`));
+    for (const marker of markers) {
+      if (!siblingNames.has(path.basename(marker))) continue;
+      let record;
+      try { record = parseStrictJson((await readOwnedFile(marker)).bytes.toString('utf8')); }
+      catch { const error = new ExecutionContractError('allocation root identity is uncertain; preserve it', [marker]); error.code = 'TEMP_ROOT_UNPROVEN'; throw error; }
+      if (!hasOwnedAllocationEnvelope(record, marker)) continue;
+      const roots = [record.candidate, record.stage, record.backup, record.retentionRoot].filter(Boolean);
+      if (roots.some(root => pathIsWithin(physical, root))) {
+        const error = new ExecutionContractError('operational allocation cannot be selected as official SPEC_PATH', [physical, marker]);
+        error.code = 'TEMP_ROOT_UNPROVEN'; throw error;
+      }
+    }
+    if (parent === selected) break;
+    selected = parent;
+  }
+  const context = {logicalSpecRoot: workspace.specRoot, logicalAuthorityPath: workspace.authorityPath,
+    logicalExecutionRoot: workspace.executionRoot, physicalExecutionRoot: workspace.executionRoot,
+    productRoot};
+  return {workspace, context};
 }
 
 // Private kernel shadows are validated against a separately resolved logical SPEC.
@@ -250,6 +323,8 @@ async function findNonCanonicalPathsForWorkspace({specRoot,executionRoot},{allow
 }
 
 export async function validateExecutionLayout(specPath, options = {}) {
+  const workspace = await resolveExecutionWorkspace(specPath);
+  await refuseCurrentImageForLegacy(workspace.executionRoot);
   const findings = await findNonCanonicalExecutionPaths(specPath, options);
   if (findings.length !== 0) throw new ExecutionContractError(`execution layout contains non-canonical paths: ${findings.join(", ")}`, findings);
 }
@@ -333,6 +408,22 @@ function stableEncode(value) {
 
 async function lifecycleProjection(workspace) {
   const featureText = await fs.readFile(workspace.authorityPath, "utf8");
+  const sharedTexts = new Map();
+  const shared = path.join(workspace.specRoot, "shared");
+  const status = parsePurpose(featureText, 'feature_spec.md').header.get('status');
+  const sharedMetadata = status === 'closed' ? null : await lstatOrNull(shared);
+  if (sharedMetadata !== null) {
+    if (sharedMetadata.isSymbolicLink() || !sharedMetadata.isDirectory()) throw new ExecutionContractError("shared must be a real directory");
+    for (const entry of (await fs.readdir(shared, { withFileTypes: true })).sort((left, right) => left.name.localeCompare(right.name, "en"))) {
+      if (isIgnoredMetadata(entry.name)) continue;
+      if (entry.isSymbolicLink() || !entry.isFile() || !entry.name.endsWith(".md")) throw new ExecutionContractError(`shared contains a non-canonical authority entry: ${entry.name}`);
+      sharedTexts.set(entry.name, await fs.readFile(path.join(shared, entry.name), "utf8"));
+    }
+  }
+  return lifecycleProjectionFromTexts(workspace, featureText, sharedTexts);
+}
+
+function lifecycleProjectionFromTexts(workspace, featureText, sharedTexts) {
   const { header, body } = parsePurpose(featureText, "feature_spec.md");
   const status = header.get("status");
   const featureSections = sections(body);
@@ -354,21 +445,45 @@ async function lifecycleProjection(workspace) {
       if (!featureSections.has(active)) throw new ExecutionContractError(`active feature_spec.md is missing ${active}`);
       core.push([closed, featureSections.get(active)]);
     }
-    const shared = path.join(workspace.specRoot, "shared");
-    const sharedMetadata = await lstatOrNull(shared);
-    if (sharedMetadata !== null) {
-      if (sharedMetadata.isSymbolicLink() || !sharedMetadata.isDirectory()) throw new ExecutionContractError("shared must be a real directory");
-      for (const entry of (await fs.readdir(shared, { withFileTypes: true })).sort((left, right) => left.name.localeCompare(right.name, "en"))) {
-        if (isIgnoredMetadata(entry.name)) continue;
-        if (entry.isSymbolicLink() || !entry.isFile() || !entry.name.endsWith(".md")) throw new ExecutionContractError(`shared contains a non-canonical authority entry: ${entry.name}`);
-        const sharedText = await fs.readFile(path.join(shared, entry.name), "utf8");
-        records.push(...canonicalRecords(parsePurpose(sharedText, entry.name).body));
-      }
+    for (const [name, sharedText] of [...sharedTexts].sort(([left], [right]) => left.localeCompare(right, "en"))) {
+      if (isIgnoredMetadata(name)) continue;
+      if (!name.endsWith('.md') || name.includes('/') || name.includes('\\')) throw new ExecutionContractError(`shared contains a non-canonical authority entry: ${name}`);
+      records.push(...canonicalRecords(parsePurpose(sharedText, name).body));
     }
   }
   records.sort(([left], [right]) => left.localeCompare(right, "en"));
   if (new Set(records.map(([identifier]) => identifier)).size !== records.length) throw new ExecutionContractError("lifecycle authority contains duplicate canonical IDs");
   return { h1, core, records };
+}
+
+export function projectCurrentRequirements({workspace, files}) {
+  if (!(files instanceof Map) || !workspace || !['lifecycle', 'standalone'].includes(workspace.kind)) {
+    const error = new ExecutionContractError('current requirements require a captured documentary Map');
+    error.code = 'INVALID_CURRENT_IMAGE'; throw error;
+  }
+  const allowed = file => file === workspace.authorityPath
+    || (workspace.kind === 'lifecycle' && path.dirname(file) === path.join(workspace.specRoot, 'shared')
+      && path.basename(file).endsWith('.md'));
+  for (const [file, bytes] of files) if (!allowed(file) || !(bytes instanceof Uint8Array)) {
+    const error = new ExecutionContractError(`unexpected documentary path or bytes: ${file}`);
+    error.code = 'INVALID_CURRENT_IMAGE'; throw error;
+  }
+  if (!files.has(workspace.authorityPath)) {
+    const error = new ExecutionContractError('requirements source is absent from captured documents');
+    error.code = 'REQUIREMENTS_CHANGED'; throw error;
+  }
+  const decode = bytes => new TextDecoder('utf-8', {fatal: true}).decode(bytes);
+  const source = files.get(workspace.authorityPath);
+  let payload, documentStatus = null;
+  if (workspace.kind === 'standalone') payload = source;
+  else {
+    const sharedTexts = new Map();
+    for (const [file, bytes] of files) if (file !== workspace.authorityPath) sharedTexts.set(path.basename(file), decode(bytes));
+    const text = decode(source);
+    documentStatus = parsePurpose(text, 'feature_spec.md').header.get('status');
+    payload = stableEncode(lifecycleProjectionFromTexts(workspace, text, sharedTexts));
+  }
+  return {requirementsAuthority: `sha256:${createHash('sha256').update(HASH_DOMAIN).update(payload).digest('hex')}`, documentStatus};
 }
 
 async function lifecycleStatusForExecution(workspace) {
@@ -2304,6 +2419,7 @@ export async function inspectExecutionState(specPath) {
 }
 
 export async function preparationAuthorityAt(root) {
+  await refuseCurrentImageForLegacy(root);
   return projectPreparationAuthority(await readPreparationArtifacts(root));
 }
 
@@ -2318,6 +2434,7 @@ function continuationPath(base, relative) {
 const relativeContinuation = (base, file) => path.relative(base, file).split(path.sep).join('/');
 
 export async function readDeliveryContinuity(workspace, authority = null) {
+  await refuseCurrentImageForLegacy(workspace.executionRoot);
   const logical = logicalWorkspaceFor(workspace);
   const file = path.join(workspace.executionRoot, 'continuity.json');
   const index = parseStrictJson((await readOwnedFile(file)).bytes.toString('utf8'));
@@ -2366,6 +2483,7 @@ async function readContinuityReference(workspace, allocationRef, fileRef, task =
 }
 
 export async function readDeliveryHistory(workspace, delivery, currentText) {
+  await refuseCurrentImageForLegacy(workspace.executionRoot);
   const logical=logicalWorkspaceFor(workspace);
   const evidenceOrigins=new Map();const reopenedPasses=new Set();const cumulative=new Map();
   const archived=[];
@@ -2586,6 +2704,7 @@ export async function captureContinuationWorkState({ workspace, authority, deliv
 }
 
 export async function readContinuationWorkCapture(workspace, reference, delivery, owner = null) {
+  await refuseCurrentImageForLegacy(workspace.executionRoot);
   continuationKeys(reference, ['path','sha256'], 'work capture');
   const bytes = (await readOwnedFile(reference.path)).bytes;
   if (continuationHash(bytes) !== reference.sha256) throw new ExecutionContractError('work capture hash differs');
@@ -3503,6 +3622,7 @@ export async function validateExecutionCandidate(specPath, candidateExecutionRoo
   if (pathIsWithin(candidate, workspace.executionRoot) || pathIsWithin(workspace.executionRoot, candidate)) {
     throw new ExecutionContractError("candidate execution root must be isolated from live execution artifacts", [candidate]);
   }
+  await refuseCurrentImageForLegacy(candidate);
   await assertCandidateTreeSafe(candidate);
   const shadow = await createCandidateShadow(workspace);
   try {

@@ -1334,3 +1334,330 @@ export function validateCurrentFindingsEvidence(input) {
     sha256:raw(result.original),counters:structuredClone(result.counters),outcome:result.outcome,
     auxiliaryStatus:result.cycle.auxiliaryStatus,formalStatus:result.formalStatus,validation:result.validation};
 }
+
+// Internal read-only bridge for the official EC-1 reader.  It uses the same
+// capture reconstruction as the formal and APPLY validators, but reports the
+// sealed verdict separately from the observation made on current product bytes.
+export function inspectCurrentEvidence({context,authority,bundleBytes,counters:declaredCounters,baseline:declaredBaseline,observedWork}) {
+  counters(declaredCounters,'current counters');
+  verifyWorkObservation('current-validation',{observedWork});
+  if (bundleBytes === null) {
+    equal(declaredCounters,{implementationChecks:0,findingsChecks:0,validationAttempts:0,findings:0},'INVALID_CURRENT_IMAGE','empty evidence counters');
+    return {context,authority,bundle:null,evidenceSha256:null,counters:structuredClone(declaredCounters),
+      baseline:declaredBaseline,persistedValidation:'unvalidated',observationMatches:same(declaredBaseline,observedWork),
+      observedValidation:same(declaredBaseline,observedWork)?'unvalidated':'revalidation-required',
+      auxiliaryStatus:null,formalStatus:null,verifiedChanges:[],verifiedCorrections:[],openFindings:[],records:{implementation:[],findings:[],validation:[]},
+      rejection:null,latest:null,cycle:null};
+  }
+  const original=copyBytes(bundleBytes,'bundleBytes');
+  const bundle=jsonBytes(original,'bundleBytes').value;
+  validateCurrentEvidence(bundle);
+  const map=sourceMap(bundle);
+  const initialRejection=bundle.validation===null && bundle.findingsChecks.length===0
+    && bundle.support.some(item=>item.kind==='rejection' && item.origin.operation==='EXECUTE_SLICE');
+  let result;
+  if (initialRejection) {
+    const record=bundle.implementation[0]??bundle.support.find(item=>item.kind==='rejection');
+    if (!record) invalid('Initial rejection lacks capture');
+    const cap=restoreCaptureSources('initial-implementation',record,map);
+    const initialOwner=jsonBytes(cap.transport==='native'?cap.origin:cap.managedContext,'Initial owner').value.owner;
+    const isolated={...bundle,objects:referencedObjects([...bundle.implementation,...bundle.support],map)};
+    const validated=validateInitialImplementationEvidence({context,authority,owner:initialOwner,currentEvidence:null,
+      counters:{implementationChecks:0,findingsChecks:0,validationAttempts:0,findings:0},bundleBytes:encode(isolated)});
+    equal(declaredCounters,validated.counters,'INVALID_CURRENT_IMAGE','Initial rejection counters');
+    result={bundle,initial:null,latest:null,rejected:bundle.support.find(item=>item.kind==='rejection'),
+      cycle:null,formalStatus:null,validation:'uncertain',counters:declaredCounters};
+  } else result=inspect(original,context,authority,declaredCounters,observedWork,true);
+  const firstInitial=bundle.implementation[0]??bundle.support.find(item=>item.kind==='rejection' && item.origin.operation==='EXECUTE_SLICE');
+  const firstApply=bundle.findingsChecks[0]??bundle.support.find(item=>item.kind==='rejection' && item.origin.operation==='APPLY_FINDINGS');
+  const first=firstApply??firstInitial;
+  if (!first) incomplete('evidence lacks a verified cycle baseline');
+  const cap=restoreCaptureSources(firstApply?'current-findings':'initial-implementation',first,map);
+  const base=jsonBytes(cap.baselineCapture,'current cycle baseline').value;
+  if (!base || !Object.hasOwn(base,'manifest')) incomplete('current cycle baseline capture is absent');
+  equal(declaredBaseline,base.manifest,'INVALID_CURRENT_IMAGE','current cycle baseline');
+  const rejected=Boolean(result.rejected);
+  const latest=result.latest??null;
+  const formalStatus=result.formalStatus??null;
+  const persistedValidation=rejected?'uncertain':formalStatus==='PASS' && !bundle.openFindings.some(item=>item.severity==='blocking')
+    ?'current':formalStatus===null?'unvalidated':'revalidation-required';
+  const initialTested=bundle.implementation.at(-1)?.testedWork;
+  const sealedWork=result.cycle && bundle.validation?.id===result.cycle.admissionId
+    ?result.cycle.lastWork??latest?.record.testedWork:latest?.record.testedWork??initialTested??base.manifest;
+  const observationMatches=same(sealedWork,observedWork);
+  const observedValidation=rejected?'uncertain':!observationMatches?'revalidation-required':result.validation;
+  const auxiliaryStatus=result.cycle?.status
+    ?? (bundle.implementation.length ? (()=>{const response=jsonBytes(restoreCaptureSources('initial-implementation',bundle.implementation.at(-1),map).rawResponse,'Initial response').value;
+      return response.status??response.result?.status??null;})() : null);
+  if (!rejected && auxiliaryStatus==='TESTS_FAIL' && !result.cycle && bundle.implementation.length<3)
+    fail('UNSUPPORTED_FORMAT','Initial FAIL prefix is not a completed quiet cycle');
+  if (!rejected && auxiliaryStatus==='BLOCKED' && !result.cycle)
+    fail('UNSUPPORTED_FORMAT','Initial BLOCKED requires operational recovery outside quiet profile');
+  const info=verifyWorkObservation('initial-implementation',{context,delivery:authority.delivery,slice:bundle.slice});
+  const output=name=>info.areas.some(item=>item.path===name || item.kind==='directory' && name.startsWith(`${item.path}/`));
+  const cycleDeltas=[];
+  for(const record of [...bundle.implementation,...bundle.findingsChecks]) {
+    const profile=record.kind==='implementation-check'?'initial-implementation':'current-findings';
+    const before=jsonBytes(restoreCaptureSources(profile,record,map).baselineCapture,'verified round baseline').value.manifest;
+    cycleDeltas.push(...changedOutputPaths(before,record.testedWork).filter(output));
+  }
+  const verifiedChanges=[...new Set([...cycleDeltas,...changedOutputPaths(base.manifest,sealedWork).filter(output)])].sort(ordinal);
+  const verifiedCorrections=result.cycle?[...new Set(cycleDeltas)].sort(ordinal):[...new Set(bundle.implementation.slice(1).flatMap(record=>{
+    const before=jsonBytes(restoreCaptureSources('initial-implementation',record,map).baselineCapture,'verified correction baseline').value.manifest;
+    return changedOutputPaths(before,record.testedWork).filter(output);
+  }))].sort(ordinal);
+  return {context,authority,bundle,evidenceSha256:raw(original),counters:structuredClone(declaredCounters),verifiedChanges,verifiedCorrections,
+    baseline:base.manifest,sealedWork,observationMatches,persistedValidation,observedValidation,auxiliaryStatus,formalStatus,
+    openFindings:bundle.openFindings,records:{implementation:bundle.implementation,
+      findings:bundle.findingsChecks,validation:[...bundle.support.filter(item=>item.kind==='validation'),...(bundle.validation?[bundle.validation]:[])]},
+    rejection:rejected?result.rejected:null,latest,cycle:result.cycle??null};
+}
+
+function carrierMismatch(artifact,field,reason) {
+  const error=new Error(`${artifact} ${field}: ${reason}`);
+  error.code='INVALID_CURRENT_IMAGE';
+  error.diagnostics=[{kind:'carrier-mismatch',artifact,field,reason}];
+  throw error;
+}
+
+function carrierSyntax(artifact,field,reason) {
+  const error=new Error(`${artifact} ${field}: ${reason}`);
+  error.code='INVALID_CURRENT_IMAGE';
+  error.diagnostics=[{kind:'carrier-syntax',artifact,field,reason}];
+  throw error;
+}
+
+function operationalScalar(value) {
+  const trimmed=value.trim();
+  if (/^`[^`]*`$/u.test(trimmed)) return trimmed.slice(1,-1);
+  if (trimmed.startsWith('json:')) {
+    try {return canonical(parseCurrentJson(trimmed.slice(5)));}
+    catch {return trimmed;}
+  }
+  return trimmed;
+}
+
+const PROSE_FIELDS=new Set(['Evidence','Evidence summary','Discovery sources','Discovery actions',
+  'Verification types considered','Non-applicability rationale','No verification-command confirmation',
+  'Selection rationale','Coverage','Failures','Blockers','Unexpected workspace effects','Persistence summary',
+  'Prior-round failure','Correction applied','In-slice rationale','Regressions','Fileless reason',
+  'Problem','Impact','Related authority','Expected correction','Resolution','Affected behavior']);
+function operationalProse(value) {
+  let text=value.trim();
+  if (text.startsWith('json:')) {
+    try {const decoded=parseCurrentJson(text.slice(5));if(typeof decoded==='string') text=decoded;}
+    catch { /* The field comparison still rejects malformed encoded prose. */ }
+  }
+  return text.split(/\n[ \t]*\n+/u).map(paragraph=>paragraph.split(/(`[^`]*`)/u)
+    .map((part,index)=>index%2?part:part.replace(/\s+/gu,' ')).join('').trim()).join('\n\n');
+}
+function operationalFields(body,artifact,field) {
+  const rows=[];
+  let blank=false;
+  for (const line of body.replaceAll('\r\n','\n').trim().split('\n')) {
+    if (!line.trim()) {blank=true;continue;}
+    const entry=/^[ \t]*[-*+][ \t]+([^:]+?)[ \t]*:[ \t]*(.*?)[ \t]*$/u.exec(line);
+    const bullet=/^[ \t]*[-*+][ \t]+(.+?)[ \t]*$/u.exec(line);
+    const parts=bullet && /^(.*?)\s*\|\s*(exit:[-]?[0-9]+|sha256:[a-f0-9]{64}|REMOVED)\s*$/u.exec(bullet[1]);
+    // A nested typed item is distinguished by its complete value grammar,
+    // not the field's left margin. Commands keep their exact inner contents.
+    if (parts && !(entry && PROSE_FIELDS.has(entry[1].trim()))
+      && rows.length && ['Commands','Tested state','Files','Authoritative commands'].includes(rows.at(-1)[0])) {
+      if (rows.at(-1)[1]==='') rows.at(-1)[1]=[];
+      if (!Array.isArray(rows.at(-1)[1])) carrierSyntax(artifact,field,'nested list conflicts with scalar');
+      rows.at(-1)[1].push([operationalScalar(parts[1]),parts[2]]);
+    } else if (entry) rows.push([entry[1].trim(),entry[2]]);
+    else if (rows.length && PROSE_FIELDS.has(rows.at(-1)[0]) && !/^\s*[-*+#]/u.test(line)) {
+      rows.at(-1)[1]+=(blank?'\n\n':' ')+line.trim();
+    } else carrierSyntax(artifact,field,'unrecognized operational field');
+    blank=false;
+  }
+  const names=rows.map(row=>row[0]);
+  if (new Set(names).size!==names.length) carrierSyntax(artifact,field,'duplicate operational field');
+  const sets=new Set(['Finding references','Finding IDs','Findings verified','Unsupported active findings','Selected checks']);
+  const paths=new Set(['Tested scope','Verified scope','Updated scope','Correction paths','Corrections covered']);
+  return Object.fromEntries(rows.map(([name,value])=>[name,Array.isArray(value)?value:PROSE_FIELDS.has(name)
+    ?operationalProse(value):sets.has(name)?operationalScalar(value).split(/\s*,\s*/u).map(operationalScalar).sort(ordinal).join(', ')
+      :paths.has(name)?operationalScalar(value).split(/\s*,\s*/u).map(operationalScalar).join(', '):operationalScalar(value)]));
+}
+
+function operationalRecords(body,artifact,field) {
+  if (/^\s*[-*+]\s+none\s*$/u.test(body)) return [];
+  const headings=[...body.matchAll(/^###\s+((?:implementation-check|findings-check|attempt)-[0-9]{2,})\s*$/gmu)];
+  if (!headings.length || headings[0].index!==0) carrierSyntax(artifact,field,'record headings are missing');
+  return headings.map((heading,index)=>{
+    const text=body.slice(heading.index+heading[0].length,headings[index+1]?.index).trim();
+    return {id:heading[1],fields:operationalFields(text,artifact,`${field}.${heading[1]}`)};
+  });
+}
+
+function operationalPaths(body,facts,artifact,field,{pending=false}={}) {
+  if (/^\s*[-*+]\s+none\s*$/u.test(body) || pending && /^\s*[-*+]\s+pending\s*$/u.test(body)) return [];
+  const values=[];
+  for (const line of body.replaceAll('\r\n','\n').trim().split('\n')) {
+    const match=/^[ \t]*[-*+][ \t]+(.+?)[ \t]*$/u.exec(line);
+    if (!match || match[1].includes('`') && !/^`[^`]+`$/u.test(match[1]))
+      carrierSyntax(artifact,field,'invalid path claim');
+    const claim=operationalScalar(match[1]);
+    let absolute;
+    try {absolute=resolveLogicalProductClaim(facts.context,artifact,claim);}
+    catch {carrierSyntax(artifact,field,'path escapes product authority');}
+    values.push(path.relative(facts.context.productRoot,absolute).split(path.sep).join('/'));
+  }
+  if (new Set(values).size!==values.length) carrierSyntax(artifact,field,'duplicate path claim');
+  return values.sort(ordinal);
+}
+
+function findingCarrier(body,artifact) {
+  if (/^\s*[-*+]\s+none\s*$/u.test(body)) return [];
+  const headings=[...body.matchAll(/^###\s+(finding-[0-9]{2,})\s*$/gmu)];
+  if (!headings.length || headings[0].index!==0) carrierSyntax(artifact,'Validation Findings','finding headings are missing');
+  return headings.map((heading,index)=>({id:heading[1],fields:operationalFields(
+    body.slice(heading.index+heading[0].length,headings[index+1]?.index).trim(),artifact,`Validation Findings.${heading[1]}`)}));
+}
+
+function compareFindings(facts,sections,artifact) {
+  const actual=findingCarrier(sections['Validation Findings'],artifact);
+  const expected=facts.latest?.all??[];
+  if (!same(actual.map(item=>item.id),expected.map(item=>item.id)))
+    carrierMismatch(artifact,'Validation Findings','finding membership differs from verified formal history');
+  const names=['Severity','Origin','Problem','Evidence','Impact','Related authority','Expected correction'];
+  const keys=['severity','originAttempt','problem','evidence','impact','relatedAuthority','expectedCorrection'];
+  for (let i=0;i<expected.length;i+=1) {
+    const {fields}=actual[i],source=expected[i],state=facts.latest.dispositions.get(source.id);
+    for (let j=0;j<names.length;j+=1) if (fields[names[j]]!==(PROSE_FIELDS.has(names[j])?operationalProse(source[keys[j]]):source[keys[j]]))
+      carrierMismatch(artifact,`Validation Findings.${source.id}.${names[j]}`,'finding detail differs from verified origin');
+    if (fields.State!==state) carrierMismatch(artifact,`Validation Findings.${source.id}.State`,'finding disposition differs');
+    const allowed=[...names,'State',...(state==='resolved'?['Resolution']:state==='superseded'?['Superseded by']:[])];
+    if (!same(Object.keys(fields).sort(ordinal),allowed.sort(ordinal)))
+      carrierSyntax(artifact,`Validation Findings.${source.id}`,'missing or unknown finding field');
+    if (state==='active' && (fields.Resolution!==undefined || fields['Superseded by']!==undefined))
+      carrierMismatch(artifact,`Validation Findings.${source.id}`,'active finding has resolution');
+    if (state==='resolved' && !String(fields.Resolution??'').split(/[^a-zA-Z0-9-]+/u).includes(facts.latest.record.id))
+      carrierMismatch(artifact,`Validation Findings.${source.id}.Resolution`,'resolution lacks verified formal attempt');
+  }
+}
+
+function compareEffectiveBase(facts,sections,artifact) {
+  const body=sections['Effective Validation Base'];
+  if (facts.formalStatus!=='PASS') {
+    if (!/^\s*[-*+]\s+none\s*$/u.test(body)) carrierMismatch(artifact,'Effective Validation Base','no sealed PASS owns a base');
+    return;
+  }
+  if (/^\s*[-*+]\s+none\s*$/u.test(body)) carrierMismatch(artifact,'Effective Validation Base','sealed PASS base is absent');
+  const base=operationalFields(body,artifact,'Effective Validation Base');
+  const record=operationalRecords(facts.latest.record.recordUtf8,artifact,'Validation Attempts')[0].fields;
+  for (const [name,expected] of [['Origin attempt',facts.latest.record.id],['Attempt type',record.Type],
+    ['HEAD',record.HEAD],['Result','PASS'],['Evidence summary',record.Evidence]])
+    if (base[name]!==expected) carrierMismatch(artifact,`Effective Validation Base.${name}`,'base differs from verified PASS');
+  if (!same(base['Authoritative commands'],record.Commands))
+    carrierMismatch(artifact,'Effective Validation Base.Authoritative commands','commands differ from verified PASS');
+  const expectedKeys=['Origin attempt','Attempt type','HEAD','Result','Files','Authoritative commands','Evidence summary',
+    ...(facts.latest.request.scope.paths.length?[]:['Fileless reason'])];
+  if (!same(Object.keys(base).sort(ordinal),expectedKeys.sort(ordinal)))
+    carrierSyntax(artifact,'Effective Validation Base','missing or unknown base field');
+  const scope=facts.latest.request.scope.paths;
+  if (!scope.length) {
+    if (base.Files!=='none' || base['Fileless reason']!==facts.latest.request.scope.filelessReason)
+      carrierMismatch(artifact,'Effective Validation Base.Files','fileless base differs from verified scope');
+  } else {
+    const observed=new Map(facts.latest.record.testedWork.entries.map(item=>[item.path,item]));
+    const expected=scope.map(name=>{
+      const relative=path.relative(path.dirname(logicalArtifactPath(facts.context,artifact)),path.join(facts.context.productRoot,name)).split(path.sep).join('/');
+      const item=observed.get(name);
+      if (!item) carrierMismatch(artifact,'Effective Validation Base.Files','verified scope lacks product entry');
+      return [relative,item.kind==='absent'?'REMOVED':item.sha256];
+    });
+    if (!same(base.Files,expected) || base['Fileless reason']!==undefined)
+      carrierMismatch(artifact,'Effective Validation Base.Files','file state differs from verified PASS');
+  }
+}
+
+export function validateCurrentEvidenceCarriers({facts,sections,continuity,index,slice,priorDeliveries=[]}) {
+  const artifact=`tasks/${slice}.md`;
+  const parsed=(field,records)=>operationalRecords(sections[field],artifact,field);
+  for (const [field,records] of [
+    ['Implementation Test Evidence',facts.records.implementation],
+    ['Findings Test Evidence',facts.records.findings],
+    ['Validation Attempts',facts.records.validation],
+  ]) {
+    const actual=parsed(field,records);
+    const expected=records.map(record=>operationalRecords(record.recordUtf8,artifact,field)[0]);
+    for (let i=0;i<actual.length;i+=1) if (expected[i] && !same(Object.keys(actual[i].fields).sort(ordinal),Object.keys(expected[i].fields).sort(ordinal)))
+      carrierSyntax(artifact,field,'missing or unknown record field');
+    if (!same(actual,expected)) carrierMismatch(artifact,field,'record fields differ from verified capture');
+  }
+  compareFindings(facts,sections,artifact);
+  compareEffectiveBase(facts,sections,artifact);
+  for (const field of ['Divergences','Scope Expansion']) if (!/^\s*[-*+]\s+none\s*$/u.test(sections[field]))
+    carrierMismatch(artifact,field,'active divergence or scope expansion exceeds quiet profile');
+  const changed=operationalPaths(sections['Changed Areas'],facts,artifact,'Changed Areas',{pending:true});
+  const corrections=operationalPaths(sections['Corrections Applied'],facts,artifact,'Corrections Applied');
+  if (!same(changed,facts.verifiedChanges)) carrierMismatch(artifact,'Changed Areas','paths differ from verified cycle deltas');
+  if (!same(corrections,facts.verifiedCorrections)) carrierMismatch(artifact,'Corrections Applied','paths differ from verified corrections');
+  // Cross-delivery overlap is presentation of already verified path facts.
+  const overlapOrder=(a,b)=>ordinal(a[0],b[0]) || ordinal(a[1],b[1]);
+  const required=priorDeliveries.filter(item=>item.facts.formalStatus==='PASS').flatMap(item=>
+    changed.filter(name=>item.facts.latest.request.scope.paths.includes(name)).map(name=>[item.slice,name])).sort(overlapOrder);
+  const overlap=[];
+  const overlapBody=sections['Prior Validation Overlap'];
+  if (!/^\s*[-*+]\s+none\s*$/u.test(overlapBody)) {
+    const add=(slice,claims)=>{
+      if(!/^slice-[0-9]{2,}$/u.test(slice)) carrierSyntax(artifact,'Prior Validation Overlap','invalid prior slice');
+      const paths=operationalPaths(claims.split(/\s*,\s*/u).map(item=>`- ${item}`).join('\n'),facts,artifact,'Prior Validation Overlap');
+      overlap.push(...paths.map(name=>[slice,name]));
+    };
+    if(overlapBody.startsWith('###')) {
+      const headings=[...overlapBody.matchAll(/^###[ \t]+overlap-[0-9]+[ \t]*$/gmu)];
+      if(!headings.length || headings[0].index!==0) carrierSyntax(artifact,'Prior Validation Overlap','invalid overlap heading');
+      for(const [i,heading] of headings.entries()) {
+        const fields=operationalFields(overlapBody.slice(heading.index+heading[0].length,headings[i+1]?.index).trim(),artifact,'Prior Validation Overlap');
+        if(!same(Object.keys(fields).sort(ordinal),['Affected behavior','Paths','Prior slice','Regressions'])
+          || !fields['Affected behavior'] || !fields.Regressions) carrierSyntax(artifact,'Prior Validation Overlap','invalid overlap fields');
+        add(fields['Prior slice'],fields.Paths);
+      }
+    } else for(const line of overlapBody.trim().split('\n')) {
+      const match=/^\s*[-*+]\s+Slice ([0-9]{2,}) overlap:\s*(.+);\s*(\S.*)$/u.exec(line);
+      if(!match) carrierSyntax(artifact,'Prior Validation Overlap','invalid overlap record');
+      add(`slice-${match[1]}`,match[2]);
+    }
+  }
+  if(!same(overlap.sort(overlapOrder),required)) carrierMismatch(artifact,'Prior Validation Overlap','overlap differs from verified prior PASS paths');
+  if (corrections.some(name=>!changed.includes(name)))
+    carrierMismatch(artifact,'Corrections Applied','correction path is absent from Changed Areas');
+  const proofPaths=new Set([...(facts.bundle?.implementation??[]),...(facts.bundle?.findingsChecks??[]),
+    ...(facts.bundle?.validation?[facts.bundle.validation]:[])].flatMap(record=>record.testedWork.entries
+    .filter(item=>item.kind==='file' || item.kind==='absent').map(item=>item.path)));
+  if (changed.some(name=>!proofPaths.has(name)) && facts.bundle!==null)
+    carrierMismatch(artifact,'Changed Areas','path has no verified product proof');
+  if (!facts.rejection && !/^\s*[-*+]\s+none\s*$/u.test(sections['Delegation Blocker']))
+    carrierMismatch(artifact,'Delegation Blocker','no verified rejection owns a blocker');
+  if (facts.rejection) {
+    const blocker=operationalFields(sections['Delegation Blocker'],artifact,'Delegation Blocker');
+    if (!same(Object.keys(blocker).sort(ordinal),['Operation','State']))
+      carrierSyntax(artifact,'Delegation Blocker','missing or unknown blocker field');
+    if (blocker.Operation!==facts.rejection.origin?.operation || blocker.State!=='active')
+      carrierMismatch(artifact,'Delegation Blocker','blocker does not name verified rejection');
+  }
+  if (!sections['Diff Summary']?.trim()) carrierSyntax(artifact,'Diff Summary','description is empty');
+  const final=operationalScalar(sections['Final Result'].replace(/^\s*[-*+]\s*/u,''));
+  if (final!==(facts.formalStatus==='PASS'?'PASS':'pending'))
+    carrierMismatch(artifact,'Final Result','result differs from sealed formal status');
+  if (continuity.validation!==facts.persistedValidation) carrierMismatch(artifact,'Continuity.Current validation','sealed validation differs');
+  const evidence=facts.evidenceSha256===null?'none':`evidence/${facts.bundle.deliveryId}.json`;
+  if (continuity.evidence!==evidence) carrierMismatch(artifact,'Continuity.Current evidence','evidence path differs');
+  if (!continuity.action?.trim()) carrierSyntax(artifact,'Continuity.Current action','action is empty');
+  const action=operationalScalar(continuity.action);
+  if (['PLAN','REVIEW_PLAN','REPLAN','EXECUTE_SLICE','APPLY_FINDINGS','VALIDATE_SLICE',
+    'INIT','RESUME','READINESS','CLOSE','COMPLETE'].includes(action)) {
+    const expectedAction=facts.rejection || facts.auxiliaryStatus==='BLOCKED' || facts.formalStatus==='BLOCKED' || facts.persistedValidation==='current'?null
+      :facts.formalStatus==='NEEDS_FIX' && (!facts.cycle || facts.bundle.validation.id!==facts.cycle.admissionId)?'APPLY_FINDINGS'
+        :facts.bundle===null?'EXECUTE_SLICE':'VALIDATE_SLICE';
+    if (action!==expectedAction) carrierMismatch(artifact,'Continuity.Current action','operation token contradicts verified facts');
+  }
+  if (index.validation!==(facts.formalStatus??'pending')) carrierMismatch('tasks.md',slice,'formal row differs');
+  if (index.result!==(facts.formalStatus==='PASS'?'PASS':'pending')) carrierMismatch('tasks.md',slice,'result row differs');
+  if (facts.formalStatus==='PASS' && index.done?.toLowerCase()!=='[x]') carrierMismatch('tasks.md',slice,'PASS row is not marked done');
+  if (facts.formalStatus!== 'PASS' && index.done!=='[ ]') carrierMismatch('tasks.md',slice,'row done mark lacks formal PASS');
+  return {evidence,validation:facts.persistedValidation,formalStatus:facts.formalStatus};
+}

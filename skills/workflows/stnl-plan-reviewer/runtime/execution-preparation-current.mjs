@@ -520,3 +520,250 @@ export function validateInitialApprovedPreparation(value) {
   if (!same(snapshot, rebuilt.snapshot)) invalid('approved-preparation.json: projection or binding differs');
   return {authority: rebuilt.authority, snapshot: rebuilt.snapshot, bytes, sha256: raw(bytes)};
 }
+
+function currentFailure(code, kind, artifact, field, reason) {
+  const error = new Error(`${artifact} ${field}: ${reason}`);
+  error.code = code;
+  error.diagnostics = [{kind, artifact, field, reason}];
+  throw error;
+}
+
+function currentCarrier(bytes, name, heading, expectedSections = null) {
+  const source = decode(bytes, name).replaceAll('\r\n', '\n').trim();
+  const top = /^#[ \t]+File Purpose Header[ \t]*\n+```yaml[ \t]*\n([\s\S]*?)\n```\s*\n+#[ \t]+([^\n]+)\s*\n+/u.exec(source + '\n');
+  if (!top || top[2].trim() !== heading) currentFailure('INVALID_CURRENT_IMAGE', 'carrier-syntax', name, 'header', 'unrecognized header or title');
+  const metadata = currentFields(top[1], HEADER_KEYS, name, 'header', false);
+  metadata.owner=typed(metadata.owner);metadata.status=typed(metadata.status);
+  if (metadata.owner !== 'stnl-execution-planner' || !['draft', 'ready'].includes(metadata.status))
+    currentFailure('INVALID_CURRENT_IMAGE', 'carrier-syntax', name, 'header', 'owner or status differs');
+  const body = source.slice(top[0].length).trim();
+  if (expectedSections === null) {
+    if (!body || /^#{1,6}\s/mu.test(body)) currentFailure('INVALID_CURRENT_IMAGE', 'carrier-syntax', name, 'body', 'unexpected heading or empty body');
+    return {metadata, body};
+  }
+  const headers = [...body.matchAll(/^##[ \t]+([^\n]+?)[ \t]*$/gmu)];
+  if (headers.length !== expectedSections.length || headers[0]?.index !== 0
+    || headers.some((item, index) => item[1].trim() !== expectedSections[index]))
+    currentFailure('INVALID_CURRENT_IMAGE', 'carrier-syntax', name, 'sections', 'missing, reordered or foreign section');
+  const sections = Object.create(null);
+  for (let i = 0; i < headers.length; i += 1) {
+    const start = headers[i].index + headers[i][0].length;
+    const content = body.slice(start, headers[i + 1]?.index).trim();
+    const field = expectedSections[i];
+    if (!content || /^#{1,2}\s/mu.test(content)) currentFailure('INVALID_CURRENT_IMAGE', 'carrier-syntax', name, field, 'empty or nested top-level section');
+    if (/^#{3,6}\s/mu.test(content) && !['Implementation Test Evidence', 'Findings Test Evidence', 'Validation Attempts', 'Validation Findings', 'Prior Validation Overlap'].includes(field))
+      currentFailure('INVALID_CURRENT_IMAGE', 'carrier-syntax', name, field, 'unexpected nested heading');
+    sections[field] = content;
+  }
+  return {metadata, sections};
+}
+
+function currentFields(body, names, artifact, field, bullet = true) {
+  const found = Object.create(null),prose=new Set(['Objective','Strategy','Current action']);
+  let last=null,blank=false;
+  for (const line of body.replaceAll('\r\n', '\n').trim().split('\n')) {
+    if(!line.trim()) {blank=true;continue;}
+    const pattern = bullet ? /^\s*[-*+]\s+([^:]+?)\s*:\s*(.*?)\s*$/u : /^\s*([^:]+?)\s*:\s*(.*?)\s*$/u;
+    const item = pattern.exec(line);
+    if(!item && bullet && prose.has(last) && !/^\s*[-*+#]/u.test(line)) {
+      found[last]+=(blank?'\n\n':' ')+line.trim();blank=false;continue;
+    }
+    if (!item || !names.includes(item[1].trim()) || Object.hasOwn(found, item[1].trim()) || item[2].trim() === '')
+      currentFailure('INVALID_CURRENT_IMAGE', 'carrier-syntax', artifact, field, 'missing, duplicate or unknown field');
+    last=item[1].trim();found[last]=item[2].trim();blank=false;
+  }
+  if (Object.keys(found).length !== names.length) currentFailure('INVALID_CURRENT_IMAGE', 'carrier-syntax', artifact, field, 'missing field');
+  return found;
+}
+
+function typed(value) {
+  const trimmed = value.trim();
+  return /^`[^`]*`$/u.test(trimmed) ? trimmed.slice(1, -1) : trimmed;
+}
+
+// Preserve inline-code contents and list/paragraph boundaries while allowing
+// soft wrapping and presentation whitespace outside those contents.
+function currentProse(value, artifact, field) {
+  const source = value.replaceAll('\r\n', '\n').trim();
+  if (!source || /```|~~~|<!--|-->/u.test(source)) currentFailure('INVALID_CURRENT_IMAGE', 'carrier-syntax', artifact, field, 'unrecognized prose');
+  const blocks=[];
+  let active=null;
+  const flush=()=>{if(active) blocks.push(active);active=null;};
+  for (const line of source.split('\n')) {
+    if (!line.trim()) {flush();continue;}
+    const bullet=/^\s*[-*+]\s+(.+)$/u.exec(line);
+    if (bullet) {flush();active={type:'item',value:bullet[1]};}
+    else if (active) active.value+=` ${line.trim()}`;
+    else active={type:'paragraph',value:line.trim()};
+  }
+  flush();
+  const normalize=text=>{
+    const parts=text.split(/(`[^`]*`)/u);
+    if (parts.some((part,index)=>index%2===0 && part.includes('`')))
+      currentFailure('INVALID_CURRENT_IMAGE','carrier-syntax',artifact,field,'unbalanced inline code');
+    return parts.map((part,index)=>index%2?part:part.replace(/\s+/gu,' ')).join('').trim();
+  };
+  return blocks.map(block=>`${block.type}:${normalize(block.value)}`);
+}
+
+function currentClaims(body, context, artifact, field, typedKind = false) {
+  if (/^\s*[-*+]\s+none\s*$/u.test(body)) return [];
+  const result = [];
+  for (const line of body.replaceAll('\r\n', '\n').trim().split('\n')) {
+    const item = /^\s*[-*+]\s+(?:(file|directory)\s*:\s*)?(.+?)\s*$/u.exec(line);
+    if (!item || Boolean(item[1]) !== typedKind) currentFailure('INVALID_CURRENT_IMAGE', 'carrier-syntax', artifact, field, 'invalid claim');
+    const claim = typed(item[2]);
+    let target;
+    try { target = resolveLogicalProductClaim(context, artifact, claim); }
+    catch (cause) { currentFailure(cause.code ?? 'UNSAFE_PATH', 'carrier-syntax', artifact, field, 'claim escapes approved product root'); }
+    result.push({kind:item[1] ?? null, target});
+  }
+  if (new Set(result.map(item => `${item.kind}\0${item.target}`)).size !== result.length)
+    currentFailure('INVALID_CURRENT_IMAGE', 'carrier-syntax', artifact, field, 'duplicate claim');
+  return result.sort((a, b) => ordinal(`${a.kind}\0${a.target}`, `${b.kind}\0${b.target}`));
+}
+
+function currentTable(body, header, artifact, field) {
+  const rows = body.replaceAll('\r\n', '\n').trim().split('\n').filter(line=>line.trim()).map(line => {
+    if (!/^\s*\|.*\|\s*$/u.test(line)) currentFailure('INVALID_CURRENT_IMAGE', 'carrier-syntax', artifact, field, 'invalid table row');
+    return line.trim().slice(1, -1).split('|').map(cell => cell.trim());
+  });
+  const labels = header[0].slice(1, -1).split('|').map(cell => cell.trim());
+  if (rows.length < 2 || rows.some(row => row.length !== labels.length || row.some(cell => !cell))
+    || rows[0].some((cell, index) => cell !== labels[index])
+    || rows[1].some(cell => !/^:?-{3,}:?$/u.test(cell)))
+    currentFailure('INVALID_CURRENT_IMAGE', 'carrier-syntax', artifact, field, 'invalid table header or separator');
+  return rows.slice(2).map(row => row.map(typed));
+}
+
+function compareCurrent(left, right, artifact, field, kind = 'authority-mismatch') {
+  if (!same(left, right)) currentFailure(kind === 'authority-mismatch' ? 'STALE_APPROVAL' : 'INVALID_CURRENT_IMAGE', kind, artifact, field, 'value differs from approved carrier');
+}
+
+function compareProse(left, right, artifact, field) {
+  compareCurrent(currentProse(left, artifact, field), currentProse(right, artifact, field), artifact, field);
+}
+
+function currentRecipe(body, artifact) {
+  const matchLine = /^\s*[-*+]\s+Recipe\s*:\s*([\s\S]+)\s*$/u.exec(body.trim());
+  if (!matchLine) currentFailure('INVALID_CURRENT_IMAGE', 'carrier-syntax', artifact, 'Verification Recipe', 'invalid recipe carrier');
+  try { return parseCurrentJson(matchLine[1]); }
+  catch { currentFailure('INVALID_CURRENT_IMAGE', 'carrier-syntax', artifact, 'Verification Recipe', 'invalid recipe JSON'); }
+}
+
+function compareCurrentSections(approved, present, names, artifact, context, {task = false} = {}) {
+  for (const field of names) {
+    if (field === 'Verification Recipe') compareCurrent(currentRecipe(approved[field], artifact), currentRecipe(present[field], artifact), artifact, field);
+    else if (field === 'References') {
+      const referenceNames = task
+        ? ['Slice', 'Delivery ID', 'Plan', 'Requirements source', 'Requirements authority', 'Plan revision', 'Local revision', 'Global tasks']
+        : ['Slice', 'Delivery ID', 'Requirements source', 'Requirements authority', 'Plan revision', 'Local revision', 'Global plan', 'Review state'];
+      const before = currentFields(approved[field], referenceNames, artifact, field);
+      const after = currentFields(present[field], referenceNames, artifact, field);
+      compareCurrent(Object.fromEntries(Object.entries(before).map(([key, value]) => [key, typed(value)])),
+        Object.fromEntries(Object.entries(after).map(([key, value]) => [key, typed(value)])), artifact, field);
+    } else if (['Authorized Areas', 'Expected Files', 'Existing Inputs'].includes(field)) {
+      if (field==='Expected Files' && !same(currentClaims(approved[field],context,artifact,field),currentClaims(present[field],context,artifact,field)))
+        currentFailure('UNSUPPORTED_FORMAT','carrier-mismatch',artifact,field,'technical path delta exceeds initial quiet profile');
+      compareCurrent(currentClaims(approved[field], context, artifact, field, field === 'Authorized Areas'),
+        currentClaims(present[field], context, artifact, field, field === 'Authorized Areas'), artifact, field);
+    } else if (field === 'Dependencies') {
+      const dependencies=value=>value.trim().split('\n').map(line=>{
+        const match=/^\s*[-*+]\s+(.+?)\s*$/u.exec(line);
+        if(!match) currentFailure('INVALID_CURRENT_IMAGE','carrier-syntax',artifact,field,'invalid dependency');
+        return typed(match[1]);
+      });
+      compareCurrent(dependencies(approved[field]),dependencies(present[field]),artifact,field);
+    } else if (field === 'Acceptance Obligations') {
+      const obligations=value=>value.trim().split(/\n(?=\s*[-*+]\s+)/u).map(line=>{
+        const parts=line.replace(/^\s*[-*+]\s+/u,'').split(/\s*\|\s*/u);
+        const id=typed(parts.shift());
+        if (!/^obligation-[0-9]{2,}$/u.test(id)) currentFailure('INVALID_CURRENT_IMAGE','carrier-syntax',artifact,field,'invalid obligation ID');
+        const values={};
+        for(const part of parts) {
+          const match=/^([^:]+):\s*([\s\S]+)$/u.exec(part);
+          if(!match || Object.hasOwn(values,match[1].trim()) || !['requirement','contribution','full owner','condition','proof'].includes(match[1].trim()))
+            currentFailure('INVALID_CURRENT_IMAGE','carrier-syntax',artifact,field,'invalid obligation field');
+          const key=match[1].trim();values[key]=['condition','proof'].includes(key)?currentProse(match[2],artifact,field):typed(match[2]);
+        }
+        if(Object.keys(values).length!==5) currentFailure('INVALID_CURRENT_IMAGE','carrier-syntax',artifact,field,'missing obligation field');
+        return {id,...values};
+      });
+      compareCurrent(obligations(approved[field]),obligations(present[field]),artifact,field);
+    } else if (field === 'Checklist') {
+      const steps = value => value.replaceAll('\r\n', '\n').trim().split(/\n(?=\s*[-*+]\s+\[)/u).map(line => {
+        line=line.replace(/\n[ \t]*/gu,' ');
+        const matchLine = /^\s*[-*+]\s+\[([ xX])\]\s+(`[^`]+`|[0-9]+\.[0-9]+)\s+(.+?)\s*\|\s*obligations\s*:\s*(.+)\s*$/u.exec(line);
+        if (!matchLine) currentFailure('INVALID_CURRENT_IMAGE', 'carrier-syntax', artifact, field, 'invalid checklist step');
+        const id=typed(matchLine[2]),obligations=matchLine[4].split(/\s*,\s*/u).map(typed);
+        if (!/^[0-9]+\.[0-9]+$/u.test(id) || obligations.some(value=>!/^obligation-[0-9]{2,}$/u.test(value))
+          || new Set(obligations).size!==obligations.length)
+          currentFailure('INVALID_CURRENT_IMAGE','carrier-syntax',artifact,field,'invalid checklist identity or obligations');
+        return {id, description:currentProse(matchLine[3], artifact, field), obligations};
+      });
+      if (!same(steps(approved[field]),steps(present[field])))
+        currentFailure('UNSUPPORTED_FORMAT','carrier-mismatch',artifact,field,'technical step delta exceeds initial quiet profile');
+    } else compareProse(approved[field], present[field], artifact, field);
+  }
+}
+
+// An operational image retains the reviewed bytes verbatim in its snapshot.
+// This parser compares current carrier meaning without projecting a new review
+// fingerprint or making the pristine Initial entry points permissive.
+export function validateCurrentPreparation({context, requirementsAuthority, snapshotBytes, artifacts}) {
+  const approved = validateInitialApprovedPreparation({context, requirementsAuthority, snapshotBytes});
+  const current = artifactMap(artifacts);
+  const expected = approved.snapshot.reviewedArtifacts.map(item => item.path).sort(ordinal);
+  compareCurrent([...current.keys()].sort(ordinal), expected, 'execution', 'artifacts', 'integrity');
+  const reviewed = new Map(approved.snapshot.reviewedArtifacts.map(item => [item.path, Buffer.from(item.utf8, 'utf8')]));
+  const oldPlan = currentCarrier(reviewed.get('plan.md'), 'plan.md', 'Execution Plan', PLAN_SECTIONS);
+  const newPlan = currentCarrier(current.get('plan.md'), 'plan.md', 'Execution Plan', PLAN_SECTIONS);
+  compareCurrent(oldPlan.metadata.status, newPlan.metadata.status, 'plan.md', 'status');
+  const globalNames = ['Requirements source', 'Requirements authority', 'Plan revision', 'Objective', 'Strategy', 'Review state'];
+  const oldGlobal = currentFields(oldPlan.sections['Global Context'], globalNames, 'plan.md', 'Global Context');
+  const newGlobal = currentFields(newPlan.sections['Global Context'], globalNames, 'plan.md', 'Global Context');
+  compareCurrent(Object.fromEntries(Object.entries(oldGlobal).map(([key, value]) => [key, key === 'Objective' || key === 'Strategy' ? currentProse(value, 'plan.md', key) : typed(value)])),
+    Object.fromEntries(Object.entries(newGlobal).map(([key, value]) => [key, key === 'Objective' || key === 'Strategy' ? currentProse(value, 'plan.md', key) : typed(value)])), 'plan.md', 'Global Context');
+  const serialRows = rows => rows.map(row => [row[0], currentProse(row[1], 'plan.md', 'Observable delivery'), row[2], row[3],
+    currentClaims(row[4].split(/\s*;\s*/u).map(claim => `- ${claim}`).join('\n'), context, 'plan.md', 'Authorized areas', true), row[5]]);
+  compareCurrent(serialRows(currentTable(oldPlan.sections['Serial Slice Order'], PLAN_TABLE, 'plan.md', 'Serial Slice Order')),
+    serialRows(currentTable(newPlan.sections['Serial Slice Order'], PLAN_TABLE, 'plan.md', 'Serial Slice Order')), 'plan.md', 'Serial Slice Order');
+  compareProse(oldPlan.sections['Global Risks and Integration'], newPlan.sections['Global Risks and Integration'], 'plan.md', 'Global Risks and Integration');
+  const oldIndex = currentCarrier(reviewed.get('tasks.md'), 'tasks.md', 'Execution Tasks');
+  const newIndex = currentCarrier(current.get('tasks.md'), 'tasks.md', 'Execution Tasks');
+  compareCurrent(oldIndex.metadata.status, newIndex.metadata.status, 'tasks.md', 'status');
+  const beforeRows = currentTable(oldIndex.body, TASK_TABLE, 'tasks.md', 'index');
+  const afterRows = currentTable(newIndex.body, TASK_TABLE, 'tasks.md', 'index');
+  if (beforeRows.length !== afterRows.length) currentFailure('STALE_APPROVAL', 'authority-mismatch', 'tasks.md', 'index', 'row count differs');
+  for (let i = 0; i < beforeRows.length; i += 1) {
+    const norm=row=>[row[1],currentProse(row[2],'tasks.md','Delivery'),row[3],row[4]];
+    compareCurrent(norm(beforeRows[i]), norm(afterRows[i]), 'tasks.md', `row ${i + 1}`);
+  }
+  const deliveries = [];
+  for (const item of approved.authority.deliveries) {
+    const planName = `plans/${item.slice}.md`, taskName = `tasks/${item.slice}.md`;
+    const title = item.slice.slice(6);
+    const oldDetail = currentCarrier(reviewed.get(planName), planName,
+      `Slice ${title} - ${beforeRows.find(row => row[1].startsWith(`${title} - `))?.[1].slice(title.length + 3)}`, DETAIL_SECTIONS);
+    const newDetail = currentCarrier(current.get(planName), planName,
+      `Slice ${title} - ${beforeRows.find(row => row[1].startsWith(`${title} - `))?.[1].slice(title.length + 3)}`, DETAIL_SECTIONS);
+    const oldTask = currentCarrier(reviewed.get(taskName), taskName,
+      `Slice ${title} Tasks - ${beforeRows.find(row => row[1].startsWith(`${title} - `))?.[1].slice(title.length + 3)}`, TASK_SECTIONS);
+    const newTask = currentCarrier(current.get(taskName), taskName,
+      `Slice ${title} Tasks - ${beforeRows.find(row => row[1].startsWith(`${title} - `))?.[1].slice(title.length + 3)}`, TASK_SECTIONS);
+    compareCurrent(oldDetail.metadata.status, newDetail.metadata.status, planName, 'status');
+    compareCurrent(oldTask.metadata.status, newTask.metadata.status, taskName, 'status');
+    compareCurrentSections(oldDetail.sections, newDetail.sections, DETAIL_SECTIONS, planName, context);
+    compareCurrentSections(oldTask.sections, newTask.sections, TASK_SECTIONS.slice(0, TASK_SECTIONS.indexOf('Continuity')), taskName, context, {task:true});
+    for (const field of ['Operational Changes', 'Scope Expansion', 'Divergences']) {
+      if (currentProse(newTask.sections[field], taskName, field).join('') !== 'item:none')
+        currentFailure('UNSUPPORTED_FORMAT', 'carrier-mismatch', taskName, field, 'active change exceeds initial quiet profile');
+    }
+    const continuity = currentFields(newTask.sections.Continuity, ['Current validation', 'Current evidence', 'Current action'], taskName, 'Continuity');
+    deliveries.push({slice:item.slice, deliveryId:item.deliveryId, sections:newTask.sections,
+      continuity:{validation:typed(continuity['Current validation']), evidence:typed(continuity['Current evidence']), action:continuity['Current action']},
+      index:{done:afterRows.find(row => row[1].startsWith(`${title} - `))?.[0], validation:afterRows.find(row => row[1].startsWith(`${title} - `))?.[5], result:afterRows.find(row => row[1].startsWith(`${title} - `))?.[6]}});
+  }
+  return {authority:approved.authority, snapshot:approved.snapshot,
+    currentArtifacts:{plan:newPlan.sections, tasksIndex:afterRows, deliveries}};
+}
