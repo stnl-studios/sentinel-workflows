@@ -269,16 +269,24 @@ function verifyLastAttempt(activation,deliveries) {
   if (activation.previousActivationId===null)
     fail('INVALID_CURRENT_IMAGE','first activation cannot contain an incorporated lastAttempt','integrity','activation.json','lastAttempt');
   if (last.outcome==='aborted') fail('UNSUPPORTED_FORMAT','aborted lastAttempt is outside quiet profile','integrity','activation.json','lastAttempt');
-  if (last.terminalActivationId!==activation.activationId)
+  const terminalId=activation.activeAttempt?.originActivationId??activation.activationId;
+  if (last.terminalActivationId!==terminalId)
     fail('INVALID_CURRENT_IMAGE','lastAttempt terminal activation differs','integrity','activation.json','lastAttempt');
   const delivery=deliveries.find(item=>item.deliveryId===last.deliveryId && item.slice===last.slice);
   const facts=delivery?.facts,bundle=facts?.bundle;
   const matched=facts?.rejection ?? (facts?.cycle && bundle?.validation?.id===facts.cycle.admissionId
     ?bundle.findingsChecks.at(-1):bundle?.validation??bundle?.findingsChecks.at(-1)??bundle?.implementation.at(-1));
+  // During publication, the active owner's installed candidate can supersede
+  // the prior validation record before the new terminal activation is written.
+  // A1 still verifies the prior lastAttempt below; only an installed record
+  // bound to this exact active owner permits the temporary supersession.
+  if(activation.activeAttempt!==null && matched?.origin?.operationAttemptId!==last.operationAttemptId
+    && bundle?.validation?.origin?.operationAttemptId===activation.activeAttempt.operationAttemptId
+    && bundle.validation.origin.deliveryId===activation.activeAttempt.deliveryId
+    && bundle.validation.origin.slice===activation.activeAttempt.slice) return;
   if (!matched || matched.origin?.operationAttemptId!==last.operationAttemptId
     || matched.origin?.operation!==last.operation || matched.origin?.deliveryId!==last.deliveryId
-    || matched.origin?.slice!==last.slice || (activation.previousActivationId!==null
-      && matched.origin?.originActivationId!==activation.previousActivationId)
+    || matched.origin?.slice!==last.slice
     || last.outcome!==(facts?.rejection?'rejected':'recorded'))
     fail('EVIDENCE_INCOMPLETE','lastAttempt incorporation is not retained','integrity','activation.json','lastAttempt');
 }
@@ -288,7 +296,7 @@ export async function observeCurrentDeliveryWork({context,delivery,sections,curr
   return scopedObservation(await observeProduct(context,targets,{entries:0,bytes:0},true),targets);
 }
 
-async function readCurrentExecution(specPath,withCapture=false) {
+async function readCurrentExecution(specPath,withCapture=false,expectedOwner=null) {
   const {workspace,context}=await resolveCurrentExecutionContext(specPath);
   const boundaries=await physicalBoundaries(context);
   const documents=await capturedDocuments(workspace);
@@ -309,7 +317,11 @@ async function readCurrentExecution(specPath,withCapture=false) {
   if (activationA===null) fail('CURRENT_FORMAT_REQUIRED','execution exists without activation','integrity','activation.json');
   const a=await safeRead(activationFile);
   const activation=activationFormat(a.bytes);
-  if (activation.activeAttempt!==null) fail('OWNER_UNCERTAIN','activeAttempt declares an unresolved owner','integrity','activation.json','activeAttempt');
+  if (activation.activeAttempt!==null && (expectedOwner===null
+    || !equal(activation.activeAttempt,expectedOwner)))
+    fail('OWNER_UNCERTAIN','activeAttempt declares an unresolved or different owner','integrity','activation.json','activeAttempt');
+  if (expectedOwner!==null && activation.activeAttempt===null)
+    fail('OWNER_MISMATCH','expected active owner is absent','integrity','activation.json','activeAttempt');
   const image=await capturedImage(root,activation);
   for(const [name,legacy] of [['approved-preparation.json','stnl-preparation-v2'],['continuity.json','stnl-delivery-continuity-v1']])
     if(parseCurrentJson(image.files.get(name).toString('utf8'))?.format===legacy)
@@ -363,10 +375,14 @@ async function readCurrentExecution(specPath,withCapture=false) {
     for(const item of outputs) {
       const current=continuity.deliveries.find(value=>value.deliveryId===item.deliveryId);
       const bundleBytes=current.evidence?image.files.get(current.evidence.path):null;
-      const v3=bundleBytes && parseCurrentJson(bundleBytes.toString('utf8')).validation?.recordFormat==='stnl-task-record-v2';
+      const bundle=bundleBytes?parseCurrentJson(bundleBytes.toString('utf8')):null;
+      const v3=bundle?.validation?.recordFormat==='stnl-task-record-v2';
+      const admissionRef=activation.activeAttempt!==null
+        && bundle?.validation?.origin?.operationAttemptId===activation.activeAttempt.operationAttemptId
+        ?activation.activeAttempt.operationRef:activation.lastAttempt?.operationRef??null;
       const observedWork=scopedObservation(item.observation,item.targets).manifest;
       const facts=await inspectPostConversionEvidence({context,snapshotBytes:image.files.get('approved-preparation.json'),
-        current,bundleBytes,observedWork});
+        current,bundleBytes,observedWork,admissionRef});
       if(!facts || facts.slice!==item.slice || facts.persistedValidation!==continuity.deliveries.find(value=>value.deliveryId===item.deliveryId)?.validation)
         fail('INVALID_CURRENT_IMAGE',`${item.slice}: converted inspection differs`);
       if(v3) {
@@ -458,6 +474,11 @@ async function readCurrentExecution(specPath,withCapture=false) {
 
 export async function inspectCurrentExecution(specPath) { return readCurrentExecution(specPath); }
 export async function captureCurrentExecution(specPath) { return readCurrentExecution(specPath,true); }
+// Active capture is only an image observation. The operation controller must
+// separately prove its allocation and phase before treating this as admission.
+export async function captureCurrentActiveExecution(specPath,expectedOwner) {
+  return readCurrentExecution(specPath,true,expectedOwner);
+}
 
 async function realDirectoryMetadata(file) {
   const metadata=await fs.lstat(file);

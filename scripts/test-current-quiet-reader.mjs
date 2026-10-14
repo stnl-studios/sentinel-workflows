@@ -1378,7 +1378,7 @@ test('R19 isolated reader closure and copy equivalence',async t=>{
   await t.test('foreign main basename does not execute the imported reader',async()=>using(authoredImage,async f=>{
     const imported=await workerRun(f,{mode:'import-only'});noAttempts(imported);
     assert.equal(imported.process.status,0,imported.process.stderr);assert.deepEqual(JSON.parse(imported.process.stdout),
-      {exports:['captureCurrentExecution','inspectCurrentExecution','main','observeCurrentDeliveryWork']});
+      {exports:['captureCurrentActiveExecution','captureCurrentExecution','inspectCurrentExecution','main','observeCurrentDeliveryWork']});
     assert.deepEqual(imported.log.opens,{});
   }));
   for(const label of ['no argument','mutating flag','unknown flag']) await t.test(`CLI usage ${label}`,async()=>using(authoredImage,async f=>{

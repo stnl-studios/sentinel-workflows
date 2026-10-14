@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { logicalArtifactPath, parseCurrentJson, resolveLogicalProductClaim, validateCurrentEvidence,
-  validateCurrentImage,validateCurrentCandidate } from './execution-current.mjs';
+  validateCurrentImage,validateCurrentCandidate,validateCurrentActivation,currentOperationBindingSha256 } from './execution-current.mjs';
 import { validateInitialImplementationEvidence } from './execution-evidence-current.mjs';
 import {
   verifyCapturedInvocation, verifyWorkObservation, packCaptureSources,
@@ -347,7 +347,7 @@ function findRelatedAuthority(value,delivery) {
   if (![...tokens].some(item => new RegExp(`(^|[^A-Za-z0-9_-])${item.replace(/[.*+?^${}()|[\]\\]/gu,'\\$&')}(?=$|[^A-Za-z0-9_-])`,'u').test(value))) invalid('finding.relatedAuthority: no effective requirement or obligation');
 }
 function semanticError(message) { return new RunnerSemanticResultError('VALIDATE_SLICE',new Error(message)); }
-function parseResponse(rawText) {
+export function parseCurrentValidationResponse(rawText) {
   let parsed;
   try { parsed=parseCurrentJson(rawText); } catch { return {error:semanticError('captured response is not strict JSON'),loose:null}; }
   try {
@@ -488,7 +488,7 @@ function deriveCapture({context,authority:approvedAuthority,capture,expectedOwne
     localRevision:request.owner.localRevision,normativeSha256:request.owner.normativeSha256,
     originActivationId:request.owner.originActivationId,transport:capture.transport,
     dispatchId:info.dispatchId,runnerId:info.runnerId};
-  const parsed=parseResponse(rawText);
+  const parsed=parseCurrentValidationResponse(rawText);
   if (receipt.status==='RUNNER_RESULT_BLOCKED') {
     if (parsed.response) uncertain('schema-rejected receipt has valid formal response');
     if (receipt.semanticResponseStatus!==null || receipt.testedState!==null || typeof receipt.captureFailure!=='string' || !receipt.captureFailure.trim()
@@ -586,12 +586,42 @@ function postOutput(context,delivery,slice) {
 function postChangedPaths(context,delivery,slice,before,after) {
   return changedOutputPaths(before,after).filter(postOutput(context,delivery,slice));
 }
-function postCaptureProof({context,snapshotBytes,current,capture,expectedBase}) {
+function postCaptureProof({context,snapshotBytes,current,capture,expectedBase,admissionRef=null}) {
   const snapshot=jsonBytes(snapshotBytes,'approved-preparation.json').value;
   const auth=postAuthority(snapshot,current);
   const request=jsonBytes(capture.validationRequest,'post-conversion request').value;
   requestShape(request);
   if(request.format!=='stnl-current-validation-request-v3') invalid('post-conversion v3 request required');
+  if(capture.transport==='native') {
+    const source=jsonBytes(capture.origin,'post-conversion native origin').value;
+    if(admissionRef!==null && source.admission===undefined)
+      mismatch('native EC-1 admission witness is absent');
+    if(source.admission!==undefined) {
+      closed(source.admission,['binding','baseActivation','reservedActivation'],'native admission witness');
+      const {binding,baseActivation,reservedActivation}=source.admission;
+      validateCurrentActivation(baseActivation);validateCurrentActivation(reservedActivation);
+      if(baseActivation.activeAttempt!==null || reservedActivation.previousActivationId!==baseActivation.activationId
+        || reservedActivation.sequence!==baseActivation.sequence+1
+        || !same(baseActivation.artifacts,reservedActivation.artifacts)
+        || reservedActivation.approvedSnapshotSha256!==baseActivation.approvedSnapshotSha256
+        || reservedActivation.requirementsAuthority!==baseActivation.requirementsAuthority
+        || reservedActivation.normativeSha256!==baseActivation.normativeSha256
+        || !same(reservedActivation.lastAttempt,baseActivation.lastAttempt)
+        || !same(reservedActivation.activeAttempt,{
+          ...request.owner,operationRef:reservedActivation.activeAttempt?.operationRef})
+        || !same(binding.owner,request.owner)
+        || binding.baseActivationId!==baseActivation.activationId
+        || binding.logicalExecutionRoot!==context.logicalExecutionRoot
+        || reservedActivation.activeAttempt.operationRef.operationId!==binding.operationId
+        || reservedActivation.activeAttempt.operationRef.allocationSha256!==currentOperationBindingSha256(binding)
+        || baseActivation.approvedSnapshotSha256!==raw(snapshotBytes)
+        || baseActivation.requirementsAuthority!==snapshot.requirementsAuthority)
+        mismatch('native admission witness does not bind A0/A1, owner and approved snapshot');
+      if(admissionRef!==null && !same(admissionRef,{operationId:binding.operationId,
+        allocationSha256:currentOperationBindingSha256(binding)}))
+        mismatch('terminal operationRef differs from native admission witness');
+    }
+  }
   const output=postOutput(context,auth.delivery,current.slice);
   if(request.base.priorScopePaths.some(name=>!output(name)))
     fail('UNSAFE_PATH','prior formal scope contains an input-only path');
@@ -602,7 +632,8 @@ function postCaptureProof({context,snapshotBytes,current,capture,expectedBase}) 
   return derived;
 }
 
-export async function inspectPostConversionEvidence({context,snapshotBytes,current,bundleBytes,observedWork}) {
+export async function inspectPostConversionEvidence({context,snapshotBytes,current,bundleBytes,observedWork,
+  admissionRef=null}) {
   const {validateCurrentPreparation}=await import('./execution-preparation-current.mjs');
   const snapshot=jsonBytes(snapshotBytes,'approved-preparation.json').value;
   const reviewed=new Map(snapshot.reviewedArtifacts.map(item=>[item.path,utf8(item.utf8)]));
@@ -627,7 +658,7 @@ export async function inspectPostConversionEvidence({context,snapshotBytes,curre
   const predecessor={evidence:{sha256:request.base.evidenceSha256},counters:request.base.counters,
     baseline:request.base.baseline,validation:request.base.validation,lastDiagnostic:request.base.lastDiagnostic};
   const expected=postBase(snapshotBytes,predecessor,request.base.priorScopePaths);
-  const derived=postCaptureProof({context,snapshotBytes,current,capture,expectedBase:expected});
+  const derived=postCaptureProof({context,snapshotBytes,current,capture,expectedBase:expected,admissionRef});
   if(!same(record,{...derived.recordDraft,sources:record.sources})
     || !same(bundle.openFindings,derived.open)
     || !same(current.counters,{...request.base.counters,
@@ -726,7 +757,7 @@ function postIndex(document,slice,status) {
   return utf8(lines.join('\n'));
 }
 
-export async function composePostConversionValidation({context,requirementsAuthority,previous,deliveryId,capture}) {
+export async function composePostConversionValidation({context,requirementsAuthority,previous,admission=null,deliveryId,capture}) {
   closed(previous,['activationBytes','files'],'post-conversion predecessor');
   const activation=jsonBytes(previous.activationBytes,'predecessor activation').value;
   const files=new Map([...previous.files].map(([name,bytes])=>[name,copyBytes(bytes,name)]));
@@ -751,9 +782,26 @@ export async function composePostConversionValidation({context,requirementsAutho
   const previousV3=previousRecord?.recordFormat==='stnl-task-record-v2';
   if(previousV3 && (activation.lastAttempt?.operationAttemptId!==previousRecord.origin.operationAttemptId
     || activation.lastAttempt?.outcome!=='recorded'
-    || activation.lastAttempt?.terminalActivationId!==activation.activationId
-    || activation.previousActivationId!==previousRecord.origin.originActivationId))
+    || activation.lastAttempt?.terminalActivationId!==activation.activationId))
     incomplete('predecessor formal is not incorporated by activation');
+  if(admission!==null) {
+    closed(admission,['activationBytes','files'],'post-conversion reservation');
+    const admitted=validateCurrentImage(admission).activation;
+    if(admitted.previousActivationId!==activation.activationId
+      || admitted.sequence!==activation.sequence+1
+      || !same(admitted.artifacts,activation.artifacts)
+      || !same(admitted.activeAttempt,{
+        ...request.owner,operationRef:admitted.activeAttempt?.operationRef})
+      || admitted.activeAttempt?.originActivationId!==activation.activationId
+      || files.size!==admission.files.size
+      || [...files].some(([name,bytes])=>!Buffer.from(admission.files.get(name)??[]).equals(bytes)))
+      mismatch('post-conversion reservation is not the admitted owner over unchanged artifacts');
+    const origin=jsonBytes(capture.origin,'native admission origin').value;
+    if(capture.transport!=='native' || !origin.admission
+      || !same(origin.admission.baseActivation,activation)
+      || !same(origin.admission.reservedActivation,admitted))
+      mismatch('captured native admission witness differs from A0/A1');
+  }
   const replay=previousV3 && previousRecord.origin.operationAttemptId===request.owner.operationAttemptId;
   if(replay) {
     const retained=restoreCaptureSources('current-validation',previousRecord,

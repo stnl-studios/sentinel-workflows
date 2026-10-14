@@ -251,10 +251,10 @@ function checkRunner(root, platform = null) {
   }
   const contract = platform === 'claude' ? claude.body : String(codex.developer_instructions ?? "").trim();
   if (platform === null && contract !== claude.body) reject("R003_EQUIVALENCE", "runner platform contracts diverge");
-  checkRunnerContract(contract, readmeFile);
+  checkRunnerContract(contract, readmeFile, platform);
 }
 
-function checkRunnerContract(contract, readmeFile) {
+function checkRunnerContract(contract, readmeFile, platform) {
 
   requirePattern(contract, /^CONTRATO_CANONICO=stnl-validation-runner\/v[0-9]+$/mu, "R013_SYNTAX", "canonical runner contract ID is missing");
   const operations = /^OPERACOES_SUPORTADAS=([^\n]+)$/mu.exec(contract)?.[1];
@@ -265,6 +265,14 @@ function checkRunnerContract(contract, readmeFile) {
   for (const [operation, expected] of Object.entries(checkSchemas)) {
     const actual = extractSchema(contract, operation);
     if (actual.length !== expected.length || actual.some((line, index) => line !== expected[index])) reject("R007_OUTPUT_SCHEMA", `${operation} output schema changed`);
+  }
+  if(platform==='codex') {
+    requirePattern(contract, /Quando a entrada oficial incluir `stnl-current-validation-request-v3`[^\n]*stnl-current-validation-response-v1[^\n]*newFindings/u,
+      'R028_NATIVE_V3','native v3 response envelope/finding variant is missing');
+    requirePattern(contract, /`severity` aceita somente `blocking` ou `advisory`; NEEDS_FIX exige pelo menos um finding `blocking` ativo/u,
+      'R028_NATIVE_V3','native v3 finding severity is not bounded');
+    requirePattern(contract, /Ecoe o digest literal fornecido pelo runtime; não recalcule hash ou owner/u,
+      'R028_NATIVE_V3','native v3 request digest echo is missing');
   }
   for (const heading of ["EXECUTE_SLICE", "APPLY_FINDINGS", "VALIDATE_SLICE"]) {
     requirePattern(contract, new RegExp(`^# ${heading}$`, "mu"), "R004_OPERATION_SCOPE", `missing runner section: ${heading}`);

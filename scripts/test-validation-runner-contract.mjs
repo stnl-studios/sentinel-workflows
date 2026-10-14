@@ -41,6 +41,16 @@ test("accepts the canonical independent semantic runner", async (t) => {
   assert.equal(check(await fixture(t)).status, 0);
 });
 
+test('Codex native v3 instructions are a checked conditional variant',async t=>{
+  const root=await fixture(t);
+  const file=path.join(root,'codex/.codex/agents/stnl_validation_runner.toml');
+  const before=await fs.readFile(file,'utf8');
+  const after=before.replace(/^Quando a entrada oficial incluir `stnl-current-validation-request-v3`[^\n]*\n/mu,'');
+  assert.notEqual(after,before);
+  await fs.writeFile(file,after);
+  expectCategory(check(root),'R028_NATIVE_V3');
+});
+
 test('aggregate runner gate preserves real R003 pending Claude equalization', () => {
   const result = spawnSync(process.execPath, [checker, 'validation-runner', '--root', canonical], { encoding: 'utf8' });
   expectCategory(result, 'R003_EQUIVALENCE');

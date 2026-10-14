@@ -118,6 +118,7 @@ function projected(tag, value) {
   const preimage = Buffer.concat([Buffer.from(`stnl-ec1/${tag}/v1`, 'utf8'), Buffer.from([0]), Buffer.from(canonical(value), 'utf8')]);
   return raw(preimage);
 }
+export const currentOperationBindingSha256 = binding => projected('operation-binding', binding);
 const same = (a, b) => canonical(a) === canonical(b);
 function parsedJsonValue(value) {
   if (typeof value === 'number' && (!Number.isFinite(value) || Object.is(value, -0))) invalid('nonfinite or negative-zero JSON number');
@@ -275,15 +276,22 @@ export function validateCurrentActivation(value) {
     attemptIdentity(Object.fromEntries(Object.entries(attempt).filter(([key]) => key !== 'operationRef')), 'activeAttempt');
     object(attempt.operationRef, ['operationId', 'allocationSha256'], 'operationRef');
     uuid(attempt.operationRef.operationId, 'operationRef.operationId'); hash(attempt.operationRef.allocationSha256, 'operationRef.allocationSha256');
-    if (attempt.preparationRevision !== value.preparationRevision || attempt.normativeSha256 !== value.normativeSha256) invalid('active attempt authority mismatch');
+    if (attempt.preparationRevision !== value.preparationRevision
+      || (value.preparationRevision === 1 && attempt.normativeSha256 !== value.normativeSha256)) invalid('active attempt authority mismatch');
   }
   if (value.lastAttempt !== null) {
     const last = value.lastAttempt;
-    object(last, ['operationAttemptId', 'deliveryId', 'slice', 'operation', 'terminalActivationId', 'outcome'], 'lastAttempt');
+    const fields=['operationAttemptId', 'deliveryId', 'slice', 'operation', 'terminalActivationId', 'outcome'];
+    object(last, last.operationRef===undefined?fields:[...fields,'operationRef'], 'lastAttempt');
     uuid(last.operationAttemptId, 'lastAttempt.operationAttemptId'); uuid(last.deliveryId, 'lastAttempt.deliveryId');
     slice(last.slice, 'lastAttempt.slice'); oneOf(last.operation, OPERATIONS, 'lastAttempt.operation');
     uuid(last.terminalActivationId, 'lastAttempt.terminalActivationId');
     oneOf(last.outcome, ['recorded', 'rejected', 'aborted'], 'lastAttempt.outcome');
+    if(last.operationRef!==undefined) {
+      object(last.operationRef,['operationId','allocationSha256'],'lastAttempt.operationRef');
+      uuid(last.operationRef.operationId,'lastAttempt.operationRef.operationId');
+      hash(last.operationRef.allocationSha256,'lastAttempt.operationRef.allocationSha256');
+    }
   }
   return value;
 }
@@ -729,6 +737,12 @@ export function validateCurrentImage(input) {
     const owner = activation.activeAttempt;
     const current = continuity.deliveries.find(item => item.deliveryId === owner.deliveryId && item.slice === owner.slice);
     if (!current || current.localRevision !== owner.localRevision) invalid('active attempt delivery mismatch');
+    if (activation.preparationRevision > 1) {
+      const approved = snapshot.deliveries.find(item => item.deliveryId === owner.deliveryId && item.slice === owner.slice);
+      if (!approved || owner.normativeSha256 !== current.authoritySha256
+        || owner.normativeSha256 !== approved.review.authoritySha256)
+        invalid('converted active attempt delivery authority mismatch');
+    }
   }
   return {activation, continuity, referencedObjects: content.referencedObjects};
 }

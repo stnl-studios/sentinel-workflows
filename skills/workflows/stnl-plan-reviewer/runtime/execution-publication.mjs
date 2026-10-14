@@ -40,14 +40,14 @@ export async function captureLifecycleRecoveryControl(file) {
   return { file, identity: current.identity, sha256: digest(current.bytes), links: current.links };
 }
 
-async function syncLockParent(parent) {
+export async function syncLockParent(parent) {
   let handle;
   try { handle = await fs.open(parent, constants.O_RDONLY | (constants.O_DIRECTORY ?? 0)); await handle.sync(); }
   catch (error) { if (!['EBADF','EINVAL','ENOTSUP','EOPNOTSUPP','EISDIR', ...(process.platform === 'win32' ? ['EPERM','EACCES'] : [])].includes(error.code)) throw error; }
   finally { await handle?.close(); }
 }
 
-async function writeNew(file, bytes, mode = 0o600) {
+export async function writeNew(file, bytes, mode = 0o600) {
   const handle = await fs.open(file, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, mode);
   try { await handle.writeFile(bytes); await handle.sync(); } finally { await handle.close(); }
   return readOwnedFile(file);
@@ -219,6 +219,255 @@ export async function releaseExecutionPublicationLock(lease) {
 export async function withExecutionPublicationLock(workspace, action) {
   const lease = await acquireExecutionPublicationLock(workspace);
   return withPublicationLease(lease, action);
+}
+
+// EC-1 keeps the same common lease as legacy writers. The operation-specific
+// controller supplies the validated current-image callbacks and an immutable
+// binding; this boundary owns the activation CAS and physical tree exchange.
+export async function reserveCurrentExecutionOperation({workspace,expectedActivationId,expectedBaseActivation,owner,binding,
+  marker,registryReservation,readQuiet,readActive,bindingSha256}) {
+  return withExecutionPublicationLock(workspace,async lease=>{
+    const base=await readQuiet();
+    if(base.activation.activationId!==expectedActivationId || !equal(base.activation,expectedBaseActivation)
+      || base.activation.activeAttempt!==null
+      || owner.originActivationId!==expectedActivationId) fail('EC-1 reservation base or owner differs');
+    const tree=await captureExecutionTree(workspace.executionRoot);
+    if(!equal(tree,binding.baseTree)) fail('EC-1 reservation physical base differs');
+    const allocation={format:'stnl-execution-publication-owner-v2',binding,phase:'allocated',
+      candidate:null,previous:null,expectedInstalledActivation:null,preparation:null,runner:null,
+      normalization:null,commonLease:await lifecycleCommonLeaseBinding(lease),confirmation:null,
+      cleanup:{status:'none',ownedPaths:[],diagnostics:[]}};
+    await registryReservation(allocation);
+    await writeNew(marker,Buffer.from(JSON.stringify(allocation,null,2)+'\n'));
+    const activation={...base.activation,activationId:randomUUID(),sequence:base.activation.sequence+1,
+      previousActivationId:base.activation.activationId,
+      activeAttempt:{...owner,operationRef:{operationId:binding.operationId,allocationSha256:bindingSha256}}};
+    await assertExecutionPublicationLock(lease);
+    await replaceActivation(workspace.executionRoot,activation);
+    const admitted=await readActive(activation.activeAttempt);
+    if(!equal(admitted.activation,activation)) fail('EC-1 reservation readback uncertain');
+    allocation.phase='working';
+    await persistAllocation(marker,allocation);
+    return {publication:'confirmed',cleanup:'complete',baseActivation:base.activation,
+      reservedActivation:activation,owner:activation.activeAttempt,baseTree:tree};
+  });
+}
+
+export async function publishCurrentExecutionOperation({workspace,marker,binding,candidatePath,previousPath,
+  expectedActivationId,owner,readActive,readQuiet,validateCandidate,authorizeCandidate,
+  registryCompletion,checkpoint=null}) {
+  return withExecutionPublicationLock(workspace,async lease=>{
+    const allocated=parseStrictJson((await readOwnedFile(marker)).bytes.toString('utf8'));
+    if(allocated.format!=='stnl-execution-publication-owner-v2'
+      || !equal(allocated.binding,binding) || !['working','prepared','backup_created','candidate_promoted','activation_written','committed'].includes(allocated.phase))
+      fail('EC-1 allocation binding/phase differs');
+    const active=await readActive(owner);
+    if(active.activation.activationId!==expectedActivationId
+      || !equal(active.activation.activeAttempt,owner)) fail('EC-1 publication owner CAS differs');
+    if(allocated.phase==='committed') fail('EC-1 already committed; use confirmed readback');
+    if(allocated.phase!=='working' && allocated.phase!=='prepared')
+      fail(`EC-1 publication phase ${allocated.phase} requires recovery classification`);
+    const before=await captureExecutionTree(workspace.executionRoot);
+    const candidate=await captureExecutionTree(candidatePath);
+    if(!candidate || await stat(previousPath)) fail('EC-1 candidate or previous tree differs');
+    if(allocated.candidate!==null && !equal(allocated.candidate,{identity:candidate.identity,tree:candidate.files}))
+      fail('EC-1 candidate changed since preparation');
+    await authorizeCandidate(active,candidate);
+    await validateCandidate(candidatePath);
+    if(!equal(candidate,await captureExecutionTree(candidatePath))) fail('EC-1 candidate changed during validation');
+    allocated.candidate={identity:candidate.identity,tree:candidate.files};
+    allocated.phase='prepared';allocated.commonLease=await lifecycleCommonLeaseBinding(lease);
+    await persistAllocation(marker,allocated);
+    await assertExecutionPublicationLock(lease);
+    if(checkpoint) await checkpoint('before-backup');
+    if(!equal(before,await captureExecutionTree(workspace.executionRoot))) fail('EC-1 live tree changed before swap');
+    let moved=false,promoted=false,activationWritten=false;
+    try {
+      await fs.rename(workspace.executionRoot,previousPath); moved=true;
+      await syncLockParent(path.dirname(workspace.executionRoot));
+      allocated.previous={identity:before.identity,tree:before.files};
+      allocated.phase='backup_created';await persistAllocation(marker,allocated);
+      if(checkpoint) await checkpoint('after-backup');
+      if(await stat(workspace.executionRoot)) fail('EC-1 live target unexpectedly occupied');
+      await fs.rename(candidatePath,workspace.executionRoot); promoted=true;
+      await syncLockParent(path.dirname(workspace.executionRoot));
+      allocated.phase='candidate_promoted';await persistAllocation(marker,allocated);
+      if(checkpoint) await checkpoint('after-install');
+      if(!equal((await captureExecutionTree(workspace.executionRoot)).files,candidate.files))
+        fail('EC-1 installed candidate changed');
+      const artifacts=candidate.files.filter(item=>item.type==='file' && item.path!=='activation.json')
+        .map(item=>({path:item.path,sha256:item.sha256})).sort((a,b)=>a.path<b.path?-1:a.path>b.path?1:0);
+      const intermediate={...active.activation,activationId:randomUUID(),sequence:active.activation.sequence+1,
+        previousActivationId:active.activation.activationId,artifacts};
+      allocated.expectedInstalledActivation=intermediate;
+      await persistAllocation(marker,allocated);
+      if(checkpoint) await checkpoint('before-activation');
+      await replaceActivation(workspace.executionRoot,intermediate);activationWritten=true;
+      allocated.phase='activation_written';await persistAllocation(marker,allocated);
+      if(checkpoint) await checkpoint('after-activation');
+      const first=await readActive(owner);
+      if(!equal(first.activation,intermediate)) fail('EC-1 intermediate readback differs');
+      const terminalId=randomUUID();
+      const terminal={...intermediate,activationId:terminalId,sequence:intermediate.sequence+1,
+        previousActivationId:intermediate.activationId,activeAttempt:null,
+        lastAttempt:{operationAttemptId:owner.operationAttemptId,deliveryId:owner.deliveryId,
+          slice:owner.slice,operation:owner.operation,terminalActivationId:terminalId,outcome:'recorded',
+          operationRef:owner.operationRef}};
+      allocated.preparation={intermediateActivation:intermediate};
+      allocated.expectedInstalledActivation=terminal;await persistAllocation(marker,allocated);
+      await replaceActivation(workspace.executionRoot,terminal);
+      if(checkpoint) await checkpoint('after-terminal-activation');
+      const final=await readQuiet();
+      if(!equal(final.activation,terminal)) fail('EC-1 terminal readback differs');
+      allocated.phase='committed';
+      allocated.confirmation={activationId:terminalId,artifactManifestSha256:digest(JSON.stringify(artifacts))};
+      allocated.cleanup={status:'pending',ownedPaths:[{role:'previous',path:previousPath,
+        identity:before.identity,tree:before.files}],diagnostics:[]};
+      await persistAllocation(marker,allocated);
+      try {
+        const retained=await captureExecutionTree(previousPath);
+        if(!equal(retained,before)) fail('EC-1 previous tree changed before own cleanup');
+        await fs.rm(previousPath,{recursive:true});
+        allocated.cleanup={status:'pending',ownedPaths:[],diagnostics:[]};
+        await persistAllocation(marker,allocated);
+        if(checkpoint) await checkpoint('before-registry-completion');
+        await registryCompletion(allocated);
+        allocated.cleanup={status:'complete',ownedPaths:[],diagnostics:[]};
+        await persistAllocation(marker,allocated);
+      } catch(error) {
+        allocated.cleanup.status='pending';allocated.cleanup.diagnostics=[error.message];
+        await persistAllocation(marker,allocated);
+        return {publication:'confirmed',cleanup:'pending',activation:terminal,allocation:marker,
+          cleanupDiagnostics:[error.message]};
+      }
+      return {publication:'confirmed',cleanup:'complete',activation:terminal,allocation:marker};
+    } catch(error) {
+      if(!activationWritten) {
+        try {
+          if(promoted) {
+            const installed=await captureExecutionTree(workspace.executionRoot);
+            if(!installed || !equal(installed.files,candidate.files)) fail('EC-1 foreign installed bytes; preserve previous');
+            await fs.rename(workspace.executionRoot,candidatePath);
+          }
+          if(moved) {
+            if(await stat(workspace.executionRoot) || !equal(await captureExecutionTree(previousPath),before))
+              fail('EC-1 previous tree is not own unchanged base');
+            await fs.rename(previousPath,workspace.executionRoot);
+          }
+          await syncLockParent(path.dirname(workspace.executionRoot));
+          allocated.phase='working';allocated.previous=null;
+          await persistAllocation(marker,allocated);
+        } catch(restoreError) {
+          error.message+=`; EC-1 restoration uncertain: ${restoreError.message}`;
+        }
+      } else error.message+='; EC-1 activation outcome requires readback recovery';
+      throw error;
+    }
+  });
+}
+
+// Resume only the already installed, byte-verified image for this exact owner.
+// The terminal activation is persisted before its CAS so a process failure can
+// classify the same intermediate/terminal pair without rebuilding a candidate.
+export async function recoverCurrentExecutionOperation({workspace,marker,binding,previousPath,
+  expectedActivationId,owner,readActive,readQuiet,registryCompletion}) {
+  return withExecutionPublicationLock(workspace,async lease=>{
+    const allocated=parseStrictJson((await readOwnedFile(marker)).bytes.toString('utf8'));
+    if(allocated.format!=='stnl-execution-publication-owner-v2'
+      || !equal(allocated.binding,binding) || allocated.phase!=='activation_written'
+      || !allocated.candidate || !allocated.previous || !allocated.expectedInstalledActivation)
+      fail('EC-1 recovery owner/phase differs');
+    const installed=await captureExecutionTree(workspace.executionRoot);
+    const previous=await captureExecutionTree(previousPath);
+    const withoutActivation=entries=>entries.filter(item=>item.path!=='activation.json');
+    if(!installed || !previous
+      || !equal(installed.identity,allocated.candidate.identity)
+      || !equal(withoutActivation(installed.files),withoutActivation(allocated.candidate.tree))
+      || !equal({identity:previous.identity,tree:previous.files},allocated.previous))
+      fail('EC-1 recovery installed or previous tree differs');
+    let expected=allocated.expectedInstalledActivation;
+    const actual=parseStrictJson((await readOwnedFile(path.join(workspace.executionRoot,'activation.json'))).bytes.toString('utf8'));
+    if(actual.activeAttempt!==null) {
+      const intermediate=allocated.preparation?.intermediateActivation??expected;
+      if(!equal(actual,intermediate) || !equal(actual.activeAttempt,owner)
+        || actual.previousActivationId!==expectedActivationId)
+        fail('EC-1 recovery intermediate activation differs');
+      const readback=await readActive(owner);
+      if(!equal(readback.activation,actual)) fail('EC-1 recovery active readback differs');
+      if(!allocated.preparation) {
+        const terminalId=randomUUID();
+        expected={...actual,activationId:terminalId,sequence:actual.sequence+1,
+          previousActivationId:actual.activationId,activeAttempt:null,
+          lastAttempt:{operationAttemptId:owner.operationAttemptId,deliveryId:owner.deliveryId,
+            slice:owner.slice,operation:owner.operation,terminalActivationId:terminalId,outcome:'recorded',
+            operationRef:owner.operationRef}};
+        allocated.preparation={intermediateActivation:actual};
+        allocated.expectedInstalledActivation=expected;
+        allocated.commonLease=await lifecycleCommonLeaseBinding(lease);
+        await persistAllocation(marker,allocated);
+      }
+      if(expected.activeAttempt!==null || expected.previousActivationId!==actual.activationId
+        || expected.lastAttempt?.operationAttemptId!==owner.operationAttemptId)
+        fail('EC-1 recovery terminal descriptor differs');
+      await assertExecutionPublicationLock(lease);
+      await replaceActivation(workspace.executionRoot,expected);
+    } else if(!equal(actual,expected) || expected.activeAttempt!==null
+      || expected.lastAttempt?.operationAttemptId!==owner.operationAttemptId)
+      fail('EC-1 recovery terminal activation differs');
+    const final=await readQuiet();
+    if(!equal(final.activation,expected)) fail('EC-1 recovery terminal readback differs');
+    allocated.phase='committed';
+    allocated.confirmation={activationId:expected.activationId,
+      artifactManifestSha256:digest(JSON.stringify(expected.artifacts))};
+    allocated.cleanup={status:'pending',ownedPaths:[{role:'previous',path:previousPath,
+      identity:previous.identity,tree:previous.files}],diagnostics:[]};
+    await persistAllocation(marker,allocated);
+    try {
+      if(!equal(await captureExecutionTree(previousPath),previous)) fail('EC-1 recovery previous changed before cleanup');
+      await fs.rm(previousPath,{recursive:true});
+      allocated.cleanup={status:'pending',ownedPaths:[],diagnostics:[]};
+      await persistAllocation(marker,allocated);
+      await registryCompletion(allocated);
+      allocated.cleanup={status:'complete',ownedPaths:[],diagnostics:[]};
+      await persistAllocation(marker,allocated);
+    } catch(error) {
+      allocated.cleanup.status='pending';allocated.cleanup.diagnostics=[error.message];
+      await persistAllocation(marker,allocated);
+      return {publication:'confirmed',cleanup:'pending',activation:expected,allocation:marker,
+        cleanupDiagnostics:[error.message]};
+    }
+    return {publication:'confirmed',cleanup:'complete',activation:expected,allocation:marker};
+  });
+}
+
+export async function finishCurrentExecutionCleanup({workspace,marker,binding,previousPath,
+  owner,readQuiet,registryCompletion}) {
+  return withExecutionPublicationLock(workspace,async()=>{
+    const allocated=parseStrictJson((await readOwnedFile(marker)).bytes.toString('utf8'));
+    if(allocated.format!=='stnl-execution-publication-owner-v2'
+      || !equal(allocated.binding,binding) || allocated.phase!=='committed'
+      || allocated.cleanup?.status!=='pending' || !allocated.confirmation)
+      fail('EC-1 cleanup owner/phase differs');
+    const current=await readQuiet();
+    if(current.activation.activationId!==allocated.confirmation.activationId
+      || current.activation.activeAttempt!==null
+      || current.activation.lastAttempt?.operationAttemptId!==owner.operationAttemptId
+      || digest(JSON.stringify(current.activation.artifacts))!==allocated.confirmation.artifactManifestSha256)
+      fail('EC-1 cleanup confirmed image differs');
+    const retained=await captureExecutionTree(previousPath);
+    if(retained) {
+      if(!allocated.previous
+        || !equal({identity:retained.identity,tree:retained.files},allocated.previous))
+        fail('EC-1 cleanup previous tree changed');
+      await fs.rm(previousPath,{recursive:true});
+    }
+    allocated.cleanup={status:'pending',ownedPaths:[],diagnostics:[]};
+    await persistAllocation(marker,allocated);
+    await registryCompletion(allocated);
+    allocated.cleanup={status:'complete',ownedPaths:[],diagnostics:[]};
+    await persistAllocation(marker,allocated);
+    return {publication:'confirmed',cleanup:'complete',activation:current.activation,allocation:marker};
+  });
 }
 
 export async function withLifecycleRecoveryPublicationLock(workspace, proof, action) {
@@ -412,6 +661,7 @@ async function copyTree(source, target) {
     else { const file = await readOwnedFile(from); await writeNew(to, file.bytes, file.mode); }
   }
 }
+export async function copyCurrentCandidateTree(source,target) { await copyTree(source,target); }
 
 // The wrapper supplies fixed operation-specific validation and diff scope, never model-selected callbacks.
 export async function publishExecutionUpdate({ workspace, candidateExecutionRoot, expectedTree, expectedActivationId,
