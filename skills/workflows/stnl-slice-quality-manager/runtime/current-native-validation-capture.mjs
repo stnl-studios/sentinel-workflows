@@ -12,6 +12,16 @@ const encode=value=>Buffer.from(JSON.stringify(value)+'\n');
 const same=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
 function fail(code,message) {const error=new Error(message);error.code=code;throw error;}
 const order=(a,b)=>a<b?-1:a>b?1:0;
+function rejectBlockedImage(inspection) {
+  const blocked=inspection.deliveries.filter(item=>item.formalStatus==='BLOCKED'
+    || item.observedValidation==='uncertain');
+  if(!blocked.length) return;
+  const slices=new Set(blocked.map(item=>item.slice));
+  const diagnostics=inspection.diagnostics.filter(item=>slices.has(item.artifact))
+    .map(item=>`${item.artifact}.${item.field}: ${item.reason}`).join('; ');
+  fail('UNSUPPORTED_FORMAT',`offline formal capture is blocked by ${blocked.map(item=>
+    `${item.slice} ${item.formalStatus==='BLOCKED'?'BLOCKED':'uncertain'}`).join(', ')}${diagnostics?`; ${diagnostics}`:''}`);
+}
 const copyCapture=value=>Object.fromEntries(Object.entries(value).map(([key,item])=>
   [key,Array.isArray(item)?item.map(bytes=>Uint8Array.from(bytes))
     :item instanceof Uint8Array?Uint8Array.from(item):item]));
@@ -20,6 +30,7 @@ const copyCapture=value=>Object.fromEntries(Object.entries(value).map(([key,item
 // image nor adopts a session after restart.
 export async function createCurrentNativeValidationCapture({specPath,deliveryId,captureParent}) {
   const previous=await captureCurrentExecution(specPath);
+  rejectBlockedImage(previous.inspection);
   const activation=parseCurrentJson(Buffer.from(previous.activationBytes).toString('utf8'));
   const snapshot=parseCurrentJson(Buffer.from(previous.files.get('approved-preparation.json')).toString('utf8'));
   const continuity=parseCurrentJson(Buffer.from(previous.files.get('continuity.json')).toString('utf8'));
@@ -89,6 +100,15 @@ export async function createCurrentNativeValidationCapture({specPath,deliveryId,
   if(!expected) fail('INVALID_CURRENT_IMAGE','approved Task has no Expected Files section');
   const observe=async()=>observeCurrentDeliveryWork({context,delivery:leaf,
     sections:{'Expected Files':expected},current,bundle:null});
+  const assertCurrentBase=async phase=>{
+    const reread=await captureCurrentExecution(specPath);
+    rejectBlockedImage(reread.inspection);
+    if(!Buffer.from(reread.activationBytes).equals(Buffer.from(previous.activationBytes))
+      || reread.files.size!==previous.files.size
+      || [...previous.files].some(([name,bytes])=>!Buffer.from(reread.files.get(name)??[]).equals(Buffer.from(bytes)))
+      || !same(reread.observedByDelivery.get(deliveryId)?.manifest,observed.manifest))
+      fail('EVIDENCE_STALE',`official base or product changed ${phase}`);
+  };
   return {...copies,
     async bindAgent({agentId}) {
       if(bound || typeof agentId!=='string' || !agentId.trim()) fail('OWNER_MISMATCH','agent must bind once before verification');
@@ -102,6 +122,7 @@ export async function createCurrentNativeValidationCapture({specPath,deliveryId,
       const before=await observe();
       if(!same(before.manifest,observed.manifest) || !same([...before.identities],[...observed.identities]))
         fail('EVIDENCE_STALE','product changed before verification');
+      await assertCurrentBase('before verification');
       const result=await executeRunnerVerification({verification:approved.resolved,
         outputFile:path.join(root,'round-1.verification.json'),
         observeState:async()=>(await observe()).manifest});
@@ -126,12 +147,7 @@ export async function createCurrentNativeValidationCapture({specPath,deliveryId,
       const after=await observe();
       if(!same(after.manifest,measurement.after.manifest) || !same([...after.identities],[...measurement.after.identities]))
         fail('EVIDENCE_STALE','product changed before conclusion');
-      const reread=await captureCurrentExecution(specPath);
-      if(!Buffer.from(reread.activationBytes).equals(Buffer.from(previous.activationBytes))
-        || reread.files.size!==previous.files.size
-        || [...previous.files].some(([name,bytes])=>!Buffer.from(reread.files.get(name)??[]).equals(Buffer.from(bytes)))
-        || !same(reread.observedByDelivery.get(deliveryId)?.manifest,observed.manifest))
-        fail('EVIDENCE_STALE','official base or product changed before conclusion');
+      await assertCurrentBase('before conclusion');
       const work=measurement.after.manifest;
       const taskRoot=path.dirname(path.join(context.logicalExecutionRoot,`tasks/${current.slice}.md`));
       const testedState={workspace:context.productRoot,sourceTaskPath:path.join(context.logicalExecutionRoot,`tasks/${current.slice}.md`),
