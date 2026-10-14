@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import path from 'node:path';
-import { parseCurrentJson, resolveLogicalProductClaim, logicalArtifactPath } from './execution-current.mjs';
+import { parseCurrentJson, resolveLogicalProductClaim, logicalArtifactPath, validateCurrentCandidate } from './execution-current.mjs';
 
 const HASH = /^sha256:[a-f0-9]{64}$/u;
 const UUID = /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/u;
@@ -131,7 +131,7 @@ function claimLines(value, label, typed = false) {
     return typed ? { kind: match[1], path: match[2] } : { kind: 'file', path: match[1] };
   });
 }
-function work(value, label) {
+function workEntries(value, label) {
   closed(value, ['format', 'entries'], label);
   if (value.format !== 'stnl-current-work-v1') fail('CURRENT_FORMAT_REQUIRED', `${label}: current WorkManifest required`);
   dense(value.entries, `${label}.entries`, 0, 10000);
@@ -157,6 +157,10 @@ function work(value, label) {
     byPath.set(entry.path, entry);
   }
   if (value.entries.some((entry, index) => index && ordinal(value.entries[index - 1].path, entry.path) >= 0)) invalid(`${label}: entries unordered`);
+  return byPath;
+}
+function work(value,label) {
+  const byPath=workEntries(value,label);
   for (const entry of value.entries) {
     const parts = entry.path.split('/');
     for (let i = 1; i < parts.length; i += 1) {
@@ -228,6 +232,86 @@ function recipeAndClaims(context, delivery, slice) {
   });
   if (new Set(checks.map(check => check.id)).size !== checks.length) invalid('recipe duplicate check id');
   return { recipe, areas, inputs, refs, resolved:{format:'stnl-resolved-verification-v2', recipeSha256:raw(utf8(canonical(recipe))), checks} };
+}
+function observedAbsent(byPath,name) {
+  const parts=name.split('/');
+  for (let index=1;index<parts.length;index+=1) {
+    const ancestor=byPath.get(parts.slice(0,index).join('/'));
+    if (ancestor?.kind==='absent' || ancestor?.kind==='directory' && Array.isArray(ancestor.children)
+      && !ancestor.children.includes(parts[index])) return true;
+  }
+  return false;
+}
+function canonicalConversionEntries(entries) {
+  const byPath=new Map(entries.map(entry=>[entry.path,entry]));
+  return entries.filter(entry=>entry.kind!=='absent' || !observedAbsent(byPath,entry.path))
+    .sort((a,b)=>ordinal(a.path,b.path));
+}
+function conversionDomain(entries,claims,label,{legacy=false}={}) {
+  const byPath=new Map(entries.map(entry=>[entry.path,entry]));
+  const included=name=>claims.some(item=>item.path===name || item.kind==='directory' && name.startsWith(`${item.path}/`));
+  for (const item of claims) {
+    const entry=byPath.get(item.path);
+    if (!entry) {
+      if (item.kind!=='input' && !legacy && observedAbsent(byPath,item.path)) continue;
+      incomplete(`${label}: missing declared ${item.path}`);
+    }
+    if (item.kind==='input' && entry.kind!=='file' || item.kind==='directory' && entry.kind==='file'
+      || item.kind==='file' && entry.kind==='directory') stale(`${label}: declared kind differs ${item.path}`);
+  }
+  for (const entry of entries) {
+    if (!included(entry.path)) incomplete(`${label}: unexpected domain member ${entry.path}`);
+    // Separate declared roots can repeat an absence already proved by the
+    // union. Present descendants still pass every parent/child check below.
+    if (!legacy && entry.kind==='absent' && observedAbsent(byPath,entry.path)) continue;
+    const parts=entry.path.split('/');
+    for (let index=1;index<parts.length;index+=1) {
+      const name=parts.slice(0,index).join('/'),parent=byPath.get(name);
+      // Only ancestors inside an approved directory need an observation.
+      if (!parent && !included(name)) continue;
+      // v1 inventories roots, forecasts and prior paths independently: an
+      // absent root may therefore have explicitly absent descendants.
+      if (legacy && entry.kind==='absent' && (!parent || parent.kind==='absent')) continue;
+      if (!parent || parent.kind!=='directory' || !legacy &&
+        parent.children.includes(parts[index]) === (index===parts.length-1 && entry.kind==='absent'))
+        incomplete(`${label}: missing parent/child closure ${entry.path}`);
+    }
+    if (!legacy && entry.kind==='directory') for (const child of entry.children) {
+      if (!byPath.has(`${entry.path}/${child}`) || byPath.get(`${entry.path}/${child}`).kind==='absent')
+        incomplete(`${label}: missing present child ${child}`);
+    }
+  }
+  return byPath;
+}
+
+// An observation is the union of the selected delivery domains. Roots may be
+// nested in the product; structural ancestors outside those domains are absent.
+export function projectConversionObservedWork(value) {
+  closed(value,['context','deliveries','observedWork'],'conversion work input');
+  const {context}=value;
+  const observed=JSON.parse(canonical(value.observedWork));
+  workEntries(observed,'conversion observedWork');
+  const declarations=new Map(),slices=new Set();
+  for (const delivery of dense(value.deliveries,'conversion work deliveries',1)) {
+    closed(delivery,['slice','deliveryId','authorizedAreas','existingInputs','verificationRecipe'],'conversion delivery domain');
+    canonicalSlice(delivery.slice,'conversion domain slice');token(delivery.deliveryId,UUID,'conversion domain delivery');
+    if (declarations.has(delivery.deliveryId) || slices.has(delivery.slice)) invalid('duplicate conversion delivery domain');
+    slices.add(delivery.slice);
+    const info=recipeAndClaims(context,delivery,delivery.slice);
+    declarations.set(delivery.deliveryId,[...info.areas,...info.inputs]);
+  }
+  const union=conversionDomain(observed.entries,[...declarations.values()].flat(),'conversion observedWork');
+  const projections=new Map();
+  for (const [id,claims] of declarations) {
+    let entries=observed.entries.filter(entry=>claims.some(item=>item.path===entry.path
+      || item.kind==='directory' && entry.path.startsWith(`${item.path}/`)));
+    for (const item of claims) if (!entries.some(entry=>entry.path===item.path) && observedAbsent(union,item.path))
+      entries.push({path:item.path,kind:'absent'});
+    entries=canonicalConversionEntries(entries);
+    conversionDomain(entries,claims,`conversion ${id}`);
+    projections.set(id,{format:'stnl-current-work-v1',entries});
+  }
+  return projections;
 }
 const quote = value => /^[A-Za-z0-9_./:=+-]+$/u.test(value) ? value : `'${value.replaceAll("'", "'\\''")}'`;
 const commandFor = check => [check.executable, ...check.args].map(quote).join(' ');
@@ -765,3 +849,729 @@ export function findingsRoundCaptureSha256(cap) {
   return raw(serialized(link));
 }
 export function closeEvidenceObjects() { return objectStore(); }
+
+function importedObject(objects, id, label) {
+  if (!(objects instanceof Map) || Object.getPrototypeOf(objects) !== Map.prototype) invalid('imported object store');
+  token(id, HASH, label);
+  const value = Map.prototype.get.call(objects,id);
+  if (!value || raw(bytes(value,label)) !== id) incomplete(`${label}: referenced bytes differ`);
+  return jsonBytes(value,label).value;
+}
+
+function importedCapsule(objects, id, format, fields, label) {
+  const value = importedObject(objects,id,label);
+  closed(value,['format',...fields],label);
+  if (value.format !== format) fail('UNSUPPORTED_FORMAT',`${label}: capsule format`);
+  return Object.fromEntries(fields.map(key => [key,utf8(str(value[key],`${label}.${key}`))]));
+}
+
+function importedManifest(value, record, context) {
+  closed(value,['format','logicalExecutionRoot','logicalWorkspaceRoot','slice','deliveryId',
+    'operationAttemptId','sourceActivationId','preparationRevision','requirementsAuthority','normativeSha256','entries'],
+    'legacy work manifest');
+  if (value.format !== 'stnl-work-continuation-v1' || value.logicalExecutionRoot !== context.logicalExecutionRoot
+    || value.logicalWorkspaceRoot !== context.productRoot || value.slice !== record.origin.slice
+    || value.deliveryId !== record.origin.deliveryId || value.operationAttemptId !== record.origin.operationAttemptId
+    || value.sourceActivationId !== record.origin.originActivationId
+    || value.preparationRevision !== record.origin.preparationRevision
+    || value.requirementsAuthority !== record.contract.context.requirementsAuthority
+    || value.normativeSha256 !== record.origin.normativeSha256)
+    mismatch('legacy work manifest identity differs');
+  dense(value.entries,'legacy work entries',0,10000);
+  const paths = new Map();
+  for (const entry of value.entries) {
+    closed(entry,['path','kind','sha256','storedPath'],'legacy work entry');
+    relative(entry.path,'legacy work path');
+    if (paths.has(entry.path)) invalid('duplicate legacy work path');
+    if (!['directory','absent','file'].includes(entry.kind)) invalid('legacy work kind');
+    if (entry.kind === 'file') token(entry.sha256,HASH,'legacy work hash');
+    else if (entry.sha256 !== null || entry.storedPath !== null) invalid('non-file legacy work hash');
+    paths.set(entry.path,entry);
+  }
+  if ([...paths.keys()].some((name,index,array) => index && array[index-1].localeCompare(name,'en')>=0)) invalid('legacy work order');
+  if ([...paths.values()].some(entry => entry.kind === 'file')) incomplete('legacy file mode was never captured');
+  const entries=canonicalConversionEntries([...paths.values()].map(entry => entry.kind === 'directory'
+    ? {path:entry.path,kind:'directory',children:[...paths.values()].filter(child => child.kind !== 'absent'
+      && path.posix.dirname(child.path) === entry.path).map(child => path.posix.basename(child.path)).sort(ordinal)}
+    : {path:entry.path,kind:'absent'}));
+  const result={format:'stnl-current-work-v1',entries};
+  const info=recipeAndClaims(context,record.contract.delivery,record.origin.slice);
+  conversionDomain(result.entries,[...info.areas,...info.inputs],'imported testedWork');
+  return result;
+}
+
+function importedTerminal(publication, owner, manifestBytes, context) {
+  plain(publication,'terminal publication');
+  plain(publication.confirmation,'terminal confirmation');
+  plain(publication.expectedInstalledActivation,'terminal activation');
+  dense(publication.expectedInstalledActivation.artifacts,'terminal artifacts');
+  if (publication.format !== 'stnl-execution-publication-owner-v1' || !publication.confirmation
+    || publication.confirmation.terminalOperationAttemptId !== owner.operationAttemptId
+    || publication.confirmation.activationId !== publication.expectedInstalledActivation?.activationId
+    || publication.expectedInstalledActivation.activeAttempt !== null
+    || publication.expectedInstalledActivation.lastAttempt?.operationAttemptId !== owner.operationAttemptId
+    || publication.expectedInstalledActivation.lastAttempt.terminalActivationId !== publication.confirmation.activationId
+    || publication.expectedInstalledActivation.lastAttempt.originActivationId !== owner.originActivationId
+    || !same(publication.owner,owner)
+    || publication.expectedInstalledActivation.lastAttempt.deliveryId !== owner.deliveryId
+    || publication.expectedInstalledActivation.lastAttempt.slice !== owner.slice
+    || publication.expectedInstalledActivation.lastAttempt.operation !== owner.operation
+    || publication.expectedInstalledActivation.lastAttempt.ownershipToken !== owner.ownershipToken
+    || publication.expectedInstalledActivation.lastAttempt.preparationRevision !== owner.preparationRevision
+    || publication.expectedInstalledActivation.lastAttempt.normativeSha256 !== owner.normativeSha256
+    || !same(publication.expectedInstalledActivation.lastAttempt.workCapture,owner.workCapture)
+    || publication.confirmation.artifactManifestSha256!==raw(utf8(JSON.stringify(publication.expectedInstalledActivation.artifacts)))
+    || publication.retention?.producer !== 'operational-publication'
+    || !same(publication.retention.owner,owner)
+    || publication.retention.executionRoot !== context.logicalExecutionRoot
+    || publication.executionRoot !== context.logicalExecutionRoot
+    || publication.retention.allocationId !== publication.allocationId
+    || publication.retentionRoot !== path.join(context.logicalSpecRoot===null
+      ? path.dirname(context.logicalExecutionRoot) : path.dirname(context.logicalSpecRoot),
+      `.stnl-execution-backup-${publication.allocationId}`))
+    incomplete('publication does not confirm this terminal operation');
+  const retained = publication.retention?.retainedPaths;
+  const manifestPath=path.join(publication.retentionRoot,'preserved-product-manifest.json');
+  if (!Array.isArray(retained) || !retained.some(item => item.path === manifestPath && item.sha256 === raw(manifestBytes)))
+    incomplete('tested preimage is not producer retained');
+}
+
+function importedOwner(value, record, label) {
+  plain(value,label);
+  for (const [key,expected] of Object.entries({operationAttemptId:record.origin.operationAttemptId,
+    deliveryId:record.origin.deliveryId,slice:record.origin.slice,operation:record.origin.operation,
+    preparationRevision:record.origin.preparationRevision,normativeSha256:record.origin.normativeSha256,
+    originActivationId:record.origin.originActivationId}))
+    if (value[key]!==expected) mismatch(`${label}: ${key} differs`);
+  token(value.ownershipToken,UUID,`${label}.ownershipToken`);
+  if (Object.hasOwn(value,'localRevision') && value.localRevision!==null)
+    mismatch(`${label}: legacy localRevision is not null`);
+  return value;
+}
+
+function importedRecordField(text,name) {
+  const items=[...text.matchAll(new RegExp(`^- ${name}: (.+)$`,'gmu'))];
+  if (items.length !== 1) incomplete(`imported record: missing/duplicate ${name}`);
+  return items[0][1];
+}
+
+function importedScalar(value) {
+  if (!value.startsWith('json:')) return value;
+  const decoded=parseCurrentJson(value.slice(5));
+  if (typeof decoded!=='string' || (!/[`\r\n]/u.test(decoded) && !decoded.startsWith('json:'))
+    || `json:${JSON.stringify(decoded)}`!==value)
+    incomplete('imported record: noncanonical explanatory scalar');
+  return decoded;
+}
+
+function importedSemanticFields(record,payload,receipt) {
+  const pairs=record.kind==='validation'
+    ? [['Status','status'],['HEAD','head'],['Evidence','evidence'],['Blockers','blockers'],
+      ['Unexpected workspace effects','unexpectedWorkspaceEffects'],['Persistence summary','persistenceSummary']]
+    : [['Status','status'],['HEAD','head'],['Discovery sources','discoverySources'],
+      ['Discovery actions','discoveryActions'],['Verification types considered','verificationTypesConsidered'],
+      ['Selected checks','selectedChecks'],['Selection rationale','selectionRationale'],
+      ['Coverage','coverage'],['Failures','failures'],['Blockers','blockers'],
+      ['Unexpected workspace effects','unexpectedWorkspaceEffects'],['Persistence summary','persistenceSummary']];
+  for (const [field,key] of pairs) if (importedScalar(importedRecordField(record.recordUtf8,field))!==payload[key])
+    incomplete(`${record.id}: ${field} differs from captured response`);
+  if (record.kind==='validation') {
+    const references=importedRecordField(record.recordUtf8,'Finding references');
+    const dispositions=importedRecordField(record.recordUtf8,'Finding dispositions');
+    const capturedDispositions=payload.findingReferences==='none' && payload.findingDispositions==='unchanged'
+      ? 'none' : payload.findingDispositions;
+    if (references!==payload.findingReferences || dispositions!==capturedDispositions)
+      incomplete(`${record.id}: finding disposition differs from captured response`);
+    const ids=references==='none'?[]:references.split(', ');
+    if (ids.some(id=>!/^finding-[0-9]{2,}$/u.test(id)) || new Set(ids).size!==ids.length
+      || ids.some((id,index)=>index && ids[index-1].localeCompare(id,'en')>=0)
+      || (ids.length ? !['resolved','superseded'].includes(dispositions.split(', ')[0]?.split('=')[1]) : dispositions!=='none')
+      || (ids.length && !same(dispositions.split(', ').map(item=>item.split('=')[0]),ids))
+      || (ids.length && dispositions.split(', ').some(item=>!/^finding-[0-9]{2,}=(?:resolved|superseded)$/u.test(item))))
+      incomplete(`${record.id}: formal PASS has an open or malformed finding disposition`);
+  }
+  if (record.kind==='implementation-check'
+    && (importedRecordField(record.recordUtf8,'Automatic check round')!==`${receipt.attempt}/3`
+      || (Object.hasOwn(payload,'automaticCheckRound') && payload.automaticCheckRound!==`${receipt.attempt}/3`)))
+    mismatch(`${record.id}: automatic round differs`);
+}
+
+function importedCommandTuples(body,label) {
+  const marker=[...body.matchAll(/^- Commands:$/gmu)];
+  if (marker.length!==1) incomplete(`${label}: commands absent`);
+  const tail=body.slice(marker[0].index+marker[0][0].length);
+  const end=tail.search(/^- [^:\n]+:/mu);
+  const lines=(end<0?tail:tail.slice(0,end)).replace(/^\n/u,'').trimEnd().split('\n');
+  if (!lines.length || !lines[0]) incomplete(`${label}: commands empty`);
+  return lines.map(line=>{
+    const match=/^  - (?:`([^`\r\n]+)`|json:(".*")) \| exit:([-]?[0-9]+)$/u.exec(line);
+    if (!match) incomplete(`${label}: command tuple malformed`);
+    const command=match[1]??parseCurrentJson(match[2]);
+    const exit=Number(match[3]);
+    if (typeof command!=='string' || !command || !Number.isSafeInteger(exit)
+      || (match[2] && (!/[`\r\n]/u.test(command) || JSON.stringify(command)!==match[2])))
+      incomplete(`${label}: command tuple invalid`);
+    return {command,exit};
+  });
+}
+
+function importedTestedState(record, tested) {
+  const marker=[...record.recordUtf8.matchAll(/^- Tested state:(?: (none))?$/gmu)];
+  if (marker.length!==1) incomplete(`${record.id}: Tested state carrier`);
+  const body=record.recordUtf8;
+  const tail=body.slice(marker[0].index+marker[0][0].length);
+  const end=tail.search(/^- [^:\n]+:/mu);
+  const block=(end<0?tail:tail.slice(0,end)).replace(/^\n/u,'').trimEnd();
+  if (marker[0][1]==='none') {
+    if (block || !/^- Fileless reason: \S.+$/mu.test(body)
+      || importedScalar(importedRecordField(body,'Tested scope'))!==importedScalar(importedRecordField(body,'Fileless reason'))) incomplete(`${record.id}: invalid fileless carrier`);
+    return;
+  }
+  incomplete(`${record.id}: file-backed tested state lacks original mode`);
+}
+
+function importedEffectiveBase(carrier,formal,tested) {
+  const body=carrier.get('Effective Validation Base');
+  if (!body || body==='- none') incomplete('formal PASS lacks Effective Validation Base');
+  const field=name=>importedRecordField(body,name);
+  const attempt=formal.recordUtf8;
+  if (field('Origin attempt')!==formal.id || field('Attempt type')!==importedRecordField(attempt,'Type')
+    || field('HEAD')!==importedRecordField(attempt,'HEAD') || field('Result')!=='PASS'
+    || field('Evidence summary')!==importedRecordField(attempt,'Evidence'))
+    incomplete('Effective Validation Base differs from formal PASS');
+  const marker=body.indexOf('- Authoritative commands:');
+  const evidence=body.indexOf('- Evidence summary:');
+  if (marker<0 || evidence<=marker) incomplete('Effective Validation Base command order');
+  const commands=body.slice(marker+'- Authoritative commands:'.length,evidence)
+    .replace(/^\n/u,'').trimEnd().split('\n');
+  const expected=importedCommandTuples(attempt,'formal attempt');
+  const actual=importedCommandTuples(`- Commands:\n${commands.join('\n')}`,'Effective Validation Base');
+  if (!same(actual,expected) || actual.some(item=>item.exit!==0)) incomplete('Effective Validation Base commands differ');
+  const fileless=/^- Files: none$/mu.test(body);
+  if (fileless) {
+    if (importedRecordField(attempt,'Verified scope')!=='fileless task state'
+      || [...body.matchAll(/^- Files:/gmu)].length!==1
+      || !/^- Fileless reason: \S.+$/mu.test(body) || tested.entries.some(entry=>entry.kind==='file'))
+      incomplete('Effective Validation Base fileless claim differs');
+  } else {
+    const tuples=[...body.matchAll(/^  - `([^`]+)` \| (sha256:[a-f0-9]{64}|REMOVED)$/gmu)];
+    if (!tuples.length || tuples.some(match=>match[2]==='REMOVED'))
+      incomplete('Effective Validation Base needs historical file mode');
+  }
+}
+
+function importedPreparationEquivalent(old, oldDelivery, approvedAuthority) {
+  const leaf=approvedAuthority.delivery;
+  const oldGlobal=old.normativeProjection.global;
+  const global=approvedAuthority.snapshot.normativeProjection.global;
+  if (oldGlobal.Objective!==global.objective || oldGlobal.Strategy!==global.strategy
+    || old.normativeProjection.risks!==global.risks
+    || !same(old.normativeProjection.order.map(item=>item.slice),
+      approvedAuthority.snapshot.deliveries.map(item=>item.slice)))
+    stale('imported global preparation differs');
+  const sections={
+    objectiveAndObservableResult:'Objective and Observable Result',requirements:'Requirements',
+    includedScope:'Included Scope',outOfScopeAndBoundaries:'Out of Scope and Boundaries',
+    authorizedAreas:'Authorized Areas',existingInputs:'Existing Inputs',
+    protectedResponsibilities:'Protected Responsibilities',risksAndStrategy:'Risks and Strategy',
+    expectedTests:'Expected Tests',completionCriterion:'Completion Criterion',
+  };
+  for (const [key,heading] of Object.entries(sections))
+    if (oldDelivery.plan[heading]!==leaf[key]) stale(`imported ${heading} differs`);
+  if (oldDelivery.task.Result!==leaf.taskResult || !same(oldDelivery.obligations,leaf.obligations)
+    || !same(oldDelivery.plan['Verification Recipe'],oldDelivery.task['Verification Recipe']))
+    stale('imported task result, obligations or recipe differs');
+  const oldDependencies=old.normativeProjection.order.find(item=>item.slice===oldDelivery.slice)?.dependencies;
+  const ids=oldDependencies==='-'?[]:oldDependencies?.split(', ').map(slice=>
+    old.normativeProjection.deliveries.find(item=>item.slice===slice)?.deliveryId);
+  if (!ids || !same(ids,leaf.dependencies)) stale('imported dependencies differ');
+}
+
+function legacySpecPath(context,value) {
+  return typeof value==='string' && (value===context.logicalAuthorityPath
+    || (context.logicalSpecRoot!==null && value===context.logicalSpecRoot));
+}
+function legacyOwnerEquals(value,owner,label) {
+  plain(value,label);
+  if (!same(value,owner)) mismatch(`${label}: full owner differs`);
+}
+function legacyManifestFacts(manifest,owner,authority,context,capture,publication) {
+  closed(manifest,['format','logicalExecutionRoot','logicalWorkspaceRoot','slice','deliveryId',
+    'operationAttemptId','sourceActivationId','preparationRevision','requirementsAuthority','normativeSha256','entries'],
+    'legacy manifest');
+  if (manifest.format!=='stnl-work-continuation-v1'
+    || manifest.logicalExecutionRoot!==context.logicalExecutionRoot || manifest.logicalWorkspaceRoot!==context.productRoot
+    || manifest.slice!==owner.slice || manifest.deliveryId!==owner.deliveryId
+    || manifest.operationAttemptId!==owner.operationAttemptId || manifest.sourceActivationId!==owner.originActivationId
+    || manifest.preparationRevision!==owner.preparationRevision || manifest.normativeSha256!==owner.normativeSha256
+    || manifest.requirementsAuthority!==authority) mismatch('legacy manifest identity differs');
+  dense(manifest.entries,'legacy manifest entries',0,10000);
+  const retained=new Map();
+  for (const item of dense(capture.retainedFiles,'retained files')) {
+    closed(item,['path','bytes'],'retained file');absolute(item.path,'retained file path');
+    if (retained.has(item.path)) invalid('duplicate retained file');
+    retained.set(item.path,bytes(item.bytes,'retained file bytes'));
+  }
+  let previous=null;
+  for (const entry of manifest.entries) {
+    closed(entry,['path','kind','sha256','storedPath'],'legacy entry');relative(entry.path,'legacy entry path');
+    // The v1 producer hashes this exact locale-ordered tuple list.
+    if (previous!==null && previous.localeCompare(entry.path,'en')>=0) invalid('legacy manifest order');
+    previous=entry.path;
+    if (!['file','directory','absent'].includes(entry.kind)) invalid('legacy entry kind');
+    if (entry.kind==='file') {
+      token(entry.sha256,HASH,'legacy file hash');absolute(entry.storedPath,'legacy retained path');
+      const rel=path.relative(publication.retentionRoot,entry.storedPath);
+      if (!rel || rel==='..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)
+        || !retained.has(entry.storedPath) || raw(retained.get(entry.storedPath))!==entry.sha256
+        || !publication.retention.retainedPaths.some(item=>item.path===entry.storedPath && item.sha256===entry.sha256))
+        incomplete('retained file bytes differ from tested preimage');
+      retained.delete(entry.storedPath);
+    } else if (entry.sha256!==null || entry.storedPath!==null) invalid('legacy non-file hash/path');
+  }
+  if (retained.size) incomplete('unexpected retained file bytes');
+}
+
+// Shared v1 proof boundary: all content is original producer bytes, with no
+// current owner, file mode, observation or activation manufactured for v1.
+export async function verifyLegacyOperationFacts(value) {
+  closed(value,['context','legacyPreparationBytes','operationRecordUtf8','capture'],'legacy operation input');
+  const {context,capture}=value;
+  plain(capture,'legacy capture');
+  const common=['transport','receipt','rawResponse','verificationObservation','workManifest','publication','retainedFiles'];
+  closed(capture,[...common,...(capture.transport==='native'
+    ? ['origin','dispatch','agentBinding','agentClaim','concludedToolResult']
+    : ['managedContext','active','started','events','closedSupervisor','latest','runtimeIdentity'])],'legacy capture');
+  if (!['native','managed'].includes(capture.transport)) fail('UNSUPPORTED_FORMAT','legacy transport');
+  const decode=name=>jsonBytes(capture[name],`legacy ${name}`).value;
+  const receipt=decode('receipt'), responseBytes=bytes(capture.rawResponse,'legacy response');
+  const response=jsonBytes(responseBytes,'legacy response').value;
+  const observation=decode('verificationObservation'),manifest=decode('workManifest'),publication=decode('publication');
+  const owner=plain(receipt.owner,'legacy receipt owner');
+  for (const key of ['operationAttemptId','ownershipToken','deliveryId','originActivationId']) token(owner[key],UUID,`legacy owner ${key}`);
+  canonicalSlice(owner.slice,'legacy owner slice');integer(owner.preparationRevision,'legacy owner revision',1);
+  token(owner.normativeSha256,HASH,'legacy owner normative hash');
+  if (Object.hasOwn(owner,'localRevision') && owner.localRevision!==null) mismatch('legacy owner local revision');
+  const operationRecordUtf8=str(value.operationRecordUtf8,'legacy record');
+  const heading=/^### ((attempt|implementation-check)-([0-9]{2,}))\n/u.exec(operationRecordUtf8);
+  if (!heading || String(Number(heading[3])).padStart(2,'0')!==heading[3]) incomplete('legacy record heading');
+  integer(Number(heading[3]),'legacy record ordinal',1);
+  const record={id:heading[1],kind:heading[2]==='attempt'?'validation':'implementation-check',recordUtf8:operationRecordUtf8};
+  const wanted=record.kind==='validation'?'PASS':'TESTS_PASS';
+  if (owner.operation!==(record.kind==='validation'?'VALIDATE_SLICE':'EXECUTE_SLICE')) mismatch('legacy operation differs');
+  const {validateApprovedPreparation,parseVerificationRecipe}=await import('./execution-preparation.mjs');
+  const old=validateApprovedPreparation(jsonBytes(value.legacyPreparationBytes,'legacy preparation').value,{historical:true});
+  if (old.preparationRevision!==owner.preparationRevision || old.normativeSha256!==owner.normativeSha256)
+    stale('legacy operation preparation authority differs');
+  const oldDelivery=old.normativeProjection.deliveries.find(item=>item.deliveryId===owner.deliveryId && item.slice===owner.slice);
+  if (!oldDelivery) stale('legacy operation delivery absent');
+  const recipe=parseVerificationRecipe(oldDelivery.task['Verification Recipe']);
+  const declaration={authorizedAreas:oldDelivery.plan['Authorized Areas'],existingInputs:oldDelivery.plan['Existing Inputs'],verificationRecipe:recipe};
+  const resolved=recipeAndClaims(context,declaration,owner.slice).resolved;
+  const expected={...resolved,format:'stnl-resolved-verification-v1',recipeSha256:raw(utf8(JSON.stringify(recipe)))};
+  integer(receipt.attempt,'legacy receipt attempt',1,3);str(receipt.threadId,'legacy runner id');
+  if (receipt.status!=='RUNNER_RESPONSE_CAPTURED' || receipt.semanticResponseStatus!==wanted || response.status!==wanted
+    || receipt.operation!==owner.operation || receipt.slice!==owner.slice
+    || receipt.semanticResponseSha256!==hex(responseBytes) || receipt.error!=null || receipt.captureFailure!=null)
+    incomplete('legacy receipt/status/owner differs');
+  for (const [field,key] of [['Operation attempt ID','operationAttemptId'],['Origin activation ID','originActivationId'],
+    ['Delivery ID','deliveryId'],['Preparation revision','preparationRevision'],['Normative sha256','normativeSha256']])
+    if (importedRecordField(operationRecordUtf8,field)!==String(owner[key])) mismatch(`legacy record ${field} differs`);
+  const recordCommands=importedCommandTuples(operationRecordUtf8,record.id);
+  importedSemanticFields(record,response,receipt);
+  let origin, dispatchId, runnerId;
+  if (capture.transport === 'native') {
+    origin=decode('origin');
+    const dispatch=decode('dispatch'), agent=decode('agentBinding'), claim=decode('agentClaim');
+    const result=decode('concludedToolResult');
+    legacyOwnerEquals(origin.owner,owner,'native origin');
+    legacyOwnerEquals(dispatch.owner,owner,'native dispatch');
+    legacyOwnerEquals(claim.owner,owner,'native claim');
+    integer(dispatch.attempt,'native dispatch attempt',1,receipt.attempt);
+    token(origin.dispatchId,UUID,'native dispatch id');
+    absolute(receipt.originFile,'native origin file');
+    if (!legacySpecPath(context,origin.specPath) || origin.workspace !== context.productRoot
+      || dispatch.specPath !== origin.specPath || dispatch.workspace !== origin.workspace
+      || origin.transport !== 'native' || dispatch.transport !== 'native' || receipt.transport !== 'native'
+      || !same(dispatch.verification,origin.verification)
+      || receipt.workspace !== origin.workspace
+      || origin.attempt !== receipt.attempt || dispatch.attempt !== (owner.recovery?.round ?? 1)
+      || origin.dispatchId !== dispatch.dispatchId || result.status !== 'completed'
+      || result.finalResponse !== responseBytes.toString('utf8') || agent.agentId !== receipt.threadId
+      || claim.agentId !== receipt.threadId || result.agentId !== receipt.threadId
+      || agent.originFile !== receipt.originFile
+      || claim.originFile !== receipt.originFile
+      || receipt.originFile !== path.join(path.dirname(receipt.originFile),`round-${receipt.attempt}.origin.json`)
+      || receipt.receiptFile !== path.join(path.dirname(receipt.originFile),`round-${receipt.attempt}.receipt.json`)
+      || receipt.semanticResponseFile !== path.join(path.dirname(receipt.originFile),`round-${receipt.attempt}.response.json`))
+      mismatch('native origin/dispatch/claim/result differs');
+    dispatchId=origin.dispatchId;runnerId=receipt.threadId;
+  } else if (capture.transport === 'managed') {
+    origin=decode('managedContext');
+    const active=decode('active'), started=decode('started');
+    const supervisor=decode('closedSupervisor'), latest=decode('latest');
+    const events=bytes(capture.events,'managed events');
+    const identity={workspace:origin.workspace,tmpdir:active.tmpdir,operation:owner.operation,
+      sequence:active.sequence,slice:owner.slice};
+    for (const doc of [active,supervisor,latest])
+      for (const [key,expected] of Object.entries(identity)) if (doc[key] !== expected) mismatch('managed lifecycle identity');
+    legacyOwnerEquals(origin.owner,owner,'managed context');
+    legacyOwnerEquals(active.officialPreflight?.owner,owner,'managed preflight');
+    legacyOwnerEquals(started.owner,owner,'managed start');
+    integer(active.sequence,'managed sequence',1);
+    absolute(active.tmpdir,'managed tmpdir');
+    token(origin.expectedActivationId,UUID,'managed admitted activation');
+    if (origin.expectedActivationId===owner.originActivationId) mismatch('managed admission did not advance activation');
+    if (Object.hasOwn(receipt,'transport')) mismatch('managed receipt mixed transport');
+    if (record.kind==='validation' ? Object.hasOwn(receipt,'automaticCheckRound')
+      : receipt.automaticCheckRound!==`${receipt.attempt}/3`) mismatch('managed receipt automatic round differs');
+    if (active.officialPreflight?.activationId!==owner.originActivationId)
+      incomplete('managed preflight requires an unavailable intervening reopening proof');
+    if (!legacySpecPath(context,origin.specPath) || origin.workspace !== context.productRoot
+      || origin.operation !== owner.operation || origin.slice !== owner.slice
+      || active.officialPreflight?.specPath !== origin.specPath
+      || active.officialPreflight?.operation !== owner.operation || active.officialPreflight?.slice !== owner.slice
+      || active.officialPreflight?.state !== origin.state
+      || active.officialPreflight?.expectedActivationId !== origin.expectedActivationId
+      || started.operation !== owner.operation || started.slice !== owner.slice
+      || (Object.hasOwn(started,'specPath') && started.specPath !== origin.specPath)
+      || origin.version !== 4 || active.protocol !== 3
+      || origin.authority !== old.requirementsAuthority
+      || started.authority !== origin.authority || receipt.authority !== origin.authority
+      || active.officialPreflight?.authority !== origin.authority
+      || active.officialPreflight?.exitCode !== 0
+      || active.sequence !== started.sequence
+      || active.sequence !== receipt.sequence
+      || started.attempt !== receipt.attempt
+      || receipt.runnerAgent !== 'stnl_validation_runner'
+      || receipt.operation !== active.operation || receipt.slice !== active.slice
+      || supervisor.pending !== false || supervisor.cancelledPending !== false
+      || !Array.isArray(supervisor.errors) || supervisor.errors.length
+      || typeof supervisor.closedAt !== 'string' || !supervisor.closedAt
+      || latest.authority !== origin.authority || !same(latest.receipt,receipt)
+      || receipt.exitCode !== 0 || receipt.threadId == null || (receipt.formatRepair !== null && receipt.formatRepair?.attempted !== false)
+      || receipt.processError != null || receipt.providerError != null)
+      incomplete('managed runner closure differs');
+    integer(supervisor.capturedReceipts,'managed captured receipts',1,3);
+    integer(supervisor.requestsHandled,'managed requests handled',supervisor.capturedReceipts);
+    if (supervisor.capturedReceipts !== receipt.attempt-(owner.recovery?.round ?? 1)+1
+      || (owner.operation==='VALIDATE_SLICE' && supervisor.capturedReceipts!==1))
+      incomplete('managed captured invocation count differs');
+    token(latest.requestId,UUID,'managed latest request id');
+    token(latest.payloadSha256,/^[a-f0-9]{64}$/u,'managed latest payload hash');
+    const stem=`${String(active.sequence).padStart(3,'0')}-${owner.operation.toLowerCase()}-${owner.slice}-attempt-${receipt.attempt}`;
+    if (receipt.receiptFile!==path.join(active.tmpdir,`${stem}.receipt.json`)
+      || receipt.semanticResponseFile!==path.join(active.tmpdir,`${stem}.response.json`)
+      || receipt.eventsPath!==path.join(active.tmpdir,`${stem}.events.jsonl`))
+      mismatch('managed receipt paths differ');
+    managedEvents({events},receipt,stem,responseBytes.toString('utf8'),receipt.attempt);
+    const roles={adapter:'agents/codex/runtime/validation-runner.mjs',
+      bridge:'agents/codex/runtime/managed-runner-bridge.mjs',
+      preflight:'agents/codex/runtime/managed-slice-preflight.mjs',
+      evidenceSerializer:'skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs',
+      runnerResultContract:'skills/workflows/stnl-slice-executor/runtime/runner-result-contract.mjs'};
+    closed(origin.identity,['snapshot',...Object.keys(roles)],'managed runtime identity');
+    closed(origin.identity.snapshot,['path','mode'],'managed snapshot identity');
+    absolute(origin.identity.snapshot.path,'managed snapshot path');
+    token(origin.identity.snapshot.mode,/^[0-7]{3,4}$/u,'managed snapshot mode');
+    const declared=[];
+    for (const [role,relativePath] of Object.entries(roles)) {
+      const identity=closed(origin.identity[role],['path','sha256','mode'],`managed ${role}`);
+      if (identity.path!==path.join(origin.identity.snapshot.path,relativePath)) stale(`managed ${role} path`);
+      token(identity.sha256,HASH,`managed ${role} hash`);
+      token(identity.mode,/^[0-7]{3,4}$/u,`managed ${role} mode`);
+      if (role==='adapter' && !(parseInt(identity.mode,8)&0o111)) stale('managed adapter is not executable');
+      declared.push(identity.sha256);
+    }
+    const actual=dense(capture.runtimeIdentity,'managed runtime bytes').map(value=>raw(bytes(value,'runtime identity')));
+    if (!same([...new Set(declared)].sort(ordinal),actual)
+      || !same([...new Set(actual)].sort(ordinal),actual)) incomplete('managed runtime identity closure differs');
+    dispatchId=`${owner.operationAttemptId}:${active.sequence}`;runnerId=receipt.threadId;
+  } else fail('UNSUPPORTED_FORMAT','imported transport');
+
+  const mechanicalCommands=record.kind==='validation'?recordCommands.slice(1):recordCommands;
+  if (record.kind==='validation') {
+    const first=recordCommands[0];
+    const prefix=/^node "([^"\r\n]+)" "([^"\r\n]+)" VALIDATE_SLICE ([1-9][0-9]*)$/u.exec(first.command);
+    const suffix='skills/workflows/stnl-slice-quality-manager/runtime/validate-execution-state.mjs';
+    if (!prefix || first.exit!==0 || prefix[2]!==origin.specPath || prefix[3]!==String(Number(owner.slice.slice(6)))
+      || !path.isAbsolute(prefix[1]) || path.normalize(prefix[1])!==prefix[1] || !prefix[1].endsWith(`/${suffix}`)
+      || (capture.transport==='managed' && prefix[1]!==path.join(origin.identity.snapshot.path,suffix)))
+      incomplete('formal launcher preflight command differs');
+  }
+  if (!same(response.commands,mechanicalCommands)) incomplete('legacy record and response commands differ');
+  importedTerminal(publication,owner,capture.workManifest,context);
+  const terminal=publication.expectedInstalledActivation;
+  if (terminal.format!=='stnl-execution-activation-v1' || terminal.preparationRevision!==old.preparationRevision
+    || terminal.normativeSha256!==old.normativeSha256 || terminal.requirementsAuthority!==old.requirementsAuthority
+    || terminal.approvedSnapshotSha256!==raw(bytes(value.legacyPreparationBytes,'legacy preparation')))
+    incomplete('terminal publication preparation differs');
+  legacyManifestFacts(manifest,owner,old.requirementsAuthority,context,capture,publication);
+  const domain=recipeAndClaims(context,declaration,owner.slice);
+  conversionDomain(manifest.entries,[...domain.areas,...domain.inputs],'legacy tested domain',{legacy:true});
+  if (observation.format!=='stnl-runner-verification-v1' || observation.status!=='completed'
+    || !same(observation.verification,expected) || !same(receipt.verification,observation)
+    || (capture.transport==='native' && !same(origin.verification,expected))
+    || observation.workStateSha256!==raw(utf8(JSON.stringify(manifest.entries.map(({path,kind,sha256})=>({path,kind,sha256})))))
+    || !Array.isArray(observation.checks) || observation.checks.length!==recipe.checks.length
+    || !same(mechanicalCommands,observation.checks.map(({command,exit})=>({command,exit}))))
+    incomplete('legacy verification is not a complete observation of the tested preimage');
+  for (const [index,check] of observation.checks.entries()) {
+    if (!same(check.request,expected.checks[index]) || check.command!==commandFor(expected.checks[index])
+      || typeof check.stdout!=='string' || typeof check.stderr!=='string'
+      || check.stdoutSha256!==raw(utf8(check.stdout)) || check.stderrSha256!==raw(utf8(check.stderr))
+      || !Number.isSafeInteger(check.exit) || check.exit!==0) incomplete('legacy check differs');
+  }
+  return {owner,receipt,response,manifest,publication,old,oldDelivery,recipe,dispatchId,runnerId};
+}
+
+function importedCapture(record,objects) {
+  const source=record.sources;
+  const get=(id,label)=>{importedObject(objects,id,label);return bytes(objects.get(id),label);};
+  const common={transport:source.transport,receipt:get(source.receipt,'receipt'),rawResponse:get(source.rawResponse,'response'),
+    verificationObservation:get(source.verificationObservation,'observation'),retainedFiles:[]};
+  if (source.transport==='native') {
+    const cap=importedCapsule(objects,source.origin,'stnl-native-imported-origin-bundle-v1',
+      ['originUtf8','dispatchUtf8','workManifestUtf8','publicationUtf8'],'native origin');
+    const agent=importedCapsule(objects,source.agentBinding,'stnl-native-agent-bundle-v1',['agentUtf8','claimUtf8'],'native agent');
+    return {...common,origin:cap.originUtf8,dispatch:cap.dispatchUtf8,workManifest:cap.workManifestUtf8,publication:cap.publicationUtf8,
+      agentBinding:agent.agentUtf8,agentClaim:agent.claimUtf8,concludedToolResult:get(source.concludedToolResult,'native result')};
+  }
+  const cap=importedCapsule(objects,source.started,'stnl-managed-imported-start-bundle-v1',
+    ['contextUtf8','activeUtf8','startedUtf8','workManifestUtf8','publicationUtf8'],'managed start');
+  const close=importedCapsule(objects,source.closedSupervisor,'stnl-managed-close-bundle-v1',['supervisorUtf8','latestUtf8'],'managed close');
+  const events=bytes(objects.get(source.events),'managed events');
+  if (raw(events)!==source.events) incomplete('managed event bytes');
+  return {...common,managedContext:cap.contextUtf8,active:cap.activeUtf8,started:cap.startedUtf8,
+    workManifest:cap.workManifestUtf8,publication:cap.publicationUtf8,closedSupervisor:close.supervisorUtf8,latest:close.latestUtf8,
+    events,runtimeIdentity:source.runtimeIdentity.map(id=>{
+      const value=bytes(objects.get(id),'runtime identity');if(raw(value)!==id) incomplete('runtime identity hash');return value;
+    })};
+}
+
+export async function verifyImportedEvidence(value) {
+  closed(value,['context','record','objects','approvedAuthority','observedWork'],'imported proof input');
+  const {context,record,objects,approvedAuthority}=value;
+  logicalArtifactPath(context,`tasks/${record.origin?.slice}.md`);
+  if (/^### ([a-z-]+-[0-9]{2,})\n/u.exec(record.recordUtf8)?.[1]!==record.id) incomplete('imported record ID differs from raw heading');
+  if (record.recordFormat!=='stnl-task-record-v1-imported' || record.origin.localRevision!==null
+    || !['implementation-check','validation'].includes(record.kind)
+    || record.origin.operation!==(record.kind==='validation'?'VALIDATE_SLICE':'EXECUTE_SLICE'))
+    incomplete('imported record provenance/operation differs');
+  const global=approvedAuthority.snapshot.normativeProjection.global;
+  const currentContext={requirementsAuthority:approvedAuthority.snapshot.requirementsAuthority,
+    objective:global.objective,strategy:global.strategy,risks:global.risks};
+  if (!same(record.contract.delivery,approvedAuthority.delivery) || !same(record.contract.context,currentContext)
+    || record.contract.terminal!==null || !same(record.contract.recipe,approvedAuthority.delivery.verificationRecipe))
+    stale('imported local contract differs from approved preparation');
+  importedObject(objects,record.sources.legacyPreparation,'legacy preparation');
+  const facts=await verifyLegacyOperationFacts({context,legacyPreparationBytes:objects.get(record.sources.legacyPreparation),
+    operationRecordUtf8:record.recordUtf8,capture:importedCapture(record,objects)});
+  importedOwner(facts.owner,record,'imported owner');
+  if (facts.dispatchId!==record.origin.dispatchId || facts.runnerId!==record.origin.runnerId)
+    mismatch('imported dispatch/runner identity differs');
+  if (facts.old.requirementsAuthority!==approvedAuthority.snapshot.requirementsAuthority
+    || !same(facts.recipe,record.contract.recipe)) stale('imported preparation/recipe authority differs');
+  importedPreparationEquivalent(facts.old,facts.oldDelivery,approvedAuthority);
+  const tested=importedManifest(facts.manifest,record,context);
+  if (!same(tested,record.testedWork)) incomplete('imported file-free testedWork differs');
+  if (record.kind==='implementation-check') importedTestedState(record,tested);
+  const {receipt}=facts;
+  if (receipt.testedState?.entries?.some(entry=>entry.kind==='absent' && entry.expected==='REMOVED')
+    || record.sources.removalProofs.length) incomplete('legacy removal needs unavailable original mode');
+  if (record.kind==='implementation-check' && (!same(receipt.testedState?.entries,[])
+    || receipt.testedState.workspace!==context.productRoot
+    || receipt.testedState.sourceTaskPath!==path.join(context.logicalExecutionRoot,`tasks/${record.origin.slice}.md`)))
+    incomplete('fileless captured Tested state is not bound to official task');
+  return {testedWork:tested,receipt,operationAttemptId:record.origin.operationAttemptId};
+}
+
+// The conversion consumer is deliberately separate from the ordinary current
+// evidence reader. It receives a sealed candidate and an observed product
+// image, never a locator or a historical source resolver.
+function conversionFiles(value) {
+  if (!(value instanceof Map) || Object.getPrototypeOf(value) !== Map.prototype || Reflect.ownKeys(value).length)
+    invalid('conversion files: ordinary Map required');
+  const copy = new Map();
+  for (const [name, valueBytes] of Map.prototype.entries.call(value)) {
+    str(name, 'conversion path');
+    copy.set(name, bytes(valueBytes, `conversion ${name}`));
+  }
+  return copy;
+}
+
+function conversionSections(text, label) {
+  const sections = new Map();
+  const markers = [...text.matchAll(/^## ([^\n]+)\n\n/gmu)];
+  for (let i = 0; i < markers.length; i += 1) {
+    const name = markers[i][1];
+    if (sections.has(name)) invalid(`${label}: duplicate section ${name}`);
+    sections.set(name, text.slice(markers[i].index + markers[i][0].length, markers[i + 1]?.index).trim());
+  }
+  return sections;
+}
+
+function convertedTaskCarriers(snapshot, item, current) {
+  const task = `tasks/${item.slice}.md`;
+  const entry = snapshot.reviewedArtifacts.find(artifact => artifact.path === task);
+  if (!entry) invalid(`${task}: reviewed task absent`);
+  const text = entry.utf8;
+  const carrier = conversionSections(text, task);
+  const expectedValidation = current.validation;
+  const expectedEvidence = current.evidence ? current.evidence.sha256 : 'none';
+  if (carrier.get('Continuity') !== `- Current validation: ${expectedValidation}\n- Current evidence: ${expectedEvidence}\n- Current action: ${current.validation === 'unvalidated' ? 'implement approved delivery' : current.validation === 'current' ? 'none' : 'validate'}`)
+    invalid(`${task}: continuity carrier differs`);
+  for (const name of ['Divergences', 'Delegation Blocker', 'Validation Findings',
+    'Scope Expansion', 'Prior Validation Overlap', 'Findings Test Evidence', 'Corrections Applied'])
+    if (carrier.get(name) !== '- none') incomplete(`${task}: active or ambiguous ${name}`);
+  if (carrier.get('Operational Changes') !== '- none') incomplete(`${task}: active operational change`);
+  if (current.evidence === null) {
+    for (const name of ['Implementation Test Evidence', 'Validation Attempts', 'Effective Validation Base'])
+      if (carrier.get(name) !== '- none') incomplete(`${task}: evidence-free candidate has ${name}`);
+    if (carrier.get('Final Result') !== '- pending') invalid(`${task}: no current formal result`);
+    if (!['- pending','- none'].includes(carrier.get('Changed Areas'))
+      || carrier.get('Diff Summary') !== '- pending') incomplete(`${task}: unsupported evidence-free scope`);
+  } else if (carrier.get('Changed Areas') !== '- none'
+    || carrier.get('Diff Summary') === '- pending') incomplete(`${task}: unsupported imported scope`);
+  if (current.validation === 'unvalidated'
+    && (!/^- \[ \] /mu.test(carrier.get('Checklist') ?? '')
+      || /^- \[x\] /mu.test(carrier.get('Checklist') ?? '')))
+    incomplete(`${task}: unvalidated checklist is not pristine`);
+  if (current.evidence !== null && /^- \[ \] /mu.test(carrier.get('Checklist') ?? ''))
+    incomplete(`${task}: imported PASS retains an incomplete checklist`);
+  return carrier;
+}
+
+function convertedIndex(snapshot, continuity) {
+  const entry=snapshot.reviewedArtifacts.find(item=>item.path==='tasks.md');
+  if (!entry || snapshot.globalReview.evidenceDecisions.length) invalid('converted global review/index differs');
+  const rows=entry.utf8.split('\n').filter(line=>/^\| \[[ x]\] \|/u.test(line));
+  if (rows.length!==continuity.deliveries.length) invalid('converted Tasks row count');
+  for (const [index,current] of continuity.deliveries.entries()) {
+    const columns=rows[index].slice(1,-1).split('|').map(item=>item.trim());
+    if (columns.length!==7 || columns[1].split(' - ')[0]!==current.slice.slice(6)
+      || columns[4]!==`tasks/${current.slice}.md`
+      || columns[5]!==current.validation
+      || columns[6]!==(current.evidence ? 'PASS':'pending')
+      || columns[0]!== (current.evidence ? '[x]':'[ ]'))
+      invalid(`${current.slice}: Tasks row/continuity differs`);
+  }
+}
+
+function counterIds(current, bundle) {
+  const values = [
+    ['implementationChecks', bundle.implementation, 'implementation-check-'],
+    ['findingsChecks', bundle.findingsChecks, 'findings-check-'],
+    ['validationAttempts', bundle.validation ? [bundle.validation] : [], 'attempt-'],
+  ];
+  for (const [key, records, prefix] of values) for (const record of records) {
+    const id = Number(record.id.slice(prefix.length));
+    if (!Number.isSafeInteger(id) || id < 1 || id > current.counters[key]) invalid(`${current.slice}: record exceeds ${key}`);
+  }
+  if (bundle.validation) {
+    const references=importedRecordField(bundle.validation.recordUtf8,'Finding references');
+    for (const identifier of references==='none'?[]:references.split(', ')) {
+      const match=/^finding-([0-9]{2,})$/u.exec(identifier),id=Number(match?.[1]);
+      if (!match || !Number.isSafeInteger(id) || id<1 || String(id).padStart(2,'0')!==match[1]
+        || id>current.counters.findings) invalid(`${current.slice}: record exceeds findings`);
+    }
+  }
+
+}
+
+export async function inspectConvertedExecution(value) {
+  closed(value, ['context', 'requirementsAuthority', 'files', 'observedWork'], 'conversion inspection input');
+  token(value.requirementsAuthority, HASH, 'requirementsAuthority');
+  logicalArtifactPath(value.context, 'plan.md');
+  const files = conversionFiles(value.files);
+  const {snapshot, continuity} = validateCurrentCandidate({files});
+  if (snapshot.requirementsAuthority !== value.requirementsAuthority) fail('REQUIREMENTS_CHANGED', 'conversion authority differs');
+  const {validateConversionApprovedPreparation} = await import('./execution-preparation-current.mjs');
+  const artifacts = new Map([...files].filter(([name]) => name !== 'approved-preparation.json'));
+  const preparation = validateConversionApprovedPreparation({context:value.context,
+    requirementsAuthority:value.requirementsAuthority,snapshotBytes:files.get('approved-preparation.json'),artifacts});
+  if (preparation.authority.normativeSha256 !== snapshot.normativeSha256) invalid('conversion projection differs');
+  convertedIndex(snapshot,continuity);
+  const domainDeliveries=snapshot.normativeProjection.deliveries.map((leaf,index)=>({
+    slice:snapshot.deliveries[index].slice,deliveryId:leaf.deliveryId,authorizedAreas:leaf.authorizedAreas,
+    existingInputs:leaf.existingInputs,verificationRecipe:leaf.verificationRecipe}));
+  const observedByDelivery=projectConversionObservedWork({context:value.context,deliveries:domainDeliveries,observedWork:value.observedWork});
+  const deliveries = [];
+  for (let i = 0; i < continuity.deliveries.length; i += 1) {
+    const current = continuity.deliveries[i], item = snapshot.deliveries[i];
+    const carrier = convertedTaskCarriers(snapshot,item,current);
+    if (current.normalization !== null) incomplete(`${current.slice}: open normalization`);
+    const baseline=projectConversionObservedWork({context:value.context,deliveries:[domainDeliveries[i]],observedWork:current.baseline}).get(current.deliveryId);
+    const matches = same(baseline,observedByDelivery.get(current.deliveryId));
+    const decisions = item.review.evidenceDecisions;
+    if (current.evidence === null && decisions.length) invalid(`${current.slice}: evidence decision without bundle`);
+    let cycle = null, consumption, requiresFormalRevalidation = false;
+    if (current.evidence === null) {
+      const zero = Object.values(current.counters).every(number => number === 0);
+      if (current.validation === 'unvalidated' && zero && current.lastDiagnostic === null) {
+        if (carrier.get('Changed Areas') !== '- pending') incomplete(`${current.slice}: S0 changed-area carrier`);
+        consumption = {kind:'none-observed',consumedInvocations:0,remainingInvocations:null,resumable:false};
+        requiresFormalRevalidation = !matches;
+      } else if (current.validation === 'revalidation-required' && current.counters.validationAttempts > 0
+        && current.lastDiagnostic?.code === 'EVIDENCE_INCOMPLETE'
+        && current.lastDiagnostic.nextAction === 'validate'
+        && current.lastDiagnostic.operationAttemptId !== null) {
+        if (carrier.get('Changed Areas') !== '- pending') incomplete(`${current.slice}: S2 changed-area carrier`);
+        consumption = {kind:'closed-boundary-not-resumable',consumedInvocations:null,remainingInvocations:null,resumable:false};
+        requiresFormalRevalidation = true;
+      } else incomplete(`${current.slice}: unsupported evidence-free conversion state`);
+    } else {
+      const bundle = parseCurrentJson(textBytes(files.get(current.evidence.path), current.evidence.path).text);
+      if (bundle.openFindings.length || bundle.openDivergences.length || bundle.support.length)
+        incomplete(`${current.slice}: open evidence episode`);
+      if (current.validation !== 'current' && current.validation !== 'revalidation-required')
+        invalid(`${current.slice}: evidence validation state`);
+      if (decisions.length !== 1 || decisions[0].deliveryId !== current.deliveryId
+        || decisions[0].evidenceSha256 !== current.evidence.sha256
+        || decisions[0].disposition !== (current.validation === 'current' ? 'retain-current' : 'revalidate'))
+        invalid(`${current.slice}: evidence review disposition`);
+      if (!bundle.validation || bundle.validation.recordFormat !== 'stnl-task-record-v1-imported'
+        || bundle.implementation.some(record => record.recordFormat !== 'stnl-task-record-v1-imported')
+        || bundle.findingsChecks.length) incomplete(`${current.slice}: imported closed PASS cycle required`);
+      counterIds(current,bundle);
+      if (current.lastDiagnostic !== null) incomplete(`${current.slice}: imported cycle has a diagnostic`);
+      for (const [section,records] of [
+        ['Implementation Test Evidence',bundle.implementation],['Validation Attempts',[bundle.validation]],
+      ]) {
+        const body=carrier.get(section);
+        const parts=body === '- none' ? [] : body.split(/(?=^### [a-z-]+-[0-9]{2,}$)/mu).filter(part => part.trim());
+        if (!same(parts.map(part => part.trim()),records.map(record => record.recordUtf8.trim())))
+          incomplete(`${current.slice}: ${section} differs from imported records`);
+      }
+      const objects = new Map(bundle.objects.map(object => [object.id,Buffer.from(object.bytesBase64,'base64')]));
+      const approvedAuthority = {snapshot,delivery:snapshot.normativeProjection.deliveries[i]};
+      let formalTestedWork = null;
+      for (const record of [...bundle.implementation,bundle.validation]) {
+        const verified = await verifyImportedEvidence({context:value.context,record,objects,approvedAuthority,
+          observedWork:value.observedWork});
+        if (record === bundle.validation) formalTestedWork = verified.testedWork;
+      }
+      if (current.validation === 'current' && !same(formalTestedWork,current.baseline))
+        stale(`${current.slice}: imported formal tested work differs from current baseline`);
+      const formal = bundle.validation;
+      importedEffectiveBase(carrier,formal,formalTestedWork);
+      const formalSource = parseCurrentJson(textBytes(objects.get(formal.sources.receipt),'formal receipt').text);
+      const lastOperationAttemptId = formal.origin.operationAttemptId;
+      if (formalSource.owner?.operationAttemptId !== lastOperationAttemptId
+        || formalSource.status !== 'RUNNER_RESPONSE_CAPTURED' || formalSource.semanticResponseStatus !== 'PASS')
+        incomplete(`${current.slice}: formal receipt does not close PASS`);
+      cycle = {implementation:bundle.implementation.map(record => record.id),findings:[],validation:formal.id,state:'closed'};
+      consumption = {kind:'closed-formal-boundary',lastOperationAttemptId,operation:'VALIDATE_SLICE',
+        consumedInvocations:1,remainingInvocations:null,resumable:false};
+      requiresFormalRevalidation = current.validation === 'revalidation-required' || !matches;
+      if (carrier.get('Final Result') !== '- PASS') invalid(`${current.slice}: formal carrier differs`);
+    }
+    deliveries.push({slice:current.slice,deliveryId:current.deliveryId,counters:current.counters,
+      counterAuthority:'persisted-continuity',persistedValidation:current.validation,
+      observedValidation:requiresFormalRevalidation || !matches ? 'revalidation-required' : current.validation,
+      evidenceSha256:current.evidence?.sha256 ?? null,baseline:current.baseline,observationMatches:matches,
+      openFindings:[],openDivergences:[],cycle,consumption,
+      diagnostics:current.lastDiagnostic ? [current.lastDiagnostic] : [],requiresFormalRevalidation});
+  }
+  return {authority:preparation.authority,deliveries,admissibleOperations:[]};
+}

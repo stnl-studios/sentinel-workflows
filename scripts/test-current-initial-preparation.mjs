@@ -285,7 +285,9 @@ test('P08 — planner/reviewer copies import with only their L1 sibling', async 
       await fs.writeFile(path.join(directory, 'execution-preparation-current.mjs'), modules[i]);
       await fs.copyFile(path.join(root, kernelPaths[i]), path.join(directory, 'execution-current.mjs'));
       const api = await import(pathToFileURL(path.join(directory, 'execution-preparation-current.mjs')).href);
-      assert.deepEqual(Object.keys(api).sort(), ['approveInitialPreparation', 'projectInitialPreparation', 'validateCurrentPreparation', 'validateInitialApprovedPreparation']);
+      assert.deepEqual(Object.keys(api).sort(), ['approveConversionPreparation', 'approveInitialPreparation',
+        'projectConversionPreparation', 'projectInitialPreparation', 'validateConversionApprovedPreparation',
+        'validateCurrentPreparation', 'validateInitialApprovedPreparation']);
       for (const [label, check] of [['P01', p01], ['P03', p03], ['P05', p05], ['P07', p07]]) {
         try { check(api); } catch (error) { error.message = `copy ${i + 1}, ${label}: ${error.message}`; throw error; }
       }

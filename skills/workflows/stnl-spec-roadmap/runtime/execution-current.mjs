@@ -627,30 +627,24 @@ function decode(bytes, label) {
   try { return new TextDecoder('utf-8', {fatal: true}).decode(bytes); }
   catch { invalid(`${label}: invalid UTF-8`); }
 }
-export function validateCurrentImage(input) {
-  object(input, ['activationBytes', 'files'], 'image input');
-  if (!(input.files instanceof Map)) invalid('files: ReadonlyMap required');
-  const activation = validateCurrentActivation(parseCurrentJson(decode(input.activationBytes, 'activation')));
-  const names = [...input.files.keys()];
+function validateCurrentContent(files) {
+  if (!(files instanceof Map) || Object.getPrototypeOf(files) !== Map.prototype || Reflect.ownKeys(files).length)
+    invalid('files: ordinary ReadonlyMap required');
+  const names = [...Map.prototype.keys.call(files)];
   for (const name of names) executionPath(name, 'file path');
-  if (names.includes('activation.json') || !same(names.sort(ordinal), activation.artifacts.map(item => item.path))) invalid('image file manifest mismatch');
+  if (names.includes('activation.json')) invalid('candidate cannot include activation.json');
   const parsed = new Map();
-  for (const item of activation.artifacts) {
-    const bytes = input.files.get(item.path);
-    if (!(bytes instanceof Uint8Array) || raw(bytes) !== item.sha256) invalid(`raw artifact hash mismatch: ${item.path}`);
-    const text = decode(bytes, item.path);
-    if (item.path.endsWith('.json')) parsed.set(item.path, parseCurrentJson(text));
+  for (const name of names) {
+    const bytes = Map.prototype.get.call(files, name);
+    const text = decode(bytes, name);
+    if (name.endsWith('.json')) parsed.set(name, parseCurrentJson(text));
   }
   const snapshot = approved(parsed.get('approved-preparation.json'));
   const continuity = validateCurrentContinuity(parsed.get('continuity.json'));
-  if (raw(input.files.get('approved-preparation.json')) !== activation.approvedSnapshotSha256
-    || activation.preparationRevision !== snapshot.preparationRevision
-    || activation.requirementsAuthority !== snapshot.requirementsAuthority
-    || activation.normativeSha256 !== snapshot.normativeSha256) invalid('activation preparation binding mismatch');
   const expected = ['approved-preparation.json', 'continuity.json', 'plan.md', 'tasks.md',
     ...snapshot.deliveries.flatMap(item => [`plans/${item.slice}.md`, `tasks/${item.slice}.md`]),
     ...[...continuity.deliveries, ...continuity.completed].filter(item => item.evidence).map(item => item.evidence.path)].sort(ordinal);
-  if (!same(names, expected)) invalid('official image layout mismatch');
+  if (!same(names.sort(ordinal), expected)) invalid('current content layout mismatch');
   if (!same(continuity.deliveries.map(item => [item.slice, item.deliveryId, item.localRevision]), snapshot.deliveries.map(item => [item.slice, item.deliveryId, item.localRevision]))) invalid('active delivery binding mismatch');
   for (const item of continuity.completed) if (item.evidence === null || item.validation !== 'current') evidenceError('completed delivery lacks current evidence');
   if (!same(continuity.completed.map(item => [item.slice, item.deliveryId, item.localRevision, item.evidence?.sha256]), snapshot.completed.map(item => [item.slice, item.deliveryId, item.localRevision, item.evidenceSha256]))) invalid('completed delivery binding mismatch');
@@ -672,7 +666,7 @@ export function validateCurrentImage(input) {
     if (current.validation === 'current' && current.evidence === null) evidenceError('current delivery lacks evidence');
     if (current.evidence === null) continue;
     const evidence = validateCurrentEvidence(parsed.get(current.evidence.path));
-    if (raw(input.files.get(current.evidence.path)) !== current.evidence.sha256) invalid('continuity evidence raw hash mismatch');
+    if (raw(Map.prototype.get.call(files, current.evidence.path)) !== current.evidence.sha256) invalid('continuity evidence raw hash mismatch');
     if (evidence.deliveryId !== current.deliveryId || evidence.slice !== current.slice || evidence.currentAuthoritySha256 !== current.authoritySha256) invalid('evidence current binding mismatch');
     if (current.validation === 'current' && evidence.validation === null) evidenceError('current delivery lacks formal validation record');
     for (const record of [...evidence.implementation, ...evidence.findingsChecks, ...(evidence.validation ? [evidence.validation] : []),
@@ -686,12 +680,35 @@ export function validateCurrentImage(input) {
     }
     for (const object of evidence.objects) referenced.add(object.id);
   }
+  return {snapshot, continuity, referencedObjects: [...referenced].sort(ordinal)};
+}
+
+export function validateCurrentCandidate(input) {
+  object(input, ['files'], 'candidate input');
+  return validateCurrentContent(input.files);
+}
+
+export function validateCurrentImage(input) {
+  object(input, ['activationBytes', 'files'], 'image input');
+  const activation = validateCurrentActivation(parseCurrentJson(decode(input.activationBytes, 'activation')));
+  const content = validateCurrentContent(input.files);
+  const {snapshot, continuity} = content;
+  const names = [...Map.prototype.keys.call(input.files)].sort(ordinal);
+  if (!same(names, activation.artifacts.map(item => item.path))) invalid('image file manifest mismatch');
+  for (const item of activation.artifacts) {
+    if (raw(Map.prototype.get.call(input.files, item.path)) !== item.sha256)
+      invalid(`raw artifact hash mismatch: ${item.path}`);
+  }
+  if (raw(Map.prototype.get.call(input.files, 'approved-preparation.json')) !== activation.approvedSnapshotSha256
+    || activation.preparationRevision !== snapshot.preparationRevision
+    || activation.requirementsAuthority !== snapshot.requirementsAuthority
+    || activation.normativeSha256 !== snapshot.normativeSha256) invalid('activation preparation binding mismatch');
   if (activation.activeAttempt) {
     const owner = activation.activeAttempt;
     const current = continuity.deliveries.find(item => item.deliveryId === owner.deliveryId && item.slice === owner.slice);
     if (!current || current.localRevision !== owner.localRevision) invalid('active attempt delivery mismatch');
   }
-  return {activation, continuity, referencedObjects: [...referenced].sort(ordinal)};
+  return {activation, continuity, referencedObjects: content.referencedObjects};
 }
 
 function absolute(value, label) {

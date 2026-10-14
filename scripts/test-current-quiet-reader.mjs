@@ -1340,7 +1340,9 @@ test('R19 isolated reader closure and copy equivalence',async t=>{
     assert.deepEqual(prepBytes,await fs.readFile(path.join(skillRoot,c6[0],'runtime/execution-preparation-current.mjs')));
     const runtime=await install(f,skill,['execution-current.mjs','execution-preparation-current.mjs'],'preparation');
     const api=await import(pathToFileURL(path.join(runtime,'execution-preparation-current.mjs')).href);
-    assert.deepEqual(Object.keys(api).sort(),['approveInitialPreparation','projectInitialPreparation','validateCurrentPreparation','validateInitialApprovedPreparation']);
+    assert.deepEqual(Object.keys(api).sort(),['approveConversionPreparation','approveInitialPreparation',
+      'projectConversionPreparation','projectInitialPreparation','validateConversionApprovedPreparation',
+      'validateCurrentPreparation','validateInitialApprovedPreparation']);
     const prepared=api.validateCurrentPreparation({context:{logicalSpecRoot:null,logicalAuthorityPath:f.source,
       logicalExecutionRoot:f.execution,physicalExecutionRoot:f.execution,productRoot:f.project},
       requirementsAuthority:f.authority,snapshotBytes:f.files.get('approved-preparation.json'),artifacts:f.artifacts});

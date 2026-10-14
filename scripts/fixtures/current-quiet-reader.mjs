@@ -818,7 +818,8 @@ export async function cleanup(fixture) {await fsp.rm(fixture.temporary,{recursiv
 
 // Worker protocol is intentionally separate from the authored builder. It is
 // entered only by a child process, before dynamically loading product code.
-function installGuard(specPath,logPath,allowedRoot) {
+function installGuard(specPath,logPath,allowedRoot,mode='reader') {
+  const conversion=mode.startsWith('conversion:');
   const projectRoot=path.resolve(allowedRoot);
   const lifecycle=path.extname(specPath)!=='.md' || path.basename(specPath)==='feature_spec.md';
   const specRoot=lifecycle && path.extname(specPath)!=='.md'?specPath:path.dirname(specPath);
@@ -832,6 +833,7 @@ function installGuard(specPath,logPath,allowedRoot) {
   const runtimeNames=['execution-current-reader.mjs','execution-state.mjs','execution-preparation.mjs',
     'execution-publication.mjs','runner-result-recovery.mjs','runner-result-contract.mjs','execution-current.mjs',
     'execution-preparation-current.mjs','current-evidence-state.mjs','execution-evidence-current.mjs','execution-evidence-proof.mjs'];
+  if(conversion) runtimeNames.push('execution-conversion-current.mjs');
   const runtimeFiles=new Set(['stnl-execution-planner','stnl-plan-reviewer','stnl-slice-executor','stnl-slice-quality-manager','stnl-spec-roadmap','stnl-spec-test-runbook'].flatMap(skill=>runtimeNames
     .map(name=>path.join(repo,'skills/workflows',skill,'runtime',name))));
   if(process.env.STNL_QUIET_IMPORT_WRAPPER==='1') runtimeFiles.add(path.resolve(process.argv[1]));
@@ -891,10 +893,10 @@ function installGuard(specPath,logPath,allowedRoot) {
     const officialArtifact=/^(?:(?:plans|tasks)\/slice-[0-9]{2,}\.md|evidence\/[a-f0-9-]{36}\.json)$/u.test(relative);
     const metadataOnly=method==='promises.lstat' && (gitMarkers.has(name) || identityMarkers.has(name));
     const inputParent=inputFiles.size>0 && name===config && directoryQueries.has(method);
-    const permitted=!mutation && (exact.has(name) || documents.has(name) || runtimeFiles.has(name)
+    const permitted=!mutation && (runtimeFiles.has(name) || !conversion && (exact.has(name) || documents.has(name)
       || inputFiles.has(name) || inputParent
       || officialFiles.has(name) || officialDirs.has(name) || officialArtifact || metadataOnly
-      || subtrees.some(root=>name===root || name.startsWith(root+path.sep)));
+      || subtrees.some(root=>name===root || name.startsWith(root+path.sep))));
     if (!permitted) {attempts.push({method,path:name});throw Object.assign(new Error(`guard denied ${method}: ${name}`),{code:'GUARD_DENIED'});}
   };
   const originals=[];
@@ -976,7 +978,7 @@ if (process.env.STNL_QUIET_PRELOAD==='1') {
 
 if (process.argv[1] && path.resolve(process.argv[1])===modulePath && process.argv[2]==='--worker') {
   const [,,,mode,reader,specPath,logPath,allowedRoot]=process.argv;
-  const guard=installGuard(specPath,logPath,allowedRoot);
+  const guard=installGuard(specPath,logPath,allowedRoot,mode);
   let result;
   try {
     if (mode==='selftest') {
@@ -1012,12 +1014,42 @@ if (process.argv[1] && path.resolve(process.argv[1])===modulePath && process.arg
       if (!official.length) throw new Error('official document control was empty');
       try {const handle=await fsp.open(officialPath,'r');try {await handle.writeFile('bad');}catch {}finally {await handle.close();}}catch {}
       result={selftest:true};
+    } else if(mode==='conversion:canary-caught') {
+      const wire=JSON.parse(Buffer.from(process.env.STNL_CONVERSION_PAYLOAD??'', 'base64').toString('utf8'));
+      const root=wire.context.logicalExecutionRoot;
+      const targets=[wire.context.logicalAuthorityPath,root,path.join(root,'approved-preparation.json'),
+        path.join(root,'activation.json'),path.join(root,'continuity.json'),path.join(root,'tasks/slice-01.md'),
+        path.join(allowedRoot,'src'),path.join(allowedRoot,'tmp/historic/receipt.json')];
+      for(const target of targets) for(const action of [()=>fsp.readFile(target),()=>fsp.lstat(target),
+        ()=>fs.statSync(target)]) {try {await action();} catch {}}
+      result={caught:true};
     } else if(mode==='canary-caught') {
       try {await fsp.lstat(path.join(allowedRoot,'tmp/historic/receipt.json'));} catch {}
       result={caught:true};
     } else {
       const api=await import(pathToFileURL(reader).href);
-      if(mode.startsWith('legacy:')) {
+      if(mode.startsWith('conversion:')) {
+        // Input bytes arrive inline from the parent after its fixture setup. The
+        // consumer mode never receives a source Map, review or historical path.
+        const wire=JSON.parse(Buffer.from(process.env.STNL_CONVERSION_PAYLOAD??'', 'base64').toString('utf8'));
+        const fromWire=rows=>new Map(rows.map(([name,body])=>[name,Buffer.from(body,'base64')]));
+        if(mode==='conversion:consume') {
+          if(Object.hasOwn(wire,'source') || Object.hasOwn(wire,'review') || Object.hasOwn(wire,'originFiles'))
+            throw new Error('converted consumer payload contains historical setup');
+          result=await api.inspectConvertedExecution({context:wire.context,
+            requirementsAuthority:wire.requirementsAuthority,observedWork:wire.observedWork,
+            files:fromWire(wire.files)});
+        } else if(mode==='conversion:prepare') {
+          wire.source.requirementsFiles=fromWire(wire.source.requirementsFiles);
+          wire.source.files=fromWire(wire.source.files);
+          wire.source.controls=fromWire(wire.source.controls);
+          wire.source.managedContexts=fromWire(wire.source.managedContexts);
+          wire.source.imports=wire.source.imports.map(item=>({...item,objects:fromWire(item.objects)}));
+          const prepared=await api.prepareCurrentConversion(wire);
+          result={phase:prepared.phase,proposalSha256:prepared.proposalSha256,
+            files:[...prepared.files].map(([name,bytes])=>[name,raw(bytes)])};
+        } else throw new Error('unknown conversion worker mode');
+      } else if(mode.startsWith('legacy:')) {
         const action=mode.slice(7),owner={};
         const lifecycle=path.extname(specPath)!=='.md' || path.basename(specPath)==='feature_spec.md';
         const specRoot=path.extname(specPath)==='.md'?path.dirname(specPath):specPath;

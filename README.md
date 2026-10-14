@@ -94,7 +94,17 @@ node skills/workflows/stnl-slice-executor/runtime/execution-current-reader.mjs S
 
 Ele lê a imagem oficial EC-1 e o produto atual, confere a aprovação inicial, os carriers e a evidência retida no bundle, e devolve JSON com a validade por entrega e um handoff descritivo. Exit 0 indica que a inspeção desse perfil foi concluída; exit 1 indica imagem ou estado que o leitor não conseguiu aceitar; exit 2 indica uso inválido. A API `inspectCurrentExecution(specPath)` está nos mesmos dois módulos.
 
-O perfil cobre preparação inicial de revisão 1 e tentativas concluídas, sem owner ativo. Um `PASS` local não fornece julgamento terminal nem autoriza `COMPLETE`, publicação, recuperação, descarte ou `CLOSE`. Os comandos antigos de execução e validação ainda não integram EC-1 e recusam esse formato. Conversão de imagem legada e publicação real ficam para etapas posteriores.
+O perfil cobre preparação inicial de revisão 1 e tentativas concluídas, sem owner ativo. Um `PASS` local não fornece julgamento terminal nem autoriza `COMPLETE`, publicação, recuperação, descarte ou `CLOSE`. Os comandos antigos de execução e validação ainda não integram EC-1 e recusam esse formato. Publicação de uma conversão legada fica para etapa posterior.
+
+### Conversão explícita de candidata EC-1 (em validação)
+
+Os módulos `execution-conversion-current.mjs` de `stnl-execution-planner` e `stnl-plan-reviewer` expõem `prepareCurrentConversion`, `finalizeCurrentConversion` e `validateCurrentConversion`. Eles recebem uma captura legada fechada em memória, compõem os bytes revisáveis antes da decisão e retornam uma candidata sem `activation.json`. `validateCurrentCandidate({files})` valida o conteúdo sem afirmar instalação oficial; `inspectConvertedExecution({context,requirementsAuthority,files,observedWork})` consome a candidata sem fontes históricas externas e não admite operações.
+
+Para uma captura managed, a entrada transitória `source.managedContexts` associa cada `operationAttemptId` aos bytes UTF-8 originais de `STNL_MANAGED_CONTEXT`. A fronteira managed usa `managedContextId`; o contexto não recebe um caminho de arquivo inventado. O adapter precisa capturar também `active.json` enquanto o broker vive e o supervisor depois do fechamento. Sem esses bytes reais, uma operação antiga não pode ser reconstruída pela conversão. A candidata não transporta esse mapa externo; a proposta registra somente seus hashes para a revisão.
+
+A observação é a união dos domínios aprovados; o conversor e o consumer validam sua cobertura e projetam cada baseline por delivery, incluindo Existing Inputs compartilhados. A prova nativa/managed de S1 e S2 passa pela mesma validação dos raws v1, sem inferir modos históricos. O preflight formal acrescentado pelo serializer é conferido separadamente dos checks mecânicos. Uma reabertura managed com activation intermediária não demonstrada pelos carriers disponíveis permanece uma recusa explícita de capacidade.
+
+O recorte previsto separa S0 sem consumo, S1 com prova v1 integralmente representável em domínio sem arquivos e S2 com fronteira formal PASS encerrada e revalidação obrigatória quando falta o modo histórico de arquivo. Findings ou episódios pendentes, owner ativo e origem ambígua exigem recusa. Essas APIs não capturam a árvore, transferem leases, publicam ou removem a fonte legada. A validação com produtores native e managed reais e a revisão independente ainda são necessárias antes de anunciar essa capacidade como operacional.
 
 ## Verificação focada do instalador
 

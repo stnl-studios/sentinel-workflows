@@ -98,7 +98,7 @@ function b1(api) {
   ]);
   assert.deepEqual(Object.keys(api).sort(), [
     'logicalArtifactPath', 'parseCurrentJson', 'resolveLogicalProductClaim',
-    'validateCurrentActivation', 'validateCurrentContinuity', 'validateCurrentEvidence', 'validateCurrentImage',
+    'validateCurrentActivation', 'validateCurrentCandidate', 'validateCurrentContinuity', 'validateCurrentEvidence', 'validateCurrentImage',
   ]);
   assert.deepEqual(api.validateCurrentImage({activationBytes: image.activationBytes, files: image.files}), {
     activation: image.activation, continuity: image.continuity, referencedObjects: [],
