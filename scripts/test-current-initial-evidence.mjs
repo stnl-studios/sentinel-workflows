@@ -490,12 +490,21 @@ test('E12 isolated byte-identical executor and quality copies', async () => {
   const left=path.join(root,'skills/workflows/stnl-slice-executor/runtime');
   const right=path.join(root,'skills/workflows/stnl-slice-quality-manager/runtime');
   const moduleName='execution-evidence-current.mjs';
-  assert.deepEqual(await fs.readFile(path.join(left,moduleName)),await fs.readFile(path.join(right,moduleName)));
-  const temporary=await fs.mkdtemp(path.join(os.tmpdir(),'l22-isolated-'));
+  const oldNames=[moduleName,'execution-current.mjs','runner-result-contract.mjs'];
+  const names=[...oldNames,'execution-evidence-proof.mjs'];
+  for (const name of names) assert.deepEqual(await fs.readFile(path.join(left,name)),await fs.readFile(path.join(right,name)),name);
+  const withoutProof=await fs.mkdtemp(path.join(os.tmpdir(),'l22-missing-proof-'));
+  let temporary=null;
   try {
+    temporary=await fs.mkdtemp(path.join(os.tmpdir(),'l22-isolated-'));
+    for (const name of oldNames) await fs.copyFile(path.join(left,name),path.join(withoutProof,name));
+    assert.deepEqual((await fs.readdir(withoutProof)).sort(),[...oldNames].sort());
+    await assert.rejects(()=>import(pathToFileURL(path.join(withoutProof,moduleName)).href),error=>
+      error?.code==='ERR_MODULE_NOT_FOUND' && String(error.message).includes('execution-evidence-proof.mjs'));
     for (const [index,source] of [left,right].entries()) {
       const destination=path.join(temporary,`copy-${index}`);await fs.mkdir(destination);
-      for (const name of [moduleName,'execution-current.mjs','runner-result-contract.mjs']) await fs.copyFile(path.join(source,name),path.join(destination,name));
+      for (const name of names) await fs.copyFile(path.join(source,name),path.join(destination,name));
+      assert.deepEqual((await fs.readdir(destination)).sort(),[...names].sort());
       const api=await import(pathToFileURL(path.join(destination,moduleName)).href);
       assert.deepEqual(Object.keys(api).sort(),['composeInitialImplementationEvidence','validateInitialImplementationEvidence']);
       for (const capture of [nativeRound(),managedRound(),schemaRejection('native')]) {
@@ -508,7 +517,12 @@ test('E12 isolated byte-identical executor and quality copies', async () => {
       const changed=copied(result.bundle);changed.implementation[0].recordUtf8+='\n- Changed: yes';
       assertCode(()=>api.validateInitialImplementationEvidence(validationInput(current,encode(changed))),'EVIDENCE_STALE');
     }
-  } finally {await fs.rm(temporary,{recursive:true,force:true});}
+  } finally {
+    await Promise.all([
+      fs.rm(withoutProof,{recursive:true,force:true}),
+      ...(temporary===null ? [] : [fs.rm(temporary,{recursive:true,force:true})]),
+    ]);
+  }
 });
 
 test('L2.2 semantic PASS fields reject placeholders with otherwise coherent captured evidence', () => {

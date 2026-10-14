@@ -1,12 +1,13 @@
 import { createHash } from 'node:crypto';
 import path from 'node:path';
-import { parseCurrentJson, resolveLogicalProductClaim, logicalArtifactPath, validateCurrentEvidence } from './execution-current.mjs';
+import { parseCurrentJson, logicalArtifactPath, validateCurrentEvidence } from './execution-current.mjs';
 import {
   RunnerSemanticResultError, assertRunnerVerdictConsistency, assertExecutionResultScope,
   deriveCanonicalRunnerRejection, recoverableRunnerResultDiagnostic,
   parseSemanticExecutionPayload, serializeMarkdownScalar, serializeCommand,
   executionFields, isExplanatoryExecutionField,
 } from './runner-result-contract.mjs';
+import { verifyCapturedInvocation, verifyWorkObservation, packCaptureSources, restoreCaptureSources, closeEvidenceObjects } from './execution-evidence-proof.mjs';
 
 const HASH = /^sha256:[a-f0-9]{64}$/u;
 const UUID = /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/u;
@@ -108,11 +109,6 @@ function ownerMatches(value, expected, label) {
   ownerShape(value, label);
   expectEqual(value, expected, 'OWNER_MISMATCH', label);
 }
-function absolute(value, label) {
-  str(value, label);
-  if (!path.isAbsolute(value) || path.normalize(value) !== value || value.split(path.sep).includes('..')) unsafe(`${label}: unsafe absolute path`);
-  return value;
-}
 function relative(value, label) {
   str(value, label);
   if (value.includes('\\') || value.startsWith('/') || /^[A-Za-z]:/u.test(value)
@@ -130,20 +126,6 @@ function productRelative(context, target, label) {
   const rel = path.relative(context.productRoot, target).split(path.sep).join('/');
   if (rel === '' || rel === '..' || rel.startsWith('../') || path.isAbsolute(rel)) unsafe(`${label}: outside product`);
   return relative(rel, label);
-}
-function claim(context, rawClaim, label) {
-  try { return productRelative(context, resolveLogicalProductClaim(context, `tasks/${label.slice}.md`, rawClaim), label.name); }
-  catch (error) { fail(error.code === 'UNSAFE_PATH' ? 'UNSAFE_PATH' : 'INVALID_CURRENT_IMAGE', `${label.name}: ${error.message}`); }
-}
-function claimLines(value, label, typed = false) {
-  str(value, label);
-  if (value === '- none' && !typed) return [];
-  const lines = value.split('\n');
-  return lines.map(line => {
-    const match = typed ? /^- (file|directory): `([^`]+)`$/u.exec(line) : /^- `([^`]+)`$/u.exec(line);
-    if (!match) invalid(`${label}: invalid declaration`);
-    return typed ? { kind: match[1], path: match[2] } : { kind: 'file', path: match[1] };
-  });
 }
 function work(value, label) {
   closed(value, ['format', 'entries'], label);
@@ -202,78 +184,6 @@ function coverage(manifest, claims, label) {
   }
   return byPath;
 }
-function recipeAndClaims(context, delivery, slice) {
-  const task = `tasks/${slice}.md`;
-  logicalArtifactPath(context, task);
-  const areas = claimLines(delivery.authorizedAreas, 'Authorized Areas', true).map(item => ({ kind: item.kind, path: claim(context, item.path, {slice, name:'Authorized Areas'}) }));
-  const inputs = claimLines(delivery.existingInputs, 'Existing Inputs').map(item => ({ kind:'input', path:claim(context, item.path, {slice, name:'Existing Inputs'}) }));
-  const recipe = delivery.verificationRecipe;
-  closed(recipe, ['format', 'base', 'cwd', 'checks', 'dependencyReview'], 'recipe');
-  if (recipe.format !== 'stnl-verification-recipe-v1' || recipe.base !== 'workspace') fail('EVIDENCE_STALE', 'recipe: current reviewed recipe required');
-  str(recipe.dependencyReview, 'recipe.dependencyReview');
-  if (recipe.cwd !== '.') relative(recipe.cwd, 'recipe.cwd');
-  dense(recipe.checks, 'recipe.checks', 1, 32);
-  const cwd = path.resolve(context.productRoot, recipe.cwd);
-  productRelative(context, path.join(cwd, '_'), 'recipe.cwd');
-  const refs = [];
-  const argument = item => {
-    plain(item, 'recipe argument');
-    if (Object.hasOwn(item, 'literal')) { closed(item, ['literal'], 'recipe literal'); return str(item.literal, 'recipe literal', false); }
-    closed(item, ['file'], 'recipe file argument');
-    closed(item.file, ['kind', 'path'], 'recipe reference');
-    if (!['product', 'input'].includes(item.file.kind)) invalid('recipe reference kind');
-    const name = claim(context, item.file.path, {slice, name:'recipe reference'});
-    refs.push({kind:item.file.kind, path:name});
-    if (item.file.kind === 'product' ? !areas.some(area => area.path === name || (area.kind === 'directory' && name.startsWith(`${area.path}/`))) : !inputs.some(input => input.path === name)) stale(`recipe reference outside declaration: ${name}`);
-    const rel = path.relative(cwd, path.join(context.productRoot, name)).split(path.sep).join('/');
-    return rel || '.';
-  };
-  const checks = recipe.checks.map(check => {
-    closed(check, ['id', 'executable', 'args', 'inputs'], 'recipe check');
-    token(check.id, /^verification-[0-9]{2,}$/u, 'recipe check id');
-    dense(check.args, 'recipe args'); dense(check.inputs, 'recipe inputs');
-    for (const input of check.inputs) {
-      closed(input, ['kind', 'path'], 'recipe input');
-      argument({file:input});
-    }
-    const executable = argument(check.executable);
-    if (!executable || /[\r\n]/u.test(executable)) invalid('recipe executable');
-    return { id:check.id, cwd, executable:Object.hasOwn(check.executable, 'file') ? `./${executable}` : executable, args:check.args.map(argument) };
-  });
-  if (new Set(checks.map(check => check.id)).size !== checks.length) invalid('recipe duplicate check id');
-  return { recipe, areas, inputs, refs, resolved:{format:'stnl-resolved-verification-v2', recipeSha256:raw(utf8(canonical(recipe))), checks} };
-}
-const quote = value => /^[A-Za-z0-9_./:=+-]+$/u.test(value) ? value : `'${value.replaceAll("'", "'\\''")}'`;
-const commandFor = check => [check.executable, ...check.args].map(quote).join(' ');
-function observation(value, owner, round, recipeInfo, baseline, context, label) {
-  if (value === null) incomplete(`${label}: observation required`);
-  if (value.format === 'stnl-runner-verification-v1') fail('MIGRATION_REQUIRED', `${label}: observation v1 lacks WorkManifest preimage`);
-  closed(value, ['format', 'status', 'owner', 'round', 'recipe', 'resolved', 'before', 'after', 'checks'], label);
-  if (value.format !== 'stnl-runner-verification-v2') fail('UNSUPPORTED_FORMAT', `${label}: observation format`);
-  if (value.status !== 'completed') uncertain(`${label}: verification not completed`);
-  ownerMatches(value.owner, owner, `${label}.owner`);
-  if (value.round !== round) mismatch(`${label}: round differs`);
-  expectEqual(value.recipe, recipeInfo.recipe, 'EVIDENCE_STALE', `${label}.recipe`);
-  expectEqual(value.resolved, recipeInfo.resolved, 'EVIDENCE_STALE', `${label}.resolved`);
-  expectEqual(value.before, value.after, 'EVIDENCE_STALE', `${label}: product changed during checks`);
-  const claims = [...recipeInfo.areas, ...recipeInfo.inputs, ...recipeInfo.refs];
-  coverage(value.before, claims, `${label}.before`);
-  coverage(value.after, claims, `${label}.after`);
-  dense(value.checks, `${label}.checks`, 1, 32);
-  if (value.checks.length !== recipeInfo.resolved.checks.length) incomplete(`${label}: incomplete recipe execution`);
-  for (let i = 0; i < value.checks.length; i += 1) {
-    const check = value.checks[i];
-    closed(check, ['request', 'command', 'exit', 'stdout', 'stderr', 'stdoutSha256', 'stderrSha256'], `${label}.check`);
-    expectEqual(check.request, recipeInfo.resolved.checks[i], 'EVIDENCE_STALE', `${label}.request`);
-    if (check.command !== commandFor(check.request)) stale(`${label}: command differs`);
-    integer(check.exit, `${label}.exit`, -2147483648, 2147483647);
-    for (const stream of ['stdout', 'stderr']) {
-      str(check[stream], `${label}.${stream}`, false);
-      if (check[`${stream}Sha256`] !== raw(utf8(check[stream]))) incomplete(`${label}: ${stream} hash differs`);
-    }
-  }
-  return value.checks.map(check => ({command:check.command, exit:check.exit}));
-}
 function baseline(value, owner, round, context, claims, label) {
   closed(value, ['format', 'owner', 'round', 'context', 'manifest'], label);
   if (value.format !== 'stnl-current-baseline-v1') fail('CURRENT_FORMAT_REQUIRED', `${label}: baseline format`);
@@ -329,161 +239,8 @@ function guard(input, validating = false) {
   canonical(input.context); canonical(input.authority); canonical(input.owner);
   if (validating) bytes(input.bundleBytes, 'bundleBytes');
   else dense(input.rounds, 'rounds', 1, 3);
-  return recipeAndClaims(input.context, delivery, input.owner.slice);
+  return verifyWorkObservation('initial-implementation',{context:input.context,delivery,slice:input.owner.slice});
 }
-function captureShape(value, transport, label) {
-  const common = ['transport', 'rawResponse', 'receipt', 'baselineCapture', 'verificationObservation', 'removalProofs'];
-  const native = ['origin', 'dispatch', 'agentBinding', 'agentClaim', 'concludedToolResult'];
-  const managed = ['managedContext', 'active', 'started', 'events', 'closedSupervisor', 'latest', 'runtimeIdentity'];
-  closed(value, [...common, ...(transport === 'native' ? native : managed)], label);
-  if (value.transport !== transport) invalid(`${label}: mixed transports`);
-  dense(value.removalProofs, `${label}.removalProofs`);
-  if (transport === 'managed') dense(value.runtimeIdentity, `${label}.runtimeIdentity`);
-  for (const key of [...common, ...(transport === 'native' ? native : managed)]) {
-    if (key === 'transport' || key === 'removalProofs' || key === 'runtimeIdentity' || (key === 'verificationObservation' && value[key] === null)) continue;
-    bytes(value[key], `${label}.${key}`);
-  }
-  for (const item of value.removalProofs) bytes(item, `${label}.removalProof`);
-  if (transport === 'managed') for (const item of value.runtimeIdentity) bytes(item, `${label}.runtimeIdentity`);
-}
-function body(value, key, label) {
-  if (!value || typeof value !== 'object' || !Object.hasOwn(value, key)) incomplete(`${label}: missing ${key}`);
-  return value[key];
-}
-function nativeOrigin(cap, receipt, rawText, expectation, round, resolved) {
-  const origin = jsonBytes(cap.origin, `round ${round} origin`).value;
-  const dispatch = jsonBytes(cap.dispatch, `round ${round} dispatch`).value;
-  const agent = jsonBytes(cap.agentBinding, `round ${round} agentBinding`).value;
-  const agentClaim = jsonBytes(cap.agentClaim, `round ${round} agentClaim`).value;
-  const result = jsonBytes(cap.concludedToolResult, `round ${round} concludedToolResult`).value;
-  for (const [document, name] of [[origin,'origin'],[dispatch,'dispatch'],[agent,'agentBinding'],[agentClaim,'agentClaim'],[result,'concludedToolResult']]) plain(document, `round ${round} ${name}`);
-  const owner = expectation.owner;
-  for (const [value, name] of [[origin,'origin'],[dispatch,'dispatch'],[agentClaim,'agentClaim'],[receipt,'receipt']]) ownerMatches(body(value, 'owner', name), owner, `round ${round} ${name}.owner`);
-  if (origin.specPath !== expectation.context.logicalAuthorityPath || origin.workspace !== expectation.context.productRoot) mismatch(`round ${round}: native ImageContext differs`);
-  if (origin.transport !== 'native' || receipt.transport !== 'native' || origin.attempt !== round || receipt.attempt !== round
-    || origin.specPath !== dispatch.specPath || origin.workspace !== dispatch.workspace
-    || origin.workspace !== receipt.workspace || origin.dispatchId !== dispatch.dispatchId) mismatch(`round ${round}: native dispatch/origin differs`);
-  expectEqual(origin.verification, resolved, 'EVIDENCE_STALE', `round ${round}: origin verification`);
-  absolute(receipt.originFile, `round ${round} native originFile`);
-  const root = path.dirname(receipt.originFile);
-  absolute(root, `round ${round} native root`);
-  const originFile = path.join(root, `round-${round}.origin.json`);
-  if (receipt.originFile !== originFile || agent.originFile !== originFile || agentClaim.originFile !== originFile
-    || receipt.receiptFile !== path.join(root, `round-${round}.receipt.json`)
-    || receipt.semanticResponseFile !== path.join(root, `round-${round}.response.json`)) mismatch(`round ${round}: native paths differ`);
-  if (dispatch.dispatchId !== origin.dispatchId || dispatch.specPath !== origin.specPath || dispatch.workspace !== origin.workspace) mismatch(`round ${round}: dispatch differs`);
-  str(origin.dispatchId, 'dispatchId'); str(agent.agentId, 'agentId');
-  if (agent.agentId !== agentClaim.agentId || agent.agentId !== result.agentId || agent.agentId !== receipt.threadId) mismatch(`round ${round}: agent binding differs`);
-  if (result.status !== 'completed' || typeof result.finalResponse !== 'string') uncertain(`round ${round}: native tool did not conclude`);
-  if (result.finalResponse !== rawText || receipt.semanticResponseSha256 !== hex(utf8(rawText))) incomplete(`round ${round}: raw native result differs`);
-  if (receipt.operation !== owner.operation || receipt.slice !== owner.slice || receipt.workspace !== origin.workspace) mismatch(`round ${round}: receipt owner differs`);
-  if (receipt.error !== null) uncertain(`round ${round}: native receipt error`);
-  return { dispatchId:origin.dispatchId, runnerId:agent.agentId, receipt, root };
-}
-function managedEvents(cap, receipt, stem, rawText, round) {
-  const {text} = textBytes(cap.events, `round ${round} events`);
-  const lines = text.endsWith('\n') ? text.slice(0, -1).split('\n') : text.split('\n');
-  if (!lines.length || lines.some(line => !line)) invalid(`round ${round}: blank SDK event line`);
-  let thread = null; let threadStarts = 0; let pending = false; let completed = 0; let finalMessage = null; let last = null;
-  const starts = new Map(); const endings = new Set();
-  for (const [index, line] of lines.entries()) {
-    let event;
-    try { event = parseCurrentJson(line); } catch (error) { invalid(`round ${round} events line ${index + 1}: ${error.message}`); }
-    plain(event, `round ${round} events line ${index + 1}`);
-    if (event.operationId !== `runner-${stem}` || event.item?.type === 'collab_tool_call') uncertain(`round ${round}: SDK event identity/collaboration`);
-    if (event.type === 'error' || event.type === 'turn.failed') uncertain(`round ${round}: SDK error`);
-    if (event.type === 'thread.started') { if (thread !== null && thread !== event.thread_id) uncertain(`round ${round}: SDK thread changed`); thread = event.thread_id; threadStarts += 1; }
-    if (event.type === 'turn.started') { if (threadStarts !== 1 || pending || completed) uncertain(`round ${round}: SDK turn overlap`); pending = true; finalMessage = null; }
-    if (event.type === 'item.completed' && event.item?.type === 'agent_message') { if (!pending) uncertain(`round ${round}: final message outside turn`); finalMessage = event.item.text; }
-    if (event.type === 'turn.completed') { if (!pending || typeof finalMessage !== 'string') uncertain(`round ${round}: incomplete SDK turn`); pending = false; completed += 1; }
-    if (event.item?.type === 'command_execution') {
-      const item = event.item;
-      if (!pending) uncertain(`round ${round}: SDK command outside turn`);
-      token(item.id, /^item_[0-9]+$/u, `round ${round} command id`);
-      if (event.type === 'item.started') {
-        if (starts.has(item.id)) uncertain(`round ${round}: duplicate command start`);
-        str(item.command, `round ${round} command`);
-        starts.set(item.id, item.command);
-      } else if (event.type === 'item.completed') {
-        if (!starts.has(item.id) || endings.has(item.id) || starts.get(item.id) !== item.command || !['completed','failed'].includes(item.status)
-          || !Number.isSafeInteger(item.exit_code)) uncertain(`round ${round}: command completion differs`);
-        endings.add(item.id);
-      }
-    }
-    last = event.type;
-  }
-  if (threadStarts !== 1 || thread !== receipt.threadId || pending || completed !== 1 || last !== 'turn.completed' || finalMessage !== rawText
-    || starts.size !== endings.size) uncertain(`round ${round}: SDK turn did not conclude exactly`);
-  if ([...starts.values()].some(command => /^(?:\/bin\/(?:zsh|bash|sh) -lc ['"])?STNL_VERIFICATION_COMMAND=1 [\s\S]+/u.test(command))) incomplete(`round ${round}: additional SDK verification command`);
-}
-function managedOrigin(cap, receipt, rawText, expectation, round) {
-  if (Object.hasOwn(receipt, 'transport')) invalid(`round ${round}: managed receipt has mixed transport`);
-  const context = jsonBytes(cap.managedContext, `round ${round} managedContext`).value;
-  const active = jsonBytes(cap.active, `round ${round} active`).value;
-  const started = jsonBytes(cap.started, `round ${round} started`).value;
-  const supervisor = jsonBytes(cap.closedSupervisor, `round ${round} closedSupervisor`).value;
-  const latest = jsonBytes(cap.latest, `round ${round} latest`).value;
-  for (const [document, name] of [[context,'managedContext'],[active,'active'],[started,'started'],[supervisor,'closedSupervisor'],[latest,'latest']]) plain(document, `round ${round} ${name}`);
-  plain(active.officialPreflight, `round ${round} officialPreflight`);
-  const owner = expectation.owner;
-  if (context.specPath !== expectation.context.logicalAuthorityPath || context.workspace !== expectation.context.productRoot) mismatch(`round ${round}: managed ImageContext differs`);
-  if (context.version !== 4 || active.protocol !== 3 || active.operation !== 'EXECUTE_SLICE' || context.operation !== 'EXECUTE_SLICE') fail('UNSUPPORTED_FORMAT', `round ${round}: managed context/protocol`);
-  for (const [doc,name] of [[context,'context'],[active.officialPreflight,'active.officialPreflight'],[started,'started'],[receipt,'receipt']]) ownerMatches(body(doc,'owner',name),owner,`round ${round} ${name}.owner`);
-  for (const [doc,name] of [[context,'context'],[active,'active']]) {
-    if (doc.operation !== owner.operation || doc.slice !== owner.slice || doc.workspace !== context.workspace) mismatch(`round ${round}: ${name} identity`);
-  }
-  if (active.officialPreflight.operation !== owner.operation || active.officialPreflight.slice !== owner.slice
-    || active.officialPreflight.exitCode !== 0 || active.officialPreflight.state !== context.state) mismatch(`round ${round}: official preflight identity`);
-  if (receipt.operation !== owner.operation || receipt.slice !== owner.slice) mismatch(`round ${round}: receipt identity`);
-  if (started.operation !== owner.operation || started.slice !== owner.slice) mismatch(`round ${round}: started identity`);
-  if (context.specPath !== active.officialPreflight.specPath || context.authority !== active.officialPreflight.authority
-    || context.authority !== started.authority || context.authority !== receipt.authority
-    || context.authority !== expectation.authority.context.requirementsAuthority) stale(`round ${round}: managed authority`);
-  if (context.specPath !== started.specPath && Object.hasOwn(started,'specPath')) mismatch(`round ${round}: started specPath`);
-  integer(active.sequence, `round ${round} sequence`, 1);
-  if (active.sequence !== started.sequence || active.sequence !== receipt.sequence || receipt.attempt !== round || started.attempt !== round
-    || receipt.runnerAgent !== 'stnl_validation_runner' || receipt.automaticCheckRound !== `${round}/3`) mismatch(`round ${round}: managed invocation`);
-  const stem = `${String(active.sequence).padStart(3,'0')}-execute_slice-${owner.slice}-attempt-${round}`;
-  const root = absolute(active.tmpdir, `round ${round} managed tmpdir`);
-  if (receipt.receiptFile !== path.join(root, `${stem}.receipt.json`)
-    || receipt.semanticResponseFile !== path.join(root, `${stem}.response.json`)
-    || receipt.eventsPath !== path.join(root, `${stem}.events.jsonl`)) mismatch(`round ${round}: managed paths`);
-  if (receipt.error != null || receipt.processError != null || receipt.providerError != null) uncertain(`round ${round}: managed tool error`);
-  str(receipt.threadId, `round ${round} managed threadId`);
-  if (receipt.formatRepair !== null && receipt.formatRepair?.attempted !== false) uncertain(`round ${round}: format repair unsupported`);
-  if (receipt.semanticResponseSha256 !== hex(utf8(rawText))) incomplete(`round ${round}: raw managed response hash`);
-  managedEvents(cap, receipt, stem, rawText, round);
-  if (context.identity === null || typeof context.identity !== 'object') incomplete(`round ${round}: runtime identity`);
-  closed(context.identity, ['snapshot','adapter','bridge','preflight','evidenceSerializer','runnerResultContract'], `round ${round} runtime identity`);
-  closed(context.identity.snapshot, ['path','mode'], `round ${round} snapshot identity`);
-  const expectedPaths = {
-    adapter:'agents/codex/runtime/validation-runner.mjs', bridge:'agents/codex/runtime/managed-runner-bridge.mjs',
-    preflight:'agents/codex/runtime/managed-slice-preflight.mjs',
-    evidenceSerializer:'skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs',
-    runnerResultContract:'skills/workflows/stnl-slice-executor/runtime/runner-result-contract.mjs',
-  };
-  absolute(context.identity.snapshot.path, `round ${round} snapshot`);
-  token(context.identity.snapshot.mode, /^[0-7]{3,4}$/u, `round ${round} snapshot mode`);
-  const declared = new Set();
-  for (const [role, relativePath] of Object.entries(expectedPaths)) {
-    const identity = context.identity[role];
-    closed(identity, ['path','sha256','mode'], `round ${round} ${role}`);
-    if (identity.path !== path.join(context.identity.snapshot.path, relativePath)) stale(`round ${round}: ${role} path`);
-    token(identity.sha256, HASH, `round ${round} ${role} hash`);
-    token(identity.mode, /^[0-7]{3,4}$/u, `round ${round} ${role} mode`);
-    if (role === 'adapter' && (parseInt(identity.mode, 8) & 0o111) === 0) stale(`round ${round}: adapter not executable`);
-    declared.add(identity.sha256);
-  }
-  const actual = cap.runtimeIdentity.map(item => raw(bytes(item, `round ${round} runtime bytes`)));
-  if (!same(actual, [...new Set(actual)].sort(ordinal)) || !same([...declared].sort(ordinal), actual)) incomplete(`round ${round}: runtime identity bytes`);
-  const identity = {workspace:context.workspace,tmpdir:root,operation:owner.operation,sequence:active.sequence,slice:owner.slice};
-  for (const doc of [active,supervisor,latest]) for (const [key,value] of Object.entries(identity)) if (doc[key] !== value) mismatch(`round ${round}: managed ${key}`);
-  if (supervisor.pending !== false || supervisor.cancelledPending !== false || !Array.isArray(supervisor.errors)
-    || supervisor.errors.length || typeof supervisor.closedAt !== 'string' || !supervisor.closedAt) uncertain(`round ${round}: supervisor not closed`);
-  if (latest.authority !== context.authority) stale(`round ${round}: latest authority`);
-  return { dispatchId:`${owner.operationAttemptId}:${active.sequence}`, runnerId:receipt.threadId, receipt, supervisor, latest, active };
-}
-
 function relativeTask(context, absolutePath, slice) {
   const rel = path.relative(path.dirname(logicalArtifactPath(context, `tasks/${slice}.md`)), absolutePath).split(path.sep).join('/');
   if (!rel || rel === '.') unsafe('tested state path aliases task');
@@ -597,45 +354,6 @@ function renderRecord(id, owner, payload, entries, commands, correctionPaths) {
   );
   return lines.join('\n');
 }
-function capsule(format, fields) { return serialized({format, ...fields}); }
-function objectStore() {
-  const objects = new Map();
-  return {
-    add(value) { const copy = bytes(value, 'source bytes'); const id = raw(copy); objects.set(id, {id,bytesBase64:copy.toString('base64')}); return id; },
-    finish() { return [...objects.values()].sort((a,b) => ordinal(a.id,b.id)); },
-  };
-}
-function sourcesFor(cap, store) {
-  const base = {
-    transport:cap.transport, rawResponse:store.add(cap.rawResponse), receipt:store.add(cap.receipt),
-    verificationObservation:cap.verificationObservation === null ? null : store.add(cap.verificationObservation),
-    removalProofs:cap.removalProofs.map(item => store.add(item)).sort(ordinal), legacyPreparation:null,
-  };
-  if (new Set(base.removalProofs).size !== base.removalProofs.length) invalid('duplicate removal proof bytes');
-  if (cap.transport === 'native') return {
-    ...base,
-    origin:store.add(capsule('stnl-native-origin-bundle-v1', {
-      originUtf8:textBytes(cap.origin,'origin').text, dispatchUtf8:textBytes(cap.dispatch,'dispatch').text,
-      baselineUtf8:textBytes(cap.baselineCapture,'baseline').text,
-    })),
-    agentBinding:store.add(capsule('stnl-native-agent-bundle-v1', {
-      agentUtf8:textBytes(cap.agentBinding,'agent').text, claimUtf8:textBytes(cap.agentClaim,'claim').text,
-    })),
-    concludedToolResult:store.add(cap.concludedToolResult),
-  };
-  return {
-    ...base,
-    started:store.add(capsule('stnl-managed-start-bundle-v1', {
-      contextUtf8:textBytes(cap.managedContext,'managed context').text, activeUtf8:textBytes(cap.active,'active').text,
-      startedUtf8:textBytes(cap.started,'started').text, baselineUtf8:textBytes(cap.baselineCapture,'baseline').text,
-    })),
-    events:store.add(cap.events),
-    closedSupervisor:store.add(capsule('stnl-managed-close-bundle-v1', {
-      supervisorUtf8:textBytes(cap.closedSupervisor,'supervisor').text, latestUtf8:textBytes(cap.latest,'latest').text,
-    })),
-    runtimeIdentity:cap.runtimeIdentity.map(item => store.add(item)).sort(ordinal),
-  };
-}
 function originRecord(owner, transport, transportInfo) {
   const {ownershipToken, ...origin} = owner;
   return {...origin, transport, dispatchId:transportInfo.dispatchId, runnerId:transportInfo.runnerId};
@@ -691,7 +409,7 @@ function compose(input, info) {
   plain(input.rounds[0], 'round 1');
   const transport = input.rounds[0].transport;
   if (!['native','managed'].includes(transport)) fail('UNSUPPORTED_FORMAT', 'round 1: unknown transport');
-  const store = objectStore();
+  const store = closeEvidenceObjects();
   const implementation = []; const support = [];
   let previousAfter = null, previousStatus = null, dispatchId = null;
   const runners = new Set();
@@ -701,7 +419,8 @@ function compose(input, info) {
   let productBytes = 0;
   for (const [index, cap] of input.rounds.entries()) {
     const round = index + 1;
-    captureShape(cap, transport, `round ${round}`);
+    verifyCapturedInvocation('initial-implementation', cap, undefined, undefined, undefined, round, transport);
+    if (cap.transport !== transport) invalid(`round ${round}: mixed transports`);
     if (round > 1 && previousStatus !== 'TESTS_FAIL') invalid(`round ${round}: previous round did not fail`);
     const rawText = textBytes(cap.rawResponse, `round ${round} rawResponse`).text;
     const receipt = jsonBytes(cap.receipt, `round ${round} receipt`).value;
@@ -711,9 +430,7 @@ function compose(input, info) {
     const claims = [...info.areas, ...info.inputs, ...info.refs];
     const before = baseline(base, input.owner, round, input.context, claims, `round ${round} baseline`);
     if (previousAfter !== null && !same(previousAfter, before)) stale(`round ${round}: baseline differs from previous tested product`);
-    const transportInfo = transport === 'native'
-      ? nativeOrigin(cap, receipt, rawText, input, round, info.resolved)
-      : managedOrigin(cap, receipt, rawText, input, round);
+    const transportInfo = verifyCapturedInvocation('initial-implementation', cap, receipt, rawText, input, round, info.resolved);
     for (const proof of cap.removalProofs) {
       const parsed=jsonBytes(proof, `round ${round} removalProof`).value;
       plain(parsed, `round ${round} removalProof`);
@@ -742,7 +459,7 @@ function compose(input, info) {
           if (receipt.verification !== null || cap.removalProofs.length !== 0) incomplete(`round ${round}: blocked receipt hides observation or removal proof`);
         } else {
           const observed=jsonBytes(cap.verificationObservation, `round ${round} verificationObservation`).value;
-          observation(observed,input.owner,round,info,before,input.context,`round ${round} observation`);
+          verifyWorkObservation('initial-implementation',observed,input.owner,round,info,before,input.context,`round ${round} observation`);
           expectEqual(receipt.verification,observed,'EVIDENCE_STALE',`round ${round}: receipt observation`);
           domainChanges(before,observed.after,info,round);
           verifyRemoval(cap.removalProofs,input.owner,round,before,observed.after);
@@ -754,7 +471,7 @@ function compose(input, info) {
         if (receipt.semanticResponseStatus !== loose?.status) uncertain(`round ${round}: accepted receipt semantic status differs`);
         if (cap.verificationObservation === null) incomplete(`round ${round}: accepted schema result lacks observation`);
         const observed=jsonBytes(cap.verificationObservation, `round ${round} verificationObservation`).value;
-        observation(observed,input.owner,round,info,before,input.context,`round ${round} observation`);
+        verifyWorkObservation('initial-implementation',observed,input.owner,round,info,before,input.context,`round ${round} observation`);
         expectEqual(receipt.verification,observed,'EVIDENCE_STALE',`round ${round}: receipt observation`);
         testedState(receipt.testedState,input.context,input.owner,before,observed.after,info,round);
         verifyRemoval(cap.removalProofs,input.owner,round,before,observed.after);
@@ -762,7 +479,7 @@ function compose(input, info) {
       const diagnostic = recoverableRunnerResultDiagnostic(result.error);
       if (diagnostic === null) invalid(`round ${round}: rejection diagnostic unavailable`);
       support.push({kind:'rejection', operationAttemptId:input.owner.operationAttemptId, origin, diagnostic,
-        consumedInvocations:round, round, sources:sourcesFor(cap,store)});
+        consumedInvocations:round, round, sources:packCaptureSources('initial-implementation',cap,store)});
       previousStatus = 'rejected';
       continue;
     }
@@ -771,7 +488,7 @@ function compose(input, info) {
       || receipt.captureFailure !== null || (transport === 'managed' && (receipt.exitCode !== 0 || receipt.captureFailureCode != null))) uncertain(`round ${round}: accepted result lacks capture receipt`);
     if (cap.verificationObservation === null) incomplete(`round ${round}: completed response lacks observation`);
     const observed = jsonBytes(cap.verificationObservation, `round ${round} verificationObservation`).value;
-    const commands = observation(observed, input.owner, round, info, before, input.context, `round ${round} observation`);
+    const commands = verifyWorkObservation('initial-implementation', observed, input.owner, round, info, before, input.context, `round ${round} observation`);
     expectEqual(receipt.verification, observed, 'EVIDENCE_STALE', `round ${round}: receipt observation`);
     const entries = testedState(receipt.testedState, input.context, input.owner, before, observed.after, info, round);
     verifyRemoval(cap.removalProofs, input.owner, round, before, observed.after);
@@ -799,7 +516,7 @@ function compose(input, info) {
       const diagnostic = recoverableRunnerResultDiagnostic(rejection);
       if (diagnostic === null) invalid(`round ${round}: rejection diagnostic unavailable`);
       support.push({kind:'rejection', operationAttemptId:input.owner.operationAttemptId, origin, diagnostic,
-        consumedInvocations:round, round, sources:sourcesFor(cap,store)});
+        consumedInvocations:round, round, sources:packCaptureSources('initial-implementation',cap,store)});
       previousStatus = 'rejected';
       continue;
     }
@@ -809,7 +526,7 @@ function compose(input, info) {
     const recordUtf8 = renderRecord(id, input.owner, payload, entries, commands, correction);
     implementation.push({kind:'implementation-check', recordFormat:'stnl-task-record-v2', id, origin,
       contract:{delivery:input.authority.delivery, context:input.authority.context, terminal:null, recipe:info.recipe},
-      recordUtf8, testedWork:observed.after, sources:sourcesFor(cap,store)});
+      recordUtf8, testedWork:observed.after, sources:packCaptureSources('initial-implementation',cap,store)});
     previousStatus = payload.status;
   }
   if (transport === 'managed') {
@@ -837,41 +554,6 @@ export function composeInitialImplementationEvidence(input) {
   return compose(input, info);
 }
 
-function restoreCapsule(objects, id, format, keys, label) {
-  const data = objects.get(id);
-  if (!data) incomplete(`${label}: missing capsule`);
-  const parsed = jsonBytes(data, label).value;
-  closed(parsed, ['format', ...keys], label);
-  if (parsed.format !== format) fail('UNSUPPORTED_FORMAT', `${label}: capsule format`);
-  const restored = {};
-  for (const key of keys) restored[key] = utf8(str(parsed[key], `${label}.${key}`, false));
-  return restored;
-}
-function restoreSources(record, objects) {
-  const sources = record.sources;
-  const get = (id, label) => {
-    if (id === null) return null;
-    const item = objects.get(id);
-    if (!item) incomplete(`${label}: missing source`);
-    return Uint8Array.from(item);
-  };
-  const base = {
-    transport:sources.transport, rawResponse:get(sources.rawResponse,'rawResponse'), receipt:get(sources.receipt,'receipt'),
-    verificationObservation:get(sources.verificationObservation,'verificationObservation'),
-    removalProofs:sources.removalProofs.map(id => get(id,'removalProof')),
-  };
-  if (sources.transport === 'native') {
-    const origin = restoreCapsule(objects,sources.origin,'stnl-native-origin-bundle-v1',['originUtf8','dispatchUtf8','baselineUtf8'],'native origin capsule');
-    const agent = restoreCapsule(objects,sources.agentBinding,'stnl-native-agent-bundle-v1',['agentUtf8','claimUtf8'],'native agent capsule');
-    return {...base, origin:origin.originUtf8,dispatch:origin.dispatchUtf8,baselineCapture:origin.baselineUtf8,
-      agentBinding:agent.agentUtf8,agentClaim:agent.claimUtf8,concludedToolResult:get(sources.concludedToolResult,'toolResult')};
-  }
-  const start = restoreCapsule(objects,sources.started,'stnl-managed-start-bundle-v1',['contextUtf8','activeUtf8','startedUtf8','baselineUtf8'],'managed start capsule');
-  const close = restoreCapsule(objects,sources.closedSupervisor,'stnl-managed-close-bundle-v1',['supervisorUtf8','latestUtf8'],'managed close capsule');
-  return {...base, managedContext:start.contextUtf8,active:start.activeUtf8,started:start.startedUtf8,baselineCapture:start.baselineUtf8,
-    events:get(sources.events,'events'),closedSupervisor:close.supervisorUtf8,latest:close.latestUtf8,
-    runtimeIdentity:sources.runtimeIdentity.map(id => get(id,'runtimeIdentity'))};
-}
 export function validateInitialImplementationEvidence(input) {
   const info = guard(input, true);
   const original = bytes(input.bundleBytes, 'bundleBytes');
@@ -889,7 +571,7 @@ export function validateInitialImplementationEvidence(input) {
   }
   if (parsed.support.length && (parsed.support[0].round !== records.length || parsed.support[0].consumedInvocations !== records.length)) invalid('bundle rejection round/consumption');
   if (new Set(records.map(record => record.sources.receipt)).size !== records.length) invalid('bundle source replay');
-  const rounds = records.map(item => restoreSources(item,objects));
+  const rounds = records.map(item => restoreCaptureSources('initial-implementation',item,objects));
   const candidate = compose({...input, rounds}, info);
   if (!same(parsed,candidate.bundle)) stale('bundle semantic reconstruction differs');
   return {...candidate, bundle:parseCurrentJson(original.toString('utf8')), bytes:Uint8Array.from(original), sha256:raw(original)};
