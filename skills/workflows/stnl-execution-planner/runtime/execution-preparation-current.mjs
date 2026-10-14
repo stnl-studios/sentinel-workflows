@@ -796,8 +796,53 @@ function compareCurrentSections(approved, present, names, artifact, context, {ta
 // An operational image retains the reviewed bytes verbatim in its snapshot.
 // This parser compares current carrier meaning without projecting a new review
 // fingerprint or making the pristine Initial entry points permissive.
-export function validateCurrentPreparation({context, requirementsAuthority, snapshotBytes, artifacts}) {
-  const approved = validateInitialApprovedPreparation({context, requirementsAuthority, snapshotBytes});
+function validateConvertedSnapshotIntrinsic({context,requirementsAuthority,snapshotBytes}) {
+  const bytes=Buffer.from(snapshotBytes instanceof Uint8Array ? snapshotBytes : invalid('snapshot bytes required'));
+  const snapshot=parseCurrentJson(decode(bytes,'approved-preparation.json'));
+  exact(snapshot,['format','preparationRevision','requirementsAuthority','normativeSha256','normativeProjection',
+    'globalReview','deliveries','completed','reviewedArtifacts'],'converted snapshot');
+  if(snapshot.format!=='stnl-preparation-v3' || !Number.isSafeInteger(snapshot.preparationRevision)
+    || snapshot.preparationRevision<1 || array(snapshot.completed,'snapshot completed').length
+    || !bytes.equals(Buffer.from(canonical(snapshot)+'\n'))) invalid('converted snapshot bytes or revision differ');
+  const reviewed=new Map();let previous=null;
+  for(const item of array(snapshot.reviewedArtifacts,'reviewedArtifacts')) {
+    exact(item,['path','sha256','utf8'],'reviewed artifact');
+    string(item.path,'reviewed artifact path');hash(item.sha256,'reviewed artifact sha256');
+    if(previous!==null && ordinal(previous,item.path)>=0) invalid('reviewed artifact order');
+    previous=item.path;
+    const original=Buffer.from(string(item.utf8,'reviewed artifact utf8',false),'utf8');
+    if(raw(original)!==item.sha256) invalid(`${item.path}: reviewed raw digest differs`);
+    reviewed.set(item.path,original);
+  }
+  const {authority,status}=project({context,requirementsAuthority,artifacts:reviewed},false,true);
+  if(status!=='ready' || snapshot.preparationRevision!==authority.preparationRevision
+    || snapshot.requirementsAuthority!==requirementsAuthority
+    || snapshot.normativeSha256!==authority.normativeSha256
+    || !same(snapshot.normativeProjection,authority.normativeProjection)
+    || !same(snapshot.reviewedArtifacts,authority.artifactHashes.map(item=>({
+      path:item.path,sha256:item.sha256,utf8:reviewed.get(item.path).toString('utf8')}))))
+    stale('converted snapshot projection or reviewed artifacts differ');
+  const hashes=new Map(authority.artifactHashes.map(item=>[item.path,item.sha256]));
+  review(snapshot.globalReview,'set',authority.globalReviewAuthoritySha256,['plan.md','tasks.md'],hashes,'global review');
+  if(array(snapshot.deliveries,'snapshot deliveries').length!==authority.deliveries.length)
+    invalid('converted snapshot delivery count differs');
+  for(let i=0;i<authority.deliveries.length;i++) {
+    const item=exact(snapshot.deliveries[i],['slice','deliveryId','localRevision','review'],'snapshot delivery');
+    const expected=authority.deliveries[i];
+    if(item.slice!==expected.slice || item.deliveryId!==expected.deliveryId || item.localRevision!==1)
+      invalid('converted snapshot delivery binding differs');
+    review(item.review,'slice',expected.authoritySha256,[`plans/${item.slice}.md`,`tasks/${item.slice}.md`],
+      hashes,`delivery review ${item.slice}`,item.review.evidenceDecisions.map(({deliveryId,evidenceSha256,disposition})=>
+        ({deliveryId,evidenceSha256,disposition})));
+  }
+  return {authority,snapshot,bytes,sha256:raw(bytes)};
+}
+
+export function validateCurrentPreparation({context, requirementsAuthority, snapshotBytes, artifacts, profile='initial'}) {
+  if(!['initial','converted-current'].includes(profile)) invalid('unknown current preparation profile');
+  const approved=profile==='initial'
+    ?validateInitialApprovedPreparation({context,requirementsAuthority,snapshotBytes})
+    :validateConvertedSnapshotIntrinsic({context,requirementsAuthority,snapshotBytes});
   const current = artifactMap(artifacts);
   const expected = approved.snapshot.reviewedArtifacts.map(item => item.path).sort(ordinal);
   compareCurrent([...current.keys()].sort(ordinal), expected, 'execution', 'artifacts', 'integrity');

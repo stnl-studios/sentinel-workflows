@@ -649,13 +649,35 @@ function validateCurrentContent(files) {
   for (const item of continuity.completed) if (item.evidence === null || item.validation !== 'current') evidenceError('completed delivery lacks current evidence');
   if (!same(continuity.completed.map(item => [item.slice, item.deliveryId, item.localRevision, item.evidence?.sha256]), snapshot.completed.map(item => [item.slice, item.deliveryId, item.localRevision, item.evidenceSha256]))) invalid('completed delivery binding mismatch');
   const byDelivery = new Map([...continuity.deliveries, ...continuity.completed].map(item => [item.deliveryId, item]));
+  const replacementFor=(current,decision)=>{
+    const bundle=current.evidence && parsed.get(current.evidence.path);
+    const record=bundle?.validation;
+    const approvedDelivery=snapshot.deliveries.find(item=>item.deliveryId===current.deliveryId);
+    const leaf=snapshot.normativeProjection.deliveries.find(item=>item.deliveryId===current.deliveryId);
+    const global=snapshot.normativeProjection.global;
+    return decision.evidenceSha256!==current.evidence?.sha256 && approvedDelivery
+      && bundle?.implementation?.length===0 && bundle.findingsChecks?.length===0
+      && bundle.support?.length===0 && bundle.openDivergences?.length===0
+      && record?.kind==='validation' && record.recordFormat==='stnl-task-record-v2'
+      && record.sources?.legacyPreparation===null && record.contract?.terminal===null
+      && record.origin?.deliveryId===current.deliveryId && record.origin?.slice===current.slice
+      && record.origin?.operation==='VALIDATE_SLICE'
+      && record.origin?.preparationRevision===snapshot.preparationRevision
+      && record.origin?.localRevision===approvedDelivery.localRevision
+      && record.origin?.normativeSha256===current.authoritySha256
+      && same(record.contract?.delivery,leaf)
+      && same(record.contract?.context,{requirementsAuthority:snapshot.requirementsAuthority,
+        objective:global.objective,strategy:global.strategy,risks:global.risks})
+      && same(record.contract?.recipe,leaf.verificationRecipe);
+  };
   for (const [reviewedId, decision] of [
     ...snapshot.globalReview.evidenceDecisions.map(item => [null, item]),
     ...snapshot.deliveries.flatMap(item => item.review.evidenceDecisions.map(decision => [item.deliveryId, decision])),
   ]) {
     const current = byDelivery.get(decision.deliveryId);
     if ((reviewedId !== null && decision.deliveryId !== reviewedId)
-      || !current?.evidence || current.evidence.sha256 !== decision.evidenceSha256) invalid('review evidence decision binding mismatch');
+      || !current?.evidence || (current.evidence.sha256 !== decision.evidenceSha256
+        && !replacementFor(current,decision))) invalid('review evidence decision binding mismatch');
   }
   const leaves = new Map([...snapshot.normativeProjection.deliveries, ...snapshot.normativeProjection.completed].map(item => [item.deliveryId, item]));
   const referenced = new Set();

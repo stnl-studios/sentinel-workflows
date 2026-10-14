@@ -432,7 +432,9 @@ test('R03 mixed format, duplicate JSON, and closed profile',async t=>{
     if(field==='preparationRevision') {f.snapshot.preparationRevision=2;f.activation.preparationRevision=2;}
     else {f.snapshot.deliveries[0].localRevision=2;f.continuity.deliveries[0].localRevision=2;}
     f.files.set('approved-preparation.json',Buffer.from(JSON.stringify(f.snapshot)+'\n'));reseal(f);await writeImage(f);
-    await rejected(()=>inspectCurrentExecution(f.specPath),'UNSUPPORTED_FORMAT',field);
+    await rejected(()=>inspectCurrentExecution(f.specPath),
+      field==='preparationRevision'?'INVALID_CURRENT_IMAGE':'UNSUPPORTED_FORMAT',
+      field==='preparationRevision'?'snapshot bytes or revision':field);
   }));
 
   await t.test('mixed snapshot',async()=>using(authoredImage,async f=>{
@@ -1375,7 +1377,8 @@ test('R19 isolated reader closure and copy equivalence',async t=>{
   }
   await t.test('foreign main basename does not execute the imported reader',async()=>using(authoredImage,async f=>{
     const imported=await workerRun(f,{mode:'import-only'});noAttempts(imported);
-    assert.equal(imported.process.status,0,imported.process.stderr);assert.deepEqual(JSON.parse(imported.process.stdout),{exports:['inspectCurrentExecution','main']});
+    assert.equal(imported.process.status,0,imported.process.stderr);assert.deepEqual(JSON.parse(imported.process.stdout),
+      {exports:['captureCurrentExecution','inspectCurrentExecution','main','observeCurrentDeliveryWork']});
     assert.deepEqual(imported.log.opens,{});
   }));
   for(const label of ['no argument','mutating flag','unknown flag']) await t.test(`CLI usage ${label}`,async()=>using(authoredImage,async f=>{

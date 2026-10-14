@@ -1479,29 +1479,20 @@ function counterIds(current, bundle) {
 
 }
 
-export async function inspectConvertedExecution(value) {
-  closed(value, ['context', 'requirementsAuthority', 'files', 'observedWork'], 'conversion inspection input');
-  token(value.requirementsAuthority, HASH, 'requirementsAuthority');
-  logicalArtifactPath(value.context, 'plan.md');
-  const files = conversionFiles(value.files);
-  const {snapshot, continuity} = validateCurrentCandidate({files});
-  if (snapshot.requirementsAuthority !== value.requirementsAuthority) fail('REQUIREMENTS_CHANGED', 'conversion authority differs');
-  const {validateConversionApprovedPreparation} = await import('./execution-preparation-current.mjs');
-  const artifacts = new Map([...files].filter(([name]) => name !== 'approved-preparation.json'));
-  const preparation = validateConversionApprovedPreparation({context:value.context,
-    requirementsAuthority:value.requirementsAuthority,snapshotBytes:files.get('approved-preparation.json'),artifacts});
-  if (preparation.authority.normativeSha256 !== snapshot.normativeSha256) invalid('conversion projection differs');
-  convertedIndex(snapshot,continuity);
-  const domainDeliveries=snapshot.normativeProjection.deliveries.map((leaf,index)=>({
-    slice:snapshot.deliveries[index].slice,deliveryId:leaf.deliveryId,authorizedAreas:leaf.authorizedAreas,
-    existingInputs:leaf.existingInputs,verificationRecipe:leaf.verificationRecipe}));
-  const observedByDelivery=projectConversionObservedWork({context:value.context,deliveries:domainDeliveries,observedWork:value.observedWork});
-  const deliveries = [];
-  for (let i = 0; i < continuity.deliveries.length; i += 1) {
-    const current = continuity.deliveries[i], item = snapshot.deliveries[i];
+export async function inspectConvertedDelivery({context,snapshot,current,bundleBytes,observedWork}) {
+  const i=snapshot.deliveries.findIndex(item=>item.deliveryId===current.deliveryId && item.slice===current.slice);
+  if(i<0) invalid('converted delivery is absent from approved preparation');
+  const item=snapshot.deliveries[i];
+  if((current.evidence===null)!==(bundleBytes===null)
+    || (bundleBytes!==null && raw(bytes(bundleBytes,'converted bundle'))!==current.evidence.sha256))
+    invalid(`${current.slice}: converted evidence bytes differ`);
+  const leaf=snapshot.normativeProjection.deliveries[i];
+  const domainDeliveries=[{slice:item.slice,deliveryId:leaf.deliveryId,authorizedAreas:leaf.authorizedAreas,
+    existingInputs:leaf.existingInputs,verificationRecipe:leaf.verificationRecipe}];
+  const observedByDelivery=projectConversionObservedWork({context,deliveries:domainDeliveries,observedWork});
     const carrier = convertedTaskCarriers(snapshot,item,current);
     if (current.normalization !== null) incomplete(`${current.slice}: open normalization`);
-    const baseline=projectConversionObservedWork({context:value.context,deliveries:[domainDeliveries[i]],observedWork:current.baseline}).get(current.deliveryId);
+    const baseline=projectConversionObservedWork({context:context,deliveries:[domainDeliveries[0]],observedWork:current.baseline}).get(current.deliveryId);
     const matches = same(baseline,observedByDelivery.get(current.deliveryId));
     const decisions = item.review.evidenceDecisions;
     if (current.evidence === null && decisions.length) invalid(`${current.slice}: evidence decision without bundle`);
@@ -1521,7 +1512,7 @@ export async function inspectConvertedExecution(value) {
         requiresFormalRevalidation = true;
       } else incomplete(`${current.slice}: unsupported evidence-free conversion state`);
     } else {
-      const bundle = parseCurrentJson(textBytes(files.get(current.evidence.path), current.evidence.path).text);
+      const bundle = parseCurrentJson(textBytes(bundleBytes, current.evidence.path).text);
       if (bundle.openFindings.length || bundle.openDivergences.length || bundle.support.length)
         incomplete(`${current.slice}: open evidence episode`);
       if (current.validation !== 'current' && current.validation !== 'revalidation-required')
@@ -1547,8 +1538,8 @@ export async function inspectConvertedExecution(value) {
       const approvedAuthority = {snapshot,delivery:snapshot.normativeProjection.deliveries[i]};
       let formalTestedWork = null;
       for (const record of [...bundle.implementation,bundle.validation]) {
-        const verified = await verifyImportedEvidence({context:value.context,record,objects,approvedAuthority,
-          observedWork:value.observedWork});
+        const verified = await verifyImportedEvidence({context:context,record,objects,approvedAuthority,
+          observedWork:observedWork});
         if (record === bundle.validation) formalTestedWork = verified.testedWork;
       }
       if (current.validation === 'current' && !same(formalTestedWork,current.baseline))
@@ -1566,12 +1557,36 @@ export async function inspectConvertedExecution(value) {
       requiresFormalRevalidation = current.validation === 'revalidation-required' || !matches;
       if (carrier.get('Final Result') !== '- PASS') invalid(`${current.slice}: formal carrier differs`);
     }
-    deliveries.push({slice:current.slice,deliveryId:current.deliveryId,counters:current.counters,
+    return {slice:current.slice,deliveryId:current.deliveryId,counters:current.counters,
       counterAuthority:'persisted-continuity',persistedValidation:current.validation,
       observedValidation:requiresFormalRevalidation || !matches ? 'revalidation-required' : current.validation,
       evidenceSha256:current.evidence?.sha256 ?? null,baseline:current.baseline,observationMatches:matches,
       openFindings:[],openDivergences:[],cycle,consumption,
-      diagnostics:current.lastDiagnostic ? [current.lastDiagnostic] : [],requiresFormalRevalidation});
-  }
+      diagnostics:current.lastDiagnostic ? [current.lastDiagnostic] : [],requiresFormalRevalidation};
+}
+
+export async function inspectConvertedExecution(value) {
+  closed(value, ['context', 'requirementsAuthority', 'files', 'observedWork'], 'conversion inspection input');
+  token(value.requirementsAuthority, HASH, 'requirementsAuthority');
+  logicalArtifactPath(value.context, 'plan.md');
+  const files = conversionFiles(value.files);
+  const {snapshot, continuity} = validateCurrentCandidate({files});
+  if (snapshot.requirementsAuthority !== value.requirementsAuthority) fail('REQUIREMENTS_CHANGED', 'conversion authority differs');
+  const {validateConversionApprovedPreparation} = await import('./execution-preparation-current.mjs');
+  const artifacts = new Map([...files].filter(([name]) => name !== 'approved-preparation.json'));
+  const preparation = validateConversionApprovedPreparation({context:value.context,
+    requirementsAuthority:value.requirementsAuthority,snapshotBytes:files.get('approved-preparation.json'),artifacts});
+  if (preparation.authority.normativeSha256 !== snapshot.normativeSha256) invalid('conversion projection differs');
+  convertedIndex(snapshot,continuity);
+  const domains=snapshot.normativeProjection.deliveries.map((item,index)=>({slice:snapshot.deliveries[index].slice,deliveryId:item.deliveryId,
+    authorizedAreas:item.authorizedAreas,existingInputs:item.existingInputs,
+    verificationRecipe:item.verificationRecipe}));
+  const scoped=projectConversionObservedWork({context:value.context,deliveries:domains,
+    observedWork:value.observedWork});
+  const deliveries=[];
+  for(const current of continuity.deliveries)
+    deliveries.push(await inspectConvertedDelivery({context:value.context,snapshot,current,
+      bundleBytes:current.evidence?files.get(current.evidence.path):null,
+      observedWork:scoped.get(current.deliveryId)}));
   return {authority:preparation.authority,deliveries,admissibleOperations:[]};
 }

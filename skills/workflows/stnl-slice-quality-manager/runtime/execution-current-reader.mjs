@@ -8,7 +8,7 @@ import {resolveCurrentExecutionContext,projectCurrentRequirements} from './execu
 import {readOwnedFile} from './execution-publication.mjs';
 import {parseCurrentJson,validateCurrentActivation,validateCurrentImage,resolveLogicalProductClaim} from './execution-current.mjs';
 import {validateCurrentPreparation} from './execution-preparation-current.mjs';
-import {inspectCurrentEvidence,validateCurrentEvidenceCarriers} from './current-evidence-state.mjs';
+import {inspectCurrentEvidence,inspectPostConversionEvidence,validateCurrentEvidenceCarriers} from './current-evidence-state.mjs';
 
 const ordinal=(a,b)=>a<b?-1:a>b?1:0;
 const digest=bytes=>`sha256:${createHash('sha256').update(bytes).digest('hex')}`;
@@ -191,7 +191,14 @@ function observationRoots(context,delivery,taskSections,continuity,bundle) {
     fail('UNSAFE_PATH','retained product path is outside the approved observation domain','integrity',artifact,item.path);
   return [...targets,...retained];
 }
-async function observeProduct(context,targets,limits) {
+function scopedObservation(observation,targets) {
+  const within=name=>targets.some(target=>target.path===name
+    || target.kind==='directory' && name.startsWith(`${target.path}/`));
+  return {...observation,
+    manifest:{format:'stnl-current-work-v1',entries:observation.manifest.entries.filter(entry=>within(entry.path))},
+    identities:new Map([...observation.identities].filter(([name])=>within(name)))};
+}
+async function observeProduct(context,targets,limits,allowUnrelatedChildren=false) {
   const entries=new Map(),identities=new Map(),visiting=new Set();
   const root=context.productRoot;
   const control=context.logicalExecutionRoot;
@@ -225,11 +232,12 @@ async function observeProduct(context,targets,limits) {
       visiting.add(relative);
       const children=await directoryNames(absolute,relative);
       if (children.length>10000) fail('UNSUPPORTED_FORMAT','bounded directory inventory exceeded','integrity',relative);
-      entries.set(relative,{path:relative,kind:'directory',children});
+      const within=allowUnrelatedChildren?children.filter(child=>permitted(`${relative}/${child}`)):children;
+      entries.set(relative,{path:relative,kind:'directory',children:within});
       identities.set(relative,identity(metadata));
       limits.entries+=1;
       if (limits.entries>10000) fail('UNSUPPORTED_FORMAT','bounded product inventory exceeded','integrity',relative);
-      for (const child of children) await visit(`${relative}/${child}`);
+      for (const child of within) await visit(`${relative}/${child}`);
       if (!equal(identity(metadata),await realDirectory(absolute,relative)))
         fail('EVIDENCE_STALE',`${relative}: directory changed while reading children`,'integrity',relative);
       visiting.delete(relative);
@@ -275,7 +283,12 @@ function verifyLastAttempt(activation,deliveries) {
     fail('EVIDENCE_INCOMPLETE','lastAttempt incorporation is not retained','integrity','activation.json','lastAttempt');
 }
 
-export async function inspectCurrentExecution(specPath) {
+export async function observeCurrentDeliveryWork({context,delivery,sections,current,bundle}) {
+  const targets=observationRoots(context,delivery,sections,current,bundle);
+  return scopedObservation(await observeProduct(context,targets,{entries:0,bytes:0},true),targets);
+}
+
+async function readCurrentExecution(specPath,withCapture=false) {
   const {workspace,context}=await resolveCurrentExecutionContext(specPath);
   const boundaries=await physicalBoundaries(context);
   const documents=await capturedDocuments(workspace);
@@ -283,6 +296,7 @@ export async function inspectCurrentExecution(specPath) {
   const root=workspace.executionRoot;
   const rootBefore=await statOrNull(root);
   if (rootBefore===null) {
+    if(withCapture) fail('CURRENT_FORMAT_REQUIRED','offline capture requires an official current image');
     await compareDocuments(workspace,documents);
     if (await statOrNull(root)!==null || !equal(boundaries,await physicalBoundaries(context)))
       fail('STALE_BASE','official root appeared or physical boundary changed during absence inspection');
@@ -303,18 +317,20 @@ export async function inspectCurrentExecution(specPath) {
   const checked=validateCurrentImage({activationBytes:a.bytes,files:image.files});
   const continuity=checked.continuity;
   const snapshot=parseCurrentJson(image.files.get('approved-preparation.json').toString('utf8'));
+  const converted=activation.preparationRevision>1;
   for (const [unsupported,artifact,field] of [
-    [activation.preparationRevision!==1,'activation.json','preparationRevision'],
+    [!converted && activation.preparationRevision!==1,'activation.json','preparationRevision'],
     [continuity.completed.length>0,'continuity.json','completed'],
     [continuity.deliveries.some(item=>item.localRevision!==1),'continuity.json','localRevision'],
     [continuity.deliveries.some(item=>item.normalization!==null),'continuity.json','normalization'],
-    [[snapshot.globalReview,...snapshot.deliveries.map(item=>item.review)].some(item=>item.evidenceDecisions.length),
+    [!converted && [snapshot.globalReview,...snapshot.deliveries.map(item=>item.review)].some(item=>item.evidenceDecisions.length),
       'approved-preparation.json','evidenceDecisions'],
   ]) if (unsupported) fail('UNSUPPORTED_FORMAT',`${field} exceeds initial quiet profile`,'integrity',artifact,field);
   if (projected.requirementsAuthority!==activation.requirementsAuthority)
     fail('REQUIREMENTS_CHANGED','documentary authority differs from activation','authority-mismatch',workspace.authorityPath);
   const prepared=validateCurrentPreparation({context,requirementsAuthority:activation.requirementsAuthority,
-    snapshotBytes:image.files.get('approved-preparation.json'),artifacts:new Map([...image.files].filter(([name])=>name.endsWith('.md')))});
+    snapshotBytes:image.files.get('approved-preparation.json'),artifacts:new Map([...image.files].filter(([name])=>name.endsWith('.md'))),
+    profile:converted?'converted-current':'initial'});
   const outputs=[];
   for (const current of continuity.deliveries) {
     const carrier=prepared.currentArtifacts.deliveries.find(item=>item.deliveryId===current.deliveryId);
@@ -323,7 +339,12 @@ export async function inspectCurrentExecution(specPath) {
     const bundleBytes=current.evidence?image.files.get(current.evidence.path):null;
     const bundle=bundleBytes?parseCurrentJson(bundleBytes.toString('utf8')):null;
     const targets=observationRoots(context,authority.delivery,carrier.sections,current,bundle);
-    const before=await observeProduct(context,targets,{entries:0,bytes:0});
+    const before=await observeProduct(context,targets,{entries:0,bytes:0},converted);
+    if(converted) {
+      outputs.push({slice:current.slice,deliveryId:current.deliveryId,counters:current.counters,
+        targets,observation:before,carrier});
+      continue;
+    }
     const facts=inspectCurrentEvidence({context,authority,bundleBytes,counters:current.counters,
       baseline:current.baseline,observedWork:before.manifest});
     if (current.validation!==facts.persistedValidation)
@@ -337,9 +358,38 @@ export async function inspectCurrentExecution(specPath) {
         ?[{kind:'observation',artifact:current.slice,field:'observedWork',reason:'EVIDENCE_STALE'}]:[],
       facts,targets,observation:before});
   }
-  verifyLastAttempt(activation,outputs);
+  if(converted) {
+    const reviewed=new Map(snapshot.reviewedArtifacts.map(item=>[item.path,item.utf8]));
+    for(const item of outputs) {
+      const current=continuity.deliveries.find(value=>value.deliveryId===item.deliveryId);
+      const bundleBytes=current.evidence?image.files.get(current.evidence.path):null;
+      const v3=bundleBytes && parseCurrentJson(bundleBytes.toString('utf8')).validation?.recordFormat==='stnl-task-record-v2';
+      const observedWork=scopedObservation(item.observation,item.targets).manifest;
+      const facts=await inspectPostConversionEvidence({context,snapshotBytes:image.files.get('approved-preparation.json'),
+        current,bundleBytes,observedWork});
+      if(!facts || facts.slice!==item.slice || facts.persistedValidation!==continuity.deliveries.find(value=>value.deliveryId===item.deliveryId)?.validation)
+        fail('INVALID_CURRENT_IMAGE',`${item.slice}: converted inspection differs`);
+      if(v3) {
+        if(item.carrier.continuity.evidence!==current.evidence.sha256)
+          fail('INVALID_CURRENT_IMAGE',`${item.slice}: converted evidence carrier digest differs`);
+        validateCurrentEvidenceCarriers({facts,sections:item.carrier.sections,
+          continuity:{...item.carrier.continuity,evidence:current.evidence.path},
+          index:item.carrier.index,slice:item.slice});
+      }
+      else if(!Buffer.from(image.files.get(`tasks/${item.slice}.md`)).equals(Buffer.from(reviewed.get(`tasks/${item.slice}.md`))))
+        fail('INVALID_CURRENT_IMAGE',`${item.slice}: converted operational carrier differs from reviewed bytes`);
+      item.facts=facts;
+      item.persistedValidation=facts.persistedValidation;
+      item.observedValidation=facts.observedValidation;
+      item.evidenceSha256=facts.evidenceSha256;
+      item.formalStatus=facts.formalStatus??(facts.cycle?'PASS':null);
+      item.auxiliaryStatus=null;
+      item.diagnostics=facts.observationMatches?[]:[{kind:'observation',artifact:item.slice,field:'observedWork',reason:'EVIDENCE_STALE'}];
+    }
+    verifyLastAttempt(activation,outputs);
+  } else verifyLastAttempt(activation,outputs);
   for (const item of outputs) {
-    const after=await observeProduct(context,item.targets,{entries:0,bytes:0});
+    const after=await observeProduct(context,item.targets,{entries:0,bytes:0},converted);
     if (!equal(item.observation.manifest,after.manifest) || !equal([...item.observation.identities],[...after.identities])
       || !equal(item.observation.rootIdentity,after.rootIdentity))
       fail('EVIDENCE_STALE',`${item.slice}: product changed during inspection`,'integrity',item.slice,'observedWork');
@@ -350,6 +400,31 @@ export async function inspectCurrentExecution(specPath) {
   if (!equal(boundaries,await physicalBoundaries(context))) fail('STALE_BASE','official physical boundary changed between A and B');
   if (!a.bytes.equals(b.bytes) || !equal(a.identity,b.identity) || !equal(identity(rootBefore),identity(await realDirectoryMetadata(root))))
     fail('STALE_BASE','activation or official root changed between A and B','integrity','activation.json');
+  if(converted) {
+    const blocked=outputs.filter(item=>item.facts.formalStatus==='BLOCKED'
+      || item.facts.observedValidation==='uncertain');
+    const pending=blocked.length?null:outputs.find(item=>item.facts.requiresFormalRevalidation);
+    const operation=pending?.facts.formalStatus==='NEEDS_FIX'?'APPLY_FINDINGS'
+      :pending?.facts.formalStatus==='BLOCKED'?null
+        :['closed-formal-boundary','closed-boundary-not-resumable'].includes(pending?.facts.consumption.kind)
+          ?'VALIDATE_SLICE':null;
+    const handoff=operation?{operation,slice:pending.slice,deliveryId:pending.deliveryId}:null;
+    const state=blocked.length?'VALIDATION_BLOCKED'
+      :pending?.facts.formalStatus==='NEEDS_FIX'?'VALIDATION_NEEDS_FIX'
+      :pending?.diagnostics.length?'EVIDENCE_STALE':'VALIDATION_BLOCKED';
+    const inspection={activationId:activation.activationId,sequence:activation.sequence,
+      requirementsAuthority:projected.requirementsAuthority,preparationRevision:activation.preparationRevision,
+      deliveries:outputs.map(({facts,targets,observation,carrier,...publicItem})=>publicItem),
+      state,normalHandoff:handoff,
+      diagnostics:blocked.length?blocked.map(item=>({kind:'evidence',artifact:item.slice,
+        field:'status',reason:item.facts.formalStatus==='BLOCKED'
+          ?'blocked incorporation':'uncertain incorporation'}))
+        :pending?pending.diagnostics.length?pending.diagnostics:pending.facts.diagnostics
+        :[{kind:'evidence',artifact:'continuity.json',field:'terminal',reason:'EVIDENCE_INCOMPLETE: local PASS has no terminal judgment'}]};
+    return withCapture?{inspection:structuredClone(inspection),context:structuredClone(context),requirementsAuthority:projected.requirementsAuthority,
+      activationBytes:Uint8Array.from(a.bytes),files:new Map([...image.files].map(([name,bytes])=>[name,Uint8Array.from(bytes)])),
+      observedByDelivery:new Map(outputs.map(item=>[item.deliveryId,scopedObservation(item.observation,item.targets)]))}:inspection;
+  }
   // A later concluded refusal or BLOCKED result owns recovery for the whole
   // image. A stale predecessor must not hide it by winning the serial scan.
   const blocked=outputs.filter(({facts})=>facts.observedValidation==='uncertain'
@@ -373,10 +448,16 @@ export async function inspectCurrentExecution(specPath) {
   }
   if (normalHandoff===null && diagnostics.length===0)
     diagnostics=[{kind:'evidence',artifact:'continuity.json',field:'terminal',reason:'EVIDENCE_INCOMPLETE: local PASS has no terminal judgment'}];
-  return {activationId:activation.activationId,sequence:activation.sequence,
+  const inspection={activationId:activation.activationId,sequence:activation.sequence,
     requirementsAuthority:projected.requirementsAuthority,preparationRevision:activation.preparationRevision,
     deliveries:outputs.map(({facts,targets,observation,...publicItem})=>publicItem),state,normalHandoff,diagnostics};
+  return withCapture?{inspection:structuredClone(inspection),context:structuredClone(context),requirementsAuthority:projected.requirementsAuthority,
+    activationBytes:Uint8Array.from(a.bytes),files:new Map([...image.files].map(([name,bytes])=>[name,Uint8Array.from(bytes)])),
+    observedByDelivery:new Map(outputs.map(item=>[item.deliveryId,scopedObservation(item.observation,item.targets)]))}:inspection;
 }
+
+export async function inspectCurrentExecution(specPath) { return readCurrentExecution(specPath); }
+export async function captureCurrentExecution(specPath) { return readCurrentExecution(specPath,true); }
 
 async function realDirectoryMetadata(file) {
   const metadata=await fs.lstat(file);
@@ -386,7 +467,7 @@ async function realDirectoryMetadata(file) {
 
 export async function main(argv=process.argv.slice(2)) {
   if (argv.length===1 && argv[0]==='--help') {
-    process.stdout.write('Usage: node execution-current-reader.mjs SPEC_PATH\nRead-only EC-1 initial quiet inspection. No operation is admitted.\n');
+    process.stdout.write('Usage: node execution-current-reader.mjs SPEC_PATH\nRead-only EC-1 quiet inspection. No operation is admitted.\n');
     return 0;
   }
   if (argv.length!==1 || argv[0].startsWith('--')) {
