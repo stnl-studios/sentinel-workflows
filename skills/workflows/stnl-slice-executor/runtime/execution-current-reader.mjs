@@ -274,8 +274,10 @@ function verifyLastAttempt(activation,deliveries) {
     fail('INVALID_CURRENT_IMAGE','lastAttempt terminal activation differs','integrity','activation.json','lastAttempt');
   const delivery=deliveries.find(item=>item.deliveryId===last.deliveryId && item.slice===last.slice);
   const facts=delivery?.facts,bundle=facts?.bundle;
-  const matched=facts?.rejection ?? (facts?.cycle && bundle?.validation?.id===facts.cycle.admissionId
-    ?bundle.findingsChecks.at(-1):bundle?.validation??bundle?.findingsChecks.at(-1)??bundle?.implementation.at(-1));
+  const matched=facts?.rejection ?? (activation.activeAttempt?.operation==='APPLY_FINDINGS'
+    ?bundle?.validation
+    :facts?.cycle && bundle?.validation?.id===facts.cycle.admissionId
+      ?bundle.findingsChecks.at(-1):bundle?.validation??bundle?.findingsChecks.at(-1)??bundle?.implementation.at(-1));
   // During publication, the active owner's installed candidate can supersede
   // the prior validation record before the new terminal activation is written.
   // A1 still verifies the prior lastAttempt below; only an installed record
@@ -377,12 +379,14 @@ async function readCurrentExecution(specPath,withCapture=false,expectedOwner=nul
       const bundleBytes=current.evidence?image.files.get(current.evidence.path):null;
       const bundle=bundleBytes?parseCurrentJson(bundleBytes.toString('utf8')):null;
       const v3=bundle?.validation?.recordFormat==='stnl-task-record-v2';
-      const admissionRef=activation.activeAttempt!==null
-        && bundle?.validation?.origin?.operationAttemptId===activation.activeAttempt.operationAttemptId
-        ?activation.activeAttempt.operationRef:activation.lastAttempt?.operationRef??null;
+      const admissionRef=activation.lastAttempt?.operation==='APPLY_FINDINGS'
+        ?activation.lastAttempt.operationRef
+        :activation.activeAttempt!==null
+          && bundle?.validation?.origin?.operationAttemptId===activation.activeAttempt.operationAttemptId
+          ?activation.activeAttempt.operationRef:activation.lastAttempt?.operationRef??null;
       const observedWork=scopedObservation(item.observation,item.targets).manifest;
       const facts=await inspectPostConversionEvidence({context,snapshotBytes:image.files.get('approved-preparation.json'),
-        current,bundleBytes,observedWork,admissionRef});
+        current,bundleBytes,observedWork,admissionRef,lastAttempt:activation.lastAttempt});
       if(!facts || facts.slice!==item.slice || facts.persistedValidation!==continuity.deliveries.find(value=>value.deliveryId===item.deliveryId)?.validation)
         fail('INVALID_CURRENT_IMAGE',`${item.slice}: converted inspection differs`);
       if(v3) {
@@ -399,7 +403,7 @@ async function readCurrentExecution(specPath,withCapture=false,expectedOwner=nul
       item.observedValidation=facts.observedValidation;
       item.evidenceSha256=facts.evidenceSha256;
       item.formalStatus=facts.formalStatus??(facts.cycle?'PASS':null);
-      item.auxiliaryStatus=null;
+      item.auxiliaryStatus=facts.auxiliaryStatus??null;
       item.diagnostics=facts.observationMatches?[]:[{kind:'observation',artifact:item.slice,field:'observedWork',reason:'EVIDENCE_STALE'}];
     }
     verifyLastAttempt(activation,outputs);
@@ -418,16 +422,27 @@ async function readCurrentExecution(specPath,withCapture=false,expectedOwner=nul
     fail('STALE_BASE','activation or official root changed between A and B','integrity','activation.json');
   if(converted) {
     const blocked=outputs.filter(item=>item.facts.formalStatus==='BLOCKED'
+      || item.facts.auxiliaryStatus==='BLOCKED'
       || item.facts.observedValidation==='uncertain');
     const pending=blocked.length?null:outputs.find(item=>item.facts.requiresFormalRevalidation);
-    const operation=pending?.facts.formalStatus==='NEEDS_FIX'?'APPLY_FINDINGS'
-      :pending?.facts.formalStatus==='BLOCKED'?null
+    const post= pending?.facts.bundle?.validation?.recordFormat==='stnl-task-record-v2';
+    const hasPost=outputs.some(item=>item.facts.bundle?.validation?.recordFormat==='stnl-task-record-v2');
+    const operation=post
+      ?pending.facts.formalStatus==='NEEDS_FIX'
+        && (!pending.facts.cycle?.admissionId || pending.facts.bundle.validation.id!==pending.facts.cycle.admissionId)
+        ?'APPLY_FINDINGS':'VALIDATE_SLICE'
+      :pending?.facts.formalStatus==='NEEDS_FIX'?'APPLY_FINDINGS'
         :['closed-formal-boundary','closed-boundary-not-resumable'].includes(pending?.facts.consumption.kind)
           ?'VALIDATE_SLICE':null;
     const handoff=operation?{operation,slice:pending.slice,deliveryId:pending.deliveryId}:null;
     const state=blocked.length?'VALIDATION_BLOCKED'
+      :post?pending?.diagnostics.length?'EVIDENCE_STALE'
+        :operation==='APPLY_FINDINGS'?'VALIDATION_NEEDS_FIX'
+          :pending?.facts.cycle?.status==='TESTS_PASS'?'FINDINGS_CORRECTED'
+            :pending?.facts.cycle?.status==='TESTS_FAIL'?'FINDINGS_RETRY_EXHAUSTED':'IMPLEMENTED_AWAITING_VALIDATION'
       :pending?.facts.formalStatus==='NEEDS_FIX'?'VALIDATION_NEEDS_FIX'
-      :pending?.diagnostics.length?'EVIDENCE_STALE':'VALIDATION_BLOCKED';
+        :pending?.diagnostics.length?'EVIDENCE_STALE'
+          :hasPost?'IMPLEMENTED_AWAITING_VALIDATION':'VALIDATION_BLOCKED';
     const inspection={activationId:activation.activationId,sequence:activation.sequence,
       requirementsAuthority:projected.requirementsAuthority,preparationRevision:activation.preparationRevision,
       deliveries:outputs.map(({facts,targets,observation,carrier,...publicItem})=>publicItem),

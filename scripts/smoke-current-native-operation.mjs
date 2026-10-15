@@ -17,13 +17,13 @@ const run=promisify(execFile);
 const sha=bytes=>`sha256:${createHash('sha256').update(bytes).digest('hex')}`;
 const output=value=>process.stdout.write(JSON.stringify(value)+'\n');
 async function git(root,args) {return run('git',['-C',root,...args],{timeout:30000});}
-async function setup() {
+async function setup({defect=false}={}) {
   const runRoot=await fs.mkdtemp(path.join(repo,'tmp/u3-reconstruction/vertical-native-EC1-'));
   const image=await convertedImage(null,{kind:'managed-s2'});
   const root=image.f.root;
   await fs.writeFile(path.join(root,'.gitignore'),'/tmp/\n');
   const firstDrift=path.join(root,'src/greeting.mjs');
-  await fs.writeFile(firstDrift,'export const greeting="hello";\n');
+  await fs.writeFile(firstDrift,defect?'export const greeting="broken";\n':'export const greeting="hello";\n');
   await fs.writeFile(path.join(root,'src/greeting.test.mjs'),
     'import test from "node:test";import assert from "node:assert/strict";import {greeting} from "./greeting.mjs";test("AC-001",()=>assert.equal(greeting,"hello"));\n');
   await git(root,['init','-q']);
@@ -43,9 +43,72 @@ async function setup() {
   const contract=path.join(repo,'agents/codex/.codex/agents/stnl_validation_runner.toml');
   const evidence={runRoot,fixtureRoot:root,specPath:image.f.specPath,executionRoot:image.f.execution,
     deliveryId:selected.deliveryId,slice:selected.slice,head,handleFile,firstDrift,
-    contract,contractSha256:sha(await fs.readFile(contract)),start,dispatch};
+    defect,contract,contractSha256:sha(await fs.readFile(contract)),start,dispatch};
   await fs.writeFile(path.join(runRoot,'operation-1.start.json'),JSON.stringify(evidence,null,2)+'\n');
   return evidence;
+}
+async function applyBegin(runRoot) {
+  const first=JSON.parse(await fs.readFile(path.join(runRoot,'operation-1.start.json'),'utf8'));
+  if((await resume(first.start.handle)).phase!=='committed') throw new Error('NEEDS_FIX operation is not committed');
+  const activation=JSON.parse(await fs.readFile(path.join(first.executionRoot,'activation.json'),'utf8'));
+  const continuity=JSON.parse(await fs.readFile(path.join(first.executionRoot,'continuity.json'),'utf8'));
+  const current=continuity.deliveries.find(item=>item.deliveryId===first.deliveryId);
+  const bundle=JSON.parse(await fs.readFile(path.join(first.executionRoot,current.evidence.path),'utf8'));
+  if(!bundle.validation?.recordUtf8.includes('- Status: NEEDS_FIX')
+    || !bundle.openFindings.some(item=>item.severity==='blocking'))
+    throw new Error('first real verdict is not a blocking NEEDS_FIX');
+  const start=await begin({specPath:first.specPath,slice:first.slice,
+    expectedActivationId:activation.activationId,operation:'APPLY_FINDINGS'});
+  const handleFile=path.join(runRoot,'operation-2.handle.json');
+  await fs.writeFile(handleFile,JSON.stringify(start.handle)+'\n',{flag:'wx',mode:0o600});
+  const evidence={runRoot,fixtureRoot:first.fixtureRoot,specPath:first.specPath,
+    executionRoot:first.executionRoot,deliveryId:first.deliveryId,slice:first.slice,
+    handleFile,start,firstCounters:current.counters};
+  await fs.writeFile(path.join(runRoot,'operation-2.start.json'),JSON.stringify(evidence,null,2)+'\n');
+  return evidence;
+}
+async function applyDispatch(runRoot) {
+  const entry=JSON.parse(await fs.readFile(path.join(runRoot,'operation-2.start.json'),'utf8'));
+  const state=await resume(entry.start.handle);
+  if(state.nextAction!=='reserve-dispatch') throw new Error('APPLY owner did not survive controller restart');
+  await fs.writeFile(path.join(entry.fixtureRoot,'src/greeting.mjs'),'export const greeting="hello";\n');
+  const dispatch=await reserveDispatch(entry.start.handle);
+  entry.dispatch=dispatch;
+  await fs.writeFile(path.join(runRoot,'operation-2.start.json'),JSON.stringify(entry,null,2)+'\n');
+  return entry;
+}
+async function formalBegin(runRoot) {
+  const first=JSON.parse(await fs.readFile(path.join(runRoot,'operation-1.start.json'),'utf8'));
+  const apply=JSON.parse(await fs.readFile(path.join(runRoot,'operation-2.start.json'),'utf8'));
+  if((await resume(apply.start.handle)).phase!=='committed') throw new Error('APPLY operation is not committed');
+  const activation=JSON.parse(await fs.readFile(path.join(first.executionRoot,'activation.json'),'utf8'));
+  const continuity=JSON.parse(await fs.readFile(path.join(first.executionRoot,'continuity.json'),'utf8'));
+  const current=continuity.deliveries.find(item=>item.deliveryId===first.deliveryId);
+  const bundle=JSON.parse(await fs.readFile(path.join(first.executionRoot,current.evidence.path),'utf8'));
+  if(bundle.findingsChecks.at(-1)?.recordUtf8.includes('- Status: TESTS_PASS')!==true
+    || !bundle.openFindings.some(item=>item.severity==='blocking'))
+    throw new Error('APPLY did not retain active findings after TESTS_PASS');
+  const start=await begin({specPath:first.specPath,slice:first.slice,
+    expectedActivationId:activation.activationId});
+  const handleFile=path.join(runRoot,'operation-3.handle.json');
+  await fs.writeFile(handleFile,JSON.stringify(start.handle)+'\n',{flag:'wx',mode:0o600});
+  const dispatch=await reserveDispatch(start.handle);
+  const evidence={runRoot,fixtureRoot:first.fixtureRoot,specPath:first.specPath,
+    executionRoot:first.executionRoot,deliveryId:first.deliveryId,slice:first.slice,
+    handleFile,start,dispatch,applyCounters:current.counters};
+  await fs.writeFile(path.join(runRoot,'operation-3.start.json'),JSON.stringify(evidence,null,2)+'\n');
+  return evidence;
+}
+async function afterPassDrift(runRoot) {
+  const first=JSON.parse(await fs.readFile(path.join(runRoot,'operation-1.start.json'),'utf8'));
+  const formal=JSON.parse(await fs.readFile(path.join(runRoot,'operation-3.start.json'),'utf8'));
+  if((await resume(formal.start.handle)).phase!=='committed') throw new Error('later formal is not committed');
+  const file=path.join(first.fixtureRoot,'src/greeting.mjs');
+  await fs.appendFile(file,'// equivalent approved output drift after formal PASS.\n');
+  const state=await readback(runRoot);
+  if(state.some(item=>item.normalHandoff?.operation!=='VALIDATE_SLICE'))
+    throw new Error('equivalent output drift did not request VALIDATE_SLICE');
+  return state;
 }
 async function second(runRoot) {
   const first=JSON.parse(await fs.readFile(path.join(runRoot,'operation-1.start.json'),'utf8'));
@@ -80,8 +143,9 @@ async function readback(runRoot) {
     const child=await run(process.execPath,[script,first.specPath],{timeout:60000});
     const response=JSON.parse(child.stdout);
     results.push({script,activationId:response.activationId,state:response.state,
+      normalHandoff:response.normalHandoff,
       deliveries:response.deliveries.map(item=>({slice:item.slice,formalStatus:item.formalStatus,
-        counters:item.counters}))});
+        auxiliaryStatus:item.auxiliaryStatus,counters:item.counters}))});
   }
   await fs.writeFile(path.join(runRoot,'readback.json'),JSON.stringify(results,null,2)+'\n');
   return results;
@@ -136,6 +200,11 @@ async function packageEvidence(runRoot) {
 try {
   const [command,arg]=process.argv.slice(2);
   if(command==='prepare') output(await setup());
+  else if(command==='prepare-findings') output(await setup({defect:true}));
+  else if(command==='apply-begin') output(await applyBegin(arg));
+  else if(command==='apply-dispatch') output(await applyDispatch(arg));
+  else if(command==='formal-begin') output(await formalBegin(arg));
+  else if(command==='drift-after-pass') output(await afterPassDrift(arg));
   else if(command==='second') output(await second(arg));
   else if(command==='readback') output(await readback(arg));
   else if(command==='package') output(await packageEvidence(arg));

@@ -663,9 +663,23 @@ function validateCurrentContent(files) {
     const approvedDelivery=snapshot.deliveries.find(item=>item.deliveryId===current.deliveryId);
     const leaf=snapshot.normativeProjection.deliveries.find(item=>item.deliveryId===current.deliveryId);
     const global=snapshot.normativeProjection.global;
+    const convertedFindings=bundle?.findingsChecks?.length>0
+      && bundle.support.every(item=>item.kind==='validation')
+      && [...bundle.findingsChecks,...bundle.support,record].every(item=>item
+        && item.recordFormat==='stnl-task-record-v2' && item.sources?.legacyPreparation===null
+        && item.contract?.terminal===null && item.origin?.deliveryId===current.deliveryId
+        && item.origin?.slice===current.slice
+        && item.origin?.preparationRevision===snapshot.preparationRevision
+        && item.origin?.localRevision===approvedDelivery?.localRevision
+        && item.origin?.normativeSha256===current.authoritySha256
+        && item.origin?.operation===(item.kind==='findings-check'?'APPLY_FINDINGS':'VALIDATE_SLICE')
+        && same(item.contract?.delivery,leaf)
+        && same(item.contract?.context,{requirementsAuthority:snapshot.requirementsAuthority,
+          objective:global.objective,strategy:global.strategy,risks:global.risks})
+        && same(item.contract?.recipe,leaf.verificationRecipe));
     return decision.evidenceSha256!==current.evidence?.sha256 && approvedDelivery
-      && bundle?.implementation?.length===0 && bundle.findingsChecks?.length===0
-      && bundle.support?.length===0 && bundle.openDivergences?.length===0
+      && bundle?.implementation?.length===0 && (bundle.findingsChecks?.length===0 || convertedFindings)
+      && (bundle.support?.length===0 || convertedFindings) && bundle.openDivergences?.length===0
       && record?.kind==='validation' && record.recordFormat==='stnl-task-record-v2'
       && record.sources?.legacyPreparation===null && record.contract?.terminal===null
       && record.origin?.deliveryId===current.deliveryId && record.origin?.slice===current.slice
