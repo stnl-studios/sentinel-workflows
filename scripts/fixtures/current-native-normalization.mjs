@@ -33,7 +33,9 @@ export async function reviewedDecisionCase(test) {
 // Mechanical fault carrier for bounded cases. Live acceptance uses independent
 // agents and exact tool finalResponse bytes in the ignored native smoke package.
 export async function normalizedFormal(fixture,{successor=false,invalid=false,partial=false,
-  candidateMutation=null,terminalFault=false,references='none',dispositions='none'}={}) {
+  candidateMutation=null,beforeCapture=null,beforePublish=null,captureOnly=false,
+  invalidText='INVALID_FORMAL_RESPONSE',headOverride=null,terminalFault=false,
+  references='none',dispositions='none'}={}) {
   const number=++next;
   const activation=JSON.parse(await fs.readFile(path.join(fixture.image.f.execution,'activation.json'),'utf8'));
   const options={specPath:fixture.specPath,slice:fixture.delivery.slice,
@@ -44,16 +46,24 @@ export async function normalizedFormal(fixture,{successor=false,invalid=false,pa
   await bindNative(start.handle,agentId);
   const measured=await verifyNative(dispatch.originFile);
   const request=await fs.readFile(dispatch.requestFile);
-  const finalResponse=invalid?'INVALID_FORMAL_RESPONSE':JSON.stringify({
+  const finalResponse=invalid?invalidText:JSON.stringify({
     format:'stnl-current-validation-response-v1',requestSha256:sha(request),
-    result:{status:'PASS',head:fixture.head,commands:measured.commands,
+    result:{status:'PASS',head:headOverride??fixture.head,commands:measured.commands,
       evidence:'The prepared AC-001 test passed under the official native verification helper.',
       findingReferences:references,findingDispositions:dispositions,blockers:'none',
       unexpectedWorkspaceEffects:'none',persistenceSummary:'No product or task file changed.'},
     newFindings:[]});
   const tool=path.join(fixture.root,`mechanical-normalization-${number}.json`);
   await fs.writeFile(tool,JSON.stringify({agentId,status:'completed',finalResponse})+'\n');
-  const captured=await captureNative(start.handle,tool);
+  if(beforeCapture) await beforeCapture({start,dispatch,tool,finalResponse});
+  let captured;
+  try {captured=await captureNative(start.handle,tool);}
+  catch(error) {
+    if(captureOnly) return {start,dispatch,captureError:error,finalResponse};
+    throw error;
+  }
+  if(captureOnly) return {start,dispatch,captured,finalResponse};
+  if(beforePublish) await beforePublish({start,dispatch,captured,tool,finalResponse});
   let repaired=null;
   if(partial) {
     try {await publish(start.handle,{checkpoint:async phase=>{
