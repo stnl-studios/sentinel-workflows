@@ -879,6 +879,36 @@ test('A10 formal v2 is tied to complete APPLY and alone disposes findings',()=>{
   assert.throws(()=>composeCurrentValidationEvidence(nextRequest.input),failure('RUNNER_RESULT_REJECTED','normalization'));
 });
 
+test('synthetic Initial NEEDS_FIX correction reaches new formal PASS with replay and stale guards',()=>{
+  const {base,owner,cap}=native();
+  assert.deepEqual(base.bundle.openFindings,[finding(1,1)]);
+  const applied=compose(base,[cap],owner);
+  assert.equal(applied.validation,'revalidation-required');
+  assert.deepEqual(applied.bundle.openFindings,[finding(1,1)]);
+  assert.deepEqual(applied.counters,{implementationChecks:1,findingsChecks:1,validationAttempts:1,findings:1});
+  const replayApply=compose(base,[cap],owner);
+  assert.deepEqual(replayApply.bytes,applied.bytes);
+  const stale=clone(cap);
+  rebindRequest(stale,item=>{item.scopePaths=[];});
+  stale.rawResponse=cap.rawResponse;
+  rebindRaw(stale,Buffer.from(cap.rawResponse).toString());
+  assert.throws(()=>compose(base,[stale],owner),failure('EVIDENCE_STALE','requestSha256'));
+  const formal=formalAfter(applied,'PASS');
+  const completed=composeCurrentValidationEvidence(formal.input);
+  assert.equal(completed.formalStatus,'PASS');
+  assert.equal(completed.validation,'current');
+  assert.deepEqual(completed.bundle.openFindings,[]);
+  assert.deepEqual(completed.counters,{implementationChecks:1,findingsChecks:1,validationAttempts:2,findings:1});
+  assert.match(completed.bundle.validation.recordUtf8,/finding-01=resolved/u);
+  const replayFormal=composeCurrentValidationEvidence({...formal.input,
+    previous:{bundleBytes:completed.bytes,counters:completed.counters}});
+  assert.equal(replayFormal.replayed,true);
+  assert.deepEqual(replayFormal.bytes,completed.bytes);
+  const staleFormal=clone(formal.input);
+  rebindFormalRequest(staleFormal.capture,item=>{item.base.auxiliary.cycle='attempt-99';});
+  assert.throws(()=>composeCurrentValidationEvidence(staleFormal),failure('EVIDENCE_STALE','auxiliary'));
+});
+
 test('A11 PASS effective base follows formal observation and passive drift',()=>{
   const f=native();const applied=compose(f.base,[f.cap],f.owner);
   assert.equal(readback(applied).validation,'revalidation-required');

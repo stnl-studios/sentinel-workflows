@@ -7,7 +7,8 @@ import {
   parseSemanticExecutionPayload, serializeMarkdownScalar, serializeCommand,
   executionFields, isExplanatoryExecutionField,
 } from './runner-result-contract.mjs';
-import { verifyCapturedInvocation, verifyWorkObservation, packCaptureSources, restoreCaptureSources, closeEvidenceObjects } from './execution-evidence-proof.mjs';
+import { verifyCapturedInvocation, verifyWorkObservation, packCaptureSources, restoreCaptureSources,
+  closeEvidenceObjects, projectNativeJudgment, NATIVE_JUDGMENT_VARIANT } from './execution-evidence-proof.mjs';
 
 const HASH = /^sha256:[a-f0-9]{64}$/u;
 const UUID = /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/u;
@@ -444,7 +445,18 @@ function compose(input, info) {
     if (transport === 'managed') { finalManaged = transportInfo; managedCloses.push(transportInfo); }
     receipts.push(receipt);
     const origin = originRecord(input.owner, transport, transportInfo);
-    const result = semantic(rawText, receipt, round);
+    let semanticText=rawText;
+    if(transport==='native') {
+      const nativeOrigin=jsonBytes(cap.origin,`round ${round} origin`).value;
+      if(nativeOrigin.responseVariant===NATIVE_JUDGMENT_VARIANT) {
+        const nativeObserved=jsonBytes(cap.verificationObservation,`round ${round} verificationObservation`).value;
+        verifyWorkObservation('initial-implementation',nativeObserved,input.owner,round,info,before,input.context,
+          `round ${round} observation`);
+        semanticText=projectNativeJudgment({origin:nativeOrigin,observation:nativeObserved,
+          agentId:transportInfo.runnerId,rawText,operation:'EXECUTE_SLICE'});
+      }
+    }
+    const result = semantic(semanticText, receipt, round);
     const schemaRejected = result.error !== undefined;
     if (schemaRejected) {
       if (index !== input.rounds.length - 1) invalid(`round ${round}: rejected round cannot precede another`);
@@ -500,7 +512,7 @@ function compose(input, info) {
     if (!rejection && payload.status === 'TESTS_NOT_APPLICABLE') rejection = semanticError('TESTS_NOT_APPLICABLE contradicts the reviewed nonempty recipe');
     if (!rejection) {
       try {
-        const helperResult = deriveCanonicalRunnerRejection({receipt, response:rawText});
+        const helperResult = deriveCanonicalRunnerRejection({receipt, response:semanticText});
         if (helperResult !== null) rejection = helperResult;
         else {
           assertRunnerVerdictConsistency('EXECUTE_SLICE', payload.status, commands);

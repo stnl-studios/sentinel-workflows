@@ -267,6 +267,10 @@ function checkRunnerContract(contract, readmeFile, platform) {
     if (actual.length !== expected.length || actual.some((line, index) => line !== expected[index])) reject("R007_OUTPUT_SCHEMA", `${operation} output schema changed`);
   }
   if(platform==='codex') {
+    requirePattern(contract, /responseVariant:"stnl-current-native-judgment-v1"[\s\S]{0,900}omita.*`head` e `requestSha256`/u,
+      'R029_NATIVE_BINDING','native judgment variant must omit copied HEAD and request digest');
+    requirePattern(contract, /nunca deduza a variante por campos ausentes/u,
+      'R029_NATIVE_BINDING','native judgment variant requires explicit dispatch selection');
     requirePattern(contract, /Quando a entrada oficial incluir `stnl-current-validation-request-v3`[^\n]*stnl-current-validation-response-v1[^\n]*newFindings/u,
       'R028_NATIVE_V3','native v3 response envelope/finding variant is missing');
     requirePattern(contract, /`severity` aceita somente `blocking` ou `advisory`; NEEDS_FIX exige pelo menos um finding `blocking` ativo/u,

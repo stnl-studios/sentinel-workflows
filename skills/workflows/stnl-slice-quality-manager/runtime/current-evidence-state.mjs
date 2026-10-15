@@ -2,11 +2,11 @@ import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { logicalArtifactPath, parseCurrentJson, resolveLogicalProductClaim, validateCurrentEvidence,
   validateCurrentImage,validateCurrentCandidate,validateCurrentActivation,currentOperationBindingSha256 } from './execution-current.mjs';
-import { validateInitialImplementationEvidence } from './execution-evidence-current.mjs';
+import { composeInitialImplementationEvidence,validateInitialImplementationEvidence } from './execution-evidence-current.mjs';
 import {
   verifyCapturedInvocation, verifyWorkObservation, packCaptureSources,
   restoreCaptureSources, closeEvidenceObjects, verifyAuxiliaryWork, findingsRoundCaptureSha256,
-  inspectConvertedDelivery,
+  inspectConvertedDelivery, projectNativeJudgment, NATIVE_JUDGMENT_VARIANT,
 } from './execution-evidence-proof.mjs';
 import {
   RunnerSemanticResultError, assertRunnerVerdictConsistency, deriveCanonicalRunnerRejection,
@@ -498,7 +498,12 @@ function deriveCapture({context,authority:approvedAuthority,capture,expectedOwne
     localRevision:request.owner.localRevision,normativeSha256:request.owner.normativeSha256,
     originActivationId:request.owner.originActivationId,transport:capture.transport,
     dispatchId:info.dispatchId,runnerId:info.runnerId};
-  const parsed=parseCurrentValidationResponse(rawText);
+  const nativeOrigin=capture.transport==='native'?jsonBytes(capture.origin,'validation origin').value:null;
+  const semanticText=nativeOrigin?.responseVariant===NATIVE_JUDGMENT_VARIANT
+    ?projectNativeJudgment({origin:nativeOrigin,observation:observed.observed,
+      requestBytes:capture.validationRequest,agentId:info.runnerId,rawText,operation:'VALIDATE_SLICE'})
+    :rawText;
+  const parsed=parseCurrentValidationResponse(semanticText);
   if (receipt.status==='RUNNER_RESULT_BLOCKED') {
     if (parsed.response) uncertain('schema-rejected receipt has valid formal response');
     if (receipt.semanticResponseStatus!==null || receipt.testedState!==null || typeof receipt.captureFailure!=='string' || !receipt.captureFailure.trim()
@@ -1715,10 +1720,16 @@ function deriveApplyCycle({context,authority:approvedAuthority,owner:expectedOwn
     runners.add(transportInfo.runnerId);
     if (transport==='managed') managed.push(transportInfo);
     receipts.push(receipt);
-    const envelope=applyEnvelope(rawText,cap.applyRequest,receipt,transport,globalRound);
-    const work=verifyAuxiliaryWork('current-findings',{context,authority:approvedAuthority,owner:request.owner,round,
+    const nativeJudgment=origin?.responseVariant===NATIVE_JUDGMENT_VARIANT;
+    const workInput={context,authority:approvedAuthority,owner:request.owner,round,
       capture:cap,receipt,priorScopePaths:baseFacts.priorScopePaths,previousScopePaths:previousScope,
       previousAfter:previousWork?.observed?.after??null,witnessedRemovals:[...witnesses].sort(ordinal),
+      status:receipt.semanticResponseStatus};
+    const preverifiedWork=nativeJudgment?verifyAuxiliaryWork('current-findings',workInput):null;
+    const semanticText=nativeJudgment?projectNativeJudgment({origin,observation:preverifiedWork.observed,
+      requestBytes:cap.applyRequest,agentId:transportInfo.runnerId,rawText,operation:'APPLY_FINDINGS'}):rawText;
+    const envelope=applyEnvelope(semanticText,cap.applyRequest,receipt,transport,globalRound);
+    const work=preverifiedWork??verifyAuxiliaryWork('current-findings',{...workInput,
       status:envelope.payload?.status??receipt.semanticResponseStatus});
     if(witness?.sourceRound===round-1) {
       if(!previousWork || previousWork.payload.status!=='TESTS_PASS'
@@ -2775,4 +2786,138 @@ export function validateCurrentEvidenceCarriers({facts,sections,continuity,index
   if (facts.formalStatus==='PASS' && index.done?.toLowerCase()!=='[x]') carrierMismatch('tasks.md',slice,'PASS row is not marked done');
   if (facts.formalStatus!== 'PASS' && index.done!=='[ ]') carrierMismatch('tasks.md',slice,'row done mark lacks formal PASS');
   return {evidence,validation:facts.persistedValidation,formalStatus:facts.formalStatus};
+}
+
+// Thin Initial adapter: the existing producers decide evidence and verdicts;
+// this projects only their verified facts into the official image carriers.
+export function composeInitialCurrentOperation({context,requirementsAuthority,previous,admission,
+  deliveryId,owner,rounds,observedByDelivery}) {
+  closed(previous,['activationBytes','files'],'Initial predecessor');
+  closed(admission,['activationBytes','files'],'Initial admission');
+  const prior=validateCurrentImage(previous);
+  const active=validateCurrentImage(admission);
+  const a0=prior.activation,a1=active.activation;
+  if(a0.preparationRevision!==1 || a0.activeAttempt!==null
+    || a1.previousActivationId!==a0.activationId || a1.sequence!==a0.sequence+1
+    || !same(a1.activeAttempt,{...owner,operationRef:a1.activeAttempt?.operationRef})
+    || owner.originActivationId!==a0.activationId
+    || previous.files.size!==admission.files.size
+    || [...previous.files].some(([name,bytes])=>!Buffer.from(admission.files.get(name)??[]).equals(Buffer.from(bytes))))
+    mismatch('Initial A0/A1 owner or artifact binding differs');
+  dense(rounds,'Initial captured rounds',1,3);
+  for(const cap of rounds) {
+    const origin=jsonBytes(cap.origin,'Initial native origin').value;
+    if(cap.transport!=='native' || !same(origin.admission?.baseActivation,a0)
+      || !same(origin.admission?.reservedActivation,a1)
+      || !same(origin.owner,owner)) mismatch('Initial native capture is not bound to A0/A1');
+  }
+  const files=new Map([...previous.files].map(([name,bytes])=>[name,copyBytes(bytes,name)]));
+  const snapshot=jsonBytes(files.get('approved-preparation.json'),'Initial approved snapshot').value;
+  const current=prior.continuity.deliveries.find(item=>item.deliveryId===deliveryId);
+  const leaf=snapshot.normativeProjection.deliveries.find(item=>item.deliveryId===deliveryId);
+  if(!current || !leaf || owner.deliveryId!==deliveryId || owner.slice!==current.slice
+    || current.localRevision!==1 || snapshot.normativeSha256!==owner.normativeSha256
+    || requirementsAuthority!==snapshot.requirementsAuthority)
+    stale('Initial selected authority differs');
+  const authority={preparationRevision:1,localRevision:1,normativeSha256:snapshot.normativeSha256,
+    delivery:leaf,context:{requirementsAuthority,
+      objective:snapshot.normativeProjection.global.objective,
+      strategy:snapshot.normativeProjection.global.strategy,
+      risks:snapshot.normativeProjection.global.risks}};
+  const observed=observedByDelivery.get(deliveryId)?.manifest;
+  if(!observed) incomplete('Initial selected product observation is absent');
+  let product;
+  if(owner.operation==='EXECUTE_SLICE') {
+    if(current.evidence!==null || Object.values(current.counters).some(value=>value!==0))
+      fail('UNSUPPORTED_FORMAT','Initial implementation predecessor is not pristine');
+    product=composeInitialImplementationEvidence({context,authority,owner,currentEvidence:null,
+      counters:current.counters,rounds});
+  } else if(owner.operation==='VALIDATE_SLICE') {
+    if(rounds.length!==1 || !current.evidence) incomplete('Initial formal needs one captured response and predecessor');
+    product=composeCurrentValidationEvidence({context,authority,owner,
+      previous:{bundleBytes:files.get(current.evidence.path),counters:current.counters},capture:rounds[0]});
+  } else if(owner.operation==='APPLY_FINDINGS') {
+    if(!current.evidence) incomplete('Initial findings need a captured formal predecessor');
+    product=composeCurrentFindingsEvidence({context,authority,owner,
+      previous:{bundleBytes:files.get(current.evidence.path),counters:current.counters},rounds});
+  } else fail('UNSUPPORTED_FORMAT','Initial operation is outside EXECUTE/VALIDATE/APPLY');
+  if(product.outcome!=='recorded') fail('RUNNER_RESULT_REJECTED','Initial refusal needs an explicit future normalization policy');
+  const nextBaseline=owner.operation==='APPLY_FINDINGS'
+    ?jsonBytes(rounds[0].baselineCapture,'Initial findings baseline').value.manifest
+    :current.baseline;
+  const next={...current,baseline:nextBaseline,
+    evidence:{path:`evidence/${deliveryId}.json`,sha256:raw(product.bytes)},
+    counters:product.counters,validation:product.validation??(owner.operation==='EXECUTE_SLICE'?'unvalidated':'revalidation-required'),
+    lastDiagnostic:null};
+  const facts=inspectCurrentEvidence({context,authority,bundleBytes:product.bytes,
+    counters:next.counters,baseline:next.baseline,observedWork:observed});
+  if(!facts.observationMatches) stale('Initial composed evidence does not match current product');
+  const changed=new Set(facts.verifiedChanges);
+  const updated=prior.continuity.deliveries.map(item=>{
+    if(item.deliveryId===deliveryId) return next;
+    if(owner.operation!=='VALIDATE_SLICE' || facts.formalStatus!=='PASS'
+      || item.evidence!==null || Object.values(item.counters).some(value=>value!==0)) return item;
+    const work=observedByDelivery.get(item.deliveryId)?.manifest;
+    if(!work) incomplete('pristine dependent delivery observation is absent');
+    const before=new Map(item.baseline.entries.map(entry=>[entry.path,entry]));
+    const after=new Map(work.entries.map(entry=>[entry.path,entry]));
+    for(const name of new Set([...before.keys(),...after.keys()])) {
+      if(same(before.get(name)??null,after.get(name)??null)) continue;
+      if(before.get(name)?.kind==='directory' || after.get(name)?.kind==='directory') continue;
+      if(!changed.has(name)) stale('pristine delivery changed outside proved Initial output');
+    }
+    return {...item,baseline:work};
+  });
+  files.set(next.evidence.path,Buffer.from(product.bytes));
+  files.set('continuity.json',encode({...prior.continuity,deliveries:updated}));
+  const taskName=`tasks/${current.slice}.md`;
+  const relative=name=>taskRelative(context,current.slice,name);
+  const paths=names=>names.length?names.map(name=>`- \`${relative(name)}\``).join('\n'):'- none';
+  const records=items=>items.length?items.map(item=>item.recordUtf8).join('\n\n'):'- none';
+  const findings=facts.latest?.all??[];
+  const disposition=facts.latest?.dispositions??new Map();
+  const findingBody=findings.length?findings.map(item=>[
+    `### ${item.id}`,`- Severity: ${item.severity}`,`- Origin: ${item.originAttempt}`,
+    `- Problem: ${serializeMarkdownScalar('Problem',item.problem,true)}`,
+    `- Evidence: ${serializeMarkdownScalar('Evidence',item.evidence,true)}`,
+    `- Impact: ${serializeMarkdownScalar('Impact',item.impact,true)}`,
+    `- Related authority: ${serializeMarkdownScalar('Related authority',item.relatedAuthority,true)}`,
+    `- Expected correction: ${serializeMarkdownScalar('Expected correction',item.expectedCorrection,true)}`,
+    `- State: ${disposition.get(item.id)}`,
+    ...(disposition.get(item.id)==='resolved'?[`- Resolution: ${facts.latest.record.id}`]:[]),
+  ].join('\n')).join('\n\n'):'- none';
+  let base='- none';
+  if(facts.formalStatus==='PASS') {
+    const record=facts.latest.record;
+    const fields=operationalRecords(record.recordUtf8,taskName,'Validation Attempts')[0].fields;
+    const scope=facts.latest.request.scope.paths;
+    const state=new Map(record.testedWork.entries.map(item=>[item.path,item]));
+    base=[`- Origin attempt: ${record.id}`,`- Attempt type: ${fields.Type}`,
+      `- HEAD: ${fields.HEAD}`,'- Result: PASS',scope.length?'- Files:':'- Files: none',
+      ...scope.map(name=>`  - \`${relative(name)}\` | ${state.get(name)?.kind==='absent'?'REMOVED':state.get(name)?.sha256}`),
+      ...(!scope.length?[`- Fileless reason: ${facts.latest.request.scope.filelessReason}`]:[]),
+      '- Authoritative commands:',...fields.Commands.map(([command,exit])=>
+        `  - ${serializeCommand(command,'authoritative command')} | ${exit}`),
+      `- Evidence summary: ${serializeMarkdownScalar('Evidence summary',fields.Evidence,true)}`].join('\n');
+  }
+  const status=facts.formalStatus??'pending';
+  const action=status==='PASS'?'none':status==='NEEDS_FIX' && owner.operation==='VALIDATE_SLICE'
+    ?'APPLY_FINDINGS':'VALIDATE_SLICE';
+  let task=Buffer.from(files.get(taskName)).toString('utf8');
+  for(const [section,body] of [
+    ['Continuity',`- Current validation: ${facts.persistedValidation}\n- Current evidence: ${next.evidence.path}\n- Current action: ${action}`],
+    ['Changed Areas',paths(facts.verifiedChanges)],['Corrections Applied',paths(facts.verifiedCorrections)],
+    ['Implementation Test Evidence',records(facts.records.implementation)],
+    ['Findings Test Evidence',records(facts.records.findings)],
+    ['Validation Attempts',records(facts.records.validation)],['Validation Findings',findingBody],
+    ['Delegation Blocker','- none'],['Effective Validation Base',base],
+    ['Diff Summary',`- Initial ${owner.operation} verified ${facts.verifiedChanges.length} approved product path(s).`],
+    ['Final Result',status==='PASS'?'- PASS':'- pending'],
+  ]) task=postSection(task,section,body);
+  files.set(taskName,utf8(task));
+  files.set('tasks.md',postIndex(Buffer.from(files.get('tasks.md')).toString('utf8'),current.slice,status));
+  validateCurrentCandidate({files});
+  return {files,transition:{deliveryId,slice:current.slice,operationAttemptId:owner.operationAttemptId,
+    originActivationId:a0.activationId,outcome:'recorded',counters:next.counters},
+    consumedInvocations:rounds.length,replayed:false};
 }

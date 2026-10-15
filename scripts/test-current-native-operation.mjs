@@ -96,6 +96,90 @@ test('EC-1 mechanical: bound result bytes replay exactly, altered result is refu
   assert.equal((await resume(handle)).phase,'captured');
 });
 
+test('EC-1 native judgment variant is selected before agent and binds measured HEAD and request',async t=>{
+  const fixture=await nativeOperationCase(t);
+  const start=await begin({specPath:fixture.specPath,slice:fixture.delivery.slice,
+    expectedActivationId:fixture.activationId});
+  const dispatch=await reserveDispatch(start.handle,{responseVariant:'stnl-current-native-judgment-v1'});
+  assert.equal(dispatch.responseVariant,'stnl-current-native-judgment-v1');
+  const origin=JSON.parse(await fs.readFile(dispatch.originFile));
+  assert.equal(origin.responseVariant,dispatch.responseVariant);
+  assert.equal(origin.requestSha256,dispatch.requestSha256);
+  await bindNative(start.handle,'mechanical-bound-judgment');
+  const measured=await verifyNative(dispatch.originFile);
+  const observed=JSON.parse(await fs.readFile(measured.observationFile));
+  assert.equal(observed.format,'stnl-runner-verification-v3');
+  assert.equal(observed.binding.head,fixture.head);
+  assert.equal(observed.binding.requestSha256,dispatch.requestSha256);
+  const response=JSON.stringify({format:'stnl-current-native-judgment-v1',
+    result:(({head,...rest})=>rest)(result('PASS',fixture.head,measured.commands)),newFindings:[]});
+  const file=await toolFile(fixture,'mechanical-bound-judgment',response);
+  const captured=await captureNative(start.handle,file);
+  assert.equal(captured.status,'PASS');
+  assert.equal(captured.rawResponseSha256,sha(Buffer.from(response)));
+  assert.equal((await captureNative(start.handle,file)).replayed,true);
+  const changed=await toolFile(fixture,'mechanical-bound-judgment',response+' ','changed-native-judgment.json');
+  await assert.rejects(()=>captureNative(start.handle,changed),blocked('OWNER_MISMATCH'));
+  const published=await publish(start.handle);
+  assert.equal(published.publication,'confirmed');
+  const image=await captureCurrentExecution(fixture.specPath);
+  assert.equal(image.inspection.deliveries.find(item=>item.deliveryId===fixture.delivery.deliveryId).formalStatus,'PASS');
+  const activation=JSON.parse(Buffer.from(image.activationBytes));
+  const continuity=JSON.parse(Buffer.from(image.files.get('continuity.json')));
+  const current=structuredClone(continuity.deliveries.find(item=>item.deliveryId===fixture.delivery.deliveryId));
+  const bundle=JSON.parse(Buffer.from(image.files.get(current.evidence.path)));
+  const source=bundle.validation.sources.verificationObservation;
+  const object=bundle.objects.find(item=>item.id===source);
+  const tamperedObservation=JSON.parse(Buffer.from(object.bytesBase64,'base64'));
+  tamperedObservation.binding.head='a'.repeat(40);
+  const changedObservation=Buffer.from(JSON.stringify(tamperedObservation)+'\n');
+  object.id=sha(changedObservation);object.bytesBase64=changedObservation.toString('base64');
+  bundle.validation.sources.verificationObservation=object.id;
+  bundle.objects.sort((a,b)=>a.id<b.id?-1:a.id>b.id?1:0);
+  const bundleBytes=Buffer.from(JSON.stringify(bundle)+'\n');
+  current.evidence.sha256=sha(bundleBytes);
+  await assert.rejects(()=>inspectPostConversionEvidence({context:image.context,
+    snapshotBytes:image.files.get('approved-preparation.json'),current,bundleBytes,
+    observedWork:image.observedByDelivery.get(current.deliveryId).manifest,
+    admissionRef:activation.lastAttempt.operationRef}),error=>
+    ['EVIDENCE_STALE','EVIDENCE_INCOMPLETE','INVALID_CURRENT_IMAGE'].includes(error.code));
+});
+
+test('EC-1 native judgment rejects foreign metadata, changed recipe and altered binding',async t=>{
+  for(const kind of ['foreign-head','foreign-request','foreign-agent','wrong-round',
+    'changed-request','wrong-format','changed-recipe','changed-observation']) await t.test(kind,async sub=>{
+    const fixture=await nativeOperationCase(sub);
+    const start=await begin({specPath:fixture.specPath,slice:fixture.delivery.slice,
+      expectedActivationId:fixture.activationId});
+    const dispatch=await reserveDispatch(start.handle,{responseVariant:'stnl-current-native-judgment-v1'});
+    await bindNative(start.handle,`mechanical-${kind}`);
+    const measured=await verifyNative(dispatch.originFile);
+    if(kind==='changed-request') await fs.appendFile(dispatch.requestFile,' ');
+    if(kind==='wrong-round') {
+      const observed=JSON.parse(await fs.readFile(measured.observationFile));
+      observed.round=2;
+      await fs.writeFile(measured.observationFile,JSON.stringify(observed)+'\n');
+    }
+    if(kind==='changed-recipe') await fs.appendFile(path.join(fixture.image.f.execution,'tasks',`${fixture.delivery.slice}.md`),'\nlate recipe edit\n');
+    if(kind==='changed-observation') {
+      const observed=JSON.parse(await fs.readFile(measured.observationFile));
+      observed.binding.head='a'.repeat(40);
+      await fs.writeFile(measured.observationFile,JSON.stringify(observed)+'\n');
+    }
+    const response={format:'stnl-current-native-judgment-v1',
+      result:(({head,...rest})=>rest)(result('PASS',fixture.head,measured.commands)),newFindings:[]};
+    if(kind==='foreign-head') response.result.head='a'.repeat(40);
+    if(kind==='foreign-request') response.requestSha256='sha256:'+'a'.repeat(64);
+    if(kind==='wrong-format') response.format='stnl-current-validation-response-v1';
+    const file=await toolFile(fixture,kind==='foreign-agent'?'mechanical-other':`mechanical-${kind}`,
+      JSON.stringify(response));
+    await assert.rejects(()=>captureNative(start.handle,file),error=>
+      ['RUNNER_RESULT_REJECTED','EVIDENCE_STALE','OWNER_UNCERTAIN','OWNER_MISMATCH',
+        'INVALID_CURRENT_IMAGE'].includes(error.code));
+    assert.notEqual((await resume(start.handle)).nextAction,'publish');
+  });
+});
+
 test('EC-1 mechanical: product drift blocks verification or publication under the owner',async t=>{
   await t.test('before recipe',async sub=>{
     const fixture=await reservedOperation(sub);

@@ -3,6 +3,7 @@ import path from 'node:path';
 import { parseCurrentJson, resolveLogicalProductClaim, logicalArtifactPath, validateCurrentCandidate } from './execution-current.mjs';
 
 const HASH = /^sha256:[a-f0-9]{64}$/u;
+export const NATIVE_JUDGMENT_VARIANT = 'stnl-current-native-judgment-v1';
 const UUID = /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/u;
 const ordinal = (a, b) => a < b ? -1 : a > b ? 1 : 0;
 const raw = bytes => `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
@@ -318,8 +319,17 @@ const commandFor = check => [check.executable, ...check.args].map(quote).join(' 
 function observation(value, owner, round, recipeInfo, baseline, context, label) {
   if (value === null) incomplete(`${label}: observation required`);
   if (value.format === 'stnl-runner-verification-v1') fail('MIGRATION_REQUIRED', `${label}: observation v1 lacks WorkManifest preimage`);
-  closed(value, ['format', 'status', 'owner', 'round', 'recipe', 'resolved', 'before', 'after', 'checks'], label);
-  if (value.format !== 'stnl-runner-verification-v2') fail('UNSUPPORTED_FORMAT', `${label}: observation format`);
+  if (!['stnl-runner-verification-v2','stnl-runner-verification-v3'].includes(value.format))
+    fail('UNSUPPORTED_FORMAT', `${label}: observation format`);
+  closed(value, ['format', 'status', 'owner', 'round', 'recipe', 'resolved', 'before', 'after', 'checks',
+    ...(value.format==='stnl-runner-verification-v3'?['binding']:[])], label);
+  if(value.format==='stnl-runner-verification-v3') {
+    closed(value.binding,['head','requestSha256','dispatchId','agentId'],`${label}.binding`);
+    token(value.binding.head,/^[a-f0-9]{40}$/u,`${label}.binding.head`);
+    token(value.binding.requestSha256,HASH,`${label}.binding.requestSha256`);
+    str(value.binding.dispatchId,`${label}.binding.dispatchId`);
+    str(value.binding.agentId,`${label}.binding.agentId`);
+  }
   if (value.status !== 'completed') uncertain(`${label}: verification not completed`);
   ownerMatches(value.owner, owner, `${label}.owner`);
   if (value.round !== round) mismatch(`${label}: round differs`);
@@ -389,6 +399,10 @@ function nativeOrigin(cap, receipt, rawText, expectation, round, resolved) {
   if (origin.transport !== 'native' || receipt.transport !== 'native' || origin.attempt !== round || receipt.attempt !== round
     || origin.specPath !== dispatch.specPath || origin.workspace !== dispatch.workspace
     || origin.workspace !== receipt.workspace || origin.dispatchId !== dispatch.dispatchId) mismatch(`round ${round}: native dispatch/origin differs`);
+  if (origin.responseVariant!==undefined && origin.responseVariant!==NATIVE_JUDGMENT_VARIANT)
+    fail('UNSUPPORTED_FORMAT',`round ${round}: native response variant`);
+  if (origin.responseVariant===NATIVE_JUDGMENT_VARIANT) token(origin.requestSha256,HASH,`round ${round}: native request digest`);
+  else if (origin.requestSha256!==undefined) invalid(`round ${round}: legacy origin carries native request digest`);
   expectEqual(origin.verification, resolved, 'EVIDENCE_STALE', `round ${round}: origin verification`);
   absolute(receipt.originFile, `round ${round} native originFile`);
   const root = path.dirname(receipt.originFile);
@@ -405,6 +419,35 @@ function nativeOrigin(cap, receipt, rawText, expectation, round, resolved) {
   if (receipt.operation !== owner.operation || receipt.slice !== owner.slice || receipt.workspace !== origin.workspace) mismatch(`round ${round}: receipt owner differs`);
   if (receipt.error !== null) uncertain(`round ${round}: native receipt error`);
   return { dispatchId:origin.dispatchId, runnerId:agent.agentId, receipt, root };
+}
+
+// The projection is transient. It is never written as the concluded response or
+// used until the caller has verified the original native invocation and recipe.
+export function projectNativeJudgment({origin,observation,requestBytes=null,agentId,rawText,operation}) {
+  if(origin.responseVariant!==NATIVE_JUDGMENT_VARIANT) {
+    if(origin.responseVariant!==undefined) fail('UNSUPPORTED_FORMAT','native response variant differs');
+    return rawText;
+  }
+  if(observation.format!=='stnl-runner-verification-v3' || !same(observation.owner,origin.owner)
+    || observation.round!==origin.attempt || observation.binding?.dispatchId!==origin.dispatchId
+    || observation.binding?.agentId!==agentId
+    || observation.binding?.requestSha256!==origin.requestSha256
+    || requestBytes!==null && observation.binding.requestSha256!==raw(bytes(requestBytes,'native request bytes')))
+    stale('native judgment binding differs from origin, request or observation');
+  token(observation.binding.head,/^[a-f0-9]{40}$/u,'native judgment HEAD');
+  const answer=parseCurrentJson(rawText);
+  closed(answer,['format','result',...(operation==='VALIDATE_SLICE'?['newFindings']:[])],'native judgment response');
+  if(answer.format!==NATIVE_JUDGMENT_VARIANT) fail('UNSUPPORTED_FORMAT','native judgment response format');
+  plain(answer.result,'native judgment result');
+  if(Object.hasOwn(answer.result,'head') || Object.hasOwn(answer.result,'requestSha256'))
+    invalid('native judgment contains foreign metadata');
+  const {status,...semantic}=answer.result;
+  const result={status,head:observation.binding.head,...semantic};
+  if(operation==='EXECUTE_SLICE') return JSON.stringify(result);
+  return JSON.stringify({format:operation==='VALIDATE_SLICE'
+    ?'stnl-current-validation-response-v1':'stnl-current-findings-response-v1',
+    requestSha256:observation.binding.requestSha256,result,
+    ...(operation==='VALIDATE_SLICE'?{newFindings:answer.newFindings}:{})});
 }
 function managedEvents(cap, receipt, stem, rawText, round) {
   const {text} = textBytes(cap.events, `round ${round} events`);

@@ -35,6 +35,8 @@ Publish the complete draft with `node "<SKILL_ROOT>/runtime/publish-task-candida
 
 ## Output
 
+For an explicitly reviewed EC-1 Initial ingress with no official execution, hand the exact reviewed preparation root and review JSON to the slice executor's `runtime/install-current-initial.mjs --spec-path SPEC_PATH --preparation-root REVIEWED_ROOT --review-file REVIEW_JSON`. That runtime installs the Initial v2 image and product baselines under the common publication lock. Never replace an existing execution or infer review approval from a fixture.
+
 Use `node "<SKILL_ROOT>/runtime/validate-execution-state.mjs" <SPEC_PATH> --handoff-after <OPERATION>` for readback. Report the runtime's handoff, current authority, changed artifact paths and concrete blocks. PLAN/REPLAN hands off to independent REVIEW_PLAN of the joint set. Stop; no implementation, formal validation or self-approval.
 
 ## REPLAN

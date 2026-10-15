@@ -676,7 +676,7 @@ export async function copyCurrentCandidateTree(source,target) { await copyTree(s
 // The wrapper supplies fixed operation-specific validation and diff scope, never model-selected callbacks.
 export async function publishExecutionUpdate({ workspace, candidateExecutionRoot, expectedTree, expectedActivationId,
   owner = null, terminal = false, draft = false, readActivated, validateCandidate, authorizeDiff, checkpoint = null,
-  prepareRetention = null }) {
+  prepareRetention = null, currentInitial = false }) {
   const location = await executionLockIdentity(workspace);
   await ancestry(candidateExecutionRoot);
   const candidate = await fs.realpath(candidateExecutionRoot);
@@ -698,6 +698,8 @@ export async function publishExecutionUpdate({ workspace, candidateExecutionRoot
   const result = await withExecutionPublicationLock(workspace, async lease => {
     const before = await captureExecutionTree(workspace.executionRoot);
     if (!equal(before, expectedTree)) fail(`publication base changed; retained candidate/allocation: ${marker}`);
+    if (currentInitial && (before !== null || expectedActivationId !== null || owner !== null || terminal || draft || prepareRetention))
+      fail('EC-1 Initial ingress requires an absent official execution and no predecessor');
     let previous = null;
     if (expectedActivationId !== null) {
       previous = (await readActivated()).activation;
@@ -716,6 +718,7 @@ export async function publishExecutionUpdate({ workspace, candidateExecutionRoot
       candidateTree.files = retainedTree.files;
     }
     const authority = await validateCandidate(stage);
+    if (currentInitial && authority.preparationRevision !== 1) fail('EC-1 Initial ingress requires preparation revision 1');
     if (!equal((await captureExecutionTree(stage)).files, candidateTree.files)) fail('staged candidate changed during validation');
     if (owner && digest((await readOwnedFile(path.join(stage, 'approved-preparation.json'))).bytes) !== previous.approvedSnapshotSha256) fail('operational update changed protected review snapshot');
     if (owner && (authority.normativeSha256 !== previous.normativeSha256 || authority.preparationRevision !== previous.preparationRevision)) fail('operational update changed preparation authority');
@@ -729,16 +732,25 @@ export async function publishExecutionUpdate({ workspace, candidateExecutionRoot
       if (before) { await fs.rename(workspace.executionRoot, backup); moved = true; }
       if (checkpoint) await checkpoint('after-backup', { stage, backup, marker });
       if (await stat(workspace.executionRoot)) fail('official target unexpectedly occupied');
+      if (currentInitial) {
+        // The reviewed source is outside the publication lock. Recheck it after
+        // every pre-swap checkpoint, while this lock still protects the target.
+        await authorizeDiff(stage, before);
+        if (!equal(await captureExecutionTree(workspace.executionRoot), before)) fail('publication base changed immediately before Initial swap');
+        await assertExecutionPublicationLock(lease);
+      }
       await fs.rename(stage, workspace.executionRoot); installed = true;
       if (checkpoint) await checkpoint('after-install', { stage, backup, marker });
       if (!equal((await captureExecutionTree(workspace.executionRoot)).files, candidateTree.files)) fail('installed bytes changed');
       let activation = null;
       if (!draft) {
         const snapshotBytes = (await readOwnedFile(path.join(workspace.executionRoot, 'approved-preparation.json'))).bytes;
-        activation = { format: 'stnl-execution-activation-v1', activationId: randomUUID(), sequence: (previous?.sequence ?? 0) + 1,
+        activation = { format: currentInitial ? 'stnl-execution-activation-v2' : 'stnl-execution-activation-v1', activationId: randomUUID(), sequence: (previous?.sequence ?? 0) + 1,
           previousActivationId: previous?.activationId ?? null, preparationRevision: authority.preparationRevision,
           requirementsAuthority: authority.requirementsAuthority, normativeSha256: authority.normativeSha256,
-          approvedSnapshotSha256: digest(snapshotBytes), artifacts: await officialManifest(workspace.executionRoot),
+          approvedSnapshotSha256: digest(snapshotBytes), artifacts: currentInitial
+            ? (await officialManifest(workspace.executionRoot)).sort((left,right)=>left.path<right.path?-1:left.path>right.path?1:0)
+            : await officialManifest(workspace.executionRoot),
           activeAttempt: previous?.activeAttempt ?? null,
           lastAttempt: previous?.lastAttempt ?? null };
         if (checkpoint) await checkpoint('before-activation', { stage, backup, marker });
@@ -1014,9 +1026,8 @@ export function hasOwnedAllocationEnvelope(record, marker) {
     if(record.retention) return ['preparation-publication','operational-publication','operation-admission','pass-reopening'].includes(record.retention.producer)
       && Object.hasOwn(record,'owner') && equal(record.retention.owner,owner)
       && (record.retention.producer==='operation-admission' ? !!owner : publicationOrigin);
-    return publisher && owned && uuid(record.expectedActivationId) && record.expectedTree?.files
-      && path.isAbsolute(record.candidate ?? '') && record.stage===path.join(parent,`.stnl-execution-stage-${record.allocationId}`)
-      && record.backup===path.join(record.retentionRoot,'previous');
+    const firstInitial = record.owner===null && record.expectedActivationId===null && record.expectedTree===null;
+    return publicationOrigin && ((owned && uuid(record.expectedActivationId) && record.expectedTree?.files) || firstInitial);
   }
   if(record.retentionRoot!==record.candidate) return false;
   if(record.format==='stnl-preparation-allocation-v1') return record.producer==='preparation' && marker===`${record.candidate}.owner.json`
@@ -1103,7 +1114,8 @@ export async function acknowledgePublishedCandidate({workspace,marker,candidateT
   });
 }
 
-export async function cleanupOwnedExecutionAllocation({ workspace, marker, readActivated, checkpoint = null }) {
+export async function cleanupOwnedExecutionAllocation({ workspace, marker, readActivated, checkpoint = null,
+  validateInstalledActivation = validateActivation }) {
   async function acknowledge(record, result) {
     try {
       if(checkpoint) await checkpoint('before-cleanup-acknowledgment', {marker});
@@ -1118,7 +1130,7 @@ export async function cleanupOwnedExecutionAllocation({ workspace, marker, readA
     const original=(await readOwnedFile(marker)).bytes;
     const { classification, record } = await classifyOwnedAllocation({ workspace, marker, activation: current.activation });
     if(!record.confirmation && record.expectedInstalledActivation) {
-      validateActivation(record.expectedInstalledActivation);
+      validateInstalledActivation(record.expectedInstalledActivation);
       if(!equal(record.expectedInstalledActivation,current.activation) || current.activation.activeAttempt) fail('unacknowledged image differs or still has an owner');
       record.confirmation={activationId:current.activation.activationId,artifactManifestSha256:digest(JSON.stringify(current.activation.artifacts)),terminalOperationAttemptId:record.owner?.operationAttemptId ?? null};
       record.cleanup={status:'pending',paths:[record.stage],diagnostics:['Recovered confirmation from exact verified installed image']};

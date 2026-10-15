@@ -51,6 +51,15 @@ test('Codex native v3 instructions are a checked conditional variant',async t=>{
   expectCategory(check(root),'R028_NATIVE_V3');
 });
 
+test('Codex native judgment variant requires explicit selection and excludes copied metadata',async t=>{
+  const root=await fixture(t);
+  await replaceSelected(root,'nunca deduza a variante por campos ausentes','deduza a variante por campos ausentes');
+  expectCategory(check(root),'R029_NATIVE_BINDING');
+  const fresh=await fixture(t);
+  await replaceSelected(fresh,'**omita** `head` e `requestSha256`','**inclua** `head` e `requestSha256`');
+  expectCategory(check(fresh),'R029_NATIVE_BINDING');
+});
+
 test('aggregate runner gate preserves real R003 pending Claude equalization', () => {
   const result = spawnSync(process.execPath, [checker, 'validation-runner', '--root', canonical], { encoding: 'utf8' });
   expectCategory(result, 'R003_EQUIVALENCE');
@@ -238,6 +247,41 @@ test("native generic spawn loads the complete installed runner contract in an in
   assert.match(guide, /agente independente com contrato carregado, não uma seleção do tipo registrado/u);
   assert.match(guide, /instruções de tarefa, sem prioridade de developer nem a mesma garantia de aplicação do agente registrado/u);
   assert.match(guide, /Instrua o agente genérico a não editar código nem artefatos de execução/u);
+});
+
+test("Initial EC-1 native test selects one complete candidate contract before dispatch", async () => {
+  const contract = await fs.readFile(path.join(canonical, 'codex/.codex/agents/stnl_validation_runner.toml'), 'utf8');
+  const operation = await fs.readFile(path.join(repository, 'skills/workflows/stnl-slice-executor/runtime/execution-current-operation.mjs'), 'utf8');
+  assert.match(contract, /CONTRATO_CANONICO=stnl-validation-runner\/v11/u);
+  assert.match(contract, /stnl-current-validation-response-v1/u);
+  assert.match(contract, /stnl-current-findings-response-v1/u);
+  assert.match(contract, /origin\.workspace/u);
+  for (const version of [1, 2, 3, 4]) assert.match(contract, new RegExp(`stnl-current-validation-request-v${version}`, 'u'));
+  for (const version of [1, 2]) assert.match(contract, new RegExp(`stnl-current-findings-request-v${version}`, 'u'));
+  assert.match(operation, /stnl-current-validation-request-v2':'stnl-current-validation-request-v1/u);
+  assert.match(operation, /stnl-current-validation-request-v4':'stnl-current-validation-request-v3/u);
+  assert.match(operation, /stnl-current-findings-request-v2':'stnl-current-findings-request-v1/u);
+  assert.match(contract, /token `requestSha256` completo retornado por `reserve-dispatch`, inclusive o prefixo `sha256:`; o request JSON não contém esse campo/u);
+  assert.match(contract, /token `requestSha256` completo retornado por `reserve-dispatch`, inclusive `sha256:`; o request JSON não contém esse campo/u);
+  assert.match(contract, /responseVariant:"stnl-current-native-judgment-v1"/u);
+  for (const owner of ['stnl-slice-executor', 'stnl-slice-quality-manager']) {
+    const base = path.join(repository, 'skills/workflows', owner);
+    const skill = await fs.readFile(path.join(base, 'SKILL.md'), 'utf8');
+    const invocation = await fs.readFile(path.join(base, 'references/runner-invocation.md'), 'utf8');
+    assert.match(skill, /In this Initial native test use only the complete candidate-distribution runner contract selected by explicit path and recorded SHA-256/u);
+    assert.match(invocation, /For this Initial EC-1 native test[^\n]*complete candidate-distribution Codex TOML[^\n]*SHA-256 before dispatch/u);
+    assert.match(invocation, /sole runner contract before scope reads or checks/u);
+    assert.match(invocation, /complete first concluded `finalResponse`[^\n]*including a rejected result/u);
+    assert.match(invocation, /No manual format continuation may replace that response/u);
+    assert.match(invocation, /Before every Initial dispatch and after every controller restart[^\n]*same explicit candidate-distribution TOML path and SHA-256/u);
+    assert.match(invocation, /Before every converted-S2 dispatch and after every controller restart[^\n]*same explicit candidate-distribution TOML path and SHA-256/u);
+    assert.match(invocation, /Never fall back to the installed personal contract/u);
+    assert.match(invocation, /Only for an old origin without `responseVariant`, Initial VALIDATE and APPLY prompts include the literal `requestSha256` token/u);
+    assert.match(invocation, /Only for an old origin without `responseVariant`, each VALIDATE or APPLY prompt includes the literal `requestSha256` token/u);
+    assert.match(invocation, /reserve-dispatch --response-variant stnl-current-native-judgment-v1/u);
+    assert.match(skill, /Before each Initial dispatch or controller restart[^\n]*SHA-256[^\n]*no fallback to the installed contract/u);
+    assert.match(skill, /Before each converted-S2 dispatch or controller restart[^\n]*SHA-256[^\n]*no fallback to the installed contract/u);
+  }
 });
 
 test("mechanical authority, candidate and serializer details stay outside runner contract", async () => {

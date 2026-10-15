@@ -12,10 +12,14 @@ import {fileURLToPath,pathToFileURL} from 'node:url';
 import {resolveCurrentExecutionContext} from './execution-state.mjs';
 import {captureCurrentExecution,captureCurrentActiveExecution,observeCurrentDeliveryWork} from './execution-current-reader.mjs';
 import {parseCurrentJson,validateCurrentCandidate,currentOperationBindingSha256} from './execution-current.mjs';
-import {verifyWorkObservation,findingsRoundCaptureSha256} from './execution-evidence-proof.mjs';
+import {verifyWorkObservation,findingsRoundCaptureSha256,NATIVE_JUDGMENT_VARIANT,
+  projectNativeJudgment} from './execution-evidence-proof.mjs';
 import {composePostConversionValidation,composePostConversionFindings,
   inspectPostConversionEvidence,inspectPostConversionFindingsPrefix,
-  parseCurrentValidationResponse,currentEvidenceValueSha256} from './current-evidence-state.mjs';
+  parseCurrentValidationResponse,currentEvidenceValueSha256,inspectCurrentEvidence,
+  composeCurrentFindingsEvidence,
+  composeInitialCurrentOperation} from './current-evidence-state.mjs';
+import {composeInitialImplementationEvidence} from './execution-evidence-current.mjs';
 import {executeRunnerVerification,verificationCommand} from './runner-verification.mjs';
 import {withExecutionPublicationLock,readOwnedFile,writeNew,persistAllocation,captureExecutionTree,
   reserveCurrentExecutionOperation,publishCurrentExecutionOperation,copyCurrentCandidateTree,
@@ -130,10 +134,46 @@ function requireS2(image,slice,operation,{successor=false}={}) {
   }
   return current;
 }
+function requireInitial(image,slice,operation) {
+  if(image.activation.preparationRevision!==1 || image.activation.activeAttempt!==null
+    || !['EXECUTE_SLICE','VALIDATE_SLICE','APPLY_FINDINGS'].includes(operation)
+    || image.inspection.normalHandoff?.operation!==operation
+    || image.inspection.normalHandoff?.slice!==slice)
+    fail('UNSUPPORTED_FORMAT','EC-1 Initial requires the exact official handoff');
+  const continuity=parseCurrentJson(Buffer.from(image.files.get('continuity.json')).toString('utf8'));
+  const current=continuity.deliveries.find(item=>item.slice===slice);
+  if(continuity.completed.length || continuity.deliveries.some(item=>item.localRevision!==1
+    || item.normalization!==null || item.validation==='uncertain') || !current)
+    fail('UNSUPPORTED_FORMAT','Initial excludes completed, local review and uncertain delivery');
+  if(image.inspection.deliveries.some(item=>item.formalStatus==='BLOCKED'
+    || item.observedValidation==='uncertain')) fail('OWNER_UNCERTAIN','another delivery blocks Initial');
+  if(operation==='EXECUTE_SLICE' && (current.evidence!==null
+    || Object.values(current.counters).some(value=>value!==0)
+    || !same(current.baseline,image.observedByDelivery.get(current.deliveryId)?.manifest)))
+    fail('EVIDENCE_STALE','Initial EXECUTE requires pristine baseline and zero consumption');
+  if(operation!=='EXECUTE_SLICE' && !current.evidence)
+    fail('EVIDENCE_INCOMPLETE','Initial formal or APPLY requires captured evidence');
+  if(operation==='APPLY_FINDINGS') {
+    const snapshot=parseCurrentJson(Buffer.from(image.files.get('approved-preparation.json')).toString('utf8'));
+    const leaf=snapshot.normativeProjection.deliveries.find(item=>item.deliveryId===current.deliveryId);
+    const authority={preparationRevision:1,localRevision:1,normativeSha256:snapshot.normativeSha256,
+      delivery:leaf,context:{requirementsAuthority:image.requirementsAuthority,
+        objective:snapshot.normativeProjection.global.objective,strategy:snapshot.normativeProjection.global.strategy,
+        risks:snapshot.normativeProjection.global.risks}};
+    const facts=inspectCurrentEvidence({context:image.context,authority,
+      bundleBytes:image.files.get(current.evidence.path),counters:current.counters,
+      baseline:current.baseline,observedWork:image.observedByDelivery.get(current.deliveryId).manifest});
+    if(facts.formalStatus!=='NEEDS_FIX' || !facts.openFindings.some(item=>item.severity==='blocking'))
+      fail('EVIDENCE_STALE','Initial APPLY requires a sealed blocking formal');
+  }
+  return current;
+}
 
 export async function begin({specPath,slice,expectedActivationId,operation='VALIDATE_SLICE',successor=false}) {
   const first=await quiet(specPath);
-  const current=requireS2(first,slice,operation,{successor});
+  const initial=first.activation.preparationRevision===1;
+  if(initial && successor) fail('UNSUPPORTED_FORMAT','Initial successor normalization is outside this profile');
+  const current=initial?requireInitial(first,slice,operation):requireS2(first,slice,operation,{successor});
   if(first.activation.activationId!==expectedActivationId) fail('STALE_BASE','begin expectedActivationId differs');
   const {workspace,context}=await resolveCurrentExecutionContext(specPath);
   const location=await namespaceFor(context,{create:true});
@@ -143,10 +183,11 @@ export async function begin({specPath,slice,expectedActivationId,operation='VALI
   if(operationMetadata.dev!==Number(location.device)) fail('CROSS_FILESYSTEM','operation controls cross filesystem');
   const owner={operationAttemptId:randomUUID(),ownershipToken:randomUUID(),deliveryId:current.deliveryId,
     slice,operation,preparationRevision:first.activation.preparationRevision,
-    localRevision:current.localRevision,normativeSha256:current.authoritySha256,
+    localRevision:current.localRevision,normativeSha256:initial?first.activation.normativeSha256:current.authoritySha256,
     originActivationId:expectedActivationId};
   const binding={operationId,specKey:location.key,logicalExecutionRoot:context.logicalExecutionRoot,
-    logicalSpecRoot:context.logicalSpecRoot,producer:operation==='APPLY_FINDINGS'?'findings':'validation',owner,
+    logicalSpecRoot:context.logicalSpecRoot,producer:operation==='EXECUTE_SLICE'?'implementation'
+      :operation==='APPLY_FINDINGS'?'findings':'validation',owner,
     baseActivationId:expectedActivationId,baseTree:await captureExecutionTree(context.logicalExecutionRoot),
     candidatePath:'candidate',previousPath:'previous',namespaceIdentity:location.identity,
     filesystemDevice:location.device,
@@ -154,7 +195,7 @@ export async function begin({specPath,slice,expectedActivationId,operation='VALI
       sourceEvidenceSha256:current.evidence.sha256,sourceActivationId:expectedActivationId}}:{})};
   const marker=path.join(operationRoot,'owner.json');
   await writeNew(path.join(operationRoot,'base.activation.json'),Buffer.from(first.activationBytes));
-  if(operation==='APPLY_FINDINGS') await put(path.join(operationRoot,'base.work.json'),
+  if(operation!=='VALIDATE_SLICE') await put(path.join(operationRoot,'base.work.json'),
     first.observedByDelivery.get(current.deliveryId).manifest);
   const reserved=await reserveCurrentExecutionOperation({workspace:workspaceFrom(context,workspace),
     expectedActivationId,expectedBaseActivation:first.activation,owner,binding,marker,
@@ -215,7 +256,9 @@ async function requestInputs(image,operation,dispatchId,round=1,previous=null) {
   const continuity=parseCurrentJson(Buffer.from(image.files.get('continuity.json')).toString('utf8'));
   const current=continuity.deliveries.find(item=>item.deliveryId===operation.owner.deliveryId);
   const leaf=snapshot.normativeProjection.deliveries.find(item=>item.deliveryId===operation.owner.deliveryId);
-  if(!current || !leaf || current.slice!==operation.owner.slice || current.authoritySha256!==operation.owner.normativeSha256)
+  if(!current || !leaf || current.slice!==operation.owner.slice
+    || (operation.owner.preparationRevision===1?snapshot.normativeSha256:current.authoritySha256)
+      !==operation.owner.normativeSha256)
     fail('EVIDENCE_STALE','selected delivery authority changed');
   const info=verifyWorkObservation('initial-implementation',{context:operation.context,delivery:leaf,slice:current.slice});
   const observed=image.observedByDelivery.get(current.deliveryId);
@@ -225,14 +268,59 @@ async function requestInputs(image,operation,dispatchId,round=1,previous=null) {
   const priorScopePaths=paths(current.baseline).sort(order);
   const scopePaths=[...new Set([...priorScopePaths,...(previous?.scopePaths??[]),...paths(observed.manifest),
     ...info.refs.filter(item=>item.kind==='product').map(item=>item.path)])].sort(order);
-  if(scopePaths.some(name=>observed.manifest.entries.find(item=>item.path===name)?.kind==='absent'))
+  if(operation.owner.preparationRevision>1
+    && scopePaths.some(name=>observed.manifest.entries.find(item=>item.path===name)?.kind==='absent'))
     fail('UNSUPPORTED_FORMAT','EC-1 S2 does not admit output removals');
   const authority={preparationRevision:snapshot.preparationRevision,localRevision:current.localRevision,
-    normativeSha256:current.authoritySha256,delivery:leaf,
+    normativeSha256:operation.owner.preparationRevision===1?snapshot.normativeSha256:current.authoritySha256,delivery:leaf,
     context:{requirementsAuthority:image.requirementsAuthority,
       objective:snapshot.normativeProjection.global.objective,
       strategy:snapshot.normativeProjection.global.strategy,
       risks:snapshot.normativeProjection.global.risks}};
+  if(operation.owner.preparationRevision===1) {
+    if(operation.owner.operation==='EXECUTE_SLICE') {
+      const request={format:'stnl-current-initial-dispatch-v1',owner:operation.owner,authority,
+        round,checkId:`implementation-check-${String(current.counters.implementationChecks+round).padStart(2,'0')}`,
+        scopePaths,previousCheck:null};
+      return {request,info,observed,dispatchId,current};
+    }
+    const bundleBytes=Buffer.from(image.files.get(current.evidence.path));
+    const bundle=parseCurrentJson(bundleBytes.toString('utf8'));
+    const facts=inspectCurrentEvidence({context:operation.context,authority,bundleBytes,
+      counters:current.counters,baseline:current.baseline,observedWork:observed.manifest});
+    if(operation.owner.operation==='APPLY_FINDINGS') {
+      if(facts.formalStatus!=='NEEDS_FIX' || !facts.latest
+        || !facts.openFindings.some(item=>item.severity==='blocking'))
+        fail('UNSUPPORTED_FORMAT','Initial APPLY predecessor no longer requires correction');
+      const formalScope=facts.latest.request.scope.paths;
+      const applyScope=[...new Set([...formalScope,...(previous?.scopePaths??[]),...paths(observed.manifest),
+        ...info.refs.filter(item=>item.kind==='product').map(item=>item.path)])].sort(order);
+      const request={format:'stnl-current-findings-request-v1',owner:operation.owner,authority,
+        base:{evidenceSha256:sha(bundleBytes),counters:structuredClone(current.counters),
+          validation:{id:bundle.validation.id,recordSha256:currentEvidenceValueSha256(bundle.validation)},
+          openFindings:structuredClone(bundle.openFindings),priorScopePaths:formalScope},
+        round,checkId:`findings-check-${String(current.counters.findingsChecks+round).padStart(2,'0')}`,
+        previousCheck:previous?{id:previous.request.checkId,
+          roundCaptureSha256:findingsRoundCaptureSha256(previous.cap)}:null,scopePaths:applyScope};
+      return {request,info,observed,dispatchId,current};
+    }
+    const formalPrior=facts.cycle?.lastScope??facts.latest?.request.scope.paths??priorScopePaths;
+    const auxiliary=facts.cycle?{kind:'findings',operationAttemptId:facts.cycle.owner.operationAttemptId,
+      cycle:facts.cycle.admissionId,firstCheckId:facts.cycle.checks[0].id,
+      lastCheckId:facts.cycle.checks.at(-1).id,
+      recordsSha256:currentEvidenceValueSha256(facts.cycle.checks)}:null;
+    const formalScope=[...new Set([...formalPrior,...paths(observed.manifest),
+      ...info.refs.filter(item=>item.kind==='product').map(item=>item.path)])].sort(order);
+    const request={format:auxiliary?'stnl-current-validation-request-v2':'stnl-current-validation-request-v1',
+      owner:operation.owner,authority,
+      base:{evidenceSha256:sha(bundleBytes),counters:structuredClone(current.counters),
+        openFindings:structuredClone(bundle.openFindings),priorScopePaths:formalPrior,
+        ...(auxiliary?{auxiliary}:{})},
+      attemptId:`attempt-${String(current.counters.validationAttempts+1).padStart(2,'0')}`,
+      scope:{paths:formalScope,filelessReason:formalScope.length?null:
+        'No approved product output paths were present in the captured domain.'}};
+    return {request,info,observed,dispatchId,current};
+  }
   if(operation.owner.operation==='APPLY_FINDINGS') {
     const snapshotBytes=Buffer.from(image.files.get('approved-preparation.json'));
     const bundleBytes=Buffer.from(image.files.get(current.evidence.path));
@@ -292,12 +380,16 @@ async function requestInputs(image,operation,dispatchId,round=1,previous=null) {
       'No approved product output paths were present in the captured domain.'}};
   return {request,info,observed,dispatchId,current};
 }
-export async function reserveDispatch(handle) {
+export async function reserveDispatch(handle,{responseVariant=null}={}) {
+  if(responseVariant!==null && responseVariant!==NATIVE_JUDGMENT_VARIANT)
+    fail('UNSUPPORTED_FORMAT','native response variant is not supported');
   const op=await load(handle);
   return withExecutionPublicationLock(op.workspace,async()=>{
     const now=await load(handle);
-    const auxiliary=now.owner.operation==='APPLY_FINDINGS';
+    const auxiliary=now.owner.operation!=='VALIDATE_SLICE';
     const previousRound=now.record.runner?.round??0;
+    if(previousRound && (now.record.responseVariant??null)!==responseVariant)
+      fail('OWNER_MISMATCH','native response variant changed within the operation');
     const productDrift=now.record.runner?.productDrift??null;
     if(now.record.phase!=='working' || (!auxiliary && now.record.runner!==null)
       || auxiliary && previousRound && (now.record.runner.status!=='captured'
@@ -319,6 +411,23 @@ export async function reserveDispatch(handle) {
       for(let index=1;index<=previousRound;index+=1) rounds.push(await capturedSources(now,index));
       const continuity=parseCurrentJson(Buffer.from(image.files.get('continuity.json')).toString('utf8'));
       const current=continuity.deliveries.find(item=>item.deliveryId===now.owner.deliveryId);
+      if(now.owner.preparationRevision===1) {
+        const request=await readJson(path.join(now.root,`round-${previousRound}.request.json`));
+        const authority=request.authority;
+        const result=now.owner.operation==='EXECUTE_SLICE'
+          ?composeInitialImplementationEvidence({context:now.context,authority,owner:now.owner,
+            currentEvidence:null,counters:current.counters,rounds})
+          :composeCurrentFindingsEvidence({context:now.context,authority,owner:now.owner,
+            previous:{bundleBytes:image.files.get(current.evidence.path),counters:current.counters},rounds});
+        if(result.outcome!=='recorded'
+          || (now.owner.operation==='EXECUTE_SLICE'
+            ?parseCurrentJson(Buffer.from(rounds.at(-1).rawResponse).toString('utf8')).status
+            :result.auxiliaryStatus)!=='TESTS_FAIL'
+          || result.consumedInvocations!==previousRound)
+          fail('OWNER_UNCERTAIN','previous Initial prefix is not an eligible failed check');
+        const prior=await readJson(path.join(now.root,`round-${previousRound}.observation.json`));
+        previous={cap:rounds.at(-1),request,scopePaths:request.scopePaths,lastWork:prior.after};
+      } else {
       const summary=await inspectPostConversionFindingsPrefix({context:now.context,
         snapshotBytes:Buffer.from(image.files.get('approved-preparation.json')),current,
         bundleBytes:Buffer.from(image.files.get(current.evidence.path)),owner:now.owner,rounds});
@@ -329,6 +438,7 @@ export async function reserveDispatch(handle) {
         fail('OWNER_UNCERTAIN','previous findings prefix is not an eligible validated result');
       previous={cap:rounds.at(-1),request:await readJson(path.join(now.root,`round-${previousRound}.request.json`)),
         scopePaths:summary.lastScope,lastWork:summary.lastWork};
+      }
     }
     const dispatchId=previousRound?now.record.runner.dispatchId:randomUUID();
     const {request,info,observed}=await requestInputs(image,now,dispatchId,round,previous);
@@ -350,10 +460,16 @@ export async function reserveDispatch(handle) {
     if(baseActivation.activationId!==now.binding.baseActivationId
       || !same(baseActivation.artifacts,image.activation.artifacts))
       fail('STALE_BASE','A0 artifacts differ from A1');
+    const allDeliveries=parseCurrentJson(Buffer.from(image.files.get('continuity.json')).toString('utf8')).deliveries;
     const origin={transport:'native',specPath:now.context.logicalAuthorityPath,
       workspace:now.context.productRoot,owner:now.owner,verification:info.resolved,
       dispatchId,attempt:round,
+      ...(responseVariant?{responseVariant,requestSha256:sha(json(request))}:{}),
       admission:{binding:now.binding,baseActivation,reservedActivation:image.activation},
+      ...(now.owner.preparationRevision===1?{otherDeliveryWork:[...image.observedByDelivery]
+        .filter(([deliveryId])=>deliveryId!==now.owner.deliveryId)
+        .map(([deliveryId,value])=>({deliveryId,
+          slice:allDeliveries.find(item=>item.deliveryId===deliveryId).slice,manifest:value.manifest}))}:{}),
       ...(productDrift?{productDrift}:{})};
     const baseline={format:'stnl-current-baseline-v1',owner:now.owner,round,
       context:now.context,manifest:auxiliary
@@ -366,10 +482,12 @@ export async function reserveDispatch(handle) {
       ...(productDrift?{productDrift}:{}),
       originFile,requestFile:path.join(now.root,`round-${round}.request.json`),
       responseFile:path.join(now.root,`round-${round}.response.json`)};
+    if(!previousRound && responseVariant) now.record.responseVariant=responseVariant;
     await persistAllocation(now.marker,now.record);
     return {phase:'dispatch-reserved',nextAction:'spawn-and-bind',owner:now.owner,
       originFile,requestFile:now.record.runner.requestFile,requestSha256:sha(json(request)),
-      verificationHelper:here,dispatchId,round};
+      verificationHelper:here,dispatchId,round,
+      ...(responseVariant?{responseVariant}:{})};
   });
 }
 
@@ -407,6 +525,7 @@ async function opFromOrigin(originFile) {
   if(originFile!==path.join(op.root,`round-${round}.origin.json`) || !same(origin.owner,op.owner)
     || !same(origin.admission?.binding,op.binding)
     || origin.dispatchId!==op.record.runner?.dispatchId || origin.attempt!==round
+    || (origin.responseVariant??null)!==(op.record.responseVariant??null)
     || op.record.runner?.round!==round)
     fail('OWNER_MISMATCH','native origin does not belong to reserved dispatch');
   return {op,origin,round};
@@ -427,7 +546,7 @@ async function boundAgent(op,originFile,round) {
     await new Promise(resolve=>setTimeout(resolve,100));
   }
 }
-function preflightCorrection(baseline,current,info) {
+function preflightCorrection(baseline,current,info,{initial=false}={}) {
   const old=new Map(baseline.entries.map(item=>[item.path,item]));
   const next=new Map(current.entries.map(item=>[item.path,item]));
   const allowed=name=>info.areas.some(area=>area.path===name
@@ -437,7 +556,35 @@ function preflightCorrection(baseline,current,info) {
     if(same(before??null,after??null)) continue;
     if(before?.kind==='directory' || after?.kind==='directory') continue;
     if(!allowed(name) || before?.kind==='file' && after?.kind!=='file'
-      || after?.kind==='absent') fail('EVIDENCE_STALE',`unauthorized correction before recipe: ${name}`);
+      || after?.kind==='absent' || initial && [...info.inputs,...info.refs].some(item=>item.path===name))
+      fail('EVIDENCE_STALE',`unauthorized correction before recipe: ${name}`);
+  }
+}
+function assertOtherInitialWork(image,origin) {
+  if(origin.owner.preparationRevision!==1) return;
+  if(!Array.isArray(origin.otherDeliveryWork)) fail('OWNER_MISMATCH','Initial other-delivery witness is absent');
+  const snapshot=parseCurrentJson(Buffer.from(image.files.get('approved-preparation.json')).toString('utf8'));
+  const selectedLeaf=snapshot.normativeProjection.deliveries.find(item=>item.deliveryId===origin.owner.deliveryId);
+  if(!selectedLeaf) fail('OWNER_MISMATCH','Initial selected delivery is absent');
+  const selectedInfo=verifyWorkObservation('initial-implementation',{
+    context:image.context,delivery:selectedLeaf,slice:origin.owner.slice});
+  for(const frozen of origin.otherDeliveryWork) {
+    const current=image.observedByDelivery.get(frozen.deliveryId)?.manifest;
+    const leaf=snapshot.normativeProjection.deliveries.find(item=>item.deliveryId===frozen.deliveryId);
+    if(!current || !leaf || frozen.deliveryId===origin.owner.deliveryId)
+      fail('OWNER_MISMATCH','Initial other-delivery witness differs');
+    const other=verifyWorkObservation('initial-implementation',{
+      context:image.context,delivery:leaf,slice:frozen.slice});
+    const prior=new Map(frozen.manifest.entries.map(item=>[item.path,item]));
+    const now=new Map(current.entries.map(item=>[item.path,item]));
+    for(const name of new Set([...prior.keys(),...now.keys()])) {
+      if(same(prior.get(name)??null,now.get(name)??null)) continue;
+      if(prior.get(name)?.kind==='directory' || now.get(name)?.kind==='directory') continue;
+      const selected=selectedInfo.areas.some(area=>area.path===name
+        || area.kind==='directory' && name.startsWith(`${area.path}/`));
+      if(!selected || [...other.inputs,...other.refs].some(item=>item.path===name))
+        fail('EVIDENCE_STALE',`another Initial delivery changed outside selected output: ${name}`);
+    }
   }
 }
 function privateProductDrift(before,after,info) {
@@ -500,6 +647,7 @@ export async function verifyNative(originFile) {
     .normativeProjection.deliveries.find(item=>item.deliveryId===op.owner.deliveryId);
   const recipe=verifyWorkObservation('initial-implementation',{
     context:op.context,delivery:leaf,slice:op.owner.slice});
+  assertOtherInitialWork(image,origin);
   if(origin.productDrift && round===origin.productDrift.sourceRound+1) {
     if(!same(origin.productDrift,op.record.runner?.productDrift)
       || currentEvidenceValueSha256(before.manifest)!==origin.productDrift.expectedWorkSha256)
@@ -507,7 +655,8 @@ export async function verifyNative(originFile) {
     const prior=await readJson(path.join(op.root,`round-${origin.productDrift.sourceRound}.observation.json`));
     await checkedProductDrift(op,image,prior);
   }
-  if(op.owner.operation==='APPLY_FINDINGS') preflightCorrection(baseline.manifest,before.manifest,recipe);
+  if(op.owner.operation!=='VALIDATE_SLICE') preflightCorrection(baseline.manifest,before.manifest,recipe,
+    {initial:op.owner.preparationRevision===1});
   else if(!same(before.manifest,baseline.manifest))
     fail('EVIDENCE_STALE','product changed before native recipe');
   const observeState=async()=>{
@@ -516,16 +665,33 @@ export async function verifyNative(originFile) {
       fail('STALE_BASE','native owner or activation changed during recipe');
     return current.observedByDelivery.get(op.owner.deliveryId)?.manifest;
   };
+  const measuredHead=async()=>{
+    const {stdout}=await run('git',['-C',op.context.productRoot,'rev-parse','HEAD'],{timeout:10000});
+    const head=stdout.endsWith('\n')?stdout.slice(0,-1):null;
+    if(!/^[a-f0-9]{40}$/u.test(head??'')) fail('EVIDENCE_INCOMPLETE','product Git HEAD unavailable');
+    return head;
+  };
+  const headBefore=origin.responseVariant===NATIVE_JUDGMENT_VARIANT?await measuredHead():null;
   const result=await executeRunnerVerification({verification:origin.verification,
     outputFile:path.join(op.root,`round-${round}.verification.json`),observeState});
   const after=await requireA1(op);
+  assertOtherInitialWork(after,origin);
   const final=after.observedByDelivery.get(op.owner.deliveryId);
   if(!final || !same(before.manifest,final.manifest)
     || !same([...before.identities],[...final.identities]))
     fail('EVIDENCE_STALE','product changed during native recipe');
+  const requestBytes=(await readOwnedFile(path.join(op.root,`round-${round}.request.json`))).bytes;
+  if(origin.responseVariant===NATIVE_JUDGMENT_VARIANT && origin.requestSha256!==sha(requestBytes))
+    fail('EVIDENCE_STALE','native request changed before observation');
+  const head=origin.responseVariant===NATIVE_JUDGMENT_VARIANT?await measuredHead():null;
+  if(headBefore!==head) fail('EVIDENCE_STALE','product Git HEAD changed during native recipe');
   const observation={format:'stnl-runner-verification-v2',status:'completed',owner:op.owner,round,
     recipe:recipe.recipe,
     resolved:origin.verification,before:before.manifest,after:final.manifest,checks:result.checks};
+  if(origin.responseVariant===NATIVE_JUDGMENT_VARIANT) {
+    observation.format='stnl-runner-verification-v3';
+    observation.binding={head,requestSha256:origin.requestSha256,dispatchId:origin.dispatchId,agentId};
+  }
   const observationFile=path.join(op.root,`round-${round}.observation.json`);
   if(await maybe(observationFile)) {
     if(!same(await readJson(observationFile),observation)) fail('OWNER_UNCERTAIN','native recipe observation differs on replay');
@@ -540,7 +706,8 @@ async function capturedSources(op,round=1) {
   const agent=await get('agent');
   const tool=await get('tool-result');
   return {transport:'native',
-    [op.owner.operation==='APPLY_FINDINGS'?'applyRequest':'validationRequest']:await get('request'),
+    ...(op.owner.operation==='EXECUTE_SLICE'?{}
+      :{[op.owner.operation==='APPLY_FINDINGS'?'applyRequest':'validationRequest']:await get('request')}),
     rawResponse:await get('response'),receipt:await get('receipt'),
     baselineCapture:await get('baseline'),
     verificationObservation:await get('observation'),removalProofs:[],
@@ -555,7 +722,7 @@ export async function captureNative(handle,toolResultFile) {
   return withExecutionPublicationLock(op.workspace,async()=>{
     const now=await load(handle);
     const round=now.record.runner?.round;
-    const auxiliary=now.owner.operation==='APPLY_FINDINGS';
+    const auxiliary=now.owner.operation!=='VALIDATE_SLICE';
     const agent=await readJson(path.join(now.root,`round-${round}.agent.json`));
     if(!['running','captured'].includes(now.record.runner?.status) || now.record.runner.agentId!==tool.agentId
       || agent.agentId!==tool.agentId) fail('OWNER_MISMATCH','concluded agent differs from bound dispatch');
@@ -569,8 +736,11 @@ export async function captureNative(handle,toolResultFile) {
     }
     const image=await requireA1(now);
     const origin=await readJson(path.join(now.root,`round-${round}.origin.json`));
+    if((origin.responseVariant??null)!==(now.record.responseVariant??null))
+      fail('OWNER_MISMATCH','native response variant differs from reserved dispatch');
     if(!same(image.activation,origin.admission.reservedActivation))
       fail('STALE_BASE','A1 changed before native conclusion');
+    assertOtherInitialWork(image,origin);
     const observation=await readJson(path.join(now.root,`round-${round}.observation.json`));
     if(observation.status!=='completed') fail('OWNER_UNCERTAIN','native recipe did not complete');
     const observed=image.observedByDelivery.get(now.owner.deliveryId);
@@ -579,33 +749,43 @@ export async function captureNative(handle,toolResultFile) {
     await writeNew(responseFile,raw);
     await put(path.join(now.root,`round-${round}.tool-result.json`),tool);
     let parsed=null,parseFailure=null;
-    if(auxiliary) {
-      try {parsed=parseCurrentJson(tool.finalResponse);}
+    const initialExecute=now.owner.preparationRevision===1 && now.owner.operation==='EXECUTE_SLICE';
+    const requestBytes=(await readOwnedFile(path.join(now.root,`round-${round}.request.json`))).bytes;
+    let projected=tool.finalResponse,projectionFailure=false;
+    if(origin.responseVariant===NATIVE_JUDGMENT_VARIANT) {
+      try {projected=projectNativeJudgment({origin,observation,requestBytes,agentId:tool.agentId,
+        rawText:tool.finalResponse,operation:now.owner.operation});}
+      catch(error) {parseFailure=error.message;projectionFailure=true;}
+    }
+    if(auxiliary && !parseFailure) {
+      try {parsed=parseCurrentJson(projected);}
       catch(error) {parseFailure=error.message;}
-    } else {
-      const semantic=parseCurrentValidationResponse(tool.finalResponse);
+    } else if(!auxiliary && !parseFailure) {
+      const semantic=parseCurrentValidationResponse(projected);
       parsed=semantic.response??semantic.loose??null;
       parseFailure=semantic.error?.message??null;
     }
-    const request=await readJson(path.join(now.root,`round-${round}.request.json`));
-    const status=parsed?.result?.status;
-    const requestSha256=sha((await readOwnedFile(path.join(now.root,`round-${round}.request.json`))).bytes);
+    const request=parseCurrentJson(requestBytes.toString('utf8'));
+    const status=initialExecute?parsed?.status:parsed?.result?.status;
+    const requestSha256=sha(requestBytes);
     const bindingFailure=parsed?.requestSha256!==undefined && parsed.requestSha256!==requestSha256;
-    if(parsed?.format!==(auxiliary?'stnl-current-findings-response-v1':'stnl-current-validation-response-v1')
-      || parsed?.requestSha256!==requestSha256
+    if((!initialExecute && (parsed?.format!==(auxiliary?'stnl-current-findings-response-v1':'stnl-current-validation-response-v1')
+      || parsed?.requestSha256!==requestSha256))
       || !(auxiliary?['TESTS_PASS','TESTS_FAIL','BLOCKED']:['PASS','NEEDS_FIX','BLOCKED']).includes(status))
       parseFailure??='native final response envelope/status differs';
     let productHead=null;
-    if(!parseFailure || parsed?.result?.head!==undefined) {
+    if(!parseFailure || (initialExecute?parsed?.head:parsed?.result?.head)!==undefined) {
       try {
         const result=await run('git',['-C',now.context.productRoot,'rev-parse','HEAD'],{timeout:10000});
         productHead=result.stdout.endsWith('\n')?result.stdout.slice(0,-1):null;
       } catch {productHead=null;}
-      if(!parseFailure && (!/^[a-f0-9]{40}$/u.test(productHead??'') || parsed.result.head!==productHead))
+      if(!parseFailure && (!/^[a-f0-9]{40}$/u.test(productHead??'')
+        || (initialExecute?parsed.head:parsed.result.head)!==productHead))
         parseFailure='native result HEAD differs from verified product Git HEAD';
     }
-    const headBindingFailure=parsed?.result?.head!==undefined
-      && (!/^[a-f0-9]{40}$/u.test(productHead??'') || parsed.result.head!==productHead);
+    const headBindingFailure=(initialExecute?parsed?.head:parsed?.result?.head)!==undefined
+      && (!/^[a-f0-9]{40}$/u.test(productHead??'')
+        || (initialExecute?parsed.head:parsed.result.head)!==productHead);
     const taskRoot=path.dirname(path.join(now.context.logicalExecutionRoot,`tasks/${now.owner.slice}.md`));
     const byPath=new Map(observation.after.entries.map(item=>[item.path,item]));
     const testedState=parseFailure?null:{workspace:now.context.productRoot,
@@ -620,18 +800,28 @@ export async function captureNative(handle,toolResultFile) {
       status:parseFailure?'RUNNER_RESULT_BLOCKED':'RUNNER_RESPONSE_CAPTURED',
       captureFailure:parseFailure,error:null,testedState,verification:observation};
     await put(path.join(now.root,`round-${round}.receipt.json`),receipt);
+    let initialRejection=false;
     if(!parseFailure && auxiliary) {
       try {
         const rounds=[];
         for(let index=1;index<=round;index+=1) rounds.push(await capturedSources(now,index));
         const continuity=parseCurrentJson(Buffer.from(image.files.get('continuity.json')).toString('utf8'));
         const current=continuity.deliveries.find(item=>item.deliveryId===now.owner.deliveryId);
-        const verified=await inspectPostConversionFindingsPrefix({context:now.context,
-          snapshotBytes:Buffer.from(image.files.get('approved-preparation.json')),current,
-          bundleBytes:Buffer.from(image.files.get(current.evidence.path)),owner:now.owner,rounds});
-        if(verified.status!==status || verified.rounds!==round
-          +(now.binding.normalization?.consumedInvocations??0))
-          fail('EVIDENCE_STALE','captured findings prefix differs from native response');
+        if(now.owner.preparationRevision===1) {
+          const authority=request.authority;
+          const composed=initialExecute?composeInitialImplementationEvidence({context:now.context,authority,
+            owner:now.owner,currentEvidence:null,counters:current.counters,rounds})
+            :composeCurrentFindingsEvidence({context:now.context,authority,owner:now.owner,
+              previous:{bundleBytes:image.files.get(current.evidence.path),counters:current.counters},rounds});
+          initialRejection=composed.outcome==='rejected';
+        } else {
+          const verified=await inspectPostConversionFindingsPrefix({context:now.context,
+            snapshotBytes:Buffer.from(image.files.get('approved-preparation.json')),current,
+            bundleBytes:Buffer.from(image.files.get(current.evidence.path)),owner:now.owner,rounds});
+          if(verified.status!==status || verified.rounds!==round
+            +(now.binding.normalization?.consumedInvocations??0))
+            fail('EVIDENCE_STALE','captured findings prefix differs from native response');
+        }
       } catch(error) {
         if(error.code==='RUNNER_RESULT_REJECTED' && !bindingFailure && !headBindingFailure) {
           now.record.runner.status='captured';
@@ -645,22 +835,22 @@ export async function captureNative(handle,toolResultFile) {
         throw error;
       }
     }
-    const concludedFormalRejection=!auxiliary && Boolean(parseFailure) && !bindingFailure
+    const concludedFormalRejection=!auxiliary && Boolean(parseFailure) && !projectionFailure && !bindingFailure
       && !headBindingFailure
       && parseFailure!=='native result HEAD differs from verified product Git HEAD';
-    const concludedFindingsRejection=auxiliary && Boolean(parseFailure) && !bindingFailure
+    const concludedFindingsRejection=auxiliary && Boolean(parseFailure) && !projectionFailure && !bindingFailure
       && !headBindingFailure
       && parseFailure!=='native result HEAD differs from verified product Git HEAD';
     now.record.runner.status=parseFailure && !concludedFormalRejection && !concludedFindingsRejection
       ?'uncertain':'captured';
-    now.record.runner.captureClass=concludedFormalRejection?'formal-rejection'
+    now.record.runner.captureClass=initialRejection?'initial-rejection':concludedFormalRejection?'formal-rejection'
       :concludedFindingsRejection?'findings-rejection':parseFailure?'uncertain':'formal-response';
     if(!parseFailure) now.record.runner.resultStatus=status;
     await persistAllocation(now.marker,now.record);
     if(parseFailure && !concludedFormalRejection && !concludedFindingsRejection)
       fail('RUNNER_RESULT_REJECTED',`native final response preserved but rejected: ${parseFailure}`);
     return {phase:'captured',rawResponseSha256:sha(raw),status,
-      nextAction:auxiliary && status==='TESTS_FAIL'
+      nextAction:initialRejection?'blocked':auxiliary && status==='TESTS_FAIL'
         && round+(now.binding.normalization?.consumedInvocations??0)<3?'reserve-dispatch':'publish',
       captureClass:now.record.runner.captureClass,replayed:false};
   });
@@ -771,7 +961,9 @@ export async function cleanup(handle) {
 }
 
 async function capturedComposition(op) {
-  const auxiliary=op.owner.operation==='APPLY_FINDINGS';
+  const auxiliary=op.owner.operation!=='VALIDATE_SLICE';
+  if(op.owner.preparationRevision===1 && op.record.runner?.captureClass==='initial-rejection')
+    fail('RUNNER_RESULT_REJECTED','Initial rejected result is preserved; normalization is outside this profile');
   const round=op.record.runner?.round;
   if(op.record.runner?.status!=='captured'
     || auxiliary && op.record.runner.resultStatus==='TESTS_FAIL'
@@ -781,6 +973,7 @@ async function capturedComposition(op) {
   const origin=await readJson(path.join(op.root,'round-1.origin.json'));
   if(!same(image.activation,origin.admission.reservedActivation))
     fail('STALE_BASE','official A1 differs before composition');
+  assertOtherInitialWork(image,origin);
   const observation=await readJson(path.join(op.root,`round-${round}.observation.json`));
   if(!same(image.observedByDelivery.get(op.owner.deliveryId)?.manifest,observation.after))
     fail('EVIDENCE_STALE','product changed after native capture');
@@ -791,13 +984,18 @@ async function capturedComposition(op) {
   const inputs={context:op.context,requirementsAuthority:image.requirementsAuthority,previous,
     admission:{activationBytes:image.activationBytes,files:baseFiles(image)},
     deliveryId:op.owner.deliveryId};
-  const composed=auxiliary?await composePostConversionFindings({...inputs,rounds})
-    :await composePostConversionValidation({...inputs,capture:rounds[0]});
+  const composed=op.owner.preparationRevision===1
+    ?composeInitialCurrentOperation({...inputs,owner:op.owner,rounds,
+      observedByDelivery:image.observedByDelivery})
+    :auxiliary?await composePostConversionFindings({...inputs,rounds})
+      :await composePostConversionValidation({...inputs,capture:rounds[0]});
   return {image,observation,composed};
 }
 
 export async function normalize(handle) {
   const op=await load(handle);
+  if(op.owner.preparationRevision===1 && !op.record.preparation?.candidateComposition)
+    fail('NORMALIZATION_NOT_ELIGIBLE','Initial excludes product-drift and rejected-result normalization');
   if(op.owner.operation==='APPLY_FINDINGS' && op.record.phase==='working'
     && op.record.runner?.status==='captured'
     && op.record.runner.resultStatus==='TESTS_PASS'
@@ -883,7 +1081,7 @@ export async function normalizeSuccessor({specPath,slice,expectedActivationId}) 
 
 export async function publish(handle,{checkpoint=null}={}) {
   const op=await load(handle);
-  const auxiliary=op.owner.operation==='APPLY_FINDINGS';
+  const auxiliary=op.owner.operation!=='VALIDATE_SLICE';
   const round=op.record.runner?.round;
   if(op.record.runner?.status!=='captured'
     || auxiliary && op.record.runner.resultStatus==='TESTS_FAIL'
@@ -954,6 +1152,7 @@ export async function publish(handle,{checkpoint=null}={}) {
         fail('STALE_BASE','publication base changed after capture');
       if(!same(current.observedByDelivery.get(op.owner.deliveryId)?.manifest,observation.after))
         fail('EVIDENCE_STALE','product changed before publication swap');
+      assertOtherInitialWork(current,await readJson(path.join(op.root,'round-1.origin.json')));
     },
     registryCompletion:()=>completeRegistry(op),checkpoint});
   return {...result,transition:composed.transition,
@@ -974,7 +1173,8 @@ export async function resume(handle) {
   }
   if(['candidate_promoted','activation_written','backup_created'].includes(phase))
     return {phase,nextAction:'classify-publication',owner:op.owner};
-  if(runner?.status==='captured') return {phase:'captured',nextAction:op.record.preparation?.candidateComposition
+  if(runner?.status==='captured') return {phase:'captured',nextAction:runner.captureClass==='initial-rejection'
+      ?'blocked':op.record.preparation?.candidateComposition
       && op.record.normalization?.status!=='settled'?'normalize':'publish',owner:op.owner,
     responseSha256:sha((await readOwnedFile(runner.responseFile)).bytes),
     ...(op.owner.operation==='APPLY_FINDINGS' && runner.resultStatus==='TESTS_FAIL'
@@ -1005,7 +1205,8 @@ export async function main(argv=process.argv.slice(2)) {
     else if(command==='begin') result=await begin({specPath:flag(argv,'--spec-path'),
       slice:flag(argv,'--slice'),expectedActivationId:flag(argv,'--expected-activation-id'),
       operation:flag(argv,'--operation')??'VALIDATE_SLICE'});
-    else if(command==='reserve-dispatch') result=await reserveDispatch(handle);
+    else if(command==='reserve-dispatch') result=await reserveDispatch(handle,
+      {responseVariant:flag(argv,'--response-variant')});
     else if(command==='bind-native') result=await bindNative(handle,flag(argv,'--agent-id'));
     else if(command==='verify-native') result=await verifyNative(flag(argv,'--origin-file'));
     else if(command==='capture-native') result=await captureNative(handle,flag(argv,'--tool-result-file'));
