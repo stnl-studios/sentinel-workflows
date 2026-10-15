@@ -291,10 +291,21 @@ function verifyLastAttempt(activation,deliveries) {
     && bundle?.support?.filter(item=>item.kind==='rejection'
       && item.origin.operation==='VALIDATE_SLICE').at(-2)?.origin.operationAttemptId
       ===last.operationAttemptId && last.outcome==='rejected') return;
+  if(activation.activeAttempt?.operation==='APPLY_FINDINGS'
+    && facts?.rejection?.origin.operationAttemptId===activation.activeAttempt.operationAttemptId
+    && bundle?.support?.filter(item=>item.kind==='rejection'
+      && item.origin.operation==='APPLY_FINDINGS').at(-2)?.origin.operationAttemptId
+      ===last.operationAttemptId && last.outcome==='rejected') return;
   if(activation.activeAttempt!==null && facts?.rejection?.origin?.operationAttemptId
     ===activation.activeAttempt.operationAttemptId && last.outcome==='recorded'
     && (bundle?.validation?.origin.operationAttemptId===last.operationAttemptId
       || bundle?.findingsChecks?.at(-1)?.origin.operationAttemptId===last.operationAttemptId)) return;
+  if(activation.activeAttempt?.operation==='APPLY_FINDINGS' && last.outcome==='rejected'
+    && bundle?.support?.some(item=>item.kind==='rejection'
+      && item.origin.operation==='APPLY_FINDINGS'
+      && item.origin.operationAttemptId===last.operationAttemptId)
+    && bundle?.findingsChecks?.at(-1)?.origin.operationAttemptId
+      ===activation.activeAttempt.operationAttemptId) return;
   if (!matched || matched.origin?.operationAttemptId!==last.operationAttemptId
     || matched.origin?.operation!==last.operation || matched.origin?.deliveryId!==last.deliveryId
     || matched.origin?.slice!==last.slice
@@ -346,7 +357,7 @@ async function readCurrentExecution(specPath,withCapture=false,expectedOwner=nul
     [continuity.completed.length>0,'continuity.json','completed'],
     [continuity.deliveries.some(item=>item.localRevision!==1),'continuity.json','localRevision'],
     [continuity.deliveries.some(item=>item.normalization!==null
-      && !(converted && item.normalization.operation==='VALIDATE_SLICE'
+      && !(converted && ['VALIDATE_SLICE','APPLY_FINDINGS'].includes(item.normalization.operation)
         && ['settled','exhausted'].includes(item.normalization.status))),
       'continuity.json','normalization'],
     [!converted && [snapshot.globalReview,...snapshot.deliveries.map(item=>item.review)].some(item=>item.evidenceDecisions.length),
@@ -393,12 +404,17 @@ async function readCurrentExecution(specPath,withCapture=false,expectedOwner=nul
       const v3=bundle?.validation?.recordFormat==='stnl-task-record-v2';
       const latestFormalRejection=bundle?.support?.filter(entry=>entry.kind==='rejection'
         && entry.origin.operation==='VALIDATE_SLICE').at(-1);
-      const admissionRef=activation.lastAttempt?.operation==='APPLY_FINDINGS'
+      const latestAuxiliaryRejection=bundle?.support?.filter(entry=>entry.kind==='rejection'
+        && entry.origin.operation==='APPLY_FINDINGS').at(-1);
+      const admissionRef=activation.lastAttempt?.operation==='APPLY_FINDINGS' && latestFormalRejection
         && latestFormalRejection?.origin.operationAttemptId!==activation.activeAttempt?.operationAttemptId
         ?activation.lastAttempt.operationRef
         :activation.activeAttempt!==null
           && [bundle?.validation?.origin?.operationAttemptId,
-            latestFormalRejection?.origin.operationAttemptId].includes(activation.activeAttempt.operationAttemptId)
+            ...(activation.lastAttempt?.operation==='APPLY_FINDINGS'
+              ?[bundle?.findingsChecks?.at(-1)?.origin?.operationAttemptId]:[]),
+            latestFormalRejection?.origin.operationAttemptId,
+            latestAuxiliaryRejection?.origin.operationAttemptId].includes(activation.activeAttempt.operationAttemptId)
           ?activation.activeAttempt.operationRef:activation.lastAttempt?.operationRef??null;
       const observedWork=scopedObservation(item.observation,item.targets).manifest;
       const facts=await inspectPostConversionEvidence({context,snapshotBytes:image.files.get('approved-preparation.json'),
@@ -418,7 +434,8 @@ async function readCurrentExecution(specPath,withCapture=false,expectedOwner=nul
       item.persistedValidation=facts.persistedValidation;
       item.observedValidation=facts.observedValidation;
       item.evidenceSha256=facts.evidenceSha256;
-      item.formalStatus=facts.rejection?null:facts.formalStatus??(facts.cycle?'PASS':null);
+      item.formalStatus=facts.rejection?.origin.operation==='VALIDATE_SLICE'?null
+        :facts.formalStatus??(facts.cycle?'PASS':null);
       item.auxiliaryStatus=facts.auxiliaryStatus??null;
       item.diagnostics=facts.observationMatches?[]:[{kind:'observation',artifact:item.slice,field:'observedWork',reason:'EVIDENCE_STALE'}];
     }
@@ -444,7 +461,8 @@ async function readCurrentExecution(specPath,withCapture=false,expectedOwner=nul
     const post= pending?.facts.bundle?.validation?.recordFormat==='stnl-task-record-v2'
       || pending?.facts.rejection && pending.facts.consumption.kind==='bounded-formal-rejection';
     const hasPost=outputs.some(item=>item.facts.bundle?.validation?.recordFormat==='stnl-task-record-v2');
-    const operation=pending?.facts.rejection?'VALIDATE_SLICE':post
+    const operation=pending?.facts.rejection
+      ?pending.facts.rejection.origin.operation==='APPLY_FINDINGS'?'APPLY_FINDINGS':'VALIDATE_SLICE':post
       ?pending.facts.formalStatus==='NEEDS_FIX'
         && (!pending.facts.cycle?.admissionId || pending.facts.bundle.validation.id!==pending.facts.cycle.admissionId)
         ?'APPLY_FINDINGS':'VALIDATE_SLICE'

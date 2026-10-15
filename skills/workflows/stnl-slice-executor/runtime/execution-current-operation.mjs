@@ -111,11 +111,13 @@ function requireS2(image,slice,operation,{successor=false}={}) {
     fail('UNSUPPORTED_FORMAT','EC-1 S2 proof boundary is not eligible');
   if(image.inspection.deliveries.some(item=>item.formalStatus==='BLOCKED' || item.observedValidation==='uncertain'))
     fail('OWNER_UNCERTAIN','another delivery blocks current execution');
-  if(successor && (operation!=='VALIDATE_SLICE'
+  if(successor && (current.normalization?.operation!==operation
     || current.normalization?.status!=='settled' || current.normalization.round!==1
+    || operation==='APPLY_FINDINGS' && current.normalization.consumedInvocations>=3
     || image.activation.lastAttempt?.outcome!=='rejected'
     || image.activation.lastAttempt?.operationAttemptId!==current.lastDiagnostic?.operationAttemptId
-    || inspected.formalStatus!==null || !current.evidence))
+    || (operation==='VALIDATE_SLICE'?inspected.formalStatus!==null
+      :inspected.formalStatus!=='NEEDS_FIX') || !current.evidence))
     fail('NORMALIZATION_NOT_ELIGIBLE','official first rejection is not settled for one successor');
   if(operation==='APPLY_FINDINGS') {
     const bundle=parseCurrentJson(Buffer.from(image.files.get(current.evidence.path)).toString('utf8'));
@@ -238,16 +240,22 @@ async function requestInputs(image,operation,dispatchId,round=1,previous=null) {
     const facts=await inspectPostConversionEvidence({context:operation.context,snapshotBytes,current,
       bundleBytes,observedWork:current.baseline,lastAttempt:image.activation.lastAttempt,
       admissionRef:image.activation.lastAttempt?.operationRef??null});
-    if(facts.formalStatus!=='NEEDS_FIX' || bundle.validation.id===facts.cycle?.admissionId)
+    const successor=operation.binding.normalization!==undefined;
+    if(facts.formalStatus!=='NEEDS_FIX' || (bundle.validation.id===facts.cycle?.admissionId
+      && !(successor && facts.rejection?.origin.operation==='APPLY_FINDINGS'
+        && facts.consumption?.kind==='bounded-findings-rejection')))
       fail('UNSUPPORTED_FORMAT','APPLY predecessor no longer requires correction');
-    const formalScope=facts.latest.request.scope.paths;
+    const formalScope=successor?facts.cycle.lastScope:facts.latest.request.scope.paths;
     const applyScope=[...new Set([...formalScope,...(previous?.scopePaths??[]),...paths(observed.manifest),
       ...info.refs.filter(item=>item.kind==='product').map(item=>item.path)])].sort(order);
-    const request={format:'stnl-current-findings-request-v1',owner:operation.owner,authority,
+    const request={format:successor?'stnl-current-findings-request-v2':'stnl-current-findings-request-v1',
+      owner:operation.owner,authority,
       base:{evidenceSha256:sha(bundleBytes),counters:structuredClone(current.counters),
         validation:{id:bundle.validation.id,recordSha256:currentEvidenceValueSha256(bundle.validation)},
         openFindings:structuredClone(bundle.openFindings),priorScopePaths:formalScope},
-      round,checkId:`findings-check-${String(current.counters.findingsChecks+round).padStart(2,'0')}`,
+      round:(successor?operation.binding.normalization.consumedInvocations:0)+round,
+      ...(successor?{invocation:round}:{}),
+      checkId:`findings-check-${String(current.counters.findingsChecks+round).padStart(2,'0')}`,
       previousCheck:previous?{id:previous.request.checkId,
         roundCaptureSha256:findingsRoundCaptureSha256(previous.cap)}:null,scopePaths:applyScope};
     return {request,info,observed,dispatchId,current};
@@ -292,7 +300,8 @@ export async function reserveDispatch(handle) {
     const previousRound=now.record.runner?.round??0;
     if(now.record.phase!=='working' || (!auxiliary && now.record.runner!==null)
       || auxiliary && previousRound && (now.record.runner.status!=='captured'
-        || now.record.runner.resultStatus!=='TESTS_FAIL' || previousRound>=3))
+        || now.record.runner.resultStatus!=='TESTS_FAIL'
+        || previousRound+(now.binding.normalization?.consumedInvocations??0)>=3))
       fail('OWNER_UNCERTAIN','dispatch is already reserved, terminal or uncertain');
     const round=auxiliary?previousRound+1:1;
     if(await maybe(path.join(now.root,`round-${round}.origin.json`)))
@@ -310,7 +319,8 @@ export async function reserveDispatch(handle) {
       const summary=await inspectPostConversionFindingsPrefix({context:now.context,
         snapshotBytes:Buffer.from(image.files.get('approved-preparation.json')),current,
         bundleBytes:Buffer.from(image.files.get(current.evidence.path)),owner:now.owner,rounds});
-      if(summary.status!=='TESTS_FAIL' || summary.rounds!==previousRound)
+      if(summary.status!=='TESTS_FAIL' || summary.rounds!==previousRound
+        +(now.binding.normalization?.consumedInvocations??0))
         fail('OWNER_UNCERTAIN','previous findings prefix is not a validated failure');
       previous={cap:rounds.at(-1),request:await readJson(path.join(now.root,`round-${previousRound}.request.json`)),
         scopePaths:summary.lastScope,lastWork:summary.lastWork};
@@ -544,9 +554,17 @@ export async function captureNative(handle,toolResultFile) {
         const verified=await inspectPostConversionFindingsPrefix({context:now.context,
           snapshotBytes:Buffer.from(image.files.get('approved-preparation.json')),current,
           bundleBytes:Buffer.from(image.files.get(current.evidence.path)),owner:now.owner,rounds});
-        if(verified.status!==status || verified.rounds!==round)
+        if(verified.status!==status || verified.rounds!==round
+          +(now.binding.normalization?.consumedInvocations??0))
           fail('EVIDENCE_STALE','captured findings prefix differs from native response');
       } catch(error) {
+        if(error.code==='RUNNER_RESULT_REJECTED' && !bindingFailure && !headBindingFailure) {
+          now.record.runner.status='captured';
+          now.record.runner.captureClass='findings-rejection';
+          await persistAllocation(now.marker,now.record);
+          return {phase:'captured',rawResponseSha256:sha(raw),status:null,
+            nextAction:'publish',captureClass:'findings-rejection',replayed:false};
+        }
         now.record.runner.status='uncertain';
         await persistAllocation(now.marker,now.record);
         throw error;
@@ -555,14 +573,20 @@ export async function captureNative(handle,toolResultFile) {
     const concludedFormalRejection=!auxiliary && Boolean(parseFailure) && !bindingFailure
       && !headBindingFailure
       && parseFailure!=='native result HEAD differs from verified product Git HEAD';
-    now.record.runner.status=parseFailure && !concludedFormalRejection?'uncertain':'captured';
-    now.record.runner.captureClass=concludedFormalRejection?'formal-rejection':parseFailure?'uncertain':'formal-response';
+    const concludedFindingsRejection=auxiliary && Boolean(parseFailure) && !bindingFailure
+      && !headBindingFailure
+      && parseFailure!=='native result HEAD differs from verified product Git HEAD';
+    now.record.runner.status=parseFailure && !concludedFormalRejection && !concludedFindingsRejection
+      ?'uncertain':'captured';
+    now.record.runner.captureClass=concludedFormalRejection?'formal-rejection'
+      :concludedFindingsRejection?'findings-rejection':parseFailure?'uncertain':'formal-response';
     if(!parseFailure) now.record.runner.resultStatus=status;
     await persistAllocation(now.marker,now.record);
-    if(parseFailure && !concludedFormalRejection)
+    if(parseFailure && !concludedFormalRejection && !concludedFindingsRejection)
       fail('RUNNER_RESULT_REJECTED',`native final response preserved but rejected: ${parseFailure}`);
     return {phase:'captured',rawResponseSha256:sha(raw),status,
-      nextAction:auxiliary && status==='TESTS_FAIL' && round<3?'reserve-dispatch':'publish',
+      nextAction:auxiliary && status==='TESTS_FAIL'
+        && round+(now.binding.normalization?.consumedInvocations??0)<3?'reserve-dispatch':'publish',
       captureClass:now.record.runner.captureClass,replayed:false};
   });
 }
@@ -675,7 +699,8 @@ async function capturedComposition(op) {
   const auxiliary=op.owner.operation==='APPLY_FINDINGS';
   const round=op.record.runner?.round;
   if(op.record.runner?.status!=='captured'
-    || auxiliary && op.record.runner.resultStatus==='TESTS_FAIL' && round<3)
+    || auxiliary && op.record.runner.resultStatus==='TESTS_FAIL'
+      && round+(op.binding.normalization?.consumedInvocations??0)<3)
     fail('OWNER_UNCERTAIN','native terminal result has not been captured');
   const image=await requireA1(op);
   const origin=await readJson(path.join(op.root,'round-1.origin.json'));
@@ -729,7 +754,13 @@ export async function normalize(handle) {
     rawResponseSha256:sha(response),nextAction:'publish'};
 }
 export async function normalizeSuccessor({specPath,slice,expectedActivationId}) {
-  return begin({specPath,slice,expectedActivationId,operation:'VALIDATE_SLICE',successor:true});
+  const image=await quiet(specPath);
+  if(image.activation.activationId!==expectedActivationId) fail('STALE_BASE','normalization activation differs');
+  const current=parseCurrentJson(Buffer.from(image.files.get('continuity.json')).toString('utf8'))
+    .deliveries.find(item=>item.slice===slice);
+  if(!current?.normalization || !['VALIDATE_SLICE','APPLY_FINDINGS'].includes(current.normalization.operation))
+    fail('NORMALIZATION_NOT_ELIGIBLE','current slice has no supported normalization successor');
+  return begin({specPath,slice,expectedActivationId,operation:current.normalization.operation,successor:true});
 }
 
 export async function publish(handle,{checkpoint=null}={}) {
@@ -737,7 +768,8 @@ export async function publish(handle,{checkpoint=null}={}) {
   const auxiliary=op.owner.operation==='APPLY_FINDINGS';
   const round=op.record.runner?.round;
   if(op.record.runner?.status!=='captured'
-    || auxiliary && op.record.runner.resultStatus==='TESTS_FAIL' && round<3)
+    || auxiliary && op.record.runner.resultStatus==='TESTS_FAIL'
+      && round+(op.binding.normalization?.consumedInvocations??0)<3)
     fail('OWNER_UNCERTAIN','native terminal result has not been captured');
   if(op.record.phase==='activation_written') {
     const result=await recoverCurrentExecutionOperation({workspace:op.workspace,marker:op.marker,
@@ -762,7 +794,6 @@ export async function publish(handle,{checkpoint=null}={}) {
       fail('OWNER_MISMATCH','terminal transition changed before publication');
     if(!now.record.terminalTransition) {
       now.record.terminalTransition=transition;
-      if(transition.normalization) now.record.normalization=transition.normalization;
       await persistAllocation(now.marker,now.record);
     }
     const proof=now.record.preparation?.candidateComposition;
@@ -828,7 +859,8 @@ export async function resume(handle) {
   if(runner?.status==='captured') return {phase:'captured',nextAction:op.record.preparation?.candidateComposition
       && op.record.normalization?.status!=='settled'?'normalize':'publish',owner:op.owner,
     responseSha256:sha((await readOwnedFile(runner.responseFile)).bytes),
-    ...(op.owner.operation==='APPLY_FINDINGS' && runner.resultStatus==='TESTS_FAIL' && runner.round<3
+    ...(op.owner.operation==='APPLY_FINDINGS' && runner.resultStatus==='TESTS_FAIL'
+      && runner.round+(op.binding.normalization?.consumedInvocations??0)<3
       ?{nextAction:'reserve-dispatch'}:{})};
   if(runner?.status==='running') return {phase:'running',nextAction:'await-same-agent',agentId:runner.agentId};
   if(runner?.status==='reserved') return {phase:'dispatch-reserved',nextAction:'bind-same-agent-or-block'};
