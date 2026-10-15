@@ -261,6 +261,11 @@ export async function publishCurrentExecutionOperation({workspace,marker,binding
     if(allocated.format!=='stnl-execution-publication-owner-v2'
       || !equal(allocated.binding,binding) || !['working','prepared','backup_created','candidate_promoted','activation_written','committed'].includes(allocated.phase))
       fail('EC-1 allocation binding/phase differs');
+    const terminalOutcome=allocated.terminalTransition?.outcome??'recorded';
+    if(!['recorded','rejected'].includes(terminalOutcome)
+      || allocated.terminalTransition && allocated.terminalTransition.operationAttemptId!==owner.operationAttemptId
+      || terminalOutcome==='rejected' && !allocated.terminalTransition?.normalization)
+      fail('EC-1 terminal transition differs from owner');
     const active=await readActive(owner);
     if(active.activation.activationId!==expectedActivationId
       || !equal(active.activation.activeAttempt,owner)) fail('EC-1 publication owner CAS differs');
@@ -311,9 +316,9 @@ export async function publishCurrentExecutionOperation({workspace,marker,binding
       const terminal={...intermediate,activationId:terminalId,sequence:intermediate.sequence+1,
         previousActivationId:intermediate.activationId,activeAttempt:null,
         lastAttempt:{operationAttemptId:owner.operationAttemptId,deliveryId:owner.deliveryId,
-          slice:owner.slice,operation:owner.operation,terminalActivationId:terminalId,outcome:'recorded',
+          slice:owner.slice,operation:owner.operation,terminalActivationId:terminalId,outcome:terminalOutcome,
           operationRef:owner.operationRef}};
-      allocated.preparation={intermediateActivation:intermediate};
+      allocated.preparation={...(allocated.preparation??{}),intermediateActivation:intermediate};
       allocated.expectedInstalledActivation=terminal;await persistAllocation(marker,allocated);
       await replaceActivation(workspace.executionRoot,terminal);
       if(checkpoint) await checkpoint('after-terminal-activation');
@@ -377,6 +382,11 @@ export async function recoverCurrentExecutionOperation({workspace,marker,binding
       || !equal(allocated.binding,binding) || allocated.phase!=='activation_written'
       || !allocated.candidate || !allocated.previous || !allocated.expectedInstalledActivation)
       fail('EC-1 recovery owner/phase differs');
+    const terminalOutcome=allocated.terminalTransition?.outcome??'recorded';
+    if(!['recorded','rejected'].includes(terminalOutcome)
+      || allocated.terminalTransition && allocated.terminalTransition.operationAttemptId!==owner.operationAttemptId
+      || terminalOutcome==='rejected' && !allocated.terminalTransition?.normalization)
+      fail('EC-1 recovery terminal transition differs');
     const installed=await captureExecutionTree(workspace.executionRoot);
     const previous=await captureExecutionTree(previousPath);
     const withoutActivation=entries=>entries.filter(item=>item.path!=='activation.json');
@@ -394,14 +404,14 @@ export async function recoverCurrentExecutionOperation({workspace,marker,binding
         fail('EC-1 recovery intermediate activation differs');
       const readback=await readActive(owner);
       if(!equal(readback.activation,actual)) fail('EC-1 recovery active readback differs');
-      if(!allocated.preparation) {
+      if(!allocated.preparation?.intermediateActivation) {
         const terminalId=randomUUID();
         expected={...actual,activationId:terminalId,sequence:actual.sequence+1,
           previousActivationId:actual.activationId,activeAttempt:null,
           lastAttempt:{operationAttemptId:owner.operationAttemptId,deliveryId:owner.deliveryId,
-            slice:owner.slice,operation:owner.operation,terminalActivationId:terminalId,outcome:'recorded',
+            slice:owner.slice,operation:owner.operation,terminalActivationId:terminalId,outcome:terminalOutcome,
             operationRef:owner.operationRef}};
-        allocated.preparation={intermediateActivation:actual};
+        allocated.preparation={...(allocated.preparation??{}),intermediateActivation:actual};
         allocated.expectedInstalledActivation=expected;
         allocated.commonLease=await lifecycleCommonLeaseBinding(lease);
         await persistAllocation(marker,allocated);

@@ -112,7 +112,7 @@ test('EC-1 mechanical: product drift blocks verification or publication under th
   });
 });
 
-test('EC-1 mechanical: malformed finding is preserved and blocks publication',async t=>{
+test('EC-1 mechanical: malformed finding is retained as a concluded rejection',async t=>{
   const fixture=await reservedOperation(t);
   const {handle}=fixture.start,agentId='mechanical-agent-invalid';
   await bindNative(handle,agentId);
@@ -125,14 +125,20 @@ test('EC-1 mechanical: malformed finding is preserved and blocks publication',as
       impact:'AC-001 is unproven.',relatedAuthority:'AC-001; obligation-01',
       expectedCorrection:'Import the expected module.'}]});
   const file=await toolFile(fixture,agentId,response);
-  await assert.rejects(()=>captureNative(handle,file),blocked('RUNNER_RESULT_REJECTED'));
+  const captured=await captureNative(handle,file);
+  assert.equal(captured.captureClass,'formal-rejection');
   const operationRoot=path.dirname(fixture.dispatch.originFile);
   assert.ok((await fs.readFile(path.join(operationRoot,'round-1.response.json')))
     .equals(Buffer.from(response,'utf8')));
   const receipt=JSON.parse(await fs.readFile(path.join(operationRoot,'round-1.receipt.json')));
   assert.equal(receipt.status,'RUNNER_RESULT_BLOCKED');
   assert.match(receipt.captureFailure,/newFindings\[0\]\.severity/u);
-  assert.equal((await resume(handle)).phase,'uncertain');
+  assert.equal((await resume(handle)).nextAction,'publish');
+  const published=await publish(handle);
+  assert.equal(published.transition.outcome,'rejected');
+  assert.equal(published.activation.lastAttempt.outcome,'rejected');
+  const readback=await captureCurrentExecution(fixture.specPath);
+  assert.equal(readback.inspection.normalHandoff.operation,'VALIDATE_SLICE');
 });
 
 test('EC-1 mechanical: valid BLOCKED and NEEDS_FIX remain their own formal outcomes',async t=>{

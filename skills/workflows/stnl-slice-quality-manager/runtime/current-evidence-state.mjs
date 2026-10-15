@@ -623,7 +623,8 @@ function verifyPostAdmission({context,snapshotBytes,owner:expectedOwner,capture,
     }
   }
 }
-function postCaptureProof({context,snapshotBytes,current,capture,expectedBase,admissionRef=null}) {
+function postCaptureProof({context,snapshotBytes,current,capture,expectedBase,admissionRef=null,
+  allowRejection=false}) {
   const snapshot=jsonBytes(snapshotBytes,'approved-preparation.json').value;
   const auth=postAuthority(snapshot,current);
   const request=jsonBytes(capture.validationRequest,'post-conversion request').value;
@@ -637,7 +638,7 @@ function postCaptureProof({context,snapshotBytes,current,capture,expectedBase,ad
   const reason=request.scope.paths.length?null:postFilelessReason;
   const derived=deriveCapture({context,authority:auth,capture,expectedOwner:request.owner,
     expectedBase,priorFiles:new Set(),filelessReason:reason});
-  if(derived.rejection) fail('RUNNER_RESULT_REJECTED',
+  if(derived.rejection && !allowRejection) fail('RUNNER_RESULT_REJECTED',
     `offline semantic rejection cannot produce a successor: ${JSON.stringify(derived.rejection)}`);
   return derived;
 }
@@ -651,10 +652,102 @@ export async function inspectPostConversionEvidence({context,snapshotBytes,curre
     snapshotBytes,artifacts:reviewed,profile:'converted-current'});
   if(current.localRevision!==1 || !snapshot.deliveries.some(item=>item.deliveryId===current.deliveryId && item.slice===current.slice))
     fail('UNSUPPORTED_FORMAT','post-conversion local review is not supported');
-  if(bundleBytes===null || jsonBytes(bundleBytes,'evidence').value.validation?.recordFormat==='stnl-task-record-v1-imported')
+  if(bundleBytes===null || jsonBytes(bundleBytes,'evidence').value.validation?.recordFormat==='stnl-task-record-v1-imported'
+    && current.normalization===null)
     return inspectConvertedDelivery({context,snapshot,current,bundleBytes,observedWork});
   const bundle=jsonBytes(bundleBytes,'post-conversion evidence').value;
   validateCurrentEvidence(bundle);
+  const formalRejections=bundle.support.filter(item=>item.kind==='rejection'
+    && item.origin.operation==='VALIDATE_SLICE');
+  if(formalRejections.length && current.normalization!==null) {
+    if(formalRejections.length>2 || bundle.implementation.length
+      && bundle.validation?.recordFormat!=='stnl-task-record-v1-imported'
+      || bundle.openDivergences.length
+      || bundle.deliveryId!==current.deliveryId || bundle.slice!==current.slice
+      || bundle.currentAuthoritySha256!==current.authoritySha256
+      || raw(bundleBytes)!==current.evidence?.sha256)
+      invalid('post-conversion rejection bundle identity differs');
+    const latest=formalRejections.at(-1);
+    const map=sourceMap(bundle);
+    const capture=restoreCaptureSources('current-validation',latest,map);
+    const request=jsonBytes(capture.validationRequest,'retained rejection request').value;
+    const before={...current,evidence:request.base.evidenceSha256===null?null:
+      {sha256:request.base.evidenceSha256},
+      counters:request.base.counters,baseline:request.base.baseline,
+      validation:request.base.validation,lastDiagnostic:request.base.lastDiagnostic,
+      normalization:null};
+    const expected=postBase(snapshotBytes,before,request.base.priorScopePaths,
+      request.base.openFindings,request.base.auxiliary??null);
+    const derived=postCaptureProof({context,snapshotBytes,current:before,capture,
+      expectedBase:expected,admissionRef,allowRejection:true});
+    if(!derived.rejection || latest.operationAttemptId!==derived.origin.operationAttemptId
+      || latest.diagnostic!==derived.rejection || !same(latest.origin,derived.origin)
+      || latest.round!==1 || latest.consumedInvocations!==1
+      || !same(current.counters,request.base.counters)
+      || !same(current.baseline,derived.observed.observed.after))
+      invalid('post-conversion rejection proof differs');
+    const inherited=jsonBytes(capture.origin,'rejection origin').value.admission?.binding?.normalization??null;
+    const causeSha256=inherited?.causeSha256??raw(encode({class:'formal-rejection',
+      operationAttemptId:request.owner.operationAttemptId,
+      requestSha256:raw(capture.validationRequest),responseSha256:raw(capture.rawResponse),
+      scopePaths:request.scope.paths}));
+    const normalization={episodeId:inherited?.episodeId??request.owner.operationAttemptId,
+      operation:'VALIDATE_SLICE',causeSha256,
+      sourceOperationAttemptId:inherited?.sourceOperationAttemptId??request.owner.operationAttemptId,
+      used:1,consumedInvocations:inherited?2:1,round:inherited?2:1,
+      status:inherited?'exhausted':'settled'};
+    if(!same(current.normalization,normalization)
+      || !same(current.lastDiagnostic,{code:'RUNNER_RESULT_REJECTED',
+        operationAttemptId:request.owner.operationAttemptId,reason:derived.rejection,
+        affectedPaths:request.scope.paths,nextAction:inherited?'stop':'normalize'}))
+      invalid('post-conversion normalization/diagnostic differs');
+    let priorFacts;
+    if(request.base.evidenceSha256===null) {
+      if(bundle.validation!==null || bundle.findingsChecks.length || formalRejections.length!==1
+        || bundle.support.length!==1 || bundle.openFindings.length)
+        invalid('first converted rejection contains foreign history');
+      priorFacts=await inspectConvertedDelivery({context,snapshot,current:before,bundleBytes:null,
+        observedWork:request.base.baseline});
+    } else {
+      const priorSupport=bundle.support.slice(0,-1);
+      const retained=[...bundle.implementation,...priorSupport,...bundle.findingsChecks,
+        ...(bundle.validation?[bundle.validation]:[])];
+      const priorBundle={...bundle,support:priorSupport,
+        objects:referencedObjects(retained,map)};
+      const priorBytes=encode(priorBundle);
+      if(raw(priorBytes)!==request.base.evidenceSha256)
+        stale('rejection predecessor retained bytes differ');
+      const baseActivation=jsonBytes(capture.origin,'rejection origin').value.admission.baseActivation;
+      priorFacts=await inspectPostConversionEvidence({context,snapshotBytes,current:{...before,
+        evidence:{path:current.evidence.path,sha256:raw(priorBytes)},
+        normalization:inherited?{episodeId:inherited.episodeId,operation:inherited.operation,
+          causeSha256:inherited.causeSha256,sourceOperationAttemptId:inherited.sourceOperationAttemptId,
+          used:inherited.used,consumedInvocations:inherited.consumedInvocations,
+          round:inherited.round,status:inherited.status}:null},
+        bundleBytes:priorBytes,observedWork:request.base.baseline,
+        lastAttempt:baseActivation.lastAttempt,
+        admissionRef:baseActivation.lastAttempt?.operationRef??null});
+    }
+    const approved=postAuthority(snapshot,current);
+    const matches=same(observedWork,current.baseline);
+    return {context,authority:approved,bundle,
+      records:bundle.validation?.recordFormat==='stnl-task-record-v1-imported'
+        ?{implementation:bundle.implementation,findings:bundle.findingsChecks,
+          validation:[...bundle.support.filter(item=>item.kind==='validation'),bundle.validation]}
+        :priorFacts.records??{implementation:[],findings:[],validation:[]},
+      latest:priorFacts.latest??null,verifiedChanges:priorFacts.verifiedChanges??[],
+      verifiedCorrections:priorFacts.verifiedCorrections??[],rejection:derived,
+      auxiliaryStatus:null,formalStatus:null,slice:current.slice,deliveryId:current.deliveryId,
+      counters:current.counters,counterAuthority:'persisted-continuity',
+      persistedValidation:current.validation,observedValidation:matches?current.validation:'revalidation-required',
+      evidenceSha256:current.evidence.sha256,baseline:current.baseline,observationMatches:matches,
+      openFindings:bundle.openFindings,openDivergences:[],cycle:priorFacts.cycle,
+      origins:priorFacts.origins??null,
+      consumption:{kind:'bounded-formal-rejection',lastOperationAttemptId:request.owner.operationAttemptId,
+        operation:'VALIDATE_SLICE',consumedInvocations:normalization.consumedInvocations,
+        remainingInvocations:inherited?0:1,resumable:!inherited},diagnostics:[],
+      requiresFormalRevalidation:!inherited && matches};
+  }
   if(bundle.findingsChecks.length) {
     if(bundle.implementation.length || bundle.deliveryId!==current.deliveryId || bundle.slice!==current.slice
       || bundle.currentAuthoritySha256!==current.authoritySha256
@@ -663,7 +756,43 @@ export async function inspectPostConversionEvidence({context,snapshotBytes,curre
     const approved=postAuthority(snapshot,current);
     const post={snapshotBytes,current,admissionRef:lastAttempt?.operation==='APPLY_FINDINGS'
       ?admissionRef:null};
-    const verified=inspectFindings(copyBytes(bundleBytes,'post-conversion findings'),bundle,context,
+    let verifiedBundle=bundle,verifiedBytes=copyBytes(bundleBytes,'post-conversion findings');
+    if(formalRejections.length) {
+      if(formalRejections.length!==1 || current.normalization!==null)
+        invalid('closed findings successor has invalid rejection history');
+      const sourceMapCurrent=sourceMap(bundle);
+      const latestCapture=restoreCaptureSources('current-validation',bundle.validation,sourceMapCurrent);
+      const latestRequest=jsonBytes(latestCapture.validationRequest,'findings successor request').value;
+      const inherited=jsonBytes(latestCapture.origin,'findings successor origin').value.admission?.binding?.normalization;
+      const priorRecord=bundle.support.filter(item=>item.kind==='validation').at(-1);
+      if(!inherited || !priorRecord || inherited.sourceEvidenceSha256!==latestRequest.base.evidenceSha256
+        || inherited.sourceActivationId!==latestRequest.owner.originActivationId
+        || inherited.round!==1 || inherited.status!=='settled')
+        mismatch('findings successor rejection lineage differs');
+      const priorSupport=bundle.support.filter(item=>item!==priorRecord);
+      const priorBundle={...bundle,validation:priorRecord,support:priorSupport,
+        openFindings:latestRequest.base.openFindings,
+        objects:referencedObjects([...priorSupport,...bundle.findingsChecks,priorRecord],sourceMapCurrent)};
+      const priorBytes=encode(priorBundle);
+      if(raw(priorBytes)!==latestRequest.base.evidenceSha256)
+        stale('findings successor retained predecessor bytes differ');
+      const {sourceEvidenceSha256,sourceActivationId,...normalization}=inherited;
+      const baseActivation=jsonBytes(latestCapture.origin,'findings successor origin').value.admission.baseActivation;
+      const predecessor=await inspectPostConversionEvidence({context,snapshotBytes,
+        current:{...current,evidence:{path:current.evidence.path,sha256:raw(priorBytes)},
+          counters:latestRequest.base.counters,baseline:latestRequest.base.baseline,
+          validation:latestRequest.base.validation,lastDiagnostic:latestRequest.base.lastDiagnostic,
+          normalization},bundleBytes:priorBytes,observedWork:latestRequest.base.baseline,
+        lastAttempt:baseActivation.lastAttempt,
+        admissionRef:baseActivation.lastAttempt?.operationRef??null});
+      if(!predecessor.rejection || predecessor.consumption.remainingInvocations!==1)
+        invalid('findings successor predecessor is not settled');
+      verifiedBundle={...bundle,support:bundle.support.filter(item=>item.kind!=='rejection'),
+        objects:referencedObjects([...bundle.support.filter(item=>item.kind!=='rejection'),
+          ...bundle.findingsChecks,bundle.validation],sourceMapCurrent)};
+      verifiedBytes=encode(verifiedBundle);
+    }
+    const verified=inspectFindings(verifiedBytes,verifiedBundle,context,
       approved,current.counters,observedWork,post);
     if(lastAttempt?.operation==='VALIDATE_SLICE' && admissionRef!==null)
       verifyPostAdmission({context,snapshotBytes,owner:verified.latest.request.owner,
@@ -698,8 +827,13 @@ export async function inspectPostConversionEvidence({context,snapshotBytes,curre
       requiresFormalRevalidation:expectedValidation!=='current'||!observationMatches};
   }
   const record=bundle.validation;
-  if(!record || record.recordFormat!=='stnl-task-record-v2' || bundle.implementation.length
-    || bundle.findingsChecks.length || bundle.support.length || bundle.openDivergences.length
+  const importedPrior=bundle.support.filter(item=>item.kind==='validation'
+    && item.recordFormat==='stnl-task-record-v1-imported');
+  if(!record || record.recordFormat!=='stnl-task-record-v2'
+    || bundle.implementation.length && importedPrior.length!==1
+    || bundle.findingsChecks.length || bundle.support.some(item=>item.kind!=='rejection'
+      && !importedPrior.includes(item)) || importedPrior.length>1
+    || formalRejections.length>1 || bundle.openDivergences.length
     || record.sources.legacyPreparation!==null || bundle.deliveryId!==current.deliveryId
     || bundle.slice!==current.slice || bundle.currentAuthoritySha256!==current.authoritySha256
     || raw(bundleBytes)!==current.evidence?.sha256)
@@ -707,6 +841,32 @@ export async function inspectPostConversionEvidence({context,snapshotBytes,curre
   const objects=new Map(bundle.objects.map(item=>[item.id,Buffer.from(item.bytesBase64,'base64')]));
   const capture=restoreCaptureSources('current-validation',record,objects);
   const request=jsonBytes(capture.validationRequest,'post-conversion request').value;
+  if(formalRejections.length) {
+    const origin=jsonBytes(capture.origin,'formal successor origin').value;
+    const inherited=origin.admission?.binding?.normalization;
+    if(!inherited || inherited.sourceEvidenceSha256!==request.base.evidenceSha256
+      || inherited.sourceActivationId!==request.owner.originActivationId
+      || inherited.status!=='settled' || inherited.round!==1
+      || inherited.consumedInvocations!==1)
+      mismatch('formal successor rejection lineage differs');
+    const priorBundle={...bundle,validation:importedPrior[0]??null,support:formalRejections,
+      openFindings:request.base.openFindings,
+      objects:referencedObjects([...bundle.implementation,...formalRejections,...importedPrior],sourceMap(bundle))};
+    const priorBytes=encode(priorBundle);
+    if(raw(priorBytes)!==request.base.evidenceSha256)
+      stale('formal successor retained predecessor bytes differ');
+    const {sourceEvidenceSha256,sourceActivationId,...normalization}=inherited;
+    const priorCurrent={...current,evidence:{path:current.evidence.path,sha256:raw(priorBytes)},
+      counters:request.base.counters,baseline:request.base.baseline,
+      validation:request.base.validation,lastDiagnostic:request.base.lastDiagnostic,
+      normalization};
+    const predecessor=await inspectPostConversionEvidence({context,snapshotBytes,current:priorCurrent,
+      bundleBytes:priorBytes,observedWork:priorCurrent.baseline,
+      lastAttempt:origin.admission.baseActivation.lastAttempt,
+      admissionRef:origin.admission.baseActivation.lastAttempt?.operationRef??null});
+    if(!predecessor.rejection || predecessor.consumption.remainingInvocations!==1)
+      invalid('formal successor predecessor is not settled');
+  }
   const predecessor={evidence:{sha256:request.base.evidenceSha256},counters:request.base.counters,
     baseline:request.base.baseline,validation:request.base.validation,lastDiagnostic:request.base.lastDiagnostic};
   const expected=postBase(snapshotBytes,predecessor,request.base.priorScopePaths);
@@ -792,6 +952,7 @@ function postTask(document,derived,digest,context,{cycle=null,admission=null,che
     ['Corrections Applied',corrections.length?corrections.map(name=>`- \`${taskRelative(context,request.owner.slice,name)}\``).join('\n'):'- none'],
     ['Implementation Test Evidence','- none'],['Findings Test Evidence',checks.length?checks.map(item=>item.recordUtf8).join('\n\n'):'- none'],
     ['Validation Attempts',[...validations.map(item=>item.recordUtf8),recordDraft.recordUtf8].join('\n\n')],['Validation Findings',findingBody],
+    ['Delegation Blocker','- none'],
     ['Effective Validation Base',status==='PASS'?base:'- none'],
     ['Diff Summary',changed.length
       ?`- Formal validation measured ${changed.length} approved product path${changed.length===1?'':'s'} after the converted boundary.`
@@ -865,7 +1026,9 @@ export async function composePostConversionValidation({context,requirementsAutho
   const previousBundle=bundleBytes?jsonBytes(bundleBytes,'predecessor bundle').value:null;
   const previousRecord=previousBundle?.validation;
   const previousV3=previousRecord?.recordFormat==='stnl-task-record-v2';
-  if(previousV3 && (!previousBundle.findingsChecks.length
+  const previousRejected=previousBundle?.support?.some(item=>item.kind==='rejection'
+    && item.origin.operation==='VALIDATE_SLICE')??false;
+  if(previousV3 && !previousRejected && (!previousBundle.findingsChecks.length
       && activation.lastAttempt?.operationAttemptId!==previousRecord.origin.operationAttemptId
     || activation.lastAttempt?.outcome!=='recorded'
     || activation.lastAttempt?.terminalActivationId!==activation.activationId))
@@ -902,7 +1065,19 @@ export async function composePostConversionValidation({context,requirementsAutho
   if(request.owner.originActivationId!==activation.activationId)
     mismatch('post-conversion owner origin activation differs');
   let previousFacts=null;
-  if(previousV3) {
+  if(previousRejected) {
+    if(current.normalization?.status!=='settled' || current.normalization.round!==1
+      || activation.lastAttempt?.outcome!=='rejected'
+      || !same(jsonBytes(capture.origin,'successor origin').value.admission?.binding?.normalization,
+        {...current.normalization,sourceEvidenceSha256:current.evidence.sha256,
+          sourceActivationId:activation.activationId}))
+      mismatch('formal successor is not bound to settled predecessor');
+    previousFacts=await inspectPostConversionEvidence({context,snapshotBytes,current,bundleBytes,
+      observedWork:current.baseline,lastAttempt:activation.lastAttempt,
+      admissionRef:activation.lastAttempt.operationRef});
+    if(!previousFacts.rejection || previousFacts.consumption.remainingInvocations!==1)
+      fail('NORMALIZATION_EXHAUSTED','formal successor budget is exhausted');
+  } else if(previousV3) {
     previousFacts=await inspectPostConversionEvidence({context,snapshotBytes,current,bundleBytes,
       observedWork:current.baseline,lastAttempt:activation.lastAttempt,
       admissionRef:activation.lastAttempt?.operationRef??null});
@@ -922,6 +1097,7 @@ export async function composePostConversionValidation({context,requirementsAutho
   const findingsCycle=previousFacts?.cycle?.admissionId?previousFacts.cycle:null;
   const priorScopePaths=findingsCycle && findingsCycle.admissionId===previousRecord?.id
     ?findingsCycle.lastScope
+    :previousRejected?previousFacts.rejection.request.scope.paths
     :[...new Set([
       ...current.baseline.entries.filter(item=>['file','absent'].includes(item.kind)).map(item=>item.path).filter(output),
       ...(previousV3?previousFacts.latest.request.scope.paths:[]),
@@ -934,21 +1110,80 @@ export async function composePostConversionValidation({context,requirementsAutho
   if(request.format!==(auxiliary?'stnl-current-validation-request-v4':'stnl-current-validation-request-v3'))
     invalid('converted formal request does not match findings state');
   const base=postBase(snapshotBytes,current,priorScopePaths,previousBundle?.openFindings??[],auxiliary);
-  const derived=postCaptureProof({context,snapshotBytes,current,capture,expectedBase:base});
+  const derived=postCaptureProof({context,snapshotBytes,current,capture,expectedBase:base,
+    allowRejection:true});
   if(request.owner.preparationRevision!==snapshot.preparationRevision
     || request.owner.localRevision!==current.localRevision
     || request.owner.normativeSha256!==current.authoritySha256)
     mismatch('post-conversion owner authority differs');
   const store=closeEvidenceObjects();
   const sources=packCaptureSources('current-validation',capture,store);
+  if(derived.rejection) {
+    const origin=jsonBytes(capture.origin,'native rejection origin').value;
+    const inherited=origin.admission?.binding?.normalization??null;
+    if(inherited && (inherited.operation!=='VALIDATE_SLICE' || inherited.status!=='settled'
+      || inherited.round!==1 || inherited.consumedInvocations!==1
+      || inherited.sourceOperationAttemptId===request.owner.operationAttemptId))
+      mismatch('formal successor has invalid inherited normalization');
+    const causeSha256=inherited?.causeSha256??raw(encode({class:'formal-rejection',
+      operationAttemptId:request.owner.operationAttemptId,
+      requestSha256:raw(capture.validationRequest),responseSha256:raw(capture.rawResponse),
+      scopePaths:request.scope.paths}));
+    const normalization={episodeId:inherited?.episodeId??request.owner.operationAttemptId,
+      operation:'VALIDATE_SLICE',causeSha256,
+      sourceOperationAttemptId:inherited?.sourceOperationAttemptId??request.owner.operationAttemptId,
+      used:1,consumedInvocations:inherited?2:1,round:inherited?2:1,
+      status:inherited?'exhausted':'settled'};
+    const rejection={kind:'rejection',operationAttemptId:request.owner.operationAttemptId,
+      origin:derived.origin,diagnostic:derived.rejection,consumedInvocations:1,round:1,sources};
+    const retained=previousBundle?.support??[];
+    if(retained.some(item=>item.kind==='rejection' && item.origin.operation==='VALIDATE_SLICE')
+      && !inherited) mismatch('prior formal rejection requires inherited episode');
+    const support=[...retained,rejection];
+    const bundle={format:'stnl-current-evidence-v1',deliveryId,
+      currentAuthoritySha256:current.authoritySha256,slice:current.slice,
+      logicalTaskPath:`tasks/${current.slice}.md`,implementation:previousBundle?.implementation??[],
+      findingsChecks:previousBundle?.findingsChecks??[],validation:previousBundle?.validation??null,
+      openFindings:previousBundle?.openFindings??[],openDivergences:[],support,
+      objects:referencedObjects([...(previousBundle?.implementation??[]),...support,...(previousBundle?.findingsChecks??[]),
+        ...(previousBundle?.validation?[previousBundle.validation]:[])],
+        mergeObjects(previousBundle?sourceMap(previousBundle):new Map(),store))};
+    validateCurrentEvidence(bundle);
+    const nextBytes=encode(bundle),nextDigest=raw(nextBytes);
+    const next={...current,evidence:{path:`evidence/${deliveryId}.json`,sha256:nextDigest},
+      baseline:derived.observed.observed.after,validation:'revalidation-required',normalization,
+      lastDiagnostic:{code:'RUNNER_RESULT_REJECTED',operationAttemptId:request.owner.operationAttemptId,
+        reason:derived.rejection,affectedPaths:request.scope.paths,nextAction:inherited?'stop':'normalize'}};
+    const continuity={...checked.continuity,deliveries:checked.continuity.deliveries.map(item=>
+      item.deliveryId===deliveryId?next:item)};
+    files.set(next.evidence.path,nextBytes);
+    files.set('continuity.json',encode(continuity));
+    let task=Buffer.from(files.get(`tasks/${current.slice}.md`)).toString('utf8');
+    task=postSection(task,'Continuity',`- Current validation: revalidation-required\n- Current evidence: ${nextDigest}\n- Current action: ${inherited?'blocked':'normalize'}`);
+    task=postSection(task,'Delegation Blocker','- Operation: VALIDATE_SLICE\n- State: active');
+    task=postSection(task,'Effective Validation Base','- none');
+    task=postSection(task,'Final Result','- pending');
+    files.set(`tasks/${current.slice}.md`,utf8(task));
+    files.set('tasks.md',postIndex(Buffer.from(files.get('tasks.md')).toString('utf8'),current.slice,'pending'));
+    validateCurrentCandidate({files});
+    return {files,transition:{deliveryId,slice:current.slice,
+      operationAttemptId:request.owner.operationAttemptId,originActivationId:activation.activationId,
+      outcome:'rejected',normalization,counters:structuredClone(current.counters)},
+      consumedInvocations:1,replayed:false};
+  }
   const record={...derived.recordDraft,sources};
-  const support=findingsCycle ? formalOrigins(
+  const importedPrior=previousRejected && previousRecord?.recordFormat==='stnl-task-record-v1-imported';
+  const support=findingsCycle ? [...formalOrigins(
     [...previousBundle.support.filter(item=>item.kind==='validation'),previousRecord],
-    [...derived.all,...findingsCycle.selectedFindings],record.id) : [];
-  const objects=referencedObjects([...support,...(findingsCycle?previousBundle.findingsChecks:[]),record],
+    [...derived.all,...findingsCycle.selectedFindings],record.id),
+    ...(previousRejected?previousBundle.support.filter(item=>item.kind==='rejection'):[])]
+    :previousRejected?[...previousBundle.support.filter(item=>item.kind==='rejection'),
+      ...(importedPrior?[previousRecord]:[])]:[];
+  const implementation=importedPrior?previousBundle.implementation:[];
+  const objects=referencedObjects([...implementation,...support,...(findingsCycle?previousBundle.findingsChecks:[]),record],
     mergeObjects(previousBundle?sourceMap(previousBundle):new Map(),store));
   const bundle={format:'stnl-current-evidence-v1',deliveryId,currentAuthoritySha256:current.authoritySha256,
-    slice:current.slice,logicalTaskPath:`tasks/${current.slice}.md`,implementation:[],
+    slice:current.slice,logicalTaskPath:`tasks/${current.slice}.md`,implementation,
     findingsChecks:findingsCycle?previousBundle.findingsChecks:[],
     validation:record,openFindings:derived.open,openDivergences:[],support,objects};
   validateCurrentEvidence(bundle);
@@ -958,7 +1193,8 @@ export async function composePostConversionValidation({context,requirementsAutho
     findings:current.counters.findings+derived.response.newFindings.length};
   const next={...current,evidence:{path:`evidence/${deliveryId}.json`,sha256:nextDigest},
     counters:nextCounters,baseline:derived.observed.observed.after,
-    validation:status==='PASS'?'current':status==='BLOCKED'?'uncertain':'revalidation-required',lastDiagnostic:null};
+    validation:status==='PASS'?'current':status==='BLOCKED'?'uncertain':'revalidation-required',
+    normalization:null,lastDiagnostic:null};
   const continuity={...checked.continuity,deliveries:checked.continuity.deliveries.map(item=>item.deliveryId===deliveryId?next:item)};
   files.set(next.evidence.path,nextBytes);
   files.set('continuity.json',encode(continuity));
@@ -966,7 +1202,7 @@ export async function composePostConversionValidation({context,requirementsAutho
   files.set(taskName,postTask(Buffer.from(files.get(taskName)).toString('utf8'),derived,nextDigest,context,
     findingsCycle?{cycle:findingsCycle,
       admission:previousFacts.origins.get(findingsCycle.admissionId),
-      checks:bundle.findingsChecks,validations:support}:{}));
+      checks:bundle.findingsChecks,validations:support.filter(item=>item.kind==='validation')}:{}));
   files.set('tasks.md',postIndex(Buffer.from(files.get('tasks.md')).toString('utf8'),current.slice,status));
   validateCurrentCandidate({files});
   return {files,transition:{deliveryId,slice:current.slice,

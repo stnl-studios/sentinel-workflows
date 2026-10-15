@@ -663,9 +663,38 @@ function validateCurrentContent(files) {
     const approvedDelivery=snapshot.deliveries.find(item=>item.deliveryId===current.deliveryId);
     const leaf=snapshot.normativeProjection.deliveries.find(item=>item.deliveryId===current.deliveryId);
     const global=snapshot.normativeProjection.global;
+    const retainedRecords=bundle?.support?.filter(item=>item.kind!=='rejection')??[];
+    const convertedRejection=bundle?.support?.some(item=>item.kind==='rejection'
+      && item.origin.operation==='VALIDATE_SLICE')
+      && (current.normalization===null || current.normalization?.operation==='VALIDATE_SLICE'
+        && ['settled','exhausted'].includes(current.normalization.status))
+      && bundle.support.filter(item=>item.kind==='rejection').length<=2;
+    const importedValidation=bundle?.support?.filter(item=>item.kind==='validation'
+      && item.recordFormat==='stnl-task-record-v1-imported')??[];
+    const validConvertedRecord=record?.kind==='validation'
+      && record.recordFormat==='stnl-task-record-v2'
+      && record.sources?.legacyPreparation===null && record.contract?.terminal===null
+      && record.origin?.deliveryId===current.deliveryId && record.origin?.slice===current.slice
+      && record.origin?.operation==='VALIDATE_SLICE'
+      && record.origin?.preparationRevision===snapshot.preparationRevision
+      && record.origin?.localRevision===approvedDelivery?.localRevision
+      && record.origin?.normativeSha256===current.authoritySha256
+      && same(record.contract?.delivery,leaf)
+      && same(record.contract?.context,{requirementsAuthority:snapshot.requirementsAuthority,
+        objective:global.objective,strategy:global.strategy,risks:global.risks})
+      && same(record.contract?.recipe,leaf.verificationRecipe);
+    const importedBridge=convertedRejection && bundle.openDivergences?.length===0
+      && bundle.findingsChecks?.length===0
+      && bundle.support.every(item=>item.kind==='rejection' || importedValidation.includes(item))
+      && bundle.implementation?.every(item=>item.recordFormat==='stnl-task-record-v1-imported'
+        && item.origin.deliveryId===current.deliveryId && item.origin.slice===current.slice)
+      && (current.normalization!==null && record?.recordFormat==='stnl-task-record-v1-imported'
+        && importedValidation.length===0
+        || current.normalization===null && validConvertedRecord
+        && importedValidation.length===1);
     const convertedFindings=bundle?.findingsChecks?.length>0
-      && bundle.support.every(item=>item.kind==='validation')
-      && [...bundle.findingsChecks,...bundle.support,record].every(item=>item
+      && retainedRecords.every(item=>item.kind==='validation')
+      && [...bundle.findingsChecks,...retainedRecords,record].every(item=>item
         && item.recordFormat==='stnl-task-record-v2' && item.sources?.legacyPreparation===null
         && item.contract?.terminal===null && item.origin?.deliveryId===current.deliveryId
         && item.origin?.slice===current.slice
@@ -678,19 +707,11 @@ function validateCurrentContent(files) {
           objective:global.objective,strategy:global.strategy,risks:global.risks})
         && same(item.contract?.recipe,leaf.verificationRecipe));
     return decision.evidenceSha256!==current.evidence?.sha256 && approvedDelivery
-      && bundle?.implementation?.length===0 && (bundle.findingsChecks?.length===0 || convertedFindings)
-      && (bundle.support?.length===0 || convertedFindings) && bundle.openDivergences?.length===0
-      && record?.kind==='validation' && record.recordFormat==='stnl-task-record-v2'
-      && record.sources?.legacyPreparation===null && record.contract?.terminal===null
-      && record.origin?.deliveryId===current.deliveryId && record.origin?.slice===current.slice
-      && record.origin?.operation==='VALIDATE_SLICE'
-      && record.origin?.preparationRevision===snapshot.preparationRevision
-      && record.origin?.localRevision===approvedDelivery.localRevision
-      && record.origin?.normativeSha256===current.authoritySha256
-      && same(record.contract?.delivery,leaf)
-      && same(record.contract?.context,{requirementsAuthority:snapshot.requirementsAuthority,
-        objective:global.objective,strategy:global.strategy,risks:global.risks})
-      && same(record.contract?.recipe,leaf.verificationRecipe);
+      && (importedBridge || bundle?.implementation?.length===0
+      && (bundle.findingsChecks?.length===0 || convertedFindings)
+      && (bundle.support?.length===0 || convertedFindings || convertedRejection)
+      && bundle.openDivergences?.length===0
+      && validConvertedRecord);
   };
   for (const [reviewedId, decision] of [
     ...snapshot.globalReview.evidenceDecisions.map(item => [null, item]),

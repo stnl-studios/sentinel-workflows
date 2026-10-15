@@ -90,7 +90,7 @@ async function saveRegistry(location,current) {
   if(await maybe(location.registry)) await persistAllocation(location.registry,current);
   else await put(location.registry,current);
 }
-function requireS2(image,slice,operation) {
+function requireS2(image,slice,operation,{successor=false}={}) {
   const activation=image.activation;
   if(activation.preparationRevision<=1 || activation.activeAttempt!==null
     || !['VALIDATE_SLICE','APPLY_FINDINGS'].includes(operation)
@@ -99,7 +99,9 @@ function requireS2(image,slice,operation) {
     fail('UNSUPPORTED_FORMAT','EC-1 native profile requires an exact converted S2 handoff');
   const continuity=parseCurrentJson(Buffer.from(image.files.get('continuity.json')).toString('utf8'));
   if(continuity.completed.length || continuity.deliveries.some(item=>item.localRevision!==1
-    || item.normalization!==null || item.validation==='uncertain'))
+    || item.normalization!==null && !(successor && item.slice===slice
+      && item.normalization.status==='settled' && item.normalization.round===1)
+    || item.validation==='uncertain'))
     fail('UNSUPPORTED_FORMAT','EC-1 native profile excludes completed, local review and uncertain delivery');
   const current=continuity.deliveries.find(item=>item.slice===slice);
   const inspected=image.inspection.deliveries.find(item=>item.slice===slice);
@@ -109,6 +111,12 @@ function requireS2(image,slice,operation) {
     fail('UNSUPPORTED_FORMAT','EC-1 S2 proof boundary is not eligible');
   if(image.inspection.deliveries.some(item=>item.formalStatus==='BLOCKED' || item.observedValidation==='uncertain'))
     fail('OWNER_UNCERTAIN','another delivery blocks current execution');
+  if(successor && (operation!=='VALIDATE_SLICE'
+    || current.normalization?.status!=='settled' || current.normalization.round!==1
+    || image.activation.lastAttempt?.outcome!=='rejected'
+    || image.activation.lastAttempt?.operationAttemptId!==current.lastDiagnostic?.operationAttemptId
+    || inspected.formalStatus!==null || !current.evidence))
+    fail('NORMALIZATION_NOT_ELIGIBLE','official first rejection is not settled for one successor');
   if(operation==='APPLY_FINDINGS') {
     const bundle=parseCurrentJson(Buffer.from(image.files.get(current.evidence.path)).toString('utf8'));
     const observed=image.observedByDelivery.get(current.deliveryId)?.manifest;
@@ -121,9 +129,9 @@ function requireS2(image,slice,operation) {
   return current;
 }
 
-export async function begin({specPath,slice,expectedActivationId,operation='VALIDATE_SLICE'}) {
+export async function begin({specPath,slice,expectedActivationId,operation='VALIDATE_SLICE',successor=false}) {
   const first=await quiet(specPath);
-  const current=requireS2(first,slice,operation);
+  const current=requireS2(first,slice,operation,{successor});
   if(first.activation.activationId!==expectedActivationId) fail('STALE_BASE','begin expectedActivationId differs');
   const {workspace,context}=await resolveCurrentExecutionContext(specPath);
   const location=await namespaceFor(context,{create:true});
@@ -139,7 +147,9 @@ export async function begin({specPath,slice,expectedActivationId,operation='VALI
     logicalSpecRoot:context.logicalSpecRoot,producer:operation==='APPLY_FINDINGS'?'findings':'validation',owner,
     baseActivationId:expectedActivationId,baseTree:await captureExecutionTree(context.logicalExecutionRoot),
     candidatePath:'candidate',previousPath:'previous',namespaceIdentity:location.identity,
-    filesystemDevice:location.device};
+    filesystemDevice:location.device,
+    ...(successor?{normalization:{...current.normalization,
+      sourceEvidenceSha256:current.evidence.sha256,sourceActivationId:expectedActivationId}}:{})};
   const marker=path.join(operationRoot,'owner.json');
   await writeNew(path.join(operationRoot,'base.activation.json'),Buffer.from(first.activationBytes));
   if(operation==='APPLY_FINDINGS') await put(path.join(operationRoot,'base.work.json'),
@@ -494,19 +504,23 @@ export async function captureNative(handle,toolResultFile) {
     }
     const request=await readJson(path.join(now.root,`round-${round}.request.json`));
     const status=parsed?.result?.status;
+    const requestSha256=sha((await readOwnedFile(path.join(now.root,`round-${round}.request.json`))).bytes);
+    const bindingFailure=parsed?.requestSha256!==undefined && parsed.requestSha256!==requestSha256;
     if(parsed?.format!==(auxiliary?'stnl-current-findings-response-v1':'stnl-current-validation-response-v1')
-      || parsed?.requestSha256!==sha((await readOwnedFile(path.join(now.root,`round-${round}.request.json`))).bytes)
+      || parsed?.requestSha256!==requestSha256
       || !(auxiliary?['TESTS_PASS','TESTS_FAIL','BLOCKED']:['PASS','NEEDS_FIX','BLOCKED']).includes(status))
       parseFailure??='native final response envelope/status differs';
-    if(!parseFailure) {
-      let productHead;
+    let productHead=null;
+    if(!parseFailure || parsed?.result?.head!==undefined) {
       try {
         const result=await run('git',['-C',now.context.productRoot,'rev-parse','HEAD'],{timeout:10000});
         productHead=result.stdout.endsWith('\n')?result.stdout.slice(0,-1):null;
       } catch {productHead=null;}
-      if(!/^[a-f0-9]{40}$/u.test(productHead??'') || parsed.result.head!==productHead)
+      if(!parseFailure && (!/^[a-f0-9]{40}$/u.test(productHead??'') || parsed.result.head!==productHead))
         parseFailure='native result HEAD differs from verified product Git HEAD';
     }
+    const headBindingFailure=parsed?.result?.head!==undefined
+      && (!/^[a-f0-9]{40}$/u.test(productHead??'') || parsed.result.head!==productHead);
     const taskRoot=path.dirname(path.join(now.context.logicalExecutionRoot,`tasks/${now.owner.slice}.md`));
     const byPath=new Map(observation.after.entries.map(item=>[item.path,item]));
     const testedState=parseFailure?null:{workspace:now.context.productRoot,
@@ -538,12 +552,18 @@ export async function captureNative(handle,toolResultFile) {
         throw error;
       }
     }
-    now.record.runner.status=parseFailure?'uncertain':'captured';
+    const concludedFormalRejection=!auxiliary && Boolean(parseFailure) && !bindingFailure
+      && !headBindingFailure
+      && parseFailure!=='native result HEAD differs from verified product Git HEAD';
+    now.record.runner.status=parseFailure && !concludedFormalRejection?'uncertain':'captured';
+    now.record.runner.captureClass=concludedFormalRejection?'formal-rejection':parseFailure?'uncertain':'formal-response';
     if(!parseFailure) now.record.runner.resultStatus=status;
     await persistAllocation(now.marker,now.record);
-    if(parseFailure) fail('RUNNER_RESULT_REJECTED',`native final response preserved but rejected: ${parseFailure}`);
+    if(parseFailure && !concludedFormalRejection)
+      fail('RUNNER_RESULT_REJECTED',`native final response preserved but rejected: ${parseFailure}`);
     return {phase:'captured',rawResponseSha256:sha(raw),status,
-      nextAction:auxiliary && status==='TESTS_FAIL' && round<3?'reserve-dispatch':'publish',replayed:false};
+      nextAction:auxiliary && status==='TESTS_FAIL' && round<3?'reserve-dispatch':'publish',
+      captureClass:now.record.runner.captureClass,replayed:false};
   });
 }
 
@@ -552,16 +572,70 @@ async function candidateFiles(root,names) {
   for(const name of names) entries.set(name,(await readOwnedFile(path.join(root,...name.split('/')))).bytes);
   return entries;
 }
-async function preparedCandidate(op,composed,image) {
+async function preparedCandidate(op,composed,image,{checkpoint=null}={}) {
   const candidatePath=path.join(op.root,op.binding.candidatePath);
+  const previous=op.record.preparation?.candidateComposition??null;
   if(!await maybe(candidatePath)) {
+    if(previous) fail('OWNER_UNCERTAIN','identified candidate disappeared before completion');
     await copyCurrentCandidateTree(op.context.logicalExecutionRoot,candidatePath);
-    for(const [name,bytes] of composed.files) {
+    const copied=await captureExecutionTree(candidatePath);
+    if(!copied || !same(copied.files,(await captureExecutionTree(op.context.logicalExecutionRoot)).files))
+      fail('EVIDENCE_STALE','candidate base copy differs before composition');
+    op.record.preparation={...(op.record.preparation??{}),candidateComposition:{identity:copied.identity,
+      baseTree:copied.files}};
+    await persistAllocation(op.marker,op.record);
+  } else if(!previous) fail('OWNER_UNCERTAIN','unidentified candidate cannot be completed');
+  const proof=op.record.preparation.candidateComposition;
+  const tree=await captureExecutionTree(candidatePath);
+  if(!tree || !same(tree.identity,proof.identity)) fail('OWNER_MISMATCH','candidate physical identity differs');
+  const base=new Map(proof.baseTree.map(item=>[item.path,item]));
+  const allowed=new Set([...base.keys(),...composed.files.keys()]);
+  for(const name of composed.files.keys()) {
+    for(let parent=path.posix.dirname(name);parent!=='.';parent=path.posix.dirname(parent)) allowed.add(parent);
+  }
+  for(const entry of tree.files) {
+    if(!allowed.has(entry.path)) fail('EVIDENCE_STALE',`foreign candidate path: ${entry.path}`);
+    const original=base.get(entry.path);
+    if(entry.type==='directory') {
+      if(original && !same(entry,original)) fail('EVIDENCE_STALE',`candidate directory changed: ${entry.path}`);
+      continue;
+    }
+    if(entry.type!=='file' || original && original.type!=='file')
+      fail('EVIDENCE_STALE',`candidate path changed type: ${entry.path}`);
+    const target=composed.files.get(entry.path);
+    if(target===undefined && !same(entry,original))
+      fail('EVIDENCE_STALE',`candidate base file changed: ${entry.path}`);
+    if(target!==undefined && !same(entry,original)
+      && (entry.sha256!==sha(target) || entry.mode!==(original?.mode??0o644)))
+      fail('EVIDENCE_STALE',`candidate file has ambiguous bytes: ${entry.path}`);
+  }
+  let writes=0;
+  for(const [name,bytes] of composed.files) {
+    const current=await maybe(path.join(candidatePath,...name.split('/')));
+    if(!current || !(await readOwnedFile(path.join(candidatePath,...name.split('/')))).bytes.equals(bytes)) {
       const target=path.join(candidatePath,...name.split('/'));
       await fs.mkdir(path.dirname(target),{recursive:true});
       await fs.writeFile(target,bytes);
+      writes+=1;
+      if(checkpoint && writes===1) await checkpoint('after-candidate-file');
     }
   }
+  for(const entry of [...proof.baseTree].sort((a,b)=>b.path.length-a.path.length)) {
+    if(entry.path==='activation.json' || composed.files.has(entry.path)) continue;
+    const target=path.join(candidatePath,...entry.path.split('/'));
+    if(entry.type==='file' && tree.files.some(item=>item.path===entry.path)) await fs.unlink(target);
+    else if(entry.type==='directory' && tree.files.some(item=>item.path===entry.path)
+      && ![...composed.files.keys()].some(name=>name.startsWith(`${entry.path}/`)))
+      await fs.rmdir(target);
+  }
+  const finalTree=await captureExecutionTree(candidatePath);
+  const required=new Set(['activation.json',...composed.files.keys()]);
+  for(const name of composed.files.keys())
+    for(let parent=path.posix.dirname(name);parent!=='.';parent=path.posix.dirname(parent))
+      required.add(parent);
+  if(!finalTree || finalTree.files.length!==required.size
+    || finalTree.files.some(entry=>!required.has(entry.path)))
+    fail('EVIDENCE_STALE','candidate has material outside captured composition');
   const actual=await candidateFiles(candidatePath,[...composed.files.keys()]);
   if(actual.size!==composed.files.size || [...composed.files].some(([name,bytes])=>!actual.get(name)?.equals(bytes)))
     fail('EVIDENCE_STALE','owned candidate differs from captured composition');
@@ -597,6 +671,67 @@ export async function cleanup(handle) {
     readQuiet:()=>quiet(handle.specPath),registryCompletion:()=>completeRegistry(op)});
 }
 
+async function capturedComposition(op) {
+  const auxiliary=op.owner.operation==='APPLY_FINDINGS';
+  const round=op.record.runner?.round;
+  if(op.record.runner?.status!=='captured'
+    || auxiliary && op.record.runner.resultStatus==='TESTS_FAIL' && round<3)
+    fail('OWNER_UNCERTAIN','native terminal result has not been captured');
+  const image=await requireA1(op);
+  const origin=await readJson(path.join(op.root,'round-1.origin.json'));
+  if(!same(image.activation,origin.admission.reservedActivation))
+    fail('STALE_BASE','official A1 differs before composition');
+  const observation=await readJson(path.join(op.root,`round-${round}.observation.json`));
+  if(!same(image.observedByDelivery.get(op.owner.deliveryId)?.manifest,observation.after))
+    fail('EVIDENCE_STALE','product changed after native capture');
+  const baseActivationBytes=(await readOwnedFile(path.join(op.root,'base.activation.json'))).bytes;
+  const previous={activationBytes:baseActivationBytes,files:baseFiles(image)};
+  const rounds=[];
+  for(let index=1;index<=round;index+=1) rounds.push(await capturedSources(op,index));
+  const inputs={context:op.context,requirementsAuthority:image.requirementsAuthority,previous,
+    admission:{activationBytes:image.activationBytes,files:baseFiles(image)},
+    deliveryId:op.owner.deliveryId};
+  const composed=auxiliary?await composePostConversionFindings({...inputs,rounds})
+    :await composePostConversionValidation({...inputs,capture:rounds[0]});
+  return {image,observation,composed};
+}
+
+export async function normalize(handle) {
+  const op=await load(handle);
+  if(op.record.phase!=='working' || op.record.runner?.status!=='captured'
+    || !op.record.preparation?.candidateComposition)
+    fail('NORMALIZATION_NOT_ELIGIBLE','no identified partial composition belongs to this captured owner');
+  const {image,composed}=await capturedComposition(op);
+  const response=(await readOwnedFile(op.record.runner.responseFile)).bytes;
+  const proof=op.record.preparation.candidateComposition;
+  const causeSha256=sha(json({class:'private-composition',operationAttemptId:op.owner.operationAttemptId,
+    responseSha256:sha(response),candidateIdentity:proof.identity}));
+  const candidatePath=await withExecutionPublicationLock(op.workspace,async()=>{
+    const now=await load(handle);
+    if(now.record.phase!=='working' || now.record.runner?.status!=='captured'
+      || !same(now.record.preparation?.candidateComposition,proof))
+      fail('OWNER_UNCERTAIN','partial composition changed before normalization reservation');
+    const existing=now.record.normalization;
+    if(existing && (existing.class!=='private-composition' || existing.causeSha256!==causeSha256
+      || existing.operationAttemptId!==op.owner.operationAttemptId))
+      fail('OWNER_MISMATCH','normalization reservation differs');
+    if(!existing) {
+      now.record.normalization={class:'private-composition',causeSha256,
+        operationAttemptId:op.owner.operationAttemptId,responseSha256:sha(response),status:'reserved'};
+      await persistAllocation(now.marker,now.record);
+    }
+    const candidate=await preparedCandidate(now,composed,image);
+    now.record.normalization.status='settled';
+    await persistAllocation(now.marker,now.record);
+    return candidate;
+  });
+  return {phase:'prepared',owner:op.owner,causeSha256,candidatePath,
+    rawResponseSha256:sha(response),nextAction:'publish'};
+}
+export async function normalizeSuccessor({specPath,slice,expectedActivationId}) {
+  return begin({specPath,slice,expectedActivationId,operation:'VALIDATE_SLICE',successor:true});
+}
+
 export async function publish(handle,{checkpoint=null}={}) {
   const op=await load(handle);
   const auxiliary=op.owner.operation==='APPLY_FINDINGS';
@@ -614,23 +749,43 @@ export async function publish(handle,{checkpoint=null}={}) {
       registryCompletion:()=>completeRegistry(op)});
     return {...result,nextAction:result.cleanup==='complete'?'inspect':'resume-cleanup'};
   }
-  const image=await requireA1(op);
-  const origin=await readJson(path.join(op.root,'round-1.origin.json'));
-  if(!same(image.activation,origin.admission.reservedActivation))
-    fail('STALE_BASE','official A1 differs before composition');
-  const observation=await readJson(path.join(op.root,`round-${round}.observation.json`));
-  if(!same(image.observedByDelivery.get(op.owner.deliveryId)?.manifest,observation.after))
-    fail('EVIDENCE_STALE','product changed after native capture');
-  const baseActivationBytes=(await readOwnedFile(path.join(op.root,'base.activation.json'))).bytes;
-  const previous={activationBytes:baseActivationBytes,files:baseFiles(image)};
-  const rounds=[];
-  for(let index=1;index<=round;index+=1) rounds.push(await capturedSources(op,index));
-  const inputs={context:op.context,requirementsAuthority:image.requirementsAuthority,previous,
-    admission:{activationBytes:image.activationBytes,files:baseFiles(image)},
-    deliveryId:op.owner.deliveryId};
-  const composed=auxiliary?await composePostConversionFindings({...inputs,rounds})
-    :await composePostConversionValidation({...inputs,capture:rounds[0]});
-  const candidatePath=await preparedCandidate(op,composed,image);
+  const {image,observation,composed}=await capturedComposition(op);
+  const candidatePath=await withExecutionPublicationLock(op.workspace,async()=>{
+    const now=await load(handle);
+    const transition={operationAttemptId:now.owner.operationAttemptId,
+      outcome:composed.transition.outcome,
+      normalization:composed.transition.normalization??null};
+    if(!['recorded','rejected'].includes(transition.outcome)
+      || transition.outcome==='rejected' && !transition.normalization)
+      fail('INVALID_CURRENT_IMAGE','composed terminal transition is invalid');
+    if(now.record.terminalTransition && !same(now.record.terminalTransition,transition))
+      fail('OWNER_MISMATCH','terminal transition changed before publication');
+    if(!now.record.terminalTransition) {
+      now.record.terminalTransition=transition;
+      if(transition.normalization) now.record.normalization=transition.normalization;
+      await persistAllocation(now.marker,now.record);
+    }
+    const proof=now.record.preparation?.candidateComposition;
+    if(proof && now.record.normalization?.status!=='settled') {
+      const tree=await captureExecutionTree(path.join(now.root,now.binding.candidatePath));
+      const base=new Map(proof.baseTree.map(item=>[item.path,item]));
+      const required=new Set(['activation.json',...composed.files.keys()]);
+      for(const name of composed.files.keys())
+        for(let parent=path.posix.dirname(name);parent!=='.';parent=path.posix.dirname(parent))
+          required.add(parent);
+      const complete=tree && same(tree.identity,proof.identity)
+        && tree.files.length===required.size && tree.files.every(entry=>{
+          if(!required.has(entry.path)) return false;
+          if(entry.type==='directory') return true;
+          const target=entry.path==='activation.json'?image.activationBytes:composed.files.get(entry.path);
+          return entry.type==='file' && target!==undefined && entry.sha256===sha(target)
+            && entry.mode===(base.get(entry.path)?.mode??0o644);
+        });
+      if(!complete) fail('NORMALIZATION_NOT_ELIGIBLE',
+        'identified partial candidate requires normalize --handle before publication');
+    }
+    return preparedCandidate(now,composed,image,{checkpoint});
+  });
   const previousPath=path.join(op.root,op.binding.previousPath);
   const result=await publishCurrentExecutionOperation({workspace:op.workspace,marker:op.marker,
     binding:op.binding,candidatePath,previousPath,
@@ -670,7 +825,8 @@ export async function resume(handle) {
   }
   if(['candidate_promoted','activation_written','backup_created'].includes(phase))
     return {phase,nextAction:'classify-publication',owner:op.owner};
-  if(runner?.status==='captured') return {phase:'captured',nextAction:'publish',owner:op.owner,
+  if(runner?.status==='captured') return {phase:'captured',nextAction:op.record.preparation?.candidateComposition
+      && op.record.normalization?.status!=='settled'?'normalize':'publish',owner:op.owner,
     responseSha256:sha((await readOwnedFile(runner.responseFile)).bytes),
     ...(op.owner.operation==='APPLY_FINDINGS' && runner.resultStatus==='TESTS_FAIL' && runner.round<3
       ?{nextAction:'reserve-dispatch'}:{})};
@@ -700,10 +856,13 @@ export async function main(argv=process.argv.slice(2)) {
     else if(command==='bind-native') result=await bindNative(handle,flag(argv,'--agent-id'));
     else if(command==='verify-native') result=await verifyNative(flag(argv,'--origin-file'));
     else if(command==='capture-native') result=await captureNative(handle,flag(argv,'--tool-result-file'));
+    else if(command==='normalize' && handle) result=await normalize(handle);
+    else if(command==='normalize') result=await normalizeSuccessor({specPath:flag(argv,'--spec-path'),
+      slice:flag(argv,'--slice'),expectedActivationId:flag(argv,'--expected-activation-id')});
     else if(command==='publish') result=await publish(handle);
     else if(command==='cleanup') result=await cleanup(handle);
     else if(command==='resume') result=await resume(handle);
-    else {process.stderr.write('Usage: execution-current-operation.mjs inspect|begin|reserve-dispatch|bind-native|verify-native|capture-native|publish|cleanup|resume ...\n');return 2;}
+    else {process.stderr.write('Usage: execution-current-operation.mjs inspect|begin|reserve-dispatch|bind-native|verify-native|capture-native|normalize|publish|cleanup|resume ...\n');return 2;}
     process.stdout.write(JSON.stringify(result)+'\n');return 0;
   } catch(error) {
     process.stdout.write(JSON.stringify({code:error.code??'CURRENT_OPERATION_BLOCKED',reason:error.message})+'\n');

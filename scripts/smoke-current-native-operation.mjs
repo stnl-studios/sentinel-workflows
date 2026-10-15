@@ -10,7 +10,7 @@ import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import {fileURLToPath} from 'node:url';
 import {convertedImage} from './fixtures/current-operational-consumption.mjs';
-import {begin,reserveDispatch,resume} from '../skills/workflows/stnl-slice-executor/runtime/execution-current-operation.mjs';
+import {begin,reserveDispatch,resume,publish} from '../skills/workflows/stnl-slice-executor/runtime/execution-current-operation.mjs';
 
 const repo=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 const run=promisify(execFile);
@@ -208,6 +208,12 @@ try {
   else if(command==='second') output(await second(arg));
   else if(command==='readback') output(await readback(arg));
   else if(command==='package') output(await packageEvidence(arg));
+  else if(command==='publish-fault-after-candidate-file') {
+    const handle=JSON.parse(await fs.readFile(arg,'utf8'));
+    output(await publish(handle,{checkpoint:async phase=>{
+      if(phase==='after-candidate-file') throw Object.assign(new Error('EC1_CONTROLLED_CANDIDATE_FILE_FAILURE'),{code:'CONTROLLED_CANDIDATE_FAILURE'});
+    }}));
+  }
   else if(command==='fault-after-capture') {
     const handle=JSON.parse(await fs.readFile(arg,'utf8'));
     const status=await resume(handle);
