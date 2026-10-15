@@ -839,6 +839,13 @@ test('R10 BLOCKED formal and Initial FAIL prefix do not invent recovery',async t
       assert.equal(f.composed.bundle.support.at(-1).kind,'rejection');
       assert.equal(f.activation.lastAttempt.outcome,'rejected');
     }));
+  for(const field of ['normalization','lastDiagnostic'])
+    await t.test(`concluded Initial refusal rejects altered ${field}`,async()=>using(
+      ()=>producerInitialImage({semanticRejection:true}),async f=>{
+        f.continuity.deliveries[0][field]=null;
+        reseal(f);await writeImage(f);
+        await rejected(()=>inspectCurrentExecution(f.specPath),'INVALID_CURRENT_IMAGE','Initial refusal state differs');
+      }));
   await t.test('concluded formal semantic rejection preserves consumption',async()=>using(
     ()=>producerFormalPass({semanticRejection:true}),async f=>{
       const result=await inspectCurrentExecution(f.specPath),first=result.deliveries[0];

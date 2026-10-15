@@ -283,10 +283,17 @@ export async function producerInitialImage({transport='native',status='TESTS_PAS
   const firstBaseline=retainedRemoval
     ?JSON.parse(Buffer.from(captures[0].baselineCapture).toString('utf8')).manifest
     :structuredClone(source.MANIFEST_0);
+  const refusal=semanticRejection?composed.bundle.support.at(-1):null;
+  const refusalNormalization=refusal?{episodeId:owner.operationAttemptId,operation:'EXECUTE_SLICE',
+    causeSha256:raw(composed.bytes),sourceOperationAttemptId:owner.operationAttemptId,
+    used:1,consumedInvocations:refusal.consumedInvocations,round:1,status:'exhausted'}:null;
+  const refusalDiagnostic=refusal?{code:'RUNNER_RESULT_REJECTED',operationAttemptId:owner.operationAttemptId,
+    reason:refusal.diagnostic,affectedPaths:[],nextAction:'stop'}:null;
   fixture.continuity.deliveries=[{slice:'slice-01',deliveryId:DELIVERY_IDS[0],localRevision:1,
       authoritySha256:approved.deliveries[0].authoritySha256,validation:semanticRejection?'uncertain':'unvalidated',
     evidence:{path:`evidence/${DELIVERY_IDS[0]}.json`,sha256:raw(composed.bytes)},
-    counters:composed.counters,baseline:firstBaseline,normalization:null,lastDiagnostic:null},
+    counters:composed.counters,baseline:firstBaseline,normalization:refusalNormalization,
+    lastDiagnostic:refusalDiagnostic},
     ...(retainSecond?[{slice:'slice-02',deliveryId:DELIVERY_IDS[1],localRevision:1,
       authoritySha256:approved.deliveries[1].authoritySha256,validation:'unvalidated',evidence:null,
       counters:{implementationChecks:0,findingsChecks:0,validationAttempts:0,findings:0},

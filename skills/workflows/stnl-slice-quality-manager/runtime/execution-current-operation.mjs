@@ -850,7 +850,8 @@ export async function captureNative(handle,toolResultFile) {
     if(parseFailure && !concludedFormalRejection && !concludedFindingsRejection)
       fail('RUNNER_RESULT_REJECTED',`native final response preserved but rejected: ${parseFailure}`);
     return {phase:'captured',rawResponseSha256:sha(raw),status,
-      nextAction:initialRejection?'blocked':auxiliary && status==='TESTS_FAIL'
+      nextAction:initialRejection?initialExecute?'publish':'blocked'
+        :initialExecute && parseFailure?'blocked':auxiliary && status==='TESTS_FAIL'
         && round+(now.binding.normalization?.consumedInvocations??0)<3?'reserve-dispatch':'publish',
       captureClass:now.record.runner.captureClass,replayed:false};
   });
@@ -962,8 +963,12 @@ export async function cleanup(handle) {
 
 async function capturedComposition(op) {
   const auxiliary=op.owner.operation!=='VALIDATE_SLICE';
-  if(op.owner.preparationRevision===1 && op.record.runner?.captureClass==='initial-rejection')
-    fail('RUNNER_RESULT_REJECTED','Initial rejected result is preserved; normalization is outside this profile');
+  if(op.owner.preparationRevision===1 && op.owner.operation==='EXECUTE_SLICE'
+    && op.record.runner?.captureClass==='findings-rejection')
+    fail('RUNNER_RESULT_REJECTED','Initial schema refusal is outside the concluded semantic profile');
+  if(op.owner.preparationRevision===1 && op.owner.operation!=='EXECUTE_SLICE'
+    && op.record.runner?.captureClass==='initial-rejection')
+    fail('RUNNER_RESULT_REJECTED','Initial non-EXECUTE refusal normalization is outside this profile');
   const round=op.record.runner?.round;
   if(op.record.runner?.status!=='captured'
     || auxiliary && op.record.runner.resultStatus==='TESTS_FAIL'
@@ -1173,9 +1178,11 @@ export async function resume(handle) {
   }
   if(['candidate_promoted','activation_written','backup_created'].includes(phase))
     return {phase,nextAction:'classify-publication',owner:op.owner};
-  if(runner?.status==='captured') return {phase:'captured',nextAction:runner.captureClass==='initial-rejection'
+  if(runner?.status==='captured') return {phase:'captured',nextAction:op.owner.preparationRevision===1
+      && (op.owner.operation!=='EXECUTE_SLICE' && runner.captureClass==='initial-rejection'
+        || op.owner.operation==='EXECUTE_SLICE' && runner.captureClass==='findings-rejection')
       ?'blocked':op.record.preparation?.candidateComposition
-      && op.record.normalization?.status!=='settled'?'normalize':'publish',owner:op.owner,
+        && op.record.normalization?.status!=='settled'?'normalize':'publish',owner:op.owner,
     responseSha256:sha((await readOwnedFile(runner.responseFile)).bytes),
     ...(op.owner.operation==='APPLY_FINDINGS' && runner.resultStatus==='TESTS_FAIL'
       && runner.round+(op.binding.normalization?.consumedInvocations??0)<3

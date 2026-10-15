@@ -284,6 +284,31 @@ test("Initial EC-1 native test selects one complete candidate contract before di
   }
 });
 
+test('all eight supported EC-1 entries are explicit in the selected native contract',async()=>{
+  const contract=await fs.readFile(path.join(canonical,'codex/.codex/agents/stnl_validation_runner.toml'),'utf8');
+  const entries=[
+    ['Initial EXECUTE','stnl-current-initial-dispatch-v1'],
+    ['Initial VALIDATE first','stnl-current-validation-request-v1'],
+    ['Initial VALIDATE after APPLY','stnl-current-validation-request-v2'],
+    ['Initial APPLY','stnl-current-findings-request-v1'],
+    ['S2 VALIDATE first','stnl-current-validation-request-v3'],
+    ['S2 VALIDATE after APPLY','stnl-current-validation-request-v4'],
+    ['S2 APPLY','stnl-current-findings-request-v1'],
+    ['S2 APPLY successor','stnl-current-findings-request-v2'],
+  ];
+  assert.equal(entries.length,8);
+  for(const [entry,request] of entries)
+    assert.ok(contract.includes('`'+request+'`'),`${entry}: selected contract lacks ${request}`);
+  assert.match(contract,/responseVariant:"stnl-current-native-judgment-v1"/u);
+  for(const owner of ['stnl-slice-executor','stnl-slice-quality-manager']) {
+    const invocation=await fs.readFile(path.join(repository,'skills/workflows',owner,'references/runner-invocation.md'),'utf8');
+    assert.match(invocation,/Before every Initial dispatch and after every controller restart[^\n]*same explicit candidate-distribution TOML path and SHA-256/u);
+    assert.match(invocation,/Before every converted-S2 dispatch and after every controller restart[^\n]*same explicit candidate-distribution TOML path and SHA-256/u);
+    assert.match(invocation,/reserve-dispatch --response-variant stnl-current-native-judgment-v1/u);
+    assert.match(invocation,/Never fall back to the installed personal contract/u);
+  }
+});
+
 test("mechanical authority, candidate and serializer details stay outside runner contract", async () => {
   const contract = await fs.readFile(path.join(canonical, "claude-code/.claude/agents/stnl-validation-runner.md"), "utf8");
   assert.doesNotMatch(contract, /RUNNER_EVIDENCE_SERIALIZER|candidateTaskArtifact|path\.relative\(|sha256:/u);

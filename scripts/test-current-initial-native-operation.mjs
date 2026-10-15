@@ -4,16 +4,20 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
+import {createHash} from 'node:crypto';
 import {initialArtifacts,REQUIREMENTS} from './fixtures/current-initial-preparation.mjs';
 import {projectInitialPreparation} from '../skills/workflows/stnl-slice-executor/runtime/execution-preparation-current.mjs';
 import {resolveCurrentExecutionContext} from '../skills/workflows/stnl-slice-executor/runtime/execution-state.mjs';
 import {inspectCurrentExecution} from '../skills/workflows/stnl-slice-executor/runtime/execution-current-reader.mjs';
+import {inspectCurrentExecution as inspectQualityExecution} from '../skills/workflows/stnl-slice-quality-manager/runtime/execution-current-reader.mjs';
 import {installCurrentInitial,recoverCurrentInitialPublication} from '../skills/workflows/stnl-slice-executor/runtime/install-current-initial.mjs';
 import {begin,reserveDispatch,bindNative,verifyNative,captureNative,publish} from '../skills/workflows/stnl-slice-executor/runtime/execution-current-operation.mjs';
 import {payload as initialPayload} from './fixtures/current-initial-evidence.mjs';
 
 const run=promisify(execFile);
 const repo=path.resolve('.');
+const operationCli=path.join(repo,'skills/workflows/stnl-slice-executor/runtime/execution-current-operation.mjs');
+const digest=bytes=>`sha256:${createHash('sha256').update(bytes).digest('hex')}`;
 async function fixture({otherInput=false}={}) {
   const root=await fs.mkdtemp(path.join(repo,'tmp/stnl-initial-test-'));
   await run('git',['-C',root,'init','-q']);
@@ -78,6 +82,102 @@ test('Initial new native judgment binds HEAD without runner transcription',async
   assert.equal(captured.status,'TESTS_PASS');
   assert.equal((await publish(started.handle)).publication,'confirmed');
   assert.equal((await inspectCurrentExecution(f.specPath)).normalHandoff.operation,'VALIDATE_SLICE');
+});
+
+test('Initial concluded semantic EXECUTE refusal publishes and resumes the same captured bytes',async()=>{
+  const f=await fixture();
+  await installCurrentInitial(f);
+  const {started,dispatch}=await reserved(f,'stnl-current-native-judgment-v1');
+  await fs.writeFile(path.join(f.root,'src/pay.mjs'),'export const pay=()=>"paid";\n');
+  const agentId='controlled-initial-refusal';
+  await bindNative(started.handle,agentId);
+  const measured=await verifyNative(dispatch.originFile);
+  const {head,...result}=initialPayload(1);
+  result.commands=measured.commands;
+  result.coverage='none'; // controlled semantic defect after a real verified recipe
+  const finalResponse=JSON.stringify({format:'stnl-current-native-judgment-v1',result});
+  const file=path.join(f.root,'controlled-refusal-tool.json');
+  await fs.writeFile(file,JSON.stringify({agentId,status:'completed',finalResponse})+'\n');
+  const foreign=path.join(f.root,'foreign-refusal-tool.json');
+  await fs.writeFile(foreign,JSON.stringify({agentId:'foreign-agent',status:'completed',finalResponse})+'\n');
+  await assert.rejects(captureNative(started.handle,foreign),error=>error.code==='OWNER_MISMATCH');
+  const captured=await captureNative(started.handle,file);
+  assert.equal(captured.captureClass,'initial-rejection');
+  assert.equal(captured.rawResponseSha256,digest(Buffer.from(finalResponse)));
+  assert.equal((await captureNative(started.handle,file)).replayed,true);
+  const different=path.join(f.root,'different-refusal-tool.json');
+  await fs.writeFile(different,JSON.stringify({agentId,status:'completed',finalResponse:finalResponse+' '})+'\n');
+  await assert.rejects(captureNative(started.handle,different),error=>error.code==='OWNER_MISMATCH');
+  const owned=path.dirname(dispatch.originFile);
+  const rawBefore=await fs.readFile(path.join(owned,'round-1.response.json'));
+  const observationBefore=await fs.readFile(path.join(owned,'round-1.observation.json'));
+  assert.equal(digest(rawBefore),captured.rawResponseSha256);
+  let fault=false;
+  await assert.rejects(publish(started.handle,{checkpoint:phase=>{
+    if(phase==='after-candidate-file') {fault=true;throw new Error('controlled partial candidate');}
+  }}),/controlled partial candidate/u);
+  assert.equal(fault,true);
+  const handleFile=path.join(f.root,'controlled-refusal-handle.json');
+  await fs.writeFile(handleFile,JSON.stringify(started.handle)+'\n');
+  const cli=async command=>JSON.parse((await run(process.execPath,[operationCli,command,'--handle',handleFile])).stdout);
+  const resumed=await cli('resume');
+  assert.equal(resumed.nextAction,'normalize');
+  assert.equal(resumed.responseSha256,captured.rawResponseSha256);
+  const normalized=await cli('normalize');
+  assert.equal(normalized.rawResponseSha256,captured.rawResponseSha256);
+  const published=await cli('publish');
+  assert.equal(published.publication,'confirmed');
+  assert.equal(published.cleanup,'complete');
+  assert.equal(published.transition.outcome,'rejected');
+  assert.equal(digest(await fs.readFile(path.join(owned,'round-1.response.json'))),captured.rawResponseSha256);
+  assert.deepEqual(await fs.readFile(path.join(owned,'round-1.observation.json')),observationBefore);
+  await assert.rejects(fs.lstat(path.join(owned,'round-2.origin.json')),error=>error.code==='ENOENT');
+  const a=await inspectCurrentExecution(f.specPath),b=await inspectQualityExecution(f.specPath);
+  assert.deepEqual(a,b);
+  assert.equal(a.state,'VALIDATION_BLOCKED');
+  assert.equal(a.normalHandoff,null);
+  assert.equal(a.deliveries[0].persistedValidation,'uncertain');
+  assert.deepEqual(a.deliveries[0].counters,
+    {implementationChecks:0,findingsChecks:0,validationAttempts:0,findings:0});
+  assert.deepEqual(a.deliveries[1].counters,
+    {implementationChecks:0,findingsChecks:0,validationAttempts:0,findings:0});
+});
+
+test('Initial valid BLOCKED is distinct from semantic refusal and remains outside recovery scope',async()=>{
+  const f=await fixture();
+  await installCurrentInitial(f);
+  const {started,dispatch}=await reserved(f,'stnl-current-native-judgment-v1');
+  await fs.writeFile(path.join(f.root,'src/pay.mjs'),'export const pay=()=>"paid";\n');
+  const agentId='controlled-initial-blocked';
+  await bindNative(started.handle,agentId);
+  const measured=await verifyNative(dispatch.originFile);
+  const {head,...result}=initialPayload(1,'BLOCKED');
+  result.commands=measured.commands;
+  result.blockers='The inspected authority has an unresolved external dependency.';
+  const finalResponse=JSON.stringify({format:'stnl-current-native-judgment-v1',result});
+  const file=path.join(f.root,'controlled-blocked-tool.json');
+  await fs.writeFile(file,JSON.stringify({agentId,status:'completed',finalResponse})+'\n');
+  const captured=await captureNative(started.handle,file);
+  assert.equal(captured.captureClass,'formal-response');
+  assert.equal(captured.status,'BLOCKED');
+  await assert.rejects(publish(started.handle),error=>error.code==='UNSUPPORTED_FORMAT'
+    && /Initial BLOCKED requires operational recovery outside quiet profile/u.test(error.message));
+  assert.equal((await captureNative(started.handle,file)).replayed,true);
+});
+
+test('Initial malformed native response cannot enter the concluded semantic refusal profile',async()=>{
+  const f=await fixture();
+  await installCurrentInitial(f);
+  const {started,dispatch}=await reserved(f);
+  await fs.writeFile(path.join(f.root,'src/pay.mjs'),'export const pay=()=>"paid";\n');
+  const agentId='controlled-initial-schema-defect';
+  await bindNative(started.handle,agentId);
+  await verifyNative(dispatch.originFile);
+  const file=path.join(f.root,'controlled-schema-tool.json');
+  await fs.writeFile(file,JSON.stringify({agentId,status:'completed',finalResponse:'{"invalid":'})+'\n');
+  const captured=await captureNative(started.handle,file);
+  assert.equal(captured.captureClass,'findings-rejection');
+  await assert.rejects(publish(started.handle),error=>error.code==='RUNNER_RESULT_REJECTED');
 });
 
 test('Initial native judgment EXECUTE, formal NEEDS_FIX, APPLY and new formal use one selected variant',async()=>{

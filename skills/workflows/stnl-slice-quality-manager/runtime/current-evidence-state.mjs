@@ -2841,17 +2841,34 @@ export function composeInitialCurrentOperation({context,requirementsAuthority,pr
     product=composeCurrentFindingsEvidence({context,authority,owner,
       previous:{bundleBytes:files.get(current.evidence.path),counters:current.counters},rounds});
   } else fail('UNSUPPORTED_FORMAT','Initial operation is outside EXECUTE/VALIDATE/APPLY');
-  if(product.outcome!=='recorded') fail('RUNNER_RESULT_REJECTED','Initial refusal needs an explicit future normalization policy');
+  const rejected=owner.operation==='EXECUTE_SLICE' && product.outcome==='rejected';
+  if(product.outcome==='rejected' && !rejected)
+    fail('RUNNER_RESULT_REJECTED','Initial refusal normalization is outside this EXECUTE profile');
+  if(!rejected && product.outcome!=='recorded') invalid('Initial outcome is not concluded');
+  const refusal=rejected?product.bundle.support.at(-1):null;
+  if(rejected && (refusal?.kind!=='rejection' || refusal.origin.operation!==owner.operation
+    || refusal.operationAttemptId!==owner.operationAttemptId
+    || refusal.consumedInvocations!==product.consumedInvocations))
+    invalid('Initial refusal does not belong to this concluded owner');
+  if(rejected && jsonBytes(rounds.at(-1).receipt,'Initial refusal receipt').value.status
+    !=='RUNNER_RESPONSE_CAPTURED')
+    fail('RUNNER_RESULT_REJECTED','Initial schema refusal is outside the concluded semantic profile');
+  const normalization=rejected?{episodeId:owner.operationAttemptId,operation:owner.operation,
+    causeSha256:product.sha256,sourceOperationAttemptId:owner.operationAttemptId,
+    used:1,consumedInvocations:product.consumedInvocations,round:1,status:'exhausted'}:null;
   const nextBaseline=owner.operation==='APPLY_FINDINGS'
     ?jsonBytes(rounds[0].baselineCapture,'Initial findings baseline').value.manifest
     :current.baseline;
   const next={...current,baseline:nextBaseline,
     evidence:{path:`evidence/${deliveryId}.json`,sha256:raw(product.bytes)},
-    counters:product.counters,validation:product.validation??(owner.operation==='EXECUTE_SLICE'?'unvalidated':'revalidation-required'),
-    lastDiagnostic:null};
+    counters:product.counters,validation:rejected?'uncertain'
+      :product.validation??(owner.operation==='EXECUTE_SLICE'?'unvalidated':'revalidation-required'),
+    normalization,lastDiagnostic:rejected?{code:'RUNNER_RESULT_REJECTED',
+      operationAttemptId:owner.operationAttemptId,reason:refusal.diagnostic,
+      affectedPaths:[],nextAction:'stop'}:null};
   const facts=inspectCurrentEvidence({context,authority,bundleBytes:product.bytes,
     counters:next.counters,baseline:next.baseline,observedWork:observed});
-  if(!facts.observationMatches) stale('Initial composed evidence does not match current product');
+  if(!facts.observationMatches && !rejected) stale('Initial composed evidence does not match current product');
   const changed=new Set(facts.verifiedChanges);
   const updated=prior.continuity.deliveries.map(item=>{
     if(item.deliveryId===deliveryId) return next;
@@ -2901,7 +2918,7 @@ export function composeInitialCurrentOperation({context,requirementsAuthority,pr
       `- Evidence summary: ${serializeMarkdownScalar('Evidence summary',fields.Evidence,true)}`].join('\n');
   }
   const status=facts.formalStatus??'pending';
-  const action=status==='PASS'?'none':status==='NEEDS_FIX' && owner.operation==='VALIDATE_SLICE'
+  const action=rejected?'blocked':status==='PASS'?'none':status==='NEEDS_FIX' && owner.operation==='VALIDATE_SLICE'
     ?'APPLY_FINDINGS':'VALIDATE_SLICE';
   let task=Buffer.from(files.get(taskName)).toString('utf8');
   for(const [section,body] of [
@@ -2910,14 +2927,16 @@ export function composeInitialCurrentOperation({context,requirementsAuthority,pr
     ['Implementation Test Evidence',records(facts.records.implementation)],
     ['Findings Test Evidence',records(facts.records.findings)],
     ['Validation Attempts',records(facts.records.validation)],['Validation Findings',findingBody],
-    ['Delegation Blocker','- none'],['Effective Validation Base',base],
-    ['Diff Summary',`- Initial ${owner.operation} verified ${facts.verifiedChanges.length} approved product path(s).`],
+    ['Delegation Blocker',rejected?`- Operation: ${owner.operation}\n- State: active`:'- none'],['Effective Validation Base',base],
+    ['Diff Summary',rejected?`- Initial ${owner.operation} retained a concluded rejection without incorporating an unverified check.`
+      :`- Initial ${owner.operation} verified ${facts.verifiedChanges.length} approved product path(s).`],
     ['Final Result',status==='PASS'?'- PASS':'- pending'],
   ]) task=postSection(task,section,body);
   files.set(taskName,utf8(task));
   files.set('tasks.md',postIndex(Buffer.from(files.get('tasks.md')).toString('utf8'),current.slice,status));
   validateCurrentCandidate({files});
   return {files,transition:{deliveryId,slice:current.slice,operationAttemptId:owner.operationAttemptId,
-    originActivationId:a0.activationId,outcome:'recorded',counters:next.counters},
+    originActivationId:a0.activationId,outcome:product.outcome,normalization,
+    counters:next.counters},
     consumedInvocations:rounds.length,replayed:false};
 }
