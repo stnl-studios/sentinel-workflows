@@ -3,15 +3,19 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import {createHash} from 'node:crypto';
+import {execFile} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
+import {promisify} from 'node:util';
 import {nativeOperationCase,reservedOperation} from './fixtures/current-native-operation.mjs';
 import {captureCurrentExecution,captureCurrentActiveExecution} from '../skills/workflows/stnl-slice-executor/runtime/execution-current-reader.mjs';
+import {captureCurrentExecution as captureQualityExecution} from '../skills/workflows/stnl-slice-quality-manager/runtime/execution-current-reader.mjs';
 import {inspectPostConversionEvidence} from '../skills/workflows/stnl-slice-executor/runtime/current-evidence-state.mjs';
 import {begin,bindNative,verifyNative,captureNative,publish,cleanup,resume,reserveDispatch} from
   '../skills/workflows/stnl-slice-executor/runtime/execution-current-operation.mjs';
 
 const sha=bytes=>`sha256:${createHash('sha256').update(bytes).digest('hex')}`;
 const repo=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
+const run=promisify(execFile);
 const blocked=code=>error=>error?.code===code;
 const result=(status,head,commands,extra={})=>({status,head,commands,
   evidence:'Mechanical fixture judgment only; the live native smoke is recorded separately.',
@@ -194,6 +198,111 @@ test('EC-1 mechanical: product drift blocks verification or publication under th
     await assert.rejects(()=>publish(fixture.start.handle),blocked('EVIDENCE_STALE'));
     assert.equal((await resume(fixture.start.handle)).phase,'captured');
   });
+});
+
+test('EC-1 captured VALIDATE drift retains the owner and forbids stale publication',async t=>{
+  const fixture=await capturedMechanical(t,'PASS');
+  const ownerRoot=path.dirname(fixture.dispatch.originFile);
+  const responseBefore=await fs.readFile(path.join(ownerRoot,'round-1.response.json'));
+  const activationFile=path.join(fixture.image.f.execution,'activation.json');
+  const continuityFile=path.join(fixture.image.f.execution,'continuity.json');
+  const activationBefore=await fs.readFile(activationFile);
+  const continuityBefore=await fs.readFile(continuityFile);
+  await fs.appendFile(path.join(fixture.root,'src/greeting.mjs'),'// drift after capture\n');
+  await assert.rejects(()=>publish(fixture.start.handle),blocked('EVIDENCE_STALE'));
+  const retained=await resume(fixture.start.handle);
+  assert.equal(retained.phase,'captured');
+  assert.equal(retained.responseSha256,sha(responseBefore));
+  const handleFile=path.join(fixture.root,'stale-validation-handle.json');
+  await fs.writeFile(handleFile,JSON.stringify(fixture.start.handle)+'\n');
+  const cli=path.join(repo,'skills/workflows/stnl-slice-executor/runtime/execution-current-operation.mjs');
+  const restarted=JSON.parse((await run(process.execPath,
+    [cli,'resume','--handle',handleFile],{timeout:30000})).stdout);
+  assert.equal(restarted.phase,'captured');
+  assert.equal(restarted.responseSha256,sha(responseBefore));
+  await assert.rejects(()=>begin({specPath:fixture.specPath,slice:fixture.delivery.slice,
+    expectedActivationId:fixture.start.activationA1}),error=>
+    ['OWNER_UNCERTAIN','UNSUPPORTED_FORMAT'].includes(error?.code));
+  await assert.rejects(()=>reserveDispatch(fixture.start.handle),blocked('OWNER_UNCERTAIN'));
+  assert.deepEqual(await fs.readFile(path.join(ownerRoot,'round-1.response.json')),responseBefore);
+  assert.deepEqual(await fs.readFile(activationFile),activationBefore);
+  assert.deepEqual(await fs.readFile(continuityFile),continuityBefore);
+  await assert.rejects(fs.lstat(path.join(ownerRoot,'round-2.origin.json')),error=>error.code==='ENOENT');
+});
+
+test('EC-1 PASS then approved product drift completes a second VALIDATE with its own owner',async t=>{
+  const fixture=await capturedMechanical(t,'PASS');
+  const first=await publish(fixture.start.handle);
+  assert.equal(first.publication,'confirmed');
+  assert.equal(first.cleanup,'complete');
+  const cleanA=await captureCurrentExecution(fixture.specPath);
+  const cleanB=await captureQualityExecution(fixture.specPath);
+  assert.deepEqual(cleanA.inspection,cleanB.inspection);
+  const cleanDelivery=cleanA.inspection.deliveries.find(item=>item.deliveryId===fixture.delivery.deliveryId);
+  assert.equal(cleanDelivery.formalStatus,'PASS');
+  assert.equal(cleanA.inspection.normalHandoff,null);
+  await assert.rejects(()=>begin({specPath:fixture.specPath,slice:fixture.delivery.slice,
+    expectedActivationId:cleanA.inspection.activationId}),blocked('UNSUPPORTED_FORMAT'));
+  const prior=JSON.parse(Buffer.from(cleanA.files.get('continuity.json'))).deliveries
+    .find(item=>item.deliveryId===fixture.delivery.deliveryId);
+  await fs.appendFile(path.join(fixture.root,'src/greeting.mjs'),'// equivalent approved output drift\n');
+  const staleA=await captureCurrentExecution(fixture.specPath);
+  const staleB=await captureQualityExecution(fixture.specPath);
+  assert.deepEqual(staleA.inspection,staleB.inspection);
+  assert.equal(staleA.inspection.normalHandoff?.operation,'VALIDATE_SLICE');
+  assert.equal(staleA.inspection.normalHandoff?.deliveryId,fixture.delivery.deliveryId);
+  const second=await begin({specPath:fixture.specPath,slice:fixture.delivery.slice,
+    expectedActivationId:staleA.inspection.activationId});
+  assert.notEqual(second.owner.operationAttemptId,fixture.start.owner.operationAttemptId);
+  const dispatch=await reserveDispatch(second.handle,{responseVariant:'stnl-current-native-judgment-v1'});
+  const request=JSON.parse(await fs.readFile(dispatch.requestFile));
+  assert.equal(request.format,'stnl-current-validation-request-v3');
+  assert.equal(request.base.evidenceSha256,prior.evidence.sha256);
+  assert.deepEqual(request.base.counters,prior.counters);
+  const agentId='mechanical-second-drift-validation';
+  await bindNative(second.handle,agentId);
+  const measured=await verifyNative(dispatch.originFile);
+  const {head,...semantic}=result('PASS',fixture.head,measured.commands);
+  const finalResponse=JSON.stringify({format:'stnl-current-native-judgment-v1',result:semantic,newFindings:[]});
+  const tool=await toolFile(fixture,agentId,finalResponse,'second-drift-validation-tool.json');
+  const captured=await captureNative(second.handle,tool);
+  assert.equal(captured.status,'PASS');
+  assert.equal(captured.rawResponseSha256,sha(Buffer.from(finalResponse)));
+  assert.equal((await captureNative(second.handle,tool)).replayed,true);
+  const different=await toolFile(fixture,agentId,finalResponse+' ','second-drift-changed-tool.json');
+  await assert.rejects(()=>captureNative(second.handle,different),blocked('OWNER_MISMATCH'));
+  const ownerRoot=path.dirname(dispatch.originFile);
+  const responseBefore=await fs.readFile(path.join(ownerRoot,'round-1.response.json'));
+  const observationBefore=await fs.readFile(path.join(ownerRoot,'round-1.observation.json'));
+  await assert.rejects(()=>publish(second.handle,{checkpoint:async phase=>{
+    if(phase==='after-candidate-file') throw new Error('controlled second VALIDATE candidate fault');
+  }}),/controlled second VALIDATE candidate fault/u);
+  const handleFile=path.join(fixture.root,'second-drift-validation-handle.json');
+  await fs.writeFile(handleFile,JSON.stringify(second.handle)+'\n');
+  const cli=path.join(repo,'skills/workflows/stnl-slice-executor/runtime/execution-current-operation.mjs');
+  const separate=async command=>JSON.parse((await run(process.execPath,
+    [cli,command,'--handle',handleFile],{timeout:30000})).stdout);
+  const resumed=await separate('resume');
+  assert.equal(resumed.nextAction,'normalize');
+  assert.equal(resumed.responseSha256,captured.rawResponseSha256);
+  const normalized=await separate('normalize');
+  assert.equal(normalized.rawResponseSha256,captured.rawResponseSha256);
+  const published=await separate('publish');
+  assert.equal(published.publication,'confirmed');
+  assert.equal(published.cleanup,'complete');
+  assert.equal(published.transition.outcome,'recorded');
+  assert.deepEqual(await fs.readFile(path.join(ownerRoot,'round-1.response.json')),responseBefore);
+  assert.deepEqual(await fs.readFile(path.join(ownerRoot,'round-1.observation.json')),observationBefore);
+  await assert.rejects(fs.lstat(path.join(ownerRoot,'round-2.origin.json')),error=>error.code==='ENOENT');
+  const finalA=await captureCurrentExecution(fixture.specPath);
+  const finalB=await captureQualityExecution(fixture.specPath);
+  assert.deepEqual(finalA.inspection,finalB.inspection);
+  assert.equal(finalA.inspection.deliveries[0].formalStatus,'PASS');
+  assert.equal(finalA.inspection.normalHandoff,null);
+  assert.equal(finalA.inspection.deliveries[0].counters.validationAttempts,
+    prior.counters.validationAttempts+1);
+  assert.equal(JSON.parse(Buffer.from(finalA.activationBytes)).lastAttempt.operationAttemptId,
+    second.owner.operationAttemptId);
 });
 
 test('EC-1 mechanical: malformed finding is retained as a concluded rejection',async t=>{
