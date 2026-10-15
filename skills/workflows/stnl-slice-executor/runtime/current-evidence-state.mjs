@@ -2841,11 +2841,14 @@ export function composeInitialCurrentOperation({context,requirementsAuthority,pr
     product=composeCurrentFindingsEvidence({context,authority,owner,
       previous:{bundleBytes:files.get(current.evidence.path),counters:current.counters},rounds});
   } else fail('UNSUPPORTED_FORMAT','Initial operation is outside EXECUTE/VALIDATE/APPLY');
-  const rejected=owner.operation==='EXECUTE_SLICE' && product.outcome==='rejected';
+  const rejected=['EXECUTE_SLICE','APPLY_FINDINGS'].includes(owner.operation) && product.outcome==='rejected';
   if(product.outcome==='rejected' && !rejected)
-    fail('RUNNER_RESULT_REJECTED','Initial refusal normalization is outside this EXECUTE profile');
+    fail('RUNNER_RESULT_REJECTED','Initial refusal normalization is outside this EXECUTE/APPLY profile');
   if(!rejected && product.outcome!=='recorded') invalid('Initial outcome is not concluded');
   const refusal=rejected?product.bundle.support.at(-1):null;
+  if(rejected && owner.operation==='APPLY_FINDINGS'
+    && (rounds.length!==1 || product.consumedInvocations!==1 || current.counters.findingsChecks!==0))
+    fail('RUNNER_RESULT_REJECTED','Initial APPLY refusal is outside the first-invocation profile');
   if(rejected && (refusal?.kind!=='rejection' || refusal.origin.operation!==owner.operation
     || refusal.operationAttemptId!==owner.operationAttemptId
     || refusal.consumedInvocations!==product.consumedInvocations))
@@ -2865,7 +2868,8 @@ export function composeInitialCurrentOperation({context,requirementsAuthority,pr
       :product.validation??(owner.operation==='EXECUTE_SLICE'?'unvalidated':'revalidation-required'),
     normalization,lastDiagnostic:rejected?{code:'RUNNER_RESULT_REJECTED',
       operationAttemptId:owner.operationAttemptId,reason:refusal.diagnostic,
-      affectedPaths:[],nextAction:'stop'}:null};
+      affectedPaths:owner.operation==='APPLY_FINDINGS'
+        ?jsonBytes(rounds[0].applyRequest,'Initial refusal request').value.scopePaths:[],nextAction:'stop'}:null};
   const facts=inspectCurrentEvidence({context,authority,bundleBytes:product.bytes,
     counters:next.counters,baseline:next.baseline,observedWork:observed});
   if(!facts.observationMatches && !rejected) stale('Initial composed evidence does not match current product');

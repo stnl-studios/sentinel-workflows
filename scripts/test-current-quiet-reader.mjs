@@ -829,6 +829,21 @@ test('R10 BLOCKED formal and Initial FAIL prefix do not invent recovery',async t
       assert.equal(rejection.consumedInvocations,count);assert.equal(rejection.round,count);
       assert.equal(result.deliveries[0].counters.findingsChecks,count-1);assert.equal(result.normalHandoff,null);
     }));
+  await t.test('first Initial APPLY refusal has terminal consumption and no accepted check',async()=>using(
+    ()=>producerAppliedImage({semanticRejection:true}),async f=>{
+      const result=await inspectCurrentExecution(f.specPath),first=result.deliveries[0];
+      assert.equal(first.persistedValidation,'uncertain');assert.equal(result.normalHandoff,null);
+      assert.equal(first.counters.findingsChecks,0);
+      assert.equal(f.applied.bundle.support.at(-1).kind,'rejection');
+      assert.deepEqual(f.applied.bundle.findingsChecks,[]);
+    }));
+  for(const field of ['normalization','lastDiagnostic'])
+    await t.test(`first Initial APPLY refusal rejects altered ${field}`,async()=>using(
+      ()=>producerAppliedImage({semanticRejection:true}),async f=>{
+        f.continuity.deliveries[0][field]=null;
+        reseal(f);await writeImage(f);
+        await rejected(()=>inspectCurrentExecution(f.specPath),'INVALID_CURRENT_IMAGE','Initial refusal state differs');
+      }));
 
   await t.test('concluded Initial semantic rejection has no implementation record',async()=>using(
     ()=>producerInitialImage({semanticRejection:true}),async f=>{

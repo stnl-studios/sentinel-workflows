@@ -360,7 +360,10 @@ async function readCurrentExecution(specPath,withCapture=false,expectedOwner=nul
       && !(converted && ['VALIDATE_SLICE','APPLY_FINDINGS'].includes(item.normalization.operation)
         && ['settled','exhausted'].includes(item.normalization.status))
       && !(!converted && item.normalization.operation==='EXECUTE_SLICE'
-        && item.normalization.status==='exhausted')),
+        && item.normalization.status==='exhausted')
+      && !(!converted && item.normalization.operation==='APPLY_FINDINGS'
+        && item.normalization.status==='exhausted'
+        && item.normalization.consumedInvocations===1 && item.normalization.round===1)),
       'continuity.json','normalization'],
     [!converted && [snapshot.globalReview,...snapshot.deliveries.map(item=>item.review)].some(item=>item.evidenceDecisions.length),
       'approved-preparation.json','evidenceDecisions'],
@@ -386,15 +389,19 @@ async function readCurrentExecution(specPath,withCapture=false,expectedOwner=nul
     }
     const facts=inspectCurrentEvidence({context,authority,bundleBytes,counters:current.counters,
       baseline:current.baseline,observedWork:before.manifest});
-    const initialRefusal=facts.rejection?.origin.operation==='EXECUTE_SLICE'?facts.rejection:null;
+    const initialRefusal=facts.rejection
+      && (facts.rejection.origin.operation==='EXECUTE_SLICE'
+        || facts.rejection.origin.operation==='APPLY_FINDINGS'
+          && facts.rejection.consumedInvocations===1)?facts.rejection:null;
     if(initialRefusal) {
       const expectedNormalization={episodeId:initialRefusal.operationAttemptId,
-        operation:'EXECUTE_SLICE',causeSha256:current.evidence?.sha256,
+        operation:initialRefusal.origin.operation,causeSha256:current.evidence?.sha256,
         sourceOperationAttemptId:initialRefusal.operationAttemptId,used:1,
         consumedInvocations:initialRefusal.consumedInvocations,round:1,status:'exhausted'};
       const expectedDiagnostic={code:'RUNNER_RESULT_REJECTED',
         operationAttemptId:initialRefusal.operationAttemptId,reason:initialRefusal.diagnostic,
-        affectedPaths:[],nextAction:'stop'};
+        affectedPaths:initialRefusal.origin.operation==='APPLY_FINDINGS'
+          ?facts.cycle?.lastScope??[]:[],nextAction:'stop'};
       const exact=(actual,expected)=>actual!==null
         && Object.keys(actual).length===Object.keys(expected).length
         && Object.entries(expected).every(([name,value])=>equal(actual[name],value));
@@ -402,7 +409,7 @@ async function readCurrentExecution(specPath,withCapture=false,expectedOwner=nul
         || !exact(current.lastDiagnostic,expectedDiagnostic))
         fail('INVALID_CURRENT_IMAGE',`${current.slice}: Initial refusal state differs`,
           'carrier-mismatch','continuity.json',current.slice);
-    } else if(current.normalization?.operation==='EXECUTE_SLICE')
+    } else if(['EXECUTE_SLICE','APPLY_FINDINGS'].includes(current.normalization?.operation))
       fail('INVALID_CURRENT_IMAGE',`${current.slice}: Initial normalization lacks a concluded refusal`,
         'carrier-mismatch','continuity.json',current.slice);
     if (current.validation!==facts.persistedValidation)

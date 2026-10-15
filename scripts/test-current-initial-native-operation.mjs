@@ -13,6 +13,7 @@ import {inspectCurrentExecution as inspectQualityExecution} from '../skills/work
 import {installCurrentInitial,recoverCurrentInitialPublication} from '../skills/workflows/stnl-slice-executor/runtime/install-current-initial.mjs';
 import {begin,reserveDispatch,bindNative,verifyNative,captureNative,publish} from '../skills/workflows/stnl-slice-executor/runtime/execution-current-operation.mjs';
 import {payload as initialPayload} from './fixtures/current-initial-evidence.mjs';
+import {applyPayload} from './fixtures/current-findings-evidence.mjs';
 
 const run=promisify(execFile);
 const repo=path.resolve('.');
@@ -64,6 +65,145 @@ async function reserved(f,responseVariant) {
   const dispatch=await reserveDispatch(started.handle,responseVariant?{responseVariant}:undefined);
   return {started,dispatch};
 }
+
+async function sealedBlockingFormal(f) {
+  await installCurrentInitial(f);
+  const execute=await reserved(f,'stnl-current-native-judgment-v1');
+  await fs.writeFile(path.join(f.root,'src/pay.mjs'),'export const pay=()=>"paid";\n');
+  await bindNative(execute.started.handle,'controlled-apply-predecessor-execute');
+  const executeMeasured=await verifyNative(execute.dispatch.originFile);
+  const {head,...executeResult}=initialPayload(1);
+  executeResult.commands=executeMeasured.commands;
+  const executeFile=path.join(f.root,'controlled-apply-predecessor-execute.json');
+  await fs.writeFile(executeFile,JSON.stringify({agentId:'controlled-apply-predecessor-execute',status:'completed',
+    finalResponse:JSON.stringify({format:'stnl-current-native-judgment-v1',result:executeResult})})+'\n');
+  await captureNative(execute.started.handle,executeFile);
+  await publish(execute.started.handle);
+  const prior=await inspectCurrentExecution(f.specPath);
+  await fs.writeFile(path.join(f.root,'src/pay.mjs'),'export const pay=()=>"broken";\n');
+  const formal=await begin({specPath:f.specPath,slice:'slice-01',
+    expectedActivationId:prior.activationId,operation:'VALIDATE_SLICE'});
+  const formalDispatch=await reserveDispatch(formal.handle,{responseVariant:'stnl-current-native-judgment-v1'});
+  await bindNative(formal.handle,'controlled-apply-predecessor-formal');
+  const formalMeasured=await verifyNative(formalDispatch.originFile);
+  const request=JSON.parse(await fs.readFile(formalDispatch.requestFile));
+  const finding={id:'finding-01',severity:'blocking',originAttempt:request.attemptId,
+    problem:'The pay export returns broken.',evidence:'The prepared assertion fails on the pay result.',
+    impact:'AC-001 is unmet.',relatedAuthority:'AC-001',expectedCorrection:'Restore the pay result to paid.'};
+  const formalResult={status:'NEEDS_FIX',commands:formalMeasured.commands,
+    evidence:'The prepared pay assertion failed with the recorded exit.',
+    findingReferences:'finding-01',findingDispositions:'finding-01=active',blockers:'none',
+    unexpectedWorkspaceEffects:'none',persistenceSummary:'No runner edits.'};
+  const formalFile=path.join(f.root,'controlled-apply-predecessor-formal.json');
+  await fs.writeFile(formalFile,JSON.stringify({agentId:'controlled-apply-predecessor-formal',status:'completed',
+    finalResponse:JSON.stringify({format:'stnl-current-native-judgment-v1',result:formalResult,newFindings:[finding]})})+'\n');
+  await captureNative(formal.handle,formalFile);
+  await publish(formal.handle);
+  const inspection=await inspectCurrentExecution(f.specPath);
+  assert.equal(inspection.normalHandoff.operation,'APPLY_FINDINGS');
+  return inspection;
+}
+
+test('Initial first APPLY semantic refusal publishes from the same captured bytes after partial failure',async()=>{
+  const f=await fixture();
+  const predecessor=await sealedBlockingFormal(f);
+  const started=await begin({specPath:f.specPath,slice:'slice-01',
+    expectedActivationId:predecessor.activationId,operation:'APPLY_FINDINGS'});
+  await fs.writeFile(path.join(f.root,'src/pay.mjs'),'export const pay=()=>"paid";\n');
+  const dispatch=await reserveDispatch(started.handle,{responseVariant:'stnl-current-native-judgment-v1'});
+  const agentId='controlled-apply-refusal';
+  await bindNative(started.handle,agentId);
+  const measured=await verifyNative(dispatch.originFile);
+  const {head,...result}=applyPayload(1,'TESTS_PASS',0);
+  result.commands=measured.commands;
+  result.coverage='none'; // controlled semantic defect after one verified APPLY recipe
+  const finalResponse=JSON.stringify({format:'stnl-current-native-judgment-v1',result});
+  const file=path.join(f.root,'controlled-apply-refusal.json');
+  await fs.writeFile(file,JSON.stringify({agentId,status:'completed',finalResponse})+'\n');
+  const foreign=path.join(f.root,'controlled-apply-refusal-foreign.json');
+  await fs.writeFile(foreign,JSON.stringify({agentId:'foreign-agent',status:'completed',finalResponse})+'\n');
+  await assert.rejects(captureNative(started.handle,foreign),error=>error.code==='OWNER_MISMATCH');
+  const captured=await captureNative(started.handle,file);
+  assert.equal(captured.captureClass,'initial-rejection');
+  assert.equal(captured.nextAction,'publish');
+  assert.equal(captured.rawResponseSha256,digest(Buffer.from(finalResponse)));
+  assert.equal((await captureNative(started.handle,file)).replayed,true);
+  const changed=path.join(f.root,'controlled-apply-refusal-changed.json');
+  await fs.writeFile(changed,JSON.stringify({agentId,status:'completed',finalResponse:finalResponse+' '})+'\n');
+  await assert.rejects(captureNative(started.handle,changed),error=>error.code==='OWNER_MISMATCH');
+  const owned=path.dirname(dispatch.originFile);
+  const responseBefore=await fs.readFile(path.join(owned,'round-1.response.json'));
+  const observationBefore=await fs.readFile(path.join(owned,'round-1.observation.json'));
+  assert.equal(digest(responseBefore),captured.rawResponseSha256);
+  let interrupted=false;
+  await assert.rejects(publish(started.handle,{checkpoint:phase=>{
+    if(phase==='after-candidate-file') {interrupted=true;throw new Error('controlled APPLY partial candidate');}
+  }}),/controlled APPLY partial candidate/u);
+  assert.equal(interrupted,true);
+  const handleFile=path.join(f.root,'controlled-apply-refusal-handle.json');
+  await fs.writeFile(handleFile,JSON.stringify(started.handle)+'\n');
+  const cli=async command=>JSON.parse((await run(process.execPath,[operationCli,command,'--handle',handleFile])).stdout);
+  const resumed=await cli('resume');
+  assert.equal(resumed.nextAction,'normalize');
+  assert.equal(resumed.responseSha256,captured.rawResponseSha256);
+  const normalized=await cli('normalize');
+  assert.equal(normalized.rawResponseSha256,captured.rawResponseSha256);
+  const published=await cli('publish');
+  assert.equal(published.publication,'confirmed');
+  assert.equal(published.cleanup,'complete');
+  assert.equal(published.transition.outcome,'rejected');
+  assert.equal(digest(await fs.readFile(path.join(owned,'round-1.response.json'))),captured.rawResponseSha256);
+  assert.deepEqual(await fs.readFile(path.join(owned,'round-1.observation.json')),observationBefore);
+  await assert.rejects(fs.lstat(path.join(owned,'round-2.origin.json')),error=>error.code==='ENOENT');
+  const a=await inspectCurrentExecution(f.specPath),b=await inspectQualityExecution(f.specPath);
+  assert.deepEqual(a,b);
+  assert.equal(a.state,'VALIDATION_BLOCKED');
+  assert.equal(a.normalHandoff,null);
+  assert.equal(a.deliveries[0].persistedValidation,'uncertain');
+  assert.deepEqual(a.deliveries[0].counters,
+    {implementationChecks:1,findingsChecks:0,validationAttempts:1,findings:1});
+  assert.deepEqual(a.deliveries[1].counters,
+    {implementationChecks:0,findingsChecks:0,validationAttempts:0,findings:0});
+});
+
+test('Initial first APPLY valid BLOCKED stays distinct from semantic refusal',async()=>{
+  const f=await fixture();
+  const predecessor=await sealedBlockingFormal(f);
+  const started=await begin({specPath:f.specPath,slice:'slice-01',
+    expectedActivationId:predecessor.activationId,operation:'APPLY_FINDINGS'});
+  await fs.writeFile(path.join(f.root,'src/pay.mjs'),'export const pay=()=>"paid";\n');
+  const dispatch=await reserveDispatch(started.handle,{responseVariant:'stnl-current-native-judgment-v1'});
+  const agentId='controlled-apply-blocked';
+  await bindNative(started.handle,agentId);
+  const measured=await verifyNative(dispatch.originFile);
+  const {head,...result}=applyPayload(1,'BLOCKED',0);
+  result.commands=measured.commands;
+  const file=path.join(f.root,'controlled-apply-blocked.json');
+  await fs.writeFile(file,JSON.stringify({agentId,status:'completed',
+    finalResponse:JSON.stringify({format:'stnl-current-native-judgment-v1',result})})+'\n');
+  const captured=await captureNative(started.handle,file);
+  assert.equal(captured.status,'BLOCKED');
+  assert.equal(captured.captureClass,'formal-response');
+});
+
+test('Initial first APPLY malformed native response cannot enter semantic refusal',async()=>{
+  const f=await fixture();
+  const predecessor=await sealedBlockingFormal(f);
+  const started=await begin({specPath:f.specPath,slice:'slice-01',
+    expectedActivationId:predecessor.activationId,operation:'APPLY_FINDINGS'});
+  await fs.writeFile(path.join(f.root,'src/pay.mjs'),'export const pay=()=>"paid";\n');
+  const dispatch=await reserveDispatch(started.handle,{responseVariant:'stnl-current-native-judgment-v1'});
+  const agentId='controlled-apply-schema-defect';
+  await bindNative(started.handle,agentId);
+  await verifyNative(dispatch.originFile);
+  const file=path.join(f.root,'controlled-apply-schema-defect.json');
+  await fs.writeFile(file,JSON.stringify({agentId,status:'completed',finalResponse:'{"invalid":'})+'\n');
+  await assert.rejects(captureNative(started.handle,file),error=>error.code==='RUNNER_RESULT_REJECTED');
+  const handleFile=path.join(f.root,'controlled-apply-schema-handle.json');
+  await fs.writeFile(handleFile,JSON.stringify(started.handle)+'\n');
+  const resumed=JSON.parse((await run(process.execPath,[operationCli,'resume','--handle',handleFile])).stdout);
+  assert.equal(resumed.nextAction,'stop-and-diagnose');
+});
 
 test('Initial new native judgment binds HEAD without runner transcription',async()=>{
   const f=await fixture();

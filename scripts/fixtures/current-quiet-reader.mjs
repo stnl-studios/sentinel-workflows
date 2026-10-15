@@ -543,6 +543,14 @@ export async function producerAppliedImage({transport='native',semanticRejection
   const current=fixture.continuity.deliveries[0];
   current.validation=semanticRejection?'uncertain':'revalidation-required';current.evidence.sha256=raw(applied.bytes);
   current.counters=applied.counters;current.baseline=structuredClone(source.manifest(1));
+  if(semanticRejection && statuses.length===1) {
+    const refusal=applied.bundle.support.at(-1);
+    current.normalization={episodeId:owner.operationAttemptId,operation:'APPLY_FINDINGS',
+      causeSha256:raw(applied.bytes),sourceOperationAttemptId:owner.operationAttemptId,
+      used:1,consumedInvocations:1,round:1,status:'exhausted'};
+    current.lastDiagnostic={code:'RUNNER_RESULT_REJECTED',operationAttemptId:owner.operationAttemptId,
+      reason:refusal.diagnostic,affectedPaths:templates.decode(cap.applyRequest).scopePaths,nextAction:'stop'};
+  }
   editSection(fixture,'slice-01','Implementation Test Evidence','- none');
   editSection(fixture,'slice-01','Findings Test Evidence',applied.bundle.findingsChecks.map(item=>item.recordUtf8).join('\n\n')||'- none');
   editSection(fixture,'slice-01','Corrections Applied',semanticRejection && statuses.length===1?'- none':'- `../../../../src/pay.mjs`');
