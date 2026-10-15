@@ -1649,6 +1649,7 @@ function deriveApplyCycle({context,authority:approvedAuthority,owner:expectedOwn
   const checks=[]; let rejection=null; let lastStatus=null; let previousCap=null; let previousWork=null;
   let lastObserved=null,lastScope=null;
   let previousScope=[]; let firstWork=null; let dispatchId=null; const runners=new Set();
+  let productDrift=null;
   const receipts=[]; const managed=[]; const witnesses=new Set(baseFacts.removalPaths??[]);
   for (const [index,cap] of rounds.entries()) {
     const round=index+1;
@@ -1664,7 +1665,34 @@ function deriveApplyCycle({context,authority:approvedAuthority,owner:expectedOwn
     authority(request.authority,context,request.owner,'APPLY_FINDINGS');
     equal(request.authority,approvedAuthority,'EVIDENCE_STALE',`round ${round} authority`);
     if (expectedOwner) equal(request.owner,expectedOwner,'OWNER_MISMATCH',`round ${round} owner`);
-    if (round>1 && lastStatus!=='TESTS_FAIL') invalid(`round ${round}: prior round did not fail`);
+    const origin=transport==='native'?jsonBytes(cap.origin,`round ${round} origin`).value:null;
+    const witness=origin?.productDrift??null;
+    if(witness!==null) {
+      closed(witness,['class','episodeId','sourceOperationAttemptId','sourceRound',
+        'sourceCaptureSha256','expectedWorkSha256','used'],'product drift witness');
+      if(offset || witness.class!=='product-drift' || witness.used!==1
+        || witness.sourceOperationAttemptId!==request.owner.operationAttemptId
+        || !Number.isSafeInteger(witness.sourceRound) || witness.sourceRound<1
+        || witness.sourceRound>=round || witness.sourceRound>=3)
+        mismatch(`round ${round}: product drift owner or source`);
+      token(witness.episodeId,HASH,'product drift episode');
+      token(witness.sourceCaptureSha256,HASH,'product drift source capture');
+      token(witness.expectedWorkSha256,HASH,'product drift expected work');
+      if(witness.sourceCaptureSha256!==findingsRoundCaptureSha256(rounds[witness.sourceRound-1])
+        || witness.episodeId!==raw(utf8(JSON.stringify({class:'product-drift',
+          owner:request.owner.operationAttemptId,sourceRound:witness.sourceRound,
+          sourceCaptureSha256:witness.sourceCaptureSha256,
+          expectedWorkSha256:witness.expectedWorkSha256})+'\n')))
+        stale(`round ${round}: product drift source differs`);
+      if(!productDrift && witness.sourceRound!==round-1)
+        mismatch(`round ${round}: product drift witness did not begin at its recheck`);
+      if(productDrift && !same(productDrift,witness)) mismatch('product drift witness changed');
+      productDrift=witness;
+    } else if(productDrift) mismatch('product drift witness disappeared');
+    if(round>1 && lastStatus!=='TESTS_FAIL'
+      && !(lastStatus==='TESTS_PASS' && witness!==null
+        && witness.sourceRound===round-1 && productDrift===witness))
+      invalid(`round ${round}: prior round did not fail`);
     if (cap.transport!==transport) mismatch(`round ${round}: request/transport differs`);
     const expectedBase={evidenceSha256:baseFacts.sha256,counters:baseFacts.counters,
       validation:baseFacts.validation,openFindings:baseFacts.openFindings,priorScopePaths:baseFacts.priorScopePaths};
@@ -1692,6 +1720,47 @@ function deriveApplyCycle({context,authority:approvedAuthority,owner:expectedOwn
       capture:cap,receipt,priorScopePaths:baseFacts.priorScopePaths,previousScopePaths:previousScope,
       previousAfter:previousWork?.observed?.after??null,witnessedRemovals:[...witnesses].sort(ordinal),
       status:envelope.payload?.status??receipt.semanticResponseStatus});
+    if(witness?.sourceRound===round-1) {
+      if(!previousWork || previousWork.payload.status!=='TESTS_PASS'
+        || !request.previousCheck
+        || request.previousCheck.roundCaptureSha256!==witness.sourceCaptureSha256
+        || !work.observed
+        || currentEvidenceValueSha256(work.observed.before)!==witness.expectedWorkSha256
+        || same(previousWork.observed.after,work.observed.before))
+        stale(`round ${round}: product drift does not bind the new observation`);
+      const info=work.info;
+      const old=new Map(previousWork.observed.after.entries.map(item=>[item.path,item]));
+      const next=new Map(work.observed.before.entries.map(item=>[item.path,item]));
+      let changed=false;
+      for(const name of new Set([...old.keys(),...next.keys()])) {
+        const prior=old.get(name),current=next.get(name);
+        if(same(prior??null,current??null)) continue;
+        if(prior?.kind==='directory' || current?.kind==='directory') {
+          if(prior?.kind!=='directory' || current?.kind!=='directory'
+            || !same(prior.children,current.children)) stale(`round ${round}: product drift structure`);
+        } else if(prior?.kind!=='file' || current?.kind!=='file'
+          || [...info.inputs,...info.refs].some(item=>item.path===name)
+          || !info.areas.some(area=>area.path===name
+            || area.kind==='directory' && name.startsWith(`${area.path}/`)))
+          stale(`round ${round}: product drift is not an existing private output`);
+        else changed=true;
+      }
+      if(!changed) stale(`round ${round}: product drift has no private leaf`);
+      if(post) {
+        const snapshot=jsonBytes(post.snapshotBytes,'approved-preparation.json').value;
+        for(const delivery of snapshot.normativeProjection.deliveries.filter(item=>
+          item.deliveryId!==request.owner.deliveryId)) {
+          const other=verifyWorkObservation('initial-implementation',{
+            context,delivery,slice:delivery.slice});
+          for(const name of new Set([...old.keys(),...next.keys()])) {
+            if(same(old.get(name)??null,next.get(name)??null)) continue;
+            if([...other.areas,...other.inputs,...other.refs].some(claim=>claim.path===name
+              || claim.kind==='directory' && name.startsWith(`${claim.path}/`)))
+              stale(`round ${round}: product drift intersects another delivery`);
+          }
+        }
+      }
+    }
     if(work.observed) {lastObserved=work.observed.after;lastScope=work.scopePaths;}
     if (round===1) {
       equal(work.before,baseFacts.testedWork,'EVIDENCE_STALE','findings baseline differs from formal product');

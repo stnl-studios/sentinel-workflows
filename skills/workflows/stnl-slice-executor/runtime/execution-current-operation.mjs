@@ -298,9 +298,12 @@ export async function reserveDispatch(handle) {
     const now=await load(handle);
     const auxiliary=now.owner.operation==='APPLY_FINDINGS';
     const previousRound=now.record.runner?.round??0;
+    const productDrift=now.record.runner?.productDrift??null;
     if(now.record.phase!=='working' || (!auxiliary && now.record.runner!==null)
       || auxiliary && previousRound && (now.record.runner.status!=='captured'
-        || now.record.runner.resultStatus!=='TESTS_FAIL'
+        || !['TESTS_FAIL',...(productDrift?['TESTS_PASS']:[])].includes(now.record.runner.resultStatus)
+        || now.record.runner.resultStatus==='TESTS_PASS'
+          && productDrift.sourceRound!==previousRound
         || previousRound+(now.binding.normalization?.consumedInvocations??0)>=3))
       fail('OWNER_UNCERTAIN','dispatch is already reserved, terminal or uncertain');
     const round=auxiliary?previousRound+1:1;
@@ -319,14 +322,30 @@ export async function reserveDispatch(handle) {
       const summary=await inspectPostConversionFindingsPrefix({context:now.context,
         snapshotBytes:Buffer.from(image.files.get('approved-preparation.json')),current,
         bundleBytes:Buffer.from(image.files.get(current.evidence.path)),owner:now.owner,rounds});
-      if(summary.status!=='TESTS_FAIL' || summary.rounds!==previousRound
+      if(!['TESTS_FAIL',...(productDrift?['TESTS_PASS']:[])].includes(summary.status)
+        || summary.status==='TESTS_PASS' && productDrift.sourceRound!==previousRound
+        || summary.rounds!==previousRound
         +(now.binding.normalization?.consumedInvocations??0))
-        fail('OWNER_UNCERTAIN','previous findings prefix is not a validated failure');
+        fail('OWNER_UNCERTAIN','previous findings prefix is not an eligible validated result');
       previous={cap:rounds.at(-1),request:await readJson(path.join(now.root,`round-${previousRound}.request.json`)),
         scopePaths:summary.lastScope,lastWork:summary.lastWork};
     }
     const dispatchId=previousRound?now.record.runner.dispatchId:randomUUID();
     const {request,info,observed}=await requestInputs(image,now,dispatchId,round,previous);
+    if(productDrift) {
+      if(now.binding.normalization || !previous || productDrift.class!=='product-drift'
+        || productDrift.sourceOperationAttemptId!==now.owner.operationAttemptId
+        || productDrift.used!==1 || productDrift.sourceRound>=round
+        || productDrift.sourceCaptureSha256!==findingsRoundCaptureSha256(
+          await capturedSources(now,productDrift.sourceRound))
+        || round===productDrift.sourceRound+1
+          && productDrift.expectedWorkSha256!==currentEvidenceValueSha256(observed.manifest))
+        fail('EVIDENCE_STALE','reserved product drift witness differs');
+      if(round===productDrift.sourceRound+1) {
+        const prior=await readJson(path.join(now.root,`round-${productDrift.sourceRound}.observation.json`));
+        await checkedProductDrift(now,image,prior);
+      }
+    }
     const baseActivation=await readJson(path.join(now.root,'base.activation.json'));
     if(baseActivation.activationId!==now.binding.baseActivationId
       || !same(baseActivation.artifacts,image.activation.artifacts))
@@ -334,7 +353,8 @@ export async function reserveDispatch(handle) {
     const origin={transport:'native',specPath:now.context.logicalAuthorityPath,
       workspace:now.context.productRoot,owner:now.owner,verification:info.resolved,
       dispatchId,attempt:round,
-      admission:{binding:now.binding,baseActivation,reservedActivation:image.activation}};
+      admission:{binding:now.binding,baseActivation,reservedActivation:image.activation},
+      ...(productDrift?{productDrift}:{})};
     const baseline={format:'stnl-current-baseline-v1',owner:now.owner,round,
       context:now.context,manifest:auxiliary
         ?previous?.lastWork??await readJson(path.join(now.root,'base.work.json')):observed.manifest};
@@ -343,6 +363,7 @@ export async function reserveDispatch(handle) {
     await put(path.join(now.root,`round-${round}.baseline.json`),baseline);
     await put(originFile,origin);
     now.record.runner={dispatchId,agentId:null,status:'reserved',round,consumedInvocations:round,
+      ...(productDrift?{productDrift}:{}),
       originFile,requestFile:path.join(now.root,`round-${round}.request.json`),
       responseFile:path.join(now.root,`round-${round}.response.json`)};
     await persistAllocation(now.marker,now.record);
@@ -419,6 +440,53 @@ function preflightCorrection(baseline,current,info) {
       || after?.kind==='absent') fail('EVIDENCE_STALE',`unauthorized correction before recipe: ${name}`);
   }
 }
+function privateProductDrift(before,after,info) {
+  const old=new Map(before.entries.map(item=>[item.path,item]));
+  const next=new Map(after.entries.map(item=>[item.path,item]));
+  const changed=[...new Set([...old.keys(),...next.keys()])].filter(name=>
+    !same(old.get(name)??null,next.get(name)??null));
+  const leaves=changed.filter(name=>old.get(name)?.kind!=='directory'
+    && next.get(name)?.kind!=='directory');
+  if(!leaves.length) fail('NORMALIZATION_NOT_ELIGIBLE','no changed private output exists');
+  for(const name of changed) {
+    const prior=old.get(name),current=next.get(name);
+    if(prior?.kind==='directory' || current?.kind==='directory') {
+      if(prior?.kind!=='directory' || current?.kind!=='directory'
+        || !same(prior.children,current.children))
+        fail('EVIDENCE_STALE',`product structure changed: ${name}`);
+      continue;
+    }
+    if(prior?.kind!=='file' || current?.kind!=='file'
+      || !info.areas.some(area=>area.path===name
+        || area.kind==='directory' && name.startsWith(`${area.path}/`))
+      || [...info.inputs,...info.refs].some(item=>item.path===name))
+      fail('EVIDENCE_STALE',`drift is not an existing private output: ${name}`);
+  }
+  return leaves.sort(order);
+}
+async function checkedProductDrift(op,image,observation) {
+  const snapshot=parseCurrentJson(Buffer.from(image.files.get('approved-preparation.json')).toString('utf8'));
+  const continuity=parseCurrentJson(Buffer.from(image.files.get('continuity.json')).toString('utf8'));
+  const current=continuity.deliveries.find(item=>item.deliveryId===op.owner.deliveryId);
+  const leaf=snapshot.normativeProjection.deliveries.find(item=>item.deliveryId===op.owner.deliveryId);
+  const info=verifyWorkObservation('initial-implementation',{
+    context:op.context,delivery:leaf,slice:op.owner.slice});
+  const observed=image.observedByDelivery.get(op.owner.deliveryId);
+  if(!current || !observed || current.localRevision!==1 || current.validation==='uncertain'
+    || !same(image.activation.activeAttempt?.operationAttemptId,op.owner.operationAttemptId))
+    fail('NORMALIZATION_NOT_ELIGIBLE','current APPLY owner is not eligible');
+  const paths=privateProductDrift(observation.after,observed.manifest,info);
+  for(const other of continuity.deliveries.filter(item=>item.deliveryId!==op.owner.deliveryId)) {
+    const otherLeaf=snapshot.normativeProjection.deliveries.find(item=>item.deliveryId===other.deliveryId);
+    const otherInfo=verifyWorkObservation('initial-implementation',{
+      context:op.context,delivery:otherLeaf,slice:other.slice});
+    if(!same(image.observedByDelivery.get(other.deliveryId)?.manifest,other.baseline)
+      || paths.some(name=>[...otherInfo.areas,...otherInfo.inputs,...otherInfo.refs].some(claim=>
+        claim.path===name || claim.kind==='directory' && name.startsWith(`${claim.path}/`))))
+      fail('EVIDENCE_STALE','drift affects another delivery');
+  }
+  return {observed,paths};
+}
 export async function verifyNative(originFile) {
   const {op,origin,round}=await opFromOrigin(originFile);
   const agentId=await boundAgent(op,originFile,round);
@@ -432,6 +500,13 @@ export async function verifyNative(originFile) {
     .normativeProjection.deliveries.find(item=>item.deliveryId===op.owner.deliveryId);
   const recipe=verifyWorkObservation('initial-implementation',{
     context:op.context,delivery:leaf,slice:op.owner.slice});
+  if(origin.productDrift && round===origin.productDrift.sourceRound+1) {
+    if(!same(origin.productDrift,op.record.runner?.productDrift)
+      || currentEvidenceValueSha256(before.manifest)!==origin.productDrift.expectedWorkSha256)
+      fail('EVIDENCE_STALE','product differs from reserved recheck state');
+    const prior=await readJson(path.join(op.root,`round-${origin.productDrift.sourceRound}.observation.json`));
+    await checkedProductDrift(op,image,prior);
+  }
   if(op.owner.operation==='APPLY_FINDINGS') preflightCorrection(baseline.manifest,before.manifest,recipe);
   else if(!same(before.manifest,baseline.manifest))
     fail('EVIDENCE_STALE','product changed before native recipe');
@@ -723,6 +798,49 @@ async function capturedComposition(op) {
 
 export async function normalize(handle) {
   const op=await load(handle);
+  if(op.owner.operation==='APPLY_FINDINGS' && op.record.phase==='working'
+    && op.record.runner?.status==='captured'
+    && op.record.runner.resultStatus==='TESTS_PASS'
+    && !op.record.preparation?.candidateComposition) {
+    if(op.binding.normalization || op.record.runner.productDrift
+      || op.record.runner.round>=3)
+      fail('NORMALIZATION_EXHAUSTED','product drift episode or invocation budget is exhausted');
+    const round=op.record.runner.round;
+    const image=await requireA1(op);
+    const observation=await readJson(path.join(op.root,`round-${round}.observation.json`));
+    const {observed}=await checkedProductDrift(op,image,observation);
+    const rounds=[];
+    for(let index=1;index<=round;index+=1) rounds.push(await capturedSources(op,index));
+    const continuity=parseCurrentJson(Buffer.from(image.files.get('continuity.json')).toString('utf8'));
+    const current=continuity.deliveries.find(item=>item.deliveryId===op.owner.deliveryId);
+    const summary=await inspectPostConversionFindingsPrefix({context:op.context,
+      snapshotBytes:Buffer.from(image.files.get('approved-preparation.json')),current,
+      bundleBytes:Buffer.from(image.files.get(current.evidence.path)),owner:op.owner,rounds});
+    if(summary.status!=='TESTS_PASS' || summary.rounds!==round)
+      fail('NORMALIZATION_NOT_ELIGIBLE','prior PASS is not a valid captured prefix');
+    const sourceCaptureSha256=findingsRoundCaptureSha256(rounds.at(-1));
+    const expectedWorkSha256=currentEvidenceValueSha256(observed.manifest);
+    const episodeId=sha(json({class:'product-drift',owner:op.owner.operationAttemptId,
+      sourceRound:round,sourceCaptureSha256,expectedWorkSha256}));
+    const witness={class:'product-drift',episodeId,
+      sourceOperationAttemptId:op.owner.operationAttemptId,sourceRound:round,
+      sourceCaptureSha256,expectedWorkSha256,used:1};
+    return withExecutionPublicationLock(op.workspace,async()=>{
+      const now=await load(handle);
+      if(now.record.phase!=='working' || now.record.runner?.status!=='captured'
+        || now.record.runner.round!==round || now.record.runner.resultStatus!=='TESTS_PASS'
+        || now.record.runner.productDrift || now.record.preparation?.candidateComposition)
+        fail('NORMALIZATION_EXHAUSTED','product drift episode is no longer available');
+      const latest=await requireA1(now);
+      if(!same(latest.activation,image.activation)
+        || !same((await checkedProductDrift(now,latest,observation)).observed.manifest,observed.manifest))
+        fail('EVIDENCE_STALE','product changed before drift reservation');
+      now.record.runner.productDrift=witness;
+      await persistAllocation(now.marker,now.record);
+      return {phase:'captured',owner:now.owner,episodeId,expectedWorkSha256,
+        nextAction:'reserve-dispatch'};
+    });
+  }
   if(op.record.phase!=='working' || op.record.runner?.status!=='captured'
     || !op.record.preparation?.candidateComposition)
     fail('NORMALIZATION_NOT_ELIGIBLE','no identified partial composition belongs to this captured owner');
@@ -861,6 +979,9 @@ export async function resume(handle) {
     responseSha256:sha((await readOwnedFile(runner.responseFile)).bytes),
     ...(op.owner.operation==='APPLY_FINDINGS' && runner.resultStatus==='TESTS_FAIL'
       && runner.round+(op.binding.normalization?.consumedInvocations??0)<3
+      ?{nextAction:'reserve-dispatch'}:{}),
+    ...(op.owner.operation==='APPLY_FINDINGS' && runner.productDrift
+      && runner.resultStatus==='TESTS_PASS' && runner.round===runner.productDrift.sourceRound
       ?{nextAction:'reserve-dispatch'}:{})};
   if(runner?.status==='running') return {phase:'running',nextAction:'await-same-agent',agentId:runner.agentId};
   if(runner?.status==='reserved') return {phase:'dispatch-reserved',nextAction:'bind-same-agent-or-block'};

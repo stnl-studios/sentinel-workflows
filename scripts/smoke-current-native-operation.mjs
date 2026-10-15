@@ -10,7 +10,7 @@ import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import {fileURLToPath} from 'node:url';
 import {convertedImage} from './fixtures/current-operational-consumption.mjs';
-import {begin,reserveDispatch,resume,publish} from '../skills/workflows/stnl-slice-executor/runtime/execution-current-operation.mjs';
+import {begin,reserveDispatch,resume,publish,normalize} from '../skills/workflows/stnl-slice-executor/runtime/execution-current-operation.mjs';
 
 const repo=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 const run=promisify(execFile);
@@ -76,6 +76,24 @@ async function applyDispatch(runRoot) {
   entry.dispatch=dispatch;
   await fs.writeFile(path.join(runRoot,'operation-2.start.json'),JSON.stringify(entry,null,2)+'\n');
   return entry;
+}
+async function applyProductDrift(runRoot) {
+  const entry=JSON.parse(await fs.readFile(path.join(runRoot,'operation-2.start.json'),'utf8'));
+  const state=await resume(entry.start.handle);
+  if(state.phase!=='captured' || state.nextAction!=='publish')
+    throw new Error('real APPLY PASS capture is required before private drift');
+  const source=path.join(entry.fixtureRoot,'src/greeting.mjs');
+  await fs.appendFile(source,'// Equivalent private output after first native PASS.\n');
+  let stale=null;
+  try {await publish(entry.start.handle);}
+  catch(error) {stale={code:error.code,message:error.message};}
+  if(stale?.code!=='EVIDENCE_STALE') throw new Error('stale PASS publication was not refused');
+  const reserved=await normalize(entry.start.handle);
+  if(reserved.nextAction!=='reserve-dispatch') throw new Error('product drift reservation did not settle');
+  const dispatch=await reserveDispatch(entry.start.handle);
+  entry.productDrift={stale,reserved,dispatch};
+  await fs.writeFile(path.join(runRoot,'operation-2.start.json'),JSON.stringify(entry,null,2)+'\n');
+  return entry.productDrift;
 }
 async function formalBegin(runRoot) {
   const first=JSON.parse(await fs.readFile(path.join(runRoot,'operation-1.start.json'),'utf8'));
@@ -203,6 +221,7 @@ try {
   else if(command==='prepare-findings') output(await setup({defect:true}));
   else if(command==='apply-begin') output(await applyBegin(arg));
   else if(command==='apply-dispatch') output(await applyDispatch(arg));
+  else if(command==='apply-product-drift') output(await applyProductDrift(arg));
   else if(command==='formal-begin') output(await formalBegin(arg));
   else if(command==='drift-after-pass') output(await afterPassDrift(arg));
   else if(command==='second') output(await second(arg));
