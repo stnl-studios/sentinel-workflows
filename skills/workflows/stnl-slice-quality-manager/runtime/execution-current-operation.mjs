@@ -107,7 +107,7 @@ function requireS2(image,slice,operation,{successor=false}={}) {
     fail('UNSUPPORTED_FORMAT','EC-1 native profile requires an exact converted S2 handoff');
   const continuity=parseCurrentJson(Buffer.from(image.files.get('continuity.json')).toString('utf8'));
   const reviewed=continuity.deliveries.filter(item=>item.localRevision!==1);
-  if(continuity.completed.length && (operation!=='VALIDATE_SLICE' || successor || reviewed.length)
+  if(continuity.completed.length && (reviewed.length || successor&&operation!=='APPLY_FINDINGS')
     || reviewed.length>1 || reviewed.some(item=>item.localRevision!==2
     || item.slice!==slice || operation!=='VALIDATE_SLICE' || successor)
     || continuity.deliveries.some(item=>item.localRevision!==1 && item.localRevision!==2
@@ -119,15 +119,18 @@ function requireS2(image,slice,operation,{successor=false}={}) {
   const inspected=image.inspection.deliveries.find(item=>item.slice===slice);
   if(continuity.completed.length) {
     const bundle=current?.evidence?parseCurrentJson(Buffer.from(image.files.get(current.evidence.path)).toString('utf8')):null;
-    if(inspected?.formalStatus!=='PASS' || current?.validation!=='current'
-      || bundle?.validation?.recordFormat!=='stnl-task-record-v2'
+    if(bundle?.validation?.recordFormat!=='stnl-task-record-v2'
       || bundle.validation.origin.transport!=='native' || bundle.implementation.length
-      || bundle.findingsChecks.length || bundle.support.length || bundle.openFindings.length || bundle.openDivergences.length)
-      fail('UNSUPPORTED_FORMAT','completed native profile requires a closed native PASS base');
+      || bundle.openDivergences.length)
+      fail('UNSUPPORTED_FORMAT','completed native profile requires a verified native formal base');
     const captured=restoreCaptureSources('current-validation',bundle.validation,
       new Map(bundle.objects.map(item=>[item.id,Buffer.from(item.bytesBase64,'base64')])));
     const origin=parseCurrentJson(Buffer.from(captured.origin).toString('utf8'));
     if(!origin.admission)fail('UNSUPPORTED_FORMAT','completed native base lacks official A0/A1 admission');
+    if(operation==='VALIDATE_SLICE'
+      && !(inspected.formalStatus==='PASS'&&current.validation==='current'&&!bundle.openFindings.length)
+      && !['TESTS_PASS','TESTS_FAIL'].includes(inspected.auxiliaryStatus))
+      fail('UNSUPPORTED_FORMAT','completed formal requires a closed PASS or concluded findings checks');
   }
   if(!current || !inspected || current.counters.validationAttempts<1
     || (current.evidence===null && current.lastDiagnostic?.code!=='EVIDENCE_INCOMPLETE')
@@ -872,7 +875,7 @@ export async function captureNative(handle,toolResultFile) {
       fail('RUNNER_RESULT_REJECTED',`native final response preserved but rejected: ${parseFailure}`);
     // Syntax alone cannot establish a completed-profile judgment. In particular
     // NEEDS_FIX must carry its active blocker before this capture can publish.
-    if(completedProfile && !parseFailure)await capturedComposition(now);
+    if(completedProfile && !parseFailure && !auxiliary)await capturedComposition(now);
     return {phase:'captured',rawResponseSha256:sha(raw),status,
       nextAction:initialRejection?now.owner.preparationRevision===1
         && ['EXECUTE_SLICE','APPLY_FINDINGS'].includes(now.owner.operation)?'publish':'blocked'

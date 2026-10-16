@@ -702,8 +702,7 @@ async function readCurrentExecution(specPath,withCapture=false,expectedOwner=nul
           :!facts.observationMatches?'VALIDATE_SLICE'
           :facts.formalStatus==='NEEDS_FIX'&&(!facts.cycle||facts.bundle.validation.id!==facts.cycle.admissionId)
             ?'APPLY_FINDINGS':'VALIDATE_SLICE';
-        normalHandoff=fresh.has(pending.deliveryId)&&facts.formalStatus==='NEEDS_FIX'
-          ?null:{operation,slice:pending.slice,deliveryId:pending.deliveryId};
+        normalHandoff={operation,slice:pending.slice,deliveryId:pending.deliveryId};
         state=!facts.observationMatches?'EVIDENCE_STALE':operation==='APPLY_FINDINGS'?'VALIDATION_NEEDS_FIX'
           :facts.cycle?.status==='TESTS_PASS'?'FINDINGS_CORRECTED'
             :facts.cycle?.status==='TESTS_FAIL'?'FINDINGS_RETRY_EXHAUSTED'

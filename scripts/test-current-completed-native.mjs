@@ -43,7 +43,7 @@ test('C01 completed A stays literal while two legal B native validations publish
   assert.equal(final.inspection.state,'VALIDATION_BLOCKED');
 });
 
-for(const status of ['NEEDS_FIX','BLOCKED'])test(`C03 valid ${status} publishes literally and enables no operation`,async t=>{
+for(const status of ['NEEDS_FIX','BLOCKED'])test(`C03 valid ${status} publishes literally and exposes only the legal handoff`,async t=>{
   const f=await completedNativeCase(t);
   const result=await normalizedFormal(f,{beforeCapture:async({tool,dispatch})=>{
     const doc=JSON.parse(await fs.readFile(tool)),response=JSON.parse(doc.finalResponse);
@@ -57,9 +57,9 @@ for(const status of ['NEEDS_FIX','BLOCKED'])test(`C03 valid ${status} publishes 
   }});
   assert.equal(result.published.publication,'confirmed');
   const image=await captureCurrentExecution(f.specPath),item=image.inspection.deliveries[0];
-  assert.equal(item.formalStatus,status);assert.equal(image.inspection.normalHandoff,null);
-  assert.match(Buffer.from(image.files.get('tasks/slice-02.md')).toString('utf8'),/Current action: blocked/u);
-  for(const operation of ['VALIDATE_SLICE','APPLY_FINDINGS'])await assert.rejects(()=>begin({specPath:f.specPath,
+  assert.equal(item.formalStatus,status);assert.equal(image.inspection.normalHandoff?.operation??null,status==='NEEDS_FIX'?'APPLY_FINDINGS':null);
+  assert.match(Buffer.from(image.files.get('tasks/slice-02.md')).toString('utf8'),status==='NEEDS_FIX'?/Current action: APPLY_FINDINGS/u:/Current action: blocked/u);
+  for(const operation of status==='NEEDS_FIX'?['VALIDATE_SLICE']:['VALIDATE_SLICE','APPLY_FINDINGS'])await assert.rejects(()=>begin({specPath:f.specPath,
     slice:'slice-02',operation,expectedActivationId:image.inspection.activationId}));
   await assert.rejects(()=>normalizeSuccessor({specPath:f.specPath,slice:'slice-02',expectedActivationId:image.inspection.activationId}));
   assert.deepEqual(await separate(f.specPath),image.inspection);

@@ -667,6 +667,10 @@ export async function inspectPostConversionEvidence({context,snapshotBytes,curre
   admissionRef=null,lastAttempt=null,preparationProfile='converted-current',retainedEvidence=null,retainedRead=null}) {
   const {validateCurrentPreparation}=await import('./execution-preparation-current.mjs');
   const snapshot=jsonBytes(snapshotBytes,'approved-preparation.json').value;
+  if(snapshot.completed?.length) {
+    preparationProfile='completed-current';
+    retainedEvidence??=completedReviewReferences(snapshot);
+  }
   const reviewed=new Map(snapshot.reviewedArtifacts.map(item=>[item.path,utf8(item.utf8)]));
   validateCurrentPreparation({context,requirementsAuthority:snapshot.requirementsAuthority,
     snapshotBytes,artifacts:reviewed,profile:preparationProfile,retainedEvidence});
@@ -1276,6 +1280,14 @@ function priorValidationOverlap(changed,priorDeliveries) {
 // Approval decisions describe the frozen review. A replacement is operational
 // evidence only after its complete native admission and sources verify against
 // this snapshot and current local authority; a digest or lastAttempt is insufficient.
+function completedReviewReferences(snapshot) {
+  const decisions=new Map(snapshot.globalReview.evidenceDecisions.map(item=>[item.deliveryId,item.evidenceSha256]));
+  for(const delivery of snapshot.deliveries)for(const item of delivery.review.evidenceDecisions)
+    if(!decisions.has(item.deliveryId))decisions.set(item.deliveryId,item.evidenceSha256);
+  for(const item of snapshot.completed)if(!decisions.has(item.deliveryId))decisions.set(item.deliveryId,item.evidenceSha256);
+  return [...decisions].map(([deliveryId,evidenceSha256])=>({deliveryId,evidenceSha256}))
+    .sort((a,b)=>ordinal(a.deliveryId,b.deliveryId));
+}
 export async function completedEvidenceContext({context,snapshotBytes,continuity,files}) {
   if(!continuity.completed.length)return {retainedEvidence:null,fresh:new Set()};
   const snapshot=jsonBytes(snapshotBytes,'approved preparation').value;
@@ -1293,18 +1305,27 @@ export async function completedEvidenceContext({context,snapshotBytes,continuity
   for(const id of fresh) {
     const current=continuity.deliveries.find(item=>item.deliveryId===id);
     const bundleBytes=files.get(current.evidence.path),bundle=jsonBytes(bundleBytes,'operational replacement').value;
-    const record=bundle.validation;
-    if(current.localRevision!==1 || current.normalization!==null
-      || record?.recordFormat!=='stnl-task-record-v2' || record.origin.transport!=='native'
-      || bundle.implementation.length || bundle.findingsChecks.length || bundle.support.length)
-      mismatch('completed profile requires a closed native operational replacement');
-    const capture=restoreCaptureSources('current-validation',record,sourceMap(bundle));
-    const request=jsonBytes(capture.validationRequest,'operational replacement request').value;
-    const origin=jsonBytes(capture.origin,'operational replacement admission').value;
-    if(!origin.admission || request.format!=='stnl-current-validation-request-v3'
-      || request.base.approvedSnapshotSha256!==raw(snapshotBytes)
-      || origin.admission.baseActivation.preparationRevision!==snapshot.preparationRevision)
-      mismatch('operational replacement lacks current native A0/A1 admission');
+    validateCurrentEvidence(bundle);
+    if(current.localRevision!==1 || bundle.validation?.recordFormat!=='stnl-task-record-v2'
+      || bundle.implementation.length)
+      mismatch('completed profile requires native operational evidence');
+    for(const record of [bundle.validation,...bundle.findingsChecks,...bundle.support]) {
+      const formal=record.origin.operation==='VALIDATE_SLICE';
+      if(record.origin.transport!=='native'
+        || !['VALIDATE_SLICE','APPLY_FINDINGS'].includes(record.origin.operation)
+        || record.kind!=='rejection'&&record.recordFormat!=='stnl-task-record-v2')
+        mismatch('operational replacement contains a foreign evidence family');
+      const capture=restoreCaptureSources(formal?'current-validation':'current-findings',record,sourceMap(bundle));
+      const request=jsonBytes(formal?capture.validationRequest:capture.applyRequest,'operational replacement request').value;
+      const origin=jsonBytes(capture.origin,'operational replacement admission').value;
+      if(!origin.admission
+        || formal&&!['stnl-current-validation-request-v3','stnl-current-validation-request-v4'].includes(request.format)
+        || !formal&&!['stnl-current-findings-request-v1','stnl-current-findings-request-v2'].includes(request.format)
+        || formal&&request.base.approvedSnapshotSha256!==raw(snapshotBytes)
+        || origin.admission.baseActivation.approvedSnapshotSha256!==raw(snapshotBytes)
+        || origin.admission.baseActivation.preparationRevision!==snapshot.preparationRevision)
+        mismatch('operational replacement lacks current native A0/A1 admission');
+    }
     await inspectPostConversionEvidence({context,snapshotBytes,current,bundleBytes,
       observedWork:current.baseline,preparationProfile:'completed-current',retainedEvidence});
   }
@@ -1332,7 +1353,7 @@ async function postPriorDeliveries({context,snapshotBytes,continuity,files,curre
   }
   return verified;
 }
-function postTask(document,derived,digest,context,{cycle=null,admission=null,checks=[],validations=[],priorDeliveries=[],blockedActions=false}={}) {
+function postTask(document,derived,digest,context,{cycle=null,admission=null,checks=[],validations=[],priorDeliveries=[]}={}) {
   const {request,payload,recordDraft,observed}=derived;
   const scope=request.scope.paths;
   const evidence=serializeMarkdownScalar('Evidence summary',payload.evidence,true);
@@ -1368,7 +1389,7 @@ function postTask(document,derived,digest,context,{cycle=null,admission=null,che
     ...(derived.dispositions.get(item.id)==='superseded'?[`- Superseded by: ${request.attemptId}`]:[])].join('\n')).join('\n\n'):'- none';
   let value=document;
   for(const [section,body] of [
-    ['Continuity',`- Current validation: ${validation}\n- Current evidence: ${digest}\n- Current action: ${status==='PASS'?'none':status==='NEEDS_FIX'&&!blockedActions?'APPLY_FINDINGS':'blocked'}`],
+    ['Continuity',`- Current validation: ${validation}\n- Current evidence: ${digest}\n- Current action: ${status==='PASS'?'none':status==='NEEDS_FIX'?'APPLY_FINDINGS':'blocked'}`],
     ['Changed Areas',changed.length?changed.map(name=>`- \`${taskRelative(context,request.owner.slice,name)}\``).join('\n'):'- none'],
     ['Corrections Applied',corrections.length?corrections.map(name=>`- \`${taskRelative(context,request.owner.slice,name)}\``).join('\n'):'- none'],
     ['Prior Validation Overlap',priorValidationOverlap(changed,priorDeliveries).map(([slice,name])=>
@@ -1459,10 +1480,9 @@ export async function composePostConversionValidation({context,requirementsAutho
   const priorRequest=retainedBase&&previousV3?requestForRecord(previousRecord,sourceMap(previousBundle)):null;
   const priorOptions={...inspectionOptions,...(priorRequest?{retainedRead:{authority:priorRequest.authority,
     snapshotDigest:priorRequest.base.approvedSnapshotSha256}}:{})};
-  if(completedProfile && (!previousV3 || current.normalization!==null || current.localRevision!==1
-    || previousBundle.implementation.length || previousBundle.findingsChecks.length || previousBundle.support.length
-    || previousBundle.openFindings.length || previousBundle.openDivergences.length))
-    fail('UNSUPPORTED_FORMAT','completed native validation requires a closed local native PASS base');
+  if(completedProfile && (!previousV3 || current.localRevision!==1
+    || previousBundle.implementation.length || previousBundle.openDivergences.length))
+    fail('UNSUPPORTED_FORMAT','completed native validation requires a verified native formal or findings base');
   const historicalPrior=current.localRevision===2 && previousV3
     && previousRecord.origin.localRevision===1;
   const previousRejected=previousBundle?.support?.some(item=>item.kind==='rejection'
@@ -1623,7 +1643,7 @@ export async function composePostConversionValidation({context,requirementsAutho
     || item.kind==='rejection' && item.origin.operation==='APPLY_FINDINGS')??[];
   const support=findingsCycle ? [...auxiliaryHistory.filter(item=>item.kind==='findings-check'),...formalOrigins(
     [...previousBundle.support.filter(item=>item.kind==='validation'),previousRecord],
-    [...derived.all,...findingsCycle.selectedFindings],record.id),
+    [...derived.all,...findingsCycle.selectedFindings],record.id,[findingsCycle.admissionId]),
     ...auxiliaryHistory.filter(item=>item.kind==='rejection'),
     ...(previousRejected?previousBundle.support.filter(item=>item.kind==='rejection'):[])]
     :previousRejected?[...previousBundle.support.filter(item=>item.kind==='rejection'),
@@ -1651,7 +1671,7 @@ export async function composePostConversionValidation({context,requirementsAutho
   const priorDeliveries=await postPriorDeliveries({context,snapshotBytes,continuity:checked.continuity,
     files:previous.files,current,activation});
   files.set(taskName,postTask(Buffer.from(files.get(taskName)).toString('utf8'),derived,nextDigest,context,
-    {priorDeliveries,blockedActions:completedProfile,...(findingsCycle?{cycle:findingsCycle,
+    {priorDeliveries,...(findingsCycle?{cycle:findingsCycle,
       admission:previousFacts.origins.get(findingsCycle.admissionId),
       checks:bundle.findingsChecks,validations:support.filter(item=>item.kind==='validation')}
       :historicalPrior?{validations:[previousRecord]}:{})}));
@@ -1733,7 +1753,8 @@ export async function composePostConversionFindings({context,requirementsAuthori
   if(snapshot.preparationRevision<=1 || snapshot.requirementsAuthority!==requirementsAuthority
     || activation.requirementsAuthority!==requirementsAuthority) stale('converted findings authority differs');
   const current=checked.continuity.deliveries.find(item=>item.deliveryId===deliveryId);
-  if(!current || current.localRevision!==1 || checked.continuity.completed.length || !current.evidence)
+  const completedProfile=checked.continuity.completed.length>0;
+  if(!current || current.localRevision!==1 || !current.evidence || completedProfile&&admission===null)
     fail('UNSUPPORTED_FORMAT','converted findings delivery is not open');
   const owner=jsonBytes(rounds[0].applyRequest,'converted findings request').value.owner;
   if(owner.deliveryId!==deliveryId || owner.slice!==current.slice
@@ -1747,6 +1768,12 @@ export async function composePostConversionFindings({context,requirementsAuthori
       || files.size!==admission.files.size
       || [...files].some(([name,bytes])=>!Buffer.from(admission.files.get(name)??[]).equals(bytes)))
       mismatch('converted findings reservation changed the admitted base');
+    if(completedProfile)for(const capture of rounds) {
+      const origin=jsonBytes(capture.origin,'completed findings origin').value;
+      if(capture.transport!=='native' || !same(origin.admission?.baseActivation,activation)
+        || !same(origin.admission?.reservedActivation,admitted))
+        mismatch('completed findings capture differs from actual A0/A1 reservation');
+    }
   }
   const bundleBytes=files.get(current.evidence.path);
   const {base,cycle,store,prior,successor}=await convertedFindingsCycle({context,snapshotBytes,current,bundleBytes,
@@ -1797,6 +1824,20 @@ export async function composePostConversionFindings({context,requirementsAuthori
   validateCurrentCandidate({files});
   await inspectPostConversionEvidence({context,snapshotBytes,current:next,bundleBytes:outputBytes,
     observedWork:cycle.lastWork});
+  if(completedProfile) {
+    const {retainedEvidence}=await completedEvidenceContext({context,snapshotBytes,continuity,files});
+    const {validateCurrentPreparation}=await import('./execution-preparation-current.mjs');
+    const prepared=validateCurrentPreparation({context,requirementsAuthority,snapshotBytes,
+      artifacts:new Map([...files].filter(([name])=>name.endsWith('.md'))),profile:'completed-current',retainedEvidence});
+    const carrier=prepared.currentArtifacts.deliveries.find(item=>item.deliveryId===deliveryId);
+    const facts=await inspectPostConversionEvidence({context,snapshotBytes,current:next,bundleBytes:outputBytes,
+      observedWork:cycle.lastWork,retainedEvidence});
+    const priorDeliveries=await postPriorDeliveries({context,snapshotBytes,continuity:checked.continuity,
+      files:previous.files,current,activation});
+    if(carrier.continuity.evidence!==nextDigest)invalid('composed findings carrier evidence digest differs');
+    validateCurrentEvidenceCarriers({facts,sections:carrier.sections,
+      continuity:{...carrier.continuity,evidence:next.evidence.path},index:carrier.index,slice:current.slice,priorDeliveries});
+  }
   return {files,transition:{deliveryId,slice:current.slice,
     operationAttemptId:owner.operationAttemptId,originActivationId:activation.activationId,
     outcome:rejection?'rejected':'recorded',normalization,counters:nextCounters},
@@ -2488,8 +2529,8 @@ function exactCapture(left,right) {
 function mergeObjects(previous,store) {
   return new Map([...previous,...store.finish().map(item => [item.id,Buffer.from(item.bytesBase64,'base64')])]);
 }
-function formalOrigins(records,all,latestId) {
-  const ids=new Set(all.map(item => item.originAttempt).filter(item => item!==latestId));
+function formalOrigins(records,all,latestId,requiredIds=[]) {
+  const ids=new Set([...all.map(item => item.originAttempt),...requiredIds].filter(item => item!==latestId));
   return records.filter(record => ids.has(record.id)).sort((a,b)=>formalRecordNumber(a)-formalRecordNumber(b));
 }
 export function composeCurrentValidationEvidence(input) {

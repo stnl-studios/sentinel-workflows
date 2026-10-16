@@ -666,8 +666,9 @@ function validateCurrentContent(files) {
     const global=snapshot.normativeProjection.global;
     const retainedRecords=bundle?.support?.filter(item=>item.kind!=='rejection')??[];
     const convertedRejection=bundle?.support?.some(item=>item.kind==='rejection'
-      && item.origin.operation==='VALIDATE_SLICE')
-      && (current.normalization===null || current.normalization?.operation==='VALIDATE_SLICE'
+      && ['VALIDATE_SLICE','APPLY_FINDINGS'].includes(item.origin.operation))
+      && (current.normalization===null || current.normalization?.operation
+        ===bundle.support.filter(item=>item.kind==='rejection').at(-1)?.origin.operation
         && ['settled','exhausted'].includes(current.normalization.status))
       && bundle.support.filter(item=>item.kind==='rejection').length<=2;
     const importedValidation=bundle?.support?.filter(item=>item.kind==='validation'
