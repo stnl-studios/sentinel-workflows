@@ -7,7 +7,7 @@ import {pathToFileURL} from 'node:url';
 import {isDeepStrictEqual} from 'node:util';
 import {resolveCurrentExecutionContext,projectCurrentRequirements} from './execution-state.mjs';
 import {readOwnedFile} from './execution-publication.mjs';
-import {parseCurrentJson,validateCurrentActivation,validateCurrentImage,resolveLogicalProductClaim} from './execution-current.mjs';
+import {parseCurrentJson,validateCurrentActivation,validateCurrentCandidate,validateCurrentImage,resolveLogicalProductClaim} from './execution-current.mjs';
 import {validateCurrentPreparation} from './execution-preparation-current.mjs';
 import {inspectCurrentEvidence,inspectPostConversionEvidence,validateCurrentEvidenceCarriers,
   completedEvidenceContext} from './current-evidence-state.mjs';
@@ -270,7 +270,7 @@ function authorityFor(snapshot,delivery) {
 function retainedLocalAuthority(snapshot,current,record,leaf) {
   if(!leaf || !record || !record.contract || record.contract.terminal!==null
     || record.origin?.deliveryId!==current.deliveryId
-    || record.origin?.slice!==current.slice || record.origin?.localRevision!==current.localRevision)
+    || record.origin?.slice!==current.slice || record.origin?.localRevision>current.localRevision)
     fail('EVIDENCE_INCOMPLETE',`${current.slice}: retained local proof is absent or inconsistent`,
       'evidence','continuity.json',current.slice);
   return {preparationRevision:record.origin.preparationRevision,
@@ -294,7 +294,7 @@ function historicalOrigin(record,bundle) {
   const origin=parseCurrentJson(Buffer.from(captured.origin).toString('utf8'));
   const base=origin.admission?.baseActivation;
   return base?{key:JSON.stringify([record.contract.context.requirementsAuthority,base.preparationRevision,
-    base.approvedSnapshotSha256]),artifacts:base.artifacts}:{key:JSON.stringify(key),artifacts:[]};
+    base.approvedSnapshotSha256]),artifacts:base.artifacts,members:origin.otherDeliveryWork??[]}:{key:JSON.stringify(key),artifacts:[]};
 }
 function validateRetainedOwnership(snapshot,continuity,items) {
   const members=[...continuity.deliveries,...continuity.completed];
@@ -302,12 +302,17 @@ function validateRetainedOwnership(snapshot,continuity,items) {
   const historical=new Map();
   const reviewed=new Map(snapshot.reviewedArtifacts.map(item=>[item.path,item.sha256]));
   for(const item of items) if(item.retainedAuthority||item.identityAuthority) for(const record of retainedWitnesses(item)) {
-    const {key,artifacts}=historicalOrigin(record,item.facts.bundle),map=historical.get(key)??new Map();
+    const {key,artifacts,members=[]}=historicalOrigin(record,item.facts.bundle),map=historical.get(key)??new Map();
     const bind=(selector,id)=>{
       const previous=map.get(selector);
       if(previous!==undefined&&previous!==id)map.set(selector,null);else if(!map.has(selector))map.set(selector,id);
     };
     bind(record.origin.slice,record.origin.deliveryId);
+    for(const member of members) {
+      if(!/^slice-[0-9]{2,}$/u.test(member.slice)||!ids.has(member.deliveryId))
+        fail('EVIDENCE_STALE','historical observed member is not in the approved current set');
+      bind(member.slice,member.deliveryId);
+    }
     // The current selector map is insufficient historical evidence. A carrier
     // can supply a binding only when its literal reviewed bytes are hash-bound
     // by this already verified original admission witness.
@@ -445,7 +450,7 @@ export async function observeCurrentDeliveryWork({context,delivery,sections,curr
   return scopedObservation(await observeProduct(context,targets,{entries:0,bytes:0},true),targets);
 }
 
-async function readCurrentExecution(specPath,withCapture=false,expectedOwner=null) {
+async function readCurrentExecution(specPath,withCapture=false,expectedOwner=null,reviewFiles=null) {
   const {workspace,context}=await resolveCurrentExecutionContext(specPath);
   const boundaries=await physicalBoundaries(context);
   const documents=await capturedDocuments(workspace);
@@ -453,6 +458,7 @@ async function readCurrentExecution(specPath,withCapture=false,expectedOwner=nul
   const root=workspace.executionRoot;
   const rootBefore=await statOrNull(root);
   if (rootBefore===null) {
+    if(reviewFiles!==null) fail('CURRENT_FORMAT_REQUIRED','local review requires an official predecessor');
     if(withCapture) fail('CURRENT_FORMAT_REQUIRED','offline capture requires an official current image');
     await compareDocuments(workspace,documents);
     if (await statOrNull(root)!==null || !equal(boundaries,await physicalBoundaries(context)))
@@ -466,17 +472,32 @@ async function readCurrentExecution(specPath,withCapture=false,expectedOwner=nul
   const activationA=await statOrNull(activationFile);
   if (activationA===null) fail('CURRENT_FORMAT_REQUIRED','execution exists without activation','integrity','activation.json');
   const a=await safeRead(activationFile);
-  const activation=activationFormat(a.bytes);
-  if (activation.activeAttempt!==null && (expectedOwner===null
-    || !equal(activation.activeAttempt,expectedOwner)))
+  const liveActivation=activationFormat(a.bytes);
+  if(reviewFiles!==null&&liveActivation.activeAttempt!==null)
+    fail('OWNER_UNCERTAIN','local review candidate requires a quiet predecessor');
+  if (liveActivation.activeAttempt!==null && (expectedOwner===null
+    || !equal(liveActivation.activeAttempt,expectedOwner)))
     fail('OWNER_UNCERTAIN','activeAttempt declares an unresolved or different owner','integrity','activation.json','activeAttempt');
-  if (expectedOwner!==null && activation.activeAttempt===null)
+  if (expectedOwner!==null && liveActivation.activeAttempt===null)
     fail('OWNER_MISMATCH','expected active owner is absent','integrity','activation.json','activeAttempt');
-  const image=await capturedImage(root,activation);
+  const liveImage=await capturedImage(root,liveActivation);
+  let activation=liveActivation,image=liveImage,validationActivation=a.bytes;
+  if(reviewFiles!==null) {
+    validateCurrentCandidate({files:reviewFiles});
+    const snapshot=parseCurrentJson(reviewFiles.get('approved-preparation.json').toString('utf8'));
+    // An in-memory semantic view reuses the inert predecessor identity. Only
+    // the publisher allocates an official activation after these checks pass.
+    activation=validateCurrentActivation({...liveActivation,preparationRevision:snapshot.preparationRevision,
+      requirementsAuthority:snapshot.requirementsAuthority,normativeSha256:snapshot.normativeSha256,
+      approvedSnapshotSha256:digest(reviewFiles.get('approved-preparation.json')),
+      artifacts:[...reviewFiles].map(([path,bytes])=>({path,sha256:digest(bytes)}))
+        .sort((a,b)=>ordinal(a.path,b.path)),lastAttempt:null});
+    image={files:reviewFiles};validationActivation=Buffer.from(JSON.stringify(activation)+'\n');
+  }
   for(const [name,legacy] of [['approved-preparation.json','stnl-preparation-v2'],['continuity.json','stnl-delivery-continuity-v1']])
     if(parseCurrentJson(image.files.get(name).toString('utf8'))?.format===legacy)
       fail('INVALID_CURRENT_IMAGE','mixed EC-1 activation and legacy artifact','integrity',name,'format');
-  const checked=validateCurrentImage({activationBytes:a.bytes,files:image.files});
+  const checked=validateCurrentImage({activationBytes:validationActivation,files:image.files});
   const continuity=checked.continuity;
   const snapshot=parseCurrentJson(image.files.get('approved-preparation.json').toString('utf8'));
   const {retainedEvidence,fresh}=await completedEvidenceContext({context,
@@ -485,8 +506,7 @@ async function readCurrentExecution(specPath,withCapture=false,expectedOwner=nul
   for (const [unsupported,artifact,field] of [
     [!converted && activation.preparationRevision!==1,'activation.json','preparationRevision'],
     [continuity.completed.length>0 && !converted,'continuity.json','completed'],
-    [continuity.deliveries.filter(item=>item.localRevision!==1).length>1
-      || continuity.deliveries.some(item=>item.localRevision!==1 && !(converted && item.localRevision===2)),
+    [!converted&&continuity.deliveries.some(item=>item.localRevision!==1),
       'continuity.json','localRevision'],
     [continuity.deliveries.some(item=>item.normalization!==null
       && !(converted && ['VALIDATE_SLICE','APPLY_FINDINGS'].includes(item.normalization.operation)
@@ -611,6 +631,7 @@ async function readCurrentExecution(specPath,withCapture=false,expectedOwner=nul
           ?activation.activeAttempt.operationRef:lastAttempt?.operationRef??null;
       const observedWork=scopedObservation(item.observation,item.targets).manifest;
       const retained=continuity.completed.length>0 && bundleBytes!==null && !fresh.has(current.deliveryId);
+      const currentChecks=bundle!==null&&originalProfile(bundle)==='initial';
       let retainedFacts=null;
       let retainedAuthority=null;
       let retainedPost=false;
@@ -629,8 +650,10 @@ async function readCurrentExecution(specPath,withCapture=false,expectedOwner=nul
           const authority=anchor?retainedLocalAuthority(snapshot,current,anchor,leaf)
             :{...authorityFor(snapshot,current),preparationRevision:origin?.preparationRevision,
               localRevision:origin?.localRevision,normativeSha256:origin?.normativeSha256};
-          retainedFacts=inspectCurrentEvidence({context,authority,bundleBytes,
-            counters:current.counters,baseline:current.baseline,observedWork,currentAuthoritySha256:current.authoritySha256});
+          retainedFacts=anchor?.origin.localRevision<current.localRevision
+            ?await inspectPostConversionEvidence({context,snapshotBytes:image.files.get('approved-preparation.json'),current,bundleBytes,observedWork,retainedEvidence})
+            :inspectCurrentEvidence({context,authority,bundleBytes,
+              counters:current.counters,baseline:current.baseline,observedWork,currentAuthoritySha256:current.authoritySha256});
           validateInitialNormalization(current,retainedFacts);retainedAuthority=anchor?authority:null;identityAuthority=authority;
         }
       }
@@ -646,7 +669,7 @@ async function readCurrentExecution(specPath,withCapture=false,expectedOwner=nul
       if(!facts || facts.slice!==item.slice || facts.persistedValidation!==continuity.deliveries.find(value=>value.deliveryId===item.deliveryId)?.validation)
         fail('INVALID_CURRENT_IMAGE',`${item.slice}: converted inspection differs`);
       const priorDeliveries=[...completedOutputs,...outputs.slice(0,outputs.indexOf(item))];
-      if(retained&&!retainedPost) {
+      if((retained&&!retainedPost)||currentChecks) {
         validateCurrentEvidenceCarriers({facts,sections:item.carrier.sections,
           continuity:item.carrier.continuity,index:item.carrier.index,slice:item.slice,
           priorDeliveries});
@@ -679,7 +702,7 @@ async function readCurrentExecution(specPath,withCapture=false,expectedOwner=nul
       || !equal(item.observation.rootIdentity,after.rootIdentity))
       fail('EVIDENCE_STALE',`${item.slice}: product changed during inspection`,'integrity',item.slice,'observedWork');
   }
-  await compareImage(root,activation,image);
+  await compareImage(root,liveActivation,liveImage);
   await compareDocuments(workspace,documents);
   const b=await safeRead(activationFile);
   if (!equal(boundaries,await physicalBoundaries(context))) fail('STALE_BASE','official physical boundary changed between A and B');
@@ -696,7 +719,13 @@ async function readCurrentExecution(specPath,withCapture=false,expectedOwner=nul
         :item.facts.rejection&&item.facts.consumption?.resumable===false?'normalization exhausted':'blocked incorporation'}));
     if(pending) {
       const facts=pending.facts;
-      if(facts.bundle===null)diagnostics=[{kind:'evidence',artifact:pending.slice,field:'validation',reason:'active delivery has no current local proof'}];
+      if(facts.bundle===null) {
+        const current=continuity.deliveries.find(item=>item.deliveryId===pending.deliveryId);
+        const pristine=current.validation==='unvalidated'&&current.lastDiagnostic===null&&current.normalization===null
+          && Object.values(current.counters).every(value=>value===0)&&facts.observationMatches;
+        if(pristine){normalHandoff={operation:'EXECUTE_SLICE',slice:pending.slice,deliveryId:pending.deliveryId};state='MATERIALIZED_PRISTINE';}
+        else diagnostics=[{kind:'evidence',artifact:pending.slice,field:'validation',reason:'active delivery is not pristine'}];
+      }
       else {
         const operation=facts.rejection?facts.rejection.origin.operation==='APPLY_FINDINGS'?'APPLY_FINDINGS':'VALIDATE_SLICE'
           :!facts.observationMatches?'VALIDATE_SLICE'
@@ -797,6 +826,13 @@ async function readCurrentExecution(specPath,withCapture=false,expectedOwner=nul
 
 export async function inspectCurrentExecution(specPath) { return readCurrentExecution(specPath); }
 export async function captureCurrentExecution(specPath) { return readCurrentExecution(specPath,true); }
+// Reuse every proof, carrier, ownership and product check before a private
+// review is promoted. This view never writes or returns an official image.
+export async function validateCurrentReviewCandidate({specPath,files}) {
+  if(!(files instanceof Map)) fail('INVALID_CURRENT_IMAGE','local review candidate files must be a Map');
+  const copied=new Map([...files].map(([name,bytes])=>[name,Buffer.from(bytes)]));
+  await readCurrentExecution(specPath,false,null,copied);
+}
 // Active capture is only an image observation. The operation controller must
 // separately prove its allocation and phase before treating this as admission.
 export async function captureCurrentActiveExecution(specPath,expectedOwner) {

@@ -185,11 +185,26 @@ function initialBundle(bundle,map,approvedAuthority) {
     currentAuthoritySha256:projectedDelivery(approvedAuthority.delivery),
     objects:referencedObjects(bundle.implementation,map)};
 }
+function recordAuthority(record,approvedAuthority) {
+  const old={preparationRevision:record.origin.preparationRevision,localRevision:record.origin.localRevision,
+    normativeSha256:record.origin.normativeSha256,delivery:record.contract.delivery,context:record.contract.context};
+  if(old.preparationRevision===approvedAuthority.preparationRevision&&old.localRevision===approvedAuthority.localRevision
+    &&old.normativeSha256===approvedAuthority.normativeSha256)return approvedAuthority;
+  const privateFields=new Set(['existingInputs','risksAndStrategy','expectedTests','verificationRecipe']);
+  if(old.preparationRevision>1&&old.normativeSha256!==projectedDelivery(old.delivery)
+    || old.preparationRevision>=approvedAuthority.preparationRevision
+    || old.localRevision>approvedAuthority.localRevision || !same(old.context,approvedAuthority.context)
+    || Object.keys(approvedAuthority.delivery).some(key=>!privateFields.has(key)
+      && !same(old.delivery[key],approvedAuthority.delivery[key]))
+    || old.localRevision===approvedAuthority.localRevision&&!same(old.delivery,approvedAuthority.delivery))
+    stale('historical source exceeds private reviewed authority');
+  return old;
+}
 function verifyInitial(bundle,context,approvedAuthority,map) {
   if (!bundle.implementation.length || bundle.implementation.length>3) invalid('initial check count');
-  const originOwner=initialOwner(bundle,map);
-  const base={context,authority:approvedAuthority,owner:originOwner,currentEvidence:null,
-    counters:{implementationChecks:0,findingsChecks:0,validationAttempts:0,findings:0},bundleBytes:encode(initialBundle(bundle,map,approvedAuthority))};
+  const originOwner=initialOwner(bundle,map),sourceAuthority=recordAuthority(bundle.implementation[0],approvedAuthority);
+  const base={context,authority:sourceAuthority,owner:originOwner,currentEvidence:null,
+    counters:{implementationChecks:0,findingsChecks:0,validationAttempts:0,findings:0},bundleBytes:encode(initialBundle(bundle,map,sourceAuthority))};
   validateInitialImplementationEvidence(base);
   const last=bundle.implementation.at(-1);
   const cap=restoreCaptureSources('initial-implementation',last,map);
@@ -680,6 +695,20 @@ export async function inspectPostConversionEvidence({context,snapshotBytes,curre
     closed(retainedRead,['authority','snapshotDigest'],'retained native read');
     authority(retainedRead.authority,context);
     if(!HASH.test(retainedRead.snapshotDigest))invalid('retained snapshot digest');
+  }
+  if(bundleBytes!==null) {
+    const bundle=jsonBytes(bundleBytes,'current native checks').value;
+    const latest=bundle.validation?.recordFormat==='stnl-task-record-v2'
+      ?requestForRecord(bundle.validation,sourceMap(bundle)):null;
+    if(bundle.support.some(item=>item.kind==='rejection'&&item.origin.operation==='EXECUTE_SLICE')
+      || bundle.implementation.some(item=>item.recordFormat==='stnl-task-record-v2')
+      && (!latest || ['stnl-current-validation-request-v1','stnl-current-validation-request-v2'].includes(latest.format))
+      || latest&&['stnl-current-validation-request-v1','stnl-current-validation-request-v2'].includes(latest.format)) {
+      const facts=inspectCurrentEvidence({context,authority:postAuthority(snapshot,current),bundleBytes,
+        counters:current.counters,baseline:current.baseline,observedWork});
+      if(facts.persistedValidation!==current.validation)invalid('current check validation differs');
+      return {...facts,slice:current.slice,deliveryId:current.deliveryId,requiresFormalRevalidation:facts.observedValidation!=='current'};
+    }
   }
   const baseFor=(predecessor,scope,findings=[],auxiliary=null,digest=null)=>
     postBase(snapshotBytes,predecessor,scope,findings,auxiliary,digest??retainedRead?.snapshotDigest??null);
@@ -1292,39 +1321,59 @@ export async function completedEvidenceContext({context,snapshotBytes,continuity
   if(!continuity.completed.length)return {retainedEvidence:null,fresh:new Set()};
   const snapshot=jsonBytes(snapshotBytes,'approved preparation').value;
   const fresh=new Set(),members=[...continuity.completed,...continuity.deliveries];
-  const retainedEvidence=members.filter(item=>item.evidence).map(item=>{
+  const retainedEvidence=completedReviewReferences(snapshot);
+  for(const item of members.filter(item=>item.evidence)) {
     const decision=snapshot.globalReview.evidenceDecisions.find(value=>value.deliveryId===item.deliveryId)
       ??snapshot.deliveries.find(value=>value.deliveryId===item.deliveryId)?.review.evidenceDecisions
         .find(value=>value.deliveryId===item.deliveryId);
-    if(decision && decision.evidenceSha256!==item.evidence.sha256) {
-      if(continuity.completed.includes(item))stale('completed evidence differs from frozen approval');
-      fresh.add(item.deliveryId);
-    }
-    return {deliveryId:item.deliveryId,evidenceSha256:decision?.evidenceSha256??item.evidence.sha256};
-  }).sort((a,b)=>ordinal(a.deliveryId,b.deliveryId));
+    if(continuity.completed.includes(item)) {
+      if(!decision)fail('STALE_APPROVAL','completed retention lacks set review');
+      if(decision.evidenceSha256!==item.evidence.sha256)stale('completed evidence differs from frozen approval');
+    }else if(!decision || decision.evidenceSha256!==item.evidence.sha256)fresh.add(item.deliveryId);
+  }
   for(const id of fresh) {
     const current=continuity.deliveries.find(item=>item.deliveryId===id);
     const bundleBytes=files.get(current.evidence.path),bundle=jsonBytes(bundleBytes,'operational replacement').value;
     validateCurrentEvidence(bundle);
-    if(current.localRevision!==1 || bundle.validation?.recordFormat!=='stnl-task-record-v2'
-      || bundle.implementation.length)
+    if(!bundle.implementation.length && bundle.validation?.recordFormat!=='stnl-task-record-v2'
+      && !bundle.support.some(item=>item.kind==='rejection'&&item.origin.operation==='EXECUTE_SLICE'))
       mismatch('completed profile requires native operational evidence');
-    for(const record of [bundle.validation,...bundle.findingsChecks,...bundle.support]) {
-      const formal=record.origin.operation==='VALIDATE_SLICE';
+    for(const record of [...bundle.implementation,bundle.validation,...bundle.findingsChecks,...bundle.support].filter(Boolean)) {
+      const formal=record.origin.operation==='VALIDATE_SLICE',implementation=record.origin.operation==='EXECUTE_SLICE';
       if(record.origin.transport!=='native'
-        || !['VALIDATE_SLICE','APPLY_FINDINGS'].includes(record.origin.operation)
+        || !['EXECUTE_SLICE','VALIDATE_SLICE','APPLY_FINDINGS'].includes(record.origin.operation)
         || record.kind!=='rejection'&&record.recordFormat!=='stnl-task-record-v2')
         mismatch('operational replacement contains a foreign evidence family');
-      const capture=restoreCaptureSources(formal?'current-validation':'current-findings',record,sourceMap(bundle));
-      const request=jsonBytes(formal?capture.validationRequest:capture.applyRequest,'operational replacement request').value;
+      const capture=restoreCaptureSources(implementation?'initial-implementation':formal?'current-validation':'current-findings',record,sourceMap(bundle));
+      const request=implementation?null:jsonBytes(formal?capture.validationRequest:capture.applyRequest,'operational replacement request').value;
       const origin=jsonBytes(capture.origin,'operational replacement admission').value;
+      const historical=record.origin.localRevision<current.localRevision;
+      const reviewed=snapshot.deliveries.find(item=>item.deliveryId===id)?.review.evidenceDecisions
+        .find(item=>item.deliveryId===id&&item.disposition==='revalidate');
+      if(historical&&!reviewed)mismatch('historical operational source lacks local review decision');
       if(!origin.admission
-        || formal&&!['stnl-current-validation-request-v3','stnl-current-validation-request-v4'].includes(request.format)
-        || !formal&&!['stnl-current-findings-request-v1','stnl-current-findings-request-v2'].includes(request.format)
-        || formal&&request.base.approvedSnapshotSha256!==raw(snapshotBytes)
-        || origin.admission.baseActivation.approvedSnapshotSha256!==raw(snapshotBytes)
-        || origin.admission.baseActivation.preparationRevision!==snapshot.preparationRevision)
+        || formal&&!['stnl-current-validation-request-v1','stnl-current-validation-request-v2','stnl-current-validation-request-v3','stnl-current-validation-request-v4'].includes(request.format)
+        || !formal&&!implementation&&!['stnl-current-findings-request-v1','stnl-current-findings-request-v2'].includes(request.format)
+        || formal&&request.base.approvedSnapshotSha256!==undefined&&request.base.approvedSnapshotSha256!==raw(snapshotBytes)
+        || !historical&&(origin.admission.baseActivation.approvedSnapshotSha256!==raw(snapshotBytes)
+        || origin.admission.baseActivation.preparationRevision!==snapshot.preparationRevision))
         mismatch('operational replacement lacks current native A0/A1 admission');
+      verifyPostAdmission({context,snapshotBytes,owner:origin.owner,capture,
+        snapshotDigest:historical?origin.admission.baseActivation.approvedSnapshotSha256:null});
+      if(implementation) {
+        const receipt=jsonBytes(capture.receipt,'implementation receipt').value;
+        const selected=record.contract??{delivery:postAuthority(snapshot,current).delivery,context:postAuthority(snapshot,current).context};
+        const authority={preparationRevision:origin.owner.preparationRevision,localRevision:origin.owner.localRevision,
+          normativeSha256:origin.owner.normativeSha256,delivery:selected.delivery,
+          context:{requirementsAuthority:selected.context.requirementsAuthority,objective:selected.context.objective,
+            strategy:selected.context.strategy,risks:selected.context.risks}};
+        const scopePaths=receipt.testedState.entries.map(item=>path.relative(context.productRoot,
+          resolveLogicalProductClaim(context,`tasks/${current.slice}.md`,item.path)).split(path.sep).join('/')).sort(ordinal);
+        const dispatch={format:'stnl-current-initial-dispatch-v1',owner:origin.owner,authority,round:origin.attempt,
+          checkId:`implementation-check-${String(origin.attempt).padStart(2,'0')}`,scopePaths,previousCheck:null};
+        if(origin.requestSha256!==raw(utf8(JSON.stringify(dispatch)+'\n')))
+          mismatch('implementation request does not bind the captured current authority and scope');
+      }
     }
     await inspectPostConversionEvidence({context,snapshotBytes,current,bundleBytes,
       observedWork:current.baseline,preparationProfile:'completed-current',retainedEvidence});
@@ -2107,7 +2156,7 @@ function verifyRecord(record,map,context,approvedAuthority,priorFiles,filelessRe
   if (record.recordFormat==='stnl-task-record-v1-imported') fail('MIGRATION_REQUIRED','imported formal record');
   if (record.kind!=='validation' || record.recordFormat!=='stnl-task-record-v2' || record.contract.terminal!==null) invalid('formal record format/terminal');
   const cap=restoreCaptureSources('current-validation',record,map);
-  const derived=deriveCapture({context,authority:approvedAuthority,capture:cap,priorFiles,filelessReason});
+  const derived=deriveCapture({context,authority:recordAuthority(record,approvedAuthority),capture:cap,priorFiles,filelessReason});
   if (derived.rejection) invalid(`retained formal record is rejected: ${derived.rejection}`);
   equal(record,{...derived.recordDraft,sources:record.sources},'EVIDENCE_STALE',`formal record ${record.id}`);
   if (record.id!==derived.request.attemptId) invalid('formal record/request ID');
@@ -2459,7 +2508,7 @@ function inspect(bundleBytes,context,approvedAuthority,declaredCounters,observed
   if (latest) {
     const {request,response,all,open,dispositions}=latest;
     if (request.base.counters.findings<witnessedFindings) invalid('latest finding counter below retained origins');
-    const required=new Set(all.map(item => item.originAttempt).filter(id => id!==request.attemptId));
+    const required=new Set([...all.map(item => item.originAttempt),...formalSupports.filter(item=>item.origin.localRevision<approvedAuthority.localRevision).map(item=>item.id)].filter(id => id!==request.attemptId));
     equal([...origins.keys()].filter(id => id!==request.attemptId).sort(ordinal),[...required].sort(ordinal),'INVALID_CURRENT_IMAGE','retained formal origins');
     for (const item of all) {
       const origin=origins.get(item.originAttempt);
@@ -2588,7 +2637,7 @@ export function composeCurrentValidationEvidence(input) {
     : base.cycle ? selectRemovalSupport(base,{lastWork:derived.recordDraft.testedWork,lastScope:derived.request.scope.paths,
       checks:base.bundle.findingsChecks},applyRoundsFromRecords(base.bundle.findingsChecks,base.map),input.context,derived.receipt) : [];
   const keepFormalOrigins=(records,all,latestId)=>{
-    const chosen=formalOrigins(records,[...all,...(base.cycle?.selectedFindings??[])],latestId);
+    const chosen=formalOrigins(records,[...all,...(base.cycle?.selectedFindings??[])],latestId,records.filter(item=>item.origin.localRevision<input.authority.localRevision).map(item=>item.id));
     if (base.cycle) {
       const admitted=auxiliary.cycle;
       const origin=records.find(item=>item.id===admitted);
@@ -2785,20 +2834,22 @@ export function inspectCurrentEvidence({context,authority,bundleBytes,counters:d
   equal(declaredBaseline,base.manifest,'INVALID_CURRENT_IMAGE','current cycle baseline');
   const rejected=Boolean(result.rejected);
   const latest=result.latest??null;
-  const formalStatus=result.formalStatus??null;
-  const persistedValidation=rejected?'uncertain':formalStatus==='PASS' && !bundle.openFindings.some(item=>item.severity==='blocking')
+  const historicalRecord=latest?.record??bundle.findingsChecks.at(-1)??bundle.implementation.at(-1);
+  const historical=Boolean(historicalRecord&&historicalRecord.origin.localRevision<authority.localRevision);
+  const formalStatus=historical?null:result.formalStatus??null;
+  const persistedValidation=rejected?'uncertain':historical?'revalidation-required':formalStatus==='PASS' && !bundle.openFindings.some(item=>item.severity==='blocking')
     ?'current':formalStatus===null?'unvalidated':'revalidation-required';
   const initialTested=bundle.implementation.at(-1)?.testedWork;
   const sealedWork=result.cycle && bundle.validation?.id===result.cycle.admissionId
     ?result.cycle.lastWork??latest?.record.testedWork:latest?.record.testedWork??initialTested??base.manifest;
   const observationMatches=same(sealedWork,observedWork);
-  const observedValidation=rejected?'uncertain':!observationMatches?'revalidation-required':result.validation;
+  const observedValidation=rejected?'uncertain':historical||!observationMatches?'revalidation-required':result.validation;
   const auxiliaryStatus=result.cycle?.status
     ?? (bundle.implementation.length ? (()=>{const response=jsonBytes(restoreCaptureSources('initial-implementation',bundle.implementation.at(-1),map).rawResponse,'Initial response').value;
       return response.status??response.result?.status??null;})() : null);
   if (!rejected && auxiliaryStatus==='TESTS_FAIL' && !result.cycle && bundle.implementation.length<3)
     fail('UNSUPPORTED_FORMAT','Initial FAIL prefix is not a completed quiet cycle');
-  if (!rejected && auxiliaryStatus==='BLOCKED' && !result.cycle)
+  if (!rejected && auxiliaryStatus==='BLOCKED' && !result.cycle && authority.preparationRevision===1)
     fail('UNSUPPORTED_FORMAT','Initial BLOCKED requires operational recovery outside quiet profile');
   const info=verifyWorkObservation('initial-implementation',{context,delivery:authority.delivery,slice:bundle.slice});
   const output=name=>info.areas.some(item=>item.path===name || item.kind==='directory' && name.startsWith(`${item.path}/`));
@@ -2816,11 +2867,13 @@ export function inspectCurrentEvidence({context,authority,bundleBytes,counters:d
     const before=jsonBytes(restoreCaptureSources('initial-implementation',record,map).baselineCapture,'verified correction baseline').value.manifest;
     return changedOutputPaths(before,record.testedWork).filter(output);
   }))].sort(ordinal);
-  return {context,authority,bundle,evidenceSha256:raw(original),counters:structuredClone(declaredCounters),verifiedChanges,verifiedCorrections,
+  return {context,authority,bundle,evidenceSha256:raw(original),counters:structuredClone(declaredCounters),
+    verifiedChanges:historical?[]:verifiedChanges,verifiedCorrections:historical?[]:verifiedCorrections,
     baseline:base.manifest,sealedWork,observationMatches,persistedValidation,observedValidation,auxiliaryStatus,formalStatus,
     openFindings:bundle.openFindings,records:{implementation:bundle.implementation,
       findings:bundle.findingsChecks,validation:[...bundle.support.filter(item=>item.kind==='validation'),...(bundle.validation?[bundle.validation]:[])]},
-    rejection:rejected?result.rejected:null,latest,cycle:result.cycle??null};
+    rejection:rejected?result.rejected:null,latest,cycle:result.cycle??null,
+    ...(historical?{consumption:{kind:'historical-local-review',resumable:false}}:{})};
 }
 
 function carrierMismatch(artifact,field,reason) {
@@ -3080,7 +3133,7 @@ export function composeInitialCurrentOperation({context,requirementsAuthority,pr
   const prior=validateCurrentImage(previous);
   const active=validateCurrentImage(admission);
   const a0=prior.activation,a1=active.activation;
-  if(a0.preparationRevision!==1 || a0.activeAttempt!==null
+  if(a0.activeAttempt!==null
     || a1.previousActivationId!==a0.activationId || a1.sequence!==a0.sequence+1
     || !same(a1.activeAttempt,{...owner,operationRef:a1.activeAttempt?.operationRef})
     || owner.originActivationId!==a0.activationId
@@ -3099,10 +3152,11 @@ export function composeInitialCurrentOperation({context,requirementsAuthority,pr
   const current=prior.continuity.deliveries.find(item=>item.deliveryId===deliveryId);
   const leaf=snapshot.normativeProjection.deliveries.find(item=>item.deliveryId===deliveryId);
   if(!current || !leaf || owner.deliveryId!==deliveryId || owner.slice!==current.slice
-    || current.localRevision!==1 || snapshot.normativeSha256!==owner.normativeSha256
+    || current.localRevision!==owner.localRevision
+    || (owner.preparationRevision===1?snapshot.normativeSha256:current.authoritySha256)!==owner.normativeSha256
     || requirementsAuthority!==snapshot.requirementsAuthority)
     stale('Initial selected authority differs');
-  const authority={preparationRevision:1,localRevision:1,normativeSha256:snapshot.normativeSha256,
+  const authority={preparationRevision:snapshot.preparationRevision,localRevision:current.localRevision,normativeSha256:owner.normativeSha256,
     delivery:leaf,context:{requirementsAuthority,
       objective:snapshot.normativeProjection.global.objective,
       strategy:snapshot.normativeProjection.global.strategy,
@@ -3205,7 +3259,7 @@ export function composeInitialCurrentOperation({context,requirementsAuthority,pr
       `- Evidence summary: ${serializeMarkdownScalar('Evidence summary',fields.Evidence,true)}`].join('\n');
   }
   const status=facts.formalStatus??'pending';
-  const action=rejected?'blocked':status==='PASS'?'none':status==='NEEDS_FIX' && owner.operation==='VALIDATE_SLICE'
+  const action=rejected||facts.auxiliaryStatus==='BLOCKED'?'blocked':status==='PASS'?'none':status==='NEEDS_FIX' && owner.operation==='VALIDATE_SLICE'
     ?'APPLY_FINDINGS':'VALIDATE_SLICE';
   let task=Buffer.from(files.get(taskName)).toString('utf8');
   for(const [section,body] of [

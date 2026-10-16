@@ -8,7 +8,7 @@ import {
   executionFields, isExplanatoryExecutionField,
 } from './runner-result-contract.mjs';
 import { verifyCapturedInvocation, verifyWorkObservation, packCaptureSources, restoreCaptureSources,
-  closeEvidenceObjects, projectNativeJudgment, NATIVE_JUDGMENT_VARIANT } from './execution-evidence-proof.mjs';
+  closeEvidenceObjects, projectNativeJudgment, NATIVE_JUDGMENT_VARIANT, findingsRoundCaptureSha256 } from './execution-evidence-proof.mjs';
 
 const HASH = /^sha256:[a-f0-9]{64}$/u;
 const UUID = /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/u;
@@ -205,14 +205,17 @@ function guard(input, validating = false) {
   plain(input.owner, 'owner');
   if (!Object.hasOwn(input.owner, 'localRevision') && Object.hasOwn(input.owner, 'operationAttemptId')) fail('MIGRATION_REQUIRED', 'old owner lacks local revision');
   ownerShape(input.owner, 'owner');
-  if (input.authority.preparationRevision !== 1 || input.authority.localRevision !== 1
-    || input.owner.preparationRevision !== 1 || input.owner.localRevision !== 1 || input.owner.operation !== 'EXECUTE_SLICE'
+  if (!Number.isSafeInteger(input.authority.preparationRevision) || input.authority.preparationRevision<1
+    || !Number.isSafeInteger(input.authority.localRevision) || input.authority.localRevision<1
+    || input.authority.preparationRevision!==input.owner.preparationRevision
+    || input.authority.localRevision!==input.owner.localRevision || input.owner.operation !== 'EXECUTE_SLICE'
     || input.currentEvidence !== null || Object.values(input.counters).some(item => !Object.is(item, 0))) invalid('initial EXECUTE_SLICE authority required');
   const delivery = input.authority.delivery;
   closed(delivery, ['deliveryId', 'objectiveAndObservableResult', 'requirements', 'includedScope', 'outOfScopeAndBoundaries', 'authorizedAreas', 'existingInputs', 'protectedResponsibilities', 'dependencies', 'risksAndStrategy', 'expectedTests', 'verificationRecipe', 'completionCriterion', 'taskResult', 'obligations'], 'delivery');
   token(delivery.deliveryId, UUID, 'delivery.deliveryId');
   if (input.authority.normativeSha256 !== input.owner.normativeSha256
-    || delivery.deliveryId !== input.owner.deliveryId) mismatch('owner authority differs');
+    || delivery.deliveryId !== input.owner.deliveryId
+    || input.authority.preparationRevision>1&&input.authority.normativeSha256!==projected('delivery',delivery)) mismatch('owner authority differs');
   token(input.authority.normativeSha256, HASH, 'authority.normativeSha256');
   token(input.authority.context.requirementsAuthority, HASH, 'authority.requirementsAuthority');
   for (const field of ['objective', 'strategy', 'risks']) str(input.authority.context[field], `authority.${field}`);
@@ -417,12 +420,26 @@ function compose(input, info) {
   let finalManaged = null;
   const managedCloses = [];
   const receipts = [];
-  let productBytes = 0;
+  let productBytes = 0, productDrift=null;
   for (const [index, cap] of input.rounds.entries()) {
     const round = index + 1;
     verifyCapturedInvocation('initial-implementation', cap, undefined, undefined, undefined, round, transport);
     if (cap.transport !== transport) invalid(`round ${round}: mixed transports`);
-    if (round > 1 && previousStatus !== 'TESTS_FAIL') invalid(`round ${round}: previous round did not fail`);
+    const nativeOrigin=cap.transport==='native'?jsonBytes(cap.origin,`round ${round} drift origin`).value:null;
+    const witness=nativeOrigin?.productDrift??null;
+    if(witness!==null) {
+      closed(witness,['class','episodeId','sourceOperationAttemptId','sourceRound','sourceCaptureSha256','expectedWorkSha256','used'],'implementation product drift');
+      if(witness.class!=='product-drift'||witness.used!==1||witness.sourceOperationAttemptId!==input.owner.operationAttemptId
+        ||!Number.isSafeInteger(witness.sourceRound)||witness.sourceRound<1||witness.sourceRound>=round
+        ||!productDrift&&witness.sourceRound!==round-1||productDrift&&!same(productDrift,witness)
+        ||witness.sourceCaptureSha256!==findingsRoundCaptureSha256(input.rounds[witness.sourceRound-1])
+        ||witness.episodeId!==raw(utf8(JSON.stringify({class:'product-drift',owner:input.owner.operationAttemptId,
+          sourceRound:witness.sourceRound,sourceCaptureSha256:witness.sourceCaptureSha256,expectedWorkSha256:witness.expectedWorkSha256})+'\n')))
+        mismatch(`round ${round}: implementation drift witness differs`);
+      productDrift=witness;
+    }else if(productDrift)mismatch('implementation drift witness disappeared');
+    if (round > 1 && previousStatus !== 'TESTS_FAIL'
+      && !(previousStatus==='TESTS_PASS'&&witness?.sourceRound===round-1))invalid(`round ${round}: previous round did not fail`);
     const rawText = textBytes(cap.rawResponse, `round ${round} rawResponse`).text;
     const receipt = jsonBytes(cap.receipt, `round ${round} receipt`).value;
     plain(receipt, `round ${round} receipt`);
@@ -504,6 +521,17 @@ function compose(input, info) {
     expectEqual(receipt.verification, observed, 'EVIDENCE_STALE', `round ${round}: receipt observation`);
     const entries = testedState(receipt.testedState, input.context, input.owner, before, observed.after, info, round);
     verifyRemoval(cap.removalProofs, input.owner, round, before, observed.after);
+    if(witness?.sourceRound===round-1) {
+      if(same(previousAfter,observed.before)||raw(utf8(canonical(observed.before)+'\n'))!==witness.expectedWorkSha256)
+        stale(`round ${round}: implementation drift observation differs`);
+      const prior=new Map(previousAfter.entries.map(item=>[item.path,item]));
+      for(const item of observed.before.entries) {
+        if(same(prior.get(item.path),item))continue;
+        if(item.kind!=='file'||prior.get(item.path)?.kind!=='file'||!areaContains(info.areas,item.path)
+          ||[...info.inputs,...info.refs].some(ref=>ref.path===item.path))
+          stale(`round ${round}: implementation drift is not private existing output`);
+      }
+    }
     previousAfter = observed.after;
     let rejection = null;
     if (transport === 'native' && (payload.automaticCheckRound !== `${round}/3` || !same(payload.commands, commands))) rejection = semanticError('native response round/commands contradict observed execution');

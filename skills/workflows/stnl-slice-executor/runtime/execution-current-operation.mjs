@@ -98,14 +98,47 @@ async function saveRegistry(location,current) {
   if(await maybe(location.registry)) await persistAllocation(location.registry,current);
   else await put(location.registry,current);
 }
+function usesCurrentChecks(image,owner) {
+  if(owner.preparationRevision===1 || owner.operation==='EXECUTE_SLICE')return true;
+  const continuity=parseCurrentJson(Buffer.from(image.files.get('continuity.json')).toString('utf8'));
+  const current=continuity.deliveries.find(item=>item.deliveryId===owner.deliveryId);
+  if(!current?.evidence)return false;
+  const bundle=parseCurrentJson(Buffer.from(image.files.get(current.evidence.path)).toString('utf8'));
+  if(bundle.implementation.some(item=>item.recordFormat==='stnl-task-record-v2'))return true;
+  if(!bundle.validation || bundle.validation.recordFormat!=='stnl-task-record-v2')return false;
+  const captured=restoreCaptureSources('current-validation',bundle.validation,new Map(bundle.objects.map(item=>[item.id,Buffer.from(item.bytesBase64,'base64')])));
+  return ['stnl-current-validation-request-v1','stnl-current-validation-request-v2'].includes(parseCurrentJson(Buffer.from(captured.validationRequest).toString('utf8')).format);
+}
 function requireS2(image,slice,operation,{successor=false}={}) {
   const activation=image.activation;
   if(activation.preparationRevision<=1 || activation.activeAttempt!==null
-    || !['VALIDATE_SLICE','APPLY_FINDINGS'].includes(operation)
+    || !['EXECUTE_SLICE','VALIDATE_SLICE','APPLY_FINDINGS'].includes(operation)
     || image.inspection.normalHandoff?.operation!==operation
     || image.inspection.normalHandoff?.slice!==slice)
     fail('UNSUPPORTED_FORMAT','EC-1 native profile requires an exact converted S2 handoff');
   const continuity=parseCurrentJson(Buffer.from(image.files.get('continuity.json')).toString('utf8'));
+  const pristine=continuity.deliveries.find(item=>item.slice===slice);
+  if(operation==='EXECUTE_SLICE') {
+    if(successor || pristine?.evidence!==null || pristine.validation!=='unvalidated'
+      || pristine.normalization!==null || pristine.lastDiagnostic!==null
+      || Object.values(pristine.counters).some(value=>value!==0)
+      || currentEvidenceValueSha256(pristine.baseline)!==currentEvidenceValueSha256(image.observedByDelivery.get(pristine.deliveryId)?.manifest))
+      fail('EVIDENCE_STALE','current EXECUTE requires an unconsumed pristine delivery');
+    return pristine;
+  }
+  if(usesCurrentChecks(image,{deliveryId:pristine?.deliveryId,operation,preparationRevision:activation.preparationRevision})) {
+    if(successor || !pristine?.evidence || pristine.normalization!==null
+      || image.inspection.deliveries.some(item=>item.formalStatus==='BLOCKED'||item.observedValidation==='uncertain'))
+      fail('OWNER_UNCERTAIN','current implementation predecessor is not eligible');
+    if(operation==='APPLY_FINDINGS') {
+      const bundle=parseCurrentJson(Buffer.from(image.files.get(pristine.evidence.path)).toString('utf8'));
+      if(image.inspection.deliveries.find(item=>item.slice===slice)?.formalStatus!=='NEEDS_FIX'
+        || !bundle.openFindings.some(item=>item.severity==='blocking')
+        || currentEvidenceValueSha256(bundle.validation.testedWork)!==currentEvidenceValueSha256(image.observedByDelivery.get(pristine.deliveryId)?.manifest))
+        fail('EVIDENCE_STALE','current APPLY requires a sealed blocking formal and unchanged product');
+    }
+    return pristine;
+  }
   const reviewed=continuity.deliveries.filter(item=>item.localRevision!==1);
   if(continuity.completed.length && (reviewed.length || successor&&operation!=='APPLY_FINDINGS')
     || reviewed.length>1 || reviewed.some(item=>item.localRevision!==2
@@ -300,7 +333,7 @@ async function requestInputs(image,operation,dispatchId,round=1,previous=null) {
       objective:snapshot.normativeProjection.global.objective,
       strategy:snapshot.normativeProjection.global.strategy,
       risks:snapshot.normativeProjection.global.risks}};
-  if(operation.owner.preparationRevision===1) {
+  if(usesCurrentChecks(image,operation.owner)) {
     if(operation.owner.operation==='EXECUTE_SLICE') {
       const request={format:'stnl-current-initial-dispatch-v1',owner:operation.owner,authority,
         round,checkId:`implementation-check-${String(current.counters.implementationChecks+round).padStart(2,'0')}`,
@@ -434,7 +467,7 @@ export async function reserveDispatch(handle,{responseVariant=null}={}) {
       for(let index=1;index<=previousRound;index+=1) rounds.push(await capturedSources(now,index));
       const continuity=parseCurrentJson(Buffer.from(image.files.get('continuity.json')).toString('utf8'));
       const current=continuity.deliveries.find(item=>item.deliveryId===now.owner.deliveryId);
-      if(now.owner.preparationRevision===1) {
+      if(usesCurrentChecks(image,now.owner)) {
         const request=await readJson(path.join(now.root,`round-${previousRound}.request.json`));
         const authority=request.authority;
         const result=now.owner.operation==='EXECUTE_SLICE'
@@ -444,8 +477,9 @@ export async function reserveDispatch(handle,{responseVariant=null}={}) {
             previous:{bundleBytes:image.files.get(current.evidence.path),counters:current.counters},rounds});
         if(result.outcome!=='recorded'
           || (now.owner.operation==='EXECUTE_SLICE'
-            ?parseCurrentJson(Buffer.from(rounds.at(-1).rawResponse).toString('utf8')).status
+            ?(parseCurrentJson(Buffer.from(rounds.at(-1).rawResponse).toString('utf8')).result?.status??parseCurrentJson(Buffer.from(rounds.at(-1).rawResponse).toString('utf8')).status)
             :result.auxiliaryStatus)!=='TESTS_FAIL'
+          && !(productDrift&&parseCurrentJson(Buffer.from(rounds.at(-1).rawResponse).toString('utf8')).result?.status==='TESTS_PASS')
           || result.consumedInvocations!==previousRound)
           fail('OWNER_UNCERTAIN','previous Initial prefix is not an eligible failed check');
         const prior=await readJson(path.join(now.root,`round-${previousRound}.observation.json`));
@@ -489,10 +523,10 @@ export async function reserveDispatch(handle,{responseVariant=null}={}) {
       dispatchId,attempt:round,
       ...(responseVariant?{responseVariant,requestSha256:sha(json(request))}:{}),
       admission:{binding:now.binding,baseActivation,reservedActivation:image.activation},
-      ...(now.owner.preparationRevision===1?{otherDeliveryWork:[...image.observedByDelivery]
+      otherDeliveryWork:[...image.observedByDelivery]
         .filter(([deliveryId])=>deliveryId!==now.owner.deliveryId)
         .map(([deliveryId,value])=>({deliveryId,
-          slice:allDeliveries.find(item=>item.deliveryId===deliveryId).slice,manifest:value.manifest}))}:{}),
+          slice:allDeliveries.find(item=>item.deliveryId===deliveryId).slice,manifest:value.manifest})),
       ...(productDrift?{productDrift}:{})};
     const baseline={format:'stnl-current-baseline-v1',owner:now.owner,round,
       context:now.context,manifest:auxiliary
@@ -584,7 +618,7 @@ function preflightCorrection(baseline,current,info,{initial=false}={}) {
   }
 }
 function assertOtherInitialWork(image,origin) {
-  if(origin.owner.preparationRevision!==1) return;
+  if(origin.otherDeliveryWork===undefined && origin.owner.preparationRevision!==1)return;
   if(!Array.isArray(origin.otherDeliveryWork)) fail('OWNER_MISMATCH','Initial other-delivery witness is absent');
   const snapshot=parseCurrentJson(Buffer.from(image.files.get('approved-preparation.json')).toString('utf8'));
   const selectedLeaf=snapshot.normativeProjection.deliveries.find(item=>item.deliveryId===origin.owner.deliveryId);
@@ -642,7 +676,7 @@ async function checkedProductDrift(op,image,observation) {
   const info=verifyWorkObservation('initial-implementation',{
     context:op.context,delivery:leaf,slice:op.owner.slice});
   const observed=image.observedByDelivery.get(op.owner.deliveryId);
-  if(!current || !observed || current.localRevision!==1 || current.validation==='uncertain'
+  if(!current || !observed || current.validation==='uncertain'
     || !same(image.activation.activeAttempt?.operationAttemptId,op.owner.operationAttemptId))
     fail('NORMALIZATION_NOT_ELIGIBLE','current APPLY owner is not eligible');
   const paths=privateProductDrift(observation.after,observed.manifest,info);
@@ -772,7 +806,7 @@ export async function captureNative(handle,toolResultFile) {
     await writeNew(responseFile,raw);
     await put(path.join(now.root,`round-${round}.tool-result.json`),tool);
     let parsed=null,parseFailure=null;
-    const initialExecute=now.owner.preparationRevision===1 && now.owner.operation==='EXECUTE_SLICE';
+    const initialExecute=now.owner.operation==='EXECUTE_SLICE';
     const requestBytes=(await readOwnedFile(path.join(now.root,`round-${round}.request.json`))).bytes;
     let projected=tool.finalResponse,projectionFailure=false;
     if(origin.responseVariant===NATIVE_JUDGMENT_VARIANT) {
@@ -830,7 +864,7 @@ export async function captureNative(handle,toolResultFile) {
         for(let index=1;index<=round;index+=1) rounds.push(await capturedSources(now,index));
         const continuity=parseCurrentJson(Buffer.from(image.files.get('continuity.json')).toString('utf8'));
         const current=continuity.deliveries.find(item=>item.deliveryId===now.owner.deliveryId);
-        if(now.owner.preparationRevision===1) {
+        if(usesCurrentChecks(image,now.owner)) {
           const authority=request.authority;
           const composed=initialExecute?composeInitialImplementationEvidence({context:now.context,authority,
             owner:now.owner,currentEvidence:null,counters:current.counters,rounds})
@@ -877,8 +911,7 @@ export async function captureNative(handle,toolResultFile) {
     // NEEDS_FIX must carry its active blocker before this capture can publish.
     if(completedProfile && !parseFailure && !auxiliary)await capturedComposition(now);
     return {phase:'captured',rawResponseSha256:sha(raw),status,
-      nextAction:initialRejection?now.owner.preparationRevision===1
-        && ['EXECUTE_SLICE','APPLY_FINDINGS'].includes(now.owner.operation)?'publish':'blocked'
+      nextAction:initialRejection?'publish'
         :initialExecute && parseFailure?'blocked':auxiliary && status==='TESTS_FAIL'
         && round+(now.binding.normalization?.consumedInvocations??0)<3?'reserve-dispatch':'publish',
       captureClass:now.record.runner.captureClass,replayed:false};
@@ -969,7 +1002,7 @@ async function completeRegistry(op) {
   if(registry.operations.length>1 || registry.operations.length===1
     && registry.operations[0].marker!==op.marker)
     fail('OWNER_UNCERTAIN','operation registry changed before cleanup');
-  const names=['base.activation.json',...(op.owner.operation==='APPLY_FINDINGS'?['base.work.json']:[])];
+  const names=['base.activation.json',...(op.owner.operation!=='VALIDATE_SLICE'?['base.work.json']:[])];
   for(let round=1;round<=op.record.runner.round;round+=1)
     names.push(...['request','baseline','origin','agent','claim','verification','observation',
       'response','tool-result','receipt'].map(name=>`round-${round}.${name}.json`));
@@ -1019,7 +1052,7 @@ async function capturedComposition(op) {
     deliveryId:op.owner.deliveryId};
   let composed;
   try {
-    composed=op.owner.preparationRevision===1
+    composed=usesCurrentChecks(image,op.owner)
       ?composeInitialCurrentOperation({...inputs,owner:op.owner,rounds,
         observedByDelivery:image.observedByDelivery})
       :auxiliary?await composePostConversionFindings({...inputs,rounds})
@@ -1040,7 +1073,7 @@ export async function normalize(handle) {
   const op=await load(handle);
   if(op.owner.preparationRevision===1 && !op.record.preparation?.candidateComposition)
     fail('NORMALIZATION_NOT_ELIGIBLE','Initial excludes product-drift and rejected-result normalization');
-  if(op.owner.operation==='APPLY_FINDINGS' && op.record.phase==='working'
+  if(['EXECUTE_SLICE','APPLY_FINDINGS'].includes(op.owner.operation) && op.record.phase==='working'
     && op.record.runner?.status==='captured'
     && op.record.runner.resultStatus==='TESTS_PASS'
     && !op.record.preparation?.candidateComposition) {
@@ -1055,9 +1088,17 @@ export async function normalize(handle) {
     for(let index=1;index<=round;index+=1) rounds.push(await capturedSources(op,index));
     const continuity=parseCurrentJson(Buffer.from(image.files.get('continuity.json')).toString('utf8'));
     const current=continuity.deliveries.find(item=>item.deliveryId===op.owner.deliveryId);
-    const summary=await inspectPostConversionFindingsPrefix({context:op.context,
-      snapshotBytes:Buffer.from(image.files.get('approved-preparation.json')),current,
-      bundleBytes:Buffer.from(image.files.get(current.evidence.path)),owner:op.owner,rounds});
+    const implementation=op.owner.operation==='EXECUTE_SLICE';
+    const request=await readJson(path.join(op.root,'round-1.request.json'));
+    const summary=implementation?composeInitialImplementationEvidence({context:op.context,authority:request.authority,
+      owner:op.owner,currentEvidence:null,counters:current.counters,rounds})
+      :await inspectPostConversionFindingsPrefix({context:op.context,
+        snapshotBytes:Buffer.from(image.files.get('approved-preparation.json')),current,
+        bundleBytes:Buffer.from(image.files.get(current.evidence.path)),owner:op.owner,rounds});
+    if(implementation){
+      if(summary.outcome!=='recorded')fail('NORMALIZATION_NOT_ELIGIBLE','rejected implementation cannot grant a drift episode');
+      summary.status='TESTS_PASS';summary.rounds=summary.consumedInvocations;
+    }
     if(summary.status!=='TESTS_PASS' || summary.rounds!==round)
       fail('NORMALIZATION_NOT_ELIGIBLE','prior PASS is not a valid captured prefix');
     const sourceCaptureSha256=findingsRoundCaptureSha256(rounds.at(-1));
@@ -1224,10 +1265,10 @@ export async function resume(handle) {
       ?'blocked':op.record.preparation?.candidateComposition
         && op.record.normalization?.status!=='settled'?'normalize':'publish',owner:op.owner,
     responseSha256:sha((await readOwnedFile(runner.responseFile)).bytes),
-    ...(op.owner.operation==='APPLY_FINDINGS' && runner.resultStatus==='TESTS_FAIL'
+    ...(['EXECUTE_SLICE','APPLY_FINDINGS'].includes(op.owner.operation) && runner.resultStatus==='TESTS_FAIL'
       && runner.round+(op.binding.normalization?.consumedInvocations??0)<3
       ?{nextAction:'reserve-dispatch'}:{}),
-    ...(op.owner.operation==='APPLY_FINDINGS' && runner.productDrift
+    ...(['EXECUTE_SLICE','APPLY_FINDINGS'].includes(op.owner.operation) && runner.productDrift
       && runner.resultStatus==='TESTS_PASS' && runner.round===runner.productDrift.sourceRound
       ?{nextAction:'reserve-dispatch'}:{})};
   if(runner?.status==='running') return {phase:'running',nextAction:'await-same-agent',agentId:runner.agentId};

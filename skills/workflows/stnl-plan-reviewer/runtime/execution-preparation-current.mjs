@@ -992,19 +992,14 @@ export function prepareCurrentLocalReview(input) {
   const old=validateCurrentImage({activationBytes:previous.activationBytes,files});
   const activation=parseCurrentJson(decode(previous.activationBytes,'activation.json'));
   if(activation.activeAttempt!==null || activation.requirementsAuthority!==requirementsAuthority
-    || activation.preparationRevision<=1 || old.continuity.completed.length)
+    || activation.preparationRevision<=1)
     fail('UNSUPPORTED_FORMAT','local review requires a quiet converted image');
   const selected=old.continuity.deliveries.find(item=>item.slice===slice);
-  if(!selected || selected.localRevision!==1 || selected.counters.validationAttempts<1
-    || selected.validation==='uncertain' || selected.normalization!==null)
+  if(!selected || selected.validation==='uncertain' || selected.normalization!==null)
     fail('UNSUPPORTED_FORMAT','selected S2 is not eligible for one local review');
-  if(selected.evidence!==null && selected.validation!=='current')
-    fail('UNSUPPORTED_FORMAT','local review of an already stale evidence episode is outside one S2');
-  if(old.continuity.deliveries.some(item=>item.slice!==slice && item.localRevision!==1))
-    fail('UNSUPPORTED_FORMAT','another delivery already has a local review');
   const snapshot=parseCurrentJson(decode(files.get('approved-preparation.json'),'approved-preparation.json'));
   const original=snapshot.normativeProjection.deliveries.find(item=>item.deliveryId===selected.deliveryId);
-  if(snapshot.normativeProjection.deliveries.some(item=>item.deliveryId!==selected.deliveryId
+  if([...snapshot.normativeProjection.deliveries,...snapshot.normativeProjection.completed].some(item=>item.deliveryId!==selected.deliveryId
     && item.dependencies.includes(selected.deliveryId)))
     fail('REPLAN_REQUIRED','consumer of selected delivery requires a set review');
   const planName=`plans/${slice}.md`,taskName=`tasks/${slice}.md`;
@@ -1015,7 +1010,7 @@ export function prepareCurrentLocalReview(input) {
   const revisions=new Map(snapshot.deliveries.map(item=>[item.slice,item.localRevision]));
   revisions.set(slice,selected.localRevision+1);
   const {authority,status}=project({context,requirementsAuthority,artifacts:reviewed},false,true,
-    {preparationRevision:snapshot.preparationRevision+1,revisions});
+    {preparationRevision:snapshot.preparationRevision+1,revisions,completed:snapshot.completed.map((item,i)=>({slice:item.slice,localRevision:item.localRevision,leaf:snapshot.normativeProjection.completed[i]}))});
   if(status!=='ready' || !same(authority.normativeProjection.global,snapshot.normativeProjection.global)
     || !same(authority.normativeProjection.completed,snapshot.normativeProjection.completed)
     || authority.deliveries.some((item,i)=>item.slice!==slice && (
@@ -1028,6 +1023,19 @@ export function prepareCurrentLocalReview(input) {
   const privateFields=new Set(['existingInputs','risksAndStrategy','expectedTests','verificationRecipe']);
   if(Object.keys(original).some(key=>!privateFields.has(key) && !same(original[key],revised[key]))
     || same(original,revised)) fail('REPLAN_REQUIRED','selected delta is transverse or has no normative change');
+  const inputPaths=(leaf,artifact)=>[...claims(leaf.existingInputs,context,artifact,'local review inputs').map(item=>item.target),
+    ...leaf.verificationRecipe.checks.flatMap(check=>[...check.inputs,...check.args.flatMap(arg=>arg.file?[arg.file]:[]),
+      ...(check.executable.file?[check.executable.file]:[])])
+      .map(ref=>resolveLogicalProductClaim(context,artifact,ref.path))];
+  const priorInputs=new Set(inputPaths(original,taskName)),nextInputs=new Set(inputPaths(revised,taskName));
+  const changedInputs=[...new Set([...priorInputs,...nextInputs])].filter(name=>priorInputs.has(name)!==nextInputs.has(name));
+  for(const sibling of [...snapshot.deliveries,...snapshot.completed].filter(item=>item.deliveryId!==selected.deliveryId)) {
+    const leaf=[...snapshot.normativeProjection.deliveries,...snapshot.normativeProjection.completed].find(item=>item.deliveryId===sibling.deliveryId);
+    const artifact=`tasks/${sibling.slice}.md`,areas=claims(leaf.authorizedAreas,context,artifact,'sibling areas',true);
+    const inputs=inputPaths(leaf,artifact);
+    if(changedInputs.some(name=>inputs.includes(name)||areas.some(area=>area.kind==='directory'?within(area.target,name):area.target===name)))
+      fail('REPLAN_REQUIRED','local review changes a shared input or another delivery output reference');
+  }
   const changedPaths=[planName,taskName];
   if(snapshot.reviewedArtifacts.some(item=>!changedPaths.includes(item.path)
     && (authority.artifactHashes.find(hash=>hash.path===item.path)?.sha256!==item.sha256)))
@@ -1039,19 +1047,28 @@ export function prepareCurrentLocalReview(input) {
   const next=nextContinuity.deliveries.find(item=>item.deliveryId===selected.deliveryId);
   next.localRevision+=1;
   next.authoritySha256=authority.deliveries.find(item=>item.deliveryId===selected.deliveryId).authoritySha256;
-  next.validation='revalidation-required';
+  next.validation=next.evidence===null&&Object.values(next.counters).every(value=>value===0)
+    && selected.validation==='unvalidated'?'unvalidated':'revalidation-required';
   let evidenceDecision=[];
   if(next.evidence) {
     const bundle=parseCurrentJson(decode(files.get(next.evidence.path),next.evidence.path));
     validateCurrentEvidence(bundle);
     bundle.currentAuthoritySha256=next.authoritySha256;
+    const currentChecks=bundle.implementation.some(item=>item.recordFormat==='stnl-task-record-v2');
+    if(currentChecks&&bundle.openFindings.length===0) {
+      bundle.support=bundle.support.filter(item=>item.kind!=='validation');
+      const ids=new Set([...bundle.implementation,...bundle.findingsChecks,...bundle.support,bundle.validation].filter(Boolean)
+        .flatMap(item=>Object.values(item.sources).flat()).filter(item=>typeof item==='string'&&HASH.test(item)));
+      bundle.objects=bundle.objects.filter(item=>ids.has(item.id));
+    }
     const bytes=Buffer.from(canonical(bundle)+'\n','utf8');
     updatedFiles.set(next.evidence.path,bytes);
     next.evidence.sha256=raw(bytes);
     evidenceDecision=[{deliveryId:next.deliveryId,evidenceSha256:next.evidence.sha256,
       disposition:'revalidate',reason:''}];
     const carriers=composeCurrentLocalReviewCarriers({task:Buffer.from(currentTaskBytes).toString('utf8'),
-      index:files.get('tasks.md').toString('utf8'),slice,evidenceSha256:next.evidence.sha256});
+      index:files.get('tasks.md').toString('utf8'),slice,evidenceSha256:currentChecks?next.evidence.path:next.evidence.sha256,
+      validationRecords:currentChecks?[...bundle.support.filter(item=>item.kind==='validation'),bundle.validation].filter(Boolean):null});
     updatedFiles.set(taskName,carriers.task);
     updatedFiles.set('tasks.md',carriers.index);
   }
@@ -1063,7 +1080,7 @@ export function prepareCurrentLocalReview(input) {
   return {input,files:updatedFiles,authority,selected,snapshot,reviewed,reviewRequest};
 }
 
-function composeCurrentLocalReviewCarriers({task,index,slice,evidenceSha256}) {
+function composeCurrentLocalReviewCarriers({task,index,slice,evidenceSha256,validationRecords=null}) {
   const replace=(document,name,body)=>{
     const lines=document.split('\n');
     const start=lines.findIndex(line=>line===`## ${name}`);
@@ -1077,6 +1094,7 @@ function composeCurrentLocalReviewCarriers({task,index,slice,evidenceSha256}) {
   for(const section of ['Final Result','Changed Areas','Corrections Applied',
     'Prior Validation Overlap','Effective Validation Base'])
     next=replace(next,section,section==='Final Result'?'- pending':'- none');
+  if(validationRecords!==null)next=replace(next,'Validation Attempts',validationRecords.length?validationRecords.map(item=>item.recordUtf8).join('\n\n'):'- none');
   let found=false;
   const rows=index.split('\n').map(line=>{
     if(!/^\| \[[ x]\] \|/u.test(line)) return line;

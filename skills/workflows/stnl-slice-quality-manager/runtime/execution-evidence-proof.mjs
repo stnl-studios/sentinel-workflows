@@ -857,7 +857,8 @@ export function findingsRoundCaptureSha256(cap) {
   // The link is also available before the aggregate managed close exists. Guard
   // exactly its invocation-local projection; full capture guards remain mandatory
   // at incorporation. Never read accessors while projecting.
-  const stable = ['transport','applyRequest','rawResponse','receipt','baselineCapture',
+  const hasRequest=Object.hasOwn(cap,'applyRequest');
+  const stable = ['transport',...(hasRequest?['applyRequest']:[]),'rawResponse','receipt','baselineCapture',
     'verificationObservation','removalProofs', ...(cap.transport === 'native'
       ? ['origin','dispatch','agentBinding','agentClaim','concludedToolResult']
       : ['managedContext','active','started','events','runtimeIdentity'])];
@@ -878,7 +879,7 @@ export function findingsRoundCaptureSha256(cap) {
   };
   const link = {
     format:'stnl-current-findings-round-link-v1', transport:cap.transport,
-    applyRequest:raw(cap.applyRequest), rawResponse:raw(cap.rawResponse), receipt:raw(cap.receipt),
+    ...(hasRequest?{applyRequest:raw(cap.applyRequest)}:{}), rawResponse:raw(cap.rawResponse), receipt:raw(cap.receipt),
     baselineCapture:raw(cap.baselineCapture), verificationObservation:raw(cap.verificationObservation),
     removalProofs:uniqueHashes(cap.removalProofs, 'removal proof'),
     ...(cap.transport === 'native' ? {

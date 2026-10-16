@@ -5,7 +5,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import {resolveCurrentExecutionContext,projectCurrentRequirements} from './execution-state.mjs';
-import {captureCurrentExecution} from './execution-current-reader.mjs';
+import {captureCurrentExecution,validateCurrentReviewCandidate} from './execution-current-reader.mjs';
 import {prepareCurrentLocalReview,finalizeCurrentLocalReview,validateCurrentPreparation} from './execution-preparation-current.mjs';
 import {validateCurrentCandidate,validateCurrentActivation,parseCurrentJson} from './execution-current.mjs';
 import {captureExecutionTree,readOwnedFile,writeNew,publishExecutionUpdate,
@@ -107,9 +107,17 @@ export async function publishCurrentLocalReview({specPath,slice,planBytes,review
       const now=await captureCurrentExecution(specPath);
       if(now.requirementsAuthority!==previous.requirementsAuthority)
         fail('REQUIREMENTS_CHANGED','local review requirements changed');
-      return validateCurrentPreparation({context,requirementsAuthority:previous.requirementsAuthority,
-        snapshotBytes:files.get('approved-preparation.json'),
-        artifacts:new Map([...files].filter(([name])=>preparationFile(name))),profile:'converted-current'}).authority;
+      const snapshot=parseCurrentJson(Buffer.from(files.get('approved-preparation.json')).toString('utf8'));
+      const retained=new Map();
+      for(const item of [...snapshot.globalReview.evidenceDecisions,...snapshot.deliveries.flatMap(item=>item.review.evidenceDecisions)])
+        if(!retained.has(item.deliveryId))retained.set(item.deliveryId,item.evidenceSha256);
+      const prepared=validateCurrentPreparation({context,requirementsAuthority:previous.requirementsAuthority,
+        snapshotBytes:files.get('approved-preparation.json'),artifacts:new Map([...files].filter(([name])=>preparationFile(name))),
+        profile:snapshot.completed.length?'completed-current':'converted-current',
+        retainedEvidence:snapshot.completed.length?[...retained].sort(([a],[b])=>a<b?-1:a>b?1:0)
+          .map(([deliveryId,evidenceSha256])=>({deliveryId,evidenceSha256})):null});
+      await validateCurrentReviewCandidate({specPath,files});
+      return prepared.authority;
     }});}
   catch(error) {
     error.candidateRoot=candidate;

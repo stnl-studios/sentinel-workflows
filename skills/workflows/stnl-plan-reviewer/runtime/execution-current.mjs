@@ -685,18 +685,33 @@ function validateCurrentContent(files) {
       && same(record.contract?.context,{requirementsAuthority:snapshot.requirementsAuthority,
         objective:global.objective,strategy:global.strategy,risks:global.risks})
       && same(record.contract?.recipe,leaf.verificationRecipe);
-    const historicalPrior=approvedDelivery?.localRevision===2
+    if(decision.disposition==='revalidate' && validConvertedRecord
+      && bundle.implementation.length>0 && bundle.findingsChecks.length===0
+      && bundle.support.length===0 && bundle.openDivergences.length===0
+      && bundle.implementation.every(item=>item.recordFormat==='stnl-task-record-v2'
+        && item.origin.operation==='EXECUTE_SLICE' && item.origin.deliveryId===current.deliveryId
+        && item.origin.slice===current.slice && item.origin.localRevision<approvedDelivery.localRevision)) {
+      // The first formal after a private review replaces an implementation-only
+      // reviewed bundle. Reconstruct its exact bytes; the frozen decision stays
+      // bound to that predecessor, never to a hash supplied by the new result.
+      const ids=new Set(bundle.implementation.flatMap(item=>Object.values(item.sources).flat())
+        .filter(item=>typeof item==='string' && HASH.test(item)));
+      const prior={...bundle,validation:null,support:[],openFindings:[],
+        objects:bundle.objects.filter(item=>ids.has(item.id))};
+      if(raw(Buffer.from(canonical(prior)+'\n','utf8'))===decision.evidenceSha256)return true;
+    }
+    const historicalPrior=approvedDelivery?.localRevision>1
       && decision.disposition==='revalidate'
       && bundle?.support?.length===1
       && bundle.support[0]?.kind==='validation'
       && bundle.support[0]?.recordFormat==='stnl-task-record-v2'
-      && bundle.support[0]?.origin?.localRevision===1
+      && bundle.support[0]?.origin?.localRevision===approvedDelivery.localRevision-1
       && record?.recordFormat==='stnl-task-record-v2'
-      && record.origin?.localRevision===2
-      && bundle.implementation.length===0 && bundle.findingsChecks.length===0;
+      && record.origin?.localRevision===approvedDelivery.localRevision
+      && bundle.findingsChecks.length===0;
     if(historicalPrior) {
       const old=bundle.support[0];
-      const ids=new Set(Object.values(old.sources).flat().filter(item=>typeof item==='string' && HASH.test(item)));
+      const ids=new Set([...bundle.implementation,old].flatMap(item=>Object.values(item.sources).flat()).filter(item=>typeof item==='string' && HASH.test(item)));
       const prior={...bundle,validation:old,support:[],openFindings:[],
         objects:bundle.objects.filter(item=>ids.has(item.id))};
       if(raw(Buffer.from(canonical(prior)+'\n','utf8'))===decision.evidenceSha256)

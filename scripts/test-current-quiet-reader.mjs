@@ -469,10 +469,10 @@ test('R03b completed A and active B with retained local proof',async t=>{
     replaceRecordCapture(bundle,bundle.validation,cap,oracle);await storeRetainedActiveBundle(f,bundle);
     await rejected(()=>inspectCurrentExecution(f.specPath),'OWNER_MISMATCH');
   }));
-  await t.test('B retention decision and exact evidence digest are required',async()=>using(authoredCompletedWithActiveProof,async f=>{
+  await t.test('B without a matching retention decision requires official current admission',async()=>using(authoredCompletedWithActiveProof,async f=>{
     f.snapshot.globalReview.evidenceDecisions.pop();
     f.files.set('approved-preparation.json',Buffer.from(canonical(f.snapshot)+'\n'));reseal(f);await writeImage(f);
-    await rejected(()=>inspectCurrentExecution(f.specPath),'STALE_APPROVAL');
+    await rejected(()=>inspectCurrentExecution(f.specPath),'OWNER_MISMATCH');
   }));
   await t.test('B decision cannot bind the digest of A',async()=>using(authoredCompletedWithActiveProof,async f=>{
     f.snapshot.globalReview.evidenceDecisions[1].evidenceSha256=f.continuity.completed[0].evidence.sha256;
@@ -1519,7 +1519,7 @@ test('R19 isolated reader closure and copy equivalence',async t=>{
   await t.test('foreign main basename does not execute the imported reader',async()=>using(authoredImage,async f=>{
     const imported=await workerRun(f,{mode:'import-only'});noAttempts(imported);
     assert.equal(imported.process.status,0,imported.process.stderr);assert.deepEqual(JSON.parse(imported.process.stdout),
-      {exports:['captureCurrentActiveExecution','captureCurrentExecution','inspectCurrentExecution','main','observeCurrentDeliveryWork']});
+      {exports:['captureCurrentActiveExecution','captureCurrentExecution','inspectCurrentExecution','main','observeCurrentDeliveryWork','validateCurrentReviewCandidate']});
     assert.deepEqual(imported.log.opens,{});
   }));
   for(const label of ['no argument','mutating flag','unknown flag']) await t.test(`CLI usage ${label}`,async()=>using(authoredImage,async f=>{
