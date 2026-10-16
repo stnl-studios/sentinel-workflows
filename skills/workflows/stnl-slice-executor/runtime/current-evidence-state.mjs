@@ -1273,11 +1273,46 @@ function priorValidationOverlap(changed,priorDeliveries) {
     changed.filter(name=>item.facts.latest.request.scope.paths.includes(name)).map(name=>[item.slice,name]))
     .sort((a,b)=>ordinal(a[0],b[0])||ordinal(a[1],b[1]));
 }
+// Approval decisions describe the frozen review. A replacement is operational
+// evidence only after its complete native admission and sources verify against
+// this snapshot and current local authority; a digest or lastAttempt is insufficient.
+export async function completedEvidenceContext({context,snapshotBytes,continuity,files}) {
+  if(!continuity.completed.length)return {retainedEvidence:null,fresh:new Set()};
+  const snapshot=jsonBytes(snapshotBytes,'approved preparation').value;
+  const fresh=new Set(),members=[...continuity.completed,...continuity.deliveries];
+  const retainedEvidence=members.filter(item=>item.evidence).map(item=>{
+    const decision=snapshot.globalReview.evidenceDecisions.find(value=>value.deliveryId===item.deliveryId)
+      ??snapshot.deliveries.find(value=>value.deliveryId===item.deliveryId)?.review.evidenceDecisions
+        .find(value=>value.deliveryId===item.deliveryId);
+    if(decision && decision.evidenceSha256!==item.evidence.sha256) {
+      if(continuity.completed.includes(item))stale('completed evidence differs from frozen approval');
+      fresh.add(item.deliveryId);
+    }
+    return {deliveryId:item.deliveryId,evidenceSha256:decision?.evidenceSha256??item.evidence.sha256};
+  }).sort((a,b)=>ordinal(a.deliveryId,b.deliveryId));
+  for(const id of fresh) {
+    const current=continuity.deliveries.find(item=>item.deliveryId===id);
+    const bundleBytes=files.get(current.evidence.path),bundle=jsonBytes(bundleBytes,'operational replacement').value;
+    const record=bundle.validation;
+    if(current.localRevision!==1 || current.normalization!==null
+      || record?.recordFormat!=='stnl-task-record-v2' || record.origin.transport!=='native'
+      || bundle.implementation.length || bundle.findingsChecks.length || bundle.support.length)
+      mismatch('completed profile requires a closed native operational replacement');
+    const capture=restoreCaptureSources('current-validation',record,sourceMap(bundle));
+    const request=jsonBytes(capture.validationRequest,'operational replacement request').value;
+    const origin=jsonBytes(capture.origin,'operational replacement admission').value;
+    if(!origin.admission || request.format!=='stnl-current-validation-request-v3'
+      || request.base.approvedSnapshotSha256!==raw(snapshotBytes)
+      || origin.admission.baseActivation.preparationRevision!==snapshot.preparationRevision)
+      mismatch('operational replacement lacks current native A0/A1 admission');
+    await inspectPostConversionEvidence({context,snapshotBytes,current,bundleBytes,
+      observedWork:current.baseline,preparationProfile:'completed-current',retainedEvidence});
+  }
+  return {retainedEvidence,fresh};
+}
 async function postPriorDeliveries({context,snapshotBytes,continuity,files,current,activation}) {
   const prior=[...continuity.completed,...continuity.deliveries.slice(0,continuity.deliveries.indexOf(current))];
-  const retainedEvidence=continuity.completed.length?[...continuity.completed,...continuity.deliveries]
-    .filter(item=>item.evidence).map(item=>({deliveryId:item.deliveryId,evidenceSha256:item.evidence.sha256}))
-    .sort((a,b)=>ordinal(a.deliveryId,b.deliveryId)):null;
+  const {retainedEvidence,fresh}=await completedEvidenceContext({context,snapshotBytes,continuity,files});
   const verified=[];
   for(const previous of prior) {
     if(!previous.evidence)continue;
@@ -1289,14 +1324,15 @@ async function postPriorDeliveries({context,snapshotBytes,continuity,files,curre
     const facts=post?await inspectPostConversionEvidence({context,snapshotBytes,current:previous,bundleBytes,
       observedWork:previous.baseline,lastAttempt,admissionRef:lastAttempt?.operationRef??null,
       preparationProfile:continuity.completed.length?'completed-current':'converted-current',retainedEvidence,
-      retainedRead:continuity.completed.length?{authority:request.authority,snapshotDigest:request.base.approvedSnapshotSha256}:null})
+      retainedRead:continuity.completed.length&&!fresh.has(previous.deliveryId)
+        ?{authority:request.authority,snapshotDigest:request.base.approvedSnapshotSha256}:null})
       :inspectCurrentEvidence({context,authority:request.authority,bundleBytes,counters:previous.counters,
         baseline:previous.baseline,observedWork:previous.baseline,currentAuthoritySha256:previous.authoritySha256});
     verified.push({slice:previous.slice,facts});
   }
   return verified;
 }
-function postTask(document,derived,digest,context,{cycle=null,admission=null,checks=[],validations=[],priorDeliveries=[]}={}) {
+function postTask(document,derived,digest,context,{cycle=null,admission=null,checks=[],validations=[],priorDeliveries=[],blockedActions=false}={}) {
   const {request,payload,recordDraft,observed}=derived;
   const scope=request.scope.paths;
   const evidence=serializeMarkdownScalar('Evidence summary',payload.evidence,true);
@@ -1332,7 +1368,7 @@ function postTask(document,derived,digest,context,{cycle=null,admission=null,che
     ...(derived.dispositions.get(item.id)==='superseded'?[`- Superseded by: ${request.attemptId}`]:[])].join('\n')).join('\n\n'):'- none';
   let value=document;
   for(const [section,body] of [
-    ['Continuity',`- Current validation: ${validation}\n- Current evidence: ${digest}\n- Current action: ${status==='PASS'?'none':status==='NEEDS_FIX'?'APPLY_FINDINGS':'blocked'}`],
+    ['Continuity',`- Current validation: ${validation}\n- Current evidence: ${digest}\n- Current action: ${status==='PASS'?'none':status==='NEEDS_FIX'&&!blockedActions?'APPLY_FINDINGS':'blocked'}`],
     ['Changed Areas',changed.length?changed.map(name=>`- \`${taskRelative(context,request.owner.slice,name)}\``).join('\n'):'- none'],
     ['Corrections Applied',corrections.length?corrections.map(name=>`- \`${taskRelative(context,request.owner.slice,name)}\``).join('\n'):'- none'],
     ['Prior Validation Overlap',priorValidationOverlap(changed,priorDeliveries).map(([slice,name])=>
@@ -1400,7 +1436,9 @@ export async function composePostConversionValidation({context,requirementsAutho
   if(snapshot.requirementsAuthority!==requirementsAuthority || activation.requirementsAuthority!==requirementsAuthority)
     stale('post-conversion requirements authority differs');
   const current=checked.continuity.deliveries.find(item=>item.deliveryId===deliveryId);
-  if(!current || ![1,2].includes(current.localRevision) || checked.continuity.completed.length)
+  const completedProfile=checked.continuity.completed.length>0;
+  if(!current || ![1,2].includes(current.localRevision)
+    || completedProfile && (current.localRevision!==1 || admission===null || capture.transport!=='native'))
     fail('UNSUPPORTED_FORMAT','post-conversion delivery is not an open converted local revision');
   if(current.evidence===null && current.counters.validationAttempts===0)
     fail('UNSUPPORTED_FORMAT','S0 is read-only in offline post-conversion validation');
@@ -1414,11 +1452,22 @@ export async function composePostConversionValidation({context,requirementsAutho
   const previousBundle=bundleBytes?jsonBytes(bundleBytes,'predecessor bundle').value:null;
   const previousRecord=previousBundle?.validation;
   const previousV3=previousRecord?.recordFormat==='stnl-task-record-v2';
+  const evidenceContext=await completedEvidenceContext({context,snapshotBytes,continuity:checked.continuity,files});
+  const inspectionOptions={preparationProfile:completedProfile?'completed-current':'converted-current',
+    retainedEvidence:evidenceContext.retainedEvidence};
+  const retainedBase=completedProfile&&!evidenceContext.fresh.has(deliveryId);
+  const priorRequest=retainedBase&&previousV3?requestForRecord(previousRecord,sourceMap(previousBundle)):null;
+  const priorOptions={...inspectionOptions,...(priorRequest?{retainedRead:{authority:priorRequest.authority,
+    snapshotDigest:priorRequest.base.approvedSnapshotSha256}}:{})};
+  if(completedProfile && (!previousV3 || current.normalization!==null || current.localRevision!==1
+    || previousBundle.implementation.length || previousBundle.findingsChecks.length || previousBundle.support.length
+    || previousBundle.openFindings.length || previousBundle.openDivergences.length))
+    fail('UNSUPPORTED_FORMAT','completed native validation requires a closed local native PASS base');
   const historicalPrior=current.localRevision===2 && previousV3
     && previousRecord.origin.localRevision===1;
   const previousRejected=previousBundle?.support?.some(item=>item.kind==='rejection'
     && item.origin.operation==='VALIDATE_SLICE')??false;
-  if(previousV3 && !historicalPrior && !previousRejected && (!previousBundle.findingsChecks.length
+  if(previousV3 && !completedProfile && !historicalPrior && !previousRejected && (!previousBundle.findingsChecks.length
       && activation.lastAttempt?.operationAttemptId!==previousRecord.origin.operationAttemptId
     || activation.lastAttempt?.outcome!=='recorded'
     || activation.lastAttempt?.terminalActivationId!==activation.activationId))
@@ -1475,7 +1524,7 @@ export async function composePostConversionValidation({context,requirementsAutho
   } else if(previousV3) {
     previousFacts=await inspectPostConversionEvidence({context,snapshotBytes,current,bundleBytes,
       observedWork:current.baseline,lastAttempt:activation.lastAttempt,
-      admissionRef:activation.lastAttempt?.operationRef??null});
+      admissionRef:activation.lastAttempt?.operationRef??null,...priorOptions});
     const readyCycle=previousBundle.findingsChecks.length
       && previousFacts.cycle?.admissionId===previousRecord.id
       && ['TESTS_PASS','TESTS_FAIL'].includes(previousFacts.cycle.status);
@@ -1507,6 +1556,8 @@ export async function composePostConversionValidation({context,requirementsAutho
   const base=postBase(snapshotBytes,current,priorScopePaths,previousBundle?.openFindings??[],auxiliary);
   const derived=postCaptureProof({context,snapshotBytes,current,capture,expectedBase:base,
     allowRejection:true});
+  if(completedProfile && derived.rejection)
+    fail('RUNNER_RESULT_REJECTED',`completed native judgment rejected: ${derived.rejection}`);
   if(request.owner.preparationRevision!==snapshot.preparationRevision
     || request.owner.localRevision!==current.localRevision
     || request.owner.normativeSha256!==current.authoritySha256)
@@ -1600,18 +1651,21 @@ export async function composePostConversionValidation({context,requirementsAutho
   const priorDeliveries=await postPriorDeliveries({context,snapshotBytes,continuity:checked.continuity,
     files:previous.files,current,activation});
   files.set(taskName,postTask(Buffer.from(files.get(taskName)).toString('utf8'),derived,nextDigest,context,
-    {priorDeliveries,...(findingsCycle?{cycle:findingsCycle,
+    {priorDeliveries,blockedActions:completedProfile,...(findingsCycle?{cycle:findingsCycle,
       admission:previousFacts.origins.get(findingsCycle.admissionId),
       checks:bundle.findingsChecks,validations:support.filter(item=>item.kind==='validation')}
       :historicalPrior?{validations:[previousRecord]}:{})}));
   files.set('tasks.md',postIndex(Buffer.from(files.get('tasks.md')).toString('utf8'),current.slice,status));
   validateCurrentCandidate({files});
   const {validateCurrentPreparation}=await import('./execution-preparation-current.mjs');
+  const finalContext=await completedEvidenceContext({context,snapshotBytes,continuity,files});
   const prepared=validateCurrentPreparation({context,requirementsAuthority,snapshotBytes,
-    artifacts:new Map([...files].filter(([name])=>name.endsWith('.md'))),profile:'converted-current'});
+    artifacts:new Map([...files].filter(([name])=>name.endsWith('.md'))),
+    profile:inspectionOptions.preparationProfile,retainedEvidence:finalContext.retainedEvidence});
   const carrier=prepared.currentArtifacts.deliveries.find(item=>item.deliveryId===deliveryId);
   const facts=await inspectPostConversionEvidence({context,snapshotBytes,current:next,bundleBytes:nextBytes,
-    observedWork:next.baseline});
+    observedWork:next.baseline,preparationProfile:inspectionOptions.preparationProfile,
+    retainedEvidence:finalContext.retainedEvidence});
   if(carrier.continuity.evidence!==nextDigest)invalid('composed formal carrier evidence digest differs');
   validateCurrentEvidenceCarriers({facts,sections:carrier.sections,
     continuity:{...carrier.continuity,evidence:next.evidence.path},

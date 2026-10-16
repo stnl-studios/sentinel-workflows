@@ -9,7 +9,8 @@ import {resolveCurrentExecutionContext,projectCurrentRequirements} from './execu
 import {readOwnedFile} from './execution-publication.mjs';
 import {parseCurrentJson,validateCurrentActivation,validateCurrentImage,resolveLogicalProductClaim} from './execution-current.mjs';
 import {validateCurrentPreparation} from './execution-preparation-current.mjs';
-import {inspectCurrentEvidence,inspectPostConversionEvidence,validateCurrentEvidenceCarriers} from './current-evidence-state.mjs';
+import {inspectCurrentEvidence,inspectPostConversionEvidence,validateCurrentEvidenceCarriers,
+  completedEvidenceContext} from './current-evidence-state.mjs';
 import {restoreCaptureSources} from './execution-evidence-proof.mjs';
 
 const ordinal=(a,b)=>a<b?-1:a>b?1:0;
@@ -478,9 +479,8 @@ async function readCurrentExecution(specPath,withCapture=false,expectedOwner=nul
   const checked=validateCurrentImage({activationBytes:a.bytes,files:image.files});
   const continuity=checked.continuity;
   const snapshot=parseCurrentJson(image.files.get('approved-preparation.json').toString('utf8'));
-  const retainedEvidence=continuity.completed.length?[...continuity.completed,...continuity.deliveries].filter(item=>item.evidence)
-    .map(item=>({deliveryId:item.deliveryId,evidenceSha256:item.evidence.sha256}))
-    .sort((a,b)=>ordinal(a.deliveryId,b.deliveryId)):null;
+  const {retainedEvidence,fresh}=await completedEvidenceContext({context,
+    snapshotBytes:image.files.get('approved-preparation.json'),continuity,files:image.files});
   const converted=activation.preparationRevision>1;
   for (const [unsupported,artifact,field] of [
     [!converted && activation.preparationRevision!==1,'activation.json','preparationRevision'],
@@ -610,7 +610,7 @@ async function readCurrentExecution(specPath,withCapture=false,expectedOwner=nul
             latestAuxiliaryRejection?.origin.operationAttemptId].includes(activation.activeAttempt.operationAttemptId)
           ?activation.activeAttempt.operationRef:lastAttempt?.operationRef??null;
       const observedWork=scopedObservation(item.observation,item.targets).manifest;
-      const retained=continuity.completed.length>0 && bundleBytes!==null;
+      const retained=continuity.completed.length>0 && bundleBytes!==null && !fresh.has(current.deliveryId);
       let retainedFacts=null;
       let retainedAuthority=null;
       let retainedPost=false;
@@ -702,7 +702,8 @@ async function readCurrentExecution(specPath,withCapture=false,expectedOwner=nul
           :!facts.observationMatches?'VALIDATE_SLICE'
           :facts.formalStatus==='NEEDS_FIX'&&(!facts.cycle||facts.bundle.validation.id!==facts.cycle.admissionId)
             ?'APPLY_FINDINGS':'VALIDATE_SLICE';
-        normalHandoff={operation,slice:pending.slice,deliveryId:pending.deliveryId};
+        normalHandoff=fresh.has(pending.deliveryId)&&facts.formalStatus==='NEEDS_FIX'
+          ?null:{operation,slice:pending.slice,deliveryId:pending.deliveryId};
         state=!facts.observationMatches?'EVIDENCE_STALE':operation==='APPLY_FINDINGS'?'VALIDATION_NEEDS_FIX'
           :facts.cycle?.status==='TESTS_PASS'?'FINDINGS_CORRECTED'
             :facts.cycle?.status==='TESTS_FAIL'?'FINDINGS_RETRY_EXHAUSTED'

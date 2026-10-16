@@ -12,7 +12,7 @@ import {fileURLToPath,pathToFileURL} from 'node:url';
 import {resolveCurrentExecutionContext} from './execution-state.mjs';
 import {captureCurrentExecution,captureCurrentActiveExecution,observeCurrentDeliveryWork} from './execution-current-reader.mjs';
 import {parseCurrentJson,validateCurrentCandidate,currentOperationBindingSha256} from './execution-current.mjs';
-import {verifyWorkObservation,findingsRoundCaptureSha256,NATIVE_JUDGMENT_VARIANT,
+import {verifyWorkObservation,findingsRoundCaptureSha256,NATIVE_JUDGMENT_VARIANT,restoreCaptureSources,
   projectNativeJudgment} from './execution-evidence-proof.mjs';
 import {composePostConversionValidation,composePostConversionFindings,
   inspectPostConversionEvidence,inspectPostConversionFindingsPrefix,
@@ -107,7 +107,8 @@ function requireS2(image,slice,operation,{successor=false}={}) {
     fail('UNSUPPORTED_FORMAT','EC-1 native profile requires an exact converted S2 handoff');
   const continuity=parseCurrentJson(Buffer.from(image.files.get('continuity.json')).toString('utf8'));
   const reviewed=continuity.deliveries.filter(item=>item.localRevision!==1);
-  if(continuity.completed.length || reviewed.length>1 || reviewed.some(item=>item.localRevision!==2
+  if(continuity.completed.length && (operation!=='VALIDATE_SLICE' || successor || reviewed.length)
+    || reviewed.length>1 || reviewed.some(item=>item.localRevision!==2
     || item.slice!==slice || operation!=='VALIDATE_SLICE' || successor)
     || continuity.deliveries.some(item=>item.localRevision!==1 && item.localRevision!==2
     || item.normalization!==null && !(successor && item.slice===slice
@@ -116,6 +117,18 @@ function requireS2(image,slice,operation,{successor=false}={}) {
     fail('UNSUPPORTED_FORMAT','EC-1 native profile excludes completed, local review and uncertain delivery');
   const current=continuity.deliveries.find(item=>item.slice===slice);
   const inspected=image.inspection.deliveries.find(item=>item.slice===slice);
+  if(continuity.completed.length) {
+    const bundle=current?.evidence?parseCurrentJson(Buffer.from(image.files.get(current.evidence.path)).toString('utf8')):null;
+    if(inspected?.formalStatus!=='PASS' || current?.validation!=='current'
+      || bundle?.validation?.recordFormat!=='stnl-task-record-v2'
+      || bundle.validation.origin.transport!=='native' || bundle.implementation.length
+      || bundle.findingsChecks.length || bundle.support.length || bundle.openFindings.length || bundle.openDivergences.length)
+      fail('UNSUPPORTED_FORMAT','completed native profile requires a closed native PASS base');
+    const captured=restoreCaptureSources('current-validation',bundle.validation,
+      new Map(bundle.objects.map(item=>[item.id,Buffer.from(item.bytesBase64,'base64')])));
+    const origin=parseCurrentJson(Buffer.from(captured.origin).toString('utf8'));
+    if(!origin.admission)fail('UNSUPPORTED_FORMAT','completed native base lacks official A0/A1 admission');
+  }
   if(!current || !inspected || current.counters.validationAttempts<1
     || (current.evidence===null && current.lastDiagnostic?.code!=='EVIDENCE_INCOMPLETE')
     || inspected.formalStatus==='BLOCKED')
@@ -842,7 +855,8 @@ export async function captureNative(handle,toolResultFile) {
         throw error;
       }
     }
-    const concludedFormalRejection=!auxiliary && Boolean(parseFailure) && !projectionFailure && !bindingFailure
+    const completedProfile=parseCurrentJson(Buffer.from(image.files.get('continuity.json')).toString('utf8')).completed.length>0;
+    const concludedFormalRejection=!completedProfile && !auxiliary && Boolean(parseFailure) && !projectionFailure && !bindingFailure
       && !headBindingFailure
       && parseFailure!=='native result HEAD differs from verified product Git HEAD';
     const concludedFindingsRejection=auxiliary && Boolean(parseFailure) && !projectionFailure && !bindingFailure
@@ -856,6 +870,9 @@ export async function captureNative(handle,toolResultFile) {
     await persistAllocation(now.marker,now.record);
     if(parseFailure && !concludedFormalRejection && !concludedFindingsRejection)
       fail('RUNNER_RESULT_REJECTED',`native final response preserved but rejected: ${parseFailure}`);
+    // Syntax alone cannot establish a completed-profile judgment. In particular
+    // NEEDS_FIX must carry its active blocker before this capture can publish.
+    if(completedProfile && !parseFailure)await capturedComposition(now);
     return {phase:'captured',rawResponseSha256:sha(raw),status,
       nextAction:initialRejection?now.owner.preparationRevision===1
         && ['EXECUTE_SLICE','APPLY_FINDINGS'].includes(now.owner.operation)?'publish':'blocked'
@@ -997,11 +1014,22 @@ async function capturedComposition(op) {
   const inputs={context:op.context,requirementsAuthority:image.requirementsAuthority,previous,
     admission:{activationBytes:image.activationBytes,files:baseFiles(image)},
     deliveryId:op.owner.deliveryId};
-  const composed=op.owner.preparationRevision===1
-    ?composeInitialCurrentOperation({...inputs,owner:op.owner,rounds,
-      observedByDelivery:image.observedByDelivery})
-    :auxiliary?await composePostConversionFindings({...inputs,rounds})
-      :await composePostConversionValidation({...inputs,capture:rounds[0]});
+  let composed;
+  try {
+    composed=op.owner.preparationRevision===1
+      ?composeInitialCurrentOperation({...inputs,owner:op.owner,rounds,
+        observedByDelivery:image.observedByDelivery})
+      :auxiliary?await composePostConversionFindings({...inputs,rounds})
+        :await composePostConversionValidation({...inputs,capture:rounds[0]});
+  } catch(error) {
+    const completed=parseCurrentJson(Buffer.from(image.files.get('continuity.json')).toString('utf8')).completed.length;
+    if(completed && ['INVALID_CURRENT_IMAGE','RUNNER_RESULT_REJECTED','EVIDENCE_INCOMPLETE','OWNER_MISMATCH'].includes(error.code)) {
+      op.record.runner.status='uncertain';op.record.runner.captureClass='uncertain';
+      await persistAllocation(op.marker,op.record);
+      fail('RUNNER_RESULT_REJECTED',`native final bytes preserved; completed judgment cannot incorporate: ${error.message}`);
+    }
+    throw error;
+  }
   return {image,observation,composed};
 }
 

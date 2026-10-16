@@ -78,7 +78,7 @@ async function secondBoundary(f,round,publication) {
   return {controls,boundary:{transport:'native',receiptPath,responsePath,observationPath,manifestPath,
     publicationPath,originPath,closure:{dispatchPath,agentPath,claimPath,resultPath}}};
 }
-async function twoDeliveryS2(test,{thirdActive=false,sharedInput=false}={}) {
+async function twoDeliveryS2(test,{thirdActive=false,sharedInput=false,behaviorCheck=false}={}) {
   const f=await fixture({test,retiredSelector:true});
   await fs.mkdir(path.join(f.root,'other'));
   if(thirdActive) {
@@ -94,10 +94,24 @@ async function twoDeliveryS2(test,{thirdActive=false,sharedInput=false}={}) {
   const relative=path.relative(path.join(f.execution,'tasks'),target).split(path.sep).join('/');
   const area=path.relative(path.join(f.execution,'tasks'),path.join(f.root,'other')).split(path.sep).join('/');
   const input=path.relative(path.join(f.execution,'tasks'),path.join(f.root,'shared-config.json')).split(path.sep).join('/');
+  const testRelative=path.relative(path.join(f.execution,'tasks'),path.join(f.root,'other/greeting.test.mjs')).split(path.sep).join('/');
+  if(behaviorCheck)await fs.writeFile(path.join(f.root,'other/greeting.test.mjs'),
+    'import assert from "node:assert/strict";\nimport {greeting} from "./greeting.mjs";\nassert.equal(greeting,"hello");\n');
   const secondRecipe={format:'stnl-verification-recipe-v1',base:'workspace',cwd:'.',checks:[{
     id:'verification-01',executable:{literal:'node'},args:[{literal:'-e'},
       {literal:'if (2 + 2 !== 4) process.exit(1)'}],inputs:sharedInput?[{kind:'input',path:input}]:[]}],
     dependencyReview:'The second delivery uses a literal check with no inputs from the first delivery.'};
+  if(behaviorCheck) {
+    secondRecipe.checks[0].args=[{literal:'--test'},{file:{kind:'product',path:testRelative}}];
+    secondRecipe.dependencyReview='The prepared Node test imports only the second delivery greeting output and asserts AC-001.';
+  }
+  if(behaviorCheck&&sharedInput)for(const directory of ['plans','tasks']) {
+    const file=path.join(f.candidate,directory,'slice-01.md');let content=await fs.readFile(file,'utf8');
+    const recipe=JSON.parse(content.split('- Recipe: ')[1].split('\n')[0]);
+    recipe.checks[0].inputs.push({kind:'input',path:input});
+    content=section(content,'Existing Inputs',`- \`${input}\``);
+    await fs.writeFile(file,section(content,'Verification Recipe',`- Recipe: ${JSON.stringify(recipe)}`));
+  }
   const global=path.join(f.candidate,'plan.md');
   await fs.writeFile(global,(await fs.readFile(global,'utf8')).split('\n').map(line=>
     line.includes('| plans/slice-02.md |')
@@ -112,6 +126,7 @@ async function twoDeliveryS2(test,{thirdActive=false,sharedInput=false}={}) {
       'Expected Files':`- \`${relative}\``,
       'Existing Inputs':sharedInput?`- \`${input}\``:'- none',
       'Verification Recipe':`- Recipe: ${JSON.stringify(secondRecipe)}`,
+      ...(behaviorCheck?{'Expected Tests':'- node --test other/greeting.test.mjs'}:{}),
     })) content=section(content,heading,body);
     await fs.writeFile(name,content);
   }
@@ -214,13 +229,13 @@ async function twoDeliveryS2(test,{thirdActive=false,sharedInput=false}={}) {
   return {f,input:await captureLegacy(f,{controls,imports})};
 }
 
-export async function convertedImage(test,{kind='native-s1',sharedInput=false}={}) {
+export async function convertedImage(test,{kind='native-s1',sharedInput=false,behaviorCheck=false}={}) {
   const produced=kind==='native-s1'
     ?await nativeFilePass(test,{fileless:true})
     :kind==='managed-s2'?await managedFilePass(test)
       :kind==='managed-s1'?await managedFilelessPass(test)
       :kind==='disjoint-s0'?await disjointDomainS0(test)
-      :kind==='two-s2'?await twoDeliveryS2(test)
+      :kind==='two-s2'?await twoDeliveryS2(test,{behaviorCheck,sharedInput})
       :kind==='three-s2'?await twoDeliveryS2(test,{thirdActive:true,sharedInput})
       :kind==='s0'?await (async()=>{
         const f=await fixture({test});await approveFixture(f);
