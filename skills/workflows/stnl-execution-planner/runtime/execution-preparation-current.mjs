@@ -298,6 +298,10 @@ function project(value, withReview = false, conversion = false, local = null) {
   const supplied = input(value, withReview);
   const artifacts = conversion ? new Map([...supplied].filter(([name]) => /^(?:plan|tasks)\.md$|^(?:plans|tasks)\/slice-[0-9]{2,}\.md$/u.test(name))) : supplied;
   const context = value.context, expectedAuthority = value.requirementsAuthority;
+  const completed=local?.completed??[];
+  const completedBySlice=new Map(completed.map(item=>[item.slice,item]));
+  if(completedBySlice.size!==completed.length || new Set(completed.map(item=>item.leaf.deliveryId)).size!==completed.length)
+    invalid('duplicate completed delivery');
   const texts = new Map();
   for (const [name, bytes] of artifacts) texts.set(name, decode(bytes, name));
   if (!texts.has('plan.md') || !texts.has('tasks.md')) invalid('preparation requires plan.md and tasks.md');
@@ -339,8 +343,12 @@ function project(value, withReview = false, conversion = false, local = null) {
       || columns[2] !== row.delivery || columns[3] !== (row.dependencies.length ? row.dependencies.join(', ') : '-')
       || columns[4] !== `tasks/${row.slice}.md`) invalid(`${row.slice}: Tasks index differs from Plan`);
     const priorIndexes = row.dependencies.map(dep => serialIndex.get(dep));
-    if (priorIndexes.some(position => position === undefined || position >= index)
-      || priorIndexes.some((position, i) => i > 0 && position <= priorIndexes[i - 1])) invalid(`${row.slice}: dependency is not prior and serial`);
+    if (row.dependencies.some((dep,i)=>{
+      const position=priorIndexes[i];
+      return position===undefined?!completedBySlice.has(dep) || Number(dep.slice(6))>=Number(row.slice.slice(6))
+        :position>=index;
+    }) || row.dependencies.some((dep,i)=>i>0 && Number(dep.slice(6))<=Number(row.dependencies[i-1].slice(6))))
+      invalid(`${row.slice}: dependency is not prior and serial`);
   }
   const deliveries = [], projectionLeaves = [], obligationRows = [];
   for (const row of serialRows) {
@@ -409,7 +417,8 @@ function project(value, withReview = false, conversion = false, local = null) {
       outOfScopeAndBoundaries: detail.sections['Out of Scope and Boundaries'], authorizedAreas: detail.sections['Authorized Areas'],
       existingInputs: detail.sections['Existing Inputs'], protectedResponsibilities: detail.sections['Protected Responsibilities'],
       dependencies: row.dependencies.map(dep => {
-        const source = deliveries.find(item => item.slice === dep);
+        const source = deliveries.find(item => item.slice === dep)
+          ?? (completedBySlice.has(dep)?{deliveryId:completedBySlice.get(dep).leaf.deliveryId}:null);
         if (!source) invalid(`${row.slice}: dependency UUID unavailable`);
         return source.deliveryId;
       }),
@@ -420,6 +429,16 @@ function project(value, withReview = false, conversion = false, local = null) {
     deliveries.push({slice: row.slice, deliveryId: leaf.deliveryId, localRevision, authoritySha256: projected('delivery', leaf)});
     projectionLeaves.push(leaf);
     obligationRows.push({slice: row.slice, requirements: row.requirements, obligations: declared, dependencies: row.dependencies});
+  }
+  const allIds=new Map([...deliveries.map(item=>[item.deliveryId,item.slice]),
+    ...completed.map(item=>[item.leaf.deliveryId,item.slice])]);
+  if(allIds.size!==deliveries.length+completed.length || completed.some(item=>deliveries.some(active=>active.slice===item.slice)))
+    invalid('active/completed identity collision');
+  for(const item of completed) {
+    if(item.leaf.dependencies.some(id=>!allIds.has(id) || Number(allIds.get(id).slice(6))>=Number(item.slice.slice(6))))
+      invalid(`${item.slice}: completed dependency is not prior`);
+    obligationRows.push({slice:item.slice,requirements:[...new Set(item.leaf.obligations.map(value=>value.requirement))],
+      obligations:item.leaf.obligations,dependencies:item.leaf.dependencies.map(id=>allIds.get(id))});
   }
   const owners = new Map();
   for (const row of obligationRows) for (const obligation of row.obligations) {
@@ -440,13 +459,16 @@ function project(value, withReview = false, conversion = false, local = null) {
   }
   const normativeProjection = {format: 'stnl-preparation-projection-v3', requirementsAuthority: expectedAuthority,
     global: {objective: normalized(global.Objective), strategy: normalized(global.Strategy), risks: plan.sections['Global Risks and Integration'],
-      order: deliveries.map(item => item.deliveryId)}, deliveries: projectionLeaves, completed: []};
+      order: deliveries.map(item => item.deliveryId)}, deliveries: projectionLeaves,
+    completed:completed.map(item=>item.leaf)};
   const globalReviewProjection = {requirementsAuthority: expectedAuthority, global: normativeProjection.global,
-    deliveryIds: deliveries.map(item => item.deliveryId), completed: []};
+    deliveryIds: deliveries.map(item => item.deliveryId), completed:normativeProjection.completed};
   const artifactHashes = [...artifacts].map(([name, bytes]) => ({path: name, sha256: raw(bytes)})).sort((a, b) => ordinal(a.path, b.path));
   return {authority: {requirementsAuthority: expectedAuthority, preparationRevision, normativeProjection,
     normativeSha256: projected('preparation', normativeProjection),
-    globalReviewAuthoritySha256: projected('global-review', globalReviewProjection), deliveries, artifactHashes},
+    globalReviewAuthoritySha256: projected('global-review', globalReviewProjection), deliveries,
+    ...(completed.length?{completed:completed.map(item=>({slice:item.slice,deliveryId:item.leaf.deliveryId,
+      localRevision:item.localRevision}))}:{}),artifactHashes},
   status: plan.metadata.status, texts, supplied};
 }
 
@@ -801,14 +823,25 @@ function compareCurrentSections(approved, present, names, artifact, context, {ta
 // An operational image retains the reviewed bytes verbatim in its snapshot.
 // This parser compares current carrier meaning without projecting a new review
 // fingerprint or making the pristine Initial entry points permissive.
-function validateConvertedSnapshotIntrinsic({context,requirementsAuthority,snapshotBytes}) {
+function validateConvertedSnapshotIntrinsic({context,requirementsAuthority,snapshotBytes,allowCompleted=false}) {
   const bytes=Buffer.from(snapshotBytes instanceof Uint8Array ? snapshotBytes : invalid('snapshot bytes required'));
   const snapshot=parseCurrentJson(decode(bytes,'approved-preparation.json'));
   exact(snapshot,['format','preparationRevision','requirementsAuthority','normativeSha256','normativeProjection',
     'globalReview','deliveries','completed','reviewedArtifacts'],'converted snapshot');
+  const completed=array(snapshot.completed,'snapshot completed');
   if(snapshot.format!=='stnl-preparation-v3' || !Number.isSafeInteger(snapshot.preparationRevision)
-    || snapshot.preparationRevision<1 || array(snapshot.completed,'snapshot completed').length
+    || snapshot.preparationRevision<1 || completed.length && (!allowCompleted || snapshot.preparationRevision<2)
     || !bytes.equals(Buffer.from(canonical(snapshot)+'\n'))) invalid('converted snapshot bytes or revision differ');
+  if(allowCompleted && !completed.length) invalid('completed profile requires a completed delivery');
+  const leaves=array(snapshot.normativeProjection?.completed,'projection completed');
+  if(leaves.length!==completed.length || leaves.some((leaf,i)=>leaf.deliveryId!==completed[i].deliveryId))
+    invalid('completed projection binding differs');
+  const retained=completed.map((item,i)=>{
+    exact(item,['deliveryId','slice','localRevision','evidenceSha256'],'snapshot completed');
+    uuid(item.deliveryId,'completed deliveryId');hash(item.evidenceSha256,'completed evidenceSha256');
+    if(!Number.isSafeInteger(item.localRevision) || item.localRevision<1) invalid('completed local revision');
+    return {slice:item.slice,localRevision:item.localRevision,leaf:leaves[i]};
+  });
   const reviewed=new Map();let previous=null;
   for(const item of array(snapshot.reviewedArtifacts,'reviewedArtifacts')) {
     exact(item,['path','sha256','utf8'],'reviewed artifact');
@@ -820,7 +853,8 @@ function validateConvertedSnapshotIntrinsic({context,requirementsAuthority,snaps
     reviewed.set(item.path,original);
   }
   const local={preparationRevision:snapshot.preparationRevision,
-    revisions:new Map(array(snapshot.deliveries,'snapshot deliveries').map(item=>[item.slice,item.localRevision]))};
+    revisions:new Map(array(snapshot.deliveries,'snapshot deliveries').map(item=>[item.slice,item.localRevision])),
+    completed:retained};
   const {authority,status}=project({context,requirementsAuthority,artifacts:reviewed},false,true,local);
   if(status!=='ready' || snapshot.preparationRevision!==authority.preparationRevision
     || snapshot.requirementsAuthority!==requirementsAuthority
@@ -830,7 +864,11 @@ function validateConvertedSnapshotIntrinsic({context,requirementsAuthority,snaps
       path:item.path,sha256:item.sha256,utf8:reviewed.get(item.path).toString('utf8')}))))
     stale('converted snapshot projection or reviewed artifacts differ');
   const hashes=new Map(authority.artifactHashes.map(item=>[item.path,item.sha256]));
-  review(snapshot.globalReview,'set',authority.globalReviewAuthoritySha256,['plan.md','tasks.md'],hashes,'global review');
+  review(snapshot.globalReview,'set',authority.globalReviewAuthoritySha256,['plan.md','tasks.md'],hashes,'global review',
+    completed.map(item=>({deliveryId:item.deliveryId,evidenceSha256:item.evidenceSha256,disposition:'retain-current'})));
+  if(!same(completed.map(item=>[item.slice,item.deliveryId,item.localRevision]),
+    (authority.completed??[]).map(item=>[item.slice,item.deliveryId,item.localRevision])))
+    invalid('converted completed binding differs');
   if(array(snapshot.deliveries,'snapshot deliveries').length!==authority.deliveries.length)
     invalid('converted snapshot delivery count differs');
   for(let i=0;i<authority.deliveries.length;i++) {
@@ -846,10 +884,11 @@ function validateConvertedSnapshotIntrinsic({context,requirementsAuthority,snaps
 }
 
 export function validateCurrentPreparation({context, requirementsAuthority, snapshotBytes, artifacts, profile='initial'}) {
-  if(!['initial','converted-current'].includes(profile)) invalid('unknown current preparation profile');
+  if(!['initial','converted-current','completed-current'].includes(profile)) invalid('unknown current preparation profile');
   const approved=profile==='initial'
     ?validateInitialApprovedPreparation({context,requirementsAuthority,snapshotBytes})
-    :validateConvertedSnapshotIntrinsic({context,requirementsAuthority,snapshotBytes});
+    :validateConvertedSnapshotIntrinsic({context,requirementsAuthority,snapshotBytes,
+      allowCompleted:profile==='completed-current'});
   const current = artifactMap(artifacts);
   const expected = approved.snapshot.reviewedArtifacts.map(item => item.path).sort(ordinal);
   compareCurrent([...current.keys()].sort(ordinal), expected, 'execution', 'artifacts', 'integrity');

@@ -332,7 +332,8 @@ async function readCurrentExecution(specPath,withCapture=false,expectedOwner=nul
     if (await statOrNull(root)!==null || !equal(boundaries,await physicalBoundaries(context)))
       fail('STALE_BASE','official root appeared or physical boundary changed during absence inspection');
     return {activationId:null,sequence:null,requirementsAuthority:projected.requirementsAuthority,
-      preparationRevision:null,deliveries:[],state:projected.documentStatus==='closed'?'SPEC_CLOSED':'NO_EXECUTION',normalHandoff:null,diagnostics:[]};
+      preparationRevision:null,deliveries:[],completed:[],
+      state:projected.documentStatus==='closed'?'SPEC_CLOSED':'NO_EXECUTION',normalHandoff:null,diagnostics:[]};
   }
   await realDirectory(root,'execution root');
   const activationFile=path.join(root,'activation.json');
@@ -355,7 +356,7 @@ async function readCurrentExecution(specPath,withCapture=false,expectedOwner=nul
   const converted=activation.preparationRevision>1;
   for (const [unsupported,artifact,field] of [
     [!converted && activation.preparationRevision!==1,'activation.json','preparationRevision'],
-    [continuity.completed.length>0,'continuity.json','completed'],
+    [continuity.completed.length>0 && !converted,'continuity.json','completed'],
     [continuity.deliveries.filter(item=>item.localRevision!==1).length>1
       || continuity.deliveries.some(item=>item.localRevision!==1 && !(converted && item.localRevision===2)),
       'continuity.json','localRevision'],
@@ -375,7 +376,7 @@ async function readCurrentExecution(specPath,withCapture=false,expectedOwner=nul
     fail('REQUIREMENTS_CHANGED','documentary authority differs from activation','authority-mismatch',workspace.authorityPath);
   const prepared=validateCurrentPreparation({context,requirementsAuthority:activation.requirementsAuthority,
     snapshotBytes:image.files.get('approved-preparation.json'),artifacts:new Map([...image.files].filter(([name])=>name.endsWith('.md'))),
-    profile:converted?'converted-current':'initial'});
+    profile:continuity.completed.length?'completed-current':converted?'converted-current':'initial'});
   const outputs=[];
   for (const current of continuity.deliveries) {
     const carrier=prepared.currentArtifacts.deliveries.find(item=>item.deliveryId===current.deliveryId);
@@ -426,6 +427,45 @@ async function readCurrentExecution(specPath,withCapture=false,expectedOwner=nul
         ?[{kind:'observation',artifact:current.slice,field:'observedWork',reason:'EVIDENCE_STALE'}]:[],
       facts,targets,observation:before});
   }
+  const completedOutputs=[];
+  for(const current of continuity.completed) {
+    const leaf=snapshot.normativeProjection.completed.find(item=>item.deliveryId===current.deliveryId);
+    const bundleBytes=image.files.get(current.evidence.path);
+    const bundle=parseCurrentJson(bundleBytes.toString('utf8'));
+    const record=bundle.validation;
+    if(!leaf || !record || record.kind!=='validation' || record.contract?.terminal!==null
+      || !equal(record.contract?.delivery,leaf) || record.origin?.deliveryId!==current.deliveryId
+      || record.origin?.slice!==current.slice || record.origin?.localRevision!==current.localRevision
+      || record.origin?.normativeSha256!==current.authoritySha256 && record.origin?.preparationRevision===snapshot.preparationRevision
+      || current.normalization!==null)
+      fail('EVIDENCE_INCOMPLETE',`${current.slice}: completed local proof is absent or inconsistent`,
+        'evidence','continuity.json',current.slice);
+    const global=snapshot.normativeProjection.global;
+    const expectedContext={requirementsAuthority:snapshot.requirementsAuthority,
+      objective:global.objective,strategy:global.strategy,risks:global.risks};
+    if(Object.keys(record.contract.context).length!==Object.keys(expectedContext).length
+      || Object.entries(expectedContext).some(([key,value])=>record.contract.context[key]!==value))
+      fail('EVIDENCE_STALE',`${current.slice}: completed context changed since local proof`,
+        'evidence','approved-preparation.json',current.slice);
+    const authority={preparationRevision:record.origin.preparationRevision,
+      localRevision:record.origin.localRevision,normativeSha256:record.origin.normativeSha256,
+      delivery:record.contract.delivery,context:record.contract.context};
+    const targets=observationRoots(context,leaf,{'Expected Files':'- none'},current,bundle);
+    const before=await observeProduct(context,targets,{entries:0,bytes:0},true);
+    const facts=inspectCurrentEvidence({context,authority,bundleBytes,counters:current.counters,
+      baseline:current.baseline,observedWork:scopedObservation(before,targets).manifest});
+    if(facts.formalStatus!=='PASS' || facts.persistedValidation!=='current'
+      || facts.openFindings.length || facts.openDivergences?.length)
+      fail('EVIDENCE_INCOMPLETE',`${current.slice}: completed delivery lacks current local PASS`,
+        'evidence',current.evidence.path,'validation');
+    if(!facts.observationMatches || facts.observedValidation!=='current')
+      fail('EVIDENCE_STALE',`${current.slice}: completed local proof no longer matches product`,
+        'evidence',current.evidence.path,'observedWork');
+    completedOutputs.push({slice:current.slice,deliveryId:current.deliveryId,counters:current.counters,
+      persistedValidation:facts.persistedValidation,observedValidation:facts.observedValidation,
+      formalStatus:facts.formalStatus,evidenceSha256:facts.evidenceSha256,
+      facts,targets,observation:before});
+  }
   if(converted) {
     const reviewed=new Map(snapshot.reviewedArtifacts.map(item=>[item.path,item.utf8]));
     for(const item of outputs) {
@@ -448,8 +488,12 @@ async function readCurrentExecution(specPath,withCapture=false,expectedOwner=nul
             latestAuxiliaryRejection?.origin.operationAttemptId].includes(activation.activeAttempt.operationAttemptId)
           ?activation.activeAttempt.operationRef:activation.lastAttempt?.operationRef??null;
       const observedWork=scopedObservation(item.observation,item.targets).manifest;
-      const facts=await inspectPostConversionEvidence({context,snapshotBytes:image.files.get('approved-preparation.json'),
-        current,bundleBytes,observedWork,admissionRef,lastAttempt:activation.lastAttempt});
+      const facts=continuity.completed.length && bundleBytes===null
+        ?{...inspectCurrentEvidence({context,authority:authorityFor(snapshot,current),bundleBytes:null,
+          counters:current.counters,baseline:current.baseline,observedWork}),slice:current.slice}
+        :await inspectPostConversionEvidence({context,snapshotBytes:image.files.get('approved-preparation.json'),
+          current,bundleBytes,observedWork,admissionRef,lastAttempt:activation.lastAttempt,
+          preparationProfile:continuity.completed.length?'completed-current':'converted-current'});
       if(!facts || facts.slice!==item.slice || facts.persistedValidation!==continuity.deliveries.find(value=>value.deliveryId===item.deliveryId)?.validation)
         fail('INVALID_CURRENT_IMAGE',`${item.slice}: converted inspection differs`);
       if(v3 || facts.rejection) {
@@ -470,9 +514,9 @@ async function readCurrentExecution(specPath,withCapture=false,expectedOwner=nul
       item.auxiliaryStatus=facts.auxiliaryStatus??null;
       item.diagnostics=facts.observationMatches?[]:[{kind:'observation',artifact:item.slice,field:'observedWork',reason:'EVIDENCE_STALE'}];
     }
-    verifyLastAttempt(activation,outputs);
-  } else verifyLastAttempt(activation,outputs);
-  for (const item of outputs) {
+    verifyLastAttempt(activation,[...outputs,...completedOutputs]);
+  } else verifyLastAttempt(activation,[...outputs,...completedOutputs]);
+  for (const item of [...outputs,...completedOutputs]) {
     const after=await observeProduct(context,item.targets,{entries:0,bytes:0},converted);
     if (!equal(item.observation.manifest,after.manifest) || !equal([...item.observation.identities],[...after.identities])
       || !equal(item.observation.rootIdentity,after.rootIdentity))
@@ -509,14 +553,18 @@ async function readCurrentExecution(specPath,withCapture=false,expectedOwner=nul
       :pending?.facts.formalStatus==='NEEDS_FIX'?'VALIDATION_NEEDS_FIX'
         :pending?.diagnostics.length?'EVIDENCE_STALE'
           :hasPost?'IMPLEMENTED_AWAITING_VALIDATION':'VALIDATION_BLOCKED';
+    const awaiting=completedOutputs.length && outputs.find(item=>item.facts.persistedValidation!=='current');
     const inspection={activationId:activation.activationId,sequence:activation.sequence,
       requirementsAuthority:projected.requirementsAuthority,preparationRevision:activation.preparationRevision,
       deliveries:outputs.map(({facts,targets,observation,carrier,...publicItem})=>publicItem),
+      completed:completedOutputs.map(({facts,targets,observation,...publicItem})=>publicItem),
       state,normalHandoff:handoff,
       diagnostics:blocked.length?blocked.map(item=>({kind:'evidence',artifact:item.slice,
         field:'status',reason:item.facts.formalStatus==='BLOCKED'
           ?'blocked incorporation':'uncertain incorporation'}))
         :pending?pending.diagnostics.length?pending.diagnostics:pending.facts.diagnostics
+        :awaiting?[{kind:'evidence',artifact:awaiting.slice,field:'validation',
+          reason:'active delivery has no current local proof'}]
         :[{kind:'evidence',artifact:'continuity.json',field:'terminal',reason:'EVIDENCE_INCOMPLETE: local PASS has no terminal judgment'}]};
     return withCapture?{inspection:structuredClone(inspection),context:structuredClone(context),requirementsAuthority:projected.requirementsAuthority,
       activationBytes:Uint8Array.from(a.bytes),files:new Map([...image.files].map(([name,bytes])=>[name,Uint8Array.from(bytes)])),
@@ -547,7 +595,8 @@ async function readCurrentExecution(specPath,withCapture=false,expectedOwner=nul
     diagnostics=[{kind:'evidence',artifact:'continuity.json',field:'terminal',reason:'EVIDENCE_INCOMPLETE: local PASS has no terminal judgment'}];
   const inspection={activationId:activation.activationId,sequence:activation.sequence,
     requirementsAuthority:projected.requirementsAuthority,preparationRevision:activation.preparationRevision,
-    deliveries:outputs.map(({facts,targets,observation,...publicItem})=>publicItem),state,normalHandoff,diagnostics};
+    deliveries:outputs.map(({facts,targets,observation,...publicItem})=>publicItem),
+    completed:completedOutputs.map(({facts,targets,observation,...publicItem})=>publicItem),state,normalHandoff,diagnostics};
   return withCapture?{inspection:structuredClone(inspection),context:structuredClone(context),requirementsAuthority:projected.requirementsAuthority,
     activationBytes:Uint8Array.from(a.bytes),files:new Map([...image.files].map(([name,bytes])=>[name,Uint8Array.from(bytes)])),
     observedByDelivery:new Map(outputs.map(item=>[item.deliveryId,scopedObservation(item.observation,item.targets)]))}:inspection;

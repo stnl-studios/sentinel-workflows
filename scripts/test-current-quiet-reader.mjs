@@ -10,7 +10,7 @@ import {inspectCurrentExecution} from '../skills/workflows/stnl-slice-executor/r
 import * as legacy from '../skills/workflows/stnl-slice-executor/runtime/execution-state.mjs';
 import {authoredImage,producerInitialImage,producerFormalPass,producerTwoFormalPass,producerAppliedImage,producerPostApplyPass,
   authoredCyclesImage,authoredCompletedImage,repackBundle,replaceRecordCapture,storeBundle,
-  writeImage,reseal,editSection,cleanup,raw} from './fixtures/current-quiet-reader.mjs';
+  writeImage,reseal,editSection,cleanup,raw,canonical} from './fixtures/current-quiet-reader.mjs';
 
 const here=path.dirname(fileURLToPath(import.meta.url)),repo=path.resolve(here,'..');
 const reader=path.join(repo,'skills/workflows/stnl-slice-executor/runtime/execution-current-reader.mjs');
@@ -413,20 +413,79 @@ test('R02 cosmetic carriers and stale normative approval',async t=>{
   }));
   await t.test('review binding',async()=>using(authoredImage,async f=>{
     f.snapshot.deliveries[0].review.decision='pending';
-    f.files.set('approved-preparation.json',Buffer.from(JSON.stringify(f.snapshot)+'\n'));
+    f.files.set('approved-preparation.json',Buffer.from(canonical(f.snapshot)+'\n'));
     reseal(f);await writeImage(f);
     await rejected(()=>inspectCurrentExecution(f.specPath),'INVALID_CURRENT_IMAGE');
   }));
 });
 
 test('R03 mixed format, duplicate JSON, and closed profile',async t=>{
-  await t.test('valid EC-1 completed envelope is unsupported, never migrated',async()=>using(authoredCompletedImage,async f=>{
+  await t.test('completed A retains local proof while B remains active and global state stays open',async()=>using(authoredCompletedImage,async f=>{
     const {validateCurrentImage}=await import('../skills/workflows/stnl-slice-executor/runtime/execution-current.mjs');
     const envelope=validateCurrentImage({activationBytes:await fs.readFile(path.join(f.execution,'activation.json')),files:f.files});
     assert.equal(envelope.continuity.completed[0].deliveryId,DELIVERY);
     const before=await manifest(f.project);
-    await rejected(()=>inspectCurrentExecution(f.specPath),'UNSUPPORTED_FORMAT','completed');
+    const result=await inspectCurrentExecution(f.specPath);
+    assert.equal(result.completed.length,1);
+    assert.equal(result.completed[0].deliveryId,DELIVERY);
+    assert.equal(result.completed[0].formalStatus,'PASS');
+    assert.equal(result.completed[0].observedValidation,'current');
+    assert.equal(result.deliveries.length,1);
+    assert.equal(result.deliveries[0].slice,'slice-02');
+    assert.notEqual(result.state,'COMPLETE');
+    assert.equal(result.diagnostics[0].artifact,'slice-02');
+    assert.match(result.diagnostics[0].reason,/no current local proof/u);
+    for(const selected of [reader,quality]) {
+      const observed=await workerRun(f,{selected});
+      assert.equal(observed.process.status,0);
+      noAttempts(observed);
+      assert.equal(observed.log.result.completed[0].deliveryId,DELIVERY);
+      assert.notEqual(observed.log.result.state,'COMPLETE');
+    }
     assert.deepEqual(await manifest(f.project),before);
+  }));
+  await t.test('completed evidence without formal proof is incomplete',async()=>using(authoredCompletedImage,async f=>{
+    const done=f.continuity.completed[0],bundle=JSON.parse(f.files.get(done.evidence.path));
+    bundle.validation=null;repackBundle(bundle);
+    const bytes=Buffer.from(JSON.stringify(bundle)+'\n');f.files.set(done.evidence.path,bytes);
+    done.evidence.sha256=digest(bytes);f.snapshot.completed[0].evidenceSha256=done.evidence.sha256;
+    f.snapshot.globalReview.evidenceDecisions[0].evidenceSha256=done.evidence.sha256;
+    f.files.set('approved-preparation.json',Buffer.from(canonical(f.snapshot)+'\n'));
+    reseal(f);await writeImage(f);
+    await rejected(()=>inspectCurrentExecution(f.specPath),'EVIDENCE_INCOMPLETE');
+  }));
+  await t.test('completed NEEDS_FIX cannot be advertised as current',async()=>using(
+    ()=>authoredCompletedImage({pass:false}),async f=>{
+      await rejected(()=>inspectCurrentExecution(f.specPath),'EVIDENCE_INCOMPLETE');
+    }));
+  await t.test('completed retention decision is required',async()=>using(authoredCompletedImage,async f=>{
+    f.snapshot.globalReview.evidenceDecisions=[];
+    f.files.set('approved-preparation.json',Buffer.from(canonical(f.snapshot)+'\n'));
+    reseal(f);await writeImage(f);
+    await rejected(()=>inspectCurrentExecution(f.specPath),'STALE_APPROVAL');
+  }));
+  await t.test('unknown completed evidence format remains unsupported',async()=>using(authoredCompletedImage,async f=>{
+    const done=f.continuity.completed[0],bundle=JSON.parse(f.files.get(done.evidence.path));
+    bundle.format='stnl-current-evidence-v99';
+    const bytes=Buffer.from(JSON.stringify(bundle)+'\n');f.files.set(done.evidence.path,bytes);
+    done.evidence.sha256=digest(bytes);f.snapshot.completed[0].evidenceSha256=done.evidence.sha256;
+    f.snapshot.globalReview.evidenceDecisions[0].evidenceSha256=done.evidence.sha256;
+    f.files.set('approved-preparation.json',Buffer.from(canonical(f.snapshot)+'\n'));
+    reseal(f);await writeImage(f);
+    await rejected(()=>inspectCurrentExecution(f.specPath),'UNSUPPORTED_FORMAT');
+  }));
+  await t.test('completed identity collision and old detail artifact are inconsistent',async()=>using(authoredCompletedImage,async f=>{
+    f.continuity.completed[0].deliveryId=f.continuity.deliveries[0].deliveryId;
+    reseal(f);await writeImage(f);
+    await rejected(()=>inspectCurrentExecution(f.specPath),'INVALID_CURRENT_IMAGE');
+  }));
+  await t.test('completed old detail artifact is not official',async()=>using(authoredCompletedImage,async f=>{
+    await fs.writeFile(path.join(f.execution,'plans','slice-01.md'),'stale plan\n');
+    await rejected(()=>inspectCurrentExecution(f.specPath),'INVALID_CURRENT_IMAGE');
+  }));
+  await t.test('completed product drift never becomes current',async()=>using(authoredCompletedImage,async f=>{
+    await fs.writeFile(path.join(f.project,'src','pay.mjs'),'drifted product\n');
+    await rejected(()=>inspectCurrentExecution(f.specPath),'EVIDENCE_STALE');
   }));
   for(const field of ['preparationRevision','localRevision']) await t.test(`valid envelope beyond ${field}`,async()=>using(authoredImage,async f=>{
     if(field==='preparationRevision') {f.snapshot.preparationRevision=2;f.activation.preparationRevision=2;}

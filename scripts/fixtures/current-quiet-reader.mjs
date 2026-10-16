@@ -802,13 +802,18 @@ export async function storeBundle(fixture,bundle) {
   reseal(fixture);await writeImage(fixture);
 }
 
-export async function authoredCompletedImage() {
-  const f=await authoredCyclesImage({retainSecond:true});
+export async function authoredCompletedImage({pass=true}={}) {
+  const f=await authoredCyclesImage({retainSecond:true,pass});
   const done=f.continuity.deliveries.shift();
+  if(!pass) done.validation='current';
   f.continuity.completed=[done];
   const snapshot=f.snapshot,projection=snapshot.normativeProjection;
+  snapshot.preparationRevision=2;f.activation.preparationRevision=2;
+  f.activation.previousActivationId=f.activation.activationId;
+  f.activation.activationId='dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+  f.activation.sequence+=1;f.activation.lastAttempt=null;
   const leaf=projection.deliveries.shift();
-  projection.completed=[leaf];projection.global.order=[DELIVERY_IDS[1]];
+  projection.completed=[leaf];projection.global.order=projection.deliveries.map(item=>item.deliveryId);
   snapshot.deliveries.shift();snapshot.completed=[{slice:done.slice,deliveryId:done.deliveryId,
     localRevision:1,evidenceSha256:done.evidence.sha256}];
   for(const name of ['plans/slice-01.md','tasks/slice-01.md']) {
@@ -823,6 +828,9 @@ export async function authoredCompletedImage() {
   snapshot.globalReview.examinedArtifactHashes=['plan.md','tasks.md'].map(name=>({path:name,sha256:raw(f.artifacts.get(name))}));
   snapshot.globalReview.authoritySha256=projected('global-review',canonical({requirementsAuthority:f.authority,
     global:projection.global,deliveryIds:projection.global.order,completed:projection.completed}));
+  snapshot.globalReview.evidenceDecisions=[{deliveryId:done.deliveryId,
+    evidenceSha256:done.evidence.sha256,disposition:'retain-current',
+    reason:'Reviewed unchanged local delivery and current formal proof.'}];
   snapshot.normativeSha256=projected('preparation',canonical(projection));
   f.activation.normativeSha256=snapshot.normativeSha256;
   f.files.set('approved-preparation.json',json(snapshot));

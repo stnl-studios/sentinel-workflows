@@ -658,12 +658,12 @@ function postCaptureProof({context,snapshotBytes,current,capture,expectedBase,ad
 }
 
 export async function inspectPostConversionEvidence({context,snapshotBytes,current,bundleBytes,observedWork,
-  admissionRef=null,lastAttempt=null}) {
+  admissionRef=null,lastAttempt=null,preparationProfile='converted-current'}) {
   const {validateCurrentPreparation}=await import('./execution-preparation-current.mjs');
   const snapshot=jsonBytes(snapshotBytes,'approved-preparation.json').value;
   const reviewed=new Map(snapshot.reviewedArtifacts.map(item=>[item.path,utf8(item.utf8)]));
   validateCurrentPreparation({context,requirementsAuthority:snapshot.requirementsAuthority,
-    snapshotBytes,artifacts:reviewed,profile:'converted-current'});
+    snapshotBytes,artifacts:reviewed,profile:preparationProfile});
   if(!snapshot.deliveries.some(item=>item.deliveryId===current.deliveryId && item.slice===current.slice))
     fail('UNSUPPORTED_FORMAT','post-conversion local review is not supported');
   if(current.localRevision===2 && bundleBytes!==null
