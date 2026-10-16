@@ -78,7 +78,7 @@ async function secondBoundary(f,round,publication) {
   return {controls,boundary:{transport:'native',receiptPath,responsePath,observationPath,manifestPath,
     publicationPath,originPath,closure:{dispatchPath,agentPath,claimPath,resultPath}}};
 }
-async function twoDeliveryS2(test,{thirdActive=false}={}) {
+async function twoDeliveryS2(test,{thirdActive=false,sharedInput=false}={}) {
   const f=await fixture({test,retiredSelector:true});
   await fs.mkdir(path.join(f.root,'other'));
   if(thirdActive) {
@@ -86,12 +86,17 @@ async function twoDeliveryS2(test,{thirdActive=false}={}) {
     await fs.writeFile(path.join(f.root,'fourth/state.mjs'),'export const state=1;\n');
   }
   f.observedRoots=thirdActive?['src','other','third','fourth']:['src','other'];
+  if(sharedInput) {
+    await fs.writeFile(path.join(f.root,'shared-config.json'),'{"mode":"initial"}\n');
+    f.observedRoots.push('shared-config.json');
+  }
   const target=path.join(f.root,'other/greeting.mjs');
   const relative=path.relative(path.join(f.execution,'tasks'),target).split(path.sep).join('/');
   const area=path.relative(path.join(f.execution,'tasks'),path.join(f.root,'other')).split(path.sep).join('/');
+  const input=path.relative(path.join(f.execution,'tasks'),path.join(f.root,'shared-config.json')).split(path.sep).join('/');
   const secondRecipe={format:'stnl-verification-recipe-v1',base:'workspace',cwd:'.',checks:[{
     id:'verification-01',executable:{literal:'node'},args:[{literal:'-e'},
-      {literal:'if (2 + 2 !== 4) process.exit(1)'}],inputs:[]}],
+      {literal:'if (2 + 2 !== 4) process.exit(1)'}],inputs:sharedInput?[{kind:'input',path:input}]:[]}],
     dependencyReview:'The second delivery uses a literal check with no inputs from the first delivery.'};
   const global=path.join(f.candidate,'plan.md');
   await fs.writeFile(global,(await fs.readFile(global,'utf8')).split('\n').map(line=>
@@ -105,7 +110,7 @@ async function twoDeliveryS2(test,{thirdActive=false}={}) {
     for(const [heading,body] of Object.entries({
       'Authorized Areas':`- directory: \`${area}\``,
       'Expected Files':`- \`${relative}\``,
-      'Existing Inputs':'- none',
+      'Existing Inputs':sharedInput?`- \`${input}\``:'- none',
       'Verification Recipe':`- Recipe: ${JSON.stringify(secondRecipe)}`,
     })) content=section(content,heading,body);
     await fs.writeFile(name,content);
@@ -209,14 +214,14 @@ async function twoDeliveryS2(test,{thirdActive=false}={}) {
   return {f,input:await captureLegacy(f,{controls,imports})};
 }
 
-export async function convertedImage(test,{kind='native-s1'}={}) {
+export async function convertedImage(test,{kind='native-s1',sharedInput=false}={}) {
   const produced=kind==='native-s1'
     ?await nativeFilePass(test,{fileless:true})
     :kind==='managed-s2'?await managedFilePass(test)
       :kind==='managed-s1'?await managedFilelessPass(test)
       :kind==='disjoint-s0'?await disjointDomainS0(test)
       :kind==='two-s2'?await twoDeliveryS2(test)
-      :kind==='three-s2'?await twoDeliveryS2(test,{thirdActive:true})
+      :kind==='three-s2'?await twoDeliveryS2(test,{thirdActive:true,sharedInput})
       :kind==='s0'?await (async()=>{
         const f=await fixture({test});await approveFixture(f);
         return {f,input:await captureLegacy(f)};

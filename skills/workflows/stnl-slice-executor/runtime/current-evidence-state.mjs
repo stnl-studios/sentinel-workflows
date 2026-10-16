@@ -1268,7 +1268,35 @@ function postSection(document,name,body) {
   while(end<lines.length && !lines[end].startsWith('## ')) end+=1;
   return [...lines.slice(0,start+1),'',body,'',...lines.slice(end)].join('\n');
 }
-function postTask(document,derived,digest,context,{cycle=null,admission=null,checks=[],validations=[]}={}) {
+function priorValidationOverlap(changed,priorDeliveries) {
+  return priorDeliveries.filter(item=>item.facts.formalStatus==='PASS').flatMap(item=>
+    changed.filter(name=>item.facts.latest.request.scope.paths.includes(name)).map(name=>[item.slice,name]))
+    .sort((a,b)=>ordinal(a[0],b[0])||ordinal(a[1],b[1]));
+}
+async function postPriorDeliveries({context,snapshotBytes,continuity,files,current,activation}) {
+  const prior=[...continuity.completed,...continuity.deliveries.slice(0,continuity.deliveries.indexOf(current))];
+  const retainedEvidence=continuity.completed.length?[...continuity.completed,...continuity.deliveries]
+    .filter(item=>item.evidence).map(item=>({deliveryId:item.deliveryId,evidenceSha256:item.evidence.sha256}))
+    .sort((a,b)=>ordinal(a.deliveryId,b.deliveryId)):null;
+  const verified=[];
+  for(const previous of prior) {
+    if(!previous.evidence)continue;
+    const bundleBytes=files.get(previous.evidence.path),bundle=jsonBytes(bundleBytes,'prior validation evidence').value;
+    if(bundle.validation?.recordFormat!=='stnl-task-record-v2')continue;
+    const request=requestForRecord(bundle.validation,sourceMap(bundle));
+    const post=['stnl-current-validation-request-v3','stnl-current-validation-request-v4'].includes(request.format);
+    const lastAttempt=activation.lastAttempt?.deliveryId===previous.deliveryId?activation.lastAttempt:null;
+    const facts=post?await inspectPostConversionEvidence({context,snapshotBytes,current:previous,bundleBytes,
+      observedWork:previous.baseline,lastAttempt,admissionRef:lastAttempt?.operationRef??null,
+      preparationProfile:continuity.completed.length?'completed-current':'converted-current',retainedEvidence,
+      retainedRead:continuity.completed.length?{authority:request.authority,snapshotDigest:request.base.approvedSnapshotSha256}:null})
+      :inspectCurrentEvidence({context,authority:request.authority,bundleBytes,counters:previous.counters,
+        baseline:previous.baseline,observedWork:previous.baseline,currentAuthoritySha256:previous.authoritySha256});
+    verified.push({slice:previous.slice,facts});
+  }
+  return verified;
+}
+function postTask(document,derived,digest,context,{cycle=null,admission=null,checks=[],validations=[],priorDeliveries=[]}={}) {
   const {request,payload,recordDraft,observed}=derived;
   const scope=request.scope.paths;
   const evidence=serializeMarkdownScalar('Evidence summary',payload.evidence,true);
@@ -1307,6 +1335,8 @@ function postTask(document,derived,digest,context,{cycle=null,admission=null,che
     ['Continuity',`- Current validation: ${validation}\n- Current evidence: ${digest}\n- Current action: ${status==='PASS'?'none':status==='NEEDS_FIX'?'APPLY_FINDINGS':'blocked'}`],
     ['Changed Areas',changed.length?changed.map(name=>`- \`${taskRelative(context,request.owner.slice,name)}\``).join('\n'):'- none'],
     ['Corrections Applied',corrections.length?corrections.map(name=>`- \`${taskRelative(context,request.owner.slice,name)}\``).join('\n'):'- none'],
+    ['Prior Validation Overlap',priorValidationOverlap(changed,priorDeliveries).map(([slice,name])=>
+      `- Slice ${slice.slice(6)} overlap: \`${taskRelative(context,request.owner.slice,name)}\`; Accepted delta overlaps verified prior formal PASS.`).join('\n')||'- none'],
     ['Implementation Test Evidence','- none'],['Findings Test Evidence',checks.length?checks.map(item=>item.recordUtf8).join('\n\n'):'- none'],
     ['Validation Attempts',[...validations.map(item=>item.recordUtf8),recordDraft.recordUtf8].join('\n\n')],['Validation Findings',findingBody],
     ['Delegation Blocker','- none'],
@@ -1567,13 +1597,25 @@ export async function composePostConversionValidation({context,requirementsAutho
   files.set(next.evidence.path,nextBytes);
   files.set('continuity.json',encode(continuity));
   const taskName=`tasks/${current.slice}.md`;
+  const priorDeliveries=await postPriorDeliveries({context,snapshotBytes,continuity:checked.continuity,
+    files:previous.files,current,activation});
   files.set(taskName,postTask(Buffer.from(files.get(taskName)).toString('utf8'),derived,nextDigest,context,
-    findingsCycle?{cycle:findingsCycle,
+    {priorDeliveries,...(findingsCycle?{cycle:findingsCycle,
       admission:previousFacts.origins.get(findingsCycle.admissionId),
       checks:bundle.findingsChecks,validations:support.filter(item=>item.kind==='validation')}
-      :historicalPrior?{validations:[previousRecord]}:{}));
+      :historicalPrior?{validations:[previousRecord]}:{})}));
   files.set('tasks.md',postIndex(Buffer.from(files.get('tasks.md')).toString('utf8'),current.slice,status));
   validateCurrentCandidate({files});
+  const {validateCurrentPreparation}=await import('./execution-preparation-current.mjs');
+  const prepared=validateCurrentPreparation({context,requirementsAuthority,snapshotBytes,
+    artifacts:new Map([...files].filter(([name])=>name.endsWith('.md'))),profile:'converted-current'});
+  const carrier=prepared.currentArtifacts.deliveries.find(item=>item.deliveryId===deliveryId);
+  const facts=await inspectPostConversionEvidence({context,snapshotBytes,current:next,bundleBytes:nextBytes,
+    observedWork:next.baseline});
+  if(carrier.continuity.evidence!==nextDigest)invalid('composed formal carrier evidence digest differs');
+  validateCurrentEvidenceCarriers({facts,sections:carrier.sections,
+    continuity:{...carrier.continuity,evidence:next.evidence.path},
+    index:carrier.index,slice:current.slice,priorDeliveries});
   return {files,transition:{deliveryId,slice:current.slice,
     operationAttemptId:request.owner.operationAttemptId,originActivationId:activation.activationId,
     outcome:'recorded',counters:nextCounters},consumedInvocations:1,replayed:false};
@@ -2870,8 +2912,7 @@ export function validateCurrentEvidenceCarriers({facts,sections,continuity,index
   if (!same(corrections,facts.verifiedCorrections)) carrierMismatch(artifact,'Corrections Applied','paths differ from verified corrections');
   // Cross-delivery overlap is presentation of already verified path facts.
   const overlapOrder=(a,b)=>ordinal(a[0],b[0]) || ordinal(a[1],b[1]);
-  const required=priorDeliveries.filter(item=>item.facts.formalStatus==='PASS').flatMap(item=>
-    changed.filter(name=>item.facts.latest.request.scope.paths.includes(name)).map(name=>[item.slice,name])).sort(overlapOrder);
+  const required=priorValidationOverlap(changed,priorDeliveries);
   const overlap=[];
   const overlapBody=sections['Prior Validation Overlap'];
   if (!/^\s*[-*+]\s+none\s*$/u.test(overlapBody)) {

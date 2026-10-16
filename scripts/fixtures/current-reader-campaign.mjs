@@ -254,13 +254,13 @@ export async function overlappingActiveImage({status='PASS'}={}) {
   await retireActive(f,['slice-01']);return f;
 }
 
-export async function overlappingPostImage(test,{status='PASS'}={}) {
+export async function overlappingPostImage(test,{status='PASS',operationOnly=false,sharedChange=true,sharedInput=false}={}) {
   const {convertedImage,installSuccessor}=await import('./current-operational-consumption.mjs');
   const {createCurrentNativeValidationCapture}=await import('../../skills/workflows/stnl-slice-executor/runtime/current-native-validation-capture.mjs');
   const {composePostConversionValidation}=await import('../../skills/workflows/stnl-slice-executor/runtime/current-evidence-state.mjs');
   const {normalizedFormal}=await import('./current-native-normalization.mjs');
   const {execFile}=await import('node:child_process'),{promisify}=await import('node:util');
-  const run=promisify(execFile),image=await convertedImage(test,{kind:'three-s2'}),root=image.f.root;
+  const run=promisify(execFile),image=await convertedImage(test,{kind:'three-s2',sharedInput}),root=image.f.root;
   await fs.writeFile(path.join(root,'.gitignore'),'/tmp/\n');
   await run('git',['-C',root,'init','-q']);await run('git',['-C',root,'add','.gitignore','requirements.md']);
   await run('git',['-C',root,'-c','user.name=Reader Fixture','-c','user.email=reader@example.invalid','commit','-qm','reader overlap fixture']);
@@ -270,7 +270,8 @@ export async function overlappingPostImage(test,{status='PASS'}={}) {
   for(const [index,delivery]of deliveries.entries()) {
     // C measures the shared change before B's legal serial validation. A private
     // output drifts only after both proofs have been captured and published.
-    if(index===1)await fs.writeFile(path.join(root,'other/greeting.mjs'),'export const greeting="post";\n');
+    if(index===1&&sharedChange)await fs.writeFile(path.join(root,'other/greeting.mjs'),'export const greeting="post";\n');
+    if(index===2&&operationOnly)return {image,root,head,specPath:image.f.specPath,delivery};
     if(index<2)await normalizedFormal({image,root,head,specPath:image.f.specPath,delivery});
     else {
       // The reader fixture authors the final carrier; this does not certify a
