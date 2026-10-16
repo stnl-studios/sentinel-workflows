@@ -78,10 +78,14 @@ async function secondBoundary(f,round,publication) {
   return {controls,boundary:{transport:'native',receiptPath,responsePath,observationPath,manifestPath,
     publicationPath,originPath,closure:{dispatchPath,agentPath,claimPath,resultPath}}};
 }
-async function twoDeliveryS2(test) {
+async function twoDeliveryS2(test,{thirdActive=false}={}) {
   const f=await fixture({test,retiredSelector:true});
   await fs.mkdir(path.join(f.root,'other'));
-  f.observedRoots=['src','other'];
+  if(thirdActive) {
+    await fs.mkdir(path.join(f.root,'third'));await fs.mkdir(path.join(f.root,'fourth'));
+    await fs.writeFile(path.join(f.root,'fourth/state.mjs'),'export const state=1;\n');
+  }
+  f.observedRoots=thirdActive?['src','other','third','fourth']:['src','other'];
   const target=path.join(f.root,'other/greeting.mjs');
   const relative=path.relative(path.join(f.execution,'tasks'),target).split(path.sep).join('/');
   const area=path.relative(path.join(f.execution,'tasks'),path.join(f.root,'other')).split(path.sep).join('/');
@@ -106,68 +110,102 @@ async function twoDeliveryS2(test) {
     })) content=section(content,heading,body);
     await fs.writeFile(name,content);
   }
+  if(thirdActive) {
+    for(const directory of ['plans','tasks']) {
+      const source=await fs.readFile(path.join(f.candidate,directory,'slice-02.md'),'utf8');
+      const third=source
+        .replaceAll('slice-02','slice-03').replaceAll('Slice 02','Slice 03').replace('- Slice: 02','- Slice: 03')
+        .replaceAll(' - Completion',' - Earlier completion')
+        .replace(/^- Delivery ID: .+\n/mu,'')
+        .replace(/^- History source: .+$/mu,'- History source: runtime')
+        .replace('contribution: complete | full owner: slice-03','contribution: partial | full owner: slice-02');
+      const thirdArea=path.relative(path.join(f.execution,'tasks'),path.join(f.root,'fourth')).split(path.sep).join('/');
+      await fs.writeFile(path.join(f.candidate,directory,'slice-03.md'),section(third,'Authorized Areas',`- directory: \`${area}\`\n- directory: \`${thirdArea}\``));
+    }
+    const detail=path.join(f.candidate,'plans/slice-02.md');
+    await fs.writeFile(detail,section(await fs.readFile(detail,'utf8'),'Dependencies','- slice-01\n- slice-03'));
+    const thirdArea=path.relative(path.join(f.execution,'tasks'),path.join(f.root,'third')).split(path.sep).join('/');
+    for(const directory of ['plans','tasks']) {
+      const file=path.join(f.candidate,directory,'slice-02.md');
+      await fs.writeFile(file,section(await fs.readFile(file,'utf8'),'Authorized Areas',`- directory: \`${area}\`\n- directory: \`${thirdArea}\``));
+    }
+    for(const name of ['plan.md','tasks.md']) {
+      const file=path.join(f.candidate,name),text=await fs.readFile(file,'utf8');
+      const row=text.split('\n').find(line=>line.includes('02 - Completion'));
+      const revised=text.replace(row,row.replace('02 - Completion','03 - Earlier completion')
+        .replaceAll('slice-02.md','slice-03.md').replace(/directory: `[^`]+`/u,
+          `directory: \`${path.relative(f.execution,path.dirname(target)).split(path.sep).join('/')}\`; directory: \`${path.relative(f.execution,path.join(f.root,'fourth')).split(path.sep).join('/')}\``)+'\n'+row.replace('| slice-01 |','| slice-01, slice-03 |')
+          .replace(/directory: `[^`]+`/u,match=>match+`; directory: \`${path.relative(f.execution,path.join(f.root,'third')).split(path.sep).join('/')}\``));
+      await fs.writeFile(file,name==='plan.md'?section(revised,'Delivery Continuity','- runtime'):revised);
+    }
+  }
   await normalizePreparation(f,f.candidate);
   await approveFixture(f);
   const first=await nativeFilePass(test,{existing:f});
-  const installed=await readExecutionActivation(f.specPath);
-  const implemented=await beginPreparedExecutionOperation(f.specPath,'EXECUTE_SLICE','2',installed.activation.activationId);
-  const firstStart=await startNativeRunnerCapture({specPath:f.specPath,owner:implemented.owner,
-    workspace:f.root,captureParent:f.root});
-  const firstAgentId=`e2-native-${randomUUID()}`;
-  await bindNativeRunnerIdentity({...firstStart,agentId:firstAgentId});
-  const copy=await prepareExecutionCopy({specPath:f.specPath,slice:'slice-02',owner:implemented.owner});
-  test.after(()=>fs.rm(copy.candidateRoot,{recursive:true,force:true}));
-  await fs.writeFile(target,'export const greeting="hello";\n');
-  let task=await fs.readFile(copy.candidateTaskArtifact,'utf8');
-  task=section(task.replace('- [ ] 1.1','- [x] 1.1'),'Changed Areas',`- \`${relative}\``);
-  task=section(task,'Diff Summary','- Added the second approved output and ran the prepared check.');
-  await fs.writeFile(copy.candidateTaskArtifact,task);
-  const recipe=await readRunnerVerification(f.specPath,'slice-02');
-  const command=verificationCommand(recipe.checks[0]);
-  const response={status:'TESTS_PASS',automaticCheckRound:'1/3',head:'offline-working-tree',
-    discoverySources:'approved Task and prepared assertion',discoveryActions:'checked the greeting result',
-    verificationTypesConsidered:'prepared Node assertion',nonApplicabilityRationale:'none',
-    noVerificationCommandConfirmation:'none',commands:[{command,exit:0}],
-    resultOfEachCommandAndExitCode:'Prepared assertion exited 0',selectedChecks:command,
-    selectionRationale:'Observe AC-001 export',coverage:'AC-001 export value',failures:'none',
-    priorRoundFailure:'none',correctionApplied:'none',inSliceRationale:'none',
-    evidenceOrFailureSummary:'Prepared check exited zero',affectedFilesOrBehaviors:'second approved output',
-    blockers:'none',unexpectedWorkspaceEffects:'none',persistenceSummary:'Preserve concluded native check'};
-  const round=await nativeRound(f,implemented.owner,response,[relative],{start:firstStart,agentId:firstAgentId});
-  const bundle=await serializeRunnerExecutionBundleFromResponse({operation:'EXECUTE_SLICE',
-    response:JSON.stringify(response),workspace:f.root,taskArtifact:copy.candidateTaskArtifact,...round.captured});
-  await insertExecutionEvidenceInCandidate({taskArtifact:copy.candidateTaskArtifact,operation:'EXECUTE_SLICE',bundle,
-    validateProspectiveTask:text=>validateExecutionCandidate(f.specPath,copy.candidateExecutionRoot,[text])});
-  const implementation=await publishExecutionCopy({specPath:f.specPath,slice:'slice-02',candidateRoot:copy.candidateRoot});
-  if(implementation.publication!=='confirmed') throw new Error('second implementation not published in fixture');
-  const afterImplementation=await readExecutionActivation(f.specPath);
-  const formal=await beginPreparedExecutionOperation(f.specPath,'VALIDATE_SLICE','2',afterImplementation.activation.activationId);
-  const formalResult=await withOwner(f,formal.owner,async()=>{
-    const formalStart=await startNativeRunnerCapture({specPath:f.specPath,owner:formal.owner,
+  const imports=[...first.input.source.imports],controls=new Map(first.input.source.controls);
+  for(const ordinal of thirdActive?['03','02']:['02']) {
+    const selected=`slice-${ordinal}`;
+    const selectedTarget=thirdActive&&ordinal==='02'?path.join(f.root,'third/later.mjs'):target;
+    const relative=path.relative(path.join(f.execution,'tasks'),selectedTarget).split(path.sep).join('/');
+    const installed=await readExecutionActivation(f.specPath);
+    const implemented=await beginPreparedExecutionOperation(f.specPath,'EXECUTE_SLICE',String(Number(ordinal)),installed.activation.activationId);
+    const firstStart=await startNativeRunnerCapture({specPath:f.specPath,owner:implemented.owner,
       workspace:f.root,captureParent:f.root});
-    const formalAgentId=`e2-native-${randomUUID()}`;
-    await bindNativeRunnerIdentity({...formalStart,agentId:formalAgentId});
-    const parent=await fs.mkdtemp(path.join(f.root,'e2-formal-'));
-    test.after(()=>fs.rm(parent,{recursive:true,force:true}));
-    const candidate=await prepareValidationCopy({specPath:f.specPath,slice:'slice-02',candidateParent:parent,owner:formal.owner});
-    const formalResponse={status:'PASS',head:'offline-working-tree',commands:[{command,exit:0}],
-      evidence:'Prepared assertion executed; the independent semantic judgment is an offline stimulus.',
-      findingReferences:'none',findingDispositions:'none',blockers:'none',unexpectedWorkspaceEffects:'none',
-      persistenceSummary:'Preserve concluded formal PASS'};
-    const formalRound=await nativeRound(f,formal.owner,formalResponse,null,
-      {start:formalStart,agentId:formalAgentId});
-    const prepared=await prepareValidationCandidate({specPath:f.specPath,slice:'slice-02',workspace:f.root,
-      candidateExecutionRoot:candidate.candidateExecutionRoot,...formalRound.captured});
-    if(prepared.formalStatus!=='PASS') throw new Error('second formal did not pass in fixture');
-    const publication=await publishValidationCandidate({specPath:f.specPath,slice:'slice-02',
-      candidateExecutionRoot:candidate.candidateExecutionRoot,owner:formal.owner});
-    if(publication.publication!=='confirmed') throw new Error('second formal not published in fixture');
-    return {formalRound,publication};
-  });
-  const second=await secondBoundary(f,formalResult.formalRound,formalResult.publication);
-  const imports=[...first.input.source.imports,{slice:'slice-02',implementation:[],validation:null,
-    objects:new Map(),boundary:second.boundary}];
-  const controls=new Map([...first.input.source.controls,...second.controls]);
+    const firstAgentId=`e2-native-${randomUUID()}`;
+    await bindNativeRunnerIdentity({...firstStart,agentId:firstAgentId});
+    const copy=await prepareExecutionCopy({specPath:f.specPath,slice:selected,owner:implemented.owner});
+    test.after(()=>fs.rm(copy.candidateRoot,{recursive:true,force:true}));
+    await fs.writeFile(selectedTarget,'export const greeting="hello";\n');
+    let task=await fs.readFile(copy.candidateTaskArtifact,'utf8');
+    task=section(task.replace('- [ ] 1.1','- [x] 1.1'),'Changed Areas',`- \`${relative}\``);
+    task=section(task,'Diff Summary','- Added the second approved output and ran the prepared check.');
+    await fs.writeFile(copy.candidateTaskArtifact,task);
+    const recipe=await readRunnerVerification(f.specPath,selected);
+    const command=verificationCommand(recipe.checks[0]);
+    const response={status:'TESTS_PASS',automaticCheckRound:'1/3',head:'offline-working-tree',
+      discoverySources:'approved Task and prepared assertion',discoveryActions:'checked the greeting result',
+      verificationTypesConsidered:'prepared Node assertion',nonApplicabilityRationale:'none',
+      noVerificationCommandConfirmation:'none',commands:[{command,exit:0}],
+      resultOfEachCommandAndExitCode:'Prepared assertion exited 0',selectedChecks:command,
+      selectionRationale:'Observe AC-001 export',coverage:'AC-001 export value',failures:'none',
+      priorRoundFailure:'none',correctionApplied:'none',inSliceRationale:'none',
+      evidenceOrFailureSummary:'Prepared check exited zero',affectedFilesOrBehaviors:'second approved output',
+      blockers:'none',unexpectedWorkspaceEffects:'none',persistenceSummary:'Preserve concluded native check'};
+    const round=await nativeRound(f,implemented.owner,response,[relative],{start:firstStart,agentId:firstAgentId});
+    const bundle=await serializeRunnerExecutionBundleFromResponse({operation:'EXECUTE_SLICE',
+      response:JSON.stringify(response),workspace:f.root,taskArtifact:copy.candidateTaskArtifact,...round.captured});
+    await insertExecutionEvidenceInCandidate({taskArtifact:copy.candidateTaskArtifact,operation:'EXECUTE_SLICE',bundle,
+      validateProspectiveTask:text=>validateExecutionCandidate(f.specPath,copy.candidateExecutionRoot,[text])});
+    const implementation=await publishExecutionCopy({specPath:f.specPath,slice:selected,candidateRoot:copy.candidateRoot});
+    if(implementation.publication!=='confirmed') throw new Error('second implementation not published in fixture');
+    const afterImplementation=await readExecutionActivation(f.specPath);
+    const formal=await beginPreparedExecutionOperation(f.specPath,'VALIDATE_SLICE',String(Number(ordinal)),afterImplementation.activation.activationId);
+    const formalResult=await withOwner(f,formal.owner,async()=>{
+      const formalStart=await startNativeRunnerCapture({specPath:f.specPath,owner:formal.owner,
+        workspace:f.root,captureParent:f.root});
+      const formalAgentId=`e2-native-${randomUUID()}`;
+      await bindNativeRunnerIdentity({...formalStart,agentId:formalAgentId});
+      const parent=await fs.mkdtemp(path.join(f.root,'e2-formal-'));
+      test.after(()=>fs.rm(parent,{recursive:true,force:true}));
+      const candidate=await prepareValidationCopy({specPath:f.specPath,slice:selected,candidateParent:parent,owner:formal.owner});
+      const formalResponse={status:'PASS',head:'offline-working-tree',commands:[{command,exit:0}],
+        evidence:'Prepared assertion executed; the independent semantic judgment is an offline stimulus.',
+        findingReferences:'none',findingDispositions:'none',blockers:'none',unexpectedWorkspaceEffects:'none',
+        persistenceSummary:'Preserve concluded formal PASS'};
+      const formalRound=await nativeRound(f,formal.owner,formalResponse,null,
+        {start:formalStart,agentId:formalAgentId});
+      const prepared=await prepareValidationCandidate({specPath:f.specPath,slice:selected,workspace:f.root,
+        candidateExecutionRoot:candidate.candidateExecutionRoot,...formalRound.captured});
+      if(prepared.formalStatus!=='PASS') throw new Error('second formal did not pass in fixture');
+      const publication=await publishValidationCandidate({specPath:f.specPath,slice:selected,
+        candidateExecutionRoot:candidate.candidateExecutionRoot,owner:formal.owner});
+      if(publication.publication!=='confirmed') throw new Error('second formal not published in fixture');
+      return {formalRound,publication};
+    });
+    const second=await secondBoundary(f,formalResult.formalRound,formalResult.publication);
+    imports.push({slice:selected,implementation:[],validation:null,objects:new Map(),boundary:second.boundary});
+    for(const [name,bytes]of second.controls)controls.set(name,bytes);
+  }
   return {f,input:await captureLegacy(f,{controls,imports})};
 }
 
@@ -178,6 +216,7 @@ export async function convertedImage(test,{kind='native-s1'}={}) {
       :kind==='managed-s1'?await managedFilelessPass(test)
       :kind==='disjoint-s0'?await disjointDomainS0(test)
       :kind==='two-s2'?await twoDeliveryS2(test)
+      :kind==='three-s2'?await twoDeliveryS2(test,{thirdActive:true})
       :kind==='s0'?await (async()=>{
         const f=await fixture({test});await approveFixture(f);
         return {f,input:await captureLegacy(f)};

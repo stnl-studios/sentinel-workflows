@@ -131,7 +131,7 @@ function section(text,heading,body) {
 // concluded capture bytes. The assertions in the focal test use independent
 // literal IDs/statuses and physical bytes, never a producer result as expected.
 export async function producerInitialImage({transport='native',status='TESTS_PASS',statuses=[status],retainSecond=false,
-  retainedRemoval=false,historicalCanary=false,semanticRejection=false,authored=false,extraOutput=false}={}) {
+  retainedRemoval=false,historicalCanary=false,semanticRejection=false,authored=false,extraOutput=false,secondIndependent=false,thirdActive=false}={}) {
   if(extraOutput && (authored || retainSecond || retainedRemoval || semanticRejection || statuses.length!==1))
     throw new Error('spaced-output fixture declares one accepted Initial round');
   if (semanticRejection) {
@@ -143,6 +143,7 @@ export async function producerInitialImage({transport='native',status='TESTS_PAS
   if (retainedRemoval && transport!=='native') throw new Error('retained removal fixture uses native captures');
   const fixture=await authoredImage({kind:'lifecycle',withExecution:false});
   const source=await import('./current-initial-evidence.mjs');
+  const secondRecipe=secondIndependent?JSON.parse(JSON.stringify(source.RECIPE).replaceAll('src/pay.mjs','verify/check.mjs')):source.RECIPE;
   const preparation=authored?null:await import('../../skills/workflows/stnl-slice-executor/runtime/execution-preparation-current.mjs');
   const evidence=authored?null:await import('../../skills/workflows/stnl-slice-executor/runtime/execution-evidence-current.mjs');
   const put=(name,text)=>fixture.artifacts.set(name,encoded(text));
@@ -151,7 +152,7 @@ export async function producerInitialImage({transport='native',status='TESTS_PAS
   edit(plan,'Global Context',`- Requirements source: \`../feature_spec.md\`\n- Requirements authority: ${fixture.authority}\n- Plan revision: 1\n- Objective: Deliver pay command.\n- Strategy: One delivery.\n- Review state: approved`);
   edit(plan,'Serial Slice Order','| Slice | Observable delivery | Dependencies | Requirements | Authorized areas | Detailed plan |\n'
     +'|---|---|---|---|---|---|\n| 01 - Foundation | Pay command executes. | - | AC-001 | directory: `../../../src` | plans/slice-01.md |'
-    +(retainSecond?'\n| 02 - Verification | Pay export verified. | slice-01 | AC-001 | directory: `../../../src` | plans/slice-02.md |':''));
+    +(retainSecond?`\n| 02 - Verification | Pay export verified. | slice-01 | AC-001 | directory: \`../../../${secondIndependent?'verify':'src'}\` | plans/slice-02.md |`:''));
   edit(plan,'Global Risks and Integration','- Local checks only.');
   put('tasks.md',(retainSecond?fixture.artifacts.get('tasks.md').toString('utf8')
     :fixture.artifacts.get('tasks.md').toString('utf8').replace(/^\| \[ \] \| 02 - Verification.*\n/mu,''))
@@ -174,8 +175,10 @@ export async function producerInitialImage({transport='native',status='TESTS_PAS
   ]) edit(task,heading,body);
   if (retainSecond) for (const name of ['plans/slice-02.md','tasks/slice-02.md']) for (const [heading,body] of [
     ['Existing Inputs',source.DELIVERY.existingInputs],
-    ['Expected Tests',source.DELIVERY.expectedTests],
-    ['Verification Recipe',`- Recipe: ${JSON.stringify(source.RECIPE)}`],
+    ['Expected Tests',secondIndependent?'- node verify/check.mjs':source.DELIVERY.expectedTests],
+    ['Verification Recipe',`- Recipe: ${JSON.stringify(secondRecipe)}`],
+    ...(secondIndependent?[['Authorized Areas','- directory: `../../../../verify`'],
+      ['Expected Files','- `../../../../verify/check.mjs`']]:[]),
   ]) edit(name,heading,body);
   if (!retainSecond) {fixture.artifacts.delete('plans/slice-02.md');fixture.artifacts.delete('tasks/slice-02.md');}
   const context={logicalSpecRoot:fixture.spec,logicalAuthorityPath:fixture.source,
@@ -187,14 +190,38 @@ export async function producerInitialImage({transport='native',status='TESTS_PAS
   const second=structuredClone(fixture.snapshot.normativeProjection.deliveries[1]);
   Object.assign(second,{existingInputs:source.DELIVERY.existingInputs,expectedTests:source.DELIVERY.expectedTests,
     verificationRecipe:structuredClone(source.RECIPE)});
+  if(secondIndependent) Object.assign(second,{authorizedAreas:'- directory: `../../../../verify`',
+    expectedTests:'- node verify/check.mjs',verificationRecipe:structuredClone(secondRecipe)});
   const projection={format:'stnl-preparation-projection-v3',requirementsAuthority:fixture.authority,
     global:{objective:'Deliver pay command.',strategy:'One delivery.',risks:'- Local checks only.',
       order:retainSecond?DELIVERY_IDS:[DELIVERY_IDS[0]]},deliveries:[leaf,...(retainSecond?[second]:[])],completed:[]};
+  const thirdId='33333333-7777-4777-8777-333333333333';
+  if(thirdActive) {
+    if(!retainSecond||!secondIndependent) throw new Error('three-delivery fixture requires independent verification domain');
+    const third={...structuredClone(second),deliveryId:thirdId};
+    third.obligations[0].contribution='partial';third.obligations[0].fullOwner='slice-02';
+    second.dependencies.push(thirdId);projection.deliveries.splice(1,0,third);
+    projection.global.order=[DELIVERY_IDS[0],thirdId,DELIVERY_IDS[1]];
+    for(const group of ['plans','tasks']) {
+      const text=fixture.artifacts.get(`${group}/slice-02.md`).toString('utf8')
+        .replaceAll('slice-02','slice-03').replaceAll('Slice 02','Slice 03').replace('- Slice: 02','- Slice: 03')
+        .replaceAll(DELIVERY_IDS[1],thirdId).replace(' - Verification',' - Earlier verification')
+        .replace('contribution: complete | full owner: slice-03','contribution: partial | full owner: slice-02');
+      put(`${group}/slice-03.md`,text);
+    }
+    edit('plans/slice-02.md','Dependencies','- slice-01\n- slice-03');
+    for(const name of ['plan.md','tasks.md']) {
+      const text=fixture.artifacts.get(name).toString('utf8'),row=text.split('\n').find(line=>line.includes('02 - Verification'));
+      const thirdRow=row.replace('02 - Verification','03 - Earlier verification').replaceAll('slice-02.md','slice-03.md');
+      put(name,text.replace(row,thirdRow+'\n'+row.replace('| slice-01 |','| slice-01, slice-03 |')));
+    }
+  }
+  const selector=item=>item.deliveryId===thirdId?'slice-03':`slice-0${DELIVERY_IDS.indexOf(item.deliveryId)+1}`;
   const declared={normativeProjection:projection,normativeSha256:projected('preparation',canonical(projection)),
     globalReviewAuthoritySha256:projected('global-review',canonical({requirementsAuthority:fixture.authority,
       global:projection.global,deliveryIds:projection.global.order,completed:[]})),
     artifactHashes:[...fixture.artifacts].map(([name,bytes])=>({path:name,sha256:raw(bytes)})).sort((a,b)=>sort(a.path,b.path)),
-    deliveries:projection.deliveries.map((item,i)=>({slice:`slice-0${i+1}`,deliveryId:item.deliveryId,
+    deliveries:projection.deliveries.map(item=>({slice:selector(item),deliveryId:item.deliveryId,
       authoritySha256:projected('delivery',canonical(item))}))};
   const approved=authored?declared:preparation.projectInitialPreparation({context,requirementsAuthority:fixture.authority,artifacts:fixture.artifacts});
   if (!retainSecond && canonical(approved.normativeProjection.deliveries[0])
@@ -203,16 +230,16 @@ export async function producerInitialImage({transport='native',status='TESTS_PAS
   const review={globalReview:{scope:'set',decision:'approved',authoritySha256:approved.globalReviewAuthoritySha256,
     examinedArtifactHashes:approved.artifactHashes.filter(item=>['plan.md','tasks.md'].includes(item.path)),
     evidenceDecisions:[],summary:'The reviewed bytes are approved.'},
-  deliveries:approved.deliveries.map((delivery,index)=>({deliveryId:delivery.deliveryId,
+  deliveries:approved.deliveries.map(delivery=>({deliveryId:delivery.deliveryId,
     review:{scope:'slice',decision:'approved',authoritySha256:delivery.authoritySha256,
       examinedArtifactHashes:approved.artifactHashes.filter(item=>[
-        `plans/slice-0${index+1}.md`,`tasks/slice-0${index+1}.md`].includes(item.path)),
+        `plans/${delivery.slice}.md`,`tasks/${delivery.slice}.md`].includes(item.path)),
       evidenceDecisions:[],summary:'The delivery bytes are approved.'}}))};
   let sealed;
   if(authored) {
     const snapshot={format:'stnl-preparation-v3',preparationRevision:1,requirementsAuthority:fixture.authority,
       normativeSha256:declared.normativeSha256,normativeProjection:projection,globalReview:review.globalReview,
-      deliveries:review.deliveries.map((item,i)=>({slice:`slice-0${i+1}`,deliveryId:item.deliveryId,localRevision:1,review:item.review})),
+      deliveries:review.deliveries.map(item=>({slice:selector(item),deliveryId:item.deliveryId,localRevision:1,review:item.review})),
       completed:[],reviewedArtifacts:[...fixture.artifacts].map(([name,bytes])=>({path:name,sha256:raw(bytes),utf8:bytes.toString('utf8')})).sort((a,b)=>sort(a.path,b.path))};
     sealed={snapshot,bytes:json(snapshot),authority:declared};
   } else sealed=preparation.approveInitialPreparation({context,requirementsAuthority:fixture.authority,
@@ -295,10 +322,15 @@ export async function producerInitialImage({transport='native',status='TESTS_PAS
     counters:composed.counters,baseline:firstBaseline,normalization:refusalNormalization,
     lastDiagnostic:refusalDiagnostic},
     ...(retainSecond?[{slice:'slice-02',deliveryId:DELIVERY_IDS[1],localRevision:1,
-      authoritySha256:approved.deliveries[1].authoritySha256,validation:'unvalidated',evidence:null,
+      authoritySha256:approved.deliveries.find(item=>item.deliveryId===DELIVERY_IDS[1]).authoritySha256,validation:'unvalidated',evidence:null,
       counters:{implementationChecks:0,findingsChecks:0,validationAttempts:0,findings:0},
       baseline:source.manifest(captures.length),normalization:null,lastDiagnostic:null}]:[])];
-  fixture.continuity.nextSliceOrdinal=retainSecond?3:2;
+  if(thirdActive) {
+    const third={...structuredClone(fixture.continuity.deliveries[1]),slice:'slice-03',deliveryId:thirdId,
+      authoritySha256:approved.deliveries.find(item=>item.deliveryId===thirdId).authoritySha256};
+    fixture.continuity.deliveries.splice(1,0,third);
+  }
+  fixture.continuity.nextSliceOrdinal=thirdActive?4:retainSecond?3:2;
   fixture.files.set(`evidence/${DELIVERY_IDS[0]}.json`,Buffer.from(composed.bytes));
   editSection(fixture,'slice-01','Implementation Test Evidence',composed.bundle.implementation.map(item=>item.recordUtf8).join('\n\n')||'- none');
   editSection(fixture,'slice-01','Continuity',`- Current validation: ${semanticRejection?'uncertain':'unvalidated'}\n- Current evidence: evidence/${DELIVERY_IDS[0]}.json\n- Current action: ${semanticRejection?'Resolve the retained diagnostic':'VALIDATE_SLICE'}`);
@@ -646,9 +678,9 @@ function adaptCapture(fixture,source,capture) {
   return Object.fromEntries(Object.entries(capture).map(([name,value])=>[name,
     value instanceof Uint8Array?adapt(value):Array.isArray(value)?value.map(item=>item instanceof Uint8Array?adapt(item):item):value]));
 }
-export async function authoredCyclesImage({transport='native',cycles=1,removal=false,pass=true,retainSecond=false,producer=false}={}) {
+export async function authoredCyclesImage({transport='native',cycles=1,removal=false,pass=true,retainSecond=false,producer=false,secondIndependent=false,thirdActive=false}={}) {
   if(!Number.isSafeInteger(cycles) || cycles<1 || cycles>8) throw new Error('bounded authored cycle count');
-  const fixture=await producerInitialImage({transport,authored:true,retainSecond});
+  const fixture=await producerInitialImage({transport,authored:true,retainSecond,secondIndependent,thirdActive});
   const source=await import('./current-initial-evidence.mjs');
   const formal=await import('./current-validation-evidence.mjs');
   const oracle=await import('./current-findings-evidence.mjs');
@@ -802,8 +834,8 @@ export async function storeBundle(fixture,bundle) {
   reseal(fixture);await writeImage(fixture);
 }
 
-export async function authoredCompletedImage({pass=true}={}) {
-  const f=await authoredCyclesImage({retainSecond:true,pass});
+export async function authoredCompletedImage({pass=true,secondIndependent=false}={}) {
+  const f=await authoredCyclesImage({retainSecond:true,pass,secondIndependent});
   const done=f.continuity.deliveries.shift();
   if(!pass) done.validation='current';
   f.continuity.completed=[done];
@@ -839,8 +871,8 @@ export async function authoredCompletedImage({pass=true}={}) {
 
 // A and B have independent product directories and share only an approved input.
 // Captures and records are authored with the builtin-only oracle, not the reader.
-export async function authoredCompletedWithActiveProof({formal=true}={}) {
-  const f=await authoredCompletedImage();
+export async function authoredCompletedWithActiveProof({formal=true,historicalShaOverride=null}={}) {
+  const f=await authoredCompletedImage({secondIndependent:true});
   const source=await import('./current-initial-evidence.mjs');
   const templates=await import('./current-validation-evidence.mjs');
   const oracle=await import('./current-findings-evidence.mjs');
@@ -862,7 +894,7 @@ export async function authoredCompletedWithActiveProof({formal=true}={}) {
   const projection=f.snapshot.normativeProjection;
   const historical={...structuredClone(projection),global:{...projection.global,order:DELIVERY_IDS},
     deliveries:[projection.completed[0],leaf],completed:[]};
-  const historicalSha=projected('preparation',canonical(historical));
+  const historicalSha=historicalShaOverride??projected('preparation',canonical(historical));
   const authority={preparationRevision:1,localRevision:1,normativeSha256:historicalSha,
     delivery:structuredClone(leaf),context:{requirementsAuthority:f.authority,
       objective:projection.global.objective,strategy:projection.global.strategy,risks:projection.global.risks}};
@@ -935,7 +967,7 @@ export async function authoredCompletedWithActiveProof({formal=true}={}) {
   snapshot.normativeSha256=projected('preparation',canonical(projection));
   f.activation.normativeSha256=snapshot.normativeSha256;
   f.files.set('approved-preparation.json',json(snapshot));
-  f.activeProof={initial,capture,authority};
+  f.activeProof={initial,capture,authority,adapt,first,work};
   reseal(f);await writeImage(f);return f;
 }
 

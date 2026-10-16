@@ -178,15 +178,18 @@ function initialOwner(bundle,map) {
   const cap=restoreCaptureSources('initial-implementation',first,map);
   return jsonBytes(cap.transport==='native' ? cap.origin : cap.managedContext,'initial owner source').value.owner;
 }
-function initialBundle(bundle,map) {
+function initialBundle(bundle,map,approvedAuthority) {
   return {...bundle,validation:null,openFindings:[],openDivergences:[],support:[],
+    // Reconstruct the original Initial index while retaining literal records and
+    // source objects; a later approved current index is not part of that origin.
+    currentAuthoritySha256:projectedDelivery(approvedAuthority.delivery),
     objects:referencedObjects(bundle.implementation,map)};
 }
 function verifyInitial(bundle,context,approvedAuthority,map) {
   if (!bundle.implementation.length || bundle.implementation.length>3) invalid('initial check count');
   const originOwner=initialOwner(bundle,map);
   const base={context,authority:approvedAuthority,owner:originOwner,currentEvidence:null,
-    counters:{implementationChecks:0,findingsChecks:0,validationAttempts:0,findings:0},bundleBytes:encode(initialBundle(bundle,map))};
+    counters:{implementationChecks:0,findingsChecks:0,validationAttempts:0,findings:0},bundleBytes:encode(initialBundle(bundle,map,approvedAuthority))};
   validateInitialImplementationEvidence(base);
   const last=bundle.implementation.at(-1);
   const cap=restoreCaptureSources('initial-implementation',last,map);
@@ -584,7 +587,7 @@ function deriveCapture({context,authority:approvedAuthority,capture,expectedOwne
 const postFilelessReason='No approved product output paths were present in the captured domain.';
 const postAuthority=(snapshot,current)=>({preparationRevision:snapshot.preparationRevision,
   localRevision:current.localRevision,normativeSha256:current.authoritySha256,
-  delivery:snapshot.normativeProjection.deliveries.find(item=>item.deliveryId===current.deliveryId),
+  delivery:[...snapshot.normativeProjection.deliveries,...snapshot.normativeProjection.completed].find(item=>item.deliveryId===current.deliveryId),
   context:{requirementsAuthority:snapshot.requirementsAuthority,
     objective:snapshot.normativeProjection.global.objective,
     strategy:snapshot.normativeProjection.global.strategy,
@@ -657,15 +660,27 @@ function postCaptureProof({context,snapshotBytes,current,capture,expectedBase,ad
   return derived;
 }
 
+// retainedRead selects literal historical proof authority for read-only source
+// verification. It does not authorize retention: the reader must subsequently
+// prove current contract/ownership equivalence before exposing current validity.
 export async function inspectPostConversionEvidence({context,snapshotBytes,current,bundleBytes,observedWork,
-  admissionRef=null,lastAttempt=null,preparationProfile='converted-current'}) {
+  admissionRef=null,lastAttempt=null,preparationProfile='converted-current',retainedEvidence=null,retainedRead=null}) {
   const {validateCurrentPreparation}=await import('./execution-preparation-current.mjs');
   const snapshot=jsonBytes(snapshotBytes,'approved-preparation.json').value;
   const reviewed=new Map(snapshot.reviewedArtifacts.map(item=>[item.path,utf8(item.utf8)]));
   validateCurrentPreparation({context,requirementsAuthority:snapshot.requirementsAuthority,
-    snapshotBytes,artifacts:reviewed,profile:preparationProfile});
-  if(!snapshot.deliveries.some(item=>item.deliveryId===current.deliveryId && item.slice===current.slice))
+    snapshotBytes,artifacts:reviewed,profile:preparationProfile,retainedEvidence});
+  if(![...snapshot.deliveries,...snapshot.completed].some(item=>item.deliveryId===current.deliveryId && item.slice===current.slice))
     fail('UNSUPPORTED_FORMAT','post-conversion local review is not supported');
+  if(retainedRead!==null) {
+    closed(retainedRead,['authority','snapshotDigest'],'retained native read');
+    authority(retainedRead.authority,context);
+    if(!HASH.test(retainedRead.snapshotDigest))invalid('retained snapshot digest');
+  }
+  const baseFor=(predecessor,scope,findings=[],auxiliary=null,digest=null)=>
+    postBase(snapshotBytes,predecessor,scope,findings,auxiliary,digest??retainedRead?.snapshotDigest??null);
+  const verifyCapture=options=>postCaptureProof({...options,historicalProof:options.historicalProof??retainedRead});
+  const recurse=options=>inspectPostConversionEvidence({preparationProfile,retainedEvidence,retainedRead,...options});
   if(current.localRevision===2 && bundleBytes!==null
     && jsonBytes(bundleBytes,'reviewed evidence').value.validation?.origin?.localRevision===1) {
     const bundle=jsonBytes(bundleBytes,'historical local review evidence').value;
@@ -678,7 +693,7 @@ export async function inspectPostConversionEvidence({context,snapshotBytes,curre
     const historical=old?.recordFormat==='stnl-task-record-v2'
       && old.origin?.operation==='VALIDATE_SLICE'
       && old.origin?.deliveryId===current.deliveryId && old.origin?.slice===current.slice
-      && old.origin?.preparationRevision===snapshot.preparationRevision-1
+      && old.origin?.preparationRevision<snapshot.preparationRevision
       && old.origin?.localRevision===1
       && old.origin?.normativeSha256===currentDeliveryAuthoritySha256(oldLeaf)
       && old.contract?.recipe && same(old.contract.recipe,oldLeaf.verificationRecipe)
@@ -711,12 +726,12 @@ export async function inspectPostConversionEvidence({context,snapshotBytes,curre
     const predecessor={evidence:{sha256:request.base.evidenceSha256},counters:request.base.counters,
       baseline:request.base.baseline,validation:request.base.validation,
       lastDiagnostic:request.base.lastDiagnostic};
-    const expected=postBase(snapshotBytes,predecessor,request.base.priorScopePaths,
+    const expected=baseFor(predecessor,request.base.priorScopePaths,
       request.base.openFindings,request.base.auxiliary,oldDigest);
     const historicalProof={snapshotDigest:oldDigest,authority:{
       preparationRevision:old.origin.preparationRevision,localRevision:1,
       normativeSha256:old.origin.normativeSha256,delivery:oldLeaf,context:old.contract.context}};
-    const derived=postCaptureProof({context,snapshotBytes,current,capture:captured,
+    const derived=verifyCapture({context,snapshotBytes,current,capture:captured,
       expectedBase:expected,historicalProof});
     if(!same(old,{...derived.recordDraft,sources:old.sources})
       || derived.payload.status!=='PASS'
@@ -766,9 +781,9 @@ export async function inspectPostConversionEvidence({context,snapshotBytes,curre
       counters:request.base.counters,baseline:request.base.baseline,
       validation:request.base.validation,lastDiagnostic:request.base.lastDiagnostic,
       normalization:null};
-    const expected=postBase(snapshotBytes,before,request.base.priorScopePaths,
+    const expected=baseFor(before,request.base.priorScopePaths,
       request.base.openFindings,request.base.auxiliary??null);
-    const derived=postCaptureProof({context,snapshotBytes,current:before,capture,
+    const derived=verifyCapture({context,snapshotBytes,current:before,capture,
       expectedBase:expected,admissionRef,allowRejection:true});
     if(!derived.rejection || latest.operationAttemptId!==derived.origin.operationAttemptId
       || latest.diagnostic!==derived.rejection || !same(latest.origin,derived.origin)
@@ -808,7 +823,7 @@ export async function inspectPostConversionEvidence({context,snapshotBytes,curre
       if(raw(priorBytes)!==request.base.evidenceSha256)
         stale('rejection predecessor retained bytes differ');
       const baseActivation=jsonBytes(capture.origin,'rejection origin').value.admission.baseActivation;
-      priorFacts=await inspectPostConversionEvidence({context,snapshotBytes,current:{...before,
+      priorFacts=await recurse({context,snapshotBytes,current:{...before,
         evidence:{path:current.evidence.path,sha256:raw(priorBytes)},
         normalization:inherited?{episodeId:inherited.episodeId,operation:inherited.operation,
           causeSha256:inherited.causeSha256,sourceOperationAttemptId:inherited.sourceOperationAttemptId,
@@ -864,15 +879,15 @@ export async function inspectPostConversionEvidence({context,snapshotBytes,curre
         counters:formalRequest.base.counters,baseline:formalRequest.base.baseline,
         validation:formalRequest.base.validation,lastDiagnostic:formalRequest.base.lastDiagnostic,
         normalization:null};
-      const predecessor=await inspectPostConversionEvidence({context,snapshotBytes,current:priorCurrent,
+      const predecessor=await recurse({context,snapshotBytes,current:priorCurrent,
         bundleBytes:priorBytes,observedWork:priorCurrent.baseline,
         lastAttempt:baseActivation?.lastAttempt??null,
         admissionRef:baseActivation?.lastAttempt?.operationRef??null});
       if(predecessor.cycle?.owner.operationAttemptId!==formalRequest.base.auxiliary.operationAttemptId
         || predecessor.rejection) invalid('formal predecessor is not a concluded successor APPLY');
-      const expected=postBase(snapshotBytes,priorCurrent,formalRequest.base.priorScopePaths,
+      const expected=baseFor(priorCurrent,formalRequest.base.priorScopePaths,
         formalRequest.base.openFindings,formalRequest.base.auxiliary);
-      const derived=postCaptureProof({context,snapshotBytes,current:priorCurrent,capture:formalCap,
+      const derived=verifyCapture({context,snapshotBytes,current:priorCurrent,capture:formalCap,
         expectedBase:expected,admissionRef});
       const record={...derived.recordDraft,sources:bundle.validation.sources};
       if(!same(bundle.validation,record) || !same(bundle.openFindings,derived.open)
@@ -948,7 +963,7 @@ export async function inspectPostConversionEvidence({context,snapshotBytes,curre
         reason:priorChecked.cycle.rejection.diagnostic,affectedPaths:priorChecked.cycle.lastScope,
         nextAction:'normalize'}};
     const baseActivation=jsonBytes(cap.origin,'successor origin').value.admission.baseActivation;
-    const predecessor=await inspectPostConversionEvidence({context,snapshotBytes,current:priorCurrent,
+    const predecessor=await recurse({context,snapshotBytes,current:priorCurrent,
       bundleBytes:priorBytes,observedWork:priorBaseline,lastAttempt:baseActivation.lastAttempt,
       admissionRef:baseActivation.lastAttempt?.operationRef??null});
     if(predecessor.consumption.kind!=='bounded-findings-rejection'
@@ -1078,7 +1093,7 @@ export async function inspectPostConversionEvidence({context,snapshotBytes,curre
         stale('findings successor retained predecessor bytes differ');
       const {sourceEvidenceSha256,sourceActivationId,...normalization}=inherited;
       const baseActivation=jsonBytes(latestCapture.origin,'findings successor origin').value.admission.baseActivation;
-      const predecessor=await inspectPostConversionEvidence({context,snapshotBytes,
+      const predecessor=await recurse({context,snapshotBytes,
         current:{...current,evidence:{path:current.evidence.path,sha256:raw(priorBytes)},
           counters:latestRequest.base.counters,baseline:latestRequest.base.baseline,
           validation:latestRequest.base.validation,lastDiagnostic:latestRequest.base.lastDiagnostic,
@@ -1147,7 +1162,7 @@ export async function inspectPostConversionEvidence({context,snapshotBytes,curre
   const request=jsonBytes(capture.validationRequest,'post-conversion request').value;
   const admission=jsonBytes(capture.origin,'post-conversion native origin').value.admission;
   const siblingLeaf=snapshot.normativeProjection.deliveries.find(item=>item.deliveryId===current.deliveryId);
-  const historicalSibling=current.localRevision===1 && snapshot.deliveries.length===2
+  const historicalSibling=retainedRead??(current.localRevision===1 && snapshot.deliveries.length===2
     && snapshot.deliveries.filter(item=>item.localRevision===2).length===1
     && snapshot.deliveries.some(item=>item.deliveryId===current.deliveryId && item.localRevision===1)
     && record.origin.preparationRevision===snapshot.preparationRevision-1
@@ -1163,7 +1178,7 @@ export async function inspectPostConversionEvidence({context,snapshotBytes,curre
     && bundle.openFindings.length===0 && formalRejections.length===0
     ?{authority:{...postAuthority(snapshot,current),
       preparationRevision:record.origin.preparationRevision},
-      snapshotDigest:request.base.approvedSnapshotSha256}:null;
+      snapshotDigest:request.base.approvedSnapshotSha256}:null);
   if(historicalPrior.length) {
     const old=historicalPrior[0];
     const priorBundle={...bundle,validation:old,support:[],openFindings:[],
@@ -1175,7 +1190,7 @@ export async function inspectPostConversionEvidence({context,snapshotBytes,curre
     const priorCurrent={...current,evidence:{path:current.evidence.path,sha256:raw(priorBytes)},
       counters:request.base.counters,baseline:request.base.baseline,
       validation:request.base.validation,lastDiagnostic:request.base.lastDiagnostic};
-    const predecessor=await inspectPostConversionEvidence({context,snapshotBytes,current:priorCurrent,
+    const predecessor=await recurse({context,snapshotBytes,current:priorCurrent,
       bundleBytes:priorBytes,observedWork:priorCurrent.baseline,
       lastAttempt:origin.admission?.baseActivation?.lastAttempt??null});
     if(!predecessor.requiresFormalRevalidation || predecessor.formalStatus!==null)
@@ -1200,7 +1215,7 @@ export async function inspectPostConversionEvidence({context,snapshotBytes,curre
       counters:request.base.counters,baseline:request.base.baseline,
       validation:request.base.validation,lastDiagnostic:request.base.lastDiagnostic,
       normalization};
-    const predecessor=await inspectPostConversionEvidence({context,snapshotBytes,current:priorCurrent,
+    const predecessor=await recurse({context,snapshotBytes,current:priorCurrent,
       bundleBytes:priorBytes,observedWork:priorCurrent.baseline,
       lastAttempt:origin.admission.baseActivation.lastAttempt,
       admissionRef:origin.admission.baseActivation.lastAttempt?.operationRef??null});
@@ -1209,9 +1224,9 @@ export async function inspectPostConversionEvidence({context,snapshotBytes,curre
   }
   const predecessor={evidence:{sha256:request.base.evidenceSha256},counters:request.base.counters,
     baseline:request.base.baseline,validation:request.base.validation,lastDiagnostic:request.base.lastDiagnostic};
-  const expected=postBase(snapshotBytes,predecessor,request.base.priorScopePaths,[],null,
+  const expected=baseFor(predecessor,request.base.priorScopePaths,[],null,
     historicalSibling?.snapshotDigest??null);
-  const derived=postCaptureProof({context,snapshotBytes,current,capture,expectedBase:expected,admissionRef,
+  const derived=verifyCapture({context,snapshotBytes,current,capture,expectedBase:expected,admissionRef,
     historicalProof:historicalSibling});
   if(!same(record,{...derived.recordDraft,sources:record.sources})
     || !same(bundle.openFindings,derived.open)
@@ -2131,8 +2146,8 @@ function currentRemovalSupport(bundle,map,context,cycle,admission,latest,retaine
   for (const [key,records] of retained.groups) if (!demandedGroups.has(records)) invalid(`undemanded removal cycle retained ${key}`);
   return proven;
 }
-function inspectFindings(original,bundle,context,approvedAuthority,declaredCounters,observedWork,post=null) {
-  if (bundle.openDivergences.length || bundle.currentAuthoritySha256!==projectedDelivery(approvedAuthority.delivery)) invalid('findings bundle authority/divergence');
+function inspectFindings(original,bundle,context,approvedAuthority,declaredCounters,observedWork,post=null,currentAuthoritySha256=null) {
+  if (bundle.openDivergences.length || bundle.currentAuthoritySha256!==(currentAuthoritySha256??projectedDelivery(approvedAuthority.delivery))) invalid('findings bundle authority/divergence');
   if (bundle.objects.reduce((total,item)=>total+Buffer.from(item.bytesBase64,'base64').length,0)>128*1024*1024)
     incomplete('findings retained capture exceeds 128 MiB');
   const map=sourceMap(bundle);
@@ -2246,7 +2261,7 @@ function inspectFindings(original,bundle,context,approvedAuthority,declaredCount
   return {bundle,original,map,initial:null,latest,rejected,origins:formals,priorFiles,cycle,
     counters:structuredClone(declaredCounters),outcome:rejected?'rejected':'recorded',formalStatus:status,validation:state};
 }
-function inspect(bundleBytes,context,approvedAuthority,declaredCounters,observedWork,allowInitial=false) {
+function inspect(bundleBytes,context,approvedAuthority,declaredCounters,observedWork,allowInitial=false,currentAuthoritySha256=null) {
   const original=copyBytes(bundleBytes,'bundleBytes');
   const bundle=jsonBytes(original,'bundleBytes').value;
   validateCurrentEvidence(bundle);
@@ -2254,8 +2269,8 @@ function inspect(bundleBytes,context,approvedAuthority,declaredCounters,observed
     .some(record=>record.recordFormat==='stnl-task-record-v1-imported')) fail('MIGRATION_REQUIRED','imported evidence requires conversion');
   verifyWorkObservation('current-validation',{observedWork});
   if (bundle.findingsChecks.length || bundle.support.some(item=>item.kind==='rejection' && item.origin.operation==='APPLY_FINDINGS'))
-    return inspectFindings(original,bundle,context,approvedAuthority,declaredCounters,observedWork);
-  if (bundle.findingsChecks.length || bundle.openDivergences.length || bundle.currentAuthoritySha256!==projectedDelivery(approvedAuthority.delivery)) invalid('bundle formal authority/unsupported records');
+    return inspectFindings(original,bundle,context,approvedAuthority,declaredCounters,observedWork,null,currentAuthoritySha256);
+  if (bundle.findingsChecks.length || bundle.openDivergences.length || bundle.currentAuthoritySha256!==(currentAuthoritySha256??projectedDelivery(approvedAuthority.delivery))) invalid('bundle formal authority/unsupported records');
   if (bundle.implementation.some(item => item.recordFormat==='stnl-task-record-v1-imported')) fail('MIGRATION_REQUIRED','imported implementation record');
   if (bundle.implementation.some(item => item.recordFormat!=='stnl-task-record-v2' || item.contract.terminal!==null)) invalid('implementation record format/terminal');
   const map=sourceMap(bundle);
@@ -2587,8 +2602,12 @@ export function validateCurrentFindingsEvidence(input) {
 // Internal read-only bridge for the official EC-1 reader.  It uses the same
 // capture reconstruction as the formal and APPLY validators, but reports the
 // sealed verdict separately from the observation made on current product bytes.
-export function inspectCurrentEvidence({context,authority,bundleBytes,counters:declaredCounters,baseline:declaredBaseline,observedWork}) {
+// A supplied currentAuthoritySha256 binds the current index independently of the
+// literal source authority. Publication validators retain their strict default;
+// the read-only caller still owns the subsequent retention-equivalence gate.
+export function inspectCurrentEvidence({context,authority,bundleBytes,counters:declaredCounters,baseline:declaredBaseline,observedWork,currentAuthoritySha256=null}) {
   counters(declaredCounters,'current counters');
+  if(currentAuthoritySha256!==null&&!HASH.test(currentAuthoritySha256))invalid('current authority index digest');
   verifyWorkObservation('current-validation',{observedWork});
   if (bundleBytes === null) {
     equal(declaredCounters,{implementationChecks:0,findingsChecks:0,validationAttempts:0,findings:0},'INVALID_CURRENT_IMAGE','empty evidence counters');
@@ -2610,13 +2629,15 @@ export function inspectCurrentEvidence({context,authority,bundleBytes,counters:d
     if (!record) invalid('Initial rejection lacks capture');
     const cap=restoreCaptureSources('initial-implementation',record,map);
     const initialOwner=jsonBytes(cap.transport==='native'?cap.origin:cap.managedContext,'Initial owner').value.owner;
-    const isolated={...bundle,objects:referencedObjects([...bundle.implementation,...bundle.support],map)};
+    if(bundle.currentAuthoritySha256!==(currentAuthoritySha256??projectedDelivery(authority.delivery)))invalid('rejection current authority index');
+    const isolated={...bundle,currentAuthoritySha256:projectedDelivery(authority.delivery),
+      objects:referencedObjects([...bundle.implementation,...bundle.support],map)};
     const validated=validateInitialImplementationEvidence({context,authority,owner:initialOwner,currentEvidence:null,
       counters:{implementationChecks:0,findingsChecks:0,validationAttempts:0,findings:0},bundleBytes:encode(isolated)});
     equal(declaredCounters,validated.counters,'INVALID_CURRENT_IMAGE','Initial rejection counters');
     result={bundle,initial:null,latest:null,rejected:bundle.support.find(item=>item.kind==='rejection'),
       cycle:null,formalStatus:null,validation:'uncertain',counters:declaredCounters};
-  } else result=inspect(original,context,authority,declaredCounters,observedWork,true);
+  } else result=inspect(original,context,authority,declaredCounters,observedWork,true,currentAuthoritySha256);
   const firstInitial=bundle.implementation[0]??bundle.support.find(item=>item.kind==='rejection' && item.origin.operation==='EXECUTE_SLICE');
   const firstApply=bundle.findingsChecks[0]??bundle.support.find(item=>item.kind==='rejection' && item.origin.operation==='APPLY_FINDINGS');
   const first=firstApply??firstInitial;

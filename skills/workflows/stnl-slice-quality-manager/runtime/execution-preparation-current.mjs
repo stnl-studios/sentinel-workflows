@@ -166,9 +166,9 @@ function carrier(text, filename, heading, expectedSections = null, conversion = 
   }
   return {metadata, sections};
 }
-function table(body, header, label) {
+function table(body, header, label, allowEmpty=false) {
   const source = lines(body, label);
-  if (source.length < 3 || source[0] !== header[0] || source[1] !== header[1]) invalid(`${label}: invalid table header`);
+  if (source.length < (allowEmpty?2:3) || source[0] !== header[0] || source[1] !== header[1]) invalid(`${label}: invalid table header`);
   return source.slice(2).map(line => {
     if (!line.startsWith('|') || !line.endsWith('|')) invalid(`${label}: invalid table row`);
     const columns = line.slice(1, -1).split('|').map(item => item.trim());
@@ -260,11 +260,11 @@ function recipe(body, context, artifact, areas, inputs, label) {
 function obligations(body, label) {
   const result = [];
   for (const line of lines(body, label)) {
-    const found = /^- (obligation-[0-9]{2,}) \| requirement: ([A-Z][A-Z0-9]*-[0-9]+) \| contribution: (complete|partial) \| full owner: (slice-[0-9]{2,}) \| condition: ([^|]+) \| proof: ([^|]+)$/u.exec(line);
+    const found = /^- (obligation-[0-9]{2,}) \| requirement: ([A-Z][A-Z0-9]*-[0-9]+) \| contribution: (complete|partial) \| full owner: (slice-[0-9]{2,}|delivery:[a-f0-9-]+) \| condition: ([^|]+) \| proof: ([^|]+)$/u.exec(line);
     if (!found) invalid(`${label}: invalid obligation`);
     const item = {id: found[1], requirement: found[2], contribution: found[3], fullOwner: found[4],
       condition: populated(found[5].trim(), label), proof: populated(found[6].trim(), label)};
-    slice(item.fullOwner, label);
+    if(item.fullOwner.startsWith('delivery:')) uuid(item.fullOwner.slice(9),label);else slice(item.fullOwner, label);
     const n = Number(item.id.slice('obligation-'.length));
     if (!Number.isSafeInteger(n) || n < 1 || result.some(other => Number(other.id.slice('obligation-'.length)) === n)) invalid(`${label}: duplicate or invalid obligation ID`);
     result.push(item);
@@ -318,7 +318,7 @@ function project(value, withReview = false, conversion = false, local = null) {
   if (!Number.isSafeInteger(preparationRevision) || preparationRevision < planRevision)
     invalid('preparation revision precedes global plan revision');
   if (global['Review state'] !== (plan.metadata.status === 'ready' ? 'approved' : 'pending')) invalid('plan.md: review state differs from status');
-  const serialRows = table(plan.sections['Serial Slice Order'], PLAN_TABLE, 'plan.md Serial Slice Order').map(columns => {
+  const serialRows = table(plan.sections['Serial Slice Order'], PLAN_TABLE, 'plan.md Serial Slice Order',conversion).map(columns => {
     const identity = serial(columns[0], 'plan.md Slice');
     if (columns[5] !== `plans/${identity.slice}.md`) invalid(`${identity.slice}: detailed plan link differs`);
     return {...identity, delivery: populated(columns[1], 'observable delivery'), dependencies: dependencies(columns[2], 'serial dependencies'),
@@ -330,7 +330,7 @@ function project(value, withReview = false, conversion = false, local = null) {
   if (!same(actualNames, expectedNames)) invalid('preparation artifact manifest differs');
   const taskIndex = carrier(texts.get('tasks.md'), 'tasks.md', 'Execution Tasks');
   if (taskIndex.metadata.status !== plan.metadata.status) invalid('tasks.md status differs');
-  const indexRows = table(taskIndex.body, TASK_TABLE, 'tasks.md');
+  const indexRows = table(taskIndex.body, TASK_TABLE, 'tasks.md',conversion);
   if (indexRows.length !== serialRows.length) invalid('tasks.md row count differs');
   const seen = new Map(), serialIndex = new Map(serialRows.map((row, index) => [row.slice, index]));
   for (let index = 0; index < serialRows.length; index += 1) {
@@ -345,7 +345,7 @@ function project(value, withReview = false, conversion = false, local = null) {
     const priorIndexes = row.dependencies.map(dep => serialIndex.get(dep));
     if (row.dependencies.some((dep,i)=>{
       const position=priorIndexes[i];
-      return position===undefined?!completedBySlice.has(dep) || Number(dep.slice(6))>=Number(row.slice.slice(6))
+      return position===undefined?!completedBySlice.has(dep)
         :position>=index;
     }) || row.dependencies.some((dep,i)=>i>0 && Number(dep.slice(6))<=Number(row.dependencies[i-1].slice(6))))
       invalid(`${row.slice}: dependency is not prior and serial`);
@@ -435,27 +435,43 @@ function project(value, withReview = false, conversion = false, local = null) {
   if(allIds.size!==deliveries.length+completed.length || completed.some(item=>deliveries.some(active=>active.slice===item.slice)))
     invalid('active/completed identity collision');
   for(const item of completed) {
-    if(item.leaf.dependencies.some(id=>!allIds.has(id) || Number(allIds.get(id).slice(6))>=Number(item.slice.slice(6))))
-      invalid(`${item.slice}: completed dependency is not prior`);
+    if(item.leaf.dependencies.some(id=>!completed.some(value=>value.leaf.deliveryId===id)))
+      invalid(`${item.slice}: completed dependency is missing or pending`);
     obligationRows.push({slice:item.slice,requirements:[...new Set(item.leaf.obligations.map(value=>value.requirement))],
       obligations:item.leaf.obligations,dependencies:item.leaf.dependencies.map(id=>allIds.get(id))});
   }
+  const bySlice=new Map([...allIds].map(([id,selector])=>[selector,id]));
+  const completedIds=new Set(completed.map(item=>item.leaf.deliveryId));
+  const resolveOwner=reference=>{
+    const id=reference.startsWith('delivery:')?reference.slice(9):bySlice.get(reference);
+    if(!allIds.has(id) || reference.startsWith('delivery:')&&!completedIds.has(id)) invalid('obligation owner is not a current member');
+    return id;
+  };
   const owners = new Map();
   for (const row of obligationRows) for (const obligation of row.obligations) {
     if (obligation.contribution === 'complete') {
-      if (obligation.fullOwner !== row.slice) invalid(`${row.slice}: complete obligation has another owner`);
+      const id=resolveOwner(obligation.fullOwner);
+      if (id !== bySlice.get(row.slice)) invalid(`${row.slice}: complete obligation has another owner`);
       const previous = owners.get(obligation.requirement);
-      if (previous && previous !== row.slice) invalid(`${obligation.requirement}: multiple integral owners`);
-      owners.set(obligation.requirement, row.slice);
+      if (previous && previous !== id) invalid(`${obligation.requirement}: multiple integral owners`);
+      owners.set(obligation.requirement,id);
     }
   }
   const dependenciesOf = new Map(obligationRows.map(row => [row.slice, row.dependencies]));
+  const visiting=new Set(),visited=new Set();
+  const visit=selector=>{
+    if(visiting.has(selector)) invalid('cyclic delivery dependencies');
+    if(visited.has(selector))return;visiting.add(selector);
+    for(const dep of dependenciesOf.get(selector)??[]) {if(!bySlice.has(dep))invalid('delivery dependency missing');visit(dep);}
+    visiting.delete(selector);visited.add(selector);
+  };
+  for(const selector of bySlice.keys())visit(selector);
   const dependsOn = (owner, predecessor) => (dependenciesOf.get(owner) ?? []).some(dep => dep === predecessor || dependsOn(dep, predecessor));
   for (const row of obligationRows) for (const obligation of row.obligations) {
     const owner = owners.get(obligation.requirement);
-    if (!owner || obligation.fullOwner !== owner) invalid(`${obligation.requirement}: missing or mismatched integral owner`);
-    if (obligation.contribution === 'partial' && (!dependsOn(owner, row.slice)
-      || serialIndex.get(owner) <= serialIndex.get(row.slice))) invalid(`${obligation.requirement}: partial owner must depend on earlier contribution`);
+    if (!owner || resolveOwner(obligation.fullOwner) !== owner) invalid(`${obligation.requirement}: missing or mismatched integral owner`);
+    if (obligation.contribution === 'partial' && !dependsOn(allIds.get(owner), row.slice))
+      invalid(`${obligation.requirement}: partial owner must depend on earlier contribution`);
   }
   const normativeProjection = {format: 'stnl-preparation-projection-v3', requirementsAuthority: expectedAuthority,
     global: {objective: normalized(global.Objective), strategy: normalized(global.Strategy), risks: plan.sections['Global Risks and Integration'],
@@ -877,8 +893,16 @@ function validateConvertedSnapshotIntrinsic({context,requirementsAuthority,snaps
   }
   if(completed.some(item=>!expectedRetention.some(value=>value.deliveryId===item.deliveryId
     && value.evidenceSha256===item.evidenceSha256))) invalid('completed retention is absent');
+  const globalRetention=expectedRetention.filter(item=>{
+    const global=snapshot.globalReview.evidenceDecisions.find(value=>value.deliveryId===item.deliveryId);
+    const local=snapshot.deliveries.find(value=>value.deliveryId===item.deliveryId)?.review.evidenceDecisions
+      .find(value=>value.deliveryId===item.deliveryId&&value.evidenceSha256===item.evidenceSha256);
+    if(!global&&!local)stale('retained evidence has no reviewed disposition');
+    if(completed.some(value=>value.deliveryId===item.deliveryId)&&!global)stale('completed retention has no set review');
+    return Boolean(global);
+  }).map(item=>({...item,disposition:snapshot.globalReview.evidenceDecisions.find(value=>value.deliveryId===item.deliveryId).disposition}));
   review(snapshot.globalReview,'set',authority.globalReviewAuthoritySha256,['plan.md','tasks.md'],hashes,'global review',
-    expectedRetention.map(item=>({...item,disposition:'retain-current'})));
+    globalRetention);
   if(!same(completed.map(item=>[item.slice,item.deliveryId,item.localRevision]),
     (authority.completed??[]).map(item=>[item.slice,item.deliveryId,item.localRevision])))
     invalid('converted completed binding differs');

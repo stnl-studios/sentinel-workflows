@@ -455,7 +455,11 @@ test('R03b completed A and active B with retained local proof',async t=>{
     await rejected(()=>inspectCurrentExecution(f.specPath),'EVIDENCE_STALE','slice-01');
   }));
   await t.test('auxiliary evidence alone is not formal PASS',async()=>using(()=>authoredCompletedWithActiveProof({formal:false}),async f=>{
-    await rejected(()=>inspectCurrentExecution(f.specPath),'EVIDENCE_INCOMPLETE','slice-02');
+    const result=await inspectCurrentExecution(f.specPath);
+    assert.equal(result.completed[0].observedValidation,'current');
+    assert.equal(result.deliveries[0].formalStatus,null);
+    assert.notEqual(result.deliveries[0].observedValidation,'current');
+    assert.notEqual(result.state,'COMPLETE');
   }));
   await t.test('B foreign captured owner is not replaced by A proof',async()=>using(authoredCompletedWithActiveProof,async f=>{
     const oracle=await import('./fixtures/current-findings-evidence.mjs');
@@ -491,28 +495,12 @@ test('R03b completed A and active B with retained local proof',async t=>{
 });
 
 test('R03 mixed format, duplicate JSON, and closed profile',async t=>{
-  await t.test('completed A retains local proof while B remains active and global state stays open',async()=>using(authoredCompletedImage,async f=>{
+  await t.test('completed A with unproved historical shared owner requires Q19 despite a valid envelope',async()=>using(authoredCompletedImage,async f=>{
     const {validateCurrentImage}=await import('../skills/workflows/stnl-slice-executor/runtime/execution-current.mjs');
     const envelope=validateCurrentImage({activationBytes:await fs.readFile(path.join(f.execution,'activation.json')),files:f.files});
     assert.equal(envelope.continuity.completed[0].deliveryId,DELIVERY);
     const before=await manifest(f.project);
-    const result=await inspectCurrentExecution(f.specPath);
-    assert.equal(result.completed.length,1);
-    assert.equal(result.completed[0].deliveryId,DELIVERY);
-    assert.equal(result.completed[0].formalStatus,'PASS');
-    assert.equal(result.completed[0].observedValidation,'current');
-    assert.equal(result.deliveries.length,1);
-    assert.equal(result.deliveries[0].slice,'slice-02');
-    assert.notEqual(result.state,'COMPLETE');
-    assert.equal(result.diagnostics[0].artifact,'slice-02');
-    assert.match(result.diagnostics[0].reason,/no current local proof/u);
-    for(const selected of [reader,quality]) {
-      const observed=await workerRun(f,{selected});
-      assert.equal(observed.process.status,0);
-      noAttempts(observed);
-      assert.equal(observed.log.result.completed[0].deliveryId,DELIVERY);
-      assert.notEqual(observed.log.result.state,'COMPLETE');
-    }
+    await rejected(()=>inspectCurrentExecution(f.specPath),'EVIDENCE_STALE','historical owner');
     assert.deepEqual(await manifest(f.project),before);
   }));
   await t.test('completed evidence without formal proof is incomplete',async()=>using(authoredCompletedImage,async f=>{
