@@ -9,7 +9,8 @@ import {fileURLToPath,pathToFileURL} from 'node:url';
 import {inspectCurrentExecution} from '../skills/workflows/stnl-slice-executor/runtime/execution-current-reader.mjs';
 import * as legacy from '../skills/workflows/stnl-slice-executor/runtime/execution-state.mjs';
 import {authoredImage,producerInitialImage,producerFormalPass,producerTwoFormalPass,producerAppliedImage,producerPostApplyPass,
-  authoredCyclesImage,authoredCompletedImage,repackBundle,replaceRecordCapture,storeBundle,
+  authoredCyclesImage,authoredCompletedImage,authoredCompletedWithActiveProof,storeRetainedActiveBundle,
+  repackBundle,replaceRecordCapture,storeBundle,
   writeImage,reseal,editSection,cleanup,raw,canonical} from './fixtures/current-quiet-reader.mjs';
 
 const here=path.dirname(fileURLToPath(import.meta.url)),repo=path.resolve(here,'..');
@@ -67,7 +68,8 @@ async function workerRun(fixture,{selected=reader,mode='api',env={}}={}) {
   const args=preloaded?['--import',worker,entry,fixture.specPath]
     :[worker,'--worker',mode,selected,fixture.specPath,log,fixture.project];
   const result=spawnSync(process.execPath,args,{cwd:os.tmpdir(),encoding:'utf8',
-    timeout:20000,env:{...process.env,...env,STNL_QUIET_PROFILE:fixture.composed?'evidence':'pristine',...(preloaded?{STNL_QUIET_PRELOAD:'1',STNL_QUIET_IMPORT_WRAPPER:mode==='import-only'?'1':'0',STNL_QUIET_LOG:log,
+    timeout:20000,env:{...process.env,...env,STNL_QUIET_PROFILE:fixture.composed?'evidence':'pristine',
+      ...(fixture.activeProof?{STNL_QUIET_ACTIVE_PROOF:'1'}:{}),...(preloaded?{STNL_QUIET_PRELOAD:'1',STNL_QUIET_IMPORT_WRAPPER:mode==='import-only'?'1':'0',STNL_QUIET_LOG:log,
       STNL_QUIET_PROJECT:fixture.project}:{})}});
   assert.deepEqual(await manifest(fixture.project),before,'child preserved bytes, modes, identities and topology');
   return {process:result,log:JSON.parse(await fs.readFile(log,'utf8'))};
@@ -416,6 +418,75 @@ test('R02 cosmetic carriers and stale normative approval',async t=>{
     f.files.set('approved-preparation.json',Buffer.from(canonical(f.snapshot)+'\n'));
     reseal(f);await writeImage(f);
     await rejected(()=>inspectCurrentExecution(f.specPath),'INVALID_CURRENT_IMAGE');
+  }));
+});
+
+test('R03b completed A and active B with retained local proof',async t=>{
+  await t.test('both local proofs are current without global completion',async()=>using(authoredCompletedWithActiveProof,async f=>{
+    const before=await manifest(f.project),result=await inspectCurrentExecution(f.specPath);
+    assert.equal(result.completed[0].deliveryId,DELIVERY);
+    assert.equal(result.completed[0].observedValidation,'current');
+    assert.equal(result.deliveries[0].deliveryId,'22222222-2222-4222-8222-222222222222');
+    assert.equal(result.deliveries[0].formalStatus,'PASS');
+    assert.equal(result.deliveries[0].observedValidation,'current');
+    assert.notEqual(result.state,'COMPLETE');assert.equal(result.normalHandoff,null);
+    assert.equal(result.diagnostics[0].field,'terminal');
+    for(const selected of [reader,quality]) {
+      const observed=await workerRun(f,{selected});assert.equal(observed.process.status,0);noAttempts(observed);
+      assert.deepEqual(observed.log.result,result);
+      const cli=await workerRun(f,{selected,mode:'cli'});assert.equal(cli.process.status,0);noAttempts(cli);
+      assert.deepEqual(JSON.parse(cli.process.stdout),result);
+    }
+    assert.deepEqual(await manifest(f.project),before);
+  }));
+  await t.test('B-only drift preserves A current and requires B revalidation',async()=>using(authoredCompletedWithActiveProof,async f=>{
+    const aBytes=Buffer.from(f.files.get(f.continuity.completed[0].evidence.path));
+    await fs.writeFile(path.join(f.project,'verify/check.mjs'),'B drift\n');
+    const before=await manifest(f.project),result=await inspectCurrentExecution(f.specPath);
+    assert.equal(result.completed[0].observedValidation,'current');
+    assert.equal(result.deliveries[0].persistedValidation,'current');
+    assert.equal(result.deliveries[0].observedValidation,'revalidation-required');
+    assert.equal(result.state,'EVIDENCE_STALE');assert.equal(result.normalHandoff.slice,'slice-02');
+    assert.ok(aBytes.equals(await fs.readFile(path.join(f.execution,f.continuity.completed[0].evidence.path))));
+    assert.deepEqual(await manifest(f.project),before);
+  }));
+  for(const target of ['src/pay.mjs','config/settings.json']) await t.test(`B PASS cannot mask A drift in ${target}`,async()=>using(authoredCompletedWithActiveProof,async f=>{
+    await fs.writeFile(path.join(f.project,target),'drift\n');
+    await rejected(()=>inspectCurrentExecution(f.specPath),'EVIDENCE_STALE','slice-01');
+  }));
+  await t.test('auxiliary evidence alone is not formal PASS',async()=>using(()=>authoredCompletedWithActiveProof({formal:false}),async f=>{
+    await rejected(()=>inspectCurrentExecution(f.specPath),'EVIDENCE_INCOMPLETE','slice-02');
+  }));
+  await t.test('B foreign captured owner is not replaced by A proof',async()=>using(authoredCompletedWithActiveProof,async f=>{
+    const oracle=await import('./fixtures/current-findings-evidence.mjs');
+    const bundle=JSON.parse(f.files.get(f.continuity.deliveries[0].evidence.path));
+    const cap=structuredClone(f.activeProof.capture),receipt=oracle.decode(cap.receipt);
+    receipt.owner.deliveryId=DELIVERY;cap.receipt=Buffer.from(JSON.stringify(receipt)+'\n');
+    replaceRecordCapture(bundle,bundle.validation,cap,oracle);await storeRetainedActiveBundle(f,bundle);
+    await rejected(()=>inspectCurrentExecution(f.specPath),'OWNER_MISMATCH');
+  }));
+  await t.test('B retention decision and exact evidence digest are required',async()=>using(authoredCompletedWithActiveProof,async f=>{
+    f.snapshot.globalReview.evidenceDecisions.pop();
+    f.files.set('approved-preparation.json',Buffer.from(canonical(f.snapshot)+'\n'));reseal(f);await writeImage(f);
+    await rejected(()=>inspectCurrentExecution(f.specPath),'STALE_APPROVAL');
+  }));
+  await t.test('B decision cannot bind the digest of A',async()=>using(authoredCompletedWithActiveProof,async f=>{
+    f.snapshot.globalReview.evidenceDecisions[1].evidenceSha256=f.continuity.completed[0].evidence.sha256;
+    f.files.set('approved-preparation.json',Buffer.from(canonical(f.snapshot)+'\n'));reseal(f);await writeImage(f);
+    await rejected(()=>inspectCurrentExecution(f.specPath),'INVALID_CURRENT_IMAGE');
+  }));
+  await t.test('B counter and carrier remain independently checked',async()=>using(authoredCompletedWithActiveProof,async f=>{
+    f.continuity.deliveries[0].counters.validationAttempts+=1;reseal(f);await writeImage(f);
+    await rejected(()=>inspectCurrentExecution(f.specPath),'INVALID_CURRENT_IMAGE');
+  }));
+  await t.test('B carrier cannot omit the verified PASS',async()=>using(authoredCompletedWithActiveProof,async f=>{
+    editSection(f,'slice-02','Final Result','- pending');reseal(f);await writeImage(f);
+    await rejected(()=>inspectCurrentExecution(f.specPath),'INVALID_CURRENT_IMAGE','Final Result');
+  }));
+  await t.test('unknown B evidence remains unsupported',async()=>using(authoredCompletedWithActiveProof,async f=>{
+    const bundle=JSON.parse(f.files.get(f.continuity.deliveries[0].evidence.path));
+    bundle.format='stnl-current-evidence-v99';await storeRetainedActiveBundle(f,bundle);
+    await rejected(()=>inspectCurrentExecution(f.specPath),'UNSUPPORTED_FORMAT');
   }));
 });
 

@@ -264,6 +264,25 @@ function authorityFor(snapshot,delivery) {
     normativeSha256:snapshot.preparationRevision===1?snapshot.normativeSha256:delivery.authoritySha256,delivery:leaf,
     context:{requirementsAuthority:snapshot.requirementsAuthority,objective:global.objective,strategy:global.strategy,risks:global.risks}};
 }
+function retainedLocalAuthority(snapshot,current,record,leaf) {
+  if(!leaf || !record || record.kind!=='validation' || record.contract?.terminal!==null
+    || !equal(record.contract?.delivery,leaf) || record.origin?.deliveryId!==current.deliveryId
+    || record.origin?.slice!==current.slice || record.origin?.localRevision!==current.localRevision
+    || record.origin?.normativeSha256!==current.authoritySha256 && record.origin?.preparationRevision===snapshot.preparationRevision
+    || current.normalization!==null)
+    fail('EVIDENCE_INCOMPLETE',`${current.slice}: retained local proof is absent or inconsistent`,
+      'evidence','continuity.json',current.slice);
+  const global=snapshot.normativeProjection.global;
+  const expectedContext={requirementsAuthority:snapshot.requirementsAuthority,
+    objective:global.objective,strategy:global.strategy,risks:global.risks};
+  if(Object.keys(record.contract.context).length!==Object.keys(expectedContext).length
+    || Object.entries(expectedContext).some(([key,value])=>record.contract.context[key]!==value))
+    fail('EVIDENCE_STALE',`${current.slice}: retained context changed since local proof`,
+      'evidence','approved-preparation.json',current.slice);
+  return {preparationRevision:record.origin.preparationRevision,
+    localRevision:record.origin.localRevision,normativeSha256:record.origin.normativeSha256,
+    delivery:record.contract.delivery,context:record.contract.context};
+}
 function verifyLastAttempt(activation,deliveries) {
   const last=activation.lastAttempt;
   if (last===null) return;
@@ -376,7 +395,10 @@ async function readCurrentExecution(specPath,withCapture=false,expectedOwner=nul
     fail('REQUIREMENTS_CHANGED','documentary authority differs from activation','authority-mismatch',workspace.authorityPath);
   const prepared=validateCurrentPreparation({context,requirementsAuthority:activation.requirementsAuthority,
     snapshotBytes:image.files.get('approved-preparation.json'),artifacts:new Map([...image.files].filter(([name])=>name.endsWith('.md'))),
-    profile:continuity.completed.length?'completed-current':converted?'converted-current':'initial'});
+    profile:continuity.completed.length?'completed-current':converted?'converted-current':'initial',
+    retainedEvidence:continuity.completed.length?[...continuity.completed,...continuity.deliveries].filter(item=>item.evidence)
+      .map(item=>({deliveryId:item.deliveryId,evidenceSha256:item.evidence.sha256}))
+      .sort((a,b)=>ordinal(a.deliveryId,b.deliveryId)):null});
   const outputs=[];
   for (const current of continuity.deliveries) {
     const carrier=prepared.currentArtifacts.deliveries.find(item=>item.deliveryId===current.deliveryId);
@@ -433,23 +455,7 @@ async function readCurrentExecution(specPath,withCapture=false,expectedOwner=nul
     const bundleBytes=image.files.get(current.evidence.path);
     const bundle=parseCurrentJson(bundleBytes.toString('utf8'));
     const record=bundle.validation;
-    if(!leaf || !record || record.kind!=='validation' || record.contract?.terminal!==null
-      || !equal(record.contract?.delivery,leaf) || record.origin?.deliveryId!==current.deliveryId
-      || record.origin?.slice!==current.slice || record.origin?.localRevision!==current.localRevision
-      || record.origin?.normativeSha256!==current.authoritySha256 && record.origin?.preparationRevision===snapshot.preparationRevision
-      || current.normalization!==null)
-      fail('EVIDENCE_INCOMPLETE',`${current.slice}: completed local proof is absent or inconsistent`,
-        'evidence','continuity.json',current.slice);
-    const global=snapshot.normativeProjection.global;
-    const expectedContext={requirementsAuthority:snapshot.requirementsAuthority,
-      objective:global.objective,strategy:global.strategy,risks:global.risks};
-    if(Object.keys(record.contract.context).length!==Object.keys(expectedContext).length
-      || Object.entries(expectedContext).some(([key,value])=>record.contract.context[key]!==value))
-      fail('EVIDENCE_STALE',`${current.slice}: completed context changed since local proof`,
-        'evidence','approved-preparation.json',current.slice);
-    const authority={preparationRevision:record.origin.preparationRevision,
-      localRevision:record.origin.localRevision,normativeSha256:record.origin.normativeSha256,
-      delivery:record.contract.delivery,context:record.contract.context};
+    const authority=retainedLocalAuthority(snapshot,current,record,leaf);
     const targets=observationRoots(context,leaf,{'Expected Files':'- none'},current,bundle);
     const before=await observeProduct(context,targets,{entries:0,bytes:0},true);
     const facts=inspectCurrentEvidence({context,authority,bundleBytes,counters:current.counters,
@@ -488,7 +494,24 @@ async function readCurrentExecution(specPath,withCapture=false,expectedOwner=nul
             latestAuxiliaryRejection?.origin.operationAttemptId].includes(activation.activeAttempt.operationAttemptId)
           ?activation.activeAttempt.operationRef:activation.lastAttempt?.operationRef??null;
       const observedWork=scopedObservation(item.observation,item.targets).manifest;
-      const facts=continuity.completed.length && bundleBytes===null
+      const retained=continuity.completed.length>0 && bundleBytes!==null;
+      let retainedFacts=null;
+      if(retained) {
+        const authority=retainedLocalAuthority(snapshot,current,bundle.validation,
+          snapshot.normativeProjection.deliveries.find(value=>value.deliveryId===current.deliveryId));
+        if(bundle.validation.origin.transport!=='native' || bundle.validation.id!=='attempt-01'
+          || bundle.implementation.length!==1 || bundle.findingsChecks.length || bundle.support.length
+          || bundle.openFindings.length || bundle.openDivergences.length)
+          fail('UNSUPPORTED_FORMAT',`${current.slice}: retained active evidence exceeds the local PASS profile`);
+        retainedFacts=inspectCurrentEvidence({context,authority,bundleBytes,
+          counters:current.counters,baseline:current.baseline,observedWork});
+        if(retainedFacts.formalStatus!=='PASS' || retainedFacts.persistedValidation!=='current')
+          fail('EVIDENCE_INCOMPLETE',`${current.slice}: retained active evidence lacks local PASS`,
+            'evidence',current.evidence.path,'validation');
+      }
+      const facts=retainedFacts
+        ?{...retainedFacts,slice:current.slice,requiresFormalRevalidation:retainedFacts.observedValidation!=='current'}
+        :continuity.completed.length && bundleBytes===null
         ?{...inspectCurrentEvidence({context,authority:authorityFor(snapshot,current),bundleBytes:null,
           counters:current.counters,baseline:current.baseline,observedWork}),slice:current.slice}
         :await inspectPostConversionEvidence({context,snapshotBytes:image.files.get('approved-preparation.json'),
@@ -496,7 +519,11 @@ async function readCurrentExecution(specPath,withCapture=false,expectedOwner=nul
           preparationProfile:continuity.completed.length?'completed-current':'converted-current'});
       if(!facts || facts.slice!==item.slice || facts.persistedValidation!==continuity.deliveries.find(value=>value.deliveryId===item.deliveryId)?.validation)
         fail('INVALID_CURRENT_IMAGE',`${item.slice}: converted inspection differs`);
-      if(v3 || facts.rejection) {
+      if(retained) {
+        validateCurrentEvidenceCarriers({facts,sections:item.carrier.sections,
+          continuity:item.carrier.continuity,index:item.carrier.index,slice:item.slice,
+          priorDeliveries:completedOutputs});
+      } else if(v3 || facts.rejection) {
         if(item.carrier.continuity.evidence!==current.evidence.sha256)
           fail('INVALID_CURRENT_IMAGE',`${item.slice}: converted evidence carrier digest differs`);
         validateCurrentEvidenceCarriers({facts,sections:item.carrier.sections,

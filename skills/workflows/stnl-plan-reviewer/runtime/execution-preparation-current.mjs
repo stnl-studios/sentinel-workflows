@@ -823,7 +823,7 @@ function compareCurrentSections(approved, present, names, artifact, context, {ta
 // An operational image retains the reviewed bytes verbatim in its snapshot.
 // This parser compares current carrier meaning without projecting a new review
 // fingerprint or making the pristine Initial entry points permissive.
-function validateConvertedSnapshotIntrinsic({context,requirementsAuthority,snapshotBytes,allowCompleted=false}) {
+function validateConvertedSnapshotIntrinsic({context,requirementsAuthority,snapshotBytes,allowCompleted=false,retainedEvidence=null}) {
   const bytes=Buffer.from(snapshotBytes instanceof Uint8Array ? snapshotBytes : invalid('snapshot bytes required'));
   const snapshot=parseCurrentJson(decode(bytes,'approved-preparation.json'));
   exact(snapshot,['format','preparationRevision','requirementsAuthority','normativeSha256','normativeProjection',
@@ -864,8 +864,21 @@ function validateConvertedSnapshotIntrinsic({context,requirementsAuthority,snaps
       path:item.path,sha256:item.sha256,utf8:reviewed.get(item.path).toString('utf8')}))))
     stale('converted snapshot projection or reviewed artifacts differ');
   const hashes=new Map(authority.artifactHashes.map(item=>[item.path,item.sha256]));
+  const expectedRetention=retainedEvidence??completed.map(item=>({deliveryId:item.deliveryId,evidenceSha256:item.evidenceSha256}));
+  const members=new Set([...snapshot.deliveries,...completed].map(item=>item.deliveryId));
+  let previousRetention=null;
+  for(const item of array(expectedRetention,'retained evidence')) {
+    exact(item,['deliveryId','evidenceSha256'],'retained evidence');
+    uuid(item.deliveryId,'retained evidence identity');hash(item.evidenceSha256,'retained evidence digest');
+    if(!allowCompleted || !members.has(item.deliveryId)
+      || previousRetention!==null && ordinal(previousRetention,item.deliveryId)>=0)
+      invalid('retained evidence membership or order differs');
+    previousRetention=item.deliveryId;
+  }
+  if(completed.some(item=>!expectedRetention.some(value=>value.deliveryId===item.deliveryId
+    && value.evidenceSha256===item.evidenceSha256))) invalid('completed retention is absent');
   review(snapshot.globalReview,'set',authority.globalReviewAuthoritySha256,['plan.md','tasks.md'],hashes,'global review',
-    completed.map(item=>({deliveryId:item.deliveryId,evidenceSha256:item.evidenceSha256,disposition:'retain-current'})));
+    expectedRetention.map(item=>({...item,disposition:'retain-current'})));
   if(!same(completed.map(item=>[item.slice,item.deliveryId,item.localRevision]),
     (authority.completed??[]).map(item=>[item.slice,item.deliveryId,item.localRevision])))
     invalid('converted completed binding differs');
@@ -883,12 +896,12 @@ function validateConvertedSnapshotIntrinsic({context,requirementsAuthority,snaps
   return {authority,snapshot,bytes,sha256:raw(bytes)};
 }
 
-export function validateCurrentPreparation({context, requirementsAuthority, snapshotBytes, artifacts, profile='initial'}) {
+export function validateCurrentPreparation({context, requirementsAuthority, snapshotBytes, artifacts, profile='initial',retainedEvidence=null}) {
   if(!['initial','converted-current','completed-current'].includes(profile)) invalid('unknown current preparation profile');
   const approved=profile==='initial'
     ?validateInitialApprovedPreparation({context,requirementsAuthority,snapshotBytes})
     :validateConvertedSnapshotIntrinsic({context,requirementsAuthority,snapshotBytes,
-      allowCompleted:profile==='completed-current'});
+      allowCompleted:profile==='completed-current',retainedEvidence});
   const current = artifactMap(artifacts);
   const expected = approved.snapshot.reviewedArtifacts.map(item => item.path).sort(ordinal);
   compareCurrent([...current.keys()].sort(ordinal), expected, 'execution', 'artifacts', 'integrity');

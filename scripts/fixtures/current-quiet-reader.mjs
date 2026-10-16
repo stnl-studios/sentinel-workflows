@@ -837,6 +837,116 @@ export async function authoredCompletedImage({pass=true}={}) {
   reseal(f);await writeImage(f);return f;
 }
 
+// A and B have independent product directories and share only an approved input.
+// Captures and records are authored with the builtin-only oracle, not the reader.
+export async function authoredCompletedWithActiveProof({formal=true}={}) {
+  const f=await authoredCompletedImage();
+  const source=await import('./current-initial-evidence.mjs');
+  const templates=await import('./current-validation-evidence.mjs');
+  const oracle=await import('./current-findings-evidence.mjs');
+  const leaf=f.snapshot.normativeProjection.deliveries[0];
+  const replace=value=>value.replaceAll('src/pay.mjs','verify/check.mjs').replaceAll('../../../../src','../../../../verify')
+    .replaceAll('"path":"src"','"path":"verify"').replaceAll('"pay.mjs"','"check.mjs"');
+  const recipe=JSON.parse(replace(JSON.stringify(source.RECIPE)));
+  Object.assign(leaf,{authorizedAreas:'- directory: `../../../../verify`',
+    existingInputs:source.DELIVERY.existingInputs,expectedTests:'- node verify/check.mjs',verificationRecipe:recipe});
+  for(const name of ['plans/slice-02.md','tasks/slice-02.md']) {
+    let text=f.artifacts.get(name).toString('utf8');
+    for(const [heading,body] of [['Authorized Areas',leaf.authorizedAreas],['Existing Inputs',leaf.existingInputs],
+      ['Expected Tests',leaf.expectedTests],['Verification Recipe',`- Recipe: ${JSON.stringify(recipe)}`],
+      ['Expected Files','- `../../../../verify/check.mjs`']]) text=section(text,heading,body);
+    f.artifacts.set(name,encoded(text));f.files.set(name,encoded(text));
+  }
+  const plan=f.artifacts.get('plan.md').toString('utf8').replace('directory: `../../../src`','directory: `../../../verify`');
+  f.artifacts.set('plan.md',encoded(plan));f.files.set('plan.md',encoded(plan));
+  const projection=f.snapshot.normativeProjection;
+  const historical={...structuredClone(projection),global:{...projection.global,order:DELIVERY_IDS},
+    deliveries:[projection.completed[0],leaf],completed:[]};
+  const historicalSha=projected('preparation',canonical(historical));
+  const authority={preparationRevision:1,localRevision:1,normativeSha256:historicalSha,
+    delivery:structuredClone(leaf),context:{requirementsAuthority:f.authority,
+      objective:projection.global.objective,strategy:projection.global.strategy,risks:projection.global.risks}};
+  const adapt=cap=>{
+    const text=bytes=>encoded(replace(Buffer.from(bytes).toString('utf8'))
+      .replaceAll('/workspace',f.project).replaceAll('/tmp/pay-candidate',f.execution)
+      .replaceAll('slice-01','slice-02').replaceAll(source.OWNER.deliveryId,DELIVERY_IDS[1])
+      .replaceAll(source.OWNER.normativeSha256,historicalSha)
+      .replaceAll(source.AUTHORITY.context.requirementsAuthority,f.authority)
+      .replaceAll(source.OWNER.operationAttemptId,'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb')
+      .replaceAll(source.OWNER.ownershipToken,'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'));
+    const out=Object.fromEntries(Object.entries(cap).map(([name,value])=>[name,
+      value instanceof Uint8Array?text(value):Array.isArray(value)?value.map(item=>item instanceof Uint8Array?text(item):item):value]));
+    const observed=oracle.decode(out.verificationObservation);
+    observed.resolved.recipeSha256=raw(encoded(canonical(recipe)));
+    out.verificationObservation=json(observed);
+    const origin=oracle.decode(out.origin);origin.verification=observed.resolved;
+    out.origin=json(origin);out.dispatch=json(origin);
+    const receipt=oracle.decode(out.receipt);receipt.verification=observed;
+    out.receipt=json(receipt);
+    templates.rebindRaw(out,oracle.decode(out.rawResponse));
+    return out;
+  };
+  const initial=adapt(source.nativeRound());
+  const check=oracle.authoredCheck(initial,'implementation-check-01',oracle.initialGolden(initial),authority);
+  const first=authoredBundleFor(oracle,{implementation:[check],captures:[initial],authority,
+    counters:{implementationChecks:1,findingsChecks:0,validationAttempts:0,findings:0}});
+  first.bundle.slice='slice-02';first.bundle.logicalTaskPath='tasks/slice-02.md';first.bytes=json(first.bundle);
+  const owner={...templates.validationOwner(701),deliveryId:DELIVERY_IDS[1],slice:'slice-02',
+    normativeSha256:historicalSha};
+  const work=oracle.decode(initial.verificationObservation).after;
+  const request=templates.request({baseBytes:first.bytes,counters:first.counters,owner,authority,
+    scopePaths:['verify/check.mjs'],priorScopePaths:['verify/check.mjs']});
+  const capture=adapt(templates.capture({request,approvedAuthority:authority,work,
+    command:'node verify/check.mjs',resolved:oracle.decode(initial.verificationObservation).resolved}).cap);
+  const validation=oracle.authoredFormal(capture,authority);
+  const result=authoredBundleFor(oracle,{implementation:[check],validation:formal?validation:null,
+    captures:formal?[initial,capture]:[initial],authority,
+    counters:{implementationChecks:1,findingsChecks:0,validationAttempts:formal?1:0,findings:0}});
+  result.bundle.slice='slice-02';result.bundle.logicalTaskPath='tasks/slice-02.md';result.bytes=json(result.bundle);
+  const current=f.continuity.deliveries[0];
+  current.authoritySha256=projected('delivery',canonical(leaf));
+  current.validation=formal?'current':'unvalidated';current.counters=result.counters;
+  current.baseline=oracle.decode(initial.baselineCapture).manifest;
+  current.evidence={path:`evidence/${DELIVERY_IDS[1]}.json`,sha256:raw(result.bytes)};
+  f.files.set(current.evidence.path,result.bytes);
+  editSection(f,'slice-02','Implementation Test Evidence',check.recordUtf8);
+  editSection(f,'slice-02','Validation Attempts',formal?validation.recordUtf8:'- none');
+  editSection(f,'slice-02','Changed Areas','- `../../../../verify/check.mjs`');
+  editSection(f,'slice-02','Continuity',`- Current validation: ${current.validation}\n- Current evidence: ${current.evidence.path}\n- Current action: ${formal?'validation complete':'VALIDATE_SLICE'}`);
+  if(formal) {
+    editSection(f,'slice-02','Effective Validation Base',`- Origin attempt: attempt-01\n- Attempt type: initial\n- HEAD: 0123456789abcdef\n- Result: PASS\n- Files:\n  - \`../../../../verify/check.mjs\` | ${raw(encoded('pay-v1\n'))}\n- Authoritative commands:\n  - \`node verify/check.mjs\` | exit:0\n- Evidence summary: Direct recipe observation and file hash.`);
+    editSection(f,'slice-02','Final Result','- PASS');
+    f.files.set('tasks.md',encoded(f.files.get('tasks.md').toString('utf8')
+      .replace('| [ ] | 02 - Verification |','| [x] | 02 - Verification |').replace('| pending | pending |','| PASS | PASS |')));
+  }
+  await fsp.mkdir(path.join(f.project,'verify'));
+  await fsp.writeFile(path.join(f.project,'verify/check.mjs'),'pay-v1\n');
+  const snapshot=f.snapshot;
+  snapshot.reviewedArtifacts=[...f.artifacts].map(([name,bytes])=>({path:name,sha256:raw(bytes),utf8:bytes.toString('utf8')}))
+    .sort((a,b)=>sort(a.path,b.path));
+  snapshot.globalReview.examinedArtifactHashes=['plan.md','tasks.md'].map(name=>({path:name,sha256:raw(f.artifacts.get(name))}));
+  snapshot.globalReview.authoritySha256=projected('global-review',canonical({requirementsAuthority:f.authority,
+    global:projection.global,deliveryIds:projection.global.order,completed:projection.completed}));
+  snapshot.globalReview.evidenceDecisions.push({deliveryId:current.deliveryId,evidenceSha256:current.evidence.sha256,
+    disposition:'retain-current',reason:'Reviewed unchanged active local proof independently of A.'});
+  const review=snapshot.deliveries[0].review;
+  review.authoritySha256=current.authoritySha256;
+  review.examinedArtifactHashes=['plans/slice-02.md','tasks/slice-02.md'].map(name=>({path:name,sha256:raw(f.artifacts.get(name))}));
+  snapshot.normativeSha256=projected('preparation',canonical(projection));
+  f.activation.normativeSha256=snapshot.normativeSha256;
+  f.files.set('approved-preparation.json',json(snapshot));
+  f.activeProof={initial,capture,authority};
+  reseal(f);await writeImage(f);return f;
+}
+
+export async function storeRetainedActiveBundle(f,bundle) {
+  const current=f.continuity.deliveries[0],bytes=json(bundle);
+  f.files.set(current.evidence.path,bytes);current.evidence.sha256=raw(bytes);
+  f.snapshot.globalReview.evidenceDecisions.find(item=>item.deliveryId===current.deliveryId).evidenceSha256=raw(bytes);
+  f.files.set('approved-preparation.json',json(f.snapshot));
+  reseal(f);await writeImage(f);
+}
+
 export async function cleanup(fixture) {await fsp.rm(fixture.temporary,{recursive:true,force:true});}
 
 // Worker protocol is intentionally separate from the authored builder. It is
@@ -861,6 +971,7 @@ function installGuard(specPath,logPath,allowedRoot,mode='reader') {
     .map(name=>path.join(repo,'skills/workflows',skill,'runtime',name))));
   if(process.env.STNL_QUIET_IMPORT_WRAPPER==='1') runtimeFiles.add(path.resolve(process.argv[1]));
   const subtrees=[path.join(projectRoot,'src'),path.join(specRoot,'shared')];
+  if(process.env.STNL_QUIET_ACTIVE_PROOF==='1') subtrees.push(path.join(projectRoot,'verify'));
   // Independent fixture profiles declare the input itself, never its subtree.
   const config=path.join(projectRoot,'config');
   const inputFiles=new Set(process.env.STNL_QUIET_PROFILE==='evidence'?[path.join(config,'settings.json')]:[]);
