@@ -119,6 +119,7 @@ function projected(tag, value) {
   return raw(preimage);
 }
 export const currentOperationBindingSha256 = binding => projected('operation-binding', binding);
+export const currentDeliveryAuthoritySha256 = delivery => projected('delivery', delivery);
 const same = (a, b) => canonical(a) === canonical(b);
 function parsedJsonValue(value) {
   if (typeof value === 'number' && (!Number.isFinite(value) || Object.is(value, -0))) invalid('nonfinite or negative-zero JSON number');
@@ -683,6 +684,23 @@ function validateCurrentContent(files) {
       && same(record.contract?.context,{requirementsAuthority:snapshot.requirementsAuthority,
         objective:global.objective,strategy:global.strategy,risks:global.risks})
       && same(record.contract?.recipe,leaf.verificationRecipe);
+    const historicalPrior=approvedDelivery?.localRevision===2
+      && decision.disposition==='revalidate'
+      && bundle?.support?.length===1
+      && bundle.support[0]?.kind==='validation'
+      && bundle.support[0]?.recordFormat==='stnl-task-record-v2'
+      && bundle.support[0]?.origin?.localRevision===1
+      && record?.recordFormat==='stnl-task-record-v2'
+      && record.origin?.localRevision===2
+      && bundle.implementation.length===0 && bundle.findingsChecks.length===0;
+    if(historicalPrior) {
+      const old=bundle.support[0];
+      const ids=new Set(Object.values(old.sources).flat().filter(item=>typeof item==='string' && HASH.test(item)));
+      const prior={...bundle,validation:old,support:[],openFindings:[],
+        objects:bundle.objects.filter(item=>ids.has(item.id))};
+      if(raw(Buffer.from(canonical(prior)+'\n','utf8'))===decision.evidenceSha256)
+        return true;
+    }
     const importedBridge=convertedRejection && bundle.openDivergences?.length===0
       && bundle.findingsChecks?.length===0
       && bundle.support.every(item=>item.kind==='rejection' || importedValidation.includes(item))

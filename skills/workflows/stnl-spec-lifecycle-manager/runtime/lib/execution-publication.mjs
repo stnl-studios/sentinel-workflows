@@ -676,30 +676,45 @@ export async function copyCurrentCandidateTree(source,target) { await copyTree(s
 // The wrapper supplies fixed operation-specific validation and diff scope, never model-selected callbacks.
 export async function publishExecutionUpdate({ workspace, candidateExecutionRoot, expectedTree, expectedActivationId,
   owner = null, terminal = false, draft = false, readActivated, validateCandidate, authorizeDiff, checkpoint = null,
-  prepareRetention = null, currentInitial = false }) {
+  prepareRetention = null, currentInitial = false, currentReplacement = false,
+  recheckRequirements = null }) {
   const location = await executionLockIdentity(workspace);
+  if(currentReplacement && typeof recheckRequirements!=='function')
+    fail('EC-1 local review requires a documentary authority recheck');
   await ancestry(candidateExecutionRoot);
   const candidate = await fs.realpath(candidateExecutionRoot);
   if (inside(candidate, workspace.specRoot ?? workspace.executionRoot) || inside(workspace.executionRoot, candidate)) fail('candidate overlaps official execution');
   const candidateTree = await captureExecutionTree(candidate);
+  if(currentReplacement && candidateTree.identity.dev!==location.parentIdentity.dev)
+    fail('EC-1 local review candidate is not on the official filesystem');
   const allocationId = randomUUID();
-  const stage = path.join(location.parent, `.stnl-execution-stage-${allocationId}`);
+  const stage = currentReplacement ? candidate : path.join(location.parent, `.stnl-execution-stage-${allocationId}`);
   const retentionRoot = path.join(location.parent, `.stnl-execution-backup-${allocationId}`);
   const backup = path.join(retentionRoot, 'previous');
   const marker = path.join(location.parent, `.stnl-execution-publication-${allocationId}.json`);
   const allocation = { format: 'stnl-execution-publication-owner-v1', allocationId, executionRoot: workspace.executionRoot,
-    candidate, stage, backup, retentionRoot, expectedActivationId, expectedTree, owner };
-  await writeNew(marker, Buffer.from(JSON.stringify(allocation) + '\n'));
+    candidate, stage, backup, retentionRoot, expectedActivationId, expectedTree, owner,
+    ...(currentReplacement ? {currentReplacement:true,candidateTree} : {}) };
+  try {await writeNew(marker, Buffer.from(JSON.stringify(allocation) + '\n'));}
+  catch(error) {
+    if(currentReplacement) {error.allocation=marker;error.candidateRoot=candidate;error.markerCreationFailed=true;}
+    throw error;
+  }
+  let result;
+  try {
   await fs.mkdir(retentionRoot, { mode: 0o700 });
   if (owner?.workCapture) await registerOwnedAllocation(owner.workCapture, marker);
-  await copyTree(candidate, stage);
+  if (!currentReplacement) await copyTree(candidate, stage);
   if (!equal((await captureExecutionTree(stage)).files, candidateTree.files) || !equal(await captureExecutionTree(candidate), candidateTree)) fail(`candidate changed while staging; retained allocation: ${marker}`);
   let confirmed = false; let markerWritten = false;
-  const result = await withExecutionPublicationLock(workspace, async lease => {
+  result = await withExecutionPublicationLock(workspace, async lease => {
     const before = await captureExecutionTree(workspace.executionRoot);
     if (!equal(before, expectedTree)) fail(`publication base changed; retained candidate/allocation: ${marker}`);
     if (currentInitial && (before !== null || expectedActivationId !== null || owner !== null || terminal || draft || prepareRetention))
       fail('EC-1 Initial ingress requires an absent official execution and no predecessor');
+    if (currentReplacement && (before === null || expectedActivationId === null || owner !== null
+      || terminal || draft || prepareRetention || currentInitial))
+      fail('EC-1 local review requires one quiet current predecessor');
     let previous = null;
     if (expectedActivationId !== null) {
       previous = (await readActivated()).activation;
@@ -727,10 +742,12 @@ export async function publishExecutionUpdate({ workspace, candidateExecutionRoot
     try {
       if (checkpoint) await checkpoint('before-backup', { stage, backup, marker });
       if (recheckRetention) await recheckRetention();
+      if(currentReplacement) await recheckRequirements();
       if (!equal(await captureExecutionTree(workspace.executionRoot),before)) fail('publication base changed immediately before swap');
       await assertExecutionPublicationLock(lease);
       if (before) { await fs.rename(workspace.executionRoot, backup); moved = true; }
       if (checkpoint) await checkpoint('after-backup', { stage, backup, marker });
+      if(currentReplacement) await recheckRequirements();
       if (await stat(workspace.executionRoot)) fail('official target unexpectedly occupied');
       if (currentInitial) {
         // The reviewed source is outside the publication lock. Recheck it after
@@ -745,19 +762,23 @@ export async function publishExecutionUpdate({ workspace, candidateExecutionRoot
       let activation = null;
       if (!draft) {
         const snapshotBytes = (await readOwnedFile(path.join(workspace.executionRoot, 'approved-preparation.json'))).bytes;
-        activation = { format: currentInitial ? 'stnl-execution-activation-v2' : 'stnl-execution-activation-v1', activationId: randomUUID(), sequence: (previous?.sequence ?? 0) + 1,
+        activation = { format: currentInitial || currentReplacement ? 'stnl-execution-activation-v2' : 'stnl-execution-activation-v1', activationId: randomUUID(), sequence: (previous?.sequence ?? 0) + 1,
           previousActivationId: previous?.activationId ?? null, preparationRevision: authority.preparationRevision,
           requirementsAuthority: authority.requirementsAuthority, normativeSha256: authority.normativeSha256,
-          approvedSnapshotSha256: digest(snapshotBytes), artifacts: currentInitial
-            ? (await officialManifest(workspace.executionRoot)).sort((left,right)=>left.path<right.path?-1:left.path>right.path?1:0)
-            : await officialManifest(workspace.executionRoot),
+          approvedSnapshotSha256: digest(snapshotBytes), artifacts: currentReplacement
+            ? candidateTree.files.filter(item=>item.type==='file' && item.path!=='activation.json')
+              .map(item=>({path:item.path,sha256:item.sha256})).sort((left,right)=>left.path<right.path?-1:left.path>right.path?1:0)
+            : currentInitial
+              ? (await officialManifest(workspace.executionRoot)).sort((left,right)=>left.path<right.path?-1:left.path>right.path?1:0)
+              : await officialManifest(workspace.executionRoot),
           activeAttempt: previous?.activeAttempt ?? null,
-          lastAttempt: previous?.lastAttempt ?? null };
+          lastAttempt: currentReplacement ? null : previous?.lastAttempt ?? null };
         if (checkpoint) await checkpoint('before-activation', { stage, backup, marker });
         // Any error after entering this call may have installed the marker. Never compensate blindly.
         allocation.expectedInstalledActivation=activation;
         await persistAllocation(marker,allocation);
         markerWritten = true;
+        if(currentReplacement && checkpoint) await checkpoint('after-activation-intent',{stage,backup,marker});
         await replaceActivation(workspace.executionRoot, activation);
         if (checkpoint) await checkpoint('after-activation', { stage, backup, marker });
         const readback = await readActivated();
@@ -833,9 +854,15 @@ export async function publishExecutionUpdate({ workspace, candidateExecutionRoot
           }
         } catch (restoreError) { error.message += `; restore failed: ${restoreError.message}; retained backup ${backup}, stage ${stage}`; }
       } else error.message += '; activation outcome uncertain; preserve owner and inspect marker before any retry';
-      error.allocation = marker; throw error;
+      error.allocation = marker;
+      if(currentReplacement) error.candidateRoot=candidate;
+      throw error;
     }
   });
+  } catch(error) {
+    if(currentReplacement) {error.allocation=marker;error.candidateRoot=candidate;}
+    throw error;
+  }
   if (result.publication === 'confirmed' && result.cleanup === 'pending') {
     allocation.cleanup = { status: 'pending', paths: result.retainedLock ? [result.retainedLock] : allocation.cleanup.paths,
       diagnostics: result.cleanupDiagnostics ?? [] };
@@ -1020,14 +1047,19 @@ export function hasOwnedAllocationEnvelope(record, marker) {
     const publisher=marker===path.join(parent,`.stnl-execution-publication-${record.allocationId}.json`);
     const admission=owned && marker===`${owner.workCapture.path}.owner.json` && inside(owner.workCapture.path,record.retentionRoot);
     if(!publisher && !admission) return false;
+    const localReviewStage=record.currentReplacement===true && record.owner===null
+      && record.stage===record.candidate && record.candidateTree?.files;
     const publicationOrigin=publisher && Object.hasOwn(record,'expectedActivationId') && Object.hasOwn(record,'expectedTree')
-      && path.isAbsolute(record.candidate ?? '') && record.stage===path.join(parent,`.stnl-execution-stage-${record.allocationId}`)
+      && path.isAbsolute(record.candidate ?? '') && (localReviewStage
+        || record.currentReplacement===undefined && record.stage===path.join(parent,`.stnl-execution-stage-${record.allocationId}`))
       && record.backup===path.join(record.retentionRoot,'previous');
     if(record.retention) return ['preparation-publication','operational-publication','operation-admission','pass-reopening'].includes(record.retention.producer)
       && Object.hasOwn(record,'owner') && equal(record.retention.owner,owner)
       && (record.retention.producer==='operation-admission' ? !!owner : publicationOrigin);
     const firstInitial = record.owner===null && record.expectedActivationId===null && record.expectedTree===null;
-    return publicationOrigin && ((owned && uuid(record.expectedActivationId) && record.expectedTree?.files) || firstInitial);
+    const quietReplacement=record.owner===null && uuid(record.expectedActivationId) && record.expectedTree?.files;
+    return publicationOrigin && ((owned && uuid(record.expectedActivationId) && record.expectedTree?.files)
+      || firstInitial || quietReplacement);
   }
   if(record.retentionRoot!==record.candidate) return false;
   if(record.format==='stnl-preparation-allocation-v1') return record.producer==='preparation' && marker===`${record.candidate}.owner.json`
@@ -1114,8 +1146,83 @@ export async function acknowledgePublishedCandidate({workspace,marker,candidateT
   });
 }
 
+// The local review promotes its one approved candidate directly. The v1 owner
+// marker already binds the old tree, candidate identity, and activation intent.
+export async function recoverCurrentReplacementPublication({workspace,marker,readActivated,
+  validateInstalledActivation}) {
+  return withExecutionPublicationLock(workspace,async lease=>{
+    const record=parseStrictJson((await readOwnedFile(marker)).bytes.toString('utf8'));
+    if(!hasOwnedAllocationEnvelope(record,marker) || record.currentReplacement!==true
+      || record.executionRoot!==workspace.executionRoot || record.owner!==null
+      || record.stage!==record.candidate || !record.expectedTree?.files
+      || !record.candidateTree?.files || record.backup!==path.join(record.retentionRoot,'previous'))
+      fail('local review recovery owner differs');
+    const old=record.expectedTree, proposed=record.candidateTree;
+    const live=await captureExecutionTree(workspace.executionRoot);
+    const candidate=await captureExecutionTree(record.candidate);
+    const backup=await captureExecutionTree(record.backup);
+    const exact=(a,b)=>a!==null && equal(a,b);
+    const proposedInstalled=live!==null && equal(live.identity,proposed.identity)
+      && equal(live.files.filter(item=>item.path!=='activation.json'),proposed.files);
+    if(backup!==null && !exact(backup,old)) fail('local review prior backup differs');
+    if(candidate!==null && !exact(candidate,proposed)) fail('local review candidate differs');
+    if(record.expectedInstalledActivation && proposedInstalled
+      && live.files.some(item=>item.path==='activation.json')) {
+      validateInstalledActivation(record.expectedInstalledActivation);
+      const activation=parseStrictJson((await readOwnedFile(path.join(workspace.executionRoot,'activation.json'))).bytes.toString('utf8'));
+      if(equal(activation,record.expectedInstalledActivation)) {
+        if(backup===null || candidate!==null) fail('local review confirmed roles differ');
+        const current=await readActivated();
+        if(!equal(current.activation,activation) || current.activation.activeAttempt!==null)
+          fail('local review confirmed readback differs');
+        await assertExecutionPublicationLock(lease);
+        if(!exact(await captureExecutionTree(record.backup),old)
+          || !equal((await readActivated()).activation,activation)) fail('local review confirmed state changed');
+        await fs.rm(record.backup,{recursive:true});
+        await fs.rmdir(record.retentionRoot);
+        await fs.unlink(marker);
+        return {publication:'confirmed',cleanup:'complete',classification:'disposable',
+          expectedActivationId:activation.activationId};
+      }
+      // An intent may have been persisted before the activation CAS. Only the
+      // literal candidate image without activation may be moved back.
+      if(live.files.some(item=>item.path==='activation.json'))
+        fail('local review activation outcome is uncertain');
+    }
+    if(backup===null) {
+      if(!exact(live,old) || candidate!==null && !exact(candidate,proposed))
+        fail('local review unswapped roles differ');
+    } else if(live===null) {
+      if(!exact(candidate,proposed)) fail('local review preinstall candidate differs');
+    } else if(proposedInstalled && candidate===null && !live.files.some(item=>item.path==='activation.json')) {
+      await assertExecutionPublicationLock(lease);
+      await fs.rename(workspace.executionRoot,record.candidate);
+    } else fail('local review unconfirmed roles differ');
+    if(backup!==null) {
+      if(await stat(workspace.executionRoot) || !exact(await captureExecutionTree(record.backup),old))
+        fail('local review previous image changed before restoration');
+      await assertExecutionPublicationLock(lease);
+      await fs.rename(record.backup,workspace.executionRoot);
+    }
+    const restoredCandidate=await captureExecutionTree(record.candidate);
+    if(!exact(await captureExecutionTree(workspace.executionRoot),old)
+      || restoredCandidate!==null && !exact(restoredCandidate,proposed))
+      fail('local review restored image or candidate differs');
+    if(restoredCandidate!==null) await fs.rm(record.candidate,{recursive:true});
+    const retention=await stat(record.retentionRoot);
+    if(retention) {
+      if(!retention.isDirectory() || retention.isSymbolicLink())
+        fail('local review retention root differs');
+      await fs.rmdir(record.retentionRoot);
+    }
+    await fs.unlink(marker);
+    return {publication:'aborted',cleanup:'complete',classification:'disposable',
+      expectedActivationId:record.expectedActivationId};
+  });
+}
+
 export async function cleanupOwnedExecutionAllocation({ workspace, marker, readActivated, checkpoint = null,
-  validateInstalledActivation = validateActivation }) {
+  validateInstalledActivation = validateActivation, currentReplacement = false }) {
   async function acknowledge(record, result) {
     try {
       if(checkpoint) await checkpoint('before-cleanup-acknowledgment', {marker});
@@ -1139,6 +1246,41 @@ export async function cleanupOwnedExecutionAllocation({ workspace, marker, readA
       || record.confirmation.artifactManifestSha256 !== digest(JSON.stringify(current.activation.artifacts))) fail('cleanup needs matching confirmed, inactive image');
     closed(record.cleanup, ['status', 'paths', 'diagnostics'], 'cleanup');
     if (!['complete', 'pending'].includes(record.cleanup.status) || !Array.isArray(record.cleanup.paths) || !Array.isArray(record.cleanup.diagnostics)) fail('malformed cleanup');
+    if(currentReplacement) {
+      if(record.format!=='stnl-execution-publication-owner-v1' || record.owner!==null
+        || !record.expectedTree?.files || record.expectedActivationId===null
+        || record.expectedInstalledActivation?.activationId!==current.activation.activationId
+        || record.backup!==path.join(record.retentionRoot,'previous'))
+        fail('local review cleanup lacks its exact publication owner');
+      const roles=[record.backup,record.retentionRoot,marker];
+      if(record.cleanup.paths.length && !equal(record.cleanup.paths,roles))
+        fail('local review cleanup has foreign roles');
+      const prior=await captureExecutionTree(record.backup);
+      if(prior===null && !equal(record.cleanup.paths,roles))
+        fail('local review backup disappeared before owned cleanup');
+      if(prior!==null && !equal(prior,record.expectedTree))
+        fail('local review backup contains foreign or changed material');
+      if(!equal(record.cleanup.paths,roles)) {
+        record.cleanup={status:'pending',paths:roles,diagnostics:[]};
+        await persistAllocation(marker,record);
+      }
+      await assertExecutionPublicationLock(lease);
+      if(!equal((await readActivated()).activation,current.activation)
+        || prior!==null && !equal(await captureExecutionTree(record.backup),prior))
+        fail('local review cleanup base or backup changed');
+      try {
+        if(prior!==null) await fs.rm(record.backup,{recursive:true});
+        await fs.rmdir(record.retentionRoot);
+        await fs.unlink(marker);
+        return {publication:'confirmed',cleanup:'complete',classification:'disposable',
+          expectedActivationId:current.activation.activationId};
+      } catch(error) {
+        record.cleanup.diagnostics=[error.message];
+        return acknowledge(record,{publication:'confirmed',cleanup:'pending',
+          cleanupDiagnostics:[error.message],allocation:marker,
+          expectedActivationId:current.activation.activationId});
+      }
+    }
     if(['execution-copy','validation-copy'].includes(record.producer)) {
       if(classification!=='disposable' || !record.publicationAllocation || !record.confirmedCandidateTree
         || record.cleanup.paths.some(p=>p!==record.candidate)) fail('candidate is not demonstrably disposable');

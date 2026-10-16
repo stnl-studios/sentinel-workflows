@@ -1365,6 +1365,7 @@ test('R19 isolated reader closure and copy equivalence',async t=>{
     const runtime=await install(f,skill,['execution-current.mjs','execution-preparation-current.mjs'],'preparation');
     const api=await import(pathToFileURL(path.join(runtime,'execution-preparation-current.mjs')).href);
     assert.deepEqual(Object.keys(api).sort(),['approveConversionPreparation','approveInitialPreparation',
+      'finalizeCurrentLocalReview','prepareCurrentLocalReview',
       'projectConversionPreparation','projectInitialPreparation','validateConversionApprovedPreparation',
       'validateCurrentPreparation','validateInitialApprovedPreparation']);
     const prepared=api.validateCurrentPreparation({context:{logicalSpecRoot:null,logicalAuthorityPath:f.source,

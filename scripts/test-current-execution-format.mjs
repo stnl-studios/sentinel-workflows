@@ -97,7 +97,7 @@ function b1(api) {
     'approved-preparation.json', 'continuity.json', 'plan.md', 'plans/slice-01.md', 'tasks.md', 'tasks/slice-01.md',
   ]);
   assert.deepEqual(Object.keys(api).sort(), [
-    'currentOperationBindingSha256', 'logicalArtifactPath', 'parseCurrentJson', 'resolveLogicalProductClaim',
+    'currentDeliveryAuthoritySha256', 'currentOperationBindingSha256', 'logicalArtifactPath', 'parseCurrentJson', 'resolveLogicalProductClaim',
     'validateCurrentActivation', 'validateCurrentCandidate', 'validateCurrentContinuity', 'validateCurrentEvidence', 'validateCurrentImage',
   ]);
   assert.deepEqual(api.validateCurrentImage({activationBytes: image.activationBytes, files: image.files}), {

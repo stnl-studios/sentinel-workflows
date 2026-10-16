@@ -77,6 +77,10 @@ async function namespaceFor(context,{create=false}={}) {
   return {namespace,registry:path.join(namespace,'registry.json'),key,exists:true,
     identity:identity(await realDirectory(namespace)),device:String(product.dev)};
 }
+export async function allocateCurrentLocalReviewCandidate(context) {
+  const {namespace}=await namespaceFor(context,{create:true});
+  return fs.realpath(await fs.mkdtemp(path.join(namespace,'local-review-')));
+}
 async function registryAt(location,executionRoot) {
   const exists=await maybe(location.registry);
   if(!exists) return {format:'stnl-current-operation-registry-v1',executionRoot,operations:[]};
@@ -102,7 +106,10 @@ function requireS2(image,slice,operation,{successor=false}={}) {
     || image.inspection.normalHandoff?.slice!==slice)
     fail('UNSUPPORTED_FORMAT','EC-1 native profile requires an exact converted S2 handoff');
   const continuity=parseCurrentJson(Buffer.from(image.files.get('continuity.json')).toString('utf8'));
-  if(continuity.completed.length || continuity.deliveries.some(item=>item.localRevision!==1
+  const reviewed=continuity.deliveries.filter(item=>item.localRevision!==1);
+  if(continuity.completed.length || reviewed.length>1 || reviewed.some(item=>item.localRevision!==2
+    || item.slice!==slice || operation!=='VALIDATE_SLICE' || successor)
+    || continuity.deliveries.some(item=>item.localRevision!==1 && item.localRevision!==2
     || item.normalization!==null && !(successor && item.slice===slice
       && item.normalization.status==='settled' && item.normalization.round===1)
     || item.validation==='uncertain'))

@@ -286,6 +286,7 @@ test('P08 — planner/reviewer copies import with only their L1 sibling', async 
       await fs.copyFile(path.join(root, kernelPaths[i]), path.join(directory, 'execution-current.mjs'));
       const api = await import(pathToFileURL(path.join(directory, 'execution-preparation-current.mjs')).href);
       assert.deepEqual(Object.keys(api).sort(), ['approveConversionPreparation', 'approveInitialPreparation',
+        'finalizeCurrentLocalReview', 'prepareCurrentLocalReview',
         'projectConversionPreparation', 'projectInitialPreparation', 'validateConversionApprovedPreparation',
         'validateCurrentPreparation', 'validateInitialApprovedPreparation']);
       for (const [label, check] of [['P01', p01], ['P03', p03], ['P05', p05], ['P07', p07]]) {

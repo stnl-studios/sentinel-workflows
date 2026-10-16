@@ -260,7 +260,8 @@ function authorityFor(snapshot,delivery) {
   const leaf=snapshot.normativeProjection.deliveries.find(item=>item.deliveryId===delivery.deliveryId);
   if (!leaf) fail('INVALID_CURRENT_IMAGE','approved delivery leaf is absent','integrity',delivery.slice);
   const global=snapshot.normativeProjection.global;
-  return {preparationRevision:1,localRevision:1,normativeSha256:snapshot.normativeSha256,delivery:leaf,
+  return {preparationRevision:snapshot.preparationRevision,localRevision:delivery.localRevision,
+    normativeSha256:snapshot.preparationRevision===1?snapshot.normativeSha256:delivery.authoritySha256,delivery:leaf,
     context:{requirementsAuthority:snapshot.requirementsAuthority,objective:global.objective,strategy:global.strategy,risks:global.risks}};
 }
 function verifyLastAttempt(activation,deliveries) {
@@ -355,7 +356,9 @@ async function readCurrentExecution(specPath,withCapture=false,expectedOwner=nul
   for (const [unsupported,artifact,field] of [
     [!converted && activation.preparationRevision!==1,'activation.json','preparationRevision'],
     [continuity.completed.length>0,'continuity.json','completed'],
-    [continuity.deliveries.some(item=>item.localRevision!==1),'continuity.json','localRevision'],
+    [continuity.deliveries.filter(item=>item.localRevision!==1).length>1
+      || continuity.deliveries.some(item=>item.localRevision!==1 && !(converted && item.localRevision===2)),
+      'continuity.json','localRevision'],
     [continuity.deliveries.some(item=>item.normalization!==null
       && !(converted && ['VALIDATE_SLICE','APPLY_FINDINGS'].includes(item.normalization.operation)
         && ['settled','exhausted'].includes(item.normalization.status))

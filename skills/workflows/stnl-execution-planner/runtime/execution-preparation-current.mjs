@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { parseCurrentJson, logicalArtifactPath, resolveLogicalProductClaim, validateCurrentContinuity,
-  validateCurrentEvidence } from './execution-current.mjs';
+  validateCurrentEvidence,validateCurrentImage,validateCurrentCandidate } from './execution-current.mjs';
 
 const HASH = /^sha256:[a-f0-9]{64}$/u;
 const UUID = /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/u;
@@ -294,7 +294,7 @@ function requirementsBody(body, assigned, label) {
   if (!/[\p{L}]/u.test(body.replace(/[A-Z][A-Z0-9]*-[0-9]+/gu, ''))) invalid(`${label}: IDs without requirement content`);
 }
 
-function project(value, withReview = false, conversion = false) {
+function project(value, withReview = false, conversion = false, local = null) {
   const supplied = input(value, withReview);
   const artifacts = conversion ? new Map([...supplied].filter(([name]) => /^(?:plan|tasks)\.md$|^(?:plans|tasks)\/slice-[0-9]{2,}\.md$/u.test(name))) : supplied;
   const context = value.context, expectedAuthority = value.requirementsAuthority;
@@ -306,10 +306,13 @@ function project(value, withReview = false, conversion = false) {
   sourceClaim(global['Requirements source'], context, 'plan.md', 'plan.md Requirements source');
   hash(global['Requirements authority'], 'plan.md authority');
   if (global['Requirements authority'] !== expectedAuthority) changed('plan.md requirements authority differs');
-  const preparationRevision = Number(global['Plan revision']);
-  if (!Number.isSafeInteger(preparationRevision) || preparationRevision < 1 || Object.is(preparationRevision, -0)
-    || String(preparationRevision) !== global['Plan revision'] || (!conversion && preparationRevision !== 1))
+  const planRevision = Number(global['Plan revision']);
+  if (!Number.isSafeInteger(planRevision) || planRevision < 1 || Object.is(planRevision, -0)
+    || String(planRevision) !== global['Plan revision'] || (!conversion && planRevision !== 1))
     invalid('plan.md: invalid preparation revision');
+  const preparationRevision = local?.preparationRevision ?? planRevision;
+  if (!Number.isSafeInteger(preparationRevision) || preparationRevision < planRevision)
+    invalid('preparation revision precedes global plan revision');
   if (global['Review state'] !== (plan.metadata.status === 'ready' ? 'approved' : 'pending')) invalid('plan.md: review state differs from status');
   const serialRows = table(plan.sections['Serial Slice Order'], PLAN_TABLE, 'plan.md Serial Slice Order').map(columns => {
     const identity = serial(columns[0], 'plan.md Slice');
@@ -349,8 +352,10 @@ function project(value, withReview = false, conversion = false) {
       ['Slice', 'Delivery ID', 'Requirements source', 'Requirements authority', 'Plan revision', 'Local revision', 'Global plan', 'Review state'], `${planName} References`);
     const taskRefs = inline(task.sections.References,
       ['Slice', 'Delivery ID', 'Plan', 'Requirements source', 'Requirements authority', 'Plan revision', 'Local revision', 'Global tasks'], `${taskName} References`);
-    if (detailRefs.Slice !== row.number || taskRefs.Slice !== row.number || detailRefs['Plan revision'] !== String(preparationRevision)
-      || taskRefs['Plan revision'] !== String(preparationRevision) || detailRefs['Local revision'] !== '1' || taskRefs['Local revision'] !== '1'
+    const localRevision=local?.revisions?.get(row.slice) ?? 1;
+    if (!Number.isSafeInteger(localRevision) || localRevision<1
+      || detailRefs.Slice !== row.number || taskRefs.Slice !== row.number || detailRefs['Plan revision'] !== String(planRevision)
+      || taskRefs['Plan revision'] !== String(planRevision) || detailRefs['Local revision'] !== String(localRevision) || taskRefs['Local revision'] !== String(localRevision)
       || detailRefs['Global plan'] !== '`../plan.md`' || taskRefs.Plan !== `\`../plans/${row.slice}.md\``
       || taskRefs['Global tasks'] !== '`../tasks.md`'
       || detailRefs['Review state'] !== (plan.metadata.status === 'ready' ? 'approved' : 'pending')) invalid(`${row.slice}: invalid references/revisions`);
@@ -412,7 +417,7 @@ function project(value, withReview = false, conversion = false) {
       verificationRecipe: planRecipe, completionCriterion: detail.sections['Completion Criterion'],
       taskResult: task.sections.Result, obligations: declared,
     };
-    deliveries.push({slice: row.slice, deliveryId: leaf.deliveryId, localRevision: 1, authoritySha256: projected('delivery', leaf)});
+    deliveries.push({slice: row.slice, deliveryId: leaf.deliveryId, localRevision, authoritySha256: projected('delivery', leaf)});
     projectionLeaves.push(leaf);
     obligationRows.push({slice: row.slice, requirements: row.requirements, obligations: declared, dependencies: row.dependencies});
   }
@@ -814,7 +819,9 @@ function validateConvertedSnapshotIntrinsic({context,requirementsAuthority,snaps
     if(raw(original)!==item.sha256) invalid(`${item.path}: reviewed raw digest differs`);
     reviewed.set(item.path,original);
   }
-  const {authority,status}=project({context,requirementsAuthority,artifacts:reviewed},false,true);
+  const local={preparationRevision:snapshot.preparationRevision,
+    revisions:new Map(array(snapshot.deliveries,'snapshot deliveries').map(item=>[item.slice,item.localRevision]))};
+  const {authority,status}=project({context,requirementsAuthority,artifacts:reviewed},false,true,local);
   if(status!=='ready' || snapshot.preparationRevision!==authority.preparationRevision
     || snapshot.requirementsAuthority!==requirementsAuthority
     || snapshot.normativeSha256!==authority.normativeSha256
@@ -829,7 +836,7 @@ function validateConvertedSnapshotIntrinsic({context,requirementsAuthority,snaps
   for(let i=0;i<authority.deliveries.length;i++) {
     const item=exact(snapshot.deliveries[i],['slice','deliveryId','localRevision','review'],'snapshot delivery');
     const expected=authority.deliveries[i];
-    if(item.slice!==expected.slice || item.deliveryId!==expected.deliveryId || item.localRevision!==1)
+    if(item.slice!==expected.slice || item.deliveryId!==expected.deliveryId || item.localRevision!==expected.localRevision)
       invalid('converted snapshot delivery binding differs');
     review(item.review,'slice',expected.authoritySha256,[`plans/${item.slice}.md`,`tasks/${item.slice}.md`],
       hashes,`delivery review ${item.slice}`,item.review.evidenceDecisions.map(({deliveryId,evidenceSha256,disposition})=>
@@ -897,4 +904,133 @@ export function validateCurrentPreparation({context, requirementsAuthority, snap
   }
   return {authority:approved.authority, snapshot:approved.snapshot,
     currentArtifacts:{plan:newPlan.sections, tasksIndex:afterRows, deliveries}};
+}
+
+// A local review replaces one already approved leaf. The proposal is deliberately
+// in memory: the existing reviewed snapshot, continuity and publisher remain the
+// only official carriers. Approval is supplied separately by an independent reviewer.
+export function prepareCurrentLocalReview(input) {
+  const {context,requirementsAuthority,previous,slice,planBytes,reviewedTaskBytes,currentTaskBytes}=input;
+  if(!SLICE.test(slice)) invalid('local review requires one selected slice');
+  const files=new Map([...previous.files].map(([name,bytes])=>[name,Buffer.from(bytes)]));
+  const old=validateCurrentImage({activationBytes:previous.activationBytes,files});
+  const activation=parseCurrentJson(decode(previous.activationBytes,'activation.json'));
+  if(activation.activeAttempt!==null || activation.requirementsAuthority!==requirementsAuthority
+    || activation.preparationRevision<=1 || old.continuity.completed.length)
+    fail('UNSUPPORTED_FORMAT','local review requires a quiet converted image');
+  const selected=old.continuity.deliveries.find(item=>item.slice===slice);
+  if(!selected || selected.localRevision!==1 || selected.counters.validationAttempts<1
+    || selected.validation==='uncertain' || selected.normalization!==null)
+    fail('UNSUPPORTED_FORMAT','selected S2 is not eligible for one local review');
+  if(selected.evidence!==null && selected.validation!=='current')
+    fail('UNSUPPORTED_FORMAT','local review of an already stale evidence episode is outside one S2');
+  if(old.continuity.deliveries.some(item=>item.slice!==slice && item.localRevision!==1))
+    fail('UNSUPPORTED_FORMAT','another delivery already has a local review');
+  const snapshot=parseCurrentJson(decode(files.get('approved-preparation.json'),'approved-preparation.json'));
+  const original=snapshot.normativeProjection.deliveries.find(item=>item.deliveryId===selected.deliveryId);
+  if(snapshot.normativeProjection.deliveries.some(item=>item.deliveryId!==selected.deliveryId
+    && item.dependencies.includes(selected.deliveryId)))
+    fail('REPLAN_REQUIRED','consumer of selected delivery requires a set review');
+  const planName=`plans/${slice}.md`,taskName=`tasks/${slice}.md`;
+  const reviewed=new Map(snapshot.reviewedArtifacts.map(item=>[item.path,Buffer.from(item.utf8,'utf8')]));
+  if(!reviewed.has(planName) || !reviewed.has(taskName)) invalid('selected reviewed artifacts absent');
+  reviewed.set(planName,Buffer.from(planBytes));
+  reviewed.set(taskName,Buffer.from(reviewedTaskBytes));
+  const revisions=new Map(snapshot.deliveries.map(item=>[item.slice,item.localRevision]));
+  revisions.set(slice,selected.localRevision+1);
+  const {authority,status}=project({context,requirementsAuthority,artifacts:reviewed},false,true,
+    {preparationRevision:snapshot.preparationRevision+1,revisions});
+  if(status!=='ready' || !same(authority.normativeProjection.global,snapshot.normativeProjection.global)
+    || !same(authority.normativeProjection.completed,snapshot.normativeProjection.completed)
+    || authority.deliveries.some((item,i)=>item.slice!==slice && (
+      !same(item,snapshot.deliveries[i] && {slice:snapshot.deliveries[i].slice,
+        deliveryId:snapshot.deliveries[i].deliveryId,localRevision:snapshot.deliveries[i].localRevision,
+        authoritySha256:projected('delivery',snapshot.normativeProjection.deliveries[i])})
+      || !same(authority.normativeProjection.deliveries[i],snapshot.normativeProjection.deliveries[i]))))
+    fail('REPLAN_REQUIRED','local review changes set or another delivery');
+  const revised=authority.normativeProjection.deliveries.find(item=>item.deliveryId===selected.deliveryId);
+  const privateFields=new Set(['existingInputs','risksAndStrategy','expectedTests','verificationRecipe']);
+  if(Object.keys(original).some(key=>!privateFields.has(key) && !same(original[key],revised[key]))
+    || same(original,revised)) fail('REPLAN_REQUIRED','selected delta is transverse or has no normative change');
+  const changedPaths=[planName,taskName];
+  if(snapshot.reviewedArtifacts.some(item=>!changedPaths.includes(item.path)
+    && (authority.artifactHashes.find(hash=>hash.path===item.path)?.sha256!==item.sha256)))
+    fail('REPLAN_REQUIRED','unselected reviewed bytes differ');
+  const updatedFiles=new Map(files);
+  updatedFiles.set(planName,Buffer.from(planBytes));
+  updatedFiles.set(taskName,Buffer.from(currentTaskBytes));
+  const nextContinuity=structuredClone(old.continuity);
+  const next=nextContinuity.deliveries.find(item=>item.deliveryId===selected.deliveryId);
+  next.localRevision+=1;
+  next.authoritySha256=authority.deliveries.find(item=>item.deliveryId===selected.deliveryId).authoritySha256;
+  next.validation='revalidation-required';
+  let evidenceDecision=[];
+  if(next.evidence) {
+    const bundle=parseCurrentJson(decode(files.get(next.evidence.path),next.evidence.path));
+    validateCurrentEvidence(bundle);
+    bundle.currentAuthoritySha256=next.authoritySha256;
+    const bytes=Buffer.from(canonical(bundle)+'\n','utf8');
+    updatedFiles.set(next.evidence.path,bytes);
+    next.evidence.sha256=raw(bytes);
+    evidenceDecision=[{deliveryId:next.deliveryId,evidenceSha256:next.evidence.sha256,
+      disposition:'revalidate',reason:''}];
+    const carriers=composeCurrentLocalReviewCarriers({task:Buffer.from(currentTaskBytes).toString('utf8'),
+      index:files.get('tasks.md').toString('utf8'),slice,evidenceSha256:next.evidence.sha256});
+    updatedFiles.set(taskName,carriers.task);
+    updatedFiles.set('tasks.md',carriers.index);
+  }
+  updatedFiles.set('continuity.json',Buffer.from(canonical(nextContinuity)+'\n','utf8'));
+  const hashes=new Map(authority.artifactHashes.map(item=>[item.path,item.sha256]));
+  const reviewRequest={scope:'slice',authoritySha256:next.authoritySha256,
+    examinedArtifactHashes:changedPaths.sort(ordinal).map(path=>({path,sha256:hashes.get(path)})),
+    evidenceDecisions:evidenceDecision};
+  return {input,files:updatedFiles,authority,selected,snapshot,reviewed,reviewRequest};
+}
+
+function composeCurrentLocalReviewCarriers({task,index,slice,evidenceSha256}) {
+  const replace=(document,name,body)=>{
+    const lines=document.split('\n');
+    const start=lines.findIndex(line=>line===`## ${name}`);
+    if(start<0) invalid(`Task lacks ${name}`);
+    let end=start+1;
+    while(end<lines.length && !lines[end].startsWith('## ')) end++;
+    return [...lines.slice(0,start+1),'',body,'',...lines.slice(end)].join('\n');
+  };
+  let next=replace(task,'Continuity',
+    `- Current validation: revalidation-required\n- Current evidence: ${evidenceSha256}\n- Current action: VALIDATE_SLICE`);
+  for(const section of ['Final Result','Changed Areas','Corrections Applied',
+    'Prior Validation Overlap','Effective Validation Base'])
+    next=replace(next,section,section==='Final Result'?'- pending':'- none');
+  let found=false;
+  const rows=index.split('\n').map(line=>{
+    if(!/^\| \[[ x]\] \|/u.test(line)) return line;
+    const cols=line.slice(1,-1).split('|').map(item=>item.trim());
+    if(!cols[1].startsWith(`${slice.slice(6)} - `)) return line;
+    found=true;cols[0]='[ ]';cols[5]='pending';cols[6]='pending';
+    return `| ${cols.join(' | ')} |`;
+  });
+  if(!found) invalid('selected Tasks index row absent');
+  return {task:Buffer.from(next,'utf8'),index:Buffer.from(rows.join('\n'),'utf8')};
+}
+
+export function finalizeCurrentLocalReview({proposal,review:decision}) {
+  if(decision===null || decision===undefined) stale('independent local review is absent');
+  const fresh=prepareCurrentLocalReview(proposal.input);
+  if(!same(fresh.reviewRequest,proposal.reviewRequest)) stale('local proposal changed after review');
+  const {snapshot,authority,reviewed,selected}=fresh;
+  const hashes=new Map(authority.artifactHashes.map(item=>[item.path,item.sha256]));
+  review(decision,'slice',fresh.reviewRequest.authoritySha256,
+    fresh.reviewRequest.examinedArtifactHashes.map(item=>item.path),hashes,'local delivery review',
+    fresh.reviewRequest.evidenceDecisions.map(({deliveryId,evidenceSha256,disposition})=>
+      ({deliveryId,evidenceSha256,disposition})));
+  const nextSnapshot={...snapshot,preparationRevision:authority.preparationRevision,
+    normativeProjection:authority.normativeProjection,normativeSha256:authority.normativeSha256,
+    deliveries:snapshot.deliveries.map(item=>item.deliveryId===selected.deliveryId
+      ?{...item,localRevision:item.localRevision+1,review:parseCurrentJson(canonical(decision))}:item),
+    reviewedArtifacts:authority.artifactHashes.map(item=>({path:item.path,sha256:item.sha256,
+      utf8:reviewed.get(item.path).toString('utf8')}))};
+  const files=new Map(fresh.files);
+  files.set('approved-preparation.json',Buffer.from(canonical(nextSnapshot)+'\n','utf8'));
+  validateCurrentCandidate({files});
+  return {files,authority,selected};
 }
