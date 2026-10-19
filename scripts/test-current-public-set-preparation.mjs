@@ -56,12 +56,13 @@ test('Public Q18 API prepares a complete owned proposal, stays awaiting review a
   await assert.rejects(fs.readFile(path.join(options.candidateExecutionRoot,name)),{code:'ENOENT'});
  assert.deepEqual(await publishPreparationCandidate(options),proposal);
  assert.equal((await preparePreparationCandidate({...options,operation:'REVIEW_PLAN'})).expectedActivationId,f.source.inspection.activationId);
- const review=reviewFor(proposal.reviewRequest),reviewed=await publishPreparationCandidate({...options,reviewDecision:review});
- assert.equal(reviewed.reviewValidated,true);assert.equal(reviewed.publication,'not-started');
+ const review=reviewFor(proposal.reviewRequest);
  await assert.rejects(publishPreparationCandidate({...options,reviewDecision:{decision:'approved'}}));
  const stale=structuredClone(review);stale.globalReview.examinedArtifactHashes[0].sha256='sha256:'+'0'.repeat(64);
  await assert.rejects(publishPreparationCandidate({...options,reviewDecision:stale}),{code:'STALE_APPROVAL'});
  await unchanged(f);assert.deepEqual(await fs.readFile(path.join(f.root,f.productFile)),before);
+ const reviewed=await publishPreparationCandidate({...options,reviewDecision:review});
+ assert.equal(reviewed.reviewValidated,true);assert.equal(reviewed.publication,'confirmed');assert.equal(reviewed.cleanup,'complete');
 });
 
 for(const reopening of [false,true])test(`Public ${reopening?'Q19':'Q18'} CLI uses the registered source and preserves live and product`,async t=>{
@@ -99,10 +100,12 @@ for(const reopening of [false,true])test(`Public ${reopening?'Q19':'Q18'} CLI us
  }
  const review=reviewFor(proposal.reviewRequest),reviewFile=path.join(f.root,'tmp/review.json');await fs.writeFile(reviewFile,JSON.stringify(review));
  if(reopening)await assert.rejects(publishPreparationCandidate({...options,reviewDecision:{...review,deliveries:[]}}),{code:'STALE_APPROVAL'});
- assert.equal((await command('publish-task-candidate.mjs',[...args,'--review-decision-file',reviewFile])).reviewValidated,true);
- await fs.appendFile(path.join(root,'plan.md'),'\n');
+ const planBefore=await fs.readFile(path.join(root,'plan.md'));await fs.appendFile(path.join(root,'plan.md'),'\n');
  await assert.rejects(command('publish-task-candidate.mjs',[...args,'--review-decision-file',reviewFile]));
  await unchanged(f);assert.deepEqual(await fs.readFile(path.join(f.root,f.productFile)),beforeProduct);
+ await fs.writeFile(path.join(root,'plan.md'),planBefore);
+ const installed=await command('publish-task-candidate.mjs',[...args,'--review-decision-file',reviewFile]);
+ assert.equal(installed.reviewValidated,true);assert.equal(installed.publication,'confirmed');assert.equal(installed.cleanup,'complete');
 });
 
 test('Public set preparation refuses foreign identities, revisions, carriers, ownership and stale source',async t=>{

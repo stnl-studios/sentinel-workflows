@@ -12,6 +12,8 @@ import {inspectPostConversionEvidence} from '../skills/workflows/stnl-slice-exec
 import {begin,reserveDispatch,bindNative,verifyNative,captureNative,publish} from
   '../skills/workflows/stnl-slice-executor/runtime/execution-current-operation.mjs';
 import {publishCurrentLocalReview,recoverCurrentLocalReview} from '../skills/workflows/stnl-slice-executor/runtime/current-local-review.mjs';
+import {resolveExecutionWorkspace} from '../skills/workflows/stnl-slice-executor/runtime/execution-workspace.mjs';
+import {executionLockIdentity} from '../skills/workflows/stnl-slice-executor/runtime/execution-publication.mjs';
 
 const string=bytes=>Buffer.from(bytes).toString('utf8');
 const sha=bytes=>`sha256:${createHash('sha256').update(bytes).digest('hex')}`;
@@ -42,6 +44,15 @@ async function localPublicationCase(t) {
     currentTaskBytes:input.currentTaskBytes,review,checkpoint});
   return {fixture,image,publish};
 }
+
+test('local replacement propagates a retained cleanup lease through its public wrapper',async t=>{
+ const {fixture,publish}=await localPublicationCase(t),open=fs.open,unlink=fs.unlink;let parent=null,injected=0,error;
+ fs.unlink=async(file,...args)=>{const result=await unlink(file,...args);if(typeof file==='string'&&/\.stnl-execution-publication-[a-f0-9-]+\.json$/u.test(file))parent=path.dirname(file);return result;};
+ fs.open=async(file,...args)=>{if(parent&&file===parent){injected++;throw Object.assign(Error('controlled local cleanup sync'),{code:'EIO'});}return open(file,...args);};
+ try{await publish();}catch(caught){error=caught;}finally{fs.open=open;fs.unlink=unlink;}
+ assert.equal(injected,1);assert.equal(error?.retainExecutionLock,true);assert.ok(error.allocation);assert.ok(error.candidateRoot);
+ await fs.access((await executionLockIdentity(await resolveExecutionWorkspace(fixture.specPath))).lockPath);
+});
 
 test('local S2 review changes one leaf, keeps other reviewed bytes and consumption',async t=>{
   const image=await currentImage(t,{kind:'two-s2'});

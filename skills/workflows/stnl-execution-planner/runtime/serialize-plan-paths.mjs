@@ -6,7 +6,7 @@ import path from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {assertPreparationCandidate,capturePreparationSource} from './prepare-plan-candidate.mjs';
 import {resolveCurrentExecutionContext} from './execution-workspace.mjs';
-import {inspectCurrentExecution} from './execution-current-reader.mjs';
+import {inspectCurrentExecution,validateCurrentReviewCandidate} from './execution-current-reader.mjs';
 import {projectInitialPreparation,prepareCurrentSetReplacement} from './execution-preparation-current.mjs';
 import {captureExecutionTree,readOwnedFile} from './execution-publication.mjs';
 export async function serializePlanPathClaims({specPath,candidateExecutionRoot}) {
@@ -20,13 +20,15 @@ export async function serializePlanPathClaims({specPath,candidateExecutionRoot})
    }
    const bytes=(await readOwnedFile(path.join(owned.root,entry.path))).bytes;
    if(/^(?:plan|tasks)\.md$|^(?:plans|tasks)\/slice-[0-9]{2,}\.md$/u.test(entry.path))artifacts.set(entry.path,bytes);
-   else if(entry.path==='continuity.json'||entry.path.startsWith('evidence/')&&source.files.has(entry.path))carriers.set(entry.path,bytes);
+   else if(['continuity.json','approved-preparation.json'].includes(entry.path)||entry.path.startsWith('evidence/')&&source.files.has(entry.path))carriers.set(entry.path,bytes);
    else throw new Error('Foreign replacement artifact');
   }
   const proposal=prepareCurrentSetReplacement({context,requirementsAuthority:source.requirementsAuthority,
    previous:{activationBytes:source.activationBytes,files:source.files},artifacts,completedDeliveryIds:owned.marker.completedDeliveryIds});
-  for(const [name,bytes] of carriers)if(!bytes.equals(Buffer.from(source.files.get(name)??[]))&&!bytes.equals(Buffer.from(proposal.files.get(name)??[])))
+  for(const [name,bytes] of carriers)if(name!=='approved-preparation.json'&&!bytes.equals(Buffer.from(source.files.get(name)??[]))&&!bytes.equals(Buffer.from(proposal.files.get(name)??[])))
    throw Object.assign(new Error('Candidate evidence or continuity differs from its official source and current proposal'),{code:'EVIDENCE_INCOMPLETE'});
+  if(carriers.has('approved-preparation.json'))await validateCurrentReviewCandidate({specPath,
+   files:new Map([...proposal.files,['approved-preparation.json',carriers.get('approved-preparation.json')]])});
   await capturePreparationSource(await assertPreparationCandidate(owned.root,specPath));
   return {status:'PASS',artifacts,authority:proposal.authority,proposal};
  }

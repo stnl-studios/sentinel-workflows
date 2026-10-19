@@ -156,7 +156,7 @@ export async function publishCurrentLocalReview({specPath,slice,planBytes,review
   let ownedCleanup={cleanup:'pending',cleanupDiagnostics:['local review publication owner cleanup not attempted']};
   if(result.allocation) {
     try {ownedCleanup=await recoverCurrentLocalReview({specPath,allocation:result.allocation});}
-    catch(error) {ownedCleanup={cleanup:'pending',cleanupDiagnostics:[error.message]};}
+    catch(error) {if(error.retainExecutionLock){error.allocation=result.allocation;error.candidateRoot=candidate;throw error;}ownedCleanup={cleanup:'pending',cleanupDiagnostics:[error.message]};}
   }
   return {...result,cleanup:ownedCleanup.cleanup==='complete'?'complete':'pending',
     cleanupDiagnostics:ownedCleanup.cleanupDiagnostics??[],
