@@ -33,10 +33,10 @@ const DYNAMIC_CODE_IDENTIFIER_PATTERN = new RegExp(
 );
 const DYNAMIC_CODE_MODULES = new Set(["vm", "node:vm"]);
 
-// Explicit execution capability of the reviewed-recipe producer only. Other
-// operational kernels, including lifecycle, remain unable to spawn commands.
+// Explicit current capabilities: reviewed recipe execution, native Git HEAD/ignore
+// checks, and Initial preparation Git ignore check. Other runtimes cannot spawn.
 export const EXECUTION_DISTRIBUTION_POLICY = Object.freeze({
-  externalCommandRuntimes: ['runtime/runner-verification.mjs'],
+  externalCommandRuntimes: ['runtime/runner-verification.mjs','runtime/execution-current-operation.mjs','runtime/prepare-task-candidate.mjs'],
 });
 
 export const LIFECYCLE_DISTRIBUTION_POLICY = Object.freeze({

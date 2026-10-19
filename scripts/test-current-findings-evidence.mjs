@@ -1315,7 +1315,7 @@ test('A16 isolated skill distributions expose two facades and fail on missing si
   assertBytesEqual(checkedInitial.bytes,initialOnly.bytes);
   const apply=applyCapture({base:compatibility}).cap;
   assert.throws(()=>composeInitialImplementationEvidence({...initial([apply]),owner:applyOwner()}),failure('INVALID_CURRENT_IMAGE'));
-  assert.throws(()=>composeCurrentFindingsEvidence({imported:true}),failure('MIGRATION_REQUIRED'));
+  assert.throws(()=>composeCurrentFindingsEvidence({imported:true}),failure('UNSUPPORTED_FORMAT'));
   const unknown=clone(apply);rebindRequest(unknown,item=>{item.format='stnl-current-findings-request-v9';});
   assert.throws(()=>compose(compatibility,[unknown]),failure('UNSUPPORTED_FORMAT','findings request format'));
   const beforeCwd=process.cwd(),beforeEnv=JSON.stringify(process.env);

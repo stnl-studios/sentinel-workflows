@@ -3,11 +3,11 @@
 ```yaml
 purpose: Template for one pristine slice checklist and its empty execution and validation record.
 status: draft
-read_when: Materializing or classifying a pristine slice task.
+read_when: Authoring or classifying a current pristine slice task.
 do_not_read_when: Operational record schemas are needed after execution starts.
 contains: References, checklist, expected tests, exact pristine sentinels, and pending final result.
 owner: stnl-execution-planner
-update_policy: PLAN/REPLAN creates; later operations replace only their authorized sentinels using the execution-record schema.
+update_policy: PLAN authors the joint Initial candidate; later current operations publish only their authorized records.
 ```
 
 # Slice 01 Tasks - <Name>
@@ -15,10 +15,12 @@ update_policy: PLAN/REPLAN creates; later operations replace only their authoriz
 ## References
 
 - Slice: 01
+- Delivery ID: runtime
 - Plan: `../plans/slice-01.md`
 - Requirements source: `<relative path>`
 - Requirements authority: sha256:<64hex>
 - Plan revision: <positive integer>
+- Local revision: 1
 - Global tasks: `../tasks.md`
 
 ## Result
@@ -60,8 +62,7 @@ update_policy: PLAN/REPLAN creates; later operations replace only their authoriz
 ## Continuity
 
 - Current validation: unvalidated
-- Historical PASS: none
-- History source: runtime
+- Current evidence: none
 - Current action: implement approved delivery
 
 ## Operational Changes

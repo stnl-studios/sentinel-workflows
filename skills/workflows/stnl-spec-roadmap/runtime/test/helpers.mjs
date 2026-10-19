@@ -17,6 +17,7 @@ export async function representativeRaw() {
 
 export async function project(t) {
   const root = await temporary(t, "stnl-roadmap-project-");
+  await fs.mkdir(path.join(root,".git"));
   await fs.mkdir(path.join(root, "docs"), { recursive: true });
   await fs.writeFile(path.join(root, "docs/checkout-stories.md"), "# Checkout stories\n\nUS-001 US-002 US-003 US-004\n", "utf8");
   return root;

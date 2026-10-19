@@ -61,8 +61,7 @@ test("orders an explicit multi-slice set by the canonical serial plan", async (t
 
   const plan = path.join(root, "execution", "plan.md");
   await fs.writeFile(plan, (await fs.readFile(plan, "utf8")).replace("- Objective:", "- Incidental reference: plans/slice-02.md\n- Objective:"), "utf8");
-  const withIncidentalReference = await inspectWorkspace(root, "MULTI_SLICE", { slices: ["2", "1"] });
-  assert.deepEqual(withIncidentalReference.scope.selection.slices, ["slice-01", "slice-02"]);
+  await assert.rejects(inspectWorkspace(root,"MULTI_SLICE",{slices:["2","1"]}),error=>error.code==='INVALID_CURRENT_IMAGE'&&/plan.md: raw artifact hash differs/u.test(error.message));
 });
 
 test("TASK requires one exact persisted label paired with its slice", async (t) => {
@@ -75,28 +74,28 @@ test("TASK requires one exact persisted label paired with its slice", async (t) 
   const tasks = path.join(root, "execution", "tasks", "slice-01.md");
   let taskText = await fs.readFile(tasks, "utf8");
   taskText = taskText
-    .replace(/^- \[x\] 1\.1 .*\n/mu, "")
+    .replace(/^- \[[ x]\] 1\.1 .*\n/mu, "")
     .replace("## Diff Summary\n", "## Diff Summary\n\n- 1.1 Incidental evidence mention only.\n");
   await fs.writeFile(tasks, taskText, "utf8");
-  await assert.rejects(inspectWorkspace(root, "TASK", { slice: "1", task: "1.1" }), /occur exactly once/u);
+  await assert.rejects(inspectWorkspace(root, "TASK", { slice: "1", task: "1.1" }), error=>error.code==='INVALID_CURRENT_IMAGE'&&/tasks\/slice-01.md: raw artifact hash differs/u.test(error.message));
 });
 
 test("execution discovery requires canonical approved plan and task artifacts", async (t) => {
   const root = await copyFixture(t);
   const plan = path.join(root, "execution", "plans", "slice-01.md");
   await fs.writeFile(plan, (await fs.readFile(plan, "utf8")).replace("Review state: approved", "Review state: pending"), "utf8");
-  await assert.rejects(inspectWorkspace(root, "SLICE", { slice: "1" }), /status and Review state disagree/u);
+  await assert.rejects(inspectWorkspace(root, "SLICE", { slice: "1" }), /plans\/slice-01.md: raw artifact hash differs/u);
 
   const residueRoot = await copyFixture(t);
   await fs.writeFile(path.join(residueRoot, "execution", "analysis.tmp"), "residue\n", "utf8");
-  await assert.rejects(inspectWorkspace(residueRoot, "SLICE", { slice: "1" }), /non-canonical paths.*analysis\.tmp/u);
+  await assert.rejects(inspectWorkspace(residueRoot, "SLICE", { slice: "1" }), error=>error.code==='INVALID_CURRENT_IMAGE'&&error.message==='official execution root has missing or foreign entries');
 
   const orphanRoot = await copyFixture(t);
   await fs.copyFile(
     path.join(orphanRoot, "execution", "plans", "slice-01.md"),
     path.join(orphanRoot, "execution", "plans", "slice-99.md"),
   );
-  await assert.rejects(inspectWorkspace(orphanRoot, "EXECUTION", {}), /non-canonical paths.*tasks.*slice-99\.md/u);
+  await assert.rejects(inspectWorkspace(orphanRoot, "EXECUTION", {}), error=>error.code==='INVALID_CURRENT_IMAGE'&&error.message==='plans: missing or foreign artifact');
 
   const pairedOrphanRoot = await copyFixture(t);
   for (const directory of ["plans", "tasks"]) {
@@ -105,7 +104,7 @@ test("execution discovery requires canonical approved plan and task artifacts", 
       path.join(pairedOrphanRoot, "execution", directory, "slice-99.md"),
     );
   }
-  await assert.rejects(inspectWorkspace(pairedOrphanRoot, "EXECUTION", {}), /plans directory does not exactly match the current Serial Slice Order/u);
+  await assert.rejects(inspectWorkspace(pairedOrphanRoot, "EXECUTION", {}), error=>error.code==='INVALID_CURRENT_IMAGE'&&error.message==='plans: missing or foreign artifact');
 
   const missingGlobalRowRoot = await copyFixture(t);
   const globalTasks = path.join(missingGlobalRowRoot, "execution", "tasks.md");
@@ -114,7 +113,7 @@ test("execution discovery requires canonical approved plan and task artifacts", 
     (await fs.readFile(globalTasks, "utf8")).replace(/^\| \[ \] \| 02 - .*\n/mu, ""),
     "utf8",
   );
-  await assert.rejects(inspectWorkspace(missingGlobalRowRoot, "EXECUTION", {}), /plan\/task slice mappings or serial order disagree/u);
+  await assert.rejects(inspectWorkspace(missingGlobalRowRoot, "EXECUTION", {}), /tasks.md: raw artifact hash differs/u);
 
   const externalSiblingRoot = await copyFixture(t);
   const externalSibling = path.join(externalSiblingRoot, "analysis.tmp");
@@ -125,12 +124,12 @@ test("execution discovery requires canonical approved plan and task artifacts", 
   const missingBlockerRoot = await copyFixture(t);
   const missingBlockerTask = path.join(missingBlockerRoot, "execution/tasks/slice-01.md");
   await fs.writeFile(missingBlockerTask, (await fs.readFile(missingBlockerTask, "utf8")).replace(/\n## Delegation Blocker\n\n- none\n/u, ""), "utf8");
-  await assert.rejects(inspectWorkspace(missingBlockerRoot, "SLICE", { slice: "1" }), /non-canonical sections/u);
+  await assert.rejects(inspectWorkspace(missingBlockerRoot, "SLICE", { slice: "1" }), /tasks\/slice-01.md: raw artifact hash differs/u);
 
   const mismatchedAuthorityRoot = await copyFixture(t);
   const mismatchedTask = path.join(mismatchedAuthorityRoot, "execution/tasks/slice-01.md");
   await fs.writeFile(mismatchedTask, (await fs.readFile(mismatchedTask, "utf8")).replace("Plan revision: 1", "Plan revision: 2"), "utf8");
-  await assert.rejects(inspectWorkspace(mismatchedAuthorityRoot, "SLICE", { slice: "1" }), /open slice is stale relative to current global authority/u);
+  await assert.rejects(inspectWorkspace(mismatchedAuthorityRoot, "SLICE", { slice: "1" }), /tasks\/slice-01.md: raw artifact hash differs/u);
 });
 
 test("modular discovery accepts the canonical blocked status for questions authority", async (t) => {
@@ -258,7 +257,7 @@ test("slice discovery rejects symlinked execution plan and task directories", as
   await fs.cp(path.join(root, "execution", "plans"), outside, { recursive: true });
   await fs.rm(path.join(root, "execution", "plans"), { recursive: true });
   await fs.symlink(outside, path.join(root, "execution", "plans"));
-  await assert.rejects(inspectWorkspace(root, "SLICE", { slice: "1" }), /non-canonical paths|execution plans directory|symlink component/u);
+  await assert.rejects(inspectWorkspace(root, "SLICE", { slice: "1" }), error=>error.code==='UNSAFE_PATH'&&error.message==='plans: real directory required');
 });
 
 test("SPEC and CUSTOM discovery reject secret-bearing paths before reading", async (t) => {

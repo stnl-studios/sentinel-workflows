@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
-import {convertedImage} from './current-operational-consumption.mjs';
+import {currentImage} from './current-operational-consumption.mjs';
 import {normalizedFormal} from './current-native-normalization.mjs';
 import {retireActive} from './current-reader-campaign.mjs';
 import {captureCurrentExecution} from '../../skills/workflows/stnl-slice-executor/runtime/execution-current-reader.mjs';
@@ -10,7 +10,7 @@ import {captureCurrentExecution} from '../../skills/workflows/stnl-slice-executo
 // Preparation and predecessor captures are authored test setup. Only subsequent
 // official tool conclusions can establish the live transport acceptance case.
 export async function completedNativeCase(t,{drift=true,sharedInput=false,extraOutput=false,spaces=false,retire=true}={}) {
-  const image=await convertedImage(t,{kind:'two-s2',behaviorCheck:true,sharedInput,spaces}),root=image.f.root,run=promisify(execFile);
+  const image=await currentImage(t,{kind:'two-s2',behaviorCheck:true,sharedInput,spaces}),root=image.f.root,run=promisify(execFile);
   await fs.writeFile(path.join(root,'.gitignore'),'/tmp/\n');
   await run('git',['-C',root,'init','-q']);
   await run('git',['-C',root,'add','.gitignore',path.relative(root,image.f.specPath)]);

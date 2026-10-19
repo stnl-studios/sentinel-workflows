@@ -3,11 +3,11 @@
 ```yaml
 purpose: Template for the compact global slice progress authority.
 status: draft
-read_when: PLAN/REPLAN creates progress or another operation checks global completion and dependencies.
+read_when: PLAN creates current progress or current inspection checks completion and dependencies.
 do_not_read_when: A selected task file supplies all necessary local detail.
 contains: One binary row per approved serial slice with dependencies, detail path, validation, and result.
 owner: stnl-execution-planner
-update_policy: PLAN/REPLAN creates rows and may commit approved supersession; successful VALIDATE_SLICE changes its selected row to PASS.
+update_policy: PLAN authors the joint candidate; current producers publish reviewed Initial or the selected operational result.
 ```
 
 # Execution Tasks

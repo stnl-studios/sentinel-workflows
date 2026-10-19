@@ -2,17 +2,17 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
-import {convertedImage} from './current-operational-consumption.mjs';
+import {currentImage} from './current-operational-consumption.mjs';
 import {begin,reserveDispatch} from '../../skills/workflows/stnl-slice-executor/runtime/execution-current-operation.mjs';
 
 const run=promisify(execFile);
 async function git(root,args) {return run('git',['-C',root,...args],{timeout:30000});}
 
-// The legacy preparation and conversion remain the existing offline fixture.
+// This setup authors a current EC-1 boundary using the existing current projector.
 // These cases exercise only the new admission/capture mechanics; they do not
 // impersonate a native agent or count as the live smoke's judgment.
-export async function nativeOperationCase(test) {
-  const image=await convertedImage(test,{kind:'managed-s2'});
+export async function nativeOperationCase(test,{sharedInput=false}={}) {
+  const image=await currentImage(test,{kind:'managed-s2',behaviorCheck:true,sharedInput});
   const root=image.f.root;
   await fs.writeFile(path.join(root,'.gitignore'),'/tmp/\n');
   await fs.writeFile(path.join(root,'src/greeting.mjs'),'export const greeting="hello";\n');

@@ -7,8 +7,8 @@ import {begin,reserveDispatch,bindNative,verifyNative,captureNative} from
 
 const sha=bytes=>`sha256:${createHash('sha256').update(bytes).digest('hex')}`;
 
-export async function productNormalizationCase(test) {
-  const {fixture}=await blockingFormalCase(test);
+export async function productNormalizationCase(test,options={}) {
+  const {fixture}=await blockingFormalCase(test,options);
   const activation=JSON.parse(await fs.readFile(path.join(fixture.image.f.execution,'activation.json')));
   const start=await begin({specPath:fixture.specPath,slice:fixture.delivery.slice,
     expectedActivationId:activation.activationId,operation:'APPLY_FINDINGS'});

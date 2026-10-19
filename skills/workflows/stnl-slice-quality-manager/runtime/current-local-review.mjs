@@ -4,7 +4,7 @@
 // and approval; the existing publisher owns the common lock and activation CAS.
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import {resolveCurrentExecutionContext,projectCurrentRequirements} from './execution-state.mjs';
+import {resolveCurrentExecutionContext,projectCurrentRequirements} from './execution-workspace.mjs';
 import {captureCurrentExecution,validateCurrentReviewCandidate} from './execution-current-reader.mjs';
 import {prepareCurrentLocalReview,finalizeCurrentLocalReview,validateCurrentPreparation} from './execution-preparation-current.mjs';
 import {validateCurrentCandidate,validateCurrentActivation,parseCurrentJson} from './execution-current.mjs';

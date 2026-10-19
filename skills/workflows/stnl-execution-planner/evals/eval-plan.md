@@ -10,18 +10,17 @@ owner: stnl-execution-planner
 update_policy: Extend when a planner regression reveals a missing invariant.
 ```
 
-# PLAN and REPLAN Eval Cases
+# Current Initial preparation cases
 
-1. Creates only global and detailed plan artifacts with `draft` headers and pending review state.
-2. Preserves the requirements source and relative paths.
-3. Covers every requirement with serial, observable, testable slices and explicit dependencies.
-4. Adds a final integration slice when cross-slice verification is a real delivery requirement.
-5. Rejects ambiguous requirements instead of inventing product decisions.
-6. Runs only from `EMPTY`; existing plans, tasks, or unrelated content block without byte changes.
-7. Never describes PLAN as replacement or reset.
-8. Requires explicit `REPLAN_REASON` and derives pristine replacement versus append-only extension only from deterministic state.
-9. Before tasks exist, atomically replaces the complete current planning authority, removes obsolete detailed plans, remains revision `1`, omits historical recovery fields, and returns through review plus initial materialization.
-10. Replaces a wholly pristine canonical materialized plan/task set atomically under an increasing `pristine-replacement` revision, with no operational history loss.
-11. After execution starts, preserves all history and appends monotonically numbered corrective, replacement, reconciliation, or integration slices under an increasing plan revision.
-12. Detects requirements fingerprint changes before materialization, after materialization, during partial execution, and after all prior slices PASS; never treats stale plans as current.
-13. Returns lifecycle `RESUME` without drafting when a new product decision is required; otherwise returns `REPLAN_DRAFT` and requires review.
+1. Creates an isolated joint Plan/Tasks candidate only for NO_EXECUTION.
+2. Preserves requirements and the logical artifact-relative path basis.
+3. Covers current requirements with serial, observable deliveries and explicit dependencies.
+4. Uses integral owners and sufficient proof for applicable acceptance conditions; partial contributions do not claim full acceptance.
+5. Rejects ambiguous requirements rather than inventing product decisions.
+6. Keeps draft preparation unofficial and unactivated until independent exact-byte review.
+7. Assigns delivery identities only through the existing positively owned producer.
+8. Requires the current closed global/delivery review and exact examined hashes before Initial publication.
+9. Rejects stale review, source identity/CAS changes, unsafe paths and occupied targets without overwriting execution.
+10. Reports REPLAN_REQUIRED when physical replacement is requested; never substitutes Initial or an earlier interpreter.
+11. Preserves current local revisions, evidence, counters and owners through their existing current mechanisms.
+12. Publishes and reads back the v3 preparation/current activation under the common lock before EXECUTE_SLICE can be admitted.

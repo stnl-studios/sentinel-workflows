@@ -15,9 +15,11 @@ update_policy: PLAN or REPLAN creates as draft; REVIEW_PLAN corrects only the mu
 ## References
 
 - Slice: 01
+- Delivery ID: runtime
 - Requirements source: `<relative path>`
 - Requirements authority: sha256:<64hex>
 - Plan revision: <positive integer>
+- Local revision: 1
 - Global plan: `../plan.md`
 - Review state: pending
 

@@ -226,7 +226,6 @@ function verifyInitial(bundle,context,approvedAuthority,map) {
 function requestShape(value) {
   closed(value,['format','owner','authority','base','attemptId','scope'],'validation request');
   if (typeof value.format !== 'string') invalid('validation request format: string required');
-  if (value.format === 'stnl-current-validation-request-v0') fail('MIGRATION_REQUIRED','validation request legacy format');
   if (!['stnl-current-validation-request-v1','stnl-current-validation-request-v2',
     'stnl-current-validation-request-v3','stnl-current-validation-request-v4'].includes(value.format)) fail('UNSUPPORTED_FORMAT','validation request format');
   owner(value.owner,'validation request owner');
@@ -811,8 +810,7 @@ export async function inspectPostConversionEvidence({context,snapshotBytes,curre
         operation:'VALIDATE_SLICE',consumedInvocations:1,remainingInvocations:null,resumable:false},
       diagnostics:[],requiresFormalRevalidation:true};
   }
-  if(bundleBytes===null || jsonBytes(bundleBytes,'evidence').value.validation?.recordFormat==='stnl-task-record-v1-imported'
-    && current.normalization===null)
+  if(bundleBytes===null)
     return inspectConvertedDelivery({context,snapshot,current,bundleBytes,observedWork});
   const bundle=jsonBytes(bundleBytes,'post-conversion evidence').value;
   validateCurrentEvidence(bundle);
@@ -822,7 +820,7 @@ export async function inspectPostConversionEvidence({context,snapshotBytes,curre
     && item.origin.operation==='APPLY_FINDINGS');
   if(formalRejections.length && current.normalization!==null) {
     if(formalRejections.length>2 || bundle.implementation.length
-      && bundle.validation?.recordFormat!=='stnl-task-record-v1-imported'
+
       || bundle.openDivergences.length
       || bundle.deliveryId!==current.deliveryId || bundle.slice!==current.slice
       || bundle.currentAuthoritySha256!==current.authoritySha256
@@ -1208,19 +1206,16 @@ export async function inspectPostConversionEvidence({context,snapshotBytes,curre
   const record=bundle.validation;
   const removalSupport=bundle.support.filter(item=>['implementation-check','findings-check'].includes(item.kind));
   const removalRoots=new Set([...removalGroups(removalSupport,sourceMap(bundle)).values()].flatMap(records=>removalDependencies(records,bundle,sourceMap(bundle))).filter(item=>item.kind==='validation'));
-  const importedPrior=bundle.support.filter(item=>item.kind==='validation'
-    && item.recordFormat==='stnl-task-record-v1-imported');
   const refusalPrior=formalRejections.length?bundle.support.filter(item=>item.kind==='validation'
     && item.recordFormat==='stnl-task-record-v2'):[];
   const historicalPrior=current.localRevision>1&&!formalRejections.length?bundle.support.filter(item=>item.kind==='validation'
     && item.recordFormat==='stnl-task-record-v2' && item.origin.localRevision<current.localRevision&&!removalRoots.has(item)):[];
   if(!record || record.recordFormat!=='stnl-task-record-v2'
-    || bundle.implementation.length && importedPrior.length!==1
+    || bundle.implementation.length
     || bundle.findingsChecks.length || bundle.support.some(item=>item.kind!=='rejection'
-      && !removalRoots.has(item) && !importedPrior.includes(item) && !historicalPrior.includes(item) && !refusalPrior.includes(item) && !removalSupport.includes(item))
-    || importedPrior.length>1 || historicalPrior.length>1
+      && !removalRoots.has(item) && !historicalPrior.includes(item) && !refusalPrior.includes(item) && !removalSupport.includes(item))
+    || historicalPrior.length>1
     || refusalPrior.length>current.counters.validationAttempts
-    || importedPrior.length&&historicalPrior.length
     || formalRejections.length>1 || bundle.openDivergences.length
     || record.sources.legacyPreparation!==null || bundle.deliveryId!==current.deliveryId
     || bundle.slice!==current.slice || bundle.currentAuthoritySha256!==current.authoritySha256
@@ -1285,7 +1280,7 @@ export async function inspectPostConversionEvidence({context,snapshotBytes,curre
       || inherited.status!=='settled' || inherited.round!==1
       || inherited.consumedInvocations!==1)
       mismatch('formal successor rejection lineage differs');
-    const old=importedPrior[0]??refusalPrior.find(item=>formalRecordNumber(item)===request.base.counters.validationAttempts)??null;
+    const old=refusalPrior.find(item=>formalRecordNumber(item)===request.base.counters.validationAttempts)??null;
     const oldRequest=old?.recordFormat==='stnl-task-record-v2'?requestForRecord(old,sourceMap(bundle)):null;
     const priorFindings=oldRequest?.format==='stnl-current-validation-request-v4'
       ?removalSupport.filter(item=>item.kind==='findings-check'
@@ -1780,7 +1775,6 @@ export async function composePostConversionValidation({context,requirementsAutho
       consumedInvocations:1,replayed:false};
   }
   const record={...derived.recordDraft,sources};
-  const importedPrior=previousRejected && previousRecord?.recordFormat==='stnl-task-record-v1-imported';
   const auxiliaryHistory=previousBundle?.support?.filter(item=>item.kind==='findings-check'
     || item.kind==='rejection' && item.origin.operation==='APPLY_FINDINGS')??[];
   let support=findingsCycle ? [...auxiliaryHistory.filter(item=>item.kind==='findings-check'),...formalOrigins(
@@ -1808,7 +1802,7 @@ export async function composePostConversionValidation({context,requirementsAutho
     support=[...previousBundle.findingsChecks,...previousBundle.support,
       ...(previousRecord?[previousRecord]:[])];
   }
-  const implementation=importedPrior?previousBundle.implementation:[];
+  const implementation=[];
   const objects=referencedObjects([...implementation,...support,...(findingsCycle?previousBundle.findingsChecks:[]),record],
     mergeObjects(previousBundle?sourceMap(previousBundle):new Map(),store));
   const bundle={format:'stnl-current-evidence-v1',deliveryId,currentAuthoritySha256:current.authoritySha256,
@@ -2275,7 +2269,7 @@ function projectedDelivery(value) {
 }
 function formalRecordNumber(record) { return Number(record.id.slice('attempt-'.length)); }
 function verifyRecord(record,map,context,approvedAuthority,priorFiles,filelessReason) {
-  if (record.recordFormat==='stnl-task-record-v1-imported') fail('MIGRATION_REQUIRED','imported formal record');
+  if (record.recordFormat==='stnl-task-record-v1-imported') fail('UNSUPPORTED_FORMAT','imported formal record');
   if (record.kind!=='validation' || record.recordFormat!=='stnl-task-record-v2' || record.contract.terminal!==null) invalid('formal record format/terminal');
   const cap=restoreCaptureSources('current-validation',record,map);
   const derived=deriveCapture({context,authority:recordAuthority(record,approvedAuthority),capture:cap,priorFiles,filelessReason});
@@ -2688,7 +2682,7 @@ function inspect(bundleBytes,context,approvedAuthority,declaredCounters,observed
   const bundle=jsonBytes(original,'bundleBytes').value;
   validateCurrentEvidence(bundle);
   if ([...bundle.implementation,...bundle.findingsChecks,...bundle.support,...(bundle.validation?[bundle.validation]:[])]
-    .some(record=>record.recordFormat==='stnl-task-record-v1-imported')) fail('MIGRATION_REQUIRED','imported evidence requires conversion');
+    .some(record=>record.recordFormat==='stnl-task-record-v1-imported')) fail('UNSUPPORTED_FORMAT','evidence format is not supported');
   verifyWorkObservation('current-validation',{observedWork});
   const formalRefusals=bundle.support.filter(item=>item.kind==='rejection'&&item.origin.operation==='VALIDATE_SLICE');
   const refusedAttempt=formalRefusals.length?jsonBytes(restoreCaptureSources('current-validation',formalRefusals.at(-1),sourceMap(bundle)).validationRequest,'refused formal request').value.attemptId:null;
@@ -2747,7 +2741,7 @@ function inspect(bundleBytes,context,approvedAuthority,declaredCounters,observed
   if (bundle.findingsChecks.length || bundle.support.some(item=>item.kind==='rejection' && item.origin.operation==='APPLY_FINDINGS'))
     return inspectFindings(original,bundle,context,approvedAuthority,declaredCounters,observedWork,null,currentAuthoritySha256);
   if (bundle.findingsChecks.length || bundle.openDivergences.length || bundle.currentAuthoritySha256!==(currentAuthoritySha256??projectedDelivery(approvedAuthority.delivery))) invalid('bundle formal authority/unsupported records');
-  if (bundle.implementation.some(item => item.recordFormat==='stnl-task-record-v1-imported')) fail('MIGRATION_REQUIRED','imported implementation record');
+  if (bundle.implementation.some(item => item.recordFormat==='stnl-task-record-v1-imported')) fail('UNSUPPORTED_FORMAT','imported implementation record');
   if (bundle.implementation.some(item => item.recordFormat!=='stnl-task-record-v2' || item.contract.terminal!==null)) invalid('implementation record format/terminal');
   const map=sourceMap(bundle);
   const initial=verifyInitial(bundle,context,approvedAuthority,map);
@@ -2841,7 +2835,7 @@ function inspect(bundleBytes,context,approvedAuthority,declaredCounters,observed
     counters:structuredClone(declaredCounters),outcome:rejected ? 'rejected' : 'recorded',formalStatus:status,validation:state};
 }
 function guardValidate(input) {
-  if (input && typeof input==='object' && Object.getOwnPropertyDescriptor(input,'imported')?.value===true) fail('MIGRATION_REQUIRED','imported formal evidence requires conversion');
+  if (input && typeof input==='object' && Object.getOwnPropertyDescriptor(input,'imported')?.value===true) fail('UNSUPPORTED_FORMAT','formal evidence format is not supported');
   closed(input,['context','authority','bundleBytes','counters','observedWork'],'formal validator input');
   authority(input.authority,input.context);
   counters(input.counters,'counters');
@@ -2874,7 +2868,7 @@ function formalOrigins(records,all,latestId,requiredIds=[]) {
   return records.filter(record => ids.has(record.id)).sort((a,b)=>formalRecordNumber(a)-formalRecordNumber(b));
 }
 export function composeCurrentValidationEvidence(input) {
-  if (input && typeof input==='object' && Object.getOwnPropertyDescriptor(input,'imported')?.value===true) fail('MIGRATION_REQUIRED','imported formal evidence requires conversion');
+  if (input && typeof input==='object' && Object.getOwnPropertyDescriptor(input,'imported')?.value===true) fail('UNSUPPORTED_FORMAT','formal evidence format is not supported');
   closed(input,['context','authority','owner','previous','capture'],'formal composition input');
   plain(input.capture,'capture');
   verifyCapturedInvocation('current-validation',input.capture);
@@ -3008,7 +3002,7 @@ function selectRemovalSupport(base,cycle,currentRounds,context,demandReceipt=nul
 }
 export function composeCurrentFindingsEvidence(input) {
   if (input && typeof input==='object' && Object.getOwnPropertyDescriptor(input,'imported')?.value===true)
-    fail('MIGRATION_REQUIRED','imported findings evidence requires conversion');
+    fail('UNSUPPORTED_FORMAT','findings evidence format is not supported');
   closed(input,['context','authority','owner','previous','rounds'],'findings composition input');
   authority(input.authority,input.context,input.owner,'APPLY_FINDINGS');
   closed(input.previous,['bundleBytes','counters'],'findings previous');
@@ -3076,7 +3070,7 @@ export function composeCurrentFindingsEvidence(input) {
 }
 export function validateCurrentFindingsEvidence(input) {
   if (input && typeof input==='object' && Object.getOwnPropertyDescriptor(input,'imported')?.value===true)
-    fail('MIGRATION_REQUIRED','imported findings evidence requires conversion');
+    fail('UNSUPPORTED_FORMAT','findings evidence format is not supported');
   closed(input,['context','authority','bundleBytes','counters','observedWork'],'findings validator input');
   authority(input.authority,input.context);
   counters(input.counters,'findings validator counters');

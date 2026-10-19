@@ -4,6 +4,7 @@ import { constants } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
+import {validateCurrentActivation} from './execution-current.mjs';
 
 const digest = bytes => `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
 const equal = (left, right) => JSON.stringify(left) === JSON.stringify(right);
@@ -530,72 +531,7 @@ async function officialManifest(root) {
   });
 }
 
-function validateActivation(activation) {
-  const expected = ['format', 'activationId', 'sequence', 'previousActivationId', 'preparationRevision', 'requirementsAuthority', 'normativeSha256', 'approvedSnapshotSha256', 'artifacts', 'activeAttempt', 'lastAttempt'];
-  if (!activation || Object.keys(activation).sort().join('\0') !== expected.sort().join('\0')
-    || activation.format !== 'stnl-execution-activation-v1' || !/^[a-f0-9-]{36}$/u.test(activation.activationId)
-    || !Number.isSafeInteger(activation.sequence) || activation.sequence < 1 || !Array.isArray(activation.artifacts)) fail('malformed activation');
-  const uuid = value => /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/u.test(value);
-  if (!uuid(activation.activationId) || !Number.isSafeInteger(activation.preparationRevision) || activation.preparationRevision < 1
-    || (activation.sequence === 1 ? activation.previousActivationId !== null : !uuid(activation.previousActivationId))) fail('invalid activation identity/revision');
-  const fields = ['operationAttemptId', 'ownershipToken', 'deliveryId', 'slice', 'operation', 'preparationRevision', 'normativeSha256', 'originActivationId', 'runner', 'workCapture'];
-  for (const [name, attempt] of [['activeAttempt', activation.activeAttempt], ['lastAttempt', activation.lastAttempt]]) {
-    if (attempt === null) continue;
-    const ownedFields = [...fields, ...(Object.hasOwn(attempt ?? {}, 'recovery') ? ['recovery'] : [])];
-    const expected = name === 'lastAttempt' ? [...ownedFields, 'terminalActivationId'] : ownedFields;
-    if (!attempt || Object.keys(attempt).sort().join('\0') !== expected.sort().join('\0')
-      || ['operationAttemptId', 'ownershipToken', 'deliveryId', 'originActivationId'].some(key => !uuid(attempt[key]))
-      || !/^slice-[0-9]{2,}$/u.test(attempt.slice) || !['EXECUTE_SLICE', 'APPLY_FINDINGS', 'VALIDATE_SLICE'].includes(attempt.operation)
-      || !Number.isSafeInteger(attempt.preparationRevision) || !/^sha256:[a-f0-9]{64}$/u.test(attempt.normativeSha256)
-      || (name === 'lastAttempt' && !uuid(attempt.terminalActivationId))) fail('malformed attempt ownership');
-    if (attempt.runner !== null) {
-      if (!attempt.runner || Object.keys(attempt.runner).sort().join('\0') !== ['dispatchId', 'receiptFile', 'threadId', 'status'].sort().join('\0')
-        || !['pending', 'uncertain', 'captured'].includes(attempt.runner.status)) fail('malformed runner binding');
-    }
-    if (!attempt.workCapture || Object.keys(attempt.workCapture).sort().join('\0') !== 'path\0sha256'
-      || !path.isAbsolute(attempt.workCapture.path) || !/^sha256:[a-f0-9]{64}$/u.test(attempt.workCapture.sha256)) fail('malformed work capture binding');
-  }
-  for (const value of [activation.requirementsAuthority, activation.normativeSha256, activation.approvedSnapshotSha256]) if (!/^sha256:[a-f0-9]{64}$/u.test(value)) fail('invalid activation digest');
-}
-
-// Resolver A -> all artifacts -> B. A changed marker never admits a mixed image.
-export async function readActivatedExecution({ executionRoot, requirementsAuthority, projectAuthority, validateSnapshot, parseJson, readCheckpoint = null }) {
-  if (typeof projectAuthority !== 'function' || typeof validateSnapshot !== 'function' || typeof parseJson !== 'function') fail('trusted preparation validators required');
-  const marker = path.join(executionRoot, 'activation.json');
-  let a;
-  try { a = await readOwnedFile(marker); } catch (error) { fail(`draft, incomplete or incompatible legacy execution; activation unavailable: ${error.message}`); }
-  const activation = parseJson(a.bytes.toString('utf8')); validateActivation(activation);
-  if (readCheckpoint) await readCheckpoint('A');
-  const snapshotFile = await readOwnedFile(path.join(executionRoot, 'approved-preparation.json'));
-  if (digest(snapshotFile.bytes) !== activation.approvedSnapshotSha256) fail('approved snapshot digest differs');
-  const snapshot = parseJson(snapshotFile.bytes.toString('utf8')); const approved = validateSnapshot(snapshot);
-  const authority = await projectAuthority(executionRoot);
-  for (const name of ['preparationRevision', 'requirementsAuthority', 'normativeSha256']) {
-    if (activation[name] !== approved[name] || activation[name] !== authority[name]) fail(`current ${name} differs from approved preparation`);
-  }
-  if (activation.requirementsAuthority !== requirementsAuthority) fail('requirements authority is stale');
-  if (activation.activeAttempt !== null) {
-    const active = activation.activeAttempt;
-    if (active.preparationRevision !== authority.preparationRevision || active.normativeSha256 !== authority.normativeSha256
-      || !authority.deliveries.some(entry => entry.slice === active.slice && entry.deliveryId === active.deliveryId)) fail('active attempt no longer belongs to preparation');
-  }
-  const manifest = await officialManifest(executionRoot);
-  if (!equal(manifest, activation.artifacts)) fail('activation manifest does not cover current artifacts');
-  if (readCheckpoint) await readCheckpoint('artifacts');
-  const tree = await captureExecutionTree(executionRoot);
-  const treeManifest = tree.files.filter(entry => entry.type === 'file' && entry.path !== 'activation.json').map(({path, sha256}) => ({path, sha256}));
-  if (!equal(treeManifest, activation.artifacts)) fail('artifacts changed during resolution');
-  const b = await readOwnedFile(marker);
-  if (!a.bytes.equals(b.bytes) || !equal(a.identity, b.identity)) fail('activation changed during resolution; retryable mixed read blocked');
-  return { activation, snapshot, authority, tree };
-}
-
-export function assertExecutionAttempt(activation, owner) {
-  const attempt = activation.activeAttempt;
-  if (!owner || !attempt || ['operationAttemptId', 'ownershipToken', 'deliveryId', 'slice', 'operation', 'originActivationId', 'preparationRevision', 'normativeSha256'].some(key => attempt[key] !== owner[key])
-    || !equal(attempt.workCapture,owner.workCapture) || !equal(attempt.recovery ?? null,owner.recovery ?? null)) fail('active attempt/owner/preparation differs');
-  return attempt;
-}
+const validateActivation=validateCurrentActivation;
 
 export async function assertOwnedPreparationCandidate({ candidateExecutionRoot, specPath = null, resolveWorkspace }) {
   await ancestry(candidateExecutionRoot);
@@ -615,52 +551,10 @@ export async function assertOwnedPreparationCandidate({ candidateExecutionRoot, 
 }
 
 // Both checklist and evidence writers use the same isolated-candidate/owner boundary.
-export async function assertOwnedOperationalCandidate({ candidateExecutionRoot, slice, resolveWorkspace, readActivated }) {
-  await ancestry(candidateExecutionRoot);
-  const root = await fs.realpath(candidateExecutionRoot);
-  const candidates = [`${root}.copy.json`, `${path.dirname(root)}.copy.json`, `${root}.publication.json`];
-  for (const file of candidates) {
-    if (!await stat(file)) continue;
-    const marker = parseStrictJson((await readOwnedFile(file)).bytes.toString('utf8'));
-    const official = await resolveWorkspace(marker.specPath);
-    if (marker.executionRoot !== official.executionRoot || inside(root, official.executionRoot)
-      || inside(official.executionRoot, root) || (official.specRoot && inside(root, official.specRoot))) fail('writer requires isolated candidate; live/overlapping execution is forbidden');
-    if (!marker.owner || marker.slice !== slice) fail('candidate slice/owner differs');
-    assertExecutionAttempt((await readActivated(marker.specPath)).activation, marker.owner);
-    await captureExecutionTree(root);
-    return { root, marker, workspace: official };
-  }
-  fail('writer requires an owned isolated candidate; live mutation is forbidden');
-}
-
 async function replaceActivation(root, activation) {
   const file = path.join(root, 'activation.json'); const temporary = `${file}.${randomUUID()}.tmp`;
   await writeNew(temporary, Buffer.from(JSON.stringify(activation, null, 2) + '\n'));
   await fs.rename(temporary, file);
-}
-
-export async function beginExecutionOperation({ workspace, expectedActivationId, operation, slice, readActivated, preflight, captureWork, recovery = null }) {
-  return withExecutionPublicationLock(workspace, async lease => {
-    const current = await readActivated();
-    if (current.activation.activationId !== expectedActivationId) fail('begin activation CAS conflict');
-    if (current.activation.activeAttempt && !recovery) fail('an active or uncertain operation already owns execution');
-    const succession = recovery ? await recovery(current) : null;
-    await preflight();
-    const delivery = current.authority.deliveries.find(entry => entry.slice === slice);
-    if (!delivery || !['EXECUTE_SLICE', 'APPLY_FINDINGS', 'VALIDATE_SLICE'].includes(operation)) fail('operation/delivery is not admitted');
-    const owner = { operationAttemptId: randomUUID(), ownershipToken: randomUUID(), deliveryId: delivery.deliveryId, slice, operation,
-      preparationRevision: current.activation.preparationRevision, normativeSha256: current.activation.normativeSha256,
-      originActivationId: current.activation.activationId, runner: null, workCapture: null, ...(succession ? { recovery: succession } : {}) };
-    if (typeof captureWork !== 'function') fail('trusted pre-effect work capture required');
-    owner.workCapture = await captureWork(owner, current);
-    const activation = { ...current.activation, activationId: randomUUID(), sequence: current.activation.sequence + 1,
-      previousActivationId: current.activation.activationId, activeAttempt: owner };
-    await assertExecutionPublicationLock(lease);
-    await replaceActivation(workspace.executionRoot, activation);
-    const readback = await readActivated();
-    if (!equal(readback.activation, activation)) fail('begin readback uncertain; preserve ownership');
-    return { publication: 'confirmed', cleanup: 'complete', owner, expectedActivationId: activation.activationId, activation };
-  });
 }
 
 async function copyTree(source, target) {
@@ -678,6 +572,8 @@ export async function publishExecutionUpdate({ workspace, candidateExecutionRoot
   owner = null, terminal = false, draft = false, readActivated, validateCandidate, authorizeDiff, checkpoint = null,
   prepareRetention = null, currentInitial = false, currentReplacement = false,
   recheckRequirements = null }) {
+  if(!currentInitial&&!currentReplacement)fail('Only current Initial installation or local review publication is supported');
+  if(owner!==null||terminal||draft||prepareRetention!==null)fail('Operational publication uses the current operation controller');
   const location = await executionLockIdentity(workspace);
   if(currentReplacement && typeof recheckRequirements!=='function')
     fail('EC-1 local review requires a documentary authority recheck');
@@ -703,7 +599,6 @@ export async function publishExecutionUpdate({ workspace, candidateExecutionRoot
   let result;
   try {
   await fs.mkdir(retentionRoot, { mode: 0o700 });
-  if (owner?.workCapture) await registerOwnedAllocation(owner.workCapture, marker);
   if (!currentReplacement) await copyTree(candidate, stage);
   if (!equal((await captureExecutionTree(stage)).files, candidateTree.files) || !equal(await captureExecutionTree(candidate), candidateTree)) fail(`candidate changed while staging; retained allocation: ${marker}`);
   let confirmed = false; let markerWritten = false;
@@ -720,28 +615,15 @@ export async function publishExecutionUpdate({ workspace, candidateExecutionRoot
       previous = (await readActivated()).activation;
       if (previous.activationId !== expectedActivationId) fail('publication activation CAS conflict');
     }
-    if (owner) assertExecutionAttempt(previous, owner);
-    else if (previous?.activeAttempt) fail('active/uncertain owner blocks replacement');
+    if (previous?.activeAttempt) fail('active/uncertain owner blocks replacement');
     await authorizeDiff(stage, before);
-    let recheckRetention=null;
-    if (prepareRetention) {
-      recheckRetention=await prepareRetention({ stage, backup, marker, allocation, retentionRoot });
-      // Only this trusted wrapper may produce the continuity delta, before the final manifest.
-      const retainedTree = await captureExecutionTree(stage);
-      const mutable = new Set(['continuity.json', 'tasks.md', ...(!owner ? ['approved-preparation.json'] : []), ...candidateTree.files.filter(entry => /^tasks\/slice-[0-9]{2,}\.md$/u.test(entry.path)).map(entry => entry.path)]);
-      if (!equal(retainedTree.files.filter(entry => !mutable.has(entry.path)), candidateTree.files.filter(entry => !mutable.has(entry.path)))) fail('retention changed an untyped artifact');
-      candidateTree.files = retainedTree.files;
-    }
     const authority = await validateCandidate(stage);
     if (currentInitial && authority.preparationRevision !== 1) fail('EC-1 Initial ingress requires preparation revision 1');
     if (!equal((await captureExecutionTree(stage)).files, candidateTree.files)) fail('staged candidate changed during validation');
-    if (owner && digest((await readOwnedFile(path.join(stage, 'approved-preparation.json'))).bytes) !== previous.approvedSnapshotSha256) fail('operational update changed protected review snapshot');
-    if (owner && (authority.normativeSha256 !== previous.normativeSha256 || authority.preparationRevision !== previous.preparationRevision)) fail('operational update changed preparation authority');
     await assertExecutionPublicationLock(lease);
     let moved = false; let installed = false;
     try {
       if (checkpoint) await checkpoint('before-backup', { stage, backup, marker });
-      if (recheckRetention) await recheckRetention();
       if(currentReplacement) await recheckRequirements();
       if (!equal(await captureExecutionTree(workspace.executionRoot),before)) fail('publication base changed immediately before swap');
       await assertExecutionPublicationLock(lease);
@@ -762,15 +644,13 @@ export async function publishExecutionUpdate({ workspace, candidateExecutionRoot
       let activation = null;
       if (!draft) {
         const snapshotBytes = (await readOwnedFile(path.join(workspace.executionRoot, 'approved-preparation.json'))).bytes;
-        activation = { format: currentInitial || currentReplacement ? 'stnl-execution-activation-v2' : 'stnl-execution-activation-v1', activationId: randomUUID(), sequence: (previous?.sequence ?? 0) + 1,
+        activation = { format: 'stnl-execution-activation-v2', activationId: randomUUID(), sequence: (previous?.sequence ?? 0) + 1,
           previousActivationId: previous?.activationId ?? null, preparationRevision: authority.preparationRevision,
           requirementsAuthority: authority.requirementsAuthority, normativeSha256: authority.normativeSha256,
           approvedSnapshotSha256: digest(snapshotBytes), artifacts: currentReplacement
             ? candidateTree.files.filter(item=>item.type==='file' && item.path!=='activation.json')
               .map(item=>({path:item.path,sha256:item.sha256})).sort((left,right)=>left.path<right.path?-1:left.path>right.path?1:0)
-            : currentInitial
-              ? (await officialManifest(workspace.executionRoot)).sort((left,right)=>left.path<right.path?-1:left.path>right.path?1:0)
-              : await officialManifest(workspace.executionRoot),
+            : (await officialManifest(workspace.executionRoot)).sort((left,right)=>left.path<right.path?-1:left.path>right.path?1:0),
           activeAttempt: previous?.activeAttempt ?? null,
           lastAttempt: currentReplacement ? null : previous?.lastAttempt ?? null };
         if (checkpoint) await checkpoint('before-activation', { stage, backup, marker });
@@ -783,48 +663,12 @@ export async function publishExecutionUpdate({ workspace, candidateExecutionRoot
         if (checkpoint) await checkpoint('after-activation', { stage, backup, marker });
         const readback = await readActivated();
         if (!equal(readback.activation, activation)) fail('activation readback uncertain');
-        if (terminal) {
-          // Preserve ownership through the first image readback. Only confirmed image publication
-          // can seal a terminal record and clear the owner; this is a new CAS identity.
-          const terminalId = randomUUID();
-          activation = { ...activation, previousActivationId: activation.activationId, activationId: terminalId,
-            sequence: activation.sequence + 1, activeAttempt: null,
-            lastAttempt: { ...previous.activeAttempt, terminalActivationId: terminalId } };
-          allocation.expectedInstalledActivation=activation;
-          await persistAllocation(marker,allocation);
-          await replaceActivation(workspace.executionRoot, activation);
-          try {
-            if (checkpoint) await checkpoint('after-terminal-activation', { stage, backup, marker });
-            const terminalReadback = await readActivated();
-            if (!equal(terminalReadback.activation, activation)) fail('terminal readback uncertain');
-          } catch (terminalError) {
-            // Terminal acknowledgment is uncertain. Keep the final artifact image, but
-            // conservatively hold this owner. Never overwrite an unobserved/foreign marker.
-            try {
-              const observed = parseStrictJson((await readOwnedFile(path.join(workspace.executionRoot, 'activation.json'))).bytes.toString('utf8'));
-              if (!equal(observed, activation)) fail('cannot prove ownership of terminal marker');
-              await assertExecutionPublicationLock(lease);
-              const hold = { ...activation, previousActivationId: activation.activationId, activationId: randomUUID(),
-                sequence: activation.sequence + 1, activeAttempt: previous.activeAttempt, lastAttempt: previous.lastAttempt };
-              await replaceActivation(workspace.executionRoot, hold);
-              const held = parseStrictJson((await readOwnedFile(path.join(workspace.executionRoot, 'activation.json'))).bytes.toString('utf8'));
-              if (!equal(held, hold)) fail('ownership hold readback uncertain');
-              terminalError.message += `; owner preserved at activation ${hold.activationId}`;
-            } catch (holdError) {
-              terminalError.retainExecutionLock = true;
-              terminalError.message += `; ownership hold uncertain: ${holdError.message}`;
-            }
-            throw terminalError;
-          }
-        }
-      } else {
-        if (await stat(path.join(workspace.executionRoot, 'activation.json'))) fail('draft retained an executable marker');
-        await validateCandidate(workspace.executionRoot);
+
       }
       confirmed = true;
       allocation.confirmation = { activationId: activation?.activationId ?? null,
         artifactManifestSha256: digest(JSON.stringify(activation?.artifacts ?? await officialManifest(workspace.executionRoot))),
-        terminalOperationAttemptId: terminal ? owner.operationAttemptId : null };
+        terminalOperationAttemptId: null };
       allocation.cleanup = { status: 'complete', paths: [], diagnostics: [] };
       try {if(checkpoint) await checkpoint('before-confirmation-persistence',{stage,backup,marker});await persistAllocation(marker, allocation);} catch(error) {
         return {publication:'confirmed',cleanup:'pending',cleanupDiagnostics:[`confirmation persistence pending: ${error.message}`],allocation:marker,
@@ -884,7 +728,6 @@ export async function assertLifecycleExecutionUnowned(executionRoot) {
 function closed(object, fields, label) {
   if (!object || Array.isArray(object) || Object.keys(object).sort().join('\0') !== [...fields].sort().join('\0')) fail(`${label} has unknown or missing fields`);
 }
-export const retentionSha256 = retention => digest(JSON.stringify(retention));
 export async function persistAllocation(marker, allocation) {
   const previous = await readOwnedFile(marker);
   const temporary = `${marker}.${randomUUID()}.tmp`;
@@ -892,54 +735,6 @@ export async function persistAllocation(marker, allocation) {
   const current = await readOwnedFile(marker);
   if (!current.bytes.equals(previous.bytes) || !equal(current.identity, previous.identity)) fail('allocation changed before update');
   await fs.rename(temporary, marker);
-}
-
-// Direct producer references only. No discovery by names, age or directory scans.
-export async function readRetainedAllocation(marker, executionRoot, expected = null) {
-  const record = parseStrictJson((await readOwnedFile(marker)).bytes.toString('utf8'));
-  const retention = record.retention;
-  closed(retention, ['allocationId', 'executionRoot', 'producer', 'owner', 'retainedPaths'], 'retention');
-  if (record.allocationId !== retention.allocationId || record.executionRoot !== executionRoot || retention.executionRoot !== executionRoot
-    || !/^[a-f0-9-]{36}$/u.test(retention.allocationId) || typeof retention.producer !== 'string'
-    || !Array.isArray(retention.retainedPaths) || !path.isAbsolute(record.retentionRoot)
-    || inside(record.retentionRoot, executionRoot) || inside(executionRoot, record.retentionRoot)) fail('retention identity/containment differs');
-  if (expected && (expected.allocationId !== retention.allocationId || expected.sha256 !== retentionSha256(retention))) fail('sealed retention descriptor differs');
-  let previous = '';
-  for (const entry of retention.retainedPaths) {
-    closed(entry, ['path', 'sha256'], 'retained path');
-    if (!path.isAbsolute(entry.path) || !inside(entry.path, record.retentionRoot) || entry.path.localeCompare(previous, 'en') <= 0
-      || digest((await readOwnedFile(entry.path)).bytes) !== entry.sha256) fail('retained bytes/order differ');
-    previous = entry.path;
-  }
-  return record;
-}
-
-export async function registerOwnedAllocation(workCapture, marker) {
-  const file = `${workCapture.path}.owner.json`;
-  const record = parseStrictJson((await readOwnedFile(file)).bytes.toString('utf8'));
-  const allocation = parseStrictJson((await readOwnedFile(marker)).bytes.toString('utf8'));
-  if (record.executionRoot !== allocation.executionRoot || !allocation.owner
-    || ['operationAttemptId','ownershipToken','deliveryId','slice','operation','originActivationId'].some(k => record.retention.owner?.[k] !== allocation.owner[k])) fail('allocation registration belongs to another owner');
-  const known = record.knownAllocations ?? [];
-  if (!known.includes(marker)) await persistAllocation(file, { ...record, knownAllocations: [...known, marker] });
-}
-
-export async function registerRunnerAllocation({workspace,owner,root,producer}) {
-  await ancestry(root);
-  let marker=`${root}.publication.json`;
-  if(await stat(marker)) {
-    const existing=parseStrictJson((await readOwnedFile(marker)).bytes.toString('utf8'));
-    if(existing.format!=='stnl-runner-allocation-v1' || existing.executionRoot!==workspace.executionRoot || existing.candidate!==root || existing.retentionRoot!==root || existing.producer!==producer) fail('runner allocation root has foreign ownership');
-    if(existing.owner.operationAttemptId===owner.operationAttemptId && existing.owner.ownershipToken===owner.ownershipToken) return marker;
-    // Managed tmpdir is reused across legal operations; keep the original root
-    // marker and register each owner explicitly, without overwriting old receipts.
-    marker=`${root}.publication-${owner.operationAttemptId}.json`;
-  }
-  const allocation={format:'stnl-runner-allocation-v1',allocationId:randomUUID(),executionRoot:workspace.executionRoot,
-    candidate:root,retentionRoot:root,owner,producer,controlFiles:[]};
-  await writeNew(marker,Buffer.from(JSON.stringify(allocation)+'\n'));
-  await registerOwnedAllocation(owner.workCapture,marker);
-  return marker;
 }
 
 // A nearby filename/format/UUID is not a producer binding. These are the exact
@@ -1090,19 +885,7 @@ export async function classifyOwnedAllocation({ workspace, marker=null, activati
     || !['stnl-execution-publication-owner-v1','stnl-runner-allocation-v1','stnl-preparation-allocation-v1'].includes(record.format)
       && !['execution-copy','validation-copy'].includes(record.producer)) fail('allocation identity/producer is not positively established');
   await ancestry(record.retentionRoot);
-  if (record.retention) {
-    await readRetainedAllocation(marker, workspace.executionRoot);
-    if(!['preparation-publication','operational-publication','operation-admission','pass-reopening'].includes(record.retention.producer)
-      || !equal(record.retention.owner,record.owner)) fail('retention producer/owner differs');
-  }
-  if(record.format==='stnl-runner-allocation-v1' && !['native-runner','managed-runner'].includes(record.producer)) fail('unknown runner allocation producer');
-  if(['execution-copy','validation-copy','native-runner','managed-runner'].includes(record.producer)
-    && (!record.owner || !record.owner.workCapture || !record.owner.ownershipToken || !record.owner.operationAttemptId)) fail('allocation owner is absent');
-  if(['execution-copy','validation-copy','native-runner','managed-runner'].includes(record.producer)) {
-    const admission=await readRetainedAllocation(`${record.owner.workCapture.path}.owner.json`,workspace.executionRoot);
-    if(!(admission.knownAllocations ?? []).includes(marker)
-      || ['operationAttemptId','ownershipToken','deliveryId','slice','operation','originActivationId'].some(k=>admission.retention.owner?.[k]!==record.owner[k])) fail('allocation producer registration is absent or belongs to another owner');
-  }
+  if(record.retention || !['stnl-execution-publication-owner-v1','stnl-preparation-allocation-v1'].includes(record.format))fail('Unsupported allocation producer; preserve it');
   for(const root of [record.candidate,record.stage,record.backup,record.retentionRoot].filter(Boolean)) {await ancestry(root);if(inside(root,workspace.executionRoot)||inside(workspace.executionRoot,root)) fail('allocation overlaps official execution');}
   const active = activation?.activeAttempt;
   if (active && record.owner && ['operationAttemptId','ownershipToken','deliveryId','slice','operation','originActivationId'].every(k=>record.owner[k]===active[k])) return { classification: 'active', record };
@@ -1111,39 +894,8 @@ export async function classifyOwnedAllocation({ workspace, marker=null, activati
     && equal(record.source,await captureExecutionTree(workspace.executionRoot))) return {classification:'active',record};
   if (!record.confirmation) return { classification: 'diagnostic', record };
   if (record.confirmation.activationId !== activation?.activationId) return { classification: 'diagnostic', record };
-  if(['execution-copy','validation-copy'].includes(record.producer) && record.confirmation) {
-    if(!record.confirmedCandidateTree || !record.publicationAllocation) return {classification:'diagnostic',record};
-    const image=await captureExecutionTree(record.candidate);
-    if(image!==null && !equal(image,record.confirmedCandidateTree)) return {classification:'diagnostic',record};
-    const published=await readRetainedAllocation(record.publicationAllocation,workspace.executionRoot);
-    if(!equal(published.expectedInstalledActivation,activation)) return {classification:'diagnostic',record};
-  }
   const soleCopy = (record.retention?.retainedPaths.length ?? 0) > 0 || (record.backup && await stat(record.backup));
   return { classification: soleCopy ? 'diagnostic' : 'disposable', record };
-}
-
-// Only the two trusted candidate publishers call this after their common image
-// readback. A candidate remains retained until explicit own-only cleanup.
-export async function acknowledgePublishedCandidate({workspace,marker,candidateTree,publication,readActivated}) {
-  if(publication.publication!=='confirmed' || publication.activation?.activeAttempt) return;
-  return withExecutionPublicationLock(workspace,async()=>{
-    const current=await readActivated();
-    if(!equal(current.activation,publication.activation)) fail('candidate acknowledgment image advanced');
-    const record=parseStrictJson((await readOwnedFile(marker)).bytes.toString('utf8'));
-    if(!['execution-copy','validation-copy'].includes(record.producer) || record.executionRoot!==workspace.executionRoot
-      || !equal(await captureExecutionTree(record.candidate),candidateTree)
-      || ['operationAttemptId','ownershipToken','deliveryId','slice','operation','originActivationId'].some(k=>record.owner?.[k]!==current.activation.lastAttempt?.[k])) fail('candidate acknowledgment ownership/content differs');
-    const prefix=record.producer==='execution-copy' && workspace.specRoot ? 'execution/' : '';
-    if(candidateTree.files.some(e=>e.type==='directory' ? ![prefix.slice(0,-1),prefix+'plans',prefix+'tasks'].includes(e.path)
-      : !/^(?:plan|tasks)\.md$|^(?:approved-preparation|continuity|activation)\.json$|^(?:plans|tasks)\/slice-[0-9]{2,}\.md$/u.test(e.path.slice(prefix.length)))) fail('candidate contains material outside its producer artifacts');
-    const publicationRecord=await readRetainedAllocation(publication.allocation,workspace.executionRoot);
-    if(!equal(publicationRecord.expectedInstalledActivation,current.activation) || !publicationRecord.confirmation) fail('candidate lacks confirmed producer image');
-    record.publicationAllocation=publication.allocation;
-    record.confirmedCandidateTree=candidateTree;
-    record.confirmation=publicationRecord.confirmation;
-    record.cleanup={status:'pending',paths:[record.candidate],diagnostics:['Redundant confirmed candidate retained for explicit inspection/cleanup']};
-    await persistAllocation(marker,record);
-  });
 }
 
 // The local review promotes its one approved candidate directly. The v1 owner
@@ -1281,26 +1033,6 @@ export async function cleanupOwnedExecutionAllocation({ workspace, marker, readA
           expectedActivationId:current.activation.activationId});
       }
     }
-    if(['execution-copy','validation-copy'].includes(record.producer)) {
-      if(classification!=='disposable' || !record.publicationAllocation || !record.confirmedCandidateTree
-        || record.cleanup.paths.some(p=>p!==record.candidate)) fail('candidate is not demonstrably disposable');
-      const published=await readRetainedAllocation(record.publicationAllocation,workspace.executionRoot);
-      if(!equal(published.expectedInstalledActivation,current.activation) || !equal(published.confirmation,record.confirmation)) fail('candidate publication binding differs');
-      // Explicit refs are the only retention authority; never discover by names.
-      const index=parseStrictJson((await readOwnedFile(path.join(workspace.executionRoot,'continuity.json'))).bytes.toString('utf8'));
-      const references=index.deliveries.flatMap(d=>[...(d.baseline ? [d.baseline.allocationRef.path,d.baseline.manifestRef.path]:[]),...d.history.flatMap(h=>[h.allocationRef.path,h.taskRef.path,h.snapshotRef.path])]);
-      if(references.some(p=>inside(path.resolve(workspace.executionRoot,p),record.candidate))
-        || [current.activation.lastAttempt?.workCapture?.path,current.activation.lastAttempt?.runner?.receiptFile].filter(Boolean).some(p=>inside(p,record.candidate))) fail('candidate still holds required retained material');
-      const observed=await captureExecutionTree(record.candidate);
-      if(observed!==null && !equal(observed,record.confirmedCandidateTree)) fail('candidate changed; retain foreign/unknown material');
-      await assertExecutionPublicationLock(lease);
-      if(!equal((await readActivated()).activation,current.activation) || !(await readOwnedFile(marker)).bytes.equals(original)
-        || !equal(await captureExecutionTree(record.candidate),observed)) fail('candidate cleanup recheck changed');
-      try {if(observed) await fs.rm(record.candidate,{recursive:true});}
-      catch(error) {record.cleanup.diagnostics=[error.message];return acknowledge(record,{publication:'confirmed',cleanup:'pending',cleanupDiagnostics:[error.message],allocation:marker,expectedActivationId:current.activation.activationId});}
-      record.cleanup={status:'complete',paths:[],diagnostics:[]};
-      return acknowledge(record,{publication:'confirmed',cleanup:'complete',classification,allocation:marker,expectedActivationId:current.activation.activationId});
-    }
     // Retained backup/history/code is never removed. The retired stage is the only
     // provably redundant publication root; candidate cleanup requires its own producer.
     if (record.cleanup.paths.some(file => file !== record.stage)) fail('cleanup path is foreign or still needed');
@@ -1349,28 +1081,4 @@ export function parseStrictJson(text) {
     else { const match = /^(?:true|false|null|-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)/u.exec(text.slice(i)); if (!match) fail('invalid JSON value'); i += match[0].length; }
   };
   value(); ws(); if (i !== text.length) fail('trailing JSON content'); return JSON.parse(text);
-}
-
-
-export async function readOperationOwner(specPath, environment = process.env) {
-  const file = environment.STNL_OPERATION_OWNER_FILE;
-  if (!file || !path.isAbsolute(file)) fail('runtime operation owner file is required');
-  const record = parseStrictJson((await readOwnedFile(file)).bytes.toString('utf8'));
-  if (record.specPath !== await fs.realpath(specPath)) fail('operation owner file belongs to another requirements source');
-  return record.owner;
-}
-
-export async function bindExecutionBroker({ workspace, owner, runner, readActivated }) {
-  return withExecutionPublicationLock(workspace, async lease => {
-    const current = await readActivated();
-    const attempt = assertExecutionAttempt(current.activation, owner);
-    if (attempt.runner !== null) fail('attempt already has a runner broker; preserve pending/uncertain dispatch');
-    const activation = { ...current.activation, activationId: randomUUID(), sequence: current.activation.sequence + 1,
-      previousActivationId: current.activation.activationId, activeAttempt: { ...attempt, runner } };
-    validateActivation(activation);
-    await assertExecutionPublicationLock(lease); await replaceActivation(workspace.executionRoot, activation);
-    const after = await readActivated();
-    if (!equal(after.activation, activation)) fail('broker binding readback uncertain');
-    return { publication: 'confirmed', cleanup: 'complete', expectedActivationId: activation.activationId };
-  });
 }

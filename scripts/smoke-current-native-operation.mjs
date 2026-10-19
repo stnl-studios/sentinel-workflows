@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 // The launcher runs official collaboration agents between these commands.
-// This script creates only the disposable legacy/conversion fixture and records
+// This script creates only the explicitly mechanical current EC-1 fixture and records
 // mechanical S2 admission/readback evidence; it never simulates a native result.
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -9,7 +9,7 @@ import {createHash} from 'node:crypto';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import {fileURLToPath} from 'node:url';
-import {convertedImage} from './fixtures/current-operational-consumption.mjs';
+import {currentImage} from './fixtures/current-operational-consumption.mjs';
 import {begin,reserveDispatch,resume,publish,normalize} from '../skills/workflows/stnl-slice-executor/runtime/execution-current-operation.mjs';
 
 const repo=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
@@ -19,7 +19,7 @@ const output=value=>process.stdout.write(JSON.stringify(value)+'\n');
 async function git(root,args) {return run('git',['-C',root,...args],{timeout:30000});}
 async function setup({defect=false}={}) {
   const runRoot=await fs.mkdtemp(path.join(repo,'tmp/u3-reconstruction/vertical-native-EC1-'));
-  const image=await convertedImage(null,{kind:'managed-s2'});
+  const image=await currentImage(null,{kind:'managed-s2',behaviorCheck:true});
   const root=image.f.root;
   await fs.writeFile(path.join(root,'.gitignore'),'/tmp/\n');
   const firstDrift=path.join(root,'src/greeting.mjs');
@@ -34,7 +34,7 @@ async function setup({defect=false}={}) {
   if(!/^[a-f0-9]{40}$/u.test(head)) throw new Error('disposable fixture has no verifiable Git HEAD');
   const continuity=JSON.parse(await fs.readFile(path.join(image.f.execution,'continuity.json'),'utf8'));
   const selected=continuity.deliveries.find(item=>item.counters.validationAttempts>0);
-  if(!selected) throw new Error('converted fixture lacks S2 delivery');
+  if(!selected) throw new Error('current mechanical fixture lacks S2 delivery');
   const start=await begin({specPath:image.f.specPath,slice:selected.slice,
     expectedActivationId:image.activation.activationId});
   const handleFile=path.join(runRoot,'operation-1.handle.json');

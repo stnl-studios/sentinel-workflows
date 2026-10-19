@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import {createHash} from 'node:crypto';
-import {convertedImage} from './fixtures/current-operational-consumption.mjs';
+import {currentImage} from './fixtures/current-operational-consumption.mjs';
 import {nativeOperationCase} from './fixtures/current-native-operation.mjs';
 import {prepareCurrentLocalReview,finalizeCurrentLocalReview} from
   '../skills/workflows/stnl-slice-executor/runtime/execution-preparation-current.mjs';
@@ -44,7 +44,7 @@ async function localPublicationCase(t) {
 }
 
 test('local S2 review changes one leaf, keeps other reviewed bytes and consumption',async t=>{
-  const image=await convertedImage(t,{kind:'two-s2'});
+  const image=await currentImage(t,{kind:'two-s2'});
   const input=proposalInput(image);
   const before=JSON.parse(input.previous.files.get('approved-preparation.json'));
   const continuity=JSON.parse(input.previous.files.get('continuity.json'));
@@ -157,11 +157,11 @@ test('local S2 review keeps old formal record literal and makes it historical',a
 });
 
 test('local S2 review refuses transverse changes and stale leaf approval',async t=>{
-  const image=await convertedImage(t,{kind:'two-s2'});
+  const image=await currentImage(t,{kind:'two-s2'});
   const input=proposalInput(image);
-  await assert.rejects(async()=>prepareCurrentLocalReview({...input,
-    planBytes:Buffer.from(string(input.planBytes).replace('Export observed by node --test.',
-      'A different observable result.'))}),error=>error?.code==='REPLAN_REQUIRED');
+  const transverse=string(input.planBytes).replace('Verify the greeting export.','A different observable result.');
+  assert.notEqual(transverse,string(input.planBytes),'the transverse mutation must apply');
+  await assert.rejects(async()=>prepareCurrentLocalReview({...input,planBytes:Buffer.from(transverse)}),error=>error?.code==='REPLAN_REQUIRED');
   const proposal=prepareCurrentLocalReview(input);
   const review={...proposal.reviewRequest,decision:'approved',summary:'Independent local decision.'};
   await assert.rejects(async()=>finalizeCurrentLocalReview({proposal,review:{...review,
@@ -169,7 +169,7 @@ test('local S2 review refuses transverse changes and stale leaf approval',async 
 });
 
 test('local replacement keeps another delivery native formal proof current and byte-identical',async t=>{
-  const converted=await convertedImage(t,{kind:'two-s2'});
+  const converted=await currentImage(t,{kind:'two-s2'});
   await fs.writeFile(path.join(converted.f.root,'src/greeting.mjs'),'export const greeting="hello";\n');
   const first=await captureCurrentExecution(converted.f.specPath);
   const selected=JSON.parse(Buffer.from(first.files.get('continuity.json'))).deliveries[0];

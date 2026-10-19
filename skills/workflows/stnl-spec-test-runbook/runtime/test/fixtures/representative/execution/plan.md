@@ -1,13 +1,13 @@
 # File Purpose Header
 
 ```yaml
-purpose: Compact global execution strategy for invitation acceptance.
+purpose: Global invitation execution plan.
 status: ready
-read_when: Planning or reviewing the global invitation acceptance execution.
-do_not_read_when: A selected detailed plan already supplies all necessary local context.
-contains: Requirements source, objective, strategy, approval state, serial slices, dependencies, coverage, and detailed plan paths.
+read_when: Preparing the initial invitation execution image.
+do_not_read_when: Another delivery is selected.
+contains: Current authority and initial delivery carriers.
 owner: stnl-execution-planner
-update_policy: PLAN created it as draft; REVIEW_PLAN approved it and made it immutable to execution skills.
+update_policy: Author writes; reviewer approves the final bytes.
 ```
 
 # Execution Plan
@@ -17,19 +17,17 @@ update_policy: PLAN created it as draft; REVIEW_PLAN approved it and made it imm
 - Requirements source: `../feature_spec.md`
 - Requirements authority: sha256:11aba916db71705bfb2f518aac2b8f808c5f410559b1693949764b318b0f6424
 - Plan revision: 1
-- Objective: Deliver API invitation acceptance followed by its confirmation UI.
-- Strategy: Establish the service behavior before exposing the user flow.
+- Objective: Ship invitation.
+- Strategy: Two deliveries.
 - Review state: approved
 
 ## Serial Slice Order
 
-| Slice | Observable delivery | Dependencies | Requirements | Expected areas | Detailed plan |
+| Slice | Observable delivery | Dependencies | Requirements | Authorized areas | Detailed plan |
 |---|---|---|---|---|---|
-| 01 - Invitation API | Eligible and expired invitations have deterministic API results. | - | AC-001, AC-002 | invitation service, integration tests | plans/slice-01.md |
-| 02 - Confirmation UI | The accepted invitation presents approved confirmation copy. | slice-01 | AC-001 | invitation UI, browser tests | plans/slice-02.md |
+| 01 - Foundation | Invitation export prepared. | - | AC-001, AC-002 | directory: `../../../../test` | plans/slice-01.md |
+| 02 - Verification | Invitation export verified. | slice-01 | AC-001 | directory: `../../../../test` | plans/slice-02.md |
 
 ## Global Risks and Integration
 
-- Record service UTC time for expiration checks and keep product copy approval explicit.
-
-`tasks.md` is the only global progress authority.
+- No authentication changes.

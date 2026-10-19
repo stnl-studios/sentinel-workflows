@@ -3,32 +3,13 @@ import path from 'node:path';
 import {createHash} from 'node:crypto';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
-import {convertedImage} from './current-operational-consumption.mjs';
+import {currentImage} from './current-operational-consumption.mjs';
 import {begin,normalize,normalizeSuccessor,reserveDispatch,bindNative,verifyNative,captureNative,publish,resume} from
   '../../skills/workflows/stnl-slice-executor/runtime/execution-current-operation.mjs';
 
 const sha=bytes=>`sha256:${createHash('sha256').update(bytes).digest('hex')}`;
 let next=0;
 const run=promisify(execFile);
-
-export async function reviewedDecisionCase(test) {
-  const image=await convertedImage(test,{kind:'native-s1'});
-  const root=image.f.root;
-  const snapshot=JSON.parse(await fs.readFile(path.join(image.f.execution,'approved-preparation.json'),'utf8'));
-  const continuity=JSON.parse(await fs.readFile(path.join(image.f.execution,'continuity.json'),'utf8'));
-  const delivery=continuity.deliveries[0];
-  if(snapshot.deliveries[0].review.evidenceDecisions.length!==1 || !delivery.evidence)
-    throw new Error('converted fixture lacks reviewed imported evidence');
-  await fs.writeFile(path.join(root,'.gitignore'),'/tmp/\n');
-  await run('git',['-C',root,'init','-q']);
-  await run('git',['-C',root,'add','.gitignore','requirements.md']);
-  await run('git',['-C',root,'-c','user.name=EC1 Fixture','-c','user.email=ec1-fixture@example.invalid',
-    'commit','-qm','reviewed conversion']);
-  const head=(await run('git',['-C',root,'rev-parse','HEAD'])).stdout.trim();
-  await fs.writeFile(path.join(root,'src/greeting.mjs'),'export const greeting="hello";\n');
-  return {image,root,head,delivery,specPath:image.f.specPath,
-    activationId:image.activation.activationId};
-}
 
 // Mechanical fault carrier for bounded cases. Live acceptance uses independent
 // agents and exact tool finalResponse bytes in the ignored native smoke package.

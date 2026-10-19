@@ -106,7 +106,7 @@ function canonicalSlice(value, label) {
   return value;
 }
 function ownerMatches(value, expected, label) {
-  if (value && typeof value === 'object' && !Object.hasOwn(value, 'localRevision') && (value.imported === true || value.operationAttemptId)) fail('MIGRATION_REQUIRED', `${label}: old owner lacks local revision`);
+  if (value && typeof value === 'object' && !Object.hasOwn(value, 'localRevision') && (value.imported === true || value.operationAttemptId)) fail('UNSUPPORTED_FORMAT', `${label}: old owner lacks local revision`);
   ownerShape(value, label);
   expectEqual(value, expected, 'OWNER_MISMATCH', label);
 }
@@ -197,13 +197,13 @@ function baseline(value, owner, round, context, claims, label) {
 
 function guard(input, validating = false) {
   plain(input, 'initial evidence input');
-  if (Object.hasOwn(input, 'imported') && input.imported === true) fail('MIGRATION_REQUIRED', 'imported evidence requires conversion');
+  if (Object.hasOwn(input, 'imported') && input.imported === true) fail('UNSUPPORTED_FORMAT', 'evidence format is not supported');
   closed(input, ['context', 'authority', 'owner', 'currentEvidence', 'counters', validating ? 'bundleBytes' : 'rounds'], 'initial evidence input');
   closed(input.authority, ['preparationRevision', 'localRevision', 'normativeSha256', 'delivery', 'context'], 'authority');
   closed(input.authority.context, ['requirementsAuthority', 'objective', 'strategy', 'risks'], 'authority.context');
   closed(input.counters, ['implementationChecks', 'findingsChecks', 'validationAttempts', 'findings'], 'counters');
   plain(input.owner, 'owner');
-  if (!Object.hasOwn(input.owner, 'localRevision') && Object.hasOwn(input.owner, 'operationAttemptId')) fail('MIGRATION_REQUIRED', 'old owner lacks local revision');
+  if (!Object.hasOwn(input.owner, 'localRevision') && Object.hasOwn(input.owner, 'operationAttemptId')) fail('UNSUPPORTED_FORMAT', 'old owner lacks local revision');
   ownerShape(input.owner, 'owner');
   if (!Number.isSafeInteger(input.authority.preparationRevision) || input.authority.preparationRevision<1
     || !Number.isSafeInteger(input.authority.localRevision) || input.authority.localRevision<1

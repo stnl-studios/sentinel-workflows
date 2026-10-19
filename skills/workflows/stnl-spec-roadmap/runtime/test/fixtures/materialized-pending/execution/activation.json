@@ -1,0 +1,46 @@
+{
+  "format": "stnl-execution-activation-v2",
+  "activationId": "0b464011-c01b-4b3c-94ce-d15b9a0ec42c",
+  "sequence": 1,
+  "previousActivationId": null,
+  "preparationRevision": 1,
+  "requirementsAuthority": "sha256:11aba916db71705bfb2f518aac2b8f808c5f410559b1693949764b318b0f6424",
+  "normativeSha256": "sha256:c125fc4eb4a19973d2c1ccc2a77cd7386147fb62d0c983a0d417ab4dfea57b27",
+  "approvedSnapshotSha256": "sha256:b322bf88373feda07bc6baac80d0b029d5857767e6ea076cb992d32ca4c84337",
+  "artifacts": [
+    {
+      "path": "approved-preparation.json",
+      "sha256": "sha256:b322bf88373feda07bc6baac80d0b029d5857767e6ea076cb992d32ca4c84337"
+    },
+    {
+      "path": "continuity.json",
+      "sha256": "sha256:b2ea5c2a33d2d29a7eb91738a326988a67d46e4bc3840f411f6cd57ce4592fa7"
+    },
+    {
+      "path": "plan.md",
+      "sha256": "sha256:88c99f3a4c1ee71b50cea2369549310738d90cecb831907f10a584ae6e16a48a"
+    },
+    {
+      "path": "plans/slice-01.md",
+      "sha256": "sha256:2cbedf4ba96b564fc44a0b43a42433c166f362c972a487a9de0524d5c091bd0b"
+    },
+    {
+      "path": "plans/slice-02.md",
+      "sha256": "sha256:50a03dccdbfeb3313fa396c6aa512c518fcc9fdf188f18587b1144a1059432b2"
+    },
+    {
+      "path": "tasks.md",
+      "sha256": "sha256:28a1e6240c538b29c7e8dac396ae383d5144f1ff70998bc5d6dc0f422a9c8271"
+    },
+    {
+      "path": "tasks/slice-01.md",
+      "sha256": "sha256:69f4aaa08915e41ac6b6287b7b5aae9797f9587f451ae014568d95d81a857106"
+    },
+    {
+      "path": "tasks/slice-02.md",
+      "sha256": "sha256:e151a944107e2e8c05cc1e12adb7c2aff5276b88dbf0d9d4094887fc8c1303ce"
+    }
+  ],
+  "activeAttempt": null,
+  "lastAttempt": null
+}

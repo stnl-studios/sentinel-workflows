@@ -250,7 +250,7 @@ function p06(api) {
   changedRawHash.reviewedArtifacts[0].sha256 = rawOracle(bytes('different reviewed bytes'));
   reject(() => validateSnapshot(changedRawHash), 'INVALID_CURRENT_IMAGE', 'snapshot raw artifact digest differs');
   const legacy = clone(approved.snapshot); legacy.format = 'stnl-preparation-v2';
-  reject(() => validateSnapshot(legacy), 'MIGRATION_REQUIRED', 'snapshot v2 requires explicit migration');
+  reject(() => validateSnapshot(legacy), 'UNSUPPORTED_FORMAT', 'snapshot v2 is unsupported');
   const noFormat = clone(approved.snapshot); delete noFormat.format;
   reject(() => validateSnapshot(noFormat), 'CURRENT_FORMAT_REQUIRED', 'snapshot format required');
   const unknownFormat = clone(approved.snapshot); unknownFormat.format = 'stnl-preparation-v99';
@@ -285,10 +285,10 @@ test('P08 — planner/reviewer copies import with only their L1 sibling', async 
       await fs.writeFile(path.join(directory, 'execution-preparation-current.mjs'), modules[i]);
       await fs.copyFile(path.join(root, kernelPaths[i]), path.join(directory, 'execution-current.mjs'));
       const api = await import(pathToFileURL(path.join(directory, 'execution-preparation-current.mjs')).href);
-      assert.deepEqual(Object.keys(api).sort(), ['approveConversionPreparation', 'approveInitialPreparation',
+      assert.deepEqual(Object.keys(api).sort(), ['approveCurrentPreparation', 'approveInitialPreparation',
         'finalizeCurrentLocalReview', 'prepareCurrentLocalReview',
-        'projectConversionPreparation', 'projectInitialPreparation', 'validateConversionApprovedPreparation',
-        'validateCurrentPreparation', 'validateInitialApprovedPreparation']);
+        'projectCurrentPreparation', 'projectInitialPreparation', 'validateCurrentPreparation',
+        'validateInitialApprovedPreparation', 'validateReviewedPreparation']);
       for (const [label, check] of [['P01', p01], ['P03', p03], ['P05', p05], ['P07', p07]]) {
         try { check(api); } catch (error) { error.message = `copy ${i + 1}, ${label}: ${error.message}`; throw error; }
       }

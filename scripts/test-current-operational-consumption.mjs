@@ -5,7 +5,7 @@ import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {createHash} from 'node:crypto';
 import fs from 'node:fs/promises';
-import {convertedImage,installSuccessor} from './fixtures/current-operational-consumption.mjs';
+import {currentImage,installSuccessor} from './fixtures/current-operational-consumption.mjs';
 import {createCurrentNativeValidationCapture} from '../skills/workflows/stnl-slice-executor/runtime/current-native-validation-capture.mjs';
 import {composePostConversionValidation} from '../skills/workflows/stnl-slice-executor/runtime/current-evidence-state.mjs';
 import {captureCurrentExecution} from '../skills/workflows/stnl-slice-executor/runtime/execution-current-reader.mjs';
@@ -26,24 +26,8 @@ async function guardedRead(image,reader,label) {
   return guarded.result;
 }
 
-test('O01 smoke real S1 importado: reader E2 em novo processo',async t=>{
-  const image=await convertedImage(t);
-  for(const reader of readers) {
-    const env={...process.env};delete env.NODE_TEST_CONTEXT;
-    const run=spawnSync(process.execPath,[reader,image.f.specPath],{env,encoding:'utf8',timeout:30000});
-    assert.equal(run.status,0,`${reader}: ${run.stderr} ${run.stdout}`);
-    const result=JSON.parse(run.stdout);
-    assert.equal(result.preparationRevision,JSON.parse(image.candidate.files.get('approved-preparation.json')).preparationRevision);
-    assert.equal(result.deliveries.length,1);
-    assert.equal(result.deliveries[0].persistedValidation,'current');
-    assert.equal(result.deliveries[0].observedValidation,'current');
-    assert.equal(result.deliveries[0].evidenceSha256,JSON.parse(image.candidate.files.get('continuity.json')).deliveries[0].evidence.sha256);
-    assert.equal(result.normalHandoff,null);
-  }
-});
-
-test('O02 smoke S1: nova sessão native mede a recipe aprovada',async t=>{
-  const image=await convertedImage(t);
+test('O02 limite EC-1: sessão offline mede a recipe aprovada',async t=>{
+  const image=await currentImage(t);
   const id=JSON.parse(image.candidate.files.get('continuity.json')).deliveries[0].deliveryId;
   const session=await createCurrentNativeValidationCapture({specPath:image.f.specPath,deliveryId:id,
     captureParent:image.f.root});
@@ -62,8 +46,8 @@ test('O02 smoke S1: nova sessão native mede a recipe aprovada',async t=>{
   assert.equal(JSON.parse(Buffer.from(capture.receipt).toString()).semanticResponseStatus,'PASS');
 });
 
-test('O03 smoke S1: formal v3 substitui importado e leitores novos relêem',async t=>{
-  const image=await convertedImage(t);
+test('O03 formal corrente substitui limite sem prova e leitores novos relêem',async t=>{
+  const image=await currentImage(t);
   const id=JSON.parse(image.candidate.files.get('continuity.json')).deliveries[0].deliveryId;
   const session=await createCurrentNativeValidationCapture({specPath:image.f.specPath,deliveryId:id,captureParent:image.f.root});
   await session.bindAgent({agentId:'offline-current-validation-smoke'});
@@ -100,7 +84,7 @@ test('O03 smoke S1: formal v3 substitui importado e leitores novos relêem',asyn
 });
 
 test('O04 smoke S2: formal v3 sobre arquivo e high-water histórico',async t=>{
-  const image=await convertedImage(t,{kind:'managed-s2'});
+  const image=await currentImage(t,{kind:'managed-s2'});
   await fs.writeFile(path.join(image.f.root,'src/greeting.mjs'),'export const greeting = "hello";\n');
   const before=JSON.parse(image.candidate.files.get('continuity.json')).deliveries[0];
   assert.equal(before.evidence,null);
@@ -134,7 +118,7 @@ test('O04 smoke S2: formal v3 sobre arquivo e high-water histórico',async t=>{
 
 test('O05 smoke: segunda formal v3 substitui primeira em S1 e S2',async t=>{
   for(const kind of ['native-s1','managed-s2']) {
-    const image=await convertedImage(t,{kind});
+    const image=await currentImage(t,{kind});
     if(kind==='managed-s2') await fs.writeFile(path.join(image.f.root,'src/greeting.mjs'),'export const greeting = "hello";\n');
     const id=JSON.parse(image.candidate.files.get('continuity.json')).deliveries[0].deliveryId;
     let activation=image.activation,firstDigest=null;
@@ -173,7 +157,7 @@ test('O05 smoke: segunda formal v3 substitui primeira em S1 e S2',async t=>{
 
 test('O06 resultados v3 NEEDS_FIX e BLOCKED são legíveis, sem nova composição',async t=>{
   for(const status of ['NEEDS_FIX','BLOCKED']) {
-    const image=await convertedImage(t);
+    const image=await currentImage(t);
     const id=JSON.parse(image.candidate.files.get('continuity.json')).deliveries[0].deliveryId;
     const session=await createCurrentNativeValidationCapture({specPath:image.f.specPath,deliveryId:id,captureParent:image.f.root});
     const agentId=`offline-${status}`;
@@ -210,7 +194,7 @@ test('O06 resultados v3 NEEDS_FIX e BLOCKED são legíveis, sem nova composiçã
 });
 
 test('O07 vínculo v3, ordem da sessão e replay divergente falham fechados',async t=>{
-  const image=await convertedImage(t);
+  const image=await currentImage(t);
   const id=JSON.parse(image.candidate.files.get('continuity.json')).deliveries[0].deliveryId;
   const session=await createCurrentNativeValidationCapture({specPath:image.f.specPath,deliveryId:id,captureParent:image.f.root});
   await assert.rejects(()=>session.runVerification(),error=>error.code==='OWNER_UNCERTAIN');
@@ -255,7 +239,7 @@ test('O07 vínculo v3, ordem da sessão e replay divergente falham fechados',asy
 
 test('O08 mudanças de produto ou imagem entre medição e conclusão bloqueiam capture',async t=>{
   for(const change of ['product','image']) {
-    const image=await convertedImage(t);
+    const image=await currentImage(t);
     const id=JSON.parse(image.candidate.files.get('continuity.json')).deliveries[0].deliveryId;
     const session=await createCurrentNativeValidationCapture({specPath:image.f.specPath,deliveryId:id,captureParent:image.f.root});
     await session.bindAgent({agentId:'offline-drift'});
@@ -273,40 +257,8 @@ test('O08 mudanças de produto ou imagem entre medição e conclusão bloqueiam 
   }
 });
 
-test('O09 E0 adulterado ou renomeado v2 não ganha aprovação por reseal externo',async t=>{
-  for(const mutation of ['tampered','renamed']) {
-    const image=await convertedImage(t);
-    const files=new Map(image.candidate.files);
-    const current=JSON.parse(files.get('continuity.json')).deliveries[0];
-    const evidencePath=current.evidence.path;
-    const bundle=JSON.parse(files.get(evidencePath));
-    if(mutation==='tampered') bundle.validation.recordUtf8+='\n- Forged note: changed';
-    else bundle.validation.recordFormat='stnl-task-record-v2';
-    const evidenceBytes=Buffer.from(JSON.stringify(bundle)+'\n');
-    files.set(evidencePath,evidenceBytes);
-    const digest=`sha256:${createHash('sha256').update(evidenceBytes).digest('hex')}`;
-    const oldDigest=current.evidence.sha256;
-    current.evidence.sha256=digest;
-    const continuity=JSON.parse(files.get('continuity.json'));
-    continuity.deliveries[0]=current;
-    files.set('continuity.json',Buffer.from(JSON.stringify(continuity)+'\n'));
-    files.set('tasks/slice-01.md',Buffer.from(Buffer.from(files.get('tasks/slice-01.md')).toString().replace(oldDigest,digest)));
-    const activation={...image.activation,artifacts:[...files].map(([name,bytes])=>({path:name,
-      sha256:`sha256:${createHash('sha256').update(bytes).digest('hex')}`}))
-      .sort((a,b)=>a.path<b.path?-1:a.path>b.path?1:0)};
-    for(const [name,bytes] of files) await fs.writeFile(path.join(image.f.execution,name),bytes);
-    await fs.writeFile(path.join(image.f.execution,'activation.json'),JSON.stringify(activation)+'\n');
-    for(const reader of readers) {
-      const env={...process.env};delete env.NODE_TEST_CONTEXT;
-      const run=spawnSync(process.execPath,[reader,image.f.specPath],{env,encoding:'utf8',timeout:30000});
-      assert.equal(run.status,1,`${mutation}: ${reader}`);
-      assert.equal(JSON.parse(run.stdout).code,'INVALID_CURRENT_IMAGE');
-    }
-  }
-});
-
 test('O10 S0 é legível e recusa captura e composição formal',async t=>{
-  const image=await convertedImage(t,{kind:'s0'});
+  const image=await currentImage(t,{kind:'s0'});
   const id=JSON.parse(image.candidate.files.get('continuity.json')).deliveries[0].deliveryId;
   for(const reader of readers) {
     const env={...process.env};delete env.NODE_TEST_CONTEXT;
@@ -326,7 +278,7 @@ test('O10 S0 é legível e recusa captura e composição formal',async t=>{
 });
 
 test('O11 sucessor v3 rejeita counters, record, objetos e norma adulterados após reseal',async t=>{
-  const image=await convertedImage(t);
+  const image=await currentImage(t);
   const id=JSON.parse(image.candidate.files.get('continuity.json')).deliveries[0].deliveryId;
   const session=await createCurrentNativeValidationCapture({specPath:image.f.specPath,deliveryId:id,captureParent:image.f.root});
   await session.bindAgent({agentId:'offline-reseal'});
@@ -346,7 +298,7 @@ test('O11 sucessor v3 rejeita counters, record, objetos e norma adulterados apó
     ['counter',files=>{const body=JSON.parse(files.get('continuity.json'));body.deliveries[0].counters.validationAttempts-=1;files.set('continuity.json',Buffer.from(JSON.stringify(body)+'\n'));}],
     ['record',files=>{const name=`evidence/${id}.json`,body=JSON.parse(files.get(name));body.validation.recordUtf8+='\n- Forged: yes';files.set(name,Buffer.from(JSON.stringify(body)+'\n'));}],
     ['orphan',files=>{const name=`evidence/${id}.json`,body=JSON.parse(files.get(name));body.objects.pop();files.set(name,Buffer.from(JSON.stringify(body)+'\n'));}],
-    ['normative',files=>{const name='tasks/slice-01.md';files.set(name,Buffer.from(files.get(name).toString().replace('Arithmetic command exits zero without product files.','Arithmetic command exits one without product files.')));}],
+    ['normative',files=>{const name='tasks/slice-01.md',before=files.get(name).toString(),after=before.replace('Greeting export prepared.','Greeting export forged.');assert.notEqual(after,before,'normative mutation must change bytes');files.set(name,Buffer.from(after));}],
   ]) {
     const files=new Map([...genuine].map(([name,bytes])=>[name,Buffer.from(bytes)]));
     mutate(files);
@@ -372,9 +324,9 @@ test('O11 sucessor v3 rejeita counters, record, objetos e norma adulterados apó
 });
 
 test('O12 duas deliveries S0 projetam input compartilhado e deriva em ambas',async t=>{
-  const image=await convertedImage(t,{kind:'disjoint-s0'});
+  const image=await currentImage(t,{kind:'disjoint-s0',sharedInput:true,sharedInputAll:true});
   for(const [changed,expected] of [[false,'unvalidated'],[true,'revalidation-required']]) {
-    if(changed) await fs.writeFile(path.join(image.f.root,'shared/config.json'),'{"changed":true}\n');
+    if(changed) await fs.writeFile(path.join(image.f.root,'shared-config.json'),'{"changed":true}\n');
     for(const reader of readers) {
       const env={...process.env};delete env.NODE_TEST_CONTEXT;
       const run=spawnSync(process.execPath,[reader,image.f.specPath],{env,encoding:'utf8',timeout:30000});
@@ -387,21 +339,8 @@ test('O12 duas deliveries S0 projetam input compartilhado e deriva em ambas',asy
   }
 });
 
-test('O13 S1 managed convertido é legível sem fonte histórica',async t=>{
-  const image=await convertedImage(t,{kind:'managed-s1'});
-  for(const reader of readers) {
-    const env={...process.env};delete env.NODE_TEST_CONTEXT;
-    const run=spawnSync(process.execPath,[reader,image.f.specPath],{env,encoding:'utf8',timeout:30000});
-    assert.equal(run.status,0,`${reader}: ${run.stdout} ${run.stderr}`);
-    const result=JSON.parse(run.stdout);
-    assert.equal(result.deliveries[0].persistedValidation,'current');
-    assert.equal(result.deliveries[0].observedValidation,'current');
-    assert.equal(result.deliveries[0].formalStatus,'PASS');
-  }
-});
-
-test('O14 S1 managed recebe nova formal native offline',async t=>{
-  const image=await convertedImage(t,{kind:'managed-s1'});
+test('O14 limite EC-1 recebe formal native offline',async t=>{
+  const image=await currentImage(t,{kind:'managed-s1'});
   const id=JSON.parse(image.candidate.files.get('continuity.json')).deliveries[0].deliveryId;
   const session=await createCurrentNativeValidationCapture({specPath:image.f.specPath,deliveryId:id,captureParent:image.f.root});
   await session.bindAgent({agentId:'offline-after-managed'});
@@ -409,7 +348,7 @@ test('O14 S1 managed recebe nova formal native offline',async t=>{
   const response=JSON.stringify({format:'stnl-current-validation-response-v1',
     requestSha256:`sha256:${createHash('sha256').update(session.validationRequest).digest('hex')}`,
     result:{status:'PASS',head:'offline-working-tree',commands:measured.commands,
-      evidence:'The approved recipe exited zero after the managed imported cycle.',
+      evidence:'The approved recipe exited zero at the authored current boundary.',
       findingReferences:'none',findingDispositions:'none',blockers:'none',
       unexpectedWorkspaceEffects:'none',persistenceSummary:'Keep this native formal record.'},newFindings:[]});
   const capture=await session.finish({agentId:'offline-after-managed',status:'PASS',finalResponse:response});
@@ -428,7 +367,7 @@ test('O14 S1 managed recebe nova formal native offline',async t=>{
 });
 
 test('O15 BLOCKED posterior prevalece sobre deriva de produto da primeira delivery',async t=>{
-  const image=await convertedImage(t,{kind:'two-s2'});
+  const image=await currentImage(t,{kind:'two-s2'});
   const initial=JSON.parse(image.candidate.files.get('continuity.json')).deliveries;
   assert.deepEqual(initial.map(item=>item.slice),['slice-01','slice-02']);
   assert.deepEqual(initial.map(item=>item.validation),['revalidation-required','revalidation-required']);

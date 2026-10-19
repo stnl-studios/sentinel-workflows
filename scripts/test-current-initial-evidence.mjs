@@ -236,13 +236,13 @@ test('E05 initial guard and migration discrimination', () => {
   const foreign=copied(input);editJson(foreign.rounds[0],'origin',value=>{value.owner.operationAttemptId=DUMMY;});
   assertCode(()=>compose(foreign),'OWNER_MISMATCH');
   const old=copied(input);editJson(old.rounds[0],'receipt',value=>{delete value.owner.localRevision;});
-  assertCode(()=>compose(old),'MIGRATION_REQUIRED');
+  assertCode(()=>compose(old),'UNSUPPORTED_FORMAT');
   const legacy=copied(input);editJson(legacy.rounds[0],'verificationObservation',value=>{value.format='stnl-runner-verification-v1';});
-  assertCode(()=>compose(legacy),'MIGRATION_REQUIRED');
+  assertCode(()=>compose(legacy),'UNSUPPORTED_FORMAT');
   const oldOwner=copied(input);delete oldOwner.owner.localRevision;
-  assertCode(()=>compose(oldOwner),'MIGRATION_REQUIRED');
+  assertCode(()=>compose(oldOwner),'UNSUPPORTED_FORMAT');
   const imported={...copied(input),imported:true};
-  assertCode(()=>compose(imported),'MIGRATION_REQUIRED');
+  assertCode(()=>compose(imported),'UNSUPPORTED_FORMAT');
   const mixed=copied(input);mixed.rounds=[nativeRound(1,'TESTS_FAIL',1),managedRound(2)];
   assertCode(()=>compose(mixed),'INVALID_CURRENT_IMAGE');
   const malformedDelivery=copied(input);

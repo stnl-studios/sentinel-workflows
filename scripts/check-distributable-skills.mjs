@@ -23,7 +23,7 @@ if (roots.length === 0) {
         ? ROADMAP_DISTRIBUTION_POLICY
       : basename(root) === "stnl-spec-test-runbook"
           ? RUNBOOK_DISTRIBUTION_POLICY
-          : ['stnl-slice-executor','stnl-slice-quality-manager'].includes(basename(root))
+          : ['stnl-execution-planner','stnl-plan-reviewer','stnl-slice-executor','stnl-slice-quality-manager'].includes(basename(root))
             ? EXECUTION_DISTRIBUTION_POLICY : {};
     const findings = await checkDistributableSkill(root, policy);
     if (findings.length === 0) {

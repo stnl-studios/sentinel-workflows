@@ -388,7 +388,7 @@ export async function prepareOfficialRecovery({ product, specPath, ...input }) {
     readback: { lifecycle: fresh.lifecycle, executionRaw: preflight } })) !== JSON.stringify(recovery)) return null;
   return { ...recovery, ...(admission ? { admission } : {}) };
 }
-async function loadProduct(snapshot) {
+export async function loadProduct(snapshot) {
   const execution = await import(pathToFileURL(path.join(snapshot, 'skills/workflows/stnl-execution-planner/runtime/execution-state.mjs')).href);
   const lifecycle = await import(pathToFileURL(path.join(snapshot, 'skills/workflows/stnl-spec-lifecycle-manager/runtime/lib/lifecycle.mjs')).href);
   const readiness = await import(pathToFileURL(path.join(snapshot, 'skills/workflows/stnl-spec-lifecycle-manager/runtime/lib/readiness-result.mjs')).href);
@@ -398,10 +398,10 @@ async function loadProduct(snapshot) {
   const runner = await import(pathToFileURL(path.join(snapshot, 'agents/codex/runtime/validation-runner.mjs')).href);
   const managedContext = await import(pathToFileURL(path.join(snapshot, 'skills/workflows/stnl-slice-quality-manager/runtime/managed-slice-context.mjs')).href);
   const broker = await import(pathToFileURL(path.join(snapshot, 'agents/codex/runtime/runner-broker.mjs')).href);
-  const evidence = await import(pathToFileURL(path.join(snapshot, 'skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs')).href);
+  const semantic = await import(pathToFileURL(path.join(snapshot, 'skills/workflows/stnl-slice-executor/runtime/runner-result-contract.mjs')).href);
   const commandEvents = await import(pathToFileURL(path.join(snapshot, 'skills/workflows/stnl-slice-executor/runtime/runner-command-events.mjs')).href);
   return { ...execution, validateWorkspace: lifecycle.validateWorkspace, ...readiness, ...sdk, ...usage,
-    ...home, ...runner, ...broker, ...managedContext, ...evidence, ...commandEvents };
+    ...home, ...runner, ...broker, ...managedContext, ...semantic, ...commandEvents };
 }
 function argsForJournal({ journal, operation, route, outcome, slice, readback, readinessResult, turn, durationMs, runnerCount }) {
   const args = ['journal-event', '--journal', journal, '--operation', operation, '--phase', route.phase,

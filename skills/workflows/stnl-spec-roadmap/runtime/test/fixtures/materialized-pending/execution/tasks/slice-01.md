@@ -1,38 +1,79 @@
 # File Purpose Header
 
 ```yaml
-purpose: Operational checklist and evidence record for invitation API slice 01.
+purpose: Pristine task for Foundation.
 status: ready
-read_when: Executing, validating, or auditing slice 01.
-do_not_read_when: Another slice is active and no dependency requires this record.
-contains: References, checklist, tests, changes, overlap, divergences, evidence, validation, corrections, effective base, diff, and result.
-owner: stnl-task-materializer
-update_policy: MATERIALIZE_TASKS created it; executor and quality manager update only their authorized sections.
+read_when: Preparing the initial invitation execution image.
+do_not_read_when: Another delivery is selected.
+contains: Current authority and initial delivery carriers.
+owner: stnl-execution-planner
+update_policy: Author writes; reviewer approves the final bytes.
 ```
 
-# Slice 01 Tasks - Invitation API
+# Slice 01 Tasks - Foundation
 
 ## References
 
 - Slice: 01
+- Delivery ID: 11111111-1111-4111-8111-111111111111
 - Plan: `../plans/slice-01.md`
 - Requirements source: `../../feature_spec.md`
 - Requirements authority: sha256:11aba916db71705bfb2f518aac2b8f808c5f410559b1693949764b318b0f6424
 - Plan revision: 1
+- Local revision: 1
 - Global tasks: `../tasks.md`
+
+## Result
+
+Invitation export prepared.
+
+## Acceptance Obligations
+
+- obligation-01 | requirement: AC-001 | contribution: partial | full owner: slice-02 | condition: Invitation export compiles | proof: Prepared node test
+- obligation-02 | requirement: AC-002 | contribution: complete | full owner: slice-01 | condition: Expired invitation is rejected | proof: Approved prepared test
+
+## Authorized Areas
+
+- directory: `../../../../../test`
+
+## Expected Files
+
+- `../../../../../test/fixtures/invitations.json`
+
+## Existing Inputs
+
+- none
+
+## Protected Responsibilities
+
+- Keep authentication unchanged.
 
 ## Checklist
 
-- [x] 1.1 Implement eligible invitation acceptance. | observable result: HTTP 201 and one participation | expected areas: invitation service | requirement: AC-001
-- [x] 1.2 Reject expired invitations. | observable result: public error and no participation | expected areas: invitation service | requirement: AC-002
+- [ ] 1.1 Implement eligible invitation acceptance | obligations: obligation-01
+- [ ] 1.2 Reject expired invitations | obligations: obligation-02
 
 ## Expected Tests
 
-- API integration tests for eligible, duplicate, and expired invitations.
+- Mechanical documentary setup; no behavior verdict.
+
+## Verification Recipe
+
+- Recipe: {"format":"stnl-verification-recipe-v1","base":"workspace","cwd":".","checks":[{"id":"verification-01","executable":{"literal":"node"},"args":[{"literal":"-e"},{"literal":"if (2+2!==4) process.exit(1)"}],"inputs":[]}],"dependencyReview":"Mechanical documentary fixture only; no claim of invitation behavior verification."}
+
+## Continuity
+
+- Current validation: unvalidated
+- Current evidence: none
+- Current action: implement approved delivery
+
+## Operational Changes
+
+- none
 
 ## Changed Areas
 
-- `../../test/fixtures/invitations.json`
+- pending
 
 ## Scope Expansion
 
@@ -52,26 +93,7 @@ update_policy: MATERIALIZE_TASKS created it; executor and quality manager update
 
 ## Implementation Test Evidence
 
-### implementation-check-01
-
-- Automatic check round: 1/3
-- Status: TESTS_PASS
-- HEAD: fixture
-- Tested scope: invitation acceptance service
-- Tested state:
-  - `../../test/fixtures/invitations.json` | sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
-- Discovery sources: approved task and repository tests
-- Discovery actions: inspected applicable integration-test commands
-- Verification types considered: focused integration test
-- Commands:
-  - `node --test test/invitations.test.mjs` | exit:0
-- Selected checks: invitation acceptance integration test
-- Selection rationale: focused authoritative behavior check
-- Coverage: AC-001 and AC-002 observable behavior
-- Failures: none
-- Blockers: none
-- Unexpected workspace effects: none
-- Persistence summary: TESTS_PASS persisted.
+- none
 
 ## Findings Test Evidence
 
@@ -95,7 +117,7 @@ update_policy: MATERIALIZE_TASKS created it; executor and quality manager update
 
 ## Diff Summary
 
-- Eligible and expired invitation paths are present for validation.
+- pending
 
 ## Final Result
 

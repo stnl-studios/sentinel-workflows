@@ -5,7 +5,7 @@ import * as fs from 'node:fs/promises';
 import path from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {isDeepStrictEqual} from 'node:util';
-import {resolveCurrentExecutionContext,projectCurrentRequirements} from './execution-state.mjs';
+import {resolveCurrentExecutionContext,projectCurrentRequirements,isIgnoredMetadata} from './execution-workspace.mjs';
 import {readOwnedFile} from './execution-publication.mjs';
 import {parseCurrentJson,validateCurrentActivation,validateCurrentCandidate,validateCurrentImage,resolveLogicalProductClaim} from './execution-current.mjs';
 import {validateCurrentPreparation} from './execution-preparation-current.mjs';
@@ -81,7 +81,7 @@ async function capturedDocuments(workspace) {
     if (directory!==null) {
       if (!directory.isDirectory() || directory.isSymbolicLink()) fail('UNSAFE_PATH','shared is not a real directory','integrity',shared);
       sharedIdentity=identity(directory);
-      const listed=await fs.readdir(shared,{withFileTypes:true});
+      const listed=(await fs.readdir(shared,{withFileTypes:true})).filter(item=>!isIgnoredMetadata(item.name));
       if (listed.some(item=>item.isSymbolicLink() || !item.isFile() || !item.name.endsWith('.md')))
         fail('INVALID_CURRENT_IMAGE','shared has a foreign entry','integrity',shared);
       sharedNames=listed.map(item=>item.name).sort(ordinal);
@@ -110,7 +110,7 @@ function activationFormat(bytes) {
   if (!value || typeof value!=='object' || !Object.hasOwn(value,'format'))
     fail('CURRENT_FORMAT_REQUIRED','activation discriminator is absent','integrity','activation.json');
   if (value.format==='stnl-execution-activation-v1')
-    fail('MIGRATION_REQUIRED','legacy activation requires explicit conversion','integrity','activation.json');
+    fail('UNSUPPORTED_FORMAT','execution activation format is not supported','integrity','activation.json');
   if (value.format!=='stnl-execution-activation-v2')
     fail('UNSUPPORTED_FORMAT','unknown activation format','integrity','activation.json');
   return validateCurrentActivation(value);

@@ -6,7 +6,7 @@ import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import {nativeOperationCase} from './fixtures/current-native-operation.mjs';
 import {completedFindingsCycle} from './fixtures/current-native-findings-operation.mjs';
-import {normalizedFormal,reviewedDecisionCase} from './fixtures/current-native-normalization.mjs';
+import {normalizedFormal} from './fixtures/current-native-normalization.mjs';
 import {captureCurrentExecution} from '../skills/workflows/stnl-slice-executor/runtime/execution-current-reader.mjs';
 import {captureCurrentExecution as captureQualityExecution} from '../skills/workflows/stnl-slice-quality-manager/runtime/execution-current-reader.mjs';
 import {begin,normalizeSuccessor,publish,resume} from '../skills/workflows/stnl-slice-executor/runtime/execution-current-operation.mjs';
@@ -83,18 +83,6 @@ test('EC-1 normalization: quiet rejection and successor read without temporary a
     assert.equal(first.inspection.deliveries[0].formalStatus,successor?'PASS':null);
     assert.equal(first.inspection.normalHandoff?.operation,successor?undefined:'VALIDATE_SLICE');
   });
-});
-
-test('EC-1 normalization: reviewed imported evidence survives rejection and valid successor',async t=>{
-  const fixture=await reviewedDecisionCase(t);
-  const first=await normalizedFormal(fixture,{invalid:true});
-  assert.equal(first.published.transition.outcome,'rejected');
-  const rejected=await captureCurrentExecution(fixture.specPath);
-  assert.equal(rejected.inspection.normalHandoff?.operation,'VALIDATE_SLICE');
-  const second=await normalizedFormal(fixture,{successor:true});
-  assert.equal(second.published.transition.outcome,'recorded');
-  const final=await captureCurrentExecution(fixture.specPath);
-  assert.equal(final.inspection.deliveries[0].formalStatus,'PASS');
 });
 
 test('EC-1 normalization: second rejected formal exhausts inherited episode',async t=>{

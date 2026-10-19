@@ -9,7 +9,7 @@ import {fileURLToPath} from 'node:url';
 import {inspectCurrentExecution} from '../skills/workflows/stnl-slice-executor/runtime/execution-current-reader.mjs';
 import {authoredCyclesImage,cleanup,canonical,reseal,writeImage,editSection} from './fixtures/current-quiet-reader.mjs';
 import {campaignImage,retireActive,refreshCampaign,multipleActiveImage,overlappingActiveImage,overlappingPostImage} from './fixtures/current-reader-campaign.mjs';
-import {convertedImage} from './fixtures/current-operational-consumption.mjs';
+import {currentImage} from './fixtures/current-operational-consumption.mjs';
 import {normalizedFormal} from './fixtures/current-native-normalization.mjs';
 import {captureCurrentExecution} from '../skills/workflows/stnl-slice-executor/runtime/execution-current-reader.mjs';
 import {prepareCurrentLocalReview,finalizeCurrentLocalReview} from '../skills/workflows/stnl-slice-executor/runtime/execution-preparation-current.mjs';
@@ -152,7 +152,7 @@ test('C02 existing native proof families compose with completed independently',a
 test('C03 existing post-conversion normalization and local review compose with completed',async t=>{
   for(const mode of ['settled','exhausted','review','s2-gap']) await t.test(mode,async t=>{
     const exhausted=mode==='exhausted';
-    const image=await convertedImage(t,{kind:'two-s2'}),root=image.f.root;
+    const image=await currentImage(t,{kind:'two-s2'}),root=image.f.root;
     await fs.writeFile(path.join(root,'.gitignore'),'/tmp/\n');
     await run('git',['-C',root,'init','-q']);await run('git',['-C',root,'add','.gitignore','requirements.md']);
     await run('git',['-C',root,'-c','user.name=Reader Fixture','-c','user.email=reader@example.invalid','commit','-qm','reader fixture']);

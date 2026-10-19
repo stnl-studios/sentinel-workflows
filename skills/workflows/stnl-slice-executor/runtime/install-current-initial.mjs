@@ -6,7 +6,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {pathToFileURL} from 'node:url';
-import {resolveCurrentExecutionContext} from './execution-state.mjs';
+import {resolveCurrentExecutionContext} from './execution-workspace.mjs';
 import {inspectCurrentExecution,captureCurrentExecution,observeCurrentDeliveryWork} from './execution-current-reader.mjs';
 import {approveInitialPreparation,validateCurrentPreparation} from './execution-preparation-current.mjs';
 import {validateCurrentCandidate,validateCurrentActivation} from './execution-current.mjs';

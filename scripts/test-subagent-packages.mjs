@@ -41,8 +41,6 @@ const PLATFORMS = {
       "package-lock.json",
       "runtime/isolated-home.mjs",
       "runtime/format-repair.mjs",
-      "runtime/managed-apply-scope.mjs",
-      "runtime/managed-findings-cycle.mjs",
       "runtime/managed-slice-finalize.mjs",
       "runtime/offline-provider-context.mjs",
       "runtime/managed-runner-bridge.mjs",
@@ -218,7 +216,7 @@ function assertRunnerContract(contract, label) {
     "Checks nunca emitem `PASS` formal",
     "Não repita nem corrija checks em loop para obter PASS",
   ]) assert.ok(contract.includes(boundary), `${label} lacks harmful-action boundary: ${boundary}`);
-  assert.match(contract, /Serialização, persistência e validação determinística pertencem ao runtime\/producer\.|esses resumos não substituem o receipt do produtor/u,
+  assert.match(contract, /Serialização, persistência e validação determinística pertencem ao runtime\/producer\.|esses resumos não substituem o receipt do produtor|A observação do produtor pertence à mesma invocação\/owner\. Receipts vinculam receita, argumentos efetivos, estado dos inputs e resultado\./u,
     `${label} must retain producer-owned evidence authority`);
   assert.doesNotMatch(contract, /(?:você pode|é permitido|you may)[^\n]{0,80}(?:editar|implementar|aplicar correções|criar subagentes|delegar)/iu, `${label} enables a harmful action`);
 }

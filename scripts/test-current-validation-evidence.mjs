@@ -487,7 +487,7 @@ test('V11 guards fechados, versões e counters canônicos',()=>{
     ['overflow',input=>{input.previous.counters.findings=Number.MAX_SAFE_INTEGER+1;},'INVALID_CURRENT_IMAGE'],
     ['stale counter',input=>{input.previous.counters.validationAttempts=1;},'INVALID_CURRENT_IMAGE'],
     ['authority',input=>{input.authority.context.objective='Other objective';},'EVIDENCE_STALE'],
-    ['imported',input=>{input.imported=true;},'MIGRATION_REQUIRED'],
+    ['imported',input=>{input.imported=true;},'UNSUPPORTED_FORMAT'],
   ]) {
     const input=clone(f.input);edit(input);
     assert.throws(()=>composeCurrentValidationEvidence(input),error=>error?.code===expected,label);
@@ -503,7 +503,7 @@ test('V11 guards fechados, versões e counters canônicos',()=>{
   for (const [label,edit,expected] of [
     ['ID 00',req=>{req.attemptId='attempt-00';},'INVALID_CURRENT_IMAGE'],
     ['ID 001',req=>{req.attemptId='attempt-001';},'INVALID_CURRENT_IMAGE'],
-    ['old envelope',req=>{req.format='stnl-current-validation-request-v0';},'MIGRATION_REQUIRED'],
+    ['old envelope',req=>{req.format='stnl-current-validation-request-v0';},'UNSUPPORTED_FORMAT'],
     ['future envelope',req=>{req.format='stnl-current-validation-request-v3';},'UNSUPPORTED_FORMAT'],
     ['object envelope',req=>{req.format={includes:'stnl-current-validation-request-v0'};},'INVALID_CURRENT_IMAGE'],
   ]) {

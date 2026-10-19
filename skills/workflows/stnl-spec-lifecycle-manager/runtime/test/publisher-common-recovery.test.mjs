@@ -123,10 +123,10 @@ test('uncertain liveness (EPERM) cannot reclaim a bound lease', async t => {
 
 function activeMarker(root, status) {
   const id=()=>randomUUID(), hash='sha256:'+'a'.repeat(64), activationId=id();
-  return {format:'stnl-execution-activation-v1',activationId,sequence:1,previousActivationId:null,preparationRevision:1,
+  return {format:'stnl-execution-activation-v2',activationId,sequence:1,previousActivationId:null,preparationRevision:1,
     requirementsAuthority:hash,normativeSha256:hash,approvedSnapshotSha256:hash,artifacts:[],lastAttempt:null,
-    activeAttempt:{operationAttemptId:id(),ownershipToken:id(),deliveryId:id(),slice:'slice-01',operation:'EXECUTE_SLICE',preparationRevision:1,
-      normativeSha256:hash,originActivationId:activationId,runner:status===null?null:{dispatchId:id(),receiptFile:path.join(root,'receipt.json'),threadId:id(),status},workCapture:{path:path.join(root,'capture'),sha256:hash}}};
+    activeAttempt:{operationAttemptId:id(),ownershipToken:id(),deliveryId:id(),slice:'slice-01',operation:'EXECUTE_SLICE',preparationRevision:1,localRevision:1,
+      normativeSha256:hash,originActivationId:activationId,operationRef:{operationId:id(),allocationSha256:hash}}};
 }
 test('absent target cannot bypass active or uncertain execution in retained backup', async t => {
   for(const status of [null,'uncertain']) await t.test(String(status),async t=>{

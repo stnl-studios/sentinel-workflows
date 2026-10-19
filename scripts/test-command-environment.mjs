@@ -7,11 +7,9 @@ import path from 'node:path';
 import test from 'node:test';
 import { codexClientConfig, managedDiscoveryInstructions, runCodexTurn } from '../agents/codex/runtime/sdk-transport.mjs';
 import { configText, isolatedEnvironment, verifyIsolatedHome } from '../agents/codex/runtime/isolated-home.mjs';
-import { invokeIndependentRunner } from '../agents/codex/runtime/validation-runner.mjs';
 import { assertManagedSliceLauncher, decideOutcome, renderLauncher, renderManagedLauncher, runTemplateTurn } from '../benchmarks/sentinel-todo/runtime/benchmark-manager.mjs';
 import { createUsageNormalizer, ZERO_USAGE } from '../agents/codex/runtime/usage-accounting.mjs';
 import { workflowSkillForOperation } from '../skills/workflows/stnl-execution-planner/runtime/execution-state.mjs';
-import { createManagedSliceContext, managedEnvironment } from '../skills/workflows/stnl-slice-quality-manager/runtime/managed-slice-context.mjs';
 
 const ROOT = path.resolve(import.meta.dirname, '..');
 const DENIAL = "zsh:1: can't create temp file for here document: operation not permitted\n";
@@ -78,8 +76,7 @@ test('manager and runner share explicit local discovery roots and the workspace 
   await fs.writeFile(path.join(root, 'outside-workspace-sentinel.mjs'), 'must not be discovered\n');
   await fs.copyFile(path.join(ROOT, 'agents/codex/.codex/agents/stnl_validation_runner.toml'),
     path.join(snapshot, 'agents/codex/.codex/agents/stnl_validation_runner.toml'));
-  for (const name of ['stnl-spec-lifecycle-manager', ...new Set(['PLAN', 'REVIEW_PLAN', 'MATERIALIZE_TASKS',
-    'REVIEW_TASKS', 'EXECUTE_SLICE', 'VALIDATE_SLICE'].map(workflowSkillForOperation))]) {
+  for (const name of ['stnl-spec-lifecycle-manager', ...new Set(['PLAN', 'REVIEW_PLAN', 'EXECUTE_SLICE', 'VALIDATE_SLICE'].map(workflowSkillForOperation))]) {
     await fs.cp(path.join(ROOT, 'skills/workflows', name), path.join(snapshot, 'skills/workflows', name), { recursive: true });
     await fs.cp(path.join(snapshot, 'skills/workflows', name), path.join(skillsRoot, name), { recursive: true });
   }
@@ -124,7 +121,6 @@ test('manager and runner share explicit local discovery roots and the workspace 
     ['SPEC_INIT', 'spec-init.md'], ['SPEC_READINESS', 'spec-readiness.md'], ['SPEC_RESUME', 'spec-resume.md'],
     ['SPEC_PROMOTE', 'spec-resume.md'], ['SPEC_CLOSE', 'spec-close.md'],
     ['PLAN', 'execution-plan.md'], ['REPLAN', 'execution-replan.md'], ['REVIEW_PLAN', 'execution-plan-review.md'],
-    ['MATERIALIZE_TASKS', 'execution-tasks.md'], ['REVIEW_TASKS', 'execution-tasks-review.md'],
     ['EXECUTE_SLICE', 'slice-execute-codex.md'], ['APPLY_FINDINGS', 'slice-apply-findings-codex.md'],
     ['VALIDATE_SLICE', 'slice-validate-codex.md'],
   ]) {
@@ -152,13 +148,6 @@ test('manager and runner share explicit local discovery roots and the workspace 
     assert.equal(config.default_permissions, undefined);
     assert.equal(config.permissions, undefined);
   }
-  const materializer = path.join(skillsRoot, 'stnl-task-materializer');
-  for (const resource of ['runtime/prepare-task-candidate.mjs', 'templates/tasks.template.md',
-    'templates/slice-tasks.template.md', 'references/execution-record-schema.md']) {
-    assert.deepEqual(await fs.readFile(path.join(materializer, resource)),
-      await fs.readFile(path.join(snapshot, 'skills/workflows/stnl-task-materializer', resource)));
-    await assert.rejects(fs.access(path.join(executionRoot, resource)), { code: 'ENOENT' });
-  }
   const policy = configText({ privateHome, snapshot, workspace, candidates, tmpdir });
   assert.match(policy, /^sandbox_mode = "danger-full-access"$/mu);
   assert.match(policy, /^approval_policy = "never"$/mu);
@@ -182,8 +171,7 @@ test('manager and runner share explicit local discovery roots and the workspace 
   const usage = createUsageNormalizer({ baseline: ZERO_USAGE, source: 'main' });
   let priorThreadId = 'legacy-cached-author';
   for (const [operation, template] of [['PLAN', 'execution-plan.md'], ['REVIEW_PLAN', 'execution-plan-review.md'],
-    ['PLAN', 'execution-plan.md'], ['REVIEW_PLAN', 'execution-plan-review.md'],
-    ['MATERIALIZE_TASKS', 'execution-tasks.md'], ['REVIEW_TASKS', 'execution-tasks-review.md']]) {
+    ['PLAN', 'execution-plan.md'], ['REVIEW_PLAN', 'execution-plan-review.md']]) {
     const text = await fs.readFile(path.join(ROOT, 'templates/prompts', template), 'utf8');
     const prompt = renderManagedLauncher(text, { SPEC_PATH: specPath }, managedDiscoveryInstructions({
       env, cwd: workspace, workflowSkill: workflowSkillForOperation(operation) }));
@@ -202,90 +190,18 @@ test('manager and runner share explicit local discovery roots and the workspace 
     assert.equal(observed.delta.total, author.usage.input_tokens + author.usage.output_tokens);
     assert.equal(usage.observe({ threadId: author.threadId, segment: 'offline-run', usage: author.usage }).delta.total, 0);
   }
-  assert.equal(new Set(authorTurns.map((turn) => turn.threadId)).size, 6);
+  assert.equal(new Set(authorTurns.map((turn) => turn.threadId)).size, 4);
   assert.deepEqual(usage.snapshot().reduce((sum, state) => ({ input: sum.input + state.previous.input_tokens,
     output: sum.output + state.previous.output_tokens, cached: sum.cached + state.previous.cached_input_tokens,
     reasoning: sum.reasoning + state.previous.reasoning_output_tokens }), { input: 0, output: 0, cached: 0, reasoning: 0 }),
-    { input: 615, output: 75, cached: 135, reasoning: 21 });
+    { input: 406, output: 46, cached: 86, reasoning: 10 });
 
-  for (const operation of ['EXECUTE_SLICE', 'VALIDATE_SLICE']) {
-    let dispatched;
-    await invokeIndependentRunner({ snapshot, workspace, tmpdir, env: offlineEnv, operation, sequence: 1,
-      slice: 'slice-01', officialPreflight: { exitCode: 0, operation, slice: 'slice-01', specPath,
-        legalOperations: [{ operation, slice: 'slice-01' }], mandatoryRecovery: null },
-      prompt: operation === 'EXECUTE_SLICE' ? 'automaticCheckRound=1/3\nOffline check payload.' : 'Offline validation payload.',
-      runTurn: async (input) => {
-        dispatched = input;
-        // Exercise SDK dispatch only. The fake CLI performs no checks and its
-        // missing semantic response is never claimed as successful validation.
-        return runCodexTurn({ ...input, codexPathOverride: cli });
-      } });
-    assert.equal(dispatched.cwd, workspace);
-    assert.ok(dispatched.prompt.includes(`MANAGED_WORKSPACE=${workspace}`));
-    assert.ok(dispatched.prompt.includes(`SPEC_PATH=${specPath}`));
-    assert.ok(dispatched.prompt.includes(`EXECUTION_ROOT=${executionRoot}`));
-    const config = await codexClientConfig(dispatched);
-    assert.ok(config.developer_instructions.startsWith(dispatched.developerInstructions));
-    assert.ok(config.developer_instructions.endsWith(discovery));
-    assert.equal(dispatched.isolateSkills, true);
-    assert.ok(config.skills.config.every((skill) => skill.enabled === false));
-  }
-  const adapterPath = path.join(snapshot, 'agents/codex/runtime/validation-runner.mjs');
-  const bridgePath = path.join(snapshot, 'agents/codex/runtime/managed-runner-bridge.mjs');
-  const preflightPath = path.join(snapshot, 'agents/codex/runtime/managed-slice-preflight.mjs');
-  await fs.mkdir(path.dirname(adapterPath), { recursive: true });
-  for (const file of [adapterPath, bridgePath, preflightPath]) {
-    await fs.copyFile(path.join(ROOT, 'agents/codex/runtime', path.basename(file)), file);
-  }
-  for (const [operation, slice, state] of [
-    ['EXECUTE_SLICE', 'slice-01', 'MATERIALIZED_PRISTINE'],
-    ['VALIDATE_SLICE', 'slice-01', 'IMPLEMENTED_AWAITING_VALIDATION'],
-    ['EXECUTE_SLICE', 'slice-02', 'EXECUTION_STARTED'],
-    ['VALIDATE_SLICE', 'slice-02', 'IMPLEMENTED_AWAITING_VALIDATION'],
-    ['APPLY_FINDINGS', 'slice-02', 'VALIDATION_NEEDS_FIX'],
-  ]) {
-    const context = await createManagedSliceContext({ workspace, snapshot, adapterPath, bridgePath, preflightPath,
-      officialPreflight: { exitCode: 0, operation, slice, specPath, state, authority: `sha256:${'a'.repeat(64)}`,
-        legalOperations: [{ operation, slice }], mandatoryRecovery: null } });
-    const template = { EXECUTE_SLICE: 'slice-execute-codex.md', APPLY_FINDINGS: 'slice-apply-findings-codex.md',
-      VALIDATE_SLICE: 'slice-validate-codex.md' }[operation];
-    const text = await fs.readFile(path.join(ROOT, 'templates/prompts', template), 'utf8');
-    const numericSlice = String(Number(slice.slice('slice-'.length)));
-    const prompt = renderManagedLauncher(text, { SPEC_PATH: specPath, SLICE: numericSlice },
-      managedDiscoveryInstructions({ env, cwd: workspace, workflowSkill: workflowSkillForOperation(operation) }), context);
-    assert.match(prompt, /^This invocation uses the managed slice runner\./u);
-    assert.ok(prompt.includes('node "$STNL_MANAGED_PREFLIGHT"'));
-    assert.ok(prompt.includes('node "$STNL_MANAGED_RUNNER_BRIDGE"'));
-    assert.ok(prompt.includes('STNL_MANAGED_CONTEXT'));
-    assert.ok(prompt.includes('STNL_RUNNER_ADAPTER'));
-    assert.ok(prompt.indexOf('STNL_MANAGED_CONTEXT') < prompt.indexOf('Use `'), 'managed mode precedes the optional template context');
-    assertManagedSliceLauncher(prompt, context, numericSlice);
-    const author = await runTemplateTurn({ runCodexTurn }, { env: managedEnvironment(offlineEnv, context),
-      cwd: workspace, prompt, model: 'gpt-6-luna', effort: 'medium', threadId: priorThreadId,
-      operationId: `offline-${operation}-${slice}`, eventsPath: path.join(root, `${operation}-${slice}.events.jsonl`),
-      codexPathOverride: cli });
-    assert.equal(author.completed, true, author.error);
-    priorThreadId = author.threadId;
-    authorPrompts.push(prompt);
-  }
-  const calls = (await fs.readFile(capture, 'utf8')).trim().split('\n').map(JSON.parse);
-  assert.equal(calls.length, 13);
-  assert.deepEqual(calls.slice(0, 6).map((call) => call.prompt), authorPrompts.slice(0, 6));
-  for (const [index, operation] of ['PLAN', 'REVIEW_PLAN', 'PLAN', 'REVIEW_PLAN', 'MATERIALIZE_TASKS', 'REVIEW_TASKS'].entries()) {
-    const base = path.join(skillsRoot, workflowSkillForOperation(operation));
+  const calls=(await fs.readFile(capture,'utf8')).trim().split('\n').map(JSON.parse);
+  assert.equal(calls.length,4);assert.deepEqual(calls.map(call=>call.prompt),authorPrompts);
+  for(const [index,operation]of ['PLAN','REVIEW_PLAN','PLAN','REVIEW_PLAN'].entries()){
+    const base=path.join(skillsRoot,workflowSkillForOperation(operation));
     assert.ok(calls[index].prompt.includes(`Invoked skill resource base: ${JSON.stringify(base)}.`));
-    for (const family of ['runtime', 'templates', 'references']) assert.ok(calls[index].prompt.includes(JSON.stringify(path.join(base, family))));
-  }
-  for (const call of calls.slice(6, 8)) assert.ok(!call.prompt.includes('Invoked skill resource base:'), 'independent runner must not inherit the author skill');
-  assert.deepEqual(calls.slice(8).map((call) => call.prompt), authorPrompts.slice(6));
-  assert.deepEqual(calls.slice(8).map((call) => [call.managed.operation, call.managed.slice]), [
-    ['EXECUTE_SLICE', 'slice-01'], ['VALIDATE_SLICE', 'slice-01'], ['EXECUTE_SLICE', 'slice-02'],
-    ['VALIDATE_SLICE', 'slice-02'], ['APPLY_FINDINGS', 'slice-02'],
-  ]);
-  for (const call of calls.slice(8)) {
-    assert.deepEqual(call.managed.keys,
-      ['STNL_MANAGED_CONTEXT', 'STNL_MANAGED_PREFLIGHT', 'STNL_MANAGED_RUNNER_BRIDGE', 'STNL_RUNNER_ADAPTER']);
-    assert.equal(call.managed.identityMatches, true, 'SDK receives the helpers and operation bound to the actual context');
+    for(const family of ['runtime','templates','references'])assert.ok(calls[index].prompt.includes(JSON.stringify(path.join(base,family))));
   }
   for (const call of calls) {
     assert.equal(call.args[call.args.indexOf('--sandbox') + 1], 'danger-full-access');
@@ -303,13 +219,6 @@ test('manager and runner share explicit local discovery roots and the workspace 
     assert.ok(config.includes('If any command reports a sandbox or permission denial, stop'));
     assert.ok(!config.includes('Local Git marker:'));
   }
-  const managerSource = await fs.readFile(path.join(ROOT, 'benchmarks/sentinel-todo/runtime/benchmark-manager.mjs'), 'utf8');
-  assert.match(managerSource, /return runTemplateTurn\(product, \{/u, 'each capacity attempt must use the tested SDK boundary');
-  assert.doesNotMatch(managerSource, /const threadId = caseState\.threads/u);
-  assert.match(managerSource, /operation\.startsWith\('SPEC_'\) \? 'stnl-spec-lifecycle-manager' : product\.workflowSkillForOperation\(operation\)/u);
-  assert.match(managerSource, /managedDiscoveryInstructions\(\{ env: home\.env, cwd: workspace, workflowSkill \}\)/u);
-  assert.match(managerSource, /managedDiscoveryInstructions\(\{ env: home\.env, cwd: workspace, workflowSkill \}\), managedSliceContext\)/u,
-    'the common operation loop must supply the actual context to the tested launcher');
   assert.throws(() => managedDiscoveryInstructions({ env, cwd: workspace, workflowSkill: '../stnl-task-materializer' }), /workflow skill/u);
   assert.throws(() => managedDiscoveryInstructions({ env, cwd: path.dirname(workspace) }), /working directory/u);
   assert.throws(() => managedDiscoveryInstructions({ env: { ...env, TMPDIR: '/tmp' }, cwd: workspace }), /configured environment/u);

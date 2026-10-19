@@ -215,34 +215,34 @@ test("formal commands and requirement-bound findings cannot be weakened in the d
   }
 });
 
-test("native and managed evidence require their producer origin and reviewed observation", async () => {
+test("current native evidence requires their producer origin and reviewed observation", async () => {
   const executor = await fs.readFile(path.join(repository, "skills/workflows/stnl-slice-executor/SKILL.md"), "utf8");
   const quality = await fs.readFile(path.join(repository, "skills/workflows/stnl-slice-quality-manager/SKILL.md"), "utf8");
   const runner = await fs.readFile(path.join(canonical, "codex/.codex/agents/stnl_validation_runner.toml"), "utf8");
   for (const skill of [executor, quality]) {
-    for (const operation of ['start-native', 'bind-native', 'capture-native', 'verify-native']) assert.ok(skill.includes(operation));
+    for (const operation of ['reserve-dispatch', 'bind-native', 'capture-native', 'verify-native']) assert.ok(skill.includes(operation));
     assert.match(skill, /receipt obligatory|receipt mandatory|receipt is mandatory|origin.*receipt|receipt.*origin/iu);
     assert.match(skill, /saved observation without replay/u);
   }
   assert.match(runner, /NATIVE_ORIGIN_FILE[\s\S]*verify-native[\s\S]*Não execute os checks novamente/u);
 });
 
-test("native generic spawn loads the complete installed runner contract in an independent context", async () => {
+test("native generic spawn loads the complete selected runner contract in an independent context", async () => {
   const executor = await fs.readFile(path.join(repository, "skills/workflows/stnl-slice-executor/SKILL.md"), "utf8");
   const quality = await fs.readFile(path.join(repository, "skills/workflows/stnl-slice-quality-manager/SKILL.md"), "utf8");
   const guide = await fs.readFile(path.join(canonical, "README.md"), "utf8");
   const contract = await fs.readFile(path.join(canonical, "codex/.codex/agents/stnl_validation_runner.toml"), "utf8");
-  assert.match(contract, /name = "stnl_validation_runner"[\s\S]*developer_instructions = """\nCONTRATO_CANONICO=stnl-validation-runner\/v11/u);
+  assert.match(contract, /name = "stnl_validation_runner"[\s\S]*developer_instructions = """\nCONTRATO_CANONICO=stnl-validation-runner\/v12/u);
   for (const [owner, skill] of [['stnl-slice-executor', executor], ['stnl-slice-quality-manager', quality]]) {
     assert.match(skill, /mandatory \[runner invocation guide\]\(references\/runner-invocation.md\)[^\n]*installed skill/u);
     const invocation = await fs.readFile(path.join(repository, 'skills/workflows', owner, 'references/runner-invocation.md'), 'utf8');
-    assert.match(invocation, /fork_turns:"none"[^\n]*complete installed runner contract/u);
-    assert.match(invocation, /\.codex\/agents\/stnl_validation_runner\.toml` `developer_instructions`/u);
+    assert.match(invocation, /fork_turns:"none"[^\n]*complete selected candidate-distribution runner contract/u);
+    assert.match(invocation, /explicit canonical path and SHA-256/u);
     assert.match(invocation, /not a selected registered runner type/u);
     assert.match(invocation, /task-level instruction loading; it does not confer developer-level priority or the enforcement guarantee of a registered agent/u);
-    assert.match(invocation, /instruct it to follow the contract's no-write rule/u);
+    assert.match(invocation, /Instruct it to follow the contract's no-write rule/u);
     assert.match(invocation, /without that contract is not the runner/u);
-    assert.match(skill, /In managed mode use only[^\n]*STNL_MANAGED_RUNNER_BRIDGE/u);
+    assert.match(skill, /Managed execution[^\n]*unavailable/u);
   }
   assert.match(guide, /agente independente com contrato carregado, não uma seleção do tipo registrado/u);
   assert.match(guide, /instruções de tarefa, sem prioridade de developer nem a mesma garantia de aplicação do agente registrado/u);
@@ -252,7 +252,7 @@ test("native generic spawn loads the complete installed runner contract in an in
 test("Initial EC-1 native test selects one complete candidate contract before dispatch", async () => {
   const contract = await fs.readFile(path.join(canonical, 'codex/.codex/agents/stnl_validation_runner.toml'), 'utf8');
   const operation = await fs.readFile(path.join(repository, 'skills/workflows/stnl-slice-executor/runtime/execution-current-operation.mjs'), 'utf8');
-  assert.match(contract, /CONTRATO_CANONICO=stnl-validation-runner\/v11/u);
+  assert.match(contract, /CONTRATO_CANONICO=stnl-validation-runner\/v12/u);
   assert.match(contract, /stnl-current-validation-response-v1/u);
   assert.match(contract, /stnl-current-findings-response-v1/u);
   assert.match(contract, /origin\.workspace/u);
@@ -274,13 +274,13 @@ test("Initial EC-1 native test selects one complete candidate contract before di
     assert.match(invocation, /complete first concluded `finalResponse`[^\n]*including a rejected result/u);
     assert.match(invocation, /No manual format continuation may replace that response/u);
     assert.match(invocation, /Before every Initial dispatch and after every controller restart[^\n]*same explicit candidate-distribution TOML path and SHA-256/u);
-    assert.match(invocation, /Before every converted-S2 dispatch and after every controller restart[^\n]*same explicit candidate-distribution TOML path and SHA-256/u);
+    assert.match(invocation, /Before every current-S2 dispatch and after every controller restart[^\n]*same explicit candidate-distribution TOML path and SHA-256/u);
     assert.match(invocation, /Never fall back to the installed personal contract/u);
     assert.match(invocation, /Only for an old origin without `responseVariant`, Initial VALIDATE and APPLY prompts include the literal `requestSha256` token/u);
     assert.match(invocation, /Only for an old origin without `responseVariant`, each VALIDATE or APPLY prompt includes the literal `requestSha256` token/u);
     assert.match(invocation, /reserve-dispatch --response-variant stnl-current-native-judgment-v1/u);
     assert.match(skill, /Before each Initial dispatch or controller restart[^\n]*SHA-256[^\n]*no fallback to the installed contract/u);
-    assert.match(skill, /Before each converted-S2 dispatch or controller restart[^\n]*SHA-256[^\n]*no fallback to the installed contract/u);
+    assert.match(skill, /Before each current-S2 dispatch or controller restart[^\n]*SHA-256[^\n]*no fallback to the installed contract/u);
   }
 });
 
@@ -303,7 +303,7 @@ test('all eight supported EC-1 entries are explicit in the selected native contr
   for(const owner of ['stnl-slice-executor','stnl-slice-quality-manager']) {
     const invocation=await fs.readFile(path.join(repository,'skills/workflows',owner,'references/runner-invocation.md'),'utf8');
     assert.match(invocation,/Before every Initial dispatch and after every controller restart[^\n]*same explicit candidate-distribution TOML path and SHA-256/u);
-    assert.match(invocation,/Before every converted-S2 dispatch and after every controller restart[^\n]*same explicit candidate-distribution TOML path and SHA-256/u);
+    assert.match(invocation,/Before every current-S2 dispatch and after every controller restart[^\n]*same explicit candidate-distribution TOML path and SHA-256/u);
     assert.match(invocation,/reserve-dispatch --response-variant stnl-current-native-judgment-v1/u);
     assert.match(invocation,/Never fall back to the installed personal contract/u);
   }
@@ -356,11 +356,11 @@ test("runner must check each acceptance criterion before PASS", async (t) => {
   expectCategory(check(root), "R009_VALIDATION_ATTEMPT");
 });
 
-test("format repair contract forbids a changed verdict and uncertain-turn retry", async (t) => {
+test("native capture forbids replacing first concluded bytes", async (t) => {
   const root = await fixture(t);
   await replaceSelected(root,
-    "Não use esse caminho para resposta semântica válida, timeout, processError ou conclusão incerta.",
-    "Use o reparo também após timeout.");
+    "Preserve the complete first concluded response; format refusal follows the current controller policy and never a manual replacement of those bytes",
+    "Replace the first concluded response after timeout.");
   expectCategory(check(root), "R009_VALIDATION_ATTEMPT");
 });
 
@@ -420,10 +420,8 @@ test("runner verifies an accessible missing variant instead of treating missing 
   expectCategory(check(root), "R009_VALIDATION_ATTEMPT");
 });
 
-test("runner schema repair cannot expand beyond the two empty finding sets", async (t) => {
-  const root = await fixture(t);
-  await replaceSelected(root, "A única equivalência de tipo permitida é array vazio", "Converta livremente qualquer array");
-  expectCategory(check(root), "R009_VALIDATION_ATTEMPT");
+test('current native gate rejects accepting unsupported cycle diagnostics',async t=>{
+ const root=await fixture(t);await replaceSelected(root,'No legacy `findingsCycle` diagnostic is supported','Accept arbitrary findingsCycle diagnostics');expectCategory(check(root),'R029_FIELD_SHAPE');
 });
 
 test("runner cannot create scripts to fill missing coverage or retry a denied command", async (t) => {
@@ -455,15 +453,10 @@ test("execution prepares coverage while plan review and validation stop on denie
   assert.match(quality, /Never PASS from an old suite or before sufficient evidence/u);
 });
 
-test("quality manager treats a yielded session as pending and preserves the first receipt", async () => {
-  const quality = await fs.readFile(path.join(repository, "skills/workflows/stnl-slice-quality-manager/SKILL.md"), "utf8");
-  assert.match(quality, /yielded a session ID[^\n]*pending, not an initialization or transport failure/u);
-  assert.match(quality, /Do not start a second runner while the first is pending/u);
-  assert.match(quality, /preserve the first valid receipt even if a later response differs/u);
-  assert.match(quality, /SDK return with `processError`, timeout, or no `threadId`[^\n]*does not prove that no provider work began/u);
-  assert.match(quality, /A thrown error after invoking `runTurn` or the broker's invoke callback is likewise uncertain/u);
-  assert.match(quality, /Their pending state before that verdict is not a blocker/u);
-  assert.match(quality, /every applicable acceptance criterion against concrete current implementation and check evidence/u);
-  assert.match(quality, /at most one format-only correction in the same runner thread/u);
-  assert.match(quality, /if the local equivalence check cannot prove unchanged content, stop with the malformed-result blocker/u);
+test('quality manager preserves captured bytes and uncertain ownership',async()=>{
+ const quality=await fs.readFile(path.join(repository,'skills/workflows/stnl-slice-quality-manager/SKILL.md'),'utf8');
+ assert.match(quality,/Preserve the returned handle and all uncertain effects/u);
+ assert.match(quality,/No manual format continuation replaces those bytes/u);
+ assert.match(quality,/same bytes without another agent or recipe/u);
+ assert.match(quality,/three-call budget/u);
 });

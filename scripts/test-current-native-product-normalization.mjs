@@ -66,10 +66,10 @@ test('EC-1 refuses a second call after PASS without the durable witness',async t
 });
 
 test('EC-1 refuses missing drift, input edits and exhausted continuation',async t=>{
-  const c=await productNormalizationCase(t);
+  const c=await productNormalizationCase(t,{sharedInput:true});
   await c.round(1);
   await assert.rejects(()=>normalize(c.start.handle),error=>error?.code==='NORMALIZATION_NOT_ELIGIBLE');
-  await fs.appendFile(path.join(c.fixture.root,'src/greeting.test.mjs'),'// input drift\n');
+  await fs.appendFile(path.join(c.fixture.root,'shared-config.json'),'// exclusive input drift\n');
   await assert.rejects(()=>normalize(c.start.handle),error=>
     ['EVIDENCE_STALE','NORMALIZATION_NOT_ELIGIBLE'].includes(error?.code));
 });

@@ -58,20 +58,6 @@ function rejectionSupport(bundle) {
     sources: {...clone(bundle.validation.sources), verificationObservation: null},
   };
 }
-function importedSupport(bundle) {
-  const record = clone(bundle.validation);
-  record.id = 'attempt-02'; record.recordFormat = 'stnl-task-record-v1-imported';
-  record.origin.operationAttemptId = '88888888-8888-4888-8888-888888888888';
-  record.origin.localRevision = null;
-  record.origin.normativeSha256 = sha(Buffer.from('legacy normative projection'));
-  // Structural source only; the migration reader must validate a real legacy snapshot.
-  const legacyBytes = Buffer.from('{"format":"stnl-preparation-v2"}\n');
-  record.sources.legacyPreparation = sha(legacyBytes);
-  bundle.objects.push({id: record.sources.legacyPreparation, bytesBase64: legacyBytes.toString('base64')});
-  bundle.objects.sort((a, b) => a.id < b.id ? -1 : 1);
-  return record;
-}
-
 function b1(api) {
   const image = minimalImage();
   const expectedPreimages = [PREPARATION_PREIMAGE, GLOBAL_REVIEW_PREIMAGE, DELIVERY_PREIMAGE];
@@ -180,7 +166,7 @@ function b3(api) {
   const unknown = minimalImage(); unknown.files.set('unknown.json', Buffer.from('{}'));
   rejects(() => api.validateCurrentImage({activationBytes: unknown.activationBytes, files: unknown.files}), 'INVALID_CURRENT_IMAGE');
   const mixed = minimalImage(); mixed.preparation.format = 'stnl-preparation-v2'; reseal(mixed);
-  rejects(() => api.validateCurrentImage({activationBytes: mixed.activationBytes, files: mixed.files}), 'MIGRATION_REQUIRED');
+  rejects(() => api.validateCurrentImage({activationBytes: mixed.activationBytes, files: mixed.files}), 'UNSUPPORTED_FORMAT');
   const wrongKind = minimalImage(); wrongKind.preparation.format = 'stnl-current-evidence-v1'; reseal(wrongKind);
   rejects(() => api.validateCurrentImage({activationBytes: wrongKind.activationBytes, files: wrongKind.files}), 'INVALID_CURRENT_IMAGE');
   const unsupported = minimalImage(); unsupported.activation.format = 'foreign-format'; unsupported.activationBytes = json(unsupported.activation);
@@ -256,17 +242,7 @@ function b4(api) {
   assert.deepEqual(api.validateCurrentEvidence(rejected), rejected);
   const rejectedImage = fixtureWithEvidence(rejected);
   assert.equal(api.validateCurrentImage({activationBytes: rejectedImage.activationBytes, files: rejectedImage.files}).continuity.deliveries[0].counters.validationAttempts, 1);
-  const imported = proofBundle(); imported.support.push(importedSupport(imported));
-  imported.openFindings.push({
-    id: 'finding-01', severity: 'blocking', originAttempt: 'attempt-02', problem: 'Earlier failure remains open.',
-    evidence: 'Imported origin bytes are retained in the bundle.', impact: 'Current correction remains pending.',
-    relatedAuthority: 'AC-001', expectedCorrection: 'Verify the missing condition.',
-  });
-  const importedImage = fixtureWithEvidence(imported);
-  importedImage.continuity.deliveries[0].counters.validationAttempts = 2;
-  importedImage.continuity.deliveries[0].counters.findings = 1; reseal(importedImage);
-  assert.deepEqual(api.validateCurrentImage({activationBytes: importedImage.activationBytes, files: importedImage.files}).referencedObjects,
-    imported.objects.map(item => item.id));
+
 }
 
 function b5(api) {
@@ -317,12 +293,6 @@ function b5(api) {
   const rejectionMissing = proofBundle(); rejectionMissing.support.push(rejectionSupport(rejectionMissing));
   delete rejectionMissing.support[0].sources.concludedToolResult;
   rejects(() => api.validateCurrentEvidence(rejectionMissing), 'INVALID_CURRENT_IMAGE');
-  const importedMissing = proofBundle(); importedMissing.support.push(importedSupport(importedMissing));
-  importedMissing.support[0].sources.legacyPreparation = null;
-  rejects(() => api.validateCurrentEvidence(importedMissing), 'INVALID_CURRENT_IMAGE');
-  const importedAbsent = proofBundle(); importedAbsent.support.push(importedSupport(importedAbsent));
-  importedAbsent.support[0].sources.legacyPreparation = sha(Buffer.from('missing legacy snapshot'));
-  rejects(() => api.validateCurrentEvidence(importedAbsent), 'EVIDENCE_INCOMPLETE');
   const rawFile = minimalImage(); rawFile.files.set('plan.md', Buffer.from('# Current plan\n\n')); // one raw byte changes the manifest hash
   rejects(() => api.validateCurrentImage({activationBytes: rawFile.activationBytes, files: rawFile.files}), 'INVALID_CURRENT_IMAGE');
   const reordered = minimalImage();
@@ -367,7 +337,7 @@ function b6(api) {
     rejects(() => api.validateCurrentImage({activationBytes: oldContinuity.activationBytes, files: oldContinuity.files}), 'INVALID_CURRENT_IMAGE');
   }
   const oldProjection = minimalImage(); oldProjection.preparation.normativeProjection.format = 'stnl-preparation-projection-v2'; reseal(oldProjection);
-  rejects(() => api.validateCurrentImage({activationBytes: oldProjection.activationBytes, files: oldProjection.files}), 'MIGRATION_REQUIRED');
+  rejects(() => api.validateCurrentImage({activationBytes: oldProjection.activationBytes, files: oldProjection.files}), 'UNSUPPORTED_FORMAT');
 }
 
 function b7(api) {

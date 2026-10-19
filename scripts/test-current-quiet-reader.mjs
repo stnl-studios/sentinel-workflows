@@ -7,7 +7,7 @@ import path from 'node:path';
 import {spawn,spawnSync} from 'node:child_process';
 import {fileURLToPath,pathToFileURL} from 'node:url';
 import {inspectCurrentExecution} from '../skills/workflows/stnl-slice-executor/runtime/execution-current-reader.mjs';
-import * as legacy from '../skills/workflows/stnl-slice-executor/runtime/execution-state.mjs';
+import * as currentFacade from '../skills/workflows/stnl-slice-executor/runtime/execution-state.mjs';
 import {authoredImage,producerInitialImage,producerFormalPass,producerTwoFormalPass,producerAppliedImage,producerPostApplyPass,
   authoredCyclesImage,authoredCompletedImage,authoredCompletedWithActiveProof,storeRetainedActiveBundle,
   repackBundle,replaceRecordCapture,storeBundle,
@@ -594,17 +594,13 @@ test('R03 mixed format, duplicate JSON, and closed profile',async t=>{
     reseal(f);await writeImage(f);
     await rejected(()=>inspectCurrentExecution(f.specPath),'INVALID_CURRENT_IMAGE','header');
   }));
-  await t.test('well-formed imported record requests migration',async()=>using(producerInitialImage,async f=>{
+  await t.test('unsupported record format is refused without interpretation',async()=>using(producerInitialImage,async f=>{
     const bundle=structuredClone(f.composed.bundle),record=bundle.implementation[0];
-    record.recordFormat='stnl-task-record-v1-imported';record.origin.localRevision=null;
-    const source=Buffer.from('{"format":"historical-preparation"}\n');
-    record.sources.legacyPreparation=raw(source);
-    bundle.objects.push({id:raw(source),bytesBase64:source.toString('base64')});
-    bundle.objects.sort((a,b)=>a.id<b.id?-1:a.id>b.id?1:0);
+    record.recordFormat='foreign-record-format';
     f.files.set(`evidence/${DELIVERY}.json`,Buffer.from(JSON.stringify(bundle)+'\n'));
     f.continuity.deliveries[0].evidence.sha256=raw(f.files.get(`evidence/${DELIVERY}.json`));
     reseal(f);await writeImage(f);
-    await rejected(()=>inspectCurrentExecution(f.specPath),'MIGRATION_REQUIRED');
+    await rejected(()=>inspectCurrentExecution(f.specPath),'INVALID_CURRENT_IMAGE');
   }));
 });
 
@@ -1454,12 +1450,10 @@ test('R18 guard self-test records caught historical reads and process/write atte
 }));
 
 test('R19 isolated reader closure and copy equivalence',async t=>{
-  const names=['execution-current-reader.mjs','execution-state.mjs','execution-preparation.mjs',
-    'execution-publication.mjs','runner-result-recovery.mjs','runner-result-contract.mjs',
+  const names=['execution-current-reader.mjs','execution-workspace.mjs','execution-state.mjs',
+    'execution-publication.mjs','runner-result-contract.mjs',
     'execution-current.mjs','execution-preparation-current.mjs','current-evidence-state.mjs',
     'execution-evidence-current.mjs','execution-evidence-proof.mjs'];
-  const legacyNames=['execution-state.mjs','execution-preparation.mjs','execution-publication.mjs',
-    'runner-result-recovery.mjs','runner-result-contract.mjs'];
   const skillRoot=path.join(repo,'skills/workflows');
   const c6=['stnl-execution-planner','stnl-plan-reviewer','stnl-slice-executor',
     'stnl-slice-quality-manager','stnl-spec-roadmap','stnl-spec-test-runbook'];
@@ -1468,33 +1462,30 @@ test('R19 isolated reader closure and copy equivalence',async t=>{
     for(const name of files) await fs.copyFile(path.join(skillRoot,skill,'runtime',name),path.join(runtime,name));
     return runtime;
   };
-  for(const skill of c6) await t.test(`${skill} legacy state has its five-module closure`,async()=>using(authoredImage,async f=>{
-    const state=await fs.readFile(path.join(skillRoot,skill,'runtime/execution-state.mjs'));
-    assert.deepEqual(state,await fs.readFile(path.join(skillRoot,c6[0],'runtime/execution-state.mjs')));
-    assert.doesNotMatch(state.toString('utf8'),/(?:from ['"]|import\(['"]).*(?:execution-current-reader|current-evidence-state|execution-preparation-current)/u);
-    const runtime=await install(f,skill,legacyNames,'legacy');
+  for(const skill of c6) await t.test(`${skill} current facade has an isolated current closure`,async()=>using(authoredImage,async f=>{
+    for(const name of names) assert.deepEqual(await fs.readFile(path.join(skillRoot,skill,'runtime',name)),await fs.readFile(path.join(skillRoot,c6[0],'runtime',name)));
+    const runtime=await install(f,skill,names,'facade');
     const isolated=await import(pathToFileURL(path.join(runtime,'execution-state.mjs')).href);
-    assert.equal(typeof isolated.resolveExecutionWorkspace,'function');
-    await rejected(()=>isolated.resolveExecutionWorkspace(f.specPath),'UNSUPPORTED_FORMAT','EC-1');
+    assert.deepEqual(await isolated.inspectExecutionState(f.specPath),await inspectCurrentExecution(f.specPath));
+    assert.equal((await isolated.resolveExecutionWorkspace(f.specPath)).executionRoot,f.execution);
+    assert.equal(typeof isolated.beginPreparedExecutionOperation,'undefined');
   }));
-  for(const skill of c6.slice(0,4)) await t.test(`${skill} preparation with L1 and unchanged legacy CLI`,async()=>using(authoredImage,async f=>{
+  for(const skill of c6.slice(0,4)) await t.test(`${skill} preparation with L1 and current CLI`,async()=>using(authoredImage,async f=>{
     const prepBytes=await fs.readFile(path.join(skillRoot,skill,'runtime/execution-preparation-current.mjs'));
     assert.deepEqual(prepBytes,await fs.readFile(path.join(skillRoot,c6[0],'runtime/execution-preparation-current.mjs')));
     const runtime=await install(f,skill,['execution-current.mjs','execution-preparation-current.mjs'],'preparation');
     const api=await import(pathToFileURL(path.join(runtime,'execution-preparation-current.mjs')).href);
-    assert.deepEqual(Object.keys(api).sort(),['approveConversionPreparation','approveInitialPreparation',
+    assert.deepEqual(Object.keys(api).sort(),['approveCurrentPreparation','approveInitialPreparation',
       'finalizeCurrentLocalReview','prepareCurrentLocalReview',
-      'projectConversionPreparation','projectInitialPreparation','validateConversionApprovedPreparation',
-      'validateCurrentPreparation','validateInitialApprovedPreparation']);
+      'projectCurrentPreparation','projectInitialPreparation','validateCurrentPreparation',
+      'validateInitialApprovedPreparation','validateReviewedPreparation']);
     const prepared=api.validateCurrentPreparation({context:{logicalSpecRoot:null,logicalAuthorityPath:f.source,
       logicalExecutionRoot:f.execution,physicalExecutionRoot:f.execution,productRoot:f.project},
       requirementsAuthority:f.authority,snapshotBytes:f.files.get('approved-preparation.json'),artifacts:f.artifacts});
     assert.equal(prepared.authority.normativeSha256,f.snapshot.normativeSha256);
-    assert.equal(digest(await fs.readFile(path.join(skillRoot,skill,'runtime/validate-execution-state.mjs'))),
-      'sha256:528a40dfbdcb4282aebe0cac31291f1072fe4b7aa876ea99663c25fb12756611');
-    const cliRoot=await install(f,skill,[...legacyNames,'validate-execution-state.mjs'],'cli');
+    const cliRoot=await install(f,skill,[...names,'validate-execution-state.mjs'],'cli');
     const cli=spawnSync(process.execPath,[path.join(cliRoot,'validate-execution-state.mjs'),f.specPath],{encoding:'utf8',cwd:os.tmpdir(),timeout:15000});
-    assert.equal(cli.status,1,cli.stderr);assert.match(cli.stderr,/activation.json/u);assert.doesNotMatch(cli.stdout,/PASS/u);
+    assert.equal(cli.status,0,cli.stderr);assert.deepEqual(JSON.parse(cli.stdout),await inspectCurrentExecution(f.specPath));
   }));
   for(const skill of ['stnl-slice-executor','stnl-slice-quality-manager']) {
     await t.test(`${skill} reader API and real CLI in eleven siblings`,async()=>using(authoredImage,async f=>{
@@ -1529,81 +1520,22 @@ test('R19 isolated reader closure and copy equivalence',async t=>{
   }));
 });
 
-test('R20 legacy entrypoints refuse EC-1 before effects, including candidate',async t=>{
-  for(const action of ['resolve','inspect','read','preflight','begin','recovery','resume','repair','continuity','history','workcapture'])
-    await t.test(`guarded legacy ${action} has zero effects or historical queries`,async()=>using(authoredImage,async f=>{
-      const observed=await workerRun(f,{mode:`legacy:${action}`,selected:path.join(path.dirname(reader),'execution-state.mjs')});
-      noAttempts(observed);assert.equal(observed.log.result.error?.code,'UNSUPPORTED_FORMAT');
-      assert.match(observed.log.result.error.message,/EC-1/u);
-    }));
-  for(const discriminator of ['approved-preparation.json','continuity.json'])
-    await t.test(`partial EC-1 ${discriminator} is fenced before legacy admission`,async()=>using(authoredImage,async f=>{
-      await fs.rm(path.join(f.execution,'activation.json'));
-      if(discriminator==='continuity.json') await fs.rm(path.join(f.execution,'approved-preparation.json'));
-      const observed=await workerRun(f,{mode:'legacy:begin',selected:path.join(path.dirname(reader),'execution-state.mjs')});
-      noAttempts(observed);assert.equal(observed.log.result.error?.code,'UNSUPPORTED_FORMAT');
-      assert.match(observed.log.result.error.message,new RegExp(discriminator.replaceAll('.','\\.')));
-    }));
-  await t.test('invalid discriminator does not authorize legacy fallback',async()=>using(authoredImage,async f=>{
-    await fs.writeFile(path.join(f.execution,'activation.json'),'{');
-    const observed=await workerRun(f,{mode:'legacy:begin',selected:path.join(path.dirname(reader),'execution-state.mjs')});
-    noAttempts(observed);assert.equal(observed.log.result.error?.code,'INVALID_CURRENT_IMAGE');
-    assert.match(observed.log.result.error.message,/activation.json/u);
-  }));
-
-  await t.test('new reader refuses legacy activation',async()=>using(authoredImage,async f=>{
+test('R20 current facade preserves readback and refuses unsupported images without mutation',async()=>{
+  await using(authoredImage,async f=>{
+    const before=await manifest(f.project);
+    assert.deepEqual(await currentFacade.inspectExecutionState(f.specPath),await inspectCurrentExecution(f.specPath));
+    assert.equal((await currentFacade.readExecutionActivation(f.specPath)).activation.format,'stnl-execution-activation-v2');
+    await assert.rejects(currentFacade.preflightExecutionOperation(f.specPath,'REPLAN'),e=>e.code==='REPLAN_REQUIRED');
+    assert.deepEqual(await manifest(f.project),before);
     await fs.writeFile(path.join(f.execution,'activation.json'),' {"format":"stnl-execution-activation-v1"}\n');
-    await rejected(()=>inspectCurrentExecution(f.specPath),'MIGRATION_REQUIRED');
-  }));
-  await t.test('closed lifecycle without execution',async()=>using(()=>authoredImage({kind:'lifecycle',withExecution:false}),async f=>{
+    const unsupported=await manifest(f.project);
+    await rejected(()=>currentFacade.inspectExecutionState(f.specPath),'UNSUPPORTED_FORMAT');
+    assert.deepEqual(await manifest(f.project),unsupported);
+  });
+  await using(()=>authoredImage({kind:'lifecycle',withExecution:false}),async f=>{
     const current=await fs.readFile(f.source,'utf8');
-    await fs.writeFile(f.source,current.replace('status: ready','status: closed')
-      .replace('## Scope\n','## Final Scope\n').replace('## Relevant Contracts\n','## Important Contracts\n'));
+    await fs.writeFile(f.source,current.replace('status: ready','status: closed').replace('## Scope\n','## Final Scope\n').replace('## Relevant Contracts\n','## Important Contracts\n'));
     const result=await inspectCurrentExecution(f.specPath);
     assert.equal(result.state,'SPEC_CLOSED');assert.equal(result.normalHandoff,null);
-  }));
-  await t.test('live EC-1',async()=>using(authoredImage,async f=>{
-    const before=await manifest(f.project);
-    for (const operation of [()=>legacy.resolveExecutionWorkspace(f.specPath),
-      ()=>legacy.inspectExecutionState(f.specPath),
-      ()=>legacy.preflightExecutionOperation(f.specPath,'EXECUTE_SLICE',1),
-      ()=>legacy.beginPreparedExecutionOperation(f.specPath,'EXECUTE_SLICE',1,f.activation.activationId),
-      ()=>legacy.beginRunnerResultRecovery(f.specPath,'EXECUTE_SLICE',1,{}),
-      ()=>legacy.repairExecutionContract(f.specPath),
-      ()=>legacy.resumeOwnedExecutionOperation(f.specPath,'EXECUTE_SLICE',1,{}),
-      ()=>legacy.readDeliveryContinuity({executionRoot:f.execution,specRoot:f.spec,authorityPath:f.source,kind:'lifecycle'}),
-      ()=>legacy.readDeliveryHistory({executionRoot:f.execution,specRoot:f.spec,authorityPath:f.source,kind:'lifecycle'},
-        {history:[]},''),
-      ()=>legacy.readContinuationWorkCapture({executionRoot:f.execution,specRoot:f.spec,authorityPath:f.source,kind:'lifecycle'},
-        {path:path.join(f.execution,'history','missing.json'),sha256:raw(Buffer.from('missing'))},
-        {slice:'slice-01',deliveryId:DELIVERY}),
-    ]) await rejected(operation,'UNSUPPORTED_FORMAT','EC-1');
-    assert.deepEqual(await manifest(f.project),before);
-  }));
-  await t.test('candidate EC-1 with absent live',async()=>using(()=>authoredImage({withExecution:false}),async live=>{
-    await using(authoredImage,async candidate=>{
-      const before=await manifest(live.project);
-      await rejected(()=>legacy.validateExecutionCandidate(live.specPath,candidate.execution),
-        'UNSUPPORTED_FORMAT','EC-1');
-      assert.deepEqual(await manifest(live.project),before);
-      const guarded=await workerRun(live,{mode:'legacy:candidate',selected:path.join(path.dirname(reader),'execution-state.mjs'),
-        env:{STNL_CANDIDATE:candidate.execution}});
-      noAttempts(guarded);assert.equal(guarded.log.result.error?.code,'UNSUPPORTED_FORMAT');
-      assert.match(guarded.log.result.error.message,/EC-1/u);
-    });
-  }));
-  await t.test('candidate EC-1 with legacy live',async()=>using(()=>authoredImage({withExecution:false}),async live=>{
-    await fs.mkdir(live.execution,{recursive:true});
-    await fs.writeFile(path.join(live.execution,'activation.json'),' {"format":"stnl-execution-activation-v1"}\n');
-    await using(authoredImage,async candidate=>{
-      const before=await manifest(live.project);
-      await rejected(()=>legacy.validateExecutionCandidate(live.specPath,candidate.execution),
-        'UNSUPPORTED_FORMAT','EC-1');
-      assert.deepEqual(await manifest(live.project),before);
-      const guarded=await workerRun(live,{mode:'legacy:candidate',selected:path.join(path.dirname(reader),'execution-state.mjs'),
-        env:{STNL_CANDIDATE:candidate.execution}});
-      noAttempts(guarded);assert.equal(guarded.log.result.error?.code,'UNSUPPORTED_FORMAT');
-      assert.match(guarded.log.result.error.message,/EC-1/u);
-    });
-  }));
+  });
 });

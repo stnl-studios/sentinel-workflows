@@ -53,8 +53,8 @@ async function operation(fixture,ordinal,{kind='VALIDATE_SLICE',status,edit=null
   return {start,dispatch,capture,published};
 }
 
-export async function blockingFormalCase(test) {
-  const fixture=await nativeOperationCase(test);
+export async function blockingFormalCase(test,options={}) {
+  const fixture=await nativeOperationCase(test,options);
   await fs.writeFile(path.join(fixture.root,'src/greeting.mjs'),'export const greeting="broken";\n');
   const first=await operation(fixture,1,{status:'NEEDS_FIX',references:'finding-01',
     dispositions:'finding-01=active',findings:[finding]});

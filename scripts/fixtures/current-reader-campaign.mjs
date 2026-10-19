@@ -255,12 +255,12 @@ export async function overlappingActiveImage({status='PASS'}={}) {
 }
 
 export async function overlappingPostImage(test,{status='PASS',operationOnly=false,sharedChange=true,sharedInput=false}={}) {
-  const {convertedImage,installSuccessor}=await import('./current-operational-consumption.mjs');
+  const {currentImage,installSuccessor}=await import('./current-operational-consumption.mjs');
   const {createCurrentNativeValidationCapture}=await import('../../skills/workflows/stnl-slice-executor/runtime/current-native-validation-capture.mjs');
   const {composePostConversionValidation}=await import('../../skills/workflows/stnl-slice-executor/runtime/current-evidence-state.mjs');
   const {normalizedFormal}=await import('./current-native-normalization.mjs');
   const {execFile}=await import('node:child_process'),{promisify}=await import('node:util');
-  const run=promisify(execFile),image=await convertedImage(test,{kind:'three-s2',sharedInput}),root=image.f.root;
+  const run=promisify(execFile),image=await currentImage(test,{kind:'three-s2',sharedInput}),root=image.f.root;
   await fs.writeFile(path.join(root,'.gitignore'),'/tmp/\n');
   await run('git',['-C',root,'init','-q']);await run('git',['-C',root,'add','.gitignore','requirements.md']);
   await run('git',['-C',root,'-c','user.name=Reader Fixture','-c','user.email=reader@example.invalid','commit','-qm','reader overlap fixture']);

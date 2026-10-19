@@ -14,7 +14,7 @@ const FORMAT = {
   work: 'stnl-current-work-v1',
 };
 const ERROR_CODES = [
-  'CURRENT_FORMAT_REQUIRED', 'MIGRATION_REQUIRED', 'UNSUPPORTED_FORMAT', 'INVALID_CURRENT_IMAGE',
+  'CURRENT_FORMAT_REQUIRED', 'UNSUPPORTED_FORMAT', 'INVALID_CURRENT_IMAGE',
   'STALE_BASE', 'STALE_APPROVAL', 'REQUIREMENTS_CHANGED', 'OWNER_ACTIVE', 'OWNER_UNCERTAIN',
   'OWNER_MISMATCH', 'RUNNER_RESULT_REJECTED', 'NORMALIZATION_EXHAUSTED', 'LOCAL_REVIEW_REQUIRED',
   'REPLAN_REQUIRED', 'EVIDENCE_INCOMPLETE', 'EVIDENCE_STALE', 'TEMP_ROOT_UNPROVEN',
@@ -191,9 +191,6 @@ export function parseCurrentJson(text) {
 function format(value, expected, label) {
   if (value === expected) return;
   if (value === undefined || value === null) fail('CURRENT_FORMAT_REQUIRED', `${label}: format required`);
-  const family = expected.slice(0, expected.lastIndexOf('-v'));
-  const previous = typeof value === 'string' ? new RegExp(`^${family}-v([0-9]+)$`, 'u').exec(value) : null;
-  if (previous && Number(previous[1]) < Number(expected.slice(expected.lastIndexOf('-v') + 2))) fail('MIGRATION_REQUIRED', `${label}: legacy format`);
   if (Object.values(FORMAT).includes(value)) invalid(`${label}: mixed EC-1 format`);
   fail('UNSUPPORTED_FORMAT', `${label}: unsupported format`);
 }
@@ -515,7 +512,7 @@ function origin(value, label) {
   hash(value.normativeSha256, label); uuid(value.originActivationId, label);
   oneOf(value.transport, ['native', 'managed'], label); string(value.dispatchId, label); string(value.runnerId, label);
 }
-function sources(value, transport, label, rejection, legacy) {
+function sources(value, transport, label, rejection) {
   const native = ['transport', 'rawResponse', 'receipt', 'verificationObservation', 'origin', 'agentBinding', 'concludedToolResult', 'removalProofs', 'legacyPreparation'];
   const managed = ['transport', 'rawResponse', 'receipt', 'verificationObservation', 'started', 'events', 'closedSupervisor', 'runtimeIdentity', 'removalProofs', 'legacyPreparation'];
   object(value, transport === 'native' ? native : managed, label);
@@ -523,8 +520,7 @@ function sources(value, transport, label, rejection, legacy) {
   for (const field of (transport === 'native' ? native : managed).filter(item => !['transport', 'verificationObservation', 'removalProofs', 'runtimeIdentity', 'legacyPreparation'].includes(item))) hash(value[field], `${label}.${field}`);
   if (rejection) optional(value.verificationObservation, hash, label);
   else hash(value.verificationObservation, label);
-  if (legacy) hash(value.legacyPreparation, label);
-  else if (value.legacyPreparation !== null) invalid(`${label}: unexpected legacy preparation`);
+  if (value.legacyPreparation !== null) invalid(`${label}: unexpected legacy preparation`);
   for (const field of ['removalProofs', ...(transport === 'managed' ? ['runtimeIdentity'] : [])]) {
     array(value[field], `${label}.${field}`).forEach(item => hash(item, label));
     ordered(value[field], item => item, `${label}.${field}`);
@@ -546,7 +542,7 @@ function record(value, label, rejection = false) {
     uuid(value.operationAttemptId, label); string(value.diagnostic, label); nat(value.consumedInvocations, label, true); oneOf(value.round, [1, 2, 3], label);
   } else {
     oneOf(value.kind, ['implementation-check', 'findings-check', 'validation'], label);
-    oneOf(value.recordFormat, ['stnl-task-record-v2', 'stnl-task-record-v1-imported'], label);
+    oneOf(value.recordFormat, ['stnl-task-record-v2'], label);
     const idPrefix = value.kind === 'validation' ? 'attempt' : value.kind;
     match(value.id, new RegExp(`^${idPrefix}-[0-9]{2,}$`, 'u'), label);
     nat(Number(value.id.slice(idPrefix.length + 1)), `${label}: record identifier`, true);
@@ -562,9 +558,9 @@ function record(value, label, rejection = false) {
   origin(value.origin, label);
   if (rejection) {
     if (value.operationAttemptId !== value.origin.operationAttemptId) invalid(`${label}: origin mismatch`);
-  } else if ((value.recordFormat === 'stnl-task-record-v1-imported') !== (value.origin.localRevision === null)) invalid(`${label}: record provenance mismatch`);
-  sources(value.sources, value.origin.transport, label, rejection,
-    rejection ? value.origin.localRevision === null : value.recordFormat === 'stnl-task-record-v1-imported');
+  }
+  nat(value.origin.localRevision, `${label}: local revision`, true);
+  sources(value.sources, value.origin.transport, label, rejection);
   if (!rejection && value.contract.delivery.deliveryId !== value.origin.deliveryId) invalid(`${label}: contract delivery mismatch`);
 }
 export function validateCurrentEvidence(value) {
@@ -689,8 +685,6 @@ function validateCurrentContent(files) {
         if(raw(Buffer.from(canonical(prior)+'\n','utf8'))===decision.evidenceSha256)return true;
       }
     }
-    const importedValidation=bundle?.support?.filter(item=>item.kind==='validation'
-      && item.recordFormat==='stnl-task-record-v1-imported')??[];
     const validConvertedRecord=record?.kind==='validation'
       && record.recordFormat==='stnl-task-record-v2'
       && record.sources?.legacyPreparation===null && record.contract?.terminal===null
@@ -738,15 +732,6 @@ function validateCurrentContent(files) {
       if(raw(Buffer.from(canonical(prior)+'\n','utf8'))===decision.evidenceSha256)
         return true;
     }
-    const importedBridge=convertedRejection && bundle.openDivergences?.length===0
-      && bundle.findingsChecks?.length===0
-      && bundle.support.every(item=>item.kind==='rejection' || importedValidation.includes(item))
-      && bundle.implementation?.every(item=>item.recordFormat==='stnl-task-record-v1-imported'
-        && item.origin.deliveryId===current.deliveryId && item.origin.slice===current.slice)
-      && (current.normalization!==null && record?.recordFormat==='stnl-task-record-v1-imported'
-        && importedValidation.length===0
-        || current.normalization===null && validConvertedRecord
-        && importedValidation.length===1);
     const convertedFindings=bundle?.findingsChecks?.length>0
       && retainedRecords.every(item=>item.kind==='validation')
       && [...bundle.findingsChecks,...retainedRecords,record].every(item=>item
@@ -775,7 +760,7 @@ function validateCurrentContent(files) {
           &&item.origin.deliveryId===current.deliveryId&&item.origin.slice===current.slice
           &&item.origin.localRevision<=current.localRevision&&item.contract.terminal===null);
     return decision.evidenceSha256!==current.evidence?.sha256 && approvedDelivery
-      && (importedBridge || bundle?.implementation?.length===0
+      && (bundle?.implementation?.length===0
       && (bundle.findingsChecks?.length===0 || convertedFindings || retainedRemoval)
       && (bundle.support?.length===0 || convertedFindings || convertedRejection || retainedRemoval)
       && bundle.openDivergences?.length===0

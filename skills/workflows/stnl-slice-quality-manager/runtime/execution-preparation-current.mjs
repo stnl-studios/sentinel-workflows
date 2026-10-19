@@ -139,7 +139,7 @@ function inline(body, names, label, prefix = '- ') {
   exact(result, names, label);
   return result;
 }
-function carrier(text, filename, heading, expectedSections = null, conversion = false) {
+function carrier(text, filename, heading, expectedSections = null, currentRevision = false) {
   const source = normalized(text);
   const header = /^# File Purpose Header\n\n```yaml\n([\s\S]*?)\n```\n\n# ([^\n]+)\n\n/u.exec(source + '\n\n');
   if (!header || header[2] !== heading) invalid(`${filename}: invalid purpose header or heading`);
@@ -157,7 +157,7 @@ function carrier(text, filename, heading, expectedSections = null, conversion = 
   const sections = {};
   for (let i = 0; i < found.length; i += 1) {
     const value = normalized(body.slice(found[i].index + found[i][0].length, found[i + 1]?.index));
-    const nestedRecords = conversion && ['Implementation Test Evidence', 'Findings Test Evidence',
+    const nestedRecords = currentRevision && ['Implementation Test Evidence', 'Findings Test Evidence',
       'Validation Attempts', 'Validation Findings'].includes(found[i][1]);
     if (!value || /^#{1,2} /mu.test(value) || (!nestedRecords && /^#{3,6} /mu.test(value)))
       invalid(`${filename}: empty or hidden section ${found[i][1]}`);
@@ -272,10 +272,10 @@ function obligations(body, label) {
   if (!result.length) invalid(`${label}: obligations required`);
   return result;
 }
-function checklist(body, declared, label, conversion = false) {
+function checklist(body, declared, label, currentRevision = false) {
   const seen = new Set(), covered = new Set();
   for (const line of lines(body, label)) {
-    const found = (conversion ? /^- \[[ x]\] ([0-9]+\.[0-9]+) (\S.*) \| obligations: (obligation-[0-9]{2,}(?:, obligation-[0-9]{2,})*)$/u
+    const found = (currentRevision ? /^- \[[ x]\] ([0-9]+\.[0-9]+) (\S.*) \| obligations: (obligation-[0-9]{2,}(?:, obligation-[0-9]{2,})*)$/u
       : /^- \[ \] ([0-9]+\.[0-9]+) (\S.*) \| obligations: (obligation-[0-9]{2,}(?:, obligation-[0-9]{2,})*)$/u).exec(line);
     if (!found || seen.has(found?.[1])) invalid(`${label}: invalid or duplicate pristine step`);
     seen.add(found[1]); populated(found[2], label);
@@ -294,9 +294,9 @@ function requirementsBody(body, assigned, label) {
   if (!/[\p{L}]/u.test(body.replace(/[A-Z][A-Z0-9]*-[0-9]+/gu, ''))) invalid(`${label}: IDs without requirement content`);
 }
 
-function project(value, withReview = false, conversion = false, local = null) {
+function project(value, withReview = false, currentRevision = false, local = null) {
   const supplied = input(value, withReview);
-  const artifacts = conversion ? new Map([...supplied].filter(([name]) => /^(?:plan|tasks)\.md$|^(?:plans|tasks)\/slice-[0-9]{2,}\.md$/u.test(name))) : supplied;
+  const artifacts = currentRevision ? new Map([...supplied].filter(([name]) => /^(?:plan|tasks)\.md$|^(?:plans|tasks)\/slice-[0-9]{2,}\.md$/u.test(name))) : supplied;
   const context = value.context, expectedAuthority = value.requirementsAuthority;
   const completed=local?.completed??[];
   const completedBySlice=new Map(completed.map(item=>[item.slice,item]));
@@ -312,13 +312,13 @@ function project(value, withReview = false, conversion = false, local = null) {
   if (global['Requirements authority'] !== expectedAuthority) changed('plan.md requirements authority differs');
   const planRevision = Number(global['Plan revision']);
   if (!Number.isSafeInteger(planRevision) || planRevision < 1 || Object.is(planRevision, -0)
-    || String(planRevision) !== global['Plan revision'] || (!conversion && planRevision !== 1))
+    || String(planRevision) !== global['Plan revision'] || (!currentRevision && planRevision !== 1))
     invalid('plan.md: invalid preparation revision');
   const preparationRevision = local?.preparationRevision ?? planRevision;
   if (!Number.isSafeInteger(preparationRevision) || preparationRevision < planRevision)
     invalid('preparation revision precedes global plan revision');
   if (global['Review state'] !== (plan.metadata.status === 'ready' ? 'approved' : 'pending')) invalid('plan.md: review state differs from status');
-  const serialRows = table(plan.sections['Serial Slice Order'], PLAN_TABLE, 'plan.md Serial Slice Order',conversion).map(columns => {
+  const serialRows = table(plan.sections['Serial Slice Order'], PLAN_TABLE, 'plan.md Serial Slice Order',currentRevision).map(columns => {
     const identity = serial(columns[0], 'plan.md Slice');
     if (columns[5] !== `plans/${identity.slice}.md`) invalid(`${identity.slice}: detailed plan link differs`);
     return {...identity, delivery: populated(columns[1], 'observable delivery'), dependencies: dependencies(columns[2], 'serial dependencies'),
@@ -330,13 +330,13 @@ function project(value, withReview = false, conversion = false, local = null) {
   if (!same(actualNames, expectedNames)) invalid('preparation artifact manifest differs');
   const taskIndex = carrier(texts.get('tasks.md'), 'tasks.md', 'Execution Tasks');
   if (taskIndex.metadata.status !== plan.metadata.status) invalid('tasks.md status differs');
-  const indexRows = table(taskIndex.body, TASK_TABLE, 'tasks.md',conversion);
+  const indexRows = table(taskIndex.body, TASK_TABLE, 'tasks.md',currentRevision);
   if (indexRows.length !== serialRows.length) invalid('tasks.md row count differs');
   const seen = new Map(), serialIndex = new Map(serialRows.map((row, index) => [row.slice, index]));
   for (let index = 0; index < serialRows.length; index += 1) {
     const row = serialRows[index], columns = indexRows[index], indexIdentity = serial(columns[1], 'tasks.md Slice');
-    if ((!conversion && (columns[0] !== '[ ]' || columns[5] !== 'pending' || columns[6] !== 'pending'))
-      || (conversion && (!['[ ]', '[x]'].includes(columns[0])
+    if ((!currentRevision && (columns[0] !== '[ ]' || columns[5] !== 'pending' || columns[6] !== 'pending'))
+      || (currentRevision && (!['[ ]', '[x]'].includes(columns[0])
         || !['pending', 'unvalidated', 'current', 'revalidation-required'].includes(columns[5])
         || !['pending', 'PASS'].includes(columns[6])))
       || indexIdentity.slice !== row.slice || indexIdentity.name !== row.name
@@ -354,7 +354,7 @@ function project(value, withReview = false, conversion = false, local = null) {
   for (const row of serialRows) {
     const planName = `plans/${row.slice}.md`, taskName = `tasks/${row.slice}.md`;
     const detail = carrier(texts.get(planName), planName, `Slice ${row.number} - ${row.name}`, DETAIL_SECTIONS);
-    const task = carrier(texts.get(taskName), taskName, `Slice ${row.number} Tasks - ${row.name}`, TASK_SECTIONS, conversion);
+    const task = carrier(texts.get(taskName), taskName, `Slice ${row.number} Tasks - ${row.name}`, TASK_SECTIONS, currentRevision);
     if (detail.metadata.status !== plan.metadata.status || task.metadata.status !== plan.metadata.status) invalid(`${row.slice}: mixed statuses`);
     const detailRefs = inline(detail.sections.References,
       ['Slice', 'Delivery ID', 'Requirements source', 'Requirements authority', 'Plan revision', 'Local revision', 'Global plan', 'Review state'], `${planName} References`);
@@ -401,15 +401,15 @@ function project(value, withReview = false, conversion = false, local = null) {
     const declared = obligations(task.sections['Acceptance Obligations'], `${taskName} Acceptance Obligations`);
     const declaredIds = new Set(declared.map(item => item.requirement));
     if (declaredIds.size !== row.requirements.length || row.requirements.some(id => !declaredIds.has(id))) invalid(`${row.slice}: obligation/requirement set differs`);
-    checklist(task.sections.Checklist, declared, `${taskName} Checklist`, conversion);
+    checklist(task.sections.Checklist, declared, `${taskName} Checklist`, currentRevision);
     const continuity = inline(task.sections.Continuity, ['Current validation', 'Current evidence', 'Current action'], `${taskName} Continuity`);
-    if (!conversion) {
+    if (!currentRevision) {
       if (continuity['Current validation'] !== 'unvalidated' || continuity['Current evidence'] !== 'none'
         || continuity['Current action'] !== 'implement approved delivery') invalid(`${row.slice}: nonpristine continuity`);
       for (const name of NONE_SECTIONS) if (task.sections[name] !== '- none') invalid(`${row.slice}: nonpristine ${name}`);
       for (const name of ['Changed Areas', 'Diff Summary', 'Final Result']) if (task.sections[name] !== '- pending') invalid(`${row.slice}: nonpristine ${name}`);
     } else if (!['unvalidated', 'current', 'revalidation-required'].includes(continuity['Current validation']))
-      invalid(`${row.slice}: invalid converted continuity`);
+      invalid(`${row.slice}: invalid current continuity`);
     if (task.sections.Result !== row.delivery) invalid(`${row.slice}: observable delivery differs from Task Result`);
     const leaf = {
       deliveryId: detailRefs['Delivery ID'], objectiveAndObservableResult: detail.sections['Objective and Observable Result'],
@@ -521,10 +521,10 @@ function review(value, expectedScope, expectedHash, paths, hashes, label, decisi
   return value;
 }
 
-function approvePreparation(value, conversion = false) {
+function approvePreparation(value, currentRevision = false) {
   plain(value, 'preparation input');
   if (!Object.hasOwn(value, 'review') || value.review === null) stale('preparation review is absent');
-  const {authority, status, texts, supplied:allFiles} = project(value, true, conversion);
+  const {authority, status, texts, supplied:allFiles} = project(value, true, currentRevision);
   if (status !== 'ready') stale('preparation is not ready for approval');
   exact(value.review, ['globalReview', 'deliveries'], 'initial review');
   const hashes = new Map(authority.artifactHashes.map(item => [item.path, item.sha256]));
@@ -533,14 +533,14 @@ function approvePreparation(value, conversion = false) {
   if (value.review.deliveries.length !== authority.deliveries.length) stale('delivery review count differs');
   const reviewedDeliveries = [];
   let continuity = null;
-  if (conversion) {
+  if (currentRevision) {
     const bytes = allFiles.get('continuity.json');
-    if (!bytes) invalid('converted preparation requires continuity.json');
+    if (!bytes) invalid('reviewed current preparation requires continuity.json');
     continuity = validateCurrentContinuity(parseCurrentJson(decode(bytes, 'continuity.json')));
     if (continuity.completed.length || continuity.deliveries.length !== authority.deliveries.length
       || continuity.deliveries.some((entry, i) => entry.deliveryId !== authority.deliveries[i].deliveryId
         || entry.slice !== authority.deliveries[i].slice || entry.localRevision !== 1
-        || entry.authoritySha256 !== authority.deliveries[i].authoritySha256)) invalid('converted continuity/authority mismatch');
+        || entry.authoritySha256 !== authority.deliveries[i].authoritySha256)) invalid('current continuity/authority mismatch');
   }
   for (let i = 0; i < authority.deliveries.length; i += 1) {
     const target = authority.deliveries[i], supplied = exact(value.review.deliveries[i], ['deliveryId', 'review'], `delivery review ${i}`);
@@ -569,8 +569,8 @@ function approvePreparation(value, conversion = false) {
   return {authority, snapshot, bytes, sha256: raw(bytes)};
 }
 export function approveInitialPreparation(value) { return approvePreparation(value); }
-export function projectConversionPreparation(value) { return project(value, false, true).authority; }
-export function approveConversionPreparation(value) { return approvePreparation(value, true); }
+export function projectCurrentPreparation(value) { return project(value, false, true).authority; }
+export function approveCurrentPreparation(value) { return approvePreparation(value, true); }
 
 export function validateInitialApprovedPreparation(value) {
   exact(value, ['context', 'requirementsAuthority', 'snapshotBytes'], 'snapshot input');
@@ -580,7 +580,7 @@ export function validateInitialApprovedPreparation(value) {
   const snapshot = parseCurrentJson(decode(bytes, 'approved-preparation.json'));
   plain(snapshot, 'approved-preparation.json');
   if (!Object.hasOwn(snapshot, 'format')) fail('CURRENT_FORMAT_REQUIRED', 'approved-preparation.json: format required');
-  if (snapshot.format === 'stnl-preparation-v2') fail('MIGRATION_REQUIRED', 'approved-preparation.json: legacy format');
+  if (snapshot.format === 'stnl-preparation-v2') fail('UNSUPPORTED_FORMAT', 'approved-preparation.json: legacy format');
   if (snapshot.format !== 'stnl-preparation-v3') fail('UNSUPPORTED_FORMAT', 'approved-preparation.json: unsupported format');
   exact(snapshot, ['format', 'preparationRevision', 'requirementsAuthority', 'normativeSha256', 'normativeProjection',
     'globalReview', 'deliveries', 'completed', 'reviewedArtifacts'], 'approved-preparation.json');
@@ -609,21 +609,21 @@ export function validateInitialApprovedPreparation(value) {
   return {authority: rebuilt.authority, snapshot: rebuilt.snapshot, bytes, sha256: raw(bytes)};
 }
 
-export function validateConversionApprovedPreparation(value) {
-  exact(value, ['context', 'requirementsAuthority', 'snapshotBytes', 'artifacts'], 'conversion snapshot input');
+export function validateReviewedPreparation(value) {
+  exact(value, ['context', 'requirementsAuthority', 'snapshotBytes', 'artifacts'], 'currentRevision snapshot input');
   hash(value.requirementsAuthority, 'requirementsAuthority');
   logicalArtifactPath(value.context, 'plan.md');
   const bytes = Buffer.from(value.snapshotBytes instanceof Uint8Array ? value.snapshotBytes
     : invalid('snapshot bytes required'));
   const snapshot = parseCurrentJson(decode(bytes, 'approved-preparation.json'));
   exact(snapshot, ['format', 'preparationRevision', 'requirementsAuthority', 'normativeSha256', 'normativeProjection',
-    'globalReview', 'deliveries', 'completed', 'reviewedArtifacts'], 'conversion snapshot');
+    'globalReview', 'deliveries', 'completed', 'reviewedArtifacts'], 'currentRevision snapshot');
   if (snapshot.format !== 'stnl-preparation-v3' || !Number.isSafeInteger(snapshot.preparationRevision)
     || snapshot.preparationRevision < 1 || array(snapshot.completed, 'snapshot completed').length)
-    invalid('conversion snapshot: format, revision or completed differs');
+    invalid('currentRevision snapshot: format, revision or completed differs');
   const artifacts = artifactMap(value.artifacts);
   if (artifacts.has('approved-preparation.json') || artifacts.has('activation.json'))
-    invalid('conversion snapshot: artifacts include seal or activation');
+    invalid('currentRevision snapshot: artifacts include seal or activation');
   const reviewed = new Map();
   let previous = null;
   for (const item of array(snapshot.reviewedArtifacts, 'reviewedArtifacts')) {
@@ -638,7 +638,7 @@ export function validateConversionApprovedPreparation(value) {
       invalid(`${item.path}: reviewed bytes differ`);
     reviewed.set(item.path, original);
   }
-  const rebuilt = approveConversionPreparation({context:value.context, requirementsAuthority:value.requirementsAuthority,
+  const rebuilt = approveCurrentPreparation({context:value.context, requirementsAuthority:value.requirementsAuthority,
     artifacts, review:{globalReview:snapshot.globalReview,
       deliveries:array(snapshot.deliveries, 'snapshot deliveries').map(item => {
         exact(item, ['slice', 'deliveryId', 'localRevision', 'review'], 'snapshot delivery');
@@ -646,7 +646,7 @@ export function validateConversionApprovedPreparation(value) {
         return {deliveryId:item.deliveryId,review:item.review};
       })}});
   if (!same(snapshot, rebuilt.snapshot) || !bytes.equals(rebuilt.bytes))
-    invalid('conversion snapshot: projection, review or bytes differ');
+    invalid('currentRevision snapshot: projection, review or bytes differ');
   return {authority:rebuilt.authority,snapshot:rebuilt.snapshot,bytes,sha256:raw(bytes)};
 }
 

@@ -1,13 +1,13 @@
 ---
 name: stnl-execution-planner
-description: Author a complete serial Plan and operational Tasks together from current requirements, or explicitly REPLAN that same delivery.
+description: Author a complete serial Plan and operational Tasks together from current requirements, using current EC-1 Initial preparation.
 ---
 
 # stnl-execution-planner
 
 ## Purpose
 
-Run exactly one operation, PLAN or REPLAN. One author produces plan.md, every plans/slice-NN.md, tasks.md and every tasks/slice-NN.md together. Do not implement or approve your preparation. Use the local templates and references/workspace.md. Requirements authority: sha256:<64hex> and Plan revision: <positive integer> bind the existing canonical requirements fingerprint and normative revision. Runtime delivery IDs do not establish acceptance.
+Run PLAN for an absent official execution. Physical REPLAN publication is unavailable in this cut and must report REPLAN_REQUIRED while preserving existing execution. One author produces plan.md, every plans/slice-NN.md, tasks.md and every tasks/slice-NN.md together. Do not implement or approve your preparation. Use the local templates and references/workspace.md. Requirements authority: sha256:<64hex> and Plan revision: <positive integer> bind the existing canonical requirements fingerprint and normative revision. Runtime delivery IDs do not establish acceptance.
 
 ## Inputs
 
@@ -23,7 +23,7 @@ Prepare an isolated candidate using `node "<SKILL_ROOT>/runtime/prepare-task-can
 
 Plan carries objective, strategy, exact requirement IDs, serial dependencies, observable results, scope, exclusions and protected responsibilities. Tasks carry a useful Result, Acceptance Obligations with stable local IDs, an initial Checklist associated with those obligations, Expected Tests and the existing evidence/findings/attempt sections. Each obligation names the real requirement, complete or partial contribution, integral verification owner, observable condition and proof required. Never invent a requirement ID or claim full acceptance for partial work. Every condition has an integral owner and proof capable of observing it. A later integration slice cannot silently supply missing evidence for an earlier full acceptance.
 
-Authorized Areas explicitly label `directory:` or `file:`. They define the permissible effects, not an exhaustive list of filenames. Expected Files are operational predictions and may be future files. Existing Inputs must be present regular files when required. Changed/tested files are real files or explicitly proved removals; directories cannot stand in for hashes. Before serialization, global Authorized areas code spans select repository-relative targets. Persist artifact-relative paths only, with one physical basis, containment and symlink guards. Auth, persistence and public-contract responsibilities are normative; path membership alone does not authorize their alteration.
+Authorized Areas explicitly label `directory:` or `file:`. They define the permissible effects, not an exhaustive list of filenames. Expected Files are operational predictions and may be future files. Existing Inputs must be present regular files when required. Changed/tested files are real files or explicitly proved removals; directories cannot stand in for hashes. Before serialization, all typed claims use their logical artifact location. Persist artifact-relative paths only, with one physical basis, containment and symlink guards. Auth, persistence and public-contract responsibilities are normative; path membership alone does not authorize their alteration.
 
 Declare the normative Verification Recipe identically in detailed Plan and Task using [the recipe contract](references/verification-recipe.md). Select executable, execution base, typed file arguments and reviewed indirect dependencies explicitly. External references must bind Existing Inputs; product references require Authorized Areas. Run the existing serializers before review. Inputs provide read/capture coverage and never authorize writing. The reviewed recipe reaches the runner and its receipt.
 
@@ -31,25 +31,23 @@ Expected Tests and obligation proofs remain explanatory prose and do not define 
 
 Run `node "<SKILL_ROOT>/runtime/prepare-plan-candidate.mjs" --candidate-execution-root <CANDIDATE_EXECUTION_ROOT>` then `node "<SKILL_ROOT>/runtime/serialize-plan-paths.mjs" --spec-path <SPEC_PATH> --candidate-execution-root <CANDIDATE_EXECUTION_ROOT>`. These shared producers prepare both sets, bind delivery IDs and validate the complete candidate. No MATERIALIZE_TASKS or REVIEW_TASKS operation exists. The absorbed producers are mechanical resources, not another cognitive phase.
 
-Publish the complete draft with `node "<SKILL_ROOT>/runtime/publish-task-candidate.mjs" --spec-path <SPEC_PATH> --candidate-execution-root <CANDIDATE_EXECUTION_ROOT>`. It captures/rechecks the base under the common external lock and preserves prior snapshots and evidence. Drafts have no executable activation. Do not write live artifacts outside the publisher. REPLAN preserves historical facts and snapshots. Same-result correction uses `--revision-mode same-delivery-revision`, retains the runtime UUID/slot, and fills the total normative Delivery Continuity table with predecessor UUID/revision, same/new decision, reason and affected verification. An independent result appends a new slot/UUID; never relabel an existing slot. Pristine replacement and append-only supersession retain their existing guards. Runtime seals historical Task/snapshot bytes before compacting the current evidence cycle; historical PASS remains immutable.
+Keep the complete draft isolated. `publish-task-candidate.mjs --spec-path SPEC_PATH --candidate-execution-root CANDIDATE_EXECUTION_ROOT` without a review returns AWAITING_REVIEW and never creates official execution. Hand that exact owned root to independent REVIEW_PLAN. The current producer does not import or migrate previous preparations.
 
 ## Output
 
-For an explicitly reviewed EC-1 Initial ingress with no official execution, hand the exact reviewed preparation root and review JSON to the slice executor's `runtime/install-current-initial.mjs --spec-path SPEC_PATH --preparation-root REVIEWED_ROOT --review-file REVIEW_JSON`. That runtime installs the Initial v2 image and product baselines under the common publication lock. Never replace an existing execution or infer review approval from a fixture.
-
-Use `node "<SKILL_ROOT>/runtime/validate-execution-state.mjs" <SPEC_PATH> --handoff-after <OPERATION>` for readback. Report the runtime's handoff, current authority, changed artifact paths and concrete blocks. PLAN/REPLAN hands off to independent REVIEW_PLAN of the joint set. Stop; no implementation, formal validation or self-approval.
+Report the exact isolated candidate root, current requirements authority, artifact paths and AWAITING_REVIEW. PLAN hands the complete joint set to independent REVIEW_PLAN. No implementation, formal validation or self-approval.
 
 ## REPLAN
 
-Use the same combined producer for an explicit recovery revision. Preserve operational history and referenced snapshots. Never replace an active/uncertain attempt.
+The current replacement-set producer is not available. Report REPLAN_REQUIRED and preserve the existing execution, owners, local revisions and proof. Never substitute install-current-initial or an older-format producer.
 
 ## Minimum Reads
 
-Current requirements and exact declared IDs, relevant prior history, all four templates, and code only for decisive decomposition premises.
+Current requirements and exact declared IDs, relevant current proof, all four templates, and code only for decisive decomposition premises.
 
 ## Allowed Effects
 
-Complete isolated Plan+Tasks candidate and its common publication; Continuity/baseline/history/capture metadata only through producers. An empty Task alone never proves pristine: inspect known owners, operations and actual captured product first.
+Complete isolated Plan+Tasks candidate; publication occurs only after independent exact-byte review through the current producer. An empty Task alone never proves pristine: inspect known owners, operations and actual captured product first.
 
 ## Blocks
 

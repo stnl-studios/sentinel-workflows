@@ -1,6 +1,5 @@
 import * as fs from "node:fs/promises";
 import path from "node:path";
-import { parsePreparationArtifact } from "../execution-preparation.mjs";
 import { computeRequirementsAuthority, inspectExecutionState } from "../execution-state.mjs";
 
 const SCOPES = new Set(["TASK", "SLICE", "MULTI_SLICE", "EXECUTION", "SPEC", "CUSTOM"]);
@@ -28,7 +27,7 @@ const RUNBOOK_OPTION_KEYS = new Set(Object.keys(RUNBOOK_OPTION_DEFAULTS));
 const SLICE_FILE = /^slice-[0-9]{2,}\.md$/u;
 const TASK_LABEL = /^[0-9]+\.[0-9]+$/u;
 const EXECUTION_ROOT_FILES = new Set(["plan.md", "tasks.md", "approved-preparation.json", "activation.json", "continuity.json"]);
-const EXECUTION_ROOT_DIRECTORIES = new Set(["plans", "tasks"]);
+const EXECUTION_ROOT_DIRECTORIES = new Set(["plans", "tasks", "evidence"]);
 const SECRET_PATH_NAMES = new Set([
   ".env", ".npmrc", ".pypirc", "credentials", "credentials.json", "id_rsa", "id_ed25519",
   "cookies", "cookies.json", "secrets", "secrets.json",
@@ -428,7 +427,8 @@ async function validateExecutionArtifact(filePath, kind, slice = null) {
   const text = await readBoundedText(filePath, label);
   const header = parsePurposeHeader(text, label);
   const expectedOwner = "stnl-execution-planner";
-  if (kind !== "tasks") parsePreparationArtifact(text, kind === "plan" ? "plan.md" : `${kind === "slice-plan" ? "plans" : "tasks"}/${slice}.md`);
+  // inspectExecutionState validates the closed EC-1 preparation and exact
+  // activation manifest before this bounded runbook source selection.
   if (header.values.owner !== expectedOwner || header.values.status !== "ready") {
     throw new Error(`${label} has a non-canonical File Purpose Header owner or status`);
   }

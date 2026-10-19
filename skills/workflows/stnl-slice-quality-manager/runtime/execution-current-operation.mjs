@@ -9,7 +9,7 @@ import {createHash,randomUUID} from 'node:crypto';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import {fileURLToPath,pathToFileURL} from 'node:url';
-import {resolveCurrentExecutionContext} from './execution-state.mjs';
+import {resolveCurrentExecutionContext} from './execution-workspace.mjs';
 import {captureCurrentExecution,captureCurrentActiveExecution,observeCurrentDeliveryWork} from './execution-current-reader.mjs';
 import {parseCurrentJson,validateCurrentCandidate,currentOperationBindingSha256} from './execution-current.mjs';
 import {verifyWorkObservation,findingsRoundCaptureSha256,NATIVE_JUDGMENT_VARIANT,restoreCaptureSources,

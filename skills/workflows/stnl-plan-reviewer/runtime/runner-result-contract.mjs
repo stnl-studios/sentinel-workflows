@@ -177,7 +177,7 @@ export function parseSemanticExecutionPayload(text, operation, { automaticCheckR
   if (!["1/3", "2/3", "3/3"].includes(payload.automaticCheckRound)) {
     fail("semantic execution payload Automatic check round is invalid");
   }
-  const allowed = new Set([...fields.map(([key]) => key), "filelessReason", ...(operation === "APPLY_FINDINGS" ? ["findingsCycle"] : [])]);
+  const allowed = new Set([...fields.map(([key]) => key), "filelessReason"]);
   for (const key of Object.keys(payload)) {
     if (!allowed.has(key)) fail(`unknown semantic execution payload field: ${key}`);
   }
