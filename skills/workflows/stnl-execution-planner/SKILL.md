@@ -1,13 +1,13 @@
 ---
 name: stnl-execution-planner
-description: Author a complete serial Plan and operational Tasks together from current requirements, using current EC-1 Initial preparation.
+description: Author a complete serial Plan and operational Tasks together using current EC-1 Initial preparation or the bounded Q18/Q19 set replacement.
 ---
 
 # stnl-execution-planner
 
 ## Purpose
 
-Run PLAN for an absent official execution. Physical REPLAN publication is unavailable in this cut and must report REPLAN_REQUIRED while preserving existing execution. One author produces plan.md, every plans/slice-NN.md, tasks.md and every tasks/slice-NN.md together. Do not implement or approve your preparation. Use the local templates and references/workspace.md. Requirements authority: sha256:<64hex> and Plan revision: <positive integer> bind the existing canonical requirements fingerprint and normative revision. Runtime delivery IDs do not establish acceptance.
+Run PLAN for an absent official execution, or the bounded current REPLAN described below. One author produces plan.md, every active plans/slice-NN.md, tasks.md and every active tasks/slice-NN.md together. Do not implement or approve your preparation. Use the local templates and references/workspace.md. Requirements authority: sha256:<64hex> and Plan revision: <positive integer> bind the existing canonical requirements fingerprint and normative revision. Runtime delivery IDs do not establish acceptance.
 
 ## Inputs
 
@@ -31,15 +31,23 @@ Expected Tests and obligation proofs remain explanatory prose and do not define 
 
 Run `node "<SKILL_ROOT>/runtime/prepare-plan-candidate.mjs" --candidate-execution-root <CANDIDATE_EXECUTION_ROOT>` then `node "<SKILL_ROOT>/runtime/serialize-plan-paths.mjs" --spec-path <SPEC_PATH> --candidate-execution-root <CANDIDATE_EXECUTION_ROOT>`. These shared producers prepare both sets, bind delivery IDs and validate the complete candidate. No MATERIALIZE_TASKS or REVIEW_TASKS operation exists. The absorbed producers are mechanical resources, not another cognitive phase.
 
-Keep the complete draft isolated. `publish-task-candidate.mjs --spec-path SPEC_PATH --candidate-execution-root CANDIDATE_EXECUTION_ROOT` without a review returns AWAITING_REVIEW and never creates official execution. Hand that exact owned root to independent REVIEW_PLAN. The current producer does not import or migrate previous preparations.
+Keep the complete draft isolated. `publish-task-candidate.mjs --spec-path SPEC_PATH --candidate-execution-root CANDIDATE_EXECUTION_ROOT` without a review returns AWAITING_REVIEW and never installs the candidate. Hand that exact owned root to independent REVIEW_PLAN. The current producer does not import or migrate incompatible preparations.
 
 ## Output
 
-Report the exact isolated candidate root, current requirements authority, artifact paths and AWAITING_REVIEW. PLAN hands the complete joint set to independent REVIEW_PLAN. No implementation, formal validation or self-approval.
+Report the exact isolated candidate root, source activation when present, current requirements authority, artifact paths, returned review request and AWAITING_REVIEW. PLAN and supported REPLAN hand the complete joint set to independent REVIEW_PLAN. No implementation, formal validation or self-approval.
 
 ## REPLAN
 
-The current replacement-set producer is not available. Report REPLAN_REQUIRED and preserve the existing execution, owners, local revisions and proof. Never substitute install-current-initial or an older-format producer.
+The current producer supports only two set replacements under the same requirements authority. The source must be quiet, with every member inspected current/PASS and no normal handoff. Q18 moves all active contributions to completed. Q19 starts with an empty active queue, keeps at least one contribution completed and reopens exactly one completed contribution without pending normalization for a private normative change. A consumer of the reopened contribution or a transverse change blocks this path. Other replacements remain unsupported; preserve the source and report the runtime diagnostic.
+
+After preflight, allocate with `node "<SKILL_ROOT>/runtime/prepare-task-candidate.mjs" --spec-path <SPEC_PATH> --operation REPLAN --completed-delivery-ids '<JSON_ARRAY_OF_COMPLETED_UUIDS>'`. Supply the exact source UUIDs that will remain completed. The official allocation captures the source activation, physical tree and preparation revision under the common lock; a pending registered REPLAN blocks another allocation. Keep the returned root and marker. Never edit the registry, adopt another root or use Initial to replace execution.
+
+Author the current global Plan/Tasks and each reopened detailed pair from the current normative leaves and local templates. Do not restore deleted detailed artifacts from an old preparation. Preserve global objective/strategy/risks, requirement IDs, dependencies and integral owner identities. Q19 permits only a private change in Existing Inputs, Risks and Strategy, Expected Tests or Verification Recipe, subject to the existing shared-input/output guards. Operational checklists and Expected Files cannot expand that authority. Use the same prepare-plan-candidate and serialize-plan-paths commands as PLAN. The producer derives source UUIDs, preparation revision +1 and the reopened local revision +1; it preserves completed local revisions, counters, baselines and slice high-water.
+
+Propose without a review first and pass the exact returned review request to the independent reviewer. Retained records and objects remain literal. Canonical owner representation can change current indices/envelopes for more than the reopened member; review the resulting evidence hashes without inventing independence or changing the owner UUID. Q18 requires exact retain-current decisions; Q19 retains completed contributions and requires revalidate for the reopened contribution. Its old PASS remains historical until another legal VALIDATE_SLICE, with no reset or new validation performed by REPLAN.
+
+Publication uses the exact independently reviewed candidate and existing CAS/product/requirements guards. On an interrupted replacement, preserve the returned publisher allocation and use `node "<SKILL_ROOT>/runtime/publish-task-candidate.mjs" --spec-path <SPEC_PATH> --recover-allocation <PUBLISHER_MARKER>` for official recovery. Confirm publication and own cleanup separately; do not replay publication, take over an uncertain lock or delete foreign controls. Recovery does not run an agent or recipe. Read back the legal handoff; neither an empty active queue nor retained local PASS grants COMPLETE or terminal acceptance.
 
 ## Minimum Reads
 
