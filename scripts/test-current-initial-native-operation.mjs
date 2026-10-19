@@ -326,7 +326,7 @@ test('Initial malformed native response cannot enter the concluded semantic refu
   await assert.rejects(publish(started.handle),error=>error.code==='RUNNER_RESULT_REJECTED');
 });
 
-test('Initial native judgment EXECUTE, formal NEEDS_FIX, APPLY and new formal use one selected variant',async()=>{
+for(const terminal of [false,true])test(`Initial native judgment EXECUTE, formal NEEDS_FIX, APPLY and new formal use one selected variant${terminal?' with terminal request binding':''}`,async()=>{
   const f=await fixture();
   await installCurrentInitial(f);
   let ordinal=0;
@@ -336,11 +336,15 @@ test('Initial native judgment EXECUTE, formal NEEDS_FIX, APPLY and new formal us
     const started=await begin({specPath:f.specPath,slice:'slice-01',
       expectedActivationId:inspection.activationId,operation:kind});
     if(after!==null) await fs.writeFile(path.join(f.root,'src/pay.mjs'),after);
-    const dispatch=await reserveDispatch(started.handle,{responseVariant:'stnl-current-native-judgment-v1'});
+    if(terminal && kind!=='VALIDATE_SLICE')await assert.rejects(
+      reserveDispatch(started.handle,{terminal:true}),error=>error.code==='INVALID_CURRENT_IMAGE');
+    const dispatch=await reserveDispatch(started.handle,{responseVariant:'stnl-current-native-judgment-v1',
+      terminal:terminal && kind==='VALIDATE_SLICE'});
     const agentId=`mechanical-initial-cycle-${++ordinal}`;
     await bindNative(started.handle,agentId);
     const measured=await verifyNative(dispatch.originFile);
     const request=JSON.parse(await fs.readFile(dispatch.requestFile));
+    assert.equal(Object.hasOwn(request,'terminal'),terminal && kind==='VALIDATE_SLICE');
     let result;
     if(kind==='EXECUTE_SLICE') {
       const {head,...semantic}=initialPayload(1);
@@ -370,6 +374,10 @@ test('Initial native judgment EXECUTE, formal NEEDS_FIX, APPLY and new formal us
     assert.equal(captured.status,kind==='APPLY_FINDINGS'?'TESTS_PASS':status??'TESTS_PASS');
     const published=await publish(started.handle);
     assert.equal(published.publication,'confirmed');
+    const continuity=JSON.parse(await fs.readFile(path.join(f.root,'specs/pay/requirements-execution/continuity.json')));
+    const bundle=JSON.parse(await fs.readFile(path.join(f.root,'specs/pay/requirements-execution',continuity.deliveries[0].evidence.path)));
+    for(const check of [...bundle.implementation,...bundle.findingsChecks])assert.equal(check.contract.terminal,null);
+    if(kind==='VALIDATE_SLICE')assert.deepEqual(bundle.validation.contract.terminal,request.terminal??null);
     return inspectCurrentExecution(f.specPath);
   }
   const paid='export const pay=()=>"paid";\n';

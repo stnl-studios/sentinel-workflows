@@ -16,14 +16,14 @@ const run=promisify(execFile);
 export async function normalizedFormal(fixture,{successor=false,invalid=false,partial=false,
   candidateMutation=null,beforeCapture=null,beforePublish=null,captureOnly=false,
   invalidText='INVALID_FORMAL_RESPONSE',headOverride=null,terminalFault=false,
-  references='none',dispositions='none',responseVariant=null,
+  references='none',dispositions='none',responseVariant=null,terminal=false,
   evidence='The prepared AC-001 test passed under the official native verification helper.'}={}) {
   const number=++next;
   const activation=JSON.parse(await fs.readFile(path.join(fixture.image?.f?.execution??fixture.view.execution,'activation.json'),'utf8'));
   const options={specPath:fixture.specPath,slice:fixture.delivery.slice,
     expectedActivationId:activation.activationId};
   const start=successor?await normalizeSuccessor(options):await begin(options);
-  const dispatch=await reserveDispatch(start.handle,responseVariant?{responseVariant}:{});
+  const dispatch=await reserveDispatch(start.handle,{responseVariant,terminal});
   const agentId=`mechanical-normalization-${number}`;
   await bindNative(start.handle,agentId);
   const measured=await verifyNative(dispatch.originFile);

@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { logicalArtifactPath, parseCurrentJson, resolveLogicalProductClaim, validateCurrentEvidence,
   validateCurrentImage,validateCurrentCandidate,validateCurrentActivation,currentOperationBindingSha256,
-  currentDeliveryAuthoritySha256 } from './execution-current.mjs';
+  currentDeliveryAuthoritySha256,currentTerminalProjection,validateCurrentTerminalProjection } from './execution-current.mjs';
 import { composeInitialImplementationEvidence,validateInitialImplementationEvidence } from './execution-evidence-current.mjs';
 import {
   verifyCapturedInvocation, verifyWorkObservation, packCaptureSources,
@@ -224,7 +224,9 @@ function verifyInitial(bundle,context,approvedAuthority,map) {
   return {paths,filelessReason:paths.length ? null : response.filelessReason ?? null,owner:originOwner};
 }
 function requestShape(value) {
-  closed(value,['format','owner','authority','base','attemptId','scope'],'validation request');
+  closed(value,['format','owner','authority','base','attemptId','scope',
+    ...(Object.hasOwn(value??{},'terminal')?['terminal']:[])],'validation request');
+  if(Object.hasOwn(value,'terminal')) validateCurrentTerminalProjection(value.terminal);
   if (typeof value.format !== 'string') invalid('validation request format: string required');
   if (!['stnl-current-validation-request-v1','stnl-current-validation-request-v2',
     'stnl-current-validation-request-v3','stnl-current-validation-request-v4'].includes(value.format)) fail('UNSUPPORTED_FORMAT','validation request format');
@@ -462,9 +464,34 @@ function requestForRecord(record,map) {
   const cap=restoreCaptureSources('current-validation',record,map);
   return jsonBytes(cap.validationRequest,'retained validation request').value;
 }
+export function verifyCurrentTerminalRequest(request,capture,context) {
+  requestShape(request);
+  const origin=capture.transport==='native'?jsonBytes(capture.origin,'validation origin').value:null;
+  if(!Object.hasOwn(request,'terminal')) {
+    if(origin?.terminalPreparationUtf8!==undefined) stale('terminal witness without terminal request');
+    return null;
+  }
+  if(capture.transport!=='native') fail('UNSUPPORTED_FORMAT','terminal judgment requires native admission');
+  if(!origin.admission || typeof origin.terminalPreparationUtf8!=='string')
+    incomplete('terminal request lacks its admitted approved snapshot');
+  const snapshotBytes=utf8(origin.terminalPreparationUtf8);
+  const snapshot=jsonBytes(snapshotBytes,'terminal approved snapshot').value;
+  equal(request.terminal,currentTerminalProjection(snapshot),'EVIDENCE_STALE','terminal request projection');
+  verifyPostAdmission({context,snapshotBytes,owner:request.owner,capture});
+  const base=origin.admission.baseActivation;
+  if(base.preparationRevision!==snapshot.preparationRevision || base.normativeSha256!==snapshot.normativeSha256)
+    mismatch('terminal snapshot differs from admitted preparation');
+  const member=snapshot.deliveries.find(item=>item.deliveryId===request.owner.deliveryId && item.slice===request.owner.slice);
+  const leaf=snapshot.normativeProjection.deliveries.find(item=>item.deliveryId===request.owner.deliveryId);
+  if(!member || !leaf) mismatch('terminal judgment owner is not admitted active delivery');
+  const admitted=postAuthority(snapshot,{...member,authoritySha256:snapshot.preparationRevision===1
+    ?snapshot.normativeSha256:currentDeliveryAuthoritySha256(leaf)});
+  equal(request.authority,admitted,'EVIDENCE_STALE','terminal request admitted local authority');
+  return request.terminal;
+}
 function deriveCapture({context,authority:approvedAuthority,capture,expectedOwner=null,expectedBase=null,priorFiles=new Set(),filelessReason=null}) {
   const request=jsonBytes(capture.validationRequest,'validation request').value;
-  requestShape(request);
+  const terminal=verifyCurrentTerminalRequest(request,capture,context);
   authority(request.authority,context,request.owner);
   equal(request.authority,approvedAuthority,'EVIDENCE_STALE','validation request authority');
   if (expectedOwner) equal(request.owner,expectedOwner,'OWNER_MISMATCH','validation request owner');
@@ -590,7 +617,7 @@ function deriveCapture({context,authority:approvedAuthority,capture,expectedOwne
   const open=all.filter(item => dispositions.get(item.id)==='active');
   const rootRequest={...request,__productRoot:context.productRoot,__taskPath:logicalArtifactPath(context,`tasks/${request.owner.slice}.md`)};
   const recordDraft={kind:'validation',recordFormat:'stnl-task-record-v2',id:request.attemptId,origin,
-    contract:{delivery:approvedAuthority.delivery,context:approvedAuthority.context,terminal:null,recipe:approvedAuthority.delivery.verificationRecipe},
+    contract:{delivery:approvedAuthority.delivery,context:approvedAuthority.context,terminal,recipe:approvedAuthority.delivery.verificationRecipe},
     recordUtf8:renderRecord(rootRequest,payload,observed.commands),testedWork:observed.observed.after};
   return {request,origin,receipt,observed,response,payload,recordDraft,open,all,dispositions};
   } catch (error) {
@@ -705,7 +732,6 @@ function verifyHistoricalLocalReviewProof({context,snapshotBytes,current,bundleB
   const oldDigest=request.base?.approvedSnapshotSha256;
   if(!oldDigest || oldDigest!==origin.admission?.baseActivation?.approvedSnapshotSha256
     || bundle.implementation.length!==0 || old.sources.legacyPreparation!==null
-    || old.contract.terminal!==null
     || !same(old.contract.context,reviewedAuthority.context))
     invalid('local review historical native source differs');
   const predecessor={evidence:{sha256:request.base.evidenceSha256},counters:request.base.counters,
@@ -2299,7 +2325,7 @@ function projectedDelivery(value) {
 function formalRecordNumber(record) { return Number(record.id.slice('attempt-'.length)); }
 function verifyRecord(record,map,context,approvedAuthority,priorFiles,filelessReason) {
   if (record.recordFormat==='stnl-task-record-v1-imported') fail('UNSUPPORTED_FORMAT','imported formal record');
-  if (record.kind!=='validation' || record.recordFormat!=='stnl-task-record-v2' || record.contract.terminal!==null) invalid('formal record format/terminal');
+  if (record.kind!=='validation' || record.recordFormat!=='stnl-task-record-v2') invalid('formal record format');
   const cap=restoreCaptureSources('current-validation',record,map);
   const derived=deriveCapture({context,authority:recordAuthority(record,approvedAuthority),capture:cap,priorFiles,filelessReason});
   if (derived.rejection) invalid(`retained formal record is rejected: ${derived.rejection}`);

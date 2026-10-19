@@ -16,12 +16,12 @@ const finding={id:'finding-01',severity:'blocking',originAttempt:'attempt-02',
   impact:'AC-001 is unmet.',relatedAuthority:'AC-001; obligation-01',
   expectedCorrection:'Set the greeting export to hello.'};
 
-async function operation(fixture,ordinal,{kind='VALIDATE_SLICE',status,edit=null,references='none',dispositions='none',findings=[],verified='finding-01'}) {
+async function operation(fixture,ordinal,{kind='VALIDATE_SLICE',status,edit=null,references='none',dispositions='none',findings=[],verified='finding-01',terminal=false}) {
   const activation=JSON.parse(await fs.readFile(path.join(fixture.image.f.execution,'activation.json')));
   const start=await begin({specPath:fixture.specPath,slice:fixture.delivery.slice,
     expectedActivationId:activation.activationId,operation:kind});
   if(edit!==null) await fs.writeFile(path.join(fixture.root,'src/greeting.mjs'),edit);
-  const dispatch=await reserveDispatch(start.handle);
+  const dispatch=await reserveDispatch(start.handle,{terminal});
   const agentId=`mechanical-findings-agent-${ordinal}`;
   await bindNative(start.handle,agentId);
   const measured=await verifyNative(dispatch.originFile);
@@ -61,11 +61,11 @@ export async function blockingFormalCase(test,options={}) {
   return {fixture,first};
 }
 
-export async function completedFindingsCycle(test) {
+export async function completedFindingsCycle(test,{terminal=false}={}) {
   const {fixture,first}=await blockingFormalCase(test);
   const apply=await operation(fixture,2,{kind:'APPLY_FINDINGS',status:'TESTS_PASS',
     edit:'export const greeting="hello";\n'});
-  const formal=await operation(fixture,3,{status:'PASS',references:'finding-01',
+  const formal=await operation(fixture,3,{status:'PASS',terminal,references:'finding-01',
     dispositions:'finding-01=resolved'});
   return {fixture,first,apply,formal,operation:(ordinal,options)=>operation(fixture,ordinal,options)};
 }

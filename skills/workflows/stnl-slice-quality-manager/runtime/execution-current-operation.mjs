@@ -11,12 +11,12 @@ import {promisify} from 'node:util';
 import {fileURLToPath,pathToFileURL} from 'node:url';
 import {resolveCurrentExecutionContext} from './execution-workspace.mjs';
 import {captureCurrentExecution,captureCurrentActiveExecution,observeCurrentDeliveryWork} from './execution-current-reader.mjs';
-import {parseCurrentJson,validateCurrentCandidate,currentOperationBindingSha256} from './execution-current.mjs';
+import {parseCurrentJson,validateCurrentCandidate,currentOperationBindingSha256,currentTerminalProjection} from './execution-current.mjs';
 import {verifyWorkObservation,findingsRoundCaptureSha256,NATIVE_JUDGMENT_VARIANT,restoreCaptureSources,
   projectNativeJudgment} from './execution-evidence-proof.mjs';
 import {composePostConversionValidation,composePostConversionFindings,
   inspectPostConversionEvidence,inspectPostConversionFindingsPrefix,
-  parseCurrentValidationResponse,currentEvidenceValueSha256,inspectCurrentEvidence,
+  parseCurrentValidationResponse,currentEvidenceValueSha256,inspectCurrentEvidence,verifyCurrentTerminalRequest,
   composeCurrentFindingsEvidence,
   composeInitialCurrentOperation} from './current-evidence-state.mjs';
 import {composeInitialImplementationEvidence} from './execution-evidence-current.mjs';
@@ -342,7 +342,7 @@ async function requireA1(operation) {
     fail('OWNER_MISMATCH','active owner does not bind this operation');
   return image;
 }
-async function requestInputs(image,operation,dispatchId,round=1,previous=null) {
+async function requestInputs(image,operation,dispatchId,round=1,previous=null,terminal=false) {
   const snapshot=parseCurrentJson(Buffer.from(image.files.get('approved-preparation.json')).toString('utf8'));
   const continuity=parseCurrentJson(Buffer.from(image.files.get('continuity.json')).toString('utf8'));
   const current=continuity.deliveries.find(item=>item.deliveryId===operation.owner.deliveryId);
@@ -400,7 +400,7 @@ async function requestInputs(image,operation,dispatchId,round=1,previous=null) {
     const formalScope=[...new Set([...formalPrior,...paths(observed.manifest),
       ...info.refs.filter(item=>item.kind==='product').map(item=>item.path)])].sort(order);
     const request={format:auxiliary?'stnl-current-validation-request-v2':'stnl-current-validation-request-v1',
-      owner:operation.owner,authority,
+      owner:operation.owner,authority,...(terminal?{terminal:currentTerminalProjection(snapshot)}:{}),
       base:{evidenceSha256:sha(bundleBytes),counters:structuredClone(current.counters),
         openFindings:structuredClone(bundle.openFindings),priorScopePaths:formalPrior,
         ...(auxiliary?{auxiliary}:{})},
@@ -459,7 +459,7 @@ async function requestInputs(image,operation,dispatchId,round=1,previous=null) {
   const formalScope=[...new Set([...formalPrior,...paths(observed.manifest),
     ...info.refs.filter(item=>item.kind==='product').map(item=>item.path)])].sort(order);
   const request={format:auxiliary?'stnl-current-validation-request-v4':'stnl-current-validation-request-v3',
-    owner:operation.owner,authority,
+    owner:operation.owner,authority,...(terminal?{terminal:currentTerminalProjection(snapshot)}:{}),
     base:{approvedSnapshotSha256:sha(image.files.get('approved-preparation.json')),
       evidenceSha256:current.evidence?.sha256??null,counters:structuredClone(current.counters),
       baseline:structuredClone(current.baseline),validation:current.validation,
@@ -470,13 +470,15 @@ async function requestInputs(image,operation,dispatchId,round=1,previous=null) {
       'No approved product output paths were present in the captured domain.'}};
   return {request,info,observed,dispatchId,current};
 }
-export async function reserveDispatch(handle,{responseVariant=null}={}) {
+export async function reserveDispatch(handle,{responseVariant=null,terminal=false}={}) {
+  if(typeof terminal!=='boolean') fail('INVALID_CURRENT_IMAGE','terminal selection must be boolean');
   if(responseVariant!==null && responseVariant!==NATIVE_JUDGMENT_VARIANT)
     fail('UNSUPPORTED_FORMAT','native response variant is not supported');
   const op=await load(handle);
   return withExecutionPublicationLock(op.workspace,async()=>{
     const now=await load(handle);
     const auxiliary=now.owner.operation!=='VALIDATE_SLICE';
+    if(terminal && auxiliary) fail('INVALID_CURRENT_IMAGE','terminal judgment requires VALIDATE_SLICE');
     const previousRound=now.record.runner?.round??0;
     if(previousRound && (now.record.responseVariant??null)!==responseVariant)
       fail('OWNER_MISMATCH','native response variant changed within the operation');
@@ -532,7 +534,7 @@ export async function reserveDispatch(handle,{responseVariant=null}={}) {
       }
     }
     const dispatchId=previousRound?now.record.runner.dispatchId:randomUUID();
-    const {request,info,observed}=await requestInputs(image,now,dispatchId,round,previous);
+    const {request,info,observed}=await requestInputs(image,now,dispatchId,round,previous,terminal);
     if(productDrift) {
       if(now.binding.normalization || !previous || productDrift.class!=='product-drift'
         || productDrift.sourceOperationAttemptId!==now.owner.operationAttemptId
@@ -557,6 +559,7 @@ export async function reserveDispatch(handle,{responseVariant=null}={}) {
       dispatchId,attempt:round,
       ...(responseVariant?{responseVariant,requestSha256:sha(json(request))}:{}),
       admission:{binding:now.binding,baseActivation,reservedActivation:image.activation},
+      ...(terminal?{terminalPreparationUtf8:Buffer.from(image.files.get('approved-preparation.json')).toString('utf8')}:{}),
       otherDeliveryWork:[...image.observedByDelivery]
         .filter(([deliveryId])=>deliveryId!==now.owner.deliveryId)
         .map(([deliveryId,value])=>({deliveryId,
@@ -731,6 +734,14 @@ export async function verifyNative(originFile) {
   const image=await requireA1(op);
   if(!same(image.activation,origin.admission.reservedActivation))
     fail('STALE_BASE','native reservation changed before recipe');
+  const requestBefore=(await readOwnedFile(path.join(op.root,`round-${round}.request.json`))).bytes;
+  if(origin.responseVariant===NATIVE_JUDGMENT_VARIANT && origin.requestSha256!==sha(requestBefore))
+    fail('EVIDENCE_STALE','native request changed before recipe');
+  const request=parseCurrentJson(requestBefore.toString('utf8'));
+  if(Object.hasOwn(request,'terminal') || origin.terminalPreparationUtf8!==undefined) {
+    if(op.owner.operation!=='VALIDATE_SLICE') fail('INVALID_CURRENT_IMAGE','auxiliary terminal request');
+    verifyCurrentTerminalRequest(request,{transport:'native',origin:json(origin)},op.context);
+  }
   const baseline=await readJson(path.join(op.root,`round-${round}.baseline.json`));
   const before=image.observedByDelivery.get(op.owner.deliveryId);
   if(!before) fail('EVIDENCE_INCOMPLETE','product observation is absent');
@@ -772,6 +783,7 @@ export async function verifyNative(originFile) {
     || !same([...before.identities],[...final.identities]))
     fail('EVIDENCE_STALE','product changed during native recipe');
   const requestBytes=(await readOwnedFile(path.join(op.root,`round-${round}.request.json`))).bytes;
+  if(!requestBytes.equals(requestBefore)) fail('EVIDENCE_STALE','native request changed during recipe');
   if(origin.responseVariant===NATIVE_JUDGMENT_VARIANT && origin.requestSha256!==sha(requestBytes))
     fail('EVIDENCE_STALE','native request changed before observation');
   const head=origin.responseVariant===NATIVE_JUDGMENT_VARIANT?await measuredHead():null;
@@ -1342,7 +1354,7 @@ export async function main(argv=process.argv.slice(2)) {
       slice:flag(argv,'--slice'),expectedActivationId:flag(argv,'--expected-activation-id'),
       operation:flag(argv,'--operation')??'VALIDATE_SLICE'});
     else if(command==='reserve-dispatch') result=await reserveDispatch(handle,
-      {responseVariant:flag(argv,'--response-variant')});
+      {responseVariant:flag(argv,'--response-variant'),terminal:argv.includes('--terminal')});
     else if(command==='bind-native') result=await bindNative(handle,flag(argv,'--agent-id'));
     else if(command==='verify-native') result=await verifyNative(flag(argv,'--origin-file'));
     else if(command==='capture-native') result=await captureNative(handle,flag(argv,'--tool-result-file'));

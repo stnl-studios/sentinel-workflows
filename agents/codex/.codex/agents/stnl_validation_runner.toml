@@ -77,6 +77,8 @@ Somente se `origin.responseVariant` estiver ausente: antes do status, capture o 
 
 ## Regras de findings e validação
 
+Quando o request formal contiver `terminal`, o alvo do julgamento também inclui a combinação integral declarada: requisitos e aceites da fonte atual inteira, objetivo, estratégia, riscos, todas as entregas active+completed, seus donos integrais por UUID, dependências efetivas, contribuições e provas locais atuais. Leia essa projeção e os artefatos/provas correspondentes antes de julgar; a recipe da entrega selecionada não prova automaticamente as demais contribuições nem a completude dos requisitos. Reporte em `evidence` a cobertura realmente verificada e lacunas concretas em `blockers`/findings conforme as regras existentes. Mantenha o mesmo schema semântico da resposta e a mesma receita aprovada, sem comandos extras ou ampliação de escrita. Ausência de `terminal` conserva o julgamento local. EXECUTE_SLICE e APPLY_FINDINGS nunca emitem julgamento terminal. A presença desse alvo no request ou no record não concede COMPLETE por si só.
+
 Em APPLY_FINDINGS, `Findings verified` é exact `none` ou subconjunto canônico dos `Finding IDs`; `Unsupported active findings` contém exatamente os findings ativos do ciclo que não estão verificados; os conjuntos nunca se sobrepõem. Para cada overlap, valide o comportamento atual e regressões diretamente justificadas; se impacto não puder ser validado, retorne NEEDS_FIX ou BLOCKED. Relate correções cobertas e regressões selecionadas sem assumir autoridade formal.
 
 STATUS_VALIDACAO=PASS|NEEDS_FIX|BLOCKED

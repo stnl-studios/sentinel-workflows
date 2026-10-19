@@ -399,7 +399,7 @@ function recipe(value, label) {
     array(check.args, label).forEach(argument); array(check.inputs, label).forEach(file);
   }
 }
-function projectionDelivery(value, label) {
+function projectionDelivery(value, label, terminalOwner = false) {
   object(value, ['deliveryId', 'objectiveAndObservableResult', 'requirements', 'includedScope', 'outOfScopeAndBoundaries', 'authorizedAreas', 'existingInputs', 'protectedResponsibilities', 'dependencies', 'risksAndStrategy', 'expectedTests', 'verificationRecipe', 'completionCriterion', 'taskResult', 'obligations'], label);
   uuid(value.deliveryId, label);
   for (const key of ['objectiveAndObservableResult', 'requirements', 'includedScope', 'outOfScopeAndBoundaries', 'authorizedAreas', 'existingInputs', 'protectedResponsibilities', 'risksAndStrategy', 'expectedTests', 'completionCriterion', 'taskResult']) string(value[key], `${label}.${key}`);
@@ -414,8 +414,8 @@ function projectionDelivery(value, label) {
     match(item.id, /^obligation-[0-9]{2,}$/u, label); match(item.requirement, /^[A-Z][A-Z0-9]*-[0-9]+$/u, label);
     oneOf(item.contribution, ['complete', 'partial'], label);
     string(item.fullOwner, `${label}.fullOwner`);
-    if (!SLICE.test(item.fullOwner) && !/^delivery:[a-f0-9-]+$/u.test(item.fullOwner)) invalid(`${label}: invalid full owner`);
-    if (item.fullOwner.startsWith('delivery:')) uuid(item.fullOwner.slice(9), label);
+    if (terminalOwner) uuid(item.fullOwner, `${label}.fullOwner`);
+    else if (item.fullOwner.startsWith('delivery:')) uuid(item.fullOwner.slice(9), label);
     else slice(item.fullOwner, label);
     string(item.condition, label); string(item.proof, label);
     if (obligationIds.has(item.id)) invalid(`${label}: duplicate obligation`);
@@ -530,8 +530,33 @@ function terminal(value, label) {
   object(value, ['requirementsAuthority', 'objective', 'strategy', 'risks', 'deliveries'], label);
   hash(value.requirementsAuthority, label);
   ['objective', 'strategy', 'risks'].forEach(key => string(value[key], label));
-  array(value.deliveries, label).forEach(item => projectionDelivery(item, label));
+  array(value.deliveries, label).forEach(item => projectionDelivery(item, label, true));
   ordered(value.deliveries, item => item.deliveryId, label);
+  const ids = new Set(value.deliveries.map(item => item.deliveryId));
+  for (const leaf of value.deliveries) {
+    if (leaf.dependencies.some(id => !ids.has(id))) invalid(`${label}: dependency missing`);
+    for (const obligation of leaf.obligations) if (!ids.has(obligation.fullOwner)) invalid(`${label}: full owner missing`);
+  }
+}
+export function validateCurrentTerminalProjection(value) {
+  terminal(value, 'terminal projection');
+  return value;
+}
+// Presentation membership and selectors are not terminal authority. Clone the
+// approved leaves: retained records and their original owner spelling stay literal.
+export function currentTerminalProjection(snapshot) {
+  approved(snapshot);
+  const projection = snapshot.normativeProjection;
+  const members = [...snapshot.deliveries, ...snapshot.completed];
+  const bySlice = new Map(members.map(item => [item.slice, item.deliveryId]));
+  const deliveries = [...projection.deliveries, ...projection.completed].map(leaf => ({
+    ...structuredClone(leaf),
+    obligations: leaf.obligations.map(item => ({...item,
+      fullOwner: item.fullOwner.startsWith('delivery:') ? item.fullOwner.slice(9) : bySlice.get(item.fullOwner)})),
+  })).sort((left, right) => ordinal(left.deliveryId, right.deliveryId));
+  return validateCurrentTerminalProjection({requirementsAuthority: snapshot.requirementsAuthority,
+    objective: projection.global.objective, strategy: projection.global.strategy,
+    risks: projection.global.risks, deliveries});
 }
 function record(value, label, rejection = false) {
   plain(value, label);
@@ -553,6 +578,7 @@ function record(value, label, rejection = false) {
     hash(value.contract.context.requirementsAuthority, label);
     ['objective', 'strategy', 'risks'].forEach(key => string(value.contract.context[key], label));
     optional(value.contract.terminal, terminal, label); recipe(value.contract.recipe, label);
+    if (value.kind !== 'validation' && value.contract.terminal !== null) invalid(`${label}: auxiliary terminal judgment`);
     if (!same(value.contract.delivery.verificationRecipe, value.contract.recipe)) invalid(`${label}: recipe differs from delivery`);
   }
   origin(value.origin, label);
@@ -687,7 +713,7 @@ function validateCurrentContent(files) {
     }
     const validConvertedRecord=record?.kind==='validation'
       && record.recordFormat==='stnl-task-record-v2'
-      && record.sources?.legacyPreparation===null && record.contract?.terminal===null
+      && record.sources?.legacyPreparation===null
       && record.origin?.deliveryId===current.deliveryId && record.origin?.slice===current.slice
       && record.origin?.operation==='VALIDATE_SLICE'
       && record.origin?.preparationRevision===snapshot.preparationRevision
@@ -736,7 +762,7 @@ function validateCurrentContent(files) {
       && retainedRecords.every(item=>item.kind==='validation')
       && [...bundle.findingsChecks,...retainedRecords,record].every(item=>item
         && item.recordFormat==='stnl-task-record-v2' && item.sources?.legacyPreparation===null
-        && item.contract?.terminal===null && item.origin?.deliveryId===current.deliveryId
+        && item.origin?.deliveryId===current.deliveryId
         && item.origin?.slice===current.slice
         && item.origin?.preparationRevision===snapshot.preparationRevision
         && item.origin?.localRevision===approvedDelivery?.localRevision
@@ -758,7 +784,7 @@ function validateCurrentContent(files) {
           &&item.recordFormat==='stnl-task-record-v2'&&item.origin.transport==='native'
           &&item.origin.operation===({'implementation-check':'EXECUTE_SLICE','findings-check':'APPLY_FINDINGS',validation:'VALIDATE_SLICE'})[item.kind]
           &&item.origin.deliveryId===current.deliveryId&&item.origin.slice===current.slice
-          &&item.origin.localRevision<=current.localRevision&&item.contract.terminal===null);
+          &&item.origin.localRevision<=current.localRevision);
     return decision.evidenceSha256!==current.evidence?.sha256 && approvedDelivery
       && (bundle?.implementation?.length===0
       && (bundle.findingsChecks?.length===0 || convertedFindings || retainedRemoval)

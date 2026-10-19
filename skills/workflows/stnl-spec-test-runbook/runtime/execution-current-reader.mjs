@@ -268,7 +268,9 @@ function authorityFor(snapshot,delivery) {
     context:{requirementsAuthority:snapshot.requirementsAuthority,objective:global.objective,strategy:global.strategy,risks:global.risks}};
 }
 function retainedLocalAuthority(snapshot,current,record,leaf) {
-  if(!leaf || !record || !record.contract || record.contract.terminal!==null
+  // Formal capture verification below owns the optional terminal binding. Its
+  // presence neither invalidates the local proof nor grants terminal completion.
+  if(!leaf || !record || !record.contract
     || record.origin?.deliveryId!==current.deliveryId
     || record.origin?.slice!==current.slice || record.origin?.localRevision>current.localRevision)
     fail('EVIDENCE_INCOMPLETE',`${current.slice}: retained local proof is absent or inconsistent`,
