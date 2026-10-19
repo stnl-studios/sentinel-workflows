@@ -677,6 +677,64 @@ function postCaptureProof({context,snapshotBytes,current,capture,expectedBase,ad
   return derived;
 }
 
+// Verify a captured private-review predecessor independently of today's set.
+// Current membership, exact review decisions and retention equivalence remain
+// the caller/reader's responsibility; this function cannot grant current PASS.
+function verifyHistoricalLocalReviewProof({context,snapshotBytes,current,bundleBytes,reviewedAuthority}) {
+  authority(reviewedAuthority,context);
+  const bundle=jsonBytes(bundleBytes,'captured local-review predecessor').value;
+  validateCurrentEvidence(bundle);
+  const old=bundle.validation;
+  if(!old || old.recordFormat!=='stnl-task-record-v2' || old.origin.operation!=='VALIDATE_SLICE'
+    || old.origin.deliveryId!==current.deliveryId || old.origin.slice!==current.slice
+    || old.origin.localRevision>=reviewedAuthority.localRevision
+    || reviewedAuthority.localRevision!==current.localRevision
+    || reviewedAuthority.delivery.deliveryId!==current.deliveryId
+    || reviewedAuthority.normativeSha256!==currentDeliveryAuthoritySha256(reviewedAuthority.delivery)
+    || current.authoritySha256!==reviewedAuthority.normativeSha256
+    || bundle.deliveryId!==current.deliveryId || bundle.slice!==current.slice
+    || bundle.currentAuthoritySha256!==reviewedAuthority.normativeSha256
+    || raw(bundleBytes)!==current.evidence?.sha256
+    || current.validation!=='revalidation-required' || current.normalization!==null
+    || bundle.openFindings.length || bundle.openDivergences.length)
+    invalid('captured local review predecessor binding differs');
+  recordAuthority(old,reviewedAuthority);
+  const captured=restoreCaptureSources('current-validation',old,sourceMap(bundle));
+  const request=jsonBytes(captured.validationRequest,'historical local review request').value;
+  const origin=jsonBytes(captured.origin,'historical local review origin').value;
+  const oldDigest=request.base?.approvedSnapshotSha256;
+  if(!oldDigest || oldDigest!==origin.admission?.baseActivation?.approvedSnapshotSha256
+    || bundle.implementation.length!==0 || old.sources.legacyPreparation!==null
+    || old.contract.terminal!==null
+    || !same(old.contract.context,reviewedAuthority.context))
+    invalid('local review historical native source differs');
+  const predecessor={evidence:{sha256:request.base.evidenceSha256},counters:request.base.counters,
+    baseline:request.base.baseline,validation:request.base.validation,
+    lastDiagnostic:request.base.lastDiagnostic};
+  const expected=postBase(snapshotBytes,predecessor,request.base.priorScopePaths,
+    request.base.openFindings,request.base.auxiliary,oldDigest);
+  const historicalProof={snapshotDigest:oldDigest,authority:{
+    preparationRevision:old.origin.preparationRevision,localRevision:old.origin.localRevision,
+    normativeSha256:old.origin.normativeSha256,delivery:old.contract.delivery,context:old.contract.context}};
+  const retained=inspectRetainedRemovalCycles(bundle,sourceMap(bundle),context,historicalProof.authority,current.counters);
+  const priorFiles=new Set([...retained.proofs.keys()]);
+  const derived=postCaptureProof({context,snapshotBytes,current,capture:captured,
+    expectedBase:expected,historicalProof,...(priorFiles.size?{priorFiles}:{})});
+  if(!same(old,{...derived.recordDraft,sources:old.sources})
+    || derived.payload.status!=='PASS'
+    || !same(current.counters,{...request.base.counters,
+      validationAttempts:request.base.counters.validationAttempts+1,
+      findings:request.base.counters.findings+derived.response.newFindings.length})
+    || !same(current.baseline,derived.observed.observed.after))
+    invalid('local review historical formal does not match its native capture');
+  const verifiedCycle=bundle.findingsChecks.length?inspectFindings(bundleBytes,bundle,context,
+    historicalProof.authority,current.counters,current.baseline,
+    {snapshotBytes,current,retainedRead:historicalProof},current.authoritySha256):null;
+  if(verifiedCycle&&(verifiedCycle.rejected||verifiedCycle.formalStatus!=='PASS'
+    ||verifiedCycle.bundle.openFindings.length))invalid('historical findings cycle is not closed PASS');
+  return verifiedCycle;
+}
+
 // retainedRead selects literal historical proof authority for read-only source
 // verification. It does not authorize retention: the reader must subsequently
 // prove current contract/ownership equivalence before exposing current validity.
@@ -761,42 +819,8 @@ export async function inspectPostConversionEvidence({context,snapshotBytes,curre
       && approved.review.evidenceDecisions[0].disposition==='revalidate'
       && lastAttempt===null;
     if(!historical) invalid('local review historical formal binding differs');
-    const captured=restoreCaptureSources('current-validation',old,sourceMap(bundle));
-    const request=jsonBytes(captured.validationRequest,'historical local review request').value;
-    const origin=jsonBytes(captured.origin,'historical local review origin').value;
-    const oldDigest=request.base?.approvedSnapshotSha256;
-    if(!oldDigest || oldDigest!==origin.admission?.baseActivation?.approvedSnapshotSha256
-      || bundle.implementation.length!==0 || old.sources.legacyPreparation!==null
-      || old.contract.terminal!==null
-      || !same(old.contract.context,{requirementsAuthority:snapshot.requirementsAuthority,
-        objective:snapshot.normativeProjection.global.objective,
-        strategy:snapshot.normativeProjection.global.strategy,
-        risks:snapshot.normativeProjection.global.risks}))
-      invalid('local review historical native source differs');
-    const predecessor={evidence:{sha256:request.base.evidenceSha256},counters:request.base.counters,
-      baseline:request.base.baseline,validation:request.base.validation,
-      lastDiagnostic:request.base.lastDiagnostic};
-    const expected=baseFor(predecessor,request.base.priorScopePaths,
-      request.base.openFindings,request.base.auxiliary,oldDigest);
-    const historicalProof={snapshotDigest:oldDigest,authority:{
-      preparationRevision:old.origin.preparationRevision,localRevision:old.origin.localRevision,
-      normativeSha256:old.origin.normativeSha256,delivery:oldLeaf,context:old.contract.context}};
-    const retained=inspectRetainedRemovalCycles(bundle,sourceMap(bundle),context,historicalProof.authority,current.counters);
-    const priorFiles=new Set([...retained.proofs.keys()]);
-    const derived=verifyCapture({context,snapshotBytes,current,capture:captured,
-      expectedBase:expected,historicalProof,...(priorFiles.size?{priorFiles}:{})});
-    if(!same(old,{...derived.recordDraft,sources:old.sources})
-      || derived.payload.status!=='PASS'
-      || !same(current.counters,{...request.base.counters,
-        validationAttempts:request.base.counters.validationAttempts+1,
-        findings:request.base.counters.findings+derived.response.newFindings.length})
-      || !same(current.baseline,derived.observed.observed.after))
-      invalid('local review historical formal does not match its native capture');
-    const verifiedCycle=bundle.findingsChecks.length?inspectFindings(bundleBytes,bundle,context,
-      historicalProof.authority,current.counters,current.baseline,
-      {snapshotBytes,current,retainedRead:historicalProof},current.authoritySha256):null;
-    if(verifiedCycle&&(verifiedCycle.rejected||verifiedCycle.formalStatus!=='PASS'
-      ||verifiedCycle.bundle.openFindings.length))invalid('historical findings cycle is not closed PASS');
+    const verifiedCycle=verifyHistoricalLocalReviewProof({context,snapshotBytes,current,bundleBytes,
+      reviewedAuthority:postAuthority(snapshot,current)});
     const matches=same(observedWork,current.baseline);
     return {context,authority:postAuthority(snapshot,current),bundle,
       records:{implementation:[],findings:bundle.findingsChecks,validation:[...bundle.support.filter(item=>item.kind==='validation'),old]},latest:verifiedCycle?.latest??null,
@@ -1257,20 +1281,25 @@ export async function inspectPostConversionEvidence({context,snapshotBytes,curre
       snapshotDigest:request.base.approvedSnapshotSha256}:null);
   if(historicalPrior.length) {
     const old=historicalPrior[0];
-    const priorBundle={...bundle,validation:old,support:[],openFindings:[],
-      objects:referencedObjects([old],sourceMap(bundle))};
+    requestShape(request);
+    authority(request.authority,context,request.owner);
+    // The admitting request indexed this predecessor under its reviewed leaf.
+    // Neither the current Q18 index nor the older record's leaf is that index.
+    const priorBundle={...bundle,currentAuthoritySha256:request.authority.normativeSha256,
+      validation:old,support:[],openFindings:[],objects:referencedObjects([old],sourceMap(bundle))};
     const priorBytes=encode(priorBundle);
     if(raw(priorBytes)!==request.base.evidenceSha256)
       stale('local review retained historical predecessor bytes differ');
     const origin=jsonBytes(capture.origin,'local review formal origin').value;
-    const priorCurrent={...current,evidence:{path:current.evidence.path,sha256:raw(priorBytes)},
+    if((origin.admission?.baseActivation?.lastAttempt??null)!==null)
+      invalid('local review historical formal binding differs');
+    const priorCurrent={...current,localRevision:request.authority.localRevision,
+      authoritySha256:request.authority.normativeSha256,
+      evidence:{path:current.evidence.path,sha256:raw(priorBytes)},
       counters:request.base.counters,baseline:request.base.baseline,
       validation:request.base.validation,lastDiagnostic:request.base.lastDiagnostic};
-    const predecessor=await recurse({context,snapshotBytes,current:priorCurrent,
-      bundleBytes:priorBytes,observedWork:priorCurrent.baseline,
-      lastAttempt:origin.admission?.baseActivation?.lastAttempt??null});
-    if(!predecessor.requiresFormalRevalidation || predecessor.formalStatus!==null)
-      invalid('local review formal predecessor is not historical');
+    verifyHistoricalLocalReviewProof({context,snapshotBytes,current:priorCurrent,
+      bundleBytes:priorBytes,reviewedAuthority:request.authority});
   }
   if(formalRejections.length) {
     const origin=jsonBytes(capture.origin,'formal successor origin').value;

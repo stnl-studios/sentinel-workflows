@@ -1159,3 +1159,124 @@ export function finalizeCurrentLocalReview({proposal,review:decision}) {
   validateCurrentCandidate({files});
   return {files,authority,selected};
 }
+
+// Q18 composition only. The caller must capture/inspect the quiet current source
+// with the existing reader before using this proposal. This pure boundary does
+// not admit, observe product, publish, or replace semantic evidence validation.
+// Reopening or changing a leaf belongs to the next bounded D2 block.
+export function prepareCurrentSetReplacement(value) {
+  exact(value,['context','requirementsAuthority','previous','artifacts','completedDeliveryIds'],
+    'set replacement input');
+  const {context,requirementsAuthority,previous}=value;
+  hash(requirementsAuthority,'set replacement requirements authority');
+  exact(previous,['activationBytes','files'],'set replacement predecessor');
+  const files=artifactMap(previous.files);
+  const checked=validateCurrentImage({activationBytes:previous.activationBytes,files});
+  const activation=parseCurrentJson(decode(previous.activationBytes,'set replacement activation'));
+  const snapshot=parseCurrentJson(decode(files.get('approved-preparation.json'),'approved-preparation.json'));
+  const continuity=checked.continuity;
+  if(activation.activeAttempt!==null)fail('OWNER_ACTIVE','set replacement requires a quiet predecessor');
+  if(snapshot.requirementsAuthority!==requirementsAuthority)changed('set replacement requirements differ');
+  const artifacts=artifactMap(value.artifacts);
+  if([...artifacts.keys()].some(name=>!['plan.md','tasks.md'].includes(name)))
+    invalid('Q18 retirement accepts only the two global reviewed artifacts');
+  const ids=array(value.completedDeliveryIds,'completed selection').map(id=>uuid(id,'completed selection'));
+  if(new Set(ids).size!==ids.length)invalid('duplicate completed selection');
+  const members=[...continuity.deliveries,...continuity.completed];
+  const ordered=[...members].sort((a,b)=>ordinal(a.deliveryId,b.deliveryId));
+  if(ids.some(id=>!ordered.some(item=>item.deliveryId===id)))invalid('completed selection has a foreign identity');
+  if(!same([...ids].sort(ordinal),ordered.map(item=>item.deliveryId)) || !continuity.deliveries.length)
+    fail('UNSUPPORTED_FORMAT','Q18 composition currently retires the active queue; reopening or another membership change is not supported');
+  for(const current of members) {
+    if(current.validation!=='current' || current.evidence===null
+      || current.normalization && ['reserved','running'].includes(current.normalization.status))
+      fail('EVIDENCE_INCOMPLETE',`${current.slice}: Q18 requires inspected current local evidence`);
+    const bundle=validateCurrentEvidence(parseCurrentJson(decode(files.get(current.evidence.path),current.evidence.path)));
+    if(bundle.validation===null || bundle.openFindings.some(item=>item.severity==='blocking')
+      || bundle.openDivergences.length)
+      fail('EVIDENCE_INCOMPLETE',`${current.slice}: Q18 requires an unblocked formal contribution`);
+  }
+  const reviewed=new Map(snapshot.reviewedArtifacts.map(item=>[item.path,Buffer.from(item.utf8,'utf8')]));
+  const retained=new Map();
+  for(const decision of [...snapshot.globalReview.evidenceDecisions,
+    ...snapshot.deliveries.flatMap(item=>item.review.evidenceDecisions)]) {
+    if(!retained.has(decision.deliveryId))retained.set(decision.deliveryId,decision.evidenceSha256);
+  }
+  for(const current of snapshot.completed)if(!retained.has(current.deliveryId))
+    retained.set(current.deliveryId,current.evidenceSha256);
+  validateCurrentPreparation({context,requirementsAuthority,
+    snapshotBytes:files.get('approved-preparation.json'),
+    artifacts:new Map([...files].filter(([name])=>reviewed.has(name))),
+    profile:snapshot.completed.length?'completed-current':snapshot.preparationRevision===1?'initial':'converted-current',
+    retainedEvidence:snapshot.completed.length?[...retained].sort(([a],[b])=>ordinal(a,b))
+      .map(([deliveryId,evidenceSha256])=>({deliveryId,evidenceSha256})):null});
+  const preparationRevision=snapshot.preparationRevision+1;
+  if(!Number.isSafeInteger(preparationRevision))invalid('set replacement preparation revision exhausted');
+  const bySlice=new Map(members.map(current=>[current.slice,current.deliveryId]));
+  const leaves=new Map([...snapshot.normativeProjection.deliveries,...snapshot.normativeProjection.completed]
+    .map(leaf=>[leaf.deliveryId,{...leaf,obligations:leaf.obligations.map(obligation=>({...obligation,
+      fullOwner:obligation.fullOwner.startsWith('delivery:')?obligation.fullOwner
+        :`delivery:${bySlice.get(obligation.fullOwner)}`}))}]));
+  const {authority,status}=project({context,requirementsAuthority,artifacts},false,true,
+    {preparationRevision,revisions:new Map(),completed:ordered.map(current=>({slice:current.slice,
+      localRevision:current.localRevision,leaf:leaves.get(current.deliveryId)}))});
+  if(status!=='ready')stale('set replacement is not ready for review');
+  if(authority.deliveries.length || authority.normativeProjection.global.order.length)
+    fail('UNSUPPORTED_FORMAT','Q18 retirement has no active detail artifacts');
+  const beforeGlobal=snapshot.normativeProjection.global,afterGlobal=authority.normativeProjection.global;
+  if(['objective','strategy','risks'].some(key=>!same(beforeGlobal[key],afterGlobal[key])))
+    fail('UNSUPPORTED_FORMAT','Q18 retirement preserves global objective, strategy and risks');
+  const nextContinuity={...structuredClone(continuity),deliveries:[],completed:structuredClone(ordered)};
+  const proposed=new Map(artifacts);
+  for(const current of nextContinuity.completed) {
+    const authoritySha256=projected('delivery',leaves.get(current.deliveryId));
+    let bytes=files.get(current.evidence.path);
+    if(authoritySha256!==current.authoritySha256) {
+      const bundle=parseCurrentJson(decode(bytes,current.evidence.path));
+      // Only the current index changes. Captured objects, record text, origin,
+      // contract and sources retain their literal historical authority.
+      bytes=Buffer.from(canonical({...bundle,currentAuthoritySha256:authoritySha256})+'\n','utf8');
+    }
+    current.authoritySha256=authoritySha256;
+    current.evidence.sha256=raw(bytes);
+    proposed.set(current.evidence.path,Buffer.from(bytes));
+  }
+  proposed.set('continuity.json',Buffer.from(canonical(nextContinuity)+'\n','utf8'));
+  const hashes=new Map(authority.artifactHashes.map(item=>[item.path,item.sha256]));
+  const reviewRequest={globalReview:{scope:'set',authoritySha256:authority.globalReviewAuthoritySha256,
+    examinedArtifactHashes:['plan.md','tasks.md'].map(path=>({path,sha256:hashes.get(path)})),
+    evidenceDecisions:nextContinuity.completed.map(current=>({deliveryId:current.deliveryId,
+      evidenceSha256:current.evidence.sha256,disposition:'retain-current',reason:''}))},deliveries:[]};
+  return {input:value,files:proposed,authority,reviewRequest,
+    sourceActivationSha256:raw(previous.activationBytes),
+    completed:nextContinuity.completed.map(current=>({deliveryId:current.deliveryId,slice:current.slice,
+      localRevision:current.localRevision,evidenceSha256:current.evidence.sha256}))};
+}
+
+export function finalizeCurrentSetReplacement({proposal,review:decision}) {
+  if(decision===null || decision===undefined)stale('independent set review is absent');
+  const fresh=prepareCurrentSetReplacement(proposal.input);
+  if(fresh.sourceActivationSha256!==proposal.sourceActivationSha256
+    || !same(fresh.reviewRequest,proposal.reviewRequest))stale('set proposal or predecessor changed after review');
+  exact(decision,['globalReview','deliveries'],'set replacement review');
+  const hashes=new Map(fresh.authority.artifactHashes.map(item=>[item.path,item.sha256]));
+  review(decision.globalReview,'set',fresh.authority.globalReviewAuthoritySha256,
+    ['plan.md','tasks.md'],hashes,'set replacement global review',
+    fresh.reviewRequest.globalReview.evidenceDecisions.map(({deliveryId,evidenceSha256,disposition})=>
+      ({deliveryId,evidenceSha256,disposition})));
+  if(array(decision.deliveries,'set replacement delivery reviews').length)
+    stale('Q18 retirement has no active delivery reviews');
+  const snapshot={format:'stnl-preparation-v3',preparationRevision:fresh.authority.preparationRevision,
+    requirementsAuthority:fresh.authority.requirementsAuthority,normativeSha256:fresh.authority.normativeSha256,
+    normativeProjection:fresh.authority.normativeProjection,
+    globalReview:parseCurrentJson(canonical(decision.globalReview)),deliveries:[],completed:fresh.completed,
+    reviewedArtifacts:fresh.authority.artifactHashes.map(item=>({path:item.path,sha256:item.sha256,
+      utf8:fresh.files.get(item.path).toString('utf8')}))};
+  const bytes=Buffer.from(canonical(snapshot)+'\n','utf8'),files=new Map(fresh.files);
+  files.set('approved-preparation.json',bytes);
+  validateCurrentCandidate({files});
+  validateCurrentPreparation({context:fresh.input.context,requirementsAuthority:fresh.input.requirementsAuthority,
+    snapshotBytes:bytes,artifacts:new Map(snapshot.reviewedArtifacts.map(item=>[item.path,files.get(item.path)])),
+    profile:'completed-current'});
+  return {files,authority:fresh.authority,snapshot,bytes,sha256:raw(bytes)};
+}
