@@ -1,11 +1,31 @@
 #!/usr/bin/env node
 import fs from 'node:fs/promises';
+import path from 'node:path';
 import {pathToFileURL} from 'node:url';
-import {preparePlanCandidate,assertPreparationCandidate} from './prepare-plan-candidate.mjs';
+import {preparePlanCandidate,assertPreparationCandidate,capturePreparationSource} from './prepare-plan-candidate.mjs';
 import {serializePlanPathClaims} from './serialize-plan-paths.mjs';
 import {installCurrentInitial} from './install-current-initial.mjs';
+import {finalizeCurrentSetReplacement} from './execution-preparation-current.mjs';
+import {validateCurrentReviewCandidate} from './execution-current-reader.mjs';
 export async function publishPreparationCandidate({specPath,candidateExecutionRoot,reviewDecision=null,checkpoint=null}) {
  const owned=await assertPreparationCandidate(candidateExecutionRoot,specPath);
+ if(owned.marker.operation==='REPLAN') {
+  await preparePlanCandidate({candidateExecutionRoot:owned.root});
+  const prepared=await serializePlanPathClaims({specPath,candidateExecutionRoot:owned.root});
+  if(reviewDecision!==null) {
+   const reviewed=finalizeCurrentSetReplacement({proposal:prepared.proposal,review:reviewDecision});
+   await validateCurrentReviewCandidate({specPath,files:reviewed.files});
+  }
+  // Only the positively owned proposal is written. No activation or approved
+  // snapshot is installed; physical replacement belongs to its separate gate.
+  await capturePreparationSource(await assertPreparationCandidate(owned.root,specPath));
+  for(const [name,bytes] of prepared.proposal.files) {
+   const target=path.join(owned.root,name);await fs.mkdir(path.dirname(target),{recursive:true});await fs.writeFile(target,bytes);
+  }
+  await capturePreparationSource(await assertPreparationCandidate(owned.root,specPath));
+  return {status:'AWAITING_REVIEW',candidateExecutionRoot:owned.root,expectedActivationId:owned.marker.expectedActivationId,
+   authority:prepared.authority,reviewRequest:prepared.proposal.reviewRequest,reviewValidated:reviewDecision!==null,publication:'not-started'};
+ }
  if(owned.marker.source!==null||owned.marker.expectedActivationId!==null)throw Object.assign(new Error('Current replacement-set publication is not available; Initial cannot replace execution'),{code:'REPLAN_REQUIRED'});
  await preparePlanCandidate({candidateExecutionRoot:owned.root});
  const prepared=await serializePlanPathClaims({specPath,candidateExecutionRoot:owned.root});
