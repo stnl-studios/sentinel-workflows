@@ -68,7 +68,7 @@ test('Terminal frozen request and admitted snapshot are verified before executin
 
 // These are controlled native-shaped captures in disposable workspaces, never
 // official model conclusions or evidence for the later live acceptance block.
-test('Terminal v3 binds admitted active+completed snapshot, survives recovery and never grants COMPLETE',async t=>{
+test('Terminal v3 binds admitted active+completed snapshot and certifies COMPLETE after verified recovery',async t=>{
   const f=await completedNativeCase(t),before=await captureCurrentExecution(f.specPath);
   const snapshotBytes=Buffer.from(before.files.get('approved-preparation.json'));
   const snapshot=decode(snapshotBytes),a=decode(before.files.get('continuity.json')).completed[0];
@@ -103,7 +103,7 @@ test('Terminal v3 binds admitted active+completed snapshot, survives recovery an
   assert.deepEqual(raw,Buffer.from(result.finalResponse));
   assert.equal(sha(raw),result.captured.rawResponseSha256);
   assert.equal(after.inspection.deliveries[0].formalStatus,'PASS');
-  assert.equal(after.inspection.state,'VALIDATION_BLOCKED');
+  assert.equal(after.inspection.state,'COMPLETE');
   assert.equal(after.inspection.normalHandoff,null);
   await fs.rename(path.join(f.root,'tmp/sentinel'),path.join(f.root,'tmp/retired-terminal-controls'));
   const cli=path.resolve('skills/workflows/stnl-slice-executor/runtime/execution-current-operation.mjs');
@@ -161,7 +161,7 @@ test('Terminal v3 binds admitted active+completed snapshot, survives recovery an
   assert.deepEqual(retained.objects,bundle.objects);
   assert.deepEqual(currentTerminalProjection(decode(retired.files.get('approved-preparation.json'))),expected);
   assert.equal(retired.inspection.completed.length,2);
-  assert.equal(retired.inspection.state,'VALIDATION_BLOCKED');
+  assert.equal(retired.inspection.state,'COMPLETE');
 });
 
 test('Terminal v4 after APPLY retains local auxiliary contracts without terminal judgment',async t=>{
@@ -174,7 +174,7 @@ test('Terminal v4 after APPLY retains local auxiliary contracts without terminal
   assert.ok(bundle.findingsChecks.length>0);
   for(const check of [...bundle.implementation,...bundle.findingsChecks])assert.equal(check.contract.terminal,null);
   assert.equal(image.inspection.deliveries[0].formalStatus,'PASS');
-  assert.notEqual(image.inspection.state,'COMPLETE');
+  assert.equal(image.inspection.state,'COMPLETE');
   const changed=structuredClone(bundle);changed.findingsChecks[0].contract.terminal=request.terminal;
   assert.throws(()=>validateCurrentEvidence(changed),invalid);
 });

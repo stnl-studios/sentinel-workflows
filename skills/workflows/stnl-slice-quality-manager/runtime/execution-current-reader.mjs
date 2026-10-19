@@ -7,7 +7,7 @@ import {pathToFileURL} from 'node:url';
 import {isDeepStrictEqual} from 'node:util';
 import {resolveCurrentExecutionContext,projectCurrentRequirements,isIgnoredMetadata} from './execution-workspace.mjs';
 import {readOwnedFile} from './execution-publication.mjs';
-import {parseCurrentJson,validateCurrentActivation,validateCurrentCandidate,validateCurrentImage,resolveLogicalProductClaim} from './execution-current.mjs';
+import {parseCurrentJson,validateCurrentActivation,validateCurrentCandidate,validateCurrentImage,resolveLogicalProductClaim,currentTerminalProjection} from './execution-current.mjs';
 import {validateCurrentPreparation} from './execution-preparation-current.mjs';
 import {inspectCurrentEvidence,inspectPostConversionEvidence,validateCurrentEvidenceCarriers,
   completedEvidenceContext} from './current-evidence-state.mjs';
@@ -462,6 +462,49 @@ export async function observeCurrentDeliveryWork({context,delivery,sections,curr
   return scopedObservation(await observeProduct(context,targets,{entries:0,bytes:0},true),targets);
 }
 
+// Only the verified latest formal of a current contribution can certify the
+// combination. Historical support remains literal local evidence, never a vote.
+function terminalCertification(snapshot,activation,items) {
+  const absent='EVIDENCE_INCOMPLETE: local PASS has no terminal judgment';
+  if(!items.length || activation.activeAttempt!==null) return {complete:false,reason:absent};
+  if(items.some(({facts})=>facts.formalStatus!=='PASS' || facts.persistedValidation!=='current'
+    || facts.observedValidation!=='current' || !facts.observationMatches || facts.rejection
+    || facts.requiresFormalRevalidation || facts.auxiliaryStatus==='BLOCKED'
+    || facts.openFindings.some(item=>item.severity==='blocking')
+    || facts.openDivergences?.some(item=>item.severity==='blocking')))
+    return {complete:false,reason:'EVIDENCE_INCOMPLETE: terminal combination lacks current local proof'};
+  const target=currentTerminalProjection(snapshot);
+  let reason=absent;
+  for(const item of items) {
+    const record=item.facts.latest?.record;
+    if(!record?.contract.terminal || record!==item.facts.bundle.validation
+      && !isDeepStrictEqual(record,item.facts.bundle.validation))continue;
+    if(!isDeepStrictEqual(record.contract.terminal,target)) {
+      reason='EVIDENCE_STALE: terminal judgment target differs from current combination';continue;
+    }
+    if(!target.deliveries.find(leaf=>leaf.deliveryId===item.deliveryId)?.obligations
+      .some(obligation=>obligation.contribution==='complete' && obligation.fullOwner===item.deliveryId)) {
+      reason='EVIDENCE_INCOMPLETE: terminal judgment has no integral owner';continue;
+    }
+    const cap=restoreCaptureSources('current-validation',record,new Map(item.facts.bundle.objects
+      .map(object=>[object.id,Buffer.from(object.bytesBase64,'base64')])));
+    const origin=parseCurrentJson(Buffer.from(cap.origin).toString('utf8'));
+    const others=items.filter(other=>other.deliveryId!==item.deliveryId),basis=origin.otherDeliveryWork;
+    if(!Array.isArray(basis) || basis.length!==others.length
+      || basis.some(other=>other===null || typeof other!=='object' || Array.isArray(other))
+      || new Set(basis.map(other=>other.deliveryId)).size!==others.length
+      || others.some(other=>{
+        const frozen=basis.find(entry=>entry.deliveryId===other.deliveryId);
+        return !frozen || frozen.slice!==other.slice || !isDeepStrictEqual(frozen.manifest,
+          scopedObservation(other.observation,other.targets).manifest);
+      })) {
+      reason='EVIDENCE_STALE: terminal judgment product basis differs from current combination';continue;
+    }
+    return {complete:true,reason:null};
+  }
+  return {complete:false,reason};
+}
+
 async function readCurrentExecution(specPath,withCapture=false,expectedOwner=null,reviewFiles=null) {
   const {workspace,context}=await resolveCurrentExecutionContext(specPath);
   const boundaries=await physicalBoundaries(context);
@@ -721,6 +764,11 @@ async function readCurrentExecution(specPath,withCapture=false,expectedOwner=nul
   if (!equal(boundaries,await physicalBoundaries(context))) fail('STALE_BASE','official physical boundary changed between A and B');
   if (!a.bytes.equals(b.bytes) || !equal(a.identity,b.identity) || !equal(identity(rootBefore),identity(await realDirectoryMetadata(root))))
     fail('STALE_BASE','activation or official root changed between A and B','integrity','activation.json');
+  const allOutputs=[...outputs,...completedOutputs];
+  const certification=terminalCertification(snapshot,activation,allOutputs);
+  const observedByDelivery=withCapture
+    ?new Map(allOutputs.map(item=>[item.deliveryId,scopedObservation(item.observation,item.targets)])):null;
+  const terminalDiagnostic={kind:'evidence',artifact:'continuity.json',field:'terminal',reason:certification.reason};
   if(continuity.completed.length) {
     const blocked=outputs.filter(({facts})=>facts.observedValidation==='uncertain'
       || facts.auxiliaryStatus==='BLOCKED'||facts.formalStatus==='BLOCKED'
@@ -752,8 +800,10 @@ async function readCurrentExecution(specPath,withCapture=false,expectedOwner=nul
         diagnostics=pending.diagnostics;
       }
     }
-    if(!pending&&!blocked.length)diagnostics=[{kind:'evidence',artifact:'continuity.json',field:'terminal',
-      reason:'EVIDENCE_INCOMPLETE: local PASS has no terminal judgment'}];
+    if(!pending&&!blocked.length) {
+      if(certification.complete){state='COMPLETE';diagnostics=[];}
+      else diagnostics=[terminalDiagnostic];
+    }
     const inspection={activationId:activation.activationId,sequence:activation.sequence,
       requirementsAuthority:projected.requirementsAuthority,preparationRevision:activation.preparationRevision,
       deliveries:outputs.map(({facts,targets,observation,carrier,retainedAuthority,identityAuthority,...item})=>item),
@@ -761,7 +811,7 @@ async function readCurrentExecution(specPath,withCapture=false,expectedOwner=nul
       state,normalHandoff,diagnostics};
     return withCapture?{inspection:structuredClone(inspection),context:structuredClone(context),requirementsAuthority:projected.requirementsAuthority,
       activationBytes:Uint8Array.from(a.bytes),files:new Map([...image.files].map(([name,bytes])=>[name,Uint8Array.from(bytes)])),
-      observedByDelivery:new Map(outputs.map(item=>[item.deliveryId,scopedObservation(item.observation,item.targets)]))}:inspection;
+      observedByDelivery}:inspection;
   }
   if(converted) {
     const blocked=outputs.filter(item=>item.facts.formalStatus==='BLOCKED'
@@ -780,7 +830,7 @@ async function readCurrentExecution(specPath,withCapture=false,expectedOwner=nul
         :['closed-formal-boundary','closed-boundary-not-resumable'].includes(pending?.facts.consumption.kind)
           ?'VALIDATE_SLICE':null;
     const handoff=operation?{operation,slice:pending.slice,deliveryId:pending.deliveryId}:null;
-    const state=blocked.length?'VALIDATION_BLOCKED'
+    const state=certification.complete?'COMPLETE':blocked.length||!pending?'VALIDATION_BLOCKED'
       :post?pending?.diagnostics.length?'EVIDENCE_STALE'
         :operation==='APPLY_FINDINGS'?'VALIDATION_NEEDS_FIX'
           :pending?.facts.cycle?.status==='TESTS_PASS'?'FINDINGS_CORRECTED'
@@ -794,16 +844,16 @@ async function readCurrentExecution(specPath,withCapture=false,expectedOwner=nul
       deliveries:outputs.map(({facts,targets,observation,carrier,retainedAuthority,identityAuthority,...publicItem})=>publicItem),
       completed:completedOutputs.map(({facts,targets,observation,retainedAuthority,...publicItem})=>publicItem),
       state,normalHandoff:handoff,
-      diagnostics:blocked.length?blocked.map(item=>({kind:'evidence',artifact:item.slice,
+      diagnostics:certification.complete?[]:blocked.length?blocked.map(item=>({kind:'evidence',artifact:item.slice,
         field:'status',reason:item.facts.formalStatus==='BLOCKED'
           ?'blocked incorporation':'uncertain incorporation'}))
         :pending?pending.diagnostics.length?pending.diagnostics:pending.facts.diagnostics
         :awaiting?[{kind:'evidence',artifact:awaiting.slice,field:'validation',
           reason:'active delivery has no current local proof'}]
-        :[{kind:'evidence',artifact:'continuity.json',field:'terminal',reason:'EVIDENCE_INCOMPLETE: local PASS has no terminal judgment'}]};
+        :[terminalDiagnostic]};
     return withCapture?{inspection:structuredClone(inspection),context:structuredClone(context),requirementsAuthority:projected.requirementsAuthority,
       activationBytes:Uint8Array.from(a.bytes),files:new Map([...image.files].map(([name,bytes])=>[name,Uint8Array.from(bytes)])),
-      observedByDelivery:new Map(outputs.map(item=>[item.deliveryId,scopedObservation(item.observation,item.targets)]))}:inspection;
+      observedByDelivery}:inspection;
   }
   // A later concluded refusal or BLOCKED result owns recovery for the whole
   // image. A stale predecessor must not hide it by winning the serial scan.
@@ -827,15 +877,16 @@ async function readCurrentExecution(specPath,withCapture=false,expectedOwner=nul
     normalHandoff={operation,slice:item.slice,deliveryId:item.deliveryId};
     diagnostics=item.diagnostics; break;
   }
-  if (normalHandoff===null && diagnostics.length===0)
-    diagnostics=[{kind:'evidence',artifact:'continuity.json',field:'terminal',reason:'EVIDENCE_INCOMPLETE: local PASS has no terminal judgment'}];
+  if (normalHandoff===null && diagnostics.length===0) {
+    if(certification.complete)state='COMPLETE';else diagnostics=[terminalDiagnostic];
+  }
   const inspection={activationId:activation.activationId,sequence:activation.sequence,
     requirementsAuthority:projected.requirementsAuthority,preparationRevision:activation.preparationRevision,
     deliveries:outputs.map(({facts,targets,observation,retainedAuthority,identityAuthority,...publicItem})=>publicItem),
     completed:completedOutputs.map(({facts,targets,observation,retainedAuthority,...publicItem})=>publicItem),state,normalHandoff,diagnostics};
   return withCapture?{inspection:structuredClone(inspection),context:structuredClone(context),requirementsAuthority:projected.requirementsAuthority,
     activationBytes:Uint8Array.from(a.bytes),files:new Map([...image.files].map(([name,bytes])=>[name,Uint8Array.from(bytes)])),
-    observedByDelivery:new Map(outputs.map(item=>[item.deliveryId,scopedObservation(item.observation,item.targets)]))}:inspection;
+    observedByDelivery}:inspection;
 }
 
 export async function inspectCurrentExecution(specPath) { return readCurrentExecution(specPath); }

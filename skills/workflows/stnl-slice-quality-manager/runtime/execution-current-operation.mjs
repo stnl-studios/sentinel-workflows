@@ -553,7 +553,8 @@ export async function reserveDispatch(handle,{responseVariant=null,terminal=fals
     if(baseActivation.activationId!==now.binding.baseActivationId
       || !same(baseActivation.artifacts,image.activation.artifacts))
       fail('STALE_BASE','A0 artifacts differ from A1');
-    const allDeliveries=parseCurrentJson(Buffer.from(image.files.get('continuity.json')).toString('utf8')).deliveries;
+    const continuity=parseCurrentJson(Buffer.from(image.files.get('continuity.json')).toString('utf8'));
+    const allDeliveries=[...continuity.deliveries,...continuity.completed];
     const origin={transport:'native',specPath:now.context.logicalAuthorityPath,
       workspace:now.context.productRoot,owner:now.owner,verification:info.resolved,
       dispatchId,attempt:round,
@@ -655,18 +656,34 @@ function preflightCorrection(baseline,current,info,{initial=false}={}) {
   }
 }
 function assertOtherInitialWork(image,origin) {
-  if(origin.otherDeliveryWork===undefined && origin.owner.preparationRevision!==1)return;
+  if(origin.otherDeliveryWork===undefined && origin.owner.preparationRevision!==1
+    && origin.terminalPreparationUtf8===undefined)return;
   if(!Array.isArray(origin.otherDeliveryWork)) fail('OWNER_MISMATCH','Initial other-delivery witness is absent');
   const snapshot=parseCurrentJson(Buffer.from(image.files.get('approved-preparation.json')).toString('utf8'));
   const selectedLeaf=snapshot.normativeProjection.deliveries.find(item=>item.deliveryId===origin.owner.deliveryId);
   if(!selectedLeaf) fail('OWNER_MISMATCH','Initial selected delivery is absent');
   const selectedInfo=verifyWorkObservation('initial-implementation',{
     context:image.context,delivery:selectedLeaf,slice:origin.owner.slice});
+  const members=[...snapshot.deliveries,...snapshot.completed];
+  if(origin.terminalPreparationUtf8!==undefined) {
+    const others=members.filter(item=>item.deliveryId!==origin.owner.deliveryId);
+    if(origin.otherDeliveryWork.length!==others.length
+      || origin.otherDeliveryWork.some(item=>item===null || typeof item!=='object' || Array.isArray(item))
+      || new Set(origin.otherDeliveryWork.map(item=>item.deliveryId)).size!==others.length
+      || others.some(item=>!origin.otherDeliveryWork.some(frozen=>frozen.deliveryId===item.deliveryId
+        && frozen.slice===item.slice)))fail('EVIDENCE_INCOMPLETE','terminal other-delivery basis is incomplete');
+  }
   for(const frozen of origin.otherDeliveryWork) {
+    if(frozen===null || typeof frozen!=='object' || Array.isArray(frozen))
+      fail('OWNER_MISMATCH','other-delivery witness is not an object');
     const current=image.observedByDelivery.get(frozen.deliveryId)?.manifest;
-    const leaf=snapshot.normativeProjection.deliveries.find(item=>item.deliveryId===frozen.deliveryId);
-    if(!current || !leaf || frozen.deliveryId===origin.owner.deliveryId)
+    const leaf=[...snapshot.normativeProjection.deliveries,...snapshot.normativeProjection.completed]
+      .find(item=>item.deliveryId===frozen.deliveryId);
+    if(!current || !leaf || frozen.deliveryId===origin.owner.deliveryId
+      || !members.some(item=>item.deliveryId===frozen.deliveryId&&item.slice===frozen.slice))
       fail('OWNER_MISMATCH','Initial other-delivery witness differs');
+    if(origin.terminalPreparationUtf8!==undefined && !same(frozen.manifest,current))
+      fail('EVIDENCE_STALE','terminal other-delivery product changed');
     const other=verifyWorkObservation('initial-implementation',{
       context:image.context,delivery:leaf,slice:frozen.slice});
     const prior=new Map(frozen.manifest.entries.map(item=>[item.path,item]));
@@ -1279,6 +1296,15 @@ export async function publish(handle,{checkpoint=null}={}) {
     return preparedCandidate(now,composed,image,{checkpoint});
   });
   const previousPath=path.join(op.root,op.binding.previousPath);
+  const authorizeCurrent=async current=>{
+    if(!same(current.activation,image.activation)
+      || current.files.size!==image.files.size
+      || [...image.files].some(([name,bytes])=>!Buffer.from(current.files.get(name)??[]).equals(Buffer.from(bytes))))
+      fail('STALE_BASE','publication base changed after capture');
+    if(!same(current.observedByDelivery.get(op.owner.deliveryId)?.manifest,observation.after))
+      fail('EVIDENCE_STALE','product changed before publication swap');
+    assertOtherInitialWork(current,await readJson(path.join(op.root,'round-1.origin.json')));
+  };
   const result=await publishCurrentExecutionOperation({workspace:op.workspace,marker:op.marker,
     binding:op.binding,candidatePath,previousPath,
     expectedActivationId:image.activation.activationId,
@@ -1290,16 +1316,11 @@ export async function publish(handle,{checkpoint=null}={}) {
         fail('EVIDENCE_STALE','publication candidate differs from captured composition');
       validateCurrentCandidate({files:actual});
     },
-    authorizeCandidate:async current=>{
-      if(!same(current.activation,image.activation)
-        || current.files.size!==image.files.size
-        || [...image.files].some(([name,bytes])=>!Buffer.from(current.files.get(name)??[]).equals(Buffer.from(bytes))))
-        fail('STALE_BASE','publication base changed after capture');
-      if(!same(current.observedByDelivery.get(op.owner.deliveryId)?.manifest,observation.after))
-        fail('EVIDENCE_STALE','product changed before publication swap');
-      assertOtherInitialWork(current,await readJson(path.join(op.root,'round-1.origin.json')));
-    },
-    registryCompletion:()=>completeRegistry(op),checkpoint});
+    authorizeCandidate:authorizeCurrent,
+    registryCompletion:()=>completeRegistry(op),checkpoint:async phase=>{
+      if(checkpoint)await checkpoint(phase);
+      if(phase==='before-backup')await authorizeCurrent(await requireA1(op));
+    }});
   return {...result,transition:composed.transition,
     counters:composed.transition.counters,
     nextAction:result.cleanup==='complete'?'inspect':'resume-cleanup'};
