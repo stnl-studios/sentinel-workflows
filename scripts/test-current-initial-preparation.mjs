@@ -275,7 +275,7 @@ const checks = [p01, p02, p03, p04, p05, p06, p07];
 for (let index = 0; index < checks.length; index += 1) {
   test(`P0${index + 1} — initial EC-1 preparation`, () => checks[index](initial));
 }
-test('P08 — planner/reviewer copies import with only their L1 sibling', async () => {
+test('P08 — planner/reviewer copies import from their shipped pure evidence closure', async () => {
   const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'stnl-initial-isolated-'));
   try {
     const modules = await Promise.all(modulePaths.map(name => fs.readFile(path.join(root, name))));
@@ -284,6 +284,9 @@ test('P08 — planner/reviewer copies import with only their L1 sibling', async 
       const directory = path.join(temporary, String(i)); await fs.mkdir(directory);
       await fs.writeFile(path.join(directory, 'execution-preparation-current.mjs'), modules[i]);
       await fs.copyFile(path.join(root, kernelPaths[i]), path.join(directory, 'execution-current.mjs'));
+      for (const sibling of ['current-evidence-state.mjs','execution-evidence-current.mjs',
+        'execution-evidence-proof.mjs','runner-result-contract.mjs'])
+        await fs.copyFile(path.join(root,path.dirname(modulePaths[i]),sibling),path.join(directory,sibling));
       const api = await import(pathToFileURL(path.join(directory, 'execution-preparation-current.mjs')).href);
       assert.deepEqual(Object.keys(api).sort(), ['approveCurrentPreparation', 'approveInitialPreparation',
         'finalizeCurrentLocalReview', 'finalizeCurrentSetReplacement',

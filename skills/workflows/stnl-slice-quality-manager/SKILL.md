@@ -63,6 +63,8 @@ Before an authorized EXECUTE/APPLY effect, the controller captures existing remo
 Converted v3/v4 and recognized imported predecessors use the existing local-review approval and publisher. Repeated private reviews require independent approval of each exact candidate and fresh formal proof, preserving UUIDs, other deliveries and globalReview. A current local revalidate decision governs only its active delivery; it does not rewrite the frozen set review or retain a changed completed proof. Equivalent native sibling sources remain valid only after full original proof, exact local contract and observed product/ownership checks. This integration does not claim a physical producer of completed, managed transport, Q33, CLOSE or closure of items 5/6. Integral judgment uses the explicit terminal request and current-proof checks in the mandatory runner guide.
 
 
+A reviewed Q20 terminal reentry may hand off VALIDATE_SLICE while the selected local proof remains PASS/current. The planner/reviewer owns that explicit REPLAN and its exact final-artifact/evidence review. Preserve the same UUID/selector, complete local contract, recipe, inputs, local revision, counters, baseline and literal records/objects; preparation alone advances. This handoff requires `reserve-dispatch --terminal` and the independent integral judgment described in the runner guide. A retained local PASS does not certify the combination, and review/publication does not close items 5/6.
+
 ## VALIDATE_SLICE
 
 Run only this operation when current inspection returns its exact handoff; follow the admission/capture/publication and bounded recovery procedures above.

@@ -4,6 +4,7 @@ import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import {currentImage} from './current-operational-consumption.mjs';
 import {normalizedFormal} from './current-native-normalization.mjs';
+import {restoreCaptureSources} from '../../skills/workflows/stnl-execution-planner/runtime/execution-evidence-proof.mjs';
 import {initialArtifacts} from './current-initial-preparation.mjs';
 import {retireActive} from './current-reader-campaign.mjs';
 import {captureCurrentExecution} from '../../skills/workflows/stnl-slice-executor/runtime/execution-current-reader.mjs';
@@ -44,7 +45,7 @@ const decode=bytes=>JSON.parse(Buffer.from(bytes));
 const cloneFiles=files=>new Map([...files].map(([name,bytes])=>[name,Buffer.from(bytes)]));
 const setSection=(text,name,body)=>text.replace(new RegExp(`(^## ${name}\\n\\n)[\\s\\S]*?(?=^## |$(?![\\s\\S]))`,'mu'),
   (_,heading)=>heading+body+'\n\n');
-export function reopeningInput(source,deliveryId) {
+export function reopeningInput(source,deliveryId,{terminalValidation=false}={}) {
   const snapshot=decode(source.files.get('approved-preparation.json'));
   const continuity=decode(source.files.get('continuity.json'));
   const member=continuity.completed.find(item=>item.deliveryId===deliveryId),slice=member.slice,number=slice.slice(6);
@@ -52,17 +53,25 @@ export function reopeningInput(source,deliveryId) {
   const members=new Map(continuity.completed.map(item=>[item.deliveryId,item.slice]));
   leaf.obligations=leaf.obligations.map(item=>({...item,
     fullOwner:item.fullOwner==='delivery:'+deliveryId?slice:item.fullOwner}));
-  leaf.verificationRecipe.checks[0].args.splice(1,0,{literal:'--test-reporter=tap'});
-  leaf.expectedTests='- node --test --test-reporter=tap other/greeting.test.mjs';
-  const revision=snapshot.preparationRevision+1,local=member.localRevision+1;
+  if(!terminalValidation) {
+    leaf.verificationRecipe.checks[0].args.splice(1,0,{literal:'--test-reporter=tap'});
+    leaf.expectedTests='- node --test --test-reporter=tap other/greeting.test.mjs';
+  }
+  const revision=snapshot.preparationRevision+1,local=member.localRevision+(terminalValidation?0:1);
   const dependencies=leaf.dependencies.map(id=>members.get(id));
   const refs=group=>path.relative(path.dirname(path.join(source.context.logicalExecutionRoot,`${group}/${slice}.md`)),
     source.context.logicalAuthorityPath).split(path.sep).join('/');
-  const expected='- `'+path.relative(path.join(source.context.logicalExecutionRoot,'tasks'),
-    path.join(source.context.productRoot,'other/greeting.mjs')).split(path.sep).join('/')+'`';
+  const retained=terminalValidation?decode(source.files.get(member.evidence.path)):null;
+  const scope=retained?decode(restoreCaptureSources('current-validation',retained.validation,
+    new Map(retained.objects.map(item=>[item.id,Buffer.from(item.bytesBase64,'base64')]))).validationRequest).scope.paths:['other/greeting.mjs'];
+  const expected=scope.map(name=>'- `'+path.relative(path.join(source.context.logicalExecutionRoot,'tasks'),
+    path.join(source.context.productRoot,name)).split(path.sep).join('/')+'`').join('\n');
   const templates=initialArtifacts({form:'standalone'});
   let plan=Buffer.from(templates.get('plans/slice-02.md')).toString('utf8').replaceAll('Pay','Greeting').replaceAll('pay','greeting');
   let task=Buffer.from(templates.get('tasks/slice-02.md')).toString('utf8').replaceAll('Pay','Greeting').replaceAll('pay','greeting');
+  if(terminalValidation&&number!=='02') {
+    plan=plan.replace('Slice 02 -','Slice '+number+' -');task=task.replace('Slice 02 Tasks -','Slice '+number+' Tasks -');
+  }
   plan=setSection(plan,'References',`- Slice: ${number}\n- Delivery ID: ${deliveryId}\n- Requirements source: \`${refs('plans')}\`\n- Requirements authority: ${snapshot.requirementsAuthority}\n- Plan revision: ${revision}\n- Local revision: ${local}\n- Global plan: \`../plan.md\`\n- Review state: approved`);
   task=setSection(task,'References',`- Slice: ${number}\n- Delivery ID: ${deliveryId}\n- Plan: \`../plans/${slice}.md\`\n- Requirements source: \`${refs('tasks')}\`\n- Requirements authority: ${snapshot.requirementsAuthority}\n- Plan revision: ${revision}\n- Local revision: ${local}\n- Global tasks: \`../tasks.md\``);
   const planSections={'Objective and Observable Result':leaf.objectiveAndObservableResult,Requirements:leaf.requirements,
@@ -92,5 +101,6 @@ export function reopeningInput(source,deliveryId) {
     previous:{activationBytes:Buffer.from(source.activationBytes),files:cloneFiles(source.files)},
     artifacts:new Map([['plan.md',Buffer.from(globalPlan)],['tasks.md',Buffer.from(index)],
       [`plans/${slice}.md`,Buffer.from(plan)],[`tasks/${slice}.md`,Buffer.from(task)]]),
-    completedDeliveryIds:continuity.completed.filter(item=>item.deliveryId!==deliveryId).map(item=>item.deliveryId)};
+    completedDeliveryIds:continuity.completed.filter(item=>item.deliveryId!==deliveryId).map(item=>item.deliveryId),
+    ...(terminalValidation?{terminalValidation:true}:{})};
 }

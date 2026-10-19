@@ -8,14 +8,23 @@ import {assertOwnedPreparationCandidate,readOwnedFile,persistAllocation} from '.
 import {captureCurrentSetReplacementSource} from './execution-state.mjs';
 export async function assertPreparationCandidate(root,specPath=null){return assertOwnedPreparationCandidate({candidateExecutionRoot:root,specPath,resolveWorkspace:resolveExecutionWorkspace});}
 function fail(code,message){throw Object.assign(new Error(message),{code});}
-export function setPreparationMembers(source,ids) {
+export function setPreparationMembers(source,ids,{terminalValidation=false}={}) {
  const continuity=JSON.parse(Buffer.from(source.files.get('continuity.json'))),members=[...continuity.deliveries,...continuity.completed];
  if(!Array.isArray(ids)||new Set(ids).size!==ids.length||ids.some(id=>!members.some(item=>item.deliveryId===id)))
   fail('INVALID_CURRENT_IMAGE','Completed selection differs from the captured source');
  const active=members.filter(item=>!ids.includes(item.deliveryId));
+ if(typeof terminalValidation!=='boolean')fail('INVALID_CURRENT_IMAGE','Terminal validation selection must be boolean');
+ if(terminalValidation) {
+  const snapshot=JSON.parse(Buffer.from(source.files.get('approved-preparation.json')));
+  if(continuity.deliveries.length!==0||active.length!==1||source.inspection.state!=='VALIDATION_BLOCKED'
+    ||!source.inspection.diagnostics.some(item=>item.field==='terminal')
+    ||!snapshot.normativeProjection.completed.find(item=>item.deliveryId===active[0].deliveryId)?.obligations
+      .some(item=>item.contribution==='complete'&&item.fullOwner==='delivery:'+active[0].deliveryId))
+   fail('REPLAN_REQUIRED','Terminal reentry requires an empty queue without current integral proof and its same integral owner');
+ }
  if(!(continuity.deliveries.length>0&&active.length===0)
-   &&!(continuity.deliveries.length===0&&active.length===1&&ids.length>0&&active[0].normalization===null))
-  fail('UNSUPPORTED_FORMAT','Preparation supports Q18 retirement or one Q19 private reopening');
+   &&!(continuity.deliveries.length===0&&active.length===1&&(ids.length>0||terminalValidation)&&active[0].normalization===null))
+  fail('UNSUPPORTED_FORMAT','Preparation supports Q18 retirement, Q19 private reopening or explicit Q20 terminal reentry');
  return active;
 }
 export async function capturePreparationSource(owned) {
@@ -24,13 +33,14 @@ export async function capturePreparationSource(owned) {
  if(owned.marker.expectedActivationId!==source.inspection.activationId
    ||owned.marker.preparationRevision!==source.inspection.preparationRevision+1)
   fail('STALE_BASE','Preparation activation or revision differs from its official source');
- setPreparationMembers(source,owned.marker.completedDeliveryIds);
+ setPreparationMembers(source,owned.marker.completedDeliveryIds,{terminalValidation:owned.marker.terminalValidation??false});
  return source;
 }
 export async function preparePlanCandidate({candidateExecutionRoot}) {
  const owned=await assertPreparationCandidate(candidateExecutionRoot),{context}=await resolveCurrentExecutionContext(owned.marker.specPath);
  if(owned.marker.operation==='REPLAN') {
-  const source=await capturePreparationSource(owned),active=setPreparationMembers(source,owned.marker.completedDeliveryIds);
+  const source=await capturePreparationSource(owned),active=setPreparationMembers(source,owned.marker.completedDeliveryIds,
+   {terminalValidation:owned.marker.terminalValidation??false});
   const continuity=JSON.parse(Buffer.from(source.files.get('continuity.json')));
   for(const member of [...continuity.deliveries,...continuity.completed].filter(item=>!active.some(value=>value.deliveryId===item.deliveryId)))
    for(const group of ['plans','tasks']) {
@@ -47,13 +57,14 @@ export async function preparePlanCandidate({candidateExecutionRoot}) {
   const global=path.join(owned.root,'plan.md');
   await fs.writeFile(global,writeRevision((await readOwnedFile(global)).bytes.toString('utf8'),source.files.get('plan.md')));
   for(const member of active)for(const group of ['plans','tasks']) {
+   const localRevision=member.localRevision+(owned.marker.terminalValidation?0:1);
    const target=path.join(owned.root,group,`${member.slice}.md`),before=(await readOwnedFile(target)).bytes.toString('utf8');
    const supplied=before.match(/^- Delivery ID: (.+)$/mu)?.[1],local=before.match(/^- Local revision: (.+)$/mu)?.[1];
    if(supplied&&supplied!=='runtime'&&supplied!==member.deliveryId)fail('OWNER_UNCERTAIN','Delivery identity differs from its official source');
-   if(local&&local!=='runtime'&&local!==String(member.localRevision+1))fail('STALE_BASE','Local revision differs from its official source');
+   if(local&&local!=='runtime'&&local!==String(localRevision))fail('STALE_BASE','Local revision differs from its official source');
    let text=supplied?before.replace(/^- Delivery ID: .+$/mu,'- Delivery ID: '+member.deliveryId):before.replace('## References\n\n','## References\n\n- Delivery ID: '+member.deliveryId+'\n');
    text=writeRevision(text,source.files.get(`${group}/${member.slice}.md`));
-   text=local?text.replace(/^- Local revision: .+$/mu,'- Local revision: '+(member.localRevision+1)):text.replace(/^- Plan revision: .+$/mu,line=>line+'\n- Local revision: '+(member.localRevision+1));
+   text=local?text.replace(/^- Local revision: .+$/mu,'- Local revision: '+localRevision):text.replace(/^- Plan revision: .+$/mu,line=>line+'\n- Local revision: '+localRevision);
    await fs.writeFile(target,text);
   }
   await capturePreparationSource(await assertPreparationCandidate(owned.root,owned.marker.specPath));

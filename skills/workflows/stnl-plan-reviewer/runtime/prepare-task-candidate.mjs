@@ -12,7 +12,8 @@ import {allocatePreparationCandidate,withExecutionPublicationLock,assertOwnedPre
  preparationRegistryPath,readOwnedFile,parseStrictJson} from './execution-publication.mjs';
 import {resolveExecutionWorkspace} from './execution-workspace.mjs';
 function fail(code,message){throw Object.assign(new Error(message),{code});}
-export async function preparePreparationCandidate({specPath,operation,candidateExecutionRoot=null,revisionMode=null,completedDeliveryIds=null}) {
+export async function preparePreparationCandidate({specPath,operation,candidateExecutionRoot=null,revisionMode=null,completedDeliveryIds=null,terminalValidation=false}) {
+ if(typeof terminalValidation!=='boolean'||terminalValidation&&operation!=='REPLAN')fail('UNSUPPORTED_FORMAT','Terminal validation requires an explicit REPLAN selection');
  if(revisionMode!==null)fail('UNSUPPORTED_FORMAT','Replacement modes from earlier execution formats are not supported');
  if(!['PLAN','REPLAN','REVIEW_PLAN'].includes(operation))fail('UNSUPPORTED_FORMAT','Expected PLAN, REPLAN or REVIEW_PLAN');
  const {workspace,context}=await resolveCurrentExecutionContext(specPath);
@@ -28,7 +29,7 @@ export async function preparePreparationCandidate({specPath,operation,candidateE
  const image=source?.inspection??await inspectCurrentExecution(specPath);
  if(!replacement&&image.state!=='NO_EXECUTION')fail('REPLAN_REQUIRED','Initial preparation cannot replace an existing execution');
  if(replacement&&!Array.isArray(completedDeliveryIds))fail('EVIDENCE_INCOMPLETE','REPLAN requires an explicit completedDeliveryIds selection');
- if(replacement)setPreparationMembers(source,completedDeliveryIds);
+ if(replacement)setPreparationMembers(source,completedDeliveryIds,{terminalValidation});
  if(!replacement&&completedDeliveryIds!==null)fail('UNSUPPORTED_FORMAT','Initial has no completed selection');
  const parent=path.join(context.productRoot,'tmp');await fs.mkdir(parent,{recursive:true});
  const metadata=await fs.lstat(parent);
@@ -48,13 +49,13 @@ export async function preparePreparationCandidate({specPath,operation,candidateE
    if(registry&&(!Array.isArray(registry.allocations)||registry.allocations.some(item=>item.operation==='REPLAN')))
     fail('OWNER_ACTIVE','A registered REPLAN preparation or uncertain registry blocks another allocation');
   }
-  const root=await allocatePreparationCandidate({workspace,lease,captureParent:parent,metadata:{operation,specPath:await fs.realpath(specPath),expectedActivationId:current.activationId,preparationRevision:replacement?current.preparationRevision+1:1,deliveryIds:{},...(replacement?{completedDeliveryIds:[...completedDeliveryIds]}:{})}});
+  const root=await allocatePreparationCandidate({workspace,lease,captureParent:parent,metadata:{operation,specPath:await fs.realpath(specPath),expectedActivationId:current.activationId,preparationRevision:replacement?current.preparationRevision+1:1,deliveryIds:{},...(replacement?{completedDeliveryIds:[...completedDeliveryIds]}:{}),...(terminalValidation?{terminalValidation:true}:{})}});
   if(replacement)await capturePreparationSource(await assertOwnedPreparationCandidate({candidateExecutionRoot:root,specPath,resolveWorkspace:resolveExecutionWorkspace}));
   return {status:'DRAFT',candidateExecutionRoot:root,expectedActivationId:current.activationId,requirementsAuthority:current.requirementsAuthority};
  });
 }
 if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href){
  const args=process.argv.slice(2),options={};
- for(let i=0;i<args.length;i+=2){const key={'--spec-path':'specPath','--operation':'operation','--candidate-execution-root':'candidateExecutionRoot','--completed-delivery-ids':'completedDeliveryIds'}[args[i]];if(!key||!args[i+1]||Object.hasOwn(options,key))throw new Error('Usage: prepare-task-candidate.mjs --spec-path SPEC --operation PLAN|REPLAN|REVIEW_PLAN [--candidate-execution-root ROOT] [--completed-delivery-ids JSON_ARRAY]');options[key]=key==='completedDeliveryIds'?JSON.parse(args[i+1]):args[i+1];}
+ for(let i=0;i<args.length;i+=2){const key={'--spec-path':'specPath','--operation':'operation','--candidate-execution-root':'candidateExecutionRoot','--completed-delivery-ids':'completedDeliveryIds','--terminal-validation':'terminalValidation'}[args[i]];if(!key||!args[i+1]||Object.hasOwn(options,key))throw new Error('Usage: prepare-task-candidate.mjs --spec-path SPEC --operation PLAN|REPLAN|REVIEW_PLAN [--candidate-execution-root ROOT] [--completed-delivery-ids JSON_ARRAY] [--terminal-validation true]');options[key]=['completedDeliveryIds','terminalValidation'].includes(key)?JSON.parse(args[i+1]):args[i+1];}
  process.stdout.write(JSON.stringify(await preparePreparationCandidate(options))+'\n');
 }

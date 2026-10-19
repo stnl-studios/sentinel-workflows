@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { parseCurrentJson, logicalArtifactPath, resolveLogicalProductClaim, validateCurrentContinuity,
   validateCurrentEvidence,validateCurrentImage,validateCurrentCandidate } from './execution-current.mjs';
+import {composeRetainedValidationCarriers} from './current-evidence-state.mjs';
 
 const HASH = /^sha256:[a-f0-9]{64}$/u;
 const UUID = /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/u;
@@ -337,7 +338,8 @@ function project(value, withReview = false, currentRevision = false, local = nul
     const row = serialRows[index], columns = indexRows[index], indexIdentity = serial(columns[1], 'tasks.md Slice');
     if ((!currentRevision && (columns[0] !== '[ ]' || columns[5] !== 'pending' || columns[6] !== 'pending'))
       || (currentRevision && (!['[ ]', '[x]'].includes(columns[0])
-        || !['pending', 'unvalidated', 'current', 'revalidation-required'].includes(columns[5])
+        || !(['pending', 'unvalidated', 'current', 'revalidation-required'].includes(columns[5])
+          || local?.retainedPass?.has(row.slice) && columns[0]==='[x]' && columns[5]==='PASS' && columns[6]==='PASS')
         || !['pending', 'PASS'].includes(columns[6])))
       || indexIdentity.slice !== row.slice || indexIdentity.name !== row.name
       || columns[2] !== row.delivery || columns[3] !== (row.dependencies.length ? row.dependencies.join(', ') : '-')
@@ -870,7 +872,8 @@ function validateConvertedSnapshotIntrinsic({context,requirementsAuthority,snaps
   }
   const local={preparationRevision:snapshot.preparationRevision,
     revisions:new Map(array(snapshot.deliveries,'snapshot deliveries').map(item=>[item.slice,item.localRevision])),
-    completed:retained};
+    completed:retained,retainedPass:new Set(snapshot.deliveries.filter(item=>item.review?.evidenceDecisions?.some(
+      decision=>decision.deliveryId===item.deliveryId&&decision.disposition==='retain-current')).map(item=>item.slice))};
   const {authority,status}=project({context,requirementsAuthority,artifacts:reviewed},false,true,local);
   if(status!=='ready' || snapshot.preparationRevision!==authority.preparationRevision
     || snapshot.requirementsAuthority!==requirementsAuthority
@@ -1175,11 +1178,15 @@ export function finalizeCurrentLocalReview({proposal,review:decision}) {
 }
 
 // Bounded set composition only: Q18 retires the active queue; Q19 reopens one
-// completed contribution for a private review. The caller owns quiet source
+// completed contribution for a private review; Q20 retains the same integral
+// owner/local proof for explicit terminal judgment. The caller owns quiet source
 // capture and the full semantic reader gate. No admission or publication here.
 export function prepareCurrentSetReplacement(value) {
-  exact(value,['context','requirementsAuthority','previous','artifacts','completedDeliveryIds'],
+  exact(value,['context','requirementsAuthority','previous','artifacts','completedDeliveryIds',
+    ...(Object.hasOwn(value??{},'terminalValidation')?['terminalValidation']:[])],
     'set replacement input');
+  const terminalValidation=Object.hasOwn(value,'terminalValidation')?value.terminalValidation:false;
+  if(typeof terminalValidation!=='boolean')invalid('terminal validation selection must be boolean');
   const {context,requirementsAuthority,previous}=value;
   hash(requirementsAuthority,'set replacement requirements authority');
   exact(previous,['activationBytes','files'],'set replacement predecessor');
@@ -1198,9 +1205,10 @@ export function prepareCurrentSetReplacement(value) {
   if(ids.some(id=>!ordered.some(item=>item.deliveryId===id)))invalid('completed selection has a foreign identity');
   const completedIds=new Set(ids),active=ordered.filter(item=>!completedIds.has(item.deliveryId));
   const retiring=continuity.deliveries.length>0&&active.length===0;
-  const reopening=continuity.deliveries.length===0&&active.length===1&&ids.length>0;
+  const reopening=continuity.deliveries.length===0&&active.length===1&&(ids.length>0||terminalValidation);
+  if(terminalValidation&&!reopening)fail('REPLAN_REQUIRED','terminal reentry requires one selected completed contribution and empty queue');
   if(!retiring&&!reopening)
-    fail('UNSUPPORTED_FORMAT','set replacement supports Q18 retirement or one Q19 private reopening');
+    fail('UNSUPPORTED_FORMAT','set replacement supports Q18 retirement, Q19 private reopening or explicit Q20 terminal reentry');
   const selected=reopening?active[0]:null;
   if(selected&&selected.normalization!==null)
     fail('UNSUPPORTED_FORMAT','Q19 requires a quiet contribution without normalization');
@@ -1240,8 +1248,12 @@ export function prepareCurrentSetReplacement(value) {
       return {...obligation,fullOwner:completedIds.has(owner)?`delivery:${owner}`:byId.get(owner)};
     })}]));
   const completed=ordered.filter(item=>completedIds.has(item.deliveryId));
-  const local={preparationRevision,revisions:new Map(active.map(item=>[item.slice,item.localRevision+1])),
-    completed:completed.map(current=>({slice:current.slice,localRevision:current.localRevision,leaf:leaves.get(current.deliveryId)}))};
+  if(terminalValidation&&(selected.lastDiagnostic!==null
+    ||!leaves.get(selected.deliveryId).obligations.some(item=>item.contribution==='complete'&&item.fullOwner===selected.slice)))
+    fail('REPLAN_REQUIRED','terminal reentry requires the same quiet integral owner');
+  const local={preparationRevision,revisions:new Map(active.map(item=>[item.slice,item.localRevision+(terminalValidation?0:1)])),
+    completed:completed.map(current=>({slice:current.slice,localRevision:current.localRevision,leaf:leaves.get(current.deliveryId)})),
+    retainedPass:new Set(terminalValidation?[selected.slice]:[])};
   let {authority,status}=project({context,requirementsAuthority,artifacts},false,true,local);
   if(status!=='ready')stale('set replacement is not ready for review');
   if(!same(authority.deliveries.map(item=>[item.deliveryId,item.slice]),active.map(item=>[item.deliveryId,item.slice])))
@@ -1249,7 +1261,9 @@ export function prepareCurrentSetReplacement(value) {
   const beforeGlobal=snapshot.normativeProjection.global,afterGlobal=authority.normativeProjection.global;
   if(['objective','strategy','risks'].some(key=>!same(beforeGlobal[key],afterGlobal[key])))
     fail('UNSUPPORTED_FORMAT','set replacement preserves global objective, strategy and risks');
-  if(selected)assertPrivateLocalDelta({context,slice:selected.slice,original:leaves.get(selected.deliveryId),
+  if(terminalValidation&&!same(leaves.get(selected.deliveryId),authority.normativeProjection.deliveries[0]))
+    fail('REPLAN_REQUIRED','terminal reentry preserves the complete local normative contract');
+  if(selected&&!terminalValidation)assertPrivateLocalDelta({context,slice:selected.slice,original:leaves.get(selected.deliveryId),
     revised:authority.normativeProjection.deliveries[0],
     siblings:completed.map(item=>({slice:item.slice,leaf:leaves.get(item.deliveryId)}))});
   const nextContinuity={...structuredClone(continuity),deliveries:structuredClone(active),completed:structuredClone(completed)};
@@ -1267,8 +1281,22 @@ export function prepareCurrentSetReplacement(value) {
     proposed.set(current.evidence.path,Buffer.from(bytes));
   }
   for(const current of nextContinuity.deliveries) {
-    current.localRevision+=1;
+    current.localRevision+=terminalValidation?0:1;
     current.authoritySha256=authority.deliveries.find(item=>item.deliveryId===current.deliveryId).authoritySha256;
+    if(terminalValidation) {
+      const original=files.get(current.evidence.path),bundle=parseCurrentJson(decode(original,current.evidence.path));
+      const bytes=bundle.currentAuthoritySha256===current.authoritySha256?original:
+        Buffer.from(canonical({...bundle,currentAuthoritySha256:current.authoritySha256})+'\n','utf8');
+      current.evidence.sha256=raw(bytes);proposed.set(current.evidence.path,Buffer.from(bytes));
+      const taskName=`tasks/${current.slice}.md`;
+      const carriers=composeRetainedValidationCarriers({context,current,bundleBytes:bytes,
+        taskBytes:artifacts.get(taskName),indexBytes:artifacts.get('tasks.md'),
+        priorBundles:nextContinuity.completed.map(item=>({slice:item.slice,bundleBytes:proposed.get(item.evidence.path)}))});
+      proposed.set(taskName,carriers.task);proposed.set('tasks.md',carriers.index);
+      localDecisions.set(current.deliveryId,[{deliveryId:current.deliveryId,evidenceSha256:current.evidence.sha256,
+        disposition:'retain-current',reason:''}]);
+      continue;
+    }
     current.validation='revalidation-required';
     const taskName=`tasks/${current.slice}.md`;
     localDecisions.set(current.deliveryId,composeCurrentLocalReviewEvidence({files,updatedFiles:proposed,next:current,
@@ -1330,6 +1358,6 @@ export function finalizeCurrentSetReplacement({proposal,review:decision}) {
   validateCurrentCandidate({files});
   validateCurrentPreparation({context:fresh.input.context,requirementsAuthority:fresh.input.requirementsAuthority,
     snapshotBytes:bytes,artifacts:new Map(snapshot.reviewedArtifacts.map(item=>[item.path,files.get(item.path)])),
-    profile:'completed-current'});
+    profile:fresh.completed.length?'completed-current':'converted-current'});
   return {files,authority:fresh.authority,snapshot,bytes,sha256:raw(bytes)};
 }

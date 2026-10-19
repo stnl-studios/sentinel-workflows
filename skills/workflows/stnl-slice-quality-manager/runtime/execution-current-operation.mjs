@@ -494,6 +494,11 @@ export async function reserveDispatch(handle,{responseVariant=null,terminal=fals
     if(await maybe(path.join(now.root,`round-${round}.origin.json`)))
       fail('OWNER_UNCERTAIN','this round already has an origin');
     const image=await requireA1(now);
+    const selected=image.inspection.deliveries.find(item=>item.deliveryId===now.owner.deliveryId);
+    if(!terminal && now.owner.operation==='VALIDATE_SLICE' && selected?.formalStatus==='PASS'
+      && selected.observedValidation==='current' && image.inspection.normalHandoff?.operation==='VALIDATE_SLICE'
+      && image.inspection.diagnostics.some(item=>item.field==='terminal'))
+      fail('EVIDENCE_INCOMPLETE','reviewed terminal reentry requires an explicit terminal dispatch');
     if(image.activation.activationId!==now.record.binding.baseActivationId &&
       image.activation.previousActivationId!==now.record.binding.baseActivationId)
       fail('STALE_BASE','A1 no longer descends from admitted A0');

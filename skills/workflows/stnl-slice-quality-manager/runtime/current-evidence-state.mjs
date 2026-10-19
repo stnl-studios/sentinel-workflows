@@ -1561,7 +1561,7 @@ function postTask(document,derived,digest,context,{cycle=null,admission=null,che
     return `  - \`${relative}\` | ${entry.kind==='absent'?'REMOVED':entry.sha256}`;
   });
   const base=[`- Origin attempt: ${request.attemptId}`,
-    '- Attempt type: revalidation',`- HEAD: ${payload.head}`,`- Result: ${payload.status}`,
+    `- Attempt type: ${request.attemptId==='attempt-01'?'initial':'revalidation'}`,`- HEAD: ${payload.head}`,`- Result: ${payload.status}`,
     scope.length?'- Files:':'- Files: none',...files,
     ...(!scope.length?[`- Fileless reason: ${request.scope.filelessReason}`]:[]),
     '- Authoritative commands:',...commands,`- Evidence summary: ${evidence}`].join('\n');
@@ -1640,6 +1640,51 @@ function postIndex(document,slice,status) {
   return utf8(lines.join('\n'));
 }
 
+// Restore presentation from an already retained formal, without producing a
+// record or changing its source objects. The caller still runs the full reader
+// before review/publication; this is not a new proof or authority operation.
+export function composeRetainedValidationCarriers({context,current,bundleBytes,taskBytes,indexBytes,priorBundles=[]}) {
+  const bundle=jsonBytes(bundleBytes,'retained validation bundle').value;
+  validateCurrentEvidence(bundle);
+  const record=bundle.validation,map=sourceMap(bundle);
+  if(!record || record.origin.transport!=='native' || record.recordFormat!=='stnl-task-record-v2')
+    incomplete('terminal reentry requires a retained native formal');
+  const capture=restoreCaptureSources('current-validation',record,map);
+  const request=jsonBytes(capture.validationRequest,'retained validation request').value;
+  const derived=deriveCapture({context,authority:request.authority,capture,
+    priorFiles:new Set(record.testedWork.entries.filter(item=>item.kind==='absent').map(item=>item.path)),
+    filelessReason:request.scope.filelessReason});
+  if(derived.rejection || derived.payload.status!=='PASS')incomplete('terminal reentry requires a retained PASS');
+  equal(record,{...derived.recordDraft,sources:record.sources},'EVIDENCE_STALE','retained validation record');
+  const initial=['stnl-current-validation-request-v1','stnl-current-validation-request-v2'].includes(request.format);
+  const facts=initial?inspectCurrentEvidence({context,authority:request.authority,bundleBytes,
+    counters:current.counters,baseline:current.baseline,observedWork:record.testedWork,
+    currentAuthoritySha256:current.authoritySha256}):null;
+  const admission=request.base.auxiliary?bundle.support.find(item=>item.kind==='validation'
+    &&item.id===request.base.auxiliary.cycle):null;
+  const cycle=admission&&bundle.findingsChecks.length?{lastWork:bundle.findingsChecks.at(-1).testedWork}:null;
+  const priorDeliveries=priorBundles.map(({slice,bundleBytes})=>{
+    const other=jsonBytes(bundleBytes,'retained prior bundle').value;
+    const source=restoreCaptureSources('current-validation',other.validation,sourceMap(other));
+    return {slice,facts:{formalStatus:'PASS',latest:{request:jsonBytes(source.validationRequest,'prior retained request').value}}};
+  });
+  const rendered={...derived,request:{...request,base:{...request.base,
+    baseline:request.base.baseline??facts.baseline}}};
+  let task=postTask(textBytes(taskBytes,'retained task draft').text,rendered,current.evidence.sha256,context,
+    {priorDeliveries,cycle,admission:admission?{record:admission}:null,
+      checks:bundle.findingsChecks,validations:bundle.support.filter(item=>item.kind==='validation')});
+  if(facts) {
+    const paths=items=>items.map(name=>`- \`${taskRelative(context,current.slice,name)}\``).join('\n')||'- none';
+    for(const [section,body]of [['Implementation Test Evidence',facts.records.implementation.map(item=>item.recordUtf8).join('\n\n')||'- none'],
+      ['Changed Areas',paths(facts.verifiedChanges)],['Corrections Applied',paths(facts.verifiedCorrections)],
+      ['Prior Validation Overlap',priorValidationOverlap(facts.verifiedChanges,priorDeliveries).map(([slice,name])=>
+        `- Slice ${slice.slice(6)} overlap: \`${taskRelative(context,current.slice,name)}\`; Retained verified local proof.`).join('\n')||'- none']])
+      task=utf8(postSection(task.toString('utf8'),section,body));
+  }
+  task=utf8(postSection(task.toString('utf8'),'Continuity',`- Current validation: current\n- Current evidence: ${initial?current.evidence.path:current.evidence.sha256}\n- Current action: VALIDATE_SLICE`));
+  return {task,index:postIndex(textBytes(indexBytes,'retained index draft').text,current.slice,'PASS')};
+}
+
 export async function composePostConversionValidation({context,requirementsAuthority,previous,admission=null,deliveryId,capture}) {
   closed(previous,['activationBytes','files'],'post-conversion predecessor');
   const activation=jsonBytes(previous.activationBytes,'predecessor activation').value;
@@ -1676,11 +1721,23 @@ export async function composePostConversionValidation({context,requirementsAutho
   if(completedProfile && (!previousV3
     || previousBundle.implementation.length || previousBundle.openDivergences.length))
     fail('UNSUPPORTED_FORMAT','completed native validation requires a verified native formal or findings base');
+  // Q20's reviewed reentry advances preparation only. Its local PASS is
+  // incorporated by the exact retain-current decision, rather than lastAttempt
+  // (which belongs to the preparation publication). Full proof verification
+  // below still checks the retained native admission and unchanged local base.
+  const retainedDecisions=snapshot.deliveries.find(item=>item.deliveryId===deliveryId)?.review.evidenceDecisions;
+  const terminalRetained=Boolean(request.terminal && previousV3 && current.validation==='current'
+    && current.normalization===null && current.lastDiagnostic===null && snapshot.deliveries.length===1
+    && previousRecord.origin.preparationRevision<snapshot.preparationRevision
+    && previousRecord.origin.localRevision===current.localRevision
+    && retainedDecisions?.length===1 && retainedDecisions[0].deliveryId===deliveryId
+    && retainedDecisions[0].disposition==='retain-current'
+    && retainedDecisions[0].evidenceSha256===current.evidence.sha256);
   const historicalPrior=previousV3 && previousRecord.origin.localRevision<current.localRevision;
   const previousRejected=current.normalization?.operation==='VALIDATE_SLICE'
     && (previousBundle?.support?.some(item=>item.kind==='rejection'
       && item.origin.operation==='VALIDATE_SLICE')??false);
-  if(previousV3 && !completedProfile && !historicalPrior && !previousRejected && (!previousBundle.findingsChecks.length
+  if(previousV3 && !completedProfile && !terminalRetained && !historicalPrior && !previousRejected && (!previousBundle.findingsChecks.length
       && activation.lastAttempt?.operationAttemptId!==previousRecord.origin.operationAttemptId
     || activation.lastAttempt?.outcome!=='recorded'
     || activation.lastAttempt?.terminalActivationId!==activation.activationId))
@@ -3481,9 +3538,11 @@ export function validateCurrentEvidenceCarriers({facts,sections,continuity,index
   if (continuity.evidence!==evidence) carrierMismatch(artifact,'Continuity.Current evidence','evidence path differs');
   if (!continuity.action?.trim()) carrierSyntax(artifact,'Continuity.Current action','action is empty');
   const action=operationalScalar(continuity.action);
+  if(facts.terminalPending && action!=='VALIDATE_SLICE')
+    carrierMismatch(artifact,'Continuity.Current action','reviewed terminal reentry requires VALIDATE_SLICE');
   if (['PLAN','REVIEW_PLAN','REPLAN','EXECUTE_SLICE','APPLY_FINDINGS','VALIDATE_SLICE',
     'INIT','RESUME','READINESS','CLOSE','COMPLETE'].includes(action)) {
-    const expectedAction=facts.rejection || facts.auxiliaryStatus==='BLOCKED' || facts.formalStatus==='BLOCKED' || facts.persistedValidation==='current'?null
+    const expectedAction=facts.terminalPending?'VALIDATE_SLICE':facts.rejection || facts.auxiliaryStatus==='BLOCKED' || facts.formalStatus==='BLOCKED' || facts.persistedValidation==='current'?null
       :facts.formalStatus==='NEEDS_FIX' && (!facts.cycle || facts.bundle.validation.id!==facts.cycle.admissionId)?'APPLY_FINDINGS'
         :facts.bundle===null?'EXECUTE_SLICE':'VALIDATE_SLICE';
     if (action!==expectedAction) carrierMismatch(artifact,'Continuity.Current action','operation token contradicts verified facts');

@@ -725,6 +725,12 @@ async function readCurrentExecution(specPath,withCapture=false,expectedOwner=nul
         fail('INVALID_CURRENT_IMAGE',`${item.slice}: converted inspection differs`);
       if(currentChecks&&!retainedFacts)validateInitialNormalization(current,facts);
       const priorDeliveries=[...completedOutputs,...outputs.slice(0,outputs.indexOf(item))];
+      const retainedDecision=snapshot.deliveries.find(value=>value.deliveryId===current.deliveryId)?.review.evidenceDecisions;
+      facts.terminalPending=continuity.deliveries.length===1 && current.validation==='current'
+        && current.normalization===null && current.lastDiagnostic===null
+        && retainedDecision?.length===1 && retainedDecision[0].deliveryId===current.deliveryId
+        && retainedDecision[0].disposition==='retain-current'
+        && retainedDecision[0].evidenceSha256===current.evidence?.sha256;
       if((retained&&!retainedPost)||currentChecks) {
         validateCurrentEvidenceCarriers({facts,sections:item.carrier.sections,
           continuity:item.carrier.continuity,index:item.carrier.index,slice:item.slice,
@@ -766,6 +772,8 @@ async function readCurrentExecution(specPath,withCapture=false,expectedOwner=nul
     fail('STALE_BASE','activation or official root changed between A and B','integrity','activation.json');
   const allOutputs=[...outputs,...completedOutputs];
   const certification=terminalCertification(snapshot,activation,allOutputs);
+  if(certification.complete&&outputs.some(item=>item.facts.terminalPending))
+    fail('REPLAN_REQUIRED','terminal reentry already has current integral proof','evidence','continuity.json','terminal');
   const observedByDelivery=withCapture
     ?new Map(allOutputs.map(item=>[item.deliveryId,scopedObservation(item.observation,item.targets)])):null;
   const terminalDiagnostic={kind:'evidence',artifact:'continuity.json',field:'terminal',reason:certification.reason};
@@ -773,7 +781,7 @@ async function readCurrentExecution(specPath,withCapture=false,expectedOwner=nul
     const blocked=outputs.filter(({facts})=>facts.observedValidation==='uncertain'
       || facts.auxiliaryStatus==='BLOCKED'||facts.formalStatus==='BLOCKED'
       || facts.rejection&&facts.consumption?.resumable===false);
-    const pending=blocked.length?null:outputs.find(({facts})=>facts.observedValidation!=='current');
+    const pending=blocked.length?null:outputs.find(({facts})=>facts.terminalPending||facts.observedValidation!=='current');
     let state='VALIDATION_BLOCKED',normalHandoff=null;
     let diagnostics=blocked.map(item=>({kind:'evidence',artifact:item.slice,field:'status',
       reason:item.facts.observedValidation==='uncertain'?'uncertain incorporation'
@@ -797,7 +805,7 @@ async function readCurrentExecution(specPath,withCapture=false,expectedOwner=nul
           :facts.cycle?.status==='TESTS_PASS'?'FINDINGS_CORRECTED'
             :facts.cycle?.status==='TESTS_FAIL'?'FINDINGS_RETRY_EXHAUSTED'
               :facts.auxiliaryStatus==='TESTS_FAIL'?'IMPLEMENTATION_RETRY_EXHAUSTED':'IMPLEMENTED_AWAITING_VALIDATION';
-        diagnostics=pending.diagnostics;
+        diagnostics=facts.terminalPending?[terminalDiagnostic]:pending.diagnostics;
       }
     }
     if(!pending&&!blocked.length) {
@@ -817,7 +825,7 @@ async function readCurrentExecution(specPath,withCapture=false,expectedOwner=nul
     const blocked=outputs.filter(item=>item.facts.formalStatus==='BLOCKED'
       || item.facts.auxiliaryStatus==='BLOCKED'
       || item.facts.observedValidation==='uncertain');
-    const pending=blocked.length?null:outputs.find(item=>item.facts.requiresFormalRevalidation);
+    const pending=blocked.length?null:outputs.find(item=>item.facts.terminalPending||item.facts.requiresFormalRevalidation);
     const post= pending?.facts.bundle?.validation?.recordFormat==='stnl-task-record-v2'
       || pending?.facts.rejection && pending.facts.consumption.kind==='bounded-formal-rejection';
     const hasPost=outputs.some(item=>item.facts.bundle?.validation?.recordFormat==='stnl-task-record-v2');
@@ -847,7 +855,7 @@ async function readCurrentExecution(specPath,withCapture=false,expectedOwner=nul
       diagnostics:certification.complete?[]:blocked.length?blocked.map(item=>({kind:'evidence',artifact:item.slice,
         field:'status',reason:item.facts.formalStatus==='BLOCKED'
           ?'blocked incorporation':'uncertain incorporation'}))
-        :pending?pending.diagnostics.length?pending.diagnostics:pending.facts.diagnostics
+        :pending?pending.facts.terminalPending?[terminalDiagnostic]:pending.diagnostics.length?pending.diagnostics:pending.facts.diagnostics
         :awaiting?[{kind:'evidence',artifact:awaiting.slice,field:'validation',
           reason:'active delivery has no current local proof'}]
         :[terminalDiagnostic]};

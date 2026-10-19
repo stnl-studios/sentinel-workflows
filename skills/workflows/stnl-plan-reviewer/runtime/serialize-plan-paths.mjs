@@ -24,7 +24,8 @@ export async function serializePlanPathClaims({specPath,candidateExecutionRoot})
    else throw new Error('Foreign replacement artifact');
   }
   const proposal=prepareCurrentSetReplacement({context,requirementsAuthority:source.requirementsAuthority,
-   previous:{activationBytes:source.activationBytes,files:source.files},artifacts,completedDeliveryIds:owned.marker.completedDeliveryIds});
+   previous:{activationBytes:source.activationBytes,files:source.files},artifacts,completedDeliveryIds:owned.marker.completedDeliveryIds,
+   ...(owned.marker.terminalValidation?{terminalValidation:true}:{})});
   for(const [name,bytes] of carriers)if(name!=='approved-preparation.json'&&!bytes.equals(Buffer.from(source.files.get(name)??[]))&&!bytes.equals(Buffer.from(proposal.files.get(name)??[])))
    throw Object.assign(new Error('Candidate evidence or continuity differs from its official source and current proposal'),{code:'EVIDENCE_INCOMPLETE'});
   if(carriers.has('approved-preparation.json'))await validateCurrentReviewCandidate({specPath,
