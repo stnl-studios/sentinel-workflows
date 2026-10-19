@@ -982,44 +982,8 @@ export function validateCurrentPreparation({context, requirementsAuthority, snap
     currentArtifacts:{plan:newPlan.sections, tasksIndex:afterRows, deliveries}};
 }
 
-// A local review replaces one already approved leaf. The proposal is deliberately
-// in memory: the existing reviewed snapshot, continuity and publisher remain the
-// only official carriers. Approval is supplied separately by an independent reviewer.
-export function prepareCurrentLocalReview(input) {
-  const {context,requirementsAuthority,previous,slice,planBytes,reviewedTaskBytes,currentTaskBytes}=input;
-  if(!SLICE.test(slice)) invalid('local review requires one selected slice');
-  const files=new Map([...previous.files].map(([name,bytes])=>[name,Buffer.from(bytes)]));
-  const old=validateCurrentImage({activationBytes:previous.activationBytes,files});
-  const activation=parseCurrentJson(decode(previous.activationBytes,'activation.json'));
-  if(activation.activeAttempt!==null || activation.requirementsAuthority!==requirementsAuthority
-    || activation.preparationRevision<=1)
-    fail('UNSUPPORTED_FORMAT','local review requires a quiet converted image');
-  const selected=old.continuity.deliveries.find(item=>item.slice===slice);
-  if(!selected || selected.validation==='uncertain' || selected.normalization!==null)
-    fail('UNSUPPORTED_FORMAT','selected S2 is not eligible for one local review');
-  const snapshot=parseCurrentJson(decode(files.get('approved-preparation.json'),'approved-preparation.json'));
-  const original=snapshot.normativeProjection.deliveries.find(item=>item.deliveryId===selected.deliveryId);
-  if([...snapshot.normativeProjection.deliveries,...snapshot.normativeProjection.completed].some(item=>item.deliveryId!==selected.deliveryId
-    && item.dependencies.includes(selected.deliveryId)))
-    fail('REPLAN_REQUIRED','consumer of selected delivery requires a set review');
-  const planName=`plans/${slice}.md`,taskName=`tasks/${slice}.md`;
-  const reviewed=new Map(snapshot.reviewedArtifacts.map(item=>[item.path,Buffer.from(item.utf8,'utf8')]));
-  if(!reviewed.has(planName) || !reviewed.has(taskName)) invalid('selected reviewed artifacts absent');
-  reviewed.set(planName,Buffer.from(planBytes));
-  reviewed.set(taskName,Buffer.from(reviewedTaskBytes));
-  const revisions=new Map(snapshot.deliveries.map(item=>[item.slice,item.localRevision]));
-  revisions.set(slice,selected.localRevision+1);
-  const {authority,status}=project({context,requirementsAuthority,artifacts:reviewed},false,true,
-    {preparationRevision:snapshot.preparationRevision+1,revisions,completed:snapshot.completed.map((item,i)=>({slice:item.slice,localRevision:item.localRevision,leaf:snapshot.normativeProjection.completed[i]}))});
-  if(status!=='ready' || !same(authority.normativeProjection.global,snapshot.normativeProjection.global)
-    || !same(authority.normativeProjection.completed,snapshot.normativeProjection.completed)
-    || authority.deliveries.some((item,i)=>item.slice!==slice && (
-      !same(item,snapshot.deliveries[i] && {slice:snapshot.deliveries[i].slice,
-        deliveryId:snapshot.deliveries[i].deliveryId,localRevision:snapshot.deliveries[i].localRevision,
-        authoritySha256:projected('delivery',snapshot.normativeProjection.deliveries[i])})
-      || !same(authority.normativeProjection.deliveries[i],snapshot.normativeProjection.deliveries[i]))))
-    fail('REPLAN_REQUIRED','local review changes set or another delivery');
-  const revised=authority.normativeProjection.deliveries.find(item=>item.deliveryId===selected.deliveryId);
+function assertPrivateLocalDelta({context,slice,original,revised,siblings}) {
+  const taskName=`tasks/${slice}.md`;
   const privateFields=new Set(['existingInputs','risksAndStrategy','expectedTests','verificationRecipe']);
   if(Object.keys(original).some(key=>!privateFields.has(key) && !same(original[key],revised[key]))
     || same(original,revised)) fail('REPLAN_REQUIRED','selected delta is transverse or has no normative change');
@@ -1029,26 +993,16 @@ export function prepareCurrentLocalReview(input) {
       .map(ref=>resolveLogicalProductClaim(context,artifact,ref.path))];
   const priorInputs=new Set(inputPaths(original,taskName)),nextInputs=new Set(inputPaths(revised,taskName));
   const changedInputs=[...new Set([...priorInputs,...nextInputs])].filter(name=>priorInputs.has(name)!==nextInputs.has(name));
-  for(const sibling of [...snapshot.deliveries,...snapshot.completed].filter(item=>item.deliveryId!==selected.deliveryId)) {
-    const leaf=[...snapshot.normativeProjection.deliveries,...snapshot.normativeProjection.completed].find(item=>item.deliveryId===sibling.deliveryId);
-    const artifact=`tasks/${sibling.slice}.md`,areas=claims(leaf.authorizedAreas,context,artifact,'sibling areas',true);
+  for(const {slice:siblingSlice,leaf} of siblings) {
+    const artifact=`tasks/${siblingSlice}.md`,areas=claims(leaf.authorizedAreas,context,artifact,'sibling areas',true);
     const inputs=inputPaths(leaf,artifact);
     if(changedInputs.some(name=>inputs.includes(name)||areas.some(area=>area.kind==='directory'?within(area.target,name):area.target===name)))
       fail('REPLAN_REQUIRED','local review changes a shared input or another delivery output reference');
   }
-  const changedPaths=[planName,taskName];
-  if(snapshot.reviewedArtifacts.some(item=>!changedPaths.includes(item.path)
-    && (authority.artifactHashes.find(hash=>hash.path===item.path)?.sha256!==item.sha256)))
-    fail('REPLAN_REQUIRED','unselected reviewed bytes differ');
-  const updatedFiles=new Map(files);
-  updatedFiles.set(planName,Buffer.from(planBytes));
-  updatedFiles.set(taskName,Buffer.from(currentTaskBytes));
-  const nextContinuity=structuredClone(old.continuity);
-  const next=nextContinuity.deliveries.find(item=>item.deliveryId===selected.deliveryId);
-  next.localRevision+=1;
-  next.authoritySha256=authority.deliveries.find(item=>item.deliveryId===selected.deliveryId).authoritySha256;
-  next.validation=next.evidence===null&&Object.values(next.counters).every(value=>value===0)
-    && selected.validation==='unvalidated'?'unvalidated':'revalidation-required';
+}
+
+function composeCurrentLocalReviewEvidence({files,updatedFiles,next,taskName,currentTaskBytes,indexBytes}) {
+  const slice=next.slice;
   let evidenceDecision=[];
   if(next.evidence) {
     const bundle=parseCurrentJson(decode(files.get(next.evidence.path),next.evidence.path));
@@ -1098,11 +1052,71 @@ export function prepareCurrentLocalReview(input) {
     evidenceDecision=[{deliveryId:next.deliveryId,evidenceSha256:next.evidence.sha256,
       disposition:'revalidate',reason:''}];
     const carriers=composeCurrentLocalReviewCarriers({task:Buffer.from(currentTaskBytes).toString('utf8'),
-      index:files.get('tasks.md').toString('utf8'),slice,evidenceSha256:currentChecks?next.evidence.path:next.evidence.sha256,
+      index:Buffer.from(indexBytes).toString('utf8'),slice,evidenceSha256:currentChecks?next.evidence.path:next.evidence.sha256,
       validationRecords:currentChecks||bundle.validation?.recordFormat==='stnl-task-record-v2'?[...bundle.support.filter(item=>item.kind==='validation'),bundle.validation].filter(Boolean):null});
     updatedFiles.set(taskName,carriers.task);
     updatedFiles.set('tasks.md',carriers.index);
   }
+  return evidenceDecision;
+}
+
+// A local review replaces one already approved leaf. The proposal is deliberately
+// in memory: the existing reviewed snapshot, continuity and publisher remain the
+// only official carriers. Approval is supplied separately by an independent reviewer.
+export function prepareCurrentLocalReview(input) {
+  const {context,requirementsAuthority,previous,slice,planBytes,reviewedTaskBytes,currentTaskBytes}=input;
+  if(!SLICE.test(slice)) invalid('local review requires one selected slice');
+  const files=new Map([...previous.files].map(([name,bytes])=>[name,Buffer.from(bytes)]));
+  const old=validateCurrentImage({activationBytes:previous.activationBytes,files});
+  const activation=parseCurrentJson(decode(previous.activationBytes,'activation.json'));
+  if(activation.activeAttempt!==null || activation.requirementsAuthority!==requirementsAuthority
+    || activation.preparationRevision<=1)
+    fail('UNSUPPORTED_FORMAT','local review requires a quiet converted image');
+  const selected=old.continuity.deliveries.find(item=>item.slice===slice);
+  if(!selected || selected.validation==='uncertain' || selected.normalization!==null)
+    fail('UNSUPPORTED_FORMAT','selected S2 is not eligible for one local review');
+  const snapshot=parseCurrentJson(decode(files.get('approved-preparation.json'),'approved-preparation.json'));
+  const original=snapshot.normativeProjection.deliveries.find(item=>item.deliveryId===selected.deliveryId);
+  if([...snapshot.normativeProjection.deliveries,...snapshot.normativeProjection.completed].some(item=>item.deliveryId!==selected.deliveryId
+    && item.dependencies.includes(selected.deliveryId)))
+    fail('REPLAN_REQUIRED','consumer of selected delivery requires a set review');
+  const planName=`plans/${slice}.md`,taskName=`tasks/${slice}.md`;
+  const reviewed=new Map(snapshot.reviewedArtifacts.map(item=>[item.path,Buffer.from(item.utf8,'utf8')]));
+  if(!reviewed.has(planName) || !reviewed.has(taskName)) invalid('selected reviewed artifacts absent');
+  reviewed.set(planName,Buffer.from(planBytes));
+  reviewed.set(taskName,Buffer.from(reviewedTaskBytes));
+  const revisions=new Map(snapshot.deliveries.map(item=>[item.slice,item.localRevision]));
+  revisions.set(slice,selected.localRevision+1);
+  const {authority,status}=project({context,requirementsAuthority,artifacts:reviewed},false,true,
+    {preparationRevision:snapshot.preparationRevision+1,revisions,completed:snapshot.completed.map((item,i)=>({slice:item.slice,localRevision:item.localRevision,leaf:snapshot.normativeProjection.completed[i]}))});
+  if(status!=='ready' || !same(authority.normativeProjection.global,snapshot.normativeProjection.global)
+    || !same(authority.normativeProjection.completed,snapshot.normativeProjection.completed)
+    || authority.deliveries.some((item,i)=>item.slice!==slice && (
+      !same(item,snapshot.deliveries[i] && {slice:snapshot.deliveries[i].slice,
+        deliveryId:snapshot.deliveries[i].deliveryId,localRevision:snapshot.deliveries[i].localRevision,
+        authoritySha256:projected('delivery',snapshot.normativeProjection.deliveries[i])})
+      || !same(authority.normativeProjection.deliveries[i],snapshot.normativeProjection.deliveries[i]))))
+    fail('REPLAN_REQUIRED','local review changes set or another delivery');
+  const revised=authority.normativeProjection.deliveries.find(item=>item.deliveryId===selected.deliveryId);
+  assertPrivateLocalDelta({context,slice,original,revised,
+    siblings:[...snapshot.deliveries,...snapshot.completed].filter(item=>item.deliveryId!==selected.deliveryId)
+      .map(item=>({slice:item.slice,leaf:[...snapshot.normativeProjection.deliveries,...snapshot.normativeProjection.completed]
+        .find(leaf=>leaf.deliveryId===item.deliveryId)}))});
+  const changedPaths=[planName,taskName];
+  if(snapshot.reviewedArtifacts.some(item=>!changedPaths.includes(item.path)
+    && (authority.artifactHashes.find(hash=>hash.path===item.path)?.sha256!==item.sha256)))
+    fail('REPLAN_REQUIRED','unselected reviewed bytes differ');
+  const updatedFiles=new Map(files);
+  updatedFiles.set(planName,Buffer.from(planBytes));
+  updatedFiles.set(taskName,Buffer.from(currentTaskBytes));
+  const nextContinuity=structuredClone(old.continuity);
+  const next=nextContinuity.deliveries.find(item=>item.deliveryId===selected.deliveryId);
+  next.localRevision+=1;
+  next.authoritySha256=authority.deliveries.find(item=>item.deliveryId===selected.deliveryId).authoritySha256;
+  next.validation=next.evidence===null&&Object.values(next.counters).every(value=>value===0)
+    && selected.validation==='unvalidated'?'unvalidated':'revalidation-required';
+  const evidenceDecision=composeCurrentLocalReviewEvidence({files,updatedFiles,next,taskName,
+    currentTaskBytes,indexBytes:files.get('tasks.md')});
   updatedFiles.set('continuity.json',Buffer.from(canonical(nextContinuity)+'\n','utf8'));
   const hashes=new Map(authority.artifactHashes.map(item=>[item.path,item.sha256]));
   const reviewRequest={scope:'slice',authoritySha256:next.authoritySha256,
@@ -1160,10 +1174,9 @@ export function finalizeCurrentLocalReview({proposal,review:decision}) {
   return {files,authority,selected};
 }
 
-// Q18 composition only. The caller must capture/inspect the quiet current source
-// with the existing reader before using this proposal. This pure boundary does
-// not admit, observe product, publish, or replace semantic evidence validation.
-// Reopening or changing a leaf belongs to the next bounded D2 block.
+// Bounded set composition only: Q18 retires the active queue; Q19 reopens one
+// completed contribution for a private review. The caller owns quiet source
+// capture and the full semantic reader gate. No admission or publication here.
 export function prepareCurrentSetReplacement(value) {
   exact(value,['context','requirementsAuthority','previous','artifacts','completedDeliveryIds'],
     'set replacement input');
@@ -1178,23 +1191,30 @@ export function prepareCurrentSetReplacement(value) {
   if(activation.activeAttempt!==null)fail('OWNER_ACTIVE','set replacement requires a quiet predecessor');
   if(snapshot.requirementsAuthority!==requirementsAuthority)changed('set replacement requirements differ');
   const artifacts=artifactMap(value.artifacts);
-  if([...artifacts.keys()].some(name=>!['plan.md','tasks.md'].includes(name)))
-    invalid('Q18 retirement accepts only the two global reviewed artifacts');
   const ids=array(value.completedDeliveryIds,'completed selection').map(id=>uuid(id,'completed selection'));
   if(new Set(ids).size!==ids.length)invalid('duplicate completed selection');
   const members=[...continuity.deliveries,...continuity.completed];
   const ordered=[...members].sort((a,b)=>ordinal(a.deliveryId,b.deliveryId));
   if(ids.some(id=>!ordered.some(item=>item.deliveryId===id)))invalid('completed selection has a foreign identity');
-  if(!same([...ids].sort(ordinal),ordered.map(item=>item.deliveryId)) || !continuity.deliveries.length)
-    fail('UNSUPPORTED_FORMAT','Q18 composition currently retires the active queue; reopening or another membership change is not supported');
+  const completedIds=new Set(ids),active=ordered.filter(item=>!completedIds.has(item.deliveryId));
+  const retiring=continuity.deliveries.length>0&&active.length===0;
+  const reopening=continuity.deliveries.length===0&&active.length===1&&ids.length>0;
+  if(!retiring&&!reopening)
+    fail('UNSUPPORTED_FORMAT','set replacement supports Q18 retirement or one Q19 private reopening');
+  const selected=reopening?active[0]:null;
+  if(selected&&selected.normalization!==null)
+    fail('UNSUPPORTED_FORMAT','Q19 requires a quiet contribution without normalization');
+  const expectedPaths=['plan.md','tasks.md',...active.flatMap(item=>[`plans/${item.slice}.md`,`tasks/${item.slice}.md`])];
+  if(!same([...artifacts.keys()].sort(ordinal),expectedPaths.sort(ordinal)))
+    invalid('set replacement reviewed artifact membership differs');
   for(const current of members) {
     if(current.validation!=='current' || current.evidence===null
       || current.normalization && ['reserved','running'].includes(current.normalization.status))
-      fail('EVIDENCE_INCOMPLETE',`${current.slice}: Q18 requires inspected current local evidence`);
+      fail('EVIDENCE_INCOMPLETE',`${current.slice}: set replacement requires inspected current local evidence`);
     const bundle=validateCurrentEvidence(parseCurrentJson(decode(files.get(current.evidence.path),current.evidence.path)));
     if(bundle.validation===null || bundle.openFindings.some(item=>item.severity==='blocking')
       || bundle.openDivergences.length)
-      fail('EVIDENCE_INCOMPLETE',`${current.slice}: Q18 requires an unblocked formal contribution`);
+      fail('EVIDENCE_INCOMPLETE',`${current.slice}: set replacement requires an unblocked formal contribution`);
   }
   const reviewed=new Map(snapshot.reviewedArtifacts.map(item=>[item.path,Buffer.from(item.utf8,'utf8')]));
   const retained=new Map();
@@ -1213,40 +1233,63 @@ export function prepareCurrentSetReplacement(value) {
   const preparationRevision=snapshot.preparationRevision+1;
   if(!Number.isSafeInteger(preparationRevision))invalid('set replacement preparation revision exhausted');
   const bySlice=new Map(members.map(current=>[current.slice,current.deliveryId]));
+  const byId=new Map(members.map(current=>[current.deliveryId,current.slice]));
   const leaves=new Map([...snapshot.normativeProjection.deliveries,...snapshot.normativeProjection.completed]
-    .map(leaf=>[leaf.deliveryId,{...leaf,obligations:leaf.obligations.map(obligation=>({...obligation,
-      fullOwner:obligation.fullOwner.startsWith('delivery:')?obligation.fullOwner
-        :`delivery:${bySlice.get(obligation.fullOwner)}`}))}]));
-  const {authority,status}=project({context,requirementsAuthority,artifacts},false,true,
-    {preparationRevision,revisions:new Map(),completed:ordered.map(current=>({slice:current.slice,
-      localRevision:current.localRevision,leaf:leaves.get(current.deliveryId)}))});
+    .map(leaf=>[leaf.deliveryId,{...leaf,obligations:leaf.obligations.map(obligation=>{
+      const owner=obligation.fullOwner.startsWith('delivery:')?obligation.fullOwner.slice(9):bySlice.get(obligation.fullOwner);
+      return {...obligation,fullOwner:completedIds.has(owner)?`delivery:${owner}`:byId.get(owner)};
+    })}]));
+  const completed=ordered.filter(item=>completedIds.has(item.deliveryId));
+  const local={preparationRevision,revisions:new Map(active.map(item=>[item.slice,item.localRevision+1])),
+    completed:completed.map(current=>({slice:current.slice,localRevision:current.localRevision,leaf:leaves.get(current.deliveryId)}))};
+  let {authority,status}=project({context,requirementsAuthority,artifacts},false,true,local);
   if(status!=='ready')stale('set replacement is not ready for review');
-  if(authority.deliveries.length || authority.normativeProjection.global.order.length)
-    fail('UNSUPPORTED_FORMAT','Q18 retirement has no active detail artifacts');
+  if(!same(authority.deliveries.map(item=>[item.deliveryId,item.slice]),active.map(item=>[item.deliveryId,item.slice])))
+    invalid('set replacement active identities differ from the captured set');
   const beforeGlobal=snapshot.normativeProjection.global,afterGlobal=authority.normativeProjection.global;
   if(['objective','strategy','risks'].some(key=>!same(beforeGlobal[key],afterGlobal[key])))
-    fail('UNSUPPORTED_FORMAT','Q18 retirement preserves global objective, strategy and risks');
-  const nextContinuity={...structuredClone(continuity),deliveries:[],completed:structuredClone(ordered)};
-  const proposed=new Map(artifacts);
+    fail('UNSUPPORTED_FORMAT','set replacement preserves global objective, strategy and risks');
+  if(selected)assertPrivateLocalDelta({context,slice:selected.slice,original:leaves.get(selected.deliveryId),
+    revised:authority.normativeProjection.deliveries[0],
+    siblings:completed.map(item=>({slice:item.slice,leaf:leaves.get(item.deliveryId)}))});
+  const nextContinuity={...structuredClone(continuity),deliveries:structuredClone(active),completed:structuredClone(completed)};
+  const proposed=new Map(artifacts),localDecisions=new Map();
   for(const current of nextContinuity.completed) {
     const authoritySha256=projected('delivery',leaves.get(current.deliveryId));
     let bytes=files.get(current.evidence.path);
     if(authoritySha256!==current.authoritySha256) {
       const bundle=parseCurrentJson(decode(bytes,current.evidence.path));
-      // Only the current index changes. Captured objects, record text, origin,
-      // contract and sources retain their literal historical authority.
+      // Only the current index changes; historical records and objects stay literal.
       bytes=Buffer.from(canonical({...bundle,currentAuthoritySha256:authoritySha256})+'\n','utf8');
     }
     current.authoritySha256=authoritySha256;
     current.evidence.sha256=raw(bytes);
     proposed.set(current.evidence.path,Buffer.from(bytes));
   }
+  for(const current of nextContinuity.deliveries) {
+    current.localRevision+=1;
+    current.authoritySha256=authority.deliveries.find(item=>item.deliveryId===current.deliveryId).authoritySha256;
+    current.validation='revalidation-required';
+    const taskName=`tasks/${current.slice}.md`;
+    localDecisions.set(current.deliveryId,composeCurrentLocalReviewEvidence({files,updatedFiles:proposed,next:current,
+      taskName,currentTaskBytes:artifacts.get(taskName),indexBytes:artifacts.get('tasks.md')}));
+  }
+  // Review the final current carriers, including the exact revalidation digest.
+  const finalArtifacts=new Map([...proposed].filter(([name])=>expectedPaths.includes(name)));
+  const finalProjection=project({context,requirementsAuthority,artifacts:finalArtifacts},false,true,local);
+  if(finalProjection.status!=='ready'||finalProjection.authority.normativeSha256!==authority.normativeSha256)
+    invalid('composed current carriers changed the reviewed normative authority');
+  authority=finalProjection.authority;
   proposed.set('continuity.json',Buffer.from(canonical(nextContinuity)+'\n','utf8'));
   const hashes=new Map(authority.artifactHashes.map(item=>[item.path,item.sha256]));
   const reviewRequest={globalReview:{scope:'set',authoritySha256:authority.globalReviewAuthoritySha256,
     examinedArtifactHashes:['plan.md','tasks.md'].map(path=>({path,sha256:hashes.get(path)})),
     evidenceDecisions:nextContinuity.completed.map(current=>({deliveryId:current.deliveryId,
-      evidenceSha256:current.evidence.sha256,disposition:'retain-current',reason:''}))},deliveries:[]};
+      evidenceSha256:current.evidence.sha256,disposition:'retain-current',reason:''}))},
+    deliveries:authority.deliveries.map(current=>({deliveryId:current.deliveryId,review:{scope:'slice',
+      authoritySha256:current.authoritySha256,
+      examinedArtifactHashes:[`plans/${current.slice}.md`,`tasks/${current.slice}.md`].map(path=>({path,sha256:hashes.get(path)})),
+      evidenceDecisions:localDecisions.get(current.deliveryId)}}))};
   return {input:value,files:proposed,authority,reviewRequest,
     sourceActivationSha256:raw(previous.activationBytes),
     completed:nextContinuity.completed.map(current=>({deliveryId:current.deliveryId,slice:current.slice,
@@ -1264,12 +1307,22 @@ export function finalizeCurrentSetReplacement({proposal,review:decision}) {
     ['plan.md','tasks.md'],hashes,'set replacement global review',
     fresh.reviewRequest.globalReview.evidenceDecisions.map(({deliveryId,evidenceSha256,disposition})=>
       ({deliveryId,evidenceSha256,disposition})));
-  if(array(decision.deliveries,'set replacement delivery reviews').length)
-    stale('Q18 retirement has no active delivery reviews');
+  if(array(decision.deliveries,'set replacement delivery reviews').length!==fresh.authority.deliveries.length)
+    stale('set replacement delivery review count differs');
+  const deliveries=fresh.authority.deliveries.map((current,index)=>{
+    const local=exact(decision.deliveries[index],['deliveryId','review'],'set replacement delivery review');
+    if(local.deliveryId!==current.deliveryId)stale('set replacement delivery review identity differs');
+    const request=fresh.reviewRequest.deliveries[index].review;
+    review(local.review,'slice',current.authoritySha256,request.examinedArtifactHashes.map(item=>item.path),
+      hashes,'set replacement local review',request.evidenceDecisions.map(({deliveryId,evidenceSha256,disposition})=>
+        ({deliveryId,evidenceSha256,disposition})));
+    return {slice:current.slice,deliveryId:current.deliveryId,localRevision:current.localRevision,
+      review:parseCurrentJson(canonical(local.review))};
+  });
   const snapshot={format:'stnl-preparation-v3',preparationRevision:fresh.authority.preparationRevision,
     requirementsAuthority:fresh.authority.requirementsAuthority,normativeSha256:fresh.authority.normativeSha256,
     normativeProjection:fresh.authority.normativeProjection,
-    globalReview:parseCurrentJson(canonical(decision.globalReview)),deliveries:[],completed:fresh.completed,
+    globalReview:parseCurrentJson(canonical(decision.globalReview)),deliveries,completed:fresh.completed,
     reviewedArtifacts:fresh.authority.artifactHashes.map(item=>({path:item.path,sha256:item.sha256,
       utf8:fresh.files.get(item.path).toString('utf8')}))};
   const bytes=Buffer.from(canonical(snapshot)+'\n','utf8'),files=new Map(fresh.files);

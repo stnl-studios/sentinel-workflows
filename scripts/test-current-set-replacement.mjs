@@ -8,6 +8,7 @@ import {syncBuiltinESMExports} from 'node:module';
 import {completedNativeCase} from './fixtures/current-completed-native.mjs';
 import {normalizedFormal} from './fixtures/current-native-normalization.mjs';
 import {reviewInput} from './fixtures/current-completed-pristine.mjs';
+import {initialArtifacts} from './fixtures/current-initial-preparation.mjs';
 import {publishCurrentLocalReview} from '../skills/workflows/stnl-slice-executor/runtime/current-local-review.mjs';
 import {prepareCurrentLocalReview,prepareCurrentSetReplacement,finalizeCurrentSetReplacement} from
   '../skills/workflows/stnl-execution-planner/runtime/execution-preparation-current.mjs';
@@ -60,10 +61,12 @@ function inputFor(image) {
     completedDeliveryIds:[...snapshot.completed,...snapshot.deliveries].map(item=>item.deliveryId)};
 }
 function controlledReview(proposal) {
-  return {globalReview:{...structuredClone(proposal.reviewRequest.globalReview),decision:'approved',
-    summary:'Controlled mechanical Q18 decision; not an official independent review.',
-    evidenceDecisions:proposal.reviewRequest.globalReview.evidenceDecisions.map(item=>({...item,
-      reason:'Controlled review retains literal sources and equivalent ownership for these exact final bytes.'}))},deliveries:[]};
+  const approve=request=>({...structuredClone(request),decision:'approved',
+    summary:'Controlled mechanical set decision; not an official independent review.',
+    evidenceDecisions:request.evidenceDecisions.map(item=>({...item,
+      reason:'Controlled review binds the exact current digest and its required retention or revalidation.'}))});
+  return {globalReview:approve(proposal.reviewRequest.globalReview),
+    deliveries:proposal.reviewRequest.deliveries.map(item=>({deliveryId:item.deliveryId,review:approve(item.review)}))};
 }
 
 async function composeVerified(input,specPath) {
@@ -73,12 +76,13 @@ async function composeVerified(input,specPath) {
   for(const name of methods)childProcess[name]=deny;
   childProcess.ChildProcess.prototype.spawn=deny;syncBuiltinESMExports();
   try {
+    await validateCurrentReviewCandidate({specPath,files:input.previous.files});
     const proposal=prepareCurrentSetReplacement(input);
     const result=finalizeCurrentSetReplacement({proposal,review:controlledReview(proposal)});
     // Existing semantic proof, historical ownership and live product checks;
     // no publisher and no new command, judgment, record or activation.
-    await validateCurrentReviewCandidate({specPath,files:result.files});
-    return {proposal,result};
+    const inspection=await validateCurrentReviewCandidate({specPath,files:result.files});
+    return {proposal,result,inspection};
   } finally {
     for(const [name,fn] of saved)childProcess[name]=fn;
     childProcess.ChildProcess.prototype.spawn=spawn;syncBuiltinESMExports();
@@ -315,4 +319,184 @@ test('Q18 preserves noninitial local revision and consumed counters from a revie
   });
   const untouched=await captureCurrentExecution(fixture.specPath);
   assert.deepEqual(untouched.activationBytes,source.activationBytes);assert.deepEqual(untouched.files,source.files);
+});
+
+// The reader uses this same inert review view: retain the real capture identity,
+// rebind only its proposed content, and never allocate/write an official marker.
+function inertReviewSource(source,result) {
+  const snapshot=decode(result.files.get('approved-preparation.json'));
+  const activation={...decode(source.activationBytes),preparationRevision:snapshot.preparationRevision,
+    requirementsAuthority:snapshot.requirementsAuthority,normativeSha256:snapshot.normativeSha256,
+    approvedSnapshotSha256:sha(result.files.get('approved-preparation.json')),
+    artifacts:[...result.files].map(([path,bytes])=>({path,sha256:sha(bytes)})).sort((a,b)=>a.path.localeCompare(b.path)),
+    lastAttempt:null};
+  return {...source,activationBytes:Buffer.from(canonical(activation)+'\n'),files:cloneFiles(result.files)};
+}
+const setSection=(text,name,body)=>text.replace(new RegExp(`(^## ${name}\\n\\n)[\\s\\S]*?(?=^## |$(?![\\s\\S]))`,'mu'),
+  (_,heading)=>heading+body+'\n\n');
+function reopeningInput(source,deliveryId) {
+  const snapshot=decode(source.files.get('approved-preparation.json'));
+  const continuity=decode(source.files.get('continuity.json'));
+  const member=continuity.completed.find(item=>item.deliveryId===deliveryId),slice=member.slice,number=slice.slice(6);
+  const leaf=structuredClone(snapshot.normativeProjection.completed.find(item=>item.deliveryId===deliveryId));
+  const members=new Map(continuity.completed.map(item=>[item.deliveryId,item.slice]));
+  leaf.obligations=leaf.obligations.map(item=>({...item,
+    fullOwner:item.fullOwner==='delivery:'+deliveryId?slice:item.fullOwner}));
+  leaf.verificationRecipe.checks[0].args.splice(1,0,{literal:'--test-reporter=tap'});
+  leaf.expectedTests='- node --test --test-reporter=tap other/greeting.test.mjs';
+  const revision=snapshot.preparationRevision+1,local=member.localRevision+1;
+  const dependencies=leaf.dependencies.map(id=>members.get(id));
+  const refs=group=>path.relative(path.dirname(path.join(source.context.logicalExecutionRoot,`${group}/${slice}.md`)),
+    source.context.logicalAuthorityPath).split(path.sep).join('/');
+  const expected='- `'+path.relative(path.join(source.context.logicalExecutionRoot,'tasks'),
+    path.join(source.context.productRoot,'other/greeting.mjs')).split(path.sep).join('/')+'`';
+  const templates=initialArtifacts({form:'standalone'});
+  let plan=Buffer.from(templates.get('plans/slice-02.md')).toString('utf8').replaceAll('Pay','Greeting').replaceAll('pay','greeting');
+  let task=Buffer.from(templates.get('tasks/slice-02.md')).toString('utf8').replaceAll('Pay','Greeting').replaceAll('pay','greeting');
+  plan=setSection(plan,'References',`- Slice: ${number}\n- Delivery ID: ${deliveryId}\n- Requirements source: \`${refs('plans')}\`\n- Requirements authority: ${snapshot.requirementsAuthority}\n- Plan revision: ${revision}\n- Local revision: ${local}\n- Global plan: \`../plan.md\`\n- Review state: approved`);
+  task=setSection(task,'References',`- Slice: ${number}\n- Delivery ID: ${deliveryId}\n- Plan: \`../plans/${slice}.md\`\n- Requirements source: \`${refs('tasks')}\`\n- Requirements authority: ${snapshot.requirementsAuthority}\n- Plan revision: ${revision}\n- Local revision: ${local}\n- Global tasks: \`../tasks.md\``);
+  const planSections={'Objective and Observable Result':leaf.objectiveAndObservableResult,Requirements:leaf.requirements,
+    'Included Scope':leaf.includedScope,'Out of Scope and Boundaries':leaf.outOfScopeAndBoundaries,
+    'Authorized Areas':leaf.authorizedAreas,'Expected Files':expected,'Existing Inputs':leaf.existingInputs,
+    'Protected Responsibilities':leaf.protectedResponsibilities,Dependencies:dependencies.map(value=>'- '+value).join('\n')||'- none',
+    'Risks and Strategy':leaf.risksAndStrategy,'Expected Tests':leaf.expectedTests,
+    'Verification Recipe':'- Recipe: '+JSON.stringify(leaf.verificationRecipe),'Completion Criterion':leaf.completionCriterion};
+  for(const [name,body] of Object.entries(planSections))plan=setSection(plan,name,body);
+  const taskSections={Result:leaf.taskResult,'Acceptance Obligations':leaf.obligations.map(item=>
+    `- ${item.id} | requirement: ${item.requirement} | contribution: ${item.contribution} | full owner: ${item.fullOwner} | condition: ${item.condition} | proof: ${item.proof}`).join('\n'),
+    'Authorized Areas':leaf.authorizedAreas,'Expected Files':expected,'Existing Inputs':leaf.existingInputs,
+    'Protected Responsibilities':leaf.protectedResponsibilities,'Expected Tests':leaf.expectedTests,
+    'Verification Recipe':'- Recipe: '+JSON.stringify(leaf.verificationRecipe),
+    Continuity:'- Current validation: revalidation-required\n- Current evidence: none\n- Current action: VALIDATE_SLICE'};
+  for(const [name,body] of Object.entries(taskSections))task=setSection(task,name,body);
+  const title=`${number} - Verification`,deps=dependencies.join(', ')||'-';
+  const areas=leaf.authorizedAreas.split('\n').map(line=>line.slice(2).replace(/`([^`]+)`/gu,(_,ref)=>
+    '`'+path.relative(source.context.logicalExecutionRoot,
+      path.resolve(source.context.logicalExecutionRoot,'plans',ref)).split(path.sep).join('/')+'`')).join('; ');
+  const requirements=[...new Set(leaf.obligations.map(item=>item.requirement))].join(', ');
+  const row=`| ${title} | ${leaf.taskResult} | ${deps} | ${requirements} | ${areas} | plans/${slice}.md |`;
+  let globalPlan=Buffer.from(source.files.get('plan.md')).toString('utf8').replace(/^- Plan revision: .+$/mu,'- Plan revision: '+revision);
+  globalPlan=setSection(globalPlan,'Serial Slice Order','| Slice | Observable delivery | Dependencies | Requirements | Authorized areas | Detailed plan |\n|---|---|---|---|---|---|\n'+row);
+  const index=Buffer.from(source.files.get('tasks.md')).toString('utf8').trimEnd()+`\n| [ ] | ${title} | ${leaf.taskResult} | ${deps} | tasks/${slice}.md | pending | pending |\n`;
+  return {context:source.context,requirementsAuthority:source.requirementsAuthority,
+    previous:{activationBytes:Buffer.from(source.activationBytes),files:cloneFiles(source.files)},
+    artifacts:new Map([['plan.md',Buffer.from(globalPlan)],['tasks.md',Buffer.from(index)],
+      [`plans/${slice}.md`,Buffer.from(plan)],[`tasks/${slice}.md`,Buffer.from(task)]]),
+    completedDeliveryIds:continuity.completed.filter(item=>item.deliveryId!==deliveryId).map(item=>item.deliveryId)};
+}
+
+test('Q19 reopens private B from Q18 in memory, retaining independent A and literal proof without another PASS',async t=>{
+  const fixture=await completedNativeCase(t,{drift:false,independent:true});
+  const live=await captureCurrentExecution(fixture.specPath),before=decode(live.files.get('continuity.json'));
+  assert.deepEqual(decode(live.files.get('approved-preparation.json')).normativeProjection.completed[0].dependencies,[]);
+  const first=await composeVerified(inputFor(live),fixture.specPath);
+  assert.equal(first.inspection.state,'VALIDATION_BLOCKED');assert.equal(first.inspection.normalHandoff,null);
+  const q18=inertReviewSource(live,first.result),prior=decode(q18.files.get('continuity.json'));
+  assert.equal(prior.deliveries.length,0);
+  assert.equal(q18.files.has(`plans/${fixture.delivery.slice}.md`),false);
+  assert.equal(q18.files.has(`tasks/${fixture.delivery.slice}.md`),false);
+  const input=reopeningInput(q18,fixture.delivery.deliveryId);
+  const second=await composeVerified(input,fixture.specPath),next=decode(second.result.files.get('continuity.json'));
+  const a=prior.completed.find(item=>item.deliveryId!==fixture.delivery.deliveryId),b=prior.completed.find(item=>item.deliveryId===fixture.delivery.deliveryId);
+  const expectedLeaf=structuredClone(first.result.snapshot.normativeProjection.completed.find(item=>item.deliveryId===b.deliveryId));
+  expectedLeaf.obligations=expectedLeaf.obligations.map(item=>({...item,fullOwner:item.fullOwner==='delivery:'+b.deliveryId?b.slice:item.fullOwner}));
+  expectedLeaf.verificationRecipe.checks[0].args.splice(1,0,{literal:'--test-reporter=tap'});
+  expectedLeaf.expectedTests='- node --test --test-reporter=tap other/greeting.test.mjs';
+  const expectedGlobal={...first.result.snapshot.normativeProjection.global,order:[b.deliveryId]};
+  const expectedA=first.result.snapshot.normativeProjection.completed.filter(item=>item.deliveryId===a.deliveryId);
+  assert.deepEqual(second.result.snapshot.normativeProjection.deliveries,[expectedLeaf]);
+  assert.equal(second.result.snapshot.preparationRevision,first.result.snapshot.preparationRevision+1);
+  assert.equal(second.result.snapshot.requirementsAuthority,first.result.snapshot.requirementsAuthority);
+  assert.deepEqual(next.completed,[a]);
+  assert.ok(Buffer.from(second.result.files.get(a.evidence.path)).equals(Buffer.from(q18.files.get(a.evidence.path))));
+  assert.ok(Buffer.from(second.result.files.get(a.evidence.path)).equals(Buffer.from(live.files.get(before.completed[0].evidence.path))));
+  assert.equal(next.deliveries[0].deliveryId,b.deliveryId);assert.equal(next.deliveries[0].slice,b.slice);
+  assert.equal(next.deliveries[0].localRevision,b.localRevision+1);
+  assert.equal(next.deliveries[0].validation,'revalidation-required');
+  assert.deepEqual(next.deliveries[0].counters,b.counters);assert.deepEqual(next.deliveries[0].baseline,b.baseline);
+  assert.equal(next.nextSliceOrdinal,prior.nextSliceOrdinal);
+  const bundle=decode(second.result.files.get(b.evidence.path)),old=decode(q18.files.get(b.evidence.path));
+  assert.deepEqual(bundle,{...old,currentAuthoritySha256:next.deliveries[0].authoritySha256});
+  assert.deepEqual(second.result.snapshot.normativeProjection.global,expectedGlobal);
+  assert.deepEqual(second.result.snapshot.normativeProjection.completed,expectedA);
+  assert.deepEqual(second.proposal.reviewRequest,{globalReview:{scope:'set',
+    authoritySha256:projected('global-review',{requirementsAuthority:q18.requirementsAuthority,
+      global:expectedGlobal,deliveryIds:[b.deliveryId],completed:expectedA}),
+    examinedArtifactHashes:['plan.md','tasks.md'].map(path=>({path,sha256:sha(second.result.files.get(path))})),
+    evidenceDecisions:[{deliveryId:a.deliveryId,evidenceSha256:a.evidence.sha256,disposition:'retain-current',reason:''}]},
+    deliveries:[{deliveryId:b.deliveryId,review:{scope:'slice',authoritySha256:projected('delivery',expectedLeaf),
+      examinedArtifactHashes:[`plans/${b.slice}.md`,`tasks/${b.slice}.md`].map(path=>({path,sha256:sha(second.result.files.get(path))})),
+      evidenceDecisions:[{deliveryId:b.deliveryId,evidenceSha256:sha(Buffer.from(canonical({...old,
+        currentAuthoritySha256:projected('delivery',expectedLeaf)})+'\n')),disposition:'revalidate',reason:''}]}}]});
+  assert.ok(!input.artifacts.get(`tasks/${b.slice}.md`).equals(second.result.files.get(`tasks/${b.slice}.md`)),
+    'the exact reviewed Task includes the computed current carriers');
+  assert.equal(second.inspection.deliveries[0].formalStatus,null);
+  assert.equal(second.inspection.deliveries[0].persistedValidation,'revalidation-required');
+  assert.deepEqual(second.inspection.normalHandoff,{operation:'VALIDATE_SLICE',slice:b.slice,deliveryId:b.deliveryId});
+  assert.equal(second.result.files.has('activation.json'),false);
+  await t.test('Q19 requires its exact global and local review plus revalidate digest',()=>{
+    assert.throws(()=>finalizeCurrentSetReplacement({proposal:second.proposal,review:null}),{code:'STALE_APPROVAL'});
+    assert.throws(()=>finalizeCurrentSetReplacement({proposal:second.proposal,review:controlledReview(first.proposal)}),{code:'STALE_APPROVAL'});
+    for(const alter of [
+      decision=>{decision.deliveries=[];},
+      decision=>{decision.deliveries[0].deliveryId=a.deliveryId;},
+      decision=>{decision.deliveries[0].review.evidenceDecisions[0].evidenceSha256=b.evidence.sha256;},
+      decision=>{decision.deliveries[0].review.evidenceDecisions[0].disposition='retain-current';},
+      decision=>{decision.globalReview.evidenceDecisions=[];},
+    ]) {
+      const decision=controlledReview(second.proposal);alter(decision);
+      assert.throws(()=>finalizeCurrentSetReplacement({proposal:second.proposal,review:decision}),{code:'STALE_APPROVAL'});
+    }
+  });
+  await t.test('Q19 refuses identity, revision, nonprivate delta and shared-input substitutions',()=>{
+    const planName=`plans/${b.slice}.md`,taskName=`tasks/${b.slice}.md`;
+    const edit=(candidate,name,change)=>candidate.artifacts.set(name,Buffer.from(change(candidate.artifacts.get(name).toString('utf8'))));
+    const cases=[
+      ['foreign identity',candidate=>{for(const name of [planName,taskName])edit(candidate,name,text=>text.replace(b.deliveryId,'33333333-3333-4333-8333-333333333333'));},'INVALID_CURRENT_IMAGE'],
+      ['wrong local revision',candidate=>{for(const name of [planName,taskName])edit(candidate,name,text=>text.replace('- Local revision: 2','- Local revision: 3'));},'INVALID_CURRENT_IMAGE'],
+      ['wrong owner',candidate=>edit(candidate,taskName,text=>text.replace('full owner: '+b.slice,'full owner: delivery:'+a.deliveryId)),'INVALID_CURRENT_IMAGE'],
+      ['transverse objective',candidate=>edit(candidate,planName,text=>setSection(text,'Objective and Observable Result','A different observable result.')),'REPLAN_REQUIRED'],
+      ['changed dependency',candidate=>{
+        edit(candidate,planName,text=>setSection(text,'Dependencies','- '+a.slice));
+        for(const name of ['plan.md','tasks.md'])edit(candidate,name,text=>text.split('\n').map(line=>
+          line.includes(`| ${b.slice.slice(6)} - Verification |`)?line.replace('| - |','| '+a.slice+' |'):line).join('\n'));
+      },'REPLAN_REQUIRED'],
+      ['global context',candidate=>edit(candidate,'plan.md',text=>text.replace(/^- Strategy: .+$/mu,'- Strategy: A different global strategy.')),'UNSUPPORTED_FORMAT'],
+      ['no private change',candidate=>{const original=first.result.snapshot.normativeProjection.completed.find(item=>item.deliveryId===b.deliveryId);
+        for(const name of [planName,taskName])edit(candidate,name,text=>setSection(setSection(text,'Verification Recipe',
+          '- Recipe: '+JSON.stringify(original.verificationRecipe)),'Expected Tests',original.expectedTests));},'REPLAN_REQUIRED'],
+      ['input in independent A output area',candidate=>{for(const name of [planName,taskName])edit(candidate,name,text=>{
+        const recipe=structuredClone(expectedLeaf.verificationRecipe);recipe.checks[0].inputs=[{kind:'input',path:'../../src/greeting.mjs'}];
+        return setSection(setSection(text,'Existing Inputs','- `../../src/greeting.mjs`'),'Verification Recipe','- Recipe: '+JSON.stringify(recipe));});},'REPLAN_REQUIRED'],
+    ];
+    for(const [name,alter,code] of cases) {
+      const candidate=reopeningInput(q18,b.deliveryId);alter(candidate);
+      assert.throws(()=>prepareCurrentSetReplacement(candidate),{code},name);
+    }
+  });
+  await t.test('Q19 preserves consumed high-water and does not reuse stale proposal bytes',()=>{
+    for(const field of ['counter','high-water']) {
+      const candidate=reopeningInput(q18,b.deliveryId),files=cloneFiles(candidate.previous.files),continuity=decode(files.get('continuity.json'));
+      if(field==='counter')continuity.completed.find(item=>item.deliveryId===b.deliveryId).counters.validationAttempts=0;
+      else continuity.nextSliceOrdinal=2;
+      files.set('continuity.json',Buffer.from(canonical(continuity)+'\n'));
+      const changed=inertReviewSource(q18,{files});candidate.previous={activationBytes:changed.activationBytes,files:changed.files};
+      assert.throws(()=>prepareCurrentSetReplacement(candidate),{code:'INVALID_CURRENT_IMAGE'},field);
+    }
+    const stale=reopeningInput(q18,b.deliveryId),proposal=prepareCurrentSetReplacement(stale),review=controlledReview(proposal);
+    stale.artifacts.set('plan.md',Buffer.concat([stale.artifacts.get('plan.md'),Buffer.from('\n')]));
+    assert.throws(()=>finalizeCurrentSetReplacement({proposal,review}),{code:'STALE_APPROVAL'});
+    assert.throws(()=>prepareCurrentSetReplacement({...input,completedDeliveryIds:[b.deliveryId]}),{code:'INVALID_CURRENT_IMAGE'});
+  });
+  await t.test('Q19 inspects the retained source before reopening and refuses product drift',async()=>{
+    for(const relative of ['src/greeting.mjs',fixture.productFile]) {
+      const product=path.join(fixture.root,relative),bytes=await fs.readFile(product);
+      try {
+        await fs.appendFile(product,'// drift after the retained current source\n');
+        await assert.rejects(()=>composeVerified(reopeningInput(q18,b.deliveryId),fixture.specPath),{code:'EVIDENCE_STALE'});
+      } finally {await fs.writeFile(product,bytes);}
+    }
+  });
+  const untouched=await captureCurrentExecution(fixture.specPath);
+  assert.deepEqual(untouched.activationBytes,live.activationBytes);assert.deepEqual(untouched.files,live.files);
 });

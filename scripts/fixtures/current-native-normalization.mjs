@@ -16,7 +16,8 @@ const run=promisify(execFile);
 export async function normalizedFormal(fixture,{successor=false,invalid=false,partial=false,
   candidateMutation=null,beforeCapture=null,beforePublish=null,captureOnly=false,
   invalidText='INVALID_FORMAL_RESPONSE',headOverride=null,terminalFault=false,
-  references='none',dispositions='none',responseVariant=null}={}) {
+  references='none',dispositions='none',responseVariant=null,
+  evidence='The prepared AC-001 test passed under the official native verification helper.'}={}) {
   const number=++next;
   const activation=JSON.parse(await fs.readFile(path.join(fixture.image?.f?.execution??fixture.view.execution,'activation.json'),'utf8'));
   const options={specPath:fixture.specPath,slice:fixture.delivery.slice,
@@ -30,7 +31,7 @@ export async function normalizedFormal(fixture,{successor=false,invalid=false,pa
   let finalResponse=invalid?invalidText:JSON.stringify({
     format:'stnl-current-validation-response-v1',requestSha256:sha(request),
     result:{status:'PASS',head:headOverride??fixture.head,commands:measured.commands,
-      evidence:'The prepared AC-001 test passed under the official native verification helper.',
+      evidence,
       findingReferences:references,findingDispositions:dispositions,blockers:'none',
       unexpectedWorkspaceEffects:'none',persistenceSummary:'No product or task file changed.'},
     newFindings:[]});

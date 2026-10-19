@@ -9,8 +9,8 @@ import {captureCurrentExecution} from '../../skills/workflows/stnl-slice-executo
 
 // Preparation and predecessor captures are authored test setup. Only subsequent
 // official tool conclusions can establish the live transport acceptance case.
-export async function completedNativeCase(t,{drift=true,sharedInput=false,extraOutput=false,spaces=false,retire=true}={}) {
-  const image=await currentImage(t,{kind:'two-s2',behaviorCheck:true,sharedInput,spaces}),root=image.f.root,run=promisify(execFile);
+export async function completedNativeCase(t,{drift=true,sharedInput=false,extraOutput=false,spaces=false,retire=true,independent=false}={}) {
+  const image=await currentImage(t,{kind:'two-s2',behaviorCheck:true,sharedInput,spaces,independent}),root=image.f.root,run=promisify(execFile);
   await fs.writeFile(path.join(root,'.gitignore'),'/tmp/\n');
   await run('git',['-C',root,'init','-q']);
   await run('git',['-C',root,'add','.gitignore',path.relative(root,image.f.specPath)]);
@@ -23,7 +23,8 @@ export async function completedNativeCase(t,{drift=true,sharedInput=false,extraO
   if(extraOutput)await fs.writeFile(path.join(root,'other/obsolete module.mjs'),'export const obsolete=true;\n');
   let captured=await captureCurrentExecution(specPath);
   const deliveries=JSON.parse(Buffer.from(captured.files.get('continuity.json'))).deliveries;
-  for(const delivery of deliveries)await normalizedFormal({image,root,head,specPath,delivery});
+  for(const delivery of deliveries)await normalizedFormal({image,root,head,specPath,delivery},independent
+    ?{evidence:`Controlled source proof: the independent ${delivery.slice} greeting passes its prepared node behavior test.`}:{});
   captured=await captureCurrentExecution(specPath);
   const snapshot=JSON.parse(Buffer.from(captured.files.get('approved-preparation.json')));
   const view={project:root,execution:image.f.execution,specPath,source:specPath,spec:path.dirname(specPath),

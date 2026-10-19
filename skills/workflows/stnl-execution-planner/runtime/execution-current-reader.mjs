@@ -840,10 +840,11 @@ export async function inspectCurrentExecution(specPath) { return readCurrentExec
 export async function captureCurrentExecution(specPath) { return readCurrentExecution(specPath,true); }
 // Reuse every proof, carrier, ownership and product check before a private
 // review is promoted. This view never writes or returns an official image.
+// Its returned inspection describes only the inert candidate review view.
 export async function validateCurrentReviewCandidate({specPath,files}) {
   if(!(files instanceof Map)) fail('INVALID_CURRENT_IMAGE','local review candidate files must be a Map');
   const copied=new Map([...files].map(([name,bytes])=>[name,Buffer.from(bytes)]));
-  await readCurrentExecution(specPath,false,null,copied);
+  return readCurrentExecution(specPath,false,null,copied);
 }
 // Active capture is only an image observation. The operation controller must
 // separately prove its allocation and phase before treating this as admission.
