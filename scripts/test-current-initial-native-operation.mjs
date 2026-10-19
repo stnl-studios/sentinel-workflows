@@ -11,7 +11,7 @@ import {resolveCurrentExecutionContext} from '../skills/workflows/stnl-slice-exe
 import {inspectCurrentExecution} from '../skills/workflows/stnl-slice-executor/runtime/execution-current-reader.mjs';
 import {inspectCurrentExecution as inspectQualityExecution} from '../skills/workflows/stnl-slice-quality-manager/runtime/execution-current-reader.mjs';
 import {installCurrentInitial,recoverCurrentInitialPublication} from '../skills/workflows/stnl-slice-executor/runtime/install-current-initial.mjs';
-import {begin,reserveDispatch,bindNative,verifyNative,captureNative,publish} from '../skills/workflows/stnl-slice-executor/runtime/execution-current-operation.mjs';
+import {begin,reserveDispatch,bindNative,verifyNative,captureNative,publish,normalizeSuccessor} from '../skills/workflows/stnl-slice-executor/runtime/execution-current-operation.mjs';
 import {payload as initialPayload} from './fixtures/current-initial-evidence.mjs';
 import {applyPayload} from './fixtures/current-findings-evidence.mjs';
 
@@ -274,13 +274,19 @@ test('Initial concluded semantic EXECUTE refusal publishes and resumes the same 
   await assert.rejects(fs.lstat(path.join(owned,'round-2.origin.json')),error=>error.code==='ENOENT');
   const a=await inspectCurrentExecution(f.specPath),b=await inspectQualityExecution(f.specPath);
   assert.deepEqual(a,b);
-  assert.equal(a.state,'VALIDATION_BLOCKED');
-  assert.equal(a.normalHandoff,null);
-  assert.equal(a.deliveries[0].persistedValidation,'uncertain');
+  assert.equal(a.state,'MATERIALIZED_PRISTINE');
+  assert.equal(a.normalHandoff.operation,'EXECUTE_SLICE');
+  assert.equal(a.deliveries[0].persistedValidation,'revalidation-required');
   assert.deepEqual(a.deliveries[0].counters,
     {implementationChecks:0,findingsChecks:0,validationAttempts:0,findings:0});
   assert.deepEqual(a.deliveries[1].counters,
     {implementationChecks:0,findingsChecks:0,validationAttempts:0,findings:0});
+  await assert.rejects(()=>begin({specPath:f.specPath,slice:'slice-01',
+    expectedActivationId:a.activationId,operation:'EXECUTE_SLICE'}));
+  const successor=await normalizeSuccessor({specPath:f.specPath,slice:'slice-01',expectedActivationId:a.activationId});
+  assert.notEqual(successor.owner.operationAttemptId,started.owner.operationAttemptId);
+  const next=await reserveDispatch(successor.handle,{responseVariant:'stnl-current-native-judgment-v1'});
+  assert.equal(JSON.parse(await fs.readFile(next.requestFile)).round,2);
 });
 
 test('Initial valid BLOCKED is distinct from semantic refusal and remains outside recovery scope',async()=>{
@@ -489,4 +495,24 @@ test('Initial native preflight blocks another delivery input change',async()=>{
   await assert.rejects(verifyNative(dispatch.originFile),error=>error.code==='EVIDENCE_STALE');
   const verification=path.join(path.dirname(dispatch.originFile),'round-1.verification.json');
   await assert.rejects(fs.lstat(verification),error=>error.code==='ENOENT');
+});
+
+for(const secondInvalid of [false,true])test(`D1 Initial concluded formal refusal has exactly one successor (${secondInvalid?'exhausted':'PASS'})`,async()=>{
+  const f=await fixture();await installCurrentInitial(f);
+  const implementation=await reserved(f,'stnl-current-native-judgment-v1');
+  await fs.writeFile(path.join(f.root,'src/pay.mjs'),'export const pay=()=>"paid";\n');
+  await bindNative(implementation.started.handle,'mechanical-D1-Initial-implementation');
+  const measured=await verifyNative(implementation.dispatch.originFile),{head,...result}=initialPayload(1);result.commands=measured.commands;
+  const tool=path.join(f.root,'mechanical-D1-Initial-implementation.json');await fs.writeFile(tool,JSON.stringify({agentId:'mechanical-D1-Initial-implementation',status:'completed',finalResponse:JSON.stringify({format:'stnl-current-native-judgment-v1',result})}));
+  await captureNative(implementation.started.handle,tool);await publish(implementation.started.handle);
+  const {context}=await resolveCurrentExecutionContext(f.specPath);
+  const carrier={...f,head:(await run('git',['-C',f.root,'rev-parse','HEAD'])).stdout.trim(),
+    delivery:{slice:'slice-01'},view:{execution:context.logicalExecutionRoot}};
+  const{normalizedFormal}=await import('./fixtures/current-native-normalization.mjs');
+  await normalizedFormal(carrier,{invalid:true,responseVariant:'stnl-current-native-judgment-v1'});
+  assert.equal((await inspectCurrentExecution(f.specPath)).normalHandoff?.operation,'VALIDATE_SLICE');
+  await normalizedFormal(carrier,{successor:true,invalid:secondInvalid,responseVariant:'stnl-current-native-judgment-v1'});
+  const image=await inspectCurrentExecution(f.specPath),current=image.deliveries.find(item=>item.slice==='slice-01');
+  assert.equal(current.counters.validationAttempts,secondInvalid?0:1);
+  if(secondInvalid)assert.equal(image.normalHandoff,null);else assert.equal(current.formalStatus,'PASS');
 });

@@ -670,7 +670,25 @@ function validateCurrentContent(files) {
       && (current.normalization===null || current.normalization?.operation
         ===bundle.support.filter(item=>item.kind==='rejection').at(-1)?.origin.operation
         && ['settled','exhausted'].includes(current.normalization.status))
-      && bundle.support.filter(item=>item.kind==='rejection').length<=2;
+      && bundle.support.filter(item=>item.kind==='rejection'&&item.origin.operation==='VALIDATE_SLICE').length<=2
+      && bundle.support.filter(item=>item.kind==='rejection'&&item.origin.operation==='APPLY_FINDINGS').length
+        <=(bundle.support.some(item=>item.kind==='rejection'&&item.origin.operation==='VALIDATE_SLICE')?1:2)
+      && bundle.support.filter(item=>item.kind==='rejection'&&item.origin.operation==='EXECUTE_SLICE').length<=1;
+    if(convertedRejection && approvedDelivery) {
+      // A rejected judgment retains the literal reviewed predecessor. Recover
+      // only trailing formal refusals; full native proof is checked by readers.
+      for(let count=1;count<=2 && count<=bundle.support.length;count+=1) {
+        if(bundle.support.slice(-count).some(item=>item.kind!=='rejection'
+          || item.origin.operation!=='VALIDATE_SLICE'))break;
+        const support=bundle.support.slice(0,-count);
+        const records=[...bundle.implementation,...bundle.findingsChecks,...support,
+          ...(record?[record]:[])];
+        const ids=new Set(records.flatMap(item=>Object.values(item.sources).flat())
+          .filter(item=>typeof item==='string' && HASH.test(item)));
+        const prior={...bundle,support,objects:bundle.objects.filter(item=>ids.has(item.id))};
+        if(raw(Buffer.from(canonical(prior)+'\n','utf8'))===decision.evidenceSha256)return true;
+      }
+    }
     const importedValidation=bundle?.support?.filter(item=>item.kind==='validation'
       && item.recordFormat==='stnl-task-record-v1-imported')??[];
     const validConvertedRecord=record?.kind==='validation'
@@ -687,32 +705,35 @@ function validateCurrentContent(files) {
       && same(record.contract?.recipe,leaf.verificationRecipe);
     if(decision.disposition==='revalidate' && validConvertedRecord
       && bundle.implementation.length>0 && bundle.findingsChecks.length===0
-      && bundle.support.length===0 && bundle.openDivergences.length===0
+      && bundle.support.length<=1&&bundle.support.every(item=>item.kind==='rejection'&&item.origin.operation==='EXECUTE_SLICE')
+      && bundle.openDivergences.length===0
       && bundle.implementation.every(item=>item.recordFormat==='stnl-task-record-v2'
         && item.origin.operation==='EXECUTE_SLICE' && item.origin.deliveryId===current.deliveryId
         && item.origin.slice===current.slice && item.origin.localRevision<approvedDelivery.localRevision)) {
       // The first formal after a private review replaces an implementation-only
       // reviewed bundle. Reconstruct its exact bytes; the frozen decision stays
       // bound to that predecessor, never to a hash supplied by the new result.
-      const ids=new Set(bundle.implementation.flatMap(item=>Object.values(item.sources).flat())
+      const ids=new Set([...bundle.implementation,...bundle.support].flatMap(item=>Object.values(item.sources).flat())
         .filter(item=>typeof item==='string' && HASH.test(item)));
-      const prior={...bundle,validation:null,support:[],openFindings:[],
+      const prior={...bundle,validation:null,openFindings:[],
         objects:bundle.objects.filter(item=>ids.has(item.id))};
       if(raw(Buffer.from(canonical(prior)+'\n','utf8'))===decision.evidenceSha256)return true;
     }
+    const historicalFormals=bundle?.support?.filter(item=>item.kind==='validation')??[];
+    const implementationRefusals=bundle?.support?.filter(item=>item.kind==='rejection'&&item.origin.operation==='EXECUTE_SLICE')??[];
     const historicalPrior=approvedDelivery?.localRevision>1
       && decision.disposition==='revalidate'
-      && bundle?.support?.length===1
-      && bundle.support[0]?.kind==='validation'
-      && bundle.support[0]?.recordFormat==='stnl-task-record-v2'
-      && bundle.support[0]?.origin?.localRevision===approvedDelivery.localRevision-1
+      && historicalFormals.length===1&&implementationRefusals.length<=1
+      && bundle.support.length===historicalFormals.length+implementationRefusals.length
+      && historicalFormals[0]?.recordFormat==='stnl-task-record-v2'
+      && historicalFormals[0]?.origin?.localRevision===approvedDelivery.localRevision-1
       && record?.recordFormat==='stnl-task-record-v2'
       && record.origin?.localRevision===approvedDelivery.localRevision
       && bundle.findingsChecks.length===0;
     if(historicalPrior) {
-      const old=bundle.support[0];
-      const ids=new Set([...bundle.implementation,old].flatMap(item=>Object.values(item.sources).flat()).filter(item=>typeof item==='string' && HASH.test(item)));
-      const prior={...bundle,validation:old,support:[],openFindings:[],
+      const old=historicalFormals[0];
+      const ids=new Set([...bundle.implementation,...implementationRefusals,old].flatMap(item=>Object.values(item.sources).flat()).filter(item=>typeof item==='string' && HASH.test(item)));
+      const prior={...bundle,validation:old,support:implementationRefusals,openFindings:[],
         objects:bundle.objects.filter(item=>ids.has(item.id))};
       if(raw(Buffer.from(canonical(prior)+'\n','utf8'))===decision.evidenceSha256)
         return true;
@@ -740,10 +761,23 @@ function validateCurrentContent(files) {
         && same(item.contract?.context,{requirementsAuthority:snapshot.requirementsAuthority,
           objective:global.objective,strategy:global.strategy,risks:global.risks})
         && same(item.contract?.recipe,leaf.verificationRecipe));
+    const retainedRemoval=bundle?.support?.some(item=>['implementation-check','findings-check'].includes(item.kind))
+      &&implementationRefusals.length<=1&&[...bundle.support,...bundle.findingsChecks].every(item=>
+        item.kind==='rejection'?(item.origin.operation==='EXECUTE_SLICE'
+          &&bundle.support.some(record=>record.kind==='implementation-check')
+          ||item.origin.operation==='APPLY_FINDINGS'&&bundle.support.filter(record=>record.kind==='rejection'&&record.origin.operation==='APPLY_FINDINGS').length===1&&[...bundle.support,...bundle.findingsChecks].some(record=>record.kind==='findings-check')
+          ||item.origin.operation==='VALIDATE_SLICE'&&convertedRejection)
+          &&item.origin.transport==='native'&&item.origin.deliveryId===current.deliveryId
+          &&item.origin.slice===current.slice&&item.origin.localRevision<=current.localRevision
+        :['implementation-check','findings-check','validation'].includes(item.kind)
+          &&item.recordFormat==='stnl-task-record-v2'&&item.origin.transport==='native'
+          &&item.origin.operation===({'implementation-check':'EXECUTE_SLICE','findings-check':'APPLY_FINDINGS',validation:'VALIDATE_SLICE'})[item.kind]
+          &&item.origin.deliveryId===current.deliveryId&&item.origin.slice===current.slice
+          &&item.origin.localRevision<=current.localRevision&&item.contract.terminal===null);
     return decision.evidenceSha256!==current.evidence?.sha256 && approvedDelivery
       && (importedBridge || bundle?.implementation?.length===0
-      && (bundle.findingsChecks?.length===0 || convertedFindings)
-      && (bundle.support?.length===0 || convertedFindings || convertedRejection)
+      && (bundle.findingsChecks?.length===0 || convertedFindings || retainedRemoval)
+      && (bundle.support?.length===0 || convertedFindings || convertedRejection || retainedRemoval)
       && bundle.openDivergences?.length===0
       && validConvertedRecord);
   };
@@ -752,9 +786,13 @@ function validateCurrentContent(files) {
     ...snapshot.deliveries.flatMap(item => item.review.evidenceDecisions.map(decision => [item.deliveryId, decision])),
   ]) {
     const current = byDelivery.get(decision.deliveryId);
+    const local=reviewedId===null&&current?.localRevision>1
+      ?snapshot.deliveries.find(item=>item.deliveryId===current.deliveryId)?.review.evidenceDecisions
+        .find(item=>item.deliveryId===current.deliveryId&&item.disposition==='revalidate'):null;
+    const superseded=local&&(current.evidence?.sha256===local.evidenceSha256||replacementFor(current,local));
     if ((reviewedId !== null && decision.deliveryId !== reviewedId)
       || !current?.evidence || (current.evidence.sha256 !== decision.evidenceSha256
-        && !replacementFor(current,decision))) invalid('review evidence decision binding mismatch');
+        && !superseded && !replacementFor(current,decision))) invalid('review evidence decision binding mismatch');
   }
   const leaves = new Map([...snapshot.normativeProjection.deliveries, ...snapshot.normativeProjection.completed].map(item => [item.deliveryId, item]));
   const referenced = new Set();

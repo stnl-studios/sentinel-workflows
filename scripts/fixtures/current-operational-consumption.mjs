@@ -78,8 +78,8 @@ async function secondBoundary(f,round,publication) {
   return {controls,boundary:{transport:'native',receiptPath,responsePath,observationPath,manifestPath,
     publicationPath,originPath,closure:{dispatchPath,agentPath,claimPath,resultPath}}};
 }
-async function twoDeliveryS2(test,{thirdActive=false,sharedInput=false,behaviorCheck=false}={}) {
-  const f=await fixture({test,retiredSelector:true});
+async function twoDeliveryS2(test,{thirdActive=false,sharedInput=false,behaviorCheck=false,spaces=false}={}) {
+  const f=await fixture({test,retiredSelector:true,...(spaces?{parent:path.resolve('tmp/D1 native workspace'),form:'nested-standalone'}:{})});
   await fs.mkdir(path.join(f.root,'other'));
   if(thirdActive) {
     await fs.mkdir(path.join(f.root,'third'));await fs.mkdir(path.join(f.root,'fourth'));
@@ -90,13 +90,14 @@ async function twoDeliveryS2(test,{thirdActive=false,sharedInput=false,behaviorC
     await fs.writeFile(path.join(f.root,'shared-config.json'),'{"mode":"initial"}\n');
     f.observedRoots.push('shared-config.json');
   }
-  const target=path.join(f.root,'other/greeting.mjs');
+  const greetingName=spaces?'greeting output.mjs':'greeting.mjs',testName=spaces?'greeting test.mjs':'greeting.test.mjs';
+  const target=path.join(f.root,'other',greetingName);
   const relative=path.relative(path.join(f.execution,'tasks'),target).split(path.sep).join('/');
   const area=path.relative(path.join(f.execution,'tasks'),path.join(f.root,'other')).split(path.sep).join('/');
   const input=path.relative(path.join(f.execution,'tasks'),path.join(f.root,'shared-config.json')).split(path.sep).join('/');
-  const testRelative=path.relative(path.join(f.execution,'tasks'),path.join(f.root,'other/greeting.test.mjs')).split(path.sep).join('/');
-  if(behaviorCheck)await fs.writeFile(path.join(f.root,'other/greeting.test.mjs'),
-    'import assert from "node:assert/strict";\nimport {greeting} from "./greeting.mjs";\nassert.equal(greeting,"hello");\n');
+  const testRelative=path.relative(path.join(f.execution,'tasks'),path.join(f.root,'other',testName)).split(path.sep).join('/');
+  if(behaviorCheck)await fs.writeFile(path.join(f.root,'other',testName),
+    `import assert from "node:assert/strict";\nimport {greeting} from ${JSON.stringify('./'+greetingName)};\nassert.equal(greeting,"hello");\n`);
   const secondRecipe={format:'stnl-verification-recipe-v1',base:'workspace',cwd:'.',checks:[{
     id:'verification-01',executable:{literal:'node'},args:[{literal:'-e'},
       {literal:'if (2 + 2 !== 4) process.exit(1)'}],inputs:sharedInput?[{kind:'input',path:input}]:[]}],
@@ -126,7 +127,7 @@ async function twoDeliveryS2(test,{thirdActive=false,sharedInput=false,behaviorC
       'Expected Files':`- \`${relative}\``,
       'Existing Inputs':sharedInput?`- \`${input}\``:'- none',
       'Verification Recipe':`- Recipe: ${JSON.stringify(secondRecipe)}`,
-      ...(behaviorCheck?{'Expected Tests':'- node --test other/greeting.test.mjs'}:{}),
+      ...(behaviorCheck?{'Expected Tests':`- node --test ${JSON.stringify('other/'+testName)}`}:{}),
     })) content=section(content,heading,body);
     await fs.writeFile(name,content);
   }
@@ -229,13 +230,13 @@ async function twoDeliveryS2(test,{thirdActive=false,sharedInput=false,behaviorC
   return {f,input:await captureLegacy(f,{controls,imports})};
 }
 
-export async function convertedImage(test,{kind='native-s1',sharedInput=false,behaviorCheck=false}={}) {
+export async function convertedImage(test,{kind='native-s1',sharedInput=false,behaviorCheck=false,spaces=false}={}) {
   const produced=kind==='native-s1'
     ?await nativeFilePass(test,{fileless:true})
     :kind==='managed-s2'?await managedFilePass(test)
       :kind==='managed-s1'?await managedFilelessPass(test)
       :kind==='disjoint-s0'?await disjointDomainS0(test)
-      :kind==='two-s2'?await twoDeliveryS2(test,{behaviorCheck,sharedInput})
+      :kind==='two-s2'?await twoDeliveryS2(test,{behaviorCheck,sharedInput,spaces})
       :kind==='three-s2'?await twoDeliveryS2(test,{thirdActive:true,sharedInput})
       :kind==='s0'?await (async()=>{
         const f=await fixture({test});await approveFixture(f);

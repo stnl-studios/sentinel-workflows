@@ -138,15 +138,21 @@ test('C05 fresh evidence requires current snapshot, owner, native admission and 
   assert.notEqual(context.retainedEvidence.find(value=>value.deliveryId===selected.deliveryId).evidenceSha256,selected.evidence.sha256);
 });
 
-test('C06 structurally valid NEEDS_FIX without blocker is preserved and uncertain',async t=>{
+test('C06 concluded NEEDS_FIX without its required blocker publishes a bounded semantic refusal',async t=>{
   const f=await completedNativeCase(t),attempt=await normalizedFormal(f,{captureOnly:true,beforeCapture:async({tool})=>{
     const doc=JSON.parse(await fs.readFile(tool)),response=JSON.parse(doc.finalResponse);
     response.result.status='NEEDS_FIX';doc.finalResponse=JSON.stringify(response);await fs.writeFile(tool,JSON.stringify(doc));
   }});
-  assert.equal(attempt.captureError?.code,'RUNNER_RESULT_REJECTED');
-  assert.match(attempt.captureError.message,/NEEDS_FIX requires active blocker/u);
-  assert.equal((await resume(attempt.start.handle)).nextAction,'stop-and-diagnose');
+  assert.equal(attempt.captureError,undefined);assert.equal(attempt.captured.phase,'captured');
+  assert.equal((await resume(attempt.start.handle)).nextAction,'publish');
   await assert.rejects(()=>normalize(attempt.start.handle));await assert.rejects(()=>reserveDispatch(attempt.start.handle));
+  assert.equal((await publish(attempt.start.handle)).transition.outcome,'rejected');
+  const image=await captureCurrentExecution(f.specPath),current=JSON.parse(Buffer.from(image.files.get('continuity.json'))).deliveries[0];
+  assert.match(current.lastDiagnostic.reason,/NEEDS_FIX requires active blocker/u);
+  assert.equal(current.normalization.status,'settled');assert.equal(current.counters.validationAttempts,2);
+  assert.equal(image.inspection.deliveries[0].formalStatus,null);
+  const source=await fs.readFile(path.join(path.dirname(attempt.dispatch.originFile),'round-1.response.json'),'utf8');
+  assert.equal(JSON.parse(source).result.status,'NEEDS_FIX');
 });
 
 test('C07 offline native-looking retained base cannot reserve an official completed operation',async t=>{
@@ -160,16 +166,23 @@ test('C07 offline native-looking retained base cannot reserve an official comple
   assert.deepEqual(await fs.readFile(path.join(f.execution,'activation.json')),Buffer.from(before.activationBytes));
 });
 
-test('C02 invalid literal response consumes the owner and cannot publish or normalize',async t=>{
+test('C02 concluded invalid literal response consumes one call and requires publication before its successor',async t=>{
   const f=await completedNativeCase(t),before=await captureCurrentExecution(f.specPath);
   const attempt=await normalizedFormal(f,{invalid:true,captureOnly:true});
-  assert.equal(attempt.captureError?.code,'RUNNER_RESULT_REJECTED');
+  assert.equal(attempt.captureError,undefined);
   const status=await resume(attempt.start.handle);
-  assert.equal(status.nextAction,'stop-and-diagnose');
+  assert.equal(status.nextAction,'publish');
   const active=JSON.parse(await fs.readFile(path.join(f.image.f.execution,'activation.json')));
   assert.equal(active.activeAttempt.operationAttemptId,attempt.start.owner.operationAttemptId);
   assert.deepEqual(await fs.readFile(path.join(f.image.f.execution,'continuity.json')),Buffer.from(before.files.get('continuity.json')));
-  await assert.rejects(()=>publish(attempt.start.handle));
   await assert.rejects(()=>normalizeSuccessor({specPath:f.specPath,slice:'slice-02',expectedActivationId:active.activationId}));
   await assert.rejects(()=>begin({specPath:f.specPath,slice:'slice-02',expectedActivationId:active.activationId}));
+  assert.equal((await publish(attempt.start.handle)).transition.outcome,'rejected');
+  const image=await captureCurrentExecution(f.specPath),current=JSON.parse(Buffer.from(image.files.get('continuity.json'))).deliveries[0];
+  assert.equal(current.normalization.status,'settled');assert.equal(current.normalization.consumedInvocations,1);
+  assert.deepEqual(current.counters,before.inspection.deliveries[0].counters);
+  const bundle=JSON.parse(Buffer.from(image.files.get(current.evidence.path))),ref=bundle.support.find(item=>item.kind==='rejection');
+  assert.equal(Buffer.from(bundle.objects.find(item=>item.id===ref.sources.rawResponse).bytesBase64,'base64').toString('utf8'),attempt.finalResponse);
+  const successor=await normalizeSuccessor({specPath:f.specPath,slice:'slice-02',expectedActivationId:image.inspection.activationId});
+  assert.notEqual(successor.owner.operationAttemptId,attempt.start.owner.operationAttemptId);
 });

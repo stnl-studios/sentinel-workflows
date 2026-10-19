@@ -799,7 +799,7 @@ test('M15 consumer S0 dispensa parser legado; consumer S1 e conversor exigem sib
   const oldTree=path.join(s0Result.f.root,'isolated-current');
   const newTree=path.join(s0Result.f.root,'isolated-conversion');
   await fs.mkdir(oldTree);
-  for(const name of ['execution-current.mjs','execution-evidence-proof.mjs','execution-preparation-current.mjs'])
+  for(const name of ['execution-current.mjs','execution-evidence-proof.mjs','execution-preparation-current.mjs','runner-result-contract.mjs'])
     await fs.copyFile(path.join(runtime,name),path.join(oldTree,name));
   assert.equal((await fs.readdir(oldTree)).includes('execution-preparation.mjs'),false);
   assert.equal((await fs.readdir(oldTree)).includes('execution-conversion-current.mjs'),false);

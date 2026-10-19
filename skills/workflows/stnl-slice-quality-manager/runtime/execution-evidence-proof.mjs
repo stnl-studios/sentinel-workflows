@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { parseCurrentJson, resolveLogicalProductClaim, logicalArtifactPath, validateCurrentCandidate } from './execution-current.mjs';
+import {RunnerSemanticResultError} from './runner-result-contract.mjs';
 
 const HASH = /^sha256:[a-f0-9]{64}$/u;
 export const NATIVE_JUDGMENT_VARIANT = 'stnl-current-native-judgment-v1';
@@ -435,12 +436,20 @@ export function projectNativeJudgment({origin,observation,requestBytes=null,agen
     || requestBytes!==null && observation.binding.requestSha256!==raw(bytes(requestBytes,'native request bytes')))
     stale('native judgment binding differs from origin, request or observation');
   token(observation.binding.head,/^[a-f0-9]{40}$/u,'native judgment HEAD');
-  const answer=parseCurrentJson(rawText);
-  closed(answer,['format','result',...(operation==='VALIDATE_SLICE'?['newFindings']:[])],'native judgment response');
-  if(answer.format!==NATIVE_JUDGMENT_VARIANT) fail('UNSUPPORTED_FORMAT','native judgment response format');
-  plain(answer.result,'native judgment result');
-  if(Object.hasOwn(answer.result,'head') || Object.hasOwn(answer.result,'requestSha256'))
+  let answer;
+  try {answer=parseCurrentJson(rawText);}
+  catch(error) {throw new RunnerSemanticResultError(operation,error);}
+  if(answer && typeof answer==='object' && (Object.hasOwn(answer,'head')||Object.hasOwn(answer,'requestSha256')
+    || answer.result&&typeof answer.result==='object'
+      && (Object.hasOwn(answer.result,'head')||Object.hasOwn(answer.result,'requestSha256'))))
     invalid('native judgment contains foreign metadata');
+  if(answer?.format!==undefined&&answer.format!==NATIVE_JUDGMENT_VARIANT)
+    fail('UNSUPPORTED_FORMAT','native judgment response format');
+  try {
+    closed(answer,['format','result',...(operation==='VALIDATE_SLICE'?['newFindings']:[])],'native judgment response');
+    if(answer.format!==NATIVE_JUDGMENT_VARIANT) fail('UNSUPPORTED_FORMAT','native judgment response format');
+    plain(answer.result,'native judgment result');
+  } catch(error) {throw new RunnerSemanticResultError(operation,error);}
   const {status,...semantic}=answer.result;
   const result={status,head:observation.binding.head,...semantic};
   if(operation==='EXECUTE_SLICE') return JSON.stringify(result);

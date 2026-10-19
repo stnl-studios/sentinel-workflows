@@ -1054,13 +1054,44 @@ export function prepareCurrentLocalReview(input) {
     const bundle=parseCurrentJson(decode(files.get(next.evidence.path),next.evidence.path));
     validateCurrentEvidence(bundle);
     bundle.currentAuthoritySha256=next.authoritySha256;
-    const currentChecks=bundle.implementation.some(item=>item.recordFormat==='stnl-task-record-v2');
-    if(currentChecks&&bundle.openFindings.length===0) {
-      bundle.support=bundle.support.filter(item=>item.kind!=='validation');
-      const ids=new Set([...bundle.implementation,...bundle.findingsChecks,...bundle.support,bundle.validation].filter(Boolean)
-        .flatMap(item=>Object.values(item.sources).flat()).filter(item=>typeof item==='string'&&HASH.test(item)));
-      bundle.objects=bundle.objects.filter(item=>ids.has(item.id));
+    const formalSource=bundle.validation?.recordFormat==='stnl-task-record-v2'
+      ?bundle.objects.find(item=>item.id===bundle.validation.sources[bundle.validation.sources.transport==='native'?'origin':'started']):null;
+    const formalCapsule=formalSource?parseCurrentJson(Buffer.from(formalSource.bytesBase64,'base64').toString('utf8')):null;
+    const formalRequest=typeof formalCapsule?.validationRequestUtf8==='string'
+      ?parseCurrentJson(formalCapsule.validationRequestUtf8):null;
+    const currentChecks=bundle.implementation.some(item=>item.recordFormat==='stnl-task-record-v2')
+      || ['stnl-current-validation-request-v1','stnl-current-validation-request-v2'].includes(formalRequest?.format);
+    // A reviewed publication may compact a closed formal refusal. Its current
+    // accepted formal and necessary product witnesses remain literal.
+    if(bundle.openFindings.length===0&&bundle.validation?.recordFormat==='stnl-task-record-v2')
+      bundle.support=bundle.support.filter(item=>item.kind!=='rejection'||item.origin.operation!=='VALIDATE_SLICE');
+    if(currentChecks&&formalRequest?.format==='stnl-current-validation-request-v2'
+      &&bundle.findingsChecks.length>0&&bundle.openFindings.length===0) {
+      const check=bundle.findingsChecks[0];
+      const source=bundle.objects.find(item=>item.id===check.sources[check.sources.transport==='native'?'origin':'started']);
+      const capsule=parseCurrentJson(Buffer.from(source.bytesBase64,'base64').toString('utf8'));
+      const request=parseCurrentJson(capsule.applyRequestUtf8);
+      const roots=new Set([formalRequest.base.auxiliary.cycle,
+        ...request.base.openFindings.map(item=>item.originAttempt)]);
+      bundle.support=bundle.support.filter(item=>item.kind!=='validation'||roots.has(item.id));
     }
+    if((currentChecks||bundle.validation?.recordFormat==='stnl-task-record-v2')
+      &&bundle.findingsChecks.length===0&&bundle.openFindings.length===0) {
+      const roots=new Set();
+      for(const check of bundle.support.filter(item=>item.kind==='findings-check')) {
+        const source=bundle.objects.find(item=>item.id===check.sources[check.sources.transport==='native'?'origin':'started']);
+        const capsule=parseCurrentJson(Buffer.from(source.bytesBase64,'base64').toString('utf8'));
+        const request=parseCurrentJson(capsule.applyRequestUtf8);
+        if(request.format==='stnl-current-findings-request-v2') {
+          roots.add(request.base.validation.id);
+          for(const finding of request.base.openFindings)roots.add(finding.originAttempt);
+        }
+      }
+      bundle.support=bundle.support.filter(item=>item.kind!=='validation'||roots.has(item.id));
+    }
+    const ids=new Set([...bundle.implementation,...bundle.findingsChecks,...bundle.support,bundle.validation].filter(Boolean)
+      .flatMap(item=>Object.values(item.sources).flat()).filter(item=>typeof item==='string'&&HASH.test(item)));
+    bundle.objects=bundle.objects.filter(item=>ids.has(item.id));
     const bytes=Buffer.from(canonical(bundle)+'\n','utf8');
     updatedFiles.set(next.evidence.path,bytes);
     next.evidence.sha256=raw(bytes);
@@ -1068,7 +1099,7 @@ export function prepareCurrentLocalReview(input) {
       disposition:'revalidate',reason:''}];
     const carriers=composeCurrentLocalReviewCarriers({task:Buffer.from(currentTaskBytes).toString('utf8'),
       index:files.get('tasks.md').toString('utf8'),slice,evidenceSha256:currentChecks?next.evidence.path:next.evidence.sha256,
-      validationRecords:currentChecks?[...bundle.support.filter(item=>item.kind==='validation'),bundle.validation].filter(Boolean):null});
+      validationRecords:currentChecks||bundle.validation?.recordFormat==='stnl-task-record-v2'?[...bundle.support.filter(item=>item.kind==='validation'),bundle.validation].filter(Boolean):null});
     updatedFiles.set(taskName,carriers.task);
     updatedFiles.set('tasks.md',carriers.index);
   }

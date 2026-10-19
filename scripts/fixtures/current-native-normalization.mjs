@@ -35,24 +35,28 @@ export async function reviewedDecisionCase(test) {
 export async function normalizedFormal(fixture,{successor=false,invalid=false,partial=false,
   candidateMutation=null,beforeCapture=null,beforePublish=null,captureOnly=false,
   invalidText='INVALID_FORMAL_RESPONSE',headOverride=null,terminalFault=false,
-  references='none',dispositions='none'}={}) {
+  references='none',dispositions='none',responseVariant=null}={}) {
   const number=++next;
-  const activation=JSON.parse(await fs.readFile(path.join(fixture.image.f.execution,'activation.json'),'utf8'));
+  const activation=JSON.parse(await fs.readFile(path.join(fixture.image?.f?.execution??fixture.view.execution,'activation.json'),'utf8'));
   const options={specPath:fixture.specPath,slice:fixture.delivery.slice,
     expectedActivationId:activation.activationId};
   const start=successor?await normalizeSuccessor(options):await begin(options);
-  const dispatch=await reserveDispatch(start.handle);
+  const dispatch=await reserveDispatch(start.handle,responseVariant?{responseVariant}:{});
   const agentId=`mechanical-normalization-${number}`;
   await bindNative(start.handle,agentId);
   const measured=await verifyNative(dispatch.originFile);
   const request=await fs.readFile(dispatch.requestFile);
-  const finalResponse=invalid?invalidText:JSON.stringify({
+  let finalResponse=invalid?invalidText:JSON.stringify({
     format:'stnl-current-validation-response-v1',requestSha256:sha(request),
     result:{status:'PASS',head:headOverride??fixture.head,commands:measured.commands,
       evidence:'The prepared AC-001 test passed under the official native verification helper.',
       findingReferences:references,findingDispositions:dispositions,blockers:'none',
       unexpectedWorkspaceEffects:'none',persistenceSummary:'No product or task file changed.'},
     newFindings:[]});
+  if(!invalid&&responseVariant) {
+    const envelope=JSON.parse(finalResponse);delete envelope.requestSha256;delete envelope.result.head;
+    envelope.format=responseVariant;finalResponse=JSON.stringify(envelope);
+  }
   const tool=path.join(fixture.root,`mechanical-normalization-${number}.json`);
   await fs.writeFile(tool,JSON.stringify({agentId,status:'completed',finalResponse})+'\n');
   if(beforeCapture) await beforeCapture({start,dispatch,tool,finalResponse});

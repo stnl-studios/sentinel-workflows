@@ -28,7 +28,7 @@ export async function completedBlockingCase(t,options={}) {
   return {...f,blockingFormal:formal};
 }
 export async function startCompletedApply(f,{successor=false}={}) {
-  const activation=JSON.parse(await fs.readFile(path.join(f.image.f.execution,'activation.json')));
+  const activation=JSON.parse(await fs.readFile(path.join(f.image.f?.execution??f.view.execution,'activation.json')));
   const {normalizeSuccessor}=await import('../../skills/workflows/stnl-slice-executor/runtime/execution-current-operation.mjs');
   const input={specPath:f.specPath,slice:f.delivery.slice,expectedActivationId:activation.activationId,operation:'APPLY_FINDINGS'};
   return successor?normalizeSuccessor(input):begin(input);

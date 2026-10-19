@@ -332,8 +332,8 @@ function validateRetainedOwnership(snapshot,continuity,items) {
       objective:global.objective,strategy:global.strategy,risks:global.risks};
     if(Object.entries(expectedContext).some(([key,value])=>item.retainedAuthority.context[key]!==value))
       fail('EVIDENCE_STALE',`${item.slice}: context changed since the verified local proof`,'evidence',item.slice,'context');
-    const decision=snapshot.globalReview.evidenceDecisions.find(value=>value.deliveryId===item.deliveryId)
-      ??snapshot.deliveries.find(value=>value.deliveryId===item.deliveryId)?.review.evidenceDecisions.find(value=>value.deliveryId===item.deliveryId);
+    const decision=snapshot.deliveries.find(value=>value.deliveryId===item.deliveryId)?.review.evidenceDecisions.find(value=>value.deliveryId===item.deliveryId)
+      ??snapshot.globalReview.evidenceDecisions.find(value=>value.deliveryId===item.deliveryId);
     const reviewedHistorical=item.facts.consumption?.kind==='historical-local-review'
       &&decision?.disposition==='revalidate'&&current.validation==='revalidation-required';
     const strip=value=>({...value,obligations:value.obligations.map(({fullOwner,...rest})=>rest)});
@@ -371,7 +371,7 @@ function originalProfile(bundle) {
     'stnl-current-findings-request-v2','stnl-current-findings-request-v3'].includes(request.format)?'post':'initial';
 }
 function retainedPostRead(bundle) {
-  const record=bundle.support.findLast(item=>item.kind==='rejection')??bundle.validation??bundle.findingsChecks.at(-1);
+  const record=bundle.support.findLast(item=>item.kind==='rejection'&&item.origin.operation==='VALIDATE_SLICE')??bundle.validation??bundle.findingsChecks.at(-1)??bundle.support.findLast(item=>item.kind==='rejection');
   if(record?.recordFormat==='stnl-task-record-v1-imported')return null;
   const operation=record.origin.operation;
   const captured=restoreCaptureSources(operation==='APPLY_FINDINGS'?'current-findings':'current-validation',record,
@@ -381,18 +381,18 @@ function retainedPostRead(bundle) {
 }
 function validateInitialNormalization(current,facts) {
   const refusal=facts.rejection&&(facts.rejection.origin.operation==='EXECUTE_SLICE'
-    || facts.rejection.origin.operation==='APPLY_FINDINGS'&&facts.rejection.consumedInvocations===1)?facts.rejection:null;
+    || facts.normalization&&facts.rejection.origin.operation==='VALIDATE_SLICE' || facts.rejection.origin.operation==='APPLY_FINDINGS'&&facts.rejection.consumedInvocations===1)?facts.rejection:null;
   if(refusal) {
-    const normalization={episodeId:refusal.operationAttemptId,operation:refusal.origin.operation,
+    const normalization=facts.normalization??{episodeId:refusal.operationAttemptId,operation:refusal.origin.operation,
       causeSha256:current.evidence?.sha256,sourceOperationAttemptId:refusal.operationAttemptId,
       used:1,consumedInvocations:refusal.consumedInvocations,round:1,status:'exhausted'};
     const diagnostic={code:'RUNNER_RESULT_REJECTED',operationAttemptId:refusal.operationAttemptId,
-      reason:refusal.diagnostic,affectedPaths:refusal.origin.operation==='APPLY_FINDINGS'?facts.cycle?.lastScope??[]:[],nextAction:'stop'};
+      reason:refusal.diagnostic,affectedPaths:refusal.origin.operation==='APPLY_FINDINGS'?facts.cycle?.lastScope??[]:[],nextAction:facts.consumption?.resumable?'normalize':'stop'};
     const sameObject=(actual,expected)=>actual!==null&&Object.keys(actual).length===Object.keys(expected).length
       &&Object.entries(expected).every(([name,value])=>equal(actual[name],value));
     if(!sameObject(current.normalization,normalization)||!sameObject(current.lastDiagnostic,diagnostic))
       fail('INVALID_CURRENT_IMAGE',`${current.slice}: Initial normalization/diagnostic differs`);
-  } else if(['EXECUTE_SLICE','APPLY_FINDINGS'].includes(current.normalization?.operation))
+  } else if(['EXECUTE_SLICE','VALIDATE_SLICE','APPLY_FINDINGS'].includes(current.normalization?.operation))
     fail('INVALID_CURRENT_IMAGE',`${current.slice}: normalization lacks its concluded refusal`);
 }
 function verifyLastAttempt(activation,deliveries) {
@@ -414,6 +414,15 @@ function verifyLastAttempt(activation,deliveries) {
   // the prior validation record before the new terminal activation is written.
   // A1 still verifies the prior lastAttempt below; only an installed record
   // bound to this exact active owner permits the temporary supersession.
+  if(activation.activeAttempt!==null && last.outcome==='rejected'
+    && activation.activeAttempt.operation==='EXECUTE_SLICE'
+    && matched?.origin?.operationAttemptId===activation.activeAttempt.operationAttemptId) {
+    const cap=restoreCaptureSources('initial-implementation',matched,
+      new Map(bundle.objects.map(item=>[item.id,Buffer.from(item.bytesBase64,'base64')])));
+    const inherited=parseCurrentJson(Buffer.from(cap.origin).toString('utf8')).admission?.binding?.normalization;
+    if(inherited?.operation==='EXECUTE_SLICE'&&inherited.sourceOperationAttemptId===last.operationAttemptId
+      && inherited.sourceActivationId===activation.activeAttempt.originActivationId)return;
+  }
   if(activation.activeAttempt!==null && matched?.origin?.operationAttemptId!==last.operationAttemptId
     && bundle?.validation?.origin?.operationAttemptId===activation.activeAttempt.operationAttemptId
     && bundle.validation.origin.deliveryId===activation.activeAttempt.deliveryId
@@ -431,7 +440,8 @@ function verifyLastAttempt(activation,deliveries) {
   if(activation.activeAttempt!==null && facts?.rejection?.origin?.operationAttemptId
     ===activation.activeAttempt.operationAttemptId && last.outcome==='recorded'
     && (bundle?.validation?.origin.operationAttemptId===last.operationAttemptId
-      || bundle?.findingsChecks?.at(-1)?.origin.operationAttemptId===last.operationAttemptId)) return;
+      || bundle?.findingsChecks?.at(-1)?.origin.operationAttemptId===last.operationAttemptId
+      || bundle?.implementation?.at(-1)?.origin.operationAttemptId===last.operationAttemptId)) return;
   if(activation.activeAttempt?.operation==='APPLY_FINDINGS' && last.outcome==='rejected'
     && bundle?.support?.some(item=>item.kind==='rejection'
       && item.origin.operation==='APPLY_FINDINGS'
@@ -511,8 +521,8 @@ async function readCurrentExecution(specPath,withCapture=false,expectedOwner=nul
     [continuity.deliveries.some(item=>item.normalization!==null
       && !(converted && ['VALIDATE_SLICE','APPLY_FINDINGS'].includes(item.normalization.operation)
         && ['settled','exhausted'].includes(item.normalization.status))
-      && !(!converted && item.normalization.operation==='EXECUTE_SLICE'
-        && item.normalization.status==='exhausted')
+      && !(['EXECUTE_SLICE','VALIDATE_SLICE'].includes(item.normalization.operation)
+        && ['settled','exhausted'].includes(item.normalization.status))
       && !(!converted && item.normalization.operation==='APPLY_FINDINGS'
         && item.normalization.status==='exhausted'
         && item.normalization.consumedInvocations===1 && item.normalization.round===1)
@@ -546,17 +556,17 @@ async function readCurrentExecution(specPath,withCapture=false,expectedOwner=nul
       baseline:current.baseline,observedWork:before.manifest});
     const initialRefusal=facts.rejection
       && (facts.rejection.origin.operation==='EXECUTE_SLICE'
-        || facts.rejection.origin.operation==='APPLY_FINDINGS'
+        || facts.normalization&&facts.rejection.origin.operation==='VALIDATE_SLICE' || facts.rejection.origin.operation==='APPLY_FINDINGS'
           && facts.rejection.consumedInvocations===1)?facts.rejection:null;
     if(initialRefusal) {
-      const expectedNormalization={episodeId:initialRefusal.operationAttemptId,
+      const expectedNormalization=facts.normalization??{episodeId:initialRefusal.operationAttemptId,
         operation:initialRefusal.origin.operation,causeSha256:current.evidence?.sha256,
         sourceOperationAttemptId:initialRefusal.operationAttemptId,used:1,
         consumedInvocations:initialRefusal.consumedInvocations,round:1,status:'exhausted'};
       const expectedDiagnostic={code:'RUNNER_RESULT_REJECTED',
         operationAttemptId:initialRefusal.operationAttemptId,reason:initialRefusal.diagnostic,
         affectedPaths:initialRefusal.origin.operation==='APPLY_FINDINGS'
-          ?facts.cycle?.lastScope??[]:[],nextAction:'stop'};
+          ?facts.cycle?.lastScope??[]:[],nextAction:facts.consumption?.resumable?'normalize':'stop'};
       const exact=(actual,expected)=>actual!==null
         && Object.keys(actual).length===Object.keys(expected).length
         && Object.entries(expected).every(([name,value])=>equal(actual[name],value));
@@ -564,7 +574,7 @@ async function readCurrentExecution(specPath,withCapture=false,expectedOwner=nul
         || !exact(current.lastDiagnostic,expectedDiagnostic))
         fail('INVALID_CURRENT_IMAGE',`${current.slice}: Initial refusal state differs`,
           'carrier-mismatch','continuity.json',current.slice);
-    } else if(['EXECUTE_SLICE','APPLY_FINDINGS'].includes(current.normalization?.operation))
+    } else if(['EXECUTE_SLICE','VALIDATE_SLICE','APPLY_FINDINGS'].includes(current.normalization?.operation))
       fail('INVALID_CURRENT_IMAGE',`${current.slice}: Initial normalization lacks a concluded refusal`,
         'carrier-mismatch','continuity.json',current.slice);
     if (current.validation!==facts.persistedValidation)
@@ -668,6 +678,7 @@ async function readCurrentExecution(specPath,withCapture=false,expectedOwner=nul
           preparationProfile:continuity.completed.length?'completed-current':'converted-current',retainedEvidence});
       if(!facts || facts.slice!==item.slice || facts.persistedValidation!==continuity.deliveries.find(value=>value.deliveryId===item.deliveryId)?.validation)
         fail('INVALID_CURRENT_IMAGE',`${item.slice}: converted inspection differs`);
+      if(currentChecks&&!retainedFacts)validateInitialNormalization(current,facts);
       const priorDeliveries=[...completedOutputs,...outputs.slice(0,outputs.indexOf(item))];
       if((retained&&!retainedPost)||currentChecks) {
         validateCurrentEvidenceCarriers({facts,sections:item.carrier.sections,
@@ -727,7 +738,7 @@ async function readCurrentExecution(specPath,withCapture=false,expectedOwner=nul
         else diagnostics=[{kind:'evidence',artifact:pending.slice,field:'validation',reason:'active delivery is not pristine'}];
       }
       else {
-        const operation=facts.rejection?facts.rejection.origin.operation==='APPLY_FINDINGS'?'APPLY_FINDINGS':'VALIDATE_SLICE'
+        const operation=facts.rejection?facts.rejection.origin.operation
           :!facts.observationMatches?'VALIDATE_SLICE'
           :facts.formalStatus==='NEEDS_FIX'&&(!facts.cycle||facts.bundle.validation.id!==facts.cycle.admissionId)
             ?'APPLY_FINDINGS':'VALIDATE_SLICE';
@@ -759,7 +770,7 @@ async function readCurrentExecution(specPath,withCapture=false,expectedOwner=nul
       || pending?.facts.rejection && pending.facts.consumption.kind==='bounded-formal-rejection';
     const hasPost=outputs.some(item=>item.facts.bundle?.validation?.recordFormat==='stnl-task-record-v2');
     const operation=pending?.facts.rejection
-      ?pending.facts.rejection.origin.operation==='APPLY_FINDINGS'?'APPLY_FINDINGS':'VALIDATE_SLICE':post
+      ?pending.facts.rejection.origin.operation:post
       ?pending.facts.formalStatus==='NEEDS_FIX'
         && (!pending.facts.cycle?.admissionId || pending.facts.bundle.validation.id!==pending.facts.cycle.admissionId)
         ?'APPLY_FINDINGS':'VALIDATE_SLICE'
@@ -795,16 +806,17 @@ async function readCurrentExecution(specPath,withCapture=false,expectedOwner=nul
   // A later concluded refusal or BLOCKED result owns recovery for the whole
   // image. A stale predecessor must not hide it by winning the serial scan.
   const blocked=outputs.filter(({facts})=>facts.observedValidation==='uncertain'
-    || facts.auxiliaryStatus==='BLOCKED' || facts.formalStatus==='BLOCKED');
+    || facts.auxiliaryStatus==='BLOCKED' || facts.formalStatus==='BLOCKED'
+    || facts.rejection&&facts.consumption?.resumable===false);
   let state='VALIDATION_BLOCKED',normalHandoff=null,diagnostics=blocked.map(item=>({
     kind:'evidence',artifact:item.slice,field:'status',reason:item.facts.observedValidation==='uncertain'
       ?'uncertain incorporation':'blocked incorporation'}));
   for (const item of blocked.length?[]:outputs) {
     const facts=item.facts;
     if (facts.observedValidation==='current') continue;
-    const operation=!facts.observationMatches?'VALIDATE_SLICE':facts.bundle===null?'EXECUTE_SLICE'
+    const operation=facts.rejection?.origin.operation??(!facts.observationMatches?'VALIDATE_SLICE':facts.bundle===null?'EXECUTE_SLICE'
       :facts.formalStatus==='NEEDS_FIX' && (!facts.cycle || facts.bundle.validation.id!==facts.cycle.admissionId)
-        ?'APPLY_FINDINGS':'VALIDATE_SLICE';
+        ?'APPLY_FINDINGS':'VALIDATE_SLICE');
     state=item.diagnostics.length?'EVIDENCE_STALE':operation==='EXECUTE_SLICE'?'MATERIALIZED_PRISTINE'
       :operation==='APPLY_FINDINGS'?'VALIDATION_NEEDS_FIX'
         :facts.cycle?.status==='TESTS_PASS'?'FINDINGS_CORRECTED'

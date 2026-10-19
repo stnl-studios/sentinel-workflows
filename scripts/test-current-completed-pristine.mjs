@@ -122,11 +122,14 @@ for(const statuses of [['TESTS_FAIL','TESTS_PASS'],['TESTS_FAIL','TESTS_FAIL','T
   assert.equal(image.inspection.deliveries[0].counters.implementationChecks,statuses.length);assert.equal(image.inspection.normalHandoff?.operation,'VALIDATE_SLICE');
 });
 
-test('P03 concluded implementation rejection publishes faithfully without manufacturing a successor',async t=>{
+test('P03 concluded implementation rejection publishes faithfully before its explicit bounded successor',async t=>{
   const f=await completedPristineCase(t),operation=await execute(f,{invalid:true});await publish(operation.start.handle);
   const image=await captureCurrentExecution(f.specPath),current=JSON.parse(Buffer.from(image.files.get('continuity.json'))).deliveries[0];
-  assert.equal(image.inspection.normalHandoff,null);assert.equal(current.normalization.consumedInvocations,1);assert.equal(current.counters.implementationChecks,0);
-  await assert.rejects(()=>normalizeSuccessor({specPath:f.specPath,slice:f.delivery.slice,expectedActivationId:image.inspection.activationId}),error=>error.code==='NORMALIZATION_NOT_ELIGIBLE');
+  assert.equal(image.inspection.normalHandoff?.operation,'EXECUTE_SLICE');assert.equal(current.normalization.consumedInvocations,1);assert.equal(current.counters.implementationChecks,0);
+  assert.equal(current.normalization.status,'settled');
+  await assert.rejects(()=>begin({specPath:f.specPath,slice:f.delivery.slice,operation:'EXECUTE_SLICE',expectedActivationId:image.inspection.activationId}));
+  const successor=await normalizeSuccessor({specPath:f.specPath,slice:f.delivery.slice,expectedActivationId:image.inspection.activationId});
+  assert.notEqual(successor.owner.operationAttemptId,operation.start.owner.operationAttemptId);
 });
 
 test('P03 implementation BLOCKED persists and grants no handoff',async t=>{

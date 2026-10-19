@@ -209,7 +209,10 @@ function guard(input, validating = false) {
     || !Number.isSafeInteger(input.authority.localRevision) || input.authority.localRevision<1
     || input.authority.preparationRevision!==input.owner.preparationRevision
     || input.authority.localRevision!==input.owner.localRevision || input.owner.operation !== 'EXECUTE_SLICE'
-    || input.currentEvidence !== null || Object.values(input.counters).some(item => !Object.is(item, 0))) invalid('initial EXECUTE_SLICE authority required');
+    || input.currentEvidence===null && Object.values(input.counters).some(item=>!Object.is(item,0))
+    || input.currentEvidence!==null && !(input.currentEvidence instanceof Uint8Array)) invalid('initial EXECUTE_SLICE authority required');
+  if(validating&&(input.currentEvidence!==null||Object.values(input.counters).some(item=>!Object.is(item,0))))
+    invalid('initial validator requires the complete original zero-counter boundary');
   const delivery = input.authority.delivery;
   closed(delivery, ['deliveryId', 'objectiveAndObservableResult', 'requirements', 'includedScope', 'outOfScopeAndBoundaries', 'authorizedAreas', 'existingInputs', 'protectedResponsibilities', 'dependencies', 'risksAndStrategy', 'expectedTests', 'verificationRecipe', 'completionCriterion', 'taskResult', 'obligations'], 'delivery');
   token(delivery.deliveryId, UUID, 'delivery.deliveryId');
@@ -308,7 +311,7 @@ function domainChanges(before, after, info, round) {
   }
   return deltas;
 }
-function testedState(value, context, owner, before, after, info, round) {
+function testedState(value, context, owner, before, after, info, round, retainedRemovals=new Set()) {
   closed(value, ['workspace','sourceTaskPath','entries'], `round ${round} testedState`);
   if (value.workspace !== context.productRoot || value.sourceTaskPath !== logicalArtifactPath(context, `tasks/${owner.slice}.md`)) stale(`round ${round}: tested state context`);
   dense(value.entries, `round ${round} testedState.entries`);
@@ -326,7 +329,7 @@ function testedState(value, context, owner, before, after, info, round) {
     const state = afterMap.get(productPath);
     if (!areaContains(info.areas, productPath) || !state || state.kind === 'directory') stale(`round ${round}: tested target outside areas/domain`);
     if (entry.value !== (state.kind === 'file' ? state.sha256 : 'REMOVED')) stale(`round ${round}: tested state hash/removal`);
-    if (state.kind === 'absent' && priorMap.get(productPath)?.kind !== 'file') incomplete(`round ${round}: absent was not removed`);
+    if (state.kind === 'absent' && priorMap.get(productPath)?.kind !== 'file' && !retainedRemovals.has(productPath)) incomplete(`round ${round}: absent was not removed`);
     selected.set(productPath, entry);
   }
   const deltas = domainChanges(before, after, info, round);
@@ -409,23 +412,78 @@ function semantic(rawText, receipt, round) {
   } catch (error) { return {error:new RunnerSemanticResultError('EXECUTE_SLICE', error)}; }
 }
 
+function captureOwner(cap) {
+  return jsonBytes(cap.transport==='native'?cap.origin:cap.managedContext,'implementation owner').value.owner;
+}
+function implementationObjects(bundle,records) {
+  const refs=new Set(records.flatMap(item=>Object.entries(item.sources)
+    .filter(([key])=>key!=='transport').flatMap(([,value])=>Array.isArray(value)?value:[value])
+    .filter(value=>typeof value==='string')));
+  return bundle.objects.filter(item=>refs.has(item.id));
+}
+function implementationRounds(bundle) {
+  const objects=new Map(bundle.objects.map(item=>[item.id,Buffer.from(item.bytesBase64,'base64')]));
+  return [...bundle.implementation,...bundle.support].map(record=>{
+    const cap=restoreCaptureSources('initial-implementation',record,objects);
+    const origin=cap.transport==='native'?jsonBytes(cap.origin,'implementation origin').value:null;
+    const offset=origin?.admission?.binding?.normalization?.consumedInvocations??0;
+    return {record,cap,owner:captureOwner(cap),globalRound:jsonBytes(cap.receipt,'implementation receipt').value.attempt+offset};
+  }).sort((a,b)=>a.globalRound-b.globalRound);
+}
+function implementationPredecessor(input) {
+  if(input.currentEvidence===null)return null;
+  const prior=jsonBytes(input.currentEvidence,'rejected implementation predecessor').value;
+  validateCurrentEvidence(prior);
+  const rounds=implementationRounds(prior),owner=rounds.at(-1)?.owner;
+  if(!owner || owner.operationAttemptId===input.owner.operationAttemptId)
+    mismatch('implementation successor needs a new owner');
+  const verified=validateInitialImplementationEvidence({context:input.context,authority:input.authority,owner,currentEvidence:null,
+    counters:{implementationChecks:0,findingsChecks:0,validationAttempts:0,findings:0},bundleBytes:input.currentEvidence});
+  if(verified.outcome!=='rejected' || prior.support.length!==1 || verified.consumedInvocations>=3)
+    invalid('implementation predecessor has no legal successor budget');
+  expectEqual(input.counters,verified.counters,'INVALID_CURRENT_IMAGE','implementation successor counters');
+  return {...verified,owner};
+}
 function compose(input, info) {
   plain(input.rounds[0], 'round 1');
   const transport = input.rounds[0].transport;
   if (!['native','managed'].includes(transport)) fail('UNSUPPORTED_FORMAT', 'round 1: unknown transport');
   const store = closeEvidenceObjects();
-  const implementation = []; const support = [];
-  let previousAfter = null, previousStatus = null, dispatchId = null;
+  const predecessor=implementationPredecessor(input),offset=predecessor?.consumedInvocations??0;
+  if(offset+input.rounds.length>3)invalid('implementation total invocation budget exceeds three');
+  const implementation = [...(predecessor?.bundle.implementation??[])]; const support = [...(predecessor?.bundle.support??[])];
+  for(const item of predecessor?.bundle.objects??[])store.add(Buffer.from(item.bytesBase64,'base64'));
+  const inherited=predecessor?{episodeId:predecessor.owner.operationAttemptId,operation:'EXECUTE_SLICE',
+    causeSha256:predecessor.sha256,sourceOperationAttemptId:predecessor.owner.operationAttemptId,
+    used:1,consumedInvocations:offset,round:1,status:'settled',sourceEvidenceSha256:predecessor.sha256,
+    sourceActivationId:input.owner.originActivationId}:null;
+  let previousAfter = predecessor?jsonBytes(implementationRounds(predecessor.bundle).at(-1).cap.verificationObservation,'rejected predecessor observation').value.after:null, previousStatus = null, dispatchId = null;
+  const retainedRemovals=new Set(predecessor?implementationRounds(predecessor.bundle).flatMap(({cap})=>
+    cap.removalProofs.map(blob=>jsonBytes(blob,'verified predecessor removal').value.path))
+    .filter(name=>previousAfter.entries.some(entry=>entry.path===name&&entry.kind==='absent')):[]);
   const runners = new Set();
   let finalManaged = null;
   const managedCloses = [];
   const receipts = [];
   let productBytes = 0, productDrift=null;
   for (const [index, cap] of input.rounds.entries()) {
-    const round = index + 1;
+    const round = index + 1,globalRound=offset+round;
     verifyCapturedInvocation('initial-implementation', cap, undefined, undefined, undefined, round, transport);
     if (cap.transport !== transport) invalid(`round ${round}: mixed transports`);
     const nativeOrigin=cap.transport==='native'?jsonBytes(cap.origin,`round ${round} drift origin`).value:null;
+    if(!same(nativeOrigin?.admission?.binding?.normalization??null,inherited))
+      mismatch(`round ${round}: implementation inherited normalization differs`);
+    if(predecessor) {
+      const priorCapture=implementationRounds(predecessor.bundle).at(-1).cap;
+      const priorOrigin=jsonBytes(priorCapture.origin,'implementation predecessor origin').value;
+      const before=nativeOrigin.admission?.baseActivation,last=before?.lastAttempt;
+      if(!priorOrigin.admission||before?.activationId!==input.owner.originActivationId
+        ||last?.operationAttemptId!==predecessor.owner.operationAttemptId
+        ||['operation','deliveryId','slice'].some(key=>last[key]!==predecessor.owner[key])||last.outcome!=='rejected'
+        ||last.terminalActivationId!==before.activationId
+        ||!same(last.operationRef,priorOrigin.admission.reservedActivation.activeAttempt.operationRef))
+        mismatch('implementation predecessor closure differs from its captured native operation');
+    }
     const witness=nativeOrigin?.productDrift??null;
     if(witness!==null) {
       closed(witness,['class','episodeId','sourceOperationAttemptId','sourceRound','sourceCaptureSha256','expectedWorkSha256','used'],'implementation product drift');
@@ -462,18 +520,22 @@ function compose(input, info) {
     if (transport === 'managed') { finalManaged = transportInfo; managedCloses.push(transportInfo); }
     receipts.push(receipt);
     const origin = originRecord(input.owner, transport, transportInfo);
-    let semanticText=rawText;
+    let semanticText=rawText,projectionError=null;
     if(transport==='native') {
       const nativeOrigin=jsonBytes(cap.origin,`round ${round} origin`).value;
       if(nativeOrigin.responseVariant===NATIVE_JUDGMENT_VARIANT) {
         const nativeObserved=jsonBytes(cap.verificationObservation,`round ${round} verificationObservation`).value;
         verifyWorkObservation('initial-implementation',nativeObserved,input.owner,round,info,before,input.context,
           `round ${round} observation`);
-        semanticText=projectNativeJudgment({origin:nativeOrigin,observation:nativeObserved,
-          agentId:transportInfo.runnerId,rawText,operation:'EXECUTE_SLICE'});
+        try {semanticText=projectNativeJudgment({origin:nativeOrigin,observation:nativeObserved,
+          agentId:transportInfo.runnerId,rawText,operation:'EXECUTE_SLICE'});}
+        catch(error) {
+          if(recoverableRunnerResultDiagnostic(error)===null)throw error;
+          projectionError=error;
+        }
       }
     }
-    const result = semantic(semanticText, receipt, round);
+    const result = projectionError?{error:projectionError}:semantic(semanticText, receipt, round);
     const schemaRejected = result.error !== undefined;
     if (schemaRejected) {
       if (index !== input.rounds.length - 1) invalid(`round ${round}: rejected round cannot precede another`);
@@ -502,7 +564,7 @@ function compose(input, info) {
         const observed=jsonBytes(cap.verificationObservation, `round ${round} verificationObservation`).value;
         verifyWorkObservation('initial-implementation',observed,input.owner,round,info,before,input.context,`round ${round} observation`);
         expectEqual(receipt.verification,observed,'EVIDENCE_STALE',`round ${round}: receipt observation`);
-        testedState(receipt.testedState,input.context,input.owner,before,observed.after,info,round);
+        testedState(receipt.testedState,input.context,input.owner,before,observed.after,info,round,retainedRemovals);
         verifyRemoval(cap.removalProofs,input.owner,round,before,observed.after);
       } else uncertain(`round ${round}: schema result has no concluded capture`);
       const diagnostic = recoverableRunnerResultDiagnostic(result.error);
@@ -519,8 +581,10 @@ function compose(input, info) {
     const observed = jsonBytes(cap.verificationObservation, `round ${round} verificationObservation`).value;
     const commands = verifyWorkObservation('initial-implementation', observed, input.owner, round, info, before, input.context, `round ${round} observation`);
     expectEqual(receipt.verification, observed, 'EVIDENCE_STALE', `round ${round}: receipt observation`);
-    const entries = testedState(receipt.testedState, input.context, input.owner, before, observed.after, info, round);
+    const entries = testedState(receipt.testedState, input.context, input.owner, before, observed.after, info, round,retainedRemovals);
     verifyRemoval(cap.removalProofs, input.owner, round, before, observed.after);
+    for(const name of retainedRemovals)if(!observed.after.entries.some(entry=>entry.path===name&&entry.kind==='absent'))retainedRemovals.delete(name);
+    for(const blob of cap.removalProofs)retainedRemovals.add(jsonBytes(blob,'verified current removal').value.path);
     if(witness?.sourceRound===round-1) {
       if(same(previousAfter,observed.before)||raw(utf8(canonical(observed.before)+'\n'))!==witness.expectedWorkSha256)
         stale(`round ${round}: implementation drift observation differs`);
@@ -534,13 +598,15 @@ function compose(input, info) {
     }
     previousAfter = observed.after;
     let rejection = null;
-    if (transport === 'native' && (payload.automaticCheckRound !== `${round}/3` || !same(payload.commands, commands))) rejection = semanticError('native response round/commands contradict observed execution');
-    if (!rejection) rejection = recordGrammarRejection(payload, entries, round);
+    if (transport === 'native' && (payload.automaticCheckRound !== `${globalRound}/3` || !same(payload.commands, commands))) rejection = semanticError('native response round/commands contradict observed execution');
+    if (!rejection) rejection = recordGrammarRejection(payload, entries, globalRound);
     if (!rejection && payload.status === 'TESTS_FAIL' && !commands.some(command => command.exit !== 0)) rejection = semanticError('TESTS_FAIL requires an observed nonzero exit');
     if (!rejection && payload.status === 'TESTS_NOT_APPLICABLE') rejection = semanticError('TESTS_NOT_APPLICABLE contradicts the reviewed nonempty recipe');
     if (!rejection) {
       try {
-        const helperResult = deriveCanonicalRunnerRejection({receipt, response:semanticText});
+        // The receipt keeps its owner-local invocation. The inherited global
+        // round was checked above; never relabel a predecessor receipt.
+        const helperResult = offset ? null : deriveCanonicalRunnerRejection({receipt, response:semanticText});
         if (helperResult !== null) rejection = helperResult;
         else {
           assertRunnerVerdictConsistency('EXECUTE_SLICE', payload.status, commands);
@@ -560,7 +626,7 @@ function compose(input, info) {
       previousStatus = 'rejected';
       continue;
     }
-    const correction = round === 1 ? [] : changedLeaves(implementation.at(-1).testedWork, observed.after)
+    const correction = globalRound === 1 ? [] : changedLeaves(implementation.at(-1)?.testedWork??before, observed.after)
       .map(name => relativeTask(input.context, path.join(input.context.productRoot, name), input.owner.slice));
     const id = `implementation-check-${String(implementation.length + 1).padStart(2,'0')}`;
     const recordUtf8 = renderRecord(id, input.owner, payload, entries, commands, correction);
@@ -586,7 +652,7 @@ function compose(input, info) {
   const resultBytes = serialized(bundle);
   return {bundle:parseCurrentJson(resultBytes.toString('utf8')), bytes:Uint8Array.from(resultBytes), sha256:raw(resultBytes),
     counters:{implementationChecks:implementation.length,findingsChecks:0,validationAttempts:0,findings:0},
-    consumedInvocations:input.rounds.length, outcome:support.length ? 'rejected' : 'recorded'};
+    consumedInvocations:offset+input.rounds.length, outcome:previousStatus==='rejected' ? 'rejected' : 'recorded'};
 }
 
 export function composeInitialImplementationEvidence(input) {
@@ -602,17 +668,32 @@ export function validateInitialImplementationEvidence(input) {
   if (parsed.deliveryId !== input.owner.deliveryId || parsed.slice !== input.owner.slice
     || parsed.currentAuthoritySha256 !== projected('delivery', input.authority.delivery)
     || parsed.findingsChecks.length || parsed.validation !== null || parsed.openFindings.length || parsed.openDivergences.length
-    || parsed.support.length > 1 || parsed.support.some(item => item.kind !== 'rejection')) invalid('bundle outside initial implementation scope');
+    || parsed.support.length > 2 || parsed.support.some(item => item.kind !== 'rejection')) invalid('bundle outside initial implementation scope');
   const objects = new Map(parsed.objects.map(item => [item.id,Buffer.from(item.bytesBase64,'base64')]));
   const records = [...parsed.implementation,...parsed.support];
   if (!records.length || records.length > 3) invalid('bundle initial round count');
   for (const [index, record] of parsed.implementation.entries()) {
     if (record.id !== `implementation-check-${String(index + 1).padStart(2,'0')}`) invalid('bundle implementation ID sequence');
   }
-  if (parsed.support.length && (parsed.support[0].round !== records.length || parsed.support[0].consumedInvocations !== records.length)) invalid('bundle rejection round/consumption');
   if (new Set(records.map(record => record.sources.receipt)).size !== records.length) invalid('bundle source replay');
-  const rounds = records.map(item => restoreCaptureSources('initial-implementation',item,objects));
-  const candidate = compose({...input, rounds}, info);
+  const sequence=implementationRounds(parsed);
+  if(sequence.some((item,index)=>item.globalRound!==index+1))invalid('implementation global invocation sequence');
+  const owners=[...new Set(sequence.map(item=>item.owner.operationAttemptId))];
+  if(owners.length>2 || sequence.at(-1).owner.operationAttemptId!==input.owner.operationAttemptId)
+    mismatch('implementation successor owner order');
+  let currentEvidence=null,currentCounters={implementationChecks:0,findingsChecks:0,validationAttempts:0,findings:0};
+  let selected=sequence;
+  if(owners.length===2) {
+    const split=sequence.findIndex(item=>item.owner.operationAttemptId!==owners[0]);
+    if(sequence.slice(split).some(item=>item.owner.operationAttemptId!==owners[1]))mismatch('implementation owner interleaving');
+    const priorRecords=sequence.slice(0,split).map(item=>item.record);
+    const prior={...parsed,implementation:parsed.implementation.filter(item=>priorRecords.includes(item)),
+      support:parsed.support.filter(item=>priorRecords.includes(item)),objects:implementationObjects(parsed,priorRecords)};
+    currentEvidence=serialized(prior);currentCounters.implementationChecks=prior.implementation.length;
+    selected=sequence.slice(split);
+  }
+  const rounds=selected.map(item=>item.cap);
+  const candidate = compose({...input,currentEvidence,counters:currentCounters,rounds}, info);
   if (!same(parsed,candidate.bundle)) stale('bundle semantic reconstruction differs');
   return {...candidate, bundle:parseCurrentJson(original.toString('utf8')), bytes:Uint8Array.from(original), sha256:raw(original)};
 }
