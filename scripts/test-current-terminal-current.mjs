@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import {createHash,randomUUID} from 'node:crypto';
-import {ChildProcess} from 'node:child_process';
+import {ChildProcess,execFile} from 'node:child_process';
+import {promisify} from 'node:util';
 import {completedNativeCase} from './fixtures/current-completed-native.mjs';
 import {normalizedFormal} from './fixtures/current-native-normalization.mjs';
 import {captureCurrentExecution,captureCurrentActiveExecution,validateCurrentReviewCandidate} from '../skills/workflows/stnl-slice-executor/runtime/execution-current-reader.mjs';
@@ -14,6 +15,7 @@ import {finding} from './fixtures/current-validation-evidence.mjs';
 const decode=bytes=>JSON.parse(Buffer.from(bytes));
 const sha=bytes=>'sha256:'+createHash('sha256').update(bytes).digest('hex');
 const json=value=>Buffer.from(JSON.stringify(value)+'\n');
+const run=promisify(execFile);
 const invalid=error=>['EVIDENCE_STALE','EVIDENCE_INCOMPLETE','INVALID_CURRENT_IMAGE','OWNER_UNCERTAIN','RUNNER_RESULT_REJECTED'].includes(error.code);
 
 async function privateReview(f,image,slice) {
@@ -197,4 +199,36 @@ test('T06 a current latest integral PASS loses only certification when another r
   assert.ok(after.inspection.deliveries.every(item=>item.formalStatus==='PASS'&&item.observedValidation==='current'));
   assert.equal(after.inspection.state,'VALIDATION_BLOCKED');assert.equal(after.inspection.normalHandoff,null);
   assert.match(after.inspection.diagnostics[0].reason,/terminal judgment target differs/u);
+});
+
+test('T07 mechanical terminal/completed capture resumes a partial candidate in new processes without another recipe',async t=>{
+  const f=await completedNativeCase(t),before=await captureCurrentExecution(f.specPath);
+  const captured=await normalizedFormal(f,{terminal:true,responseVariant:'stnl-current-native-judgment-v1',captureOnly:true});
+  const operationRoot=path.dirname(captured.dispatch.originFile),controls=new Map();
+  for(const name of await fs.readdir(operationRoot))if(name!=='owner.json')
+    controls.set(name,await fs.readFile(path.join(operationRoot,name)));
+  let faults=0;
+  await assert.rejects(publish(captured.start.handle,{checkpoint:phase=>{
+    if(phase==='after-candidate-file') {
+      faults+=1;throw Object.assign(new Error('controlled terminal candidate interruption'),{code:'CONTROLLED_CANDIDATE_FAILURE'});
+    }
+  }}),{code:'CONTROLLED_CANDIDATE_FAILURE'});
+  assert.equal(faults,1);
+  const handleFile=path.join(f.root,'terminal recovery handle.json');await fs.writeFile(handleFile,json(captured.start.handle));
+  const controller=path.resolve('skills/workflows/stnl-slice-quality-manager/runtime/execution-current-operation.mjs');
+  const separate=async command=>JSON.parse((await run(process.execPath,[controller,command,'--handle',handleFile],{cwd:'/tmp'})).stdout);
+  const pending=await separate('resume');assert.equal(pending.nextAction,'normalize');
+  assert.equal(pending.responseSha256,captured.captured.rawResponseSha256);
+  const repaired=await separate('normalize');assert.equal(repaired.rawResponseSha256,captured.captured.rawResponseSha256);
+  const result=await separate('publish');assert.equal(result.publication,'confirmed');assert.equal(result.cleanup,'complete');
+  assert.equal((await separate('resume')).nextAction,'none');
+  for(const [name,bytes]of controls)assert.deepEqual(await fs.readFile(path.join(operationRoot,name)),bytes,name);
+  await assert.rejects(fs.lstat(path.join(operationRoot,'round-2.origin.json')),{code:'ENOENT'});
+  const after=await captureCurrentExecution(f.specPath),delivery=after.inspection.deliveries[0];
+  assert.equal(after.inspection.state,'COMPLETE');assert.equal(delivery.formalStatus,'PASS');assert.equal(after.inspection.normalHandoff,null);
+  assert.equal(delivery.counters.validationAttempts,before.inspection.deliveries[0].counters.validationAttempts+1);
+  for(const [id,work]of before.observedByDelivery)
+    assert.deepEqual(after.observedByDelivery.get(id).manifest,work.manifest);
+  assert.deepEqual(after.files.get('evidence/'+before.inspection.completed[0].deliveryId+'.json'),
+    before.files.get('evidence/'+before.inspection.completed[0].deliveryId+'.json'));
 });
