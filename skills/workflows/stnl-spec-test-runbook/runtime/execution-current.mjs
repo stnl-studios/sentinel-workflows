@@ -280,7 +280,7 @@ export function validateCurrentActivation(value) {
   if (value.lastAttempt !== null) {
     const last = value.lastAttempt;
     const fields=['operationAttemptId', 'deliveryId', 'slice', 'operation', 'terminalActivationId', 'outcome'];
-    object(last, last.operationRef===undefined?fields:[...fields,'operationRef'], 'lastAttempt');
+    object(last, [...fields,...(last.operationRef===undefined?[]:['operationRef']),...(last.outcome==='aborted'?['abort']:[])], 'lastAttempt');
     uuid(last.operationAttemptId, 'lastAttempt.operationAttemptId'); uuid(last.deliveryId, 'lastAttempt.deliveryId');
     slice(last.slice, 'lastAttempt.slice'); oneOf(last.operation, OPERATIONS, 'lastAttempt.operation');
     uuid(last.terminalActivationId, 'lastAttempt.terminalActivationId');
@@ -290,8 +290,86 @@ export function validateCurrentActivation(value) {
       uuid(last.operationRef.operationId,'lastAttempt.operationRef.operationId');
       hash(last.operationRef.allocationSha256,'lastAttempt.operationRef.allocationSha256');
     }
+    if(last.outcome==='aborted') {
+      const proof=validateCurrentAbortDisposition(last),reserved=proof.origin.admission.reservedActivation;
+      const terminalId=value.activeAttempt?.originActivationId??value.activationId;
+      if(last.terminalActivationId!==terminalId || value.activeAttempt===null && (value.sequence!==reserved.sequence+1
+        ||value.previousActivationId!==reserved.activationId || value.preparationRevision!==reserved.preparationRevision
+        ||value.requirementsAuthority!==reserved.requirementsAuthority ||value.normativeSha256!==reserved.normativeSha256
+        ||value.approvedSnapshotSha256!==reserved.approvedSnapshotSha256 ||!same(value.artifacts,reserved.artifacts)))
+        invalid('aborted activation differs from retained reservation');
+    }
   }
   return value;
+}
+
+
+// A concluded invocation without an observation is a disposition, never a
+// validation record. Its exact native sources survive without transient paths.
+export function validateCurrentAbortDisposition(last) {
+  if(last?.outcome!=='aborted'||last.operation!=='VALIDATE_SLICE'||!last.operationRef)
+    invalid('unsupported native abort disposition');
+  const proof=object(last.abort,['originUtf8','requestUtf8','baselineUtf8','agentUtf8','claimUtf8',
+    'toolResultUtf8','consumedInvocations','diagnostic'],'native abort');
+  const parsed={};
+  for(const key of ['origin','request','baseline','agent','claim','toolResult']) {
+    const bytes=string(proof[key+'Utf8'],'native abort '+key);
+    if(Buffer.byteLength(bytes,'utf8')>2*1024*1024)invalid('native abort source exceeds bound');
+    parsed[key]=plain(parseCurrentJson(bytes),'native abort '+key);
+  }
+  const {origin,request,baseline,agent,claim,toolResult}=parsed;
+  object(toolResult,['agentId','status','finalResponse'],'native abort tool result');
+  string(toolResult.agentId,'native abort agent');string(toolResult.finalResponse,'native abort final response');
+  diagnostic(proof.diagnostic,'native abort diagnostic');
+  if(proof.consumedInvocations!==1||toolResult.status!=='completed'
+    ||proof.diagnostic.code!=='EVIDENCE_INCOMPLETE'||proof.diagnostic.reason!==toolResult.finalResponse
+    ||proof.diagnostic.operationAttemptId!==last.operationAttemptId||proof.diagnostic.nextAction!=='validate'
+    ||proof.diagnostic.affectedPaths.length)invalid('native abort conclusion or consumption differs');
+  if(origin.transport!=='native'||origin.attempt!==1||origin.responseVariant!=='stnl-current-native-judgment-v1'
+    ||origin.requestSha256!==raw(Buffer.from(proof.requestUtf8,'utf8'))
+    ||request.format!=='stnl-current-validation-request-v3'
+    ||request.base?.validation!=='revalidation-required'||request.base.lastDiagnostic!==null
+    ||origin.owner?.operation!=='VALIDATE_SLICE'||origin.owner.preparationRevision<=1
+    ||origin.owner.operationAttemptId!==last.operationAttemptId||origin.owner.deliveryId!==last.deliveryId
+    ||origin.owner.slice!==last.slice||!same(request.owner,origin.owner)
+    ||!same(baseline.owner,origin.owner)||baseline.round!==1
+    ||!same(baseline.manifest,request.base.baseline)
+    ||agent.agentId!==toolResult.agentId||claim.agentId!==toolResult.agentId
+    ||claim.originFile!==agent.originFile||!same(claim.owner,origin.owner))
+    invalid('native abort retained sources differ');
+  const admission=object(origin.admission,['binding','baseActivation','reservedActivation'],'native abort admission');
+  const base=plain(admission.baseActivation,'native abort base'),reserved=plain(admission.reservedActivation,'native abort reservation');
+  string(origin.workspace,'native abort workspace');
+  if(!path.isAbsolute(origin.workspace))invalid('native abort workspace must be absolute');
+  if(request.authority?.preparationRevision!==origin.owner.preparationRevision
+    ||request.authority.localRevision!==origin.owner.localRevision
+    ||request.authority.normativeSha256!==origin.owner.normativeSha256
+    ||request.authority.delivery?.deliveryId!==last.deliveryId
+    ||currentDeliveryAuthoritySha256(request.authority.delivery)!==origin.owner.normativeSha256
+    ||request.authority.context?.requirementsAuthority!==base.requirementsAuthority)
+    invalid('native abort local request authority differs');
+  work(request.base.baseline,'native abort baseline');
+
+  // This bounded entry closes only the pending local-review boundary used by
+  // B4. It neither reopens a rejection episode nor chains abort dispositions.
+  if(base.lastAttempt!==null||base.activeAttempt!==null)invalid('native abort predecessor exceeds profile');
+  validateCurrentActivation(base);validateCurrentActivation(reserved);
+  const binding=plain(admission.binding,'native abort binding');
+  if(binding.operationId!==last.operationRef.operationId
+    ||currentOperationBindingSha256(binding)!==last.operationRef.allocationSha256
+    ||!same(binding.owner,origin.owner)||binding.baseActivationId!==base.activationId
+    ||reserved.previousActivationId!==base.activationId||reserved.sequence!==base.sequence+1
+    ||reserved.preparationRevision!==base.preparationRevision||reserved.requirementsAuthority!==base.requirementsAuthority
+    ||reserved.normativeSha256!==base.normativeSha256||reserved.approvedSnapshotSha256!==base.approvedSnapshotSha256
+    ||!same(reserved.artifacts,base.artifacts)||reserved.lastAttempt!==null
+    ||!same(reserved.activeAttempt,{...origin.owner,operationRef:last.operationRef})
+    ||agent.originFile!==path.join(origin.workspace,'tmp','sentinel',binding.specKey,binding.operationId,'round-1.origin.json'))
+    invalid('native abort reservation binding differs');
+  return parsed;
+}
+export function currentEvidenceLastAttempt(last) {
+  if(last?.outcome!=='aborted')return last;
+  return validateCurrentAbortDisposition(last).origin.admission.baseActivation.lastAttempt;
 }
 
 function work(value, label) {

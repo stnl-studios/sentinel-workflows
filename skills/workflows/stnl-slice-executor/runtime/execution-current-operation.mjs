@@ -7,11 +7,11 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import {createHash,randomUUID} from 'node:crypto';
 import {execFile} from 'node:child_process';
-import {promisify} from 'node:util';
+import {promisify,isDeepStrictEqual} from 'node:util';
 import {fileURLToPath,pathToFileURL} from 'node:url';
 import {resolveCurrentExecutionContext} from './execution-workspace.mjs';
 import {captureCurrentExecution,captureCurrentActiveExecution,observeCurrentDeliveryWork} from './execution-current-reader.mjs';
-import {parseCurrentJson,validateCurrentCandidate,currentOperationBindingSha256,currentTerminalProjection} from './execution-current.mjs';
+import {parseCurrentJson,validateCurrentCandidate,currentOperationBindingSha256,currentTerminalProjection,validateCurrentAbortDisposition} from './execution-current.mjs';
 import {verifyWorkObservation,findingsRoundCaptureSha256,NATIVE_JUDGMENT_VARIANT,restoreCaptureSources,
   projectNativeJudgment} from './execution-evidence-proof.mjs';
 import {composePostConversionValidation,composePostConversionFindings,
@@ -23,7 +23,7 @@ import {composeInitialImplementationEvidence} from './execution-evidence-current
 import {recoverableRunnerResultDiagnostic} from './runner-result-contract.mjs';
 import {executeRunnerVerification,verificationCommand} from './runner-verification.mjs';
 import {withExecutionPublicationLock,readOwnedFile,writeNew,persistAllocation,captureExecutionTree,
-  reserveCurrentExecutionOperation,publishCurrentExecutionOperation,copyCurrentCandidateTree,
+  reserveCurrentExecutionOperation,publishCurrentExecutionOperation,abortCurrentExecutionOperation,copyCurrentCandidateTree,
   recoverCurrentExecutionOperation,finishCurrentExecutionCleanup,syncLockParent} from './execution-publication.mjs';
 
 const run=promisify(execFile);
@@ -797,7 +797,14 @@ export async function verifyNative(originFile) {
   };
   const headBefore=origin.responseVariant===NATIVE_JUDGMENT_VARIANT?await measuredHead():null;
   const result=await executeRunnerVerification({verification:origin.verification,
-    outputFile:path.join(op.root,`round-${round}.verification.json`),observeState});
+    outputFile:path.join(op.root,`round-${round}.verification.json`),observeState,
+    startGuard:action=>withExecutionPublicationLock(op.workspace,async()=>{
+      const current=await load(op.handle);
+      if(current.record.phase!=='working'||current.record.terminalTransition?.outcome==='aborted')
+        fail('OWNER_UNCERTAIN','verification producer is closed or aborting');
+      await requireA1(current);
+      return action();
+    })});
   const after=await requireA1(op);
   assertOtherInitialWork(after,origin);
   const final=after.observedByDelivery.get(op.owner.deliveryId);
@@ -853,6 +860,7 @@ export async function captureNative(handle,toolResultFile) {
   return withExecutionPublicationLock(op.workspace,async()=>{
     const now=await load(handle);
     const round=now.record.runner?.round;
+    if(now.record.terminalTransition?.outcome==='aborted')fail('OWNER_UNCERTAIN','native invocation is aborting');
     const auxiliary=now.owner.operation!=='VALIDATE_SLICE';
     const agent=await readJson(path.join(now.root,`round-${round}.agent.json`));
     if(!['running','captured'].includes(now.record.runner?.status) || now.record.runner.agentId!==tool.agentId
@@ -1095,8 +1103,98 @@ async function completeRegistry(op) {
   }
 }
 
+
+// The remote completion is supplied through the same official-tool-result
+// boundary as capture-native. A missing/started local verification is decided
+// under the common lease shared with its exclusive start marker.
+export async function abort(handle,toolResultFile=null,{checkpoint=null}={}) {
+  const equal=isDeepStrictEqual;
+  const readText=async file=>{
+    const bytes=(await readOwnedFile(file)).bytes,text=bytes.toString('utf8');
+    if(!Buffer.from(text,'utf8').equals(bytes))fail('INVALID_CURRENT_IMAGE','native abort source is not faithful UTF-8');
+    return text;
+  };
+  const op=await load(handle,{requireRegistry:false});
+  const supplied=toolResultFile?await readText(toolResultFile):null;
+  const prepareDisposition=async allocated=>{
+    const now=await load(handle,{requireRegistry:false}),runner=now.record.runner;
+    if(now.owner.operation!=='VALIDATE_SLICE'||now.owner.preparationRevision<=1
+      ||runner?.round!==1||runner.consumedInvocations!==1||!['running','aborted'].includes(runner.status)
+      ||now.binding.normalization||now.record.normalization)
+      fail('UNSUPPORTED_FORMAT','abort supports only one concluded unstarted S2 validation');
+    const names=['base.activation.json','owner.json',...['request','baseline','origin','agent','claim'].map(name=>`round-1.${name}.json`)];
+    const present=await fs.readdir(now.root);
+    if(present.some(name=>!names.includes(name))||present.length!==names.length)
+      fail('OWNER_UNCERTAIN','verification producer, publication or foreign controls prevent abort');
+    const sources={};
+    for(const name of ['origin','request','baseline','agent','claim'])
+      sources[name+'Utf8']=await readText(path.join(now.root,`round-1.${name}.json`));
+    const retained=allocated.expectedInstalledActivation?.lastAttempt?.abort;
+    const toolResultUtf8=supplied??retained?.toolResultUtf8;
+    if(!toolResultUtf8)fail('EVIDENCE_INCOMPLETE','official concluded producer result required for abort');
+    const tool=parseCurrentJson(toolResultUtf8);
+    if(tool.status!=='completed'||typeof tool.finalResponse!=='string'||!tool.finalResponse.trim())
+      fail('OWNER_UNCERTAIN','native producer has not conclusively ended');
+    if(tool.agentId!==runner.agentId)fail('OWNER_MISMATCH','aborted conclusion differs from bound agent');
+    const proof={...sources,toolResultUtf8,consumedInvocations:1,
+      diagnostic:{code:'EVIDENCE_INCOMPLETE',operationAttemptId:now.owner.operationAttemptId,
+        reason:tool.finalResponse,affectedPaths:[],nextAction:'validate'}};
+    const owner={...now.owner,operationRef:{operationId:now.binding.operationId,
+      allocationSha256:currentOperationBindingSha256(now.binding)}};
+    const parsed=validateCurrentAbortDisposition({...now.owner,operationRef:owner.operationRef,
+      outcome:'aborted',abort:proof});
+    if(parsed.origin.dispatchId!==runner.dispatchId)
+      fail('OWNER_MISMATCH','abort origin differs from bound dispatch');
+    if(retained&&!equal(retained,proof))fail('OWNER_MISMATCH','sealed aborted conclusion or controls changed');
+    const base=await readJson(path.join(now.root,'base.activation.json'));
+    if(!equal(base,parsed.origin.admission.baseActivation)||!equal(parsed.origin.admission.binding,now.binding))
+      fail('OWNER_MISMATCH','abort original base or allocation differs');
+    const currentActivation=await readJson(path.join(now.context.logicalExecutionRoot,'activation.json'));
+    const image=currentActivation.activeAttempt!==null?await requireA1(now):await quiet(handle.specPath);
+    if(!equal(image.activation,parsed.origin.admission.reservedActivation)
+      &&!equal(image.activation,allocated.expectedInstalledActivation))
+      fail('STALE_BASE','abort source is neither its reservation nor terminal activation');
+    const registry=await registryAt(now.location,now.context.logicalExecutionRoot);
+    const ownAssociation=registry.operations.length===1
+      &&registry.operations[0].operationId===now.binding.operationId&&registry.operations[0].marker===now.marker;
+    const confirmedRetirement=registry.operations.length===0&&allocated.phase==='aborted'
+      &&equal(image.activation,allocated.expectedInstalledActivation)
+      &&allocated.confirmation?.activationId===image.activation.activationId
+      &&allocated.confirmation.artifactManifestSha256===sha(JSON.stringify(image.activation.artifacts));
+    if(!ownAssociation&&!confirmedRetirement)
+      fail('OWNER_UNCERTAIN','abort requires its exclusive registry association or confirmed retirement');
+    const tree=await captureExecutionTree(now.context.logicalExecutionRoot),without=entries=>entries.filter(item=>item.path!=='activation.json');
+    if(!equal(tree.identity,now.binding.baseTree.identity)||!equal(without(tree.files),without(now.binding.baseTree.files)))
+      fail('STALE_BASE','abort source physical artifacts differ');
+    const continuity=parseCurrentJson(Buffer.from(image.files.get('continuity.json')).toString('utf8'));
+    const delivery=continuity.deliveries.find(item=>item.deliveryId===now.owner.deliveryId);
+    const bundle=delivery?.evidence?parseCurrentJson(Buffer.from(image.files.get(delivery.evidence.path)).toString('utf8')):null;
+    if(!delivery||delivery.validation!=='revalidation-required'||delivery.normalization!==null||delivery.lastDiagnostic!==null
+      ||!bundle?.validation||bundle.validation.origin.localRevision>=delivery.localRevision
+      ||bundle.openFindings.length||bundle.openDivergences.length
+      ||!equal(delivery.counters,parsed.request.base.counters)||!equal(delivery.baseline,parsed.baseline.manifest)
+      ||!equal(image.observedByDelivery.get(delivery.deliveryId)?.manifest,parsed.baseline.manifest))
+      fail('EVIDENCE_STALE','abort requires the unchanged pending local-review base');
+    assertOtherInitialWork(image,parsed.origin);
+    return {owner,proof};
+  };
+  const result=await abortCurrentExecutionOperation({workspace:op.workspace,marker:op.marker,binding:op.binding,
+    readActive:owner=>active(handle.specPath,owner),readQuiet:()=>quiet(handle.specPath),prepareDisposition,
+    registryCompletion:async allocated=>{
+      await prepareDisposition(allocated);
+      const registry=await registryAt(op.location,op.context.logicalExecutionRoot);
+      if(registry.operations.length>1||registry.operations.length===1&&registry.operations[0].marker!==op.marker)
+        fail('OWNER_UNCERTAIN','abort registry association differs');
+      if(registry.operations.length){registry.operations=[];await saveRegistry(op.location,registry);}
+      // Retain all original controls and the sealed disposition; no unique
+      // native conclusion or product/capture path is discarded by this entry.
+    },checkpoint});
+  return {...result,consumedInvocations:1,nextAction:result.cleanup==='complete'?'inspect':'resume-abort'};
+}
+
 export async function cleanup(handle) {
   const op=await load(handle,{requireRegistry:false});
+  if(op.record.phase==='aborted'&&op.record.cleanup?.status==='pending')return abort(handle);
   if(op.record.phase!=='committed' || op.record.cleanup?.status!=='pending')
     fail('CLEANUP_PENDING','this operation has no confirmed pending cleanup');
   return finishCurrentExecutionCleanup({workspace:op.workspace,marker:op.marker,binding:op.binding,
@@ -1335,6 +1433,9 @@ export async function resume(handle) {
   const op=await load(handle,{requireRegistry:false});
   const phase=op.record.phase;
   const runner=op.record.runner;
+  if(phase==='aborted'||op.record.terminalTransition?.outcome==='aborted')return {phase,publication:phase==='aborted'?'aborted':'not-started',
+    cleanup:op.record.cleanup.status,nextAction:phase==='aborted'&&op.record.cleanup.status==='complete'?'none':'resume-abort',
+    consumedInvocations:runner.consumedInvocations,agentId:runner.agentId};
   if(phase==='committed' && op.record.confirmation) {
     const current=await quiet(handle.specPath);
     if(current.activation.activationId!==op.record.confirmation.activationId)
@@ -1388,9 +1489,10 @@ export async function main(argv=process.argv.slice(2)) {
     else if(command==='normalize') result=await normalizeSuccessor({specPath:flag(argv,'--spec-path'),
       slice:flag(argv,'--slice'),expectedActivationId:flag(argv,'--expected-activation-id')});
     else if(command==='publish') result=await publish(handle);
+    else if(command==='abort') result=await abort(handle,flag(argv,'--tool-result-file'));
     else if(command==='cleanup') result=await cleanup(handle);
     else if(command==='resume') result=await resume(handle);
-    else {process.stderr.write('Usage: execution-current-operation.mjs inspect|begin|reserve-dispatch|bind-native|verify-native|capture-native|normalize|publish|cleanup|resume ...\n');return 2;}
+    else {process.stderr.write('Usage: execution-current-operation.mjs inspect|begin|reserve-dispatch|bind-native|verify-native|capture-native|normalize|publish|abort|cleanup|resume ...\n');return 2;}
     process.stdout.write(JSON.stringify(result)+'\n');return 0;
   } catch(error) {
     process.stdout.write(JSON.stringify({code:error.code??'CURRENT_OPERATION_BLOCKED',reason:error.message})+'\n');

@@ -481,6 +481,70 @@ export async function finishCurrentExecutionCleanup({workspace,marker,binding,pr
   });
 }
 
+
+// Close only an unstarted native verification on the current reservation.
+// The controller supplies producer/scope evidence; this boundary owns the
+// forward-only activation CAS, durable intent, readback and registry retirement.
+export async function abortCurrentExecutionOperation({workspace,marker,binding,readActive,readQuiet,
+  prepareDisposition,registryCompletion,checkpoint=null}) {
+  return withExecutionPublicationLock(workspace,async lease=>{
+    const allocated=parseStrictJson((await readOwnedFile(marker)).bytes.toString('utf8'));
+    if(allocated.format!=='stnl-execution-publication-owner-v2'||!equal(allocated.binding,binding)
+      ||!['working','aborted'].includes(allocated.phase)||allocated.candidate||allocated.previous
+      ||allocated.preparation?.candidateComposition)
+      fail('EC-1 abort allocation binding/phase differs');
+    const disposition=await prepareDisposition(allocated);
+    if(!allocated.expectedInstalledActivation) {
+      const current=await readActive(disposition.owner);
+      const terminalId=randomUUID();
+      const terminal={...current.activation,activationId:terminalId,sequence:current.activation.sequence+1,
+        previousActivationId:current.activation.activationId,activeAttempt:null,
+        lastAttempt:{operationAttemptId:disposition.owner.operationAttemptId,deliveryId:disposition.owner.deliveryId,
+          slice:disposition.owner.slice,operation:disposition.owner.operation,terminalActivationId:terminalId,
+          outcome:'aborted',operationRef:disposition.owner.operationRef,abort:disposition.proof}};
+      validateCurrentActivation(terminal);
+      allocated.preparation={...(allocated.preparation??{}),abortSourceActivation:current.activation};
+      allocated.expectedInstalledActivation=terminal;
+      allocated.terminalTransition={operationAttemptId:disposition.owner.operationAttemptId,outcome:'aborted'};
+      allocated.commonLease=await lifecycleCommonLeaseBinding(lease);
+      await persistAllocation(marker,allocated);
+      if(checkpoint)await checkpoint('after-abort-intent');
+    }
+    if(!equal((await prepareDisposition(allocated)).proof,disposition.proof))fail('EC-1 abort producer evidence changed');
+    const expected=allocated.expectedInstalledActivation,source=allocated.preparation?.abortSourceActivation;
+    validateCurrentActivation(expected);
+    if(!source||!equal(expected.lastAttempt?.abort,disposition.proof)
+      ||allocated.terminalTransition?.outcome!=='aborted')fail('EC-1 abort disposition changed');
+    const actual=parseStrictJson((await readOwnedFile(path.join(workspace.executionRoot,'activation.json'))).bytes.toString('utf8'));
+    if(equal(actual,source)) {
+      const current=await readActive(disposition.owner);
+      if(!equal(current.activation,source))fail('EC-1 abort source changed');
+      await assertExecutionPublicationLock(lease);
+      await replaceActivation(workspace.executionRoot,expected);
+      if(checkpoint)await checkpoint('after-abort-activation');
+    }else if(!equal(actual,expected))fail('EC-1 abort activation outcome is uncertain');
+    await syncLockParent(workspace.executionRoot);
+    const confirmed=await readQuiet();
+    if(!equal(confirmed.activation,expected))fail('EC-1 abort readback differs');
+    if(checkpoint)await checkpoint('after-abort-readback');
+    allocated.phase='aborted';allocated.runner={...allocated.runner,status:'aborted'};
+    allocated.confirmation={activationId:expected.activationId,artifactManifestSha256:digest(JSON.stringify(expected.artifacts))};
+    allocated.cleanup={status:'pending',ownedPaths:[],diagnostics:[]};
+    await persistAllocation(marker,allocated);
+    try {
+      if(checkpoint)await checkpoint('before-abort-registry-completion');
+      await registryCompletion(allocated);
+      if(checkpoint)await checkpoint('after-abort-registry-completion');
+      allocated.cleanup={status:'complete',ownedPaths:[],diagnostics:[]};
+      await persistAllocation(marker,allocated);
+    }catch(error) {
+      allocated.cleanup.diagnostics=[error.message];await persistAllocation(marker,allocated);
+      return {publication:'aborted',cleanup:'pending',activation:expected,allocation:marker,cleanupDiagnostics:[error.message]};
+    }
+    return {publication:'aborted',cleanup:'complete',activation:expected,allocation:marker};
+  });
+}
+
 export async function withLifecycleRecoveryPublicationLock(workspace, proof, action) {
   const lease = await acquireLifecycleRecoveryLease(workspace, proof);
   return withPublicationLease(lease, action);

@@ -7,7 +7,7 @@ import {pathToFileURL} from 'node:url';
 import {isDeepStrictEqual} from 'node:util';
 import {resolveCurrentExecutionContext,projectCurrentRequirements,isIgnoredMetadata} from './execution-workspace.mjs';
 import {readOwnedFile} from './execution-publication.mjs';
-import {parseCurrentJson,validateCurrentActivation,validateCurrentCandidate,validateCurrentImage,resolveLogicalProductClaim,currentTerminalProjection} from './execution-current.mjs';
+import {parseCurrentJson,validateCurrentActivation,validateCurrentCandidate,validateCurrentImage,resolveLogicalProductClaim,currentTerminalProjection,validateCurrentAbortDisposition,currentEvidenceLastAttempt} from './execution-current.mjs';
 import {validateCurrentPreparation} from './execution-preparation-current.mjs';
 import {inspectCurrentEvidence,inspectPostConversionEvidence,validateCurrentEvidenceCarriers,
   completedEvidenceContext} from './current-evidence-state.mjs';
@@ -402,7 +402,18 @@ function verifyLastAttempt(activation,deliveries) {
   if (last===null) return;
   if (activation.previousActivationId===null)
     fail('INVALID_CURRENT_IMAGE','first activation cannot contain an incorporated lastAttempt','integrity','activation.json','lastAttempt');
-  if (last.outcome==='aborted') fail('UNSUPPORTED_FORMAT','aborted lastAttempt is outside quiet profile','integrity','activation.json','lastAttempt');
+  if(last.outcome==='aborted') {
+    const {request}=validateCurrentAbortDisposition(last);
+    const delivery=deliveries.find(item=>item.deliveryId===last.deliveryId&&item.slice===last.slice);
+    const fresh=activation.activeAttempt&&delivery?.facts.latest?.request?.owner.operationAttemptId===activation.activeAttempt.operationAttemptId;
+    if(!delivery||!isDeepStrictEqual(delivery.facts.authority,request.authority)||!fresh&&(!isDeepStrictEqual(delivery.counters,request.base.counters)
+      ||!isDeepStrictEqual(delivery.facts.baseline,request.base.baseline)
+      ||delivery.evidenceSha256!==request.base.evidenceSha256
+      ||delivery.facts.consumption?.kind!=='historical-local-review'
+      ||delivery.facts.persistedValidation!=='revalidation-required'))
+      fail('EVIDENCE_INCOMPLETE','aborted invocation predecessor differs','integrity','activation.json','lastAttempt');
+    return;
+  }
   const terminalId=activation.activeAttempt?.originActivationId??activation.activationId;
   if (last.terminalActivationId!==terminalId)
     fail('INVALID_CURRENT_IMAGE','lastAttempt terminal activation differs','integrity','activation.json','lastAttempt');
@@ -673,7 +684,7 @@ async function readCurrentExecution(specPath,withCapture=false,expectedOwner=nul
         && entry.origin.operation==='VALIDATE_SLICE').at(-1);
       const latestAuxiliaryRejection=bundle?.support?.filter(entry=>entry.kind==='rejection'
         && entry.origin.operation==='APPLY_FINDINGS').at(-1);
-      const lastAttempt=activation.lastAttempt?.deliveryId===current.deliveryId?activation.lastAttempt:null;
+      const lastAttempt=currentEvidenceLastAttempt(activation.lastAttempt?.deliveryId===current.deliveryId?activation.lastAttempt:null);
       const admissionRef=lastAttempt?.operation==='APPLY_FINDINGS' && latestFormalRejection
         && latestFormalRejection?.origin.operationAttemptId!==activation.activeAttempt?.operationAttemptId
         ?lastAttempt.operationRef
@@ -817,6 +828,14 @@ async function readCurrentExecution(specPath,withCapture=false,expectedOwner=nul
       deliveries:outputs.map(({facts,targets,observation,carrier,retainedAuthority,identityAuthority,...item})=>item),
       completed:completedOutputs.map(({facts,targets,observation,retainedAuthority,...item})=>item),
       state,normalHandoff,diagnostics};
+    if(activation.lastAttempt?.outcome==='aborted') {
+      const proof=validateCurrentAbortDisposition(activation.lastAttempt);
+      inspection.abortedInvocation={operationAttemptId:activation.lastAttempt.operationAttemptId,
+        consumedInvocations:activation.lastAttempt.abort.consumedInvocations,
+        rawResponseSha256:digest(Buffer.from(proof.toolResult.finalResponse,'utf8'))};
+      inspection.diagnostics.push({kind:'evidence',artifact:'activation.json',field:'lastAttempt',
+        reason:'Native invocation concluded without a verification observation; aborted consumption and literal diagnosis are retained.'});
+    }
     return withCapture?{inspection:structuredClone(inspection),context:structuredClone(context),requirementsAuthority:projected.requirementsAuthority,
       activationBytes:Uint8Array.from(a.bytes),files:new Map([...image.files].map(([name,bytes])=>[name,Uint8Array.from(bytes)])),
       observedByDelivery}:inspection;
@@ -859,6 +878,14 @@ async function readCurrentExecution(specPath,withCapture=false,expectedOwner=nul
         :awaiting?[{kind:'evidence',artifact:awaiting.slice,field:'validation',
           reason:'active delivery has no current local proof'}]
         :[terminalDiagnostic]};
+    if(activation.lastAttempt?.outcome==='aborted') {
+      const proof=validateCurrentAbortDisposition(activation.lastAttempt);
+      inspection.abortedInvocation={operationAttemptId:activation.lastAttempt.operationAttemptId,
+        consumedInvocations:activation.lastAttempt.abort.consumedInvocations,
+        rawResponseSha256:digest(Buffer.from(proof.toolResult.finalResponse,'utf8'))};
+      inspection.diagnostics.push({kind:'evidence',artifact:'activation.json',field:'lastAttempt',
+        reason:'Native invocation concluded without a verification observation; aborted consumption and literal diagnosis are retained.'});
+    }
     return withCapture?{inspection:structuredClone(inspection),context:structuredClone(context),requirementsAuthority:projected.requirementsAuthority,
       activationBytes:Uint8Array.from(a.bytes),files:new Map([...image.files].map(([name,bytes])=>[name,Uint8Array.from(bytes)])),
       observedByDelivery}:inspection;

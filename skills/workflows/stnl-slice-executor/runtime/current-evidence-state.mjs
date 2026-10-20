@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { logicalArtifactPath, parseCurrentJson, resolveLogicalProductClaim, validateCurrentEvidence,
   validateCurrentImage,validateCurrentCandidate,validateCurrentActivation,currentOperationBindingSha256,
-  currentDeliveryAuthoritySha256,currentTerminalProjection,validateCurrentTerminalProjection } from './execution-current.mjs';
+  currentDeliveryAuthoritySha256,currentTerminalProjection,validateCurrentTerminalProjection,currentEvidenceLastAttempt } from './execution-current.mjs';
 import { composeInitialImplementationEvidence,validateInitialImplementationEvidence } from './execution-evidence-current.mjs';
 import {
   verifyCapturedInvocation, verifyWorkObservation, packCaptureSources,
@@ -766,6 +766,7 @@ function verifyHistoricalLocalReviewProof({context,snapshotBytes,current,bundleB
 // prove current contract/ownership equivalence before exposing current validity.
 export async function inspectPostConversionEvidence({context,snapshotBytes,current,bundleBytes,observedWork,
   admissionRef=null,lastAttempt=null,preparationProfile='converted-current',retainedEvidence=null,retainedRead=null}) {
+  lastAttempt=currentEvidenceLastAttempt(lastAttempt);
   const {validateCurrentPreparation}=await import('./execution-preparation-current.mjs');
   const snapshot=jsonBytes(snapshotBytes,'approved-preparation.json').value;
   if(snapshot.completed?.length) {
@@ -1317,7 +1318,7 @@ export async function inspectPostConversionEvidence({context,snapshotBytes,curre
     if(raw(priorBytes)!==request.base.evidenceSha256)
       stale('local review retained historical predecessor bytes differ');
     const origin=jsonBytes(capture.origin,'local review formal origin').value;
-    if((origin.admission?.baseActivation?.lastAttempt??null)!==null)
+    if(currentEvidenceLastAttempt(origin.admission?.baseActivation?.lastAttempt??null)!==null)
       invalid('local review historical formal binding differs');
     const priorCurrent={...current,localRevision:request.authority.localRevision,
       authoritySha256:request.authority.normativeSha256,

@@ -1,8 +1,9 @@
 // Producer-owned observation of the reviewed direct-exec recipe. No shell parser.
 import fs from 'node:fs/promises';
+import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { readOwnedFile, parseStrictJson, persistAllocation } from './execution-publication.mjs';
+import { readOwnedFile, parseStrictJson, persistAllocation, syncLockParent } from './execution-publication.mjs';
 
 const equal = (a,b) => JSON.stringify(a) === JSON.stringify(b);
 const fail = message => { throw new Error(`runner verification: ${message}`); };
@@ -24,7 +25,7 @@ export function assertRunnerVerification(observation, verification) {
 
 // A pending/uncertain saved observation is never rerun. Completed observations
 // are reusable only for the exact recipe, inside the same runner-origin directory.
-export async function executeRunnerVerification({ verification, outputFile, observeState = null }) {
+export async function executeRunnerVerification({ verification, outputFile, observeState = null, startGuard = action => action() }) {
   const existing = await fs.lstat(outputFile).catch(error => { if (error.code === 'ENOENT') return null; throw error; });
   if (existing) {
     const observation = parseStrictJson((await readOwnedFile(outputFile)).bytes.toString('utf8'));
@@ -32,10 +33,15 @@ export async function executeRunnerVerification({ verification, outputFile, obse
     if (observeState && observation.workStateSha256 !== hash(JSON.stringify(await observeState()))) fail('completed recipe observation is stale; never replay it');
     return observation;
   }
-  const workStateSha256 = observeState ? hash(JSON.stringify(await observeState())) : null;
-  const observation = { format:'stnl-runner-verification-v1', status:'started', verification, workStateSha256, checks:[] };
-  const handle = await fs.open(outputFile, 'wx', 0o600);
-  try { await handle.writeFile(JSON.stringify(observation)+'\n'); await handle.sync(); } finally { await handle.close(); }
+  const observation=await startGuard(async()=>{
+    const workStateSha256 = observeState ? hash(JSON.stringify(await observeState())) : null;
+    const started = { format:'stnl-runner-verification-v1', status:'started', verification, workStateSha256, checks:[] };
+    const handle = await fs.open(outputFile, 'wx', 0o600);
+    try { await handle.writeFile(JSON.stringify(started)+'\n'); await handle.sync(); } finally { await handle.close(); }
+    await syncLockParent(path.dirname(outputFile));
+    return started;
+  });
+  const workStateSha256=observation.workStateSha256;
   const env = {...process.env}; delete env.NODE_TEST_CONTEXT;
   for (const request of verification.checks) {
     const result = await new Promise((resolve,reject) => execFile(request.executable, request.args,
