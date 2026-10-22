@@ -72,7 +72,7 @@ Há planejamento revisado **e implementação local já realizada**, com aceites
 | --- | --- | --- |
 | U1 | Preparação conjunta | Entregue com PASS histórico no recorte; sem recertificação global automática. |
 | U2 | Continuidade e recuperação | Entregue com PASS histórico no recorte; preservar garantias e histórico. |
-| U3 | Qualificação e QA | Em andamento. U3.5/U3.6 preservam o aceite EC-1 nativo/manual delimitado; U3.14 concluída no alcance local/mecânico após revisão independente; qualificação nativa U3.15 e bancada posteriores pendentes. |
+| U3 | Qualificação e QA | Em andamento. U3.5/U3.6 preservam o aceite EC-1 nativo/manual delimitado; U3.14 concluída no alcance local/mecânico; U3.15 aceita no recorte nativo da candidata D, após revisão independente. U3.16 não iniciada; bancada/benchmark posteriores pendentes. U3/P1-B continuam abertos. |
 | U4 | Equalização Claude | Pendente, após benchmark U3.18 aprovado; checks pertinentes antes de main. |
 | U5 | Entrega revisada | Pendente; publicação/PR/merge exigem os gates e autorizações próprios. |
 | U6 | Teste Claude por Aj | Pendente, depois de main. |
