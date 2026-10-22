@@ -1418,12 +1418,13 @@ export async function inspectPostConversionEvidence({context,snapshotBytes,curre
 }
 
 function postSection(document,name,body) {
-  const lines=document.split('\n');
-  const start=lines.findIndex(line=>line===`## ${name}`);
-  if(start<0) invalid(`Task lacks ${name}`);
-  let end=start+1;
-  while(end<lines.length && !lines[end].startsWith('## ')) end+=1;
-  return [...lines.slice(0,start+1),'',body,'',...lines.slice(end)].join('\n');
+  // Match the current carrier's admitted headings, without rewriting bytes in
+  // untouched sections (in particular retained records and inline-code text).
+  const headings=[...document.matchAll(/^##[ \t]+([^\r\n]+?)[ \t]*\r?$/gmu)];
+  const selected=headings.filter(item=>item[1].trim()===name);
+  if(selected.length!==1) invalid(`Task requires exactly one ${name}`);
+  const header=selected[0],next=headings[headings.indexOf(header)+1];
+  return document.slice(0,header.index+header[0].length)+'\n\n'+body+(next?'\n\n'+document.slice(next.index):'\n');
 }
 function priorValidationOverlap(changed,priorDeliveries) {
   return priorDeliveries.filter(item=>item.facts.formalStatus==='PASS').flatMap(item=>
@@ -1647,18 +1648,20 @@ function postApplyTask(document,cycle,admission,digest,context,bundle) {
   return utf8(value);
 }
 function postIndex(document,slice,status) {
-  let found=false;
+  let found=0;
   const lines=document.split('\n').map(line=>{
-    if(!/^\| \[[ x]\] \|/u.test(line)) return line;
-    const cols=line.slice(1,-1).split('|').map(item=>item.trim());
-    if(!cols[1].startsWith(`${slice.slice(6)} - `)) return line;
-    found=true;
+    if(!/^\s*\|.*\|\s*$/u.test(line)) return line;
+    const cols=line.trim().slice(1,-1).split('|').map(item=>item.trim());
+    const scalar=value=>/^`[^`]*`$/u.test(value)?value.slice(1,-1):value;
+    if(cols.length!==7 || !/^\[[ xX]\]$/u.test(scalar(cols[0])) || !scalar(cols[1]).startsWith(`${slice.slice(6)} - `)) return line;
+    found++;
     cols[0]=status==='PASS'?'[x]':'[ ]';cols[5]=status;cols[6]=status==='PASS'?'PASS':'pending';
-    return `| ${cols.join(' | ')} |`;
+    return `| ${cols.join(' | ')} |`+(line.endsWith('\r')?'\r':'');
   });
-  if(!found) invalid(`${slice}: index row absent`);
+  if(found!==1) invalid(`${slice}: exactly one index row required`);
   return utf8(lines.join('\n'));
 }
+export {postSection as replaceCurrentCarrierSection,postIndex as replaceCurrentTaskIndexStatus};
 
 // Restore presentation from an already retained formal, without producing a
 // record or changing its source objects. The caller still runs the full reader

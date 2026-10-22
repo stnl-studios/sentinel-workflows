@@ -103,6 +103,34 @@ async function reserved(f,responseVariant) {
   return {started,dispatch};
 }
 
+for(const skill of ['stnl-slice-executor','stnl-slice-quality-manager'])test(`B-T15 ${skill} CLI refuses ambiguous arguments before any effect`,async t=>{
+  const f=await fixture({single:true});t.after(()=>fs.rm(f.root,{recursive:true,force:true}));await installCurrentInitial(f);
+  const image=await captureCurrentExecution(f.specPath),cli=path.resolve('skills/workflows',skill,'runtime/execution-current-operation.mjs');
+  const handle=path.join(f.root,'must-not-read.json');
+  const base=['begin','--spec-path',f.specPath,'--slice','slice-01','--expected-activation-id',image.inspection.activationId];
+  const before=await captureExecutionTree(f.root);
+  for(const args of [
+    [...base,'--operation','EXECUTE_SLICE','--termnial'],base,
+    [...base,'--operation','EXECUTE_SLICE','--operation','VALIDATE_SLICE'],
+    [...base,'--operation'],[...base,'--operation','EXECUTE_SLICE','extra'],
+    ['reserve-dispatch','--handle',handle,'--terminal','false'],
+    ['reserve-dispatch','--handle',handle,'--termnial'],
+    ['resume','--handle',handle,'--handle',handle],['resume','--handle','--terminal'],
+    ['normalize','--handle',handle,'--spec-path',f.specPath]
+  ]) {
+    const result=await run(process.execPath,[cli,...args]).then(value=>({...value,code:0}),error=>error);
+    assert.equal(result.code,1,JSON.stringify(args));
+    assert.equal(JSON.parse(result.stdout).code,'INVALID_ARGUMENTS',JSON.stringify(args));
+    assert.deepEqual(await captureExecutionTree(f.root),before,'invalid CLI must not reserve or mutate');
+  }
+  const admitted=JSON.parse((await run(process.execPath,[cli,...base,'--operation','EXECUTE_SLICE'])).stdout);
+  assert.equal(admitted.owner.operation,'EXECUTE_SLICE');assert.equal(admitted.owner.originActivationId,image.inspection.activationId);
+  await fs.writeFile(handle,JSON.stringify(admitted.handle));
+  const dispatch=JSON.parse((await run(process.execPath,[cli,'reserve-dispatch','--handle',handle,
+    '--response-variant','stnl-current-native-judgment-v1'])).stdout);
+  const request=JSON.parse(await fs.readFile(dispatch.requestFile));assert.equal(Object.hasOwn(request,'terminal'),false);
+});
+
 async function sealedBlockingFormal(f) {
   await installCurrentInitial(f);
   const execute=await reserved(f,'stnl-current-native-judgment-v1');

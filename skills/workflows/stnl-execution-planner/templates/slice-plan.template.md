@@ -61,7 +61,7 @@ For a partial contribution, reference the existing requirement ID, describe the 
 
 ## Dependencies
 
-- <earlier slice or none>
+- none
 
 ## Risks and Strategy
 

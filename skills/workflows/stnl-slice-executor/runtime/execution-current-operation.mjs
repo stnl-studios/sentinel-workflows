@@ -1480,30 +1480,53 @@ export async function resume(handle) {
 
 export async function inspect(specPath) {return captureCurrentExecution(specPath).then(value=>value.inspection);}
 
-function flag(argv,name) {
-  const index=argv.indexOf(name);
-  return index<0?null:argv[index+1]??null;
+function commandArguments(argv) {
+  const rules={inspect:[['--spec-path'],[]],begin:[['--spec-path','--slice','--expected-activation-id','--operation'],[]],
+    'reserve-dispatch':[['--handle'],['--response-variant','--terminal']],
+    'bind-native':[['--handle','--agent-id'],[]],'verify-native':[['--origin-file'],[]],
+    'capture-native':[['--handle','--tool-result-file'],[]],abort:[['--handle'],['--tool-result-file']],
+    publish:[['--handle'],[]],cleanup:[['--handle'],[]],resume:[['--handle'],[]],
+    normalize:[[],['--handle','--spec-path','--slice','--expected-activation-id']]};
+  const reject=reason=>fail('INVALID_ARGUMENTS',reason),rule=Object.hasOwn(rules,argv[0])?rules[argv[0]]:null;
+  if(!rule) reject('Unknown current-operation command');
+  const [required,optional]=rule,allowed=new Set([...required,...optional]),options=Object.create(null);
+  for(let i=1;i<argv.length;i++) {
+    const key=argv[i];
+    if(!allowed.has(key)||Object.hasOwn(options,key))reject(`Unknown, duplicate or positional argument: ${key}`);
+    if(key==='--terminal'){options[key]=true;continue;}
+    const value=argv[++i];
+    if(typeof value!=='string'||!value||value.startsWith('--'))reject(`Missing value for ${key}`);
+    options[key]=value;
+  }
+  if(required.some(key=>!Object.hasOwn(options,key)))reject('Missing required current-operation arguments');
+  if(argv[0]==='normalize') {
+    const keys=Object.keys(options);
+    if(options['--handle']?keys.length!==1:!['--spec-path','--slice','--expected-activation-id'].every(key=>options[key]))
+      reject('normalize requires only --handle, or the complete spec/slice/activation selection');
+  }
+  return options;
 }
 export async function main(argv=process.argv.slice(2)) {
   const [command]=argv;
   try {
-    const handleFile=flag(argv,'--handle');
+    // Validate the complete argv before reading a handle or admitting effects.
+    const options=commandArguments(argv),flag=name=>options[name]??null;
+    const handleFile=flag('--handle');
     const handle=handleFile?await readJson(handleFile):null;
     let result;
-    if(command==='inspect') result=await inspect(flag(argv,'--spec-path'));
-    else if(command==='begin') result=await begin({specPath:flag(argv,'--spec-path'),
-      slice:flag(argv,'--slice'),expectedActivationId:flag(argv,'--expected-activation-id'),
-      operation:flag(argv,'--operation')??'VALIDATE_SLICE'});
+    if(command==='inspect') result=await inspect(flag('--spec-path'));
+    else if(command==='begin') result=await begin({specPath:flag('--spec-path'),
+      slice:flag('--slice'),expectedActivationId:flag('--expected-activation-id'),operation:flag('--operation')});
     else if(command==='reserve-dispatch') result=await reserveDispatch(handle,
-      {responseVariant:flag(argv,'--response-variant'),terminal:argv.includes('--terminal')});
-    else if(command==='bind-native') result=await bindNative(handle,flag(argv,'--agent-id'));
-    else if(command==='verify-native') result=await verifyNative(flag(argv,'--origin-file'));
-    else if(command==='capture-native') result=await captureNative(handle,flag(argv,'--tool-result-file'));
+      {responseVariant:flag('--response-variant'),terminal:options['--terminal']??false});
+    else if(command==='bind-native') result=await bindNative(handle,flag('--agent-id'));
+    else if(command==='verify-native') result=await verifyNative(flag('--origin-file'));
+    else if(command==='capture-native') result=await captureNative(handle,flag('--tool-result-file'));
     else if(command==='normalize' && handle) result=await normalize(handle);
-    else if(command==='normalize') result=await normalizeSuccessor({specPath:flag(argv,'--spec-path'),
-      slice:flag(argv,'--slice'),expectedActivationId:flag(argv,'--expected-activation-id')});
+    else if(command==='normalize') result=await normalizeSuccessor({specPath:flag('--spec-path'),
+      slice:flag('--slice'),expectedActivationId:flag('--expected-activation-id')});
     else if(command==='publish') result=await publish(handle);
-    else if(command==='abort') result=await abort(handle,flag(argv,'--tool-result-file'));
+    else if(command==='abort') result=await abort(handle,flag('--tool-result-file'));
     else if(command==='cleanup') result=await cleanup(handle);
     else if(command==='resume') result=await resume(handle);
     else {process.stderr.write('Usage: execution-current-operation.mjs inspect|begin|reserve-dispatch|bind-native|verify-native|capture-native|normalize|publish|abort|cleanup|resume ...\n');return 2;}

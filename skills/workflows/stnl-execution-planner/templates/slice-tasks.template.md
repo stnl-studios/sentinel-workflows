@@ -25,7 +25,7 @@ update_policy: PLAN authors the joint Initial candidate; later current operation
 
 ## Result
 
-<Local observable delivery and its practical outcome.>
+<Copy the exact observable delivery from the global Plan and Tasks rows.>
 
 ## Acceptance Obligations
 

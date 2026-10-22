@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { parseCurrentJson, logicalArtifactPath, resolveLogicalProductClaim, validateCurrentContinuity,
   validateCurrentEvidence,validateCurrentImage,validateCurrentCandidate } from './execution-current.mjs';
-import {composeRetainedValidationCarriers} from './current-evidence-state.mjs';
+import {composeRetainedValidationCarriers,replaceCurrentCarrierSection,replaceCurrentTaskIndexStatus} from './current-evidence-state.mjs';
 
 const HASH = /^sha256:[a-f0-9]{64}$/u;
 const UUID = /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/u;
@@ -1139,30 +1139,14 @@ export function prepareCurrentLocalReview(input) {
 }
 
 function composeCurrentLocalReviewCarriers({task,index,slice,evidenceSha256,validationRecords=null}) {
-  const replace=(document,name,body)=>{
-    const lines=document.split('\n');
-    const start=lines.findIndex(line=>line===`## ${name}`);
-    if(start<0) invalid(`Task lacks ${name}`);
-    let end=start+1;
-    while(end<lines.length && !lines[end].startsWith('## ')) end++;
-    return [...lines.slice(0,start+1),'',body,'',...lines.slice(end)].join('\n');
-  };
+  const replace=replaceCurrentCarrierSection;
   let next=replace(task,'Continuity',
     `- Current validation: revalidation-required\n- Current evidence: ${evidenceSha256}\n- Current action: VALIDATE_SLICE`);
   for(const section of ['Final Result','Changed Areas','Corrections Applied',
     'Prior Validation Overlap','Effective Validation Base'])
     next=replace(next,section,section==='Final Result'?'- pending':'- none');
   if(validationRecords!==null)next=replace(next,'Validation Attempts',validationRecords.length?validationRecords.map(item=>item.recordUtf8).join('\n\n'):'- none');
-  let found=false;
-  const rows=index.split('\n').map(line=>{
-    if(!/^\| \[[ x]\] \|/u.test(line)) return line;
-    const cols=line.slice(1,-1).split('|').map(item=>item.trim());
-    if(!cols[1].startsWith(`${slice.slice(6)} - `)) return line;
-    found=true;cols[0]='[ ]';cols[5]='pending';cols[6]='pending';
-    return `| ${cols.join(' | ')} |`;
-  });
-  if(!found) invalid('selected Tasks index row absent');
-  return {task:Buffer.from(next,'utf8'),index:Buffer.from(rows.join('\n'),'utf8')};
+  return {task:Buffer.from(next,'utf8'),index:replaceCurrentTaskIndexStatus(index,slice,'pending')};
 }
 
 export function finalizeCurrentLocalReview({proposal,review:decision}) {

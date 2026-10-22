@@ -45,6 +45,51 @@ async function localPublicationCase(t) {
   return {fixture,image,publish};
 }
 
+for(const presentation of ['headings','CRLF'])test(`B-T14 public local review and next native composition preserve ${presentation}`,async t=>{
+  const fixture=await nativeOperationCase(t);
+  // Establish a native-format mechanical predecessor through the public controller.
+  // An imported predecessor intentionally requires exact reviewed presentation.
+  const seed=await begin({specPath:fixture.specPath,slice:fixture.delivery.slice,expectedActivationId:fixture.activationId,operation:'VALIDATE_SLICE'});
+  const seeded=await reserveDispatch(seed.handle,{responseVariant:'stnl-current-native-judgment-v1'});
+  const seedId='mechanical-presentation-predecessor';await bindNative(seed.handle,seedId);
+  const verified=await verifyNative(seeded.originFile),seedFile=path.join(fixture.root,'presentation-predecessor.json');
+  await fs.writeFile(seedFile,JSON.stringify({agentId:seedId,status:'completed',finalResponse:JSON.stringify({format:'stnl-current-native-judgment-v1',
+    result:{status:'PASS',commands:verified.commands,evidence:'Mechanical prepared greeting check.',findingReferences:'none',findingDispositions:'none',
+      blockers:'none',unexpectedWorkspaceEffects:'none',persistenceSummary:'No runner writes.'},newFindings:[]})}));
+  await captureNative(seed.handle,seedFile);await publish(seed.handle);
+  const image=await captureCurrentExecution(fixture.specPath);
+  const previousRow=JSON.parse(Buffer.from(image.files.get('continuity.json'))).deliveries.find(item=>item.deliveryId===fixture.delivery.deliveryId);
+  const previousBundle=JSON.parse(Buffer.from(image.files.get(previousRow.evidence.path)));
+  const input=proposalInput(image,{slice:fixture.delivery.slice});
+  const text=input.currentTaskBytes.toString('utf8');
+  input.currentTaskBytes=Buffer.from(presentation==='headings'?text.replace(/^## /gmu,'##   '):text.replaceAll('\n','\r\n'));
+  const proposal=prepareCurrentLocalReview(input);
+  const review={...proposal.reviewRequest,decision:'approved',summary:'Mechanical review of one private change and equivalent current presentation.',
+    evidenceDecisions:proposal.reviewRequest.evidenceDecisions.map(item=>({...item,reason:'Revalidate the changed private strategy; retain historical sources literally.'}))};
+  const result=await publishCurrentLocalReview({specPath:fixture.specPath,slice:fixture.delivery.slice,
+    planBytes:input.planBytes,reviewedTaskBytes:input.reviewedTaskBytes,currentTaskBytes:input.currentTaskBytes,review});
+  assert.equal(result.publication,'confirmed');assert.equal(result.cleanup,'complete');
+  const current=await captureCurrentExecution(fixture.specPath);
+  assert.equal(current.inspection.normalHandoff.operation,'VALIDATE_SLICE');
+  const row=JSON.parse(Buffer.from(current.files.get('continuity.json'))).deliveries.find(item=>item.deliveryId===fixture.delivery.deliveryId);
+  const retained=JSON.parse(Buffer.from(current.files.get(row.evidence.path)));
+  assert.equal(retained.validation.recordUtf8,previousBundle.validation.recordUtf8);
+  for(const object of previousBundle.objects)assert.deepEqual(retained.objects.find(item=>item.id===object.id),object,'presentation must not rewrite historical source objects');
+  const started=await begin({specPath:fixture.specPath,slice:fixture.delivery.slice,
+    expectedActivationId:current.inspection.activationId,operation:'VALIDATE_SLICE'});
+  const dispatch=await reserveDispatch(started.handle,{responseVariant:'stnl-current-native-judgment-v1',terminal:true});
+  const agentId='mechanical-presentation-'+started.handle.operationId;await bindNative(started.handle,agentId);
+  const measured=await verifyNative(dispatch.originFile);
+  const finalResponse=JSON.stringify({format:'stnl-current-native-judgment-v1',result:{status:'PASS',commands:measured.commands,
+    evidence:'Mechanical prepared greeting check passed.',findingReferences:'none',findingDispositions:'none',blockers:'none',
+    unexpectedWorkspaceEffects:'none',persistenceSummary:'No runner writes.'},newFindings:[]});
+  const file=path.join(fixture.root,'presentation-result.json');await fs.writeFile(file,JSON.stringify({agentId,status:'completed',finalResponse}));
+  await captureNative(started.handle,file);assert.equal((await publish(started.handle)).publication,'confirmed');
+  const after=await captureCurrentExecution(fixture.specPath);
+  assert.equal(after.inspection.deliveries.find(item=>item.deliveryId===fixture.delivery.deliveryId).formalStatus,'PASS');
+  assert.deepEqual(after.files.get('approved-preparation.json'),current.files.get('approved-preparation.json'));
+});
+
 test('local replacement propagates a retained cleanup lease through its public wrapper',async t=>{
  const {fixture,publish}=await localPublicationCase(t),open=fs.open,unlink=fs.unlink;let parent=null,injected=0,error;
  fs.unlink=async(file,...args)=>{const result=await unlink(file,...args);if(typeof file==='string'&&/\.stnl-execution-publication-[a-f0-9-]+\.json$/u.test(file))parent=path.dirname(file);return result;};
