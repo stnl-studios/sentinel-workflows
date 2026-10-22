@@ -202,6 +202,14 @@ function sourceClaim(value, context, artifact, label) {
   const resolved = resolveLogicalProductClaim(context, artifact, found[1]);
   if (resolved !== context.logicalAuthorityPath) unsafe(`${label}: authority source differs`);
 }
+// Requirements source deliberately resolves to authority. Operational claims do
+// not: use this field-level gate without changing the shared path resolver.
+function operationalClaim(context,target,label,kind=null) {
+  if (target===context.logicalAuthorityPath || within(context.logicalExecutionRoot,target)
+    || kind==='directory' && (within(target,context.logicalAuthorityPath)
+      || within(target,context.logicalExecutionRoot)))
+    unsafe(`${label}: operational claim overlaps authority or execution controls`);
+}
 function claims(body, context, artifact, label, typed = false, required = false) {
   if (body === '- none' && !required) return [];
   const result = [];
@@ -210,6 +218,7 @@ function claims(body, context, artifact, label, typed = false, required = false)
     if (!found) invalid(`${label}: invalid path carrier`);
     const kind = typed ? found[1] : null, rawPath = typed ? found[2] : found[1];
     const target = resolveLogicalProductClaim(context, artifact, rawPath);
+    operationalClaim(context,target,label,kind);
     result.push({kind, target});
   }
   if (!result.length || new Set(result.map(item => `${item.kind}\0${item.target}`)).size !== result.length) invalid(`${label}: duplicate or empty paths`);
@@ -237,6 +246,7 @@ function recipe(body, context, artifact, areas, inputs, label) {
     if (!['product', 'input'].includes(ref.kind)) invalid(`${label}: invalid reference kind`);
     string(ref.path, `${label}.reference.path`);
     const target = resolveLogicalProductClaim(context, artifact, ref.path);
+    operationalClaim(context,target,`${label}.reference`);
     if (ref.kind === 'input' ? !inputs.some(item => item.target === target)
       : !areas.some(item => item.kind === 'file' ? item.target === target : within(item.target, target))) unsafe(`${label}: reference outside declared ${ref.kind}`);
   };

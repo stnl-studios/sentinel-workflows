@@ -275,6 +275,32 @@ const checks = [p01, p02, p03, p04, p05, p06, p07];
 for (let index = 0; index < checks.length; index += 1) {
   test(`P0${index + 1} — initial EC-1 preparation`, () => checks[index](initial));
 }
+for(const [form,context] of [['lifecycle',LIFECYCLE],['standalone',STANDALONE]]) {
+ for(const role of ['input-authority','input-execution','expected-authority','area-authority','area-ancestor','recipe-authority'])
+  test(`Operational claims refuse ${form} ${role} while Requirements source remains valid`,()=>{
+   let artifacts=initialArtifacts({form});
+   const authority='../../'+path.basename(context.logicalAuthorityPath);
+   const names=['plans/slice-01.md','tasks/slice-01.md'];
+   if(role.startsWith('input-'))artifacts=editAll(artifacts,names,text=>text.replace('## Existing Inputs\n\n- none',
+    '## Existing Inputs\n\n- `'+(role==='input-authority'?authority:'../activation.json')+'`'));
+   if(role==='expected-authority')artifacts=editAll(artifacts,names,text=>text.replace('## Expected Files\n\n- `../../../../src/pay.mjs`',
+    '## Expected Files\n\n- `'+authority+'`'));
+   if(role==='area-authority'||role==='area-ancestor'){
+    artifacts=editAll(artifacts,names,text=>text.replace('- directory: `../../../../src`',
+     '- directory: `../../../../src`\n'+(role==='area-authority'?'- file: `'+authority+'`':'- directory: `../..`')));
+    artifacts=edit(artifacts,'plan.md',text=>text.replace('directory: `../../../src`',
+     'directory: `../../../src`; '+(role==='area-authority'?'file: `../'+path.basename(context.logicalAuthorityPath)+'`':'directory: `..`')));
+   }
+   if(role==='recipe-authority')artifacts=editAll(artifacts,names,text=>text.split('\n').map(line=>{
+    if(!line.startsWith('- Recipe: '))return line;
+    const recipe=JSON.parse(line.slice('- Recipe: '.length));recipe.checks[0].inputs=[{kind:'input',path:authority}];
+    return '- Recipe: '+JSON.stringify(recipe);
+   }).join('\n'));
+   assert.throws(()=>initial.projectInitialPreparation(input(artifacts,context)),error=>error.code==='UNSAFE_PATH'
+    &&/operational claim overlaps authority or execution controls/u.test(error.message));
+   assert.doesNotThrow(()=>initial.projectInitialPreparation(input(initialArtifacts({form}),context)));
+  });
+}
 test('P08 — planner/reviewer copies import from their shipped pure evidence closure', async () => {
   const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'stnl-initial-isolated-'));
   try {
