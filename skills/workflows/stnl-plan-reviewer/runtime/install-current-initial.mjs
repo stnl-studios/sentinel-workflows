@@ -65,7 +65,7 @@ export async function installCurrentInitial({specPath,preparationRoot,review,che
     const observed=await observeCurrentDeliveryWork({context,
       delivery:snapshot.normativeProjection.deliveries[index],
       sections:prepared.currentArtifacts.deliveries[index].sections,
-      current:{slice:item.slice,baseline:{format:'stnl-current-work-v1',entries:[]}},bundle:null});
+      current:{slice:item.slice,baseline:{format:'stnl-current-work-v1',entries:[]}},bundle:null,initial:true});
     baselines.push(observed.manifest);
   }
   const ordinal=Number(snapshot.deliveries.at(-1)?.slice.slice(6));
@@ -101,7 +101,7 @@ export async function installCurrentInitial({specPath,preparationRoot,review,che
       const current=await observeCurrentDeliveryWork({context,
         delivery:snapshot.normativeProjection.deliveries[index],
         sections:prepared.currentArtifacts.deliveries[index].sections,
-        current:{slice:item.slice,baseline:baselines[index]},bundle:null});
+        current:{slice:item.slice,baseline:baselines[index]},bundle:null,initial:true});
       if(!same(current.manifest,baselines[index])) fail('EVIDENCE_STALE','Initial product changed before installation');
     }
   };

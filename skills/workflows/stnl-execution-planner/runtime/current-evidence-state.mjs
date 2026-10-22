@@ -2321,7 +2321,7 @@ function deriveApplyCycle({context,authority:approvedAuthority,owner:expectedOwn
       equal(work.before,baseFacts.testedWork,'EVIDENCE_STALE','findings baseline differs from formal product');
       firstWork=work.before;
     }
-    if (work.scopePaths) equal(request.scopePaths,work.scopePaths,'EVIDENCE_STALE',`round ${round} derived scope`);
+    if (work.scopePaths) equal(request.scopePaths,work.requestScopePaths,'EVIDENCE_STALE',`round ${round} derived scope`);
     if (receipt.status==='RUNNER_RESPONSE_CAPTURED' && (!work.observed || !work.entries)) incomplete(`round ${round}: accepted findings lack observation/testedState`);
     if (receipt.status==='RUNNER_RESULT_BLOCKED' && !envelope.error) uncertain(`round ${round}: schema rejection has valid envelope/payload`);
     let semanticError=envelope.error??null;
@@ -2417,7 +2417,10 @@ function historicalFormal(record,map,context,approvedAuthority,post=null) {
     equal(record,{...derived.recordDraft,sources:record.sources},'EVIDENCE_STALE',`formal record ${record.id}`);
     return {...derived,record,cap};
   }
-  const literalAbsent=new Set(record.testedWork.entries.filter(item=>item.kind==='absent').map(item=>item.path));
+  const cap=restoreCaptureSources('current-validation',record,map);
+  const receipt=jsonBytes(cap.receipt,'historical formal receipt').value;
+  const literalAbsent=new Set((receipt.testedState?.entries??[]).filter(item=>item.value==='REMOVED').map(item=>
+    path.relative(context.productRoot,resolveLogicalProductClaim(context,`tasks/${request.owner.slice}.md`,item.path)).split(path.sep).join('/')));
   return verifyRecord(record,map,context,approvedAuthority,literalAbsent,request.scope.filelessReason);
 }
 function recordRefs(bundle,map,records) { return referencedObjects(records,map); }

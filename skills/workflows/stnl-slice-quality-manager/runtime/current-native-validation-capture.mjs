@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import {createHash,randomUUID} from 'node:crypto';
 import {captureCurrentExecution,observeCurrentDeliveryWork} from './execution-current-reader.mjs';
-import {verifyWorkObservation} from './execution-evidence-proof.mjs';
+import {verifyWorkObservation,restoreCaptureSources} from './execution-evidence-proof.mjs';
 import {executeRunnerVerification,verificationCommand} from './runner-verification.mjs';
 import {parseCurrentJson} from './execution-current.mjs';
 
@@ -39,6 +39,22 @@ export async function createCurrentNativeValidationCapture({specPath,deliveryId,
   const current=continuity.deliveries[index],leaf=snapshot.normativeProjection.deliveries[index];
   const facts=previous.inspection.deliveries.find(item=>item.deliveryId===deliveryId);
   const priorBundle=current.evidence?parseCurrentJson(Buffer.from(previous.files.get(current.evidence.path)).toString('utf8')):null;
+  // This factory emits the offline post-conversion v3 contract. Native Initial
+  // sources keep their literal closure and use the official leased controller.
+  const record=priorBundle?.validation??priorBundle?.findingsChecks.at(-1)??priorBundle?.implementation.at(-1);
+  let initialSource=snapshot.preparationRevision===1;
+  if(record?.recordFormat==='stnl-task-record-v2') {
+    if(record.origin.operation==='EXECUTE_SLICE')initialSource=true;
+    else {
+      const findings=record.origin.operation==='APPLY_FINDINGS';
+      const capture=restoreCaptureSources(findings?'current-findings':'current-validation',record,
+        new Map(priorBundle.objects.map(item=>[item.id,Buffer.from(item.bytesBase64,'base64')])));
+      const request=parseCurrentJson(Buffer.from(capture[findings?'applyRequest':'validationRequest']).toString('utf8'));
+      initialSource=!['stnl-current-validation-request-v3','stnl-current-validation-request-v4',
+        'stnl-current-findings-request-v2','stnl-current-findings-request-v3'].includes(request.format);
+    }
+  }
+  if(initialSource)fail('UNSUPPORTED_FORMAT','offline v3 capture excludes native Initial sources; use the official controller');
   if(priorBundle?.validation?.recordFormat==='stnl-task-record-v2'
     && (facts?.formalStatus!=='PASS' || priorBundle.openFindings.length))
     fail('UNSUPPORTED_FORMAT','another offline formal requires a clean PASS');

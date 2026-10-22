@@ -13,7 +13,7 @@ import {resolveCurrentExecutionContext,executionWorkspaceFromContext} from './ex
 import {captureCurrentExecution,captureCurrentActiveExecution,observeCurrentDeliveryWork} from './execution-current-reader.mjs';
 import {parseCurrentJson,validateCurrentCandidate,currentOperationBindingSha256,currentTerminalProjection,validateCurrentAbortDisposition} from './execution-current.mjs';
 import {verifyWorkObservation,findingsRoundCaptureSha256,NATIVE_JUDGMENT_VARIANT,restoreCaptureSources,
-  projectNativeJudgment} from './execution-evidence-proof.mjs';
+  projectNativeJudgment,currentOutputPaths} from './execution-evidence-proof.mjs';
 import {composePostConversionValidation,composePostConversionFindings,
   inspectPostConversionEvidence,inspectPostConversionFindingsPrefix,
   parseCurrentValidationResponse,currentEvidenceValueSha256,inspectCurrentEvidence,verifyCurrentTerminalRequest,
@@ -211,7 +211,7 @@ function requireInitial(image,slice,operation,{successor=false}={}) {
     || item.observedValidation==='uncertain')) fail('OWNER_UNCERTAIN','another delivery blocks Initial');
   if(operation==='EXECUTE_SLICE' && !successor && (current.evidence!==null
     || Object.values(current.counters).some(value=>value!==0)
-    || !same(current.baseline,image.observedByDelivery.get(current.deliveryId)?.manifest)))
+    || currentEvidenceValueSha256(current.baseline)!==currentEvidenceValueSha256(image.observedByDelivery.get(current.deliveryId)?.manifest)))
     fail('EVIDENCE_STALE','Initial EXECUTE requires pristine baseline and zero consumption');
   if(operation!=='EXECUTE_SLICE' && !current.evidence)
     fail('EVIDENCE_INCOMPLETE','Initial formal or APPLY requires captured evidence');
@@ -350,7 +350,7 @@ async function requestInputs(image,operation,dispatchId,round=1,previous=null,te
   const observed=image.observedByDelivery.get(current.deliveryId);
   if(!observed) fail('EVIDENCE_INCOMPLETE','selected product observation is absent');
   const output=name=>info.areas.some(area=>area.path===name || area.kind==='directory' && name.startsWith(area.path+'/'));
-  const paths=manifest=>manifest.entries.filter(item=>item.kind!=='directory' && output(item.path)).map(item=>item.path);
+  const paths=manifest=>manifest.entries.filter(item=>item.kind==='file' && output(item.path)).map(item=>item.path);
   const priorScopePaths=paths(current.baseline).sort(order);
   const scopePaths=[...new Set([...priorScopePaths,...(previous?.scopePaths??[]),...paths(observed.manifest),
     ...info.refs.filter(item=>item.kind==='product').map(item=>item.path)])].sort(order);
@@ -377,7 +377,7 @@ async function requestInputs(image,operation,dispatchId,round=1,previous=null,te
         fail('UNSUPPORTED_FORMAT','Initial APPLY predecessor no longer requires correction');
       const formalScope=facts.latest.request.scope.paths;
       const applyScope=[...new Set([...formalScope,...(previous?.scopePaths??[]),...paths(observed.manifest),
-        ...info.refs.filter(item=>item.kind==='product').map(item=>item.path)])].sort(order);
+        ...info.refs.filter(item=>item.kind==='product' && observed.manifest.entries.some(entry=>entry.path===item.path&&entry.kind==='file')).map(item=>item.path)])].sort(order);
       const request={format:'stnl-current-findings-request-v1',owner:operation.owner,authority,
         base:{evidenceSha256:sha(bundleBytes),counters:structuredClone(current.counters),
           validation:{id:bundle.validation.id,recordSha256:currentEvidenceValueSha256(bundle.validation)},
@@ -387,13 +387,18 @@ async function requestInputs(image,operation,dispatchId,round=1,previous=null,te
           roundCaptureSha256:findingsRoundCaptureSha256(previous.cap)}:null,scopePaths:applyScope};
       return {request,info,observed,dispatchId,current};
     }
-    const formalPrior=facts.cycle?.lastScope??facts.latest?.request.scope.paths??priorScopePaths;
+    const implementation=bundle.implementation.at(-1);
+    const initialPrior=implementation?parseCurrentJson(Buffer.from(restoreCaptureSources('initial-implementation',implementation,
+      new Map(bundle.objects.map(item=>[item.id,Buffer.from(item.bytesBase64,'base64')]))).receipt).toString('utf8'))
+      .testedState.entries.map(item=>path.relative(operation.context.productRoot,
+        path.resolve(operation.context.logicalExecutionRoot,'tasks',item.path)).split(path.sep).join('/')).sort(order):priorScopePaths;
+    const formalPrior=facts.cycle?.lastScope??facts.latest?.request.scope.paths??initialPrior;
     const auxiliary=facts.cycle?{kind:'findings',operationAttemptId:facts.cycle.owner.operationAttemptId,
       cycle:facts.cycle.admissionId,firstCheckId:facts.cycle.checks[0].id,
       lastCheckId:facts.cycle.checks.at(-1).id,
       recordsSha256:currentEvidenceValueSha256(facts.cycle.checks)}:null;
     const formalScope=[...new Set([...formalPrior,...paths(observed.manifest),
-      ...info.refs.filter(item=>item.kind==='product').map(item=>item.path)])].sort(order);
+      ...info.refs.filter(item=>item.kind==='product' && observed.manifest.entries.some(entry=>entry.path===item.path&&entry.kind==='file')).map(item=>item.path)])].sort(order);
     const request={format:auxiliary?'stnl-current-validation-request-v2':'stnl-current-validation-request-v1',
       owner:operation.owner,authority,...(terminal?{terminal:currentTerminalProjection(snapshot)}:{}),
       base:{evidenceSha256:sha(bundleBytes),counters:structuredClone(current.counters),
@@ -418,7 +423,7 @@ async function requestInputs(image,operation,dispatchId,round=1,previous=null,te
       fail('UNSUPPORTED_FORMAT','APPLY predecessor no longer requires correction');
     const formalScope=successor?facts.cycle.lastScope:facts.latest.request.scope.paths;
     const applyScope=[...new Set([...formalScope,...(previous?.scopePaths??[]),...paths(observed.manifest),
-      ...info.refs.filter(item=>item.kind==='product').map(item=>item.path)])].sort(order);
+      ...info.refs.filter(item=>item.kind==='product' && observed.manifest.entries.some(entry=>entry.path===item.path&&entry.kind==='file')).map(item=>item.path)])].sort(order);
     const request={format:successor?'stnl-current-findings-request-v2':'stnl-current-findings-request-v1',
       owner:operation.owner,authority,
       base:{evidenceSha256:sha(bundleBytes),counters:structuredClone(current.counters),
@@ -452,7 +457,7 @@ async function requestInputs(image,operation,dispatchId,round=1,previous=null,te
     }
   }
   const formalScope=[...new Set([...formalPrior,...paths(observed.manifest),
-    ...info.refs.filter(item=>item.kind==='product').map(item=>item.path)])].sort(order);
+    ...info.refs.filter(item=>item.kind==='product' && observed.manifest.entries.some(entry=>entry.path===item.path&&entry.kind==='file')).map(item=>item.path)])].sort(order);
   const request={format:auxiliary?'stnl-current-validation-request-v4':'stnl-current-validation-request-v3',
     owner:operation.owner,authority,...(terminal?{terminal:currentTerminalProjection(snapshot)}:{}),
     base:{approvedSnapshotSha256:sha(image.files.get('approved-preparation.json')),
@@ -641,7 +646,7 @@ async function boundAgent(op,originFile,round) {
     await new Promise(resolve=>setTimeout(resolve,100));
   }
 }
-function preflightCorrection(baseline,current,info,{initial=false}={}) {
+function preflightCorrection(baseline,current,info) {
   const old=new Map(baseline.entries.map(item=>[item.path,item]));
   const next=new Map(current.entries.map(item=>[item.path,item]));
   const allowed=name=>info.areas.some(area=>area.path===name
@@ -651,7 +656,7 @@ function preflightCorrection(baseline,current,info,{initial=false}={}) {
     if(same(before??null,after??null)) continue;
     if(before?.kind==='directory' || after?.kind==='directory') continue;
     if(!allowed(name) || before?.kind==='file' && !['file','absent'].includes(after?.kind)
-      || info.inputs.some(item=>item.path===name) || initial && info.refs.some(item=>item.path===name))
+      || info.inputs.some(item=>item.path===name))
       fail('EVIDENCE_STALE',`unauthorized correction before recipe: ${name}`);
   }
 }
@@ -774,8 +779,7 @@ export async function verifyNative(originFile) {
     const prior=await readJson(path.join(op.root,`round-${origin.productDrift.sourceRound}.observation.json`));
     await checkedProductDrift(op,image,prior);
   }
-  if(op.owner.operation!=='VALIDATE_SLICE') preflightCorrection(baseline.manifest,before.manifest,recipe,
-    {initial:op.owner.preparationRevision===1});
+  if(op.owner.operation!=='VALIDATE_SLICE') preflightCorrection(baseline.manifest,before.manifest,recipe);
   else if(!same(before.manifest,baseline.manifest))
     fail('EVIDENCE_STALE','product changed before native recipe');
   const observeState=async()=>{
@@ -921,10 +925,25 @@ export async function captureNative(handle,toolResultFile) {
       && (!/^[a-f0-9]{40}$/u.test(productHead??'')
         || (initialExecute?parsed.head:parsed.result.head)!==productHead);
     const taskRoot=path.dirname(path.join(now.context.logicalExecutionRoot,`tasks/${now.owner.slice}.md`));
+    const baselineManifest=(await readJson(path.join(now.root,`round-${round}.baseline.json`))).manifest;
     const byPath=new Map(observation.after.entries.map(item=>[item.path,item]));
+    const priorRemovals=new Set();
+    if(auxiliary) {
+      for(const item of baselineManifest.entries)if(item.kind==='file')priorRemovals.add(item.path);
+      if(round>1) {
+        const previous=await readJson(path.join(now.root,`round-${round-1}.receipt.json`));
+        for(const item of previous.testedState?.entries??[])if(item.value==='REMOVED')
+          priorRemovals.add(path.relative(now.context.productRoot,path.resolve(taskRoot,item.path)).split(path.sep).join('/'));
+      }
+      if(now.owner.operation==='APPLY_FINDINGS')for(const name of request.base.priorScopePaths)
+        if(baselineManifest.entries.some(item=>item.path===name&&item.kind==='absent'))priorRemovals.add(name);
+    }
+    const effectivePaths=auxiliary?currentOutputPaths(observation.after,
+      verifyWorkObservation('initial-implementation',{context:now.context,delivery:request.authority.delivery,slice:now.owner.slice}).areas,
+      [...priorRemovals]):request.scope.paths;
     const testedState=parseFailure?null:{workspace:now.context.productRoot,
       sourceTaskPath:path.join(now.context.logicalExecutionRoot,`tasks/${now.owner.slice}.md`),
-      entries:(auxiliary?request.scopePaths:request.scope.paths).map(name=>({path:path.relative(taskRoot,path.join(now.context.productRoot,name)).split(path.sep).join('/'),
+      entries:effectivePaths.map(name=>({path:path.relative(taskRoot,path.join(now.context.productRoot,name)).split(path.sep).join('/'),
         value:byPath.get(name)?.sha256??'REMOVED'})).sort((a,b)=>order(a.path,b.path))};
     const receipt={transport:'native',originFile:path.join(now.root,`round-${round}.origin.json`),owner:now.owner,
       operation:now.owner.operation,slice:now.owner.slice,workspace:now.context.productRoot,attempt:round,

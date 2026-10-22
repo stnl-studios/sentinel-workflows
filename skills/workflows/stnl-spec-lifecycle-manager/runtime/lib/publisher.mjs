@@ -9,7 +9,7 @@ import {inspectLifecycleTerminalRetirement,acquireLifecycleTerminalRetirementLoc
   removeLifecycleTerminalRetirementRole,removeLifecycleTerminalRetirementNamespace,retireLifecycleTerminalRetirementLease,
   finishLifecycleTerminalRetirementSettlement} from './execution-publication.mjs';
 import {captureCurrentExecution} from './execution-current-reader.mjs';
-import {restoreCaptureSources} from './execution-evidence-proof.mjs';
+import {restoreCaptureSources,verifyWorkObservation} from './execution-evidence-proof.mjs';
 import { constants as FS_CONSTANTS } from "node:fs";
 import * as fs from "node:fs/promises";
 import { createHash, randomBytes } from "node:crypto";
@@ -2287,7 +2287,7 @@ async function captureCloseOperationalInventory(target,transactionId){
       if(record.origin?.transport!=='native')continue;
       const op=record.origin.operation,profile=op==='EXECUTE_SLICE'?'initial-implementation':op==='APPLY_FINDINGS'?'current-findings':'current-validation';
       const capture=restoreCaptureSources(profile,record,objects),origin=parseStrictJson(Buffer.from(capture.origin).toString('utf8'));
-      if(origin.admission)proofs.push({capture,origin});
+      if(origin.admission)proofs.push({capture,origin,record});
     }
   }
   const json=async file=>parseStrictJson((await readOwnedFile(file)).bytes.toString('utf8'));
@@ -2312,14 +2312,49 @@ async function captureCloseOperationalInventory(target,transactionId){
       first??=proof;
       for(const [suffix,key] of [['origin','origin'],['baseline','baselineCapture'],['request',binding.owner.operation==='APPLY_FINDINGS'?'applyRequest':'validationRequest'],['agent','agentBinding'],['claim','agentClaim'],['observation','verificationObservation'],['response','rawResponse'],['tool-result','concludedToolResult'],['receipt','receipt']]){
         const leaf=`round-${round}.${suffix}.json`;allowed.add(leaf);
-        if(key==='validationRequest'&&binding.owner.operation==='EXECUTE_SLICE')fail('CLOSE retirement does not adopt an unreplicated implementation request',file);
+        if(key==='validationRequest'&&binding.owner.operation==='EXECUTE_SLICE'){
+          // After COMPLETE this request is dispensable by its two official
+          // digest bindings, not by a literal capsule replica that does not exist.
+          const request=(await readOwnedFile(path.join(file,leaf))).bytes;
+          const observation=parseStrictJson(Buffer.from(proof.capture.verificationObservation).toString('utf8'));
+          if(proof.origin.responseVariant!=='stnl-current-native-judgment-v1'
+            ||observation.format!=='stnl-runner-verification-v3'
+            ||proof.origin.requestSha256!=='sha256:'+createHash('sha256').update(request).digest('hex')
+            ||observation.binding?.requestSha256!==proof.origin.requestSha256)
+            fail('CLOSE retirement implementation request is not bound to official proof',file);
+          continue;
+        }
         if(!proof.capture[key]||!(await readOwnedFile(path.join(file,leaf))).bytes.equals(Buffer.from(proof.capture[key])))fail('CLOSE retirement captured bytes differ from official proof',path.join(file,leaf));
       }
       const leaf=`round-${round}.verification.json`,verification=await json(path.join(file,leaf)),observed=parseStrictJson(Buffer.from(proof.capture.verificationObservation).toString('utf8')),baseline=parseStrictJson(Buffer.from(proof.capture.baselineCapture).toString('utf8'));
       allowed.add(leaf);exactKeys(verification,['format','status','verification','workStateSha256','checks'],'CLOSE private recipe observation',file);
       if(verification.format!=='stnl-runner-verification-v1'||verification.status!=='completed'||!same(verification.verification,proof.origin.verification)||!same(verification.checks,observed.checks)
-        ||verification.workStateSha256!=='sha256:'+createHash('sha256').update(JSON.stringify(baseline.manifest)).digest('hex'))fail('CLOSE retirement private verification is not replicated in the official observation',file);
+        ||verification.workStateSha256!=='sha256:'+createHash('sha256').update(JSON.stringify(observed.before)).digest('hex'))fail('CLOSE retirement private verification is not replicated in the official observation',file);
       for(const bytes of proof.capture.removalProofs){const removal=parseStrictJson(Buffer.from(bytes).toString('utf8')),leaf=`round-${round}.removal-${createHash('sha256').update(removal.path).digest('hex')}.json`;allowed.add(leaf);if(!(await readOwnedFile(path.join(file,leaf))).bytes.equals(Buffer.from(bytes)))fail('CLOSE retirement removal source differs',file);}
+      if(binding.owner.operation!=='VALIDATE_SLICE'){
+        const info=verifyWorkObservation('initial-implementation',{context:baseline.context,
+          delivery:proof.record.contract.delivery,slice:binding.owner.slice});
+        for(const entry of baseline.manifest.entries.filter(item=>item.kind==='file'
+          &&info.areas.some(area=>area.path===item.path||area.kind==='directory'&&item.path.startsWith(area.path+'/'))
+          &&!info.inputs.some(input=>input.path===item.path))){
+          const leaf=`round-${round}.removal-${createHash('sha256').update(entry.path).digest('hex')}.json`;
+          if(allowed.has(leaf)||!await lexists(path.join(file,leaf)))continue;
+          // begin reserves preimages before it knows which files will be
+          // removed. An unused preimage is dispensable after COMPLETE only
+          // when its exact bytes/owner remain bound to the official baseline.
+          if(observed.after.entries.find(item=>item.path===entry.path)?.kind!=='file')
+            fail('CLOSE retirement missing official removal source',file);
+          const removal=await json(path.join(file,leaf));
+          exactKeys(removal,['format','owner','round','path','sha256','mode','bytesBase64'],'unused removal preimage',file);
+          const bytes=typeof removal.bytesBase64==='string'?Buffer.from(removal.bytesBase64,'base64'):null;
+          if(removal.format!=='stnl-current-removal-proof-v1'||!same(removal.owner,binding.owner)
+            ||removal.round!==round||removal.path!==entry.path||removal.sha256!==entry.sha256||removal.mode!==entry.mode
+            ||bytes===null||bytes.toString('base64')!==removal.bytesBase64
+            ||'sha256:'+createHash('sha256').update(bytes).digest('hex')!==entry.sha256)
+            fail('CLOSE retirement unused preimage differs from official baseline',file);
+          allowed.add(leaf);
+        }
+      }
     }
     const last=proofs.find(item=>same(item.origin.admission.binding,binding)&&item.origin.attempt===record.runner.round);
     const receipt=parseStrictJson(Buffer.from(last.capture.receipt).toString('utf8'));

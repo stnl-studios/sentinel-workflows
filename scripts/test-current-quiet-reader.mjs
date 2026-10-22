@@ -1201,12 +1201,14 @@ test('R13 authority and product changes inside a stable activation read',async t
 });
 
 test('R14 declared active owner and incompatible lastAttempt block quietly',async t=>{
-  await t.test('input ancestor inventory cannot authorize historical child metadata',async()=>using(producerFormalPass,async f=>{
+  await t.test('input ancestor inventory ignores unselected historical child metadata',async()=>using(producerFormalPass,async f=>{
+    const before=await workerRun(f);noAttempts(before);assert.equal(before.process.status,0);
     const historical=path.join(f.project,'config/history');await fs.mkdir(historical);
     await fs.writeFile(path.join(historical,'receipt.json'),'historical canary');
+    await fs.symlink('history',path.join(f.project,'config/unselected-link'));
     const observed=await workerRun(f);noAttempts(observed);
-    assert.equal(observed.log.result.error.code,'UNSAFE_PATH');
-    assert.match(observed.log.result.error.message,/approved observation domain/u);
+    assert.equal(observed.process.status,0);
+    assert.deepEqual(observed.log.result,before.log.result);
   }));
   for(const field of ['terminalActivationId','operation','outcome']) await t.test(`lastAttempt binding ${field}`,async()=>using(producerFormalPass,async f=>{
     f.activation.lastAttempt[field]=field==='operation'?'APPLY_FINDINGS':field==='outcome'?'rejected':'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';

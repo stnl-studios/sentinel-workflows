@@ -456,6 +456,14 @@ export function projectNativeJudgment({origin,observation,requestBytes=null,agen
 function areaContains(areas, name) {
   return areas.some(item => item.path === name || (item.kind === 'directory' && name.startsWith(`${item.path}/`)));
 }
+// Missing forecasts are not removals. Retain absent leaves only when an earlier
+// scope or a real removal witness proves that the output actually existed.
+export function currentOutputPaths(manifest,areas,removedPaths=[]) {
+  const removed=new Set(removedPaths);
+  return manifest.entries.filter(entry=>areaContains(areas,entry.path)
+    && (entry.kind==='file'||entry.kind==='absent'&&removed.has(entry.path)))
+    .map(entry=>entry.path).sort(ordinal);
+}
 function capsule(format, fields) { return serialized({format, ...fields}); }
 function objectStore() {
   const objects = new Map();
@@ -578,8 +586,7 @@ export function verifyWorkObservation(profile, value, owner, round, recipeInfo, 
     const scopePaths = [...new Set([
       ...priorScopePaths.filter(name => byPath.get(name)?.kind !== 'directory'),
       ...removalScopePaths.filter(name => byPath.get(name)?.kind === 'absent'),
-      ...observedManifest.entries.filter(entry => ['file','absent'].includes(entry.kind) && areaContains(info.areas, entry.path)).map(entry => entry.path),
-      ...info.refs.filter(ref => ref.kind === 'product').map(ref => ref.path),
+      ...currentOutputPaths(observedManifest,info.areas,removalScopePaths),
     ])].sort(ordinal);
     for (const name of scopePaths) {
       const entry = byPath.get(name);
@@ -671,6 +678,8 @@ export function verifyAuxiliaryWork(profile, input) {
   const observed = jsonBytes(capture.verificationObservation, `round ${round} observation`).value;
   const commands = observation(observed, owner, round, info, before, context, `round ${round} observation`);
   expectEqual(receipt.verification, observed, 'EVIDENCE_STALE', `round ${round}: receipt observation`);
+  const requestScopePaths=[...new Set([...input.priorScopePaths,...input.previousScopePaths,
+    ...currentOutputPaths(before,info.areas,input.witnessedRemovals)])].sort(ordinal);
   const after = observed.after;
   const deltas = auxiliaryDeltas(before, after, info, round);
   const removed = auxiliaryRemovalProofs(capture.removalProofs, owner, round, before, after);
@@ -678,15 +687,14 @@ export function verifyAuxiliaryWork(profile, input) {
   const witnesses = new Set([...input.witnessedRemovals, ...removed]);
   const scopePaths = [...new Set([
     ...input.priorScopePaths, ...input.previousScopePaths,
-    ...after.entries.filter(entry => ['file','absent'].includes(entry.kind) && areaContains(info.areas, entry.path)).map(entry => entry.path),
-    ...info.refs.filter(ref => ref.kind === 'product').map(ref => ref.path),
+    ...currentOutputPaths(after,info.areas,[...witnesses]),
     ...witnesses,
   ])].sort(ordinal);
   for (const name of scopePaths) {
     const entry = byPath.get(name);
     if (!entry || entry.kind === 'directory') stale(`round ${round}: scope lacks leaf ${name}`);
   }
-  if (receipt.testedState === null) return {info, before, observed, commands, entries:null, scopePaths, correctionPaths:deltas, removed:[...removed]};
+  if (receipt.testedState === null) return {info, before, observed, commands, entries:null, scopePaths, requestScopePaths, correctionPaths:deltas, removed:[...removed]};
   closed(receipt.testedState, ['workspace','sourceTaskPath','entries'], `round ${round} testedState`);
   if (receipt.testedState.workspace !== context.productRoot
     || receipt.testedState.sourceTaskPath !== logicalArtifactPath(context, `tasks/${owner.slice}.md`)) stale(`round ${round}: testedState context`);
@@ -712,7 +720,7 @@ export function verifyAuxiliaryWork(profile, input) {
     if (state.kind === 'absent' && !witnesses.has(name) && input.status === 'TESTS_PASS') incomplete(`round ${round}: PASS lacks removal witness ${name}`);
   }
   for (const name of deltas) if (!scopePaths.includes(name)) stale(`round ${round}: correction omitted ${name}`);
-  return {info, before, observed, commands, entries:receipt.testedState.entries, scopePaths,
+  return {info, before, observed, commands, entries:receipt.testedState.entries, scopePaths, requestScopePaths,
     correctionPaths:deltas, removed:[...removed]};
 }
 export function packCaptureSources(profile, cap, store) {

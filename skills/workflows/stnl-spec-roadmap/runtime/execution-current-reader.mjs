@@ -11,7 +11,7 @@ import {parseCurrentJson,validateCurrentActivation,validateCurrentCandidate,vali
 import {validateCurrentPreparation} from './execution-preparation-current.mjs';
 import {inspectCurrentEvidence,inspectPostConversionEvidence,validateCurrentEvidenceCarriers,
   completedEvidenceContext} from './current-evidence-state.mjs';
-import {restoreCaptureSources} from './execution-evidence-proof.mjs';
+import {restoreCaptureSources,verifyWorkObservation} from './execution-evidence-proof.mjs';
 
 const ordinal=(a,b)=>a<b?-1:a>b?1:0;
 const digest=bytes=>`sha256:${createHash('sha256').update(bytes).digest('hex')}`;
@@ -192,7 +192,10 @@ function observationRoots(context,delivery,taskSections,continuity,bundle) {
     if (record.testedWork) for (const entry of record.testedWork.entries) retained.push({path:entry.path,kind:null});
   for (const item of retained) if (!permitted(item.path))
     fail('UNSAFE_PATH','retained product path is outside the approved observation domain','integrity',artifact,item.path);
-  return [...targets,...retained];
+  // Retained in-domain leaves also remain observation roots after removal.
+  // Structural ancestors outside claims must not become projected authority.
+  return [...targets,...retained.filter(item=>targets.some(target=>target.path===item.path
+    || target.kind==='directory'&&item.path.startsWith(`${target.path}/`)))];
 }
 function scopedObservation(observation,targets) {
   const within=name=>targets.some(target=>target.path===name
@@ -201,7 +204,7 @@ function scopedObservation(observation,targets) {
     manifest:{format:'stnl-current-work-v1',entries:observation.manifest.entries.filter(entry=>within(entry.path))},
     identities:new Map([...observation.identities].filter(([name])=>within(name)))};
 }
-async function observeProduct(context,targets,limits,allowUnrelatedChildren=false) {
+async function observeProduct(context,targets,limits) {
   const entries=new Map(),identities=new Map(),visiting=new Set();
   const root=context.productRoot;
   const control=context.logicalExecutionRoot;
@@ -235,7 +238,7 @@ async function observeProduct(context,targets,limits,allowUnrelatedChildren=fals
       visiting.add(relative);
       const children=await directoryNames(absolute,relative);
       if (children.length>10000) fail('UNSUPPORTED_FORMAT','bounded directory inventory exceeded','integrity',relative);
-      const within=allowUnrelatedChildren?children.filter(child=>permitted(`${relative}/${child}`)):children;
+      const within=children.filter(child=>permitted(`${relative}/${child}`));
       entries.set(relative,{path:relative,kind:'directory',children:within});
       identities.set(relative,identity(metadata));
       limits.entries+=1;
@@ -468,9 +471,20 @@ function verifyLastAttempt(activation,deliveries) {
     fail('EVIDENCE_INCOMPLETE','lastAttempt incorporation is not retained','integrity','activation.json','lastAttempt');
 }
 
-export async function observeCurrentDeliveryWork({context,delivery,sections,current,bundle}) {
+export async function observeCurrentDeliveryWork({context,delivery,sections,current,bundle,initial=false}) {
   const targets=observationRoots(context,delivery,sections,current,bundle);
-  return scopedObservation(await observeProduct(context,targets,{entries:0,bytes:0},true),targets);
+  const observed=await observeProduct(context,targets,{entries:0,bytes:0});
+  if(!initial)return scopedObservation(observed,targets);
+  verifyWorkObservation('current-validation',{observedWork:observed.manifest});
+  const info=verifyWorkObservation('initial-implementation',{context,delivery,slice:current.slice});
+  const entries=new Map(observed.manifest.entries.map(entry=>[entry.path,entry]));
+  for(const claim of [...targets,...info.inputs,...info.refs]) {
+    const entry=entries.get(claim.path);
+    if(!entry)fail('EVIDENCE_INCOMPLETE',`${claim.path}: Initial claim lacks a real ancestor`);
+    if(claim.kind==='input'&&entry.kind!=='file')fail('EVIDENCE_STALE',`${claim.path}: Existing Input is not a file`);
+    if(claim.kind==='product'&&entry.kind==='directory')fail('EVIDENCE_STALE',`${claim.path}: recipe product is a directory`);
+  }
+  return observed;
 }
 
 // Only the verified latest formal of a current contribution can certify the
@@ -507,7 +521,7 @@ function terminalCertification(snapshot,activation,items) {
       || others.some(other=>{
         const frozen=basis.find(entry=>entry.deliveryId===other.deliveryId);
         return !frozen || frozen.slice!==other.slice || !isDeepStrictEqual(frozen.manifest,
-          scopedObservation(other.observation,other.targets).manifest);
+          (other.initialObservation?other.observation:scopedObservation(other.observation,other.targets)).manifest);
       })) {
       reason='EVIDENCE_STALE: terminal judgment product basis differs from current combination';continue;
     }
@@ -602,10 +616,13 @@ async function readCurrentExecution(specPath,withCapture=false,expectedOwner=nul
     const bundleBytes=current.evidence?image.files.get(current.evidence.path):null;
     const bundle=bundleBytes?parseCurrentJson(bundleBytes.toString('utf8')):null;
     const targets=observationRoots(context,authority.delivery,carrier.sections,current,bundle);
-    const before=await observeProduct(context,targets,{entries:0,bytes:0},converted);
+    const before=await observeProduct(context,targets,{entries:0,bytes:0});
+    const initialObservation=!converted || bundle!==null&&originalProfile(bundle)==='initial'
+      || continuity.completed.length>0&&bundle===null&&current.validation==='unvalidated'
+        &&Object.values(current.counters).every(value=>value===0)&&current.lastDiagnostic===null;
     if(converted) {
       outputs.push({slice:current.slice,deliveryId:current.deliveryId,counters:current.counters,
-        targets,observation:before,carrier});
+        targets,observation:before,initialObservation,carrier});
       continue;
     }
     const facts=inspectCurrentEvidence({context,authority,bundleBytes,counters:current.counters,
@@ -642,7 +659,7 @@ async function readCurrentExecution(specPath,withCapture=false,expectedOwner=nul
       auxiliaryStatus:facts.auxiliaryStatus,formalStatus:facts.formalStatus,evidenceSha256:facts.evidenceSha256,
       diagnostics:!facts.observationMatches && !facts.rejection
         ?[{kind:'observation',artifact:current.slice,field:'observedWork',reason:'EVIDENCE_STALE'}]:[],
-      facts,targets,observation:before});
+      facts,targets,observation:before,initialObservation});
   }
   const completedOutputs=[];
   for(const current of continuity.completed) {
@@ -654,12 +671,12 @@ async function readCurrentExecution(specPath,withCapture=false,expectedOwner=nul
     const retainedRead=post?retainedPostRead(bundle):null;
     const authority=retainedRead?.authority??retainedLocalAuthority(snapshot,current,record,leaf);
     const targets=observationRoots(context,leaf,{'Expected Files':'- none'},current,bundle);
-    const before=await observeProduct(context,targets,{entries:0,bytes:0},true);
+    const before=await observeProduct(context,targets,{entries:0,bytes:0});
     const facts=post?await inspectPostConversionEvidence({context,snapshotBytes:image.files.get('approved-preparation.json'),
       current,bundleBytes,observedWork:scopedObservation(before,targets).manifest,preparationProfile:'completed-current',
       retainedEvidence,retainedRead})
       :inspectCurrentEvidence({context,authority,bundleBytes,counters:current.counters,
-        baseline:current.baseline,observedWork:scopedObservation(before,targets).manifest,
+        baseline:current.baseline,observedWork:before.manifest,
         currentAuthoritySha256:current.authoritySha256});
     if(facts.formalStatus!=='PASS' || facts.persistedValidation!=='current'
       || facts.openFindings.length || facts.openDivergences?.length)
@@ -671,7 +688,7 @@ async function readCurrentExecution(specPath,withCapture=false,expectedOwner=nul
     completedOutputs.push({slice:current.slice,deliveryId:current.deliveryId,counters:current.counters,
       persistedValidation:facts.persistedValidation,observedValidation:facts.observedValidation,
       formalStatus:facts.formalStatus,evidenceSha256:facts.evidenceSha256,
-      facts,targets,observation:before,retainedAuthority:authority});
+      facts,targets,observation:before,initialObservation:!post,retainedAuthority:authority});
   }
   if(converted) {
     const reviewed=new Map(snapshot.reviewedArtifacts.map(item=>[item.path,item.utf8]));
@@ -695,7 +712,7 @@ async function readCurrentExecution(specPath,withCapture=false,expectedOwner=nul
             latestFormalRejection?.origin.operationAttemptId,
             latestAuxiliaryRejection?.origin.operationAttemptId].includes(activation.activeAttempt.operationAttemptId)
           ?activation.activeAttempt.operationRef:lastAttempt?.operationRef??null;
-      const observedWork=scopedObservation(item.observation,item.targets).manifest;
+      const observedWork=(item.initialObservation?item.observation:scopedObservation(item.observation,item.targets)).manifest;
       const retained=continuity.completed.length>0 && bundleBytes!==null && !fresh.has(current.deliveryId);
       const currentChecks=bundle!==null&&originalProfile(bundle)==='initial';
       let retainedFacts=null;
@@ -770,7 +787,7 @@ async function readCurrentExecution(specPath,withCapture=false,expectedOwner=nul
     verifyLastAttempt(activation,[...outputs,...completedOutputs]);
   } else verifyLastAttempt(activation,[...outputs,...completedOutputs]);
   for (const item of [...outputs,...completedOutputs]) {
-    const after=await observeProduct(context,item.targets,{entries:0,bytes:0},converted);
+    const after=await observeProduct(context,item.targets,{entries:0,bytes:0});
     if (!equal(item.observation.manifest,after.manifest) || !equal([...item.observation.identities],[...after.identities])
       || !equal(item.observation.rootIdentity,after.rootIdentity))
       fail('EVIDENCE_STALE',`${item.slice}: product changed during inspection`,'integrity',item.slice,'observedWork');
@@ -786,7 +803,8 @@ async function readCurrentExecution(specPath,withCapture=false,expectedOwner=nul
   if(certification.complete&&outputs.some(item=>item.facts.terminalPending))
     fail('REPLAN_REQUIRED','terminal reentry already has current integral proof','evidence','continuity.json','terminal');
   const observedByDelivery=withCapture
-    ?new Map(allOutputs.map(item=>[item.deliveryId,scopedObservation(item.observation,item.targets)])):null;
+    ?new Map(allOutputs.map(item=>[item.deliveryId,item.initialObservation
+      ?item.observation:scopedObservation(item.observation,item.targets)])):null;
   const terminalDiagnostic={kind:'evidence',artifact:'continuity.json',field:'terminal',reason:certification.reason};
   if(continuity.completed.length) {
     const blocked=outputs.filter(({facts})=>facts.observedValidation==='uncertain'
@@ -868,8 +886,8 @@ async function readCurrentExecution(specPath,withCapture=false,expectedOwner=nul
     const awaiting=completedOutputs.length && outputs.find(item=>item.facts.persistedValidation!=='current');
     const inspection={activationId:activation.activationId,sequence:activation.sequence,
       requirementsAuthority:projected.requirementsAuthority,preparationRevision:activation.preparationRevision,
-      deliveries:outputs.map(({facts,targets,observation,carrier,retainedAuthority,identityAuthority,...publicItem})=>publicItem),
-      completed:completedOutputs.map(({facts,targets,observation,retainedAuthority,...publicItem})=>publicItem),
+      deliveries:outputs.map(({facts,targets,observation,initialObservation,carrier,retainedAuthority,identityAuthority,...publicItem})=>publicItem),
+      completed:completedOutputs.map(({facts,targets,observation,initialObservation,retainedAuthority,...publicItem})=>publicItem),
       state,normalHandoff:handoff,
       diagnostics:certification.complete?[]:blocked.length?blocked.map(item=>({kind:'evidence',artifact:item.slice,
         field:'status',reason:item.facts.formalStatus==='BLOCKED'
@@ -917,8 +935,8 @@ async function readCurrentExecution(specPath,withCapture=false,expectedOwner=nul
   }
   const inspection={activationId:activation.activationId,sequence:activation.sequence,
     requirementsAuthority:projected.requirementsAuthority,preparationRevision:activation.preparationRevision,
-    deliveries:outputs.map(({facts,targets,observation,retainedAuthority,identityAuthority,...publicItem})=>publicItem),
-    completed:completedOutputs.map(({facts,targets,observation,retainedAuthority,...publicItem})=>publicItem),state,normalHandoff,diagnostics};
+    deliveries:outputs.map(({facts,targets,observation,initialObservation,retainedAuthority,identityAuthority,...publicItem})=>publicItem),
+    completed:completedOutputs.map(({facts,targets,observation,initialObservation,retainedAuthority,...publicItem})=>publicItem),state,normalHandoff,diagnostics};
   return withCapture?{inspection:structuredClone(inspection),context:structuredClone(context),requirementsAuthority:projected.requirementsAuthority,
     activationBytes:Uint8Array.from(a.bytes),files:new Map([...image.files].map(([name,bytes])=>[name,Uint8Array.from(bytes)])),
     observedByDelivery}:inspection;
