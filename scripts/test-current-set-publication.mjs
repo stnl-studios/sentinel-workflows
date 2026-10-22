@@ -122,7 +122,7 @@ test('B4 recovery checks the compound association before restoring or deleting m
 });
 
 test('B4 retirement preserves unrelated registry bindings and foreign retention bytes',async t=>{
- const f=await fixture(t),registry=decode(await fs.readFile(f.registry)),foreignRoot=path.join(f.image.f.root,'tmp/foreign preparation');
+ const f=await fixture(t),registry=decode(await fs.readFile(f.registry)),foreignRoot=path.join(path.dirname(f.registry),'foreign preparation');
  await fs.mkdir(foreignRoot);await fs.writeFile(path.join(foreignRoot,'keep.txt'),'foreign material');
  const metadata=await fs.lstat(foreignRoot),foreign={...structuredClone(registry.allocations[0]),allocationId:randomUUID(),candidate:foreignRoot,
   candidateIdentity:{dev:String(metadata.dev),ino:String(metadata.ino)},operation:'PLAN'};

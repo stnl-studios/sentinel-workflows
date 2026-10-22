@@ -15,7 +15,8 @@ import {
 
 const USAGE =
   "usage: publish-spec-lifecycle.mjs [-h] [--manifest MANIFEST] " +
-  "[--readiness-attestation READINESS_ATTESTATION] {CLOSE,INIT,RESUME} target candidate";
+  "[--readiness-attestation auto|READINESS_ATTESTATION] " +
+  "[--product-root ROOT --temporary-root ROOT --excluded-root ROOT] {CLOSE,INIT,RESUME} target [candidate]";
 
 function argumentFailure(message) {
   process.stderr.write(`${USAGE}\npublish-spec-lifecycle.mjs: error: ${message}\n`);
@@ -27,6 +28,8 @@ function parseArguments(arguments_) {
   let manifestPath = null;
   let readinessAttestation = null;
   let optionsEnabled = true;
+  const roots = new Map();
+  const rootOptions = ["--product-root", "--temporary-root", "--excluded-root"];
   for (let index = 0; index < arguments_.length; index += 1) {
     const argument = arguments_[index];
     if (optionsEnabled && argument === "--") {
@@ -41,7 +44,8 @@ function parseArguments(arguments_) {
       : null;
     if (optionsEnabled && (
       argument === "--manifest" || argument === "--readiness-attestation" ||
-      equalsOption === "--manifest" || equalsOption === "--readiness-attestation"
+      equalsOption === "--manifest" || equalsOption === "--readiness-attestation" ||
+      rootOptions.includes(argument) || rootOptions.includes(equalsOption)
     )) {
       const option = equalsOption ?? argument;
       const inlineValue = equalsOption === null ? null : argument.slice(argument.indexOf("=") + 1);
@@ -53,7 +57,10 @@ function parseArguments(arguments_) {
         value = arguments_[index + 1];
         index += 1;
       }
-      if (option === "--manifest") {
+      if (rootOptions.includes(option)) {
+        if (!value || roots.has(option)) return { error: `argument ${option}: requires one nonempty value, once` };
+        roots.set(option, value);
+      } else if (option === "--manifest") {
         manifestPath = value;
       } else {
         readinessAttestation = value;
@@ -65,20 +72,21 @@ function parseArguments(arguments_) {
     }
     positional.push(argument);
   }
-  if (positional.length < 3) {
-    const missing = ["mode", "target", "candidate"].slice(positional.length).join(", ");
-    return { error: `the following arguments are required: ${missing}` };
-  }
-  if (positional.length > 3) {
-    return { error: `unrecognized arguments: ${positional.slice(3).join(" ")}` };
-  }
-  const [mode, target, candidate] = positional;
+  const [mode,target,candidate=null]=positional;
+  const expected=mode==='CLOSE'?2:3;
+  if(positional.length!==expected)return {error:mode==='CLOSE'?'CLOSE requires target only; omit external candidate':'the following arguments are required: mode, target, candidate'};
   if (!MUTABLE_MODES.has(mode)) {
     return {
       error: `argument mode: invalid choice: '${mode}' (choose from 'CLOSE', 'INIT', 'RESUME')`,
     };
   }
-  return { mode, target, candidate, manifestPath, readinessAttestation };
+  if (roots.size !== 0 && roots.size !== rootOptions.length)
+    return { error: 'product-root, temporary-root and excluded-root must be supplied together' };
+  const filesystemContext = roots.size === 0 ? null : {
+    productRoot: roots.get('--product-root'), temporaryRoot: roots.get('--temporary-root'),
+    excludedRoots: [roots.get('--excluded-root')],
+  };
+  return { mode, target, candidate, manifestPath, readinessAttestation, filesystemContext };
 }
 
 export async function main(arguments_ = process.argv.slice(2)) {
@@ -94,11 +102,13 @@ export async function main(arguments_ = process.argv.slice(2)) {
     const published = await publishCandidate(parsed.mode, parsed.target, parsed.candidate, {
       manifestPath: parsed.manifestPath,
       readinessAttestation: parsed.readinessAttestation,
+      filesystemContext: parsed.filesystemContext,
     });
-    process.stdout.write(`PASS: ${parsed.mode} published validated candidate at ${published}\n`);
+    if(parsed.mode==='CLOSE')process.stdout.write(JSON.stringify(published)+'\n');
+    else process.stdout.write(`PASS: ${parsed.mode} published validated candidate at ${published}\n`);
     if (parsed.mode === "RESUME" && parsed.readinessAttestation !== null) {
       process.stdout.write(
-        `PASS: readiness attestation available at ${readinessAttestationPath(published)}\n`,
+        `PASS: readiness attestation available at ${await readinessAttestationPath(published,{filesystemContext:parsed.filesystemContext})}\n`,
       );
     }
     return 0;

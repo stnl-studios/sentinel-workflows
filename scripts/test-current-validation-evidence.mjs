@@ -116,16 +116,9 @@ test('V01 primeira validação native PASS: request, record e bytes literais',()
     bundleBytes:f.base.bytes,counters:f.base.counters,observedWork:manifest(1)}),code('INVALID_CURRENT_IMAGE','incorporation'));
 });
 
-test('V02 managed formal e domínio fileless com origem auxiliar',()=>{
-  const managed=first({transport:'managed'});
-  assert.equal(Object.hasOwn(parse(managed.cap.receipt),'automaticCheckRound'),false);
-  assert.equal(composeCurrentValidationEvidence(managed.input).formalStatus,'PASS');
-  const managedNoCarrier=clone(managed.input);updateReceipt(managedNoCarrier.capture,receipt=>{receipt.testedState=null;});
-  assert.throws(()=>composeCurrentValidationEvidence(managedNoCarrier),code('EVIDENCE_INCOMPLETE','testedState carrier'));
-  const foreign=clone(managed.input);const close=parse(foreign.capture.closedSupervisor);close.operation='EXECUTE_SLICE';foreign.capture.closedSupervisor=json(close);
-  assert.throws(()=>composeCurrentValidationEvidence(foreign),code('OWNER_MISMATCH','managed'));
-  const mixed=clone(managed.input);const receipt=parse(mixed.capture.receipt);receipt.transport='native';mixed.capture.receipt=json(receipt);
-  assert.throws(()=>composeCurrentValidationEvidence(mixed),code('INVALID_CURRENT_IMAGE','mixed transport'));
+test('V02 removed managed formal is refused; native fileless domain retains auxiliary authority',()=>{
+ const managed=first({transport:'managed'}),before=clone(managed.input);assert.throws(()=>composeCurrentValidationEvidence(managed.input),code('UNSUPPORTED_FORMAT'));assert.deepEqual(managed.input,before);
+ const nativeNoCarrier=first();updateReceipt(nativeNoCarrier.cap,receipt=>{receipt.testedState=null;});assert.throws(()=>composeCurrentValidationEvidence(nativeNoCarrier.input),code('EVIDENCE_INCOMPLETE','testedState carrier'));
   const fileless=filelessInitial();const initInput=initial([fileless.cap]);initInput.authority=fileless.authority;
   const base=composeInitialImplementationEvidence(initInput);
   const f=first({base,authority:fileless.authority,scopePaths:[],priorScopePaths:[],
@@ -436,7 +429,7 @@ test('V09 replay usa só última incorporação e mesmos bytes',()=>{
 });
 
 test('V10 recusa concluída preserva raw sem criar attempt',()=>{
-  for (const transport of ['native','managed']) {
+  for (const transport of ['native']) {
     const f=first({transport});schemaReject(f.cap,'{ malformed');
     const result=composeCurrentValidationEvidence(f.input);
     assert.equal(result.outcome,'rejected',transport);assert.equal(result.validation,'uncertain');
@@ -460,13 +453,13 @@ test('V10 recusa concluída preserva raw sem criar attempt',()=>{
   const oldPayload=first();schemaReject(oldPayload.cap,JSON.stringify(payload()));
   assertRejected(oldPayload.input,/validation response: fields differ/u);
   const pending=first({transport:'managed'});const supervisor=parse(pending.cap.closedSupervisor);supervisor.pending=true;pending.cap.closedSupervisor=json(supervisor);
-  assert.throws(()=>composeCurrentValidationEvidence(pending.input),code('OWNER_UNCERTAIN','supervisor'));
+  assert.throws(()=>composeCurrentValidationEvidence(pending.input),code('UNSUPPORTED_FORMAT'));
   const unfinished=first({transport:'managed'});
   const lines=Buffer.from(unfinished.cap.events).toString('utf8').trimEnd().split('\n');
   unfinished.cap.events=Uint8Array.from(Buffer.from(lines.slice(0,-1).join('\n')+'\n'));
-  assert.throws(()=>composeCurrentValidationEvidence(unfinished.input),code('OWNER_UNCERTAIN','SDK turn'));
+  assert.throws(()=>composeCurrentValidationEvidence(unfinished.input),code('UNSUPPORTED_FORMAT'));
   const incompleteManaged=first({transport:'managed'});incompleteManaged.cap.verificationObservation=null;
-  assert.throws(()=>composeCurrentValidationEvidence(incompleteManaged.input),code('EVIDENCE_INCOMPLETE','observation absent'));
+  assert.throws(()=>composeCurrentValidationEvidence(incompleteManaged.input),code('UNSUPPORTED_FORMAT'));
   const good=composeCurrentValidationEvidence(first().input);
   const refusal=next(good,2);schemaReject(refusal.cap,'{ malformed');
   const after=composeCurrentValidationEvidence(refusal.input);
@@ -516,13 +509,13 @@ test('V11 guards fechados, versões e counters canônicos',()=>{
     }
     assert.throws(()=>composeCurrentValidationEvidence(input),code(expected),label);
   }
-  for (const [label,edit,part] of [
-    ['terminal',bundle=>{bundle.validation.contract.terminal={...clone(AUTHORITY.context),deliveries:[clone(AUTHORITY.delivery)]};},'formal record format/terminal'],
+  for (const [label,edit,part,expectedCode='INVALID_CURRENT_IMAGE'] of [
+    ['terminal',bundle=>{bundle.validation.contract.terminal={...clone(AUTHORITY.context),deliveries:[{...clone(AUTHORITY.delivery),obligations:AUTHORITY.delivery.obligations.map(item=>({...clone(item),fullOwner:OWNER.deliveryId}))}]};},'formal record','EVIDENCE_STALE'],
     ['findingsChecks',bundle=>{bundle.findingsChecks=[{...clone(bundle.validation),kind:'findings-check',id:'findings-check-01'}];},'unsupported records'],
     ['divergences',bundle=>{bundle.openDivergences=[{id:'divergence-01',severity:'blocking',problem:'x',evidence:'x',requiredAuthorityOperation:'REPLAN'}];},'unsupported records'],
   ]) {
     const input=mutateBundle(valid,edit);
-    assert.throws(()=>validateCurrentValidationEvidence(input),code('INVALID_CURRENT_IMAGE',part),label);
+    assert.throws(()=>validateCurrentValidationEvidence(input),error=>{assert.equal(error.code,expectedCode,label+': '+error.message);assert.ok(error.message.includes(part),label+': '+error.message);return true;},label);
   }
   const first99=Array.from({length:98},(_,index)=>finding(index+1,1));
   const firstIds=first99.map(item=>item.id).join(', ');
@@ -699,7 +692,7 @@ test('V13 distribuição isolada importa somente siblings e preserva semântica'
       assert.deepEqual(candidate.bytes,expected.bytes);
       assert.equal(module.validateCurrentValidationEvidence({context:CONTEXT,authority:AUTHORITY,
         bundleBytes:candidate.bytes,counters:candidate.counters,observedWork:manifest(1)}).validation,'current');
-      assert.equal(module.composeCurrentValidationEvidence(first({transport:'managed'}).input).formalStatus,'PASS');
+      assert.throws(()=>module.composeCurrentValidationEvidence(first({transport:'managed'}).input),code('UNSUPPORTED_FORMAT'));
       const needing=first({status:'NEEDS_FIX',newFindings:[finding(1,1)],
         findingReferences:'finding-01',findingDispositions:'finding-01=active'});
       assert.deepEqual(module.composeCurrentValidationEvidence(needing.input).bundle.openFindings,[finding(1,1)]);
@@ -774,7 +767,7 @@ test('V14 extração conserva Initial e não habilita APPLY',async()=>{
     code('INVALID_CURRENT_IMAGE','fields differ'));
   const mixed=initial([nativeRound(1,'TESTS_FAIL',1),nativeRound(2,'TESTS_PASS',0)]);
   mixed.rounds[1].transport='unknown';
-  assert.throws(()=>composeInitialImplementationEvidence(mixed),code('INVALID_CURRENT_IMAGE','mixed transport'));
+  assert.throws(()=>composeInitialImplementationEvidence(mixed),code('UNSUPPORTED_FORMAT'));
   const forbidden=clone(source);forbidden.owner.operation='APPLY_FINDINGS';
   assert.throws(()=>composeInitialImplementationEvidence(forbidden),code('INVALID_CURRENT_IMAGE','initial'));
   assert.deepEqual(Object.keys(await import('../skills/workflows/stnl-slice-executor/runtime/execution-evidence-current.mjs')).sort(),

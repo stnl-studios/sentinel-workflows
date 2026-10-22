@@ -3,7 +3,8 @@
 import {createHash} from "node:crypto";
 import * as fs from "node:fs/promises";
 import path from "node:path";
-import {parseStrictJson,readOwnedFile,hasOwnedAllocationEnvelope} from "./execution-publication.mjs";
+import {parseStrictJson,readOwnedFile,hasOwnedAllocationEnvelope,resolveExecutionFilesystemRoots,normalizeExecutionFilesystemPolicy} from "./execution-publication.mjs";
+export {resolveExecutionFilesystemContext} from "./execution-publication.mjs";
 
 const HASH_DOMAIN = Buffer.from("stnl-requirements-authority-v1\0", "utf8");
 
@@ -69,7 +70,7 @@ async function assertNoSymlinkComponents(filePath, label) {
   }
 }
 
-export async function resolveCurrentExecutionContext(specPath) {
+export async function resolveCurrentExecutionContext(specPath, {filesystemContext = null} = {}) {
   const requested = path.resolve(String(specPath));
   await assertNoSymlinkComponents(requested, 'SPEC_PATH');
   const metadata = await lstatOrNull(requested);
@@ -78,9 +79,13 @@ export async function resolveCurrentExecutionContext(specPath) {
     error.code = 'UNSAFE_PATH'; throw error;
   }
   const physical = await fs.realpath(requested);
-  const workspace = await resolvePhysicalExecutionWorkspace(physical);
-  const productRoot = await trustedProjectRoot(workspace);
-  const operationalRoot = path.join(productRoot, 'tmp', 'sentinel');
+  let workspace = await resolvePhysicalExecutionWorkspace(physical);
+  // Explicit physical context remains outside the five-field ImageContext.
+  // Default readers and all current writers retain their existing path policy.
+  const filesystem = filesystemContext === null ? null
+    : await resolveExecutionFilesystemRoots(workspace, filesystemContext);
+  const productRoot = filesystem?.productRoot ?? await trustedProjectRoot(workspace);
+  const operationalRoot = filesystem?.temporaryRoot ?? path.join(productRoot, 'tmp', 'sentinel');
   if (pathIsWithin(physical, operationalRoot)) {
     const error = new ExecutionContractError('known EC-1 operational namespace cannot be selected as official SPEC_PATH', [physical, operationalRoot]);
     error.code = 'TEMP_ROOT_UNPROVEN'; throw error;
@@ -110,7 +115,42 @@ export async function resolveCurrentExecutionContext(specPath) {
   const context = {logicalSpecRoot: workspace.specRoot, logicalAuthorityPath: workspace.authorityPath,
     logicalExecutionRoot: workspace.executionRoot, physicalExecutionRoot: workspace.executionRoot,
     productRoot};
-  return {workspace, context};
+  if (filesystem !== null) {
+    // Forward the three-field input policy, never the resolved observation or an
+    // extra ImageContext field. This does not select the proposed lease domain.
+    workspace = {...workspace, filesystemContext:{productRoot:filesystem.productRoot,
+      temporaryRoot:filesystem.temporaryRoot, excludedRoots:[...filesystem.excludedRoots]}};
+  }
+  return {workspace, context, ...(filesystem === null ? {} : {filesystemContext: filesystem})};
+}
+
+// Bind a normal caller to the logical official identity before any allocation.
+// physicalExecutionRoot may describe a candidate and cannot replace that root.
+export function executionWorkspaceFromContext(context, workspace = {}) {
+  const refuse = message => {
+    const error = new ExecutionContractError(message);
+    error.code = 'UNSAFE_PATH'; throw error;
+  };
+  if (!workspace || typeof workspace !== 'object' || Array.isArray(workspace)
+    || ![Object.prototype, null].includes(Object.getPrototypeOf(workspace))
+    || Reflect.ownKeys(workspace).some(key => typeof key !== 'string')
+    || Object.values(Object.getOwnPropertyDescriptors(workspace)).some(field => !Object.hasOwn(field, 'value')))
+    refuse('workspace must contain plain data properties');
+  const expected = {executionRoot:context.logicalExecutionRoot, specRoot:context.logicalSpecRoot ?? null,
+    authorityPath:context.logicalAuthorityPath, productRoot:context.productRoot};
+  for (const [field, value] of Object.entries(expected)) {
+    if ((field !== 'specRoot' || value !== null) && (typeof value !== 'string' || !path.isAbsolute(value)))
+      refuse('context must identify absolute logical official roots');
+    if (Object.hasOwn(workspace, field) && workspace[field] !== value)
+      refuse(`workspace ${field} differs from the logical official context`);
+  }
+  for (const field of ['temporaryRoot','materialRoot','leaseParent','lockPath','specKey'])
+    if (Object.hasOwn(workspace, field)) refuse(`workspace ${field} must not override the locator`);
+  const policy = normalizeExecutionFilesystemPolicy(workspace.filesystemContext ?? null);
+  if (policy !== null && policy.productRoot !== expected.productRoot)
+    refuse('workspace filesystem policy differs from the logical product root');
+  return {...workspace, executionRoot:expected.executionRoot, specRoot:expected.specRoot,
+    ...(policy === null ? {} : {filesystemContext:policy})};
 }
 
 async function resolvePhysicalExecutionWorkspace(physical) {
@@ -278,7 +318,7 @@ function logicalWorkspaceFor(workspace) {
   return workspace.logicalWorkspace ?? workspace;
 }
 
-export async function resolveExecutionWorkspace(specPath) { return (await resolveCurrentExecutionContext(specPath)).workspace; }
+export async function resolveExecutionWorkspace(specPath, options) { return (await resolveCurrentExecutionContext(specPath, options)).workspace; }
 export async function computeRequirementsAuthority(specPath) {
   const {workspace}=await resolveCurrentExecutionContext(specPath);
   const payload=workspace.kind==="standalone"?await fs.readFile(workspace.authorityPath):stableEncode(await lifecycleProjection(workspace));

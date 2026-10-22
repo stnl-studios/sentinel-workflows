@@ -176,12 +176,12 @@ function initialOwner(bundle,map) {
   const records=[...bundle.implementation,...bundle.support.filter(item=>item.kind==='rejection'&&item.origin.operation==='EXECUTE_SLICE')];
   const captures=records.map(record=>restoreCaptureSources('initial-implementation',record,map));
   const cap=captures.sort((left,right)=>{
-    const rank=value=>{const origin=jsonBytes(value.transport==='native'?value.origin:value.managedContext,'initial ordinal origin').value;
+    const rank=value=>{const origin=jsonBytes(value.origin,'initial ordinal origin').value;
       return jsonBytes(value.receipt,'initial ordinal receipt').value.attempt+(origin.admission?.binding?.normalization?.consumedInvocations??0);};
     return rank(left)-rank(right);
   }).at(-1);
   if (!cap) invalid('initial checks required');
-  return jsonBytes(cap.transport==='native' ? cap.origin : cap.managedContext,'initial owner source').value.owner;
+  return jsonBytes(cap.origin,'initial owner source').value.owner;
 }
 function initialBundle(bundle,map,approvedAuthority) {
   return {...bundle,validation:null,openFindings:[],openDivergences:[],support:bundle.support.filter(item=>item.kind==='rejection'&&item.origin.operation==='EXECUTE_SLICE'),
@@ -533,9 +533,6 @@ function deriveCapture({context,authority:approvedAuthority,capture,expectedOwne
     if (!filelessReason) incomplete('fileless validation has no auxiliary proof reason');
     if (request.scope.filelessReason!==filelessReason) stale('fileless reason differs from initial proof');
   }
-  if (capture.transport==='managed' && (info.supervisor.requestsHandled!==1
-    || info.supervisor.capturedReceipts!==(receipt.status==='RUNNER_RESPONSE_CAPTURED' && receipt.exitCode===0 ? 1 : 0)
-    || info.latest.sequence!==info.active.sequence || !same(info.latest.receipt,receipt))) uncertain('managed validation close/latest does not cover one invocation');
   const origin={operationAttemptId:request.owner.operationAttemptId,deliveryId:request.owner.deliveryId,
     slice:request.owner.slice,operation:'VALIDATE_SLICE',preparationRevision:request.owner.preparationRevision,
     localRevision:request.owner.localRevision,normativeSha256:request.owner.normativeSha256,
@@ -553,10 +550,9 @@ function deriveCapture({context,authority:approvedAuthority,capture,expectedOwne
   const parsed=projectionError?{error:projectionError,loose:null}:parseCurrentValidationResponse(semanticText);
   if (receipt.status==='RUNNER_RESULT_BLOCKED') {
     if (parsed.response) uncertain('schema-rejected receipt has valid formal response');
-    if (receipt.semanticResponseStatus!==null || receipt.testedState!==null || typeof receipt.captureFailure!=='string' || !receipt.captureFailure.trim()
-      || (capture.transport==='managed' && (receipt.exitCode!==1 || receipt.captureFailureCode!=='RUNNER_RESPONSE_SCHEMA_INVALID'))) uncertain('schema-rejected receipt not concluded');
+    if (receipt.semanticResponseStatus!==null || receipt.testedState!==null || typeof receipt.captureFailure!=='string' || !receipt.captureFailure.trim()) uncertain('schema-rejected receipt not concluded');
   } else if (receipt.status==='RUNNER_RESPONSE_CAPTURED') {
-    if (receipt.captureFailure!==null || (capture.transport==='managed' && (receipt.exitCode!==0 || receipt.captureFailureCode!==null))) uncertain('accepted validation receipt not concluded');
+    if (receipt.captureFailure!==null) uncertain('accepted validation receipt not concluded');
     const loose=parsed.response ?? parsed.loose;
     if (!loose || receipt.semanticResponseStatus!==loose.result?.status) uncertain('accepted validation receipt semantic status differs');
     if (!observed.observed) incomplete('accepted validation lacks observation');
@@ -2119,14 +2115,13 @@ function applyEnvelope(rawText,requestBytes,receipt,transport,round) {
     && typeof external.requestSha256==='string' && HASH.test(external.requestSha256)
     && external.requestSha256!==raw(requestBytes)) stale(`round ${round}: response requestSha256 differs`);
   if (receipt.status==='RUNNER_RESPONSE_CAPTURED') {
-    if (receipt.captureFailure!==null || (transport==='managed' && (receipt.exitCode!==0 || receipt.captureFailureCode!==null))) uncertain(`round ${round}: accepted findings receipt not concluded`);
+    if (receipt.captureFailure!==null) uncertain(`round ${round}: accepted findings receipt not concluded`);
     if (!external || typeof external!=='object' || Array.isArray(external)
       || typeof external.result?.status!=='string' || receipt.semanticResponseStatus!==external.result.status) uncertain(`round ${round}: accepted findings receipt cannot bind result status`);
     if (receipt.testedState===null) incomplete(`round ${round}: accepted findings receipt lacks testedState`);
   } else if (receipt.status==='RUNNER_RESULT_BLOCKED') {
     if (receipt.semanticResponseStatus!==null || receipt.testedState!==null
-      || typeof receipt.captureFailure!=='string' || !receipt.captureFailure.trim()
-      || (transport==='managed' && (receipt.exitCode!==1 || receipt.captureFailureCode!=='RUNNER_RESPONSE_SCHEMA_INVALID'))) uncertain(`round ${round}: schema rejection is not concluded`);
+      || typeof receipt.captureFailure!=='string' || !receipt.captureFailure.trim()) uncertain(`round ${round}: schema rejection is not concluded`);
   } else uncertain(`round ${round}: findings result not concluded`);
   if (!defect) try {
     closed(external,['format','requestSha256','result'],'findings response');
@@ -2134,9 +2129,7 @@ function applyEnvelope(rawText,requestBytes,receipt,transport,round) {
     token(external.requestSha256,HASH,'findings response requestSha256');
     if (external.requestSha256!==raw(requestBytes)) stale(`round ${round}: response requestSha256 differs`);
     return {payload:parseCapturedResult('APPLY_FINDINGS',
-      (text,operation)=>parseSemanticExecutionPayload(text,operation,{
-        automaticCheckRound:transport==='managed' ? `${round}/3` : undefined,
-      }),JSON.stringify(external.result))};
+      parseSemanticExecutionPayload,JSON.stringify(external.result))};
   } catch (error) {
     if (error.code==='EVIDENCE_STALE') throw error;
     defect=error instanceof RunnerSemanticResultError ? error : applySemanticError(error.message);
@@ -2195,12 +2188,12 @@ function deriveApplyCycle({context,authority:approvedAuthority,owner:expectedOwn
   dense(rounds,'findings rounds',1,3);
   rounds.forEach((cap,index)=>plain(cap,`round ${index+1} capture`));
   const transport=rounds[0].transport;
-  if (!['native','managed'].includes(transport)) fail('UNSUPPORTED_FORMAT','findings transport');
+  if (transport!=='native') fail('UNSUPPORTED_FORMAT','findings transport');
   const checks=[]; let rejection=null; let lastStatus=null; let previousCap=null; let previousWork=null;
   let lastObserved=null,lastScope=null;
   let previousScope=[]; let firstWork=null; let dispatchId=null; const runners=new Set();
   let productDrift=null;
-  const receipts=[]; const managed=[]; const witnesses=new Set(baseFacts.removalPaths??[]);
+  const receipts=[]; const witnesses=new Set(baseFacts.removalPaths??[]);
   for (const [index,cap] of rounds.entries()) {
     const round=index+1;
     verifyCapturedInvocation('current-findings',cap,undefined,undefined,undefined,round,transport);
@@ -2264,7 +2257,6 @@ function deriveApplyCycle({context,authority:approvedAuthority,owner:expectedOwn
     dispatchId=transportInfo.dispatchId;
     if (runners.has(transportInfo.runnerId)) mismatch(`round ${round}: runner replay`);
     runners.add(transportInfo.runnerId);
-    if (transport==='managed') managed.push(transportInfo);
     receipts.push(receipt);
     const nativeJudgment=origin?.responseVariant===NATIVE_JUDGMENT_VARIANT;
     const workInput={context,authority:approvedAuthority,owner:request.owner,round,
@@ -2361,13 +2353,6 @@ function deriveApplyCycle({context,authority:approvedAuthority,owner:expectedOwn
       lastStatus=payload.status;
     }
     previousCap=cap;
-  }
-  if (transport==='managed') {
-    const {supervisor,latest,active}=managed.at(-1);
-    if (supervisor.requestsHandled!==rounds.length
-      || supervisor.capturedReceipts!==receipts.filter(item=>item.status==='RUNNER_RESPONSE_CAPTURED' && item.exitCode===0).length
-      || !same(latest.receipt,receipts.at(-1)) || latest.sequence!==active.sequence
-      || managed.some(item=>!same(item.supervisor,supervisor) || !same(item.latest,latest))) uncertain('managed findings close does not cover cycle');
   }
   if (!allowPrefix && !rejection && !['TESTS_PASS','BLOCKED'].includes(lastStatus)
     && !(lastStatus==='TESTS_FAIL' && offset+rounds.length===3)) incomplete('findings cycle is an incomplete FAIL prefix');

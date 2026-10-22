@@ -588,18 +588,18 @@ function origin(value, label) {
   oneOf(value.operation, OPERATIONS, label); nat(value.preparationRevision, label, true);
   optional(value.localRevision, (item, key) => nat(item, key, true), label);
   hash(value.normativeSha256, label); uuid(value.originActivationId, label);
-  oneOf(value.transport, ['native', 'managed'], label); string(value.dispatchId, label); string(value.runnerId, label);
+  if(value.transport!=='native')fail('UNSUPPORTED_FORMAT',`${label}: native evidence transport required`); string(value.dispatchId, label); string(value.runnerId, label);
 }
 function sources(value, transport, label, rejection) {
   const native = ['transport', 'rawResponse', 'receipt', 'verificationObservation', 'origin', 'agentBinding', 'concludedToolResult', 'removalProofs', 'legacyPreparation'];
-  const managed = ['transport', 'rawResponse', 'receipt', 'verificationObservation', 'started', 'events', 'closedSupervisor', 'runtimeIdentity', 'removalProofs', 'legacyPreparation'];
-  object(value, transport === 'native' ? native : managed, label);
+  if(transport!=='native')fail('UNSUPPORTED_FORMAT',`${label}: native sources required`);
+  object(value, native, label);
   if (value.transport !== transport) invalid(`${label}: transport mismatch`);
-  for (const field of (transport === 'native' ? native : managed).filter(item => !['transport', 'verificationObservation', 'removalProofs', 'runtimeIdentity', 'legacyPreparation'].includes(item))) hash(value[field], `${label}.${field}`);
+  for (const field of (native).filter(item => !['transport', 'verificationObservation', 'removalProofs', 'runtimeIdentity', 'legacyPreparation'].includes(item))) hash(value[field], `${label}.${field}`);
   if (rejection) optional(value.verificationObservation, hash, label);
   else hash(value.verificationObservation, label);
   if (value.legacyPreparation !== null) invalid(`${label}: unexpected legacy preparation`);
-  for (const field of ['removalProofs', ...(transport === 'managed' ? ['runtimeIdentity'] : [])]) {
+  for (const field of ['removalProofs']) {
     array(value[field], `${label}.${field}`).forEach(item => hash(item, label));
     ordered(value[field], item => item, `${label}.${field}`);
   }

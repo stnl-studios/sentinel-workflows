@@ -153,7 +153,7 @@ export function canonicalSemanticValidationScalar(name, value) {
 }
 
 
-export function parseSemanticExecutionPayload(text, operation, { automaticCheckRound } = {}) {
+export function parseSemanticExecutionPayload(text, operation) {
   const fields = MACHINE_EXECUTION_FIELDS[operation];
   if (fields === undefined) fail(`unsupported semantic execution operation: ${operation}`);
   let payload;
@@ -167,12 +167,6 @@ export function parseSemanticExecutionPayload(text, operation, { automaticCheckR
   }
   if (!["TESTS_PASS", "TESTS_FAIL", "TESTS_NOT_APPLICABLE", "BLOCKED"].includes(payload.status)) {
     fail("semantic execution payload Status is invalid");
-  }
-  // The managed caller supplies the broker-admitted round. The raw echo stays
-  // unchanged in its captured artifact and has no bookkeeping authority.
-  if (automaticCheckRound !== undefined) {
-    if (!["1/3", "2/3", "3/3"].includes(automaticCheckRound)) fail("admitted automatic check round is invalid");
-    payload = { ...payload, automaticCheckRound };
   }
   if (!["1/3", "2/3", "3/3"].includes(payload.automaticCheckRound)) {
     fail("semantic execution payload Automatic check round is invalid");
@@ -272,14 +266,12 @@ export function deriveCanonicalRunnerRejection({ receipt, response }) {
   let payload;
   try {
     payload = parseCapturedResult(operation, operation === "VALIDATE_SLICE" ? parseSemanticValidationPayload
-      : (text, op) => parseSemanticExecutionPayload(text, op, {
-        automaticCheckRound: receipt.transport === "native" ? undefined : receipt.automaticCheckRound,
-      }), response);
+      : parseSemanticExecutionPayload, response);
   } catch (error) {
     if (!(error instanceof RunnerSemanticResultError)) throw error;
     if (receipt.status !== "RUNNER_RESULT_BLOCKED") return error;
     // Reconstruct the capture diagnostic from final bytes, preserving the
-    // existing managed diagnostic format without trusting captureFailure.
+    // canonical capture diagnostic without trusting captureFailure.
     let raw;
     try { raw = JSON.parse(response); }
     catch { return new RunnerSemanticResultError(operation, new Error("final runner message is not valid JSON")); }

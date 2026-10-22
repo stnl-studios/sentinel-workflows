@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://sentinel.local/schemas/stnl-runner-semantic-response-v1.json",
-  "$comment": "Managed transport schema: the broker supplies round ownership. Native producers additionally require an explicit canonical automaticCheckRound.",
+  "$comment": "Native transport schema: each execution or findings response owns its explicit admitted automaticCheckRound.",
   "title": "Sentinel validation runner semantic response v1",
   "oneOf": [
     {
@@ -29,7 +29,8 @@
         "affectedFilesOrBehaviors",
         "blockers",
         "unexpectedWorkspaceEffects",
-        "persistenceSummary"
+        "persistenceSummary",
+        "automaticCheckRound"
       ],
       "properties": {
         "status": {
@@ -41,7 +42,13 @@
           ]
         },
         "automaticCheckRound": {
-          "description": "Optional managed diagnostic. Native producers require an explicit canonical 1/3, 2/3, or 3/3 round."
+          "type": "string",
+          "enum": [
+            "1/3",
+            "2/3",
+            "3/3"
+          ],
+          "description": "Explicit admitted native invocation round."
         },
         "head": {
           "type": "string",
@@ -154,7 +161,8 @@
         "affectedFilesOrBehaviors",
         "blockers",
         "unexpectedWorkspaceEffects",
-        "persistenceSummary"
+        "persistenceSummary",
+        "automaticCheckRound"
       ],
       "properties": {
         "status": {
@@ -166,7 +174,13 @@
           ]
         },
         "automaticCheckRound": {
-          "description": "Optional managed diagnostic. Native producers require an explicit canonical 1/3, 2/3, or 3/3 round."
+          "type": "string",
+          "enum": [
+            "1/3",
+            "2/3",
+            "3/3"
+          ],
+          "description": "Explicit admitted native invocation round."
         },
         "head": {
           "type": "string",
@@ -316,7 +330,7 @@
   ],
   "$defs": {
     "commands": {
-      "description": "Non-authoritative semantic check claims; exact command and exit come from marked SDK command_execution events.",
+      "description": "Non-authoritative semantic check claims; the producer binds exact commands and exits to official verification observations.",
       "type": "array",
       "items": {
         "type": "object",

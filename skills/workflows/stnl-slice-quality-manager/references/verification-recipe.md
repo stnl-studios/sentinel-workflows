@@ -5,7 +5,7 @@ purpose: Define the normative verification recipe and its producer-owned observa
 status: not_applicable
 read_when: Prepare, review, execute or validate a delivery using its explicit verification recipe.
 do_not_read_when: No preparation or verification contract is being interpreted.
-contains: Typed inputs, dependency review, native and managed observations, provenance and durable allocation.
+contains: Typed inputs, dependency review, native observations, provenance and durable allocation.
 owner: stnl-slice-quality-manager
 update_policy: Preserve equivalent recipe semantics across distributed consumers.
 ```
@@ -24,7 +24,7 @@ Canonical reference paths use the logical Plan/Task artifact-relative basis. The
 
 Authors and reviewers must explicitly account for imports, scripts, configuration and indirect dependencies in the approved areas/Existing Inputs and dependencyReview. The runtime verifies declared references; it does not discover every read of an arbitrary program, infer file types from literals, parse shell prose, or certify dependencies deliberately mislabeled as literal arguments. Interpreter code and dependency expansion require explicit semantic review. The serializer parses and resolves the Plan and Task recipes independently. Equivalent typed target spellings can converge, but command, base, input or dependency-review differences and malformed/unknown Task fields block preparation before snapshot; never overwrite a discrepant Task recipe with the Plan. Missing recipes, unequal Plan/Task recipes, invalid references, control overlap and unlinked inputs block preparation.
 
-The current native controller executes the reviewed executable/args directly without a shell. reserve-dispatch returns the exact verificationHelper and origin; the bound independent runner calls that helper with verify-native --origin-file ORIGIN_FILE once. Capture consumes the saved observation without replay and requires the same commands/exits. Discovery does not count as verification. Additional coverage requires an independently reviewed recipe revision; managed execution is unavailable in this cut.
+The current native controller executes the reviewed executable/args directly without a shell. reserve-dispatch returns the exact verificationHelper and origin; the bound independent runner calls that helper with verify-native --origin-file ORIGIN_FILE once. Capture consumes the saved observation without replay and requires the same commands/exits. Discovery does not count as verification. Additional coverage requires an independently reviewed recipe revision; managed execution is unsupported and cannot supply current proof.
 
 The operation-local `*.verification.json` records the recipe digest, resolved requests, numeric exits, bounded stdout/stderr and hashes. The receipt binds this exact producer observation. The producer compares the passive product/input image before and after execution, and rejects changes during the check. A completed observation is reused only for its exact recipe and unchanged work image; started/uncertain observations are retained and never replayed. The Tested state source is the official Task from the independently resolved workspace bound to its owned copy, in both standalone and lifecycle layouts. A missing copy marker or wrong owner cannot fall back to the candidate Task as source. Existing owner, freshness, response, Tested state, publication and CAS guards still apply. A nonzero observed recipe command cannot grant PASS/TESTS_PASS.
 

@@ -4,7 +4,7 @@
 // and approval; the existing publisher owns the common lock and activation CAS.
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import {resolveCurrentExecutionContext,projectCurrentRequirements} from './execution-workspace.mjs';
+import {resolveCurrentExecutionContext,projectCurrentRequirements,executionWorkspaceFromContext} from './execution-workspace.mjs';
 import {captureCurrentExecution,validateCurrentReviewCandidate} from './execution-current-reader.mjs';
 import {prepareCurrentLocalReview,finalizeCurrentLocalReview,validateCurrentPreparation} from './execution-preparation-current.mjs';
 import {validateCurrentCandidate,validateCurrentActivation,parseCurrentJson} from './execution-current.mjs';
@@ -33,8 +33,8 @@ async function activated(specPath) {
   return {activation:parseCurrentJson(Buffer.from(image.activationBytes).toString('utf8'))};
 }
 export async function publishCurrentLocalReview({specPath,slice,planBytes,reviewedTaskBytes,
-  currentTaskBytes,review,checkpoint=null}) {
-  const {context,workspace}=await resolveCurrentExecutionContext(specPath);
+  currentTaskBytes,review,checkpoint=null,filesystemContext=null}) {
+  const {context,workspace}=await resolveCurrentExecutionContext(specPath,{filesystemContext});
   const previous=await captureCurrentExecution(specPath);
   const sourceActivation=parseCurrentJson(Buffer.from(previous.activationBytes).toString('utf8'));
   const input={context,requirementsAuthority:previous.requirementsAuthority,
@@ -43,7 +43,7 @@ export async function publishCurrentLocalReview({specPath,slice,planBytes,review
   const proposal=prepareCurrentLocalReview(input);
   const finalized=finalizeCurrentLocalReview({proposal,review});
   const before=await captureExecutionTree(context.logicalExecutionRoot);
-  const candidate=await allocateCurrentLocalReviewCandidate(context);
+  const candidate=await allocateCurrentLocalReviewCandidate(context,{filesystemContext});
   const created=await fs.lstat(candidate);
   let expected;
   try {
@@ -67,7 +67,7 @@ export async function publishCurrentLocalReview({specPath,slice,planBytes,review
     }
     throw error;
   }
-  const currentWorkspace={executionRoot:context.logicalExecutionRoot,specRoot:context.logicalSpecRoot};
+  const currentWorkspace=executionWorkspaceFromContext(context,workspace);
   const recheckRequirements=async()=>{
     const documents=new Map([[workspace.authorityPath,await fs.readFile(workspace.authorityPath)]]);
     if(workspace.kind==='lifecycle') {
@@ -163,9 +163,8 @@ export async function publishCurrentLocalReview({specPath,slice,planBytes,review
     reviewedDeliveryId:finalized.selected.deliveryId};
 }
 
-export async function recoverCurrentLocalReview({specPath,allocation}) {
-  const {context}=await resolveCurrentExecutionContext(specPath);
-  return recoverCurrentReplacementPublication({workspace:{executionRoot:context.logicalExecutionRoot,
-    specRoot:context.logicalSpecRoot},marker:allocation,readActivated:()=>activated(specPath),
+export async function recoverCurrentLocalReview({specPath,allocation,filesystemContext=null}) {
+  const {context,workspace}=await resolveCurrentExecutionContext(specPath,{filesystemContext});
+  return recoverCurrentReplacementPublication({workspace:executionWorkspaceFromContext(context,workspace),marker:allocation,readActivated:()=>activated(specPath),
     validateInstalledActivation:validateCurrentActivation});
 }

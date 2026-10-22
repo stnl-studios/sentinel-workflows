@@ -285,71 +285,23 @@ test('A01 native authored request, envelope, record and counters preserve findin
   assert.throws(()=>compose(f.base,[digest],f.owner),failure('EVIDENCE_STALE','findings base'));
 });
 
-test('A02 managed causal links precede close and final records use final close',()=>{
-  const base=needsFixBase({transport:'managed'}),owner=applyOwner();
-  const first=applyCapture({base,owner,transport:'managed',status:'TESTS_FAIL',exit:1});
-  assert.equal(Object.hasOwn(first.cap,'closedSupervisor'),false);assert.equal(Object.hasOwn(first.cap,'latest'),false);
-  const frozen=roundLink(first.cap);assert.equal(findingsRoundCaptureSha256(first.cap),frozen);
-  const second=applyCapture({base,owner,round:2,transport:'managed',status:'TESTS_PASS',exit:0,
-    previousCheck:{id:first.request.checkId,roundCaptureSha256:frozen}});
-  assert.equal(Object.hasOwn(second.cap,'closedSupervisor'),false);assert.equal(Object.hasOwn(second.cap,'latest'),false);
-  const beforeSecond=Buffer.from(second.cap.applyRequest);closeManaged([first.cap,second.cap]);
-  assert.equal(roundLink(first.cap),frozen);assert.deepEqual(Buffer.from(second.cap.applyRequest),beforeSecond);
-  const result=compose(base,[first.cap,second.cap],owner);
-  assert.equal(result.auxiliaryStatus,'TESTS_PASS');assert.equal(result.consumedInvocations,2);
-  assert.deepEqual(result.bundle.findingsChecks.map(item=>item.id),['findings-check-01','findings-check-02']);
-  assert.equal(readback(result,manifest(3)).validation,'revalidation-required');
-  const wrong=clone(second.cap);rebindRequest(wrong,item=>{item.previousCheck.roundCaptureSha256=hash(canonicalBytes(result.bundle.findingsChecks[0]));});
-  assert.throws(()=>compose(base,[first.cap,wrong],owner),failure('EVIDENCE_STALE','previous check link'));
-  const pending=clone(first.cap);const supervisor=decode(pending.closedSupervisor);supervisor.pending=true;pending.closedSupervisor=encode(supervisor);
-  assert.throws(()=>compose(base,[pending,second.cap],owner),failure('OWNER_UNCERTAIN'));
-  const f1=applyCapture({base,owner,transport:'managed',status:'TESTS_FAIL',exit:1});
-  const f2=applyCapture({base,owner,round:2,transport:'managed',status:'TESTS_FAIL',exit:1,
-    before:manifest(2),after:manifest(3),previousCheck:{id:f1.request.checkId,roundCaptureSha256:roundLink(f1.cap)}});
-  const f3=applyCapture({base,owner,round:3,transport:'managed',status:'TESTS_FAIL',exit:1,
-    before:manifest(3),after:manifest(3),previousCheck:{id:f2.request.checkId,roundCaptureSha256:roundLink(f2.cap)}});
-  closeManaged([f1.cap,f2.cap,f3.cap]);
-  const exhausted=compose(base,[f1.cap,f2.cap,f3.cap],owner);
-  assert.equal(exhausted.auxiliaryStatus,'TESTS_FAIL');assert.equal(exhausted.counters.findingsChecks,3);
-  const malformed=clone(f3.cap);schemaReject(malformed);
-  closeManaged([f1.cap,f2.cap,malformed]);
-  const rejected=compose(base,[f1.cap,f2.cap,malformed],owner);
-  assert.equal(rejected.outcome,'rejected');assert.equal(rejected.counters.findingsChecks,2);
-  assert.equal(rejected.consumedInvocations,3);
-  const secondClose=clone([first.cap,second.cap]);closeManaged(secondClose,'2026-10-14T13:00:00.000Z');
-  assert.equal(roundLink(secondClose[0]),frozen);assert.deepEqual(Buffer.from(secondClose[1].applyRequest),beforeSecond);
-  const alternative=compose(base,secondClose,owner);
-  assert.notEqual(alternative.bundle.findingsChecks[0].sources.closedSupervisor,result.bundle.findingsChecks[0].sources.closedSupervisor);
-  const expectedChecks=[authoredCheck(first.cap,'findings-check-01',findingsGolden(first.cap)),
-    authoredCheck(second.cap,'findings-check-02',findingsGolden(second.cap,{roundCorrections:[TARGET],priorFailure:'Pay check failed.'}))];
-  const expected=authoredBundle({findingsChecks:expectedChecks,validation:base.bundle.validation,
-    openFindings:[finding(1,1)],captures:[first.cap,second.cap],objects:base.bundle.objects,
-    counters:{implementationChecks:1,findingsChecks:2,validationAttempts:1,findings:1}});
-  assert.deepEqual(result.bundle,expected.bundle);assert.equal(direct(expected.bundle,expected.counters,manifest(3)).auxiliaryStatus,'TESTS_PASS');
-  const staleSource=clone([first.cap,second.cap]);
-  const altered=decode(staleSource[0].rawResponse);altered.result.evidenceOrFailureSummary='Different complete prior evidence.';
-  rebindRaw(staleSource[0],altered);closeManaged(staleSource);
-  assert.throws(()=>compose(base,staleSource,owner),failure('EVIDENCE_STALE','previous check link'));
-  for(const [field,value,code,relation] of [['requestsHandled',1,'OWNER_UNCERTAIN','cover cycle'],
-    ['cancelledPending',true,'OWNER_UNCERTAIN','supervisor'],['operation','EXECUTE_SLICE','OWNER_MISMATCH','managed']]) {
-    const caps=clone([first.cap,second.cap]);
-    for(const cap of caps){const close=decode(cap.closedSupervisor);close[field]=value;cap.closedSupervisor=encode(close);}
-    assert.throws(()=>compose(base,caps,owner),failure(code,relation));
-  }
-  const event=clone(first.cap);event.events=Buffer.from(Buffer.from(event.events).toString().split('\n').filter(line=>!line.includes('turn.completed')).join('\n'));
-  assert.throws(()=>compose(base,[event,second.cap],owner),failure('OWNER_UNCERTAIN'));
-  const mixed=clone([first.cap,second.cap]);mixed[1]=applyCapture({base,owner,round:2,previousCheck:second.request.previousCheck}).cap;
-  assert.throws(()=>compose(base,mixed,owner),failure('INVALID_CURRENT_IMAGE','fields differ'));
-  const reused=clone([first.cap,second.cap]);
-  const thread=decode(reused[0].receipt).threadId;
-  updateReceipt(reused[1],item=>{item.threadId=thread;});
-  const events=Buffer.from(reused[1].events).toString().trimEnd().split('\n').map(JSON.parse);events[0].thread_id=thread;
-  reused[1].events=Buffer.from(events.map(JSON.stringify).join('\n')+'\n');closeManaged(reused);
-  assert.throws(()=>compose(base,reused,owner),failure('OWNER_MISMATCH','runner replay'));
-  const expectedPrefix=[authoredCheck(f1.cap,'findings-check-01',findingsGolden(f1.cap)),
-    authoredCheck(f2.cap,'findings-check-02',findingsGolden(f2.cap,{roundCorrections:[TARGET],priorFailure:'Pay check failed.'}))];
-  assert.deepEqual(rejected.bundle.findingsChecks,expectedPrefix);
-  assertRejectedApply(base,[f1.cap,f2.cap,malformed],owner,/strict JSON/,expectedPrefix);
+test('A02 native causal links preserve raw rounds, budgets and independent authored readback; managed is refused',()=>{
+ const base=needsFixBase(),owner=applyOwner();
+ const first=applyCapture({base,owner,status:'TESTS_FAIL',exit:1}),frozen=roundLink(first.cap);
+ assert.equal(findingsRoundCaptureSha256(first.cap),frozen);
+ const second=applyCapture({base,owner,round:2,previousCheck:{id:first.request.checkId,roundCaptureSha256:frozen}}),beforeSecond=Buffer.from(second.cap.applyRequest);
+ const result=compose(base,[first.cap,second.cap],owner);assert.equal(result.auxiliaryStatus,'TESTS_PASS');assert.equal(result.consumedInvocations,2);assert.deepEqual(result.bundle.findingsChecks.map(item=>item.id),['findings-check-01','findings-check-02']);assert.equal(readback(result,manifest(3)).validation,'revalidation-required');assert.deepEqual(Buffer.from(second.cap.applyRequest),beforeSecond);
+ const wrong=clone(second.cap);rebindRequest(wrong,item=>{item.previousCheck.roundCaptureSha256=hash(canonicalBytes(result.bundle.findingsChecks[0]));});assert.throws(()=>compose(base,[first.cap,wrong],owner),failure('EVIDENCE_STALE','previous check link'));
+ const f1=applyCapture({base,owner,status:'TESTS_FAIL',exit:1});
+ const f2=applyCapture({base,owner,round:2,status:'TESTS_FAIL',exit:1,before:manifest(2),after:manifest(3),previousCheck:{id:f1.request.checkId,roundCaptureSha256:roundLink(f1.cap)}});
+ const f3=applyCapture({base,owner,round:3,status:'TESTS_FAIL',exit:1,before:manifest(3),after:manifest(3),previousCheck:{id:f2.request.checkId,roundCaptureSha256:roundLink(f2.cap)}});
+ const exhausted=compose(base,[f1.cap,f2.cap,f3.cap],owner);assert.equal(exhausted.auxiliaryStatus,'TESTS_FAIL');assert.equal(exhausted.counters.findingsChecks,3);
+ const malformed=clone(f3.cap);schemaReject(malformed);const rejected=compose(base,[f1.cap,f2.cap,malformed],owner);assert.equal(rejected.outcome,'rejected');assert.equal(rejected.counters.findingsChecks,2);assert.equal(rejected.consumedInvocations,3);
+ const expectedChecks=[authoredCheck(first.cap,'findings-check-01',findingsGolden(first.cap)),authoredCheck(second.cap,'findings-check-02',findingsGolden(second.cap,{roundCorrections:[TARGET],priorFailure:'Pay check failed.'}))];
+ const expected=authoredBundle({findingsChecks:expectedChecks,validation:base.bundle.validation,openFindings:[finding(1,1)],captures:[first.cap,second.cap],objects:base.bundle.objects,counters:{implementationChecks:1,findingsChecks:2,validationAttempts:1,findings:1}});assert.deepEqual(result.bundle,expected.bundle);assert.equal(direct(expected.bundle,expected.counters,manifest(3)).auxiliaryStatus,'TESTS_PASS');
+ const staleSource=clone([first.cap,second.cap]),altered=decode(staleSource[0].rawResponse);altered.result.evidenceOrFailureSummary='Different complete prior evidence.';rebindRaw(staleSource[0],altered);assert.throws(()=>compose(base,staleSource,owner),failure('EVIDENCE_STALE','previous check link'));
+ const expectedPrefix=[authoredCheck(f1.cap,'findings-check-01',findingsGolden(f1.cap)),authoredCheck(f2.cap,'findings-check-02',findingsGolden(f2.cap,{roundCorrections:[TARGET],priorFailure:'Pay check failed.'}))];assert.deepEqual(rejected.bundle.findingsChecks,expectedPrefix);assertRejectedApply(base,[f1.cap,f2.cap,malformed],owner,/strict JSON/,expectedPrefix);
+ const retiredBase=needsFixBase({transport:'managed'}),retired=applyCapture({base:retiredBase,owner,transport:'managed'}).cap,before=clone(retired);assert.throws(()=>findingsRoundCaptureSha256(retired),failure('UNSUPPORTED_FORMAT'));assert.throws(()=>compose(retiredBase,[retired],owner),failure('UNSUPPORTED_FORMAT'));assert.deepEqual(clone(retired),before);
 });
 
 test('A03 selection includes blocking and advisory with exact complement',()=>{
@@ -750,7 +702,7 @@ test('A09 external envelope, receipt class and semantic rejection are distinct',
   assert.equal(absentResult.auxiliaryStatus,'BLOCKED');assert.doesNotMatch(absentResult.bundle.findingsChecks[0].recordUtf8,/Fileless reason:/u);
   assert.match(absentResult.bundle.findingsChecks[0].recordUtf8,/- Tested state: none/u);
   assert.equal(readback(absentResult,absent).auxiliaryStatus,'BLOCKED');
-  for(const transport of ['native','managed']) {
+  for(const transport of ['native']) {
     const base=needsFixBase({transport}),owner=applyOwner();
     const good=applyCapture({base,owner,transport,before:manifest(1),after:manifest(1)}).cap;
     if(transport==='managed')closeManaged([good]);
@@ -1040,7 +992,7 @@ test('A13 prior removal cycle remains only while an absent leaf needs its bytes'
   const result=compose(formal,[next],nextOwner);
   assert.equal(result.bundle.support.filter(item=>item.kind==='findings-check').length,0);
   assert.equal(readback(result,oldSourceWork()).validation,'revalidation-required');
-  for(const transport of ['native','managed']) {
+  for(const transport of ['native']) {
     const authored=authoredRemovalScenario({transport});
     assert.equal(direct(authored.expected.bundle,authored.expected.counters,authored.work).auxiliaryStatus,'TESTS_PASS');
     assertRoots(authored.expected,{checks:['findings-check-01'],formal:'attempt-01',support:['implementation-check-01','implementation-check-02']});
@@ -1114,7 +1066,7 @@ test('A13 prior removal cycle remains only while an absent leaf needs its bytes'
     objects:zeroRefusal.bundle.objects,counters:zeroRefusal.counters});
   assert.throws(()=>direct(noZeroWitness.bundle,noZeroWitness.counters,zeroCheck.work),
     failure('EVIDENCE_INCOMPLETE','REMOVED lacks witness'));
-  for(const transport of ['native','managed']) {
+  for(const transport of ['native']) {
     const both=twoWitnesses(transport);
     assert.equal(direct(both.expected.bundle,both.expected.counters,both.work).auxiliaryStatus,'TESTS_PASS');
     assertRoots(both.expected,{checks:['findings-check-02'],formal:'attempt-02',support:['implementation-check-01','findings-check-01','attempt-01']});
@@ -1179,14 +1131,7 @@ test('A14 byte-exact replay is idempotent and owner conflicts cannot mint a chec
   const addedProof=clone(sameWork);addedProof.removalProofs=[Buffer.from('different proof bytes')];
   assert.throws(()=>compose(applied,[addedProof],f.owner),failure('OWNER_MISMATCH','different captured sources'));
   const managedBase=needsFixBase({transport:'managed'}),managedCap=applyCapture({base:managedBase,transport:'managed',before:manifest(1),after:manifest(1)}).cap;
-  closeManaged([managedCap]);const managed=compose(managedBase,[managedCap]);
-  assert.equal(compose(managed,[managedCap]).replayed,true);
-  for(const field of ['managedContext','active','started','events','closedSupervisor','latest','runtimeIdentity']) {
-    const changed=clone(managedCap);
-    if(field==='runtimeIdentity')changed[field][0]=Buffer.concat([Buffer.from(changed[field][0]),Buffer.from(' ')]);
-    else changed[field]=Buffer.concat([Buffer.from(changed[field]),Buffer.from(' ')]);
-    assert.throws(()=>compose(managed,[changed]),failure('OWNER_MISMATCH','different captured sources'));
-  }
+  closeManaged([managedCap]);const beforeManaged=clone(managedCap);assert.throws(()=>compose(managedBase,[managedCap]),failure('UNSUPPORTED_FORMAT'));assert.deepEqual(clone(managedCap),beforeManaged);
 });
 
 test('A15 direct authored readback rejects a recomposed but false role relation',()=>{
@@ -1232,7 +1177,7 @@ test('A15 direct authored readback rejects a recomposed but false role relation'
   Object.defineProperty(observedWork,'entries',{get(){throw new Error('getter executed');},enumerable:true});
   assert.throws(()=>validateCurrentFindingsEvidence({context:CONTEXT,authority:AUTHORITY,
     bundleBytes:canonicalBytes(authored),counters,observedWork}),error=>error.message!=='getter executed');
-  for(const transport of ['native','managed']) {
+  for(const transport of ['native']) {
     const base=needsFixBase({transport}),cap=applyCapture({base,transport}).cap;
     if(transport==='managed')closeManaged([cap]);
     const expected=authoredBundle({findingsChecks:[authoredCheck(cap,'findings-check-01',findingsGolden(cap))],
@@ -1290,7 +1235,7 @@ test('A15 direct authored readback rejects a recomposed but false role relation'
   assert.throws(()=>compose(f.base,sparse,f.owner),failure('INVALID_CURRENT_IMAGE','dense array'));
   // Complete authored removal-only roles, including distinct Initial and APPLY
   // witnesses, enter the reader without a producer anywhere in their setup.
-  for(const transport of ['native','managed']) {
+  for(const transport of ['native']) {
     const roles=twoWitnesses(transport);
     assert.equal(direct(roles.expected.bundle,roles.expected.counters,roles.work).validation,'revalidation-required');
     const broken=clone(roles.a),proof=decode(broken.removalProofs[0]);proof.sha256=hash(Buffer.from('unrelated'));

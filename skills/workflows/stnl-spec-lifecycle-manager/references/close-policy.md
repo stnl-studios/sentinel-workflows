@@ -12,7 +12,7 @@ update_policy: Change only when documentary closure or preservation policy chang
 
 # CLOSE Policy
 
-`MODE=CLOSE` returns documentary `SPEC_CLOSED`, not durable delivery approval. It preserves requirements authority; substantive `RESUME` requires `REPLAN`. Lifecycle never rewrites execution artifacts.
+`MODE=CLOSE` returns documentary `SPEC_CLOSED`, not durable delivery approval. It preserves requirements authority; substantive `RESUME` requires `REPLAN`. CLOSE omits execution only when absent or independently inspected as current integral COMPLETE; other external paths remain exact. This does not retain durable implementation approval after execution is discarded.
 
 ## Preconditions
 
@@ -20,12 +20,11 @@ Require explicit `MODE=CLOSE` and active `ready`; use `RESUME` for change. The s
 
 ## Deterministic pipeline
 
-1. Build a disjoint candidate without model generation:
-   `node "<SKILL_ROOT>/runtime/build-closed-spec.mjs" <SOURCE> <CANDIDATE>`
-2. The renderer verifies the active ready source and authority snapshot, copies externals safely, validates closed form and exact transition, then rechecks immediately before and after renaming its inode-backed candidate; stale state rolls that candidate back.
-3. Do not edit the rendered candidate. Publish it only with:
-   `node "<SKILL_ROOT>/runtime/publish-spec-lifecycle.mjs" CLOSE <TARGET> <CANDIDATE>`
-4. Publisher revalidates the live source identity and digest and requires the exact deterministic candidate before promotion. A changed source aborts publication.
+1. Use the normal publisher directly: `node "<SKILL_ROOT>/runtime/publish-spec-lifecycle.mjs" CLOSE <TARGET>`.
+2. Do not supply a candidate. The publisher derives execution disposition through the normal current reader, obtains the common and lifecycle leases, allocates its own single stage and renders into that owned inode.
+3. Preview through pure `renderClosedFeature` is documentary only. It neither admits nor publishes CLOSE.
+4. Before promotion, revalidate source identity/digest, execution authority/activation/manifest and exact rendered bytes under the common lease. Pending or uncertain producers and foreign material block discard.
+5. Retain source/backup through commit until sealed ownership and dispensability are proved. Delete only those bound roles, then the empty namespace and common lease. Keep recovery authority while cleanup remains pending; no eternal residue is required after settlement. Never interpret partial integration as permission to discard.
 
 The model does not copy or paraphrase records, nor rebuild deterministic structure or metadata; renderer and validators do.
 
@@ -39,4 +38,12 @@ Reject any missing or extra record, changed title/type/text/metadata, duplicate 
 
 ## External and failure boundary
 
-`shared/` is lifecycle input and is absent only in the validated candidate. `execution/` and every other external path are copied without dereferencing symlinks and must compare unchanged; ignored OS packaging metadata is neither authority nor copied. Any renderer failure leaves source and destination untouched. Any publication failure or abrupt interruption is handled by the publisher's journaled recovery; never remove live `shared/` or a valid backup manually.
+`shared/` is lifecycle input and is absent only in the validated candidate. `execution/` is absent in the result only after the normal admissibility/discard checks. Every other external path is copied without dereferencing symlinks and must compare unchanged; ignored OS packaging metadata is neither authority nor copied. Renderer failure preserves the source and never promotes its partial owned stage. Any publication failure or abrupt interruption is handled by the publisher's journaled recovery and ownership checks; never remove live `shared/`, a valid backup or a foreign stage replacement manually.
+
+On Darwin, additional members of an existing symlink hardlink group use only the fixed `/bin/ln -P -h --` capability from the shared owned-stage copy helper, with a two-second timeout, 4-KiB output limits and no shell. Both normal candidate copy and CLOSE reuse it. Source payloads are literal, including dangling or absolute targets; regular hardlinks and isolated symlinks retain their native Node paths. The destination must be absent, both names must remain within the sealed stage/filesystem, and identities, parents, payload and exact inode/link topology are checked before and after the call. Failure blocks promotion without retries or alternate executables; ownership mismatch preserves foreign material. Path barriers detect observed replacement, but cannot promise zero external effect under arbitrary hostile mutation during the OS syscall.
+
+## Terminal observation
+
+CLOSE returns publication `confirmed` with cleanup `complete` or `pending`, its transaction, authority, digest and derived disposition. A final unlink followed by failed parent fsync reports `FINAL_SETTLEMENT_DURABILITY_UNCONFIRMED` with cleanup pending, without inventing a retained lock or reconstructing removed names. Recovery uses valid remaining authority and finishes the same cleanup; with every control absent it observes only the valid closed document and returns false, without republishing or invoking a model.
+
+Closed readers do not depend on removed operational files. Execution readers report `SPEC_CLOSED` with no normal handoff; the documentary lifecycle handoff remains `NOT_APPLICABLE`. Roadmap delivery dependencies without structured retained evidence remain `UNKNOWN`. The runbook inspector can inspect the consolidated SPEC, but execution/slice/task selections without current execution report `SPEC_CLOSED`; it does not reconstruct historical sources or generate approval.

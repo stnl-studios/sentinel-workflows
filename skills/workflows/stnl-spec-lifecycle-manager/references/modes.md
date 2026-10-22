@@ -19,10 +19,10 @@ Use the exact MODE/inputs and conflict rules in `SKILL.md`.
 Mutable modes share this recovery-safe boundary:
 
 1. Resolve authority; snapshot live state and protected paths.
-2. Build the complete disjoint candidate; never edit live state.
+2. INIT/RESUME build the complete disjoint candidate without editing live state. CLOSE supplies no candidate: the publisher allocates its own single stage and renders internally.
 3. For INIT before validation, run `node "<SKILL_ROOT>/runtime/prepare-init-candidate.mjs" <TARGET> <CANDIDATE>`; owner-only serialization blocks malformed headers. Never after rejection.
 4. Validate candidate structure and mode transition against unchanged source.
-5. Publish only with `node "<SKILL_ROOT>/runtime/publish-spec-lifecycle.mjs"`. Acquire common before lifecycle; bound dead-owner recovery follows `../README.md`. Recheck backup digest before promotion. Conflicts restore exact state; failures retain or restore valid state. Renames are not filesystem-wide atomic.
+5. Publish only with `node "<SKILL_ROOT>/runtime/publish-spec-lifecycle.mjs"`. Before any publisher write, prove the temporary-root exclusion per `../README.md` (fixed Git query, or explicit non-Git API/CLI roots). Acquire common before lifecycle; bound dead-owner recovery follows `../README.md`. Recheck backup digest before promotion. Conflicts restore exact state; failures retain or restore valid state. Renames are not filesystem-wide atomic.
 6. Revalidate published state and external snapshot; report failures and stop.
 
 Candidates cannot authorize changes. Runtime proves structure, relations, preservation, rendering/publication; the model owns semantic sufficiency and non-invention.
@@ -42,7 +42,7 @@ Build the smallest valid workspace from supplied evidence, without empty categor
 
 Source must be valid and active. Normal changes require a strict ephemeral JSON manifest of authorized sections, IDs, and status transitions. No removal, wildcards, generic authority, unknown fields, external paths, or post-fact expansion. Preserve omitted authority bytes.
 
-Preserve H1, IDs/types/titles and unaffected bytes/links/paths; retire in place and allocate above highest suffix. Manifests are consumed on failure. After `GLOBAL/READY`, status-only `draft → ready` is manifest-free: run `node "<SKILL_ROOT>/runtime/publish-spec-lifecycle.mjs" RESUME <TARGET> <CANDIDATE> --readiness-attestation <ATTESTATION>` with absent sibling `.<workspace-name>.readiness-attestation.json`. Publisher creates it from target identity/candidate snapshot. Never call `create-readiness-attestation.mjs` on a candidate or hand-write JSON; reuse only for a publisher-retained retry.
+Preserve H1, IDs/types/titles and unaffected bytes/links/paths; retire in place and allocate above highest suffix. Manifests are consumed on failure. After `GLOBAL/READY`, status-only `draft → ready` is manifest-free: run `node "<SKILL_ROOT>/runtime/publish-spec-lifecycle.mjs" RESUME <TARGET> <CANDIDATE> --readiness-attestation auto` with the persistent locator-derived attestation at `materialRoot/readiness-attestation.json` absent or retained by the same compatible retry. Publisher creates it from target identity/candidate snapshot. Never call `create-readiness-attestation.mjs` on a candidate or hand-write JSON; reuse only for a publisher-retained retry.
 
 ## READINESS
 
@@ -52,7 +52,7 @@ Run `node "<SKILL_ROOT>/runtime/validate-spec-lifecycle.mjs" workspace <SPEC_PAT
 
 ## CLOSE
 
-Source must be valid active `ready`. Follow `close-policy.md`; runtime verifies/renders/validates/publishes directly. Neither implementation evidence nor terminal attestation is a gate.
+Source must be valid active `ready`. Follow `close-policy.md`; invoke `publish-spec-lifecycle.mjs CLOSE <TARGET>` without a candidate. Runtime derives execution disposition and renders directly into its owned stage. An absent execution needs no implementation PASS; an existing execution requires current integral COMPLETE from the normal reader plus ownership/retirement checks. A terminal readiness attestation is optional, not substitute authority.
 
 ## Outcome contract
 

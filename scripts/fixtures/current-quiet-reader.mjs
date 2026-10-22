@@ -995,7 +995,7 @@ function installGuard(specPath,logPath,allowedRoot,mode='reader') {
     while (!exact.has(current)) {exact.add(current);const parent=path.dirname(current);if(parent===current) break;current=parent;}
   }
   const runtimeNames=['execution-current-reader.mjs','execution-workspace.mjs','execution-state.mjs',
-    'execution-publication.mjs','runner-result-contract.mjs','execution-current.mjs',
+    'execution-publication.mjs','unicode-casefold.mjs','runner-result-contract.mjs','execution-current.mjs',
     'execution-preparation-current.mjs','current-evidence-state.mjs','execution-evidence-current.mjs','execution-evidence-proof.mjs'];
   const runtimeFiles=new Set(['stnl-execution-planner','stnl-plan-reviewer','stnl-slice-executor','stnl-slice-quality-manager','stnl-spec-roadmap','stnl-spec-test-runbook'].flatMap(skill=>runtimeNames
     .map(name=>path.join(repo,'skills/workflows',skill,'runtime',name))));

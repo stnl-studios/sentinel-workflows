@@ -9,7 +9,7 @@ import {acquireExecutionPublicationLock,releaseExecutionPublicationLock,executio
 import {checkDistributableSkill,EXECUTION_DISTRIBUTION_POLICY} from './lib/check-distributable-skill.mjs';
 const environment=process.env;
 const deepRoot=(root,n)=>path.join(root,...Array.from({length:n},(_,i)=>'depth-'+i));
-async function fixture(){const root=await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(),'stnl-neutral-')));await fs.mkdir(path.join(root,'.git'));return {root,workspace:{executionRoot:path.join(root,'requirements-execution'),specRoot:null}};}
+async function fixture(){const root=await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(),'stnl-neutral-')));await fs.mkdir(path.join(root,'.git'));await fs.mkdir(path.join(root,'tmp/sentinel'),{recursive:true});return {root,workspace:{executionRoot:path.join(root,'requirements-execution'),specRoot:null}};}
 test('exclusive lock in separate processes/barrier; no age stealing or foreign release', async () => {
   const f = await fixture();
   try {
@@ -44,7 +44,7 @@ test('U2-R4-F1 unowned deep standalone authority terminates ancestry traversal i
 });
 test('U2-R3 distribution permits only the named recipe producer to execute external commands',async()=>{
   const f=await fixture(),root=path.join(f.root,'minimal-distribution'),runtime=path.join(root,'runtime');await fs.mkdir(runtime,{recursive:true});
-  for(const file of ['runner-verification.mjs','execution-publication.mjs','execution-current.mjs'])await fs.copyFile(path.resolve('skills/workflows/stnl-slice-executor/runtime',file),path.join(runtime,file));
+  for(const file of ['runner-verification.mjs','execution-publication.mjs','execution-current.mjs','unicode-casefold.mjs'])await fs.copyFile(path.resolve('skills/workflows/stnl-slice-executor/runtime',file),path.join(runtime,file));
   assert.deepEqual(await checkDistributableSkill(root,EXECUTION_DISTRIBUTION_POLICY),[]);
   assert.ok((await checkDistributableSkill(root)).some(message=>message.includes('operational runtime must not execute external commands')));
   await fs.writeFile(path.join(runtime,'other-operation.mjs'),'import {execFile} from "node:child_process";\n');
@@ -77,4 +77,14 @@ test('benchmark product imports current contracts without the retired serializer
  assert.equal(product.parseSemanticExecutionPayload,semantic.parseSemanticExecutionPayload);
  assert.equal(product.parseSemanticValidationPayload,semantic.parseSemanticValidationPayload);
  assert.throws(()=>product.createManagedSliceContext({}),error=>error.code==='CURRENT_MANAGED_UNAVAILABLE');
+});
+
+test('native distribution checker refuses imports of either exact excluded development stub',async t=>{
+ const f=await fixture();t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
+ for(const name of ['stnl-slice-executor','stnl-slice-quality-manager']){
+  const root=path.join(f.root,name),runtime=path.join(root,'runtime');await fs.mkdir(runtime,{recursive:true});
+  await fs.copyFile(path.resolve('skills/workflows',name,'runtime/managed-slice-context.mjs'),path.join(runtime,'managed-slice-context.mjs'));
+  await fs.writeFile(path.join(runtime,'entry.mjs'),"import './managed-slice-context.mjs';\n");
+  const findings=await checkDistributableSkill(root,{});assert.ok(findings.some(line=>/missing relative import.*managed-slice-context/u.test(line)));
+ }
 });

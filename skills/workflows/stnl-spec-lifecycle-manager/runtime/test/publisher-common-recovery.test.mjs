@@ -6,7 +6,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import test from 'node:test';
 import { publishCandidate, recoverIncompletePublication, lockPath, journalPath, TEST_ONLY_ACK } from '../lib/publisher.mjs';
-import { acquireExecutionPublicationLock, assertExecutionPublicationLock, releaseExecutionPublicationLock, executionLockIdentity } from '../lib/execution-publication.mjs';
+import { acquireExecutionPublicationLock, assertExecutionPublicationLock, releaseExecutionPublicationLock, executionLockIdentity,resolveExecutionFilesystemRoots } from '../lib/execution-publication.mjs';
 import { workspaceSnapshot, validateWorkspace } from '../lib/lifecycle.mjs';
 import { temporaryDirectory, copyTree, READY_FIXTURE, PUBLISHER_CLI, buildResumeFixture } from './publisher-fixtures.mjs';
 
@@ -30,14 +30,17 @@ function crash(f, checkpoint = 'JOURNAL_PREPARED', cli = PUBLISHER_CLI, args = [
   return result;
 }
 async function controls(f) {
-  const rows = [];
-  for (const name of (await fs.readdir(f.root)).sort()) {
-    const file = path.join(f.root, name), meta = await fs.lstat(file);
-    if (!meta.isFile()) continue;
-    rows.push({name, identity:{dev:String(meta.dev),ino:String(meta.ino)}, links:meta.nlink, sha256:sha(await fs.readFile(file))});
+  const rows=[],roots=await resolveExecutionFilesystemRoots(workspace(f.target));
+  for(const directory of new Set([f.root,roots.leaseParent,roots.materialRoot])) {
+    for(const name of (await fs.readdir(directory).catch(error=>{if(error.code==='ENOENT')return [];throw error;})).sort()) {
+      const file=path.join(directory,name),meta=await fs.lstat(file);
+      if(!meta.isFile())continue;
+      rows.push({name:path.relative(f.root,file),identity:{dev:String(meta.dev),ino:String(meta.ino)},links:meta.nlink,sha256:sha(await fs.readFile(file))});
+    }
   }
-  return rows;
+  return rows.sort((a,b)=>a.name<b.name?-1:a.name>b.name?1:0);
 }
+
 const workspace = target => ({specRoot:target, executionRoot:path.join(target, 'execution')});
 async function unchangedBlocked(f, pattern = /binding|recovery|lock|journal|ownership/u, recover = () => recoverIncompletePublication(f.target)) {
   const before = await controls(f);
@@ -61,7 +64,7 @@ test('SIGKILL INIT explicitly recovers exact staged history and reentry is idemp
   const f = await fixture(t, 'init'); const original = workspaceSnapshot(f.candidate);
   crash(f);
   const common = (await executionLockIdentity(workspace(f.target))).lockPath;
-  const locked = await json(lockPath(f.target)), lease = await json(common);
+  const locked = await json(await lockPath(f.target)), lease = await json(common);
   assert.equal(locked.version,2); assert.equal(locked.common_lease.token,lease.token);
   assert.equal(locked.common_lease.sha256,sha(await fs.readFile(common)));
   assert.equal(locked.common_lease.pid,locked.pid); assert.equal(locked.common_lease.hostname,locked.hostname);
@@ -73,7 +76,7 @@ test('SIGKILL INIT explicitly recovers exact staged history and reentry is idemp
   assert.equal(await recoverIncompletePublication(f.target),false);
   await assert.rejects(publishCandidate('INIT',f.target,f.candidate), /INIT destination already exists/u);
   assert.deepEqual(workspaceSnapshot(f.target),recovered);
-  assert.equal(await fs.stat(journalPath(f.target)).catch(()=>null),null);
+  assert.equal(await fs.stat(await journalPath(f.target)).catch(()=>null),null);
   assert.equal(await fs.stat(common).catch(()=>null),null);
 });
 
@@ -97,7 +100,7 @@ test('foreign, old, missing or tampered linkage and ambiguous controls preserve 
   for (const kind of ['foreign-host','missing-binding','token','inode','digest','root','common-bytes','journal-transaction','ownership','common-hardlink']) {
     await t.test(kind, async t => {
       const f=await fixture(t,kind); crash(f);
-      const lock=lockPath(f.target), record=await json(lock), common=record.common_lease.lockPath;
+      const lock=await lockPath(f.target), record=await json(lock), common=record.common_lease.lockPath;
       if(kind==='foreign-host') {
         record.hostname='other-host.invalid'; record.common_lease.hostname=record.hostname;
       } else if(kind==='missing-binding') {record.version=1;delete record.common_lease;}
@@ -106,8 +109,8 @@ test('foreign, old, missing or tampered linkage and ambiguous controls preserve 
       else if(kind==='digest') record.common_lease.sha256='sha256:'+'0'.repeat(64);
       else if(kind==='root') record.common_lease.executionRoot=path.join(f.root,'foreign','execution');
       else if(kind==='common-bytes') await fs.appendFile(common,' ');
-      else if(kind==='journal-transaction') {const journal=await json(journalPath(f.target));journal.transaction_id='a'.repeat(32);await writeJson(journalPath(f.target),journal);}
-      else if(kind==='ownership') {const file=path.join(f.root,`.target.lifecycle-ownership-${record.transaction_id}.json`); const owner=await json(file);owner.candidate_snapshot_sha256='0'.repeat(64);await writeJson(file,owner);}
+      else if(kind==='journal-transaction') {const journal=await json(await journalPath(f.target));journal.transaction_id='a'.repeat(32);await writeJson(await journalPath(f.target),journal);}
+      else if(kind==='ownership') {const file=path.join(path.dirname(await journalPath(f.target)),`.target.lifecycle-ownership-${record.transaction_id}.json`); const owner=await json(file);owner.candidate_snapshot_sha256='0'.repeat(64);await writeJson(file,owner);}
       else if(kind==='common-hardlink') await fs.link(common,path.join(f.root,'foreign-link'));
       await writeJson(lock,record);
       await unchangedBlocked(f);
@@ -133,7 +136,7 @@ test('absent target cannot bypass active or uncertain execution in retained back
     const f=await fixture(t,`backup-${status}`);await fs.rm(f.candidate,{recursive:true});
     const r=await buildResumeFixture(f.root); f.target=r.target;f.candidate=r.candidate;
     crash(f,'TARGET_TO_BACKUP_RENAMED',PUBLISHER_CLI,['RESUME',r.target,r.candidate,'--manifest',r.manifest]);
-    const journal=await json(journalPath(f.target)),backup=path.join(f.root,journal.backup);
+    const journal=await json(await journalPath(f.target)),backup=path.join(path.dirname(await journalPath(f.target)),journal.backup);
     await fs.mkdir(path.join(backup,'execution'),{recursive:true});await writeJson(path.join(backup,'execution','activation.json'),activeMarker(backup,status));
     await unchangedBlocked(f,/active or uncertain execution/u);
   });
@@ -169,7 +172,7 @@ test('controls changed after retirement claim block before removing the canonica
   const f=await fixture(t,'claim-drift');crash(f);
   const running=await launch(`import fs from 'node:fs/promises';import {recoverIncompletePublication} from ${JSON.stringify(PUBLISHER)};const link=fs.link;fs.link=async(a,b)=>{await link(a,b);if(b.includes('.lock.recovery-')){process.send('claimed');await new Promise(resolve=>process.once('message',resolve));}};try{await recoverIncompletePublication(process.argv[1]);process.send('unexpected-success');process.exitCode=2;}catch(e){process.send({blocked:e.message});}process.disconnect();`,[f.target]);
   t.after(()=>running.child.kill('SIGTERM'));assert.equal(await running.message(),'claimed');
-  await fs.appendFile(journalPath(f.target),' ');const before=await controls(f),reply=running.message();running.child.send('continue');
+  await fs.appendFile(await journalPath(f.target),' ');const before=await controls(f),reply=running.message();running.child.send('continue');
   assert.match((await reply).blocked,/recovery control changed/u);assert.equal((await running.exited).code,0);
   assert.deepEqual(await controls(f),before);assert.equal(await fs.stat(f.target).catch(()=>null),null);
   await assert.rejects(recoverIncompletePublication(f.target),/recovery is incomplete/u);
@@ -178,11 +181,11 @@ test('controls changed after retirement claim block before removing the canonica
 test('SIGKILL during handoff preserves diagnostic claim and blocks subsequent work', async t => {
   for(const point of ['claimed','retired','installed']) await t.test(point,async t=>{
     const f=await fixture(t,point);crash(f);
-    const code=`import fs from 'node:fs/promises';import {recoverIncompletePublication} from ${JSON.stringify(PUBLISHER)};const point=process.argv[2];const pause=async()=>{process.send('paused');await new Promise(()=>{});};const link=fs.link,unlink=fs.unlink;fs.link=async(a,b)=>{const r=await link(a,b);if(point==='claimed'&&b.includes('.lock.recovery-'))await pause();return r;};fs.unlink=async(a)=>{const r=await unlink(a);if(point==='retired'&&a.endsWith('.lock')&&a.includes('.stnl-execution-'))await pause();if(point==='installed'&&a.includes('.lock.recovery-'))await pause();return r;};await recoverIncompletePublication(process.argv[1]);`;
-    const running=await launch(code,[f.target,point]);t.after(()=>running.child.kill('SIGTERM'));assert.equal(await running.message(),'paused');running.child.kill('SIGKILL');assert.equal((await running.exited).signal,'SIGKILL');
+    const code=`import fs from 'node:fs/promises';import {recoverIncompletePublication} from ${JSON.stringify(PUBLISHER)};const point=process.argv[2];const pause=async()=>{process.send('paused');await new Promise(()=>{});};const link=fs.link,unlink=fs.unlink;fs.link=async(a,b)=>{const r=await link(a,b);if(point==='claimed'&&b.includes('.lock.recovery-'))await pause();return r;};fs.unlink=async(a)=>{const r=await unlink(a);if(point==='retired'&&a===process.argv[3])await pause();if(point==='installed'&&a.includes('.lock.recovery-'))await pause();return r;};await recoverIncompletePublication(process.argv[1]);`;
+    const running=await launch(code,[f.target,point,(await executionLockIdentity(workspace(f.target))).lockPath]);t.after(()=>running.child.kill('SIGTERM'));assert.equal(await running.message(),'paused');running.child.kill('SIGKILL');assert.equal((await running.exited).signal,'SIGKILL');
     const before=await controls(f);await assert.rejects(recoverIncompletePublication(f.target),/recovery is incomplete|differs from lifecycle binding/u);
     assert.deepEqual(await controls(f),before);assert.equal(await fs.stat(f.target).catch(()=>null),null);
-    assert.ok(await fs.stat(journalPath(f.target)));assert.ok((await fs.readdir(f.root)).some(name=>name.includes('lifecycle-stage-')));
+    assert.ok(await fs.stat(await journalPath(f.target)));assert.ok((await fs.readdir(path.dirname(await journalPath(f.target)))).some(name=>name.includes('lifecycle-stage-')));
   });
 });
 

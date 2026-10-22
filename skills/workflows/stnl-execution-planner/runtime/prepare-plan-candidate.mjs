@@ -6,7 +6,7 @@ import {pathToFileURL} from 'node:url';
 import {resolveCurrentExecutionContext,resolveExecutionWorkspace} from './execution-workspace.mjs';
 import {assertOwnedPreparationCandidate,readOwnedFile,persistAllocation} from './execution-publication.mjs';
 import {captureCurrentSetReplacementSource} from './execution-state.mjs';
-export async function assertPreparationCandidate(root,specPath=null){return assertOwnedPreparationCandidate({candidateExecutionRoot:root,specPath,resolveWorkspace:resolveExecutionWorkspace});}
+export async function assertPreparationCandidate(root,specPath=null,{filesystemContext=null}={}){return assertOwnedPreparationCandidate({candidateExecutionRoot:root,specPath,resolveWorkspace:spec=>resolveExecutionWorkspace(spec,{filesystemContext})});}
 function fail(code,message){throw Object.assign(new Error(message),{code});}
 export function setPreparationMembers(source,ids,{terminalValidation=false}={}) {
  const continuity=JSON.parse(Buffer.from(source.files.get('continuity.json'))),members=[...continuity.deliveries,...continuity.completed];
@@ -36,8 +36,8 @@ export async function capturePreparationSource(owned) {
  setPreparationMembers(source,owned.marker.completedDeliveryIds,{terminalValidation:owned.marker.terminalValidation??false});
  return source;
 }
-export async function preparePlanCandidate({candidateExecutionRoot}) {
- const owned=await assertPreparationCandidate(candidateExecutionRoot),{context}=await resolveCurrentExecutionContext(owned.marker.specPath);
+export async function preparePlanCandidate({candidateExecutionRoot,filesystemContext=null}) {
+ const owned=await assertPreparationCandidate(candidateExecutionRoot,null,{filesystemContext}),{context}=await resolveCurrentExecutionContext(owned.marker.specPath,{filesystemContext});
  if(owned.marker.operation==='REPLAN') {
   const source=await capturePreparationSource(owned),active=setPreparationMembers(source,owned.marker.completedDeliveryIds,
    {terminalValidation:owned.marker.terminalValidation??false});
@@ -67,7 +67,7 @@ export async function preparePlanCandidate({candidateExecutionRoot}) {
    text=local?text.replace(/^- Local revision: .+$/mu,'- Local revision: '+localRevision):text.replace(/^- Plan revision: .+$/mu,line=>line+'\n- Local revision: '+localRevision);
    await fs.writeFile(target,text);
   }
-  await capturePreparationSource(await assertPreparationCandidate(owned.root,owned.marker.specPath));
+  await capturePreparationSource(await assertPreparationCandidate(owned.root,owned.marker.specPath,{filesystemContext}));
   return {status:'DRAFT',candidateExecutionRoot:owned.root,logicalAuthorityPath:context.logicalAuthorityPath};
  }
  if(owned.marker.source!==null||owned.marker.preparationRevision!==1)throw Object.assign(new Error('Only absent-target Initial preparation is supported'),{code:'REPLAN_REQUIRED'});

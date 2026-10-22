@@ -11,8 +11,8 @@ import {captureCurrentExecution} from '../../skills/workflows/stnl-slice-executo
 
 // Preparation and predecessor captures are authored test setup. Only subsequent
 // official tool conclusions can establish the live transport acceptance case.
-export async function completedNativeCase(t,{drift=true,sharedInput=false,extraOutput=false,spaces=false,retire=true,independent=false}={}) {
-  const image=await currentImage(t,{kind:'two-s2',behaviorCheck:true,sharedInput,spaces,independent}),root=image.f.root,run=promisify(execFile);
+export async function completedNativeCase(t,{drift=true,sharedInput=false,extraOutput=false,spaces=false,retire=true,independent=false,documentarySource=null}={}) {
+  const image=await currentImage(t,{kind:'two-s2',behaviorCheck:true,sharedInput,spaces,independent,documentarySource}),root=image.f.root,run=promisify(execFile);
   await fs.writeFile(path.join(root,'.gitignore'),'/tmp/\n');
   await run('git',['-C',root,'init','-q']);
   await run('git',['-C',root,'add','.gitignore',path.relative(root,image.f.specPath)]);

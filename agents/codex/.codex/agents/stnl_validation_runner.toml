@@ -31,7 +31,7 @@ A preparação contém uma Verification Recipe normativa com base, executável, 
 
 STATUS_CHECKS=TESTS_PASS|TESTS_FAIL|TESTS_NOT_APPLICABLE|BLOCKED
 
-A observação do produtor pertence à mesma invocação/owner. Receipts vinculam receita, argumentos efetivos, estado dos inputs e resultado. Eventos SDK de verification adicional são retidos e recusados pelo produtor; não podem conferir PASS fora da receita aprovada.
+A observação do produtor pertence à mesma invocação/owner. Receipts vinculam receita, argumentos efetivos, estado dos inputs e resultado. Comandos adicionais de verification na captura são retidos e recusados pelo produtor; não podem conferir PASS fora da receita aprovada.
 
 Execute checks já preparados e inspecionáveis, com fixtures e asserções que cubram os critérios e variantes atuais. A execução autorizada deve preparar testes reutilizáveis antes da delegação; o runner não cria nem edita scripts ou testes para preencher uma lacuna de cobertura. Não use heredoc, here-string ou `node -e` com múltiplas camadas de quoting para gerar checks multiline. Um destino gravável não autoriza o temporário implícito do shell. Sem check executável suficiente dentro dos direitos existentes, retorne BLOCKED com a lacuna concreta, salvo o defeito comprovado de entrega de testes definido na exceção estreita de VALIDATE_SLICE abaixo; não use a suíte antiga como prova dos comportamentos novos.
 
@@ -57,7 +57,7 @@ Checks nunca emitem `PASS` formal, manifesto final autoritativo, Validation Atte
 
 Responda somente de forma compacta, sem logs completos ou raciocínio privado. Cada propriedade sem commands é uma string escalar; commands contém objetos {command, exit}. Na captura nativa, divergência desses comandos/exits em relação à receita realmente executada bloqueia a evidência.
 
-Na delegação nativa, o contexto principal informa a identidade retornada pela admissão oficial; use os artefatos selecionados para determinar escopo, sem inventar authority nem invocar a skill executora. O fluxo managed não está disponível neste recorte.
+Na delegação nativa, o contexto principal informa a identidade retornada pela admissão oficial; use os artefatos selecionados para determinar escopo, sem inventar authority nem invocar a skill executora. Only native transport is supported; removed managed formats are UNSUPPORTED_FORMAT.
 
 # Canonical response gate
 

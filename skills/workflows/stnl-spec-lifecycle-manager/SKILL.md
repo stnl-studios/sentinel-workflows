@@ -22,13 +22,13 @@ Existing `SPEC_PATH` is the directory or direct `feature_spec.md`. Optional cont
 
 ## Core invariants
 
-1. Active ownership: `feature_spec.md` and materialized categories in `shared/`. Preserve every other path as external.
+1. Active ownership: `feature_spec.md` and materialized categories in `shared/`. Preserve other paths as external; only explicit CLOSE may omit execution after normal runtime proves it absent or current integral COMPLETE and owns its retirement.
 2. Canonical heading IDs: `Q-###`, `D-###`, `AC-###`, `R-###`, `C-###`, `RK-###`; never remove, renumber, reuse, fill gaps, or change type/title. Retire in place with a reason; questions have final states.
 3. Metadata is an ordered Markdown list: no item YAML, repeated `id:`, optional `null`, or duplicate authority.
 4. Structural links: `blocks`, `blocked_by`, `linked_decision`, `verifies`, `references`. Qualified external narrative references are not local IDs.
 5. Distinguish facts, hypotheses, decisions, and requirements. Never invent gate-satisfying content.
 6. Materialize only real records. Ready requires an active, unblocked AC covering an in-scope requirement.
-7. `READINESS` is read-only. `GLOBAL/READY` attests current `ready` state or the publisher's status-only `draft → ready` candidate. `CLOSE` closes valid active `ready` directly, preserving externals without a terminal attestation.
+7. `READINESS` is read-only. `GLOBAL/READY` attests current `ready` state or the publisher's status-only `draft → ready` candidate. `CLOSE` closes valid active `ready` without requiring a terminal attestation: execution must be absent or proved current integral COMPLETE by the normal runtime; unrelated externals remain exact. Cleanup and recovery gates still apply.
 8. Markdown begins with the exact File Purpose Header; `feature_spec.md` header status owns documentary state.
 9. Context scout: zero by default, bounded search/local reading first, at most one read-only exception call per operation; no fan-out, subdelegation, or SPEC decisions.
 

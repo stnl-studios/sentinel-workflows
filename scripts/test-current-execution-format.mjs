@@ -236,8 +236,8 @@ function b4(api) {
   assert.equal(image.files.has('/legacy/receipt/only-a-literal.json'), false);
   assert.deepEqual(api.validateCurrentEvidence(bundle), bundle);
   const managed = managedBundle(), managedImage = fixtureWithEvidence(managed);
-  assert.deepEqual(api.validateCurrentImage({activationBytes: managedImage.activationBytes, files: managedImage.files}).referencedObjects,
-    [managed.objects[0].id]);
+  rejects(()=>api.validateCurrentImage({activationBytes:managedImage.activationBytes,files:managedImage.files}),'UNSUPPORTED_FORMAT');
+  rejects(()=>api.validateCurrentEvidence(managed),'UNSUPPORTED_FORMAT');
   const rejected = proofBundle(); rejected.support.push(rejectionSupport(rejected));
   assert.deepEqual(api.validateCurrentEvidence(rejected), rejected);
   const rejectedImage = fixtureWithEvidence(rejected);
@@ -285,9 +285,9 @@ function b5(api) {
   const absentRefImage = fixtureWithEvidence(absentRef);
   rejects(() => api.validateCurrentImage({activationBytes: absentRefImage.activationBytes, files: absentRefImage.files}), 'EVIDENCE_INCOMPLETE');
   const managedMissing = managedBundle(); delete managedMissing.validation.sources.closedSupervisor;
-  rejects(() => api.validateCurrentEvidence(managedMissing), 'INVALID_CURRENT_IMAGE');
+  rejects(() => api.validateCurrentEvidence(managedMissing), 'UNSUPPORTED_FORMAT');
   const managedAbsent = managedBundle(); managedAbsent.validation.sources.closedSupervisor = sha(Buffer.from('missing close'));
-  rejects(() => api.validateCurrentEvidence(managedAbsent), 'EVIDENCE_INCOMPLETE');
+  rejects(() => api.validateCurrentEvidence(managedAbsent), 'UNSUPPORTED_FORMAT');
   const normalWithoutObservation = proofBundle(); normalWithoutObservation.validation.sources.verificationObservation = null;
   rejects(() => api.validateCurrentEvidence(normalWithoutObservation), 'INVALID_CURRENT_IMAGE');
   const rejectionMissing = proofBundle(); rejectionMissing.support.push(rejectionSupport(rejectionMissing));

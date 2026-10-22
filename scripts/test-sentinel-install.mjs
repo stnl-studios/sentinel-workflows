@@ -4,7 +4,9 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { DOMAIN_SKILLS, WORKFLOW_SKILLS } from "./lib/skill-registry.mjs";
+import {execFile} from "node:child_process";
+import {promisify} from "node:util";
+import { DOMAIN_SKILLS, WORKFLOW_SKILLS, isDistributedSkillResource } from "./lib/skill-registry.mjs";
 import { applyInstallPlan, buildInstallPlan, main, parseArguments, summarize } from "./sentinel-install.mjs";
 
 const REPOSITORY_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -190,4 +192,25 @@ test("missing source and ambiguous managed names fail during preflight", async (
   await assert.rejects(buildInstallPlan({ repositoryRoot: REPOSITORY_ROOT, home, targets: ["codex"] }), /ambiguous Sentinel skill entry/u);
   await assert.deepEqual(await fs.readdir(home), [".codex"]);
   assert.equal(await fs.readFile(ambiguous, "utf8"), "keep\n");
+});
+
+test('native-only bundle excludes exactly two development stubs and upgrade removes their old installed copies',async t=>{
+ const home=await isolatedHome(t),stub='runtime/managed-slice-context.mjs',names=['stnl-slice-executor','stnl-slice-quality-manager'];
+ for(const name of WORKFLOW_SKILLS){assert.equal(isDistributedSkillResource(name,stub),!names.includes(name));assert.equal(isDistributedSkillResource(name,'references/managed-slice-context.mjs'),true);assert.equal(isDistributedSkillResource(name,'runtime/nested/managed-slice-context.mjs'),true);}
+ assert.equal(isDistributedSkillResource('unrelated-skill',stub),true);
+ await install(home,['codex']);
+ for(const name of names){const original=path.join(REPOSITORY_ROOT,'skills/workflows',name,stub),installed=path.join(home,'.codex/skills',name,stub);assert.equal((await fs.stat(original)).isFile(),true);await assert.rejects(fs.access(installed));await fs.writeFile(installed,'old installed managed stub\n');}
+ const before=await buildInstallPlan({repositoryRoot:REPOSITORY_ROOT,home,targets:['codex']});
+ for(const name of names)assert.equal(before.operations.find(item=>item.kind==='skill'&&item.name===name).status,'REPLACE');
+ await applyInstallPlan(before);
+ for(const name of names)await assert.rejects(fs.access(path.join(home,'.codex/skills',name,stub)));
+ const after=await buildInstallPlan({repositoryRoot:REPOSITORY_ROOT,home,targets:['codex']});assert.equal(after.operations.every(item=>item.status==='NO-OP'),true);
+});
+
+test('installed reader closure runs outside the checkout without development stubs or benchmark',async t=>{
+ const home=await fs.realpath(await isolatedHome(t));await install(home,['codex']);await fs.mkdir(path.join(home,'.git'));
+ const target=path.join(home,'closed-spec');await fs.cp(path.join(REPOSITORY_ROOT,'skills/workflows/stnl-spec-lifecycle-manager/examples/validator-fixtures/closed'),target,{recursive:true});
+ const readers=WORKFLOW_SKILLS.map(name=>path.join(home,'.codex/skills',name,name==='stnl-spec-lifecycle-manager'?'runtime/lib/execution-current-reader.mjs':'runtime/execution-current-reader.mjs'));
+ const code=`import assert from 'node:assert/strict';import {pathToFileURL} from 'node:url';for(const file of JSON.parse(process.argv[2])){const module=await import(pathToFileURL(file));const result=await module.inspectCurrentExecution(process.argv[1]);assert.equal(result.state,'SPEC_CLOSED');assert.equal(result.normalHandoff,null);}console.log('installed closed readers passed');`;
+ const result=await promisify(execFile)(process.execPath,['--input-type=module','-e',code,target,JSON.stringify(readers)],{cwd:home,timeout:30000});assert.match(result.stdout,/installed closed readers passed/u);
 });

@@ -1,8 +1,15 @@
+import { execFile } from 'node:child_process';
 import {
   withExecutionPublicationLock, withLifecycleRecoveryPublicationLock,
-  lifecycleCommonLeaseBinding, validateLifecycleCommonLeaseBinding,
-  captureLifecycleRecoveryControl, assertLifecycleExecutionUnowned,
+  lifecycleCommonLeaseBinding, validateLifecycleCommonLeaseBinding, resolveExecutionFilesystemRoots,
+  captureLifecycleRecoveryControl, readOwnedFile, assertLifecycleExecutionUnowned, executionLockIdentity, ensureExecutionMaterialRoot, validateLifecycleLockPayload, assertNoLegacyExecutionControls, assertNoPendingExecutionPublication,validateCurrentOperationAllocationBinding,validateCurrentOperationRetirementRecord,parseStrictJson,validatePreparationRegistry,validateLifecycleRetirementManifest,beginLifecycleTerminalRetirement,validateLifecycleCloseBinding,captureLifecycleRetirementRoles,
 } from './execution-publication.mjs';
+import {projectCurrentRequirements} from './execution-workspace.mjs';
+import {inspectLifecycleTerminalRetirement,acquireLifecycleTerminalRetirementLock,assertLifecycleTerminalRetirementState,
+  removeLifecycleTerminalRetirementRole,removeLifecycleTerminalRetirementNamespace,retireLifecycleTerminalRetirementLease,
+  finishLifecycleTerminalRetirementSettlement} from './execution-publication.mjs';
+import {captureCurrentExecution} from './execution-current-reader.mjs';
+import {restoreCaptureSources} from './execution-evidence-proof.mjs';
 import { constants as FS_CONSTANTS } from "node:fs";
 import * as fs from "node:fs/promises";
 import { createHash, randomBytes } from "node:crypto";
@@ -14,7 +21,7 @@ import {
   canonicalPathWithoutSymlinks,
   filesystemComponentKey,
   isOsMetadata,
-  validateCloseTransition,
+  validateCloseTransition, deriveCloseExecutionDisposition,
   validateInitTransition,
   validateReadyPromotionTransition,
   validateResumeTransition,
@@ -26,7 +33,7 @@ import {
   validateReadinessAttestation,
   validateReadyPromotionAttestation,
 } from "./readiness.mjs";
-import { renderClosedFeature } from "./closed-spec.mjs";
+import { renderClosedFeature, populateOwnedClosedStage, linkOwnedStageSymlink } from "./closed-spec.mjs";
 
 export const MUTABLE_MODES = new Set(["INIT", "RESUME", "CLOSE"]);
 export const JOURNAL_VERSION = 2;
@@ -72,6 +79,10 @@ export const TEST_ONLY_MUTATE_WINDOW_ENV =
 export const TEST_ONLY_ACK_ENV = "STNL_PUBLISHER_TEST_ONLY_ACKNOWLEDGE_PROCESS_KILL";
 export const TEST_ONLY_ACK = "YES_THIS_IS_AN_ISOLATED_PUBLISHER_CRASH_TEST";
 export const TEST_ONLY_CHECKPOINTS = new Set([
+  "TERMINAL_WITNESS_DURABLE",
+  "TERMINAL_LAST_CONTROL_REMOVED",
+  "TERMINAL_NAMESPACE_REMOVED",
+  "TERMINAL_LEASE_RETIRED",
   "JOURNAL_PREPARED",
   "TARGET_TO_BACKUP_RENAMED",
   "STAGE_TO_TARGET_RENAMED",
@@ -239,7 +250,7 @@ async function copyMetadata(sourceMetadata, destination, { directory = false } =
   }
 }
 
-async function copyCandidateEntry(source, destination, linkGroups) {
+async function copyCandidateEntry(source, destination, linkGroups, stage) {
   const metadata = await fs.lstat(source, { bigint: true });
   const isLink = metadata.isSymbolicLink();
   const isFile = metadata.isFile();
@@ -253,7 +264,9 @@ async function copyCandidateEntry(source, destination, linkGroups) {
       if (group.sourceLinkCount !== metadata.nlink || group.kind !== kind) {
         fail("candidate hardlink group changed while staging", source);
       }
-      await fs.link(group.firstStagePath, destination);
+      if(kind==='symlink'&&process.platform==='darwin')linkOwnedStageSymlink(stage.root,stage.identity,group.firstStagePath,destination,
+        {...group.firstStageIdentity,nlink:String(group.seen),payload:group.payload});
+      else await fs.link(group.firstStagePath, destination);
       group.seen += 1n;
       return;
     }
@@ -261,11 +274,14 @@ async function copyCandidateEntry(source, destination, linkGroups) {
   if (isLink) {
     await fs.symlink(await fs.readlink(source), destination);
     if (metadata.nlink > 1n) {
+      const staged=await fs.lstat(destination,{bigint:true});
       linkGroups.set(key, {
         firstStagePath: destination,
         sourceLinkCount: metadata.nlink,
         seen: 1n,
         kind,
+        firstStageIdentity:{dev:String(staged.dev),ino:String(staged.ino)},
+        payload:isLink?await fs.readlink(destination):null,
       });
     }
     return;
@@ -274,11 +290,14 @@ async function copyCandidateEntry(source, destination, linkGroups) {
     await fs.copyFile(source, destination, FS_CONSTANTS.COPYFILE_EXCL);
     await copyMetadata(metadata, destination);
     if (metadata.nlink > 1n) {
+      const staged=await fs.lstat(destination,{bigint:true});
       linkGroups.set(key, {
         firstStagePath: destination,
         sourceLinkCount: metadata.nlink,
         seen: 1n,
         kind,
+        firstStageIdentity:{dev:String(staged.dev),ino:String(staged.ino)},
+        payload:isLink?await fs.readlink(destination):null,
       });
     }
     return;
@@ -286,7 +305,7 @@ async function copyCandidateEntry(source, destination, linkGroups) {
   if (metadata.isDirectory()) {
     await fs.mkdir(destination);
     for (const child of await directoryEntries(source)) {
-      await copyCandidateEntry(path.join(source, child), path.join(destination, child), linkGroups);
+      await copyCandidateEntry(path.join(source, child), path.join(destination, child), linkGroups,stage);
     }
     await copyMetadata(metadata, destination, { directory: true });
     return;
@@ -294,13 +313,13 @@ async function copyCandidateEntry(source, destination, linkGroups) {
   fail("candidate contains an unsupported filesystem entry", source);
 }
 
-async function copyCandidateTree(candidate, stage) {
+async function copyCandidateTree(candidate, stage, stageIdentity) {
   if ((await fs.readdir(stage)).length !== 0) {
     fail("transaction-owned stage must be empty before candidate copy", stage);
   }
   const linkGroups = new Map();
   for (const child of await directoryEntries(candidate)) {
-    await copyCandidateEntry(path.join(candidate, child), path.join(stage, child), linkGroups);
+    await copyCandidateEntry(path.join(candidate, child), path.join(stage, child), linkGroups,{root:stage,identity:stageIdentity});
   }
   for (const group of linkGroups.values()) {
     if (group.seen !== group.sourceLinkCount) {
@@ -373,20 +392,60 @@ async function fsyncTree(root) {
   for (const directory of directories) await fsyncDirectory(directory);
 }
 
-async function durableReplace(source, destination) {
-  if (path.dirname(source) !== path.dirname(destination)) {
-    fail("critical publication renames must remain in one parent directory");
+function queryLifecycleGitIgnore(productRoot, ignoredPath) {
+  return new Promise((resolve, reject) => {
+    execFile('git', ['-C', productRoot, 'check-ignore', '-q', '--', ignoredPath], {
+      shell: false, timeout: 10000, maxBuffer: 16384, encoding: 'utf8', windowsHide: true,
+    }, error => error ? reject(error) : resolve());
+  });
+}
+
+
+// One immutable operation context, local to this invocation. No global registry,
+// async-local state, alternate target or cached locator is used.
+function lifecyclePublisher(roots,{legacyInspection=false}={}) {
+  const policy={productRoot:roots.productRoot,temporaryRoot:roots.temporaryRoot,excludedRoots:roots.excludedRoots};
+  const workspace={specRoot:roots.specRoot,executionRoot:roots.executionRoot,filesystemContext:policy};
+  const filesystemProof={format:'stnl-lifecycle-filesystem-context-v1',specRoot:roots.specRoot,executionRoot:roots.executionRoot,
+    policy,targetParent:{path:roots.targetParent,identity:roots.targetParentIdentity},
+    leaseParent:{path:roots.leaseParent,identity:roots.leaseParentIdentity},
+    materialParent:{path:roots.materialRoot,identity:roots.materialRootIdentity}};
+  function materialParent(target){
+    if(target!==roots.specRoot)fail('lifecycle helper target differs from sealed official context',target);
+    return roots.materialRoot;
   }
+  function assertFilesystemProof(proof){
+    if(!proof||typeof proof!=='object'||Array.isArray(proof))fail('lifecycle control lacks its physical context');
+    if(JSON.stringify(sortedJsonValue(proof))!==JSON.stringify(sortedJsonValue(filesystemProof)))
+      fail('lifecycle physical context differs from persisted control');
+  }
+  async function assertPhysicalRoles(){
+    try {
+      const current=await resolveExecutionFilesystemRoots(workspace);
+      for(const field of ['specRoot','executionRoot','productRoot','temporaryRoot','materialRoot',
+        'targetParentIdentity','leaseParentIdentity','materialRootIdentity'])
+        if(JSON.stringify(current[field])!==JSON.stringify(roots[field]))fail('lifecycle physical role changed: '+field);
+    }catch(error){error.retainExecutionLock=true;throw error;}
+  }
+async function durableReplace(source, destination) {
+  await assertPhysicalRoles();
+  const sourceParent=path.dirname(source),destinationParent=path.dirname(destination);
+  const pair=new Set([sourceParent,destinationParent]);
+  if(pair.size>1&&!(pair.size===2&&pair.has(roots.targetParent)&&pair.has(roots.materialRoot)))
+    fail("critical publication rename has unbound parents");
+  if(pair.size===1&&!pair.has(roots.materialRoot))fail("critical control rename has an unbound parent");
   if (await lexists(destination)) {
     fail("critical rename destination unexpectedly exists", destination);
   }
-  await renameWithRetry(source, destination);
-  await fsyncDirectory(path.dirname(destination));
+  try{await renameWithRetry(source, destination);
+    for(const parent of new Set([sourceParent,destinationParent]))await fsyncDirectory(parent);
+    await assertPhysicalRoles();}
+  catch(error){error.retainExecutionLock=true;throw error;}
 }
 
 function retiredTreePath(target, transactionId, role, identity) {
   return path.join(
-    path.dirname(target),
+    materialParent(target),
     `${retiredTreePrefix(target)}${transactionId}-${role}-${identity.dev}-${identity.ino}`,
   );
 }
@@ -404,12 +463,13 @@ async function validateOwnedDirectory(filePath, identity, expectedDigest, label)
 }
 
 async function removeOwnedDirectory(target, transactionId, role, filePath, identity, expectedDigest) {
+  await assertPhysicalRoles();
   if (identity === null) fail(`transaction has no persisted ${role} filesystem identity`, filePath);
   const retired = retiredTreePath(target, transactionId, role, identity);
   const canonical = await lstatOrNull(filePath, { bigint: true });
   const retiredMetadata = await lstatOrNull(retired, { bigint: true });
   if (canonical !== null && retiredMetadata !== null) {
-    fail(`transaction-owned ${role} exists at both canonical and quarantine paths`, path.dirname(target));
+    fail(`transaction-owned ${role} exists at both canonical and quarantine paths`, materialParent(target));
   }
   if (canonical !== null) {
     await validateOwnedDirectory(filePath, identity, expectedDigest, `transaction-owned ${role}`);
@@ -593,19 +653,16 @@ async function removeEphemeralManifest(filePath, expected) {
   });
 }
 
-export function journalPath(target) {
-  return path.join(path.dirname(target), `.${path.basename(target)}.lifecycle-transaction.json`);
+function journalPath(target) {
+  materialParent(target);return roots.lifecycleJournal;
 }
 
-export function lockPath(target) {
-  return path.join(path.dirname(target), `.${path.basename(target)}.lifecycle.lock`);
+function lockPath(target) {
+  materialParent(target);return roots.lifecycleLock;
 }
 
-export function readinessAttestationPath(target) {
-  return path.join(
-    path.dirname(target),
-    `.${path.basename(target)}.readiness-attestation.json`,
-  );
+function readinessAttestationPath(target) {
+  materialParent(target);return roots.readinessAttestation;
 }
 
 function journalTempPrefix(target) {
@@ -649,7 +706,7 @@ function ownershipBuildPrefix(target) {
 }
 
 function ownershipPath(target, transactionId) {
-  return path.join(path.dirname(target), `${ownershipPrefix(target)}${transactionId}.json`);
+  return path.join(materialParent(target), `${ownershipPrefix(target)}${transactionId}.json`);
 }
 
 function retiredTreePrefix(target) {
@@ -672,6 +729,8 @@ async function normalizeTarget(target) {
   if (parentMetadata?.isSymbolicLink() || !parentMetadata?.isDirectory()) {
     fail("target parent must be a real directory", parent);
   }
+  if(normalized!==roots.specRoot)fail('lifecycle target differs from sealed official context',normalized);
+  await assertPhysicalRoles();
   return normalized;
 }
 
@@ -723,6 +782,10 @@ async function preflightManifestPath(
 }
 
 async function preflightReadinessAttestationPath(mode, readinessAttestation, target, candidate) {
+  if(readinessAttestation==='auto') {
+    if(mode!=='RESUME')fail('readiness attestation auto is only valid for RESUME draft to ready promotion');
+    readinessAttestation=readinessAttestationPath(target);
+  }
   if (mode === "INIT") {
     if (readinessAttestation !== null && readinessAttestation !== undefined) {
       fail("--readiness-attestation is valid only for RESUME ready promotion or CLOSE, not INIT");
@@ -742,7 +805,7 @@ async function preflightReadinessAttestationPath(mode, readinessAttestation, tar
   const attestation = await validateMaybePromise(
     canonicalPathWithoutSymlinks(requested, "readiness attestation"),
   );
-  if (isWithin(attestation, target) || isWithin(attestation, candidate)) {
+  if (isWithin(attestation, target) || candidate!==null&&isWithin(attestation, candidate)) {
     fail("readiness attestation must remain outside source and candidate workspaces", attestation);
   }
   if (mode === "RESUME" && attestation !== readinessAttestationPath(target)) {
@@ -777,7 +840,7 @@ function pathComponents(filePath) {
 }
 
 function validateRuntimeMetadataNamespace(target, inputPath, label) {
-  const parentParts = pathComponents(path.dirname(target));
+  const parentParts = pathComponents(materialParent(target));
   const inputParts = pathComponents(inputPath);
   if (inputParts.length <= parentParts.length) return;
   for (let index = 0; index < parentParts.length; index += 1) {
@@ -808,10 +871,10 @@ function validateRuntimeMetadataNamespace(target, inputPath, label) {
 }
 
 function validateStaticInputRelationships(target, candidate, manifest, readinessAttestation) {
-  if (candidate === target || isWithin(candidate, target) || isWithin(target, candidate)) {
+  if (candidate!==null&&(candidate === target || isWithin(candidate, target) || isWithin(target, candidate))) {
     fail("candidate and target must be disjoint directories");
   }
-  validateRuntimeMetadataNamespace(target, candidate, "candidate");
+  if(candidate!==null)validateRuntimeMetadataNamespace(target, candidate, "candidate");
   if (manifest !== null) validateRuntimeMetadataNamespace(target, manifest, "RESUME manifest");
   if (
     readinessAttestation !== null
@@ -1073,7 +1136,7 @@ function journalRolePath(
     ? `-${priorIdentity.dev}-${priorIdentity.ino}-${priorDigest}`
     : "";
   return path.join(
-    path.dirname(target),
+    materialParent(target),
     `${journalTempPrefix(target)}${transactionId}-${role}-${identity.dev}-${identity.ino}${prior}-${randomIdentity()}`,
   );
 }
@@ -1177,6 +1240,7 @@ function assertJournalRecordMatches(record, expected, message, filePath) {
 }
 
 async function assertOwnedJournal(target, transaction, { allowLinkedClaim = false } = {}) {
+  await assertPhysicalRoles();
   const journal = journalPath(target);
   const token = requireJournalToken(transaction, journal);
   const record = await readStableJournalRecord(journal, { allowLinkedClaim });
@@ -1202,7 +1266,7 @@ async function buildJournalCandidate(
   try {
     for (let attempt = 0; attempt < 16; attempt += 1) {
       const candidate = path.join(
-        path.dirname(target),
+        materialParent(target),
         `${journalBuildPrefix(target)}${randomIdentity()}`,
       );
       try {
@@ -1214,7 +1278,7 @@ async function buildJournalCandidate(
       }
     }
     if (handle === null || build === null) {
-      fail("could not allocate a unique transaction journal temp file", path.dirname(target));
+      fail("could not allocate a unique transaction journal temp file", materialParent(target));
     }
     await handle.writeFile(bytes);
     await handle.sync();
@@ -1231,7 +1295,7 @@ async function buildJournalCandidate(
     );
     await renameWithRetry(build, temp);
     build = null;
-    await fsyncDirectory(path.dirname(target));
+    await fsyncDirectory(materialParent(target));
     const record = await readStableJournalRecord(temp);
     assertJournalRecordMatches(
       record,
@@ -1290,7 +1354,7 @@ async function settleLinkedJournalClaim(target, linkedPath, expectedIdentity, ex
     fail("transaction journal claim residue changed immediately before settlement", linkedPath);
   }
   await fs.unlink(linkedPath);
-  await fsyncDirectory(path.dirname(target));
+  await fsyncDirectory(materialParent(target));
   const installed = await readStableJournalRecord(journal);
   assertJournalRecordMatches(
     installed,
@@ -1320,6 +1384,7 @@ function journalTransitionCompatible(previous, next) {
     previous.backupName === next.backupName &&
     previous.sourceSnapshotSha256 === next.sourceSnapshotSha256 &&
     previous.candidateSnapshotSha256 === next.candidateSnapshotSha256 &&
+    compactAsciiJson(previous.closeBinding??null)===compactAsciiJson(next.closeBinding??null) &&
     (previous.phase !== next.phase ||
       previous.observedSourceSnapshotSha256 !== next.observedSourceSnapshotSha256);
 }
@@ -1331,10 +1396,10 @@ function journalPriorRecordMatches(next, record) {
 
 async function journalRoleRecords(target) {
   const records = [];
-  for (const name of (await fs.readdir(path.dirname(target))).sort(compareCodePoints)) {
+  for (const name of (await fs.readdir(materialParent(target))).sort(compareCodePoints)) {
     const role = parseJournalRoleName(target, name);
     if (role === null) continue;
-    const filePath = path.join(path.dirname(target), name);
+    const filePath = path.join(materialParent(target), name);
     const record = await readStableJournalRecord(filePath, { allowLinkedClaim: true });
     assertJournalRecordMatches(
       record,
@@ -1352,6 +1417,7 @@ async function journalRoleRecords(target) {
 }
 
 async function settleJournalState(target, { validateOnly = false } = {}) {
+  await assertPhysicalRoles();
   const journal = journalPath(target);
   const canonicalMetadata = await lstatOrNull(journal, { bigint: true });
   const roles = await journalRoleRecords(target);
@@ -1373,7 +1439,7 @@ async function settleJournalState(target, { validateOnly = false } = {}) {
       if (claim.role === "next") {
         if (create.length !== 0 || cleanup.length !== 0 || next.length !== 1 ||
             previous.length > 1) {
-          fail("transaction journal atomic update residues are ambiguous", path.dirname(target));
+          fail("transaction journal atomic update residues are ambiguous", materialParent(target));
         }
         await validateLinkedJournalClaim(
           target,
@@ -1384,7 +1450,7 @@ async function settleJournalState(target, { validateOnly = false } = {}) {
         if (previous.length === 1) {
           if (!journalPriorRecordMatches(claim, previous[0].record) ||
               !journalTransitionCompatible(previous[0].transaction, claim.transaction)) {
-            fail("transaction journal atomic update residues do not match", path.dirname(target));
+            fail("transaction journal atomic update residues do not match", materialParent(target));
           }
           if (validateOnly) return claim.transaction;
           await removeOwnedJournalResidue(
@@ -1395,11 +1461,11 @@ async function settleJournalState(target, { validateOnly = false } = {}) {
         }
       } else if (claim.role === "create") {
         if (roles.length !== 1 || claim.transaction.phase !== PHASE_PREPARED) {
-          fail("transaction journal atomic creation residues are ambiguous", path.dirname(target));
+          fail("transaction journal atomic creation residues are ambiguous", materialParent(target));
         }
       } else if (claim.role === "cleanup") {
         if (roles.length !== 1) {
-          fail("transaction journal cleanup residues are ambiguous", path.dirname(target));
+          fail("transaction journal cleanup residues are ambiguous", materialParent(target));
         }
       } else {
         fail("transaction journal atomic claim has an invalid residue role", claim.filePath);
@@ -1448,7 +1514,7 @@ async function settleJournalState(target, { validateOnly = false } = {}) {
   } else if (create.length === 0 && next.length === 0 && previous.length === 0 && cleanup.length === 1) {
     selected = cleanup[0];
   } else {
-    fail("transaction journal recovery residues do not describe one recoverable atomic operation", path.dirname(target));
+    fail("transaction journal recovery residues do not describe one recoverable atomic operation", materialParent(target));
   }
   if (validateOnly) return selected.transaction;
   try {
@@ -1459,7 +1525,7 @@ async function settleJournalState(target, { validateOnly = false } = {}) {
     }
     throw error;
   }
-  await fsyncDirectory(path.dirname(target));
+  await fsyncDirectory(materialParent(target));
   if (selected.role === "next") {
     await validateLinkedJournalClaim(
       target,
@@ -1482,6 +1548,7 @@ async function settleJournalState(target, { validateOnly = false } = {}) {
 }
 
 async function writeJournal(target, transaction) {
+  await assertPhysicalRoles();
   const journal = journalPath(target);
   const bytes = journalBytes(transaction);
   const token = transaction[JOURNAL_TOKEN] ?? null;
@@ -1516,7 +1583,7 @@ async function writeJournal(target, transaction) {
       }
       throw error;
     }
-    await fsyncDirectory(path.dirname(target));
+    await fsyncDirectory(materialParent(target));
     const installed = await settleLinkedJournalClaim(
       target,
       candidate.path,
@@ -1535,7 +1602,7 @@ async function writeJournal(target, transaction) {
     token.identity,
   );
   await renameWithRetry(journal, previousPath);
-  await fsyncDirectory(path.dirname(target));
+  await fsyncDirectory(materialParent(target));
   const previous = await readStableJournalRecord(previousPath);
   assertJournalRecordMatches(
     previous,
@@ -1555,7 +1622,7 @@ async function writeJournal(target, transaction) {
     }
     throw error;
   }
-  await fsyncDirectory(path.dirname(target));
+  await fsyncDirectory(materialParent(target));
   testOnlyCheckpoint("JOURNAL_UPDATE_CLAIMED");
   await validateLinkedJournalClaim(
     target,
@@ -1587,7 +1654,7 @@ function sameFilesystemIdentity(metadata, identity) {
 }
 
 function ownershipPayload(ownership) {
-  return {
+  return {filesystem_context:filesystemProof,
     version: 1,
     mode: ownership.mode,
     target: ownership.targetName,
@@ -1600,6 +1667,7 @@ function ownershipPayload(ownership) {
     source_snapshot_sha256: ownership.sourceSnapshotSha256,
     backup_identity: ownership.backupIdentity,
     promoted_identity: ownership.promotedIdentity,
+    ...(ownership.mode==='CLOSE'?{close_binding:ownership.closeBinding??null}:{}),
   };
 }
 
@@ -1617,14 +1685,17 @@ function parseIdentity(value, field, filePath) {
 }
 
 function parseOwnership(target, transactionId, payload) {
+  assertFilesystemProof(payload?.filesystem_context);
   const filePath = ownershipPath(target, transactionId);
   if (payload === null || Array.isArray(payload) || typeof payload !== "object") {
     fail("transaction ownership root must be a JSON object", filePath);
   }
   exactKeys(payload, [
+    "filesystem_context",
     "version", "mode", "target", "stage", "backup", "transaction_id",
     "stage_identity", "candidate_snapshot_sha256", "source_identity",
     "source_snapshot_sha256", "backup_identity", "promoted_identity",
+    ...(payload.mode==='CLOSE'?['close_binding']:[]),
   ], "transaction ownership", filePath);
   if (payload.version !== 1) fail("unsupported transaction ownership version", filePath);
   if (!MUTABLE_MODES.has(payload.mode)) fail("transaction ownership has an invalid mode", filePath);
@@ -1661,6 +1732,7 @@ function parseOwnership(target, transactionId, payload) {
     sourceSnapshotSha256: payload.source_snapshot_sha256,
     backupIdentity: parseIdentity(payload.backup_identity, "backup_identity", filePath),
     promotedIdentity: parseIdentity(payload.promoted_identity, "promoted_identity", filePath),
+    ...(payload.mode==='CLOSE'?{closeBinding:validateCloseBinding(payload.close_binding,filePath,{nullable:payload.candidate_snapshot_sha256===null})}:{}),
   };
 }
 
@@ -1707,7 +1779,7 @@ function ownershipRolePath(target, transactionId, role, identity, prior = null) 
     ? `-${prior.identity.dev}-${prior.identity.ino}-${prior.digest}`
     : "";
   return path.join(
-    path.dirname(target),
+    materialParent(target),
     `${ownershipTempPrefix(target)}${transactionId}-${role}-${identity.dev}-${identity.ino}${suffix}-${randomIdentity()}`,
   );
 }
@@ -1746,7 +1818,9 @@ function ownershipTransitionCompatible(previous, next) {
   for (const field of ["mode", "targetName", "stageName", "backupName", "transactionId"]) {
     if (compactAsciiJson(previous[field]) !== compactAsciiJson(next[field])) return false;
   }
-  let changed = false;
+  const oldClose=previous.closeBinding??null,nextClose=next.closeBinding??null;
+  if(oldClose!==null&&compactAsciiJson(oldClose)!==compactAsciiJson(nextClose))return false;
+  let changed=compactAsciiJson(oldClose)!==compactAsciiJson(nextClose);
   for (const field of [
     "stageIdentity", "candidateSnapshotSha256", "sourceIdentity",
     "sourceSnapshotSha256", "backupIdentity", "promotedIdentity",
@@ -1761,10 +1835,10 @@ function ownershipTransitionCompatible(previous, next) {
 
 async function ownershipRoleRecords(target, transactionId) {
   const records = [];
-  for (const name of (await fs.readdir(path.dirname(target))).sort(compareCodePoints)) {
+  for (const name of (await fs.readdir(materialParent(target))).sort(compareCodePoints)) {
     const role = parseOwnershipRoleName(target, transactionId, name);
     if (role === null) continue;
-    const filePath = path.join(path.dirname(target), name);
+    const filePath = path.join(materialParent(target), name);
     const before = await lstatOrNull(filePath, { bigint: true });
     if (before === null || before.isSymbolicLink() || !before.isFile() ||
         !new Set([1n, 2n]).has(before.nlink) ||
@@ -1846,7 +1920,7 @@ async function settleLinkedOwnershipClaim(target, transactionId, role) {
     fail("transaction ownership claim residue changed before settlement", role.filePath);
   }
   await fs.unlink(role.filePath);
-  await fsyncDirectory(path.dirname(target));
+  await fsyncDirectory(materialParent(target));
   const installed = await readOwnershipRecord(target, transactionId);
   if (installed === null || !sameInode(installed.metadata, canonical.metadata) ||
       !installed.bytes.equals(canonical.bytes)) {
@@ -1888,7 +1962,7 @@ async function claimOwnershipNext(target, transactionId, next, previous) {
     }
     throw error;
   }
-  await fsyncDirectory(path.dirname(target));
+  await fsyncDirectory(materialParent(target));
   testOnlyCheckpoint("OWNERSHIP_UPDATE_CLAIMED");
   await validateLinkedOwnershipClaim(target, transactionId, next);
   if (previous !== null) await removeOwnedOwnershipRole(previous, "previous transaction ownership");
@@ -1956,7 +2030,7 @@ async function settleOwnershipClaim(target, transactionId, { validateOnly = fals
       };
       const moved = await readOwnershipRecordAtRole(target, transactionId, previousRole);
       if (moved === null) fail("transaction ownership changed during update quarantine", previousPath);
-      await fsyncDirectory(path.dirname(target));
+      await fsyncDirectory(materialParent(target));
       return claimOwnershipNext(target, transactionId, next[0], previousRole);
     }
     fail("transaction ownership canonical path appeared in an interrupted atomic operation", filePath);
@@ -1970,7 +2044,7 @@ async function settleOwnershipClaim(target, transactionId, { validateOnly = fals
       if (error?.code === "EEXIST") fail("transaction ownership appeared during claim recovery", filePath);
       throw error;
     }
-    await fsyncDirectory(path.dirname(target));
+    await fsyncDirectory(materialParent(target));
     await settleLinkedOwnershipClaim(target, transactionId, create[0]);
     return;
   }
@@ -1980,7 +2054,7 @@ async function settleOwnershipClaim(target, transactionId, { validateOnly = fals
     await claimOwnershipNext(target, transactionId, next[0], previous[0]);
     return;
   }
-  fail("transaction ownership recovery residues are ambiguous", path.dirname(target));
+  fail("transaction ownership recovery residues are ambiguous", materialParent(target));
 }
 
 async function readOwnership(target, transactionId) {
@@ -1989,11 +2063,12 @@ async function readOwnership(target, transactionId) {
 }
 
 async function writeOwnership(target, ownership) {
+  await assertPhysicalRoles();
   const filePath = ownershipPath(target, ownership.transactionId);
   await settleOwnershipClaim(target, ownership.transactionId);
   const existing = await readOwnershipRecord(target, ownership.transactionId);
   const build = path.join(
-    path.dirname(target),
+    materialParent(target),
     `${ownershipBuildPrefix(target)}${ownership.transactionId}-${randomIdentity()}`,
   );
   const handle = await fs.open(build, "wx", 0o600);
@@ -2016,7 +2091,7 @@ async function writeOwnership(target, ownership) {
     },
   );
   await renameWithRetry(build, temp);
-  await fsyncDirectory(path.dirname(target));
+  await fsyncDirectory(materialParent(target));
   const tempRecord = (await ownershipRoleRecords(target, ownership.transactionId))
     .find((entry) => entry.filePath === temp);
   if (tempRecord === undefined || !ownershipRecordsEqual(tempRecord.record.ownership, ownership)) {
@@ -2029,7 +2104,7 @@ async function writeOwnership(target, ownership) {
         "foreign ownership exclusive-create canonical sentinel\n",
         { flag: "wx", mode: 0o600 },
       );
-      await fsyncDirectory(path.dirname(target));
+      await fsyncDirectory(materialParent(target));
     }
     try {
       await fs.link(temp, filePath);
@@ -2048,7 +2123,7 @@ async function writeOwnership(target, ownership) {
       }
       throw error;
     }
-    await fsyncDirectory(path.dirname(target));
+    await fsyncDirectory(materialParent(target));
     await settleLinkedOwnershipClaim(target, ownership.transactionId, tempRecord);
   } else {
     testOnlyCheckpoint("OWNERSHIP_UPDATE_READY");
@@ -2064,7 +2139,7 @@ async function writeOwnership(target, ownership) {
       filesystemIdentity(existing.metadata),
     );
     await renameWithRetry(filePath, previousPath);
-    await fsyncDirectory(path.dirname(target));
+    await fsyncDirectory(materialParent(target));
     const previousRole = {
       role: "previous",
       identity: filesystemIdentity(existing.metadata),
@@ -2079,7 +2154,7 @@ async function writeOwnership(target, ownership) {
     }
     await claimOwnershipNext(target, ownership.transactionId, tempRecord, previousRole);
   }
-  await fsyncDirectory(path.dirname(target));
+  await fsyncDirectory(materialParent(target));
   const installed = await readOwnership(target, ownership.transactionId);
   if (installed === null || !ownershipRecordsEqual(installed, ownership)) {
     fail("transaction ownership update was not durably installed", filePath);
@@ -2087,6 +2162,7 @@ async function writeOwnership(target, ownership) {
 }
 
 async function removeOwnership(target, ownership) {
+  await assertPhysicalRoles();
   const filePath = ownershipPath(target, ownership.transactionId);
   const before = await lstatOrNull(filePath, { bigint: true });
   if (before === null) {
@@ -2116,16 +2192,16 @@ async function removeOwnership(target, ownership) {
 async function cleanupRetiredOwnership(target, transactionId, expected = null) {
   const canonical = ownershipPath(target, transactionId);
   const prefix = `${path.basename(canonical)}.retired-`;
-  const names = (await fs.readdir(path.dirname(target)))
+  const names = (await fs.readdir(materialParent(target)))
     .filter((name) => name.startsWith(prefix))
     .sort(compareCodePoints);
-  if (names.length > 1) fail("multiple retired transaction ownership records require inspection", path.dirname(target));
+  if (names.length > 1) fail("multiple retired transaction ownership records require inspection", materialParent(target));
   if (names.length === 0) return false;
   const name = names[0];
   const suffix = name.slice(prefix.length);
   const match = suffix.match(/^(\d+)-(\d+)(?:-([0-9a-f]{32}))?$/u);
   if (match === null) fail("retired transaction ownership has an invalid filesystem identity", name);
-  const filePath = path.join(path.dirname(target), name);
+  const filePath = path.join(materialParent(target), name);
   const metadata = await fs.lstat(filePath, { bigint: true });
   if (metadata.isSymbolicLink() || !metadata.isFile() || metadata.nlink !== 1n ||
       metadata.dev.toString() !== match[1] || metadata.ino.toString() !== match[2]) {
@@ -2168,7 +2244,7 @@ async function cleanupRetiredOwnership(target, transactionId, expected = null) {
     fail("transaction ownership canonical path appeared during retired cleanup", canonical);
   }
   await fs.unlink(filePath);
-  await fsyncDirectory(path.dirname(target));
+  await fsyncDirectory(materialParent(target));
   return true;
 }
 
@@ -2180,14 +2256,192 @@ function validateOwnershipAgainstTransaction(target, ownership, transaction) {
       ownership.transactionId !== transaction.transactionId ||
       ownership.candidateSnapshotSha256 !== transaction.candidateSnapshotSha256 ||
       ownership.sourceSnapshotSha256 !== transaction.sourceSnapshotSha256 ||
+      compactAsciiJson(ownership.closeBinding??null)!==compactAsciiJson(transaction.closeBinding??null) ||
+      (transaction.mode==='CLOSE'&&compactAsciiJson(transaction.closeBinding.sourceIdentity)!==compactAsciiJson(ownership.sourceIdentity)) ||
       ownership.stageIdentity === null ||
       (transaction.mode !== "INIT" && ownership.sourceIdentity === null)) {
     fail("transaction ownership does not match the recovery journal", ownershipPath(target, transaction.transactionId));
   }
 }
 
+function validateCloseBinding(binding,filePath,{nullable=false}={}) {
+  if(binding===null&&nullable)return null;
+  try{return sortedJsonValue(validateLifecycleCloseBinding(binding));}
+  catch(error){fail(error.message,filePath);}
+}
+
+async function captureRetirementRoles(root,options={}){return sortedJsonValue(await captureLifecycleRetirementRoles(root,options));}
+
+async function captureCloseOperationalInventory(target,transactionId){
+  await assertPhysicalRoles();
+  const names=(await fs.readdir(materialParent(target))).sort(compareCodePoints);
+  const own=new Set([path.basename(lockPath(target)),path.basename(journalPath(target)),
+    ...(transactionId===null?[]:[`${stagePrefix(target)}${transactionId}`,`${backupPrefix(target)}${transactionId}`,path.basename(ownershipPath(target,transactionId))])]);
+  const selected=names.filter(name=>!own.has(name));
+  const image=await lexists(path.join(target,'execution'))?await captureCurrentExecution(path.join(target,'feature_spec.md')):null;
+  if(image!==null&&image.inspection.state!=='COMPLETE')fail('CLOSE retirement requires current integral COMPLETE',target);
+  const proofs=[];
+  if(image!==null)for(const [name,bytes] of image.files)if(/^evidence\/[^/]+\.json$/u.test(name)){
+    const bundle=parseStrictJson(Buffer.from(bytes).toString('utf8')),objects=new Map(bundle.objects.map(item=>[item.id,Buffer.from(item.bytesBase64,'base64')]));
+    for(const record of [...bundle.implementation,bundle.validation,...bundle.findingsChecks,...bundle.support].filter(Boolean)){
+      if(record.origin?.transport!=='native')continue;
+      const op=record.origin.operation,profile=op==='EXECUTE_SLICE'?'initial-implementation':op==='APPLY_FINDINGS'?'current-findings':'current-validation';
+      const capture=restoreCaptureSources(profile,record,objects),origin=parseStrictJson(Buffer.from(capture.origin).toString('utf8'));
+      if(origin.admission)proofs.push({capture,origin});
+    }
+  }
+  const json=async file=>parseStrictJson((await readOwnedFile(file)).bytes.toString('utf8'));
+  const same=(a,b)=>compactAsciiJson(sortedJsonValue(a))===compactAsciiJson(sortedJsonValue(b));
+  for(const name of selected){
+    const file=path.join(materialParent(target),name);
+    if(file===roots.preparationRegistry){const registry=validatePreparationRegistry(await json(file),workspace);if(registry.allocations.length)fail('CLOSE retirement has pending preparation allocations',file);continue;}
+    if(file===roots.operationRegistry){const registry=await json(file);exactKeys(registry,['format','executionRoot','operations'],'CLOSE operation registry',file);if(registry.format!=='stnl-current-operation-registry-v1'||registry.executionRoot!==roots.executionRoot||!Array.isArray(registry.operations)||registry.operations.length)fail('CLOSE retirement has an active or uncertain operation registry',file);continue;}
+    if(file===roots.readinessAttestation){await validateReadinessAttestation(target,file);continue;}
+    const metadata=await fs.lstat(file,{bigint:true});
+    if(!/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/u.test(name)||!metadata.isDirectory()||metadata.isSymbolicLink())fail('CLOSE retirement preserves foreign or unproven material',file);
+    const record=await json(path.join(file,'owner.json'));
+    validateCurrentOperationRetirementRecord(record);
+    const binding=validateCurrentOperationAllocationBinding(record,{operationId:name,specKey:roots.specKey,logicalExecutionRoot:roots.executionRoot,logicalSpecRoot:roots.specRoot,
+      ownershipToken:record.binding?.owner?.ownershipToken,namespaceIdentity:roots.materialRootIdentity,filesystemDevice:roots.materialRootIdentity.dev,filesystemContext:policy,
+      filesystemBinding:{targetParentIdentity:roots.targetParentIdentity,leaseParentIdentity:roots.leaseParentIdentity,materialRootIdentity:roots.materialRootIdentity}});
+    const allowed=new Set(['owner.json','base.activation.json',...(binding.owner.operation==='VALIDATE_SLICE'?[]:['base.work.json'])]);
+    let first=null;
+    for(let round=1;round<=record.runner.round;round++){
+      const proof=proofs.find(item=>same(item.origin.admission.binding,binding)&&item.origin.attempt===round);
+      if(!proof)fail('CLOSE retirement preserves an operation capture without an official faithful replica',file);
+      first??=proof;
+      for(const [suffix,key] of [['origin','origin'],['baseline','baselineCapture'],['request',binding.owner.operation==='APPLY_FINDINGS'?'applyRequest':'validationRequest'],['agent','agentBinding'],['claim','agentClaim'],['observation','verificationObservation'],['response','rawResponse'],['tool-result','concludedToolResult'],['receipt','receipt']]){
+        const leaf=`round-${round}.${suffix}.json`;allowed.add(leaf);
+        if(key==='validationRequest'&&binding.owner.operation==='EXECUTE_SLICE')fail('CLOSE retirement does not adopt an unreplicated implementation request',file);
+        if(!proof.capture[key]||!(await readOwnedFile(path.join(file,leaf))).bytes.equals(Buffer.from(proof.capture[key])))fail('CLOSE retirement captured bytes differ from official proof',path.join(file,leaf));
+      }
+      const leaf=`round-${round}.verification.json`,verification=await json(path.join(file,leaf)),observed=parseStrictJson(Buffer.from(proof.capture.verificationObservation).toString('utf8')),baseline=parseStrictJson(Buffer.from(proof.capture.baselineCapture).toString('utf8'));
+      allowed.add(leaf);exactKeys(verification,['format','status','verification','workStateSha256','checks'],'CLOSE private recipe observation',file);
+      if(verification.format!=='stnl-runner-verification-v1'||verification.status!=='completed'||!same(verification.verification,proof.origin.verification)||!same(verification.checks,observed.checks)
+        ||verification.workStateSha256!=='sha256:'+createHash('sha256').update(JSON.stringify(baseline.manifest)).digest('hex'))fail('CLOSE retirement private verification is not replicated in the official observation',file);
+      for(const bytes of proof.capture.removalProofs){const removal=parseStrictJson(Buffer.from(bytes).toString('utf8')),leaf=`round-${round}.removal-${createHash('sha256').update(removal.path).digest('hex')}.json`;allowed.add(leaf);if(!(await readOwnedFile(path.join(file,leaf))).bytes.equals(Buffer.from(bytes)))fail('CLOSE retirement removal source differs',file);}
+    }
+    const last=proofs.find(item=>same(item.origin.admission.binding,binding)&&item.origin.attempt===record.runner.round);
+    const receipt=parseStrictJson(Buffer.from(last.capture.receipt).toString('utf8'));
+    const reserved=last.origin.admission.reservedActivation,intermediate=record.preparation.intermediateActivation;
+    if(intermediate.previousActivationId!==reserved.activationId||intermediate.sequence!==reserved.sequence+1||!same(intermediate.activeAttempt,reserved.activeAttempt)
+      ||!same(intermediate.lastAttempt,reserved.lastAttempt)
+      ||['format','preparationRevision','requirementsAuthority','normativeSha256','approvedSnapshotSha256'].some(key=>intermediate[key]!==reserved[key])
+      ||!same(record.previous.tree.filter(row=>row.path!=='activation.json'),binding.baseTree.files.filter(row=>row.path!=='activation.json'))
+      ||record.previous.tree.find(row=>row.path==='activation.json')?.sha256!=='sha256:'+createHash('sha256').update(JSON.stringify(reserved,null,2)+'\n').digest('hex'))fail('CLOSE terminal operation does not follow the official reservation',file);
+    if(record.runner.dispatchId!==last.origin.dispatchId||record.runner.agentId!==receipt.agentId&&record.runner.agentId!==receipt.threadId
+      ||record.runner.originFile!==path.join(file,`round-${record.runner.round}.origin.json`)
+      ||record.runner.requestFile!==path.join(file,`round-${record.runner.round}.request.json`)
+      ||record.runner.responseFile!==path.join(file,`round-${record.runner.round}.response.json`)
+      ||record.runner.captureClass!=='formal-response'
+      ||record.runner.resultStatus!==receipt.semanticResponseStatus||(record.responseVariant??null)!==(last.origin.responseVariant??null))fail('CLOSE terminal runner is not replicated by official conclusion',file);
+    const base=await readOwnedFile(path.join(file,'base.activation.json'));
+    if(!same(parseStrictJson(base.bytes.toString('utf8')),first.origin.admission.baseActivation)||binding.baseTree.files.find(item=>item.path==='activation.json')?.sha256!=='sha256:'+createHash('sha256').update(base.bytes).digest('hex'))fail('CLOSE retirement base activation is not bound to official admission',file);
+    if(binding.owner.operation!=='VALIDATE_SLICE'){
+      const work=await json(path.join(file,'base.work.json')),baseline=parseStrictJson(Buffer.from(first.capture.baselineCapture).toString('utf8'));if(!same(work,baseline.manifest))fail('CLOSE retirement base work is not replicated',file);
+    }
+    const actual=(await fs.readdir(file)).sort(compareCodePoints);if(actual.length!==allowed.size||actual.some(name=>!allowed.has(name)))fail('CLOSE retirement preserves extra or unique operation material',file);
+  }
+  const rows=await captureRetirementRoles(materialParent(target),{names:selected});
+  if(compactAsciiJson(names)!==compactAsciiJson((await fs.readdir(materialParent(target))).sort(compareCodePoints)))fail('CLOSE retirement namespace changed during inventory',materialParent(target));
+  return rows;
+}
+
+async function closeRequirementsAuthority(target) {
+  const files=new Map(),authorityPath=path.join(target,'feature_spec.md');
+  files.set(authorityPath,(await readOwnedFile(authorityPath)).bytes);
+  const shared=path.join(target,'shared');
+  if(await lexists(shared))for(const name of (await fs.readdir(shared)).sort(compareCodePoints))if(name.endsWith('.md')&&!isOsMetadata(name)){
+    const file=path.join(shared,name);files.set(file,(await readOwnedFile(file)).bytes);
+  }
+  return projectCurrentRequirements({workspace:{kind:'lifecycle',specRoot:target,authorityPath},files}).requirementsAuthority;
+}
+
+function closePublicationResult(target,transaction,{diagnostics=[]}={}) {
+  validateCloseBinding(transaction.closeBinding,journalPath(target));
+  return {target,transactionId:transaction.transactionId,publication:'confirmed',cleanup:'pending',
+    requirementsAuthority:transaction.closeBinding.requirementsAuthority,
+    closedSnapshotSha256:`sha256:${transaction.candidateSnapshotSha256}`,
+    sourceExecutionDisposition:transaction.closeBinding.sourceExecutionDisposition,
+    ...(diagnostics.length?{cleanupDiagnostics:diagnostics}:{})};
+}
+
+async function prepareCloseTerminalRetirement(target,transaction,ownership,executionLease){
+  const {backup}=await transactionPaths(target,transaction);
+  await validateSourceIdentity(backup,transaction,ownership);
+  await validateCandidateIdentity(target,transaction,ownership);
+  const selected=[...new Set(transaction.closeBinding.operationalInventory.map(row=>row.path.split('/')[0]))].sort(compareCodePoints);
+  const current=await captureRetirementRoles(materialParent(target),{names:selected});
+  if(compactAsciiJson(current)!==compactAsciiJson(transaction.closeBinding.operationalInventory))fail('CLOSE operational inventory changed after admission',materialParent(target));
+  await assertOwnedJournal(target,transaction);
+  const roles=await captureRetirementRoles(materialParent(target));
+  const ownNames=new Set([...selected,path.basename(lockPath(target)),path.basename(journalPath(target)),path.basename(ownershipPath(target,transaction.transactionId)),transaction.backupName]);
+  if(roles.some(row=>!ownNames.has(row.path.split('/')[0])))fail('CLOSE terminal inventory has unbound controls or foreign material',materialParent(target));
+  const witness={format:'stnl-lifecycle-terminal-retirement-v1',transactionId:transaction.transactionId,
+    sourceCommonLease:await lifecycleCommonLeaseBinding(executionLease),filesystemContext:{specRoot:roots.specRoot,productRoot:roots.productRoot,temporaryRoot:roots.temporaryRoot,
+      excludedRoots:roots.excludedRoots,targetParentIdentity:roots.targetParentIdentity,leaseParentIdentity:roots.leaseParentIdentity},
+    materialRootIdentity:roots.materialRootIdentity,targetIdentity:ownership.promotedIdentity??ownership.stageIdentity,
+    closedSnapshotSha256:'sha256:'+transaction.candidateSnapshotSha256,closeBinding:transaction.closeBinding,roles,targetRoles:await captureRetirementRoles(target),intent:'cleanup'};
+  await beginLifecycleTerminalRetirement(executionLease,witness);
+  testOnlyCheckpoint('TERMINAL_WITNESS_DURABLE');
+  return witness;
+}
+
+async function validateTerminalPublisherState(inspection){
+  const witness=typeof inspection.intent==='object'?inspection.intent:inspection;
+  validateCloseBinding(witness.closeBinding,roots.lockPath);
+  if(witness.filesystemContext.specRoot!==roots.specRoot||!validateWorkspace(roots.specRoot).closed
+    ||await snapshotDigest(roots.specRoot)!==witness.closedSnapshotSha256.slice(7)
+    ||await closeRequirementsAuthority(roots.specRoot)!==witness.closeBinding.requirementsAuthority)fail('terminal witness does not match the current closed document',roots.specRoot);
+  const backupName=`${backupPrefix(roots.specRoot)}${witness.transactionId}`;
+  const backupRole=witness.roles.find(row=>row.path===backupName);
+  if(backupRole?.kind!=='directory'||compactAsciiJson(backupRole.identity)!==compactAsciiJson(witness.closeBinding.sourceIdentity))fail('terminal source binding differs from sealed backup role');
+  const journal=journalPath(roots.specRoot);
+  if(await lexists(journal)){
+    const transaction=parseJournal(roots.specRoot,await readJournalPayload(journal));
+    if(transaction.mode!=='CLOSE'||transaction.phase!==PHASE_COMMITTED||transaction.transactionId!==witness.transactionId
+      ||compactAsciiJson(transaction.closeBinding)!==compactAsciiJson(witness.closeBinding))fail('terminal journal and external witness disagree',journal);
+  }
+  if(await lexists(lockPath(roots.specRoot))){
+    const lock=(await readLockRecord(lockPath(roots.specRoot))).record;
+    if(lock.transactionId!==witness.transactionId||compactAsciiJson(sortedJsonValue(lock.commonLease))!==compactAsciiJson(sortedJsonValue(witness.sourceCommonLease)))fail('terminal lifecycle lease and external witness disagree');
+  }
+  return witness;
+}
+function terminalPublicationResult(witness,cleanup){
+  return {target:roots.specRoot,transactionId:witness.transactionId,publication:'confirmed',...cleanup,
+    requirementsAuthority:witness.closeBinding.requirementsAuthority,closedSnapshotSha256:witness.closedSnapshotSha256,
+    sourceExecutionDisposition:witness.closeBinding.sourceExecutionDisposition};
+}
+async function cleanupTerminalRetirement(executionLease,witness){
+  try{
+    await validateTerminalPublisherState(witness);
+    await assertLifecycleTerminalRetirementState(executionLease);
+    // All remaining roles/extras are proved before the first removal. Deeper
+    // children leave first; only the journal, ownership and lifecycle lease stay
+    // until the source material has gone. The external witness owns both passes.
+    const finalControls=new Set([path.basename(journalPath(roots.specRoot)),path.basename(lockPath(roots.specRoot)),path.basename(ownershipPath(roots.specRoot,witness.transactionId))]);
+    const order=(a,b)=>b.path.split('/').length-a.path.split('/').length||compareCodePoints(a.path,b.path);
+    for(const row of witness.roles.filter(row=>!finalControls.has(row.path)).sort(order))await removeLifecycleTerminalRetirementRole(executionLease,row.path);
+    for(const row of witness.roles.filter(row=>finalControls.has(row.path)).sort(order))await removeLifecycleTerminalRetirementRole(executionLease,row.path);
+    testOnlyCheckpoint('TERMINAL_LAST_CONTROL_REMOVED');
+    await removeLifecycleTerminalRetirementNamespace(executionLease);
+    testOnlyCheckpoint('TERMINAL_NAMESPACE_REMOVED');
+    const retired=await retireLifecycleTerminalRetirementLease(executionLease);
+    testOnlyCheckpoint('TERMINAL_LEASE_RETIRED');
+    return terminalPublicationResult(witness,await finishLifecycleTerminalRetirementSettlement(executionLease,retired));
+  }catch(error){return terminalPublicationResult(witness,{cleanup:'pending',cleanupDiagnostics:[error.message]});}
+}
+async function recoverTerminalRetirement(inspection){
+  validateTestOnlyHookConfiguration();
+  const witness=await validateTerminalPublisherState(inspection);
+  await proveLifecycleTemporaryExclusion(workspace,policy);
+  const lease=await acquireLifecycleTerminalRetirementLock(workspace,inspection);
+  return cleanupTerminalRetirement(lease,witness);
+}
+
 function transactionPayload(transaction) {
-  return {
+  return {filesystem_context:filesystemProof,
     version: JOURNAL_VERSION,
     mode: transaction.mode,
     target: transaction.targetName,
@@ -2198,6 +2452,7 @@ function transactionPayload(transaction) {
     candidate_snapshot_sha256: transaction.candidateSnapshotSha256,
     observed_source_snapshot_sha256: transaction.observedSourceSnapshotSha256,
     transaction_id: transaction.transactionId,
+    ...(transaction.mode==='CLOSE'?{close_binding:transaction.closeBinding}:{}),
   };
 }
 
@@ -2228,6 +2483,7 @@ function exactKeys(payload, expectedKeys, label, filePath) {
 }
 
 function parseJournal(target, payload) {
+  assertFilesystemProof(payload?.filesystem_context);
   const journal = journalPath(target);
   if (payload === null || Array.isArray(payload) || typeof payload !== "object") {
     fail("transaction journal root must be a JSON object", journal);
@@ -2239,9 +2495,11 @@ function parseJournal(target, payload) {
     fail(`unsupported transaction journal version ${JSON.stringify(payload.version)}`, journal);
   }
   const expectedKeys = [
+    "filesystem_context",
     "version", "mode", "target", "stage", "backup", "phase",
     "source_snapshot_sha256", "candidate_snapshot_sha256",
     "observed_source_snapshot_sha256", "transaction_id",
+    ...(payload.mode==='CLOSE'?['close_binding']:[]),
   ];
   exactKeys(payload, expectedKeys, "transaction journal", journal);
   for (const field of ["mode", "target", "stage", "phase", "candidate_snapshot_sha256", "transaction_id"]) {
@@ -2304,6 +2562,7 @@ function parseJournal(target, payload) {
     candidateSnapshotSha256: payload.candidate_snapshot_sha256,
     observedSourceSnapshotSha256: payload.observed_source_snapshot_sha256,
     transactionId: payload.transaction_id,
+    ...(payload.mode==='CLOSE'?{closeBinding:validateCloseBinding(payload.close_binding,journal)}:{}),
   };
 }
 
@@ -2319,7 +2578,7 @@ async function readJournal(target) {
 }
 
 function lockPayload(record) {
-  return {
+  return {...(legacyInspection?{}:{filesystem_context:filesystemProof}),
     version: record.commonLease === undefined ? 1 : 2,
     state: record.state,
     owner_id: record.ownerId,
@@ -2336,59 +2595,27 @@ function lockRecordsEqual(left, right) {
   return compactAsciiJson(lockPayload(left)) === compactAsciiJson(lockPayload(right));
 }
 
-function parseLockPayload(filePath, payload) {
-  if (payload === null || Array.isArray(payload) || typeof payload !== "object") {
-    fail("workspace publication lock root must be a JSON object", filePath);
+function parseLockPayload(filePath,payload) {
+  if(payload===null||Array.isArray(payload)||typeof payload!=='object')fail('workspace publication lock root must be a JSON object',filePath);
+  let structural=payload;
+  if(!legacyInspection) {
+    assertFilesystemProof(payload.filesystem_context);
+    const {filesystem_context,...rest}=payload;structural=rest;
   }
-  exactKeys(payload, [
-    "version", "state", "owner_id", "operation_id", "transaction_id",
-    "pid", "hostname", "started_at",
-    ...(payload.version === 2 ? ["common_lease"] : []),
-  ], "workspace publication lock", filePath);
-  if (![1, 2].includes(payload.version)) fail(`unsupported workspace publication lock version ${JSON.stringify(payload.version)}`, filePath);
-  if (!new Set(["active", "released"]).has(payload.state)) fail("workspace publication lock has an invalid state", filePath);
-  for (const field of ["owner_id", "operation_id"]) {
-    if (typeof payload[field] !== "string" || !TRANSACTION_ID_PATTERN.test(payload[field])) {
-      fail(`workspace publication lock has an invalid ${field.replaceAll("_", " ")}`, filePath);
-    }
-  }
-  if (payload.transaction_id !== null &&
-      (typeof payload.transaction_id !== "string" || !TRANSACTION_ID_PATTERN.test(payload.transaction_id))) {
-    fail("workspace publication lock has an invalid transaction identity", filePath);
-  }
-  if (!Number.isSafeInteger(payload.pid) || payload.pid <= 0) fail("workspace publication lock has an invalid process identity", filePath);
-  if (typeof payload.hostname !== "string" || payload.hostname.length === 0 || payload.hostname.length > 1024) {
-    fail("workspace publication lock has an invalid host identity", filePath);
-  }
-  if (typeof payload.started_at !== "string" || Number.isNaN(Date.parse(payload.started_at))) {
-    fail("workspace publication lock has an invalid acquisition timestamp", filePath);
-  }
-  if (payload.version === 2) {
-    validateLifecycleCommonLeaseBinding(payload.common_lease);
-    if (payload.common_lease.pid !== payload.pid || payload.common_lease.hostname !== payload.hostname) {
-      fail("workspace publication lock common lease owner differs", filePath);
-    }
-  }
-  return {
-    state: payload.state,
-    ownerId: payload.owner_id,
-    operationId: payload.operation_id,
-    transactionId: payload.transaction_id,
-    pid: payload.pid,
-    hostname: payload.hostname,
-    startedAt: payload.started_at,
-    ...(payload.version === 2 ? { commonLease: payload.common_lease } : {}),
-  };
+  try{return validateLifecycleLockPayload(structural);}
+  catch(error){fail(error.message,filePath);}
 }
 
 async function readLockRecord(filePath, { allowLinkedClaim = false } = {}) {
   const before = await lstatOrNull(filePath, { bigint: true });
   if (before === null) return null;
-  if (before.isSymbolicLink()) fail("workspace publication lock must not be a symlink", filePath);
-  const handle = await fs.open(filePath, FS_CONSTANTS.O_RDONLY | (FS_CONSTANTS.O_NOFOLLOW ?? 0));
+  const allowedLinks = allowLinkedClaim ? new Set([1n, 2n]) : new Set([1n]);
+  if(before.isSymbolicLink())fail("workspace publication lock must not be a symlink",filePath);
+  if(!before.isFile()||!allowedLinks.has(before.nlink))fail("workspace publication lock must be a single-link regular file",filePath);
+  if(before.size>BigInt(MAX_LOCK_BYTES))fail("workspace publication lock exceeds the safe size limit",filePath);
+  const handle = await fs.open(filePath, FS_CONSTANTS.O_RDONLY | (FS_CONSTANTS.O_NOFOLLOW ?? 0) | (FS_CONSTANTS.O_NONBLOCK ?? 0));
   try {
     const metadata = await handle.stat({ bigint: true });
-    const allowedLinks = allowLinkedClaim ? new Set([1n, 2n]) : new Set([1n]);
     if (!metadata.isFile() || !allowedLinks.has(metadata.nlink) || !sameInode(before, metadata)) {
       fail("workspace publication lock must be a single-link regular file", filePath);
     }
@@ -2411,6 +2638,72 @@ async function readLockRecord(filePath, { allowLinkedClaim = false } = {}) {
   }
 }
 
+// Observation for the coordinated locator cutover, not writer admission. Keep
+// this beside the existing lock parser; neither settle nor recovery runs here.
+async function inspectLifecycleLocatorTransition(target) {
+  target = await normalizeTarget(target);
+  const parent = path.dirname(target);
+  const journalPath=value=>path.join(path.dirname(value), `.${path.basename(value)}.lifecycle-transaction.json`);
+  const lockPath=value=>path.join(path.dirname(value), `.${path.basename(value)}.lifecycle.lock`);
+  const readinessAttestationPath=value=>path.join(path.dirname(value), `.${path.basename(value)}.readiness-attestation.json`);
+  // Historical controls keep their original geometry after normal leases move.
+  const location={executionRoot:roots.executionRoot,parentIdentity:roots.targetParentIdentity,
+    lockPath:path.join(parent,`.stnl-execution-${roots.specKey}.lock`)};
+  const common = path.basename(location.lockPath);
+  const prefixes = [journalTempPrefix(target), journalBuildPrefix(target), lockTempPrefix(target),
+    lockBuildPrefix(target), lockRetiredPrefix(target), stagePrefix(target), backupPrefix(target),
+    ownershipPrefix(target), retiredTreePrefix(target), `${common}.recovery-`, `${common}.retired-`,
+    `.${path.basename(readinessAttestationPath(target))}.lifecycle-attestation-retired-`].map(filesystemComponentKey);
+  const exact = new Set([path.basename(lockPath(target)), path.basename(journalPath(target)),
+    path.basename(readinessAttestationPath(target)), common, common.replace(/\.lock$/u, '.preparations.json')].map(filesystemComponentKey));
+  const related = names => names.filter(name => {
+    const key = filesystemComponentKey(name);
+    return exact.has(key) || prefixes.some(prefix => key.startsWith(prefix));
+  }).sort(compareCodePoints);
+  const before = related(await fs.readdir(parent));
+  const lockName = path.basename(lockPath(target)),attestationName=path.basename(readinessAttestationPath(target));
+  if (before.some(name => name !== lockName&&name!==attestationName))
+    fail('locator transition has pending or uncertain legacy controls; preserve them', target);
+  let readinessInput=null;
+  if(before.includes(attestationName)) {
+    const file=readinessAttestationPath(target),captured=await captureEphemeralAttestationIdentity(file);
+    await validateMaybePromise(validateReadinessAttestation(target,file));
+    await assertEphemeralAttestationIdentity(file,captured,'legacy readiness input classification');
+    readinessInput={file,identity:filesystemIdentity(captured.metadata),sha256:`sha256:${captured.digest}`};
+  }
+  let observed = null;
+  if (before.includes(lockName)) {
+    observed = await readLockRecord(lockPath(target));
+    if (observed === null || observed.record.state !== 'released' || observed.record.transactionId !== null)
+      fail('locator transition legacy lock is active or uncertain; preserve it', target);
+    const binding = observed.record.commonLease;
+    if (binding !== undefined && (binding.executionRoot !== location.executionRoot || binding.lockPath !== location.lockPath
+      || compactAsciiJson(binding.parentIdentity) !== compactAsciiJson(location.parentIdentity)))
+      fail('locator transition legacy lock binding differs from the official context', target);
+  }
+  if (compactAsciiJson(before) !== compactAsciiJson(related(await fs.readdir(parent))))
+    fail('locator transition legacy controls changed during inspection', target);
+  if (observed !== null) {
+    const after = await readLockRecord(lockPath(target));
+    if (after === null || !sameInode(observed.metadata, after.metadata) || !observed.bytes.equals(after.bytes))
+      fail('locator transition legacy lock changed during inspection', target);
+  }
+  if(readinessInput!==null) {
+    const finalInput=await captureEphemeralAttestationIdentity(readinessInput.file);
+    if(compactAsciiJson(readinessInput.identity)!==compactAsciiJson(filesystemIdentity(finalInput.metadata))
+      ||readinessInput.sha256!==`sha256:${finalInput.digest}`)fail('legacy readiness input changed during inspection');
+    await validateMaybePromise(validateReadinessAttestation(target,readinessInput.file));
+  }
+  const finalParent=await fs.lstat(parent,{bigint:true});
+  if(!finalParent.isDirectory()||finalParent.isSymbolicLink()||await fs.realpath(parent)!==parent
+    || compactAsciiJson(location.parentIdentity) !== compactAsciiJson(filesystemIdentity(finalParent)))
+    fail('locator transition official parent changed during inspection', target);
+  return {target, classification:observed===null&&readinessInput===null?'clear':'historical-inert',activation:'read-only',
+    legacyReadinessInput:readinessInput,
+    legacyLock:observed === null ? null : {file:lockPath(target), identity:filesystemIdentity(observed.metadata),
+      sha256:`sha256:${createHash('sha256').update(observed.bytes).digest('hex')}`}};
+}
+
 function ownerIsProvablyDead(record) {
   if (record.hostname !== os.hostname()) return false;
   try {
@@ -2430,11 +2723,12 @@ async function validateLockJournalRelationship(target, record) {
 }
 
 async function retireValidatedLock(target, observed) {
+  await assertPhysicalRoles();
   const current = await readLockRecord(lockPath(target));
   if (current === null) return false;
   if (!sameInode(current.metadata, observed.metadata) ||
       !lockRecordsEqual(current.record, observed.record)) return false;
-  const retired = path.join(path.dirname(target), `${lockRetiredPrefix(target)}${observed.record.ownerId}-${randomIdentity()}`);
+  const retired = path.join(materialParent(target), `${lockRetiredPrefix(target)}${observed.record.ownerId}-${randomIdentity()}`);
   try {
     await renameWithRetry(lockPath(target), retired);
   } catch (error) {
@@ -2467,7 +2761,7 @@ async function retireValidatedLock(target, observed) {
     fail("workspace publication lock canonical path appeared during validated retirement", lockPath(target));
   }
   await fs.unlink(retired);
-  await fsyncDirectory(path.dirname(target));
+  await fsyncDirectory(materialParent(target));
   return true;
 }
 
@@ -2526,7 +2820,7 @@ function lockUpdateRolePath(target, record, role, identity, prior = null) {
   const suffix = role === "next"
     ? `-${prior.identity.dev}-${prior.identity.ino}-${prior.digest}`
     : "";
-  return path.join(path.dirname(target), `${base}${suffix}-${randomIdentity()}`);
+  return path.join(materialParent(target), `${base}${suffix}-${randomIdentity()}`);
 }
 
 function lockTransitionCompatible(previous, next) {
@@ -2541,10 +2835,10 @@ function lockTransitionCompatible(previous, next) {
 
 async function lockUpdateRoleRecords(target) {
   const roles = [];
-  for (const name of (await fs.readdir(path.dirname(target))).sort(compareCodePoints)) {
+  for (const name of (await fs.readdir(materialParent(target))).sort(compareCodePoints)) {
     const parsed = parseLockTempName(target, name);
     if (parsed === null || parsed.role === "create") continue;
-    const filePath = path.join(path.dirname(target), name);
+    const filePath = path.join(materialParent(target), name);
     const observed = await readLockRecord(filePath, { allowLinkedClaim: true });
     if (observed === null || !sameFilesystemIdentity(observed.metadata, parsed.identity) ||
         (parsed.ownerId !== null &&
@@ -2607,7 +2901,7 @@ async function settleLinkedLockUpdate(target, next) {
     fail("workspace publication lock update claim changed before settlement", next.filePath);
   }
   await fs.unlink(next.filePath);
-  await fsyncDirectory(path.dirname(target));
+  await fsyncDirectory(materialParent(target));
   const installed = await readLockRecord(lockPath(target));
   if (installed === null || !sameInode(installed.metadata, canonical.metadata) ||
       !installed.bytes.equals(canonical.bytes)) {
@@ -2627,7 +2921,7 @@ async function claimLockNext(target, next, previous, { checkpoints = false } = {
     }
     throw error;
   }
-  await fsyncDirectory(path.dirname(target));
+  await fsyncDirectory(materialParent(target));
   if (checkpoints) testOnlyCheckpoint("LOCK_UPDATE_CLAIMED");
   await validateLinkedLockUpdate(target, next);
   if (previous !== null) await removeOwnedLockRole(previous, "previous workspace publication lock");
@@ -2659,7 +2953,7 @@ async function testOnlySwapLockCreateCanonical(target, expected, window) {
   } finally {
     await handle.close();
   }
-  await fsyncDirectory(path.dirname(target));
+  await fsyncDirectory(materialParent(target));
 }
 
 async function validateLinkedLockCreate(target, tempPath, expected = null) {
@@ -2694,7 +2988,7 @@ async function settleLinkedLockCreate(target, tempPath, expected = null, mutatio
     fail("workspace publication lock create claim changed before settlement", filePath);
   }
   await fs.unlink(tempPath);
-  await fsyncDirectory(path.dirname(target));
+  await fsyncDirectory(materialParent(target));
   const installed = await readLockRecord(filePath);
   if (installed === null || !sameInode(installed.metadata, first.canonical.metadata) ||
       !installed.bytes.equals(first.canonical.bytes) ||
@@ -2717,7 +3011,7 @@ async function settleLinkedLockClaim(target, { validateOnly = false } = {}) {
       await claimLockNext(target, next[0], previous[0]);
       return;
     }
-    fail("workspace publication lock recovery residues are ambiguous", path.dirname(target));
+    fail("workspace publication lock recovery residues are ambiguous", materialParent(target));
   }
   if (lockMetadata.isSymbolicLink()) {
     fail("workspace publication lock must not be a symlink", filePath);
@@ -2727,9 +3021,9 @@ async function settleLinkedLockClaim(target, { validateOnly = false } = {}) {
   }
   if (lockMetadata.nlink === 2n) {
     const matches = [];
-    for (const name of await fs.readdir(path.dirname(target))) {
+    for (const name of await fs.readdir(materialParent(target))) {
       if (!name.startsWith(lockTempPrefix(target))) continue;
-      const candidate = path.join(path.dirname(target), name);
+      const candidate = path.join(materialParent(target), name);
       const metadata = await lstatOrNull(candidate, { bigint: true });
       if (metadata !== null && sameInode(metadata, lockMetadata)) matches.push(candidate);
     }
@@ -2781,7 +3075,7 @@ async function settleLinkedLockClaim(target, { validateOnly = false } = {}) {
       filesystemIdentity(canonical.metadata),
     );
     await renameWithRetry(filePath, previousPath);
-    await fsyncDirectory(path.dirname(target));
+    await fsyncDirectory(materialParent(target));
     const previousObserved = await readLockRecord(previousPath);
     if (previousObserved === null || !sameInode(previousObserved.metadata, canonical.metadata) ||
         !previousObserved.bytes.equals(canonical.bytes)) {
@@ -2798,10 +3092,11 @@ async function settleLinkedLockClaim(target, { validateOnly = false } = {}) {
 }
 
 async function createExclusiveLock(target, record) {
+  await assertPhysicalRoles();
   const filePath = lockPath(target);
-  const temp = path.join(path.dirname(target), lockTempName(target, record));
+  const temp = path.join(materialParent(target), lockTempName(target, record));
   const build = path.join(
-    path.dirname(target),
+    materialParent(target),
     `${lockBuildPrefix(target)}${record.ownerId}-${randomIdentity()}`,
   );
   let handle = await fs.open(build, "wx", 0o600);
@@ -2817,7 +3112,7 @@ async function createExclusiveLock(target, record) {
     await handle.close();
   }
   await renameWithRetry(build, temp);
-  await fsyncDirectory(path.dirname(target));
+  await fsyncDirectory(materialParent(target));
   testOnlyCheckpoint("LOCK_TEMP_WRITTEN");
   const ownedTemp = await readLockRecord(temp);
   if (ownedTemp === null || !lockRecordsEqual(ownedTemp.record, record)) {
@@ -2839,7 +3134,7 @@ async function createExclusiveLock(target, record) {
     } finally {
       await foreignHandle.close();
     }
-    await fsyncDirectory(path.dirname(target));
+    await fsyncDirectory(materialParent(target));
   }
   try {
     await fs.link(temp, filePath);
@@ -2858,7 +3153,7 @@ async function createExclusiveLock(target, record) {
     }
     throw error;
   }
-  await fsyncDirectory(path.dirname(target));
+  await fsyncDirectory(materialParent(target));
   testOnlyCheckpoint("LOCK_CLAIM_LINKED");
   return settleLinkedLockCreate(
     target,
@@ -2869,6 +3164,7 @@ async function createExclusiveLock(target, record) {
 }
 
 async function replaceOwnedLock(target, previous, next) {
+  await assertPhysicalRoles();
   const filePath = lockPath(target);
   const current = await readLockRecord(filePath);
   if (current === null || !sameInode(current.metadata, previous.metadata) ||
@@ -2876,7 +3172,7 @@ async function replaceOwnedLock(target, previous, next) {
     fail("workspace publication lock ownership changed during operation", filePath);
   }
   const build = path.join(
-    path.dirname(target),
+    materialParent(target),
     `${lockBuildPrefix(target)}${next.ownerId}-${randomIdentity()}`,
   );
   let handle = await fs.open(build, "wx", 0o600);
@@ -2899,7 +3195,7 @@ async function replaceOwnedLock(target, previous, next) {
     },
   );
   await renameWithRetry(build, temp);
-  await fsyncDirectory(path.dirname(target));
+  await fsyncDirectory(materialParent(target));
   const nextRole = (await lockUpdateRoleRecords(target)).find((entry) => entry.filePath === temp);
   if (nextRole === undefined || !lockRecordsEqual(nextRole.observed.record, next)) {
     fail("workspace publication lock update candidate changed after construction", temp);
@@ -2917,7 +3213,7 @@ async function replaceOwnedLock(target, previous, next) {
     filesystemIdentity(previous.metadata),
   );
   await renameWithRetry(filePath, previousPath);
-  await fsyncDirectory(path.dirname(target));
+  await fsyncDirectory(materialParent(target));
   const previousObserved = await readLockRecord(previousPath);
   if (previousObserved === null || !sameInode(previousObserved.metadata, previous.metadata) ||
       !previousObserved.bytes.equals(previous.bytes)) {
@@ -2951,11 +3247,11 @@ async function cleanupMalformedLockTemp(target, residue, parsedName) {
 
 async function quarantineAndRemoveLockResidue(target, residue, observed) {
   const quarantine = path.join(
-    path.dirname(target),
+    materialParent(target),
     `${lockRetiredPrefix(target)}${observed.record.ownerId}-${randomIdentity()}`,
   );
   await renameWithRetry(residue, quarantine);
-  await fsyncDirectory(path.dirname(target));
+  await fsyncDirectory(materialParent(target));
   const moved = await readLockRecord(quarantine);
   if (moved === null || !sameInode(moved.metadata, observed.metadata) ||
       !lockRecordsEqual(moved.record, observed.record)) {
@@ -2971,16 +3267,16 @@ async function quarantineAndRemoveLockResidue(target, residue, observed) {
     fail("publisher lock residue changed immediately before cleanup", quarantine);
   }
   await fs.unlink(quarantine);
-  await fsyncDirectory(path.dirname(target));
+  await fsyncDirectory(materialParent(target));
 }
 
 async function cleanupValidatedLockResidues(target, currentOwnerId) {
-  const names = (await fs.readdir(path.dirname(target)))
+  const names = (await fs.readdir(materialParent(target)))
     .filter((name) =>
       name.startsWith(lockTempPrefix(target)) || name.startsWith(lockRetiredPrefix(target)))
     .sort(compareCodePoints);
   for (const name of names) {
-    const residue = path.join(path.dirname(target), name);
+    const residue = path.join(materialParent(target), name);
     let observed;
     try {
       observed = await readLockRecord(residue);
@@ -3017,6 +3313,7 @@ async function cleanupValidatedLockResidues(target, currentOwnerId) {
 }
 
 async function acquireWorkspaceLock(target, commonLease) {
+  await assertPhysicalRoles();
   const operationId = randomIdentity();
   const record = {
     state: "active",
@@ -3092,6 +3389,7 @@ async function acquireWorkspaceLock(target, commonLease) {
 }
 
 async function withWorkspaceLock(target, action, commonLease) {
+  await assertPhysicalRoles();
   const lease = await acquireWorkspaceLock(target, commonLease);
   let result;
   let actionError = null;
@@ -3100,6 +3398,8 @@ async function withWorkspaceLock(target, action, commonLease) {
   } catch (error) {
     actionError = error;
   }
+  if(actionError?.retainExecutionLock)throw actionError;
+  if(result?.publication==='confirmed'&&['pending','complete'].includes(result.cleanup))return result;
   let releaseError = null;
   try {
     await lease.release();
@@ -3111,6 +3411,7 @@ async function withWorkspaceLock(target, action, commonLease) {
       `workspace action failed: ${actionError.message}; workspace lock release also failed: ${releaseError.message}`,
     );
     combined.cause = new AggregateError([actionError, releaseError], "action and lock release both failed");
+    if(actionError.retainExecutionLock||releaseError.retainExecutionLock)combined.retainExecutionLock=true;
     throw combined;
   }
   if (actionError !== null) throw actionError;
@@ -3119,8 +3420,8 @@ async function withWorkspaceLock(target, action, commonLease) {
 }
 
 async function transactionPaths(target, transaction) {
-  const stage = path.join(path.dirname(target), transaction.stageName);
-  const backup = transaction.backupName === null ? null : path.join(path.dirname(target), transaction.backupName);
+  const stage = path.join(materialParent(target), transaction.stageName);
+  const backup = transaction.backupName === null ? null : path.join(materialParent(target), transaction.backupName);
   for (const [label, candidate] of [["stage", stage], ["backup", backup]]) {
     if (candidate === null) continue;
     const metadata = await lstatOrNull(candidate);
@@ -3136,11 +3437,11 @@ async function transactionPaths(target, transaction) {
 
 async function cleanupAbandonedPreJournalTransaction(target, transactionId) {
   const ownership = await readOwnership(target, transactionId);
-  const stage = path.join(path.dirname(target), `${stagePrefix(target)}${transactionId}`);
-  const backup = path.join(path.dirname(target), `${backupPrefix(target)}${transactionId}`);
+  const stage = path.join(materialParent(target), `${stagePrefix(target)}${transactionId}`);
+  const backup = path.join(materialParent(target), `${backupPrefix(target)}${transactionId}`);
   if (ownership === null) {
     if (await lexists(stage) || await lexists(backup)) {
-      fail("pre-journal transaction residues have no durable ownership record", path.dirname(target));
+      fail("pre-journal transaction residues have no durable ownership record", materialParent(target));
     }
     // A crash while atomically creating the initial sidecar may leave only a
     // transaction-named temp file. The dead lock's transaction id authorizes
@@ -3182,9 +3483,9 @@ async function cleanupAbandonedPreJournalTransaction(target, transactionId) {
 async function cleanupOwnershipTemps(target, transactionId) {
   const prefix = `${ownershipTempPrefix(target)}${transactionId}-`;
   const canonical = await readOwnership(target, transactionId);
-  for (const name of (await fs.readdir(path.dirname(target))).sort(compareCodePoints)) {
+  for (const name of (await fs.readdir(materialParent(target))).sort(compareCodePoints)) {
     if (!name.startsWith(prefix)) continue;
-    const filePath = path.join(path.dirname(target), name);
+    const filePath = path.join(materialParent(target), name);
     const metadata = await lstatOrNull(filePath, { bigint: true });
     if (metadata === null) continue;
     if (metadata.isSymbolicLink() || !metadata.isFile() || metadata.nlink !== 1n) {
@@ -3213,6 +3514,7 @@ async function cleanupOwnershipTemps(target, transactionId) {
         "mode", "targetName", "stageName", "backupName", "transactionId",
         "stageIdentity", "candidateSnapshotSha256", "sourceIdentity",
         "sourceSnapshotSha256", "backupIdentity", "promotedIdentity",
+        ...(canonical.mode==='CLOSE'?['closeBinding']:[]),
       ]) {
         const existing = compactAsciiJson(canonical[field]);
         const candidate = compactAsciiJson(tempOwnership[field]);
@@ -3228,21 +3530,22 @@ async function cleanupOwnershipTemps(target, transactionId) {
       fail("transaction ownership temp changed identity during cleanup", retired);
     }
     await fs.unlink(retired);
-    await fsyncDirectory(path.dirname(target));
+    await fsyncDirectory(materialParent(target));
   }
 }
 
 async function scanResidues(target) {
+  await assertPhysicalRoles();
   const prefixes = [
     stagePrefix(target), backupPrefix(target), journalTempPrefix(target),
     ownershipPrefix(target), ownershipTempPrefix(target), retiredTreePrefix(target),
   ];
-  return (await fs.readdir(path.dirname(target)))
+  return (await fs.readdir(materialParent(target)))
     .filter((name) =>
       !name.startsWith(ownershipBuildPrefix(target)) &&
       prefixes.some((prefix) => name.startsWith(prefix)))
     .sort(compareCodePoints)
-    .map((name) => path.join(path.dirname(target), name));
+    .map((name) => path.join(materialParent(target), name));
 }
 
 async function validateResidueSet(target, transaction) {
@@ -3251,7 +3554,7 @@ async function validateResidueSet(target, transaction) {
     if (residues.length !== 0) {
       fail(
         `orphan publisher residues require manual inspection; no journal authorizes recovery: ${JSON.stringify(residues.map((value) => path.basename(value)))}`,
-        path.dirname(target),
+        materialParent(target),
       );
     }
     return [];
@@ -3289,12 +3592,13 @@ async function validateResidueSet(target, transaction) {
     }
   }
   if (unexpected.length !== 0) {
-    fail(`transaction journal does not own publisher residues ${JSON.stringify(unexpected)}`, path.dirname(target));
+    fail(`transaction journal does not own publisher residues ${JSON.stringify(unexpected)}`, materialParent(target));
   }
   return journalTemps;
 }
 
 async function removeJournal(target, transaction) {
+  await assertPhysicalRoles();
   const journal = journalPath(target);
   const token = requireJournalToken(transaction, journal);
   await assertOwnedJournal(target, transaction);
@@ -3305,7 +3609,7 @@ async function removeJournal(target, transaction) {
     token.identity,
   );
   await renameWithRetry(journal, retired);
-  await fsyncDirectory(path.dirname(target));
+  await fsyncDirectory(materialParent(target));
   const moved = await readStableJournalRecord(retired);
   assertJournalRecordMatches(
     moved,
@@ -3516,7 +3820,7 @@ async function rollbackUpdate(target, transaction, ownership) {
   } else if (transaction.phase === PHASE_PREPARED ||
              (transaction.phase === PHASE_ROLLBACK_REQUIRED && await lexists(stage))) {
     if (!(await lexists(target))) {
-      fail("prepared transaction journal has no recoverable source/stage layout", path.dirname(target));
+      fail("prepared transaction journal has no recoverable source/stage layout", materialParent(target));
     }
     const actualDigest = await captureOwnedDirectoryDigest(
       target,
@@ -3540,7 +3844,7 @@ async function rollbackUpdate(target, transaction, ownership) {
   if (await lexists(backup)) {
     await validateSourceIdentity(backup, transaction, ownership, rollbackSourceDigest(transaction));
     if (await lexists(target)) {
-      if (await lexists(stage)) fail("rollback found target, backup, and stage simultaneously", path.dirname(target));
+      if (await lexists(stage)) fail("rollback found target, backup, and stage simultaneously", materialParent(target));
       discardedStageDigest = await captureOwnedDirectoryDigest(
         target,
         ownership.promotedIdentity ?? ownership.stageIdentity,
@@ -3596,20 +3900,20 @@ async function finishInitRecovery(target, transaction, stage, ownership) {
       ownership = { ...ownership, promotedIdentity: ownership.stageIdentity };
       await writeOwnership(target, ownership);
     } else if (!((await lexists(target)) && !(await lexists(stage)))) {
-      fail("prepared INIT journal has an inconsistent target/stage layout", path.dirname(target));
+      fail("prepared INIT journal has an inconsistent target/stage layout", materialParent(target));
     }
     transaction = await advance(target, transaction, PHASE_CANDIDATE_PROMOTED);
   }
   if (transaction.phase === PHASE_CANDIDATE_PROMOTED) {
     if (!(await lexists(target)) || await lexists(stage)) {
-      fail("promoted INIT journal has an inconsistent target/stage layout", path.dirname(target));
+      fail("promoted INIT journal has an inconsistent target/stage layout", materialParent(target));
     }
     await validateCandidateIdentity(target, transaction, ownership);
     transaction = await advance(target, transaction, PHASE_CANDIDATE_VALIDATED);
   }
   if (transaction.phase === PHASE_CANDIDATE_VALIDATED) {
     if (!(await lexists(target)) || await lexists(stage)) {
-      fail("validated INIT journal has an inconsistent target/stage layout", path.dirname(target));
+      fail("validated INIT journal has an inconsistent target/stage layout", materialParent(target));
     }
     await validateCandidateIdentity(target, transaction, ownership);
     transaction = await advance(target, transaction, PHASE_COMMITTED);
@@ -3656,6 +3960,14 @@ async function finishUpdateCommit(target, transaction, stage, backup, ownership)
     await validateSourceIdentity(backup, transaction, ownership);
     transaction = await advance(target, transaction, PHASE_COMMITTED);
   }
+  if(transaction.mode==='CLOSE'){
+    // Until terminal retirement has its own durable witness, this is the last
+    // source tree. A confirmation cannot silently adopt a missing/replaced copy.
+    if(!(await lexists(backup)))fail('CLOSE retained source backup is missing',backup);
+    await validateSourceIdentity(backup,transaction,ownership);
+    await validateCandidateIdentity(target,transaction,ownership);
+    return closePublicationResult(target,transaction);
+  }
   await validateCandidateIdentity(target, transaction, ownership);
   if (await lexists(backup)) await validateSourceIdentity(backup, transaction, ownership);
   await assertOwnedJournal(target, transaction);
@@ -3690,7 +4002,7 @@ async function recoverUpdate(target, transaction, stage, backup, ownership) {
       return rollbackUpdate(target, transaction, ownership);
     }
     if (targetExists && backupExists) return rollbackUpdate(target, transaction, ownership);
-    fail("prepared transaction journal has no recoverable source/stage layout", path.dirname(target));
+    fail("prepared transaction journal has no recoverable source/stage layout", materialParent(target));
   }
   if (new Set([
     PHASE_BACKUP_CREATED,
@@ -3717,19 +4029,20 @@ async function recoverUpdate(target, transaction, stage, backup, ownership) {
       await finishUpdateCommit(target, transaction, stage, backup, ownership);
       return { sourceConflict: false, restoredValidationError: null };
     }
-    fail("candidate_validated transaction has an inconsistent target/backup layout", path.dirname(target));
+    fail("candidate_validated transaction has an inconsistent target/backup layout", materialParent(target));
   }
   if (transaction.phase === PHASE_COMMITTED) {
     if (targetExists) {
       await finishUpdateCommit(target, transaction, stage, backup, ownership);
       return { sourceConflict: false, restoredValidationError: null };
     }
-    fail("committed transaction has no target or recoverable backup", path.dirname(target));
+    fail("committed transaction has no target or recoverable backup", materialParent(target));
   }
   fail(`unhandled transaction recovery phase ${JSON.stringify(transaction.phase)}`, journalPath(target));
 }
 
 async function recoverLocked(target, lease) {
+  await assertPhysicalRoles();
   const transaction = await readJournal(target);
   await recoveryExecutionGuard(target, transaction);
   if (transaction !== null) await lease.setTransactionId(transaction.transactionId);
@@ -3755,12 +4068,14 @@ async function recoverLocked(target, lease) {
   return transaction;
 }
 
-async function recoverIncompletePublicationLocked(target, commonLease) {
+async function recoverIncompletePublicationLocked(target, commonLease,executionLease) {
   const targetPath = await normalizeTarget(target);
   validateTestOnlyHookConfiguration();
   return withWorkspaceLock(
     targetPath,
-    async (lease) => (await recoverLocked(targetPath, lease)) !== null,
+    async lease=>{const transaction=await recoverLocked(targetPath,lease);
+      if(transaction?.mode==='CLOSE'&&await lexists(journalPath(targetPath))){const held=await readJournal(targetPath);if(held.phase===PHASE_COMMITTED){const ownership=await readOwnership(targetPath,held.transactionId);validateOwnershipAgainstTransaction(targetPath,ownership,held);await validateCandidateIdentity(targetPath,held,ownership);const witness=await prepareCloseTerminalRetirement(targetPath,held,ownership,executionLease);return cleanupTerminalRetirement(executionLease,witness);}}
+      return transaction!==null;},
     commonLease,
   );
 }
@@ -3794,10 +4109,11 @@ async function validateCandidate(
 }
 
 async function allocateTransactionPaths(target, mode, lease) {
+  await assertPhysicalRoles();
   for (let attempt = 0; attempt < 16; attempt += 1) {
     const transactionId = randomIdentity();
-    const stage = path.join(path.dirname(target), `${stagePrefix(target)}${transactionId}`);
-    const backup = mode === "INIT" ? null : path.join(path.dirname(target), `${backupPrefix(target)}${transactionId}`);
+    const stage = path.join(materialParent(target), `${stagePrefix(target)}${transactionId}`);
+    const backup = mode === "INIT" ? null : path.join(materialParent(target), `${backupPrefix(target)}${transactionId}`);
     if (await lexists(stage) || (backup !== null && await lexists(backup)) ||
         await lexists(ownershipPath(target, transactionId))) continue;
     await lease.setTransactionId(transactionId);
@@ -3824,7 +4140,7 @@ async function allocateTransactionPaths(target, mode, lease) {
       }
       throw error;
     }
-    await fsyncDirectory(path.dirname(target));
+    await fsyncDirectory(materialParent(target));
     const stageMetadata = await fs.lstat(stage, { bigint: true });
     if (stageMetadata.isSymbolicLink() || !stageMetadata.isDirectory()) {
       fail("allocated transaction stage is not a real directory", stage);
@@ -3834,31 +4150,17 @@ async function allocateTransactionPaths(target, mode, lease) {
     testOnlyCheckpoint("STAGE_ALLOCATED");
     return { transactionId, stage, backup, ownership };
   }
-  fail("could not allocate transaction-owned stage and backup paths", path.dirname(target));
+  fail("could not allocate transaction-owned stage and backup paths", materialParent(target));
 }
 
 function validateMaybePromise(value) {
   return Promise.resolve(value);
 }
 
-async function publishCandidateLocked(mode, target, candidate, {
-  manifestPath = null,
-  readinessAttestation = null,
-  beforePublish = null,
-  afterJournalPrepared = null,
-  afterBackupVerified = null,
-  afterCandidateValidated = null,
-  beforeCommittedCleanup = null,
-  beforeAttestationCleanup = null,
-} = {}, commonLease) {
-  if (!MUTABLE_MODES.has(mode)) {
-    throw new ValidationError("publisher accepts only explicit INIT, RESUME, or CLOSE");
-  }
-  const targetPath = await normalizeTarget(target);
-  const candidatePath = await preflightCandidatePath(candidate);
-  const readyPromotion = mode === "RESUME"
-    && readinessAttestation !== null
-    && readinessAttestation !== undefined;
+async function preflightInputs(mode,targetPath,candidate,{manifestPath=null,readinessAttestation=null}={}) {
+  if(mode==='CLOSE'&&candidate!=null)fail('CLOSE does not accept an external candidate; omit candidate');
+  const candidatePath = mode==='CLOSE'?null:await preflightCandidatePath(candidate);
+  const readyPromotion=mode==='RESUME'&&readinessAttestation!=null;
   const manifest = await preflightManifestPath(
     mode,
     manifestPath,
@@ -3873,6 +4175,24 @@ async function publishCandidateLocked(mode, target, candidate, {
     candidatePath,
   );
   validateStaticInputRelationships(targetPath, candidatePath, manifest, attestation);
+  return {candidatePath,manifest,attestation,readyPromotion};
+}
+
+async function publishCandidateLocked(mode, target, candidate, {
+  manifestPath = null,
+  readinessAttestation = null,
+  beforePublish = null,
+  afterJournalPrepared = null,
+  afterBackupVerified = null,
+  afterCandidateValidated = null,
+  beforeCommittedCleanup = null,
+  beforeAttestationCleanup = null,
+} = {}, commonLease,executionLease) {
+  if (!MUTABLE_MODES.has(mode)) {
+    throw new ValidationError("publisher accepts only explicit INIT, RESUME, or CLOSE");
+  }
+  const targetPath = await normalizeTarget(target);
+  const {candidatePath,manifest,attestation,readyPromotion}=await preflightInputs(mode,targetPath,candidate,{manifestPath,readinessAttestation});
   validateTestOnlyHookConfiguration();
 
   let preflightCloseAttestationIdentity = null;
@@ -3894,7 +4214,8 @@ async function publishCandidateLocked(mode, target, candidate, {
 
   return withWorkspaceLock(targetPath, async (lease) => {
     await recoverLocked(targetPath, lease);
-    await validateCandidatePath(candidatePath);
+    if(mode!=='CLOSE')await validateCandidatePath(candidatePath);
+    if(readinessAttestation==='auto')await validateReadyPromotionTransition(targetPath,candidatePath);
     await validateManifestPath(manifest);
     if (mode === "INIT") {
       if (await lexists(targetPath)) fail("INIT destination already exists", targetPath);
@@ -3911,6 +4232,7 @@ async function publishCandidateLocked(mode, target, candidate, {
       }
     }
 
+    const closeDisposition=mode==='CLOSE'?await deriveCloseExecutionDisposition(targetPath):null;
     const manifestIdentity = manifest === null
       ? null
       : await captureEphemeralFileIdentity(manifest, "RESUME manifest");
@@ -3936,16 +4258,19 @@ async function publishCandidateLocked(mode, target, candidate, {
     let closeAttestationIdentity = null;
     let readyPromotionAttestationIdentity = null;
     let readyPromotionAttestationRetained = false;
+    let retainOperationForRecovery = false;
     const withRetainedReadyAttestation = (error) => {
       if (!readyPromotionAttestationRetained) return error;
       const retained = new ValidationError(
         `${error.message}; readiness attestation intentionally retained for retry: ${attestation}`,
       );
       retained.cause = error;
+      if(error.retainExecutionLock)retained.retainExecutionLock=true;
       return retained;
     };
     try {
-      await copyCandidateTree(candidatePath, stage);
+      if(mode==='CLOSE')populateOwnedClosedStage(targetPath,stage,ownership.stageIdentity);
+      else await copyCandidateTree(candidatePath, stage,ownership.stageIdentity);
       testOnlyCheckpoint("CANDIDATE_STAGED");
       const candidateDigest = await snapshotDigest(stage);
       let sourceDigest = null;
@@ -3958,10 +4283,14 @@ async function publishCandidateLocked(mode, target, candidate, {
           `${mode} source`,
         );
       }
+      const closeBinding=mode==='CLOSE'?validateCloseBinding({format:'stnl-lifecycle-close-binding-v1',sourceIdentity:ownership.sourceIdentity,requirementsAuthority:await closeRequirementsAuthority(targetPath),sourceExecutionDisposition:closeDisposition,
+        operationalInventory:await captureCloseOperationalInventory(targetPath,transactionId)},targetPath):null;
+      if(closeBinding!==null){validateCloseBinding(closeBinding,targetPath);if(await closeRequirementsAuthority(stage)!==closeBinding.requirementsAuthority)fail('CLOSE rendered requirements authority differs');}
       ownership = {
         ...ownership,
         candidateSnapshotSha256: candidateDigest,
         sourceSnapshotSha256: sourceDigest,
+        ...(mode==='CLOSE'?{closeBinding}:{}),
       };
       await writeOwnership(targetPath, ownership);
       if (mode === "CLOSE" && attestation !== null) {
@@ -4012,6 +4341,10 @@ async function publishCandidateLocked(mode, target, candidate, {
           "ready promotion validation",
         );
         readyPromotionAttestationRetained = true;
+      // The existing attestation writer already fsyncs its file. Persist its
+      // directory entry too before a journal or official rename can rely on it.
+      try{await fsyncDirectory(path.dirname(attestation));await assertPhysicalRoles();}
+      catch(error){error.retainExecutionLock=true;throw error;}
       }
       await requireCandidateSnapshot(stage, candidateDigest, mode, `${mode} candidate changed during validation`);
       if (sourceDigest !== null) {
@@ -4039,6 +4372,7 @@ async function publishCandidateLocked(mode, target, candidate, {
       if (beforePublish !== null) await beforePublish({
         target: targetPath, stage, backup, transactionId, lock: lockPath(targetPath),
       });
+      if(mode==='CLOSE'&&compactAsciiJson(await deriveCloseExecutionDisposition(targetPath))!==compactAsciiJson(closeDisposition))fail('CLOSE execution disposition changed before publication');
       await consumeManifest();
       await requireCandidateSnapshot(stage, candidateDigest, mode, `${mode} candidate changed after validation`);
       if (mode === "INIT") {
@@ -4070,6 +4404,7 @@ async function publishCandidateLocked(mode, target, candidate, {
         candidateSnapshotSha256: candidateDigest,
         observedSourceSnapshotSha256: null,
         transactionId,
+        ...(mode==='CLOSE'?{closeBinding:ownership.closeBinding}:{}),
       };
       await writeJournal(targetPath, transaction);
       journalPersisted = true;
@@ -4083,6 +4418,10 @@ async function publishCandidateLocked(mode, target, candidate, {
       } else {
         await validateSourceIdentity(targetPath, transaction, ownership);
         await testOnlyMutateSourceBeforeBackupRename(targetPath);
+        if(mode==='CLOSE'){
+          if(compactAsciiJson(await deriveCloseExecutionDisposition(targetPath))!==compactAsciiJson(closeDisposition))fail('CLOSE execution disposition changed at publication barrier');
+          if(compactAsciiJson(await captureCloseOperationalInventory(targetPath,transactionId))!==compactAsciiJson(transaction.closeBinding.operationalInventory))fail('CLOSE operational inventory changed at publication barrier');
+        }
         await durableReplace(targetPath, backup);
         await validateOwnedDirectory(
           backup,
@@ -4161,6 +4500,11 @@ async function publishCandidateLocked(mode, target, candidate, {
       if (beforeCommittedCleanup !== null) await beforeCommittedCleanup({
         target: targetPath, stage, backup, transactionId,
       });
+      if(mode==='CLOSE'){
+        if(attestation!==null){if(beforeAttestationCleanup!==null)await beforeAttestationCleanup({target:targetPath,stage,backup,attestation,transactionId});await removeEphemeralAttestation(attestation,closeAttestationIdentity);testOnlyCheckpoint('AFTER_ATTESTATION_REMOVAL');}
+        const witness=await prepareCloseTerminalRetirement(targetPath,transaction,ownership,executionLease);
+        return cleanupTerminalRetirement(executionLease,witness);
+      }
       await assertOwnedJournal(targetPath, transaction);
       await validateCandidateIdentity(targetPath, transaction, ownership);
       if (backup !== null) {
@@ -4196,7 +4540,9 @@ async function publishCandidateLocked(mode, target, candidate, {
       await removeOwnership(targetPath, ownership);
       return targetPath;
     } catch (publicationError) {
-      if (journalPersisted && !committed && transaction !== null) {
+      if(mode==='CLOSE'&&committed&&transaction!==null){retainOperationForRecovery=true;return closePublicationResult(targetPath,transaction,{diagnostics:[publicationError.message]});}
+      retainOperationForRecovery=publicationError.retainExecutionLock===true;
+      if (journalPersisted && !committed && transaction !== null && !retainOperationForRecovery) {
         let outcome;
         try {
           outcome = await rollbackTransaction(targetPath, transaction, ownership);
@@ -4209,6 +4555,7 @@ async function publishCandidateLocked(mode, target, candidate, {
             [publicationError, rollbackError],
             "publication and rollback both failed",
           );
+          if(publicationError.retainExecutionLock||rollbackError.retainExecutionLock)combined.retainExecutionLock=true;
           throw withRetainedReadyAttestation(combined);
         }
         if (outcome.restoredValidationError !== null || outcome.sourceConflict) {
@@ -4228,7 +4575,7 @@ async function publishCandidateLocked(mode, target, candidate, {
       } catch (error) {
         terminalCleanupError = error;
       }
-      if (!journalPersisted) {
+      if (!journalPersisted && !retainOperationForRecovery) {
         try {
           const persisted = await readOwnership(targetPath, transactionId);
           if (persisted !== null) {
@@ -4262,7 +4609,7 @@ async function publishCandidateLocked(mode, target, candidate, {
   }, commonLease);
 }
 
-export function isFilesystemError(error) {
+function isFilesystemError(error) {
   return error !== null && typeof error === "object" && typeof error.code === "string";
 }
 
@@ -4278,11 +4625,11 @@ async function recoveryExecutionGuard(target, transaction = null) {
 async function lifecycleCommonRecoveryProof(target) {
   // Validate the existing atomic roles without settling any lifecycle control
   // before acquiring common ownership. The same validators own settlement later.
-  const names = (await fs.readdir(path.dirname(target))).sort(compareCodePoints);
+  const names = (await fs.readdir(materialParent(target))).sort(compareCodePoints);
   const recoveryPaths = currentNames => [...new Set([lockPath(target), journalPath(target),
     ...currentNames.filter(name => name.startsWith(lockTempPrefix(target)) || name.startsWith(journalTempPrefix(target))
       || name.startsWith(ownershipPrefix(target)) || name.startsWith(ownershipTempPrefix(target)))
-      .map(name => path.join(path.dirname(target), name))])];
+      .map(name => path.join(materialParent(target), name))])];
   const paths = recoveryPaths(names);
   if (paths.length > 128) fail('lifecycle recovery controls exceed the bounded limit', target);
   const controls = [], absent = [];
@@ -4295,7 +4642,7 @@ async function lifecycleCommonRecoveryProof(target) {
     const claims = names.filter(name => name.startsWith(lockTempPrefix(target)));
     if (claims.length !== 1) fail('common lease recovery has no unambiguous durable lifecycle claim; execution publication: lock already exists', lockPath(target));
     const parsed = parseLockTempName(target, claims[0]);
-    const claimPath = path.join(path.dirname(target), claims[0]);
+    const claimPath = path.join(materialParent(target), claims[0]);
     let observed;
     try { observed = await readLockRecord(claimPath); }
     catch { await cleanupMalformedLockTemp(target, claimPath, parsed); }
@@ -4314,11 +4661,16 @@ async function lifecycleCommonRecoveryProof(target) {
   if (record.transactionId !== null) {
     const ownership = await settleOwnershipClaim(target, record.transactionId, { validateOnly: true });
     if (transaction !== null) validateOwnershipAgainstTransaction(target, ownership, transaction);
+    if(transaction?.mode==='CLOSE'&&transaction.phase===PHASE_COMMITTED){
+      const {backup}=await transactionPaths(target,transaction);
+      if(!(await lexists(backup)))fail('CLOSE retained source backup is missing',backup);
+      await validateSourceIdentity(backup,transaction,ownership);
+    }
   }
   await recoveryExecutionGuard(target, transaction ?? (record.transactionId === null ? null : {
     stageName: `${stagePrefix(target)}${record.transactionId}`, backupName: `${backupPrefix(target)}${record.transactionId}`,
   }));
-  if (compactAsciiJson(paths) !== compactAsciiJson(recoveryPaths((await fs.readdir(path.dirname(target))).sort(compareCodePoints)))) {
+  if (compactAsciiJson(paths) !== compactAsciiJson(recoveryPaths((await fs.readdir(materialParent(target))).sort(compareCodePoints)))) {
     fail('lifecycle recovery control paths changed during validation', target);
   }
   if (record.transactionId !== null && !paths.includes(ownershipPath(target, record.transactionId))) {
@@ -4328,24 +4680,54 @@ async function lifecycleCommonRecoveryProof(target) {
     if (compactAsciiJson(await captureLifecycleRecoveryControl(expected.file)) !== compactAsciiJson(expected)) fail('lifecycle recovery control changed during validation', expected.file);
   }
   for (const file of absent) if (await lexists(file)) fail('absent lifecycle recovery control appeared during validation', file);
-  return { format: 'stnl-lifecycle-common-recovery-v1', binding: record.commonLease,
+  return { format: 'stnl-lifecycle-common-recovery-v2',filesystemContext:filesystemProof,binding: record.commonLease,
     controls, absent };
 }
 
-async function withCommonExecutionLock(target, action, { recovery = false } = {}) {
+// The producer alone owns this fixed read-only capability. No caller supplies
+// executable, argv, options or callback. Kernels and readers remain command-free.
+
+async function proveLifecycleTemporaryExclusion(workspace, filesystemContext) {
+  const roots = await resolveExecutionFilesystemRoots(workspace, filesystemContext);
+  if (roots.exclusion.kind === 'git-ignore-unverified') {
+    // -C cannot neutralize inherited repository/index or runtime-config selectors.
+    // Refuse them without inspecting/logging values or changing the environment.
+    if (['GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR', 'GIT_INDEX_FILE',
+      'GIT_CONFIG_COUNT', 'GIT_CONFIG_PARAMETERS'].some(name => Object.hasOwn(process.env, name)))
+      fail('TEMP_ROOT_UNPROVEN: Git repository/index/configuration overrides are not accepted');
+    try {
+      // A directory query also proves a not-yet-created ignored namespace.
+      await queryLifecycleGitIgnore(roots.productRoot, roots.temporaryRoot + path.sep);
+    } catch {
+      fail('TEMP_ROOT_UNPROVEN: Git exclusion query failed; publication blocked before writing');
+    }
+  }
+  return roots;
+}
+
+async function withCommonExecutionLock(target, action, { recovery = false, filesystemContext = null,mode=null } = {}) {
   const intended = expandUser(target);
   const parent = await fs.realpath(path.dirname(intended));
   const specRoot = path.join(parent, path.basename(intended));
   const executionRoot = path.join(specRoot, 'execution');
-  const workspace = { specRoot, executionRoot };
+  if(specRoot!==roots.specRoot)fail('common writer target differs from sealed context');
+  const workspace = { specRoot, executionRoot,filesystemContext:policy };
+  await proveLifecycleTemporaryExclusion(workspace, policy);
+  await assertPhysicalRoles();
   const run = async lease => {
+    await assertNoLegacyExecutionControls(workspace);
+    if(!recovery)await assertNoPendingExecutionPublication(workspace);
+    if(!recovery&&!await hasPendingPublication())
+      await lifecyclePublisher(roots,{legacyInspection:true}).inspectLifecycleLocatorTransition(specRoot);
     await assertLifecycleExecutionUnowned(executionRoot);
     if (recovery) {
       const transaction = await settleJournalState(specRoot, { validateOnly: true });
       await recoveryExecutionGuard(specRoot, transaction);
     }
     const commonLease = await lifecycleCommonLeaseBinding(lease);
-    return action({ specRoot, executionRoot, commonLease });
+    const result=await action({specRoot,executionRoot,commonLease,executionLease:lease});
+    if(result?.publication==='confirmed'&&result.cleanup==='pending')lease.retainExecutionLock=true;
+    return result;
   };
   try { return await withExecutionPublicationLock(workspace, run); }
   catch (error) {
@@ -4356,12 +4738,17 @@ async function withCommonExecutionLock(target, action, { recovery = false } = {}
     }
     // Only the lifecycle recovery entry can transfer the stale common lease.
     // Complete the existing transaction before considering this new candidate.
-    await recoverIncompletePublication(specRoot);
+    const recovered=await recoverIncompletePublication(specRoot,{filesystemContext});
+    if(recovered?.publication==='confirmed'){
+      if(mode==='CLOSE')return recovered;
+      fail(`prior CLOSE publication is confirmed; cleanup is ${recovered.cleanup}; re-evaluate the new lifecycle intent against the closed document`,specRoot);
+    }
+    await proveLifecycleTemporaryExclusion(workspace, filesystemContext);
     return withExecutionPublicationLock(workspace, run);
   }
 }
-export async function recoverIncompletePublication(target) {
-  return withCommonExecutionLock(target, ({ commonLease }) => recoverIncompletePublicationLocked(target, commonLease), { recovery: true });
+async function recoverIncompletePublication(target, { filesystemContext = null } = {}) {
+  return withCommonExecutionLock(target, ({ commonLease,executionLease }) => recoverIncompletePublicationLocked(target, commonLease,executionLease), { recovery: true, filesystemContext });
 }
 async function lifecycleExecutionSnapshot(specRoot) {
   const root = path.join(specRoot, 'execution');
@@ -4371,13 +4758,86 @@ async function lifecycleExecutionSnapshot(specRoot) {
   // Executable preparation retains the stricter consumer grammar and single-link guards.
   return workspaceSnapshot(specRoot).filter(record => record[1] === 'execution' || record[1].startsWith('execution/'));
 }
-export async function publishCandidate(mode, target, candidate, options = {}) {
-  return withCommonExecutionLock(target, async ({ specRoot, commonLease }) => {
-    const source = await lifecycleExecutionSnapshot(specRoot);
-    const proposed = await lifecycleExecutionSnapshot(candidate);
-    if (JSON.stringify(source) !== JSON.stringify(proposed)) {
-      fail('lifecycle candidate does not preserve execution captured under common lock; refresh stale candidate', candidate);
+async function publishCandidate(mode, target, candidate, options = {}) {
+  return withCommonExecutionLock(target, async ({ specRoot, commonLease,executionLease }) => {
+    if(mode!=='CLOSE') {
+      const source=await lifecycleExecutionSnapshot(specRoot),proposed=await lifecycleExecutionSnapshot(candidate);
+      if(JSON.stringify(source)!==JSON.stringify(proposed))fail('lifecycle candidate does not preserve execution captured under common lock; refresh stale candidate',candidate);
     }
-    return publishCandidateLocked(mode, target, candidate, options, commonLease);
-  });
+    return publishCandidateLocked(mode, target, candidate, options, commonLease,executionLease);
+  }, { filesystemContext: options.filesystemContext ?? null,mode });
 }
+
+  async function hasPendingPublication() {
+    await assertPhysicalRoles();
+    if(roots.materialRootIdentity===null)return false;
+    if(await settleJournalState(roots.specRoot,{validateOnly:true})!=null)return true;
+    const record=await settleLinkedLockClaim(roots.specRoot,{validateOnly:true});
+    return record!=null&&(record.transactionId!==null||record.state==='active');
+  }
+  if(legacyInspection)return {inspectLifecycleLocatorTransition};
+  return {journalPath,lockPath,readinessAttestationPath,publishCandidate,recoverIncompletePublication,recoverTerminalRetirement,hasPendingPublication,preflightInputs};
+}
+
+async function lifecycleRoots(target,filesystemContext,{allocate=false}={}) {
+  const requested=path.resolve(expandUser(target));
+  const canonical=await canonicalPathWithoutSymlinks(requested,'target');
+  const workspace={specRoot:canonical,executionRoot:path.join(canonical,'execution'),
+    ...(filesystemContext===null?{}:{filesystemContext})};
+  const roots=await resolveExecutionFilesystemRoots(workspace);
+  if(!allocate)return roots;
+  await assertNoLegacyExecutionControls(workspace);
+  // Pending typed controls own their recovery. External inputs cannot prevent
+  // restoration of that operation while the official target is temporarily absent.
+  if(!await lifecyclePublisher(roots).hasPendingPublication())
+    await lifecyclePublisher(roots,{legacyInspection:true}).inspectLifecycleLocatorTransition(roots.specRoot);
+  // Use the same existing named producer capability before even mkdir.
+  // The method is read-only until the primitive allocates its proved roles.
+  if(roots.exclusion.kind==='git-ignore-unverified') {
+    if(['GIT_DIR','GIT_WORK_TREE','GIT_COMMON_DIR','GIT_INDEX_FILE','GIT_CONFIG_COUNT','GIT_CONFIG_PARAMETERS'].some(name=>Object.hasOwn(process.env,name)))
+      fail('TEMP_ROOT_UNPROVEN: Git repository/index/configuration overrides are not accepted');
+    try{await queryLifecycleGitIgnore(roots.productRoot,roots.temporaryRoot+path.sep);}
+    catch{fail('TEMP_ROOT_UNPROVEN: Git exclusion query failed; publication blocked before writing');}
+  }
+  return ensureExecutionMaterialRoot(workspace,roots);
+}
+export async function journalPath(target,{filesystemContext=null}={}) {return (await lifecycleRoots(target,filesystemContext)).lifecycleJournal;}
+export async function lockPath(target,{filesystemContext=null}={}) {return (await lifecycleRoots(target,filesystemContext)).lifecycleLock;}
+export async function readinessAttestationPath(target,{filesystemContext=null}={}) {return (await lifecycleRoots(target,filesystemContext)).readinessAttestation;}
+export async function inspectLifecycleLocatorTransition(target,{filesystemContext=null}={}) {
+  const roots=await lifecycleRoots(target,filesystemContext);
+  return lifecyclePublisher(roots,{legacyInspection:true}).inspectLifecycleLocatorTransition(roots.specRoot);
+}
+export async function publishCandidate(mode,target,candidate,options={}) {
+  if(!MUTABLE_MODES.has(mode))fail('publisher accepts only explicit INIT, RESUME, or CLOSE');
+  const observedRoots=await lifecycleRoots(target,options.filesystemContext??null);
+  await lifecyclePublisher(observedRoots).preflightInputs(mode,observedRoots.specRoot,candidate,options);
+  const terminal=await inspectLifecycleTerminalRetirement({specRoot:observedRoots.specRoot,executionRoot:observedRoots.executionRoot,
+    filesystemContext:{productRoot:observedRoots.productRoot,temporaryRoot:observedRoots.temporaryRoot,excludedRoots:observedRoots.excludedRoots}});
+  if(terminal!==null){if(mode!=='CLOSE')fail('prior CLOSE terminal cleanup is pending; use its recovery before new lifecycle work');return lifecyclePublisher(observedRoots).recoverTerminalRetirement(terminal);}
+  if(options.readinessAttestation==='auto') {
+    if(mode!=='RESUME')fail('readiness attestation auto is only valid for RESUME draft to ready promotion');
+    if(options.manifestPath!==undefined&&options.manifestPath!==null)fail('ready promotion RESUME uses no external manifest; omit --manifest');
+    const observed=await lifecycleRoots(target,options.filesystemContext??null);
+    if(!await lifecyclePublisher(observed).hasPendingPublication())
+      await validateReadyPromotionTransition(observed.specRoot,candidate);
+  }
+  if(mode==='CLOSE'&&!await lifecyclePublisher(observedRoots).hasPendingPublication())await deriveCloseExecutionDisposition(observedRoots.specRoot);
+  const roots=await lifecycleRoots(target,options.filesystemContext??null,{allocate:true});
+  return lifecyclePublisher(roots).publishCandidate(mode,roots.specRoot,candidate,options);
+}
+export async function recoverIncompletePublication(target,{filesystemContext=null}={}) {
+  const observed=await lifecycleRoots(target,filesystemContext);
+  const workspace={specRoot:observed.specRoot,executionRoot:observed.executionRoot,filesystemContext:{productRoot:observed.productRoot,temporaryRoot:observed.temporaryRoot,excludedRoots:observed.excludedRoots}};
+  const terminal=await inspectLifecycleTerminalRetirement(workspace);
+  if(terminal!==null)return lifecyclePublisher(observed).recoverTerminalRetirement(terminal);
+  if(await lifecyclePublisher(observed).hasPendingPublication())return lifecyclePublisher(observed).recoverIncompletePublication(observed.specRoot,{filesystemContext});
+  if(await lexists(observed.specRoot)&&validateWorkspace(observed.specRoot).closed){
+    await assertNoLegacyExecutionControls(workspace);
+    if(await lexists(observed.lockPath)||observed.materialRootIdentity!==null)fail('closed document has unbound operational controls; preserve and inspect before recovery');
+    return false; // Documentary state only. No transaction or PASS is reconstructed.
+  }
+  const roots=await lifecycleRoots(target,filesystemContext,{allocate:true});
+  return lifecyclePublisher(roots).recoverIncompletePublication(roots.specRoot,{filesystemContext});
+}
+export function isFilesystemError(error) {return error!==null&&typeof error==='object'&&typeof error.code==='string';}

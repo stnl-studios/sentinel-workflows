@@ -64,3 +64,10 @@ export function canonicalSkillRelativePath(name) {
 export function registrySkills() {
   return [...WORKFLOW_SKILLS, ...DOMAIN_SKILLS];
 }
+
+// Exact distributed-resource exclusions; development callers retain these stubs
+// in the checkout until the external harness retires them in its own phase.
+export function isDistributedSkillResource(skillName,relativePath) {
+  return !(['stnl-slice-executor','stnl-slice-quality-manager'].includes(skillName)
+    && relativePath==='runtime/managed-slice-context.mjs');
+}

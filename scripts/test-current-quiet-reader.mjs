@@ -604,8 +604,8 @@ test('R03 mixed format, duplicate JSON, and closed profile',async t=>{
   }));
 });
 
-test('R04 Initial native and managed capture, no external origin read',async t=>{
-  for (const transport of ['native','managed']) await t.test(transport,async()=>using(
+test('R04 native Initial capture, no external origin read',async t=>{
+  for (const transport of ['native']) await t.test(transport,async()=>using(
     ()=>producerInitialImage({transport}),async f=>{
       const result=await inspectCurrentExecution(f.specPath),first=result.deliveries[0];
       assert.equal(first.auxiliaryStatus,'TESTS_PASS');assert.equal(first.formalStatus,null);
@@ -615,7 +615,7 @@ test('R04 Initial native and managed capture, no external origin read',async t=>
       const processResult=await workerRun(f);assert.equal(processResult.process.status,0);
       assert.deepEqual(processResult.log.attempts,[]);
     }));
-  for (const transport of ['native','managed']) for(const failures of [1,2]) await t.test(`${transport} ${failures} FAIL then PASS`,async()=>using(
+  for (const transport of ['native']) for(const failures of [1,2]) await t.test(`${transport} ${failures} FAIL then PASS`,async()=>using(
     ()=>producerInitialImage({transport,statuses:[...Array(failures).fill('TESTS_FAIL'),'TESTS_PASS']}),async f=>{
       const result=await inspectCurrentExecution(f.specPath),first=result.deliveries[0];
       assert.deepEqual(first.counters,{implementationChecks:failures+1,findingsChecks:0,validationAttempts:0,findings:0});
@@ -657,7 +657,7 @@ test('R05 NEEDS_FIX then APPLY retains formal admission',async t=>{
 });
 
 test('R06 formal v2 PASS after APPLY with local terminal null',async t=>{
-  for(const transport of ['native','managed']) await t.test(`${transport} authored v2 with literal serial successor`,async()=>using(
+  for(const transport of ['native']) await t.test(`${transport} authored v2 with literal serial successor`,async()=>using(
     ()=>authoredCyclesImage({transport,retainSecond:true}),async f=>{
       const result=await inspectCurrentExecution(f.specPath);
       assert.equal(result.deliveries[0].observedValidation,'current');
@@ -680,7 +680,7 @@ test('R06 formal v2 PASS after APPLY with local terminal null',async t=>{
     await rejected(()=>inspectCurrentExecution(f.specPath),'INVALID_CURRENT_IMAGE','requires request v2');
   }));
 
-  for (const transport of ['native','managed']) await t.test(transport,async()=>using(
+  for (const transport of ['native']) await t.test(transport,async()=>using(
     ()=>producerPostApplyPass({transport}),async f=>{
       const result=await inspectCurrentExecution(f.specPath),first=result.deliveries[0];
       assert.equal(first.formalStatus,'PASS');assert.equal(first.observedValidation,'current');
@@ -800,7 +800,7 @@ test('R09 counters and retained object roots have independent authority',async t
     assert.equal(result.normalHandoff?.slice,'slice-01');assert.equal(f.continuity.nextSliceOrdinal,105);
   }));
 
-  for(const [cycles,transport,producer] of [[3,'native',false],[6,'native',false],[6,'managed',false],[3,'native',true]])
+  for(const [cycles,transport,producer] of [[3,'native',false],[6,'native',false],[3,'native',true]])
     await t.test(`${cycles} pruned cycles ${transport} ${producer?'producer':'authored'}`,async()=>using(
       ()=>authoredCyclesImage({cycles,transport,removal:true,pass:false,producer}),async f=>{
         const result=await inspectCurrentExecution(f.specPath),number=String(cycles).padStart(2,'0');
@@ -889,7 +889,7 @@ test('R10 BLOCKED formal and Initial FAIL prefix do not invent recovery',async t
       assert.equal(refusal.round,count);assert.equal(result.normalHandoff,null);assert.equal(result.deliveries[0].observedValidation,'uncertain');
     }));
 
-  for(const transport of ['native','managed']) {
+  for(const transport of ['native']) {
     await t.test(`${transport} Initial BLOCKED is outside quiet capability`,async()=>using(()=>producerInitialImage({transport,status:'BLOCKED'}),async f=>{
       await rejected(()=>inspectCurrentExecution(f.specPath),'UNSUPPORTED_FORMAT','Initial BLOCKED');
     }));
@@ -1148,7 +1148,8 @@ test('R12 A/B detects activation bytes and inode replacement',async t=>{
       await fs.writeFile(replacement,bytes);await fs.rename(replacement,file);}],
   ]) await t.test(label,async()=>using(authoredImage,async f=>{
     const observed=await barrier(f,path.join(f.execution,'activation.json'),()=>change(f));
-    assert.equal(observed.result.error?.code,'STALE_BASE');
+    assert.equal(observed.result.error?.code,label==='bytes'?'STALE_BASE':'UNSAFE_PATH');
+    if(label!=='bytes')assert.match(observed.result.error.message,/unsafe or unstable physical file/u);
     barrierReads(observed,f,path.join(f.execution,'activation.json'),{deliveries:2,activation:2,
       artifactCapture:'full',documentCaptures:2,productFiles:PRISTINE_OBSERVED_FILES});
   }));
@@ -1168,7 +1169,7 @@ test('R12 A/B detects activation bytes and inode replacement',async t=>{
     });
     assert.equal(observed.result.error?.code,'STALE_BASE');
     barrierReads(observed,f,path.join(original,'slice-01.md'),{deliveries:2,activation:1,
-      artifactCapture:'full',documentCaptures:1,productFiles:PRISTINE_OBSERVED_FILES});
+      artifactCapture:'prefix',documentCaptures:1,productFiles:PRISTINE_OBSERVED_FILES});
   }));
   await t.test('root replacement with identical bytes',async()=>using(authoredImage,async f=>{
     const replacement=path.join(f.spec,'.replacement-execution');
@@ -1177,7 +1178,7 @@ test('R12 A/B detects activation bytes and inode replacement',async t=>{
       await fs.rename(f.execution,path.join(f.spec,'.old-execution'));
       await fs.rename(replacement,f.execution);
     });
-    assert.equal(observed.result.error?.code,'STALE_BASE');
+    assert.equal(observed.result.error?.code,'UNSAFE_PATH');assert.match(observed.result.error.message,/unsafe or unstable physical file/u);
     barrierReads(observed,f,path.join(f.execution,'activation.json'),{deliveries:2,activation:2,
       artifactCapture:'full',documentCaptures:2,productFiles:PRISTINE_OBSERVED_FILES});
   }));
@@ -1402,7 +1403,7 @@ test('R16 serial frontier and terminal absence',async t=>{
 });
 
 test('R17 new processes read official image with historical canary denied',async t=>{
-  for(const transport of ['native','managed']) for(const mode of ['api','cli']) await t.test(`${transport} authored ${mode}`,async()=>using(
+  for(const transport of ['native']) for(const mode of ['api','cli']) await t.test(`${transport} authored ${mode}`,async()=>using(
     ()=>authoredCyclesImage({transport,cycles:3,removal:true}),async f=>{
       const observed=await workerRun(f,{mode});assert.equal(observed.process.status,0,observed.process.stderr);noAttempts(observed);
       const result=mode==='api'?observed.log.result:JSON.parse(observed.process.stdout);
@@ -1451,7 +1452,7 @@ test('R18 guard self-test records caught historical reads and process/write atte
 
 test('R19 isolated reader closure and copy equivalence',async t=>{
   const names=['execution-current-reader.mjs','execution-workspace.mjs','execution-state.mjs',
-    'execution-publication.mjs','runner-result-contract.mjs',
+    'execution-publication.mjs','unicode-casefold.mjs','runner-result-contract.mjs',
     'execution-current.mjs','execution-preparation-current.mjs','current-evidence-state.mjs',
     'execution-evidence-current.mjs','execution-evidence-proof.mjs'];
   const skillRoot=path.join(repo,'skills/workflows');
@@ -1473,10 +1474,10 @@ test('R19 isolated reader closure and copy equivalence',async t=>{
   for(const skill of c6.slice(0,4)) await t.test(`${skill} preparation with L1 and current CLI`,async()=>using(authoredImage,async f=>{
     const prepBytes=await fs.readFile(path.join(skillRoot,skill,'runtime/execution-preparation-current.mjs'));
     assert.deepEqual(prepBytes,await fs.readFile(path.join(skillRoot,c6[0],'runtime/execution-preparation-current.mjs')));
-    const runtime=await install(f,skill,['execution-current.mjs','execution-preparation-current.mjs'],'preparation');
+    const runtime=await install(f,skill,names,'preparation');
     const api=await import(pathToFileURL(path.join(runtime,'execution-preparation-current.mjs')).href);
     assert.deepEqual(Object.keys(api).sort(),['approveCurrentPreparation','approveInitialPreparation',
-      'finalizeCurrentLocalReview','prepareCurrentLocalReview',
+      'finalizeCurrentLocalReview','finalizeCurrentSetReplacement','prepareCurrentLocalReview','prepareCurrentSetReplacement',
       'projectCurrentPreparation','projectInitialPreparation','validateCurrentPreparation',
       'validateInitialApprovedPreparation','validateReviewedPreparation']);
     const prepared=api.validateCurrentPreparation({context:{logicalSpecRoot:null,logicalAuthorityPath:f.source,
@@ -1539,3 +1540,8 @@ test('R20 current facade preserves readback and refuses unsupported images witho
     assert.equal(result.state,'SPEC_CLOSED');assert.equal(result.normalHandoff,null);
   });
 });
+
+test('R21 managed historical images are refused read-only before any historical receipt or subprocess access',async()=>using(()=>authoredCyclesImage({transport:'managed',cycles:3,removal:true}),async f=>{
+ const before=await manifest(f.project);await rejected(()=>inspectCurrentExecution(f.specPath),'UNSUPPORTED_FORMAT');assert.deepEqual(await manifest(f.project),before);
+ const observed=await workerRun(f);assert.equal(observed.log.result.error.code,'UNSUPPORTED_FORMAT');noAttempts(observed);
+}));

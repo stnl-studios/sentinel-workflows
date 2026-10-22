@@ -84,7 +84,7 @@ test("journal and ownership survive a crash, while the manifest is already consu
     );
     assert.notEqual(crashed.status, 0);
     assert.equal(await fs.stat(manifest).then(() => true, () => false), false);
-    assert.equal(await fs.stat(journalPath(target)).then(() => true, () => false), true);
+    assert.equal(await fs.stat(await journalPath(target)).then(() => true, () => false), true);
     assert.ok((await transactionResidues(target)).some((name) =>
       name.includes("lifecycle-ownership-")));
     await recoverIncompletePublication(target);

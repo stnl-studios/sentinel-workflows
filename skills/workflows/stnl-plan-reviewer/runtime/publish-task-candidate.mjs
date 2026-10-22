@@ -25,20 +25,20 @@ async function exactCandidate(root,expected) {
   fail('STALE_APPROVAL','Registered replacement bytes differ from the reviewed candidate');
  return files;
 }
-export async function recoverPreparationPublication({specPath,allocation,checkpoint=null}) {
- const {workspace}=await resolveCurrentExecutionContext(specPath);
+export async function recoverPreparationPublication({specPath,allocation,checkpoint=null,filesystemContext=null}) {
+ const {workspace}=await resolveCurrentExecutionContext(specPath,{filesystemContext});
  try{return await recoverCurrentReplacementPublication({workspace,marker:allocation,readActivated:()=>activated(specPath),
   validateInstalledActivation:validateCurrentActivation,registeredPreparation:true,checkpoint});}
  catch(error){error.allocation=allocation;throw error;}
 }
-export async function publishPreparationCandidate({specPath,candidateExecutionRoot,reviewDecision=null,checkpoint=null}) {
- const owned=await assertPreparationCandidate(candidateExecutionRoot,specPath);
+export async function publishPreparationCandidate({specPath,candidateExecutionRoot,reviewDecision=null,checkpoint=null,filesystemContext=null}) {
+ const owned=await assertPreparationCandidate(candidateExecutionRoot,specPath,{filesystemContext});
  if(owned.marker.operation==='REPLAN') {
-  await preparePlanCandidate({candidateExecutionRoot:owned.root});
-  const prepared=await serializePlanPathClaims({specPath,candidateExecutionRoot:owned.root});
+  await preparePlanCandidate({candidateExecutionRoot:owned.root,filesystemContext});
+  const prepared=await serializePlanPathClaims({specPath,candidateExecutionRoot:owned.root,filesystemContext});
   const reviewed=reviewDecision===null?null:finalizeCurrentSetReplacement({proposal:prepared.proposal,review:reviewDecision});
   if(reviewed)await validateCurrentReviewCandidate({specPath,files:reviewed.files});
-  await capturePreparationSource(await assertPreparationCandidate(owned.root,specPath));
+  await capturePreparationSource(await assertPreparationCandidate(owned.root,specPath,{filesystemContext}));
   try {
    for(const [name,bytes] of reviewed?.files??prepared.proposal.files) {
     const target=path.join(owned.root,name);await fs.mkdir(path.dirname(target),{recursive:true});
@@ -48,10 +48,10 @@ export async function publishPreparationCandidate({specPath,candidateExecutionRo
    }
    if(reviewed){await syncLockParent(owned.root);await syncLockParent(path.dirname(owned.root));}
   }catch(error){error.candidateRoot=owned.root;throw error;}
-  await capturePreparationSource(await assertPreparationCandidate(owned.root,specPath));
+  await capturePreparationSource(await assertPreparationCandidate(owned.root,specPath,{filesystemContext}));
   if(!reviewed)return {status:'AWAITING_REVIEW',candidateExecutionRoot:owned.root,expectedActivationId:owned.marker.expectedActivationId,
    authority:prepared.authority,reviewRequest:prepared.proposal.reviewRequest,reviewValidated:false,publication:'not-started'};
-  const {workspace}=await resolveCurrentExecutionContext(specPath),source=prepared.proposal.input.previous,context=prepared.proposal.input.context;
+  const {workspace}=await resolveCurrentExecutionContext(specPath,{filesystemContext}),source=prepared.proposal.input.previous,context=prepared.proposal.input.context;
   const snapshot=parseStrictJson(Buffer.from(source.files.get('approved-preparation.json')).toString('utf8'));
   const continuity=parseStrictJson(Buffer.from(source.files.get('continuity.json')).toString('utf8'));
   const {retainedEvidence}=await completedEvidenceContext({context,snapshotBytes:source.files.get('approved-preparation.json'),continuity,files:source.files});
@@ -71,7 +71,7 @@ export async function publishPreparationCandidate({specPath,candidateExecutionRo
     fail('EVIDENCE_STALE','Approved source product or input changed before replacement promotion');
   };
   const authorize=async()=>{
-   const current=await capturePreparationSource(await assertPreparationCandidate(owned.root,specPath));
+   const current=await capturePreparationSource(await assertPreparationCandidate(owned.root,specPath,{filesystemContext}));
    if(!Buffer.from(current.activationBytes).equals(Buffer.from(source.activationBytes))
      ||current.files.size!==source.files.size||[...source.files].some(([name,bytes])=>!Buffer.from(current.files.get(name)??[]).equals(Buffer.from(bytes))))
     fail('STALE_BASE','Reviewed replacement predecessor changed');
@@ -108,12 +108,12 @@ export async function publishPreparationCandidate({specPath,candidateExecutionRo
    preparationDisposition:result.cleanup==='complete'?'retired':'pending',reviewValidated:true};
  }
  if(owned.marker.source!==null||owned.marker.expectedActivationId!==null)throw Object.assign(new Error('Current replacement-set publication is not available; Initial cannot replace execution'),{code:'REPLAN_REQUIRED'});
- await preparePlanCandidate({candidateExecutionRoot:owned.root});
- const prepared=await serializePlanPathClaims({specPath,candidateExecutionRoot:owned.root});
+ await preparePlanCandidate({candidateExecutionRoot:owned.root,filesystemContext});
+ const prepared=await serializePlanPathClaims({specPath,candidateExecutionRoot:owned.root,filesystemContext});
  if(reviewDecision===null)return {status:'AWAITING_REVIEW',candidateExecutionRoot:owned.root,authority:prepared.authority,publication:'not-started'};
  // The v3 review schema is validated by the existing Initial producer. A former
  // reviewDecision object is not an equivalent authority and cannot activate it.
- const publication=await installCurrentInitial({specPath,preparationRoot:owned.root,review:reviewDecision,checkpoint});
- return {...publication,candidateExecutionRoot:owned.root,preparationDisposition:'diagnostic',preparationCleanup:'not-supported; retain this positively owned reviewed source without replaying publication'};
+ const publication=await installCurrentInitial({specPath,preparationRoot:owned.root,review:reviewDecision,checkpoint,filesystemContext});
+ return {...publication,candidateExecutionRoot:owned.root,preparationDisposition:publication.cleanup==='complete'?'retired':'pending'};
 }
 if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href){const a=process.argv.slice(2);if(a.length===4&&a[0]==='--spec-path'&&a[2]==='--recover-allocation')process.stdout.write(JSON.stringify(await recoverPreparationPublication({specPath:a[1],allocation:a[3]}))+'\n');else{if(![4,6].includes(a.length)||a[0]!=='--spec-path'||a[2]!=='--candidate-execution-root'||a.length===6&&a[4]!=='--review-decision-file')throw new Error('Usage: publish-task-candidate.mjs --spec-path SPEC --candidate-execution-root ROOT [--review-decision-file FILE] | --spec-path SPEC --recover-allocation MARKER');const reviewDecision=a.length===6?JSON.parse(await fs.readFile(a[5],'utf8')):null;process.stdout.write(JSON.stringify(await publishPreparationCandidate({specPath:a[1],candidateExecutionRoot:a[3],reviewDecision}))+'\n');}}

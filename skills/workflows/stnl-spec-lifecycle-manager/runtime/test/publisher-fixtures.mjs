@@ -1,3 +1,5 @@
+import {resolveExecutionFilesystemRoots} from '../lib/execution-publication.mjs';
+import {spawnSync} from "node:child_process";
 import * as fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -21,7 +23,13 @@ export const READY_FIXTURE = path.join(
 export const PUBLISHER_CLI = path.join(RUNTIME_ROOT, "publish-spec-lifecycle.mjs");
 
 export async function temporaryDirectory(prefix = "stnl-node-publisher-") {
-  return fs.mkdtemp(path.join(os.tmpdir(), prefix));
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
+  // Normal publishers now prove Git exclusion before creating any controls.
+  // Non-Git behavior is exercised separately with the explicit API/CLI roots.
+  const result = spawnSync('git', ['init', '-q', root], {encoding:'utf8', timeout:10000});
+  if (result.status !== 0) throw new Error(`fixture Git init failed: ${result.stderr}`);
+  await fs.writeFile(path.join(root, '.gitignore'), 'tmp/sentinel/\n');
+  return root;
 }
 
 export async function removeTemporaryDirectory(directory) {
@@ -107,8 +115,9 @@ export async function transactionResidues(target) {
     `.${targetName}.lifecycle-ownership-`,
     `.${targetName}.lifecycle-retired-tree-`,
   ];
-  const journal = `.${targetName}.lifecycle-transaction.json`;
-  return (await fs.readdir(path.dirname(target)))
+  const journal = 'lifecycle-transaction.json';
+  const roots=await resolveExecutionFilesystemRoots({specRoot:target,executionRoot:path.join(target,'execution')});
+  return (await fs.readdir(roots.materialRoot).catch(error=>{if(error.code==='ENOENT')return [];throw error;}))
     .filter((name) => name === journal || prefixes.some((prefix) => name.startsWith(prefix)))
     .sort();
 }

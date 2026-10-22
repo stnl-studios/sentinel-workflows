@@ -11,28 +11,33 @@ import {resolveCurrentExecutionContext} from '../skills/workflows/stnl-slice-exe
 import {inspectCurrentExecution} from '../skills/workflows/stnl-slice-executor/runtime/execution-current-reader.mjs';
 import {inspectCurrentExecution as inspectQualityExecution} from '../skills/workflows/stnl-slice-quality-manager/runtime/execution-current-reader.mjs';
 import {installCurrentInitial,recoverCurrentInitialPublication} from '../skills/workflows/stnl-slice-executor/runtime/install-current-initial.mjs';
-import {begin,reserveDispatch,bindNative,verifyNative,captureNative,publish,normalizeSuccessor} from '../skills/workflows/stnl-slice-executor/runtime/execution-current-operation.mjs';
+import {begin,reserveDispatch,bindNative,verifyNative,captureNative,publish,normalizeSuccessor,resume} from '../skills/workflows/stnl-slice-executor/runtime/execution-current-operation.mjs';
 import {payload as initialPayload} from './fixtures/current-initial-evidence.mjs';
 import {applyPayload} from './fixtures/current-findings-evidence.mjs';
 
+import {preparePreparationCandidate} from '../skills/workflows/stnl-slice-executor/runtime/prepare-task-candidate.mjs';
+import {captureExecutionTree,resolveExecutionFilesystemRoots,executionLockIdentity} from '../skills/workflows/stnl-slice-executor/runtime/execution-publication.mjs';
 const run=promisify(execFile);
 const repo=path.resolve('.');
 const operationCli=path.join(repo,'skills/workflows/stnl-slice-executor/runtime/execution-current-operation.mjs');
 const digest=bytes=>`sha256:${createHash('sha256').update(bytes).digest('hex')}`;
-async function fixture({otherInput=false}={}) {
+async function fixture({otherInput=false,kind='standalone',entry='file'}={}) {
   const root=await fs.mkdtemp(path.join(repo,'tmp/stnl-initial-test-'));
   await run('git',['-C',root,'init','-q']);
   await fs.writeFile(path.join(root,'.gitignore'),'/tmp/\n');
   await fs.mkdir(path.join(root,'specs/pay'),{recursive:true});
   await fs.mkdir(path.join(root,'src'));
-  const specPath=path.join(root,'specs/pay/requirements.md');
-  await fs.writeFile(specPath,'# Initial delivery\n\nAC-001: export pay.\n');
+  const authorityPath=path.join(root,'specs/pay',kind==='lifecycle'?'feature_spec.md':'requirements.md');
+  const specPath=kind==='lifecycle'&&entry==='directory'?path.dirname(authorityPath):authorityPath;
+  const lifecycleHeader='# File Purpose Header\n\n```yaml\npurpose: Pay feature.\nstatus: ready\nread_when: Reviewing pay.\ndo_not_read_when: Another feature is selected.\ncontains: Pay requirements.\nowner: stnl-spec-lifecycle-manager\nupdate_policy: Author writes.\n```\n\n';
+  const lifecycleBody='# Feature: Pay\n\n'+[['Objective','Pay export.'],['Context','Pay module.'],['Scope','Pay export.'],['Out of Scope','Authentication.'],['Business Rules','Observe pay.'],['Relevant Contracts','AC-001: Pay export.']].map(([name,body])=>`## ${name}\n\n${body}\n\n`).join('');
+  await fs.writeFile(authorityPath,kind==='lifecycle'?lifecycleHeader+lifecycleBody:'# Initial delivery\n\nAC-001: export pay.\n');
   await fs.writeFile(path.join(root,'src/pay.test.mjs'),
     'import test from "node:test";import assert from "node:assert/strict";import {pay} from "./pay.mjs";test("AC-001",()=>assert.equal(pay(),"paid"));\n');
   if(otherInput) await fs.writeFile(path.join(root,'src/other.txt'),'independent input\n');
   const before=await inspectCurrentExecution(specPath);
   const {context}=await resolveCurrentExecutionContext(specPath);
-  const artifacts=new Map([...initialArtifacts({form:'standalone'})].map(([name,bytes])=>{
+  const artifacts=new Map([...initialArtifacts({form:kind})].map(([name,bytes])=>{
     let content=bytes.toString('utf8').replaceAll(REQUIREMENTS,before.requirementsAuthority);
     if(otherInput && ['plans/slice-02.md','tasks/slice-02.md'].includes(name)) content=content
       .replace('## Existing Inputs\n\n- none\n\n','## Existing Inputs\n\n- `../../../../src/other.txt`\n\n');
@@ -52,7 +57,7 @@ async function fixture({otherInput=false}={}) {
     await fs.mkdir(path.dirname(target),{recursive:true});
     await fs.writeFile(target,bytes);
   }
-  await run('git',['-C',root,'add','.gitignore','specs/pay/requirements.md','src/pay.test.mjs',
+  await run('git',['-C',root,'add','.gitignore',path.relative(root,authorityPath),'src/pay.test.mjs',
     ...(otherInput?['src/other.txt']:[])]);
   await run('git',['-C',root,'-c','user.name=Sentinel','-c','user.email=sentinel@example.invalid',
     'commit','-qm','fixture baseline']);
@@ -408,12 +413,134 @@ test('Initial ingress installs reviewed bytes once and reads back pristine',asyn
   assert.equal((await inspectCurrentExecution(f.specPath)).activationId,image.activationId);
 });
 
-test('Initial interruption before activation restores absence and permits a fresh reviewed install',async()=>{
+test('Initial promotes the same registered PLAN inode and retires only its controls',async()=>{
   const f=await fixture();
+  const {workspace}=await resolveCurrentExecutionContext(f.specPath);
+  const prepared=await preparePreparationCandidate({specPath:f.specPath,operation:'PLAN'});
+  const candidate=prepared.candidateExecutionRoot;
+  await fs.cp(f.preparationRoot,candidate,{recursive:true});
+  const before=await captureExecutionTree(candidate),source=await captureExecutionTree(f.preparationRoot);
+  const installed=await installCurrentInitial({...f,preparationRoot:candidate});
+  assert.equal(installed.publication,'confirmed');assert.equal(installed.cleanup,'complete');
+  assert.equal(installed.candidateRoot,candidate);assert.equal(installed.preparationDisposition,'retired');
+  const live=await captureExecutionTree(workspace.executionRoot);
+  assert.deepEqual(live.identity,before.identity,'Initial must rename the reviewed PLAN, not copy its tree');
+  assert.deepEqual(live.files.filter(item=>!['activation.json','approved-preparation.json','continuity.json'].includes(item.path)),before.files);
+  assert.deepEqual(await captureExecutionTree(f.preparationRoot),source,'external input remains unchanged');
+  assert.equal(await fs.stat(candidate).catch(()=>null),null);
+  assert.equal(await fs.stat(`${candidate}.owner.json`).catch(()=>null),null);
+  assert.equal(await fs.stat(installed.allocation).catch(()=>null),null);
+  const roots=await resolveExecutionFilesystemRoots(workspace);
+  assert.deepEqual(JSON.parse(await fs.readFile(roots.preparationRegistry)).allocations,[]);
+});
+
+for(const point of ['after-install','after-activation-intent'])test(`Initial recovery restores absence and retires its same candidate at ${point}`,async()=>{
+  const f=await fixture(),source=await captureExecutionTree(f.preparationRoot);
+  let allocation;
+  await assert.rejects(installCurrentInitial({...f,checkpoint:step=>{if(step===point)throw new Error('controlled Initial interruption');}}),error=>{
+    allocation=error.allocation;return /controlled Initial interruption/.test(error.message)&&typeof allocation==='string';
+  });
+  const result=await recoverCurrentInitialPublication({specPath:f.specPath,allocation});
+  assert.equal(result.publication,'aborted');assert.equal(result.cleanup,'complete');
+  assert.equal((await inspectCurrentExecution(f.specPath)).state,'NO_EXECUTION');
+  assert.deepEqual(await captureExecutionTree(f.preparationRoot),source);
+});
+
+for(const point of ['before-backup','after-backup'])test(`Initial rejects a byte-identical candidate replacement at ${point} before promotion`,async()=>{
+  const f=await fixture();let candidate,saved;
+  await assert.rejects(installCurrentInitial({...f,checkpoint:async(step,paths)=>{if(step===point){
+    candidate=paths.stage;saved=candidate+'.original';await fs.rename(candidate,saved);await fs.cp(saved,candidate,{recursive:true});
+  }}}),/identity|registered|candidate/i);
+  assert.equal((await inspectCurrentExecution(f.specPath)).state,'NO_EXECUTION');
+  assert.notDeepEqual((await captureExecutionTree(candidate)).identity,(await captureExecutionTree(saved)).identity);
+  assert.deepEqual((await captureExecutionTree(candidate)).files,(await captureExecutionTree(saved)).files);
+  await fs.access(`${candidate}.owner.json`);
+});
+
+for(const variant of ['rename','sync'])test(`Initial recovery retains its lease on uncertain ${variant} while restoring absence`,async()=>{
+  const f=await fixture();let allocation;
+  await assert.rejects(installCurrentInitial({...f,checkpoint:step=>{if(step==='after-activation-intent')throw new Error('controlled interruption');}}),error=>{allocation=error.allocation;return /controlled interruption/.test(error.message);});
+  const record=JSON.parse(await fs.readFile(allocation)),{workspace}=await resolveCurrentExecutionContext(f.specPath);
+  const rename=fs.rename,open=fs.open;let armed=false,injected=0,caught;
+  fs.rename=async(from,to)=>{if(from===workspace.executionRoot&&to===record.candidate){
+    if(variant==='rename'){injected++;throw Object.assign(Error('controlled rename uncertainty'),{code:'EIO'});}
+    const result=await rename(from,to);armed=true;return result;
+  }return rename(from,to);};
+  fs.open=async(file,...args)=>{if(armed&&file===path.dirname(workspace.executionRoot)){injected++;throw Object.assign(Error('controlled sync uncertainty'),{code:'EIO'});}return open(file,...args);};
+  try{await recoverCurrentInitialPublication({specPath:f.specPath,allocation});}catch(error){caught=error;}finally{fs.rename=rename;fs.open=open;}
+  assert.equal(injected,1);assert.equal(caught?.retainExecutionLock,true);
+  await fs.access(allocation);await fs.access(`${record.candidate}.owner.json`);
+  await fs.access((await executionLockIdentity(workspace)).lockPath);
+});
+
+for(const entry of ['directory','file'])test(`Initial lifecycle ${entry} entry shares its canonical PLAN and authority`,async()=>{
+  const f=await fixture({kind:'lifecycle',entry});
+  const drafted=await preparePreparationCandidate({specPath:f.specPath,operation:'PLAN'});
+  await fs.cp(f.preparationRoot,drafted.candidateExecutionRoot,{recursive:true});
+  const marker=JSON.parse(await fs.readFile(`${drafted.candidateExecutionRoot}.owner.json`));
+  assert.equal(path.basename(marker.specPath),'feature_spec.md');
+  const alternate=entry==='directory'?path.join(f.specPath,'feature_spec.md'):path.dirname(f.specPath);
+  assert.equal((await preparePreparationCandidate({specPath:alternate,operation:'REVIEW_PLAN',candidateExecutionRoot:drafted.candidateExecutionRoot})).status,'AWAITING_REVIEW');
+  const installed=await installCurrentInitial({...f,specPath:alternate,preparationRoot:drafted.candidateExecutionRoot});
+  assert.equal(installed.cleanup,'complete');
+  assert.equal((await inspectCurrentExecution(f.specPath)).state,'MATERIALIZED_PRISTINE');
+});
+
+test('Initial controller seals explicit physical policy through handle and dispatch reentry',async()=>{
+  const f=await fixture();await installCurrentInitial(f);
+  const inspection=await inspectCurrentExecution(f.specPath);
+  const temporaryRoot=path.join(f.root,'tmp','sentinel');
+  const filesystemContext={productRoot:f.root,temporaryRoot,excludedRoots:[temporaryRoot]};
+  const started=await begin({specPath:f.specPath,slice:'slice-01',operation:'EXECUTE_SLICE',expectedActivationId:inspection.activationId,filesystemContext});
+  assert.deepEqual(started.handle.filesystemContext,filesystemContext);
+  assert.equal((await resume(started.handle)).phase,'working');
+  const dispatch=await reserveDispatch(started.handle,{responseVariant:'stnl-current-native-judgment-v1'});
+  assert.equal(dispatch.phase,'dispatch-reserved');
+  assert.equal(path.dirname(path.dirname(dispatch.originFile)),path.join(temporaryRoot,createHash('sha256').update(path.join(f.root,'specs/pay/requirements-execution')).digest('hex')));
+  const origin=JSON.parse(await fs.readFile(dispatch.originFile));
+  assert.deepEqual(origin.admission.binding.filesystemContext,filesystemContext);
+  const changedRoot=path.join(f.root,'tmp','another controller');
+  await assert.rejects(resume({...started.handle,filesystemContext:{...filesystemContext,temporaryRoot:changedRoot,excludedRoots:[changedRoot]}}));
+  assert.equal(await fs.stat(changedRoot).catch(()=>null),null);
+});
+
+test('Initial resumes exact deterministic files on its same PLAN after a pre-publisher write failure',async()=>{
+  const f=await fixture();const prepared=await preparePreparationCandidate({specPath:f.specPath,operation:'PLAN'});
+  const candidate=prepared.candidateExecutionRoot;await fs.cp(f.preparationRoot,candidate,{recursive:true});
+  const identity=(await captureExecutionTree(candidate)).identity,open=fs.open;let injected=0,caught;
+  fs.open=async(file,...args)=>{if(file===path.join(candidate,'continuity.json')){injected++;throw Object.assign(Error('controlled second generated write'),{code:'EIO'});}return open(file,...args);};
+  try{await installCurrentInitial({...f,preparationRoot:candidate});}catch(error){caught=error;}finally{fs.open=open;}
+  assert.equal(injected,1);assert.equal(caught?.candidateRoot,candidate);assert.equal(caught?.publication,'not-started');
+  const approval=await fs.readFile(path.join(candidate,'approved-preparation.json'));
+  assert.equal((await inspectCurrentExecution(f.specPath)).state,'NO_EXECUTION');
+  const installed=await installCurrentInitial({...f,preparationRoot:candidate});
+  const {workspace}=await resolveCurrentExecutionContext(f.specPath);
+  assert.deepEqual((await captureExecutionTree(workspace.executionRoot)).identity,identity);
+  assert.deepEqual(await fs.readFile(path.join(workspace.executionRoot,'approved-preparation.json')),approval);
+  assert.equal(installed.cleanup,'complete');
+});
+
+test('Initial refuses stale generated files on a registered PLAN without overwriting them',async()=>{
+  const f=await fixture();const prepared=await preparePreparationCandidate({specPath:f.specPath,operation:'PLAN'});
+  await fs.cp(f.preparationRoot,prepared.candidateExecutionRoot,{recursive:true});
+  const file=path.join(prepared.candidateExecutionRoot,'continuity.json');await fs.writeFile(file,'foreign generated bytes\n');
+  const before=await captureExecutionTree(prepared.candidateExecutionRoot);
+  await assert.rejects(installCurrentInitial({...f,preparationRoot:prepared.candidateExecutionRoot}),error=>error.code==='STALE_APPROVAL');
+  assert.deepEqual(await captureExecutionTree(prepared.candidateExecutionRoot),before);
+  assert.equal((await inspectCurrentExecution(f.specPath)).state,'NO_EXECUTION');
+});
+
+test('Initial interruption restores absence; explicit own recovery precedes a fresh reviewed install',async()=>{
+  const f=await fixture();let interrupted;
   await assert.rejects(installCurrentInitial({...f,checkpoint:step=>{
     if(step==='before-activation') throw new Error('injected before activation');
-  }}),/injected before activation/);
+  }}),error=>{interrupted=error;return /injected before activation/u.test(error.message);});
   assert.equal((await inspectCurrentExecution(f.specPath)).state,'NO_EXECUTION');
+  assert.ok(interrupted.allocation);const source=await captureExecutionTree(f.preparationRoot);
+  await assert.rejects(installCurrentInitial(f),/prior preparation publication or cleanup remains pending/u);
+  assert.deepEqual(await captureExecutionTree(f.preparationRoot),source);
+  const recovered=await recoverCurrentInitialPublication({specPath:f.specPath,allocation:interrupted.allocation});
+  assert.equal(recovered.publication,'aborted');assert.equal(recovered.cleanup,'complete');assert.deepEqual(await captureExecutionTree(f.preparationRoot),source);
   const installed=await installCurrentInitial(f);
   assert.equal(installed.publication,'confirmed');
   assert.equal((await inspectCurrentExecution(f.specPath)).state,'MATERIALIZED_PRISTINE');
@@ -463,10 +590,13 @@ test('Initial interruption after activation recovers the exact installed image',
 test('Initial recovery refuses another execution allocation',async()=>{
   const first=await fixture();
   const second=await fixture();
-  const installed=await installCurrentInitial(first);
+  const installed=await installCurrentInitial({...first,checkpoint:step=>{if(step==='cleanup')throw new Error('retain pending publisher');}});
+  assert.equal(installed.cleanup,'pending');
+  const markerBefore=await fs.readFile(installed.allocation);
   await installCurrentInitial(second);
   await assert.rejects(recoverCurrentInitialPublication({specPath:second.specPath,
     allocation:installed.allocation}),/another execution/u);
+  assert.deepEqual(await fs.readFile(installed.allocation),markerBefore);
 });
 
 test('Initial native recipe permits absent approved output after admission',async()=>{
@@ -523,4 +653,62 @@ for(const secondInvalid of [false,true])test(`D1 Initial concluded formal refusa
   const image=await inspectCurrentExecution(f.specPath),current=image.deliveries.find(item=>item.slice==='slice-01');
   assert.equal(current.counters.validationAttempts,secondInvalid?0:1);
   if(secondInvalid)assert.equal(image.normalHandoff,null);else assert.equal(current.formalStatus,'PASS');
+});
+
+for(const kind of ['standalone','lifecycle'])test(`Initial ${kind} pending cleanup excludes every fresh family until its own recovery finishes`,async()=>{
+ const f=await fixture({kind});try{
+  const result=await installCurrentInitial({...f,checkpoint:step=>{if(step==='cleanup')throw new Error('controlled pending cleanup');}});
+  assert.equal(result.publication,'confirmed');assert.equal(result.cleanup,'pending');
+  const image=await inspectCurrentExecution(f.specPath),{context}=await resolveCurrentExecutionContext(f.specPath),activationFile=path.join(context.logicalExecutionRoot,'activation.json'),before=await fs.readFile(activationFile);
+  await assert.rejects(begin({specPath:f.specPath,slice:image.normalHandoff.slice,operation:'EXECUTE_SLICE',expectedActivationId:image.activationId}),/publication or cleanup remains pending/u);
+  assert.deepEqual(await fs.readFile(activationFile),before);
+  const {workspace}=await resolveCurrentExecutionContext(f.specPath),roots=await resolveExecutionFilesystemRoots(workspace),names=await fs.readdir(roots.materialRoot);
+  const members=JSON.parse(await fs.readFile(path.join(context.logicalExecutionRoot,'continuity.json'))).deliveries.map(x=>x.deliveryId);
+  await assert.rejects(preparePreparationCandidate({specPath:f.specPath,operation:'REPLAN',completedDeliveryIds:members}),/publication or cleanup remains pending/u);
+  const {allocateCurrentLocalReviewCandidate}=await import('../skills/workflows/stnl-slice-executor/runtime/execution-current-operation.mjs');
+  await assert.rejects(allocateCurrentLocalReviewCandidate(context),/publication or cleanup remains pending/u);
+  const {publishExecutionUpdate}=await import('../skills/workflows/stnl-slice-executor/runtime/execution-publication.mjs');
+  await assert.rejects(publishExecutionUpdate({workspace,candidateExecutionRoot:f.preparationRoot,expectedTree:await captureExecutionTree(context.logicalExecutionRoot),expectedActivationId:image.activationId,currentReplacement:true,recheckRequirements:async()=>{},readActivated:async()=>{throw Error('must not read a new publisher base');}}),/publication or cleanup remains pending/u);
+  if(kind==='lifecycle'){
+   const {publishCandidate}=await import('../skills/workflows/stnl-spec-lifecycle-manager/runtime/lib/publisher.mjs');
+   const manifest=path.join(f.root,'blocked-resume-input.json');await fs.writeFile(manifest,'{}');
+   await assert.rejects(publishCandidate('RESUME',path.dirname(f.specPath),f.preparationRoot,{manifestPath:manifest}),/publication or cleanup remains pending/u);
+  }
+  assert.deepEqual(await fs.readdir(roots.materialRoot),names);assert.deepEqual(await fs.readFile(activationFile),before);
+  const recovered=await recoverCurrentInitialPublication({specPath:f.specPath,allocation:result.allocation});
+  assert.equal(recovered.cleanup,'complete');
+  const next=await reserved(f);assert.equal(next.started.phase,'working');
+ }finally{await fs.rm(f.root,{recursive:true,force:true});}
+});
+
+test('current reservation rejects an actual material-root replacement at common acquire before creating controls',async()=>{
+ const f=await fixture();const open=fs.open;try{
+  await installCurrentInitial(f);
+  const {context,workspace}=await resolveCurrentExecutionContext(f.specPath),roots=await resolveExecutionFilesystemRoots(workspace);
+  const image=await inspectCurrentExecution(f.specPath),activationFile=path.join(context.logicalExecutionRoot,'activation.json'),before=await fs.readFile(activationFile),beforeNames=await fs.readdir(roots.materialRoot);
+  let swapped=false;
+  fs.open=async function(file,...args){
+   if(String(file)===roots.lockPath&&typeof args[0]==='number'&&!swapped){
+    swapped=true;await fs.rename(roots.materialRoot,roots.materialRoot+'.test-original');await fs.mkdir(roots.materialRoot);
+    for(const name of await fs.readdir(roots.materialRoot+'.test-original'))await fs.rename(path.join(roots.materialRoot+'.test-original',name),path.join(roots.materialRoot,name));
+   }
+   return open.call(this,file,...args);
+  };
+  await assert.rejects(begin({specPath:f.specPath,slice:image.normalHandoff.slice,operation:'EXECUTE_SLICE',expectedActivationId:image.activationId}),/filesystem binding changed/u);
+  assert.ok(swapped);assert.deepEqual(await fs.readFile(activationFile),before);assert.deepEqual(await fs.readdir(roots.materialRoot),beforeNames);
+ }finally{fs.open=open;await fs.rm(f.root,{recursive:true,force:true});}
+});
+
+test('lifecycle-family common barrier excludes controller with no orphan operation',async()=>{
+ const f=await fixture();try{
+  await installCurrentInitial(f);const {workspace,context}=await resolveCurrentExecutionContext(f.specPath);
+  const roots=await resolveExecutionFilesystemRoots(workspace),beforeNames=await fs.readdir(roots.materialRoot);
+  const {withExecutionPublicationLock}=await import('../skills/workflows/stnl-spec-lifecycle-manager/runtime/lib/execution-publication.mjs');
+  const image=await inspectCurrentExecution(f.specPath),activationFile=path.join(context.logicalExecutionRoot,'activation.json'),before=await fs.readFile(activationFile);
+  await withExecutionPublicationLock(workspace,async()=>{
+   await assert.rejects(begin({specPath:f.specPath,slice:image.normalHandoff.slice,operation:'EXECUTE_SLICE',expectedActivationId:image.activationId}),/lock already exists/u);
+   assert.deepEqual(await fs.readdir(roots.materialRoot),beforeNames);assert.deepEqual(await fs.readFile(activationFile),before);
+  });
+  assert.equal((await reserved(f)).started.phase,'working');
+ }finally{await fs.rm(f.root,{recursive:true,force:true});}
 });

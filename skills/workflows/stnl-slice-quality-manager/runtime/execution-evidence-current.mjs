@@ -406,14 +406,12 @@ function semantic(rawText, receipt, round) {
     parseCurrentJson(rawText);
   } catch { return {error:semanticError('captured response is not strict JSON')}; }
   try {
-    return {payload:parseSemanticExecutionPayload(rawText, 'EXECUTE_SLICE', {
-      automaticCheckRound:receipt.transport === 'native' ? undefined : `${round}/3`,
-    })};
+    return {payload:parseSemanticExecutionPayload(rawText,'EXECUTE_SLICE')};
   } catch (error) { return {error:new RunnerSemanticResultError('EXECUTE_SLICE', error)}; }
 }
 
 function captureOwner(cap) {
-  return jsonBytes(cap.transport==='native'?cap.origin:cap.managedContext,'implementation owner').value.owner;
+  return jsonBytes(cap.origin,'implementation owner').value.owner;
 }
 function implementationObjects(bundle,records) {
   const refs=new Set(records.flatMap(item=>Object.entries(item.sources)
@@ -447,7 +445,7 @@ function implementationPredecessor(input) {
 function compose(input, info) {
   plain(input.rounds[0], 'round 1');
   const transport = input.rounds[0].transport;
-  if (!['native','managed'].includes(transport)) fail('UNSUPPORTED_FORMAT', 'round 1: unknown transport');
+  if (transport!=='native') fail('UNSUPPORTED_FORMAT', 'round 1: unknown transport');
   const store = closeEvidenceObjects();
   const predecessor=implementationPredecessor(input),offset=predecessor?.consumedInvocations??0;
   if(offset+input.rounds.length>3)invalid('implementation total invocation budget exceeds three');
@@ -462,8 +460,6 @@ function compose(input, info) {
     cap.removalProofs.map(blob=>jsonBytes(blob,'verified predecessor removal').value.path))
     .filter(name=>previousAfter.entries.some(entry=>entry.path===name&&entry.kind==='absent')):[]);
   const runners = new Set();
-  let finalManaged = null;
-  const managedCloses = [];
   const receipts = [];
   let productBytes = 0, productDrift=null;
   for (const [index, cap] of input.rounds.entries()) {
@@ -517,7 +513,6 @@ function compose(input, info) {
     dispatchId = transportInfo.dispatchId;
     if (runners.has(transportInfo.runnerId)) mismatch(`round ${round}: runner identity replay`);
     runners.add(transportInfo.runnerId);
-    if (transport === 'managed') { finalManaged = transportInfo; managedCloses.push(transportInfo); }
     receipts.push(receipt);
     const origin = originRecord(input.owner, transport, transportInfo);
     let semanticText=rawText,projectionError=null;
@@ -543,9 +538,7 @@ function compose(input, info) {
         if (transport === 'native') {
           if (receipt.semanticResponseStatus !== null || receipt.testedState !== null
             || typeof receipt.captureFailure !== 'string' || !receipt.captureFailure.trim()) uncertain(`round ${round}: native rejection has no concluded schema receipt`);
-        } else if (receipt.exitCode !== 1 || receipt.semanticResponseStatus !== null || receipt.testedState !== null
-          || receipt.captureFailureCode !== 'RUNNER_RESPONSE_SCHEMA_INVALID' || typeof receipt.captureFailure !== 'string'
-          || !receipt.captureFailure.trim()) uncertain(`round ${round}: managed rejection has no concluded schema receipt`);
+        }
         if (cap.verificationObservation === null) {
           if (receipt.verification !== null || cap.removalProofs.length !== 0) incomplete(`round ${round}: blocked receipt hides observation or removal proof`);
         } else {
@@ -556,7 +549,7 @@ function compose(input, info) {
           verifyRemoval(cap.removalProofs,input.owner,round,before,observed.after);
         }
       } else if (receipt.status === 'RUNNER_RESPONSE_CAPTURED') {
-        if (receipt.captureFailure !== null || (transport === 'managed' && (receipt.exitCode !== 0 || receipt.captureFailureCode != null))) uncertain(`round ${round}: captured schema result is not concluded`);
+        if (receipt.captureFailure !== null) uncertain(`round ${round}: captured schema result is not concluded`);
         let loose;
         try { loose=JSON.parse(rawText); } catch { uncertain(`round ${round}: accepted receipt cannot bind non-JSON raw`); }
         if (receipt.semanticResponseStatus !== loose?.status) uncertain(`round ${round}: accepted receipt semantic status differs`);
@@ -576,7 +569,7 @@ function compose(input, info) {
     }
     const payload = result.payload;
     if (receipt.status !== 'RUNNER_RESPONSE_CAPTURED' || receipt.semanticResponseStatus !== payload.status
-      || receipt.captureFailure !== null || (transport === 'managed' && (receipt.exitCode !== 0 || receipt.captureFailureCode != null))) uncertain(`round ${round}: accepted result lacks capture receipt`);
+      || receipt.captureFailure !== null) uncertain(`round ${round}: accepted result lacks capture receipt`);
     if (cap.verificationObservation === null) incomplete(`round ${round}: completed response lacks observation`);
     const observed = jsonBytes(cap.verificationObservation, `round ${round} verificationObservation`).value;
     const commands = verifyWorkObservation('initial-implementation', observed, input.owner, round, info, before, input.context, `round ${round} observation`);
@@ -634,13 +627,6 @@ function compose(input, info) {
       contract:{delivery:input.authority.delivery, context:input.authority.context, terminal:null, recipe:info.recipe},
       recordUtf8, testedWork:observed.after, sources:packCaptureSources('initial-implementation',cap,store)});
     previousStatus = payload.status;
-  }
-  if (transport === 'managed') {
-    const {supervisor, latest, active} = finalManaged;
-    if (supervisor.requestsHandled !== input.rounds.length
-      || supervisor.capturedReceipts !== receipts.filter(receipt => receipt.status === 'RUNNER_RESPONSE_CAPTURED' && receipt.exitCode === 0).length
-      || !same(latest.receipt, receipts.at(-1)) || latest.sequence !== active.sequence
-      || managedCloses.some(item => !same(item.supervisor,supervisor) || !same(item.latest,latest))) uncertain('managed close/latest does not cover every round');
   }
   const bundle = {
     format:'stnl-current-evidence-v1', deliveryId:input.owner.deliveryId, slice:input.owner.slice,

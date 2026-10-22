@@ -43,7 +43,7 @@ else {
         const [before, after] = validateReadinessTransition(...parsed.positional, parsed.options['--scope']);
         process.stdout.write(`PASS: READINESS ${parsed.options['--scope']} ${before.root} -> ${after.root} was read-only\n`);
       } else {
-        const [before, after] = validateCloseTransition(...parsed.positional);
+        const [before, after] = await validateCloseTransition(...parsed.positional);
         process.stdout.write(`PASS: CLOSE ${before.root} -> ${after.root} preserved exact authority and external directories\n`);
       }
     } catch (error) {

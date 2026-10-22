@@ -9,8 +9,8 @@ import {resolveCurrentExecutionContext} from './execution-workspace.mjs';
 import {inspectCurrentExecution,validateCurrentReviewCandidate} from './execution-current-reader.mjs';
 import {projectInitialPreparation,prepareCurrentSetReplacement} from './execution-preparation-current.mjs';
 import {captureExecutionTree,readOwnedFile} from './execution-publication.mjs';
-export async function serializePlanPathClaims({specPath,candidateExecutionRoot}) {
- const owned=await assertPreparationCandidate(candidateExecutionRoot,specPath),{context}=await resolveCurrentExecutionContext(specPath),image=await inspectCurrentExecution(specPath);
+export async function serializePlanPathClaims({specPath,candidateExecutionRoot,filesystemContext=null}) {
+ const owned=await assertPreparationCandidate(candidateExecutionRoot,specPath,{filesystemContext}),{context}=await resolveCurrentExecutionContext(specPath,{filesystemContext}),image=await inspectCurrentExecution(specPath);
  if(owned.marker.operation==='REPLAN') {
   const source=await capturePreparationSource(owned),tree=await captureExecutionTree(owned.root),artifacts=new Map(),carriers=new Map();
   for(const entry of tree.files) {
@@ -30,7 +30,7 @@ export async function serializePlanPathClaims({specPath,candidateExecutionRoot})
    throw Object.assign(new Error('Candidate evidence or continuity differs from its official source and current proposal'),{code:'EVIDENCE_INCOMPLETE'});
   if(carriers.has('approved-preparation.json'))await validateCurrentReviewCandidate({specPath,
    files:new Map([...proposal.files,['approved-preparation.json',carriers.get('approved-preparation.json')]])});
-  await capturePreparationSource(await assertPreparationCandidate(owned.root,specPath));
+  await capturePreparationSource(await assertPreparationCandidate(owned.root,specPath,{filesystemContext}));
   return {status:'PASS',artifacts,authority:proposal.authority,proposal};
  }
  if(image.state!=='NO_EXECUTION')throw Object.assign(new Error('Initial preparation target is occupied'),{code:'REPLAN_REQUIRED'});

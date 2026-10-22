@@ -9,7 +9,7 @@ import {createHash,randomUUID} from 'node:crypto';
 import {execFile} from 'node:child_process';
 import {promisify,isDeepStrictEqual} from 'node:util';
 import {fileURLToPath,pathToFileURL} from 'node:url';
-import {resolveCurrentExecutionContext} from './execution-workspace.mjs';
+import {resolveCurrentExecutionContext,executionWorkspaceFromContext} from './execution-workspace.mjs';
 import {captureCurrentExecution,captureCurrentActiveExecution,observeCurrentDeliveryWork} from './execution-current-reader.mjs';
 import {parseCurrentJson,validateCurrentCandidate,currentOperationBindingSha256,currentTerminalProjection,validateCurrentAbortDisposition} from './execution-current.mjs';
 import {verifyWorkObservation,findingsRoundCaptureSha256,NATIVE_JUDGMENT_VARIANT,restoreCaptureSources,
@@ -22,9 +22,10 @@ import {composePostConversionValidation,composePostConversionFindings,
 import {composeInitialImplementationEvidence} from './execution-evidence-current.mjs';
 import {recoverableRunnerResultDiagnostic} from './runner-result-contract.mjs';
 import {executeRunnerVerification,verificationCommand} from './runner-verification.mjs';
-import {withExecutionPublicationLock,readOwnedFile,writeNew,persistAllocation,captureExecutionTree,
+import {withExecutionPublicationLock,assertNoPendingExecutionPublication,readOwnedFile,writeNew,persistAllocation,captureExecutionTree,
   reserveCurrentExecutionOperation,publishCurrentExecutionOperation,abortCurrentExecutionOperation,copyCurrentCandidateTree,
   recoverCurrentExecutionOperation,finishCurrentExecutionCleanup,syncLockParent} from './execution-publication.mjs';
+import {resolveExecutionFilesystemRoots,resolveExecutionFilesystemContext,ensureExecutionMaterialRoot,validateCurrentOperationAllocationBinding} from './execution-publication.mjs';
 
 const run=promisify(execFile);
 const sha=bytes=>`sha256:${createHash('sha256').update(bytes).digest('hex')}`;
@@ -53,34 +54,32 @@ async function realDirectory(directory) {
     fail('TEMP_ROOT_UNPROVEN',`real directory required: ${directory}`);
   return metadata;
 }
-function workspaceFrom(context,workspace) {return {executionRoot:context.logicalExecutionRoot,specRoot:context.logicalSpecRoot??null,...workspace};}
-async function namespaceFor(context,{create=false}={}) {
-  const productRoot=context.productRoot;
-  const key=createHash('sha256').update(context.logicalExecutionRoot,'utf8').digest('hex');
-  const tmp=path.join(productRoot,'tmp'),sentinel=path.join(tmp,'sentinel'),namespace=path.join(sentinel,key);
-  const product=await realDirectory(productRoot);
-  for(const directory of [tmp,sentinel,namespace]) {
-    if(create && !await maybe(directory)) {
-      try {await fs.mkdir(directory,{mode:0o700});}
-      catch(error) {if(error.code!=='EEXIST') throw error;}
-    }
-    const state=await maybe(directory);
-    if(!state) return {namespace,registry:path.join(namespace,'registry.json'),key,exists:false};
-    if(!state.isDirectory() || state.isSymbolicLink() || await fs.realpath(directory)!==directory
-      || state.dev!==product.dev) fail('TEMP_ROOT_UNPROVEN',`operation namespace is unsafe: ${directory}`);
+async function namespaceFor(context,{create=false,filesystemContext=null}={}) {
+  const workspace=executionWorkspaceFromContext(context,{...(filesystemContext===null?{}:{filesystemContext})});
+  const roots=await (create?resolveExecutionFilesystemContext:resolveExecutionFilesystemRoots)(workspace);
+  if(roots.productRoot!==context.productRoot)fail('TEMP_ROOT_UNPROVEN','operation product root differs from official context');
+  if(create&&roots.exclusion.kind==='git-ignore-unverified') {
+    if(['GIT_DIR','GIT_WORK_TREE','GIT_COMMON_DIR','GIT_INDEX_FILE','GIT_CONFIG_COUNT','GIT_CONFIG_PARAMETERS'].some(name=>Object.hasOwn(process.env,name)))
+      fail('TEMP_ROOT_UNPROVEN','Git repository/index/configuration overrides are not accepted');
+    try {await run('git',['-C',roots.productRoot,'check-ignore','-q','--',roots.temporaryRoot+path.sep],
+      {shell:false,timeout:10000,maxBuffer:16384,encoding:'utf8',windowsHide:true});}
+    catch {fail('TEMP_ROOT_UNPROVEN',`operation namespace is not Git-ignored: ${roots.temporaryRoot}`);}
   }
-  if(create) {
-    let ignored=false;
-    try {await run('git',['-C',productRoot,'check-ignore','-q',path.relative(productRoot,namespace)],{timeout:10000});ignored=true;}
-    catch {}
-    if(!ignored) fail('TEMP_ROOT_UNPROVEN',`operation namespace is not Git-ignored: ${namespace}`);
-  }
-  return {namespace,registry:path.join(namespace,'registry.json'),key,exists:true,
-    identity:identity(await realDirectory(namespace)),device:String(product.dev)};
+  const resolved=create?await ensureExecutionMaterialRoot(workspace,roots):roots;
+  return {namespace:resolved.materialRoot,registry:resolved.operationRegistry,key:resolved.specKey,
+    exists:resolved.materialRootIdentity!==null,identity:resolved.materialRootIdentity,device:resolved.officialAnchor.identity.dev,
+    filesystemContext:{productRoot:resolved.productRoot,temporaryRoot:resolved.temporaryRoot,excludedRoots:resolved.excludedRoots},
+    filesystemBinding:{targetParentIdentity:resolved.targetParentIdentity,leaseParentIdentity:resolved.leaseParentIdentity,materialRootIdentity:resolved.materialRootIdentity}};
 }
-export async function allocateCurrentLocalReviewCandidate(context) {
-  const {namespace}=await namespaceFor(context,{create:true});
-  return fs.realpath(await fs.mkdtemp(path.join(namespace,'local-review-')));
+export async function allocateCurrentLocalReviewCandidate(context,{filesystemContext=null}={}) {
+  const location=await namespaceFor(context,{create:true,filesystemContext});
+  const workspace=executionWorkspaceFromContext(context,{filesystemContext:location.filesystemContext});
+  return withExecutionPublicationLock(workspace,async()=>{
+    const current=await namespaceFor(context,{filesystemContext:location.filesystemContext});
+    if(!same(current.filesystemBinding,location.filesystemBinding))fail('OWNER_UNCERTAIN','local-review physical namespace changed before allocation');
+    await assertNoPendingExecutionPublication(workspace);
+    return fs.realpath(await fs.mkdtemp(path.join(location.namespace,'local-review-')));
+  });
 }
 async function registryAt(location,executionRoot) {
   const exists=await maybe(location.registry);
@@ -255,17 +254,15 @@ async function captureRemovalBefore({root,context,owner,round,manifest,info}) {
     } else await writeNew(filename,proof);
   }
 }
-export async function begin({specPath,slice,expectedActivationId,operation='VALIDATE_SLICE',successor=false}) {
+export async function begin({specPath,slice,expectedActivationId,operation='VALIDATE_SLICE',successor=false,filesystemContext=null}) {
   const first=await quiet(specPath);
   const initial=first.activation.preparationRevision===1;
   const current=initial?requireInitial(first,slice,operation,{successor}):requireS2(first,slice,operation,{successor});
   if(first.activation.activationId!==expectedActivationId) fail('STALE_BASE','begin expectedActivationId differs');
-  const {workspace,context}=await resolveCurrentExecutionContext(specPath);
-  const location=await namespaceFor(context,{create:true});
+  const {workspace,context}=await resolveCurrentExecutionContext(specPath,{filesystemContext});
+  const officialWorkspace=executionWorkspaceFromContext(context,workspace);
+  const location=await namespaceFor(context,{create:true,filesystemContext:workspace.filesystemContext??null});
   const operationId=randomUUID(),operationRoot=path.join(location.namespace,operationId);
-  await fs.mkdir(operationRoot,{mode:0o700});
-  const operationMetadata=await realDirectory(operationRoot);
-  if(operationMetadata.dev!==Number(location.device)) fail('CROSS_FILESYSTEM','operation controls cross filesystem');
   const owner={operationAttemptId:randomUUID(),ownershipToken:randomUUID(),deliveryId:current.deliveryId,
     slice,operation,preparationRevision:first.activation.preparationRevision,
     localRevision:current.localRevision,normativeSha256:initial?first.activation.normativeSha256:current.authoritySha256,
@@ -275,30 +272,33 @@ export async function begin({specPath,slice,expectedActivationId,operation='VALI
       :operation==='APPLY_FINDINGS'?'findings':'validation',owner,
     baseActivationId:expectedActivationId,baseTree:await captureExecutionTree(context.logicalExecutionRoot),
     candidatePath:'candidate',previousPath:'previous',namespaceIdentity:location.identity,
-    filesystemDevice:location.device,
+    filesystemDevice:location.device,filesystemContext:location.filesystemContext,filesystemBinding:location.filesystemBinding,
     ...(successor?{normalization:{...current.normalization,
       sourceEvidenceSha256:current.evidence.sha256,sourceActivationId:expectedActivationId}}:{})};
   const marker=path.join(operationRoot,'owner.json');
-  await writeNew(path.join(operationRoot,'base.activation.json'),Buffer.from(first.activationBytes));
-  if(operation!=='VALIDATE_SLICE') {
-    const manifest=first.observedByDelivery.get(current.deliveryId).manifest;
-    await put(path.join(operationRoot,'base.work.json'),manifest);
-    const snapshot=parseCurrentJson(Buffer.from(first.files.get('approved-preparation.json')).toString('utf8'));
-    const delivery=snapshot.normativeProjection.deliveries.find(item=>item.deliveryId===current.deliveryId);
-    const info=verifyWorkObservation('initial-implementation',{context,delivery,slice});
-    await captureRemovalBefore({root:operationRoot,context,owner,round:1,manifest,info});
-  }
-  const reserved=await reserveCurrentExecutionOperation({workspace:workspaceFrom(context,workspace),
+  const reserved=await reserveCurrentExecutionOperation({workspace:officialWorkspace,
     expectedActivationId,expectedBaseActivation:first.activation,owner,binding,marker,
     bindingSha256:currentOperationBindingSha256(binding),
     readQuiet:()=>quiet(specPath),readActive:expected=>active(specPath,expected),
     registryReservation:async()=>{
       const registry=await registryAt(location,context.logicalExecutionRoot);
       if(registry.operations.length) fail('OWNER_ACTIVE','another current operation or cleanup is pending');
+      await fs.mkdir(operationRoot,{mode:0o700});
+      const operationMetadata=await realDirectory(operationRoot);
+      if(operationMetadata.dev!==Number(location.device)) fail('CROSS_FILESYSTEM','operation controls cross filesystem');
+      await writeNew(path.join(operationRoot,'base.activation.json'),Buffer.from(first.activationBytes));
+      if(operation!=='VALIDATE_SLICE') {
+        const manifest=first.observedByDelivery.get(current.deliveryId).manifest;
+        await put(path.join(operationRoot,'base.work.json'),manifest);
+        const snapshot=parseCurrentJson(Buffer.from(first.files.get('approved-preparation.json')).toString('utf8'));
+        const delivery=snapshot.normativeProjection.deliveries.find(item=>item.deliveryId===current.deliveryId);
+        const info=verifyWorkObservation('initial-implementation',{context,delivery,slice});
+        await captureRemovalBefore({root:operationRoot,context,owner,round:1,manifest,info});
+      }
       registry.operations.push({operationId,marker});await saveRegistry(location,registry);
     }});
   const handle={format:'stnl-current-operation-handle-v1',specPath:context.logicalAuthorityPath,
-    operationId,ownershipToken:owner.ownershipToken};
+    operationId,ownershipToken:owner.ownershipToken,filesystemContext:location.filesystemContext};
   return {handle,owner:reserved.owner,activationA0:reserved.baseActivation.activationId,
     activationA1:reserved.reservedActivation.activationId,phase:'working',nextAction:'reserve-dispatch'};
 }
@@ -307,8 +307,9 @@ async function load(handle,{requireRegistry=true}={}) {
   if(!handle || handle.format!=='stnl-current-operation-handle-v1'
     || typeof handle.specPath!=='string' || typeof handle.operationId!=='string'
     || typeof handle.ownershipToken!=='string') fail('OWNER_MISMATCH','invalid operation handle');
-  const {workspace,context}=await resolveCurrentExecutionContext(handle.specPath);
-  const location=await namespaceFor(context);
+  const {workspace,context}=await resolveCurrentExecutionContext(handle.specPath,{filesystemContext:handle.filesystemContext??null});
+  const officialWorkspace=executionWorkspaceFromContext(context,workspace);
+  const location=await namespaceFor(context,{filesystemContext:workspace.filesystemContext??null});
   if(!location.exists || location.key!==createHash('sha256').update(context.logicalExecutionRoot).digest('hex'))
     fail('OWNER_UNCERTAIN','operation namespace is absent');
   const root=path.join(location.namespace,handle.operationId);
@@ -316,21 +317,15 @@ async function load(handle,{requireRegistry=true}={}) {
   if(metadata.dev!==Number(location.device)) fail('CROSS_FILESYSTEM','operation root moved');
   const marker=path.join(root,'owner.json');
   const record=await readJson(marker);
-  const binding=record.binding;
-  if(record.format!=='stnl-execution-publication-owner-v2'
-    || binding?.operationId!==handle.operationId
-    || binding?.specKey!==location.key
-    || binding?.logicalExecutionRoot!==context.logicalExecutionRoot
-    || binding?.logicalSpecRoot!==context.logicalSpecRoot
-    || binding?.owner?.ownershipToken!==handle.ownershipToken
-    || !same(binding.namespaceIdentity,location.identity)
-    || binding.filesystemDevice!==location.device
-    || binding.candidatePath!=='candidate' || binding.previousPath!=='previous')
-    fail('OWNER_MISMATCH','operation binding or physical namespace differs');
+  let binding;
+  try{binding=validateCurrentOperationAllocationBinding(record,{operationId:handle.operationId,specKey:location.key,
+    logicalExecutionRoot:context.logicalExecutionRoot,logicalSpecRoot:context.logicalSpecRoot,ownershipToken:handle.ownershipToken,
+    namespaceIdentity:location.identity,filesystemDevice:location.device,filesystemContext:location.filesystemContext,filesystemBinding:location.filesystemBinding});}
+  catch(error){fail('OWNER_MISMATCH',error.message);}
   const registry=await registryAt(location,context.logicalExecutionRoot);
   const entry=registry.operations.find(item=>item.operationId===handle.operationId);
   if(requireRegistry && (!entry || entry.marker!==marker)) fail('OWNER_UNCERTAIN','operation registry association is absent');
-  return {handle,workspace:workspaceFrom(context,workspace),context,location,root,marker,record,binding,
+  return {handle,workspace:officialWorkspace,context,location,root,marker,record,binding,
     owner:binding.owner,registry};
 }
 async function requireA1(operation) {
@@ -620,7 +615,7 @@ async function opFromOrigin(originFile) {
   const origin=await readJson(originFile);
   const operationId=origin.admission?.binding?.operationId;
   const handle={format:'stnl-current-operation-handle-v1',specPath:origin.specPath,
-    operationId,ownershipToken:origin.owner?.ownershipToken};
+    operationId,ownershipToken:origin.owner?.ownershipToken,filesystemContext:origin.admission?.binding?.filesystemContext};
   const op=await load(handle);
   if(originFile!==path.join(op.root,`round-${round}.origin.json`) || !same(origin.owner,op.owner)
     || !same(origin.admission?.binding,op.binding)

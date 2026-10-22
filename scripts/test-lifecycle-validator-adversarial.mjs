@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// CLOSE cases below test the synchronous documentary comparator; runtime admission has separate async/current tests.
 
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -12,7 +13,7 @@ import test from "node:test";
 import {
   ValidationError,
   resumeWorkspaceIdentity,
-  validateCloseTransition,
+  compareCloseDocuments,
   validateInitTransition,
   validateReadinessTransition,
   validateResumeTransition,
@@ -1535,7 +1536,7 @@ contractTest("close-structural-and-identity-matrix", async (t) => {
       if (case_.validateOnly) expectValidationError(() => validateWorkspace(after), case_.diagnostic);
       else {
         validateWorkspace(after);
-        expectValidationError(() => validateCloseTransition(before, after), case_.diagnostic);
+        expectValidationError(() => compareCloseDocuments(before, after), case_.diagnostic);
       }
       assert.deepEqual(rawTreeSnapshot(before), sourceBefore);
       assert.deepEqual(rawTreeSnapshot(after), candidateBefore);
@@ -1558,7 +1559,7 @@ contractTest("close-structural-and-identity-matrix", async (t) => {
       "- status: in_scope",
       "- status: retired\n- retired_reason: The record is no longer applicable, but its canonical identity remains reserved.",
     );
-    validateCloseTransition(before, after);
+    compareCloseDocuments(before, after);
 
     replaceInClosedRecord(
       after,
@@ -1569,7 +1570,7 @@ contractTest("close-structural-and-identity-matrix", async (t) => {
     const sourceBefore = rawTreeSnapshot(before);
     const candidateBefore = rawTreeSnapshot(after);
     validateWorkspace(after);
-    expectValidationError(() => validateCloseTransition(before, after), "changed canonical content for R-002");
+    expectValidationError(() => compareCloseDocuments(before, after), "changed canonical content for R-002");
     assert.deepEqual(rawTreeSnapshot(before), sourceBefore);
     assert.deepEqual(rawTreeSnapshot(after), candidateBefore);
   });
@@ -1578,14 +1579,14 @@ contractTest("close-structural-and-identity-matrix", async (t) => {
     const base = temporary(st, "stnl close external hardlink ");
     const before = copyFixture(base, "ready", "before");
     const after = copyFixture(base, "closed", "after");
-    write(path.join(before, "execution", "retained.txt"), "same bytes\n");
-    write(path.join(after, "execution", "retained.txt"), "same bytes\n");
+    write(path.join(before, "assets", "retained.txt"), "same bytes\n");
+    write(path.join(after, "assets", "retained.txt"), "same bytes\n");
     const outside = path.join(base, "outside.txt");
     fs.writeFileSync(outside, "same bytes\n");
-    const victim = path.join(after, "execution", "retained.txt");
+    const victim = path.join(after, "assets", "retained.txt");
     fs.unlinkSync(victim);
     if (!createHardlinkOrSkip(st, outside, victim)) return;
-    expectValidationError(() => validateCloseTransition(before, after), "changed an external directory");
+    expectValidationError(() => compareCloseDocuments(before, after), "changed an external directory");
     assert.equal(fs.lstatSync(victim).ino, fs.lstatSync(outside).ino);
   });
 
@@ -1598,7 +1599,7 @@ contractTest("close-structural-and-identity-matrix", async (t) => {
     fs.writeFileSync(outside, fs.readFileSync(feature));
     fs.unlinkSync(feature);
     if (!createHardlinkOrSkip(st, outside, feature)) return;
-    expectValidationError(() => validateCloseTransition(before, after), "single-link regular file");
+    expectValidationError(() => compareCloseDocuments(before, after), "single-link regular file");
     assert.equal(fs.lstatSync(feature).ino, fs.lstatSync(outside).ino);
   });
 });
@@ -1624,7 +1625,7 @@ contractTest("close-invented-category-matrix", async (t) => {
       const validated = validateWorkspace(after);
       assert(validated.items.has(destinationId));
       expectValidationError(
-        () => validateCloseTransition(before, after),
+        () => compareCloseDocuments(before, after),
         "invented canonical items",
       );
     });

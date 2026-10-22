@@ -31,6 +31,7 @@ export { ValidationError, canonicalPathWithoutSymlinks, filesystemComponentKey, 
 export const HEADER_FIELDS = [
   'purpose', 'status', 'read_when', 'do_not_read_when', 'contains', 'owner', 'update_policy',
 ];
+export const HEADER_OWNER = 'stnl-spec-lifecycle-manager';
 const HEADER_STATUSES = new Set(['draft', 'ready', 'blocked', 'done', 'closed', 'not_applicable']);
 const FEATURE_ACTIVE_STATUSES = new Set(['draft', 'ready', 'blocked']);
 const CANONICAL_PREFIXES = ['R', 'AC', 'D', 'C', 'RK', 'Q'];
@@ -138,8 +139,7 @@ function readText(file) {
   return decodeLifecycleUtf8(fs.readFileSync(file));
 }
 
-export function parseFilePurposeHeader(file) {
-  const text = readText(file);
+function parseFilePurposeHeaderText(text, file, { allowNoncanonicalOwner = false } = {}) {
   const match = text.match(/^# File Purpose Header\n\n```yaml\n([\s\S]*?)```\n/u);
   if (match === null) fail('missing normalized File Purpose Header', file);
   const data = Object.create(null);
@@ -161,8 +161,22 @@ export function parseFilePurposeHeader(file) {
   const placeholders = HEADER_FIELDS.filter((field) => containsTemplatePlaceholder(data[field]));
   if (placeholders.length) fail(`File Purpose Header fields contain placeholder content: [${placeholders.map((field) => `'${field}'`).join(', ')}]`, file);
   if (!HEADER_STATUSES.has(data.status)) fail(`invalid File Purpose Header status '${data.status}'`, file);
-  if (data.owner !== 'stnl-spec-lifecycle-manager') fail('wrong File Purpose Header owner', file);
-  return [data, text.slice(match[0].length)];
+  if (!allowNoncanonicalOwner && data.owner !== HEADER_OWNER) fail('wrong File Purpose Header owner', file);
+  return { data, body: text.slice(match[0].length), header: match[0] };
+}
+
+export function canonicalizeInitFilePurposeHeader(text, file = '<INIT candidate>') {
+  const source = String(text);
+  const parsed = parseFilePurposeHeaderText(source, file, { allowNoncanonicalOwner: true });
+  if (parsed.data.owner === HEADER_OWNER) return source;
+  const canonicalHeader = parsed.header.replace(/^owner:[^\n]*$/mu, `owner: ${HEADER_OWNER}`);
+  if (canonicalHeader === parsed.header) fail('File Purpose Header owner could not be serialized', file);
+  return canonicalHeader + source.slice(parsed.header.length);
+}
+
+export function parseFilePurposeHeader(file) {
+  const parsed = parseFilePurposeHeaderText(readText(file), file);
+  return [parsed.data, parsed.body];
 }
 
 function validateFeatureRoot(text, file) {
@@ -1117,7 +1131,7 @@ export function validateReadinessTransition(beforeRoot, afterRoot, scope) {
   return [before, after];
 }
 
-export function validateCloseTransition(beforeRoot, afterRoot) {
+export function compareCloseDocuments(beforeRoot, afterRoot) {
   const before = validateWorkspace(beforeRoot);
   if (before.closed || before.status !== 'ready') fail('CLOSE source must be an active ready SPEC', path.join(before.root, 'feature_spec.md'));
   if (before.openQuestions.length || before.brokenReferences.length || before.documentaryGaps.length) fail('CLOSE source still has documentary blockers', path.join(before.root, 'feature_spec.md'));
@@ -1132,6 +1146,40 @@ export function validateCloseTransition(beforeRoot, afterRoot) {
   if (missing.length) fail(`CLOSE discarded canonical items: [${missing.map((value) => `'${value}'`).join(', ')}]`, feature);
   if (extra.length) fail(`CLOSE invented canonical items: [${extra.map((value) => `'${value}'`).join(', ')}]`, feature);
   for (const [identifier, source] of before.items) if (itemPreservationSignature(source) !== itemPreservationSignature(after.items.get(identifier))) fail(`CLOSE changed canonical content for ${identifier}`, feature);
-  if (!same(externalSnapshot(before.root), externalSnapshot(after.root))) fail('CLOSE changed an external directory, including execution/', after.root);
+  const durableExternal=directory=>externalSnapshot(directory).filter(item=>item[1]!=='execution'&&!item[1].startsWith('execution/'));
+  if (!same(durableExternal(before.root), durableExternal(after.root))) fail('CLOSE changed an external directory', after.root);
   return [before, after];
+}
+
+// The normal reader is the only authority for discarding an existing execution.
+// Documentary closure without execution is legal and confers no implementation PASS.
+export async function deriveCloseExecutionDisposition(source) {
+  const before=validateWorkspace(source);
+  if(before.closed||before.status!=='ready')fail('CLOSE requires an active ready workspace',before.root);
+  if(before.openQuestions.length||before.brokenReferences.length||before.documentaryGaps.length)fail('CLOSE source still has documentary blockers',before.root);
+  const execution=path.join(before.root,'execution');
+  if(!lexists(execution))return {kind:'absent'};
+  const initialExecution=fs.lstatSync(execution,{bigint:true});
+  const {captureCurrentExecution}=await import('./execution-current-reader.mjs');
+  let image;
+  try{image=await captureCurrentExecution(before.root);}
+  catch(error){fail(`CLOSE cannot discard execution: ${error.code??'UNKNOWN'}: ${error.message}`,execution);}
+  if(image.inspection.state!=='COMPLETE')fail(`CLOSE requires current integral COMPLETE before discarding execution: ${image.inspection.state}`,execution);
+  const activation=JSON.parse(Buffer.from(image.activationBytes).toString('utf8'));
+  if(activation.activeAttempt!==null)fail('CLOSE execution has unresolved ownership',execution);
+  const finalExecution=fs.lstatSync(execution,{bigint:true});
+  if(initialExecution.dev!==finalExecution.dev||initialExecution.ino!==finalExecution.ino)fail('CLOSE execution identity changed during inspection',execution);
+  return {kind:'discard-current-complete',requirementsAuthority:image.requirementsAuthority,
+    executionIdentity:{dev:String(finalExecution.dev),ino:String(finalExecution.ino)},
+    activationId:activation.activationId,
+    artifactManifestSha256:'sha256:'+createHash('sha256').update(JSON.stringify(activation.artifacts)).digest('hex')};
+}
+
+export async function validateCloseTransition(beforeRoot,afterRoot) {
+  const disposition=await deriveCloseExecutionDisposition(beforeRoot);
+  const transition=compareCloseDocuments(beforeRoot,afterRoot);
+  if(lexists(path.join(transition[1].root,'execution')))fail('CLOSE result must not retain execution',transition[1].root);
+  if(!same(disposition,await deriveCloseExecutionDisposition(beforeRoot)))fail('CLOSE execution disposition changed during validation',beforeRoot);
+  Object.defineProperty(transition,'sourceExecutionDisposition',{value:disposition,enumerable:false});
+  return transition;
 }

@@ -460,3 +460,14 @@ test('quality manager preserves captured bytes and uncertain ownership',async()=
  assert.match(quality,/same bytes without another agent or recipe/u);
  assert.match(quality,/three-call budget/u);
 });
+
+test('native execution schemas require their literal admitted round and cannot use a broker override',async()=>{
+ const runtime=path.join(repository,'skills/workflows/stnl-slice-executor/runtime');
+ for(const file of ['runner-execute-response.schema.json','runner-apply-findings-response.schema.json','runner-semantic-response.schema.json']){
+  const schema=JSON.parse(await fs.readFile(path.join(runtime,file),'utf8'));let found=0;
+  const visit=value=>{if(!value||typeof value!=='object')return;if(value.properties?.automaticCheckRound){found++;assert.ok(value.required.includes('automaticCheckRound'));assert.equal(value.properties.automaticCheckRound.type,'string');assert.deepEqual(value.properties.automaticCheckRound.enum,['1/3','2/3','3/3']);}for(const child of Object.values(value))if(typeof child==='object')visit(child);};visit(schema);assert.ok(found>0);assert.doesNotMatch(JSON.stringify(schema),/managed|broker/u);
+ }
+ const {parseSemanticExecutionPayload}=await import('../skills/workflows/stnl-slice-executor/runtime/runner-result-contract.mjs');const {payload}=await import('./fixtures/current-initial-evidence.mjs');
+ const raw=payload(1);assert.equal(parseSemanticExecutionPayload(JSON.stringify(raw),'EXECUTE_SLICE').automaticCheckRound,'1/3');delete raw.automaticCheckRound;
+ assert.throws(()=>parseSemanticExecutionPayload(JSON.stringify(raw),'EXECUTE_SLICE',{automaticCheckRound:'1/3'}),/Automatic check round is invalid/u);
+});

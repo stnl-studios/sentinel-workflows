@@ -16,7 +16,7 @@ import {
   workspaceAuthoritySnapshotSha256,
 } from '../skills/workflows/stnl-spec-lifecycle-manager/runtime/lib/readiness.mjs';
 import { publishCandidate } from '../skills/workflows/stnl-spec-lifecycle-manager/runtime/lib/publisher.mjs';
-import { buildClosedCandidate } from '../skills/workflows/stnl-spec-lifecycle-manager/runtime/lib/closed-spec.mjs';
+import { closedDocumentFixture } from '../skills/workflows/stnl-spec-lifecycle-manager/runtime/test/helpers.mjs';
 import {
   ValidationError,
   validateWorkspace,
@@ -27,9 +27,11 @@ const REPOSITORY_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)
 const SKILL_ROOT = path.join(REPOSITORY_ROOT, 'skills', 'workflows', 'stnl-spec-lifecycle-manager');
 const FIXTURES = path.join(SKILL_ROOT, 'examples', 'validator-fixtures');
 const PUBLISHER = path.join(SKILL_ROOT, 'runtime', 'publish-spec-lifecycle.mjs');
-const RENDERER = path.join(SKILL_ROOT, 'runtime', 'build-closed-spec.mjs');
 const OPTIONAL_SYMLINK_ERRORS = new Set(['EPERM', 'EACCES', 'ENOTSUP', 'EOPNOTSUPP', 'UNKNOWN']);
 const OPTIONAL_HARDLINK_ERRORS = new Set([...OPTIONAL_SYMLINK_ERRORS, 'EXDEV']);
+
+const normalOptions=root=>({productRoot:root,temporaryRoot:path.join(root,'excluded'),excludedRoots:[path.join(root,'excluded')]});
+const normalArgs=root=>['--product-root',root,'--temporary-root',path.join(root,'excluded'),'--excluded-root',path.join(root,'excluded')];
 
 function temporary(t, prefix = 'stnl readiness adversarial ') {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -345,12 +347,12 @@ test('directory attestation input fails fast through the publisher CLI preservin
   const directory = path.join(root, 'attestation-directory');
   fs.mkdirSync(directory);
   const candidate = path.join(root, 'directory-candidate');
-  buildClosedCandidate(source, candidate);
+  closedDocumentFixture(source, candidate);
   const sourceBefore = workspaceSnapshot(source);
   const candidateBefore = workspaceSnapshot(candidate);
   const result = spawnSync(
     process.execPath,
-    [PUBLISHER, '--readiness-attestation', directory, 'CLOSE', source, candidate],
+    [PUBLISHER, '--readiness-attestation', directory, ...normalArgs(root), 'CLOSE', source],
     { cwd: root, encoding: 'utf8', timeout: 2_000 },
   );
   assert.equal(result.error, undefined, result.error?.message);
@@ -383,12 +385,12 @@ test('Unix-domain socket attestation input fails fast through the publisher CLI 
   }
   t.after(() => new Promise((resolve) => server.close(resolve)));
   const candidate = path.join(root, 'socket-candidate');
-  buildClosedCandidate(source, candidate);
+  closedDocumentFixture(source, candidate);
   const sourceBefore = workspaceSnapshot(source);
   const candidateBefore = workspaceSnapshot(candidate);
   const result = spawnSync(
     process.execPath,
-    [PUBLISHER, '--readiness-attestation', socket, 'CLOSE', source, candidate],
+    [PUBLISHER, '--readiness-attestation', socket, ...normalArgs(root), 'CLOSE', source],
     { cwd: root, encoding: 'utf8', timeout: 2_000 },
   );
   assert.equal(result.error, undefined, result.error?.message);
@@ -405,13 +407,13 @@ test('FIFO attestation input is rejected before a blocking open by the publisher
   }
   const root = temporary(t, 'stnl receipt fifo ');
   const source = fresh(root);
-  const candidate = buildClosedCandidate(source, path.join(root, 'candidate'));
+  const candidate = closedDocumentFixture(source, path.join(root, 'candidate'));
   const fifo = path.join(root, 'receipt.fifo');
   const created = spawnSync('mkfifo', [fifo], { encoding: 'utf8' });
   assert.equal(created.status, 0, created.stderr);
   assert.equal(fs.lstatSync(fifo).isFIFO(), true);
   const before = [workspaceSnapshot(source), workspaceSnapshot(candidate)];
-  const result = spawnSync(process.execPath, [PUBLISHER, '--readiness-attestation', fifo, 'CLOSE', source, candidate], {
+  const result = spawnSync(process.execPath, [PUBLISHER, '--readiness-attestation', fifo, ...normalArgs(root), 'CLOSE', source], {
     cwd: root, encoding: 'utf8', timeout: 2_000,
   });
   assert.equal(result.error, undefined, result.error?.message);
@@ -480,14 +482,14 @@ test('publisher refuses a stale explicit receipt and accepts a fresh receipt aft
   assert.equal(exists(path.join(root, 'stale-candidate')), false);
   assert.deepEqual(fs.readFileSync(stale), staleBefore);
   const freshReceipt = attestation(root, source, 'fresh.json');
-  const candidate = buildClosedCandidate(source, path.join(root, 'fresh-candidate'));
+  const candidate = closedDocumentFixture(source, path.join(root, 'fresh-candidate'));
   const candidateBefore = workspaceSnapshot(candidate);
   const sourceBefore = workspaceSnapshot(source);
-  await assert.rejects(() => publishCandidate('CLOSE', source, candidate, { readinessAttestation: stale }), /stale/u);
+  await assert.rejects(() => publishCandidate('CLOSE', source, null, { readinessAttestation: stale,filesystemContext:normalOptions(root) }), /stale/u);
   assert.deepEqual(workspaceSnapshot(source), sourceBefore);
   assert.deepEqual(workspaceSnapshot(candidate), candidateBefore);
   assert.deepEqual(fs.readFileSync(stale), staleBefore);
-  await publishCandidate('CLOSE', source, candidate, { readinessAttestation: freshReceipt });
+  await publishCandidate('CLOSE', source, null, { readinessAttestation: freshReceipt,filesystemContext:normalOptions(root) });
   assert.equal(validateWorkspace(source).closed, true);
   assert.equal(exists(freshReceipt), false);
   assert.deepEqual(workspaceSnapshot(candidate), candidateBefore);
@@ -517,8 +519,9 @@ test('external execution data and persistent sibling metadata do not change read
   const [workspace, after] = validateReadinessAttestation(source, receipt);
   assert.equal(after, before);
   assert.equal(after, workspaceAuthoritySnapshotSha256(workspace));
-  const candidate = buildClosedCandidate(source, path.join(root, 'candidate'));
-  assert.deepEqual(fs.readFileSync(path.join(candidate, 'execution', 'evidence.bin')), Buffer.from([0, 255, 1]));
+  const candidate = closedDocumentFixture(source, path.join(root, 'candidate'));
+  assert.equal(exists(path.join(candidate,'execution')),false,'documentary fixture is not a discard authorization');
+  assert.deepEqual(fs.readFileSync(path.join(source,'execution/evidence.bin')),Buffer.from([0,255,1]));
   assert.equal(exists(path.join(candidate, '.DS_Store')), false);
   assert.equal(fs.readFileSync(path.join(candidate, 'feature_spec.md'), 'utf8').includes('workspace_snapshot_sha256'), false);
 });
@@ -742,7 +745,7 @@ test('legacy readiness boolean remains a syntax error even beside a valid receip
   const candidate = path.join(root, 'legacy-candidate');
   const result = spawnSync(
     process.execPath,
-    [RENDERER, source, candidate, '--global-readiness-confirmed'],
+    [PUBLISHER, 'CLOSE', source, '--global-readiness-confirmed'],
     { cwd: root, encoding: 'utf8' },
   );
   assert.equal(result.status, 2, result.stderr);

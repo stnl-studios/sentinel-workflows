@@ -1,15 +1,18 @@
 import assert from "node:assert/strict";
-import { spawn, spawnSync } from "node:child_process";
+import childProcess, { spawn, spawnSync, execFileSync } from "node:child_process";
+import {syncBuiltinESMExports} from "node:module";
 import { createHash } from "node:crypto";
 import * as fs from "node:fs/promises";
+import syncFs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
+import {resolveExecutionFilesystemRoots} from '../lib/execution-publication.mjs';
 import { ValidationError, validateWorkspace, workspaceSnapshot } from "../lib/lifecycle.mjs";
 import { createReadinessAttestation } from "../lib/readiness.mjs";
-import { buildClosedCandidate } from "../lib/closed-spec.mjs";
+import {closedDocumentFixture} from "./helpers.mjs";
 import {
   SOURCE_CONFLICT_DIAGNOSTIC,
   TEST_ONLY_ACK,
@@ -65,7 +68,7 @@ function runCli(
   manifest = null,
   { environment = {}, cwd = null, readinessAttestation = null } = {},
 ) {
-  const arguments_ = [PUBLISHER_CLI, mode, target, candidate];
+  const arguments_ = [PUBLISHER_CLI, mode, target,...(mode==='CLOSE'?[]:[candidate])];
   if (manifest !== null) arguments_.push("--manifest", manifest);
   if (readinessAttestation !== null) {
     arguments_.push("--readiness-attestation", readinessAttestation);
@@ -87,8 +90,15 @@ async function withTemporaryDirectory(prefix, action) {
   }
 }
 
-function strictLockRecord(overrides = {}) {
-  return {
+async function strictLockRecord(target,overrides = {}) {
+  const workspace={specRoot:target,executionRoot:path.join(target,'execution')};
+  const before=await resolveExecutionFilesystemRoots(workspace);
+  await fs.mkdir(before.materialRoot,{recursive:true});
+  const roots=await resolveExecutionFilesystemRoots(workspace);
+  return {filesystem_context:{format:'stnl-lifecycle-filesystem-context-v1',specRoot:roots.specRoot,executionRoot:roots.executionRoot,
+    policy:{productRoot:roots.productRoot,temporaryRoot:roots.temporaryRoot,excludedRoots:roots.excludedRoots},
+    targetParent:{path:roots.targetParent,identity:roots.targetParentIdentity},
+    leaseParent:{path:roots.leaseParent,identity:roots.leaseParentIdentity},materialParent:{path:roots.materialRoot,identity:roots.materialRootIdentity}},
     version: 1,
     state: "active",
     owner_id: "a".repeat(32),
@@ -102,7 +112,7 @@ function strictLockRecord(overrides = {}) {
 }
 
 async function writeLock(target, payload) {
-  await fs.writeFile(lockPath(target), `${JSON.stringify(payload, null, 2)}\n`, { mode: 0o600 });
+  await fs.writeFile(await lockPath(target), `${JSON.stringify(payload, null, 2)}\n`, { mode: 0o600 });
 }
 
 function assertKilled(result, checkpoint) {
@@ -134,12 +144,12 @@ async function assertFileEvidencePreserved(evidence) {
 }
 
 async function captureLockCreateSwapEvidence(target) {
-  const canonical = lockPath(target);
+  const canonical = await lockPath(target);
   const proof = `${canonical}.test-owned-original`;
-  const tempNames = (await fs.readdir(path.dirname(target))).filter((name) =>
+  const tempNames = (await fs.readdir(path.dirname(await journalPath(target)))).filter((name) =>
     name.includes("lifecycle-lock-tmp-") && !name.endsWith(".test-owned-original"));
   assert.equal(tempNames.length, 1);
-  const temp = path.join(path.dirname(target), tempNames[0]);
+  const temp = path.join(path.dirname(await journalPath(target)), tempNames[0]);
   const canonicalMetadata = await fs.lstat(canonical, { bigint: true });
   const proofMetadata = await fs.lstat(proof, { bigint: true });
   const tempMetadata = await fs.lstat(temp, { bigint: true });
@@ -377,12 +387,12 @@ test("all seven durable crash windows recover to a complete state and recovery i
         if (checkpoint === "DURING_ROLLBACK") environment[TEST_ONLY_FORCE_ROLLBACK_ENV] = "1";
         const result = runCli("RESUME", target, candidate, manifest, { environment });
         assertKilled(result, checkpoint);
-        const journal = await readJson(journalPath(target));
+        const journal = await readJson(await journalPath(target));
         assert.equal(journal.phase, expected[0]);
-        assert.equal(await fs.stat(lockPath(target)).then(() => true, () => false), true);
+        assert.equal(await fs.stat(await lockPath(target)).then(() => true, () => false), true);
         assert.equal(await fs.stat(target).then(() => true, () => false), expected[1]);
-        const stage = path.join(path.dirname(target), journal.stage);
-        const backup = path.join(path.dirname(target), journal.backup);
+        const stage = path.join(path.dirname(await journalPath(target)), journal.stage);
+        const backup = path.join(path.dirname(await journalPath(target)), journal.backup);
         assert.equal(await fs.stat(stage).then(() => true, () => false), expected[2]);
         assert.equal(await fs.stat(backup).then(() => true, () => false), expected[3]);
 
@@ -495,20 +505,20 @@ test("ownership and lock CAS reject foreign canonical replacements and preserve 
           delete process.env[TEST_ONLY_MUTATE_WINDOW_ENV];
           delete process.env[TEST_ONLY_ACK_ENV];
         }
-        const names = await fs.readdir(path.dirname(target));
+        const names = await fs.readdir(path.dirname(await journalPath(target)));
         const canonicalName = window === "LOCK_UPDATE_CANONICAL_SWAP"
-          ? path.basename(lockPath(target))
+          ? path.basename(await lockPath(target))
           : names.find((name) =>
             name.startsWith(`.${path.basename(target)}.${canonicalMarker}`) &&
             /^[.]json$/u.test(name.slice(-5)) && !name.includes("-tmp-"));
         assert.ok(canonicalName, `missing exact foreign canonical for ${window}`);
-        const canonical = path.join(path.dirname(target), canonicalName);
+        const canonical = path.join(path.dirname(await journalPath(target)), canonicalName);
         const canonicalMetadata = await fs.lstat(canonical, { bigint: true });
         const canonicalBytes = await fs.readFile(canonical);
         assert.equal(canonicalBytes.toString("utf8"), sentinel);
         const roleEvidence = new Map();
         for (const name of names.filter((entry) => entry.includes("-tmp-"))) {
-          const filePath = path.join(path.dirname(target), name);
+          const filePath = path.join(path.dirname(await journalPath(target)), name);
           roleEvidence.set(filePath, {
             metadata: await fs.lstat(filePath, { bigint: true }),
             bytes: await fs.readFile(filePath),
@@ -610,7 +620,7 @@ test("failed exclusive creates never unlink replacement ownership or lock candid
         delete process.env[TEST_ONLY_ACK_ENV];
       }
       assert.equal(snapshot(target), sourceState);
-      const parent = path.dirname(target);
+      const parent = path.dirname(await journalPath(target));
       const names = await fs.readdir(parent);
       const prefix = `.${path.basename(target)}.lifecycle-ownership-`;
       const canonicalName = names.find((name) => name.startsWith(prefix) && name.endsWith(".json"));
@@ -657,7 +667,7 @@ test("failed exclusive creates never unlink replacement ownership or lock candid
         delete process.env[TEST_ONLY_ACK_ENV];
       }
       assert.equal(snapshot(target), sourceState);
-      const parent = path.dirname(target);
+      const parent = path.dirname(await journalPath(target));
       const names = await fs.readdir(parent);
       const foreignTempName = names.find((name) =>
         name.includes(".lifecycle-lock-tmp-") && !name.endsWith(".test-owned-original"));
@@ -665,7 +675,7 @@ test("failed exclusive creates never unlink replacement ownership or lock candid
         name.includes(".lifecycle-lock-tmp-") && name.endsWith(".test-owned-original"));
       assert.ok(foreignTempName);
       assert.ok(ownedProofName);
-      const canonical = lockPath(target);
+      const canonical = await lockPath(target);
       const foreignTemp = path.join(parent, foreignTempName);
       const ownedProof = path.join(parent, ownedProofName);
       assert.equal(
@@ -705,7 +715,7 @@ test("interrupted journal operations reject and preserve unexpected canonical fi
           },
         });
         assertKilled(result, checkpoint);
-        const parent = path.dirname(target);
+        const parent = path.dirname(await journalPath(target));
         const prefix = `.${path.basename(target)}.lifecycle-journal-tmp-`;
         const rolePaths = (await fs.readdir(parent))
           .filter((name) => name.startsWith(prefix))
@@ -715,9 +725,9 @@ test("interrupted journal operations reject and preserve unexpected canonical fi
         assert.ok(source, `missing ${sourceRole} role at ${checkpoint}`);
 
         let ownedCanonicalEvidence = null;
-        if (await fs.stat(journalPath(target)).then(() => true, () => false)) {
+        if (await fs.stat(await journalPath(target)).then(() => true, () => false)) {
           ownedCanonicalEvidence = path.join(base, `owned canonical ${checkpoint}.json`);
-          await fs.rename(journalPath(target), ownedCanonicalEvidence);
+          await fs.rename(await journalPath(target), ownedCanonicalEvidence);
         }
         const evidence = new Map();
         for (const filePath of rolePaths) {
@@ -738,17 +748,17 @@ test("interrupted journal operations reject and preserve unexpected canonical fi
           : foreignKind === "owned-copy"
             ? ownedCanonicalRecord.bytes
             : Buffer.from(`FOREIGN ${checkpoint} JOURNAL SENTINEL\n`, "utf8");
-        await fs.writeFile(journalPath(target), foreignBytes, { mode: 0o600 });
-        const foreignMetadata = await fs.lstat(journalPath(target), { bigint: true });
+        await fs.writeFile(await journalPath(target), foreignBytes, { mode: 0o600 });
+        const foreignMetadata = await fs.lstat(await journalPath(target), { bigint: true });
 
         await assert.rejects(
           recoverIncompletePublication(target),
           /transaction journal canonical (?:path appeared in an interrupted atomic operation|identity or payload changed before atomic update)/u,
         );
-        const preservedForeign = await fs.lstat(journalPath(target), { bigint: true });
+        const preservedForeign = await fs.lstat(await journalPath(target), { bigint: true });
         assert.equal(preservedForeign.dev, foreignMetadata.dev);
         assert.equal(preservedForeign.ino, foreignMetadata.ino);
-        assert.deepEqual(await fs.readFile(journalPath(target)), foreignBytes);
+        assert.deepEqual(await fs.readFile(await journalPath(target)), foreignBytes);
         for (const [filePath, before] of evidence) {
           const after = await fs.lstat(filePath, { bigint: true });
           assert.equal(after.dev, before.metadata.dev);
@@ -777,14 +787,14 @@ test("interrupted journal operations reject and preserve unexpected canonical fi
         },
       });
       assertKilled(result, "JOURNAL_UPDATE_READY");
-      const parent = path.dirname(target);
+      const parent = path.dirname(await journalPath(target));
       const nextPath = (await fs.readdir(parent))
         .filter((name) => name.includes(".lifecycle-journal-tmp-") && name.includes("-next-"))
         .map((name) => path.join(parent, name))[0];
       assert.ok(nextPath);
       const nextMetadata = await fs.lstat(nextPath, { bigint: true });
       const nextBytes = await fs.readFile(nextPath);
-      const canonical = journalPath(target);
+      const canonical = await journalPath(target);
       const canonicalMetadata = await fs.lstat(canonical, { bigint: true });
       const originalBytes = await fs.readFile(canonical);
       await fs.writeFile(path.join(base, "owned canonical payload evidence.json"), originalBytes);
@@ -831,12 +841,12 @@ test("journal creation and updates preserve foreign canonical replacements and o
         publishCandidate("RESUME", target, candidate, {
           manifestPath: manifest,
           beforePublish: async () => {
-            await fs.writeFile(journalPath(target), sentinel, "utf8");
+            await fs.writeFile(await journalPath(target), sentinel, "utf8");
           },
         }),
         /transaction journal appeared during exclusive creation/u,
       );
-      assert.equal(await fs.readFile(journalPath(target), "utf8"), sentinel);
+      assert.equal(await fs.readFile(await journalPath(target), "utf8"), sentinel);
       assert.equal(snapshot(target), sourceState);
     });
   });
@@ -853,19 +863,19 @@ test("journal creation and updates preserve foreign canonical replacements and o
         publishCandidate("RESUME", target, candidate, {
           manifestPath: manifest,
           afterJournalPrepared: async () => {
-            foreignBytes = await fs.readFile(journalPath(target));
-            await fs.rename(journalPath(target), ownedEvidence);
-            await fs.writeFile(journalPath(target), foreignBytes);
+            foreignBytes = await fs.readFile(await journalPath(target));
+            await fs.rename(await journalPath(target), ownedEvidence);
+            await fs.writeFile(await journalPath(target), foreignBytes);
           },
         }),
         /transaction journal changed ownership identity or payload/u,
       );
-      assert.deepEqual(await fs.readFile(journalPath(target)), foreignBytes);
+      assert.deepEqual(await fs.readFile(await journalPath(target)), foreignBytes);
       const original = await readJson(ownedEvidence);
       assert.equal(original.phase, "prepared");
       assert.match(original.transaction_id, /^[0-9a-f]{32}$/u);
       assert.equal(await fs.stat(target).then(() => true, () => false), false);
-      assert.equal(snapshot(path.join(path.dirname(target), original.backup)), sourceState);
+      assert.equal(snapshot(path.join(path.dirname(await journalPath(target)), original.backup)), sourceState);
     });
   });
 
@@ -881,21 +891,21 @@ test("journal creation and updates preserve foreign canonical replacements and o
         publishCandidate("RESUME", target, candidate, {
           manifestPath: manifest,
           afterJournalPrepared: async () => {
-            const originalBytes = await fs.readFile(journalPath(target));
+            const originalBytes = await fs.readFile(await journalPath(target));
             await fs.writeFile(ownedEvidence, originalBytes);
             const payload = JSON.parse(originalBytes.toString("utf8"));
             payload.phase = "candidate_promoted";
             foreignBytes = Buffer.from(`${JSON.stringify(payload)}\n`, "utf8");
-            await fs.writeFile(journalPath(target), foreignBytes);
+            await fs.writeFile(await journalPath(target), foreignBytes);
           },
         }),
         /transaction journal changed ownership identity or payload/u,
       );
-      assert.deepEqual(await fs.readFile(journalPath(target)), foreignBytes);
+      assert.deepEqual(await fs.readFile(await journalPath(target)), foreignBytes);
       const original = await readJson(ownedEvidence);
       assert.equal(original.phase, "prepared");
       assert.equal(await fs.stat(target).then(() => true, () => false), false);
-      assert.equal(snapshot(path.join(path.dirname(target), original.backup)), sourceState);
+      assert.equal(snapshot(path.join(path.dirname(await journalPath(target)), original.backup)), sourceState);
     });
   });
 
@@ -914,13 +924,13 @@ test("journal creation and updates preserve foreign canonical replacements and o
           manifestPath: manifest,
           beforeCommittedCleanup: async ({ backup }) => {
             backupPath = backup;
-            await fs.rename(journalPath(target), ownedEvidence);
-            await fs.writeFile(journalPath(target), sentinel, "utf8");
+            await fs.rename(await journalPath(target), ownedEvidence);
+            await fs.writeFile(await journalPath(target), sentinel, "utf8");
           },
         }),
         /transaction journal is malformed|changed ownership identity or payload/u,
       );
-      assert.equal(await fs.readFile(journalPath(target), "utf8"), sentinel);
+      assert.equal(await fs.readFile(await journalPath(target), "utf8"), sentinel);
       const original = await readJson(ownedEvidence);
       assert.equal(original.phase, "committed");
       assert.match(original.transaction_id, /^[0-9a-f]{32}$/u);
@@ -933,6 +943,11 @@ test("journal creation and updates preserve foreign canonical replacements and o
 test("real competing publishers serialize through the portable lock", async () => {
   await withTemporaryDirectory("stnl-publisher-concurrency-", async (base) => {
     const { target, candidate, manifest } = await buildResumeFixture(base);
+    if(process.platform==='darwin'){
+      await addRealSymlinkGroup(target);await addRealSymlinkGroup(candidate);
+      await writeResumeManifest(manifest,target);
+    }
+    const sourceBefore=snapshot(target),candidateBefore=snapshot(candidate);
     const child = spawn(process.execPath, [CHILD, target, candidate, manifest], {
       cwd: path.dirname(base),
       env: cleanEnvironment(),
@@ -954,40 +969,43 @@ test("real competing publishers serialize through the portable lock", async () =
       });
     });
     assert.deepEqual(firstMessage, { state: "locked" });
+    const controls=path.dirname(await journalPath(target)),controlsBefore=snapshot(controls);
     const competing = runCli("RESUME", target, candidate, manifest);
     assert.equal(competing.status, 1);
     assert.match(competing.stderr, /another publisher already holds the workspace lock|execution publication: lock already exists/u);
+    assert.equal(snapshot(controls),controlsBefore);assert.equal(snapshot(target),sourceBefore);assert.equal(snapshot(candidate),candidateBefore);
     child.send({ state: "release" });
     const exitCode = await new Promise((resolve) => child.once("exit", resolve));
     assert.equal(exitCode, 0, stderr);
     validateWorkspace(target);
+    if(process.platform==='darwin')await assertRealSymlinkGroup(target);
     assert.deepEqual(await transactionResidues(target), []);
-    assert.equal((await readJson(lockPath(target))).state, "released");
+    assert.equal((await readJson(await lockPath(target))).state, "released");
   });
 });
 
 test("active, orphan, symlink, and hardlinked locks are handled conservatively", async (t) => {
   await withTemporaryDirectory("stnl-publisher-active-lock-", async (base) => {
     const { target } = await buildResumeFixture(base);
-    const active = strictLockRecord();
+    const active = await strictLockRecord(target);
     // Use the exact hostname selected by the runtime, learned from a completed lock if needed.
     await writeLock(target, active);
     await assert.rejects(
       recoverIncompletePublication(target),
       /another publisher already holds the workspace lock|execution publication: lock already exists/u,
     );
-    assert.deepEqual(await readJson(lockPath(target)), active);
+    assert.deepEqual(await readJson(await lockPath(target)), active);
   });
 
   await withTemporaryDirectory("stnl-publisher-orphan-lock-", async (base) => {
     const { target } = await buildResumeFixture(base);
     // First acquire/release once to capture the runtime's portable hostname spelling.
     assert.equal(await recoverIncompletePublication(target), false);
-    const seed = await readJson(lockPath(target));
-    const orphan = strictLockRecord({ hostname: seed.hostname, pid: 2_147_483_647 });
+    const seed = await readJson(await lockPath(target));
+    const orphan = await strictLockRecord(target,{ hostname: seed.hostname, pid: 2_147_483_647 });
     await writeLock(target, orphan);
     assert.equal(await recoverIncompletePublication(target), false);
-    const reclaimed = await readJson(lockPath(target));
+    const reclaimed = await readJson(await lockPath(target));
     assert.equal(reclaimed.state, "released");
     assert.notEqual(reclaimed.owner_id, orphan.owner_id);
   });
@@ -995,9 +1013,10 @@ test("active, orphan, symlink, and hardlinked locks are handled conservatively",
   await withTemporaryDirectory("stnl-publisher-lock-symlink-", async (base) => {
     const { target } = await buildResumeFixture(base);
     const outside = path.join(base, "outside.lock");
+    await fs.mkdir(path.dirname(await lockPath(target)),{recursive:true});
     await fs.writeFile(outside, "external sentinel\n", "utf8");
     try {
-      await fs.symlink(outside, lockPath(target));
+      await fs.symlink(outside, await lockPath(target));
     } catch (error) {
       if (linkUnavailable(error)) {
         t.diagnostic(`symlinks unavailable: ${error.code}`);
@@ -1012,9 +1031,10 @@ test("active, orphan, symlink, and hardlinked locks are handled conservatively",
   await withTemporaryDirectory("stnl-publisher-lock-hardlink-", async (base) => {
     const { target } = await buildResumeFixture(base);
     const outside = path.join(base, "outside.lock");
+    await fs.mkdir(path.dirname(await lockPath(target)),{recursive:true});
     await fs.writeFile(outside, "external sentinel\n", "utf8");
     try {
-      await fs.link(outside, lockPath(target));
+      await fs.link(outside, await lockPath(target));
     } catch (error) {
       if (linkUnavailable(error)) {
         t.diagnostic(`hardlinks unavailable: ${error.code}`);
@@ -1067,40 +1087,17 @@ test("final-window source mutations are restored exactly and never overwritten b
   }
 });
 
-test("CLOSE without attestation preserves external state and rejects authority drift before publication", async (t) => {
-  for (const drift of [false, true]) {
-    await t.test(drift ? "authority drift" : "documentary CLOSE", async () => {
-      await withTemporaryDirectory("stnl-publisher-close-documentary-", async (base) => {
-        const { target } = await buildResumeFixture(path.join(base, "seed"));
-        const external = path.join(target, "execution", "external.bin");
-        await fs.mkdir(path.dirname(external), { recursive: true });
-        await fs.writeFile(external, Buffer.from([0, 255, 1]));
-        const candidate = path.join(base, "candidate");
-        buildClosedCandidate(target, candidate);
-        const candidateState = snapshot(candidate);
-        if (drift) {
-          const feature = path.join(target, "feature_spec.md");
-          const before = await fs.readFile(feature, "utf8");
-          const changed = before.replace("Provide deterministic invitation expiration behavior.", "Concurrent authority requires revised invitation expiration behavior.");
-          assert.notEqual(changed, before);
-          await fs.writeFile(feature, changed);
-          validateWorkspace(target);
-        }
-        const sourceState = snapshot(target);
-        if (drift) {
-          await assert.rejects(publishCandidate("CLOSE", target, candidate), /CLOSE lost or changed durable section 'Objective'/u);
-          assert.equal(snapshot(target), sourceState);
-        } else {
-          await publishCandidate("CLOSE", target, candidate);
-          assert.equal(validateWorkspace(target).closed, true);
-          assert.equal(snapshot(target), candidateState);
-          assert.deepEqual(await fs.readFile(external), Buffer.from([0, 255, 1]));
-        }
-        assert.equal(snapshot(candidate), candidateState);
-        assert.deepEqual(await transactionResidues(target), []);
-      });
-    });
-  }
+test("CLOSE without attestation preserves external state and refuses source drift at its publication barrier",async t=>{
+ for(const drift of [false,true])await t.test(drift?'authority drift':'documentary CLOSE',async()=>{
+  await withTemporaryDirectory('stnl-publisher-close-documentary-',async base=>{
+   const {target}=await buildResumeFixture(path.join(base,'seed')),external=path.join(target,'assets/external.bin');await fs.mkdir(path.dirname(external),{recursive:true});await fs.writeFile(external,Buffer.from([0,255,1]));
+   const expected=path.join(base,'expected-document');closedDocumentFixture(target,expected);let changed;
+   const options={beforePublish:async()=>{if(drift){const feature=path.join(target,'feature_spec.md'),text=await fs.readFile(feature,'utf8');await fs.writeFile(feature,text.replace('Provide deterministic invitation expiration behavior.','Concurrent revised expiration behavior.'));changed=snapshot(target);}}};
+   if(drift){await assert.rejects(publishCandidate('CLOSE',target,null,options),/source changed/u);assert.equal(snapshot(target),changed);}
+   else{await publishCandidate('CLOSE',target,null,options);assert.equal(validateWorkspace(target).closed,true);assert.equal(snapshot(target),snapshot(expected));assert.deepEqual(await fs.readFile(external),Buffer.from([0,255,1]));}
+   assert.deepEqual(await transactionResidues(target),[]);
+  });
+ });
 });
 
 test("CLOSE refuses an invalid explicitly supplied receipt preserving source, candidate and receipt", async () => {
@@ -1109,14 +1106,14 @@ test("CLOSE refuses an invalid explicitly supplied receipt preserving source, ca
     const receipt = path.join(base, "receipt.json");
     createReadinessAttestation(target, receipt, { scope: "GLOBAL", verdict: "READY" });
     const candidate = path.join(base, "candidate");
-    buildClosedCandidate(target, candidate);
+    closedDocumentFixture(target, candidate);
     const payload = JSON.parse(await fs.readFile(receipt, "utf8"));
     await fs.writeFile(receipt, JSON.stringify({ ...payload, verdict: "BLOCKED" }));
     const sourceState = snapshot(target);
     const candidateState = snapshot(candidate);
     const receiptBytes = await fs.readFile(receipt);
     const identity = await fs.stat(receipt);
-    await assert.rejects(publishCandidate("CLOSE", target, candidate, { readinessAttestation: receipt }), /verdict READY/u);
+    await assert.rejects(publishCandidate("CLOSE", target, null, { readinessAttestation: receipt }), /verdict READY/u);
     assert.equal(snapshot(target), sourceState);
     assert.equal(snapshot(candidate), candidateState);
     assert.deepEqual(await fs.readFile(receipt), receiptBytes);
@@ -1133,7 +1130,7 @@ test("CLOSE validates an explicitly supplied attestation and the exact determini
     const candidate = path.join(base, "closed candidate");
     const attestation = path.join(base, "readiness attestation.json");
     createReadinessAttestation(target, attestation, { scope: "GLOBAL", verdict: "READY" });
-    buildClosedCandidate(target, candidate);
+    closedDocumentFixture(target, candidate);
     const expected = snapshot(candidate);
     const result = runCli("CLOSE", target, candidate, null, {
       readinessAttestation: attestation,
@@ -1148,7 +1145,7 @@ test("CLOSE validates an explicitly supplied attestation and the exact determini
 
     const stable = snapshot(target);
     await assert.rejects(
-      publishCandidate("CLOSE", target, candidate, { readinessAttestation: attestation }),
+      publishCandidate("CLOSE", target, null, { readinessAttestation: attestation }),
       /CLOSE requires an active ready workspace/u,
     );
     assert.equal(snapshot(target), stable);
@@ -1160,7 +1157,7 @@ test("CLOSE validates an explicitly supplied attestation and the exact determini
     const candidate = path.join(base, "closed candidate");
     const attestation = path.join(base, "readiness.json");
     createReadinessAttestation(target, attestation, { scope: "GLOBAL", verdict: "READY" });
-    buildClosedCandidate(target, candidate);
+    closedDocumentFixture(target, candidate);
     const feature = path.join(target, "feature_spec.md");
     const text = await fs.readFile(feature, "utf8");
     await fs.writeFile(
@@ -1174,12 +1171,12 @@ test("CLOSE validates an explicitly supplied attestation and the exact determini
     const sourceState = snapshot(target);
     const candidateState = snapshot(candidate);
     await assert.rejects(
-      publishCandidate("CLOSE", target, candidate, { readinessAttestation: attestation }),
+      publishCandidate("CLOSE", target, null, { readinessAttestation: attestation }),
       /readiness attestation is stale; rerun READINESS GLOBAL/u,
     );
     assert.equal(snapshot(target), sourceState);
     assert.equal(snapshot(candidate), candidateState);
-    assert.equal(await fs.stat(lockPath(target)).then(() => true, () => false), false);
+    assert.equal(await fs.stat(await lockPath(target)).then(() => true, () => false), false);
     assert.deepEqual(await transactionResidues(target), []);
   });
 
@@ -1188,7 +1185,7 @@ test("CLOSE validates an explicitly supplied attestation and the exact determini
     const candidate = path.join(base, "closed candidate");
     const attestation = path.join(base, "readiness.json");
     createReadinessAttestation(target, attestation, { scope: "GLOBAL", verdict: "READY" });
-    buildClosedCandidate(target, candidate);
+    closedDocumentFixture(target, candidate);
     const feature = path.join(candidate, "feature_spec.md");
     const text = await fs.readFile(feature, "utf8");
     await fs.writeFile(
@@ -1203,7 +1200,7 @@ test("CLOSE validates an explicitly supplied attestation and the exact determini
     const sourceState = snapshot(target);
     await assert.rejects(
       publishCandidate("CLOSE", target, candidate, { readinessAttestation: attestation }),
-      /CLOSE candidate is not the exact deterministic rendering of the active source/u,
+      /does not accept an external candidate/u,
     );
     assert.equal(snapshot(target), sourceState);
     assert.deepEqual(await transactionResidues(target), []);
@@ -1214,24 +1211,22 @@ test("CLOSE validates an explicitly supplied attestation and the exact determini
     const candidate = path.join(base, "closed candidate");
     const attestation = path.join(base, "readiness.json");
     createReadinessAttestation(target, attestation, { scope: "GLOBAL", verdict: "READY" });
-    buildClosedCandidate(target, candidate);
-    await assert.rejects(
-      publishCandidate("CLOSE", target, candidate, {
-        readinessAttestation: attestation,
-        beforeAttestationCleanup: async () => {
-          await fs.unlink(attestation);
-          await fs.writeFile(attestation, "concurrently replaced receipt\n", "utf8");
-        },
-      }),
-      /readiness attestation changed identity before terminal cleanup/u,
-    );
+    closedDocumentFixture(target, candidate);
+    const pending=await publishCandidate("CLOSE", target, null, {
+      readinessAttestation: attestation,
+      beforeAttestationCleanup: async () => {
+        await fs.unlink(attestation);
+        await fs.writeFile(attestation, "concurrently replaced receipt\n", "utf8");
+      },
+    });
+    assert.equal(pending.publication,'confirmed');assert.equal(pending.cleanup,'pending');assert.match(pending.cleanupDiagnostics.join(' '),/readiness attestation changed identity before terminal cleanup/u);
     assert.equal(validateWorkspace(target).closed, true);
-    assert.equal(await fs.stat(journalPath(target)).then(() => true, () => false), true);
+    assert.equal(await fs.stat(await journalPath(target)).then(() => true, () => false), true);
     assert.equal(await fs.readFile(attestation, "utf8"), "concurrently replaced receipt\n");
-    assert.equal(await recoverIncompletePublication(target), true);
+    await assert.rejects(recoverIncompletePublication(target),/proven-dead local owner/u);
     assert.equal(validateWorkspace(target).closed, true);
     assert.equal(await fs.readFile(attestation, "utf8"), "concurrently replaced receipt\n");
-    assert.deepEqual(await transactionResidues(target), []);
+    assert.notDeepEqual(await transactionResidues(target), []);
   });
 
   await withTemporaryDirectory("stnl-publisher-close-receipt-quarantine-race-", async (base) => {
@@ -1239,14 +1234,12 @@ test("CLOSE validates an explicitly supplied attestation and the exact determini
     const candidate = path.join(base, "closed candidate");
     const attestation = path.join(base, "readiness.json");
     createReadinessAttestation(target, attestation, { scope: "GLOBAL", verdict: "READY" });
-    buildClosedCandidate(target, candidate);
+    closedDocumentFixture(target, candidate);
     process.env[TEST_ONLY_MUTATE_WINDOW_ENV] = "ATTESTATION_QUARANTINE_SWAP";
     process.env[TEST_ONLY_ACK_ENV] = TEST_ONLY_ACK;
     try {
-      await assert.rejects(
-        publishCandidate("CLOSE", target, candidate, { readinessAttestation: attestation }),
-        /attestation quarantine changed immediately before terminal removal/u,
-      );
+      const pending=await publishCandidate("CLOSE", target, null, {readinessAttestation:attestation});
+      assert.equal(pending.publication,'confirmed');assert.equal(pending.cleanup,'pending');assert.match(pending.cleanupDiagnostics.join(' '),/attestation quarantine changed immediately before terminal removal/u);
     } finally {
       delete process.env[TEST_ONLY_MUTATE_WINDOW_ENV];
       delete process.env[TEST_ONLY_ACK_ENV];
@@ -1260,7 +1253,7 @@ test("CLOSE validates an explicitly supplied attestation and the exact determini
       await fs.readFile(path.join(base, foreign), "utf8"),
       "foreign attestation quarantine sentinel\n",
     );
-    assert.equal((await readJson(journalPath(target))).phase, "committed");
+    assert.equal((await readJson(await journalPath(target))).phase, "committed");
   });
 });
 
@@ -1276,7 +1269,7 @@ test("CLOSE recovery is independent of the ephemeral attestation after journalin
         const candidate = path.join(base, "closed candidate");
         const attestation = path.join(base, "readiness.json");
         createReadinessAttestation(target, attestation, { scope: "GLOBAL", verdict: "READY" });
-        buildClosedCandidate(target, candidate);
+        closedDocumentFixture(target, candidate);
         const sourceState = snapshot(target);
         const candidateState = snapshot(candidate);
         const result = runCli("CLOSE", target, candidate, null, {
@@ -1287,15 +1280,21 @@ test("CLOSE recovery is independent of the ephemeral attestation after journalin
           },
         });
         assertKilled(result, checkpoint);
-        const journalText = await fs.readFile(journalPath(target), "utf8");
-        assert.doesNotMatch(journalText, /readiness|attestation|workspace_identity/u);
+        const journalText = await fs.readFile(await journalPath(target), "utf8");
+        const {filesystem_context:physicalContext,...transactionPayload}=JSON.parse(journalText);
+        assert.equal(physicalContext.format,'stnl-lifecycle-filesystem-context-v1');
+        // The physical root may contain the fixture checkpoint name "attestation";
+        // no ephemeral receipt or attestation dependency enters transaction data.
+        assert.doesNotMatch(JSON.stringify(transactionPayload), /readiness|attestation|workspace_identity/u);
+        assert.doesNotMatch(JSON.stringify(Object.keys(physicalContext)),/readiness|attestation|workspace_identity/u);
         if (attestationAction === "remove") await fs.unlink(attestation);
         else if (attestationAction === "corrupt") {
           await fs.writeFile(attestation, "corrupted ephemeral receipt\n", "utf8");
         } else {
           assert.equal(await fs.stat(attestation).then(() => true, () => false), false);
         }
-        assert.equal(await recoverIncompletePublication(target), true);
+        const recovered=await recoverIncompletePublication(target);
+        if(expectedClosed){assert.equal(recovered.publication,'confirmed');assert.equal(recovered.cleanup,'complete');}else assert.equal(recovered,true);
         const workspace = validateWorkspace(target);
         assert.equal(workspace.closed, expectedClosed);
         assert.equal(snapshot(target), expectedClosed ? candidateState : sourceState);
@@ -1382,9 +1381,10 @@ test("runtime metadata namespace rejects exact, casefold, and Unicode-normalized
   await withTemporaryDirectory("stnl-publisher-runtime-namespace-", async (base) => {
     const { target, candidate, manifest } = await buildResumeFixture(base);
     const targetName = path.basename(target);
+    await fs.mkdir(path.dirname(await journalPath(target)),{recursive:true});
     const collisionNames = [
-      `.${targetName}.lifecycle-transaction.json`,
-      `.${targetName}.lifecycle.lock`,
+      path.basename(await journalPath(target)),
+      path.basename(await lockPath(target)),
       `.${targetName}.lifecycle-stage-collision`,
       `.${targetName}.lifecycle-backup-collision`,
       `.${targetName}.lifecycle-journal-tmp-collision`,
@@ -1392,7 +1392,7 @@ test("runtime metadata namespace rejects exact, casefold, and Unicode-normalized
     ];
     const sourceState = snapshot(target);
     for (const name of collisionNames) {
-      const collision = path.join(path.dirname(target), name);
+      const collision = path.join(path.dirname(await journalPath(target)), name);
       await copyTree(candidate, collision);
       await assert.rejects(
         publishCandidate("RESUME", target, collision, { manifestPath: manifest }),
@@ -1400,14 +1400,14 @@ test("runtime metadata namespace rejects exact, casefold, and Unicode-normalized
       );
       assert.equal(snapshot(target), sourceState);
       assert.equal(
-        await fs.stat(lockPath(target)).then(() => true, () => false),
-        path.resolve(collision) === path.resolve(lockPath(target)),
+        await fs.stat(await lockPath(target)).then(() => true, () => false),
+        path.resolve(collision) === path.resolve(await lockPath(target)),
       );
       await fs.rm(collision, { recursive: true });
     }
 
     const manifestCollision = path.join(
-      path.dirname(target),
+      path.dirname(await journalPath(target)),
       `.${targetName.toUpperCase()}.LIFECYCLE-JOURNAL-TMP-MANIFEST`,
     );
     await fs.copyFile(manifest, manifestCollision);
@@ -1416,7 +1416,7 @@ test("runtime metadata namespace rejects exact, casefold, and Unicode-normalized
       /RESUME manifest collides with target-owned publisher runtime metadata namespace/u,
     );
     assert.equal(snapshot(target), sourceState);
-    assert.equal(await fs.stat(lockPath(target)).then(() => true, () => false), false);
+    assert.equal(await fs.stat(await lockPath(target)).then(() => true, () => false), false);
   });
 
   await withTemporaryDirectory("stnl-publisher-unicode-namespace-", async (base) => {
@@ -1427,7 +1427,8 @@ test("runtime metadata namespace rejects exact, casefold, and Unicode-normalized
     await fs.rename(seed.target, target);
     await fs.rename(seed.candidate, candidate);
     await writeResumeManifest(manifest, target);
-    const collision = path.join(base, ".Caf\u00e9.lifecycle-stage-collision");
+    await fs.mkdir(path.dirname(await journalPath(target)),{recursive:true});
+    const collision = path.join(path.dirname(await journalPath(target)), ".Caf\u00e9.lifecycle-stage-collision");
     await copyTree(candidate, collision);
     const before = snapshot(target);
     await assert.rejects(
@@ -1435,7 +1436,7 @@ test("runtime metadata namespace rejects exact, casefold, and Unicode-normalized
       /candidate collides with target-owned publisher runtime metadata namespace/u,
     );
     assert.equal(snapshot(target), before);
-    assert.equal(await fs.stat(lockPath(target)).then(() => true, () => false), false);
+    assert.equal(await fs.stat(await lockPath(target)).then(() => true, () => false), false);
   });
 });
 
@@ -1474,7 +1475,7 @@ test("byte-identical hardlink swaps are detected before journaling and preserved
     assert.equal(victimMetadata.nlink, 2n);
     assert.equal(await fs.readFile(victim, "utf8"), "byte-identical hardlink payload\n");
     assert.deepEqual(await transactionResidues(target), []);
-    assert.equal(await fs.stat(lockPath(target)).then(() => true, () => false), true);
+    assert.equal(await fs.stat(await lockPath(target)).then(() => true, () => false), true);
   });
 });
 
@@ -1493,8 +1494,8 @@ test("journal and residue inconsistencies preserve every recovery artifact for i
           },
         });
         assertKilled(result, "JOURNAL_PREPARED");
-        const journal = await readJson(journalPath(target));
-        const stage = path.join(path.dirname(target), journal.stage);
+        const journal = await readJson(await journalPath(target));
+        const stage = path.join(path.dirname(await journalPath(target)), journal.stage);
         let expected;
         let extra = null;
         if (corruption === "missing-stage") {
@@ -1502,24 +1503,24 @@ test("journal and residue inconsistencies preserve every recovery artifact for i
           expected = /no recoverable source\/stage layout/u;
         } else if (corruption === "unexpected-residue") {
           extra = path.join(
-            path.dirname(target),
+            path.dirname(await journalPath(target)),
             `.${path.basename(target)}.lifecycle-stage-${"d".repeat(32)}`,
           );
           await fs.mkdir(extra);
           expected = /transaction journal does not own publisher residues/u;
         } else if (corruption === "traversal-stage") {
           journal.stage = "../outside";
-          await fs.writeFile(journalPath(target), `${JSON.stringify(journal)}\n`, "utf8");
+          await fs.writeFile(await journalPath(target), `${JSON.stringify(journal)}\n`, "utf8");
           expected = /stage is not the transaction-owned sibling path/u;
         } else {
-          const lock = await readJson(lockPath(target));
+          const lock = await readJson(await lockPath(target));
           lock.transaction_id = "e".repeat(32);
-          await fs.writeFile(lockPath(target), `${JSON.stringify(lock)}\n`, "utf8");
+          await fs.writeFile(await lockPath(target), `${JSON.stringify(lock)}\n`, "utf8");
           expected = /lock transaction identity does not match the recovery journal/u;
         }
         await assert.rejects(recoverIncompletePublication(target), expected);
         assert.equal(snapshot(target), sourceState);
-        assert.equal(await fs.stat(journalPath(target)).then(() => true, () => false), true);
+        assert.equal(await fs.stat(await journalPath(target)).then(() => true, () => false), true);
         if (corruption !== "missing-stage") {
           assert.equal(await fs.stat(stage).then(() => true, () => false), true);
         }
@@ -1540,7 +1541,7 @@ test("journal and residue inconsistencies preserve every recovery artifact for i
     assertKilled(result, "JOURNAL_PREPARED");
     const outside = path.join(base, "external-journal.json");
     try {
-      await fs.link(journalPath(target), outside);
+      await fs.link(await journalPath(target), outside);
     } catch (error) {
       if (linkUnavailable(error)) {
         t.diagnostic(`journal hardlink unavailable: ${error.code}`);
@@ -1561,8 +1562,8 @@ test("validated orphan lock-update residues are recovered, while foreign-host ow
   await withTemporaryDirectory("stnl-publisher-lock-update-residue-", async (base) => {
     const { target } = await buildResumeFixture(base);
     assert.equal(await recoverIncompletePublication(target), false);
-    const seed = await readJson(lockPath(target));
-    const stale = strictLockRecord({
+    const seed = await readJson(await lockPath(target));
+    const stale = await strictLockRecord(target,{
       owner_id: "1".repeat(32),
       operation_id: "2".repeat(32),
       hostname: seed.hostname,
@@ -1573,25 +1574,25 @@ test("validated orphan lock-update residues are recovered, while foreign-host ow
       .digest("hex")
       .slice(0, 16);
     const residue = path.join(
-      path.dirname(target),
+      path.dirname(await journalPath(target)),
       `.${path.basename(target)}.lifecycle-lock-tmp-${stale.owner_id}-` +
         `${stale.operation_id}-${stale.pid}-${hostDigest}-${"f".repeat(32)}`,
     );
     await fs.writeFile(residue, `${JSON.stringify(stale)}\n`, { mode: 0o600 });
     assert.equal(await recoverIncompletePublication(target), false);
     assert.equal(await fs.stat(residue).then(() => true, () => false), false);
-    assert.equal((await readJson(lockPath(target))).state, "released");
+    assert.equal((await readJson(await lockPath(target))).state, "released");
   });
 
   await withTemporaryDirectory("stnl-publisher-foreign-host-lock-", async (base) => {
     const { target } = await buildResumeFixture(base);
-    const foreign = strictLockRecord({ hostname: "definitely-another-host.invalid", pid: 2_147_483_647 });
+    const foreign = await strictLockRecord(target,{ hostname: "definitely-another-host.invalid", pid: 2_147_483_647 });
     await writeLock(target, foreign);
     await assert.rejects(
       recoverIncompletePublication(target),
       /another publisher already holds the workspace lock|execution publication: lock already exists/u,
     );
-    assert.deepEqual(await readJson(lockPath(target)), foreign);
+    assert.deepEqual(await readJson(await lockPath(target)), foreign);
   });
 });
 
@@ -1616,7 +1617,7 @@ test("path aliases and malformed journal evidence are rejected without destructi
       /candidate must not contain symlink components/u,
     );
     assert.equal(snapshot(target), before);
-    assert.equal(await fs.stat(lockPath(target)).then(() => true, () => false), false);
+    assert.equal(await fs.stat(await lockPath(target)).then(() => true, () => false), false);
   });
 
   await withTemporaryDirectory("stnl-publisher-malformed-journal-", async (base) => {
@@ -1629,16 +1630,17 @@ test("path aliases and malformed journal evidence are rejected without destructi
     });
     assertKilled(result, "JOURNAL_PREPARED");
     const before = snapshot(target);
-    await fs.writeFile(journalPath(target), '{"version":2,"version":2}\n', "utf8");
+    await fs.writeFile(await journalPath(target), '{"version":2,"version":2}\n', "utf8");
     await assert.rejects(recoverIncompletePublication(target), /duplicate JSON key 'version'/u);
     assert.equal(snapshot(target), before);
-    assert.equal(await fs.stat(journalPath(target)).then(() => true, () => false), true);
+    assert.equal(await fs.stat(await journalPath(target)).then(() => true, () => false), true);
     assert.notDeepEqual(await transactionResidues(target), []);
   });
 
   await withTemporaryDirectory("stnl-publisher-orphan-residue-", async (base) => {
     const { target } = await buildResumeFixture(base);
-    const orphan = path.join(path.dirname(target), `.${path.basename(target)}.lifecycle-stage-${"c".repeat(32)}`);
+    const orphan = path.join(path.dirname(await journalPath(target)), `.${path.basename(target)}.lifecycle-stage-${"c".repeat(32)}`);
+    await fs.mkdir(path.dirname(orphan),{recursive:true});
     await fs.mkdir(orphan);
     const before = JSON.stringify(workspaceSnapshot(target));
     await assert.rejects(recoverIncompletePublication(target), /orphan publisher residues require manual inspection/u);
@@ -1730,9 +1732,10 @@ test("pre-journal recovery requires a durable common lease binding and preserves
         });
         assertKilled(result, checkpoint);
         if (checkpoint === "LOCK_BUILD_ALLOCATED") {
-          const names = await fs.readdir(path.dirname(target));
+          const materialParent=path.dirname(await journalPath(target));
+          const names = await fs.readdir(materialParent);
           const controls = await captureFileEvidence(names.filter(name => name.startsWith('.'))
-            .map(name => path.join(path.dirname(target), name)));
+            .map(name => path.join(materialParent, name)));
           await assert.rejects(recoverIncompletePublication(target), /no unambiguous durable lifecycle claim/u);
           await assertFileEvidencePreserved(controls);
           assert.equal(snapshot(target), before);
@@ -1743,7 +1746,7 @@ test("pre-journal recovery requires a durable common lease binding and preserves
         assert.equal(await recoverIncompletePublication(target), false);
         assert.equal(snapshot(target), before);
         assert.deepEqual(await transactionResidues(target), []);
-        const names = await fs.readdir(path.dirname(target));
+        const names = await fs.readdir(path.dirname(await journalPath(target)));
         assert.equal(names.some((name) => name.includes("lifecycle-lock-tmp-")), false);
       });
     });
@@ -1759,10 +1762,10 @@ test("pre-journal recovery requires a durable common lease binding and preserves
         },
       });
       assertKilled(result, "LOCK_TEMP_WRITTEN");
-      const name = (await fs.readdir(path.dirname(target))).find((entry) =>
+      const name = (await fs.readdir(path.dirname(await journalPath(target)))).find((entry) =>
         entry.includes("lifecycle-lock-tmp-"));
       assert.ok(name);
-      const residue = path.join(path.dirname(target), name);
+      const residue = path.join(path.dirname(await journalPath(target)), name);
       await fs.writeFile(residue, "foreign truncated sentinel", "utf8");
       await assert.rejects(
         recoverIncompletePublication(target),
@@ -1776,8 +1779,8 @@ test("pre-journal recovery requires a durable common lease binding and preserves
     await withTemporaryDirectory("stnl-publisher-claim-name-mismatch-", async (base) => {
       const { target } = await buildResumeFixture(base);
       assert.equal(await recoverIncompletePublication(target), false);
-      const seed = await readJson(lockPath(target));
-      const stale = strictLockRecord({
+      const seed = await readJson(await lockPath(target));
+      const stale = await strictLockRecord(target,{
         owner_id: "1".repeat(32),
         operation_id: "2".repeat(32),
         hostname: seed.hostname,
@@ -1785,7 +1788,7 @@ test("pre-journal recovery requires a durable common lease binding and preserves
       });
       const hostDigest = createHash("sha256").update(stale.hostname).digest("hex").slice(0, 16);
       const residue = path.join(
-        path.dirname(target),
+        path.dirname(await journalPath(target)),
         `.${path.basename(target)}.lifecycle-lock-tmp-${"3".repeat(32)}-` +
           `${stale.operation_id}-${stale.pid}-${hostDigest}-${"4".repeat(32)}`,
       );
@@ -1812,7 +1815,7 @@ test("recovery lock is transaction-bound across crash, recovery crash, and final
       },
     });
     assertKilled(first, "TARGET_TO_BACKUP_RENAMED");
-    const firstJournal = await readJson(journalPath(target));
+    const firstJournal = await readJson(await journalPath(target));
 
     const second = runCli("RESUME", target, candidate, manifest, {
       environment: {
@@ -1821,8 +1824,8 @@ test("recovery lock is transaction-bound across crash, recovery crash, and final
       },
     });
     assertKilled(second, "DURING_ROLLBACK");
-    const recoveryLock = await readJson(lockPath(target));
-    const recoveryJournal = await readJson(journalPath(target));
+    const recoveryLock = await readJson(await lockPath(target));
+    const recoveryJournal = await readJson(await journalPath(target));
     assert.equal(recoveryLock.transaction_id, firstJournal.transaction_id);
     assert.equal(recoveryJournal.transaction_id, firstJournal.transaction_id);
     assert.equal(recoveryJournal.phase, "rollback_required");
@@ -1838,8 +1841,8 @@ test("lock-residue quarantine is revalidated immediately before deletion", async
   await withTemporaryDirectory("stnl-publisher-lock-residue-quarantine-", async (base) => {
     const { target } = await buildResumeFixture(base);
     assert.equal(await recoverIncompletePublication(target), false);
-    const seed = await readJson(lockPath(target));
-    const stale = strictLockRecord({
+    const seed = await readJson(await lockPath(target));
+    const stale = await strictLockRecord(target,{
       owner_id: "1".repeat(32),
       operation_id: "2".repeat(32),
       hostname: seed.hostname,
@@ -1847,7 +1850,7 @@ test("lock-residue quarantine is revalidated immediately before deletion", async
     });
     const hostDigest = createHash("sha256").update(stale.hostname).digest("hex").slice(0, 16);
     const residue = path.join(
-      path.dirname(target),
+      path.dirname(await journalPath(target)),
       `.${path.basename(target)}.lifecycle-lock-tmp-${stale.owner_id}-` +
         `${stale.operation_id}-${stale.pid}-${hostDigest}-${"f".repeat(32)}`,
     );
@@ -1860,11 +1863,11 @@ test("lock-residue quarantine is revalidated immediately before deletion", async
       delete process.env[TEST_ONLY_MUTATE_WINDOW_ENV];
       delete process.env[TEST_ONLY_ACK_ENV];
     }
-    const foreign = (await fs.readdir(path.dirname(target))).find((name) =>
+    const foreign = (await fs.readdir(path.dirname(await journalPath(target)))).find((name) =>
       name.includes("lifecycle-lock-retired-") && !name.endsWith("test-owned-original"));
     assert.ok(foreign);
     assert.equal(
-      await fs.readFile(path.join(path.dirname(target), foreign), "utf8"),
+      await fs.readFile(path.join(path.dirname(await journalPath(target)), foreign), "utf8"),
       "foreign lock residue quarantine sentinel\n",
     );
   });
@@ -1883,8 +1886,8 @@ test("a crash after owned-tree quarantine resumes cleanup without trusting path 
       },
     });
     assertKilled(result, "DURING_OWNED_REMOVAL");
-    assert.equal((await readJson(journalPath(target))).phase, "committed");
-    assert.ok((await fs.readdir(path.dirname(target))).some((name) =>
+    assert.equal((await readJson(await journalPath(target))).phase, "committed");
+    assert.ok((await fs.readdir(path.dirname(await journalPath(target)))).some((name) =>
       name.includes("lifecycle-retired-tree-")));
     assert.equal(await recoverIncompletePublication(target), true);
     assert.equal(snapshot(target), candidateState);
@@ -1904,17 +1907,17 @@ test("foreign content added inside a crashed quarantine is preserved and blocks 
       },
     });
     assertKilled(result, "DURING_OWNED_REMOVAL");
-    const retiredName = (await fs.readdir(path.dirname(target))).find((name) =>
+    const retiredName = (await fs.readdir(path.dirname(await journalPath(target)))).find((name) =>
       name.includes("lifecycle-retired-tree-"));
     assert.ok(retiredName);
-    const sentinel = path.join(path.dirname(target), retiredName, "foreign-after-crash.txt");
+    const sentinel = path.join(path.dirname(await journalPath(target)), retiredName, "foreign-after-crash.txt");
     await fs.writeFile(sentinel, "foreign quarantine content\n", "utf8");
     await assert.rejects(
       recoverIncompletePublication(target),
       /quarantined backup during recovery changed bytes or topology/u,
     );
     assert.equal(await fs.readFile(sentinel, "utf8"), "foreign quarantine content\n");
-    assert.equal((await readJson(journalPath(target))).phase, "committed");
+    assert.equal((await readJson(await journalPath(target))).phase, "committed");
   });
 });
 
@@ -1931,8 +1934,8 @@ test("a crash during ownership-sidecar retirement is recovered from the transact
       },
     });
     assertKilled(result, "DURING_OWNERSHIP_REMOVAL");
-    assert.equal(await fs.stat(journalPath(target)).then(() => true, () => false), false);
-    assert.ok((await fs.readdir(path.dirname(target))).some((name) =>
+    assert.equal(await fs.stat(await journalPath(target)).then(() => true, () => false), false);
+    assert.ok((await fs.readdir(path.dirname(await journalPath(target)))).some((name) =>
       name.includes("lifecycle-ownership-") && name.includes(".retired-")));
     assert.equal(await recoverIncompletePublication(target), false);
     assert.equal(snapshot(target), candidateState);
@@ -2057,7 +2060,7 @@ test("committed foreign backup, stage, and quarantine replacements are never del
         /transaction source\/backup changed filesystem identity/u,
       );
       assert.equal(await fs.readFile(path.join(foreignBackup, "sentinel.txt"), "utf8"), "foreign backup sentinel\n");
-      assert.equal((await readJson(journalPath(target))).phase, "committed");
+      assert.equal((await readJson(await journalPath(target))).phase, "committed");
     });
   });
 
@@ -2079,7 +2082,7 @@ test("committed foreign backup, stage, and quarantine replacements are never del
         /transaction-owned stage changed filesystem identity/u,
       );
       assert.equal(await fs.readFile(path.join(foreignStage, "sentinel.txt"), "utf8"), "foreign stage sentinel\n");
-      assert.equal((await readJson(journalPath(target))).phase, "committed");
+      assert.equal((await readJson(await journalPath(target))).phase, "committed");
     });
   });
 
@@ -2099,11 +2102,11 @@ test("committed foreign backup, stage, and quarantine replacements are never del
         delete process.env[TEST_ONLY_MUTATE_WINDOW_ENV];
         delete process.env[TEST_ONLY_ACK_ENV];
       }
-      const retired = (await fs.readdir(path.dirname(target))).find((name) =>
+      const retired = (await fs.readdir(path.dirname(await journalPath(target)))).find((name) =>
         name.includes("lifecycle-retired-tree-") && !name.endsWith("test-owned-original"));
       assert.ok(retired);
       assert.equal(
-        await fs.readFile(path.join(path.dirname(target), retired, "foreign-sentinel.txt"), "utf8"),
+        await fs.readFile(path.join(path.dirname(await journalPath(target)), retired, "foreign-sentinel.txt"), "utf8"),
         "foreign quarantine sentinel\n",
       );
     });
@@ -2125,13 +2128,13 @@ test("foreign ownership sidecars and ownership temps never authorize transaction
           },
         });
         assertKilled(result, "JOURNAL_PREPARED");
-        const journal = await readJson(journalPath(target));
+        const journal = await readJson(await journalPath(target));
         const ownershipName = `.${path.basename(target)}.lifecycle-ownership-${journal.transaction_id}.json`;
-        const ownership = path.join(path.dirname(target), ownershipName);
+        const ownership = path.join(path.dirname(await journalPath(target)), ownershipName);
         let sentinel = ownership;
         if (corruption === "temp") {
           sentinel = path.join(
-            path.dirname(target),
+            path.dirname(await journalPath(target)),
             `.${path.basename(target)}.lifecycle-ownership-tmp-${journal.transaction_id}-${"f".repeat(32)}`,
           );
         }
@@ -2142,8 +2145,87 @@ test("foreign ownership sidecars and ownership temps never authorize transaction
         );
         assert.equal(await fs.readFile(sentinel, "utf8"), `foreign ${corruption} ownership sentinel`);
         assert.equal(snapshot(target), sourceState);
-        assert.equal(await fs.stat(path.join(path.dirname(target), journal.stage)).then(() => true), true);
+        assert.equal(await fs.stat(path.join(path.dirname(await journalPath(target)), journal.stage)).then(() => true), true);
       });
     });
   }
+});
+
+
+async function addRealSymlinkGroup(root) {
+  const assets=path.join(root,'assets');await fs.mkdir(assets,{recursive:true});
+  const first=path.join(assets,'alias-a'),second=path.join(assets,'alias-b');
+  await fs.writeFile(path.join(assets,'target.bin'),'preserve target\n');
+  await fs.symlink('target.bin',first);
+  execFileSync('/bin/ln',['-P','-h','--',first,second],{shell:false,timeout:2000,maxBuffer:4096,stdio:['ignore','pipe','pipe']});
+  const a=await fs.lstat(first),b=await fs.lstat(second);assert(a.isSymbolicLink()&&b.isSymbolicLink());assert.equal(a.ino,b.ino);assert.equal(a.nlink,2);
+}
+async function assertRealSymlinkGroup(root) {
+  const first=path.join(root,'assets/alias-a'),second=path.join(root,'assets/alias-b');
+  const a=await fs.lstat(first),b=await fs.lstat(second);assert(a.isSymbolicLink()&&b.isSymbolicLink());assert.equal(a.ino,b.ino);assert.equal(a.nlink,2);assert.equal(b.nlink,2);
+  assert.equal(await fs.readlink(first),'target.bin');assert.equal(await fs.readlink(second),'target.bin');
+  assert.equal((await fs.lstat(path.join(root,'assets/target.bin'))).nlink,1);
+}
+
+test('normal INIT remains valid and RESUME CLOSE preserve independently created symlink hardlink groups',async t=>{
+  if(process.platform!=='darwin'){t.skip('Darwin no-follow capability');return;}
+  await withTemporaryDirectory('stnl-link-lifecycle-',async base=>{
+    const candidate=path.join(base,'candidate'),target=path.join(base,'workspace');await copyTree(path.join(TEST_DIRECTORY,'../../examples/validator-fixtures/ready'),candidate);
+    const sourceBefore=snapshot(candidate);
+    assert.equal(await publishCandidate('INIT',target,candidate),await fs.realpath(target));assert.equal(snapshot(candidate),sourceBefore);
+    // INIT forbids external assets. Existing external material is a RESUME/CLOSE preservation input.
+    await addRealSymlinkGroup(target);await assertRealSymlinkGroup(target);
+    const resumed=path.join(base,'resume-candidate'),manifest=path.join(base,'resume.json');await copyTree(target,resumed);
+    await fs.unlink(path.join(resumed,'assets/alias-b'));execFileSync('/bin/ln',['-P','-h','--',path.join(resumed,'assets/alias-a'),path.join(resumed,'assets/alias-b')],{shell:false,timeout:2000,maxBuffer:4096});
+    await writeResumeManifest(manifest,target);const resumedBefore=snapshot(resumed);
+    assert.equal(await publishCandidate('RESUME',target,resumed,{manifestPath:manifest}),await fs.realpath(target));await assertRealSymlinkGroup(target);assert.equal(snapshot(resumed),resumedBefore);
+    const closed=runCli('CLOSE',target,null);assert.equal(closed.error,undefined);assert.equal(closed.status,0,closed.stderr);
+    const result=JSON.parse(closed.stdout);assert.equal(result.publication,'confirmed');assert.equal(result.cleanup,'complete');assert.equal(result.sourceExecutionDisposition.kind,'absent');
+    assert.equal(validateWorkspace(target).closed,true);await assertRealSymlinkGroup(target);assert.equal(snapshot(candidate),sourceBefore);assert.equal(snapshot(resumed),resumedBefore);
+  });
+});
+
+test('symlink hardlink command failure prevents normal CLOSE publication and preserves its source',async t=>{
+  if(process.platform!=='darwin'){t.skip('Darwin no-follow capability');return;}
+  await withTemporaryDirectory('stnl-link-failure-',async base=>{
+    const target=path.join(base,'workspace');await copyTree(path.join(TEST_DIRECTORY,'../../examples/validator-fixtures/ready'),target);await addRealSymlinkGroup(target);const before=snapshot(target);
+    const original=childProcess.execFileSync;let calls=0;childProcess.execFileSync=()=>{calls++;const e=new Error('controlled link permission refusal');e.code='EACCES';throw e;};syncBuiltinESMExports();
+    try{await assert.rejects(publishCandidate('CLOSE',target,null),/controlled link permission refusal/u);}finally{childProcess.execFileSync=original;syncBuiltinESMExports();}
+    assert.equal(calls,1);assert.equal(snapshot(target),before);assert.equal(validateWorkspace(target).closed,false);
+    assert.deepEqual(await transactionResidues(target),[]);
+    assert.equal(await recoverIncompletePublication(target),false);assert.equal(snapshot(target),before);
+  });
+});
+
+
+test('INIT still refuses external symlink hardlink assets without consuming candidate',async t=>{
+  if(process.platform!=='darwin'){t.skip('Darwin no-follow capability');return;}
+  await withTemporaryDirectory('stnl-link-init-refusal-',async base=>{
+    const candidate=path.join(base,'candidate'),target=path.join(base,'workspace');
+    await copyTree(path.join(TEST_DIRECTORY,'../../examples/validator-fixtures/ready'),candidate);await addRealSymlinkGroup(candidate);const before=snapshot(candidate);
+    await assert.rejects(publishCandidate('INIT',target,candidate),/INIT created an out-of-contract path/u);
+    assert.equal(snapshot(candidate),before);await assertRealSymlinkGroup(candidate);assert.equal(await fs.stat(target).catch(()=>null),null);assert.deepEqual(await transactionResidues(target),[]);
+  });
+});
+
+test('normal CLOSE preserves a foreign stage replacement after the symlink command',async t=>{
+  if(process.platform!=='darwin'){t.skip('Darwin no-follow capability');return;}
+  await withTemporaryDirectory('stnl-link-foreign-stage-',async base=>{
+    const target=path.join(base,'workspace');await copyTree(path.join(TEST_DIRECTORY,'../../examples/validator-fixtures/ready'),target);await addRealSymlinkGroup(target);const before=snapshot(target);
+    const original=childProcess.execFileSync;let foreignStage,retained,calls=0;
+    childProcess.execFileSync=(program,args,options)=>{
+      calls++;const result=original(program,args,options);
+      foreignStage=path.dirname(path.dirname(args[3]));retained=foreignStage+'.retained-fixture';
+      syncFs.renameSync(foreignStage,retained);syncFs.mkdirSync(foreignStage);syncFs.writeFileSync(path.join(foreignStage,'foreign'),'preserve');return result;
+    };syncBuiltinESMExports();
+    try{await assert.rejects(publishCandidate('CLOSE',target,null),/ownership|identity|inode/u);}finally{childProcess.execFileSync=original;syncBuiltinESMExports();}
+    assert.equal(calls,1);assert.equal(snapshot(target),before);assert.equal(validateWorkspace(target).closed,false);
+    assert.equal(await fs.readFile(path.join(foreignStage,'foreign'),'utf8'),'preserve');assert.deepEqual(await fs.readdir(foreignStage),['foreign']);
+    const retainedA=await fs.lstat(path.join(retained,'assets/alias-a')),retainedB=await fs.lstat(path.join(retained,'assets/alias-b'));
+    assert(retainedA.isSymbolicLink()&&retainedB.isSymbolicLink());assert.equal(retainedA.ino,retainedB.ino);assert.equal(retainedA.nlink,2);
+    assert((await transactionResidues(target)).length>0,'ownership evidence must be retained instead of removing the foreign tree');
+    const foreignBefore=snapshot(foreignStage),retainedBefore=snapshot(retained);
+    await assert.rejects(recoverIncompletePublication(target));
+    assert.equal(snapshot(target),before);assert.equal(snapshot(foreignStage),foreignBefore);assert.equal(snapshot(retained),retainedBefore);
+  });
 });

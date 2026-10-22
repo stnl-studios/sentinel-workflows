@@ -299,12 +299,12 @@ function checkRunnerContract(contract, readmeFile, platform) {
   if(platform==='codex') {
     requirePattern(contract, /Native mode without a broker requires explicit `automaticCheckRound` equal to `1\/3`, `2\/3`, or `3\/3`/u, 'R029_FIELD_SHAPE', 'native round requirement is missing');
     requirePattern(contract, /No legacy `findingsCycle` diagnostic is supported/u, 'R029_FIELD_SHAPE', 'unsupported cycle diagnostics must not acquire authority');
-    requirePattern(contract, /O fluxo managed não está disponível neste recorte/u, 'R029_FIELD_SHAPE', 'unavailable managed execution must be explicit');
+    requirePattern(contract,/Only native transport is supported/u,'R029_FIELD_SHAPE','native-only transport contract is missing');
   } else {
-  requirePattern(contract, /managed ownership and active IDs come only from `FINDINGS_OWNERSHIP`/u, "R029_FIELD_SHAPE", "managed findings ownership must be sealed, not inferred from legacy text");
-  requirePattern(contract, /`automaticCheckRound` is optional diagnostic data in managed mode: history uses the round admitted and sealed by the broker/u, "R029_FIELD_SHAPE", "managed round ownership must come from the broker");
+  requirePattern(contract,/Only native transport is supported/u,'R029_FIELD_SHAPE','native-only transport contract is missing');
+  forbidPattern(contract,/managed ownership|optional diagnostic data in managed mode/u,'R029_FIELD_SHAPE','removed managed ownership must not remain operational');
   requirePattern(contract, /Native mode without a broker requires explicit `automaticCheckRound` equal to `1\/3`, `2\/3`, or `3\/3`/u, "R029_FIELD_SHAPE", "native round requirement is missing");
-  requirePattern(contract, /optional legacy `findingsCycle` never defines ownership in either mode/u, "R029_FIELD_SHAPE", "legacy cycle cannot grant ownership");
+  requirePattern(contract, /optional legacy `findingsCycle` never defines ownership/u, "R029_FIELD_SHAPE", "legacy cycle cannot grant ownership");
   }
   if(platform==='codex')requirePattern(contract,/Preserve the complete first concluded response; format refusal follows the current controller policy and never a manual replacement of those bytes/u,'R009_VALIDATION_ATTEMPT','native capture must preserve its first literal response without manual repair');
   for (const [operation, section] of [["EXECUTE_SLICE", execute], ["APPLY_FINDINGS", findings]]) {
@@ -656,10 +656,12 @@ function checkLifecycleStatic(root) {
   for (const [marker, label] of [
     ["never remove, renumber, reuse, fill gaps", "immutable IDs"], ["retired_reason", "tombstone reason"],
     ["runtime/create-readiness-attestation.mjs", "attestation creator"], ["--readiness-attestation", "attestation binding"],
-    ["CLOSE <TARGET> <CANDIDATE>", "direct CLOSE publisher binding"], ["Recheck backup digest before promotion", "post-rename verification"],
+    ["CLOSE <TARGET>", "direct target-only CLOSE publisher binding"], ["Recheck backup digest before promotion", "post-rename verification"],
   ]) if (!lifecycleText.includes(marker)) reject("C015_LIFECYCLE_AUTHORITY", `lifecycle contracts lack ${label}`);
+  if(/CLOSE\s+<TARGET>\s+<CANDIDATE>/u.test(lifecycleText))reject('C015_LIFECYCLE_AUTHORITY','external CLOSE candidate route remains');
   const readme = read(path.join(lifecycle, "README.md"));
-  if (!read(path.join(root, ".gitignore")).includes(".*.lifecycle.lock") || !readme.includes(".*.lifecycle.lock")) reject("C015_LIFECYCLE_AUTHORITY", "persistent publisher lock contract is missing");
+  const ignored=read(path.join(root,'.gitignore'));
+  if(!ignored.includes('.*.lifecycle.lock')||!ignored.includes('/tmp')||!readme.includes('materialRoot/lifecycle.lock')||!readme.includes('common lease remains outside'))reject('C015_LIFECYCLE_AUTHORITY','coordinated publisher locator or legacy exclusion contract is missing');
 }
 
 function parseArguments(argv) {

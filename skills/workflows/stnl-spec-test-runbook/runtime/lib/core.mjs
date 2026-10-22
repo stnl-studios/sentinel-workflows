@@ -898,7 +898,8 @@ export async function inspectWorkspace(specPath, scopeValue, selectionValue, opt
   const selection = normalizeSelection(scope, selectionValue);
   const mandatorySources = [workspace.authorityPath, ...(await canonicalSharedSources(workspace))];
   if (new Set(["EXECUTION", "SLICE", "TASK", "MULTI_SLICE"]).has(scope)) {
-    await inspectExecutionState(workspace.authorityPath);
+    const execution=await inspectExecutionState(workspace.authorityPath);
+    if(execution.state==='SPEC_CLOSED')throw Object.assign(new Error('SPEC_CLOSED: the closed document has no current execution or historical slice sources for this selection'),{code:'SPEC_CLOSED'});
   }
 
   if (scope === "EXECUTION") {

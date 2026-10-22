@@ -15,15 +15,16 @@ const run=promisify(execFile),json=x=>Buffer.from(JSON.stringify(x)+'\n');
 const raw=x=>`sha256:${createHash('sha256').update(x).digest('hex')}`;
 const section=(text,name,body)=>text.replace(new RegExp(`(^## ${name}\\n\\n)[\\s\\S]*?(?=^## |$(?![\\s\\S]))`,'mu'),(_,head)=>head+body+'\n\n');
 
-export async function currentImage(test,{kind='native-s1',sharedInput=false,sharedInputAll=false,behaviorCheck=false,spaces=false,independent=false}={}) {
+export async function currentImage(test,{kind='native-s1',sharedInput=false,sharedInputAll=false,behaviorCheck=false,spaces=false,independent=false,documentarySource=null}={}) {
   if(!['native-s1','managed-s1','managed-s2','two-s2','three-s2','s0','disjoint-s0'].includes(kind))throw new Error('unknown current seed profile');
   if(independent&&kind!=='two-s2')throw new Error('independent source setup requires the two-s2 fixture');
   const parent=path.resolve(spaces?'tmp/current seeds with spaces':'tmp/current-seeds');await fs.mkdir(parent,{recursive:true});
   const root=await fs.realpath(await fs.mkdtemp(path.join(parent,'ec1-')));
   test?.after(()=>fs.rm(root,{recursive:true,force:true}));
-  const specPath=path.join(root,spaces?'docs/área Ω/requirements.md':'requirements.md');
+  const specPath=path.join(root,documentarySource?'spec/feature_spec.md':spaces?'docs/área Ω/requirements.md':'requirements.md');
   await fs.mkdir(path.dirname(specPath),{recursive:true});
-  await fs.writeFile(specPath,independent
+  if(documentarySource)await fs.cp(documentarySource,path.dirname(specPath),{recursive:true});
+  else await fs.writeFile(specPath,independent
     ?'# Current greeting\n\nAC-001: Export the src greeting and verify it by its prepared node test.\nAC-002: Export the independent other greeting and verify it by its prepared node test.\n'
     :'# Current greeting\n\nAC-001: Export a deterministic greeting and verify it by node --test.\n');
   await fs.writeFile(path.join(root,'.gitignore'),'/tmp/\n');
@@ -40,7 +41,7 @@ export async function currentImage(test,{kind='native-s1',sharedInput=false,shar
   }
   if(sharedInput)await fs.writeFile(path.join(root,'shared-config.json'),'{"greeting":"shared"}\n');
   const artifacts=new Map();
-  for(const [name,bytes] of initialArtifacts({form:'standalone'})) {
+  for(const [name,bytes] of initialArtifacts({form:documentarySource?'lifecycle':'standalone'})) {
     if(!two&&/slice-02/.test(name))continue;
     let text=bytes.toString().replaceAll(REQUIREMENTS,before.requirementsAuthority).replaceAll('Pay','Greeting').replaceAll('pay','greeting').replaceAll('- Plan revision: 1','- Plan revision: 2');
     const second=name.includes('slice-02'),directory=second?'other':'src',base=path.dirname(path.join(execution,name));

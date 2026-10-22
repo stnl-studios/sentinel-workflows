@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 
 import assert from "node:assert/strict";
-import { mkdtemp, cp, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, cp, mkdir, readFile, readdir, realpath, rm, stat, writeFile, symlink, lstat, readlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { spawnSync } from "node:child_process";
+import { spawnSync, execFileSync } from "node:child_process";
 import test from "node:test";
 import {
   checkDistributableSkill,
@@ -17,7 +17,6 @@ const SOURCE_SKILL_ROOT = join(REPOSITORY_ROOT, "skills", "workflows", "stnl-spe
 const ENTRYPOINTS = Object.freeze({
   validator: "validate-spec-lifecycle.mjs",
   attestation: "create-readiness-attestation.mjs",
-  renderer: "build-closed-spec.mjs",
   publisher: "publish-spec-lifecycle.mjs",
   initCandidatePreparer: "prepare-init-candidate.mjs",
 });
@@ -30,7 +29,11 @@ async function assertSelfContained(skillRoot) {
 }
 
 function runNode(entrypoint, args, options = {}) {
-  const result = spawnSync(process.execPath, [entrypoint, ...args], {
+  const rootArguments = basename(entrypoint) === 'publish-spec-lifecycle.mjs' && options.cwd ? [
+    '--product-root', options.cwd, '--temporary-root', join(options.cwd, 'tmp', 'sentinel'),
+    '--excluded-root', join(options.cwd, 'tmp', 'sentinel'),
+  ] : [];
+  const result = spawnSync(process.execPath, [entrypoint, ...args, ...rootArguments], {
     cwd: options.cwd,
     encoding: "utf8",
     env: {
@@ -78,6 +81,28 @@ async function writeResumeManifest(installedSkill, workspace, manifestPath) {
 
 test("distributed lifecycle skill is statically self-contained", async () => {
   await assertSelfContained(SOURCE_SKILL_ROOT);
+});
+
+test("copied publisher receives nonGit roots through the portable test launcher", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "stnl publisher launcher "));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const copiedSkill = join(root, "copied skill");
+  const consumer = join(root, "nonGit consumer");
+  const emptyPath = join(root, "empty executable path");
+  await cp(SOURCE_SKILL_ROOT, copiedSkill, { recursive: true, verbatimSymlinks: true });
+  await mkdir(consumer);
+  await mkdir(emptyPath);
+  const candidate = join(consumer, "candidate");
+  const target = join(consumer, "published target");
+  await cp(join(copiedSkill, "examples", "validator-fixtures", "ready"), candidate, {
+    recursive: true, verbatimSymlinks: true,
+  });
+  const options = { cwd: consumer, emptyPath };
+  assertCliPass(runNode(join(copiedSkill, "runtime", ENTRYPOINTS.publisher),
+    ["INIT", target, candidate], options), "copied nonGit publisher launcher");
+  // Non-publisher entrypoints must not receive publisher-only root flags.
+  assertCliPass(runNode(join(copiedSkill, "runtime", ENTRYPOINTS.validator),
+    ["workspace", target], options), "copied workspace validation");
 });
 
 test("self-containment checker accepts portable path syntax without false positives", async (t) => {
@@ -557,6 +582,14 @@ test("copying only the skill supports INIT, RESUME, READINESS, CLOSE, and recove
   );
 
   const attestation = join(consumer, "readiness attestation with spaces.json");
+  if(process.platform==='darwin'){
+    // Independent physical fixture; the installed producer must use its own fixed capability even with empty PATH.
+    const assets=join(activeTarget,'assets');await mkdir(assets);
+    await writeFile(join(assets,'target.bin'),'unchanged target');await symlink('target.bin',join(assets,'a'));
+    execFileSync('/bin/ln',['-P','-h','--',join(assets,'a'),join(assets,'b')],{shell:false,timeout:2000,maxBuffer:4096});
+    const a=await lstat(join(assets,'a')),b=await lstat(join(assets,'b'));
+    assert(a.isSymbolicLink()&&b.isSymbolicLink());assert.equal(a.ino,b.ino);assert.equal(a.nlink,2);
+  }
   assertCliPass(
     runNode(
       commands.attestation,
@@ -566,23 +599,9 @@ test("copying only the skill supports INIT, RESUME, READINESS, CLOSE, and recove
     "isolated readiness attestation",
   );
 
-  const closeCandidate = join(consumer, "candidate close with spaces");
-  assertCliPass(
-    runNode(
-      commands.renderer,
-      [activeTarget, closeCandidate],
-      { cwd: consumer, emptyPath },
-    ),
-    "isolated deterministic renderer",
-  );
-  assertCliPass(
-    runNode(
-      commands.publisher,
-      ["CLOSE", activeTarget, closeCandidate, "--readiness-attestation", attestation],
-      { cwd: consumer, emptyPath },
-    ),
-    "isolated CLOSE",
-  );
+  const close=runNode(commands.publisher,["CLOSE",activeTarget,"--readiness-attestation",attestation],{cwd:consumer,emptyPath});
+  assert.equal(close.error,undefined);assert.equal(close.status,0,close.stderr);
+  const closeResult=JSON.parse(close.stdout);assert.equal(closeResult.target,await realpath(activeTarget));assert.equal(closeResult.publication,'confirmed');assert.equal(closeResult.cleanup,'complete');assert.match(closeResult.transactionId,/^[0-9a-f]{32}$/u);assert.match(closeResult.closedSnapshotSha256,/^sha256:[0-9a-f]{64}$/u);assert.match(closeResult.requirementsAuthority,/^sha256:[0-9a-f]{64}$/u);assert.equal(closeResult.sourceExecutionDisposition.kind,'absent');
   assert.equal(
     await stat(attestation).catch((error) => (error?.code === "ENOENT" ? null : Promise.reject(error))),
     null,
@@ -594,6 +613,12 @@ test("copying only the skill supports INIT, RESUME, READINESS, CLOSE, and recove
   });
   assertCliPass(closedValidation, "isolated closed workspace validation");
   assert.match(closedValidation.stdout, /status=closed/u);
+  if(process.platform==='darwin'){
+    const assets=join(activeTarget,'assets'),a=await lstat(join(assets,'a')),b=await lstat(join(assets,'b'));
+    assert(a.isSymbolicLink()&&b.isSymbolicLink());assert.equal(a.ino,b.ino);assert.equal(a.nlink,2);assert.equal(b.nlink,2);
+    assert.equal(await readlink(join(assets,'a')),'target.bin');assert.equal(await readlink(join(assets,'b')),'target.bin');
+    assert.equal(await readFile(join(assets,'target.bin'),'utf8'),'unchanged target');assert.equal((await lstat(join(assets,'target.bin'))).nlink,1);
+  }
 
   const recoveryCandidate = join(consumer, "recovery candidate with spaces");
   const recoveryTarget = join(consumer, "recovery target with spaces");
@@ -624,16 +649,12 @@ test("copying only the skill supports INIT, RESUME, READINESS, CLOSE, and recove
     runNode(commands.validator, ["workspace", recoveryTarget], { cwd: consumer, emptyPath }),
     "isolated recovered workspace validation",
   );
-  const recoveryResidues = (await readdir(consumer)).filter(
-    (name) =>
-      name.startsWith(".recovery target with spaces.lifecycle-journal") ||
-      name.startsWith(".recovery target with spaces.lifecycle-stage-") ||
-      name.startsWith(".recovery target with spaces.lifecycle-backup-"),
-  );
-  assert.deepEqual(recoveryResidues, [], "recovery left journal, stage, or backup residue");
-  const releasedLock = JSON.parse(
-    await readFile(join(consumer, ".recovery target with spaces.lifecycle.lock"), "utf8"),
-  );
+  const installedKernel=await import(pathToFileURL(join(runtime,'lib/execution-publication.mjs')));
+  const filesystemContext={productRoot:consumer,temporaryRoot:join(consumer,'tmp/sentinel'),excludedRoots:[join(consumer,'tmp/sentinel')]};
+  const roles=await installedKernel.resolveExecutionFilesystemRoots({specRoot:recoveryTarget,executionRoot:join(recoveryTarget,'execution'),filesystemContext});
+  const recoveryResidues=(await readdir(roles.materialRoot)).filter(name=>name==='lifecycle-transaction.json'||name.includes('lifecycle-journal-')||name.includes('lifecycle-stage-')||name.includes('lifecycle-backup-'));
+  assert.deepEqual(recoveryResidues,[],'recovery left journal/stage/backup in its real material root');
+  const releasedLock=JSON.parse(await readFile(roles.lifecycleLock,'utf8'));
   assert.equal(releasedLock.state, "released");
   assert.match(releasedLock.operation_id, /^[0-9a-f]{32}$/u);
   assert.equal(

@@ -4,7 +4,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
-import { DOMAIN_SKILLS, WORKFLOW_SKILLS, canonicalSkillRelativePath } from "./lib/skill-registry.mjs";
+import { DOMAIN_SKILLS, WORKFLOW_SKILLS, canonicalSkillRelativePath, isDistributedSkillResource } from "./lib/skill-registry.mjs";
 
 const SCRIPT_ROOT = path.dirname(fileURLToPath(import.meta.url));
 const REPOSITORY_ROOT = path.resolve(SCRIPT_ROOT, "..");
@@ -52,14 +52,14 @@ function excluded(relativePath) {
     || parts.some((part, index) => part === "test" && parts[index - 1] === "runtime");
 }
 
-async function walkFiles(root, relative = "") {
+async function walkFiles(root, relative = "", skillName = null) {
   const found = [];
   const entries = await fs.readdir(path.join(root, relative), { withFileTypes: true });
   entries.sort((left, right) => left.name.localeCompare(right.name, "en"));
   for (const entry of entries) {
     const child = path.join(relative, entry.name);
-    if (excluded(child)) continue;
-    if (entry.isDirectory()) found.push(...await walkFiles(root, child));
+    if (excluded(child)||!isDistributedSkillResource(skillName,toPosix(child))) continue;
+    if (entry.isDirectory()) found.push(...await walkFiles(root, child,skillName));
     else if (entry.isFile()) found.push(child);
   }
   return found;
@@ -67,7 +67,7 @@ async function walkFiles(root, relative = "") {
 
 async function readSkillSource(repositoryRoot, name) {
   const sourceRoot = path.dirname(path.join(repositoryRoot, canonicalSkillRelativePath(name)));
-  const files = await walkFiles(sourceRoot);
+  const files = await walkFiles(sourceRoot,"",name);
   if (files.length === 0) throw new Error(`skill source is empty: ${sourceRoot}`);
   return new Map(await Promise.all(files.map(async (relative) => [
     toPosix(relative), await fs.readFile(path.join(sourceRoot, relative)),

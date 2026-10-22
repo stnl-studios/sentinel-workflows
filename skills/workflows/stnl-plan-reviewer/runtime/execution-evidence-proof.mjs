@@ -365,20 +365,18 @@ function baseline(value, owner, round, context, claims, label) {
 function captureShape(value, transport, label, profile) {
   const common = ['transport', 'rawResponse', 'receipt', 'baselineCapture', 'verificationObservation', 'removalProofs'];
   const native = ['origin', 'dispatch', 'agentBinding', 'agentClaim', 'concludedToolResult'];
-  const managed = ['managedContext', 'active', 'started', 'events', 'closedSupervisor', 'latest', 'runtimeIdentity'];
-  closed(value, [...common, ...(transport === 'native' ? native : managed),
+  if(transport!=='native'||value.transport!=='native')fail('UNSUPPORTED_FORMAT',`${label}: native transport required`);
+  closed(value, [...common, ...native,
     ...(profile === 'current-validation' ? ['validationRequest'] : profile === 'current-findings' ? ['applyRequest'] : [])], label);
   if (value.transport !== transport) invalid(`${label}: mixed transports`);
   dense(value.removalProofs, `${label}.removalProofs`);
-  if (transport === 'managed') dense(value.runtimeIdentity, `${label}.runtimeIdentity`);
-  for (const key of [...common, ...(transport === 'native' ? native : managed)]) {
+  for (const key of [...common, ...native]) {
     if (key === 'transport' || key === 'removalProofs' || key === 'runtimeIdentity' || (key === 'verificationObservation' && value[key] === null)) continue;
     bytes(value[key], `${label}.${key}`);
   }
   if (profile === 'current-validation') bytes(value.validationRequest, `${label}.validationRequest`);
   if (profile === 'current-findings') bytes(value.applyRequest, `${label}.applyRequest`);
   for (const item of value.removalProofs) bytes(item, `${label}.removalProof`);
-  if (transport === 'managed') for (const item of value.runtimeIdentity) bytes(item, `${label}.runtimeIdentity`);
 }
 function body(value, key, label) {
   if (!value || typeof value !== 'object' || !Object.hasOwn(value, key)) incomplete(`${label}: missing ${key}`);
@@ -455,114 +453,6 @@ export function projectNativeJudgment({origin,observation,requestBytes=null,agen
     requestSha256:observation.binding.requestSha256,result,
     ...(operation==='VALIDATE_SLICE'?{newFindings:answer.newFindings}:{})});
 }
-function managedEvents(cap, receipt, stem, rawText, round) {
-  const {text} = textBytes(cap.events, `round ${round} events`);
-  const lines = text.endsWith('\n') ? text.slice(0, -1).split('\n') : text.split('\n');
-  if (!lines.length || lines.some(line => !line)) invalid(`round ${round}: blank SDK event line`);
-  let thread = null; let threadStarts = 0; let pending = false; let completed = 0; let finalMessage = null; let last = null;
-  const starts = new Map(); const endings = new Set();
-  for (const [index, line] of lines.entries()) {
-    let event;
-    try { event = parseCurrentJson(line); } catch (error) { invalid(`round ${round} events line ${index + 1}: ${error.message}`); }
-    plain(event, `round ${round} events line ${index + 1}`);
-    if (event.operationId !== `runner-${stem}` || event.item?.type === 'collab_tool_call') uncertain(`round ${round}: SDK event identity/collaboration`);
-    if (event.type === 'error' || event.type === 'turn.failed') uncertain(`round ${round}: SDK error`);
-    if (event.type === 'thread.started') { if (thread !== null && thread !== event.thread_id) uncertain(`round ${round}: SDK thread changed`); thread = event.thread_id; threadStarts += 1; }
-    if (event.type === 'turn.started') { if (threadStarts !== 1 || pending || completed) uncertain(`round ${round}: SDK turn overlap`); pending = true; finalMessage = null; }
-    if (event.type === 'item.completed' && event.item?.type === 'agent_message') { if (!pending) uncertain(`round ${round}: final message outside turn`); finalMessage = event.item.text; }
-    if (event.type === 'turn.completed') { if (!pending || typeof finalMessage !== 'string') uncertain(`round ${round}: incomplete SDK turn`); pending = false; completed += 1; }
-    if (event.item?.type === 'command_execution') {
-      const item = event.item;
-      if (!pending) uncertain(`round ${round}: SDK command outside turn`);
-      token(item.id, /^item_[0-9]+$/u, `round ${round} command id`);
-      if (event.type === 'item.started') {
-        if (starts.has(item.id)) uncertain(`round ${round}: duplicate command start`);
-        str(item.command, `round ${round} command`);
-        starts.set(item.id, item.command);
-      } else if (event.type === 'item.completed') {
-        if (!starts.has(item.id) || endings.has(item.id) || starts.get(item.id) !== item.command || !['completed','failed'].includes(item.status)
-          || !Number.isSafeInteger(item.exit_code)) uncertain(`round ${round}: command completion differs`);
-        endings.add(item.id);
-      }
-    }
-    last = event.type;
-  }
-  if (threadStarts !== 1 || thread !== receipt.threadId || pending || completed !== 1 || last !== 'turn.completed' || finalMessage !== rawText
-    || starts.size !== endings.size) uncertain(`round ${round}: SDK turn did not conclude exactly`);
-  if ([...starts.values()].some(command => /^(?:\/bin\/(?:zsh|bash|sh) -lc ['"])?STNL_VERIFICATION_COMMAND=1 [\s\S]+/u.test(command))) incomplete(`round ${round}: additional SDK verification command`);
-}
-function managedOrigin(cap, receipt, rawText, expectation, round, profile) {
-  if (Object.hasOwn(receipt, 'transport')) invalid(`round ${round}: managed receipt has mixed transport`);
-  const context = jsonBytes(cap.managedContext, `round ${round} managedContext`).value;
-  const active = jsonBytes(cap.active, `round ${round} active`).value;
-  const started = jsonBytes(cap.started, `round ${round} started`).value;
-  const supervisor = jsonBytes(cap.closedSupervisor, `round ${round} closedSupervisor`).value;
-  const latest = jsonBytes(cap.latest, `round ${round} latest`).value;
-  for (const [document, name] of [[context,'managedContext'],[active,'active'],[started,'started'],[supervisor,'closedSupervisor'],[latest,'latest']]) plain(document, `round ${round} ${name}`);
-  plain(active.officialPreflight, `round ${round} officialPreflight`);
-  const owner = expectation.owner;
-  if (context.specPath !== expectation.context.logicalAuthorityPath || context.workspace !== expectation.context.productRoot) mismatch(`round ${round}: managed ImageContext differs`);
-  if (context.version !== 4 || active.protocol !== 3 || active.operation !== owner.operation || context.operation !== owner.operation) fail('UNSUPPORTED_FORMAT', `round ${round}: managed context/protocol`);
-  for (const [doc,name] of [[context,'context'],[active.officialPreflight,'active.officialPreflight'],[started,'started'],[receipt,'receipt']]) ownerMatches(body(doc,'owner',name),owner,`round ${round} ${name}.owner`);
-  for (const [doc,name] of [[context,'context'],[active,'active']]) {
-    if (doc.operation !== owner.operation || doc.slice !== owner.slice || doc.workspace !== context.workspace) mismatch(`round ${round}: ${name} identity`);
-  }
-  if (active.officialPreflight.operation !== owner.operation || active.officialPreflight.slice !== owner.slice
-    || active.officialPreflight.exitCode !== 0 || active.officialPreflight.state !== context.state) mismatch(`round ${round}: official preflight identity`);
-  if (receipt.operation !== owner.operation || receipt.slice !== owner.slice) mismatch(`round ${round}: receipt identity`);
-  if (started.operation !== owner.operation || started.slice !== owner.slice) mismatch(`round ${round}: started identity`);
-  if (context.specPath !== active.officialPreflight.specPath || context.authority !== active.officialPreflight.authority
-    || context.authority !== started.authority || context.authority !== receipt.authority
-    || context.authority !== expectation.authority.context.requirementsAuthority) stale(`round ${round}: managed authority`);
-  if (context.specPath !== started.specPath && Object.hasOwn(started,'specPath')) mismatch(`round ${round}: started specPath`);
-  integer(active.sequence, `round ${round} sequence`, 1);
-  if (active.sequence !== started.sequence || active.sequence !== receipt.sequence || receipt.attempt !== round || started.attempt !== round
-    || receipt.runnerAgent !== 'stnl_validation_runner'
-    || (profile !== 'current-validation' && receipt.automaticCheckRound !== `${round}/3`)) mismatch(`round ${round}: managed invocation`);
-  if (profile === 'current-validation' && Object.hasOwn(receipt, 'automaticCheckRound')) mismatch(`round ${round}: managed automaticCheckRound`);
-  const stem = `${String(active.sequence).padStart(3,'0')}-${owner.operation.toLowerCase()}-${owner.slice}-attempt-${round}`;
-  const root = absolute(active.tmpdir, `round ${round} managed tmpdir`);
-  if (receipt.receiptFile !== path.join(root, `${stem}.receipt.json`)
-    || receipt.semanticResponseFile !== path.join(root, `${stem}.response.json`)
-    || receipt.eventsPath !== path.join(root, `${stem}.events.jsonl`)) mismatch(`round ${round}: managed paths`);
-  if (receipt.error != null || receipt.processError != null || receipt.providerError != null) uncertain(`round ${round}: managed tool error`);
-  str(receipt.threadId, `round ${round} managed threadId`);
-  if (receipt.formatRepair !== null && receipt.formatRepair?.attempted !== false) uncertain(`round ${round}: format repair unsupported`);
-  if (receipt.semanticResponseSha256 !== hex(utf8(rawText))) incomplete(`round ${round}: raw managed response hash`);
-  managedEvents(cap, receipt, stem, rawText, round);
-  if (context.identity === null || typeof context.identity !== 'object') incomplete(`round ${round}: runtime identity`);
-  closed(context.identity, ['snapshot','adapter','bridge','preflight','evidenceSerializer','runnerResultContract'], `round ${round} runtime identity`);
-  closed(context.identity.snapshot, ['path','mode'], `round ${round} snapshot identity`);
-  // Retained current proof identities are checked from embedded bytes only.
-  // This does not enable managed dispatch or resolve these historical paths.
-  const expectedPaths = {
-    adapter:'agents/codex/runtime/validation-runner.mjs', bridge:'agents/codex/runtime/managed-runner-bridge.mjs',
-    preflight:'agents/codex/runtime/managed-slice-preflight.mjs',
-    evidenceSerializer:'skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs',
-    runnerResultContract:'skills/workflows/stnl-slice-executor/runtime/runner-result-contract.mjs',
-  };
-  absolute(context.identity.snapshot.path, `round ${round} snapshot`);
-  token(context.identity.snapshot.mode, /^[0-7]{3,4}$/u, `round ${round} snapshot mode`);
-  const declared = new Set();
-  for (const [role, relativePath] of Object.entries(expectedPaths)) {
-    const identity = context.identity[role];
-    closed(identity, ['path','sha256','mode'], `round ${round} ${role}`);
-    if (identity.path !== path.join(context.identity.snapshot.path, relativePath)) stale(`round ${round}: ${role} path`);
-    token(identity.sha256, HASH, `round ${round} ${role} hash`);
-    token(identity.mode, /^[0-7]{3,4}$/u, `round ${round} ${role} mode`);
-    if (role === 'adapter' && (parseInt(identity.mode, 8) & 0o111) === 0) stale(`round ${round}: adapter not executable`);
-    declared.add(identity.sha256);
-  }
-  const actual = cap.runtimeIdentity.map(item => raw(bytes(item, `round ${round} runtime bytes`)));
-  if (!same(actual, [...new Set(actual)].sort(ordinal)) || !same([...declared].sort(ordinal), actual)) incomplete(`round ${round}: runtime identity bytes`);
-  const identity = {workspace:context.workspace,tmpdir:root,operation:owner.operation,sequence:active.sequence,slice:owner.slice};
-  for (const doc of [active,supervisor,latest]) for (const [key,value] of Object.entries(identity)) if (doc[key] !== value) mismatch(`round ${round}: managed ${key}`);
-  if (supervisor.pending !== false || supervisor.cancelledPending !== false || !Array.isArray(supervisor.errors)
-    || supervisor.errors.length || typeof supervisor.closedAt !== 'string' || !supervisor.closedAt) uncertain(`round ${round}: supervisor not closed`);
-  if (latest.authority !== context.authority) stale(`round ${round}: latest authority`);
-  return { dispatchId:`${owner.operationAttemptId}:${active.sequence}`, runnerId:receipt.threadId, receipt, supervisor, latest, active };
-}
-
 function areaContains(areas, name) {
   return areas.some(item => item.path === name || (item.kind === 'directory' && name.startsWith(`${item.path}/`)));
 }
@@ -575,13 +465,14 @@ function objectStore() {
   };
 }
 function sourcesFor(cap, store, profile) {
+  if(cap.transport!=='native')fail('UNSUPPORTED_FORMAT','capture sources require native transport');
   const base = {
     transport:cap.transport, rawResponse:store.add(cap.rawResponse), receipt:store.add(cap.receipt),
     verificationObservation:cap.verificationObservation === null ? null : store.add(cap.verificationObservation),
     removalProofs:cap.removalProofs.map(item => store.add(item)).sort(ordinal), legacyPreparation:null,
   };
   if (new Set(base.removalProofs).size !== base.removalProofs.length) invalid('duplicate removal proof bytes');
-  if (cap.transport === 'native') return {
+  return {
     ...base,
     origin:store.add(capsule(profile === 'current-validation' ? 'stnl-native-validation-origin-bundle-v1'
       : profile === 'current-findings' ? 'stnl-native-findings-origin-bundle-v1' : 'stnl-native-origin-bundle-v1', {
@@ -595,21 +486,6 @@ function sourcesFor(cap, store, profile) {
     })),
     concludedToolResult:store.add(cap.concludedToolResult),
   };
-  return {
-    ...base,
-    started:store.add(capsule(profile === 'current-validation' ? 'stnl-managed-validation-start-bundle-v1'
-      : profile === 'current-findings' ? 'stnl-managed-findings-start-bundle-v1' : 'stnl-managed-start-bundle-v1', {
-      contextUtf8:textBytes(cap.managedContext,'managed context').text, activeUtf8:textBytes(cap.active,'active').text,
-      startedUtf8:textBytes(cap.started,'started').text, baselineUtf8:textBytes(cap.baselineCapture,'baseline').text,
-      ...(profile === 'current-validation' ? {validationRequestUtf8:textBytes(cap.validationRequest,'validation request').text} : {}),
-      ...(profile === 'current-findings' ? {applyRequestUtf8:textBytes(cap.applyRequest,'apply request').text} : {}),
-    })),
-    events:store.add(cap.events),
-    closedSupervisor:store.add(capsule('stnl-managed-close-bundle-v1', {
-      supervisorUtf8:textBytes(cap.closedSupervisor,'supervisor').text, latestUtf8:textBytes(cap.latest,'latest').text,
-    })),
-    runtimeIdentity:cap.runtimeIdentity.map(item => store.add(item)).sort(ordinal),
-  };
 }
 function restoreCapsule(objects, id, format, keys, label) {
   const data = objects.get(id);
@@ -619,7 +495,7 @@ function restoreCapsule(objects, id, format, keys, label) {
   if (!versionedCapsule) closed(parsed, ['format', ...keys], label);
   else plain(parsed,label);
   if (parsed.format !== format) fail(
-    versionedCapsule && ['stnl-native-origin-bundle-v1','stnl-managed-start-bundle-v1'].includes(parsed.format)
+    versionedCapsule && parsed.format==='stnl-native-origin-bundle-v1'
       ? 'UNSUPPORTED_FORMAT' : 'UNSUPPORTED_FORMAT', `${label}: capsule format`);
   if (versionedCapsule) closed(parsed, ['format', ...keys], label);
   const restored = {};
@@ -628,6 +504,7 @@ function restoreCapsule(objects, id, format, keys, label) {
 }
 function restoreSources(record, objects, profile) {
   const sources = record.sources;
+  if(sources.transport!=='native')fail('UNSUPPORTED_FORMAT','persisted capture sources require native transport');
   const get = (id, label) => {
     if (id === null) return null;
     const item = objects.get(id);
@@ -649,15 +526,6 @@ function restoreSources(record, objects, profile) {
       ...(profile === 'current-findings' ? {applyRequest:origin.applyRequestUtf8} : {}),
       agentBinding:agent.agentUtf8,agentClaim:agent.claimUtf8,concludedToolResult:get(sources.concludedToolResult,'toolResult')};
   }
-  const start = restoreCapsule(objects,sources.started,profile === 'current-validation' ? 'stnl-managed-validation-start-bundle-v1'
-    : profile === 'current-findings' ? 'stnl-managed-findings-start-bundle-v1' : 'stnl-managed-start-bundle-v1',
-    ['contextUtf8','activeUtf8','startedUtf8','baselineUtf8',...(profile === 'current-validation' ? ['validationRequestUtf8'] : profile === 'current-findings' ? ['applyRequestUtf8'] : [])],'managed start capsule');
-  const close = restoreCapsule(objects,sources.closedSupervisor,'stnl-managed-close-bundle-v1',['supervisorUtf8','latestUtf8'],'managed close capsule');
-  return {...base, managedContext:start.contextUtf8,active:start.activeUtf8,started:start.startedUtf8,baselineCapture:start.baselineUtf8,
-    ...(profile === 'current-validation' ? {validationRequest:start.validationRequestUtf8} : {}),
-    ...(profile === 'current-findings' ? {applyRequest:start.applyRequestUtf8} : {}),
-    events:get(sources.events,'events'),closedSupervisor:close.supervisorUtf8,latest:close.latestUtf8,
-    runtimeIdentity:sources.runtimeIdentity.map(id => get(id,'runtimeIdentity'))};
 }
 
 // The two closed profiles share source and transport checks, with distinct formal
@@ -666,14 +534,12 @@ export function verifyCapturedInvocation(profile, cap, receipt, rawText, expecta
   if (!['initial-implementation', 'current-validation', 'current-findings'].includes(profile)) invalid('capture profile');
   plain(cap,`round ${round} capture`);
   const transport = receipt === undefined && profile !== 'current-validation' ? resolved : cap.transport;
-  if (!['native', 'managed'].includes(transport)) fail('UNSUPPORTED_FORMAT', 'capture transport');
+  if (transport!=='native') fail('UNSUPPORTED_FORMAT', 'capture transport');
   captureShape(cap, transport, `round ${round}`, profile);
   if (receipt === undefined) return;
   const verifiedResolved = profile === 'current-validation'
     ? recipeAndClaims(expectation.context, expectation.authority.delivery, expectation.owner.slice).resolved : resolved;
-  return cap.transport === 'native'
-    ? nativeOrigin(cap, receipt, rawText, expectation, round, verifiedResolved)
-    : managedOrigin(cap, receipt, rawText, expectation, round, profile);
+  return nativeOrigin(cap,receipt,rawText,expectation,round,verifiedResolved);
 }
 export function verifyWorkObservation(profile, value, owner, round, recipeInfo, baselineManifest, context, label) {
   if (!['initial-implementation', 'current-validation'].includes(profile)) invalid('observation profile');
@@ -857,48 +723,18 @@ export function restoreCaptureSources(profile, record, objects) {
   if (!['initial-implementation', 'current-validation', 'current-findings'].includes(profile)) invalid('source profile');
   return restoreSources(record, objects, profile);
 }
-// Only invocation-local bytes enter this link. In particular, managed close and
-// latest are unavailable when the next request is dispatched.
+// Only literal invocation-local native capture bytes define this causal link.
 export function findingsRoundCaptureSha256(cap) {
-  plain(cap, 'findings link capture');
-  if (!['native', 'managed'].includes(cap.transport)) fail('UNSUPPORTED_FORMAT', 'findings link transport');
-  // The link is also available before the aggregate managed close exists. Guard
-  // exactly its invocation-local projection; full capture guards remain mandatory
-  // at incorporation. Never read accessors while projecting.
+  plain(cap,'findings link capture');
+  if(cap.transport!=='native')fail('UNSUPPORTED_FORMAT','findings link transport');
   const hasRequest=Object.hasOwn(cap,'applyRequest');
-  const stable = ['transport',...(hasRequest?['applyRequest']:[]),'rawResponse','receipt','baselineCapture',
-    'verificationObservation','removalProofs', ...(cap.transport === 'native'
-      ? ['origin','dispatch','agentBinding','agentClaim','concludedToolResult']
-      : ['managedContext','active','started','events','runtimeIdentity'])];
-  if (Object.keys(cap).some(key => !stable.includes(key)
-    && !(cap.transport === 'managed' && ['closedSupervisor','latest'].includes(key)))
-    || stable.some(key => !Object.hasOwn(cap,key))) invalid('findings link capture: fields differ');
-  for (const key of stable) {
-    if (key === 'transport') continue;
-    if (['removalProofs','runtimeIdentity'].includes(key)) {
-      dense(cap[key], `findings link ${key}`);
-      for (const blob of cap[key]) bytes(blob, `findings link ${key}`);
-    } else bytes(cap[key], `findings link ${key}`);
-  }
-  const uniqueHashes = (items, label) => {
-    const hashes = items.map(item => raw(bytes(item, label)));
-    if (new Set(hashes).size !== hashes.length) invalid(`${label}: duplicate bytes`);
-    return hashes.sort(ordinal);
-  };
-  const link = {
-    format:'stnl-current-findings-round-link-v1', transport:cap.transport,
-    ...(hasRequest?{applyRequest:raw(cap.applyRequest)}:{}), rawResponse:raw(cap.rawResponse), receipt:raw(cap.receipt),
-    baselineCapture:raw(cap.baselineCapture), verificationObservation:raw(cap.verificationObservation),
-    removalProofs:uniqueHashes(cap.removalProofs, 'removal proof'),
-    ...(cap.transport === 'native' ? {
-      origin:raw(cap.origin), dispatch:raw(cap.dispatch), agentBinding:raw(cap.agentBinding),
-      agentClaim:raw(cap.agentClaim), concludedToolResult:raw(cap.concludedToolResult),
-    } : {
-      managedContext:raw(cap.managedContext), active:raw(cap.active), started:raw(cap.started),
-      events:raw(cap.events), runtimeIdentity:uniqueHashes(cap.runtimeIdentity, 'runtime identity'),
-    }),
-  };
-  return raw(serialized(link));
+  const stable=['transport',...(hasRequest?['applyRequest']:[]),'rawResponse','receipt','baselineCapture','verificationObservation','removalProofs','origin','dispatch','agentBinding','agentClaim','concludedToolResult'];
+  if(Object.keys(cap).some(key=>!stable.includes(key))||stable.some(key=>!Object.hasOwn(cap,key)))invalid('findings link capture: fields differ');
+  for(const key of stable){if(key==='transport')continue;if(key==='removalProofs'){dense(cap[key],`findings link ${key}`);for(const blob of cap[key])bytes(blob,`findings link ${key}`);}else bytes(cap[key],`findings link ${key}`);}
+  const hashes=cap.removalProofs.map(item=>raw(bytes(item,'removal proof')));if(new Set(hashes).size!==hashes.length)invalid('removal proof: duplicate bytes');
+  return raw(serialized({format:'stnl-current-findings-round-link-v1',transport:cap.transport,
+    ...(hasRequest?{applyRequest:raw(cap.applyRequest)}:{}),rawResponse:raw(cap.rawResponse),receipt:raw(cap.receipt),baselineCapture:raw(cap.baselineCapture),verificationObservation:raw(cap.verificationObservation),removalProofs:hashes.sort(ordinal),
+    origin:raw(cap.origin),dispatch:raw(cap.dispatch),agentBinding:raw(cap.agentBinding),agentClaim:raw(cap.agentClaim),concludedToolResult:raw(cap.concludedToolResult)}));
 }
 export function closeEvidenceObjects() { return objectStore(); }
 

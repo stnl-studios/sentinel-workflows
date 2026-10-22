@@ -123,22 +123,12 @@ test('E01 native: authored record, full domain, hashes and counters', () => {
   assert.equal(compose(fileArea).outcome,'recorded');
 });
 
-test('E02 managed: complete SDK stream, runtime identities and raw recovery', () => {
-  const input=initial([managedRound()]);
-  const result=compose(input);
-  assert.equal(result.outcome,'recorded');
-  const record=result.bundle.implementation[0];
-  assert.equal(record.origin.transport,'managed');
-  assert.equal(record.origin.dispatchId,`${OWNER.operationAttemptId}:7`);
-  assert.equal(record.origin.runnerId,'thread-pay-1');
-  assert.equal(record.sources.runtimeIdentity.length,5);
-  const objects=new Map(result.bundle.objects.map(item=>[item.id,Buffer.from(item.bytesBase64,'base64')]));
-  assert.equal(objects.get(record.sources.rawResponse).toString('utf8'),Buffer.from(input.rounds[0].rawResponse).toString('utf8'));
-  assert.deepEqual(validateResult(input,result).counters,result.counters);
+test('E02 removed managed transport is refused before evidence or counters change',()=>{
+ const input=initial([managedRound()]),before=copied(input);assertCode(()=>compose(input),'UNSUPPORTED_FORMAT');assert.deepEqual(input,before);
 });
 
 test('E03 two/three rounds preserve failure and derive correction paths', () => {
-  for (const transport of ['native','managed']) for (const statuses of [
+  for (const transport of ['native']) for (const statuses of [
     ['TESTS_FAIL','TESTS_PASS'], ['TESTS_FAIL','TESTS_FAIL','TESTS_PASS'],
   ]) {
     const input=multi(transport,statuses), result=compose(input);
@@ -163,7 +153,7 @@ test('E03 two/three rounds preserve failure and derive correction paths', () => 
 });
 
 test('E04 concluded semantic rejection preserves claims and consumption', () => {
-  for (const transport of ['native','managed']) {
+  for (const transport of ['native']) {
     const malformed=initial([schemaRejection(transport)]);
     const result=compose(malformed);
     assert.equal(result.outcome,'rejected');
@@ -211,7 +201,7 @@ test('E04 concluded semantic rejection preserves claims and consumption', () => 
   const pending=schemaRejection('native');
   editJson(pending,'concludedToolResult',item=>{item.status='pending';});
   assertCode(()=>compose(initial([pending])),'OWNER_UNCERTAIN');
-  for (const transport of ['native','managed']) {
+  for (const transport of ['native']) {
     const foreign=schemaRejection(transport);
     editJson(foreign,'receipt',receipt=>{receipt.owner.operationAttemptId=DUMMY;});
     assertCode(()=>compose(initial([foreign])),'OWNER_MISMATCH');
@@ -244,7 +234,7 @@ test('E05 initial guard and migration discrimination', () => {
   const imported={...copied(input),imported:true};
   assertCode(()=>compose(imported),'UNSUPPORTED_FORMAT');
   const mixed=copied(input);mixed.rounds=[nativeRound(1,'TESTS_FAIL',1),managedRound(2)];
-  assertCode(()=>compose(mixed),'INVALID_CURRENT_IMAGE');
+  assertCode(()=>compose(mixed),'UNSUPPORTED_FORMAT');
   const malformedDelivery=copied(input);
   malformedDelivery.authority.delivery.obligations=[{}];
   malformedDelivery.rounds[0].receipt=encode(null);
@@ -266,48 +256,10 @@ test('E05 initial guard and migration discrimination', () => {
 });
 const DUMMY='eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
 
-test('E06 managed completion, SDK command and runtime negative cases', () => {
-  const base=managedRound();
-  const cases=[
-    ['closedSupervisor',value=>{value.pending=true;},'OWNER_UNCERTAIN'],
-    ['closedSupervisor',value=>{value.cancelledPending=true;},'OWNER_UNCERTAIN'],
-    ['latest',value=>{value.receipt.attempt=2;},'OWNER_UNCERTAIN'],
-    ['managedContext',value=>{value.identity.adapter.sha256=`sha256:${'0'.repeat(64)}`;},'EVIDENCE_INCOMPLETE'],
-  ];
-  for (const [field,mutation,code] of cases) {
-    const cap=copied(base);editJson(cap,field,mutation);assertCode(()=>compose(initial([cap])),code);
-  }
-  const pending=copied(base);
-  pending.events=Uint8Array.from(Buffer.from(Buffer.from(pending.events).toString('utf8').replace('turn.completed','turn.failed')));
-  assertCode(()=>compose(initial([pending])),'OWNER_UNCERTAIN');
-  const incompleteTurn=copied(base);
-  incompleteTurn.events=Uint8Array.from(Buffer.from(Buffer.from(incompleteTurn.events).toString('utf8').replace(/.*turn\.completed.*\n/u,'')));
-  assertCode(()=>compose(initial([incompleteTurn])),'OWNER_UNCERTAIN');
-  const collab=copied(base);
-  const collabLines=Buffer.from(collab.events).toString('utf8').trimEnd().split('\n').map(JSON.parse);
-  collabLines.splice(2,0,{operationId:collabLines[0].operationId,type:'item.completed',item:{type:'collab_tool_call'}});
-  collab.events=Uint8Array.from(Buffer.from(collabLines.map(JSON.stringify).join('\n')+'\n'));
-  assertCode(()=>compose(initial([collab])),'OWNER_UNCERTAIN');
-  const thread=copied(base);editJson(thread,'receipt',value=>{value.threadId='foreign-thread';});
-  assertCode(()=>compose(initial([thread])),'OWNER_UNCERTAIN');
-  const finalBytes=copied(base);
-  finalBytes.events=Uint8Array.from(Buffer.from(Buffer.from(finalBytes.events).toString('utf8').replace('TESTS_PASS','TESTS_FAIL')));
-  assertCode(()=>compose(initial([finalBytes])),'OWNER_UNCERTAIN');
-  const openCommand=copied(base);
-  const openLines=Buffer.from(openCommand.events).toString('utf8').trimEnd().split('\n').map(JSON.parse);
-  openLines.splice(2,0,{operationId:openLines[0].operationId,type:'item.started',item:{type:'command_execution',id:'item_1',command:'echo work'}});
-  openCommand.events=Uint8Array.from(Buffer.from(openLines.map(JSON.stringify).join('\n')+'\n'));
-  assertCode(()=>compose(initial([openCommand])),'OWNER_UNCERTAIN');
-  const command=copied(base);
-  const lines=Buffer.from(command.events).toString('utf8').trimEnd().split('\n').map(JSON.parse);
-  lines.splice(2,0,{operationId:lines[0].operationId,type:'item.started',item:{type:'command_execution',id:'item_1',command:'STNL_VERIFICATION_COMMAND=1 node src/pay.mjs'}});
-  lines.splice(3,0,{operationId:lines[0].operationId,type:'item.completed',item:{type:'command_execution',id:'item_1',command:'STNL_VERIFICATION_COMMAND=1 node src/pay.mjs',status:'completed',exit_code:0}});
-  command.events=Uint8Array.from(Buffer.from(lines.map(JSON.stringify).join('\n')+'\n'));
-  assertCode(()=>compose(initial([command])),'EVIDENCE_INCOMPLETE');
-  const altered=copied(base);editJson(altered,'verificationObservation',value=>{value.checks[0].exit=1;});
-  assertCode(()=>compose(initial([altered])),'EVIDENCE_STALE');
-  const observedCommand=copied(base);editJson(observedCommand,'verificationObservation',value=>{value.checks[0].command='echo foreign';});
-  assertCode(()=>compose(initial([observedCommand])),'EVIDENCE_STALE');
+test('E06 removed managed captures remain unsupported even with plausible completed or altered SDK material',()=>{
+ const base=managedRound();
+ for(const field of ['closedSupervisor','latest','managedContext','events','runtimeIdentity']){const cap=copied(base);cap[field]=field==='runtimeIdentity'?[]:encode(null);assertCode(()=>compose(initial([cap])),'UNSUPPORTED_FORMAT');}
+ for(const mutate of [value=>{value.checks[0].exit=1;},value=>{value.checks[0].command='echo foreign';}]){const cap=nativeRound();editJson(cap,'verificationObservation',mutate);assertCode(()=>compose(initial([cap])),'EVIDENCE_STALE');}
 });
 
 test('E07 native independent origin, receipt and recipe guards', () => {
@@ -507,7 +459,7 @@ test('E12 isolated byte-identical executor and quality copies', async () => {
       assert.deepEqual((await fs.readdir(destination)).sort(),[...names].sort());
       const api=await import(pathToFileURL(path.join(destination,moduleName)).href);
       assert.deepEqual(Object.keys(api).sort(),['composeInitialImplementationEvidence','validateInitialImplementationEvidence']);
-      for (const capture of [nativeRound(),managedRound(),schemaRejection('native')]) {
+      for (const capture of [nativeRound(),schemaRejection('native')]) {
         const input=initial([capture]);const result=api.composeInitialImplementationEvidence(input);
         assert.equal(api.validateInitialImplementationEvidence(validationInput(input,result.bytes)).outcome,result.outcome);
       }
@@ -528,7 +480,7 @@ test('E12 isolated byte-identical executor and quality copies', async () => {
 test('L2.2 semantic PASS fields reject placeholders with otherwise coherent captured evidence', () => {
   const fields=[['coverage','Coverage'],['selectedChecks','Selected checks'],
     ['verificationTypesConsidered','Verification types considered']];
-  for (const transport of ['native','managed']) for (const [field,label] of fields) for (const value of ['none','  none  ','   ']) {
+  for (const transport of ['native']) for (const [field,label] of fields) for (const value of ['none','  none  ','   ']) {
     const cap=transport==='native' ? nativeRound() : managedRound();
     const raw=payload(1);raw[field]=value;
     recaptured(cap,JSON.stringify(raw)+'\n');
@@ -539,7 +491,7 @@ test('L2.2 semantic PASS fields reject placeholders with otherwise coherent capt
     assert.equal(result.bundle.support[0].sources.rawResponse,hash(cap.rawResponse));
     assert.deepEqual(validateResult(input,result).bundle,result.bundle);
   }
-  for (const transport of ['native','managed']) {
+  for (const transport of ['native']) {
     const cap=transport==='native' ? nativeRound() : managedRound();
     const raw=payload(1);raw.coverage='json:"none"';
     recaptured(cap,JSON.stringify(raw)+'\n');
@@ -553,7 +505,7 @@ test('L2.2 rendered record grammar covers present fields, fileless reason and co
     ['selectionRationale','Selection rationale'],['coverage','Coverage'],['failures','Failures'],
     ['blockers','Blockers'],['unexpectedWorkspaceEffects','Unexpected workspace effects'],
     ['persistenceSummary','Persistence summary']];
-  for (const transport of ['native','managed']) for (const [field,label] of presentFields) for (const value of [' pending ','   ']) {
+  for (const transport of ['native']) for (const [field,label] of presentFields) for (const value of [' pending ','   ']) {
     const cap=transport==='native' ? nativeRound(1,'TESTS_FAIL',1) : managedRound(1,'TESTS_FAIL',1);
     const raw=payload(1,'TESTS_FAIL',1);raw[field]=value;
     recaptured(cap,JSON.stringify(raw)+'\n');
@@ -563,7 +515,7 @@ test('L2.2 rendered record grammar covers present fields, fileless reason and co
     assert.equal(result.bundle.support[0].sources.rawResponse,hash(cap.rawResponse));
     assert.deepEqual(validateResult(input,result).bundle,result.bundle);
   }
-  for (const transport of ['native','managed']) for (const status of ['TESTS_PASS','TESTS_FAIL','BLOCKED']) {
+  for (const transport of ['native']) for (const status of ['TESTS_PASS','TESTS_FAIL','BLOCKED']) {
     const exit=status==='TESTS_FAIL' ? 1 : 0;
     const fileless=value=>{
       const cap=transport==='native' ? nativeRound(1,status,exit) : managedRound(1,status,exit);
@@ -592,40 +544,16 @@ test('L2.2 rendered record grammar covers present fields, fileless reason and co
   }
 });
 
-test('L2.2 managed close and receipt transport are bound before semantic helpers', () => {
-  for (const field of ['closedSupervisor','latest']) {
-    const input=multi('managed',['TESTS_FAIL','TESTS_PASS']);
-    editJson(input.rounds[0],field,value=>{
-      if (field==='closedSupervisor') value.requestsHandled=1;
-      else value.requestId='stale-first-close';
-    });
-    assertCode(()=>compose(input),'OWNER_UNCERTAIN');
-  }
-  const cap=managedRound();
-  editJson(cap,'receipt',receipt=>{receipt.transport='native';});
-  editJson(cap,'latest',latest=>{latest.receipt=decode(cap.receipt);});
-  assertCode(()=>compose(initial([cap])),'INVALID_CURRENT_IMAGE');
+test('L2.2 removed managed transport cannot be disguised by a native receipt',()=>{
+ const cap=managedRound();editJson(cap,'receipt',receipt=>{receipt.transport='native';});assertCode(()=>compose(initial([cap])),'UNSUPPORTED_FORMAT');
 });
 
-test('L2.2 separate managed invocations may return byte-identical raw responses', () => {
-  const input=multi('managed',['TESTS_FAIL','TESTS_FAIL']);
-  const commonRaw=JSON.stringify(payload(2,'TESTS_FAIL',1))+'\n';
-  for (const cap of input.rounds) recaptured(cap,commonRaw);
-  const final=input.rounds[1];
-  for (const cap of input.rounds) {
-    cap.latest=Uint8Array.from(final.latest);
-    cap.closedSupervisor=Uint8Array.from(final.closedSupervisor);
-  }
-  const result=compose(input);
-  assert.equal(result.outcome,'recorded');
-  assert.equal(result.bundle.implementation.length,2);
-  assert.equal(result.bundle.implementation[0].sources.rawResponse,result.bundle.implementation[1].sources.rawResponse);
-  assert.notEqual(result.bundle.implementation[0].sources.receipt,result.bundle.implementation[1].sources.receipt);
-  assert.deepEqual(validateResult(input,result).bundle,result.bundle);
+test('L2.2 native rounds cannot borrow the next round from an external override',()=>{
+ const input=multi('native',['TESTS_FAIL','TESTS_FAIL']);recaptured(input.rounds[0],JSON.stringify(payload(2,'TESTS_FAIL',1))+'\n');assertCode(()=>compose(input),'INVALID_CURRENT_IMAGE');
 });
 
 test('L2.2 observed negative exit is a valid signed check value', () => {
-  for (const transport of ['native','managed']) {
+  for (const transport of ['native']) {
     const input=initial([transport==='native' ? nativeRound(1,'TESTS_FAIL',-1) : managedRound(1,'TESTS_FAIL',-1)]);
     const result=compose(input);
     assert.equal(result.outcome,'recorded');
@@ -642,7 +570,7 @@ test('L2.2 JSON-valid wrong shapes fail with stable codes', () => {
   const nullEvent=managedRound();
   const lines=Buffer.from(nullEvent.events).toString('utf8').trimEnd().split('\n');
   lines[0]='null';nullEvent.events=Uint8Array.from(Buffer.from(lines.join('\n')+'\n'));
-  assertCode(()=>compose(initial([nullEvent])),'INVALID_CURRENT_IMAGE');
+  assertCode(()=>compose(initial([nullEvent])),'UNSUPPORTED_FORMAT');
   const nullProof=nativeRound();nullProof.removalProofs=[encode(null)];
   assertCode(()=>compose(initial([nullProof])),'INVALID_CURRENT_IMAGE');
 });
