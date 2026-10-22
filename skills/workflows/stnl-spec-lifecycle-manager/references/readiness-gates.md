@@ -22,11 +22,15 @@ After a green structural result, load this file and SPEC evidence. The validator
 
 ## Scope and evidence
 
-`READINESS_SCOPE=LOCAL` evaluates only `READINESS_FOCUS` plus dependencies required for that conclusion. Return `LOCAL_PASS` or `LOCAL_FINDINGS` and always `global_readiness: NOT_EVALUATED`; never claim global `READY`, change status, or widen into a global review.
+`READINESS_SCOPE=LOCAL` evaluates only `READINESS_FOCUS` plus dependencies required for that conclusion. Return `LOCAL_CLEAR` when the focus is clear, otherwise `FINDINGS`; never claim global `READY`, change status, or widen into a global review.
 
-`READINESS_SCOPE=GLOBAL` reads the complete feature and every materialized canonical record. Indexes locate authority but are not evidence. Return `READY` only when every applicable gate passes; otherwise return `BLOCKED` with exact IDs or paths. Economy never permits omitting a potentially relevant material category.
+`READINESS_SCOPE=GLOBAL` reads the complete feature and every materialized canonical record. Indexes locate authority but are not evidence. Return `READY` only when every applicable gate passes; otherwise return `FINDINGS` with concrete evidence and affected SPEC-relative paths. Economy never permits omitting a potentially relevant material category.
 
-INIT or RESUME may set `ready` only after the global evidence standard. READINESS never changes workspace status or authority. After a semantic `GLOBAL/READY` verdict, generate the external readiness attestation with the deterministic command in `modes.md`; `LOCAL` and every non-`READY` verdict must not generate one. The attestation is operational proof of the exact reviewed snapshot, not durable SPEC authority. CLOSE rejects a stale or mismatched attestation and requires a new global review.
+Return one JSON object matching `runtime/readiness-result.schema.json`, with exactly its required fields: version, mode, scope, verdict, workspacePath, snapshotSha256 and findings. Do not add `global_readiness` or return per-gate states as response verdicts. Findings use stable `F-###` IDs, concrete evidence, normalized SPEC-relative paths and the actions defined by that schema; they cannot invent missing product decisions. Capture the normal readiness snapshot before and after semantic evaluation; a changed identity blocks the result rather than granting a verdict on stale bytes.
+
+INIT or RESUME may set `ready` only after the global evidence standard. READINESS never changes workspace status or authority and does not create an attestation by default. After semantic `GLOBAL/READY` for a ready workspace, the deterministic command in `modes.md` may create an external attestation for an explicitly legitimate consumer. LOCAL and every non-READY verdict cannot authorize that creation. Draft-to-ready status-only promotion instead uses the normal RESUME publisher's own attestation as described in `modes.md`; never create an attestation on a candidate or hand-write it. An attestation is operational proof of the exact reviewed snapshot, not durable SPEC authority.
+
+CLOSE does not require a terminal readiness attestation. Use the target-only normal publisher; it derives whether execution is absent or current integral COMPLETE and applies its ownership/retirement gates. If an optional attestation is explicitly supplied, it must pass the normal freshness and identity checks; a stale or mismatched supplied attestation blocks that invocation, without making an attestation mandatory for a later legitimate CLOSE.
 
 ## Required gates
 
