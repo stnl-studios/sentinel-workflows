@@ -583,10 +583,13 @@ export function verifyWorkObservation(profile, value, owner, round, recipeInfo, 
       relative(name, `${label} path`);
       if (!byPath.has(name)) incomplete(`validation: ${label} member omitted ${name}`);
     }
+    const judgment=jsonBytes(capture.origin,'validation scope origin').value.responseVariant===NATIVE_JUDGMENT_VARIANT;
     const scopePaths = [...new Set([
       ...priorScopePaths.filter(name => byPath.get(name)?.kind !== 'directory'),
       ...removalScopePaths.filter(name => byPath.get(name)?.kind === 'absent'),
-      ...currentOutputPaths(observedManifest,info.areas,removalScopePaths),
+      ...(judgment?currentOutputPaths(observedManifest,info.areas,removalScopePaths)
+        :[...observedManifest.entries.filter(entry=>['file','absent'].includes(entry.kind)&&areaContains(info.areas,entry.path)).map(entry=>entry.path),
+          ...info.refs.filter(ref=>ref.kind==='product').map(ref=>ref.path)]),
     ])].sort(ordinal);
     for (const name of scopePaths) {
       const entry = byPath.get(name);

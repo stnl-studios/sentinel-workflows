@@ -184,7 +184,7 @@ function initialOwner(bundle,map) {
   return jsonBytes(cap.origin,'initial owner source').value.owner;
 }
 function initialBundle(bundle,map,approvedAuthority) {
-  return {...bundle,validation:null,openFindings:[],openDivergences:[],support:bundle.support.filter(item=>item.kind==='rejection'&&item.origin.operation==='EXECUTE_SLICE'),
+  return {...bundle,findingsChecks:[],validation:null,openFindings:[],openDivergences:[],support:bundle.support.filter(item=>item.kind==='rejection'&&item.origin.operation==='EXECUTE_SLICE'),
     // Reconstruct the original Initial index while retaining literal records and
     // source objects; a later approved current index is not part of that origin.
     currentAuthoritySha256:projectedDelivery(approvedAuthority.delivery),
@@ -204,6 +204,29 @@ function recordAuthority(record,approvedAuthority) {
     || old.localRevision===approvedAuthority.localRevision&&!same(old.delivery,approvedAuthority.delivery))
     stale('historical source exceeds private reviewed authority');
   return old;
+}
+// Preserve only controller-admitted native implementation sources. Existing
+// history without those bindings remains readable under its original profile.
+function ownedImplementation(bundle,map) {
+  return bundle.implementation.length>0 && bundle.implementation.every(record=>{
+    const cap=restoreCaptureSources('initial-implementation',record,map);
+    return cap.transport==='native' && jsonBytes(cap.origin,'owned implementation origin').value.admission!==undefined;
+  });
+}
+// A normalized first formal keeps its concluded refusal as a literal dependency.
+// Selection is not authentication: inspectFindings replays the existing verifier
+// on the bounded historical image before accepting this dependency.
+function firstFormalRefusals(bundle,map) {
+  if(!bundle.implementation.length)return [];
+  const first=[...bundle.support,bundle.validation].find(item=>item?.kind==='validation'&&item.id==='attempt-01');
+  if(!first)return [];
+  const cap=restoreCaptureSources('current-validation',first,map);
+  const normalization=cap.transport==='native'?jsonBytes(cap.origin,'first formal origin').value.admission?.binding?.normalization:null;
+  if(!normalization)return [];
+  const refusal=bundle.support.find(item=>item.kind==='rejection'&&item.origin.operation==='VALIDATE_SLICE'
+    &&item.operationAttemptId===normalization.sourceOperationAttemptId);
+  if(!refusal)incomplete('retained first formal normalization refusal absent');
+  return [refusal];
 }
 function verifyInitial(bundle,context,approvedAuthority,map) {
   if (!bundle.implementation.length || bundle.implementation.length>3) invalid('initial check count');
@@ -2321,7 +2344,10 @@ function deriveApplyCycle({context,authority:approvedAuthority,owner:expectedOwn
       equal(work.before,baseFacts.testedWork,'EVIDENCE_STALE','findings baseline differs from formal product');
       firstWork=work.before;
     }
-    if (work.scopePaths) equal(request.scopePaths,work.requestScopePaths,'EVIDENCE_STALE',`round ${round} derived scope`);
+    // Judgment dispatches bind the pre-edit selection; the older public
+    // carrier binds its exact observed scope. Neither admits an arbitrary subset.
+    if (work.scopePaths) equal(request.scopePaths,origin?.responseVariant===NATIVE_JUDGMENT_VARIANT
+      ?work.requestScopePaths:work.scopePaths,'EVIDENCE_STALE',`round ${round} derived scope`);
     if (receipt.status==='RUNNER_RESPONSE_CAPTURED' && (!work.observed || !work.entries)) incomplete(`round ${round}: accepted findings lack observation/testedState`);
     if (receipt.status==='RUNNER_RESULT_BLOCKED' && !envelope.error) uncertain(`round ${round}: schema rejection has valid envelope/payload`);
     let semanticError=envelope.error??null;
@@ -2587,8 +2613,8 @@ function removedTuples(record,map,context) {
 }
 function inspectRetainedRemovalCycles(bundle,map,context,approvedAuthority,ceiling) {
   const activeCycles=new Set(bundle.findingsChecks.map(item=>removalGroupKey(item,map)));
-  const supports=bundle.support.filter(item=>['implementation-check','findings-check'].includes(item.kind)
-    &&!activeCycles.has(removalGroupKey(item,map)));
+  const supports=[...bundle.implementation,...bundle.support.filter(item=>['implementation-check','findings-check'].includes(item.kind)
+    &&!activeCycles.has(removalGroupKey(item,map)))];
   const groups=removalGroups(supports,map),refusals=removalRefusals(bundle);
   if(implementationRefusals(bundle).length&&!groups.has('implementation-check'))invalid('orphan retained Initial refusal');
   let previousCounters=null;
@@ -2648,7 +2674,8 @@ function currentRemovalSupport(bundle,map,context,cycle,admission,latest,retaine
       incomplete(`current REMOVED has recreated witness ${name}`);
     demandedGroups.add(records);proven.add(name);
   }
-  for (const [key,records] of retained.groups) if (!demandedGroups.has(records)) invalid(`undemanded removal cycle retained ${key}`);
+  for (const [key,records] of retained.groups) if (!demandedGroups.has(records)
+    && !same(records,bundle.implementation)) invalid(`undemanded removal cycle retained ${key}`);
   return proven;
 }
 function inspectFindings(original,bundle,context,approvedAuthority,declaredCounters,observedWork,post=null,currentAuthoritySha256=null) {
@@ -2666,7 +2693,8 @@ function inspectFindings(original,bundle,context,approvedAuthority,declaredCount
     previousRank=currentRank;previousId=number;
   }
   const initialRefusals=implementationRefusals(bundle);
-  const rejections=bundle.support.filter(item=>item.kind==='rejection'&&item.origin.operation!=='EXECUTE_SLICE');
+  const anchorRefusals=firstFormalRefusals(bundle,map);
+  const rejections=bundle.support.filter(item=>item.kind==='rejection'&&item.origin.operation!=='EXECUTE_SLICE'&&!anchorRefusals.includes(item));
   if(initialRefusals.length>1 || rejections.length>1 || rejections.some(item=>!['APPLY_FINDINGS','VALIDATE_SLICE'].includes(item.origin.operation))) invalid('findings rejection count/operation');
   if(initialRefusals.length&&bundle.support.filter(item=>item.kind==='rejection')[0]!==initialRefusals[0])invalid('findings Initial refusal order');
   const applyRejection=rejections.find(item=>item.origin.operation==='APPLY_FINDINGS');
@@ -2674,7 +2702,7 @@ function inspectFindings(original,bundle,context,approvedAuthority,declaredCount
   const normalizedApply=bundle.findingsChecks.some(item=>jsonBytes(restoreCaptureSources('current-findings',item,map).applyRequest,'current findings format').value.format==='stnl-current-findings-request-v2');
   const current=[...bundle.findingsChecks,...(applyRejection&&!normalizedApply?[applyRejection]:[])];
   if (!current.length) invalid('findings cycle required');
-  if (!bundle.validation || bundle.implementation.length) invalid('findings unsupported records');
+  if (!bundle.validation || bundle.implementation.length && !ownedImplementation(bundle,map)) invalid('findings unsupported records');
   const rounds=applyRoundsFromRecords(current,map);
   const first=jsonBytes(rounds[0].applyRequest,'current findings request').value;
   applyRequestShape(first);
@@ -2684,6 +2712,28 @@ function inspectFindings(original,bundle,context,approvedAuthority,declaredCount
   const admission=formals.get(first.base.validation.id);
   if (!admission) incomplete('findings admission formal absent');
   if (admission.payload.status!=='NEEDS_FIX') invalid('findings admission formal is not NEEDS_FIX');
+  if(bundle.implementation.length) {
+    // A literal prefix is retained for retirement, not granted fresh PASS. Its
+    // original producer and first formal CAS must still authenticate it.
+    const initial=verifyInitial(bundle,context,approvedAuthority,map),firstFormal=formals.get('attempt-01');
+    if(!firstFormal)incomplete('retained implementation lacks its first formal anchor');
+    const sourceAuthority=recordAuthority(bundle.implementation[0],approvedAuthority);
+    const prefix=initialBundle(bundle,map,sourceAuthority);
+    const firstRequest=anchorRefusals.length?jsonBytes(restoreCaptureSources('current-validation',anchorRefusals[0],map).validationRequest,'first formal refusal request').value:firstFormal.request;
+    equal(firstRequest.base.evidenceSha256,raw(encode(prefix)),
+      'EVIDENCE_STALE','retained implementation first formal CAS');
+    if(anchorRefusals.length) {
+      const anchor={...prefix,validation:firstFormal.record,openFindings:firstFormal.open,
+        support:[...prefix.support,...anchorRefusals]};
+      anchor.objects=referencedObjects([...anchor.implementation,...anchor.support,anchor.validation],map);
+      inspect(encode(anchor),context,approvedAuthority,formalCounters(firstFormal),firstFormal.record.testedWork);
+      equal(firstRequest.base.counters,firstFormal.request.base.counters,'INVALID_CURRENT_IMAGE','normalized first formal counters');
+      equal(firstRequest.base.priorScopePaths,firstFormal.request.base.priorScopePaths,'EVIDENCE_STALE','normalized first formal scope');
+    }
+    equal(firstFormal.request.base.priorScopePaths,initial.paths,'EVIDENCE_STALE','retained implementation first formal scope');
+    equal(firstFormal.request.base.counters,{implementationChecks:bundle.implementation.length,findingsChecks:0,
+      validationAttempts:0,findings:0},'INVALID_CURRENT_IMAGE','retained implementation first formal counters');
+  }
   const admissionCounters=formalCounters(admission);
   const currentAdmission=first.base.validation.id;
   const retainedBundle=normalizedApply?{...bundle,support:bundle.support.filter(item=>
@@ -2761,7 +2811,8 @@ function inspectFindings(original,bundle,context,approvedAuthority,declaredCount
     rejected={...derived,cap};
   }
   const demandedFindings=[...admission.open,...(later?latest.all:[])];
-  const demandedIds=new Set([admission.record.id,bundle.validation.id,...demandedFindings.map(item=>item.originAttempt)]);
+  const demandedIds=new Set([admission.record.id,bundle.validation.id,...demandedFindings.map(item=>item.originAttempt),
+    ...(bundle.implementation.length?['attempt-01']:[])]);
   for (const item of demandedFindings) {
     const origin=formals.get(item.originAttempt);
     if (!origin) incomplete(`finding ${item.id} origin absent`);
@@ -2785,7 +2836,8 @@ function inspect(bundleBytes,context,approvedAuthority,declaredCounters,observed
   if ([...bundle.implementation,...bundle.findingsChecks,...bundle.support,...(bundle.validation?[bundle.validation]:[])]
     .some(record=>record.recordFormat==='stnl-task-record-v1-imported')) fail('UNSUPPORTED_FORMAT','evidence format is not supported');
   verifyWorkObservation('current-validation',{observedWork});
-  const formalRefusals=bundle.support.filter(item=>item.kind==='rejection'&&item.origin.operation==='VALIDATE_SLICE');
+  const historicalRefusals=bundle.findingsChecks.length?firstFormalRefusals(bundle,sourceMap(bundle)):[];
+  const formalRefusals=bundle.support.filter(item=>item.kind==='rejection'&&item.origin.operation==='VALIDATE_SLICE'&&!historicalRefusals.includes(item));
   const refusedAttempt=formalRefusals.length?jsonBytes(restoreCaptureSources('current-validation',formalRefusals.at(-1),sourceMap(bundle)).validationRequest,'refused formal request').value.attemptId:null;
   const candidate=bundle.validation?.id===refusedAttempt?bundle.validation:null;
   const latestCandidate=formalRefusals.length>1?formalRefusals.at(-1):candidate;
@@ -2830,9 +2882,9 @@ function inspect(bundleBytes,context,approvedAuthority,declaredCounters,observed
       if(derived.rejection||!same(latestCandidate,{...derived.recordDraft,sources:latestCandidate.sources}))
         invalid('formal successor accepted record differs');
       const required=new Set([...derived.all.map(item=>item.originAttempt),
-        ...(predecessor.cycle?[predecessor.cycle.admissionId]:[]),
+        ...(predecessor.cycle?[predecessor.cycle.admissionId,...(bundle.implementation.length?['attempt-01']:[])]:[]),
         ...(predecessor.cycle?[]:bundle.support.filter(item=>item.kind==='validation'&&item.origin.localRevision<approvedAuthority.localRevision).map(item=>item.id))]);
-      const support=bundle.support.filter(item=>item.kind!=='rejection'||item.origin.operation!=='VALIDATE_SLICE')
+      const support=bundle.support.filter(item=>item.kind!=='rejection'||item.origin.operation!=='VALIDATE_SLICE'||historicalRefusals.includes(item))
         .filter(item=>item.kind!=='validation'||required.has(item.id));
       const reduced={...bundle,support,objects:referencedObjects([...bundle.implementation,...bundle.findingsChecks,...support,bundle.validation],objects)};
       const verified=inspect(encode(reduced),context,approvedAuthority,declaredCounters,observedWork,allowInitial,currentAuthoritySha256);
@@ -3024,7 +3076,8 @@ export function composeCurrentValidationEvidence(input) {
   const map=mergeObjects(base.map,store);
   const bundle={...base.bundle};
   const supporting=[...base.bundle.support.filter(item => item.kind==='validation'),...(base.bundle.validation ? [base.bundle.validation] : [])];
-  const initialRefusals=base.bundle.implementation.length||derived.rejection?implementationRefusals(base.bundle):[];
+  const initialRefusals=[...(base.bundle.implementation.length||derived.rejection?implementationRefusals(base.bundle):[]),
+    ...(base.cycle?firstFormalRefusals(base.bundle,base.map):[])];
   const supportCycles=derived.rejection
     ? base.bundle.support.filter(item=>['implementation-check','findings-check'].includes(item.kind))
     : base.cycle ? selectRemovalSupport(base,{lastWork:derived.recordDraft.testedWork,lastScope:derived.request.scope.paths,
@@ -3035,6 +3088,11 @@ export function composeCurrentValidationEvidence(input) {
       const admitted=auxiliary.cycle;
       const origin=records.find(item=>item.id===admitted);
       if (origin && admitted!==latestId && !chosen.some(item=>item.id===admitted)) chosen.push(origin);
+      chosen.sort((a,b)=>formalRecordNumber(a)-formalRecordNumber(b));
+    }
+    if(base.cycle&&base.bundle.implementation.length) {
+      const first=records.find(item=>item.id==='attempt-01');
+      if(first&&first.id!==latestId&&!chosen.some(item=>item.id===first.id))chosen.push(first);
       chosen.sort((a,b)=>formalRecordNumber(a)-formalRecordNumber(b));
     }
     return chosen;
@@ -3055,7 +3113,7 @@ export function composeCurrentValidationEvidence(input) {
   if(normalizing)bundle.support=[...base.bundle.support,
     ...(derived.rejection?bundle.support.filter(item=>item.kind==='rejection'&&item.operationAttemptId===input.owner.operationAttemptId)
       :base.bundle.validation?[base.bundle.validation]:[])];
-  if(bundle.support.some(item=>item.kind==='implementation-check')) {
+  if(base.cycle||bundle.support.some(item=>item.kind==='implementation-check')) {
     const rank={'implementation-check':0,'findings-check':1,validation:2,rejection:3};
     bundle.support.sort((a,b)=>rank[a.kind]-rank[b.kind]);
   }
@@ -3092,7 +3150,8 @@ function selectRemovalSupport(base,cycle,currentRounds,context,demandReceipt=nul
   const groups=removalGroups(prior,base.map);
   const selected=new Set();
   for (const [name,records] of removalProofIndex(groups.values(),base.map,removalRefusals(base.bundle))) {
-    if (!needed.has(name) || currentProofs.has(name) || !base.priorFiles.has(name)) continue;
+    if (!needed.has(name) || currentProofs.has(name) || !base.priorFiles.has(name)
+      || records[0].kind==='implementation-check'&&ownedImplementation(base.bundle,base.map)) continue;
     if (cycle.checks.some(record=>record.origin.operationAttemptId===records[0].origin.operationAttemptId)) continue;
     selected.add(removalGroupKey(records[0],base.map));
   }
@@ -3152,15 +3211,18 @@ export function composeCurrentFindingsEvidence(input) {
   const store=closeEvidenceObjects();
   const cycle=deriveApplyCycle({context:input.context,authority:input.authority,owner:input.owner,
     rounds:input.rounds,baseFacts:facts,store});
+  const implementation=ownedImplementation(base.bundle,base.map)?base.bundle.implementation:[];
   const oldOrigins=base.bundle.support.filter(item=>item.kind==='validation'
-    && base.bundle.openFindings.some(finding=>finding.originAttempt===item.id));
+    && (base.bundle.openFindings.some(finding=>finding.originAttempt===item.id)||implementation.length&&item.id==='attempt-01'));
   const retained=selectRemovalSupport(base,cycle,input.rounds,input.context);
-  const support=[...retained.filter(item=>item.kind!=='rejection'),...oldOrigins,...retained.filter(item=>item.kind==='rejection')];
+  const refusals=implementation.length?[...implementationRefusals(base.bundle),...firstFormalRefusals(base.bundle,base.map)]:[];
+  const support=[...retained.filter(item=>item.kind!=='rejection'),...oldOrigins,
+    ...new Set([...refusals,...retained.filter(item=>item.kind==='rejection')])];
   if (cycle.rejection) support.push(cycle.rejection);
   const joined=new Map([...base.map,...store.finish().map(item=>[item.id,Buffer.from(item.bytesBase64,'base64')])]);
-  const bundle={...base.bundle,implementation:[],findingsChecks:cycle.checks,
+  const bundle={...base.bundle,implementation,findingsChecks:cycle.checks,
     validation:base.bundle.validation,openFindings:base.bundle.openFindings,support};
-  bundle.objects=referencedObjects([...bundle.findingsChecks,bundle.validation,...bundle.support],joined);
+  bundle.objects=referencedObjects([...bundle.implementation,...bundle.findingsChecks,bundle.validation,...bundle.support],joined);
   validateCurrentEvidence(bundle);
   const outputBytes=encode(bundle);
   const outputCounters={...input.previous.counters,findingsChecks:input.previous.counters.findingsChecks+cycle.checks.length};
@@ -3257,17 +3319,18 @@ export function inspectCurrentEvidence({context,authority,bundleBytes,counters:d
     fail('UNSUPPORTED_FORMAT','Initial BLOCKED requires operational recovery outside quiet profile');
   const info=verifyWorkObservation('initial-implementation',{context,delivery:authority.delivery,slice:bundle.slice});
   const output=name=>info.areas.some(item=>item.path===name || item.kind==='directory' && name.startsWith(`${item.path}/`));
-  const cycleDeltas=[];
+  const cycleDeltas=[],findingsDeltas=[];
   for(const record of [...bundle.implementation,...bundle.findingsChecks]) {
     const profile=record.kind==='implementation-check'?'initial-implementation':'current-findings';
     const before=jsonBytes(restoreCaptureSources(profile,record,map).baselineCapture,'verified round baseline').value.manifest;
-    cycleDeltas.push(...changedOutputPaths(before,record.testedWork).filter(output));
+    const deltas=changedOutputPaths(before,record.testedWork).filter(output);
+    cycleDeltas.push(...deltas);if(record.kind==='findings-check')findingsDeltas.push(...deltas);
   }
   // A rejected APPLY has no accepted current-round tested work. Its last formal
   // work belongs to the preceding attempt and cannot substantiate new areas.
   const verifiedChanges=[...new Set([...cycleDeltas,...(rejected && firstApply
     ?[]:changedOutputPaths(base.manifest,sealedWork).filter(output))])].sort(ordinal);
-  const verifiedCorrections=result.cycle?[...new Set(cycleDeltas)].sort(ordinal):[...new Set(bundle.implementation.slice(1).flatMap(record=>{
+  const verifiedCorrections=result.cycle?[...new Set(findingsDeltas)].sort(ordinal):[...new Set(bundle.implementation.slice(1).flatMap(record=>{
     const before=jsonBytes(restoreCaptureSources('initial-implementation',record,map).baselineCapture,'verified correction baseline').value.manifest;
     return changedOutputPaths(before,record.testedWork).filter(output);
   }))].sort(ordinal);

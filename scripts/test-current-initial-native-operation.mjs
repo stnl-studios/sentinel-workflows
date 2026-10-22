@@ -17,6 +17,7 @@ import {applyPayload} from './fixtures/current-findings-evidence.mjs';
 import {READY_FIXTURE,copyTree} from '../skills/workflows/stnl-spec-lifecycle-manager/runtime/test/publisher-fixtures.mjs';
 import {publishCandidate} from '../skills/workflows/stnl-spec-lifecycle-manager/runtime/lib/publisher.mjs';
 import {validateWorkspace} from '../skills/workflows/stnl-spec-lifecycle-manager/runtime/lib/lifecycle.mjs';
+import {inspectCurrentEvidence} from '../skills/workflows/stnl-slice-executor/runtime/current-evidence-state.mjs';
 
 import {preparePreparationCandidate} from '../skills/workflows/stnl-slice-executor/runtime/prepare-task-candidate.mjs';
 import {captureExecutionTree,resolveExecutionFilesystemRoots,executionLockIdentity} from '../skills/workflows/stnl-slice-executor/runtime/execution-publication.mjs';
@@ -106,6 +107,7 @@ async function sealedBlockingFormal(f) {
   await installCurrentInitial(f);
   const execute=await reserved(f,'stnl-current-native-judgment-v1');
   await fs.writeFile(path.join(f.root,'src/pay.mjs'),'export const pay=()=>"paid";\n');
+  if(f.initialOnly)await fs.writeFile(path.join(f.root,'src/initial-only.mjs'),'export const initialOnly=true;\n');
   await bindNative(execute.started.handle,'controlled-apply-predecessor-execute');
   const executeMeasured=await verifyNative(execute.dispatch.originFile);
   const {head,...executeResult}=initialPayload(1);
@@ -117,7 +119,13 @@ async function sealedBlockingFormal(f) {
   await publish(execute.started.handle);
   const prior=await inspectCurrentExecution(f.specPath);
   await fs.writeFile(path.join(f.root,'src/pay.mjs'),'export const pay=()=>"broken";\n');
-  const formal=await begin({specPath:f.specPath,slice:'slice-01',
+  if(f.normalizedFirst) {
+    const {context}=await resolveCurrentExecutionContext(f.specPath);
+    const {normalizedFormal}=await import('./fixtures/current-native-normalization.mjs');
+    await normalizedFormal({...f,delivery:{slice:'slice-01'},view:{execution:context.logicalExecutionRoot}},
+      {invalid:true,responseVariant:'stnl-current-native-judgment-v1'});
+  }
+  const formal=f.normalizedFirst?await normalizeSuccessor({specPath:f.specPath,slice:'slice-01',expectedActivationId:(await inspectCurrentExecution(f.specPath)).activationId}):await begin({specPath:f.specPath,slice:'slice-01',
     expectedActivationId:prior.activationId,operation:'VALIDATE_SLICE'});
   const formalDispatch=await reserveDispatch(formal.handle,{responseVariant:'stnl-current-native-judgment-v1'});
   await bindNative(formal.handle,'controlled-apply-predecessor-formal');
@@ -1047,9 +1055,14 @@ for(const mutation of ['none','removed','removal-missing','request','request-mis
 });
 
 
-test('U3.15-B APPLY includes a new helper but CLOSE preserves superseded unique capture',async t=>{
+for(const privateMutation of [false,true])test(`U3.15-B APPLY retains the original EXECUTE capture through CLOSE${privateMutation?' and refuses altered private source':''}`,async t=>{
   const f=await fixture({kind:'lifecycle',single:true,productRefs:true,futureLeaf:true,closeReady:true});t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
+  f.initialOnly=true;
+  const annex=path.join(path.dirname(f.specPath),'annex');await fs.mkdir(annex);await fs.writeFile(path.join(annex,'keep.bin'),Buffer.from([0,1,255]));
   await sealedBlockingFormal(f);
+  const predecessor=await captureCurrentExecution(f.specPath);
+  const predecessorRow=JSON.parse(Buffer.from(predecessor.files.get('continuity.json'))).deliveries[0];
+  const predecessorBundle=JSON.parse(Buffer.from(predecessor.files.get(predecessorRow.evidence.path)));
   const applied=await bConclude(f,'APPLY_FINDINGS',{edit:async()=>{
     await fs.writeFile(path.join(f.root,'src/helper.mjs'),'export const value="paid";\n');
     await fs.writeFile(path.join(f.root,'src/pay.mjs'),'import {value} from "./helper.mjs";export const pay=()=>value;\n');
@@ -1057,9 +1070,79 @@ test('U3.15-B APPLY includes a new helper but CLOSE preserves superseded unique 
   const receipt=JSON.parse(await fs.readFile(path.join(applied.root,'round-1.receipt.json')));
   assert.ok(receipt.testedState.entries.some(item=>item.path.endsWith('/src/helper.mjs')));
   const formal=await bConclude(f,'VALIDATE_SLICE',{terminal:true,resolved:true});assert.equal(formal.image.inspection.state,'COMPLETE');
-  const before=await fs.readFile(f.specPath);
-  await assert.rejects(publishCandidate('CLOSE',path.dirname(f.specPath),null),/capture without an official faithful replica/u);
-  assert.deepEqual(await fs.readFile(f.specPath),before);
-  assert.ok(await fs.lstat(applied.root));
-  assert.equal((await inspectCurrentExecution(f.specPath)).state,'COMPLETE');
+  const initial=JSON.parse(Buffer.from(formal.image.files.get('continuity.json'))).deliveries[0];
+  const bundle=JSON.parse(Buffer.from(formal.image.files.get(initial.evidence.path)));
+  assert.equal(bundle.implementation.length,1,'the original implementation record remains literal until CLOSE');
+  assert.equal(bundle.implementation[0].origin.operation,'EXECUTE_SLICE');
+  assert.deepEqual(bundle.implementation,predecessorBundle.implementation,'literal original records survive APPLY and terminal judgment');
+  assert.deepEqual(bundle.support.find(record=>record.id==='attempt-01'),predecessorBundle.validation,'first formal anchor remains literal');
+  const refs=new Set(Object.entries(predecessorBundle.implementation[0].sources).flatMap(([key,value])=>
+    key==='transport'||value===null?[]:Array.isArray(value)?value:[value]));
+  for(const object of predecessorBundle.objects.filter(item=>refs.has(item.id)))assert.deepEqual(bundle.objects.find(item=>item.id===object.id),object,'original source object bytes survive');
+  if(!privateMutation) {
+    const authority=JSON.parse(await fs.readFile(formal.dispatch.requestFile)).authority;
+    const validate=(copy,counters=initial.counters)=>inspectCurrentEvidence({context:formal.image.context,authority,
+      bundleBytes:Buffer.from(JSON.stringify(copy)+'\n'),counters,baseline:initial.baseline,
+      observedWork:formal.image.observedByDelivery.get(initial.deliveryId).manifest});
+    assert.ok(!validate(bundle).verifiedCorrections.includes('src/initial-only.mjs'),'retention does not relabel original implementation as APPLY correction');
+    const prune=copy=>{const ids=new Set([...copy.implementation,...copy.findingsChecks,...copy.support,copy.validation].filter(Boolean).flatMap(record=>Object.entries(record.sources).flatMap(([key,value])=>key==='transport'||value===null?[]:Array.isArray(value)?value:[value])));copy.objects=copy.objects.filter(item=>ids.has(item.id));};
+    for(const change of ['missing-object','changed-record','foreign-owner','duplicate-prefix','missing-anchor','rewound-counters','repacked-prefix'])await t.test(change,()=>{
+      const copy=structuredClone(bundle);let counters=initial.counters;
+      if(change==='missing-object')copy.objects=copy.objects.filter(item=>item.id!==copy.implementation[0].sources.receipt);
+      if(change==='changed-record')copy.implementation[0].recordUtf8+='\nforeign record content';
+      if(change==='foreign-owner')copy.implementation[0].origin.operationAttemptId='00000000-0000-4000-8000-000000000000';
+      if(change==='duplicate-prefix')copy.implementation.push(structuredClone(copy.implementation[0]));
+      if(change==='missing-anchor'){copy.support=copy.support.filter(item=>item.id!=='attempt-01');prune(copy);}
+      if(change==='rewound-counters')counters={...initial.counters,implementationChecks:0};
+      if(change==='repacked-prefix') {
+        const receipt=copy.objects.find(item=>item.id===copy.implementation[0].sources.receipt);
+        const bytes=Buffer.concat([Buffer.from(receipt.bytesBase64,'base64'),Buffer.from(' ')]);
+        receipt.id=digest(bytes);receipt.bytesBase64=bytes.toString('base64');copy.implementation[0].sources.receipt=receipt.id;
+        copy.objects.sort((a,b)=>a.id<b.id?-1:a.id>b.id?1:0);
+        assert.throws(()=>validate(copy),/retained implementation first formal CAS/u);return;
+      }
+      assert.throws(()=>validate(copy,counters),error=>['EVIDENCE_STALE','OWNER_MISMATCH','EVIDENCE_INCOMPLETE','INVALID_CURRENT_IMAGE','CURRENT_FORMAT_REQUIRED'].includes(error.code));
+    });
+  }
+  if(privateMutation) {
+    const record=bundle.implementation[0];
+    const receipt=JSON.parse(Buffer.from(bundle.objects.find(item=>item.id===record.sources.receipt).bytesBase64,'base64'));
+    const response=receipt.semanticResponseFile;
+    await fs.appendFile(response,' ');const before=await fs.readFile(f.specPath);
+    await assert.rejects(publishCandidate('CLOSE',path.dirname(f.specPath),null),/captured bytes differ/u);
+    assert.deepEqual(await fs.readFile(f.specPath),before);assert.ok(await fs.lstat(response));return;
+  }
+  const result=await publishCandidate('CLOSE',path.dirname(f.specPath),null);
+  assert.equal(result.publication,'confirmed');assert.equal(result.cleanup,'complete');
+  assert.equal((await inspectCurrentExecution(f.specPath)).state,'SPEC_CLOSED');
+  assert.equal((await inspectQualityExecution(f.specPath)).normalHandoff,null);
+  assert.deepEqual(await fs.readFile(path.join(annex,'keep.bin')),Buffer.from([0,1,255]));
+});
+
+
+for(const laterNormalized of [false,true])test(`U3.15-B retained EXECUTE preserves a normalized first formal anchor through APPLY and ${laterNormalized?'normalized ':''}terminal PASS`,async t=>{
+  const f=await fixture({single:true,productRefs:true,futureLeaf:true});t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
+  f.normalizedFirst=true;
+  await sealedBlockingFormal(f);
+  await bConclude(f,'APPLY_FINDINGS',{edit:()=>fs.writeFile(path.join(f.root,'src/pay.mjs'),'export const pay=()=>"paid";\n')});
+  let formal;
+  if(laterNormalized) {
+    const {context}=await resolveCurrentExecutionContext(f.specPath);
+    const {normalizedFormal}=await import('./fixtures/current-native-normalization.mjs');
+    const carrier={...f,delivery:{slice:'slice-01'},view:{execution:context.logicalExecutionRoot}};
+    await normalizedFormal(carrier,{invalid:true,responseVariant:'stnl-current-native-judgment-v1',terminal:true});
+    const done=await normalizedFormal(carrier,{successor:true,responseVariant:'stnl-current-native-judgment-v1',terminal:true,references:'finding-01',dispositions:'finding-01=resolved'});
+    formal={...done,image:await captureCurrentExecution(f.specPath)};
+  }else formal=await bConclude(f,'VALIDATE_SLICE',{terminal:true,resolved:true});
+  assert.equal(formal.image.inspection.state,'COMPLETE');
+  const row=JSON.parse(Buffer.from(formal.image.files.get('continuity.json'))).deliveries[0];
+  const bundle=JSON.parse(Buffer.from(formal.image.files.get(row.evidence.path)));
+  assert.equal(bundle.implementation.length,1);
+  assert.equal(bundle.support.filter(item=>item.kind==='rejection'&&item.origin.operation==='VALIDATE_SLICE').length,laterNormalized?2:1);
+  const authority=JSON.parse(await fs.readFile(formal.dispatch.requestFile)).authority;
+  const validate=copy=>inspectCurrentEvidence({context:formal.image.context,authority,bundleBytes:Buffer.from(JSON.stringify(copy)+'\n'),counters:row.counters,baseline:row.baseline,observedWork:formal.image.observedByDelivery.get(row.deliveryId).manifest});
+  assert.equal(validate(bundle).formalStatus,'PASS');
+  const missing=structuredClone(bundle);missing.support=missing.support.filter(item=>item.kind!=='rejection');
+  const ids=new Set([...missing.implementation,...missing.findingsChecks,...missing.support,missing.validation].flatMap(record=>Object.entries(record.sources).flatMap(([key,value])=>key==='transport'||value===null?[]:Array.isArray(value)?value:[value])));missing.objects=missing.objects.filter(item=>ids.has(item.id));
+  assert.throws(()=>validate(missing),error=>error.code==='EVIDENCE_INCOMPLETE');
 });
