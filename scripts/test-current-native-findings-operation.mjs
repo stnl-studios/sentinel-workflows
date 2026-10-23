@@ -130,7 +130,8 @@ test('EC-1/S2 keeps high-water and required origins through a second correction 
   const continuity=JSON.parse(Buffer.from(after.files.get('continuity.json')));
   const bundle=JSON.parse(Buffer.from(after.files.get(continuity.deliveries[0].evidence.path)));
   assert.equal(bundle.validation.id,'attempt-05');
-  assert.deepEqual(bundle.support.map(item=>item.id),['attempt-04']);
+  assert.deepEqual(bundle.support.map(item=>item.id),['findings-check-01','attempt-02','attempt-03','attempt-04'],
+    'controller-admitted earlier captures remain literal until retirement, beyond current finding roots');
 });
 
 test('EC-1/S2 resumes FAIL then publishes PASS on the second findings round',async t=>{

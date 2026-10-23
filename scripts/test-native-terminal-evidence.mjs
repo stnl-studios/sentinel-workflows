@@ -15,9 +15,9 @@ import {READY_FIXTURE} from '../skills/workflows/stnl-spec-lifecycle-manager/run
 const sha=bytes=>'sha256:'+createHash('sha256').update(bytes).digest('hex');
 const product=await loadProduct(path.resolve(import.meta.dirname,'..'));
 
-test('converted retained proof is verified, but required public CLOSE remains a discriminant',async t=>{
-  const cleanups=[];let preserve=false;
-  t.after(async()=>{if(!preserve)for(const cleanup of cleanups)await cleanup();});
+test('converted retained proof survives Q18/Q20 terminal validation and public CLOSE',async t=>{
+  const cleanups=[];
+  t.after(async()=>{for(const cleanup of cleanups)await cleanup();});
   const f=await completedNativeCase({after:cleanup=>cleanups.push(cleanup)},{documentarySource:READY_FIXTURE,drift:false,retire:false});
   const specPath=path.dirname(f.specPath),workspace=await fs.realpath(f.root);
   const source=await captureCurrentExecution(f.specPath),snapshot=JSON.parse(Buffer.from(source.files.get('approved-preparation.json')));
@@ -42,7 +42,7 @@ test('converted retained proof is verified, but required public CLOSE remains a 
   const retired=await captureCurrentExecution(f.specPath);
   const input=reopeningInput(retired,f.delivery.deliveryId,{terminalValidation:true});
   await replace(input,true);
-  const beforeTerminal=await captureCurrentExecution(f.specPath);
+
   await normalizedFormal(f,{terminal:true,responseVariant:'stnl-current-native-judgment-v1'});
   const pre=await retainBeforeClose({product,specPath,workspace,artifacts:{}});
   assert.ok(pre.source.inspection.completed.length>0);
@@ -59,33 +59,8 @@ test('converted retained proof is verified, but required public CLOSE remains a 
   }
   assert.deepEqual((await captureCurrentExecution(f.specPath)).activationBytes,before.activationBytes);
   assert.deepEqual((await captureCurrentExecution(f.specPath)).files,before.files);
-  const beforeDocuments=JSON.stringify(product.workspaceSnapshot(specPath));
-  let receipt;
-  try { receipt=await publishCandidate('CLOSE',specPath,null); }
-  catch(error) {
-    preserve=true;
-    const origins=image=>[...image.files].filter(([name])=>name.startsWith('evidence/')).flatMap(([,bytes])=>{
-      const bundle=JSON.parse(Buffer.from(bytes));
-      return [...bundle.implementation,bundle.validation,...bundle.findingsChecks,...bundle.support].filter(Boolean)
-        .map(record=>({deliveryId:record.origin.deliveryId,operation:record.origin.operation,
-          operationAttemptId:record.origin.operationAttemptId,preparationRevision:record.origin.preparationRevision}));
-    });
-    const before=origins(beforeTerminal), after=origins(await captureCurrentExecution(f.specPath));
-    const lost=before.filter(item=>!after.some(other=>other.operationAttemptId===item.operationAttemptId));
-    const blockedPath=error.message.split(': ').at(-1);
-    const afterImage=await captureCurrentExecution(f.specPath);
-    const sourceBytesPreserved=pre.source.activationBase64===Buffer.from(afterImage.activationBytes).toString('base64')
-      &&pre.source.files.length===afterImage.files.size
-      &&pre.source.files.every(file=>file.bytesBase64===Buffer.from(afterImage.files.get(file.name)).toString('base64'));
-    const documentsPreserved=beforeDocuments===JSON.stringify(product.workspaceSnapshot(specPath));
-    const owner=blockedPath.startsWith(workspace+'/tmp/')?JSON.parse(await fs.readFile(path.join(blockedPath,'owner.json'))):null;
-    await fs.writeFile(path.resolve('tmp/u3-planejamento/U3.16-S2-2026-10-23.noPvk5/converted-close-blocker-reviewed.json'),
-      JSON.stringify({error:error.message,fixtureRoot:workspace,sourceSetup:'authored current EC-1 boundary; subsequent native-shaped local checks, Q18 retirement, Q20 reentry and terminal validation use public producers; no model',
-        before,after,lost,blockedOwner:owner?.binding?.owner??null,retirementState:owner?.phase??null,sourceBytesPreserved,documentsPreserved,sourcePreserved:(await captureCurrentExecution(f.specPath)).inspection.state==='COMPLETE'},null,2)+'\n');
-    assert.equal(sourceBytesPreserved,true);assert.equal(documentsPreserved,true);
-    assert.ok(lost.some(item=>item.operationAttemptId===owner.binding.owner.operationAttemptId));
-    throw error;
-  }
+
+  const receipt=await publishCandidate('CLOSE',specPath,null);
   const evidence=await finishCloseEvidence({product,pre,commandResults:[receipt]});
   await validateTerminalEvidence({product,evidence,specPath,workspace});
   for(const field of ['sourceSha256','sourceActivationId','transactionId']) {

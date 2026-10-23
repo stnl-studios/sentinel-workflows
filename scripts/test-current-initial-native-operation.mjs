@@ -1114,7 +1114,7 @@ for(const privateMutation of [false,true])test(`U3.15-B APPLY retains the origin
       observedWork:formal.image.observedByDelivery.get(initial.deliveryId).manifest});
     assert.ok(!validate(bundle).verifiedCorrections.includes('src/initial-only.mjs'),'retention does not relabel original implementation as APPLY correction');
     const prune=copy=>{const ids=new Set([...copy.implementation,...copy.findingsChecks,...copy.support,copy.validation].filter(Boolean).flatMap(record=>Object.entries(record.sources).flatMap(([key,value])=>key==='transport'||value===null?[]:Array.isArray(value)?value:[value])));copy.objects=copy.objects.filter(item=>ids.has(item.id));};
-    for(const change of ['missing-object','changed-record','foreign-owner','duplicate-prefix','missing-anchor','rewound-counters','repacked-prefix'])await t.test(change,()=>{
+    for(const change of ['missing-object','changed-record','foreign-owner','duplicate-prefix','missing-anchor','rewound-counters','repacked-prefix','repacked-formal-admission'])await t.test(change,()=>{
       const copy=structuredClone(bundle);let counters=initial.counters;
       if(change==='missing-object')copy.objects=copy.objects.filter(item=>item.id!==copy.implementation[0].sources.receipt);
       if(change==='changed-record')copy.implementation[0].recordUtf8+='\nforeign record content';
@@ -1122,6 +1122,17 @@ for(const privateMutation of [false,true])test(`U3.15-B APPLY retains the origin
       if(change==='duplicate-prefix')copy.implementation.push(structuredClone(copy.implementation[0]));
       if(change==='missing-anchor'){copy.support=copy.support.filter(item=>item.id!=='attempt-01');prune(copy);}
       if(change==='rewound-counters')counters={...initial.counters,implementationChecks:0};
+      if(change==='repacked-formal-admission') {
+        const record=copy.support.find(item=>item.kind==='validation');
+        const object=copy.objects.find(item=>item.id===record.sources.origin);
+        const capsule=JSON.parse(Buffer.from(object.bytesBase64,'base64'));
+        const origin=JSON.parse(capsule.originUtf8);
+        origin.admission={baseActivation:{artifacts:origin.admission.baseActivation.artifacts,
+          approvedSnapshotSha256:origin.admission.baseActivation.approvedSnapshotSha256}};
+        capsule.originUtf8=JSON.stringify(origin);
+        const bytes=Buffer.from(JSON.stringify(capsule));object.id=digest(bytes);object.bytesBase64=bytes.toString('base64');
+        record.sources.origin=object.id;copy.objects.sort((a,b)=>a.id<b.id?-1:a.id>b.id?1:0);
+      }
       if(change==='repacked-prefix') {
         const receipt=copy.objects.find(item=>item.id===copy.implementation[0].sources.receipt);
         const bytes=Buffer.concat([Buffer.from(receipt.bytesBase64,'base64'),Buffer.from(' ')]);
@@ -1173,4 +1184,32 @@ for(const laterNormalized of [false,true])test(`U3.15-B retained EXECUTE preserv
   const missing=structuredClone(bundle);missing.support=missing.support.filter(item=>item.kind!=='rejection');
   const ids=new Set([...missing.implementation,...missing.findingsChecks,...missing.support,missing.validation].flatMap(record=>Object.entries(record.sources).flatMap(([key,value])=>key==='transport'||value===null?[]:Array.isArray(value)?value:[value])));missing.objects=missing.objects.filter(item=>ids.has(item.id));
   assert.throws(()=>validate(missing),error=>error.code==='EVIDENCE_INCOMPLETE');
+});
+
+
+test('bounded normalized EXECUTE retains all public Initial captures through integral CLOSE',async t=>{
+ const f=await fixture({kind:'lifecycle',single:true,closeReady:true,productRefs:true});
+ t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
+ await installCurrentInitial(f);
+ const first=await reserved(f,'stnl-current-native-judgment-v1');
+ await fs.writeFile(path.join(f.root,'src/pay.mjs'),'export const pay=()=>"paid";\n');
+ await bindNative(first.started.handle,'retirement-initial-refusal');const observed=await verifyNative(first.dispatch.originFile);
+ const {head:ignoredHead,...refusal}=initialPayload(1);refusal.commands=observed.commands;refusal.coverage='none';
+ const rejected=path.join(f.root,'retirement-initial-refusal.json');
+ await fs.writeFile(rejected,JSON.stringify({agentId:'retirement-initial-refusal',status:'completed',finalResponse:JSON.stringify({format:'stnl-current-native-judgment-v1',result:refusal})})+'\n');
+ const capture=await captureNative(first.started.handle,rejected);assert.equal(capture.captureClass,'initial-rejection');
+ await publish(first.started.handle);
+ const before=await inspectCurrentExecution(f.specPath);
+ const successor=await normalizeSuccessor({specPath:f.specPath,slice:'slice-01',expectedActivationId:before.activationId});
+ const dispatch=await reserveDispatch(successor.handle,{responseVariant:'stnl-current-native-judgment-v1'});
+ await fs.writeFile(path.join(f.root,'src/pay.mjs'),'export const pay=()=>"paid";\n');
+ await bindNative(successor.handle,'retirement-initial-successor');const measured=await verifyNative(dispatch.originFile);
+ const {head,...result}=initialPayload(2);result.commands=measured.commands;
+ const accepted=path.join(f.root,'retirement-initial-successor.json');
+ await fs.writeFile(accepted,JSON.stringify({agentId:'retirement-initial-successor',status:'completed',finalResponse:JSON.stringify({format:'stnl-current-native-judgment-v1',result})})+'\n');
+ await captureNative(successor.handle,accepted);await publish(successor.handle);
+ const formal=await bConclude(f,'VALIDATE_SLICE',{terminal:true});assert.equal(formal.image.inspection.state,'COMPLETE');
+ const receipt=await publishCandidate('CLOSE',path.dirname(f.specPath),null);
+ assert.equal(receipt.publication,'confirmed');assert.equal(receipt.cleanup,'complete');
+ assert.equal((await inspectCurrentExecution(f.specPath)).state,'SPEC_CLOSED');
 });

@@ -78,8 +78,18 @@ export function validateCurrentOperationRetirementRecord(record){
   closed(record.confirmation,['activationId','artifactManifestSha256'],'terminal operation confirmation');
   closed(record.cleanup,['status','ownedPaths','diagnostics'],'terminal operation cleanup');
   closed(record.terminalTransition,['operationAttemptId','outcome','normalization'],'terminal operation transition');
-  closed(record.runner,['dispatchId','agentId','status','round','consumedInvocations','originFile','requestFile','responseFile','captureClass','resultStatus'],'terminal operation runner');
-  if(record.phase!=='committed'||record.normalization!==null||record.terminalTransition.normalization!==null||record.terminalTransition.outcome!=='recorded'
+  const rejected=record.terminalTransition.outcome==='rejected';
+  const normalization=record.terminalTransition.normalization;
+  if(rejected){
+    closed(normalization,['episodeId','operation','causeSha256','sourceOperationAttemptId','used','consumedInvocations','round','status'],'terminal refusal normalization');
+    if(normalization.episodeId!==owner?.operationAttemptId||normalization.sourceOperationAttemptId!==owner.operationAttemptId
+      ||normalization.operation!==owner.operation||normalization.used!==1||normalization.round!==1
+      ||normalization.status!=='settled'||!/^sha256:[a-f0-9]{64}$/u.test(normalization.causeSha256)
+      ||normalization.consumedInvocations!==record.runner.consumedInvocations
+      ||normalization.consumedInvocations>=(owner.operation==='VALIDATE_SLICE'?2:3))fail('terminal refusal is not bounded and settled');
+  }
+  closed(record.runner,['dispatchId','agentId','status','round','consumedInvocations','originFile','requestFile','responseFile','captureClass',...(rejected&&!Object.hasOwn(record.runner,'resultStatus')?[]:['resultStatus'])],'terminal operation runner');
+  if(record.phase!=='committed'||record.normalization!==null||(!rejected&&(normalization!==null||record.terminalTransition.outcome!=='recorded'))
     ||record.terminalTransition.operationAttemptId!==owner?.operationAttemptId||record.cleanup.status!=='complete'
     ||!Array.isArray(record.cleanup.ownedPaths)||record.cleanup.ownedPaths.length||!Array.isArray(record.cleanup.diagnostics)||record.cleanup.diagnostics.length
     ||record.expectedInstalledActivation.activeAttempt!==null||record.confirmation.activationId!==record.expectedInstalledActivation.activationId
@@ -98,7 +108,7 @@ export function validateCurrentOperationRetirementRecord(record){
     ||terminal.previousActivationId!==intermediate.activationId||terminal.sequence!==intermediate.sequence+1||!same(stable(intermediate),stable(terminal))
     ||!same(intermediate.activeAttempt,{...owner,operationRef})
     ||!same(terminal.lastAttempt,{operationAttemptId:owner.operationAttemptId,deliveryId:owner.deliveryId,slice:owner.slice,operation:owner.operation,
-      terminalActivationId:terminal.activationId,outcome:'recorded',operationRef})
+      terminalActivationId:terminal.activationId,outcome:rejected?'rejected':'recorded',operationRef})
     ||!same(terminal.artifacts,record.candidate.tree.filter(item=>item.type==='file'&&item.path!=='activation.json').map(({path,sha256})=>({path,sha256})).sort((a,b)=>a.path<b.path?-1:a.path>b.path?1:0)))fail('terminal operation transition or tree association differs');
   return record;
 }

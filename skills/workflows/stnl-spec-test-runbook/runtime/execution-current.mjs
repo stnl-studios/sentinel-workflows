@@ -821,17 +821,16 @@ function validateCurrentContent(files) {
     const implementationRefusals=bundle?.support?.filter(item=>item.kind==='rejection'&&item.origin.operation==='EXECUTE_SLICE')??[];
     const historicalPrior=approvedDelivery?.localRevision>1
       && decision.disposition==='revalidate'
-      && historicalFormals.length===1&&implementationRefusals.length<=1
-      && bundle.support.length===historicalFormals.length+implementationRefusals.length
-      && historicalFormals[0]?.recordFormat==='stnl-task-record-v2'
-      && historicalFormals[0]?.origin?.localRevision===approvedDelivery.localRevision-1
+      && historicalFormals.length>=1&&implementationRefusals.length<=1
+      && historicalFormals.at(-1)?.recordFormat==='stnl-task-record-v2'
+      && historicalFormals.at(-1)?.origin?.localRevision===approvedDelivery.localRevision-1
       && record?.recordFormat==='stnl-task-record-v2'
       && record.origin?.localRevision===approvedDelivery.localRevision
       && bundle.findingsChecks.length===0;
     if(historicalPrior) {
-      const old=historicalFormals[0];
-      const ids=new Set([...bundle.implementation,...implementationRefusals,old].flatMap(item=>Object.values(item.sources).flat()).filter(item=>typeof item==='string' && HASH.test(item)));
-      const prior={...bundle,validation:old,support:implementationRefusals,openFindings:[],
+      const old=historicalFormals.at(-1),support=bundle.support.filter(item=>item!==old);
+      const ids=new Set([...bundle.implementation,...support,old].flatMap(item=>Object.values(item.sources).flat()).filter(item=>typeof item==='string' && HASH.test(item)));
+      const prior={...bundle,validation:old,support,openFindings:[],
         objects:bundle.objects.filter(item=>ids.has(item.id))};
       if(raw(Buffer.from(canonical(prior)+'\n','utf8'))===decision.evidenceSha256)
         return true;
@@ -850,7 +849,9 @@ function validateCurrentContent(files) {
         && same(item.contract?.context,{requirementsAuthority:snapshot.requirementsAuthority,
           objective:global.objective,strategy:global.strategy,risks:global.risks})
         && same(item.contract?.recipe,leaf.verificationRecipe));
-    const retainedRemoval=bundle?.support?.some(item=>['implementation-check','findings-check'].includes(item.kind))
+    // Structural admission only; the reader authenticates every historical
+    // operational capture independently before exposing current validity.
+    const retainedRemoval=bundle?.support?.length>0
       &&implementationRefusals.length<=1&&[...bundle.support,...bundle.findingsChecks].every(item=>
         item.kind==='rejection'?(item.origin.operation==='EXECUTE_SLICE'
           &&bundle.support.some(record=>record.kind==='implementation-check')

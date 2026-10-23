@@ -12,9 +12,10 @@ o adaptador e sua captura foram implementados/testados offline (§25.11 do plano
 O manager/provider normal já foi composto e testado mecanicamente até CLOSE,
 finalizer/export e retenção, nos regimes declarados. A emissão real dos dados e
 o carregamento efetivo do bundle ainda não estão comprovados. O consumidor
-terminal convertido já verifica fonte current+completed offline; o gate real de
-CLOSE convertido está bloqueado por perda de uma réplica formal no compositor
-do produto (§25.13). A unidade integral não foi aceita. Não iniciar prova real/campanha por este aceite.
+terminal convertido verifica fonte current+completed e percorre CLOSE/export offline.
+O bloqueio de retenção de §25.13 foi corrigido no produto sob autorização específica,
+com QA mecânica e revisão (§25.14); escopo offline concluído. A nova fonte
+não herda o PASS nativo da candidata D. Não iniciar prova real/campanha por este aceite.
 
 ## Quem controla cada fronteira
 

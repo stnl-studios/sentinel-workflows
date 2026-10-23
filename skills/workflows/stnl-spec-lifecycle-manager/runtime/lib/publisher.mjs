@@ -2301,6 +2301,7 @@ async function captureCloseOperationalInventory(target,transactionId){
     if(!/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/u.test(name)||!metadata.isDirectory()||metadata.isSymbolicLink())fail('CLOSE retirement preserves foreign or unproven material',file);
     const record=await json(path.join(file,'owner.json'));
     validateCurrentOperationRetirementRecord(record);
+    const refusal=record.terminalTransition.outcome==='rejected';
     const binding=validateCurrentOperationAllocationBinding(record,{operationId:name,specKey:roots.specKey,logicalExecutionRoot:roots.executionRoot,logicalSpecRoot:roots.specRoot,
       ownershipToken:record.binding?.owner?.ownershipToken,namespaceIdentity:roots.materialRootIdentity,filesystemDevice:roots.materialRootIdentity.dev,filesystemContext:policy,
       filesystemBinding:{targetParentIdentity:roots.targetParentIdentity,leaseParentIdentity:roots.leaseParentIdentity,materialRootIdentity:roots.materialRootIdentity}});
@@ -2332,8 +2333,14 @@ async function captureCloseOperationalInventory(target,transactionId){
         ||verification.workStateSha256!=='sha256:'+createHash('sha256').update(JSON.stringify(observed.before)).digest('hex'))fail('CLOSE retirement private verification is not replicated in the official observation',file);
       for(const bytes of proof.capture.removalProofs){const removal=parseStrictJson(Buffer.from(bytes).toString('utf8')),leaf=`round-${round}.removal-${createHash('sha256').update(removal.path).digest('hex')}.json`;allowed.add(leaf);if(!(await readOwnedFile(path.join(file,leaf))).bytes.equals(Buffer.from(bytes)))fail('CLOSE retirement removal source differs',file);}
       if(binding.owner.operation!=='VALIDATE_SLICE'){
+        // Refusals have no authored contract record. Their bounded accepted
+        // successor carries the same verified local authority, never a wider one.
+        const sourceContract=proof.record.contract??proofs.find(item=>item.record.kind!=='rejection'
+          &&['deliveryId','slice','preparationRevision','localRevision','normativeSha256','operation']
+            .every(key=>item.record.origin[key]===proof.record.origin[key]))?.record.contract;
+        if(!sourceContract)fail('CLOSE retirement refusal has no verified matching operation contract',file);
         const info=verifyWorkObservation('initial-implementation',{context:baseline.context,
-          delivery:proof.record.contract.delivery,slice:binding.owner.slice});
+          delivery:sourceContract.delivery,slice:binding.owner.slice});
         for(const entry of baseline.manifest.entries.filter(item=>item.kind==='file'
           &&info.areas.some(area=>area.path===item.path||area.kind==='directory'&&item.path.startsWith(area.path+'/'))
           &&!info.inputs.some(input=>input.path===item.path))){
@@ -2368,8 +2375,17 @@ async function captureCloseOperationalInventory(target,transactionId){
       ||record.runner.originFile!==path.join(file,`round-${record.runner.round}.origin.json`)
       ||record.runner.requestFile!==path.join(file,`round-${record.runner.round}.request.json`)
       ||record.runner.responseFile!==path.join(file,`round-${record.runner.round}.response.json`)
-      ||record.runner.captureClass!=='formal-response'
-      ||record.runner.resultStatus!==receipt.semanticResponseStatus||(record.responseVariant??null)!==(last.origin.responseVariant??null))fail('CLOSE terminal runner is not replicated by official conclusion',file);
+      ||record.runner.captureClass!==(refusal?(binding.owner.operation==='EXECUTE_SLICE'?'initial-rejection':binding.owner.operation==='APPLY_FINDINGS'?'findings-rejection':'formal-rejection'):'formal-response')
+      ||(record.runner.resultStatus??null)!==receipt.semanticResponseStatus||(record.responseVariant??null)!==(last.origin.responseVariant??null))fail('CLOSE terminal runner is not replicated by official conclusion',file);
+    if(refusal){
+      const normalization=record.terminalTransition.normalization;
+      const successor=proofs.find(item=>item.record.kind!=='rejection'
+        &&item.origin.owner.operation===binding.owner.operation
+        &&item.origin.owner.operationAttemptId!==binding.owner.operationAttemptId
+        &&same(item.origin.admission.baseActivation,record.expectedInstalledActivation)
+        &&Object.entries(normalization).every(([key,value])=>same(item.origin.admission.binding.normalization?.[key],value)));
+      if(!successor)fail('CLOSE retirement refusal lacks its verified bounded successor',file);
+    }
     const base=await readOwnedFile(path.join(file,'base.activation.json'));
     if(!same(parseStrictJson(base.bytes.toString('utf8')),first.origin.admission.baseActivation)||binding.baseTree.files.find(item=>item.path==='activation.json')?.sha256!=='sha256:'+createHash('sha256').update(base.bytes).digest('hex'))fail('CLOSE retirement base activation is not bound to official admission',file);
     if(binding.owner.operation!=='VALIDATE_SLICE'){

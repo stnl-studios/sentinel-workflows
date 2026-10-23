@@ -58,27 +58,31 @@ for(const kind of ['foreign-file','foreign-directory','registry-active','prepara
 test('a COMPLETE image alone cannot discard a superseded operation whose raw sources have no verified official replica',async t=>{
  const f=await completedNativeCase(t,{documentarySource:READY_FIXTURE,drift:true});await normalizedFormal(f,{terminal:true,responseVariant:'stnl-current-native-judgment-v1'});
  const target=path.dirname(f.specPath),roots=await resolveExecutionFilesystemRoots({specRoot:target,executionRoot:path.join(target,'execution')}),before=snapshot(target),names=await fs.readdir(roots.materialRoot);
+ const priorOwner=names.find(name=>name!=='registry.json'),owner=JSON.parse(await fs.readFile(path.join(roots.materialRoot,priorOwner,'owner.json')));
+ await fs.appendFile(owner.runner.responseFile,' '); // An actually unique private byte, not assumed semantic pruning.
  await assert.rejects(publishCandidate('CLOSE',target,null),/faithful replica|private verification|captured bytes/u);assert.equal(snapshot(target),before);
  for(const name of names)assert.equal((await fs.stat(path.join(roots.materialRoot,name))).isDirectory()||name==='registry.json',true);
 });
 
-async function archivedCompleteFixture(t){
+async function completeOperationalFixture(t){
  const f=await completedNativeCase(t,{documentarySource:READY_FIXTURE,drift:true});await normalizedFormal(f,{terminal:true,responseVariant:'stnl-current-native-judgment-v1'});
  const target=path.dirname(f.specPath),workspace={specRoot:target,executionRoot:path.join(target,'execution')},roots=await resolveExecutionFilesystemRoots(workspace),image=await captureCurrentExecution(f.specPath);
  const officialOwners=new Set();for(const [name,bytes] of image.files)if(name.startsWith('evidence/')){const bundle=JSON.parse(Buffer.from(bytes));for(const record of [...bundle.implementation,bundle.validation,...bundle.findingsChecks,...bundle.support].filter(Boolean))officialOwners.add(record.origin.operationAttemptId);}
- // Explicit fixture precondition: unique historical sources have already been
- // archived outside this namespace. Product never performs this move for CLOSE.
- const archive=path.join(f.root,'tmp','fixture-historical-archive');await fs.mkdir(archive);
- for(const name of await fs.readdir(roots.materialRoot)){const file=path.join(roots.materialRoot,name);if(!(await fs.lstat(file)).isDirectory())continue;const record=JSON.parse(await fs.readFile(path.join(file,'owner.json')));if(!officialOwners.has(record.binding.owner.operationAttemptId))await fs.rename(file,path.join(archive,name));}
- return {f,target,workspace,roots,image,archive};
+ let officialOwnerCount=0;
+ for(const name of await fs.readdir(roots.materialRoot)){
+  const file=path.join(roots.materialRoot,name);if(!(await fs.lstat(file)).isDirectory())continue;
+  const record=JSON.parse(await fs.readFile(path.join(file,'owner.json')));
+  assert.ok(officialOwners.has(record.binding.owner.operationAttemptId),'every own capture remains official; no manual archival for CLOSE');officialOwnerCount++;
+ }
+ return {f,target,workspace,roots,image,officialOwnerCount};
 }
 
 test('terminal owners with faithful official copies are dispensable even when their confirmations precede the final activation',async t=>{
- const {target,workspace,roots,archive,image}=await archivedCompleteFixture(t),source=snapshot(target),execution=await fs.lstat(workspace.executionRoot);
+ const {target,workspace,roots,officialOwnerCount,image}=await completeOperationalFixture(t),source=snapshot(target),execution=await fs.lstat(workspace.executionRoot);
  await assert.rejects(run(process.execPath,[PUBLISHER_CLI,'CLOSE',target],{timeout:30000,env:{...process.env,[TEST_ONLY_ACK_ENV]:TEST_ONLY_ACK,[TEST_ONLY_CRASH_ENV]:'TERMINAL_WITNESS_DURABLE'}}),error=>error.signal==='SIGKILL');
  const witness=JSON.parse(await fs.readFile(roots.lockPath)).terminalRetirement,backup=witness.roles.find(row=>row.kind==='directory'&&row.identity.ino===witness.closeBinding.sourceIdentity.ino);
  assert.equal(snapshot(path.join(roots.materialRoot,backup.path)),source);assert.equal((await fs.lstat(path.join(roots.materialRoot,backup.path,'execution'))).ino,execution.ino);assert.ok(witness.closeBinding.operationalInventory.some(row=>row.path.endsWith('/owner.json')));
- const result=await recoverFresh({target,roots});assert.equal(result.cleanupDiagnostics,undefined);assert.equal(result.cleanup,'complete');assert.equal(result.sourceExecutionDisposition.kind,'discard-current-complete');assert.equal(result.sourceExecutionDisposition.activationId,image.inspection.activationId);assert.equal(await fs.lstat(roots.materialRoot).catch(()=>null),null);assert.equal(await fs.lstat(roots.lockPath).catch(()=>null),null);assert.ok((await fs.readdir(archive)).length>0,'archived unique source remains intact');
+ const result=await recoverFresh({target,roots});assert.equal(result.cleanupDiagnostics,undefined);assert.equal(result.cleanup,'complete');assert.equal(result.sourceExecutionDisposition.kind,'discard-current-complete');assert.equal(result.sourceExecutionDisposition.activationId,image.inspection.activationId);assert.equal(await fs.lstat(roots.materialRoot).catch(()=>null),null);assert.equal(await fs.lstat(roots.lockPath).catch(()=>null),null);assert.ok(officialOwnerCount>1,'multiple original owners retired only after faithful official replication');
 });
 
 for(const change of ['extra','digest','root','intent','role-parent','role-extra','role-backslash','role-nul'])test(`terminal witness closed contract refuses ${change}`,async t=>{
@@ -108,7 +112,7 @@ test('the complete common record size is checked before writing a terminal role 
 });
 
  test('public CLOSE refuses unique fields inside otherwise terminal owners and preserves their source bytes',async t=>{
- const {target,roots}=await archivedCompleteFixture(t);const name=(await fs.readdir(roots.materialRoot)).find(name=>name!=='registry.json'),file=path.join(roots.materialRoot,name,'owner.json'),original=await fs.readFile(file),owner=JSON.parse(original),source=snapshot(target);
+ const {target,roots}=await completeOperationalFixture(t);const name=(await fs.readdir(roots.materialRoot)).find(name=>name!=='registry.json'),file=path.join(roots.materialRoot,name,'owner.json'),original=await fs.readFile(file),owner=JSON.parse(original),source=snapshot(target);
  for(const field of ['confirmation','runner','expectedInstalledActivation','preparation','cleanup','terminalTransition','candidate']){
    const mutated=structuredClone(owner);mutated[field].extra='unique source that must survive';const bytes=Buffer.from(JSON.stringify(mutated)+'\n');await fs.writeFile(file,bytes);const meta=await fs.lstat(file);
    await assert.rejects(publishCandidate('CLOSE',target,null),/unknown|fields|format/u,field);assert.equal(snapshot(target),source);assert.equal((await fs.lstat(file)).ino,meta.ino);assert.deepEqual(await fs.readFile(file),bytes);await fs.writeFile(file,original);

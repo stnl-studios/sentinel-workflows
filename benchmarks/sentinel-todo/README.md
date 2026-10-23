@@ -2,15 +2,18 @@
 
 ## Adaptation status
 
-U3.16 is partially implemented and tested offline. **Do not run the real
-manager/campaign yet:** S1 remains `NATIVE_TRANSPORT_UNPROVEN`. Neither automatic
-capture of the official child's full response nor unambiguous frozen-bundle
-selection in the normal client has been demonstrated. U3.15-D qualified the
-native product, not this Node manager. See [interfaces](INTERFACES.md) for the
-boundaries and [the active plan](../../maintenance/P1-B-PLANO.md#u316-integral).
-The manager internals below still include suspended integration and are not a
-claim that the current candidate is qualified. No real call was used in this
-adaptation's offline tests.
+U3.16 is implemented and accepted within its documented offline scope.
+**Do not run the real manager/campaign yet:** S2/App Server capture, bundle
+selection and child completion have been exercised with an offline provider,
+not demonstrated in the normal authenticated client. S1 remains a historical
+`NATIVE_TRANSPORT_UNPROVEN` diagnosis. Normal manager paths through Initial and
+converted CLOSE/readers/export are covered mechanically; source retention fixes
+were explicitly authorized in the product, without benchmark hooks. U3.15-D's
+native acceptance belongs to its historical freeze and does not qualify the
+changed candidate. See [interfaces](INTERFACES.md) and
+[the current offline acceptance](../../maintenance/P1-B-PLANO.md#u316-retencao)
+for tests, known historical failures and the approval gate before U3.17.
+No real product/model/runner call was used in this adaptation's offline tests.
 
 ## Campaign entrypoints after qualification
 

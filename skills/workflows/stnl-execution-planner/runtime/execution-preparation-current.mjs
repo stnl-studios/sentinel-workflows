@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { parseCurrentJson, logicalArtifactPath, resolveLogicalProductClaim, validateCurrentContinuity,
   validateCurrentEvidence,validateCurrentImage,validateCurrentCandidate } from './execution-current.mjs';
-import {composeRetainedValidationCarriers,replaceCurrentCarrierSection,replaceCurrentTaskIndexStatus} from './current-evidence-state.mjs';
+import {composeRetainedValidationCarriers,retainOperationalSupport,replaceCurrentCarrierSection,replaceCurrentTaskIndexStatus} from './current-evidence-state.mjs';
 
 const HASH = /^sha256:[a-f0-9]{64}$/u;
 const UUID = /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/u;
@@ -1026,10 +1026,11 @@ function composeCurrentLocalReviewEvidence({files,updatedFiles,next,taskName,cur
     const formalCapsule=formalSource?parseCurrentJson(Buffer.from(formalSource.bytesBase64,'base64').toString('utf8')):null;
     const formalRequest=typeof formalCapsule?.validationRequestUtf8==='string'
       ?parseCurrentJson(formalCapsule.validationRequestUtf8):null;
+    const priorSupport={...bundle,support:[...bundle.support]};
     const currentChecks=bundle.implementation.some(item=>item.recordFormat==='stnl-task-record-v2')
       || ['stnl-current-validation-request-v1','stnl-current-validation-request-v2'].includes(formalRequest?.format);
-    // A reviewed publication may compact a closed formal refusal. Its current
-    // accepted formal and necessary product witnesses remain literal.
+    // Semantic selection may compact a closed refusal. Operational roots are
+    // restored below while their controller-owned captures still need retirement.
     if(bundle.openFindings.length===0&&bundle.validation?.recordFormat==='stnl-task-record-v2')
       bundle.support=bundle.support.filter(item=>item.kind!=='rejection'||item.origin.operation!=='VALIDATE_SLICE');
     if(currentChecks&&formalRequest?.format==='stnl-current-validation-request-v2'
@@ -1056,6 +1057,9 @@ function composeCurrentLocalReviewEvidence({files,updatedFiles,next,taskName,cur
       }
       bundle.support=bundle.support.filter(item=>item.kind!=='validation'||roots.has(item.id));
     }
+    bundle.support=retainOperationalSupport(priorSupport,bundle.support,
+      new Map(bundle.objects.map(item=>[item.id,Buffer.from(item.bytesBase64,'base64')])),
+      [...bundle.implementation,...bundle.findingsChecks,bundle.validation].filter(Boolean));
     const ids=new Set([...bundle.implementation,...bundle.findingsChecks,...bundle.support,bundle.validation].filter(Boolean)
       .flatMap(item=>Object.values(item.sources).flat()).filter(item=>typeof item==='string'&&HASH.test(item)));
     bundle.objects=bundle.objects.filter(item=>ids.has(item.id));

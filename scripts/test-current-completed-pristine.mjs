@@ -99,7 +99,7 @@ test('P02 a first operational proof with no decision requires every native sourc
   const bundle=JSON.parse(Buffer.from(image.files.get(current.evidence.path))),record=bundle.implementation[0];
   const checked=await completedEvidenceContext({context:image.context,snapshotBytes:Buffer.from(image.files.get('approved-preparation.json')),continuity:original,files:image.files});
   assert.ok(checked.fresh.has(current.deliveryId));assert.ok(!checked.retainedEvidence.some(item=>item.deliveryId===current.deliveryId));
-  const reject=async changed=>{const bytes=Buffer.from(JSON.stringify(changed)+'\n'),continuity=structuredClone(original),files=new Map(image.files);continuity.deliveries[0].evidence.sha256=sha(bytes);files.set(current.evidence.path,bytes);await assert.rejects(()=>completedEvidenceContext({context:image.context,snapshotBytes:Buffer.from(image.files.get('approved-preparation.json')),continuity,files}),error=>['INVALID_CURRENT_IMAGE','EVIDENCE_INCOMPLETE','OWNER_MISMATCH','EVIDENCE_STALE'].includes(error.code));};
+  const reject=async (changed,expectedCode=null)=>{const bytes=Buffer.from(JSON.stringify(changed)+'\n'),continuity=structuredClone(original),files=new Map(image.files);continuity.deliveries[0].evidence.sha256=sha(bytes);files.set(current.evidence.path,bytes);await assert.rejects(()=>completedEvidenceContext({context:image.context,snapshotBytes:Buffer.from(image.files.get('approved-preparation.json')),continuity,files}),error=>expectedCode?error.code===expectedCode:['INVALID_CURRENT_IMAGE','EVIDENCE_INCOMPLETE','OWNER_MISMATCH','EVIDENCE_STALE'].includes(error.code));};
   for(const field of ['origin','agentBinding','concludedToolResult','verificationObservation'])await t.test('missing '+field,()=>reject({...structuredClone(bundle),objects:bundle.objects.filter(item=>item.id!==record.sources[field])}));
   for(const variant of ['no-admission','foreign-snapshot','foreign-owner','foreign-request'])await t.test(variant,async()=>{
     const id=record.sources.origin,capsule=JSON.parse(Buffer.from(bundle.objects.find(item=>item.id===id).bytesBase64,'base64')),origin=JSON.parse(capsule.originUtf8);
@@ -111,7 +111,7 @@ test('P02 a first operational proof with no decision requires every native sourc
     const source=Buffer.from(JSON.stringify(capsule)+'\n'),digest=sha(source),changed=JSON.parse(JSON.stringify(bundle).replaceAll(id,digest));
     changed.objects.find(item=>item.id===digest).bytesBase64=source.toString('base64');changed.objects.sort((a,b)=>a.id<b.id?-1:1);await reject(changed);
   });
-  await t.test('offline family',async()=>{const changed=structuredClone(bundle);changed.implementation[0].origin.transport='managed';await reject(changed);});
+  await t.test('offline family',async()=>{const changed=structuredClone(bundle);changed.implementation[0].origin.transport='managed';await reject(changed,'UNSUPPORTED_FORMAT');});
 });
 
 for(const statuses of [['TESTS_FAIL','TESTS_PASS'],['TESTS_FAIL','TESTS_FAIL','TESTS_FAIL']])test('P03 current implementation budget '+statuses.join('/'),async t=>{
