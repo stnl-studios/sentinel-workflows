@@ -12,7 +12,9 @@ o adaptador e sua captura foram implementados/testados offline (§25.11 do plano
 O manager/provider normal já foi composto e testado mecanicamente até CLOSE,
 finalizer/export e retenção, nos regimes declarados. A emissão real dos dados e
 o carregamento efetivo do bundle ainda não estão comprovados. O consumidor
-terminal convertido por REPLAN permanece pendente; a unidade integral não foi aceita. Não iniciar prova real/campanha por este aceite.
+terminal convertido já verifica fonte current+completed offline; o gate real de
+CLOSE convertido está bloqueado por perda de uma réplica formal no compositor
+do produto (§25.13). A unidade integral não foi aceita. Não iniciar prova real/campanha por este aceite.
 
 ## Quem controla cada fronteira
 
@@ -156,7 +158,8 @@ foram preservados. Não houve mudança de skill/template/TOML/SDK package.
 
 Limites deste checkpoint: provider/juízos de testes são fictícios, testes usam APIs
 públicas reais para efeitos mecânicos em fixtures e nenhum julgamento de modelo
-foi certificado. REPLAN/retained-completed no consumidor pós-CLOSE, os gates
+foi certificado. REPLAN/retained-completed pós-CLOSE está bloqueado por retenção
+do produto congelado; os gates
 restantes de U3.16 e U3.17/U3.18 continuam separados.
 
 ### Schema e prova futura
@@ -172,8 +175,9 @@ Usa `skills/extraRoots/set`; não supõe campos de documentação mais recente, 
 o [handler público](https://raw.githubusercontent.com/openai/codex/rust-v0.163.0/codex-rs/app-server/src/request_processors/catalog_processor.rs)
 mantém extra roots em memória.
 
-Próximo gate offline: completar o consumidor de evidências convertidas/REPLAN e
-suas regressões. O percurso Initial sem managed até CLOSE/export já foi exercido,
+Próximo gate offline: resolver por decisão separada a retenção do produto que
+bloqueia CLOSE convertido e revalidar esse percurso. O consumidor externo não
+remove controles nem altera a guarda do produto. O percurso Initial sem managed até CLOSE/export já foi exercido,
 incluindo findings e os dois regimes; isso não encerra a unidade. Depois,
 uma U3.17 separadamente autorizada deve demonstrar carregamento do bundle, spawn
 correto, resposta integral real e retomada. Incompatibilidade, identidade ambígua,

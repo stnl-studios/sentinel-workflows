@@ -138,32 +138,79 @@ export async function validateRetainedSource({ product, evidence, specPath, work
     || activation.requirementsAuthority !== evidence.disposition.requirementsAuthority
     || activation.requirementsAuthority !== evidence.source.requirementsAuthority
     || sha(Buffer.from(JSON.stringify(activation.artifacts))) !== evidence.disposition.artifactManifestSha256) fail('retained activation/disposition differs');
-  // Initial is the normal benchmark candidate. A converted profile requires its
-  // dedicated public evidence consumer; do not certify it by this projection.
-  if (activation.preparationRevision !== 1 || continuity.completed.length) fail('converted terminal consumer not proven');
-  const prepared = product.validateCurrentPreparation({ context, requirementsAuthority: activation.requirementsAuthority,
-    snapshotBytes: files.get('approved-preparation.json'), artifacts: new Map([...files].filter(([name]) => name.endsWith('.md'))) });
-  const snapshot = prepared.snapshot, global = snapshot.normativeProjection.global, outputs = [];
-  for (const current of continuity.deliveries) {
-    const carrier = prepared.currentArtifacts.deliveries.find(item => item.deliveryId === current.deliveryId);
-    const delivery = snapshot.normativeProjection.deliveries.find(item => item.deliveryId === current.deliveryId);
-    const bundleBytes = files.get(current.evidence?.path);
-    if (!carrier || !delivery || !bundleBytes) fail('retained delivery/evidence absent');
-    const bundle = JSON.parse(bundleBytes);
-    const observed = await product.observeCurrentDeliveryWork({ context, delivery, sections: carrier.sections,
-      current, bundle, initial: true });
-    const authority = { preparationRevision: 1, localRevision: current.localRevision,
-      normativeSha256: snapshot.normativeSha256, delivery, context: { requirementsAuthority: snapshot.requirementsAuthority,
-        objective: global.objective, strategy: global.strategy, risks: global.risks } };
-    const facts = product.inspectCurrentEvidence({ context, authority, bundleBytes, counters: current.counters,
-      baseline: current.baseline, observedWork: observed.manifest });
-    product.validateCurrentEvidenceCarriers({ facts, sections: carrier.sections, continuity: carrier.continuity,
-      index: carrier.index, slice: current.slice, priorDeliveries: outputs });
-    if (facts.formalStatus !== 'PASS' || facts.persistedValidation !== 'current' || facts.observedValidation !== 'current'
-      || !facts.observationMatches || facts.rejection || facts.requiresFormalRevalidation
-      || facts.auxiliaryStatus === 'BLOCKED' || facts.openFindings.some(item => item.severity === 'blocking')) fail('retained local formal proof incomplete');
-    outputs.push({ slice: current.slice, deliveryId: current.deliveryId, facts, manifest: observed.manifest });
+  const snapshotBytes = files.get('approved-preparation.json');
+  const {retainedEvidence,fresh} = await product.completedEvidenceContext({context,snapshotBytes,continuity,files});
+  const converted = activation.preparationRevision > 1;
+  const prepared = product.validateCurrentPreparation({context,requirementsAuthority:activation.requirementsAuthority,
+    snapshotBytes,artifacts:new Map([...files].filter(([name])=>name.endsWith('.md'))),
+    profile:continuity.completed.length?'completed-current':converted?'converted-current':'initial',retainedEvidence});
+  const snapshot=prepared.snapshot, global=snapshot.normativeProjection.global, verified=[];
+  const members=[...continuity.deliveries,...continuity.completed];
+  for(const current of [...continuity.completed,...continuity.deliveries]) {
+    const completed=continuity.completed.includes(current);
+    const carrier=prepared.currentArtifacts.deliveries.find(item=>item.deliveryId===current.deliveryId);
+    const delivery=[...snapshot.normativeProjection.deliveries,...snapshot.normativeProjection.completed]
+      .find(item=>item.deliveryId===current.deliveryId);
+    const bundleBytes=files.get(current.evidence?.path);
+    if(!delivery||!bundleBytes||!completed&&!carrier) fail('retained delivery/evidence absent');
+    const bundle=JSON.parse(bundleBytes), record=bundle.validation;
+    if(!record||record.origin.deliveryId!==current.deliveryId||record.origin.slice!==current.slice)
+      fail('retained validation identity differs');
+    const cap=product.restoreCaptureSources('current-validation',record,
+      new Map(bundle.objects.map(object=>[object.id,Buffer.from(object.bytesBase64,'base64')])));
+    const request=JSON.parse(Buffer.from(cap.validationRequest));
+    const post=['stnl-current-validation-request-v3','stnl-current-validation-request-v4'].includes(request.format);
+    const retained=completed||continuity.completed.length>0&&!fresh.has(current.deliveryId);
+    const authority={preparationRevision:record.origin.preparationRevision,localRevision:record.origin.localRevision,
+      normativeSha256:record.origin.normativeSha256,delivery:record.contract.delivery,context:record.contract.context};
+    const observed=await product.observeCurrentDeliveryWork({context,delivery,
+      sections:carrier?.sections??{'Expected Files':'- none'},current,bundle,initial:!post});
+    const lastAttempt=activation.lastAttempt?.deliveryId===current.deliveryId?activation.lastAttempt:null;
+    const currentAuthority={preparationRevision:snapshot.preparationRevision,localRevision:current.localRevision,
+      normativeSha256:converted?current.authoritySha256:snapshot.normativeSha256,delivery,
+      context:{requirementsAuthority:snapshot.requirementsAuthority,objective:global.objective,strategy:global.strategy,risks:global.risks}};
+    const facts=post?await product.inspectPostConversionEvidence({context,snapshotBytes,current,bundleBytes,
+      observedWork:observed.manifest,lastAttempt,admissionRef:lastAttempt?.operationRef??null,
+      preparationProfile:continuity.completed.length?'completed-current':'converted-current',retainedEvidence,
+      retainedRead:retained?{authority:request.authority,snapshotDigest:request.base.approvedSnapshotSha256}:null})
+      :product.inspectCurrentEvidence({context,authority:retained?authority:currentAuthority,bundleBytes,counters:current.counters,
+        baseline:current.baseline,observedWork:observed.manifest,currentAuthoritySha256:current.authoritySha256});
+    // The public historical verifier proves the old capture, not its current
+    // ownership. Bind every historical selector to that verified admission's
+    // literal identities before comparing the current normative contract.
+    if(retained) {
+      const origin=JSON.parse(Buffer.from(cap.origin)), bindings=new Map([[record.origin.slice,record.origin.deliveryId]]);
+      for(const item of origin.otherDeliveryWork??[]) {
+        if(!members.some(member=>member.deliveryId===item.deliveryId&&member.slice===item.slice)
+          || bindings.has(item.slice)&&bindings.get(item.slice)!==item.deliveryId) fail('historical delivery binding differs');
+        bindings.set(item.slice,item.deliveryId);
+      }
+      const expected={requirementsAuthority:snapshot.requirementsAuthority,objective:global.objective,
+        strategy:global.strategy,risks:global.risks};
+      const canonical=(leaf,historical)=>({...leaf,obligations:leaf.obligations.map(obligation=>{
+        const owner=obligation.fullOwner.startsWith('delivery:')?obligation.fullOwner.slice(9)
+          :historical?bindings.get(obligation.fullOwner):members.find(member=>member.slice===obligation.fullOwner)?.deliveryId;
+        if(!owner||!members.some(member=>member.deliveryId===owner)) fail('unproven retained obligation owner');
+        return {...obligation,fullOwner:owner};
+      })});
+      if(!equal(authority.context,expected)||!equal(canonical(authority.delivery,true),canonical(delivery,false))
+        || record.origin.localRevision!==current.localRevision) fail('retained current contract/ownership differs');
+      const decision=snapshot.deliveries.find(item=>item.deliveryId===current.deliveryId)?.review.evidenceDecisions
+        .find(item=>item.deliveryId===current.deliveryId)
+        ??snapshot.globalReview.evidenceDecisions.find(item=>item.deliveryId===current.deliveryId);
+      if(decision?.disposition==='revalidate') fail('retained proof still requires reviewed revalidation');
+    }
+    if(carrier) product.validateCurrentEvidenceCarriers({facts,sections:carrier.sections,
+      continuity:post?{...carrier.continuity,evidence:current.evidence.path}:carrier.continuity,
+      index:carrier.index,slice:current.slice,priorDeliveries:verified});
+    if(facts.formalStatus!=='PASS'||facts.persistedValidation!=='current'||facts.observedValidation!=='current'
+      || !facts.observationMatches||facts.rejection||facts.requiresFormalRevalidation
+      || facts.auxiliaryStatus==='BLOCKED'||facts.openFindings.some(item=>item.severity==='blocking')
+      || facts.openDivergences?.some(item=>item.severity==='blocking')) fail('retained local formal proof incomplete');
+    verified.push({slice:current.slice,deliveryId:current.deliveryId,facts,manifest:observed.manifest,
+      observed,observationInput:{context,delivery,sections:carrier?.sections??{'Expected Files':'- none'},current,bundle,initial:!post}});
   }
+  const outputs=members.map(member=>verified.find(item=>item.deliveryId===member.deliveryId));
   const target = product.currentTerminalProjection(snapshot);
   const terminal = outputs.find(item => equal(item.facts.latest?.record, item.facts.bundle.validation)
     && equal(item.facts.bundle.validation?.contract.terminal, target)
@@ -183,6 +230,11 @@ export async function validateRetainedSource({ product, evidence, specPath, work
       && other.slice === item.slice && equal(other.manifest, item.manifest)))) fail('integral other-delivery basis differs');
   const manifests = outputs.map(item => ({ deliveryId: item.deliveryId, manifest: item.manifest }));
   if (!equal(manifests, evidence.source.manifests)) fail('retained manifests differ from public observation');
+  for(const item of outputs) {
+    const after=await product.observeCurrentDeliveryWork(item.observationInput);
+    if(!equal(after.manifest,item.observed.manifest)||!equal(after.identities,item.observed.identities)
+      ||!equal(after.rootIdentity,item.observed.rootIdentity)) fail('product changed during retained evidence inspection');
+  }
   return files;
 }
 

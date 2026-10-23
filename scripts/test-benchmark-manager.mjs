@@ -121,6 +121,19 @@ test('historical Case C collaboration events remain detectable as unmeasured del
     { result: 'BLOCKED', blocker: 'UNMANAGED_COLLABORATION' });
 });
 
+test('independent synthetic Case C transcript detects unmeasured delegation without claiming historical replay',async t=>{
+  const root=path.join(ROOT,'tmp','u316-synthetic-collaboration-'+randomUUID());await fs.mkdir(root,{recursive:true});
+  t.after(()=>fs.rm(root,{recursive:true,force:true}));
+  const file=path.join(root,'events.jsonl');
+  const event=(operationId,tool)=>({operationId,type:'item.completed',item:{id:randomUUID(),type:'collab_tool_call',tool,receiver_thread_ids:['synthetic-child']}});
+  await fs.writeFile(file,[event('C-08-VALIDATE_SLICE','spawn_agent'),event('C-other','spawn_agent')].map(item=>JSON.stringify(item)).join('\n')+'\n');
+  const events=await unmanagedCollaborationEvents(file,'C-08-VALIDATE_SLICE');
+  assert.equal(events.length,1);assert.equal(events[0].tool,'spawn_agent');
+  assert.deepEqual(guardOperationProvenance({result:'PASS',blocker:null},'VALIDATE_SLICE',events,0),
+    {result:'BLOCKED',blocker:'UNMANAGED_COLLABORATION'});
+  assert.deepEqual(await unmanagedCollaborationEvents(file,'missing-operation'),[]);
+});
+
 test('native launcher disagreement stops before SDK and runner dispatch for every runner operation', () => {
   for (const operation of ['EXECUTE_SLICE', 'APPLY_FINDINGS', 'VALIDATE_SLICE']) {
     const context = { operation, slice: 'slice-01', specPath: '/run-ABC123/case-c/workspace/specs/case-c' };
