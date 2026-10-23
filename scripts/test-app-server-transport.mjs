@@ -99,11 +99,36 @@ test('S2 frozen paths select the intended skill despite homonyms; all siblings/r
   assert.deepEqual(s.calls.find(value => value.method === 'skills/list').params, { cwds: [f.root], forceReload: true });
 });
 
+test('S2 excludes only frozen workflow homonyms and preserves distinct domain/legacy availability', async t => {
+  const f = await fixture(t), s = server({ bundle: f.bundle, cwd: f.root });
+  const distinct = [
+    ['stnl-backend-dotnet', true], ['stnl-backend-node-typescript', true],
+    ['stnl-database-persistence', true], ['stnl-frontend-react-next-angular', true],
+    ['stnl-mobile-ios-swift', true], ['stnl-testing', true],
+    ['stnl-security-auth', false], ['stnl-task-materializer', true],
+    ['stnl-task-reviewer', false], ['unrelated-skill', true],
+  ].map(([name, enabled]) => ({ name, enabled, path: `/normal-home/.agents/skills/${name}/SKILL.md` }));
+  const siblingHomonym = { name: 'stnl-slice-quality-manager', enabled: true,
+    path: '/normal-home/.agents/skills/stnl-slice-quality-manager/SKILL.md' };
+  s.state.listing.data[0].skills.push(...distinct, siblingHomonym);
+  const selected = await selectAppServerBundle(s.rpc, { bundle: f.bundle, cwd: f.root, skillName: 'stnl-slice-executor' });
+  const overrides = selected.config['skills.config'];
+  for (const skill of distinct) {
+    assert.deepEqual(overrides.find(value => value.path === skill.path), { path: skill.path, enabled: skill.enabled },
+      `${skill.name} must keep the client's setting even when the config array replaces inherited overrides`);
+  }
+  assert.deepEqual(overrides.filter(value => value.enabled === false && !distinct.some(skill => skill.path === value.path)).map(value => value.path), [
+    '/normal-home/.agents/skills/stnl-slice-executor/SKILL.md', siblingHomonym.path,
+  ]);
+});
+
 for (const [name, change] of Object.entries({
   absent: s => s.listing.data[0].skills.shift(),
   disabled: s => { s.listing.data[0].skills[0].enabled = false; },
   homonymOnly: s => { s.listing.data[0].skills = s.listing.data[0].skills.slice(2); },
   wrongName: s => { s.listing.data[0].skills[0].name = 'stnl-other'; },
+  nonSentinelNameInBundle: s => { s.listing.data[0].skills[0].name = 'unrelated-skill'; },
+  wrongPathInBundle: s => { s.listing.data[0].skills[0].path = path.join(path.dirname(s.listing.data[0].skills[0].path), 'runtime/SKILL.md'); },
   duplicate: s => s.listing.data[0].skills.push(s.listing.data[0].skills[0]),
   discoveryError: s => s.listing.data[0].errors.push({ message: 'incomplete' }),
   wrongCwd: s => { s.listing.data[0].cwd = '/foreign'; },

@@ -61,9 +61,26 @@ for (const [regime, fault] of [['fresh', null], ['author-continuity', null], ['f
   await fs.writeFile(path.join(runRoot, 'run.json'), JSON.stringify(run));
   await fs.writeFile(path.join(runRoot, 'summary.json'), JSON.stringify({ ...run, cases: { A: result } }));
   assert.equal(result.status, 'PASS', JSON.stringify(result));
+  const starts = backend.calls.filter(call => call.method === 'turn/start');
+  assert.ok(starts.length > 0);
+  for (const { params } of starts) {
+    const skill = params.input.filter(item => item.type === 'skill');
+    const text = params.input.filter(item => item.type === 'text');
+    assert.equal(skill.length, 1); assert.equal(text.length, 1);
+    assert.equal(skill[0].path, path.join(runRoot, 'snapshot/skills/workflows', skill[0].name, 'SKILL.md'));
+    assert.ok(text[0].text.startsWith(`$${skill[0].name}\n`), 'normal explicit mention agrees with native skill item');
+  }
   const extra = fault === 'findings-cycle' ? 2 : 0;
   assert.equal(result.operations, 6 + extra); assert.equal(result.runnerTurns, 2 + extra); assert.equal(result.mainTurns, 6 + extra);
   const state = JSON.parse(await fs.readFile(path.join(runRoot, 'case-a/case-state.json')));
+  for (const operation of state.operations) {
+    // The manager persists the exact launcher it sends, including the mention.
+    const evidence = JSON.parse(await fs.readFile(operation.evidencePath));
+    const prompt = await fs.readFile(evidence.promptFile, 'utf8');
+    assert.ok(starts.some(call => call.params.input.some(item => item.type === 'text' && item.text === prompt)));
+    assert.ok(prompt.includes(`SPEC_PATH=${state.specPath}`));
+    assert.equal(evidence.promptSha256, `sha256:${createHash('sha256').update(prompt).digest('hex')}`);
+  }
   const raw = JSON.parse(await fs.readFile(state.finalizer.rawPath));
   const ajv = new Ajv2020({ strict: false, allErrors: true });
   const v1 = JSON.parse(await fs.readFile(path.join(repo, 'benchmarks/sentinel-todo/schemas/result.schema.json')));

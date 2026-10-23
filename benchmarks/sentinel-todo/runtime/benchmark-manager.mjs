@@ -525,7 +525,9 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
       }
       const templatePath = path.join(runRoot, 'snapshot', 'templates/prompts', TEMPLATE[operation]);
       const template = await fs.readFile(templatePath, 'utf8');
-      const prompt = renderLauncher(template, { SPEC_PATH: specPath, REQUIREMENTS_SOURCE: requirementsPath,
+      const workflowSkill = operation.startsWith('SPEC_')
+        ? 'stnl-spec-lifecycle-manager' : product.workflowSkillForOperation(operation);
+      const prompt = `$${workflowSkill}\n` + renderLauncher(template, { SPEC_PATH: specPath, REQUIREMENTS_SOURCE: requirementsPath,
         SLICE: slice === null ? '' : specInput(slice), READINESS_SCOPE: 'GLOBAL', READINESS_FOCUS: 'not-applicable',
         NEW_INFORMATION: operation === 'SPEC_PROMOTE' ? `GLOBAL READY ${readiness.snapshotSha256}; promote status only.`
           : readiness?.verdict === 'FINDINGS' ? JSON.stringify(readiness.findings) : '',
@@ -557,8 +559,7 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
             startedChildren: [...startedChildren], mainNumber, dispatch, preClose };
           await atomicJson(stateFile, state);
         };
-        turn = await provider.runTurn({ prompt, workflowSkill: operation.startsWith('SPEC_')
-          ? 'stnl-spec-lifecycle-manager' : product.workflowSkillForOperation(operation), model: route.model,
+        turn = await provider.runTurn({ prompt, workflowSkill, model: route.model,
           effort: route.effort, role, priorAuthorThread: prior, operationId, signal,
           observation: pending?.dispatch ?? null,
           onDispatched: checkpoint,

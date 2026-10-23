@@ -182,20 +182,25 @@ export async function selectAppServerBundle(rpc, { bundle, cwd, skillName }) {
   const entry = listing.data[0];
   requireThat(entry.cwd === cwd && Array.isArray(entry.errors) && entry.errors.length === 0
     && Array.isArray(entry.skills), 'skill discovery incomplete');
+  const frozenSkills = bundle.files.filter(file => path.basename(file.path) === 'SKILL.md');
+  const frozenNames = new Set(frozenSkills.map(file => path.basename(path.dirname(file.path))));
   const seen = new Set(), config = [];
   for (const skill of entry.skills) {
     requireThat(id(skill.path) && id(skill.name) && typeof skill.enabled === 'boolean'
       && !seen.has(skill.path), 'missing/duplicate skill identity');
     seen.add(skill.path);
-    if (!skill.name.startsWith('stnl-')) continue;
-    if (inside(bundle.skillsRoot, skill.path)) {
-      await physical(skill.path);
+    const inBundle = inside(bundle.skillsRoot, skill.path);
+    // Preserve discovered availability for distinct skills (including domain
+    // guards and legacy names), even when skills.config replaces an array.
+    // Only external homonyms of this frozen workflow set are disabled.
+    if (inBundle) {
       requireThat(skill.enabled === true && bundle.files.some(file => file.path === skill.path)
         && skill.path === path.join(bundle.skillsRoot, skill.name, 'SKILL.md'), 'frozen skill identity differs');
+      await physical(skill.path);
     }
-    config.push({ path: skill.path, enabled: inside(bundle.skillsRoot, skill.path) });
+    config.push({ path: skill.path, enabled: inBundle || (!frozenNames.has(skill.name) && skill.enabled) });
   }
-  for (const file of bundle.files.filter(file => path.basename(file.path) === 'SKILL.md')) {
+  for (const file of frozenSkills) {
     requireThat(seen.has(file.path), 'frozen sibling absent from discovery');
   }
   const selected = entry.skills.filter(skill => skill.path === selectedPath && skill.name === skillName);
