@@ -8,7 +8,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { runDoctor, runProbeDoctor } from './benchmark-environment.mjs';
-import { checkProductAcceptance, PRODUCT_CONTRACT } from './product-acceptance.mjs';
+import { checkProductAcceptance, validateProductAcceptance, productCandidateIdentity } from './product-acceptance.mjs';
 
 const RUNTIME_ROOT = path.dirname(fileURLToPath(import.meta.url));
 const BENCHMARK_ROOT = path.resolve(RUNTIME_ROOT, '..');
@@ -813,7 +813,7 @@ async function sha256File(file) {
   return `sha256:${createHash('sha256').update(await fs.readFile(file)).digest('hex')}`;
 }
 
-function validateResult(value) {
+export function validateResult(value) {
   if (![1, 2].includes(value?.schemaVersion) || value?.benchmarkVersion !== 1 || value?.benchmarkId !== 'sentinel-todo') {
     throw new CliError('result identity is invalid');
   }
@@ -890,10 +890,12 @@ function validateResult(value) {
   if (value.contextCost.actualTokenTelemetryAvailable
     ? value.contextCost.inputTokens === null || value.contextCost.outputTokens === null
     : value.contextCost.inputTokens !== null || value.contextCost.outputTokens !== null) throw new CliError('result token telemetry consistency is invalid');
-  if (JSON.stringify(Object.keys(value.workspace).sort()) !== JSON.stringify([
+  const workspaceKeys = [
     'changedFileCount', 'finalDiffBytes', 'observedSentinelSha', 'requirementsHash',
     'requirementsHashMatches', 'seedContentHash', 'sentinelShaMatchesCheckout',
-  ])
+  ];
+  if (Object.hasOwn(value.workspace, 'productRoot')) workspaceKeys.push('productRoot', 'productSha256');
+  if (JSON.stringify(Object.keys(value.workspace).sort()) !== JSON.stringify(workspaceKeys.sort())
     || !Number.isInteger(value.workspace.changedFileCount) || value.workspace.changedFileCount < 0
     || !Number.isInteger(value.workspace.finalDiffBytes) || value.workspace.finalDiffBytes < 0
     || !/^sha256:[0-9a-f]{64}$/u.test(value.workspace.seedContentHash)
@@ -904,19 +906,9 @@ function validateResult(value) {
   if (JSON.stringify(Object.keys(value.finalTests).sort()) !== JSON.stringify(['command', 'exitCode', 'passed'])
     || value.finalTests.command !== 'node --test' || !Number.isInteger(value.finalTests.exitCode)
     || typeof value.finalTests.passed !== 'boolean') throw new CliError('result finalTests is invalid');
-  const acceptance = value.productAcceptance;
-  if (acceptance !== undefined && acceptance !== null) {
-    if (typeof acceptance !== 'object' || Array.isArray(acceptance)
-      || JSON.stringify(Object.keys(acceptance).sort()) !== JSON.stringify([
-        'caseId', 'checks', 'commands', 'contract', 'diagnostic', 'errorCode', 'failedCheck', 'passed',
-      ]) || acceptance.contract !== PRODUCT_CONTRACT || acceptance.caseId !== value.caseId
-      || !['A', 'B'].includes(acceptance.caseId) || typeof acceptance.passed !== 'boolean'
-      || !Array.isArray(acceptance.checks) || acceptance.checks.some((check) => typeof check !== 'string')
-      || !Number.isInteger(acceptance.commands) || acceptance.commands < 0
-      || ['diagnostic', 'errorCode', 'failedCheck'].some((key) => acceptance[key] !== null && typeof acceptance[key] !== 'string')
-      || (acceptance.passed ? acceptance.failedCheck !== null || acceptance.diagnostic !== null || acceptance.errorCode !== null
-        : acceptance.failedCheck === null || acceptance.diagnostic === null)) throw new CliError('result productAcceptance is invalid');
-  }
+  validateProductAcceptance(value.productAcceptance, value.caseId,
+    ['case', 'full'].includes(value.runMode) && value.status === 'PASS', undefined,
+    { root: value.workspace.productRoot, sha256: value.workspace.productSha256 });
 }
 
 async function finalize(options) {
@@ -999,7 +991,7 @@ async function finalize(options) {
   const tests = run(process.execPath, ['--test'], realWorkspace);
   const finalTestsPassed = tests.exitCode === 0;
   const needsClosure = journal.runMode === 'case' || journal.runMode === 'full';
-  const needsProductAcceptance = needsClosure && ['A', 'B'].includes(item.id);
+  const needsProductAcceptance = needsClosure;
   const productAcceptance = needsProductAcceptance
     ? await checkProductAcceptance(realWorkspace, item.id) : null;
   const executionValidation = needsClosure
@@ -1015,7 +1007,8 @@ async function finalize(options) {
   const lastLifecycleEvent = journal.events.filter((event) => event.operation.startsWith('SPEC_')).at(-1);
   const effectiveBlocked = lastOperationalEvent?.result === 'BLOCKED'
     || lastLifecycleEvent?.result === 'BLOCKED'
-    || officialExecutionBlocked;
+    || officialExecutionBlocked
+    || ['PRODUCT_OBSERVATION_UNPROVEN', 'INSTRUMENT_DRIFT', 'PRODUCT_STATE_DRIFT'].includes(productAcceptance?.errorCode);
   const terminalEvidence = terminalSequence
     && finalExecutionState === 'COMPLETE'
     && artifacts.structurallyTerminal;
@@ -1049,6 +1042,7 @@ async function finalize(options) {
     contextCost: contextMetrics(journal.events, artifacts),
     workspace: {
       ...workspaceMetrics,
+      productRoot: realWorkspace, productSha256: await productCandidateIdentity(realWorkspace),
       seedContentHash: await contentHash(path.join(BENCHMARK_ROOT, configuration.seedPath)),
       requirementsHash,
       requirementsHashMatches,

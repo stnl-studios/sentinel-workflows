@@ -4,6 +4,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { assertSnapshotIntegrity } from './benchmark-snapshot.mjs';
+import { validateProductAcceptance, productInstrumentIdentity, productCandidateIdentity } from './product-acceptance.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const UNAVAILABLE = 'unavailable';
@@ -104,6 +105,7 @@ async function measurement(runId) {
     config = await json(path.join(runRoot, 'snapshot/benchmarks/sentinel-todo/benchmark.json'));
   } else throw new Error('terminal run is missing its frozen snapshot');
   const cases = [];
+  const instrument = productInstrumentIdentity(path.join(runRoot, 'snapshot/benchmarks/sentinel-todo/runtime'));
   const summary = await optionalJson(path.join(runRoot, 'summary.json'));
   if (!summary || summary.runId !== runId || summary.status !== run.status || summary.mode !== run.mode) throw new Error('run summary identity differs from run.json');
   const caseIds = run.cases ?? [];
@@ -114,6 +116,16 @@ async function measurement(runId) {
       optionalJson(path.join(dir, 'journal.json')),
     ]);
     const raw = await currentFinalizerRaw(dir, state, journal, id);
+    const needsAcceptance = ['full', 'case'].includes(run.mode) && (state?.status === 'PASS' || raw?.status === 'PASS');
+    let product = null;
+    if (needsAcceptance) {
+      const workspace = path.join(dir, 'workspace');
+      if (state?.workspace !== workspace || raw?.workspace?.productRoot !== workspace)
+        throw new Error(`case ${id} productAcceptance workspace identity differs`);
+      product = { root: workspace, sha256: await productCandidateIdentity(workspace) };
+      if (raw.workspace.productSha256 !== product.sha256) throw new Error(`case ${id} productAcceptance candidate changed`);
+    }
+    validateProductAcceptance(raw?.productAcceptance, id, needsAcceptance, instrument, product);
     const result = summary.cases?.[id] ?? {};
     if (!raw && !state && !journal) {
       if (result.status !== 'NOT_RUN') {
@@ -189,6 +201,8 @@ async function measurement(runId) {
       specClosed: raw?.specClosed ?? UNAVAILABLE, finalizer: state.finalizer?.exitCode === 0 ? 'PASS' : state.finalizer?.exitCode !== undefined ? 'FAIL' : UNAVAILABLE,
       finalizerExitCode: state.finalizer?.exitCode ?? UNAVAILABLE,
       finalTestsPassed: raw?.finalTests?.passed ?? raw?.finalTestsPassed ?? UNAVAILABLE,
+      productAcceptance: raw?.productAcceptance ?? null,
+      product: raw?.workspace?.productRoot ? { root: raw.workspace.productRoot, sha256: raw.workspace.productSha256 } : null,
       finalTestCommand: typeof raw?.finalTests?.command === 'string' && raw.finalTests.command.length <= 120 && /^[a-zA-Z0-9._ -]+$/u.test(raw.finalTests.command) ? raw.finalTests.command : UNAVAILABLE,
       finalTestExitCode: raw?.finalTests?.exitCode ?? UNAVAILABLE,
       profileMismatches: raw?.modelUse?.profileMismatches ?? UNAVAILABLE,
@@ -225,6 +239,7 @@ async function measurement(runId) {
       requirementsHashes: Object.fromEntries(run.cases.map((id) => [id, caseById[id]?.requirementsHash ?? UNAVAILABLE])),
       fixtureContentHashes: Object.fromEntries(run.cases.map((id) => [id, caseById[id]?.fixtureContentHash ?? UNAVAILABLE])),
       seedHash: config.integrity?.seedContentHash ?? UNAVAILABLE,
+      productInstrumentSha256: instrument,
       resultSchemaVersion: config?.schemaVersions.result ?? UNAVAILABLE, resultSchemaHash,
       metricDefinitions: 'g2-operation-counts-v1;g3-attributable-usage-delta-v1',
       qualification: { harnessContractVersion: config?.productionPilot?.qualification?.harnessContractVersion ?? UNAVAILABLE,
@@ -288,34 +303,42 @@ function aggregateTelemetry(cases) {
 
 function comparable(a, b, allowProfileMismatch = false) {
   const x = a.comparability; const y = b.comparability;
-  const fields = ['schemaVersion', 'benchmarkVersion', 'requirementsHashes', 'fixtureContentHashes', 'seedHash', 'resultSchemaVersion', 'resultSchemaHash', 'metricDefinitions', 'qualification', 'resultDefinition'];
+  const fields = ['schemaVersion', 'benchmarkVersion', 'requirementsHashes', 'fixtureContentHashes', 'seedHash', 'productInstrumentSha256', 'resultSchemaVersion', 'resultSchemaHash', 'metricDefinitions', 'qualification', 'resultDefinition'];
   const mismatches = fields.filter((k) => JSON.stringify(x[k]) !== JSON.stringify(y[k]));
   if (!allowProfileMismatch && x.profile !== y.profile) mismatches.push('profile');
   const profileExperiment = allowProfileMismatch && x.profile !== y.profile && mismatches.length === 0;
   return { directlyComparable: mismatches.length === 0, mismatches, profileExperiment };
 }
 
-export function validateMeasurementReport(report) {
+export function validateMeasurementReport(report, { qualify = false } = {}) {
   const fail = (message) => { throw new Error(`invalid measurement report: ${message}`); };
   if (!report || report.schemaVersion !== 1 || report.benchmarkId !== 'sentinel-todo' || (report.benchmarkVersion !== UNAVAILABLE && !Number.isInteger(report.benchmarkVersion))) fail('identity/schema');
   if (!report.run?.id || !['PASS', 'FAIL', 'ABORTED', 'BLOCKED', 'CANCELLED', 'PAUSED_BUDGET_OR_QUOTA', 'FOCAL_STOP'].includes(report.run.status)
     || !['full', 'case', 'focal'].includes(report.run.mode)) fail('run identity');
   if (!report.provenance?.sourceFunctionalSha256 || !report.provenance?.snapshotSha256) fail('source/snapshot identity');
   const c = report.comparability;
+  if (qualify && (c?.profile !== report.run.profile || c?.benchmarkVersion !== report.benchmarkVersion || c?.schemaVersion !== report.schemaVersion)) fail('comparability identity differs from report');
   for (const key of ['schemaVersion', 'benchmarkVersion', 'profile', 'requirementsHashes', 'fixtureContentHashes', 'seedHash', 'resultSchemaVersion', 'resultSchemaHash', 'metricDefinitions', 'qualification', 'resultDefinition']) {
     if (c?.[key] === undefined || c[key] === null || c[key] === '') fail(`comparability.${key}`);
   }
   if (!Array.isArray(report.cases) || !report.cases.length) fail('cases');
   if (report.run.mode !== 'full' && report.cases.length !== 1) fail('selected case scope');
+  if (qualify && report.run.status === 'PASS' && (report.cases.some(row => row.status !== 'PASS')
+    || new Set(report.cases.map(row => row.id)).size !== report.cases.length
+    || (report.run.mode === 'full' && report.cases.map(row => row.id).sort().join() !== 'A,B,C'))) fail('PASS requires the complete passing case scope');
   for (const row of report.cases) {
     if (!row.id || !['PASS', 'FAIL', 'ABORTED', 'BLOCKED', 'CANCELLED', 'PAUSED_BUDGET_OR_QUOTA', 'FOCAL_STOP', 'NOT_RUN'].includes(row.status)
       || (row.operations !== UNAVAILABLE && !Number.isInteger(row.operations))) fail('case identity/metrics');
+    validateProductAcceptance(row.productAcceptance, row.id,
+      qualify && ['full', 'case'].includes(report.run.mode) && row.status === 'PASS', undefined, row.product);
     for (const key of ['main', 'runner']) {
       const group = row.telemetry?.[key];
       if (group !== UNAVAILABLE && (!group || !Number.isInteger(group.turns)
         || (group.input !== UNAVAILABLE && !Number.isFinite(group.input)) || (group.output !== UNAVAILABLE && !Number.isFinite(group.output)))) fail(`case ${row.id} telemetry ${key}`);
     }
   }
+  if (qualify && ['full', 'case'].includes(report.run.mode) && report.cases.some(row => row.status === 'PASS')
+    && c.productInstrumentSha256 !== productInstrumentIdentity()) fail('product instrument identity');
   if (!report.aggregate || (report.aggregate.operations !== UNAVAILABLE && !Number.isInteger(report.aggregate.operations)) || !report.aggregate.telemetry) fail('aggregate');
   for (const key of ['main', 'runner']) {
     const group = report.aggregate.telemetry[key];
@@ -342,6 +365,12 @@ export function compareMeasurements(before, after, allowProfileMismatch = false)
     conclusion: 'TEST-ONLY; ineligible for real proof or baseline', deltas: UNAVAILABLE };
   const compatibility = comparable(before, after, allowProfileMismatch);
   if (!compatibility.directlyComparable && !compatibility.profileExperiment) return { ...compatibility, deltas: UNAVAILABLE };
+  try {
+    validateMeasurementReport(before, { qualify: true }); validateMeasurementReport(after, { qualify: true });
+  } catch {
+    return { ...compatibility, directlyComparable: false, mismatches: [...compatibility.mismatches, 'unqualified product acceptance'],
+      conclusion: 'historical or insufficient product evidence; no savings conclusion', deltas: UNAVAILABLE };
+  }
   const complete = (r) => r.run.mode === 'full' && r.run.status === 'PASS' && r.cases.every((c) => c.status === 'PASS' && c.finalizer === 'PASS'
     && c.finalTestsPassed === true && c.specClosed === true && c.execution === 'COMPLETE');
   if (!complete(before) || !complete(after)) return { ...compatibility, directlyComparable: false,
@@ -365,7 +394,7 @@ export async function exportMeasurement(runId) {
   if (!/^[a-z0-9][a-z0-9-]{7,}$/u.test(runId)) throw new Error('invalid run id');
   const run = await json(path.join(ROOT, 'benchmark-temp', runId, 'run.json'));
   if (run.mode !== 'full') throw new Error('measurements can only be exported for full runs');
-  const report = validateMeasurementReport(await measurement(runId));
+  const report = validateMeasurementReport(await measurement(runId), { qualify: true });
   for (const row of report.cases) for (const key of ['main', 'runner']) {
     if (row.telemetry[key] !== UNAVAILABLE) delete row.telemetry[key].inputByTurn;
   }
@@ -432,7 +461,7 @@ async function writeAtomic(file, bytes, { exclusive = false } = {}) {
 function randomSuffix() { return createHash('sha256').update(`${Date.now()}-${Math.random()}`).digest('hex').slice(0, 10); }
 
 export async function publishMeasurement(report, { root = path.join(ROOT, 'benchmarks/sentinel-todo/measurements'), updateLatest = true } = {}) {
-  report = validateMeasurementReport(report);
+  report = validateMeasurementReport(report, { qualify: true });
   if (report.run.mode !== 'full') throw new Error('measurements can only be published for full runs');
   if (!/^[a-z0-9][a-z0-9-]{7,}$/u.test(report.run.id)) throw new Error('invalid run id');
   const baselinePath = path.resolve(root, '../baselines/baseline-v1.json');
