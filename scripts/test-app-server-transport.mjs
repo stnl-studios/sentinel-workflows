@@ -7,7 +7,7 @@ import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { appServerRpc, initializeAppServer, describeAppServerBundle, assertAppServerBundle,
   selectAppServerBundle, startAppServerTurn, bindAppServerChild, readAppServerChild,
-  writeNativeToolResult, captureAppServerChild } from '../agents/codex/runtime/app-server-transport.mjs';
+  writeNativeToolResult, captureAppServerChild, persistAppServerStderrSample } from '../agents/codex/runtime/app-server-transport.mjs';
 import { createNativeProvider } from '../agents/codex/runtime/native-provider.mjs';
 import { reservedOperation } from './fixtures/current-native-operation.mjs';
 import { bindNative, verifyNative, captureNative, resume } from
@@ -306,6 +306,122 @@ for (const kind of ['early-denial-in-long-chunk', 'split-denial', 'diagnostic-ov
     assert.equal(w.sent.length, 1);
   });
 }
+
+test('stderr guard still accepts 65536 bytes and blocks byte 65537 without another request', async t => {
+  const f = await fixture(t), w = wire(t);
+  const accepted = w.rpc.request('thread/read', { threadId: child });
+  w.diagnostics.write(Buffer.alloc(65536, 120));
+  await assert.rejects(fs.lstat(path.join(f.root, 'tmp/app-server-stderr-sample.txt')), { code: 'ENOENT' }, 'healthy diagnostics are not persisted');
+  w.input.write(JSON.stringify({ id: w.sent[0].id, result: { ok: true } }) + '\n');
+  assert.deepEqual(await accepted, { ok: true });
+  const rejected = assert.rejects(w.rpc.request('thread/read', { threadId: child }),
+    { code: 'NATIVE_TRANSPORT_UNPROVEN', message: 'App Server diagnostic limit exceeded' });
+  w.diagnostics.write('x'); await rejected;
+  const result = await persistAppServerStderrSample(w.rpc, f.root);
+  assert.equal(result.status, 'retained');
+  const bytes = await fs.readFile(result.file);
+  assert.ok(bytes.length <= 1024); assert.ok(!bytes.includes(Buffer.from('xxxx')));
+  assert.equal((await fs.stat(result.file)).mode & 0o777, 0o600);
+  await assert.rejects(w.rpc.request('thread/read', {}), blocked);
+  assert.equal(w.sent.length, 2);
+});
+
+for (const chunkSize of [1, 7, 511]) test(`stderr sample omits unknown/private content fragmented every ${chunkSize} bytes`, async t => {
+  const f = await fixture(t), w = wire(t);
+  const rejected = assert.rejects(w.rpc.request('thread/read', {}), blocked);
+  const secret = 'sk-private-secret-value-123456789';
+  const prefix = Buffer.from(`failed to load skill\nAuthorization: Bearer ${secret}\npassword=hunter-private\n/Users/private-user/secret.env\n{"prompt":"private prompt","env":"private environment"}\n𝛑\n`);
+  for (let offset = 0; offset < prefix.length; offset += chunkSize) w.diagnostics.write(prefix.subarray(offset, offset + chunkSize));
+  w.diagnostics.write(Buffer.alloc(65537, 120)); await rejected;
+  const result = await persistAppServerStderrSample(w.rpc, f.root), sample = await fs.readFile(result.file, 'utf8');
+  assert.ok(sample.includes('failed to load skill'));
+  for (const privateText of [secret, 'Authorization', 'Bearer', 'hunter-private', '/Users/', 'secret.env', 'private prompt', 'private environment', '𝛑']) {
+    assert.equal(sample.includes(privateText), false, privateText);
+  }
+  assert.ok(Buffer.byteLength(sample) <= 1024);
+  const original = await fs.readFile(result.file);
+  w.diagnostics.write('failed to parse config');
+  assert.ok(original.equals(await fs.readFile(result.file)), 'later chunks cannot rewrite the first sample');
+  assert.deepEqual(await persistAppServerStderrSample(w.rpc, f.root), { status: 'unavailable' }, 'never overwrite a retained sample');
+  assert.ok(original.equals(await fs.readFile(result.file)));
+  assert.equal(w.sent.length, 1);
+});
+
+test('stderr prefix truncation and unknown-only text cannot escape via the retained sample', async t => {
+  const f = await fixture(t), w = wire(t);
+  const rejected = assert.rejects(w.rpc.request('thread/read', {}), blocked);
+  w.diagnostics.write(Buffer.concat([Buffer.alloc(4096, 120), Buffer.from('failed to parse config\nprivate-value'), Buffer.alloc(65537, 120)]));
+  await rejected;
+  const result = await persistAppServerStderrSample(w.rpc, f.root), sample = await fs.readFile(result.file, 'utf8');
+  assert.equal(sample.includes('failed to parse config'), false, 'only the bounded prefix is sampled');
+  assert.equal(sample.includes('private-value'), false);
+  assert.ok(sample.includes('All other stderr omitted'));
+});
+
+for (const failure of ['occupied-file', 'symlink-directory', 'noncanonical-root']) test(`stderr persistence ${failure} preserves prior bytes and original RPC error`, async t => {
+  const f = await fixture(t), w = wire(t);
+  const rejected = assert.rejects(w.rpc.request('thread/read', {}), { message: 'App Server diagnostic limit exceeded' });
+  w.diagnostics.write(Buffer.alloc(65537)); await rejected;
+  let evidenceRoot = f.root;
+  const prior = path.join(f.root, 'prior'); await fs.mkdir(prior);
+  const priorFile = path.join(prior, 'app-server-stderr-sample.txt'); await fs.writeFile(priorFile, 'prior bytes');
+  if (failure === 'occupied-file') { await fs.mkdir(path.join(f.root, 'tmp')); await fs.copyFile(priorFile, path.join(f.root, 'tmp/app-server-stderr-sample.txt')); }
+  if (failure === 'symlink-directory') await fs.symlink(prior, path.join(f.root, 'tmp'));
+  if (failure === 'noncanonical-root') evidenceRoot += '/.';
+  assert.deepEqual(await persistAppServerStderrSample(w.rpc, evidenceRoot), { status: 'unavailable' });
+  assert.equal(await fs.readFile(priorFile, 'utf8'), 'prior bytes');
+  if (failure === 'occupied-file') assert.equal(await fs.readFile(path.join(f.root, 'tmp/app-server-stderr-sample.txt'), 'utf8'), 'prior bytes');
+  await assert.rejects(w.rpc.request('thread/read', {}), { code: 'NATIVE_TRANSPORT_UNPROVEN', message: 'App Server diagnostic limit exceeded' });
+  assert.equal(w.sent.length, 1);
+});
+
+for (const phase of ['initialize', 'turn', 'turn-write-failure']) test(`provider exposes limited stderr evidence for ${phase} without replacing the failure`, async t => {
+  const f = await fixture(t), w = wire(t);
+  const request = w.rpc.request;
+  w.rpc.request = (method, params) => {
+    if (method === 'initialize' && phase !== 'initialize') return Promise.resolve({ userAgent: 'codex-cli/0.163.0' });
+    const pending = request(method, params);
+    w.diagnostics.write(Buffer.concat([Buffer.from('failed to load skill\nsecret-value'), Buffer.alloc(65537)]));
+    return pending;
+  };
+  if (phase === 'turn-write-failure') await fs.writeFile(path.join(f.root, 'tmp'), 'occupied parent');
+  if (phase === 'initialize') {
+    await assert.rejects(createNativeProvider({ snapshot: f.root, workspace: f.root, evidenceRoot: f.root, rpc: w.rpc }), error => {
+      assert.equal(error.message, 'App Server diagnostic limit exceeded'); assert.equal(error.code, 'NATIVE_TRANSPORT_UNPROVEN');
+      assert.equal(error.stderrSample.status, 'retained'); return true;
+    });
+  } else {
+    const provider = await createNativeProvider({ snapshot: f.root, workspace: f.root, evidenceRoot: f.root, rpc: w.rpc });
+    const result = await provider.runTurn({ prompt: 'normal input', workflowSkill: 'stnl-slice-executor', model: 'gpt-6.1-sol', effort: 'medium', role: 'author', operationId: 'failure' });
+    assert.equal(result.completed, false); assert.equal(result.turnStarted, null);
+    assert.equal(result.error, 'App Server diagnostic limit exceeded'); assert.equal(result.errorCode, 'NATIVE_TRANSPORT_UNPROVEN');
+    assert.equal(result.stderrSample.status, phase === 'turn' ? 'retained' : 'unavailable');
+    const event = JSON.parse((await fs.readFile(result.eventsPath, 'utf8')).trim());
+    assert.deepEqual(event.stderrSample, result.stderrSample);
+  }
+  if (phase !== 'turn-write-failure') {
+    const sample = await fs.readFile(path.join(f.root, 'tmp/app-server-stderr-sample.txt'), 'utf8');
+    assert.ok(sample.includes('failed to load skill')); assert.equal(sample.includes('secret-value'), false);
+  }
+  assert.equal(w.sent.filter(call => Object.hasOwn(call, 'id')).length, 1);
+});
+
+test('initialization rejection retains available stderr even while the codec remains open', async t => {
+  const f = await fixture(t), w = wire(t), request = w.rpc.request;
+  w.rpc.request = (method, params) => {
+    const pending = request(method, params);
+    w.diagnostics.write('failed to parse config: private-value');
+    w.input.write(JSON.stringify({ id: w.sent.at(-1).id, error: { message: 'private server detail' } }) + '\n');
+    return pending;
+  };
+  await assert.rejects(createNativeProvider({ snapshot: f.root, workspace: f.root, evidenceRoot: f.root, rpc: w.rpc }), error => {
+    assert.equal(error.message, 'App Server rejected initialize'); assert.equal(error.code, 'NATIVE_TRANSPORT_UNPROVEN');
+    assert.equal(error.stderrSample.status, 'retained'); return true;
+  });
+  const sample = await fs.readFile(path.join(f.root, 'tmp/app-server-stderr-sample.txt'), 'utf8');
+  assert.ok(sample.includes('failed to parse config')); assert.equal(sample.includes('private'), false);
+  assert.equal(w.sent.length, 1);
+});
 
 test('S2 JSONL correlates out-of-order replies, ignores completion notifications and preserves UTF-8', async t => {
   const w = wire(t), a = w.rpc.request('thread/read', { threadId: child }), b = w.rpc.request('skills/list', {});

@@ -4,12 +4,69 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
+import { PassThrough } from 'node:stream';
 import Ajv2020 from 'ajv/dist/2020.js';
 import { allocateOfflineFixture, finishOfflineFixture } from './fixtures/offline-checkout.mjs';
 import { describeOfflineSdk } from '../agents/codex/runtime/offline-provider-context.mjs';
 import { offlineNativeWorkflow } from './fixtures/native-workflow-provider.mjs';
 
 const repo = path.resolve(import.meta.dirname, '..');
+
+for (const phase of ['initialize', 'turn', 'turn-write-failure']) test(`normal entry retains bounded stderr after ${phase} failure without another admission`, async t => {
+  const fixture = await allocateOfflineFixture(repo);
+  t.after(async () => { await finishOfflineFixture(fixture); });
+  const url = name => pathToFileURL(path.join(fixture.root, name)).href;
+  const manager = await import(url('benchmarks/sentinel-todo/runtime/benchmark-manager.mjs'));
+  const { createNativeProvider } = await import(url('agents/codex/runtime/native-provider.mjs'));
+  const { appServerRpc } = await import(url('agents/codex/runtime/app-server-transport.mjs'));
+  const input = new PassThrough(), output = new PassThrough(), diagnostics = new PassThrough();
+  const codec = appServerRpc({ input, output, diagnostics, timeoutMs: 1000 });
+  t.after(() => { codec.close(); input.destroy(); output.destroy(); diagnostics.destroy(); });
+  const calls = [];
+  const rpc = {
+    stderrSample: () => codec.stderrSample(), notify() {},
+    request(method, params) {
+      calls.push(method);
+      if (phase !== 'initialize' && method === 'initialize') return Promise.resolve({ userAgent: 'codex-cli/0.163.0' });
+      const pending = codec.request(method, params);
+      diagnostics.write(Buffer.concat([Buffer.from('failed to load skill: private-value\n'), Buffer.alloc(65537)]));
+      return pending;
+    },
+  };
+  const sdk = await describeOfflineSdk(await fs.realpath(path.join(repo, 'agents/codex/node_modules')), fixture.root);
+  const offline = { mode: 'OFFLINE_TEST_ONLY', sdk,
+    createNativeProvider: async args => {
+      if (phase === 'turn-write-failure') await fs.writeFile(path.join(args.evidenceRoot, 'tmp/app-server-stderr-sample.txt'), 'prior sample');
+      return createNativeProvider({ ...args, rpc });
+    } };
+  assert.equal(await manager.main(['run', '--case', 'A', '--max-operations', '1', '--json'], { offline }), 1);
+  const runId = (await fs.readdir(path.join(fixture.root, 'benchmark-temp'))).find(name => name.startsWith('run-'));
+  const runRoot = path.join(fixture.root, 'benchmark-temp', runId);
+  const state = JSON.parse(await fs.readFile(path.join(runRoot, 'case-a/case-state.json')));
+  const ledger = JSON.parse(await fs.readFile(path.join(runRoot, '.turn-ledger.json')));
+  const summary = JSON.parse(await fs.readFile(path.join(runRoot, 'summary.json')));
+  const failure = phase === 'initialize' ? state.terminal
+    : JSON.parse(await fs.readFile(state.operations[0].evidencePath)).turn;
+  assert.equal(failure.diagnostic ?? failure.error, 'App Server diagnostic limit exceeded');
+  assert.equal(failure.blocker ?? failure.errorCode, 'NATIVE_TRANSPORT_UNPROVEN');
+  assert.deepEqual(summary.cases.A.terminal.stderrSample, failure.stderrSample, 'sample reference is exposed in the public result');
+  const sampleFile = path.join(runRoot, 'case-a/tmp/app-server-stderr-sample.txt');
+  const sample = await fs.readFile(sampleFile);
+  if (phase === 'turn-write-failure') {
+    assert.deepEqual(failure.stderrSample, { status: 'unavailable' });
+    assert.equal(sample.toString(), 'prior sample');
+  } else {
+    assert.deepEqual(failure.stderrSample, { status: 'retained', file: sampleFile });
+    assert.ok(sample.includes(Buffer.from('failed to load skill'))); assert.ok(!sample.includes(Buffer.from('private-value')));
+  }
+  assert.ok(sample.length <= 1024);
+  assert.equal(state.status, 'BLOCKED'); assert.equal(ledger.total, phase === 'initialize' ? 0 : 1);
+  assert.equal(ledger.reservations.length, 0); assert.equal(state.operations.length, phase === 'initialize' ? 0 : 1);
+  if (phase !== 'initialize') assert.equal(ledger.turns[0].state, 'uncertain');
+  assert.deepEqual(calls, phase === 'initialize' ? ['initialize'] : ['initialize', 'skills/extraRoots/set']);
+  await assert.rejects(fs.lstat(state.specPath), { code: 'ENOENT' });
+});
+
 for (const [regime, fault] of [['fresh', null], ['author-continuity', null], ['fresh', 'interrupt-execute'], ['fresh', 'interrupt-close'], ['fresh', 'findings-cycle']]) test(`normal manager ${regime}/${fault}: public preparation through closed/export without managed`, async t => {
   const fixture = await allocateOfflineFixture(repo);
   t.after(async () => { await finishOfflineFixture(fixture); });

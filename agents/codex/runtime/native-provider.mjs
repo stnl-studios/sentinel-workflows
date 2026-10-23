@@ -3,7 +3,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { connectAppServer, initializeAppServer, describeAppServerBundle, assertAppServerBundle,
   startAppServerTurn, readAppServerTurn, bindAppServerChild, captureAppServerChild,
-  deniedShellTemporaryFile } from './app-server-transport.mjs';
+  deniedShellTemporaryFile, persistAppServerStderrSample } from './app-server-transport.mjs';
 
 const sha = bytes => `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
 const blocked = message => Object.assign(new Error(message), { code: 'NATIVE_TRANSPORT_UNPROVEN' });
@@ -31,7 +31,12 @@ export async function createNativeProvider({ snapshot, workspace, evidenceRoot, 
     connection = await connectAppServer({ cliLauncher, cliSha256: sha(await fs.readFile(cliLauncher)), cwd: workspace });
     rpc = connection.rpc;
   }
-  await initializeAppServer(rpc);
+  try { await initializeAppServer(rpc); }
+  catch (error) {
+    const stderrSample = await persistAppServerStderrSample(rpc, evidenceRoot);
+    if (stderrSample !== null) error.stderrSample = stderrSample;
+    throw error;
+  }
   return {
     bundle,
     async runTurn({ prompt, workflowSkill, model, effort, outputSchema, operationId, role,
@@ -106,13 +111,14 @@ export async function createNativeProvider({ snapshot, workspace, evidenceRoot, 
             bundleSha256: sha(Buffer.from(JSON.stringify(bundle))), role: 'author' } : null };
       } catch (error) {
         if (error.descendants?.length) await onUnadmittedChildren?.(error.descendants);
+        const stderrSample = await persistAppServerStderrSample(rpc, evidenceRoot);
         await record({ type: 'native.transport.blocked', code: error.code ?? 'DRIVER_FAILURE',
-          message: error.message, dispatch, dispatchAttempted });
+          message: error.message, dispatch, dispatchAttempted, stderrSample });
         return { ...dispatch, threadId: dispatch?.threadId ?? null, completed: false,
           turnStarted: dispatchAttempted ? null : false, response: null, usage: null, toolCalls: null,
           captures: [], commandResults: [], eventsPath: eventsFile, error: error.message,
           errorCode: error.code ?? 'NATIVE_TRANSPORT_UNPROVEN', requestedModel: model, requestedEffort: effort,
-          observation: dispatch };
+          observation: dispatch, stderrSample };
       }
     },
     close() { connection?.close(); },

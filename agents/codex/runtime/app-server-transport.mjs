@@ -11,6 +11,14 @@ const fail = (message, code = 'NATIVE_TRANSPORT_UNPROVEN') => Object.assign(new 
 const requireThat = (condition, message) => { if (!condition) throw fail(message); };
 const id = value => typeof value === 'string' && value.length > 0 && !/[\0\r\n]/u.test(value);
 const inside = (root, file) => file.startsWith(`${root}${path.sep}`);
+// A default-deny projection, not a general-purpose secret scrubber. Persist
+// only these fixed phrases; unknown text/paths/values never leave memory.
+const STDERR_PHRASES = ['operation not permitted', 'permission denied', 'no such file or directory',
+  'too many open files', 'resource temporarily unavailable', 'address already in use',
+  'connection refused', 'connection reset by peer', 'broken pipe',
+  'failed to load skill', 'failed to read skill', 'failed to parse skill',
+  'invalid frontmatter', 'invalid yaml', 'failed to load config', 'failed to parse config',
+  'failed to initialize', 'invalid configuration'];
 
 async function physical(file, directory = false) {
   requireThat(typeof file === 'string' && path.isAbsolute(file) && path.resolve(file) === file,
@@ -112,17 +120,25 @@ export function appServerRpc({ input, output, diagnostics = null, timeoutMs = 30
   input.on('end', () => stop(fail('RPC ended; any dispatched turn has uncertain effect')));
   input.on('error', () => stop(fail('RPC input failed')));
   output.on('error', () => stop(fail('RPC output failed; effect uncertain')));
-  // Keep only a bounded tail, but inspect the whole new chunk before slicing:
-  // a denial can precede a long diagnostic or straddle two writes.
+  // The guard remains 65536 bytes. Keep at most a 4096-byte raw prefix and a
+  // 512-character detection tail; decode in small blocks even for huge chunks.
+  // The prefix is never persisted verbatim, including on truncation/failure.
+  const diagnosticHead = Buffer.alloc(4096);
+  let diagnosticHeadSize = 0;
   let diagnosticBytes = 0, diagnosticTail = '';
   diagnostics?.on('data', bytes => {
+    if (closed) return;
+    const copied = Math.min(bytes.length, diagnosticHead.length - diagnosticHeadSize);
+    bytes.copy(diagnosticHead, diagnosticHeadSize, 0, copied); diagnosticHeadSize += copied;
     diagnosticBytes += bytes.length;
-    const text = diagnosticTail + bytes.toString('utf8');
-    if (diagnosticBytes > 64 * 1024) stop(fail('App Server diagnostic limit exceeded'));
-    if (/operation not permitted|permission denied/iu.test(text)) {
-      stop(fail('App Server process reported a permission denial', 'PERMISSION_REQUIRED'));
+    if (diagnosticBytes > 64 * 1024) { stop(fail('App Server diagnostic limit exceeded')); return; }
+    for (let offset = 0; offset < bytes.length; offset += 512) {
+      const text = diagnosticTail + bytes.subarray(offset, offset + 512).toString('utf8');
+      if (/operation not permitted|permission denied/iu.test(text)) {
+        stop(fail('App Server process reported a permission denial', 'PERMISSION_REQUIRED')); return;
+      }
+      diagnosticTail = text.slice(-512);
     }
-    diagnosticTail = text.slice(-512);
   });
   diagnostics?.on('error', () => stop(fail('App Server diagnostic channel failed')));
   return {
@@ -141,7 +157,32 @@ export function appServerRpc({ input, output, diagnostics = null, timeoutMs = 30
       send({ method, params });
     },
     close(error = fail('RPC closed by owner')) { stop(error); },
+    stderrSample() {
+      if (diagnosticHeadSize === 0) return null;
+      const text = diagnosticHead.subarray(0, diagnosticHeadSize).toString('utf8').toLowerCase();
+      // Output is ASCII constants only, independent of chunk/UTF-8 boundaries.
+      return ['App Server stderr: allowlisted phrases from first 4096 bytes only.',
+        ...STDERR_PHRASES.filter(phrase => text.includes(phrase)),
+        '[All other stderr omitted; this sample does not establish the cause.]', ''].join('\n').slice(0, 1024);
+    },
   };
+}
+
+// Fixed name within this execution's evidence tmp directory, exclusive create,
+// 0600 and <=1024 bytes. Failure to retain must never replace the transport error.
+export async function persistAppServerStderrSample(rpc, evidenceRoot) {
+  try {
+    const sample = rpc.stderrSample?.();
+    if (sample == null) return null;
+    requireThat(typeof sample === 'string' && Buffer.byteLength(sample) <= 1024, 'invalid stderr sample');
+    await physical(evidenceRoot, true);
+    const directory = path.join(evidenceRoot, 'tmp');
+    await fs.mkdir(directory).catch(error => { if (error.code !== 'EEXIST') throw error; });
+    await physical(directory, true);
+    const file = path.join(directory, 'app-server-stderr-sample.txt');
+    await fs.writeFile(file, sample, { flag: 'wx', mode: 0o600 });
+    return { status: 'retained', file };
+  } catch { return { status: 'unavailable' }; }
 }
 
 // Explicit opt-in only. Importing this module and all offline tests spawn zero

@@ -603,7 +603,8 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
       state.runnerTurns = counted.filter(item => item.role === 'runner').length;
       if (role === 'author' && turn.completed) state.authorThread = turn.authorThread;
       const readback = await officialReadback(product, specPath);
-      let outcome = { result: 'BLOCKED', blocker: turn.errorCode ?? 'NATIVE_TRANSPORT_UNPROVEN' };
+      let outcome = { result: 'BLOCKED', blocker: turn.errorCode ?? 'NATIVE_TRANSPORT_UNPROVEN',
+        ...(turn.stderrSample ? { stderrSample: turn.stderrSample } : {}) };
       let captureProof = null, closeEvidence = null;
       if (turn.completed) try {
         if (operation === 'PLAN' || operation === 'REPLAN') preparation = await preparationHandoff(product, specPath, turn.commandResults);
@@ -657,7 +658,8 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
     }
   } catch (error) {
     terminal = { result: error.code === 'PAUSED_BUDGET_OR_QUOTA' ? error.code : 'BLOCKED',
-      blocker: error.code ?? 'DRIVER_FAILURE', diagnostic: error.message };
+      blocker: error.code ?? 'DRIVER_FAILURE', diagnostic: error.message,
+      ...(error.stderrSample ? { stderrSample: error.stderrSample } : {}) };
   } finally {
     provider?.close();
     const rawPath = path.join(caseRoot, resume ? `raw-resume-${state.operations.length}.json` : 'raw.json');
