@@ -32,7 +32,7 @@ export async function describeOfflineSdk(dependencyRoot, fixtureRoot) {
   const sdk = JSON.parse(await inspect('@openai/codex-sdk/package.json'));
   const cli = JSON.parse(await inspect('@openai/codex/package.json'));
   if (sdk.name !== '@openai/codex-sdk' || cli.name !== '@openai/codex'
-    || sdk.version !== '0.160.0' || cli.version !== '0.160.0'
+    || sdk.version !== '0.163.0' || cli.version !== '0.163.0'
     || sdk.type !== 'module' || sdk.exports?.['.']?.import !== './dist/index.js'
     || sdk.dependencies?.['@openai/codex'] !== cli.version || cli.bin?.codex !== 'bin/codex.js') {
     throw new Error('offline shared SDK/CLI identity differs from the pinned adapter');

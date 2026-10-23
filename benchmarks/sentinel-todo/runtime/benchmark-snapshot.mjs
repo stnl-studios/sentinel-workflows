@@ -124,7 +124,7 @@ export async function copySnapshotDependencies(snapshot, { executionMode, depend
   const files = await listFiles(source, '', { dependencies: true });
   const sdkVersion = JSON.parse(await fs.readFile(path.join(source, '@openai/codex-sdk/package.json'), 'utf8')).version;
   const cliVersion = JSON.parse(await fs.readFile(path.join(source, '@openai/codex/package.json'), 'utf8')).version;
-  if (sdkVersion !== '0.160.0' || cliVersion !== '0.160.0') throw new Error('local Codex SDK/CLI version differs from the pinned adapter');
+  if (sdkVersion !== '0.163.0' || cliVersion !== '0.163.0') throw new Error('local Codex SDK/CLI version differs from the pinned adapter');
   await copyFiles(source, path.join(snapshot, 'agents/codex/node_modules'), files);
   return { sdkVersion, cliVersion };
 }
