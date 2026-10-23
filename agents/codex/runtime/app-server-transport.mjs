@@ -1,0 +1,322 @@
+// Public Codex App Server 0.163 adapter. No product admission, judging or retries.
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { createHash } from 'node:crypto';
+import { spawn } from 'node:child_process';
+import { readRunnerConfiguration } from './validation-runner.mjs';
+
+export const APP_SERVER_VERSION = '0.163.0';
+const sha = bytes => `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+const fail = (message, code = 'NATIVE_TRANSPORT_UNPROVEN') => Object.assign(new Error(message), { code });
+const requireThat = (condition, message) => { if (!condition) throw fail(message); };
+const id = value => typeof value === 'string' && value.length > 0 && !/[\0\r\n]/u.test(value);
+const inside = (root, file) => file.startsWith(`${root}${path.sep}`);
+
+async function physical(file, directory = false) {
+  requireThat(typeof file === 'string' && path.isAbsolute(file) && path.resolve(file) === file,
+    'noncanonical path');
+  const stat = await fs.lstat(file);
+  requireThat(!stat.isSymbolicLink() && (directory ? stat.isDirectory() : stat.isFile())
+    && await fs.realpath(file) === file, 'path is not physical/canonical');
+  return stat;
+}
+
+// The caller freezes this descriptor with its existing snapshot identity. It is
+// not proof that the client loaded these bytes; that remains a runtime gate.
+export async function describeAppServerBundle({ skillsRoot, runnerFile }) {
+  await physical(skillsRoot, true);
+  await physical(runnerFile);
+  requireThat(path.basename(runnerFile) === 'stnl_validation_runner.toml', 'wrong runner contract path');
+  const files = [];
+  async function visit(directory) {
+    for (const name of (await fs.readdir(directory)).sort()) {
+      const file = path.join(directory, name), stat = await fs.lstat(file);
+      requireThat(!stat.isSymbolicLink() && await fs.realpath(file) === file, 'bundle symlink');
+      if (stat.isDirectory()) await visit(file);
+      else {
+        requireThat(stat.isFile(), 'unsupported bundle entry');
+        files.push({ path: file, mode: stat.mode & 0o777, sha256: sha(await fs.readFile(file)) });
+      }
+    }
+  }
+  await visit(skillsRoot);
+  const snapshot = path.resolve(path.dirname(runnerFile), '../../../..');
+  requireThat(runnerFile === path.join(snapshot, 'agents/codex/.codex/agents/stnl_validation_runner.toml'),
+    'runner is not from the candidate distribution');
+  const { model, effort } = await readRunnerConfiguration(snapshot);
+  const runner = { path: runnerFile, sha256: sha(await fs.readFile(runnerFile)), model, effort };
+  requireThat(files.some(file => path.basename(file.path) === 'SKILL.md'), 'empty skill bundle');
+  return { skillsRoot, files, runner };
+}
+
+export async function assertAppServerBundle(bundle) {
+  requireThat(bundle && Array.isArray(bundle.files) && bundle.runner, 'missing frozen bundle');
+  const actual = await describeAppServerBundle({ skillsRoot: bundle.skillsRoot, runnerFile: bundle.runner.path });
+  requireThat(JSON.stringify(actual) === JSON.stringify(bundle), 'bundle/sibling/runner hash or mode drift');
+  return actual;
+}
+
+// JSONL only. This codec is bounded and stops on uncertainty; it cannot accept
+// approval requests, reconnect, retry a mutation, or silently start another turn.
+export function appServerRpc({ input, output, diagnostics = null, timeoutMs = 30_000, maxLineBytes = 8 * 1024 * 1024 }) {
+  requireThat(Number.isSafeInteger(timeoutMs) && timeoutMs > 0
+    && Number.isSafeInteger(maxLineBytes) && maxLineBytes > 0, 'invalid RPC bounds');
+  const pending = new Map();
+  const methods = new Set(['initialize', 'skills/extraRoots/set', 'skills/list', 'thread/start',
+    'turn/start', 'thread/read', 'thread/turns/list', 'thread/items/list']);
+  let nextId = 1, buffer = '', closed = null;
+  const decoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
+  function stop(error) {
+    if (closed) return;
+    closed = error;
+    for (const entry of pending.values()) { clearTimeout(entry.timer); entry.reject(error); }
+    pending.clear();
+  }
+  function send(value) {
+    if (closed) throw closed;
+    const line = `${JSON.stringify(value)}\n`;
+    requireThat(Buffer.byteLength(line) <= maxLineBytes, 'outgoing RPC line limit exceeded');
+    output.write(line, error => { if (error) stop(fail('RPC write uncertain')); });
+  }
+  input.on('data', bytes => {
+    if (closed) return;
+    try { buffer += decoder.decode(bytes, { stream: true }); }
+    catch { stop(fail('invalid UTF-8 in public RPC stream')); return; }
+    for (;;) {
+      const newline = buffer.indexOf('\n');
+      if (newline < 0) break;
+      const line = buffer.slice(0, newline); buffer = buffer.slice(newline + 1);
+      if (Buffer.byteLength(line) > maxLineBytes) { stop(fail('RPC line limit exceeded')); return; }
+      try {
+        const message = JSON.parse(line);
+        requireThat(message && typeof message === 'object', 'invalid RPC message');
+        if (message.method && Object.hasOwn(message, 'id')) {
+          // Includes command/file approvals, auth and persistent-access requests.
+          stop(fail('App Server requires explicit user interaction', 'INTERACTION_REQUIRED')); return;
+        }
+        if (Object.hasOwn(message, 'id')) {
+          const entry = pending.get(message.id);
+          requireThat(entry && (Object.hasOwn(message, 'result') !== Object.hasOwn(message, 'error')),
+            'unexpected RPC response');
+          clearTimeout(entry.timer); pending.delete(message.id);
+          if (message.error) entry.reject(fail(`App Server rejected ${entry.method}`));
+          else entry.resolve(message.result);
+        }
+        // Notifications are hints, never completion evidence. Read scoped public
+        // history to recover exact identities/items even after a client restart.
+        else requireThat(typeof message.method === 'string', 'invalid RPC notification');
+      } catch (error) { stop(error.code ? error : fail('malformed public RPC message')); return; }
+    }
+    if (Buffer.byteLength(buffer) > maxLineBytes) stop(fail('RPC line limit exceeded'));
+  });
+  input.on('end', () => stop(fail('RPC ended; any dispatched turn has uncertain effect')));
+  input.on('error', () => stop(fail('RPC input failed')));
+  output.on('error', () => stop(fail('RPC output failed; effect uncertain')));
+  // Keep only a bounded tail, but inspect the whole new chunk before slicing:
+  // a denial can precede a long diagnostic or straddle two writes.
+  let diagnosticBytes = 0, diagnosticTail = '';
+  diagnostics?.on('data', bytes => {
+    diagnosticBytes += bytes.length;
+    const text = diagnosticTail + bytes.toString('utf8');
+    if (diagnosticBytes > 64 * 1024) stop(fail('App Server diagnostic limit exceeded'));
+    if (/operation not permitted|permission denied/iu.test(text)) {
+      stop(fail('App Server process reported a permission denial', 'PERMISSION_REQUIRED'));
+    }
+    diagnosticTail = text.slice(-512);
+  });
+  diagnostics?.on('error', () => stop(fail('App Server diagnostic channel failed')));
+  return {
+    request(method, params) {
+      if (closed) return Promise.reject(closed);
+      if (!methods.has(method)) return Promise.reject(fail('RPC method outside adapter scope'));
+      const requestId = nextId++;
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => stop(fail(`RPC timeout for ${method}; effect uncertain`)), timeoutMs);
+        pending.set(requestId, { resolve, reject, timer, method });
+        try { send({ id: requestId, method, params }); } catch (error) { stop(error); }
+      });
+    },
+    notify(method, params = {}) {
+      requireThat(method === 'initialized', 'notification outside adapter scope');
+      send({ method, params });
+    },
+    close(error = fail('RPC closed by owner')) { stop(error); },
+  };
+}
+
+// Explicit opt-in only. Importing this module and all offline tests spawn zero
+// authenticated clients. No HOME/config/auth copy and no desktop socket.
+export async function connectAppServer({ cliLauncher, cliSha256, cwd, timeoutMs }) {
+  await physical(cliLauncher); await physical(cwd, true);
+  const metadata = JSON.parse(await fs.readFile(path.resolve(cliLauncher, '../../package.json'), 'utf8'));
+  requireThat(metadata.name === '@openai/codex' && metadata.version === APP_SERVER_VERSION
+    && cliSha256 === sha(await fs.readFile(cliLauncher)), 'CLI pin/hash differs');
+  const child = spawn(process.execPath, [cliLauncher, 'app-server', '--listen', 'stdio://'],
+    { cwd, env: process.env, stdio: ['pipe', 'pipe', 'pipe'], shell: false });
+  const rpc = appServerRpc({ input: child.stdout, output: child.stdin, diagnostics: child.stderr, timeoutMs });
+  // Drain without printing potentially sensitive diagnostics or retaining an
+  // unbounded buffer. Exit/permission errors stay blocking, not alias bypasses.
+  child.on('error', () => rpc.close(fail('owned App Server process failed to start')));
+  child.on('exit', () => rpc.close(fail('owned App Server exited; dispatched effect may be uncertain')));
+  return { rpc, close() { rpc.close(); child.stdin.end(); child.kill(); } };
+}
+
+export async function initializeAppServer(rpc) {
+  const result = await rpc.request('initialize', {
+    clientInfo: { name: 'sentinel-benchmark', version: '0.1.0' }, capabilities: null,
+  });
+  requireThat(typeof result?.userAgent === 'string'
+    && /(?:^|[^0-9.])0\.163\.0(?:[^0-9.]|$)/u.test(result.userAgent), 'server handshake version differs');
+  rpc.notify('initialized');
+  return result;
+}
+
+export async function selectAppServerBundle(rpc, { bundle, cwd, skillName }) {
+  await assertAppServerBundle(bundle); await physical(cwd, true);
+  requireThat(/^stnl-[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(skillName), 'invalid skill name');
+  const selectedPath = path.join(bundle.skillsRoot, skillName, 'SKILL.md');
+  requireThat(bundle.files.some(file => file.path === selectedPath), 'selected skill absent from bundle');
+  await rpc.request('skills/extraRoots/set', { extraRoots: [bundle.skillsRoot] });
+  const listing = await rpc.request('skills/list', { cwds: [cwd], forceReload: true });
+  requireThat(Array.isArray(listing?.data) && listing.data.length === 1, 'ambiguous skill listing');
+  const entry = listing.data[0];
+  requireThat(entry.cwd === cwd && Array.isArray(entry.errors) && entry.errors.length === 0
+    && Array.isArray(entry.skills), 'skill discovery incomplete');
+  const seen = new Set(), config = [];
+  for (const skill of entry.skills) {
+    requireThat(id(skill.path) && id(skill.name) && typeof skill.enabled === 'boolean'
+      && !seen.has(skill.path), 'missing/duplicate skill identity');
+    seen.add(skill.path);
+    if (!skill.name.startsWith('stnl-')) continue;
+    if (inside(bundle.skillsRoot, skill.path)) {
+      await physical(skill.path);
+      requireThat(skill.enabled === true && bundle.files.some(file => file.path === skill.path)
+        && skill.path === path.join(bundle.skillsRoot, skill.name, 'SKILL.md'), 'frozen skill identity differs');
+    }
+    config.push({ path: skill.path, enabled: inside(bundle.skillsRoot, skill.path) });
+  }
+  for (const file of bundle.files.filter(file => path.basename(file.path) === 'SKILL.md')) {
+    requireThat(seen.has(file.path), 'frozen sibling absent from discovery');
+  }
+  const selected = entry.skills.filter(skill => skill.path === selectedPath && skill.name === skillName);
+  requireThat(selected.length === 1 && selected[0].enabled === true, 'selected skill not enabled by exact path');
+  await assertAppServerBundle(bundle);
+  return {
+    input: { type: 'skill', name: skillName, path: selectedPath },
+    config: { 'skills.config': config,
+      'agents.stnl_validation_runner.config_file': bundle.runner.path },
+  };
+}
+
+// Starting a turn is deliberately separate from observation/restore. The caller
+// owns admission, context regime, budgets and recording any uncertain dispatch.
+export async function startAppServerTurn(rpc, { bundle, cwd, skillName, prompt, model, effort,
+  threadId = null, approvalPolicy, sandbox }) {
+  requireThat(typeof prompt === 'string' && prompt.trim() && id(model) && id(effort)
+    && ['never', 'untrusted', 'on-request'].includes(approvalPolicy)
+    && ['read-only', 'workspace-write', 'danger-full-access'].includes(sandbox), 'explicit turn settings required');
+  requireThat(threadId === null, 'continuity requires separately admitted existing thread configuration');
+  const selection = await selectAppServerBundle(rpc, { bundle, cwd, skillName });
+  const started = await rpc.request('thread/start', { cwd, model, approvalPolicy, sandbox,
+    config: selection.config });
+  requireThat(id(started?.thread?.id) && started.thread.cliVersion === APP_SERVER_VERSION
+    && started.thread.cwd === cwd, 'thread creation identity/version differs');
+  await assertAppServerBundle(bundle);
+  const response = await rpc.request('turn/start', { threadId: started.thread.id, effort,
+    input: [selection.input, { type: 'text', text: prompt }] });
+  requireThat(id(response?.turn?.id), 'turn dispatch response incomplete; effect uncertain');
+  return { threadId: started.thread.id, turnId: response.turn.id };
+}
+
+async function pages(rpc, method, params) {
+  const items = [], seen = new Set(); let cursor = null;
+  for (let page = 0; page < 32; page++) {
+    const result = await rpc.request(method, { ...params, cursor, limit: 100, sortDirection: 'asc' });
+    requireThat(Array.isArray(result?.data), 'public history page absent');
+    items.push(...result.data);
+    // Optional nullable cursor: omitted and null both mean None in 0.163.
+    if (result.nextCursor == null) return items;
+    requireThat(id(result.nextCursor) && !seen.has(result.nextCursor), 'history cursor missing/repeated');
+    seen.add(result.nextCursor); cursor = result.nextCursor;
+  }
+  throw fail('public history page limit reached; result incomplete');
+}
+
+async function parentBinding(rpc, { parentThreadId, parentTurnId, agentPath }) {
+  requireThat(id(parentThreadId) && id(parentTurnId) && id(agentPath), 'missing parent/agent identity');
+  const items = await pages(rpc, 'thread/items/list', { threadId: parentThreadId, turnId: parentTurnId });
+  const starts = items.filter(item => item.type === 'subAgentActivity' && item.kind === 'started'
+    && item.agentPath === agentPath);
+  requireThat(starts.length === 1 && id(starts[0].agentThreadId), 'child missing or ambiguous in parent turn');
+  requireThat(items.filter(item => item.type === 'subAgentActivity' && item.kind === 'started'
+    && item.agentThreadId === starts[0].agentThreadId).length === 1, 'child thread has multiple official paths');
+  return { binding: { parentThreadId, parentTurnId, agentPath, agentThreadId: starts[0].agentThreadId,
+    model: starts[0].model, effort: starts[0].reasoningEffort }, items };
+}
+
+export async function bindAppServerChild(rpc, identity) { return (await parentBinding(rpc, identity)).binding; }
+
+// Only scoped read APIs. A completed wait/mailbox or parent agent message never
+// certifies the child. No resume/start/followup, recipe, private path or synthesis.
+export async function readAppServerChild(rpc, { binding, bundle, cwd }) {
+  await assertAppServerBundle(bundle); await physical(cwd, true);
+  const { binding: current, items: parentItems } = await parentBinding(rpc, binding);
+  requireThat(Object.keys(current).every(key => current[key] === binding[key]), 'child binding changed');
+  requireThat(current.model === bundle.runner.model && current.effort === bundle.runner.effort,
+    'runner model/effort not proven by official spawn activity');
+  const { thread } = await rpc.request('thread/read', { threadId: binding.agentThreadId, includeTurns: false });
+  requireThat(thread?.id === binding.agentThreadId && thread.parentThreadId === binding.parentThreadId
+    && thread.forkedFromId == null && thread.cliVersion === APP_SERVER_VERSION && thread.cwd === cwd
+    && thread.agentRole === 'stnl_validation_runner',
+  'child metadata foreign, forked or version differs');
+  const turns = await pages(rpc, 'thread/turns/list', { threadId: binding.agentThreadId, itemsView: 'full' });
+  requireThat(turns.length === 1 && id(turns[0].id) && turns[0].status === 'completed'
+    && turns[0].error == null, 'fresh child has no single completed successful turn');
+  const turn = turns[0];
+  const items = await pages(rpc, 'thread/items/list', { threadId: binding.agentThreadId, turnId: turn.id });
+  requireThat(new Set(items.map(item => item.id)).size === items.length, 'duplicate child history items');
+  const messages = items.filter(item => item.type === 'agentMessage');
+  const final = messages.at(-1);
+  requireThat(final && (final.phase === 'final_answer' || final.phase == null)
+    && id(final.id) && typeof final.text === 'string' && final.text.length > 0,
+    'child final response missing/incomplete');
+  // When full turn items are supplied, independently require the same complete
+  // item; summary views are not used as a source of text.
+  if ((turn.itemsView ?? 'full') === 'full') {
+    const copy = turn.items?.filter(item => item.type === 'agentMessage').at(-1);
+    requireThat(copy?.id === final.id && copy.text === final.text && copy.phase === final.phase,
+      'public child surfaces disagree');
+  }
+  for (const item of parentItems) {
+    const state = item.type === 'collabAgentToolCall' ? item.agentsStates?.[binding.agentThreadId] : null;
+    if (state?.status === 'completed' && state.message != null) {
+      requireThat(state.message === final.text, 'completed parent tool report disagrees with child text');
+    }
+  }
+  requireThat(Buffer.from(final.text, 'utf8').toString('utf8') === final.text, 'invalid UTF-8 response');
+  await assertAppServerBundle(bundle);
+  return { agentId: binding.agentPath, status: 'completed', finalResponse: final.text };
+}
+
+// Existing capture-native accepts this envelope. Never overwrite an earlier
+// result: exact replay is allowed, differing bytes preserve the first capture.
+export async function writeNativeToolResult(file, envelope) {
+  await physical(path.dirname(file), true);
+  requireThat(path.isAbsolute(file) && path.resolve(file) === file && id(envelope?.agentId)
+    && envelope.status === 'completed' && typeof envelope.finalResponse === 'string'
+    && envelope.finalResponse.length > 0
+    && Buffer.from(envelope.finalResponse, 'utf8').toString('utf8') === envelope.finalResponse, 'invalid tool result');
+  const bytes = Buffer.from(`${JSON.stringify(envelope)}\n`);
+  try { await fs.writeFile(file, bytes, { flag: 'wx', mode: 0o600 }); }
+  catch (error) {
+    if (error.code !== 'EEXIST') throw error;
+    await physical(file);
+    requireThat(bytes.equals(await fs.readFile(file)), 'existing tool result differs');
+  }
+  return { file, finalResponseSha256: sha(Buffer.from(envelope.finalResponse, 'utf8')) };
+}
+
+export async function captureAppServerChild(rpc, { toolResultFile, ...observation }) {
+  const envelope = await readAppServerChild(rpc, observation);
+  return writeNativeToolResult(toolResultFile, envelope);
+}

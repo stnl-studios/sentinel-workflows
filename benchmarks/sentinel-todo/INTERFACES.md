@@ -7,10 +7,10 @@ não cria contrato, callback, variável ou ferramenta nas skills.
 
 U3.15-D qualificou o produto no cliente nativo, até CLOSE e leitores novos.
 Isso não qualificou o manager Node/SDK. O gate estático S1 de U3.16 continua
-`NATIVE_TRANSPORT_UNPROVEN`: não foi demonstrado um produtor público automático
-dos bytes oficiais do filho para o arquivo aceito por `capture-native`.
-Também falta fechar a seleção inequívoca do bundle no ambiente normal.
-Não iniciar prova real/campanha nem migrar automaticamente para App Server.
+`NATIVE_TRANSPORT_UNPROVEN`. Aj autorizou posteriormente o recorte S2/App Server:
+o adaptador e sua captura foram implementados/testados offline (§25.11 do plano).
+A emissão real dos dados, o carregamento efetivo do bundle e a ligação do manager
+normal ainda não estão comprovados. Não iniciar prova real/campanha por este aceite.
 
 ## Quem controla cada fronteira
 
@@ -60,13 +60,77 @@ Ele exige esses dados oficiais e preserva bytes/owner/binding; não será adapta
 isso não demonstra seleção de outro root congelado com HOME normal ou resolução
 de homônimos. Não substituir esses dois elos por inferência, prompt ou resumo.
 
-Alternativas para decisão futura: manter S1 parado até demonstrar os elos nas
-interfaces públicas do SDK/CLI, ou autorizar investigação de leitura da superfície
-pública App Server (S2), com os mesmos requisitos de bytes, bundle e permissões.
-S2 não foi escolhido, iniciado ou qualificado. Mudar o objetivo para medir apenas
-o principal perderia a garantia sobre o filho e exigiria decisão explícita;
-não é fallback equivalente. Nenhuma alternativa autoriza ler sessões privadas,
-copiar autenticação, introduzir hooks nas skills ou executar uma sondagem real.
+S1 permanece como diagnóstico da integração SDK anterior; não prova uma limitação
+universal. A investigação pública e o recorte S2 foram aprovados depois dele.
+Não medir apenas o principal como substituto do filho, ler sessões privadas,
+copiar autenticação ou introduzir hooks nas skills.
+
+## Adaptador S2 — alcance offline
+
+`agents/codex/runtime/app-server-transport.mjs` contém o transporte JSONL limitado
+e funções explícitas; importar o módulo não inicia cliente nem modelo.
+`connectAppServer` é opt-in, possui somente o processo stdio que cria e herda o
+ambiente normal sem escrever HOME/CODEX_HOME/config. Não conecta ao desktop.
+O caller deve verificar a integridade do snapshot/CLI completo pelo mecanismo
+existente, fornecer o hash do launcher e possuir o processo até encerrá-lo.
+O pin do launcher e o handshake0.163 não substituem o hash do binário do snapshot.
+Pedido de interação/aprovação, erro de permissão, protocolo inválido, timeout ou
+desconexão bloqueia; o adaptador não aceita permissões nem reconecta/reenvia.
+Efeito de `turn/start` sem resposta permanece incerto para o ledger do caller.
+
+- `describeAppServerBundle` descreve todos os arquivos de skills/siblings e o
+  TOML do runner da distribuição candidata. O caller congela essa identidade
+  junto ao snapshot existente; `assertAppServerBundle` recusa drift. Não há novo
+  journal, engine ou parser de contrato: a leitura do TOML reutiliza o módulo atual.
+- `selectAppServerBundle` usa `skills/extraRoots/set` só nesse processo e
+  `skills/list` com reload. Exige caminhos físicos, todos os siblings descobertos
+  e a skill exata habilitada; homônimos externos Sentinel são desabilitados só
+  no config da thread. A entrada normal é `{type:"skill",name,path}` e o override
+  do papel aponta para o TOML congelado. Não há fallback para a cópia pessoal.
+- `startAppServerTurn` oferece somente início explícito fresh. Não dá continuidade
+  a uma thread existente sem admissão própria; o cenário de continuidade da
+  U3.16 permanece pendente de integração. Orçamento/contexto/ownership continuam
+  com o manager/controller normal, não com o transporte.
+- `bindAppServerChild` consulta somente os itens do turno pai conhecido e retém
+  `agentPath`/`agentThreadId` oficiais, modelo/effort. O caller guarda esse binding
+  no estado externo já existente; o adaptador não cria armazenamento paralelo.
+- `readAppServerChild` consulta esse mesmo pai e o filho correlacionado via
+  `thread/read`, `thread/turns/list`, `thread/items/list`, com paginação completa e
+  limitada. Exige filho fresh do pai, papel correto, uma única rodada concluída
+  sem erro e última resposta integral. Divergência entre fontes bloqueia.
+  `wait_agent`/mailbox concluído e resposta do principal nunca certificam o filho.
+- `captureAppServerChild` grava automaticamente o envelope normal
+  `{agentId,status:"completed",finalResponse}` para `capture-native`. Não altera
+  texto nem escolhe um veredicto. Arquivo anterior divergente é preservado e
+  bloqueia; o mesmo binding após reinício só consulta dados públicos e reutiliza
+  os mesmos bytes, sem start/resume/followup ou recipe. O controller normal ainda
+  verifica owner, observação, receipt e semântica; a bancada não os substitui.
+
+O caminho mecânico exercitou essa captura até o consumidor normal real, incluindo
+falha de persistência e replay. O servidor foi falso; isso não atesta dados reais
+nem o uso do TOML pelo cliente. Paths/hashes são checagens nas fronteiras, sem
+garantia de isolamento contra alguém que mude os arquivos do host entre elas.
+O manager legado ainda usa SDK/managed; não foi redirecionado silenciosamente.
+
+### Schema e prova futura
+
+Exportação oficial da instalação efetiva0.163 foi conferida pelo gate read-only
+`node scripts/check-app-server-schema.mjs EXPORTED_SCHEMA_DIRECTORY` contra os
+campos necessários do tag público
+[`rust-v0.163.0`](https://github.com/openai/codex/tree/rust-v0.163.0/codex-rs/app-server-protocol).
+O gate retorna `PASS_SCHEMA_ONLY`, não compatibilidade comportamental universal.
+Usa `skills/extraRoots/set`; não supõe campos de documentação mais recente, como
+`perCwdExtraUserRoots`. Overrides pontuados são processados pelo
+[loader público](https://raw.githubusercontent.com/openai/codex/rust-v0.163.0/codex-rs/config/src/overrides.rs);
+o [handler público](https://raw.githubusercontent.com/openai/codex/rust-v0.163.0/codex-rs/app-server/src/request_processors/catalog_processor.rs)
+mantém extra roots em memória.
+
+Próximo gate offline: ligar driver/coleta/ledger existentes ao adaptador e provar
+o percurso público sem managed até CLOSE/export, preservando os regimes. Depois,
+uma U3.17 separadamente autorizada deve demonstrar carregamento do bundle, spawn
+correto, resposta integral real e retomada. Incompatibilidade, identidade ambígua,
+texto incompleto, drift ou necessidade de tocar skills/permissões são parada,
+sem trocar superfície, simular prova ou gastar outro turno automaticamente.
 
 ## Medição e retenção
 
