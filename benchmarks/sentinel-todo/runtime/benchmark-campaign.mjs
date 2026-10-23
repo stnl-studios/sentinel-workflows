@@ -34,11 +34,12 @@ function git(root, ...args) {
 function realGitState(root) {
   const head = git(root, 'rev-parse', 'HEAD');
   const branch = git(root, 'symbolic-ref', '--quiet', '--short', 'HEAD');
-  const upstream = git(root, 'rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}');
-  const upstreamHead = git(root, 'rev-parse', '@{upstream}');
-  if (!upstream.startsWith('origin/') || upstreamHead !== head) {
-    throw blocked('BLOCKED_BASE', `HEAD/origin diverged: ${branch} ${head}, ${upstream} ${upstreamHead}`);
-  }
+  // A local frozen candidate need not already be pushed. This optional cached
+  // reference is information, never a remote freshness or publication proof.
+  const reference = spawnSync('git', ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}'], { cwd: root, encoding: 'utf8', timeout: 30_000 });
+  if (reference.error || /permission denied|operation not permitted/iu.test(reference.stderr ?? ''))
+    throw blocked('BLOCKED_BASE', `cannot read cached upstream: ${reference.error?.message ?? reference.stderr}`);
+  const upstream = reference.status === 0 ? reference.stdout.trim() : 'unavailable';
   const status = git(root, 'status', '--porcelain=v1', '--untracked-files=all');
   if (status) throw blocked('BLOCKED_BASE', `working tree is dirty:\n${status}`);
   const diff = git(root, 'diff', '--check');
@@ -107,25 +108,16 @@ async function assertSafeScratch(scratch) {
   }
 }
 
-async function cleanScratch(scratch, stillInactive) {
+async function acquireCampaignLock(scratch, stillInactive) {
   await fs.mkdir(scratch, { recursive: true });
+  const metadata = await fs.lstat(scratch);
+  if (!metadata.isDirectory() || metadata.isSymbolicLink()) throw blocked('BLOCKED_CLEANUP', 'scratch root is unsafe');
   const lock = path.join(scratch, '.campaign-active.json');
   await fs.writeFile(lock, `${JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() })}\n`, { flag: 'wx' });
   try {
     await stillInactive();
-  async function thaw(directory) {
-    for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
-      if (entry.isDirectory()) await thaw(path.join(directory, entry.name));
-    }
-    await fs.chmod(directory, 0o700);
-  }
-  for (const name of await fs.readdir(scratch)) {
-    if (name !== '.campaign-active.json') {
-      const item = path.join(scratch, name);
-      if ((await fs.lstat(item)).isDirectory()) await thaw(item);
-      await fs.rm(item, { recursive: true });
-    }
-  }
+  // Starting a campaign does not authorize deleting other runs, ledgers or raw
+  // diagnostics. Only this invocation's temporary lock is owned here.
   return lock;
   } catch (error) { await fs.unlink(lock).catch(() => {}); throw error; }
 }
@@ -186,6 +178,14 @@ export function campaignSummary({ campaignId, head, startedAt, endedAt, baseline
     throw blocked('BLOCKED_SUMMARY', `${plannedRuns} reports and comparisons are required`);
   }
   const a = reports[0];
+  if (new Set(reports.map(report => report?.run?.id)).size !== plannedRuns
+    || reports.some(report => report?.run?.status !== 'PASS' || report.run.mode !== 'full'
+      || report.run.profile !== a.run.profile || report.benchmarkVersion !== a.benchmarkVersion
+      || report.provenance?.sourceFunctionalSha256 !== a.provenance?.sourceFunctionalSha256
+      || !Array.isArray(report.cases) || report.cases.map(row => row.id).sort().join() !== 'A,B,C'
+      || report.cases.some(row => row.status !== 'PASS'))) {
+    throw blocked('BLOCKED_SUMMARY', 'N distinct coherent passing FULLs are required');
+  }
   const metrics = {
     g2: Object.fromEntries([
       ['operations', (r) => r.aggregate.operations], ['recoveryOperations', (r) => r.aggregate.recoveryOperations],
@@ -204,7 +204,7 @@ export function campaignSummary({ campaignId, head, startedAt, endedAt, baseline
   return { schemaVersion: 1, campaignId, benchmarkId: a.benchmarkId, benchmarkVersion: a.benchmarkVersion,
     baseline: baselineRef, head, profile: a.run.profile,
     sourceFunctionalSha256: a.provenance.sourceFunctionalSha256, startedAt, endedAt,
-    status: 'CAMPAIGN_COMPLETE', comparability: 'PASS', plannedRuns, completedRuns: reports.length, successRate: 1,
+    status: 'CAMPAIGN_COMPLETE', comparability: comparisons.every(row => row.directlyComparable && !row.profileExperiment) ? 'PASS' : 'unavailable', plannedRuns, completedRuns: reports.length, successRate: 1,
     runs: reports.map((report, index) => ({ index: index + 1, runId: report.run.id, status: report.run.status,
       cases: Object.fromEntries(report.cases.map((row) => [row.id, row.status])),
       operations: report.aggregate.operations, mainTurns: report.aggregate.mainTurns, runnerTurns: report.aggregate.runnerTurns,
@@ -241,7 +241,8 @@ async function promote(root, campaignId, files, signal) {
   return destination;
 }
 
-export async function runCampaign({ root = ROOT, hooks = {}, campaignId = null } = {}) {
+export async function runCampaign({ root = ROOT, hooks = {}, campaignId = null, runs = undefined } = {}) {
+  if (runs !== undefined && (!Number.isSafeInteger(runs) || runs < 1)) throw blocked('BLOCKED_CONFIG', 'runs must be a positive integer');
   if (process.env.STNL_OFFLINE_PROVIDER_CONTEXT !== undefined) throw blocked('BLOCKED_BASE', 'TEST-ONLY provider cannot enter a formal campaign');
   const api = { ...adapters(root), ...hooks };
   const scratch = path.join(root, 'benchmark-temp');
@@ -254,20 +255,23 @@ export async function runCampaign({ root = ROOT, hooks = {}, campaignId = null }
   try {
     say('PRECHECK');
     const base = await api.gitState();
-    const baselineBytes = await fs.readFile(path.join(root, BASELINE));
-    const baseline = validateMeasurementReport(JSON.parse(baselineBytes));
-    if (baseline.baselineVersion !== 1 || baseline.run.status !== 'PASS') throw blocked('BLOCKED_BASELINE', 'baseline-v1 is invalid');
     const manifest = await readJson(path.join(root, 'benchmarks/sentinel-todo/benchmark.json'));
-    const plannedRuns = manifest.campaign?.fullRuns;
+    const plannedRuns = runs ?? manifest.campaign?.fullRuns;
     if (!Number.isSafeInteger(plannedRuns) || plannedRuns < 1) throw blocked('BLOCKED_CONFIG', 'campaign.fullRuns must be a positive integer');
-    if (manifest.benchmarkVersion !== baseline.benchmarkVersion || manifest.productionProfile?.id !== baseline.run.profile) {
-      throw blocked('BLOCKED_BASELINE', 'baseline and manifest version/profile differ');
-    }
+    let baseline = null;
+    let baselineRef = { path: BASELINE, status: 'unavailable', reason: 'baseline absent' };
+    try {
+      const bytes = await fs.readFile(path.join(root, BASELINE));
+      const candidate = validateMeasurementReport(JSON.parse(bytes));
+      if (candidate.baselineVersion !== 1 || candidate.run.status !== 'PASS') throw new Error('invalid historical baseline');
+      baseline = candidate;
+      baselineRef = { path: BASELINE, runId: baseline.run.id, sha256: `sha256:${createHash('sha256').update(bytes).digest('hex')}` };
+    } catch (error) { baselineRef.reason = `baseline unavailable: ${error.code ?? error.message}`; }
     if ((await api.processes()).length) throw blocked('BLOCKED_ACTIVE', 'another benchmark process is alive');
     await assertSafeScratch(scratch);
     checkCancel();
-    say('CLEAN');
-    lock = await cleanScratch(scratch, async () => {
+    say('LOCK');
+    lock = await acquireCampaignLock(scratch, async () => {
       if (await exists(path.join(scratch, '.active-run.json')) || (await api.processes()).length) {
         throw blocked('BLOCKED_ACTIVE', 'benchmark became active before cleanup');
       }
@@ -287,8 +291,6 @@ export async function runCampaign({ root = ROOT, hooks = {}, campaignId = null }
     const startedAt = new Date().toISOString();
     const source = await api.identity();
     const reports = []; const comparisons = []; const files = {};
-    const baselineRef = { path: BASELINE, runId: baseline.run.id,
-      sha256: `sha256:${createHash('sha256').update(baselineBytes).digest('hex')}` };
     for (index = 1; index <= plannedRuns; index += 1) {
       checkCancel();
       if ((await api.gitState()).head !== base.head || (await api.identity()).sha256 !== source.sha256) {
@@ -318,17 +320,17 @@ export async function runCampaign({ root = ROOT, hooks = {}, campaignId = null }
       const exported = await api.export(runId, file, signal.signal);
       checkCancel();
       if (exported.code !== 0) throw blocked('BLOCKED_EXPORT', `run ${index} ${runId}: ${exported.stderr || exported.code}`);
-      const report = validateMeasurementReport(await readJson(file));
-      if (report.run.id !== runId || report.run.status !== 'PASS' || report.run.profile !== manifest.productionProfile.id
+      const report = validateMeasurementReport(await readJson(file), { qualify: true });
+      if (report.benchmarkId !== manifest.benchmarkId || report.benchmarkVersion !== manifest.benchmarkVersion
+        || report.run.id !== runId || report.run.status !== 'PASS' || report.run.mode !== 'full' || report.run.profile !== manifest.productionProfile.id
         || report.provenance.sourceFunctionalSha256 !== source.sha256
         || report.cases.length !== 3 || ['A', 'B', 'C'].some((key) => report.cases.find((row) => row.id === key)?.status !== 'PASS')) {
         throw blocked('BLOCKED_REPORT', `run ${index} ${runId}: invalid campaign report`);
       }
       say(`COMPARE ${index}/${plannedRuns}`);
-      const comparison = await api.compare(baseline, report);
-      if (!comparison.directlyComparable || comparison.profileExperiment || comparison.mismatches?.length) {
-        throw blocked('BLOCKED_COMPARABILITY', `run ${index} ${runId}: ${comparison.mismatches?.join(', ') || 'not directly comparable'}`);
-      }
+      const comparison = baseline && baseline.benchmarkVersion === manifest.benchmarkVersion && baseline.run.profile === report.run.profile
+        ? await api.compare(baseline, report)
+        : { directlyComparable: false, profileExperiment: false, mismatches: [baseline ? 'baseline version/profile differs' : baselineRef.reason], deltas: 'unavailable' };
       await writeJson(path.join(campaignRoot, `compare-${String(index).padStart(2, '0')}.json`), comparison);
       reports.push(report); comparisons.push(comparison); files[name] = file;
       runId = null;
@@ -372,15 +374,21 @@ export async function runCampaign({ root = ROOT, hooks = {}, campaignId = null }
   }
 }
 
-// The default npm command is deliberately a single functional run. The formal
-// campaign above remains opt-in through `npm run benchmark:campaign`.
-export async function runFunctionalBenchmark({ root = ROOT, hooks = {} } = {}) {
+// Functional and formal entrypoints share N, but only the latter requires a
+// clean Git candidate and comparison gate. Neither entrypoint cleans history.
+export async function runFunctionalBenchmark({ root = ROOT, hooks = {}, runs = undefined } = {}) {
+  if (runs !== undefined && (!Number.isSafeInteger(runs) || runs < 1)) throw blocked('BLOCKED_CONFIG', 'runs must be a positive integer');
+  if (process.env.STNL_OFFLINE_PROVIDER_CONTEXT !== undefined) throw blocked('BLOCKED_BASE', 'TEST-ONLY provider cannot enter a functional campaign');
+  const manifest = await readJson(path.join(root, 'benchmarks/sentinel-todo/benchmark.json'));
+  const plannedRuns = runs ?? manifest.campaign?.fullRuns;
+  if (!Number.isSafeInteger(plannedRuns) || plannedRuns < 1) throw blocked('BLOCKED_CONFIG', 'campaign.fullRuns must be a positive integer');
   const api = { ...adapters(root), ...hooks };
   const scratch = path.join(root, 'benchmark-temp');
   const signal = new AbortController();
   const onSignal = () => signal.abort();
   process.on('SIGINT', onSignal); process.on('SIGTERM', onSignal);
-  let lock = null;
+  let lock = null; let campaignRoot = null; let completed = 0;
+  const reports = []; const comparisons = []; const startedAt = new Date().toISOString();
   const reportRoot = path.join(root, 'benchmarks', 'sentinel-todo', 'measurements');
   const say = (line) => console.log(line);
   const checkCancel = () => { if (signal.signal.aborted) throw blocked('CANCELLED', 'benchmark interrupted'); };
@@ -392,16 +400,6 @@ export async function runFunctionalBenchmark({ root = ROOT, hooks = {} } = {}) {
     // latest when requested, so an existing ID cannot silently hide new data.
     await api.publishMeasurement(report, { root: reportRoot, updateLatest });
     return true;
-  }
-  async function preserve(runId) {
-    try {
-      const report = await api.exportMeasurement(runId);
-      if (report?.run?.id !== runId) throw new Error(`exported report identity mismatch for ${runId}`);
-      return await preserveReport(report);
-    } catch (error) {
-      console.error(`report for ${runId} was not preserved; raw evidence retained: ${error.message}`);
-      return false;
-    }
   }
   try {
     say('VERIFY');
@@ -473,89 +471,77 @@ export async function runFunctionalBenchmark({ root = ROOT, hooks = {} } = {}) {
     lock = lockPath;
     if (await exists(path.join(scratch, '.active-run.json')) || (await api.processes()).length)
       throw blocked('BLOCKED_ACTIVE', 'benchmark became active before cleanup');
-    // Preserve terminal report files before removing old campaign scratch.
-    for (const entry of await fs.readdir(scratch, { withFileTypes: true })) {
-      if (!entry.isDirectory()) continue;
-      const item = path.join(scratch, entry.name);
-      if (entry.name.startsWith('run-')) {
-        const run = await readJson(path.join(item, 'run.json'));
-        const saved = run.mode === 'full' ? await preserve(run.runId ?? entry.name) : true;
-        if (run.mode !== 'full') say(`SKIP MEASUREMENT ${run.runId}: ${run.mode}`);
-        if (!saved) throw blocked('BLOCKED_CLEANUP', `report preservation failed for ${entry.name}; scratch retained`);
-        if (await exists(path.join(scratch, '.active-run.json')) || (await api.processes()).length)
-          throw blocked('BLOCKED_ACTIVE', 'benchmark became active during report preservation');
-        const cleaned = await api.cleanRun(run.runId);
-        if (cleaned.code !== 0) throw blocked('BLOCKED_CLEANUP', `manager cleanup retained ${entry.name}: ${cleaned.stderr || cleaned.code}`);
-      } else if (entry.name.startsWith('campaign-')) {
-        let safeToRemove = true;
-        for (const child of await fs.readdir(item, { withFileTypes: true })) {
-          if (child.isFile() && /^run-\d+\.json$/u.test(child.name)) {
-            const report = await readJson(path.join(item, child.name)).catch(() => null);
-            try { if (!report?.run?.id) throw new Error('missing report identity'); await preserveReport(report); }
-            catch (error) { safeToRemove = false; console.error(`campaign report ${child.name} retained in scratch: ${error.message}`); }
-          }
-        }
-        if (safeToRemove) {
-          const summaryFile = path.join(item, 'campaign-summary.json');
-          if (await exists(summaryFile)) {
-            try {
-              const archive = path.join(reportRoot, entry.name);
-              await fs.mkdir(archive, { recursive: true });
-              const archivedSummary = path.join(archive, 'campaign-summary.json');
-              if (await exists(archivedSummary)) {
-                if (!Buffer.from(await fs.readFile(archivedSummary)).equals(await fs.readFile(summaryFile))) safeToRemove = false;
-              } else await fs.copyFile(summaryFile, archivedSummary, fs.constants.COPYFILE_EXCL);
-            } catch (error) { safeToRemove = false; console.error(`campaign summary retained in scratch: ${error.message}`); }
-          }
-          if (safeToRemove) {
-            if (await exists(path.join(scratch, '.active-run.json')) || (await api.processes()).length)
-              throw blocked('BLOCKED_ACTIVE', 'benchmark became active during campaign preservation');
-            await fs.rm(item, { recursive: true });
-          }
-        }
-        if (!safeToRemove) throw blocked('BLOCKED_CLEANUP', `campaign preservation failed for ${entry.name}; scratch retained`);
-      }
-    }
-    for (const name of await fs.readdir(scratch)) {
-      if (name === '.campaign-active.json' || name === '.active-run.json') continue;
-      if (name === '.turn-ledger.json' || name === '.campaign-state.json' || name === '.DS_Store' || name === '__MACOSX' || name.startsWith('._')) {
-        const target = path.join(scratch, name);
-        if ((await fs.lstat(target)).isDirectory()) await fs.rm(target, { recursive: true });
-        else await fs.unlink(target);
-      }
-    }
+    // Terminal history already has its raw/state evidence. No deletion or
+    // re-publication of another invocation is required to start this one.
+    // Full retain-before-clean settlement remains owned by explicit clean.
     checkCancel();
     if ((await api.processes()).length || await exists(path.join(scratch, '.active-run.json')))
       throw blocked('BLOCKED_ACTIVE', 'benchmark activity detected before full run');
-    say('RUN FULL');
-    const before = await runIds(scratch);
-    const result = await api.runFull(signal.signal);
-    const created = [...await runIds(scratch)].filter((item) => !before.has(item));
-    if (created.length !== 1) throw blocked('BLOCKED_RUN_ID', `full run created ${created.length} run directories`);
-    const runId = created[0];
-    const runRoot = path.join(scratch, runId);
-    const run = await readJson(path.join(runRoot, 'run.json')).catch(() => null);
-    const summary = await readJson(path.join(runRoot, 'summary.json')).catch(() => null);
-    const status = signal.signal.aborted ? 'CANCELLED' : (run?.status ?? 'UNAVAILABLE');
-    try {
-      const report = await api.exportMeasurement(runId);
-      if (report?.run?.id !== runId) throw new Error(`exported report identity mismatch for ${runId}`);
-      if (report.run.mode !== 'full') throw new Error('current benchmark report must be full');
-      await preserveReport(report, true);
-    } catch (error) {
-      console.error(`report for ${runId} was not published; raw evidence retained: ${error.message}`);
-      const failure = blocked(status, `run ${runId} outcome ${status}; cases ${JSON.stringify(summary?.cases ?? null)}; manager exit ${result.code}; report publication failed: ${error.message}; raw evidence retained at ${runRoot}`);
-      failure.exitCode = result.code || 1;
-      throw failure;
+    const campaignId = `campaign-functional-${randomUUID()}`;
+    campaignRoot = path.join(scratch, campaignId);
+    await fs.mkdir(campaignRoot);
+    await fs.writeFile(path.join(campaignRoot, '.sentinel-campaign-owned'), CAMPAIGN_MARKER, { flag: 'wx' });
+    await writeJson(path.join(campaignRoot, 'state.json'), { campaignId, status: 'ACTIVE', plannedRuns, startedAt });
+    for (let index = 1; index <= plannedRuns; index += 1) {
+      checkCancel();
+      if ((await api.processes()).length || await exists(path.join(scratch, '.active-run.json')))
+        throw blocked('BLOCKED_ACTIVE', 'benchmark activity detected before full run');
+      say(`RUN FULL ${index}/${plannedRuns}`);
+      const before = await runIds(scratch);
+      const result = await api.runFull(signal.signal);
+      const created = [...await runIds(scratch)].filter((item) => !before.has(item));
+      if (created.length !== 1) throw blocked('BLOCKED_RUN_ID', `full run created ${created.length} run directories`);
+      const runId = created[0];
+      const runRoot = path.join(scratch, runId);
+      const run = await readJson(path.join(runRoot, 'run.json')).catch(() => null);
+      const summary = await readJson(path.join(runRoot, 'summary.json')).catch(() => null);
+      const status = signal.signal.aborted ? 'CANCELLED' : (run?.status ?? 'UNAVAILABLE');
+      try {
+        const report = await api.exportMeasurement(runId);
+        if (report?.run?.id !== runId) throw new Error(`exported report identity mismatch for ${runId}`);
+        if (report.run.mode !== 'full') throw new Error('current benchmark report must be full');
+        if (run?.runId !== runId || run.mode !== 'full' || summary?.runId !== runId || summary.mode !== 'full'
+          || run.status !== summary.status || run.status !== report.run.status)
+          throw blocked('BLOCKED_REPORT', 'functional run/summary/report identity or outcome differs');
+        validateMeasurementReport(report, { qualify: true });
+        if (report.benchmarkId !== manifest.benchmarkId || report.benchmarkVersion !== manifest.benchmarkVersion
+          || report.run.profile !== manifest.productionProfile.id
+          || (reports.length && report.provenance.sourceFunctionalSha256 !== reports[0].provenance.sourceFunctionalSha256))
+          throw blocked('BLOCKED_REPORT', 'functional report candidate identity differs');
+        await preserveReport(report, false);
+        await writeJson(path.join(campaignRoot, `run-${String(index).padStart(2, '0')}.json`), report);
+        reports.push(report);
+      } catch (error) {
+        console.error(`report for ${runId} was not published; raw evidence retained: ${error.message}`);
+        const failure = blocked(status === 'PASS' ? 'BLOCKED_REPORT' : status, `run ${runId} outcome ${status}; cases ${JSON.stringify(summary?.cases ?? null)}; manager exit ${result.code}; report publication failed: ${error.message}; raw evidence retained at ${runRoot}`);
+        failure.exitCode = result.code || 1;
+        throw failure;
+      }
+      if (result.code !== 0 || status !== 'PASS' || reports.at(-1).run.status !== status
+        || ['A', 'B', 'C'].some(id => summary?.cases?.[id]?.status !== 'PASS')) {
+        const failure = blocked(status === 'PASS' ? 'BLOCKED_RUN' : status, `run ${runId} outcome ${status}; cases ${JSON.stringify(summary?.cases ?? null)}; manager exit ${result.code}; raw evidence ${runRoot}`);
+        failure.exitCode = result.code || 1;
+        throw failure;
+      }
+      completed = index;
+      comparisons.push({ directlyComparable: false, profileExperiment: false, deltas: 'unavailable', mismatches: ['functional campaign has no comparison baseline'] });
     }
-    if (result.code !== 0 || status !== 'PASS') {
-      const failure = blocked(status, `run ${runId} outcome ${status}; cases ${JSON.stringify(summary?.cases ?? null)}; manager exit ${result.code}; raw evidence ${runRoot}`);
-      failure.exitCode = result.code || 1;
-      throw failure;
-    }
-    say(`PASS ${runId}; report published`);
-    return { runId, status, cases: summary?.cases ?? null };
+    checkCancel();
+    const last = reports.at(-1);
+    const summary = campaignSummary({ campaignId, head: 'unavailable', startedAt, endedAt: new Date().toISOString(),
+      baselineRef: { status: 'unavailable', reason: 'functional campaign has no comparison baseline' }, reports, comparisons, plannedRuns });
+    await writeJson(path.join(campaignRoot, 'campaign-summary.json'), summary);
+    // Only N/N qualifying runs may advance latest. Individual reports and raw
+    // diagnostics have already been retained without promoting the campaign.
+    await preserveReport(last, true);
+    await fs.writeFile(path.join(campaignRoot, 'state.json'), `${JSON.stringify({ campaignId,
+      status: 'CAMPAIGN_COMPLETE', plannedRuns, completedRuns: completed, endedAt: summary.endedAt })}\n`);
+    say(`PASS ${campaignId}: ${completed}/${plannedRuns}; reports published`);
+    return { runId: last.run.id, status: 'PASS', plannedRuns, completedRuns: completed, runs: reports.map(row => row.run.id) };
   } catch (error) {
+    if (campaignRoot) await fs.writeFile(path.join(campaignRoot, 'state.json'), `${JSON.stringify({
+      status: signal.signal.aborted ? 'CANCELLED' : 'BLOCKED', plannedRuns, completedRuns: completed,
+      blocker: error.message, endedAt: new Date().toISOString() })}\n`).catch(() => {});
     console.error(`${error.code ?? 'BLOCKED'}: ${error.message}`);
     throw error;
   } finally {
@@ -564,12 +550,25 @@ export async function runFunctionalBenchmark({ root = ROOT, hooks = {} } = {}) {
   }
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
-  if (process.argv.includes('--help')) {
-    const config = await readJson(path.join(ROOT, 'benchmarks/sentinel-todo/benchmark.json'));
-    console.log(`Functional single run: npm run benchmark\nFormal ${config.campaign.fullRuns}-full campaign: npm run benchmark:campaign`);
+export function parseCampaignArgs(argv) {
+  if (argv.length === 1 && argv[0] === '--help') return { mode: 'help' };
+  const functional = argv[0] === '--functional';
+  const rest = functional ? argv.slice(1) : argv;
+  if (rest.length === 0) return { mode: functional ? 'functional' : 'campaign' };
+  if (rest.length === 2 && rest[0] === '--runs' && /^[0-9]+$/u.test(rest[1])) {
+    const runs = Number(rest[1]);
+    if (Number.isSafeInteger(runs) && runs > 0) return { mode: functional ? 'functional' : 'campaign', runs };
   }
-  else if (process.argv.length === 3 && process.argv[2] === '--functional') runFunctionalBenchmark().catch((error) => { process.exitCode = error.exitCode ?? 1; });
-  else if (process.argv.length !== 2) { console.error('usage: npm run benchmark:campaign | benchmark-campaign.mjs --functional'); process.exitCode = 2; }
-  else runCampaign().catch(() => { process.exitCode = 1; });
+  throw blocked('BLOCKED_CONFIG', 'usage: benchmark-campaign.mjs [--functional] [--runs <positive integer>] | --help');
+}
+
+if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
+  try {
+    const options = parseCampaignArgs(process.argv.slice(2));
+    if (options.mode === 'help') {
+      const config = await readJson(path.join(ROOT, 'benchmarks/sentinel-todo/benchmark.json'));
+      console.log(`Functional ${config.campaign.fullRuns}-full campaign: npm run benchmark\nFormal ${config.campaign.fullRuns}-full campaign: npm run benchmark:campaign\nOverride: npm run benchmark[:campaign] -- --runs N`);
+    } else if (options.mode === 'functional') await runFunctionalBenchmark({ runs: options.runs });
+    else await runCampaign({ runs: options.runs });
+  } catch (error) { console.error(`${error.code ?? 'BLOCKED'}: ${error.message}`); process.exitCode = error.exitCode ?? 1; }
 }
