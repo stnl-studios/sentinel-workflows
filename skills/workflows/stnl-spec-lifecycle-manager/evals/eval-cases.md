@@ -41,3 +41,12 @@ Deterministic executable coverage includes:
 `PLANNING` and the removed boolean CLOSE argument appear only in explicit rejection controls. `broken_references` appears only as a calculated validator diagnostic or a negative persistence mutation. Publisher locks are persistent sibling runtime metadata and are excluded from readiness, rendering, and authority snapshots.
 
 The runner does not invoke Codex or Claude Code as lifecycle models and does not measure model tokens. Static triggering, security, exploration, and token scenarios prove catalog/adapter contract consistency, not real model behavior. A real-model eval may be reported only by an external authenticated run that records the platform, model, observed reads/writes, and actual result.
+
+## Focused model regression: source meaning versus observed examples
+
+Use an independent, fresh context with the same frozen request, artifacts, model and effort before and after an instruction change. This is a semantic-policy eval, not a live lifecycle operation, formal receipt or benchmark qualification; static catalogs do not execute it.
+
+- Given a source requiring an observable property and a baseline example A, ask for a verifiable AC. It must preserve the source property, distinguish an illustrative value from a required literal, and surface a material unresolved decision instead of inventing one. An example explicitly labelled non-normative is allowed.
+- Score the returned obligations and provenance, not whether the answer repeats a preferred phrase. Preserve the first response, reads, input/instruction hashes and actual admission count.
+- Keep exact-output requirements when the source or an authorized decision actually requires them. This eval never relaxes an already approved criterion to turn a historical failure into PASS.
+- If the baseline already satisfies the oracle, report no reproduced regression or measured improvement. A model run that changes verdict is evidence for that run, not deterministic semantic correctness. Never tune the fixture after observing a result and call it the same before/after comparison.

@@ -30,3 +30,13 @@ update_policy: Extend when quality persistence or completion accepts an invalid 
 16. Explicit validation is the only continuation from third auxiliary `TESTS_FAIL`; executor re-entry remains blocked until its verdict.
 17. Stale requirements/revision blocks before delegation; arbitrary user-owned SPEC-root siblings remain preserved and allowed.
 18. Scoped runner, retry, or validation recovery reports the exact persisted operation and slice even when the current request is wrong; unscoped authority recovery keeps slice absent.
+
+## Focused model regression: canonical authority versus green self-consistent tests
+
+Use the existing model-eval procedure with fresh independent contexts and frozen inputs/model/effort; no live operation, synthetic approval or controller admission is implied. Keep the feature index and Plan/Task summary identical between the two controls and place the full AC in its indexed category.
+
+- Negative: the canonical criterion explicitly requires A; implementation and a passing test expect B. The reviewer must read the canonical record and identify NEEDS_FIX from the actual required/produced/asserted mismatch, even though the test exits zero.
+- Positive: canonical criterion, implementation and test all require/produce B. The reviewer may approve when the actual promised behavior is proved, without inventing a requirement for A.
+- Freeze abstract values rather than the historical usage string. Compare reads, concrete evidence and verdicts, not just IDs mentioned in the answer or the test count. Use the existing evidence/report fields; no new schema or persisted authority is required.
+- Validate the positive control's real entrypoint before spending model calls. A CLI requirement needs an exercised executable path, not only a helper returning an object. If the control is defective, preserve and exclude that trial; a repaired fixture needs a new baseline and cannot be compared as unchanged input.
+- An instruction rewrite alone, a mocked model, static substring checks or a correct answer already produced before the rewrite do not prove a behavioral fix. Record non-reproduction, false rejections and budget limits honestly; never manufacture red/green.

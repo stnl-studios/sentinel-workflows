@@ -42,7 +42,7 @@ CLOSE does not require a terminal readiness attestation. Use the target-only nor
 - `question_gate`: no open blocking question, active `blocked_by`, or open irrelevant question exists. An open non-blocking question is allowed only when its classification remains semantically justified.
 - `coverage_gate`: every in-scope requirement has an active AC that verifies it or a credible formal `coverage_justification`; every active AC verifies an existing in-scope requirement. Traceability is AC to requirement only.
 - `spec_quality_gate`: objective, facts, hypotheses, scope, exclusions, requirements, business rules, and contracts provide coherent, non-placeholder signal; no readiness-relevant documentary gap remains.
-- `acceptance_quality_gate`: active ACs are concrete, observable, verifiable, consistent with requirements, scope, and rules, and include applicable negative and failure behavior.
+- `acceptance_quality_gate`: active ACs are concrete, observable, verifiable, consistent with requirements, scope, and rules, and include applicable negative and failure behavior. Examples alone bind no literals; material compatibility choices need authority or clarification.
 - `consistency_gate`: requirements, decisions, constraints, risks, questions, contracts, and feature prose have no material contradiction.
 
 An active mitigated risk remains active and does not fail readiness merely by existing. A category or gate is `not_applicable` only when feature evidence explains why; never materialize an empty file to represent absence.
