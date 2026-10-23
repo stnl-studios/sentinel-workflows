@@ -9,6 +9,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { runDoctor, runProbeDoctor } from './benchmark-environment.mjs';
 import { checkProductAcceptance, validateProductAcceptance, productCandidateIdentity } from './product-acceptance.mjs';
+import { validateTerminalEvidence, contextPolicy } from './native-evidence.mjs';
 
 const RUNTIME_ROOT = path.dirname(fileURLToPath(import.meta.url));
 const BENCHMARK_ROOT = path.resolve(RUNTIME_ROOT, '..');
@@ -282,10 +283,12 @@ async function copyTree(source, destination) {
 }
 
 function run(command, args, cwd, { environment = {}, inheritEnvironment = true, timeout = 60_000 } = {}) {
+  const env = { ...(inheritEnvironment ? process.env : {}), ...environment };
+  delete env.NODE_TEST_CONTEXT; // The candidate's test runner is an independent process.
   const result = spawnSync(command, args, {
     cwd,
     encoding: 'utf8',
-    env: { ...(inheritEnvironment ? process.env : {}), ...environment },
+    env,
     shell: false,
     timeout,
   });
@@ -372,6 +375,9 @@ async function prepare(options) {
       if (command.exitCode !== 0) throw new CliError(`${label} failed: ${command.stderr}`);
     }
     await fs.mkdir(path.join(stage, '.git', 'benchmark-empty-hooks'));
+    // Operational exclusion belongs to this disposable repository only. It is
+    // established before any product publisher and does not change seed bytes.
+    await fs.appendFile(path.join(stage, '.git/info/exclude'), '\n/tmp/\n');
     const indexed = gitRun(['add', '--all'], stage);
     if (indexed.exitCode !== 0) throw new CliError(`git baseline index failed: ${indexed.stderr}`);
     const commit = gitRun(['commit', '-m', `benchmark: seed case ${item.id}`], stage, {
@@ -679,19 +685,26 @@ async function existingFiles(directory, pattern) {
     .sort();
 }
 
-async function artifactMetrics(specPath) {
+export async function artifactMetrics(specPath, retainedFiles = null) {
   const execution = path.join(specPath, 'execution');
-  const planFiles = await existingFiles(path.join(execution, 'plans'), /^slice-[0-9]{2,}\.md$/u);
-  const taskFiles = await existingFiles(path.join(execution, 'tasks'), /^slice-[0-9]{2,}\.md$/u);
+  const list = async kind => retainedFiles === null ? existingFiles(path.join(execution, kind), /^slice-[0-9]{2,}\.md$/u)
+    : [...retainedFiles.keys()].filter(name => new RegExp(`^${kind}/slice-[0-9]{2,}\\.md$`, 'u').test(name)).sort().map(name => path.join(execution, name));
+  const read = file => retainedFiles === null ? fs.readFile(file) : retainedFiles.get(path.relative(execution, file));
+  const present = async file => retainedFiles === null ? (await fs.lstat(file).catch(() => null))?.isFile() : retainedFiles.has(path.relative(execution, file));
+  const totals = async files => {
+    const content = await Promise.all(files.map(read));
+    return { bytes: content.reduce((n, bytes) => n + bytes.length, 0), words: content.reduce((n, bytes) => n + countWords(bytes.toString('utf8')), 0) };
+  };
+  const planFiles = await list('plans'), taskFiles = await list('tasks');
   const rootPlan = path.join(execution, 'plan.md');
   const rootTasks = path.join(execution, 'tasks.md');
-  const planInputs = (await fs.lstat(rootPlan).catch(() => null))?.isFile() ? [rootPlan, ...planFiles] : planFiles;
-  const taskInputs = (await fs.lstat(rootTasks).catch(() => null))?.isFile() ? [rootTasks, ...taskFiles] : taskFiles;
+  const planInputs = await present(rootPlan) ? [rootPlan, ...planFiles] : planFiles;
+  const taskInputs = await present(rootTasks) ? [rootTasks, ...taskFiles] : taskFiles;
   const tasksPerSlice = {};
   let tasks = 0;
   let terminal = taskFiles.length > 0;
   for (const file of taskFiles) {
-    const text = await fs.readFile(file, 'utf8');
+    const text = Buffer.from(await read(file)).toString('utf8');
     const count = [...text.matchAll(/^- \[(?: |x)\] \S.*$/gmu)].length;
     const slice = path.basename(file, '.md');
     tasksPerSlice[slice] = count;
@@ -702,8 +715,8 @@ async function artifactMetrics(specPath) {
     slices: new Set([...planFiles, ...taskFiles].map((file) => path.basename(file, '.md'))).size,
     tasks,
     tasksPerSlice,
-    plan: await readArtifactSet(planInputs),
-    tasksArtifacts: await readArtifactSet(taskInputs),
+    plan: await totals(planInputs),
+    tasksArtifacts: await totals(taskInputs),
     structurallyTerminal: terminal,
   };
 }
@@ -824,6 +837,17 @@ export function validateResult(value) {
   ];
   // Historical measurements predate fixed product checks; absence is not product evidence.
   if (Object.hasOwn(value, 'productAcceptance')) topKeys.push('productAcceptance');
+  if (Object.hasOwn(value, 'nativeTerminal')) {
+    topKeys.push('nativeTerminal');
+    const terminal = value.nativeTerminal;
+    if (!terminal || Object.keys(terminal).sort().join() !== ['sourceActivationId', 'transactionId', 'closedSnapshotSha256', 'sourceSha256'].sort().join()
+      || !/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/u.test(terminal.sourceActivationId)
+      || !/^[a-f0-9]{32}$/u.test(terminal.transactionId)
+      || !/^sha256:[a-f0-9]{64}$/u.test(terminal.closedSnapshotSha256)
+      || !/^sha256:[a-f0-9]{64}$/u.test(terminal.sourceSha256)
+      || value.finalExecutionState !== 'SPEC_CLOSED' || !value.specClosed || !Object.hasOwn(value, 'contextPolicy')) throw new CliError('native terminal projection is invalid');
+  }
+  if (Object.hasOwn(value, 'contextPolicy')) { topKeys.push('contextPolicy'); contextPolicy(value); }
   if (value === null || typeof value !== 'object' || Array.isArray(value)
     || JSON.stringify(Object.keys(value).sort()) !== JSON.stringify(topKeys.sort())) throw new CliError('result has unknown or missing fields');
   if (!['A', 'B', 'C'].includes(value.caseId) || !RUN_MODES.has(value.runMode)
@@ -936,7 +960,20 @@ async function finalize(options) {
   const budget = budgetViolation(journal.events, item.budgets);
   if (budget !== null && journal.status !== 'ABORTED_BUDGET') throw new CliError('journal exceeds a budget without terminal abort state');
 
-  const artifacts = await artifactMetrics(realSpec);
+  let terminal = null;
+  if (options['--terminal-evidence']) {
+    terminal = await readJson(requireAbsolute(options['--terminal-evidence'], '--terminal-evidence'), 'terminal evidence');
+    const modules = await Promise.all([
+      'stnl-spec-lifecycle-manager/runtime/lib/lifecycle.mjs',
+      ...['execution-state.mjs', 'execution-current-reader.mjs', 'execution-current.mjs',
+        'execution-preparation-current.mjs', 'current-evidence-state.mjs', 'execution-evidence-proof.mjs']
+        .map(name => `stnl-slice-executor/runtime/${name}`),
+    ].map(name => import(pathToFileURL(path.join(REPOSITORY_ROOT, 'skills/workflows', name)).href)));
+    await validateTerminalEvidence({ product: Object.assign({}, ...modules),
+      evidence: terminal, specPath: realSpec, workspace: realWorkspace });
+  }
+  const artifacts = await artifactMetrics(realSpec, terminal === null ? null
+    : new Map(terminal.source.files.map(item => [item.name, Buffer.from(item.bytesBase64, 'base64')])));
   const operationalEvents = journal.events.filter((event) => !event.operation.startsWith('SPEC_'));
   const reportedExecutionEvents = operationalEvents.filter((event) => event.resultingState !== undefined);
   const reportedExecutionState = reportedExecutionEvents.at(-1)?.resultingState ?? null;
@@ -1000,7 +1037,8 @@ async function finalize(options) {
   const officialStateMatch = executionValidation?.exitCode === 0
     ? /^PASS: execution state=([A-Z][A-Z0-9_]*) authority=sha256:[0-9a-f]{64}\n?$/u.exec(executionValidation.stdout)
     : null;
-  const finalExecutionState = needsClosure ? officialStateMatch?.[1] ?? null : reportedExecutionState;
+  const finalExecutionState = terminal !== null ? 'SPEC_CLOSED'
+    : needsClosure ? officialStateMatch?.[1] ?? null : reportedExecutionState;
   const officialExecutionBlocked = needsClosure && executionValidation.exitCode !== 0
     && /^(?:BLOCKED|RECOVERY_TARGETS):/mu.test(executionValidation.stderr);
   const lastOperationalEvent = operationalEvents.at(-1);
@@ -1010,8 +1048,8 @@ async function finalize(options) {
     || officialExecutionBlocked
     || ['PRODUCT_OBSERVATION_UNPROVEN', 'INSTRUMENT_DRIFT', 'PRODUCT_STATE_DRIFT'].includes(productAcceptance?.errorCode);
   const terminalEvidence = terminalSequence
-    && finalExecutionState === 'COMPLETE'
-    && artifacts.structurallyTerminal;
+    && (terminal !== null ? finalExecutionState === 'SPEC_CLOSED' && terminal.source.inspection.state === 'COMPLETE'
+      : finalExecutionState === 'COMPLETE' && artifacts.structurallyTerminal);
   const commonPass = requirementsHashMatches && sentinelShaMatchesCheckout && finalTestsPassed
     && (!needsProductAcceptance || productAcceptance.passed);
   const passed = commonPass && (needsClosure ? terminalEvidence && specClosed : !effectiveBlocked);
@@ -1050,6 +1088,9 @@ async function finalize(options) {
       sentinelShaMatchesCheckout,
     },
     finalTests: { command: 'node --test', exitCode: tests.exitCode, passed: finalTestsPassed },
+    ...(terminal === null ? {} : { nativeTerminal: { sourceActivationId: terminal.disposition.activationId,
+      transactionId: terminal.receipt.transactionId, closedSnapshotSha256: terminal.closedSnapshotSha256,
+      sourceSha256: terminal.sourceSha256 }, contextPolicy: contextPolicy(await readJson(path.join(path.dirname(realJournal), 'case-state.json'), 'case state')) }),
   };
   validateResult(result);
   await atomicJson(output, result, { exclusive: true });
@@ -1193,7 +1234,7 @@ export async function main(argv) {
   if (command === 'journal-event') return journalEvent(parseOptions(tokens, EVENT_OPTIONS,
     ['--journal', '--operation', '--phase', '--model', '--effort', '--result']));
   if (command === 'finalize') return finalize(parseOptions(tokens,
-    new Set(['--workspace', '--case', '--spec', '--journal', '--output']),
+    new Set(['--workspace', '--case', '--spec', '--journal', '--output', '--terminal-evidence']),
     ['--workspace', '--case', '--spec', '--journal', '--output']));
   if (command === 'compare') return compare(parseOptions(tokens,
     new Set(['--before', '--after', '--output']), ['--before', '--after']));

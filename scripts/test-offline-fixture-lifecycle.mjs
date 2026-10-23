@@ -13,7 +13,7 @@ test('source copy excludes every node_modules subtree and measurements', () => {
   assert.equal(offlineSourceFilter('/project/agents/codex/node_modules'), false);
   assert.equal(offlineSourceFilter('/project/agents/codex/node_modules/sdk/file.mjs'), false);
   assert.equal(offlineSourceFilter('/project/benchmarks/sentinel-todo/measurements/latest.json'), false);
-  assert.equal(offlineSourceFilter('/project/agents/codex/runtime/sdk-transport.mjs'), true);
+  assert.equal(offlineSourceFilter('/project/agents/codex/runtime/native-provider.mjs'), true);
 });
 
 test('offline snapshot uses the pinned real SDK read-only with identity and no dependency copy', async t => {

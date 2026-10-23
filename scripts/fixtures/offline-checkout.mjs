@@ -55,6 +55,7 @@ export async function finishOfflineFixture(fixture, { remove = true } = {}) {
   const root = owner.root;
   if(process.env.STNL_OFFLINE_KEEP_FIXTURES==='1') remove=false;
   const retainedBrokers = [];
+  const checkpointStates = new Set(['PAUSED_BUDGET_OR_QUOTA', 'FOCAL_STOP']);
   if (await optional(path.join(root, 'benchmark-temp/.active-run.json')) !== null) throw new Error('OFFLINE_FIXTURE_RETAINED: active or interrupted manager');
   const runNames = await fs.readdir(path.join(root, 'benchmark-temp')).catch(error => {
     if (error.code === 'ENOENT') return []; throw error;
@@ -63,12 +64,13 @@ export async function finishOfflineFixture(fixture, { remove = true } = {}) {
     const runRoot = path.join(root, 'benchmark-temp', name);
     const info = await optional(path.join(runRoot, 'run.json'));
     const summary = await optional(path.join(runRoot, 'summary.json'));
-    if (!info || !summary || !['PASS', 'BLOCKED', 'CANCELLED'].includes(info.status) || info.status !== summary.status) {
+    if (!info || !summary || !['PASS', 'BLOCKED', 'CANCELLED', ...checkpointStates].includes(info.status) || info.status !== summary.status) {
       throw new Error('OFFLINE_FIXTURE_RETAINED: run is not demonstrably terminal');
     }
+    if (checkpointStates.has(info.status)) remove = false;
     for (const entry of await fs.readdir(runRoot, { withFileTypes: true })) if (entry.isDirectory() && /^case-[abc]$/u.test(entry.name)) {
       const state = await optional(path.join(runRoot, entry.name, 'case-state.json'));
-      if (!state || !['PASS', 'BLOCKED', 'CANCELLED'].includes(state.status)
+      if (!state || !['PASS', 'BLOCKED', 'CANCELLED', ...checkpointStates].includes(state.status)
         || state.privateHomeSuspended || state.privateHomeCleanupError) throw new Error('OFFLINE_FIXTURE_RETAINED: case is not settled');
       const activeFile = path.join(runRoot, entry.name, 'tmp/stnl-runner-broker/active.json');
       const active = await optional(activeFile);
@@ -86,9 +88,18 @@ export async function finishOfflineFixture(fixture, { remove = true } = {}) {
   }
   if ([...pids].some(alive)) throw new Error('OFFLINE_FIXTURE_RETAINED: recorded fixture process is still alive');
 
+  // The current native path has no managed broker. Preserve uncertain/live
+  // turns rather than treating an absent legacy broker as permission to erase.
+  const retainedNative = [];
+  const runsRoot = path.join(root, 'benchmark-temp');
+  for (const name of await fs.readdir(runsRoot).catch(error => { if (error.code === 'ENOENT') return []; throw error; })) {
+    const ledger = await optional(path.join(runsRoot, name, '.turn-ledger.json'));
+    if (ledger?.turns?.some(turn => ['dispatched', 'uncertain'].includes(turn.state))) retainedNative.push(name);
+  }
+  if (retainedNative.length) remove = false;
   const archive = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(),'stnl-offline-evidence-')));
   const manifest = { originalRoot: root, ownerId: owner.id, dependenciesOmitted: true, regenerableSnapshotOmitted: true,
-    retainedBrokers, processesSettled: [...pids].sort((a,b) => a-b), files: [] };
+    retainedBrokers, retainedNative, processesSettled: [...pids].sort((a,b) => a-b), files: [] };
   async function copy(relative) {
     if (['node_modules', '.git', '.offline-home', 'snapshot'].includes(path.basename(relative))) return;
     const source = path.join(root, relative), target = path.join(archive, relative);
@@ -115,6 +126,7 @@ export async function finishOfflineFixture(fixture, { remove = true } = {}) {
   await fs.writeFile(path.join(archive, 'evidence-manifest.json'), JSON.stringify(manifest, null, 2) + '\n', { flag: 'wx' });
   console.log(`TEST-ONLY archived fixture evidence: ${archive}`);
   if (retainedBrokers.length) console.log(`TEST-ONLY preserved pending operation and diagnostic state: ${root}`);
+  if (retainedNative.length) console.log(`TEST-ONLY preserved uncertain native case and source: ${root}`);
   if (remove) {
     await assertOwnership();
     // Thaw only directories of this closed owned fixture, never the shared SDK.

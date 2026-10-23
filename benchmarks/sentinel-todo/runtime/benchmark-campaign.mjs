@@ -7,7 +7,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { compareMeasurements, validateMeasurementReport, exportMeasurement, publishMeasurement } from './benchmark-measurement.mjs';
 import { currentFunctionalIdentity } from './benchmark-snapshot.mjs';
-import { privateHomeNeverCreated } from './benchmark-manager.mjs';
+import { privateHomeNeverCreated, settledNativeCase } from './benchmark-manager.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const RUNTIME = path.join('benchmarks', 'sentinel-todo', 'runtime');
@@ -424,6 +424,17 @@ export async function runFunctionalBenchmark({ root = ROOT, hooks = {}, runs = u
         || entry.name === '.turn-ledger.json' || entry.name === '.campaign-state.json') continue;
       const item = path.join(scratch, entry.name);
       if (!entry.isDirectory()) throw blocked('BLOCKED_CLEANUP', `unknown scratch entry: ${item}`);
+      if (entry.name === '.retained') {
+        if (await fs.readFile(path.join(item, '.sentinel-retention-owned'), 'utf8').catch(() => null) !== 'sentinel-local-retention-v1\n')
+          throw blocked('BLOCKED_CLEANUP', `unowned retained evidence: ${item}`);
+        for (const archived of await fs.readdir(item, { withFileTypes: true })) {
+          if (archived.name === '.sentinel-retention-owned') continue;
+          if (!archived.isDirectory() || !/^run-[a-z0-9-]+$/u.test(archived.name)
+            || await fs.readFile(path.join(item, archived.name, '.sentinel-benchmark-owned'), 'utf8').catch(() => null) !== RUN_MARKER)
+            throw blocked('BLOCKED_CLEANUP', `unknown retained evidence: ${archived.name}`);
+        }
+        continue;
+      }
       if (entry.name.startsWith('run-')) {
         if (await fs.readFile(path.join(item, '.sentinel-benchmark-owned'), 'utf8').catch(() => null) !== RUN_MARKER)
           throw blocked('BLOCKED_CLEANUP', `unowned scratch directory: ${item}`);
@@ -448,7 +459,8 @@ export async function runFunctionalBenchmark({ root = ROOT, hooks = {}, runs = u
           const state = await readJson(path.join(caseRoot, 'case-state.json')).catch(() => null);
           if (!state || state.caseId !== child.name.slice(5).toUpperCase() || !run.cases.includes(state.caseId)
             || !TERMINAL.has(state.status) || summary.cases?.[state.caseId]?.status !== state.status
-            || (state.privateHomeRemoved !== true && !(state.privateHomeSuspended === true && state.suspendedHome)
+            || (!settledNativeCase(state, await readJson(path.join(item, '.turn-ledger.json')).catch(() => null))
+              && state.privateHomeRemoved !== true && !(state.privateHomeSuspended === true && state.suspendedHome)
               && !privateHomeNeverCreated(state, await readJson(path.join(caseRoot, 'journal.json')).catch(() => null))))
             throw blocked('BLOCKED_CLEANUP', `active or ambiguous case state: ${caseRoot}`);
         }

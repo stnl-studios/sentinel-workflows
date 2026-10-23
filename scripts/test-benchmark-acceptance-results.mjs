@@ -90,16 +90,17 @@ for (const caseId of ['A', 'B', 'C']) {
 test('schema copies require the same v2 check sets as the runtime for every approved case/full', async () => {
   for (const name of ['result.schema.json', 'result-v2.schema.json']) {
     const schema = JSON.parse(await fs.readFile(path.resolve(import.meta.dirname, '../benchmarks/sentinel-todo/schemas', name), 'utf8'));
-    assert.ok(schema.allOf[0].then.required.includes('productAcceptance'));
-    assert.equal(schema.allOf[0].then.properties.productAcceptance.properties.contract.const, PRODUCT_CONTRACT);
+    const approved = schema.allOf.find(rule => rule.then?.required?.includes('productAcceptance'));
+    assert.ok(approved);
+    assert.equal(approved.then.properties.productAcceptance.properties.contract.const, PRODUCT_CONTRACT);
     const definition = schema.$defs?.productAcceptance ?? JSON.parse(await fs.readFile(
       path.resolve(import.meta.dirname, '../benchmarks/sentinel-todo/schemas/result.schema.json'), 'utf8')).$defs.productAcceptance;
     const consistency = definition.allOf.find(rule => rule.if?.properties?.passed?.const === true);
     for (const field of ['failedCheck', 'diagnostic', 'errorCode']) assert.equal(consistency.then.properties[field].type, 'null');
     assert.equal(consistency.else.properties.failedCheck.type, 'string');
     assert.equal(consistency.else.properties.diagnostic.type, 'string');
-    assert.ok(schema.allOf[0].then.properties.workspace.required.includes('productRoot'));
-    assert.ok(schema.allOf[0].then.properties.workspace.required.includes('productSha256'));
+    assert.ok(approved.then.properties.workspace.required.includes('productRoot'));
+    assert.ok(approved.then.properties.workspace.required.includes('productSha256'));
     for (const caseId of ['A', 'B', 'C']) {
       const rule = schema.allOf.find(rule => rule.if?.properties?.caseId?.const === caseId && rule.if?.properties?.status?.const === 'PASS');
       const checks = rule.then.properties.productAcceptance.properties.checks;

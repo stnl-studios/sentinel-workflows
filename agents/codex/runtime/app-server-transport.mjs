@@ -63,7 +63,7 @@ export function appServerRpc({ input, output, diagnostics = null, timeoutMs = 30
     && Number.isSafeInteger(maxLineBytes) && maxLineBytes > 0, 'invalid RPC bounds');
   const pending = new Map();
   const methods = new Set(['initialize', 'skills/extraRoots/set', 'skills/list', 'thread/start',
-    'turn/start', 'thread/read', 'thread/turns/list', 'thread/items/list']);
+    'thread/resume', 'turn/start', 'thread/read', 'thread/turns/list', 'thread/items/list']);
   let nextId = 1, buffer = '', closed = null;
   const decoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
   function stop(error) {
@@ -211,19 +211,27 @@ export async function selectAppServerBundle(rpc, { bundle, cwd, skillName }) {
 // Starting a turn is deliberately separate from observation/restore. The caller
 // owns admission, context regime, budgets and recording any uncertain dispatch.
 export async function startAppServerTurn(rpc, { bundle, cwd, skillName, prompt, model, effort,
-  threadId = null, approvalPolicy, sandbox }) {
+  threadId = null, admittedAuthorThread = null, approvalPolicy, sandbox, outputSchema }) {
   requireThat(typeof prompt === 'string' && prompt.trim() && id(model) && id(effort)
-    && ['never', 'untrusted', 'on-request'].includes(approvalPolicy)
-    && ['read-only', 'workspace-write', 'danger-full-access'].includes(sandbox), 'explicit turn settings required');
-  requireThat(threadId === null, 'continuity requires separately admitted existing thread configuration');
+    && (approvalPolicy === null || ['never', 'untrusted', 'on-request'].includes(approvalPolicy))
+    && (sandbox === null || ['read-only', 'workspace-write', 'danger-full-access'].includes(sandbox)), 'explicit turn settings required');
+  requireThat(threadId === null || (id(threadId) && admittedAuthorThread?.threadId === threadId
+    && admittedAuthorThread.cwd === cwd && admittedAuthorThread.bundleSha256 === sha(Buffer.from(JSON.stringify(bundle)))
+    && admittedAuthorThread.role === 'author'), 'continuity requires separately admitted existing author thread');
   const selection = await selectAppServerBundle(rpc, { bundle, cwd, skillName });
-  const started = await rpc.request('thread/start', { cwd, model, approvalPolicy, sandbox,
-    config: selection.config });
+  if (threadId !== null) {
+    const previous = await rpc.request('thread/read', { threadId, includeTurns: false });
+    requireThat(previous?.thread?.id === threadId && previous.thread.cwd === cwd
+      && previous.thread.parentThreadId == null && previous.thread.cliVersion === APP_SERVER_VERSION,
+    'continuity thread is foreign or a child/reviewer');
+  }
+  const started = await rpc.request(threadId === null ? 'thread/start' : 'thread/resume', {
+    ...(threadId === null ? {} : { threadId }), cwd, model, approvalPolicy, sandbox, config: selection.config });
   requireThat(id(started?.thread?.id) && started.thread.cliVersion === APP_SERVER_VERSION
-    && started.thread.cwd === cwd, 'thread creation identity/version differs');
+    && started.thread.cwd === cwd && (threadId === null || started.thread.id === threadId), 'thread creation identity/version differs');
   await assertAppServerBundle(bundle);
   const response = await rpc.request('turn/start', { threadId: started.thread.id, effort,
-    input: [selection.input, { type: 'text', text: prompt }] });
+    input: [selection.input, { type: 'text', text: prompt }], ...(outputSchema === undefined ? {} : { outputSchema }) });
   requireThat(id(response?.turn?.id), 'turn dispatch response incomplete; effect uncertain');
   return { threadId: started.thread.id, turnId: response.turn.id };
 }
@@ -240,6 +248,35 @@ async function pages(rpc, method, params) {
     seen.add(result.nextCursor); cursor = result.nextCursor;
   }
   throw fail('public history page limit reached; result incomplete');
+}
+
+function hasShellTemporaryRedirection(command, kind) {
+  // Inspect recorded shell syntax, not quoted/escaped output data. Decode only
+  // a shell's explicit -c argument; arbitrary program arguments are not shell.
+  const words = String(command ?? '').match(/#[^\n]*|(?:\\[\s\S]|'[^']*'|"(?:\\[\s\S]|[^"\\])*"|[^\s'"\\<>;&|()])+|<<<|<<-?|[<>;&|()]/gu) ?? [];
+  const operator = kind === 'string' ? /^<<<$/u : /^<<-?$/u;
+  if (words.some((word) => operator.test(word))) return true;
+  if (!/^(?:\/[^\s]+\/)?(?:zsh|bash|sh)$/u.test(words[0] ?? '')) return false;
+  const option = words.findIndex((word, index) => index > 0 && /^-[a-z]*c[a-z]*$/u.test(word));
+  if (option < 0 || words[option + 1] === undefined) return false;
+  const script = words[option + 1].replace(/'([^']*)'|"((?:\\[\s\S]|[^"\\])*)"|\\([\s\S])/gu,
+    (_, single, double, escaped) => single ?? double?.replace(/\\([$`"\\\n])/gu, '$1') ?? escaped);
+  return hasShellTemporaryRedirection(script, kind);
+}
+
+export function deniedShellTemporaryFile(item) {
+  if (item?.type !== 'commandExecution') return false;
+  const denials = String(item.aggregatedOutput ?? '').matchAll(
+    /^zsh:[0-9]+: can't create temp file for here (document|string): operation not permitted\s*$/gmu);
+  return [...denials].some((denial) => hasShellTemporaryRedirection(item.command, denial[1]));
+}
+
+export async function readAppServerTurn(rpc, { threadId, turnId }) {
+  requireThat(id(threadId) && id(turnId), 'missing scoped turn identity');
+  const turns = await pages(rpc, 'thread/turns/list', { threadId, itemsView: 'full' });
+  const selected = turns.filter(turn => turn.id === turnId);
+  requireThat(selected.length === 1, 'scoped turn absent/ambiguous in public history');
+  return { turn: selected[0], items: await pages(rpc, 'thread/items/list', { threadId, turnId }) };
 }
 
 async function parentBinding(rpc, { parentThreadId, parentTurnId, agentPath }) {
@@ -274,6 +311,9 @@ export async function readAppServerChild(rpc, { binding, bundle, cwd }) {
     && turns[0].error == null, 'fresh child has no single completed successful turn');
   const turn = turns[0];
   const items = await pages(rpc, 'thread/items/list', { threadId: binding.agentThreadId, turnId: turn.id });
+  if (items.some(deniedShellTemporaryFile)) throw fail('SANDBOX_COMMAND_DENIED: runner implicit temporary file denial');
+  const descendants = items.filter(item => item.type === 'subAgentActivity' && item.kind === 'started');
+  if (descendants.length) throw Object.assign(fail('runner delegated outside the admitted operation'), { descendants });
   requireThat(new Set(items.map(item => item.id)).size === items.length, 'duplicate child history items');
   const messages = items.filter(item => item.type === 'agentMessage');
   const final = messages.at(-1);

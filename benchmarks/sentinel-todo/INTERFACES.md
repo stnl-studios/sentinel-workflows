@@ -9,8 +9,10 @@ U3.15-D qualificou o produto no cliente nativo, até CLOSE e leitores novos.
 Isso não qualificou o manager Node/SDK. O gate estático S1 de U3.16 continua
 `NATIVE_TRANSPORT_UNPROVEN`. Aj autorizou posteriormente o recorte S2/App Server:
 o adaptador e sua captura foram implementados/testados offline (§25.11 do plano).
-A emissão real dos dados, o carregamento efetivo do bundle e a ligação do manager
-normal ainda não estão comprovados. Não iniciar prova real/campanha por este aceite.
+O manager/provider normal já foi composto e testado mecanicamente até CLOSE,
+finalizer/export e retenção, nos regimes declarados. A emissão real dos dados e
+o carregamento efetivo do bundle ainda não estão comprovados. O consumidor
+terminal convertido por REPLAN permanece pendente; a unidade integral não foi aceita. Não iniciar prova real/campanha por este aceite.
 
 ## Quem controla cada fronteira
 
@@ -45,20 +47,18 @@ capacidade ou qualidade de contexto do cliente real nem acrescenta FULLs.
 
 ## Gate público ainda aberto
 
-O adapter existente em `agents/codex/runtime/sdk-transport.mjs` grava os eventos
-JSON recebidos por `runStreamed`, mas configura colaboração desativada e escolhe
-a última mensagem do principal como resposta. O SDK instalado0.163 não filtra
-JSON desconhecido; ausência de um tipo TypeScript não prova ausência universal
-de um evento. Ainda falta demonstrar, na superfície pública usada, a origem de
-**agentId + completed + finalResponse integral do filho**, correlação ao handle
-e gravação automática desses bytes no `toolResultFile` normal.
+A integração SDK anterior foi retirada do caminho ativo. Seus diagnósticos S1
+permanecem históricos: não demonstraram o resultado integral do filho nem a
+seleção inequívoca do bundle com HOME normal. A implementação corrente usa o
+provider S2 abaixo, com byte capture e correlação exercitados somente offline.
+Ainda falta a prova focal real autorizada separadamente; não inferir capacidade
+runtime de fixtures de protocolo.
 
 O consumidor normal é `captureNative` em
 `skills/workflows/stnl-slice-quality-manager/runtime/execution-current-operation.mjs`.
 Ele exige esses dados oficiais e preserva bytes/owner/binding; não será adaptado
-à bancada. O adapter também configura skills já descobertas sob a HOME isolada;
-isso não demonstra seleção de outro root congelado com HOME normal ou resolução
-de homônimos. Não substituir esses dois elos por inferência, prompt ou resumo.
+à bancada. A seleção S2 exige paths e hashes congelados; só a prova real futura demonstrará
+que o cliente usa esses mesmos recursos em execução. Não substituir esses dois elos por inferência, prompt ou resumo.
 
 S1 permanece como diagnóstico da integração SDK anterior; não prova uma limitação
 universal. A investigação pública e o recorte S2 foram aprovados depois dele.
@@ -87,9 +87,10 @@ Efeito de `turn/start` sem resposta permanece incerto para o ledger do caller.
   e a skill exata habilitada; homônimos externos Sentinel são desabilitados só
   no config da thread. A entrada normal é `{type:"skill",name,path}` e o override
   do papel aponta para o TOML congelado. Não há fallback para a cópia pessoal.
-- `startAppServerTurn` oferece somente início explícito fresh. Não dá continuidade
-  a uma thread existente sem admissão própria; o cenário de continuidade da
-  U3.16 permanece pendente de integração. Orçamento/contexto/ownership continuam
+- `startAppServerTurn` oferece início fresh e continuidade somente de thread
+  autoral previamente admitida, com ID/cwd/bundle exatos. Reviews/runners não
+  herdam esse contexto. A bancada declara antecipadamente o trecho reutilizado;
+  não há limiar inventado de contexto baixo. Orçamento/contexto/ownership continuam
   com o manager/controller normal, não com o transporte.
 - `bindAppServerChild` consulta somente os itens do turno pai conhecido e retém
   `agentPath`/`agentThreadId` oficiais, modelo/effort. O caller guarda esse binding
@@ -110,7 +111,53 @@ O caminho mecânico exercitou essa captura até o consumidor normal real, inclui
 falha de persistência e replay. O servidor foi falso; isso não atesta dados reais
 nem o uso do TOML pelo cliente. Paths/hashes são checagens nas fronteiras, sem
 garantia de isolamento contra alguém que mude os arquivos do host entre elas.
-O manager legado ainda usa SDK/managed; não foi redirecionado silenciosamente.
+O manager atual usa `native-provider.mjs`; os callers exclusivos SDK/managed,
+HOME descartável, broker e wrappers de retry/reassessment foram retirados. Os
+mecanismos de conversão histórica do produto e os checks ambientais de temporários
+foram preservados. Não houve mudança de skill/template/TOML/SDK package.
+
+## Composição normal da bancada — checkpoint offline
+
+- Entrada: `node benchmarks/sentinel-todo/runtime/benchmark-manager.mjs run --case A`
+  (campanha permanece posterior). O teste de entrada usa essa mesma análise de
+  argumentos e núcleo, com provider injetado exclusivamente em checkout próprio
+  marcado `OFFLINE_TEST_ONLY` e SDK compartilhado verificado; não abre cliente real.
+- `native-provider.mjs` observa o principal e os filhos oficiais. Permissões são
+  herdadas por `approvalPolicy:null`/`sandbox:null`; a bancada não força Full Access
+  ou never. A política efetiva não retornada fica unavailable. Requisição de
+  aprovação é bloqueio, sem consentimento automático.
+- PLAN retorna `AWAITING_REVIEW` e root público validado; REVIEW_PLAN recebe esse
+  root como input normal. O manager não fabrica owner, receipt ou publicação.
+  A formal recebe pedido integral explícito, conforme o contrato normal.
+- O ledger reserva principal e margem legal de filhos antes do despacho, conta
+  cada UUID observado uma vez e retém margem durante incerteza. Descendants não
+  admitidos são contados e bloqueiam. Usage não fornecida fica null/unavailable.
+- Interrupção com dispatch persistido permite somente observar esse turno por
+  APIs públicas. O mesmo resultado é reaproveitado byte a byte, sem novo turno,
+  recipe, publicação ou nova candidata. Ausência de identidade suficiente bloqueia.
+  Primeira resposta/evidência permanece preservada.
+- Antes de CLOSE, reter imagem pública COMPLETE, activation, manifest, observação
+  e disposition. Após CLOSE, conferir recibo/transação/digest e reader SPEC_CLOSED;
+  revalidar imagem Initial/fontes/carriers pelos validators públicos e recomputar
+  métricas dos bytes retidos. Sumário COMPLETE, recibo absent e workspace alheia
+  não bastam. A imagem convertida ainda para explicitamente como UNPROVEN.
+- Export diagnóstico de case/focal é permitido, identificado pelo escopo; promoção
+  e comparação de FULL continuam exigindo FULL íntegro. Contextos diferentes ou
+  ausentes na identidade não produzem economia comparável. Offline jamais promove
+  resultado runtime.
+- `clean --run ID` exige run própria inativa, prova terminal/ledger/export íntegros
+  e ausência de symlinks/consumo pendente. Retém por rename atômico em
+  `benchmark-temp/.retained/ID`; export já concluído só é reutilizado se igual ao
+  atual. Essa retenção local é explícita, não exigência eterna do produto. Nenhuma
+  purga de históricos é executada no startup. Falha preserva a fonte própria.
+- `run --resume ID` depois de FOCAL_STOP continua o mesmo caso. Ao passar
+  explicitamente de focal para case, preserva journal/raw anteriores e altera
+  somente o escopo do journal externo: finalizer passa a exigir oracle e CLOSE.
+
+Limites deste checkpoint: provider/juízos de testes são fictícios, testes usam APIs
+públicas reais para efeitos mecânicos em fixtures e nenhum julgamento de modelo
+foi certificado. REPLAN/retained-completed no consumidor pós-CLOSE, os gates
+restantes de U3.16 e U3.17/U3.18 continuam separados.
 
 ### Schema e prova futura
 
@@ -125,8 +172,9 @@ Usa `skills/extraRoots/set`; não supõe campos de documentação mais recente, 
 o [handler público](https://raw.githubusercontent.com/openai/codex/rust-v0.163.0/codex-rs/app-server/src/request_processors/catalog_processor.rs)
 mantém extra roots em memória.
 
-Próximo gate offline: ligar driver/coleta/ledger existentes ao adaptador e provar
-o percurso público sem managed até CLOSE/export, preservando os regimes. Depois,
+Próximo gate offline: completar o consumidor de evidências convertidas/REPLAN e
+suas regressões. O percurso Initial sem managed até CLOSE/export já foi exercido,
+incluindo findings e os dois regimes; isso não encerra a unidade. Depois,
 uma U3.17 separadamente autorizada deve demonstrar carregamento do bundle, spawn
 correto, resposta integral real e retomada. Incompatibilidade, identidade ambígua,
 texto incompleto, drift ou necessidade de tocar skills/permissões são parada,
@@ -158,9 +206,11 @@ esse vínculo contra o workspace do caso e a identidade congelada do instrumento
 Um receipt genuíno de outro workspace/bytes não qualifica o atual. Não há signer
 ou autenticação contra alguém que forje todos os arquivos do host; integridade
 do snapshot e da entrada permanece obrigatória. Históricos v1 são diagnóstico,
-não recebem certificação retroativa. A validação manual/API/CLI foi exercida;
-os testes dos schemas verificam sua coerência estrutural, sem engine JSON Schema
-instalado. A cadeia literal finalizer pós-CLOSE permanece pendente de .8.
+não recebem certificação retroativa. A validação manual/API/CLI e o engine
+JSON Schema Ajv2020 foram exercidos sobre o resultado real da fixture offline.
+O finalizer literal pós-CLOSE passou no percurso Initial; convertido/REPLAN
+permanece pendente de .8. Ajv é dependência de desenvolvimento local da bancada,
+sem modificar o package/lock do SDK.
 
 ## N e publicação da campanha
 
@@ -176,7 +226,8 @@ ausente, malformada ou incompatível deixa comparação/deltas unavailable, sem
 inventar economia e sem invalidar qualidade atual independente. Erro inesperado
 num comparador compatível bloqueia. Iniciar uma campanha não apaga nem republica
 históricos, ledgers ou owners; só o lock temporário próprio é retirado ao sair.
-Retenção/settlement e cleanup explícito do manager ainda exigem seus gates .8/.10.
+Retenção/export e cleanup explícito do manager passaram mecanicamente para o
+percurso Initial; os gates .8/.10 de evidências convertidas continuam pendentes.
 
 Congelar produto e instrumento separadamente. Antes de cleanup, reter os fatos
 e primeiras respostas necessários ao resultado/diagnóstico. Não exigir Tasks ou

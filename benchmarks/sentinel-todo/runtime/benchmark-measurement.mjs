@@ -5,6 +5,8 @@ import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { assertSnapshotIntegrity } from './benchmark-snapshot.mjs';
 import { validateProductAcceptance, productInstrumentIdentity, productCandidateIdentity } from './product-acceptance.mjs';
+import { contextPolicy, validateTerminalEvidence, validateNativeLedger } from './native-evidence.mjs';
+import { pathToFileURL } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const UNAVAILABLE = 'unavailable';
@@ -150,6 +152,19 @@ async function measurement(runId) {
       continue;
     }
     if (!state || !journal || state.status === 'ACTIVE' || !state.endedAt) throw new Error(`case ${id} is incomplete`);
+    if (state.protocol === 'native-app-server-v1') validateNativeLedger(await json(path.join(runRoot, '.turn-ledger.json')),
+      state, runId, { settled: state.status === 'PASS' });
+    if (state.protocol === 'native-app-server-v1' && raw?.status === 'PASS') {
+      const { loadProduct } = await import(pathToFileURL(path.join(runRoot, 'snapshot/benchmarks/sentinel-todo/runtime/benchmark-manager.mjs')).href);
+      const terminal = await json(path.join(dir, 'terminal-evidence.json'));
+      await validateTerminalEvidence({ product: await loadProduct(path.join(runRoot, 'snapshot')),
+        evidence: terminal, specPath: state.specPath, workspace: state.workspace });
+      if (JSON.stringify(raw.contextPolicy) !== JSON.stringify(contextPolicy(state))
+        || raw.nativeTerminal?.sourceSha256 !== terminal.sourceSha256
+        || raw.nativeTerminal?.closedSnapshotSha256 !== terminal.closedSnapshotSha256
+        || raw.nativeTerminal?.sourceActivationId !== terminal.disposition.activationId
+        || raw.nativeTerminal?.transactionId !== terminal.receipt.transactionId) throw new Error(`case ${id} raw terminal/context binding differs`);
+    }
     if (!Array.isArray(journal.events)) throw new Error(`case ${id} operation journal is unavailable`);
     const events = journal.events;
     const summaryCase = result;
@@ -202,13 +217,14 @@ async function measurement(runId) {
       finalizerExitCode: state.finalizer?.exitCode ?? UNAVAILABLE,
       finalTestsPassed: raw?.finalTests?.passed ?? raw?.finalTestsPassed ?? UNAVAILABLE,
       productAcceptance: raw?.productAcceptance ?? null,
+      ...(state.protocol === 'native-app-server-v1' ? { contextPolicy: contextPolicy(state), nativeTerminal: raw?.nativeTerminal ?? null } : {}),
       product: raw?.workspace?.productRoot ? { root: raw.workspace.productRoot, sha256: raw.workspace.productSha256 } : null,
       finalTestCommand: typeof raw?.finalTests?.command === 'string' && raw.finalTests.command.length <= 120 && /^[a-zA-Z0-9._ -]+$/u.test(raw.finalTests.command) ? raw.finalTests.command : UNAVAILABLE,
       finalTestExitCode: raw?.finalTests?.exitCode ?? UNAVAILABLE,
       profileMismatches: raw?.modelUse?.profileMismatches ?? UNAVAILABLE,
-      provider: state.isolation?.provider ?? UNAVAILABLE,
-      authMode: state.isolation?.authMode ?? UNAVAILABLE,
-      isolation: state.isolation?.filesystemSandbox ?? UNAVAILABLE,
+      provider: state.protocol === 'native-app-server-v1' ? 'app-server-0.163.0' : state.isolation?.provider ?? UNAVAILABLE,
+      authMode: state.protocol === 'native-app-server-v1' ? 'normal-client' : state.isolation?.authMode ?? UNAVAILABLE,
+      isolation: state.protocol === 'native-app-server-v1' ? 'separate-workspace; normal-client-permissions-inherited' : state.isolation?.filesystemSandbox ?? UNAVAILABLE,
       findingsCycles: raw?.operations?.findingsCycles ?? UNAVAILABLE, recoveryOperations: counts.APPLY_FINDINGS + counts.REPLAN + counts.SPEC_RESUME,
       extraRunnerTurns: numeric(state.runnerTurns) === null ? UNAVAILABLE : Math.max(0, state.runnerTurns - runnerBearingOperations),
       jointPreparationRounds: counts.PLAN + counts.REPLAN,
@@ -236,6 +252,7 @@ async function measurement(runId) {
       ...(snapshot?.executionMode === 'OFFLINE_TEST_ONLY' ? { executionMode: 'OFFLINE_TEST_ONLY' } : {}),
       sourceFunctionalSha256: snapshot?.sourceFunctionalSha256 ?? UNAVAILABLE, snapshotSha256: snapshot?.snapshotSha256 ?? UNAVAILABLE, snapshotCreatedAt: snapshot?.createdAt ?? UNAVAILABLE },
     comparability: { schemaVersion: 1, benchmarkVersion: config?.benchmarkVersion ?? UNAVAILABLE, profile: run.profile ?? UNAVAILABLE,
+      ...(cases.some(row => row.contextPolicy) ? { contextPolicy: contextPolicy(config), transport: 'native-app-server-v1' } : {}),
       requirementsHashes: Object.fromEntries(run.cases.map((id) => [id, caseById[id]?.requirementsHash ?? UNAVAILABLE])),
       fixtureContentHashes: Object.fromEntries(run.cases.map((id) => [id, caseById[id]?.fixtureContentHash ?? UNAVAILABLE])),
       seedHash: config.integrity?.seedContentHash ?? UNAVAILABLE,
@@ -303,7 +320,7 @@ function aggregateTelemetry(cases) {
 
 function comparable(a, b, allowProfileMismatch = false) {
   const x = a.comparability; const y = b.comparability;
-  const fields = ['schemaVersion', 'benchmarkVersion', 'requirementsHashes', 'fixtureContentHashes', 'seedHash', 'productInstrumentSha256', 'resultSchemaVersion', 'resultSchemaHash', 'metricDefinitions', 'qualification', 'resultDefinition'];
+  const fields = ['schemaVersion', 'benchmarkVersion', 'requirementsHashes', 'fixtureContentHashes', 'seedHash', 'productInstrumentSha256', 'resultSchemaVersion', 'resultSchemaHash', 'metricDefinitions', 'qualification', 'resultDefinition', 'contextPolicy', 'transport'];
   const mismatches = fields.filter((k) => JSON.stringify(x[k]) !== JSON.stringify(y[k]));
   if (!allowProfileMismatch && x.profile !== y.profile) mismatches.push('profile');
   const profileExperiment = allowProfileMismatch && x.profile !== y.profile && mismatches.length === 0;
@@ -327,6 +344,11 @@ export function validateMeasurementReport(report, { qualify = false } = {}) {
     || new Set(report.cases.map(row => row.id)).size !== report.cases.length
     || (report.run.mode === 'full' && report.cases.map(row => row.id).sort().join() !== 'A,B,C'))) fail('PASS requires the complete passing case scope');
   for (const row of report.cases) {
+    if (c.transport === 'native-app-server-v1') {
+      if (JSON.stringify(contextPolicy({ contextPolicy: c.contextPolicy })) !== JSON.stringify(contextPolicy(row))) fail(`case ${row.id} context regime differs`);
+      if (row.status === 'PASS' && (row.execution !== 'SPEC_CLOSED' || !row.nativeTerminal
+        || !/^sha256:[a-f0-9]{64}$/u.test(row.nativeTerminal.sourceSha256))) fail(`case ${row.id} native terminal absent`);
+    }
     if (!row.id || !['PASS', 'FAIL', 'ABORTED', 'BLOCKED', 'CANCELLED', 'PAUSED_BUDGET_OR_QUOTA', 'FOCAL_STOP', 'NOT_RUN'].includes(row.status)
       || (row.operations !== UNAVAILABLE && !Number.isInteger(row.operations))) fail('case identity/metrics');
     validateProductAcceptance(row.productAcceptance, row.id,
@@ -372,7 +394,8 @@ export function compareMeasurements(before, after, allowProfileMismatch = false)
       conclusion: 'historical or insufficient product evidence; no savings conclusion', deltas: UNAVAILABLE };
   }
   const complete = (r) => r.run.mode === 'full' && r.run.status === 'PASS' && r.cases.every((c) => c.status === 'PASS' && c.finalizer === 'PASS'
-    && c.finalTestsPassed === true && c.specClosed === true && c.execution === 'COMPLETE');
+    && c.finalTestsPassed === true && c.specClosed === true && (c.execution === 'COMPLETE'
+      || r.comparability.transport === 'native-app-server-v1' && c.execution === 'SPEC_CLOSED' && c.nativeTerminal != null));
   if (!complete(before) || !complete(after)) return { ...compatibility, directlyComparable: false,
     mismatches: [...compatibility.mismatches, 'incomplete full-run conclusion'], conclusion: 'partial-run; no savings conclusion', deltas: UNAVAILABLE };
   const bt = before.aggregate.telemetry; const at = after.aggregate.telemetry;
@@ -393,7 +416,7 @@ export function compareMeasurements(before, after, allowProfileMismatch = false)
 export async function exportMeasurement(runId) {
   if (!/^[a-z0-9][a-z0-9-]{7,}$/u.test(runId)) throw new Error('invalid run id');
   const run = await json(path.join(ROOT, 'benchmark-temp', runId, 'run.json'));
-  if (run.mode !== 'full') throw new Error('measurements can only be exported for full runs');
+  if (!['full', 'case', 'focal'].includes(run.mode)) throw new Error('measurement scope is invalid');
   const report = validateMeasurementReport(await measurement(runId), { qualify: true });
   for (const row of report.cases) for (const key of ['main', 'runner']) {
     if (row.telemetry[key] !== UNAVAILABLE) delete row.telemetry[key].inputByTurn;

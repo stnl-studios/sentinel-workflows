@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { appServerRpc, initializeAppServer, describeAppServerBundle, assertAppServerBundle,
   selectAppServerBundle, startAppServerTurn, bindAppServerChild, readAppServerChild,
   writeNativeToolResult, captureAppServerChild } from '../agents/codex/runtime/app-server-transport.mjs';
+import { createNativeProvider } from '../agents/codex/runtime/native-provider.mjs';
 import { reservedOperation } from './fixtures/current-native-operation.mjs';
 import { bindNative, verifyNative, captureNative, resume } from
   '../skills/workflows/stnl-slice-executor/runtime/execution-current-operation.mjs';
@@ -23,7 +24,7 @@ async function fixture(t) {
   await fs.mkdir(path.join(repo, 'tmp'), { recursive: true });
   const root = await fs.mkdtemp(path.join(repo, 'tmp/app-server-offline-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
-  const skillsRoot = path.join(root, 'skills'), runnerFile = path.join(root,
+  const skillsRoot = path.join(root, 'skills/workflows'), runnerFile = path.join(root,
     'agents/codex/.codex/agents/stnl_validation_runner.toml');
   for (const skill of ['stnl-slice-executor', 'stnl-slice-quality-manager']) {
     await fs.mkdir(path.join(skillsRoot, skill, 'runtime'), { recursive: true });
@@ -35,7 +36,7 @@ async function fixture(t) {
   return { root, bundle: await describeAppServerBundle({ skillsRoot, runnerFile }) };
 }
 
-function server({ bundle, cwd, response = '  resultado íntegro\r\n𝛑\n', mutate = () => {} }) {
+function server({ bundle, cwd, response = '  resultado íntegro\r\n𝛑\n', mutate = () => {}, provider = false }) {
   const calls = [];
   const final = { id: 'answer', type: 'agentMessage', phase: 'final_answer', text: response };
   const activity = { id: 'spawn', type: 'subAgentActivity', kind: 'started', agentPath: identity.agentPath,
@@ -64,11 +65,19 @@ function server({ bundle, cwd, response = '  resultado íntegro\r\n𝛑\n', muta
       if (method === 'skills/list') return structuredClone(state.listing);
       if (method === 'thread/start') return { thread: { id: parent, cwd, cliVersion: '0.163.0' } };
       if (method === 'turn/start') return { turn: { id: 'parent-turn' } };
-      if (method === 'thread/read') { assert.equal(params.threadId, child); return { thread: structuredClone(state.thread) }; }
-      if (method === 'thread/turns/list') { assert.equal(params.threadId, child); return { data: structuredClone(state.turns), nextCursor: null }; }
+      if (method === 'thread/read') {
+        if (provider && params.threadId === parent) return { thread: { id: parent, cwd, cliVersion: '0.163.0', parentThreadId: null } };
+        assert.equal(params.threadId, child); return { thread: structuredClone(state.thread) };
+      }
+      if (method === 'thread/resume') return { thread: { id: parent, cwd, cliVersion: '0.163.0' } };
+      if (method === 'thread/turns/list') {
+        if (provider && params.threadId === parent) return { data: [{ id: 'parent-turn', status: 'completed', error: null }], nextCursor: null };
+        assert.equal(params.threadId, child); return { data: structuredClone(state.turns), nextCursor: null };
+      }
       if (method === 'thread/items/list') {
         if (params.threadId === parent) {
-          assert.equal(params.turnId, 'parent-turn'); return { data: structuredClone(state.parentItems), nextCursor: null };
+          assert.equal(params.turnId, 'parent-turn'); return { data: [...structuredClone(state.parentItems),
+            ...(provider ? [{ id: 'parent-answer', type: 'agentMessage', phase: 'final_answer', text: 'OFFLINE principal result' }] : [])], nextCursor: null };
         }
         assert.equal(params.threadId, child); assert.equal(params.turnId, 'child-turn');
         return { data: structuredClone(state.items), nextCursor: null };
@@ -337,4 +346,58 @@ test('S2 offline public child envelope crosses normal capture-native; persistenc
   assert.ok(observation.equals(await fs.readFile(measured.observationFile)));
   assert.ok(newObserver.calls.every(call => /^thread\/(?:read|items\/list|turns\/list)$/u.test(call.method)));
   assert.ok(restoredBeforeCapture.calls.every(call => /^thread\/(?:read|items\/list|turns\/list)$/u.test(call.method)));
+});
+
+test('normal provider inherits client permissions and scoped observation resumes without another turn', async t => {
+  const f = await fixture(t), s = server({ bundle: f.bundle, cwd: f.root, provider: true });
+  let stopped = false;
+  const request = s.rpc.request;
+  s.rpc.request = async (method, params) => {
+    if (!stopped && method === 'thread/turns/list' && params.threadId === parent) { stopped = true; throw new Error('OFFLINE observation interruption'); }
+    return request(method, params);
+  };
+  const p = await createNativeProvider({ snapshot: f.root, workspace: f.root, evidenceRoot: f.root, rpc: s.rpc, pollMs: 1 });
+  const input = { prompt: 'Normal author input', workflowSkill: 'stnl-slice-executor', model: 'gpt-6.1-sol', effort: 'high',
+    operationId: 'read-only-resume', role: 'author' };
+  const first = await p.runTurn(input);
+  assert.equal(first.completed, false); assert.equal(first.turnStarted, null);
+  assert.equal(first.observation.threadId, parent);
+  const second = await p.runTurn({ ...input, observation: first.observation });
+  assert.equal(second.completed, true); assert.equal(second.captures[0].toolResult.finalResponse, '  resultado íntegro\r\n𝛑\n');
+  const bytes = await fs.readFile(second.captures[0].file);
+  const third = await p.runTurn({ ...input, observation: first.observation });
+  assert.ok(bytes.equals(await fs.readFile(third.captures[0].file)));
+  assert.equal(s.calls.filter(call => call.method === 'turn/start').length, 1);
+  assert.equal(s.calls.filter(call => call.method === 'thread/start').length, 1);
+  const settings = s.calls.find(call => call.method === 'thread/start').params;
+  assert.equal(settings.approvalPolicy, null); assert.equal(settings.sandbox, null);
+});
+
+test('runner descendants are all observed before rejecting the result', async t => {
+  const f = await fixture(t), s = server({ bundle: f.bundle, cwd: f.root, provider: true, mutate(state) {
+    state.items.push(...['grandchild-one','grandchild-two'].map(agentThreadId => ({ id: agentThreadId,
+      type: 'subAgentActivity', kind: 'started', agentThreadId, agentPath: '/root/'+agentThreadId })));
+  } });
+  const p = await createNativeProvider({ snapshot: f.root, workspace: f.root, evidenceRoot: f.root, rpc: s.rpc });
+  const unadmitted = [];
+  const result = await p.runTurn({ prompt: 'Normal input', workflowSkill: 'stnl-slice-executor', model: 'gpt-6.1-sol', effort: 'high',
+    operationId: 'descendants', role: 'author', onUnadmittedChildren: async bindings => unadmitted.push(...bindings) });
+  assert.equal(result.completed, false); assert.equal(unadmitted.length, 2);
+  assert.equal(s.calls.filter(call => call.method === 'turn/start').length, 1);
+});
+
+for (const mode of ['author', 'review', 'foreign-resume']) test(`normal continuity rejects ${mode} mismatch without a new turn`, async t => {
+  const f = await fixture(t), s = server({ bundle: f.bundle, cwd: f.root, provider: true });
+  const p = await createNativeProvider({ snapshot: f.root, workspace: f.root, evidenceRoot: f.root, rpc: s.rpc });
+  const prior = { threadId: parent, cwd: f.root, bundleSha256: sha(Buffer.from(JSON.stringify(p.bundle))), role: 'author' };
+  if (mode === 'author') prior.cwd = '/another-case';
+  if (mode === 'foreign-resume') {
+    const request = s.rpc.request;
+    s.rpc.request = async (method, params) => method === 'thread/resume'
+      ? { thread: { id: child, cwd: f.root, cliVersion: '0.163.0' } } : request(method, params);
+  }
+  const result = await p.runTurn({ prompt: 'Normal continuation', workflowSkill: 'stnl-slice-executor',
+    model: 'gpt-6.1-sol', effort: 'high', operationId: mode, role: mode === 'review' ? 'review' : 'author', priorAuthorThread: prior });
+  assert.equal(result.completed, false);
+  assert.equal(s.calls.some(call => call.method === 'turn/start'), false);
 });

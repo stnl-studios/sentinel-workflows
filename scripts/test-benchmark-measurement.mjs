@@ -300,7 +300,7 @@ try {
     await fs.writeFile(summaryFile, JSON.stringify({ ...JSON.parse(originalSummary), mode, status,
       cases: { A: { ...JSON.parse(originalSummary).cases.A, status } } }));
     await fs.writeFile(stateFile, JSON.stringify({ ...JSON.parse(originalState), status }));
-    await assert.rejects(exportMeasurement(runId), /only be exported for full runs/);
+    await assert.rejects(exportMeasurement(runId), /supported mode and matching identity/);
     const scoped = structuredClone(report); scoped.run.mode = mode; scoped.run.status = status; scoped.cases = [scoped.cases[0]];
     assert.equal(compareMeasurements(scoped, scoped).directlyComparable, false, 'partial scope cannot certify a full-run comparison');
     const destination = path.join(temp, `scoped-${mode}`);
@@ -308,7 +308,7 @@ try {
     await assert.rejects(fs.lstat(destination), { code: 'ENOENT' });
     const deniedOutput = path.join(temp, `denied-${mode}.json`);
     const denied = spawnSync(process.execPath, [cli, 'export', '--run', runId, '--output', deniedOutput], { cwd: root, encoding: 'utf8' });
-    assert.notEqual(denied.status, 0); assert.match(denied.stderr, /only be exported for full runs/);
+    assert.notEqual(denied.status, 0); assert.match(denied.stderr, /supported mode and matching identity/);
     await assert.rejects(fs.lstat(deniedOutput), { code: 'ENOENT' });
   }
   await fs.writeFile(runFile, originalRun);

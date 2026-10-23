@@ -55,7 +55,7 @@ test('U2-R3 distribution permits only the named recipe producer to execute exter
 
 test('retired managed entrypoints refuse finitely before consuming stdin or dispatch',async t=>{
  const {spawn}=await import('node:child_process');
- for(const entry of ['validation-runner.mjs','managed-runner-bridge.mjs','managed-slice-preflight.mjs','managed-slice-finalize.mjs'])await t.test(entry,async()=>{
+ for(const entry of ['validation-runner.mjs'])await t.test(entry,async()=>{
   const child=spawn(process.execPath,[path.resolve('agents/codex/runtime',entry)],{stdio:['pipe','pipe','pipe']});
   let stderr='',stdout='';child.stderr.on('data',chunk=>stderr+=chunk);child.stdout.on('data',chunk=>stdout+=chunk);
   const timer=setTimeout(()=>child.kill('SIGTERM'),2500);
@@ -63,8 +63,9 @@ test('retired managed entrypoints refuse finitely before consuming stdin or disp
   assert.deepEqual(result,{code:1,signal:null});assert.equal(stdout,'');assert.match(stderr,/^CURRENT_MANAGED_UNAVAILABLE:/u);
  });
  const {createManagedSliceContext}=await import('../skills/workflows/stnl-slice-executor/runtime/managed-slice-context.mjs');
- const {startOfficialRunnerBroker,submitOfficialRunnerRequest}=await import('../agents/codex/runtime/runner-broker.mjs');
- for(const action of [createManagedSliceContext,startOfficialRunnerBroker,submitOfficialRunnerRequest])assert.throws(()=>action({}),e=>e.code==='CURRENT_MANAGED_UNAVAILABLE');
+ assert.throws(()=>createManagedSliceContext({}),e=>e.code==='CURRENT_MANAGED_UNAVAILABLE');
+ for(const name of ['runner-broker','managed-runner-bridge','managed-slice-preflight','managed-slice-finalize','isolated-home','sdk-transport','format-repair'])
+  await assert.rejects(fs.lstat(path.resolve('agents/codex/runtime',name+'.mjs')),{code:'ENOENT'});
 });
 
 
@@ -74,9 +75,8 @@ test('benchmark product imports current contracts without the retired serializer
  const current=await import('../skills/workflows/stnl-execution-planner/runtime/execution-state.mjs');
  const semantic=await import('../skills/workflows/stnl-slice-executor/runtime/runner-result-contract.mjs');
  assert.equal(product.inspectExecutionState,current.inspectExecutionState);
- assert.equal(product.parseSemanticExecutionPayload,semantic.parseSemanticExecutionPayload);
- assert.equal(product.parseSemanticValidationPayload,semantic.parseSemanticValidationPayload);
- assert.throws(()=>product.createManagedSliceContext({}),error=>error.code==='CURRENT_MANAGED_UNAVAILABLE');
+ assert.equal(typeof product.createNativeProvider,'function');
+ for(const name of ['createManagedSliceContext','runCodexTurn','startOfficialRunnerBroker','prepareIsolatedHome'])assert.equal(product[name],undefined);
 });
 
 test('native distribution checker refuses imports of either exact excluded development stub',async t=>{

@@ -92,9 +92,7 @@ test("formal coverage findings require a demonstrated authorized test-delivery d
   const quality = await fs.readFile(path.join(repository, "skills/workflows/stnl-slice-quality-manager/SKILL.md"), "utf8");
   assert.match(quality, /demonstrated defect of executor-prepared tests already required by current authority[^\n]*authorized paths in this slice[^\n]*NEEDS_FIX/u);
   assert.match(quality, /Missing evidence alone does not establish a correctable test-delivery defect/u);
-  const sdk = await fs.readFile(path.join(repository, "agents/codex/runtime/sdk-transport.mjs"), "utf8");
-  assert.match(sdk, /For VALIDATE_SLICE only[^\n]*executor-prepared tests already required by current authority and authorized in this slice[\s\S]{0,80}NEEDS_FIX/u);
-  assert.doesNotMatch(sdk, /Missing runnable coverage is BLOCKED;/u);
+
 });
 
 test("coverage review compares authority, effective input, assertion and producer in every instruction source", async () => {
@@ -105,7 +103,7 @@ test("coverage review compares authority, effective input, assertion and produce
     assert.match(contract, /Aponte paths e trechos ou valores observados[^\n]*separe requisito exigido de melhoria opcional/u);
     assert.match(contract, /julgamento semântico; o runtime não prova a validade de um finding/u);
   }
-  for (const file of ['agents/codex/runtime/sdk-transport.mjs', 'skills/workflows/stnl-slice-quality-manager/SKILL.md']) {
+  for (const file of ['skills/workflows/stnl-slice-quality-manager/SKILL.md']) {
     const instruction = await fs.readFile(path.join(repository, file), 'utf8');
     assert.match(instruction, /Before claiming coverage is absent[^\n]*current requirement\/variant[^\n]*input actually persisted[^\n]*expected assertion[^\n]*producer path/u);
     assert.match(instruction, /cite paths and observed values or excerpts/iu);

@@ -5,7 +5,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { admitOperation, assertManagedSliceLauncher, budgetSnapshot, decideOutcome, guardOperationProvenance, unmanagedCollaborationEvents,
+import { admitOperation, assertNativeLauncher, budgetSnapshot, decideOutcome, guardOperationProvenance, unmanagedCollaborationEvents,
   providerConfigurationError,
   initializeTurnBudget, nextHandoff, recoverableRunnerHandoff, settleTurn, startReservedTurn } from '../benchmarks/sentinel-todo/runtime/benchmark-manager.mjs';
 import * as manager from '../benchmarks/sentinel-todo/runtime/benchmark-manager.mjs';
@@ -121,30 +121,30 @@ test('historical Case C collaboration events remain detectable as unmeasured del
     { result: 'BLOCKED', blocker: 'UNMANAGED_COLLABORATION' });
 });
 
-test('managed launcher disagreement stops before SDK and runner dispatch for every runner operation', () => {
+test('native launcher disagreement stops before SDK and runner dispatch for every runner operation', () => {
   for (const operation of ['EXECUTE_SLICE', 'APPLY_FINDINGS', 'VALIDATE_SLICE']) {
     const context = { operation, slice: 'slice-01', specPath: '/run-ABC123/case-c/workspace/specs/case-c' };
     const prompt = `Use runner.\nOPERATION=${operation}\nSPEC_PATH=${context.specPath}\nSLICE=1\n`;
-    assert.doesNotThrow(() => assertManagedSliceLauncher(prompt, context, '1'));
-    assert.throws(() => assertManagedSliceLauncher(prompt.replace('/run-ABC123/', '/run-ABC123-c-QwE456/'), context, '1'),
-    /managed launcher SPEC_PATH disagrees/u);
-    assert.throws(() => assertManagedSliceLauncher(prompt.replace('SLICE=1', 'SLICE=2'), context, '1'),
-    /managed launcher SLICE disagrees/u);
+    assert.doesNotThrow(() => assertNativeLauncher(prompt, context, '1'));
+    assert.throws(() => assertNativeLauncher(prompt.replace('/run-ABC123/', '/run-ABC123-c-QwE456/'), context, '1'),
+    /native launcher SPEC_PATH disagrees/u);
+    assert.throws(() => assertNativeLauncher(prompt.replace('SLICE=1', 'SLICE=2'), context, '1'),
+    /native launcher SLICE disagrees/u);
     const wrongOperation = operation === 'EXECUTE_SLICE' ? 'VALIDATE_SLICE' : 'EXECUTE_SLICE';
-    assert.throws(() => assertManagedSliceLauncher(prompt.replace(`OPERATION=${operation}`, `OPERATION=${wrongOperation}`), context, '1'),
-    /managed launcher OPERATION disagrees/u);
+    assert.throws(() => assertNativeLauncher(prompt.replace(`OPERATION=${operation}`, `OPERATION=${wrongOperation}`), context, '1'),
+    /native launcher OPERATION disagrees/u);
   }
 });
 
 const managerFixtures = new WeakMap();
 async function isolatedManagerFixture(t) {
   if (managerFixtures.has(t)) return managerFixtures.get(t);
-  const root = await fs.mkdtemp(path.join(process.env.TMPDIR ?? '/tmp', 'sentinel-manager-fixture-'));
+  const root = await fs.realpath(await fs.mkdtemp(path.join(process.env.TMPDIR ?? '/tmp', 'sentinel-manager-fixture-')));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const runtime = path.join(root, 'benchmarks/sentinel-todo/runtime');
   await fs.mkdir(runtime, { recursive: true });
   for (const name of ['benchmark-manager.mjs', 'benchmark-snapshot.mjs', 'benchmark-ui.mjs',
-    'benchmark.mjs', 'benchmark-environment.mjs', 'product-acceptance.mjs', 'validation-reassessment.mjs', 'capacity-retry.mjs']) {
+    'benchmark.mjs', 'benchmark-environment.mjs', 'product-acceptance.mjs', 'native-evidence.mjs', 'benchmark-measurement.mjs']) {
     await fs.copyFile(path.join(ROOT, 'benchmarks/sentinel-todo/runtime', name), path.join(runtime, name));
   }
   for (const name of ['seed', 'schemas', 'cases']) await fs.cp(path.join(ROOT, 'benchmarks/sentinel-todo', name),
@@ -244,13 +244,12 @@ test('deterministic provider schema rejection is preserved as a terminal cause',
   } }]), { code: 'invalid_json_schema', message: 'invalid_json_schema rejected' });
 });
 
-test('isolated-home verification happens once after preparation or resume, before operations', async () => {
-  const source = await fs.readFile(MANAGER, 'utf8');
-  assert.equal([...source.matchAll(/product\.verifyIsolatedHome\(home\)/gu)].length, 1);
-  assert.match(source, /const auth = await product\.verifyIsolatedHome\(home\);[\s\S]*?for \(let sequence/u);
-  assert.match(source, /providerConfigurationError\(\[\], runnerTurn\.providerError \?\? runnerTurn\.errorEvent/u);
-  assert.match(source, /readinessDiagnostic && !providerConfigError/u);
-  assert.match(source, /if \(!providerConfigError\) outcome\.result = 'BLOCKED', outcome\.blocker = 'JOURNAL_REJECTED'/u);
+test('normal product loader exposes the public provider without managed transport or credential copying', async () => {
+  const product = await manager.loadProduct(ROOT);
+  assert.equal(typeof product.createNativeProvider, 'function');
+  for (const name of ['prepareIsolatedHome', 'verifyIsolatedHome', 'runCodexTurn', 'createManagedSliceContext', 'startOfficialRunnerBroker']) {
+    assert.equal(product[name], undefined, name);
+  }
 });
 
 test('documentary maturation advances through global findings, RESUME, and status-only promotion', () => {
@@ -326,21 +325,9 @@ test('clean accepts recorded zero-turn failure before private home creation', as
   await assert.rejects(fs.lstat(root), { code: 'ENOENT' });
 });
 
-test('startup persists an uncreated home only for a recorded allocation failure', async (t) => {
-  const { id, root } = await ownedRun(t);
-  const fixture = await isolatedManagerFixture(t);
-  const isolatedManager = await import(pathToFileURL(path.join(fixture.runtime, 'benchmark-manager.mjs')).href);
-  const configuration = JSON.parse(await fs.readFile(path.join(ROOT, 'benchmarks/sentinel-todo/benchmark.json'), 'utf8'));
-  const head = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: ROOT, encoding: 'utf8' }).stdout.trim();
-  const error = Object.assign(new Error('fixture allocation failure'), { code: 'EPERM', privateHomeNotCreated: true });
-  const product = { ZERO_USAGE: {}, createUsageNormalizer: () => ({ observe: () => ({}) }),
-    prepareIsolatedHome: async () => { throw error; } };
-  const result = await isolatedManager.runCase({ runRoot: root, caseId: 'A', configuration, snapshotMetadata: { baseSha: head },
-    maxOperations: null, mode: 'case', product, signal: new AbortController().signal });
-  assert.equal(result.status, 'BLOCKED');
-  const state = JSON.parse(await fs.readFile(path.join(root, 'case-a/case-state.json'), 'utf8'));
-  const journal = JSON.parse(await fs.readFile(path.join(root, 'case-a/journal.json'), 'utf8'));
-  assert.equal(state.terminal.blocker, 'DRIVER_FAILURE');
+test('historical zero-dispatch cleanup marker is narrowly recognized without reading any HOME', () => {
+  const state = { privateHomeNotCreated: true, status: 'BLOCKED', finalizer: null, mainTurns: 0, runnerTurns: 0, operations: [] };
+  const journal = { events: [] };
   assert.equal(manager.privateHomeNeverCreated(state, journal), true);
   for (const change of [{ privateHomeNotCreated: undefined }, { mainTurns: 1 }, { runnerTurns: 1 },
     { operations: [{}] }, { finalizer: {} }, { isolationHomePath: '/fixture/home' }, { suspendedHome: {} },
