@@ -7,12 +7,12 @@
 
 | Onde estamos | Situação comprovada |
 | --- | --- |
-| Unidade corrente | **U3 — Qualificação e QA**, U3.16 concluída offline. Caso A nativo terminou FAIL (§26.10); comparação focal das instruções concluída em30/30 (§26.12), sem melhoria causal demonstrada. Global/históricos preservados. S2/U3.17 integral/U3/P1-B abertos. |
+| Unidade corrente | **U3 — Qualificação e QA**, U3.16 concluída offline. Cinco falhas locais do preflight corrigidas (§26.13); Claude permanece fora. Case A histórico FAIL e S2/U3.17 integral/U3/P1-B continuam abertos. |
 | Entrega corrente | **U3.16 — adaptação aceita no alcance offline.** Oracle/observer/N, Initial, convertido/REPLAN, captura/retomada e CLOSE/readers/export passaram mecanicamente. Sem qualificação runtime, FULL real ou aceite U3/P1-B. U3.15-D conserva seu PASS nativo delimitado; C conserva TESTS_FAIL. |
 | Última execução nativa aceita | **Janela nativa21:40:43–22:22 UTC concluída**, dez invocações novas; preparação, EXECUTE, formal integral, CLOSE e revisão passaram. Fonte/bundle finais estáveis, sem consumir a reserva. |
 | Base aceita | U1/U2 com PASS histórico delimitado; U3.5/U3.6 com aceite EC-1 nativo/manual. Nenhuma recertificação global automática. |
-| Foco atual | **Comparação semântica delimitada concluída (§26.12).** Os três controles tiveram comportamento esperado antes e depois. Esclarecimentos mínimos registrados; não são prova de correção determinística nem de aceite do caso A. Nenhuma chamada pendente. |
-| Autorização atual | **Cinco admissões adicionais aprovadas para concluir a comparação**, teto agregado30 desde25, totalmente consumido, sem filhos novos. Escopo encerrado após registros/arquivamento; nenhum próximo fluxo, S2/U3.18/FULL/push/PR/merge/RECONCILE/instalação autorizado. |
+| Foco atual | **Pacote local de cinco correções concluído (§26.13).** Dois positivos nonGit reais, dois gates de contexto e contrato nativo Codex passaram; regressão 298/299, com uma falha Claude conhecida. Próxima prova funcional ainda exige autorização; não transferir aceite para as instruções condensadas. |
+| Autorização atual | **Correção/QA local e uma área externa exclusiva para dois testes nonGit**, encerradas; área movida recuperavelmente à Lixeira e origem ausente. Zero admissões novas, total30/30; teto44/prova funcional não aprovados. Sem Claude, instalação/global, push/PR/merge/RECONCILE ou U3.18. |
 
 **Caminho:** produto/QA → Codex nativo → adaptação offline da bancada → prova focal autorizada → **U3.18, executar benchmark completo** → U4, equalização Claude → U5, entrega → U6, teste Claude por Aj.
 
@@ -2841,3 +2841,37 @@ A bancada deriva o conjunto de nomes dos SKILL.md do próprio descriptor congela
 **Preservação/limpeza:**127 registros globais byte/modo/hash iguais; result.json histórico FAIL inalterado; originais de avaliação, primeira resposta inválida e demais históricos mantidos. Cinco chats novos concluídos e arquivados recuperavelmente; nenhuma admissão pendente. Não se repetiu a limpeza negada de process-tmp/xcrun_db, que permanece local. Não surgiram outros temporários descartáveis exigindo remoção; snapshots pequenos e respostas necessários à comparação permanecem no pacote opcional local tmp/u3-planejamento/U3.17-root-cause-eval-2026-10-23.dtk3lqf7/completion. Evidências brutas não versionadas.
 
 **Saída do escopo:** comparação autorizada encerrada e orçamento esgotado. Sem novos ajustes, infraestrutura, instalação, repetição Case A, push/PR/merge/RECONCILE ou avanço U3.18. S2/U3.17 integral/U3/P1-B continuam abertos; qualquer próxima execução exige decisão própria. Checkpoint local final somente documental.
+
+
+<a id="u317-cinco-gates-locais"></a>
+### 26.13 Cinco falhas locais corrigidas — Claude excluído e prova funcional pendente
+
+**Autorização/baseline:** Aj aprovou corrigir os cinco pontos locais e uma exceção pontual de diretório externo somente para os dois positivos nonGit. Não aprovou teto44, novos modelos/evals, prova funcional, App Server, benchmark/U3.18, instalação/global ou publicação. Início 23/10,22:45 UTC; HEAD5eefdd9b59a8d8a176f43c61a4621bfb4973e449 e árvore limpa antes do corte. Claude permanece exclusivamente pendência futura, sem correção ou equalização aqui.
+
+**Causas e delta delimitado:**
+
+- [x] Dois positivos nonGit: a fixture em tmp/ do repo encontrava o .git ancestral real. Não era defeito da guarda. O launcher de teste agora aceita STNL_NONGIT_TEST_ROOT explicitamente fornecido e verifica ausência física de qualquer .git ancestral antes de criar a fixture. Sem fallback externo silencioso, mudança de PATH/Git discovery ou mock. O caller é dono da área explícita e de sua limpeza; uso padrão preserva limpeza automática. Novo negativo comprova recusa do ancestral Git.
+- [x] Dois gates de contexto: removida duplicação em SKILL.md, modes.md, readiness-gates.md e close-policy.md. Mesmos arquivos medidos, tetos, baseline e reduções do manifest original; nenhuma obrigação movida para manutenção ou arquivo não contabilizado. INIT/RESUME, autoridade canônica, READINESS imutável, snapshots/JSON, não invenção e preservação/recovery/CLOSE mantidos na revisão manual.
+- [x] Contrato nativo Codex: a propriedade managed indisponível pertence ao guia obrigatório de invocação; a assertion exigia duplicá-la no SKILL. A verificação passa a consultar a autoridade correta e mantém as demais exigências. Novo controle executa 14 mutações negativas nos dois consumidores: herança de contexto, resumo em vez de contrato completo, perda de path/hash, escrita, managed disponível, falsa prioridade de agente registrado e guia tornado opcional. Nenhum contrato/runner/runtime de produto foi alterado por essa correção.
+- [ ] Falha Claude conhecida: fora do pacote. O trecho desse teste e o restante do arquivo depois dele foram conferidos byte a byte iguais; nenhuma promessa de seis verdes ou paridade.
+
+**Medição final, sem alterar contratos de orçamento:**
+
+| Modo | Palavras antes → depois | Bytes antes → depois | Teto palavras/bytes |
+| --- | --- | --- | --- |
+| INIT_DRAFT | 3141 → 2952 | 24850 → 23358 | 3300/24800 |
+| INIT_READY | 4376 → 3980 | 34174 → 31446 | 4275/32225 |
+| RESUME_FOCUSED | 2096 → 1907 | 16880 → 15388 | 2180/16610 |
+| READINESS_LOCAL | 2034 → 1638 | 16758 → 14030 | 1870/14750 |
+| READINESS_GLOBAL | 2034 → 1638 | 16758 → 14030 | 1870/14750 |
+| CLOSE | 2823 → 2178 | 22699 → 18610 | 2375/18650 |
+
+**Verificações realmente executadas:** focais7/7PASS/0FAIL/0SKIP, incluindo os cinco casos originalmente falhos e dois controles negativos novos. Bateria afetada299testes:298PASS/1FAIL/0SKIP; única falha é a assertion Claude preexistente e excluída. A bateria anterior tinha297testes/291PASS/6FAIL: cinco falhas resolvidas e dois testes novos, sem apagar testes ou enfraquecer limits. Checks mecânicos nativos de identidade, binding e drift13/13PASS, sem servidor/turno real. Após explicitar duas expressões de clareza no texto CLOSE, budget/self-containment finais3/3PASS; os testes nonGit/identidade reutilizados dependem do runtime e dos inputs operacionais inalterados, não dessa prosa. Não somar baterias sobrepostas como cobertura única.
+
+O quick_validate.py genérico não pôde iniciar: Python sem PyYAML. Nenhuma instalação, monkeypatch ou alegação de PASS desse utilitário. Frontmatter original do SKILL foi preservado exatamente; validações existentes de contratos/distribuição passaram no alcance acima.
+
+**Revisão e limites:** revisão manual das obrigações antigas/novas, diff, schema/inputs, comandos, autorizações, metadados canônicos, attestation, renderização exata, topology/limites Darwin, durabilidade final incerta e leitores closed. Sem revisor/modelo adicional e sem prova determinística de equivalência semântica. As instruções condensadas têm novos hashes; os evals anteriores de §26.12 e o aceite nativo histórico não se transferem automaticamente. A prova funcional futura permanece necessária.
+
+**Exceção externa e limpeza:** única área /private/tmp/stnl-u317-nongit-only-1a_gawft,0700, sem Git ancestral. Continha apenas marcador próprio e duas execuções de cada um dos dois positivos (focal e regressão),441arquivos/cerca6,3MB. Após conferir propriedade/conteúdo, trash oficial via permissão pontual moveu a área à Lixeira recuperável, exit0; origem ativa confirmada ausente. Nenhuma regra/configuração global alterada; a exceção encerrou neste teste. Evidências e demais temporários permaneceram no tmp/ do repo. Cache xcrun_db mantido; não se repetiu nem contornou a limpeza anteriormente negada. Históricos/pending não limpos.
+
+**Integridade/saída:**127registros globais Codex sem drift; FAIL histórico preservado. Runtime, guardas de raízes/CLOSE, SDK/lock, runner TOML, templates/seeds/cases e Claude sem alteração. Seis arquivos de fonte/testes no incremento, mais este plano/BACKLOG. Evidência opcional local tmp/u3-planejamento/U3.17-five-local-gates-2026-10-23.l8i0vthb; nenhum dado bruto versionado. Zero admissões novas, total30/30; nenhum chat novo para arquivar. Checkpoint local autorizado, sem push/rede Git/PR/merge/RECONCILE. Este corte não executa nem aprova a retomada funcional proposta, S2 ou U3.18; U3.17 integral/U3/P1-B seguem abertos.

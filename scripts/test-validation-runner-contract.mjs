@@ -225,6 +225,17 @@ test("current native evidence requires their producer origin and reviewed observ
   assert.match(runner, /NATIVE_ORIGIN_FILE[\s\S]*verify-native[\s\S]*Não execute os checks novamente/u);
 });
 
+function assertIndependentNativeInvocation(skill, invocation) {
+  assert.match(skill, /mandatory \[runner invocation guide\]\(references\/runner-invocation.md\)[^\n]*installed skill/u);
+  assert.match(invocation, /fork_turns:"none"[^\n]*complete selected candidate-distribution runner contract/u);
+  assert.match(invocation, /explicit canonical path and SHA-256/u);
+  assert.match(invocation, /not a selected registered runner type/u);
+  assert.match(invocation, /task-level instruction loading; it does not confer developer-level priority or the enforcement guarantee of a registered agent/u);
+  assert.match(invocation, /Instruct it to follow the contract's no-write rule/u);
+  assert.match(invocation, /without that contract is not the runner/u);
+  assert.match(invocation, /Managed execution[^\n]*unavailable/u);
+}
+
 test("native generic spawn loads the complete selected runner contract in an independent context", async () => {
   const executor = await fs.readFile(path.join(repository, "skills/workflows/stnl-slice-executor/SKILL.md"), "utf8");
   const quality = await fs.readFile(path.join(repository, "skills/workflows/stnl-slice-quality-manager/SKILL.md"), "utf8");
@@ -232,19 +243,34 @@ test("native generic spawn loads the complete selected runner contract in an ind
   const contract = await fs.readFile(path.join(canonical, "codex/.codex/agents/stnl_validation_runner.toml"), "utf8");
   assert.match(contract, /name = "stnl_validation_runner"[\s\S]*developer_instructions = """\nCONTRATO_CANONICO=stnl-validation-runner\/v12/u);
   for (const [owner, skill] of [['stnl-slice-executor', executor], ['stnl-slice-quality-manager', quality]]) {
-    assert.match(skill, /mandatory \[runner invocation guide\]\(references\/runner-invocation.md\)[^\n]*installed skill/u);
     const invocation = await fs.readFile(path.join(repository, 'skills/workflows', owner, 'references/runner-invocation.md'), 'utf8');
-    assert.match(invocation, /fork_turns:"none"[^\n]*complete selected candidate-distribution runner contract/u);
-    assert.match(invocation, /explicit canonical path and SHA-256/u);
-    assert.match(invocation, /not a selected registered runner type/u);
-    assert.match(invocation, /task-level instruction loading; it does not confer developer-level priority or the enforcement guarantee of a registered agent/u);
-    assert.match(invocation, /Instruct it to follow the contract's no-write rule/u);
-    assert.match(invocation, /without that contract is not the runner/u);
-    assert.match(skill, /Managed execution[^\n]*unavailable/u);
+    assertIndependentNativeInvocation(skill, invocation);
   }
   assert.match(guide, /agente independente com contrato carregado, não uma seleção do tipo registrado/u);
   assert.match(guide, /instruções de tarefa, sem prioridade de developer nem a mesma garantia de aplicação do agente registrado/u);
   assert.match(guide, /Instrua o agente genérico a não editar código nem artefatos de execução/u);
+});
+
+test('native invocation rejects missing independence, selected identity and no-write boundaries', async () => {
+  for (const owner of ['stnl-slice-executor', 'stnl-slice-quality-manager']) {
+    const root = path.join(repository, 'skills/workflows', owner);
+    const skill = await fs.readFile(path.join(root, 'SKILL.md'), 'utf8');
+    const invocation = await fs.readFile(path.join(root, 'references/runner-invocation.md'), 'utf8');
+    assert.doesNotThrow(() => assertIndependentNativeInvocation(skill, invocation));
+    const changes = [
+      ['fork_turns:"none"', 'fork_turns:"all"'],
+      ['complete selected candidate-distribution runner contract', 'a summary of the runner'],
+      ['explicit canonical path and SHA-256', 'installed name alone'],
+      ["Instruct it to follow the contract's no-write rule", 'Let it edit artifacts'],
+      ['Managed execution is unavailable', 'Managed execution is available'],
+      ['it does not confer developer-level priority or the enforcement guarantee of a registered agent', 'it confers registered-agent guarantees'],
+    ];
+    for (const [before, after] of changes) {
+      assert(invocation.includes(before), `${owner}: mutation must change its intended boundary`);
+      assert.throws(() => assertIndependentNativeInvocation(skill, invocation.replace(before, after)), assert.AssertionError);
+    }
+    assert.throws(() => assertIndependentNativeInvocation(skill.replace('mandatory [runner invocation guide]', 'optional [runner invocation guide]'), invocation), assert.AssertionError);
+  }
 });
 
 test("Initial EC-1 native test selects one complete candidate contract before dispatch", async () => {

@@ -21,6 +21,36 @@ const ENTRYPOINTS = Object.freeze({
   initCandidatePreparer: "prepare-init-candidate.mjs",
 });
 
+async function assertNonGitParent(directory) {
+  let current = await realpath(directory);
+  for (;;) {
+    try {
+      await lstat(join(current, '.git'));
+      throw new Error(`nonGit fixture parent has a Git ancestor: ${current}`);
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+    }
+    const parent = dirname(current);
+    if (parent === current) return;
+    current = parent;
+  }
+}
+
+async function nonGitFixture(t, prefix) {
+  // An explicitly supplied parent belongs to the caller, including cleanup.
+  // Never silently move tests outside the caller's temporary-directory policy.
+  const supplied = process.env.STNL_NONGIT_TEST_ROOT;
+  const parent = await realpath(supplied ?? tmpdir());
+  await assertNonGitParent(parent);
+  const root = await mkdtemp(join(parent, prefix));
+  if (!supplied) t.after(() => rm(root, {recursive: true, force: true}));
+  return root;
+}
+
+test('nonGit fixture preflight rejects a physical Git ancestor', async () => {
+  await assert.rejects(assertNonGitParent(REPOSITORY_ROOT), /has a Git ancestor/u);
+});
+
 async function assertSelfContained(skillRoot) {
   assert.deepEqual(
     await checkDistributableSkill(skillRoot, LIFECYCLE_DISTRIBUTION_POLICY),
@@ -84,8 +114,7 @@ test("distributed lifecycle skill is statically self-contained", async () => {
 });
 
 test("copied publisher receives nonGit roots through the portable test launcher", async (t) => {
-  const root = await mkdtemp(join(tmpdir(), "stnl publisher launcher "));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  const root = await nonGitFixture(t, "stnl publisher launcher ");
   const copiedSkill = join(root, "copied skill");
   const consumer = join(root, "nonGit consumer");
   const emptyPath = join(root, "empty executable path");
@@ -500,11 +529,7 @@ test("self-containment checker rejects operational distribution mutations", asyn
 });
 
 test("copying only the skill supports INIT, RESUME, READINESS, CLOSE, and recovery", async (t) => {
-  const temporaryRoot = await mkdtemp(join(tmpdir(), "stnl isolated distribution "));
-  t.after(async () => {
-    const { rm } = await import("node:fs/promises");
-    await rm(temporaryRoot, { recursive: true, force: true });
-  });
+  const temporaryRoot = await nonGitFixture(t, "stnl isolated distribution ");
 
   const installedSkill = join(temporaryRoot, "installed skills", "lifecycle skill with spaces");
   const consumer = join(temporaryRoot, "consumer project with spaces");
