@@ -1,57 +1,56 @@
 # Sentinel Todo benchmark
 
-## Running the benchmark
+## Adaptation status
 
-For a fresh diagnostic full run at the repository root, run:
+U3.16 is partially implemented and tested offline. **Do not run the real
+manager/campaign yet:** S1 remains `NATIVE_TRANSPORT_UNPROVEN`. Neither automatic
+capture of the official child's full response nor unambiguous frozen-bundle
+selection in the normal client has been demonstrated. U3.15-D qualified the
+native product, not this Node manager. See [interfaces](INTERFACES.md) for the
+boundaries and [the active plan](../../maintenance/P1-B-PLANO.md#u316-integral).
+The manager internals below still include suspended integration and are not a
+claim that the current candidate is qualified. No real call was used in this
+adaptation's offline tests.
+
+## Campaign entrypoints after qualification
 
 ```sh
 npm run benchmark
-```
-
-No install is needed. The functional mode of the existing campaign driver checks
-the benchmark and activity, preserves compact reports from eligible previous
-runs, and cleans only recognized, owned, inactive scratch through the manager's
-cleanup, including private homes. It then starts exactly one new full manager
-run: A first, followed by B/C concurrently only after A passes. Unknown or
-ambiguous data is preserved and reported; a previous run whose report cannot be
-preserved keeps its raw files.
-
-The command publishes terminal results, including BLOCKED, cancellation and
-budget pauses, to [`measurements/latest.json`](measurements/latest.json) and
-[`measurements/latest.md`](measurements/latest.md), with immutable per-run
-history at `measurements/<run-id>.json`. Latest shows the last published round,
-including a blocked round. The Markdown is a deterministic view of that JSON.
-The current run's raw evidence and snapshot remain in ignored `benchmark-temp/`
-for diagnosis until a later preparation can safely preserve and clean them.
-
-A dirty checkout, unpublished HEAD, missing baseline or unavailable comparison
-does not prevent functional use. Reports retain the real HEAD, dirty state and
-frozen source identity. A failure before a terminal run exists does not invent a
-measurement or replace latest. Missing evidence or a publication failure keeps
-scratch and reports the limitation alongside the execution result.
-
-For the formal measurement campaign, explicitly run:
-
-```sh
 npm run benchmark:campaign
 ```
 
-That command retains the formal clean-checkout and active-process checks,
-safe-scratch cleanup, baseline comparison, and report promotion to
-`measurements/<campaign-id>/` for review and commit. The campaign summary
-retains every value and leaves G2/G3 decisions pending.
-That pending status describes the protocol's historical pre-acceptance
-checkpoint. The final P0 acceptance subsequently recorded G2 and G3 as
-PROVEN in [`maintenance/p0-summary.md`](../../maintenance/p0-summary.md).
-This benchmark README documents measurement procedure; it is not the authority
-for P0 acceptance status.
+Both entrypoints use `campaign.fullRuns` (default **3**) and accept an explicit
+positive integer override, for example `npm run benchmark -- --runs 1` or
+`npm run benchmark:campaign -- --runs 2`. Invalid, duplicated and unknown
+arguments are rejected before preparation or dispatch. Each FULL retains the
+manager's A-first, then B/C policy. FULLs are sequential; the first failure,
+cancellation, unavailable evidence or publication error stops the sequence.
+The offline tests use controlled hooks, not real FULLs.
 
-A blocked run or Ctrl+C stops the formal sequence and preserves scratch evidence;
-no partial formal campaign is promoted. The functional command independently
-publishes the available terminal result. Active or ambiguous scratch requires
-inspection before cleanup. `npm run benchmark:verify` and `npm run benchmark:status` remain
-available for standalone diagnostics. The Node commands below remain available
-for advanced debugging.
+The functional entrypoint preserves per-run terminal reports at
+`measurements/<run-id>.json` and its own campaign state/reports in ignored
+`benchmark-temp/campaign-functional-<id>/`. It advances `latest.json` and the
+Markdown view only after **N/N** qualifying PASS runs. A failed round preserves
+its own raw evidence and available diagnostic report; it does not replace a
+previous successful latest or start the next FULL. A failure before a run
+exists does not invent a measurement.
+
+The formal entrypoint additionally requires a clean local Git candidate and
+retains all run reports plus a campaign summary for review under
+`measurements/<campaign-id>/`. HEAD need not already be pushed; a cached
+upstream is informational and does not prove remote synchronization. A baseline
+is optional: absent, malformed or incompatible historical data leaves comparison
+and deltas `unavailable`, separately from current N/N quality. Unexpected errors
+in a compatible comparison stop the campaign. G2/G3 decisions remain explicit.
+Historical P0 acceptance is recorded in
+[maintenance/p0-summary.md](../../maintenance/p0-summary.md), not recertified here.
+
+Neither entrypoint deletes/re-publishes another invocation's history when
+starting. Active, foreign, unsafe or ambiguous scratch blocks dispatch. Retained
+raw data, ledgers, interrupted states and owners are not discarded for a clean
+start. Explicit manager cleanup still needs its own legal preconditions and
+retain-before-clean qualification; it is not certified by these campaign tests.
+`benchmark:verify` and `benchmark:status` remain diagnostic entrypoints.
 
 This benchmark is measurement and regression tooling for the stabilized Sentinel
 workflow on a small Todo CLI. It is not requirements, lifecycle, or execution
@@ -139,7 +138,7 @@ cancelled run is retained. `status` and `inspect` are read only and use no model
 important full run's canonical measurement before removing its raw directory.
 Measurement export and publication accept only terminal `full` runs, including
 failed full-suite attempts for diagnosis. `case` and `focal` remain scratch
-evidence; the launcher's existing safe cleanup skips their measurement export.
+evidence without automatic measurement export or startup cleanup.
 The versioned `benchmark.json` sets `turnBudget.maxTurnsPerRun` to 100. Every
 new run starts with zero consumed turns and keeps its reservation ledger inside
 that run directory. B and C share that run budget safely while executing
@@ -247,8 +246,8 @@ measurements belong in Git. Export a canonical report for any run used as a
 baseline, comparison reference, or gate evidence, then review and commit that
 small report. The default command publishes these compact reports automatically;
 the formal campaign retains its explicit promotion. Do not copy raw trees into
-Git. Preparation preserves reports before cleaning eligible scratch and retains
-unrecognized data. A fresh run recreates its runtime state from the versioned
+Git. Campaign startup retains previous scratch and its ledgers. Explicit cleanup
+requires its own retention and safety gates. A fresh run recreates its runtime state from the versioned
 manifest; no old ledger, focal artifact, or handshake is required.
 
 `measurements/` is output, excluded from functional source selection, copying
@@ -300,13 +299,13 @@ Durations, slice counts, final
 tests, provider, auth mode, isolation, profile mismatches, and finalizer status
 are diagnostic dimensions where recorded; they are not G2 or G3 scores.
 
-For the initial functional comparison, use one full run per
-configuration. Preserve the report, and summarize median,
+The historical initial comparison used one full run per configuration.
+Current campaign defaults are N=3; preserve every report and summarize median,
 minimum/maximum, and success rate without hiding outliers. Stop interpreting
 G2/G3 when integrity fails, runs are incomplete, or the comparison contract
 does not match. One sample checks function but does not establish a mature
 statistical distribution. The versioned
-`campaign.fullRuns` setting can be raised explicitly in the future. No
+`campaign.fullRuns` defaults to3 and can be overridden explicitly with `--runs N`. No
 retrospective threshold is set from the reference run. Under the protocol's
 historical pre-acceptance state, G2 and G3 stayed `PARTIAL` pending comparable
 empirical evidence and an explicit gate decision. The later acceptance decision
