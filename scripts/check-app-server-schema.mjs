@@ -31,12 +31,13 @@ export async function checkAppServerSchema(directory) {
   properties(listing.definitions?.SkillMetadata, ['name', 'path', 'enabled'], 'SkillMetadata');
   properties(listing.definitions?.SkillsListEntry, ['cwd', 'errors', 'skills'], 'SkillsListEntry');
   const history = await read('v2/ThreadReadResponse.json');
-  properties(history.definitions?.Thread, ['id', 'parentThreadId', 'forkedFromId', 'cliVersion', 'cwd', 'agentRole'], 'Thread');
+  properties(history.definitions?.Thread, ['id', 'parentThreadId', 'forkedFromId', 'cliVersion', 'cwd', 'agentRole', 'model', 'reasoningEffort'], 'Thread');
   properties(history.definitions?.Turn, ['id', 'status', 'error', 'items', 'itemsView'], 'Turn');
   const variants = history.definitions?.ThreadItem?.oneOf;
   const variant = name => variants?.find(value => value.properties?.type?.enum?.includes(name));
   properties(variant('subAgentActivity'), ['agentThreadId', 'agentPath', 'kind', 'model', 'reasoningEffort'], 'subAgentActivity');
   properties(variant('agentMessage'), ['id', 'text', 'phase'], 'agentMessage');
+  properties(variant('commandExecution'), ['command', 'cwd', 'status', 'exitCode', 'aggregatedOutput'], 'commandExecution');
   expect(history.definitions?.SubAgentActivityKind?.enum?.includes('started'), 'started activity kind');
   properties(await read('v2/ThreadItemsListParams.json'), ['threadId', 'turnId', 'cursor', 'sortDirection'], 'thread/items/list');
   properties(await read('v2/ThreadTurnsListParams.json'), ['threadId', 'itemsView', 'cursor'], 'thread/turns/list');

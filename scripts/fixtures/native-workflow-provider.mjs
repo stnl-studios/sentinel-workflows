@@ -84,16 +84,11 @@ export function offlineNativeWorkflow({ workspace, caseRoot, snapshot, fault = n
       if (operation === 'VALIDATE_SLICE' && !prompt.includes('Solicito validação integral terminal')) {
         throw new Error('fixture requires the same explicit integral request as the normal author');
       }
+      if (!prompt.includes('Select model=gpt-6-luna and reasoning_effort=medium explicitly')
+        || (operation !== 'VALIDATE_SLICE' && !prompt.includes('before delegating read-only verification'))) throw new Error('generic profile/work-order context missing');
       const dispatch = await reserveDispatch(admitted.handle, { responseVariant: 'stnl-current-native-judgment-v1',
         ...(operation === 'VALIDATE_SLICE' ? { terminal: true } : {}) });
-      const agentPath = `/root/check-${randomUUID()}`, childId = randomUUID();
-      const child = { id: childId, cwd: workspace, cliVersion: '0.163.0', parentThreadId: thread.id,
-        forkedFromId: null, agentRole: 'stnl_validation_runner', turns: [] };
-      threads.set(childId, child);
-      turn.items.push({ id: randomUUID(), type: 'subAgentActivity', kind: 'started', agentPath,
-        agentThreadId: childId, model: 'gpt-6-luna', reasoningEffort: 'medium' });
-      await bindNative(admitted.handle, agentPath);
-      if (operation === 'EXECUTE_SLICE') {
+      if (operation === 'EXECUTE_SLICE' && fault !== 'premature-verification') {
         await fs.copyFile(path.join(repo, 'scripts/fixtures/filtered-cli.mjs'), path.join(workspace, 'src/cli.mjs'));
         await fs.writeFile(path.join(workspace, 'src/native-filter.test.mjs'), checkSource);
         if (fault === 'findings-cycle') {
@@ -106,6 +101,13 @@ export function offlineNativeWorkflow({ workspace, caseRoot, snapshot, fault = n
         await fs.copyFile(path.join(repo, 'scripts/fixtures/filtered-cli.mjs'), path.join(workspace, 'src/cli.mjs'));
         await fs.writeFile(path.join(workspace, 'src/native-filter.test.mjs'), checkSource.replace("assert.equal(code,0);", "let pending='';assert.equal(await runCli(['--store',store,'list','--pending'],{stdout:{write:s=>{pending+=s;}},stderr:{write:()=>{}}}),0);assert.deepEqual(pending.trim().split('\\n').map(JSON.parse).map(x=>x.id),[2]);assert.equal(code,0);"));
       }
+      const agentPath = `/root/check-${randomUUID()}`, childId = randomUUID();
+      const child = { id: childId, cwd: workspace, cliVersion: '0.163.0', parentThreadId: thread.id,
+        forkedFromId: null, agentRole: 'default', model: 'gpt-6-luna', reasoningEffort: 'medium', turns: [] };
+      threads.set(childId, child);
+      turn.items.push({ id: randomUUID(), type: 'subAgentActivity', kind: 'started', agentPath,
+        agentThreadId: childId, model: 'gpt-6-luna', reasoningEffort: 'medium' });
+      await bindNative(admitted.handle, agentPath);
       const measured = await verifyNative(dispatch.originFile);
       const needsFix = fault === 'findings-cycle' && operation === 'VALIDATE_SLICE'
         && operations.filter(item => item.operation === 'VALIDATE_SLICE').length === 1;
@@ -123,7 +125,7 @@ export function offlineNativeWorkflow({ workspace, caseRoot, snapshot, fault = n
       const text = JSON.stringify({ format: 'stnl-current-native-judgment-v1', result,
         ...(operation === 'VALIDATE_SLICE' ? { newFindings: findings } : {}) });
       child.turns.push({ id: randomUUID(), status: 'completed', error: null, itemsView: 'full',
-        items: [{ id: randomUUID(), type: 'agentMessage', phase: 'final_answer', text }] });
+        items: [{ id: randomUUID(), type: 'commandExecution', command: `cat -- '${path.join(snapshot, 'agents/codex/.codex/agents/stnl_validation_runner.toml').replaceAll("'", "'\\''")}'`, cwd: workspace, status: 'completed', exitCode: 0, aggregatedOutput: await fs.readFile(path.join(snapshot, 'agents/codex/.codex/agents/stnl_validation_runner.toml'), 'utf8') }, { id: randomUUID(), type: 'agentMessage', phase: 'final_answer', text }] });
       if (fault === 'grandchildren' && operation === 'EXECUTE_SLICE') child.turns[0].items.push(...[1, 2].map(index => ({
         id: randomUUID(), type: 'subAgentActivity', kind: 'started', agentPath: `${agentPath}/extra-${index}`, agentThreadId: randomUUID() })));
       const file = path.join(caseRoot, `${operation}.normal-tool-result.json`);

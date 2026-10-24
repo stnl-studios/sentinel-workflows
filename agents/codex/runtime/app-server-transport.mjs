@@ -316,8 +316,7 @@ export async function selectAppServerBundle(rpc, { bundle, cwd, skillName }) {
   await assertAppServerBundle(bundle);
   return {
     input: { type: 'skill', name: skillName, path: selectedPath },
-    config: { 'skills.config': config,
-      'agents.stnl_validation_runner.config_file': bundle.runner.path },
+    config: { 'skills.config': config },
   };
 }
 
@@ -416,6 +415,38 @@ async function parentBinding(rpc, { parentThreadId, parentTurnId, agentPath }) {
 
 export async function bindAppServerChild(rpc, identity) { return (await parentBinding(rpc, identity)).binding; }
 
+// Observe the contract-loaded generic profile approved by the product. A
+// completed read with exact bytes is evidence of loading, not developer priority
+// or proof of semantic obedience. Accept ordinary bounded cat/hash+cat forms;
+// never execute parsed shell text or accept a claim/echo as a read.
+const shellQuote = value => `'${value.replaceAll("'", "'\\''")}'`;
+const shellDoubleQuote = value => `"${value.replace(/[\\$`"]/gu, '\\$&')}"`;
+function contractReadForms(file) {
+  const operands = [shellQuote(file), shellDoubleQuote(file), ...(/^[a-zA-Z0-9_./-]+$/u.test(file) ? [file] : [])];
+  const plain = new Set(), hashed = new Set();
+  for (const operand of operands) for (const cat of ['cat', '/bin/cat']) for (const flags of ['', '-- ']) {
+    const read = `${cat} ${flags}${operand}`; plain.add(read);
+    for (const hash of ['sha256sum', 'shasum -a 256']) hashed.add(`${hash} ${operand} && ${read}`);
+  }
+  const wrap = forms => new Set([...forms].flatMap(form => [form,
+    ...['/bin/zsh -lc', '/bin/sh -c', '/bin/bash -lc'].flatMap(shell =>
+      [shellQuote(form), shellDoubleQuote(form)].map(script => `${shell} ${script}`))]));
+  return { plain: wrap(plain), hashed: wrap(hashed) };
+}
+async function assertGenericContractLoad(items, bundle, cwd) {
+  const firstAction = items.find(item => !['userMessage', 'agentMessage', 'reasoning'].includes(item.type));
+  requireThat(firstAction?.type === 'commandExecution' && firstAction.status === 'completed'
+    && firstAction.exitCode === 0 && firstAction.cwd === cwd, 'generic runner contract read not observed before scope actions');
+  const bytes = await fs.readFile(bundle.runner.path), text = bytes.toString('utf8');
+  requireThat(Buffer.from(text, 'utf8').equals(bytes) && sha(bytes) === bundle.runner.sha256,
+    'generic runner contract bytes differ');
+  const forms = contractReadForms(bundle.runner.path), command = firstAction.command;
+  const expected = forms.plain.has(command) ? text : forms.hashed.has(command)
+    ? `${bundle.runner.sha256.slice(7)}  ${bundle.runner.path}\n${text}` : null;
+  requireThat(expected !== null && firstAction.aggregatedOutput === expected,
+    'generic runner complete contract output absent, truncated or foreign');
+}
+
 // Only scoped read APIs. A completed wait/mailbox or parent agent message never
 // certifies the child. No resume/start/followup, recipe, private path or synthesis.
 export async function readAppServerChild(rpc, { binding, bundle, cwd }) {
@@ -427,7 +458,8 @@ export async function readAppServerChild(rpc, { binding, bundle, cwd }) {
   const { thread } = await rpc.request('thread/read', { threadId: binding.agentThreadId, includeTurns: false });
   requireThat(thread?.id === binding.agentThreadId && thread.parentThreadId === binding.parentThreadId
     && thread.forkedFromId == null && thread.cliVersion === APP_SERVER_VERSION && thread.cwd === cwd
-    && thread.agentRole === 'stnl_validation_runner',
+    && thread.agentRole === 'default' && thread.model === bundle.runner.model
+    && thread.reasoningEffort === bundle.runner.effort,
   'child metadata foreign, forked or version differs');
   const turns = await pages(rpc, 'thread/turns/list', { threadId: binding.agentThreadId, itemsView: 'full' });
   requireThat(turns.length === 1 && id(turns[0].id) && turns[0].status === 'completed'
@@ -437,6 +469,7 @@ export async function readAppServerChild(rpc, { binding, bundle, cwd }) {
   if (items.some(deniedShellTemporaryFile)) throw fail('SANDBOX_COMMAND_DENIED: runner implicit temporary file denial');
   const descendants = items.filter(item => item.type === 'subAgentActivity' && item.kind === 'started');
   if (descendants.length) throw Object.assign(fail('runner delegated outside the admitted operation'), { descendants });
+  await assertGenericContractLoad(items, bundle, cwd);
   requireThat(new Set(items.map(item => item.id)).size === items.length, 'duplicate child history items');
   const messages = items.filter(item => item.type === 'agentMessage');
   const final = messages.at(-1);

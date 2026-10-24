@@ -67,7 +67,7 @@ for (const phase of ['initialize', 'turn', 'turn-write-failure']) test(`normal e
   await assert.rejects(fs.lstat(state.specPath), { code: 'ENOENT' });
 });
 
-for (const [regime, fault] of [['fresh', null], ['author-continuity', null], ['fresh', 'interrupt-execute'], ['fresh', 'interrupt-close'], ['fresh', 'findings-cycle']]) test(`normal manager ${regime}/${fault}: public preparation through closed/export without managed`, async t => {
+for (const [regime, fault] of [['fresh', null], ['author-continuity', null], ['fresh', 'interrupt-execute'], ['fresh', 'interrupt-close'], ['fresh', 'findings-cycle'], ['fresh', 'premature-verification']]) test(`normal manager ${regime}/${fault}: public preparation through closed/export without managed`, async t => {
   const fixture = await allocateOfflineFixture(repo);
   t.after(async () => { await finishOfflineFixture(fixture); });
   const configurationPath = path.join(fixture.root, 'benchmarks/sentinel-todo/benchmark.json');
@@ -117,6 +117,15 @@ for (const [regime, fault] of [['fresh', null], ['author-continuity', null], ['f
     status: result.status, snapshot: metadata, startedAt: new Date().toISOString(), endedAt: new Date().toISOString() };
   await fs.writeFile(path.join(runRoot, 'run.json'), JSON.stringify(run));
   await fs.writeFile(path.join(runRoot, 'summary.json'), JSON.stringify({ ...run, cases: { A: result } }));
+  if (fault === 'premature-verification') {
+    assert.equal(result.status,'BLOCKED');
+    assert.equal(backend.operations.some(item=>['VALIDATE_SLICE','SPEC_CLOSE'].includes(item.operation)),false);
+    const calls=backend.calls.filter(call=>call.method==='turn/start');assert.equal(calls.length,4,'no successor after missing prepared tests');
+    const state=JSON.parse(await fs.readFile(path.join(runRoot,'case-a/case-state.json')));
+    await assert.rejects(fs.lstat(path.join(state.workspace,'src/native-filter.test.mjs')),{code:'ENOENT'});
+    assert.ok((await fs.readFile(path.join(state.workspace,'src/cli.mjs'),'utf8')).includes('args.length === 0'));
+    return;
+  }
   assert.equal(result.status, 'PASS', JSON.stringify(result));
   const starts = backend.calls.filter(call => call.method === 'turn/start');
   assert.ok(starts.length > 0);

@@ -134,6 +134,21 @@ test('independent synthetic Case C transcript detects unmeasured delegation with
   assert.deepEqual(await unmanagedCollaborationEvents(file,'missing-operation'),[]);
 });
 
+test('normal operator context selects the generic profile and keeps implementation before checks',()=>{
+  const bundle={runner:{path:'/frozen/stnl_validation_runner.toml',sha256:`sha256:${'a'.repeat(64)}`,model:'gpt-6-luna',effort:'medium'}};
+  for(const operation of ['EXECUTE_SLICE','APPLY_FINDINGS','VALIDATE_SLICE']){
+    const context=manager.nativeRunnerContext(operation,bundle);
+    assert.ok(context.includes(bundle.runner.path)&&context.includes(bundle.runner.sha256));
+    assert.ok(context.includes('Select model=gpt-6-luna and reasoning_effort=medium explicitly'));
+    assert.ok(context.includes('not a registered runner type'));
+    assert.equal(context.includes('before delegating read-only verification'),operation!=='VALIDATE_SLICE');
+    assert.equal(context.includes('The child must not implement'),operation!=='VALIDATE_SLICE');
+  }
+  assert.equal(manager.nativeRunnerContext('PLAN',bundle),'');
+  assert.throws(()=>manager.nativeRunnerContext('EXECUTE_SLICE',{runner:{...bundle.runner,effort:'high'}}),/missing explicit generic runner profile/u);
+  assert.throws(()=>manager.nativeRunnerContext('EXECUTE_SLICE',null),/missing explicit generic runner profile/u);
+});
+
 test('native launcher disagreement stops before SDK and runner dispatch for every runner operation', () => {
   for (const operation of ['EXECUTE_SLICE', 'APPLY_FINDINGS', 'VALIDATE_SLICE']) {
     const context = { operation, slice: 'slice-01', specPath: '/run-ABC123/case-c/workspace/specs/case-c' };

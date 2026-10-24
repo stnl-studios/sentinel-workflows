@@ -236,6 +236,19 @@ export function renderLauncher(template, values) {
   return rendered;
 }
 
+// Normal operator context, not a product command or hidden binding. A file
+// contract does not configure a generic child's model/effort by itself.
+export function nativeRunnerContext(operation, bundle) {
+  if (!RUNNER_OPERATIONS.has(operation)) return '';
+  const runner = bundle?.runner;
+  if (!runner || !path.isAbsolute(runner.path) || !/^sha256:[0-9a-f]{64}$/u.test(runner.sha256)
+    || runner.model !== 'gpt-6-luna' || runner.effort !== 'medium') fail('missing explicit generic runner profile');
+  return `\nIndependent checks use a fresh generic native agent (fork_turns=none), not a registered runner type. Select model=${runner.model} and reasoning_effort=${runner.effort} explicitly when spawning; if unavailable, block before spawn.\n`
+    + `Load the complete contract at ${runner.path} (SHA-256 ${runner.sha256}) before scope actions. Use an ordinary full-file cat read with sufficient output to avoid truncation; preserve the complete official command output. Reading the file supplies task instructions, not a registered agent role.\n`
+    + (['EXECUTE_SLICE', 'APPLY_FINDINGS'].includes(operation)
+      ? 'The selected operation includes the approved implementation/corrections and preparation of reusable tests. The controller nextAction names its next command; it does not replace that work. Complete the approved work and test preparation before delegating read-only verification. The child must not implement.\n' : 'The independent child judges the complete canonical criteria; tests alone are not the authority.\n');
+}
+
 export function assertNativeLauncher(prompt, context, numericSlice) {
   const declarations = [...prompt.matchAll(/^([A-Z_]+)=(.*)$/gmu)];
   const expected = { SPEC_PATH: context.specPath, OPERATION: context.operation, SLICE: numericSlice };
@@ -534,7 +547,8 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
         REPLAN_REASON: 'Follow the exact current public requirements and handoff.' })
         + (operation === 'REVIEW_PLAN' ? `\nCANDIDATE_EXECUTION_ROOT=${preparation.candidateExecutionRoot}\n` : '')
         + (operation === 'VALIDATE_SLICE' ? '\nSolicito validação integral terminal do estado atual quando admissível pelo contrato normal; se não for admissível, reporte o bloqueio. Não certifique COMPLETE com julgamento apenas local.\n' : '')
-        + `\nProject working directory: ${workspace}\nRequirements source: ${requirementsPath}\n`;
+        + `\nProject working directory: ${workspace}\nRequirements source: ${requirementsPath}\n`
+        + nativeRunnerContext(operation, provider.bundle);
       const promptFile = path.join(prompts, `${String(sequence).padStart(2, '0')}-${operation.toLowerCase()}.md`);
       if (RUNNER_OPERATIONS.has(operation)) assertNativeLauncher(prompt, { operation, specPath }, specInput(slice));
       if (pending === null) await fs.writeFile(promptFile, prompt, { flag: 'wx' });

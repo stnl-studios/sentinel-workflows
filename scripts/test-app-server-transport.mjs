@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { PassThrough } from 'node:stream';
 import { createHash } from 'node:crypto';
@@ -48,16 +49,18 @@ async function fixture(t) {
 function server({ bundle, cwd, response = '  resultado íntegro\r\n𝛑\n', mutate = () => {}, provider = false }) {
   const calls = [];
   const final = { id: 'answer', type: 'agentMessage', phase: 'final_answer', text: response };
+  const contract = { id: 'contract-read', type: 'commandExecution', command: `cat -- '${bundle.runner.path.replaceAll("'", "'\\''")}'`,
+    cwd, status: 'completed', exitCode: 0, aggregatedOutput: readFileSync(bundle.runner.path, 'utf8') };
   const activity = { id: 'spawn', type: 'subAgentActivity', kind: 'started', agentPath: identity.agentPath,
     agentThreadId: child, model: 'gpt-6-luna', reasoningEffort: 'medium' };
   const state = {
     parentItems: [activity, { id: 'wait', type: 'collabAgentToolCall', tool: 'wait', status: 'completed',
       senderThreadId: parent, receiverThreadIds: [], agentsStates: {} }],
     thread: { id: child, parentThreadId: parent, forkedFromId: null, cliVersion: '0.163.0',
-      cwd, agentRole: 'stnl_validation_runner' },
-    turns: [{ id: 'child-turn', rootTurnId: 'parent-turn', items: [structuredClone(final)],
+      cwd, agentRole: 'default', model: bundle.runner.model, reasoningEffort: bundle.runner.effort },
+    turns: [{ id: 'child-turn', rootTurnId: 'parent-turn', items: [structuredClone(contract), structuredClone(final)],
       itemsView: 'full', status: 'completed', error: null }],
-    items: [final],
+    items: [contract, final],
     listing: { data: [{ cwd, errors: [], skills: [
       ...bundle.files.filter(file => path.basename(file.path) === 'SKILL.md').map(file => ({
         path: file.path, name: path.basename(path.dirname(file.path)), enabled: true })),
@@ -102,7 +105,7 @@ test('S2 frozen paths select the intended skill despite homonyms; all siblings/r
   const selected = await selectAppServerBundle(s.rpc, { bundle: f.bundle, cwd: f.root, skillName: 'stnl-slice-executor' });
   assert.deepEqual(selected.input, { type: 'skill', name: 'stnl-slice-executor',
     path: path.join(f.bundle.skillsRoot, 'stnl-slice-executor/SKILL.md') });
-  assert.equal(selected.config['agents.stnl_validation_runner.config_file'], f.bundle.runner.path);
+  assert.equal(selected.config['agents.stnl_validation_runner.config_file'], undefined);
   assert.deepEqual(selected.config['skills.config'].map(value => value.enabled), [true, true, false]);
   assert.deepEqual(s.calls.find(value => value.method === 'skills/extraRoots/set').params, { extraRoots: [f.bundle.skillsRoot] });
   assert.deepEqual(s.calls.find(value => value.method === 'skills/list').params, { cwds: [f.root], forceReload: true });
@@ -172,7 +175,7 @@ test('S2 explicit fresh turn settings do not copy auth or disable collaboration'
   assert.deepEqual(result, { threadId: parent, turnId: 'parent-turn' });
   const start = s.calls.find(call => call.method === 'thread/start');
   assert.equal(start.params.config['features.multi_agent'], undefined);
-  assert.equal(start.params.config['agents.stnl_validation_runner.config_file'], f.bundle.runner.path);
+  assert.equal(start.params.config['agents.stnl_validation_runner.config_file'], undefined);
   assert.deepEqual(s.calls.at(-1).params.input, [{ type: 'skill', name: 'stnl-slice-executor',
     path: path.join(f.bundle.skillsRoot, 'stnl-slice-executor/SKILL.md') }, { type: 'text', text: 'normal payload' }]);
 });
@@ -199,7 +202,7 @@ test('S2 official child mapping and completed full text survive observer restart
   const f = await fixture(t), s = server({ bundle: f.bundle, cwd: f.root });
   const binding = await bindAppServerChild(s.rpc, identity);
   const envelope = await readAppServerChild(s.rpc, { binding, bundle: f.bundle, cwd: f.root });
-  assert.deepEqual(envelope, { agentId: identity.agentPath, status: 'completed', finalResponse: s.state.items[0].text });
+  assert.deepEqual(envelope, { agentId: identity.agentPath, status: 'completed', finalResponse: s.state.items.at(-1).text });
   const restored = server({ bundle: f.bundle, cwd: f.root });
   // Property order is incidental to the persisted binding.
   const reordered = Object.fromEntries(Object.entries(JSON.parse(JSON.stringify(binding))).reverse());
@@ -224,7 +227,10 @@ for (const [name, change] of Object.entries({
   foreignParent: s => { s.thread.parentThreadId = 'foreign'; },
   forkedHistory: s => { s.thread.forkedFromId = parent; },
   oldCli: s => { s.thread.cliVersion = '0.160.0'; },
-  wrongRole: s => { s.thread.agentRole = 'default'; },
+  wrongRole: s => { s.thread.agentRole = 'stnl_validation_runner'; },
+  wrongMetadataModel: s => { s.thread.model = 'other'; },
+  wrongMetadataEffort: s => { s.thread.reasoningEffort = 'high'; },
+  missingMetadataEffort: s => { s.thread.reasoningEffort = null; },
   wrongModel: s => { s.parentItems[0].model = 'other'; },
   missingModel: s => { s.parentItems[0].model = null; },
   wrongEffort: s => { s.parentItems[0].reasoningEffort = 'low'; },
@@ -233,12 +239,12 @@ for (const [name, change] of Object.entries({
   noTurns: s => { s.turns = []; },
   extraTurn: s => s.turns.push({ ...s.turns[0], id: 'extra' }),
   missingText: s => { s.items = []; },
-  commentary: s => { s.items[0].phase = 'commentary'; },
-  partial: s => { s.items[0].phase = 'partial_answer'; },
-  divergent: s => { s.turns[0].items[0].text += 'changed'; },
+  commentary: s => { s.items.at(-1).phase = 'commentary'; },
+  partial: s => { s.items.at(-1).phase = 'partial_answer'; },
+  divergent: s => { s.turns[0].items.at(-1).text += 'changed'; },
   divergentParentReport: s => { s.parentItems[1].agentsStates[child] = { status: 'completed', message: 'other bytes' }; },
   duplicateItems: s => s.items.push({ ...s.items[0] }),
-  invalidUtf8: s => { s.items[0].text = '\ud800'; s.turns[0].items[0].text = '\ud800'; },
+  invalidUtf8: s => { s.items.at(-1).text = '\ud800'; s.turns[0].items.at(-1).text = '\ud800'; },
 })) test(`S2 no envelope for ${name}; no new turn/retry`, async t => {
   const f = await fixture(t), good = server({ bundle: f.bundle, cwd: f.root });
   const binding = await bindAppServerChild(good.rpc, identity);
@@ -247,17 +253,54 @@ for (const [name, change] of Object.entries({
   assert.ok(bad.calls.every(call => ['thread/read', 'thread/items/list', 'thread/turns/list'].includes(call.method)));
 });
 
+for(const [name,change]of Object.entries({
+  missing:s=>{s.items.shift();},
+  late:s=>{s.items.unshift({id:'scope-read',type:'commandExecution',cwd:s.thread.cwd,status:'completed',exitCode:0,command:'cat src/cli.mjs',aggregatedOutput:'scope'});},
+  claim:s=>{s.items[0]={id:'claim',type:'agentMessage',phase:'commentary',text:'I loaded the whole contract.'};},
+  echo:s=>{s.items[0].command='echo fake contract';},
+  foreignPath:s=>{s.items[0].command="cat '/other/stnl_validation_runner.toml'";},
+  truncated:s=>{s.items[0].aggregatedOutput=s.items[0].aggregatedOutput.slice(0,-1);},
+  changedBytes:s=>{s.items[0].aggregatedOutput+='changed';},
+  nonzero:s=>{s.items[0].exitCode=1;},
+  running:s=>{s.items[0].status='inProgress';},
+  foreignCwd:s=>{s.items[0].cwd='/other';},
+  extraShellEffect:s=>{s.items[0].command+='; touch src/other';},
+}))test(`generic contract loading refuses ${name} without a new turn`,async t=>{
+  const f=await fixture(t),s=server({bundle:f.bundle,cwd:f.root,mutate:change});
+  const binding=await bindAppServerChild(s.rpc,identity);
+  await assert.rejects(()=>readAppServerChild(s.rpc,{binding,bundle:f.bundle,cwd:f.root}),blocked);
+  assert.equal(s.calls.some(c=>c.method==='turn/start'),false);
+});
+
+test('generic contract loading accepts complete ordinary hash plus cat output, with official identity',async t=>{
+  const f=await fixture(t),s=server({bundle:f.bundle,cwd:f.root});
+  const command=`sha256sum ${f.bundle.runner.path} && cat ${f.bundle.runner.path}`;
+  s.state.items[0].command=`/bin/zsh -lc '${command}'`;
+  s.state.items[0].aggregatedOutput=`${f.bundle.runner.sha256.slice(7)}  ${f.bundle.runner.path}\n${s.state.items[0].aggregatedOutput}`;
+  const binding=await bindAppServerChild(s.rpc,identity);
+  assert.equal((await readAppServerChild(s.rpc,{binding,bundle:f.bundle,cwd:f.root})).finalResponse,s.state.items.at(-1).text);
+});
+
+test('generic contract read preserves paths with spaces/quotes and double-quoted shell display',async t=>{
+  const f=await fixture(t),root=f.root+" space's";await fs.rename(f.root,root);t.after(()=>fs.rm(root,{recursive:true,force:true}));
+  const bundle=await describeAppServerBundle({skillsRoot:path.join(root,'skills/workflows'),runnerFile:path.join(root,'agents/codex/.codex/agents/stnl_validation_runner.toml')});
+  const s=server({bundle,cwd:root}),script=s.state.items[0].command;
+  s.state.items[0].command='/bin/zsh -lc "'+script.replace(/[\\$`"]/gu,'\\$&')+'"';
+  const binding=await bindAppServerChild(s.rpc,identity);
+  assert.equal((await readAppServerChild(s.rpc,{binding,bundle,cwd:root})).finalResponse,s.state.items.at(-1).text);
+});
+
 test('S2 another completed child is not substituted for the scoped child', async t => {
   const f = await fixture(t), s = server({ bundle: f.bundle, cwd: f.root, mutate(state) {
     state.parentItems.unshift({ ...state.parentItems[0], id: 'other-spawn',
       agentPath: '/root/foreign', agentThreadId: 'other-child' });
     state.parentItems.at(-1).agentsStates['other-child'] = { status: 'completed', message: 'foreign bytes' };
-    state.parentItems.at(-1).agentsStates[child] = { status: 'completed', message: state.items[0].text };
+    state.parentItems.at(-1).agentsStates[child] = { status: 'completed', message: state.items.at(-1).text };
   } });
   const binding = await bindAppServerChild(s.rpc, identity);
   assert.equal(binding.agentThreadId, child);
   const result = await readAppServerChild(s.rpc, { binding, bundle: f.bundle, cwd: f.root });
-  assert.equal(result.finalResponse, s.state.items[0].text);
+  assert.equal(result.finalResponse, s.state.items.at(-1).text);
   assert.ok(s.calls.filter(call => call.method === 'thread/read').every(call => call.params.threadId === child));
 });
 
@@ -293,7 +336,7 @@ test('S2 refuses duplicate child item IDs across public history pages', async t 
 test('S2 nullable optional history fields retain public 0.163 compatibility', async t => {
   const f = await fixture(t), s = server({ bundle: f.bundle, cwd: f.root,
     mutate(state) { delete state.turns[0].error; delete state.turns[0].itemsView;
-      delete state.thread.forkedFromId; delete state.items[0].phase; delete state.turns[0].items[0].phase; } });
+      delete state.thread.forkedFromId; delete state.items.at(-1).phase; delete state.turns[0].items.at(-1).phase; } });
   const request = s.rpc.request.bind(s.rpc);
   s.rpc.request = async (method, params) => {
     const result = await request(method, params);
@@ -302,7 +345,7 @@ test('S2 nullable optional history fields retain public 0.163 compatibility', as
   };
   const binding = await bindAppServerChild(s.rpc, identity);
   assert.equal((await readAppServerChild(s.rpc, { binding, bundle: f.bundle, cwd: f.root })).finalResponse,
-    s.state.items[0].text);
+    s.state.items.at(-1).text);
 });
 
 function wire(t, options = {}) {
@@ -826,10 +869,11 @@ test('normal provider inherits client permissions and scoped observation resumes
   assert.equal(settings.approvalPolicy, null); assert.equal(settings.sandbox, null);
 });
 
-test('runner descendants are all observed before rejecting the result', async t => {
+for (const position of ['before-contract', 'after-contract']) test(`runner descendants ${position} are all observed before rejecting the result`, async t => {
   const f = await fixture(t), s = server({ bundle: f.bundle, cwd: f.root, provider: true, mutate(state) {
-    state.items.push(...['grandchild-one','grandchild-two'].map(agentThreadId => ({ id: agentThreadId,
-      type: 'subAgentActivity', kind: 'started', agentThreadId, agentPath: '/root/'+agentThreadId })));
+    const descendants=['grandchild-one','grandchild-two'].map(agentThreadId => ({ id: agentThreadId,
+      type: 'subAgentActivity', kind: 'started', agentThreadId, agentPath: '/root/'+agentThreadId }));
+    if(position==='before-contract')state.items.unshift(...descendants);else state.items.push(...descendants);
   } });
   const p = await createNativeProvider({ snapshot: f.root, workspace: f.root, evidenceRoot: f.root, rpc: s.rpc });
   const unadmitted = [];
