@@ -23,6 +23,26 @@ const STDERR_PHRASES = ['operation not permitted', 'permission denied', 'no such
   'invalid frontmatter', 'invalid yaml', 'failed to load config', 'failed to parse config',
   'failed to initialize', 'invalid configuration'];
 
+// Fixed causal labels only: never reconstruct a sequence of server words.
+// These are diagnostic hints, not proof of cause or permission to retry.
+function historyErrorShape(prefix) {
+  const labels = [
+    ['SESSION_METADATA', /failed to read session metadata/u],
+    ['EMPTY_ROLLOUT', /rollout at [^\n]+ is empty/u],
+    ['RESPONSE_BEFORE_METADATA', /does not start with session metadata/u],
+    ['JSON_EOF', /(?:unexpected end of input|eof while parsing)/u],
+    ['JSON_EXPECTED_VALUE', /expected value at line/u],
+    ['JSON_MISSING_FIELD', /missing field/u],
+    ['JSON_INVALID_TYPE', /invalid type/u],
+    ['JSON_UNKNOWN_VARIANT', /unknown variant/u],
+    ['THREAD_ID_MISMATCH', /belongs to thread/u],
+    ['DATABASE_LOCKED', /database (?:is )?locked/u],
+    ['DATABASE_BUSY', /database (?:is )?busy/u],
+    ['DATABASE_CORRUPT', /database (?:disk image is malformed|is corrupt)/u],
+  ].filter(([, pattern]) => pattern.test(prefix)).map(([label]) => label);
+  return labels.length ? `history cause: ${labels.join('; ')}`.slice(0, 256) : 'failed to read thread; cause omitted';
+}
+
 // Only a numeric protocol code and fixed categories may escape a rejection.
 // Unknown messages, data, paths and identifiers are never retained verbatim.
 function rpcRejection(method, value, threadId) {
@@ -34,7 +54,11 @@ function rpcRejection(method, value, threadId) {
     'failed to read thread', 'failed to load thread history', 'failed to list thread history', 'failed to list thread items',
     'thread not loaded', 'no such file or directory', 'os error 2',
     'permission denied', 'operation not permitted'].filter(text => prefix.includes(text));
-  const description = categories.join('; ').slice(0, 256) || 'omitted';
+  let description = categories.join('; ').slice(0, 256) || 'omitted';
+  // Make an unknown history cause distinguishable without retaining dynamic
+  // text. This diagnostic shape never grants a retry or alters the marker below.
+  if (method === 'thread/turns/list' && code === -32603 && prefix.startsWith('failed to read thread: ')
+    && categories.every(text => text === 'failed to read thread')) description = historyErrorShape(prefix);
   const detail = code === null && description === 'omitted' ? '' : ` (RPC ${code ?? 'unknown'}: ${description})`;
   // This marker is stricter than the diagnostic categories: exact server
   // prefix, scoped request and ENOENT only. Never defer a permission failure.

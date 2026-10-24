@@ -338,6 +338,48 @@ test('RPC rejection omits text after its 2048-character diagnostic prefix', asyn
   await rejected; assert.equal(w.sent.length, 1);
 });
 
+test('unknown official history cause exposes fixed labels without dynamic word sequences', async t => {
+  const w = wire(t), pending = w.rpc.request('thread/turns/list', { threadId: parent });
+  const rejected = assert.rejects(pending, error => {
+    assert.equal(error.rpcError.code, -32603); assert.equal(error.initialHistoryUnavailable, false);
+    assert.equal(error.rpcError.description, 'history cause: SESSION_METADATA; JSON_EOF');
+    for (const value of ['alice','private','key-value','read file metadata','17','https','secret-host']) assert.equal(error.message.includes(value), false);
+    assert.ok(Buffer.byteLength(error.rpcError.description) <= 256); return true;
+  });
+  const error = { code: -32603, message: 'failed to read thread: thread-store internal error: failed to read session metadata /Users/alice/private: unexpected end of input at line 17; password=read file metadata; https://secret-host/key-value', data: { secret: 'key-value' } };
+  const line=Buffer.from(JSON.stringify({id:w.sent[0].id,error})+'\n');
+  for(let offset=0;offset<line.length;offset+=3)w.input.write(line.subarray(offset,offset+3));
+  await rejected;assert.equal(w.sent.length,1);
+});
+
+for (const value of ['client_secret=read file metadata', 'credentials=database locked',
+  '/Users/private/secret read file metadata']) test(`history projection never reconstructs values: ${value.split('=')[0]}`, async t => {
+  const w = wire(t), pending = w.rpc.request('thread/turns/list', { threadId: parent });
+  const rejected = assert.rejects(pending, error => {
+    assert.equal(error.initialHistoryUnavailable, false);
+    assert.ok(['history cause: DATABASE_LOCKED', 'failed to read thread; cause omitted'].includes(error.rpcError.description));
+    assert.equal(error.message.includes(value), false);
+    assert.equal(error.message.includes('read file metadata'), false); return true;
+  });
+  w.input.write(JSON.stringify({ id: w.sent[0].id, error: { code: -32603,
+    message: `failed to read thread: thread-store internal error: ${value}` } })+'\n');
+  await rejected; assert.equal(w.sent.length, 1);
+});
+
+for (const [message, label] of [
+  ['failed to read session metadata /private/path: rollout at /private/path is empty', 'SESSION_METADATA; EMPTY_ROLLOUT'],
+  ['failed to read session metadata /private/path: rollout at /private/path does not start with session metadata', 'SESSION_METADATA; RESPONSE_BEFORE_METADATA'],
+]) test(`official metadata cause projects fixed label: ${label}`, async t => {
+  const w = wire(t), pending = w.rpc.request('thread/turns/list', { threadId: parent });
+  const rejected = assert.rejects(pending, error => {
+    assert.equal(error.initialHistoryUnavailable, false);
+    assert.equal(error.rpcError.description, `history cause: ${label}`); return true;
+  });
+  w.input.write(JSON.stringify({ id: w.sent[0].id, error: { code: -32603,
+    message: `failed to read thread: thread-store internal error: ${message}` } })+'\n');
+  await rejected; assert.equal(w.sent.length, 1);
+});
+
 test('provider result and event retain safe RPC rejection detail without another turn', async t => {
   const f = await fixture(t), s = server({ bundle: f.bundle, cwd: f.root, provider: true }), w = wire(t);
   const request = s.rpc.request;
@@ -397,6 +439,7 @@ for (const [name, first] of [
 
 for (const [name, first] of [
   ['unknown-internal', { error: { code: -32603, message: 'database failure' } }],
+  ['known-words-unknown-cause', { error: { code: -32603, message: 'failed to read thread: thread-store internal error: database locked' } }],
   ['quoted-prefix', { error: { code: -32603, message: 'wrapper quotes failed to read thread: No such file or directory (os error 2)' } }],
   ['permission', { error: { code: -32603, message: 'failed to read thread: No such file or directory (os error 2); permission denied' } }],
   ['permission-outside-prefix', { error: { code: -32603, message: 'failed to read thread: No such file or directory (os error 2)'+'x'.repeat(2048)+'operation not permitted' } }],
