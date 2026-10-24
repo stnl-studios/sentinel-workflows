@@ -406,15 +406,23 @@ function verifyLastAttempt(activation,deliveries) {
   if (activation.previousActivationId===null)
     fail('INVALID_CURRENT_IMAGE','first activation cannot contain an incorporated lastAttempt','integrity','activation.json','lastAttempt');
   if(last.outcome==='aborted') {
-    const {request}=validateCurrentAbortDisposition(last);
+    const {request,origin,baseline}=validateCurrentAbortDisposition(last);
     const delivery=deliveries.find(item=>item.deliveryId===last.deliveryId&&item.slice===last.slice);
     const fresh=activation.activeAttempt&&delivery?.facts.latest?.request?.owner.operationAttemptId===activation.activeAttempt.operationAttemptId;
     if(!delivery||!isDeepStrictEqual(delivery.facts.authority,request.authority)||!fresh&&(!isDeepStrictEqual(delivery.counters,request.base.counters)
-      ||!isDeepStrictEqual(delivery.facts.baseline,request.base.baseline)
+      ||!isDeepStrictEqual(request.format==='stnl-current-validation-request-v1'
+        ?delivery.facts.bundle.implementation.at(-1)?.testedWork:delivery.facts.baseline,baseline.manifest)
       ||delivery.evidenceSha256!==request.base.evidenceSha256
-      ||delivery.facts.consumption?.kind!=='historical-local-review'
-      ||delivery.facts.persistedValidation!=='revalidation-required'))
+      ||(request.format==='stnl-current-validation-request-v1'
+        ?delivery.facts.bundle.validation!==null||delivery.facts.bundle.findingsChecks.length!==0
+        :delivery.facts.consumption?.kind!=='historical-local-review'
+          ||delivery.facts.persistedValidation!=='revalidation-required')))
       fail('EVIDENCE_INCOMPLETE','aborted invocation predecessor differs','integrity','activation.json','lastAttempt');
+    // Verify the retained EXECUTE against its original terminal activation,
+    // including while a newly admitted formal publishes its own evidence.
+    if(request.format==='stnl-current-validation-request-v1')
+      verifyLastAttempt({...origin.admission.baseActivation,activeAttempt:activation.activeAttempt
+        ?{...activation.activeAttempt,originActivationId:origin.admission.baseActivation.activationId}:null},deliveries);
     return;
   }
   const terminalId=activation.activeAttempt?.originActivationId??activation.activationId;

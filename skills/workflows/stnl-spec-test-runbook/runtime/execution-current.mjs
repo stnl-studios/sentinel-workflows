@@ -318,6 +318,12 @@ export function validateCurrentAbortDisposition(last) {
     parsed[key]=plain(parseCurrentJson(bytes),'native abort '+key);
   }
   const {origin,request,baseline,agent,claim,toolResult}=parsed;
+  const initial=request.format==='stnl-current-validation-request-v1'
+    && origin.owner?.preparationRevision===1 && origin.owner.localRevision===1;
+  const localReview=request.format==='stnl-current-validation-request-v3'
+    && origin.owner?.preparationRevision>1 && request.base?.validation==='revalidation-required'
+    && request.base.lastDiagnostic===null;
+  if(!initial&&!localReview)invalid('native abort request exceeds supported profiles');
   object(toolResult,['agentId','status','finalResponse'],'native abort tool result');
   string(toolResult.agentId,'native abort agent');string(toolResult.finalResponse,'native abort final response');
   diagnostic(proof.diagnostic,'native abort diagnostic');
@@ -327,13 +333,11 @@ export function validateCurrentAbortDisposition(last) {
     ||proof.diagnostic.affectedPaths.length)invalid('native abort conclusion or consumption differs');
   if(origin.transport!=='native'||origin.attempt!==1||origin.responseVariant!=='stnl-current-native-judgment-v1'
     ||origin.requestSha256!==raw(Buffer.from(proof.requestUtf8,'utf8'))
-    ||request.format!=='stnl-current-validation-request-v3'
-    ||request.base?.validation!=='revalidation-required'||request.base.lastDiagnostic!==null
-    ||origin.owner?.operation!=='VALIDATE_SLICE'||origin.owner.preparationRevision<=1
+    ||origin.owner?.operation!=='VALIDATE_SLICE'
     ||origin.owner.operationAttemptId!==last.operationAttemptId||origin.owner.deliveryId!==last.deliveryId
     ||origin.owner.slice!==last.slice||!same(request.owner,origin.owner)
     ||!same(baseline.owner,origin.owner)||baseline.round!==1
-    ||!same(baseline.manifest,request.base.baseline)
+    ||localReview&&!same(baseline.manifest,request.base.baseline)
     ||agent.agentId!==toolResult.agentId||claim.agentId!==toolResult.agentId
     ||claim.originFile!==agent.originFile||!same(claim.owner,origin.owner))
     invalid('native abort retained sources differ');
@@ -345,14 +349,31 @@ export function validateCurrentAbortDisposition(last) {
     ||request.authority.localRevision!==origin.owner.localRevision
     ||request.authority.normativeSha256!==origin.owner.normativeSha256
     ||request.authority.delivery?.deliveryId!==last.deliveryId
-    ||currentDeliveryAuthoritySha256(request.authority.delivery)!==origin.owner.normativeSha256
+    ||(initial?base.normativeSha256:currentDeliveryAuthoritySha256(request.authority.delivery))!==origin.owner.normativeSha256
     ||request.authority.context?.requirementsAuthority!==base.requirementsAuthority)
     invalid('native abort local request authority differs');
-  work(request.base.baseline,'native abort baseline');
-
-  // This bounded entry closes only the pending local-review boundary used by
-  // B4. It neither reopens a rejection episode nor chains abort dispositions.
-  if(base.lastAttempt!==null||base.activeAttempt!==null)invalid('native abort predecessor exceeds profile');
+  work(baseline.manifest,'native abort baseline');
+  // Initial retains its actual recorded implementation; local review retains
+  // its original null predecessor. Neither profile chains aborted invocations.
+  const prior=base.lastAttempt;
+  if(base.activeAttempt!==null || (initial
+    ?base.preparationRevision!==1 || prior?.outcome!=='recorded' || prior.operation!=='EXECUTE_SLICE'
+      ||prior.deliveryId!==last.deliveryId || prior.slice!==last.slice || !prior.operationRef
+      ||prior.terminalActivationId!==base.activationId || request.attemptId!=='attempt-01'
+      ||request.base?.counters?.validationAttempts!==0 || request.base.counters.findings!==0
+      ||request.base.counters.findingsChecks!==0 || !(request.base.counters.implementationChecks>0)
+      ||!Array.isArray(request.base.openFindings)||request.base.openFindings.length!==0
+    :prior!==null))invalid('native abort predecessor exceeds profile');
+  if(initial && Object.hasOwn(request,'terminal')) {
+    const bytes=string(origin.terminalPreparationUtf8,'native abort terminal preparation');
+    const snapshot=parseCurrentJson(bytes);approved(snapshot);
+    if(raw(Buffer.from(bytes,'utf8'))!==base.approvedSnapshotSha256
+      ||snapshot.normativeSha256!==base.normativeSha256 ||snapshot.preparationRevision!==1
+      ||!same(request.terminal,currentTerminalProjection(snapshot))
+      ||!same(request.authority.delivery,snapshot.normativeProjection.deliveries.find(item=>item.deliveryId===last.deliveryId)))
+      invalid('native abort Initial terminal authority differs');
+  } else if(initial && origin.terminalPreparationUtf8!==undefined)
+    invalid('native abort terminal preparation without terminal request');
   validateCurrentActivation(base);validateCurrentActivation(reserved);
   const binding=plain(admission.binding,'native abort binding');
   if(binding.operationId!==last.operationRef.operationId
@@ -361,7 +382,8 @@ export function validateCurrentAbortDisposition(last) {
     ||reserved.previousActivationId!==base.activationId||reserved.sequence!==base.sequence+1
     ||reserved.preparationRevision!==base.preparationRevision||reserved.requirementsAuthority!==base.requirementsAuthority
     ||reserved.normativeSha256!==base.normativeSha256||reserved.approvedSnapshotSha256!==base.approvedSnapshotSha256
-    ||!same(reserved.artifacts,base.artifacts)||reserved.lastAttempt!==null
+    ||!same(reserved.artifacts,base.artifacts)||!same(reserved.lastAttempt,base.lastAttempt)
+    ||initial&&binding.normalization!==undefined
     ||!same(reserved.activeAttempt,{...origin.owner,operationRef:last.operationRef})
     ||agent.originFile!==path.join(origin.workspace,'tmp','sentinel',binding.specKey,binding.operationId,'round-1.origin.json'))
     invalid('native abort reservation binding differs');

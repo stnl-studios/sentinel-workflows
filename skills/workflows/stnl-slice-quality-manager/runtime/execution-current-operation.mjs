@@ -1132,10 +1132,10 @@ export async function abort(handle,toolResultFile=null,{checkpoint=null}={}) {
   const supplied=toolResultFile?await readText(toolResultFile):null;
   const prepareDisposition=async allocated=>{
     const now=await load(handle,{requireRegistry:false}),runner=now.record.runner;
-    if(now.owner.operation!=='VALIDATE_SLICE'||now.owner.preparationRevision<=1
+    if(now.owner.operation!=='VALIDATE_SLICE'
       ||runner?.round!==1||runner.consumedInvocations!==1||!['running','aborted'].includes(runner.status)
       ||now.binding.normalization||now.record.normalization)
-      fail('UNSUPPORTED_FORMAT','abort supports only one concluded unstarted S2 validation');
+      fail('UNSUPPORTED_FORMAT','abort supports only one concluded unstarted Initial or private-review validation');
     const names=['base.activation.json','owner.json',...['request','baseline','origin','agent','claim'].map(name=>`round-1.${name}.json`)];
     const present=await fs.readdir(now.root);
     if(present.some(name=>!names.includes(name))||present.length!==names.length)
@@ -1183,12 +1183,26 @@ export async function abort(handle,toolResultFile=null,{checkpoint=null}={}) {
     const continuity=parseCurrentJson(Buffer.from(image.files.get('continuity.json')).toString('utf8'));
     const delivery=continuity.deliveries.find(item=>item.deliveryId===now.owner.deliveryId);
     const bundle=delivery?.evidence?parseCurrentJson(Buffer.from(image.files.get(delivery.evidence.path)).toString('utf8')):null;
-    if(!delivery||delivery.validation!=='revalidation-required'||delivery.normalization!==null||delivery.lastDiagnostic!==null
-      ||!bundle?.validation||bundle.validation.origin.localRevision>=delivery.localRevision
+    const initial=parsed.request.format==='stnl-current-validation-request-v1';
+    if(!delivery||delivery.normalization!==null||delivery.lastDiagnostic!==null||!bundle
+      ||(initial?delivery.validation!=='unvalidated'||delivery.localRevision!==1||bundle.validation!==null
+          ||bundle.findingsChecks.length!==0||bundle.implementation.length===0
+        :delivery.validation!=='revalidation-required'||!bundle.validation
+          ||bundle.validation.origin.localRevision>=delivery.localRevision)
       ||bundle.openFindings.length||bundle.openDivergences.length
-      ||!equal(delivery.counters,parsed.request.base.counters)||!equal(delivery.baseline,parsed.baseline.manifest)
+      ||!equal(delivery.counters,parsed.request.base.counters)
+      ||sha(Buffer.from(image.files.get(delivery.evidence.path)))!==parsed.request.base.evidenceSha256
+      ||!equal(initial?bundle.implementation.at(-1)?.testedWork:delivery.baseline,parsed.baseline.manifest)
       ||!equal(image.observedByDelivery.get(delivery.deliveryId)?.manifest,parsed.baseline.manifest))
-      fail('EVIDENCE_STALE','abort requires the unchanged pending local-review base');
+      fail('EVIDENCE_STALE','abort requires the unchanged admitted validation base');
+    const snapshot=parseCurrentJson(Buffer.from(image.files.get('approved-preparation.json')).toString('utf8'));
+    const leaf=snapshot.normativeProjection.deliveries.find(item=>item.deliveryId===now.owner.deliveryId);
+    if(!equal(parsed.request.authority.delivery,leaf)
+      ||parsed.request.authority.context?.objective!==snapshot.normativeProjection.global.objective
+      ||parsed.request.authority.context?.strategy!==snapshot.normativeProjection.global.strategy
+      ||!equal(parsed.request.authority.context?.risks,snapshot.normativeProjection.global.risks))
+      fail('EVIDENCE_STALE','abort request authority differs from approved preparation');
+    verifyCurrentTerminalRequest(parsed.request,{transport:'native',origin:Buffer.from(proof.originUtf8)},now.context);
     assertOtherInitialWork(image,parsed.origin);
     return {owner,proof};
   };

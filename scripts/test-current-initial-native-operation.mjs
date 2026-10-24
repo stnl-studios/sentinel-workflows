@@ -11,11 +11,11 @@ import {resolveCurrentExecutionContext} from '../skills/workflows/stnl-slice-exe
 import {inspectCurrentExecution,captureCurrentExecution,captureCurrentActiveExecution} from '../skills/workflows/stnl-slice-executor/runtime/execution-current-reader.mjs';
 import {inspectCurrentExecution as inspectQualityExecution} from '../skills/workflows/stnl-slice-quality-manager/runtime/execution-current-reader.mjs';
 import {installCurrentInitial,recoverCurrentInitialPublication} from '../skills/workflows/stnl-slice-executor/runtime/install-current-initial.mjs';
-import {begin,reserveDispatch,bindNative,verifyNative,captureNative,publish,normalizeSuccessor,resume} from '../skills/workflows/stnl-slice-executor/runtime/execution-current-operation.mjs';
+import {begin,reserveDispatch,bindNative,verifyNative,captureNative,publish,normalizeSuccessor,resume,abort} from '../skills/workflows/stnl-slice-executor/runtime/execution-current-operation.mjs';
 import {payload as initialPayload} from './fixtures/current-initial-evidence.mjs';
 import {applyPayload} from './fixtures/current-findings-evidence.mjs';
-import {READY_FIXTURE,copyTree} from '../skills/workflows/stnl-spec-lifecycle-manager/runtime/test/publisher-fixtures.mjs';
-import {publishCandidate} from '../skills/workflows/stnl-spec-lifecycle-manager/runtime/lib/publisher.mjs';
+import {READY_FIXTURE,copyTree,PUBLISHER_CLI} from '../skills/workflows/stnl-spec-lifecycle-manager/runtime/test/publisher-fixtures.mjs';
+import {publishCandidate,TEST_ONLY_ACK,TEST_ONLY_ACK_ENV,TEST_ONLY_CRASH_ENV} from '../skills/workflows/stnl-spec-lifecycle-manager/runtime/lib/publisher.mjs';
 import {validateWorkspace} from '../skills/workflows/stnl-spec-lifecycle-manager/runtime/lib/lifecycle.mjs';
 import {inspectCurrentEvidence} from '../skills/workflows/stnl-slice-executor/runtime/current-evidence-state.mjs';
 
@@ -1212,4 +1212,195 @@ test('bounded normalized EXECUTE retains all public Initial captures through int
  const receipt=await publishCandidate('CLOSE',path.dirname(f.specPath),null);
  assert.equal(receipt.publication,'confirmed');assert.equal(receipt.cleanup,'complete');
  assert.equal((await inspectCurrentExecution(f.specPath)).state,'SPEC_CLOSED');
+});
+
+
+// A concluded tool result here is authored mechanical evidence, not a model
+// conclusion. The live blocked episode is never used or mutated by these tests.
+async function unstartedInitialFormal(t) {
+  const f=await fixture({kind:'lifecycle',single:true,closeReady:true});
+  t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
+  await installCurrentInitial(f);
+  await bConclude(f,'EXECUTE_SLICE',{edit:()=>fs.writeFile(path.join(f.root,'src/pay.mjs'),'export const pay=()=>"paid";\n')});
+  const before=await captureCurrentExecution(f.specPath);
+  const start=await begin({specPath:f.specPath,slice:'slice-01',expectedActivationId:before.inspection.activationId,operation:'VALIDATE_SLICE'});
+  const dispatch=await reserveDispatch(start.handle,{terminal:true,responseVariant:'stnl-current-native-judgment-v1'});
+  const agentId='mechanical-unstarted-Initial';await bindNative(start.handle,agentId);
+  const tool=path.join(f.root,'tmp/concluded.json');
+  const finalResponse='BLOCKED: verifier was never invoked. Preserve this first conclusion: Ω "literal".';
+  await fs.writeFile(tool,JSON.stringify({agentId,status:'completed',finalResponse}));
+  return {...f,before,start,dispatch,agentId,tool,finalResponse,operationRoot:path.dirname(dispatch.originFile)};
+}
+
+test('Initial unstarted abort retains EXECUTE and permits a new integral formal through public CLOSE/readers',async t=>{
+  const f=await unstartedInitialFormal(t),base=JSON.parse(Buffer.from(f.before.activationBytes));
+  const priorFiles=new Map(f.before.files),response=await fs.readFile(f.tool);
+  const ended=await abort(f.start.handle,f.tool);
+  assert.equal(ended.cleanup,'complete');assert.equal(ended.activation.lastAttempt.outcome,'aborted');
+  assert.deepEqual(ended.activation.lastAttempt.abort.toolResultUtf8,response.toString());
+  assert.deepEqual(JSON.parse(ended.activation.lastAttempt.abort.originUtf8).admission.baseActivation.lastAttempt,base.lastAttempt);
+  const quiet=await captureCurrentExecution(f.specPath);
+  assert.equal(quiet.inspection.state,'IMPLEMENTED_AWAITING_VALIDATION');
+  assert.equal(quiet.inspection.deliveries[0].formalStatus,null);
+  for(const [name,bytes]of priorFiles)assert.deepEqual(Buffer.from(quiet.files.get(name)),Buffer.from(bytes),name);
+  assert.equal((await abort(f.start.handle,f.tool)).activation.activationId,ended.activation.activationId);
+  await assert.rejects(verifyNative(f.dispatch.originFile));
+  await assert.rejects(captureNative(f.start.handle,f.tool));
+  const renamed=f.operationRoot+'.offline';await fs.rename(f.operationRoot,renamed);
+  assert.equal((await inspectQualityExecution(f.specPath)).state,'IMPLEMENTED_AWAITING_VALIDATION');
+  await fs.rename(renamed,f.operationRoot);
+  const formal=await bConclude(f,'VALIDATE_SLICE',{terminal:true});
+  assert.notEqual(formal.started.owner.operationAttemptId,f.start.owner.operationAttemptId);
+  assert.equal(formal.image.inspection.state,'COMPLETE');
+  // Distribution gate for the actual Git-native profile: only the copied
+  // lifecycle skill is available to this CLI, without nonGit path workarounds.
+  const installed=path.join(f.root,'tmp/copied-lifecycle');
+  await fs.cp(path.resolve('skills/workflows/stnl-spec-lifecycle-manager'),installed,{recursive:true});
+  const copiedCli=path.join(installed,'runtime/publish-spec-lifecycle.mjs');
+  const closed=JSON.parse((await run(process.execPath,[copiedCli,'CLOSE',path.dirname(f.specPath)],{cwd:f.root})).stdout);
+  assert.equal(closed.publication,'confirmed');assert.equal(closed.cleanup,'complete');
+  assert.equal((await inspectQualityExecution(f.specPath)).state,'SPEC_CLOSED');
+  assert.equal((await inspectCurrentExecution(f.specPath)).state,'SPEC_CLOSED');
+});
+
+for(const mutation of ['active','uncertain','foreign','blank','changed-origin','missing-claim','verification','observation','receipt','capture','candidate','drift','registry','authority','predecessor'])
+test(`Initial unstarted abort refuses ${mutation} without effects`,async t=>{
+  const f=await unstartedInitialFormal(t);
+  if(['active','uncertain','foreign','blank'].includes(mutation)) {
+    const v=JSON.parse(await fs.readFile(f.tool));
+    if(mutation==='active')v.status='running';if(mutation==='uncertain')v.status='uncertain';
+    if(mutation==='foreign')v.agentId='foreign';if(mutation==='blank')v.finalResponse='';
+    await fs.writeFile(f.tool,JSON.stringify(v));
+  } else if(mutation==='changed-origin') {
+    const v=JSON.parse(await fs.readFile(f.dispatch.originFile));v.dispatchId='foreign';await fs.writeFile(f.dispatch.originFile,JSON.stringify(v));
+  } else if(mutation==='missing-claim')await fs.rm(path.join(f.operationRoot,'round-1.claim.json'));
+  else if(mutation==='drift')await fs.appendFile(path.join(f.root,'src/pay.mjs'),'// drift\n');
+  else if(mutation==='registry') {
+    const file=path.join(path.dirname(f.operationRoot),'registry.json'),v=JSON.parse(await fs.readFile(file));v.operations=[];await fs.writeFile(file,JSON.stringify(v));
+  } else if(['authority','predecessor'].includes(mutation)) {
+    const file=f.dispatch.originFile,v=JSON.parse(await fs.readFile(file));
+    if(mutation==='authority')v.admission.baseActivation.normativeSha256='sha256:'+'0'.repeat(64);
+    else v.admission.baseActivation.lastAttempt.outcome='aborted';
+    await fs.writeFile(file,JSON.stringify(v));
+  } else await fs.writeFile(path.join(f.operationRoot,`round-1.${mutation}.json`),'{}');
+  const before=await captureExecutionTree(f.root);
+  await assert.rejects(abort(f.start.handle,f.tool));
+  assert.deepEqual(await captureExecutionTree(f.root),before);
+});
+
+for(const phase of ['after-abort-intent','after-abort-activation','after-abort-readback','before-abort-registry-completion','after-abort-registry-completion'])
+test(`Initial unstarted abort resumes exact bytes after ${phase}`,async t=>{
+  const f=await unstartedInitialFormal(t);let injected=0;
+  try {await abort(f.start.handle,f.tool,{checkpoint:at=>{if(at===phase){injected++;throw Object.assign(Error('controlled Initial abort interruption'),{code:'CONTROLLED_ABORT_FAULT'});}}});}
+  catch(error){assert.equal(error.code,'CONTROLLED_ABORT_FAULT');}
+  assert.equal(injected,1);assert.equal((await resume(f.start.handle)).nextAction,'resume-abort');
+  const handleFile=path.join(f.root,'tmp/abort-handle.json');await fs.writeFile(handleFile,JSON.stringify(f.start.handle));
+  const result=JSON.parse((await run(process.execPath,[operationCli,'abort','--handle',handleFile])).stdout);
+  assert.equal(result.publication,'aborted');assert.equal(result.cleanup,'complete');
+  assert.equal((await abort(f.start.handle,f.tool)).activation.activationId,result.activation.activationId);
+});
+
+test('Initial abort rejects started/completed verification and a second unstarted formal, retaining both episodes',async t=>{
+  const f=await unstartedInitialFormal(t);await abort(f.start.handle,f.tool);
+  const next=await begin({specPath:f.specPath,slice:'slice-01',expectedActivationId:(await inspectCurrentExecution(f.specPath)).activationId,operation:'VALIDATE_SLICE'});
+  const dispatch=await reserveDispatch(next.handle,{terminal:true,responseVariant:'stnl-current-native-judgment-v1'});
+  await bindNative(next.handle,f.agentId);
+  const before=await captureExecutionTree(f.root);await assert.rejects(abort(next.handle,f.tool));
+  assert.deepEqual(await captureExecutionTree(f.root),before);
+  await verifyNative(dispatch.originFile);
+  await assert.rejects(abort(next.handle,f.tool));
+});
+
+test('resolved verifier arguments avoid same-invocation shell expansion and preserve literal paths',async t=>{
+  const root=await fs.mkdtemp(path.join(repo,'tmp/verifier quote $ spaces '));t.after(()=>fs.rm(root,{recursive:true,force:true}));
+  const helper=path.join(root,"helper 'literal.mjs"),origin=path.join(root,"origin 'literal.json"),marker=path.join(root,'observed.json');
+  await fs.writeFile(origin,'{}');
+  await fs.writeFile(helper,'import fs from "node:fs";if(process.argv[2]!=="verify-native"||process.argv[3]!=="--origin-file"||!process.argv[4])process.exit(2);fs.writeFileSync('+JSON.stringify(marker)+',JSON.stringify(process.argv.slice(2)));');
+  const quote=value=>"'"+value.replaceAll("'","'\\''")+"'";
+  const env={...process.env};delete env.NATIVE_VERIFICATION_HELPER;delete env.NATIVE_ORIGIN_FILE;
+  const shell=(command)=>new Promise((resolve,reject)=>{const child=execFile('/bin/zsh',['-f','-c',command],{env,timeout:5000},(error,stdout,stderr)=>error?reject(error):resolve({stdout,stderr}));child.stdin.end();});
+  await shell(`NATIVE_VERIFICATION_HELPER=${quote(helper)} NATIVE_ORIGIN_FILE=${quote(origin)} ${quote(process.execPath)} "$NATIVE_VERIFICATION_HELPER" verify-native --origin-file "$NATIVE_ORIGIN_FILE"`);
+  await assert.rejects(fs.readFile(marker),{code:'ENOENT'});
+  await run(process.execPath,[helper,'verify-native','--origin-file',origin],{env});
+  assert.deepEqual(JSON.parse(await fs.readFile(marker)),['verify-native','--origin-file',origin]);
+  await fs.rm(marker);
+  await shell([process.execPath,helper,'verify-native','--origin-file',origin].map(quote).join(' '));
+  assert.deepEqual(JSON.parse(await fs.readFile(marker)),['verify-native','--origin-file',origin]);
+});
+
+
+for(const phase of ['verification','captured','published'])test(`first Initial formal refuses unstarted abort after ${phase}`,async t=>{
+  const f=await unstartedInitialFormal(t),measured=await verifyNative(f.dispatch.originFile);
+  if(phase!=='verification') {
+    const result={status:'PASS',commands:measured.commands,evidence:'Mechanical current AC-001 verification.',
+      findingReferences:'none',findingDispositions:'none',blockers:'none',unexpectedWorkspaceEffects:'none',persistenceSummary:'No writes.'};
+    const tool=path.join(f.root,'tmp/mechanical-PASS.json');
+    await fs.writeFile(tool,JSON.stringify({agentId:f.agentId,status:'completed',finalResponse:JSON.stringify({format:'stnl-current-native-judgment-v1',result,newFindings:[]})}));
+    await captureNative(f.start.handle,tool);
+    if(phase==='published')await publish(f.start.handle);
+  }
+  const before=await captureExecutionTree(f.root);
+  await assert.rejects(abort(f.start.handle,f.tool));
+  assert.deepEqual(await captureExecutionTree(f.root),before);
+});
+
+test('first Initial verification start and abort serialize through the common lease',async t=>{
+  const f=await unstartedInitialFormal(t),open=fs.open;
+  let entered,release;const started=new Promise(resolve=>{entered=resolve;}),gate=new Promise(resolve=>{release=resolve;});
+  const output=path.join(f.operationRoot,'round-1.verification.json');
+  fs.open=async(file,...args)=>{if(file===output&&args[0]==='wx'){entered();await gate;}return open(file,...args);};
+  const verifying=verifyNative(f.dispatch.originFile);
+  try {await started;await assert.rejects(abort(f.start.handle,f.tool));}
+  finally {release();fs.open=open;}
+  assert.equal((await verifying).status,'completed');
+  await assert.rejects(abort(f.start.handle,f.tool));
+});
+
+
+for(const mutation of ['origin','request','baseline','agent','claim','base','confirmation','consumption','identity','lease','extra','missing','registry','replica'])
+test(`Initial abort retirement refuses ${mutation} and preserves unique controls`,async t=>{
+  const f=await unstartedInitialFormal(t);await abort(f.start.handle,f.tool);
+  await bConclude(f,'VALIDATE_SLICE',{terminal:true});
+  const metadata=path.join(f.operationRoot,'owner.json');
+  if(['confirmation','consumption','identity','lease'].includes(mutation)){
+    const v=JSON.parse(await fs.readFile(metadata));
+    if(mutation==='confirmation')v.confirmation.artifactManifestSha256='sha256:'+'0'.repeat(64);
+    if(mutation==='consumption')v.runner.consumedInvocations=0;
+    if(mutation==='identity')v.binding.owner.ownershipToken='00000000-0000-4000-8000-000000000000';
+    if(mutation==='lease')v.commonLease.sha256='sha256:'+'0'.repeat(64);
+    await fs.writeFile(metadata,JSON.stringify(v));
+  } else if(mutation==='extra')await fs.writeFile(path.join(f.operationRoot,'sole-source.txt'),'preserve me');
+  else if(mutation==='missing')await fs.rm(path.join(f.operationRoot,'round-1.claim.json'));
+  else if(mutation==='registry'){
+    const file=path.join(path.dirname(f.operationRoot),'registry.json'),v=JSON.parse(await fs.readFile(file));
+    v.operations=[{operationId:'00000000-0000-4000-8000-000000000000',marker:metadata}];await fs.writeFile(file,JSON.stringify(v));
+  } else if(mutation==='replica'){
+    const current=await captureCurrentExecution(f.specPath),delivery=JSON.parse(Buffer.from(current.files.get('continuity.json'))).deliveries[0];
+    const file=path.join(path.dirname(f.specPath),'execution',delivery.evidence.path),v=JSON.parse(await fs.readFile(file));
+    const object=v.objects.find(item=>item.id===v.validation.sources.origin);
+    const capsule=JSON.parse(Buffer.from(object.bytesBase64,'base64'));const origin=JSON.parse(capsule.originUtf8);
+    delete origin.admission.baseActivation.lastAttempt.abort;capsule.originUtf8=JSON.stringify(origin);object.bytesBase64=Buffer.from(JSON.stringify(capsule)).toString('base64');
+    await fs.writeFile(file,JSON.stringify(v));
+  } else {
+    const file=path.join(f.operationRoot,mutation==='base'?'base.activation.json':`round-1.${mutation}.json`);
+    await fs.appendFile(file,' ');
+  }
+  const before=await captureExecutionTree(f.root);
+  await assert.rejects(publishCandidate('CLOSE',path.dirname(f.specPath),null));
+  const after=await captureExecutionTree(f.root),prior=new Map(before.files.map(row=>[row.path,row]));
+  for(const row of before.files)assert.deepEqual(after.files.find(item=>item.path===row.path),row,'existing source/control retained: '+row.path);
+  // CLOSE may retain its own diagnostic lock when preflight refuses. It must
+  // not alter any preexisting source/control or create a stage/backup/journal.
+  for(const row of after.files.filter(row=>!prior.has(row.path)))assert.match(row.path,/\/lifecycle\.lock$/u);
+});
+
+test('Initial aborted controls survive a CLOSE crash and retire through normal public recovery',async t=>{
+  const f=await unstartedInitialFormal(t);await abort(f.start.handle,f.tool);
+  await bConclude(f,'VALIDATE_SLICE',{terminal:true});
+  const cli=PUBLISHER_CLI;
+  await assert.rejects(run(process.execPath,[cli,'CLOSE',path.dirname(f.specPath)],{
+    timeout:30000,env:{...process.env,[TEST_ONLY_ACK_ENV]:TEST_ONLY_ACK,[TEST_ONLY_CRASH_ENV]:'TERMINAL_WITNESS_DURABLE'}}),e=>e.signal==='SIGKILL');
+  const {recoverIncompletePublication}=await import('../skills/workflows/stnl-spec-lifecycle-manager/runtime/lib/publisher.mjs');
+  const recovered=await recoverIncompletePublication(path.dirname(f.specPath));
+  assert.equal(recovered.cleanup,'complete');assert.equal((await inspectQualityExecution(f.specPath)).state,'SPEC_CLOSED');
 });

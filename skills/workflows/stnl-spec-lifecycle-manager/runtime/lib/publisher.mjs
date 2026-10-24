@@ -9,6 +9,7 @@ import {inspectLifecycleTerminalRetirement,acquireLifecycleTerminalRetirementLoc
   removeLifecycleTerminalRetirementRole,removeLifecycleTerminalRetirementNamespace,retireLifecycleTerminalRetirementLease,
   finishLifecycleTerminalRetirementSettlement} from './execution-publication.mjs';
 import {captureCurrentExecution} from './execution-current-reader.mjs';
+import {validateCurrentAbortDisposition} from './execution-current.mjs';
 import {restoreCaptureSources,verifyWorkObservation} from './execution-evidence-proof.mjs';
 import { constants as FS_CONSTANTS } from "node:fs";
 import * as fs from "node:fs/promises";
@@ -2306,6 +2307,32 @@ async function captureCloseOperationalInventory(target,transactionId){
       ownershipToken:record.binding?.owner?.ownershipToken,namespaceIdentity:roots.materialRootIdentity,filesystemDevice:roots.materialRootIdentity.dev,filesystemContext:policy,
       filesystemBinding:{targetParentIdentity:roots.targetParentIdentity,leaseParentIdentity:roots.leaseParentIdentity,materialRootIdentity:roots.materialRootIdentity}});
     const allowed=new Set(['owner.json','base.activation.json',...(binding.owner.operation==='VALIDATE_SLICE'?[]:['base.work.json'])]);
+    if(record.phase==='aborted') {
+      if(record.commonLease.lockPath!==roots.lockPath)fail('CLOSE abort common lease path differs',file);
+      const terminal=record.expectedInstalledActivation;
+      const successor=proofs.find(item=>item.record.kind==='validation'
+        &&item.origin.owner.operation==='VALIDATE_SLICE'
+        &&item.origin.owner.deliveryId===binding.owner.deliveryId&&item.origin.owner.slice===binding.owner.slice
+        &&item.origin.owner.operationAttemptId!==binding.owner.operationAttemptId
+        &&same(item.origin.admission.baseActivation,terminal));
+      if(!successor)fail('CLOSE retirement abort lacks its verified formal successor replica',file);
+      const last=successor.origin.admission.baseActivation.lastAttempt,parsed=validateCurrentAbortDisposition(last);
+      if(!same(last,terminal.lastAttempt)||!same(parsed.origin.admission.binding,binding))
+        fail('CLOSE retirement abort disposition differs from official admission',file);
+      for(const key of ['origin','request','baseline','agent','claim']) {
+        const leaf=`round-1.${key}.json`;allowed.add(leaf);
+        if(!(await readOwnedFile(path.join(file,leaf))).bytes.equals(Buffer.from(last.abort[key+'Utf8'],'utf8')))
+          fail('CLOSE retirement aborted source differs from official replica',path.join(file,leaf));
+      }
+      const base=await readOwnedFile(path.join(file,'base.activation.json'));
+      if(!same(parseStrictJson(base.bytes.toString('utf8')),parsed.origin.admission.baseActivation)
+        ||binding.baseTree.files.find(item=>item.path==='activation.json')?.sha256!=='sha256:'+createHash('sha256').update(base.bytes).digest('hex'))
+        fail('CLOSE retirement aborted base differs from official replica',file);
+      const actual=(await fs.readdir(file)).sort(compareCodePoints);
+      if(actual.length!==allowed.size||actual.some(name=>!allowed.has(name)))
+        fail('CLOSE retirement preserves extra or unique aborted material',file);
+      continue;
+    }
     let first=null;
     for(let round=1;round<=record.runner.round;round++){
       const proof=proofs.find(item=>same(item.origin.admission.binding,binding)&&item.origin.attempt===round);

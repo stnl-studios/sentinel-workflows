@@ -6,7 +6,7 @@ import path from 'node:path';
 import os from 'node:os';
 import {isDeepStrictEqual} from 'node:util';
 import {unicodeCaseFold} from './unicode-casefold.mjs';
-import {validateCurrentActivation,currentOperationBindingSha256} from './execution-current.mjs';
+import {validateCurrentActivation,currentOperationBindingSha256,validateCurrentAbortDisposition} from './execution-current.mjs';
 
 const digest = bytes => `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
 const equal = (left, right) => JSON.stringify(left) === JSON.stringify(right);
@@ -66,6 +66,40 @@ export function validateCurrentOperationRetirementRecord(record){
   closed(record,['format','binding','phase','candidate','previous','expectedInstalledActivation','preparation','runner','normalization','commonLease','confirmation','cleanup',
     ...(Object.hasOwn(record,'responseVariant')?['responseVariant']:[]),'terminalTransition'],'terminal operation owner');
   const binding=record.binding,owner=binding?.owner;
+  if(record.phase==='aborted') {
+    // No verification capture exists in this bounded disposition. Its sources
+    // must instead be replicated in the verified successor's native admission.
+    closed(record.preparation,['abortSourceActivation'],'aborted operation preparation');
+    closed(record.terminalTransition,['operationAttemptId','outcome'],'aborted operation transition');
+    closed(record.runner,['dispatchId','agentId','status','round','consumedInvocations','originFile','requestFile','responseFile'],'aborted operation runner');
+    closed(record.confirmation,['activationId','artifactManifestSha256'],'aborted operation confirmation');
+    closed(record.cleanup,['status','ownedPaths','diagnostics'],'aborted operation cleanup');
+    validateCurrentActivation(record.expectedInstalledActivation);
+    validateLifecycleCommonLeaseBinding(record.commonLease);
+    const last=record.expectedInstalledActivation.lastAttempt,parsed=validateCurrentAbortDisposition(last);
+    if(parsed.request.format!=='stnl-current-validation-request-v1'
+      ||record.format!=='stnl-execution-publication-owner-v2'||record.candidate!==null||record.previous!==null
+      ||record.normalization!==null||record.responseVariant!=='stnl-current-native-judgment-v1'
+      ||record.commonLease.executionRoot!==binding.logicalExecutionRoot
+      ||!isDeepStrictEqual(record.commonLease.parentIdentity,binding.filesystemBinding.leaseParentIdentity)
+      ||record.commonLease.sha256!==digest(Buffer.from(JSON.stringify({format:'stnl-execution-lock-v1',
+        token:record.commonLease.token,executionRoot:record.commonLease.executionRoot,pid:record.commonLease.pid})+'\n'))
+      ||record.terminalTransition.outcome!=='aborted'||record.terminalTransition.operationAttemptId!==owner?.operationAttemptId
+      ||!isDeepStrictEqual(parsed.origin.admission.binding,binding)
+      ||!isDeepStrictEqual(parsed.origin.admission.reservedActivation,record.preparation.abortSourceActivation)
+      ||record.runner.status!=='aborted'||record.runner.round!==1||record.runner.consumedInvocations!==1
+      ||record.runner.dispatchId!==parsed.origin.dispatchId||record.runner.agentId!==parsed.toolResult.agentId
+      ||record.runner.originFile!==parsed.agent.originFile
+      ||record.runner.requestFile!==path.join(path.dirname(record.runner.originFile),'round-1.request.json')
+      ||record.runner.responseFile!==path.join(path.dirname(record.runner.originFile),'round-1.response.json')
+      ||record.expectedInstalledActivation.activeAttempt!==null||last.operationAttemptId!==owner.operationAttemptId
+      ||record.confirmation.activationId!==record.expectedInstalledActivation.activationId
+      ||record.confirmation.artifactManifestSha256!==digest(JSON.stringify(record.expectedInstalledActivation.artifacts))
+      ||record.cleanup.status!=='complete'||!Array.isArray(record.cleanup.ownedPaths)||record.cleanup.ownedPaths.length
+      ||!Array.isArray(record.cleanup.diagnostics)||record.cleanup.diagnostics.length)
+      fail('aborted Initial operation is not confirmed and bound');
+    return record;
+  }
   for(const key of ['candidate','previous']){
     closed(record[key],['identity','tree'],'terminal operation '+key);
     if(!hasCapturedSource({identity:record[key].identity,files:record[key].tree}))fail('terminal operation has invalid tree metadata');
