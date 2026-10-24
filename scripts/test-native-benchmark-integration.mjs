@@ -15,12 +15,14 @@ const repo = path.resolve(import.meta.dirname, '..');
 
 test('invocation provenance distinguishes review contexts from author continuity without reclassifying controllers', () => {
   const author = { threadId: 'author-thread', role: 'author' };
+  const temporaryDirectory = path.join(repo, 'tmp', 'case scratch');
+  const originalTmpdir = process.env.TMPDIR;
   for (const regime of ['fresh', 'author-continuity']) {
     const policy = { regime, authorContinuityOperations: regime === 'fresh' ? [] : ['PLAN'] };
     for (const [operation, skill] of [['SPEC_READINESS', 'stnl-spec-lifecycle-manager'],
       ['REVIEW_PLAN', 'stnl-plan-reviewer'], ['VALIDATE_SLICE', 'stnl-slice-quality-manager'],
       ['PLAN', 'stnl-execution-planner']]) {
-      const context = invocationContext(operation, skill, policy, author);
+      const context = invocationContext(operation, skill, policy, author, temporaryDirectory);
       const resumed = regime === 'author-continuity' && operation === 'PLAN';
       assert.equal(context.prior, resumed ? author : null);
       assert.equal(context.role, operation === 'PLAN' ? 'author' : 'review');
@@ -28,14 +30,18 @@ test('invocation provenance distinguishes review contexts from author continuity
       const provenance = /^Context provenance: (thread\/(?:start|resume)); (.+)\.$/mu.exec(context.text);
       assert.equal(provenance[1], resumed ? 'thread/resume' : 'thread/start');
       assert.equal(provenance[2], resumed ? `author thread ${author.threadId}` : 'no author thread resumed');
+      assert.equal(/^Temporary work directory: (.+)$/mu.exec(context.text)[1], temporaryDirectory);
+      assert.match(context.text, /pass this same restriction to every delegated agent/u);
+      assert.match(context.text, /preserve the inherited process-local TMPDIR for tool-managed temporaries/u);
     }
   }
   for (const missing of [null, undefined]) {
     const context = invocationContext('PLAN', 'stnl-execution-planner',
-      { regime: 'author-continuity', authorContinuityOperations: ['PLAN'] }, missing);
+      { regime: 'author-continuity', authorContinuityOperations: ['PLAN'] }, missing, temporaryDirectory);
     assert.equal(context.prior, null);
     assert.match(context.text, /Context provenance: thread\/start; no author thread resumed\./u);
   }
+  assert.equal(process.env.TMPDIR, originalTmpdir, 'context communication does not alter the process environment');
 });
 
 for (const phase of ['initialize', 'turn', 'turn-write-failure']) test(`normal entry retains bounded stderr after ${phase} failure without another admission`, async t => {
@@ -196,6 +202,13 @@ for (const [regime, fault] of [['fresh', null], ['author-continuity', null], ['f
     assert.match(text[0].text, /including the internal delegation required by its skill/u,
       'returning the handoff must preserve required checks inside the selected operation');
     assert.match(text[0].text, /external manager is the caller and invokes the next operation from your returned handoff/u);
+    const temporaryDirectory = /^Temporary work directory: (.+)$/mu.exec(text[0].text)?.[1];
+    assert.equal(temporaryDirectory, await fs.realpath(path.join(runRoot, 'case-a/tmp')),
+      'every operation receives the actual already allocated case temporary directory');
+    assert.match(text[0].text, /authored scratch files and lifecycle candidates/u);
+    assert.match(text[0].text, /pass this same restriction to every delegated agent/u,
+      'the principal must transmit the same temporary boundary to auxiliaries and formal children');
+    assert.match(text[0].text, /Do not choose external\/system temporary paths/u);
     if (['stnl-execution-planner', 'stnl-plan-reviewer'].includes(skill[0].name)) {
       const originalInput = text[0].text.match(/^Original requirements input: (.+)$/mu)?.[1];
       assert.equal(originalInput, path.join(runRoot, 'case-a/workspace/requirements.md'),

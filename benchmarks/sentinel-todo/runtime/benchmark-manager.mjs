@@ -241,14 +241,16 @@ export function renderLauncher(template, values) {
 
 // Normal operator context, not a product command or hidden binding. A file
 // contract does not configure a generic child's model/effort by itself.
-export function invocationContext(operation, workflowSkill, policy, authorThread) {
+export function invocationContext(operation, workflowSkill, policy, authorThread, temporaryDirectory) {
   const role = ['REVIEW_PLAN', 'VALIDATE_SLICE', 'SPEC_READINESS'].includes(operation) ? 'review' : 'author';
   const prior = role === 'author' && policy.regime === 'author-continuity'
     && policy.authorContinuityOperations.includes(operation) ? authorThread ?? null : null;
   const provenance = prior === null ? 'thread/start; no author thread resumed'
     : `thread/resume; author thread ${prior.threadId}`;
   return { role, prior, text: `\nYou are executing ${operation} as ${workflowSkill}.\nContext provenance: ${provenance}.\n`
-    + 'The external manager is the caller and invokes the next operation from your returned handoff. Complete this selected operation, including the internal delegation required by its skill, then return its result and public handoff.\n' };
+    + 'The external manager is the caller and invokes the next operation from your returned handoff. Complete this selected operation, including the internal delegation required by its skill, then return its result and public handoff.\n'
+    + `Temporary work directory: ${temporaryDirectory}\n`
+    + 'Use this repository-local directory for authored scratch files and lifecycle candidates, and pass this same restriction to every delegated agent. Do not choose external/system temporary paths; preserve the inherited process-local TMPDIR for tool-managed temporaries.\n' };
 }
 
 export function nativeRunnerContext(operation, bundle, eventsFile) {
@@ -568,7 +570,8 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
       const template = await fs.readFile(templatePath, 'utf8');
       const workflowSkill = operation.startsWith('SPEC_')
         ? 'stnl-spec-lifecycle-manager' : product.workflowSkillForOperation(operation);
-      const { role, prior, text: invocation } = invocationContext(operation, workflowSkill, policy, state.authorThread);
+      const temporaryDirectory = await fs.realpath(path.join(caseRoot, 'tmp'));
+      const { role, prior, text: invocation } = invocationContext(operation, workflowSkill, policy, state.authorThread, temporaryDirectory);
       const operationId = `${caseId}-${String(sequence).padStart(2, '0')}-${operation}`;
       const prompt = `$${workflowSkill}\n` + renderLauncher(template, { SPEC_PATH: specPath, REQUIREMENTS_SOURCE: requirementsPath,
         SLICE: slice === null ? '' : specInput(slice), READINESS_SCOPE: 'GLOBAL', READINESS_FOCUS: 'not-applicable',
