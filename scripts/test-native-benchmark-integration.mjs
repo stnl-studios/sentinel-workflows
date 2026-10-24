@@ -153,6 +153,11 @@ for (const [regime, fault] of [['fresh', null], ['author-continuity', null], ['f
     assert.equal(skill.length, 1); assert.equal(text.length, 1);
     assert.equal(skill[0].path, path.join(runRoot, 'snapshot/skills/workflows', skill[0].name, 'SKILL.md'));
     assert.ok(text[0].text.startsWith(`$${skill[0].name}\n`), 'normal explicit mention agrees with native skill item');
+    assert.match(text[0].text, /The manager is the caller for this invocation\./u,
+      'every operation must receive the same caller boundary through the normal dispatch path');
+    assert.match(text[0].text, /including the internal delegation required by its skill/u,
+      'returning the handoff must preserve required checks inside the selected operation');
+    assert.match(text[0].text, /return control with its result and public handoff\. The manager invokes the next operation from that handoff\./u);
     if (['stnl-execution-planner', 'stnl-plan-reviewer'].includes(skill[0].name)) {
       const originalInput = text[0].text.match(/^Original requirements input: (.+)$/mu)?.[1];
       assert.equal(originalInput, path.join(runRoot, 'case-a/workspace/requirements.md'),
@@ -163,6 +168,9 @@ for (const [regime, fault] of [['fresh', null], ['author-continuity', null], ['f
   }
   const extra = fault === 'findings-cycle' ? 2 : 0;
   const refusalChild=fault==='formal-successor'?1:0;
+  assert.deepEqual(backend.operations.map(item => item.operation), ['SPEC_INIT', 'PLAN', 'REVIEW_PLAN',
+    'EXECUTE_SLICE', 'VALIDATE_SLICE', ...(extra ? ['APPLY_FINDINGS', 'VALIDATE_SLICE'] : []), 'SPEC_CLOSE'],
+  'the manager follows each public handoff once, retaining the separate independent review');
   assert.equal(result.operations, 6 + extra); assert.equal(result.runnerTurns, 2 + extra + refusalChild); assert.equal(result.mainTurns, 6 + extra);
   const state = JSON.parse(await fs.readFile(path.join(runRoot, 'case-a/case-state.json')));
   for (const operation of state.operations) {
@@ -279,7 +287,7 @@ test('literal manager entry parses ordinary run --case A and retains its normal 
   await assert.rejects(fs.lstat(path.join(fixture.root,'benchmark-temp/.active-run.json')),{code:'ENOENT'});
 });
 
-for (const fault of ['foreign-child','grandchildren','budget']) test(`normal entry blocks ${fault} without successor, refund or proof substitution`, async t => {
+for (const fault of ['foreign-child','grandchildren','budget','unexpected-plan-child']) test(`normal entry blocks ${fault} without successor, refund or proof substitution`, async t => {
   const fixture = await allocateOfflineFixture(repo);
   t.after(async () => { await finishOfflineFixture(fixture); });
   const url = relative => pathToFileURL(path.join(fixture.root, relative)).href;
@@ -304,8 +312,21 @@ for (const fault of ['foreign-child','grandchildren','budget']) test(`normal ent
     const file = path.join(runRoot,'case-a/case-state.json'), state = JSON.parse(await fs.readFile(file));
     assert.notEqual(state.status,'PASS'); assert.ok(!backend.operations.some(item => item.operation === 'SPEC_CLOSE'));
     const ledger = JSON.parse(await fs.readFile(path.join(runRoot,'.turn-ledger.json')));
-    assert.equal(backend.calls.filter(call => call.method === 'turn/start').length,fault === 'budget' ? 3 : 4);
-    if (fault === 'budget') {
+    assert.equal(backend.calls.filter(call => call.method === 'turn/start').length,
+      fault === 'unexpected-plan-child' ? 2 : fault === 'budget' ? 3 : 4);
+    if (fault === 'unexpected-plan-child') {
+      assert.deepEqual(backend.operations.map(item => item.operation), ['SPEC_INIT', 'PLAN']);
+      assert.equal(state.terminal.result, 'BLOCKED');
+      const evidence = JSON.parse(await fs.readFile(state.operations.at(-1).evidencePath));
+      assert.match(evidence.turn.error, /native child outside reserved operation margin/u);
+      assert.equal(evidence.officialReadback.execution.state, 'NO_EXECUTION');
+      assert.equal(ledger.total, 3); assert.equal(ledger.reservations.length, 0);
+      const unexpected = ledger.turns.filter(turn => turn.unadmitted);
+      assert.equal(unexpected.length, 1);
+      assert.equal(unexpected[0].operation, 'PLAN'); assert.equal(unexpected[0].state, 'uncertain');
+      assert.equal(unexpected[0].agentPath, '/root/review_plan');
+      await assert.rejects(manager.main(['clean','--run',runId]),/pending\/uncertain/);
+    } else if (fault === 'budget') {
       assert.equal(ledger.total,3); assert.equal(ledger.reservations.length,0);
     } else {
       assert.ok(ledger.turns.some(turn => turn.state === 'uncertain'));

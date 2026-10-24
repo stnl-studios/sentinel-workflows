@@ -62,6 +62,14 @@ export function offlineNativeWorkflow({ workspace, caseRoot, snapshot, fault = n
       }
       preparation = await publishPreparationCandidate({ specPath, candidateExecutionRoot: allocated.candidateExecutionRoot });
       command(turn.items, preparation);
+      if (fault === 'unexpected-plan-child') {
+        const childId = randomUUID();
+        threads.set(childId, { id: childId, parentThreadId: thread.id, cliVersion: '0.163.0',
+          cwd: workspace, historyMode: 'paginated', forkedFromId: null, agentRole: 'default',
+          model: 'gpt-6-luna', reasoningEffort: 'high', turns: [] });
+        turn.items.push({ id: randomUUID(), type: 'subAgentActivity', kind: 'started',
+          agentPath: '/root/review_plan', agentThreadId: childId });
+      }
     } else if (operation === 'REVIEW_PLAN') {
       if (!prompt.includes(`CANDIDATE_EXECUTION_ROOT=${preparation.candidateExecutionRoot}`)) throw new Error('fixture root was not passed to the independent review');
       const { projectInitialPreparation } = await import('../../skills/workflows/stnl-execution-planner/runtime/execution-preparation-current.mjs');
