@@ -306,6 +306,8 @@ for (const [name, value, expected] of [
   ['state', { code: -32600, message: 'thread private-id is not materialized; unavailable before first user message' },
     { code: -32600, description: 'not materialized; unavailable before first user message' }],
   ['capability', { code: -32600, message: 'requires experimental API; private data omitted' }, { code: -32600, description: 'experimental' }],
+  ['history-io', { code: -32603, message: 'failed to read thread: /Users/private/session: No such file or directory (os error 2)' },
+    { code: -32603, description: 'failed to read thread; no such file or directory; os error 2' }],
   ['unknown', { code: -32001, message: 'Bearer secret-value /Users/private/session', data: { token: 'secret-value' } }, { code: -32001, description: 'omitted' }],
   ['invalid-code', { code: 'secret-value', message: 'private server detail' }, { code: null, description: 'omitted' }],
   ['oversized-code', { code: 1e100, message: 'private server detail' }, { code: null, description: 'omitted' }],
@@ -356,6 +358,133 @@ test('provider result and event retain safe RPC rejection detail without another
   const events = await fs.readFile(result.eventsPath, 'utf8');
   assert.ok(events.includes(result.error));
   for (const secret of ['private-id','private-secret','Bearer']) assert.equal(JSON.stringify(result).includes(secret) || events.includes(secret), false);
+});
+
+async function historyBootstrapFixture(t, history) {
+  const f = await fixture(t), s = server({ bundle: f.bundle, cwd: f.root, provider: true,
+    mutate: state => { state.parentItems = []; } }), w = wire(t), request = s.rpc.request;
+  let reads = 0;
+  s.rpc.request = (method, params) => {
+    if (method !== 'thread/turns/list') return request(method, params);
+    reads++;
+    const next = history(reads, params);
+    if (next === undefined) return request(method, params);
+    const pending = w.rpc.request(method, params);
+    if (next !== 'stall') w.input.write(JSON.stringify({ id: w.sent.at(-1).id,
+      ...(next.error ? { error: next.error } : { result: next }) })+'\n');
+    return pending;
+  };
+  const provider = await createNativeProvider({ snapshot: f.root, workspace: f.root, evidenceRoot: f.root, rpc: s.rpc, pollMs: 1 });
+  return { f, s, w, provider, reads: () => reads,
+    args: { prompt: 'offline only', workflowSkill: 'stnl-slice-executor', model: 'gpt-6-luna', effort: 'high',
+      operationId: 'history-bootstrap', role: 'author', timeoutMs: 200 } };
+}
+
+for (const [name, first] of [
+  ['not-materialized', { error: { code: -32600, message: `thread ${parent} is not materialized yet; thread/turns/list is unavailable before first user message` } }],
+  ['read-enoent', { error: { code: -32603, message: 'failed to read thread: /Users/private/rollout: No such file or directory (os error 2)' } }],
+  ['list-enoent', { error: { code: -32603, message: 'failed to list thread history: No such file or directory (os error 2)' } }],
+  ['load-enoent', { error: { code: -32603, message: `failed to load thread history for thread ${parent}: No such file or directory (os error 2)` } }],
+  ['empty-page', { data: [], nextCursor: null }],
+]) test(`initial public history ${name} is observed on the same dispatch without another turn`, async t => {
+  const h = await historyBootstrapFixture(t, n => n === 1 ? first : undefined);
+  const result = await h.provider.runTurn(h.args);
+  assert.equal(result.completed, true); assert.equal(result.threadId, parent); assert.equal(result.turnId, 'parent-turn');
+  assert.equal(h.reads(), 2); assert.equal(h.s.calls.filter(c => c.method === 'turn/start').length, 1);
+  const events = (await fs.readFile(result.eventsPath, 'utf8')).split('\n').filter(Boolean).map(JSON.parse);
+  assert.equal(events.filter(e => e.type === 'native.history.pending').length, 1);
+});
+
+for (const [name, first] of [
+  ['unknown-internal', { error: { code: -32603, message: 'database failure' } }],
+  ['quoted-prefix', { error: { code: -32603, message: 'wrapper quotes failed to read thread: No such file or directory (os error 2)' } }],
+  ['permission', { error: { code: -32603, message: 'failed to read thread: No such file or directory (os error 2); permission denied' } }],
+  ['permission-outside-prefix', { error: { code: -32603, message: 'failed to read thread: No such file or directory (os error 2)'+'x'.repeat(2048)+'operation not permitted' } }],
+  ['foreign-error-thread', { error: { code: -32603, message: `failed to load thread history for thread ${child}: No such file or directory (os error 2)` } }],
+  ['foreign-turn', { data: [{ id: 'foreign', status: 'completed' }], nextCursor: null }],
+  ['duplicate-turn', { data: [{ id: 'parent-turn' }, { id: 'parent-turn' }], nextCursor: null }],
+]) test(`initial public history ${name} remains blocking`, async t => {
+  const h = await historyBootstrapFixture(t, () => first), result = await h.provider.runTurn(h.args);
+  assert.equal(result.completed, false); assert.equal(h.reads(), 1);
+  assert.equal(h.s.calls.filter(c => c.method === 'turn/start').length, 1);
+});
+
+test('initial public history tolerance ends after the first valid observation', async t => {
+  const h = await historyBootstrapFixture(t, n => n === 1
+    ? { data: [{ id: 'parent-turn', status: 'inProgress', error: null }], nextCursor: null }
+    : { error: { code: -32603, message: 'failed to read thread: No such file or directory (os error 2)' } });
+  const result = await h.provider.runTurn(h.args);
+  assert.equal(result.completed, false); assert.equal(h.reads(), 2);
+  assert.equal(h.s.calls.filter(c => c.method === 'turn/start').length, 1);
+});
+
+test('initial public history deadline includes a stalled RPC', async t => {
+  const h = await historyBootstrapFixture(t, () => 'stall'), started = Date.now();
+  const result = await h.provider.runTurn({ ...h.args, timeoutMs: 25 });
+  assert.equal(result.completed, false); assert.ok(Date.now()-started < 500, 'must not await the 1000ms RPC timeout');
+  assert.equal(h.reads(), 1); assert.equal(h.s.calls.filter(c => c.method === 'turn/start').length, 1);
+});
+
+test('initial public history never refreshes the deadline for persisted observation', async t => {
+  const h = await historyBootstrapFixture(t, () => ({ error: { code: -32603,
+    message: 'failed to read thread: No such file or directory (os error 2)' } }));
+  await fs.writeFile(path.join(h.f.root, 'history-bootstrap.events.jsonl'), '');
+  const result = await h.provider.runTurn({ ...h.args, observation: { threadId: parent, turnId: 'parent-turn' } });
+  assert.equal(result.completed, false); assert.equal(h.reads(), 1);
+  assert.equal(h.s.calls.filter(c => c.method === 'turn/start').length, 0);
+});
+
+test('initial public history pending cannot certify completion and respects cancellation', async t => {
+  const controller = new AbortController();
+  const h = await historyBootstrapFixture(t, () => { controller.abort(); return { data: [], nextCursor: null }; });
+  const result = await h.provider.runTurn({ ...h.args, signal: controller.signal });
+  assert.equal(result.completed, false); assert.equal(result.response, null); assert.deepEqual(result.captures, []);
+  assert.equal(h.reads(), 1); assert.equal(h.s.calls.filter(c => c.method === 'turn/start').length, 1);
+});
+
+test('initial public history late checkpoint cannot open a new observation window', async t => {
+  const h = await historyBootstrapFixture(t, () => undefined);
+  const result = await h.provider.runTurn({ ...h.args, timeoutMs: 20,
+    onDispatched: () => new Promise(resolve => setTimeout(resolve, 35)) });
+  assert.equal(result.completed, false); assert.equal(result.threadId, parent);
+  assert.match(result.error, /initial public history observation deadline exceeded/u);
+  assert.equal(h.reads(), 0); assert.equal(h.s.calls.filter(c => c.method === 'turn/start').length, 1);
+});
+
+test('initial public history late synchronous reply cannot beat an expired timer', async t => {
+  const h = await historyBootstrapFixture(t, () => {
+    // Deliberately hold the event loop, making a resolved RPC race a timer that
+    // has expired but whose callback has not run. No production sleep is added.
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 35);
+    return undefined;
+  });
+  const result = await h.provider.runTurn({ ...h.args, timeoutMs: 20 });
+  assert.equal(result.completed, false); assert.equal(result.response, null);
+  assert.equal(h.reads(), 1); assert.equal(h.s.calls.filter(c => c.method === 'turn/start').length, 1);
+});
+
+test('initial public history cancellation during a completed RPC cannot certify completion', async t => {
+  const controller = new AbortController();
+  const h = await historyBootstrapFixture(t, () => { controller.abort(); return undefined; });
+  const result = await h.provider.runTurn({ ...h.args, signal: controller.signal });
+  assert.equal(result.completed, false); assert.equal(result.response, null); assert.deepEqual(result.captures, []);
+  assert.equal(h.reads(), 1); assert.equal(h.s.calls.filter(c => c.method === 'turn/start').length, 1);
+});
+
+test('initial public history pre-aborted dispatch clears its timer before slow diagnostic IO', async t => {
+  const h = await historyBootstrapFixture(t, () => undefined), controller = new AbortController();
+  h.s.rpc.stderrSample = () => 'bounded diagnostic\n';
+  const write = fs.writeFile, sample = path.join(h.f.root, 'tmp/app-server-stderr-sample.txt');
+  fs.writeFile = async (file, ...args) => {
+    if (file === sample) await new Promise(resolve => setTimeout(resolve, 40));
+    return write(file, ...args);
+  };
+  try {
+    const result = await h.provider.runTurn({ ...h.args, timeoutMs: 20, signal: controller.signal,
+      onDispatched: () => controller.abort() });
+    assert.equal(result.completed, false); assert.equal(result.stderrSample.status, 'retained');
+    assert.equal(h.reads(), 0); assert.equal(h.s.calls.filter(c => c.method === 'turn/start').length, 1);
+  } finally { fs.writeFile = write; }
 });
 
 for (const kind of ['early-denial-in-long-chunk', 'split-denial', 'diagnostic-overflow']) {

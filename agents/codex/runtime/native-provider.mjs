@@ -50,7 +50,7 @@ export async function createNativeProvider({ snapshot, workspace, evidenceRoot, 
       const record = async event => {
         events.push(event); await fs.appendFile(eventsFile, `${JSON.stringify(event)}\n`);
       };
-      let dispatch = null, dispatchAttempted = false;
+      let dispatch = null, dispatchAttempted = false, historyTimer = null;
       try {
         if (role !== 'author' && priorAuthorThread !== null) throw blocked('review context cannot inherit author history');
         dispatchAttempted = true;
@@ -59,12 +59,43 @@ export async function createNativeProvider({ snapshot, workspace, evidenceRoot, 
           // Explicit null inherits the normal client's configured permissions.
           // The benchmark never silently enables Full Access/never.
           admittedAuthorThread: priorAuthorThread, approvalPolicy: null, sandbox: null });
+        const acknowledgedAt = Date.now();
+        const historyDeadlineAt = observation === null && priorAuthorThread === null
+          ? acknowledgedAt + Math.min(30_000, timeoutMs) : null;
         await onDispatched?.(dispatch);
         await record({ type: observation === null ? 'native.turn.started' : 'native.turn.observation-resumed', ...dispatch, operationId, role });
-        const started = Date.now(); let observed;
+        const started = Date.now(); let observed, historyObserved = false, pendingRecorded = false;
+        // ACK is not a readable history barrier. Observe this fresh dispatch
+        // within one bounded window; never restart it on persisted observation.
+        if (historyDeadlineAt !== null && Date.now() >= historyDeadlineAt) {
+          throw blocked('initial public history observation deadline exceeded; dispatch remains uncertain');
+        }
+        const historyDeadline = historyDeadlineAt !== null ? new Promise((_, reject) => {
+          historyTimer = setTimeout(() => reject(blocked('initial public history observation deadline exceeded; dispatch remains uncertain')),
+            Math.max(0, historyDeadlineAt - Date.now()));
+        }) : null;
         for (;;) {
           if (signal?.aborted || Date.now() - started > timeoutMs) throw blocked('observation interrupted; started turn is uncertain');
-          observed = await readAppServerTurn(rpc, dispatch);
+          if (!historyObserved && historyDeadlineAt !== null && Date.now() >= historyDeadlineAt) {
+            throw blocked('initial public history observation deadline exceeded; dispatch remains uncertain');
+          }
+          try {
+            const reading = readAppServerTurn(rpc, dispatch);
+            observed = await (!historyObserved && historyDeadline ? Promise.race([reading, historyDeadline]) : reading);
+          } catch (error) {
+            if (historyObserved || !historyDeadline || error.initialHistoryUnavailable !== true) throw error;
+            if (!pendingRecorded) {
+              await record({ type: 'native.history.pending', ...dispatch, message: error.message });
+              pendingRecorded = true;
+            }
+            await Promise.race([wait(pollMs, signal), historyDeadline]);
+            continue;
+          }
+          if (signal?.aborted || Date.now() - started > timeoutMs) throw blocked('observation interrupted; started turn is uncertain');
+          if (!historyObserved && historyDeadlineAt !== null && Date.now() >= historyDeadlineAt) {
+            throw blocked('initial public history observation deadline exceeded; dispatch remains uncertain');
+          }
+          historyObserved = true; clearTimeout(historyTimer); historyTimer = null;
           if (observed.items.some(deniedShellTemporaryFile)) throw blocked('SANDBOX_COMMAND_DENIED: implicit temporary file denial');
           for (const item of observed.items) {
             if (item.type !== 'subAgentActivity' || item.kind !== 'started') continue;
@@ -110,6 +141,7 @@ export async function createNativeProvider({ snapshot, workspace, evidenceRoot, 
           authorThread: role === 'author' ? { threadId: dispatch.threadId, cwd: workspace,
             bundleSha256: sha(Buffer.from(JSON.stringify(bundle))), role: 'author' } : null };
       } catch (error) {
+        clearTimeout(historyTimer); historyTimer = null;
         if (error.descendants?.length) await onUnadmittedChildren?.(error.descendants);
         const stderrSample = await persistAppServerStderrSample(rpc, evidenceRoot);
         await record({ type: 'native.transport.blocked', code: error.code ?? 'DRIVER_FAILURE',
@@ -119,7 +151,7 @@ export async function createNativeProvider({ snapshot, workspace, evidenceRoot, 
           captures: [], commandResults: [], eventsPath: eventsFile, error: error.message,
           errorCode: error.code ?? 'NATIVE_TRANSPORT_UNPROVEN', requestedModel: model, requestedEffort: effort,
           observation: dispatch, stderrSample };
-      }
+      } finally { clearTimeout(historyTimer); }
     },
     close() { connection?.close(); },
   };

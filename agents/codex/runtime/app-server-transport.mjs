@@ -25,16 +25,27 @@ const STDERR_PHRASES = ['operation not permitted', 'permission denied', 'no such
 
 // Only a numeric protocol code and fixed categories may escape a rejection.
 // Unknown messages, data, paths and identifiers are never retained verbatim.
-function rpcRejection(method, value) {
+function rpcRejection(method, value, threadId) {
   const code = Number.isSafeInteger(value?.code) ? value.code : null;
   const prefix = typeof value?.message === 'string' ? value.message.slice(0, 2048).toLowerCase() : '';
   const categories = ['method not found', 'invalid params', 'invalid request',
     'not materialized', 'unavailable before first user message', 'no rollout found',
     'missing source rollout', 'experimental', 'not supported', 'paginated',
+    'failed to read thread', 'failed to load thread history', 'failed to list thread history', 'failed to list thread items',
+    'thread not loaded', 'no such file or directory', 'os error 2',
     'permission denied', 'operation not permitted'].filter(text => prefix.includes(text));
   const description = categories.join('; ').slice(0, 256) || 'omitted';
   const detail = code === null && description === 'omitted' ? '' : ` (RPC ${code ?? 'unknown'}: ${description})`;
-  return Object.assign(fail(`App Server rejected ${method}${detail}`), { rpcError: { code, description } });
+  // This marker is stricter than the diagnostic categories: exact server
+  // prefix, scoped request and ENOENT only. Never defer a permission failure.
+  const scoped = method === 'thread/turns/list' && typeof threadId === 'string' && threadId.length <= 256;
+  const initialHistoryUnavailable = scoped && !/permission denied|operation not permitted/iu.test(value?.message ?? '')
+    && ((code === -32600 && prefix === `thread ${threadId.toLowerCase()} is not materialized yet; thread/turns/list is unavailable before first user message`)
+      || (code === -32603 && /no such file or directory \(os error 2\)/u.test(prefix)
+        && (prefix.startsWith('failed to read thread: ')
+          || prefix.startsWith('failed to list thread history: ')
+          || prefix.startsWith(`failed to load thread history for thread ${threadId.toLowerCase()}: `))));
+  return Object.assign(fail(`App Server rejected ${method}${detail}`), { rpcError: { code, description }, initialHistoryUnavailable });
 }
 
 async function physical(file, directory = false) {
@@ -124,7 +135,7 @@ export function appServerRpc({ input, output, diagnostics = null, timeoutMs = 30
           requireThat(entry && (Object.hasOwn(message, 'result') !== Object.hasOwn(message, 'error')),
             'unexpected RPC response');
           clearTimeout(entry.timer); pending.delete(message.id);
-          if (message.error) entry.reject(rpcRejection(entry.method, message.error));
+          if (message.error) entry.reject(rpcRejection(entry.method, message.error, entry.threadId));
           else entry.resolve(message.result);
         }
         // Notifications are hints, never completion evidence. Read scoped public
@@ -165,7 +176,8 @@ export function appServerRpc({ input, output, diagnostics = null, timeoutMs = 30
       const requestId = nextId++;
       return new Promise((resolve, reject) => {
         const timer = setTimeout(() => stop(fail(`RPC timeout for ${method}; effect uncertain`)), timeoutMs);
-        pending.set(requestId, { resolve, reject, timer, method });
+        pending.set(requestId, { resolve, reject, timer, method,
+          threadId: typeof params?.threadId === 'string' && params.threadId.length <= 256 ? params.threadId : null });
         try { send({ id: requestId, method, params }); } catch (error) { stop(error); }
       });
     },
@@ -338,6 +350,7 @@ export async function readAppServerTurn(rpc, { threadId, turnId }) {
   requireThat(id(threadId) && id(turnId), 'missing scoped turn identity');
   const turns = await pages(rpc, 'thread/turns/list', { threadId, itemsView: 'full' });
   const selected = turns.filter(turn => turn.id === turnId);
+  if (turns.length === 0) throw Object.assign(fail('public history has no turn yet'), { initialHistoryUnavailable: true });
   requireThat(selected.length === 1, 'scoped turn absent/ambiguous in public history');
   return { turn: selected[0], items: await pages(rpc, 'thread/items/list', { threadId, turnId }) };
 }
