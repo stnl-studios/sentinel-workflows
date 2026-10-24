@@ -402,6 +402,26 @@ test('provider result and event retain safe RPC rejection detail without another
   for (const secret of ['private-id','private-secret','Bearer']) assert.equal(JSON.stringify(result).includes(secret) || events.includes(secret), false);
 });
 
+const initialRollout = `/Users/private/.codex/sessions/rollout-2026-10-24-${parent}.jsonl`;
+const emptyMetadataError = (file = initialRollout, nested = true) => ({ code: -32603,
+  message: `failed to read thread: thread-store internal error: failed to read session metadata ${file}: ${nested ? `thread-store internal error: failed to read session metadata ${file}: ` : ''}rollout at ${file} is empty` });
+for (const [name, value, allowed] of [
+  ['official-nested', emptyMetadataError(), true],
+  ['official-direct', emptyMetadataError(initialRollout, false), true],
+  ['foreign-rollout', emptyMetadataError(initialRollout.replace(parent, child)), false],
+  ['path-traversal', emptyMetadataError(initialRollout.replace('/sessions/', '/sessions/../sessions/')), false],
+  ['different-inner-path', {code:-32603,message:emptyMetadataError().message.replace(`rollout at ${initialRollout}`, `rollout at /other-${parent}.jsonl`)}, false],
+  ['case-distinct-inner-path', {code:-32603,message:emptyMetadataError().message.replace(`rollout at ${initialRollout}`, `rollout at ${initialRollout.replace('/private/', '/PRIVATE/')}`)}, false],
+  ['quoted-wrapper', {code:-32603,message:'wrapper says '+emptyMetadataError().message}, false],
+  ['suffix', {code:-32603,message:emptyMetadataError().message+'; schema mismatch'}, false],
+  ['permission', {code:-32603,message:emptyMetadataError().message+'; permission denied'}, false],
+  ['metadata-order', {code:-32603,message:emptyMetadataError().message.replace('is empty', 'does not start with session metadata')}, false],
+]) test(`initial empty metadata scopes the exact causal chain: ${name}`, async t => {
+  const w=wire(t), pending=w.rpc.request('thread/turns/list',{threadId:parent});
+  const rejected=assert.rejects(pending,error=>{assert.equal(error.initialHistoryUnavailable,allowed);return true;});
+  w.input.write(JSON.stringify({id:w.sent[0].id,error:value})+'\n'); await rejected; assert.equal(w.sent.length,1);
+});
+
 async function historyBootstrapFixture(t, history) {
   const f = await fixture(t), s = server({ bundle: f.bundle, cwd: f.root, provider: true,
     mutate: state => { state.parentItems = []; } }), w = wire(t), request = s.rpc.request;
@@ -428,6 +448,7 @@ for (const [name, first] of [
   ['list-enoent', { error: { code: -32603, message: 'failed to list thread history: No such file or directory (os error 2)' } }],
   ['load-enoent', { error: { code: -32603, message: `failed to load thread history for thread ${parent}: No such file or directory (os error 2)` } }],
   ['empty-page', { data: [], nextCursor: null }],
+  ['metadata-not-yet-readable', { error: emptyMetadataError() }],
 ]) test(`initial public history ${name} is observed on the same dispatch without another turn`, async t => {
   const h = await historyBootstrapFixture(t, n => n === 1 ? first : undefined);
   const result = await h.provider.runTurn(h.args);
@@ -450,6 +471,17 @@ for (const [name, first] of [
   const h = await historyBootstrapFixture(t, () => first), result = await h.provider.runTurn(h.args);
   assert.equal(result.completed, false); assert.equal(h.reads(), 1);
   assert.equal(h.s.calls.filter(c => c.method === 'turn/start').length, 1);
+});
+
+test('initial metadata absence cannot bypass the deadline or permit a resumed turn', async t => {
+  const h=await historyBootstrapFixture(t,()=>({error:emptyMetadataError()}));
+  const result=await h.provider.runTurn({...h.args,timeoutMs:25});
+  assert.equal(result.completed,false);assert.ok(h.reads()>=1);
+  assert.equal(h.s.calls.filter(c=>c.method==='turn/start').length,1);
+  await fs.writeFile(path.join(h.f.root,'history-bootstrap.events.jsonl'),'');
+  const before=h.reads();const resumed=await h.provider.runTurn({...h.args,observation:{threadId:parent,turnId:'parent-turn'}});
+  assert.equal(resumed.completed,false);assert.equal(h.reads(),before+1);
+  assert.equal(h.s.calls.filter(c=>c.method==='turn/start').length,1);
 });
 
 test('initial public history tolerance ends after the first valid observation', async t => {

@@ -43,11 +43,24 @@ function historyErrorShape(prefix) {
   return labels.length ? `history cause: ${labels.join('; ')}`.slice(0, 256) : 'failed to read thread; cause omitted';
 }
 
+// Official 0.163 metadata reader can observe a newly materialized rollout
+// before SessionMeta is available. Match the complete causal chain and the
+// same scoped rollout path; never use the diagnostic label as authorization.
+function initialRolloutMetadataPending(prefix, threadId) {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u.test(threadId)) return false;
+  const head = 'failed to read thread: thread-store internal error: failed to read session metadata ';
+  if (!prefix.startsWith(head)) return false;
+  const match = /^(\/[^\r\n\0]+?\.jsonl): (?:thread-store internal error: failed to read session metadata \1: )?rollout at \1 is empty$/u.exec(prefix.slice(head.length));
+  return match !== null && path.posix.normalize(match[1]) === match[1]
+    && path.posix.basename(match[1]).endsWith(`-${threadId}.jsonl`);
+}
+
 // Only a numeric protocol code and fixed categories may escape a rejection.
 // Unknown messages, data, paths and identifiers are never retained verbatim.
 function rpcRejection(method, value, threadId) {
   const code = Number.isSafeInteger(value?.code) ? value.code : null;
-  const prefix = typeof value?.message === 'string' ? value.message.slice(0, 2048).toLowerCase() : '';
+  const rawPrefix = typeof value?.message === 'string' ? value.message.slice(0, 2048) : '';
+  const prefix = rawPrefix.toLowerCase();
   const categories = ['method not found', 'invalid params', 'invalid request',
     'not materialized', 'unavailable before first user message', 'no rollout found',
     'missing source rollout', 'experimental', 'not supported', 'paginated',
@@ -65,6 +78,7 @@ function rpcRejection(method, value, threadId) {
   const scoped = method === 'thread/turns/list' && typeof threadId === 'string' && threadId.length <= 256;
   const initialHistoryUnavailable = scoped && !/permission denied|operation not permitted/iu.test(value?.message ?? '')
     && ((code === -32600 && prefix === `thread ${threadId.toLowerCase()} is not materialized yet; thread/turns/list is unavailable before first user message`)
+      || (code === -32603 && initialRolloutMetadataPending(rawPrefix, threadId.toLowerCase()))
       || (code === -32603 && /no such file or directory \(os error 2\)/u.test(prefix)
         && (prefix.startsWith('failed to read thread: ')
           || prefix.startsWith('failed to list thread history: ')
