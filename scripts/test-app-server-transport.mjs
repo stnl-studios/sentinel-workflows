@@ -5,7 +5,7 @@ import path from 'node:path';
 import { PassThrough } from 'node:stream';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { appServerRpc, initializeAppServer, describeAppServerBundle, assertAppServerBundle,
+import { appServerEnvironment, appServerRpc, initializeAppServer, describeAppServerBundle, assertAppServerBundle,
   selectAppServerBundle, startAppServerTurn, bindAppServerChild, readAppServerChild,
   writeNativeToolResult, captureAppServerChild, persistAppServerStderrSample } from '../agents/codex/runtime/app-server-transport.mjs';
 import { createNativeProvider } from '../agents/codex/runtime/native-provider.mjs';
@@ -19,6 +19,15 @@ const blocked = error => error.code === 'NATIVE_TRANSPORT_UNPROVEN';
 const parent = '019a0000-0000-7000-8000-000000000001';
 const child = '019a0000-0000-7000-8000-000000000002';
 const identity = { parentThreadId: parent, parentTurnId: 'parent-turn', agentPath: '/root/check-one' };
+
+test('owned App Server excludes inherited informational span logging without changing HOME/config or its caller', () => {
+  const environment = Object.freeze({ HOME: '/normal-home', CODEX_HOME: '/existing-codex-home',
+    PATH: '/existing-path', RUST_LOG: 'info,codex_exec_server::remote=info', LOG_FORMAT: 'json',
+    UNRELATED_SETTING: 'preserved' });
+  assert.deepEqual(appServerEnvironment(environment), { ...environment, RUST_LOG: 'warn' });
+  assert.equal(environment.RUST_LOG, 'info,codex_exec_server::remote=info');
+  assert.deepEqual(appServerEnvironment({ HOME: '/normal-home' }), { HOME: '/normal-home', RUST_LOG: 'warn' });
+});
 
 async function fixture(t) {
   await fs.mkdir(path.join(repo, 'tmp'), { recursive: true });
@@ -290,6 +299,64 @@ function wire(t, options = {}) {
   t.after(() => { rpc.close(); input.destroy(); output.destroy(); diagnostics.destroy(); });
   return { input, output, diagnostics, rpc, sent };
 }
+
+for (const [name, value, expected] of [
+  ['method', { code: -32601, message: 'Method not found: private-method' }, { code: -32601, description: 'method not found' }],
+  ['params', { code: -32602, message: 'Invalid params at /Users/private/config' }, { code: -32602, description: 'invalid params' }],
+  ['state', { code: -32600, message: 'thread private-id is not materialized; unavailable before first user message' },
+    { code: -32600, description: 'not materialized; unavailable before first user message' }],
+  ['capability', { code: -32600, message: 'requires experimental API; private data omitted' }, { code: -32600, description: 'experimental' }],
+  ['unknown', { code: -32001, message: 'Bearer secret-value /Users/private/session', data: { token: 'secret-value' } }, { code: -32001, description: 'omitted' }],
+  ['invalid-code', { code: 'secret-value', message: 'private server detail' }, { code: null, description: 'omitted' }],
+  ['oversized-code', { code: 1e100, message: 'private server detail' }, { code: null, description: 'omitted' }],
+]) test(`RPC rejection retains bounded code/category only: ${name}`, async t => {
+  const w = wire(t), pending = w.rpc.request('thread/turns/list', { threadId: parent });
+  const rejection = assert.rejects(pending, error => {
+    assert.equal(error.code, 'NATIVE_TRANSPORT_UNPROVEN');
+    assert.deepEqual(error.rpcError, expected);
+    const serialized = JSON.stringify({ message: error.message, rpcError: error.rpcError });
+    for (const secret of ['secret-value', '/Users/', 'private-id', 'private-method', 'private data', 'private server']) assert.equal(serialized.includes(secret), false);
+    assert.ok(Buffer.byteLength(error.rpcError.description) <= 256);
+    return true;
+  });
+  const line = Buffer.from(JSON.stringify({ id: w.sent[0].id, error: value })+'\n');
+  // The projection sees the decoded frame, so secrets split across chunks cannot escape.
+  for (let offset=0; offset<line.length; offset+=7) w.input.write(line.subarray(offset, offset+7));
+  await rejection;
+  assert.equal(w.sent.length, 1);
+});
+
+test('RPC rejection omits text after its 2048-character diagnostic prefix', async t => {
+  const w = wire(t), pending = w.rpc.request('thread/read', { threadId: child });
+  const rejected = assert.rejects(pending, error => {
+    assert.deepEqual(error.rpcError, { code: -32600, description: 'omitted' }); return true;
+  });
+  w.input.write(JSON.stringify({ id: w.sent[0].id, error: { code: -32600,
+    message: 'x'.repeat(2048)+'permission denied private-value', data: 'secret-value' } })+'\n');
+  await rejected; assert.equal(w.sent.length, 1);
+});
+
+test('provider result and event retain safe RPC rejection detail without another turn', async t => {
+  const f = await fixture(t), s = server({ bundle: f.bundle, cwd: f.root, provider: true }), w = wire(t);
+  const request = s.rpc.request;
+  s.rpc.request = (method, params) => {
+    if (method !== 'thread/turns/list') return request(method, params);
+    const pending = w.rpc.request(method, params);
+    w.input.write(JSON.stringify({ id: w.sent.at(-1).id, error: { code: -32600,
+      message: 'thread private-id is not materialized; Bearer private-secret', data: { secret: 'private-secret' } } })+'\n');
+    return pending;
+  };
+  const provider = await createNativeProvider({ snapshot: f.root, workspace: f.root, evidenceRoot: f.root, rpc: s.rpc });
+  const result = await provider.runTurn({ prompt: 'offline only', workflowSkill: 'stnl-slice-executor',
+    model: 'gpt-6-luna', effort: 'high', operationId: 'rpc-rejection', role: 'author' });
+  assert.equal(result.completed, false); assert.equal(result.turnStarted, null);
+  assert.equal(result.error, 'App Server rejected thread/turns/list (RPC -32600: not materialized)');
+  assert.equal(s.calls.filter(call => call.method === 'turn/start').length, 1);
+  assert.equal(w.sent.length, 1); assert.deepEqual(result.captures, []);
+  const events = await fs.readFile(result.eventsPath, 'utf8');
+  assert.ok(events.includes(result.error));
+  for (const secret of ['private-id','private-secret','Bearer']) assert.equal(JSON.stringify(result).includes(secret) || events.includes(secret), false);
+});
 
 for (const kind of ['early-denial-in-long-chunk', 'split-denial', 'diagnostic-overflow']) {
   test(`S2 diagnostics ${kind} block without disclosing text or dispatching again`, async t => {

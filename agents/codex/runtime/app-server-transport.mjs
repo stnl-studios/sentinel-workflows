@@ -6,6 +6,9 @@ import { spawn } from 'node:child_process';
 import { readRunnerConfiguration } from './validation-runner.mjs';
 
 export const APP_SERVER_VERSION = '0.163.0';
+// A caller's INFO/TRACE filter can emit large span payloads before any turn.
+// Scope logging to this owned process; warnings/errors and the 64 KiB guard stay.
+export const appServerEnvironment = environment => ({ ...environment, RUST_LOG: 'warn' });
 const sha = bytes => `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
 const fail = (message, code = 'NATIVE_TRANSPORT_UNPROVEN') => Object.assign(new Error(message), { code });
 const requireThat = (condition, message) => { if (!condition) throw fail(message); };
@@ -19,6 +22,20 @@ const STDERR_PHRASES = ['operation not permitted', 'permission denied', 'no such
   'failed to load skill', 'failed to read skill', 'failed to parse skill',
   'invalid frontmatter', 'invalid yaml', 'failed to load config', 'failed to parse config',
   'failed to initialize', 'invalid configuration'];
+
+// Only a numeric protocol code and fixed categories may escape a rejection.
+// Unknown messages, data, paths and identifiers are never retained verbatim.
+function rpcRejection(method, value) {
+  const code = Number.isSafeInteger(value?.code) ? value.code : null;
+  const prefix = typeof value?.message === 'string' ? value.message.slice(0, 2048).toLowerCase() : '';
+  const categories = ['method not found', 'invalid params', 'invalid request',
+    'not materialized', 'unavailable before first user message', 'no rollout found',
+    'missing source rollout', 'experimental', 'not supported', 'paginated',
+    'permission denied', 'operation not permitted'].filter(text => prefix.includes(text));
+  const description = categories.join('; ').slice(0, 256) || 'omitted';
+  const detail = code === null && description === 'omitted' ? '' : ` (RPC ${code ?? 'unknown'}: ${description})`;
+  return Object.assign(fail(`App Server rejected ${method}${detail}`), { rpcError: { code, description } });
+}
 
 async function physical(file, directory = false) {
   requireThat(typeof file === 'string' && path.isAbsolute(file) && path.resolve(file) === file,
@@ -107,7 +124,7 @@ export function appServerRpc({ input, output, diagnostics = null, timeoutMs = 30
           requireThat(entry && (Object.hasOwn(message, 'result') !== Object.hasOwn(message, 'error')),
             'unexpected RPC response');
           clearTimeout(entry.timer); pending.delete(message.id);
-          if (message.error) entry.reject(fail(`App Server rejected ${entry.method}`));
+          if (message.error) entry.reject(rpcRejection(entry.method, message.error));
           else entry.resolve(message.result);
         }
         // Notifications are hints, never completion evidence. Read scoped public
@@ -193,7 +210,7 @@ export async function connectAppServer({ cliLauncher, cliSha256, cwd, timeoutMs 
   requireThat(metadata.name === '@openai/codex' && metadata.version === APP_SERVER_VERSION
     && cliSha256 === sha(await fs.readFile(cliLauncher)), 'CLI pin/hash differs');
   const child = spawn(process.execPath, [cliLauncher, 'app-server', '--listen', 'stdio://'],
-    { cwd, env: process.env, stdio: ['pipe', 'pipe', 'pipe'], shell: false });
+    { cwd, env: appServerEnvironment(process.env), stdio: ['pipe', 'pipe', 'pipe'], shell: false });
   const rpc = appServerRpc({ input: child.stdout, output: child.stdin, diagnostics: child.stderr, timeoutMs });
   // Drain without printing potentially sensitive diagnostics or retaining an
   // unbounded buffer. Exit/permission errors stay blocking, not alias bypasses.
