@@ -3126,3 +3126,69 @@ Thread `01a16c0b-ef37-7da2-9ffb-750bf8d0f115`, turn `01a16c0b-f013-7ca1-8b9a-49b
 **Decisão necessária antes de nova admissão:** recomendação proporcional é preservar o perfil genérico autoritativo do produto e decidir explicitamente a adaptação do predicado S2 a esse perfil, com modelo/effort medium selecionado separadamente e prova de path/hash/carregamento/origem/captura integral. Isso altera o contrato de identidade da bancada e requer decisão, não um afrouxamento silencioso. A alternativa é aprovar migração do produto a runner registrado, mudando primeiro contrato e qualificação; não é o ajuste mínimo cotidiano. Separadamente, tratar a delegação prematura como falha de execução/condução, sem guardas dos filtros nem framework novo. Nenhuma dessas mudanças foi implementada. Teto250 não amplia escopo de identidade nem autoriza outra rodada sem evidência nova; não há bloqueio de orçamento. U3.17 integral/S2/Case A continuam sem aceite; U3.18 não iniciada.
 
 **Preservação e fechamento deste incremento:** owner e904c568-118f-47e7-b17a-cd2812c10e96 e seus20arquivos foram inventariados por path/hash sem mutação; run/snapshot/fonte/primeiras respostas/FAILs anteriores mantidos. Nenhum turno/produto/recovery novo após a parada. Três chats settled de INIT/PLAN/REVIEW_PLAN arquivados recuperavelmente; pai/filho de EXECUTE mantidos por pendência do owner. Global127arquivos/modes reconferidos, zero diferença. Fonte/SDK/templates/runner/Claude/main intocados neste resultado; somente documentação de status após e2e848a, sem push/PR/merge/instalação/RECONCILE. Evidências em tmp/u3-planejamento/U3.17-history-codec-2026-10-24: result.json, aggregate-ledger.json, freeze.json, schema-check-result.json, public-runner-metadata.json, official-conclusions.json, TAP antes/depois e inventário de limpeza. Janela04:31–06:31UTC encerrada antecipadamente às05:23UTC (02:23BRT), neste gate bloqueado; não há incremento dependente autorizado em curso. Não declarar entrega concluída.
+
+
+<a id="u317-relatorio-manha"></a>
+### 26.20 Relatório de manhã — autoridade, condução e decisão pendente (somente leitura)
+
+**Resultado autocontido:** U3.17 NÃO concluída. Candidata real e2e848a0d12c6855d04d1c3207b91af8fad8e459, run run-20261024050221-d6daa501: INIT, PLAN e REVIEW_PLAN PASS; EXECUTE BLOCKED; formal, CLOSE, leitores/export terminal e revisão integrada não executados. Nenhum processo próprio ativo. Consumo62/250; esta análise não admitiu modelos, servidores, testes, retries ou recovery e não alterou predicados, perfil ou owner. O documento contém análise/proposta, não autorização de execução. HEAD documental de entrada e03b11c4c7abd746b346018ed316d1e94ec3144b.
+
+#### Autoridade e origem da divergência
+
+- Produto, runner-invocation.md:15: **“This is a contract-loaded independent agent, not a selected registered runner type.”** Na mesma linha, o contrato limita o carregamento a instrução de tarefa, sem prioridade developer ou garantia de tipo registrado. SKILL.md:26 manda carregar o contrato completo e preservar path/hash/identidade; Initial:44 escolhe agente genérico. A explicitação atual antecede S2: git blame aponta5fed3051 de19/10, também presente na baseline56092d9 anterior à adaptação.
+- Plano aprovado§22.4, já presente em56092d9: **“No agente genérico o arquivo não configura modelo sozinho: selecionar explicitamente os valores declarados se a interface suportar”** e **“não prioridade developer nem garantia de agent-type registrado”**. O perfil aprovado continua Luna/medium. Ausência de seleção efetiva não autoriza fallback.
+- A implementação S2 introduziu o predicado extra no commit9b125f5b58f0362083ed1d54b8d9c658dd4407b0,23/10,07:44BRT. app-server-transport.mjs:425 exige modelo/effort do bundle;:430 exige `thread.agentRole === 'stnl_validation_runner'`. Configurar `agents.stnl_validation_runner.config_file` em:320 somente oferece o papel, não demonstra seleção.
+- O registro posterior14a9414,07:45BRT, descreveu em§25.11 “papel/modelo/effort esperados”, mas não resolveu a incompatibilidade com o contrato genérico anterior. Seu escopo aprovado explicitamente congelava skills. Nos registros oficiais e histórico inspecionados não há decisão específica aprovando migração para tipo registrado. Logo esse predicado foi uma concretização incompatível da bancada, não requisito original demonstrado do produto. Os mocks já devolviam papel/effort esperados e não revelaram a divergência real.
+
+**Garantia e decisão:** alinhar S2 ao perfil genérico pode preservar a garantia ORIGINAL aprovada: identidade oficial pai/turno/agentPath/filho, contexto novo sem fork, CLI/cwd corretos, modelo/effort medium comprovados, contrato completo por path/hash e carregamento observável, uma conclusão real, primeira resposta integral consistente, origin/observation/receipt/capture/publicação/readback. Não preserva uma alegação adicional de prioridade developer/tipo registrado — essa alegação não era a garantia do fluxo aprovado. Remover o predicado e aceitar qualquer default silenciosamente seria insuficiente; é necessário especificar e testar o perfil genérico e suas provas positivas/negativas. A decisão muda o contrato de admissão da bancada e por isso permanece parada. High continua incorreto em ambas as opções. A alternativa registrada exige mudar antes o contrato do produto e requalificá-lo, contrariando a preservação das skills neste recorte; não é recomendada como atalho.
+
+#### Implementação ausente: fatos e limite causal
+
+O launcher real04-execute_slice.md enviou a entrada normal explícita da skill, OPERATION=EXECUTE_SLICE, SPEC_PATH e SLICE=1, cwd e fonte dos requisitos. Não pediu delegar implementação, não proibiu editar e não forneceu seleção separada de modelo/effort do filho. O item skill oficial aponta o SKILL do snapshot; o trace registra leitura completa do guia e leitura dos artefatos canônicos. Não há prova de contexto pessoal puro: HOME normal foi intencional e o agente consultou memória pessoal; esta análise não abriu seu conteúdo nem atribuiu a ela a causa.
+
+Sequência observada: inspect MATERIALIZED_PRISTINE → begin/admissão → reserve-dispatch → filho vinculado → receita → captura BLOCKED → publish recusado → resume owner captured. Antes do filho, o principal afirmou: **“Aguardo a execução única do recipe congelado antes de considerar qualquer alteração no produto.”** Ao terminar confirmou **“Não alterei código nem testes.”** Isso evidencia checagem da baseline antes da implementação, não uma ordem para o filho implementar. O filho carregou o TOML completo por sha256sum+cat, permaneceu read-only, executou a receita uma vez e identificou corretamente os filtros ausentes e oito testes antigos insuficientes. Sua resposta pública integral coincide com o arquivo capturado; nenhum PASS foi fabricado.
+
+O executor tinha obrigação explícita: SKILL:28 atribui produto/testes ao executor após admissão;:34 exige preparar testes antes da delegação. O registro demonstra descumprimento dessa ordem, não seu motivo interno. Há também uma superfície de condução que pode induzir leitura mecânica: begin() devolve phase=working e nextAction=reserve-dispatch (controller:303), sem representar o trabalho semântico; o SKILL:44 diz “Reserve before editing”. O runtime permite edição autorizada durante working; testes existentes inclusive escrevem produto depois de reserve-dispatch e antes de verify-native. Portanto não inventar uma proibição de editar após reserva nem declarar que nextAction exige delegação imediata. A possível ambiguidade entre próximo comando do controller e próxima ação de trabalho é uma hipótese sustentada pelo texto/trace, não causa interna provada.
+
+**Menor correção de condução proposta:** explicitar no handoff normal que admissão/reserva protege a operação, enquanto implementação e preparação dos testes pertencem ao executor antes de delegar a verificação; nextAction indica o próximo comando do controller, não dispensa essas obrigações. Encaminhar também o perfil do filho como seleção explícita normal, conforme§22.4, ou bloquear se a interface não o suportar. Não acrescentar scripts, checks literais dos filtros, aprovação sugerida, implementação pelo runner, guarda exigindo diff para todo caso/no-op ou nova recuperação. As instruções já continham obrigações suficientes; essa clarificação não prova que o próximo modelo as cumprirá nem justifica repetir até PASS.
+
+#### Mudanças, necessidade, testes e revisões já concluídos
+
+| Commit local | Alteração e razão |
+| --- | --- |
+| c23d67f81b9eaaa5f98ce7fb9aaa624fcc6dddfe | Janela inicial única e limitada sobre o mesmo dispatch; ACK não comprova histórico materializado. Sem novo turno, sem tolerar erro genérico. |
+| 06b7aef1de21c983f513791544bdc16afd5b3fc2 | Categorias causais fixas; proposta que reconstruía palavras foi recusada na revisão e retirada antes de uso real. |
+| aba7a18e8bd9ddf0f620a6d844f96092869766b1 | Cadeia oficial de metadata ainda ilegível, path repetido/normalizado e UUID exato, dentro do prazo fresh existente. Leitura posterior não foi usada como prova retroativa. |
+| e2e848a0d12c6855d04d1c3207b91af8fad8e459 | Codec ThreadItemEntry: a API retorna `{turnId,item}`; a bancada e mocks esperavam item direto e não encontravam a resposta final existente. Unwrap compartilhado valida escopo/id/tipo/duplicação em todas as páginas, sem fallback raw. Fixtures e checker de schema corrigidos na mesma fronteira. |
+| e03b11c4c7abd746b346018ed316d1e94ec3144b | Resultado bloqueado, preservações e decisão registrados; nenhum aceite indevido. |
+
+QA final do codec:135focais+12integração PASS/0FAIL/0SKIP, sem somar rodadas anteriores sobrepostas. Reproduções do codec2/2FAIL antes, positivas depois; metadata11casos antes8PASS/3FAIL,127focais+12integração depois. Schema público instalado PASS e negativo required.turnId removido REJECTED. Negativos incluem estrangeiro/ambíguo, path/caixa/UUID, permissão, erro permanente, deadline/cancelamento, retomada sem novo turno, wrapper inválido, duplicação entre páginas e metadata pendente seguida de terminal que bloqueia sem esperar timeout. Revisões independentes corrigiram findings antes do uso; a revisão62 confirmou os dois bloqueios atuais. Não houve nova revisão/modelo/teste nesta análise.
+
+**Autorização Git, sem contorno:** a negativa anterior dizia respeito ao commit do ajuste de logs e à evidência disponível. A autorização humana direta nesta conversa, “pode fazer o commit local, sem push”, antecedeu o checkpoint782a48508439652bdc17ea6488d816cb5c00651a. Os checkpoints posteriores acima foram operações locais novas, com paths explícitos, diff staged conferido, gates/revisões e autorização de continuidade; a via oficial permitiu cada operação. Não houve troca de transporte/comando para burlar recusa nem push. A autoria Git não prova autoria humana das mudanças: foram alterações conduzidas pelo assistente sob essa autorização.
+
+#### Composição conservadora46→62
+
+| Total após admissão | Natureza |
+| --- | --- |
+| 47 | Revisão de desenho do bootstrap. |
+| 48 | Revisão do código do bootstrap. |
+| 49 | Principal Case A c23d67f bloqueado; consumo incerto preservado. |
+| 50 | Revisão que recusou vocabulário diagnóstico dinâmico. |
+| 51 | Revisão dos labels fixos. |
+| 52 | Conferência dos labels oficiais de metadata. |
+| 53 | Principal focal06b7aef identificou metadata/EMPTY_ROLLOUT; incerto preservado. |
+| 54 | Revisão do matcher causal de metadata. |
+| 55 | Principal focalaba7a18 criou SPEC, mas captura bloqueou no codec; incerto preservado. |
+| 56 | Revisão do codec público/fixtures. |
+| 57 | Principal INIT e2e848a PASS. |
+| 58 | Principal PLAN PASS. |
+| 59 | Principal REVIEW_PLAN PASS. |
+| 60 | Principal EXECUTE concluído, captura S2 recusada; sem refund. |
+| 61 | Filho EXECUTE concluído BLOCKED, perfil high/default; sem refund. |
+| 62 | Revisão diagnóstica dos conflitos de identidade e execução. |
+
+São8revisões+7principais+1filho novos, além dos46herdados. Consultas públicas só de leitura não admitiram modelos; não se alega custo/tokens globais zero. Saldo188 não é meta de uso nem autorização para ignorar bloqueio. O run atual consumiu5 das20admissões locais; ledger/owner não foram reescritos para liberar retomada.
+
+**Preservação/decisão mínima:** global127arquivos/modos sem diferença, fonte/SDK/skills/templates/runner/Claude/main intactos desde o freeze; todos os históricos/FAILs e owner20arquivos mantidos.496008670bytes de QA descartável própria movidos recuperavelmente à Lixeira; três chats settled arquivados, pai/filho pending mantidos. O diagnóstico vazio anterior com arquivamento não confirmado continua declarado, sem nova tentativa. Autoridades: este plano e BACKLOG; evidência bruta só tmp ignorado.
+
+Recomendação para Aj: decidir preservar o perfil genérico original e autorizar o alinhamento explícito da bancada/prova de contrato, com medium obrigatório e clarificação curta da fase de implementação. Primeiro QA offline/revisão dos discriminantes pertinentes; só depois decidir uma nova comprovação real. Não modificar o produto para selecionar registered à revelia do guia, não recuperar este BLOCKED por nova API e não usar os oito testes antigos como aceite. Nenhuma nova execução foi iniciada por esta proposta; U3.17/S2/funcional integral seguem pendentes e U3.18 não começou.
