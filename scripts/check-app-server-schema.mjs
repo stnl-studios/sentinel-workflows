@@ -41,7 +41,16 @@ export async function checkAppServerSchema(directory) {
   properties(await read('v2/ThreadItemsListParams.json'), ['threadId', 'turnId', 'cursor', 'sortDirection'], 'thread/items/list');
   properties(await read('v2/ThreadTurnsListParams.json'), ['threadId', 'itemsView', 'cursor'], 'thread/turns/list');
   for (const kind of ['Items', 'Turns']) {
-    properties(await read(`v2/Thread${kind}ListResponse.json`), ['data', 'nextCursor'], `Thread${kind}ListResponse`);
+    const response = await read(`v2/Thread${kind}ListResponse.json`);
+    properties(response, ['data', 'nextCursor'], `Thread${kind}ListResponse`);
+    if (kind === 'Items') {
+      expect(response.properties.data.items?.$ref === '#/definitions/ThreadItemEntry', 'items data uses ThreadItemEntry');
+      const entry = response.definitions?.ThreadItemEntry;
+      properties(entry, ['turnId', 'item'], 'ThreadItemEntry');
+      expect(entry.required?.includes('turnId') && entry.required?.includes('item')
+        && entry.properties.turnId.type === 'string' && entry.properties.item.$ref === '#/definitions/ThreadItem',
+      'scoped item envelope');
+    }
   }
   const start = await read('v2/ThreadStartParams.json');
   properties(start, ['config', 'cwd', 'approvalPolicy', 'sandbox'], 'thread/start');

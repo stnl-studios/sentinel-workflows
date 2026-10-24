@@ -86,10 +86,10 @@ function server({ bundle, cwd, response = '  resultado íntegro\r\n𝛑\n', muta
       if (method === 'thread/items/list') {
         if (params.threadId === parent) {
           assert.equal(params.turnId, 'parent-turn'); return { data: [...structuredClone(state.parentItems),
-            ...(provider ? [{ id: 'parent-answer', type: 'agentMessage', phase: 'final_answer', text: 'OFFLINE principal result' }] : [])], nextCursor: null };
+            ...(provider ? [{ id: 'parent-answer', type: 'agentMessage', phase: 'final_answer', text: 'OFFLINE principal result' }] : [])].map(item => ({ turnId: params.turnId, item })), nextCursor: null };
         }
         assert.equal(params.threadId, child); assert.equal(params.turnId, 'child-turn');
-        return { data: structuredClone(state.items), nextCursor: null };
+        return { data: structuredClone(state.items).map(item => ({ turnId: params.turnId, item })), nextCursor: null };
       }
       assert.fail(`unexpected method ${method}`);
     },
@@ -277,6 +277,19 @@ test('S2 consumes every history page and blocks a repeated/incomplete cursor', a
   await assert.rejects(() => bindAppServerChild(s.rpc, identity), blocked);
 });
 
+test('S2 refuses duplicate child item IDs across public history pages', async t => {
+  const f=await fixture(t),s=server({bundle:f.bundle,cwd:f.root}),request=s.rpc.request;
+  let pagesRead=0;
+  s.rpc.request=async(method,params)=>{
+    const result=await request(method,params);
+    if(method!=='thread/items/list'||params.threadId!==child)return result;
+    pagesRead++;return {...result,data:[result.data[0]],nextCursor:params.cursor===null?'second-page':null};
+  };
+  const binding=await bindAppServerChild(s.rpc,identity);
+  await assert.rejects(()=>readAppServerChild(s.rpc,{binding,bundle:f.bundle,cwd:f.root}),error=>blocked(error)&&/duplicate public history item/u.test(error.message));
+  assert.equal(pagesRead,2);assert.equal(s.calls.some(c=>c.method==='turn/start'),false);
+});
+
 test('S2 nullable optional history fields retain public 0.163 compatibility', async t => {
   const f = await fixture(t), s = server({ bundle: f.bundle, cwd: f.root,
     mutate(state) { delete state.turns[0].error; delete state.turns[0].itemsView;
@@ -326,6 +339,27 @@ for (const [name, value, expected] of [
   for (let offset=0; offset<line.length; offset+=7) w.input.write(line.subarray(offset, offset+7));
   await rejection;
   assert.equal(w.sent.length, 1);
+});
+
+for (const [name, mutateEntry] of [
+  ['bare-item', entry => entry.item],
+  ['foreign-turn', entry => ({...entry,turnId:'foreign-turn'})],
+  ['missing-item', entry => ({turnId:entry.turnId})],
+  ['invalid-item-id', entry => ({...entry,item:{...entry.item,id:''}})],
+  ['duplicate-item', entry => [entry,entry]],
+]) test(`public item envelope rejects ${name} for parent and child without another dispatch`, async t => {
+  const f=await fixture(t),s=server({bundle:f.bundle,cwd:f.root,provider:true}),request=s.rpc.request;
+  let scope=parent;
+  s.rpc.request=async(method,params)=>{
+    const result=await request(method,params);
+    if(method!=='thread/items/list'||params.threadId!==scope)return result;
+    const transformed=result.data.map(mutateEntry).flat();return {...result,data:transformed};
+  };
+  const provider=await createNativeProvider({snapshot:f.root,workspace:f.root,evidenceRoot:f.root,rpc:s.rpc});
+  const result=await provider.runTurn({prompt:'offline',workflowSkill:'stnl-slice-executor',model:'gpt-6-luna',effort:'high',operationId:'invalid-envelope',role:'author'});
+  assert.equal(result.completed,false);assert.equal(s.calls.filter(c=>c.method==='turn/start').length,1);
+  scope=child;
+  await assert.rejects(()=>readAppServerChild(s.rpc,{binding:{...identity,agentThreadId:child,model:'gpt-6-luna',effort:'medium'},bundle:f.bundle,cwd:f.root}),blocked);
 });
 
 test('RPC rejection omits text after its 2048-character diagnostic prefix', async t => {
@@ -482,6 +516,13 @@ test('initial metadata absence cannot bypass the deadline or permit a resumed tu
   const before=h.reads();const resumed=await h.provider.runTurn({...h.args,observation:{threadId:parent,turnId:'parent-turn'}});
   assert.equal(resumed.completed,false);assert.equal(h.reads(),before+1);
   assert.equal(h.s.calls.filter(c=>c.method==='turn/start').length,1);
+});
+
+for(const status of ['interrupted','failed'])test(`initial metadata pending followed by ${status} stops before timeout without a new turn`,async t=>{
+  const h=await historyBootstrapFixture(t,n=>n===1?{error:emptyMetadataError()}:{data:[{id:'parent-turn',status,error:null}],nextCursor:null});
+  const started=Date.now(),result=await h.provider.runTurn({...h.args,timeoutMs:1000});
+  assert.equal(result.completed,false);assert.equal(result.error,'parent turn failed/interrupted');assert.equal(h.reads(),2);
+  assert.ok(Date.now()-started<500);assert.equal(h.s.calls.filter(c=>c.method==='turn/start').length,1);
 });
 
 test('initial public history tolerance ends after the first valid observation', async t => {

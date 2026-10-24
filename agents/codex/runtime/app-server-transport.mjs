@@ -350,11 +350,20 @@ export async function startAppServerTurn(rpc, { bundle, cwd, skillName, prompt, 
 }
 
 async function pages(rpc, method, params) {
-  const items = [], seen = new Set(); let cursor = null;
+  const items = [], seen = new Set(), itemIds = new Set(); let cursor = null;
   for (let page = 0; page < 32; page++) {
     const result = await rpc.request(method, { ...params, cursor, limit: 100, sortDirection: 'asc' });
     requireThat(Array.isArray(result?.data), 'public history page absent');
-    items.push(...result.data);
+    for (const entry of result.data) {
+      if (method !== 'thread/items/list') { items.push(entry); continue; }
+      // 0.163 returns ThreadItemEntry, not a bare ThreadItem. Enforce its
+      // scope before exposing an item to parent/child consumers.
+      requireThat(id(params.turnId) && entry?.turnId === params.turnId
+        && entry.item && typeof entry.item === 'object' && !Array.isArray(entry.item)
+        && id(entry.item.id) && id(entry.item.type), 'public item entry absent or foreign');
+      requireThat(!itemIds.has(entry.item.id), 'duplicate public history item');
+      itemIds.add(entry.item.id); items.push(entry.item);
+    }
     // Optional nullable cursor: omitted and null both mean None in 0.163.
     if (result.nextCursor == null) return items;
     requireThat(id(result.nextCursor) && !seen.has(result.nextCursor), 'history cursor missing/repeated');

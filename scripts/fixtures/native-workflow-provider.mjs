@@ -173,7 +173,7 @@ export function offlineNativeWorkflow({ workspace, caseRoot, snapshot, fault = n
         }
         return { data: structuredClone(thread.turns), nextCursor: null };
       }
-      if (method === 'thread/items/list') return { data: structuredClone(thread.turns.find(turn => turn.id === params.turnId).items), nextCursor: null };
+      if (method === 'thread/items/list') return { data: structuredClone(thread.turns.find(turn => turn.id === params.turnId).items).map(item => ({ turnId: params.turnId, item })), nextCursor: null };
       throw new Error(`unexpected public method ${method}`);
     },
   } };
